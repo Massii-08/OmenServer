@@ -1,0 +1,27 @@
+# OmenServer V1 - Dépendances Python
+
+# Framework web API
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+
+# Base de données
+sqlalchemy==2.0.41
+
+# Authentification (JWT + hash passwords)
+python-jose[cryptography]==3.4.0
+passlib[bcrypt]==1.7.4
+
+# Monitoring système (CPU, RAM, température)
+psutil==7.0.0
+
+# Gestion Docker (conteneurs Minecraft)
+docker==7.1.0
+
+# Variables d'environnement
+python-dotenv==1.1.0
+
+# Formulaires et multipart (pour le login)
+python-multipart==0.0.20
+
+# WebSockets (pour les logs en temps réel)
+websockets==15.0.1

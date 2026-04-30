@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OmenServer — Connexion</title>
+    <meta name="description" content="Panel de gestion de serveur dédié polyvalent">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div class="login-page">
+        <div class="login-card fade-in">
+            <!-- Logo -->
+            <div class="login-logo">
+                <span class="login-logo-icon">🖥️</span>
+                <div class="login-logo-title" id="login-title">OmenServer</div>
+            </div>
+
+            <!-- Wizard steps (visible seulement en mode setup) -->
+            <div id="wizard-steps" class="wizard-steps hidden">
+                <div class="wizard-step active" id="wizard-dot-1"></div>
+                <div class="wizard-step" id="wizard-dot-2"></div>
+                <div class="wizard-step" id="wizard-dot-3"></div>
+            </div>
+
+            <!-- Message d'erreur -->
+            <div id="login-error" class="login-error"></div>
+
+            <!-- Étape 1 du Wizard : Nom du serveur -->
+            <div id="wizard-step-1" class="hidden">
+                <h2 style="font-size: 18px; font-weight: 700; margin-bottom: 8px; text-align: center;">
+                    Bienvenue ! 👋
+                </h2>
+                <p style="font-size: 13px; color: var(--text-secondary); text-align: center; margin-bottom: 20px;">
+                    Première configuration de ton serveur
+                </p>
+                <div class="form-group">
+                    <label class="form-label">Nom de ton serveur</label>
+                    <input type="text" class="form-input" id="setup-server-name" 
+                           placeholder="Mon OmenServer" value="OmenServer">
+                </div>
+                <button class="btn btn-primary login-btn" onclick="LoginPage.wizardNext(1)">
+                    Suivant →
+                </button>
+            </div>
+
+            <!-- Étape 2 du Wizard : Créer le compte admin -->
+            <div id="wizard-step-2" class="hidden">
+                <h2 style="font-size: 18px; font-weight: 700; margin-bottom: 8px; text-align: center;">
+                    Crée ton compte admin
+                </h2>
+                <p style="font-size: 13px; color: var(--text-secondary); text-align: center; margin-bottom: 20px;">
+                    Ce sera le compte principal de ton serveur
+                </p>
+                <div class="form-group">
+                    <label class="form-label">Nom d'utilisateur</label>
+                    <input type="text" class="form-input" id="setup-username" placeholder="admin">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Mot de passe</label>
+                    <input type="password" class="form-input" id="setup-password" placeholder="••••••••">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Confirmer le mot de passe</label>
+                    <input type="password" class="form-input" id="setup-password-confirm" placeholder="••••••••">
+                </div>
+                <button class="btn btn-primary login-btn" onclick="LoginPage.wizardNext(2)">
+                    Créer le compte →
+                </button>
+            </div>
+
+            <!-- Formulaire de login (affiché si le setup est déjà fait) -->
+            <div id="login-form">
+                <div class="form-group">
+                    <label class="form-label">Nom d'utilisateur</label>
+                    <input type="text" class="form-input" id="login-username" placeholder="admin">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Mot de passe</label>
+                    <input type="password" class="form-input" id="login-password" placeholder="••••••••"
+                           onkeydown="if(event.key==='Enter') LoginPage.login()">
+                </div>
+                <button class="btn btn-primary login-btn" onclick="LoginPage.login()">
+                    Se connecter
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/js/auth.js"></script>
+    <script>
+        const LoginPage = {
+            serverName: 'OmenServer',
+
+            async init() {
+                // Si déjà connecté, aller au dashboard
+                if (Auth.isLoggedIn()) {
+                    window.location.href = '/';
+                    return;
+                }
+
+                // Vérifier si c'est la première config
+                const needsSetup = await Auth.checkSetupNeeded();
+                if (needsSetup) {
+                    this.showWizard();
+                }
+            },
+
+            showWizard() {
+                document.getElementById('login-form').classList.add('hidden');
+                document.getElementById('wizard-steps').classList.remove('hidden');
+                document.getElementById('wizard-step-1').classList.remove('hidden');
+                document.getElementById('login-title').textContent = 'Configuration';
+            },
+
+            async wizardNext(step) {
+                const errorEl = document.getElementById('login-error');
+                errorEl.classList.remove('show');
+
+                if (step === 1) {
+                    this.serverName = document.getElementById('setup-server-name').value.trim() || 'OmenServer';
+                    // Passer à l'étape 2
+                    document.getElementById('wizard-step-1').classList.add('hidden');
+                    document.getElementById('wizard-step-2').classList.remove('hidden');
+                    document.getElementById('wizard-dot-1').classList.remove('active');
+                    document.getElementById('wizard-dot-1').classList.add('done');
+                    document.getElementById('wizard-dot-2').classList.add('active');
+                }
+
+                if (step === 2) {
+                    const username = document.getElementById('setup-username').value.trim();
+                    const password = document.getElementById('setup-password').value;
+                    const passwordConfirm = document.getElementById('setup-password-confirm').value;
+
+                    if (!username) {
+                        errorEl.textContent = 'Entre un nom d\'utilisateur';
+                        errorEl.classList.add('show');
+                        return;
+                    }
+                    if (password.length < 4) {
+                        errorEl.textContent = 'Le mot de passe doit faire au moins 4 caractères';
+                        errorEl.classList.add('show');
+                        return;
+                    }
+                    if (password !== passwordConfirm) {
+                        errorEl.textContent = 'Les mots de passe ne correspondent pas';
+                        errorEl.classList.add('show');
+                        return;
+                    }
+
+                    const result = await Auth.register(username, password, this.serverName);
+                    if (result.success) {
+                        window.location.href = '/';
+                    } else {
+                        errorEl.textContent = result.error;
+                        errorEl.classList.add('show');
+                    }
+                }
+            },
+
+            async login() {
+                const errorEl = document.getElementById('login-error');
+                errorEl.classList.remove('show');
+
+                const username = document.getElementById('login-username').value.trim();
+                const password = document.getElementById('login-password').value;
+
+                if (!username || !password) {
+                    errorEl.textContent = 'Remplis tous les champs';
+                    errorEl.classList.add('show');
+                    return;
+                }
+
+                const result = await Auth.login(username, password);
+                if (result.success) {
+                    window.location.href = '/';
+                } else {
+                    errorEl.textContent = result.error;
+                    errorEl.classList.add('show');
+                }
+            },
+        };
+
+        // Initialiser au chargement
+        document.addEventListener('DOMContentLoaded', () => LoginPage.init());
+    </script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+# Ignorer les fichiers sensibles et temporaires
+.env
+venv/
+__pycache__/
+*.pyc
+data/
+*.db
+mdpdf.log

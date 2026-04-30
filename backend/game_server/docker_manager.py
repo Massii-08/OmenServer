@@ -1,0 +1,237 @@
+"""
+Docker Manager — Contrôle les conteneurs Docker pour les serveurs de jeux.
+
+Supporte tous les jeux définis dans games_config.py.
+Chaque jeu a sa propre image Docker, ses ports et ses variables d'environnement.
+"""
+
+import logging
+import socket
+
+from backend.config import settings
+from backend.game_server.games_config import get_game_config
+
+logger = logging.getLogger(__name__)
+
+_docker_client = None
+
+
+def _get_docker_client():
+    """Retourne le client Docker, en le créant si nécessaire."""
+    global _docker_client
+    if _docker_client is None:
+        try:
+            import docker
+            _docker_client = docker.from_env()
+            _docker_client.ping()
+            logger.info("Connexion Docker établie")
+        except Exception as e:
+            logger.warning(f"Docker non disponible: {e}")
+            _docker_client = None
+    return _docker_client
+
+
+def is_docker_available() -> bool:
+    """Vérifie si Docker est installé et lancé."""
+    client = _get_docker_client()
+    if client is None:
+        return False
+    try:
+        client.ping()
+        return True
+    except Exception:
+        return False
+
+
+def get_local_ip() -> str:
+    """
+    Détecte l'IP locale de la machine sur le réseau.
+    C'est cette IP que les joueurs utiliseront pour se connecter.
+    """
+    try:
+        # Astuce : on ouvre une connexion UDP vers une IP externe
+        # pour trouver quelle interface réseau est utilisée
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def create_game_server(
+    name: str,
+    game_type: str = "minecraft",
+    port: int = None,
+    memory_mb: int = None,
+    version: str = "LATEST",
+    custom_image: str = None,
+) -> dict:
+    """
+    Crée un conteneur Docker pour n'importe quel jeu supporté.
+
+    Args:
+        name:         Nom du serveur
+        game_type:    Type de jeu (minecraft, ark, valheim, etc.)
+        port:         Port du serveur (utilise le port par défaut du jeu si None)
+        memory_mb:    RAM en Mo (utilise la valeur par défaut du jeu si None)
+        version:      Version du jeu (si supporté par le jeu)
+        custom_image: Image Docker personnalisée (pour game_type="custom")
+    """
+    client = _get_docker_client()
+    if not client:
+        raise RuntimeError("Docker n'est pas disponible. Lance Docker Desktop.")
+
+    # Récupérer la config du jeu
+    game_config = get_game_config(game_type)
+
+    # Utiliser les valeurs par défaut du jeu si non spécifié
+    if port is None:
+        port = game_config["default_port"]
+    if memory_mb is None:
+        memory_mb = game_config["default_memory_mb"]
+
+    # Image Docker à utiliser
+    image_name = custom_image if (game_type == "custom" and custom_image) else game_config["image"]
+    if not image_name:
+        raise RuntimeError("Aucune image Docker spécifiée pour ce jeu")
+
+    # Nom du conteneur Docker (pas d'espaces ni caractères spéciaux)
+    safe_name = name.lower().replace(' ', '-').replace('_', '-')
+    container_name = f"omen-{game_type}-{safe_name}"
+
+    # Variables d'environnement du jeu
+    env = dict(game_config.get("env", {}))
+
+    # Ajouter la version si le jeu le supporte
+    if game_config.get("version_env") and version:
+        env[game_config["version_env"]] = version
+
+    # Ajouter la mémoire si le jeu le supporte
+    if game_config.get("memory_env"):
+        memory_str = f"{memory_mb // 1024}G" if memory_mb >= 1024 else f"{memory_mb}M"
+        env[game_config["memory_env"]] = memory_str
+
+    # Configuration des ports
+    protocol = game_config.get("port_protocol", "tcp")
+    ports_config = {f"{game_config['default_port']}/{protocol}": port}
+
+    # Ajouter les ports supplémentaires (ARK, Valheim en ont besoin)
+    extra_ports = game_config.get("extra_ports", {})
+    ports_config.update(extra_ports)
+
+    try:
+        # Télécharger l'image Docker si elle n'existe pas
+        try:
+            client.images.get(image_name)
+            logger.info(f"Image {image_name} déjà présente")
+        except Exception:
+            logger.info(f"Téléchargement de {image_name}... (peut prendre quelques minutes)")
+            client.images.pull(image_name)
+            logger.info(f"Image {image_name} téléchargée ✅")
+
+        container = client.containers.create(
+            image=image_name,
+            name=container_name,
+            ports=ports_config,
+            environment=env,
+            mem_limit=f"{memory_mb + 512}m",
+            detach=True,
+            restart_policy={"Name": "unless-stopped"},
+        )
+
+        logger.info(f"Conteneur créé: {container_name} (ID: {container.short_id})")
+        return {
+            "docker_id": container.id,
+            "container_name": container_name,
+            "status": "created",
+        }
+
+    except Exception as e:
+        logger.error(f"Erreur création conteneur: {e}")
+        raise RuntimeError(f"Impossible de créer le serveur: {e}")
+
+
+def start_container(docker_id: str) -> bool:
+    """Démarre un conteneur Docker existant."""
+    client = _get_docker_client()
+    if not client:
+        raise RuntimeError("Docker non disponible")
+    try:
+        container = client.containers.get(docker_id)
+        container.start()
+        logger.info(f"Conteneur démarré: {container.short_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Erreur démarrage: {e}")
+        raise RuntimeError(f"Impossible de démarrer: {e}")
+
+
+def stop_container(docker_id: str) -> bool:
+    """Arrête un conteneur Docker proprement."""
+    client = _get_docker_client()
+    if not client:
+        raise RuntimeError("Docker non disponible")
+    try:
+        container = client.containers.get(docker_id)
+        container.stop(timeout=30)
+        logger.info(f"Conteneur arrêté: {container.short_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Erreur arrêt: {e}")
+        raise RuntimeError(f"Impossible d'arrêter: {e}")
+
+
+def get_container_status(docker_id: str) -> dict:
+    """Retourne le statut détaillé d'un conteneur."""
+    client = _get_docker_client()
+    if not client:
+        return {"status": "unknown", "docker_available": False}
+    try:
+        container = client.containers.get(docker_id)
+        status_info = {
+            "status": container.status,
+            "docker_available": True,
+        }
+        if container.status == "running":
+            try:
+                stats = container.stats(stream=False)
+                mem_usage = stats.get("memory_stats", {}).get("usage", 0)
+                mem_limit = stats.get("memory_stats", {}).get("limit", 0)
+                status_info["memory_usage_mb"] = round(mem_usage / (1024 ** 2), 1)
+                status_info["memory_limit_mb"] = round(mem_limit / (1024 ** 2), 1)
+            except Exception:
+                pass
+        return status_info
+    except Exception as e:
+        logger.warning(f"Conteneur introuvable: {e}")
+        return {"status": "not_found", "docker_available": True}
+
+
+def get_container_logs(docker_id: str, tail: int = 100) -> str:
+    """Retourne les dernières lignes de logs du conteneur."""
+    client = _get_docker_client()
+    if not client:
+        return "Docker non disponible"
+    try:
+        container = client.containers.get(docker_id)
+        logs = container.logs(tail=tail, timestamps=False).decode("utf-8", errors="replace")
+        return logs
+    except Exception as e:
+        return f"Erreur lecture logs: {e}"
+
+
+def delete_container(docker_id: str) -> bool:
+    """Supprime un conteneur Docker (l'arrête d'abord si nécessaire)."""
+    client = _get_docker_client()
+    if not client:
+        raise RuntimeError("Docker non disponible")
+    try:
+        container = client.containers.get(docker_id)
+        container.remove(force=True)
+        logger.info(f"Conteneur supprimé: {container.short_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Erreur suppression: {e}")
+        raise RuntimeError(f"Impossible de supprimer: {e}")
