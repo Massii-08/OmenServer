@@ -54,11 +54,18 @@ class ServerResponse(BaseModel):
     version: str
     port: int
     memory_mb: int
+    cpu_percent: int = 100
     status: str
     docker_id: Optional[str]
 
     class Config:
         from_attributes = True
+
+
+class UpdateResourcesRequest(BaseModel):
+    """Données pour modifier les ressources d'un serveur."""
+    memory_mb: int
+    cpu_percent: int
 
 
 # --- Routes ---
@@ -278,3 +285,51 @@ def delete_server(
     db.delete(server)
     db.commit()
     return {"message": f"Serveur '{server.name}' supprimé"}
+
+
+@router.put("/{server_id}/resources")
+def update_resources(
+    server_id: int,
+    request: UpdateResourcesRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Modifie les ressources (RAM + CPU) d'un serveur.
+    Les changements sont appliqués immédiatement au conteneur Docker.
+    """
+    server = db.query(GameServer).filter(GameServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Serveur non trouvé")
+
+    # Validation des limites
+    if request.memory_mb < 256:
+        raise HTTPException(status_code=400, detail="La RAM minimum est 256 Mo")
+    if request.memory_mb > 16384:
+        raise HTTPException(status_code=400, detail="La RAM maximum est 16 Go")
+    if request.cpu_percent < 25:
+        raise HTTPException(status_code=400, detail="Le CPU minimum est 25%")
+    if request.cpu_percent > 400:
+        raise HTTPException(status_code=400, detail="Le CPU maximum est 400% (4 cœurs)")
+
+    # Appliquer au conteneur Docker si possible
+    if server.docker_id:
+        try:
+            docker_manager.update_container_resources(
+                docker_id=server.docker_id,
+                memory_mb=request.memory_mb,
+                cpu_percent=request.cpu_percent,
+            )
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # Mettre à jour en base
+    server.memory_mb = request.memory_mb
+    server.cpu_percent = request.cpu_percent
+    db.commit()
+
+    return {
+        "message": f"Ressources de '{server.name}' mises à jour ✅",
+        "memory_mb": server.memory_mb,
+        "cpu_percent": server.cpu_percent,
+    }

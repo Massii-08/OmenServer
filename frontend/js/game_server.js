@@ -201,6 +201,51 @@ const GameServer = {
                     </div>
                 </div>
             </div>
+
+            <!-- Modal réglages ressources -->
+            <div id="resources-modal" class="modal-overlay">
+                <div class="modal" style="max-width: 500px;">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="modal-title" style="margin: 0;">⚙️ Réglages ressources</h2>
+                        <button class="btn btn-secondary btn-sm" onclick="GameServer.hideResourcesModal()">✕ Fermer</button>
+                    </div>
+
+                    <!-- RAM Slider -->
+                    <div style="margin-bottom: 24px;">
+                        <div class="flex justify-between items-center" style="margin-bottom: 8px;">
+                            <label class="form-label" style="margin: 0;">💻 Mémoire RAM</label>
+                            <span id="ram-value" style="font-family: monospace; font-weight: 700; color: var(--accent-blue); font-size: 16px;">2048 Mo</span>
+                        </div>
+                        <input type="range" id="ram-slider" min="256" max="8192" step="256" value="2048"
+                            style="width: 100%; accent-color: var(--accent-blue); cursor: pointer;"
+                            oninput="document.getElementById('ram-value').textContent = this.value + ' Mo'" />
+                        <div class="flex justify-between" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+                            <span>256 Mo</span>
+                            <span>8192 Mo (8 Go)</span>
+                        </div>
+                    </div>
+
+                    <!-- CPU Slider -->
+                    <div style="margin-bottom: 24px;">
+                        <div class="flex justify-between items-center" style="margin-bottom: 8px;">
+                            <label class="form-label" style="margin: 0;">⚡ CPU</label>
+                            <span id="cpu-value" style="font-family: monospace; font-weight: 700; color: var(--accent-orange); font-size: 16px;">100%</span>
+                        </div>
+                        <input type="range" id="cpu-slider" min="25" max="400" step="25" value="100"
+                            style="width: 100%; accent-color: var(--accent-orange); cursor: pointer;"
+                            oninput="document.getElementById('cpu-value').textContent = this.value + '%'" />
+                        <div class="flex justify-between" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+                            <span>25% (¼ cœur)</span>
+                            <span>400% (4 cœurs)</span>
+                        </div>
+                    </div>
+
+                    <div id="resources-message" style="font-size: 13px; margin-bottom: 12px;"></div>
+                    <button class="btn btn-primary" id="resources-save-btn" onclick="GameServer.saveResources()" style="width: 100%;">
+                        💾 Appliquer les changements
+                    </button>
+                </div>
+            </div>
         `;
 
         this.checkDocker();
@@ -306,7 +351,7 @@ const GameServer = {
                         <div>
                             <div class="server-name">${server.name}</div>
                             <div class="server-meta">
-                                ${gameName} · v${server.version} · ${server.memory_mb} Mo RAM
+                                ${gameName} · v${server.version} · ${server.memory_mb} Mo RAM · ${server.cpu_percent || 100}% CPU
                             </div>
                             <div style="margin-top: 4px; font-family: monospace; font-size: 12px; color: ${isRunning ? 'var(--accent-green)' : 'var(--text-muted)'};">
                                 📡 ${connectAddr}
@@ -327,6 +372,7 @@ const GameServer = {
                             `}
                             <button class="btn btn-icon btn-secondary" onclick="GameServer.showLogs(${server.id})" title="Console">📋</button>
                             <button class="btn btn-icon btn-secondary" onclick="GameServer.showBackups(${server.id})" title="Sauvegardes">💾</button>
+                            <button class="btn btn-icon btn-secondary" onclick="GameServer.showResources(${server.id}, ${server.memory_mb}, ${server.cpu_percent || 100})" title="Ressources">⚙️</button>
                             <button class="btn btn-icon btn-danger" onclick="GameServer.deleteServer(${server.id})" title="Supprimer">🗑️</button>
                         </div>
                     </div>
@@ -405,6 +451,77 @@ const GameServer = {
         } catch (e) {
             this.hideDeleteModal();
             alert('Erreur réseau lors de la suppression');
+        }
+    },
+
+    // --- Réglages ressources ---
+
+    _resourcesServerId: null,
+
+    showResources(serverId, currentRam, currentCpu) {
+        this._resourcesServerId = serverId;
+        const modal = document.getElementById('resources-modal');
+        const ramSlider = document.getElementById('ram-slider');
+        const cpuSlider = document.getElementById('cpu-slider');
+        const ramValue = document.getElementById('ram-value');
+        const cpuValue = document.getElementById('cpu-value');
+        const msgEl = document.getElementById('resources-message');
+
+        if (ramSlider) { ramSlider.value = currentRam; }
+        if (cpuSlider) { cpuSlider.value = currentCpu; }
+        if (ramValue) { ramValue.textContent = currentRam + ' Mo'; }
+        if (cpuValue) { cpuValue.textContent = currentCpu + '%'; }
+        if (msgEl) { msgEl.textContent = ''; }
+
+        if (modal) modal.classList.add('active');
+    },
+
+    hideResourcesModal() {
+        const modal = document.getElementById('resources-modal');
+        if (modal) modal.classList.remove('active');
+        this._resourcesServerId = null;
+    },
+
+    async saveResources() {
+        const id = this._resourcesServerId;
+        if (!id) return;
+
+        const ram = parseInt(document.getElementById('ram-slider').value);
+        const cpu = parseInt(document.getElementById('cpu-slider').value);
+        const btn = document.getElementById('resources-save-btn');
+        const msgEl = document.getElementById('resources-message');
+
+        if (btn) { btn.disabled = true; btn.textContent = '⏳ Application...'; }
+
+        try {
+            const response = await Auth.apiCall(`/api/servers/${id}/resources`, {
+                method: 'PUT',
+                body: JSON.stringify({ memory_mb: ram, cpu_percent: cpu }),
+            });
+
+            if (btn) { btn.disabled = false; btn.innerHTML = '💾 Appliquer les changements'; }
+
+            if (response && response.ok) {
+                if (msgEl) {
+                    msgEl.style.color = 'var(--accent-green)';
+                    msgEl.textContent = '✅ Ressources mises à jour !';
+                }
+                await this.refreshServers();
+                // Fermer après 1s
+                setTimeout(() => this.hideResourcesModal(), 1000);
+            } else if (response) {
+                const err = await response.json();
+                if (msgEl) {
+                    msgEl.style.color = '#e74c3c';
+                    msgEl.textContent = `❌ ${err.detail || 'Erreur'}`;
+                }
+            }
+        } catch (e) {
+            if (btn) { btn.disabled = false; btn.innerHTML = '💾 Appliquer les changements'; }
+            if (msgEl) {
+                msgEl.style.color = '#e74c3c';
+                msgEl.textContent = '❌ Erreur réseau';
+            }
         }
     },
 

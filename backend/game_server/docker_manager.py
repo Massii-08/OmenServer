@@ -235,3 +235,42 @@ def delete_container(docker_id: str) -> bool:
     except Exception as e:
         logger.error(f"Erreur suppression: {e}")
         raise RuntimeError(f"Impossible de supprimer: {e}")
+
+
+def update_container_resources(docker_id: str, memory_mb: int, cpu_percent: int) -> dict:
+    """
+    Met à jour les ressources (RAM + CPU) d'un conteneur Docker.
+
+    Args:
+        docker_id:    ID du conteneur Docker
+        memory_mb:    RAM en Mo (ex: 2048 = 2 Go)
+        cpu_percent:  % CPU (100 = 1 cœur, 200 = 2 cœurs)
+
+    Docker utilise:
+        - mem_limit: limite RAM en bytes
+        - nano_cpus: CPU en nano-CPUs (1 cœur = 1_000_000_000)
+    """
+    client = _get_docker_client()
+    if not client:
+        raise RuntimeError("Docker non disponible")
+    try:
+        container = client.containers.get(docker_id)
+
+        # Convertir en unités Docker
+        mem_bytes = memory_mb * 1024 * 1024
+        nano_cpus = int(cpu_percent * 10_000_000)  # 100% = 1 cœur = 1e9 nano
+
+        container.update(
+            mem_limit=mem_bytes,
+            memswap_limit=mem_bytes * 2,  # Swap = 2x la RAM
+            nano_cpus=nano_cpus,
+        )
+
+        logger.info(f"Ressources mises à jour: {container.short_id} → {memory_mb}Mo RAM, {cpu_percent}% CPU")
+        return {
+            "memory_mb": memory_mb,
+            "cpu_percent": cpu_percent,
+        }
+    except Exception as e:
+        logger.error(f"Erreur mise à jour ressources: {e}")
+        raise RuntimeError(f"Impossible de modifier les ressources: {e}")
