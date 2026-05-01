@@ -81,6 +81,26 @@ async def startup_event():
     create_tables()
     logger.info("📦 Base de données initialisée")
 
+    # Migration : ajouter les colonnes manquantes (SQLite ne supporte pas ALTER TABLE IF NOT EXISTS)
+    from sqlalchemy import text
+    from backend.database import SessionLocal
+    db = SessionLocal()
+    try:
+        migrations = [
+            ("game_servers", "cpu_percent", "INTEGER DEFAULT 100"),
+            ("users", "role", "VARCHAR(20) DEFAULT 'player'"),
+            ("users", "invited_by", "INTEGER"),
+        ]
+        for table, column, col_type in migrations:
+            try:
+                db.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+                db.commit()
+                logger.info(f"🔧 Migration: ajouté {table}.{column}")
+            except Exception:
+                db.rollback()  # La colonne existe déjà
+    finally:
+        db.close()
+
     # Migration : corriger les admins qui n'ont pas role="admin"
     from backend.database import SessionLocal
     from backend.auth.models import User
