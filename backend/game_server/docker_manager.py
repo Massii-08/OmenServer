@@ -258,12 +258,15 @@ def update_container_resources(docker_id: str, memory_mb: int, cpu_percent: int)
 
         # Convertir en unités Docker
         mem_bytes = memory_mb * 1024 * 1024
-        nano_cpus = int(cpu_percent * 10_000_000)  # 100% = 1 cœur = 1e9 nano
+        # cpu_period = 100000 µs (par défaut), cpu_quota = période * (percent / 100)
+        cpu_period = 100000
+        cpu_quota = int(cpu_period * cpu_percent / 100)
 
         container.update(
             mem_limit=mem_bytes,
             memswap_limit=mem_bytes * 2,  # Swap = 2x la RAM
-            nano_cpus=nano_cpus,
+            cpu_period=cpu_period,
+            cpu_quota=cpu_quota,
         )
 
         logger.info(f"Ressources mises à jour: {container.short_id} → {memory_mb}Mo RAM, {cpu_percent}% CPU")
