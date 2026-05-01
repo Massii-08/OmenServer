@@ -289,6 +289,49 @@ const GameServer = {
                     <div id="scheduler-message" style="font-size: 13px; margin-top: 8px;"></div>
                 </div>
             </div>
+
+            <!-- Modal Mods CurseForge -->
+            <div id="mods-modal" class="modal-overlay">
+                <div class="modal" style="max-width: 700px; max-height: 85vh; display: flex; flex-direction: column;">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="modal-title" style="margin: 0;">🧩 Mods CurseForge</h2>
+                        <button class="btn btn-secondary btn-sm" onclick="GameServer.hideModsModal()">✕ Fermer</button>
+                    </div>
+
+                    <!-- Tabs -->
+                    <div class="flex gap-2" style="margin-bottom: 12px;">
+                        <button class="btn btn-primary btn-sm" id="mods-tab-search" onclick="GameServer.switchModsTab('search')">🔍 Rechercher</button>
+                        <button class="btn btn-secondary btn-sm" id="mods-tab-installed" onclick="GameServer.switchModsTab('installed')">📦 Installés</button>
+                    </div>
+
+                    <!-- Tab Recherche -->
+                    <div id="mods-search-tab">
+                        <div class="flex gap-2" style="margin-bottom: 12px;">
+                            <input type="text" id="mods-search-input" class="form-input" placeholder="Rechercher un mod..." style="flex:1;"
+                                onkeydown="if(event.key==='Enter') GameServer.searchMods()" />
+                            <select id="mods-category" class="form-input" style="width: 130px;">
+                                <option value="mods">🧩 Mods</option>
+                                <option value="modpacks">📦 Modpacks</option>
+                                <option value="textures">🎨 Textures</option>
+                                <option value="worlds">🌍 Maps</option>
+                            </select>
+                            <button class="btn btn-primary" onclick="GameServer.searchMods()">🔍</button>
+                        </div>
+                        <div id="mods-results" style="overflow-y: auto; max-height: 400px;">
+                            <div style="text-align:center;padding:30px;color:var(--text-muted);">🔍 Recherche un mod pour commencer</div>
+                        </div>
+                    </div>
+
+                    <!-- Tab Installés -->
+                    <div id="mods-installed-tab" style="display:none;">
+                        <div id="mods-installed-list" style="overflow-y: auto; max-height: 450px;">
+                            <div style="text-align:center;padding:30px;color:var(--text-muted);">⏳ Chargement...</div>
+                        </div>
+                    </div>
+
+                    <div id="mods-message" style="font-size: 13px; margin-top: 8px;"></div>
+                </div>
+            </div>
         `;
 
         this.checkDocker();
@@ -417,6 +460,7 @@ const GameServer = {
                             <button class="btn btn-icon btn-secondary" onclick="GameServer.showBackups(${server.id})" title="Sauvegardes">💾</button>
                             <button class="btn btn-icon btn-secondary" onclick="GameServer.showResources(${server.id}, ${server.memory_mb}, ${server.cpu_percent || 100})" title="Ressources">⚙️</button>
                             <button class="btn btn-icon btn-secondary" onclick="GameServer.showScheduler(${server.id})" title="Planification">⏰</button>
+                            ${server.game_type === 'minecraft' ? `<button class="btn btn-icon btn-secondary" onclick="GameServer.showMods(${server.id})" title="Mods">🧩</button>` : ''}
                             <button class="btn btn-icon btn-danger" onclick="GameServer.deleteServer(${server.id})" title="Supprimer">🗑️</button>
                         </div>
                     </div>
@@ -665,6 +709,192 @@ const GameServer = {
     async deleteScheduledTask(taskId) {
         const response = await Auth.apiCall(`/api/scheduler/${taskId}`, { method: 'DELETE' });
         if (response && response.ok) await this.loadSchedulerTasks();
+    },
+
+    // --- Mods CurseForge ---
+
+    _modsServerId: null,
+
+    showMods(serverId) {
+        this._modsServerId = serverId;
+        const modal = document.getElementById('mods-modal');
+        const msgEl = document.getElementById('mods-message');
+        if (msgEl) msgEl.textContent = '';
+        if (modal) modal.classList.add('active');
+        this.switchModsTab('search');
+    },
+
+    hideModsModal() {
+        const modal = document.getElementById('mods-modal');
+        if (modal) modal.classList.remove('active');
+        this._modsServerId = null;
+    },
+
+    switchModsTab(tab) {
+        const searchTab = document.getElementById('mods-search-tab');
+        const installedTab = document.getElementById('mods-installed-tab');
+        const tabSearch = document.getElementById('mods-tab-search');
+        const tabInstalled = document.getElementById('mods-tab-installed');
+
+        if (tab === 'search') {
+            searchTab.style.display = 'block';
+            installedTab.style.display = 'none';
+            tabSearch.className = 'btn btn-primary btn-sm';
+            tabInstalled.className = 'btn btn-secondary btn-sm';
+        } else {
+            searchTab.style.display = 'none';
+            installedTab.style.display = 'block';
+            tabSearch.className = 'btn btn-secondary btn-sm';
+            tabInstalled.className = 'btn btn-primary btn-sm';
+            this.loadInstalledMods();
+        }
+    },
+
+    async searchMods() {
+        const query = document.getElementById('mods-search-input').value.trim();
+        const category = document.getElementById('mods-category').value;
+        const resultsEl = document.getElementById('mods-results');
+
+        if (!query) return;
+
+        resultsEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">⏳ Recherche...</div>';
+
+        const response = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(query)}&category=${category}`);
+        if (!response || !response.ok) {
+            const err = response ? await response.json() : {};
+            resultsEl.innerHTML = `<div style="text-align:center;padding:20px;color:#e74c3c;">❌ ${err.detail || 'Erreur de recherche'}</div>`;
+            return;
+        }
+
+        const data = await response.json();
+        const mods = data.mods || [];
+
+        if (mods.length === 0) {
+            resultsEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Aucun résultat</div>';
+            return;
+        }
+
+        resultsEl.innerHTML = mods.map(mod => {
+            const downloads = mod.downloads > 1000000 ? `${(mod.downloads/1000000).toFixed(1)}M` :
+                             mod.downloads > 1000 ? `${(mod.downloads/1000).toFixed(0)}K` :
+                             mod.downloads;
+            return `
+                <div style="display:flex;align-items:center;gap:12px;padding:10px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;">
+                    <img src="${mod.icon_url || ''}" alt="" style="width:40px;height:40px;border-radius:6px;background:var(--bg-primary);" onerror="this.style.display='none'" />
+                    <div style="flex:1;min-width:0;">
+                        <div style="font-weight:600;font-size:14px;">${mod.name}</div>
+                        <div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                            ${mod.summary}
+                        </div>
+                        <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
+                            👤 ${mod.author} · ⬇️ ${downloads}
+                        </div>
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="GameServer.showModFiles(${mod.id}, '${mod.name.replace(/'/g, "\\'")}')">📥 Installer</button>
+                </div>
+            `;
+        }).join('');
+    },
+
+    async showModFiles(modId, modName) {
+        const resultsEl = document.getElementById('mods-results');
+        resultsEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">⏳ Chargement des versions...</div>';
+
+        const response = await Auth.apiCall(`/api/mods/${modId}/files`);
+        if (!response || !response.ok) {
+            resultsEl.innerHTML = '<div style="text-align:center;padding:20px;color:#e74c3c;">❌ Erreur</div>';
+            return;
+        }
+
+        const data = await response.json();
+        const files = data.files || [];
+
+        if (files.length === 0) {
+            resultsEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Aucun fichier disponible</div>';
+            return;
+        }
+
+        resultsEl.innerHTML = `
+            <div style="margin-bottom:8px;">
+                <button class="btn btn-secondary btn-sm" onclick="GameServer.searchMods()">← Retour</button>
+                <span style="font-weight:600;margin-left:8px;">${modName}</span>
+            </div>
+        ` + files.slice(0, 10).map(f => {
+            const versions = f.game_versions.slice(0, 3).join(', ');
+            const badge = f.release_type === 'Release' ? '🟢' : f.release_type === 'Beta' ? '🟡' : '🔴';
+            const hasUrl = f.download_url ? true : false;
+            return `
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;">
+                    <div>
+                        <div style="font-size:13px;">${badge} ${f.name} <span style="color:var(--text-muted);font-size:11px;">(${f.size_mb} Mo)</span></div>
+                        <div style="font-size:11px;color:var(--text-muted);">${versions}</div>
+                    </div>
+                    ${hasUrl ? `<button class="btn btn-primary btn-sm" onclick="GameServer.installMod('${modName.replace(/'/g, "\\'")}', '${f.download_url}', '${f.name}')">📥</button>` : '<span style="font-size:11px;color:var(--text-muted);">Non dispo</span>'}
+                </div>
+            `;
+        }).join('');
+    },
+
+    async installMod(modName, downloadUrl, filename) {
+        const id = this._modsServerId;
+        if (!id) return;
+        const msgEl = document.getElementById('mods-message');
+
+        if (msgEl) { msgEl.style.color = 'var(--accent-blue)'; msgEl.textContent = '⏳ Téléchargement en cours...'; }
+
+        const response = await Auth.apiCall('/api/mods/install', {
+            method: 'POST',
+            body: JSON.stringify({ server_id: id, mod_name: modName, download_url: downloadUrl, filename: filename }),
+        });
+
+        if (response && response.ok) {
+            if (msgEl) { msgEl.style.color = 'var(--accent-green)'; msgEl.textContent = `✅ ${modName} installé !`; }
+        } else if (response) {
+            const err = await response.json();
+            if (msgEl) { msgEl.style.color = '#e74c3c'; msgEl.textContent = `❌ ${err.detail || 'Erreur'}`; }
+        }
+    },
+
+    async loadInstalledMods() {
+        const id = this._modsServerId;
+        if (!id) return;
+
+        const listEl = document.getElementById('mods-installed-list');
+        const response = await Auth.apiCall(`/api/mods/server/${id}`);
+        if (!response || !response.ok) {
+            listEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Erreur</div>';
+            return;
+        }
+
+        const data = await response.json();
+        const mods = data.mods || [];
+
+        if (mods.length === 0) {
+            listEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Aucun mod installé</div>';
+            return;
+        }
+
+        listEl.innerHTML = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${mods.length} mod(s) installé(s)</div>` +
+            mods.map(m => `
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;">
+                    <div>
+                        <div style="font-size:13px;">🧩 ${m.filename}</div>
+                        <div style="font-size:11px;color:var(--text-muted);">${m.size_mb} Mo</div>
+                    </div>
+                    <button class="btn btn-icon btn-danger" onclick="GameServer.removeMod('${m.filename}')" title="Supprimer">🗑️</button>
+                </div>
+            `).join('');
+    },
+
+    async removeMod(filename) {
+        const id = this._modsServerId;
+        if (!id) return;
+        const response = await Auth.apiCall(`/api/mods/server/${id}/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+        if (response && response.ok) {
+            await this.loadInstalledMods();
+            const msgEl = document.getElementById('mods-message');
+            if (msgEl) { msgEl.style.color = 'var(--accent-green)'; msgEl.textContent = `🗑️ ${filename} supprimé`; }
+        }
     },
 
     /**
