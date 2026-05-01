@@ -56,4 +56,8 @@ def create_tables():
     Appelé au démarrage du serveur.
     Si les tables existent déjà, ne fait rien.
     """
+    # Importer tous les modèles pour que SQLAlchemy les découvre
+    import backend.auth.models        # noqa: User, Invitation
+    import backend.game_server.models  # noqa: GameServer
+    import backend.scheduler.models    # noqa: ScheduledTask
     Base.metadata.create_all(bind=engine)

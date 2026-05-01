@@ -59,6 +59,7 @@ from backend.modules.router import router as modules_router
 from backend.game_server.router import router as game_server_router
 from backend.game_server.websocket import router as ws_router
 from backend.game_server.backup_router import router as backup_router
+from backend.scheduler.router import router as scheduler_router
 
 app.include_router(auth_router)
 app.include_router(invite_router)
@@ -67,6 +68,7 @@ app.include_router(modules_router)
 app.include_router(game_server_router)
 app.include_router(ws_router)
 app.include_router(backup_router)
+app.include_router(scheduler_router)
 
 
 # --- Événement de démarrage ---
@@ -122,7 +124,18 @@ async def startup_event():
     os.makedirs(settings.SERVERS_DATA_DIR, exist_ok=True)
     logger.info("📁 Dossiers de données créés")
 
+    # Démarrer le scheduler (tâches planifiées)
+    from backend.scheduler.engine import start_scheduler
+    start_scheduler()
+
     logger.info(f"🚀 {settings.SERVER_NAME} est prêt ! → http://localhost:{settings.PORT}")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Arrêter proprement le scheduler."""
+    from backend.scheduler.engine import stop_scheduler
+    stop_scheduler()
 
 
 # --- Servir le frontend ---

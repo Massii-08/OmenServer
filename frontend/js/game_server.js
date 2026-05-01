@@ -246,6 +246,49 @@ const GameServer = {
                     </button>
                 </div>
             </div>
+
+            <!-- Modal tâches planifiées -->
+            <div id="scheduler-modal" class="modal-overlay">
+                <div class="modal" style="max-width: 550px;">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="modal-title" style="margin: 0;">⏰ Tâches planifiées</h2>
+                        <button class="btn btn-secondary btn-sm" onclick="GameServer.hideSchedulerModal()">✕ Fermer</button>
+                    </div>
+
+                    <!-- Formulaire nouvelle tâche -->
+                    <div style="background: var(--bg-secondary); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+                        <div class="form-label" style="margin-bottom: 8px;">Nouvelle tâche</div>
+                        <div class="flex gap-2" style="align-items: flex-end;">
+                            <div style="flex: 1;">
+                                <label style="font-size: 12px; color: var(--text-muted);">Type</label>
+                                <select id="scheduler-type" class="form-input" style="margin-top: 4px;">
+                                    <option value="backup">💾 Backup auto</option>
+                                    <option value="restart">🔄 Redémarrage auto</option>
+                                </select>
+                            </div>
+                            <div style="flex: 1;">
+                                <label style="font-size: 12px; color: var(--text-muted);">Intervalle</label>
+                                <select id="scheduler-interval" class="form-input" style="margin-top: 4px;">
+                                    <option value="1">Toutes les 1h</option>
+                                    <option value="3">Toutes les 3h</option>
+                                    <option value="6" selected>Toutes les 6h</option>
+                                    <option value="12">Toutes les 12h</option>
+                                    <option value="24">Toutes les 24h</option>
+                                    <option value="48">Toutes les 48h</option>
+                                    <option value="168">Toutes les semaines</option>
+                                </select>
+                            </div>
+                            <button class="btn btn-primary" onclick="GameServer.createScheduledTask()">➕ Ajouter</button>
+                        </div>
+                    </div>
+
+                    <!-- Liste des tâches -->
+                    <div id="scheduler-tasks-list">
+                        <div style="text-align: center; padding: 20px; color: var(--text-muted);">⏳ Chargement...</div>
+                    </div>
+                    <div id="scheduler-message" style="font-size: 13px; margin-top: 8px;"></div>
+                </div>
+            </div>
         `;
 
         this.checkDocker();
@@ -373,6 +416,7 @@ const GameServer = {
                             <button class="btn btn-icon btn-secondary" onclick="GameServer.showLogs(${server.id})" title="Console">📋</button>
                             <button class="btn btn-icon btn-secondary" onclick="GameServer.showBackups(${server.id})" title="Sauvegardes">💾</button>
                             <button class="btn btn-icon btn-secondary" onclick="GameServer.showResources(${server.id}, ${server.memory_mb}, ${server.cpu_percent || 100})" title="Ressources">⚙️</button>
+                            <button class="btn btn-icon btn-secondary" onclick="GameServer.showScheduler(${server.id})" title="Planification">⏰</button>
                             <button class="btn btn-icon btn-danger" onclick="GameServer.deleteServer(${server.id})" title="Supprimer">🗑️</button>
                         </div>
                     </div>
@@ -523,6 +567,104 @@ const GameServer = {
                 msgEl.textContent = '❌ Erreur réseau';
             }
         }
+    },
+
+    // --- Tâches planifiées ---
+
+    _schedulerServerId: null,
+
+    async showScheduler(serverId) {
+        this._schedulerServerId = serverId;
+        const modal = document.getElementById('scheduler-modal');
+        const msgEl = document.getElementById('scheduler-message');
+        if (msgEl) msgEl.textContent = '';
+        if (modal) modal.classList.add('active');
+        await this.loadSchedulerTasks();
+    },
+
+    hideSchedulerModal() {
+        const modal = document.getElementById('scheduler-modal');
+        if (modal) modal.classList.remove('active');
+        this._schedulerServerId = null;
+    },
+
+    async loadSchedulerTasks() {
+        const id = this._schedulerServerId;
+        if (!id) return;
+
+        const listEl = document.getElementById('scheduler-tasks-list');
+        const response = await Auth.apiCall(`/api/scheduler/server/${id}`);
+        if (!response || !response.ok) {
+            if (listEl) listEl.innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-muted);">Erreur de chargement</div>';
+            return;
+        }
+
+        const tasks = await response.json();
+        if (tasks.length === 0) {
+            listEl.innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-muted);">Aucune tâche planifiée</div>';
+            return;
+        }
+
+        listEl.innerHTML = tasks.map(task => {
+            const typeEmoji = task.task_type === 'backup' ? '💾' : '🔄';
+            const typeLabel = task.task_type === 'backup' ? 'Backup' : 'Redémarrage';
+            const statusColor = task.enabled ? 'var(--accent-green)' : 'var(--text-muted)';
+            const statusLabel = task.enabled ? '● Actif' : '○ Inactif';
+            const lastRun = task.last_run ? new Date(task.last_run).toLocaleString('fr-FR') : 'Jamais';
+            const nextRun = task.next_run && task.enabled ? new Date(task.next_run).toLocaleString('fr-FR') : '—';
+
+            return `
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:8px;">
+                    <div>
+                        <div style="font-weight:600;">${typeEmoji} ${typeLabel} auto</div>
+                        <div style="font-size:12px;color:var(--text-muted);margin-top:4px;">
+                            ⏱️ Toutes les ${task.interval_hours}h &nbsp;|&nbsp;
+                            📅 Dernier: ${lastRun} &nbsp;|&nbsp;
+                            ⏭️ Prochain: ${nextRun}
+                        </div>
+                    </div>
+                    <div class="flex gap-2" style="align-items:center;">
+                        <span style="color:${statusColor};font-size:12px;font-weight:600;">${statusLabel}</span>
+                        <button class="btn btn-icon btn-secondary" onclick="GameServer.toggleScheduledTask(${task.id})" title="${task.enabled ? 'Désactiver' : 'Activer'}">
+                            ${task.enabled ? '⏸️' : '▶️'}
+                        </button>
+                        <button class="btn btn-icon btn-danger" onclick="GameServer.deleteScheduledTask(${task.id})" title="Supprimer">🗑️</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    },
+
+    async createScheduledTask() {
+        const id = this._schedulerServerId;
+        if (!id) return;
+
+        const taskType = document.getElementById('scheduler-type').value;
+        const interval = parseInt(document.getElementById('scheduler-interval').value);
+        const msgEl = document.getElementById('scheduler-message');
+
+        const response = await Auth.apiCall('/api/scheduler/', {
+            method: 'POST',
+            body: JSON.stringify({ server_id: id, task_type: taskType, interval_hours: interval }),
+        });
+
+        if (response && response.ok) {
+            if (msgEl) { msgEl.style.color = 'var(--accent-green)'; msgEl.textContent = '✅ Tâche créée !'; }
+            await this.loadSchedulerTasks();
+        } else if (response) {
+            const err = await response.json();
+            if (msgEl) { msgEl.style.color = '#e74c3c'; msgEl.textContent = `❌ ${err.detail || 'Erreur'}`; }
+        }
+    },
+
+    async toggleScheduledTask(taskId) {
+        const response = await Auth.apiCall(`/api/scheduler/${taskId}/toggle`, { method: 'POST' });
+        if (response && response.ok) await this.loadSchedulerTasks();
+    },
+
+    async deleteScheduledTask(taskId) {
+        const response = await Auth.apiCall(`/api/scheduler/${taskId}`, { method: 'DELETE' });
+        if (response && response.ok) await this.loadSchedulerTasks();
     },
 
     /**
