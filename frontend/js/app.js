@@ -64,17 +64,20 @@ const App = {
      * Navigation entre les vues.
      * C'est la fonction principale qui change le contenu affiché.
      */
-    async navigateTo(view) {
+    async navigateTo(view, data) {
         // Décharger la vue précédente
         if (this.currentView === 'game_server') {
             GameServer.unload();
+        }
+        if (this.currentView === 'server_view') {
+            ServerView.close();
         }
 
         this.currentView = view;
 
         // Mettre à jour la sidebar
         document.querySelectorAll('.nav-item').forEach(item => {
-            item.classList.toggle('active', item.dataset.view === view);
+            item.classList.toggle('active', item.dataset.view === view || (view === 'server_view' && item.dataset.view === 'game_server'));
         });
 
         const content = document.getElementById('module-content');
@@ -88,6 +91,10 @@ const App = {
 
             case 'game_server':
                 await GameServer.load();
+                break;
+
+            case 'server_view':
+                await ServerView.open(data);
                 break;
 
             case 'settings':

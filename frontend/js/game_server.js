@@ -431,7 +431,7 @@ const GameServer = {
             const connectAddr = `${this._serverIP}:${server.port}`;
 
             return `
-                <div class="server-item fade-in">
+                <div class="server-item fade-in" onclick="App.navigateTo('server_view', ${server.id})" style="cursor:pointer;">
                     <div class="server-info">
                         <span class="server-icon">${icon}</span>
                         <div>
@@ -449,7 +449,7 @@ const GameServer = {
                             <span class="status-dot ${statusClass}"></span>
                             ${statusText}
                         </span>
-                        <div class="server-actions">
+                        <div class="server-actions" onclick="event.stopPropagation()">
                             ${isRunning ? `
                                 <button class="btn btn-icon btn-secondary" onclick="GameServer.stopServer(${server.id})" title="Arrêter">⏹️</button>
                                 <button class="btn btn-icon btn-secondary" onclick="GameServer.restartServer(${server.id})" title="Redémarrer">🔄</button>
