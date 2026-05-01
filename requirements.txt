@@ -1,4 +1,4 @@
-# OmenServer V1 - Dépendances Python
+# OmenServer V2 - Dépendances Python
 
 # Framework web API
 fastapi==0.115.12
@@ -25,3 +25,9 @@ python-multipart==0.0.20
 
 # WebSockets (pour les logs en temps réel)
 websockets==15.0.1
+
+# Tâches planifiées (backups et redémarrages auto)
+APScheduler==3.10.4
+
+# Requêtes HTTP (API CurseForge)
+requests==2.32.3
