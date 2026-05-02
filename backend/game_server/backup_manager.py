@@ -34,7 +34,7 @@ def _get_backup_dir(server_id: int) -> Path:
     return backup_dir
 
 
-def create_backup(server_id: int, server_name: str, docker_id: str) -> dict:
+def create_backup(server_id: int, server_name: str, docker_id: str, custom_name: str = None) -> dict:
     """
     Crée une sauvegarde des données d'un serveur.
 
@@ -46,6 +46,7 @@ def create_backup(server_id: int, server_name: str, docker_id: str) -> dict:
         server_id:   ID du serveur en base
         server_name: Nom du serveur (pour le nom du fichier)
         docker_id:   ID du conteneur Docker
+        custom_name: Nom personnalisé pour la sauvegarde (optionnel)
     """
     try:
         import docker
@@ -56,8 +57,14 @@ def create_backup(server_id: int, server_name: str, docker_id: str) -> dict:
 
     backup_dir = _get_backup_dir(server_id)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_name = server_name.lower().replace(' ', '-').replace('_', '-')
-    backup_name = f"{safe_name}_{timestamp}"
+    
+    if custom_name and custom_name.strip():
+        safe_custom = custom_name.strip().replace(' ', '-').replace('/', '-').replace('\\', '-')
+        backup_name = f"{safe_custom}_{timestamp}"
+    else:
+        safe_name = server_name.lower().replace(' ', '-').replace('_', '-')
+        backup_name = f"{safe_name}_{timestamp}"
+    
     backup_path = backup_dir / f"{backup_name}.tar.gz"
     temp_dir = backup_dir / f"_temp_{backup_name}"
 
@@ -150,6 +157,41 @@ def list_backups(server_id: int) -> list:
         })
 
     return backups
+
+
+def rename_backup(server_id: int, backup_id: str, new_name: str) -> dict:
+    """Renomme une sauvegarde."""
+    backup_dir = _get_backup_dir(server_id)
+    old_path = backup_dir / f"{backup_id}.tar.gz"
+
+    if not old_path.exists():
+        raise RuntimeError(f"Sauvegarde '{backup_id}' non trouvée")
+
+    # Extraire le timestamp de l'ancien nom
+    parts = backup_id.rsplit('_', 2)
+    if len(parts) >= 3:
+        timestamp = f"{parts[-2]}_{parts[-1]}"
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Créer le nouveau nom
+    safe_name = new_name.strip().replace(' ', '-').replace('/', '-').replace('\\', '-')
+    new_id = f"{safe_name}_{timestamp}"
+    new_path = backup_dir / f"{new_id}.tar.gz"
+
+    if new_path.exists():
+        raise RuntimeError(f"Une sauvegarde avec ce nom existe déjà")
+
+    old_path.rename(new_path)
+    logger.info(f"Sauvegarde renommée: {backup_id} -> {new_id}")
+
+    stat = new_path.stat()
+    return {
+        "id": new_id,
+        "filename": new_path.name,
+        "size_mb": round(stat.st_size / (1024 * 1024), 1),
+        "message": "Sauvegarde renommée \u2705",
+    }
 
 
 def restore_backup(server_id: int, backup_id: str, docker_id: str) -> bool:

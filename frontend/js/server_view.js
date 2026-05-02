@@ -228,10 +228,17 @@ const ServerView = {
         setTimeout(() => this._loadBackups(), 50);
         return `<h2>💾 Sauvegardes</h2>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">Gérez les sauvegardes de votre serveur</p>
-        <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
-            <button class="btn btn-primary btn-sm" id="sv-backup-btn" onclick="ServerView._createBackup()">➕ Créer une sauvegarde</button>
-            <span id="sv-backup-msg" style="font-size:12px;"></span>
+        
+        <!-- Formulaire de création -->
+        <div style="background:var(--bg-secondary);padding:14px;border-radius:10px;margin-bottom:16px;">
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px;">➕ Nouvelle sauvegarde</div>
+            <div style="display:flex;gap:8px;align-items:center;">
+                <input id="sv-backup-name" class="form-input" placeholder="Nom (optionnel, ex: avant-update-1.21)" style="flex:1;" />
+                <button class="btn btn-primary btn-sm" id="sv-backup-btn" onclick="ServerView._createBackup()">💾 Créer</button>
+            </div>
+            <span id="sv-backup-msg" style="font-size:12px;display:block;margin-top:6px;"></span>
         </div>
+        
         <div id="sv-backups-list"><div style="color:var(--text-muted)">⏳ Chargement...</div></div>`;
     },
 
@@ -242,28 +249,45 @@ const ServerView = {
         if (!r || !r.ok) { el.innerHTML='<p style="color:#e74c3c">❌ Erreur de chargement</p>'; return; }
         const data = await r.json();
         const backups = data.backups || data || [];
-        if (backups.length===0) { el.innerHTML='<p style="color:var(--text-muted)">Aucune sauvegarde. Cliquez sur "➕ Créer" pour en faire une.</p>'; return; }
-        el.innerHTML = backups.map(b => `
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;">
-                <div>
-                    <div style="font-weight:600;">📦 ${b.filename||b.id}</div>
+        if (backups.length===0) { el.innerHTML='<p style="color:var(--text-muted)">Aucune sauvegarde. Créez-en une ci-dessus.</p>'; return; }
+        
+        el.innerHTML = backups.map(b => {
+            // Extraire le nom lisible (avant le timestamp)
+            const parts = (b.id||'').split('_');
+            const displayName = parts.length >= 3 ? parts.slice(0, -2).join('_') : (b.id || b.filename);
+            
+            return `
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;" id="sv-bk-${b.id}">
+                <div style="flex:1;min-width:0;">
+                    <div style="font-weight:600;font-size:14px;">📦 ${displayName}</div>
                     <div style="font-size:11px;color:var(--text-muted);">${b.size_mb||'?'} Mo · ${b.created_at||''}</div>
                 </div>
-                <div style="display:flex;gap:6px;">
-                    <button class="btn btn-sm btn-secondary" onclick="ServerView._restoreBackup('${b.id}')" title="Restaurer">♻️ Restaurer</button>
-                    <button class="btn btn-sm btn-danger" onclick="ServerView._deleteBackup('${b.id}')" title="Supprimer">🗑️</button>
+                <div style="display:flex;gap:6px;flex-shrink:0;">
+                    <button class="btn btn-sm btn-secondary" onclick="ServerView._renameBackup('${b.id}','${displayName.replace(/'/g,"\\'")}')" title="Renommer">✏️</button>
+                    <button class="btn btn-sm btn-secondary" onclick="ServerView._restoreBackup('${b.id}')" title="Restaurer">♻️</button>
+                    <button class="btn btn-sm btn-danger" onclick="ServerView._confirmDeleteBackup('${b.id}')" title="Supprimer">🗑️</button>
                 </div>
-            </div>`).join('');
+            </div>`;
+        }).join('');
     },
 
     async _createBackup() {
         const btn = document.getElementById('sv-backup-btn');
         const msg = document.getElementById('sv-backup-msg');
+        const nameInput = document.getElementById('sv-backup-name');
+        const backupName = nameInput ? nameInput.value.trim() : '';
+        
         if (btn) btn.disabled = true;
         if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Sauvegarde en cours...'; }
-        const r = await Auth.apiCall(`/api/servers/${this.serverId}/backup`,{method:'POST'});
+        
+        const body = backupName ? JSON.stringify({backup_name: backupName}) : null;
+        const opts = {method: 'POST'};
+        if (body) opts.body = body;
+        
+        const r = await Auth.apiCall(`/api/servers/${this.serverId}/backup`, opts);
         if (r && r.ok) {
             if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = '✅ Sauvegarde créée !'; }
+            if (nameInput) nameInput.value = '';
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
             if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
@@ -272,10 +296,30 @@ const ServerView = {
         this._loadBackups();
     },
 
+    async _renameBackup(id, currentName) {
+        const newName = prompt('Nouveau nom pour la sauvegarde :', currentName);
+        if (!newName || newName.trim() === '' || newName.trim() === currentName) return;
+        
+        const msg = document.getElementById('sv-backup-msg');
+        const r = await Auth.apiCall(`/api/servers/${this.serverId}/backups/${id}`, {
+            method: 'PUT',
+            body: JSON.stringify({new_name: newName.trim()})
+        });
+        
+        if (r && r.ok) {
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = '✅ Sauvegarde renommée !'; }
+        } else {
+            const err = r ? await r.json().catch(()=>({})) : {};
+            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+        }
+        this._loadBackups();
+    },
+
     async _restoreBackup(id) {
         if (!confirm('Restaurer cette sauvegarde ? Le serveur doit être arrêté.')) return;
-        const r = await Auth.apiCall(`/api/servers/${this.serverId}/restore/${id}`,{method:'POST'});
         const msg = document.getElementById('sv-backup-msg');
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Restauration...'; }
+        const r = await Auth.apiCall(`/api/servers/${this.serverId}/restore/${id}`,{method:'POST'});
         if (r && r.ok) {
             if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = '✅ Restauration effectuée !'; }
         } else {
@@ -284,9 +328,33 @@ const ServerView = {
         }
     },
 
+    _confirmDeleteBackup(id) {
+        // Inline confirm — remplace le contenu de la carte par une confirmation
+        const row = document.getElementById(`sv-bk-${id}`);
+        if (!row) return;
+        row.style.background = 'rgba(231,76,60,0.15)';
+        row.style.border = '1px solid rgba(231,76,60,0.3)';
+        row.innerHTML = `
+            <div style="flex:1;">
+                <div style="font-weight:600;color:#e74c3c;">⚠️ Supprimer cette sauvegarde ?</div>
+                <div style="font-size:12px;color:var(--text-muted);">Cette action est irréversible.</div>
+            </div>
+            <div style="display:flex;gap:6px;">
+                <button class="btn btn-sm btn-danger" onclick="ServerView._deleteBackup('${id}')">🗑️ Confirmer</button>
+                <button class="btn btn-sm btn-secondary" onclick="ServerView._loadBackups()">Annuler</button>
+            </div>`;
+    },
+
     async _deleteBackup(id) {
-        if (!confirm('Supprimer cette sauvegarde ?')) return;
-        await Auth.apiCall(`/api/servers/${this.serverId}/backups/${id}`,{method:'DELETE'});
+        const msg = document.getElementById('sv-backup-msg');
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Suppression...'; }
+        const r = await Auth.apiCall(`/api/servers/${this.serverId}/backups/${id}`,{method:'DELETE'});
+        if (r && r.ok) {
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = '✅ Sauvegarde supprimée !'; }
+        } else {
+            const err = r ? await r.json().catch(()=>({})) : {};
+            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+        }
         this._loadBackups();
     },
 

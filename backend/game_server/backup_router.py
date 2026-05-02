@@ -5,10 +5,13 @@ Routes:
     POST   /api/servers/{id}/backup         → Créer une sauvegarde
     GET    /api/servers/{id}/backups         → Lister les sauvegardes
     POST   /api/servers/{id}/restore/{bid}   → Restaurer une sauvegarde
+    PUT    /api/servers/{id}/backups/{bid}    → Renommer une sauvegarde
     DELETE /api/servers/{id}/backups/{bid}    → Supprimer une sauvegarde
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
+from typing import Optional
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
@@ -18,6 +21,14 @@ from backend.game_server.models import GameServer
 from backend.game_server import backup_manager
 
 router = APIRouter(prefix="/api/servers", tags=["Sauvegardes"])
+
+
+class CreateBackupRequest(BaseModel):
+    backup_name: Optional[str] = None
+
+
+class RenameBackupRequest(BaseModel):
+    new_name: str
 
 
 def _get_server(server_id: int, db: Session) -> GameServer:
@@ -34,10 +45,11 @@ def _get_server(server_id: int, db: Session) -> GameServer:
 @router.post("/{server_id}/backup")
 def create_backup(
     server_id: int,
+    request: Optional[CreateBackupRequest] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Créer une sauvegarde du serveur."""
+    """Créer une sauvegarde du serveur avec un nom optionnel."""
     server = _get_server(server_id, db)
 
     if not server.docker_id:
@@ -46,11 +58,14 @@ def create_backup(
             detail="Ce serveur n'a pas de conteneur Docker associé"
         )
 
+    custom_name = request.backup_name if request else None
+
     try:
         backup = backup_manager.create_backup(
             server_id=server.id,
             server_name=server.name,
             docker_id=server.docker_id,
+            custom_name=custom_name,
         )
         # Rotation automatique : garder les 10 dernières
         backup_manager.cleanup_old_backups(server_id, keep=10)
@@ -97,6 +112,27 @@ def restore_backup(
             docker_id=server.docker_id,
         )
         return {"message": f"Sauvegarde '{backup_id}' restaurée avec succès ✅"}
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+
+@router.put("/{server_id}/backups/{backup_id}")
+def rename_backup(
+    server_id: int,
+    backup_id: str,
+    request: RenameBackupRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Renommer une sauvegarde."""
+    _get_server(server_id, db)
+
+    try:
+        result = backup_manager.rename_backup(server_id, backup_id, request.new_name)
+        return result
     except RuntimeError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
