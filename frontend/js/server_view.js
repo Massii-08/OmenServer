@@ -104,12 +104,24 @@ const ServerView = {
 
     _dashboardTab() {
         const s = this.serverData;
+        const isRunning = s.status === 'running';
         const addr = `${GameServer._serverIP || 'localhost'}:${s.port||25565}`;
         return `
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
             <h2 style="margin:0;">📊 Tableau de bord</h2>
             <button class="btn btn-secondary btn-sm" onclick="App.navigateTo('game_server')">← Retour à la liste</button>
         </div>
+
+        <!-- Boutons de contrôle -->
+        <div style="display:flex;gap:8px;margin-bottom:20px;">
+            ${isRunning ? `
+                <button class="btn btn-danger" onclick="ServerView.action('stop')" style="flex:1;">⏹️ Arrêter</button>
+                <button class="btn btn-secondary" onclick="ServerView.action('restart')" style="flex:1;">🔄 Redémarrer</button>
+            ` : `
+                <button class="btn btn-primary" onclick="ServerView.action('start')" style="flex:1;">▶️ Démarrer</button>
+            `}
+        </div>
+
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;">
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
                 <div style="font-size:12px;color:var(--text-muted);">Adresse</div>

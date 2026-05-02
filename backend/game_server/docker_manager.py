@@ -131,6 +131,14 @@ def create_game_server(
             client.images.pull(image_name)
             logger.info(f"Image {image_name} téléchargée ✅")
 
+        # Supprimer un conteneur existant avec le même nom (cas de conflit)
+        try:
+            old = client.containers.get(container_name)
+            logger.warning(f"Conteneur '{container_name}' existe déjà, suppression...")
+            old.remove(force=True)
+        except Exception:
+            pass
+
         container = client.containers.create(
             image=image_name,
             name=container_name,

@@ -456,12 +456,6 @@ const GameServer = {
                             ` : `
                                 <button class="btn btn-icon btn-primary" onclick="GameServer.startServer(${server.id})" title="Démarrer">▶️</button>
                             `}
-                            <button class="btn btn-icon btn-secondary" onclick="GameServer.showLogs(${server.id})" title="Console">📋</button>
-                            <button class="btn btn-icon btn-secondary" onclick="GameServer.showBackups(${server.id})" title="Sauvegardes">💾</button>
-                            <button class="btn btn-icon btn-secondary" onclick="GameServer.showResources(${server.id}, ${server.memory_mb}, ${server.cpu_percent || 100})" title="Ressources">⚙️</button>
-                            <button class="btn btn-icon btn-secondary" onclick="GameServer.showScheduler(${server.id})" title="Planification">⏰</button>
-                            ${server.game_type === 'minecraft' ? `<button class="btn btn-icon btn-secondary" onclick="GameServer.showMods(${server.id})" title="Mods">🧩</button>` : ''}
-                            <button class="btn btn-icon btn-danger" onclick="GameServer.deleteServer(${server.id})" title="Supprimer">🗑️</button>
                         </div>
                     </div>
                 </div>
