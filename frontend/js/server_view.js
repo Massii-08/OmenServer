@@ -135,30 +135,79 @@ const ServerView = {
         return `
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
             <h2 style="margin:0;">💻 Console</h2>
-            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('sv-console-logs').innerHTML=''">🗑 Effacer</button>
+            <div style="display:flex;gap:8px;">
+                <span id="sv-console-status" style="font-size:11px;padding:4px 8px;border-radius:4px;background:var(--bg-secondary);color:var(--text-muted);">⏳ Connexion...</span>
+                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('sv-console-logs').innerHTML=''">🗑 Effacer</button>
+            </div>
         </div>
-        <div id="sv-console-logs" style="background:#0d1117;color:#c9d1d9;font-family:'Courier New',monospace;font-size:12px;padding:12px;border-radius:8px;height:400px;overflow-y:auto;white-space:pre-wrap;"></div>
+        <div id="sv-console-logs" style="background:#0d1117;color:#c9d1d9;font-family:'Courier New',monospace;font-size:12px;padding:12px;border-radius:8px;height:400px;overflow-y:auto;white-space:pre-wrap;line-height:1.5;"></div>
         <div style="display:flex;gap:8px;margin-top:8px;">
             <input id="sv-console-input" class="form-input" placeholder="Entrez une commande..." style="flex:1;font-family:monospace;" onkeydown="if(event.key==='Enter')ServerView.sendCommand()"/>
-            <button class="btn btn-primary" onclick="ServerView.sendCommand()">📤</button>
-        </div>`;
+            <button class="btn btn-primary" onclick="ServerView.sendCommand()">📤 Envoyer</button>
+        </div>
+        <p style="font-size:11px;color:var(--text-muted);margin-top:8px;">💡 Les commandes sont envoyées via rcon-cli. Exemples : <code>say Bonjour</code>, <code>list</code>, <code>op Massii_08</code></p>`;
+    },
+
+    _appendLog(text, color) {
+        const logs = document.getElementById('sv-console-logs');
+        if (!logs) return;
+        const span = document.createElement('span');
+        span.style.color = color || '#c9d1d9';
+        span.textContent = text + '\n';
+        logs.appendChild(span);
+        logs.scrollTop = logs.scrollHeight;
     },
 
     _startConsoleWS() {
         if (this._ws) this._ws.close();
         const proto = location.protocol === 'https:' ? 'wss' : 'ws';
         const token = Auth.getToken();
-        this._ws = new WebSocket(`${proto}://${location.host}/api/servers/${this.serverId}/ws?token=${token}`);
-        const logs = document.getElementById('sv-console-logs');
+        // URL corrigée : /ws/servers/{id}/console
+        this._ws = new WebSocket(`${proto}://${location.host}/ws/servers/${this.serverId}/console?token=${token}`);
+
+        const statusEl = document.getElementById('sv-console-status');
+
+        this._ws.onopen = () => {
+            if (statusEl) { statusEl.textContent = '🟢 Connecté'; statusEl.style.color = 'var(--accent-green)'; }
+            this._appendLog('--- Console connectée ---', '#22c55e');
+        };
+
         this._ws.onmessage = (e) => {
-            if (logs) { logs.textContent += e.data + '\n'; logs.scrollTop = logs.scrollHeight; }
+            try {
+                const msg = JSON.parse(e.data);
+                if (msg.type === 'log') {
+                    this._appendLog(msg.data, '#c9d1d9');
+                } else if (msg.type === 'info') {
+                    this._appendLog(msg.data, '#3b82f6');
+                } else if (msg.type === 'error') {
+                    this._appendLog('❌ ' + (msg.message || msg.data), '#ef4444');
+                } else {
+                    this._appendLog(JSON.stringify(msg), '#c9d1d9');
+                }
+            } catch {
+                // Message texte brut
+                this._appendLog(e.data, '#c9d1d9');
+            }
+        };
+
+        this._ws.onclose = () => {
+            if (statusEl) { statusEl.textContent = '🔴 Déconnecté'; statusEl.style.color = '#ef4444'; }
+            this._appendLog('--- Console déconnectée ---', '#ef4444');
+        };
+
+        this._ws.onerror = () => {
+            this._appendLog('--- Erreur de connexion WebSocket ---', '#ef4444');
         };
     },
 
     sendCommand() {
         const input = document.getElementById('sv-console-input');
-        if (input && input.value.trim() && this._ws) {
-            this._ws.send(JSON.stringify({command: input.value.trim()}));
+        if (input && input.value.trim() && this._ws && this._ws.readyState === WebSocket.OPEN) {
+            const cmd = input.value.trim();
+            // Afficher la commande localement
+            this._appendLog('> ' + cmd, '#f59e0b');
+            // Envoyer au format attendu par le backend
+            this._ws.send(JSON.stringify({type: 'command', data: cmd}));
             input.value = '';
         }
     },

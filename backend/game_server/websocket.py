@@ -9,7 +9,9 @@ Endpoint: ws://localhost:8000/ws/servers/{server_id}/console?token={jwt_token}
 
 import asyncio
 import logging
+import threading
 from typing import Optional
+from queue import Queue, Empty
 
 from fastapi import WebSocket, WebSocketDisconnect, APIRouter, Query
 from sqlalchemy.orm import Session
@@ -47,6 +49,26 @@ def get_server(server_id: int) -> Optional[GameServer]:
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     db.close()
     return server
+
+
+def _stream_logs_thread(container, log_queue: Queue, stop_event: threading.Event):
+    """Thread bloquant qui lit les logs Docker et les met dans une queue."""
+    try:
+        log_stream = container.logs(
+            stream=True,
+            follow=True,
+            tail=0,
+            timestamps=False,
+        )
+        for chunk in log_stream:
+            if stop_event.is_set():
+                break
+            line = chunk.decode("utf-8", errors="replace").rstrip()
+            if line:
+                log_queue.put(line)
+    except Exception as e:
+        if not stop_event.is_set():
+            log_queue.put(f"__ERROR__:Stream interrompu: {e}")
 
 
 @router.websocket("/ws/servers/{server_id}/console")
@@ -100,33 +122,32 @@ async def console_websocket(
     except Exception:
         pass
 
-    # 6. Démarrer le streaming en parallèle
-    stop_event = asyncio.Event()
+    # 6. Streaming en temps réel via thread + queue
+    log_queue = Queue()
+    stop_event = threading.Event()
 
-    async def stream_logs():
-        """Lit les nouveaux logs Docker et les envoie au client."""
-        try:
-            # Suivre les nouveaux logs en temps réel
-            log_stream = container.logs(
-                stream=True,
-                follow=True,
-                since=int(asyncio.get_event_loop().time()),
-                timestamps=False,
-            )
-            for chunk in log_stream:
-                if stop_event.is_set():
-                    break
-                line = chunk.decode("utf-8", errors="replace").rstrip()
-                if line:
+    # Lancer le thread de streaming
+    log_thread = threading.Thread(
+        target=_stream_logs_thread,
+        args=(container, log_queue, stop_event),
+        daemon=True,
+    )
+    log_thread.start()
+
+    async def forward_logs():
+        """Lit la queue et envoie les logs au WebSocket."""
+        while not stop_event.is_set():
+            try:
+                line = log_queue.get_nowait()
+                if line.startswith("__ERROR__:"):
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": line.replace("__ERROR__:", "")
+                    })
+                else:
                     await websocket.send_json({"type": "log", "data": line})
-                # Petit délai pour ne pas surcharger
-                await asyncio.sleep(0.05)
-        except Exception as e:
-            if not stop_event.is_set():
-                await websocket.send_json({
-                    "type": "error",
-                    "message": f"Stream interrompu: {e}"
-                })
+            except Empty:
+                await asyncio.sleep(0.1)
 
     async def receive_commands():
         """Reçoit les commandes du client et les envoie au conteneur."""
@@ -137,16 +158,22 @@ async def console_websocket(
                     cmd = data.get("data", "").strip()
                     if cmd:
                         try:
-                            # Envoyer la commande au conteneur via docker exec
-                            # Pour Minecraft, on utilise rcon-cli ou l'entrée standard
-                            container.exec_run(
+                            # Envoyer la commande au conteneur via rcon-cli
+                            result = container.exec_run(
                                 f"rcon-cli {cmd}",
-                                detach=True,
+                                detach=False,
                             )
-                            await websocket.send_json({
-                                "type": "info",
-                                "data": f"→ Commande envoyée: {cmd}"
-                            })
+                            output = result.output.decode("utf-8", errors="replace").strip() if result.output else ""
+                            if output:
+                                await websocket.send_json({
+                                    "type": "info",
+                                    "data": f"[RCON] {output}"
+                                })
+                            else:
+                                await websocket.send_json({
+                                    "type": "info",
+                                    "data": f"→ Commande envoyée: {cmd}"
+                                })
                         except Exception as e:
                             await websocket.send_json({
                                 "type": "error",
@@ -161,14 +188,11 @@ async def console_websocket(
 
     # 7. Lancer les deux tâches en parallèle
     try:
-        # stream_logs tourne dans un thread séparé (car Docker est bloquant)
-        log_task = asyncio.create_task(
-            asyncio.to_thread(lambda: asyncio.run(stream_logs()))
-        )
-        # receive_commands tourne dans la boucle async principale
+        log_task = asyncio.create_task(forward_logs())
         await receive_commands()
     except Exception as e:
         logger.warning(f"Console WS fermée: {e}")
     finally:
         stop_event.set()
+        log_task.cancel()
         logger.info(f"Console WS déconnectée: {user.username} → serveur {server.name}")
