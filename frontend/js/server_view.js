@@ -215,36 +215,65 @@ const ServerView = {
     _backupsTab() {
         setTimeout(() => this._loadBackups(), 50);
         return `<h2>💾 Sauvegardes</h2>
-        <button class="btn btn-primary btn-sm" onclick="ServerView._createBackup()" style="margin-bottom:12px;">➕ Créer une sauvegarde</button>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">Gérez les sauvegardes de votre serveur</p>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
+            <button class="btn btn-primary btn-sm" id="sv-backup-btn" onclick="ServerView._createBackup()">➕ Créer une sauvegarde</button>
+            <span id="sv-backup-msg" style="font-size:12px;"></span>
+        </div>
         <div id="sv-backups-list"><div style="color:var(--text-muted)">⏳ Chargement...</div></div>`;
     },
 
     async _loadBackups() {
         const r = await Auth.apiCall(`/api/servers/${this.serverId}/backups`);
         const el = document.getElementById('sv-backups-list');
-        if (!r||!r.ok||!el) return;
-        const backups = await r.json();
-        if (backups.length===0) { el.innerHTML='<p style="color:var(--text-muted)">Aucune sauvegarde</p>'; return; }
+        if (!el) return;
+        if (!r || !r.ok) { el.innerHTML='<p style="color:#e74c3c">❌ Erreur de chargement</p>'; return; }
+        const data = await r.json();
+        const backups = data.backups || data || [];
+        if (backups.length===0) { el.innerHTML='<p style="color:var(--text-muted)">Aucune sauvegarde. Cliquez sur "➕ Créer" pour en faire une.</p>'; return; }
         el.innerHTML = backups.map(b => `
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;">
-                <div><div style="font-weight:600;">📦 ${b.filename||b.id}</div><div style="font-size:11px;color:var(--text-muted);">${b.size_mb||'?'} Mo · ${b.created_at||''}</div></div>
-                <div class="flex gap-2">
-                    <button class="btn btn-sm btn-secondary" onclick="ServerView._restoreBackup('${b.id}')">♻️</button>
-                    <button class="btn btn-sm btn-danger" onclick="ServerView._deleteBackup('${b.id}')">🗑️</button>
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;">
+                <div>
+                    <div style="font-weight:600;">📦 ${b.filename||b.id}</div>
+                    <div style="font-size:11px;color:var(--text-muted);">${b.size_mb||'?'} Mo · ${b.created_at||''}</div>
+                </div>
+                <div style="display:flex;gap:6px;">
+                    <button class="btn btn-sm btn-secondary" onclick="ServerView._restoreBackup('${b.id}')" title="Restaurer">♻️ Restaurer</button>
+                    <button class="btn btn-sm btn-danger" onclick="ServerView._deleteBackup('${b.id}')" title="Supprimer">🗑️</button>
                 </div>
             </div>`).join('');
     },
 
     async _createBackup() {
-        await Auth.apiCall(`/api/servers/${this.serverId}/backup`,{method:'POST'});
+        const btn = document.getElementById('sv-backup-btn');
+        const msg = document.getElementById('sv-backup-msg');
+        if (btn) btn.disabled = true;
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Sauvegarde en cours...'; }
+        const r = await Auth.apiCall(`/api/servers/${this.serverId}/backup`,{method:'POST'});
+        if (r && r.ok) {
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = '✅ Sauvegarde créée !'; }
+        } else {
+            const err = r ? await r.json().catch(()=>({})) : {};
+            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+        }
+        if (btn) btn.disabled = false;
         this._loadBackups();
     },
 
     async _restoreBackup(id) {
-        await Auth.apiCall(`/api/servers/${this.serverId}/restore/${id}`,{method:'POST'});
+        if (!confirm('Restaurer cette sauvegarde ? Le serveur doit être arrêté.')) return;
+        const r = await Auth.apiCall(`/api/servers/${this.serverId}/restore/${id}`,{method:'POST'});
+        const msg = document.getElementById('sv-backup-msg');
+        if (r && r.ok) {
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = '✅ Restauration effectuée !'; }
+        } else {
+            const err = r ? await r.json().catch(()=>({})) : {};
+            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+        }
     },
 
     async _deleteBackup(id) {
+        if (!confirm('Supprimer cette sauvegarde ?')) return;
         await Auth.apiCall(`/api/servers/${this.serverId}/backups/${id}`,{method:'DELETE'});
         this._loadBackups();
     },
@@ -289,34 +318,175 @@ const ServerView = {
     async _deleteTask(id) { await Auth.apiCall(`/api/scheduler/${id}`,{method:'DELETE'}); this._loadTasks(); },
 
     _modsTab() {
+        this._modMode = this._modMode || 'plugins';
         return `<h2>🧩 Mods & Plugins</h2>
-        <div class="flex gap-2" style="margin-bottom:12px;">
-            <button class="btn btn-primary btn-sm" id="sv-mods-tab-search" onclick="ServerView._modsSwitch('search')">🔍 Rechercher</button>
-            <button class="btn btn-secondary btn-sm" id="sv-mods-tab-installed" onclick="ServerView._modsSwitch('installed')">📦 Installés</button>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">Installez des plugins (Spigot/Paper) ou des mods (Forge/Fabric)</p>
+
+        <!-- Sous-navigation -->
+        <div style="display:flex;gap:4px;margin-bottom:16px;background:var(--bg-secondary);padding:4px;border-radius:8px;width:fit-content;">
+            <button class="btn btn-sm ${this._modMode==='plugins'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='plugins';ServerView.switchTab('mods')">🔌 Plugins</button>
+            <button class="btn btn-sm ${this._modMode==='installed'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='installed';ServerView.switchTab('mods')">📦 Installés</button>
+            <button class="btn btn-sm ${this._modMode==='mods'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='mods';ServerView.switchTab('mods')">🧩 Mods (CurseForge)</button>
         </div>
-        <div id="sv-mods-search" style="margin-bottom:12px;">
-            <div class="flex gap-2" style="margin-bottom:10px;">
-                <input id="sv-mods-q" class="form-input" placeholder="Rechercher..." style="flex:1;" onkeydown="if(event.key==='Enter')ServerView._searchMods()"/>
-                <select id="sv-mods-cat" class="form-input" style="width:120px;"><option value="mods">🧩 Mods</option><option value="modpacks">📦 Modpacks</option></select>
-                <button class="btn btn-primary" onclick="ServerView._searchMods()">🔍</button>
-            </div>
-        </div>
-        <div id="sv-mods-results"><div style="color:var(--text-muted)">🔍 Cherche un mod</div></div>`;
+
+        <div id="sv-mods-content">${this._modModeContent()}</div>`;
     },
 
-    _modsSwitch(tab) {
-        if (tab==='installed') { this._loadInstalledMods(); }
-        else { document.getElementById('sv-mods-search').style.display='block'; }
+    _modModeContent() {
+        if (this._modMode === 'plugins') return this._pluginsSearch();
+        if (this._modMode === 'installed') { setTimeout(() => this._loadInstalledPlugins(), 50); return '<div id="sv-installed-list"><div style="color:var(--text-muted)">⏳ Chargement...</div></div>'; }
+        if (this._modMode === 'mods') return this._modsSearch();
+        return '';
+    },
+
+    // ============ PLUGINS (Modrinth) ============
+
+    _pluginsSearch() {
+        return `
+        <div style="display:flex;gap:8px;margin-bottom:12px;">
+            <input id="sv-plugin-q" class="form-input" placeholder="Rechercher un plugin (ex: EssentialsX, Vault, WorldEdit)..." style="flex:1;" onkeydown="if(event.key==='Enter')ServerView._searchPlugins()" />
+            <button class="btn btn-primary" onclick="ServerView._searchPlugins()">🔍 Rechercher</button>
+        </div>
+        <div id="sv-plugin-results"><div style="color:var(--text-muted)">🔌 Recherchez un plugin pour Spigot/Paper/Bukkit</div></div>`;
+    },
+
+    async _searchPlugins() {
+        const q = document.getElementById('sv-plugin-q')?.value?.trim();
+        if (!q) return;
+        const el = document.getElementById('sv-plugin-results');
+        if (!el) return;
+        el.innerHTML = '<div style="color:var(--text-muted)">⏳ Recherche sur Modrinth...</div>';
+
+        const r = await Auth.apiCall(`/api/plugins/search?q=${encodeURIComponent(q)}`);
+        if (!r || !r.ok) { el.innerHTML = '<div style="color:#e74c3c">❌ Erreur de connexion à Modrinth</div>'; return; }
+        const data = await r.json();
+        const plugins = data.plugins || [];
+
+        if (plugins.length === 0) { el.innerHTML = '<div style="color:var(--text-muted)">Aucun résultat</div>'; return; }
+
+        el.innerHTML = plugins.map(p => {
+            const dl = p.downloads > 1000 ? `${Math.round(p.downloads/1000)}k` : p.downloads;
+            const cats = (p.categories||[]).slice(0,3).map(c => `<span style="font-size:10px;padding:1px 5px;background:var(--bg-primary);border-radius:3px;margin-right:3px;">${c}</span>`).join('');
+            return `
+            <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;">
+                <img src="${p.icon_url||''}" style="width:40px;height:40px;border-radius:8px;object-fit:cover;" onerror="this.style.display='none'" />
+                <div style="flex:1;min-width:0;">
+                    <div style="font-weight:600;font-size:14px;">${p.name}</div>
+                    <div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.description||''}</div>
+                    <div style="margin-top:4px;">${cats} <span style="font-size:10px;color:var(--text-muted);">📥 ${dl} téléchargements</span></div>
+                </div>
+                <button class="btn btn-primary btn-sm" onclick="ServerView._showPluginVersions('${p.id}','${(p.name||'').replace(/'/g,"\\'")}')">📥 Installer</button>
+            </div>`;
+        }).join('');
+    },
+
+    async _showPluginVersions(projectId, name) {
+        const el = document.getElementById('sv-plugin-results');
+        if (!el) return;
+        el.innerHTML = '<div style="color:var(--text-muted)">⏳ Chargement des versions...</div>';
+
+        const r = await Auth.apiCall(`/api/plugins/${projectId}/versions`);
+        if (!r || !r.ok) { el.innerHTML = '<div style="color:#e74c3c">❌ Erreur</div>'; return; }
+        const data = await r.json();
+        const versions = data.versions || [];
+
+        el.innerHTML = `
+            <button class="btn btn-secondary btn-sm" onclick="ServerView._searchPlugins()">← Retour</button>
+            <span style="font-weight:600;margin-left:8px;font-size:15px;">📦 ${name}</span>
+            <span id="sv-plugin-install-msg" style="font-size:12px;margin-left:8px;"></span>
+            <div style="margin-top:12px;">
+            ${versions.map(v => {
+                const loaders = (v.loaders||[]).map(l => `<span style="font-size:10px;padding:1px 5px;background:var(--accent-blue);color:#fff;border-radius:3px;margin-right:3px;">${l}</span>`).join('');
+                const gameVers = (v.game_versions||[]).slice(-3).join(', ');
+                return `
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;">
+                    <div>
+                        <span style="font-weight:600;font-size:13px;">${v.name || v.version_number}</span>
+                        <span style="font-size:11px;color:var(--text-muted);margin-left:6px;">(${v.size_mb} Mo)</span>
+                        <div style="margin-top:3px;">${loaders} <span style="font-size:10px;color:var(--text-muted);">MC ${gameVers}</span></div>
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="ServerView._installPlugin('${name.replace(/'/g,"\\'")}','${v.download_url}','${v.filename}')">📥 Installer</button>
+                </div>`;
+            }).join('')}
+            </div>`;
+    },
+
+    async _installPlugin(name, url, filename) {
+        const msg = document.getElementById('sv-plugin-install-msg');
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Installation...'; }
+
+        const r = await Auth.apiCall('/api/plugins/install', {
+            method: 'POST',
+            body: JSON.stringify({server_id: this.serverId, plugin_name: name, download_url: url, filename: filename})
+        });
+
+        if (r && r.ok) {
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${name} installé ! Redémarre le serveur pour l'activer.`; }
+        } else {
+            const err = r ? await r.json().catch(()=>({})) : {};
+            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+        }
+    },
+
+    // ============ INSTALLÉS (liste combinée) ============
+
+    async _loadInstalledPlugins() {
+        const el = document.getElementById('sv-installed-list');
+        if (!el) return;
+
+        // Charger plugins depuis le conteneur
+        const r = await Auth.apiCall(`/api/plugins/server/${this.serverId}`);
+        const plugins = (r && r.ok) ? ((await r.json()).plugins || []) : [];
+
+        if (plugins.length === 0) {
+            el.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-muted);">Aucun plugin installé.<br><span style="font-size:12px;">Installez des plugins depuis l\'onglet "🔌 Plugins".</span></div>';
+            return;
+        }
+
+        el.innerHTML = `<p style="color:var(--text-muted);font-size:12px;margin-bottom:8px;">${plugins.length} plugin(s) installé(s) dans /data/plugins/</p>` +
+            plugins.map(p => `
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:4px;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span>🔌</span>
+                    <div>
+                        <div style="font-weight:600;font-size:13px;">${p.filename}</div>
+                        <div style="font-size:11px;color:var(--text-muted);">${p.size_mb} Mo</div>
+                    </div>
+                </div>
+                <button class="btn btn-sm btn-danger" onclick="ServerView._removePlugin('${p.filename.replace(/'/g,"\\'")}')">🗑️ Supprimer</button>
+            </div>`).join('');
+    },
+
+    async _removePlugin(filename) {
+        if (!confirm(`Supprimer le plugin "${filename}" ?`)) return;
+        await Auth.apiCall(`/api/plugins/server/${this.serverId}/${encodeURIComponent(filename)}`, {method: 'DELETE'});
+        this._loadInstalledPlugins();
+    },
+
+    // ============ MODS (CurseForge) ============
+
+    _modsSearch() {
+        return `
+        <div style="display:flex;gap:8px;margin-bottom:12px;">
+            <input id="sv-mods-q" class="form-input" placeholder="Rechercher un mod (Forge/Fabric)..." style="flex:1;" onkeydown="if(event.key==='Enter')ServerView._searchMods()" />
+            <select id="sv-mods-cat" class="form-input" style="width:130px;">
+                <option value="mods">🧩 Mods</option>
+                <option value="modpacks">📦 Modpacks</option>
+            </select>
+            <button class="btn btn-primary" onclick="ServerView._searchMods()">🔍</button>
+        </div>
+        <div id="sv-mods-results"><div style="color:var(--text-muted)">🧩 Recherchez un mod sur CurseForge</div></div>`;
     },
 
     async _searchMods() {
-        const q = document.getElementById('sv-mods-q').value.trim();
-        const cat = document.getElementById('sv-mods-cat').value;
+        const q = document.getElementById('sv-mods-q')?.value?.trim();
+        const cat = document.getElementById('sv-mods-cat')?.value || 'mods';
         if (!q) return;
         const el = document.getElementById('sv-mods-results');
-        el.innerHTML = '<div style="color:var(--text-muted)">⏳ Recherche...</div>';
+        if (!el) return;
+        el.innerHTML = '<div style="color:var(--text-muted)">⏳ Recherche sur CurseForge...</div>';
         const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=${cat}`);
-        if (!r||!r.ok) { el.innerHTML='<div style="color:#e74c3c">❌ Erreur</div>'; return; }
+        if (!r||!r.ok) { el.innerHTML='<div style="color:#e74c3c">❌ Erreur (clé CurseForge requise)</div>'; return; }
         const data = await r.json();
         const mods = data.mods||[];
         if (mods.length===0) { el.innerHTML='<div style="color:var(--text-muted)">Aucun résultat</div>'; return; }
@@ -324,12 +494,13 @@ const ServerView = {
             <div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;">
                 <img src="${m.icon_url||''}" style="width:36px;height:36px;border-radius:6px;" onerror="this.style.display='none'"/>
                 <div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:13px;">${m.name}</div><div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.summary||''}</div></div>
-                <button class="btn btn-primary btn-sm" onclick="ServerView._showModFiles(${m.id},'${m.name.replace(/'/g,"\\'")}')">📥</button>
+                <button class="btn btn-primary btn-sm" onclick="ServerView._showModFiles(${m.id},'${(m.name||'').replace(/'/g,"\\'")}')">📥</button>
             </div>`).join('');
     },
 
     async _showModFiles(modId, name) {
         const el = document.getElementById('sv-mods-results');
+        if (!el) return;
         const r = await Auth.apiCall(`/api/mods/${modId}/files`);
         if (!r||!r.ok) return;
         const files = (await r.json()).files||[];
@@ -343,24 +514,6 @@ const ServerView = {
 
     async _installMod(name, url, filename) {
         await Auth.apiCall('/api/mods/install',{method:'POST',body:JSON.stringify({server_id:this.serverId,mod_name:name,download_url:url,filename:filename})});
-    },
-
-    async _loadInstalledMods() {
-        const el = document.getElementById('sv-mods-results');
-        const r = await Auth.apiCall(`/api/mods/server/${this.serverId}`);
-        if (!r||!r.ok) return;
-        const mods = (await r.json()).mods||[];
-        if (mods.length===0) { el.innerHTML='<div style="color:var(--text-muted)">Aucun mod installé</div>'; return; }
-        el.innerHTML = mods.map(m => `
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;">
-                <div>🧩 ${m.filename} <span style="color:var(--text-muted);font-size:11px;">${m.size_mb}Mo</span></div>
-                <button class="btn btn-sm btn-danger" onclick="ServerView._removeMod('${m.filename}')">🗑️</button>
-            </div>`).join('');
-    },
-
-    async _removeMod(f) {
-        await Auth.apiCall(`/api/mods/server/${this.serverId}/${encodeURIComponent(f)}`,{method:'DELETE'});
-        this._loadInstalledMods();
     },
 
     async action(act) {
