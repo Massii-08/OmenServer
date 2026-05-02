@@ -61,6 +61,9 @@ from backend.game_server.websocket import router as ws_router
 from backend.game_server.backup_router import router as backup_router
 from backend.scheduler.router import router as scheduler_router
 from backend.mods.router import router as mods_router
+from backend.game_server.settings_router import router as settings_router
+from backend.game_server.players_router import router as players_router
+from backend.game_server.access_router import router as access_router
 
 app.include_router(auth_router)
 app.include_router(invite_router)
@@ -71,6 +74,9 @@ app.include_router(ws_router)
 app.include_router(backup_router)
 app.include_router(scheduler_router)
 app.include_router(mods_router)
+app.include_router(settings_router)
+app.include_router(players_router)
+app.include_router(access_router)
 
 
 # --- Événement de démarrage ---

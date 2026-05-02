@@ -56,11 +56,12 @@ const ServerView = {
             {id:'console',icon:'💻',label:'Console'},
             {id:'settings',icon:'⚙️',label:'Paramètres'},
             {id:'files',icon:'📁',label:'Fichiers'},
+            {id:'access',icon:'🔌',label:'Accès'},
             {id:'backups',icon:'💾',label:'Sauvegardes'},
             {id:'scheduler',icon:'⏰',label:'Tâches planifiées'},
-            {id:'monitoring',icon:'📈',label:'Monitoring'},
+            {id:'monitoring',icon:'📈',label:'Monitoring temps réel'},
+            {id:'players',icon:'👥',label:'Joueurs'},
             {id:'mods',icon:'🧩',label:'Mods & Plugins'},
-            {id:'access',icon:'👥',label:'Accès SFTP'},
         ];
         return tabs.map(t => `
             <a class="sv-tab ${this.currentTab===t.id?'active':''}" onclick="ServerView.switchTab('${t.id}')" style="display:flex;align-items:center;gap:10px;padding:10px 20px;cursor:pointer;color:${this.currentTab===t.id?'var(--accent-blue)':'var(--text-primary)'};background:${this.currentTab===t.id?'rgba(59,130,246,0.1)':'transparent'};font-size:13px;font-weight:${this.currentTab===t.id?'600':'400'};border-left:3px solid ${this.currentTab===t.id?'var(--accent-blue)':'transparent'};transition:all .15s;">
@@ -89,10 +90,11 @@ const ServerView = {
             case 'backups': return this._backupsTab();
             case 'scheduler': return this._schedulerTab();
             case 'mods': return this._modsTab();
-            case 'settings': return this._settingsTab();
+            case 'settings': return SvSettings.render(this.serverData, this.serverId);
             case 'files': return this._filesTab();
             case 'monitoring': return this._monitoringTab();
-            case 'access': return this._accessTab();
+            case 'access': return SvAccess.render(this.serverData, this.serverId);
+            case 'players': return SvPlayers.render(this.serverId);
             default: return '<p>Section en cours de développement</p>';
         }
     },
@@ -309,73 +311,12 @@ const ServerView = {
         this._loadInstalledMods();
     },
 
-    _settingsTab() {
-        return `<h2>⚙️ Paramètres</h2>
-        <div class="flex gap-2" style="margin-bottom:16px;">
-            <button class="btn btn-primary btn-sm" onclick="ServerView._settingsSubTab('server')">🖥 Serveur</button>
-            <button class="btn btn-secondary btn-sm" onclick="ServerView._settingsSubTab('resources')">📊 Ressources</button>
-        </div>
-        <div id="sv-settings-content">${this._settingsServerSub()}</div>`;
-    },
-
-    _settingsSubTab(sub) {
-        const el = document.getElementById('sv-settings-content');
-        if (sub==='resources') { el.innerHTML = this._settingsResourcesSub(); this._initSliders(); }
-        else { el.innerHTML = this._settingsServerSub(); }
-    },
-
-    _settingsServerSub() {
-        return `<p style="color:var(--text-muted);font-size:13px;">Les paramètres du serveur (server.properties) seront éditables ici quand le backend sera connecté.</p>`;
-    },
-
-    _settingsResourcesSub() {
-        const s = this.serverData;
-        return `
-        <div style="margin-bottom:20px;">
-            <label class="form-label">RAM : <span id="sv-ram-val">${s.memory_mb||1024}</span> Mo</label>
-            <input type="range" id="sv-ram-slider" min="256" max="8192" step="256" value="${s.memory_mb||1024}" oninput="document.getElementById('sv-ram-val').textContent=this.value" style="width:100%;"/>
-        </div>
-        <div style="margin-bottom:20px;">
-            <label class="form-label">CPU : <span id="sv-cpu-val">${s.cpu_percent||100}</span>%</label>
-            <input type="range" id="sv-cpu-slider" min="25" max="400" step="25" value="${s.cpu_percent||100}" oninput="document.getElementById('sv-cpu-val').textContent=this.value" style="width:100%;"/>
-        </div>
-        <button class="btn btn-primary" onclick="ServerView._saveResources()">💾 Appliquer</button>
-        <span id="sv-res-msg" style="margin-left:10px;font-size:13px;"></span>`;
-    },
-
-    _initSliders() {},
-
-    async _saveResources() {
-        const ram = parseInt(document.getElementById('sv-ram-slider').value);
-        const cpu = parseInt(document.getElementById('sv-cpu-slider').value);
-        const r = await Auth.apiCall(`/api/servers/${this.serverId}/resources`,{method:'PUT',body:JSON.stringify({memory_mb:ram,cpu_percent:cpu})});
-        const msg = document.getElementById('sv-res-msg');
-        if (r&&r.ok) { msg.style.color='var(--accent-green)'; msg.textContent='✅ Appliqué'; }
-        else { msg.style.color='#e74c3c'; msg.textContent='❌ Erreur'; }
-    },
-
     _filesTab() {
-        return `<h2>📁 Fichiers</h2><p style="color:var(--text-muted);">Explorateur de fichiers — disponible prochainement.</p>`;
+        return `<h2>📁 Fichiers</h2><p style="color:var(--text-muted);">Explorateur de fichiers — disponible prochainement (Vague 2).</p>`;
     },
 
     _monitoringTab() {
-        return `<h2>📈 Monitoring</h2><p style="color:var(--text-muted);">Graphiques temps réel — disponible prochainement.</p>`;
-    },
-
-    _accessTab() {
-        const s = this.serverData;
-        return `<h2>👥 Accès SFTP</h2>
-        <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
-            <p style="margin-bottom:12px;">Connecte-toi avec WinSCP ou FileZilla pour gérer tes fichiers :</p>
-            <div style="font-family:monospace;font-size:13px;line-height:2;">
-                <div>📡 <strong>Hôte :</strong> ${GameServer._serverIP||'ton-ip'}</div>
-                <div>🔌 <strong>Port :</strong> 2222</div>
-                <div>👤 <strong>Utilisateur :</strong> server_${this.serverId}</div>
-                <div>🔑 <strong>Mot de passe :</strong> <em>Celui de ton compte OmenServer</em></div>
-                <div>📂 <strong>Dossier :</strong> /data/servers/${this.serverId}/</div>
-            </div>
-            <p style="color:var(--text-muted);font-size:12px;margin-top:12px;">⚠️ Le service SFTP doit être activé sur le serveur hôte.</p>
-        </div>`;
+        return `<h2>📈 Monitoring temps réel</h2><p style="color:var(--text-muted);">Graphiques temps réel — disponible prochainement (Vague 2).</p>`;
     },
 
     async action(act) {
