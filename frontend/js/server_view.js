@@ -63,6 +63,7 @@ const ServerView = {
             {id:'history',icon:'📜',label:'Historique'},
             {id:'players',icon:'👥',label:'Joueurs'},
             {id:'mods',icon:'🧩',label:'Mods & Plugins'},
+            {id:'notifications',icon:'🔔',label:'Notifications'},
         ];
         return tabs.map(t => `
             <a class="sv-tab ${this.currentTab===t.id?'active':''}" onclick="ServerView.switchTab('${t.id}')" style="display:flex;align-items:center;gap:10px;padding:10px 20px;cursor:pointer;color:${this.currentTab===t.id?'var(--accent-blue)':'var(--text-primary)'};background:${this.currentTab===t.id?'rgba(59,130,246,0.1)':'transparent'};font-size:13px;font-weight:${this.currentTab===t.id?'600':'400'};border-left:3px solid ${this.currentTab===t.id?'var(--accent-blue)':'transparent'};transition:all .15s;">
@@ -98,6 +99,7 @@ const ServerView = {
             case 'access': return SvAccess.render(this.serverData, this.serverId);
             case 'players': return SvPlayers.render(this.serverId);
             case 'history': return SvHistory.render(this.serverId);
+            case 'notifications': return this._notificationsTab();
             default: return '<p>Section en cours de développement</p>';
         }
     },
@@ -106,6 +108,15 @@ const ServerView = {
         const s = this.serverData;
         const isRunning = s.status === 'running';
         const addr = `${GameServer._serverIP || 'localhost'}:${s.port||25565}`;
+        const game = GameServer._games?.find(g => g.id === s.game_type);
+        const gameIcon = game ? game.icon : '🎮';
+        const gameName = game ? game.name : (s.game_type || 'minecraft');
+        
+        // Calculer l'uptime approximatif
+        const uptimeHtml = isRunning ? '<span style="color:var(--accent-green);font-weight:600;">● En ligne</span>' : '<span style="color:var(--text-muted);">○ Arrêté</span>';
+        
+        setTimeout(() => this._loadDashboardStats(), 100);
+        
         return `
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
             <h2 style="margin:0;">📊 Tableau de bord</h2>
@@ -122,23 +133,60 @@ const ServerView = {
             `}
         </div>
 
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;">
+        <!-- Stats principales -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:20px;">
+            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;text-align:center;">
+                <div style="font-size:24px;margin-bottom:4px;">${gameIcon}</div>
+                <div style="font-size:12px;color:var(--text-muted);">Jeu</div>
+                <div style="font-size:14px;font-weight:600;margin-top:2px;">${gameName}</div>
+            </div>
+            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;text-align:center;">
+                <div style="font-size:24px;margin-bottom:4px;">📡</div>
+                <div style="font-size:12px;color:var(--text-muted);">Statut</div>
+                <div style="font-size:14px;margin-top:2px;">${uptimeHtml}</div>
+            </div>
+            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;text-align:center;">
+                <div style="font-size:24px;margin-bottom:4px;">🧠</div>
+                <div style="font-size:12px;color:var(--text-muted);">RAM</div>
+                <div style="font-size:14px;font-weight:600;margin-top:2px;" id="sv-dash-ram">${s.memory_mb||1024} Mo</div>
+            </div>
+            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;text-align:center;">
+                <div style="font-size:24px;margin-bottom:4px;">⚡</div>
+                <div style="font-size:12px;color:var(--text-muted);">CPU</div>
+                <div style="font-size:14px;font-weight:600;margin-top:2px;" id="sv-dash-cpu">${s.cpu_percent||100}%</div>
+            </div>
+        </div>
+
+        <!-- Infos connexion -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
-                <div style="font-size:12px;color:var(--text-muted);">Adresse</div>
-                <div style="font-family:monospace;font-size:15px;margin-top:4px;cursor:pointer;" onclick="navigator.clipboard.writeText('${addr}')">📡 ${addr} <span style="font-size:11px;color:var(--text-muted);">📋</span></div>
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">📡 Adresse de connexion</div>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="font-family:monospace;font-size:16px;font-weight:700;color:var(--accent-green);">${addr}</span>
+                    <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText('${addr}');this.textContent='✅';setTimeout(()=>this.textContent='📋',1500)" style="padding:2px 8px;">📋</button>
+                </div>
             </div>
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
-                <div style="font-size:12px;color:var(--text-muted);">Version</div>
-                <div style="font-size:15px;margin-top:4px;">${s.game_type||'minecraft'} · v${s.version||'?'}</div>
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">🏷️ Version</div>
+                <div style="font-size:16px;font-weight:600;">${gameName} · v${s.version||'?'}</div>
             </div>
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
-                <div style="font-size:12px;color:var(--text-muted);">RAM allouée</div>
-                <div style="font-size:15px;margin-top:4px;">${s.memory_mb||1024} Mo</div>
+        </div>
+
+        <!-- Raccourcis rapides -->
+        <div style="margin-bottom:20px;">
+            <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text-muted);">⚡ Actions rapides</div>
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
+                <button class="btn btn-secondary" onclick="ServerView.switchTab('console')" style="padding:12px 8px;font-size:12px;">💻 Console</button>
+                <button class="btn btn-secondary" onclick="ServerView.switchTab('files')" style="padding:12px 8px;font-size:12px;">📁 Fichiers</button>
+                <button class="btn btn-secondary" onclick="ServerView.switchTab('backups')" style="padding:12px 8px;font-size:12px;">💾 Sauvegarder</button>
+                <button class="btn btn-secondary" onclick="ServerView.switchTab('players')" style="padding:12px 8px;font-size:12px;">👥 Joueurs</button>
             </div>
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
-                <div style="font-size:12px;color:var(--text-muted);">CPU alloué</div>
-                <div style="font-size:15px;margin-top:4px;">${s.cpu_percent||100}%</div>
-            </div>
+        </div>
+
+        <!-- Stats Docker live -->
+        <div id="sv-dash-docker" style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px;">🐳 Docker — Ressources en temps réel</div>
+            <div style="color:var(--text-muted);font-size:12px;">⏳ Chargement...</div>
         </div>`;
     },
 
@@ -610,5 +658,148 @@ const ServerView = {
         if (this._ws) { this._ws.close(); this._ws = null; }
         this.serverId = null;
         this.serverData = null;
-    }
+    },
+
+    // --- Dashboard live stats ---
+    async _loadDashboardStats() {
+        const el = document.getElementById('sv-dash-docker');
+        if (!el) return;
+        
+        try {
+            const r = await Auth.apiCall(`/api/containers/${this.serverData?.docker_id}/stats`);
+            if (r && r.ok) {
+                const stats = await r.json();
+                el.innerHTML = `
+                    <div style="font-size:13px;font-weight:600;margin-bottom:10px;">🐳 Docker — Ressources en temps réel</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+                        <div>
+                            <div style="font-size:11px;color:var(--text-muted);">CPU utilisé</div>
+                            <div style="font-size:18px;font-weight:700;color:var(--accent-blue);">${(stats.cpu_percent||0).toFixed(1)}%</div>
+                            <div style="background:var(--bg-primary);height:4px;border-radius:2px;margin-top:4px;">
+                                <div style="background:var(--accent-blue);height:100%;border-radius:2px;width:${Math.min(stats.cpu_percent||0,100)}%;"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div style="font-size:11px;color:var(--text-muted);">RAM utilisée</div>
+                            <div style="font-size:18px;font-weight:700;color:var(--accent-green);">${stats.memory_mb ? stats.memory_mb.toFixed(0) : '?'} Mo</div>
+                            <div style="background:var(--bg-primary);height:4px;border-radius:2px;margin-top:4px;">
+                                <div style="background:var(--accent-green);height:100%;border-radius:2px;width:${stats.memory_percent ? Math.min(stats.memory_percent,100) : 0}%;"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div style="font-size:11px;color:var(--text-muted);">Réseau</div>
+                            <div style="font-size:14px;font-weight:600;">↑ ${stats.net_tx_mb ? stats.net_tx_mb.toFixed(1) : '0'} Mo</div>
+                            <div style="font-size:14px;font-weight:600;">↓ ${stats.net_rx_mb ? stats.net_rx_mb.toFixed(1) : '0'} Mo</div>
+                        </div>
+                    </div>`;
+            } else {
+                el.innerHTML = `
+                    <div style="font-size:13px;font-weight:600;margin-bottom:8px;">🐳 Docker</div>
+                    <div style="color:var(--text-muted);font-size:12px;">Le serveur doit être en ligne pour voir les stats.</div>`;
+            }
+        } catch (e) {
+            el.innerHTML = `
+                <div style="font-size:13px;font-weight:600;margin-bottom:8px;">🐳 Docker</div>
+                <div style="color:var(--text-muted);font-size:12px;">Stats non disponibles</div>`;
+        }
+    },
+
+    // --- Notifications Discord ---
+    _notificationsTab() {
+        setTimeout(() => this._loadNotifSettings(), 50);
+        return `
+        <h2>🔔 Notifications Discord</h2>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Recevez des alertes sur votre serveur Discord quand des événements se produisent</p>
+
+        <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
+            <div style="font-weight:600;margin-bottom:12px;">🔗 Webhook Discord</div>
+            <div style="display:flex;gap:8px;align-items:center;">
+                <input id="sv-notif-webhook" class="form-input" placeholder="https://discord.com/api/webhooks/..." style="flex:1;font-family:monospace;font-size:12px;" />
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">
+                💡 Pour créer un webhook : Paramètres du salon Discord → Intégrations → Webhooks → Nouveau webhook → Copier l'URL
+            </div>
+        </div>
+
+        <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
+            <div style="font-weight:600;margin-bottom:12px;">📋 Événements à notifier</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
+                    <input type="checkbox" id="sv-notif-start" checked /> ▶️ Démarrage du serveur
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
+                    <input type="checkbox" id="sv-notif-stop" checked /> ⏹️ Arrêt du serveur
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
+                    <input type="checkbox" id="sv-notif-crash" checked /> 💥 Crash du serveur
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
+                    <input type="checkbox" id="sv-notif-backup" checked /> 💾 Sauvegarde créée
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
+                    <input type="checkbox" id="sv-notif-join" /> 👋 Joueur rejoint
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
+                    <input type="checkbox" id="sv-notif-leave" /> 👋 Joueur quitte
+                </label>
+            </div>
+        </div>
+
+        <div style="display:flex;gap:8px;align-items:center;">
+            <button class="btn btn-primary" onclick="ServerView._saveNotifSettings()">💾 Sauvegarder</button>
+            <button class="btn btn-secondary" onclick="ServerView._testNotif()">🧪 Tester</button>
+            <span id="sv-notif-msg" style="font-size:12px;"></span>
+        </div>`;
+    },
+
+    async _loadNotifSettings() {
+        const r = await Auth.apiCall('/api/notifications/settings');
+        if (!r || !r.ok) return;
+        const s = await r.json();
+
+        const el = (id) => document.getElementById(id);
+        if (el('sv-notif-webhook')) el('sv-notif-webhook').value = s.discord_webhook_url || '';
+        if (el('sv-notif-start')) el('sv-notif-start').checked = s.notify_server_start !== false;
+        if (el('sv-notif-stop')) el('sv-notif-stop').checked = s.notify_server_stop !== false;
+        if (el('sv-notif-crash')) el('sv-notif-crash').checked = s.notify_server_crash !== false;
+        if (el('sv-notif-backup')) el('sv-notif-backup').checked = s.notify_backup_created !== false;
+        if (el('sv-notif-join')) el('sv-notif-join').checked = s.notify_player_join === true;
+        if (el('sv-notif-leave')) el('sv-notif-leave').checked = s.notify_player_leave === true;
+    },
+
+    async _saveNotifSettings() {
+        const msg = document.getElementById('sv-notif-msg');
+        const body = {
+            discord_webhook_url: document.getElementById('sv-notif-webhook')?.value || '',
+            notify_server_start: document.getElementById('sv-notif-start')?.checked ?? true,
+            notify_server_stop: document.getElementById('sv-notif-stop')?.checked ?? true,
+            notify_server_crash: document.getElementById('sv-notif-crash')?.checked ?? true,
+            notify_backup_created: document.getElementById('sv-notif-backup')?.checked ?? true,
+            notify_player_join: document.getElementById('sv-notif-join')?.checked ?? false,
+            notify_player_leave: document.getElementById('sv-notif-leave')?.checked ?? false,
+        };
+
+        const r = await Auth.apiCall('/api/notifications/settings', {
+            method: 'PUT', body: JSON.stringify(body)
+        });
+
+        if (r && r.ok) {
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = '✅ Réglages sauvegardés !'; }
+        } else {
+            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '❌ Erreur'; }
+        }
+    },
+
+    async _testNotif() {
+        const msg = document.getElementById('sv-notif-msg');
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Envoi du test...'; }
+
+        const r = await Auth.apiCall('/api/notifications/test', { method: 'POST' });
+        if (r && r.ok) {
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = '✅ Notification envoyée ! Vérifie ton Discord.'; }
+        } else {
+            const err = r ? await r.json().catch(()=>({})) : {};
+            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+        }
+    },
 };

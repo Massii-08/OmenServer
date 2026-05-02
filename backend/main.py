@@ -68,6 +68,7 @@ from backend.game_server.files_router import router as files_router
 from backend.monitoring.container_router import router as container_router
 from backend.activity.router import router as activity_router
 from backend.mods.plugin_router import router as plugin_router
+from backend.notifications.router import router as notification_router
 
 app.include_router(auth_router)
 app.include_router(invite_router)
@@ -85,6 +86,7 @@ app.include_router(files_router)
 app.include_router(container_router)
 app.include_router(activity_router)
 app.include_router(plugin_router)
+app.include_router(notification_router)
 
 
 # --- Événement de démarrage ---
