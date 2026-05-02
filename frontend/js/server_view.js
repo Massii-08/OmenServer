@@ -60,6 +60,7 @@ const ServerView = {
             {id:'backups',icon:'💾',label:'Sauvegardes'},
             {id:'scheduler',icon:'⏰',label:'Tâches planifiées'},
             {id:'monitoring',icon:'📈',label:'Monitoring temps réel'},
+            {id:'history',icon:'📜',label:'Historique'},
             {id:'players',icon:'👥',label:'Joueurs'},
             {id:'mods',icon:'🧩',label:'Mods & Plugins'},
         ];
@@ -72,6 +73,7 @@ const ServerView = {
 
     switchTab(tab) {
         if (this._ws) { this._ws.close(); this._ws = null; }
+        if (typeof SvMonitoring !== 'undefined') SvMonitoring.stop();
         this.currentTab = tab;
         document.getElementById('sv-sidebar').innerHTML = `
             <div style="padding:0 16px 16px;border-bottom:1px solid var(--border-color);margin-bottom:8px;">
@@ -91,10 +93,11 @@ const ServerView = {
             case 'scheduler': return this._schedulerTab();
             case 'mods': return this._modsTab();
             case 'settings': return SvSettings.render(this.serverData, this.serverId);
-            case 'files': return this._filesTab();
-            case 'monitoring': return this._monitoringTab();
+            case 'files': return SvFiles.render(this.serverId);
+            case 'monitoring': return SvMonitoring.render(this.serverId);
             case 'access': return SvAccess.render(this.serverData, this.serverId);
             case 'players': return SvPlayers.render(this.serverId);
+            case 'history': return SvHistory.render(this.serverId);
             default: return '<p>Section en cours de développement</p>';
         }
     },
@@ -309,14 +312,6 @@ const ServerView = {
     async _removeMod(f) {
         await Auth.apiCall(`/api/mods/server/${this.serverId}/${encodeURIComponent(f)}`,{method:'DELETE'});
         this._loadInstalledMods();
-    },
-
-    _filesTab() {
-        return `<h2>📁 Fichiers</h2><p style="color:var(--text-muted);">Explorateur de fichiers — disponible prochainement (Vague 2).</p>`;
-    },
-
-    _monitoringTab() {
-        return `<h2>📈 Monitoring temps réel</h2><p style="color:var(--text-muted);">Graphiques temps réel — disponible prochainement (Vague 2).</p>`;
     },
 
     async action(act) {
