@@ -142,8 +142,37 @@ const GameServer = {
                         </select>
                     </div>
                     <div class="form-group" id="version-group">
-                        <label class="form-label">Version</label>
-                        <input type="text" class="form-input" id="server-version" value="LATEST" placeholder="LATEST, 1.21.4..." />
+                        <label class="form-label">Version Minecraft</label>
+                        <select class="form-input" id="server-version">
+                            <option value="LATEST">🔄 Dernière version (LATEST)</option>
+                            <option value="1.21.4">1.21.4</option>
+                            <option value="1.21.3">1.21.3</option>
+                            <option value="1.21.2">1.21.2</option>
+                            <option value="1.21.1">1.21.1</option>
+                            <option value="1.21">1.21</option>
+                            <option value="1.20.6">1.20.6</option>
+                            <option value="1.20.4">1.20.4</option>
+                            <option value="1.20.2">1.20.2</option>
+                            <option value="1.20.1">1.20.1</option>
+                            <option value="1.19.4">1.19.4</option>
+                            <option value="1.19.2">1.19.2</option>
+                            <option value="1.18.2">1.18.2</option>
+                            <option value="1.17.1">1.17.1</option>
+                            <option value="1.16.5">1.16.5</option>
+                            <option value="1.15.2">1.15.2</option>
+                            <option value="1.14.4">1.14.4</option>
+                            <option value="1.13.2">1.13.2</option>
+                            <option value="1.12.2">1.12.2</option>
+                            <option value="1.12">1.12</option>
+                            <option value="1.11.2">1.11.2</option>
+                            <option value="1.10.2">1.10.2</option>
+                            <option value="1.9.4">1.9.4</option>
+                            <option value="1.8.9">1.8.9</option>
+                            <option value="1.8.8">1.8.8</option>
+                            <option value="1.7.10">1.7.10</option>
+                            <option value="CUSTOM">✏️ Version personnalisée...</option>
+                        </select>
+                        <input type="text" class="form-input" id="server-version-custom" placeholder="Ex: 1.12.2, 23w13a (snapshot)..." style="display:none;margin-top:8px;" />
                     </div>
                     <div class="form-group" id="custom-image-group" style="display: none;">
                         <label class="form-label">Image Docker</label>
@@ -1066,6 +1095,16 @@ const GameServer = {
         document.getElementById('create-error').classList.remove('show');
         document.getElementById('create-loading').classList.add('hidden');
         document.getElementById('create-buttons').style.display = '';
+
+        // Handler pour le dropdown version → afficher champ custom si "Personnalisée"
+        const versionSelect = document.getElementById('server-version');
+        const versionCustom = document.getElementById('server-version-custom');
+        if (versionSelect && versionCustom) {
+            versionSelect.onchange = () => {
+                versionCustom.style.display = versionSelect.value === 'CUSTOM' ? 'block' : 'none';
+                if (versionSelect.value === 'CUSTOM') versionCustom.focus();
+            };
+        }
     },
 
     hideCreateModal() {
@@ -1076,7 +1115,14 @@ const GameServer = {
     async createServer() {
         const name = document.getElementById('server-name').value.trim();
         const gameType = document.getElementById('server-game-type').value;
-        const version = document.getElementById('server-version').value.trim();
+        const versionSelect = document.getElementById('server-version');
+        const versionCustom = document.getElementById('server-version-custom');
+        let version = versionSelect ? versionSelect.value : 'LATEST';
+        // Si "Personnalisée" est sélectionné, utiliser le champ texte
+        if (version === 'CUSTOM') {
+            version = versionCustom ? versionCustom.value.trim() : 'LATEST';
+            if (!version) { this.showCreateError('Entre une version personnalisée'); return; }
+        }
         const port = parseInt(document.getElementById('server-port').value);
         const memory = parseInt(document.getElementById('server-memory').value);
         const customImage = document.getElementById('server-custom-image')?.value?.trim();

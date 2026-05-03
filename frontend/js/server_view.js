@@ -669,18 +669,18 @@ const ServerView = {
         const isMinecraft = s.game_type === 'minecraft';
 
         const types = [
-            {id:'VANILLA', icon:'🎨', name:'Vanilla', desc:'Serveur officiel Mojang sans modifications'},
-            {id:'PAPER', icon:'📄', name:'Paper', desc:'Fork optimisé de Spigot — Recommandé pour les plugins'},
-            {id:'SPIGOT', icon:'🛠️', name:'Spigot', desc:'Le classique pour les plugins Bukkit/Spigot'},
-            {id:'BUKKIT', icon:'🪣', name:'Bukkit', desc:'Le pionnier des serveurs moddés'},
-            {id:'PURPUR', icon:'💜', name:'Purpur', desc:'Fork de Paper avec plus d\'options de configuration'},
-            {id:'FORGE', icon:'🔨', name:'Forge', desc:'Pour les mods Forge (Minecraft moddé)'},
+            {id:'VANILLA', icon:'🎨', name:'Vanilla', desc:'Serveur officiel Mojang'},
+            {id:'PAPER', icon:'📄', name:'Paper', desc:'Optimisé — Recommandé'},
+            {id:'SPIGOT', icon:'🛠️', name:'Spigot', desc:'Classique plugins'},
+            {id:'BUKKIT', icon:'🪣', name:'Bukkit', desc:'Pionnier des plugins'},
+            {id:'PURPUR', icon:'💜', name:'Purpur', desc:'Fork de Paper avancé'},
+            {id:'FORGE', icon:'🔨', name:'Forge', desc:'Mods Forge'},
             {id:'NEOFORGE', icon:'✨', name:'NeoForge', desc:'Fork moderne de Forge'},
-            {id:'FABRIC', icon:'🧵', name:'Fabric', desc:'Loader de mods léger et performant'},
-            {id:'QUILT', icon:'🧶', name:'Quilt', desc:'Fork de Fabric compatible avec ses mods'},
-            {id:'MOHIST', icon:'🌍', name:'Mohist', desc:'Forge + Bukkit — mods ET plugins ensemble'},
-            {id:'CATSERVER', icon:'🐱', name:'CatServer', desc:'Alternative à Mohist (Forge + Bukkit)'},
-            {id:'PUFFERFISH', icon:'🐡', name:'Pufferfish', desc:'Fork ultra-optimisé de Paper'},
+            {id:'FABRIC', icon:'🧵', name:'Fabric', desc:'Mods léger & performant'},
+            {id:'QUILT', icon:'🧶', name:'Quilt', desc:'Compatible Fabric'},
+            {id:'MOHIST', icon:'🌍', name:'Mohist', desc:'Forge + Bukkit ensemble'},
+            {id:'CATSERVER', icon:'🐱', name:'CatServer', desc:'Forge + Bukkit alt.'},
+            {id:'PUFFERFISH', icon:'🐡', name:'Pufferfish', desc:'Ultra-optimisé'},
         ];
 
         if (!isMinecraft) {
@@ -695,57 +695,63 @@ const ServerView = {
 
         const current = types.find(t => t.id === currentType) || types[0];
 
+        const versionOptions = [
+            'LATEST','1.21.4','1.21.3','1.21.2','1.21.1','1.21',
+            '1.20.6','1.20.4','1.20.2','1.20.1',
+            '1.19.4','1.19.2','1.18.2','1.17.1','1.16.5',
+            '1.15.2','1.14.4','1.13.2','1.12.2','1.12',
+            '1.11.2','1.10.2','1.9.4','1.8.9','1.8.8','1.7.10'
+        ];
+
+        const currentVer = s.version || 'LATEST';
+        const isKnownVersion = versionOptions.includes(currentVer);
+
         return `
         <h2>🏷️ Version & Type de serveur</h2>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Changez le type de serveur ou la version de Minecraft</p>
 
         <!-- Version actuelle -->
-        <div style="background:linear-gradient(135deg, rgba(59,130,246,0.15), rgba(139,92,246,0.1));padding:20px;border-radius:10px;margin-bottom:20px;border:1px solid rgba(59,130,246,0.3);">
-            <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">Configuration actuelle</div>
-            <div style="display:flex;align-items:center;gap:12px;">
-                <span style="font-size:32px;">${current.icon}</span>
+        <div style="background:linear-gradient(135deg, rgba(59,130,246,0.15), rgba(139,92,246,0.1));padding:20px;border-radius:12px;margin-bottom:20px;border:1px solid rgba(59,130,246,0.3);">
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">Configuration actuelle</div>
+            <div style="display:flex;align-items:center;gap:14px;">
+                <span style="font-size:36px;">${current.icon}</span>
                 <div>
-                    <div style="font-size:18px;font-weight:700;">${current.name}</div>
-                    <div style="font-size:13px;color:var(--text-muted);">Version ${s.version || 'LATEST'}</div>
+                    <div style="font-size:20px;font-weight:700;">${current.name}</div>
+                    <div style="font-size:14px;color:var(--text-muted);">Minecraft ${currentVer}</div>
                 </div>
             </div>
         </div>
 
         <!-- Sélection du type -->
         <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
-            <div style="font-weight:600;margin-bottom:12px;">📦 Choisir le type de serveur</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                ${types.map(t => `
-                    <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;border:2px solid ${t.id === currentType ? 'var(--accent-blue)' : 'var(--border-color)'};background:${t.id === currentType ? 'rgba(59,130,246,0.1)' : 'transparent'};transition:all .15s;" onclick="document.querySelectorAll('[name=sv-ver-type]').forEach(r=>r.checked=false);this.querySelector('input').checked=true;">
-                        <input type="radio" name="sv-ver-type" value="${t.id}" ${t.id === currentType ? 'checked' : ''} style="display:none;" />
-                        <span style="font-size:20px;">${t.icon}</span>
-                        <div>
-                            <div style="font-size:13px;font-weight:600;">${t.name}</div>
-                            <div style="font-size:11px;color:var(--text-muted);">${t.desc}</div>
-                        </div>
-                    </label>
-                `).join('')}
-            </div>
+            <div style="font-weight:600;margin-bottom:10px;">📦 Type de serveur</div>
+            <select id="sv-ver-type" class="form-input" style="font-size:14px;">
+                ${types.map(t => `<option value="${t.id}" ${t.id === currentType ? 'selected' : ''}>${t.icon} ${t.name} — ${t.desc}</option>`).join('')}
+            </select>
         </div>
 
-        <!-- Version -->
+        <!-- Version Minecraft -->
         <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
-            <div style="font-weight:600;margin-bottom:8px;">🎮 Version Minecraft</div>
-            <input id="sv-ver-version" class="form-input" value="${s.version || 'LATEST'}" placeholder="LATEST, 1.21.4, 1.20.1..." style="max-width:300px;" />
-            <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Entrez "LATEST" pour la dernière version ou un numéro précis (ex: 1.21.4)</div>
+            <div style="font-weight:600;margin-bottom:10px;">🎮 Version Minecraft</div>
+            <select id="sv-ver-version" class="form-input" style="font-size:14px;" onchange="document.getElementById('sv-ver-version-custom').style.display=this.value==='CUSTOM'?'block':'none'">
+                <option value="LATEST" ${currentVer === 'LATEST' ? 'selected' : ''}>🔄 Dernière version (LATEST)</option>
+                ${versionOptions.filter(v => v !== 'LATEST').map(v => `<option value="${v}" ${v === currentVer ? 'selected' : ''}>${v}</option>`).join('')}
+                <option value="CUSTOM" ${!isKnownVersion && currentVer !== 'LATEST' ? 'selected' : ''}>✏️ Version personnalisée...</option>
+            </select>
+            <input id="sv-ver-version-custom" class="form-input" value="${!isKnownVersion && currentVer !== 'LATEST' ? currentVer : ''}" placeholder="Ex: 1.12.2, 23w13a (snapshot)..." style="display:${!isKnownVersion && currentVer !== 'LATEST' ? 'block' : 'none'};margin-top:8px;" />
         </div>
 
         <!-- Option réinstallation -->
         <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
-            <div style="font-weight:600;margin-bottom:8px;">🔄 Mode d'installation</div>
-            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin-bottom:8px;">
+            <div style="font-weight:600;margin-bottom:10px;">🔄 Mode d'installation</div>
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;border-radius:8px;border:2px solid var(--accent-green);background:rgba(34,197,94,0.08);margin-bottom:8px;">
                 <input type="radio" name="sv-ver-mode" value="keep" checked />
                 <div>
                     <div style="font-size:13px;font-weight:600;">💾 Garder les fichiers existants</div>
                     <div style="font-size:11px;color:var(--text-muted);">Les mondes, configs et plugins sont conservés</div>
                 </div>
             </label>
-            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;border-radius:8px;border:2px solid var(--border-color);">
                 <input type="radio" name="sv-ver-mode" value="reset" />
                 <div>
                     <div style="font-size:13px;font-weight:600;color:#ef4444;">🗑️ Réinstaller tout (reset)</div>
@@ -754,16 +760,24 @@ const ServerView = {
             </label>
         </div>
 
-        <div style="display:flex;gap:8px;align-items:center;">
-            <button class="btn btn-primary" onclick="ServerView._changeVersion()">🔄 Appliquer le changement</button>
-            <span id="sv-ver-msg" style="font-size:12px;"></span>
+        <div style="display:flex;gap:10px;align-items:center;">
+            <button class="btn btn-primary" onclick="ServerView._changeVersion()" style="padding:10px 24px;font-size:14px;">🔄 Appliquer le changement</button>
+            <span id="sv-ver-msg" style="font-size:13px;"></span>
         </div>`;
     },
 
     async _changeVersion() {
         const msg = document.getElementById('sv-ver-msg');
-        const selectedType = document.querySelector('[name=sv-ver-type]:checked')?.value || 'VANILLA';
-        const version = document.getElementById('sv-ver-version')?.value || 'LATEST';
+        const selectedType = document.getElementById('sv-ver-type')?.value || 'VANILLA';
+        let version = document.getElementById('sv-ver-version')?.value || 'LATEST';
+        // Si "Personnalisée" est sélectionné, utiliser le champ custom
+        if (version === 'CUSTOM') {
+            version = document.getElementById('sv-ver-version-custom')?.value?.trim() || '';
+            if (!version) {
+                if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '❌ Entre une version personnalisée'; }
+                return;
+            }
+        }
         const resetData = document.querySelector('[name=sv-ver-mode]:checked')?.value === 'reset';
 
         if (resetData && !confirm('⚠️ Cela va SUPPRIMER TOUS les fichiers du serveur (mondes, plugins, configs). Continuer ?')) {
