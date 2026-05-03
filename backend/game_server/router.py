@@ -461,23 +461,21 @@ def list_worlds(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Liste les mondes du serveur."""
+    """Liste les mondes du serveur (fonctionne même si le serveur est éteint)."""
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
     if not server.docker_id:
         raise HTTPException(status_code=400, detail="Pas de conteneur Docker")
 
-    import docker
-    client = docker.from_env()
+    from backend.game_server.settings_router import _docker_exec
+
     try:
-        container = client.containers.get(server.docker_id)
         # Lister les dossiers de mondes
-        result = container.exec_run(
-            "sh -c 'for d in /data/world*; do if [ -d \"$d\" ]; then size=$(du -sh \"$d\" 2>/dev/null | cut -f1); echo \"$(basename $d)|$size\"; fi; done'",
-            demux=True
+        output = _docker_exec(
+            server.docker_id,
+            "sh -c 'for d in /data/world*; do if [ -d \"$d\" ]; then size=$(du -sh \"$d\" 2>/dev/null | cut -f1); echo \"$(basename $d)|$size\"; fi; done'"
         )
-        output = result.output[0].decode("utf-8", errors="replace") if result.output[0] else ""
         worlds = []
         for line in output.strip().split("\n"):
             if "|" in line:
@@ -485,13 +483,16 @@ def list_worlds(
                 worlds.append({"name": name.strip(), "size": size.strip()})
 
         # Lire le seed depuis server.properties
-        seed_result = container.exec_run(
-            "sh -c \"grep '^level-seed=' /data/server.properties | cut -d= -f2\"",
-            demux=True
-        )
         seed = ""
-        if seed_result.output[0]:
-            seed = seed_result.output[0].decode("utf-8", errors="replace").strip()
+        try:
+            seed_output = _docker_exec(
+                server.docker_id,
+                "grep '^level-seed=' /data/server.properties"
+            )
+            if seed_output:
+                seed = seed_output.strip().split("=", 1)[-1] if "=" in seed_output else seed_output.strip()
+        except Exception:
+            pass
 
         return {"worlds": worlds, "seed": seed}
     except Exception as e:
@@ -505,7 +506,7 @@ def reset_world(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Supprime/réinitialise un monde."""
+    """Supprime/réinitialise un monde (le serveur doit être arrêté pour sécurité)."""
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
@@ -516,11 +517,10 @@ def reset_world(
     if not world_name.startswith("world"):
         raise HTTPException(status_code=400, detail="Nom de monde invalide")
 
-    import docker
-    client = docker.from_env()
+    from backend.game_server.settings_router import _docker_exec
+
     try:
-        container = client.containers.get(server.docker_id)
-        result = container.exec_run(f"rm -rf /data/{world_name}", demux=True)
+        _docker_exec(server.docker_id, f"rm -rf /data/{world_name}")
         return {"message": f"Monde '{world_name}' supprimé. Il sera regénéré au prochain démarrage."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

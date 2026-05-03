@@ -43,31 +43,186 @@ class ConfigFileUpdateRequest(BaseModel):
 # --- Helpers Docker ---
 
 def _docker_exec(docker_id: str, cmd: str) -> str:
-    """Exécute une commande dans le conteneur et retourne la sortie."""
+    """Exécute une commande dans le conteneur.
+    Si le conteneur est arrêté, utilise docker cp pour accéder aux fichiers."""
     client = docker_manager._get_docker_client()
     if not client:
         raise RuntimeError("Docker non disponible")
     try:
         container = client.containers.get(docker_id)
-        result = container.exec_run(["sh", "-c", cmd], demux=True)
-        stdout = result.output[0] if result.output[0] else b""
-        return stdout.decode("utf-8", errors="replace")
+
+        # Si le conteneur tourne, utiliser exec_run comme avant
+        if container.status == "running":
+            result = container.exec_run(["sh", "-c", cmd], demux=True)
+            stdout = result.output[0] if result.output[0] else b""
+            return stdout.decode("utf-8", errors="replace")
+
+        # Conteneur arrêté → utiliser docker cp via subprocess
+        return _docker_exec_stopped(docker_id, cmd)
+
     except Exception as e:
         logger.error(f"Erreur docker exec: {e}")
         raise RuntimeError(f"Erreur d'exécution: {e}")
 
 
+def _docker_exec_stopped(docker_id: str, cmd: str) -> str:
+    """Exécute une commande d'accès fichier sur un conteneur arrêté via docker cp."""
+    import subprocess, tempfile, os
+
+    # Parse les commandes courantes : cat, ls, stat, grep
+    cmd_stripped = cmd.strip()
+
+    # cat /path/to/file
+    if cmd_stripped.startswith("cat "):
+        filepath = cmd_stripped.replace("cat ", "").split("2>")[0].strip().strip('"').strip("'")
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                dest = os.path.join(tmp, "file")
+                r = subprocess.run(
+                    ["docker", "cp", f"{docker_id}:{filepath}", dest],
+                    capture_output=True, timeout=15
+                )
+                if r.returncode != 0:
+                    return ""
+                with open(dest, "r", errors="replace") as f:
+                    return f.read()
+        except Exception:
+            return ""
+
+    # ls -la /path
+    if "ls " in cmd_stripped:
+        import re
+        path_match = re.search(r'"([^"]+)"', cmd_stripped) or re.search(r'(/\S+)', cmd_stripped.split("ls")[1])
+        target_path = path_match.group(1) if path_match else "/data"
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                dest = os.path.join(tmp, "dir")
+                r = subprocess.run(
+                    ["docker", "cp", f"{docker_id}:{target_path}/.", dest],
+                    capture_output=True, timeout=15
+                )
+                if r.returncode != 0:
+                    return "ERROR"
+                # Simuler un ls -la via Python (compatible macOS)
+                import stat as stat_mod
+                from datetime import datetime
+                lines = ["total 0"]
+                for entry in os.scandir(dest):
+                    st = entry.stat(follow_symlinks=False)
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                    perms = "d" if is_dir else "-"
+                    perms += "rwxr-xr-x" if is_dir else "rw-r--r--"
+                    mtime = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+                    size = st.st_size
+                    lines.append(f"{perms}  1 root root {size} {mtime} {entry.name}")
+                return "\n".join(lines)
+        except Exception:
+            return "ERROR"
+
+    # stat -c %s /path
+    if "stat " in cmd_stripped:
+        import re
+        path_match = re.search(r'"([^"]+)"', cmd_stripped) or re.search(r'(/\S+)', cmd_stripped.split("stat")[1])
+        filepath = path_match.group(1) if path_match else None
+        if filepath:
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    dest = os.path.join(tmp, "file")
+                    r = subprocess.run(
+                        ["docker", "cp", f"{docker_id}:{filepath}", dest],
+                        capture_output=True, timeout=15
+                    )
+                    if r.returncode != 0:
+                        return "0"
+                    return str(os.path.getsize(dest))
+            except Exception:
+                return "0"
+
+    # grep
+    if "grep " in cmd_stripped:
+        import re
+        path_match = re.search(r'(/data\S+)', cmd_stripped)
+        filepath = path_match.group(1) if path_match else None
+        pattern = re.search(r"'([^']+)'", cmd_stripped)
+        if filepath and pattern:
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    dest = os.path.join(tmp, "file")
+                    subprocess.run(
+                        ["docker", "cp", f"{docker_id}:{filepath}", dest],
+                        capture_output=True, timeout=15
+                    )
+                    if os.path.exists(dest):
+                        with open(dest, "r", errors="replace") as f:
+                            for line in f:
+                                if re.match(pattern.group(1), line):
+                                    key_val = line.strip().split("=", 1)
+                                    return key_val[1] if len(key_val) > 1 else line.strip()
+                return ""
+            except Exception:
+                return ""
+
+    # du / for - world listing
+    if "du " in cmd_stripped or "for " in cmd_stripped:
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                dest = os.path.join(tmp, "data")
+                subprocess.run(
+                    ["docker", "cp", f"{docker_id}:/data/.", dest],
+                    capture_output=True, timeout=30
+                )
+                if not os.path.exists(dest):
+                    return ""
+                result = []
+                for entry in os.listdir(dest):
+                    if entry.startswith("world") and os.path.isdir(os.path.join(dest, entry)):
+                        size_proc = subprocess.run(
+                            ["du", "-sh", os.path.join(dest, entry)],
+                            capture_output=True, text=True, timeout=10
+                        )
+                        size = size_proc.stdout.split("\t")[0] if size_proc.stdout else "?"
+                        result.append(f"{entry}|{size}")
+                return "\n".join(result)
+        except Exception:
+            return ""
+
+    # rm / mkdir / mv → need container running
+    if any(x in cmd_stripped for x in ["rm ", "mkdir ", "mv "]):
+        raise RuntimeError("Cette opération nécessite de démarrer le conteneur (suppression/création de dossier)")
+
+    return ""
+
+
 def _docker_write(docker_id: str, path: str, content: str):
-    """Écrit du contenu dans un fichier à l'intérieur du conteneur."""
+    """Écrit du contenu dans un fichier à l'intérieur du conteneur.
+    Fonctionne que le conteneur soit allumé ou éteint."""
     import base64
     client = docker_manager._get_docker_client()
     if not client:
         raise RuntimeError("Docker non disponible")
     try:
         container = client.containers.get(docker_id)
-        # Encode en base64 pour éviter les problèmes d'échappement
-        b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
-        container.exec_run(["sh", "-c", f"echo '{b64}' | base64 -d > {path}"])
+
+        if container.status == "running":
+            b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+            container.exec_run(["sh", "-c", f"echo '{b64}' | base64 -d > {path}"])
+        else:
+            # Conteneur arrêté → docker cp
+            import subprocess, tempfile, os
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".tmp", delete=False) as f:
+                f.write(content)
+                tmp_path = f.name
+            try:
+                subprocess.run(
+                    ["docker", "cp", tmp_path, f"{docker_id}:{path}"],
+                    capture_output=True, timeout=15, check=True
+                )
+            finally:
+                os.unlink(tmp_path)
+
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Erreur docker cp write: {e}")
+        raise RuntimeError(f"Erreur d'écriture: {e}")
     except Exception as e:
         logger.error(f"Erreur docker write: {e}")
         raise RuntimeError(f"Erreur d'écriture: {e}")
