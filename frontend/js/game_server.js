@@ -174,6 +174,29 @@ const GameServer = {
                         </select>
                         <input type="text" class="form-input" id="server-version-custom" placeholder="Ex: 1.12.2, 23w13a (snapshot)..." style="display:none;margin-top:8px;" />
                     </div>
+
+                    <!-- Choix modpack (affiché pour Forge/Fabric/NeoForge/Quilt) -->
+                    <div id="modpack-choice-group" style="display:none;">
+                        <label class="form-label">Mode d'installation</label>
+                        <div style="display:flex;gap:8px;margin-bottom:12px;">
+                            <button type="button" id="modpack-mode-blank" class="btn btn-primary btn-sm" onclick="GameServer.setModpackMode('blank')" style="flex:1;padding:10px;">
+                                🗂️ Serveur vierge<br><span style="font-size:10px;font-weight:400;opacity:0.8;">J'ajouterai les mods après</span>
+                            </button>
+                            <button type="button" id="modpack-mode-modpack" class="btn btn-secondary btn-sm" onclick="GameServer.setModpackMode('modpack')" style="flex:1;padding:10px;">
+                                📦 Modpack CurseForge<br><span style="font-size:10px;font-weight:400;opacity:0.8;">Choisir un modpack pré-fait</span>
+                            </button>
+                        </div>
+                        <div id="modpack-search-area" style="display:none;">
+                            <div style="display:flex;gap:6px;margin-bottom:8px;">
+                                <input id="modpack-search-q" class="form-input" placeholder="Rechercher un modpack (ex: RLCraft, All the Mods)..." style="flex:1;" onkeydown="if(event.key==='Enter')GameServer.searchModpacks()" />
+                                <button class="btn btn-primary btn-sm" onclick="GameServer.searchModpacks()">🔍</button>
+                            </div>
+                            <div id="modpack-results" style="max-height:200px;overflow-y:auto;"></div>
+                            <div id="modpack-selected" style="display:none;background:linear-gradient(135deg,rgba(34,197,94,0.1),rgba(16,185,129,0.05));border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:10px;margin-top:8px;">
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="form-group" id="custom-image-group" style="display: none;">
                         <label class="form-label">Image Docker</label>
                         <input type="text" class="form-input" id="server-custom-image" placeholder="mon-image:latest" />
@@ -400,6 +423,12 @@ const GameServer = {
     /**
      * Met à jour les champs quand on change de jeu.
      */
+    _selectedModpackId: null,
+    _modpackMode: 'blank', // 'blank' or 'modpack'
+
+    /**
+     * Met à jour les champs quand on change de jeu.
+     */
     onGameChange() {
         const select = document.getElementById('server-game-type');
         if (!select) return;
@@ -432,6 +461,101 @@ const GameServer = {
         const customGroup = document.getElementById('custom-image-group');
         if (customGroup) {
             customGroup.style.display = gameType === 'custom' ? 'block' : 'none';
+        }
+
+        // Gérer l'affichage du choix modpack
+        this._updateModpackVisibility();
+
+        // Écouter les changements de type serveur
+        const serverTypeEl = document.getElementById('server-type-select');
+        if (serverTypeEl) {
+            serverTypeEl.onchange = () => this._updateModpackVisibility();
+        }
+    },
+
+    _updateModpackVisibility() {
+        const serverTypeEl = document.getElementById('server-type-select');
+        const modpackGroup = document.getElementById('modpack-choice-group');
+        const gameType = document.getElementById('server-game-type')?.value;
+        if (!modpackGroup) return;
+
+        const moddableTypes = ['FORGE', 'NEOFORGE', 'FABRIC', 'QUILT'];
+        const serverType = serverTypeEl?.value || '';
+        const show = gameType === 'minecraft' && moddableTypes.includes(serverType);
+        modpackGroup.style.display = show ? 'block' : 'none';
+
+        // Reset si caché
+        if (!show) {
+            this._selectedModpackId = null;
+            this._modpackMode = 'blank';
+        }
+    },
+
+    setModpackMode(mode) {
+        this._modpackMode = mode;
+        const blankBtn = document.getElementById('modpack-mode-blank');
+        const modpackBtn = document.getElementById('modpack-mode-modpack');
+        const searchArea = document.getElementById('modpack-search-area');
+        const selectedArea = document.getElementById('modpack-selected');
+
+        if (blankBtn) {
+            blankBtn.className = mode === 'blank' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
+        }
+        if (modpackBtn) {
+            modpackBtn.className = mode === 'modpack' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
+        }
+        if (searchArea) {
+            searchArea.style.display = mode === 'modpack' ? 'block' : 'none';
+        }
+        if (selectedArea && mode === 'blank') {
+            selectedArea.style.display = 'none';
+            this._selectedModpackId = null;
+        }
+    },
+
+    async searchModpacks() {
+        const q = document.getElementById('modpack-search-q')?.value?.trim();
+        if (!q) return;
+        const el = document.getElementById('modpack-results');
+        if (!el) return;
+        el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px;">⏳ Recherche sur CurseForge...</div>';
+
+        const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=modpacks`);
+        if (!r || !r.ok) { el.innerHTML = '<div style="color:#ef4444;font-size:12px;">❌ Erreur CurseForge</div>'; return; }
+        const data = await r.json();
+        const mods = data.mods || [];
+        if (mods.length === 0) { el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">Aucun résultat</div>'; return; }
+
+        el.innerHTML = mods.map(m => {
+            const dl = m.downloads > 1000000 ? `${(m.downloads/1000000).toFixed(1)}M` : m.downloads > 1000 ? `${Math.round(m.downloads/1000)}k` : m.downloads;
+            return `
+            <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='var(--bg-secondary)'" onclick="GameServer.selectModpack(${m.id}, '${(m.name||'').replace(/'/g,"\\'")}', '${m.icon_url||''}')">
+                <img src="${m.icon_url||''}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;" onerror="this.style.display='none'" />
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.name}</div>
+                    <div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.summary||''}</div>
+                </div>
+                <span style="font-size:10px;color:var(--text-muted);white-space:nowrap;">📥 ${dl}</span>
+            </div>`;
+        }).join('');
+    },
+
+    selectModpack(id, name, iconUrl) {
+        this._selectedModpackId = id;
+        const el = document.getElementById('modpack-selected');
+        const results = document.getElementById('modpack-results');
+        if (results) results.innerHTML = '';
+        if (el) {
+            el.style.display = 'block';
+            el.innerHTML = `
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <img src="${iconUrl}" style="width:32px;height:32px;border-radius:6px;" onerror="this.style.display='none'" />
+                    <div style="flex:1;">
+                        <div style="font-size:13px;font-weight:600;color:var(--accent-green);">✅ ${name}</div>
+                        <div style="font-size:10px;color:var(--text-muted);">ID: ${id} — sera installé automatiquement au démarrage</div>
+                    </div>
+                    <button class="btn btn-secondary btn-sm" onclick="GameServer._selectedModpackId=null;this.parentElement.parentElement.style.display='none'" style="font-size:10px;">✕</button>
+                </div>`;
         }
     },
 
@@ -1147,6 +1271,18 @@ const GameServer = {
         if (gameType === 'custom' && customImage) {
             body.custom_image = customImage;
         }
+        // Ajouter le modpack CurseForge si sélectionné
+        if (this._selectedModpackId) {
+            body.cf_modpack_id = this._selectedModpackId;
+        }
+
+        // Adapter le message de chargement
+        const loadingEl = document.getElementById('create-loading');
+        if (loadingEl) {
+            loadingEl.textContent = this._selectedModpackId
+                ? '⏳ Création du serveur + téléchargement du modpack... Ça peut prendre plusieurs minutes.'
+                : '⏳ Téléchargement de l\'image Docker... Ça peut prendre quelques minutes la première fois.';
+        }
 
         const response = await Auth.apiCall('/api/servers/', {
             method: 'POST',
@@ -1157,6 +1293,8 @@ const GameServer = {
         document.getElementById('create-buttons').style.display = '';
 
         if (response && response.ok) {
+            this._selectedModpackId = null;
+            this._modpackMode = 'blank';
             this.hideCreateModal();
             await this.refreshServers();
         } else if (response) {

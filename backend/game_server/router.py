@@ -45,6 +45,7 @@ class CreateServerRequest(BaseModel):
     port: Optional[int] = None
     memory_mb: Optional[int] = None
     custom_image: Optional[str] = None
+    cf_modpack_id: Optional[int] = None  # ID CurseForge pour installer un modpack
 
 
 class ServerResponse(BaseModel):
@@ -169,6 +170,7 @@ def create_server(
             version=request.version,
             custom_image=request.custom_image,
             server_type=request.server_type,
+            cf_modpack_id=request.cf_modpack_id,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))

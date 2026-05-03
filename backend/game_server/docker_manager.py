@@ -6,6 +6,7 @@ Chaque jeu a sa propre image Docker, ses ports et ses variables d'environnement.
 """
 
 import logging
+import os
 import socket
 
 from backend.config import settings
@@ -133,6 +134,7 @@ def create_game_server(
     version: str = "LATEST",
     custom_image: str = None,
     server_type: str = "VANILLA",
+    cf_modpack_id: int = None,
 ) -> dict:
     """
     Crée un conteneur Docker pour n'importe quel jeu supporté.
@@ -145,6 +147,7 @@ def create_game_server(
         version:      Version du jeu (si supporté par le jeu)
         custom_image: Image Docker personnalisée (pour game_type="custom")
         server_type:  Variante du serveur (VANILLA, PAPER, FORGE, FABRIC, etc.)
+        cf_modpack_id: ID CurseForge du modpack (si applicable)
     """
     client = _get_docker_client()
     if not client:
@@ -174,6 +177,14 @@ def create_game_server(
     # Pour Minecraft Java, utiliser le server_type (PAPER, FORGE, etc.)
     if game_type == "minecraft" and server_type:
         env["TYPE"] = server_type.upper()
+
+    # Support modpack CurseForge : l'image itzg/minecraft-server gère tout
+    if cf_modpack_id and game_type == "minecraft":
+        env["CF_SERVER_MOD"] = str(cf_modpack_id)
+        env["CF_API_KEY"] = os.environ.get("CURSEFORGE_API_KEY", "")
+        # Le type sera auto-détecté par le modpack (Forge/Fabric)
+        # mais on le force si l'utilisateur l'a choisi
+        logger.info(f"Modpack CurseForge #{cf_modpack_id} sera installé")
 
     # Ajouter la version si le jeu le supporte
     if game_config.get("version_env") and version:
