@@ -44,13 +44,14 @@ class InstallModRequest(BaseModel):
 @router.get("/search")
 def search_mods(
     q: str = Query(..., min_length=2, description="Terme de recherche"),
-    category: str = Query("mods", description="Catégorie: mods, modpacks, textures, worlds"),
+    category: str = Query("mods", description="Catégorie: mods, modpacks, textures, worlds, datapacks"),
+    game_version: Optional[str] = Query(None, description="Version MC pour filtrer"),
     page: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
 ):
     """Recherche des mods sur CurseForge."""
     try:
-        result = curseforge.search_mods(query=q, category=category, page=page)
+        result = curseforge.search_mods(query=q, category=category, page=page, game_version=game_version)
         return result
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))

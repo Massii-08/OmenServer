@@ -39,12 +39,13 @@ class InstallPluginRequest(BaseModel):
 @router.get("/search")
 def search_plugins(
     q: str = Query(..., min_length=2, description="Terme de recherche"),
+    game_version: str = Query(None, description="Version MC pour filtrer"),
     limit: int = Query(20, ge=1, le=50),
     current_user: User = Depends(get_current_user),
 ):
     """Recherche des plugins sur Modrinth."""
     try:
-        return plugin_manager.search_plugins(query=q, limit=limit)
+        return plugin_manager.search_plugins(query=q, limit=limit, game_version=game_version)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 

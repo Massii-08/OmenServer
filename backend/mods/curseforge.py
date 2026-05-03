@@ -57,6 +57,7 @@ def search_mods(
     page: int = 0,
     page_size: int = 20,
     sort_field: int = 2,  # 2 = Popularity
+    game_version: str = None,
 ) -> dict:
     """
     Recherche des mods sur CurseForge.
@@ -84,6 +85,8 @@ def search_mods(
         "index": page * page_size,
         "pageSize": page_size,
     }
+    if game_version and game_version not in ('LATEST', ''):
+        params['gameVersion'] = game_version
 
     try:
         r = requests.get(f"{CF_BASE_URL}/v1/mods/search", headers=_headers(), params=params, timeout=10)

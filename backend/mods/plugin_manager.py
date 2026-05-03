@@ -21,13 +21,15 @@ MODRINTH_API = "https://api.modrinth.com/v2"
 USER_AGENT = "OmenServer/1.0 (contact@omenserver.local)"
 
 
-def search_plugins(query: str, limit: int = 20) -> dict:
+def search_plugins(query: str, limit: int = 20, game_version: str = None) -> dict:
     """
     Recherche des plugins sur Modrinth.
     Filtre par type 'plugin' et loaders Bukkit/Spigot/Paper.
     """
     try:
         facets = '[["project_type:plugin"],["categories:paper","categories:spigot","categories:bukkit","categories:purpur","categories:folia"]]'
+        if game_version and game_version not in ('LATEST', ''):
+            facets = f'[["project_type:plugin"],["categories:paper","categories:spigot","categories:bukkit","categories:purpur","categories:folia"],["versions:{game_version}"]]'
         r = httpx.get(
             f"{MODRINTH_API}/search",
             params={

@@ -51,6 +51,10 @@ const ServerView = {
     },
 
     _sidebarItems() {
+        const st = (this.serverData?.server_type || 'VANILLA').toUpperCase();
+        const isPlugin = ['PAPER','SPIGOT','BUKKIT','PURPUR','FOLIA'].includes(st);
+        const isMod = ['FORGE','FABRIC','NEOFORGE','QUILT'].includes(st);
+
         const tabs = [
             {id:'dashboard',icon:'📊',label:'Tableau de bord'},
             {id:'console',icon:'💻',label:'Console'},
@@ -62,13 +66,23 @@ const ServerView = {
             {id:'monitoring',icon:'📈',label:'Monitoring temps réel'},
             {id:'history',icon:'📜',label:'Historique'},
             {id:'players',icon:'👥',label:'Joueurs'},
-            {id:'mods',icon:'🧩',label:'Mods & Plugins'},
-            {id:'datapacks',icon:'📜',label:'Datapacks'},
-            {id:'worlds',icon:'🌍',label:'Mondes'},
-            {id:'database',icon:'🗄️',label:'Base de données'},
-            {id:'version',icon:'🏷️',label:'Version'},
-            {id:'notifications',icon:'🔔',label:'Notifications'},
         ];
+
+        // Afficher Plugins seulement pour Paper/Spigot/Bukkit/Purpur
+        if (isPlugin) {
+            tabs.push({id:'mods',icon:'🔌',label:'Plugins'});
+        }
+        // Afficher Mods seulement pour Forge/Fabric/NeoForge/Quilt
+        if (isMod) {
+            tabs.push({id:'mods',icon:'🧩',label:'Mods'});
+        }
+        // Datapacks pour tous (Vanilla inclus)
+        tabs.push({id:'datapacks',icon:'📜',label:'Datapacks'});
+        tabs.push({id:'worlds',icon:'🌍',label:'Mondes'});
+        tabs.push({id:'database',icon:'🗄️',label:'Base de données'});
+        tabs.push({id:'version',icon:'🏷️',label:'Version'});
+        tabs.push({id:'notifications',icon:'🔔',label:'Notifications'});
+
         return tabs.map(t => `
             <a class="sv-tab ${this.currentTab===t.id?'active':''}" onclick="ServerView.switchTab('${t.id}')" style="display:flex;align-items:center;gap:10px;padding:10px 20px;cursor:pointer;color:${this.currentTab===t.id?'var(--accent-blue)':'var(--text-primary)'};background:${this.currentTab===t.id?'rgba(59,130,246,0.1)':'transparent'};font-size:13px;font-weight:${this.currentTab===t.id?'600':'400'};border-left:3px solid ${this.currentTab===t.id?'var(--accent-blue)':'transparent'};transition:all .15s;">
                 <span>${t.icon}</span>${t.label}
@@ -459,17 +473,35 @@ const ServerView = {
     async _deleteTask(id) { await Auth.apiCall(`/api/scheduler/${id}`,{method:'DELETE'}); this._loadTasks(); },
 
     _modsTab() {
-        this._modMode = this._modMode || 'plugins';
-        return `<h2>🧩 Mods & Plugins</h2>
-        <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">Installez des plugins (Spigot/Paper) ou des mods (Forge/Fabric)</p>
+        const st = (this.serverData?.server_type || 'VANILLA').toUpperCase();
+        const isPlugin = ['PAPER','SPIGOT','BUKKIT','PURPUR','FOLIA'].includes(st);
+        const isMod = ['FORGE','FABRIC','NEOFORGE','QUILT'].includes(st);
+        const ver = this.serverData?.version || '';
 
-        <!-- Sous-navigation -->
+        // Default mode based on server type
+        if (!this._modMode) this._modMode = isPlugin ? 'plugins' : 'mods';
+
+        const title = isPlugin ? '🔌 Plugins' : '🧩 Mods';
+        const desc = isPlugin
+            ? `Installez des plugins pour ${st}${ver && ver !== 'LATEST' ? ` (MC ${ver})` : ''}`
+            : `Installez des mods pour ${st}${ver && ver !== 'LATEST' ? ` (MC ${ver})` : ''}`;
+
+        let buttons = '';
+        if (isPlugin) {
+            buttons = `
+            <button class="btn btn-sm ${this._modMode==='plugins'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='plugins';ServerView.switchTab('mods')">🔌 Rechercher</button>
+            <button class="btn btn-sm ${this._modMode==='installed'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='installed';ServerView.switchTab('mods')">📦 Installés</button>`;
+        } else {
+            buttons = `
+            <button class="btn btn-sm ${this._modMode==='mods'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='mods';ServerView.switchTab('mods')">🧩 Rechercher</button>
+            <button class="btn btn-sm ${this._modMode==='installed'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='installed';ServerView.switchTab('mods')">📦 Installés</button>`;
+        }
+
+        return `<h2>${title}</h2>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">${desc}</p>
         <div style="display:flex;gap:4px;margin-bottom:16px;background:var(--bg-secondary);padding:4px;border-radius:8px;width:fit-content;">
-            <button class="btn btn-sm ${this._modMode==='plugins'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='plugins';ServerView.switchTab('mods')">🔌 Plugins</button>
-            <button class="btn btn-sm ${this._modMode==='installed'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='installed';ServerView.switchTab('mods')">📦 Installés</button>
-            <button class="btn btn-sm ${this._modMode==='mods'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='mods';ServerView.switchTab('mods')">🧩 Mods (CurseForge)</button>
+            ${buttons}
         </div>
-
         <div id="sv-mods-content">${this._modModeContent()}</div>`;
     },
 
@@ -498,7 +530,9 @@ const ServerView = {
         if (!el) return;
         el.innerHTML = '<div style="color:var(--text-muted)">⏳ Recherche sur Modrinth...</div>';
 
-        const r = await Auth.apiCall(`/api/plugins/search?q=${encodeURIComponent(q)}`);
+        const ver = this.serverData?.version || '';
+        const verParam = ver && ver !== 'LATEST' ? `&game_version=${encodeURIComponent(ver)}` : '';
+        const r = await Auth.apiCall(`/api/plugins/search?q=${encodeURIComponent(q)}${verParam}`);
         if (!r || !r.ok) { el.innerHTML = '<div style="color:#e74c3c">❌ Erreur de connexion à Modrinth</div>'; return; }
         const data = await r.json();
         const plugins = data.plugins || [];
@@ -607,13 +641,11 @@ const ServerView = {
     // ============ MODS (CurseForge) ============
 
     _modsSearch() {
+        const ver = this.serverData?.version || '';
+        const verHint = ver && ver !== 'LATEST' ? ` compatible MC ${ver}` : '';
         return `
         <div style="display:flex;gap:8px;margin-bottom:12px;">
-            <input id="sv-mods-q" class="form-input" placeholder="Rechercher un mod (Forge/Fabric)..." style="flex:1;" onkeydown="if(event.key==='Enter')ServerView._searchMods()" />
-            <select id="sv-mods-cat" class="form-input" style="width:130px;">
-                <option value="mods">🧩 Mods</option>
-                <option value="modpacks">📦 Modpacks</option>
-            </select>
+            <input id="sv-mods-q" class="form-input" placeholder="Rechercher un mod${verHint}..." style="flex:1;" onkeydown="if(event.key==='Enter')ServerView._searchMods()" />
             <button class="btn btn-primary" onclick="ServerView._searchMods()">🔍</button>
         </div>
         <div id="sv-mods-results"><div style="color:var(--text-muted)">🧩 Recherchez un mod sur CurseForge</div></div>`;
@@ -621,12 +653,14 @@ const ServerView = {
 
     async _searchMods() {
         const q = document.getElementById('sv-mods-q')?.value?.trim();
-        const cat = document.getElementById('sv-mods-cat')?.value || 'mods';
+        const cat = 'mods';
         if (!q) return;
         const el = document.getElementById('sv-mods-results');
         if (!el) return;
         el.innerHTML = '<div style="color:var(--text-muted)">⏳ Recherche sur CurseForge...</div>';
-        const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=${cat}`);
+        const ver = this.serverData?.version || '';
+        const verParam = ver && ver !== 'LATEST' ? `&game_version=${encodeURIComponent(ver)}` : '';
+        const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=${cat}${verParam}`);
         if (!r||!r.ok) { el.innerHTML='<div style="color:#e74c3c">❌ Erreur (clé CurseForge requise)</div>'; return; }
         const data = await r.json();
         const mods = data.mods||[];
@@ -692,7 +726,9 @@ const ServerView = {
         if (!el) return;
         el.innerHTML = '<div style="color:var(--text-muted)">⏳ Recherche sur CurseForge...</div>';
 
-        const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=datapacks`);
+        const ver = this.serverData?.version || '';
+        const verParam = ver && ver !== 'LATEST' ? `&game_version=${encodeURIComponent(ver)}` : '';
+        const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=datapacks${verParam}`);
         if (!r || !r.ok) { el.innerHTML = '<div style="color:#e74c3c">❌ Erreur CurseForge</div>'; return; }
         const data = await r.json();
         const mods = data.mods || [];
