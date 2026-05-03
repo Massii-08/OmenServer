@@ -63,6 +63,8 @@ const ServerView = {
             {id:'history',icon:'📜',label:'Historique'},
             {id:'players',icon:'👥',label:'Joueurs'},
             {id:'mods',icon:'🧩',label:'Mods & Plugins'},
+            {id:'worlds',icon:'🌍',label:'Mondes'},
+            {id:'database',icon:'🗄️',label:'Base de données'},
             {id:'version',icon:'🏷️',label:'Version'},
             {id:'notifications',icon:'🔔',label:'Notifications'},
         ];
@@ -102,6 +104,8 @@ const ServerView = {
             case 'history': return SvHistory.render(this.serverId);
             case 'notifications': return this._notificationsTab();
             case 'version': return this._versionTab();
+            case 'worlds': return this._worldsTab();
+            case 'database': return this._databaseTab();
             default: return '<p>Section en cours de développement</p>';
         }
     },
@@ -665,6 +669,232 @@ const ServerView = {
         if (this._ws) { this._ws.close(); this._ws = null; }
         this.serverId = null;
         this.serverData = null;
+    },
+
+    // --- Base de données MySQL ---
+    _databaseTab() {
+        setTimeout(() => this._loadDatabase(), 50);
+        return `
+        <h2>🗄️ Base de données</h2>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Créez et gérez une base de données MySQL/MariaDB pour vos plugins</p>
+        <div id="sv-db-content"><div style="text-align:center;padding:30px;color:var(--text-muted);">⏳ Chargement...</div></div>`;
+    },
+
+    async _loadDatabase() {
+        const el = document.getElementById('sv-db-content');
+        if (!el) return;
+
+        const r = await Auth.apiCall(`/api/servers/${this.serverId}/database`);
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:#ef4444;">❌ Erreur</div>`; return; }
+        const data = await r.json();
+
+        if (!data.exists) {
+            // Formulaire de création
+            el.innerHTML = `
+            <div style="background:linear-gradient(135deg, rgba(139,92,246,0.1), rgba(59,130,246,0.05));padding:20px;border-radius:10px;margin-bottom:16px;border:1px solid rgba(139,92,246,0.2);">
+                <div style="font-size:14px;font-weight:600;margin-bottom:8px;">ℹ️ Pas de base de données</div>
+                <div style="font-size:13px;color:var(--text-muted);">Créez une base de données MariaDB pour les plugins qui en ont besoin (LuckPerms, AuthMe, etc.)</div>
+            </div>
+            <div class="card">
+                <h3 style="margin:0 0 16px;">➕ Créer une base de données</h3>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                    <div>
+                        <label class="form-label">Nom de la base</label>
+                        <input id="sv-db-name" class="form-input" value="minecraft" />
+                    </div>
+                    <div>
+                        <label class="form-label">Utilisateur</label>
+                        <input id="sv-db-user" class="form-input" value="mc_user" />
+                    </div>
+                    <div>
+                        <label class="form-label">Mot de passe</label>
+                        <input id="sv-db-pass" class="form-input" type="password" value="mc_pass" />
+                    </div>
+                    <div>
+                        <label class="form-label">Mot de passe root</label>
+                        <input id="sv-db-root" class="form-input" type="password" value="root_pass" />
+                    </div>
+                </div>
+                <div style="margin-top:16px;display:flex;align-items:center;gap:12px;">
+                    <button class="btn btn-primary" onclick="ServerView._createDB()">🗄️ Créer la base de données</button>
+                    <span id="sv-db-msg" style="font-size:13px;"></span>
+                </div>
+            </div>`;
+        } else {
+            // Affichage statut
+            const isRunning = data.status === 'running';
+            el.innerHTML = `
+            <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+                    <div>
+                        <div style="font-size:16px;font-weight:700;">🗄️ MariaDB</div>
+                        <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${data.container_name}</div>
+                    </div>
+                    <span class="status-badge ${isRunning ? 'online' : 'offline'}">
+                        <span class="status-dot ${isRunning ? 'online' : 'offline'}"></span>
+                        ${isRunning ? 'En ligne' : 'Arrêté'}
+                    </span>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                    <div style="background:var(--bg-card);padding:12px;border-radius:8px;">
+                        <div style="font-size:11px;color:var(--text-muted);">🏠 Hôte</div>
+                        <div style="font-family:monospace;font-size:14px;font-weight:600;margin-top:4px;">${data.host}</div>
+                    </div>
+                    <div style="background:var(--bg-card);padding:12px;border-radius:8px;">
+                        <div style="font-size:11px;color:var(--text-muted);">🔌 Port</div>
+                        <div style="font-family:monospace;font-size:14px;font-weight:600;margin-top:4px;">${data.port}</div>
+                    </div>
+                </div>
+
+                <div style="margin-top:16px;display:flex;gap:8px;align-items:center;">
+                    <button class="btn btn-danger btn-sm" onclick="ServerView._confirmDeleteDB()">🗑️ Supprimer</button>
+                    <span id="sv-db-msg" style="font-size:13px;"></span>
+                </div>
+                <div id="sv-db-del-confirm" style="display:none;background:rgba(239,68,68,0.1);border:2px solid #ef4444;border-radius:8px;padding:12px;margin-top:8px;">
+                    <div style="font-size:13px;color:#ef4444;font-weight:600;margin-bottom:8px;">⚠️ Supprimer la base de données ?</div>
+                    <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Toutes les données seront perdues définitivement.</div>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('sv-db-del-confirm').style.display='none'">Annuler</button>
+                        <button class="btn btn-sm" style="background:#ef4444;color:white;" onclick="ServerView._deleteDB()">🗑️ Oui, supprimer</button>
+                    </div>
+                </div>
+            </div>
+
+            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
+                <div style="font-size:13px;color:var(--text-muted);">
+                    💡 <strong>Configuration plugin :</strong> Utilisez ces infos dans la config de vos plugins MySQL. Ex pour LuckPerms :<br>
+                    <code style="font-size:12px;color:var(--accent-blue);">address: ${data.host}:${data.port}</code>
+                </div>
+            </div>`;
+        }
+    },
+
+    async _createDB() {
+        const msg = document.getElementById('sv-db-msg');
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Création (peut prendre un moment)...'; }
+        const r = await Auth.apiCall(`/api/servers/${this.serverId}/database`, {
+            method: 'POST',
+            body: JSON.stringify({
+                db_name: document.getElementById('sv-db-name')?.value || 'minecraft',
+                db_user: document.getElementById('sv-db-user')?.value || 'mc_user',
+                db_password: document.getElementById('sv-db-pass')?.value || 'mc_pass',
+                root_password: document.getElementById('sv-db-root')?.value || 'root_pass',
+            })
+        });
+        if (r && r.ok) {
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = '✅ Base créée !'; }
+            setTimeout(() => this._loadDatabase(), 1500);
+        } else {
+            if (msg) { msg.style.color = '#ef4444'; msg.textContent = '❌ Erreur'; }
+        }
+    },
+
+    _confirmDeleteDB() {
+        document.getElementById('sv-db-del-confirm').style.display = 'block';
+    },
+
+    async _deleteDB() {
+        const msg = document.getElementById('sv-db-msg');
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Suppression...'; }
+        const r = await Auth.apiCall(`/api/servers/${this.serverId}/database`, { method: 'DELETE' });
+        if (r && r.ok) {
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = '✅ Supprimée'; }
+            setTimeout(() => this._loadDatabase(), 1500);
+        } else {
+            if (msg) { msg.style.color = '#ef4444'; msg.textContent = '❌ Erreur'; }
+        }
+    },
+
+    // --- Gestion des mondes ---
+    _worldsTab() {
+        setTimeout(() => this._loadWorlds(), 50);
+        return `
+        <h2>🌍 Gestion des mondes</h2>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Gérez les mondes de votre serveur Minecraft</p>
+        <div id="sv-worlds-content"><div style="text-align:center;padding:30px;color:var(--text-muted);">⏳ Chargement...</div></div>`;
+    },
+
+    async _loadWorlds() {
+        const el = document.getElementById('sv-worlds-content');
+        if (!el) return;
+
+        const r = await Auth.apiCall(`/api/servers/${this.serverId}/worlds`);
+        if (!r || !r.ok) {
+            el.innerHTML = `<div style="color:#ef4444;padding:20px;">❌ Impossible de charger les mondes. Le serveur doit être en cours d'exécution.</div>`;
+            return;
+        }
+
+        const data = await r.json();
+        const worlds = data.worlds || [];
+        const seed = data.seed || '(non défini)';
+
+        const worldIcons = {
+            'world': '🌍 Overworld',
+            'world_nether': '🔥 Nether',
+            'world_the_end': '🌌 End',
+        };
+
+        el.innerHTML = `
+        <!-- Seed -->
+        <div style="background:linear-gradient(135deg, rgba(34,197,94,0.1), rgba(16,185,129,0.05));padding:16px;border-radius:10px;margin-bottom:16px;border:1px solid rgba(34,197,94,0.2);">
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">🌱 Seed du monde</div>
+            <div style="font-family:monospace;font-size:16px;font-weight:600;color:var(--accent-green);">${seed || 'Aléatoire'}</div>
+        </div>
+
+        <!-- Liste des mondes -->
+        <div style="font-weight:600;margin-bottom:12px;">📂 Mondes (${worlds.length})</div>
+        ${worlds.length === 0 ? `
+            <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;color:var(--text-muted);text-align:center;">
+                Aucun monde trouvé. Démarrez le serveur pour générer les mondes.
+            </div>
+        ` : worlds.map(w => {
+            const label = worldIcons[w.name] || `📁 ${w.name}`;
+            return `
+            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">
+                <div>
+                    <div style="font-size:14px;font-weight:600;">${label}</div>
+                    <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">Dossier: ${w.name}/ · Taille: ${w.size}</div>
+                </div>
+                <div style="display:flex;gap:6px;align-items:center;">
+                    <span id="sv-w-msg-${w.name}" style="font-size:12px;"></span>
+                    <button class="btn btn-secondary btn-sm" onclick="ServerView._confirmResetWorld('${w.name}')" style="font-size:12px;">🗑️ Réinitialiser</button>
+                </div>
+            </div>
+            <div id="sv-w-confirm-${w.name}" style="display:none;background:rgba(239,68,68,0.1);border:2px solid #ef4444;border-radius:10px;padding:12px;margin-bottom:8px;">
+                <div style="font-size:13px;color:#ef4444;font-weight:600;margin-bottom:8px;">⚠️ Supprimer le monde "${label}" ?</div>
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Tous les blocs, constructions et données seront perdus. Le monde sera regénéré au prochain démarrage.</div>
+                <div style="display:flex;gap:8px;">
+                    <button class="btn btn-secondary btn-sm" onclick="document.getElementById('sv-w-confirm-${w.name}').style.display='none'">Annuler</button>
+                    <button class="btn btn-sm" style="background:#ef4444;color:white;" onclick="ServerView._resetWorld('${w.name}')">🗑️ Oui, supprimer</button>
+                </div>
+            </div>`;
+        }).join('')}
+
+        <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;margin-top:16px;">
+            <div style="font-size:13px;color:var(--text-muted);">
+                💡 <strong>Astuce :</strong> Après la suppression d'un monde, redémarrez le serveur pour qu'il soit regénéré avec un nouveau seed (ou le même si défini dans les paramètres).
+            </div>
+        </div>`;
+    },
+
+    _confirmResetWorld(name) {
+        document.getElementById(`sv-w-confirm-${name}`).style.display = 'block';
+    },
+
+    async _resetWorld(name) {
+        document.getElementById(`sv-w-confirm-${name}`).style.display = 'none';
+        const msg = document.getElementById(`sv-w-msg-${name}`);
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳...'; }
+
+        const r = await Auth.apiCall(`/api/servers/${this.serverId}/worlds/${name}`, { method: 'DELETE' });
+        if (r && r.ok) {
+            const data = await r.json();
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = '✅ Supprimé'; }
+            setTimeout(() => this._loadWorlds(), 1500);
+        } else {
+            if (msg) { msg.style.color = '#ef4444'; msg.textContent = '❌ Erreur'; }
+        }
     },
 
     // --- Version / Type de serveur ---

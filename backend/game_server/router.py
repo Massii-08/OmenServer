@@ -61,6 +61,7 @@ class ServerResponse(BaseModel):
     docker_id: Optional[str]
     player_count: int = 0
     player_max: int = 20
+    jvm_flags: str = ""
 
     class Config:
         from_attributes = True
@@ -415,3 +416,230 @@ def update_resources(
         "memory_mb": server.memory_mb,
         "cpu_percent": server.cpu_percent,
     }
+
+
+class JvmFlagsRequest(BaseModel):
+    """Données pour changer les flags JVM."""
+    jvm_flags: str = ""
+
+
+@router.put("/{server_id}/jvm-flags")
+def update_jvm_flags(
+    server_id: int,
+    request: JvmFlagsRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Met à jour les flags JVM d'un serveur."""
+    server = db.query(GameServer).filter(GameServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Serveur non trouvé")
+
+    server.jvm_flags = request.jvm_flags
+    db.commit()
+
+    return {
+        "message": f"Flags JVM de '{server.name}' mis à jour ✅",
+        "jvm_flags": server.jvm_flags,
+        "note": "Redémarrez le serveur pour appliquer les changements.",
+    }
+
+
+# --- Gestion des mondes ---
+
+@router.get("/{server_id}/worlds")
+def list_worlds(
+    server_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Liste les mondes du serveur."""
+    server = db.query(GameServer).filter(GameServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Serveur non trouvé")
+    if not server.docker_id:
+        raise HTTPException(status_code=400, detail="Pas de conteneur Docker")
+
+    import docker
+    client = docker.from_env()
+    try:
+        container = client.containers.get(server.docker_id)
+        # Lister les dossiers de mondes
+        result = container.exec_run(
+            "sh -c 'for d in /data/world*; do if [ -d \"$d\" ]; then size=$(du -sh \"$d\" 2>/dev/null | cut -f1); echo \"$(basename $d)|$size\"; fi; done'",
+            demux=True
+        )
+        output = result.output[0].decode("utf-8", errors="replace") if result.output[0] else ""
+        worlds = []
+        for line in output.strip().split("\n"):
+            if "|" in line:
+                name, size = line.split("|", 1)
+                worlds.append({"name": name.strip(), "size": size.strip()})
+
+        # Lire le seed depuis server.properties
+        seed_result = container.exec_run(
+            "sh -c \"grep '^level-seed=' /data/server.properties | cut -d= -f2\"",
+            demux=True
+        )
+        seed = ""
+        if seed_result.output[0]:
+            seed = seed_result.output[0].decode("utf-8", errors="replace").strip()
+
+        return {"worlds": worlds, "seed": seed}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{server_id}/worlds/{world_name}")
+def reset_world(
+    server_id: int,
+    world_name: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Supprime/réinitialise un monde."""
+    server = db.query(GameServer).filter(GameServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Serveur non trouvé")
+    if not server.docker_id:
+        raise HTTPException(status_code=400, detail="Pas de conteneur Docker")
+
+    # Sécurité : le nom doit commencer par "world"
+    if not world_name.startswith("world"):
+        raise HTTPException(status_code=400, detail="Nom de monde invalide")
+
+    import docker
+    client = docker.from_env()
+    try:
+        container = client.containers.get(server.docker_id)
+        result = container.exec_run(f"rm -rf /data/{world_name}", demux=True)
+        return {"message": f"Monde '{world_name}' supprimé. Il sera regénéré au prochain démarrage."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Base de données MySQL ---
+
+class CreateDatabaseRequest(BaseModel):
+    """Données pour créer une base de données."""
+    db_name: str = "minecraft"
+    db_user: str = "mc_user"
+    db_password: str = "mc_pass"
+    root_password: str = "root_pass"
+
+
+@router.post("/{server_id}/database")
+def create_database(
+    server_id: int,
+    request: CreateDatabaseRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Crée un conteneur MySQL/MariaDB associé au serveur."""
+    server = db.query(GameServer).filter(GameServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Serveur non trouvé")
+
+    import docker
+    client = docker.from_env()
+
+    container_name = f"omen-mysql-{server.id}"
+
+    # Vérifier si déjà existant
+    try:
+        existing = client.containers.get(container_name)
+        return {"message": "Base de données déjà existante", "status": existing.status, "host": container_name, "port": 3306}
+    except Exception:
+        pass
+
+    try:
+        # Télécharger MariaDB
+        try:
+            client.images.get("mariadb:10")
+        except Exception:
+            client.images.pull("mariadb:10")
+
+        container = client.containers.create(
+            image="mariadb:10",
+            name=container_name,
+            environment={
+                "MYSQL_ROOT_PASSWORD": request.root_password,
+                "MYSQL_DATABASE": request.db_name,
+                "MYSQL_USER": request.db_user,
+                "MYSQL_PASSWORD": request.db_password,
+            },
+            ports={"3306/tcp": None},  # Port aléatoire
+            restart_policy={"Name": "unless-stopped"},
+            detach=True,
+        )
+        container.start()
+
+        return {
+            "message": f"Base de données '{request.db_name}' créée ✅",
+            "host": container_name,
+            "port": 3306,
+            "db_name": request.db_name,
+            "db_user": request.db_user,
+            "db_password": request.db_password,
+            "status": "running",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{server_id}/database")
+def get_database_status(
+    server_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Retourne le statut de la base de données du serveur."""
+    server = db.query(GameServer).filter(GameServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Serveur non trouvé")
+
+    import docker
+    client = docker.from_env()
+    container_name = f"omen-mysql-{server.id}"
+
+    try:
+        container = client.containers.get(container_name)
+        # Récupérer le port mappé
+        ports = container.attrs.get("NetworkSettings", {}).get("Ports", {})
+        mapped_port = None
+        if "3306/tcp" in ports and ports["3306/tcp"]:
+            mapped_port = ports["3306/tcp"][0].get("HostPort")
+
+        return {
+            "exists": True,
+            "status": container.status,
+            "host": "localhost",
+            "port": mapped_port or 3306,
+            "container_name": container_name,
+        }
+    except Exception:
+        return {"exists": False}
+
+
+@router.delete("/{server_id}/database")
+def delete_database(
+    server_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Supprime le conteneur MySQL du serveur."""
+    server = db.query(GameServer).filter(GameServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Serveur non trouvé")
+
+    import docker
+    client = docker.from_env()
+    container_name = f"omen-mysql-{server.id}"
+
+    try:
+        container = client.containers.get(container_name)
+        container.remove(force=True)
+        return {"message": "Base de données supprimée ✅"}
+    except Exception:
+        raise HTTPException(status_code=404, detail="Aucune base de données trouvée")
+

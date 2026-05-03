@@ -58,6 +58,10 @@ const App = {
         if (nameEl) nameEl.textContent = user.username;
         if (avatarEl) avatarEl.textContent = user.username.charAt(0).toUpperCase();
         if (roleEl) roleEl.textContent = user.is_admin ? 'Administrateur' : 'Utilisateur';
+
+        // Afficher le lien Utilisateurs seulement pour les admins
+        const navUsers = document.getElementById('nav-users');
+        if (navUsers) navUsers.style.display = user.is_admin ? '' : 'none';
     },
 
     /**
@@ -99,6 +103,10 @@ const App = {
 
             case 'settings':
                 this.renderSettings(content);
+                break;
+
+            case 'users':
+                this.renderUsers(content);
                 break;
 
             default:
@@ -360,51 +368,179 @@ const App = {
 
     // --- Gestion des utilisateurs ---
 
+    renderUsers(content) {
+        content.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+            <div>
+                <h1 style="margin:0;">👥 Gestion des utilisateurs</h1>
+                <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">Créer, modifier ou supprimer des comptes</p>
+            </div>
+            <button class="btn btn-secondary" onclick="App.navigateTo('hub')">← Retour au Hub</button>
+        </div>
+
+        <!-- Créer un utilisateur -->
+        <div class="card" style="margin-bottom:20px;">
+            <h3 style="margin:0 0 16px;">➕ Créer un compte</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end;">
+                <div>
+                    <label class="form-label">Nom d'utilisateur</label>
+                    <input id="new-user-name" class="form-input" placeholder="Ex: joueur123" />
+                </div>
+                <div>
+                    <label class="form-label">Mot de passe</label>
+                    <input id="new-user-pass" class="form-input" type="password" placeholder="Min. 4 caractères" />
+                </div>
+                <div>
+                    <label class="form-label">Rôle</label>
+                    <select id="new-user-role" class="form-input">
+                        <option value="player">🎮 Joueur</option>
+                        <option value="moderator">🔧 Modérateur</option>
+                        <option value="admin">👑 Admin</option>
+                        <option value="spectator">👀 Spectateur</option>
+                    </select>
+                </div>
+                <button class="btn btn-primary" onclick="App.createUser()" style="height:38px;">Créer</button>
+            </div>
+            <div id="create-user-msg" style="font-size:13px;margin-top:8px;"></div>
+        </div>
+
+        <!-- Liste des utilisateurs -->
+        <div class="card">
+            <h3 style="margin:0 0 16px;">📋 Utilisateurs</h3>
+            <div id="users-admin-list"><div style="text-align:center;padding:20px;color:var(--text-muted);">⏳ Chargement...</div></div>
+        </div>
+        `;
+        this._loadUsersAdmin();
+    },
+
+    async createUser() {
+        const name = document.getElementById('new-user-name')?.value?.trim();
+        const pass = document.getElementById('new-user-pass')?.value;
+        const role = document.getElementById('new-user-role')?.value || 'player';
+        const msg = document.getElementById('create-user-msg');
+        if (!name || !pass) { if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '\u274c Remplis tous les champs'; } return; }
+        if (pass.length < 4) { if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '\u274c Mot de passe trop court (min 4)'; } return; }
+
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '\u23f3 Cr\u00e9ation...'; }
+        const r = await Auth.apiCall('/api/auth/admin/create-user', {
+            method: 'POST', body: JSON.stringify({ username: name, password: pass, is_admin: role === 'admin' })
+        });
+        if (r && r.ok) {
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `\u2705 Utilisateur '${name}' cr\u00e9\u00e9 !`; }
+            document.getElementById('new-user-name').value = '';
+            document.getElementById('new-user-pass').value = '';
+            // Si le r\u00f4le n'est pas admin, on doit aussi changer le r\u00f4le
+            if (role !== 'admin' && role !== 'player') {
+                const data = await r.json();
+                await Auth.apiCall(`/api/auth/admin/users/${data.id}/role`, {
+                    method: 'PUT', body: JSON.stringify({ role })
+                });
+            }
+            this._loadUsersAdmin();
+        } else {
+            const err = r ? await r.json().catch(() => ({})) : {};
+            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `\u274c ${err.detail || 'Erreur'}`; }
+        }
+    },
+
+    async _loadUsersAdmin() {
+        const listEl = document.getElementById('users-admin-list');
+        if (!listEl) return;
+
+        const response = await Auth.apiCall('/api/auth/admin/users');
+        if (!response || !response.ok) { listEl.innerHTML = '<div style="color:#ef4444;">\u274c Erreur</div>'; return; }
+        const users = await response.json();
+        const currentUser = Auth.getUser();
+
+        const roleLabels = { admin: '\ud83d\udc51 Admin', moderator: '\ud83d\udd27 Mod\u00e9rateur', player: '\ud83c\udfae Joueur', spectator: '\ud83d\udc40 Spectateur' };
+
+        listEl.innerHTML = users.length === 0 ? '<div style="text-align:center;padding:20px;color:var(--text-muted);">Aucun utilisateur</div>' :
+            users.map(u => `
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border-color);">
+                <div style="display:flex;align-items:center;gap:12px;">
+                    <div style="width:36px;height:36px;border-radius:50%;background:${u.is_admin ? 'linear-gradient(135deg,#3b82f6,#8b5cf6)' : 'var(--bg-secondary)'};display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:${u.is_admin ? 'white' : 'var(--text-muted)'}">${u.username.charAt(0).toUpperCase()}</div>
+                    <div>
+                        <div style="font-weight:600;font-size:14px;">${u.username}</div>
+                        <div style="font-size:12px;color:var(--text-muted);">${roleLabels[u.role] || u.role}${u.created_at ? ' \u00b7 Cr\u00e9\u00e9 le ' + new Date(u.created_at).toLocaleDateString('fr-FR') : ''}</div>
+                    </div>
+                </div>
+                ${u.id !== currentUser?.id ? `
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <select class="form-input" style="font-size:12px;padding:4px 8px;width:auto;" onchange="App._changeRoleAdmin(${u.id}, this.value)">
+                            <option value="spectator" ${u.role === 'spectator' ? 'selected' : ''}>\ud83d\udc40 Spectateur</option>
+                            <option value="player" ${u.role === 'player' ? 'selected' : ''}>\ud83c\udfae Joueur</option>
+                            <option value="moderator" ${u.role === 'moderator' ? 'selected' : ''}>\ud83d\udd27 Mod\u00e9rateur</option>
+                            <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>\ud83d\udc51 Admin</option>
+                        </select>
+                        <button class="btn btn-danger btn-sm" onclick="App._confirmDeleteUser(${u.id}, '${u.username}')" style="padding:4px 8px;font-size:12px;">\ud83d\uddd1\ufe0f</button>
+                    </div>
+                ` : '<span style="font-size:12px;color:var(--accent-green);font-weight:600;">\ud83d\udc51 Toi</span>'}
+            </div>
+            <div id="del-confirm-${u.id}" style="display:none;background:rgba(239,68,68,0.08);border:1px solid #ef4444;border-radius:8px;padding:10px;margin:4px 0 8px;">
+                <span style="font-size:12px;color:#ef4444;">Supprimer '${u.username}' ?</span>
+                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('del-confirm-${u.id}').style.display='none'" style="margin-left:8px;font-size:11px;">Annuler</button>
+                <button class="btn btn-sm" style="background:#ef4444;color:white;margin-left:4px;font-size:11px;" onclick="App._deleteUserAdmin(${u.id})">Supprimer</button>
+            </div>
+        `).join('');
+    },
+
+    async _changeRoleAdmin(userId, role) {
+        const r = await Auth.apiCall(`/api/auth/admin/users/${userId}/role`, {
+            method: 'PUT', body: JSON.stringify({ role })
+        });
+        if (r && r.ok) this._loadUsersAdmin();
+    },
+
+    _confirmDeleteUser(userId, username) {
+        document.getElementById(`del-confirm-${userId}`).style.display = 'block';
+    },
+
+    async _deleteUserAdmin(userId) {
+        const r = await Auth.apiCall(`/api/auth/admin/users/${userId}`, { method: 'DELETE' });
+        if (r && r.ok) this._loadUsersAdmin();
+    },
+
     async loadUsers() {
         const listEl = document.getElementById('users-list');
         if (!listEl) return;
 
-        const response = await Auth.apiCall('/api/auth/users');
-        if (!response) return;
-        const data = await response.json();
-        const users = data.users || [];
+        const response = await Auth.apiCall('/api/auth/admin/users');
+        if (!response || !response.ok) return;
+        const users = await response.json();
+        const currentUser = Auth.getUser();
+
+        const roleLabels = { admin: '\ud83d\udc51 Admin', moderator: '\ud83d\udd27 Mod\u00e9rateur', player: '\ud83c\udfae Joueur', spectator: '\ud83d\udc40 Spectateur' };
 
         listEl.innerHTML = users.map(u => `
-            <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border-color);">
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border-color);">
                 <div>
-                    <span style="font-weight: 600;">${u.username}</span>
-                    <span style="font-size: 12px; color: var(--text-muted);"> · ${u.role_name}</span>
-                    <span style="font-size: 11px; color: var(--text-muted);"> · ${u.created_at}</span>
+                    <span style="font-weight:600;">${u.username}</span>
+                    <span style="font-size:12px;color:var(--text-muted);"> \u00b7 ${roleLabels[u.role] || u.role}</span>
                 </div>
-                ${!u.is_admin ? `
-                    <div class="flex gap-2">
-                        <select class="form-input" style="font-size: 11px; padding: 4px 8px; width: auto;" onchange="App.changeUserRole(${u.id}, this.value)">
-                            <option value="spectator" ${u.role === 'spectator' ? 'selected' : ''}>👀 Spectateur</option>
-                            <option value="player" ${u.role === 'player' ? 'selected' : ''}>🎮 Joueur</option>
-                            <option value="moderator" ${u.role === 'moderator' ? 'selected' : ''}>🔧 Modérateur</option>
-                            <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>👑 Admin</option>
+                ${u.id !== currentUser?.id ? `
+                    <div style="display:flex;gap:4px;align-items:center;">
+                        <select class="form-input" style="font-size:11px;padding:4px 8px;width:auto;" onchange="App._changeRoleAdmin(${u.id}, this.value)">
+                            <option value="spectator" ${u.role === 'spectator' ? 'selected' : ''}>\ud83d\udc40 Spectateur</option>
+                            <option value="player" ${u.role === 'player' ? 'selected' : ''}>\ud83c\udfae Joueur</option>
+                            <option value="moderator" ${u.role === 'moderator' ? 'selected' : ''}>\ud83d\udd27 Mod\u00e9rateur</option>
+                            <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>\ud83d\udc51 Admin</option>
                         </select>
-                        <button class="btn btn-danger btn-sm" onclick="App.deleteUser(${u.id}, '${u.username}')" style="padding: 2px 8px; font-size: 11px;">🗑️</button>
+                        <button class="btn btn-danger btn-sm" onclick="App._confirmDeleteUser(${u.id}, '${u.username}')" style="padding:2px 8px;font-size:11px;">\ud83d\uddd1\ufe0f</button>
                     </div>
-                ` : '<span style="font-size: 11px; color: var(--accent-green);">👑 Toi</span>'}
+                ` : '<span style="font-size:11px;color:var(--accent-green);">\ud83d\udc51 Toi</span>'}
             </div>
         `).join('');
     },
 
     async changeUserRole(userId, role) {
-        const response = await Auth.apiCall(`/api/auth/users/${userId}/role`, {
-            method: 'PUT',
-            body: JSON.stringify({ role }),
-        });
-        if (response && response.ok) this.loadUsers();
+        await this._changeRoleAdmin(userId, role);
+        this.loadUsers();
     },
 
     async deleteUser(userId, username) {
-        if (!confirm(`Supprimer l'utilisateur "${username}" ? Cette action est irréversible.`)) return;
-        const response = await Auth.apiCall(`/api/auth/users/${userId}`, { method: 'DELETE' });
-        if (response && response.ok) this.loadUsers();
+        this._confirmDeleteUser(userId, username);
     },
 };
 
-// Lancer l'app quand la page est chargée
+// Lancer l'app quand la page est charg\u00e9e
 document.addEventListener('DOMContentLoaded', () => App.init());

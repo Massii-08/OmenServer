@@ -143,6 +143,34 @@ GAMES = {
         "memory_env": None,
         "description": "Serveur personnalisé — entre l'image Docker de ton choix",
     },
+    "velocity": {
+        "name": "Velocity (Proxy)",
+        "icon": "🌐",
+        "image": "itzg/bungeecord:latest",
+        "default_port": 25577,
+        "default_memory_mb": 512,
+        "port_protocol": "tcp",
+        "env": {
+            "TYPE": "VELOCITY",
+        },
+        "version_env": None,
+        "memory_env": "MEMORY",
+        "description": "Proxy Velocity — relie plusieurs serveurs Minecraft (recommandé, moderne)",
+    },
+    "bungeecord": {
+        "name": "BungeeCord (Proxy)",
+        "icon": "🔗",
+        "image": "itzg/bungeecord:latest",
+        "default_port": 25577,
+        "default_memory_mb": 512,
+        "port_protocol": "tcp",
+        "env": {
+            "TYPE": "BUNGEECORD",
+        },
+        "version_env": None,
+        "memory_env": "MEMORY",
+        "description": "Proxy BungeeCord/Waterfall — relie plusieurs serveurs Minecraft (classique)",
+    },
 }
 
 

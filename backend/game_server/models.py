@@ -39,5 +39,6 @@ class GameServer(Base):
     port = Column(Integer, default=25565)
     memory_mb = Column(Integer, default=2048)
     cpu_percent = Column(Integer, default=100)  # % CPU alloué (100 = 1 cœur)
+    jvm_flags = Column(String(500), default="")  # Flags JVM personnalisés
     status = Column(String(20), default="stopped")
     created_at = Column(DateTime, default=datetime.utcnow)

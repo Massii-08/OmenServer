@@ -28,6 +28,7 @@ const SvSettings = {
             {id:'map',icon:'🗺️',label:'Map'},
             {id:'protocols',icon:'📡',label:'Protocoles'},
             {id:'resourcepack',icon:'🎨',label:'Pack de ressources'},
+            {id:'jvm',icon:'☕',label:'JVM / Java'},
             {id:'hosting',icon:'🏠',label:'Hébergement'},
         ];
         return tabs.map(t => `
@@ -54,6 +55,7 @@ const SvSettings = {
             case 'map': return this._mapSub(p);
             case 'protocols': return this._protocolsSub(p);
             case 'resourcepack': return this._resourcePackSub(p);
+            case 'jvm': return this._jvmSub(p);
             case 'hosting': return this._hostingSub(p);
             default: return '';
         }
@@ -260,6 +262,82 @@ const SvSettings = {
         });
         if (r && r.ok) {
             if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = '✅ Appliqué !'; }
+        } else {
+            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '❌ Erreur'; }
+        }
+    },
+
+    // --- Sous-onglet JVM / Java ---
+    _jvmSub(p) {
+        const s = this._serverData;
+        const currentFlags = s.jvm_flags || '';
+
+        const presets = [
+            {
+                id: 'aikar',
+                name: "🚀 Aikar's Flags (recommandé)",
+                desc: 'Optimisé pour Paper/Spigot — utilisé par 90% des serveurs',
+                flags: '-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch -XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M -XX:G1ReservePercent=20 -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1'
+            },
+            {
+                id: 'performance',
+                name: '⚡ Performance générale',
+                desc: 'Bon équilibre entre stabilité et rapidité',
+                flags: '-XX:+UseG1GC -XX:+OptimizeStringConcat -XX:+UseCompressedOops'
+            },
+            {
+                id: 'lowram',
+                name: '💾 Faible RAM (< 2Go)',
+                desc: 'Optimisé pour les serveurs avec peu de mémoire',
+                flags: '-XX:+UseSerialGC -XX:+OptimizeStringConcat'
+            },
+            {
+                id: 'none',
+                name: '✅ Aucun flag',
+                desc: 'Configuration Java par défaut',
+                flags: ''
+            },
+        ];
+
+        return `
+        <div style="background:linear-gradient(135deg, rgba(249,115,22,0.1), rgba(234,88,12,0.05));padding:16px;border-radius:10px;margin-bottom:20px;border:1px solid rgba(249,115,22,0.2);">
+            <div style="font-size:13px;color:var(--text-muted);">Les flags JVM optimisent les performances du serveur Minecraft. Un redémarrage est nécessaire après modification.</div>
+        </div>
+
+        <div style="font-weight:600;margin-bottom:12px;">🏁 Presets recommandés</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px;">
+            ${presets.map(pr => `
+                <div style="background:var(--bg-secondary);padding:12px;border-radius:8px;cursor:pointer;border:2px solid var(--border-color);transition:all .15s;"
+                    onclick="document.getElementById('sv-jvm-textarea').value='${pr.flags.replace(/'/g, "\\'")}';"
+                    onmouseover="this.style.borderColor='var(--accent-blue)'"
+                    onmouseout="this.style.borderColor='var(--border-color)'">
+                    <div style="font-size:13px;font-weight:600;">${pr.name}</div>
+                    <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">${pr.desc}</div>
+                </div>
+            `).join('')}
+        </div>
+
+        <div style="font-weight:600;margin-bottom:8px;">☕ Flags JVM personnalisés</div>
+        <textarea id="sv-jvm-textarea" class="form-input" rows="5" style="font-family:monospace;font-size:12px;resize:vertical;">${currentFlags}</textarea>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Séparez les flags par des espaces. Ex: -XX:+UseG1GC -XX:MaxGCPauseMillis=200</div>
+
+        <div style="margin-top:16px;display:flex;align-items:center;gap:12px;">
+            <button class="btn btn-primary" onclick="SvSettings._saveJvm()">💾 Sauvegarder les flags JVM</button>
+            <span id="sv-jvm-msg" style="font-size:13px;"></span>
+        </div>`;
+    },
+
+    async _saveJvm() {
+        const flags = document.getElementById('sv-jvm-textarea')?.value?.trim() || '';
+        const msg = document.getElementById('sv-jvm-msg');
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Sauvegarde...'; }
+        const r = await Auth.apiCall(`/api/servers/${this._serverId}/jvm-flags`, {
+            method: 'PUT', body: JSON.stringify({ jvm_flags: flags })
+        });
+        if (r && r.ok) {
+            const data = await r.json();
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${data.message} ${data.note}`; }
+            this._serverData.jvm_flags = flags;
         } else {
             if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '❌ Erreur'; }
         }

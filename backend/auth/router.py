@@ -244,3 +244,84 @@ def logout(current_user: User = Depends(get_current_user)):
     Cette route confirme simplement que le token était valide.
     """
     return {"message": f"Utilisateur '{current_user.username}' déconnecté"}
+
+
+# --- Administration des utilisateurs ---
+
+@router.get("/admin/users")
+def list_users(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Liste tous les utilisateurs (admin seulement)."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    users = db.query(User).all()
+    return [
+        {
+            "id": u.id,
+            "username": u.username,
+            "is_admin": u.is_admin,
+            "role": u.role or "player",
+            "created_at": u.created_at.isoformat() if u.created_at else None,
+        }
+        for u in users
+    ]
+
+
+class ChangeRoleRequest(BaseModel):
+    """Données pour changer le rôle d'un utilisateur."""
+    role: str  # admin, moderator, player, spectator
+
+
+@router.put("/admin/users/{user_id}/role")
+def change_user_role(
+    user_id: int,
+    request: ChangeRoleRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Change le rôle d'un utilisateur (admin seulement)."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+
+    valid_roles = ["admin", "moderator", "player", "spectator"]
+    if request.role not in valid_roles:
+        raise HTTPException(status_code=400, detail=f"Rôle invalide. Choisis parmi: {', '.join(valid_roles)}")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+
+    if user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="Tu ne peux pas changer ton propre rôle")
+
+    user.role = request.role
+    user.is_admin = (request.role == "admin")
+    db.commit()
+
+    return {"message": f"Rôle de '{user.username}' changé en '{request.role}' ✅"}
+
+
+@router.delete("/admin/users/{user_id}")
+def delete_user(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Supprime un utilisateur (admin seulement)."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+
+    if user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="Tu ne peux pas te supprimer toi-même")
+
+    username = user.username
+    db.delete(user)
+    db.commit()
+
+    return {"message": f"Utilisateur '{username}' supprimé ✅"}
