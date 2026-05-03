@@ -20,6 +20,7 @@ class GameServer(Base):
         id:            Numéro unique auto-incrémenté
         name:          Nom du serveur (ex: "Minecraft Survie")
         game_type:     Type de jeu (ex: "minecraft")
+        server_type:   Variante du serveur (ex: "PAPER", "FORGE", "FABRIC")
         version:       Version du jeu (ex: "1.21.4")
         docker_id:     ID du conteneur Docker (rempli quand le serveur est créé)
         port:          Port du serveur (ex: 25565 pour Minecraft)
@@ -32,6 +33,7 @@ class GameServer(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False)
     game_type = Column(String(50), default="minecraft")
+    server_type = Column(String(30), default="VANILLA")  # VANILLA, PAPER, SPIGOT, FORGE, FABRIC, etc.
     version = Column(String(20), default="LATEST")
     docker_id = Column(String(100), nullable=True)
     port = Column(Integer, default=25565)

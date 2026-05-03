@@ -40,10 +40,11 @@ class CreateServerRequest(BaseModel):
     """Données pour créer un nouveau serveur."""
     name: str
     game_type: str = "minecraft"
+    server_type: str = "VANILLA"       # VANILLA, PAPER, SPIGOT, FORGE, FABRIC, NEOFORGE, MOHIST, PURPUR, QUILT
     version: str = "LATEST"
-    port: Optional[int] = None        # None = utilise le port par défaut du jeu
-    memory_mb: Optional[int] = None   # None = utilise la RAM par défaut du jeu
-    custom_image: Optional[str] = None  # Pour game_type="custom"
+    port: Optional[int] = None
+    memory_mb: Optional[int] = None
+    custom_image: Optional[str] = None
 
 
 class ServerResponse(BaseModel):
@@ -51,6 +52,7 @@ class ServerResponse(BaseModel):
     id: int
     name: str
     game_type: str
+    server_type: str = "VANILLA"
     version: str
     port: int
     memory_mb: int
@@ -60,6 +62,13 @@ class ServerResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ChangeVersionRequest(BaseModel):
+    """Données pour changer la version/type d'un serveur."""
+    server_type: str          # VANILLA, PAPER, SPIGOT, FORGE, etc.
+    version: str = "LATEST"   # Version du jeu
+    reset_data: bool = False  # Si True, supprime /data et réinstalle tout
 
 
 class UpdateResourcesRequest(BaseModel):
@@ -146,6 +155,7 @@ def create_server(
             memory_mb=actual_memory,
             version=request.version,
             custom_image=request.custom_image,
+            server_type=request.server_type,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -154,6 +164,7 @@ def create_server(
     server = GameServer(
         name=request.name,
         game_type=request.game_type,
+        server_type=request.server_type,
         version=request.version,
         port=actual_port,
         memory_mb=actual_memory,
@@ -245,6 +256,65 @@ def restart_server(
         return {"message": f"Serveur '{server.name}' redémarré", "status": "running"}
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{server_id}/version")
+def change_server_version(
+    server_id: int,
+    request: ChangeVersionRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Change la version et/ou le type de serveur (ex: VANILLA → PAPER).
+    Arrête le serveur, supprime le conteneur et en recrée un nouveau.
+    Si reset_data=True, supprime aussi les fichiers du serveur.
+    """
+    server = db.query(GameServer).filter(GameServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Serveur non trouvé")
+
+    # 1. Arrêter et supprimer l'ancien conteneur
+    if server.docker_id:
+        try:
+            docker_manager.stop_container(server.docker_id)
+        except Exception:
+            pass
+        try:
+            docker_manager.remove_container(server.docker_id, delete_data=request.reset_data)
+        except Exception:
+            pass
+
+    # 2. Recréer le conteneur avec le nouveau type/version
+    try:
+        result = docker_manager.create_game_server(
+            name=server.name,
+            game_type=server.game_type,
+            port=server.port,
+            memory_mb=server.memory_mb,
+            version=request.version,
+            server_type=request.server_type,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # 3. Mettre à jour la base de données
+    server.server_type = request.server_type
+    server.version = request.version
+    server.docker_id = result["docker_id"]
+    server.status = "stopped"
+    db.commit()
+    db.refresh(server)
+
+    return {
+        "message": f"Version changée → {request.server_type} {request.version}",
+        "server": {
+            "id": server.id,
+            "server_type": server.server_type,
+            "version": server.version,
+            "status": server.status,
+        }
+    }
 
 
 @router.get("/{server_id}/logs")

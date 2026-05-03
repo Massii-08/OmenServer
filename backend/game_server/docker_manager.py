@@ -67,6 +67,7 @@ def create_game_server(
     memory_mb: int = None,
     version: str = "LATEST",
     custom_image: str = None,
+    server_type: str = "VANILLA",
 ) -> dict:
     """
     Crée un conteneur Docker pour n'importe quel jeu supporté.
@@ -78,6 +79,7 @@ def create_game_server(
         memory_mb:    RAM en Mo (utilise la valeur par défaut du jeu si None)
         version:      Version du jeu (si supporté par le jeu)
         custom_image: Image Docker personnalisée (pour game_type="custom")
+        server_type:  Variante du serveur (VANILLA, PAPER, FORGE, FABRIC, etc.)
     """
     client = _get_docker_client()
     if not client:
@@ -103,6 +105,10 @@ def create_game_server(
 
     # Variables d'environnement du jeu
     env = dict(game_config.get("env", {}))
+
+    # Pour Minecraft Java, utiliser le server_type (PAPER, FORGE, etc.)
+    if game_type == "minecraft" and server_type:
+        env["TYPE"] = server_type.upper()
 
     # Ajouter la version si le jeu le supporte
     if game_config.get("version_env") and version:

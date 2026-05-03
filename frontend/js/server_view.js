@@ -63,6 +63,7 @@ const ServerView = {
             {id:'history',icon:'📜',label:'Historique'},
             {id:'players',icon:'👥',label:'Joueurs'},
             {id:'mods',icon:'🧩',label:'Mods & Plugins'},
+            {id:'version',icon:'🏷️',label:'Version'},
             {id:'notifications',icon:'🔔',label:'Notifications'},
         ];
         return tabs.map(t => `
@@ -100,6 +101,7 @@ const ServerView = {
             case 'players': return SvPlayers.render(this.serverId);
             case 'history': return SvHistory.render(this.serverId);
             case 'notifications': return this._notificationsTab();
+            case 'version': return this._versionTab();
             default: return '<p>Section en cours de développement</p>';
         }
     },
@@ -658,6 +660,137 @@ const ServerView = {
         if (this._ws) { this._ws.close(); this._ws = null; }
         this.serverId = null;
         this.serverData = null;
+    },
+
+    // --- Version / Type de serveur ---
+    _versionTab() {
+        const s = this.serverData;
+        const currentType = (s.server_type || 'VANILLA').toUpperCase();
+        const isMinecraft = s.game_type === 'minecraft';
+
+        const types = [
+            {id:'VANILLA', icon:'🎨', name:'Vanilla', desc:'Serveur officiel Mojang sans modifications'},
+            {id:'PAPER', icon:'📄', name:'Paper', desc:'Fork optimisé de Spigot — Recommandé pour les plugins'},
+            {id:'SPIGOT', icon:'🛠️', name:'Spigot', desc:'Le classique pour les plugins Bukkit/Spigot'},
+            {id:'BUKKIT', icon:'🪣', name:'Bukkit', desc:'Le pionnier des serveurs moddés'},
+            {id:'PURPUR', icon:'💜', name:'Purpur', desc:'Fork de Paper avec plus d\'options de configuration'},
+            {id:'FORGE', icon:'🔨', name:'Forge', desc:'Pour les mods Forge (Minecraft moddé)'},
+            {id:'NEOFORGE', icon:'✨', name:'NeoForge', desc:'Fork moderne de Forge'},
+            {id:'FABRIC', icon:'🧵', name:'Fabric', desc:'Loader de mods léger et performant'},
+            {id:'QUILT', icon:'🧶', name:'Quilt', desc:'Fork de Fabric compatible avec ses mods'},
+            {id:'MOHIST', icon:'🌍', name:'Mohist', desc:'Forge + Bukkit — mods ET plugins ensemble'},
+            {id:'CATSERVER', icon:'🐱', name:'CatServer', desc:'Alternative à Mohist (Forge + Bukkit)'},
+            {id:'PUFFERFISH', icon:'🐡', name:'Pufferfish', desc:'Fork ultra-optimisé de Paper'},
+        ];
+
+        if (!isMinecraft) {
+            return `
+            <h2>🏷️ Version</h2>
+            <p style="color:var(--text-muted);font-size:13px;">La gestion des versions n'est disponible que pour Minecraft Java.</p>
+            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;margin-top:16px;">
+                <div style="font-size:14px;">Jeu : <strong>${s.game_type}</strong></div>
+                <div style="font-size:14px;margin-top:4px;">Version : <strong>${s.version || 'LATEST'}</strong></div>
+            </div>`;
+        }
+
+        const current = types.find(t => t.id === currentType) || types[0];
+
+        return `
+        <h2>🏷️ Version & Type de serveur</h2>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Changez le type de serveur ou la version de Minecraft</p>
+
+        <!-- Version actuelle -->
+        <div style="background:linear-gradient(135deg, rgba(59,130,246,0.15), rgba(139,92,246,0.1));padding:20px;border-radius:10px;margin-bottom:20px;border:1px solid rgba(59,130,246,0.3);">
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">Configuration actuelle</div>
+            <div style="display:flex;align-items:center;gap:12px;">
+                <span style="font-size:32px;">${current.icon}</span>
+                <div>
+                    <div style="font-size:18px;font-weight:700;">${current.name}</div>
+                    <div style="font-size:13px;color:var(--text-muted);">Version ${s.version || 'LATEST'}</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sélection du type -->
+        <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
+            <div style="font-weight:600;margin-bottom:12px;">📦 Choisir le type de serveur</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                ${types.map(t => `
+                    <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;border:2px solid ${t.id === currentType ? 'var(--accent-blue)' : 'var(--border-color)'};background:${t.id === currentType ? 'rgba(59,130,246,0.1)' : 'transparent'};transition:all .15s;" onclick="document.querySelectorAll('[name=sv-ver-type]').forEach(r=>r.checked=false);this.querySelector('input').checked=true;">
+                        <input type="radio" name="sv-ver-type" value="${t.id}" ${t.id === currentType ? 'checked' : ''} style="display:none;" />
+                        <span style="font-size:20px;">${t.icon}</span>
+                        <div>
+                            <div style="font-size:13px;font-weight:600;">${t.name}</div>
+                            <div style="font-size:11px;color:var(--text-muted);">${t.desc}</div>
+                        </div>
+                    </label>
+                `).join('')}
+            </div>
+        </div>
+
+        <!-- Version -->
+        <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
+            <div style="font-weight:600;margin-bottom:8px;">🎮 Version Minecraft</div>
+            <input id="sv-ver-version" class="form-input" value="${s.version || 'LATEST'}" placeholder="LATEST, 1.21.4, 1.20.1..." style="max-width:300px;" />
+            <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Entrez "LATEST" pour la dernière version ou un numéro précis (ex: 1.21.4)</div>
+        </div>
+
+        <!-- Option réinstallation -->
+        <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
+            <div style="font-weight:600;margin-bottom:8px;">🔄 Mode d'installation</div>
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin-bottom:8px;">
+                <input type="radio" name="sv-ver-mode" value="keep" checked />
+                <div>
+                    <div style="font-size:13px;font-weight:600;">💾 Garder les fichiers existants</div>
+                    <div style="font-size:11px;color:var(--text-muted);">Les mondes, configs et plugins sont conservés</div>
+                </div>
+            </label>
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+                <input type="radio" name="sv-ver-mode" value="reset" />
+                <div>
+                    <div style="font-size:13px;font-weight:600;color:#ef4444;">🗑️ Réinstaller tout (reset)</div>
+                    <div style="font-size:11px;color:var(--text-muted);">Supprime TOUS les fichiers et repart de zéro</div>
+                </div>
+            </label>
+        </div>
+
+        <div style="display:flex;gap:8px;align-items:center;">
+            <button class="btn btn-primary" onclick="ServerView._changeVersion()">🔄 Appliquer le changement</button>
+            <span id="sv-ver-msg" style="font-size:12px;"></span>
+        </div>`;
+    },
+
+    async _changeVersion() {
+        const msg = document.getElementById('sv-ver-msg');
+        const selectedType = document.querySelector('[name=sv-ver-type]:checked')?.value || 'VANILLA';
+        const version = document.getElementById('sv-ver-version')?.value || 'LATEST';
+        const resetData = document.querySelector('[name=sv-ver-mode]:checked')?.value === 'reset';
+
+        if (resetData && !confirm('⚠️ Cela va SUPPRIMER TOUS les fichiers du serveur (mondes, plugins, configs). Continuer ?')) {
+            return;
+        }
+
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Changement en cours... (peut prendre quelques minutes)'; }
+
+        const r = await Auth.apiCall(`/api/servers/${this.serverId}/version`, {
+            method: 'PUT',
+            body: JSON.stringify({
+                server_type: selectedType,
+                version: version,
+                reset_data: resetData,
+            })
+        });
+
+        if (r && r.ok) {
+            const data = await r.json();
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${data.message}`; }
+            // Refresh server data
+            await this.refreshServer();
+            setTimeout(() => this.switchTab('version'), 1000);
+        } else {
+            const err = r ? await r.json().catch(() => ({})) : {};
+            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+        }
     },
 
     // --- Dashboard live stats ---

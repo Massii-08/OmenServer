@@ -124,6 +124,23 @@ const GameServer = {
                         <label class="form-label">Nom du serveur</label>
                         <input type="text" class="form-input" id="server-name" placeholder="Mon serveur" />
                     </div>
+                    <div class="form-group" id="server-type-group">
+                        <label class="form-label">Type de serveur</label>
+                        <select class="form-input" id="server-type-select">
+                            <option value="VANILLA">🎨 Vanilla</option>
+                            <option value="PAPER" selected>📄 Paper (recommandé)</option>
+                            <option value="SPIGOT">🛠️ Spigot</option>
+                            <option value="BUKKIT">🪣 Bukkit</option>
+                            <option value="PURPUR">💜 Purpur</option>
+                            <option value="FORGE">🔨 Forge</option>
+                            <option value="NEOFORGE">✨ NeoForge</option>
+                            <option value="FABRIC">🧵 Fabric</option>
+                            <option value="QUILT">🧶 Quilt</option>
+                            <option value="MOHIST">🌍 Mohist</option>
+                            <option value="CATSERVER">🐱 CatServer</option>
+                            <option value="PUFFERFISH">🐡 Pufferfish</option>
+                        </select>
+                    </div>
                     <div class="form-group" id="version-group">
                         <label class="form-label">Version</label>
                         <input type="text" class="form-input" id="server-version" value="LATEST" placeholder="LATEST, 1.21.4..." />
@@ -374,6 +391,12 @@ const GameServer = {
         const versionGroup = document.getElementById('version-group');
         if (versionGroup) {
             versionGroup.style.display = game.version_env ? 'block' : 'none';
+        }
+
+        // Afficher/masquer le sélecteur de type serveur (seulement pour Minecraft Java)
+        const serverTypeGroup = document.getElementById('server-type-group');
+        if (serverTypeGroup) {
+            serverTypeGroup.style.display = gameType === 'minecraft' ? 'block' : 'none';
         }
 
         // Afficher/masquer le champ image Docker (seulement pour "custom")
@@ -1069,6 +1092,11 @@ const GameServer = {
         document.getElementById('create-error').classList.remove('show');
 
         const body = { name, game_type: gameType, version, port, memory_mb: memory };
+        // Ajouter le server_type pour Minecraft
+        const serverTypeEl = document.getElementById('server-type-select');
+        if (serverTypeEl && gameType === 'minecraft') {
+            body.server_type = serverTypeEl.value;
+        }
         if (gameType === 'custom' && customImage) {
             body.custom_image = customImage;
         }
