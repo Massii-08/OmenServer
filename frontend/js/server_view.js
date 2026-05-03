@@ -195,7 +195,7 @@ const ServerView = {
             </div>
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
                 <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">🏷️ Version</div>
-                <div style="font-size:16px;font-weight:600;">${gameName} · v${s.version||'?'}</div>
+                <div style="font-size:16px;font-weight:600;">${(s.server_type||'VANILLA')} · v${s.version||'?'}</div>
             </div>
         </div>
 
@@ -239,7 +239,29 @@ const ServerView = {
         const logs = document.getElementById('sv-console-logs');
         if (!logs) return;
         const span = document.createElement('span');
-        span.style.color = color || '#c9d1d9';
+
+        // Auto-coloration si pas de couleur explicite
+        if (!color) {
+            const t = text.toLowerCase();
+            if (t.includes('error') || t.includes('exception') || t.includes('severe') || t.includes('failed')) {
+                color = '#ef4444'; // Rouge — erreurs
+            } else if (t.includes('warn')) {
+                color = '#f59e0b'; // Orange — warnings
+            } else if (t.includes('joined the game') || t.includes('left the game') || t.includes('logged in') || t.includes('lost connection')) {
+                color = '#22c55e'; // Vert — joueurs
+            } else if (t.includes('starting minecraft') || t.includes('done (') || t.includes('server started') || t.includes('preparing') || t.includes('loading')) {
+                color = '#a78bfa'; // Violet — démarrage
+            } else if (t.includes('info') && t.includes(']: ')) {
+                // Format [HH:MM:SS INFO]: ... — extraire le contenu
+                color = '#8b949e'; // Gris clair — info standard
+            } else if (t.startsWith('[') && t.includes('/')) {
+                color = '#8b949e'; // Gris — logs horodatés standards
+            } else {
+                color = '#c9d1d9'; // Défaut
+            }
+        }
+
+        span.style.color = color;
         span.textContent = text + '\n';
         logs.appendChild(span);
         logs.scrollTop = logs.scrollHeight;
@@ -263,17 +285,17 @@ const ServerView = {
             try {
                 const msg = JSON.parse(e.data);
                 if (msg.type === 'log') {
-                    this._appendLog(msg.data, '#c9d1d9');
+                    this._appendLog(msg.data);
                 } else if (msg.type === 'info') {
                     this._appendLog(msg.data, '#3b82f6');
                 } else if (msg.type === 'error') {
                     this._appendLog('❌ ' + (msg.message || msg.data), '#ef4444');
                 } else {
-                    this._appendLog(JSON.stringify(msg), '#c9d1d9');
+                    this._appendLog(JSON.stringify(msg));
                 }
             } catch {
                 // Message texte brut
-                this._appendLog(e.data, '#c9d1d9');
+                this._appendLog(e.data);
             }
         };
 
