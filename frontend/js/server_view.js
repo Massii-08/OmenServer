@@ -760,11 +760,21 @@ const ServerView = {
             </label>
         </div>
 
-        <div style="display:flex;gap:10px;align-items:center;">
-            <button class="btn btn-primary" onclick="ServerView._changeVersion()" style="padding:10px 24px;font-size:14px;">🔄 Appliquer le changement</button>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <button id="sv-ver-apply-btn" class="btn btn-primary" onclick="ServerView._changeVersion()" style="padding:10px 24px;font-size:14px;">🔄 Appliquer le changement</button>
             <span id="sv-ver-msg" style="font-size:13px;"></span>
+        </div>
+        <div id="sv-ver-confirm" style="display:none;margin-top:12px;background:rgba(239,68,68,0.1);border:2px solid #ef4444;border-radius:10px;padding:16px;">
+            <div style="font-weight:600;color:#ef4444;margin-bottom:8px;">⚠️ Confirmer la réinstallation</div>
+            <div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">Cela va <strong style="color:#ef4444;">SUPPRIMER TOUS</strong> les fichiers du serveur (mondes, plugins, configs). Cette action est irréversible.</div>
+            <div style="display:flex;gap:8px;">
+                <button class="btn btn-secondary" onclick="document.getElementById('sv-ver-confirm').style.display='none';document.getElementById('sv-ver-apply-btn').style.display='';">Annuler</button>
+                <button class="btn" style="background:#ef4444;color:white;" onclick="ServerView._changeVersionConfirmed()">🗑️ Oui, tout supprimer et réinstaller</button>
+            </div>
         </div>`;
     },
+
+    _changeVersionPending: null,
 
     async _changeVersion() {
         const msg = document.getElementById('sv-ver-msg');
@@ -780,10 +790,29 @@ const ServerView = {
         }
         const resetData = document.querySelector('[name=sv-ver-mode]:checked')?.value === 'reset';
 
-        if (resetData && !confirm('⚠️ Cela va SUPPRIMER TOUS les fichiers du serveur (mondes, plugins, configs). Continuer ?')) {
+        if (resetData) {
+            // Stocker les paramètres et afficher la confirmation inline
+            this._changeVersionPending = { selectedType, version, resetData: true };
+            document.getElementById('sv-ver-confirm').style.display = 'block';
+            document.getElementById('sv-ver-apply-btn').style.display = 'none';
             return;
         }
 
+        // Pas de reset → exécuter directement
+        await this._doChangeVersion(selectedType, version, false);
+    },
+
+    async _changeVersionConfirmed() {
+        if (!this._changeVersionPending) return;
+        const { selectedType, version } = this._changeVersionPending;
+        this._changeVersionPending = null;
+        document.getElementById('sv-ver-confirm').style.display = 'none';
+        document.getElementById('sv-ver-apply-btn').style.display = '';
+        await this._doChangeVersion(selectedType, version, true);
+    },
+
+    async _doChangeVersion(selectedType, version, resetData) {
+        const msg = document.getElementById('sv-ver-msg');
         if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Changement en cours... (peut prendre quelques minutes)'; }
 
         const r = await Auth.apiCall(`/api/servers/${this.serverId}/version`, {
@@ -798,7 +827,6 @@ const ServerView = {
         if (r && r.ok) {
             const data = await r.json();
             if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${data.message}`; }
-            // Refresh server data
             await this.refreshServer();
             setTimeout(() => this.switchTab('version'), 1000);
         } else {
