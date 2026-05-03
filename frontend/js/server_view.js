@@ -136,7 +136,7 @@ const ServerView = {
         </div>
 
         <!-- Stats principales -->
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:20px;">
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px;">
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;text-align:center;">
                 <div style="font-size:24px;margin-bottom:4px;">${gameIcon}</div>
                 <div style="font-size:12px;color:var(--text-muted);">Jeu</div>
@@ -146,6 +146,11 @@ const ServerView = {
                 <div style="font-size:24px;margin-bottom:4px;">📡</div>
                 <div style="font-size:12px;color:var(--text-muted);">Statut</div>
                 <div style="font-size:14px;margin-top:2px;">${uptimeHtml}</div>
+            </div>
+            <div style="background:${isRunning ? 'linear-gradient(135deg, rgba(59,130,246,0.1), rgba(139,92,246,0.1))' : 'var(--bg-secondary)'};padding:16px;border-radius:10px;text-align:center;border:${isRunning ? '1px solid rgba(59,130,246,0.2)' : 'none'};">
+                <div style="font-size:24px;margin-bottom:4px;">👥</div>
+                <div style="font-size:12px;color:var(--text-muted);">Joueurs</div>
+                <div style="font-size:14px;font-weight:600;margin-top:2px;color:${isRunning ? 'var(--accent-blue)' : 'var(--text-muted)'};" id="sv-dash-players">${isRunning ? `${s.player_count || 0}/${s.player_max || 20}` : '—'}</div>
             </div>
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;text-align:center;">
                 <div style="font-size:24px;margin-bottom:4px;">🧠</div>

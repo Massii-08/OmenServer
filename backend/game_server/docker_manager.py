@@ -60,6 +60,71 @@ def get_local_ip() -> str:
         return "127.0.0.1"
 
 
+def mc_server_ping(port: int) -> dict:
+    """
+    Ping un serveur Minecraft pour obtenir le nombre de joueurs.
+    Utilise le protocole Server List Ping (SLP) de Minecraft.
+    Retourne {"online": int, "max": int, "players": [str]} ou None si échec.
+    """
+    import struct
+    import json
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(3)
+        s.connect(("localhost", port))
+
+        # Handshake packet
+        host = "localhost"
+        data = b""
+        data += b"\x00"  # packet id
+        data += b"\x00"  # protocol version (doesn't matter for status)
+        data += struct.pack(">b", len(host)) + host.encode("utf-8")
+        data += struct.pack(">H", port)
+        data += b"\x01"  # next state: status
+        # Add length prefix
+        s.send(struct.pack(">b", len(data)) + data)
+
+        # Status request
+        s.send(b"\x01\x00")
+
+        # Read response
+        def read_varint(sock):
+            result = 0
+            for i in range(5):
+                byte = sock.recv(1)
+                if not byte:
+                    return 0
+                val = byte[0]
+                result |= (val & 0x7F) << (7 * i)
+                if not (val & 0x80):
+                    break
+            return result
+
+        _total_len = read_varint(s)
+        _packet_id = read_varint(s)
+        json_len = read_varint(s)
+
+        json_data = b""
+        while len(json_data) < json_len:
+            chunk = s.recv(json_len - len(json_data))
+            if not chunk:
+                break
+            json_data += chunk
+
+        s.close()
+
+        resp = json.loads(json_data.decode("utf-8"))
+        players_info = resp.get("players", {})
+        return {
+            "online": players_info.get("online", 0),
+            "max": players_info.get("max", 20),
+            "players": [p.get("name", "") for p in players_info.get("sample", [])],
+        }
+    except Exception:
+        return None
+
+
 def create_game_server(
     name: str,
     game_type: str = "minecraft",

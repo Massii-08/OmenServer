@@ -59,6 +59,8 @@ class ServerResponse(BaseModel):
     cpu_percent: int = 100
     status: str
     docker_id: Optional[str]
+    player_count: int = 0
+    player_max: int = 20
 
     class Config:
         from_attributes = True
@@ -110,6 +112,7 @@ def list_servers(
 ):
     """Retourne la liste de tous les serveurs de jeux."""
     servers = db.query(GameServer).all()
+    result = []
 
     for server in servers:
         if server.docker_id:
@@ -123,7 +126,16 @@ def list_servers(
                 server.status = "error"
             db.commit()
 
-    return servers
+        # Construire la réponse avec player_count
+        resp = ServerResponse.model_validate(server, from_attributes=True)
+        if server.status == "running" and server.game_type == "minecraft":
+            ping = docker_manager.mc_server_ping(server.port)
+            if ping:
+                resp.player_count = ping["online"]
+                resp.player_max = ping["max"]
+        result.append(resp)
+
+    return result
 
 
 @router.post("/", response_model=ServerResponse, status_code=status.HTTP_201_CREATED)

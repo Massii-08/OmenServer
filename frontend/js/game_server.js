@@ -501,6 +501,7 @@ const GameServer = {
                             <span class="status-dot ${statusClass}"></span>
                             ${statusText}
                         </span>
+                        ${isRunning ? `<span style="font-size:12px;color:var(--accent-blue);font-weight:600;">👥 ${server.player_count || 0}/${server.player_max || 20}</span>` : ''}
                         <div class="server-actions" onclick="event.stopPropagation()">
                             ${isRunning ? `
                                 <button class="btn btn-icon btn-secondary" onclick="GameServer.stopServer(${server.id})" title="Arrêter">⏹️</button>
