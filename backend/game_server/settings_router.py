@@ -186,9 +186,18 @@ def _docker_exec_stopped(docker_id: str, cmd: str) -> str:
         except Exception:
             return ""
 
-    # rm / mkdir / mv → need container running
+    # rm / mkdir / mv → utiliser un conteneur temporaire busybox avec --volumes-from
     if any(x in cmd_stripped for x in ["rm ", "mkdir ", "mv "]):
-        raise RuntimeError("Cette opération nécessite de démarrer le conteneur (suppression/création de dossier)")
+        try:
+            r = subprocess.run(
+                ["docker", "run", "--rm", "--volumes-from", docker_id,
+                 "busybox", "sh", "-c", cmd_stripped],
+                capture_output=True, text=True, timeout=30
+            )
+            return r.stdout
+        except Exception as e:
+            logger.error(f"Erreur busybox exec: {e}")
+            raise RuntimeError(f"Erreur: {e}")
 
     return ""
 
