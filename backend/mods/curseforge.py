@@ -31,10 +31,12 @@ GAME_IDS = {
 
 # Mod class IDs (type de contenu)
 MOD_CLASS_IDS = {
-    "mods": 6,       # Mods
-    "modpacks": 4471, # Modpacks
-    "textures": 12,   # Resource packs
-    "worlds": 17,     # Maps
+    "mods": 6,         # Mods
+    "modpacks": 4471,  # Modpacks
+    "textures": 12,    # Resource packs
+    "worlds": 17,      # Maps
+    "datapacks": 6945, # Data Packs
+    "shaders": 6552,   # Shaders
 }
 
 

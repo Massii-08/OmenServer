@@ -118,7 +118,6 @@ def list_installed_mods(
     mods = curseforge.list_installed_mods(server_data_dir)
     return {"mods": mods, "count": len(mods)}
 
-
 @router.delete("/server/{server_id}/{filename}")
 def remove_mod(
     server_id: int,
@@ -137,3 +136,80 @@ def remove_mod(
         return {"message": f"✅ Mod '{filename}' supprimé"}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# --- Routes Datapacks ---
+
+class InstallDatapackRequest(BaseModel):
+    """Données pour installer un datapack."""
+    server_id: int
+    mod_name: str
+    download_url: str
+    filename: str
+
+
+@router.post("/datapacks/install")
+def install_datapack(
+    request: InstallDatapackRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Télécharge et installe un datapack sur un serveur."""
+    from backend.mods.datapack_manager import install_datapack as _install
+
+    server = db.query(GameServer).filter(GameServer.id == request.server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Serveur non trouvé")
+    if not server.docker_id:
+        raise HTTPException(status_code=400, detail="Pas de conteneur Docker")
+
+    try:
+        _install(server.docker_id, request.download_url, request.filename)
+        return {
+            "message": f"✅ Datapack '{request.mod_name}' installé !",
+            "filename": request.filename,
+        }
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/datapacks/{server_id}")
+def list_installed_datapacks(
+    server_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Liste les datapacks installés sur un serveur."""
+    from backend.mods.datapack_manager import list_installed_datapacks as _list
+
+    server = db.query(GameServer).filter(GameServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Serveur non trouvé")
+    if not server.docker_id:
+        return {"datapacks": [], "count": 0}
+
+    datapacks = _list(server.docker_id)
+    return {"datapacks": datapacks, "count": len(datapacks)}
+
+
+@router.delete("/datapacks/{server_id}/{filename}")
+def remove_datapack(
+    server_id: int,
+    filename: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Supprime un datapack d'un serveur."""
+    from backend.mods.datapack_manager import remove_datapack as _remove
+
+    server = db.query(GameServer).filter(GameServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Serveur non trouvé")
+    if not server.docker_id:
+        raise HTTPException(status_code=400, detail="Pas de conteneur Docker")
+
+    try:
+        _remove(server.docker_id, filename)
+        return {"message": f"✅ Datapack '{filename}' supprimé"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -63,6 +63,7 @@ const ServerView = {
             {id:'history',icon:'📜',label:'Historique'},
             {id:'players',icon:'👥',label:'Joueurs'},
             {id:'mods',icon:'🧩',label:'Mods & Plugins'},
+            {id:'datapacks',icon:'📜',label:'Datapacks'},
             {id:'worlds',icon:'🌍',label:'Mondes'},
             {id:'database',icon:'🗄️',label:'Base de données'},
             {id:'version',icon:'🏷️',label:'Version'},
@@ -96,6 +97,7 @@ const ServerView = {
             case 'backups': return this._backupsTab();
             case 'scheduler': return this._schedulerTab();
             case 'mods': return this._modsTab();
+            case 'datapacks': return this._datapacksTab();
             case 'settings': return SvSettings.render(this.serverData, this.serverId);
             case 'files': return SvFiles.render(this.serverId);
             case 'monitoring': return SvMonitoring.render(this.serverId);
@@ -649,6 +651,146 @@ const ServerView = {
                 <div><span style="font-size:13px;">${f.name}</span> <span style="color:var(--text-muted);font-size:11px;">(${f.size_mb}Mo)</span></div>
                 ${f.download_url?`<button class="btn btn-primary btn-sm" onclick="ServerView._installMod('${name.replace(/'/g,"\\'")}','${f.download_url}','${f.name}')">📥</button>`:''}
             </div>`).join('');
+    },
+
+    // ============ DATAPACKS (CurseForge) ============
+
+    _datapacksTab() {
+        this._dpMode = this._dpMode || 'search';
+        return `<h2>📜 Datapacks</h2>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">Installez des datapacks depuis CurseForge pour personnaliser le gameplay</p>
+
+        <div style="display:flex;gap:4px;margin-bottom:16px;background:var(--bg-secondary);padding:4px;border-radius:8px;width:fit-content;">
+            <button class="btn btn-sm ${this._dpMode==='search'?'btn-primary':'btn-secondary'}" onclick="ServerView._dpMode='search';ServerView.switchTab('datapacks')">🔍 Rechercher</button>
+            <button class="btn btn-sm ${this._dpMode==='installed'?'btn-primary':'btn-secondary'}" onclick="ServerView._dpMode='installed';ServerView.switchTab('datapacks')">📦 Installés</button>
+        </div>
+
+        <div id="sv-dp-content">${this._dpModeContent()}</div>`;
+    },
+
+    _dpModeContent() {
+        if (this._dpMode === 'installed') {
+            setTimeout(() => this._loadInstalledDatapacks(), 50);
+            return '<div id="sv-dp-installed"><div style="color:var(--text-muted)">⏳ Chargement...</div></div>';
+        }
+        return this._dpSearchUI();
+    },
+
+    _dpSearchUI() {
+        return `
+        <div style="display:flex;gap:8px;margin-bottom:12px;">
+            <input id="sv-dp-q" class="form-input" placeholder="Rechercher un datapack (ex: Timber, Vanilla Tweaks)..." style="flex:1;" onkeydown="if(event.key==='Enter')ServerView._searchDatapacks()" />
+            <button class="btn btn-primary" onclick="ServerView._searchDatapacks()">🔍 Rechercher</button>
+        </div>
+        <div id="sv-dp-results"><div style="color:var(--text-muted)">📜 Recherchez un datapack sur CurseForge</div></div>`;
+    },
+
+    async _searchDatapacks() {
+        const q = document.getElementById('sv-dp-q')?.value?.trim();
+        if (!q) return;
+        const el = document.getElementById('sv-dp-results');
+        if (!el) return;
+        el.innerHTML = '<div style="color:var(--text-muted)">⏳ Recherche sur CurseForge...</div>';
+
+        const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=datapacks`);
+        if (!r || !r.ok) { el.innerHTML = '<div style="color:#e74c3c">❌ Erreur CurseForge</div>'; return; }
+        const data = await r.json();
+        const mods = data.mods || [];
+        if (mods.length === 0) { el.innerHTML = '<div style="color:var(--text-muted)">Aucun résultat</div>'; return; }
+
+        el.innerHTML = mods.map(m => {
+            const dl = m.downloads > 1000000 ? `${(m.downloads/1000000).toFixed(1)}M` : m.downloads > 1000 ? `${Math.round(m.downloads/1000)}k` : m.downloads;
+            return `
+            <div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;">
+                <img src="${m.icon_url||''}" style="width:36px;height:36px;border-radius:6px;" onerror="this.style.display='none'"/>
+                <div style="flex:1;min-width:0;">
+                    <div style="font-weight:600;font-size:13px;">${m.name}</div>
+                    <div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.summary||''}</div>
+                    <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">📥 ${dl} téléchargements</div>
+                </div>
+                <button class="btn btn-primary btn-sm" onclick="ServerView._showDpFiles(${m.id},'${(m.name||'').replace(/'/g,"\\'")}')">📥 Versions</button>
+            </div>`;
+        }).join('');
+    },
+
+    async _showDpFiles(modId, name) {
+        const el = document.getElementById('sv-dp-results');
+        if (!el) return;
+        el.innerHTML = '<div style="color:var(--text-muted)">⏳ Chargement des versions...</div>';
+
+        const r = await Auth.apiCall(`/api/mods/${modId}/files`);
+        if (!r||!r.ok) { el.innerHTML = '<div style="color:#e74c3c">❌ Erreur</div>'; return; }
+        const files = (await r.json()).files || [];
+
+        el.innerHTML = `
+            <button class="btn btn-secondary btn-sm" onclick="ServerView._searchDatapacks()">← Retour</button>
+            <span style="font-weight:600;margin-left:8px;font-size:15px;">📜 ${name}</span>
+            <span id="sv-dp-install-msg" style="font-size:12px;margin-left:8px;"></span>
+            <div style="margin-top:12px;">
+            ${files.slice(0,10).map(f => {
+                const mcVers = (f.game_versions||[]).filter(v => /^\d/.test(v)).join(', ') || '?';
+                const type = f.release_type || '';
+                const typeColor = type === 'Release' ? 'var(--accent-green)' : type === 'Beta' ? 'var(--accent-yellow)' : 'var(--text-muted)';
+                return `
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;">
+                    <div>
+                        <span style="font-size:13px;font-weight:600;">${f.name}</span>
+                        <span style="color:var(--text-muted);font-size:11px;"> (${f.size_mb} Mo)</span>
+                        <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">MC ${mcVers} · <span style="color:${typeColor};">${type}</span></div>
+                    </div>
+                    ${f.download_url ? `<button class="btn btn-primary btn-sm" onclick="ServerView._installDatapack('${name.replace(/'/g,"\\'")  }','${f.download_url}','${f.name}')">📥 Installer</button>` : ''}
+                </div>`;
+            }).join('')}
+            </div>`;
+    },
+
+    async _installDatapack(name, url, filename) {
+        const msg = document.getElementById('sv-dp-install-msg');
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Installation...'; }
+
+        const r = await Auth.apiCall('/api/mods/datapacks/install', {
+            method: 'POST',
+            body: JSON.stringify({server_id: this.serverId, mod_name: name, download_url: url, filename: filename})
+        });
+
+        if (r && r.ok) {
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${name} installé ! Redémarre le serveur pour l'activer.`; }
+        } else {
+            const err = r ? await r.json().catch(()=>({})) : {};
+            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+        }
+    },
+
+    async _loadInstalledDatapacks() {
+        const el = document.getElementById('sv-dp-installed');
+        if (!el) return;
+
+        const r = await Auth.apiCall(`/api/mods/datapacks/${this.serverId}`);
+        const datapacks = (r && r.ok) ? ((await r.json()).datapacks || []) : [];
+
+        if (datapacks.length === 0) {
+            el.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-muted);">Aucun datapack installé.<br><span style="font-size:12px;">Installez des datapacks depuis l\'onglet "🔍 Rechercher".</span></div>';
+            return;
+        }
+
+        el.innerHTML = `<p style="color:var(--text-muted);font-size:12px;margin-bottom:8px;">${datapacks.length} datapack(s) dans /data/world/datapacks/</p>` +
+            datapacks.map(p => `
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:4px;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span>${p.is_dir ? '📁' : '📜'}</span>
+                    <div>
+                        <div style="font-weight:600;font-size:13px;">${p.filename}</div>
+                        <div style="font-size:11px;color:var(--text-muted);">${p.is_dir ? 'Dossier' : p.size_mb + ' Mo'}</div>
+                    </div>
+                </div>
+                <button class="btn btn-sm btn-danger" onclick="ServerView._removeDatapack('${p.filename.replace(/'/g,"\\'")}')">🗑️ Supprimer</button>
+            </div>`).join('');
+    },
+
+    async _removeDatapack(filename) {
+        if (!confirm(`Supprimer le datapack "${filename}" ?`)) return;
+        await Auth.apiCall(`/api/mods/datapacks/${this.serverId}/${encodeURIComponent(filename)}`, {method: 'DELETE'});
+        this._loadInstalledDatapacks();
     },
 
     async _installMod(name, url, filename) {
