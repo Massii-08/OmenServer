@@ -11,7 +11,7 @@ GAMES = {
     "minecraft": {
         "name": "Minecraft Java",
         "icon": "⛏️",
-        "image": "itzg/minecraft-server",
+        "image": "itzg/minecraft-server:java21",
         "default_port": 25565,
         "default_memory_mb": 2048,
         "port_protocol": "tcp",
