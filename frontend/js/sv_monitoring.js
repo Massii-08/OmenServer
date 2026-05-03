@@ -1,16 +1,18 @@
 /**
- * SvMonitoring — Monitoring temps réel avec graphiques Canvas.
- * Affiche CPU, RAM et Réseau en temps réel avec historique.
+ * SvMonitoring — Monitoring temps réel avec graphiques Canvas avancés.
+ * 4 graphiques : CPU, RAM, Réseau ↓ et Réseau ↑ avec historique et stats.
  */
 const SvMonitoring = {
     _serverId: null,
     _interval: null,
     _history: {cpu: [], ram: [], net_rx: [], net_tx: []},
+    _timestamps: [],
     _maxPoints: 60,
 
     render(serverId) {
         this._serverId = serverId;
         this._history = {cpu: [], ram: [], net_rx: [], net_tx: []};
+        this._timestamps = [];
         if (this._interval) clearInterval(this._interval);
         setTimeout(() => {
             this._poll();
@@ -18,33 +20,59 @@ const SvMonitoring = {
         }, 100);
         return `
         <h2>📈 Monitoring temps réel</h2>
-        <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Statistiques en direct du conteneur Docker</p>
-        <div id="sv-mon-status" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:20px;">
-            <div style="background:var(--bg-secondary);padding:14px;border-radius:10px;text-align:center;">
-                <div style="font-size:11px;color:var(--text-muted);">CPU</div>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Statistiques en direct · Actualisation toutes les 3s · Historique 3 min</p>
+
+        <div id="sv-mon-status" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">
+            <div style="background:var(--bg-secondary);padding:14px;border-radius:10px;text-align:center;border-top:3px solid var(--accent-blue);">
+                <div style="font-size:11px;color:var(--text-muted);">⚡ CPU</div>
                 <div id="sv-mon-cpu" style="font-size:24px;font-weight:700;color:var(--accent-blue);">—</div>
+                <div id="sv-mon-cpu-info" style="font-size:10px;color:var(--text-muted);margin-top:2px;">—</div>
             </div>
-            <div style="background:var(--bg-secondary);padding:14px;border-radius:10px;text-align:center;">
-                <div style="font-size:11px;color:var(--text-muted);">RAM</div>
+            <div style="background:var(--bg-secondary);padding:14px;border-radius:10px;text-align:center;border-top:3px solid var(--accent-green);">
+                <div style="font-size:11px;color:var(--text-muted);">🧠 RAM</div>
                 <div id="sv-mon-ram" style="font-size:24px;font-weight:700;color:var(--accent-green);">—</div>
+                <div id="sv-mon-ram-info" style="font-size:10px;color:var(--text-muted);margin-top:2px;">—</div>
             </div>
-            <div style="background:var(--bg-secondary);padding:14px;border-radius:10px;text-align:center;">
-                <div style="font-size:11px;color:var(--text-muted);">Réseau ↓</div>
-                <div id="sv-mon-rx" style="font-size:24px;font-weight:700;color:var(--accent-orange);">—</div>
+            <div style="background:var(--bg-secondary);padding:14px;border-radius:10px;text-align:center;border-top:3px solid #f59e0b;">
+                <div style="font-size:11px;color:var(--text-muted);">📥 Réseau ↓</div>
+                <div id="sv-mon-rx" style="font-size:24px;font-weight:700;color:#f59e0b;">—</div>
             </div>
-            <div style="background:var(--bg-secondary);padding:14px;border-radius:10px;text-align:center;">
-                <div style="font-size:11px;color:var(--text-muted);">Réseau ↑</div>
+            <div style="background:var(--bg-secondary);padding:14px;border-radius:10px;text-align:center;border-top:3px solid #a78bfa;">
+                <div style="font-size:11px;color:var(--text-muted);">📤 Réseau ↑</div>
                 <div id="sv-mon-tx" style="font-size:24px;font-weight:700;color:#a78bfa;">—</div>
+            </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <span style="font-size:13px;font-weight:600;">⚡ CPU</span>
+                    <span id="sv-mon-cpu-peak" style="font-size:10px;color:var(--text-muted);">pic: —</span>
+                </div>
+                <canvas id="sv-mon-cpu-chart" height="180"></canvas>
+            </div>
+            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <span style="font-size:13px;font-weight:600;">🧠 RAM</span>
+                    <span id="sv-mon-ram-peak" style="font-size:10px;color:var(--text-muted);">pic: —</span>
+                </div>
+                <canvas id="sv-mon-ram-chart" height="180"></canvas>
             </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
-                <div style="font-size:13px;font-weight:600;margin-bottom:8px;">⚡ CPU</div>
-                <canvas id="sv-mon-cpu-chart" height="150"></canvas>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <span style="font-size:13px;font-weight:600;">📥 Réseau entrant</span>
+                    <span id="sv-mon-rx-total" style="font-size:10px;color:var(--text-muted);">total: —</span>
+                </div>
+                <canvas id="sv-mon-rx-chart" height="140"></canvas>
             </div>
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
-                <div style="font-size:13px;font-weight:600;margin-bottom:8px;">💻 RAM</div>
-                <canvas id="sv-mon-ram-chart" height="150"></canvas>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <span style="font-size:13px;font-weight:600;">📤 Réseau sortant</span>
+                    <span id="sv-mon-tx-total" style="font-size:10px;color:var(--text-muted);">total: —</span>
+                </div>
+                <canvas id="sv-mon-tx-chart" height="140"></canvas>
             </div>
         </div>`;
     },
@@ -63,7 +91,7 @@ const SvMonitoring = {
             return;
         }
 
-        // Mettre à jour les valeurs
+        // Valeurs live
         const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
         setVal('sv-mon-cpu', d.cpu_percent.toFixed(1) + '%');
         setVal('sv-mon-ram', d.ram_used_mb + ' Mo');
@@ -71,43 +99,99 @@ const SvMonitoring = {
         setVal('sv-mon-tx', d.net_tx_mb + ' Mo');
 
         // Historique
+        const now = new Date();
+        this._timestamps.push(now);
         this._history.cpu.push(d.cpu_percent);
-        this._history.ram.push(d.ram_percent);
-        if (this._history.cpu.length > this._maxPoints) this._history.cpu.shift();
-        if (this._history.ram.length > this._maxPoints) this._history.ram.shift();
+        this._history.ram.push(d.ram_percent || (d.ram_used_mb / (d.ram_limit_mb || 2048) * 100));
+        this._history.net_rx.push(d.net_rx_mb || 0);
+        this._history.net_tx.push(d.net_tx_mb || 0);
 
-        // Dessiner
+        // Trim
+        while (this._timestamps.length > this._maxPoints) {
+            this._timestamps.shift();
+            this._history.cpu.shift();
+            this._history.ram.shift();
+            this._history.net_rx.shift();
+            this._history.net_tx.shift();
+        }
+
+        // Stats info
+        const avg = arr => arr.length ? (arr.reduce((a,b) => a+b, 0) / arr.length).toFixed(1) : '—';
+        const peak = arr => arr.length ? Math.max(...arr).toFixed(1) : '—';
+
+        setVal('sv-mon-cpu-info', `moy: ${avg(this._history.cpu)}% · ${this._history.cpu.length} pts`);
+        setVal('sv-mon-ram-info', `${d.ram_used_mb}/${d.ram_limit_mb || '?'} Mo`);
+        setVal('sv-mon-cpu-peak', `pic: ${peak(this._history.cpu)}%`);
+        setVal('sv-mon-ram-peak', `pic: ${peak(this._history.ram)}%`);
+        setVal('sv-mon-rx-total', `total: ${d.net_rx_mb} Mo`);
+        setVal('sv-mon-tx-total', `total: ${d.net_tx_mb} Mo`);
+
+        // Dessiner les graphiques
         this._drawChart('sv-mon-cpu-chart', this._history.cpu, '#3b82f6', 100, '%');
         this._drawChart('sv-mon-ram-chart', this._history.ram, '#22c55e', 100, '%');
+
+        // Pour réseau, calculer les deltas (trafic incrémental)
+        const rxDeltas = this._calcDeltas(this._history.net_rx);
+        const txDeltas = this._calcDeltas(this._history.net_tx);
+        const maxNet = Math.max(0.01, Math.max(...rxDeltas, ...txDeltas));
+        this._drawChart('sv-mon-rx-chart', rxDeltas, '#f59e0b', maxNet, ' Mo');
+        this._drawChart('sv-mon-tx-chart', txDeltas, '#a78bfa', maxNet, ' Mo');
+    },
+
+    _calcDeltas(arr) {
+        if (arr.length < 2) return arr.slice();
+        const deltas = [0];
+        for (let i = 1; i < arr.length; i++) {
+            deltas.push(Math.max(0, arr[i] - arr[i-1]));
+        }
+        return deltas;
     },
 
     _drawChart(canvasId, data, color, maxVal, unit) {
         const canvas = document.getElementById(canvasId);
         if (!canvas || data.length < 2) return;
         const ctx = canvas.getContext('2d');
-        const w = canvas.width = canvas.offsetWidth;
-        const h = canvas.height = canvas.offsetHeight;
-        const pad = {top: 10, right: 10, bottom: 20, left: 40};
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.offsetWidth;
+        const h = canvas.offsetHeight;
+        canvas.width = w * dpr;
+        canvas.height = h * dpr;
+        ctx.scale(dpr, dpr);
+
+        const pad = {top: 10, right: 10, bottom: 22, left: 42};
         const cw = w - pad.left - pad.right;
         const ch = h - pad.top - pad.bottom;
 
         ctx.clearRect(0, 0, w, h);
 
-        // Grille
-        ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-        ctx.lineWidth = 1;
+        // Grille horizontale + labels
+        ctx.font = '10px Inter, monospace';
+        ctx.textAlign = 'right';
         for (let i = 0; i <= 4; i++) {
             const y = pad.top + (ch * i / 4);
+            ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+            ctx.lineWidth = 1;
             ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
-            ctx.fillStyle = 'rgba(255,255,255,0.3)';
-            ctx.font = '10px monospace';
-            ctx.textAlign = 'right';
-            ctx.fillText(Math.round(maxVal - (maxVal * i / 4)) + unit, pad.left - 4, y + 3);
+            ctx.fillStyle = 'rgba(255,255,255,0.25)';
+            const label = maxVal <= 1 ? (maxVal - (maxVal * i / 4)).toFixed(2) : Math.round(maxVal - (maxVal * i / 4));
+            ctx.fillText(label + unit, pad.left - 4, y + 3);
+        }
+
+        // Labels de temps sur X
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(255,255,255,0.2)';
+        const timeLabels = [0, Math.floor(data.length / 2), data.length - 1];
+        for (const i of timeLabels) {
+            if (i < this._timestamps.length) {
+                const t = this._timestamps[i];
+                const x = pad.left + (i / (this._maxPoints - 1)) * cw;
+                ctx.fillText(t.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit', second:'2-digit'}), x, h - 4);
+            }
         }
 
         // Remplissage gradient
         const grad = ctx.createLinearGradient(0, pad.top, 0, h - pad.bottom);
-        grad.addColorStop(0, color + '40');
+        grad.addColorStop(0, color + '30');
         grad.addColorStop(1, color + '05');
 
         ctx.beginPath();
@@ -115,35 +199,64 @@ const SvMonitoring = {
         for (let i = 0; i < data.length; i++) {
             const x = pad.left + (i / (this._maxPoints - 1)) * cw;
             const y = pad.top + ch - (Math.min(data[i], maxVal) / maxVal) * ch;
-            ctx.lineTo(x, y);
+            if (i === 0) ctx.lineTo(x, y);
+            else {
+                // Courbe lissée
+                const prevX = pad.left + ((i-1) / (this._maxPoints - 1)) * cw;
+                const prevY = pad.top + ch - (Math.min(data[i-1], maxVal) / maxVal) * ch;
+                const cpx = (prevX + x) / 2;
+                ctx.bezierCurveTo(cpx, prevY, cpx, y, x, y);
+            }
         }
         ctx.lineTo(pad.left + ((data.length - 1) / (this._maxPoints - 1)) * cw, pad.top + ch);
         ctx.closePath();
         ctx.fillStyle = grad;
         ctx.fill();
 
-        // Ligne
+        // Ligne lissée
         ctx.beginPath();
         for (let i = 0; i < data.length; i++) {
             const x = pad.left + (i / (this._maxPoints - 1)) * cw;
             const y = pad.top + ch - (Math.min(data[i], maxVal) / maxVal) * ch;
-            i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+            if (i === 0) ctx.moveTo(x, y);
+            else {
+                const prevX = pad.left + ((i-1) / (this._maxPoints - 1)) * cw;
+                const prevY = pad.top + ch - (Math.min(data[i-1], maxVal) / maxVal) * ch;
+                const cpx = (prevX + x) / 2;
+                ctx.bezierCurveTo(cpx, prevY, cpx, y, x, y);
+            }
         }
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
         ctx.stroke();
 
-        // Point courant
+        // Point courant avec glow
         if (data.length > 0) {
             const lastX = pad.left + ((data.length - 1) / (this._maxPoints - 1)) * cw;
             const lastY = pad.top + ch - (Math.min(data[data.length - 1], maxVal) / maxVal) * ch;
+
+            // Glow
+            ctx.beginPath();
+            ctx.arc(lastX, lastY, 8, 0, Math.PI * 2);
+            ctx.fillStyle = color + '20';
+            ctx.fill();
+
+            // Point
             ctx.beginPath();
             ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
             ctx.fillStyle = color;
             ctx.fill();
-            ctx.strokeStyle = '#fff';
+            ctx.strokeStyle = '#0f0f1a';
             ctx.lineWidth = 2;
             ctx.stroke();
+
+            // Valeur actuelle
+            const val = maxVal <= 1 ? data[data.length-1].toFixed(3) : data[data.length-1].toFixed(1);
+            ctx.fillStyle = color;
+            ctx.font = 'bold 11px Inter, monospace';
+            ctx.textAlign = 'left';
+            const labelX = lastX + 10 > w - 50 ? lastX - 45 : lastX + 10;
+            ctx.fillText(val + unit, labelX, lastY + 4);
         }
     },
 };

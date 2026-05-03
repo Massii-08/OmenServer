@@ -10,6 +10,9 @@
 </head>
 <body>
     <div class="app-layout">
+        <!-- Mobile hamburger -->
+        <button class="mobile-menu-btn" id="mobile-menu-btn" onclick="document.getElementById('sidebar').classList.toggle('open');document.getElementById('sidebar-overlay').classList.toggle('active')">☰</button>
+        <div class="sidebar-overlay" id="sidebar-overlay" onclick="document.getElementById('sidebar').classList.remove('open');this.classList.remove('active')"></div>
         <!-- SIDEBAR -->
         <aside class="sidebar" id="sidebar">
             <!-- Header -->
@@ -72,17 +75,17 @@
     </div>
 
     <!-- Scripts -->
-    <script src="/js/auth.js?v=49"></script>
-    <script src="/js/monitoring.js?v=49"></script>
-    <script src="/js/modules.js?v=49"></script>
-    <script src="/js/game_server.js?v=49"></script>
-    <script src="/js/sv_settings.js?v=49"></script>
-    <script src="/js/sv_players.js?v=49"></script>
-    <script src="/js/sv_access.js?v=49"></script>
-    <script src="/js/sv_files.js?v=49"></script>
-    <script src="/js/sv_monitoring.js?v=49"></script>
-    <script src="/js/sv_history.js?v=49"></script>
-    <script src="/js/server_view.js?v=49"></script>
-    <script src="/js/app.js?v=49"></script>
+    <script src="/js/auth.js?v=50"></script>
+    <script src="/js/monitoring.js?v=50"></script>
+    <script src="/js/modules.js?v=50"></script>
+    <script src="/js/game_server.js?v=50"></script>
+    <script src="/js/sv_settings.js?v=50"></script>
+    <script src="/js/sv_players.js?v=50"></script>
+    <script src="/js/sv_access.js?v=50"></script>
+    <script src="/js/sv_files.js?v=50"></script>
+    <script src="/js/sv_monitoring.js?v=50"></script>
+    <script src="/js/sv_history.js?v=50"></script>
+    <script src="/js/server_view.js?v=50"></script>
+    <script src="/js/app.js?v=50"></script>
 </body>
 </html>

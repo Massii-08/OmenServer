@@ -15,7 +15,7 @@ Routes:
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -207,4 +207,54 @@ def rename_file(
         _docker_exec(server.docker_id, f'mv "{old}" "{new}"')
         return {"message": f"✅ Renommé", "old": request.old_path, "new": request.new_path}
     except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{server_id}/files/upload")
+async def upload_file(
+    server_id: int,
+    path: str = Form("/", description="Dossier destination"),
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Upload un fichier dans le conteneur Docker (max 100 Mo)."""
+    import docker
+    import tarfile
+    import io
+
+    server = _get_server_or_404(server_id, db)
+    if not server.docker_id:
+        raise HTTPException(status_code=400, detail="Pas de conteneur Docker")
+
+    # Lire le fichier (max 100 Mo)
+    content = await file.read()
+    if len(content) > 100 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 100 Mo)")
+
+    filename = file.filename or "uploaded_file"
+    dest_dir = _safe_path(path)
+
+    try:
+        # Créer un tar avec le fichier
+        tar_buffer = io.BytesIO()
+        with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
+            info = tarfile.TarInfo(name=filename)
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+        tar_buffer.seek(0)
+
+        client = docker.from_env()
+        container = client.containers.get(server.docker_id)
+        container.put_archive(dest_dir, tar_buffer.read())
+
+        size_mb = round(len(content) / (1024 * 1024), 2)
+        logger.info(f"Fichier uploadé: {filename} ({size_mb} Mo) -> {dest_dir}")
+        return {
+            "message": f"✅ {filename} uploadé ({size_mb} Mo)",
+            "filename": filename,
+            "path": path,
+        }
+    except Exception as e:
+        logger.error(f"Erreur upload: {e}")
         raise HTTPException(status_code=500, detail=str(e))

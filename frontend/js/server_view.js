@@ -27,8 +27,8 @@ const ServerView = {
         const statusText = isRunning ? 'En ligne' : 'Arrêté';
 
         content.innerHTML = `
-        <div style="display:flex;height:100%;overflow:hidden;">
-            <div id="sv-sidebar" style="width:220px;min-width:220px;background:var(--bg-secondary);border-right:1px solid var(--border-color);padding:16px 0;overflow-y:auto;">
+        <div class="sv-layout" style="display:flex;height:100%;overflow:hidden;">
+            <div id="sv-sidebar" class="sv-sidebar" style="width:220px;min-width:220px;background:var(--bg-secondary);border-right:1px solid var(--border-color);padding:16px 0;overflow-y:auto;">
                 <div style="padding:0 16px 16px;border-bottom:1px solid var(--border-color);margin-bottom:8px;">
                     <div style="font-size:18px;font-weight:700;">${s.name || 'Serveur'}</div>
                     <div style="font-size:12px;color:${statusColor};margin-top:4px;">● ${statusText}</div>
@@ -43,7 +43,7 @@ const ServerView = {
                 </div>
                 ${this._sidebarItems()}
             </div>
-            <div id="sv-content" style="flex:1;overflow-y:auto;padding:24px;">
+            <div id="sv-content" class="sv-main" style="flex:1;overflow-y:auto;padding:24px;">
                 ${this._tabContent()}
             </div>
         </div>`;

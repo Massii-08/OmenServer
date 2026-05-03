@@ -69,6 +69,10 @@ const App = {
      * C'est la fonction principale qui change le contenu affiché.
      */
     async navigateTo(view, data) {
+        // Fermer le menu mobile si ouvert
+        document.getElementById('sidebar')?.classList.remove('open');
+        document.getElementById('sidebar-overlay')?.classList.remove('active');
+
         // Décharger la vue précédente
         if (this.currentView === 'game_server') {
             GameServer.unload();

@@ -22,9 +22,12 @@ const SvFiles = {
         </div>
         <div id="sv-files-toolbar" style="display:flex;gap:8px;margin-bottom:12px;align-items:center;">
             <div id="sv-files-breadcrumb" style="flex:1;font-size:13px;"></div>
+            <button class="btn btn-primary btn-sm" onclick="document.getElementById('sv-file-upload').click()">📤 Uploader</button>
+            <input type="file" id="sv-file-upload" multiple style="display:none;" onchange="SvFiles._uploadFiles(this.files)" />
             <button class="btn btn-secondary btn-sm" onclick="SvFiles._promptNewFile()">📄 Nouveau fichier</button>
             <button class="btn btn-secondary btn-sm" onclick="SvFiles._promptMkdir()">📁 Nouveau dossier</button>
         </div>
+        <div id="sv-upload-progress" style="display:none;margin-bottom:10px;"></div>
         <div id="sv-files-content"><div style="color:var(--text-muted)">⏳ Chargement...</div></div>`;
     },
 
@@ -255,5 +258,49 @@ const SvFiles = {
 
     _escapeHtml(str) {
         return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    },
+
+    async _uploadFiles(fileList) {
+        if (!fileList || fileList.length === 0) return;
+        const prog = document.getElementById('sv-upload-progress');
+        if (prog) { prog.style.display = 'block'; }
+
+        let success = 0, fail = 0;
+        for (let i = 0; i < fileList.length; i++) {
+            const f = fileList[i];
+            if (prog) {
+                prog.innerHTML = `<div style="padding:8px 12px;background:var(--bg-secondary);border-radius:6px;font-size:12px;">
+                    ⏳ Upload ${i+1}/${fileList.length} : <strong>${f.name}</strong> (${(f.size/1024/1024).toFixed(2)} Mo)...
+                </div>`;
+            }
+
+            const formData = new FormData();
+            formData.append('file', f);
+            formData.append('path', this._currentPath);
+
+            try {
+                const token = Auth.getToken();
+                const r = await fetch(`/api/servers/${this._serverId}/files/upload`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}` },
+                    body: formData,
+                });
+                if (r.ok) success++; else fail++;
+            } catch { fail++; }
+        }
+
+        // Reset file input
+        const inp = document.getElementById('sv-file-upload');
+        if (inp) inp.value = '';
+
+        if (prog) {
+            const color = fail === 0 ? 'var(--accent-green)' : '#e74c3c';
+            prog.innerHTML = `<div style="padding:8px 12px;background:var(--bg-secondary);border-radius:6px;font-size:12px;color:${color};">
+                ${fail === 0 ? '✅' : '⚠️'} ${success} fichier(s) uploadé(s)${fail > 0 ? `, ${fail} erreur(s)` : ''}
+            </div>`;
+            setTimeout(() => { prog.style.display = 'none'; }, 4000);
+        }
+
+        this._loadDir();
     },
 };
