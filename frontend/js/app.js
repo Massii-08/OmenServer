@@ -30,6 +30,34 @@ const App = {
 
         // Démarrer le monitoring
         Monitoring.start();
+
+        // Charger le thème sauvegardé
+        this._loadTheme();
+    },
+
+    // === THÈMES ===
+    _themes: ['default', 'midnight', 'emerald', 'crimson'],
+    _themeNames: { default: '🌑 Défaut', midnight: '🌊 Midnight', emerald: '🌲 Emerald', crimson: '🔥 Crimson' },
+
+    _loadTheme() {
+        const saved = localStorage.getItem('omen-theme') || 'default';
+        document.documentElement.setAttribute('data-theme', saved);
+    },
+
+    cycleTheme() {
+        const current = localStorage.getItem('omen-theme') || 'default';
+        const idx = this._themes.indexOf(current);
+        const next = this._themes[(idx + 1) % this._themes.length];
+        localStorage.setItem('omen-theme', next);
+        document.documentElement.setAttribute('data-theme', next);
+
+        // Feedback visuel
+        const btn = document.getElementById('theme-btn');
+        if (btn) {
+            btn.title = this._themeNames[next];
+            btn.style.transform = 'rotate(360deg)';
+            setTimeout(() => btn.style.transform = '', 300);
+        }
     },
 
     /**
@@ -168,12 +196,44 @@ const App = {
                 🌐 Réseau : <span id="stat-network">--</span>
             </div>
 
+            <!-- Kill All + Actions rapides -->
+            <div style="display:flex;gap:12px;margin-bottom:28px;align-items:center;">
+                <button class="btn btn-kill-all" onclick="App.killAllServers()" title="Arrêter tous les services d'urgence">
+                    🔴 Kill All
+                </button>
+                <span style="font-size:12px;color:var(--text-muted);">Arrêt d'urgence de tous les services</span>
+            </div>
+
             <!-- Modules -->
             <div class="page-header">
                 <h2 style="font-size: 18px; font-weight: 700;">Modules</h2>
             </div>
             <div id="modules-grid" class="modules-grid"></div>
         `;
+    },
+
+    /**
+     * Kill All — arrête tous les services d'urgence.
+     */
+    async killAllServers() {
+        if (!confirm('⚠️ ARRÊT D\'URGENCE\n\nCela va arrêter TOUS les serveurs de jeux en cours.\n\nContinuer ?')) return;
+
+        const r = await Auth.apiCall('/api/servers');
+        if (!r || !r.ok) { alert('❌ Erreur'); return; }
+        const servers = await r.json();
+
+        let stopped = 0;
+        for (const s of servers) {
+            if (s.status === 'running') {
+                const sr = await Auth.apiCall(`/api/servers/${s.id}/stop`, { method: 'POST' });
+                if (sr && sr.ok) stopped++;
+            }
+        }
+
+        alert(`✅ ${stopped} serveur(s) arrêté(s)`);
+        if (this.currentView === 'hub') {
+            this.navigateTo('hub');
+        }
     },
 
     /**
