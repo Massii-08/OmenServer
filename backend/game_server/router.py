@@ -73,6 +73,7 @@ class ChangeVersionRequest(BaseModel):
     server_type: str          # VANILLA, PAPER, SPIGOT, FORGE, etc.
     version: str = "LATEST"   # Version du jeu
     reset_data: bool = False  # Si True, supprime /data et réinstalle tout
+    cf_modpack_id: Optional[int] = None  # ID CurseForge du modpack
 
 
 class UpdateResourcesRequest(BaseModel):
@@ -309,6 +310,7 @@ def change_server_version(
             memory_mb=server.memory_mb,
             version=request.version,
             server_type=request.server_type,
+            cf_modpack_id=request.cf_modpack_id,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))

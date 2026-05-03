@@ -976,6 +976,29 @@ const ServerView = {
             <input id="sv-ver-version-custom" class="form-input" value="${!isKnownVersion && currentVer !== 'LATEST' ? currentVer : ''}" placeholder="Ex: 1.12.2, 23w13a (snapshot)..." style="display:${!isKnownVersion && currentVer !== 'LATEST' ? 'block' : 'none'};margin-top:8px;" />
         </div>
 
+        <!-- Modpack CurseForge (affiché pour Forge/Fabric/NeoForge/Quilt) -->
+        <div id="sv-ver-modpack-group" style="display:${['FORGE','NEOFORGE','FABRIC','QUILT'].includes(currentType) ? 'block' : 'none'};">
+            <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
+                <div style="font-weight:600;margin-bottom:10px;">📦 Mode de contenu</div>
+                <div style="display:flex;gap:8px;margin-bottom:12px;">
+                    <button type="button" id="sv-ver-mp-blank" class="btn btn-primary btn-sm" onclick="ServerView._setVerModpackMode('blank')" style="flex:1;padding:10px;">
+                        🗂️ Serveur vierge<br><span style="font-size:10px;font-weight:400;opacity:0.8;">J'ajouterai les mods après</span>
+                    </button>
+                    <button type="button" id="sv-ver-mp-modpack" class="btn btn-secondary btn-sm" onclick="ServerView._setVerModpackMode('modpack')" style="flex:1;padding:10px;">
+                        📦 Modpack CurseForge<br><span style="font-size:10px;font-weight:400;opacity:0.8;">Installer un modpack pré-fait</span>
+                    </button>
+                </div>
+                <div id="sv-ver-mp-search" style="display:none;">
+                    <div style="display:flex;gap:6px;margin-bottom:8px;">
+                        <input id="sv-ver-mp-q" class="form-input" placeholder="Rechercher un modpack (ex: RLCraft, All the Mods)..." style="flex:1;" onkeydown="if(event.key==='Enter')ServerView._searchVerModpacks()" />
+                        <button class="btn btn-primary btn-sm" onclick="ServerView._searchVerModpacks()">🔍</button>
+                    </div>
+                    <div id="sv-ver-mp-results" style="max-height:180px;overflow-y:auto;"></div>
+                    <div id="sv-ver-mp-selected" style="display:none;background:linear-gradient(135deg,rgba(34,197,94,0.1),rgba(16,185,129,0.05));border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:10px;margin-top:8px;"></div>
+                </div>
+            </div>
+        </div>
+
         <!-- Option réinstallation -->
         <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
             <div style="font-weight:600;margin-bottom:10px;">🔄 Mode d'installation</div>
@@ -1007,9 +1030,89 @@ const ServerView = {
                 <button class="btn" style="background:#ef4444;color:white;" onclick="ServerView._changeVersionConfirmed()">🗑️ Oui, tout supprimer et réinstaller</button>
             </div>
         </div>`;
+
+        // Attacher le listener pour afficher/masquer le modpack selon le type choisi
+        setTimeout(() => {
+            const typeSelect = document.getElementById('sv-ver-type');
+            if (typeSelect) {
+                typeSelect.addEventListener('change', () => {
+                    const moddable = ['FORGE','NEOFORGE','FABRIC','QUILT'];
+                    const group = document.getElementById('sv-ver-modpack-group');
+                    if (group) {
+                        group.style.display = moddable.includes(typeSelect.value) ? 'block' : 'none';
+                    }
+                    // Reset modpack quand on quitte un type moddable
+                    if (!moddable.includes(typeSelect.value)) {
+                        ServerView._verModpackId = null;
+                    }
+                });
+            }
+        }, 50);
     },
 
     _changeVersionPending: null,
+    _verModpackId: null,
+
+    _setVerModpackMode(mode) {
+        const blankBtn = document.getElementById('sv-ver-mp-blank');
+        const modpackBtn = document.getElementById('sv-ver-mp-modpack');
+        const searchArea = document.getElementById('sv-ver-mp-search');
+        const selectedArea = document.getElementById('sv-ver-mp-selected');
+
+        if (blankBtn) blankBtn.className = mode === 'blank' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
+        if (modpackBtn) modpackBtn.className = mode === 'modpack' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
+        if (searchArea) searchArea.style.display = mode === 'modpack' ? 'block' : 'none';
+        if (selectedArea && mode === 'blank') {
+            selectedArea.style.display = 'none';
+            this._verModpackId = null;
+        }
+    },
+
+    async _searchVerModpacks() {
+        const q = document.getElementById('sv-ver-mp-q')?.value?.trim();
+        if (!q) return;
+        const el = document.getElementById('sv-ver-mp-results');
+        if (!el) return;
+        el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px;">⏳ Recherche sur CurseForge...</div>';
+
+        const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=modpacks`);
+        if (!r || !r.ok) { el.innerHTML = '<div style="color:#ef4444;font-size:12px;">❌ Erreur CurseForge</div>'; return; }
+        const data = await r.json();
+        const mods = data.mods || [];
+        if (mods.length === 0) { el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">Aucun résultat</div>'; return; }
+
+        el.innerHTML = mods.map(m => {
+            const dl = m.downloads > 1000000 ? `${(m.downloads/1000000).toFixed(1)}M` : m.downloads > 1000 ? `${Math.round(m.downloads/1000)}k` : m.downloads;
+            return `
+            <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-card);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='var(--bg-card)'" onclick="ServerView._selectVerModpack(${m.id}, '${(m.name||'').replace(/'/g,"\\'")}', '${m.icon_url||''}')">
+                <img src="${m.icon_url||''}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;" onerror="this.style.display='none'" />
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.name}</div>
+                    <div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.summary||''}</div>
+                </div>
+                <span style="font-size:10px;color:var(--text-muted);white-space:nowrap;">📥 ${dl}</span>
+            </div>`;
+        }).join('');
+    },
+
+    _selectVerModpack(id, name, iconUrl) {
+        this._verModpackId = id;
+        const el = document.getElementById('sv-ver-mp-selected');
+        const results = document.getElementById('sv-ver-mp-results');
+        if (results) results.innerHTML = '';
+        if (el) {
+            el.style.display = 'block';
+            el.innerHTML = `
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <img src="${iconUrl}" style="width:32px;height:32px;border-radius:6px;" onerror="this.style.display='none'" />
+                    <div style="flex:1;">
+                        <div style="font-size:13px;font-weight:600;color:var(--accent-green);">✅ ${name}</div>
+                        <div style="font-size:10px;color:var(--text-muted);">ID: ${id} — sera installé automatiquement au démarrage</div>
+                    </div>
+                    <button class="btn btn-secondary btn-sm" onclick="ServerView._verModpackId=null;this.parentElement.parentElement.style.display='none'" style="font-size:10px;">✕</button>
+                </div>`;
+        }
+    },
 
     async _changeVersion() {
         const msg = document.getElementById('sv-ver-msg');
@@ -1024,44 +1127,54 @@ const ServerView = {
             }
         }
         const resetData = document.querySelector('[name=sv-ver-mode]:checked')?.value === 'reset';
+        const cfModpackId = this._verModpackId || null;
 
         if (resetData) {
             // Stocker les paramètres et afficher la confirmation inline
-            this._changeVersionPending = { selectedType, version, resetData: true };
+            this._changeVersionPending = { selectedType, version, resetData: true, cfModpackId };
             document.getElementById('sv-ver-confirm').style.display = 'block';
             document.getElementById('sv-ver-apply-btn').style.display = 'none';
             return;
         }
 
         // Pas de reset → exécuter directement
-        await this._doChangeVersion(selectedType, version, false);
+        await this._doChangeVersion(selectedType, version, false, cfModpackId);
     },
 
     async _changeVersionConfirmed() {
         if (!this._changeVersionPending) return;
-        const { selectedType, version } = this._changeVersionPending;
+        const { selectedType, version, cfModpackId } = this._changeVersionPending;
         this._changeVersionPending = null;
         document.getElementById('sv-ver-confirm').style.display = 'none';
         document.getElementById('sv-ver-apply-btn').style.display = '';
-        await this._doChangeVersion(selectedType, version, true);
+        await this._doChangeVersion(selectedType, version, true, cfModpackId);
     },
 
-    async _doChangeVersion(selectedType, version, resetData) {
+    async _doChangeVersion(selectedType, version, resetData, cfModpackId) {
         const msg = document.getElementById('sv-ver-msg');
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Changement en cours... (peut prendre quelques minutes)'; }
+        if (msg) {
+            msg.style.color = 'var(--accent-blue)';
+            msg.textContent = cfModpackId
+                ? '⏳ Changement + installation du modpack... (peut prendre plusieurs minutes)'
+                : '⏳ Changement en cours... (peut prendre quelques minutes)';
+        }
+
+        const body = {
+            server_type: selectedType,
+            version: version,
+            reset_data: resetData,
+        };
+        if (cfModpackId) body.cf_modpack_id = cfModpackId;
 
         const r = await Auth.apiCall(`/api/servers/${this.serverId}/version`, {
             method: 'PUT',
-            body: JSON.stringify({
-                server_type: selectedType,
-                version: version,
-                reset_data: resetData,
-            })
+            body: JSON.stringify(body)
         });
 
         if (r && r.ok) {
             const data = await r.json();
             if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${data.message}`; }
+            this._verModpackId = null;
             await this.refreshServer();
             setTimeout(() => this.switchTab('version'), 1000);
         } else {
