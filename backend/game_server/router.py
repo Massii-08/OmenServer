@@ -45,7 +45,8 @@ class CreateServerRequest(BaseModel):
     port: Optional[int] = None
     memory_mb: Optional[int] = None
     custom_image: Optional[str] = None
-    cf_modpack_id: Optional[int] = None  # ID CurseForge pour installer un modpack
+    cf_page_url: Optional[str] = None   # URL page CurseForge du modpack
+    cf_file_id: Optional[int] = None    # ID fichier spécifique (version précise)
 
 
 class ServerResponse(BaseModel):
@@ -73,7 +74,8 @@ class ChangeVersionRequest(BaseModel):
     server_type: str          # VANILLA, PAPER, SPIGOT, FORGE, etc.
     version: str = "LATEST"   # Version du jeu
     reset_data: bool = False  # Si True, supprime /data et réinstalle tout
-    cf_modpack_id: Optional[int] = None  # ID CurseForge du modpack
+    cf_page_url: Optional[str] = None   # URL page CurseForge du modpack
+    cf_file_id: Optional[int] = None    # ID fichier spécifique (version précise)
 
 
 class UpdateResourcesRequest(BaseModel):
@@ -171,7 +173,8 @@ def create_server(
             version=request.version,
             custom_image=request.custom_image,
             server_type=request.server_type,
-            cf_modpack_id=request.cf_modpack_id,
+            cf_page_url=request.cf_page_url,
+            cf_file_id=request.cf_file_id,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -310,7 +313,8 @@ def change_server_version(
             memory_mb=server.memory_mb,
             version=request.version,
             server_type=request.server_type,
-            cf_modpack_id=request.cf_modpack_id,
+            cf_page_url=request.cf_page_url,
+            cf_file_id=request.cf_file_id,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))

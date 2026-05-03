@@ -663,7 +663,9 @@ const ServerView = {
         this.render();
     },
 
-    _bindEvents() {},
+    _bindEvents() {
+        if (this.currentTab === 'version') this._initVersionListeners();
+    },
 
     close() {
         if (this._ws) { this._ws.close(); this._ws = null; }
@@ -966,7 +968,7 @@ const ServerView = {
         </div>
 
         <!-- Version Minecraft -->
-        <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
+        <div id="sv-ver-version-group" style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
             <div style="font-weight:600;margin-bottom:10px;">🎮 Version Minecraft</div>
             <select id="sv-ver-version" class="form-input" style="font-size:14px;" onchange="document.getElementById('sv-ver-version-custom').style.display=this.value==='CUSTOM'?'block':'none'">
                 <option value="LATEST" ${currentVer === 'LATEST' ? 'selected' : ''}>🔄 Dernière version (LATEST)</option>
@@ -1030,28 +1032,26 @@ const ServerView = {
                 <button class="btn" style="background:#ef4444;color:white;" onclick="ServerView._changeVersionConfirmed()">🗑️ Oui, tout supprimer et réinstaller</button>
             </div>
         </div>`;
-
-        // Attacher le listener pour afficher/masquer le modpack selon le type choisi
-        setTimeout(() => {
-            const typeSelect = document.getElementById('sv-ver-type');
-            if (typeSelect) {
-                typeSelect.addEventListener('change', () => {
-                    const moddable = ['FORGE','NEOFORGE','FABRIC','QUILT'];
-                    const group = document.getElementById('sv-ver-modpack-group');
-                    if (group) {
-                        group.style.display = moddable.includes(typeSelect.value) ? 'block' : 'none';
-                    }
-                    // Reset modpack quand on quitte un type moddable
-                    if (!moddable.includes(typeSelect.value)) {
-                        ServerView._verModpackId = null;
-                    }
-                });
-            }
-        }, 50);
     },
 
     _changeVersionPending: null,
-    _verModpackId: null,
+    _verPageUrl: null,
+    _verFileId: null,
+
+    _initVersionListeners() {
+        const typeSelect = document.getElementById('sv-ver-type');
+        if (typeSelect) {
+            typeSelect.addEventListener('change', () => {
+                const moddable = ['FORGE','NEOFORGE','FABRIC','QUILT'];
+                const group = document.getElementById('sv-ver-modpack-group');
+                if (group) group.style.display = moddable.includes(typeSelect.value) ? 'block' : 'none';
+                if (!moddable.includes(typeSelect.value)) {
+                    this._verPageUrl = null;
+                    this._verFileId = null;
+                }
+            });
+        }
+    },
 
     _setVerModpackMode(mode) {
         const blankBtn = document.getElementById('sv-ver-mp-blank');
@@ -1064,8 +1064,12 @@ const ServerView = {
         if (searchArea) searchArea.style.display = mode === 'modpack' ? 'block' : 'none';
         if (selectedArea && mode === 'blank') {
             selectedArea.style.display = 'none';
-            this._verModpackId = null;
+            this._verPageUrl = null;
+            this._verFileId = null;
         }
+        // Réafficher le dropdown de version normal si on revient en vierge
+        const vg = document.getElementById('sv-ver-version-group');
+        if (vg) vg.style.display = mode === 'blank' ? 'block' : (this._verPageUrl ? 'none' : 'block');
     },
 
     async _searchVerModpacks() {
@@ -1073,7 +1077,7 @@ const ServerView = {
         if (!q) return;
         const el = document.getElementById('sv-ver-mp-results');
         if (!el) return;
-        el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px;">⏳ Recherche sur CurseForge...</div>';
+        el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px;">⏳ Recherche...</div>';
 
         const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=modpacks`);
         if (!r || !r.ok) { el.innerHTML = '<div style="color:#ef4444;font-size:12px;">❌ Erreur CurseForge</div>'; return; }
@@ -1083,8 +1087,10 @@ const ServerView = {
 
         el.innerHTML = mods.map(m => {
             const dl = m.downloads > 1000000 ? `${(m.downloads/1000000).toFixed(1)}M` : m.downloads > 1000 ? `${Math.round(m.downloads/1000)}k` : m.downloads;
+            const safeUrl = (m.url||'').replace(/'/g,"\\'");
+            const safeName = (m.name||'').replace(/'/g,"\\'");
             return `
-            <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-card);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='var(--bg-card)'" onclick="ServerView._selectVerModpack(${m.id}, '${(m.name||'').replace(/'/g,"\\'")}', '${m.icon_url||''}')">
+            <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-card);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='var(--bg-card)'" onclick="ServerView._selectVerModpack(${m.id}, '${safeName}', '${m.icon_url||''}', '${safeUrl}')">
                 <img src="${m.icon_url||''}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;" onerror="this.style.display='none'" />
                 <div style="flex:1;min-width:0;">
                     <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.name}</div>
@@ -1095,30 +1101,94 @@ const ServerView = {
         }).join('');
     },
 
-    _selectVerModpack(id, name, iconUrl) {
-        this._verModpackId = id;
+    async _selectVerModpack(id, name, iconUrl, pageUrl) {
+        this._verPageUrl = pageUrl;
+        this._verFileId = null;
         const el = document.getElementById('sv-ver-mp-selected');
         const results = document.getElementById('sv-ver-mp-results');
         if (results) results.innerHTML = '';
-        if (el) {
-            el.style.display = 'block';
-            el.innerHTML = `
-                <div style="display:flex;align-items:center;gap:10px;">
-                    <img src="${iconUrl}" style="width:32px;height:32px;border-radius:6px;" onerror="this.style.display='none'" />
-                    <div style="flex:1;">
-                        <div style="font-size:13px;font-weight:600;color:var(--accent-green);">✅ ${name}</div>
-                        <div style="font-size:10px;color:var(--text-muted);">ID: ${id} — sera installé automatiquement au démarrage</div>
-                    </div>
-                    <button class="btn btn-secondary btn-sm" onclick="ServerView._verModpackId=null;this.parentElement.parentElement.style.display='none'" style="font-size:10px;">✕</button>
-                </div>`;
+        if (!el) return;
+
+        // Cacher le dropdown de version normal (le modpack dicte la version)
+        const vg = document.getElementById('sv-ver-version-group');
+        if (vg) vg.style.display = 'none';
+
+        el.style.display = 'block';
+        el.innerHTML = `
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+                <img src="${iconUrl}" style="width:36px;height:36px;border-radius:8px;" onerror="this.style.display='none'" />
+                <div style="flex:1;">
+                    <div style="font-size:14px;font-weight:700;">${name}</div>
+                    <div style="font-size:10px;color:var(--text-muted);">⏳ Chargement des versions disponibles...</div>
+                </div>
+                <button class="btn btn-secondary btn-sm" onclick="ServerView._clearVerModpack()" style="font-size:10px;">✕</button>
+            </div>
+            <div id="sv-ver-mp-versions"><div style="color:var(--text-muted);font-size:12px;">⏳ Chargement...</div></div>`;
+
+        // Charger les fichiers du modpack
+        const r = await Auth.apiCall(`/api/mods/${id}/files`);
+        if (!r || !r.ok) {
+            document.getElementById('sv-ver-mp-versions').innerHTML = '<div style="color:#ef4444;">❌ Erreur</div>';
+            return;
         }
+        const files = (await r.json()).files || [];
+        if (files.length === 0) {
+            document.getElementById('sv-ver-mp-versions').innerHTML = '<div style="color:var(--text-muted);">Aucune version trouvée</div>';
+            return;
+        }
+
+        const versEl = document.getElementById('sv-ver-mp-versions');
+        if (!versEl) return;
+        versEl.innerHTML = `<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">${files.length} version(s) disponible(s) :</div>` +
+            files.map(f => {
+                const mcVers = (f.game_versions||[]).filter(v => /^\d/.test(v)).join(', ') || '?';
+                const type = f.release_type || '';
+                const typeColor = type === 'Release' ? 'var(--accent-green)' : type === 'Beta' ? 'var(--accent-yellow)' : 'var(--text-muted)';
+                const safeName2 = (f.name||'').replace(/'/g,"\\'");
+                return `
+                <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-primary);border-radius:6px;margin-bottom:3px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='var(--bg-primary)'" onclick="ServerView._pickVerModpackFile(${f.id}, '${safeName2}', '${mcVers}')">
+                    <div style="flex:1;">
+                        <div style="font-size:12px;font-weight:600;">${f.name}</div>
+                        <div style="font-size:10px;color:var(--text-muted);">MC ${mcVers} · ${f.size_mb} Mo · <span style="color:${typeColor};">${type}</span></div>
+                    </div>
+                    <span style="font-size:18px;">📥</span>
+                </div>`;
+            }).join('');
+    },
+
+    _pickVerModpackFile(fileId, fileName, mcVersion) {
+        this._verFileId = fileId;
+        // Mettre à jour le dropdown de version MC (caché) avec la bonne version
+        const verSelect = document.getElementById('sv-ver-version');
+        if (verSelect) verSelect.value = mcVersion.split(',')[0]?.trim() || 'LATEST';
+
+        const versEl = document.getElementById('sv-ver-mp-versions');
+        if (versEl) {
+            versEl.innerHTML = `
+            <div style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:6px;padding:10px;display:flex;align-items:center;gap:8px;">
+                <span style="font-size:18px;">✅</span>
+                <div>
+                    <div style="font-size:13px;font-weight:600;color:var(--accent-green);">${fileName}</div>
+                    <div style="font-size:10px;color:var(--text-muted);">Minecraft ${mcVersion} — sera installé au démarrage</div>
+                </div>
+                <button class="btn btn-secondary btn-sm" onclick="ServerView._selectVerModpack(0,'','','${this._verPageUrl}')" style="font-size:9px;margin-left:auto;">Changer</button>
+            </div>`;
+        }
+    },
+
+    _clearVerModpack() {
+        this._verPageUrl = null;
+        this._verFileId = null;
+        const el = document.getElementById('sv-ver-mp-selected');
+        if (el) el.style.display = 'none';
+        const vg = document.getElementById('sv-ver-version-group');
+        if (vg) vg.style.display = 'block';
     },
 
     async _changeVersion() {
         const msg = document.getElementById('sv-ver-msg');
         const selectedType = document.getElementById('sv-ver-type')?.value || 'VANILLA';
         let version = document.getElementById('sv-ver-version')?.value || 'LATEST';
-        // Si "Personnalisée" est sélectionné, utiliser le champ custom
         if (version === 'CUSTOM') {
             version = document.getElementById('sv-ver-version-custom')?.value?.trim() || '';
             if (!version) {
@@ -1127,44 +1197,38 @@ const ServerView = {
             }
         }
         const resetData = document.querySelector('[name=sv-ver-mode]:checked')?.value === 'reset';
-        const cfModpackId = this._verModpackId || null;
 
         if (resetData) {
-            // Stocker les paramètres et afficher la confirmation inline
-            this._changeVersionPending = { selectedType, version, resetData: true, cfModpackId };
+            this._changeVersionPending = { selectedType, version, resetData: true };
             document.getElementById('sv-ver-confirm').style.display = 'block';
             document.getElementById('sv-ver-apply-btn').style.display = 'none';
             return;
         }
-
-        // Pas de reset → exécuter directement
-        await this._doChangeVersion(selectedType, version, false, cfModpackId);
+        await this._doChangeVersion(selectedType, version, false);
     },
 
     async _changeVersionConfirmed() {
         if (!this._changeVersionPending) return;
-        const { selectedType, version, cfModpackId } = this._changeVersionPending;
+        const { selectedType, version } = this._changeVersionPending;
         this._changeVersionPending = null;
         document.getElementById('sv-ver-confirm').style.display = 'none';
         document.getElementById('sv-ver-apply-btn').style.display = '';
-        await this._doChangeVersion(selectedType, version, true, cfModpackId);
+        await this._doChangeVersion(selectedType, version, true);
     },
 
-    async _doChangeVersion(selectedType, version, resetData, cfModpackId) {
+    async _doChangeVersion(selectedType, version, resetData) {
         const msg = document.getElementById('sv-ver-msg');
+        const hasModpack = !!this._verPageUrl;
         if (msg) {
             msg.style.color = 'var(--accent-blue)';
-            msg.textContent = cfModpackId
+            msg.textContent = hasModpack
                 ? '⏳ Changement + installation du modpack... (peut prendre plusieurs minutes)'
                 : '⏳ Changement en cours... (peut prendre quelques minutes)';
         }
 
-        const body = {
-            server_type: selectedType,
-            version: version,
-            reset_data: resetData,
-        };
-        if (cfModpackId) body.cf_modpack_id = cfModpackId;
+        const body = { server_type: selectedType, version, reset_data: resetData };
+        if (this._verPageUrl) body.cf_page_url = this._verPageUrl;
+        if (this._verFileId) body.cf_file_id = this._verFileId;
 
         const r = await Auth.apiCall(`/api/servers/${this.serverId}/version`, {
             method: 'PUT',
@@ -1174,7 +1238,8 @@ const ServerView = {
         if (r && r.ok) {
             const data = await r.json();
             if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${data.message}`; }
-            this._verModpackId = null;
+            this._verPageUrl = null;
+            this._verFileId = null;
             await this.refreshServer();
             setTimeout(() => this.switchTab('version'), 1000);
         } else {

@@ -423,8 +423,9 @@ const GameServer = {
     /**
      * Met à jour les champs quand on change de jeu.
      */
-    _selectedModpackId: null,
-    _modpackMode: 'blank', // 'blank' or 'modpack'
+    _cfPageUrl: null,
+    _cfFileId: null,
+    _modpackMode: 'blank',
 
     /**
      * Met à jour les champs quand on change de jeu.
@@ -437,40 +438,24 @@ const GameServer = {
         const game = this._games.find(g => g.id === gameType);
         if (!game) return;
 
-        // Mettre à jour le port et la RAM par défaut
         document.getElementById('server-port').value = game.default_port;
         document.getElementById('server-memory').value = game.default_memory_mb;
 
-        // Afficher la description du jeu
         const descEl = document.getElementById('game-description');
         if (descEl) descEl.textContent = game.description || '';
 
-        // Afficher/masquer le champ version (seulement si le jeu supporte les versions)
         const versionGroup = document.getElementById('version-group');
-        if (versionGroup) {
-            versionGroup.style.display = game.version_env ? 'block' : 'none';
-        }
+        if (versionGroup) versionGroup.style.display = game.version_env ? 'block' : 'none';
 
-        // Afficher/masquer le sélecteur de type serveur (seulement pour Minecraft Java)
         const serverTypeGroup = document.getElementById('server-type-group');
-        if (serverTypeGroup) {
-            serverTypeGroup.style.display = gameType === 'minecraft' ? 'block' : 'none';
-        }
+        if (serverTypeGroup) serverTypeGroup.style.display = gameType === 'minecraft' ? 'block' : 'none';
 
-        // Afficher/masquer le champ image Docker (seulement pour "custom")
         const customGroup = document.getElementById('custom-image-group');
-        if (customGroup) {
-            customGroup.style.display = gameType === 'custom' ? 'block' : 'none';
-        }
+        if (customGroup) customGroup.style.display = gameType === 'custom' ? 'block' : 'none';
 
-        // Gérer l'affichage du choix modpack
         this._updateModpackVisibility();
-
-        // Écouter les changements de type serveur
         const serverTypeEl = document.getElementById('server-type-select');
-        if (serverTypeEl) {
-            serverTypeEl.onchange = () => this._updateModpackVisibility();
-        }
+        if (serverTypeEl) serverTypeEl.onchange = () => this._updateModpackVisibility();
     },
 
     _updateModpackVisibility() {
@@ -484,10 +469,12 @@ const GameServer = {
         const show = gameType === 'minecraft' && moddableTypes.includes(serverType);
         modpackGroup.style.display = show ? 'block' : 'none';
 
-        // Reset si caché
         if (!show) {
-            this._selectedModpackId = null;
+            this._cfPageUrl = null;
+            this._cfFileId = null;
             this._modpackMode = 'blank';
+            const vg = document.getElementById('version-group');
+            if (vg) vg.style.display = 'block';
         }
     },
 
@@ -498,19 +485,16 @@ const GameServer = {
         const searchArea = document.getElementById('modpack-search-area');
         const selectedArea = document.getElementById('modpack-selected');
 
-        if (blankBtn) {
-            blankBtn.className = mode === 'blank' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
-        }
-        if (modpackBtn) {
-            modpackBtn.className = mode === 'modpack' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
-        }
-        if (searchArea) {
-            searchArea.style.display = mode === 'modpack' ? 'block' : 'none';
-        }
+        if (blankBtn) blankBtn.className = mode === 'blank' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
+        if (modpackBtn) modpackBtn.className = mode === 'modpack' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
+        if (searchArea) searchArea.style.display = mode === 'modpack' ? 'block' : 'none';
         if (selectedArea && mode === 'blank') {
             selectedArea.style.display = 'none';
-            this._selectedModpackId = null;
+            this._cfPageUrl = null;
+            this._cfFileId = null;
         }
+        const vg = document.getElementById('version-group');
+        if (vg) vg.style.display = mode === 'blank' ? 'block' : (this._cfPageUrl ? 'none' : 'block');
     },
 
     async searchModpacks() {
@@ -518,7 +502,7 @@ const GameServer = {
         if (!q) return;
         const el = document.getElementById('modpack-results');
         if (!el) return;
-        el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px;">⏳ Recherche sur CurseForge...</div>';
+        el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px;">⏳ Recherche...</div>';
 
         const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=modpacks`);
         if (!r || !r.ok) { el.innerHTML = '<div style="color:#ef4444;font-size:12px;">❌ Erreur CurseForge</div>'; return; }
@@ -528,8 +512,10 @@ const GameServer = {
 
         el.innerHTML = mods.map(m => {
             const dl = m.downloads > 1000000 ? `${(m.downloads/1000000).toFixed(1)}M` : m.downloads > 1000 ? `${Math.round(m.downloads/1000)}k` : m.downloads;
+            const safeUrl = (m.url||'').replace(/'/g,"\\'");
+            const safeName = (m.name||'').replace(/'/g,"\\'");
             return `
-            <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='var(--bg-secondary)'" onclick="GameServer.selectModpack(${m.id}, '${(m.name||'').replace(/'/g,"\\'")}', '${m.icon_url||''}')">
+            <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='var(--bg-secondary)'" onclick="GameServer.selectModpack(${m.id}, '${safeName}', '${m.icon_url||''}', '${safeUrl}')">
                 <img src="${m.icon_url||''}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;" onerror="this.style.display='none'" />
                 <div style="flex:1;min-width:0;">
                     <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.name}</div>
@@ -540,23 +526,86 @@ const GameServer = {
         }).join('');
     },
 
-    selectModpack(id, name, iconUrl) {
-        this._selectedModpackId = id;
+    async selectModpack(id, name, iconUrl, pageUrl) {
+        this._cfPageUrl = pageUrl;
+        this._cfFileId = null;
         const el = document.getElementById('modpack-selected');
         const results = document.getElementById('modpack-results');
         if (results) results.innerHTML = '';
-        if (el) {
-            el.style.display = 'block';
-            el.innerHTML = `
-                <div style="display:flex;align-items:center;gap:10px;">
-                    <img src="${iconUrl}" style="width:32px;height:32px;border-radius:6px;" onerror="this.style.display='none'" />
-                    <div style="flex:1;">
-                        <div style="font-size:13px;font-weight:600;color:var(--accent-green);">✅ ${name}</div>
-                        <div style="font-size:10px;color:var(--text-muted);">ID: ${id} — sera installé automatiquement au démarrage</div>
-                    </div>
-                    <button class="btn btn-secondary btn-sm" onclick="GameServer._selectedModpackId=null;this.parentElement.parentElement.style.display='none'" style="font-size:10px;">✕</button>
-                </div>`;
+        if (!el) return;
+
+        // Cacher le dropdown de version normal
+        const vg = document.getElementById('version-group');
+        if (vg) vg.style.display = 'none';
+
+        el.style.display = 'block';
+        el.innerHTML = `
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+                <img src="${iconUrl}" style="width:36px;height:36px;border-radius:8px;" onerror="this.style.display='none'" />
+                <div style="flex:1;">
+                    <div style="font-size:14px;font-weight:700;">${name}</div>
+                    <div style="font-size:10px;color:var(--text-muted);">⏳ Chargement des versions...</div>
+                </div>
+                <button class="btn btn-secondary btn-sm" onclick="GameServer._clearModpack()" style="font-size:10px;">✕</button>
+            </div>
+            <div id="modpack-versions"><div style="color:var(--text-muted);font-size:12px;">⏳ Chargement...</div></div>`;
+
+        // Charger les fichiers du modpack
+        const r = await Auth.apiCall(`/api/mods/${id}/files`);
+        if (!r || !r.ok) {
+            document.getElementById('modpack-versions').innerHTML = '<div style="color:#ef4444;">❌ Erreur</div>';
+            return;
         }
+        const files = (await r.json()).files || [];
+        if (files.length === 0) {
+            document.getElementById('modpack-versions').innerHTML = '<div style="color:var(--text-muted);">Aucune version</div>';
+            return;
+        }
+
+        const versEl = document.getElementById('modpack-versions');
+        if (!versEl) return;
+        versEl.innerHTML = `<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">${files.length} version(s) :</div>` +
+            files.map(f => {
+                const mcVers = (f.game_versions||[]).filter(v => /^\d/.test(v)).join(', ') || '?';
+                const type = f.release_type || '';
+                const typeColor = type === 'Release' ? 'var(--accent-green)' : type === 'Beta' ? 'var(--accent-yellow)' : 'var(--text-muted)';
+                const safeName2 = (f.name||'').replace(/'/g,"\\'");
+                return `
+                <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-primary);border-radius:6px;margin-bottom:3px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='var(--bg-primary)'" onclick="GameServer._pickModpackFile(${f.id}, '${safeName2}', '${mcVers}')">
+                    <div style="flex:1;">
+                        <div style="font-size:12px;font-weight:600;">${f.name}</div>
+                        <div style="font-size:10px;color:var(--text-muted);">MC ${mcVers} · ${f.size_mb} Mo · <span style="color:${typeColor};">${type}</span></div>
+                    </div>
+                    <span style="font-size:18px;">📥</span>
+                </div>`;
+            }).join('');
+    },
+
+    _pickModpackFile(fileId, fileName, mcVersion) {
+        this._cfFileId = fileId;
+        const verSelect = document.getElementById('server-version');
+        if (verSelect) verSelect.value = mcVersion.split(',')[0]?.trim() || 'LATEST';
+
+        const versEl = document.getElementById('modpack-versions');
+        if (versEl) {
+            versEl.innerHTML = `
+            <div style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:6px;padding:10px;display:flex;align-items:center;gap:8px;">
+                <span style="font-size:18px;">✅</span>
+                <div>
+                    <div style="font-size:13px;font-weight:600;color:var(--accent-green);">${fileName}</div>
+                    <div style="font-size:10px;color:var(--text-muted);">Minecraft ${mcVersion}</div>
+                </div>
+            </div>`;
+        }
+    },
+
+    _clearModpack() {
+        this._cfPageUrl = null;
+        this._cfFileId = null;
+        const el = document.getElementById('modpack-selected');
+        if (el) el.style.display = 'none';
+        const vg = document.getElementById('version-group');
+        if (vg) vg.style.display = 'block';
     },
 
     async checkDocker() {
@@ -1272,14 +1321,15 @@ const GameServer = {
             body.custom_image = customImage;
         }
         // Ajouter le modpack CurseForge si sélectionné
-        if (this._selectedModpackId) {
-            body.cf_modpack_id = this._selectedModpackId;
+        if (this._cfPageUrl) {
+            body.cf_page_url = this._cfPageUrl;
+            if (this._cfFileId) body.cf_file_id = this._cfFileId;
         }
 
         // Adapter le message de chargement
         const loadingEl = document.getElementById('create-loading');
         if (loadingEl) {
-            loadingEl.textContent = this._selectedModpackId
+            loadingEl.textContent = this._cfPageUrl
                 ? '⏳ Création du serveur + téléchargement du modpack... Ça peut prendre plusieurs minutes.'
                 : '⏳ Téléchargement de l\'image Docker... Ça peut prendre quelques minutes la première fois.';
         }
@@ -1293,7 +1343,8 @@ const GameServer = {
         document.getElementById('create-buttons').style.display = '';
 
         if (response && response.ok) {
-            this._selectedModpackId = null;
+            this._cfPageUrl = null;
+            this._cfFileId = null;
             this._modpackMode = 'blank';
             this.hideCreateModal();
             await this.refreshServers();
