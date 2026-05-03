@@ -15,9 +15,13 @@ const SvMonitoring = {
         this._timestamps = [];
         if (this._interval) clearInterval(this._interval);
         setTimeout(() => {
+            // Initialiser les canvas avec fond sombre
+            ['sv-mon-cpu-chart','sv-mon-ram-chart','sv-mon-rx-chart','sv-mon-tx-chart'].forEach(id => {
+                this._drawChart(id, [], '#555', 100, '%');
+            });
             this._poll();
             this._interval = setInterval(() => this._poll(), 3000);
-        }, 100);
+        }, 200);
         return `
         <h2>📈 Monitoring temps réel</h2>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Statistiques en direct · Actualisation toutes les 3s · Historique 3 min</p>
@@ -149,20 +153,32 @@ const SvMonitoring = {
 
     _drawChart(canvasId, data, color, maxVal, unit) {
         const canvas = document.getElementById(canvasId);
-        if (!canvas || data.length < 2) return;
+        if (!canvas) return;
         const ctx = canvas.getContext('2d');
         const dpr = window.devicePixelRatio || 1;
         const w = canvas.offsetWidth;
         const h = canvas.offsetHeight;
+        if (w === 0 || h === 0) return;
         canvas.width = w * dpr;
         canvas.height = h * dpr;
         ctx.scale(dpr, dpr);
 
+        // Fond sombre (fix fond blanc)
+        ctx.fillStyle = '#1a1a2e';
+        ctx.fillRect(0, 0, w, h);
+
+        // Pas assez de données ? Afficher un message
+        if (data.length < 2) {
+            ctx.fillStyle = 'rgba(255,255,255,0.15)';
+            ctx.font = '12px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('⏳ En attente de données...', w / 2, h / 2);
+            return;
+        }
+
         const pad = {top: 10, right: 10, bottom: 22, left: 42};
         const cw = w - pad.left - pad.right;
         const ch = h - pad.top - pad.bottom;
-
-        ctx.clearRect(0, 0, w, h);
 
         // Grille horizontale + labels
         ctx.font = '10px Inter, monospace';

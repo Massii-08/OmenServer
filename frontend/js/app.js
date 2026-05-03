@@ -91,6 +91,9 @@ const App = {
         const content = document.getElementById('module-content');
         if (!content) return;
 
+        // Supprimer le padding pour la vue serveur (sidebar doit coller au bord)
+        content.classList.toggle('sv-fullscreen', view === 'server_view');
+
         switch (view) {
             case 'hub':
                 this.renderHub(content);

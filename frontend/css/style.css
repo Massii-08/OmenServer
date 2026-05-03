@@ -222,6 +222,19 @@ body {
     min-height: 100vh;
 }
 
+/* Mode plein écran pour server_view (sidebar serveur colle au bord) */
+.main-content.sv-fullscreen {
+    padding: 0;
+    overflow: hidden;
+}
+
+/* Canvas transparent (fix fond blanc) */
+canvas {
+    background: transparent !important;
+    display: block;
+    width: 100%;
+}
+
 /* === HEADER === */
 .page-header {
     margin-bottom: 28px;
