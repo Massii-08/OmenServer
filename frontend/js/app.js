@@ -283,11 +283,40 @@ const App = {
         }
 
         if (allTasks.length === 0) {
+            // Build server options for the create form
+            const serverOptions = servers.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
             schedEl.innerHTML = `
-                <div style="text-align:center;padding:30px;">
+                <div style="text-align:center;padding:20px;">
                     <div style="font-size:32px;margin-bottom:8px;">📅</div>
                     <div style="color:var(--text-muted);font-size:13px;">Aucune tâche planifiée</div>
-                    <div style="color:var(--text-muted);font-size:12px;margin-top:4px;">Ajoutez des tâches via l'onglet "Tâches planifiées" de chaque serveur</div>
+                    <button class="btn btn-primary btn-sm" style="margin-top:12px;" onclick="App._toggleScheduleForm()">➕ Créer une tâche</button>
+                </div>
+                <div id="hub-schedule-form" style="display:none;margin-top:12px;padding:14px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
+                    <div style="display:flex;gap:8px;align-items:flex-end;">
+                        <div style="flex:1;">
+                            <label style="font-size:12px;color:var(--text-muted);">Serveur</label>
+                            <select id="hub-sched-server" class="form-input" style="margin-top:4px;">${serverOptions}</select>
+                        </div>
+                        <div style="flex:1;">
+                            <label style="font-size:12px;color:var(--text-muted);">Type</label>
+                            <select id="hub-sched-type" class="form-input" style="margin-top:4px;">
+                                <option value="backup">💾 Backup auto</option>
+                                <option value="restart">🔄 Restart auto</option>
+                            </select>
+                        </div>
+                        <div style="flex:1;">
+                            <label style="font-size:12px;color:var(--text-muted);">Intervalle</label>
+                            <select id="hub-sched-interval" class="form-input" style="margin-top:4px;">
+                                <option value="1">1h</option>
+                                <option value="6" selected>6h</option>
+                                <option value="12">12h</option>
+                                <option value="24">24h</option>
+                                <option value="168">1 semaine</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-primary" onclick="App._createScheduledTask()">➕ Ajouter</button>
+                    </div>
+                    <div id="hub-sched-msg" style="font-size:12px;margin-top:8px;"></div>
                 </div>`;
             return;
         }
@@ -308,6 +337,33 @@ const App = {
                     </div>
                 `).join('')}
             </div>`;
+    },
+
+    _toggleScheduleForm() {
+        const form = document.getElementById('hub-schedule-form');
+        if (form) form.style.display = form.style.display === 'none' ? 'block' : 'none';
+    },
+
+    async _createScheduledTask() {
+        const serverId = document.getElementById('hub-sched-server')?.value;
+        const taskType = document.getElementById('hub-sched-type')?.value;
+        const interval = parseInt(document.getElementById('hub-sched-interval')?.value) || 6;
+        const msg = document.getElementById('hub-sched-msg');
+
+        if (!serverId) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = '❌ Sélectionne un serveur'; } return; }
+
+        const r = await Auth.apiCall('/api/scheduler/', {
+            method: 'POST',
+            body: JSON.stringify({ server_id: parseInt(serverId), task_type: taskType, interval_hours: interval })
+        });
+
+        if (r && r.ok) {
+            if (msg) { msg.style.color = '#22c55e'; msg.textContent = '✅ Tâche créée !'; }
+            setTimeout(() => this._loadGlobalSchedule(), 500);
+        } else {
+            const err = r ? await r.json().catch(() => ({})) : {};
+            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+        }
     },
 
     /**
