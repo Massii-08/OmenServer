@@ -321,17 +321,49 @@ const App = {
             return;
         }
 
-        const taskIcons = { start: '▶️', stop: '⏹️', restart: '🔄', backup: '💾', command: '💻' };
+        const taskIcons = { restart: '🔄', backup: '💾' };
+        const taskLabels = { restart: 'Restart auto', backup: 'Backup auto' };
+        const serverOptions = servers.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
 
         schedEl.innerHTML = `
-            <div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">${allTasks.length} tâche(s) sur ${servers.length} serveur(s)</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <div style="font-size:13px;color:var(--text-muted);">${allTasks.length} tâche(s) sur ${servers.length} serveur(s)</div>
+                <button class="btn btn-primary btn-sm" onclick="App._toggleScheduleForm()">➕ Nouvelle tâche</button>
+            </div>
+            <div id="hub-schedule-form" style="display:none;margin-bottom:12px;padding:14px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
+                <div style="display:flex;gap:8px;align-items:flex-end;">
+                    <div style="flex:1;">
+                        <label style="font-size:12px;color:var(--text-muted);">Serveur</label>
+                        <select id="hub-sched-server" class="form-input" style="margin-top:4px;">${serverOptions}</select>
+                    </div>
+                    <div style="flex:1;">
+                        <label style="font-size:12px;color:var(--text-muted);">Type</label>
+                        <select id="hub-sched-type" class="form-input" style="margin-top:4px;">
+                            <option value="backup">💾 Backup auto</option>
+                            <option value="restart">🔄 Restart auto</option>
+                        </select>
+                    </div>
+                    <div style="flex:1;">
+                        <label style="font-size:12px;color:var(--text-muted);">Intervalle</label>
+                        <select id="hub-sched-interval" class="form-input" style="margin-top:4px;">
+                            <option value="1">1h</option>
+                            <option value="6" selected>6h</option>
+                            <option value="12">12h</option>
+                            <option value="24">24h</option>
+                            <option value="168">1 semaine</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" onclick="App._createScheduledTask()">➕ Ajouter</button>
+                </div>
+                <div id="hub-sched-msg" style="font-size:12px;margin-top:8px;"></div>
+            </div>
             <div style="display:flex;flex-direction:column;gap:6px;">
                 ${allTasks.map(t => `
                     <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
-                        <span style="font-size:18px;">${taskIcons[t.action] || '📋'}</span>
+                        <span style="font-size:18px;">${taskIcons[t.task_type] || '📋'}</span>
                         <div style="flex:1;">
-                            <div style="font-size:13px;font-weight:600;">${t.action || 'tâche'} ${t.value ? '· ' + t.value : ''}</div>
-                            <div style="font-size:11px;color:var(--text-muted);">🎮 ${t.serverName} · ⏰ ${t.schedule || t.cron || 'non défini'}</div>
+                            <div style="font-size:13px;font-weight:600;">${taskLabels[t.task_type] || t.task_type}</div>
+                            <div style="font-size:11px;color:var(--text-muted);">🎮 ${t.serverName} · ⏰ toutes les ${t.interval_hours}h</div>
                         </div>
                         <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled !== false ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.05)'};color:${t.enabled !== false ? 'var(--accent-green)' : 'var(--text-muted)'};">${t.enabled !== false ? '● Actif' : '○ Inactif'}</span>
                     </div>
