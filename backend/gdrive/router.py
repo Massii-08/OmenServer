@@ -253,7 +253,7 @@ def gdrive_download(
         raise HTTPException(401, "Google Drive non connecté")
 
     file_id = data.get("file_id")
-    dest_path = data.get("dest_path", "/opt/omenserver/downloads")
+    dest_path = data.get("dest_path", str(Path.home() / "omenserver" / "downloads"))
 
     if not file_id:
         raise HTTPException(400, "file_id requis")

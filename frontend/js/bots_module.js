@@ -199,15 +199,21 @@ const BotsModule = {
             <div class="card">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
                     <h3 style="margin:0;">📋 Logs — ${bot?.name || 'Bot'}</h3>
-                    <button class="btn btn-secondary btn-sm" onclick="BotsModule.showBotDetail(${id})">🔄 Rafraîchir</button>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <span style="font-size:11px;color:var(--text-muted);">${logs.logs.length} ligne(s)</span>
+                        <button class="btn btn-secondary btn-sm" onclick="BotsModule.showBotDetail(${id})">🔄 Rafraîchir</button>
+                    </div>
                 </div>
-                <div style="background:#0d1117;border-radius:8px;padding:12px;max-height:300px;overflow-y:auto;font-family:monospace;font-size:12px;line-height:1.6;color:#c9d1d9;">
+                <div id="bot-logs-terminal" style="background:#0d1117;border-radius:8px;padding:12px;max-height:350px;overflow-y:auto;font-family:'Fira Code',monospace;font-size:12px;line-height:1.6;color:#c9d1d9;">
                     ${logs.logs.length > 0 
-                        ? logs.logs.map(l => `<div>${l.replace(/</g,'&lt;')}</div>`).join('')
-                        : '<div style="color:#6b7280;">Aucun log disponible</div>'
+                        ? logs.logs.map((l, i) => `<div style="display:flex;gap:8px;"><span style="color:#6b7280;min-width:28px;text-align:right;user-select:none;">${i+1}</span><span>${l.replace(/</g,'&lt;')}</span></div>`).join('')
+                        : '<div style="color:#6b7280;text-align:center;padding:20px;">Aucun log disponible — Démarre le bot pour voir les logs ici</div>'
                     }
                 </div>
             </div>`;
+        // Auto-scroll vers le bas
+        const terminal = document.getElementById('bot-logs-terminal');
+        if (terminal) terminal.scrollTop = terminal.scrollHeight;
     },
 
     async openEditor(id) {
@@ -224,12 +230,31 @@ const BotsModule = {
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
                     <h3 style="margin:0;">✏️ Éditeur — ${bot?.name || 'Bot'}</h3>
                     <div style="display:flex;gap:8px;align-items:center;">
+                        <span style="font-size:11px;color:var(--text-muted);">Ctrl+S pour sauvegarder</span>
                         <span id="code-save-msg" style="font-size:12px;"></span>
                         <button class="btn btn-primary btn-sm" onclick="BotsModule.saveCode(${id})">💾 Sauvegarder</button>
                     </div>
                 </div>
-                <textarea id="bot-code-editor" style="width:100%;min-height:400px;background:#0d1117;color:#c9d1d9;border:1px solid var(--border-color);border-radius:8px;padding:12px;font-family:'Fira Code',monospace;font-size:13px;line-height:1.6;resize:vertical;tab-size:4;">${data.code.replace(/</g,'&lt;')}</textarea>
+                <textarea id="bot-code-editor" spellcheck="false" style="width:100%;min-height:400px;background:#0d1117;color:#c9d1d9;border:1px solid var(--border-color);border-radius:8px;padding:16px;font-family:'Fira Code',monospace;font-size:13px;line-height:1.6;resize:vertical;tab-size:4;outline:none;">${data.code.replace(/</g,'&lt;')}</textarea>
             </div>`;
+        // Support Tab dans l'éditeur
+        const editor = document.getElementById('bot-code-editor');
+        if (editor) {
+            editor.addEventListener('keydown', (e) => {
+                if (e.key === 'Tab') {
+                    e.preventDefault();
+                    const start = editor.selectionStart;
+                    const end = editor.selectionEnd;
+                    editor.value = editor.value.substring(0, start) + '    ' + editor.value.substring(end);
+                    editor.selectionStart = editor.selectionEnd = start + 4;
+                }
+                if (e.key === 's' && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    BotsModule.saveCode(${id});
+                }
+            });
+            editor.focus();
+        }
     },
 
     async saveCode(id) {

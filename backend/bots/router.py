@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/bots", tags=["Bots"])
 
 # Dossier de stockage des bots
-BOTS_DIR = Path(os.environ.get("BOTS_DIR", "/opt/omenserver/bots"))
+_home = Path.home()
+BOTS_DIR = Path(os.environ.get("BOTS_DIR", str(_home / "omenserver" / "bots")))
 
 # Stockage des processus en mémoire
 _bot_processes: dict[int, subprocess.Popen] = {}
