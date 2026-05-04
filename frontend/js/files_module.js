@@ -90,35 +90,56 @@ const FilesModule = {
 
     async connectGDrive() {
         const statusEl = document.getElementById('gdrive-status');
+
         const r = await Auth.apiCall('/api/gdrive/connect', { method: 'POST' });
-        if (r && r.ok) {
-            // L'OAuth se fait dans un thread séparé — montrer un message d'attente
-            if (statusEl) {
-                statusEl.innerHTML = `
-                    <div style="display:flex;align-items:center;gap:16px;">
-                        <span style="font-size:32px;">⏳</span>
-                        <div style="flex:1;">
-                            <div style="font-weight:700;font-size:15px;">Authentification en cours...</div>
-                            <div style="font-size:13px;color:var(--text-muted);margin-top:2px;">Une page Google s'est ouverte. Autorise l'accès, puis cette page se mettra à jour automatiquement.</div>
+        if (!r || !r.ok) {
+            const err = r ? await r.json().catch(() => ({})) : {};
+            alert(`❌ ${err.detail || 'Erreur'}`);
+            return;
+        }
+
+        const data = await r.json();
+
+        // Ouvrir le lien Google dans un nouvel onglet
+        window.open(data.auth_url, '_blank');
+
+        // Afficher le champ pour coller le code
+        if (statusEl) {
+            statusEl.innerHTML = `
+                <div style="display:flex;flex-direction:column;gap:12px;">
+                    <div style="display:flex;align-items:center;gap:12px;">
+                        <span style="font-size:28px;">🔑</span>
+                        <div>
+                            <div style="font-weight:700;font-size:15px;">Autorise l'accès dans l'onglet Google</div>
+                            <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">Puis copie le code affiché et colle-le ci-dessous</div>
                         </div>
-                    </div>`;
-            }
-            // Vérifier toutes les 3s si l'auth est faite
-            const checkInterval = setInterval(async () => {
-                const sr = await Auth.apiCall('/api/gdrive/status');
-                if (sr && sr.ok) {
-                    const st = await sr.json();
-                    if (st.connected) {
-                        clearInterval(checkInterval);
-                        await this.checkGDriveStatus();
-                    }
-                }
-            }, 3000);
-            // Stop checking after 2 minutes
-            setTimeout(() => clearInterval(checkInterval), 120000);
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                        <input id="gdrive-code" class="form-input" placeholder="Colle le code Google ici..." style="flex:1;font-family:monospace;" />
+                        <button class="btn btn-primary" onclick="FilesModule.submitCode()">✅ Valider</button>
+                    </div>
+                    <div id="gdrive-code-msg" style="font-size:12px;"></div>
+                </div>`;
+        }
+    },
+
+    async submitCode() {
+        const code = document.getElementById('gdrive-code')?.value?.trim();
+        const msg = document.getElementById('gdrive-code-msg');
+        if (!code) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = '❌ Colle le code Google'; } return; }
+
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Vérification...'; }
+
+        const r = await Auth.apiCall('/api/gdrive/callback', {
+            method: 'POST',
+            body: JSON.stringify({ code })
+        });
+
+        if (r && r.ok) {
+            await this.checkGDriveStatus();
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            alert(`❌ ${err.detail || 'Erreur de connexion'}`);
+            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || 'Code invalide'}`; }
         }
     },
 

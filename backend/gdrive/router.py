@@ -113,7 +113,7 @@ def gdrive_status(current_user: User = Depends(get_current_user)):
 
 @router.post("/connect")
 def gdrive_connect(current_user: User = Depends(get_current_user)):
-    """Lancer le processus d'authentification OAuth dans un thread séparé."""
+    """Étape 1 : Génère l'URL d'authentification Google."""
     if not _google_available:
         raise HTTPException(400, "Librairies Google non installées")
 
@@ -121,36 +121,44 @@ def gdrive_connect(current_user: User = Depends(get_current_user)):
         raise HTTPException(400, "credentials.json manquant")
 
     try:
-        import threading
+        flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
+        flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
 
-        def _run_oauth():
-            try:
-                flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
-                for port in [8091, 8092, 8093, 8094, 8095]:
-                    try:
-                        creds = flow.run_local_server(port=port, open_browser=True)
-                        break
-                    except OSError:
-                        continue
-                else:
-                    logger.error("Tous les ports OAuth occupés")
-                    return
-
-                GDRIVE_DIR.mkdir(parents=True, exist_ok=True)
-                TOKEN_FILE.write_text(creds.to_json())
-                logger.info("✅ Google Drive authentifié avec succès")
-            except Exception as e:
-                logger.error(f"Erreur OAuth: {e}")
-
-        t = threading.Thread(target=_run_oauth, daemon=True)
-        t.start()
+        auth_url, _ = flow.authorization_url(prompt='consent')
 
         return {
-            "message": "Authentification lancée ! Une page Google va s'ouvrir dans ton navigateur. Autorise l'accès puis reviens ici.",
-            "started": True,
+            "auth_url": auth_url,
+            "message": "Ouvre ce lien, autorise l'accès, puis copie le code affiché.",
         }
     except Exception as e:
-        raise HTTPException(500, f"Erreur OAuth: {e}")
+        raise HTTPException(500, f"Erreur: {e}")
+
+
+@router.post("/callback")
+def gdrive_callback(
+    data: dict,
+    current_user: User = Depends(get_current_user),
+):
+    """Étape 2 : Reçoit le code d'autorisation et finalise la connexion."""
+    if not _google_available:
+        raise HTTPException(400, "Librairies Google non installées")
+
+    code = data.get("code", "").strip()
+    if not code:
+        raise HTTPException(400, "Code d'autorisation manquant")
+
+    try:
+        flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
+        flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+        flow.fetch_token(code=code)
+
+        creds = flow.credentials
+        GDRIVE_DIR.mkdir(parents=True, exist_ok=True)
+        TOKEN_FILE.write_text(creds.to_json())
+
+        return {"message": "✅ Google Drive connecté avec succès !", "connected": True}
+    except Exception as e:
+        raise HTTPException(500, f"Code invalide ou expiré: {e}")
 
 
 @router.get("/files")
