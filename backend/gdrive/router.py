@@ -64,13 +64,45 @@ def _get_drive_service():
         creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
 
     if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        TOKEN_FILE.write_text(creds.to_json())
+        import google.auth.transport.requests
+        import httplib2
+        from google_auth_httplib2 import AuthorizedHttp
+        # Utiliser httplib2 pour le refresh (fix SSL LibreSSL)
+        http = httplib2.Http()
+        request = google.auth.transport.requests.Request()
+        try:
+            creds.refresh(request)
+        except Exception:
+            # Fallback: refresh manuel via httplib2
+            from urllib.parse import urlencode
+            import json as _json
+            body = urlencode({
+                "client_id": creds.client_id,
+                "client_secret": creds.client_secret,
+                "refresh_token": creds.refresh_token,
+                "grant_type": "refresh_token",
+            })
+            resp, content = http.request(
+                "https://oauth2.googleapis.com/token", "POST",
+                body=body,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            if resp.status == 200:
+                token_data = _json.loads(content.decode())
+                creds.token = token_data.get("access_token")
+                creds.expiry = None
+                TOKEN_FILE.write_text(creds.to_json())
+        else:
+            TOKEN_FILE.write_text(creds.to_json())
 
     if not creds or not creds.valid:
         return None
 
-    return build('drive', 'v3', credentials=creds)
+    # Construire le service avec httplib2 (fix SSL)
+    import httplib2
+    from google_auth_httplib2 import AuthorizedHttp
+    authorized_http = AuthorizedHttp(creds, http=httplib2.Http())
+    return build('drive', 'v3', http=authorized_http)
 
 
 @router.get("/status")
