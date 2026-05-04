@@ -48,8 +48,8 @@ class ModuleManager:
                 "description": "Cloud personnel + sync Google Drive",
                 "icon": "📁",
                 "color": "#3b82f6",  # Bleu
-                "enabled": False,  # V3
-                "version": "0.0.0",
+                "enabled": True,  # V3 ✅
+                "version": "1.0.0",
                 "category": "storage",
             },
             "media": {

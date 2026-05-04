@@ -151,6 +151,10 @@ const App = {
                 BotsModule.render(content);
                 break;
 
+            case 'files':
+                FilesModule.render(content);
+                break;
+
             default:
                 content.innerHTML = `
                     <div class="text-center" style="padding: 60px; color: var(--text-muted);">
