@@ -533,6 +533,31 @@ canvas {
     box-shadow: var(--shadow-glow-red);
 }
 
+.btn-kill-all {
+    background: linear-gradient(135deg, #991b1b, #7f1d1d);
+    color: #fca5a5;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    padding: 8px 20px;
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+    animation: killPulse 2s ease-in-out infinite;
+}
+
+.btn-kill-all:hover {
+    background: linear-gradient(135deg, #b91c1c, #991b1b);
+    box-shadow: 0 0 20px rgba(239, 68, 68, 0.4);
+    color: #fff;
+    transform: scale(1.03);
+}
+
+@keyframes killPulse {
+    0%, 100% { box-shadow: 0 0 8px rgba(239, 68, 68, 0.15); }
+    50% { box-shadow: 0 0 16px rgba(239, 68, 68, 0.3); }
+}
+
 .btn-secondary {
     background: rgba(255, 255, 255, 0.06);
     color: var(--text-secondary);

@@ -209,7 +209,67 @@ const App = {
                 <h2 style="font-size: 18px; font-weight: 700;">Modules</h2>
             </div>
             <div id="modules-grid" class="modules-grid"></div>
+
+            <!-- Planification globale -->
+            <div class="page-header" style="margin-top:28px;">
+                <h2 style="font-size: 18px; font-weight: 700;">📅 Planification globale</h2>
+                <p class="page-subtitle">Tâches planifiées sur tous les serveurs</p>
+            </div>
+            <div id="hub-scheduler" style="background:var(--bg-secondary);border-radius:12px;padding:20px;border:1px solid var(--border-color);">
+                <div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px;">⏳ Chargement des tâches...</div>
+            </div>
         `;
+
+        // Charger les tâches planifiées de tous les serveurs
+        this._loadGlobalSchedule();
+    },
+
+    async _loadGlobalSchedule() {
+        const schedEl = document.getElementById('hub-scheduler');
+        if (!schedEl) return;
+
+        const r = await Auth.apiCall('/api/servers');
+        if (!r || !r.ok) { schedEl.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:20px;">Aucun serveur</div>'; return; }
+        const servers = await r.json();
+
+        let allTasks = [];
+        for (const s of servers) {
+            const tr = await Auth.apiCall(`/api/servers/${s.id}/scheduler`);
+            if (tr && tr.ok) {
+                const data = await tr.json();
+                const tasks = data.tasks || data || [];
+                if (Array.isArray(tasks)) {
+                    tasks.forEach(t => allTasks.push({...t, serverName: s.name, serverId: s.id}));
+                }
+            }
+        }
+
+        if (allTasks.length === 0) {
+            schedEl.innerHTML = `
+                <div style="text-align:center;padding:30px;">
+                    <div style="font-size:32px;margin-bottom:8px;">📅</div>
+                    <div style="color:var(--text-muted);font-size:13px;">Aucune tâche planifiée</div>
+                    <div style="color:var(--text-muted);font-size:12px;margin-top:4px;">Ajoutez des tâches via l'onglet "Tâches planifiées" de chaque serveur</div>
+                </div>`;
+            return;
+        }
+
+        const taskIcons = { start: '▶️', stop: '⏹️', restart: '🔄', backup: '💾', command: '💻' };
+
+        schedEl.innerHTML = `
+            <div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">${allTasks.length} tâche(s) sur ${servers.length} serveur(s)</div>
+            <div style="display:flex;flex-direction:column;gap:6px;">
+                ${allTasks.map(t => `
+                    <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
+                        <span style="font-size:18px;">${taskIcons[t.action] || '📋'}</span>
+                        <div style="flex:1;">
+                            <div style="font-size:13px;font-weight:600;">${t.action || 'tâche'} ${t.value ? '· ' + t.value : ''}</div>
+                            <div style="font-size:11px;color:var(--text-muted);">🎮 ${t.serverName} · ⏰ ${t.schedule || t.cron || 'non défini'}</div>
+                        </div>
+                        <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled !== false ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.05)'};color:${t.enabled !== false ? 'var(--accent-green)' : 'var(--text-muted)'};">${t.enabled !== false ? '● Actif' : '○ Inactif'}</span>
+                    </div>
+                `).join('')}
+            </div>`;
     },
 
     /**
@@ -519,36 +579,59 @@ const App = {
         const users = await response.json();
         const currentUser = Auth.getUser();
 
-        const roleLabels = { admin: '\ud83d\udc51 Admin', moderator: '\ud83d\udd27 Mod\u00e9rateur', player: '\ud83c\udfae Joueur', spectator: '\ud83d\udc40 Spectateur' };
+        const roleLabels = { admin: '👑 Admin', moderator: '🔧 Modérateur', player: '🎮 Joueur', spectator: '👀 Spectateur' };
+        const permLabels = {
+            view: '👀 Voir', start: '▶️ Démarrer', stop: '⏹️ Arrêter', restart: '🔄 Restart',
+            console: '💻 Console', backup: '💾 Backup', logs: '📋 Logs',
+            create: '➕ Créer', delete: '🗑️ Supprimer', settings: '⚙️ Config',
+            invite: '🎟️ Inviter', manage_users: '👥 Users'
+        };
+        const rolePerms = {
+            spectator: ['view'],
+            player: ['view','start','stop','restart'],
+            moderator: ['view','start','stop','restart','console','backup','logs'],
+            admin: Object.keys(permLabels)
+        };
 
         listEl.innerHTML = users.length === 0 ? '<div style="text-align:center;padding:20px;color:var(--text-muted);">Aucun utilisateur</div>' :
-            users.map(u => `
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border-color);">
-                <div style="display:flex;align-items:center;gap:12px;">
-                    <div style="width:36px;height:36px;border-radius:50%;background:${u.is_admin ? 'linear-gradient(135deg,#3b82f6,#8b5cf6)' : 'var(--bg-secondary)'};display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:${u.is_admin ? 'white' : 'var(--text-muted)'}">${u.username.charAt(0).toUpperCase()}</div>
-                    <div>
-                        <div style="font-weight:600;font-size:14px;">${u.username}</div>
-                        <div style="font-size:12px;color:var(--text-muted);">${roleLabels[u.role] || u.role}${u.created_at ? ' \u00b7 Cr\u00e9\u00e9 le ' + new Date(u.created_at).toLocaleDateString('fr-FR') : ''}</div>
+            users.map(u => {
+                const userPerms = rolePerms[u.role] || [];
+                return `
+            <div style="padding:12px 0;border-bottom:1px solid var(--border-color);">
+                <div style="display:flex;align-items:center;justify-content:space-between;">
+                    <div style="display:flex;align-items:center;gap:12px;">
+                        <div style="width:36px;height:36px;border-radius:50%;background:${u.is_admin ? 'linear-gradient(135deg,#3b82f6,#8b5cf6)' : 'var(--bg-secondary)'};display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:${u.is_admin ? 'white' : 'var(--text-muted)'}">${u.username.charAt(0).toUpperCase()}</div>
+                        <div>
+                            <div style="font-weight:600;font-size:14px;">${u.username}</div>
+                            <div style="font-size:12px;color:var(--text-muted);">${roleLabels[u.role] || u.role}${u.created_at ? ' · Créé le ' + new Date(u.created_at).toLocaleDateString('fr-FR') : ''}</div>
+                        </div>
                     </div>
+                    ${u.id !== currentUser?.id ? `
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <select class="form-input" style="font-size:12px;padding:4px 8px;width:auto;" onchange="App._changeRoleAdmin(${u.id}, this.value)">
+                                <option value="spectator" ${u.role === 'spectator' ? 'selected' : ''}>👀 Spectateur</option>
+                                <option value="player" ${u.role === 'player' ? 'selected' : ''}>🎮 Joueur</option>
+                                <option value="moderator" ${u.role === 'moderator' ? 'selected' : ''}>🔧 Modérateur</option>
+                                <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>👑 Admin</option>
+                            </select>
+                            <button class="btn btn-danger btn-sm" onclick="App._confirmDeleteUser(${u.id}, '${u.username}')" style="padding:4px 8px;font-size:12px;">🗑️</button>
+                        </div>
+                    ` : '<span style="font-size:12px;color:var(--accent-green);font-weight:600;">👑 Toi</span>'}
                 </div>
-                ${u.id !== currentUser?.id ? `
-                    <div style="display:flex;align-items:center;gap:8px;">
-                        <select class="form-input" style="font-size:12px;padding:4px 8px;width:auto;" onchange="App._changeRoleAdmin(${u.id}, this.value)">
-                            <option value="spectator" ${u.role === 'spectator' ? 'selected' : ''}>\ud83d\udc40 Spectateur</option>
-                            <option value="player" ${u.role === 'player' ? 'selected' : ''}>\ud83c\udfae Joueur</option>
-                            <option value="moderator" ${u.role === 'moderator' ? 'selected' : ''}>\ud83d\udd27 Mod\u00e9rateur</option>
-                            <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>\ud83d\udc51 Admin</option>
-                        </select>
-                        <button class="btn btn-danger btn-sm" onclick="App._confirmDeleteUser(${u.id}, '${u.username}')" style="padding:4px 8px;font-size:12px;">\ud83d\uddd1\ufe0f</button>
-                    </div>
-                ` : '<span style="font-size:12px;color:var(--accent-green);font-weight:600;">\ud83d\udc51 Toi</span>'}
+                <!-- Permissions granulaires -->
+                <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:8px;padding-left:48px;">
+                    ${Object.entries(permLabels).map(([k, label]) => {
+                        const has = userPerms.includes(k);
+                        return `<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${has ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.04)'};color:${has ? 'var(--accent-green)' : 'rgba(255,255,255,0.15)'};border:1px solid ${has ? 'rgba(34,197,94,0.2)' : 'rgba(255,255,255,0.05)'};">${label}</span>`;
+                    }).join('')}
+                </div>
             </div>
             <div id="del-confirm-${u.id}" style="display:none;background:rgba(239,68,68,0.08);border:1px solid #ef4444;border-radius:8px;padding:10px;margin:4px 0 8px;">
                 <span style="font-size:12px;color:#ef4444;">Supprimer '${u.username}' ?</span>
                 <button class="btn btn-secondary btn-sm" onclick="document.getElementById('del-confirm-${u.id}').style.display='none'" style="margin-left:8px;font-size:11px;">Annuler</button>
                 <button class="btn btn-sm" style="background:#ef4444;color:white;margin-left:4px;font-size:11px;" onclick="App._deleteUserAdmin(${u.id})">Supprimer</button>
-            </div>
-        `).join('');
+            </div>`;
+            }).join('');
     },
 
     async _changeRoleAdmin(userId, role) {
