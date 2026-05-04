@@ -60,4 +60,5 @@ def create_tables():
     import backend.auth.models        # noqa: User, Invitation
     import backend.game_server.models  # noqa: GameServer
     import backend.scheduler.models    # noqa: ScheduledTask
+    import backend.bots.models         # noqa: Bot
     Base.metadata.create_all(bind=engine)

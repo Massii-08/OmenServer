@@ -69,6 +69,8 @@ from backend.monitoring.container_router import router as container_router
 from backend.activity.router import router as activity_router
 from backend.mods.plugin_router import router as plugin_router
 from backend.notifications.router import router as notification_router
+from backend.monitoring.diagnostic_router import router as diagnostic_router
+from backend.bots.router import router as bots_router
 
 app.include_router(auth_router)
 app.include_router(invite_router)
@@ -87,6 +89,8 @@ app.include_router(container_router)
 app.include_router(activity_router)
 app.include_router(plugin_router)
 app.include_router(notification_router)
+app.include_router(diagnostic_router)
+app.include_router(bots_router)
 
 
 # --- Événement de démarrage ---

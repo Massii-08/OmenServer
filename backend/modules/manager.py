@@ -38,8 +38,8 @@ class ModuleManager:
                 "description": "Déployer et monitorer tes bots Python",
                 "icon": "🤖",
                 "color": "#8b5cf6",  # Violet
-                "enabled": False,  # V3
-                "version": "0.0.0",
+                "enabled": True,  # V3 ✅
+                "version": "1.0.0",
                 "category": "automation",
             },
             "files": {

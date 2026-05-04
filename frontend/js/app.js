@@ -108,6 +108,9 @@ const App = {
         if (this.currentView === 'server_view') {
             ServerView.close();
         }
+        if (this.currentView === 'bots' && typeof BotsModule !== 'undefined') {
+            BotsModule.unload();
+        }
 
         this.currentView = view;
 
@@ -142,6 +145,10 @@ const App = {
 
             case 'users':
                 this.renderUsers(content);
+                break;
+
+            case 'bots':
+                BotsModule.render(content);
                 break;
 
             default:
@@ -196,13 +203,19 @@ const App = {
                 🌐 Réseau : <span id="stat-network">--</span>
             </div>
 
-            <!-- Kill All + Actions rapides -->
+            <!-- Kill All + Diagnostic -->
             <div style="display:flex;gap:12px;margin-bottom:28px;align-items:center;">
                 <button class="btn btn-kill-all" onclick="App.killAllServers()" title="Arrêter tous les services d'urgence">
                     🔴 Kill All
                 </button>
-                <span style="font-size:12px;color:var(--text-muted);">Arrêt d'urgence de tous les services</span>
+                <button class="btn btn-secondary" onclick="App.runDiagnostic()" id="diag-btn" style="display:flex;align-items:center;gap:6px;">
+                    🩺 Diagnostic
+                </button>
+                <span style="font-size:12px;color:var(--text-muted);">Actions rapides</span>
             </div>
+
+            <!-- Diagnostic auto (caché par défaut) -->
+            <div id="diagnostic-panel" style="display:none;margin-bottom:28px;"></div>
 
             <!-- Modules -->
             <div class="page-header">
@@ -269,6 +282,55 @@ const App = {
                         <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled !== false ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.05)'};color:${t.enabled !== false ? 'var(--accent-green)' : 'var(--text-muted)'};">${t.enabled !== false ? '● Actif' : '○ Inactif'}</span>
                     </div>
                 `).join('')}
+            </div>`;
+    },
+
+    /**
+     * Diagnostic auto — analyse la santé du système.
+     */
+    async runDiagnostic() {
+        const panel = document.getElementById('diagnostic-panel');
+        if (!panel) return;
+
+        panel.style.display = 'block';
+        panel.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">🩺 Analyse en cours...</div>';
+
+        const r = await Auth.apiCall('/api/diagnostic');
+        if (!r || !r.ok) {
+            panel.innerHTML = '<div style="color:#ef4444;padding:12px;">❌ Erreur de diagnostic</div>';
+            return;
+        }
+        const d = await r.json();
+
+        const levelColors = { ok: '#22c55e', warning: '#f59e0b', critical: '#ef4444' };
+        const levelIcons = { ok: '✅', warning: '⚠️', critical: '🔴' };
+        const levelBg = { ok: 'rgba(34,197,94,0.08)', warning: 'rgba(245,158,11,0.08)', critical: 'rgba(239,68,68,0.08)' };
+        const overallLabel = { ok: '🟢 Tout va bien', warning: '🟡 Attention requise', critical: '🔴 Problèmes détectés' };
+
+        panel.innerHTML = `
+            <div style="background:var(--bg-secondary);border-radius:12px;padding:20px;border:1px solid var(--border-color);">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                    <div>
+                        <div style="font-size:16px;font-weight:700;">${overallLabel[d.overall] || '🩺 Diagnostic'}</div>
+                        <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${d.ok} OK · ${d.warnings} avertissement(s) · ${d.criticals} critique(s)</div>
+                    </div>
+                    <button onclick="document.getElementById('diagnostic-panel').style.display='none'" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:18px;">✕</button>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                    ${d.checks.map(c => `
+                        <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:${levelBg[c.level]};border-radius:8px;border:1px solid ${levelColors[c.level]}20;">
+                            <span style="font-size:20px;">${c.icon}</span>
+                            <div style="flex:1;min-width:0;">
+                                <div style="display:flex;gap:8px;align-items:center;">
+                                    <span style="font-weight:600;font-size:13px;">${c.name}</span>
+                                    <span style="font-size:11px;color:${levelColors[c.level]};font-weight:600;">${levelIcons[c.level]} ${c.value}</span>
+                                </div>
+                                <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${c.message}</div>
+                                ${c.suggestion ? `<div style="font-size:11px;color:${levelColors[c.level]};margin-top:4px;">💡 ${c.suggestion}</div>` : ''}
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
             </div>`;
     },
 
