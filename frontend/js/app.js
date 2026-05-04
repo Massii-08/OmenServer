@@ -148,11 +148,11 @@ const App = {
                 break;
 
             case 'bots':
-                BotsModule.render(content);
+                await BotsModule.render(content);
                 break;
 
             case 'files':
-                FilesModule.render(content);
+                await FilesModule.render(content);
                 break;
 
             default:
