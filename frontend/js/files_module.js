@@ -28,6 +28,8 @@ const FilesModule = {
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
                         <h3 style="margin:0;">☁️ Google Drive</h3>
                         <div style="display:flex;gap:8px;">
+                            <button class="btn btn-primary btn-sm" onclick="document.getElementById('gdrive-upload-input').click()">📤 Upload</button>
+                            <input type="file" id="gdrive-upload-input" style="display:none;" onchange="FilesModule.uploadFile(this)" />
                             <button class="btn btn-secondary btn-sm" onclick="FilesModule._currentFolder='root';FilesModule.loadDriveFiles()">🏠 Racine</button>
                             <button class="btn btn-secondary btn-sm" onclick="FilesModule.loadDriveFiles()">🔄 Rafraîchir</button>
                         </div>
@@ -180,6 +182,32 @@ const FilesModule = {
             alert(`✅ ${data.message}`);
         } else {
             alert('❌ Erreur de téléchargement');
+        }
+    },
+
+    async uploadFile(input) {
+        const file = input.files[0];
+        if (!file) return;
+
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('folder_id', this._currentFolder);
+
+        // Upload avec token sans Content-Type (FormData le gère)
+        const token = localStorage.getItem(Auth.TOKEN_KEY);
+        const r = await fetch('/api/gdrive/upload?folder_id=' + this._currentFolder, {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + token },
+            body: formData,
+        });
+
+        input.value = '';
+        if (r && r.ok) {
+            const data = await r.json();
+            alert(`✅ ${data.message}`);
+            await this.loadDriveFiles();
+        } else {
+            alert('❌ Erreur d\'upload');
         }
     },
 };

@@ -1,6 +1,6 @@
 # 🎮 OmenServer
 
-> **Panel de gestion de serveurs de jeux** — Déploie et gère tes serveurs Minecraft, ARK, Valheim et plus via Docker.
+> **Panel de gestion de serveur dédié polyvalent** — Serveurs de jeux, bots Python, Google Drive et plus.
 
 <div align="center">
 
@@ -8,6 +8,7 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
+![Version](https://img.shields.io/badge/Version-3.0-10b981?style=for-the-badge)
 
 </div>
 
@@ -21,15 +22,32 @@
 - **Console live WebSocket** — Envoie des commandes en temps réel (rcon-cli)
 - **Monitoring** — CPU, RAM, disque, réseau en temps réel
 
+### 🤖 Bots & Automatisation (V3)
+- **5 types de bots** : Trading, Gaming, Scraper, Analyse, Custom
+- **Éditeur de code intégré** — Tab, Ctrl+S, coloration syntaxique
+- **Logs en temps réel** — Console avec numéros de ligne + persistance fichier
+- **Start/Stop** — Gestion des processus Python avec capture stdout
+
+### 📁 Fichiers & Cloud (V3)
+- **Google Drive intégré** — OAuth2 avec redirect localhost
+- **Navigation Drive** — Parcours tes dossiers et fichiers
+- **Upload & Download** — Transfère des fichiers entre serveur et Drive
+
+### 🩺 Diagnostic Automatique (V3)
+- **Analyse en temps réel** — CPU, RAM, Disque, Docker, Réseau
+- **Code couleur** — OK (vert), Warning (jaune), Critique (rouge)
+- **Suggestions** — Correctifs proposés pour chaque problème
+
 ### 🔧 Gestion Avancée
 - **⚙️ Ressources** — Sliders RAM (256 Mo → 8 Go) et CPU (25% → 400%) par serveur
 - **💾 Sauvegardes** — Créer, restaurer, supprimer des backups tar.gz + rotation automatique
 - **⏰ Tâches planifiées** — Backups et redémarrages automatiques (APScheduler)
 - **🧩 Mods CurseForge** — Recherche, installe et gère tes mods Minecraft
+- **🎨 4 thèmes** — Défaut, Midnight, Emerald, Crimson
 
 ### 👥 Multi-Utilisateurs
 - **4 rôles** : Spectateur, Joueur, Modérateur, Administrateur
-- **Système d'invitations** — Génère des codes/liens d'invitation avec rôles
+- **Système d'invitations** — Codes/liens d'invitation avec rôles
 - **Auth JWT** — Connexion sécurisée avec tokens
 
 ---
@@ -57,6 +75,8 @@ source venv/bin/activate  # macOS/Linux
 ### 3. Installer les dépendances
 ```bash
 pip install -r requirements.txt
+# Pour Google Drive (optionnel) :
+pip install google-api-python-client google-auth-oauthlib google-auth-httplib2
 ```
 
 ### 4. Configurer
@@ -67,7 +87,7 @@ cp .env.example .env
 
 ### 5. Lancer
 ```bash
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
 Ouvre **http://localhost:8000** dans ton navigateur 🎉
@@ -86,6 +106,16 @@ Ouvre **http://localhost:8000** dans ton navigateur 🎉
 
 > 🔑 Obtiens ta clé CurseForge gratuitement sur [console.curseforge.com](https://console.curseforge.com/)
 
+### Google Drive (optionnel)
+
+1. Va sur [console.cloud.google.com](https://console.cloud.google.com/)
+2. Crée un projet → Active "Google Drive API"
+3. Crée un client OAuth **"Application Web"**
+4. URI de redirection : `http://localhost:8000/api/gdrive/oauth-redirect`
+5. Télécharge le JSON → renomme en `credentials.json`
+6. Place-le dans `~/omenserver/gdrive/credentials.json`
+7. Dans le panel, va sur Fichiers & Cloud → Connecter
+
 ---
 
 ## 📁 Structure du Projet
@@ -97,37 +127,31 @@ OmenServer/
 │   ├── config.py             # Configuration
 │   ├── database.py           # SQLAlchemy + SQLite
 │   ├── auth/                 # Authentification JWT + Invitations
-│   │   ├── router.py         # Login, register, change password
-│   │   ├── invite_router.py  # Invitations + gestion utilisateurs
-│   │   ├── models.py         # User, Invitation
-│   │   ├── permissions.py    # Système de rôles (4 niveaux)
-│   │   └── utils.py          # JWT helpers
-│   ├── game_server/          # Serveurs de jeux
-│   │   ├── router.py         # CRUD serveurs + ressources
-│   │   ├── docker_manager.py # Interface Docker SDK
-│   │   ├── games_config.py   # Config des 9 jeux supportés
-│   │   ├── websocket.py      # Console live WebSocket
-│   │   ├── backup_manager.py # Sauvegardes tar.gz
-│   │   └── backup_router.py  # API sauvegardes
-│   ├── scheduler/            # Tâches planifiées
-│   │   ├── engine.py         # APScheduler engine
-│   │   ├── models.py         # ScheduledTask
-│   │   └── router.py         # API CRUD tâches
+│   ├── game_server/          # Serveurs de jeux (Docker, WebSocket, Backups)
+│   ├── bots/                 # 🤖 Module Bots (V3)
+│   │   ├── router.py         # CRUD + Start/Stop + Logs + Code editor
+│   │   └── models.py         # Bot model
+│   ├── gdrive/               # 📁 Module Google Drive (V3)
+│   │   └── router.py         # OAuth + Files + Upload/Download
+│   ├── monitoring/           # Monitoring + Diagnostic (V3)
+│   │   └── diagnostic_router.py
+│   ├── scheduler/            # Tâches planifiées (APScheduler)
 │   ├── mods/                 # Mods CurseForge
-│   │   ├── curseforge.py     # Client API CurseForge
-│   │   └── router.py         # API recherche/install/suppression
-│   ├── monitoring/           # Monitoring système
-│   └── modules/              # Gestion des modules
+│   ├── modules/              # Gestion des modules
+│   └── notifications/        # Notifications
 ├── frontend/
 │   ├── index.html            # Page principale
 │   ├── login.html            # Page de connexion
-│   ├── css/style.css         # Design dark theme
+│   ├── css/style.css         # Design dark theme (4 thèmes)
 │   └── js/
-│       ├── app.js            # Routeur frontend
+│       ├── app.js            # Routeur frontend + thèmes
 │       ├── auth.js           # Auth + API calls
-│       ├── game_server.js    # UI serveurs + modals
+│       ├── game_server.js    # UI serveurs
+│       ├── server_view.js    # Vue détaillée serveur
+│       ├── bots_module.js    # 🤖 UI Bots (V3)
+│       ├── files_module.js   # 📁 UI Fichiers (V3)
 │       ├── monitoring.js     # Dashboard monitoring
-│       └── modules.js        # Liste des modules
+│       └── modules.js        # Hub des modules
 ├── requirements.txt
 ├── .env.example
 └── README.md
@@ -151,14 +175,16 @@ OmenServer/
 
 ---
 
-## 👥 Système de Rôles
+## 📂 Stockage
 
-| Rôle | Permissions |
-|------|------------|
-| 👀 Spectateur | Voir les serveurs |
-| 🎮 Joueur | + Démarrer, arrêter, redémarrer |
-| 🔧 Modérateur | + Console, backups, logs |
-| 👑 Administrateur | + Créer, supprimer, configurer, inviter |
+Toutes les données sont stockées dans `~/omenserver/` :
+
+| Dossier | Contenu |
+|---------|---------|
+| `~/omenserver/bots/` | Scripts Python des bots |
+| `~/omenserver/bots/logs/` | Logs persistants des bots |
+| `~/omenserver/gdrive/` | Credentials + Token Google Drive |
+| `~/omenserver/downloads/` | Fichiers téléchargés depuis Drive |
 
 ---
 
@@ -180,5 +206,7 @@ Ce projet est sous licence MIT. Voir le fichier [LICENSE](LICENSE) pour plus de 
 <div align="center">
 
 **Fait avec ❤️ par Massimiliano**
+
+*OmenServer V3 — Polyvalence Complète*
 
 </div>

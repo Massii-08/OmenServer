@@ -115,8 +115,7 @@ async def startup_event():
         migrations = [
             ("game_servers", "cpu_percent", "INTEGER DEFAULT 100"),
             ("users", "role", "VARCHAR(20) DEFAULT 'player'"),
-            ("users", "invited_by", "INTEGER"),
-        ]
+            ("users", "invited_by", "INTEGER"),        ]
         for table, column, col_type in migrations:
             try:
                 db.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))

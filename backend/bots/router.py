@@ -43,6 +43,8 @@ BOTS_DIR = Path(os.environ.get("BOTS_DIR", str(_home / "omenserver" / "bots")))
 _bot_processes: dict[int, subprocess.Popen] = {}
 # Stockage des logs en mémoire (dernières 200 lignes par bot)
 _bot_logs: dict[int, list] = {}
+# Dossier de logs persistants
+LOGS_DIR = BOTS_DIR / "logs"
 
 
 class BotCreate(BaseModel):
@@ -236,17 +238,24 @@ def start_bot(
 
         # Lancer un thread pour capturer les logs
         import threading
-        def _capture_logs(pid, proc, bot_id):
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = LOGS_DIR / f"bot_{bot_id}.log"
+
+        def _capture_logs(pid, proc, bot_id, log_file):
             try:
-                for line in proc.stdout:
-                    if bot_id not in _bot_logs:
-                        _bot_logs[bot_id] = []
-                    _bot_logs[bot_id].append(line.rstrip())
-                    if len(_bot_logs[bot_id]) > 200:
-                        _bot_logs[bot_id] = _bot_logs[bot_id][-200:]
+                with open(log_file, "a", encoding="utf-8") as fh:
+                    for line in proc.stdout:
+                        stripped = line.rstrip()
+                        if bot_id not in _bot_logs:
+                            _bot_logs[bot_id] = []
+                        _bot_logs[bot_id].append(stripped)
+                        if len(_bot_logs[bot_id]) > 200:
+                            _bot_logs[bot_id] = _bot_logs[bot_id][-200:]
+                        fh.write(stripped + "\n")
+                        fh.flush()
             except Exception:
                 pass
-        t = threading.Thread(target=_capture_logs, args=(proc.pid, proc, bot_id), daemon=True)
+        t = threading.Thread(target=_capture_logs, args=(proc.pid, proc, bot_id, log_file), daemon=True)
         t.start()
 
         return {"message": f"Bot '{bot.name}' démarré (PID {proc.pid})"}
@@ -296,6 +305,12 @@ def get_bot_logs(
         raise HTTPException(404, "Bot non trouvé")
 
     logs = _bot_logs.get(bot_id, [])
+    # Fallback: charger depuis le fichier si mémoire vide
+    if not logs:
+        log_file = LOGS_DIR / f"bot_{bot_id}.log"
+        if log_file.exists():
+            lines = log_file.read_text(encoding="utf-8").splitlines()
+            logs = lines[-200:]  # Dernières 200 lignes
     return {"logs": logs, "count": len(logs)}
 
 

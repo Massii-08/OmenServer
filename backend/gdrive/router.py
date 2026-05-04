@@ -23,7 +23,7 @@ import os
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
@@ -279,3 +279,31 @@ def gdrive_download(
         return {"message": f"Fichier '{file_name}' téléchargé", "path": str(dest / file_name)}
     except Exception as e:
         raise HTTPException(500, f"Erreur: {e}")
+
+
+@router.post("/upload")
+def gdrive_upload(
+    file: UploadFile = File(...),
+    folder_id: str = "root",
+    current_user: User = Depends(get_current_user),
+):
+    """Uploader un fichier vers Google Drive."""
+    service = _get_drive_service()
+    if not service:
+        raise HTTPException(401, "Google Drive non connecté")
+
+    try:
+        from googleapiclient.http import MediaInMemoryUpload
+
+        content = file.file.read()
+        media = MediaInMemoryUpload(content, mimetype=file.content_type or "application/octet-stream")
+
+        metadata = {"name": file.filename}
+        if folder_id and folder_id != "root":
+            metadata["parents"] = [folder_id]
+
+        uploaded = service.files().create(body=metadata, media_body=media, fields="id,name").execute()
+
+        return {"message": f"Fichier '{uploaded['name']}' uploadé", "file_id": uploaded["id"]}
+    except Exception as e:
+        raise HTTPException(500, f"Erreur upload: {e}")
