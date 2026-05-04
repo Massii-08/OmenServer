@@ -113,7 +113,7 @@ def gdrive_status(current_user: User = Depends(get_current_user)):
 
 @router.post("/connect")
 def gdrive_connect(current_user: User = Depends(get_current_user)):
-    """Étape 1 : Génère l'URL d'authentification Google."""
+    """Génère l'URL d'authentification Google avec redirect localhost."""
     if not _google_available:
         raise HTTPException(400, "Librairies Google non installées")
 
@@ -121,44 +121,88 @@ def gdrive_connect(current_user: User = Depends(get_current_user)):
         raise HTTPException(400, "credentials.json manquant")
 
     try:
-        flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
-        flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+        import json
+        cred_data = json.loads(CREDENTIALS_FILE.read_text())
+        creds_info = cred_data.get("web") or cred_data.get("installed", {})
+        client_id = creds_info.get("client_id", "")
 
-        auth_url, _ = flow.authorization_url(prompt='consent')
+        redirect_uri = "http://localhost:8000/api/gdrive/oauth-redirect"
 
-        return {
-            "auth_url": auth_url,
-            "message": "Ouvre ce lien, autorise l'accès, puis copie le code affiché.",
-        }
+        auth_url = (
+            "https://accounts.google.com/o/oauth2/v2/auth"
+            f"?client_id={client_id}"
+            f"&redirect_uri={redirect_uri}"
+            "&response_type=code"
+            "&scope=https://www.googleapis.com/auth/drive"
+            "&access_type=offline"
+            "&prompt=consent"
+        )
+
+        return {"auth_url": auth_url}
     except Exception as e:
         raise HTTPException(500, f"Erreur: {e}")
 
 
-@router.post("/callback")
-def gdrive_callback(
-    data: dict,
-    current_user: User = Depends(get_current_user),
-):
-    """Étape 2 : Reçoit le code d'autorisation et finalise la connexion."""
-    if not _google_available:
-        raise HTTPException(400, "Librairies Google non installées")
+@router.get("/oauth-redirect")
+def gdrive_oauth_redirect(code: str = None, error: str = None):
+    """Callback OAuth — Google redirige ici avec le code."""
+    from fastapi.responses import HTMLResponse
 
-    code = data.get("code", "").strip()
+    if error:
+        return HTMLResponse(f"<html><body><h2>❌ Erreur: {error}</h2><p><a href='http://localhost:8000'>Retour au panel</a></p></body></html>")
+
     if not code:
-        raise HTTPException(400, "Code d'autorisation manquant")
+        return HTMLResponse("<html><body><h2>❌ Pas de code reçu</h2></body></html>")
 
     try:
-        flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
-        flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
-        flow.fetch_token(code=code)
+        import json
+        cred_data = json.loads(CREDENTIALS_FILE.read_text())
+        installed = cred_data.get("web") or cred_data.get("installed", {})
 
-        creds = flow.credentials
+        import httplib2
+        from urllib.parse import urlencode
+        h = httplib2.Http(timeout=15)
+        body = urlencode({
+            "code": code,
+            "client_id": installed.get("client_id"),
+            "client_secret": installed.get("client_secret"),
+            "redirect_uri": "http://localhost:8000/api/gdrive/oauth-redirect",
+            "grant_type": "authorization_code",
+        })
+        resp, content = h.request(
+            "https://oauth2.googleapis.com/token", "POST",
+            body=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        if resp.status != 200:
+            return HTMLResponse(f"<html><body><h2>❌ Erreur token: {content.decode()}</h2></body></html>")
+
+        token_data = json.loads(content.decode())
+
+        # Sauvegarder le token
         GDRIVE_DIR.mkdir(parents=True, exist_ok=True)
-        TOKEN_FILE.write_text(creds.to_json())
+        TOKEN_FILE.write_text(json.dumps({
+            "token": token_data.get("access_token"),
+            "refresh_token": token_data.get("refresh_token"),
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "client_id": installed.get("client_id"),
+            "client_secret": installed.get("client_secret"),
+            "scopes": SCOPES,
+        }))
 
-        return {"message": "✅ Google Drive connecté avec succès !", "connected": True}
+        return HTMLResponse("""
+        <html><body style="background:#0f172a;color:white;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
+            <div style="text-align:center;">
+                <div style="font-size:64px;">✅</div>
+                <h1>Google Drive connecté !</h1>
+                <p style="color:#94a3b8;">Tu peux fermer cet onglet et retourner sur OmenServer.</p>
+                <a href="http://localhost:8000" style="color:#3b82f6;">← Retour au panel</a>
+            </div>
+        </body></html>
+        """)
     except Exception as e:
-        raise HTTPException(500, f"Code invalide ou expiré: {e}")
+        return HTMLResponse(f"<html><body><h2>❌ Erreur: {e}</h2></body></html>")
 
 
 @router.get("/files")
