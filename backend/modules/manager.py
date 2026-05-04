@@ -72,16 +72,6 @@ class ModuleManager:
                 "version": "0.0.0",
                 "category": "web",
             },
-            "vpn": {
-                "id": "vpn",
-                "name": "VPN",
-                "description": "Accès sécurisé à ton réseau à distance",
-                "icon": "🔒",
-                "color": "#ef4444",  # Rouge
-                "enabled": False,  # V4
-                "version": "0.0.0",
-                "category": "network",
-            },
         }
 
     def get_all_modules(self) -> list:
