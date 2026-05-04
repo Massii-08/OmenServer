@@ -34,7 +34,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/gdrive", tags=["Google Drive"])
 
-GDRIVE_DIR = Path(os.environ.get("GDRIVE_DIR", "/opt/omenserver/gdrive"))
+_home = Path.home()
+GDRIVE_DIR = Path(os.environ.get("GDRIVE_DIR", str(_home / "omenserver" / "gdrive")))
 CREDENTIALS_FILE = GDRIVE_DIR / "credentials.json"
 TOKEN_FILE = GDRIVE_DIR / "token.json"
 
