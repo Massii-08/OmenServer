@@ -166,7 +166,7 @@ const WebModule = {
     async startSite(id) {
         const r = await Auth.apiCall(`/api/websites/${id}/start`, { method: 'POST' });
         if (r && r.ok) await this.loadSites();
-        else { const err = r ? await r.json().catch(() => ({})) : {}; alert(`❌ ${err.detail || 'Erreur'}`); }
+        else { const err = r ? await r.json().catch(() => ({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Erreur'); else alert(`❌ ${err.detail || 'Erreur'}`); }
     },
 
     async stopSite(id) {

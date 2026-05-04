@@ -754,11 +754,13 @@ const GameServer = {
                 await this.refreshServers();
             } else if (response) {
                 const err = await response.json();
-                alert(`Erreur: ${err.detail || 'Impossible de supprimer'}`);
+                if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Impossible de supprimer');
+                else alert(`Erreur: ${err.detail || 'Impossible de supprimer'}`);
             }
         } catch (e) {
             this.hideDeleteModal();
-            alert('Erreur réseau lors de la suppression');
+            if (typeof Toast !== 'undefined') Toast.error('Erreur réseau lors de la suppression');
+            else alert('Erreur réseau lors de la suppression');
         }
     },
 
@@ -1450,7 +1452,8 @@ const GameServer = {
             await this.refreshBackups();
         } else if (response) {
             const err = await response.json();
-            alert(`Erreur: ${err.detail || 'Impossible de sauvegarder'}`);
+            if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Impossible de sauvegarder');
+            else alert(`Erreur: ${err.detail || 'Impossible de sauvegarder'}`);
         }
     },
 
@@ -1466,10 +1469,12 @@ const GameServer = {
         const response = await Auth.apiCall(`/api/servers/${id}/restore/${backupId}`, { method: 'POST' });
 
         if (response && response.ok) {
-            alert('✅ Sauvegarde restaurée avec succès !');
+            if (typeof Toast !== 'undefined') Toast.success('Sauvegarde restaurée avec succès !');
+            else alert('✅ Sauvegarde restaurée avec succès !');
         } else if (response) {
             const err = await response.json();
-            alert(`Erreur: ${err.detail || 'Impossible de restaurer'}`);
+            if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Impossible de restaurer');
+            else alert(`Erreur: ${err.detail || 'Impossible de restaurer'}`);
         }
     },
 
@@ -1488,7 +1493,8 @@ const GameServer = {
             await this.refreshBackups();
         } else if (response) {
             const err = await response.json();
-            alert(`Erreur: ${err.detail || 'Impossible de supprimer'}`);
+            if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Impossible de supprimer');
+            else alert(`Erreur: ${err.detail || 'Impossible de supprimer'}`);
         }
     },
 };

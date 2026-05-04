@@ -41,10 +41,16 @@ const App = {
 
     _loadTheme() {
         const saved = localStorage.getItem('omen-theme') || 'default';
-        document.documentElement.setAttribute('data-theme', saved);
+        const isLight = localStorage.getItem('omen-light') === 'true';
+        document.documentElement.setAttribute('data-theme', isLight ? 'light' : saved);
+        // Update light mode button icon
+        const lmBtn = document.getElementById('lightmode-btn');
+        if (lmBtn) lmBtn.textContent = isLight ? '🌞' : '🌗';
     },
 
     cycleTheme() {
+        // Only cycle dark themes — light mode is separate toggle
+        if (localStorage.getItem('omen-light') === 'true') return;
         const current = localStorage.getItem('omen-theme') || 'default';
         const idx = this._themes.indexOf(current);
         const next = this._themes[(idx + 1) % this._themes.length];
@@ -58,6 +64,18 @@ const App = {
             btn.style.transform = 'rotate(360deg)';
             setTimeout(() => btn.style.transform = '', 300);
         }
+        if (typeof Toast !== 'undefined') Toast.info(`Thème : ${this._themeNames[next]}`);
+    },
+
+    toggleLightMode() {
+        const isLight = localStorage.getItem('omen-light') === 'true';
+        const newMode = !isLight;
+        localStorage.setItem('omen-light', newMode.toString());
+        const theme = newMode ? 'light' : (localStorage.getItem('omen-theme') || 'default');
+        document.documentElement.setAttribute('data-theme', theme);
+        const lmBtn = document.getElementById('lightmode-btn');
+        if (lmBtn) lmBtn.textContent = newMode ? '🌞' : '🌗';
+        if (typeof Toast !== 'undefined') Toast.info(newMode ? '☀️ Mode clair activé' : '🌙 Mode sombre activé');
     },
 
     /**
@@ -454,7 +472,7 @@ const App = {
         if (!confirm('⚠️ ARRÊT D\'URGENCE\n\nCela va arrêter TOUS les serveurs de jeux en cours.\n\nContinuer ?')) return;
 
         const r = await Auth.apiCall('/api/servers');
-        if (!r || !r.ok) { alert('❌ Erreur'); return; }
+        if (!r || !r.ok) { if (typeof Toast !== 'undefined') Toast.error('Erreur'); return; }
         const servers = await r.json();
 
         let stopped = 0;
@@ -465,7 +483,8 @@ const App = {
             }
         }
 
-        alert(`✅ ${stopped} serveur(s) arrêté(s)`);
+        if (typeof Toast !== 'undefined') Toast.success(`${stopped} serveur(s) arrêté(s)`);
+        else alert(`✅ ${stopped} serveur(s) arrêté(s)`);
         if (this.currentView === 'hub') {
             this.navigateTo('hub');
         }

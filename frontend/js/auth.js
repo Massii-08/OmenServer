@@ -118,7 +118,8 @@ const Auth = {
 
             // Si 401 (non autorisé), le token est expiré → message + déconnexion
             if (response.status === 401) {
-                alert('Ta session a expiré. Reconnecte-toi.');
+                if (typeof Toast !== 'undefined') Toast.warn('Ta session a expiré. Reconnecte-toi.');
+                else alert('Ta session a expiré. Reconnecte-toi.');
                 this.logout();
                 return null;
             }

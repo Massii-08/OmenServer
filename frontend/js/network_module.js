@@ -17,6 +17,7 @@ const NetworkModule = {
                     <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">Surveillance connexion + Wake-on-LAN</p>
                 </div>
                 <div style="display:flex;gap:8px;">
+                    <button class="btn btn-secondary" onclick="NetworkModule.exportCSV()">📊 Export CSV</button>
                     <button class="btn btn-secondary" onclick="App.navigateTo('hub')">← Hub</button>
                 </div>
             </div>
@@ -310,11 +311,13 @@ const NetworkModule = {
         const r = await Auth.apiCall(`/api/network/wake/${id}`, { method: 'POST' });
         if (r && r.ok) {
             const data = await r.json();
-            alert(`⚡ ${data.message}\n\n${data.note}`);
+            if (typeof Toast !== 'undefined') Toast.success(`⚡ ${data.message}`);
+            else alert(`⚡ ${data.message}`);
             await this._loadDevices();
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            alert(`❌ ${err.detail || 'Erreur'}`);
+            if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Erreur');
+            else alert(`❌ ${err.detail || 'Erreur'}`);
         }
     },
 
@@ -322,5 +325,27 @@ const NetworkModule = {
         if (!confirm('Supprimer cet appareil ?')) return;
         const r = await Auth.apiCall(`/api/network/devices/${id}`, { method: 'DELETE' });
         if (r && r.ok) await this._loadDevices();
+    },
+
+    async exportCSV() {
+        const r = await Auth.apiCall('/api/network/history?hours=24');
+        if (!r || !r.ok) { Toast.error('Erreur de chargement'); return; }
+        const data = await r.json();
+        const logs = data.logs || [];
+        if (logs.length === 0) { Toast.warn('Aucune donnée à exporter'); return; }
+
+        const header = 'Timestamp,Latence (ms),IP Publique,Download (Mbps),Upload (Mbps)\n';
+        const rows = logs.map(l => 
+            `${l.timestamp || ''},${l.latency_ms || ''},${l.public_ip || ''},${l.download_mbps || ''},${l.upload_mbps || ''}`
+        ).join('\n');
+
+        const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `omenserver-network-${new Date().toISOString().slice(0,10)}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+        Toast.success(`📊 ${logs.length} mesures exportées en CSV`);
     },
 };

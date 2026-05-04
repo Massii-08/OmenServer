@@ -270,7 +270,7 @@ const MediaModule = {
     async start() {
         const r = await Auth.apiCall('/api/media/start', { method: 'POST' });
         if (r && r.ok) await this.loadStatus();
-        else { const err = r ? await r.json().catch(() => ({})) : {}; alert(`❌ ${err.detail || 'Erreur'}`); }
+        else { const err = r ? await r.json().catch(() => ({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Erreur'); else alert(`❌ ${err.detail || 'Erreur'}`); }
     },
 
     async stop() {
@@ -288,6 +288,6 @@ const MediaModule = {
 
         const r = await Auth.apiCall('/api/media/reset', { method: 'DELETE' });
         if (r && r.ok) await this.loadStatus();
-        else { const err = r ? await r.json().catch(() => ({})) : {}; alert(`❌ ${err.detail || 'Erreur'}`); }
+        else { const err = r ? await r.json().catch(() => ({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Erreur'); else alert(`❌ ${err.detail || 'Erreur'}`); }
     },
 };

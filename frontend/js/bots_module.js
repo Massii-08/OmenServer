@@ -165,7 +165,8 @@ const BotsModule = {
             await this.loadBots();
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            alert(`❌ ${err.detail || 'Erreur'}`);
+            if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Erreur');
+            else alert(`❌ ${err.detail || 'Erreur'}`);
         }
     },
 

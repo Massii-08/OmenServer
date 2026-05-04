@@ -96,7 +96,8 @@ const FilesModule = {
         const r = await Auth.apiCall('/api/gdrive/connect', { method: 'POST' });
         if (!r || !r.ok) {
             const err = r ? await r.json().catch(() => ({})) : {};
-            alert(`❌ ${err.detail || 'Erreur'}`);
+            if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Erreur');
+            else alert(`❌ ${err.detail || 'Erreur'}`);
             return;
         }
 
@@ -179,9 +180,11 @@ const FilesModule = {
         });
         if (r && r.ok) {
             const data = await r.json();
-            alert(`✅ ${data.message}`);
+            if (typeof Toast !== 'undefined') Toast.success(data.message);
+            else alert(`✅ ${data.message}`);
         } else {
-            alert('❌ Erreur de téléchargement');
+            if (typeof Toast !== 'undefined') Toast.error('Erreur de téléchargement');
+            else alert('❌ Erreur de téléchargement');
         }
     },
 
@@ -204,10 +207,12 @@ const FilesModule = {
         input.value = '';
         if (r && r.ok) {
             const data = await r.json();
-            alert(`✅ ${data.message}`);
+            if (typeof Toast !== 'undefined') Toast.success(data.message);
+            else alert(`✅ ${data.message}`);
             await this.loadDriveFiles();
         } else {
-            alert('❌ Erreur d\'upload');
+            if (typeof Toast !== 'undefined') Toast.error('Erreur d\'upload');
+            else alert('❌ Erreur d\'upload');
         }
     },
 };
