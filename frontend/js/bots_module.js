@@ -10,6 +10,7 @@ const BotsModule = {
     _refreshInterval: null,
 
     async render(container) {
+        console.log('[BotsModule] render() called');
         container.innerHTML = `
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;">
                 <div>
@@ -23,11 +24,15 @@ const BotsModule = {
             </div>
 
             <div id="bot-create-form" style="display:none;margin-bottom:20px;"></div>
-            <div id="bots-grid"></div>
+            <div id="bots-grid"><div style="text-align:center;padding:20px;color:var(--text-muted);">⏳ Chargement des bots...</div></div>
             <div id="bot-detail" style="display:none;margin-top:20px;"></div>
         `;
 
-        await this.loadBots();
+        try {
+            await this.loadBots();
+        } catch (e) {
+            console.error('[BotsModule] loadBots error:', e);
+        }
 
         // Refresh auto toutes les 5s
         this._refreshInterval = setInterval(() => this.loadBots(), 5000);

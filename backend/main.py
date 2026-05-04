@@ -181,7 +181,7 @@ async def serve_index():
     """Page principale du panel (redirige vers login si pas connecté)."""
     index_path = os.path.join(frontend_dir, "index.html")
     if os.path.exists(index_path):
-        return FileResponse(index_path)
+        return FileResponse(index_path, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
     return {"message": f"{settings.SERVER_NAME} API is running"}
 
 
@@ -190,7 +190,7 @@ async def serve_login():
     """Page de connexion."""
     login_path = os.path.join(frontend_dir, "login.html")
     if os.path.exists(login_path):
-        return FileResponse(login_path)
+        return FileResponse(login_path, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
     return {"message": "Login page not found"}
 
 
