@@ -104,5 +104,49 @@ const Monitoring = {
                 this._history[key].shift();
             }
         });
+
+        // Vérifier les seuils d'alerte
+        this._checkAlerts(data);
+    },
+
+    // === Système d'alertes ===
+    _alertCooldowns: {},
+    _ALERT_COOLDOWN: 60000, // 1 minute entre chaque alerte du même type
+
+    _checkAlerts(data) {
+        if (typeof Toast === 'undefined') return;
+
+        const now = Date.now();
+        const fire = (key, msg) => {
+            if (this._alertCooldowns[key] && now - this._alertCooldowns[key] < this._ALERT_COOLDOWN) return;
+            this._alertCooldowns[key] = now;
+            Toast.warn(msg, 6000);
+            // Update badge
+            this._alertCount = (this._alertCount || 0) + 1;
+            const badge = document.getElementById('alert-badge');
+            if (badge) { badge.textContent = this._alertCount; badge.style.display = 'flex'; }
+        };
+
+        // CPU > 95% pendant 3 mesures consécutives
+        const cpuHist = this._history.cpu.slice(-3);
+        if (cpuHist.length >= 3 && cpuHist.every(v => v > 95)) {
+            fire('cpu_critical', `⚡ CPU critique : ${Math.round(data.cpu.percent)}% — Le processeur est surchargé`);
+        }
+
+        // RAM > 90%
+        if (data.memory.percent > 90) {
+            fire('ram_high', `🧠 RAM élevée : ${Math.round(data.memory.percent)}% — ${data.memory.used_gb}/${data.memory.total_gb} Go`);
+        }
+
+        // Disque > 95%
+        if (data.disk.percent > 95) {
+            fire('disk_full', `💾 Disque quasi plein : ${Math.round(data.disk.percent)}% — Libère de l'espace !`);
+        }
+
+        // Température CPU > 85°C
+        if (data.temperature?.available && data.temperature.cpu_temp > 85) {
+            fire('temp_high', `🌡️ Température CPU élevée : ${data.temperature.cpu_temp}°C`);
+        }
     },
 };
+

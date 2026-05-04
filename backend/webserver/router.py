@@ -18,6 +18,7 @@ Endpoints:
 import os
 import logging
 import docker
+import subprocess
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -54,6 +55,7 @@ class CreateWebsite(BaseModel):
     site_type: str = "static"   # static, node, php, python
     port: int = 3000
     description: str = ""
+    git_url: str = ""           # URL Git à cloner (optionnel)
 
 
 # === Helpers ===
@@ -153,26 +155,50 @@ async def create_website(req: CreateWebsite, db: Session = Depends(get_db), user
     site_dir = os.path.join(WEBSITES_DIR, str(site.id))
     os.makedirs(site_dir, exist_ok=True)
 
-    # Créer un fichier index par défaut selon le type
-    if req.site_type == "static":
-        with open(os.path.join(site_dir, "index.html"), "w") as f:
-            f.write(f"""<!DOCTYPE html>
+    # Si une URL Git est fournie, cloner le repo
+    if req.git_url and req.git_url.strip():
+        try:
+            git_bin = "/usr/bin/git"
+            # Chercher git dans les emplacements courants
+            for p in ["/usr/bin/git", "/usr/local/bin/git", "/opt/homebrew/bin/git"]:
+                if os.path.exists(p):
+                    git_bin = p
+                    break
+            result = subprocess.run(
+                [git_bin, "clone", "--depth", "1", req.git_url.strip(), "."],
+                cwd=site_dir, capture_output=True, text=True, timeout=120
+            )
+            if result.returncode != 0:
+                logger.error(f"Git clone échoué: {result.stderr}")
+                raise HTTPException(status_code=400, detail=f"Erreur git clone: {result.stderr[:200]}")
+            logger.info(f"📦 Repo cloné: {req.git_url} → {site_dir}")
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=408, detail="Timeout: le clone a pris trop de temps (>120s)")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Erreur git: {str(e)}")
+    else:
+        # Créer un fichier index par défaut selon le type
+        if req.site_type == "static":
+            with open(os.path.join(site_dir, "index.html"), "w") as f:
+                f.write(f"""<!DOCTYPE html>
 <html><head><title>{req.name}</title>
 <style>body{{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#0f172a;color:white;}}
 h1{{font-size:2em;}}</style></head>
 <body><div style="text-align:center"><h1>🌐 {req.name}</h1><p>Site hébergé par OmenServer</p></div></body></html>""")
-    elif req.site_type == "node":
-        with open(os.path.join(site_dir, "index.js"), "w") as f:
-            f.write(f"""const http = require('http');
+        elif req.site_type == "node":
+            with open(os.path.join(site_dir, "index.js"), "w") as f:
+                f.write(f"""const http = require('http');
 const server = http.createServer((req, res) => {{
     res.writeHead(200, {{'Content-Type': 'text/html'}});
     res.end('<h1>⚡ {req.name}</h1><p>App Node.js sur OmenServer</p>');
 }});
 server.listen(3000, () => console.log('Serveur Node.js sur le port 3000'));
 """)
-    elif req.site_type == "python":
-        with open(os.path.join(site_dir, "app.py"), "w") as f:
-            f.write(f"""from http.server import HTTPServer, SimpleHTTPRequestHandler
+        elif req.site_type == "python":
+            with open(os.path.join(site_dir, "app.py"), "w") as f:
+                f.write(f"""from http.server import HTTPServer, SimpleHTTPRequestHandler
 import os
 
 class Handler(SimpleHTTPRequestHandler):

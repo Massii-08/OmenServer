@@ -214,6 +214,19 @@ const ServerView = {
         <div id="sv-dash-docker" style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
             <div style="font-size:13px;font-weight:600;margin-bottom:8px;">🐳 Docker — Ressources en temps réel</div>
             <div style="color:var(--text-muted);font-size:12px;">⏳ Chargement...</div>
+        </div>
+
+        <!-- Mini-logs -->
+        <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;margin-top:16px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                <span style="font-size:13px;font-weight:600;">📜 Derniers logs</span>
+                <div style="display:flex;gap:6px;align-items:center;">
+                    <span id="sv-dash-logs-time" style="font-size:10px;color:var(--text-muted);"></span>
+                    <button class="btn btn-secondary btn-sm" onclick="ServerView._refreshDashLogs()" style="font-size:11px;padding:3px 8px;">🔄</button>
+                    <button class="btn btn-secondary btn-sm" onclick="ServerView.switchTab('console')" style="font-size:11px;padding:3px 8px;">Ouvrir console →</button>
+                </div>
+            </div>
+            <div id="sv-dash-logs" style="background:#0d1117;color:#c9d1d9;font-family:'Courier New',monospace;font-size:11px;padding:10px;border-radius:6px;height:180px;overflow-y:auto;white-space:pre-wrap;line-height:1.5;">⏳ Chargement...</div>
         </div>`;
     },
 
@@ -1453,6 +1466,9 @@ const ServerView = {
         const el = document.getElementById('sv-dash-docker');
         if (!el) return;
         
+        // Load mini-logs too
+        this._refreshDashLogs();
+        
         try {
             const r = await Auth.apiCall(`/api/containers/${this.serverData?.docker_id}/stats`);
             if (r && r.ok) {
@@ -1489,6 +1505,52 @@ const ServerView = {
             el.innerHTML = `
                 <div style="font-size:13px;font-weight:600;margin-bottom:8px;">🐳 Docker</div>
                 <div style="color:var(--text-muted);font-size:12px;">Stats non disponibles</div>`;
+        }
+    },
+
+    async _refreshDashLogs() {
+        const el = document.getElementById('sv-dash-logs');
+        const timeEl = document.getElementById('sv-dash-logs-time');
+        if (!el) return;
+        
+        try {
+            const r = await Auth.apiCall(`/api/servers/${this.serverId}/logs?tail=15`);
+            if (!r || !r.ok) {
+                el.textContent = 'Le serveur doit être en ligne pour voir les logs.';
+                el.style.color = 'var(--text-muted)';
+                return;
+            }
+            const data = await r.json();
+            const logs = data.logs || '';
+            
+            if (!logs.trim()) {
+                el.textContent = 'Aucun log disponible.';
+                el.style.color = 'var(--text-muted)';
+                return;
+            }
+            
+            // Color-code each line
+            el.innerHTML = '';
+            logs.split('\n').forEach(line => {
+                if (!line.trim()) return;
+                const span = document.createElement('span');
+                const t = line.toLowerCase();
+                let color = '#c9d1d9';
+                if (t.includes('error') || t.includes('exception') || t.includes('severe')) color = '#ef4444';
+                else if (t.includes('warn')) color = '#f59e0b';
+                else if (t.includes('joined') || t.includes('logged in')) color = '#22c55e';
+                else if (t.includes('starting') || t.includes('done (') || t.includes('preparing')) color = '#a78bfa';
+                else if (t.includes('info')) color = '#8b949e';
+                span.style.color = color;
+                span.textContent = line + '\n';
+                el.appendChild(span);
+            });
+            el.scrollTop = el.scrollHeight;
+            
+            if (timeEl) timeEl.textContent = new Date().toLocaleTimeString('fr-FR');
+        } catch (e) {
+            el.textContent = 'Logs non disponibles';
+            el.style.color = 'var(--text-muted)';
         }
     },
 

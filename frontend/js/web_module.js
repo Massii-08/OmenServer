@@ -132,6 +132,10 @@ const WebModule = {
                         <input id="web-desc" class="form-input" placeholder="Mon projet..." />
                     </div>
                 </div>
+                <div style="margin-bottom:12px;">
+                    <label class="form-label">📦 URL Git (optionnel — clone un repo au lieu de créer un dossier vide)</label>
+                    <input id="web-git" class="form-input" placeholder="https://github.com/user/repo.git" style="font-family:monospace;font-size:12px;" />
+                </div>
                 <div style="display:flex;gap:8px;align-items:center;">
                     <button class="btn btn-primary" onclick="WebModule.createSite()">Créer</button>
                     <button class="btn btn-secondary" onclick="document.getElementById('web-create-form').style.display='none'">Annuler</button>
@@ -145,17 +149,21 @@ const WebModule = {
         const type = document.getElementById('web-type')?.value || 'static';
         const port = parseInt(document.getElementById('web-port')?.value) || 3000;
         const desc = document.getElementById('web-desc')?.value?.trim() || '';
+        const gitUrl = document.getElementById('web-git')?.value?.trim() || '';
         const msg = document.getElementById('web-create-msg');
 
         if (!name) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = '❌ Nom requis'; } return; }
 
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = gitUrl ? '⏳ Clonage en cours...' : '⏳ Création...'; }
+
         const r = await Auth.apiCall('/api/websites', {
             method: 'POST',
-            body: JSON.stringify({ name, site_type: type, port, description: desc })
+            body: JSON.stringify({ name, site_type: type, port, description: desc, git_url: gitUrl })
         });
 
         if (r && r.ok) {
             document.getElementById('web-create-form').style.display = 'none';
+            if (typeof Toast !== 'undefined') Toast.success(gitUrl ? `📦 ${name} cloné et prêt !` : `🌐 ${name} créé !`);
             await this.loadSites();
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
