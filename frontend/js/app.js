@@ -272,7 +272,7 @@ const App = {
 
         let allTasks = [];
         for (const s of servers) {
-            const tr = await Auth.apiCall(`/api/servers/${s.id}/scheduler`);
+            const tr = await Auth.apiCall(`/api/scheduler/server/${s.id}`);
             if (tr && tr.ok) {
                 const data = await tr.json();
                 const tasks = data.tasks || data || [];

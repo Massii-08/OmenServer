@@ -77,28 +77,50 @@ def get_disk_info() -> dict:
 def get_temperature() -> dict:
     """
     Retourne la température du CPU (si le capteur est disponible).
-    Note: sur Mac, les capteurs de température ne sont pas toujours accessibles.
-
-    Exemple de retour:
-    {
-        "cpu_temp": 65.0,       # Température en °C
-        "available": true       # Si le capteur est disponible
-    }
+    Essaie plusieurs méthodes selon l'OS :
+    1. psutil.sensors_temperatures() (Linux)
+    2. /sys/class/thermal (Linux fallback)
+    3. osx-cpu-temp (macOS, via Homebrew)
     """
+    import subprocess
+    import os
+
+    # Méthode 1 : psutil (fonctionne surtout sur Linux)
     try:
         temps = psutil.sensors_temperatures()
         if temps:
-            # Cherche le capteur CPU (le nom varie selon l'OS)
             for name, entries in temps.items():
                 if entries:
                     return {
                         "cpu_temp": round(entries[0].current, 1),
                         "available": True,
                     }
-        return {"cpu_temp": 0, "available": False}
     except (AttributeError, Exception):
-        # psutil.sensors_temperatures() n'existe pas sur certains OS
-        return {"cpu_temp": 0, "available": False}
+        pass
+
+    # Méthode 2 : Linux thermal zones
+    thermal_path = "/sys/class/thermal/thermal_zone0/temp"
+    if os.path.exists(thermal_path):
+        try:
+            with open(thermal_path) as f:
+                temp = int(f.read().strip()) / 1000
+                return {"cpu_temp": round(temp, 1), "available": True}
+        except Exception:
+            pass
+
+    # Méthode 3 : macOS via osx-cpu-temp (brew install osx-cpu-temp)
+    if platform.system() == "Darwin":
+        try:
+            result = subprocess.run(
+                ["osx-cpu-temp"], capture_output=True, text=True, timeout=3
+            )
+            if result.returncode == 0 and result.stdout:
+                temp_str = result.stdout.strip().replace("°C", "").strip()
+                return {"cpu_temp": round(float(temp_str), 1), "available": True}
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+            pass
+
+    return {"cpu_temp": 0, "available": False}
 
 
 def get_network_info() -> dict:

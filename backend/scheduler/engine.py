@@ -77,6 +77,32 @@ def _execute_task(task_id: int):
         db.close()
 
 
+def _auto_network_ping():
+    """
+    Ping automatique toutes les 5 minutes.
+    Stocke le résultat dans la table network_logs pour l'historique.
+    """
+    db = SessionLocal()
+    try:
+        from backend.network.router import _ping, _get_public_ip
+        from backend.network.models import NetworkLog
+
+        latency = _ping(count=1)
+        public_ip = _get_public_ip()
+
+        log = NetworkLog(
+            latency_ms=latency,
+            public_ip=public_ip,
+        )
+        db.add(log)
+        db.commit()
+    except Exception as e:
+        logger.warning(f"📡 Auto-ping échoué: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def start_scheduler():
     """
     Démarre le scheduler et charge toutes les tâches actives depuis la DB.
@@ -99,6 +125,16 @@ def start_scheduler():
         logger.info(f"⏰ Scheduler démarré: {len(tasks)} tâche(s) active(s)")
     finally:
         db.close()
+
+    # Auto-ping réseau toutes les 5 minutes (V4)
+    _scheduler.add_job(
+        _auto_network_ping,
+        trigger=IntervalTrigger(minutes=5),
+        id="auto_network_ping",
+        name="Auto Network Ping (5min)",
+        replace_existing=True,
+    )
+    logger.info("📡 Auto-ping réseau activé (toutes les 5 min)")
 
 
 def stop_scheduler():
