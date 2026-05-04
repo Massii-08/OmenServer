@@ -55,22 +55,32 @@ class ModuleManager:
             "media": {
                 "id": "media",
                 "name": "Média & Streaming",
-                "description": "Serveur Plex/Jellyfin pour tes films et séries",
+                "description": "Serveur Jellyfin pour tes films et séries",
                 "icon": "📺",
                 "color": "#f59e0b",  # Orange
-                "enabled": False,  # V4
-                "version": "0.0.0",
+                "enabled": True,  # V4 ✅
+                "version": "1.0.0",
                 "category": "media",
             },
             "web": {
                 "id": "web",
                 "name": "Serveur Web",
-                "description": "Héberger un site web ou une API",
+                "description": "Héberger des sites web et APIs via Docker",
                 "icon": "🌐",
                 "color": "#06b6d4",  # Cyan
-                "enabled": False,  # V4
-                "version": "0.0.0",
+                "enabled": True,  # V4 ✅
+                "version": "1.0.0",
                 "category": "web",
+            },
+            "network": {
+                "id": "network",
+                "name": "Monitoring Réseau",
+                "description": "Surveillance réseau + Wake-on-LAN",
+                "icon": "📡",
+                "color": "#ec4899",  # Rose
+                "enabled": True,  # V4 ✅
+                "version": "1.0.0",
+                "category": "network",
             },
         }
 

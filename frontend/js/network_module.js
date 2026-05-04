@@ -1,0 +1,326 @@
+/**
+ * NetworkModule — Interface du Module Monitoring Réseau + Wake-on-LAN.
+ *
+ * Affiche le statut réseau en temps réel (latence, IP, qualité),
+ * permet de lancer des speed tests, et de gérer les appareils WoL.
+ */
+const NetworkModule = {
+    _refreshInterval: null,
+    _status: null,
+
+    async render(container) {
+        console.log('[NetworkModule] render() called');
+        container.innerHTML = `
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;">
+                <div>
+                    <h1 style="margin:0;">📡 Monitoring Réseau</h1>
+                    <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">Surveillance connexion + Wake-on-LAN</p>
+                </div>
+                <div style="display:flex;gap:8px;">
+                    <button class="btn btn-secondary" onclick="App.navigateTo('hub')">← Hub</button>
+                </div>
+            </div>
+
+            <div id="net-status-cards"></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;">
+                <div id="net-actions"></div>
+                <div id="net-speedtest"></div>
+            </div>
+            <div id="net-history" style="margin-top:20px;"></div>
+            <div id="net-wol" style="margin-top:20px;"></div>
+        `;
+
+        await this.loadStatus();
+        await this._loadHistory();
+        await this._loadDevices();
+        this._refreshInterval = setInterval(() => this.loadStatus(), 10000);
+    },
+
+    unload() {
+        if (this._refreshInterval) {
+            clearInterval(this._refreshInterval);
+            this._refreshInterval = null;
+        }
+    },
+
+    async loadStatus() {
+        const r = await Auth.apiCall('/api/network/status');
+        if (!r || !r.ok) return;
+        this._status = await r.json();
+        this._renderStatusCards();
+        this._renderActions();
+    },
+
+    _renderStatusCards() {
+        const el = document.getElementById('net-status-cards');
+        if (!el) return;
+        const s = this._status;
+
+        const qualityColors = {
+            excellent: '#22c55e', good: '#22c55e', average: '#f59e0b',
+            poor: '#ef4444', offline: '#ef4444'
+        };
+        const latencyColor = qualityColors[s.quality] || '#6b7280';
+
+        el.innerHTML = `
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+                <div class="card" style="text-align:center;">
+                    <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Statut</div>
+                    <div style="font-size:20px;font-weight:700;color:${latencyColor};">
+                        ${s.quality_label}
+                    </div>
+                </div>
+                <div class="card" style="text-align:center;">
+                    <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Latence</div>
+                    <div style="font-size:24px;font-weight:700;">
+                        ${s.latency_ms !== null ? s.latency_ms : '--'}
+                        <span style="font-size:14px;color:var(--text-muted);">ms</span>
+                    </div>
+                </div>
+                <div class="card" style="text-align:center;">
+                    <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">IP Publique</div>
+                    <div style="font-size:14px;font-weight:600;font-family:monospace;">
+                        ${s.public_ip || '--'}
+                    </div>
+                </div>
+                <div class="card" style="text-align:center;">
+                    <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">IP Locale</div>
+                    <div style="font-size:14px;font-weight:600;font-family:monospace;">
+                        ${s.local_ip || '--'}
+                    </div>
+                </div>
+            </div>`;
+    },
+
+    _renderActions() {
+        const el = document.getElementById('net-actions');
+        if (!el) return;
+        el.innerHTML = `
+            <div class="card">
+                <h3 style="margin:0 0 12px;font-size:15px;">🔧 Actions</h3>
+                <div style="display:flex;flex-direction:column;gap:8px;">
+                    <button class="btn btn-secondary" onclick="NetworkModule.runPing()" style="text-align:left;">
+                        📡 Test de latence (Ping)
+                    </button>
+                    <button class="btn btn-secondary" onclick="NetworkModule.runSpeedTest()" id="speedtest-btn" style="text-align:left;">
+                        🚀 Speed Test
+                    </button>
+                    <button class="btn btn-secondary" onclick="NetworkModule._loadHistory()" style="text-align:left;">
+                        🔄 Rafraîchir l'historique
+                    </button>
+                </div>
+            </div>`;
+
+        const st = document.getElementById('net-speedtest');
+        if (st && !st.innerHTML.trim()) {
+            st.innerHTML = `
+                <div class="card">
+                    <h3 style="margin:0 0 12px;font-size:15px;">🚀 Dernier Speed Test</h3>
+                    <div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px;">
+                        Lance un speed test pour voir les résultats ici.
+                    </div>
+                </div>`;
+        }
+    },
+
+    async runPing() {
+        const r = await Auth.apiCall('/api/network/ping', { method: 'POST' });
+        if (r && r.ok) {
+            const data = await r.json();
+            await this.loadStatus();
+            await this._loadHistory();
+        }
+    },
+
+    async runSpeedTest() {
+        const btn = document.getElementById('speedtest-btn');
+        const st = document.getElementById('net-speedtest');
+        if (btn) { btn.disabled = true; btn.textContent = '⏳ Test en cours...'; }
+
+        const r = await Auth.apiCall('/api/network/speedtest', { method: 'POST' });
+
+        if (r && r.ok) {
+            const data = await r.json();
+            if (st) {
+                st.innerHTML = `
+                    <div class="card">
+                        <h3 style="margin:0 0 16px;font-size:15px;">🚀 Résultats Speed Test</h3>
+                        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+                            <div style="text-align:center;padding:12px;background:var(--bg-primary);border-radius:8px;">
+                                <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Latence</div>
+                                <div style="font-size:20px;font-weight:700;">${data.latency_ms || '--'} <span style="font-size:12px;color:var(--text-muted);">ms</span></div>
+                            </div>
+                            <div style="text-align:center;padding:12px;background:var(--bg-primary);border-radius:8px;">
+                                <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Download</div>
+                                <div style="font-size:20px;font-weight:700;color:var(--accent-green);">${data.download_mbps || '--'} <span style="font-size:12px;color:var(--text-muted);">Mbps</span></div>
+                            </div>
+                            <div style="text-align:center;padding:12px;background:var(--bg-primary);border-radius:8px;">
+                                <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Upload</div>
+                                <div style="font-size:20px;font-weight:700;color:var(--accent-blue);">${data.upload_mbps || '--'} <span style="font-size:12px;color:var(--text-muted);">Mbps</span></div>
+                            </div>
+                        </div>
+                    </div>`;
+            }
+            await this._loadHistory();
+        }
+
+        if (btn) { btn.disabled = false; btn.textContent = '🚀 Speed Test'; }
+    },
+
+    async _loadHistory() {
+        const el = document.getElementById('net-history');
+        if (!el) return;
+
+        const r = await Auth.apiCall('/api/network/history?hours=24');
+        if (!r || !r.ok) return;
+        const data = await r.json();
+        const logs = data.logs || [];
+
+        if (logs.length === 0) {
+            el.innerHTML = `
+                <div class="card">
+                    <h3 style="margin:0 0 12px;font-size:15px;">📊 Historique (24h)</h3>
+                    <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:13px;">
+                        Aucune mesure. Lance un ping ou un speed test pour commencer.
+                    </div>
+                </div>`;
+            return;
+        }
+
+        // Dessiner un mini graphique en barres ASCII pour la latence
+        const maxLatency = Math.max(...logs.filter(l => l.latency_ms).map(l => l.latency_ms), 1);
+        const barWidth = Math.max(4, Math.floor(600 / logs.length));
+
+        el.innerHTML = `
+            <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                    <h3 style="margin:0;font-size:15px;">📊 Historique (24h)</h3>
+                    <span style="font-size:12px;color:var(--text-muted);">${logs.length} mesure(s)</span>
+                </div>
+                <div style="display:flex;align-items:flex-end;gap:2px;height:80px;padding:8px;background:var(--bg-primary);border-radius:8px;overflow-x:auto;">
+                    ${logs.slice(-60).map(log => {
+                        const h = log.latency_ms ? Math.max(4, (log.latency_ms / maxLatency) * 70) : 0;
+                        const color = !log.latency_ms ? '#ef4444' : log.latency_ms < 30 ? '#22c55e' : log.latency_ms < 80 ? '#f59e0b' : '#ef4444';
+                        return `<div style="width:${barWidth}px;height:${h}px;background:${color};border-radius:2px;flex-shrink:0;" title="${log.latency_ms || 'offline'} ms — ${new Date(log.timestamp).toLocaleTimeString('fr-FR')}"></div>`;
+                    }).join('')}
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-top:4px;">
+                    <span>${logs.length > 0 ? new Date(logs[Math.max(0, logs.length-60)].timestamp).toLocaleTimeString('fr-FR') : ''}</span>
+                    <span>Maintenant</span>
+                </div>
+            </div>`;
+    },
+
+    async _loadDevices() {
+        const el = document.getElementById('net-wol');
+        if (!el) return;
+
+        const r = await Auth.apiCall('/api/network/devices');
+        if (!r || !r.ok) return;
+        const devices = await r.json();
+
+        el.innerHTML = `
+            <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                    <h3 style="margin:0;font-size:15px;">💻 Wake-on-LAN</h3>
+                    <button class="btn btn-secondary btn-sm" onclick="NetworkModule.showAddDevice()">➕ Ajouter un PC</button>
+                </div>
+                <div id="wol-add-form" style="display:none;margin-bottom:12px;"></div>
+                ${devices.length === 0 ? `
+                    <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:13px;">
+                        <div style="font-size:32px;margin-bottom:8px;">💻</div>
+                        Aucun appareil enregistré.<br>
+                        <span style="font-size:11px;">Ajoute un PC avec son adresse MAC pour le réveiller à distance.</span>
+                    </div>
+                ` : `
+                    <div style="display:flex;flex-direction:column;gap:6px;">
+                        ${devices.map(d => `
+                            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
+                                <span style="font-size:24px;">🖥️</span>
+                                <div style="flex:1;">
+                                    <div style="font-size:14px;font-weight:600;">${d.name}</div>
+                                    <div style="font-size:11px;color:var(--text-muted);font-family:monospace;">${d.mac_address}${d.ip_hint ? ' · ' + d.ip_hint : ''}</div>
+                                    ${d.last_wake ? `<div style="font-size:10px;color:var(--text-muted);margin-top:2px;">Dernier réveil: ${new Date(d.last_wake).toLocaleString('fr-FR')}</div>` : ''}
+                                </div>
+                                <div style="display:flex;gap:6px;">
+                                    <button class="btn btn-primary btn-sm" onclick="NetworkModule.wakeDevice(${d.id})" style="font-size:12px;padding:6px 14px;">
+                                        ⚡ Allumer
+                                    </button>
+                                    <button class="btn btn-secondary btn-sm" onclick="NetworkModule.deleteDevice(${d.id})" style="font-size:11px;padding:4px 8px;color:#ef4444;">
+                                        🗑
+                                    </button>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `}
+            </div>`;
+    },
+
+    showAddDevice() {
+        const form = document.getElementById('wol-add-form');
+        if (!form) return;
+        form.style.display = 'block';
+        form.innerHTML = `
+            <div style="padding:12px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px;">
+                    <div>
+                        <label class="form-label">Nom</label>
+                        <input id="wol-name" class="form-input" placeholder="PC Bureau" />
+                    </div>
+                    <div>
+                        <label class="form-label">Adresse MAC</label>
+                        <input id="wol-mac" class="form-input" placeholder="AA:BB:CC:DD:EE:FF" />
+                    </div>
+                    <div>
+                        <label class="form-label">IP (optionnel)</label>
+                        <input id="wol-ip" class="form-input" placeholder="192.168.1.100" />
+                    </div>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <button class="btn btn-primary btn-sm" onclick="NetworkModule.addDevice()">Ajouter</button>
+                    <button class="btn btn-secondary btn-sm" onclick="document.getElementById('wol-add-form').style.display='none'">Annuler</button>
+                    <span id="wol-msg" style="font-size:12px;"></span>
+                </div>
+            </div>`;
+    },
+
+    async addDevice() {
+        const name = document.getElementById('wol-name')?.value?.trim();
+        const mac = document.getElementById('wol-mac')?.value?.trim();
+        const ip = document.getElementById('wol-ip')?.value?.trim() || null;
+        const msg = document.getElementById('wol-msg');
+
+        if (!name || !mac) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = '❌ Nom et MAC requis'; } return; }
+
+        const r = await Auth.apiCall('/api/network/devices', {
+            method: 'POST',
+            body: JSON.stringify({ name, mac_address: mac, ip_hint: ip })
+        });
+
+        if (r && r.ok) {
+            await this._loadDevices();
+        } else {
+            const err = r ? await r.json().catch(() => ({})) : {};
+            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+        }
+    },
+
+    async wakeDevice(id) {
+        const r = await Auth.apiCall(`/api/network/wake/${id}`, { method: 'POST' });
+        if (r && r.ok) {
+            const data = await r.json();
+            alert(`⚡ ${data.message}\n\n${data.note}`);
+            await this._loadDevices();
+        } else {
+            const err = r ? await r.json().catch(() => ({})) : {};
+            alert(`❌ ${err.detail || 'Erreur'}`);
+        }
+    },
+
+    async deleteDevice(id) {
+        if (!confirm('Supprimer cet appareil ?')) return;
+        const r = await Auth.apiCall(`/api/network/devices/${id}`, { method: 'DELETE' });
+        if (r && r.ok) await this._loadDevices();
+    },
+};

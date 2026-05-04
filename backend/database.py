@@ -61,4 +61,6 @@ def create_tables():
     import backend.game_server.models  # noqa: GameServer
     import backend.scheduler.models    # noqa: ScheduledTask
     import backend.bots.models         # noqa: Bot
+    import backend.webserver.models    # noqa: Website
+    import backend.network.models      # noqa: WolDevice, NetworkLog
     Base.metadata.create_all(bind=engine)

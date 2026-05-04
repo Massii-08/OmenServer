@@ -36,7 +36,7 @@ logger = logging.getLogger("omenserver")
 app = FastAPI(
     title="OmenServer",
     description="Panel de gestion de serveur dédié polyvalent",
-    version="1.0.0",
+    version="4.0.0",
 )
 
 # --- Middleware CORS ---
@@ -72,6 +72,9 @@ from backend.notifications.router import router as notification_router
 from backend.monitoring.diagnostic_router import router as diagnostic_router
 from backend.bots.router import router as bots_router
 from backend.gdrive.router import router as gdrive_router
+from backend.media.router import router as media_router
+from backend.webserver.router import router as webserver_router
+from backend.network.router import router as network_router
 
 app.include_router(auth_router)
 app.include_router(invite_router)
@@ -93,6 +96,9 @@ app.include_router(notification_router)
 app.include_router(diagnostic_router)
 app.include_router(bots_router)
 app.include_router(gdrive_router)
+app.include_router(media_router)
+app.include_router(webserver_router)
+app.include_router(network_router)
 
 
 # --- Événement de démarrage ---

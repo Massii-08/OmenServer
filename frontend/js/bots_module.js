@@ -255,7 +255,7 @@ const BotsModule = {
                 }
                 if (e.key === 's' && (e.ctrlKey || e.metaKey)) {
                     e.preventDefault();
-                    BotsModule.saveCode(${id});
+                    BotsModule.saveCode(id);
                 }
             });
             editor.focus();

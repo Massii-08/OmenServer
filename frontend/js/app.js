@@ -111,6 +111,15 @@ const App = {
         if (this.currentView === 'bots' && typeof BotsModule !== 'undefined') {
             BotsModule.unload();
         }
+        if (this.currentView === 'media' && typeof MediaModule !== 'undefined') {
+            MediaModule.unload();
+        }
+        if (this.currentView === 'web' && typeof WebModule !== 'undefined') {
+            WebModule.unload();
+        }
+        if (this.currentView === 'network' && typeof NetworkModule !== 'undefined') {
+            NetworkModule.unload();
+        }
 
         this.currentView = view;
 
@@ -153,6 +162,18 @@ const App = {
 
             case 'files':
                 await FilesModule.render(content);
+                break;
+
+            case 'media':
+                await MediaModule.render(content);
+                break;
+
+            case 'web':
+                await WebModule.render(content);
+                break;
+
+            case 'network':
+                await NetworkModule.render(content);
                 break;
 
             default:

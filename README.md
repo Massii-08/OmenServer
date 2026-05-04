@@ -8,7 +8,7 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Version](https://img.shields.io/badge/Version-3.0-10b981?style=for-the-badge)
+![Version](https://img.shields.io/badge/Version-4.0-10b981?style=for-the-badge)
 
 </div>
 
@@ -37,6 +37,24 @@
 - **Analyse en temps réel** — CPU, RAM, Disque, Docker, Réseau
 - **Code couleur** — OK (vert), Warning (jaune), Critique (rouge)
 - **Suggestions** — Correctifs proposés pour chaque problème
+
+### 📺 Média & Streaming (V4)
+- **Jellyfin intégré** — Serveur multimédia open-source via Docker
+- **Setup en un clic** — Déploiement automatique du conteneur
+- **Bibliothèques** — Films, Séries, Musique avec gestion des dossiers
+- **Monitoring** — CPU, RAM du conteneur en temps réel
+
+### 🌐 Serveur Web (V4)
+- **Multi-sites** — Héberger plusieurs sites/APIs en parallèle
+- **4 types supportés** — Statique (Nginx), Node.js, PHP (Apache), Python
+- **Docker isolé** — Chaque site = 1 conteneur indépendant
+- **Logs en temps réel** — Console avec historique
+
+### 📡 Monitoring Réseau (V4)
+- **Surveillance 24/7** — Latence, IP publique, qualité de connexion
+- **Speed Test** — Test de débit intégré
+- **Historique** — Graphique de latence sur 24h
+- **Wake-on-LAN** — Allumer d'autres PC à distance via magic packet
 
 ### 🔧 Gestion Avancée
 - **⚙️ Ressources** — Sliders RAM (256 Mo → 8 Go) et CPU (25% → 400%) par serveur
@@ -150,6 +168,9 @@ OmenServer/
 │       ├── server_view.js    # Vue détaillée serveur
 │       ├── bots_module.js    # 🤖 UI Bots (V3)
 │       ├── files_module.js   # 📁 UI Fichiers (V3)
+│       ├── media_module.js   # 📺 UI Média (V4)
+│       ├── web_module.js     # 🌐 UI Serveur Web (V4)
+│       ├── network_module.js # 📡 UI Réseau (V4)
 │       ├── monitoring.js     # Dashboard monitoring
 │       └── modules.js        # Hub des modules
 ├── requirements.txt
@@ -185,6 +206,9 @@ Toutes les données sont stockées dans `~/omenserver/` :
 | `~/omenserver/bots/logs/` | Logs persistants des bots |
 | `~/omenserver/gdrive/` | Credentials + Token Google Drive |
 | `~/omenserver/downloads/` | Fichiers téléchargés depuis Drive |
+| `~/omenserver/media/` | Films, séries, musique (Jellyfin) |
+| `~/omenserver/jellyfin/` | Config et cache Jellyfin |
+| `~/omenserver/websites/` | Fichiers source des sites web |
 
 ---
 
@@ -207,6 +231,6 @@ Ce projet est sous licence MIT. Voir le fichier [LICENSE](LICENSE) pour plus de 
 
 **Fait avec ❤️ par Massimiliano**
 
-*OmenServer V3 — Polyvalence Complète*
+*OmenServer V4 — L'Écosystème*
 
 </div>
