@@ -7,10 +7,17 @@
     "background_color": "#0f0f1a",
     "theme_color": "#10b981",
     "orientation": "any",
+    "categories": ["utilities", "developer"],
     "icons": [
         {
             "src": "/favicon.svg",
             "sizes": "any",
+            "type": "image/svg+xml",
+            "purpose": "any"
+        },
+        {
+            "src": "/icon-512.svg",
+            "sizes": "512x512",
             "type": "image/svg+xml",
             "purpose": "any maskable"
         }

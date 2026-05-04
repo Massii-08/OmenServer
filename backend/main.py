@@ -209,6 +209,34 @@ async def serve_favicon():
     return {"message": "Favicon not found"}
 
 
+@app.get("/sw.js")
+async def serve_sw():
+    """Service Worker — doit être servi depuis la racine pour le bon scope."""
+    sw_path = os.path.join(frontend_dir, "sw.js")
+    if os.path.exists(sw_path):
+        return FileResponse(sw_path, media_type="application/javascript",
+                          headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+    return {"message": "Service Worker not found"}
+
+
+@app.get("/manifest.json")
+async def serve_manifest():
+    """Manifest PWA."""
+    manifest_path = os.path.join(frontend_dir, "manifest.json")
+    if os.path.exists(manifest_path):
+        return FileResponse(manifest_path, media_type="application/manifest+json")
+    return {"message": "Manifest not found"}
+
+
+@app.get("/icon-512.svg")
+async def serve_icon_512():
+    """Icône PWA 512x512."""
+    icon_path = os.path.join(frontend_dir, "icon-512.svg")
+    if os.path.exists(icon_path):
+        return FileResponse(icon_path, media_type="image/svg+xml")
+    return {"message": "Icon not found"}
+
+
 # --- Route de santé ---
 @app.get("/api/health")
 async def health_check():

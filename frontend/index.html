@@ -10,6 +10,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#0f0f1a">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="apple-touch-icon" href="/icon-512.svg">
     <link rel="manifest" href="/manifest.json">
     <link rel="stylesheet" href="/css/style.css?v=66">
 </head>
@@ -106,6 +107,14 @@
     <script src="/js/media_module.js?v=66"></script>
     <script src="/js/web_module.js?v=66"></script>
     <script src="/js/network_module.js?v=66"></script>
-    <script src="/js/app.js?v=66"></script>
+    <script src="/js/app.js?v=67"></script>
+    <script>
+        // Enregistrement du Service Worker (PWA)
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js')
+                .then(reg => console.log('[PWA] Service Worker enregistré:', reg.scope))
+                .catch(err => console.warn('[PWA] Erreur SW:', err));
+        }
+    </script>
 </body>
 </html>
