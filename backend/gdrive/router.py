@@ -113,7 +113,7 @@ def gdrive_status(current_user: User = Depends(get_current_user)):
 
 @router.post("/connect")
 def gdrive_connect(current_user: User = Depends(get_current_user)):
-    """Lancer le processus d'authentification OAuth."""
+    """Lancer le processus d'authentification OAuth dans un thread séparé."""
     if not _google_available:
         raise HTTPException(400, "Librairies Google non installées")
 
@@ -121,13 +121,34 @@ def gdrive_connect(current_user: User = Depends(get_current_user)):
         raise HTTPException(400, "credentials.json manquant")
 
     try:
-        flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
-        creds = flow.run_local_server(port=8090, open_browser=False)
+        import threading
 
-        GDRIVE_DIR.mkdir(parents=True, exist_ok=True)
-        TOKEN_FILE.write_text(creds.to_json())
+        def _run_oauth():
+            try:
+                flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
+                for port in [8091, 8092, 8093, 8094, 8095]:
+                    try:
+                        creds = flow.run_local_server(port=port, open_browser=True)
+                        break
+                    except OSError:
+                        continue
+                else:
+                    logger.error("Tous les ports OAuth occupés")
+                    return
 
-        return {"message": "Authentification réussie ! Google Drive connecté.", "connected": True}
+                GDRIVE_DIR.mkdir(parents=True, exist_ok=True)
+                TOKEN_FILE.write_text(creds.to_json())
+                logger.info("✅ Google Drive authentifié avec succès")
+            except Exception as e:
+                logger.error(f"Erreur OAuth: {e}")
+
+        t = threading.Thread(target=_run_oauth, daemon=True)
+        t.start()
+
+        return {
+            "message": "Authentification lancée ! Une page Google va s'ouvrir dans ton navigateur. Autorise l'accès puis reviens ici.",
+            "started": True,
+        }
     except Exception as e:
         raise HTTPException(500, f"Erreur OAuth: {e}")
 

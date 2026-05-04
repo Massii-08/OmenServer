@@ -89,10 +89,33 @@ const FilesModule = {
     },
 
     async connectGDrive() {
+        const statusEl = document.getElementById('gdrive-status');
         const r = await Auth.apiCall('/api/gdrive/connect', { method: 'POST' });
         if (r && r.ok) {
-            alert('✅ Google Drive connecté !');
-            await this.checkGDriveStatus();
+            // L'OAuth se fait dans un thread séparé — montrer un message d'attente
+            if (statusEl) {
+                statusEl.innerHTML = `
+                    <div style="display:flex;align-items:center;gap:16px;">
+                        <span style="font-size:32px;">⏳</span>
+                        <div style="flex:1;">
+                            <div style="font-weight:700;font-size:15px;">Authentification en cours...</div>
+                            <div style="font-size:13px;color:var(--text-muted);margin-top:2px;">Une page Google s'est ouverte. Autorise l'accès, puis cette page se mettra à jour automatiquement.</div>
+                        </div>
+                    </div>`;
+            }
+            // Vérifier toutes les 3s si l'auth est faite
+            const checkInterval = setInterval(async () => {
+                const sr = await Auth.apiCall('/api/gdrive/status');
+                if (sr && sr.ok) {
+                    const st = await sr.json();
+                    if (st.connected) {
+                        clearInterval(checkInterval);
+                        await this.checkGDriveStatus();
+                    }
+                }
+            }, 3000);
+            // Stop checking after 2 minutes
+            setTimeout(() => clearInterval(checkInterval), 120000);
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
             alert(`❌ ${err.detail || 'Erreur de connexion'}`);
