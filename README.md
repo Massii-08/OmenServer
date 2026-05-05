@@ -1,6 +1,8 @@
 # 🎮 OmenServer
 
-> **Panel de gestion de serveur dédié polyvalent** — Serveurs de jeux, bots Python, Google Drive et plus.
+> **Panel de gestion de serveur dédié polyvalent** — Serveurs de jeux, bots Python, sites web, accès distant et plus.
+>
+> 🌐 **[omenserver.org](https://omenserver.org)**
 
 <div align="center">
 
@@ -47,6 +49,7 @@
 ### 🌐 Serveur Web (V4)
 - **Multi-sites** — Héberger plusieurs sites/APIs en parallèle
 - **4 types supportés** — Statique (Nginx), Node.js, PHP (Apache), Python
+- **📦 Git Clone** — Déploie un site depuis n'importe quel repo Git
 - **Docker isolé** — Chaque site = 1 conteneur indépendant
 - **Logs en temps réel** — Console avec historique
 
@@ -56,12 +59,23 @@
 - **Historique** — Graphique de latence sur 24h
 - **Wake-on-LAN** — Allumer d'autres PC à distance via magic packet
 
+### 📱 PWA & Accès Distant (V4)
+- **Progressive Web App** — Installable sur mobile et bureau
+- **Service Worker** — Fonctionne hors-ligne (cache Network-first)
+- **Cloudflare Tunnel** — Accès sécurisé depuis n'importe où (HTTPS)
+- **Système d'invitations** — URL publique mais accès sur invitation uniquement
+
+### ⚡ Monitoring Avancé (V4)
+- **Mini-logs dashboard** — 15 dernières lignes de log avec coloration
+- **Alertes système** — CPU, RAM, disque, température avec Toast notifications
+- **Cooldown anti-spam** — 1 alerte par minute par type
+
 ### 🔧 Gestion Avancée
 - **⚙️ Ressources** — Sliders RAM (256 Mo → 8 Go) et CPU (25% → 400%) par serveur
 - **💾 Sauvegardes** — Créer, restaurer, supprimer des backups tar.gz + rotation automatique
 - **⏰ Tâches planifiées** — Backups et redémarrages automatiques (APScheduler)
 - **🧩 Mods CurseForge** — Recherche, installe et gère tes mods Minecraft
-- **🎨 4 thèmes** — Défaut, Midnight, Emerald, Crimson
+- **🎨 4 thèmes** — Défaut, Midnight, Emerald, Crimson + Light Mode
 
 ### 👥 Multi-Utilisateurs
 - **4 rôles** : Spectateur, Joueur, Modérateur, Administrateur
@@ -79,7 +93,7 @@
 
 ### 1. Cloner le projet
 ```bash
-git clone https://github.com/TON_USERNAME/OmenServer.git
+git clone https://github.com/Massii-08/OmenServer.git
 cd OmenServer
 ```
 
