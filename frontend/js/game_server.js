@@ -643,9 +643,30 @@ const GameServer = {
         }
 
         list.innerHTML = servers.map(server => {
-            const isRunning = server.status === 'running';
-            const statusClass = isRunning ? 'online' : (server.status === 'error' ? 'error' : 'offline');
-            const statusText = isRunning ? 'En ligne' : (server.status === 'error' ? 'Erreur' : 'Arrêté');
+            const pending = this._pendingStates[server.id];
+            const isRunning = !pending && server.status === 'running';
+            const isPending = !!pending;
+
+            let statusClass, statusText;
+            if (pending === 'starting') {
+                statusClass = 'starting';
+                statusText = '⏳ Démarrage...';
+            } else if (pending === 'stopping') {
+                statusClass = 'stopping';
+                statusText = '⏳ Arrêt...';
+            } else if (pending === 'restarting') {
+                statusClass = 'restarting';
+                statusText = '⏳ Redémarrage...';
+            } else if (isRunning) {
+                statusClass = 'online';
+                statusText = 'En ligne';
+            } else if (server.status === 'error') {
+                statusClass = 'error';
+                statusText = 'Erreur';
+            } else {
+                statusClass = 'offline';
+                statusText = 'Arrêté';
+            }
 
             // Trouver l'icône du jeu
             const game = this._games.find(g => g.id === server.game_type);
@@ -670,13 +691,15 @@ const GameServer = {
                         </div>
                     </div>
                     <div class="flex items-center gap-4">
-                        <span class="status-badge ${statusClass}">
-                            <span class="status-dot ${statusClass}"></span>
+                        <span class="status-badge ${statusClass}"${isPending ? ' style="animation:pulse-badge 1.5s ease-in-out infinite;"' : ''}>
+                            ${isPending ? '<span class="spinner-sm"></span>' : `<span class="status-dot ${statusClass}"></span>`}
                             ${statusText}
                         </span>
                         ${isRunning ? `<span style="font-size:12px;color:var(--accent-blue);font-weight:600;">👥 ${server.player_count || 0}/${server.player_max || 20}</span>` : ''}
                         <div class="server-actions" onclick="event.stopPropagation()">
-                            ${isRunning ? `
+                            ${isPending ? `
+                                <button class="btn btn-icon btn-secondary" disabled style="opacity:0.5;">⏳</button>
+                            ` : isRunning ? `
                                 <button class="btn btn-icon btn-secondary" onclick="GameServer.stopServer(${server.id})" title="Arrêter">⏹️</button>
                                 <button class="btn btn-icon btn-secondary" onclick="GameServer.restartServer(${server.id})" title="Redémarrer">🔄</button>
                             ` : `
@@ -695,19 +718,92 @@ const GameServer = {
 
     // --- Actions serveur ---
 
+    /** 
+     * Map des serveurs en cours de transition : id → 'starting' | 'stopping' | 'restarting'
+     */
+    _pendingStates: {},
+
     async startServer(id) {
+        this._pendingStates[id] = 'starting';
+        this._renderPendingCard(id);
         const response = await Auth.apiCall(`/api/servers/${id}/start`, { method: 'POST' });
-        if (response && response.ok) await this.refreshServers();
+        if (response && response.ok) {
+            this._pollUntilState(id, 'running', 'starting');
+        } else {
+            delete this._pendingStates[id];
+            await this.refreshServers();
+        }
     },
 
     async stopServer(id) {
+        this._pendingStates[id] = 'stopping';
+        this._renderPendingCard(id);
         const response = await Auth.apiCall(`/api/servers/${id}/stop`, { method: 'POST' });
-        if (response && response.ok) await this.refreshServers();
+        if (response && response.ok) {
+            this._pollUntilState(id, 'exited', 'stopping');
+        } else {
+            delete this._pendingStates[id];
+            await this.refreshServers();
+        }
     },
 
     async restartServer(id) {
+        this._pendingStates[id] = 'restarting';
+        this._renderPendingCard(id);
         const response = await Auth.apiCall(`/api/servers/${id}/restart`, { method: 'POST' });
-        if (response && response.ok) await this.refreshServers();
+        if (response && response.ok) {
+            this._pollUntilState(id, 'running', 'restarting');
+        } else {
+            delete this._pendingStates[id];
+            await this.refreshServers();
+        }
+    },
+
+    /**
+     * Poll le statut du serveur toutes les 3s jusqu'à l'état cible.
+     * Timeout après 120s.
+     */
+    _pollUntilState(id, targetState, pendingType) {
+        let attempts = 0;
+        const maxAttempts = 40; // 40 × 3s = 120s max
+        const interval = setInterval(async () => {
+            attempts++;
+            try {
+                const r = await Auth.apiCall(`/api/servers/${id}`);
+                if (r && r.ok) {
+                    const data = await r.json();
+                    const ready = (targetState === 'exited')
+                        ? data.status !== 'running'
+                        : data.status === targetState;
+                    if (ready || attempts >= maxAttempts) {
+                        clearInterval(interval);
+                        delete this._pendingStates[id];
+                        await this.refreshServers();
+                        if (ready && typeof Toast !== 'undefined') {
+                            const labels = {
+                                starting: '▶️ Serveur démarré !',
+                                stopping: '⏹ Serveur arrêté',
+                                restarting: '🔄 Serveur redémarré !',
+                            };
+                            Toast.success(labels[pendingType] || 'OK');
+                        }
+                    }
+                }
+            } catch (e) {
+                // Ignorer les erreurs réseau pendant le polling
+            }
+        }, 3000);
+    },
+
+    /**
+     * Met à jour visuellement la carte d'un serveur pendant la transition.
+     */
+    _renderPendingCard(id) {
+        // Mettre à jour le badge de statut
+        const list = document.getElementById('server-list');
+        if (!list) return;
+        // On rafraîchit toute la liste pour intégrer l'état pending
+        this.renderServers(this._servers || []);
     },
 
     _deleteServerId: null,

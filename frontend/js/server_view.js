@@ -31,8 +31,8 @@ const ServerView = {
             <div id="sv-sidebar" class="sv-sidebar" style="width:220px;min-width:220px;background:var(--bg-secondary);border-right:1px solid var(--border-color);padding:16px 0;overflow-y:auto;">
                 <div style="padding:0 16px 16px;border-bottom:1px solid var(--border-color);margin-bottom:8px;">
                     <div style="font-size:18px;font-weight:700;">${s.name || 'Serveur'}</div>
-                    <div style="font-size:12px;color:${statusColor};margin-top:4px;">● ${statusText}</div>
-                    <div style="display:flex;gap:6px;margin-top:10px;">
+                    <div class="sv-status-text" style="font-size:12px;color:${statusColor};margin-top:4px;">● ${statusText}</div>
+                    <div class="sv-action-btns" style="display:flex;gap:6px;margin-top:10px;">
                         ${isRunning ? `
                         <button class="btn btn-sm btn-secondary" onclick="ServerView.action('stop')">⏹</button>
                         <button class="btn btn-sm btn-secondary" onclick="ServerView.action('restart')">🔄</button>
@@ -868,12 +868,51 @@ const ServerView = {
         await Auth.apiCall('/api/mods/install',{method:'POST',body:JSON.stringify({server_id:this.serverId,mod_name:name,download_url:url,filename:filename})});
     },
 
+    _pendingAction: null,
+
     async action(act) {
-        if (act==='start') await Auth.apiCall(`/api/servers/${this.serverId}/start`,{method:'POST'});
-        else if (act==='stop') await Auth.apiCall(`/api/servers/${this.serverId}/stop`,{method:'POST'});
-        else if (act==='restart') await Auth.apiCall(`/api/servers/${this.serverId}/restart`,{method:'POST'});
-        await this.refreshServer();
-        this.render();
+        this._pendingAction = act;
+        this._updateHeaderStatus();
+
+        if (act === 'start') await Auth.apiCall(`/api/servers/${this.serverId}/start`, { method: 'POST' });
+        else if (act === 'stop') await Auth.apiCall(`/api/servers/${this.serverId}/stop`, { method: 'POST' });
+        else if (act === 'restart') await Auth.apiCall(`/api/servers/${this.serverId}/restart`, { method: 'POST' });
+
+        // Poll jusqu'au vrai statut
+        const targetState = (act === 'stop') ? 'exited' : 'running';
+        let attempts = 0;
+        const poll = setInterval(async () => {
+            attempts++;
+            await this.refreshServer();
+            const s = this.serverData;
+            const ready = (targetState === 'exited')
+                ? s?.status !== 'running'
+                : s?.status === 'running';
+            if (ready || attempts >= 40) {
+                clearInterval(poll);
+                this._pendingAction = null;
+                this.render();
+                if (ready && typeof Toast !== 'undefined') {
+                    const labels = { start: '▶️ Serveur démarré !', stop: '⏹ Serveur arrêté', restart: '🔄 Serveur redémarré !' };
+                    Toast.success(labels[act] || 'OK');
+                }
+            } else {
+                this._updateHeaderStatus();
+            }
+        }, 3000);
+    },
+
+    _updateHeaderStatus() {
+        const statusEl = document.querySelector('#sv-sidebar .sv-status-text');
+        const btnContainer = document.querySelector('#sv-sidebar .sv-action-btns');
+        if (statusEl) {
+            const labels = { start: '⏳ Démarrage...', stop: '⏳ Arrêt...', restart: '⏳ Redémarrage...' };
+            statusEl.innerHTML = `<span class="spinner-sm"></span> ${labels[this._pendingAction] || '⏳...'}`;
+            statusEl.style.color = 'var(--accent-yellow)';
+        }
+        if (btnContainer) {
+            btnContainer.innerHTML = '<button class="btn btn-sm btn-secondary" disabled style="opacity:0.5;width:100%;">⏳ Patientez...</button>';
+        }
     },
 
     _bindEvents() {

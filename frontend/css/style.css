@@ -697,6 +697,17 @@ canvas {
     color: var(--accent-red);
 }
 
+.status-badge.starting,
+.status-badge.restarting {
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+}
+
+.status-badge.stopping {
+    background: rgba(239, 68, 68, 0.12);
+    color: #f87171;
+}
+
 .status-dot {
     width: 8px;
     height: 8px;
@@ -706,6 +717,26 @@ canvas {
 
 .status-dot.online {
     animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* Spinner petit pour les badges */
+.spinner-sm {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-badge {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
 }
 
 @keyframes pulse-dot {
