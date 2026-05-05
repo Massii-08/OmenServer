@@ -212,10 +212,11 @@ const App = {
      * Affiche la vue Hub avec le monitoring + les modules.
      */
     renderHub(content) {
+        const t = (k) => Lang.t(k);
         content.innerHTML = `
             <div class="page-header">
-                <h1 class="page-title">Dashboard</h1>
-                <p class="page-subtitle">Vue d'ensemble de ton serveur</p>
+                <h1 class="page-title">${t('dashboard.title')}</h1>
+                <p class="page-subtitle">${t('dashboard.overview')}</p>
             </div>
 
             <!-- Stats monitoring -->
@@ -226,19 +227,19 @@ const App = {
                     <div class="stat-bar"><div class="stat-bar-fill" id="stat-cpu-bar" style="width: 0%"></div></div>
                 </div>
                 <div class="stat-card" style="--stat-color: var(--accent-blue)">
-                    <div class="stat-label">Mémoire RAM</div>
+                    <div class="stat-label">${t('dashboard.memory')}</div>
                     <div class="stat-value"><span id="stat-memory-value">--</span><span class="stat-unit">%</span></div>
                     <div id="stat-memory-detail" style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">-- / -- Go</div>
                     <div class="stat-bar"><div class="stat-bar-fill" id="stat-memory-bar" style="width: 0%"></div></div>
                 </div>
                 <div class="stat-card" style="--stat-color: var(--accent-purple)">
-                    <div class="stat-label">Disque</div>
+                    <div class="stat-label">${t('dashboard.disk')}</div>
                     <div class="stat-value"><span id="stat-disk-value">--</span><span class="stat-unit">%</span></div>
                     <div id="stat-disk-detail" style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">-- / -- Go</div>
                     <div class="stat-bar"><div class="stat-bar-fill" id="stat-disk-bar" style="width: 0%"></div></div>
                 </div>
                 <div class="stat-card" style="--stat-color: var(--accent-yellow)">
-                    <div class="stat-label">Température</div>
+                    <div class="stat-label">${t('dashboard.temp')}</div>
                     <div class="stat-value"><span id="stat-temp-value">--</span><span class="stat-unit">°C</span></div>
                     <div class="stat-bar"><div class="stat-bar-fill" id="stat-temp-bar" style="width: 0%"></div></div>
                 </div>
@@ -246,18 +247,18 @@ const App = {
 
             <!-- Réseau -->
             <div style="margin-bottom: 28px; font-size: 13px; color: var(--text-muted);">
-                🌐 Réseau : <span id="stat-network">--</span>
+                🌐 ${t('dashboard.network')} : <span id="stat-network">--</span>
             </div>
 
             <!-- Kill All + Diagnostic -->
             <div style="display:flex;gap:12px;margin-bottom:28px;align-items:center;">
-                <button class="btn btn-kill-all" onclick="App.killAllServers()" title="Arrêter tous les services d'urgence">
-                    🔴 Kill All
+                <button class="btn btn-kill-all" onclick="App.killAllServers()" title="${t('dashboard.kill_all')}">
+                    🔴 ${t('dashboard.kill_all')}
                 </button>
                 <button class="btn btn-secondary" onclick="App.runDiagnostic()" id="diag-btn" style="display:flex;align-items:center;gap:6px;">
-                    🩺 Diagnostic
+                    🩺 ${t('dashboard.diagnostic')}
                 </button>
-                <span style="font-size:12px;color:var(--text-muted);">Actions rapides</span>
+                <span style="font-size:12px;color:var(--text-muted);">${t('dashboard.quick_actions')}</span>
             </div>
 
             <!-- Diagnostic auto (caché par défaut) -->
@@ -265,17 +266,17 @@ const App = {
 
             <!-- Modules -->
             <div class="page-header">
-                <h2 style="font-size: 18px; font-weight: 700;">Modules</h2>
+                <h2 style="font-size: 18px; font-weight: 700;">${t('modules.title')}</h2>
             </div>
             <div id="modules-grid" class="modules-grid"></div>
 
             <!-- Planification globale -->
             <div class="page-header" style="margin-top:28px;">
-                <h2 style="font-size: 18px; font-weight: 700;">📅 Planification globale</h2>
-                <p class="page-subtitle">Tâches planifiées sur tous les serveurs</p>
+                <h2 style="font-size: 18px; font-weight: 700;">${t('scheduler.title')}</h2>
+                <p class="page-subtitle">${t('scheduler.subtitle')}</p>
             </div>
             <div id="hub-scheduler" style="background:var(--bg-secondary);border-radius:12px;padding:20px;border:1px solid var(--border-color);">
-                <div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px;">⏳ Chargement des tâches...</div>
+                <div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px;">${t('scheduler.loading')}</div>
             </div>
         `;
 
@@ -288,7 +289,7 @@ const App = {
         if (!schedEl) return;
 
         const r = await Auth.apiCall('/api/servers');
-        if (!r || !r.ok) { schedEl.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:20px;">Aucun serveur</div>'; return; }
+        if (!r || !r.ok) { schedEl.innerHTML = `<div style="color:var(--text-muted);text-align:center;padding:20px;">${Lang.t('scheduler.no_servers')}</div>`; return; }
         const servers = await r.json();
 
         let allTasks = [];
@@ -309,33 +310,33 @@ const App = {
             schedEl.innerHTML = `
                 <div style="text-align:center;padding:20px;">
                     <div style="font-size:32px;margin-bottom:8px;">📅</div>
-                    <div style="color:var(--text-muted);font-size:13px;">Aucune tâche planifiée</div>
-                    <button class="btn btn-primary btn-sm" style="margin-top:12px;" onclick="App._toggleScheduleForm()">➕ Créer une tâche</button>
+                    <div style="color:var(--text-muted);font-size:13px;">${Lang.t('scheduler.no_tasks')}</div>
+                    <button class="btn btn-primary btn-sm" style="margin-top:12px;" onclick="App._toggleScheduleForm()">➕ ${Lang.t('scheduler.create')}</button>
                 </div>
                 <div id="hub-schedule-form" style="display:none;margin-top:12px;padding:14px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
                     <div style="display:flex;gap:8px;align-items:flex-end;">
                         <div style="flex:1;">
-                            <label style="font-size:12px;color:var(--text-muted);">Serveur</label>
+                            <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.server')}</label>
                             <select id="hub-sched-server" class="form-input" style="margin-top:4px;">${serverOptions}</select>
                         </div>
                         <div style="flex:1;">
-                            <label style="font-size:12px;color:var(--text-muted);">Type</label>
+                            <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.type')}</label>
                             <select id="hub-sched-type" class="form-input" style="margin-top:4px;">
-                                <option value="backup">💾 Backup auto</option>
-                                <option value="restart">🔄 Restart auto</option>
+                                <option value="backup">💾 ${Lang.t('scheduler.backup')}</option>
+                                <option value="restart">🔄 ${Lang.t('scheduler.restart')}</option>
                             </select>
                         </div>
                         <div style="flex:1;">
-                            <label style="font-size:12px;color:var(--text-muted);">Intervalle</label>
+                            <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.interval')}</label>
                             <select id="hub-sched-interval" class="form-input" style="margin-top:4px;">
                                 <option value="1">1h</option>
                                 <option value="6" selected>6h</option>
                                 <option value="12">12h</option>
                                 <option value="24">24h</option>
-                                <option value="168">1 semaine</option>
+                                <option value="168">${Lang.t('scheduler.week')}</option>
                             </select>
                         </div>
-                        <button class="btn btn-primary" onclick="App._createScheduledTask()">➕ Ajouter</button>
+                        <button class="btn btn-primary" onclick="App._createScheduledTask()">➕ ${Lang.t('scheduler.add')}</button>
                     </div>
                     <div id="hub-sched-msg" style="font-size:12px;margin-top:8px;"></div>
                 </div>`;
@@ -343,13 +344,13 @@ const App = {
         }
 
         const taskIcons = { restart: '🔄', backup: '💾' };
-        const taskLabels = { restart: 'Restart auto', backup: 'Backup auto' };
+        const taskLabels = { restart: Lang.t('scheduler.restart'), backup: Lang.t('scheduler.backup') };
         const serverOptions = servers.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
 
         schedEl.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                <div style="font-size:13px;color:var(--text-muted);">${allTasks.length} tâche(s) sur ${servers.length} serveur(s)</div>
-                <button class="btn btn-primary btn-sm" onclick="App._toggleScheduleForm()">➕ Nouvelle tâche</button>
+                <div style="font-size:13px;color:var(--text-muted);">${allTasks.length} ${Lang.t('scheduler.tasks_count')} ${servers.length} ${Lang.t('scheduler.servers_count')}</div>
+                <button class="btn btn-primary btn-sm" onclick="App._toggleScheduleForm()">➕ ${Lang.t('scheduler.new_task')}</button>
             </div>
             <div id="hub-schedule-form" style="display:none;margin-bottom:12px;padding:14px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
                 <div style="display:flex;gap:8px;align-items:flex-end;">
@@ -384,9 +385,9 @@ const App = {
                         <span style="font-size:18px;">${taskIcons[t.task_type] || '📋'}</span>
                         <div style="flex:1;">
                             <div style="font-size:13px;font-weight:600;">${taskLabels[t.task_type] || t.task_type}</div>
-                            <div style="font-size:11px;color:var(--text-muted);">🎮 ${t.serverName} · ⏰ toutes les ${t.interval_hours}h</div>
+                            <div style="font-size:11px;color:var(--text-muted);">🎮 ${t.serverName} · ⏰ ${Lang.t('scheduler.every')} ${t.interval_hours}h</div>
                         </div>
-                        <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled !== false ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.05)'};color:${t.enabled !== false ? 'var(--accent-green)' : 'var(--text-muted)'};">${t.enabled !== false ? '● Actif' : '○ Inactif'}</span>
+                        <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled !== false ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.05)'};color:${t.enabled !== false ? 'var(--accent-green)' : 'var(--text-muted)'};">${t.enabled !== false ? '● ' + Lang.t('scheduler.active') : '○ ' + Lang.t('scheduler.inactive')}</span>
                     </div>
                 `).join('')}
             </div>`;
@@ -403,7 +404,7 @@ const App = {
         const interval = parseInt(document.getElementById('hub-sched-interval')?.value) || 6;
         const msg = document.getElementById('hub-sched-msg');
 
-        if (!serverId) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = '❌ Sélectionne un serveur'; } return; }
+        if (!serverId) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = Lang.t('scheduler.select_server'); } return; }
 
         const r = await Auth.apiCall('/api/scheduler/', {
             method: 'POST',
@@ -411,7 +412,7 @@ const App = {
         });
 
         if (r && r.ok) {
-            if (msg) { msg.style.color = '#22c55e'; msg.textContent = '✅ Tâche créée !'; }
+            if (msg) { msg.style.color = '#22c55e'; msg.textContent = Lang.t('scheduler.created'); }
             setTimeout(() => this._loadGlobalSchedule(), 500);
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
@@ -427,11 +428,11 @@ const App = {
         if (!panel) return;
 
         panel.style.display = 'block';
-        panel.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">🩺 Analyse en cours...</div>';
+        panel.innerHTML = `<div style="text-align:center;padding:20px;color:var(--text-muted);">${Lang.t('dashboard.analyzing')}</div>`;
 
         const r = await Auth.apiCall('/api/diagnostic');
         if (!r || !r.ok) {
-            panel.innerHTML = '<div style="color:#ef4444;padding:12px;">❌ Erreur de diagnostic</div>';
+            panel.innerHTML = `<div style="color:#ef4444;padding:12px;">${Lang.t('dashboard.diag_error')}</div>`;
             return;
         }
         const d = await r.json();
@@ -439,14 +440,14 @@ const App = {
         const levelColors = { ok: '#22c55e', warning: '#f59e0b', critical: '#ef4444' };
         const levelIcons = { ok: '✅', warning: '⚠️', critical: '🔴' };
         const levelBg = { ok: 'rgba(34,197,94,0.08)', warning: 'rgba(245,158,11,0.08)', critical: 'rgba(239,68,68,0.08)' };
-        const overallLabel = { ok: '🟢 Tout va bien', warning: '🟡 Attention requise', critical: '🔴 Problèmes détectés' };
+        const overallLabel = { ok: Lang.t('dashboard.all_good'), warning: Lang.t('dashboard.attention'), critical: Lang.t('dashboard.problems') };
 
         panel.innerHTML = `
             <div style="background:var(--bg-secondary);border-radius:12px;padding:20px;border:1px solid var(--border-color);">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
                     <div>
                         <div style="font-size:16px;font-weight:700;">${overallLabel[d.overall] || '🩺 Diagnostic'}</div>
-                        <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${d.ok} OK · ${d.warnings} avertissement(s) · ${d.criticals} critique(s)</div>
+                        <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${d.ok} OK · ${d.warnings} ${Lang.t('dashboard.warnings')} · ${d.criticals} ${Lang.t('dashboard.criticals')}</div>
                     </div>
                     <button onclick="document.getElementById('diagnostic-panel').style.display='none'" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:18px;">✕</button>
                 </div>

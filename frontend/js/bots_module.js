@@ -14,17 +14,17 @@ const BotsModule = {
         container.innerHTML = `
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;">
                 <div>
-                    <h1 style="margin:0;">🤖 Bots & Automatisation</h1>
-                    <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">Déployer et monitorer tes bots Python</p>
+                    <h1 style="margin:0;">${Lang.t('bots.title')}</h1>
+                    <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">${Lang.t('bots.subtitle')}</p>
                 </div>
                 <div style="display:flex;gap:8px;">
-                    <button class="btn btn-primary" onclick="BotsModule.showCreateForm()">➕ Nouveau bot</button>
+                    <button class="btn btn-primary" onclick="BotsModule.showCreateForm()">➕ ${Lang.t('bots.new')}</button>
                     <button class="btn btn-secondary" onclick="App.navigateTo('hub')">← Hub</button>
                 </div>
             </div>
 
             <div id="bot-create-form" style="display:none;margin-bottom:20px;"></div>
-            <div id="bots-grid"><div style="text-align:center;padding:20px;color:var(--text-muted);">⏳ Chargement des bots...</div></div>
+            <div id="bots-grid"><div style="text-align:center;padding:20px;color:var(--text-muted);">${Lang.t('bots.loading')}</div></div>
             <div id="bot-detail" style="display:none;margin-top:20px;"></div>
         `;
 
@@ -58,14 +58,14 @@ const BotsModule = {
 
         const typeIcons = { trading: '📈', gaming: '🎮', scraper: '🕷️', analysis: '📊', custom: '🐍' };
         const statusColors = { running: '#22c55e', stopped: '#6b7280', error: '#ef4444' };
-        const statusLabels = { running: '● En cours', stopped: '○ Arrêté', error: '⚠️ Erreur' };
+        const statusLabels = { running: Lang.t('bots.running'), stopped: Lang.t('bots.stopped'), error: Lang.t('bots.error') };
 
         if (this._bots.length === 0) {
             grid.innerHTML = `
                 <div style="text-align:center;padding:60px;">
                     <div style="font-size:48px;margin-bottom:12px;">🤖</div>
-                    <div style="color:var(--text-muted);font-size:15px;">Aucun bot</div>
-                    <div style="color:var(--text-muted);font-size:12px;margin-top:4px;">Clique sur "Nouveau bot" pour commencer</div>
+                    <div style="color:var(--text-muted);font-size:15px;">${Lang.t('bots.none')}</div>
+                    <div style="color:var(--text-muted);font-size:12px;margin-top:4px;">${Lang.t('bots.none_hint')}</div>
                 </div>`;
             return;
         }
@@ -89,7 +89,7 @@ const BotsModule = {
                                 ${statusLabels[b.status] || b.status}
                             </span>
                         </div>
-                        <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">${b.description || 'Pas de description'}</div>
+                        <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">${b.description || Lang.t('bots.no_desc')}</div>
                         <div style="display:flex;gap:6px;">
                             ${b.status === 'running' 
                                 ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();BotsModule.stopBot(${b.id})" style="font-size:11px;padding:4px 12px;">⏹ Stop</button>`
@@ -109,10 +109,10 @@ const BotsModule = {
         form.style.display = 'block';
         form.innerHTML = `
             <div class="card">
-                <h3 style="margin:0 0 16px;">➕ Créer un bot</h3>
+                <h3 style="margin:0 0 16px;">➕ ${Lang.t('bots.create')}</h3>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px;">
                     <div>
-                        <label class="form-label">Nom du bot</label>
+                        <label class="form-label">${Lang.t('bots.name')}</label>
                         <input id="bot-name" class="form-input" placeholder="Mon bot trading" />
                     </div>
                     <div>
@@ -122,7 +122,7 @@ const BotsModule = {
                             <option value="trading">📈 Trading</option>
                             <option value="gaming">🎮 Gaming</option>
                             <option value="scraper">🕷️ Scraper</option>
-                            <option value="analysis">📊 Analyse</option>
+                            <option value="analysis">📊 ${Lang.t('bots.analysis')}</option>
                         </select>
                     </div>
                     <div>
@@ -131,8 +131,8 @@ const BotsModule = {
                     </div>
                 </div>
                 <div style="display:flex;gap:8px;align-items:center;">
-                    <button class="btn btn-primary" onclick="BotsModule.createBot()">Créer</button>
-                    <button class="btn btn-secondary" onclick="document.getElementById('bot-create-form').style.display='none'">Annuler</button>
+                    <button class="btn btn-primary" onclick="BotsModule.createBot()">${Lang.t('common.save')}</button>
+                    <button class="btn btn-secondary" onclick="document.getElementById('bot-create-form').style.display='none'">${Lang.t('common.cancel')}</button>
                     <span id="bot-create-msg" style="font-size:13px;"></span>
                 </div>
             </div>`;
@@ -144,7 +144,7 @@ const BotsModule = {
         const desc = document.getElementById('bot-desc')?.value?.trim() || '';
         const msg = document.getElementById('bot-create-msg');
 
-        if (!name) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = '❌ Nom requis'; } return; }
+        if (!name) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = Lang.t('bots.name_required'); } return; }
 
         const r = await Auth.apiCall('/api/bots', {
             method: 'POST',
@@ -155,7 +155,7 @@ const BotsModule = {
             document.getElementById('bot-create-form').style.display = 'none';
             await this.loadBots();
         } else {
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = '❌ Erreur'; }
+            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
         }
     },
 
@@ -165,8 +165,8 @@ const BotsModule = {
             await this.loadBots();
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Erreur');
-            else alert(`❌ ${err.detail || 'Erreur'}`);
+            if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error'));
+            else alert(`❌ ${err.detail || Lang.t('common.error')}`);
         }
     },
 
@@ -176,7 +176,7 @@ const BotsModule = {
     },
 
     async deleteBot(id) {
-        if (!confirm('Supprimer ce bot ?')) return;
+        if (!confirm(Lang.t('bots.delete_confirm'))) return;
         const r = await Auth.apiCall(`/api/bots/${id}`, { method: 'DELETE' });
         if (r && r.ok) {
             this._selectedBot = null;
@@ -204,16 +204,16 @@ const BotsModule = {
         detail.innerHTML = `
             <div class="card">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                    <h3 style="margin:0;">📋 Logs — ${bot?.name || 'Bot'}</h3>
+                    <h3 style="margin:0;">📋 ${Lang.t('bots.logs')} — ${bot?.name || 'Bot'}</h3>
                     <div style="display:flex;gap:8px;align-items:center;">
-                        <span style="font-size:11px;color:var(--text-muted);">${logs.logs.length} ligne(s)</span>
-                        <button class="btn btn-secondary btn-sm" onclick="BotsModule.showBotDetail(${id})">🔄 Rafraîchir</button>
+                        <span style="font-size:11px;color:var(--text-muted);">${logs.logs.length} ${Lang.t('bots.lines')}</span>
+                        <button class="btn btn-secondary btn-sm" onclick="BotsModule.showBotDetail(${id})">🔄 ${Lang.t('common.refresh')}</button>
                     </div>
                 </div>
                 <div id="bot-logs-terminal" style="background:#0d1117;border-radius:8px;padding:12px;max-height:350px;overflow-y:auto;font-family:'Fira Code',monospace;font-size:12px;line-height:1.6;color:#c9d1d9;">
                     ${logs.logs.length > 0 
                         ? logs.logs.map((l, i) => `<div style="display:flex;gap:8px;"><span style="color:#6b7280;min-width:28px;text-align:right;user-select:none;">${i+1}</span><span>${l.replace(/</g,'&lt;')}</span></div>`).join('')
-                        : '<div style="color:#6b7280;text-align:center;padding:20px;">Aucun log disponible — Démarre le bot pour voir les logs ici</div>'
+                        : `<div style="color:#6b7280;text-align:center;padding:20px;">${Lang.t('bots.no_logs')}</div>`
                     }
                 </div>
             </div>`;
@@ -234,11 +234,11 @@ const BotsModule = {
         detail.innerHTML = `
             <div class="card">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                    <h3 style="margin:0;">✏️ Éditeur — ${bot?.name || 'Bot'}</h3>
+                    <h3 style="margin:0;">${Lang.t('bots.editor')} — ${bot?.name || 'Bot'}</h3>
                     <div style="display:flex;gap:8px;align-items:center;">
-                        <span style="font-size:11px;color:var(--text-muted);">Ctrl+S pour sauvegarder</span>
+                        <span style="font-size:11px;color:var(--text-muted);">${Lang.t('bots.save_hint')}</span>
                         <span id="code-save-msg" style="font-size:12px;"></span>
-                        <button class="btn btn-primary btn-sm" onclick="BotsModule.saveCode(${id})">💾 Sauvegarder</button>
+                        <button class="btn btn-primary btn-sm" onclick="BotsModule.saveCode(${id})">💾 ${Lang.t('common.save')}</button>
                     </div>
                 </div>
                 <textarea id="bot-code-editor" spellcheck="false" style="width:100%;min-height:400px;background:#0d1117;color:#c9d1d9;border:1px solid var(--border-color);border-radius:8px;padding:16px;font-family:'Fira Code',monospace;font-size:13px;line-height:1.6;resize:vertical;tab-size:4;outline:none;">${data.code.replace(/</g,'&lt;')}</textarea>
@@ -274,9 +274,9 @@ const BotsModule = {
         });
 
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = '✅ Sauvegardé !'; }
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('bots.saved'); }
         } else {
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = '❌ Erreur'; }
+            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
         }
     },
 };
