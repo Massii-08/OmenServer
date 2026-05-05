@@ -18,6 +18,8 @@ GAMES = {
         "env": {
             "EULA": "TRUE",
             "TYPE": "VANILLA",
+            "ENABLE_RCON": "true",
+            "RCON_PASSWORD": "omenserver",
         },
         "version_env": "VERSION",       # Variable d'env pour la version
         "memory_env": "MEMORY",          # Variable d'env pour la RAM
