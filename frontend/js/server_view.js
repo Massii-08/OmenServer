@@ -878,28 +878,36 @@ const ServerView = {
         else if (act === 'stop') await Auth.apiCall(`/api/servers/${this.serverId}/stop`, { method: 'POST' });
         else if (act === 'restart') await Auth.apiCall(`/api/servers/${this.serverId}/restart`, { method: 'POST' });
 
-        // Poll jusqu'au vrai statut
+        // Poll jusqu'au vrai statut (ready=true pour start/restart)
         const targetState = (act === 'stop') ? 'exited' : 'running';
+        const initialDelay = (act === 'start' || act === 'restart') ? 5000 : 2000;
         let attempts = 0;
-        const poll = setInterval(async () => {
-            attempts++;
-            await this.refreshServer();
-            const s = this.serverData;
-            const ready = (targetState === 'exited')
-                ? s?.status !== 'running'
-                : s?.status === 'running';
-            if (ready || attempts >= 40) {
-                clearInterval(poll);
-                this._pendingAction = null;
-                this.render();
-                if (ready && typeof Toast !== 'undefined') {
-                    const labels = { start: '▶️ Serveur démarré !', stop: '⏹ Serveur arrêté', restart: '🔄 Serveur redémarré !' };
-                    Toast.success(labels[act] || 'OK');
+        setTimeout(() => {
+            const poll = setInterval(async () => {
+                attempts++;
+                await this.refreshServer();
+                const s = this.serverData;
+                let isReady;
+                if (targetState === 'exited') {
+                    isReady = s?.status !== 'running';
+                } else {
+                    isReady = s?.status === 'running' && s?.ready === true;
                 }
-            } else {
-                this._updateHeaderStatus();
-            }
-        }, 3000);
+                if (isReady || attempts >= 40) {
+                    clearInterval(poll);
+                    this._pendingAction = null;
+                    this.render();
+                    if (isReady && typeof Toast !== 'undefined') {
+                        const labels = { start: '▶️ Serveur démarré !', stop: '⏹ Serveur arrêté', restart: '🔄 Serveur redémarré !' };
+                        Toast.success(labels[act] || 'OK');
+                    } else if (attempts >= 40 && typeof Toast !== 'undefined') {
+                        Toast.error('⏰ Timeout — le serveur met trop de temps');
+                    }
+                } else {
+                    this._updateHeaderStatus();
+                }
+            }, 3000);
+        }, initialDelay);
     },
 
     _updateHeaderStatus() {

@@ -64,6 +64,7 @@ class ServerResponse(BaseModel):
     player_count: int = 0
     player_max: int = 20
     jvm_flags: str = ""
+    ready: bool = False  # True seulement quand le jeu répond (pas juste Docker running)
 
     class Config:
         from_attributes = True
@@ -131,13 +132,19 @@ def list_servers(
                 server.status = "error"
             db.commit()
 
-        # Construire la réponse avec player_count
+        # Construire la réponse avec player_count et ready
         resp = ServerResponse.model_validate(server, from_attributes=True)
-        if server.status == "running" and server.game_type == "minecraft":
+        if server.status == "running" and server.game_type in ("minecraft", "minecraft_bedrock"):
             ping = docker_manager.mc_server_ping(server.port)
             if ping:
                 resp.player_count = ping["online"]
                 resp.player_max = ping["max"]
+                resp.ready = True
+            else:
+                resp.ready = False
+        elif server.status == "running":
+            # Pour les autres jeux, on considère ready si Docker est running
+            resp.ready = True
         result.append(resp)
 
     return result
@@ -207,7 +214,31 @@ def get_server(
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
-    return server
+
+    # Mettre à jour le statut Docker en temps réel
+    if server.docker_id:
+        ds = docker_manager.get_container_status(server.docker_id)
+        real_status = ds.get("status", "unknown")
+        if real_status == "running":
+            server.status = "running"
+        elif real_status in ("exited", "created"):
+            server.status = "stopped"
+        elif real_status == "not_found":
+            server.status = "error"
+        db.commit()
+
+    resp = ServerResponse.model_validate(server, from_attributes=True)
+    if server.status == "running" and server.game_type in ("minecraft", "minecraft_bedrock"):
+        ping = docker_manager.mc_server_ping(server.port)
+        if ping:
+            resp.player_count = ping["online"]
+            resp.player_max = ping["max"]
+            resp.ready = True
+        else:
+            resp.ready = False
+    elif server.status == "running":
+        resp.ready = True
+    return resp
 
 
 @router.post("/{server_id}/start")

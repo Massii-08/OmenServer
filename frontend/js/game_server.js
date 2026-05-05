@@ -762,38 +762,50 @@ const GameServer = {
 
     /**
      * Poll le statut du serveur toutes les 3s jusqu'à l'état cible.
+     * Pour start/restart : attend que ready=true (jeu opérationnel, pas juste Docker).
      * Timeout après 120s.
      */
     _pollUntilState(id, targetState, pendingType) {
         let attempts = 0;
         const maxAttempts = 40; // 40 × 3s = 120s max
-        const interval = setInterval(async () => {
-            attempts++;
-            try {
-                const r = await Auth.apiCall(`/api/servers/${id}`);
-                if (r && r.ok) {
-                    const data = await r.json();
-                    const ready = (targetState === 'exited')
-                        ? data.status !== 'running'
-                        : data.status === targetState;
-                    if (ready || attempts >= maxAttempts) {
-                        clearInterval(interval);
-                        delete this._pendingStates[id];
-                        await this.refreshServers();
-                        if (ready && typeof Toast !== 'undefined') {
-                            const labels = {
-                                starting: '▶️ Serveur démarré !',
-                                stopping: '⏹ Serveur arrêté',
-                                restarting: '🔄 Serveur redémarré !',
-                            };
-                            Toast.success(labels[pendingType] || 'OK');
+        // Délai initial : laisser Docker le temps de démarrer
+        const initialDelay = (pendingType === 'starting' || pendingType === 'restarting') ? 5000 : 2000;
+        setTimeout(() => {
+            const interval = setInterval(async () => {
+                attempts++;
+                try {
+                    const r = await Auth.apiCall(`/api/servers/${id}`);
+                    if (r && r.ok) {
+                        const data = await r.json();
+                        let ready;
+                        if (targetState === 'exited') {
+                            // Pour stop : vérifier que le statut n'est plus running
+                            ready = data.status !== 'running';
+                        } else {
+                            // Pour start/restart : vérifier que le jeu répond (ready=true)
+                            ready = data.status === 'running' && data.ready === true;
+                        }
+                        if (ready || attempts >= maxAttempts) {
+                            clearInterval(interval);
+                            delete this._pendingStates[id];
+                            await this.refreshServers();
+                            if (ready && typeof Toast !== 'undefined') {
+                                const labels = {
+                                    starting: '▶️ Serveur démarré !',
+                                    stopping: '⏹ Serveur arrêté',
+                                    restarting: '🔄 Serveur redémarré !',
+                                };
+                                Toast.success(labels[pendingType] || 'OK');
+                            } else if (attempts >= maxAttempts && typeof Toast !== 'undefined') {
+                                Toast.error('⏰ Timeout — le serveur met trop de temps');
+                            }
                         }
                     }
+                } catch (e) {
+                    // Ignorer les erreurs réseau pendant le polling
                 }
-            } catch (e) {
-                // Ignorer les erreurs réseau pendant le polling
-            }
-        }, 3000);
+            }, 3000);
+        }, initialDelay);
     },
 
     /**
