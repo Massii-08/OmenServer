@@ -7,6 +7,7 @@
     <meta name="description" content="Panel de gestion de serveur dédié polyvalent">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="/css/style.css">
+    <script src="/js/lang.js"></script>
 </head>
 <body>
     <div class="login-page">
@@ -15,6 +16,11 @@
             <div class="login-logo">
                 <span class="login-logo-icon">🖥️</span>
                 <div class="login-logo-title" id="login-title">OmenServer</div>
+            </div>
+
+            <!-- Bouton langue -->
+            <div style="text-align:center;margin-bottom:8px;">
+                <button onclick="LoginPage.toggleLang()" style="background:none;border:1px solid var(--border-color,#333);border-radius:6px;cursor:pointer;font-size:13px;padding:4px 12px;color:var(--text-secondary,#999);" id="login-lang-btn">🌐 EN</button>
             </div>
 
             <!-- Wizard steps (visible seulement en mode setup) -->
@@ -129,6 +135,9 @@
                     return;
                 }
 
+                // Appliquer la langue
+                this.applyLang();
+
                 // Vérifier si c'est la première config
                 const needsSetup = await Auth.checkSetupNeeded();
                 if (needsSetup) {
@@ -193,9 +202,9 @@
                 const username = document.getElementById('join-username').value.trim();
                 const password = document.getElementById('join-password').value;
 
-                if (!code) { errorEl.textContent = 'Entre ton code d\'invitation'; errorEl.classList.add('show'); return; }
-                if (!username) { errorEl.textContent = 'Choisis un nom d\'utilisateur'; errorEl.classList.add('show'); return; }
-                if (password.length < 4) { errorEl.textContent = 'Le mot de passe doit faire au moins 4 caractères'; errorEl.classList.add('show'); return; }
+                if (!code) { errorEl.textContent = Lang.t('login.invite_enter'); errorEl.classList.add('show'); return; }
+                if (!username) { errorEl.textContent = Lang.t('login.choose_username'); errorEl.classList.add('show'); return; }
+                if (password.length < 4) { errorEl.textContent = Lang.t('login.password_min'); errorEl.classList.add('show'); return; }
 
                 try {
                     const r = await fetch(`/api/auth/join/${code}`, {
@@ -210,11 +219,11 @@
                         window.location.href = '/';
                     } else {
                         const err = await r.json().catch(() => ({}));
-                        errorEl.textContent = err.detail || 'Erreur lors de l\'inscription';
+                        errorEl.textContent = err.detail || Lang.t('login.signup_error');
                         errorEl.classList.add('show');
                     }
                 } catch (e) {
-                    errorEl.textContent = 'Erreur de connexion au serveur';
+                    errorEl.textContent = Lang.t('login.server_error');
                     errorEl.classList.add('show');
                 }
             },
@@ -239,17 +248,17 @@
                     const passwordConfirm = document.getElementById('setup-password-confirm').value;
 
                     if (!username) {
-                        errorEl.textContent = 'Entre un nom d\'utilisateur';
+                        errorEl.textContent = Lang.t('login.enter_username');
                         errorEl.classList.add('show');
                         return;
                     }
                     if (password.length < 4) {
-                        errorEl.textContent = 'Le mot de passe doit faire au moins 4 caractères';
+                        errorEl.textContent = Lang.t('login.password_min');
                         errorEl.classList.add('show');
                         return;
                     }
                     if (password !== passwordConfirm) {
-                        errorEl.textContent = 'Les mots de passe ne correspondent pas';
+                        errorEl.textContent = Lang.t('login.passwords_mismatch');
                         errorEl.classList.add('show');
                         return;
                     }
@@ -272,7 +281,7 @@
                 const password = document.getElementById('login-password').value;
 
                 if (!username || !password) {
-                    errorEl.textContent = 'Remplis tous les champs';
+                    errorEl.textContent = Lang.t('login.fill_all');
                     errorEl.classList.add('show');
                     return;
                 }
@@ -284,6 +293,63 @@
                     errorEl.textContent = result.error;
                     errorEl.classList.add('show');
                 }
+            },
+
+            toggleLang() {
+                Lang.toggle();
+                this.applyLang();
+            },
+
+            applyLang() {
+                const t = (k) => Lang.t(k);
+                // Lang button
+                const btn = document.getElementById('login-lang-btn');
+                if (btn) btn.textContent = Lang.current === 'fr' ? '🌐 EN' : '🌐 FR';
+
+                // Login form labels
+                const labels = document.querySelectorAll('#login-form .form-label');
+                if (labels[0]) labels[0].textContent = t('login.username');
+                if (labels[1]) labels[1].textContent = t('login.password');
+                const loginBtn = document.querySelector('#login-form .login-btn');
+                if (loginBtn) loginBtn.textContent = t('login.submit');
+                // Invite link
+                const inviteSpan = document.querySelector('#login-form div[style*="text-align:center"] span');
+                if (inviteSpan) inviteSpan.textContent = t('login.invite_question');
+                const inviteLink = document.querySelector('#login-form div[style*="text-align:center"] a');
+                if (inviteLink) inviteLink.textContent = t('login.create_account');
+
+                // Join form
+                const joinTitle = document.querySelector('#join-form h2');
+                if (joinTitle) joinTitle.textContent = t('login.join_title');
+                const joinLabels = document.querySelectorAll('#join-form .form-label');
+                if (joinLabels[0]) joinLabels[0].textContent = t('login.invite_code');
+                if (joinLabels[1]) joinLabels[1].textContent = t('login.username');
+                if (joinLabels[2]) joinLabels[2].textContent = t('login.password');
+                const joinBtn = document.querySelector('#join-form .login-btn');
+                if (joinBtn) joinBtn.textContent = t('login.create_my_account');
+                const backLink = document.querySelector('#join-form a');
+                if (backLink) backLink.textContent = t('login.back');
+
+                // Wizard
+                const wizH2_1 = document.querySelector('#wizard-step-1 h2');
+                if (wizH2_1) wizH2_1.textContent = t('login.setup_welcome');
+                const wizP_1 = document.querySelector('#wizard-step-1 p');
+                if (wizP_1) wizP_1.textContent = t('login.setup_subtitle');
+                const wizLabel_1 = document.querySelector('#wizard-step-1 .form-label');
+                if (wizLabel_1) wizLabel_1.textContent = t('login.setup_servername');
+                const wizBtn_1 = document.querySelector('#wizard-step-1 .login-btn');
+                if (wizBtn_1) wizBtn_1.textContent = t('login.setup_next');
+
+                const wizH2_2 = document.querySelector('#wizard-step-2 h2');
+                if (wizH2_2) wizH2_2.textContent = t('login.setup_create_admin');
+                const wizP_2 = document.querySelector('#wizard-step-2 p');
+                if (wizP_2) wizP_2.textContent = t('login.setup_admin_subtitle');
+                const wizLabels_2 = document.querySelectorAll('#wizard-step-2 .form-label');
+                if (wizLabels_2[0]) wizLabels_2[0].textContent = t('login.username');
+                if (wizLabels_2[1]) wizLabels_2[1].textContent = t('login.password');
+                if (wizLabels_2[2]) wizLabels_2[2].textContent = t('login.setup_confirm_password');
+                const wizBtn_2 = document.querySelector('#wizard-step-2 .login-btn');
+                if (wizBtn_2) wizBtn_2.textContent = t('login.setup_create');
             },
         };
 

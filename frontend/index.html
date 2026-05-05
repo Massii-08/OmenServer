@@ -26,7 +26,7 @@
                 <div class="sidebar-logo">🖥️</div>
                 <div>
                     <div class="sidebar-title">OmenServer</div>
-                    <div class="sidebar-subtitle">Panel de gestion</div>
+                    <div class="sidebar-subtitle" id="sidebar-subtitle">Panel de gestion</div>
                 </div>
             </div>
 
@@ -74,6 +74,7 @@
                         <div class="user-name" id="user-name">—</div>
                         <div class="user-role" id="user-role">—</div>
                     </div>
+                    <button onclick="Lang.toggle()" title="FR/EN" style="background:none;border:none;cursor:pointer;font-size:16px;padding:4px;" id="lang-btn">🌐</button>
                     <button onclick="App.cycleTheme()" title="Changer de thème" style="background:none;border:none;cursor:pointer;font-size:18px;padding:4px;" id="theme-btn">🎨</button>
                     <button onclick="App.toggleLightMode()" title="Mode clair/sombre" style="background:none;border:none;cursor:pointer;font-size:18px;padding:4px;" id="lightmode-btn">🌗</button>
                 </div>
@@ -90,7 +91,8 @@
     </div>
 
     <!-- Scripts -->
-    <script src="/js/toast.js?v=66"></script>
+    <script src="/js/lang.js?v=67"></script>
+    <script src="/js/toast.js?v=67"></script>
     <script src="/js/auth.js?v=66"></script>
     <script src="/js/monitoring.js?v=66"></script>
     <script src="/js/modules.js?v=66"></script>

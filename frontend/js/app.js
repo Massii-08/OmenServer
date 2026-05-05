@@ -33,6 +33,9 @@ const App = {
 
         // Charger le thème sauvegardé
         this._loadTheme();
+
+        // Appliquer la langue sauvegardée sur la sidebar
+        if (typeof Lang !== 'undefined') Lang._updateSidebar();
     },
 
     // === THÈMES ===
@@ -64,7 +67,7 @@ const App = {
             btn.style.transform = 'rotate(360deg)';
             setTimeout(() => btn.style.transform = '', 300);
         }
-        if (typeof Toast !== 'undefined') Toast.info(`Thème : ${this._themeNames[next]}`);
+        if (typeof Toast !== 'undefined') Toast.info(`${Lang.t('toast.theme')} ${this._themeNames[next]}`);
     },
 
     toggleLightMode() {
@@ -75,7 +78,7 @@ const App = {
         document.documentElement.setAttribute('data-theme', theme);
         const lmBtn = document.getElementById('lightmode-btn');
         if (lmBtn) lmBtn.textContent = newMode ? '🌞' : '🌗';
-        if (typeof Toast !== 'undefined') Toast.info(newMode ? '☀️ Mode clair activé' : '🌙 Mode sombre activé');
+        if (typeof Toast !== 'undefined') Toast.info(newMode ? Lang.t('toast.light_on') : Lang.t('toast.light_off'));
     },
 
     /**
