@@ -621,6 +621,7 @@ const GameServer = {
         const response = await Auth.apiCall('/api/servers/');
         if (!response) return;
         const servers = await response.json();
+        this._servers = servers;
         this.renderServers(servers);
     },
 
