@@ -31,3 +31,6 @@ APScheduler==3.10.4
 
 # Requêtes HTTP (API CurseForge)
 requests==2.32.3
+
+# Requêtes HTTP async (plugin manager)
+httpx==0.28.1
