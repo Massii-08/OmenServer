@@ -204,7 +204,7 @@
 
                 if (!code) { errorEl.textContent = Lang.t('login.invite_enter'); errorEl.classList.add('show'); return; }
                 if (!username) { errorEl.textContent = Lang.t('login.choose_username'); errorEl.classList.add('show'); return; }
-                if (password.length < 4) { errorEl.textContent = Lang.t('login.password_min'); errorEl.classList.add('show'); return; }
+                if (password.length < 8) { errorEl.textContent = Lang.t('login.password_min'); errorEl.classList.add('show'); return; }
 
                 try {
                     const r = await fetch(`/api/auth/join/${code}`, {
@@ -252,7 +252,7 @@
                         errorEl.classList.add('show');
                         return;
                     }
-                    if (password.length < 4) {
+                    if (password.length < 8) {
                         errorEl.textContent = Lang.t('login.password_min');
                         errorEl.classList.add('show');
                         return;

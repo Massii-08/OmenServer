@@ -199,6 +199,77 @@ def delete_bot(
     return {"message": "Bot supprimé"}
 
 
+# --- Fonctions helper (appelables par le scheduler) ---
+
+def _start_bot_process(bot: Bot, db: Session):
+    """Démarrer un bot (sans passer par l'API auth). Utilisé par le scheduler."""
+    import threading
+
+    if bot.id in _bot_processes and _bot_processes[bot.id].poll() is None:
+        return  # Déjà en cours
+
+    script_file = BOTS_DIR / bot.script_path
+    if not script_file.exists():
+        logger.error(f"Script bot introuvable: {script_file}")
+        return
+
+    _bot_logs[bot.id] = []
+
+    proc = subprocess.Popen(
+        ["python3", str(script_file)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        cwd=str(BOTS_DIR),
+    )
+    _bot_processes[bot.id] = proc
+    bot.status = "running"
+    bot.pid = proc.pid
+    bot.last_run = datetime.utcnow()
+    bot.last_error = None
+    db.commit()
+
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    log_file = LOGS_DIR / f"bot_{bot.id}.log"
+
+    def _capture_logs(pid, proc, bot_id, log_file):
+        try:
+            with open(log_file, "a", encoding="utf-8") as fh:
+                for line in proc.stdout:
+                    stripped = line.rstrip()
+                    if bot_id not in _bot_logs:
+                        _bot_logs[bot_id] = []
+                    _bot_logs[bot_id].append(stripped)
+                    if len(_bot_logs[bot_id]) > 200:
+                        _bot_logs[bot_id] = _bot_logs[bot_id][-200:]
+                    fh.write(stripped + "\n")
+                    fh.flush()
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_capture_logs, args=(proc.pid, proc, bot.id, log_file), daemon=True)
+    t.start()
+
+
+def _stop_bot_process(bot: Bot, db: Session):
+    """Arrêter un bot (sans passer par l'API auth). Utilisé par le scheduler."""
+    if bot.id in _bot_processes:
+        proc = _bot_processes[bot.id]
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        del _bot_processes[bot.id]
+
+    bot.status = "stopped"
+    bot.pid = None
+    db.commit()
+
+
+
 @router.post("/{bot_id}/start")
 def start_bot(
     bot_id: int,

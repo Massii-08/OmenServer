@@ -80,24 +80,42 @@ async def console_websocket(
     """
     WebSocket pour la console live d'un serveur.
 
+    - Supporte l'authentification via query string (legacy) OU premier message (recommandé)
     - Envoie les logs Docker en temps réel au client
     - Reçoit les commandes du client et les envoie au conteneur
     - Se déconnecte proprement si le conteneur s'arrête
     """
-    # 1. Authentification via token dans l'URL
-    user = get_user_from_token(token)
+    # 1. Authentification : d'abord essayer via query string (rétro-compatible)
+    user = None
+    if token:
+        user = get_user_from_token(token)
+
+    # Si pas de token en query, accepter la connexion et attendre un message d'auth
     if not user:
-        await websocket.close(code=4001, reason="Token invalide")
-        return
+        await websocket.accept()
+        try:
+            # Attendre le premier message d'authentification (timeout 10s)
+            auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
+            if auth_msg.get("type") == "auth":
+                user = get_user_from_token(auth_msg.get("token", ""))
+            if not user:
+                await websocket.send_json({"type": "error", "message": "Token invalide"})
+                await websocket.close(code=4001, reason="Token invalide")
+                return
+        except (asyncio.TimeoutError, Exception):
+            await websocket.close(code=4001, reason="Authentification requise")
+            return
+    else:
+        # Token query valide → accepter la connexion
+        await websocket.accept()
 
     # 2. Vérifier que le serveur existe
     server = get_server(server_id)
     if not server or not server.docker_id:
+        await websocket.send_json({"type": "error", "message": "Serveur non trouvé"})
         await websocket.close(code=4004, reason="Serveur non trouvé")
         return
 
-    # 3. Accepter la connexion WebSocket
-    await websocket.accept()
     logger.info(f"Console WS connectée: {user.username} → serveur {server.name}")
 
     # 4. Récupérer le conteneur Docker

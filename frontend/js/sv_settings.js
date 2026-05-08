@@ -14,22 +14,22 @@ const SvSettings = {
         this._currentSub = 'server';
         setTimeout(() => this._loadProperties(), 50);
         return `
-        <h2>⚙️ Paramètres</h2>
-        <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Configurez les paramètres et options de votre serveur</p>
+        <h2>${Lang.t('sv.set_title')}</h2>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.set_desc')}</p>
         <div id="sv-set-tabs" style="display:flex;gap:0;margin-bottom:20px;border-bottom:2px solid var(--border-color);">
             ${this._subTabs()}
         </div>
-        <div id="sv-set-content"><div style="color:var(--text-muted)">⏳ Chargement des propriétés...</div></div>`;
+        <div id="sv-set-content"><div style="color:var(--text-muted)">${Lang.t('sv.set_loading')}</div></div>`;
     },
 
     _subTabs() {
         const tabs = [
-            {id:'server',icon:'🖥',label:'Serveur'},
-            {id:'map',icon:'🗺️',label:'Map'},
-            {id:'protocols',icon:'📡',label:'Protocoles'},
-            {id:'resourcepack',icon:'🎨',label:'Pack de ressources'},
-            {id:'jvm',icon:'☕',label:'JVM / Java'},
-            {id:'hosting',icon:'🏠',label:'Hébergement'},
+            {id:'server',icon:'🖥',label:Lang.t('sv.set_server')},
+            {id:'map',icon:'🗺️',label:Lang.t('sv.set_map')},
+            {id:'protocols',icon:'📡',label:Lang.t('sv.set_protocols')},
+            {id:'resourcepack',icon:'🎨',label:Lang.t('sv.set_resourcepack')},
+            {id:'jvm',icon:'☕',label:Lang.t('sv.set_jvm')},
+            {id:'hosting',icon:'🏠',label:Lang.t('sv.set_hosting')},
         ];
         return tabs.map(t => `
             <button onclick="SvSettings.switchSub('${t.id}')" id="sv-set-tab-${t.id}"
@@ -102,7 +102,7 @@ const SvSettings = {
 
     _saveBtn() {
         return `<div style="margin-top:20px;display:flex;align-items:center;gap:12px;">
-            <button class="btn btn-primary" onclick="SvSettings._save()">💾 Sauvegarder</button>
+            <button class="btn btn-primary" onclick="SvSettings._save()">${Lang.t('sv.set_save')}</button>
             <span id="sv-set-msg" style="font-size:13px;"></span>
             <span style="font-size:12px;color:var(--text-muted);">⚠️ Un redémarrage peut être nécessaire</span>
         </div>`;
@@ -122,7 +122,7 @@ const SvSettings = {
             method: 'PUT', body: JSON.stringify({properties: props})
         });
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = '✅ Sauvegardé !'; }
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('sv.set_saved'); }
             this._props = {...this._props, ...props};
         } else {
             if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '❌ Erreur'; }
@@ -133,43 +133,43 @@ const SvSettings = {
     _serverSub(p) {
         return `
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
-            <div>${this._field('MOTD (Message du jour)', 'motd', 'text', {default:'A Minecraft Server'})}</div>
-            <div>${this._field('Nombre max de joueurs', 'max-players', 'number', {default:'20'})}</div>
+            <div>${this._field(Lang.t('sv.cfg.motd'), 'motd', 'text', {default:'A Minecraft Server'})}</div>
+            <div>${this._field(Lang.t('sv.cfg.max_players'), 'max-players', 'number', {default:'20'})}</div>
         </div>
-        ${this._field('Difficulté', 'difficulty', 'select', {options:[
+        ${this._field(Lang.t('sv.cfg.difficulty'), 'difficulty', 'select', {options:[
             {value:'peaceful',label:'☮️ Peaceful'},{value:'easy',label:'😊 Easy'},
             {value:'normal',label:'⚔️ Normal'},{value:'hard',label:'💀 Hard'}
         ]})}
-        ${this._field('Mode de jeu', 'gamemode', 'select', {options:[
-            {value:'survival',label:'⛏️ Survie'},{value:'creative',label:'🎨 Créatif'},
-            {value:'adventure',label:'🗺️ Aventure'},{value:'spectator',label:'👁️ Spectateur'}
+        ${this._field(Lang.t('sv.cfg.gamemode'), 'gamemode', 'select', {options:[
+            {value:'survival',label:Lang.t('sv.cfg.survival')},{value:'creative',label:Lang.t('sv.cfg.creative')},
+            {value:'adventure',label:Lang.t('sv.cfg.adventure')},{value:'spectator',label:Lang.t('sv.cfg.spectator')}
         ]})}
-        ${this._field('PvP activé', 'pvp', 'toggle')}
-        ${this._field('Mode Hardcore', 'hardcore', 'toggle')}
-        ${this._field('Mode en ligne (vérification Mojang)', 'online-mode', 'toggle')}
-        ${this._field('Apparition des animaux', 'spawn-animals', 'toggle')}
-        ${this._field('Apparition des monstres', 'spawn-monsters', 'toggle')}
-        ${this._field('Apparition des PNJ', 'spawn-npcs', 'toggle')}
-        ${this._field('Autoriser le vol', 'allow-flight', 'toggle')}
-        ${this._field('Autoriser le Nether', 'allow-nether', 'toggle')}
-        ${this._field('Blocs de commande', 'enable-command-block', 'toggle')}
+        ${this._field(Lang.t('sv.cfg.pvp'), 'pvp', 'toggle')}
+        ${this._field(Lang.t('sv.cfg.hardcore'), 'hardcore', 'toggle')}
+        ${this._field(Lang.t('sv.cfg.online_mode'), 'online-mode', 'toggle')}
+        ${this._field(Lang.t('sv.cfg.spawn_animals'), 'spawn-animals', 'toggle')}
+        ${this._field(Lang.t('sv.cfg.spawn_monsters'), 'spawn-monsters', 'toggle')}
+        ${this._field(Lang.t('sv.cfg.spawn_npcs'), 'spawn-npcs', 'toggle')}
+        ${this._field(Lang.t('sv.cfg.allow_flight'), 'allow-flight', 'toggle')}
+        ${this._field(Lang.t('sv.cfg.allow_nether'), 'allow-nether', 'toggle')}
+        ${this._field(Lang.t('sv.cfg.command_blocks'), 'enable-command-block', 'toggle')}
         ${this._saveBtn()}`;
     },
 
     // --- Sous-onglet Map ---
     _mapSub(p) {
         return `
-        ${this._field('Nom du monde', 'level-name', 'text', {default:'world'})}
-        ${this._field('Seed', 'level-seed', 'text', {placeholder:'Laisser vide pour aléatoire'})}
-        ${this._field('Type de monde', 'level-type', 'select', {options:[
-            {value:'minecraft:normal',label:'🌍 Normal'},{value:'minecraft:flat',label:'🟩 Plat (Flat)'},
-            {value:'minecraft:large_biomes',label:'🏔️ Grands biomes'},{value:'minecraft:amplified',label:'⛰️ Amplifié'}
+        ${this._field(Lang.t('sv.cfg.world_name'), 'level-name', 'text', {default:'world'})}
+        ${this._field(Lang.t('sv.cfg.seed'), 'level-seed', 'text', {placeholder:Lang.t('sv.cfg.seed_hint')})}
+        ${this._field(Lang.t('sv.cfg.world_type'), 'level-type', 'select', {options:[
+            {value:'minecraft:normal',label:'🌍 Normal'},{value:'minecraft:flat',label:Lang.t('sv.cfg.flat')},
+            {value:'minecraft:large_biomes',label:Lang.t('sv.cfg.large_biomes')},{value:'minecraft:amplified',label:Lang.t('sv.cfg.amplified')}
         ]})}
-        ${this._field('Protection du spawn (rayon en blocs)', 'spawn-protection', 'number', {default:'16'})}
-        ${this._field('Distance de vue (chunks)', 'view-distance', 'number', {default:'10'})}
-        ${this._field('Distance de simulation (chunks)', 'simulation-distance', 'number', {default:'10'})}
-        ${this._field('Taille max du monde (blocs)', 'max-world-size', 'number', {default:'29999984'})}
-        ${this._field('Générer les structures', 'generate-structures', 'toggle')}
+        ${this._field(Lang.t('sv.cfg.spawn_protection'), 'spawn-protection', 'number', {default:'16'})}
+        ${this._field(Lang.t('sv.cfg.view_distance'), 'view-distance', 'number', {default:'10'})}
+        ${this._field(Lang.t('sv.cfg.sim_distance'), 'simulation-distance', 'number', {default:'10'})}
+        ${this._field(Lang.t('sv.cfg.max_world'), 'max-world-size', 'number', {default:'29999984'})}
+        ${this._field(Lang.t('sv.cfg.gen_structures'), 'generate-structures', 'toggle')}
         ${this._saveBtn()}`;
     },
 
@@ -178,16 +178,16 @@ const SvSettings = {
         return `
         <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;margin-bottom:20px;">
             <h3 style="margin:0 0 8px;font-size:15px;">📡 RCON (Remote Console)</h3>
-            <p style="color:var(--text-muted);font-size:12px;margin-bottom:12px;">Permet de contrôler le serveur à distance via des commandes.</p>
-            ${this._field('Activer RCON', 'enable-rcon', 'toggle')}
-            ${this._field('Port RCON', 'rcon.port', 'number', {default:'25575'})}
-            ${this._field('Mot de passe RCON', 'rcon.password', 'text', {placeholder:'Mot de passe RCON'})}
+            <p style="color:var(--text-muted);font-size:12px;margin-bottom:12px;">${Lang.t('sv.cfg.rcon_desc')}</p>
+            ${this._field(Lang.t('sv.cfg.enable_rcon'), 'enable-rcon', 'toggle')}
+            ${this._field(Lang.t('sv.cfg.rcon_port'), 'rcon.port', 'number', {default:'25575'})}
+            ${this._field(Lang.t('sv.cfg.rcon_pass'), 'rcon.password', 'text', {placeholder:Lang.t('sv.cfg.rcon_pass')})}
         </div>
         <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
             <h3 style="margin:0 0 8px;font-size:15px;">🔍 Query</h3>
-            <p style="color:var(--text-muted);font-size:12px;margin-bottom:12px;">Permet aux services tiers de lister votre serveur.</p>
-            ${this._field('Activer Query', 'enable-query', 'toggle')}
-            ${this._field('Port Query', 'query.port', 'number', {default:'25565'})}
+            <p style="color:var(--text-muted);font-size:12px;margin-bottom:12px;">${Lang.t('sv.cfg.query_desc')}</p>
+            ${this._field(Lang.t('sv.cfg.enable_query'), 'enable-query', 'toggle')}
+            ${this._field(Lang.t('sv.cfg.query_port'), 'query.port', 'number', {default:'25565'})}
         </div>
         ${this._saveBtn()}`;
     },
@@ -197,12 +197,12 @@ const SvSettings = {
         return `
         <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;margin-bottom:16px;">
             <p style="color:var(--text-muted);font-size:12px;margin-bottom:16px;">
-                Entrez l'URL d'un pack de ressources pour que les joueurs le téléchargent automatiquement en rejoignant.
+                ${Lang.t('sv.cfg.rp_desc')}
             </p>
-            ${this._field('URL du pack de ressources', 'resource-pack', 'text', {placeholder:'https://example.com/pack.zip'})}
-            ${this._field('SHA-1 du pack (vérification)', 'resource-pack-sha1', 'text', {placeholder:'Hash SHA-1 optionnel'})}
-            ${this._field('Texte affiché au joueur', 'resource-pack-prompt', 'text', {placeholder:'Ce serveur utilise un pack de ressources personnalisé'})}
-            ${this._field('Pack de ressources obligatoire', 'require-resource-pack', 'toggle')}
+            ${this._field(Lang.t('sv.cfg.rp_url'), 'resource-pack', 'text', {placeholder:'https://example.com/pack.zip'})}
+            ${this._field(Lang.t('sv.cfg.rp_sha1'), 'resource-pack-sha1', 'text', {placeholder:'Hash SHA-1'})}
+            ${this._field(Lang.t('sv.cfg.rp_prompt'), 'resource-pack-prompt', 'text', {placeholder:''})}
+            ${this._field(Lang.t('sv.cfg.rp_required'), 'require-resource-pack', 'toggle')}
         </div>
         ${this._saveBtn()}`;
     },
@@ -213,7 +213,7 @@ const SvSettings = {
         return `
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;">
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
-                <div style="font-size:12px;color:var(--text-muted);">Type de serveur</div>
+                <div style="font-size:12px;color:var(--text-muted);">${Lang.t('sv.cfg.server_type')}</div>
                 <div style="font-size:15px;margin-top:4px;font-weight:600;">${s.game_type || 'minecraft'}</div>
             </div>
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
@@ -221,10 +221,10 @@ const SvSettings = {
                 <div style="font-size:15px;margin-top:4px;font-weight:600;">${s.version || 'LATEST'}</div>
             </div>
         </div>
-        <h3 style="font-size:15px;margin-bottom:12px;">📊 Ressources</h3>
+        <h3 style="font-size:15px;margin-bottom:12px;">${Lang.t('sv.cfg.resources')}</h3>
         <div style="margin-bottom:20px;">
             <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
-                <label class="form-label" style="margin:0;">💻 Mémoire RAM</label>
+                <label class="form-label" style="margin:0;">${Lang.t('sv.cfg.memory')}</label>
                 <span id="sv-ram-val" style="font-family:monospace;font-weight:700;color:var(--accent-blue);font-size:16px;">${s.memory_mb||1024} Mo</span>
             </div>
             <input type="range" id="sv-ram-slider" min="256" max="8192" step="256" value="${s.memory_mb||1024}"
@@ -243,12 +243,40 @@ const SvSettings = {
                 style="width:100%;accent-color:var(--accent-orange);cursor:pointer;"
                 oninput="document.getElementById('sv-cpu-val').textContent=this.value+'%'" />
             <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-top:4px;">
-                <span>25% (¼ cœur)</span><span>400% (4 cœurs)</span>
+                <span>25% (¼ core)</span><span>400% (4 cores)</span>
             </div>
         </div>
         <div style="display:flex;align-items:center;gap:12px;">
-            <button class="btn btn-primary" onclick="SvSettings._saveResources()">💾 Appliquer les ressources</button>
+            <button class="btn btn-primary" onclick="SvSettings._saveResources()">${Lang.t('sv.cfg.apply_resources')}</button>
             <span id="sv-res-msg" style="font-size:13px;"></span>
+        </div>
+
+        <!-- Zone dangereuse -->
+        <div style="margin-top:32px;padding:20px;border-radius:10px;border:1px solid rgba(239,68,68,0.3);background:rgba(239,68,68,0.05);">
+            <h3 style="margin:0 0 8px;font-size:15px;color:#ef4444;">${Lang.t('sv.cfg.danger_zone')}</h3>
+            <p style="color:var(--text-muted);font-size:12px;margin-bottom:16px;">
+                ${Lang.t('sv.cfg.danger_desc')}
+            </p>
+            <div id="sv-del-zone">
+                <button class="btn" style="background:#ef4444;color:white;" onclick="SvSettings._showDeleteConfirm()">
+                    🗑️ Supprimer ce serveur
+                </button>
+            </div>
+            <div id="sv-del-confirm" style="display:none;margin-top:12px;padding:14px;background:rgba(239,68,68,0.1);border-radius:8px;border:1px solid #ef4444;">
+                <p style="font-size:13px;color:#ef4444;margin-bottom:10px;">
+                    Tape <strong>${s.name}</strong> pour confirmer la suppression :
+                </p>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <input id="sv-del-input" class="form-input" placeholder="${s.name}" style="flex:1;border-color:#ef4444;" />
+                    <button class="btn" style="background:#ef4444;color:white;" onclick="SvSettings._confirmDelete('${s.name.replace(/'/g, "\\'")}')">
+                        ${Lang.t('sv.cfg.delete_btn')}
+                    </button>
+                    <button class="btn btn-secondary" onclick="document.getElementById('sv-del-confirm').style.display='none'">
+                        ${Lang.t('common.cancel')}
+                    </button>
+                </div>
+                <div id="sv-del-msg" style="font-size:13px;margin-top:8px;"></div>
+            </div>
         </div>`;
     },
 
@@ -261,7 +289,7 @@ const SvSettings = {
             method: 'PUT', body: JSON.stringify({memory_mb: ram, cpu_percent: cpu})
         });
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = '✅ Appliqué !'; }
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('sv.cfg.res_applied'); }
         } else {
             if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '❌ Erreur'; }
         }
@@ -275,41 +303,40 @@ const SvSettings = {
         const presets = [
             {
                 id: 'aikar',
-                name: "🚀 Aikar's Flags (recommandé)",
-                desc: 'Optimisé pour Paper/Spigot — utilisé par 90% des serveurs',
+                name: Lang.t('sv.cfg.jvm_aikar'),
+                desc: Lang.t('sv.cfg.jvm_aikar_desc'),
                 flags: '-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch -XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M -XX:G1ReservePercent=20 -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1'
             },
             {
                 id: 'performance',
-                name: '⚡ Performance générale',
-                desc: 'Bon équilibre entre stabilité et rapidité',
+                name: Lang.t('sv.cfg.jvm_perf'),
+                desc: Lang.t('sv.cfg.jvm_perf_desc'),
                 flags: '-XX:+UseG1GC -XX:+OptimizeStringConcat -XX:+UseCompressedOops'
             },
             {
                 id: 'lowram',
-                name: '💾 Faible RAM (< 2Go)',
-                desc: 'Optimisé pour les serveurs avec peu de mémoire',
+                name: Lang.t('sv.cfg.jvm_lowram'),
+                desc: Lang.t('sv.cfg.jvm_lowram_desc'),
                 flags: '-XX:+UseSerialGC -XX:+OptimizeStringConcat'
             },
             {
                 id: 'none',
-                name: '✅ Aucun flag',
-                desc: 'Configuration Java par défaut',
+                name: Lang.t('sv.cfg.jvm_none'),
+                desc: Lang.t('sv.cfg.jvm_none_desc'),
                 flags: ''
             },
         ];
 
         return `
         <div style="background:linear-gradient(135deg, rgba(249,115,22,0.1), rgba(234,88,12,0.05));padding:16px;border-radius:10px;margin-bottom:20px;border:1px solid rgba(249,115,22,0.2);">
-            <div style="font-size:13px;color:var(--text-muted);">Les flags JVM optimisent les performances du serveur Minecraft. Un redémarrage est nécessaire après modification.</div>
+            <div style="font-size:13px;color:var(--text-muted);">${Lang.t('sv.cfg.jvm_info')}</div>
         </div>
 
-        <div style="font-weight:600;margin-bottom:12px;">🏁 Presets recommandés</div>
+        <div style="font-weight:600;margin-bottom:12px;">${Lang.t('sv.cfg.jvm_presets')}</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px;">
             ${presets.map(pr => `
                 <div style="background:var(--bg-secondary);padding:12px;border-radius:8px;cursor:pointer;border:2px solid var(--border-color);transition:all .15s;"
-                    onclick="document.getElementById('sv-jvm-textarea').value='${pr.flags.replace(/'/g, "\\'")}';"
-                    onmouseover="this.style.borderColor='var(--accent-blue)'"
+                    onclick="document.getElementById('sv-jvm-textarea').value='${pr.flags.replace(/'/g, "\\\'")}';"                    onmouseover="this.style.borderColor='var(--accent-blue)'"
                     onmouseout="this.style.borderColor='var(--border-color)'">
                     <div style="font-size:13px;font-weight:600;">${pr.name}</div>
                     <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">${pr.desc}</div>
@@ -317,12 +344,12 @@ const SvSettings = {
             `).join('')}
         </div>
 
-        <div style="font-weight:600;margin-bottom:8px;">☕ Flags JVM personnalisés</div>
+        <div style="font-weight:600;margin-bottom:8px;">${Lang.t('sv.cfg.jvm_custom')}</div>
         <textarea id="sv-jvm-textarea" class="form-input" rows="5" style="font-family:monospace;font-size:12px;resize:vertical;">${currentFlags}</textarea>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Séparez les flags par des espaces. Ex: -XX:+UseG1GC -XX:MaxGCPauseMillis=200</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">${Lang.t('sv.cfg.jvm_hint')}</div>
 
         <div style="margin-top:16px;display:flex;align-items:center;gap:12px;">
-            <button class="btn btn-primary" onclick="SvSettings._saveJvm()">💾 Sauvegarder les flags JVM</button>
+            <button class="btn btn-primary" onclick="SvSettings._saveJvm()">${Lang.t('sv.cfg.jvm_save')}</button>
             <span id="sv-jvm-msg" style="font-size:13px;"></span>
         </div>`;
     },
@@ -330,7 +357,7 @@ const SvSettings = {
     async _saveJvm() {
         const flags = document.getElementById('sv-jvm-textarea')?.value?.trim() || '';
         const msg = document.getElementById('sv-jvm-msg');
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Sauvegarde...'; }
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.cfg.jvm_saving'); }
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/jvm-flags`, {
             method: 'PUT', body: JSON.stringify({ jvm_flags: flags })
         });
@@ -340,6 +367,35 @@ const SvSettings = {
             this._serverData.jvm_flags = flags;
         } else {
             if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '❌ Erreur'; }
+        }
+    },
+
+    // --- Suppression du serveur ---
+
+    _showDeleteConfirm() {
+        document.getElementById('sv-del-confirm').style.display = 'block';
+        document.getElementById('sv-del-input').value = '';
+        document.getElementById('sv-del-input').focus();
+    },
+
+    async _confirmDelete(serverName) {
+        const input = document.getElementById('sv-del-input')?.value?.trim();
+        const msg = document.getElementById('sv-del-msg');
+
+        if (input !== serverName) {
+            if (msg) { msg.style.color = '#ef4444'; msg.textContent = Lang.t('sv.cfg.delete_name_mismatch'); }
+            return;
+        }
+
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.cfg.deleting'); }
+
+        const r = await Auth.apiCall(`/api/servers/${this._serverId}`, { method: 'DELETE' });
+        if (r && r.ok) {
+            if (typeof Toast !== 'undefined') Toast.success(`🗑️ Serveur '${serverName}' supprimé`);
+            App.navigateTo('game_server');
+        } else {
+            const err = r ? await r.json().catch(() => ({})) : {};
+            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
     },
 };

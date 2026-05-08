@@ -12,7 +12,7 @@ Rôles disponibles:
     spectator  → Voir le statut seulement
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 import secrets
 
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey
@@ -41,8 +41,9 @@ class User(Base):
     hashed_password = Column(String(255), nullable=False)
     is_admin = Column(Boolean, default=False)
     role = Column(String(20), default="player")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     invited_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    allowed_modules = Column(String(500), nullable=True, default=None)  # JSON array, null = tous les modules
 
 
 class Invitation(Base):
@@ -72,7 +73,7 @@ class Invitation(Base):
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     used_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     used_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     expires_at = Column(DateTime, nullable=True)
     max_uses = Column(Integer, default=1)
     uses = Column(Integer, default=0)

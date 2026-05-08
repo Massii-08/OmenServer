@@ -9,6 +9,8 @@ Routes:
     GET /api/modules/{id}     → Détails d'un module spécifique
 """
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.auth.utils import get_current_user
@@ -22,11 +24,34 @@ router = APIRouter(prefix="/api/modules", tags=["Modules"])
 def list_modules(current_user: User = Depends(get_current_user)):
     """
     Retourne la liste de tous les modules avec leur statut.
-    Le frontend utilise ça pour afficher les cartes du hub.
+    Filtre par les modules autorisés pour l'utilisateur.
+    Les admins voient tout.
     """
+    all_modules = module_manager.get_all_modules()
+
+    # Admins voient tout
+    if current_user.is_admin:
+        return {
+            "modules": all_modules,
+            "enabled_count": len(module_manager.get_enabled_modules()),
+        }
+
+    # Filtrer par allowed_modules
+    allowed = None
+    if current_user.allowed_modules:
+        try:
+            allowed = json.loads(current_user.allowed_modules)
+        except (json.JSONDecodeError, TypeError):
+            allowed = None
+
+    if allowed is not None:
+        filtered = [m for m in all_modules if m["id"] in allowed]
+    else:
+        filtered = all_modules  # null = tous les modules
+
     return {
-        "modules": module_manager.get_all_modules(),
-        "enabled_count": len(module_manager.get_enabled_modules()),
+        "modules": filtered,
+        "enabled_count": len([m for m in filtered if m.get("enabled")]),
     }
 
 
@@ -36,4 +61,14 @@ def get_module(module_id: str, current_user: User = Depends(get_current_user)):
     module = module_manager.get_module(module_id)
     if not module:
         raise HTTPException(status_code=404, detail="Module non trouvé")
+
+    # Vérifier l'accès si non-admin
+    if not current_user.is_admin and current_user.allowed_modules:
+        try:
+            allowed = json.loads(current_user.allowed_modules)
+            if module_id not in allowed:
+                raise HTTPException(status_code=403, detail="Accès non autorisé à ce module")
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     return module

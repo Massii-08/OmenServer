@@ -21,6 +21,7 @@ from backend.database import get_db
 from backend.auth.utils import get_current_user
 from backend.auth.models import User
 from backend.game_server.models import GameServer
+from backend.bots.models import Bot
 from backend.scheduler.models import ScheduledTask
 from backend.scheduler import engine
 
@@ -31,8 +32,9 @@ router = APIRouter(prefix="/api/scheduler", tags=["Tâches planifiées"])
 
 class CreateTaskRequest(BaseModel):
     """Données pour créer une tâche planifiée."""
-    server_id: int
-    task_type: str = "backup"        # "backup" ou "restart"
+    server_id: Optional[int] = None
+    bot_id: Optional[int] = None
+    task_type: str = "backup"        # "backup", "restart", "bot_start", "bot_stop", "bot_restart"
     interval_hours: int = 6          # Intervalle en heures
 
 
@@ -68,17 +70,27 @@ def list_tasks(
     tasks = db.query(ScheduledTask).all()
     result = []
     for task in tasks:
-        server = db.query(GameServer).filter(GameServer.id == task.server_id).first()
-        result.append({
+        entry = {
             "id": task.id,
             "server_id": task.server_id,
-            "server_name": server.name if server else "Serveur supprimé",
+            "bot_id": task.bot_id,
             "task_type": task.task_type,
             "interval_hours": task.interval_hours,
             "enabled": task.enabled,
             "last_run": task.last_run.isoformat() if task.last_run else None,
             "next_run": task.next_run.isoformat() if task.next_run else None,
-        })
+        }
+        if task.server_id:
+            server = db.query(GameServer).filter(GameServer.id == task.server_id).first()
+            entry["server_name"] = server.name if server else "Serveur supprimé"
+            entry["target_name"] = entry["server_name"]
+        elif task.bot_id:
+            bot = db.query(Bot).filter(Bot.id == task.bot_id).first()
+            entry["bot_name"] = bot.name if bot else "Bot supprimé"
+            entry["target_name"] = entry["bot_name"]
+        else:
+            entry["target_name"] = "?"
+        result.append(entry)
     return result
 
 
@@ -93,6 +105,26 @@ def list_server_tasks(
     return [{
         "id": t.id,
         "server_id": t.server_id,
+        "bot_id": t.bot_id,
+        "task_type": t.task_type,
+        "interval_hours": t.interval_hours,
+        "enabled": t.enabled,
+        "last_run": t.last_run.isoformat() if t.last_run else None,
+        "next_run": t.next_run.isoformat() if t.next_run else None,
+    } for t in tasks]
+
+
+@router.get("/bot/{bot_id}")
+def list_bot_tasks(
+    bot_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Liste les tâches d'un bot spécifique."""
+    tasks = db.query(ScheduledTask).filter(ScheduledTask.bot_id == bot_id).all()
+    return [{
+        "id": t.id,
+        "bot_id": t.bot_id,
         "task_type": t.task_type,
         "interval_hours": t.interval_hours,
         "enabled": t.enabled,
@@ -108,30 +140,48 @@ def create_task(
     db: Session = Depends(get_db),
 ):
     """Crée une nouvelle tâche planifiée."""
-    # Vérifier que le serveur existe
-    server = db.query(GameServer).filter(GameServer.id == request.server_id).first()
-    if not server:
-        raise HTTPException(status_code=404, detail="Serveur non trouvé")
+    # Validation des types
+    valid_server_types = ("backup", "restart")
+    valid_bot_types = ("bot_start", "bot_stop", "bot_restart")
+    all_valid = valid_server_types + valid_bot_types
 
-    # Validation
-    if request.task_type not in ("backup", "restart"):
-        raise HTTPException(status_code=400, detail="Type de tâche invalide (backup ou restart)")
+    if request.task_type not in all_valid:
+        raise HTTPException(status_code=400, detail=f"Type de tâche invalide ({', '.join(all_valid)})")
     if request.interval_hours < 1 or request.interval_hours > 168:
         raise HTTPException(status_code=400, detail="Intervalle: entre 1h et 168h (7 jours)")
 
-    # Vérifier qu'il n'existe pas déjà une tâche identique
-    existing = db.query(ScheduledTask).filter(
-        ScheduledTask.server_id == request.server_id,
-        ScheduledTask.task_type == request.task_type,
-    ).first()
-    if existing:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Une tâche '{request.task_type}' existe déjà pour ce serveur"
-        )
+    # Selon le type: vérifier serveur ou bot
+    if request.task_type in valid_server_types:
+        if not request.server_id:
+            raise HTTPException(status_code=400, detail="server_id requis pour backup/restart")
+        server = db.query(GameServer).filter(GameServer.id == request.server_id).first()
+        if not server:
+            raise HTTPException(status_code=404, detail="Serveur non trouvé")
+        # Vérifier doublon
+        existing = db.query(ScheduledTask).filter(
+            ScheduledTask.server_id == request.server_id,
+            ScheduledTask.task_type == request.task_type,
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Une tâche '{request.task_type}' existe déjà pour ce serveur")
+
+    elif request.task_type in valid_bot_types:
+        if not request.bot_id:
+            raise HTTPException(status_code=400, detail="bot_id requis pour les tâches bot")
+        bot = db.query(Bot).filter(Bot.id == request.bot_id).first()
+        if not bot:
+            raise HTTPException(status_code=404, detail="Bot non trouvé")
+        # Vérifier doublon
+        existing = db.query(ScheduledTask).filter(
+            ScheduledTask.bot_id == request.bot_id,
+            ScheduledTask.task_type == request.task_type,
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Une tâche '{request.task_type}' existe déjà pour ce bot")
 
     task = ScheduledTask(
-        server_id=request.server_id,
+        server_id=request.server_id if request.task_type in valid_server_types else None,
+        bot_id=request.bot_id if request.task_type in valid_bot_types else None,
         task_type=request.task_type,
         interval_hours=request.interval_hours,
         enabled=True,
@@ -149,6 +199,7 @@ def create_task(
         "task": {
             "id": task.id,
             "server_id": task.server_id,
+            "bot_id": task.bot_id,
             "task_type": task.task_type,
             "interval_hours": task.interval_hours,
             "enabled": task.enabled,

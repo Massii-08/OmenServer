@@ -6,4 +6,5 @@ __pycache__/
 data/
 *.db
 mdpdf.log
+*.log
 cloudflared

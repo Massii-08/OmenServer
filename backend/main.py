@@ -25,10 +25,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.config import settings
 from backend.database import create_tables
 
-# Configuration du logging (affiche les messages dans la console)
+# Configuration du logging avec rotation des fichiers
+from logging.handlers import RotatingFileHandler
+
+# Handler console
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter(
+    "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+))
+
+# Handler fichier avec rotation (max 5 Mo, garde 5 fichiers)
+_log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+os.makedirs(_log_dir, exist_ok=True)
+file_handler = RotatingFileHandler(
+    os.path.join(_log_dir, "omenserver.log"),
+    maxBytes=5 * 1024 * 1024,  # 5 Mo
+    backupCount=5,
+    encoding="utf-8",
+)
+file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+))
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    handlers=[console_handler, file_handler],
 )
 logger = logging.getLogger("omenserver")
 
@@ -37,6 +58,8 @@ app = FastAPI(
     title="OmenServer",
     description="Panel de gestion de serveur dédié polyvalent",
     version="4.0.0",
+    docs_url=None,     # Désactiver Swagger en production (sécurité)
+    redoc_url=None,    # Désactiver Redoc en production (sécurité)
 )
 
 # --- Middleware CORS ---
@@ -44,11 +67,30 @@ app = FastAPI(
 # (quand le frontend et le backend sont sur des ports différents)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En production, restreindre aux domaines autorisés
+    allow_origins=[
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        f"http://{os.getenv('HOST', '0.0.0.0')}:{os.getenv('PORT', '8000')}",
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+    expose_headers=["Content-Disposition"],
 )
+
+
+# --- Middleware Security Headers ---
+from starlette.requests import Request
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Ajoute des en-têtes de sécurité à toutes les réponses."""
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 
 # --- Import et montage des routers ---
 # Chaque router gère un groupe de routes (ex: /api/auth/*, /api/monitoring/*, etc.)
@@ -71,10 +113,13 @@ from backend.mods.plugin_router import router as plugin_router
 from backend.notifications.router import router as notification_router
 from backend.monitoring.diagnostic_router import router as diagnostic_router
 from backend.bots.router import router as bots_router
+from backend.bots.yield_router import router as yield_router
 from backend.gdrive.router import router as gdrive_router
 from backend.media.router import router as media_router
 from backend.webserver.router import router as webserver_router
 from backend.network.router import router as network_router
+from backend.scheduler.power_router import router as power_router
+from backend.monitoring.nodes_router import router as nodes_router
 
 app.include_router(auth_router)
 app.include_router(invite_router)
@@ -95,10 +140,13 @@ app.include_router(plugin_router)
 app.include_router(notification_router)
 app.include_router(diagnostic_router)
 app.include_router(bots_router)
+app.include_router(yield_router)
 app.include_router(gdrive_router)
 app.include_router(media_router)
 app.include_router(webserver_router)
 app.include_router(network_router)
+app.include_router(power_router)
+app.include_router(nodes_router)
 
 
 # --- Événement de démarrage ---
@@ -121,7 +169,12 @@ async def startup_event():
         migrations = [
             ("game_servers", "cpu_percent", "INTEGER DEFAULT 100"),
             ("users", "role", "VARCHAR(20) DEFAULT 'player'"),
-            ("users", "invited_by", "INTEGER"),        ]
+            ("users", "invited_by", "INTEGER"),
+            ("users", "allowed_modules", "VARCHAR(500)"),
+            ("scheduled_tasks", "bot_id", "INTEGER REFERENCES bots(id) ON DELETE CASCADE"),
+            ("scheduled_tasks", "schedule_time", "VARCHAR(5)"),
+            ("scheduled_tasks", "schedule_days", "VARCHAR(50)"),
+        ]
         for table, column, col_type in migrations:
             try:
                 db.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))

@@ -1201,3 +1201,397 @@ canvas {
         font-size: 11px;
     }
 }
+
+/* ═════════════════════════════════════════════════
+   YIELD BOT — Styles dédiés
+   ═════════════════════════════════════════════════ */
+
+/* Dropzone */
+.yield-dropzone {
+    border: 2px dashed var(--border-color);
+    border-radius: var(--border-radius-lg);
+    padding: 48px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: all var(--transition-normal);
+    background: rgba(255, 255, 255, 0.02);
+    position: relative;
+}
+
+.yield-dropzone:hover {
+    border-color: var(--accent-blue);
+    background: rgba(59, 130, 246, 0.04);
+}
+
+.yield-dropzone.dragover {
+    border-color: var(--accent-green);
+    background: rgba(16, 185, 129, 0.06);
+    border-style: solid;
+    transform: scale(1.01);
+}
+
+.yield-dropzone.has-file {
+    border-color: var(--accent-green);
+    border-style: solid;
+    background: rgba(16, 185, 129, 0.04);
+    padding: 24px;
+}
+
+.yield-dropzone-icon {
+    font-size: 48px;
+    margin-bottom: 12px;
+    display: block;
+    opacity: 0.7;
+}
+
+.yield-dropzone-text {
+    font-size: 14px;
+    color: var(--text-muted);
+}
+
+/* File info inside dropzone */
+.yield-file-info {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    text-align: left;
+}
+
+.yield-file-icon {
+    font-size: 36px;
+    flex-shrink: 0;
+}
+
+.yield-file-details {
+    flex: 1;
+    min-width: 0;
+}
+
+.yield-file-name {
+    font-weight: 600;
+    font-size: 15px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.yield-file-meta {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+.yield-file-remove {
+    padding: 6px 12px;
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+    color: var(--accent-red);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all var(--transition-fast);
+}
+
+.yield-file-remove:hover {
+    background: rgba(239, 68, 68, 0.2);
+}
+
+/* Mode selector */
+.yield-modes {
+    display: flex;
+    gap: 12px;
+    margin: 20px 0;
+}
+
+.yield-mode-option {
+    flex: 1;
+    padding: 16px;
+    border: 2px solid var(--border-color);
+    border-radius: var(--border-radius);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    background: var(--bg-card);
+    text-align: center;
+}
+
+.yield-mode-option:hover {
+    border-color: var(--accent-blue);
+    background: rgba(59, 130, 246, 0.04);
+}
+
+.yield-mode-option.selected {
+    border-color: var(--accent-green);
+    background: rgba(16, 185, 129, 0.06);
+    box-shadow: 0 0 0 1px var(--accent-green);
+}
+
+.yield-mode-icon {
+    font-size: 24px;
+    margin-bottom: 8px;
+    display: block;
+}
+
+.yield-mode-label {
+    font-weight: 600;
+    font-size: 13px;
+    margin-bottom: 4px;
+}
+
+.yield-mode-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+/* Usage badge */
+.yield-usage-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    background: rgba(59, 130, 246, 0.1);
+    color: var(--accent-blue);
+    border: 1px solid rgba(59, 130, 246, 0.15);
+}
+
+.yield-usage-badge.warning {
+    background: rgba(245, 158, 11, 0.1);
+    color: var(--accent-yellow);
+    border-color: rgba(245, 158, 11, 0.15);
+}
+
+.yield-usage-badge.danger {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--accent-red);
+    border-color: rgba(239, 68, 68, 0.15);
+}
+
+/* Progress bar */
+.yield-progress-container {
+    margin: 20px 0;
+}
+
+.yield-progress-bar {
+    height: 8px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+}
+
+.yield-progress-fill {
+    height: 100%;
+    border-radius: 4px;
+    background: linear-gradient(90deg, var(--accent-green), var(--accent-cyan));
+    transition: width 0.5s ease;
+    position: relative;
+}
+
+.yield-progress-fill::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(255, 255, 255, 0.2),
+        transparent
+    );
+    animation: yield-shimmer 2s infinite;
+}
+
+@keyframes yield-shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+}
+
+.yield-progress-text {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.yield-progress-percent {
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--accent-green);
+}
+
+/* Terminal logs */
+.yield-terminal {
+    background: #0d1117;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: var(--border-radius);
+    padding: 16px;
+    max-height: 400px;
+    overflow-y: auto;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    color: #c9d1d9;
+    scroll-behavior: smooth;
+}
+
+.yield-terminal::-webkit-scrollbar {
+    width: 6px;
+}
+
+.yield-terminal::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.yield-terminal::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+}
+
+.yield-log-line {
+    display: flex;
+    gap: 8px;
+    padding: 1px 0;
+}
+
+.yield-log-line:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.yield-log-num {
+    color: #6b7280;
+    min-width: 28px;
+    text-align: right;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.yield-log-content {
+    flex: 1;
+    word-break: break-word;
+}
+
+/* Stats cards */
+.yield-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin: 16px 0;
+}
+
+.yield-stat-card {
+    padding: 16px;
+    border-radius: var(--border-radius-sm);
+    text-align: center;
+    border: 1px solid var(--border-color);
+    background: var(--bg-card);
+}
+
+.yield-stat-value {
+    font-size: 28px;
+    font-weight: 800;
+    line-height: 1;
+    margin-bottom: 4px;
+}
+
+.yield-stat-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.yield-stat-card.success .yield-stat-value { color: var(--accent-green); }
+.yield-stat-card.warning .yield-stat-value { color: var(--accent-yellow); }
+.yield-stat-card.error .yield-stat-value { color: var(--accent-red); }
+
+/* Launch button */
+.yield-launch-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    padding: 14px 28px;
+    background: linear-gradient(135deg, var(--accent-green), var(--accent-cyan));
+    color: #fff;
+    border: none;
+    border-radius: var(--border-radius);
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all var(--transition-normal);
+    margin-top: 16px;
+}
+
+.yield-launch-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(16, 185, 129, 0.3);
+}
+
+.yield-launch-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+.yield-launch-btn.running {
+    background: linear-gradient(135deg, var(--accent-red), #dc2626);
+}
+
+/* Header bar */
+.yield-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+}
+
+.yield-header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.yield-header-icon {
+    font-size: 32px;
+}
+
+/* Pulsing dot for running state */
+.yield-pulse {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    background: var(--accent-green);
+    border-radius: 50%;
+    animation: yield-pulse-anim 1.5s ease-in-out infinite;
+    margin-right: 6px;
+}
+
+@keyframes yield-pulse-anim {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+    50% { opacity: 0.6; box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .yield-modes {
+        flex-direction: column;
+    }
+
+    .yield-stats {
+        grid-template-columns: 1fr;
+    }
+
+    .yield-header {
+        flex-direction: column;
+        gap: 12px;
+        align-items: flex-start;
+    }
+}

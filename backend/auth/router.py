@@ -15,9 +15,10 @@ Routes:
     POST /api/auth/logout       → Déconnexion (invalide côté client)
 """
 
-from typing import Optional
+import json
+from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -30,6 +31,7 @@ from backend.auth.utils import (
     create_access_token,
     get_current_user,
 )
+from backend.auth.rate_limiter import check_rate_limit, reset_rate_limit
 
 router = APIRouter(prefix="/api/auth", tags=["Authentification"])
 
@@ -50,9 +52,37 @@ class UserResponse(BaseModel):
     username: str
     is_admin: bool
     role: str = "player"
+    allowed_modules: Optional[List[str]] = None  # null = tous les modules
 
     class Config:
         from_attributes = True
+
+    @staticmethod
+    def _parse_modules(v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        return v
+
+    def __init__(self, **data):
+        if 'allowed_modules' in data:
+            data['allowed_modules'] = UserResponse._parse_modules(data['allowed_modules'])
+        super().__init__(**data)
+
+    @classmethod
+    def from_orm(cls, obj):
+        data = {
+            'id': obj.id,
+            'username': obj.username,
+            'is_admin': obj.is_admin,
+            'role': getattr(obj, 'role', 'player') or 'player',
+            'allowed_modules': cls._parse_modules(getattr(obj, 'allowed_modules', None)),
+        }
+        return cls(**data)
 
 
 class TokenResponse(BaseModel):
@@ -163,13 +193,18 @@ def admin_create_user(
 
 @router.post("/login", response_model=TokenResponse)
 def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
 ):
     """
     Se connecter avec username + password.
     Retourne un token JWT si les identifiants sont corrects.
+    Protégé par rate limiting (5 tentatives/minute par IP).
     """
+    # Vérifier le rate limit avant toute tentative
+    check_rate_limit(request, endpoint="login")
+
     user = db.query(User).filter(User.username == form_data.username).first()
 
     if not user or not verify_password(form_data.password, user.hashed_password):
@@ -178,6 +213,9 @@ def login(
             detail="Nom d'utilisateur ou mot de passe incorrect",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # Login réussi → réinitialiser le compteur de tentatives
+    reset_rate_limit(request, endpoint="login")
 
     access_token = create_access_token(data={"sub": user.username})
     return TokenResponse(
@@ -189,7 +227,7 @@ def login(
 @router.get("/me", response_model=UserResponse)
 def get_me(current_user: User = Depends(get_current_user)):
     """Retourne les infos de l'utilisateur actuellement connecté."""
-    return current_user
+    return UserResponse.from_orm(current_user)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -223,10 +261,10 @@ def change_password(
         )
 
     # Vérifier la longueur minimum
-    if len(request.new_password) < 4:
+    if len(request.new_password) < 8:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Le mot de passe doit faire au moins 4 caractères"
+            detail="Le mot de passe doit faire au moins 8 caractères"
         )
 
     # Mettre à jour
@@ -264,6 +302,7 @@ def list_users(
             "is_admin": u.is_admin,
             "role": u.role or "player",
             "created_at": u.created_at.isoformat() if u.created_at else None,
+            "allowed_modules": json.loads(u.allowed_modules) if u.allowed_modules else None,
         }
         for u in users
     ]
@@ -301,6 +340,42 @@ def change_user_role(
     db.commit()
 
     return {"message": f"Rôle de '{user.username}' changé en '{request.role}' ✅"}
+
+
+class UpdateModulesRequest(BaseModel):
+    """Données pour modifier les modules autorisés d'un utilisateur."""
+    allowed_modules: Optional[List[str]] = None  # null = tous, [] = aucun
+
+
+@router.put("/admin/users/{user_id}/modules")
+def update_user_modules(
+    user_id: int,
+    request: UpdateModulesRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Change les modules autorisés pour un utilisateur (admin seulement)."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+
+    if user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="Tu ne peux pas modifier tes propres modules")
+
+    # null = tous les modules, sinon JSON array
+    if request.allowed_modules is None:
+        user.allowed_modules = None
+    else:
+        user.allowed_modules = json.dumps(request.allowed_modules)
+    db.commit()
+
+    return {
+        "message": f"Modules de '{user.username}' mis à jour ✅",
+        "allowed_modules": request.allowed_modules,
+    }
 
 
 @router.delete("/admin/users/{user_id}")

@@ -45,11 +45,16 @@ def get_memory_info() -> dict:
     }
     """
     mem = psutil.virtual_memory()
+    total_gb = round(mem.total / (1024 ** 3), 1)
+    used_gb = round(mem.used / (1024 ** 3), 1)
+    # Calcul du % basé sur used/total (et non (total-available)/total de psutil
+    # qui inclut le cache/wired/inactive sur macOS et donne des valeurs trop élevées)
+    percent = round((mem.used / mem.total) * 100, 1) if mem.total > 0 else 0
     return {
-        "total_gb": round(mem.total / (1024 ** 3), 1),
-        "used_gb": round(mem.used / (1024 ** 3), 1),
+        "total_gb": total_gb,
+        "used_gb": used_gb,
         "available_gb": round(mem.available / (1024 ** 3), 1),
-        "percent": mem.percent,
+        "percent": percent,
     }
 
 
@@ -66,11 +71,17 @@ def get_disk_info() -> dict:
     }
     """
     disk = psutil.disk_usage("/")
+    total_gb = round(disk.total / (1024 ** 3), 1)
+    used_gb = round(disk.used / (1024 ** 3), 1)
+    free_gb = round(disk.free / (1024 ** 3), 1)
+    # Calcul du % basé sur used/total pour cohérence avec les valeurs affichées
+    # (sur APFS, disk.percent peut être incohérent car used + free ≠ total)
+    percent = round((disk.used / disk.total) * 100, 1) if disk.total > 0 else 0
     return {
-        "total_gb": round(disk.total / (1024 ** 3), 1),
-        "used_gb": round(disk.used / (1024 ** 3), 1),
-        "free_gb": round(disk.free / (1024 ** 3), 1),
-        "percent": round(disk.percent, 1),
+        "total_gb": total_gb,
+        "used_gb": used_gb,
+        "free_gb": free_gb,
+        "percent": percent,
     }
 
 

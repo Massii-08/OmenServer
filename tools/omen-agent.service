@@ -1,0 +1,39 @@
+[Unit]
+Description=OmenServer Monitoring Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/omen-agent
+ExecStart=/usr/bin/python3 /opt/omen-agent/omen_agent.py
+Restart=always
+RestartSec=10
+
+# Logs visibles via : journalctl -u omen-agent -f
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+
+# === INSTALLATION ===
+# 1. Copier omen_agent.py dans /opt/omen-agent/
+#    sudo mkdir -p /opt/omen-agent
+#    sudo cp omen_agent.py /opt/omen-agent/
+#
+# 2. Installer les dépendances :
+#    sudo pip3 install psutil requests
+#
+# 3. Configurer SERVER_URL et API_KEY dans omen_agent.py
+#
+# 4. Copier ce fichier dans systemd :
+#    sudo cp omen-agent.service /etc/systemd/system/
+#
+# 5. Activer et démarrer :
+#    sudo systemctl enable omen-agent
+#    sudo systemctl start omen-agent
+#
+# 6. Voir les logs :
+#    journalctl -u omen-agent -f

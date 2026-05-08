@@ -3,12 +3,15 @@ Backup Manager — Sauvegarde et restauration des données de serveurs de jeux.
 
 Chaque serveur de jeu stocke ses données dans un volume Docker.
 Ce module permet de :
-- Créer des archives .tar.gz de ces données
-- Lister les sauvegardes existantes
+- Créer des archives .tar.gz de ces données (auto ou manuelles)
+- Lister les sauvegardes existantes (séparées auto / manuel)
 - Restaurer une sauvegarde
-- Supprimer les anciennes sauvegardes (rotation)
+- Supprimer les anciennes sauvegardes auto (rotation : max 10)
+- Limiter les sauvegardes manuelles à 10 (suppression par l'utilisateur)
 
-Les sauvegardes sont stockées dans : data/backups/{server_id}/
+Structure de stockage :
+    data/backups/{server_id}/auto/    → Backups automatiques (scheduler)
+    data/backups/{server_id}/manual/  → Backups manuels (bouton)
 """
 
 import os
@@ -27,14 +30,39 @@ logger = logging.getLogger(__name__)
 BACKUPS_DIR = Path(settings.BASE_DIR) / "data" / "backups"
 
 
-def _get_backup_dir(server_id: int) -> Path:
-    """Retourne le dossier de sauvegardes d'un serveur."""
-    backup_dir = BACKUPS_DIR / str(server_id)
+def _get_backup_dir(server_id: int, backup_type: str = "manual") -> Path:
+    """Retourne le dossier de sauvegardes d'un serveur (auto ou manual)."""
+    backup_dir = BACKUPS_DIR / str(server_id) / backup_type
     backup_dir.mkdir(parents=True, exist_ok=True)
     return backup_dir
 
 
-def create_backup(server_id: int, server_name: str, docker_id: str, custom_name: str = None) -> dict:
+def _migrate_legacy_backups(server_id: int):
+    """
+    Migration : déplace les anciens backups (racine) vers manual/.
+    Appelée automatiquement quand on list ou crée un backup.
+    """
+    legacy_dir = BACKUPS_DIR / str(server_id)
+    manual_dir = legacy_dir / "manual"
+    manual_dir.mkdir(parents=True, exist_ok=True)
+
+    for f in legacy_dir.glob("*.tar.gz"):
+        try:
+            dest = manual_dir / f.name
+            if not dest.exists():
+                f.rename(dest)
+                logger.info(f"🔧 Migration backup: {f.name} → manual/")
+        except Exception:
+            pass
+
+
+def create_backup(
+    server_id: int,
+    server_name: str,
+    docker_id: str,
+    custom_name: str = None,
+    backup_type: str = "manual",
+) -> dict:
     """
     Crée une sauvegarde des données d'un serveur.
 
@@ -47,7 +75,17 @@ def create_backup(server_id: int, server_name: str, docker_id: str, custom_name:
         server_name: Nom du serveur (pour le nom du fichier)
         docker_id:   ID du conteneur Docker
         custom_name: Nom personnalisé pour la sauvegarde (optionnel)
+        backup_type: "auto" ou "manual"
     """
+    # Migration des anciens backups
+    _migrate_legacy_backups(server_id)
+
+    # Vérifier la limite pour les backups manuels
+    if backup_type == "manual":
+        existing = list_backups(server_id, backup_type="manual")
+        if len(existing) >= 10:
+            raise RuntimeError("Limite de 10 sauvegardes manuelles atteinte. Supprime une sauvegarde avant d'en créer une nouvelle.")
+
     try:
         import docker
         client = docker.from_env()
@@ -55,7 +93,7 @@ def create_backup(server_id: int, server_name: str, docker_id: str, custom_name:
     except Exception as e:
         raise RuntimeError(f"Conteneur Docker non trouvé: {e}")
 
-    backup_dir = _get_backup_dir(server_id)
+    backup_dir = _get_backup_dir(server_id, backup_type)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     if custom_name and custom_name.strip():
@@ -63,7 +101,8 @@ def create_backup(server_id: int, server_name: str, docker_id: str, custom_name:
         backup_name = f"{safe_custom}_{timestamp}"
     else:
         safe_name = server_name.lower().replace(' ', '-').replace('_', '-')
-        backup_name = f"{safe_name}_{timestamp}"
+        prefix = "auto" if backup_type == "auto" else safe_name
+        backup_name = f"{prefix}_{timestamp}"
     
     backup_path = backup_dir / f"{backup_name}.tar.gz"
     temp_dir = backup_dir / f"_temp_{backup_name}"
@@ -110,11 +149,12 @@ def create_backup(server_id: int, server_name: str, docker_id: str, custom_name:
         size_bytes = backup_path.stat().st_size
         size_mb = round(size_bytes / (1024 * 1024), 1)
 
-        logger.info(f"Sauvegarde créée: {backup_path.name} ({size_mb} Mo)")
+        logger.info(f"Sauvegarde créée [{backup_type}]: {backup_path.name} ({size_mb} Mo)")
 
         return {
             "id": backup_name,
             "filename": backup_path.name,
+            "backup_type": backup_type,
             "created_at": datetime.now().isoformat(),
             "size_mb": size_mb,
             "size_bytes": size_bytes,
@@ -128,40 +168,51 @@ def create_backup(server_id: int, server_name: str, docker_id: str, custom_name:
         raise RuntimeError(f"Erreur lors de la sauvegarde: {e}")
 
 
-def list_backups(server_id: int) -> list:
-    """Retourne la liste des sauvegardes d'un serveur."""
-    backup_dir = _get_backup_dir(server_id)
-    backups = []
+def list_backups(server_id: int, backup_type: str = None) -> list:
+    """
+    Retourne la liste des sauvegardes d'un serveur.
+    
+    Args:
+        backup_type: "auto", "manual", ou None pour toutes
+    """
+    # Migration des anciens backups
+    _migrate_legacy_backups(server_id)
 
-    for f in sorted(backup_dir.glob("*.tar.gz"), reverse=True):
-        stat = f.stat()
-        # Extraire la date du nom de fichier
-        name = f.stem.replace('.tar', '')
-        parts = name.rsplit('_', 2)
-        if len(parts) >= 3:
-            date_str = f"{parts[-2]}_{parts[-1]}"
-            try:
-                created = datetime.strptime(date_str, "%Y%m%d_%H%M%S")
-                created_str = created.strftime("%d/%m/%Y %H:%M")
-            except ValueError:
+    results = []
+    types_to_scan = [backup_type] if backup_type else ["auto", "manual"]
+
+    for btype in types_to_scan:
+        backup_dir = _get_backup_dir(server_id, btype)
+        for f in sorted(backup_dir.glob("*.tar.gz"), reverse=True):
+            stat = f.stat()
+            # Extraire la date du nom de fichier
+            name = f.stem.replace('.tar', '')
+            parts = name.rsplit('_', 2)
+            if len(parts) >= 3:
+                date_str = f"{parts[-2]}_{parts[-1]}"
+                try:
+                    created = datetime.strptime(date_str, "%Y%m%d_%H%M%S")
+                    created_str = created.strftime("%d/%m/%Y %H:%M")
+                except ValueError:
+                    created_str = datetime.fromtimestamp(stat.st_mtime).strftime("%d/%m/%Y %H:%M")
+            else:
                 created_str = datetime.fromtimestamp(stat.st_mtime).strftime("%d/%m/%Y %H:%M")
-        else:
-            created_str = datetime.fromtimestamp(stat.st_mtime).strftime("%d/%m/%Y %H:%M")
 
-        backups.append({
-            "id": name,
-            "filename": f.name,
-            "created_at": created_str,
-            "size_mb": round(stat.st_size / (1024 * 1024), 1),
-            "size_bytes": stat.st_size,
-        })
+            results.append({
+                "id": name,
+                "filename": f.name,
+                "backup_type": btype,
+                "created_at": created_str,
+                "size_mb": round(stat.st_size / (1024 * 1024), 1),
+                "size_bytes": stat.st_size,
+            })
 
-    return backups
+    return results
 
 
-def rename_backup(server_id: int, backup_id: str, new_name: str) -> dict:
+def rename_backup(server_id: int, backup_id: str, new_name: str, backup_type: str = "manual") -> dict:
     """Renomme une sauvegarde."""
-    backup_dir = _get_backup_dir(server_id)
+    backup_dir = _get_backup_dir(server_id, backup_type)
     old_path = backup_dir / f"{backup_id}.tar.gz"
 
     if not old_path.exists():
@@ -190,11 +241,11 @@ def rename_backup(server_id: int, backup_id: str, new_name: str) -> dict:
         "id": new_id,
         "filename": new_path.name,
         "size_mb": round(stat.st_size / (1024 * 1024), 1),
-        "message": "Sauvegarde renommée \u2705",
+        "message": "Sauvegarde renommée ✅",
     }
 
 
-def restore_backup(server_id: int, backup_id: str, docker_id: str) -> bool:
+def restore_backup(server_id: int, backup_id: str, docker_id: str, backup_type: str = "manual") -> bool:
     """
     Restaure une sauvegarde dans le conteneur Docker.
 
@@ -203,7 +254,7 @@ def restore_backup(server_id: int, backup_id: str, docker_id: str) -> bool:
     1. Décompresse l'archive
     2. Copie les fichiers dans le conteneur
     """
-    backup_dir = _get_backup_dir(server_id)
+    backup_dir = _get_backup_dir(server_id, backup_type)
     backup_path = backup_dir / f"{backup_id}.tar.gz"
 
     if not backup_path.exists():
@@ -259,28 +310,29 @@ def restore_backup(server_id: int, backup_id: str, docker_id: str) -> bool:
         raise RuntimeError(f"Erreur lors de la restauration: {e}")
 
 
-def delete_backup(server_id: int, backup_id: str) -> bool:
+def delete_backup(server_id: int, backup_id: str, backup_type: str = "manual") -> bool:
     """Supprime une sauvegarde."""
-    backup_dir = _get_backup_dir(server_id)
+    backup_dir = _get_backup_dir(server_id, backup_type)
     backup_path = backup_dir / f"{backup_id}.tar.gz"
 
     if not backup_path.exists():
         raise RuntimeError(f"Sauvegarde '{backup_id}' non trouvée")
 
     backup_path.unlink()
-    logger.info(f"Sauvegarde supprimée: {backup_id}")
+    logger.info(f"Sauvegarde supprimée [{backup_type}]: {backup_id}")
     return True
 
 
-def cleanup_old_backups(server_id: int, keep: int = 5):
+def cleanup_old_backups(server_id: int, keep: int = 10, backup_type: str = "auto"):
     """
     Supprime les anciennes sauvegardes, ne garde que les X plus récentes.
-    Appelée automatiquement après chaque nouvelle sauvegarde.
+    Ne s'applique qu'aux backups du type spécifié (par défaut: auto).
+    Appelée automatiquement après chaque nouveau backup auto.
     """
-    backups = list_backups(server_id)
+    backups = list_backups(server_id, backup_type=backup_type)
     if len(backups) > keep:
         for old_backup in backups[keep:]:
             try:
-                delete_backup(server_id, old_backup["id"])
+                delete_backup(server_id, old_backup["id"], backup_type=backup_type)
             except Exception:
                 pass

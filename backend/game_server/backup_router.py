@@ -2,14 +2,14 @@
 Routes de sauvegarde des serveurs de jeux.
 
 Routes:
-    POST   /api/servers/{id}/backup         → Créer une sauvegarde
-    GET    /api/servers/{id}/backups         → Lister les sauvegardes
+    POST   /api/servers/{id}/backup         → Créer une sauvegarde manuelle
+    GET    /api/servers/{id}/backups         → Lister les sauvegardes (auto + manual)
     POST   /api/servers/{id}/restore/{bid}   → Restaurer une sauvegarde
     PUT    /api/servers/{id}/backups/{bid}    → Renommer une sauvegarde
     DELETE /api/servers/{id}/backups/{bid}    → Supprimer une sauvegarde
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy.orm import Session
@@ -49,7 +49,7 @@ def create_backup(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Créer une sauvegarde du serveur avec un nom optionnel."""
+    """Créer une sauvegarde manuelle du serveur avec un nom optionnel."""
     server = _get_server(server_id, db)
 
     if not server.docker_id:
@@ -66,9 +66,8 @@ def create_backup(
             server_name=server.name,
             docker_id=server.docker_id,
             custom_name=custom_name,
+            backup_type="manual",
         )
-        # Rotation automatique : garder les 10 dernières
-        backup_manager.cleanup_old_backups(server_id, keep=10)
         return backup
     except RuntimeError as e:
         raise HTTPException(
@@ -83,16 +82,26 @@ def list_backups(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Lister toutes les sauvegardes d'un serveur."""
+    """Lister toutes les sauvegardes d'un serveur (auto + manual séparés)."""
     _get_server(server_id, db)  # Vérifier que le serveur existe
-    backups = backup_manager.list_backups(server_id)
-    return {"backups": backups, "count": len(backups)}
+
+    auto_backups = backup_manager.list_backups(server_id, backup_type="auto")
+    manual_backups = backup_manager.list_backups(server_id, backup_type="manual")
+
+    return {
+        "auto": auto_backups,
+        "manual": manual_backups,
+        "auto_count": len(auto_backups),
+        "manual_count": len(manual_backups),
+        "count": len(auto_backups) + len(manual_backups),
+    }
 
 
 @router.post("/{server_id}/restore/{backup_id}")
 def restore_backup(
     server_id: int,
     backup_id: str,
+    backup_type: str = Query(default="manual"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -110,6 +119,7 @@ def restore_backup(
             server_id=server.id,
             backup_id=backup_id,
             docker_id=server.docker_id,
+            backup_type=backup_type,
         )
         return {"message": f"Sauvegarde '{backup_id}' restaurée avec succès ✅"}
     except RuntimeError as e:
@@ -124,6 +134,7 @@ def rename_backup(
     server_id: int,
     backup_id: str,
     request: RenameBackupRequest,
+    backup_type: str = Query(default="manual"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -131,7 +142,7 @@ def rename_backup(
     _get_server(server_id, db)
 
     try:
-        result = backup_manager.rename_backup(server_id, backup_id, request.new_name)
+        result = backup_manager.rename_backup(server_id, backup_id, request.new_name, backup_type=backup_type)
         return result
     except RuntimeError as e:
         raise HTTPException(
@@ -144,6 +155,7 @@ def rename_backup(
 def delete_backup(
     server_id: int,
     backup_id: str,
+    backup_type: str = Query(default="manual"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -151,7 +163,7 @@ def delete_backup(
     _get_server(server_id, db)
 
     try:
-        backup_manager.delete_backup(server_id, backup_id)
+        backup_manager.delete_backup(server_id, backup_id, backup_type=backup_type)
         return {"message": f"Sauvegarde supprimée ✅"}
     except RuntimeError as e:
         raise HTTPException(

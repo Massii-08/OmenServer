@@ -157,6 +157,14 @@ async def create_website(req: CreateWebsite, db: Session = Depends(get_db), user
 
     # Si une URL Git est fournie, cloner le repo
     if req.git_url and req.git_url.strip():
+        # Validation de sécurité : seuls les repos HTTPS de domaines connus sont autorisés
+        import re
+        git_url = req.git_url.strip()
+        if not re.match(r'^https://(github\.com|gitlab\.com|bitbucket\.org|codeberg\.org)/', git_url):
+            raise HTTPException(
+                status_code=400,
+                detail="Seuls les repos HTTPS de GitHub, GitLab, Bitbucket et Codeberg sont autorisés"
+            )
         try:
             git_bin = "/usr/bin/git"
             # Chercher git dans les emplacements courants
@@ -165,13 +173,13 @@ async def create_website(req: CreateWebsite, db: Session = Depends(get_db), user
                     git_bin = p
                     break
             result = subprocess.run(
-                [git_bin, "clone", "--depth", "1", req.git_url.strip(), "."],
+                [git_bin, "clone", "--depth", "1", git_url, "."],
                 cwd=site_dir, capture_output=True, text=True, timeout=120
             )
             if result.returncode != 0:
                 logger.error(f"Git clone échoué: {result.stderr}")
                 raise HTTPException(status_code=400, detail=f"Erreur git clone: {result.stderr[:200]}")
-            logger.info(f"📦 Repo cloné: {req.git_url} → {site_dir}")
+            logger.info(f"📦 Repo cloné: {git_url} → {site_dir}")
         except subprocess.TimeoutExpired:
             raise HTTPException(status_code=408, detail="Timeout: le clone a pris trop de temps (>120s)")
         except HTTPException:

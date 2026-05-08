@@ -13,17 +13,17 @@ const WebModule = {
         container.innerHTML = `
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;">
                 <div>
-                    <h1 style="margin:0;">🌐 Serveur Web</h1>
-                    <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">Héberger des sites web et APIs via Docker</p>
+                    <h1 style="margin:0;">${Lang.t('web.title')}</h1>
+                    <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">${Lang.t('web.subtitle')}</p>
                 </div>
                 <div style="display:flex;gap:8px;">
-                    <button class="btn btn-primary" onclick="WebModule.showCreateForm()">➕ Nouveau site</button>
-                    <button class="btn btn-secondary" onclick="App.navigateTo('hub')">← Hub</button>
+                    <button class="btn btn-primary" onclick="WebModule.showCreateForm()">${Lang.t('web.new_site')}</button>
+                    <button class="btn btn-secondary" onclick="App.navigateTo('hub')">${Lang.t('net.back_hub')}</button>
                 </div>
             </div>
 
             <div id="web-create-form" style="display:none;margin-bottom:20px;"></div>
-            <div id="web-sites-grid"><div style="text-align:center;padding:20px;color:var(--text-muted);">⏳ Chargement...</div></div>
+            <div id="web-sites-grid"><div style="text-align:center;padding:20px;color:var(--text-muted);">⏳ ${Lang.t('common.loading')}</div></div>
             <div id="web-site-detail" style="display:none;margin-top:20px;"></div>
         `;
 
@@ -51,14 +51,14 @@ const WebModule = {
 
         const typeIcons = { static: '🌐', node: '⚡', php: '🐘', python: '🐍' };
         const statusColors = { running: '#22c55e', stopped: '#6b7280', error: '#ef4444' };
-        const statusLabels = { running: '● En ligne', stopped: '○ Arrêté', error: '⚠️ Erreur' };
+        const statusLabels = { running: Lang.t('web.status_running'), stopped: Lang.t('web.status_stopped'), error: Lang.t('web.status_error') };
 
         if (this._sites.length === 0) {
             grid.innerHTML = `
                 <div style="text-align:center;padding:60px;">
                     <div style="font-size:48px;margin-bottom:12px;">🌐</div>
-                    <div style="color:var(--text-muted);font-size:15px;">Aucun site web</div>
-                    <div style="color:var(--text-muted);font-size:12px;margin-top:4px;">Clique sur "Nouveau site" pour héberger ton premier site</div>
+                    <div style="color:var(--text-muted);font-size:15px;">${Lang.t('web.no_sites')}</div>
+                    <div style="color:var(--text-muted);font-size:12px;margin-top:4px;">${Lang.t('web.no_sites_hint')}</div>
                 </div>`;
             return;
         }
@@ -94,7 +94,7 @@ const WebModule = {
                                 ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();WebModule.stopSite(${s.id})" style="font-size:11px;padding:4px 12px;">⏹ Stop</button>`
                                 : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();WebModule.startSite(${s.id})" style="font-size:11px;padding:4px 12px;">▶ Start</button>`
                             }
-                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.showLogs(${s.id})" style="font-size:11px;padding:4px 12px;">📋 Logs</button>
+                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.showLogs(${s.id})" style="font-size:11px;padding:4px 12px;">${Lang.t('web.logs_title')}</button>
                             <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.deleteSite(${s.id})" style="font-size:11px;padding:4px 8px;color:#ef4444;">🗑</button>
                         </div>
                     </div>
@@ -108,37 +108,37 @@ const WebModule = {
         form.style.display = 'block';
         form.innerHTML = `
             <div class="card">
-                <h3 style="margin:0 0 16px;">➕ Créer un site web</h3>
+                <h3 style="margin:0 0 16px;">${Lang.t('web.create_title')}</h3>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:12px;">
                     <div>
-                        <label class="form-label">Nom du site</label>
+                        <label class="form-label">${Lang.t('web.site_name')}</label>
                         <input id="web-name" class="form-input" placeholder="Mon site" />
                     </div>
                     <div>
-                        <label class="form-label">Type</label>
+                        <label class="form-label">${Lang.t('web.site_type')}</label>
                         <select id="web-type" class="form-input">
-                            <option value="static">🌐 Site statique (Nginx)</option>
-                            <option value="node">⚡ Node.js</option>
-                            <option value="php">🐘 PHP (Apache)</option>
-                            <option value="python">🐍 Python</option>
+                            <option value="static">${Lang.t('web.static')}</option>
+                            <option value="node">${Lang.t('web.node')}</option>
+                            <option value="php">${Lang.t('web.php')}</option>
+                            <option value="python">${Lang.t('web.python')}</option>
                         </select>
                     </div>
                     <div>
-                        <label class="form-label">Port</label>
+                        <label class="form-label">${Lang.t('web.port')}</label>
                         <input id="web-port" class="form-input" type="number" value="3000" min="1024" max="65535" />
                     </div>
                     <div>
-                        <label class="form-label">Description</label>
+                        <label class="form-label">${Lang.t('web.description')}</label>
                         <input id="web-desc" class="form-input" placeholder="Mon projet..." />
                     </div>
                 </div>
                 <div style="margin-bottom:12px;">
-                    <label class="form-label">📦 URL Git (optionnel — clone un repo au lieu de créer un dossier vide)</label>
+                    <label class="form-label">${Lang.t('web.git_url')}</label>
                     <input id="web-git" class="form-input" placeholder="https://github.com/user/repo.git" style="font-family:monospace;font-size:12px;" />
                 </div>
                 <div style="display:flex;gap:8px;align-items:center;">
-                    <button class="btn btn-primary" onclick="WebModule.createSite()">Créer</button>
-                    <button class="btn btn-secondary" onclick="document.getElementById('web-create-form').style.display='none'">Annuler</button>
+                    <button class="btn btn-primary" onclick="WebModule.createSite()">${Lang.t('common.confirm')}</button>
+                    <button class="btn btn-secondary" onclick="document.getElementById('web-create-form').style.display='none'">${Lang.t('common.cancel')}</button>
                     <span id="web-create-msg" style="font-size:13px;"></span>
                 </div>
             </div>`;
@@ -152,9 +152,9 @@ const WebModule = {
         const gitUrl = document.getElementById('web-git')?.value?.trim() || '';
         const msg = document.getElementById('web-create-msg');
 
-        if (!name) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = '❌ Nom requis'; } return; }
+        if (!name) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = Lang.t('web.name_required'); } return; }
 
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = gitUrl ? '⏳ Clonage en cours...' : '⏳ Création...'; }
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = gitUrl ? Lang.t('web.cloning') : Lang.t('web.creating'); }
 
         const r = await Auth.apiCall('/api/websites', {
             method: 'POST',
@@ -163,18 +163,18 @@ const WebModule = {
 
         if (r && r.ok) {
             document.getElementById('web-create-form').style.display = 'none';
-            if (typeof Toast !== 'undefined') Toast.success(gitUrl ? `📦 ${name} cloné et prêt !` : `🌐 ${name} créé !`);
+            if (typeof Toast !== 'undefined') Toast.success(`🌐 ${name} ✅`);
             await this.loadSites();
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
     },
 
     async startSite(id) {
         const r = await Auth.apiCall(`/api/websites/${id}/start`, { method: 'POST' });
         if (r && r.ok) await this.loadSites();
-        else { const err = r ? await r.json().catch(() => ({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Erreur'); else alert(`❌ ${err.detail || 'Erreur'}`); }
+        else { const err = r ? await r.json().catch(() => ({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error')); else alert(`❌ ${err.detail || Lang.t('common.error')}`); }
     },
 
     async stopSite(id) {
@@ -183,7 +183,7 @@ const WebModule = {
     },
 
     async deleteSite(id) {
-        if (!confirm('Supprimer ce site web ?')) return;
+        if (!confirm(Lang.t('web.delete_confirm'))) return;
         const r = await Auth.apiCall(`/api/websites/${id}`, { method: 'DELETE' });
         if (r && r.ok) {
             document.getElementById('web-site-detail').style.display = 'none';
@@ -203,17 +203,17 @@ const WebModule = {
         detail.innerHTML = `
             <div class="card">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                    <h3 style="margin:0;">📋 Logs — ${site?.name || 'Site'}</h3>
+                    <h3 style="margin:0;">${Lang.t('web.logs_title')} — ${site?.name || 'Site'}</h3>
                     <div style="display:flex;gap:8px;align-items:center;">
-                        <span style="font-size:11px;color:var(--text-muted);">${data.logs.length} ligne(s)</span>
-                        <button class="btn btn-secondary btn-sm" onclick="WebModule.showLogs(${id})">🔄 Rafraîchir</button>
+                        <span style="font-size:11px;color:var(--text-muted);">${data.logs.length} ${Lang.t('web.lines')}</span>
+                        <button class="btn btn-secondary btn-sm" onclick="WebModule.showLogs(${id})">${Lang.t('web.refresh')}</button>
                         <button class="btn btn-secondary btn-sm" onclick="document.getElementById('web-site-detail').style.display='none'">✕</button>
                     </div>
                 </div>
                 <div style="background:#0d1117;border-radius:8px;padding:12px;max-height:300px;overflow-y:auto;font-family:'Fira Code',monospace;font-size:12px;line-height:1.6;color:#c9d1d9;">
                     ${data.logs.length > 0
                         ? data.logs.map((l, i) => `<div style="display:flex;gap:8px;"><span style="color:#6b7280;min-width:28px;text-align:right;user-select:none;">${i+1}</span><span>${l.replace(/</g,'&lt;')}</span></div>`).join('')
-                        : '<div style="color:#6b7280;text-align:center;padding:20px;">Aucun log — Démarre le site pour voir les logs</div>'
+                        : `<div style="color:#6b7280;text-align:center;padding:20px;">${Lang.t('web.logs_empty')}</div>`
                     }
                 </div>
             </div>`;

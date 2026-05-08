@@ -13,8 +13,8 @@ const SvFiles = {
         this._editing = null;
         setTimeout(() => this._loadDir(), 50);
         return `
-        <h2>📁 Fichiers</h2>
-        <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">Parcourez, éditez et gérez les fichiers de votre serveur</p>
+        <h2>${Lang.t('sv.files.title')}</h2>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">${Lang.t('sv.files.desc')}</p>
         <div id="sv-files-quickaccess" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
             ${['server.properties','spigot.yml','bukkit.yml','paper-global.yml','ops.json','whitelist.json'].map(f =>
                 `<button class="btn btn-secondary btn-sm" onclick="SvFiles._openFile('/${f}')" style="font-size:11px;">${this._fileIcon(f)} ${f}</button>`
@@ -22,13 +22,13 @@ const SvFiles = {
         </div>
         <div id="sv-files-toolbar" style="display:flex;gap:8px;margin-bottom:12px;align-items:center;">
             <div id="sv-files-breadcrumb" style="flex:1;font-size:13px;"></div>
-            <button class="btn btn-primary btn-sm" onclick="document.getElementById('sv-file-upload').click()">📤 Uploader</button>
+            <button class="btn btn-primary btn-sm" onclick="document.getElementById('sv-file-upload').click()">${Lang.t('sv.files.upload')}</button>
             <input type="file" id="sv-file-upload" multiple style="display:none;" onchange="SvFiles._uploadFiles(this.files)" />
-            <button class="btn btn-secondary btn-sm" onclick="SvFiles._promptNewFile()">📄 Nouveau fichier</button>
-            <button class="btn btn-secondary btn-sm" onclick="SvFiles._promptMkdir()">📁 Nouveau dossier</button>
+            <button class="btn btn-secondary btn-sm" onclick="SvFiles._promptNewFile()">${Lang.t('sv.files.new_file')}</button>
+            <button class="btn btn-secondary btn-sm" onclick="SvFiles._promptMkdir()">${Lang.t('sv.files.new_folder')}</button>
         </div>
         <div id="sv-upload-progress" style="display:none;margin-bottom:10px;"></div>
-        <div id="sv-files-content"><div style="color:var(--text-muted)">⏳ Chargement...</div></div>`;
+        <div id="sv-files-content"><div style="color:var(--text-muted)">⏳ ${Lang.t('common.loading')}</div></div>`;
     },
 
     _breadcrumb() {
@@ -48,27 +48,26 @@ const SvFiles = {
         const bc = document.getElementById('sv-files-breadcrumb');
         if (!el) return;
         if (bc) bc.innerHTML = this._breadcrumb();
-        el.innerHTML = '<div style="color:var(--text-muted)">⏳ Chargement...</div>';
+        el.innerHTML = `<div style="color:var(--text-muted)">⏳ ${Lang.t('common.loading')}</div>`;
 
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/files?path=${encodeURIComponent(this._currentPath)}`);
-        if (!r || !r.ok) { el.innerHTML = '<div style="color:#e74c3c">❌ Erreur</div>'; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:#e74c3c">❌ ${Lang.t('common.error')}</div>`; return; }
         const data = await r.json();
         const files = data.files || [];
 
         if (files.length === 0) {
-            el.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-muted);">Dossier vide</div>';
+            el.innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);">${Lang.t('sv.files.empty')}</div>`;
             return;
         }
 
         let html = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
             <thead><tr style="border-bottom:2px solid var(--border-color);text-align:left;">
-                <th style="padding:8px;">Nom</th>
-                <th style="padding:8px;width:100px;">Taille</th>
-                <th style="padding:8px;width:150px;">Modifié</th>
+                <th style="padding:8px;">${Lang.t('sv.files.name')}</th>
+                <th style="padding:8px;width:100px;">${Lang.t('sv.files.size')}</th>
+                <th style="padding:8px;width:150px;">${Lang.t('sv.files.modified')}</th>
                 <th style="padding:8px;width:80px;"></th>
             </tr></thead><tbody>`;
 
-        // Bouton "dossier parent" si on n'est pas à la racine
         if (this._currentPath !== '/') {
             const parent = this._currentPath.split('/').slice(0, -1).join('/') || '/';
             html += `<tr style="cursor:pointer;border-bottom:1px solid var(--border-color);" onclick="SvFiles._navigate('${parent}')">
@@ -87,8 +86,8 @@ const SvFiles = {
                     <td style="padding:8px;color:var(--text-muted);">${size}</td>
                     <td style="padding:8px;color:var(--text-muted);font-size:11px;">${f.modified}</td>
                     <td style="padding:8px;text-align:right;">
-                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title="Renommer">✏️</button>
-                        <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title="Supprimer">🗑️</button>
+                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title="✏️">✏️</button>
+                        <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title="🗑️">🗑️</button>
                     </td>
                 </tr>`;
             } else {
@@ -98,8 +97,8 @@ const SvFiles = {
                     <td style="padding:8px;color:var(--text-muted);">${size}</td>
                     <td style="padding:8px;color:var(--text-muted);font-size:11px;">${f.modified}</td>
                     <td style="padding:8px;text-align:right;">
-                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title="Renommer">✏️</button>
-                        <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title="Supprimer">🗑️</button>
+                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title="✏️">✏️</button>
+                        <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title="🗑️">🗑️</button>
                     </td>
                 </tr>`;
             }
@@ -126,11 +125,11 @@ const SvFiles = {
         this._editing = path;
         const fileName = path.split('/').pop();
         if (bc) bc.innerHTML = this._breadcrumb() + ` <span style="color:var(--text-muted);">/</span> <span style="color:var(--accent-green);">✏️ ${fileName}</span>`;
-        el.innerHTML = '<div style="color:var(--text-muted)">⏳ Chargement du fichier...</div>';
+        el.innerHTML = `<div style="color:var(--text-muted)">${Lang.t('sv.files.loading_file')}</div>`;
 
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/files/content?path=${encodeURIComponent(path)}`);
         if (!r || !r.ok) {
-            el.innerHTML = '<div style="color:#e74c3c">❌ Impossible de lire ce fichier (binaire ou trop volumineux)</div><br><button class="btn btn-secondary btn-sm" onclick="SvFiles._navigate(SvFiles._currentPath)">← Retour</button>';
+            el.innerHTML = `<div style="color:#e74c3c">${Lang.t('sv.files.cant_read')}</div><br><button class="btn btn-secondary btn-sm" onclick="SvFiles._navigate(SvFiles._currentPath)">${Lang.t('sv.files.back')}</button>`;
             return;
         }
         const data = await r.json();
@@ -140,14 +139,14 @@ const SvFiles = {
         el.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
             <div style="display:flex;align-items:center;gap:8px;">
-                <button class="btn btn-secondary btn-sm" onclick="SvFiles._navigate('${this._currentPath}')">← Retour</button>
+                <button class="btn btn-secondary btn-sm" onclick="SvFiles._navigate('${this._currentPath}')">${Lang.t('sv.files.back')}</button>
                 <span style="font-weight:600;font-size:14px;">${this._fileIcon(fileName)} ${data.filename}</span>
-                <span style="font-size:11px;color:var(--text-muted);">${lineCount} lignes</span>
+                <span style="font-size:11px;color:var(--text-muted);">${lineCount} ${Lang.t('sv.files.lines')}</span>
             </div>
             <div style="display:flex;gap:8px;align-items:center;">
                 <span id="sv-file-msg" style="font-size:12px;"></span>
-                <span style="font-size:11px;color:var(--text-muted);">Ctrl+S pour sauvegarder</span>
-                <button class="btn btn-primary btn-sm" onclick="SvFiles._saveFile('${safePath}')">💾 Sauvegarder</button>
+                <span style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.files.save_hint')}</span>
+                <button class="btn btn-primary btn-sm" onclick="SvFiles._saveFile('${safePath}')">${Lang.t('sv.files.save')}</button>
             </div>
         </div>
         <div style="position:relative;border:1px solid var(--border-color);border-radius:8px;overflow:hidden;">
@@ -159,10 +158,8 @@ const SvFiles = {
             </div>
         </div>`;
 
-        // Bind events
         const editor = document.getElementById('sv-file-editor');
         if (editor) {
-            // Tab support
             editor.addEventListener('keydown', (e) => {
                 if (e.key === 'Tab') {
                     e.preventDefault();
@@ -171,18 +168,15 @@ const SvFiles = {
                     editor.value = editor.value.substring(0, start) + '    ' + editor.value.substring(end);
                     editor.selectionStart = editor.selectionEnd = start + 4;
                 }
-                // Ctrl+S save
                 if ((e.ctrlKey || e.metaKey) && e.key === 's') {
                     e.preventDefault();
                     SvFiles._saveFile(path);
                 }
             });
-            // Sync line numbers on scroll
             editor.addEventListener('scroll', () => {
                 const lines = document.getElementById('sv-file-lines');
                 if (lines) lines.scrollTop = editor.scrollTop;
             });
-            // Update line numbers on input
             editor.addEventListener('input', () => {
                 const lines = document.getElementById('sv-file-lines');
                 if (lines) {
@@ -197,27 +191,27 @@ const SvFiles = {
         const textarea = document.getElementById('sv-file-editor');
         const msg = document.getElementById('sv-file-msg');
         if (!textarea) return;
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Sauvegarde...'; }
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.files.saving'); }
 
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/files/content`, {
             method: 'PUT', body: JSON.stringify({path, content: textarea.value})
         });
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = '✅ Sauvegardé !'; }
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('sv.files.saved'); }
             setTimeout(() => { if (msg) msg.textContent = ''; }, 2000);
         } else {
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '❌ Erreur'; }
+            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
         }
     },
 
     async _delete(path) {
-        if (!confirm(`Supprimer ${path.split('/').pop()} ?`)) return;
+        if (!confirm(`${Lang.t('sv.files.delete_confirm')} ${path.split('/').pop()} ?`)) return;
         await Auth.apiCall(`/api/servers/${this._serverId}/files?path=${encodeURIComponent(path)}`, {method: 'DELETE'});
         this._loadDir();
     },
 
     _rename(path, oldName) {
-        const newName = prompt('Nouveau nom :', oldName);
+        const newName = prompt(Lang.t('sv.files.rename_prompt'), oldName);
         if (!newName || newName === oldName) return;
         const dir = path.substring(0, path.lastIndexOf('/'));
         const newPath = dir + '/' + newName;
@@ -227,7 +221,7 @@ const SvFiles = {
     },
 
     _promptMkdir() {
-        const name = prompt('Nom du nouveau dossier :');
+        const name = prompt(Lang.t('sv.files.new_folder_prompt'));
         if (!name) return;
         const path = (this._currentPath === '/' ? '' : this._currentPath) + '/' + name;
         Auth.apiCall(`/api/servers/${this._serverId}/files/mkdir`, {
@@ -236,7 +230,7 @@ const SvFiles = {
     },
 
     _promptNewFile() {
-        const name = prompt('Nom du nouveau fichier :');
+        const name = prompt(Lang.t('sv.files.new_file_prompt'));
         if (!name) return;
         const path = (this._currentPath === '/' ? '' : this._currentPath) + '/' + name;
         Auth.apiCall(`/api/servers/${this._serverId}/files/content`, {
@@ -289,14 +283,13 @@ const SvFiles = {
             } catch { fail++; }
         }
 
-        // Reset file input
         const inp = document.getElementById('sv-file-upload');
         if (inp) inp.value = '';
 
         if (prog) {
             const color = fail === 0 ? 'var(--accent-green)' : '#e74c3c';
             prog.innerHTML = `<div style="padding:8px 12px;background:var(--bg-secondary);border-radius:6px;font-size:12px;color:${color};">
-                ${fail === 0 ? '✅' : '⚠️'} ${success} fichier(s) uploadé(s)${fail > 0 ? `, ${fail} erreur(s)` : ''}
+                ${fail === 0 ? '✅' : '⚠️'} ${success} ${Lang.t('sv.files.uploaded')}${fail > 0 ? `, ${fail} ${Lang.t('sv.files.upload_errors')}` : ''}
             </div>`;
             setTimeout(() => { prog.style.display = 'none'; }, 4000);
         }

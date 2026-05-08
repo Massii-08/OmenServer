@@ -48,11 +48,15 @@ class RenameRequest(BaseModel):
 
 
 def _safe_path(path: str) -> str:
-    """Sécurise le chemin pour éviter les path traversal."""
+    """Sécurise le chemin pour éviter les path traversal et l'injection shell."""
     import posixpath
+    import re
     clean = posixpath.normpath(path)
     if clean.startswith("..") or "/../" in clean:
         raise HTTPException(status_code=400, detail="Chemin invalide")
+    # Bloquer les caractères dangereux pour la shell (protection injection)
+    if re.search(r'[;|`$&<>\\!\'"(){}\[\]]', clean):
+        raise HTTPException(status_code=400, detail="Caractères interdits dans le chemin")
     if not clean.startswith("/"):
         clean = "/" + clean
     return BASE_PATH + clean
@@ -233,6 +237,23 @@ async def upload_file(
         raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 100 Mo)")
 
     filename = file.filename or "uploaded_file"
+
+    # Vérifier l'extension du fichier (whitelist de sécurité)
+    import os as _os
+    allowed_extensions = {
+        ".jar", ".zip", ".gz", ".tar", ".json", ".yml", ".yaml",
+        ".properties", ".txt", ".cfg", ".conf", ".toml", ".ini",
+        ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg",
+        ".sk", ".lua", ".js", ".css", ".html", ".mcmeta",
+        ".dat", ".dat_old", ".nbt", ".mca", ".log",
+    }
+    _, ext = _os.path.splitext(filename.lower())
+    if ext and ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Extension '{ext}' non autorisée. Extensions permises : {', '.join(sorted(allowed_extensions))}"
+        )
+
     dest_dir = _safe_path(path)
 
     try:

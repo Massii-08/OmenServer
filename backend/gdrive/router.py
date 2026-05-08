@@ -143,6 +143,9 @@ def gdrive_status(current_user: User = Depends(get_current_user)):
         }
 
 
+# Stockage temporaire du state OAuth (anti-CSRF)
+_oauth_states: dict = {}
+
 @router.post("/connect")
 def gdrive_connect(current_user: User = Depends(get_current_user)):
     """Génère l'URL d'authentification Google avec redirect localhost."""
@@ -154,11 +157,17 @@ def gdrive_connect(current_user: User = Depends(get_current_user)):
 
     try:
         import json
+        import secrets as sec
+        import time as _time
         cred_data = json.loads(CREDENTIALS_FILE.read_text())
         creds_info = cred_data.get("web") or cred_data.get("installed", {})
         client_id = creds_info.get("client_id", "")
 
         redirect_uri = "http://localhost:8000/api/gdrive/oauth-redirect"
+
+        # Générer un state anti-CSRF unique
+        state = sec.token_urlsafe(32)
+        _oauth_states[state] = _time.time()  # Stocker avec timestamp
 
         auth_url = (
             "https://accounts.google.com/o/oauth2/v2/auth"
@@ -168,6 +177,7 @@ def gdrive_connect(current_user: User = Depends(get_current_user)):
             "&scope=https://www.googleapis.com/auth/drive"
             "&access_type=offline"
             "&prompt=consent"
+            f"&state={state}"
         )
 
         return {"auth_url": auth_url}
@@ -176,15 +186,25 @@ def gdrive_connect(current_user: User = Depends(get_current_user)):
 
 
 @router.get("/oauth-redirect")
-def gdrive_oauth_redirect(code: str = None, error: str = None):
-    """Callback OAuth — Google redirige ici avec le code."""
+def gdrive_oauth_redirect(code: str = None, error: str = None, state: str = None):
+    """Callback OAuth — Google redirige ici avec le code. Vérifie le state anti-CSRF."""
     from fastapi.responses import HTMLResponse
+    import time as _time
 
     if error:
-        return HTMLResponse(f"<html><body><h2>❌ Erreur: {error}</h2><p><a href='http://localhost:8000'>Retour au panel</a></p></body></html>")
+        return HTMLResponse("<html><body><h2>❌ Erreur d'authentification</h2><p><a href='http://localhost:8000'>Retour au panel</a></p></body></html>")
 
     if not code:
         return HTMLResponse("<html><body><h2>❌ Pas de code reçu</h2></body></html>")
+
+    # Vérifier le state anti-CSRF
+    if not state or state not in _oauth_states:
+        return HTMLResponse("<html><body><h2>❌ Requête invalide (state manquant)</h2><p>Tentative CSRF détectée ou session expirée.</p><p><a href='http://localhost:8000'>Retour au panel</a></p></body></html>")
+
+    # Vérifier que le state n'est pas trop vieux (max 10 minutes)
+    state_age = _time.time() - _oauth_states.pop(state, 0)
+    if state_age > 600:
+        return HTMLResponse("<html><body><h2>❌ Session expirée</h2><p><a href='http://localhost:8000'>Retour au panel</a></p></body></html>")
 
     try:
         import json

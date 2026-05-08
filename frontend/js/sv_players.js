@@ -11,19 +11,19 @@ const SvPlayers = {
         this._currentSub = 'ops';
         setTimeout(() => this._load(), 50);
         return `
-        <h2>👥 Joueurs</h2>
-        <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Gérez les opérateurs, la whitelist et les joueurs bannis</p>
+        <h2>${Lang.t('sv.pl.title')}</h2>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.pl.desc')}</p>
         <div id="sv-pl-tabs" style="display:flex;gap:0;margin-bottom:20px;border-bottom:2px solid var(--border-color);">
             ${this._subTabs()}
         </div>
-        <div id="sv-pl-content"><div style="color:var(--text-muted)">⏳ Chargement...</div></div>`;
+        <div id="sv-pl-content"><div style="color:var(--text-muted)">⏳ ${Lang.t('common.loading')}</div></div>`;
     },
 
     _subTabs() {
         const tabs = [
-            {id:'ops',icon:'🛡️',label:'Opérateurs'},
-            {id:'whitelist',icon:'📋',label:'Liste blanche'},
-            {id:'banned',icon:'🚫',label:'Bannis'},
+            {id:'ops',icon:'🛡️',label:Lang.t('sv.pl.ops')},
+            {id:'whitelist',icon:'📋',label:Lang.t('sv.pl.whitelist')},
+            {id:'banned',icon:'🚫',label:Lang.t('sv.pl.banned')},
         ];
         return tabs.map(t => `
             <button onclick="SvPlayers.switchSub('${t.id}')" 
@@ -45,18 +45,20 @@ const SvPlayers = {
     async _load() {
         const el = document.getElementById('sv-pl-content');
         if (!el) return;
-        el.innerHTML = '<div style="color:var(--text-muted)">⏳ Chargement...</div>';
+        el.innerHTML = `<div style="color:var(--text-muted)">⏳ ${Lang.t('common.loading')}</div>`;
         
         const endpoint = this._currentSub === 'ops' ? 'ops' : this._currentSub === 'whitelist' ? 'whitelist' : 'banned';
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/players/${endpoint}`);
-        if (!r || !r.ok) { el.innerHTML = '<div style="color:#e74c3c">❌ Erreur de chargement</div>'; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:#e74c3c">❌ ${Lang.t('common.error')}</div>`; return; }
         
         const data = await r.json();
         const players = data.players || [];
         
-        const labels = {ops: {title:'Opérateurs', emoji:'🛡️', addLabel:'Ajouter un opérateur'}, 
-            whitelist: {title:'Liste blanche', emoji:'📋', addLabel:'Ajouter à la whitelist'},
-            banned: {title:'Bannis', emoji:'🚫', addLabel:'Bannir un joueur'}};
+        const labels = {
+            ops: {title:Lang.t('sv.pl.ops'), emoji:'🛡️', addLabel:Lang.t('sv.pl.add_op')}, 
+            whitelist: {title:Lang.t('sv.pl.whitelist'), emoji:'📋', addLabel:Lang.t('sv.pl.add_wl')},
+            banned: {title:Lang.t('sv.pl.banned'), emoji:'🚫', addLabel:Lang.t('sv.pl.add_ban')}
+        };
         const l = labels[this._currentSub];
         
         // Formulaire d'ajout
@@ -64,14 +66,14 @@ const SvPlayers = {
         <div style="background:var(--bg-secondary);padding:14px;border-radius:8px;margin-bottom:16px;">
             <div style="display:flex;gap:8px;align-items:flex-end;">
                 <div style="flex:1;">
-                    <label style="font-size:12px;color:var(--text-muted);">Pseudo Minecraft</label>
-                    <input type="text" id="sv-pl-name" class="form-input" placeholder="Pseudo du joueur" style="margin-top:4px;" 
+                    <label style="font-size:12px;color:var(--text-muted);">${Lang.t('sv.pl.pseudo')}</label>
+                    <input type="text" id="sv-pl-name" class="form-input" placeholder="${Lang.t('sv.pl.pseudo_placeholder')}" style="margin-top:4px;" 
                         onkeydown="if(event.key==='Enter')SvPlayers._add()" />
                 </div>`;
         if (this._currentSub === 'banned') {
             addForm += `<div style="flex:1;">
-                    <label style="font-size:12px;color:var(--text-muted);">Raison</label>
-                    <input type="text" id="sv-pl-reason" class="form-input" placeholder="Raison du ban" style="margin-top:4px;" />
+                    <label style="font-size:12px;color:var(--text-muted);">${Lang.t('sv.pl.reason')}</label>
+                    <input type="text" id="sv-pl-reason" class="form-input" placeholder="${Lang.t('sv.pl.reason_placeholder')}" style="margin-top:4px;" />
                 </div>`;
         }
         addForm += `<button class="btn btn-primary" onclick="SvPlayers._add()">➕ ${l.addLabel}</button>
@@ -82,12 +84,12 @@ const SvPlayers = {
         // Liste des joueurs
         let list = '';
         if (players.length === 0) {
-            list = `<div style="text-align:center;padding:30px;color:var(--text-muted);">Aucun joueur dans cette liste</div>`;
+            list = `<div style="text-align:center;padding:30px;color:var(--text-muted);">${Lang.t('sv.pl.empty')}</div>`;
         } else {
             list = players.map(p => {
-                const name = p.name || 'Inconnu';
-                const extra = this._currentSub === 'banned' ? ` · <span style="color:var(--text-muted);font-size:11px;">${p.reason||'Aucune raison'}</span>` : '';
-                const level = this._currentSub === 'ops' ? ` · <span style="color:var(--accent-blue);font-size:11px;">Niveau ${p.level||4}</span>` : '';
+                const name = p.name || Lang.t('sv.pl.unknown');
+                const extra = this._currentSub === 'banned' ? ` · <span style="color:var(--text-muted);font-size:11px;">${p.reason||Lang.t('sv.pl.no_reason')}</span>` : '';
+                const level = this._currentSub === 'ops' ? ` · <span style="color:var(--accent-blue);font-size:11px;">${Lang.t('sv.pl.level')} ${p.level||4}</span>` : '';
                 return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;">
                     <div>
                         <span style="font-weight:600;font-size:14px;">${l.emoji} ${name}</span>${level}${extra}
@@ -119,12 +121,12 @@ const SvPlayers = {
         });
         
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${name} ajouté !`; }
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${name} ${Lang.t('sv.pl.added')}`; }
             if (nameEl) nameEl.value = '';
             this._load();
         } else {
             const err = r ? await r.json() : {};
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
     },
 

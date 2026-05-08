@@ -49,7 +49,8 @@ def run_diagnostic(
 
     # --- RAM ---
     mem = psutil.virtual_memory()
-    ram_pct = mem.percent
+    # Calcul cohérent : used/total (et non (total-available)/total de psutil)
+    ram_pct = round((mem.used / mem.total) * 100, 1) if mem.total > 0 else 0
     ram_avail_gb = round(mem.available / (1024**3), 1)
     if ram_pct > 90:
         checks.append({"id": "ram", "name": "RAM", "icon": "🧠", "level": "critical",
@@ -68,7 +69,8 @@ def run_diagnostic(
 
     # --- Disque ---
     disk = psutil.disk_usage("/")
-    disk_pct = disk.percent
+    # Calcul cohérent : used/total
+    disk_pct = round((disk.used / disk.total) * 100, 1) if disk.total > 0 else 0
     disk_free_gb = round(disk.free / (1024**3), 1)
     if disk_pct > 90:
         checks.append({"id": "disk", "name": "Disque", "icon": "💾", "level": "critical",

@@ -106,11 +106,23 @@ const App = {
 
         if (nameEl) nameEl.textContent = user.username;
         if (avatarEl) avatarEl.textContent = user.username.charAt(0).toUpperCase();
-        if (roleEl) roleEl.textContent = user.is_admin ? 'Administrateur' : 'Utilisateur';
+        if (roleEl) roleEl.textContent = user.is_admin ? Lang.t('users.admin_label') : Lang.t('users.user_label');
 
         // Afficher le lien Utilisateurs seulement pour les admins
         const navUsers = document.getElementById('nav-users');
         if (navUsers) navUsers.style.display = user.is_admin ? '' : 'none';
+
+        // Masquer les modules non autorisés dans la sidebar
+        const moduleIds = ['game_server', 'bots', 'files', 'media', 'web', 'network'];
+        moduleIds.forEach(modId => {
+            const navEl = document.getElementById(`nav-${modId}`);
+            if (!navEl) return;
+            if (user.is_admin || !user.allowed_modules) {
+                navEl.style.display = '';  // Admin ou null = tout visible
+            } else {
+                navEl.style.display = user.allowed_modules.includes(modId) ? '' : 'none';
+            }
+        });
     },
 
     /**
@@ -154,6 +166,23 @@ const App = {
 
         // Supprimer le padding pour la vue serveur (sidebar doit coller au bord)
         content.classList.toggle('sv-fullscreen', view === 'server_view');
+
+        // Vérifier l'accès au module (non-admin seulement)
+        const moduleViews = ['game_server', 'bots', 'files', 'media', 'web', 'network'];
+        const user = Auth.getUser();
+        if (moduleViews.includes(view) && user && !user.is_admin && user.allowed_modules) {
+            if (!user.allowed_modules.includes(view)) {
+                content.innerHTML = `
+                    <div class="text-center" style="padding: 60px; color: var(--text-muted);">
+                        <div style="font-size: 48px; margin-bottom: 16px;">🔒</div>
+                        <p style="font-size:16px;font-weight:600;color:var(--text-primary);">${Lang.t('access.denied')}</p>
+                        <p style="margin-top:8px;">${Lang.t('access.denied_msg')}</p>
+                        <button class="btn btn-secondary mt-4" onclick="App.navigateTo('hub')">${Lang.t('access.back')}</button>
+                    </div>
+                `;
+                return;
+            }
+        }
 
         switch (view) {
             case 'hub':
@@ -201,8 +230,8 @@ const App = {
                 content.innerHTML = `
                     <div class="text-center" style="padding: 60px; color: var(--text-muted);">
                         <div style="font-size: 48px; margin-bottom: 16px;">🚧</div>
-                        <p>Ce module n'est pas encore disponible.</p>
-                        <button class="btn btn-secondary mt-4" onclick="App.navigateTo('hub')">← Retour au Hub</button>
+                        <p>${Lang.t('module.unavailable')}</p>
+                        <button class="btn btn-secondary mt-4" onclick="App.navigateTo('hub')">${Lang.t('access.back')}</button>
                     </div>
                 `;
         }
@@ -264,6 +293,18 @@ const App = {
             <!-- Diagnostic auto (caché par défaut) -->
             <div id="diagnostic-panel" style="display:none;margin-bottom:28px;"></div>
 
+            <!-- Ordinateurs connectés -->
+            <div class="page-header" style="margin-bottom:12px;">
+                <h2 style="font-size: 18px; font-weight: 700;">${t('nodes.title')} <span id="nodes-count" style="font-size:13px;font-weight:400;color:var(--text-muted);"></span></h2>
+            </div>
+            <div id="nodes-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-bottom:28px;">
+                <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:13px;grid-column:1/-1;">
+                    <div style="font-size:32px;margin-bottom:8px;">💻</div>
+                    ${t('nodes.no_nodes')}<br>
+                    <span style="font-size:11px;">${t('nodes.no_nodes_hint')}</span>
+                </div>
+            </div>
+
             <!-- Modules -->
             <div class="page-header">
                 <h2 style="font-size: 18px; font-weight: 700;">${t('modules.title')}</h2>
@@ -288,10 +329,20 @@ const App = {
         const schedEl = document.getElementById('hub-scheduler');
         if (!schedEl) return;
 
-        const r = await Auth.apiCall('/api/servers');
-        if (!r || !r.ok) { schedEl.innerHTML = `<div style="color:var(--text-muted);text-align:center;padding:20px;">${Lang.t('scheduler.no_servers')}</div>`; return; }
-        const servers = await r.json();
+        // Charger serveurs + bots en parallèle
+        const [sr, br] = await Promise.all([
+            Auth.apiCall('/api/servers'),
+            Auth.apiCall('/api/bots'),
+        ]);
+        const servers = (sr && sr.ok) ? await sr.json() : [];
+        const bots = (br && br.ok) ? await br.json() : [];
 
+        if (servers.length === 0 && bots.length === 0) {
+            schedEl.innerHTML = `<div style="color:var(--text-muted);text-align:center;padding:20px;">${Lang.t('scheduler.no_servers')}</div>`;
+            return;
+        }
+
+        // Charger toutes les tâches (serveurs + bots)
         let allTasks = [];
         for (const s of servers) {
             const tr = await Auth.apiCall(`/api/scheduler/server/${s.id}`);
@@ -299,98 +350,154 @@ const App = {
                 const data = await tr.json();
                 const tasks = data.tasks || data || [];
                 if (Array.isArray(tasks)) {
-                    tasks.forEach(t => allTasks.push({...t, serverName: s.name, serverId: s.id}));
+                    tasks.forEach(t => allTasks.push({...t, targetName: s.name, targetIcon: '🎮', targetType: 'server'}));
+                }
+            }
+        }
+        for (const b of bots) {
+            const tr = await Auth.apiCall(`/api/scheduler/bot/${b.id}`);
+            if (tr && tr.ok) {
+                const data = await tr.json();
+                const tasks = data.tasks || data || [];
+                if (Array.isArray(tasks)) {
+                    tasks.forEach(t => allTasks.push({...t, targetName: b.name, targetIcon: '🤖', targetType: 'bot'}));
                 }
             }
         }
 
+        // Options pour le formulaire
+        const serverOptions = servers.map(s => `<option value="server_${s.id}">🎮 ${s.name}</option>`).join('');
+        const botOptions = bots.map(b => `<option value="bot_${b.id}">🤖 ${b.name}</option>`).join('');
+        const targetOptions = serverOptions + botOptions;
+
+        const formHTML = `
+            <div id="hub-schedule-form" style="display:none;margin-bottom:12px;padding:14px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
+                <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+                    <div style="flex:1;min-width:140px;">
+                        <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.target')}</label>
+                        <select id="hub-sched-target" class="form-input" style="margin-top:4px;" onchange="App._onScheduleTargetChange()">${targetOptions}</select>
+                    </div>
+                    <div style="flex:1;min-width:140px;">
+                        <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.type')}</label>
+                        <select id="hub-sched-type" class="form-input" style="margin-top:4px;">
+                            <option value="backup">💾 ${Lang.t('scheduler.backup')}</option>
+                            <option value="restart">🔄 ${Lang.t('scheduler.restart')}</option>
+                        </select>
+                    </div>
+                    <div style="flex:1;min-width:110px;">
+                        <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.mode')}</label>
+                        <select id="hub-sched-mode" class="form-input" style="margin-top:4px;" onchange="App._onScheduleModeChange()">
+                            <option value="interval">⏰ ${Lang.t('scheduler.mode_interval')}</option>
+                            <option value="fixed">📅 ${Lang.t('scheduler.mode_fixed')}</option>
+                        </select>
+                    </div>
+                </div>
+                <!-- Mode intervalle -->
+                <div id="hub-sched-interval-row" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:8px;">
+                    <div style="flex:1;min-width:100px;">
+                        <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.interval')}</label>
+                        <select id="hub-sched-interval" class="form-input" style="margin-top:4px;">
+                            <option value="1">1h</option>
+                            <option value="6" selected>6h</option>
+                            <option value="12">12h</option>
+                            <option value="24">24h</option>
+                            <option value="168">${Lang.t('scheduler.week')}</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" onclick="App._createScheduledTask()">➕ ${Lang.t('scheduler.add')}</button>
+                </div>
+                <!-- Mode heure fixe -->
+                <div id="hub-sched-fixed-row" style="display:none;margin-top:8px;">
+                    <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+                        <div>
+                            <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.time')}</label>
+                            <input type="time" id="hub-sched-time" class="form-input" style="margin-top:4px;" value="08:00" />
+                        </div>
+                        <button class="btn btn-primary" onclick="App._createScheduledTask()">➕ ${Lang.t('scheduler.add')}</button>
+                    </div>
+                    <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+                        <label style="font-size:12px;color:var(--text-muted);margin-right:4px;">${Lang.t('scheduler.days')}:</label>
+                        <label style="font-size:12px;cursor:pointer;"><input type="checkbox" id="hub-day-daily" checked onchange="App._onDailyToggle(this)"> ${Lang.t('scheduler.daily')}</label>
+                        <label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="mon" disabled> ${Lang.t('scheduler.day_mon')}</label>
+                        <label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="tue" disabled> ${Lang.t('scheduler.day_tue')}</label>
+                        <label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="wed" disabled> ${Lang.t('scheduler.day_wed')}</label>
+                        <label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="thu" disabled> ${Lang.t('scheduler.day_thu')}</label>
+                        <label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="fri" disabled> ${Lang.t('scheduler.day_fri')}</label>
+                        <label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="sat" disabled> ${Lang.t('scheduler.day_sat')}</label>
+                        <label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="sun" disabled> ${Lang.t('scheduler.day_sun')}</label>
+                    </div>
+                </div>
+                <div id="hub-sched-msg" style="font-size:12px;margin-top:8px;"></div>
+                <div style="text-align:right;margin-top:8px;"><button class="btn btn-sm btn-secondary" onclick="App._toggleScheduleForm()">✕ ${Lang.t('common.cancel')}</button></div>
+            </div>`;
+
         if (allTasks.length === 0) {
-            // Build server options for the create form
-            const serverOptions = servers.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
             schedEl.innerHTML = `
                 <div style="text-align:center;padding:20px;">
                     <div style="font-size:32px;margin-bottom:8px;">📅</div>
                     <div style="color:var(--text-muted);font-size:13px;">${Lang.t('scheduler.no_tasks')}</div>
                     <button class="btn btn-primary btn-sm" style="margin-top:12px;" onclick="App._toggleScheduleForm()">➕ ${Lang.t('scheduler.create')}</button>
                 </div>
-                <div id="hub-schedule-form" style="display:none;margin-top:12px;padding:14px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
-                    <div style="display:flex;gap:8px;align-items:flex-end;">
-                        <div style="flex:1;">
-                            <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.server')}</label>
-                            <select id="hub-sched-server" class="form-input" style="margin-top:4px;">${serverOptions}</select>
-                        </div>
-                        <div style="flex:1;">
-                            <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.type')}</label>
-                            <select id="hub-sched-type" class="form-input" style="margin-top:4px;">
-                                <option value="backup">💾 ${Lang.t('scheduler.backup')}</option>
-                                <option value="restart">🔄 ${Lang.t('scheduler.restart')}</option>
-                            </select>
-                        </div>
-                        <div style="flex:1;">
-                            <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.interval')}</label>
-                            <select id="hub-sched-interval" class="form-input" style="margin-top:4px;">
-                                <option value="1">1h</option>
-                                <option value="6" selected>6h</option>
-                                <option value="12">12h</option>
-                                <option value="24">24h</option>
-                                <option value="168">${Lang.t('scheduler.week')}</option>
-                            </select>
-                        </div>
-                        <button class="btn btn-primary" onclick="App._createScheduledTask()">➕ ${Lang.t('scheduler.add')}</button>
-                    </div>
-                    <div id="hub-sched-msg" style="font-size:12px;margin-top:8px;"></div>
-                </div>`;
+                ${formHTML}`;
+            // Initialiser les options du type en fonction de la cible
+            setTimeout(() => this._onScheduleTargetChange(), 50);
             return;
         }
 
-        const taskIcons = { restart: '🔄', backup: '💾' };
-        const taskLabels = { restart: Lang.t('scheduler.restart'), backup: Lang.t('scheduler.backup') };
-        const serverOptions = servers.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+        const taskIcons = { restart: '🔄', backup: '💾', bot_start: '▶️', bot_stop: '⏹️', bot_restart: '🔄' };
+        const taskLabels = {
+            restart: Lang.t('scheduler.restart'), backup: Lang.t('scheduler.backup'),
+            bot_start: Lang.t('scheduler.bot_start'), bot_stop: Lang.t('scheduler.bot_stop'),
+            bot_restart: Lang.t('scheduler.bot_restart'),
+        };
 
         schedEl.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                <div style="font-size:13px;color:var(--text-muted);">${allTasks.length} ${Lang.t('scheduler.tasks_count')} ${servers.length} ${Lang.t('scheduler.servers_count')}</div>
+                <div style="font-size:13px;color:var(--text-muted);">${allTasks.length} ${Lang.t('scheduler.tasks_count')} ${servers.length + bots.length} ${Lang.t('scheduler.servers_count')}</div>
                 <button class="btn btn-primary btn-sm" onclick="App._toggleScheduleForm()">➕ ${Lang.t('scheduler.new_task')}</button>
             </div>
-            <div id="hub-schedule-form" style="display:none;margin-bottom:12px;padding:14px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
-                <div style="display:flex;gap:8px;align-items:flex-end;">
-                    <div style="flex:1;">
-                        <label style="font-size:12px;color:var(--text-muted);">Serveur</label>
-                        <select id="hub-sched-server" class="form-input" style="margin-top:4px;">${serverOptions}</select>
-                    </div>
-                    <div style="flex:1;">
-                        <label style="font-size:12px;color:var(--text-muted);">Type</label>
-                        <select id="hub-sched-type" class="form-input" style="margin-top:4px;">
-                            <option value="backup">💾 Backup auto</option>
-                            <option value="restart">🔄 Restart auto</option>
-                        </select>
-                    </div>
-                    <div style="flex:1;">
-                        <label style="font-size:12px;color:var(--text-muted);">Intervalle</label>
-                        <select id="hub-sched-interval" class="form-input" style="margin-top:4px;">
-                            <option value="1">1h</option>
-                            <option value="6" selected>6h</option>
-                            <option value="12">12h</option>
-                            <option value="24">24h</option>
-                            <option value="168">1 semaine</option>
-                        </select>
-                    </div>
-                    <button class="btn btn-primary" onclick="App._createScheduledTask()">➕ Ajouter</button>
-                </div>
-                <div id="hub-sched-msg" style="font-size:12px;margin-top:8px;"></div>
-            </div>
+            ${formHTML}
             <div style="display:flex;flex-direction:column;gap:6px;">
                 ${allTasks.map(t => `
                     <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
                         <span style="font-size:18px;">${taskIcons[t.task_type] || '📋'}</span>
                         <div style="flex:1;">
                             <div style="font-size:13px;font-weight:600;">${taskLabels[t.task_type] || t.task_type}</div>
-                            <div style="font-size:11px;color:var(--text-muted);">🎮 ${t.serverName} · ⏰ ${Lang.t('scheduler.every')} ${t.interval_hours}h</div>
+                            <div style="font-size:11px;color:var(--text-muted);">${t.targetIcon} ${t.targetName} · ${t.schedule_time ? ('⏰ ' + Lang.t('scheduler.at') + ' ' + t.schedule_time + ' (' + (t.schedule_days || 'daily') + ')') : ('⏰ ' + Lang.t('scheduler.every') + ' ' + t.interval_hours + 'h')}</div>
                         </div>
-                        <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled !== false ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.05)'};color:${t.enabled !== false ? 'var(--accent-green)' : 'var(--text-muted)'};">${t.enabled !== false ? '● ' + Lang.t('scheduler.active') : '○ ' + Lang.t('scheduler.inactive')}</span>
+                        <div style="display:flex;gap:6px;align-items:center;">
+                            <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled !== false ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.05)'};color:${t.enabled !== false ? 'var(--accent-green)' : 'var(--text-muted)'};">${t.enabled !== false ? '● ' + Lang.t('scheduler.active') : '○ ' + Lang.t('scheduler.inactive')}</span>
+                            <button class="btn btn-sm btn-secondary" onclick="App._toggleHubTask(${t.id})" title="${t.enabled ? 'Pause' : 'Resume'}">${t.enabled !== false ? '⏸' : '▶️'}</button>
+                            <button class="btn btn-sm btn-danger" onclick="App._deleteHubTask(${t.id})" title="Delete">🗑️</button>
+                        </div>
                     </div>
                 `).join('')}
             </div>`;
+        // Initialiser les options du type en fonction de la cible
+        setTimeout(() => this._onScheduleTargetChange(), 50);
+    },
+
+    /**
+     * Actualise la liste des types de tâches selon la cible sélectionnée (serveur ou bot).
+     */
+    _onScheduleTargetChange() {
+        const targetEl = document.getElementById('hub-sched-target');
+        const typeEl = document.getElementById('hub-sched-type');
+        if (!targetEl || !typeEl) return;
+
+        const val = targetEl.value || '';
+        const isBot = val.startsWith('bot_');
+
+        if (isBot) {
+            typeEl.innerHTML = `
+                <option value="bot_start">${Lang.t('scheduler.bot_start')}</option>
+                <option value="bot_stop">${Lang.t('scheduler.bot_stop')}</option>
+                <option value="bot_restart">${Lang.t('scheduler.bot_restart')}</option>`;
+        } else {
+            typeEl.innerHTML = `
+                <option value="backup">💾 ${Lang.t('scheduler.backup')}</option>
+                <option value="restart">🔄 ${Lang.t('scheduler.restart')}</option>`;
+        }
     },
 
     _toggleScheduleForm() {
@@ -398,17 +505,54 @@ const App = {
         if (form) form.style.display = form.style.display === 'none' ? 'block' : 'none';
     },
 
+    _onScheduleModeChange() {
+        const mode = document.getElementById('hub-sched-mode')?.value || 'interval';
+        const intervalRow = document.getElementById('hub-sched-interval-row');
+        const fixedRow = document.getElementById('hub-sched-fixed-row');
+        if (intervalRow) intervalRow.style.display = mode === 'interval' ? 'flex' : 'none';
+        if (fixedRow) fixedRow.style.display = mode === 'fixed' ? 'block' : 'none';
+    },
+
+    _onDailyToggle(cb) {
+        const checks = document.querySelectorAll('.hub-day-check');
+        checks.forEach(c => {
+            c.disabled = cb.checked;
+            if (cb.checked) c.checked = false;
+        });
+    },
+
     async _createScheduledTask() {
-        const serverId = document.getElementById('hub-sched-server')?.value;
+        const targetVal = document.getElementById('hub-sched-target')?.value;
         const taskType = document.getElementById('hub-sched-type')?.value;
         const interval = parseInt(document.getElementById('hub-sched-interval')?.value) || 6;
         const msg = document.getElementById('hub-sched-msg');
 
-        if (!serverId) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = Lang.t('scheduler.select_server'); } return; }
+        if (!targetVal) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = Lang.t('scheduler.select_target'); } return; }
+
+        // Parser "server_3" ou "bot_5"
+        const [targetType, targetId] = targetVal.split('_');
+        const body = { task_type: taskType };
+        if (targetType === 'server') body.server_id = parseInt(targetId);
+        else if (targetType === 'bot') body.bot_id = parseInt(targetId);
+
+        // Mode intervalle vs heure fixe
+        const mode = document.getElementById('hub-sched-mode')?.value || 'interval';
+        if (mode === 'fixed') {
+            body.schedule_time = document.getElementById('hub-sched-time')?.value || '08:00';
+            const dailyCb = document.getElementById('hub-day-daily');
+            if (dailyCb && dailyCb.checked) {
+                body.schedule_days = 'daily';
+            } else {
+                const checked = [...document.querySelectorAll('.hub-day-check:checked')].map(c => c.value);
+                body.schedule_days = checked.length > 0 ? checked.join(',') : 'daily';
+            }
+        } else {
+            body.interval_hours = parseInt(document.getElementById('hub-sched-interval')?.value) || 6;
+        }
 
         const r = await Auth.apiCall('/api/scheduler/', {
             method: 'POST',
-            body: JSON.stringify({ server_id: parseInt(serverId), task_type: taskType, interval_hours: interval })
+            body: JSON.stringify(body)
         });
 
         if (r && r.ok) {
@@ -418,6 +562,17 @@ const App = {
             const err = r ? await r.json().catch(() => ({})) : {};
             if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
         }
+    },
+
+    async _toggleHubTask(taskId) {
+        await Auth.apiCall(`/api/scheduler/${taskId}/toggle`, { method: 'POST' });
+        this._loadGlobalSchedule();
+    },
+
+    async _deleteHubTask(taskId) {
+        if (!confirm(Lang.t('gs.delete_warn'))) return;
+        await Auth.apiCall(`/api/scheduler/${taskId}`, { method: 'DELETE' });
+        this._loadGlobalSchedule();
     },
 
     /**
@@ -500,89 +655,151 @@ const App = {
     renderSettings(content) {
         const user = Auth.getUser();
         const isAdmin = user && user.is_admin;
+        const t = (k) => Lang.t(k);
 
         content.innerHTML = `
             <div class="page-header">
-                <h1 class="page-title">⚙️ Paramètres</h1>
-                <p class="page-subtitle">Configuration de ton serveur</p>
+                <h1 class="page-title">${t('settings.title')}</h1>
+                <p class="page-subtitle">${t('settings.subtitle')}</p>
             </div>
 
             <div style="display: flex; flex-direction: column; gap: 20px; max-width: 600px;">
-                <!-- Infos compte -->
                 <div class="card">
-                    <h3 class="card-title">👤 Compte</h3>
+                    <h3 class="card-title">${t('settings.account')}</h3>
                     <div style="margin-top: 12px;">
-                        <p><strong>Utilisateur :</strong> ${user ? user.username : '—'}</p>
-                        <p><strong>Rôle :</strong> ${isAdmin ? '👑 Administrateur' : '🎮 Joueur'}</p>
+                        <p><strong>${t('settings.user_label')}</strong> ${user ? user.username : '—'}</p>
+                        <p><strong>${t('settings.role_label')}</strong> ${isAdmin ? '👑 ' + t('common.admin') : '🎮'}</p>
                     </div>
                     <button class="btn btn-danger mt-4" onclick="Auth.logout()">
-                        🚪 Se déconnecter
+                        ${t('settings.logout')}
                     </button>
                 </div>
 
-                <!-- Changer mot de passe -->
                 <div class="card">
-                    <h3 class="card-title">🔑 Changer le mot de passe</h3>
+                    <h3 class="card-title">${t('settings.change_password')}</h3>
                     <div style="margin-top: 16px;">
                         <div class="form-group">
-                            <label class="form-label">Mot de passe actuel</label>
+                            <label class="form-label">${t('settings.current_password')}</label>
                             <input type="password" class="form-input" id="current-password" placeholder="••••••••" />
                         </div>
                         <div class="form-group">
-                            <label class="form-label">Nouveau mot de passe</label>
+                            <label class="form-label">${t('settings.new_password')}</label>
                             <input type="password" class="form-input" id="new-password" placeholder="••••••••" />
                         </div>
                         <div class="form-group">
-                            <label class="form-label">Confirmer le nouveau mot de passe</label>
+                            <label class="form-label">${t('settings.confirm_password')}</label>
                             <input type="password" class="form-input" id="confirm-password" placeholder="••••••••" />
                         </div>
                         <div id="password-message" style="font-size: 13px; margin-bottom: 12px;"></div>
                         <button class="btn btn-primary" onclick="App.changePassword()">
-                            Changer le mot de passe
+                            ${t('settings.change_btn')}
                         </button>
                     </div>
                 </div>
 
                 ${isAdmin ? `
-                <!-- Invitations (admin only) -->
                 <div class="card">
                     <div class="flex justify-between items-center">
-                        <h3 class="card-title" style="margin: 0;">🎟️ Invitations</h3>
+                        <h3 class="card-title" style="margin: 0;">${t('settings.invitations')}</h3>
                         <button class="btn btn-primary btn-sm" onclick="App.createInvitation()">
-                            ➕ Créer
+                            ${t('settings.invite_create')}
                         </button>
                     </div>
                     <p style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">
-                        Génère un code d'invitation pour que tes amis puissent se créer un compte.
+                        ${t('settings.invite_desc')}
                     </p>
                     <div style="display: flex; gap: 8px; margin-top: 12px;">
                         <select class="form-input" id="invite-role" style="flex: 1;">
-                            <option value="player">🎮 Joueur (start/stop)</option>
-                            <option value="moderator">🔧 Modérateur (console + backups)</option>
-                            <option value="spectator">👀 Spectateur (voir seulement)</option>
+                            <option value="player">${t('settings.invite_player')}</option>
+                            <option value="moderator">${t('settings.invite_mod')}</option>
+                            <option value="spectator">${t('settings.invite_spectator')}</option>
                         </select>
                     </div>
                     <div id="invite-result" style="margin-top: 12px;"></div>
                     <div id="invitations-list" style="margin-top: 16px;">
-                        <div style="text-align: center; padding: 16px; color: var(--text-muted); font-size: 13px;">Chargement...</div>
+                        <div style="text-align: center; padding: 16px; color: var(--text-muted); font-size: 13px;">${t('common.loading')}</div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3 class="card-title">${t('settings.users')}</h3>
+                    <div id="users-list" style="margin-top: 12px;">
+                        <div style="text-align: center; padding: 16px; color: var(--text-muted); font-size: 13px;">${t('common.loading')}</div>
+                    </div>
+                </div>
+                ` : ''}
+
+                <div class="card">
+                    <h3 class="card-title">${t('settings.language')}</h3>
+                    <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">${t('settings.lang_desc')}</p>
+                    <div style="display: flex; gap: 8px; margin-top: 12px;">
+                        <button class="btn ${Lang.current === 'fr' ? 'btn-primary' : 'btn-secondary'}" onclick="Lang.set('fr')" style="flex:1;">🇫🇷 Français</button>
+                        <button class="btn ${Lang.current === 'en' ? 'btn-primary' : 'btn-secondary'}" onclick="Lang.set('en')" style="flex:1;">🇬🇧 English</button>
+                        <button class="btn ${Lang.current === 'it' ? 'btn-primary' : 'btn-secondary'}" onclick="Lang.set('it')" style="flex:1;">🇮🇹 Italiano</button>
                     </div>
                 </div>
 
-                <!-- Utilisateurs (admin only) -->
+                ${isAdmin ? `
+                <div class="card" id="power-schedule-card">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <div>
+                            <h3 class="card-title" style="margin:0;">${t('power.title')}</h3>
+                            <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">${t('power.desc')}</p>
+                        </div>
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                            <span id="power-status-label" style="font-size:12px;color:var(--text-muted);">--</span>
+                            <input type="checkbox" id="power-enabled" onchange="App._onPowerToggle()" style="width:18px;height:18px;cursor:pointer;" />
+                        </label>
+                    </div>
+                    <div id="power-config" style="margin-top:16px;">
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                            <div>
+                                <label class="form-label">⏻ ${t('power.shutdown_time')}</label>
+                                <input type="time" id="power-shutdown-hour" class="form-input" value="01:00" />
+                            </div>
+                            <div>
+                                <label class="form-label">⏰ ${t('power.wake_time')}</label>
+                                <input type="time" id="power-wake-hour" class="form-input" value="05:00" />
+                            </div>
+                        </div>
+                        <div style="margin-top:12px;padding:10px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
+                            <div style="font-size:12px;color:var(--text-muted);">💡 ${t('power.graceful_info')}</div>
+                        </div>
+                        <div id="power-rtcwake-warn" style="display:none;margin-top:8px;padding:8px 12px;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:8px;font-size:12px;color:#f59e0b;">
+                            ⚠️ rtcwake non détecté — le réveil automatique ne fonctionnera pas. Installez util-linux.
+                        </div>
+                        <div id="power-last-info" style="margin-top:12px;font-size:12px;color:var(--text-muted);"></div>
+                        <div style="display:flex;gap:8px;margin-top:16px;align-items:center;">
+                            <button class="btn btn-primary" onclick="App._savePowerSchedule()">${t('power.save')}</button>
+                            <button class="btn btn-secondary" onclick="App._testPower()" title="${t('power.test_desc')}">${t('power.test')}</button>
+                            <button class="btn btn-secondary" onclick="App._cancelPowerWake()" style="font-size:12px;">${t('power.cancel')}</button>
+                            <span id="power-msg" style="font-size:12px;margin-left:8px;"></span>
+                        </div>
+                    </div>
+                </div>
+                ` : ''}
+
+                ${isAdmin ? `
                 <div class="card">
-                    <h3 class="card-title">👥 Utilisateurs</h3>
-                    <div id="users-list" style="margin-top: 12px;">
-                        <div style="text-align: center; padding: 16px; color: var(--text-muted); font-size: 13px;">Chargement...</div>
+                    <h3 class="card-title" style="margin:0;">${t('nodes.api_key')}</h3>
+                    <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">${t('nodes.api_key_desc')}</p>
+                    <div style="display:flex;gap:8px;margin-top:12px;align-items:center;">
+                        <code id="nodes-api-key" style="flex:1;padding:8px 12px;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:6px;font-size:12px;word-break:break-all;color:var(--text-primary);">Chargement...</code>
+                        <button class="btn btn-secondary btn-sm" onclick="App._copyNodesKey()" title="${t('nodes.copy')}">📋</button>
+                        <button class="btn btn-secondary btn-sm" onclick="App._resetNodesKey()" style="font-size:11px;">${t('nodes.reset_key')}</button>
                     </div>
                 </div>
                 ` : ''}
             </div>
         `;
 
+
+
         // Charger les listes si admin
         if (isAdmin) {
             this.loadInvitations();
             this.loadUsers();
+            this._loadPowerSchedule();
+            this._loadNodesKey();
         }
     },
 
@@ -596,22 +813,22 @@ const App = {
 
         if (!current || !newPwd || !confirm) {
             msgEl.style.color = '#e74c3c';
-            msgEl.textContent = '❌ Remplis tous les champs';
+            msgEl.textContent = Lang.t('settings.fill_all');
             return;
         }
         if (newPwd !== confirm) {
             msgEl.style.color = '#e74c3c';
-            msgEl.textContent = '❌ Les mots de passe ne correspondent pas';
+            msgEl.textContent = Lang.t('settings.pwd_mismatch');
             return;
         }
         if (newPwd.length < 4) {
             msgEl.style.color = '#e74c3c';
-            msgEl.textContent = '❌ Le mot de passe doit faire au moins 4 caractères';
+            msgEl.textContent = Lang.t('settings.pwd_min');
             return;
         }
 
         msgEl.style.color = 'var(--text-muted)';
-        msgEl.textContent = '⏳ Changement en cours...';
+        msgEl.textContent = Lang.t('settings.pwd_changing');
 
         const response = await Auth.apiCall('/api/auth/change-password', {
             method: 'PUT',
@@ -620,14 +837,14 @@ const App = {
 
         if (response && response.ok) {
             msgEl.style.color = '#2ecc71';
-            msgEl.textContent = '✅ Mot de passe changé avec succès !';
+            msgEl.textContent = Lang.t('settings.pwd_success');
             document.getElementById('current-password').value = '';
             document.getElementById('new-password').value = '';
             document.getElementById('confirm-password').value = '';
         } else if (response) {
             const err = await response.json();
             msgEl.style.color = '#e74c3c';
-            msgEl.textContent = `❌ ${err.detail || 'Erreur'}`;
+            msgEl.textContent = `❌ ${err.detail || Lang.t('common.error')}`;
         }
     },
 
@@ -691,48 +908,201 @@ const App = {
         if (response && response.ok) this.loadInvitations();
     },
 
+    // --- Power Schedule (extinction/réveil automatique) ---
+
+    async _loadPowerSchedule() {
+        const r = await Auth.apiCall('/api/power/schedule');
+        if (!r || !r.ok) return;
+        const config = await r.json();
+
+        const enabledCb = document.getElementById('power-enabled');
+        const shutdownInput = document.getElementById('power-shutdown-hour');
+        const wakeInput = document.getElementById('power-wake-hour');
+        const statusLabel = document.getElementById('power-status-label');
+        const configDiv = document.getElementById('power-config');
+        const lastInfo = document.getElementById('power-last-info');
+
+        if (enabledCb) enabledCb.checked = config.enabled;
+        if (shutdownInput) shutdownInput.value = config.shutdown_hour || '01:00';
+        if (wakeInput) wakeInput.value = config.wake_hour || '05:00';
+
+        if (statusLabel) {
+            statusLabel.textContent = config.enabled ? Lang.t('power.enabled') : Lang.t('power.disabled');
+            statusLabel.style.color = config.enabled ? 'var(--accent-green)' : 'var(--text-muted)';
+        }
+
+        if (configDiv) {
+            configDiv.style.opacity = config.enabled ? '1' : '0.5';
+        }
+
+        // Info dernière extinction
+        if (lastInfo) {
+            let html = '';
+            if (config.enabled) {
+                html += `<span style="color:var(--accent-green);">● ${Lang.t('power.next_shutdown')}: ${Lang.t('power.tonight')} ${config.shutdown_hour}</span>`;
+            }
+            if (config.last_shutdown) {
+                const d = new Date(config.last_shutdown);
+                html += ` · ${Lang.t('power.last_shutdown')}: ${d.toLocaleDateString()} ${d.toLocaleTimeString().slice(0,5)} ✅`;
+            } else {
+                html += ` · ${Lang.t('power.last_shutdown')}: ${Lang.t('power.never')}`;
+            }
+            lastInfo.innerHTML = html;
+        }
+
+        // Avertissement si rtcwake non disponible
+        if (config.rtcwake_available === false) {
+            const warn = document.getElementById('power-rtcwake-warn');
+            if (warn) warn.style.display = 'block';
+        }
+    },
+
+    _onPowerToggle() {
+        const enabled = document.getElementById('power-enabled')?.checked;
+        const statusLabel = document.getElementById('power-status-label');
+        const configDiv = document.getElementById('power-config');
+
+        if (statusLabel) {
+            statusLabel.textContent = enabled ? Lang.t('power.enabled') : Lang.t('power.disabled');
+            statusLabel.style.color = enabled ? 'var(--accent-green)' : 'var(--text-muted)';
+        }
+        if (configDiv) {
+            configDiv.style.opacity = enabled ? '1' : '0.5';
+        }
+    },
+
+    async _savePowerSchedule() {
+        const msg = document.getElementById('power-msg');
+        const body = {
+            enabled: document.getElementById('power-enabled')?.checked || false,
+            shutdown_hour: document.getElementById('power-shutdown-hour')?.value || '01:00',
+            wake_hour: document.getElementById('power-wake-hour')?.value || '05:00',
+        };
+
+        const r = await Auth.apiCall('/api/power/schedule', {
+            method: 'PUT',
+            body: JSON.stringify(body),
+        });
+
+        if (r && r.ok) {
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('power.saved'); }
+            if (typeof Toast !== 'undefined') Toast.success(Lang.t('power.saved'));
+            // Recharger pour mettre à jour les infos
+            setTimeout(() => this._loadPowerSchedule(), 500);
+        } else {
+            const err = r ? await r.json().catch(() => ({})) : {};
+            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+        }
+    },
+
+    async _testPower() {
+        if (!confirm(Lang.t('power.test_desc') + '\n\nContinuer ?')) return;
+
+        const msg = document.getElementById('power-msg');
+        const r = await Auth.apiCall('/api/power/test', { method: 'POST' });
+
+        if (r && r.ok) {
+            if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('power.test_launched'); }
+            if (typeof Toast !== 'undefined') Toast.info(Lang.t('power.test_launched'));
+        } else {
+            const err = r ? await r.json().catch(() => ({})) : {};
+            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+        }
+    },
+
+    async _cancelPowerWake() {
+        const msg = document.getElementById('power-msg');
+        const r = await Auth.apiCall('/api/power/cancel', { method: 'POST' });
+
+        if (r && r.ok) {
+            const data = await r.json();
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = data.message; }
+        } else {
+            const err = r ? await r.json().catch(() => ({})) : {};
+            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+        }
+    },
+
+    // --- Nodes API Key ---
+
+    async _loadNodesKey() {
+        const r = await Auth.apiCall('/api/nodes/key');
+        if (!r || !r.ok) return;
+        const data = await r.json();
+        const el = document.getElementById('nodes-api-key');
+        if (el) el.textContent = data.key;
+    },
+
+    async _copyNodesKey() {
+        const el = document.getElementById('nodes-api-key');
+        if (!el) return;
+        try {
+            await navigator.clipboard.writeText(el.textContent);
+            if (typeof Toast !== 'undefined') Toast.success(Lang.t('nodes.copied'));
+        } catch (e) {
+            // Fallback
+            const range = document.createRange();
+            range.selectNode(el);
+            window.getSelection().removeAllRanges();
+            window.getSelection().addRange(range);
+            document.execCommand('copy');
+            if (typeof Toast !== 'undefined') Toast.success(Lang.t('nodes.copied'));
+        }
+    },
+
+    async _resetNodesKey() {
+        if (!confirm(Lang.t('nodes.reset_confirm'))) return;
+        const r = await Auth.apiCall('/api/nodes/key/reset', { method: 'POST' });
+        if (r && r.ok) {
+            const data = await r.json();
+            const el = document.getElementById('nodes-api-key');
+            if (el) el.textContent = data.key;
+            if (typeof Toast !== 'undefined') Toast.warn(data.message);
+        }
+    },
+
     // --- Gestion des utilisateurs ---
 
     renderUsers(content) {
         content.innerHTML = `
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
             <div>
-                <h1 style="margin:0;">👥 Gestion des utilisateurs</h1>
-                <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">Créer, modifier ou supprimer des comptes</p>
+                <h1 style="margin:0;">${Lang.t('users.title')}</h1>
+                <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">${Lang.t('users.subtitle')}</p>
             </div>
-            <button class="btn btn-secondary" onclick="App.navigateTo('hub')">← Retour au Hub</button>
+            <button class="btn btn-secondary" onclick="App.navigateTo('hub')">${Lang.t('users.back_hub')}</button>
         </div>
 
         <!-- Créer un utilisateur -->
         <div class="card" style="margin-bottom:20px;">
-            <h3 style="margin:0 0 16px;">➕ Créer un compte</h3>
+            <h3 style="margin:0 0 16px;">${Lang.t('users.create_title')}</h3>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end;">
                 <div>
-                    <label class="form-label">Nom d'utilisateur</label>
-                    <input id="new-user-name" class="form-input" placeholder="Ex: joueur123" />
+                    <label class="form-label">${Lang.t('users.username')}</label>
+                    <input id="new-user-name" class="form-input" placeholder="${Lang.t('users.username_hint')}" />
                 </div>
                 <div>
-                    <label class="form-label">Mot de passe</label>
-                    <input id="new-user-pass" class="form-input" type="password" placeholder="Min. 4 caractères" />
+                    <label class="form-label">${Lang.t('users.password')}</label>
+                    <input id="new-user-pass" class="form-input" type="password" placeholder="${Lang.t('users.password_hint')}" />
                 </div>
                 <div>
-                    <label class="form-label">Rôle</label>
+                    <label class="form-label">${Lang.t('users.role')}</label>
                     <select id="new-user-role" class="form-input">
-                        <option value="player">🎮 Joueur</option>
-                        <option value="moderator">🔧 Modérateur</option>
-                        <option value="admin">👑 Admin</option>
-                        <option value="spectator">👀 Spectateur</option>
+                        <option value="player">${Lang.t('users.role_player')}</option>
+                        <option value="moderator">${Lang.t('users.role_moderator')}</option>
+                        <option value="admin">${Lang.t('users.role_admin')}</option>
+                        <option value="spectator">${Lang.t('users.role_spectator')}</option>
                     </select>
                 </div>
-                <button class="btn btn-primary" onclick="App.createUser()" style="height:38px;">Créer</button>
+                <button class="btn btn-primary" onclick="App.createUser()" style="height:38px;">${Lang.t('users.create_btn')}</button>
             </div>
             <div id="create-user-msg" style="font-size:13px;margin-top:8px;"></div>
         </div>
 
         <!-- Liste des utilisateurs -->
         <div class="card">
-            <h3 style="margin:0 0 16px;">📋 Utilisateurs</h3>
-            <div id="users-admin-list"><div style="text-align:center;padding:20px;color:var(--text-muted);">⏳ Chargement...</div></div>
+            <h3 style="margin:0 0 16px;">${Lang.t('users.list_title')}</h3>
+            <div id="users-admin-list"><div style="text-align:center;padding:20px;color:var(--text-muted);">${Lang.t('users.loading')}</div></div>
         </div>
         `;
         this._loadUsersAdmin();
@@ -743,15 +1113,15 @@ const App = {
         const pass = document.getElementById('new-user-pass')?.value;
         const role = document.getElementById('new-user-role')?.value || 'player';
         const msg = document.getElementById('create-user-msg');
-        if (!name || !pass) { if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '\u274c Remplis tous les champs'; } return; }
-        if (pass.length < 4) { if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '\u274c Mot de passe trop court (min 4)'; } return; }
+        if (!name || !pass) { if (msg) { msg.style.color = '#e74c3c'; msg.textContent = Lang.t('users.fill_fields'); } return; }
+        if (pass.length < 4) { if (msg) { msg.style.color = '#e74c3c'; msg.textContent = Lang.t('users.pass_too_short'); } return; }
 
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '\u23f3 Cr\u00e9ation...'; }
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('users.creating'); }
         const r = await Auth.apiCall('/api/auth/admin/create-user', {
             method: 'POST', body: JSON.stringify({ username: name, password: pass, is_admin: role === 'admin' })
         });
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `\u2705 Utilisateur '${name}' cr\u00e9\u00e9 !`; }
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('users.created'); }
             document.getElementById('new-user-name').value = '';
             document.getElementById('new-user-pass').value = '';
             // Si le r\u00f4le n'est pas admin, on doit aussi changer le r\u00f4le
@@ -773,16 +1143,16 @@ const App = {
         if (!listEl) return;
 
         const response = await Auth.apiCall('/api/auth/admin/users');
-        if (!response || !response.ok) { listEl.innerHTML = '<div style="color:#ef4444;">\u274c Erreur</div>'; return; }
+        if (!response || !response.ok) { listEl.innerHTML = '<div style="color:#ef4444;">❌ ' + Lang.t('common.error') + '</div>'; return; }
         const users = await response.json();
         const currentUser = Auth.getUser();
 
-        const roleLabels = { admin: '👑 Admin', moderator: '🔧 Modérateur', player: '🎮 Joueur', spectator: '👀 Spectateur' };
+        const roleLabels = { admin: Lang.t('users.role_admin'), moderator: Lang.t('users.role_moderator'), player: Lang.t('users.role_player'), spectator: Lang.t('users.role_spectator') };
         const permLabels = {
-            view: '👀 Voir', start: '▶️ Démarrer', stop: '⏹️ Arrêter', restart: '🔄 Restart',
-            console: '💻 Console', backup: '💾 Backup', logs: '📋 Logs',
-            create: '➕ Créer', delete: '🗑️ Supprimer', settings: '⚙️ Config',
-            invite: '🎟️ Inviter', manage_users: '👥 Users'
+            view: Lang.t('users.perm_view'), start: Lang.t('users.perm_start'), stop: Lang.t('users.perm_stop'),
+            restart: Lang.t('users.perm_restart'), console: Lang.t('users.perm_console'), backup: Lang.t('users.perm_backup'),
+            logs: Lang.t('users.perm_logs'), create: Lang.t('users.perm_create'), delete: Lang.t('users.perm_delete'),
+            settings: Lang.t('users.perm_settings'), invite: Lang.t('users.perm_invite'), manage_users: Lang.t('users.perm_manage_users'),
         };
         const rolePerms = {
             spectator: ['view'],
@@ -791,9 +1161,21 @@ const App = {
             admin: Object.keys(permLabels)
         };
 
-        listEl.innerHTML = users.length === 0 ? '<div style="text-align:center;padding:20px;color:var(--text-muted);">Aucun utilisateur</div>' :
+        const allModules = [
+            { id: 'game_server', icon: '🎮', label: Lang.t('users.mod_games') },
+            { id: 'bots', icon: '🤖', label: Lang.t('users.mod_bots') },
+            { id: 'files', icon: '📁', label: Lang.t('users.mod_files') },
+            { id: 'media', icon: '📺', label: Lang.t('users.mod_media') },
+            { id: 'web', icon: '🌐', label: Lang.t('users.mod_web') },
+            { id: 'network', icon: '📡', label: Lang.t('users.mod_network') },
+        ];
+
+        listEl.innerHTML = users.length === 0 ? '<div style="text-align:center;padding:20px;color:var(--text-muted);">' + Lang.t('users.none') + '</div>' :
             users.map(u => {
                 const userPerms = rolePerms[u.role] || [];
+                // allowed_modules: null = tous, array = seulement ceux-là
+                const userModules = u.allowed_modules; // null ou array
+
                 return `
             <div style="padding:12px 0;border-bottom:1px solid var(--border-color);">
                 <div style="display:flex;align-items:center;justify-content:space-between;">
@@ -801,20 +1183,20 @@ const App = {
                         <div style="width:36px;height:36px;border-radius:50%;background:${u.is_admin ? 'linear-gradient(135deg,#3b82f6,#8b5cf6)' : 'var(--bg-secondary)'};display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:${u.is_admin ? 'white' : 'var(--text-muted)'}">${u.username.charAt(0).toUpperCase()}</div>
                         <div>
                             <div style="font-weight:600;font-size:14px;">${u.username}</div>
-                            <div style="font-size:12px;color:var(--text-muted);">${roleLabels[u.role] || u.role}${u.created_at ? ' · Créé le ' + new Date(u.created_at).toLocaleDateString('fr-FR') : ''}</div>
+                            <div style="font-size:12px;color:var(--text-muted);">${roleLabels[u.role] || u.role}${u.created_at ? ' · ' + Lang.t('users.created_on') + ' ' + new Date(u.created_at).toLocaleDateString() : ''}</div>
                         </div>
                     </div>
                     ${u.id !== currentUser?.id ? `
                         <div style="display:flex;align-items:center;gap:8px;">
                             <select class="form-input" style="font-size:12px;padding:4px 8px;width:auto;" onchange="App._changeRoleAdmin(${u.id}, this.value)">
-                                <option value="spectator" ${u.role === 'spectator' ? 'selected' : ''}>👀 Spectateur</option>
-                                <option value="player" ${u.role === 'player' ? 'selected' : ''}>🎮 Joueur</option>
-                                <option value="moderator" ${u.role === 'moderator' ? 'selected' : ''}>🔧 Modérateur</option>
-                                <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>👑 Admin</option>
+                                <option value="spectator" ${u.role === 'spectator' ? 'selected' : ''}>${Lang.t('users.role_spectator')}</option>
+                                <option value="player" ${u.role === 'player' ? 'selected' : ''}>${Lang.t('users.role_player')}</option>
+                                <option value="moderator" ${u.role === 'moderator' ? 'selected' : ''}>${Lang.t('users.role_moderator')}</option>
+                                <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>${Lang.t('users.role_admin')}</option>
                             </select>
                             <button class="btn btn-danger btn-sm" onclick="App._confirmDeleteUser(${u.id}, '${u.username}')" style="padding:4px 8px;font-size:12px;">🗑️</button>
                         </div>
-                    ` : '<span style="font-size:12px;color:var(--accent-green);font-weight:600;">👑 Toi</span>'}
+                    ` : '<span style="font-size:12px;color:var(--accent-green);font-weight:600;">' + Lang.t('users.you') + '</span>'}
                 </div>
                 <!-- Permissions granulaires -->
                 <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:8px;padding-left:48px;">
@@ -823,13 +1205,88 @@ const App = {
                         return `<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${has ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.04)'};color:${has ? 'var(--accent-green)' : 'rgba(255,255,255,0.15)'};border:1px solid ${has ? 'rgba(34,197,94,0.2)' : 'rgba(255,255,255,0.05)'};">${label}</span>`;
                     }).join('')}
                 </div>
+                <!-- Modules autorisés -->
+                ${u.id !== currentUser?.id && u.role !== 'admin' ? `
+                <div style="margin-top:8px;padding-left:48px;">
+                    <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">${Lang.t('users.modules_allowed')}</div>
+                    <div style="display:flex;flex-wrap:wrap;gap:4px;" id="user-modules-${u.id}">
+                        ${allModules.map(m => {
+                            const hasAccess = userModules === null || userModules.includes(m.id);
+                            return `<span data-module="${m.id}" data-user="${u.id}"
+                                onclick="App._toggleUserModule(${u.id}, '${m.id}', this)"
+                                style="font-size:11px;padding:3px 8px;border-radius:5px;cursor:pointer;user-select:none;transition:all .15s;
+                                background:${hasAccess ? 'rgba(59,130,246,0.15)' : 'rgba(255,255,255,0.04)'};
+                                color:${hasAccess ? 'var(--accent-blue)' : 'rgba(255,255,255,0.2)'};
+                                border:1px solid ${hasAccess ? 'rgba(59,130,246,0.3)' : 'rgba(255,255,255,0.06)'};"
+                            >${hasAccess ? '☑' : '☐'} ${m.icon} ${m.label}</span>`;
+                        }).join('')}
+                    </div>
+                </div>
+                ` : u.role === 'admin' && u.id !== currentUser?.id ? `
+                <div style="margin-top:8px;padding-left:48px;">
+                    <div style="font-size:11px;color:var(--text-muted);">🧩 Modules : <span style="color:var(--accent-green);">${Lang.t('users.modules_full')}</span></div>
+                </div>
+                ` : ''}
             </div>
             <div id="del-confirm-${u.id}" style="display:none;background:rgba(239,68,68,0.08);border:1px solid #ef4444;border-radius:8px;padding:10px;margin:4px 0 8px;">
-                <span style="font-size:12px;color:#ef4444;">Supprimer '${u.username}' ?</span>
-                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('del-confirm-${u.id}').style.display='none'" style="margin-left:8px;font-size:11px;">Annuler</button>
-                <button class="btn btn-sm" style="background:#ef4444;color:white;margin-left:4px;font-size:11px;" onclick="App._deleteUserAdmin(${u.id})">Supprimer</button>
+                <span style="font-size:12px;color:#ef4444;">${Lang.t('users.delete_confirm').replace('${name}', u.username)}</span>
+                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('del-confirm-${u.id}').style.display='none'" style="margin-left:8px;font-size:11px;">${Lang.t('common.cancel')}</button>
+                <button class="btn btn-sm" style="background:#ef4444;color:white;margin-left:4px;font-size:11px;" onclick="App._deleteUserAdmin(${u.id})">${Lang.t('users.delete_btn')}</button>
             </div>`;
             }).join('');
+    },
+
+    async _toggleUserModule(userId, moduleId, el) {
+        // Lire l'état actuel depuis tous les badges de cet utilisateur
+        const container = document.getElementById(`user-modules-${userId}`);
+        if (!container) return;
+
+        const badges = container.querySelectorAll('[data-module]');
+        const currentModules = [];
+        let allEnabled = true;
+
+        badges.forEach(badge => {
+            const mid = badge.dataset.module;
+            const isActive = badge.textContent.includes('☑');
+            if (mid === moduleId) {
+                // Toggle celui qu'on clique
+                if (!isActive) currentModules.push(mid);
+                // Si on désactive, on ne l'ajoute pas
+            } else {
+                if (isActive) currentModules.push(mid);
+            }
+        });
+
+        // Si tous les modules sont activés, envoyer null (= tous)
+        const allModuleIds = ['game_server', 'bots', 'files', 'media', 'web', 'network'];
+        const payload = currentModules.length === allModuleIds.length ? null : currentModules;
+
+        // Feedback visuel immédiat
+        const isNowActive = el.textContent.includes('☐'); // était inactif, va devenir actif
+        const moduleIcon = el.textContent.split(' ').slice(1).join(' ');
+        if (isNowActive) {
+            el.style.background = 'rgba(59,130,246,0.15)';
+            el.style.color = 'var(--accent-blue)';
+            el.style.borderColor = 'rgba(59,130,246,0.3)';
+            el.textContent = '☑ ' + moduleIcon;
+        } else {
+            el.style.background = 'rgba(255,255,255,0.04)';
+            el.style.color = 'rgba(255,255,255,0.2)';
+            el.style.borderColor = 'rgba(255,255,255,0.06)';
+            el.textContent = '☐ ' + moduleIcon;
+        }
+
+        // Appel API
+        const r = await Auth.apiCall(`/api/auth/admin/users/${userId}/modules`, {
+            method: 'PUT',
+            body: JSON.stringify({ allowed_modules: payload })
+        });
+
+        if (!r || !r.ok) {
+            // Rollback visuel
+            if (typeof Toast !== 'undefined') Toast.error(Lang.t('users.update_error'));
+            this._loadUsersAdmin();
+        }
     },
 
     async _changeRoleAdmin(userId, role) {

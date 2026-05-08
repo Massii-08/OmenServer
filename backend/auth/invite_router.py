@@ -18,7 +18,7 @@ Routes:
     DELETE /api/auth/users/{id}        → Supprimer un utilisateur (admin only)
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -176,8 +176,8 @@ def join_with_invite(
     if existing:
         raise HTTPException(status_code=400, detail="Ce nom d'utilisateur est déjà pris")
 
-    if len(request.password) < 4:
-        raise HTTPException(status_code=400, detail="Le mot de passe doit faire au moins 4 caractères")
+    if len(request.password) < 8:
+        raise HTTPException(status_code=400, detail="Le mot de passe doit faire au moins 8 caractères")
 
     # Créer le compte
     new_user = User(
@@ -192,7 +192,7 @@ def join_with_invite(
     # Marquer l'invitation comme utilisée
     invitation.uses += 1
     invitation.used_by = new_user.id
-    invitation.used_at = datetime.utcnow()
+    invitation.used_at = datetime.now(timezone.utc)
 
     db.commit()
     db.refresh(new_user)

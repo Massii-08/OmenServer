@@ -44,6 +44,7 @@ class Settings:
     # --- Chemins ---
     BASE_DIR: str = str(PROJECT_DIR)
     SERVERS_DATA_DIR: str = os.getenv("SERVERS_DATA_DIR", str(PROJECT_DIR / "data" / "servers"))
+    YIELD_BOT_DIR: str = os.getenv("YIELD_BOT_DIR", str(Path.home() / "omenserver" / "bots" / "yield-bot"))
 
 
 # Instance unique des settings, importable partout

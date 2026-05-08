@@ -3,6 +3,7 @@
  * 
  * Permet de créer, éditer, démarrer, arrêter et monitorer des bots Python
  * directement depuis le panel OmenServer.
+ * Inclut la planification de tâches automatiques (start/stop/restart).
  */
 const BotsModule = {
     _bots: [],
@@ -11,21 +12,24 @@ const BotsModule = {
 
     async render(container) {
         console.log('[BotsModule] render() called');
+        this._container = container;
         container.innerHTML = `
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;">
-                <div>
-                    <h1 style="margin:0;">${Lang.t('bots.title')}</h1>
-                    <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">${Lang.t('bots.subtitle')}</p>
+            <div id="bots-module-container">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;">
+                    <div>
+                        <h1 style="margin:0;">${Lang.t('bots.title')}</h1>
+                        <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">${Lang.t('bots.subtitle')}</p>
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn btn-primary" onclick="BotsModule.showCreateForm()">➕ ${Lang.t('bots.new')}</button>
+                        <button class="btn btn-secondary" onclick="App.navigateTo('hub')">← Hub</button>
+                    </div>
                 </div>
-                <div style="display:flex;gap:8px;">
-                    <button class="btn btn-primary" onclick="BotsModule.showCreateForm()">➕ ${Lang.t('bots.new')}</button>
-                    <button class="btn btn-secondary" onclick="App.navigateTo('hub')">← Hub</button>
-                </div>
-            </div>
 
-            <div id="bot-create-form" style="display:none;margin-bottom:20px;"></div>
-            <div id="bots-grid"><div style="text-align:center;padding:20px;color:var(--text-muted);">${Lang.t('bots.loading')}</div></div>
-            <div id="bot-detail" style="display:none;margin-top:20px;"></div>
+                <div id="bot-create-form" style="display:none;margin-bottom:20px;"></div>
+                <div id="bots-grid"><div style="text-align:center;padding:20px;color:var(--text-muted);">${Lang.t('bots.loading')}</div></div>
+                <div id="bot-detail" style="display:none;margin-top:20px;"></div>
+            </div>
         `;
 
         try {
@@ -60,18 +64,40 @@ const BotsModule = {
         const statusColors = { running: '#22c55e', stopped: '#6b7280', error: '#ef4444' };
         const statusLabels = { running: Lang.t('bots.running'), stopped: Lang.t('bots.stopped'), error: Lang.t('bots.error') };
 
+        // Carte virtuelle du Yield Bot (toujours visible)
+        const yieldBotCard = `
+            <div class="card" style="cursor:pointer;transition:all .15s;border:2px solid transparent;background:linear-gradient(135deg, var(--bg-card) 0%, rgba(59,130,246,0.06) 100%);"
+                onclick="BotsModule.openYieldBot()"
+                onmouseover="this.style.transform='translateY(-2px)';this.style.borderColor='var(--accent-blue)'"
+                onmouseout="this.style.transform='';this.style.borderColor='transparent'">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <span style="font-size:24px;">🏦</span>
+                        <div>
+                            <div style="font-weight:700;font-size:14px;">Yield Calculator</div>
+                            <div style="font-size:11px;color:var(--text-muted);">analysis</div>
+                        </div>
+                    </div>
+                    <span style="font-size:11px;padding:2px 8px;border-radius:4px;color:var(--accent-blue);background:rgba(59,130,246,0.12);font-weight:600;">⚡ ${Lang.t('modules.active')}</span>
+                </div>
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">${Lang.t('yield.subtitle')}</div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                    <span class="btn btn-sm" style="font-size:11px;padding:4px 12px;background:linear-gradient(135deg,#3b82f6,#06b6d4);color:#fff;cursor:pointer;">▶ ${Lang.t('yield.launch')}</span>
+                </div>
+            </div>
+        `;
+
         if (this._bots.length === 0) {
             grid.innerHTML = `
-                <div style="text-align:center;padding:60px;">
-                    <div style="font-size:48px;margin-bottom:12px;">🤖</div>
-                    <div style="color:var(--text-muted);font-size:15px;">${Lang.t('bots.none')}</div>
-                    <div style="color:var(--text-muted);font-size:12px;margin-top:4px;">${Lang.t('bots.none_hint')}</div>
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;">
+                    ${yieldBotCard}
                 </div>`;
             return;
         }
 
         grid.innerHTML = `
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;">
+                ${yieldBotCard}
                 ${this._bots.map(b => `
                     <div class="card" style="cursor:pointer;transition:all .15s;border:2px solid ${this._selectedBot?.id === b.id ? 'var(--accent-blue)' : 'transparent'};"
                         onclick="BotsModule.selectBot(${b.id})"
@@ -90,12 +116,13 @@ const BotsModule = {
                             </span>
                         </div>
                         <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">${b.description || Lang.t('bots.no_desc')}</div>
-                        <div style="display:flex;gap:6px;">
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;">
                             ${b.status === 'running' 
                                 ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();BotsModule.stopBot(${b.id})" style="font-size:11px;padding:4px 12px;">⏹ Stop</button>`
                                 : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();BotsModule.startBot(${b.id})" style="font-size:11px;padding:4px 12px;">▶ Start</button>`
                             }
                             <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();BotsModule.openEditor(${b.id})" style="font-size:11px;padding:4px 12px;">✏️ Code</button>
+                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();BotsModule.showScheduler(${b.id})" style="font-size:11px;padding:4px 12px;">⏰ ${Lang.t('bots.schedule')}</button>
                             <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();BotsModule.deleteBot(${b.id})" style="font-size:11px;padding:4px 8px;color:#ef4444;">🗑</button>
                         </div>
                     </div>
@@ -222,6 +249,182 @@ const BotsModule = {
         if (terminal) terminal.scrollTop = terminal.scrollHeight;
     },
 
+    // ============ SCHEDULER ============
+
+    async showScheduler(botId) {
+        const detail = document.getElementById('bot-detail');
+        if (!detail) return;
+        detail.style.display = 'block';
+
+        const bot = this._bots.find(b => b.id === botId);
+        const botName = bot?.name || 'Bot';
+
+        // Charger les tâches planifiées du bot
+        const tr = await Auth.apiCall(`/api/scheduler/bot/${botId}`);
+        const tasks = (tr && tr.ok) ? await tr.json() : [];
+        const taskList = Array.isArray(tasks) ? tasks : (tasks.tasks || []);
+
+        const taskLabels = {
+            bot_start: Lang.t('scheduler.bot_start'),
+            bot_stop: Lang.t('scheduler.bot_stop'),
+            bot_restart: Lang.t('scheduler.bot_restart'),
+        };
+        const taskIcons = { bot_start: '▶️', bot_stop: '⏹️', bot_restart: '🔄' };
+
+        detail.innerHTML = `
+            <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                    <h3 style="margin:0;">⏰ ${Lang.t('bots.schedule')} — ${botName}</h3>
+                    <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bot-detail').style.display='none'">✕</button>
+                </div>
+
+                <!-- Formulaire nouvelle tâche -->
+                <div style="background:var(--bg-primary);border-radius:8px;padding:14px;margin-bottom:16px;border:1px solid var(--border-color);">
+                    <div style="font-size:13px;font-weight:600;margin-bottom:10px;">${Lang.t('bots.new_sched_task')}</div>
+                    <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+                        <div style="flex:1;min-width:140px;">
+                            <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.type')}</label>
+                            <select id="bot-sched-type" class="form-input" style="margin-top:4px;">
+                                <option value="bot_start">${Lang.t('scheduler.bot_start')}</option>
+                                <option value="bot_stop">${Lang.t('scheduler.bot_stop')}</option>
+                                <option value="bot_restart">${Lang.t('scheduler.bot_restart')}</option>
+                            </select>
+                        </div>
+                        <div style="flex:1;min-width:110px;">
+                            <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.mode')}</label>
+                            <select id="bot-sched-mode" class="form-input" style="margin-top:4px;" onchange="BotsModule._onBotSchedModeChange()">
+                                <option value="interval">⏰ ${Lang.t('scheduler.mode_interval')}</option>
+                                <option value="fixed">📅 ${Lang.t('scheduler.mode_fixed')}</option>
+                            </select>
+                        </div>
+                    </div>
+                    <!-- Mode intervalle -->
+                    <div id="bot-sched-interval-row" style="display:flex;gap:8px;align-items:flex-end;margin-top:8px;">
+                        <div style="flex:1;min-width:100px;">
+                            <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.interval')}</label>
+                            <select id="bot-sched-interval" class="form-input" style="margin-top:4px;">
+                                <option value="1">1h</option><option value="3">3h</option><option value="6" selected>6h</option>
+                                <option value="12">12h</option><option value="24">24h</option><option value="48">48h</option>
+                                <option value="168">${Lang.t('scheduler.week')}</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-primary" onclick="BotsModule.createBotTask(${botId})">➕ ${Lang.t('scheduler.add')}</button>
+                    </div>
+                    <!-- Mode heure fixe -->
+                    <div id="bot-sched-fixed-row" style="display:none;margin-top:8px;">
+                        <div style="display:flex;gap:8px;align-items:flex-end;">
+                            <div><label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.time')}</label><input type="time" id="bot-sched-time" class="form-input" style="margin-top:4px;" value="08:00" /></div>
+                            <button class="btn btn-primary" onclick="BotsModule.createBotTask(${botId})">➕ ${Lang.t('scheduler.add')}</button>
+                        </div>
+                        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+                            <label style="font-size:12px;color:var(--text-muted);margin-right:4px;">${Lang.t('scheduler.days')}:</label>
+                            <label style="font-size:12px;cursor:pointer;"><input type="checkbox" id="bot-day-daily" checked onchange="BotsModule._onBotDailyToggle(this)"> ${Lang.t('scheduler.daily')}</label>
+                            <label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="bot-day-check" value="mon" disabled> ${Lang.t('scheduler.day_mon')}</label>
+                            <label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="bot-day-check" value="tue" disabled> ${Lang.t('scheduler.day_tue')}</label>
+                            <label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="bot-day-check" value="wed" disabled> ${Lang.t('scheduler.day_wed')}</label>
+                            <label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="bot-day-check" value="thu" disabled> ${Lang.t('scheduler.day_thu')}</label>
+                            <label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="bot-day-check" value="fri" disabled> ${Lang.t('scheduler.day_fri')}</label>
+                            <label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="bot-day-check" value="sat" disabled> ${Lang.t('scheduler.day_sat')}</label>
+                            <label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="bot-day-check" value="sun" disabled> ${Lang.t('scheduler.day_sun')}</label>
+                        </div>
+                    </div>
+                    <div id="bot-sched-msg" style="font-size:12px;margin-top:8px;"></div>
+                </div>
+
+                <!-- Liste des tâches -->
+                ${taskList.length === 0 ? `
+                    <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:13px;">
+                        <div style="font-size:28px;margin-bottom:8px;">📅</div>
+                        ${Lang.t('bots.no_sched_tasks')}
+                    </div>
+                ` : `
+                    <div style="display:flex;flex-direction:column;gap:6px;">
+                        ${taskList.map(t => {
+                            const locale = Lang.t('common.locale') || 'fr-FR';
+                            return `
+                            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
+                                <span style="font-size:18px;">${taskIcons[t.task_type] || '📋'}</span>
+                                <div style="flex:1;">
+                                    <div style="font-size:13px;font-weight:600;">${taskLabels[t.task_type] || t.task_type}</div>
+                                    <div style="font-size:11px;color:var(--text-muted);">
+                                        ${t.schedule_time ? ('⏰ ' + Lang.t('scheduler.at') + ' ' + t.schedule_time + ' (' + (t.schedule_days || 'daily') + ')') : ('⏰ ' + Lang.t('scheduler.every') + ' ' + t.interval_hours + 'h')}
+                                        ${t.next_run ? ` · ${Lang.t('bots.next_run')}: ${new Date(t.next_run).toLocaleString(locale)}` : ''}
+                                        ${t.last_run ? ` · ${Lang.t('bots.last_run')}: ${new Date(t.last_run).toLocaleString(locale)}` : ''}
+                                    </div>
+                                </div>
+                                <div style="display:flex;gap:6px;align-items:center;">
+                                    <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.05)'};color:${t.enabled ? 'var(--accent-green)' : 'var(--text-muted)'};">
+                                        ${t.enabled ? '● ' + Lang.t('scheduler.active') : '○ ' + Lang.t('scheduler.inactive')}
+                                    </span>
+                                    <button class="btn btn-sm btn-secondary" onclick="BotsModule.toggleBotTask(${t.id}, ${botId})" title="${t.enabled ? 'Pause' : 'Resume'}">${t.enabled ? '⏸' : '▶️'}</button>
+                                    <button class="btn btn-sm btn-secondary" onclick="BotsModule.deleteBotTask(${t.id}, ${botId})" style="color:#ef4444;" title="Delete">🗑️</button>
+                                </div>
+                            </div>`;
+                        }).join('')}
+                    </div>
+                `}
+            </div>`;
+    },
+
+    _onBotSchedModeChange() {
+        const mode = document.getElementById('bot-sched-mode')?.value || 'interval';
+        const intRow = document.getElementById('bot-sched-interval-row');
+        const fixRow = document.getElementById('bot-sched-fixed-row');
+        if (intRow) intRow.style.display = mode === 'interval' ? 'flex' : 'none';
+        if (fixRow) fixRow.style.display = mode === 'fixed' ? 'block' : 'none';
+    },
+
+    _onBotDailyToggle(cb) {
+        document.querySelectorAll('.bot-day-check').forEach(c => { c.disabled = cb.checked; if (cb.checked) c.checked = false; });
+    },
+
+    async createBotTask(botId) {
+        const taskType = document.getElementById('bot-sched-type')?.value;
+        const mode = document.getElementById('bot-sched-mode')?.value || 'interval';
+        const msg = document.getElementById('bot-sched-msg');
+
+        const body = { bot_id: botId, task_type: taskType };
+
+        if (mode === 'fixed') {
+            body.schedule_time = document.getElementById('bot-sched-time')?.value || '08:00';
+            const dailyCb = document.getElementById('bot-day-daily');
+            if (dailyCb && dailyCb.checked) {
+                body.schedule_days = 'daily';
+            } else {
+                const checked = [...document.querySelectorAll('.bot-day-check:checked')].map(c => c.value);
+                body.schedule_days = checked.length > 0 ? checked.join(',') : 'daily';
+            }
+        } else {
+            body.interval_hours = parseInt(document.getElementById('bot-sched-interval')?.value) || 6;
+        }
+
+        const r = await Auth.apiCall('/api/scheduler/', {
+            method: 'POST',
+            body: JSON.stringify(body)
+        });
+
+        if (r && r.ok) {
+            if (msg) { msg.style.color = '#22c55e'; msg.textContent = Lang.t('scheduler.created'); }
+            setTimeout(() => this.showScheduler(botId), 500);
+        } else {
+            const err = r ? await r.json().catch(() => ({})) : {};
+            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+        }
+    },
+
+    async toggleBotTask(taskId, botId) {
+        await Auth.apiCall(`/api/scheduler/${taskId}/toggle`, { method: 'POST' });
+        await this.showScheduler(botId);
+    },
+
+    async deleteBotTask(taskId, botId) {
+        if (!confirm(Lang.t('bots.delete_task_confirm'))) return;
+        await Auth.apiCall(`/api/scheduler/${taskId}`, { method: 'DELETE' });
+        await this.showScheduler(botId);
+    },
+
+    // ============ CODE EDITOR ============
+
     async openEditor(id) {
         const detail = document.getElementById('bot-detail');
         if (!detail) return;
@@ -279,4 +482,536 @@ const BotsModule = {
             if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
         }
     },
+
+    // ============ YIELD BOT ============
+
+    _yieldState: {
+        jobId: null,
+        file: null,
+        mode: 'recalculate',
+        status: null,
+        pollInterval: null,
+        usage: null,
+    },
+
+    async openYieldBot() {
+        // Arrêter le refresh auto des bots
+        if (this._refreshInterval) {
+            clearInterval(this._refreshInterval);
+            this._refreshInterval = null;
+        }
+
+        const content = this._container || document.getElementById('bots-module-container')?.parentElement;
+        if (!content) return;
+
+        // Réinitialiser l'état
+        this._yieldState.jobId = null;
+        this._yieldState.file = null;
+        this._yieldState.status = null;
+
+        // Charger l'usage
+        await this._loadYieldUsage();
+
+        this._renderYieldUpload(content);
+    },
+
+    async _loadYieldUsage() {
+        try {
+            const r = await Auth.apiCall('/api/bots/yield/usage');
+            if (r && r.ok) {
+                this._yieldState.usage = await r.json();
+            }
+        } catch (e) {
+            this._yieldState.usage = { today_runs: 0, max_runs: 5, remaining: 5 };
+        }
+    },
+
+    _renderYieldUpload(container) {
+        if (!container) container = this._container || document.getElementById('bots-module-container')?.parentElement;
+        if (!container) return;
+
+        const usage = this._yieldState.usage || { today_runs: 0, max_runs: 5, remaining: 5 };
+        const usageClass = usage.remaining === 0 ? 'danger' : usage.remaining <= 2 ? 'warning' : '';
+        const hasFile = this._yieldState.file !== null;
+
+        container.innerHTML = `
+            <div class="yield-header">
+                <div class="yield-header-left">
+                    <span class="yield-header-icon">🏦</span>
+                    <div>
+                        <h1 style="margin:0;font-size:22px;">${Lang.t('yield.title')}</h1>
+                        <p style="color:var(--text-muted);font-size:13px;margin-top:2px;">${Lang.t('yield.subtitle')}</p>
+                    </div>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <span class="yield-usage-badge ${usageClass}">
+                        📊 ${Lang.t('yield.usage')}: ${usage.today_runs}/${usage.max_runs}
+                    </span>
+                    <button class="btn btn-secondary btn-sm" onclick="BotsModule.render(BotsModule._container)">
+                        ${Lang.t('yield.back_bots')}
+                    </button>
+                </div>
+            </div>
+
+            <div class="card" style="margin-bottom:20px;">
+                <!-- Dropzone -->
+                <div id="yield-dropzone" class="yield-dropzone ${hasFile ? 'has-file' : ''}"
+                    ondragover="event.preventDefault();this.classList.add('dragover')"
+                    ondragleave="this.classList.remove('dragover')"
+                    ondrop="event.preventDefault();this.classList.remove('dragover');BotsModule._onYieldFileDrop(event)"
+                    onclick="document.getElementById('yield-file-input').click()">
+                    ${hasFile ? this._renderYieldFileInfo() : `
+                        <span class="yield-dropzone-icon">📂</span>
+                        <div class="yield-dropzone-text">${Lang.t('yield.upload_hint')}</div>
+                    `}
+                </div>
+                <input type="file" id="yield-file-input" accept=".xlsx" style="display:none"
+                    onchange="BotsModule._onYieldFileSelect(event)">
+
+                <!-- Mode selector -->
+                <div class="yield-modes">
+                    <div class="yield-mode-option ${this._yieldState.mode === 'recalculate' ? 'selected' : ''}"
+                        onclick="BotsModule._selectYieldMode('recalculate')">
+                        <span class="yield-mode-icon">⚡</span>
+                        <div class="yield-mode-label">${Lang.t('yield.mode_recalculate')}</div>
+                        <div class="yield-mode-desc">${Lang.t('yield.mode_recalculate_desc')}</div>
+                    </div>
+                    <div class="yield-mode-option ${this._yieldState.mode === 'all' ? 'selected' : ''}"
+                        onclick="BotsModule._selectYieldMode('all')">
+                        <span class="yield-mode-icon">🌐</span>
+                        <div class="yield-mode-label">${Lang.t('yield.mode_all')}</div>
+                        <div class="yield-mode-desc">${Lang.t('yield.mode_all_desc')}</div>
+                    </div>
+                </div>
+
+                <!-- Upload info / summary -->
+                <div id="yield-upload-info" style="display:none;margin-top:12px;"></div>
+
+                <!-- Launch button -->
+                <button id="yield-launch-btn" class="yield-launch-btn" onclick="BotsModule._launchYieldBot()"
+                    ${!hasFile ? 'disabled' : ''}>
+                    ${Lang.t('yield.launch')}
+                </button>
+
+                <div id="yield-error-msg" style="display:none;margin-top:12px;color:var(--accent-red);font-size:13px;text-align:center;"></div>
+            </div>
+        `;
+    },
+
+    _renderYieldFileInfo() {
+        const f = this._yieldState.file;
+        if (!f) return '';
+        const sizeKB = (f.size / 1024).toFixed(1);
+        return `
+            <div class="yield-file-info">
+                <span class="yield-file-icon">📊</span>
+                <div class="yield-file-details">
+                    <div class="yield-file-name">${f.name}</div>
+                    <div class="yield-file-meta">${sizeKB} KB</div>
+                </div>
+                <button class="yield-file-remove" onclick="event.stopPropagation();BotsModule._removeYieldFile()">✕</button>
+            </div>
+        `;
+    },
+
+    _onYieldFileDrop(event) {
+        const files = event.dataTransfer?.files;
+        if (files && files.length > 0) {
+            this._handleYieldFile(files[0]);
+        }
+    },
+
+    _onYieldFileSelect(event) {
+        const files = event.target?.files;
+        if (files && files.length > 0) {
+            this._handleYieldFile(files[0]);
+        }
+    },
+
+    _handleYieldFile(file) {
+        if (!file.name.endsWith('.xlsx')) {
+            const errMsg = document.getElementById('yield-error-msg');
+            if (errMsg) {
+                errMsg.style.display = 'block';
+                errMsg.textContent = Lang.t('yield.invalid_file');
+            }
+            return;
+        }
+
+        this._yieldState.file = file;
+
+        // Mettre à jour la dropzone
+        const dropzone = document.getElementById('yield-dropzone');
+        if (dropzone) {
+            dropzone.classList.add('has-file');
+            dropzone.innerHTML = this._renderYieldFileInfo();
+        }
+
+        // Activer le bouton
+        const btn = document.getElementById('yield-launch-btn');
+        if (btn) btn.disabled = false;
+
+        // Cacher l'erreur
+        const errMsg = document.getElementById('yield-error-msg');
+        if (errMsg) errMsg.style.display = 'none';
+    },
+
+    _removeYieldFile() {
+        this._yieldState.file = null;
+        const dropzone = document.getElementById('yield-dropzone');
+        if (dropzone) {
+            dropzone.classList.remove('has-file');
+            dropzone.innerHTML = `
+                <span class="yield-dropzone-icon">📂</span>
+                <div class="yield-dropzone-text">${Lang.t('yield.upload_hint')}</div>
+            `;
+        }
+        const btn = document.getElementById('yield-launch-btn');
+        if (btn) btn.disabled = true;
+
+        // Reset file input
+        const input = document.getElementById('yield-file-input');
+        if (input) input.value = '';
+    },
+
+    _selectYieldMode(mode) {
+        this._yieldState.mode = mode;
+        document.querySelectorAll('.yield-mode-option').forEach(el => {
+            el.classList.toggle('selected', el.textContent.includes(
+                mode === 'recalculate' ? '⚡' : '🌐'
+            ));
+        });
+        // Re-select properly via onclick attribute content
+        const modes = document.querySelectorAll('.yield-mode-option');
+        modes.forEach(el => el.classList.remove('selected'));
+        if (mode === 'recalculate') modes[0]?.classList.add('selected');
+        else modes[1]?.classList.add('selected');
+    },
+
+    async _launchYieldBot() {
+        const file = this._yieldState.file;
+        if (!file) return;
+
+        const btn = document.getElementById('yield-launch-btn');
+        if (btn) { btn.disabled = true; btn.textContent = '⏳...'; }
+
+        const errMsg = document.getElementById('yield-error-msg');
+        if (errMsg) errMsg.style.display = 'none';
+
+        try {
+            // 1. Upload le fichier
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const uploadR = await Auth.apiCall('/api/bots/yield/upload', {
+                method: 'POST',
+                body: formData,
+                headers: {},  // Let browser set content-type with boundary
+                rawBody: true,
+            });
+
+            if (!uploadR || !uploadR.ok) {
+                const err = uploadR ? await uploadR.json().catch(() => ({})) : {};
+                throw new Error(err.detail || 'Upload failed');
+            }
+
+            const uploadData = await uploadR.json();
+            this._yieldState.jobId = uploadData.job_id;
+
+            // 2. Lancer le bot
+            const runR = await Auth.apiCall(`/api/bots/yield/run/${uploadData.job_id}`, {
+                method: 'POST',
+                body: JSON.stringify({ mode: this._yieldState.mode }),
+            });
+
+            if (!runR || !runR.ok) {
+                const err = runR ? await runR.json().catch(() => ({})) : {};
+                throw new Error(err.detail || 'Run failed');
+            }
+
+            // 3. Passer à l'écran de suivi
+            this._yieldState.status = 'running';
+            this._renderYieldRunning();
+
+        } catch (e) {
+            if (btn) { btn.disabled = false; btn.textContent = Lang.t('yield.launch'); }
+            if (errMsg) {
+                errMsg.style.display = 'block';
+                errMsg.textContent = `❌ ${e.message}`;
+            }
+        }
+    },
+
+    _renderYieldRunning() {
+        const container = this._container || document.getElementById('bots-module-container')?.parentElement;
+        if (!container) return;
+
+        const mode = this._yieldState.mode;
+        const modeLabel = mode === 'all' ? Lang.t('yield.mode_all') : Lang.t('yield.mode_recalculate');
+
+        container.innerHTML = `
+            <div class="yield-header">
+                <div class="yield-header-left">
+                    <span class="yield-header-icon">🏦</span>
+                    <div>
+                        <h1 style="margin:0;font-size:22px;">${Lang.t('yield.title')} — <span class="yield-pulse"></span>${Lang.t('yield.running')}</h1>
+                        <p style="color:var(--text-muted);font-size:13px;margin-top:2px;">${this._yieldState.file?.name || ''} · ${modeLabel}</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-bottom:16px;">
+                <!-- Progress -->
+                <div class="yield-progress-container">
+                    <div class="yield-progress-bar">
+                        <div id="yield-progress-fill" class="yield-progress-fill" style="width:0%"></div>
+                    </div>
+                    <div class="yield-progress-text">
+                        <span id="yield-progress-label">${Lang.t('yield.processing')} 0/0</span>
+                        <span id="yield-progress-percent" class="yield-progress-percent">0%</span>
+                    </div>
+                </div>
+
+                <!-- Stats (mis à jour en live) -->
+                <div class="yield-stats">
+                    <div class="yield-stat-card success">
+                        <div id="yield-stat-updated" class="yield-stat-value">0</div>
+                        <div class="yield-stat-label">✅ ${Lang.t('yield.updated')}</div>
+                    </div>
+                    <div class="yield-stat-card warning">
+                        <div id="yield-stat-skipped" class="yield-stat-value">0</div>
+                        <div class="yield-stat-label">⚠️ ${Lang.t('yield.skipped')}</div>
+                    </div>
+                    <div class="yield-stat-card error">
+                        <div id="yield-stat-errors" class="yield-stat-value">0</div>
+                        <div class="yield-stat-label">❌ ${Lang.t('yield.errors')}</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Logs terminal -->
+            <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                    <h3 style="margin:0;">📋 ${Lang.t('yield.logs')}</h3>
+                    ${mode === 'all' ? `<button class="btn btn-danger btn-sm" onclick="BotsModule._stopYieldBot()">${Lang.t('yield.stop')}</button>` : ''}
+                </div>
+                <div id="yield-logs" class="yield-terminal">
+                    <div style="color:#6b7280;text-align:center;padding:20px;">⏳ ${Lang.t('yield.running')}</div>
+                </div>
+            </div>
+        `;
+
+        // Démarrer le polling
+        this._startYieldPolling();
+    },
+
+    _startYieldPolling() {
+        // Nettoyer l'ancien polling
+        if (this._yieldState.pollInterval) {
+            clearInterval(this._yieldState.pollInterval);
+        }
+
+        // Poll immédiatement puis toutes les 2 secondes
+        this._pollYieldStatus();
+        this._yieldState.pollInterval = setInterval(() => this._pollYieldStatus(), 2000);
+    },
+
+    async _pollYieldStatus() {
+        const jobId = this._yieldState.jobId;
+        if (!jobId) return;
+
+        try {
+            const r = await Auth.apiCall(`/api/bots/yield/status/${jobId}`);
+            if (!r || !r.ok) return;
+
+            const data = await r.json();
+
+            // Mettre à jour la progression
+            const fill = document.getElementById('yield-progress-fill');
+            const label = document.getElementById('yield-progress-label');
+            const pct = document.getElementById('yield-progress-percent');
+
+            if (fill) fill.style.width = `${data.progress_percent}%`;
+            if (label) label.textContent = `${Lang.t('yield.processing')} ${data.progress}`;
+            if (pct) pct.textContent = `${data.progress_percent}%`;
+
+            // Mettre à jour les stats
+            const statUpdated = document.getElementById('yield-stat-updated');
+            const statSkipped = document.getElementById('yield-stat-skipped');
+            const statErrors = document.getElementById('yield-stat-errors');
+            if (statUpdated) statUpdated.textContent = data.stats?.updated || 0;
+            if (statSkipped) statSkipped.textContent = data.stats?.skipped || 0;
+            if (statErrors) statErrors.textContent = data.stats?.errors || 0;
+
+            // Mettre à jour les logs
+            const logsEl = document.getElementById('yield-logs');
+            if (logsEl && data.logs && data.logs.length > 0) {
+                logsEl.innerHTML = data.logs.map((l, i) => `
+                    <div class="yield-log-line">
+                        <span class="yield-log-num">${i + 1}</span>
+                        <span class="yield-log-content">${l.replace(/</g, '&lt;')}</span>
+                    </div>
+                `).join('');
+                // Auto-scroll en bas
+                logsEl.scrollTop = logsEl.scrollHeight;
+            }
+
+            // Vérifier si terminé
+            if (data.status === 'completed' || data.status === 'error' || data.status === 'stopped') {
+                this._yieldState.status = data.status;
+                this._yieldState.resultFile = data.result_file || null;
+                clearInterval(this._yieldState.pollInterval);
+                this._yieldState.pollInterval = null;
+
+                // Attendre un petit moment pour que les derniers logs arrivent
+                setTimeout(() => this._renderYieldCompleted(data), 1000);
+            }
+
+        } catch (e) {
+            console.error('[YieldBot] Poll error:', e);
+        }
+    },
+
+    _renderYieldCompleted(data) {
+        const container = this._container || document.getElementById('bots-module-container')?.parentElement;
+        if (!container) return;
+
+        const isSuccess = data.status === 'completed';
+        const statusIcon = isSuccess ? '✅' : data.status === 'error' ? '❌' : '⏹';
+        const statusLabel = isSuccess ? Lang.t('yield.completed') : data.status === 'error' ? Lang.t('yield.error') : Lang.t('yield.stopped');
+
+        container.innerHTML = `
+            <div class="yield-header">
+                <div class="yield-header-left">
+                    <span class="yield-header-icon">🏦</span>
+                    <div>
+                        <h1 style="margin:0;font-size:22px;">${Lang.t('yield.title')} — ${statusIcon} ${statusLabel}</h1>
+                        <p style="color:var(--text-muted);font-size:13px;margin-top:2px;">${data.filename || ''}</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Stats résumé -->
+            <div class="card" style="margin-bottom:16px;">
+                <h3 style="margin:0 0 16px;">📊 ${Lang.t('yield.summary')}</h3>
+
+                <div class="yield-stats">
+                    <div class="yield-stat-card success">
+                        <div class="yield-stat-value">${data.stats?.updated || 0}</div>
+                        <div class="yield-stat-label">✅ ${Lang.t('yield.updated')}</div>
+                    </div>
+                    <div class="yield-stat-card warning">
+                        <div class="yield-stat-value">${data.stats?.skipped || 0}</div>
+                        <div class="yield-stat-label">⚠️ ${Lang.t('yield.skipped')}</div>
+                    </div>
+                    <div class="yield-stat-card error">
+                        <div class="yield-stat-value">${data.stats?.errors || 0}</div>
+                        <div class="yield-stat-label">❌ ${Lang.t('yield.errors')}</div>
+                    </div>
+                </div>
+
+                <!-- Progress bar complète -->
+                <div class="yield-progress-container" style="margin-top:16px;">
+                    <div class="yield-progress-bar">
+                        <div class="yield-progress-fill" style="width:${data.progress_percent || 0}%;${!isSuccess ? 'background:linear-gradient(90deg,var(--accent-yellow),var(--accent-red));' : ''}"></div>
+                    </div>
+                    <div class="yield-progress-text" style="margin-top:4px;">
+                        <span>${data.progress || ''}</span>
+                        <span class="yield-progress-percent">${data.progress_percent || 0}%</span>
+                    </div>
+                </div>
+
+                <!-- Actions -->
+                <div style="display:flex;gap:12px;margin-top:20px;">
+                    ${isSuccess && data.result_file ? `
+                        <button class="yield-launch-btn" style="flex:1;margin-top:0;" onclick="BotsModule._downloadYieldResult()">
+                            ${Lang.t('yield.download')}
+                        </button>
+                    ` : ''}
+                    <button class="btn btn-secondary" style="flex:1;padding:14px;font-size:15px;font-weight:600;" onclick="BotsModule.openYieldBot()">
+                        ${Lang.t('yield.restart')}
+                    </button>
+                </div>
+            </div>
+
+            <!-- Logs -->
+            <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                    <h3 style="margin:0;">📋 ${Lang.t('yield.logs')} (${data.logs_count || data.logs?.length || 0} ${Lang.t('bots.lines')})</h3>
+                </div>
+                <div class="yield-terminal">
+                    ${data.logs && data.logs.length > 0
+                        ? data.logs.map((l, i) => `
+                            <div class="yield-log-line">
+                                <span class="yield-log-num">${i + 1}</span>
+                                <span class="yield-log-content">${l.replace(/</g, '&lt;')}</span>
+                            </div>
+                        `).join('')
+                        : '<div style="color:#6b7280;text-align:center;padding:20px;">No logs</div>'
+                    }
+                </div>
+            </div>
+        `;
+    },
+
+    async _downloadYieldResult() {
+        const jobId = this._yieldState.jobId;
+        if (!jobId) return;
+
+        try {
+            // Méthode 1: fetch + blob pour contrôler le nom du fichier
+            const r = await Auth.apiCall(`/api/bots/yield/download/${jobId}`);
+            if (!r || !r.ok) {
+                throw new Error('Download failed');
+            }
+
+            // Déterminer le nom du fichier
+            let filename = 'result.xlsx';
+            const disposition = r.headers.get('Content-Disposition') || '';
+            const match = disposition.match(/filename="?([^";\n]+)"?/i);
+            if (match) {
+                filename = decodeURIComponent(match[1].trim());
+            } else if (this._yieldState.file?.name) {
+                const base = this._yieldState.file.name.replace(/\.xlsx$/i, '');
+                filename = `${base}_AGGIORNATO.xlsx`;
+            }
+
+            // Créer le blob et télécharger
+            const blob = await r.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            // Petit délai avant cleanup pour que le download se lance
+            setTimeout(() => {
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }, 100);
+
+        } catch (e) {
+            console.error('[YieldBot] Download error:', e);
+            // Fallback: window.open avec le nom de fichier dans l'URL
+            const token = Auth.getToken();
+            const fname = this._yieldState.file?.name || 'result.xlsx';
+            const outputName = fname.replace(/\.xlsx$/i, '_AGGIORNATO.xlsx');
+            if (token) {
+                window.open(`/api/bots/yield/download-file/${jobId}/${encodeURIComponent(outputName)}?token=${encodeURIComponent(token)}`, '_blank');
+            }
+        }
+    },
+
+    async _stopYieldBot() {
+        const jobId = this._yieldState.jobId;
+        if (!jobId) return;
+
+        try {
+            await Auth.apiCall(`/api/bots/yield/stop/${jobId}`, { method: 'POST' });
+        } catch (e) {
+            console.error('[YieldBot] Stop error:', e);
+        }
+    },
 };
+

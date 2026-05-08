@@ -72,15 +72,15 @@ const GameServer = {
         content.innerHTML = `
             <div class="page-header flex justify-between items-center">
                 <div>
-                    <h1 class="page-title">🎮 Serveurs de jeux</h1>
-                    <p class="page-subtitle">Gérer tes serveurs — ${this._games.length} jeux supportés</p>
+                    <h1 class="page-title">${Lang.t('gs.title')}</h1>
+                    <p class="page-subtitle">${Lang.t('gs.subtitle')} — ${this._games.length} ${Lang.t('gs.game_label')}</p>
                 </div>
                 <div class="flex gap-2">
                     <button class="btn btn-primary" onclick="GameServer.showCreateModal()">
-                        ➕ Nouveau serveur
+                        ${Lang.t('gs.create')}
                     </button>
                     <button class="btn btn-secondary" onclick="App.navigateTo('hub')">
-                        ← Retour au Hub
+                        ${Lang.t('gs.back_hub')}
                     </button>
                 </div>
             </div>
@@ -89,31 +89,31 @@ const GameServer = {
             <div style="background: var(--bg-card); border: 1px solid var(--border-active); border-radius: var(--border-radius); padding: 14px 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 12px;">
                 <span style="font-size: 20px;">🌐</span>
                 <div>
-                    <div style="font-size: 13px; color: var(--text-secondary);">IP de connexion pour les joueurs</div>
+                    <div style="font-size: 13px; color: var(--text-secondary);">${Lang.t('gs.conn_ip')}</div>
                     <div style="font-size: 18px; font-weight: 700; color: var(--accent-green); font-family: monospace;">
-                        ${this._serverIP || 'Chargement...'}
+                        ${this._serverIP || Lang.t('common.loading')}
                     </div>
                 </div>
-                <button class="btn btn-secondary btn-sm" style="margin-left: auto;" onclick="GameServer.copyIP()">📋 Copier</button>
+                <button class="btn btn-secondary btn-sm" style="margin-left: auto;" onclick="GameServer.copyIP()">${Lang.t('gs.copy')}</button>
             </div>
 
             <div id="docker-warning" class="hidden" style="background: var(--accent-yellow); color: #000; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; font-size: 13px;">
-                ⚠️ Docker n'est pas disponible. Lance Docker Desktop pour gérer les serveurs.
+                ${Lang.t('gs.docker_warn')}
             </div>
 
             <div id="server-list" class="server-list">
                 <div class="text-center" style="padding: 40px; color: var(--text-muted);">
-                    Chargement...
+                    ${Lang.t('common.loading')}
                 </div>
             </div>
 
             <!-- Modal création -->
             <div id="create-modal" class="modal-overlay">
                 <div class="modal" style="max-width: 520px;">
-                    <h2 class="modal-title">➕ Nouveau serveur</h2>
+                    <h2 class="modal-title">${Lang.t('gs.new_server')}</h2>
                     
                     <div class="form-group">
-                        <label class="form-label">Jeu</label>
+                        <label class="form-label">${Lang.t('gs.game_label')}</label>
                         <select class="form-input" id="server-game-type" onchange="GameServer.onGameChange()">
                             ${gameOptions}
                         </select>
@@ -121,11 +121,11 @@ const GameServer = {
                     <div id="game-description" style="font-size: 12px; color: var(--text-muted); margin-top: -12px; margin-bottom: 16px;">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Nom du serveur</label>
+                        <label class="form-label">${Lang.t('gs.server_name')}</label>
                         <input type="text" class="form-input" id="server-name" placeholder="Mon serveur" />
                     </div>
                     <div class="form-group" id="server-type-group">
-                        <label class="form-label">Type de serveur</label>
+                        <label class="form-label">${Lang.t('gs.server_type')}</label>
                         <select class="form-input" id="server-type-select">
                             <option value="VANILLA">🎨 Vanilla</option>
                             <option value="PAPER" selected>📄 Paper (recommandé)</option>
@@ -142,7 +142,7 @@ const GameServer = {
                         </select>
                     </div>
                     <div class="form-group" id="version-group">
-                        <label class="form-label">Version Minecraft</label>
+                        <label class="form-label">${Lang.t('gs.version')}</label>
                         <select class="form-input" id="server-version">
                             <option value="LATEST">🔄 Dernière version (LATEST)</option>
                             <option value="1.21.4">1.21.4</option>
@@ -177,18 +177,18 @@ const GameServer = {
 
                     <!-- Choix modpack (affiché pour Forge/Fabric/NeoForge/Quilt) -->
                     <div id="modpack-choice-group" style="display:none;">
-                        <label class="form-label">Mode d'installation</label>
+                        <label class="form-label">${Lang.t('gs.install_mode')}</label>
                         <div style="display:flex;gap:8px;margin-bottom:12px;">
                             <button type="button" id="modpack-mode-blank" class="btn btn-primary btn-sm" onclick="GameServer.setModpackMode('blank')" style="flex:1;padding:10px;">
-                                🗂️ Serveur vierge<br><span style="font-size:10px;font-weight:400;opacity:0.8;">J'ajouterai les mods après</span>
+                                ${Lang.t('gs.blank_server')}<br><span style="font-size:10px;font-weight:400;opacity:0.8;">${Lang.t('gs.blank_hint')}</span>
                             </button>
                             <button type="button" id="modpack-mode-modpack" class="btn btn-secondary btn-sm" onclick="GameServer.setModpackMode('modpack')" style="flex:1;padding:10px;">
-                                📦 Modpack CurseForge<br><span style="font-size:10px;font-weight:400;opacity:0.8;">Choisir un modpack pré-fait</span>
+                                ${Lang.t('gs.modpack_cf')}<br><span style="font-size:10px;font-weight:400;opacity:0.8;">${Lang.t('gs.modpack_hint')}</span>
                             </button>
                         </div>
                         <div id="modpack-search-area" style="display:none;">
                             <div style="display:flex;gap:6px;margin-bottom:8px;">
-                                <input id="modpack-search-q" class="form-input" placeholder="Rechercher un modpack (ex: RLCraft, All the Mods)..." style="flex:1;" onkeydown="if(event.key==='Enter')GameServer.searchModpacks()" />
+                                <input id="modpack-search-q" class="form-input" placeholder="${Lang.t('gs.search_modpack')}" style="flex:1;" onkeydown="if(event.key==='Enter')GameServer.searchModpacks()" />
                                 <button class="btn btn-primary btn-sm" onclick="GameServer.searchModpacks()">🔍</button>
                             </div>
                             <div id="modpack-results" style="max-height:200px;overflow-y:auto;"></div>
@@ -198,26 +198,26 @@ const GameServer = {
                     </div>
 
                     <div class="form-group" id="custom-image-group" style="display: none;">
-                        <label class="form-label">Image Docker</label>
+                        <label class="form-label">${Lang.t('gs.docker_image')}</label>
                         <input type="text" class="form-input" id="server-custom-image" placeholder="mon-image:latest" />
                     </div>
                     <div style="display: flex; gap: 12px;">
                         <div class="form-group" style="flex: 1;">
-                            <label class="form-label">Port</label>
+                            <label class="form-label">${Lang.t('gs.port')}</label>
                             <input type="number" class="form-input" id="server-port" value="25565" />
                         </div>
                         <div class="form-group" style="flex: 1;">
-                            <label class="form-label">RAM (Mo)</label>
+                            <label class="form-label">${Lang.t('gs.ram')}</label>
                             <input type="number" class="form-input" id="server-memory" value="2048" step="512" />
                         </div>
                     </div>
                     <div id="create-error" class="login-error"></div>
                     <div id="create-loading" class="hidden" style="text-align: center; padding: 12px; color: var(--text-secondary); font-size: 13px;">
-                        ⏳ Téléchargement de l'image Docker... Ça peut prendre quelques minutes la première fois.
+                        ${Lang.t('gs.creating')}
                     </div>
                     <div id="create-buttons" class="flex gap-2 mt-4">
-                        <button class="btn btn-primary" onclick="GameServer.createServer()">Créer le serveur</button>
-                        <button class="btn btn-secondary" onclick="GameServer.hideCreateModal()">Annuler</button>
+                        <button class="btn btn-primary" onclick="GameServer.createServer()">${Lang.t('gs.create_btn')}</button>
+                        <button class="btn btn-secondary" onclick="GameServer.hideCreateModal()">${Lang.t('gs.cancel')}</button>
                     </div>
                 </div>
             </div>
@@ -227,15 +227,15 @@ const GameServer = {
                 <div class="modal" style="max-width: 800px;">
                     <div class="flex justify-between items-center mb-4">
                         <div class="flex items-center gap-3">
-                            <h2 class="modal-title" style="margin: 0;">📋 Console live</h2>
-                            <span id="console-status" style="font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--bg-hover); color: var(--text-muted);">Déconnecté</span>
+                            <h2 class="modal-title" style="margin: 0;">${Lang.t('gs.console_live')}</h2>
+                            <span id="console-status" style="font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--bg-hover); color: var(--text-muted);">${Lang.t('gs.disconnected')}</span>
                         </div>
-                        <button class="btn btn-secondary btn-sm" onclick="GameServer.hideLogsModal()">✕ Fermer</button>
+                        <button class="btn btn-secondary btn-sm" onclick="GameServer.hideLogsModal()">${Lang.t('gs.close')}</button>
                     </div>
-                    <div id="server-logs" class="console" style="height: 400px; overflow-y: auto; font-size: 12px; line-height: 1.6;">Connexion en cours...</div>
+                    <div id="server-logs" class="console" style="height: 400px; overflow-y: auto; font-size: 12px; line-height: 1.6;">${Lang.t('gs.connecting')}</div>
                     <div style="display: flex; gap: 8px; margin-top: 8px;">
-                        <input type="text" class="form-input" id="console-command" placeholder="Envoie une commande... (ex: say Hello)" style="flex: 1; font-family: monospace; font-size: 13px;" onkeydown="if(event.key==='Enter') GameServer.sendCommand()" />
-                        <button class="btn btn-primary" onclick="GameServer.sendCommand()">Envoyer</button>
+                        <input type="text" class="form-input" id="console-command" placeholder="${Lang.t('gs.send_cmd')}" style="flex: 1; font-family: monospace; font-size: 13px;" onkeydown="if(event.key==='Enter') GameServer.sendCommand()" />
+                        <button class="btn btn-primary" onclick="GameServer.sendCommand()">${Lang.t('gs.send')}</button>
                     </div>
                 </div>
             </div>
@@ -244,16 +244,16 @@ const GameServer = {
             <div id="backups-modal" class="modal-overlay">
                 <div class="modal" style="max-width: 650px;">
                     <div class="flex justify-between items-center mb-4">
-                        <h2 class="modal-title" style="margin: 0;">💾 Sauvegardes</h2>
+                        <h2 class="modal-title" style="margin: 0;">${Lang.t('gs.backups_title')}</h2>
                         <div class="flex gap-2">
                             <button class="btn btn-primary btn-sm" id="backup-create-btn" onclick="GameServer.createBackup()">
-                                ➕ Sauvegarder maintenant
+                                ${Lang.t('gs.backup_now')}
                             </button>
-                            <button class="btn btn-secondary btn-sm" onclick="GameServer.hideBackupsModal()">✕ Fermer</button>
+                            <button class="btn btn-secondary btn-sm" onclick="GameServer.hideBackupsModal()">${Lang.t('gs.close')}</button>
                         </div>
                     </div>
                     <div id="backups-list" style="max-height: 400px; overflow-y: auto;">
-                        <div style="text-align: center; padding: 30px; color: var(--text-muted);">Chargement...</div>
+                        <div style="text-align: center; padding: 30px; color: var(--text-muted);">${Lang.t('common.loading')}</div>
                     </div>
                 </div>
             </div>
@@ -262,11 +262,11 @@ const GameServer = {
             <div id="delete-modal" class="modal-overlay">
                 <div class="modal" style="max-width: 400px; text-align: center;">
                     <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
-                    <h2 class="modal-title">Supprimer ce serveur ?</h2>
-                    <p style="color: var(--text-muted); margin-bottom: 20px;">Cette action est irréversible. Toutes les données seront perdues.</p>
+                    <h2 class="modal-title">${Lang.t('gs.delete_title')}</h2>
+                    <p style="color: var(--text-muted); margin-bottom: 20px;">${Lang.t('gs.delete_warn')}</p>
                     <div class="flex gap-2" style="justify-content: center;">
-                        <button class="btn btn-danger" id="delete-confirm-btn" onclick="GameServer.confirmDelete()">🗑️ Supprimer</button>
-                        <button class="btn btn-secondary" onclick="GameServer.hideDeleteModal()">Annuler</button>
+                        <button class="btn btn-danger" id="delete-confirm-btn" onclick="GameServer.confirmDelete()">${Lang.t('gs.delete_btn')}</button>
+                        <button class="btn btn-secondary" onclick="GameServer.hideDeleteModal()">${Lang.t('gs.cancel')}</button>
                     </div>
                 </div>
             </div>
@@ -275,14 +275,14 @@ const GameServer = {
             <div id="resources-modal" class="modal-overlay">
                 <div class="modal" style="max-width: 500px;">
                     <div class="flex justify-between items-center mb-4">
-                        <h2 class="modal-title" style="margin: 0;">⚙️ Réglages ressources</h2>
-                        <button class="btn btn-secondary btn-sm" onclick="GameServer.hideResourcesModal()">✕ Fermer</button>
+                        <h2 class="modal-title" style="margin: 0;">${Lang.t('gs.resources')}</h2>
+                        <button class="btn btn-secondary btn-sm" onclick="GameServer.hideResourcesModal()">${Lang.t('gs.close')}</button>
                     </div>
 
                     <!-- RAM Slider -->
                     <div style="margin-bottom: 24px;">
                         <div class="flex justify-between items-center" style="margin-bottom: 8px;">
-                            <label class="form-label" style="margin: 0;">💻 Mémoire RAM</label>
+                            <label class="form-label" style="margin: 0;">${Lang.t('gs.memory')}</label>
                             <span id="ram-value" style="font-family: monospace; font-weight: 700; color: var(--accent-blue); font-size: 16px;">2048 Mo</span>
                         </div>
                         <input type="range" id="ram-slider" min="256" max="8192" step="256" value="2048"
@@ -311,7 +311,7 @@ const GameServer = {
 
                     <div id="resources-message" style="font-size: 13px; margin-bottom: 12px;"></div>
                     <button class="btn btn-primary" id="resources-save-btn" onclick="GameServer.saveResources()" style="width: 100%;">
-                        💾 Appliquer les changements
+                        ${Lang.t('gs.apply')}
                     </button>
                 </div>
             </div>
@@ -320,40 +320,40 @@ const GameServer = {
             <div id="scheduler-modal" class="modal-overlay">
                 <div class="modal" style="max-width: 550px;">
                     <div class="flex justify-between items-center mb-4">
-                        <h2 class="modal-title" style="margin: 0;">⏰ Tâches planifiées</h2>
-                        <button class="btn btn-secondary btn-sm" onclick="GameServer.hideSchedulerModal()">✕ Fermer</button>
+                        <h2 class="modal-title" style="margin: 0;">${Lang.t('gs.scheduler')}</h2>
+                        <button class="btn btn-secondary btn-sm" onclick="GameServer.hideSchedulerModal()">${Lang.t('gs.close')}</button>
                     </div>
 
                     <!-- Formulaire nouvelle tâche -->
                     <div style="background: var(--bg-secondary); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
-                        <div class="form-label" style="margin-bottom: 8px;">Nouvelle tâche</div>
+                        <div class="form-label" style="margin-bottom: 8px;">${Lang.t('gs.new_task')}</div>
                         <div class="flex gap-2" style="align-items: flex-end;">
                             <div style="flex: 1;">
-                                <label style="font-size: 12px; color: var(--text-muted);">Type</label>
+                                <label style="font-size: 12px; color: var(--text-muted);">${Lang.t('gs.task_type')}</label>
                                 <select id="scheduler-type" class="form-input" style="margin-top: 4px;">
-                                    <option value="backup">💾 Backup auto</option>
-                                    <option value="restart">🔄 Redémarrage auto</option>
+                                    <option value="backup">${Lang.t('gs.backup_auto')}</option>
+                                    <option value="restart">${Lang.t('gs.restart_auto')}</option>
                                 </select>
                             </div>
                             <div style="flex: 1;">
-                                <label style="font-size: 12px; color: var(--text-muted);">Intervalle</label>
+                                <label style="font-size: 12px; color: var(--text-muted);">${Lang.t('gs.task_interval')}</label>
                                 <select id="scheduler-interval" class="form-input" style="margin-top: 4px;">
-                                    <option value="1">Toutes les 1h</option>
-                                    <option value="3">Toutes les 3h</option>
-                                    <option value="6" selected>Toutes les 6h</option>
-                                    <option value="12">Toutes les 12h</option>
-                                    <option value="24">Toutes les 24h</option>
-                                    <option value="48">Toutes les 48h</option>
-                                    <option value="168">Toutes les semaines</option>
+                                    <option value="1">${Lang.t('gs.every_1h')}</option>
+                                    <option value="3">${Lang.t('gs.every_3h')}</option>
+                                    <option value="6" selected>${Lang.t('gs.every_6h')}</option>
+                                    <option value="12">${Lang.t('gs.every_12h')}</option>
+                                    <option value="24">${Lang.t('gs.every_24h')}</option>
+                                    <option value="48">${Lang.t('gs.every_48h')}</option>
+                                    <option value="168">${Lang.t('gs.every_week')}</option>
                                 </select>
                             </div>
-                            <button class="btn btn-primary" onclick="GameServer.createScheduledTask()">➕ Ajouter</button>
+                            <button class="btn btn-primary" onclick="GameServer.createScheduledTask()">${Lang.t('gs.task_add')}</button>
                         </div>
                     </div>
 
                     <!-- Liste des tâches -->
                     <div id="scheduler-tasks-list">
-                        <div style="text-align: center; padding: 20px; color: var(--text-muted);">⏳ Chargement...</div>
+                        <div style="text-align: center; padding: 20px; color: var(--text-muted);">⏳ ${Lang.t('common.loading')}</div>
                     </div>
                     <div id="scheduler-message" style="font-size: 13px; margin-top: 8px;"></div>
                 </div>
@@ -364,7 +364,7 @@ const GameServer = {
                 <div class="modal" style="max-width: 700px; max-height: 85vh; display: flex; flex-direction: column;">
                     <div class="flex justify-between items-center mb-4">
                         <h2 class="modal-title" style="margin: 0;">🧩 Mods CurseForge</h2>
-                        <button class="btn btn-secondary btn-sm" onclick="GameServer.hideModsModal()">✕ Fermer</button>
+                        <button class="btn btn-secondary btn-sm" onclick="GameServer.hideModsModal()">${Lang.t('gs.close')}</button>
                     </div>
 
                     <!-- Tabs -->
@@ -394,7 +394,7 @@ const GameServer = {
                     <!-- Tab Installés -->
                     <div id="mods-installed-tab" style="display:none;">
                         <div id="mods-installed-list" style="overflow-y: auto; max-height: 450px;">
-                            <div style="text-align:center;padding:30px;color:var(--text-muted);">⏳ Chargement...</div>
+                            <div style="text-align:center;padding:30px;color:var(--text-muted);">⏳ ${Lang.t('common.loading')}</div>
                         </div>
                     </div>
 
@@ -415,7 +415,7 @@ const GameServer = {
             // Petit feedback visuel
             const btn = event.target;
             const original = btn.textContent;
-            btn.textContent = '✅ Copié !';
+            btn.textContent = Lang.t('gs.copied');
             setTimeout(() => btn.textContent = original, 1500);
         });
     },
@@ -544,11 +544,11 @@ const GameServer = {
                 <img src="${iconUrl}" style="width:36px;height:36px;border-radius:8px;" onerror="this.style.display='none'" />
                 <div style="flex:1;">
                     <div style="font-size:14px;font-weight:700;">${name}</div>
-                    <div style="font-size:10px;color:var(--text-muted);">⏳ Chargement des versions...</div>
+                    <div style="font-size:10px;color:var(--text-muted);">⏳ ${Lang.t('common.loading')}</div>
                 </div>
                 <button class="btn btn-secondary btn-sm" onclick="GameServer._clearModpack()" style="font-size:10px;">✕</button>
             </div>
-            <div id="modpack-versions"><div style="color:var(--text-muted);font-size:12px;">⏳ Chargement...</div></div>`;
+            <div id="modpack-versions"><div style="color:var(--text-muted);font-size:12px;">⏳ ${Lang.t('common.loading')}</div></div>`;
 
         // Charger les fichiers du modpack
         const r = await Auth.apiCall(`/api/mods/${id}/files`);
@@ -636,8 +636,8 @@ const GameServer = {
             list.innerHTML = `
                 <div class="text-center" style="padding: 60px; color: var(--text-muted);">
                     <div style="font-size: 48px; margin-bottom: 16px;">🎮</div>
-                    <p style="font-size: 16px; margin-bottom: 8px;">Aucun serveur pour le moment</p>
-                    <p style="font-size: 13px;">Clique sur "Nouveau serveur" pour en créer un !</p>
+                    <p style="font-size: 16px; margin-bottom: 8px;">${Lang.t('gs.no_servers')}</p>
+                    <p style="font-size: 13px;">${Lang.t('gs.no_servers_hint')}</p>
                 </div>
             `;
             return;
@@ -651,22 +651,22 @@ const GameServer = {
             let statusClass, statusText;
             if (pending === 'starting') {
                 statusClass = 'starting';
-                statusText = '⏳ Démarrage...';
+                statusText = Lang.t('gs.starting');
             } else if (pending === 'stopping') {
                 statusClass = 'stopping';
-                statusText = '⏳ Arrêt...';
+                statusText = Lang.t('gs.stopping');
             } else if (pending === 'restarting') {
                 statusClass = 'restarting';
-                statusText = '⏳ Redémarrage...';
+                statusText = Lang.t('gs.restarting');
             } else if (isRunning) {
                 statusClass = 'online';
-                statusText = 'En ligne';
+                statusText = Lang.t('gs.online');
             } else if (server.status === 'error') {
                 statusClass = 'error';
-                statusText = 'Erreur';
+                statusText = Lang.t('gs.error');
             } else {
                 statusClass = 'offline';
-                statusText = 'Arrêté';
+                statusText = Lang.t('gs.offline');
             }
 
             // Trouver l'icône du jeu
@@ -701,10 +701,10 @@ const GameServer = {
                             ${isPending ? `
                                 <button class="btn btn-icon btn-secondary" disabled style="opacity:0.5;">⏳</button>
                             ` : isRunning ? `
-                                <button class="btn btn-icon btn-secondary" onclick="GameServer.stopServer(${server.id})" title="Arrêter">⏹️</button>
-                                <button class="btn btn-icon btn-secondary" onclick="GameServer.restartServer(${server.id})" title="Redémarrer">🔄</button>
+                                <button class="btn btn-icon btn-secondary" onclick="GameServer.stopServer(${server.id})" title="${Lang.t('common.stop')}">⏹️</button>
+                                <button class="btn btn-icon btn-secondary" onclick="GameServer.restartServer(${server.id})" title="${Lang.t('common.restart')}">🔄</button>
                             ` : `
-                                <button class="btn btn-icon btn-primary" onclick="GameServer.startServer(${server.id})" title="Démarrer">▶️</button>
+                                <button class="btn btn-icon btn-primary" onclick="GameServer.startServer(${server.id})" title="${Lang.t('common.start')}">▶️</button>
                             `}
                         </div>
                     </div>
@@ -791,13 +791,13 @@ const GameServer = {
                             await this.refreshServers();
                             if (ready && typeof Toast !== 'undefined') {
                                 const labels = {
-                                    starting: '▶️ Serveur démarré !',
-                                    stopping: '⏹ Serveur arrêté',
-                                    restarting: '🔄 Serveur redémarré !',
+                                    starting: Lang.t('gs.toast_started'),
+                                    stopping: Lang.t('gs.toast_stopped'),
+                                    restarting: Lang.t('gs.toast_restarted'),
                                 };
                                 Toast.success(labels[pendingType] || 'OK');
                             } else if (attempts >= maxAttempts && typeof Toast !== 'undefined') {
-                                Toast.error('⏰ Timeout — le serveur met trop de temps');
+                                Toast.error(Lang.t('gs.toast_timeout'));
                             }
                         }
                     }
