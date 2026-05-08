@@ -30,12 +30,24 @@ from backend.auth.models import User
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
+def _truncate_password(password: str) -> str:
+    """
+    Tronque le mot de passe à 72 octets (limite bcrypt).
+    Les versions récentes de bcrypt (4.1+) lèvent une ValueError
+    si le mot de passe dépasse 72 octets. On tronque silencieusement.
+    """
+    encoded = password.encode("utf-8")
+    if len(encoded) > 72:
+        encoded = encoded[:72]
+    return encoded.decode("utf-8", errors="ignore")
+
+
 def hash_password(password: str) -> str:
     """
     Transforme un mot de passe en hash.
     Exemple: "monmdp123" → "$2b$12$LJ3m5..."
     """
-    return pwd_context.hash(password)
+    return pwd_context.hash(_truncate_password(password))
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -43,7 +55,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     Vérifie si un mot de passe correspond à un hash.
     Retourne True si ça correspond, False sinon.
     """
-    return pwd_context.verify(plain_password, hashed_password)
+    return pwd_context.verify(_truncate_password(plain_password), hashed_password)
 
 
 # --- Tokens JWT ---
