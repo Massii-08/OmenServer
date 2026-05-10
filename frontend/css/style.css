@@ -879,6 +879,8 @@ canvas {
     padding: 32px;
     width: 90%;
     max-width: 480px;
+    max-height: 85vh;
+    overflow-y: auto;
     transform: translateY(20px);
     transition: transform var(--transition-normal);
 }
