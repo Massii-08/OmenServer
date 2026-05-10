@@ -264,11 +264,11 @@ def _parse_progress(job: dict, line: str):
     elif "Perpetua: Yield=" in line or "Yield perpetuo:" in line:
         job["stats"]["updated"] = job["stats"].get("updated", 0) + 1
 
-    # Détecter les skips (⚠️ sans "Errore")
+    # Détecter les skips (obligations sans données suffisantes pour calculer le yield)
+    # Note: "Scraping fallito" n'est PAS un skip — le yield est calculé avec les données existantes
     if ("⚠️ Nessun prezzo" in line
             or "⚠️ Dati insufficienti" in line
-            or "⚠️ Prezzo non numerico" in line
-            or "⚠️ Scraping fallito" in line):
+            or "⚠️ Prezzo non numerico" in line):
         job["stats"]["skipped"] = job["stats"].get("skipped", 0) + 1
 
     # Détecter les erreurs
