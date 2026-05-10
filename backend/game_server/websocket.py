@@ -176,6 +176,15 @@ async def console_websocket(
                     cmd = data.get("data", "").strip()
                     if cmd:
                         try:
+                            # Vérifier que le conteneur est bien running (pas restarting/paused)
+                            container.reload()
+                            state = container.status
+                            if state != "running":
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "message": f"Le conteneur n'est pas prêt (état: {state}). Attends qu'il soit running."
+                                })
+                                continue
                             # Envoyer la commande au conteneur via rcon-cli
                             result = container.exec_run(
                                 f"rcon-cli {cmd}",
@@ -204,13 +213,25 @@ async def console_websocket(
         finally:
             stop_event.set()
 
-    # 7. Lancer les deux tâches en parallèle
+    async def heartbeat():
+        """Envoie un ping toutes les 30s pour garder le WebSocket ouvert (Cloudflare Tunnel timeout)."""
+        while not stop_event.is_set():
+            try:
+                await asyncio.sleep(30)
+                if not stop_event.is_set():
+                    await websocket.send_json({"type": "ping"})
+            except Exception:
+                break
+
+    # 7. Lancer les trois tâches en parallèle
     try:
         log_task = asyncio.create_task(forward_logs())
+        ping_task = asyncio.create_task(heartbeat())
         await receive_commands()
     except Exception as e:
         logger.warning(f"Console WS fermée: {e}")
     finally:
         stop_event.set()
         log_task.cancel()
+        ping_task.cancel()
         logger.info(f"Console WS déconnectée: {user.username} → serveur {server.name}")

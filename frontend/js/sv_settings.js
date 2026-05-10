@@ -225,13 +225,13 @@ const SvSettings = {
         <div style="margin-bottom:20px;">
             <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
                 <label class="form-label" style="margin:0;">${Lang.t('sv.cfg.memory')}</label>
-                <span id="sv-ram-val" style="font-family:monospace;font-weight:700;color:var(--accent-blue);font-size:16px;">${s.memory_mb||1024} Mo</span>
+                <span id="sv-ram-val" style="font-family:monospace;font-weight:700;color:var(--accent-blue);font-size:16px;">${((s.memory_mb||1024) / 1024).toFixed(1).replace(/\.0$/, '')} Go</span>
             </div>
-            <input type="range" id="sv-ram-slider" min="256" max="8192" step="256" value="${s.memory_mb||1024}"
+            <input type="range" id="sv-ram-slider" min="0.5" max="16" step="0.5" value="${((s.memory_mb||1024) / 1024).toFixed(1)}"
                 style="width:100%;accent-color:var(--accent-blue);cursor:pointer;"
-                oninput="document.getElementById('sv-ram-val').textContent=this.value+' Mo'" />
+                oninput="document.getElementById('sv-ram-val').textContent=parseFloat(this.value).toFixed(1).replace(/\\.0$/,'')+' Go'" />
             <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-top:4px;">
-                <span>256 Mo</span><span>8192 Mo (8 Go)</span>
+                <span>0.5 Go</span><span>16 Go</span>
             </div>
         </div>
         <div style="margin-bottom:20px;">
@@ -281,7 +281,8 @@ const SvSettings = {
     },
 
     async _saveResources() {
-        const ram = parseInt(document.getElementById('sv-ram-slider').value);
+        const ramGb = parseFloat(document.getElementById('sv-ram-slider').value);
+        const ram = Math.round(ramGb * 1024);
         const cpu = parseInt(document.getElementById('sv-cpu-slider').value);
         const msg = document.getElementById('sv-res-msg');
         if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳...'; }

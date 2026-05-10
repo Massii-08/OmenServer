@@ -10,11 +10,11 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Charge les variables depuis le fichier .env (s'il existe)
-load_dotenv()
-
 # Chemin racine du projet (le dossier parent de backend/)
 PROJECT_DIR = Path(__file__).resolve().parent.parent
+
+# Charge les variables depuis le fichier .env (chemin absolu pour systemd/production)
+load_dotenv(PROJECT_DIR / ".env")
 
 
 class Settings:

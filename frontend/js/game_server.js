@@ -208,7 +208,7 @@ const GameServer = {
                         </div>
                         <div class="form-group" style="flex: 1;">
                             <label class="form-label">${Lang.t('gs.ram')}</label>
-                            <input type="number" class="form-input" id="server-memory" value="2048" step="512" />
+                            <input type="number" class="form-input" id="server-memory" value="2" step="0.5" min="0.5" />
                         </div>
                     </div>
                     <div id="create-error" class="login-error"></div>
@@ -283,14 +283,14 @@ const GameServer = {
                     <div style="margin-bottom: 24px;">
                         <div class="flex justify-between items-center" style="margin-bottom: 8px;">
                             <label class="form-label" style="margin: 0;">${Lang.t('gs.memory')}</label>
-                            <span id="ram-value" style="font-family: monospace; font-weight: 700; color: var(--accent-blue); font-size: 16px;">2048 Mo</span>
+                            <span id="ram-value" style="font-family: monospace; font-weight: 700; color: var(--accent-blue); font-size: 16px;">2 Go</span>
                         </div>
-                        <input type="range" id="ram-slider" min="256" max="8192" step="256" value="2048"
+                        <input type="range" id="ram-slider" min="0.5" max="16" step="0.5" value="2"
                             style="width: 100%; accent-color: var(--accent-blue); cursor: pointer;"
-                            oninput="document.getElementById('ram-value').textContent = this.value + ' Mo'" />
+                            oninput="document.getElementById('ram-value').textContent = parseFloat(this.value).toFixed(1).replace(/\\.0$/, '') + ' Go'" />
                         <div class="flex justify-between" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
-                            <span>256 Mo</span>
-                            <span>8192 Mo (8 Go)</span>
+                            <span>0.5 Go</span>
+                            <span>16 Go</span>
                         </div>
                     </div>
 
@@ -439,7 +439,7 @@ const GameServer = {
         if (!game) return;
 
         document.getElementById('server-port').value = game.default_port;
-        document.getElementById('server-memory').value = game.default_memory_mb;
+        document.getElementById('server-memory').value = (game.default_memory_mb / 1024).toFixed(1).replace(/\.0$/, '');
 
         const descEl = document.getElementById('game-description');
         if (descEl) descEl.textContent = game.description || '';
@@ -684,7 +684,7 @@ const GameServer = {
                         <div>
                             <div class="server-name">${server.name}</div>
                             <div class="server-meta">
-                                ${gameName} · v${server.version} · ${server.memory_mb} Mo RAM · ${server.cpu_percent || 100}% CPU
+                                ${gameName} · v${server.version} · ${(server.memory_mb / 1024).toFixed(1).replace(/\.0$/, '')} Go RAM · ${server.cpu_percent || 100}% CPU
                             </div>
                             <div style="margin-top: 4px; font-family: monospace; font-size: 12px; color: ${isRunning ? 'var(--accent-green)' : 'var(--text-muted)'};">
                                 📡 ${connectAddr}
@@ -886,9 +886,9 @@ const GameServer = {
         const cpuValue = document.getElementById('cpu-value');
         const msgEl = document.getElementById('resources-message');
 
-        if (ramSlider) { ramSlider.value = currentRam; }
+        if (ramSlider) { ramSlider.value = (currentRam / 1024).toFixed(1); }
         if (cpuSlider) { cpuSlider.value = currentCpu; }
-        if (ramValue) { ramValue.textContent = currentRam + ' Mo'; }
+        if (ramValue) { ramValue.textContent = (currentRam / 1024).toFixed(1).replace(/\.0$/, '') + ' Go'; }
         if (cpuValue) { cpuValue.textContent = currentCpu + '%'; }
         if (msgEl) { msgEl.textContent = ''; }
 
@@ -905,7 +905,8 @@ const GameServer = {
         const id = this._resourcesServerId;
         if (!id) return;
 
-        const ram = parseInt(document.getElementById('ram-slider').value);
+        const ramGb = parseFloat(document.getElementById('ram-slider').value);
+        const ram = Math.round(ramGb * 1024);
         const cpu = parseInt(document.getElementById('cpu-slider').value);
         const btn = document.getElementById('resources-save-btn');
         const msgEl = document.getElementById('resources-message');
@@ -1409,7 +1410,8 @@ const GameServer = {
             if (!version) { this.showCreateError('Entre une version personnalisée'); return; }
         }
         const port = parseInt(document.getElementById('server-port').value);
-        const memory = parseInt(document.getElementById('server-memory').value);
+        const memoryGb = parseFloat(document.getElementById('server-memory').value);
+        const memory = Math.round(memoryGb * 1024);
         const customImage = document.getElementById('server-custom-image')?.value?.trim();
 
         if (!name) {

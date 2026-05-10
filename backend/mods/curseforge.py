@@ -22,7 +22,6 @@ logger = logging.getLogger("omenserver")
 
 # CurseForge API
 CF_BASE_URL = "https://api.curseforge.com"
-CF_API_KEY = os.getenv("CURSEFORGE_API_KEY", "")
 
 # Game IDs CurseForge
 GAME_IDS = {
@@ -42,11 +41,13 @@ MOD_CLASS_IDS = {
 
 def _headers():
     """Headers pour l'API CurseForge."""
-    if not CF_API_KEY:
+    # Lecture lazy : la clé est lue à chaque appel pour être sûr que load_dotenv() a été exécuté
+    api_key = os.getenv("CURSEFORGE_API_KEY", "")
+    if not api_key:
         raise RuntimeError("Clé API CurseForge non configurée. Ajoute CURSEFORGE_API_KEY dans .env")
     return {
         "Accept": "application/json",
-        "x-api-key": CF_API_KEY,
+        "x-api-key": api_key,
     }
 
 

@@ -231,7 +231,7 @@ const ServerView = {
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;text-align:center;">
                 <div style="font-size:24px;margin-bottom:4px;">🧠</div>
                 <div style="font-size:12px;color:var(--text-muted);">RAM</div>
-                <div style="font-size:14px;font-weight:600;margin-top:2px;" id="sv-dash-ram">${s.memory_mb||1024} Mo</div>
+                <div style="font-size:14px;font-weight:600;margin-top:2px;" id="sv-dash-ram">${((s.memory_mb||1024) / 1024).toFixed(1).replace(/\.0$/, '')} Go</div>
             </div>
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;text-align:center;">
                 <div style="font-size:24px;margin-bottom:4px;">⚡</div>

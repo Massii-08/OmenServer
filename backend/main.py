@@ -71,6 +71,8 @@ app.add_middleware(
         "http://localhost:8000",
         "http://127.0.0.1:8000",
         f"http://{os.getenv('HOST', '0.0.0.0')}:{os.getenv('PORT', '8000')}",
+        "https://omenserver.org",
+        "http://omenserver.org",
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
