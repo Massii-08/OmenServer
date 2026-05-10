@@ -35,6 +35,7 @@
 - Il enverra ses stats (CPU, RAM, Disque, Température) à l'Omen toutes les 10 secondes
 - Tu pourras le **redémarrer ou l'éteindre à distance** depuis le dashboard OmenServer
 - Son **stockage sera fusionné** dans le total affiché sur le dashboard
+- Il **restera allumé même capot fermé** et **s'allumera/s'éteindra automatiquement** (1h-6h)
 
 ---
 
@@ -210,116 +211,34 @@ Tu es maintenant connecté à distance ! **Tu peux débrancher l'écran et le cl
 
 ---
 
-## 6 — Installer l'agent OmenServer
+## 6 — Installer l'agent (en 1 seule commande)
 
-### 6.1 — Télécharger l'agent
+Pour simplifier au maximum, un script s'occupe de **tout** installer et configurer automatiquement :
+- Téléchargement de l'agent OmenServer
+- Configuration de la clé API
+- Lancement automatique au démarrage (service en arrière-plan)
+- **Fermeture du capot** : le PC restera allumé même si tu fermes l'écran
+- **Horaires automatiques** : le PC s'éteindra à 1h du matin et se rallumera à 6h du matin
 
-```bash
-curl -o ~/omen_agent.py https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/omen_agent.py
-```
+### 6.1 — Lancer l'installation
 
-### 6.2 — Installer les dépendances Python
-
-```bash
-pip3 install psutil requests
-```
-
-> Si `pip3` ne marche pas directement, utilise :
-> ```bash
-> python3 -m pip install psutil requests
-> ```
-
-### 6.3 — Récupérer la clé API
-
-1. Va sur **https://omenserver.org**
-2. Connecte-toi avec ton compte
-3. Va dans **Settings** (Paramètres)
-4. Section **"Ordinateurs connectés"**
-5. Copie la **clé API**
-
-### 6.4 — Configurer l'agent
+1. Va sur **https://omenserver.org**, connecte-toi, et va dans les **Paramètres** pour copier ta **Clé API**.
+2. Sur le nouveau PC, tape cette commande en remplaçant `TA_CLE_API` par ta vraie clé :
 
 ```bash
-nano ~/omen_agent.py
+curl -sL https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/setup_omen_agent.sh | sudo bash -s -- TA_CLE_API
 ```
 
-Modifie les **2 lignes** en haut du fichier :
+*(Si ça te demande un mot de passe, c'est celui de ta session ubuntu)*
 
-```python
-SERVER_URL = "https://omenserver.org"      # ← Adresse du serveur
-API_KEY = "COLLE_TA_CLE_ICI"              # ← La clé API copiée
-```
+3. Attends 1 minute, le script va tout configurer et afficher `✅ Terminé !` à la fin.
 
-Enregistre avec `Ctrl+O` puis `Entrée`, puis quitte avec `Ctrl+X`.
+### 6.2 — C'est tout !
 
-### 6.5 — Tester l'agent manuellement
-
-```bash
-python3 ~/omen_agent.py
-```
-
-Tu devrais voir :
-```
-🖥️  OmenServer Agent — pc-bureau
-📡 Serveur: https://omenserver.org
-⏱️  Intervalle: 10s
-========================================
-📡 [16:30:45] CPU 12% | RAM 1.2/8.0Go (15%) | Disk 23%
-📡 [16:30:55] CPU 8% | RAM 1.1/8.0Go (14%) | Disk 23%
-```
-
-Si tu vois ça, **ça marche !** Appuie `Ctrl+C` pour arrêter.
-
----
-
-## 7 — Lancer l'agent au démarrage automatiquement
-
-### 7.1 — Créer le service systemd
-
-```bash
-sudo tee /etc/systemd/system/omen-agent.service << EOF
-[Unit]
-Description=OmenServer Agent
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=$USER
-ExecStart=/usr/bin/python3 /home/$USER/omen_agent.py
-Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-### 7.2 — Activer et démarrer
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable omen-agent
-sudo systemctl start omen-agent
-```
-
-### 7.3 — Vérifier que ça tourne
-
-```bash
-sudo systemctl status omen-agent
-```
-
-Tu devrais voir `active (running)` en vert.
-
-### 7.4 — Voir les logs en temps réel
-
-```bash
-sudo journalctl -u omen-agent -f
-```
-
-> Appuie `Ctrl+C` pour quitter les logs.
+Tu peux maintenant :
+- **Fermer le capot de l'ordinateur**, il restera allumé
+- Le ranger dans une étagère avec son câble d'alimentation
+- Le gérer entièrement depuis le dashboard OmenServer
 
 ---
 
@@ -655,11 +574,8 @@ Pour chaque nouveau PC, fais ces étapes dans l'ordre :
 - [ ] Créer la clé USB Ubuntu Server
 - [ ] Installer Ubuntu Server (cocher SSH !)
 - [ ] Se connecter et mettre à jour : `sudo apt update && sudo apt upgrade -y`
-- [ ] Installer les outils : `sudo apt install -y python3 python3-pip curl htop`
-- [ ] Télécharger l'agent : `curl -o ~/omen_agent.py https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/omen_agent.py`
-- [ ] Installer psutil + requests : `pip3 install psutil requests`
-- [ ] Configurer SERVER_URL et API_KEY : `nano ~/omen_agent.py`
-- [ ] Créer le service systemd (Section 7)
+- [ ] Installer python : `sudo apt install -y python3 python3-pip curl htop`
+- [ ] Lancer le script d'installation auto : `curl -sL https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/setup_omen_agent.sh | sudo bash -s -- TA_CLE_API`
 - [ ] Vérifier sur le dashboard OmenServer
 - [ ] (Optionnel) Étendre le disque LVM
 - [ ] (Optionnel) Formater un SSD supplémentaire
