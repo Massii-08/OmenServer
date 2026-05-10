@@ -212,6 +212,57 @@ async def startup_event():
     from backend.scheduler.engine import start_scheduler
     start_scheduler()
 
+    # Auto-redémarrage des serveurs de jeux
+    # Quand l'Omen reboot ou OmenServer redémarre (auto-deploy),
+    # on vérifie que tous les conteneurs Docker sont bien running.
+    try:
+        from backend.database import SessionLocal
+        from backend.game_server.models import GameServer
+        db = SessionLocal()
+        try:
+            servers = db.query(GameServer).filter(GameServer.docker_id != None).all()
+            if servers:
+                import docker
+                try:
+                    client = docker.from_env()
+                    client.ping()
+                except Exception as e:
+                    logger.warning(f"🐳 Docker non disponible, skip auto-restart: {e}")
+                    servers = []  # Skip si Docker n'est pas dispo
+
+                started = 0
+                for srv in servers:
+                    try:
+                        container = client.containers.get(srv.docker_id)
+                        if container.status == "running":
+                            # Déjà running → juste sync le statut DB
+                            if srv.status != "running":
+                                srv.status = "running"
+                                logger.info(f"🔄 Sync statut: {srv.name} → running")
+                        elif container.status in ("exited", "created", "paused"):
+                            # Pas running → le redémarrer
+                            container.start()
+                            srv.status = "running"
+                            started += 1
+                            logger.info(f"🚀 Auto-restart: {srv.name} ({container.status} → running)")
+                        else:
+                            # État inconnu (restarting, dead, etc.)
+                            srv.status = container.status
+                            logger.warning(f"⚠️ {srv.name} en état: {container.status}")
+                    except Exception as e:
+                        srv.status = "error"
+                        logger.warning(f"❌ Auto-restart échoué: {srv.name} → {e}")
+
+                db.commit()
+                if started > 0:
+                    logger.info(f"🎮 {started} serveur(s) de jeu redémarré(s) automatiquement")
+                else:
+                    logger.info(f"🎮 {len(servers)} serveur(s) de jeu vérifiés — tous OK")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Erreur auto-restart serveurs: {e}")
+
     logger.info(f"🚀 {settings.SERVER_NAME} est prêt ! → http://localhost:{settings.PORT}")
 
 
