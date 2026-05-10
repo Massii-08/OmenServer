@@ -1,6 +1,6 @@
 # 🎮 OmenServer
 
-> **Panel de gestion de serveur dédié polyvalent** — Serveurs de jeux, bots Python, sites web, accès distant et plus.
+> **Panel de gestion de serveur dédié polyvalent** — Serveurs de jeux, bots Python, sites web, monitoring multi-machines et plus.
 >
 > 🌐 **[omenserver.org](https://omenserver.org)**
 
@@ -10,7 +10,8 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Version](https://img.shields.io/badge/Version-4.0-10b981?style=for-the-badge)
+![Cloudflare](https://img.shields.io/badge/Cloudflare-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)
+![Version](https://img.shields.io/badge/Version-4.1-10b981?style=for-the-badge)
 
 </div>
 
@@ -24,58 +25,60 @@
 - **Console live WebSocket** — Envoie des commandes en temps réel (rcon-cli)
 - **Monitoring** — CPU, RAM, disque, réseau en temps réel
 
-### 🤖 Bots & Automatisation (V3)
+### 🤖 Bots & Automatisation
 - **5 types de bots** : Trading, Gaming, Scraper, Analyse, Custom
 - **Éditeur de code intégré** — Tab, Ctrl+S, coloration syntaxique
 - **Logs en temps réel** — Console avec numéros de ligne + persistance fichier
 - **Start/Stop** — Gestion des processus Python avec capture stdout
+- **🏦 Bot Yield** — Calcul automatique de rendement d'obligations (Excel)
 
-### 📁 Fichiers & Cloud (V3)
+### 📁 Fichiers & Cloud
 - **Google Drive intégré** — OAuth2 avec redirect localhost
 - **Navigation Drive** — Parcours tes dossiers et fichiers
 - **Upload & Download** — Transfère des fichiers entre serveur et Drive
 
-### 🩺 Diagnostic Automatique (V3)
+### 🖥️ Infrastructure Multi-Machines
+- **Architecture cerveau/bras** — L'Omen est le serveur central, les autres PC sont des agents
+- **Agent léger** — `omen_agent.py` à installer sur chaque PC (CPU, RAM, Disque, Temp)
+- **Stockage combiné** — Le dashboard fusionne le stockage de tous les disques et tous les PC
+- **Mini-listes par machine** — Chaque carte du dashboard détaille les stats par PC
+- **Commandes à distance** — Redémarrer ou éteindre n'importe quel PC depuis le dashboard
+- **Auto-deploy** — Les changements Git sont déployés automatiquement en < 1 minute
+
+### 🩺 Diagnostic Automatique
 - **Analyse en temps réel** — CPU, RAM, Disque, Docker, Réseau
 - **Code couleur** — OK (vert), Warning (jaune), Critique (rouge)
 - **Suggestions** — Correctifs proposés pour chaque problème
 
-### 📺 Média & Streaming (V4)
+### 📺 Média & Streaming
 - **Jellyfin intégré** — Serveur multimédia open-source via Docker
 - **Setup en un clic** — Déploiement automatique du conteneur
 - **Bibliothèques** — Films, Séries, Musique avec gestion des dossiers
-- **Monitoring** — CPU, RAM du conteneur en temps réel
 
-### 🌐 Serveur Web (V4)
+### 🌐 Serveur Web
 - **Multi-sites** — Héberger plusieurs sites/APIs en parallèle
 - **4 types supportés** — Statique (Nginx), Node.js, PHP (Apache), Python
 - **📦 Git Clone** — Déploie un site depuis n'importe quel repo Git
 - **Docker isolé** — Chaque site = 1 conteneur indépendant
-- **Logs en temps réel** — Console avec historique
 
-### 📡 Monitoring Réseau (V4)
+### 📡 Monitoring Réseau
 - **Surveillance 24/7** — Latence, IP publique, qualité de connexion
 - **Speed Test** — Test de débit intégré
-- **Historique** — Graphique de latence sur 24h
 - **Wake-on-LAN** — Allumer d'autres PC à distance via magic packet
 
-### 📱 PWA & Accès Distant (V4)
+### 📱 PWA & Accès Distant
 - **Progressive Web App** — Installable sur mobile et bureau
-- **Service Worker** — Fonctionne hors-ligne (cache Network-first)
 - **Cloudflare Tunnel** — Accès sécurisé depuis n'importe où (HTTPS)
+- **Auto-deploy** — Cron + Git pull automatique toutes les minutes
 - **Système d'invitations** — URL publique mais accès sur invitation uniquement
-
-### ⚡ Monitoring Avancé (V4)
-- **Mini-logs dashboard** — 15 dernières lignes de log avec coloration
-- **Alertes système** — CPU, RAM, disque, température avec Toast notifications
-- **Cooldown anti-spam** — 1 alerte par minute par type
 
 ### 🔧 Gestion Avancée
 - **⚙️ Ressources** — Sliders RAM (256 Mo → 8 Go) et CPU (25% → 400%) par serveur
 - **💾 Sauvegardes** — Créer, restaurer, supprimer des backups tar.gz + rotation automatique
 - **⏰ Tâches planifiées** — Backups et redémarrages automatiques (APScheduler)
 - **🧩 Mods CurseForge** — Recherche, installe et gère tes mods Minecraft
-- **🎨 4 thèmes** — Défaut, Midnight, Emerald, Crimson + Light Mode
+- **🎨 5 thèmes** — Défaut, Midnight, Emerald, Crimson + Light Mode
+- **🌍 3 langues** — Français, English, Italiano
 
 ### 👥 Multi-Utilisateurs
 - **4 rôles** : Spectateur, Joueur, Modérateur, Administrateur
@@ -107,8 +110,6 @@ source venv/bin/activate  # macOS/Linux
 ### 3. Installer les dépendances
 ```bash
 pip install -r requirements.txt
-# Pour Google Drive (optionnel) :
-pip install google-api-python-client google-auth-oauthlib google-auth-httplib2
 ```
 
 ### 4. Configurer
@@ -126,27 +127,15 @@ Ouvre **http://localhost:8000** dans ton navigateur 🎉
 
 ---
 
-## ⚙️ Configuration (.env)
+## 🖥️ Ajouter un PC au réseau
 
-| Variable | Description | Défaut |
-|----------|-------------|--------|
-| `SECRET_KEY` | Clé secrète JWT | `change-moi-...` |
-| `SERVER_NAME` | Nom affiché dans le panel | `OmenServer` |
-| `TOKEN_EXPIRE_MINUTES` | Durée du token (min) | `1440` (24h) |
-| `PORT` | Port du serveur | `8000` |
-| `CURSEFORGE_API_KEY` | Clé API CurseForge (optionnel) | — |
+Voir le guide complet : **[docs/Guide_Installation_PC_OmenServer.md](docs/Guide_Installation_PC_OmenServer.md)**
 
-> 🔑 Obtiens ta clé CurseForge gratuitement sur [console.curseforge.com](https://console.curseforge.com/)
-
-### Google Drive (optionnel)
-
-1. Va sur [console.cloud.google.com](https://console.cloud.google.com/)
-2. Crée un projet → Active "Google Drive API"
-3. Crée un client OAuth **"Application Web"**
-4. URI de redirection : `http://localhost:8000/api/gdrive/oauth-redirect`
-5. Télécharge le JSON → renomme en `credentials.json`
-6. Place-le dans `~/omenserver/gdrive/credentials.json`
-7. Dans le panel, va sur Fichiers & Cloud → Connecter
+En résumé :
+1. Installer Ubuntu Server sur le PC
+2. Installer l'agent : `curl -o ~/omen_agent.py https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/omen_agent.py`
+3. Configurer SERVER_URL et API_KEY
+4. Créer un service systemd pour le démarrage automatique
 
 ---
 
@@ -160,35 +149,35 @@ OmenServer/
 │   ├── database.py           # SQLAlchemy + SQLite
 │   ├── auth/                 # Authentification JWT + Invitations
 │   ├── game_server/          # Serveurs de jeux (Docker, WebSocket, Backups)
-│   ├── bots/                 # 🤖 Module Bots (V3)
-│   │   ├── router.py         # CRUD + Start/Stop + Logs + Code editor
-│   │   └── models.py         # Bot model
-│   ├── gdrive/               # 📁 Module Google Drive (V3)
-│   │   └── router.py         # OAuth + Files + Upload/Download
-│   ├── monitoring/           # Monitoring + Diagnostic (V3)
+│   ├── bots/                 # 🤖 Module Bots + Yield Bot
+│   ├── gdrive/               # 📁 Module Google Drive
+│   ├── monitoring/           # Monitoring + Diagnostic + Nodes
+│   │   ├── router.py         # /api/monitoring/stats (CPU, RAM, disque combiné)
+│   │   ├── system_info.py    # Collecte multi-disques psutil
+│   │   ├── nodes_router.py   # /api/nodes — PC connectés via agents
 │   │   └── diagnostic_router.py
+│   ├── media/                # Module Média (Jellyfin)
+│   ├── webserver/            # Module Serveur Web
+│   ├── network/              # Module Réseau (WoL, ping)
 │   ├── scheduler/            # Tâches planifiées (APScheduler)
-│   ├── mods/                 # Mods CurseForge
-│   ├── modules/              # Gestion des modules
+│   ├── modules/              # Hub des modules
 │   └── notifications/        # Notifications
 ├── frontend/
-│   ├── index.html            # Page principale
+│   ├── index.html            # Shell SPA principal
 │   ├── login.html            # Page de connexion
-│   ├── css/style.css         # Design dark theme (4 thèmes)
+│   ├── css/style.css         # Design system (5 thèmes, variables CSS)
 │   └── js/
-│       ├── app.js            # Routeur frontend + thèmes
-│       ├── auth.js           # Auth + API calls
-│       ├── game_server.js    # UI serveurs
-│       ├── server_view.js    # Vue détaillée serveur
-│       ├── bots_module.js    # 🤖 UI Bots (V3)
-│       ├── files_module.js   # 📁 UI Fichiers (V3)
-│       ├── media_module.js   # 📺 UI Média (V4)
-│       ├── web_module.js     # 🌐 UI Serveur Web (V4)
-│       ├── network_module.js # 📡 UI Réseau (V4)
-│       ├── monitoring.js     # Dashboard monitoring
-│       └── modules.js        # Hub des modules
+│       ├── app.js            # Routeur SPA + Dashboard
+│       ├── auth.js           # Auth JWT + API calls
+│       ├── lang.js           # i18n FR/EN/IT
+│       ├── monitoring.js     # Dashboard monitoring (stats combinées)
+│       └── ...               # Modules: bots, files, media, web, network
+├── tools/
+│   └── omen_agent.py         # 🦾 Agent à installer sur chaque PC
+├── docs/
+│   └── Guide_Installation_PC_OmenServer.md  # Guide complet (PDF-ready)
+├── data/                     # Base SQLite + données serveurs
 ├── requirements.txt
-├── .env.example
 └── README.md
 ```
 
@@ -210,19 +199,16 @@ OmenServer/
 
 ---
 
-## 📂 Stockage
+## 🏗️ Infrastructure de Production
 
-Toutes les données sont stockées dans `~/omenserver/` :
-
-| Dossier | Contenu |
-|---------|---------|
-| `~/omenserver/bots/` | Scripts Python des bots |
-| `~/omenserver/bots/logs/` | Logs persistants des bots |
-| `~/omenserver/gdrive/` | Credentials + Token Google Drive |
-| `~/omenserver/downloads/` | Fichiers téléchargés depuis Drive |
-| `~/omenserver/media/` | Films, séries, musique (Jellyfin) |
-| `~/omenserver/jellyfin/` | Config et cache Jellyfin |
-| `~/omenserver/websites/` | Fichiers source des sites web |
+| Composant | Détail |
+|-----------|--------|
+| **Serveur** | HP Omen (Ubuntu Server) |
+| **Stockage** | HDD 914 Go + SSD NVMe 469 Go = **1.3 To** |
+| **Accès distant** | Cloudflare Tunnel → `omenserver.org` |
+| **Service systemd** | `omenserver.service` — démarre au boot |
+| **Auto-deploy** | Cron → `git pull` + `restart` toutes les minutes |
+| **Agents** | `omen_agent.py` sur chaque PC du réseau |
 
 ---
 
@@ -245,6 +231,6 @@ Ce projet est sous licence MIT. Voir le fichier [LICENSE](LICENSE) pour plus de 
 
 **Fait avec ❤️ par Massimiliano**
 
-*OmenServer V4 — L'Écosystème*
+*OmenServer V4.1 — L'Omen est le cerveau, les autres PC sont les bras*
 
 </div>

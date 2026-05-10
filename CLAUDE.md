@@ -9,13 +9,14 @@
 
 **OmenServer** est un panel de gestion de serveur dédié polyvalent, inspiré de Minestrator/Pterodactyl.
 Il permet de gérer des serveurs de jeux (Minecraft, etc.), des bots Python, des médias, un serveur web,
-et le monitoring système depuis une interface web premium.
+et le monitoring système multi-machines depuis une interface web premium.
 
-- **Version** : 4.0.0
+- **Version** : 4.1.0
 - **Auteur** : Massii_08 (Massimiliano)
 - **License** : MIT
-- **Hardware cible** : HP Omen (Ubuntu Server en prod, macOS en dev)
+- **Hardware** : HP Omen (Ubuntu Server en prod, cerveau) + agents sur d'autres PC (bras)
 - **Stack** : Python FastAPI (backend) + Vanilla JS/CSS (frontend) — **pas de framework JS**
+- **Accès** : https://omenserver.org (Cloudflare Tunnel)
 
 ---
 
@@ -31,9 +32,10 @@ Projet serveur/
 │   │   ├── router.py           # /api/auth/login, /register, /logout
 │   │   ├── invite_router.py    # /api/auth/invite — codes d'invitation
 │   │   ├── models.py           # User, Invitation (SQLAlchemy)
-│   │   └── utils.py            # get_current_user(), hash/verify password
-│   ├── monitoring/             # Monitoring système
-│   │   ├── router.py           # /api/monitoring/stats (CPU, RAM, disque, temp)
+│   │   └── utils.py            # get_current_user(), hash/verify (bcrypt direct)
+│   ├── monitoring/             # Monitoring système + multi-machines
+│   │   ├── router.py           # /api/monitoring/stats (CPU, RAM, disque combiné)
+│   │   ├── system_info.py      # Collecte multi-disques via psutil
 │   │   ├── diagnostic_router.py # /api/monitoring/diagnostic
 │   │   ├── container_router.py # /api/monitoring/containers (Docker)
 │   │   └── nodes_router.py     # /api/nodes — PC connectés via omen_agent.py
@@ -75,13 +77,13 @@ Projet serveur/
 │   ├── index.html              # Shell SPA principal
 │   ├── login.html              # Page de connexion (standalone)
 │   ├── css/
-│   │   └── style.css           # Design system complet (variables CSS, thèmes, composants)
+│   │   └── style.css           # Design system complet (variables CSS, 5 thèmes)
 │   ├── js/
 │   │   ├── app.js              # Router SPA + Dashboard + App controller
 │   │   ├── auth.js             # Auth.apiCall(), login/logout, token JWT
 │   │   ├── lang.js             # i18n — FR/EN/IT (clés: modules.*, bots.*, yield.*, etc.)
 │   │   ├── modules.js          # Hub des modules (cartes)
-│   │   ├── monitoring.js       # Dashboard monitoring (CPU, RAM, graphiques)
+│   │   ├── monitoring.js       # Dashboard monitoring (stats combinées multi-machines)
 │   │   ├── toast.js            # Notifications toast
 │   │   ├── bots_module.js      # Module Bots (liste + Yield Bot UI)
 │   │   ├── files_module.js     # Module Fichiers (navigateur)
@@ -99,10 +101,13 @@ Projet serveur/
 │   ├── sw.js                   # Service Worker (PWA)
 │   ├── manifest.json           # PWA manifest
 │   └── favicon.svg
+├── tools/                      # Scripts utilitaires
+│   └── omen_agent.py           # 🦾 Agent monitoring à installer sur chaque PC
+├── docs/                       # Documentation
+│   └── Guide_Installation_PC_OmenServer.md  # Guide complet ajout PC
 ├── data/                       # Données persistantes
 │   ├── omenserver.db           # Base SQLite
 │   └── servers/                # Données des serveurs de jeux
-├── tools/                      # Scripts utilitaires
 ├── .env                        # Variables d'environnement (non commité)
 ├── .env.example                # Template des variables
 ├── requirements.txt            # Dépendances Python
@@ -119,8 +124,9 @@ Projet serveur/
 |-------------|-------|
 | **FastAPI** 0.115 | Framework API REST |
 | **SQLAlchemy** 2.0 | ORM — SQLite en local |
+| **bcrypt** | Hachage de mots de passe (direct, sans passlib) |
 | **python-jose** | JWT pour l'authentification |
-| **psutil** | Monitoring système (CPU, RAM, temp) |
+| **psutil** | Monitoring système (CPU, RAM, temp, multi-disques) |
 | **docker** (Python SDK) | Gestion conteneurs Docker |
 | **APScheduler** | Tâches planifiées (cron-like) |
 | **uvicorn** | Serveur ASGI |
@@ -133,15 +139,19 @@ Projet serveur/
 | **Inter** (Google Fonts) | Typographie |
 | **Chart.js** | (via CDN) Graphiques monitoring |
 
-### Infrastructure
+### Infrastructure de Production
 | Composant | Détail |
 |-----------|--------|
 | **OS prod** | Ubuntu Server (HP Omen) |
 | **OS dev** | macOS |
+| **Stockage** | HDD 914 Go (`/`) + SSD NVMe 469 Go (`/mnt/ssd`) = **1.3 To** |
 | **Python** | 3.9+ (venv dans `./venv/`) |
 | **DB** | SQLite (`data/omenserver.db`) |
 | **Docker** | Conteneurs pour les serveurs de jeux |
-| **Cloudflared** | Tunnel Cloudflare (accès distant) |
+| **Cloudflared** | Tunnel Cloudflare → `omenserver.org` (service systemd) |
+| **Service** | `omenserver.service` (systemd, démarre au boot via `start-omen.sh`) |
+| **Auto-deploy** | Cron toutes les minutes → `auto-deploy.sh` (git pull + restart) |
+| **Agents** | `omen_agent.py` sur chaque PC du réseau |
 
 ---
 
@@ -158,19 +168,40 @@ Le frontend est une **Single Page Application** sans framework :
 - **Variables CSS** dans `:root` pour les couleurs, espacements, transitions
 - **5 thèmes** : default (violet sombre), midnight, emerald, crimson, light
 - **Composants** : `.card`, `.btn`, `.stat-card`, `.status-badge`, `.console`, `.module-card`
+- **Mini-listes machines** : `.stat-machines-list`, `.stat-machine-item` (dashboard multi-PC)
 - **Responsive** : breakpoints à 768px, 480px
 
 ### Internationalisation (lang.js)
 - 3 langues : **FR**, **EN**, **IT**
 - Accès via `Lang.t('clé.sous_clé')`
 - Changement de langue via `Lang.setLang('en')` (persisté dans localStorage)
-- Structure des clés : `common.*`, `nav.*`, `modules.*`, `bots.*`, `yield.*`, `servers.*`
+- Structure des clés : `common.*`, `nav.*`, `modules.*`, `bots.*`, `yield.*`, `servers.*`, `dashboard.*`
 
 ### Authentification (auth.js)
 - Token JWT stocké dans `localStorage`
 - `Auth.apiCall(url, options)` ajoute automatiquement le header `Authorization: Bearer <token>`
 - Détection automatique `FormData` → pas de `Content-Type: application/json`
 - Bannière auto-reconnexion si le serveur est down
+
+---
+
+## 🖥️ Architecture Multi-Machines
+
+### Concept : Cerveau / Bras
+- **L'Omen** = cerveau (serveur central, dashboard, API)
+- **Les autres PC** = bras (agents légers qui envoient leurs stats)
+
+### Monitoring combiné
+- `system_info.py → get_disk_info()` somme **tous les disques physiques** (HDD + SSD + partitions)
+- `monitoring.js → updateUI()` fusionne le stockage serveur + nodes connectés
+- Les cartes CPU/RAM/Temp affichent une **mini-liste par machine** quand des nodes sont connectés
+
+### Agent (`tools/omen_agent.py`)
+- Script Python léger à installer sur chaque PC
+- Envoie un heartbeat toutes les 10s : CPU, RAM, Disque, Temp, Uptime
+- Authentification via `X-Agent-Key` (clé API auto-générée)
+- Peut recevoir des commandes : `reboot`, `shutdown`
+- Guide d'installation : `docs/Guide_Installation_PC_OmenServer.md`
 
 ---
 
@@ -207,30 +238,23 @@ OmenServer                          Bot Calcul Yield (externe)
 - Le bot est lancé via `subprocess.Popen` — **jamais importé directement** en prod
 - Les logs sont capturés en temps réel via `stdout` pipe + thread
 - La progression est parsée via regex sur les lignes de log
-- Pattern de détection d'une obligation : `r'\[.+?:\d+\]'` (ex: `[USD:5]`, `[Feuille 1:12]`)
-- Stats live : détection de `"Yield calcolato:"`, `"⚠️ Nessun prezzo"`, `"❌ Errore:"`
 - Le fichier résultat est `*_AGGIORNATO.xlsx`
 - Rate limit : max 5 scraping/jour (ricalcolo illimité)
 - Variable d'environnement : `YIELD_BOT_DIR` (défaut: `~/omenserver/bots/yield-bot/`)
-
-### Frontend Yield Bot
-Le Yield Bot apparaît comme **une carte dans la grille des bots** (pas un bouton séparé).
-Il a 3 états :
-1. **Upload** : dropzone drag&drop, sélection de mode (⚡ recalcul / 🌐 scraping+recalcul)
-2. **Running** : barre de progression animée, stats live (updated/skipped/errors), terminal logs
-3. **Completed** : résumé, bouton téléchargement, option relancer
 
 ---
 
 ## 🔒 Sécurité
 
 - **JWT** avec expiration configurable (défaut 24h)
+- **bcrypt** direct (sans passlib, avec troncature 72 bytes manuelle)
 - **CORS** restreint aux origines locales
 - **Headers sécurité** : X-Frame-Options DENY, X-Content-Type-Options nosniff, XSS-Protection
 - **Swagger/Redoc** désactivés en production (`docs_url=None`)
 - **Upload** : validation `.xlsx` uniquement pour le Yield Bot
 - **Rôles** : admin, moderator, player (via `User.role`)
 - **Invitations** : inscription uniquement par code d'invitation
+- **Agents** : authentification via clé API (`X-Agent-Key`)
 
 ---
 
@@ -261,11 +285,22 @@ cd "Projet serveur"
 source venv/bin/activate
 uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 
-# Production (Ubuntu Server)
-/home/omenserver/Projet\ serveur/venv/bin/python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+# Production (Ubuntu Server — géré par systemd)
+sudo systemctl status omenserver
+sudo systemctl restart omenserver
+
+# Logs du serveur
+sudo journalctl -u omenserver -f
+
+# Auto-deploy (cron, toutes les minutes)
+cat ~/deploy.log
+
+# SSH vers l'Omen
+ssh massii08@192.168.68.66
 
 # Accès distant via Cloudflare Tunnel
-./cloudflared tunnel run omenserver
+# Automatique via systemd : cloudflared.service
+sudo systemctl status cloudflared
 ```
 
 ---
@@ -276,7 +311,7 @@ uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 - **Routers** : un fichier `router.py` par module, préfixé `/api/<module>/`
 - **Modèles** : SQLAlchemy dans `models.py` de chaque module
 - **Auth** : `current_user: User = Depends(get_current_user)` sur chaque endpoint protégé
-- **Logging** : `logger = logging.getLogger(__name__)` puis `logger.info/warning/error`
+- **Logging** : `logger = logging.getLogger("omenserver")` puis `logger.info/warning/error`
 - **Docstrings** : en français ou italien, triple quotes
 
 ### Frontend (JS)
@@ -288,7 +323,7 @@ uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 
 ### CSS
 - **Variables** : utiliser `var(--nom)` pour couleurs, bordures, transitions
-- **Composants** : classes `.card`, `.btn`, `.btn-primary`, `.status-badge`, etc.
+- **Composants** : classes `.card`, `.btn`, `.btn-primary`, `.status-badge`, `.console`, `.module-card`
 - **Nouveau module** : ajouter les styles dans `style.css` avec un commentaire séparateur
 
 ---
@@ -301,6 +336,8 @@ uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 4. **Playwright** + Chromium requis sur le serveur prod pour le scraping du Yield Bot
 5. **FormData upload** : `Auth.apiCall` détecte automatiquement `FormData` et ne met pas `Content-Type: application/json`
 6. **Auto-refresh des bots** : l'interval de 5s doit être clearé (`unload()`) avant de naviguer vers le Yield Bot
+7. **Espace dans le chemin** : "Projet serveur" a un espace — utiliser un wrapper script pour systemd
+8. **bcrypt direct** : `auth/utils.py` utilise `bcrypt` directement (pas passlib) avec troncature manuelle à 72 bytes
 
 ---
 
@@ -308,6 +345,10 @@ uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 
 | Date | Changement |
 |------|-----------|
+| 2026-05-10 | 🖥️ Multi-machines : stockage combiné + mini-listes + auto-deploy |
+| 2026-05-10 | 💾 Extension disque LVM (98→914 Go) + formatage SSD NVMe (469 Go) |
+| 2026-05-10 | 🌐 Cloudflare Tunnel → omenserver.org + service systemd |
+| 2026-05-08 | 🔧 Fix bcrypt (passlib → bcrypt direct) |
 | 2026-05-07 | 🏦 Intégration Bot Yield (backend + frontend + CSS + i18n) |
 | 2026-05-07 | 🔒 Security headers + CORS restreint + Swagger désactivé |
 | 2026-05-06 | 🖥️ Déploiement Ubuntu Server sur HP Omen |

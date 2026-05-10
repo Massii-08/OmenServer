@@ -28,6 +28,13 @@
 - Tutti i nuovi componenti CSS vanno in `style.css` con un commento separatore
 - Hover effects, transizioni, micro-animazioni sono attesi
 
+### 5. Multi-macchine: architettura cervello/braccio
+- L'**Omen** è il cervello (server principale)
+- Gli altri PC sono **bracci** (agenti che inviano stats via `omen_agent.py`)
+- Il monitoring del disk è **combinato** (tutti i dischi di tutti i server)
+- Le card CPU/RAM/Temp mostrano **mini-liste per macchina** quando ci sono nodes connessi
+- `system_info.py → get_disk_info()` somma tutti i mount point fisici
+
 ---
 
 ## 📋 Checklist per ogni modifica
@@ -52,6 +59,12 @@
 - [ ] Importare in `database.py` → `create_tables()`
 - [ ] Se aggiunta colonna a tabella esistente → aggiungere migrazione in `main.py` startup
 
+### Modifica al monitoring
+- [ ] Se nuova stat → aggiornare `system_info.py` (backend)
+- [ ] Aggiornare `monitoring.js → updateUI()` (frontend)
+- [ ] Se serve nelle card → aggiornare `_renderMachinesList()` nel frontend
+- [ ] Aggiungere nel `HeartbeatData` schema se anche gli agenti devono inviarlo
+
 ---
 
 ## 🛠️ Comandi di sviluppo
@@ -69,6 +82,15 @@ TOKEN=$(curl -s http://localhost:8000/api/auth/login \
   -d 'username=Massii_08&password=XXX' \
   -H 'Content-Type: application/x-www-form-urlencoded' | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
 curl -s http://localhost:8000/api/bots -H "Authorization: Bearer $TOKEN"
+
+# Production (Omen via SSH)
+ssh massii08@192.168.68.66
+sudo systemctl status omenserver
+sudo systemctl restart omenserver
+sudo journalctl -u omenserver -f
+
+# Deploy automatico (ogni minuto via cron)
+cat ~/deploy.log
 ```
 
 ---
@@ -82,6 +104,24 @@ curl -s http://localhost:8000/api/bots -H "Authorization: Bearer $TOKEN"
 5. **Non modificare il bot Yield** (`Bot Calcul yield/`) — OmenServer lo tratta come esterno
 6. **Non usare `print()`** nel backend — usare `logger.info/warning/error`
 7. **Non usare `alert()`** nel frontend — usare `Toast.success/error/warn`
+8. **Non usare `passlib`** — usare `bcrypt` direttamente (vedi `auth/utils.py`)
+9. **Non dimenticare di fare `git push`** — il deploy è automatico dopo il push
+
+---
+
+## 🏗️ Infrastruttura di produzione
+
+| Componente | Dettaglio |
+|-----------|-----------|
+| **Server** | HP Omen (Ubuntu Server) |
+| **Accesso** | `omenserver.org` (Cloudflare Tunnel) |
+| **Servizio** | `omenserver.service` (systemd, avvio al boot) |
+| **Wrapper** | `~/start-omen.sh` (gestisce lo spazio nel path) |
+| **Auto-deploy** | `~/auto-deploy.sh` (cron ogni minuto, git pull + restart) |
+| **Tunnel** | `cloudflared.service` (systemd, persistente) |
+| **Storage** | HDD 914 Go `/` + SSD NVMe 469 Go `/mnt/ssd` = **1.3 To** |
+| **SSH** | `ssh massii08@192.168.68.66` |
+| **Agenti** | `omen_agent.py` su ogni PC del network |
 
 ---
 
@@ -94,5 +134,9 @@ curl -s http://localhost:8000/api/bots -H "Authorization: Bearer $TOKEN"
 | ⭐⭐ | `frontend/js/app.js` | Router SPA + struttura dashboard |
 | ⭐⭐ | `frontend/js/auth.js` | Come funzionano le chiamate API |
 | ⭐⭐ | `frontend/css/style.css` | Design system + variabili CSS |
+| ⭐⭐ | `backend/monitoring/system_info.py` | Monitoring multi-dischi |
+| ⭐⭐ | `backend/monitoring/nodes_router.py` | API multi-macchine |
 | ⭐ | `frontend/js/lang.js` | Struttura delle traduzioni |
+| ⭐ | `frontend/js/monitoring.js` | Stats combinate + mini-liste |
 | ⭐ | `backend/config.py` | Variabili di configurazione |
+| ⭐ | `tools/omen_agent.py` | Agent per i PC "braccio" |
