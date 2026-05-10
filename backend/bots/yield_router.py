@@ -55,6 +55,7 @@ class YieldRunRequest(BaseModel):
     mode: str = "all"  # "all" ou "recalculate"
     sheet: Optional[str] = None
     isin: Optional[str] = None
+    skip: int = 0  # Nombre de bonds à sauter (pour resume)
 
 
 # ================================================================
@@ -164,7 +165,10 @@ async def run_yield_bot(
         raise HTTPException(400, "Mode invalide. Utiliser 'all' ou 'recalculate'")
 
     # Construire la commande
+    skip = data.skip if hasattr(data, 'skip') and data.skip else 0
     cmd = [sys.executable, "main.py", f"--{data.mode}", "--file", input_path]
+    if skip > 0:
+        cmd += ["--skip", str(skip)]
 
     if data.sheet:
         # Override: utiliser --sheet au lieu de --all/--recalculate
@@ -322,6 +326,7 @@ async def get_yield_status(
         "status": job["status"],
         "progress": progress,
         "progress_percent": min(100, int(processed / total * 100)) if total > 0 else 0,
+        "processed": processed,
         "logs": job["logs"][-100:],  # Dernières 100 lignes
         "logs_count": len(job["logs"]),
         "result_file": os.path.basename(job["output_path"]) if job.get("output_path") else None,

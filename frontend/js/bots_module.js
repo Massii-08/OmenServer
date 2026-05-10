@@ -860,6 +860,7 @@ const BotsModule = {
             if (data.status === 'completed' || data.status === 'error' || data.status === 'stopped') {
                 this._yieldState.status = data.status;
                 this._yieldState.resultFile = data.result_file || null;
+                this._yieldState.processedCount = data.processed || 0;
                 clearInterval(this._yieldState.pollInterval);
                 this._yieldState.pollInterval = null;
 
@@ -926,6 +927,11 @@ const BotsModule = {
                     ${isSuccess && data.result_file ? `
                         <button class="yield-launch-btn" style="flex:1;margin-top:0;" onclick="BotsModule._downloadYieldResult()">
                             ${Lang.t('yield.download')}
+                        </button>
+                    ` : ''}
+                    ${data.status === 'stopped' && this._yieldState.processedCount > 0 ? `
+                        <button class="yield-launch-btn" style="flex:1;margin-top:0;background:linear-gradient(135deg,#f59e0b,#ef4444);" onclick="BotsModule._resumeYieldBot()">
+                            ▶ ${Lang.t('yield.resume')} (${Lang.t('yield.from_bond')} ${this._yieldState.processedCount + 1})
                         </button>
                     ` : ''}
                     <button class="btn btn-secondary" style="flex:1;padding:14px;font-size:15px;font-weight:600;" onclick="BotsModule.openYieldBot()">
@@ -1011,6 +1017,30 @@ const BotsModule = {
             await Auth.apiCall(`/api/bots/yield/stop/${jobId}`, { method: 'POST' });
         } catch (e) {
             console.error('[YieldBot] Stop error:', e);
+        }
+    },
+
+    async _resumeYieldBot() {
+        const jobId = this._yieldState.jobId;
+        const skip = this._yieldState.processedCount || 0;
+        if (!jobId || skip === 0) return;
+
+        try {
+            const runR = await Auth.apiCall(`/api/bots/yield/run/${jobId}`, {
+                method: 'POST',
+                body: JSON.stringify({ mode: this._yieldState.mode, skip: skip }),
+            });
+
+            if (!runR || !runR.ok) {
+                const err = runR ? await runR.json().catch(() => ({})) : {};
+                throw new Error(err.detail || 'Resume failed');
+            }
+
+            this._yieldState.status = 'running';
+            this._renderYieldRunning();
+        } catch (e) {
+            console.error('[YieldBot] Resume error:', e);
+            Toast.error(`Resume failed: ${e.message}`);
         }
     },
 };
