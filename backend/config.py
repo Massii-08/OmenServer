@@ -14,7 +14,9 @@ from dotenv import load_dotenv
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
 # Charge les variables depuis le fichier .env (chemin absolu pour systemd/production)
-load_dotenv(PROJECT_DIR / ".env")
+# interpolate=False : les clés CurseForge contiennent des $ (ex: $2a$10$...)
+# que python-dotenv essaierait d'interpoler comme des variables
+load_dotenv(PROJECT_DIR / ".env", interpolate=False)
 
 
 class Settings:
