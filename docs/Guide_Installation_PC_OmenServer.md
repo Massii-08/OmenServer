@@ -59,7 +59,16 @@ Télécharge le fichier **Ubuntu Server 24.04 LTS** (fichier `.iso` d'environ 2.
 5. Clique **"Flash!"**
 6. Attends que ça finisse (~5 minutes)
 
-#### Option B — Sur Mac (avec le Terminal)
+#### Option B — Sur Windows (avec Rufus)
+
+1. Télécharge **Rufus** : https://rufus.ie/
+2. Ouvre Rufus
+3. **Périphérique** : Sélectionne ta clé USB
+4. **Type de démarrage** : Clique sur **"SÉLECTION"** et choisis le fichier `.iso` d'Ubuntu
+5. Laisse les autres options par défaut et clique sur **"DÉMARRER"**
+6. (Si on te demande de télécharger Syslinux ou d'écrire en mode Image ISO, dis "Oui" / "Mode image ISO")
+
+#### Option C — Sur Mac (avec le Terminal)
 
 ```bash
 # Trouver le disque de ta clé USB
@@ -219,19 +228,25 @@ Pour simplifier au maximum, un script s'occupe de **tout** installer et configur
 - Lancement automatique au démarrage (service en arrière-plan)
 - **Fermeture du capot** : le PC restera allumé même si tu fermes l'écran
 - **Horaires automatiques** : le PC s'éteindra à 1h du matin et se rallumera à 6h du matin
+- **Extension du disque** : étend automatiquement l'espace de base
+- **Option SSD/HDD** : te demandera si tu veux formater un 2e disque
 
 ### 6.1 — Lancer l'installation
 
 1. Va sur **https://omenserver.org**, connecte-toi, et va dans les **Paramètres** pour copier ta **Clé API**.
-2. Sur le nouveau PC, tape cette commande en remplaçant `TA_CLE_API` par ta vraie clé :
+2. Sur le nouveau PC, tape cette commande en remplaçant `TA_CLE_API` par ta vraie clé (par exemple `sk_123456789abc`) :
 
 ```bash
-curl -sL https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/setup_omen_agent.sh | sudo bash -s -- TA_CLE_API
+curl -sL https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/setup_omen_agent.sh \
+  | sudo bash -s -- TA_CLE_API
 ```
 
 *(Si ça te demande un mot de passe, c'est celui de ta session ubuntu)*
 
-3. Attends 1 minute, le script va tout configurer et afficher `✅ Terminé !` à la fin.
+3. Attends 1 minute. À la fin, le script te demandera :
+   > `⚠️ ATTENTION: As-tu un deuxième disque (SSD/HDD) que tu veux effacer... ? (y/N):`
+   Tape `y` si tu as un vieux disque à formater (ATTENTION : efface TOUT), ou juste `Entrée` pour ignorer.
+4. Quand tu vois `✅ Terminé !`, c'est fini.
 
 ### 6.2 — C'est tout !
 

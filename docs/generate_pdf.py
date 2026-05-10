@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Convertit le guide Markdown en HTML autonome (ouvrable dans le navigateur, imprimable en PDF)."""
+"""Convertit le guide Markdown en HTML autonome."""
 import markdown2
+import sys
+import os
 
-MD_FILE = "docs/Guide_Installation_PC_OmenServer.md"
-HTML_FILE = "docs/Guide_Installation_PC_OmenServer.html"
+if len(sys.argv) < 2:
+    print("Usage: python3 generate_pdf.py <file.md>")
+    sys.exit(1)
+
+MD_FILE = sys.argv[1]
+HTML_FILE = MD_FILE.replace(".md", ".html")
 
 with open(MD_FILE, "r") as f:
     md_content = f.read()
@@ -12,15 +18,17 @@ html_body = markdown2.markdown(md_content, extras=[
     "fenced-code-blocks", "tables", "header-ids", "code-friendly"
 ])
 
+title = "Guide Installation PC" if "_IT" not in MD_FILE else "Guida Installazione PC"
+
 html = f"""<!DOCTYPE html>
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<title>Guide Installation PC — OmenServer</title>
+<title>{title}</title>
 <style>
     @media print {{
         body {{ font-size: 11px; }}
-        pre {{ font-size: 10px; }}
+        pre {{ font-size: 10px; word-wrap: break-word; white-space: pre-wrap; }}
         h1 {{ page-break-before: avoid; }}
         h2, h3 {{ page-break-after: avoid; }}
         pre, table, blockquote {{ page-break-inside: avoid; }}
@@ -85,12 +93,18 @@ html = f"""<!DOCTYPE html>
         line-height: 1.6;
         overflow-x: auto;
         border: 1px solid #1e293b;
+        white-space: pre-wrap;       /* css-3 */
+        white-space: -moz-pre-wrap;  /* Mozilla, since 1999 */
+        white-space: -pre-wrap;      /* Opera 4-6 */
+        white-space: -o-pre-wrap;    /* Opera 7 */
+        word-wrap: break-word;       /* Internet Explorer 5.5+ */
     }}
     pre code {{
         background: none;
         color: #e2e8f0;
         padding: 0;
         font-size: inherit;
+        white-space: pre-wrap;
     }}
     table {{
         width: 100%;
@@ -161,4 +175,3 @@ with open(HTML_FILE, "w") as f:
     f.write(html)
 
 print(f"✅ HTML généré : {HTML_FILE}")
-print(f"📄 Ouvre-le dans Chrome et fais Cmd+P pour imprimer en PDF")

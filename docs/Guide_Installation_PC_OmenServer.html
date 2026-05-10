@@ -2,11 +2,11 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<title>Guide Installation PC — OmenServer</title>
+<title>Guide Installation PC</title>
 <style>
     @media print {
         body { font-size: 11px; }
-        pre { font-size: 10px; }
+        pre { font-size: 10px; word-wrap: break-word; white-space: pre-wrap; }
         h1 { page-break-before: avoid; }
         h2, h3 { page-break-after: avoid; }
         pre, table, blockquote { page-break-inside: avoid; }
@@ -71,12 +71,18 @@
         line-height: 1.6;
         overflow-x: auto;
         border: 1px solid #1e293b;
+        white-space: pre-wrap;       /* css-3 */
+        white-space: -moz-pre-wrap;  /* Mozilla, since 1999 */
+        white-space: -pre-wrap;      /* Opera 4-6 */
+        white-space: -o-pre-wrap;    /* Opera 7 */
+        word-wrap: break-word;       /* Internet Explorer 5.5+ */
     }
     pre code {
         background: none;
         color: #e2e8f0;
         padding: 0;
         font-size: inherit;
+        white-space: pre-wrap;
     }
     table {
         width: 100%;
@@ -185,6 +191,7 @@
 <li>Il enverra ses stats (CPU, RAM, Disque, Température) à l'Omen toutes les 10 secondes</li>
 <li>Tu pourras le <strong>redémarrer ou l'éteindre à distance</strong> depuis le dashboard OmenServer</li>
 <li>Son <strong>stockage sera fusionné</strong> dans le total affiché sur le dashboard</li>
+<li>Il <strong>restera allumé même capot fermé</strong> et <strong>s'allumera/s'éteindra automatiquement</strong> (1h-6h)</li>
 </ul>
 
 <hr />
@@ -211,7 +218,18 @@
 <li>Attends que ça finisse (~5 minutes)</li>
 </ol>
 
-<h4 id="option-b-sur-mac-avec-le-terminal">Option B — Sur Mac (avec le Terminal)</h4>
+<h4 id="option-b-sur-windows-avec-rufus">Option B — Sur Windows (avec Rufus)</h4>
+
+<ol>
+<li>Télécharge <strong>Rufus</strong> : https://rufus.ie/</li>
+<li>Ouvre Rufus</li>
+<li><strong>Périphérique</strong> : Sélectionne ta clé USB</li>
+<li><strong>Type de démarrage</strong> : Clique sur <strong>"SÉLECTION"</strong> et choisis le fichier <code>.iso</code> d'Ubuntu</li>
+<li>Laisse les autres options par défaut et clique sur <strong>"DÉMARRER"</strong></li>
+<li>(Si on te demande de télécharger Syslinux ou d'écrire en mode Image ISO, dis "Oui" / "Mode image ISO")</li>
+</ol>
+
+<h4 id="option-c-sur-mac-avec-le-terminal">Option C — Sur Mac (avec le Terminal)</h4>
 
 <pre><code># Trouver le disque de ta clé USB
 diskutil list
@@ -432,113 +450,43 @@ sudo systemctl start ssh
 
 <hr />
 
-<h2 id="6-installer-lagent-omenserver">6 — Installer l'agent OmenServer</h2>
+<h2 id="6-installer-lagent-en-1-seule-commande">6 — Installer l'agent (en 1 seule commande)</h2>
 
-<h3 id="61-telecharger-lagent">6.1 — Télécharger l'agent</h3>
+<p>Pour simplifier au maximum, un script s'occupe de <strong>tout</strong> installer et configurer automatiquement :
+- Téléchargement de l'agent OmenServer
+- Configuration de la clé API
+- Lancement automatique au démarrage (service en arrière-plan)
+- <strong>Fermeture du capot</strong> : le PC restera allumé même si tu fermes l'écran
+- <strong>Horaires automatiques</strong> : le PC s'éteindra à 1h du matin et se rallumera à 6h du matin
+- <strong>Extension du disque</strong> : étend automatiquement l'espace de base
+- <strong>Option SSD/HDD</strong> : te demandera si tu veux formater un 2e disque</p>
 
-<pre><code>curl -o ~/omen_agent.py https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/omen_agent.py
-</code></pre>
-
-<h3 id="62-installer-les-dependances-python">6.2 — Installer les dépendances Python</h3>
-
-<pre><code>pip3 install psutil requests
-</code></pre>
-
-<blockquote>
-  <p>Si <code>pip3</code> ne marche pas directement, utilise :</p>
-
-<pre><code>python3 -m pip install psutil requests
-</code></pre>
-</blockquote>
-
-<h3 id="63-recuperer-la-cle-api">6.3 — Récupérer la clé API</h3>
+<h3 id="61-lancer-linstallation">6.1 — Lancer l'installation</h3>
 
 <ol>
-<li>Va sur <strong>https://omenserver.org</strong></li>
-<li>Connecte-toi avec ton compte</li>
-<li>Va dans <strong>Settings</strong> (Paramètres)</li>
-<li>Section <strong>"Ordinateurs connectés"</strong></li>
-<li>Copie la <strong>clé API</strong></li>
+<li>Va sur <strong>https://omenserver.org</strong>, connecte-toi, et va dans les <strong>Paramètres</strong> pour copier ta <strong>Clé API</strong>.</li>
+<li>Sur le nouveau PC, tape cette commande en remplaçant <code>TA_CLE_API</code> par ta vraie clé (par exemple <code>sk_123456789abc</code>) :</li>
 </ol>
 
-<h3 id="64-configurer-lagent">6.4 — Configurer l'agent</h3>
-
-<pre><code>nano ~/omen_agent.py
+<pre><code>curl -sL https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/setup_omen_agent.sh \
+  | sudo bash -s -- TA_CLE_API
 </code></pre>
 
-<p>Modifie les <strong>2 lignes</strong> en haut du fichier :</p>
+<p><em>(Si ça te demande un mot de passe, c'est celui de ta session ubuntu)</em></p>
 
-<pre><code>SERVER_URL = "https://omenserver.org"      # ← Adresse du serveur
-API_KEY = "COLLE_TA_CLE_ICI"              # ← La clé API copiée
-</code></pre>
+<ol start="3">
+<li>Attends 1 minute. À la fin, le script te demandera :
+&gt; <code>⚠️ ATTENTION: As-tu un deuxième disque (SSD/HDD) que tu veux effacer... ? (y/N):</code>
+Tape <code>y</code> si tu as un vieux disque à formater (ATTENTION : efface TOUT), ou juste <code>Entrée</code> pour ignorer.</li>
+<li>Quand tu vois <code>✅ Terminé !</code>, c'est fini.</li>
+</ol>
 
-<p>Enregistre avec <code>Ctrl+O</code> puis <code>Entrée</code>, puis quitte avec <code>Ctrl+X</code>.</p>
+<h3 id="62-cest-tout">6.2 — C'est tout !</h3>
 
-<h3 id="65-tester-lagent-manuellement">6.5 — Tester l'agent manuellement</h3>
-
-<pre><code>python3 ~/omen_agent.py
-</code></pre>
-
-<p>Tu devrais voir :</p>
-
-<pre><code>🖥️  OmenServer Agent — pc-bureau
-📡 Serveur: https://omenserver.org
-⏱️  Intervalle: 10s
-========================================
-📡 [16:30:45] CPU 12% | RAM 1.2/8.0Go (15%) | Disk 23%
-📡 [16:30:55] CPU 8% | RAM 1.1/8.0Go (14%) | Disk 23%
-</code></pre>
-
-<p>Si tu vois ça, <strong>ça marche !</strong> Appuie <code>Ctrl+C</code> pour arrêter.</p>
-
-<hr />
-
-<h2 id="7-lancer-lagent-au-demarrage-automatiquement">7 — Lancer l'agent au démarrage automatiquement</h2>
-
-<h3 id="71-creer-le-service-systemd">7.1 — Créer le service systemd</h3>
-
-<pre><code>sudo tee /etc/systemd/system/omen-agent.service &lt;&lt; EOF
-[Unit]
-Description=OmenServer Agent
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=$USER
-ExecStart=/usr/bin/python3 /home/$USER/omen_agent.py
-Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-</code></pre>
-
-<h3 id="72-activer-et-demarrer">7.2 — Activer et démarrer</h3>
-
-<pre><code>sudo systemctl daemon-reload
-sudo systemctl enable omen-agent
-sudo systemctl start omen-agent
-</code></pre>
-
-<h3 id="73-verifier-que-ca-tourne">7.3 — Vérifier que ça tourne</h3>
-
-<pre><code>sudo systemctl status omen-agent
-</code></pre>
-
-<p>Tu devrais voir <code>active (running)</code> en vert.</p>
-
-<h3 id="74-voir-les-logs-en-temps-reel">7.4 — Voir les logs en temps réel</h3>
-
-<pre><code>sudo journalctl -u omen-agent -f
-</code></pre>
-
-<blockquote>
-  <p>Appuie <code>Ctrl+C</code> pour quitter les logs.</p>
-</blockquote>
+<p>Tu peux maintenant :
+- <strong>Fermer le capot de l'ordinateur</strong>, il restera allumé
+- Le ranger dans une étagère avec son câble d'alimentation
+- Le gérer entièrement depuis le dashboard OmenServer</p>
 
 <hr />
 
@@ -869,11 +817,8 @@ sudo ufw allow ssh
 <li>[ ] Créer la clé USB Ubuntu Server</li>
 <li>[ ] Installer Ubuntu Server (cocher SSH !)</li>
 <li>[ ] Se connecter et mettre à jour : <code>sudo apt update &amp;&amp; sudo apt upgrade -y</code></li>
-<li>[ ] Installer les outils : <code>sudo apt install -y python3 python3-pip curl htop</code></li>
-<li>[ ] Télécharger l'agent : <code>curl -o ~/omen_agent.py https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/omen_agent.py</code></li>
-<li>[ ] Installer psutil + requests : <code>pip3 install psutil requests</code></li>
-<li>[ ] Configurer SERVER_URL et API_KEY : <code>nano ~/omen_agent.py</code></li>
-<li>[ ] Créer le service systemd (Section 7)</li>
+<li>[ ] Installer python : <code>sudo apt install -y python3 python3-pip curl htop</code></li>
+<li>[ ] Lancer le script d'installation auto : <code>curl -sL https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/setup_omen_agent.sh | sudo bash -s -- TA_CLE_API</code></li>
 <li>[ ] Vérifier sur le dashboard OmenServer</li>
 <li>[ ] (Optionnel) Étendre le disque LVM</li>
 <li>[ ] (Optionnel) Formater un SSD supplémentaire</li>
