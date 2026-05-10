@@ -18,8 +18,20 @@ const Monitoring = {
      * Démarre le monitoring (appel toutes les 2s).
      */
     start() {
+        this._fetchHostname(); // Récupérer le hostname du serveur une seule fois
         this.fetchStats(); // Premier appel immédiat
         this._intervalId = setInterval(() => this.fetchStats(), this.REFRESH_INTERVAL);
+    },
+
+    /**
+     * Récupère le hostname du serveur principal (une seule fois).
+     */
+    async _fetchHostname() {
+        const r = await Auth.apiCall('/api/monitoring/system');
+        if (r && r.ok) {
+            const data = await r.json();
+            this._serverHostname = data.hostname || 'Omen';
+        }
     },
 
     /**
@@ -58,6 +70,7 @@ const Monitoring = {
         if (!r || !r.ok) return;
 
         const nodes = await r.json();
+        this._lastNodes = nodes; // Cache pour calculs combinés
         this.renderNodes(nodes);
     },
 
@@ -209,26 +222,103 @@ const Monitoring = {
     },
 
     updateUI(data) {
-        // CPU
+        // Récupérer les nodes en cache pour le calcul combiné
+        const nodes = this._lastNodes || [];
+        const onlineNodes = nodes.filter(n => n.online);
+        const serverHostname = this._serverHostname || 'Omen';
+
+        // --- CPU : afficher la valeur du serveur principal ---
         this.updateStat('cpu', data.cpu.percent, '%');
-        // RAM
+
+        // --- RAM : afficher la valeur du serveur principal ---
         this.updateStat('memory', data.memory.percent, '%',
             `${data.memory.used_gb} / ${data.memory.total_gb} Go`);
-        // Disque
-        this.updateStat('disk', data.disk.percent, '%',
-            `${data.disk.used_gb} / ${data.disk.total_gb} Go`);
-        // Température
+
+        // --- DISQUE : combiner serveur + tous les nodes online ---
+        let totalDiskGb = data.disk.total_gb;
+        let usedDiskGb = data.disk.used_gb;
+        for (const node of onlineNodes) {
+            totalDiskGb += (node.disk_total_gb || 0);
+            usedDiskGb += (node.disk_used_gb || 0);
+        }
+        const combinedDiskPercent = totalDiskGb > 0
+            ? Math.round((usedDiskGb / totalDiskGb) * 1000) / 10
+            : 0;
+        this.updateStat('disk', combinedDiskPercent, '%',
+            `${Math.round(usedDiskGb * 10) / 10} / ${Math.round(totalDiskGb * 10) / 10} Go`);
+
+        // --- Température ---
         if (data.temperature.available) {
             this.updateStat('temp', data.temperature.cpu_temp, '°C');
         } else {
             const tempValue = document.getElementById('stat-temp-value');
             if (tempValue) tempValue.textContent = 'N/A';
         }
-        // Réseau
+
+        // --- Réseau ---
         const netEl = document.getElementById('stat-network');
         if (netEl) {
             netEl.textContent = `↑ ${data.network.bytes_sent_mb} Mo  ↓ ${data.network.bytes_recv_mb} Mo`;
         }
+
+        // --- Mini-listes par machine ---
+        this._renderMachinesList('cpu', serverHostname, data, onlineNodes);
+        this._renderMachinesList('memory', serverHostname, data, onlineNodes);
+        this._renderMachinesList('disk', serverHostname, data, onlineNodes);
+        this._renderMachinesList('temp', serverHostname, data, onlineNodes);
+    },
+
+    /**
+     * Affiche la mini-liste des machines dans une carte de stat.
+     */
+    _renderMachinesList(type, serverHostname, serverData, onlineNodes) {
+        const container = document.getElementById(`stat-${type}-machines`);
+        if (!container) return;
+
+        // Ne rien afficher s'il n'y a pas de nodes
+        if (!onlineNodes || onlineNodes.length === 0) {
+            container.innerHTML = '';
+            return;
+        }
+
+        // Construire la liste des machines (serveur + nodes)
+        let items = [];
+
+        if (type === 'cpu') {
+            items.push({ name: serverHostname, value: `${Math.round(serverData.cpu.percent)}%`, cores: serverData.cpu.count });
+            for (const n of onlineNodes) {
+                items.push({ name: n.hostname, value: `${Math.round(n.cpu_percent)}%`, cores: n.cpu_count });
+            }
+        } else if (type === 'memory') {
+            items.push({ name: serverHostname, value: `${serverData.memory.used_gb}/${serverData.memory.total_gb} Go` });
+            for (const n of onlineNodes) {
+                items.push({ name: n.hostname, value: `${n.ram_used_gb}/${n.ram_total_gb} Go` });
+            }
+        } else if (type === 'disk') {
+            // Afficher le détail du serveur (avec les partitions)
+            const serverDiskLabel = `${serverData.disk.used_gb}/${serverData.disk.total_gb} Go`;
+            items.push({ name: serverHostname, value: serverDiskLabel });
+            for (const n of onlineNodes) {
+                items.push({ name: n.hostname, value: `${n.disk_used_gb}/${n.disk_total_gb} Go` });
+            }
+        } else if (type === 'temp') {
+            if (serverData.temperature.available) {
+                items.push({ name: serverHostname, value: `${serverData.temperature.cpu_temp}°C` });
+            }
+            for (const n of onlineNodes) {
+                if (n.temperature) {
+                    items.push({ name: n.hostname, value: `${n.temperature}°C` });
+                }
+            }
+            if (items.length === 0) return;
+        }
+
+        container.innerHTML = items.map(item => `
+            <div class="stat-machine-item">
+                <span class="stat-machine-name">${item.name}</span>
+                <span class="stat-machine-value">${item.value}${item.cores ? ` <span style="opacity:0.5">(${item.cores}c)</span>` : ''}</span>
+            </div>
+        `).join('');
     },
 
     /**

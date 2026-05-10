@@ -253,23 +253,27 @@ const App = {
                 <div class="stat-card" style="--stat-color: var(--accent-green)">
                     <div class="stat-label">CPU</div>
                     <div class="stat-value"><span id="stat-cpu-value">--</span><span class="stat-unit">%</span></div>
+                    <div id="stat-cpu-machines" class="stat-machines-list"></div>
                     <div class="stat-bar"><div class="stat-bar-fill" id="stat-cpu-bar" style="width: 0%"></div></div>
                 </div>
                 <div class="stat-card" style="--stat-color: var(--accent-blue)">
                     <div class="stat-label">${t('dashboard.memory')}</div>
                     <div class="stat-value"><span id="stat-memory-value">--</span><span class="stat-unit">%</span></div>
                     <div id="stat-memory-detail" style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">-- / -- Go</div>
+                    <div id="stat-memory-machines" class="stat-machines-list"></div>
                     <div class="stat-bar"><div class="stat-bar-fill" id="stat-memory-bar" style="width: 0%"></div></div>
                 </div>
                 <div class="stat-card" style="--stat-color: var(--accent-purple)">
-                    <div class="stat-label">${t('dashboard.disk')}</div>
+                    <div class="stat-label">${t('dashboard.disk')} <span style="font-size:10px;color:var(--text-muted);font-weight:400;">${t('dashboard.disk_combined')}</span></div>
                     <div class="stat-value"><span id="stat-disk-value">--</span><span class="stat-unit">%</span></div>
                     <div id="stat-disk-detail" style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">-- / -- Go</div>
+                    <div id="stat-disk-machines" class="stat-machines-list"></div>
                     <div class="stat-bar"><div class="stat-bar-fill" id="stat-disk-bar" style="width: 0%"></div></div>
                 </div>
                 <div class="stat-card" style="--stat-color: var(--accent-yellow)">
                     <div class="stat-label">${t('dashboard.temp')}</div>
                     <div class="stat-value"><span id="stat-temp-value">--</span><span class="stat-unit">°C</span></div>
+                    <div id="stat-temp-machines" class="stat-machines-list"></div>
                     <div class="stat-bar"><div class="stat-bar-fill" id="stat-temp-bar" style="width: 0%"></div></div>
                 </div>
             </div>

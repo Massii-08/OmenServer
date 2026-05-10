@@ -60,28 +60,83 @@ def get_memory_info() -> dict:
 
 def get_disk_info() -> dict:
     """
-    Retourne les infos sur le disque principal.
+    Retourne les infos sur TOUS les disques physiques combinés.
+
+    Somme les partitions physiques réelles (exclut les pseudo-fs
+    comme tmpfs, devtmpfs, loop, snap, overlay, etc.)
 
     Exemple de retour:
     {
-        "total_gb": 512.0,
+        "total_gb": 1382.0,
         "used_gb": 234.5,
-        "free_gb": 277.5,
-        "percent": 45.8
+        "free_gb": 1147.5,
+        "percent": 17.0,
+        "disks": [
+            {"mount": "/", "total_gb": 914.0, "used_gb": 9.0, "free_gb": 867.0},
+            {"mount": "/mnt/ssd", "total_gb": 469.0, "used_gb": 0.0, "free_gb": 445.0}
+        ]
     }
     """
-    disk = psutil.disk_usage("/")
-    total_gb = round(disk.total / (1024 ** 3), 1)
-    used_gb = round(disk.used / (1024 ** 3), 1)
-    free_gb = round(disk.free / (1024 ** 3), 1)
-    # Calcul du % basé sur used/total pour cohérence avec les valeurs affichées
-    # (sur APFS, disk.percent peut être incohérent car used + free ≠ total)
-    percent = round((disk.used / disk.total) * 100, 1) if disk.total > 0 else 0
+    # Pseudo-filesystems à exclure
+    _EXCLUDED_FS = {'tmpfs', 'devtmpfs', 'squashfs', 'overlay', 'devfs',
+                    'iso9660', 'udf', 'hugetlbfs', 'mqueue', 'proc',
+                    'sysfs', 'cgroup', 'cgroup2', 'autofs', 'fusectl',
+                    'securityfs', 'pstore', 'debugfs', 'tracefs',
+                    'configfs', 'binfmt_misc', 'efivarfs', 'fuse.snapfuse'}
+
+    seen_devices = set()
+    total_bytes = 0
+    used_bytes = 0
+    free_bytes = 0
+    disks_list = []
+
+    for part in psutil.disk_partitions(all=False):
+        # Exclure les pseudo-fs et les snaps
+        if part.fstype in _EXCLUDED_FS:
+            continue
+        if '/snap/' in part.mountpoint or '/loop' in part.device:
+            continue
+        # Éviter les doublons de device (bind mounts)
+        if part.device in seen_devices:
+            continue
+        seen_devices.add(part.device)
+
+        try:
+            usage = psutil.disk_usage(part.mountpoint)
+            total_bytes += usage.total
+            used_bytes += usage.used
+            free_bytes += usage.free
+            disks_list.append({
+                "mount": part.mountpoint,
+                "total_gb": round(usage.total / (1024 ** 3), 1),
+                "used_gb": round(usage.used / (1024 ** 3), 1),
+                "free_gb": round(usage.free / (1024 ** 3), 1),
+            })
+        except (PermissionError, OSError):
+            continue
+
+    # Fallback si rien trouvé
+    if not disks_list:
+        disk = psutil.disk_usage("/")
+        total_bytes = disk.total
+        used_bytes = disk.used
+        free_bytes = disk.free
+        disks_list = [{"mount": "/",
+                       "total_gb": round(disk.total / (1024 ** 3), 1),
+                       "used_gb": round(disk.used / (1024 ** 3), 1),
+                       "free_gb": round(disk.free / (1024 ** 3), 1)}]
+
+    total_gb = round(total_bytes / (1024 ** 3), 1)
+    used_gb = round(used_bytes / (1024 ** 3), 1)
+    free_gb = round(free_bytes / (1024 ** 3), 1)
+    percent = round((used_bytes / total_bytes) * 100, 1) if total_bytes > 0 else 0
+
     return {
         "total_gb": total_gb,
         "used_gb": used_gb,
         "free_gb": free_gb,
         "percent": percent,
+        "disks": disks_list,
     }
 
 
