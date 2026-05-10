@@ -9,6 +9,7 @@ sqlalchemy==2.0.41
 
 # Authentification (JWT + hash passwords)
 python-jose[cryptography]==3.4.0
+bcrypt>=4.0.0
 passlib[bcrypt]==1.7.4
 
 # Monitoring système (CPU, RAM, température)

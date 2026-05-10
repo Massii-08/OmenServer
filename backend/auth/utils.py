@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt as _bcrypt
 from sqlalchemy.orm import Session
 
 from backend.config import settings
@@ -27,27 +27,18 @@ from backend.auth.models import User
 
 # --- Hash des mots de passe ---
 # bcrypt est l'algorithme recommandé : lent exprès pour résister au bruteforce
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
-def _truncate_password(password: str) -> str:
-    """
-    Tronque le mot de passe à 72 octets (limite bcrypt).
-    Les versions récentes de bcrypt (4.1+) lèvent une ValueError
-    si le mot de passe dépasse 72 octets. On tronque silencieusement.
-    """
-    encoded = password.encode("utf-8")
-    if len(encoded) > 72:
-        encoded = encoded[:72]
-    return encoded.decode("utf-8", errors="ignore")
+# On utilise bcrypt directement (pas passlib) pour compatibilité Python 3.14+
 
 
 def hash_password(password: str) -> str:
     """
     Transforme un mot de passe en hash.
     Exemple: "monmdp123" → "$2b$12$LJ3m5..."
+    bcrypt a une limite de 72 octets, on tronque silencieusement.
     """
-    return pwd_context.hash(_truncate_password(password))
+    pwd_bytes = password.encode("utf-8")[:72]
+    salt = _bcrypt.gensalt(rounds=12)
+    return _bcrypt.hashpw(pwd_bytes, salt).decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -55,7 +46,12 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     Vérifie si un mot de passe correspond à un hash.
     Retourne True si ça correspond, False sinon.
     """
-    return pwd_context.verify(_truncate_password(plain_password), hashed_password)
+    pwd_bytes = plain_password.encode("utf-8")[:72]
+    hash_bytes = hashed_password.encode("utf-8")
+    try:
+        return _bcrypt.checkpw(pwd_bytes, hash_bytes)
+    except Exception:
+        return False
 
 
 # --- Tokens JWT ---
