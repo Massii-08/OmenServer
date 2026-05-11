@@ -73,10 +73,11 @@ sed -i 's/#HandleLidSwitch=suspend/HandleLidSwitch=ignore/' /etc/systemd/logind.
 sed -i 's/#HandleLidSwitchExternalPower=suspend/HandleLidSwitchExternalPower=ignore/' /etc/systemd/logind.conf
 systemctl restart systemd-logind
 
-# 8. Horaires de réveil/extinction (Cron)
-echo "⏰ Configuration des horaires (Extinction 1h, Allumage 6h)..."
+# 8. Fuseau horaire et horaires de réveil/extinction (Cron)
+echo "⏰ Configuration du fuseau horaire et des horaires..."
+timedatectl set-timezone Europe/Zurich
 crontab -l 2>/dev/null | grep -v 'rtcwake' > /tmp/current_cron
-echo '0 1 * * * /usr/sbin/rtcwake -m off -l -t $(date -d "tomorrow 06:00" +\%s)' >> /tmp/current_cron
+echo '0 1 * * * /usr/sbin/rtcwake -m mem -l -t $(date -d "tomorrow 06:00" +\%s)' >> /tmp/current_cron
 crontab /tmp/current_cron
 rm /tmp/current_cron
 

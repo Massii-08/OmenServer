@@ -115,12 +115,12 @@ diskutil eject /dev/diskX
 | **Rete** | Rileva automaticamente il cavo Ethernet. Si WiFi, configure-le. |
 | **Proxy** | Lascia vuoto, premi Invio |
 | **Mirror** | Lascia predefinito, premi Invio |
-| **Archiviazione** | ⭐ **IMPORTANTE** — voir ci-dessous |
+| **Archiviazione** | ⭐ **IMPORTANTEE** — voir ci-dessous |
 | **Nome / Utente** | Vedi sotto |
 | **SSH** | ⭐ **Spunta "Install OpenSSH server"** |
 | **Snaps** | Non spuntare nulla, premi Invio |
 
-### 3.3 — Configurazione dell'archiviazione (IMPORTANTE)
+### 3.3 — Configurazione dell'archiviazione (IMPORTANTEE)
 
 L'installer propone uno schema di partizioni. **Di default, Ubuntu non usa tutto lo spazio!**
 
@@ -227,7 +227,7 @@ Per semplificare al massimo, uno script si occupa di installare e configurare **
 - Configurazione della chiave API
 - Avvio automatico (servizio in background)
 - **Chiusura del coperchio** : il PC resterà acceso anche se chiudi lo schermo
-- **Orari automatici** : il PC si spegnerà all'1 di notte e si riaccenderà alle 6 del mattino
+- **Orari automatici** : il PC entrerà in sospensione profonda all'1 di notte e si sveglierà alle 6 del mattino (fuso orario europeo configurato automaticamente)
 - **Estensione del disco** : espande automaticamente lo spazio di base
 - **Opzione SSD/HDD** : ti chiederà se vuoi formattare un 2° disco
 

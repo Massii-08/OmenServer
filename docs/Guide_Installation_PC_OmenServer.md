@@ -227,7 +227,7 @@ Pour simplifier au maximum, un script s'occupe de **tout** installer et configur
 - Configuration de la clé API
 - Lancement automatique au démarrage (service en arrière-plan)
 - **Fermeture du capot** : le PC restera allumé même si tu fermes l'écran
-- **Horaires automatiques** : le PC s'éteindra à 1h du matin et se rallumera à 6h du matin
+- **Horaires automatiques** : le PC se mettra en veille profonde à 1h du matin et se réveillera à 6h du matin (fuseau horaire européen configuré automatiquement)
 - **Extension du disque** : étend automatiquement l'espace de base
 - **Option SSD/HDD** : te demandera si tu veux formater un 2e disque
 
