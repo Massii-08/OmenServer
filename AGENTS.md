@@ -29,11 +29,17 @@
 - Hover effects, transizioni, micro-animazioni sono attesi
 
 ### 5. Multi-macchine: architettura cervello/braccio
-- L'**Omen** è il cervello (server principale)
+- L'**Omen** è il cervello (server principale) — **sempre visibile** nella griglia delle macchine
 - Gli altri PC sono **bracci** (agenti che inviano stats via `omen_agent.py`)
-- Il monitoring del disk è **combinato** (tutti i dischi di tutti i server)
-- Le card CPU/RAM/Temp mostrano **mini-liste per macchina** quando ci sono nodes connessi
+- Le card in alto mostrano **totali combinati** (CPU media ponderata, RAM sommata, Disco sommato, Temp max)
+- La sezione "Rete di macchine" mostra: 🧠 Omen (cervello) per primo + 🦾 Bracci dopo
 - `system_info.py → get_disk_info()` somma tutti i mount point fisici
+- Il diagnostico rileva i **crash dei nodi** (offline < 5 min = crash recente)
+
+### 6. Cache: bumper le versioni dopo ogni modifica JS/CSS
+- Ogni file JS in `index.html` ha un `?v=XX` — incrementare dopo ogni modifica
+- Il Service Worker (`sw.js`) ha un `CACHE_NAME` — incrementare ad ogni versione
+- Cloudflare + Service Worker cachano aggressivamente i file statici
 
 ---
 
@@ -63,7 +69,10 @@
 - [ ] Se nuova stat → aggiornare `system_info.py` (backend)
 - [ ] Aggiornare `monitoring.js → updateUI()` (frontend)
 - [ ] Se serve nelle card → aggiornare `_renderMachinesList()` nel frontend
+- [ ] Se serve nella carta Omen → aggiornare `renderNodes()` nel frontend
 - [ ] Aggiungere nel `HeartbeatData` schema se anche gli agenti devono inviarlo
+- [ ] **Bumper** `?v=XX` in `index.html` per i file JS/CSS modificati
+- [ ] **Bumper** `CACHE_NAME` in `sw.js`
 
 ---
 
@@ -106,6 +115,7 @@ cat ~/deploy.log
 7. **Non usare `alert()`** nel frontend — usare `Toast.success/error/warn`
 8. **Non usare `passlib`** — usare `bcrypt` direttamente (vedi `auth/utils.py`)
 9. **Non dimenticare di fare `git push`** — il deploy è automatico dopo il push
+10. **Non dimenticare di bumper le versioni** — `?v=XX` in `index.html` + `CACHE_NAME` in `sw.js`
 
 ---
 
@@ -136,7 +146,10 @@ cat ~/deploy.log
 | ⭐⭐ | `frontend/css/style.css` | Design system + variabili CSS |
 | ⭐⭐ | `backend/monitoring/system_info.py` | Monitoring multi-dischi |
 | ⭐⭐ | `backend/monitoring/nodes_router.py` | API multi-macchine |
+| ⭐⭐ | `backend/scheduler/power_router.py` | Gestione alimentazione (reboot/shutdown) |
 | ⭐ | `frontend/js/lang.js` | Struttura delle traduzioni |
-| ⭐ | `frontend/js/monitoring.js` | Stats combinate + mini-liste |
+| ⭐ | `frontend/js/monitoring.js` | Stats combinate + carta Omen + nodi |
+| ⭐ | `frontend/index.html` | Versioni cache JS (`?v=XX`) |
+| ⭐ | `frontend/sw.js` | Service Worker (PWA, `CACHE_NAME`) |
 | ⭐ | `backend/config.py` | Variabili di configurazione |
 | ⭐ | `tools/omen_agent.py` | Agent per i PC "braccio" |

@@ -11,7 +11,7 @@
 Il permet de gérer des serveurs de jeux (Minecraft, etc.), des bots Python, des médias, un serveur web,
 et le monitoring système multi-machines depuis une interface web premium.
 
-- **Version** : 4.1.0
+- **Version** : 4.2.0
 - **Auteur** : Massii_08 (Massimiliano)
 - **License** : MIT
 - **Hardware** : HP Omen (Ubuntu Server en prod, cerveau) + agents sur d'autres PC (bras)
@@ -36,7 +36,7 @@ Projet serveur/
 │   ├── monitoring/             # Monitoring système + multi-machines
 │   │   ├── router.py           # /api/monitoring/stats (CPU, RAM, disque combiné)
 │   │   ├── system_info.py      # Collecte multi-disques via psutil
-│   │   ├── diagnostic_router.py # /api/monitoring/diagnostic
+│   │   ├── diagnostic_router.py # /api/monitoring/diagnostic (système + crash nodes)
 │   │   ├── container_router.py # /api/monitoring/containers (Docker)
 │   │   └── nodes_router.py     # /api/nodes — PC connectés via omen_agent.py
 │   ├── game_server/            # Gestion serveurs de jeux (Docker)
@@ -56,7 +56,7 @@ Projet serveur/
 │   │   ├── router.py           # CRUD tâches cron
 │   │   ├── engine.py           # APScheduler engine
 │   │   ├── models.py           # ScheduledTask
-│   │   └── power_router.py     # Extinction/redémarrage programmé
+│   │   └── power_router.py     # Extinction/redémarrage programmé + immédiat
 │   ├── modules/                # Hub des modules
 │   │   └── router.py           # /api/modules/ — liste des modules activés
 │   ├── media/                  # Module Média (Jellyfin)
@@ -83,7 +83,7 @@ Projet serveur/
 │   │   ├── auth.js             # Auth.apiCall(), login/logout, token JWT
 │   │   ├── lang.js             # i18n — FR/EN/IT (clés: modules.*, bots.*, yield.*, etc.)
 │   │   ├── modules.js          # Hub des modules (cartes)
-│   │   ├── monitoring.js       # Dashboard monitoring (stats combinées multi-machines)
+│   │   ├── monitoring.js       # Dashboard monitoring (stats combinées, carte Omen cerveau)
 │   │   ├── toast.js            # Notifications toast
 │   │   ├── bots_module.js      # Module Bots (liste + Yield Bot UI)
 │   │   ├── files_module.js     # Module Fichiers (navigateur)
@@ -188,13 +188,30 @@ Le frontend est une **Single Page Application** sans framework :
 ## 🖥️ Architecture Multi-Machines
 
 ### Concept : Cerveau / Bras
-- **L'Omen** = cerveau (serveur central, dashboard, API)
+- **L'Omen** = cerveau (serveur central, dashboard, API) — **toujours visible** dans la liste des machines
 - **Les autres PC** = bras (agents légers qui envoient leurs stats)
+
+### Dashboard unifié
+- **Cartes du haut** : stats **combinées** (CPU moy. pondérée par cœurs, RAM sommée, Disque sommé, Temp max)
+- **Section "Réseau de machines"** : grille de cartes avec :
+  - 🧠 **Omen (cerveau)** toujours en premier, avec badge violet et bordure verte
+  - 🦾 **Agents (bras)** ensuite, avec badge bleu et boutons reboot/shutdown/retirer
+- Boutons **reboot/shutdown** sur la carte Omen (admin, double confirmation)
 
 ### Monitoring combiné
 - `system_info.py → get_disk_info()` somme **tous les disques physiques** (HDD + SSD + partitions)
-- `monitoring.js → updateUI()` fusionne le stockage serveur + nodes connectés
+- `monitoring.js → updateUI()` fusionne les stats serveur + nodes connectés (CPU pondéré, RAM sommée, Temp max)
 - Les cartes CPU/RAM/Temp affichent une **mini-liste par machine** quand des nodes sont connectés
+
+### Gestion de l'alimentation
+- `power_router.py` : planning extinction/réveil programmé (rtcwake) + reboot/shutdown immédiat
+- Endpoints : `POST /api/power/reboot`, `POST /api/power/shutdown` (arrêt gracieux des services)
+- Double confirmation pour l'extinction du cerveau (coupe tout le réseau)
+
+### Diagnostic multi-machines
+- `diagnostic_router.py` vérifie CPU, RAM, Disque, Docker, Serveurs de jeux, Réseau **et Nodes**
+- **Crash détecté** : si un PC agent passe offline depuis < 5 min → CRITICAL avec dernières stats
+- **Offline longue durée** : > 5 min → WARNING avec suggestion Wake-on-LAN
 
 ### Agent (`tools/omen_agent.py`)
 - Script Python léger à installer sur chaque PC
@@ -338,6 +355,8 @@ sudo systemctl status cloudflared
 6. **Auto-refresh des bots** : l'interval de 5s doit être clearé (`unload()`) avant de naviguer vers le Yield Bot
 7. **Espace dans le chemin** : "Projet serveur" a un espace — utiliser un wrapper script pour systemd
 8. **bcrypt direct** : `auth/utils.py` utilise `bcrypt` directement (pas passlib) avec troncature manuelle à 72 bytes
+9. **Cache Cloudflare/SW** : bumper `?v=XX` dans `index.html` + `CACHE_NAME` dans `sw.js` après chaque modif JS/CSS
+10. **Service Worker PWA** : `sw.js` met en cache les fichiers statiques — bumper `CACHE_NAME` à chaque version
 
 ---
 
@@ -345,6 +364,8 @@ sudo systemctl status cloudflared
 
 | Date | Changement |
 |------|-----------|
+| 2026-05-12 | 🖥️ Omen cerveau visible dans la grille machines + stats combinées (CPU/RAM/Temp) |
+| 2026-05-12 | 🔌 Boutons reboot/shutdown sur carte Omen + diagnostic crash nodes |
 | 2026-05-10 | 🖥️ Multi-machines : stockage combiné + mini-listes + auto-deploy |
 | 2026-05-10 | 💾 Extension disque LVM (98→914 Go) + formatage SSD NVMe (469 Go) |
 | 2026-05-10 | 🌐 Cloudflare Tunnel → omenserver.org + service systemd |
