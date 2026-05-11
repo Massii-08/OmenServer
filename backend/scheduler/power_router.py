@@ -158,3 +158,58 @@ def cancel_scheduled_shutdown(current_user: User = Depends(get_current_user)):
             return {"message": "ℹ️ Aucun shutdown programmé à annuler"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur: {e}")
+
+
+@router.post("/reboot")
+def reboot_server(current_user: User = Depends(get_current_user)):
+    """
+    Redémarre le serveur Omen (cerveau).
+    Effectue un arrêt gracieux de tous les services avant le reboot.
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin uniquement")
+
+    def _delayed_reboot():
+        """Arrêt gracieux + reboot après 15 secondes."""
+        logger.info("🔄 Reboot demandé — arrêt gracieux des services...")
+        time.sleep(3)
+        graceful_shutdown()
+        time.sleep(5)
+        logger.info("🔄 Reboot du serveur...")
+        try:
+            subprocess.run(["sudo", "reboot"], timeout=10)
+        except Exception as e:
+            logger.error(f"❌ Erreur reboot: {e}")
+
+    thread = threading.Thread(target=_delayed_reboot, daemon=True)
+    thread.start()
+
+    return {"message": "🔄 Reboot en cours — arrêt gracieux des services puis redémarrage dans ~15 secondes."}
+
+
+@router.post("/shutdown")
+def shutdown_server(current_user: User = Depends(get_current_user)):
+    """
+    Éteint le serveur Omen (cerveau).
+    Effectue un arrêt gracieux de tous les services avant l'extinction.
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin uniquement")
+
+    def _delayed_shutdown():
+        """Arrêt gracieux + extinction après 15 secondes."""
+        logger.info("⏻ Shutdown demandé — arrêt gracieux des services...")
+        time.sleep(3)
+        graceful_shutdown()
+        time.sleep(5)
+        logger.info("⏻ Extinction du serveur...")
+        try:
+            subprocess.run(["sudo", "shutdown", "-h", "now"], timeout=10)
+        except Exception as e:
+            logger.error(f"❌ Erreur shutdown: {e}")
+
+    thread = threading.Thread(target=_delayed_shutdown, daemon=True)
+    thread.start()
+
+    return {"message": "⏻ Extinction en cours — arrêt gracieux des services puis extinction dans ~15 secondes."}
+

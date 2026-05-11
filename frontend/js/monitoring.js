@@ -165,6 +165,12 @@ const Monitoring = {
                             <span>${temp && temp.available ? `🌡️ ${temp.cpu_temp}°C` : ''}</span>
                             <span>⏱️ ${uptimeText} ${Lang.t('nodes.uptime')}</span>
                         </div>
+                        ${Auth.getUser()?.is_admin ? `
+                        <div style="display:flex;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border-color);">
+                            <button class="btn btn-sm btn-secondary" onclick="Monitoring.omenPowerAction('reboot')" style="font-size:11px;padding:3px 8px;" title="${Lang.t('nodes.omen_reboot_desc')}">🔄 ${Lang.t('nodes.reboot')}</button>
+                            <button class="btn btn-sm btn-secondary" onclick="Monitoring.omenPowerAction('shutdown')" style="font-size:11px;padding:3px 8px;color:var(--accent-red);" title="${Lang.t('nodes.omen_shutdown_desc')}">⏻ ${Lang.t('nodes.shutdown')}</button>
+                        </div>
+                        ` : ''}
                     </div>
                 </div>`;
         }
@@ -287,6 +293,33 @@ const Monitoring = {
         if (r && r.ok) {
             if (typeof Toast !== 'undefined') Toast.success(`✅ ${hostname} retiré`);
             this.fetchNodes(); // Refresh
+        } else {
+            const err = r ? await r.json().catch(() => ({})) : {};
+            if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Erreur');
+        }
+    },
+
+    /**
+     * Reboot ou shutdown du serveur Omen (cerveau).
+     * Double confirmation car c'est le serveur principal.
+     */
+    async omenPowerAction(action) {
+        const actionLabel = action === 'reboot' ? Lang.t('nodes.reboot') : Lang.t('nodes.shutdown');
+        const hostname = this._serverHostname || 'Omen';
+
+        // Première confirmation
+        const confirmKey = action === 'reboot' ? 'nodes.omen_reboot_confirm' : 'nodes.omen_shutdown_confirm';
+        if (!confirm(Lang.t(confirmKey).replace('{name}', hostname))) return;
+
+        // Double confirmation pour le shutdown (extinction totale)
+        if (action === 'shutdown') {
+            if (!confirm(Lang.t('nodes.omen_shutdown_final'))) return;
+        }
+
+        const r = await Auth.apiCall(`/api/power/${action}`, { method: 'POST' });
+        if (r && r.ok) {
+            const data = await r.json();
+            if (typeof Toast !== 'undefined') Toast.success(data.message);
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
             if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Erreur');

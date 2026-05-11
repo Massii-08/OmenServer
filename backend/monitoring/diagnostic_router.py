@@ -142,6 +142,64 @@ def run_diagnostic(
         checks.append({"id": "network", "name": "Réseau", "icon": "🌐", "level": "warning",
             "value": "Inconnu", "message": "Impossible de lire les stats réseau."})
 
+    # --- Nodes (PC du réseau) ---
+    try:
+        from backend.monitoring.nodes_router import _nodes, _OFFLINE_THRESHOLD
+        import time as _time
+
+        now = _time.time()
+        offline_recent = []  # Offline depuis < 5 min (crash probable)
+        offline_long = []    # Offline depuis > 5 min
+
+        for hostname, info in _nodes.items():
+            age = now - info.get("last_seen", 0)
+            if age >= _OFFLINE_THRESHOLD:
+                since_min = round(age / 60, 1)
+                since_str = f"{since_min} min" if since_min < 60 else f"{round(since_min / 60, 1)}h"
+                node_info = f"{hostname} ({info.get('os', '?')}) — offline depuis {since_str}"
+
+                # Ajouter les dernières stats connues si dispo
+                last_cpu = info.get("cpu_percent", 0)
+                last_ram = info.get("ram_percent", 0)
+                last_temp = info.get("temperature")
+                stats_str = f"Dernières stats: CPU {last_cpu}%, RAM {last_ram}%"
+                if last_temp:
+                    stats_str += f", Temp {last_temp}°C"
+
+                if age < 300:  # < 5 min = crash récent
+                    offline_recent.append({"name": hostname, "info": node_info, "stats": stats_str, "age": age})
+                else:
+                    offline_long.append({"name": hostname, "info": node_info, "stats": stats_str, "age": age})
+
+        if offline_recent:
+            names = ", ".join(n["name"] for n in offline_recent)
+            details = "; ".join(f"{n['info']} — {n['stats']}" for n in offline_recent)
+            checks.append({"id": "nodes_crash", "name": "PC — Crash détecté", "icon": "💥", "level": "critical",
+                "value": f"{len(offline_recent)} PC hors ligne",
+                "message": f"PC récemment déconnecté(s): {details}",
+                "suggestion": f"Vérifiez {names} — déconnexion soudaine (crash, coupure réseau ou extinction inattendue)."})
+        
+        if offline_long:
+            names = ", ".join(n["name"] for n in offline_long)
+            details = "; ".join(n["info"] for n in offline_long)
+            checks.append({"id": "nodes_offline", "name": "PC — Hors ligne", "icon": "💻", "level": "warning",
+                "value": f"{len(offline_long)} PC offline",
+                "message": f"PC hors ligne depuis longtemps: {details}",
+                "suggestion": f"Ces PC sont probablement éteints. Utilisez Wake-on-LAN ou démarrez-les manuellement."})
+
+        online_count = sum(1 for h, i in _nodes.items() if (now - i.get("last_seen", 0)) < _OFFLINE_THRESHOLD)
+        total_count = len(_nodes)
+        if total_count > 0 and not offline_recent:
+            checks.append({"id": "nodes_ok", "name": "PC réseau", "icon": "💻", "level": "ok",
+                "value": f"{online_count}/{total_count} en ligne",
+                "message": "Tous les PC connus fonctionnent normalement."})
+        elif total_count == 0:
+            checks.append({"id": "nodes_ok", "name": "PC réseau", "icon": "💻", "level": "ok",
+                "value": "Aucun agent",
+                "message": "Aucun PC agent enregistré. Installez omen_agent.py pour le monitoring multi-machines."})
+    except Exception as e:
+        logger.warning(f"Diagnostic nodes check failed: {e}")
+
     # Score global
     levels = [c["level"] for c in checks]
     if "critical" in levels:
