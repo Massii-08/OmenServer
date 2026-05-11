@@ -25,12 +25,15 @@ const Monitoring = {
 
     /**
      * Récupère le hostname du serveur principal (une seule fois).
+     * Cache aussi l'OS et l'uptime pour la carte Omen.
      */
     async _fetchHostname() {
         const r = await Auth.apiCall('/api/monitoring/system');
         if (r && r.ok) {
             const data = await r.json();
             this._serverHostname = data.hostname || 'Omen';
+            this._serverOS = data.os || 'Linux';
+            this._serverUptime = data.uptime_hours || 0;
         }
     },
 
@@ -52,6 +55,7 @@ const Monitoring = {
         if (!response) return;
 
         const data = await response.json();
+        this._lastServerData = data; // Cache pour la carte Omen
         this.updateUI(data);
         this.updateHistory(data);
 
@@ -59,6 +63,11 @@ const Monitoring = {
         this._nodesCycle = (this._nodesCycle || 0) + 1;
         if (this._nodesCycle % 2 === 0) {
             this.fetchNodes();
+        }
+
+        // Re-fetch uptime toutes les ~60s (30 cycles * 2s)
+        if (this._nodesCycle % 30 === 0) {
+            this._fetchHostname();
         }
     },
 
@@ -76,29 +85,92 @@ const Monitoring = {
 
     /**
      * Affiche les cartes des PC connectés dans le dashboard.
+     * Le serveur Omen (cerveau) est TOUJOURS affiché en premier,
+     * suivi des agents (bras).
      */
     renderNodes(nodes) {
         const grid = document.getElementById('nodes-grid');
         const countEl = document.getElementById('nodes-count');
         if (!grid) return;
 
-        if (!nodes || nodes.length === 0) {
-            if (countEl) countEl.textContent = '';
-            grid.innerHTML = `
-                <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:13px;grid-column:1/-1;">
-                    <div style="font-size:32px;margin-bottom:8px;">💻</div>
-                    ${Lang.t('nodes.no_nodes')}<br>
-                    <span style="font-size:11px;">${Lang.t('nodes.no_nodes_hint')}</span>
-                </div>`;
-            return;
-        }
+        const serverData = this._lastServerData;
+        const serverHostname = this._serverHostname || 'Omen';
+        const agentNodes = nodes || [];
+        const onlineAgents = agentNodes.filter(n => n.online).length;
+        const totalCount = 1 + agentNodes.length;
+        const onlineCount = 1 + onlineAgents; // Omen is always online
 
-        const online = nodes.filter(n => n.online).length;
         if (countEl) {
-            countEl.textContent = `(${online}/${nodes.length})`;
+            countEl.textContent = `(${onlineCount}/${totalCount})`;
         }
 
-        grid.innerHTML = nodes.map(node => {
+        // Helper: couleur des barres selon la valeur
+        const barColor = (v) => v > 90 ? 'var(--accent-red)' : v > 70 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+
+        // === Carte du serveur Omen (cerveau) — toujours en premier ===
+        let omenCard = '';
+        if (serverData) {
+            const cpu = serverData.cpu;
+            const mem = serverData.memory;
+            const disk = serverData.disk;
+            const temp = serverData.temperature;
+            const uptimeH = this._serverUptime || 0;
+
+            let uptimeText = '';
+            if (uptimeH < 1) uptimeText = `${Math.round(uptimeH * 60)} min`;
+            else if (uptimeH < 24) uptimeText = `${Math.round(uptimeH)}h`;
+            else uptimeText = `${Math.round(uptimeH / 24)}j ${Math.round(uptimeH % 24)}h`;
+
+            omenCard = `
+                <div style="background:var(--bg-secondary);border-radius:12px;padding:16px;border:2px solid var(--accent-green);transition:all 0.3s;position:relative;">
+                    <div style="position:absolute;top:8px;right:10px;font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(139,92,246,0.15);color:#a78bfa;font-weight:600;letter-spacing:0.3px;">🧠 ${Lang.t('nodes.brain')}</div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                        <div>
+                            <div style="font-weight:700;font-size:14px;">🟢 ${serverHostname}</div>
+                            <div style="font-size:11px;color:var(--text-muted);">${this._serverOS || 'Linux'}</div>
+                        </div>
+                        <div style="text-align:right;margin-top:14px;">
+                            <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(34,197,94,0.15);color:var(--accent-green);">${Lang.t('nodes.online')}</span>
+                        </div>
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:8px;">
+                        <div>
+                            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
+                                <span>CPU <span style="opacity:0.5">(${cpu.count}c)</span></span>
+                                <span style="font-weight:600;">${Math.round(cpu.percent)}%</span>
+                            </div>
+                            <div style="height:6px;background:var(--bg-primary);border-radius:3px;overflow:hidden;">
+                                <div style="height:100%;width:${Math.min(cpu.percent, 100)}%;background:${barColor(cpu.percent)};border-radius:3px;transition:width 0.5s;"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
+                                <span>RAM</span>
+                                <span style="font-weight:600;">${mem.used_gb}/${mem.total_gb} Go (${Math.round(mem.percent)}%)</span>
+                            </div>
+                            <div style="height:6px;background:var(--bg-primary);border-radius:3px;overflow:hidden;">
+                                <div style="height:100%;width:${Math.min(mem.percent, 100)}%;background:${barColor(mem.percent)};border-radius:3px;transition:width 0.5s;"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
+                                <span>Disque</span>
+                                <span style="font-weight:600;">${disk.used_gb}/${disk.total_gb} Go (${Math.round(disk.percent)}%)</span>
+                            </div>
+                            <div style="height:6px;background:var(--bg-primary);border-radius:3px;overflow:hidden;">
+                                <div style="height:100%;width:${Math.min(disk.percent, 100)}%;background:${barColor(disk.percent)};border-radius:3px;transition:width 0.5s;"></div>
+                            </div>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-top:4px;">
+                            <span>${temp && temp.available ? `🌡️ ${temp.cpu_temp}°C` : ''}</span>
+                            <span>⏱️ ${uptimeText} ${Lang.t('nodes.uptime')}</span>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        // === Cartes des agents (bras) ===
+        const agentCards = agentNodes.map(node => {
             const statusColor = node.online ? 'var(--accent-green)' : 'var(--accent-red)';
             const statusIcon = node.online ? '🟢' : '🔴';
             const statusText = node.online ? Lang.t('nodes.online') : Lang.t('nodes.offline');
@@ -120,17 +192,15 @@ const Monitoring = {
             else if (node.uptime_hours < 24) uptimeText = `${Math.round(node.uptime_hours)}h`;
             else uptimeText = `${Math.round(node.uptime_hours / 24)}j ${Math.round(node.uptime_hours % 24)}h`;
 
-            // Couleur des barres selon la valeur
-            const barColor = (v) => v > 90 ? 'var(--accent-red)' : v > 70 ? 'var(--accent-yellow)' : 'var(--accent-green)';
-
             return `
-                <div style="background:var(--bg-secondary);border-radius:12px;padding:16px;border:1px solid var(--border-color);opacity:${opacity};transition:all 0.3s;">
+                <div style="background:var(--bg-secondary);border-radius:12px;padding:16px;border:1px solid var(--border-color);opacity:${opacity};transition:all 0.3s;position:relative;">
+                    <div style="position:absolute;top:8px;right:10px;font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(59,130,246,0.15);color:#60a5fa;font-weight:600;letter-spacing:0.3px;">🦾 ${Lang.t('nodes.arm')}</div>
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
                         <div>
                             <div style="font-weight:700;font-size:14px;">${statusIcon} ${node.hostname}</div>
                             <div style="font-size:11px;color:var(--text-muted);">${node.os}</div>
                         </div>
-                        <div style="text-align:right;">
+                        <div style="text-align:right;margin-top:14px;">
                             <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${node.online ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)'};color:${statusColor};">${statusText}</span>
                             ${!node.online ? `<div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${offlineText}</div>` : ''}
                         </div>
@@ -139,7 +209,7 @@ const Monitoring = {
                     <div style="display:flex;flex-direction:column;gap:8px;">
                         <div>
                             <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
-                                <span>CPU</span>
+                                <span>CPU <span style="opacity:0.5">(${node.cpu_count}c)</span></span>
                                 <span style="font-weight:600;">${Math.round(node.cpu_percent)}%</span>
                             </div>
                             <div style="height:6px;background:var(--bg-primary);border-radius:3px;overflow:hidden;">
@@ -185,6 +255,8 @@ const Monitoring = {
                     `}
                 </div>`;
         }).join('');
+
+        grid.innerHTML = omenCard + agentCards;
     },
 
     /**
@@ -227,12 +299,29 @@ const Monitoring = {
         const onlineNodes = nodes.filter(n => n.online);
         const serverHostname = this._serverHostname || 'Omen';
 
-        // --- CPU : afficher la valeur du serveur principal ---
-        this.updateStat('cpu', data.cpu.percent, '%');
+        // --- CPU : moyenne pondérée par nombre de cœurs ---
+        let totalCores = data.cpu.count || 1;
+        let weightedCpu = data.cpu.percent * totalCores;
+        for (const node of onlineNodes) {
+            const cores = node.cpu_count || 1;
+            totalCores += cores;
+            weightedCpu += (node.cpu_percent || 0) * cores;
+        }
+        const combinedCpu = totalCores > 0 ? Math.round((weightedCpu / totalCores) * 10) / 10 : data.cpu.percent;
+        this.updateStat('cpu', combinedCpu, '%');
 
-        // --- RAM : afficher la valeur du serveur principal ---
-        this.updateStat('memory', data.memory.percent, '%',
-            `${data.memory.used_gb} / ${data.memory.total_gb} Go`);
+        // --- RAM : somme de toutes les machines ---
+        let totalRamGb = data.memory.total_gb;
+        let usedRamGb = data.memory.used_gb;
+        for (const node of onlineNodes) {
+            totalRamGb += (node.ram_total_gb || 0);
+            usedRamGb += (node.ram_used_gb || 0);
+        }
+        const combinedRamPercent = totalRamGb > 0
+            ? Math.round((usedRamGb / totalRamGb) * 1000) / 10
+            : data.memory.percent;
+        this.updateStat('memory', combinedRamPercent, '%',
+            `${Math.round(usedRamGb * 10) / 10} / ${Math.round(totalRamGb * 10) / 10} Go`);
 
         // --- DISQUE : combiner serveur + tous les nodes online ---
         let totalDiskGb = data.disk.total_gb;
@@ -247,9 +336,17 @@ const Monitoring = {
         this.updateStat('disk', combinedDiskPercent, '%',
             `${Math.round(usedDiskGb * 10) / 10} / ${Math.round(totalDiskGb * 10) / 10} Go`);
 
-        // --- Température ---
-        if (data.temperature.available) {
-            this.updateStat('temp', data.temperature.cpu_temp, '°C');
+        // --- Température : max de toutes les machines ---
+        let maxTemp = data.temperature.available ? data.temperature.cpu_temp : 0;
+        let tempAvailable = data.temperature.available;
+        for (const node of onlineNodes) {
+            if (node.temperature) {
+                maxTemp = Math.max(maxTemp, node.temperature);
+                tempAvailable = true;
+            }
+        }
+        if (tempAvailable) {
+            this.updateStat('temp', maxTemp, '°C');
         } else {
             const tempValue = document.getElementById('stat-temp-value');
             if (tempValue) tempValue.textContent = 'N/A';

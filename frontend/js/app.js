@@ -251,13 +251,13 @@ const App = {
             <!-- Stats monitoring -->
             <div class="stats-grid">
                 <div class="stat-card" style="--stat-color: var(--accent-green)">
-                    <div class="stat-label">CPU</div>
+                    <div class="stat-label">CPU <span style="font-size:10px;color:var(--text-muted);font-weight:400;">${t('dashboard.disk_combined')}</span></div>
                     <div class="stat-value"><span id="stat-cpu-value">--</span><span class="stat-unit">%</span></div>
                     <div id="stat-cpu-machines" class="stat-machines-list"></div>
                     <div class="stat-bar"><div class="stat-bar-fill" id="stat-cpu-bar" style="width: 0%"></div></div>
                 </div>
                 <div class="stat-card" style="--stat-color: var(--accent-blue)">
-                    <div class="stat-label">${t('dashboard.memory')}</div>
+                    <div class="stat-label">${t('dashboard.memory')} <span style="font-size:10px;color:var(--text-muted);font-weight:400;">${t('dashboard.disk_combined')}</span></div>
                     <div class="stat-value"><span id="stat-memory-value">--</span><span class="stat-unit">%</span></div>
                     <div id="stat-memory-detail" style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">-- / -- Go</div>
                     <div id="stat-memory-machines" class="stat-machines-list"></div>
@@ -271,7 +271,7 @@ const App = {
                     <div class="stat-bar"><div class="stat-bar-fill" id="stat-disk-bar" style="width: 0%"></div></div>
                 </div>
                 <div class="stat-card" style="--stat-color: var(--accent-yellow)">
-                    <div class="stat-label">${t('dashboard.temp')}</div>
+                    <div class="stat-label">${t('dashboard.temp')} <span style="font-size:10px;color:var(--text-muted);font-weight:400;">max</span></div>
                     <div class="stat-value"><span id="stat-temp-value">--</span><span class="stat-unit">°C</span></div>
                     <div id="stat-temp-machines" class="stat-machines-list"></div>
                     <div class="stat-bar"><div class="stat-bar-fill" id="stat-temp-bar" style="width: 0%"></div></div>
@@ -303,9 +303,8 @@ const App = {
             </div>
             <div id="nodes-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-bottom:28px;">
                 <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:13px;grid-column:1/-1;">
-                    <div style="font-size:32px;margin-bottom:8px;">💻</div>
-                    ${t('nodes.no_nodes')}<br>
-                    <span style="font-size:11px;">${t('nodes.no_nodes_hint')}</span>
+                    <div style="font-size:32px;margin-bottom:8px;">⏳</div>
+                    ${t('common.loading')}
                 </div>
             </div>
 

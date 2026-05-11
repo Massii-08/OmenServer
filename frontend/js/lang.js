@@ -82,7 +82,9 @@ const Lang = {
             'dashboard.criticals': 'critique(s)',
 
             // Nodes (ordinateurs connectés)
-            'nodes.title': '💻 Ordinateurs connectés',
+            'nodes.title': '💻 Réseau de machines',
+            'nodes.brain': 'Cerveau',
+            'nodes.arm': 'Bras',
             'nodes.online': 'En ligne',
             'nodes.offline': 'Hors ligne',
             'nodes.since': 'depuis',
@@ -910,7 +912,9 @@ const Lang = {
             'dashboard.criticals': 'critical(s)',
 
             // Nodes (connected computers)
-            'nodes.title': '💻 Connected Computers',
+            'nodes.title': '💻 Machine Network',
+            'nodes.brain': 'Brain',
+            'nodes.arm': 'Arm',
             'nodes.online': 'Online',
             'nodes.offline': 'Offline',
             'nodes.since': 'since',
@@ -1738,7 +1742,9 @@ const Lang = {
             'dashboard.criticals': 'critico/i',
 
             // Nodes (computer collegati)
-            'nodes.title': '💻 Computer collegati',
+            'nodes.title': '💻 Rete di macchine',
+            'nodes.brain': 'Cervello',
+            'nodes.arm': 'Braccio',
             'nodes.online': 'Online',
             'nodes.offline': 'Offline',
             'nodes.since': 'da',
