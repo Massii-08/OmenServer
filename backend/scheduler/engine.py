@@ -345,7 +345,7 @@ def _add_power_job(config: dict):
         name=f"Auto Power Shutdown ({config['shutdown_hour']})",
         replace_existing=True,
     )
-    logger.info(f"🌙 Extinction programmée activée: {config['shutdown_hour']} → réveil {config['wake_hour']} ({config['mode']})")
+    logger.info(f"🌙 Extinction programmée activée: {config['shutdown_hour']} → réveil {config.get('wake_hour', '?')} ({config.get('mode', 'shutdown')})")
 
 
 def update_power_job(config: dict):
