@@ -760,9 +760,11 @@ const App = {
                     </p>
                     <div style="display: flex; gap: 8px; margin-top: 12px;">
                         <select class="form-input" id="invite-role" style="flex: 1;">
-                            <option value="player">${t('settings.invite_player')}</option>
-                            <option value="moderator">${t('settings.invite_mod')}</option>
                             <option value="spectator">${t('settings.invite_spectator')}</option>
+                            <option value="player" selected>${t('settings.invite_player')}</option>
+                            <option value="money">${t('settings.invite_money')}</option>
+                            <option value="moderator">${t('settings.invite_mod')}</option>
+                            <option value="developer">${t('settings.invite_dev')}</option>
                         </select>
                     </div>
                     <div id="invite-result" style="margin-top: 12px;"></div>
@@ -847,7 +849,7 @@ const App = {
         // Charger les listes si admin
         if (isAdmin) {
             this.loadInvitations();
-            this.loadUsers();
+            this._loadUsersAdmin();
             this._loadPowerSchedule();
             this._loadNodesKey();
         }
@@ -1362,46 +1364,6 @@ const App = {
         if (r && r.ok) this._loadUsersAdmin();
     },
 
-    async loadUsers() {
-        const listEl = document.getElementById('users-list');
-        if (!listEl) return;
-
-        const response = await Auth.apiCall('/api/auth/admin/users');
-        if (!response || !response.ok) return;
-        const users = await response.json();
-        const currentUser = Auth.getUser();
-
-        const roleLabels = { admin: '\ud83d\udc51 Admin', moderator: '\ud83d\udd27 Mod\u00e9rateur', player: '\ud83c\udfae Joueur', spectator: '\ud83d\udc40 Spectateur' };
-
-        listEl.innerHTML = users.map(u => `
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border-color);">
-                <div>
-                    <span style="font-weight:600;">${u.username}</span>
-                    <span style="font-size:12px;color:var(--text-muted);"> \u00b7 ${roleLabels[u.role] || u.role}</span>
-                </div>
-                ${u.id !== currentUser?.id ? `
-                    <div style="display:flex;gap:4px;align-items:center;">
-                        <select class="form-input" style="font-size:11px;padding:4px 8px;width:auto;" onchange="App._changeRoleAdmin(${u.id}, this.value)">
-                            <option value="spectator" ${u.role === 'spectator' ? 'selected' : ''}>\ud83d\udc40 Spectateur</option>
-                            <option value="player" ${u.role === 'player' ? 'selected' : ''}>\ud83c\udfae Joueur</option>
-                            <option value="moderator" ${u.role === 'moderator' ? 'selected' : ''}>\ud83d\udd27 Mod\u00e9rateur</option>
-                            <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>\ud83d\udc51 Admin</option>
-                        </select>
-                        <button class="btn btn-danger btn-sm" onclick="App._confirmDeleteUser(${u.id}, '${u.username}')" style="padding:2px 8px;font-size:11px;">\ud83d\uddd1\ufe0f</button>
-                    </div>
-                ` : '<span style="font-size:11px;color:var(--accent-green);">\ud83d\udc51 Toi</span>'}
-            </div>
-        `).join('');
-    },
-
-    async changeUserRole(userId, role) {
-        await this._changeRoleAdmin(userId, role);
-        this.loadUsers();
-    },
-
-    async deleteUser(userId, username) {
-        this._confirmDeleteUser(userId, username);
-    },
 };
 
 // Lancer l'app quand la page est charg\u00e9e
