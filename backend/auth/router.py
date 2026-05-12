@@ -324,7 +324,7 @@ def change_user_role(
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
 
-    valid_roles = ["admin", "moderator", "player", "spectator"]
+    valid_roles = ["admin", "moderator", "developer", "money", "player", "spectator"]
     if request.role not in valid_roles:
         raise HTTPException(status_code=400, detail=f"Rôle invalide. Choisis parmi: {', '.join(valid_roles)}")
 

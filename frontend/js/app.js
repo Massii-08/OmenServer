@@ -1230,69 +1230,78 @@ const App = {
         listEl.innerHTML = users.length === 0 ? '<div style="text-align:center;padding:20px;color:var(--text-muted);">' + Lang.t('users.none') + '</div>' :
             users.map(u => {
                 const userPerms = rolePerms[u.role] || [];
-                // allowed_modules: null = tous, array = seulement ceux-là
-                const userModules = u.allowed_modules; // null ou array
+                const userModules = u.allowed_modules;
+                const permBadges = Object.entries(permLabels).map(function([k, label]) {
+                    const has = userPerms.includes(k);
+                    return '<span style="font-size:10px;padding:2px 6px;border-radius:4px;'
+                        + 'background:' + (has ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.04)') + ';'
+                        + 'color:' + (has ? 'var(--accent-green)' : 'rgba(255,255,255,0.15)') + ';'
+                        + 'border:1px solid ' + (has ? 'rgba(34,197,94,0.2)' : 'rgba(255,255,255,0.05)') + ';">'
+                        + label + '</span>';
+                }).join('');
+                const moduleBadges = allModules.map(function(m) {
+                    const hasAccess = userModules === null || userModules.includes(m.id);
+                    return '<span data-module="' + m.id + '" data-user="' + u.id + '"'
+                        + ' onclick="event.stopPropagation();App._toggleUserModule(' + u.id + ', \'' + m.id + '\', this)"'
+                        + ' style="font-size:11px;padding:3px 8px;border-radius:5px;cursor:pointer;user-select:none;transition:all .15s;'
+                        + 'background:' + (hasAccess ? 'rgba(59,130,246,0.15)' : 'rgba(255,255,255,0.04)') + ';'
+                        + 'color:' + (hasAccess ? 'var(--accent-blue)' : 'rgba(255,255,255,0.2)') + ';'
+                        + 'border:1px solid ' + (hasAccess ? 'rgba(59,130,246,0.3)' : 'rgba(255,255,255,0.06)') + ';">'
+                        + (hasAccess ? '☑' : '☐') + ' ' + m.icon + ' ' + m.label + '</span>';
+                }).join('');
 
-                return `
-            <div style="padding:12px 0;border-bottom:1px solid var(--border-color);">
-                <div style="display:flex;align-items:center;justify-content:space-between;">
-                    <div style="display:flex;align-items:center;gap:12px;">
-                        <div style="width:36px;height:36px;border-radius:50%;background:${u.is_admin ? 'linear-gradient(135deg,#3b82f6,#8b5cf6)' : 'var(--bg-secondary)'};display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:${u.is_admin ? 'white' : 'var(--text-muted)'}">${u.username.charAt(0).toUpperCase()}</div>
-                        <div>
-                            <div style="font-weight:600;font-size:14px;">${u.username}</div>
-                            <div style="font-size:12px;color:var(--text-muted);">${roleLabels[u.role] || u.role}${u.created_at ? ' · ' + Lang.t('users.created_on') + ' ' + new Date(u.created_at).toLocaleDateString() : ''}</div>
-                        </div>
-                    </div>
-                    ${u.id !== currentUser?.id ? `
-                        <div style="display:flex;align-items:center;gap:8px;">
-                            <select class="form-input" style="font-size:12px;padding:4px 8px;width:auto;" onchange="App._changeRoleAdmin(${u.id}, this.value)">
-                                <option value="spectator" ${u.role === 'spectator' ? 'selected' : ''}>${Lang.t('users.role_spectator')}</option>
-                                <option value="player" ${u.role === 'player' ? 'selected' : ''}>${Lang.t('users.role_player')}</option>
-                                <option value="money" ${u.role === 'money' ? 'selected' : ''}>${Lang.t('users.role_money')}</option>
-                                <option value="moderator" ${u.role === 'moderator' ? 'selected' : ''}>${Lang.t('users.role_moderator')}</option>
-                                <option value="developer" ${u.role === 'developer' ? 'selected' : ''}>${Lang.t('users.role_developer')}</option>
-                                <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>${Lang.t('users.role_admin')}</option>
-                            </select>
-                            <button class="btn btn-danger btn-sm" onclick="App._confirmDeleteUser(${u.id}, '${u.username}')" style="padding:4px 8px;font-size:12px;">🗑️</button>
-                        </div>
-                    ` : '<span style="font-size:12px;color:var(--accent-green);font-weight:600;">' + Lang.t('users.you') + '</span>'}
-                </div>
-                <!-- Permissions granulaires -->
-                <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:8px;padding-left:48px;">
-                    ${Object.entries(permLabels).map(([k, label]) => {
-                        const has = userPerms.includes(k);
-                        return `<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${has ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.04)'};color:${has ? 'var(--accent-green)' : 'rgba(255,255,255,0.15)'};border:1px solid ${has ? 'rgba(34,197,94,0.2)' : 'rgba(255,255,255,0.05)'};">${label}</span>`;
-                    }).join('')}
-                </div>
-                <!-- Modules autorisés -->
-                ${u.id !== currentUser?.id && u.role !== 'admin' ? `
-                <div style="margin-top:8px;padding-left:48px;">
-                    <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">${Lang.t('users.modules_allowed')}</div>
-                    <div style="display:flex;flex-wrap:wrap;gap:4px;" id="user-modules-${u.id}">
-                        ${allModules.map(m => {
-                            const hasAccess = userModules === null || userModules.includes(m.id);
-                            return `<span data-module="${m.id}" data-user="${u.id}"
-                                onclick="App._toggleUserModule(${u.id}, '${m.id}', this)"
-                                style="font-size:11px;padding:3px 8px;border-radius:5px;cursor:pointer;user-select:none;transition:all .15s;
-                                background:${hasAccess ? 'rgba(59,130,246,0.15)' : 'rgba(255,255,255,0.04)'};
-                                color:${hasAccess ? 'var(--accent-blue)' : 'rgba(255,255,255,0.2)'};
-                                border:1px solid ${hasAccess ? 'rgba(59,130,246,0.3)' : 'rgba(255,255,255,0.06)'};"
-                            >${hasAccess ? '☑' : '☐'} ${m.icon} ${m.label}</span>`;
-                        }).join('')}
-                    </div>
-                </div>
-                ` : u.role === 'admin' && u.id !== currentUser?.id ? `
-                <div style="margin-top:8px;padding-left:48px;">
-                    <div style="font-size:11px;color:var(--text-muted);">🧩 Modules : <span style="color:var(--accent-green);">${Lang.t('users.modules_full')}</span></div>
-                </div>
-                ` : ''}
-            </div>
-            <div id="del-confirm-${u.id}" style="display:none;background:rgba(239,68,68,0.08);border:1px solid #ef4444;border-radius:8px;padding:10px;margin:4px 0 8px;">
-                <span style="font-size:12px;color:#ef4444;">${Lang.t('users.delete_confirm').replace('${name}', u.username)}</span>
-                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('del-confirm-${u.id}').style.display='none'" style="margin-left:8px;font-size:11px;">${Lang.t('common.cancel')}</button>
-                <button class="btn btn-sm" style="background:#ef4444;color:white;margin-left:4px;font-size:11px;" onclick="App._deleteUserAdmin(${u.id})">${Lang.t('users.delete_btn')}</button>
-            </div>`;
+                return '<div style="padding:12px 0;border-bottom:1px solid var(--border-color);">'
+                + '<div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;" onclick="App._toggleUserDetails(' + u.id + ')">'
+                +   '<div style="display:flex;align-items:center;gap:12px;">'
+                +     '<div style="width:36px;height:36px;border-radius:50%;background:' + (u.is_admin ? 'linear-gradient(135deg,#3b82f6,#8b5cf6)' : 'var(--bg-secondary)') + ';display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:' + (u.is_admin ? 'white' : 'var(--text-muted)') + '">' + u.username.charAt(0).toUpperCase() + '</div>'
+                +     '<div>'
+                +       '<div style="font-weight:600;font-size:14px;">' + u.username + '</div>'
+                +       '<div style="font-size:12px;color:var(--text-muted);">' + (roleLabels[u.role] || u.role) + (u.created_at ? ' · ' + Lang.t('users.created_on') + ' ' + new Date(u.created_at).toLocaleDateString() : '') + '</div>'
+                +     '</div>'
+                +   '</div>'
+                +   '<div style="display:flex;align-items:center;gap:8px;">'
+                +     (u.id !== currentUser?.id
+                        ? '<select class="form-input" style="font-size:12px;padding:4px 8px;width:auto;" onchange="event.stopPropagation();App._changeRoleAdmin(' + u.id + ', this.value)" onclick="event.stopPropagation()">'
+                        +   '<option value="spectator"' + (u.role === 'spectator' ? ' selected' : '') + '>' + Lang.t('users.role_spectator') + '</option>'
+                        +   '<option value="player"' + (u.role === 'player' ? ' selected' : '') + '>' + Lang.t('users.role_player') + '</option>'
+                        +   '<option value="money"' + (u.role === 'money' ? ' selected' : '') + '>' + Lang.t('users.role_money') + '</option>'
+                        +   '<option value="moderator"' + (u.role === 'moderator' ? ' selected' : '') + '>' + Lang.t('users.role_moderator') + '</option>'
+                        +   '<option value="developer"' + (u.role === 'developer' ? ' selected' : '') + '>' + Lang.t('users.role_developer') + '</option>'
+                        +   '<option value="admin"' + (u.role === 'admin' ? ' selected' : '') + '>' + Lang.t('users.role_admin') + '</option>'
+                        + '</select>'
+                        + '<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();App._confirmDeleteUser(' + u.id + ', \'' + u.username + '\')" style="padding:4px 8px;font-size:12px;">🗑️</button>'
+                        : '<span style="font-size:12px;color:var(--accent-green);font-weight:600;">' + Lang.t('users.you') + '</span>')
+                +     '<span id="user-chevron-' + u.id + '" style="font-size:10px;color:var(--text-muted);transition:transform .2s;">▼</span>'
+                +   '</div>'
+                + '</div>'
+                // Collapsible details
+                + '<div id="user-details-' + u.id + '" style="display:none;">'
+                +   '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:10px;padding-left:48px;">' + permBadges + '</div>'
+                +   (u.id !== currentUser?.id && u.role !== 'admin'
+                    ? '<div style="margin-top:8px;padding-left:48px;">'
+                    +   '<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">' + Lang.t('users.modules_allowed') + '</div>'
+                    +   '<div style="display:flex;flex-wrap:wrap;gap:4px;" id="user-modules-' + u.id + '">' + moduleBadges + '</div>'
+                    + '</div>'
+                    : (u.role === 'admin' && u.id !== currentUser?.id
+                        ? '<div style="margin-top:8px;padding-left:48px;"><div style="font-size:11px;color:var(--text-muted);">🧩 Modules : <span style="color:var(--accent-green);">' + Lang.t('users.modules_full') + '</span></div></div>'
+                        : ''))
+                + '</div>'
+                + '</div>'
+                + '<div id="del-confirm-' + u.id + '" style="display:none;background:rgba(239,68,68,0.08);border:1px solid #ef4444;border-radius:8px;padding:10px;margin:4px 0 8px;">'
+                +   '<span style="font-size:12px;color:#ef4444;">' + Lang.t('users.delete_confirm').replace('${name}', u.username) + '</span>'
+                +   '<button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'del-confirm-' + u.id + '\').style.display=\'none\'" style="margin-left:8px;font-size:11px;">' + Lang.t('common.cancel') + '</button>'
+                +   '<button class="btn btn-sm" style="background:#ef4444;color:white;margin-left:4px;font-size:11px;" onclick="App._deleteUserAdmin(' + u.id + ')">' + Lang.t('users.delete_btn') + '</button>'
+                + '</div>';
             }).join('');
+    },
+
+    _toggleUserDetails(userId) {
+        const details = document.getElementById('user-details-' + userId);
+        const chevron = document.getElementById('user-chevron-' + userId);
+        if (!details) return;
+        const isOpen = details.style.display !== 'none';
+        details.style.display = isOpen ? 'none' : 'block';
+        if (chevron) chevron.style.transform = isOpen ? '' : 'rotate(180deg)';
     },
 
     async _toggleUserModule(userId, moduleId, el) {
