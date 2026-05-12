@@ -292,6 +292,8 @@ const Lang = {
             'yield.back_bots': '← Retour aux Bots',
             'yield.file_ready': 'Fichier prêt',
             'yield.logs': 'Logs',
+            'yield.reconnected': '🔄 Reconnecté au calcul en cours !',
+            'yield.recovered': '✅ Résultat du dernier calcul récupéré',
 
             // Settings
             'settings.title': '⚙️ Paramètres',
@@ -1127,6 +1129,8 @@ const Lang = {
             'yield.back_bots': '← Back to Bots',
             'yield.file_ready': 'File ready',
             'yield.logs': 'Logs',
+            'yield.reconnected': '🔄 Reconnected to running calculation!',
+            'yield.recovered': '✅ Last calculation result recovered',
 
             // Settings
             'settings.title': '⚙️ Settings',
@@ -1962,6 +1966,8 @@ const Lang = {
             'yield.back_bots': '← Torna ai Bot',
             'yield.file_ready': 'File pronto',
             'yield.logs': 'Log',
+            'yield.reconnected': '🔄 Riconnesso al calcolo in corso!',
+            'yield.recovered': '✅ Risultato dell\'ultimo calcolo recuperato',
 
             // Settings
             'settings.title': '⚙️ Impostazioni',

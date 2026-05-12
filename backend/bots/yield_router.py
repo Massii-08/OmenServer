@@ -454,6 +454,74 @@ async def download_yield_file(
 
 
 # ================================================================
+#  ACTIVE JOB (reconnexion après navigation/refresh)
+# ================================================================
+
+@router.get("/active")
+async def get_active_yield_job(
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Retourne le job yield actif (running) ou le dernier terminé récemment.
+    Permet au frontend de se reconnecter après un refresh ou un changement de page.
+    """
+    # Priorité 1: job en cours d'exécution
+    for job_id, job in _yield_jobs.items():
+        if job["status"] == "running":
+            processed = job.get("_processed", 0)
+            total = job["bonds_count"] or 1
+            return {
+                "found": True,
+                "job_id": job_id,
+                "status": job["status"],
+                "filename": job["filename"],
+                "mode": job.get("mode"),
+                "progress": f"{processed}/{total}",
+                "progress_percent": min(100, int(processed / total * 100)) if total > 0 else 0,
+                "processed": processed,
+                "stats": job["stats"],
+                "logs": job["logs"][-100:],
+                "logs_count": len(job["logs"]),
+                "result_file": os.path.basename(job["output_path"]) if job.get("output_path") else None,
+            }
+
+    # Priorité 2: job terminé récemment (< 30 min) — pour récupérer le résultat
+    from datetime import timedelta
+    now = datetime.utcnow()
+    recent_cutoff = now - timedelta(minutes=30)
+
+    best_job = None
+    best_job_id = None
+    for job_id, job in _yield_jobs.items():
+        if job["status"] in ("completed", "error", "stopped"):
+            created = datetime.fromisoformat(job["created_at"]) if job.get("created_at") else None
+            if created and created > recent_cutoff:
+                if best_job is None or (created > datetime.fromisoformat(best_job["created_at"])):
+                    best_job = job
+                    best_job_id = job_id
+
+    if best_job:
+        processed = best_job.get("_processed", 0)
+        total = best_job["bonds_count"] or 1
+        return {
+            "found": True,
+            "job_id": best_job_id,
+            "status": best_job["status"],
+            "filename": best_job["filename"],
+            "mode": best_job.get("mode"),
+            "progress": f"{processed}/{total}",
+            "progress_percent": min(100, int(processed / total * 100)) if total > 0 else 0,
+            "processed": processed,
+            "stats": best_job["stats"],
+            "logs": best_job["logs"][-100:],
+            "logs_count": len(best_job["logs"]),
+            "result_file": os.path.basename(best_job["output_path"]) if best_job.get("output_path") else None,
+        }
+
+    return {"found": False}
+
+
+# ================================================================
 #  USAGE / RATE LIMIT
 # ================================================================
 

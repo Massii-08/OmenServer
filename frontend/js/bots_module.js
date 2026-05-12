@@ -47,6 +47,12 @@ const BotsModule = {
             clearInterval(this._refreshInterval);
             this._refreshInterval = null;
         }
+        // Ne PAS arrêter le polling yield ici — le backend continue de tourner
+        // On nettoie seulement l'interval, le jobId reste en mémoire pour reconnexion
+        if (this._yieldState.pollInterval) {
+            clearInterval(this._yieldState.pollInterval);
+            this._yieldState.pollInterval = null;
+        }
     },
 
     async loadBots() {
@@ -504,7 +510,38 @@ const BotsModule = {
         const content = this._container || document.getElementById('bots-module-container')?.parentElement;
         if (!content) return;
 
-        // Réinitialiser l'état
+        // Vérifier s'il y a un job actif avant de réinitialiser
+        try {
+            const r = await Auth.apiCall('/api/bots/yield/active');
+            if (r && r.ok) {
+                const data = await r.json();
+                if (data.found) {
+                    // Reconnexion automatique au job existant
+                    this._yieldState.jobId = data.job_id;
+                    this._yieldState.mode = data.mode || 'all';
+                    this._yieldState.status = data.status;
+                    this._yieldState.file = { name: data.filename };
+
+                    if (data.status === 'running') {
+                        // Le bot tourne encore — reprendre le suivi en direct
+                        this._renderYieldRunning();
+                        Toast.success(Lang.t('yield.reconnected'));
+                        return;
+                    } else if (data.status === 'completed' || data.status === 'error' || data.status === 'stopped') {
+                        // Job terminé récemment — afficher les résultats
+                        this._yieldState.resultFile = data.result_file || null;
+                        this._yieldState.processedCount = data.processed || 0;
+                        this._renderYieldCompleted(data);
+                        Toast.info(Lang.t('yield.recovered'));
+                        return;
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('[YieldBot] Pas de job actif:', e);
+        }
+
+        // Aucun job actif — afficher l'écran d'upload normal
         this._yieldState.jobId = null;
         this._yieldState.file = null;
         this._yieldState.status = null;
@@ -934,7 +971,7 @@ const BotsModule = {
                             ▶ ${Lang.t('yield.resume')} (${Lang.t('yield.from_bond')} ${this._yieldState.processedCount + 1})
                         </button>
                     ` : ''}
-                    <button class="btn btn-secondary" style="flex:1;padding:14px;font-size:15px;font-weight:600;" onclick="BotsModule.openYieldBot()">
+                    <button class="btn btn-secondary" style="flex:1;padding:14px;font-size:15px;font-weight:600;" onclick="BotsModule._startNewYieldJob()">
                         ${Lang.t('yield.restart')}
                     </button>
                 </div>
@@ -1042,6 +1079,26 @@ const BotsModule = {
             console.error('[YieldBot] Resume error:', e);
             Toast.error(`Resume failed: ${e.message}`);
         }
+    },
+
+    /**
+     * Démarrer un nouveau job — réinitialise l'état et affiche l'écran d'upload.
+     * Utilisé quand l'utilisateur veut explicitement relancer avec un autre fichier.
+     */
+    async _startNewYieldJob() {
+        this._yieldState.jobId = null;
+        this._yieldState.file = null;
+        this._yieldState.status = null;
+        this._yieldState.resultFile = null;
+        this._yieldState.processedCount = 0;
+
+        if (this._yieldState.pollInterval) {
+            clearInterval(this._yieldState.pollInterval);
+            this._yieldState.pollInterval = null;
+        }
+
+        await this._loadYieldUsage();
+        this._renderYieldUpload();
     },
 };
 

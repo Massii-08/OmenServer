@@ -25,8 +25,19 @@ const App = {
         // Afficher les infos utilisateur dans la sidebar
         this.updateUserInfo();
 
-        // Charger le hub par défaut
-        await this.navigateTo('hub');
+        // Déterminer la vue initiale depuis le hash de l'URL
+        const initialView = this._getViewFromHash() || 'hub';
+
+        // Charger la vue initiale (sans push dans l'historique)
+        this._skipPush = true;
+        await this.navigateTo(initialView);
+        this._skipPush = false;
+
+        // Remplacer l'état initial (pas push) pour que le premier back fonctionne
+        history.replaceState({ view: initialView }, '', `#${initialView}`);
+
+        // Écouter les boutons back/forward du navigateur
+        window.addEventListener('popstate', (e) => this._handlePopState(e));
 
         // Démarrer le monitoring
         Monitoring.start();
@@ -36,6 +47,33 @@ const App = {
 
         // Appliquer la langue sauvegardée sur la sidebar
         if (typeof Lang !== 'undefined') Lang._updateSidebar();
+    },
+
+    /**
+     * Extrait la vue depuis le hash de l'URL.
+     * Ex: "#bots" → "bots", "#server_view/3" → null (traité séparément)
+     */
+    _getViewFromHash() {
+        const hash = window.location.hash.replace('#', '');
+        if (!hash) return null;
+        // server_view/ID → retourne 'game_server' (on ne peut pas restaurer un server_view sans contexte complet)
+        if (hash.startsWith('server_view')) return 'game_server';
+        const validViews = ['hub', 'game_server', 'bots', 'files', 'media', 'web', 'network', 'settings', 'users'];
+        return validViews.includes(hash) ? hash : null;
+    },
+
+    /**
+     * Gère les boutons back/forward du navigateur.
+     */
+    _handlePopState(event) {
+        const state = event.state;
+        const view = state?.view || this._getViewFromHash() || 'hub';
+
+        // Naviguer sans re-pusher dans l'historique
+        this._skipPush = true;
+        this.navigateTo(view).then(() => {
+            this._skipPush = false;
+        });
     },
 
     // === THÈMES ===
@@ -155,6 +193,12 @@ const App = {
         }
 
         this.currentView = view;
+
+        // Enregistrer dans l'historique du navigateur (sauf si on gère un popstate)
+        if (!this._skipPush) {
+            const hashView = view === 'server_view' ? `server_view/${data || ''}` : view;
+            history.pushState({ view, data }, '', `#${hashView}`);
+        }
 
         // Mettre à jour la sidebar
         document.querySelectorAll('.nav-item').forEach(item => {
