@@ -57,6 +57,7 @@ ROLE_PERMISSIONS = {
         "restart",
         "console",
         "logs",
+        "create_server",     # Créer un serveur de jeu (max 1)
         "create_bot",        # Créer un bot (max 3)
         "invite",            # Créer des invitations (rôle player uniquement)
     ],

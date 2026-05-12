@@ -166,13 +166,22 @@ def create_server(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Crée un nouveau serveur de jeu (réservé aux moderators et admins)."""
-    # RBAC : seuls les moderators et admins peuvent créer des serveurs
+    """Crée un nouveau serveur de jeu (réservé aux moderators, developers et admins)."""
+    # RBAC : seuls les rôles avec create_server peuvent créer
     if not has_permission(current_user, "create_server"):
         raise HTTPException(
             status_code=403,
-            detail="Seuls les modérateurs et administrateurs peuvent créer des serveurs."
+            detail="Seuls les modérateurs, développeurs et administrateurs peuvent créer des serveurs."
         )
+
+    # Quota : moderators et developers = max 1 serveur chacun
+    if not current_user.is_admin and current_user.role in ("moderator", "developer"):
+        owned_count = db.query(GameServer).filter(GameServer.owner_id == current_user.id).count()
+        if owned_count >= 1:
+            raise HTTPException(
+                status_code=403,
+                detail="Tu as atteint ta limite de 1 serveur. Supprime l'existant pour en créer un nouveau."
+            )
 
     # Récupérer la config du jeu pour les valeurs par défaut
     game_config = get_game_config(request.game_type)
