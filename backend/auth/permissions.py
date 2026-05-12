@@ -48,6 +48,7 @@ ROLE_PERMISSIONS = {
         "backup",            # Créer / restaurer des sauvegardes
         "logs",              # Voir les logs
         "create_server",     # Créer un serveur de jeu
+        "delete",            # Supprimer son propre serveur
         "invite",            # Créer des invitations (rôle player uniquement)
     ],
     "developer": [
@@ -56,9 +57,11 @@ ROLE_PERMISSIONS = {
         "stop",
         "restart",
         "console",
+        "backup",            # Créer / restaurer des sauvegardes
         "logs",
         "create_server",     # Créer un serveur de jeu (max 1)
         "create_bot",        # Créer un bot (max 3)
+        "delete",            # Supprimer ses propres serveurs/bots
         "invite",            # Créer des invitations (rôle player uniquement)
     ],
     "admin": [

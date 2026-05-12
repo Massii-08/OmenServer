@@ -1213,8 +1213,8 @@ const App = {
             spectator: ['view'],
             player: ['view','start'],
             money: ['view','start','yield_bot'],
-            moderator: ['view','start','stop','restart','console','backup','logs','create_server','invite'],
-            developer: ['view','start','stop','restart','console','logs','create_server','create_bot','invite'],
+            moderator: ['view','start','stop','restart','console','backup','logs','create_server','delete','invite'],
+            developer: ['view','start','stop','restart','console','backup','logs','create_server','create_bot','delete','invite'],
             admin: Object.keys(permLabels)
         };
 
