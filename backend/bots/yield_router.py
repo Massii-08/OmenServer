@@ -32,8 +32,8 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from backend.auth.utils import get_current_user
 from backend.auth.models import User
+from backend.auth.permissions import require_role
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class YieldRunRequest(BaseModel):
 @router.post("/upload")
 async def upload_yield_file(
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("admin", "money")),
 ):
     """Upload d'un fichier Excel pour le bot yield."""
     # Vérifier l'extension
@@ -145,7 +145,7 @@ async def upload_yield_file(
 async def run_yield_bot(
     job_id: str,
     data: YieldRunRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("admin", "money")),
 ):
     """Lance le bot yield sur un fichier uploadé."""
     if job_id not in _yield_jobs:
@@ -304,7 +304,7 @@ def _parse_progress(job: dict, line: str):
 @router.get("/status/{job_id}")
 async def get_yield_status(
     job_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("admin", "money")),
 ):
     """État de l'exécution + logs en temps réel."""
     if job_id not in _yield_jobs:
@@ -344,7 +344,7 @@ async def get_yield_status(
 async def download_yield_result(
     job_id: str,
     token: Optional[str] = None,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("admin", "money")),
 ):
     """Télécharge le fichier résultat _AGGIORNATO.xlsx."""
     if job_id not in _yield_jobs:
@@ -459,7 +459,7 @@ async def download_yield_file(
 
 @router.get("/active")
 async def get_active_yield_job(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("admin", "money")),
 ):
     """
     Retourne le job yield actif (running) ou le dernier terminé récemment.
@@ -527,7 +527,7 @@ async def get_active_yield_job(
 
 @router.get("/usage")
 async def get_yield_usage(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("admin", "money")),
 ):
     """Vérifie le rate limit quotidien du scraping."""
     rate_file = YIELD_BOT_DIR / "bot" / ".rate_limit.json"
@@ -565,7 +565,7 @@ async def get_yield_usage(
 @router.post("/stop/{job_id}")
 async def stop_yield_bot(
     job_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("admin", "money")),
 ):
     """Arrête le bot yield en cours d'exécution."""
     if job_id not in _yield_jobs:
@@ -599,7 +599,7 @@ async def stop_yield_bot(
 @router.delete("/job/{job_id}")
 async def cleanup_yield_job(
     job_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("admin", "money")),
 ):
     """Supprime un job et ses fichiers."""
     if job_id not in _yield_jobs:

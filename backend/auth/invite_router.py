@@ -55,9 +55,19 @@ def create_invitation(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Créer une invitation (admin uniquement)."""
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Réservé aux administrateurs")
+    """Créer une invitation (moderators, developers et admins)."""
+    from backend.auth.permissions import has_permission, INVITABLE_ROLES
+
+    # RBAC : seuls ceux qui ont la permission "invite" peuvent créer des invitations
+    if not has_permission(current_user, "invite"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit de créer des invitations.")
+
+    # Les non-admins ne peuvent inviter qu'avec le rôle "player"
+    if not current_user.is_admin and request.role not in INVITABLE_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Tu peux uniquement inviter avec le rôle: {', '.join(INVITABLE_ROLES)}"
+        )
 
     if request.role not in VALID_ROLES or request.role == "admin":
         raise HTTPException(

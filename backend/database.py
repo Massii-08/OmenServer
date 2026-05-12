@@ -58,6 +58,7 @@ def create_tables():
     """
     # Importer tous les modèles pour que SQLAlchemy les découvre
     import backend.auth.models        # noqa: User, Invitation
+    import backend.auth.shared_access  # noqa: SharedAccess
     import backend.game_server.models  # noqa: GameServer
     import backend.scheduler.models    # noqa: ScheduledTask
     import backend.bots.models         # noqa: Bot

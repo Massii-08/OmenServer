@@ -20,8 +20,13 @@ const BotsModule = {
                         <h1 style="margin:0;">${Lang.t('bots.title')}</h1>
                         <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">${Lang.t('bots.subtitle')}</p>
                     </div>
-                    <div style="display:flex;gap:8px;">
-                        <button class="btn btn-primary" onclick="BotsModule.showCreateForm()">➕ ${Lang.t('bots.new')}</button>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        ${(() => {
+                            const u = Auth.getUser();
+                            const canCreate = u && (u.is_admin || u.role === 'developer');
+                            if (!canCreate) return '';
+                            return `<button class="btn btn-primary" onclick="BotsModule.showCreateForm()">➕ ${Lang.t('bots.new')}</button>`;
+                        })()}
                         <button class="btn btn-secondary" onclick="App.navigateTo('hub')">← Hub</button>
                     </div>
                 </div>
@@ -70,8 +75,10 @@ const BotsModule = {
         const statusColors = { running: '#22c55e', stopped: '#6b7280', error: '#ef4444' };
         const statusLabels = { running: Lang.t('bots.running'), stopped: Lang.t('bots.stopped'), error: Lang.t('bots.error') };
 
-        // Carte virtuelle du Yield Bot (toujours visible)
-        const yieldBotCard = `
+        // Carte virtuelle du Yield Bot (visible seulement pour admin et money)
+        const u = Auth.getUser();
+        const canSeeYield = u && (u.is_admin || u.role === 'money' || u.role === 'admin');
+        const yieldBotCard = canSeeYield ? `
             <div class="card" style="cursor:pointer;transition:all .15s;border:2px solid transparent;background:linear-gradient(135deg, var(--bg-card) 0%, rgba(59,130,246,0.06) 100%);"
                 onclick="BotsModule.openYieldBot()"
                 onmouseover="this.style.transform='translateY(-2px)';this.style.borderColor='var(--accent-blue)'"
@@ -91,20 +98,32 @@ const BotsModule = {
                     <span class="btn btn-sm" style="font-size:11px;padding:4px 12px;background:linear-gradient(135deg,#3b82f6,#06b6d4);color:#fff;cursor:pointer;">▶ ${Lang.t('yield.launch')}</span>
                 </div>
             </div>
-        `;
+        ` : '';
 
         if (this._bots.length === 0) {
             grid.innerHTML = `
+                ${u && u.role === 'developer' ? `<div style="margin-bottom:12px;"><span class="bot-quota-badge">${Lang.t('rbac.bot_quota')}: 0/3</span></div>` : ''}
                 <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;">
                     ${yieldBotCard}
                 </div>`;
             return;
         }
 
+        // Quota pour les devs
+        const quotaHtml = u && u.role === 'developer' ? (() => {
+            const ownBots = this._bots.filter(b => b.owner_id === u.id).length;
+            const isFull = ownBots >= 3;
+            return `<div style="margin-bottom:12px;"><span class="bot-quota-badge ${isFull ? 'full' : ''}">${isFull ? '🚫' : '🤖'} ${Lang.t('rbac.bot_quota')}: ${ownBots}/3</span></div>`;
+        })() : '';
+
         grid.innerHTML = `
+            ${quotaHtml}
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;">
                 ${yieldBotCard}
-                ${this._bots.map(b => `
+                ${this._bots.map(b => {
+                    const isOwner = u && (u.is_admin || b.owner_id === u.id);
+                    const canManage = isOwner || u?.is_admin;
+                    return `
                     <div class="card" style="cursor:pointer;transition:all .15s;border:2px solid ${this._selectedBot?.id === b.id ? 'var(--accent-blue)' : 'transparent'};"
                         onclick="BotsModule.selectBot(${b.id})"
                         onmouseover="this.style.transform='translateY(-2px)'"
@@ -114,7 +133,7 @@ const BotsModule = {
                                 <span style="font-size:24px;">${typeIcons[b.bot_type] || '🐍'}</span>
                                 <div>
                                     <div style="font-weight:700;font-size:14px;">${b.name}</div>
-                                    <div style="font-size:11px;color:var(--text-muted);">${b.bot_type}</div>
+                                    <div style="font-size:11px;color:var(--text-muted);">${b.bot_type}${!isOwner ? ' · <span style="color:var(--accent-blue);">' + Lang.t('sharing.shared_with_you') + '</span>' : ''}</div>
                                 </div>
                             </div>
                             <span style="font-size:11px;padding:2px 8px;border-radius:4px;color:${statusColors[b.status]};background:${statusColors[b.status]}15;font-weight:600;">
@@ -124,15 +143,16 @@ const BotsModule = {
                         <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">${b.description || Lang.t('bots.no_desc')}</div>
                         <div style="display:flex;gap:6px;flex-wrap:wrap;">
                             ${b.status === 'running' 
-                                ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();BotsModule.stopBot(${b.id})" style="font-size:11px;padding:4px 12px;">⏹ Stop</button>`
+                                ? (canManage ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();BotsModule.stopBot(${b.id})" style="font-size:11px;padding:4px 12px;">⏹ Stop</button>` : '')
                                 : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();BotsModule.startBot(${b.id})" style="font-size:11px;padding:4px 12px;">▶ Start</button>`
                             }
-                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();BotsModule.openEditor(${b.id})" style="font-size:11px;padding:4px 12px;">✏️ Code</button>
-                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();BotsModule.showScheduler(${b.id})" style="font-size:11px;padding:4px 12px;">⏰ ${Lang.t('bots.schedule')}</button>
-                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();BotsModule.deleteBot(${b.id})" style="font-size:11px;padding:4px 8px;color:#ef4444;">🗑</button>
+                            ${canManage ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();BotsModule.openEditor(${b.id})" style="font-size:11px;padding:4px 12px;">✏️ Code</button>` : ''}
+                            ${canManage ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();BotsModule.showScheduler(${b.id})" style="font-size:11px;padding:4px 12px;">⏰ ${Lang.t('bots.schedule')}</button>` : ''}
+                            ${isOwner ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();BotsModule.showShareModal(${b.id},'bot')" style="font-size:11px;padding:4px 8px;" title="${Lang.t('sharing.title')}">👥</button>` : ''}
+                            ${isOwner ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();BotsModule.deleteBot(${b.id})" style="font-size:11px;padding:4px 8px;color:#ef4444;">🗑</button>` : ''}
                         </div>
                     </div>
-                `).join('')}
+                `;}).join('')}
             </div>`;
     },
 

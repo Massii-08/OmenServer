@@ -144,7 +144,10 @@ const App = {
 
         if (nameEl) nameEl.textContent = user.username;
         if (avatarEl) avatarEl.textContent = user.username.charAt(0).toUpperCase();
-        if (roleEl) roleEl.textContent = user.is_admin ? Lang.t('users.admin_label') : Lang.t('users.user_label');
+        if (roleEl) {
+            const roleKey = `users.role_${user.role || 'player'}`;
+            roleEl.textContent = Lang.t(roleKey) || (user.is_admin ? Lang.t('users.admin_label') : Lang.t('users.user_label'));
+        }
 
         // Afficher le lien Utilisateurs seulement pour les admins
         const navUsers = document.getElementById('nav-users');
@@ -1135,10 +1138,12 @@ const App = {
                 <div>
                     <label class="form-label">${Lang.t('users.role')}</label>
                     <select id="new-user-role" class="form-input">
-                        <option value="player">${Lang.t('users.role_player')}</option>
-                        <option value="moderator">${Lang.t('users.role_moderator')}</option>
-                        <option value="admin">${Lang.t('users.role_admin')}</option>
                         <option value="spectator">${Lang.t('users.role_spectator')}</option>
+                        <option value="player" selected>${Lang.t('users.role_player')}</option>
+                        <option value="money">${Lang.t('users.role_money')}</option>
+                        <option value="moderator">${Lang.t('users.role_moderator')}</option>
+                        <option value="developer">${Lang.t('users.role_developer')}</option>
+                        <option value="admin">${Lang.t('users.role_admin')}</option>
                     </select>
                 </div>
                 <button class="btn btn-primary" onclick="App.createUser()" style="height:38px;">${Lang.t('users.create_btn')}</button>
@@ -1194,17 +1199,20 @@ const App = {
         const users = await response.json();
         const currentUser = Auth.getUser();
 
-        const roleLabels = { admin: Lang.t('users.role_admin'), moderator: Lang.t('users.role_moderator'), player: Lang.t('users.role_player'), spectator: Lang.t('users.role_spectator') };
+        const roleLabels = { admin: Lang.t('users.role_admin'), moderator: Lang.t('users.role_moderator'), developer: Lang.t('users.role_developer'), money: Lang.t('users.role_money'), player: Lang.t('users.role_player'), spectator: Lang.t('users.role_spectator') };
         const permLabels = {
             view: Lang.t('users.perm_view'), start: Lang.t('users.perm_start'), stop: Lang.t('users.perm_stop'),
             restart: Lang.t('users.perm_restart'), console: Lang.t('users.perm_console'), backup: Lang.t('users.perm_backup'),
-            logs: Lang.t('users.perm_logs'), create: Lang.t('users.perm_create'), delete: Lang.t('users.perm_delete'),
-            settings: Lang.t('users.perm_settings'), invite: Lang.t('users.perm_invite'), manage_users: Lang.t('users.perm_manage_users'),
+            logs: Lang.t('users.perm_logs'), create_server: Lang.t('users.perm_create_server'), create_bot: Lang.t('users.perm_create_bot'),
+            delete: Lang.t('users.perm_delete'), settings: Lang.t('users.perm_settings'), invite: Lang.t('users.perm_invite'),
+            manage_users: Lang.t('users.perm_manage_users'), yield_bot: Lang.t('users.perm_yield_bot'),
         };
         const rolePerms = {
             spectator: ['view'],
-            player: ['view','start','stop','restart'],
-            moderator: ['view','start','stop','restart','console','backup','logs'],
+            player: ['view','start'],
+            money: ['view','start','yield_bot'],
+            moderator: ['view','start','stop','restart','console','backup','logs','create_server','invite'],
+            developer: ['view','start','stop','restart','console','logs','create_bot','invite'],
             admin: Object.keys(permLabels)
         };
 
@@ -1238,7 +1246,9 @@ const App = {
                             <select class="form-input" style="font-size:12px;padding:4px 8px;width:auto;" onchange="App._changeRoleAdmin(${u.id}, this.value)">
                                 <option value="spectator" ${u.role === 'spectator' ? 'selected' : ''}>${Lang.t('users.role_spectator')}</option>
                                 <option value="player" ${u.role === 'player' ? 'selected' : ''}>${Lang.t('users.role_player')}</option>
+                                <option value="money" ${u.role === 'money' ? 'selected' : ''}>${Lang.t('users.role_money')}</option>
                                 <option value="moderator" ${u.role === 'moderator' ? 'selected' : ''}>${Lang.t('users.role_moderator')}</option>
+                                <option value="developer" ${u.role === 'developer' ? 'selected' : ''}>${Lang.t('users.role_developer')}</option>
                                 <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>${Lang.t('users.role_admin')}</option>
                             </select>
                             <button class="btn btn-danger btn-sm" onclick="App._confirmDeleteUser(${u.id}, '${u.username}')" style="padding:4px 8px;font-size:12px;">🗑️</button>
@@ -1396,3 +1406,183 @@ const App = {
 
 // Lancer l'app quand la page est charg\u00e9e
 document.addEventListener('DOMContentLoaded', () => App.init());
+
+// ═══════════════════════════════════════════════
+//  SharingModal — Modale de partage de ressources
+// ═══════════════════════════════════════════════
+
+const SharingModal = {
+    _resourceType: null,
+    _resourceId: null,
+    _searchTimeout: null,
+    _selectedUserId: null,
+
+    open(resourceId, resourceType) {
+        this._resourceId = resourceId;
+        this._resourceType = resourceType;
+        this._selectedUserId = null;
+
+        const overlay = document.createElement('div');
+        overlay.id = 'sharing-overlay';
+        overlay.className = 'modal-overlay';
+        overlay.innerHTML = `
+            <div class="modal sharing-modal">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+                    <h3 style="margin:0;">👥 ${Lang.t('sharing.title')}</h3>
+                    <button class="btn btn-secondary btn-sm" onclick="SharingModal.close()" style="padding:4px 10px;">✕</button>
+                </div>
+                <div class="sharing-search-wrap">
+                    <input id="sharing-search-input" class="form-input"
+                        placeholder="${Lang.t('sharing.search_placeholder')}"
+                        oninput="SharingModal._onSearch(this.value)"
+                        autocomplete="off" />
+                </div>
+                <div id="sharing-search-results"></div>
+                <div id="sharing-grant-form" style="display:none;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:8px;padding:12px;margin-bottom:16px;">
+                    <div style="display:flex;align-items:center;justify-content:space-between;">
+                        <div class="sharing-user-info">
+                            <div class="sharing-user-avatar" id="sharing-grant-avatar"></div>
+                            <span id="sharing-grant-username" style="font-weight:600;font-size:13px;"></span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <select id="sharing-grant-level" class="sharing-access-select">
+                                <option value="view_only">${Lang.t('sharing.view_only')}</option>
+                                <option value="start" selected>${Lang.t('sharing.start')}</option>
+                                <option value="manage">${Lang.t('sharing.manage')}</option>
+                            </select>
+                            <button class="btn btn-primary btn-sm" onclick="SharingModal._grantAccess()">${Lang.t('sharing.grant')}</button>
+                        </div>
+                    </div>
+                </div>
+                <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;">${Lang.t('sharing.access_level')}</div>
+                <div id="sharing-access-list">
+                    <div style="text-align:center;padding:12px;color:var(--text-muted);font-size:12px;">⏳</div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        requestAnimationFrame(() => overlay.classList.add('active'));
+        this._loadAccessList();
+        setTimeout(() => document.getElementById('sharing-search-input')?.focus(), 200);
+    },
+
+    close() {
+        const overlay = document.getElementById('sharing-overlay');
+        if (overlay) {
+            overlay.classList.remove('active');
+            setTimeout(() => overlay.remove(), 200);
+        }
+    },
+
+    _onSearch(query) {
+        clearTimeout(this._searchTimeout);
+        if (query.length < 1) {
+            document.getElementById('sharing-search-results').innerHTML = '';
+            document.getElementById('sharing-grant-form').style.display = 'none';
+            return;
+        }
+        this._searchTimeout = setTimeout(() => this._searchUsers(query), 300);
+    },
+
+    async _searchUsers(query) {
+        const r = await Auth.apiCall(`/api/sharing/users/search?q=${encodeURIComponent(query)}`);
+        const el = document.getElementById('sharing-search-results');
+        if (!r || !r.ok || !el) return;
+        const users = await r.json();
+        if (users.length === 0) {
+            el.innerHTML = '<div style="text-align:center;padding:8px;color:var(--text-muted);font-size:12px;">—</div>';
+            return;
+        }
+        el.innerHTML = users.map(u => `
+            <div class="sharing-user-item" onclick="SharingModal._selectUser(${u.id}, '${u.username.replace(/'/g, "\\\\'")}', '${u.role}')" style="cursor:pointer;">
+                <div class="sharing-user-info">
+                    <div class="sharing-user-avatar">${u.username.charAt(0).toUpperCase()}</div>
+                    <div>
+                        <div style="font-weight:600;font-size:13px;">${u.username}</div>
+                        <span class="role-badge ${u.role}">${Lang.t('users.role_' + u.role) || u.role}</span>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    },
+
+    _selectUser(userId, username) {
+        this._selectedUserId = userId;
+        document.getElementById('sharing-search-results').innerHTML = '';
+        document.getElementById('sharing-search-input').value = username;
+        const form = document.getElementById('sharing-grant-form');
+        form.style.display = 'block';
+        document.getElementById('sharing-grant-avatar').textContent = username.charAt(0).toUpperCase();
+        document.getElementById('sharing-grant-username').textContent = username;
+    },
+
+    async _grantAccess() {
+        if (!this._selectedUserId) return;
+        const level = document.getElementById('sharing-grant-level').value;
+        const username = document.getElementById('sharing-grant-username').textContent;
+        const r = await Auth.apiCall('/api/sharing/grant', {
+            method: 'POST',
+            body: JSON.stringify({
+                resource_type: this._resourceType,
+                resource_id: this._resourceId,
+                username: username,
+                access_level: level,
+            })
+        });
+        if (r && r.ok) {
+            Toast.success(username + ' \u2192 ' + level);
+            document.getElementById('sharing-grant-form').style.display = 'none';
+            document.getElementById('sharing-search-input').value = '';
+            this._selectedUserId = null;
+            this._loadAccessList();
+        } else {
+            const err = r ? await r.json().catch(() => ({})) : {};
+            Toast.error(err.detail || Lang.t('common.error'));
+        }
+    },
+
+    async _loadAccessList() {
+        const el = document.getElementById('sharing-access-list');
+        if (!el) return;
+        const r = await Auth.apiCall(`/api/sharing/resource/${this._resourceType}/${this._resourceId}`);
+        if (!r || !r.ok) { el.innerHTML = '<div style="color:#ef4444;font-size:12px;">Error</div>'; return; }
+        const accesses = await r.json();
+        if (accesses.length === 0) {
+            el.innerHTML = `<div style="text-align:center;padding:16px;color:var(--text-muted);font-size:12px;">${Lang.t('sharing.no_access')}</div>`;
+            return;
+        }
+        const ll = { view_only: Lang.t('sharing.view_only'), start: Lang.t('sharing.start'), manage: Lang.t('sharing.manage') };
+        el.innerHTML = accesses.map(a => `
+            <div class="sharing-user-item" style="margin-bottom:6px;">
+                <div class="sharing-user-info">
+                    <div class="sharing-user-avatar">${(a.username||'?').charAt(0).toUpperCase()}</div>
+                    <div>
+                        <div style="font-weight:600;font-size:13px;">${a.username}</div>
+                        <div style="font-size:10px;color:var(--text-muted);">${Lang.t('sharing.granted_by')} ${a.granted_by}</div>
+                    </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <select class="sharing-access-select" onchange="SharingModal._updateAccess(${a.id}, this.value)">
+                        <option value="view_only" ${a.access_level==='view_only'?'selected':''}>${ll.view_only}</option>
+                        <option value="start" ${a.access_level==='start'?'selected':''}>${ll.start}</option>
+                        <option value="manage" ${a.access_level==='manage'?'selected':''}>${ll.manage}</option>
+                    </select>
+                    <button class="btn btn-sm" style="color:#ef4444;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.2);padding:4px 8px;font-size:11px;" onclick="SharingModal._revokeAccess(${a.id}, '${(a.username||'').replace(/'/g,"\\\\'")}')">${Lang.t('sharing.revoke')}</button>
+                </div>
+            </div>
+        `).join('');
+    },
+
+    async _updateAccess(accessId, newLevel) {
+        const r = await Auth.apiCall(`/api/sharing/${accessId}`, { method: 'PUT', body: JSON.stringify({ access_level: newLevel }) });
+        if (r && r.ok) Toast.success('OK');
+        else { Toast.error(Lang.t('common.error')); this._loadAccessList(); }
+    },
+
+    async _revokeAccess(accessId, username) {
+        const r = await Auth.apiCall(`/api/sharing/${accessId}`, { method: 'DELETE' });
+        if (r && r.ok) { Toast.success(Lang.t('sharing.revoke') + ' \u2190 ' + username); this._loadAccessList(); }
+        else Toast.error(Lang.t('common.error'));
+    },
+};
+

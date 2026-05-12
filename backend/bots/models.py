@@ -11,7 +11,8 @@ Chaque bot a:
 """
 
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, ForeignKey
+from sqlalchemy.orm import relationship
 
 from backend.database import Base
 
@@ -31,3 +32,7 @@ class Bot(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     last_run = Column(DateTime, nullable=True)
     last_error = Column(Text, nullable=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Créateur du bot
+
+    # Relations
+    owner = relationship("User", foreign_keys=[owner_id])

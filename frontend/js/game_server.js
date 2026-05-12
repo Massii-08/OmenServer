@@ -76,9 +76,13 @@ const GameServer = {
                     <p class="page-subtitle">${Lang.t('gs.subtitle')} — ${this._games.length} ${Lang.t('gs.game_label')}</p>
                 </div>
                 <div class="flex gap-2">
-                    <button class="btn btn-primary" onclick="GameServer.showCreateModal()">
-                        ${Lang.t('gs.create')}
-                    </button>
+                    ${(() => {
+                        const u = Auth.getUser();
+                        const canCreate = u && (u.is_admin || u.role === 'moderator');
+                        return canCreate ? `<button class="btn btn-primary" onclick="GameServer.showCreateModal()">
+                            ${Lang.t('gs.create')}
+                        </button>` : '';
+                    })()}
                     <button class="btn btn-secondary" onclick="App.navigateTo('hub')">
                         ${Lang.t('gs.back_hub')}
                     </button>
@@ -698,14 +702,27 @@ const GameServer = {
                         </span>
                         ${isRunning ? `<span style="font-size:12px;color:var(--accent-blue);font-weight:600;">👥 ${server.player_count || 0}/${server.player_max || 20}</span>` : ''}
                         <div class="server-actions" onclick="event.stopPropagation()">
-                            ${isPending ? `
-                                <button class="btn btn-icon btn-secondary" disabled style="opacity:0.5;">⏳</button>
-                            ` : isRunning ? `
-                                <button class="btn btn-icon btn-secondary" onclick="GameServer.stopServer(${server.id})" title="${Lang.t('common.stop')}">⏹️</button>
-                                <button class="btn btn-icon btn-secondary" onclick="GameServer.restartServer(${server.id})" title="${Lang.t('common.restart')}">🔄</button>
-                            ` : `
-                                <button class="btn btn-icon btn-primary" onclick="GameServer.startServer(${server.id})" title="${Lang.t('common.start')}">▶️</button>
-                            `}
+                            ${(() => {
+                                const u = Auth.getUser();
+                                const isOwner = u && (u.is_admin || server.owner_id === u.id);
+                                const isOwnerOrAdmin = u && (u.is_admin || u.role === 'moderator' || u.role === 'admin' || server.owner_id === u.id);
+                                let btns = '';
+                                if (isPending) {
+                                    btns = `<button class="btn btn-icon btn-secondary" disabled style="opacity:0.5;">⏳</button>`;
+                                } else if (isRunning) {
+                                    btns = isOwnerOrAdmin ? `
+                                        <button class="btn btn-icon btn-secondary" onclick="GameServer.stopServer(${server.id})" title="${Lang.t('common.stop')}">⏹️</button>
+                                        <button class="btn btn-icon btn-secondary" onclick="GameServer.restartServer(${server.id})" title="${Lang.t('common.restart')}">🔄</button>
+                                    ` : '';
+                                } else {
+                                    btns = `<button class="btn btn-icon btn-primary" onclick="GameServer.startServer(${server.id})" title="${Lang.t('common.start')}">▶️</button>`;
+                                }
+                                // Share button for owner only
+                                if (isOwner) {
+                                    btns += `<button class="btn btn-icon btn-secondary" onclick="SharingModal.open(${server.id},'server')" title="${Lang.t('sharing.title')}">👥</button>`;
+                                }
+                                return btns;
+                            })()}
                         </div>
                     </div>
                 </div>

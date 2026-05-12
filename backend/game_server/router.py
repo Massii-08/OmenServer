@@ -27,6 +27,10 @@ from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend.auth.utils import get_current_user
 from backend.auth.models import User
+from backend.auth.permissions import has_permission
+from backend.auth.access_control import (
+    can_access_resource, get_accessible_resource_ids, get_user_access_level
+)
 from backend.game_server.models import GameServer
 from backend.game_server import docker_manager
 from backend.game_server.games_config import get_all_games, get_game_config
@@ -116,8 +120,14 @@ def list_servers(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Retourne la liste de tous les serveurs de jeux."""
-    servers = db.query(GameServer).all()
+    """Retourne la liste des serveurs accessibles par l'utilisateur."""
+    # RBAC : filtrer par ownership + shared access (admins voient tout)
+    accessible_ids = get_accessible_resource_ids(current_user, "server", db)
+    if accessible_ids is not None:
+        servers = db.query(GameServer).filter(GameServer.id.in_(accessible_ids)).all()
+    else:
+        servers = db.query(GameServer).all()
+
     result = []
 
     for server in servers:
@@ -132,7 +142,7 @@ def list_servers(
                 server.status = "error"
             db.commit()
 
-        # Construire la réponse avec player_count et ready
+        # Construire la réponse avec player_count, ready et access_level
         resp = ServerResponse.model_validate(server, from_attributes=True)
         if server.status == "running" and server.game_type in ("minecraft", "minecraft_bedrock"):
             ping = docker_manager.mc_server_ping(server.port)
@@ -156,7 +166,14 @@ def create_server(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Crée un nouveau serveur de jeu (n'importe quel jeu supporté)."""
+    """Crée un nouveau serveur de jeu (réservé aux moderators et admins)."""
+    # RBAC : seuls les moderators et admins peuvent créer des serveurs
+    if not has_permission(current_user, "create_server"):
+        raise HTTPException(
+            status_code=403,
+            detail="Seuls les modérateurs et administrateurs peuvent créer des serveurs."
+        )
+
     # Récupérer la config du jeu pour les valeurs par défaut
     game_config = get_game_config(request.game_type)
     actual_port = request.port or game_config["default_port"]
@@ -186,7 +203,7 @@ def create_server(
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    # Sauvegarder en base de données
+    # Sauvegarder en base de données avec owner_id
     server = GameServer(
         name=request.name,
         game_type=request.game_type,
@@ -196,6 +213,7 @@ def create_server(
         memory_mb=actual_memory,
         docker_id=result["docker_id"],
         status="stopped",
+        owner_id=current_user.id,
     )
     db.add(server)
     db.commit()
@@ -214,6 +232,10 @@ def get_server(
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
+
+    # RBAC : vérifier l'accès à ce serveur
+    if not can_access_resource(current_user, "server", server_id, db, min_level="view_only"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas accès à ce serveur.")
 
     # Mettre à jour le statut Docker en temps réel
     if server.docker_id:
@@ -247,10 +269,15 @@ def start_server(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Démarre un serveur de jeu."""
+    """Démarre un serveur de jeu (accessible aux joueurs invités avec accès 'start')."""
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
+
+    # RBAC : le joueur doit avoir au minimum le niveau "start"
+    if not can_access_resource(current_user, "server", server_id, db, min_level="start"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit de démarrer ce serveur.")
+
     if not server.docker_id:
         raise HTTPException(status_code=400, detail="Conteneur Docker non trouvé")
 
@@ -269,10 +296,15 @@ def stop_server(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Arrête un serveur de jeu proprement."""
+    """Arrête un serveur de jeu (réservé au propriétaire, managers et admins)."""
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
+
+    # RBAC : arrêter = niveau "manage" (les joueurs ne peuvent pas arrêter)
+    if not can_access_resource(current_user, "server", server_id, db, min_level="manage"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit d'arrêter ce serveur.")
+
     if not server.docker_id:
         raise HTTPException(status_code=400, detail="Conteneur Docker non trouvé")
 
@@ -291,10 +323,15 @@ def restart_server(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Redémarre un serveur (arrêt + démarrage)."""
+    """Redémarre un serveur (réservé au propriétaire, managers et admins)."""
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
+
+    # RBAC : restart = niveau "manage"
+    if not can_access_resource(current_user, "server", server_id, db, min_level="manage"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit de redémarrer ce serveur.")
+
     if not server.docker_id:
         raise HTTPException(status_code=400, detail="Conteneur Docker non trouvé")
 
@@ -323,6 +360,10 @@ def change_server_version(
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
+
+    # RBAC : changer la version = niveau "manage"
+    if not can_access_resource(current_user, "server", server_id, db, min_level="manage"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit de modifier ce serveur.")
 
     # 1. Arrêter et supprimer l'ancien conteneur
     if server.docker_id:
@@ -380,6 +421,11 @@ def get_server_logs(
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
+
+    # RBAC : voir les logs = niveau "view_only"
+    if not can_access_resource(current_user, "server", server_id, db, min_level="view_only"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas accès aux logs de ce serveur.")
+
     if not server.docker_id:
         return {"logs": "Aucun conteneur Docker associé"}
 
@@ -393,16 +439,27 @@ def delete_server(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Supprime un serveur et son conteneur Docker."""
+    """Supprime un serveur (réservé au propriétaire et admins)."""
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
+
+    # RBAC : seul le propriétaire ou un admin peut supprimer
+    if not current_user.is_admin and server.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Seul le propriétaire peut supprimer ce serveur.")
 
     if server.docker_id:
         try:
             docker_manager.delete_container(server.docker_id)
         except RuntimeError:
             pass
+
+    # Supprimer aussi les accès partagés
+    from backend.auth.shared_access import SharedAccess
+    db.query(SharedAccess).filter(
+        SharedAccess.resource_type == "server",
+        SharedAccess.resource_id == server_id,
+    ).delete()
 
     db.delete(server)
     db.commit()
@@ -423,6 +480,10 @@ def update_resources(
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
+
+    # RBAC : modifier les ressources = niveau "manage"
+    if not can_access_resource(current_user, "server", server_id, db, min_level="manage"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit de modifier ce serveur.")
 
     # Validation des limites
     if request.memory_mb < 256:

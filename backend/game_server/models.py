@@ -7,7 +7,8 @@ dans cette table avec ses paramètres et son état.
 
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
+from sqlalchemy.orm import relationship
 
 from backend.database import Base
 
@@ -42,3 +43,7 @@ class GameServer(Base):
     jvm_flags = Column(String(500), default="")  # Flags JVM personnalisés
     status = Column(String(20), default="stopped")
     created_at = Column(DateTime, default=datetime.utcnow)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Créateur du serveur
+
+    # Relations
+    owner = relationship("User", foreign_keys=[owner_id])

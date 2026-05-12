@@ -26,6 +26,9 @@ const ServerView = {
         const isRunning = !isPending && s.status === 'running';
         const isStopped = !isPending && s.status !== 'running';
 
+        const u = Auth.getUser();
+        const isOwnerOrAdmin = u && (u.is_admin || s.owner_id === u?.id || u.role === 'moderator' || u.role === 'admin');
+
         let statusColor, statusText, actionBtns;
         if (isPending) {
             const labels = { start: Lang.t('sv.starting'), stop: Lang.t('sv.stopping'), restart: Lang.t('sv.restarting') };
@@ -35,9 +38,9 @@ const ServerView = {
         } else if (isRunning) {
             statusColor = 'var(--accent-green)';
             statusText = '● ' + Lang.t('sv.running').replace(/^🟢\s*/, '');
-            actionBtns = `
+            actionBtns = isOwnerOrAdmin ? `
                 <button class="btn btn-sm btn-secondary" onclick="ServerView.action('stop')">⏹</button>
-                <button class="btn btn-sm btn-secondary" onclick="ServerView.action('restart')">🔄</button>`;
+                <button class="btn btn-sm btn-secondary" onclick="ServerView.action('restart')">🔄</button>` : '';
         } else {
             statusColor = 'var(--text-muted)';
             statusText = '○ ' + Lang.t('sv.stopped').replace(/^🔴\s*/, '');
@@ -68,43 +71,71 @@ const ServerView = {
         const isPlugin = ['PAPER','SPIGOT','BUKKIT','PURPUR','FOLIA'].includes(st);
         const isMod = ['FORGE','FABRIC','NEOFORGE','QUILT'].includes(st);
 
+        const u = Auth.getUser();
+        const isOwnerOrAdmin = u && (u.is_admin || this.serverData?.owner_id === u?.id || u.role === 'moderator');
+
         const tabs = [
             {id:'dashboard',icon:'📊',label:Lang.t('sv.dashboard')},
-            {id:'console',icon:'💻',label:Lang.t('sv.console')},
-            {id:'settings',icon:'⚙️',label:Lang.t('sv.settings')},
-            {id:'files',icon:'📁',label:Lang.t('sv.files')},
-            {id:'access',icon:'🔌',label:Lang.t('sv.access')},
-            {id:'backups',icon:'💾',label:Lang.t('sv.backups')},
-            {id:'scheduler',icon:'⏰',label:Lang.t('sv.scheduler')},
-            {id:'monitoring',icon:'📈',label:Lang.t('sv.monitoring')},
-            {id:'history',icon:'📜',label:Lang.t('sv.history')},
-            {id:'players',icon:'👥',label:Lang.t('sv.players')},
         ];
 
+        // Tabs accessibles uniquement aux managers/owners
+        if (isOwnerOrAdmin) {
+            tabs.push({id:'console',icon:'💻',label:Lang.t('sv.console')});
+            tabs.push({id:'settings',icon:'⚙️',label:Lang.t('sv.settings')});
+            tabs.push({id:'files',icon:'📁',label:Lang.t('sv.files')});
+        }
+
+        tabs.push({id:'access',icon:'🔌',label:Lang.t('sv.access')});
+
+        if (isOwnerOrAdmin) {
+            tabs.push({id:'backups',icon:'💾',label:Lang.t('sv.backups')});
+            tabs.push({id:'scheduler',icon:'⏰',label:Lang.t('sv.scheduler')});
+        }
+
+        tabs.push({id:'monitoring',icon:'📈',label:Lang.t('sv.monitoring')});
+        tabs.push({id:'history',icon:'📜',label:Lang.t('sv.history')});
+        tabs.push({id:'players',icon:'👥',label:Lang.t('sv.players')});
+
         // Afficher Plugins seulement pour Paper/Spigot/Bukkit/Purpur
-        if (isPlugin) {
+        if (isPlugin && isOwnerOrAdmin) {
             tabs.push({id:'mods',icon:'🔌',label:Lang.t('sv.plugins')});
         }
         // Afficher Mods seulement pour Forge/Fabric/NeoForge/Quilt
-        if (isMod) {
+        if (isMod && isOwnerOrAdmin) {
             tabs.push({id:'mods',icon:'🧩',label:Lang.t('sv.mods')});
         }
-        // Datapacks pour tous (Vanilla inclus)
-        tabs.push({id:'datapacks',icon:'📜',label:Lang.t('sv.datapacks')});
-        tabs.push({id:'worlds',icon:'🌍',label:Lang.t('sv.worlds')});
-        tabs.push({id:'database',icon:'🗄️',label:Lang.t('sv.database')});
-        tabs.push({id:'version',icon:'🏷️',label:Lang.t('sv.version')});
+        // Datapacks, worlds, database, version pour les owners/admins
+        if (isOwnerOrAdmin) {
+            tabs.push({id:'datapacks',icon:'📜',label:Lang.t('sv.datapacks')});
+            tabs.push({id:'worlds',icon:'🌍',label:Lang.t('sv.worlds')});
+            tabs.push({id:'database',icon:'🗄️',label:Lang.t('sv.database')});
+            tabs.push({id:'version',icon:'🏷️',label:Lang.t('sv.version')});
+        }
         tabs.push({id:'notifications',icon:'🔔',label:Lang.t('sv.notifications')});
+
+        let deleteBtn = '';
+        if (isOwnerOrAdmin) {
+            deleteBtn = `
+            <div style="border-top:1px solid var(--border-color);margin:12px 16px 8px;"></div>
+            <a onclick="ServerView._deleteServerPrompt()" style="display:flex;align-items:center;gap:10px;padding:10px 20px;cursor:pointer;color:#ef4444;font-size:13px;font-weight:400;border-left:3px solid transparent;transition:all .15s;" onmouseover="this.style.background='rgba(239,68,68,0.08)'" onmouseout="this.style.background='transparent'">
+                <span>🗑️</span>${Lang.t('sv.delete')}
+            </a>`;
+        }
+
+        // Share button for owners
+        let shareBtn = '';
+        if (u && (u.is_admin || this.serverData?.owner_id === u?.id)) {
+            shareBtn = `
+            <a onclick="SharingModal.open(${this.serverId},'server')" style="display:flex;align-items:center;gap:10px;padding:10px 20px;cursor:pointer;color:var(--accent-blue);font-size:13px;font-weight:400;border-left:3px solid transparent;transition:all .15s;" onmouseover="this.style.background='rgba(59,130,246,0.08)'" onmouseout="this.style.background='transparent'">
+                <span>👥</span>${Lang.t('sharing.title')}
+            </a>`;
+        }
 
         return tabs.map(t => `
             <a class="sv-tab ${this.currentTab===t.id?'active':''}" onclick="ServerView.switchTab('${t.id}')" style="display:flex;align-items:center;gap:10px;padding:10px 20px;cursor:pointer;color:${this.currentTab===t.id?'var(--accent-blue)':'var(--text-primary)'};background:${this.currentTab===t.id?'rgba(59,130,246,0.1)':'transparent'};font-size:13px;font-weight:${this.currentTab===t.id?'600':'400'};border-left:3px solid ${this.currentTab===t.id?'var(--accent-blue)':'transparent'};transition:all .15s;">
                 <span>${t.icon}</span>${t.label}
             </a>
-        `).join('') + `
-        <div style="border-top:1px solid var(--border-color);margin:12px 16px 8px;"></div>
-        <a onclick="ServerView._deleteServerPrompt()" style="display:flex;align-items:center;gap:10px;padding:10px 20px;cursor:pointer;color:#ef4444;font-size:13px;font-weight:400;border-left:3px solid transparent;transition:all .15s;" onmouseover="this.style.background='rgba(239,68,68,0.08)'" onmouseout="this.style.background='transparent'">
-            <span>🗑️</span>${Lang.t('sv.delete')}
-        </a>`;
+        `).join('') + shareBtn + deleteBtn;
     },
 
     switchTab(tab) {
@@ -114,6 +145,8 @@ const ServerView = {
 
         const isPending = !!this._pendingAction;
         const isRunning = !isPending && this.serverData?.status === 'running';
+        const u = Auth.getUser();
+        const isOwnerOrAdmin = u && (u.is_admin || this.serverData?.owner_id === u?.id || u.role === 'moderator' || u.role === 'admin');
         let statusColor, statusText, actionBtns;
         if (isPending) {
             const labels = { start: Lang.t('sv.starting'), stop: Lang.t('sv.stopping'), restart: Lang.t('sv.restarting') };
@@ -123,9 +156,9 @@ const ServerView = {
         } else if (isRunning) {
             statusColor = 'var(--accent-green)';
             statusText = '● ' + Lang.t('sv.running').replace(/^🟢\s*/, '');
-            actionBtns = `
+            actionBtns = isOwnerOrAdmin ? `
                 <button class="btn btn-sm btn-secondary" onclick="ServerView.action('stop')">⏹</button>
-                <button class="btn btn-sm btn-secondary" onclick="ServerView.action('restart')">🔄</button>`;
+                <button class="btn btn-sm btn-secondary" onclick="ServerView.action('restart')">🔄</button>` : '';
         } else {
             statusColor = 'var(--text-muted)';
             statusText = '○ ' + Lang.t('sv.stopped').replace(/^🔴\s*/, '');
@@ -186,14 +219,16 @@ const ServerView = {
         }
         
         // Boutons avec gestion du pending
+        const u2 = Auth.getUser();
+        const canManage = u2 && (u2.is_admin || s.owner_id === u2?.id || u2.role === 'moderator' || u2.role === 'admin');
         let controlBtns;
         if (isPending) {
             const pendingLabels = { start: Lang.t('sv.starting'), stop: Lang.t('sv.stopping'), restart: Lang.t('sv.restarting') };
             controlBtns = `<button class="btn btn-secondary" disabled style="flex:1;opacity:0.6;"><span class="spinner-sm"></span> ${pendingLabels[this._pendingAction]}</button>`;
         } else if (isRunning) {
-            controlBtns = `
+            controlBtns = canManage ? `
                 <button class="btn btn-danger" onclick="ServerView.action('stop')" style="flex:1;">⏹️ ${Lang.t('common.stop')}</button>
-                <button class="btn btn-secondary" onclick="ServerView.action('restart')" style="flex:1;">🔄 ${Lang.t('common.restart')}</button>`;
+                <button class="btn btn-secondary" onclick="ServerView.action('restart')" style="flex:1;">🔄 ${Lang.t('common.restart')}</button>` : '';
         } else {
             controlBtns = `<button class="btn btn-primary" onclick="ServerView.action('start')" style="flex:1;">▶️ ${Lang.t('common.start')}</button>`;
         }

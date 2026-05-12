@@ -29,6 +29,10 @@ from typing import Optional
 from backend.database import get_db
 from backend.auth.utils import get_current_user
 from backend.auth.models import User
+from backend.auth.permissions import has_permission
+from backend.auth.access_control import (
+    can_access_resource, get_accessible_resource_ids, check_bot_quota, get_bot_count
+)
 from backend.bots.models import Bot
 
 logger = logging.getLogger(__name__)
@@ -66,8 +70,13 @@ def list_bots(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Liste tous les bots."""
-    bots = db.query(Bot).order_by(Bot.created_at.desc()).all()
+    """Liste les bots accessibles par l'utilisateur."""
+    # RBAC : filtrer par ownership + shared access (admins voient tout)
+    accessible_ids = get_accessible_resource_ids(current_user, "bot", db)
+    if accessible_ids is not None:
+        bots = db.query(Bot).filter(Bot.id.in_(accessible_ids)).order_by(Bot.created_at.desc()).all()
+    else:
+        bots = db.query(Bot).order_by(Bot.created_at.desc()).all()
 
     # Mettre à jour les statuts des bots
     result = []
@@ -93,6 +102,7 @@ def list_bots(
             "created_at": b.created_at.isoformat() if b.created_at else None,
             "last_run": b.last_run.isoformat() if b.last_run else None,
             "last_error": b.last_error,
+            "owner_id": b.owner_id,
         })
     return result
 
@@ -103,16 +113,32 @@ def create_bot(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Créer un nouveau bot."""
+    """Créer un nouveau bot (réservé aux developers et admins)."""
+    # RBAC : vérifier la permission de créer un bot
+    if not has_permission(current_user, "create_bot"):
+        raise HTTPException(
+            status_code=403,
+            detail="Seuls les développeurs et administrateurs peuvent créer des bots."
+        )
+
+    # RBAC : vérifier le quota pour les développeurs (max 3)
+    if not check_bot_quota(current_user, db):
+        count = get_bot_count(current_user, db)
+        raise HTTPException(
+            status_code=403,
+            detail=f"Quota atteint ({count}/3 bots). Les développeurs peuvent créer max 3 bots."
+        )
+
     # Créer le dossier de stockage
     BOTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Créer le bot en DB
+    # Créer le bot en DB avec owner_id
     bot = Bot(
         name=data.name,
         description=data.description,
         bot_type=data.bot_type,
         script_path=f"bot_{int(datetime.utcnow().timestamp())}.py",
+        owner_id=current_user.id,
     )
     db.add(bot)
     db.commit()
@@ -135,13 +161,18 @@ def get_bot(
     bot = db.query(Bot).filter(Bot.id == bot_id).first()
     if not bot:
         raise HTTPException(404, "Bot non trouvé")
+
+    # RBAC : vérifier l'accès à ce bot
+    if not can_access_resource(current_user, "bot", bot_id, db, min_level="view_only"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas accès à ce bot.")
+
     return {
         "id": bot.id, "name": bot.name, "description": bot.description,
         "bot_type": bot.bot_type, "status": bot.status,
         "auto_restart": bot.auto_restart, "script_path": bot.script_path,
         "created_at": bot.created_at.isoformat() if bot.created_at else None,
         "last_run": bot.last_run.isoformat() if bot.last_run else None,
-        "last_error": bot.last_error,
+        "last_error": bot.last_error, "owner_id": bot.owner_id,
     }
 
 
@@ -176,10 +207,14 @@ def delete_bot(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Supprimer un bot (arrête d'abord si running)."""
+    """Supprimer un bot (réservé au propriétaire et admins)."""
     bot = db.query(Bot).filter(Bot.id == bot_id).first()
     if not bot:
         raise HTTPException(404, "Bot non trouvé")
+
+    # RBAC : seul le propriétaire ou un admin peut supprimer
+    if not current_user.is_admin and bot.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Seul le propriétaire peut supprimer ce bot.")
 
     # Arrêter si en cours
     if bot_id in _bot_processes:
@@ -193,6 +228,13 @@ def delete_bot(
     script_file = BOTS_DIR / bot.script_path
     if script_file.exists():
         script_file.unlink()
+
+    # Supprimer les accès partagés
+    from backend.auth.shared_access import SharedAccess
+    db.query(SharedAccess).filter(
+        SharedAccess.resource_type == "bot",
+        SharedAccess.resource_id == bot_id,
+    ).delete()
 
     db.delete(bot)
     db.commit()

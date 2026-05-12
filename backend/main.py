@@ -122,6 +122,7 @@ from backend.webserver.router import router as webserver_router
 from backend.network.router import router as network_router
 from backend.scheduler.power_router import router as power_router
 from backend.monitoring.nodes_router import router as nodes_router
+from backend.auth.sharing_router import router as sharing_router
 
 app.include_router(auth_router)
 app.include_router(invite_router)
@@ -149,6 +150,7 @@ app.include_router(webserver_router)
 app.include_router(network_router)
 app.include_router(power_router)
 app.include_router(nodes_router)
+app.include_router(sharing_router)
 
 
 # --- Événement de démarrage ---
@@ -176,6 +178,9 @@ async def startup_event():
             ("scheduled_tasks", "bot_id", "INTEGER REFERENCES bots(id) ON DELETE CASCADE"),
             ("scheduled_tasks", "schedule_time", "VARCHAR(5)"),
             ("scheduled_tasks", "schedule_days", "VARCHAR(50)"),
+            # RBAC : ownership des ressources
+            ("game_servers", "owner_id", "INTEGER REFERENCES users(id)"),
+            ("bots", "owner_id", "INTEGER REFERENCES users(id)"),
         ]
         for table, column, col_type in migrations:
             try:
@@ -184,6 +189,32 @@ async def startup_event():
                 logger.info(f"🔧 Migration: ajouté {table}.{column}")
             except Exception:
                 db.rollback()  # La colonne existe déjà
+    finally:
+        db.close()
+
+    # Migration RBAC : assigner les serveurs/bots sans owner à l'admin principal
+    from backend.database import SessionLocal
+    from backend.auth.models import User
+    from backend.game_server.models import GameServer
+    from backend.bots.models import Bot
+    db = SessionLocal()
+    try:
+        admin = db.query(User).filter(User.is_admin == True).first()
+        if admin:
+            # Serveurs sans owner → assigner à l'admin
+            orphan_servers = db.query(GameServer).filter(GameServer.owner_id == None).all()
+            for srv in orphan_servers:
+                srv.owner_id = admin.id
+                logger.info(f"🔧 RBAC: serveur '{srv.name}' → owner={admin.username}")
+
+            # Bots sans owner → assigner à l'admin
+            orphan_bots = db.query(Bot).filter(Bot.owner_id == None).all()
+            for bot in orphan_bots:
+                bot.owner_id = admin.id
+                logger.info(f"🔧 RBAC: bot '{bot.name}' → owner={admin.username}")
+
+            if orphan_servers or orphan_bots:
+                db.commit()
     finally:
         db.close()
 
