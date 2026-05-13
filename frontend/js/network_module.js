@@ -28,6 +28,25 @@ const NetworkModule = {
                 <div id="net-speedtest"></div>
             </div>
 
+            <!-- Réseau bandwidth -->
+            <div style="margin: 20px 0 0; font-size: 13px; color: var(--text-muted);">
+                🌐 ${Lang.t('dashboard.network')} : <span id="stat-network">--</span>
+            </div>
+
+            <!-- Kill All + Diagnostic -->
+            <div style="display:flex;gap:12px;margin:16px 0;align-items:center;">
+                <button class="btn btn-kill-all" onclick="App.killAllServers()" title="${Lang.t('dashboard.kill_all')}">
+                    🔴 ${Lang.t('dashboard.kill_all')}
+                </button>
+                <button class="btn btn-secondary" onclick="App.runDiagnostic()" id="diag-btn" style="display:flex;align-items:center;gap:6px;">
+                    🩺 ${Lang.t('dashboard.diagnostic')}
+                </button>
+                <span style="font-size:12px;color:var(--text-muted);">${Lang.t('dashboard.quick_actions')}</span>
+            </div>
+
+            <!-- Diagnostic panel (caché par défaut) -->
+            <div id="diagnostic-panel" style="display:none;margin-bottom:20px;"></div>
+
             <!-- Réseau de machines -->
             <div style="margin-top:24px;">
                 <div class="page-header" style="margin-bottom:12px;">

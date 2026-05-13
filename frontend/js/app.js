@@ -340,24 +340,6 @@ const App = {
                 </div>
             </div>
 
-            <!-- Réseau -->
-            <div style="margin-bottom: 28px; font-size: 13px; color: var(--text-muted);">
-                🌐 ${t('dashboard.network')} : <span id="stat-network">--</span>
-            </div>
-
-            <!-- Kill All + Diagnostic -->
-            <div style="display:flex;gap:12px;margin-bottom:28px;align-items:center;">
-                <button class="btn btn-kill-all" onclick="App.killAllServers()" title="${t('dashboard.kill_all')}">
-                    🔴 ${t('dashboard.kill_all')}
-                </button>
-                <button class="btn btn-secondary" onclick="App.runDiagnostic()" id="diag-btn" style="display:flex;align-items:center;gap:6px;">
-                    🩺 ${t('dashboard.diagnostic')}
-                </button>
-                <span style="font-size:12px;color:var(--text-muted);">${t('dashboard.quick_actions')}</span>
-            </div>
-
-            <!-- Diagnostic auto (caché par défaut) -->
-            <div id="diagnostic-panel" style="display:none;margin-bottom:28px;"></div>
 
 
             <!-- Modules -->
