@@ -734,38 +734,7 @@ const App = {
                     </div>
                 </div>
 
-                ${isAdmin ? `
-                <div class="card">
-                    <div class="flex justify-between items-center">
-                        <h3 class="card-title" style="margin: 0;">${t('settings.invitations')}</h3>
-                        <button class="btn btn-primary btn-sm" onclick="App.createInvitation()">
-                            ${t('settings.invite_create')}
-                        </button>
-                    </div>
-                    <p style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">
-                        ${t('settings.invite_desc')}
-                    </p>
-                    <div style="display: flex; gap: 8px; margin-top: 12px;">
-                        <select class="form-input" id="invite-role" style="flex: 1;">
-                            <option value="spectator">${t('settings.invite_spectator')}</option>
-                            <option value="player" selected>${t('settings.invite_player')}</option>
-                            <option value="money">${t('settings.invite_money')}</option>
-                            <option value="moderator">${t('settings.invite_mod')}</option>
-                            <option value="developer">${t('settings.invite_dev')}</option>
-                        </select>
-                    </div>
-                    <div id="invite-result" style="margin-top: 12px;"></div>
-                    <div id="invitations-list" style="margin-top: 16px;">
-                        <div style="text-align: center; padding: 16px; color: var(--text-muted); font-size: 13px;">${t('common.loading')}</div>
-                    </div>
-                </div>
-                <div class="card">
-                    <h3 class="card-title">${t('settings.users')}</h3>
-                    <div id="users-list" style="margin-top: 12px;">
-                        <div style="text-align: center; padding: 16px; color: var(--text-muted); font-size: 13px;">${t('common.loading')}</div>
-                    </div>
-                </div>
-                ` : ''}
+
 
                 <div class="card">
                     <h3 class="card-title">${t('settings.language')}</h3>
@@ -835,8 +804,6 @@ const App = {
 
         // Charger les listes si admin
         if (isAdmin) {
-            this.loadInvitations();
-            this._loadUsersAdmin();
             this._loadPowerSchedule();
             this._loadNodesKey();
         }
@@ -1103,49 +1070,77 @@ const App = {
     // --- Gestion des utilisateurs ---
 
     renderUsers(content) {
+        const t = (k) => Lang.t(k);
         content.innerHTML = `
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
             <div>
-                <h1 style="margin:0;">${Lang.t('users.title')}</h1>
-                <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">${Lang.t('users.subtitle')}</p>
+                <h1 style="margin:0;">${t('users.title')}</h1>
+                <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">${t('users.subtitle')}</p>
             </div>
-            <button class="btn btn-secondary" onclick="App.navigateTo('hub')">${Lang.t('users.back_hub')}</button>
+            <button class="btn btn-secondary" onclick="App.navigateTo('hub')">${t('users.back_hub')}</button>
+        </div>
+
+        <!-- Invitations -->
+        <div class="card" style="margin-bottom:20px;">
+            <div class="flex justify-between items-center">
+                <h3 class="card-title" style="margin: 0;">${t('settings.invitations')}</h3>
+                <button class="btn btn-primary btn-sm" onclick="App.createInvitation()">
+                    ${t('settings.invite_create')}
+                </button>
+            </div>
+            <p style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">
+                ${t('settings.invite_desc')}
+            </p>
+            <div style="display: flex; gap: 8px; margin-top: 12px;">
+                <select class="form-input" id="invite-role" style="flex: 1;">
+                    <option value="spectator">${t('settings.invite_spectator')}</option>
+                    <option value="player" selected>${t('settings.invite_player')}</option>
+                    <option value="money">${t('settings.invite_money')}</option>
+                    <option value="moderator">${t('settings.invite_mod')}</option>
+                    <option value="developer">${t('settings.invite_dev')}</option>
+                </select>
+            </div>
+            <div id="invite-result" style="margin-top: 12px;"></div>
+            <div id="invitations-list" style="margin-top: 16px;">
+                <div style="text-align: center; padding: 16px; color: var(--text-muted); font-size: 13px;">${t('common.loading')}</div>
+            </div>
         </div>
 
         <!-- Créer un utilisateur -->
         <div class="card" style="margin-bottom:20px;">
-            <h3 style="margin:0 0 16px;">${Lang.t('users.create_title')}</h3>
+            <h3 style="margin:0 0 16px;">${t('users.create_title')}</h3>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end;">
                 <div>
-                    <label class="form-label">${Lang.t('users.username')}</label>
-                    <input id="new-user-name" class="form-input" placeholder="${Lang.t('users.username_hint')}" />
+                    <label class="form-label">${t('users.username')}</label>
+                    <input id="new-user-name" class="form-input" placeholder="${t('users.username_hint')}" />
                 </div>
                 <div>
-                    <label class="form-label">${Lang.t('users.password')}</label>
-                    <input id="new-user-pass" class="form-input" type="password" placeholder="${Lang.t('users.password_hint')}" />
+                    <label class="form-label">${t('users.password')}</label>
+                    <input id="new-user-pass" class="form-input" type="password" placeholder="${t('users.password_hint')}" />
                 </div>
                 <div>
-                    <label class="form-label">${Lang.t('users.role')}</label>
+                    <label class="form-label">${t('users.role')}</label>
                     <select id="new-user-role" class="form-input">
-                        <option value="spectator">${Lang.t('users.role_spectator')}</option>
-                        <option value="player" selected>${Lang.t('users.role_player')}</option>
-                        <option value="money">${Lang.t('users.role_money')}</option>
-                        <option value="moderator">${Lang.t('users.role_moderator')}</option>
-                        <option value="developer">${Lang.t('users.role_developer')}</option>
-                        <option value="admin">${Lang.t('users.role_admin')}</option>
+                        <option value="spectator">${t('users.role_spectator')}</option>
+                        <option value="player" selected>${t('users.role_player')}</option>
+                        <option value="money">${t('users.role_money')}</option>
+                        <option value="moderator">${t('users.role_moderator')}</option>
+                        <option value="developer">${t('users.role_developer')}</option>
+                        <option value="admin">${t('users.role_admin')}</option>
                     </select>
                 </div>
-                <button class="btn btn-primary" onclick="App.createUser()" style="height:38px;">${Lang.t('users.create_btn')}</button>
+                <button class="btn btn-primary" onclick="App.createUser()" style="height:38px;">${t('users.create_btn')}</button>
             </div>
             <div id="create-user-msg" style="font-size:13px;margin-top:8px;"></div>
         </div>
 
         <!-- Liste des utilisateurs -->
         <div class="card">
-            <h3 style="margin:0 0 16px;">${Lang.t('users.list_title')}</h3>
-            <div id="users-admin-list"><div style="text-align:center;padding:20px;color:var(--text-muted);">${Lang.t('users.loading')}</div></div>
+            <h3 style="margin:0 0 16px;">${t('users.list_title')}</h3>
+            <div id="users-admin-list"><div style="text-align:center;padding:20px;color:var(--text-muted);">${t('users.loading')}</div></div>
         </div>
         `;
+        this.loadInvitations();
         this._loadUsersAdmin();
     },
 
