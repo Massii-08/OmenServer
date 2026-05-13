@@ -241,11 +241,31 @@ class YieldBot:
                 self.stats['skipped'] += 1
                 return 'skipped'
             
-            # 2. Estrai cedola e scadenza dal nome
+            # 2. Estrai cedola e scadenza dal nome Excel
             coupon = extract_coupon_from_name(name)
             maturity = extract_maturity_from_name(name)
             
-            # 3. Calcola il yield in base al tipo di bond
+            # 2b. Fallback: si le nom Excel est incomplet (ex: "Dominion"),
+            #     utiliser les données scrapées de Deutsche Börse
+            if market_data and not market_data.error:
+                if coupon is None and market_data.coupon_rate is not None:
+                    coupon = market_data.coupon_rate
+                    logger.info(f"   🔄 Cedola dal scraper: {coupon}%")
+                if maturity is None and market_data.maturity_date is not None:
+                    maturity = market_data.maturity_date
+                    logger.info(f"   🔄 Scadenza dal scraper: {maturity}")
+            
+            # 3. Aggiorna subito nome/champs vides/couleur (AVANT il calcolo yield)
+            #    Così il nome viene corretto anche se il yield fallisce
+            if market_data and not market_data.error:
+                self.processor.update_price(sheet, row, market_data.current_price) if market_data.current_price else None
+                if market_data.rating and market_data.rating != '?':
+                    self.processor.update_rating(sheet, row, market_data.rating)
+                self.processor.fill_empty_fields(sheet, row, market_data)
+                self.processor.update_name(sheet, row, market_data)
+                self.processor.apply_price_color(sheet, row, price_float)
+            
+            # 4. Calcola il yield in base al tipo di bond
             try:
                 if coupon is not None and coupon == 0 and maturity:
                     # Zero-coupon bond
@@ -281,13 +301,11 @@ class YieldBot:
                     self.stats['skipped'] += 1
                     return 'skipped'
                 
-                # 4. Aggiorna il file Excel (prix, yield, rating, champs vides, nom, couleur)
-                if market_data and not market_data.error:
-                    market_data.calculated_yield = new_yield
-                    self.processor.update_bond_full(sheet, row, market_data)
-                else:
-                    # Pas de données scrapées — mise à jour yield + couleur seulement
-                    self.processor.update_yield(sheet, row, new_yield)
+                # 5. Aggiorna il yield nel file Excel
+                self.processor.update_yield(sheet, row, new_yield)
+                
+                # Couleur aussi pour le mode sans scraping
+                if not market_data or market_data.error:
                     self.processor.apply_price_color(sheet, row, price_float)
                 
                 self.stats['updated'] += 1
