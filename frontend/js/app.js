@@ -1193,7 +1193,7 @@ const App = {
     },
 
     async _loadUsersAdmin() {
-        const listEl = document.getElementById('users-list');
+        const listEl = document.getElementById('users-admin-list') || document.getElementById('users-list');
         if (!listEl) return;
 
         const response = await Auth.apiCall('/api/auth/admin/users');

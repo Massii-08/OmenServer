@@ -128,7 +128,11 @@ async def get_network_status(user=Depends(get_current_user)):
     local_ip = _get_local_ip()
 
     # Déterminer la qualité de la connexion
-    if latency is None:
+    if latency is None and public_ip is not None:
+        # ICMP bloqué mais internet fonctionne (IP publique résolue)
+        quality = "degraded"
+        quality_label = "🟡 ICMP bloqué"
+    elif latency is None:
         quality = "offline"
         quality_label = "🔴 Hors ligne"
     elif latency < 20:
@@ -145,7 +149,7 @@ async def get_network_status(user=Depends(get_current_user)):
         quality_label = "🔴 Mauvais"
 
     return {
-        "online": latency is not None,
+        "online": latency is not None or public_ip is not None,
         "latency_ms": latency,
         "quality": quality,
         "quality_label": quality_label,
