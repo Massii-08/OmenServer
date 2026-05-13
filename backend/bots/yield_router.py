@@ -61,6 +61,7 @@ class YieldRunRequest(BaseModel):
     sheet: Optional[str] = None
     isin: Optional[str] = None
     skip: int = 0  # Nombre de bonds à sauter (pour resume)
+    price_threshold: float = 101  # Seuil prix pour coloration rouge/noir
 
 
 # ================================================================
@@ -171,16 +172,20 @@ async def run_yield_bot(
 
     # Construire la commande
     skip = data.skip if hasattr(data, 'skip') and data.skip else 0
-    cmd = [sys.executable, "main.py", f"--{data.mode}", "--file", input_path]
+    threshold = data.price_threshold if hasattr(data, 'price_threshold') else 101
+    cmd = [sys.executable, "main.py", f"--{data.mode}", "--file", input_path,
+           "--price-threshold", str(threshold)]
     if skip > 0:
         cmd += ["--skip", str(skip)]
 
     if data.sheet:
         # Override: utiliser --sheet au lieu de --all/--recalculate
-        cmd = [sys.executable, "main.py", "--sheet", data.sheet, "--file", input_path]
+        cmd = [sys.executable, "main.py", "--sheet", data.sheet, "--file", input_path,
+               "--price-threshold", str(threshold)]
 
     if data.isin:
-        cmd = [sys.executable, "main.py", "--isin", data.isin, "--file", input_path]
+        cmd = [sys.executable, "main.py", "--isin", data.isin, "--file", input_path,
+               "--price-threshold", str(threshold)]
 
     logger.info(f"[Yield] Lancement: {' '.join(cmd)}")
 

@@ -23,9 +23,12 @@ logger = logging.getLogger(__name__)
 # Sfondo blu per le celle non aggiornate (visibile in dark mode)
 BLUE_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
 
-# Fonts pour la coloration prix
-RED_FONT = Font(color="FF0000")    # Prix < 101 → rouge (bonne affaire)
-BLACK_FONT = Font(color="000000")  # Prix >= 101 → noir (au-dessus du pair)
+# Fonts pour la coloration prix (seuil configurable, défaut 101)
+RED_FONT = Font(color="FF0000")    # Prix < seuil → rouge (bonne affaire)
+BLACK_FONT = Font(color="000000")  # Prix >= seuil → noir (au-dessus du pair)
+
+# Seuil par défaut pour la coloration
+DEFAULT_PRICE_THRESHOLD = 101
 
 
 # Mappatura colonne per i fogli Euro, USD, GBP (stessa struttura)
@@ -65,12 +68,14 @@ class BondExcelProcessor:
     Processore per leggere e scrivere dati nel file Excel delle obbligazioni.
     """
     
-    def __init__(self, filepath: str):
+    def __init__(self, filepath: str, price_threshold: float = None):
         """
         Args:
             filepath: Percorso al file Excel (Lista acquisti-2026.xlsx)
+            price_threshold: Seuil de prix pour coloration rouge/noir (défaut: 101)
         """
         self.filepath = filepath
+        self.price_threshold = price_threshold if price_threshold is not None else DEFAULT_PRICE_THRESHOLD
         self.wb = None
         self._load()
     
@@ -367,13 +372,16 @@ class BondExcelProcessor:
     def apply_price_color(self, sheet_name: str, row: int, price: float):
         """
         Applique la coloration des caractères selon le prix:
-        - Prix < 101 → rouge (obligation en-dessous du pair, bonne opportunité)
-        - Prix >= 101 → noir (au-dessus du pair)
+        - Prix < seuil → rouge (obligation en-dessous du pair, bonne opportunité)
+        - Prix >= seuil → noir (au-dessus du pair)
+        
+        Le seuil est configurable via self.price_threshold (défaut: 101).
         """
         ws = self.wb[sheet_name]
         cols = self._get_columns(sheet_name)
+        threshold = self.price_threshold
         
-        font = RED_FONT if price < 101 else BLACK_FONT
+        font = RED_FONT if price < threshold else BLACK_FONT
         
         # Appliquer à toutes les colonnes de la ligne (de A à la dernière colonne utilisée)
         all_cols = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']
@@ -394,8 +402,8 @@ class BondExcelProcessor:
                 color=font.color,
             )
         
-        color_name = 'rouge' if price < 101 else 'noir'
-        logger.info(f"  🎨 Couleur {color_name}: {sheet_name}:{row} (prix={price})")
+        color_name = 'rouge' if price < threshold else 'noir'
+        logger.info(f"  🎨 Couleur {color_name}: {sheet_name}:{row} (prix={price}, seuil={threshold})")
     
     def mark_blue_dot(self, sheet_name: str, row: int):
         """

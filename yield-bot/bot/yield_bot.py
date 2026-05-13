@@ -43,18 +43,20 @@ class YieldBot:
         self,
         excel_path: str,
         headless: bool = True,
-        delay: float = 2.0
+        delay: float = 2.0,
+        price_threshold: float = None
     ):
         """
         Args:
             excel_path: Percorso al file Excel delle obbligazioni
             headless: Se True, browser invisibile
             delay: Pausa tra richieste (secondi)
+            price_threshold: Seuil de prix pour coloration rouge/noir (défaut: 101)
         """
         self.excel_path = excel_path
         self.headless = headless
         self.delay = delay
-        self.processor = BondExcelProcessor(excel_path)
+        self.processor = BondExcelProcessor(excel_path, price_threshold=price_threshold)
         self.stats = {
             'total': 0,
             'updated': 0,

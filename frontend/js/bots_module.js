@@ -518,6 +518,7 @@ const BotsModule = {
         status: null,
         pollInterval: null,
         usage: null,
+        priceThreshold: 101,
     },
 
     async openYieldBot() {
@@ -641,6 +642,24 @@ const BotsModule = {
                     </div>
                 </div>
 
+                <!-- Seuil prix coloration -->
+                <div class="yield-threshold-container" style="margin-top:14px;padding:12px 16px;background:var(--bg-primary);border-radius:10px;border:1px solid var(--border-color);">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                        <label style="font-size:13px;font-weight:600;">🎨 ${Lang.t('yield.threshold_label') || 'Seuil coloration prix'}</label>
+                        <span id="yield-threshold-value" style="font-size:14px;font-weight:700;color:var(--accent-blue);min-width:40px;text-align:right;">${this._yieldState.priceThreshold}</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <span style="font-size:11px;color:var(--text-muted);">90</span>
+                        <input type="range" id="yield-threshold-slider" min="90" max="110" step="0.5" value="${this._yieldState.priceThreshold}"
+                            style="flex:1;accent-color:var(--accent-blue);cursor:pointer;"
+                            oninput="BotsModule._onThresholdChange(this.value)">
+                        <span style="font-size:11px;color:var(--text-muted);">110</span>
+                    </div>
+                    <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">
+                        🔴 ${Lang.t('yield.threshold_below') || 'Rouge si prix'} &lt; <span id="yield-threshold-hint">${this._yieldState.priceThreshold}</span> · ⚫ ${Lang.t('yield.threshold_above') || 'Noir si prix'} ≥ <span id="yield-threshold-hint2">${this._yieldState.priceThreshold}</span>
+                    </div>
+                </div>
+
                 <!-- Upload info / summary -->
                 <div id="yield-upload-info" style="display:none;margin-top:12px;"></div>
 
@@ -745,6 +764,16 @@ const BotsModule = {
         else modes[1]?.classList.add('selected');
     },
 
+    _onThresholdChange(value) {
+        this._yieldState.priceThreshold = parseFloat(value);
+        const valEl = document.getElementById('yield-threshold-value');
+        const hintEl = document.getElementById('yield-threshold-hint');
+        const hint2El = document.getElementById('yield-threshold-hint2');
+        if (valEl) valEl.textContent = value;
+        if (hintEl) hintEl.textContent = value;
+        if (hint2El) hint2El.textContent = value;
+    },
+
     async _launchYieldBot() {
         const file = this._yieldState.file;
         if (!file) return;
@@ -778,7 +807,10 @@ const BotsModule = {
             // 2. Lancer le bot
             const runR = await Auth.apiCall(`/api/bots/yield/run/${uploadData.job_id}`, {
                 method: 'POST',
-                body: JSON.stringify({ mode: this._yieldState.mode }),
+                body: JSON.stringify({
+                    mode: this._yieldState.mode,
+                    price_threshold: this._yieldState.priceThreshold || 101,
+                }),
             });
 
             if (!runR || !runR.ok) {
@@ -1085,7 +1117,11 @@ const BotsModule = {
         try {
             const runR = await Auth.apiCall(`/api/bots/yield/run/${jobId}`, {
                 method: 'POST',
-                body: JSON.stringify({ mode: this._yieldState.mode, skip: skip }),
+                body: JSON.stringify({
+                    mode: this._yieldState.mode,
+                    skip: skip,
+                    price_threshold: this._yieldState.priceThreshold || 101,
+                }),
             });
 
             if (!runR || !runR.ok) {

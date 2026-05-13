@@ -108,6 +108,8 @@ Esempi:
                         help='Pausa tra richieste in secondi (default: 1)')
     parser.add_argument('--skip', type=int, default=0,
                         help='Salta i primi N bond (per reprendre après arrêt)')
+    parser.add_argument('--price-threshold', type=float, default=101,
+                        help='Seuil prix pour coloration rouge/noir (défaut: 101)')
     parser.add_argument('-v', '--verbose', action='store_true',
                         help='Output dettagliato')
     
@@ -144,7 +146,10 @@ Esempi:
         excel_path=excel_path,
         headless=not args.visible,
         delay=args.delay,
+        price_threshold=args.price_threshold,
     )
+    
+    logger.info(f"🎨 Seuil coloration prix: {args.price_threshold}")
     
     save = not args.no_save
     
