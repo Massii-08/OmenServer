@@ -464,35 +464,32 @@ class BondExcelProcessor:
     
     def apply_blue_row(self, sheet_name: str, row: int):
         """
-        Applique un fond bleu sur toute la ligne pour indiquer
-        que l'ISIN n'a pas été trouvé (erreur à contrôler).
+        Mette un pallino blu (●) alla fine della riga (colonna J o K)
+        per indicare che l'ISIN non è stato trovato (errore da controllare).
         """
         ws = self.wb[sheet_name]
         
-        all_cols = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']
-        if sheet_name == 'Vale':
-            all_cols.append('J')
+        dot_col = 'K' if sheet_name == 'Vale' else 'J'
+        cell = ws[f"{dot_col}{row}"]
+        cell.value = "●"
+        cell.fill = BLUE_FILL
+        cell.alignment = CENTER_ALIGN
         
-        for col in all_cols:
-            ws[f"{col}{row}"].fill = BLUE_FILL
-        
-        logger.info(f"  🔵 {sheet_name}:{row} fond bleu (ISIN non trouvé)")
+        logger.info(f"  🔵 {sheet_name}:{row} pallino blu (ISIN non trouvé)")
     
     def clear_blue_row(self, sheet_name: str, row: int):
         """
-        Enlève le fond bleu de toute la ligne quand tout est OK
+        Enlève le pallino blu quand tout est OK
         (ISIN trouvé et yield calculé correctement).
         """
         ws = self.wb[sheet_name]
         
-        all_cols = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']
-        if sheet_name == 'Vale':
-            all_cols.append('J')
+        dot_col = 'K' if sheet_name == 'Vale' else 'J'
+        cell = ws[f"{dot_col}{row}"]
+        cell.value = None
+        cell.fill = NO_FILL
         
-        for col in all_cols:
-            ws[f"{col}{row}"].fill = NO_FILL
-        
-        logger.info(f"  ✅ {sheet_name}:{row} fond bleu enlevé (tout OK)")
+        logger.info(f"  ✅ {sheet_name}:{row} pallino blu enlevé (tout OK)")
     
     def mark_blue_dot(self, sheet_name: str, row: int):
         """Alias pour apply_blue_row (rétrocompatibilité)."""
