@@ -656,7 +656,7 @@ const BotsModule = {
                         <span style="font-size:11px;color:var(--text-muted);">110</span>
                     </div>
                     <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">
-                        🔴 ${Lang.t('yield.threshold_below') || 'Rouge si prix'} &lt; <span id="yield-threshold-hint">${this._yieldState.priceThreshold}</span> · ⚫ ${Lang.t('yield.threshold_above') || 'Noir si prix'} ≥ <span id="yield-threshold-hint2">${this._yieldState.priceThreshold}</span>
+                        🔴 ${Lang.t('yield.threshold_above') || 'Rouge si prix'} &gt; <span id="yield-threshold-hint">${this._yieldState.priceThreshold}</span> · ⚫ ${Lang.t('yield.threshold_below') || 'Noir si prix'} ≤ <span id="yield-threshold-hint2">${this._yieldState.priceThreshold}</span>
                     </div>
                 </div>
 
