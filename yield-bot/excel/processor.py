@@ -438,7 +438,7 @@ class BondExcelProcessor:
         cols = self._get_columns(sheet_name)
         threshold = self.price_threshold
         
-        font = RED_FONT if price < threshold else BLACK_FONT
+        font = RED_FONT if price > threshold else BLACK_FONT
         
         # Appliquer à toutes les colonnes de la ligne (de A à la dernière colonne utilisée)
         all_cols = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']
@@ -459,7 +459,7 @@ class BondExcelProcessor:
                 color=font.color,
             )
         
-        color_name = 'rouge' if price < threshold else 'noir'
+        color_name = 'rouge' if price > threshold else 'noir'
         logger.info(f"  🎨 Couleur {color_name}: {sheet_name}:{row} (prix={price}, seuil={threshold})")
     
     def mark_orange_dot(self, sheet_name: str, row: int):
