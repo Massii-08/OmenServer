@@ -14,7 +14,8 @@ Avant l'extinction, le système :
 Configuration stockée dans data/power_schedule.json.
 
 Commandes Linux utilisées :
-- rtcwake -m off -l -t <timestamp>  → Éteint et programme le réveil BIOS
+- rtcwake -m mem -l -t <timestamp>  → Suspend-to-RAM + programme le réveil BIOS
+  (Note: -m off est bloqué par Kernel Lockdown / Secure Boot)
 - shutdown -h now                    → Extinction simple (sans réveil auto)
 """
 
@@ -131,12 +132,15 @@ def _calc_wake_timestamp(wake_hour: str) -> int:
 
 def shutdown_with_rtcwake(wake_hour: str) -> bool:
     """
-    Éteint la machine et programme le réveil automatique via rtcwake.
+    Met la machine en veille (suspend-to-RAM) et programme le réveil via rtcwake.
 
-    Utilise le timer RTC du BIOS pour rallumer la machine à l'heure
+    Utilise le timer RTC du BIOS pour réveiller la machine à l'heure
     configurée. Fonctionne sur Linux (nécessite root/sudo).
 
-    Commande : sudo rtcwake -m off -l -t <wake_timestamp>
+    Note: -m mem est utilisé car -m off est bloqué par Kernel Lockdown
+    (Secure Boot activé sur le HP Omen).
+
+    Commande : sudo rtcwake -m mem -l -t <wake_timestamp>
 
     Args:
         wake_hour: Heure de réveil au format "HH:MM"
@@ -147,15 +151,16 @@ def shutdown_with_rtcwake(wake_hour: str) -> bool:
     wake_dt = datetime.fromtimestamp(wake_ts)
 
     try:
-        logger.info(f"🌙 rtcwake: extinction + réveil prévu à {wake_dt.strftime('%H:%M')} (timestamp {wake_ts})")
+        logger.info(f"🌙 rtcwake: suspend-to-RAM + réveil prévu à {wake_dt.strftime('%H:%M')} (timestamp {wake_ts})")
 
-        # rtcwake -m off : éteint complètement
+        # rtcwake -m mem : suspend-to-RAM (veille profonde, ~1-3W)
+        # Note: -m off est bloqué par Kernel Lockdown (Secure Boot activé)
         # -l : utilise l'heure locale (pas UTC)
         # -t : timestamp de réveil
         result = subprocess.Popen(
-            ["sudo", "rtcwake", "-m", "off", "-l", "-t", str(wake_ts)],
+            ["sudo", "rtcwake", "-m", "mem", "-l", "-t", str(wake_ts)],
         )
-        logger.info("🌙 rtcwake lancé — extinction imminente")
+        logger.info("🌙 rtcwake lancé — mise en veille imminente")
         return True
 
     except Exception as e:
