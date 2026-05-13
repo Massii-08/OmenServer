@@ -149,12 +149,14 @@ const App = {
             roleEl.textContent = Lang.t(roleKey) || (user.is_admin ? Lang.t('users.admin_label') : Lang.t('users.user_label'));
         }
 
-        // Afficher le lien Utilisateurs seulement pour les admins
+        // Afficher le lien Utilisateurs et Réseau seulement pour les admins
         const navUsers = document.getElementById('nav-users');
         if (navUsers) navUsers.style.display = user.is_admin ? '' : 'none';
+        const navNetwork = document.getElementById('nav-network');
+        if (navNetwork) navNetwork.style.display = user.is_admin ? '' : 'none';
 
         // Masquer les modules non autorisés dans la sidebar
-        const moduleIds = ['game_server', 'bots', 'files', 'media', 'web', 'network'];
+        const moduleIds = ['game_server', 'bots', 'files', 'media', 'web'];
         moduleIds.forEach(modId => {
             const navEl = document.getElementById(`nav-${modId}`);
             if (!navEl) return;
@@ -214,9 +216,22 @@ const App = {
         // Supprimer le padding pour la vue serveur (sidebar doit coller au bord)
         content.classList.toggle('sv-fullscreen', view === 'server_view');
 
-        // Vérifier l'accès au module (non-admin seulement)
-        const moduleViews = ['game_server', 'bots', 'files', 'media', 'web', 'network'];
+        // Vérifier l'accès admin pour le module Réseau
         const user = Auth.getUser();
+        if (view === 'network' && user && !user.is_admin) {
+            content.innerHTML = `
+                <div class="text-center" style="padding: 60px; color: var(--text-muted);">
+                    <div style="font-size: 48px; margin-bottom: 16px;">🔒</div>
+                    <p style="font-size:16px;font-weight:600;color:var(--text-primary);">${Lang.t('access.denied')}</p>
+                    <p style="margin-top:8px;">${Lang.t('access.denied_msg')}</p>
+                    <button class="btn btn-secondary mt-4" onclick="App.navigateTo('hub')">${Lang.t('access.back')}</button>
+                </div>
+            `;
+            return;
+        }
+
+        // Vérifier l'accès au module (non-admin seulement)
+        const moduleViews = ['game_server', 'bots', 'files', 'media', 'web'];
         if (moduleViews.includes(view) && user && !user.is_admin && user.allowed_modules) {
             if (!user.allowed_modules.includes(view)) {
                 content.innerHTML = `
@@ -344,16 +359,6 @@ const App = {
             <!-- Diagnostic auto (caché par défaut) -->
             <div id="diagnostic-panel" style="display:none;margin-bottom:28px;"></div>
 
-            <!-- Ordinateurs connectés -->
-            <div class="page-header" style="margin-bottom:12px;">
-                <h2 style="font-size: 18px; font-weight: 700;">${t('nodes.title')} <span id="nodes-count" style="font-size:13px;font-weight:400;color:var(--text-muted);"></span></h2>
-            </div>
-            <div id="nodes-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-bottom:28px;">
-                <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:13px;grid-column:1/-1;">
-                    <div style="font-size:32px;margin-bottom:8px;">⏳</div>
-                    ${t('common.loading')}
-                </div>
-            </div>
 
             <!-- Modules -->
             <div class="page-header">

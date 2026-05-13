@@ -27,6 +27,20 @@ const NetworkModule = {
                 <div id="net-actions"></div>
                 <div id="net-speedtest"></div>
             </div>
+
+            <!-- Réseau de machines -->
+            <div style="margin-top:24px;">
+                <div class="page-header" style="margin-bottom:12px;">
+                    <h2 style="font-size: 18px; font-weight: 700;">${Lang.t('nodes.title')} <span id="nodes-count" style="font-size:13px;font-weight:400;color:var(--text-muted);"></span></h2>
+                </div>
+                <div id="nodes-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;">
+                    <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:13px;grid-column:1/-1;">
+                        <div style="font-size:32px;margin-bottom:8px;">⏳</div>
+                        ${Lang.t('common.loading')}
+                    </div>
+                </div>
+            </div>
+
             <div id="net-history" style="margin-top:20px;"></div>
             <div id="net-wol" style="margin-top:20px;"></div>
         `;
@@ -34,13 +48,39 @@ const NetworkModule = {
         await this.loadStatus();
         await this._loadHistory();
         await this._loadDevices();
-        this._refreshInterval = setInterval(() => this.loadStatus(), 10000);
+        this._loadNodes();
+        this._refreshInterval = setInterval(() => {
+            this.loadStatus();
+            this._loadNodes();
+        }, 10000);
     },
 
     unload() {
         if (this._refreshInterval) {
             clearInterval(this._refreshInterval);
             this._refreshInterval = null;
+        }
+    },
+
+    /**
+     * Charge la liste des PC connectés via le Monitoring existant.
+     * Réutilise Monitoring.renderNodes() qui écrit dans #nodes-grid.
+     */
+    async _loadNodes() {
+        if (typeof Monitoring !== 'undefined') {
+            // S'assurer que le hostname du serveur est chargé
+            if (!Monitoring._serverHostname) {
+                await Monitoring._fetchHostname();
+            }
+            // Charger les stats du serveur si pas encore disponibles
+            if (!Monitoring._lastServerData) {
+                const r = await Auth.apiCall('/api/monitoring/stats');
+                if (r && r.ok) {
+                    Monitoring._lastServerData = await r.json();
+                }
+            }
+            // Charger et afficher les nodes
+            await Monitoring.fetchNodes();
         }
     },
 
