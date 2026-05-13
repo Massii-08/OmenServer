@@ -54,6 +54,8 @@ GAMES = {
         "version_env": None,
         "memory_env": None,
         "extra_ports": {"7777/udp": 7777, "7778/udp": 7778},
+        "steam_app_id": 376030,   # App ID Steam d'ARK: Survival Evolved
+        "mod_source": "steam",
         "description": "Serveur ARK avec dinosaures — demande beaucoup de RAM (4 Go+)",
     },
     "valheim": {
@@ -71,6 +73,8 @@ GAMES = {
         "version_env": None,
         "memory_env": None,
         "extra_ports": {"2457/udp": 2457, "2458/udp": 2458},
+        "steam_app_id": 892970,   # App ID Steam de Valheim
+        "mod_source": "steam",
         "description": "Serveur Valheim — exploration viking coopérative",
     },
     "terraria": {
@@ -86,6 +90,8 @@ GAMES = {
         },
         "version_env": None,
         "memory_env": None,
+        "steam_app_id": 105600,   # App ID Steam de Terraria
+        "mod_source": "steam",
         "description": "Serveur Terraria — aventure 2D sandbox",
     },
     "csgo2": {
@@ -101,6 +107,8 @@ GAMES = {
         },
         "version_env": None,
         "memory_env": None,
+        "steam_app_id": 730,      # App ID Steam de CS2
+        "mod_source": "steam",
         "description": "Serveur Counter-Strike 2 compétitif",
     },
     "palworld": {
@@ -116,6 +124,8 @@ GAMES = {
         },
         "version_env": None,
         "memory_env": None,
+        "steam_app_id": 1623730,  # App ID Steam de Palworld
+        "mod_source": "steam",
         "description": "Serveur Palworld — Pokémon meets survival",
     },
     "gmod": {
@@ -131,6 +141,8 @@ GAMES = {
         },
         "version_env": None,
         "memory_env": None,
+        "steam_app_id": 4000,     # App ID Steam de Garry's Mod (client)
+        "mod_source": "steam",
         "description": "Serveur Garry's Mod — sandbox physique multijoueur",
     },
     "custom": {

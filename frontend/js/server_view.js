@@ -70,6 +70,7 @@ const ServerView = {
         const st = (this.serverData?.server_type || 'VANILLA').toUpperCase();
         const isPlugin = ['PAPER','SPIGOT','BUKKIT','PURPUR','FOLIA'].includes(st);
         const isMod = ['FORGE','FABRIC','NEOFORGE','QUILT'].includes(st);
+        const isSteam = !!(this.serverData?.steam_app_id);  // Jeu Steam (ARK, Valheim, GMod...)
 
         const u = Auth.getUser();
         const isOwnerOrAdmin = u && (u.is_admin || this.serverData?.owner_id === u?.id || u.role === 'moderator');
@@ -103,6 +104,10 @@ const ServerView = {
         // Afficher Mods seulement pour Forge/Fabric/NeoForge/Quilt
         if (isMod && isOwnerOrAdmin) {
             tabs.push({id:'mods',icon:'🧩',label:Lang.t('sv.mods')});
+        }
+        // Steam Workshop pour les jeux Steam (ARK, Valheim, GMod, CS2, Terraria, Palworld)
+        if (isSteam && isOwnerOrAdmin) {
+            tabs.push({id:'workshop',icon:'🎮',label:Lang.t('sv.workshop')});
         }
         // Datapacks, worlds, database, version pour les owners/admins
         if (isOwnerOrAdmin) {
@@ -183,6 +188,7 @@ const ServerView = {
             case 'backups': return this._backupsTab();
             case 'scheduler': return this._schedulerTab();
             case 'mods': return this._modsTab();
+            case 'workshop': return this._workshopTab();
             case 'datapacks': return this._datapacksTab();
             case 'settings': return SvSettings.render(this.serverData, this.serverId);
             case 'files': return SvFiles.render(this.serverId);
@@ -702,6 +708,209 @@ const ServerView = {
 
     async _toggleTask(id) { await Auth.apiCall(`/api/scheduler/${id}/toggle`,{method:'POST'}); this._loadTasks(); },
     async _deleteTask(id) { await Auth.apiCall(`/api/scheduler/${id}`,{method:'DELETE'}); this._loadTasks(); },
+
+    // ============================================================
+    // STEAM WORKSHOP
+    // ============================================================
+
+    _workshopTab() {
+        const appId = this.serverData?.steam_app_id;
+        const gameName = this.serverData?.name || this.serverData?.game_type || '';
+
+        // Onglets internes : Rechercher / Installés
+        if (!this._workshopMode) this._workshopMode = 'search';
+
+        const btnSearch    = `btn btn-sm ${this._workshopMode==='search'?'btn-primary':'btn-secondary'}`;
+        const btnInstalled = `btn btn-sm ${this._workshopMode==='installed'?'btn-primary':'btn-secondary'}`;
+
+        return `
+        <h2>${Lang.t('sv.workshop.title')}</h2>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">
+            ${Lang.t('sv.workshop.desc')} — <strong>${gameName}</strong>
+            <span style="font-size:11px;padding:2px 8px;background:rgba(25,100,235,0.15);color:#60a5fa;border-radius:20px;margin-left:8px;">App ID ${appId}</span>
+        </p>
+
+        <div style="display:flex;gap:4px;margin-bottom:16px;background:var(--bg-secondary);padding:4px;border-radius:8px;width:fit-content;">
+            <button class="${btnSearch}" onclick="ServerView._workshopMode='search';ServerView.switchTab('workshop')">
+                🔍 ${Lang.t('sv.mod.search')}
+            </button>
+            <button class="${btnInstalled}" onclick="ServerView._workshopMode='installed';ServerView.switchTab('workshop')">
+                ${Lang.t('sv.workshop.installed_tab')}
+            </button>
+        </div>
+
+        <div id="sv-workshop-content">
+            ${this._workshopModeContent()}
+        </div>`;
+    },
+
+    _workshopModeContent() {
+        if (this._workshopMode === 'installed') {
+            setTimeout(() => this._loadWorkshopMods(), 50);
+            return `<div id="sv-workshop-installed"><div style="color:var(--text-muted)">⏳ ${Lang.t('common.loading')}</div></div>`;
+        }
+        return this._workshopSearchUI();
+    },
+
+    _workshopSearchUI() {
+        return `
+        <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;margin-bottom:14px;">
+            <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text-primary);">
+                🎮 ${Lang.t('sv.workshop.desc')}
+            </div>
+            <div style="display:flex;gap:8px;">
+                <input id="sv-workshop-url" class="form-input"
+                    placeholder="${Lang.t('sv.workshop.input_hint')}"
+                    style="flex:1;"
+                    onkeydown="if(event.key==='Enter') ServerView._fetchWorkshopItem()" />
+                <button class="btn btn-primary" onclick="ServerView._fetchWorkshopItem()">
+                    ${Lang.t('sv.workshop.search_btn')}
+                </button>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">
+                💡 Depuis Steam : page du mod → barre d'adresse → copiez le lien complet ou juste le numéro
+            </div>
+        </div>
+        <div id="sv-workshop-result"></div>`;
+    },
+
+    async _fetchWorkshopItem() {
+        const input = document.getElementById('sv-workshop-url')?.value?.trim();
+        if (!input) return;
+
+        const el = document.getElementById('sv-workshop-result');
+        if (!el) return;
+        el.innerHTML = `<div style="color:var(--text-muted)">${Lang.t('sv.workshop.searching')}</div>`;
+
+        const encoded = encodeURIComponent(input);
+        const r = await Auth.apiCall(`/api/mods/steam/item/${encoded}`);
+        if (!r || !r.ok) {
+            const err = r ? await r.json().catch(()=>({})) : {};
+            el.innerHTML = `<div style="color:#ef4444">❌ ${err.detail || Lang.t('sv.workshop.invalid_id')}</div>`;
+            return;
+        }
+
+        const item = await r.json();
+        const subs = item.subscriptions > 1000000
+            ? `${(item.subscriptions/1000000).toFixed(1)}M`
+            : item.subscriptions > 1000
+            ? `${Math.round(item.subscriptions/1000)}k`
+            : item.subscriptions;
+
+        const tags = (item.tags || []).slice(0,5)
+            .map(t => `<span style="font-size:10px;padding:1px 6px;background:var(--bg-primary);border-radius:4px;margin-right:3px;">${t}</span>`)
+            .join('');
+
+        el.innerHTML = `
+        <div style="background:var(--bg-secondary);border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,0.06);">
+            <div style="display:flex;gap:14px;padding:16px;align-items:flex-start;">
+                ${item.preview_url
+                    ? `<img src="${item.preview_url}" style="width:80px;height:80px;border-radius:8px;object-fit:cover;flex-shrink:0;" onerror="this.style.display='none'" />`
+                    : `<div style="width:80px;height:80px;border-radius:8px;background:var(--bg-primary);display:flex;align-items:center;justify-content:center;font-size:32px;flex-shrink:0;">🎮</div>`
+                }
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:16px;font-weight:700;margin-bottom:4px;">${item.title || 'Mod Workshop'}</div>
+                    <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">${item.description || ''}</div>
+                    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;margin-bottom:6px;">
+                        ${item.file_size_mb ? `<span style="color:var(--text-muted);">📦 ${item.file_size_mb} Mo</span>` : ''}
+                        <span style="color:var(--text-muted);">⭐ ${subs} ${Lang.t('sv.workshop.subscriptions')}</span>
+                        <a href="${item.url}" target="_blank" style="color:var(--accent-blue);font-size:11px;">🔗 Voir sur Steam</a>
+                    </div>
+                    <div style="margin-bottom:8px;">${tags}</div>
+                    <div style="font-size:11px;color:var(--text-muted);">ID: <code style="background:var(--bg-primary);padding:1px 5px;border-radius:3px;">${item.id}</code></div>
+                </div>
+            </div>
+            <div style="padding:12px 16px;border-top:1px solid rgba(255,255,255,0.05);display:flex;align-items:center;gap:12px;">
+                <button class="btn btn-primary" id="sv-workshop-install-btn"
+                    onclick="ServerView._installWorkshopMod('${item.id}', '${(item.title||'').replace(/'/g,"\\'")}')"
+                    style="min-width:130px;">
+                    ${Lang.t('sv.workshop.install_btn')}
+                </button>
+                <span id="sv-workshop-install-msg" style="font-size:13px;"></span>
+            </div>
+        </div>`;
+    },
+
+    async _installWorkshopMod(workshopId, name) {
+        const btn = document.getElementById('sv-workshop-install-btn');
+        const msg = document.getElementById('sv-workshop-install-msg');
+        if (btn) btn.disabled = true;
+        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.workshop.installing'); }
+
+        const r = await Auth.apiCall('/api/mods/steam/install', {
+            method: 'POST',
+            body: JSON.stringify({ server_id: this.serverId, workshop_id: workshopId })
+        });
+
+        if (r && r.ok) {
+            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${name} — ${Lang.t('sv.workshop.installed')}`; }
+            if (typeof Toast !== 'undefined') Toast.success(`✅ ${name} installé !`);
+        } else {
+            const err = r ? await r.json().catch(()=>({})) : {};
+            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+        }
+        if (btn) btn.disabled = false;
+    },
+
+    async _loadWorkshopMods() {
+        const el = document.getElementById('sv-workshop-installed');
+        if (!el) return;
+
+        const r = await Auth.apiCall(`/api/mods/steam/server/${this.serverId}`);
+        if (!r || !r.ok) {
+            el.innerHTML = `<div style="color:#ef4444">❌ ${Lang.t('common.error')}</div>`;
+            return;
+        }
+
+        const data = await r.json();
+        const mods = data.mods || [];
+
+        if (mods.length === 0) {
+            el.innerHTML = `
+            <div style="text-align:center;padding:40px;color:var(--text-muted);">
+                <div style="font-size:40px;margin-bottom:12px;">🎮</div>
+                <div style="font-size:14px;">${Lang.t('sv.workshop.no_mods')}</div>
+                <div style="font-size:12px;margin-top:6px;">${Lang.t('sv.workshop.no_mods_hint')}</div>
+            </div>`;
+            return;
+        }
+
+        el.innerHTML = `<p style="color:var(--text-muted);font-size:12px;margin-bottom:10px;">${mods.length} ${Lang.t('sv.workshop.installed_list')}</p>` +
+            mods.map(m => `
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;">
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <span style="font-size:24px;">🎮</span>
+                    <div>
+                        <div style="font-weight:600;font-size:13px;">Workshop ID: ${m.workshop_id}</div>
+                        <div style="font-size:11px;color:var(--text-muted);">${m.size_mb} Mo</div>
+                    </div>
+                </div>
+                <div style="display:flex;gap:6px;">
+                    <a href="https://steamcommunity.com/sharedfiles/filedetails/?id=${m.workshop_id}" target="_blank"
+                        class="btn btn-sm btn-secondary" title="Voir sur Steam">🔗</a>
+                    <button class="btn btn-sm btn-danger"
+                        onclick="ServerView._removeWorkshopMod('${m.workshop_id}')">
+                        🗑️ ${Lang.t('sv.mod.remove')}
+                    </button>
+                </div>
+            </div>`).join('');
+    },
+
+    async _removeWorkshopMod(workshopId) {
+        if (!confirm(`${Lang.t('sv.workshop.remove_confirm')} (ID: ${workshopId}) ?`)) return;
+        const r = await Auth.apiCall(`/api/mods/steam/server/${this.serverId}/${workshopId}`, { method: 'DELETE' });
+        if (r && r.ok) {
+            if (typeof Toast !== 'undefined') Toast.success(`🗑️ Mod ${workshopId} supprimé`);
+        } else {
+            const err = r ? await r.json().catch(()=>({})) : {};
+            if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error'));
+        }
+        this._loadWorkshopMods();
+    },
+
+    // ============================================================
+    // FIN STEAM WORKSHOP
+    // ============================================================
 
     _modsTab() {
         const st = (this.serverData?.server_type || 'VANILLA').toUpperCase();

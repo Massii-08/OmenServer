@@ -69,6 +69,9 @@ class ServerResponse(BaseModel):
     player_max: int = 20
     jvm_flags: str = ""
     ready: bool = False  # True seulement quand le jeu répond (pas juste Docker running)
+    owner_id: Optional[int] = None
+    steam_app_id: Optional[int] = None    # App ID Steam (jeux Steam uniquement)
+    mod_source: Optional[str] = None      # "steam", "curseforge", "modrinth" ou None
 
     class Config:
         from_attributes = True
@@ -144,6 +147,13 @@ def list_servers(
 
         # Construire la réponse avec player_count, ready et access_level
         resp = ServerResponse.model_validate(server, from_attributes=True)
+
+        # Enrichir avec les infos Steam depuis games_config
+        game_cfg = get_game_config(server.game_type)
+        resp.steam_app_id = game_cfg.get("steam_app_id")
+        resp.mod_source = game_cfg.get("mod_source")
+        resp.owner_id = server.owner_id
+
         if server.status == "running" and server.game_type in ("minecraft", "minecraft_bedrock"):
             ping = docker_manager.mc_server_ping(server.port)
             if ping:
@@ -259,6 +269,13 @@ def get_server(
         db.commit()
 
     resp = ServerResponse.model_validate(server, from_attributes=True)
+
+    # Enrichir avec les infos Steam depuis games_config
+    game_cfg = get_game_config(server.game_type)
+    resp.steam_app_id = game_cfg.get("steam_app_id")
+    resp.mod_source = game_cfg.get("mod_source")
+    resp.owner_id = server.owner_id
+
     if server.status == "running" and server.game_type in ("minecraft", "minecraft_bedrock"):
         ping = docker_manager.mc_server_ping(server.port)
         if ping:

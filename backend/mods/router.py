@@ -1,12 +1,18 @@
 """
 Routes API pour la gestion des mods.
 
-Routes:
+Routes CurseForge:
     GET    /api/mods/search              → Rechercher sur CurseForge
     GET    /api/mods/{mod_id}/files       → Fichiers dispo pour un mod
     POST   /api/mods/install              → Télécharger + installer un mod
     GET    /api/mods/server/{server_id}   → Mods installés sur un serveur
     DELETE /api/mods/server/{server_id}/{filename} → Supprimer un mod
+
+Routes Steam Workshop:
+    GET    /api/mods/steam/item/{workshop_id}         → Détails d'un item Workshop
+    POST   /api/mods/steam/install                    → Installer un mod via SteamCMD
+    GET    /api/mods/steam/server/{server_id}         → Mods Workshop installés
+    DELETE /api/mods/steam/server/{server_id}/{wid}  → Supprimer un mod Workshop
 """
 
 import os
@@ -22,6 +28,8 @@ from backend.auth.utils import get_current_user
 from backend.auth.models import User
 from backend.game_server.models import GameServer
 from backend.mods import curseforge
+from backend.mods import steam_workshop
+from backend.game_server.games_config import get_game_config
 from backend.config import settings
 
 logger = logging.getLogger("omenserver")
@@ -213,4 +221,133 @@ def remove_datapack(
         _remove(server.docker_id, filename)
         return {"message": f"✅ Datapack '{filename}' supprimé"}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────────
+# Routes Steam Workshop
+# ─────────────────────────────────────────────
+
+class InstallWorkshopRequest(BaseModel):
+    """Données pour installer un mod Steam Workshop."""
+    server_id: int
+    workshop_id: str
+
+
+@router.get("/steam/item/{workshop_id}")
+def get_workshop_item(
+    workshop_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Récupère les détails d'un item Steam Workshop via l'API publique Steam."""
+    # Extraire l'ID depuis une URL éventuelle
+    parsed_id = steam_workshop.parse_workshop_id(workshop_id)
+    if not parsed_id:
+        raise HTTPException(status_code=400, detail="ID ou URL Workshop invalide.")
+
+    try:
+        item = steam_workshop.get_workshop_item_details(parsed_id)
+        return item
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/steam/install")
+def install_workshop_mod(
+    request: InstallWorkshopRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Installe un mod Steam Workshop via SteamCMD dans le conteneur Docker du serveur."""
+    server = db.query(GameServer).filter(GameServer.id == request.server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Serveur non trouvé.")
+    if not server.docker_id:
+        raise HTTPException(status_code=400, detail="Serveur non démarré (pas de conteneur Docker).")
+
+    # Récupérer le steam_app_id depuis la config du jeu
+    game_cfg = get_game_config(server.game_type)
+    app_id = game_cfg.get("steam_app_id")
+    if not app_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Le jeu '{server.game_type}' ne supporte pas le Steam Workshop."
+        )
+
+    # Valider l'ID Workshop
+    parsed_id = steam_workshop.parse_workshop_id(request.workshop_id)
+    if not parsed_id:
+        raise HTTPException(status_code=400, detail="ID ou URL Workshop invalide.")
+
+    try:
+        result = steam_workshop.install_workshop_mod(
+            container_id=server.docker_id,
+            app_id=app_id,
+            workshop_id=parsed_id,
+        )
+        return result
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/steam/server/{server_id}")
+def list_workshop_mods(
+    server_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Liste les mods Steam Workshop installés sur un serveur."""
+    server = db.query(GameServer).filter(GameServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Serveur non trouvé.")
+    if not server.docker_id:
+        return {"mods": [], "count": 0}
+
+    game_cfg = get_game_config(server.game_type)
+    app_id = game_cfg.get("steam_app_id")
+    if not app_id:
+        return {"mods": [], "count": 0}
+
+    try:
+        mods = steam_workshop.list_installed_workshop_mods(
+            container_id=server.docker_id,
+            app_id=app_id,
+        )
+        return {"mods": mods, "count": len(mods)}
+    except Exception as e:
+        logger.warning(f"Erreur liste Workshop mods: {e}")
+        return {"mods": [], "count": 0}
+
+
+@router.delete("/steam/server/{server_id}/{workshop_id}")
+def remove_workshop_mod(
+    server_id: int,
+    workshop_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Supprime un mod Steam Workshop d'un serveur."""
+    server = db.query(GameServer).filter(GameServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Serveur non trouvé.")
+    if not server.docker_id:
+        raise HTTPException(status_code=400, detail="Pas de conteneur Docker actif.")
+
+    game_cfg = get_game_config(server.game_type)
+    app_id = game_cfg.get("steam_app_id")
+    if not app_id:
+        raise HTTPException(status_code=400, detail="Ce jeu ne supporte pas le Steam Workshop.")
+
+    try:
+        steam_workshop.remove_workshop_mod(
+            container_id=server.docker_id,
+            app_id=app_id,
+            workshop_id=workshop_id,
+        )
+        return {"message": f"✅ Mod Workshop {workshop_id} supprimé."}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
