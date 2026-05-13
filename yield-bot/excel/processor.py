@@ -14,14 +14,15 @@ from typing import List, Dict, Optional, Tuple
 import re
 
 import openpyxl
-from openpyxl.styles import PatternFill, Font
+from openpyxl.styles import PatternFill, Font, Alignment
 
 from scraper.models import BondData
 
 logger = logging.getLogger(__name__)
 
-# Sfondo blu per le celle non aggiornate (visibile in dark mode)
+# Sfondo blu per le righe con errori da controllare
 BLUE_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+NO_FILL = PatternFill(fill_type=None)  # Per rimuovere il blu
 
 # Fonts pour la coloration prix (seuil configurable, défaut 101)
 RED_FONT = Font(color="FF0000")    # Prix < seuil → rouge (bonne affaire)
@@ -29,6 +30,47 @@ BLACK_FONT = Font(color="000000")  # Prix >= seuil → noir (au-dessus du pair)
 
 # Seuil par défaut pour la coloration
 DEFAULT_PRICE_THRESHOLD = 101
+
+# Alignement centré (comme les lignes existantes)
+CENTER_ALIGN = Alignment(horizontal='center', vertical='center')
+
+# Mois italiens pour le format date (es: "mag.15", "feb.23")
+ITALIAN_MONTHS = {
+    1: 'gen', 2: 'feb', 3: 'mar', 4: 'apr', 5: 'mag', 6: 'giu',
+    7: 'lug', 8: 'ago', 9: 'set', 10: 'ott', 11: 'nov', 12: 'dic',
+}
+
+
+def _format_date_italian(d) -> str:
+    """Formate une date en format italien: 'mag.15', 'feb.23', etc."""
+    if isinstance(d, str):
+        # Tenter de parser DD.MM.YYYY ou YYYY-MM-DD
+        for fmt in ('%d.%m.%Y', '%Y-%m-%d', '%d/%m/%Y'):
+            try:
+                d = datetime.strptime(d, fmt).date()
+                break
+            except ValueError:
+                continue
+        else:
+            return d  # Retourner tel quel si non parsable
+    if isinstance(d, (date, datetime)):
+        month_abbr = ITALIAN_MONTHS.get(d.month, str(d.month))
+        year_short = str(d.year)[-2:]  # 2025 → "25"
+        return f"{month_abbr}.{year_short}"
+    return str(d)
+
+
+def _format_as_k(value) -> str:
+    """Formate un nombre en notation 'Xk': 2000→'2k', 500000000→'500,000k'."""
+    try:
+        num = float(value)
+        k_value = int(num / 1000)
+        if k_value == 0:
+            return str(int(num))  # Nombres < 1000 : afficher tel quel
+        # Formater avec séparateur de milliers + 'k'
+        return f"{k_value:,}k"
+    except (ValueError, TypeError):
+        return str(value)
 
 
 # Mappatura colonne per i fogli Euro, USD, GBP (stessa struttura)
@@ -153,21 +195,23 @@ class BondExcelProcessor:
     def update_yield(self, sheet_name: str, row: int, new_yield: float):
         """
         Aggiorna il yield di un'obbligazione specifica.
-        Formato: percentuale arrotondata (es: 4.37% → 0.0437 con formato 0.00%)
+        Formato: percentuale arrotondata a 2 decimali (es: 4.35%)
         """
         ws = self.wb[sheet_name]
         cols = self._get_columns(sheet_name)
         
         cell = ws[f"{cols['yield']}{row}"]
         old_value = cell.value
-        cell.value = round(new_yield, 6)
+        # Arrotondare a 2 cifre decimali (es: 0.043527 → 0.0435)
+        cell.value = round(new_yield, 4)
         
-        # Formatta come percentuale arrotondata (es: 4.37%)
-        cell.number_format = '0.0000%'
+        # Formatta come percentuale a 2 decimali (es: 4.35%)
+        cell.number_format = '0.00%'
+        cell.alignment = CENTER_ALIGN
         
         logger.info(
             f"  Yield aggiornato: {sheet_name} riga {row}: "
-            f"{old_value} → {new_yield:.4%}"
+            f"{old_value} → {new_yield:.2%}"
         )
     
     def update_price(self, sheet_name: str, row: int, new_price: float):
@@ -185,6 +229,7 @@ class BondExcelProcessor:
         cell = ws[f"{cols['price']}{row}"]
         old_value = cell.value
         cell.value = new_price
+        cell.alignment = CENTER_ALIGN
         
         logger.info(
             f"  Prezzo aggiornato: {sheet_name} riga {row}: "
@@ -199,6 +244,7 @@ class BondExcelProcessor:
         cell = ws[f"{cols['rating']}{row}"]
         if cell.value in (None, '?', '? '):
             cell.value = rating
+            cell.alignment = CENTER_ALIGN
             logger.info(f"  Rating aggiornato: {sheet_name} riga {row}: {rating}")
     
     def update_bond_full(self, sheet_name: str, row: int, bond_data: BondData):
@@ -234,34 +280,45 @@ class BondExcelProcessor:
         """
         Remplit les cellules vides avec les données trouvées sur Deutsche Börse.
         Ne touche PAS au rating (pas disponible sur la bourse).
+        Formate les valeurs comme les lignes existantes :
+          - Date : format italien (mag.15, feb.23)
+          - Volume : notation Xk (500,000k)
+          - Min Piece : notation Xk (2k, 10k)
+          - Alignement centré
         """
         ws = self.wb[sheet_name]
         cols = self._get_columns(sheet_name)
         
-        # --- Emission (date d'émission) ---
+        # --- Emission (date d'émission) — format italien : "mag.15" ---
         emission_cell = ws[f"{cols['emission']}{row}"]
         if emission_cell.value is None and bond_data.issue_date is not None:
-            emission_cell.value = bond_data.issue_date
-            emission_cell.number_format = 'DD.MM.YYYY'
-            logger.info(f"  📝 Emission remplie: {sheet_name}:{row} → {bond_data.issue_date}")
+            formatted_date = _format_date_italian(bond_data.issue_date)
+            emission_cell.value = formatted_date
+            emission_cell.alignment = CENTER_ALIGN
+            logger.info(f"  📝 Emission remplie: {sheet_name}:{row} → {formatted_date}")
         
-        # --- Volume ---
+        # --- Volume — format Xk : "500,000k" ---
         volume_cell = ws[f"{cols['volume']}{row}"]
         if volume_cell.value is None and bond_data.volume is not None:
-            volume_cell.value = bond_data.volume
-            logger.info(f"  📝 Volume rempli: {sheet_name}:{row} → {bond_data.volume}")
+            formatted_vol = _format_as_k(bond_data.volume)
+            volume_cell.value = formatted_vol
+            volume_cell.alignment = CENTER_ALIGN
+            logger.info(f"  📝 Volume rempli: {sheet_name}:{row} → {formatted_vol}")
         
-        # --- Min Piece ---
+        # --- Min Piece — format Xk : "2k", "10k" ---
         min_piece_cell = ws[f"{cols['min_piece']}{row}"]
         if min_piece_cell.value is None and bond_data.min_piece is not None:
-            min_piece_cell.value = bond_data.min_piece
-            logger.info(f"  📝 Min piece rempli: {sheet_name}:{row} → {bond_data.min_piece}")
+            formatted_mp = _format_as_k(bond_data.min_piece)
+            min_piece_cell.value = formatted_mp
+            min_piece_cell.alignment = CENTER_ALIGN
+            logger.info(f"  📝 Min piece rempli: {sheet_name}:{row} → {formatted_mp}")
         
         # --- Valuta (seulement pour le foglio Vale) ---
         if sheet_name == 'Vale' and 'currency' in cols:
             currency_cell = ws[f"{cols['currency']}{row}"]
             if currency_cell.value is None and bond_data.currency:
                 currency_cell.value = bond_data.currency
+                currency_cell.alignment = CENTER_ALIGN
                 logger.info(f"  📝 Valuta remplie: {sheet_name}:{row} → {bond_data.currency}")
     
     def update_name(self, sheet_name: str, row: int, bond_data: BondData):
@@ -405,19 +462,41 @@ class BondExcelProcessor:
         color_name = 'rouge' if price < threshold else 'noir'
         logger.info(f"  🎨 Couleur {color_name}: {sheet_name}:{row} (prix={price}, seuil={threshold})")
     
-    def mark_blue_dot(self, sheet_name: str, row: int):
+    def apply_blue_row(self, sheet_name: str, row: int):
         """
-        Mette un pallino blu alla fine della riga (colonna J o K)
-        per indicare che il bot non ha potuto aggiornare questa riga.
+        Applique un fond bleu sur toute la ligne pour indiquer
+        que l'ISIN n'a pas été trouvé (erreur à contrôler).
         """
         ws = self.wb[sheet_name]
         
-        dot_col = 'K' if sheet_name == 'Vale' else 'J'
-        cell = ws[f"{dot_col}{row}"]
-        cell.value = "●"
-        cell.fill = BLUE_FILL
+        all_cols = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']
+        if sheet_name == 'Vale':
+            all_cols.append('J')
         
-        logger.info(f"  🔵 {sheet_name}:{row} pallino blu")
+        for col in all_cols:
+            ws[f"{col}{row}"].fill = BLUE_FILL
+        
+        logger.info(f"  🔵 {sheet_name}:{row} fond bleu (ISIN non trouvé)")
+    
+    def clear_blue_row(self, sheet_name: str, row: int):
+        """
+        Enlève le fond bleu de toute la ligne quand tout est OK
+        (ISIN trouvé et yield calculé correctement).
+        """
+        ws = self.wb[sheet_name]
+        
+        all_cols = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']
+        if sheet_name == 'Vale':
+            all_cols.append('J')
+        
+        for col in all_cols:
+            ws[f"{col}{row}"].fill = NO_FILL
+        
+        logger.info(f"  ✅ {sheet_name}:{row} fond bleu enlevé (tout OK)")
+    
+    def mark_blue_dot(self, sheet_name: str, row: int):
+        """Alias pour apply_blue_row (rétrocompatibilité)."""
+        self.apply_blue_row(sheet_name, row)
     
     def save(self, backup: bool = True) -> str:
         """

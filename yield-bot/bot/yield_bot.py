@@ -222,6 +222,8 @@ class YieldBot:
                     # Usa il prezzo esistente nel file
                     current_price = bond_info.get('price')
                     scrape_ok = False
+                    # Fond bleu = ISIN non trouvé, à contrôler
+                    self.processor.apply_blue_row(sheet, row)
                 else:
                     current_price = market_data.current_price or bond_info.get('price')
                     scrape_ok = True
@@ -309,6 +311,10 @@ class YieldBot:
                 # Couleur aussi pour le mode sans scraping
                 if not market_data or market_data.error:
                     self.processor.apply_price_color(sheet, row, price_float)
+                
+                # Si tout a réussi (scraping OK + yield calculé) → enlever le bleu
+                if update_price and scrape_ok:
+                    self.processor.clear_blue_row(sheet, row)
                 
                 self.stats['updated'] += 1
                 return 'scrape_failed' if (update_price and not scrape_ok) else 'ok'

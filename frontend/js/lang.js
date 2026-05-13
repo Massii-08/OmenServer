@@ -318,6 +318,9 @@ const Lang = {
             'yield.logs': 'Logs',
             'yield.reconnected': '🔄 Reconnecté au calcul en cours !',
             'yield.recovered': '✅ Résultat du dernier calcul récupéré',
+            'yield.threshold_label': 'Seuil coloration prix',
+            'yield.threshold_below': 'Rouge si prix',
+            'yield.threshold_above': 'Noir si prix',
 
             // Settings
             'settings.title': '⚙️ Paramètres',
@@ -1181,6 +1184,9 @@ const Lang = {
             'yield.logs': 'Logs',
             'yield.reconnected': '🔄 Reconnected to running calculation!',
             'yield.recovered': '✅ Last calculation result recovered',
+            'yield.threshold_label': 'Price color threshold',
+            'yield.threshold_below': 'Red if price',
+            'yield.threshold_above': 'Black if price',
 
             // Settings
             'settings.title': '⚙️ Settings',
@@ -2044,6 +2050,9 @@ const Lang = {
             'yield.logs': 'Log',
             'yield.reconnected': '🔄 Riconnesso al calcolo in corso!',
             'yield.recovered': '✅ Risultato dell\'ultimo calcolo recuperato',
+            'yield.threshold_label': 'Soglia colore prezzo',
+            'yield.threshold_below': 'Rosso se prezzo',
+            'yield.threshold_above': 'Nero se prezzo',
 
             // Settings
             'settings.title': '⚙️ Impostazioni',
