@@ -39,13 +39,18 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/bots/yield", tags=["Yield Bot"])
 
-# Dossier du bot yield (configurable via .env)
-_home = Path.home()
+# Dossier du bot yield — par défaut dans le repo (synced via git pull)
+_project_root = Path(__file__).resolve().parent.parent.parent
 YIELD_BOT_DIR = Path(os.environ.get(
     "YIELD_BOT_DIR",
-    str(_home / "omenserver" / "bots" / "yield-bot")
+    str(_project_root / "yield-bot")
 ))
-UPLOADS_DIR = YIELD_BOT_DIR / "uploads"
+# Uploads dans un dossier séparé (données, pas du code)
+_home = Path.home()
+UPLOADS_DIR = Path(os.environ.get(
+    "YIELD_UPLOADS_DIR",
+    str(_home / "omenserver" / "bots" / "yield-uploads")
+))
 
 # Stockage des jobs en mémoire
 _yield_jobs: dict[str, dict] = {}

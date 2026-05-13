@@ -10,3 +10,7 @@ mdpdf.log
 cloudflared
 *.HEIC
 *.jpg
+
+# Yield Bot — fichiers runtime (pas du code)
+yield-bot/bot/.rate_limit.json
+yield-bot/uploads/
