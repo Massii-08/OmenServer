@@ -222,8 +222,8 @@ class YieldBot:
                     # Usa il prezzo esistente nel file
                     current_price = bond_info.get('price')
                     scrape_ok = False
-                    # Fond bleu = ISIN non trouvé, à contrôler
-                    self.processor.apply_blue_row(sheet, row)
+                    # Pallino rosso = ISIN non trouvé / erreur scraping
+                    self.processor.mark_red_dot(sheet, row)
                 else:
                     current_price = market_data.current_price or bond_info.get('price')
                     scrape_ok = True
@@ -232,7 +232,7 @@ class YieldBot:
             
             if not current_price:
                 logger.warning(f"   ⚠️ Nessun prezzo disponibile")
-                self.processor.mark_blue_dot(sheet, row)
+                self.processor.mark_orange_dot(sheet, row)
                 self.stats['skipped'] += 1
                 return 'skipped'
             
@@ -241,7 +241,7 @@ class YieldBot:
                 price_float = float(current_price)
             except (ValueError, TypeError):
                 logger.warning(f"   ⚠️ Prezzo non numerico: '{current_price}'")
-                self.processor.mark_blue_dot(sheet, row)
+                self.processor.mark_orange_dot(sheet, row)
                 self.stats['skipped'] += 1
                 return 'skipped'
             
@@ -301,7 +301,7 @@ class YieldBot:
                 
                 else:
                     logger.warning(f"   ⚠️ Dati insufficienti (cedola={coupon}, scadenza={maturity})")
-                    self.processor.mark_blue_dot(sheet, row)
+                    self.processor.mark_orange_dot(sheet, row)
                     self.stats['skipped'] += 1
                     return 'skipped'
                 
@@ -312,9 +312,9 @@ class YieldBot:
                 if not market_data or market_data.error:
                     self.processor.apply_price_color(sheet, row, price_float)
                 
-                # Si tout a réussi (scraping OK + yield calculé) → enlever le bleu
+                # Si tout a réussi (scraping OK + yield calculé) → enlever le pallino
                 if update_price and scrape_ok:
-                    self.processor.clear_blue_row(sheet, row)
+                    self.processor.clear_dot(sheet, row)
                 
                 self.stats['updated'] += 1
                 return 'scrape_failed' if (update_price and not scrape_ok) else 'ok'
@@ -345,7 +345,7 @@ class YieldBot:
         # Controlla prezzo
         if not price:
             logger.warning(f"    ⚠️ Nessun prezzo")
-            self.processor.mark_blue_dot(sheet, row)
+            self.processor.mark_orange_dot(sheet, row)
             self.stats['skipped'] += 1
             return
         
@@ -353,7 +353,7 @@ class YieldBot:
             price_float = float(price)
         except (ValueError, TypeError):
             logger.warning(f"    ⚠️ Prezzo non numerico: '{price}'")
-            self.processor.mark_blue_dot(sheet, row)
+            self.processor.mark_orange_dot(sheet, row)
             self.stats['skipped'] += 1
             return
         
@@ -389,7 +389,7 @@ class YieldBot:
             
             else:
                 logger.warning(f"    ⚠️ Dati insufficienti (cedola={coupon}, scadenza={maturity})")
-                self.processor.mark_blue_dot(sheet, row)
+                self.processor.mark_orange_dot(sheet, row)
                 self.stats['skipped'] += 1
                 return
             

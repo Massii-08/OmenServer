@@ -462,38 +462,52 @@ class BondExcelProcessor:
         color_name = 'rouge' if price < threshold else 'noir'
         logger.info(f"  🎨 Couleur {color_name}: {sheet_name}:{row} (prix={price}, seuil={threshold})")
     
-    def apply_blue_row(self, sheet_name: str, row: int):
+    def mark_orange_dot(self, sheet_name: str, row: int):
         """
-        Mette un pallino blu (●) alla fine della riga (colonna J o K)
-        per indicare che l'ISIN non è stato trovato (errore da controllare).
+        Pallino arancione (●) → bond sauté (données insuffisantes).
+        Colonne J (ou K pour Vale).
         """
         ws = self.wb[sheet_name]
-        
         dot_col = 'K' if sheet_name == 'Vale' else 'J'
         cell = ws[f"{dot_col}{row}"]
         cell.value = "●"
-        cell.fill = BLUE_FILL
+        cell.fill = PatternFill(start_color="FF8C00", end_color="FF8C00", fill_type="solid")
+        cell.font = Font(color="FF8C00")
         cell.alignment = CENTER_ALIGN
-        
-        logger.info(f"  🔵 {sheet_name}:{row} pallino blu (ISIN non trouvé)")
+        logger.info(f"  🟠 {sheet_name}:{row} pallino arancione (skip)")
     
-    def clear_blue_row(self, sheet_name: str, row: int):
+    def mark_red_dot(self, sheet_name: str, row: int):
         """
-        Enlève le pallino blu quand tout est OK
-        (ISIN trouvé et yield calculé correctement).
+        Pallino rosso (●) → erreur (ISIN non trouvé, scraping échoué).
+        Colonne J (ou K pour Vale).
         """
         ws = self.wb[sheet_name]
-        
+        dot_col = 'K' if sheet_name == 'Vale' else 'J'
+        cell = ws[f"{dot_col}{row}"]
+        cell.value = "●"
+        cell.fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
+        cell.font = Font(color="FF0000")
+        cell.alignment = CENTER_ALIGN
+        logger.info(f"  🔴 {sheet_name}:{row} pallino rosso (erreur)")
+    
+    def clear_dot(self, sheet_name: str, row: int):
+        """
+        Enlève le pallino (orange ou rouge) quand tout est OK.
+        """
+        ws = self.wb[sheet_name]
         dot_col = 'K' if sheet_name == 'Vale' else 'J'
         cell = ws[f"{dot_col}{row}"]
         cell.value = None
         cell.fill = NO_FILL
-        
-        logger.info(f"  ✅ {sheet_name}:{row} pallino blu enlevé (tout OK)")
+        logger.info(f"  ✅ {sheet_name}:{row} pallino enlevé (tout OK)")
     
+    # Rétrocompatibilité
     def mark_blue_dot(self, sheet_name: str, row: int):
-        """Alias pour apply_blue_row (rétrocompatibilité)."""
-        self.apply_blue_row(sheet_name, row)
+        self.mark_orange_dot(sheet_name, row)
+    def apply_blue_row(self, sheet_name: str, row: int):
+        self.mark_red_dot(sheet_name, row)
+    def clear_blue_row(self, sheet_name: str, row: int):
+        self.clear_dot(sheet_name, row)
     
     def save(self, backup: bool = True) -> str:
         """
