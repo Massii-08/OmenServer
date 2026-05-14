@@ -43,6 +43,7 @@ class GameServer(Base):
     jvm_flags = Column(String(500), default="")  # Flags JVM personnalisés
     status = Column(String(20), default="stopped")
     connect_alias = Column(String(100), nullable=True)  # Alias de connexion (remplace l'IP réelle)
+    sftp_password = Column(String(50), nullable=True)  # Mot de passe SFTP auto-généré
     created_at = Column(DateTime, default=datetime.utcnow)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Créateur du serveur
 

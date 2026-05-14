@@ -231,6 +231,7 @@ def create_server(
         raise HTTPException(status_code=500, detail=str(e))
 
     # Sauvegarder en base de données avec owner_id
+    from backend.game_server.sftp_manager import generate_sftp_password, rebuild_sftp_container
     server = GameServer(
         name=request.name,
         game_type=request.game_type,
@@ -241,10 +242,17 @@ def create_server(
         docker_id=result["docker_id"],
         status="stopped",
         owner_id=current_user.id,
+        sftp_password=generate_sftp_password(),
     )
     db.add(server)
     db.commit()
     db.refresh(server)
+
+    # Recréer le conteneur SFTP avec le nouveau serveur
+    try:
+        rebuild_sftp_container(db)
+    except Exception as e:
+        logger.warning(f"SFTP rebuild échoué (non-bloquant): {e}")
 
     return server
 

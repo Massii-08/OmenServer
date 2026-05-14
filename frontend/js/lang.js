@@ -642,6 +642,10 @@ const Lang = {
             'sv.acc.password': 'Mot de passe',
             'sv.acc.connect_winscp': 'Se connecter avec WinSCP',
             'sv.acc.copy_creds': '📋 Copier les identifiants',
+            'sv.acc.reset_pw': 'Nouveau mdp',
+            'sv.acc.reset_confirm': 'Régénérer le mot de passe SFTP ? Les anciens accès ne fonctionneront plus.',
+            'sv.acc.reset_ok': '✅ Mot de passe SFTP régénéré !',
+            'sv.acc.copied': '📋 Identifiants copiés !',
             'sv.acc.winscp_hint': 'Cliquez sur "Se connecter" pour ouvrir directement WinSCP avec les bons paramètres.',
             'sv.acc.sftp_hint': 'Le service SFTP doit être configuré sur le serveur hôte (port 2222).',
 
@@ -1561,6 +1565,10 @@ const Lang = {
             'sv.acc.password': 'Password',
             'sv.acc.connect_winscp': 'Connect with WinSCP',
             'sv.acc.copy_creds': '📋 Copy credentials',
+            'sv.acc.reset_pw': 'New password',
+            'sv.acc.reset_confirm': 'Regenerate SFTP password? Old access will no longer work.',
+            'sv.acc.reset_ok': '✅ SFTP password regenerated!',
+            'sv.acc.copied': '📋 Credentials copied!',
             'sv.acc.winscp_hint': 'Click "Connect" to open WinSCP directly with the right settings.',
             'sv.acc.sftp_hint': 'The SFTP service must be configured on the host server (port 2222).',
 
@@ -2480,6 +2488,10 @@ const Lang = {
             'sv.acc.password': 'Password',
             'sv.acc.connect_winscp': 'Connetti con WinSCP',
             'sv.acc.copy_creds': '📋 Copia credenziali',
+            'sv.acc.reset_pw': 'Nuova password',
+            'sv.acc.reset_confirm': 'Rigenerare la password SFTP? I vecchi accessi non funzioneranno più.',
+            'sv.acc.reset_ok': '✅ Password SFTP rigenerata!',
+            'sv.acc.copied': '📋 Credenziali copiate!',
             'sv.acc.winscp_hint': 'Clicca "Connetti" per aprire WinSCP direttamente con i parametri corretti.',
             'sv.acc.sftp_hint': 'Il servizio SFTP deve essere configurato sul server host (porta 2222).',
 

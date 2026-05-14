@@ -268,17 +268,65 @@ def get_sftp_info(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Retourne les informations de connexion SFTP."""
+    """Retourne les informations de connexion SFTP avec les vrais credentials."""
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
 
     ip = docker_manager.get_local_ip()
-    username = f"server_{server.id}"
+    username = f"mc_{server.id}"
+
+    # Générer un mot de passe SFTP si pas encore fait
+    if not server.sftp_password:
+        from backend.game_server.sftp_manager import generate_sftp_password
+        server.sftp_password = generate_sftp_password()
+        db.commit()
+
     return {
         "host": ip,
-        "port": 22,
+        "port": 2222,
         "username": username,
-        "directory": f"/data/servers/{server.id}/",
-        "winscp_url": f"sftp://{username}@{ip}:22/",
+        "password": server.sftp_password,
+        "directory": "/data",
+        "winscp_url": f"sftp://{username}@{ip}:2222/",
     }
+
+
+@router.post("/{server_id}/sftp-reset")
+def reset_sftp_password(
+    server_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Régénère le mot de passe SFTP d'un serveur et recrée le conteneur SFTP."""
+    server = db.query(GameServer).filter(GameServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Serveur non trouvé")
+
+    # Vérifier que l'utilisateur est le propriétaire ou admin
+    if not current_user.is_admin and server.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Accès refusé")
+
+    from backend.game_server.sftp_manager import generate_sftp_password, rebuild_sftp_container
+    server.sftp_password = generate_sftp_password()
+    db.commit()
+
+    # Recréer le conteneur SFTP avec le nouveau mot de passe
+    result = rebuild_sftp_container(db)
+    logger.info(f"SFTP password reset pour serveur {server_id}: {result}")
+
+    return {
+        "message": "Mot de passe SFTP régénéré",
+        "new_password": server.sftp_password,
+        "sftp_status": result,
+    }
+
+
+@router.get("/sftp-status")
+def get_sftp_global_status(
+    current_user: User = Depends(get_current_user),
+):
+    """Retourne le statut global du conteneur SFTP."""
+    from backend.game_server.sftp_manager import get_sftp_status
+    return get_sftp_status()
+

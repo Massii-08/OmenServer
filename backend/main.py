@@ -183,6 +183,7 @@ async def startup_event():
             # RBAC : ownership des ressources
             ("game_servers", "owner_id", "INTEGER REFERENCES users(id)"),
             ("game_servers", "connect_alias", "VARCHAR(100)"),
+            ("game_servers", "sftp_password", "VARCHAR(50)"),
             ("bots", "owner_id", "INTEGER REFERENCES users(id)"),
             ("websites", "owner_id", "INTEGER REFERENCES users(id)"),
         ]
@@ -293,6 +294,14 @@ async def startup_event():
                     logger.info(f"🎮 {started} serveur(s) de jeu redémarré(s) automatiquement")
                 else:
                     logger.info(f"🎮 {len(servers)} serveur(s) de jeu vérifiés — tous OK")
+
+            # Démarrer/recréer le conteneur SFTP
+            try:
+                from backend.game_server.sftp_manager import rebuild_sftp_container
+                sftp_result = rebuild_sftp_container(db)
+                logger.info(f"📁 SFTP: {sftp_result.get('status', 'unknown')} ({sftp_result.get('users', 0)} utilisateurs)")
+            except Exception as e:
+                logger.warning(f"SFTP rebuild au démarrage échoué: {e}")
         finally:
             db.close()
     except Exception as e:
