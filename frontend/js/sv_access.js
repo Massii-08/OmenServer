@@ -76,7 +76,20 @@ const SvAccess = {
         try {
             const r = await Auth.apiCall(`/api/servers/${this._serverId}/sftp-info`);
             if (!r || !r.ok) {
-                el.innerHTML = `<div style="color:#e74c3c;">❌ ${Lang.t('common.error')}</div>`;
+                const ip = GameServer._serverIP || 'localhost';
+                const username = `mc_${this._serverId}`;
+                el.innerHTML = `
+                    <div style="padding:12px;background:rgba(245,158,11,0.1);border-radius:8px;border-left:3px solid #f59e0b;">
+                        <div style="font-weight:600;margin-bottom:6px;color:#f59e0b;">⚠️ ${Lang.t('sv.acc.sftp_not_ready') || 'Service SFTP en cours de configuration'}</div>
+                        <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
+                            ${Lang.t('sv.acc.sftp_not_ready_desc') || 'Le conteneur SFTP sera disponible après le prochain redémarrage du serveur.'}
+                        </div>
+                        <div style="font-size:12px;color:var(--text-muted);">
+                            <strong>${Lang.t('sv.acc.host')}</strong>: ${ip} · <strong>Port</strong>: 2222 · <strong>User</strong>: ${username}
+                        </div>
+                        <button class="btn btn-secondary btn-sm" onclick="SvAccess._loadSftpInfo()" style="margin-top:10px;">🔄 ${Lang.t('common.retry') || 'Réessayer'}</button>
+                    </div>
+                `;
                 return;
             }
             const info = await r.json();
@@ -140,7 +153,16 @@ const SvAccess = {
                 </p>
             `;
         } catch(e) {
-            el.innerHTML = `<div style="color:#e74c3c;">❌ Erreur SFTP</div>`;
+            const ip = GameServer._serverIP || 'localhost';
+            el.innerHTML = `
+                <div style="padding:12px;background:rgba(245,158,11,0.1);border-radius:8px;border-left:3px solid #f59e0b;">
+                    <div style="font-weight:600;margin-bottom:6px;color:#f59e0b;">⚠️ ${Lang.t('sv.acc.sftp_not_ready') || 'Service SFTP en cours de configuration'}</div>
+                    <div style="font-size:12px;color:var(--text-muted);">
+                        ${Lang.t('sv.acc.sftp_not_ready_desc') || 'Le conteneur SFTP sera disponible après le prochain redémarrage du serveur.'}
+                    </div>
+                    <button class="btn btn-secondary btn-sm" onclick="SvAccess._loadSftpInfo()" style="margin-top:10px;">🔄 ${Lang.t('common.retry') || 'Réessayer'}</button>
+                </div>
+            `;
         }
     },
 

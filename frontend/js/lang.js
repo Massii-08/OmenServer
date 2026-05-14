@@ -648,6 +648,8 @@ const Lang = {
             'sv.acc.copied': '📋 Identifiants copiés !',
             'sv.acc.winscp_hint': 'Cliquez sur "Se connecter" pour ouvrir directement WinSCP avec les bons paramètres.',
             'sv.acc.sftp_hint': 'Le service SFTP doit être configuré sur le serveur hôte (port 2222).',
+            'sv.acc.sftp_not_ready': 'Service SFTP en cours de configuration',
+            'sv.acc.sftp_not_ready_desc': 'Le conteneur SFTP sera disponible après le prochain redémarrage du serveur. Vous pouvez utiliser l\'onglet Fichiers en attendant.',
 
             // Files
             'sv.files.title': '📁 Fichiers',
@@ -1571,6 +1573,8 @@ const Lang = {
             'sv.acc.copied': '📋 Credentials copied!',
             'sv.acc.winscp_hint': 'Click "Connect" to open WinSCP directly with the right settings.',
             'sv.acc.sftp_hint': 'The SFTP service must be configured on the host server (port 2222).',
+            'sv.acc.sftp_not_ready': 'SFTP service being configured',
+            'sv.acc.sftp_not_ready_desc': 'The SFTP container will be available after the next server restart. You can use the Files tab in the meantime.',
 
             // Files
             'sv.files.title': '📁 Files',
@@ -2494,6 +2498,8 @@ const Lang = {
             'sv.acc.copied': '📋 Credenziali copiate!',
             'sv.acc.winscp_hint': 'Clicca "Connetti" per aprire WinSCP direttamente con i parametri corretti.',
             'sv.acc.sftp_hint': 'Il servizio SFTP deve essere configurato sul server host (porta 2222).',
+            'sv.acc.sftp_not_ready': 'Servizio SFTP in configurazione',
+            'sv.acc.sftp_not_ready_desc': 'Il contenitore SFTP sarà disponibile dopo il prossimo riavvio del server. Puoi usare la scheda File nel frattempo.',
 
             // Files
             'sv.files.title': '📁 File',
