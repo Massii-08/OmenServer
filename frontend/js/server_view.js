@@ -216,7 +216,8 @@ const ServerView = {
         const s = this.serverData;
         const isPending = !!this._pendingAction;
         const isRunning = !isPending && s.status === 'running';
-        const addr = `${s.connect_alias || ('srv-' + String(s.id).padStart(4,'0'))}:${s.port||25565}`;
+        const addr = `${GameServer._serverIP || 'localhost'}:${s.port||25565}`;
+        const displayAlias = s.connect_alias || null;
         const game = GameServer._games?.find(g => g.id === s.game_type);
         const gameIcon = game ? game.icon : '🎮';
         const gameName = game ? game.name : (s.game_type || 'minecraft');
@@ -297,15 +298,16 @@ const ServerView = {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
                 <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">📡 ${Lang.t('sv.connection')}</div>
-                <div style="display:flex;align-items:center;gap:8px;">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                     <span style="font-family:monospace;font-size:16px;font-weight:700;color:var(--accent-green);">${addr}</span>
                     <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText('${addr}');this.textContent='✅';setTimeout(()=>this.textContent='📋',1500)" style="padding:2px 8px;">📋</button>
+                    ${displayAlias ? `<span style="font-size:11px;color:var(--text-muted);background:var(--bg-primary);padding:2px 8px;border-radius:4px;">🏷️ ${displayAlias}</span>` : ''}
                     ${isOwnerOrAdmin ? `<button class="btn btn-secondary btn-sm" onclick="ServerView._editAlias()" style="padding:2px 8px;" title="${Lang.t('sv.edit_alias') || 'Modifier l\'alias'}">✏️</button>` : ''}
                 </div>
             </div>
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
                 <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">🏷️ Version</div>
-                <div style="font-size:16px;font-weight:600;">${(s.server_type||'VANILLA')} · v${s.version||'?'}</div>
+                <div style="font-size:16px;font-weight:600;" data-version-display>${(s.server_type||'VANILLA')} · v${s.version === 'LATEST' ? (this._resolvedVersion || 'latest') : (s.version||'?')}</div>
             </div>
         </div>
 
@@ -327,7 +329,7 @@ const ServerView = {
             <div style="color:var(--text-muted);font-size:12px;">⏳ ${Lang.t('common.loading')}</div>
         </div>
 
-        <!-- Mini-logs -->
+        ${canManage ? `<!-- Mini-logs (manage only) -->
         <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;margin-top:16px;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
                 <span style="font-size:13px;font-weight:600;">${Lang.t('sv.last_logs')}</span>
@@ -338,7 +340,7 @@ const ServerView = {
                 </div>
             </div>
             <div id="sv-dash-logs" style="background:#0d1117;color:#c9d1d9;font-family:'Courier New',monospace;font-size:11px;padding:10px;border-radius:6px;height:180px;overflow-y:auto;white-space:pre-wrap;line-height:1.5;">⏳ ${Lang.t('common.loading')}</div>
-        </div>`;
+        </div>` : ''}`;
     },
 
     _consoleTab() {
@@ -2023,8 +2025,15 @@ const ServerView = {
         const el = document.getElementById('sv-dash-docker');
         if (!el) return;
         
-        // Load mini-logs too
-        this._refreshDashLogs();
+        // Load mini-logs too (only if canManage)
+        const al = this.serverData?.access_level || 'view_only';
+        const canManage = al === 'owner' || al === 'manage';
+        if (canManage) this._refreshDashLogs();
+
+        // Resolve actual version if "LATEST"
+        if (this.serverData?.version === 'LATEST' && !this._resolvedVersion) {
+            this._resolveLatestVersion();
+        }
         
         try {
             const r = await Auth.apiCall(`/api/containers/${this.serverData?.docker_id}/stats`);
@@ -2063,6 +2072,37 @@ const ServerView = {
                 <div style="font-size:13px;font-weight:600;margin-bottom:8px;">🐳 Docker</div>
                 <div style="color:var(--text-muted);font-size:12px;">${Lang.t('sv.dash.docker_offline')}</div>`;
         }
+    },
+
+    async _resolveLatestVersion() {
+        try {
+            // Try to get version from server logs or properties
+            const r = await Auth.apiCall(`/api/servers/${this.serverId}/logs?tail=50`);
+            if (r && r.ok) {
+                const data = await r.json();
+                const logs = data.logs || '';
+                // Look for version pattern in Minecraft logs: "Starting minecraft server version X.Y.Z"
+                const match = logs.match(/version\s+(\d+\.\d+(?:\.\d+)?)/i);
+                if (match) {
+                    this._resolvedVersion = match[1];
+                    // Update the version display
+                    const verEl = document.querySelector('[data-version-display]');
+                    if (verEl) verEl.textContent = `${this.serverData?.server_type || 'VANILLA'} · v${this._resolvedVersion}`;
+                    return;
+                }
+            }
+            // Fallback: try Minecraft version API
+            const mcr = await fetch('https://launchermeta.mojang.com/mc/game/version_manifest.json');
+            if (mcr.ok) {
+                const manifest = await mcr.json();
+                const release = manifest.latest?.release;
+                if (release) {
+                    this._resolvedVersion = release;
+                    const verEl = document.querySelector('[data-version-display]');
+                    if (verEl) verEl.textContent = `${this.serverData?.server_type || 'VANILLA'} · v${this._resolvedVersion}`;
+                }
+            }
+        } catch(e) { /* silent */ }
     },
 
     async _refreshDashLogs() {

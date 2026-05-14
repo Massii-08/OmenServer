@@ -277,8 +277,8 @@ def get_sftp_info(
     username = f"server_{server.id}"
     return {
         "host": ip,
-        "port": 2222,
+        "port": 22,
         "username": username,
         "directory": f"/data/servers/{server.id}/",
-        "winscp_url": f"sftp://{username}@{ip}:2222/",
+        "winscp_url": f"sftp://{username}@{ip}:22/",
     }

@@ -67,13 +67,13 @@ const SvAccess = {
                         <div>
                             <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">${Lang.t('sv.acc.host')}</div>
                             <div class="form-input" style="font-family:monospace;font-size:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="navigator.clipboard.writeText('${ip}');this.querySelector('.cp').textContent='✅';setTimeout(()=>this.querySelector('.cp').textContent='📋',1500)">
-                                sftp://${ip} <span class="cp" style="font-size:11px;color:var(--text-muted);">📋</span>
+                                ${ip} <span class="cp" style="font-size:11px;color:var(--text-muted);">📋</span>
                             </div>
                         </div>
                         <div>
                             <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">${Lang.t('sv.acc.server_port')}</div>
-                            <div class="form-input" style="font-family:monospace;font-size:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="navigator.clipboard.writeText('2222');this.querySelector('.cp').textContent='✅';setTimeout(()=>this.querySelector('.cp').textContent='📋',1500)">
-                                2222 <span class="cp" style="font-size:11px;color:var(--text-muted);">📋</span>
+                            <div class="form-input" style="font-family:monospace;font-size:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="navigator.clipboard.writeText('22');this.querySelector('.cp').textContent='✅';setTimeout(()=>this.querySelector('.cp').textContent='📋',1500)">
+                                22 <span class="cp" style="font-size:11px;color:var(--text-muted);">📋</span>
                             </div>
                         </div>
                     </div>
@@ -95,7 +95,7 @@ const SvAccess = {
 
                     <!-- Boutons d'action -->
                     <div style="display:flex;gap:8px;margin-top:16px;">
-                        <a href="sftp://${user}@${ip}:2222/" class="btn btn-primary btn-sm" style="text-decoration:none;display:flex;align-items:center;gap:6px;">
+                        <a href="sftp://${user}@${ip}:22/" class="btn btn-primary btn-sm" style="text-decoration:none;display:flex;align-items:center;gap:6px;">
                             <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white' width='16' height='16'%3E%3Cpath d='M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z'/%3E%3C/svg%3E" width="14" height="14" />
                             ${Lang.t('sv.acc.connect_winscp')}
                         </a>
@@ -174,13 +174,13 @@ const SvAccess = {
         const u = Auth.getUser();
         const al = this._serverData?.access_level || 'view_only';
         const canManage = al === 'owner' || al === 'manage';
-        const alias = this._serverData?.connect_alias || `srv-${String(this._serverId).padStart(4,'0')}`;
+        const serverIp = GameServer._serverIP || 'localhost';
 
         el.innerHTML = ports.map(p => {
             const isMain = p.is_main || p.host_port === data.main_port;
             const deleteBtn = (!isMain && canManage) ?
                 `<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvAccess._removePort(${p.host_port})" title="🗑️">🗑️</button>` : '';
-            const displayAddr = `${alias}:${p.host_port}`;
+            const displayAddr = `${serverIp}:${p.host_port}`;
             return `
             <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;${isMain ? 'border-left:3px solid var(--accent-green);' : 'border-left:3px solid var(--accent-blue);'}">
                 <div style="display:flex;align-items:center;gap:8px;">

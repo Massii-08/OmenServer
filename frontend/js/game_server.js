@@ -671,7 +671,7 @@ const GameServer = {
                         <div>
                             <div class="server-name">${server.name}</div>
                             <div class="server-meta">
-                                ${gameName} · v${server.version} · ${(server.memory_mb / 1024).toFixed(1).replace(/\.0$/, '')} Go RAM · ${server.cpu_percent || 100}% CPU
+                                ${gameName} · v${server.version === 'LATEST' ? 'latest' : server.version} · ${(server.memory_mb / 1024).toFixed(1).replace(/\.0$/, '')} Go RAM · ${server.cpu_percent || 100}% CPU
                             </div>
                         </div>
                     </div>
