@@ -169,7 +169,7 @@ const BotsModule = {
                         <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">${b.description || Lang.t('bots.no_desc')}</div>
                         <div style="display:flex;gap:6px;flex-wrap:wrap;">
                             ${b.status === 'running' 
-                                ? (canManage ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();BotsModule.stopBot(${b.id})" style="font-size:11px;padding:4px 12px;">⏹ Stop</button>` : '')
+                                ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();BotsModule.stopBot(${b.id})" style="font-size:11px;padding:4px 12px;">⏹ Stop</button>`
                                 : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();BotsModule.startBot(${b.id})" style="font-size:11px;padding:4px 12px;">▶ Start</button>`
                             }
                             ${canManage ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();BotsModule.openEditor(${b.id})" style="font-size:11px;padding:4px 12px;">✏️ Code</button>` : ''}
