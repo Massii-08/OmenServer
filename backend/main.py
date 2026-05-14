@@ -116,6 +116,7 @@ from backend.notifications.router import router as notification_router
 from backend.monitoring.diagnostic_router import router as diagnostic_router
 from backend.bots.router import router as bots_router
 from backend.bots.yield_router import router as yield_router
+from backend.bots.scanner_router import router as scanner_router
 from backend.gdrive.router import router as gdrive_router
 from backend.media.router import router as media_router
 from backend.webserver.router import router as webserver_router
@@ -144,6 +145,7 @@ app.include_router(notification_router)
 app.include_router(diagnostic_router)
 app.include_router(bots_router)
 app.include_router(yield_router)
+app.include_router(scanner_router)
 app.include_router(gdrive_router)
 app.include_router(media_router)
 app.include_router(webserver_router)

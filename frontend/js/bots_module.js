@@ -100,11 +100,36 @@ const BotsModule = {
             </div>
         ` : '';
 
+        // Carte virtuelle du Bond Scanner (visible seulement pour admin et money)
+        const canSeeScanner = u && (u.is_admin || u.role === 'money' || u.role === 'admin');
+        const scannerBotCard = canSeeScanner ? `
+            <div class="card" style="cursor:pointer;transition:all .15s;border:2px solid transparent;background:linear-gradient(135deg, var(--bg-card) 0%, rgba(16,185,129,0.06) 100%);"
+                onclick="BotsModule.openBondScanner()"
+                onmouseover="this.style.transform='translateY(-2px)';this.style.borderColor='#10b981'"
+                onmouseout="this.style.transform='';this.style.borderColor='transparent'">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <span style="font-size:24px;">🔍</span>
+                        <div>
+                            <div style="font-weight:700;font-size:14px;">Bond Scanner</div>
+                            <div style="font-size:11px;color:var(--text-muted);">analysis</div>
+                        </div>
+                    </div>
+                    <span style="font-size:11px;padding:2px 8px;border-radius:4px;color:#10b981;background:rgba(16,185,129,0.12);font-weight:600;">⚡ ${Lang.t('modules.active')}</span>
+                </div>
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">${Lang.t('scanner.subtitle')}</div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                    <span class="btn btn-sm" style="font-size:11px;padding:4px 12px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;cursor:pointer;">▶ ${Lang.t('scanner.launch')}</span>
+                </div>
+            </div>
+        ` : '';
+
         if (this._bots.length === 0) {
             grid.innerHTML = `
                 ${u && u.role === 'developer' ? `<div style="margin-bottom:12px;"><span class="bot-quota-badge">${Lang.t('rbac.bot_quota')}: 0/3</span></div>` : ''}
                 <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;">
                     ${yieldBotCard}
+                    ${scannerBotCard}
                 </div>`;
             return;
         }
@@ -120,6 +145,7 @@ const BotsModule = {
             ${quotaHtml}
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;">
                 ${yieldBotCard}
+                ${scannerBotCard}
                 ${this._bots.map(b => {
                     const isOwner = u && (u.is_admin || b.owner_id === u.id);
                     const canManage = isOwner || u?.is_admin;
@@ -1155,6 +1181,442 @@ const BotsModule = {
 
         await this._loadYieldUsage();
         this._renderYieldUpload();
+    },
+
+    // ============ BOND SCANNER ============
+
+    _scannerState: {
+        jobId: null,
+        status: null,
+        pollInterval: null,
+        usage: null,
+        maxPrice: 100,
+        minYield: 3,
+        maxMaturity: 9,
+        minRating: 'BBB-',
+        currencies: { EUR: true, USD: true, GBP: true },
+        priceThreshold: 101,
+    },
+
+    async openBondScanner() {
+        if (this._refreshInterval) {
+            clearInterval(this._refreshInterval);
+            this._refreshInterval = null;
+        }
+
+        // Check for active job
+        try {
+            const r = await Auth.apiCall('/api/bots/scanner/active');
+            if (r && r.ok) {
+                const data = await r.json();
+                if (data.found) {
+                    this._scannerState.jobId = data.job_id;
+                    this._scannerState.status = data.status;
+                    if (data.status === 'running') {
+                        this._renderScannerRunning();
+                        Toast.success(Lang.t('yield.reconnected'));
+                        return;
+                    } else if (data.status === 'completed' || data.status === 'error' || data.status === 'stopped') {
+                        this._renderScannerCompleted(data);
+                        return;
+                    }
+                }
+            }
+        } catch (e) { console.warn('[Scanner] No active job:', e); }
+
+        this._scannerState.jobId = null;
+        this._scannerState.status = null;
+        await this._loadScannerUsage();
+        this._renderScannerConfig();
+    },
+
+    async _loadScannerUsage() {
+        try {
+            const r = await Auth.apiCall('/api/bots/scanner/usage');
+            if (r && r.ok) this._scannerState.usage = await r.json();
+        } catch (e) {
+            this._scannerState.usage = { today_scans: 0, max_scans: 2, remaining: 2 };
+        }
+    },
+
+    _renderScannerConfig() {
+        const container = this._container || document.getElementById('bots-module-container')?.parentElement;
+        if (!container) return;
+
+        const usage = this._scannerState.usage || { today_scans: 0, max_scans: 2, remaining: 2 };
+        const usageClass = usage.remaining === 0 ? 'danger' : usage.remaining <= 1 ? 'warning' : '';
+        const s = this._scannerState;
+
+        container.innerHTML = `
+            <div class="yield-header">
+                <div class="yield-header-left">
+                    <span class="yield-header-icon">🔍</span>
+                    <div>
+                        <h1 style="margin:0;font-size:22px;">${Lang.t('scanner.title')}</h1>
+                        <p style="color:var(--text-muted);font-size:13px;margin-top:2px;">${Lang.t('scanner.subtitle')}</p>
+                    </div>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <span class="yield-usage-badge ${usageClass}">
+                        📊 ${Lang.t('scanner.usage')}: ${usage.today_scans}/${usage.max_scans}
+                    </span>
+                    <button class="btn btn-secondary btn-sm" onclick="BotsModule.render(BotsModule._container)">
+                        ${Lang.t('scanner.back_bots')}
+                    </button>
+                </div>
+            </div>
+
+            <div class="card" style="margin-bottom:20px;">
+                <h3 style="margin:0 0 16px;">${Lang.t('scanner.config_title')}</h3>
+                <p style="color:var(--text-muted);font-size:13px;margin-bottom:20px;">${Lang.t('scanner.criteria_desc')}</p>
+
+                <!-- Prezzo massimo -->
+                <div class="yield-threshold-container" style="margin-bottom:14px;padding:12px 16px;background:var(--bg-primary);border-radius:10px;border:1px solid var(--border-color);">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                        <label style="font-size:13px;font-weight:600;">💰 ${Lang.t('scanner.max_price')}</label>
+                        <span id="scanner-price-value" style="font-size:14px;font-weight:700;color:#10b981;">${s.maxPrice}</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <span style="font-size:11px;color:var(--text-muted);">85</span>
+                        <input type="range" id="scanner-price-slider" min="85" max="110" step="0.5" value="${s.maxPrice}"
+                            style="flex:1;accent-color:#10b981;cursor:pointer;"
+                            oninput="BotsModule._scannerState.maxPrice=parseFloat(this.value);document.getElementById('scanner-price-value').textContent=this.value">
+                        <span style="font-size:11px;color:var(--text-muted);">110</span>
+                    </div>
+                </div>
+
+                <!-- Yield minimo -->
+                <div class="yield-threshold-container" style="margin-bottom:14px;padding:12px 16px;background:var(--bg-primary);border-radius:10px;border:1px solid var(--border-color);">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                        <label style="font-size:13px;font-weight:600;">📈 ${Lang.t('scanner.min_yield')}</label>
+                        <span id="scanner-yield-value" style="font-size:14px;font-weight:700;color:#10b981;">${s.minYield}%</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <span style="font-size:11px;color:var(--text-muted);">1%</span>
+                        <input type="range" id="scanner-yield-slider" min="1" max="10" step="0.5" value="${s.minYield}"
+                            style="flex:1;accent-color:#10b981;cursor:pointer;"
+                            oninput="BotsModule._scannerState.minYield=parseFloat(this.value);document.getElementById('scanner-yield-value').textContent=this.value+'%'">
+                        <span style="font-size:11px;color:var(--text-muted);">10%</span>
+                    </div>
+                </div>
+
+                <!-- Scadenza + Rating + Valute -->
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
+                    <div style="padding:12px 16px;background:var(--bg-primary);border-radius:10px;border:1px solid var(--border-color);">
+                        <label style="font-size:13px;font-weight:600;">📅 ${Lang.t('scanner.maturity')}</label>
+                        <select id="scanner-maturity" class="form-input" style="margin-top:8px;"
+                            onchange="BotsModule._scannerState.maxMaturity=parseInt(this.value)">
+                            <option value="5" ${s.maxMaturity===5?'selected':''}>5 anni</option>
+                            <option value="7" ${s.maxMaturity===7?'selected':''}>7 anni</option>
+                            <option value="9" ${s.maxMaturity===9?'selected':''}>9 anni</option>
+                            <option value="12" ${s.maxMaturity===12?'selected':''}>12 anni</option>
+                            <option value="15" ${s.maxMaturity===15?'selected':''}>15 anni</option>
+                        </select>
+                    </div>
+                    <div style="padding:12px 16px;background:var(--bg-primary);border-radius:10px;border:1px solid var(--border-color);">
+                        <label style="font-size:13px;font-weight:600;">⭐ ${Lang.t('scanner.rating')}</label>
+                        <select id="scanner-rating" class="form-input" style="margin-top:8px;"
+                            onchange="BotsModule._scannerState.minRating=this.value">
+                            <option value="BBB-" ${s.minRating==='BBB-'?'selected':''}>BBB- (Investment Grade)</option>
+                            <option value="BBB" ${s.minRating==='BBB'?'selected':''}>BBB</option>
+                            <option value="A-" ${s.minRating==='A-'?'selected':''}>A-</option>
+                            <option value="A" ${s.minRating==='A'?'selected':''}>A</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Valute -->
+                <div style="padding:12px 16px;background:var(--bg-primary);border-radius:10px;border:1px solid var(--border-color);margin-bottom:20px;">
+                    <label style="font-size:13px;font-weight:600;margin-bottom:8px;display:block;">🌍 ${Lang.t('scanner.currencies')}</label>
+                    <div style="display:flex;gap:12px;">
+                        <label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px;">
+                            <input type="checkbox" id="scanner-eur" ${s.currencies.EUR?'checked':''}
+                                onchange="BotsModule._scannerState.currencies.EUR=this.checked"> 🇪🇺 EUR
+                        </label>
+                        <label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px;">
+                            <input type="checkbox" id="scanner-usd" ${s.currencies.USD?'checked':''}
+                                onchange="BotsModule._scannerState.currencies.USD=this.checked"> 🇺🇸 USD
+                        </label>
+                        <label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px;">
+                            <input type="checkbox" id="scanner-gbp" ${s.currencies.GBP?'checked':''}
+                                onchange="BotsModule._scannerState.currencies.GBP=this.checked"> 🇬🇧 GBP
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Launch button -->
+                <button id="scanner-launch-btn" class="yield-launch-btn" style="background:linear-gradient(135deg,#10b981,#059669);"
+                    onclick="BotsModule._launchScanner()" ${usage.remaining===0?'disabled':''}>
+                    ${usage.remaining === 0 ? Lang.t('scanner.rate_limit') : Lang.t('scanner.launch')}
+                </button>
+
+                <div id="scanner-error-msg" style="display:none;margin-top:12px;color:var(--accent-red);font-size:13px;text-align:center;"></div>
+            </div>
+        `;
+    },
+
+    async _launchScanner() {
+        const btn = document.getElementById('scanner-launch-btn');
+        if (btn) { btn.disabled = true; btn.textContent = '⏳...'; }
+        const errMsg = document.getElementById('scanner-error-msg');
+        if (errMsg) errMsg.style.display = 'none';
+
+        const s = this._scannerState;
+        const currencies = Object.entries(s.currencies).filter(([,v]) => v).map(([k]) => k).join(',');
+        if (!currencies) {
+            if (errMsg) { errMsg.style.display = 'block'; errMsg.textContent = '❌ Seleziona almeno una valuta'; }
+            if (btn) { btn.disabled = false; btn.textContent = Lang.t('scanner.launch'); }
+            return;
+        }
+
+        try {
+            const r = await Auth.apiCall('/api/bots/scanner/run', {
+                method: 'POST',
+                body: JSON.stringify({
+                    max_price: s.maxPrice,
+                    min_yield: s.minYield / 100,
+                    max_maturity: s.maxMaturity,
+                    min_rating: s.minRating,
+                    currencies: currencies,
+                    price_threshold: s.priceThreshold,
+                }),
+            });
+            if (!r || !r.ok) {
+                const err = r ? await r.json().catch(() => ({})) : {};
+                throw new Error(err.detail || 'Launch failed');
+            }
+            const data = await r.json();
+            this._scannerState.jobId = data.job_id;
+            this._scannerState.status = 'running';
+            this._renderScannerRunning();
+        } catch (e) {
+            if (btn) { btn.disabled = false; btn.textContent = Lang.t('scanner.launch'); }
+            if (errMsg) { errMsg.style.display = 'block'; errMsg.textContent = `❌ ${e.message}`; }
+        }
+    },
+
+    _renderScannerRunning() {
+        const container = this._container || document.getElementById('bots-module-container')?.parentElement;
+        if (!container) return;
+
+        container.innerHTML = `
+            <div class="yield-header">
+                <div class="yield-header-left">
+                    <span class="yield-header-icon">🔍</span>
+                    <div>
+                        <h1 style="margin:0;font-size:22px;">${Lang.t('scanner.title')} — <span class="yield-pulse"></span>${Lang.t('scanner.running')}</h1>
+                        <p style="color:var(--text-muted);font-size:13px;margin-top:2px;">${Lang.t('scanner.subtitle')}</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-bottom:16px;">
+                <div class="yield-progress-container">
+                    <div class="yield-progress-bar">
+                        <div id="scanner-progress-fill" class="yield-progress-fill" style="width:0%;background:linear-gradient(90deg,#10b981,#059669);"></div>
+                    </div>
+                    <div class="yield-progress-text">
+                        <span id="scanner-progress-label">${Lang.t('scanner.running')}</span>
+                        <span id="scanner-progress-percent" class="yield-progress-percent">0%</span>
+                    </div>
+                </div>
+
+                <div class="yield-stats">
+                    <div class="yield-stat-card" style="border-left:3px solid var(--accent-blue);">
+                        <div id="scanner-stat-scanned" class="yield-stat-value">0</div>
+                        <div class="yield-stat-label">📡 ${Lang.t('scanner.scanned')}</div>
+                    </div>
+                    <div class="yield-stat-card success">
+                        <div id="scanner-stat-found" class="yield-stat-value">0</div>
+                        <div class="yield-stat-label">✅ ${Lang.t('scanner.found')}</div>
+                    </div>
+                    <div class="yield-stat-card warning">
+                        <div id="scanner-stat-discarded" class="yield-stat-value">0</div>
+                        <div class="yield-stat-label">⚠️ ${Lang.t('scanner.discarded')}</div>
+                    </div>
+                    <div class="yield-stat-card error">
+                        <div id="scanner-stat-errors" class="yield-stat-value">0</div>
+                        <div class="yield-stat-label">❌ ${Lang.t('scanner.errors')}</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                    <h3 style="margin:0;">📋 Log</h3>
+                    <button class="btn btn-danger btn-sm" onclick="BotsModule._stopScanner()">${Lang.t('scanner.stop')}</button>
+                </div>
+                <div id="scanner-logs" class="yield-terminal">
+                    <div style="color:#6b7280;text-align:center;padding:20px;">⏳ ${Lang.t('scanner.running')}</div>
+                </div>
+            </div>
+        `;
+
+        this._startScannerPolling();
+    },
+
+    _startScannerPolling() {
+        if (this._scannerState.pollInterval) clearInterval(this._scannerState.pollInterval);
+        this._pollScannerStatus();
+        this._scannerState.pollInterval = setInterval(() => this._pollScannerStatus(), 2000);
+    },
+
+    async _pollScannerStatus() {
+        const jobId = this._scannerState.jobId;
+        if (!jobId) return;
+
+        try {
+            const r = await Auth.apiCall(`/api/bots/scanner/status/${jobId}`);
+            if (!r || !r.ok) return;
+            const data = await r.json();
+
+            const fill = document.getElementById('scanner-progress-fill');
+            const pct = document.getElementById('scanner-progress-percent');
+            const label = document.getElementById('scanner-progress-label');
+            if (fill) fill.style.width = `${data.progress_percent}%`;
+            if (pct) pct.textContent = `${data.progress_percent}%`;
+
+            const cc = data.completed_currencies || [];
+            if (label && cc.length > 0) label.textContent = `✅ ${cc.join(', ')}`;
+
+            const ss = data.stats || {};
+            const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v || 0; };
+            el('scanner-stat-scanned', ss.total_scanned);
+            el('scanner-stat-found', ss.total_filtered);
+            el('scanner-stat-discarded', ss.total_discarded);
+            el('scanner-stat-errors', ss.total_errors);
+
+            const logsEl = document.getElementById('scanner-logs');
+            if (logsEl && data.logs && data.logs.length > 0) {
+                logsEl.innerHTML = data.logs.map((l, i) => `
+                    <div class="yield-log-line">
+                        <span class="yield-log-num">${i + 1}</span>
+                        <span class="yield-log-content">${l.replace(/</g, '&lt;')}</span>
+                    </div>
+                `).join('');
+                logsEl.scrollTop = logsEl.scrollHeight;
+            }
+
+            if (data.status === 'completed' || data.status === 'error' || data.status === 'stopped') {
+                this._scannerState.status = data.status;
+                clearInterval(this._scannerState.pollInterval);
+                this._scannerState.pollInterval = null;
+                setTimeout(() => this._renderScannerCompleted(data), 1000);
+            }
+        } catch (e) { console.error('[Scanner] Poll error:', e); }
+    },
+
+    _renderScannerCompleted(data) {
+        const container = this._container || document.getElementById('bots-module-container')?.parentElement;
+        if (!container) return;
+
+        const isSuccess = data.status === 'completed';
+        const statusIcon = isSuccess ? '✅' : data.status === 'error' ? '❌' : '⏹';
+        const statusLabel = isSuccess ? Lang.t('scanner.completed') : data.status === 'error' ? Lang.t('scanner.error') : Lang.t('scanner.stopped');
+        const ss = data.stats || {};
+
+        container.innerHTML = `
+            <div class="yield-header">
+                <div class="yield-header-left">
+                    <span class="yield-header-icon">🔍</span>
+                    <div>
+                        <h1 style="margin:0;font-size:22px;">${Lang.t('scanner.title')} — ${statusIcon} ${statusLabel}</h1>
+                        <p style="color:var(--text-muted);font-size:13px;margin-top:2px;">${Lang.t('scanner.subtitle')}</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-bottom:16px;">
+                <h3 style="margin:0 0 16px;">📊 ${Lang.t('scanner.summary')}</h3>
+                <div class="yield-stats">
+                    <div class="yield-stat-card" style="border-left:3px solid var(--accent-blue);">
+                        <div class="yield-stat-value">${ss.total_scanned || 0}</div>
+                        <div class="yield-stat-label">📡 ${Lang.t('scanner.scanned')}</div>
+                    </div>
+                    <div class="yield-stat-card success">
+                        <div class="yield-stat-value">${ss.total_filtered || 0}</div>
+                        <div class="yield-stat-label">✅ ${Lang.t('scanner.found')}</div>
+                    </div>
+                    <div class="yield-stat-card warning">
+                        <div class="yield-stat-value">${ss.total_discarded || 0}</div>
+                        <div class="yield-stat-label">⚠️ ${Lang.t('scanner.discarded')}</div>
+                    </div>
+                    <div class="yield-stat-card error">
+                        <div class="yield-stat-value">${ss.total_errors || 0}</div>
+                        <div class="yield-stat-label">❌ ${Lang.t('scanner.errors')}</div>
+                    </div>
+                </div>
+
+                <div style="display:flex;gap:12px;margin-top:20px;">
+                    ${isSuccess && data.result_file ? `
+                        <button class="yield-launch-btn" style="flex:1;margin-top:0;background:linear-gradient(135deg,#10b981,#059669);" onclick="BotsModule._downloadScannerResult()">
+                            ${Lang.t('scanner.download')}
+                        </button>
+                    ` : ''}
+                    <button class="btn btn-secondary" style="flex:1;padding:14px;font-size:15px;font-weight:600;" onclick="BotsModule._startNewScan()">
+                        ${Lang.t('scanner.restart')}
+                    </button>
+                </div>
+            </div>
+
+            <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                    <h3 style="margin:0;">📋 Log (${data.logs_count || data.logs?.length || 0} ${Lang.t('bots.lines')})</h3>
+                </div>
+                <div class="yield-terminal">
+                    ${data.logs && data.logs.length > 0
+                        ? data.logs.map((l, i) => `
+                            <div class="yield-log-line">
+                                <span class="yield-log-num">${i + 1}</span>
+                                <span class="yield-log-content">${l.replace(/</g, '&lt;')}</span>
+                            </div>
+                        `).join('')
+                        : '<div style="color:#6b7280;text-align:center;padding:20px;">No logs</div>'
+                    }
+                </div>
+            </div>
+        `;
+    },
+
+    async _downloadScannerResult() {
+        const jobId = this._scannerState.jobId;
+        if (!jobId) return;
+        try {
+            const r = await Auth.apiCall(`/api/bots/scanner/download/${jobId}`);
+            if (!r || !r.ok) throw new Error('Download failed');
+            let filename = 'Opportunita_Bond.xlsx';
+            const disposition = r.headers.get('Content-Disposition') || '';
+            const match = disposition.match(/filename="?([^";\n]+)"?/i);
+            if (match) filename = decodeURIComponent(match[1].trim());
+            const blob = await r.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = filename; a.style.display = 'none';
+            document.body.appendChild(a); a.click();
+            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+        } catch (e) {
+            console.error('[Scanner] Download error:', e);
+            const token = Auth.getToken();
+            if (token) window.open(`/api/bots/scanner/download-file/${jobId}/Opportunita_Bond.xlsx?token=${encodeURIComponent(token)}`, '_blank');
+        }
+    },
+
+    async _stopScanner() {
+        const jobId = this._scannerState.jobId;
+        if (!jobId) return;
+        try { await Auth.apiCall(`/api/bots/scanner/stop/${jobId}`, { method: 'POST' }); }
+        catch (e) { console.error('[Scanner] Stop error:', e); }
+    },
+
+    async _startNewScan() {
+        this._scannerState.jobId = null;
+        this._scannerState.status = null;
+        if (this._scannerState.pollInterval) {
+            clearInterval(this._scannerState.pollInterval);
+            this._scannerState.pollInterval = null;
+        }
+        await this._loadScannerUsage();
+        this._renderScannerConfig();
     },
 };
 
