@@ -174,7 +174,7 @@ const BotsModule = {
                             }
                             ${canManage ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();BotsModule.openEditor(${b.id})" style="font-size:11px;padding:4px 12px;">✏️ Code</button>` : ''}
                             ${canManage ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();BotsModule.showScheduler(${b.id})" style="font-size:11px;padding:4px 12px;">⏰ ${Lang.t('bots.schedule')}</button>` : ''}
-                            ${isOwner ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();BotsModule.showShareModal(${b.id},'bot')" style="font-size:11px;padding:4px 8px;" title="${Lang.t('sharing.title')}">👥</button>` : ''}
+                            ${isOwner ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();SharingModal.open(${b.id},'bot')" style="font-size:11px;padding:4px 8px;" title="${Lang.t('sharing.title')}">👥</button>` : ''}
                             ${isOwner ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();BotsModule.deleteBot(${b.id})" style="font-size:11px;padding:4px 8px;color:#ef4444;">🗑</button>` : ''}
                         </div>
                     </div>

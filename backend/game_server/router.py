@@ -71,6 +71,7 @@ class ServerResponse(BaseModel):
     ready: bool = False  # True seulement quand le jeu répond (pas juste Docker running)
     owner_id: Optional[int] = None
     access_level: Optional[str] = None    # Niveau d'accès de l'utilisateur (view_only, start, manage)
+    connect_alias: Optional[str] = None   # Alias de connexion (remplace l'IP réelle)
     steam_app_id: Optional[int] = None    # App ID Steam (jeux Steam uniquement)
     mod_source: Optional[str] = None      # "steam", "curseforge", "modrinth" ou None
 
@@ -154,6 +155,7 @@ def list_servers(
         resp.steam_app_id = game_cfg.get("steam_app_id")
         resp.mod_source = game_cfg.get("mod_source")
         resp.owner_id = server.owner_id
+        resp.connect_alias = server.connect_alias or f"srv-{server.id:04d}"
 
         # Calculer le niveau d'accès de l'utilisateur courant
         resp.access_level = get_user_access_level(current_user, "server", server.id, db) or "view_only"
@@ -281,6 +283,7 @@ def get_server(
     resp.steam_app_id = game_cfg.get("steam_app_id")
     resp.mod_source = game_cfg.get("mod_source")
     resp.owner_id = server.owner_id
+    resp.connect_alias = server.connect_alias or f"srv-{server.id:04d}"
 
     # Calculer le niveau d'accès de l'utilisateur courant
     resp.access_level = get_user_access_level(current_user, "server", server.id, db) or "view_only"
@@ -465,6 +468,30 @@ def get_server_logs(
 
     logs = docker_manager.get_container_logs(server.docker_id, tail=tail)
     return {"logs": logs}
+
+
+@router.put("/{server_id}/alias")
+def update_alias(
+    server_id: int,
+    data: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Met à jour l'alias de connexion d'un serveur (owner/admin uniquement)."""
+    server = db.query(GameServer).filter(GameServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Serveur non trouvé")
+
+    if not current_user.is_admin and server.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Seul le propriétaire peut modifier l'alias.")
+
+    alias = (data.get("alias") or "").strip()
+    if len(alias) > 50:
+        raise HTTPException(status_code=400, detail="L'alias ne peut pas dépasser 50 caractères.")
+
+    server.connect_alias = alias if alias else None
+    db.commit()
+    return {"ok": True, "alias": server.connect_alias or f"srv-{server.id:04d}"}
 
 
 @router.delete("/{server_id}")

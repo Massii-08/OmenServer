@@ -182,6 +182,7 @@ async def startup_event():
             ("scheduled_tasks", "schedule_days", "VARCHAR(50)"),
             # RBAC : ownership des ressources
             ("game_servers", "owner_id", "INTEGER REFERENCES users(id)"),
+            ("game_servers", "connect_alias", "VARCHAR(100)"),
             ("bots", "owner_id", "INTEGER REFERENCES users(id)"),
             ("websites", "owner_id", "INTEGER REFERENCES users(id)"),
         ]

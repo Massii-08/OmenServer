@@ -1399,9 +1399,14 @@ const SharingModal = {
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;">
                             <select id="sharing-grant-level" class="sharing-access-select">
-                                <option value="view_only">👁️ ${Lang.t('sharing.view_only')}</option>
-                                <option value="start" selected>▶️ ${Lang.t('sharing.start')}</option>
-                                <option value="manage">⚡ ${Lang.t('sharing.manage')}</option>
+                                ${resourceType === 'bot' ? `
+                                    <option value="start" selected>▶️ ${Lang.t('sharing.bot_use')}</option>
+                                    <option value="manage">✏️ ${Lang.t('sharing.bot_edit')}</option>
+                                ` : `
+                                    <option value="view_only">👁️ ${Lang.t('sharing.view_only')}</option>
+                                    <option value="start" selected>▶️ ${Lang.t('sharing.start')}</option>
+                                    <option value="manage">⚡ ${Lang.t('sharing.manage')}</option>
+                                `}
                             </select>
                             <button class="btn btn-primary btn-sm" onclick="SharingModal._grantAccess()">${Lang.t('sharing.grant')}</button>
                         </div>
@@ -1504,7 +1509,10 @@ const SharingModal = {
             el.innerHTML = `<div style="text-align:center;padding:16px;color:var(--text-muted);font-size:12px;">${Lang.t('sharing.no_access')}</div>`;
             return;
         }
-        const ll = { view_only: Lang.t('sharing.view_only'), start: Lang.t('sharing.start'), manage: Lang.t('sharing.manage') };
+        const isBot = this._resourceType === 'bot';
+        const ll = isBot
+            ? { start: Lang.t('sharing.bot_use'), manage: Lang.t('sharing.bot_edit') }
+            : { view_only: Lang.t('sharing.view_only'), start: Lang.t('sharing.start'), manage: Lang.t('sharing.manage') };
         el.innerHTML = accesses.map(a => `
             <div class="sharing-user-item" style="margin-bottom:6px;">
                 <div class="sharing-user-info">
@@ -1516,9 +1524,14 @@ const SharingModal = {
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;">
                     <select class="sharing-access-select" onchange="SharingModal._updateAccess(${a.id}, this.value)">
-                        <option value="view_only" ${a.access_level==='view_only'?'selected':''}>👁️ ${ll.view_only}</option>
-                        <option value="start" ${a.access_level==='start'?'selected':''}>▶️ ${ll.start}</option>
-                        <option value="manage" ${a.access_level==='manage'?'selected':''}>⚡ ${ll.manage}</option>
+                        ${isBot ? `
+                            <option value="start" ${a.access_level==='start'||a.access_level==='view_only'?'selected':''}>▶️ ${ll.start}</option>
+                            <option value="manage" ${a.access_level==='manage'?'selected':''}>✏️ ${ll.manage}</option>
+                        ` : `
+                            <option value="view_only" ${a.access_level==='view_only'?'selected':''}>👁️ ${ll.view_only}</option>
+                            <option value="start" ${a.access_level==='start'?'selected':''}>▶️ ${ll.start}</option>
+                            <option value="manage" ${a.access_level==='manage'?'selected':''}>⚡ ${ll.manage}</option>
+                        `}
                     </select>
                     <button class="btn btn-sm" style="color:#ef4444;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.2);padding:4px 8px;font-size:11px;" onclick="SharingModal._revokeAccess(${a.id}, '${(a.username||'').replace(/'/g,"\\\\'")}')">${Lang.t('sharing.revoke')}</button>
                 </div>

@@ -173,14 +173,14 @@ const SvAccess = {
 
         const u = Auth.getUser();
         const al = this._serverData?.access_level || 'view_only';
-        const isOwnerOrAdmin = u && (u.is_admin || this._serverData?.owner_id === u?.id);
         const canManage = al === 'owner' || al === 'manage';
+        const alias = this._serverData?.connect_alias || `srv-${String(this._serverId).padStart(4,'0')}`;
 
         el.innerHTML = ports.map(p => {
             const isMain = p.is_main || p.host_port === data.main_port;
             const deleteBtn = (!isMain && canManage) ?
                 `<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvAccess._removePort(${p.host_port})" title="🗑️">🗑️</button>` : '';
-            const displayAddr = isOwnerOrAdmin ? `${serverIp} : ${p.host_port}` : `Port ${p.host_port}`;
+            const displayAddr = `${alias}:${p.host_port}`;
             return `
             <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;${isMain ? 'border-left:3px solid var(--accent-green);' : 'border-left:3px solid var(--accent-blue);'}">
                 <div style="display:flex;align-items:center;gap:8px;">

@@ -220,6 +220,8 @@ const Lang = {
             'sharing.granted_by': 'Accordé par',
             'sharing.owner': 'Propriétaire',
             'sharing.shared_with_you': 'Partagé avec toi',
+            'sharing.bot_use': 'Utiliser',
+            'sharing.bot_edit': 'Modifier le code',
 
             // RBAC
             'rbac.no_permission': "Tu n'as pas la permission pour cette action.",
@@ -521,6 +523,9 @@ const Lang = {
             'sv.running': '🟢 En ligne',
             'sv.stopped': '🔴 Arrêté',
             'sv.connection': 'Adresse de connexion',
+            'sv.edit_alias': "Modifier l'alias de connexion",
+            'sv.alias_prompt': "Alias de connexion (ex: monserveur.omen)\nLaisse vide pour l'alias par défaut.",
+            'sv.alias_updated': '✅ Alias mis à jour !',
             'sv.quick_actions': '⚡ Actions rapides',
             'sv.open_console': 'Ouvrir console →',
             'sv.last_logs': '📋 Derniers logs',
@@ -1133,6 +1138,8 @@ const Lang = {
             'sharing.granted_by': 'Granted by',
             'sharing.owner': 'Owner',
             'sharing.shared_with_you': 'Shared with you',
+            'sharing.bot_use': 'Use',
+            'sharing.bot_edit': 'Edit code',
 
             // RBAC
             'rbac.no_permission': 'You do not have permission for this action.',
@@ -1434,6 +1441,9 @@ const Lang = {
             'sv.running': '🟢 Online',
             'sv.stopped': '🔴 Stopped',
             'sv.connection': 'Connection address',
+            'sv.edit_alias': 'Edit connection alias',
+            'sv.alias_prompt': "Connection alias (e.g. myserver.omen)\nLeave empty for default alias.",
+            'sv.alias_updated': '✅ Alias updated!',
             'sv.quick_actions': '⚡ Quick actions',
             'sv.open_console': 'Open console →',
             'sv.last_logs': '📋 Last logs',
@@ -2046,6 +2056,8 @@ const Lang = {
             'sharing.granted_by': 'Concesso da',
             'sharing.owner': 'Proprietario',
             'sharing.shared_with_you': 'Condiviso con te',
+            'sharing.bot_use': 'Utilizzare',
+            'sharing.bot_edit': 'Modificare il codice',
 
             // RBAC
             'rbac.no_permission': 'Non hai il permesso per questa azione.',
@@ -2347,6 +2359,9 @@ const Lang = {
             'sv.running': '🟢 Online',
             'sv.stopped': '🔴 Fermo',
             'sv.connection': 'Indirizzo di connessione',
+            'sv.edit_alias': "Modifica l'alias di connessione",
+            'sv.alias_prompt': "Alias di connessione (es: mioserver.omen)\nLascia vuoto per l'alias predefinito.",
+            'sv.alias_updated': '✅ Alias aggiornato!',
             'sv.quick_actions': '⚡ Azioni rapide',
             'sv.open_console': 'Apri console →',
             'sv.last_logs': '📋 Ultimi log',

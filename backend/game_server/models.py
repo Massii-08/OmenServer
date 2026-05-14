@@ -42,6 +42,7 @@ class GameServer(Base):
     cpu_percent = Column(Integer, default=100)  # % CPU alloué (100 = 1 cœur)
     jvm_flags = Column(String(500), default="")  # Flags JVM personnalisés
     status = Column(String(20), default="stopped")
+    connect_alias = Column(String(100), nullable=True)  # Alias de connexion (remplace l'IP réelle)
     created_at = Column(DateTime, default=datetime.utcnow)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Créateur du serveur
 

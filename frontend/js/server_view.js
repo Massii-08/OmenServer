@@ -216,7 +216,7 @@ const ServerView = {
         const s = this.serverData;
         const isPending = !!this._pendingAction;
         const isRunning = !isPending && s.status === 'running';
-        const addr = `${GameServer._serverIP || 'localhost'}:${s.port||25565}`;
+        const addr = `${s.connect_alias || ('srv-' + String(s.id).padStart(4,'0'))}:${s.port||25565}`;
         const game = GameServer._games?.find(g => g.id === s.game_type);
         const gameIcon = game ? game.icon : '🎮';
         const gameName = game ? game.name : (s.game_type || 'minecraft');
@@ -293,26 +293,21 @@ const ServerView = {
         </div>
 
         <!-- Infos connexion -->
-        ${isOwnerOrAdmin ? `
+        <!-- Infos connexion (visible par tous) -->
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
                 <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">📡 ${Lang.t('sv.connection')}</div>
                 <div style="display:flex;align-items:center;gap:8px;">
                     <span style="font-family:monospace;font-size:16px;font-weight:700;color:var(--accent-green);">${addr}</span>
                     <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText('${addr}');this.textContent='✅';setTimeout(()=>this.textContent='📋',1500)" style="padding:2px 8px;">📋</button>
+                    ${isOwnerOrAdmin ? `<button class="btn btn-secondary btn-sm" onclick="ServerView._editAlias()" style="padding:2px 8px;" title="${Lang.t('sv.edit_alias') || 'Modifier l\'alias'}">✏️</button>` : ''}
                 </div>
             </div>
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
                 <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">🏷️ Version</div>
                 <div style="font-size:16px;font-weight:600;">${(s.server_type||'VANILLA')} · v${s.version||'?'}</div>
             </div>
-        </div>` : `
-        <div style="display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:20px;">
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
-                <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">🏷️ Version</div>
-                <div style="font-size:16px;font-weight:600;">${(s.server_type||'VANILLA')} · v${s.version||'?'}</div>
-            </div>
-        </div>`}
+        </div>
 
         <!-- Raccourcis rapides -->
         ${canManage ? `
@@ -362,6 +357,31 @@ const ServerView = {
             <button class="btn btn-primary" onclick="ServerView.sendCommand()">📤 ${Lang.t('gs.send')}</button>
         </div>
         <p style="font-size:11px;color:var(--text-muted);margin-top:8px;">💡 Les commandes sont envoyées via rcon-cli. Exemples : <code>say Bonjour</code>, <code>list</code>, <code>op Massii_08</code></p>`;
+    },
+
+    async _editAlias() {
+        const s = this.serverData;
+        const currentAlias = s?.connect_alias || '';
+        const newAlias = prompt(
+            Lang.t('sv.alias_prompt') || 'Alias de connexion (ex: monserveur.omen)\nLaisse vide pour l\'alias par défaut.',
+            currentAlias
+        );
+        if (newAlias === null) return; // Cancel
+
+        const r = await Auth.apiCall(`/api/servers/${s.id}/alias`, {
+            method: 'PUT',
+            body: JSON.stringify({ alias: newAlias.trim() })
+        });
+
+        if (r && r.ok) {
+            const data = await r.json();
+            this.serverData.connect_alias = data.alias;
+            Toast.success(Lang.t('sv.alias_updated') || '✅ Alias mis à jour');
+            this.switchTab(this._currentTab || 'dashboard');
+        } else {
+            const err = r ? await r.json().catch(() => ({})) : {};
+            Toast.error(err.detail || Lang.t('common.error'));
+        }
     },
 
     _appendLog(text, color) {
