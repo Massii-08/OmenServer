@@ -70,6 +70,7 @@ class ServerResponse(BaseModel):
     jvm_flags: str = ""
     ready: bool = False  # True seulement quand le jeu répond (pas juste Docker running)
     owner_id: Optional[int] = None
+    access_level: Optional[str] = None    # Niveau d'accès de l'utilisateur (view_only, start, manage)
     steam_app_id: Optional[int] = None    # App ID Steam (jeux Steam uniquement)
     mod_source: Optional[str] = None      # "steam", "curseforge", "modrinth" ou None
 
@@ -154,6 +155,8 @@ def list_servers(
         resp.mod_source = game_cfg.get("mod_source")
         resp.owner_id = server.owner_id
 
+        # Calculer le niveau d'accès de l'utilisateur courant
+        resp.access_level = get_user_access_level(current_user, "server", server.id, db) or "view_only"
         if server.status == "running" and server.game_type in ("minecraft", "minecraft_bedrock"):
             ping = docker_manager.mc_server_ping(server.port)
             if ping:
@@ -195,16 +198,19 @@ def create_server(
 
     # Récupérer la config du jeu pour les valeurs par défaut
     game_config = get_game_config(request.game_type)
-    actual_port = request.port or game_config["default_port"]
     actual_memory = request.memory_mb or game_config["default_memory_mb"]
 
-    # Vérifier que le port n'est pas déjà utilisé
-    existing = db.query(GameServer).filter(GameServer.port == actual_port).first()
-    if existing:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Le port {actual_port} est déjà utilisé par '{existing.name}'"
-        )
+    # Auto-assigner un port libre (ignorer le port envoyé par le client)
+    from backend.webserver.models import Website
+    base_port = game_config["default_port"]
+    used_game_ports = {g.port for g in db.query(GameServer.port).all()}
+    used_web_ports = {w.port for w in db.query(Website.port).all()}
+    used_ports = used_game_ports | used_web_ports
+    actual_port = base_port
+    while actual_port in used_ports:
+        actual_port += 1
+        if actual_port > base_port + 100:
+            raise HTTPException(status_code=409, detail=f"Plus de ports disponibles à partir de {base_port}.")
 
     # Créer le conteneur Docker
     try:
@@ -276,6 +282,8 @@ def get_server(
     resp.mod_source = game_cfg.get("mod_source")
     resp.owner_id = server.owner_id
 
+    # Calculer le niveau d'accès de l'utilisateur courant
+    resp.access_level = get_user_access_level(current_user, "server", server.id, db) or "view_only"
     if server.status == "running" and server.game_type in ("minecraft", "minecraft_bedrock"):
         ping = docker_manager.mc_server_ping(server.port)
         if ping:
@@ -448,8 +456,8 @@ def get_server_logs(
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
 
-    # RBAC : voir les logs = niveau "view_only"
-    if not can_access_resource(current_user, "server", server_id, db, min_level="view_only"):
+    # RBAC : voir les logs/console = niveau "manage"
+    if not can_access_resource(current_user, "server", server_id, db, min_level="manage"):
         raise HTTPException(status_code=403, detail="Tu n'as pas accès aux logs de ce serveur.")
 
     if not server.docker_id:

@@ -204,6 +204,10 @@ def join_with_invite(
     invitation.used_by = new_user.id
     invitation.used_at = datetime.now(timezone.utc)
 
+    # Si l'invitation a atteint ses utilisations max → la supprimer
+    if invitation.uses >= invitation.max_uses:
+        db.delete(invitation)
+
     db.commit()
     db.refresh(new_user)
 

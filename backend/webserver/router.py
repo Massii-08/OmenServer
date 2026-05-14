@@ -131,21 +131,40 @@ async def list_websites(db: Session = Depends(get_db), user=Depends(get_current_
 
 @router.post("")
 async def create_website(req: CreateWebsite, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    """Créer un nouveau site web."""
+    """Créer un nouveau site web (réservé aux développeurs et admins)."""
+    from backend.auth.permissions import has_permission
+    from backend.game_server.models import GameServer
+
+    # RBAC : vérifier la permission create_website
+    if not has_permission(user, "create_website"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas la permission de créer un site web.")
+
+    # Quota : developers = max 1 site web
+    if not user.is_admin and getattr(user, 'role', 'player') == 'developer':
+        owned_count = db.query(Website).filter(Website.owner_id == user.id).count()
+        if owned_count >= 1:
+            raise HTTPException(status_code=403, detail="Tu as atteint ta limite de 1 site web. Supprime l'existant pour en créer un nouveau.")
+
     if req.site_type not in SITE_IMAGES:
         raise HTTPException(status_code=400, detail=f"Type non supporté. Types : {', '.join(SITE_IMAGES.keys())}")
 
-    # Vérifier que le port n'est pas déjà utilisé
-    existing = db.query(Website).filter(Website.port == req.port).first()
-    if existing:
-        raise HTTPException(status_code=409, detail=f"Le port {req.port} est déjà utilisé par '{existing.name}'.")
+    # Auto-assigner un port libre (range 3000-3099)
+    port = 3000
+    used_web_ports = {w.port for w in db.query(Website.port).all()}
+    used_game_ports = {g.port for g in db.query(GameServer.port).all()}
+    used_ports = used_web_ports | used_game_ports
+    while port in used_ports and port < 3100:
+        port += 1
+    if port >= 3100:
+        raise HTTPException(status_code=409, detail="Plus de ports disponibles (3000-3099). Supprime un site existant.")
 
-    # Créer le site en base
+    # Créer le site en base avec owner_id
     site = Website(
         name=req.name,
         site_type=req.site_type,
-        port=req.port,
+        port=port,
         description=req.description,
+        owner_id=user.id,
     )
     db.add(site)
     db.commit()

@@ -27,7 +27,9 @@ const ServerView = {
         const isStopped = !isPending && s.status !== 'running';
 
         const u = Auth.getUser();
-        const isOwnerOrAdmin = u && (u.is_admin || s.owner_id === u?.id || u.role === 'moderator' || u.role === 'admin');
+        const al = s.access_level || 'view_only';
+        const canManage = al === 'owner' || al === 'manage';
+        const canStart = canManage || al === 'start';
 
         let statusColor, statusText, actionBtns;
         if (isPending) {
@@ -38,13 +40,13 @@ const ServerView = {
         } else if (isRunning) {
             statusColor = 'var(--accent-green)';
             statusText = '● ' + Lang.t('sv.running').replace(/^🟢\s*/, '');
-            actionBtns = isOwnerOrAdmin ? `
+            actionBtns = canManage ? `
                 <button class="btn btn-sm btn-secondary" onclick="ServerView.action('stop')">⏹</button>
                 <button class="btn btn-sm btn-secondary" onclick="ServerView.action('restart')">🔄</button>` : '';
         } else {
             statusColor = 'var(--text-muted)';
             statusText = '○ ' + Lang.t('sv.stopped').replace(/^🔴\s*/, '');
-            actionBtns = `<button class="btn btn-sm btn-primary" onclick="ServerView.action('start')">▶️ ${Lang.t('common.start')}</button>`;
+            actionBtns = canStart ? `<button class="btn btn-sm btn-primary" onclick="ServerView.action('start')">▶️ ${Lang.t('common.start')}</button>` : '';
         }
 
         content.innerHTML = `
@@ -73,14 +75,15 @@ const ServerView = {
         const isSteam = !!(this.serverData?.steam_app_id);  // Jeu Steam (ARK, Valheim, GMod...)
 
         const u = Auth.getUser();
-        const isOwnerOrAdmin = u && (u.is_admin || this.serverData?.owner_id === u?.id || u.role === 'moderator');
+        const al = this.serverData?.access_level || 'view_only';
+        const canManage = al === 'owner' || al === 'manage';
 
         const tabs = [
             {id:'dashboard',icon:'📊',label:Lang.t('sv.dashboard')},
         ];
 
         // Tabs accessibles uniquement aux managers/owners
-        if (isOwnerOrAdmin) {
+        if (canManage) {
             tabs.push({id:'console',icon:'💻',label:Lang.t('sv.console')});
             tabs.push({id:'settings',icon:'⚙️',label:Lang.t('sv.settings')});
             tabs.push({id:'files',icon:'📁',label:Lang.t('sv.files')});
@@ -88,29 +91,32 @@ const ServerView = {
 
         tabs.push({id:'access',icon:'🔌',label:Lang.t('sv.access')});
 
-        if (isOwnerOrAdmin) {
+        if (canManage) {
             tabs.push({id:'backups',icon:'💾',label:Lang.t('sv.backups')});
             tabs.push({id:'scheduler',icon:'⏰',label:Lang.t('sv.scheduler')});
         }
 
         tabs.push({id:'monitoring',icon:'📈',label:Lang.t('sv.monitoring')});
         tabs.push({id:'history',icon:'📜',label:Lang.t('sv.history')});
-        tabs.push({id:'players',icon:'👥',label:Lang.t('sv.players')});
+        // Players tab only for managers
+        if (canManage) {
+            tabs.push({id:'players',icon:'👥',label:Lang.t('sv.players')});
+        }
 
         // Afficher Plugins seulement pour Paper/Spigot/Bukkit/Purpur
-        if (isPlugin && isOwnerOrAdmin) {
+        if (isPlugin && canManage) {
             tabs.push({id:'mods',icon:'🔌',label:Lang.t('sv.plugins')});
         }
         // Afficher Mods seulement pour Forge/Fabric/NeoForge/Quilt
-        if (isMod && isOwnerOrAdmin) {
+        if (isMod && canManage) {
             tabs.push({id:'mods',icon:'🧩',label:Lang.t('sv.mods')});
         }
         // Steam Workshop pour les jeux Steam (ARK, Valheim, GMod, CS2, Terraria, Palworld)
-        if (isSteam && isOwnerOrAdmin) {
+        if (isSteam && canManage) {
             tabs.push({id:'workshop',icon:'🎮',label:Lang.t('sv.workshop')});
         }
         // Datapacks, worlds, database, version pour les owners/admins
-        if (isOwnerOrAdmin) {
+        if (canManage) {
             tabs.push({id:'datapacks',icon:'📜',label:Lang.t('sv.datapacks')});
             tabs.push({id:'worlds',icon:'🌍',label:Lang.t('sv.worlds')});
             tabs.push({id:'database',icon:'🗄️',label:Lang.t('sv.database')});
@@ -119,7 +125,7 @@ const ServerView = {
         tabs.push({id:'notifications',icon:'🔔',label:Lang.t('sv.notifications')});
 
         let deleteBtn = '';
-        if (isOwnerOrAdmin) {
+        if (canManage) {
             deleteBtn = `
             <div style="border-top:1px solid var(--border-color);margin:12px 16px 8px;"></div>
             <a onclick="ServerView._deleteServerPrompt()" style="display:flex;align-items:center;gap:10px;padding:10px 20px;cursor:pointer;color:#ef4444;font-size:13px;font-weight:400;border-left:3px solid transparent;transition:all .15s;" onmouseover="this.style.background='rgba(239,68,68,0.08)'" onmouseout="this.style.background='transparent'">
@@ -151,7 +157,9 @@ const ServerView = {
         const isPending = !!this._pendingAction;
         const isRunning = !isPending && this.serverData?.status === 'running';
         const u = Auth.getUser();
-        const isOwnerOrAdmin = u && (u.is_admin || this.serverData?.owner_id === u?.id || u.role === 'moderator' || u.role === 'admin');
+        const al = this.serverData?.access_level || 'view_only';
+        const canManage = al === 'owner' || al === 'manage';
+        const canStart = canManage || al === 'start';
         let statusColor, statusText, actionBtns;
         if (isPending) {
             const labels = { start: Lang.t('sv.starting'), stop: Lang.t('sv.stopping'), restart: Lang.t('sv.restarting') };
@@ -161,13 +169,13 @@ const ServerView = {
         } else if (isRunning) {
             statusColor = 'var(--accent-green)';
             statusText = '● ' + Lang.t('sv.running').replace(/^🟢\s*/, '');
-            actionBtns = isOwnerOrAdmin ? `
+            actionBtns = canManage ? `
                 <button class="btn btn-sm btn-secondary" onclick="ServerView.action('stop')">⏹</button>
                 <button class="btn btn-sm btn-secondary" onclick="ServerView.action('restart')">🔄</button>` : '';
         } else {
             statusColor = 'var(--text-muted)';
             statusText = '○ ' + Lang.t('sv.stopped').replace(/^🔴\s*/, '');
-            actionBtns = `<button class="btn btn-sm btn-primary" onclick="ServerView.action('start')">▶️ ${Lang.t('common.start')}</button>`;
+            actionBtns = canStart ? `<button class="btn btn-sm btn-primary" onclick="ServerView.action('start')">▶️ ${Lang.t('common.start')}</button>` : '';
         }
 
         document.getElementById('sv-sidebar').innerHTML = `
@@ -226,7 +234,10 @@ const ServerView = {
         
         // Boutons avec gestion du pending
         const u2 = Auth.getUser();
-        const canManage = u2 && (u2.is_admin || s.owner_id === u2?.id || u2.role === 'moderator' || u2.role === 'admin');
+        const al2 = s.access_level || 'view_only';
+        const canManage = al2 === 'owner' || al2 === 'manage';
+        const canStart = canManage || al2 === 'start';
+        const isOwnerOrAdmin = u2 && (u2.is_admin || s.owner_id === u2?.id);
         let controlBtns;
         if (isPending) {
             const pendingLabels = { start: Lang.t('sv.starting'), stop: Lang.t('sv.stopping'), restart: Lang.t('sv.restarting') };
@@ -236,7 +247,7 @@ const ServerView = {
                 <button class="btn btn-danger" onclick="ServerView.action('stop')" style="flex:1;">⏹️ ${Lang.t('common.stop')}</button>
                 <button class="btn btn-secondary" onclick="ServerView.action('restart')" style="flex:1;">🔄 ${Lang.t('common.restart')}</button>` : '';
         } else {
-            controlBtns = `<button class="btn btn-primary" onclick="ServerView.action('start')" style="flex:1;">▶️ ${Lang.t('common.start')}</button>`;
+            controlBtns = canStart ? `<button class="btn btn-primary" onclick="ServerView.action('start')" style="flex:1;">▶️ ${Lang.t('common.start')}</button>` : '';
         }
         
         setTimeout(() => this._loadDashboardStats(), 100);
@@ -282,6 +293,7 @@ const ServerView = {
         </div>
 
         <!-- Infos connexion -->
+        ${isOwnerOrAdmin ? `
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
                 <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">📡 ${Lang.t('sv.connection')}</div>
@@ -294,9 +306,16 @@ const ServerView = {
                 <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">🏷️ Version</div>
                 <div style="font-size:16px;font-weight:600;">${(s.server_type||'VANILLA')} · v${s.version||'?'}</div>
             </div>
-        </div>
+        </div>` : `
+        <div style="display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:20px;">
+            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">🏷️ Version</div>
+                <div style="font-size:16px;font-weight:600;">${(s.server_type||'VANILLA')} · v${s.version||'?'}</div>
+            </div>
+        </div>`}
 
         <!-- Raccourcis rapides -->
+        ${canManage ? `
         <div style="margin-bottom:20px;">
             <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text-muted);">${Lang.t('sv.quick_actions')}</div>
             <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
@@ -305,7 +324,7 @@ const ServerView = {
                 <button class="btn btn-secondary" onclick="ServerView.switchTab('backups')" style="padding:12px 8px;font-size:12px;">💾 ${Lang.t('sv.backups')}</button>
                 <button class="btn btn-secondary" onclick="ServerView.switchTab('players')" style="padding:12px 8px;font-size:12px;">👥 ${Lang.t('sv.players')}</button>
             </div>
-        </div>
+        </div>` : ''}
 
         <!-- Stats Docker live -->
         <div id="sv-dash-docker" style="background:var(--bg-secondary);padding:16px;border-radius:10px;">

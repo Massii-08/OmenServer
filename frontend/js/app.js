@@ -705,7 +705,7 @@ const App = {
                     <h3 class="card-title">${t('settings.account')}</h3>
                     <div style="margin-top: 12px;">
                         <p><strong>${t('settings.user_label')}</strong> ${user ? user.username : '—'}</p>
-                        <p><strong>${t('settings.role_label')}</strong> ${isAdmin ? '👑 ' + t('common.admin') : '🎮'}</p>
+                        <p><strong>${t('settings.role_label')}</strong> ${(() => { const rl = { admin: '👑', moderator: '🔧', developer: '💻', money: '💰', player: '🎮', spectator: '👀' }; const r = user?.role || 'player'; return (rl[r] || '🎮') + ' ' + (Lang.t('users.role_' + r) || r); })()}</p>
                     </div>
                     <button class="btn btn-danger mt-4" onclick="Auth.logout()">
                         ${t('settings.logout')}
@@ -1399,9 +1399,9 @@ const SharingModal = {
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;">
                             <select id="sharing-grant-level" class="sharing-access-select">
-                                <option value="view_only">${Lang.t('sharing.view_only')}</option>
-                                <option value="start" selected>${Lang.t('sharing.start')}</option>
-                                <option value="manage">${Lang.t('sharing.manage')}</option>
+                                <option value="view_only">👁️ ${Lang.t('sharing.view_only')}</option>
+                                <option value="start" selected>▶️ ${Lang.t('sharing.start')}</option>
+                                <option value="manage">⚡ ${Lang.t('sharing.manage')}</option>
                             </select>
                             <button class="btn btn-primary btn-sm" onclick="SharingModal._grantAccess()">${Lang.t('sharing.grant')}</button>
                         </div>
@@ -1516,9 +1516,9 @@ const SharingModal = {
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;">
                     <select class="sharing-access-select" onchange="SharingModal._updateAccess(${a.id}, this.value)">
-                        <option value="view_only" ${a.access_level==='view_only'?'selected':''}>${ll.view_only}</option>
-                        <option value="start" ${a.access_level==='start'?'selected':''}>${ll.start}</option>
-                        <option value="manage" ${a.access_level==='manage'?'selected':''}>${ll.manage}</option>
+                        <option value="view_only" ${a.access_level==='view_only'?'selected':''}>👁️ ${ll.view_only}</option>
+                        <option value="start" ${a.access_level==='start'?'selected':''}>▶️ ${ll.start}</option>
+                        <option value="manage" ${a.access_level==='manage'?'selected':''}>⚡ ${ll.manage}</option>
                     </select>
                     <button class="btn btn-sm" style="color:#ef4444;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.2);padding:4px 8px;font-size:11px;" onclick="SharingModal._revokeAccess(${a.id}, '${(a.username||'').replace(/'/g,"\\\\'")}')">${Lang.t('sharing.revoke')}</button>
                 </div>

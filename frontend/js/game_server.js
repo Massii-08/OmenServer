@@ -89,18 +89,6 @@ const GameServer = {
                 </div>
             </div>
 
-            <!-- Bannière IP de connexion -->
-            <div style="background: var(--bg-card); border: 1px solid var(--border-active); border-radius: var(--border-radius); padding: 14px 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 12px;">
-                <span style="font-size: 20px;">🌐</span>
-                <div>
-                    <div style="font-size: 13px; color: var(--text-secondary);">${Lang.t('gs.conn_ip')}</div>
-                    <div style="font-size: 18px; font-weight: 700; color: var(--accent-green); font-family: monospace;">
-                        ${this._serverIP || Lang.t('common.loading')}
-                    </div>
-                </div>
-                <button class="btn btn-secondary btn-sm" style="margin-left: auto;" onclick="GameServer.copyIP()">${Lang.t('gs.copy')}</button>
-            </div>
-
             <div id="docker-warning" class="hidden" style="background: var(--accent-yellow); color: #000; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; font-size: 13px;">
                 ${Lang.t('gs.docker_warn')}
             </div>
@@ -206,10 +194,7 @@ const GameServer = {
                         <input type="text" class="form-input" id="server-custom-image" placeholder="mon-image:latest" />
                     </div>
                     <div style="display: flex; gap: 12px;">
-                        <div class="form-group" style="flex: 1;">
-                            <label class="form-label">${Lang.t('gs.port')}</label>
-                            <input type="number" class="form-input" id="server-port" value="25565" />
-                        </div>
+                        <input type="hidden" id="server-port" value="25565" />
                         <div class="form-group" style="flex: 1;">
                             <label class="form-label">${Lang.t('gs.ram')}</label>
                             <input type="number" class="form-input" id="server-memory" value="2" step="0.5" min="0.5" />
@@ -678,8 +663,6 @@ const GameServer = {
             const icon = game ? game.icon : '🎮';
             const gameName = game ? game.name : server.game_type;
 
-            // Adresse de connexion
-            const connectAddr = `${this._serverIP}:${server.port}`;
 
             return `
                 <div class="server-item fade-in" onclick="App.navigateTo('server_view', ${server.id})" style="cursor:pointer;">
@@ -689,9 +672,6 @@ const GameServer = {
                             <div class="server-name">${server.name}</div>
                             <div class="server-meta">
                                 ${gameName} · v${server.version} · ${(server.memory_mb / 1024).toFixed(1).replace(/\.0$/, '')} Go RAM · ${server.cpu_percent || 100}% CPU
-                            </div>
-                            <div style="margin-top: 4px; font-family: monospace; font-size: 12px; color: ${isRunning ? 'var(--accent-green)' : 'var(--text-muted)'};">
-                                📡 ${connectAddr}
                             </div>
                         </div>
                     </div>
@@ -704,18 +684,20 @@ const GameServer = {
                         <div class="server-actions" onclick="event.stopPropagation()">
                             ${(() => {
                                 const u = Auth.getUser();
+                                const al = server.access_level || 'view_only';
+                                const canManage = al === 'owner' || al === 'manage';
+                                const canStart = canManage || al === 'start';
                                 const isOwner = u && (u.is_admin || server.owner_id === u.id);
-                                const isOwnerOrAdmin = u && (u.is_admin || u.role === 'moderator' || u.role === 'admin' || server.owner_id === u.id);
                                 let btns = '';
                                 if (isPending) {
                                     btns = `<button class="btn btn-icon btn-secondary" disabled style="opacity:0.5;">⏳</button>`;
                                 } else if (isRunning) {
-                                    btns = isOwnerOrAdmin ? `
+                                    btns = canManage ? `
                                         <button class="btn btn-icon btn-secondary" onclick="GameServer.stopServer(${server.id})" title="${Lang.t('common.stop')}">⏹️</button>
                                         <button class="btn btn-icon btn-secondary" onclick="GameServer.restartServer(${server.id})" title="${Lang.t('common.restart')}">🔄</button>
                                     ` : '';
                                 } else {
-                                    btns = `<button class="btn btn-icon btn-primary" onclick="GameServer.startServer(${server.id})" title="${Lang.t('common.start')}">▶️</button>`;
+                                    btns = canStart ? `<button class="btn btn-icon btn-primary" onclick="GameServer.startServer(${server.id})" title="${Lang.t('common.start')}">▶️</button>` : '';
                                 }
                                 // Share button for owner only
                                 if (isOwner) {

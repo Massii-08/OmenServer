@@ -183,6 +183,7 @@ async def startup_event():
             # RBAC : ownership des ressources
             ("game_servers", "owner_id", "INTEGER REFERENCES users(id)"),
             ("bots", "owner_id", "INTEGER REFERENCES users(id)"),
+            ("websites", "owner_id", "INTEGER REFERENCES users(id)"),
         ]
         for table, column, col_type in migrations:
             try:

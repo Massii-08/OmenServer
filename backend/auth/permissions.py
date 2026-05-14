@@ -61,6 +61,7 @@ ROLE_PERMISSIONS = {
         "logs",
         "create_server",     # Créer un serveur de jeu (max 1)
         "create_bot",        # Créer un bot (max 3)
+        "create_website",    # Créer un site web (max 1)
         "delete",            # Supprimer ses propres serveurs/bots
         "invite",            # Créer des invitations (rôle player uniquement)
     ],
@@ -74,6 +75,7 @@ ROLE_PERMISSIONS = {
         "logs",
         "create_server",     # Créer un serveur
         "create_bot",        # Créer un bot
+        "create_website",    # Créer un site web
         "delete",            # Supprimer un serveur/bot
         "settings",          # Modifier les paramètres
         "invite",            # Gérer les invitations (tous rôles)

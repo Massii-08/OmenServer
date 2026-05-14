@@ -12,19 +12,23 @@ const SvAccess = {
         setTimeout(() => this._loadPorts(), 50);
         const ip = GameServer._serverIP || 'localhost';
         const user = `server_${serverId}`;
+        const u = Auth.getUser();
+        const al = serverData?.access_level || 'view_only';
+        const canManage = al === 'owner' || al === 'manage';
+        const isOwnerOrAdmin = u && (u.is_admin || serverData?.owner_id === u?.id);
 
         return `
         <h2>${Lang.t('sv.acc.title')}</h2>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:20px;">${Lang.t('sv.acc.desc')}</p>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+        <div style="display:grid;grid-template-columns:${canManage ? '1fr 1fr' : '1fr'};gap:20px;">
 
             <!-- COLONNE GAUCHE : Ports dédiés -->
             <div>
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
                     <h3 style="font-size:15px;margin:0;">${Lang.t('sv.acc.ports')}</h3>
-                    <button class="btn btn-primary btn-sm" onclick="SvAccess._showAddPort()">${Lang.t('sv.acc.add_port')}</button>
+                    ${canManage ? `<button class="btn btn-primary btn-sm" onclick="SvAccess._showAddPort()">${Lang.t('sv.acc.add_port')}</button>` : ''}
                 </div>
-                <div id="sv-acc-add-form" style="display:none;background:var(--bg-secondary);padding:14px;border-radius:8px;margin-bottom:12px;">
+                ${canManage ? `<div id="sv-acc-add-form" style="display:none;background:var(--bg-secondary);padding:14px;border-radius:8px;margin-bottom:12px;">
                     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">
                         <div>
                             <label style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.acc.host_port')}</label>
@@ -48,11 +52,11 @@ const SvAccess = {
                         <span id="sv-acc-msg" style="font-size:12px;"></span>
                     </div>
                     <p style="font-size:10px;color:var(--text-muted);margin-top:8px;">${Lang.t('sv.acc.restart_warn')}</p>
-                </div>
+                </div>` : ''}
                 <div id="sv-acc-ports"><div style="color:var(--text-muted)">⏳ ${Lang.t('common.loading')}</div></div>
             </div>
 
-            <!-- COLONNE DROITE : Accès SFTP -->
+            ${canManage ? `<!-- COLONNE DROITE : Accès SFTP -->
             <div>
                 <h3 style="font-size:15px;margin-bottom:12px;">${Lang.t('sv.acc.sftp')}</h3>
                 <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
@@ -105,7 +109,7 @@ const SvAccess = {
                         ⚠️ ${Lang.t('sv.acc.sftp_hint')}
                     </p>
                 </div>
-            </div>
+            </div>` : ''}
         </div>`;
     },
 
@@ -167,14 +171,20 @@ const SvAccess = {
             return;
         }
 
+        const u = Auth.getUser();
+        const al = this._serverData?.access_level || 'view_only';
+        const isOwnerOrAdmin = u && (u.is_admin || this._serverData?.owner_id === u?.id);
+        const canManage = al === 'owner' || al === 'manage';
+
         el.innerHTML = ports.map(p => {
             const isMain = p.is_main || p.host_port === data.main_port;
-            const deleteBtn = isMain ? '' :
-                `<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvAccess._removePort(${p.host_port})" title="🗑️">🗑️</button>`;
+            const deleteBtn = (!isMain && canManage) ?
+                `<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvAccess._removePort(${p.host_port})" title="🗑️">🗑️</button>` : '';
+            const displayAddr = isOwnerOrAdmin ? `${serverIp} : ${p.host_port}` : `Port ${p.host_port}`;
             return `
             <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;${isMain ? 'border-left:3px solid var(--accent-green);' : 'border-left:3px solid var(--accent-blue);'}">
                 <div style="display:flex;align-items:center;gap:8px;">
-                    <span style="font-family:monospace;font-weight:600;font-size:14px;">${serverIp} : ${p.host_port}</span>
+                    <span style="font-family:monospace;font-weight:600;font-size:14px;">${displayAddr}</span>
                     ${isMain ? `<span style="font-size:10px;padding:2px 6px;background:var(--accent-green);color:#000;border-radius:4px;">${Lang.t('sv.acc.main')}</span>` : `<span style="font-size:10px;padding:2px 6px;background:var(--accent-blue);color:#fff;border-radius:4px;">${Lang.t('sv.acc.public')}</span>`}
                     <span style="font-size:11px;color:var(--text-muted);">${p.protocol.toUpperCase()}</span>
                 </div>

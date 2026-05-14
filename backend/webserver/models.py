@@ -5,7 +5,7 @@ Représente un site web hébergé sur le serveur via Docker.
 Chaque site = 1 conteneur Docker (Nginx, Node.js, PHP, ou Python).
 """
 
-from sqlalchemy import Column, Integer, String, DateTime, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey
 from datetime import datetime
 from backend.database import Base
 
@@ -29,4 +29,5 @@ class Website(Base):
     source_path = Column(String, nullable=True)         # Chemin des fichiers source
     description = Column(String, default="")
     auto_start = Column(Boolean, default=False)         # Redémarrage auto
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Propriétaire (RBAC)
     created_at = Column(DateTime, default=datetime.utcnow)

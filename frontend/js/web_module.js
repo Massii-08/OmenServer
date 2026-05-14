@@ -17,7 +17,7 @@ const WebModule = {
                     <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">${Lang.t('web.subtitle')}</p>
                 </div>
                 <div style="display:flex;gap:8px;">
-                    <button class="btn btn-primary" onclick="WebModule.showCreateForm()">${Lang.t('web.new_site')}</button>
+                    ${(() => { const u = Auth.getUser(); const canCreate = u && (u.is_admin || u.role === 'developer'); return canCreate ? `<button class="btn btn-primary" onclick="WebModule.showCreateForm()">${Lang.t('web.new_site')}</button>` : ''; })()}
                     <button class="btn btn-secondary" onclick="App.navigateTo('hub')">${Lang.t('net.back_hub')}</button>
                 </div>
             </div>
@@ -109,7 +109,7 @@ const WebModule = {
         form.innerHTML = `
             <div class="card">
                 <h3 style="margin:0 0 16px;">${Lang.t('web.create_title')}</h3>
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:12px;">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px;">
                     <div>
                         <label class="form-label">${Lang.t('web.site_name')}</label>
                         <input id="web-name" class="form-input" placeholder="Mon site" />
@@ -122,10 +122,6 @@ const WebModule = {
                             <option value="php">${Lang.t('web.php')}</option>
                             <option value="python">${Lang.t('web.python')}</option>
                         </select>
-                    </div>
-                    <div>
-                        <label class="form-label">${Lang.t('web.port')}</label>
-                        <input id="web-port" class="form-input" type="number" value="3000" min="1024" max="65535" />
                     </div>
                     <div>
                         <label class="form-label">${Lang.t('web.description')}</label>
@@ -158,7 +154,7 @@ const WebModule = {
 
         const r = await Auth.apiCall('/api/websites', {
             method: 'POST',
-            body: JSON.stringify({ name, site_type: type, port, description: desc, git_url: gitUrl })
+            body: JSON.stringify({ name, site_type: type, description: desc, git_url: gitUrl })
         });
 
         if (r && r.ok) {
