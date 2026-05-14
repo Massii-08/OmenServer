@@ -74,44 +74,44 @@ const SvAccess = {
         if (!el) return;
 
         try {
-            const r = await Auth.apiCall(\`/api/servers/\${this._serverId}/sftp-info\`);
+            const r = await Auth.apiCall(`/api/servers/${this._serverId}/sftp-info`);
             if (!r || !r.ok) {
-                el.innerHTML = \`<div style="color:#e74c3c;">❌ ${Lang.t('common.error')}</div>\`;
+                el.innerHTML = `<div style="color:#e74c3c;">❌ ${Lang.t('common.error')}</div>`;
                 return;
             }
             const info = await r.json();
             const { host, port, username, password, winscp_url } = info;
 
-            el.innerHTML = \`
+            el.innerHTML = `
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-                    <span style="font-weight:600;">\${Lang.t('sv.acc.sftp_conn')}</span>
+                    <span style="font-weight:600;">${Lang.t('sv.acc.sftp_conn')}</span>
                     <span id="sv-sftp-status" style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(74,222,128,0.15);color:var(--accent-green);">📁 SFTP</span>
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
                     <div>
-                        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">\${Lang.t('sv.acc.host')}</div>
-                        <div class="form-input" style="font-family:monospace;font-size:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="navigator.clipboard.writeText('\${host}');this.querySelector('.cp').textContent='✅';setTimeout(()=>this.querySelector('.cp').textContent='📋',1500)">
-                            \${host} <span class="cp" style="font-size:11px;color:var(--text-muted);">📋</span>
+                        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">${Lang.t('sv.acc.host')}</div>
+                        <div class="form-input" style="font-family:monospace;font-size:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="navigator.clipboard.writeText('${host}');this.querySelector('.cp').textContent='✅';setTimeout(()=>this.querySelector('.cp').textContent='📋',1500)">
+                            ${host} <span class="cp" style="font-size:11px;color:var(--text-muted);">📋</span>
                         </div>
                     </div>
                     <div>
-                        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">\${Lang.t('sv.acc.server_port')}</div>
-                        <div class="form-input" style="font-family:monospace;font-size:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="navigator.clipboard.writeText('\${port}');this.querySelector('.cp').textContent='✅';setTimeout(()=>this.querySelector('.cp').textContent='📋',1500)">
-                            \${port} <span class="cp" style="font-size:11px;color:var(--text-muted);">📋</span>
+                        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">${Lang.t('sv.acc.server_port')}</div>
+                        <div class="form-input" style="font-family:monospace;font-size:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="navigator.clipboard.writeText('${port}');this.querySelector('.cp').textContent='✅';setTimeout(()=>this.querySelector('.cp').textContent='📋',1500)">
+                            ${port} <span class="cp" style="font-size:11px;color:var(--text-muted);">📋</span>
                         </div>
                     </div>
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;">
                     <div>
-                        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">\${Lang.t('sv.acc.username')}</div>
-                        <div class="form-input" style="font-family:monospace;font-size:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="navigator.clipboard.writeText('\${username}');this.querySelector('.cp').textContent='✅';setTimeout(()=>this.querySelector('.cp').textContent='📋',1500)">
-                            \${username} <span class="cp" style="font-size:11px;color:var(--text-muted);">📋</span>
+                        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">${Lang.t('sv.acc.username')}</div>
+                        <div class="form-input" style="font-family:monospace;font-size:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="navigator.clipboard.writeText('${username}');this.querySelector('.cp').textContent='✅';setTimeout(()=>this.querySelector('.cp').textContent='📋',1500)">
+                            ${username} <span class="cp" style="font-size:11px;color:var(--text-muted);">📋</span>
                         </div>
                     </div>
                     <div>
-                        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">\${Lang.t('sv.acc.password')}</div>
+                        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">${Lang.t('sv.acc.password')}</div>
                         <div class="form-input" style="font-family:monospace;font-size:13px;display:flex;justify-content:space-between;align-items:center;">
-                            <span id="sv-sftp-pw" data-pw="\${password}">••••••••</span>
+                            <span id="sv-sftp-pw" data-pw="${password}">••••••••</span>
                             <div style="display:flex;gap:6px;">
                                 <span style="font-size:11px;color:var(--text-muted);cursor:pointer;" onclick="const el=document.getElementById('sv-sftp-pw');el.textContent=el.textContent==='••••••••'?el.dataset.pw:'••••••••'">👁️</span>
                                 <span style="font-size:11px;color:var(--text-muted);cursor:pointer;" onclick="navigator.clipboard.writeText(document.getElementById('sv-sftp-pw').dataset.pw);this.textContent='✅';setTimeout(()=>this.textContent='📋',1500)">📋</span>
@@ -122,25 +122,25 @@ const SvAccess = {
 
                 <!-- Boutons d'action -->
                 <div style="display:flex;gap:8px;margin-top:16px;">
-                    <a href="\${winscp_url}" class="btn btn-primary btn-sm" style="text-decoration:none;display:flex;align-items:center;gap:6px;">
+                    <a href="${winscp_url}" class="btn btn-primary btn-sm" style="text-decoration:none;display:flex;align-items:center;gap:6px;">
                         <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white' width='16' height='16'%3E%3Cpath d='M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z'/%3E%3C/svg%3E" width="14" height="14" />
-                        \${Lang.t('sv.acc.connect_winscp')}
+                        ${Lang.t('sv.acc.connect_winscp')}
                     </a>
                     <button class="btn btn-secondary btn-sm" onclick="SvAccess._copyAll()" style="display:flex;align-items:center;gap:6px;">
-                        \${Lang.t('sv.acc.copy_creds')}
+                        ${Lang.t('sv.acc.copy_creds')}
                     </button>
                     <button class="btn btn-secondary btn-sm" onclick="SvAccess._resetSftpPassword()" style="display:flex;align-items:center;gap:6px;color:#f59e0b;">
-                        🔄 \${Lang.t('sv.acc.reset_pw') || 'Nouveau mdp'}
+                        🔄 ${Lang.t('sv.acc.reset_pw') || 'Nouveau mdp'}
                     </button>
                 </div>
 
                 <p style="color:var(--text-muted);font-size:11px;margin-top:12px;">
-                    💡 <strong>WinSCP</strong> : \${Lang.t('sv.acc.winscp_hint')}<br>
-                    ⚠️ \${Lang.t('sv.acc.sftp_hint')}
+                    💡 <strong>WinSCP</strong> : ${Lang.t('sv.acc.winscp_hint')}<br>
+                    ⚠️ ${Lang.t('sv.acc.sftp_hint')}
                 </p>
-            \`;
+            `;
         } catch(e) {
-            el.innerHTML = \`<div style="color:#e74c3c;">❌ Erreur SFTP</div>\`;
+            el.innerHTML = `<div style="color:#e74c3c;">❌ Erreur SFTP</div>`;
         }
     },
 
