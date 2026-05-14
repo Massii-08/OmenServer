@@ -174,7 +174,6 @@ const SvAccess = {
         const u = Auth.getUser();
         const al = this._serverData?.access_level || 'view_only';
         const canManage = al === 'owner' || al === 'manage';
-        const serverIp = GameServer._serverIP || 'localhost';
 
         el.innerHTML = ports.map(p => {
             const isMain = p.is_main || p.host_port === data.main_port;
@@ -198,7 +197,7 @@ const SvAccess = {
 
     _copyAll() {
         const ip = GameServer._serverIP || 'localhost';
-        const text = `SFTP\nHost: ${ip}\nPort: 2222\nUser: server_${this._serverId}\nPassword: [OmenServer password]`;
+        const text = `SFTP\nHost: ${ip}\nPort: 22\nUser: server_${this._serverId}\nPassword: [OmenServer password]`;
         navigator.clipboard.writeText(text);
     },
 };
