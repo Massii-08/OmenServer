@@ -293,16 +293,26 @@ const ServerView = {
             </div>
         </div>
 
-        <!-- Infos connexion -->
-        <!-- Infos connexion (visible par tous) -->
+        <!-- Infos connexion (style Minestrator) -->
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
-                <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">📡 ${Lang.t('sv.connection')}</div>
-                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                    <span style="font-family:monospace;font-size:16px;font-weight:700;color:var(--accent-green);">${addr}</span>
-                    <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText('${addr}');this.textContent='✅';setTimeout(()=>this.textContent='📋',1500)" style="padding:2px 8px;">📋</button>
-                    ${displayAlias ? `<span style="font-size:11px;color:var(--text-muted);background:var(--bg-primary);padding:2px 8px;border-radius:4px;">🏷️ ${displayAlias}</span>` : ''}
-                    ${isOwnerOrAdmin ? `<button class="btn btn-secondary btn-sm" onclick="ServerView._editAlias()" style="padding:2px 8px;" title="${Lang.t('sv.edit_alias') || 'Modifier l\'alias'}">✏️</button>` : ''}
+            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;display:flex;align-items:center;gap:14px;">
+                <div style="width:44px;height:44px;border-radius:50%;background:rgba(74,222,128,0.1);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                    <span style="font-size:22px;">📍</span>
+                </div>
+                <div style="flex:1;min-width:0;">
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                        <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText('${addr}');this.textContent='✅';setTimeout(()=>this.textContent='📋',1200)" style="padding:2px 6px;font-size:11px;">📋</button>
+                        <span style="font-family:monospace;font-size:15px;font-weight:700;color:var(--accent-green);">${addr}</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        ${displayAlias ? `
+                            <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText('${displayAlias}');this.textContent='✅';setTimeout(()=>this.textContent='📋',1200)" style="padding:2px 6px;font-size:11px;">📋</button>
+                            <span style="font-family:monospace;font-size:14px;color:var(--text-primary);">${displayAlias}</span>
+                        ` : `
+                            <span style="font-size:12px;color:var(--text-muted);font-style:italic;">${Lang.t('sv.no_alias')}</span>
+                        `}
+                        ${isOwnerOrAdmin ? `<button class="btn btn-secondary btn-sm" onclick="ServerView._editAlias()" style="padding:3px 10px;font-size:11px;color:var(--accent-green);border-color:var(--accent-green);">✏️ ${Lang.t('sv.edit_alias')}</button>` : ''}
+                    </div>
                 </div>
             </div>
             <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
