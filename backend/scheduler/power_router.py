@@ -1,5 +1,6 @@
 """
 Routes de gestion de l'alimentation — Extinction/réveil programmés.
+Version: 2.1 — Validation sudo pré-vol + meilleur logging.
 
 Permet de configurer l'extinction automatique de la machine
 entre des heures configurables (ex: 1h→5h du matin).
