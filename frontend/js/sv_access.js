@@ -17,6 +17,9 @@ const SvAccess = {
         const canManage = al === 'owner' || al === 'manage';
         const isOwnerOrAdmin = u && (u.is_admin || serverData?.owner_id === u?.id);
 
+        // Charger les infos SFTP dynamiquement après le render
+        if (canManage) setTimeout(() => this._loadSftpInfo(), 200);
+
         return `
         <h2>${Lang.t('sv.acc.title')}</h2>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:20px;">${Lang.t('sv.acc.desc')}</p>
@@ -64,9 +67,6 @@ const SvAccess = {
                 </div>
             </div>` : ''}
         </div>`;
-
-        // Charger les infos SFTP dynamiquement
-        if (canManage) setTimeout(() => this._loadSftpInfo(), 100);
     },
 
     async _loadSftpInfo() {
