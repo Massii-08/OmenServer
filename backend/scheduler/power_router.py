@@ -165,19 +165,49 @@ def reboot_server(current_user: User = Depends(get_current_user)):
     """
     Redémarre le serveur Omen (cerveau).
     Effectue un arrêt gracieux de tous les services avant le reboot.
+    Vérifie d'abord que sudo est disponible sans mot de passe.
     """
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin uniquement")
+
+    # Vérifier que sudo fonctionne sans mot de passe
+    try:
+        check = subprocess.run(
+            ["sudo", "-n", "true"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if check.returncode != 0:
+            logger.error(f"❌ sudo non disponible sans mot de passe: {check.stderr}")
+            raise HTTPException(
+                status_code=500,
+                detail="sudo nécessite un mot de passe. Configurez /etc/sudoers pour le reboot sans mot de passe."
+            )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=500, detail="sudo timeout — vérifiez la config sudoers")
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="sudo non trouvé sur ce système")
 
     def _delayed_reboot():
         """Arrêt gracieux + reboot après 15 secondes."""
         logger.info("🔄 Reboot demandé — arrêt gracieux des services...")
         time.sleep(3)
-        graceful_shutdown()
+        try:
+            graceful_shutdown()
+        except Exception as e:
+            logger.error(f"❌ Erreur pendant l'arrêt gracieux: {e}")
         time.sleep(5)
         logger.info("🔄 Reboot du serveur...")
         try:
-            subprocess.run(["sudo", "reboot"], timeout=10)
+            result = subprocess.run(
+                ["sudo", "reboot"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                logger.error(f"❌ Reboot échoué (code {result.returncode}): {result.stderr}")
+            else:
+                logger.info(f"✅ Commande reboot envoyée: {result.stdout}")
+        except subprocess.TimeoutExpired:
+            logger.error("❌ Reboot timeout — la commande a pris trop de temps")
         except Exception as e:
             logger.error(f"❌ Erreur reboot: {e}")
 
@@ -192,19 +222,49 @@ def shutdown_server(current_user: User = Depends(get_current_user)):
     """
     Éteint le serveur Omen (cerveau).
     Effectue un arrêt gracieux de tous les services avant l'extinction.
+    Vérifie d'abord que sudo est disponible sans mot de passe.
     """
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin uniquement")
+
+    # Vérifier que sudo fonctionne sans mot de passe
+    try:
+        check = subprocess.run(
+            ["sudo", "-n", "true"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if check.returncode != 0:
+            logger.error(f"❌ sudo non disponible sans mot de passe: {check.stderr}")
+            raise HTTPException(
+                status_code=500,
+                detail="sudo nécessite un mot de passe. Configurez /etc/sudoers pour le shutdown sans mot de passe."
+            )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=500, detail="sudo timeout — vérifiez la config sudoers")
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="sudo non trouvé sur ce système")
 
     def _delayed_shutdown():
         """Arrêt gracieux + extinction après 15 secondes."""
         logger.info("⏻ Shutdown demandé — arrêt gracieux des services...")
         time.sleep(3)
-        graceful_shutdown()
+        try:
+            graceful_shutdown()
+        except Exception as e:
+            logger.error(f"❌ Erreur pendant l'arrêt gracieux: {e}")
         time.sleep(5)
         logger.info("⏻ Extinction du serveur...")
         try:
-            subprocess.run(["sudo", "shutdown", "-h", "now"], timeout=10)
+            result = subprocess.run(
+                ["sudo", "shutdown", "-h", "now"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                logger.error(f"❌ Shutdown échoué (code {result.returncode}): {result.stderr}")
+            else:
+                logger.info(f"✅ Commande shutdown envoyée: {result.stdout}")
+        except subprocess.TimeoutExpired:
+            logger.error("❌ Shutdown timeout — la commande a pris trop de temps")
         except Exception as e:
             logger.error(f"❌ Erreur shutdown: {e}")
 
@@ -212,4 +272,5 @@ def shutdown_server(current_user: User = Depends(get_current_user)):
     thread.start()
 
     return {"message": "⏻ Extinction en cours — arrêt gracieux des services puis extinction dans ~15 secondes."}
+
 

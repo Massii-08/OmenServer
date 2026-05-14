@@ -273,13 +273,16 @@ const Monitoring = {
         const confirmKey = action === 'reboot' ? 'nodes.reboot_confirm' : 'nodes.shutdown_confirm';
         if (!confirm(Lang.t(confirmKey).replace('{name}', hostname))) return;
 
-        const r = await Auth.apiCall(`/api/nodes/${encodeURIComponent(hostname)}/${action}`, { method: 'POST' });
+        const r = await Auth.apiCall(`/api/nodes/${encodeURIComponent(hostname)}/${action}`, {
+            method: 'POST',
+            body: JSON.stringify({}),
+        });
         if (r && r.ok) {
             const data = await r.json();
             if (typeof Toast !== 'undefined') Toast.success(data.message);
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Erreur');
+            if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error'));
         }
     },
 
@@ -295,13 +298,14 @@ const Monitoring = {
             this.fetchNodes(); // Refresh
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Erreur');
+            if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error'));
         }
     },
 
     /**
      * Reboot ou shutdown du serveur Omen (cerveau).
      * Double confirmation car c'est le serveur principal.
+     * Envoie un body JSON vide pour éviter les problèmes avec Cloudflare/proxy.
      */
     async omenPowerAction(action) {
         const actionLabel = action === 'reboot' ? Lang.t('nodes.reboot') : Lang.t('nodes.shutdown');
@@ -316,13 +320,32 @@ const Monitoring = {
             if (!confirm(Lang.t('nodes.omen_shutdown_final'))) return;
         }
 
-        const r = await Auth.apiCall(`/api/power/${action}`, { method: 'POST' });
-        if (r && r.ok) {
-            const data = await r.json();
-            if (typeof Toast !== 'undefined') Toast.success(data.message);
-        } else {
-            const err = r ? await r.json().catch(() => ({})) : {};
-            if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Erreur');
+        // Envoyer la commande — body JSON vide obligatoire pour Cloudflare
+        try {
+            const r = await Auth.apiCall(`/api/power/${action}`, {
+                method: 'POST',
+                body: JSON.stringify({}),
+            });
+            if (r && r.ok) {
+                const data = await r.json();
+                if (typeof Toast !== 'undefined') {
+                    Toast.success(data.message || `${actionLabel} ${Lang.t('nodes.power_sent')}`, 10000);
+                }
+                // Arrêter le monitoring pour éviter les fausses alertes de déconnexion
+                this.stop();
+                if (typeof NetworkModule !== 'undefined' && NetworkModule._refreshInterval) {
+                    clearInterval(NetworkModule._refreshInterval);
+                    NetworkModule._refreshInterval = null;
+                }
+            } else {
+                const err = r ? await r.json().catch(() => ({})) : {};
+                const detail = err.detail || Lang.t('common.error');
+                console.error(`[Power] ${action} failed:`, detail);
+                if (typeof Toast !== 'undefined') Toast.error(`❌ ${actionLabel}: ${detail}`, 8000);
+            }
+        } catch (e) {
+            console.error(`[Power] ${action} exception:`, e);
+            if (typeof Toast !== 'undefined') Toast.error(`❌ ${actionLabel}: ${e.message}`, 8000);
         }
     },
 

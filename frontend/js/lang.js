@@ -110,6 +110,7 @@ const Lang = {
             'nodes.omen_reboot_confirm': '⚠️ REDÉMARRER LE CERVEAU\n\nRedémarrer {name} va couper TOUS les services (serveurs de jeux, bots, sites web).\n\nLe serveur redémarrera automatiquement. Continuer ?',
             'nodes.omen_shutdown_confirm': '⚠️ ÉTEINDRE LE CERVEAU\n\nÉteindre {name} va couper TOUS les services et le serveur ne redémarrera PAS automatiquement.\n\nContinuer ?',
             'nodes.omen_shutdown_final': '🔴 DERNIÈRE CONFIRMATION\n\nÊtes-vous ABSOLUMENT sûr de vouloir éteindre le serveur principal ?\nIl faudra le rallumer physiquement ou via Wake-on-LAN.',
+            'nodes.power_sent': 'commande envoyée',
 
             // Modules hub
             'modules.title': 'Modules',
@@ -1022,6 +1023,7 @@ const Lang = {
             'nodes.omen_reboot_confirm': '⚠️ REBOOT THE BRAIN\n\nRebooting {name} will shut down ALL services (game servers, bots, websites).\n\nThe server will restart automatically. Continue?',
             'nodes.omen_shutdown_confirm': '⚠️ SHUT DOWN THE BRAIN\n\nShutting down {name} will stop ALL services and the server will NOT restart automatically.\n\nContinue?',
             'nodes.omen_shutdown_final': '🔴 FINAL CONFIRMATION\n\nAre you ABSOLUTELY sure you want to shut down the main server?\nYou will need to power it on physically or via Wake-on-LAN.',
+            'nodes.power_sent': 'command sent',
 
             // Modules hub
             'modules.title': 'Modules',
@@ -1934,6 +1936,7 @@ const Lang = {
             'nodes.omen_reboot_confirm': '⚠️ RIAVVIARE IL CERVELLO\n\nRiavviare {name} fermerà TUTTI i servizi (server di gioco, bot, siti web).\n\nIl server si riavvierà automaticamente. Continuare?',
             'nodes.omen_shutdown_confirm': '⚠️ SPEGNERE IL CERVELLO\n\nSpegnere {name} fermerà TUTTI i servizi e il server NON si riavvierà automaticamente.\n\nContinuare?',
             'nodes.omen_shutdown_final': '🔴 CONFERMA FINALE\n\nSei ASSOLUTAMENTE sicuro di voler spegnere il server principale?\nDovrà essere riacceso fisicamente o tramite Wake-on-LAN.',
+            'nodes.power_sent': 'comando inviato',
 
             // Modules hub
             'modules.title': 'Moduli',
