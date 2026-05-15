@@ -66,6 +66,8 @@ Esempi:
                         help='Rating minimo (default: BBB-)')
     parser.add_argument('--currencies', type=str, default='EUR,USD,GBP',
                         help='Valute da cercare (default: EUR,USD,GBP)')
+    parser.add_argument('--max-results', type=int, default=0,
+                        help='Numero massimo di bond da trovare (default: 0 = illimitato)')
 
     # Opzioni di output
     parser.add_argument('--output', '-o', type=str, default=None,
@@ -120,6 +122,7 @@ async def main():
         headless=not args.show,
         delay=args.delay,
         price_threshold=args.price_threshold,
+        max_results=args.max_results,
     )
 
     try:

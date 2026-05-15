@@ -46,6 +46,7 @@ class BondScanner:
         headless: bool = True,
         delay: float = 1.0,
         price_threshold: float = 101.0,
+        max_results: int = 0,
     ):
         """
         Args:
@@ -53,11 +54,13 @@ class BondScanner:
             headless: Se True, browser invisibile
             delay: Pausa tra le richieste (secondi)
             price_threshold: Soglia di prezzo per la colorazione rosso/nero
+            max_results: Numero massimo di bond da trovare (0 = illimitato)
         """
         self.criteria = criteria or ScanCriteria()
         self.headless = headless
         self.delay = delay
         self.price_threshold = price_threshold
+        self.max_results = max_results
         self.stats = {
             'total_scanned': 0,
             'total_filtered': 0,
@@ -104,6 +107,8 @@ class BondScanner:
         logger.info("🚀 BOND SCANNER — Avvio scansione del mercato")
         logger.info("=" * 60)
         logger.info(f"📋 {self.criteria}")
+        if self.max_results > 0:
+            logger.info(f"🎯 Limite risultati: {self.max_results} bond")
         logger.info(f"📂 Output: {output_path}")
         logger.info("")
 
@@ -148,6 +153,7 @@ class BondScanner:
 
                         # Skip se mancano dati essenziali
                         if bond.current_price is None:
+                            currency_stats['discarded'] += 1
                             continue
 
                         # Pre-filtro prezzo
@@ -165,11 +171,17 @@ class BondScanner:
                         pre_filtered.append(bond)
 
                     logger.info(f"  📋 Pre-filtro: {len(pre_filtered)} candidati "
-                                f"(scartati {currency_stats['discarded']} per prezzo/scadenza)")
+                                f"(scartati {currency_stats['discarded']} per prezzo/scadenza/dati mancanti)")
 
                     # 3. Arricchimento dati + calcolo yield
                     for idx, bond in enumerate(pre_filtered):
                         if self._stopped:
+                            break
+
+                        # Controlla se abbiamo raggiunto il limite
+                        if self.max_results > 0 and self.stats['total_filtered'] >= self.max_results:
+                            logger.info(f"\n  🎯 Limite di {self.max_results} bond raggiunto!")
+                            self._stopped = True
                             break
 
                         logger.info(f"\n  [{idx+1}/{len(pre_filtered)}] {bond.name[:50] if bond.name else bond.isin}")

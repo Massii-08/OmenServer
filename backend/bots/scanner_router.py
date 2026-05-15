@@ -63,6 +63,7 @@ class ScanRequest(BaseModel):
     min_rating: str = "BBB-"
     currencies: str = "EUR,USD,GBP"
     price_threshold: float = 101.0
+    max_results: int = 0  # 0 = illimitato
 
 
 # ================================================================
@@ -94,6 +95,7 @@ async def run_scanner(
         "--min-rating", data.min_rating,
         "--currencies", data.currencies,
         "--price-threshold", str(data.price_threshold),
+        "--max-results", str(data.max_results),
         "--output", output_path,
     ]
 
@@ -182,6 +184,12 @@ def _parse_scanner_progress(job: dict, line: str):
     if match:
         count = int(match.group(1))
         job["stats"]["total_scanned"] = job["stats"].get("total_scanned", 0) + count
+
+    # Pre-filtro scartati: "📋 Pre-filtro: X candidati (scartati Y per ...)"
+    match = re.search(r'Pre-filtro:.*scartati (\d+)', line)
+    if match:
+        count = int(match.group(1))
+        job["stats"]["total_discarded"] = job["stats"].get("total_discarded", 0) + count
 
     # Bond accettato: "✅ ACCETTATO"
     if "✅ ACCETTATO" in line:

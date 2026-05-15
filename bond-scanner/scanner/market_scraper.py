@@ -276,6 +276,18 @@ class MarketScraper:
             # Estrai dati dalle API
             self._enrich_from_api(bond, api_responses)
 
+            # Log debug per i campi trovati/mancanti
+            if not bond.rating:
+                # Cerca manualmente tra tutte le chiavi API per capire se c'è un campo rating
+                all_keys = set()
+                for url, data in api_responses.items():
+                    self._collect_keys(data, all_keys, depth=0, max_depth=4)
+                rating_keys = [k for k in all_keys if 'rat' in k.lower()]
+                if rating_keys:
+                    logger.info(f"    📊 Chiavi rating nelle API: {rating_keys}")
+                else:
+                    logger.debug(f"    ⚠️ Nessuna chiave rating trovata nelle API")
+
         finally:
             self._page.remove_listener("response", capture_response)
 
@@ -438,9 +450,19 @@ class MarketScraper:
                 # --- RATING ---
                 if bond.rating is None:
                     if key_lower in ('rating', 'sprating', 'moodyrating',
-                                     'fitchrating', 'creditrating'):
+                                     'fitchrating', 'creditrating',
+                                     'ratingvalue', 'ratingmoodys', 'ratingfitch',
+                                     'ratingsp', 'standardandpoorsrating',
+                                     'moodyslongtermrating', 'fitchlongtermrating',
+                                     'splongtermrating', 'issuerrating',
+                                     'bondrating', 'currentrating',
+                                     'ratingclass', 'ratinggrade'):
                         if isinstance(value, str) and 1 <= len(value) <= 10:
-                            bond.rating = value
+                            # Ignora stringhe generiche tipo 'not rated', 'NR', 'n/a'
+                            val_clean = value.strip().upper()
+                            if val_clean not in ('NR', 'N/A', 'NA', '-', 'NOT RATED', 'UNRATED'):
+                                bond.rating = value
+                                logger.debug(f"    📊 Rating trovato: {value} (chiave: {key})")
 
                 # --- MIN PIECE ---
                 if bond.min_piece is None:
@@ -487,3 +509,16 @@ class MarketScraper:
                 pass
 
         return None
+
+    def _collect_keys(self, data: Any, keys: set, depth: int, max_depth: int):
+        """Raccoglie tutte le chiavi presenti nei dati JSON (per debug)."""
+        if depth > max_depth or data is None:
+            return
+        if isinstance(data, dict):
+            for key, value in data.items():
+                keys.add(key)
+                if isinstance(value, (dict, list)):
+                    self._collect_keys(value, keys, depth + 1, max_depth)
+        elif isinstance(data, list):
+            for item in data[:5]:
+                self._collect_keys(item, keys, depth + 1, max_depth)

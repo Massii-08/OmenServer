@@ -1194,6 +1194,7 @@ const BotsModule = {
         minYield: 3,
         maxMaturity: 9,
         minRating: 'BBB-',
+        maxResults: 50,
         currencies: { EUR: true, USD: true, GBP: true },
         priceThreshold: 101,
     },
@@ -1300,6 +1301,22 @@ const BotsModule = {
                     </div>
                 </div>
 
+                <!-- Numero massimo di bond -->
+                <div class="yield-threshold-container" style="margin-bottom:14px;padding:12px 16px;background:var(--bg-primary);border-radius:10px;border:1px solid var(--border-color);">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                        <label style="font-size:13px;font-weight:600;">🎯 ${Lang.t('scanner.max_results')}</label>
+                        <span id="scanner-maxresults-value" style="font-size:14px;font-weight:700;color:#10b981;">${s.maxResults === 0 ? '∞' : s.maxResults}</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <span style="font-size:11px;color:var(--text-muted);">10</span>
+                        <input type="range" id="scanner-maxresults-slider" min="10" max="200" step="10" value="${s.maxResults || 50}"
+                            style="flex:1;accent-color:#10b981;cursor:pointer;"
+                            oninput="BotsModule._scannerState.maxResults=parseInt(this.value);document.getElementById('scanner-maxresults-value').textContent=this.value">
+                        <span style="font-size:11px;color:var(--text-muted);">200</span>
+                    </div>
+                    <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">${Lang.t('scanner.max_results_hint')}</div>
+                </div>
+
                 <!-- Scadenza + Rating + Valute -->
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
                     <div style="padding:12px 16px;background:var(--bg-primary);border-radius:10px;border:1px solid var(--border-color);">
@@ -1379,6 +1396,7 @@ const BotsModule = {
                     min_rating: s.minRating,
                     currencies: currencies,
                     price_threshold: s.priceThreshold,
+                    max_results: s.maxResults || 0,
                 }),
             });
             if (!r || !r.ok) {

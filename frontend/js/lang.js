@@ -352,6 +352,8 @@ const Lang = {
             'scanner.rate_limit': 'Limite raggiunto (2/2 oggi)',
             'scanner.config_title': 'Configura la scansione',
             'scanner.criteria_desc': 'Imposta i criteri di ricerca per le obbligazioni',
+            'scanner.max_results': 'Numero massimo di bond',
+            'scanner.max_results_hint': 'Ferma la scansione dopo aver trovato questo numero di bond',
 
             // Settings
             'settings.title': '⚙️ Paramètres',
@@ -1277,6 +1279,8 @@ const Lang = {
             'scanner.rate_limit': 'Limit reached (2/2 today)',
             'scanner.config_title': 'Configure scan',
             'scanner.criteria_desc': 'Set the search criteria for bonds',
+            'scanner.max_results': 'Max number of bonds',
+            'scanner.max_results_hint': 'Stop scanning after finding this many bonds',
 
             // Settings
             'settings.title': '⚙️ Settings',
@@ -2202,6 +2206,8 @@ const Lang = {
             'scanner.rate_limit': 'Limite raggiunto (2/2 oggi)',
             'scanner.config_title': 'Configura la scansione',
             'scanner.criteria_desc': 'Imposta i criteri di ricerca per le obbligazioni',
+            'scanner.max_results': 'Numero massimo di bond',
+            'scanner.max_results_hint': 'Ferma la scansione dopo aver trovato questo numero di bond',
 
             // Settings
             'settings.title': '⚙️ Impostazioni',
