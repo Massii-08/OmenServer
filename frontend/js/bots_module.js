@@ -1601,10 +1601,26 @@ const BotsModule = {
         if (!jobId) return;
         const token = Auth.getToken();
         if (!token) return;
-        // Utilise un lien direct avec token — plus fiable via Cloudflare
         const today = new Date().toISOString().slice(0, 10);
         const filename = `Opportunita_Bond_${today}.xlsx`;
-        window.open(`/api/bots/scanner/download-file/${jobId}/${encodeURIComponent(filename)}?token=${encodeURIComponent(token)}`, '_blank');
+        try {
+            const r = await fetch(`/api/bots/scanner/download/${jobId}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (!r.ok) throw new Error('Download failed: ' + r.status);
+            const blob = await r.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
+        } catch (e) {
+            console.error('[Scanner] Download error:', e);
+            Toast.show('❌ Errore download', 'error');
+        }
     },
 
     async _stopScanner() {
