@@ -76,8 +76,8 @@ Esempi:
     # Opzioni tecniche
     parser.add_argument('--show', action='store_true',
                         help='Mostra il browser durante la scansione (debug)')
-    parser.add_argument('--delay', type=float, default=2.0,
-                        help='Pausa tra richieste in secondi (default: 2)')
+    parser.add_argument('--delay', type=float, default=1.0,
+                        help='Pausa tra richieste in secondi (default: 1)')
 
     return parser.parse_args()
 

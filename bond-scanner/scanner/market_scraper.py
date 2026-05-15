@@ -37,7 +37,7 @@ class MarketScraper:
 
     BASE_URL = "https://live.deutsche-boerse.com"
 
-    def __init__(self, headless: bool = True, timeout: int = 15000):
+    def __init__(self, headless: bool = True, timeout: int = 12000):
         """
         Args:
             headless: Se True, il browser non mostra la finestra
@@ -159,9 +159,9 @@ class MarketScraper:
                 timeout=self.timeout,
             )
 
-            # Attendi caricamento completo
+            # Attendi caricamento API (non tutto il network)
             await self._page.wait_for_load_state("networkidle")
-            await self._page.wait_for_timeout(3000)
+            await self._page.wait_for_timeout(1500)
 
             # Analizza le risposte API per la lista bond
             bonds_from_api = self._parse_bond_list_responses(api_responses, currency)
@@ -206,7 +206,7 @@ class MarketScraper:
                 logger.info(f"  📄 Pagina {page_num}...")
                 await next_btn.click()
                 await self._page.wait_for_load_state("networkidle")
-                await self._page.wait_for_timeout(2000)
+                await self._page.wait_for_timeout(1000)
 
                 # Raccogli i nuovi bond
                 new_bonds = self._parse_bond_list_responses(api_responses, currency)
@@ -269,8 +269,9 @@ class MarketScraper:
                 wait_until="domcontentloaded",
                 timeout=self.timeout,
             )
-            await self._page.wait_for_load_state("networkidle")
-            await self._page.wait_for_timeout(2000)
+            # Attendi solo il tempo necessario per le API JSON
+            # (come il fix di velocità del Yield Bot — niente networkidle)
+            await self._page.wait_for_timeout(1500)
 
             # Estrai dati dalle API
             self._enrich_from_api(bond, api_responses)

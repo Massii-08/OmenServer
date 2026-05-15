@@ -44,7 +44,7 @@ class BondScanner:
         self,
         criteria: ScanCriteria = None,
         headless: bool = True,
-        delay: float = 2.0,
+        delay: float = 1.0,
         price_threshold: float = 101.0,
     ):
         """
