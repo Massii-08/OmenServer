@@ -306,15 +306,24 @@ async def download_scanner_result(
     current_user: User = Depends(require_role("admin", "money")),
 ):
     """Télécharge le fichier Excel résultat."""
-    if job_id not in _scanner_jobs:
-        raise HTTPException(404, "Job non trovato")
+    output_path = None
 
-    job = _scanner_jobs[job_id]
+    # 1. Chercher dans les jobs en mémoire
+    if job_id in _scanner_jobs:
+        job = _scanner_jobs[job_id]
+        if job["status"] != "completed":
+            raise HTTPException(400, "La scansione non è ancora terminata")
+        output_path = job.get("output_path")
 
-    if job["status"] != "completed":
-        raise HTTPException(400, "La scansione non è ancora terminata")
+    # 2. Fallback : chercher le fichier sur le disque
+    #    (utile après un redémarrage de uvicorn où les jobs mémoire sont perdus)
+    if not output_path or not os.path.exists(output_path):
+        job_dir = OUTPUTS_DIR / job_id
+        if job_dir.is_dir():
+            xlsx_files = list(job_dir.glob("*.xlsx"))
+            if xlsx_files:
+                output_path = str(xlsx_files[0])
 
-    output_path = job.get("output_path")
     if not output_path or not os.path.exists(output_path):
         raise HTTPException(404, "File risultato non trovato")
 
@@ -324,6 +333,7 @@ async def download_scanner_result(
         path=output_path,
         filename=download_name,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
     )
 
 
@@ -343,15 +353,23 @@ async def download_scanner_file(
     if not payload or not payload.get("sub"):
         raise HTTPException(401, "Token invalide")
 
-    if job_id not in _scanner_jobs:
-        raise HTTPException(404, "Job non trovato")
+    output_path = None
 
-    job = _scanner_jobs[job_id]
+    # 1. Chercher dans les jobs en mémoire
+    if job_id in _scanner_jobs:
+        job = _scanner_jobs[job_id]
+        if job["status"] != "completed":
+            raise HTTPException(400, "La scansione non è ancora terminata")
+        output_path = job.get("output_path")
 
-    if job["status"] != "completed":
-        raise HTTPException(400, "La scansione non è ancora terminata")
+    # 2. Fallback : chercher sur le disque
+    if not output_path or not os.path.exists(output_path):
+        job_dir = OUTPUTS_DIR / job_id
+        if job_dir.is_dir():
+            xlsx_files = list(job_dir.glob("*.xlsx"))
+            if xlsx_files:
+                output_path = str(xlsx_files[0])
 
-    output_path = job.get("output_path")
     if not output_path or not os.path.exists(output_path):
         raise HTTPException(404, "File risultato non trovato")
 
