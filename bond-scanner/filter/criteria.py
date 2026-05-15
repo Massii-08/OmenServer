@@ -27,13 +27,16 @@ RATING_SCALE = [
 ]
 
 # Scala Moody's → S&P equivalente
+# Include sia le forme con numero (Aa1, Aa2, Aa3) che senza (Aa)
+# come mostrato nella tabella "Rating equivalence between the Big Three"
 MOODY_TO_SP = {
-    'Aaa': 'AAA', 'Aa1': 'AA+', 'Aa2': 'AA', 'Aa3': 'AA-',
+    'Aaa': 'AAA',
+    'Aa1': 'AA+', 'Aa2': 'AA', 'Aa3': 'AA-', 'Aa': 'AA',
     'A1': 'A+', 'A2': 'A', 'A3': 'A-',
-    'Baa1': 'BBB+', 'Baa2': 'BBB', 'Baa3': 'BBB-',
-    'Ba1': 'BB+', 'Ba2': 'BB', 'Ba3': 'BB-',
+    'Baa1': 'BBB+', 'Baa2': 'BBB', 'Baa3': 'BBB-', 'Baa': 'BBB',
+    'Ba1': 'BB+', 'Ba2': 'BB', 'Ba3': 'BB-', 'Ba': 'BB', 'BA': 'BB',
     'B1': 'B+', 'B2': 'B', 'B3': 'B-',
-    'Caa1': 'CCC+', 'Caa2': 'CCC', 'Caa3': 'CCC-',
+    'Caa1': 'CCC+', 'Caa2': 'CCC', 'Caa3': 'CCC-', 'Caa': 'CCC',
     'Ca': 'CC', 'C': 'C',
 }
 
