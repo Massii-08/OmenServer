@@ -52,7 +52,7 @@ class BondScanner:
             criteria: Criteri di filtro configurabili
             headless: Se True, browser invisibile
             delay: Pausa tra le richieste (secondi)
-            price_threshold: Seuil de prix pour la coloration rouge/noir
+            price_threshold: Soglia di prezzo per la colorazione rosso/nero
         """
         self.criteria = criteria or ScanCriteria()
         self.headless = headless

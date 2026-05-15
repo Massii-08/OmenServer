@@ -71,7 +71,7 @@ Esempi:
     parser.add_argument('--output', '-o', type=str, default=None,
                         help='Percorso del file Excel di output')
     parser.add_argument('--price-threshold', type=float, default=101.0,
-                        help='Seuil de prix per la coloration rouge/noir (default: 101)')
+                        help='Soglia di prezzo per la colorazione rosso/nero (default: 101)')
 
     # Opzioni tecniche
     parser.add_argument('--show', action='store_true',

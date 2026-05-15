@@ -117,26 +117,26 @@ class ScanCriteria:
                 if years > self.max_maturity_years:
                     return False, f"Scadenza {years:.1f} anni > {self.max_maturity_years} anni"
         else:
-            # Senza data di scadenza, on ne peut pas vérifier → on accepte
-            # (les perpétuelles n'ont pas de scadenza)
+            # Senza data di scadenza, non possiamo verificare → accettiamo
+            # (le obbligazioni perpetue non hanno scadenza)
             pass
 
         # 3. Yield: deve essere ≥ min_yield
         if bond.calculated_yield is not None and bond.calculated_yield < self.min_yield:
             return False, f"Yield {bond.calculated_yield:.4%} < {self.min_yield:.2%}"
 
-        # 4. Rating: doit être ≥ min_rating (Investment Grade)
+        # 4. Rating: deve essere ≥ min_rating (Investment Grade)
         if bond.rating and self.min_rating:
             bond_idx = _rating_index(bond.rating)
             min_idx = _rating_index(self.min_rating)
             if bond_idx > min_idx:
                 return False, f"Rating {bond.rating} < {self.min_rating}"
 
-        # 5. Valuta: doit être dans la liste
+        # 5. Valuta: deve essere nella lista
         if bond.currency and bond.currency.upper() not in [c.upper() for c in self.currencies]:
             return False, f"Valuta {bond.currency} non nelle valute selezionate"
 
-        # 6. Volume minimum (optionnel)
+        # 6. Volume minimo (opzionale)
         if self.min_volume is not None and bond.volume is not None:
             try:
                 vol = float(str(bond.volume).replace('k', '000').replace(',', '').replace("'", ''))
@@ -145,7 +145,7 @@ class ScanCriteria:
             except ValueError:
                 pass
 
-        # 7. Pièce minimale max (optionnel)
+        # 7. Pezzo minimo max (opzionale)
         if self.max_min_piece is not None and bond.min_piece is not None:
             try:
                 mp = float(str(bond.min_piece).replace('k', '000').replace(',', '').replace("'", ''))

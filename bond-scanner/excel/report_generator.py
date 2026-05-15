@@ -4,7 +4,7 @@ Generatore di report Excel per il Bond Scanner.
 Crea un file Excel nel formato identico a "Lista acquisti-2026.xlsx":
 - 3 fogli: Euro, USD, GBP
 - Colonne: PAPY, Nome, Emissione, ISIN, Price, Yield, Rating, Volume, Min. piece
-- Coloration rouge/noir selon le prix
+- Colorazione rosso/nero secondo il prezzo
 - Ordinamento per yield decrescente
 
 Tutto in italiano 🇮🇹
@@ -120,7 +120,7 @@ class ReportGenerator:
     def __init__(self, price_threshold: float = 101.0):
         """
         Args:
-            price_threshold: Seuil de prix pour coloration rouge/noir
+            price_threshold: Soglia di prezzo per la colorazione rosso/nero
         """
         self.price_threshold = price_threshold
         self.wb = openpyxl.Workbook()
