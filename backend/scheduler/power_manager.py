@@ -134,13 +134,13 @@ def shutdown_with_rtcwake(wake_hour: str) -> bool:
     """
     Met la machine en veille (suspend-to-RAM) et programme le réveil via rtcwake.
 
-    Utilise le timer RTC du BIOS pour réveiller la machine à l'heure
-    configurée. Fonctionne sur Linux (nécessite root/sudo).
+    Utilise deux étapes pour que les hooks systemd fonctionnent au réveil :
+    1. rtcwake -m no  → Programme le timer RTC sans suspendre
+    2. systemctl suspend → Suspend via systemd (déclenche /etc/systemd/system-sleep/)
 
-    Note: -m mem est utilisé car -m off est bloqué par Kernel Lockdown
-    (Secure Boot activé sur le HP Omen).
+    Au réveil, le script omen-resume.sh redémarre cloudflared + omenserver.
 
-    Commande : sudo rtcwake -m mem -l -t <wake_timestamp>
+    Note: -m off est bloqué par Kernel Lockdown (Secure Boot activé sur le HP Omen).
 
     Args:
         wake_hour: Heure de réveil au format "HH:MM"
@@ -151,20 +151,30 @@ def shutdown_with_rtcwake(wake_hour: str) -> bool:
     wake_dt = datetime.fromtimestamp(wake_ts)
 
     try:
-        logger.info(f"🌙 rtcwake: suspend-to-RAM + réveil prévu à {wake_dt.strftime('%H:%M')} (timestamp {wake_ts})")
+        logger.info(f"🌙 rtcwake: réveil prévu à {wake_dt.strftime('%H:%M')} (timestamp {wake_ts})")
 
-        # rtcwake -m mem : suspend-to-RAM (veille profonde, ~1-3W)
-        # Note: -m off est bloqué par Kernel Lockdown (Secure Boot activé)
-        # -l : utilise l'heure locale (pas UTC)
+        # Étape 1 : Programmer le timer RTC du BIOS (sans suspendre)
+        # -m no : programme seulement le réveil, ne suspend pas
+        # -l : utilise l'heure locale
         # -t : timestamp de réveil
-        result = subprocess.Popen(
-            ["sudo", "rtcwake", "-m", "mem", "-l", "-t", str(wake_ts)],
+        result = subprocess.run(
+            ["sudo", "rtcwake", "-m", "no", "-l", "-t", str(wake_ts)],
+            capture_output=True, text=True, timeout=10,
         )
-        logger.info("🌙 rtcwake lancé — mise en veille imminente")
+        if result.returncode != 0:
+            logger.error(f"⚡ rtcwake -m no échoué: {result.stderr}")
+            return False
+
+        logger.info("🌙 Timer RTC programmé — lancement du suspend via systemd")
+
+        # Étape 2 : Suspend via systemd (déclenche les hooks system-sleep)
+        # Au réveil, /etc/systemd/system-sleep/omen-resume.sh restart les services
+        subprocess.Popen(["sudo", "systemctl", "suspend"])
+        logger.info("🌙 systemctl suspend lancé — mise en veille imminente")
         return True
 
     except Exception as e:
-        logger.error(f"⚡ Erreur rtcwake: {e}")
+        logger.error(f"⚡ Erreur rtcwake/suspend: {e}")
         # Fallback : shutdown simple sans réveil programmé
         logger.warning("⚡ Fallback: shutdown -h now (sans réveil automatique)")
         try:
