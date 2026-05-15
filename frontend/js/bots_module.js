@@ -1599,24 +1599,12 @@ const BotsModule = {
     async _downloadScannerResult() {
         const jobId = this._scannerState.jobId;
         if (!jobId) return;
-        try {
-            const r = await Auth.apiCall(`/api/bots/scanner/download/${jobId}`);
-            if (!r || !r.ok) throw new Error('Download failed');
-            let filename = 'Opportunita_Bond.xlsx';
-            const disposition = r.headers.get('Content-Disposition') || '';
-            const match = disposition.match(/filename="?([^";\n]+)"?/i);
-            if (match) filename = decodeURIComponent(match[1].trim());
-            const blob = await r.blob();
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = filename; a.style.display = 'none';
-            document.body.appendChild(a); a.click();
-            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
-        } catch (e) {
-            console.error('[Scanner] Download error:', e);
-            const token = Auth.getToken();
-            if (token) window.open(`/api/bots/scanner/download-file/${jobId}/Opportunita_Bond.xlsx?token=${encodeURIComponent(token)}`, '_blank');
-        }
+        const token = Auth.getToken();
+        if (!token) return;
+        // Utilise un lien direct avec token — plus fiable via Cloudflare
+        const today = new Date().toISOString().slice(0, 10);
+        const filename = `Opportunita_Bond_${today}.xlsx`;
+        window.open(`/api/bots/scanner/download-file/${jobId}/${encodeURIComponent(filename)}?token=${encodeURIComponent(token)}`, '_blank');
     },
 
     async _stopScanner() {
