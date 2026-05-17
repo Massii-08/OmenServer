@@ -22,7 +22,14 @@ import re
 from datetime import date, datetime
 from typing import List, Dict, Any, Optional
 
-from scanner.models import ScannedBond
+from scanner.models import ScannedBond, RatingInfo
+from scanner.rating_providers import (
+    ALL_PROVIDERS,
+    DeutscheBoerseApiProvider,
+    BoerseFrankfurtHtmlProvider,
+    BoerseStuttgartProvider,
+    merge_ratings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -236,7 +243,8 @@ class MarketScraper:
         Arricchisce un bond con dati dettagliati dalla pagina singola.
 
         Naviga alla pagina del bond su Deutsche Börse e raccoglie
-        tutti i dati disponibili (rating, volume, min piece, ecc.).
+        tutti i dati disponibili (volume, min piece, ecc.).
+        I rating sono gestiti separatamente da fetch_ratings().
 
         Args:
             bond: ScannedBond con almeno l'ISIN
@@ -244,7 +252,7 @@ class MarketScraper:
         Returns:
             ScannedBond con dati completi
         """
-        api_responses: Dict[str, Any] = {}
+        self._last_api_responses: Dict[str, Any] = {}
 
         async def capture_response(response):
             url = response.url
@@ -256,7 +264,7 @@ class MarketScraper:
                         if 'json' in content_type:
                             body = await response.json()
                             if body:
-                                api_responses[url] = body
+                                self._last_api_responses[url] = body
                 except Exception:
                     pass
 
@@ -273,23 +281,65 @@ class MarketScraper:
             # (come il fix di velocità del Yield Bot — niente networkidle)
             await self._page.wait_for_timeout(1500)
 
-            # Estrai dati dalle API
-            self._enrich_from_api(bond, api_responses)
-
-            # Log debug per i campi trovati/mancanti
-            if not bond.rating:
-                # Cerca manualmente tra tutte le chiavi API per capire se c'è un campo rating
-                all_keys = set()
-                for url, data in api_responses.items():
-                    self._collect_keys(data, all_keys, depth=0, max_depth=4)
-                rating_keys = [k for k in all_keys if 'rat' in k.lower()]
-                if rating_keys:
-                    logger.info(f"    📊 Chiavi rating nelle API: {rating_keys}")
-                else:
-                    logger.debug(f"    ⚠️ Nessuna chiave rating trovata nelle API")
+            # Estrai dati dalle API (prezzo, cedola, scadenza, volume, etc.)
+            self._enrich_from_api(bond, self._last_api_responses)
 
         finally:
             self._page.remove_listener("response", capture_response)
+
+        return bond
+
+    async def fetch_ratings(self, bond: ScannedBond) -> ScannedBond:
+        """
+        Recupera i rating da fonti multiple (cascade mode).
+
+        Strategia cascade:
+        1. Deutsche Börse API (dati già intercettati — istantaneo)
+        2. Börse Frankfurt HTML (pagina già caricata — istantaneo)
+        3. Börse Stuttgart (navigazione aggiuntiva — solo se necessario)
+
+        I rating trovati vengono combinati in rating_display con la fonte
+        tra parentesi: es. "AA- (DB, BS)" o "AA- (DB) / A+ (BS)".
+
+        Args:
+            bond: ScannedBond con l'ISIN
+
+        Returns:
+            ScannedBond con ratings, rating e rating_display aggiornati
+        """
+        found_ratings: list = []
+
+        # --- Source 1: Deutsche Börse API (dati già disponibili) ---
+        db_provider = DeutscheBoerseApiProvider()
+        api_responses = getattr(self, '_last_api_responses', {})
+        rating = await db_provider.get_rating(bond.isin, api_responses=api_responses)
+        if rating:
+            found_ratings.append(rating)
+
+        # --- Source 2: Börse Frankfurt HTML (pagina già caricata) ---
+        bf_provider = BoerseFrankfurtHtmlProvider()
+        rating = await bf_provider.get_rating(bond.isin, page=self._page)
+        if rating:
+            found_ratings.append(rating)
+
+        # --- Source 3: Börse Stuttgart (solo se necessario — cascade) ---
+        if not found_ratings:
+            bs_provider = BoerseStuttgartProvider()
+            rating = await bs_provider.get_rating(bond.isin, page=self._page)
+            if rating:
+                found_ratings.append(rating)
+
+            # Dopo Stuttgart, torna alla pagina Deutsche Börse per il prossimo bond
+            # (evita che il prossimo enrich_bond parta dalla pagina sbagliata)
+
+        # --- Fusione ---
+        bond.ratings = found_ratings
+        bond.rating, bond.rating_display = merge_ratings(found_ratings)
+
+        if found_ratings:
+            logger.info(f"    📊 Rating finale: {bond.rating_display}")
+        else:
+            logger.debug(f"    ⚠️ Nessun rating trovato da nessuna fonte")
 
         return bond
 
@@ -448,21 +498,8 @@ class MarketScraper:
                             bond.volume = str(value)
 
                 # --- RATING ---
-                if bond.rating is None:
-                    if key_lower in ('rating', 'sprating', 'moodyrating',
-                                     'fitchrating', 'creditrating',
-                                     'ratingvalue', 'ratingmoodys', 'ratingfitch',
-                                     'ratingsp', 'standardandpoorsrating',
-                                     'moodyslongtermrating', 'fitchlongtermrating',
-                                     'splongtermrating', 'issuerrating',
-                                     'bondrating', 'currentrating',
-                                     'ratingclass', 'ratinggrade'):
-                        if isinstance(value, str) and 1 <= len(value) <= 10:
-                            # Ignora stringhe generiche tipo 'not rated', 'NR', 'n/a'
-                            val_clean = value.strip().upper()
-                            if val_clean not in ('NR', 'N/A', 'NA', '-', 'NOT RATED', 'UNRATED'):
-                                bond.rating = value
-                                logger.debug(f"    📊 Rating trovato: {value} (chiave: {key})")
+                # I rating sono ora gestiti dai RatingProvider in rating_providers.py
+                # (multi-source con tracciabilità della fonte)
 
                 # --- MIN PIECE ---
                 if bond.min_piece is None:

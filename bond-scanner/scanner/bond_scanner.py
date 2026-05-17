@@ -199,6 +199,9 @@ class BondScanner:
                             else:
                                 logger.info(f"    ⚠️ Dati incompleti — skip yield")
 
+                            # Recupera rating da fonti multiple (cascade)
+                            await scraper.fetch_ratings(bond)
+
                             # Filtro completo
                             matches, reason = self.criteria.matches(bond)
                             if matches:
@@ -206,7 +209,7 @@ class BondScanner:
                                 currency_stats['filtered'] += 1
                                 yield_str = f"{bond.calculated_yield:.4%}" if bond.calculated_yield else '?'
                                 logger.info(f"    ✅ ACCETTATO — Prezzo: {bond.current_price}, "
-                                            f"Yield: {yield_str}, Rating: {bond.rating or '?'}")
+                                            f"Yield: {yield_str}, Rating: {bond.rating_display or '?'}")
                             else:
                                 currency_stats['discarded'] += 1
                                 logger.info(f"    ❌ Scartato: {reason}")

@@ -7,7 +7,19 @@ del mercato, con tutti i dati necessari per il filtraggio e il calcolo yield.
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Optional
+from typing import List, Optional
+
+
+@dataclass
+class RatingInfo:
+    """Un rating proveniente da una fonte specifica."""
+
+    value: str        # Es: "AA-", "BBB+", "Baa1"
+    source: str       # Tag corto: "DB", "BF", "BS"
+    source_full: str  # Nome completo: "Deutsche Börse", "Börse Frankfurt", "Börse Stuttgart"
+
+    def __repr__(self) -> str:
+        return f"{self.value} ({self.source})"
 
 
 @dataclass
@@ -29,7 +41,11 @@ class ScannedBond:
     # Dati aggiuntivi
     volume: Optional[str] = None
     min_piece: Optional[str] = None
-    rating: Optional[str] = None
+
+    # Rating multi-source
+    ratings: List[RatingInfo] = field(default_factory=list)  # Tutti i rating trovati
+    rating: Optional[str] = None          # Rating finale (per filtro compatibilità)
+    rating_display: Optional[str] = None  # Per Excel: "AA- (DB, BS)" o "AA- (DB) / A+ (BS)"
 
     # Yield calcolato dal bot
     calculated_yield: Optional[float] = None

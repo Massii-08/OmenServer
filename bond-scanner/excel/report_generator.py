@@ -185,7 +185,7 @@ class ReportGenerator:
 
         # Largeur des colonnes
         col_widths = {'A': 6, 'B': 42, 'C': 12, 'D': 16, 'E': 14, 'F': 10,
-                      'G': 14, 'H': 14, 'I': 10}
+                      'G': 22, 'H': 14, 'I': 10}
         for col, width in col_widths.items():
             ws.column_dimensions[col].width = width
 
@@ -204,7 +204,7 @@ class ReportGenerator:
             ('D3', 'ISIN'),
             ('E3', f'Price - {currency}'),
             ('F3', 'Yield'),
-            ('G3', 'Rating\n(to check)'),
+            ('G3', 'Rating (fonte)'),
             ('H3', 'Volume'),
             ('I3', 'Min. pie'),
         ]
@@ -260,7 +260,7 @@ class ReportGenerator:
         ws[f'F{row}'].alignment = CENTER_ALIGN
         ws[f'F{row}'].border = THIN_BORDER
 
-        ws[f'G{row}'] = bond.rating or '?'
+        ws[f'G{row}'] = bond.rating_display or bond.rating or '?'
         ws[f'G{row}'].font = font
         ws[f'G{row}'].alignment = CENTER_ALIGN
         ws[f'G{row}'].border = THIN_BORDER
