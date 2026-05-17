@@ -186,21 +186,46 @@ class MarketScraper:
                 all_bonds.extend(bonds_from_api)
                 logger.info(f"  📊 Trovati {len(bonds_from_api)} bond dalla pagina iniziale")
 
+            # Clicca su "100" per mostrare più risultati per pagina
+            try:
+                btn_100 = self._page.locator('button.page-bar-type-button:has-text("100")').first
+                if await btn_100.is_visible(timeout=3000):
+                    api_responses.clear()
+                    await btn_100.click()
+                    await self._page.wait_for_load_state("networkidle")
+                    await self._page.wait_for_timeout(2000)
+
+                    # Raccogli i bond con 100 risultati
+                    bonds_100 = self._parse_bond_list_responses(api_responses, currency)
+                    if bonds_100:
+                        all_bonds = bonds_100  # Rimpiazza, contiene i primi 25 + altri 75
+                        logger.info(f"  📊 Modalità 100/pagina: {len(bonds_100)} bond")
+            except Exception:
+                logger.debug("  ⚠️ Bottone 100/pagina non trovato")
+
             # Paginazione: clicca "Next" per caricare più risultati
             page_num = 1
             while page_num < max_pages:
                 api_responses.clear()
 
-                # Cerca il bottone "Next page"
+                # Trova il numero della pagina attiva
+                try:
+                    active_btn = self._page.locator('button.page-bar-type-button.active').first
+                    active_text = await active_btn.text_content(timeout=2000)
+                    current_page = int(active_text.strip())
+                except Exception:
+                    current_page = page_num
+
+                next_page = current_page + 1
+
+                # Cerca il bottone "Show page N" (struttura Deutsche Börse)
                 next_btn = None
                 next_selectors = [
+                    f'button.page-bar-type-button[title="Show page {next_page}"]',
+                    f'button[title="Show page {next_page}"]',
+                    'button.page-bar-type-button:has-text("|>")',  # bottone avanti
                     'button[aria-label*="Next"]',
                     'button[aria-label*="next"]',
-                    '.pagination-next',
-                    'button:has-text(">")',
-                    'a:has-text(">")',
-                    '[class*="next"]',
-                    'button[class*="paginator"] >> nth=-1',
                 ]
 
                 for selector in next_selectors:
@@ -223,7 +248,7 @@ class MarketScraper:
                 logger.info(f"  📄 Pagina {page_num}...")
                 await next_btn.click()
                 await self._page.wait_for_load_state("networkidle")
-                await self._page.wait_for_timeout(1000)
+                await self._page.wait_for_timeout(1500)
 
                 # Raccogli i nuovi bond
                 new_bonds = self._parse_bond_list_responses(api_responses, currency)
@@ -282,14 +307,26 @@ class MarketScraper:
 
         try:
             bond_url = f"{self.BASE_URL}/bond/{bond.isin.lower()}"
-            await self._page.goto(
-                bond_url,
-                wait_until="domcontentloaded",
-                timeout=self.timeout,
-            )
-            # Attendi solo il tempo necessario per le API JSON
-            # (come il fix di velocità del Yield Bot — niente networkidle)
-            await self._page.wait_for_timeout(1500)
+
+            # Tentativo con retry (il server può essere lento)
+            for attempt in range(2):
+                try:
+                    await self._page.goto(
+                        bond_url,
+                        wait_until="domcontentloaded",
+                        timeout=self.timeout,
+                    )
+                    break
+                except Exception as nav_err:
+                    if attempt == 0:
+                        logger.debug(f"    ⚠️ Retry navigazione: {nav_err}")
+                        await self._page.wait_for_timeout(1000)
+                    else:
+                        raise
+
+            # Attendi il tempo necessario per le API JSON
+            # (il server headless ha bisogno di più tempo)
+            await self._page.wait_for_timeout(2500)
 
             # Estrai dati dalle API (prezzo, cedola, scadenza, volume, etc.)
             self._enrich_from_api(bond, self._last_api_responses)
@@ -322,25 +359,34 @@ class MarketScraper:
         found_ratings: list = []
 
         # --- Source 1: Deutsche Börse API (dati già disponibili) ---
-        db_provider = DeutscheBoerseApiProvider()
-        api_responses = getattr(self, '_last_api_responses', {})
-        rating = await db_provider.get_rating(bond.isin, api_responses=api_responses)
-        if rating:
-            found_ratings.append(rating)
+        try:
+            db_provider = DeutscheBoerseApiProvider()
+            api_responses = getattr(self, '_last_api_responses', {})
+            rating = await db_provider.get_rating(bond.isin, api_responses=api_responses)
+            if rating:
+                found_ratings.append(rating)
+        except Exception as e:
+            logger.debug(f"    ⚠️ Errore DB rating: {e}")
 
         # --- Source 2: Börse Frankfurt HTML (pagina già caricata) ---
-        bf_provider = BoerseFrankfurtHtmlProvider()
-        rating = await bf_provider.get_rating(bond.isin, page=self._page)
-        if rating:
-            found_ratings.append(rating)
+        try:
+            bf_provider = BoerseFrankfurtHtmlProvider()
+            rating = await bf_provider.get_rating(bond.isin, page=self._page)
+            if rating:
+                found_ratings.append(rating)
+        except Exception as e:
+            logger.debug(f"    ⚠️ Errore BF rating: {e}")
 
         # --- Source 3: Tabella Emittenti (lookup locale istantaneo) ---
-        ref_provider = IssuerReferenceProvider()
-        rating = await ref_provider.get_rating(
-            bond.isin, bond_name=bond.name
-        )
-        if rating:
-            found_ratings.append(rating)
+        try:
+            ref_provider = IssuerReferenceProvider()
+            rating = await ref_provider.get_rating(
+                bond.isin, bond_name=bond.name
+            )
+            if rating:
+                found_ratings.append(rating)
+        except Exception as e:
+            logger.debug(f"    ⚠️ Errore REF rating: {e}")
 
         # --- Source 4+5: Stuttgart + Fitch (solo se nessun rating trovato) ---
         # Usa pagine SEPARATE per non corrompere la sessione Deutsche Börse
