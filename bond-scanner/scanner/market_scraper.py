@@ -158,20 +158,14 @@ class MarketScraper:
 
         self._page.on("response", capture_response)
 
-        # Mapping nomi valuta per il parametro URL Deutsche Börse
-        currency_names = {
-            'EUR': 'Euro',
-            'USD': 'US dollar',
-            'GBP': 'British Pound Sterling',
-            'CHF': 'Swiss franc',
-        }
+        # Deutsche Börse accetta i codici valuta standard (EUR, USD, GBP)
+        # direttamente nel parametro URL — NON il nome completo
 
         try:
             # Naviga alla pagina Bond Search CON filtro valuta
-            currency_param = currency_names.get(currency, currency)
             bonds_url = (
                 f"{self.BASE_URL}/bonds/search"
-                f"?CURRENCIES={currency_param}"
+                f"?CURRENCIES={currency}"
                 f"&ORDER_BY=TURNOVER&ORDER_DIRECTION=DESC"
             )
             logger.info(f"📡 Navigazione: {bonds_url}")
