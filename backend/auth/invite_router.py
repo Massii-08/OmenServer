@@ -21,7 +21,7 @@ Routes:
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -164,12 +164,21 @@ def get_invite_info(code: str, db: Session = Depends(get_db)):
 def join_with_invite(
     code: str,
     request: JoinRequest,
+    http_request: Request,
     db: Session = Depends(get_db),
 ):
     """
     Créer un compte avec un code d'invitation.
     Le rôle est assigné automatiquement selon l'invitation.
     """
+    # Rate limiting : protéger contre le bruteforce de codes
+    from backend.auth.rate_limiter import check_rate_limit
+    check_rate_limit(http_request, endpoint="join")
+
+    # Validation du mot de passe (min 8 caractères)
+    if len(request.password) < 8:
+        raise HTTPException(status_code=400, detail="Le mot de passe doit contenir au moins 8 caractères.")
+
     # Vérifier le code
     invitation = db.query(Invitation).filter(Invitation.code == code).first()
     if not invitation:

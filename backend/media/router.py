@@ -135,6 +135,10 @@ async def setup_jellyfin(req: SetupRequest = SetupRequest(), user=Depends(get_cu
     Déploie le conteneur Jellyfin pour la première fois.
     Crée les dossiers nécessaires et lance le conteneur Docker.
     """
+    # Sécurité : admin uniquement
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Seuls les administrateurs peuvent déployer Jellyfin.")
+
     client = _get_docker_client()
 
     # Vérifier si déjà installé
@@ -189,6 +193,8 @@ async def setup_jellyfin(req: SetupRequest = SetupRequest(), user=Depends(get_cu
 @router.post("/start")
 async def start_jellyfin(user=Depends(get_current_user)):
     """Démarrer le conteneur Jellyfin."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Seuls les administrateurs peuvent gérer Jellyfin.")
     client = _get_docker_client()
     container = _get_container(client)
 
@@ -206,6 +212,8 @@ async def start_jellyfin(user=Depends(get_current_user)):
 @router.post("/stop")
 async def stop_jellyfin(user=Depends(get_current_user)):
     """Arrêter le conteneur Jellyfin."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Seuls les administrateurs peuvent gérer Jellyfin.")
     client = _get_docker_client()
     container = _get_container(client)
 
@@ -223,6 +231,8 @@ async def stop_jellyfin(user=Depends(get_current_user)):
 @router.post("/restart")
 async def restart_jellyfin(user=Depends(get_current_user)):
     """Redémarrer le conteneur Jellyfin."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Seuls les administrateurs peuvent gérer Jellyfin.")
     client = _get_docker_client()
     container = _get_container(client)
 
@@ -322,6 +332,8 @@ async def list_libraries(user=Depends(get_current_user)):
 @router.post("/libraries")
 async def add_library(req: LibraryRequest, user=Depends(get_current_user)):
     """Ajouter un nouveau dossier de bibliothèque média."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Seuls les administrateurs peuvent ajouter des bibliothèques.")
     lib_path = os.path.join(MEDIA_BASE_DIR, req.name.lower().replace(" ", "_"))
     if os.path.exists(lib_path):
         raise HTTPException(status_code=409, detail=f"Le dossier '{req.name}' existe déjà.")
@@ -339,6 +351,8 @@ async def add_library(req: LibraryRequest, user=Depends(get_current_user)):
 @router.delete("/libraries/{name}")
 async def delete_library(name: str, user=Depends(get_current_user)):
     """Supprimer un dossier de bibliothèque (le dossier doit être vide)."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Seuls les administrateurs peuvent supprimer des bibliothèques.")
     lib_path = os.path.join(MEDIA_BASE_DIR, name)
     if not os.path.exists(lib_path):
         raise HTTPException(status_code=404, detail=f"Dossier '{name}' non trouvé.")
@@ -356,6 +370,8 @@ async def delete_library(name: str, user=Depends(get_current_user)):
 @router.delete("/reset")
 async def reset_jellyfin(user=Depends(get_current_user)):
     """Supprimer le conteneur Jellyfin (les données média sont conservées)."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Seuls les administrateurs peuvent réinitialiser Jellyfin.")
     client = _get_docker_client()
     container = _get_container(client)
 

@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend.auth.models import User
 from backend.auth.utils import get_current_user
+from backend.auth.access_control import can_access_resource
 from backend.game_server.models import GameServer
 from backend.game_server import backup_manager
 
@@ -51,6 +52,10 @@ def create_backup(
 ):
     """Créer une sauvegarde manuelle du serveur avec un nom optionnel."""
     server = _get_server(server_id, db)
+
+    # RBAC : seul le propriétaire ou un admin peut créer des backups
+    if not can_access_resource(current_user, "server", server_id, db, min_level="manage"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit de sauvegarder ce serveur.")
 
     if not server.docker_id:
         raise HTTPException(
@@ -108,6 +113,10 @@ def restore_backup(
     """Restaurer une sauvegarde (le serveur doit être arrêté)."""
     server = _get_server(server_id, db)
 
+    # RBAC : seul le propriétaire ou un admin peut restaurer
+    if not can_access_resource(current_user, "server", server_id, db, min_level="manage"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit de restaurer sur ce serveur.")
+
     if not server.docker_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -141,6 +150,10 @@ def rename_backup(
     """Renommer une sauvegarde."""
     _get_server(server_id, db)
 
+    # RBAC : seul le propriétaire ou un admin peut renommer
+    if not can_access_resource(current_user, "server", server_id, db, min_level="manage"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit de modifier les sauvegardes de ce serveur.")
+
     try:
         result = backup_manager.rename_backup(server_id, backup_id, request.new_name, backup_type=backup_type)
         return result
@@ -161,6 +174,10 @@ def delete_backup(
 ):
     """Supprimer une sauvegarde."""
     _get_server(server_id, db)
+
+    # RBAC : seul le propriétaire ou un admin peut supprimer
+    if not can_access_resource(current_user, "server", server_id, db, min_level="manage"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit de supprimer les sauvegardes de ce serveur.")
 
     try:
         backup_manager.delete_backup(server_id, backup_id, backup_type=backup_type)

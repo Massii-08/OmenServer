@@ -259,6 +259,10 @@ async def delete_website(site_id: int, db: Session = Depends(get_db), user=Depen
     if not site:
         raise HTTPException(status_code=404, detail="Site non trouvé.")
 
+    # RBAC : seul le propriétaire ou un admin peut supprimer
+    if not user.is_admin and getattr(site, 'owner_id', None) != user.id:
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit de supprimer ce site.")
+
     # Arrêter et supprimer le conteneur Docker
     try:
         client = _get_docker_client()
@@ -284,6 +288,10 @@ async def start_website(site_id: int, db: Session = Depends(get_db), user=Depend
     site = db.query(Website).filter(Website.id == site_id).first()
     if not site:
         raise HTTPException(status_code=404, detail="Site non trouvé.")
+
+    # RBAC : seul le propriétaire ou un admin peut démarrer
+    if not user.is_admin and getattr(site, 'owner_id', None) != user.id:
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit de gérer ce site.")
 
     client = _get_docker_client()
     container = _get_container(client, site_id)
@@ -366,6 +374,10 @@ async def stop_website(site_id: int, db: Session = Depends(get_db), user=Depends
     site = db.query(Website).filter(Website.id == site_id).first()
     if not site:
         raise HTTPException(status_code=404, detail="Site non trouvé.")
+
+    # RBAC : seul le propriétaire ou un admin peut arrêter
+    if not user.is_admin and getattr(site, 'owner_id', None) != user.id:
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit de gérer ce site.")
 
     client = _get_docker_client()
     container = _get_container(client, site_id)

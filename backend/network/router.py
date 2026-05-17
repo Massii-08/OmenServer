@@ -263,6 +263,9 @@ async def list_devices(db: Session = Depends(get_db), user=Depends(get_current_u
 @router.post("/devices")
 async def add_device(req: WolDeviceCreate, db: Session = Depends(get_db), user=Depends(get_current_user)):
     """Ajouter un appareil Wake-on-LAN."""
+    # Sécurité : admin uniquement
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Seuls les administrateurs peuvent ajouter des appareils WoL.")
     # Valider le format MAC
     mac = req.mac_address.strip().upper()
     mac_clean = mac.replace(":", "").replace("-", "").replace(".", "")
@@ -288,6 +291,9 @@ async def add_device(req: WolDeviceCreate, db: Session = Depends(get_db), user=D
 @router.delete("/devices/{device_id}")
 async def delete_device(device_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
     """Supprimer un appareil WoL."""
+    # Sécurité : admin uniquement
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Seuls les administrateurs peuvent supprimer des appareils WoL.")
     device = db.query(WolDevice).filter(WolDevice.id == device_id).first()
     if not device:
         raise HTTPException(status_code=404, detail="Appareil non trouvé.")

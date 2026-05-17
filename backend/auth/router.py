@@ -116,6 +116,13 @@ def register(
     - Si c'est le premier compte → autorisé sans authentification (setup wizard)
     - Sinon → SEUL un admin connecté peut créer des comptes
     """
+    # Validation du mot de passe (min 8 caractères)
+    if len(request.password) < 8:
+        raise HTTPException(
+            status_code=400,
+            detail="Le mot de passe doit contenir au moins 8 caractères."
+        )
+
     is_first_user = db.query(User).count() == 0
 
     # Si ce n'est pas le premier compte, vérifier que c'est un admin qui crée

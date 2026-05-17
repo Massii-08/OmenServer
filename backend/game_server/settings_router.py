@@ -187,11 +187,36 @@ def _docker_exec_stopped(docker_id: str, cmd: str) -> str:
             return ""
 
     # rm / mkdir / mv → utiliser un conteneur temporaire busybox avec --volumes-from
+    # Sécurité : valider les paths et construire des commandes sûres (pas de sh -c)
     if any(x in cmd_stripped for x in ["rm ", "mkdir ", "mv "]):
+        import shlex
         try:
+            # Parser la commande pour extraire le binaire et les arguments
+            parts = shlex.split(cmd_stripped)
+            if not parts:
+                return ""
+            cmd_name = parts[0]
+            # Whitelist stricte des commandes autorisées
+            if cmd_name not in ("rm", "mkdir", "mv"):
+                logger.warning(f"Commande non autorisée bloquée: {cmd_name}")
+                return ""
+            # Valider que tous les arguments de chemin restent sous /data
+            for arg in parts[1:]:
+                if arg.startswith("-"):
+                    # Whitelist de flags autorisés
+                    if arg not in ("-rf", "-r", "-f", "-p"):
+                        logger.warning(f"Flag non autorisé bloqué: {arg}")
+                        return ""
+                    continue
+                # Vérifier que le chemin est sous /data
+                import posixpath
+                resolved = posixpath.normpath(arg)
+                if not resolved.startswith("/data/") and resolved != "/data":
+                    logger.warning(f"Chemin hors /data bloqué: {arg} → {resolved}")
+                    raise RuntimeError(f"Chemin non autorisé: {arg}")
             r = subprocess.run(
                 ["docker", "run", "--rm", "--volumes-from", docker_id,
-                 "busybox", "sh", "-c", cmd_stripped],
+                 "busybox"] + parts,
                 capture_output=True, text=True, timeout=30
             )
             return r.stdout

@@ -32,7 +32,35 @@ class Settings:
     DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{_db_path}")
 
     # --- Authentification JWT ---
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "change-moi-en-production-stp")
+    # Sécurité : auto-génère une clé si la valeur par défaut est utilisée
+    _raw_secret = os.getenv("SECRET_KEY", "")
+    if not _raw_secret or _raw_secret == "change-moi-en-production-stp":
+        import secrets as _secrets
+        _raw_secret = _secrets.token_urlsafe(64)
+        # Écrire la clé générée dans .env pour la persister
+        _env_file = PROJECT_DIR / ".env"
+        try:
+            if _env_file.exists():
+                _env_content = _env_file.read_text()
+                if "SECRET_KEY=" in _env_content:
+                    import re as _re
+                    _env_content = _re.sub(
+                        r'SECRET_KEY=.*',
+                        f'SECRET_KEY={_raw_secret}',
+                        _env_content,
+                    )
+                else:
+                    _env_content += f"\nSECRET_KEY={_raw_secret}\n"
+                _env_file.write_text(_env_content)
+            else:
+                _env_file.write_text(f"SECRET_KEY={_raw_secret}\n")
+            import logging as _logging
+            _logging.getLogger("omenserver").warning(
+                "🔑 SECRET_KEY générée automatiquement et sauvegardée dans .env"
+            )
+        except Exception:
+            pass  # En lecture seule — la clé sera régénérée au prochain restart
+    SECRET_KEY: str = _raw_secret
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("TOKEN_EXPIRE_MINUTES", "1440"))
 

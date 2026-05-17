@@ -51,15 +51,20 @@ def _safe_path(path: str) -> str:
     """Sécurise le chemin pour éviter les path traversal et l'injection shell."""
     import posixpath
     import re
-    clean = posixpath.normpath(path)
-    if clean.startswith("..") or "/../" in clean:
-        raise HTTPException(status_code=400, detail="Chemin invalide")
     # Bloquer les caractères dangereux pour la shell (protection injection)
-    if re.search(r'[;|`$&<>\\!\'"(){}\[\]]', clean):
+    if re.search(r'[;|`$&<>\\!\'"(){}\[\]\x00]', path):
         raise HTTPException(status_code=400, detail="Caractères interdits dans le chemin")
-    if not clean.startswith("/"):
-        clean = "/" + clean
-    return BASE_PATH + clean
+    # Normaliser le chemin
+    clean = posixpath.normpath(path)
+    # Construire le chemin complet sous BASE_PATH
+    if clean.startswith("/"):
+        full = posixpath.normpath(BASE_PATH + clean)
+    else:
+        full = posixpath.normpath(BASE_PATH + "/" + clean)
+    # Vérification critique : le chemin résolu doit rester sous BASE_PATH
+    if not full.startswith(BASE_PATH + "/") and full != BASE_PATH:
+        raise HTTPException(status_code=400, detail="Chemin invalide — accès hors zone autorisée")
+    return full
 
 
 @router.get("/{server_id}/files")

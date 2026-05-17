@@ -192,8 +192,10 @@ def search_users(
     db: Session = Depends(get_db),
 ):
     """Rechercher un utilisateur par pseudo (pour le partage)."""
+    # Sécurité : échapper les caractères spéciaux LIKE pour éviter l'énumération
+    safe_q = q.replace("%", "\\%").replace("_", "\\_")
     users = db.query(User).filter(
-        User.username.ilike(f"%{q}%"),
+        User.username.ilike(f"%{safe_q}%"),
         User.id != current_user.id,  # Exclure soi-même
     ).limit(10).all()
 

@@ -474,7 +474,9 @@ def get_server_logs(
     if not server.docker_id:
         return {"logs": "Aucun conteneur Docker associé"}
 
-    logs = docker_manager.get_container_logs(server.docker_id, tail=tail)
+    # Sécurité : limiter le nombre de lignes pour éviter un DoS mémoire
+    safe_tail = min(max(tail, 1), 1000)
+    logs = docker_manager.get_container_logs(server.docker_id, tail=safe_tail)
     return {"logs": logs}
 
 

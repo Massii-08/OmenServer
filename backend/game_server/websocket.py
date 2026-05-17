@@ -116,6 +116,18 @@ async def console_websocket(
         await websocket.close(code=4004, reason="Serveur non trouvé")
         return
 
+    # 3. RBAC : vérifier que l'utilisateur a accès à ce serveur
+    from backend.auth.access_control import can_access_resource
+    db_check = SessionLocal()
+    try:
+        has_access = can_access_resource(user, "server", server_id, db_check, min_level="view_only")
+    finally:
+        db_check.close()
+    if not has_access:
+        await websocket.send_json({"type": "error", "message": "Accès refusé à ce serveur"})
+        await websocket.close(code=4003, reason="Accès refusé")
+        return
+
     logger.info(f"Console WS connectée: {user.username} → serveur {server.name}")
 
     # 4. Récupérer le conteneur Docker

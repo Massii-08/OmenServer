@@ -188,6 +188,10 @@ def update_bot(
     if not bot:
         raise HTTPException(404, "Bot non trouvé")
 
+    # RBAC : seul le propriétaire ou un admin peut modifier
+    if not can_access_resource(current_user, "bot", bot_id, db, min_level="manage"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit de modifier ce bot.")
+
     if data.name is not None:
         bot.name = data.name
     if data.description is not None:
@@ -323,6 +327,10 @@ def start_bot(
     if not bot:
         raise HTTPException(404, "Bot non trouvé")
 
+    # RBAC : vérifier l'accès au bot (niveau start minimum)
+    if not can_access_resource(current_user, "bot", bot_id, db, min_level="start"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit de démarrer ce bot.")
+
     if bot_id in _bot_processes and _bot_processes[bot_id].poll() is None:
         raise HTTPException(400, "Bot déjà en cours d'exécution")
 
@@ -390,6 +398,10 @@ def stop_bot(
     if not bot:
         raise HTTPException(404, "Bot non trouvé")
 
+    # RBAC : seul le propriétaire ou un admin peut arrêter
+    if not can_access_resource(current_user, "bot", bot_id, db, min_level="manage"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit d'arrêter ce bot.")
+
     if bot_id in _bot_processes:
         proc = _bot_processes[bot_id]
         if proc.poll() is None:
@@ -438,6 +450,10 @@ def get_bot_code(
     if not bot:
         raise HTTPException(404, "Bot non trouvé")
 
+    # RBAC : vérifier l'accès en lecture
+    if not can_access_resource(current_user, "bot", bot_id, db, min_level="view_only"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas accès au code de ce bot.")
+
     script_file = BOTS_DIR / bot.script_path
     if not script_file.exists():
         return {"code": "# Fichier introuvable\n"}
@@ -456,6 +472,10 @@ def save_bot_code(
     bot = db.query(Bot).filter(Bot.id == bot_id).first()
     if not bot:
         raise HTTPException(404, "Bot non trouvé")
+
+    # RBAC : seul le propriétaire ou un admin peut modifier le code
+    if not can_access_resource(current_user, "bot", bot_id, db, min_level="manage"):
+        raise HTTPException(status_code=403, detail="Tu n'as pas le droit de modifier le code de ce bot.")
 
     code = data.get("code", "")
     BOTS_DIR.mkdir(parents=True, exist_ok=True)
