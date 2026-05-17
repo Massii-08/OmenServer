@@ -116,6 +116,7 @@ class BondScanner:
         record_scan()
 
         all_filtered_bonds: List[ScannedBond] = []
+        seen_isins: set = set()  # Deduplica globale tra scansioni multi-valuta
 
         async with MarketScraper(headless=self.headless) as scraper:
             for currency in self.criteria.currencies:
@@ -205,6 +206,11 @@ class BondScanner:
                             # Filtro completo
                             matches, reason = self.criteria.matches(bond)
                             if matches:
+                                # Deduplica globale
+                                if bond.isin in seen_isins:
+                                    logger.info(f"    ⚠️ Duplicato ISIN {bond.isin} — ignorato")
+                                    continue
+                                seen_isins.add(bond.isin)
                                 all_filtered_bonds.append(bond)
                                 currency_stats['filtered'] += 1
                                 yield_str = f"{bond.calculated_yield:.4%}" if bond.calculated_yield else '?'

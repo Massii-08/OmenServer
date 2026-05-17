@@ -155,9 +155,22 @@ class MarketScraper:
 
         self._page.on("response", capture_response)
 
+        # Mapping nomi valuta per il parametro URL Deutsche Börse
+        currency_names = {
+            'EUR': 'Euro',
+            'USD': 'US dollar',
+            'GBP': 'British Pound Sterling',
+            'CHF': 'Swiss franc',
+        }
+
         try:
-            # Naviga alla pagina Bond Search
-            bonds_url = f"{self.BASE_URL}/bonds"
+            # Naviga alla pagina Bond Search CON filtro valuta
+            currency_param = currency_names.get(currency, currency)
+            bonds_url = (
+                f"{self.BASE_URL}/bonds/search"
+                f"?CURRENCIES={currency_param}"
+                f"&ORDER_BY=TURNOVER&ORDER_DIRECTION=DESC"
+            )
             logger.info(f"📡 Navigazione: {bonds_url}")
 
             await self._page.goto(
@@ -168,7 +181,7 @@ class MarketScraper:
 
             # Attendi caricamento API (non tutto il network)
             await self._page.wait_for_load_state("networkidle")
-            await self._page.wait_for_timeout(1500)
+            await self._page.wait_for_timeout(2000)
 
             # Analizza le risposte API per la lista bond
             bonds_from_api = self._parse_bond_list_responses(api_responses, currency)
@@ -296,7 +309,7 @@ class MarketScraper:
         Strategia cascade:
         1. Deutsche Börse API (dati già intercettati — istantaneo)
         2. Börse Frankfurt HTML (pagina già caricata — istantaneo)
-        3. Börse Stuttgart (navigazione aggiuntiva — solo se necessario)
+        3. Börse Stuttgart (pagina separata — solo se necessario)
 
         I rating trovati vengono combinati in rating_display con la fonte
         tra parentesi: es. "AA- (DB, BS)" o "AA- (DB) / A+ (BS)".
@@ -323,14 +336,51 @@ class MarketScraper:
             found_ratings.append(rating)
 
         # --- Source 3: Börse Stuttgart (solo se necessario — cascade) ---
+        # Usa una pagina SEPARATA per non corrompere la sessione Deutsche Börse
         if not found_ratings:
-            bs_provider = BoerseStuttgartProvider()
-            rating = await bs_provider.get_rating(bond.isin, page=self._page)
-            if rating:
-                found_ratings.append(rating)
+            stuttgart_page = None
+            try:
+                stuttgart_page = await self._context.new_page()
 
-            # Dopo Stuttgart, torna alla pagina Deutsche Börse per il prossimo bond
-            # (evita che il prossimo enrich_bond parta dalla pagina sbagliata)
+                # Intercetta le API di Stuttgart per cercare rating nei JSON
+                stuttgart_api: Dict[str, Any] = {}
+
+                async def capture_stuttgart(response):
+                    try:
+                        if response.status == 200:
+                            ct = response.headers.get('content-type', '')
+                            if 'json' in ct:
+                                body = await response.json()
+                                if body:
+                                    stuttgart_api[response.url] = body
+                    except Exception:
+                        pass
+
+                stuttgart_page.on("response", capture_stuttgart)
+
+                bs_provider = BoerseStuttgartProvider()
+                rating = await bs_provider.get_rating(bond.isin, page=stuttgart_page)
+                if rating:
+                    found_ratings.append(rating)
+
+                # Fallback: cerca rating nei JSON API di Stuttgart
+                if not rating and stuttgart_api:
+                    db_provider2 = DeutscheBoerseApiProvider()
+                    for url, data in stuttgart_api.items():
+                        r = db_provider2._search_rating_recursive(data, 0, 5)
+                        if r:
+                            from scanner.rating_providers import is_valid_rating, RatingInfo
+                            if is_valid_rating(r):
+                                ri = RatingInfo(value=r, source="BS", source_full="Börse Stuttgart")
+                                found_ratings.append(ri)
+                                logger.info(f"    📊 Rating da Börse Stuttgart API: {r}")
+                                break
+
+            except Exception as e:
+                logger.debug(f"    ⚠️ Errore Börse Stuttgart: {e}")
+            finally:
+                if stuttgart_page:
+                    await stuttgart_page.close()
 
         # --- Fusione ---
         bond.ratings = found_ratings
@@ -339,7 +389,7 @@ class MarketScraper:
         if found_ratings:
             logger.info(f"    📊 Rating finale: {bond.rating_display}")
         else:
-            logger.debug(f"    ⚠️ Nessun rating trovato da nessuna fonte")
+            logger.info(f"    ⚠️ Nessun rating trovato (DB/BF/BS)")
 
         return bond
 
@@ -479,10 +529,19 @@ class MarketScraper:
 
                 # --- NOME ---
                 if not bond.name and value is not None:
-                    if key_lower in ('name', 'instrumentname', 'title',
-                                     'shortname', 'longname', 'designation'):
+                    if key_lower in ('instrumentname', 'designation', 'longname',
+                                     'shortname'):
                         if isinstance(value, str) and len(value) > 5:
                             bond.name = value
+                    elif key_lower in ('name', 'title'):
+                        # 'name' generico: accetta solo se sembra un nome bond
+                        # (esclude nomi di file, media, ecc.)
+                        if isinstance(value, str) and len(value) > 5:
+                            # Ignora nomi che sembrano file/media/slug
+                            if not any(x in value.lower() for x in
+                                       ('boersen-radio', 'podcast', '.mp3', '.pdf',
+                                        'http', '//', 'image', 'video', 'thumbnail')):
+                                bond.name = value
 
                 # --- VALUTA ---
                 if key_lower in ('currency', 'tradingcurrency', 'issuecurrency',
