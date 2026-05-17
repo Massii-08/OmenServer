@@ -215,11 +215,15 @@ class BondScanner:
                                 seen_isins.add(bond.isin)
                                 all_filtered_bonds.append(bond)
                                 currency_stats['filtered'] += 1
+                                self.stats['total_filtered'] += 1  # ← Aggiornamento IMMEDIATO
                                 yield_str = f"{bond.calculated_yield:.4%}" if bond.calculated_yield else '?'
-                                logger.info(f"    ✅ ACCETTATO — Prezzo: {bond.current_price}, "
+                                logger.info(f"    ✅ ACCETTATO ({self.stats['total_filtered']}"
+                                            f"{'/' + str(self.max_results) if self.max_results > 0 else ''}) "
+                                            f"— Prezzo: {bond.current_price}, "
                                             f"Yield: {yield_str}, Rating: {bond.rating_display or '?'}")
                             else:
                                 currency_stats['discarded'] += 1
+                                self.stats['total_discarded'] += 1  # ← Aggiornamento IMMEDIATO
                                 logger.info(f"    ❌ Scartato: {reason}")
 
                         except Exception as e:
@@ -228,8 +232,6 @@ class BondScanner:
                             self.stats['total_errors'] += 1
 
                     self.stats['by_currency'][currency] = currency_stats
-                    self.stats['total_filtered'] += currency_stats['filtered']
-                    self.stats['total_discarded'] += currency_stats['discarded']
 
                     logger.info(f"\n📊 {currency} completato: {currency_stats['filtered']} accettati, "
                                 f"{currency_stats['discarded']} scartati, {currency_stats['errors']} errori")
