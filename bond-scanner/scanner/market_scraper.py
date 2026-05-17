@@ -28,6 +28,9 @@ from scanner.rating_providers import (
     DeutscheBoerseApiProvider,
     BoerseFrankfurtHtmlProvider,
     BoerseStuttgartProvider,
+    FitchRatingsProvider,
+    IssuerReferenceProvider,
+    is_valid_rating,
     merge_ratings,
 )
 
@@ -306,16 +309,18 @@ class MarketScraper:
         """
         Recupera i rating da fonti multiple (cascade mode).
 
-        Strategia cascade:
+        Strategia cascade (dal più rapido al più lento):
         1. Deutsche Börse API (dati già intercettati — istantaneo)
         2. Börse Frankfurt HTML (pagina già caricata — istantaneo)
-        3. Börse Stuttgart (pagina separata — solo se necessario)
+        3. Tabella Emittenti di Riferimento (lookup locale — istantaneo)
+        4. Börse Stuttgart (pagina separata — lento)
+        5. Fitch Ratings (pagina separata — lento)
 
         I rating trovati vengono combinati in rating_display con la fonte
-        tra parentesi: es. "AA- (DB, BS)" o "AA- (DB) / A+ (BS)".
+        tra parentesi: es. "AA- (DB, REF)" o "AA- (REF) / A+ (FR)".
 
         Args:
-            bond: ScannedBond con l'ISIN
+            bond: ScannedBond con l'ISIN e il nome
 
         Returns:
             ScannedBond con ratings, rating e rating_display aggiornati
@@ -335,9 +340,18 @@ class MarketScraper:
         if rating:
             found_ratings.append(rating)
 
-        # --- Source 3: Börse Stuttgart (solo se necessario — cascade) ---
-        # Usa una pagina SEPARATA per non corrompere la sessione Deutsche Börse
+        # --- Source 3: Tabella Emittenti (lookup locale istantaneo) ---
+        ref_provider = IssuerReferenceProvider()
+        rating = await ref_provider.get_rating(
+            bond.isin, bond_name=bond.name
+        )
+        if rating:
+            found_ratings.append(rating)
+
+        # --- Source 4+5: Stuttgart + Fitch (solo se nessun rating trovato) ---
+        # Usa pagine SEPARATE per non corrompere la sessione Deutsche Börse
         if not found_ratings:
+            # 4. Börse Stuttgart
             stuttgart_page = None
             try:
                 stuttgart_page = await self._context.new_page()
@@ -369,7 +383,6 @@ class MarketScraper:
                     for url, data in stuttgart_api.items():
                         r = db_provider2._search_rating_recursive(data, 0, 5)
                         if r:
-                            from scanner.rating_providers import is_valid_rating, RatingInfo
                             if is_valid_rating(r):
                                 ri = RatingInfo(value=r, source="BS", source_full="Börse Stuttgart")
                                 found_ratings.append(ri)
@@ -382,6 +395,23 @@ class MarketScraper:
                 if stuttgart_page:
                     await stuttgart_page.close()
 
+        # 5. Fitch Ratings (solo se ancora nessun rating)
+        if not found_ratings and bond.name:
+            fitch_page = None
+            try:
+                fitch_page = await self._context.new_page()
+                fitch_provider = FitchRatingsProvider()
+                rating = await fitch_provider.get_rating(
+                    bond.isin, page=fitch_page, bond_name=bond.name
+                )
+                if rating:
+                    found_ratings.append(rating)
+            except Exception as e:
+                logger.debug(f"    ⚠️ Errore Fitch Ratings: {e}")
+            finally:
+                if fitch_page:
+                    await fitch_page.close()
+
         # --- Fusione ---
         bond.ratings = found_ratings
         bond.rating, bond.rating_display = merge_ratings(found_ratings)
@@ -389,7 +419,7 @@ class MarketScraper:
         if found_ratings:
             logger.info(f"    📊 Rating finale: {bond.rating_display}")
         else:
-            logger.info(f"    ⚠️ Nessun rating trovato (DB/BF/BS)")
+            logger.info(f"    ⚠️ Nessun rating trovato (DB/BF/REF/BS/FR)")
 
         return bond
 

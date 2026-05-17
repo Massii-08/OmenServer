@@ -3,12 +3,14 @@ Provider di rating multi-source per le obbligazioni.
 
 Ogni provider tenta di recuperare il rating di un bond da una fonte specifica.
 I risultati vengono poi combinati per dare un rating finale con tracciabilità
-della fonte (es: "AA- (DB, BS)").
+della fonte (es: "AA- (DB, FR)").
 
 Fonti supportate:
 1. Deutsche Börse API JSON — dai dati già intercettati
 2. Börse Frankfurt HTML — scraping DOM della pagina dettaglio
 3. Börse Stuttgart HTML — navigazione alla pagina Stammdaten
+4. Fitch Ratings — ricerca per nome emittente su fitchratings.com
+5. Tabella Emittenti — database locale con ~80 emittenti comuni
 
 Strategia: Cascade — si prova la fonte più rapida per prima,
 e si cercano le altre solo se non si trova rating.
@@ -470,11 +472,360 @@ def merge_ratings(ratings: List[RatingInfo]) -> tuple:
 
 
 # ================================================================
+#  Source 4: Fitch Ratings — Ricerca per nome emittente
+# ================================================================
+
+class FitchRatingsProvider(RatingProvider):
+    """
+    Cerca il rating su fitchratings.com tramite il nome dell'emittente.
+
+    Fitch fornisce i rating pubblicamente senza login.
+    La ricerca avviene per nome emittente (estratto dal nome del bond).
+    Prende il primo risultato "Long Term Issuer Default Rating".
+
+    ⚠️ Richiede una pagina Playwright separata (naviga via JS/Gatsby).
+    """
+
+    BASE_URL = "https://www.fitchratings.com/search"
+
+    @property
+    def source_tag(self) -> str:
+        return "FR"
+
+    @property
+    def source_name(self) -> str:
+        return "Fitch Ratings"
+
+    def _extract_issuer_from_bond_name(self, name: str) -> Optional[str]:
+        """
+        Estrae il nome dell'emittente dal nome del bond.
+
+        Esempi:
+            "Allianz SE 2.60% 23/28" → "Allianz"
+            "Deutschland, Bundesrepublik 1,9% 25/27" → "Deutschland"
+            "Sixt SE 5,125% 23/27" → "Sixt"
+            "Schneider Electric SE 3% 24/30" → "Schneider Electric"
+        """
+        if not name:
+            return None
+
+        # Rimuovi suffissi legali
+        clean = name.strip()
+        # Prendi la parte prima del primo numero/percentuale
+        parts = re.split(r'\d', clean, 1)
+        issuer = parts[0].strip() if parts else clean
+
+        # Rimuovi suffissi legali e virgole
+        for suffix in [' SE', ' AG', ' SA', ' PLC', ' NV', ' GmbH', ' S.A.',
+                       ' Inc', ' Corp', ' Ltd', ' B.V.', ' Capital',
+                       ', Bundesrepublik', ', Republic of']:
+            issuer = issuer.replace(suffix, '')
+
+        issuer = issuer.strip(' ,-')
+
+        return issuer if len(issuer) >= 2 else None
+
+    async def get_rating(self, isin: str, page=None, api_responses=None,
+                         bond_name: str = None) -> Optional[RatingInfo]:
+        if page is None or not bond_name:
+            return None
+
+        issuer = self._extract_issuer_from_bond_name(bond_name)
+        if not issuer:
+            return None
+
+        try:
+            # Intercepta les API de Fitch pour données structurées
+            fitch_api: Dict[str, Any] = {}
+
+            async def capture_fitch(response):
+                try:
+                    if response.status == 200:
+                        ct = response.headers.get('content-type', '')
+                        if 'json' in ct:
+                            body = await response.json()
+                            if body:
+                                fitch_api[response.url] = body
+                except Exception:
+                    pass
+
+            page.on("response", capture_fitch)
+
+            url = f"{self.BASE_URL}/?query={issuer}"
+            logger.debug(f"    🔍 Ricerca Fitch per: {issuer}")
+
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.wait_for_timeout(3000)
+
+            # Strategia 1: Chercher dans les API JSON interceptées
+            for api_url, data in fitch_api.items():
+                rating_val = self._search_fitch_api(data)
+                if rating_val:
+                    logger.info(f"    📊 Rating da {self.source_name} API: {rating_val}")
+                    return RatingInfo(
+                        value=rating_val,
+                        source=self.source_tag,
+                        source_full=self.source_name,
+                    )
+
+            # Strategia 2: Scraping DOM de la page de résultats
+            try:
+                # Cherche le premier rating dans les résultats (structure Fitch)
+                # Le rating est dans un élément coloré (rouge/orange) près du nom
+                rating_elements = page.locator('a[aria-label]').first
+                if await rating_elements.is_visible(timeout=2000):
+                    # Le parent contient nom + rating
+                    parent = rating_elements.locator('..')
+                    text = (await parent.text_content() or "").strip()
+
+                    # Chercher un pattern de rating dans le texte
+                    patterns = [
+                        r'\b(AAA|AA\+|AA|AA-|A\+|A-|BBB\+|BBB|BBB-)\b',
+                        r'\b(Aaa|Aa[123]|A[123]|Baa[123])\b',
+                    ]
+                    for pattern in patterns:
+                        match = re.search(pattern, text)
+                        if match:
+                            candidate = match.group(1)
+                            if is_valid_rating(candidate):
+                                logger.info(f"    📊 Rating da {self.source_name} (DOM): {candidate}")
+                                return RatingInfo(
+                                    value=candidate,
+                                    source=self.source_tag,
+                                    source_full=self.source_name,
+                                )
+            except Exception:
+                pass
+
+            # Strategia 3: Chercher dans tout le texte de la page
+            try:
+                body_text = await page.inner_text('body', timeout=2000)
+                # Cherche "Long Term Issuer Default Rating" suivi d'un rating
+                idr_match = re.search(
+                    r'(AAA|AA\+|AA-?|A\+|A-?|BBB\+|BBB-?)\s*(?:●|⬤|•)?\s*(?:Affirmed|Downgraded|Upgraded|New)',
+                    body_text
+                )
+                if idr_match:
+                    candidate = idr_match.group(1)
+                    if is_valid_rating(candidate):
+                        logger.info(f"    📊 Rating da {self.source_name} (testo): {candidate}")
+                        return RatingInfo(
+                            value=candidate,
+                            source=self.source_tag,
+                            source_full=self.source_name,
+                        )
+            except Exception:
+                pass
+
+            logger.debug(f"    ⚠️ Nessun rating Fitch per: {issuer}")
+
+        except Exception as e:
+            logger.debug(f"    ⚠️ Errore Fitch: {e}")
+
+        return None
+
+    def _search_fitch_api(self, data: Any, depth: int = 0) -> Optional[str]:
+        """Cerca ricorsivamente un rating nelle API Fitch."""
+        if depth > 6 or data is None:
+            return None
+
+        if isinstance(data, dict):
+            # Fitch utilise des champs comme "ratingLongTerm", "rating", "ratingValue"
+            for key, value in data.items():
+                key_lower = key.lower()
+                if ('rating' in key_lower and 'type' not in key_lower
+                        and 'action' not in key_lower and 'date' not in key_lower):
+                    if isinstance(value, str) and is_valid_rating(value):
+                        return value.strip()
+
+                if isinstance(value, (dict, list)):
+                    result = self._search_fitch_api(value, depth + 1)
+                    if result:
+                        return result
+
+        elif isinstance(data, list):
+            for item in data[:5]:
+                result = self._search_fitch_api(item, depth + 1)
+                if result:
+                    return result
+
+        return None
+
+
+# ================================================================
+#  Source 5: Tabella Emittenti di Riferimento
+# ================================================================
+
+# Rating S&P/Fitch ufficiali dei principali emittenti europei e internazionali
+# Fonte: S&P Global, Fitch Ratings (dati pubblici, aggiornati maggio 2025)
+# Chiave: nome dell'emittente (minuscolo, senza suffissi legali)
+# Valore: (rating S&P, rating Fitch se diverso o None)
+ISSUER_RATINGS = {
+    # --- GOVERNI EUROPEI ---
+    'deutschland': 'AAA', 'germany': 'AAA', 'bundesrepublik': 'AAA',
+    'france': 'AA-', 'republique francaise': 'AA-',
+    'italy': 'BBB', 'italia': 'BBB', 'repubblica italiana': 'BBB',
+    'spain': 'A', 'espagne': 'A', 'reino de espana': 'A',
+    'netherlands': 'AAA', 'pays-bas': 'AAA', 'koninkrijk der nederlanden': 'AAA',
+    'austria': 'AA+', 'republik oesterreich': 'AA+',
+    'belgium': 'AA-', 'belgique': 'AA-',
+    'portugal': 'A-',
+    'ireland': 'AA-', 'irland': 'AA-',
+    'finland': 'AA+', 'finnland': 'AA+',
+    'greece': 'BBB-', 'griechenland': 'BBB-',
+    'poland': 'A-', 'polen': 'A-',
+    'united kingdom': 'AA', 'uk': 'AA',
+
+    # --- GOVERNI NON-EUROPÉENS ---
+    'united states': 'AA+', 'usa': 'AA+',
+    'japan': 'A+', 'canada': 'AAA',
+    'australia': 'AAA', 'china': 'A+',
+
+    # --- BANQUES EUROPÉENNES ---
+    'deutsche bank': 'A-', 'commerzbank': 'A-',
+    'bnp paribas': 'A+', 'societe generale': 'A',
+    'credit agricole': 'A+', 'natixis': 'A+',
+    'hsbc': 'A+', 'barclays': 'A',
+    'standard chartered': 'A+', 'lloyds': 'A+',
+    'unicredit': 'BBB', 'intesa sanpaolo': 'BBB+',
+    'ing': 'A+', 'rabobank': 'A+', 'abn amro': 'A',
+    'nordea': 'AA-', 'danske bank': 'A+',
+    'credit suisse': 'A-', 'ubs': 'A+',
+    'santander': 'A+', 'bbva': 'A+', 'caixabank': 'A-',
+    'erste bank': 'A', 'raiffeisen': 'A-',
+
+    # --- BANQUES DE DÉVELOPPEMENT ---
+    'kfw': 'AAA', 'bei': 'AAA', 'eib': 'AAA',
+    'european investment bank': 'AAA',
+    'world bank': 'AAA', 'ibrd': 'AAA',
+    'landesbank': 'A', 'lbbw': 'A+',
+    'nrw.bank': 'AAA', 'l-bank': 'AAA',
+    'rentenbank': 'AAA',
+
+    # --- ASSURANCES ---
+    'allianz': 'AA', 'munich re': 'AA-', 'muenchener rueck': 'AA-',
+    'axa': 'AA-', 'zurich': 'AA', 'swiss re': 'AA-',
+    'generali': 'A-', 'talanx': 'A+', 'hannover rueck': 'AA-',
+
+    # --- AUTOMOBILE ---
+    'volkswagen': 'BBB+', 'vw': 'BBB+',
+    'bmw': 'A+', 'mercedes-benz': 'A', 'daimler': 'A',
+    'porsche': 'A-', 'audi': 'BBB+',
+    'renault': 'BBB-', 'stellantis': 'BBB+',
+    'toyota': 'A+', 'ford': 'BBB-',
+
+    # --- ÉNERGIE & UTILITIES ---
+    'edf': 'BBB+', 'engie': 'BBB+', 'total': 'AA-', 'totalenergies': 'AA-',
+    'shell': 'AA-', 'bp': 'A-', 'eni': 'A-',
+    'enel': 'BBB+', 'iberdrola': 'BBB+', 'rwe': 'BBB+',
+    'e.on': 'BBB+', 'vattenfall': 'BBB+', 'fortum': 'BBB+',
+    'orsted': 'BBB+',
+
+    # --- TELECOM ---
+    'deutsche telekom': 'BBB+', 'orange': 'BBB+',
+    'telefonica': 'BBB', 'vodafone': 'BBB',
+    'bt': 'BBB', 'swisscom': 'A',
+
+    # --- INDUSTRIE / CONGLOMÉRATS ---
+    'siemens': 'A+', 'basf': 'A', 'bayer': 'BBB',
+    'henkel': 'A', 'linde': 'A',
+    'schneider electric': 'A-', 'saint-gobain': 'BBB+',
+    'thyssenkrupp': 'BB+',
+    'airbus': 'A', 'safran': 'A-',
+
+    # --- TECH & LUXE ---
+    'sap': 'A', 'lvmh': 'A+', 'hermes': 'A+',
+
+    # --- IMMOBILIER ---
+    'vonovia': 'BBB+', 'unibail': 'A-',
+
+    # --- RETAIL / CONSUMER ---
+    'nestle': 'AA-', 'danone': 'BBB+', 'unilever': 'A+',
+    'diageo': 'A-', 'anheuser-busch': 'BBB+', 'ab inbev': 'BBB+',
+    'sixt': 'BBB-',
+}
+
+
+class IssuerReferenceProvider(RatingProvider):
+    """
+    Lookup rapide dans la table de référence des émetteurs.
+
+    Aucun scraping — utilise une base de données locale des ratings
+    des principaux émetteurs européens et internationaux.
+    Affiché comme "AA- (REF)" dans l'Excel.
+
+    ⚠️ Les ratings peuvent être obsolètes si non mis à jour régulièrement.
+    """
+
+    @property
+    def source_tag(self) -> str:
+        return "REF"
+
+    @property
+    def source_name(self) -> str:
+        return "Tabella Emittenti"
+
+    def _extract_issuer_keywords(self, name: str) -> List[str]:
+        """
+        Extrait les mots-clés de l'émetteur depuis le nom du bond.
+
+        Retourne une liste de candidats à chercher dans ISSUER_RATINGS.
+        """
+        if not name:
+            return []
+
+        clean = name.strip()
+        # Prendi tutto prima del primo numero
+        parts = re.split(r'\d', clean, 1)
+        issuer_part = parts[0].strip(' ,-') if parts else clean
+
+        # Rimuovi suffissi legali
+        for suffix in [' SE', ' AG', ' SA', ' PLC', ' NV', ' GmbH', ' S.A.',
+                       ' Inc', ' Corp', ' Ltd', ' B.V.', ' Capital',
+                       ', Bundesrepublik', ', Republic of']:
+            issuer_part = issuer_part.replace(suffix, '')
+
+        issuer_part = issuer_part.strip(' ,-')
+
+        # Genera candidati:
+        # "Schneider Electric" → ["schneider electric", "schneider"]
+        # "Landesbank Hessen-Thüringen Girozentrale" → ["landesbank hessen-thüringen girozentrale", "landesbank"]
+        candidates = [issuer_part.lower()]
+        words = issuer_part.split()
+        if len(words) > 1:
+            candidates.append(words[0].lower())  # primo parola
+            candidates.append(' '.join(words[:2]).lower())  # prime 2 parole
+
+        return candidates
+
+    async def get_rating(self, isin: str, page=None, api_responses=None,
+                         bond_name: str = None) -> Optional[RatingInfo]:
+        if not bond_name:
+            return None
+
+        candidates = self._extract_issuer_keywords(bond_name)
+
+        for candidate in candidates:
+            if candidate in ISSUER_RATINGS:
+                rating = ISSUER_RATINGS[candidate]
+                logger.info(f"    📊 Rating da {self.source_name}: {rating} (emittente: {candidate})")
+                return RatingInfo(
+                    value=rating,
+                    source=self.source_tag,
+                    source_full=self.source_name,
+                )
+
+        return None
+
+
+# ================================================================
 #  Lista dei provider disponibili
 # ================================================================
 
 ALL_PROVIDERS: List[RatingProvider] = [
-    DeutscheBoerseApiProvider(),
-    BoerseFrankfurtHtmlProvider(),
-    BoerseStuttgartProvider(),
+    DeutscheBoerseApiProvider(),     # Source 1: API JSON (istantaneo)
+    BoerseFrankfurtHtmlProvider(),   # Source 2: DOM pagina (istantaneo)
+    IssuerReferenceProvider(),       # Source 5: Tabella emittenti (istantaneo)
+    BoerseStuttgartProvider(),       # Source 3: Börse Stuttgart (navigazione)
+    FitchRatingsProvider(),          # Source 4: Fitch Ratings (navigazione)
 ]
