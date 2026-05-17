@@ -1603,12 +1603,21 @@ const BotsModule = {
         if (!token) return;
         const today = new Date().toISOString().slice(0, 10);
         const filename = `Opportunita_Bond_${today}.xlsx`;
+
         try {
+            // Méthode 1: fetch + blob (contrôle du nom de fichier)
             const r = await fetch(`/api/bots/scanner/download/${jobId}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (!r.ok) throw new Error('Download failed: ' + r.status);
+
             const blob = await r.blob();
+
+            // Vérifier que c'est bien un fichier Excel (pas du HTML/JSON d'erreur)
+            if (blob.size < 1000 || blob.type.includes('text') || blob.type.includes('json')) {
+                throw new Error('Response is not a valid Excel file');
+            }
+
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
@@ -1618,8 +1627,12 @@ const BotsModule = {
             a.click();
             setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
         } catch (e) {
-            console.error('[Scanner] Download error:', e);
-            Toast.show('❌ Errore download', 'error');
+            console.error('[Scanner] Download blob error:', e);
+            // Fallback: window.open avec le nom dans l'URL (contourne Cloudflare)
+            window.open(
+                `/api/bots/scanner/download-file/${jobId}/${encodeURIComponent(filename)}?token=${encodeURIComponent(token)}`,
+                '_blank'
+            );
         }
     },
 
