@@ -130,9 +130,11 @@ class BondScanner:
 
                 try:
                     # 1. Scraping del mercato
+                    # max_pages alto per garantire che ci siano abbastanza bond
+                    # da filtrare per raggiungere il target max_results
                     raw_bonds = await scraper.scan_market(
                         currency=currency,
-                        max_pages=15,
+                        max_pages=30,
                     )
 
                     currency_stats = {
