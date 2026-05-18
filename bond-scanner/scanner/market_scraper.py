@@ -538,10 +538,44 @@ class MarketScraper:
 
         bond = ScannedBond(isin=isin, currency=currency, fetch_date=date.today())
 
+        # Cerca la valuta REALE nei dati di primo livello dell'API.
+        # Deutsche Börse può ignorare il filtro CURRENCIES nell'URL e
+        # restituire bond di tutte le valute mescolate. Usiamo il valore
+        # dall'API (più affidabile) se disponibile e valido.
+        actual_currency = self._extract_currency_from_item(item)
+        if actual_currency:
+            bond.currency = actual_currency
+
         # Estrai dati ricorsivamente
         self._extract_fields_recursive(bond, item, depth=0, max_depth=4)
 
         return bond
+
+    # Valute accettate (codici ISO 3166)
+    _VALID_CURRENCIES = {'EUR', 'USD', 'GBP', 'CHF'}
+
+    def _extract_currency_from_item(self, item: dict) -> Optional[str]:
+        """
+        Estrae la valuta reale di un bond dai dati API di primo livello.
+
+        Cerca SOLO nelle chiavi di primo livello del dizionario (non ricorsivo)
+        per evitare valori fuorvianti da sotto-oggetti.
+        Accetta solo codici ISO 3-lettere validi.
+
+        Returns:
+            Codice valuta normalizzato (EUR, USD, GBP, CHF) o None
+        """
+        currency_keys = (
+            'currency', 'tradingCurrency', 'issueCurrency',
+            'curr', 'ccy', 'Currency', 'CURRENCY',
+        )
+        for key in currency_keys:
+            val = item.get(key)
+            if isinstance(val, str) and len(val.strip()) >= 3:
+                normalized = val.strip().upper()[:3]
+                if normalized in self._VALID_CURRENCIES:
+                    return normalized
+        return None
 
     def _enrich_from_api(self, bond: ScannedBond, responses: Dict[str, Any]):
         """Arricchisce un bond con dati dalle API della pagina dettaglio."""
