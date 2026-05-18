@@ -439,6 +439,24 @@ async def get_scanner_usage(
         }
 
 
+@router.post("/reset-usage")
+async def reset_scanner_usage(
+    current_user: User = Depends(require_role("admin")),
+):
+    """Reset del contatore rate limit (solo admin)."""
+    import json as _json
+    rate_file = SCANNER_BOT_DIR / "bot" / ".rate_limit.json"
+    try:
+        reset_data = {"date": "", "scans": 0, "history": []}
+        with open(rate_file, 'w') as f:
+            _json.dump(reset_data, f, indent=2)
+        logger.info(f"[Scanner] Rate limit resettato da {current_user.username}")
+        return {"status": "ok", "message": "Contatore resettato a 0"}
+    except Exception as e:
+        logger.error(f"[Scanner] Erreur reset usage: {e}")
+        raise HTTPException(500, f"Errore reset: {e}")
+
+
 # ================================================================
 #  ACTIVE JOB (RECONNEXION)
 # ================================================================
