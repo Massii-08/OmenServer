@@ -78,14 +78,26 @@ systemctl restart systemd-logind
 echo "⏰ Configuration du fuseau horaire et des horaires..."
 timedatectl set-timezone Europe/Zurich
 crontab -l 2>/dev/null | grep -v 'rtcwake' > /tmp/current_cron
-echo '0 1 * * * /usr/sbin/rtcwake -m mem -l -t $(date -d "tomorrow 06:00" +\%s)' >> /tmp/current_cron
+echo '0 1 * * * /usr/sbin/rtcwake -m no -l -t $(date -d "tomorrow 06:00" +\%s) && sleep 5 && /usr/bin/systemctl suspend' >> /tmp/current_cron
 crontab /tmp/current_cron
 rm /tmp/current_cron
+
+# 9. Script de reprise après suspend (reboot pour vider la RAM)
+echo "🔄 Installation du script de reprise post-suspend..."
+curl -sL -o /etc/systemd/system-sleep/omen-resume.sh \
+    https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/omen-resume.sh
+chmod +x /etc/systemd/system-sleep/omen-resume.sh
+echo "✅ omen-resume.sh installé (reboot automatique au réveil pour RAM fraîche)"
+
+# 10. Permissions sudo pour rtcwake + systemctl suspend + reboot
+echo "🛡️ Permissions sudo pour suspend/wake/reboot..."
+echo "$USER_NAME ALL=(ALL) NOPASSWD: /usr/sbin/rtcwake, /usr/bin/systemctl suspend, /usr/sbin/reboot" >> /etc/sudoers.d/omen-agent
+chmod 0440 /etc/sudoers.d/omen-agent
 
 echo ""
 echo "✅ Terminé ! L'agent tourne et le PC est configuré."
 
-# 9. Option de formatage d'un disque supplémentaire
+# 11. Option de formatage d'un disque supplémentaire
 echo ""
 echo "⚠️  ATTENTION: As-tu un deuxième disque (SSD/HDD) que tu veux effacer et utiliser comme stockage ?"
 echo "Toutes les données dessus seront DÉTRUITES."
