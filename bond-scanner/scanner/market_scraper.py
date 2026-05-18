@@ -538,14 +538,6 @@ class MarketScraper:
 
         bond = ScannedBond(isin=isin, currency=currency, fetch_date=date.today())
 
-        # Cerca la valuta REALE nei dati di primo livello dell'API.
-        # Deutsche Börse può ignorare il filtro CURRENCIES nell'URL e
-        # restituire bond di tutte le valute mescolate. Usiamo il valore
-        # dall'API (più affidabile) se disponibile e valido.
-        actual_currency = self._extract_currency_from_item(item)
-        if actual_currency:
-            bond.currency = actual_currency
-
         # Estrai dati ricorsivamente
         self._extract_fields_recursive(bond, item, depth=0, max_depth=4)
 
@@ -553,29 +545,6 @@ class MarketScraper:
 
     # Valute accettate (codici ISO 3166)
     _VALID_CURRENCIES = {'EUR', 'USD', 'GBP', 'CHF'}
-
-    def _extract_currency_from_item(self, item: dict) -> Optional[str]:
-        """
-        Estrae la valuta reale di un bond dai dati API di primo livello.
-
-        Cerca SOLO nelle chiavi di primo livello del dizionario (non ricorsivo)
-        per evitare valori fuorvianti da sotto-oggetti.
-        Accetta solo codici ISO 3-lettere validi.
-
-        Returns:
-            Codice valuta normalizzato (EUR, USD, GBP, CHF) o None
-        """
-        currency_keys = (
-            'currency', 'tradingCurrency', 'issueCurrency',
-            'curr', 'ccy', 'Currency', 'CURRENCY',
-        )
-        for key in currency_keys:
-            val = item.get(key)
-            if isinstance(val, str) and len(val.strip()) >= 3:
-                normalized = val.strip().upper()[:3]
-                if normalized in self._VALID_CURRENCIES:
-                    return normalized
-        return None
 
     def _enrich_from_api(self, bond: ScannedBond, responses: Dict[str, Any]):
         """Arricchisce un bond con dati dalle API della pagina dettaglio."""
@@ -647,12 +616,15 @@ class MarketScraper:
                                         'http', '//', 'image', 'video', 'thumbnail')):
                                 bond.name = value
 
-                # --- VALUTA ---
-                # NON sovrascrivere: la valuta è già impostata correttamente
-                # dal parametro currency di scan_market(). I dati API possono
-                # contenere valori fuorvianti (tradingCurrency, issueCurrency)
-                # che mescolano le obbligazioni tra i fogli Excel.
-                # bond.currency è già impostato in _parse_bond_item().
+                # --- VALUTA (solo issueCurrency) ---
+                # ATTENZIONE: il campo 'currency' e 'tradingCurrency' dell'API
+                # indica la valuta di NEGOZIAZIONE (borsa), NON la valuta
+                # di emissione del bond. Solo 'issueCurrency' è affidabile.
+                if value is not None and key_lower == 'issuecurrency':
+                    if isinstance(value, str) and len(value) == 3:
+                        normalized = value.upper()
+                        if normalized in self._VALID_CURRENCIES:
+                            bond.currency = normalized
 
                 # --- VOLUME ---
                 if bond.volume is None:
@@ -666,12 +638,19 @@ class MarketScraper:
                 # (multi-source con tracciabilità della fonte)
 
                 # --- MIN PIECE ---
+                # NB: 'lotsize' e 'minlot' indicano il numero di LOTTI
+                # (es. 1, 0), NON la denominazione minima in valuta.
                 if bond.min_piece is None:
                     if key_lower in ('minimumdenomination', 'smallestunit', 'minpiece',
-                                     'minimumtradableunit', 'lotsize', 'minlot',
+                                     'minimumtradableunit',
                                      'smallesttransferableunit', 'denomination'):
                         if value is not None:
-                            bond.min_piece = str(value)
+                            try:
+                                num_val = float(str(value).replace(',', '').replace("'", ''))
+                                if num_val >= 100:  # Filtra valori assurdi (1, 0, ecc.)
+                                    bond.min_piece = str(value)
+                            except (ValueError, TypeError):
+                                bond.min_piece = str(value)
 
                 # Ricorsione
                 if isinstance(value, (dict, list)):
