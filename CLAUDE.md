@@ -11,10 +11,10 @@
 Il permet de gérer des serveurs de jeux (Minecraft, etc.), des bots Python, des médias, un serveur web,
 et le monitoring système multi-machines depuis une interface web premium.
 
-- **Version** : 4.2.0
+- **Version** : 4.3.0
 - **Auteur** : Massii_08 (Massimiliano)
 - **License** : MIT
-- **Hardware** : HP Omen (Ubuntu Server en prod, cerveau) + agents sur d'autres PC (bras)
+- **Hardware** : HP Omen (Ubuntu Server 26.04 en prod, cerveau) + agents sur d'autres PC (bras)
 - **Stack** : Python FastAPI (backend) + Vanilla JS/CSS (frontend) — **pas de framework JS**
 - **Accès** : https://omenserver.org (Cloudflare Tunnel)
 
@@ -31,8 +31,12 @@ Projet serveur/
 │   ├── auth/                   # Authentification JWT + invitations
 │   │   ├── router.py           # /api/auth/login, /register, /logout
 │   │   ├── invite_router.py    # /api/auth/invite — codes d'invitation
+│   │   ├── sharing_router.py   # /api/auth/share — partage de serveurs entre users
 │   │   ├── models.py           # User, Invitation (SQLAlchemy)
-│   │   └── utils.py            # get_current_user(), hash/verify (bcrypt direct)
+│   │   ├── utils.py            # get_current_user(), hash/verify (bcrypt direct)
+│   │   ├── access_control.py   # Contrôle d'accès par serveur
+│   │   ├── permissions.py      # Système de permissions RBAC
+│   │   └── rate_limiter.py     # Rate limiting par IP/user
 │   ├── monitoring/             # Monitoring système + multi-machines
 │   │   ├── router.py           # /api/monitoring/stats (CPU, RAM, disque combiné)
 │   │   ├── system_info.py      # Collecte multi-disques via psutil
@@ -44,9 +48,13 @@ Projet serveur/
 │   │   ├── websocket.py        # WebSocket logs temps réel
 │   │   ├── models.py           # GameServer (SQLAlchemy)
 │   │   ├── backup_router.py    # Sauvegardes auto/manuelles
+│   │   ├── backup_manager.py   # Logique de backup (tar.gz + rotation)
+│   │   ├── docker_manager.py   # Gestion conteneurs Docker
+│   │   ├── games_config.py     # Config des images Docker par jeu
 │   │   ├── settings_router.py  # server.properties, JVM args
 │   │   ├── players_router.py   # Whitelist, ops, bans
 │   │   ├── access_router.py    # SFTP/RCON credentials
+│   │   ├── sftp_manager.py     # Gestion SFTP conteneurisé
 │   │   └── files_router.py     # Navigateur de fichiers serveur
 │   ├── bots/                   # Module Bots Python
 │   │   ├── router.py           # CRUD bots + start/stop + logs
@@ -54,9 +62,17 @@ Projet serveur/
 │   │   └── yield_router.py     # 🏦 Bot Yield dédié (upload, run, status, download)
 │   ├── scheduler/              # Tâches planifiées (APScheduler)
 │   │   ├── router.py           # CRUD tâches cron
-│   │   ├── engine.py           # APScheduler engine
+│   │   ├── engine.py           # APScheduler engine + power job
 │   │   ├── models.py           # ScheduledTask
-│   │   └── power_router.py     # Extinction/redémarrage programmé + immédiat
+│   │   ├── power_router.py     # API extinction/redémarrage programmé + immédiat
+│   │   └── power_manager.py    # Logique rtcwake/suspend/shutdown + arrêt gracieux
+│   ├── mods/                   # Gestion de mods (CurseForge, Steam Workshop)
+│   │   ├── router.py           # /api/mods — installation/suppression
+│   │   ├── curseforge.py       # API CurseForge (Minecraft)
+│   │   ├── steam_workshop.py   # Steam Workshop (ARK, CS2, etc.)
+│   │   ├── plugin_router.py    # Plugins Minecraft (Spigot/Paper)
+│   │   ├── plugin_manager.py   # Gestionnaire de plugins
+│   │   └── datapack_manager.py # Datapacks Minecraft
 │   ├── modules/                # Hub des modules
 │   │   └── router.py           # /api/modules/ — liste des modules activés
 │   ├── media/                  # Module Média (Jellyfin)
@@ -71,8 +87,9 @@ Projet serveur/
 │   │   └── router.py
 │   ├── notifications/          # Notifications
 │   │   └── router.py
-│   └── activity/               # Historique d'activité
-│       └── router.py
+│   ├── activity/               # Historique d'activité
+│   │   └── router.py
+│   └── rate_limiter.py         # Rate limiter global (IP-based middleware)
 ├── frontend/                   # Interface web (vanilla JS/CSS)
 │   ├── index.html              # Shell SPA principal
 │   ├── login.html              # Page de connexion (standalone)
@@ -102,16 +119,28 @@ Projet serveur/
 │   ├── manifest.json           # PWA manifest
 │   └── favicon.svg
 ├── tools/                      # Scripts utilitaires
-│   └── omen_agent.py           # 🦾 Agent monitoring à installer sur chaque PC
+│   ├── omen_agent.py           # 🦾 Agent monitoring à installer sur chaque PC
+│   ├── omen-resume.sh          # 🌙 Script post-suspend (reboot pour RAM fraîche)
+│   ├── omen-agent.service      # Fichier service systemd pour l'agent
+│   ├── setup_omen.sh           # Setup automatique de l'Omen (cerveau)
+│   ├── setup_omen_agent.sh     # Setup automatique d'un bras (agent + suspend/wake)
+│   └── translate.py            # Script de traduction automatique
 ├── docs/                       # Documentation
-│   └── Guide_Installation_PC_OmenServer.md  # Guide complet ajout PC
+│   ├── Guide_Installation_PC_OmenServer.md     # Guide ajout PC (FR)
+│   ├── Guide_Installation_PC_OmenServer_IT.md  # Guide ajout PC (IT)
+│   ├── Guide_Installation_PC_OmenServer.html   # Version HTML (FR)
+│   ├── Guide_Installation_PC_OmenServer_IT.html# Version HTML (IT)
+│   └── generate_pdf.py         # Générateur PDF des guides
 ├── data/                       # Données persistantes
 │   ├── omenserver.db           # Base SQLite
+│   ├── power_schedule.json     # Config extinction/réveil programmé
 │   └── servers/                # Données des serveurs de jeux
 ├── .env                        # Variables d'environnement (non commité)
 ├── .env.example                # Template des variables
 ├── requirements.txt            # Dépendances Python
 ├── watchdog.sh                 # Script de surveillance (prod)
+├── CLAUDE.md                   # Contexte projet pour agents IA
+├── AGENTS.md                   # Règles pour agents IA
 └── README.md
 ```
 
@@ -203,10 +232,21 @@ Le frontend est une **Single Page Application** sans framework :
 - `monitoring.js → updateUI()` fusionne les stats serveur + nodes connectés (CPU pondéré, RAM sommée, Temp max)
 - Les cartes CPU/RAM/Temp affichent une **mini-liste par machine** quand des nodes sont connectés
 
-### Gestion de l'alimentation
-- `power_router.py` : planning extinction/réveil programmé (rtcwake) + reboot/shutdown immédiat
-- Endpoints : `POST /api/power/reboot`, `POST /api/power/shutdown` (arrêt gracieux des services)
-- Double confirmation pour l'extinction du cerveau (coupe tout le réseau)
+### Gestion de l'alimentation (Power Management)
+- `power_manager.py` : logique d'extinction/réveil programmé
+- `power_router.py` : API REST pour la configuration
+- **Cycle quotidien** :
+  1. **01:00** → APScheduler déclenche `execute_scheduled_shutdown()`
+  2. Arrêt gracieux : backup serveurs → stop Docker → stop bots
+  3. `rtcwake -m no -l -t <timestamp>` → programme le timer BIOS
+  4. `systemctl suspend` → suspend-to-RAM (S3)
+  5. **06:00** → BIOS réveille le PC via RTC alarm
+  6. `omen-resume.sh` → détecte le flag → **reboot complet** (RAM vidée)
+  7. Après reboot : cloudflared + omenserver redémarrés
+- Config stockée dans `data/power_schedule.json`
+- Endpoints : `POST /api/power/reboot`, `POST /api/power/shutdown`
+- Double confirmation pour l'extinction du cerveau
+- **Anti-boucle** : fichier flag `/tmp/omen-post-suspend-reboot` empêche les reboots infinis
 
 ### Diagnostic multi-machines
 - `diagnostic_router.py` vérifie CPU, RAM, Disque, Docker, Serveurs de jeux, Réseau **et Nodes**
@@ -218,7 +258,8 @@ Le frontend est une **Single Page Application** sans framework :
 - Envoie un heartbeat toutes les 10s : CPU, RAM, Disque, Temp, Uptime
 - Authentification via `X-Agent-Key` (clé API auto-générée)
 - Peut recevoir des commandes : `reboot`, `shutdown`
-- Guide d'installation : `docs/Guide_Installation_PC_OmenServer.md`
+- **Installation auto** : `setup_omen_agent.sh` installe tout (agent + suspend/wake + reboot post-wake)
+- Guide d'installation : `docs/Guide_Installation_PC_OmenServer.md` (FR + IT)
 
 ---
 
@@ -266,12 +307,16 @@ OmenServer                          Bot Calcul Yield (externe)
 - **JWT** avec expiration configurable (défaut 24h)
 - **bcrypt** direct (sans passlib, avec troncature 72 bytes manuelle)
 - **CORS** restreint aux origines locales
-- **Headers sécurité** : X-Frame-Options DENY, X-Content-Type-Options nosniff, XSS-Protection
+- **Headers sécurité** : X-Frame-Options DENY, X-Content-Type-Options nosniff, XSS-Protection, CSP
 - **Swagger/Redoc** désactivés en production (`docs_url=None`)
 - **Upload** : validation `.xlsx` uniquement pour le Yield Bot
-- **Rôles** : admin, moderator, player (via `User.role`)
+- **Rôles** : admin, moderator, player, spectator (via `User.role`)
 - **Invitations** : inscription uniquement par code d'invitation
 - **Agents** : authentification via clé API (`X-Agent-Key`)
+- **Rate limiter** : middleware IP-based (exemption agents + localhost)
+- **RBAC** : `access_control.py` + `permissions.py` pour contrôle d'accès par serveur
+- **Clés API masquées** : les clés sont masquées dans le dashboard (toggle show/hide)
+- **Partage serveurs** : `sharing_router.py` pour partager l'accès à un serveur entre users
 
 ---
 
@@ -312,8 +357,8 @@ sudo journalctl -u omenserver -f
 # Auto-deploy (cron, toutes les minutes)
 cat ~/deploy.log
 
-# SSH vers l'Omen
-ssh massii08@192.168.68.66
+# SSH vers l'Omen (IP peut changer via DHCP — vérifier sur le routeur)
+ssh massii08@192.168.68.72   # ou .66 selon le bail DHCP
 
 # Accès distant via Cloudflare Tunnel
 # Automatique via systemd : cloudflared.service
@@ -364,6 +409,16 @@ sudo systemctl status cloudflared
 
 | Date | Changement |
 |------|-----------|
+| 2026-05-18 | 🌙 Reboot post-suspend pour RAM fraîche (omen-resume.sh v2) |
+| 2026-05-18 | 🏦 Fix Bond Scanner : ségrégation devise EUR/USD dans les rapports Excel |
+| 2026-05-17 | 🔒 Audit sécurité complet : JWT secret, Docker shell injection, path traversal, RBAC |
+| 2026-05-17 | 🛡️ Rate limiter IP-based + clés API masquées dans le dashboard |
+| 2026-05-16 | 🏦 Optimisation Bond Scanner : pagination, retry logic, provider errors |
+| 2026-05-15 | 🌙 Fix réveil automatique 6h + omen-resume.sh (restart cloudflared/omenserver) |
+| 2026-05-15 | 🏦 Bond Scanner : download Excel fiable + slider config UI |
+| 2026-05-14 | 🔌 Module Accès : SFTP conteneurisé par serveur + fix JS template literals |
+| 2026-05-14 | 🔧 Fix Reboot/Shutdown : body JSON vide + Toast persistent + sudo validation |
+| 2026-05-13 | 🖥️ Module Réseau admin-only + nodes grid déplacée + fix ping diagnostic |
 | 2026-05-12 | 🖥️ Omen cerveau visible dans la grille machines + stats combinées (CPU/RAM/Temp) |
 | 2026-05-12 | 🔌 Boutons reboot/shutdown sur carte Omen + diagnostic crash nodes |
 | 2026-05-10 | 🖥️ Multi-machines : stockage combiné + mini-listes + auto-deploy |

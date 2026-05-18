@@ -11,7 +11,7 @@
 ![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
 ![Cloudflare](https://img.shields.io/badge/Cloudflare-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)
-![Version](https://img.shields.io/badge/Version-4.1-10b981?style=for-the-badge)
+![Version](https://img.shields.io/badge/Version-4.3-10b981?style=for-the-badge)
 
 </div>
 
@@ -80,6 +80,24 @@
 - **🎨 5 thèmes** — Défaut, Midnight, Emerald, Crimson + Light Mode
 - **🌍 3 langues** — Français, English, Italiano
 
+### 🌙 Gestion de l'énergie
+- **Extinction automatique** — Suspend-to-RAM à 1h du matin (configurable)
+- **Réveil BIOS** — RTC wake à 6h du matin (configurable)
+- **Reboot post-réveil** — RAM vidée pour un démarrage frais chaque matin
+- **Arrêt gracieux** — Backup serveurs + stop Docker + stop bots avant extinction
+
+### 🔒 Sécurité
+- **Rate limiter** — Protection IP-based contre les abus
+- **RBAC** — Contrôle d'accès par serveur et par rôle
+- **CSP + Security headers** — Protection contre injection et XSS
+- **Clés API masquées** — Show/hide toggle dans le dashboard
+
+### 🧩 Mods & Plugins
+- **CurseForge** — Recherche et installe des mods Minecraft
+- **Steam Workshop** — Mods pour ARK, CS2, Garry’s Mod
+- **Plugins Spigot/Paper** — Plugins Minecraft avec gestion des versions
+- **Datapacks** — Datapacks Minecraft
+
 ### 👥 Multi-Utilisateurs
 - **4 rôles** : Spectateur, Joueur, Modérateur, Administrateur
 - **Système d'invitations** — Codes/liens d'invitation avec rôles
@@ -129,13 +147,23 @@ Ouvre **http://localhost:8000** dans ton navigateur 🎉
 
 ## 🖥️ Ajouter un PC au réseau
 
-Voir le guide complet : **[docs/Guide_Installation_PC_OmenServer.md](docs/Guide_Installation_PC_OmenServer.md)**
+Voir le guide complet : **[docs/Guide_Installation_PC_OmenServer.md](docs/Guide_Installation_PC_OmenServer.md)** (FR) | **[IT](docs/Guide_Installation_PC_OmenServer_IT.md)**
 
-En résumé :
-1. Installer Ubuntu Server sur le PC
-2. Installer l'agent : `curl -o ~/omen_agent.py https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/omen_agent.py`
-3. Configurer SERVER_URL et API_KEY
-4. Créer un service systemd pour le démarrage automatique
+En résumé, **une seule commande** :
+```bash
+curl -sL https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/setup_omen_agent.sh \
+  | sudo bash -s -- TA_CLE_API
+```
+
+Le script fait tout automatiquement :
+- ✅ Installe Python, pip, dépendances
+- ✅ Télécharge et configure l'agent
+- ✅ Crée le service systemd (démarrage automatique)
+- ✅ Active le PC avec le couvercle fermé (laptop)
+- ✅ Programme la suspension 1h→6h avec réveil BIOS
+- ✅ Installe le reboot post-réveil (RAM vidée)
+- ✅ Étend le disque LVM au maximum
+- ✅ Propose de formater un 2è disque (optionnel)
 
 ---
 
@@ -203,11 +231,12 @@ OmenServer/
 
 | Composant | Détail |
 |-----------|--------|
-| **Serveur** | HP Omen (Ubuntu Server) |
+| **Serveur** | HP Omen (Ubuntu Server 26.04 LTS) |
 | **Stockage** | HDD 914 Go + SSD NVMe 469 Go = **1.3 To** |
 | **Accès distant** | Cloudflare Tunnel → `omenserver.org` |
 | **Service systemd** | `omenserver.service` — démarre au boot |
 | **Auto-deploy** | Cron → `git pull` + `restart` toutes les minutes |
+| **Power Management** | Suspend 1h → Wake 6h → Reboot (RAM clear) |
 | **Agents** | `omen_agent.py` sur chaque PC du réseau |
 
 ---
@@ -231,6 +260,6 @@ Ce projet est sous licence MIT. Voir le fichier [LICENSE](LICENSE) pour plus de 
 
 **Fait avec ❤️ par Massimiliano**
 
-*OmenServer V4.1 — L'Omen est le cerveau, les autres PC sont les bras*
+*OmenServer V4.3 — L'Omen est le cerveau, les autres PC sont les bras*
 
 </div>

@@ -130,7 +130,7 @@ cat ~/deploy.log
 | **Auto-deploy** | `~/auto-deploy.sh` (cron ogni minuto, git pull + restart) |
 | **Tunnel** | `cloudflared.service` (systemd, persistente) |
 | **Storage** | HDD 914 Go `/` + SSD NVMe 469 Go `/mnt/ssd` = **1.3 To** |
-| **SSH** | `ssh massii08@192.168.68.66` |
+| **SSH** | `ssh massii08@192.168.68.72` (IP DHCP, peut changer) |
 | **Agenti** | `omen_agent.py` su ogni PC del network |
 
 ---
