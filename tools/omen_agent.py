@@ -33,7 +33,7 @@ from datetime import datetime
 # ============================
 # 🔧 CONFIGURATION — À MODIFIER
 # ============================
-SERVER_URL = "http://ADRESSE_OMENSERVER:8000"   # ex: http://192.168.1.100:8000
+SERVER_URL = "https://omenserver.org"            # Tunnel Cloudflare (prod)
 API_KEY = "COLLE_TA_CLE_ICI"                    # Visible dans OmenServer > Paramètres
 INTERVAL = 10                                    # Secondes entre chaque envoi
 # ============================

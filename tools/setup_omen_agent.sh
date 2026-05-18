@@ -33,8 +33,9 @@ echo "📥 Téléchargement de l'agent..."
 curl -sL -o $USER_HOME/omen_agent.py https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/omen_agent.py
 chown $USER_NAME:$USER_NAME $USER_HOME/omen_agent.py
 
-# 4. Configuration de la clé API
-echo "🔑 Configuration de la clé API..."
+# 4. Configuration de la clé API + URL du serveur
+echo "🔑 Configuration de la clé API et de l'URL..."
+sed -i "s|SERVER_URL = .*|SERVER_URL = \"https://omenserver.org\"|" $USER_HOME/omen_agent.py
 sed -i "s/API_KEY = .*/API_KEY = \"$API_KEY\"/" $USER_HOME/omen_agent.py
 
 # 5. Autoriser reboot/shutdown sans mot de passe

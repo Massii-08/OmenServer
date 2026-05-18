@@ -145,12 +145,11 @@
 </style>
 </head>
 <body>
-<h1 id="guida-completa-aggiungere-un-pc-alla-rete-omenserver">🖥️ Guida Completa — Aggiungere un PC alla rete OmenServer</h1>
+<h1 id="guida-aggiungere-un-pc-alla-rete-omenserver">🖥️ Guida — Aggiungere un PC alla rete OmenServer</h1>
 
 <blockquote>
-  <p><strong>Version 1.0</strong> — Mai 2026<br />
-  Questa guida spiega come trasformare qualsiasi PC (même avec Windows) in un "braccio" connesso a OmenServer.<br />
-  L'Omen rimane il <strong>cervello</strong> (server principale), gli altri PC sono i <strong>bracci</strong> (agents qui envoient leurs stats).</p>
+  <p><strong>Versione 3.0</strong> — Maggio 2026<br />
+  🧠 L'Omen = cervello · 🦾 Gli altri PC = bracci</p>
 </blockquote>
 
 <hr />
@@ -158,678 +157,395 @@
 <h2 id="sommario">📑 Sommario</h2>
 
 <ol>
-<li><a href="#1--prérequis">Requisiti</a></li>
-<li><a href="#2--créer-la-clé-usb-bootable-ubuntu">Creare la chiavetta USB avviabile di Ubuntu</a></li>
-<li><a href="#3--installer-ubuntu-server">Installare Ubuntu Server</a></li>
-<li><a href="#4--premier-démarrage--configuration-de-base">Primo avvio — Configurazione di base</a></li>
-<li><a href="#5--activer-ssh-accès-à-distance">Attivare SSH (accesso remoto)</a></li>
-<li><a href="#6--installer-lagent-omenserver">Installer l'agent OmenServer</a></li>
-<li><a href="#7--lancer-lagent-au-démarrage-automatiquement">Avviare l'agente all'avvio automaticamente</a></li>
-<li><a href="#8--vérifier-que-ça-fonctionne">Verificare che funzioni</a></li>
-<li><a href="#9--commandes-optionnelles-utiles">Comandi opzionali utili</a></li>
-<li><a href="#10--dépannage">Risoluzione dei problemi</a></li>
+<li><a href="#1--requisiti">Requisiti</a></li>
+<li><a href="#2--creare-la-chiavetta-usb">Creare la chiavetta USB</a></li>
+<li><a href="#3--installare-ubuntu-server">Installare Ubuntu Server</a></li>
+<li><a href="#4--installare-lagente">Installare l'agente</a></li>
+<li><a href="#5--opzioni">⚙️ Opzioni</a></li>
+<li><a href="#6--correzione-bug">🔧 Correzione bug</a></li>
 </ol>
 
 <hr />
 
 <h2 id="1-requisiti">1 — Requisiti</h2>
 
-<h3 id="cosa-ti-serve">Cosa ti serve:</h3>
-
-<ul>
-<li><strong>Le PC</strong> à transformer (Windows, vieux PC, n'importe quoi)</li>
-<li><strong>Une clé USB</strong> de 8 Go minimum</li>
-<li><strong>Un cavo Ethernet</strong> (ou le WiFi, mais Ethernet c'est mieux pour un serveur)</li>
-<li><strong>Uno schermo + tastiera</strong> (juste pour l'installation, après tu fais tout à distance)</li>
-<li><strong>La chiave API OmenServer</strong> (visible dans le dashboard → Impostazioni)</li>
-</ul>
-
-<h3 id="cosa-diventera-il-pc">Cosa diventerà il PC:</h3>
-
-<ul>
-<li>Un PC con Linux (Ubuntu Server) senza interfaccia grafica</li>
-<li>Invierà le sue statistiche (CPU, RAM, Disque, Température) à l'Omen toutes les 10 secondes</li>
-<li>Potrai <strong>riavviarlo o spegnerlo a distanza</strong> depuis le dashboard OmenServer</li>
-<li>Il suo <strong>storage sarà unito</strong> dans le total affiché sur le dashboard</li>
-<li><strong>Resterà acceso anche col coperchio chiuso</strong> et <strong>si accenderà/spegnerà automaticamente</strong> (1h-6h)</li>
-</ul>
+<table>
+<thead>
+<tr>
+  <th>Cosa serve</th>
+  <th>Dettaglio</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Un PC</td>
+  <td>Qualsiasi (vecchio, Windows, ecc.)</td>
+</tr>
+<tr>
+  <td>Chiavetta USB</td>
+  <td>8 GB minimo</td>
+</tr>
+<tr>
+  <td>Cavo Ethernet</td>
+  <td>Consigliato (WiFi possibile)</td>
+</tr>
+<tr>
+  <td>Schermo + Tastiera</td>
+  <td>Solo durante l'installazione</td>
+</tr>
+<tr>
+  <td>Chiave API</td>
+  <td>https://omenserver.org → Impostazioni</td>
+</tr>
+</tbody>
+</table>
 
 <hr />
 
-<h2 id="2-creare-la-chiavetta-usb-avviabile-di-ubuntu">2 — Creare la chiavetta USB avviabile di Ubuntu</h2>
-
-<h3 id="21-scaricare-ubuntu-server">2.1 — Scaricare Ubuntu Server</h3>
-
-<p>Sul tuo Mac (o un altro PC), vai su:<br />
-👉 <strong>https://ubuntu.com/download/server</strong></p>
-
-<p>Scarica il file <strong>Ubuntu Server 24.04 LTS</strong> (fichier <code>.iso</code> d'environ 2.5 Go).</p>
-
-<h3 id="22-creare-la-chiavetta-usb-avviabile">2.2 — Creare la chiavetta USB avviabile</h3>
-
-<h4 id="opzione-a-su-mac-con-balenaetcher">Opzione A — Su Mac (con balenaEtcher)</h4>
+<h2 id="2-creare-la-chiavetta-usb">2 — Creare la chiavetta USB</h2>
 
 <ol>
-<li>Scarica <strong>balenaEtcher</strong> : https://etcher.balena.io/</li>
-<li>Apri balenaEtcher</li>
-<li>Clicca <strong>"Flash from file"</strong> → seleziona il file <code>.iso</code> d'Ubuntu</li>
-<li>Clicca <strong>"Select target"</strong> → seleziona la tua chiavetta USB</li>
-<li>Clicca <strong>"Flash!"</strong></li>
-<li>Aspetta che finisca (~5 minutes)</li>
+<li>Scarica <strong>Ubuntu Server 24.04 LTS</strong> → https://ubuntu.com/download/server</li>
+<li>Scrivi l'ISO con <strong>balenaEtcher</strong> → https://etcher.balena.io/</li>
 </ol>
-
-<h4 id="opzione-b-su-windows-con-rufus">Opzione B — Su Windows (con Rufus)</h4>
-
-<ol>
-<li>Scarica <strong>Rufus</strong> : https://rufus.ie/</li>
-<li>Apri Rufus</li>
-<li><strong>Dispositivo</strong> : Sélectionne ta clé USB</li>
-<li><strong>Selezione boot</strong> : Clicca sur <strong>"SÉLECTION"</strong> et scegli il file <code>.iso</code> d'Ubuntu</li>
-<li>Lascia le altre opzioni predefinite e clicca su <strong>"DÉMARRER"</strong></li>
-<li>(Si on te demande de télécharger Syslinux ou d'écrire en mode Image ISO, dis "Oui" / "Mode image ISO")</li>
-</ol>
-
-<h4 id="opzione-c-su-mac-con-il-terminale">Opzione C — Su Mac (con il Terminale)</h4>
-
-<pre><code># Trovare il disco della tua chiavetta USB
-diskutil list
-
-# Smontare la chiavetta (remplace diskX par le bon numéro, ex: disk2)
-diskutil unmountDisk /dev/diskX
-
-# Scrivere l'ISO sulla chiavetta (remplace le chemin et diskX)
-sudo dd if=~/Downloads/ubuntu-24.04-live-server-amd64.iso of=/dev/rdiskX bs=1m status=progress
-
-# Espellere la chiavetta
-diskutil eject /dev/diskX
-</code></pre>
 
 <blockquote>
-  <p>⚠️ <strong>ATTENTION</strong> : Vérifie bien le numéro du disque ! Si tu te trompes, tu peux effacer ton Mac.</p>
+  <p>💡 Alternativa Windows : <strong>Rufus</strong> (https://rufus.ie/)</p>
 </blockquote>
 
 <hr />
 
 <h2 id="3-installare-ubuntu-server">3 — Installare Ubuntu Server</h2>
 
-<h3 id="31-avviare-dalla-chiavetta-usb">3.1 — Avviare dalla chiavetta USB</h3>
+<p>Collega la chiavetta → Accendi il PC → Tasto di boot :</p>
 
-<ol>
-<li>Collega la chiavetta USB al PC</li>
-<li>Accendi il PC</li>
-<li>Premi il <strong>tasto di boot</strong> (varie selon le PC) :
-<ul>
-<li><strong>HP Omen</strong> : <code>F9</code></li>
-<li><strong>Dell</strong> : <code>F12</code></li>
-<li><strong>Lenovo</strong> : <code>F12</code></li>
-<li><strong>ASUS</strong> : <code>F8</code> ou <code>Esc</code></li>
-<li><strong>MSI</strong> : <code>F11</code></li>
-<li><strong>Acer</strong> : <code>F12</code></li>
-<li><strong>Général</strong> : <code>Esc</code>, <code>F2</code>, <code>F10</code>, <code>F11</code>, <code>F12</code> ou <code>Suppr</code></li>
-</ul></li>
-<li>Seleziona la chiavetta USB nel menu di boot</li>
-<li>Scegli <strong>"Install Ubuntu Server"</strong></li>
-</ol>
+<table>
+<thead>
+<tr>
+  <th>Marca</th>
+  <th>Tasto</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>HP</td>
+  <td><code>F9</code></td>
+</tr>
+<tr>
+  <td>Dell / Lenovo / Acer</td>
+  <td><code>F12</code></td>
+</tr>
+<tr>
+  <td>ASUS</td>
+  <td><code>F8</code> o <code>Esc</code></td>
+</tr>
+<tr>
+  <td>MSI</td>
+  <td><code>F11</code></td>
+</tr>
+</tbody>
+</table>
 
-<h3 id="32-fasi-dellinstallazione">3.2 — Fasi dell'installazione</h3>
+<p>Durante l'installazione, segui queste impostazioni :</p>
 
 <table>
 <thead>
 <tr>
   <th>Schermata</th>
-  <th>Cosa fare</th>
+  <th>Azione</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-  <td><strong>Lingua</strong></td>
-  <td>Scegli ta langue (Français ou English)</td>
+  <td>Lingua / Tastiera</td>
+  <td>Italiano / Layout desiderato</td>
 </tr>
 <tr>
-  <td><strong>Tastiera</strong></td>
-  <td>Scegli ta disposition clavier (French - AZERTY)</td>
+  <td>Tipo</td>
+  <td><strong>Ubuntu Server</strong> (non minimized)</td>
 </tr>
 <tr>
-  <td><strong>Tipo di installazione</strong></td>
-  <td>Scegli <strong>"Ubuntu Server"</strong> (pas minimized)</td>
+  <td>Rete</td>
+  <td>Lasciare predefinito (cavo auto-rilevato)</td>
 </tr>
 <tr>
-  <td><strong>Rete</strong></td>
-  <td>Rileva automaticamente il cavo Ethernet. Si WiFi, configure-le.</td>
+  <td>Storage</td>
+  <td><strong>"Use an entire disk"</strong> + <strong>LVM attivato</strong></td>
 </tr>
 <tr>
-  <td><strong>Proxy</strong></td>
-  <td>Lascia vuoto, premi Invio</td>
+  <td>SSH</td>
+  <td>⭐ <strong>Spuntare "Install OpenSSH server"</strong></td>
 </tr>
 <tr>
-  <td><strong>Mirror</strong></td>
-  <td>Lascia predefinito, premi Invio</td>
-</tr>
-<tr>
-  <td><strong>Archiviazione</strong></td>
-  <td>⭐ <strong>IMPORTANTEE</strong> — voir ci-dessous</td>
-</tr>
-<tr>
-  <td><strong>Nome / Utente</strong></td>
-  <td>Vedi sotto</td>
-</tr>
-<tr>
-  <td><strong>SSH</strong></td>
-  <td>⭐ <strong>Spunta "Install OpenSSH server"</strong></td>
-</tr>
-<tr>
-  <td><strong>Snaps</strong></td>
-  <td>Non spuntare nulla, premi Invio</td>
+  <td>Snaps</td>
+  <td>Non spuntare nulla</td>
 </tr>
 </tbody>
 </table>
 
-<h3 id="33-configurazione-dellarchiviazione-importantee">3.3 — Configurazione dell'archiviazione (IMPORTANTEE)</h3>
-
-<p>L'installer propone uno schema di partizioni. <strong>Di default, Ubuntu non usa tutto lo spazio!</strong></p>
-
-<p><strong>Opzione consigliata:</strong>
-- Scegli <strong>"Use an entire disk"</strong>
-- Se il PC ha più dischi, scegli il <strong>più grande</strong> per il sistema
-- Verifica che <code>lvm</code> sia attivato</p>
-
 <blockquote>
-  <p>💡 <strong>Pas de panique</strong> : même si Ubuntu ne prend pas tout l'espace au départ, on l'étendra après (Section 9).</p>
+  <p>⚠️ <strong>Non dimenticare SSH !</strong> Senza, dovrai tenere uno schermo collegato.</p>
 </blockquote>
 
-<h3 id="34-nome-e-utente">3.4 — Nome e utente</h3>
-
-<table>
-<thead>
-<tr>
-  <th>Campo</th>
-  <th>Cosa inserire</th>
-  <th>Esempio</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-  <td>Your name</td>
-  <td>Il tuo nome</td>
-  <td><code>Massimiliano</code></td>
-</tr>
-<tr>
-  <td>Server name</td>
-  <td>Un nome breve per il PC</td>
-  <td><code>pc-bureau</code>, <code>laptop-gaming</code>, <code>tour-salon</code></td>
-</tr>
-<tr>
-  <td>Username</td>
-  <td>Il tuo ID utente</td>
-  <td><code>massii08</code> (lo stesso dell'Omen, è più semplice)</td>
-</tr>
-<tr>
-  <td>Password</td>
-  <td>Una password sicura</td>
-  <td><code>********</code></td>
-</tr>
-</tbody>
-</table>
-
-<h3 id="35-fine-dellinstallazione">3.5 — Fine dell'installazione</h3>
-
-<ol>
-<li>L'installazione richiede ~10 minutes</li>
-<li>Quando è finito, ti chiede di <strong>rimuovere la chiavetta USB</strong> e premere Invio</li>
-<li>Il PC si riavvia in Ubuntu Server</li>
-<li>Vedi uno schermo nero con <code>login:</code> → è normale, questo è Ubuntu Server !</li>
-</ol>
+<p>Crea il tuo utente (es: <code>massii08</code>), attendi ~10 min, rimuovi la chiavetta, riavvia.</p>
 
 <hr />
 
-<h2 id="4-primo-avvio-configurazione-di-base">4 — Primo avvio — Configurazione di base</h2>
+<h2 id="4-installare-lagente">4 — Installare l'agente</h2>
 
-<h3 id="41-accedere">4.1 — Accedere</h3>
-
-<pre><code>login: massii08
-Password: (la tua password)
-</code></pre>
-
-<h3 id="42-aggiornare-il-sistema">4.2 — Aggiornare il sistema</h3>
-
-<pre><code>sudo apt update &amp;&amp; sudo apt upgrade -y
-</code></pre>
-
-<blockquote>
-  <p>Può richiedere 5-10 minuti la prima volta.</p>
-</blockquote>
-
-<h3 id="43-installare-gli-strumenti-essenziali">4.3 — Installare gli strumenti essenziali</h3>
-
-<pre><code>sudo apt install -y python3 python3-pip python3-venv curl wget htop net-tools
-</code></pre>
-
-<p><strong>Spiegazione di ogni pacchetto :</strong>
-- <code>python3</code> : Il linguaggio di programmazione per l'agente
-- <code>python3-pip</code> : L'installer dei pacchetti Python
-- <code>python3-venv</code> : Per creare ambienti Python isolati
-- <code>curl</code> / <code>wget</code> : Per scaricare file
-- <code>htop</code> : Per vedere l'uso CPU/RAM in tempo reale
-- <code>net-tools</code> : Per i comandi di rete (ifconfig, etc.)</p>
-
-<h3 id="44-trovare-lip-del-pc-per-ssh">4.4 — Trovare l'IP del PC (per SSH)</h3>
-
-<pre><code>ip addr show | grep "inet " | grep -v 127.0.0.1
-</code></pre>
-
-<p>Prendi nota dell'indirizzo IP (ex: <code>192.168.68.XX</code>). Ti servirà per connetterti a distanza.</p>
-
-<hr />
-
-<h2 id="5-attivare-ssh-accesso-remoto">5 — Attivare SSH (accesso remoto)</h2>
-
-<h3 id="51-verificare-che-ssh-sia-installato">5.1 — Verificare che SSH sia installato</h3>
-
-<pre><code>sudo systemctl status ssh
-</code></pre>
-
-<p>Se è <code>active (running)</code>, va bene! Altrimenti:</p>
-
-<pre><code>sudo apt install -y openssh-server
-sudo systemctl enable ssh
-sudo systemctl start ssh
-</code></pre>
-
-<h3 id="52-accedere-depuis-le-mac">5.2 — Accedere depuis le Mac</h3>
-
-<p>Apri un Terminale sul tuo Mac e digita:</p>
-
-<pre><code>ssh massii08@192.168.68.XX
-</code></pre>
-
-<blockquote>
-  <p>Sostituisci <code>XX</code> con le ultime cifre dell'IP del PC.</p>
-</blockquote>
-
-<p>Ora sei connesso a distanza! <strong>Puoi scollegare schermo e tastiera dal PC.</strong> 🎉</p>
-
-<hr />
-
-<h2 id="6-installare-lagente-in-1-solo-comando">6 — Installare l'agente (in 1 solo comando)</h2>
-
-<p>Per semplificare al massimo, uno script si occupa di installare e configurare <strong>tutto</strong> automaticamente:
-- Download dell'agente OmenServer
-- Configurazione della chiave API
-- Avvio automatico (servizio in background)
-- <strong>Chiusura del coperchio</strong> : il PC resterà acceso anche se chiudi lo schermo
-- <strong>Orari automatici</strong> : il PC entrerà in sospensione profonda all'1 di notte e si sveglierà alle 6 del mattino (fuso orario europeo configurato automaticamente)
-- <strong>Estensione del disco</strong> : espande automaticamente lo spazio di base
-- <strong>Opzione SSD/HDD</strong> : ti chiederà se vuoi formattare un 2° disco</p>
-
-<h3 id="61-avviare-linstallazione">6.1 — Avviare l'installazione</h3>
-
-<ol>
-<li>Va sur <strong>https://omenserver.org</strong>, accedi, e vai nelle <strong>Impostazioni</strong> per copiare la tua <strong>Chiave API</strong>.</li>
-<li>Sul nuovo PC, digita questo comando sostituendo <code>TA_CLE_API</code> con la tua vera chiave (per esempio <code>sk_123456789abc</code>) :</li>
-</ol>
+<p>Connettiti al PC, poi lancia <strong>un solo comando</strong> :</p>
 
 <pre><code>curl -sL https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/setup_omen_agent.sh \
-  | sudo bash -s -- TA_CLE_API
-</code></pre>
-
-<p><em>(Se ti chiede una password, è quella della tua sessione ubuntu)</em></p>
-
-<ol start="3">
-<li>Attendi 1 minuto. Alla fine, lo script ti chiederà:
-&gt; <code>⚠️ ATTENTION: Hai un secondo disco (SSD/HDD) che vuoi cancellare... ? (y/N):</code>
-Digita <code>y</code> se hai un vecchio disco da formattare (ATTENZIONE: cancella TUTTO), o solo <code>Invio</code> per ignorare.</li>
-<li>Quando vedi <code>✅ Terminé !</code>, hai finito.</li>
-</ol>
-
-<h3 id="62-e-tutto">6.2 — È tutto!</h3>
-
-<p>Ora puoi:
-- <strong>Chiudere il coperchio del computer</strong>, resterà acceso
-- Riporlo su uno scaffale col suo cavo di alimentazione
-- Gestirlo interamente dalla dashboard di OmenServer</p>
-
-<hr />
-
-<h2 id="8-verificare-che-funzioni">8 — Verificare che funzioni</h2>
-
-<h3 id="81-sur-le-dashboard-omenserver">8.1 — Sur le Dashboard OmenServer</h3>
-
-<ol>
-<li>Va sur <strong>https://omenserver.org</strong></li>
-<li>Le nouveau PC apparaît dans <strong>"Ordinateurs connectés"</strong> avec un point 🟢</li>
-<li>Tu vois ses stats : CPU, RAM, Disque, Température</li>
-<li>Le <strong>total de stockage</strong> dans la carte DISK inclut maintenant ce PC</li>
-</ol>
-
-<h3 id="82-tester-les-commandes-a-distance">8.2 — Tester les commandes à distance</h3>
-
-<p>Depuis le dashboard, tu peux :
-- 🔄 <strong>Redémarrer</strong> le PC à distance
-- ⏻ <strong>Éteindre</strong> le PC à distance</p>
-
-<hr />
-
-<h2 id="9-comandi-opzionali-utili">9 — Comandi opzionali utili</h2>
-
-<h3 id="estendere-il-disco-se-ubuntu-non-usa-tutto-lo-spazio">🔧 Estendere il disco (se Ubuntu non usa tutto lo spazio)</h3>
-
-<p>È il problema più comune: Ubuntu Server con LVM usa solo ~100 GB di default.</p>
-
-<pre><code># Vedere lo spazio attuale
-df -h /
-
-# Vedere i dischi fisici
-lsblk
-
-# Estendere il volume logico per usare tutto lo spazio libero
-sudo lvextend -l +100%FREE /dev/ubuntu-vg/ubuntu-lv
-
-# Ridimensionare il file system
-sudo resize2fs /dev/ubuntu-vg/ubuntu-lv
-
-# Verificare che sia a posto
-df -h /
-</code></pre>
-
-<hr />
-
-<h3 id="formattare-e-usare-un-ssdhdd-aggiuntivo">💾 Formattare e usare un SSD/HDD aggiuntivo</h3>
-
-<p>Se il PC ha un secondo disco (SSD o HDD) non utilizzato:</p>
-
-<pre><code># 1. Identificare il disco (ex: /dev/sdb ou /dev/nvme0n1)
-lsblk
-
-# 2. Vedere cosa contiene
-sudo blkid /dev/sdX*
-
-# 3. Cancellare tutte le partizioni
-sudo wipefs -a /dev/sdX
-
-# 4. Creare una partizione unica
-sudo apt install -y parted
-sudo parted /dev/sdX --script mklabel gpt mkpart primary ext4 0% 100%
-
-# 5. Formattare in ext4
-sudo mkfs.ext4 -L "DataDisk" /dev/sdX1
-
-# 6. Creare il punto di mount e montare
-sudo mkdir -p /mnt/data
-sudo mount /dev/sdX1 /mnt/data
-
-# 7. Aggiungere all'avvio automatico
-echo "UUID=$(sudo blkid -s UUID -o value /dev/sdX1) /mnt/data ext4 defaults 0 2" | sudo tee -a /etc/fstab
-
-# 8. Verificare
-df -h /mnt/data
+  | sudo bash -s -- LA_TUA_CHIAVE_API
 </code></pre>
 
 <blockquote>
-  <p>⚠️ Sostituisci <code>/dev/sdX</code> col vero nome del disco (ex: <code>/dev/sdb</code>, <code>/dev/nvme0n1</code>).</p>
+  <p>Sostituisci <code>LA_TUA_CHIAVE_API</code> con la chiave copiata da https://omenserver.org → Impostazioni.</p>
+</blockquote>
+
+<p>Lo script fa <strong>tutto automaticamente</strong> :
+- ✅ Installa Python, pip, dipendenze
+- ✅ Scarica e configura l'agente
+- ✅ Crea il servizio systemd (avvio automatico)
+- ✅ Attiva il PC col coperchio chiuso (laptop)
+- ✅ Programma sospensione 1h→6h con sveglia BIOS
+- ✅ Espande il disco LVM al massimo
+- ✅ Propone di formattare un 2° disco (opzionale)</p>
+
+<p>Quando vedi <code>✅ Terminé !</code> → Verifica su https://omenserver.org che il PC appaia 🟢</p>
+
+<blockquote>
+  <p>🎉 Ora puoi scollegare schermo e tastiera !</p>
 </blockquote>
 
 <hr />
 
-<h3 id="svuotare-completamente-un-ssd-cancellare-tutti-i-dati">🗑️ Svuotare completamente un SSD (cancellare tutti i dati)</h3>
+<h2 id="5-opzioni">5 — ⚙️ Opzioni</h2>
 
-<pre><code># ATTENZIONE : Questo cancella TUTTO sul disco!
+<h3 id="a-usare-tutto-il-disco">📀 A — Usare tutto il disco</h3>
 
-# 1. Smontare il disco se è montato
-sudo umount /mnt/data
+<p>Ubuntu LVM spesso usa solo ~100 GB di default. Lo script lo fa già, ma se serve :</p>
 
-# 2. Cancellare le partizioni
-sudo wipefs -a /dev/sdX
-
-# 3. Scrivere zeri (cancellazione completa — può richiedere molto tempo)
-sudo dd if=/dev/zero of=/dev/sdX bs=1M status=progress
-
-# 4. Ripartizionare se vuoi riutilizzarlo (vedi sezione precedente)
+<pre><code>sudo lvextend -l +100%FREE /dev/ubuntu-vg/ubuntu-lv
+sudo resize2fs /dev/ubuntu-vg/ubuntu-lv
 </code></pre>
 
 <hr />
 
-<h3 id="configurare-un-ip-statico-consigliato-per-un-server">🌐 Configurare un IP statico (consigliato per un server)</h3>
+<h3 id="b-aggiungere-un-2-disco-ssdhdd">💾 B — Aggiungere un 2° disco (SSD/HDD)</h3>
 
-<p>Di default, l'IP può cambiare a ogni riavvio. Per fissarlo:</p>
-
-<pre><code># Trovare il nome della tua interfaccia di rete
-ip link show
-# Prendi nota del nome (ex: enp3s0, eth0, eno1)
-
-# Creare la configurazione Netplan
-sudo nano /etc/netplan/01-static.yaml
+<pre><code>lsblk                                    # Identifica il disco (es: sdb)
+sudo wipefs -a /dev/sdX                  # ⚠️ Cancella tutto !
+sudo parted /dev/sdX --script mklabel gpt mkpart primary ext4 0% 100%
+sudo mkfs.ext4 -L "DataDisk" /dev/sdX1
+sudo mkdir -p /mnt/data &amp;&amp; sudo mount /dev/sdX1 /mnt/data
+echo "UUID=$(sudo blkid -s UUID -o value /dev/sdX1) /mnt/data ext4 defaults 0 2" | sudo tee -a /etc/fstab
 </code></pre>
 
-<p>Contenuto del file (adatta alla tua rete):</p>
+<blockquote>
+  <p>⚠️ Sostituisci <code>/dev/sdX</code> con il vero nome del disco !</p>
+</blockquote>
+
+<hr />
+
+<h3 id="c-ip-statico">🌐 C — IP statico</h3>
+
+<p>Crea <code>/etc/netplan/01-static.yaml</code> :</p>
 
 <pre><code>network:
   version: 2
   ethernets:
-    enp3s0:                    # ← Nome della tua interfaccia
+    enp3s0:                        # ← la tua interfaccia (ip link show)
       dhcp4: no
-      addresses:
-        - 192.168.68.XX/24     # ← IP statico che desideri
+      addresses: [192.168.68.XX/24]
       routes:
         - to: default
-          via: 192.168.68.1    # ← IP del tuo router internet
+          via: 192.168.68.1
       nameservers:
         addresses: [8.8.8.8, 8.8.4.4]
 </code></pre>
 
-<pre><code># Applicare
-sudo netplan apply
-
-# Verificare
-ip addr show
-</code></pre>
+<p>Poi : <code>sudo netplan apply</code></p>
 
 <hr />
 
-<h3 id="configurare-ssh-senza-password-chiave-ssh">🔐 Configurare SSH senza password (chiave SSH)</h3>
+<h3 id="d-ssh-senza-password">🔐 D — SSH senza password</h3>
 
-<p>Per non dover più digitare la password a ogni connessione SSH:</p>
+<p>Dal tuo <strong>Mac</strong> :</p>
 
-<p><strong>Sur le Mac :</strong></p>
-
-<pre><code># Generare una chiave SSH (se non già fatto)
-ssh-keygen -t ed25519
-
-# Copiare la chiave sul PC remoto
+<pre><code>ssh-keygen -t ed25519
 ssh-copy-id massii08@192.168.68.XX
 </code></pre>
 
-<p>Ora puoi connetterti senza password:</p>
+<hr />
 
-<pre><code>ssh massii08@192.168.68.XX
+<h3 id="e-cambiare-gli-orari-sospensionesveglia">🌙 E — Cambiare gli orari sospensione/sveglia</h3>
+
+<p>Di default : sospensione alle <strong>1h</strong>, sveglia alle <strong>6h</strong>. Per modificare :</p>
+
+<pre><code>crontab -e
+</code></pre>
+
+<p>Modifica la riga <code>rtcwake</code> (ora della sospensione) e il <code>06:00</code> (ora della sveglia).</p>
+
+<hr />
+
+<h3 id="f-disattivare-la-sospensione-automatica">🔌 F — Disattivare la sospensione automatica</h3>
+
+<p>Se vuoi che il PC resti acceso 24/7 :</p>
+
+<pre><code>crontab -e
+# Cancellare la riga contenente "rtcwake"
 </code></pre>
 
 <hr />
 
-<h3 id="vedere-luso-del-sistema-in-tempo-reale">📊 Vedere l'uso del sistema in tempo reale</h3>
+<h2 id="6-correzione-bug">6 — 🔧 Correzione bug</h2>
 
-<pre><code># CPU, RAM in tempo reale (come un task manager)
-htop
+<h3 id="il-pc-non-appare-nella-dashboard">❌ Il PC non appare nella dashboard</h3>
 
-# Uso del disco
-df -h
+<table>
+<thead>
+<tr>
+  <th>Verifica</th>
+  <th>Comando</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Servizio attivo ?</td>
+  <td><code>sudo systemctl status omen-agent</code></td>
+</tr>
+<tr>
+  <td>Rilanciare</td>
+  <td><code>sudo systemctl restart omen-agent</code></td>
+</tr>
+<tr>
+  <td>Chiave API corretta ?</td>
+  <td><code>grep "API_KEY" ~/omen_agent.py</code></td>
+</tr>
+<tr>
+  <td>Internet OK ?</td>
+  <td><code>ping omenserver.org</code></td>
+</tr>
+<tr>
+  <td>Firewall blocca ?</td>
+  <td><code>sudo ufw allow out 443</code></td>
+</tr>
+</tbody>
+</table>
 
-# Temperatura CPU
-cat /sys/class/thermal/thermal_zone0/temp
-# Dividi per 1000 per avere i °C
+<hr />
 
-# Processi più esigenti
-top -o %MEM
+<h3 id="il-pc-e-offline-ma-e-acceso">❌ Il PC è "Offline" ma è acceso</h3>
 
-# Connessioni di rete attive
-ss -tulpn
+<pre><code>sudo systemctl restart omen-agent
+</code></pre>
+
+<p>Se persiste → controlla il cavo Ethernet e che <code>ping omenserver.org</code> funzioni.</p>
+
+<hr />
+
+<h3 id="il-disco-mostra-meno-spazio-del-previsto">❌ Il disco mostra meno spazio del previsto</h3>
+
+<p>Un SSD da 500 GB mostra ~100 GB ? È il LVM di default :</p>
+
+<pre><code>sudo lvextend -l +100%FREE /dev/ubuntu-vg/ubuntu-lv
+sudo resize2fs /dev/ubuntu-vg/ubuntu-lv
+df -h /
 </code></pre>
 
 <hr />
 
-<h3 id="aggiornare-il-sistema">🔄 Aggiornare il sistema</h3>
+<h3 id="ssh-rifiutato-connection-refused">❌ SSH rifiutato ("Connection refused")</h3>
 
-<pre><code># Aggiornamenti classici
-sudo apt update &amp;&amp; sudo apt upgrade -y
+<p>Sul PC (con schermo+tastiera) :</p>
 
-# Aggiornamenti di sicurezza automatici
-sudo apt install -y unattended-upgrades
-sudo dpkg-reconfigure --priority=low unattended-upgrades
-</code></pre>
-
-<hr />
-
-<h3 id="eteindre-ou-redemarrer-le-pc">🔌 Éteindre ou redémarrer le PC</h3>
-
-<pre><code># Spegnere ora
-sudo shutdown -h now
-
-# Riavviare ora
-sudo reboot
-
-# Spegnere tra 30 minuti
-sudo shutdown -h +30
-
-# Annullare uno spegnimento programmato
-sudo shutdown -c
-</code></pre>
-
-<hr />
-
-<h3 id="diagnostics-reseau">📡 Diagnostics réseau</h3>
-
-<pre><code># Testare la connessione a OmenServer
-curl -s https://omenserver.org/api/health
-
-# Testare la connessione internet
-ping -c 4 google.com
-
-# Vedere l'IP attuale
-ip addr show | grep "inet " | grep -v 127.0.0.1
-
-# Scansionare i PC nella rete locale
-sudo apt install -y nmap
-nmap -sn 192.168.68.0/24
-</code></pre>
-
-<hr />
-
-<h3 id="permettre-le-rebootshutdown-a-distance-sans-mot-de-passe-sudo">🛡️ Permettre le reboot/shutdown à distance (sans mot de passe sudo)</h3>
-
-<p>L'agent a besoin de <code>sudo</code> pour redémarrer/éteindre le PC quand tu le demandes depuis le dashboard :</p>
-
-<pre><code>echo "$USER ALL=(ALL) NOPASSWD: /sbin/reboot, /sbin/shutdown" | sudo tee /etc/sudoers.d/omen-agent
-</code></pre>
-
-<hr />
-
-<h3 id="mettre-a-jour-lagent-omenserver">📝 Mettre à jour l'agent OmenServer</h3>
-
-<p>Si une nouvelle version de l'agent est disponible :</p>
-
-<pre><code># Arrêter l'agent
-sudo systemctl stop omen-agent
-
-# Sauvegarder l'ancien
-cp ~/omen_agent.py ~/omen_agent.py.bak
-
-# Télécharger la nouvelle version
-curl -o ~/omen_agent.py https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/omen_agent.py
-
-# Remettre ta configuration (SERVER_URL et API_KEY)
-nano ~/omen_agent.py
-
-# Relancer l'agent
-sudo systemctl start omen-agent
-</code></pre>
-
-<hr />
-
-<h2 id="10-risoluzione-dei-problemi">10 — Risoluzione dei problemi</h2>
-
-<h3 id="lagente-non-si-connette-al-server">L'agente non si connette al server</h3>
-
-<pre><code># Verificare que le service tourne
-sudo systemctl status omen-agent
-
-# Vedere gli errori nei log
-sudo journalctl -u omen-agent --no-pager -n 50
-
-# Testare la connessione manualmente
-curl -s https://omenserver.org/api/health
-
-# Verificare la clé API dans le fichier
-grep "API_KEY" ~/omen_agent.py
-</code></pre>
-
-<p><strong>Cause frequenti :</strong>
-- ❌ Chiave API errata → controlla nella dashboard
-- ❌ Nessuna connessione internet → controlla il cavo Ethernet
-- ❌ Il firewall blocca → <code>sudo ufw allow out 443</code></p>
-
-<hr />
-
-<h3 id="il-pc-non-appare-nella-dashboard">Il PC non appare nella dashboard</h3>
-
-<ul>
-<li>Attendi <strong>30 secondi</strong> dopo l'avvio dell'agente</li>
-<li>Verifica che l'agente sia in <code>active (running)</code> : <code>sudo systemctl status omen-agent</code></li>
-<li>Controlla i log : <code>sudo journalctl -u omen-agent -f</code></li>
-</ul>
-
-<hr />
-
-<h3 id="il-disco-mostra-meno-spazio-del-previsto">Il disco mostra meno spazio del previsto</h3>
-
-<p>→ Usa il comando di estensione LVM (Section 9, première commande)</p>
-
-<hr />
-
-<h3 id="il-pc-e-offline-nella-dashboard-ma-e-acceso">Il PC è "offline" nella dashboard ma è acceso</h3>
-
-<ul>
-<li>L'agente potrebbe essersi bloccato → <code>sudo systemctl restart omen-agent</code></li>
-<li>La rete potrebbe essere interrotta → <code>ping omenserver.org</code></li>
-</ul>
-
-<hr />
-
-<h3 id="ssh-rifiutato-connection-refused">SSH rifiutato ("Connection refused")</h3>
-
-<pre><code># Sul PC (con schermo+tastiera), verifica che SSH sia in esecuzione
-sudo systemctl status ssh
-
-# Se non installato
-sudo apt install -y openssh-server
-sudo systemctl enable ssh
-sudo systemctl start ssh
-
-# Verificare le firewall
+<pre><code>sudo apt install -y openssh-server
+sudo systemctl enable ssh &amp;&amp; sudo systemctl start ssh
 sudo ufw allow ssh
 </code></pre>
 
 <hr />
 
-<h2 id="checklist-rapida-riassunto">📋 Checklist rapida (riassunto)</h2>
+<h3 id="il-pc-non-si-sveglia-allora-prevista">❌ Il PC non si sveglia all'ora prevista</h3>
 
-<p>Per ogni nuovo PC, fai questi passaggi in ordine:</p>
+<ol>
+<li><strong>BIOS</strong> : Entrare nel BIOS (<code>F2</code> o <code>Canc</code>) → Attivare <strong>"Wake on RTC"</strong> o <strong>"Power On By RTC Alarm"</strong></li>
+<li><strong>Verificare il timer</strong> : <code>cat /proc/driver/rtc</code> → <code>alarm_IRQ</code> deve essere <code>yes</code></li>
+<li><strong>Ri-programmare</strong> :</li>
+</ol>
+
+<pre><code>sudo rtcwake -m no -l -t $(date -d "tomorrow 06:00" +%s)
+sudo systemctl suspend
+</code></pre>
+
+<hr />
+
+<h3 id="i-servizi-non-ripartono-dopo-la-sveglia">❌ I servizi non ripartono dopo la sveglia</h3>
+
+<p>Il PC si sveglia ma OmenServer/Cloudflare restano spenti :</p>
+
+<pre><code>sudo cp tools/omen-resume.sh /etc/systemd/system-sleep/
+sudo chmod +x /etc/systemd/system-sleep/omen-resume.sh
+</code></pre>
+
+<hr />
+
+<h3 id="rebootshutdown-da-remoto-non-funziona">❌ Reboot/Shutdown da remoto non funziona</h3>
+
+<pre><code>echo "$USER ALL=(ALL) NOPASSWD: /sbin/reboot, /sbin/shutdown" | sudo tee /etc/sudoers.d/omen-agent
+sudo chmod 0440 /etc/sudoers.d/omen-agent
+</code></pre>
+
+<hr />
+
+<h3 id="pip-install-fallisce-externally-managed-environment">❌ "pip install" fallisce (<code>externally-managed-environment</code>)</h3>
+
+<p>Ubuntu 24.04 blocca pip fuori da un venv :</p>
+
+<pre><code>pip3 install psutil requests --break-system-packages
+</code></pre>
+
+<hr />
+
+<h3 id="lagente-crasha-allavvio-errore-python">❌ L'agente crasha all'avvio (errore Python)</h3>
+
+<pre><code>sudo journalctl -u omen-agent -n 50    # Vedere i log
+python3 ~/omen_agent.py                # Testare manualmente
+</code></pre>
+
+<p><strong>Cause frequenti</strong> : versione Python sbagliata · <code>psutil</code> non installato · <code>SERVER_URL</code> mal configurato.</p>
+
+<hr />
+
+<h3 id="il-pc-si-sveglia-ma-non-si-riconnette">❌ Il PC si sveglia ma non si riconnette</h3>
+
+<p>Dopo una sveglia, l'agente impiega ~15s per riconnettersi. Se non funziona :</p>
+
+<pre><code>sudo systemctl restart omen-agent
+sudo systemctl restart systemd-networkd
+</code></pre>
+
+<blockquote>
+  <p>💡 Lo script <code>omen-resume.sh</code> fa questo automaticamente se installato (vedi bug sopra).</p>
+</blockquote>
+
+<hr />
+
+<h2 id="checklist">📋 Checklist</h2>
 
 <ul>
-<li>[ ] Créer la clé USB Ubuntu Server</li>
-<li>[ ] Installare Ubuntu Server (cocher SSH !)</li>
-<li>[ ] Accedere et mettre à jour : <code>sudo apt update &amp;&amp; sudo apt upgrade -y</code></li>
-<li>[ ] Installare python : <code>sudo apt install -y python3 python3-pip curl htop</code></li>
-<li>[ ] Lanciare lo script di installazione auto : <code>curl -sL https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/setup_omen_agent.sh | sudo bash -s -- TA_CLE_API</code></li>
-<li>[ ] Verificare sur le dashboard OmenServer</li>
-<li>[ ] (Optionnel) Estendere il disco LVM</li>
-<li>[ ] (Optionnel) Formattare un SSD aggiuntivo</li>
-<li>[ ] (Optionnel) Configurare un IP statico</li>
-<li>[ ] (Optionnel) Configurare SSH senza password</li>
+<li>[ ] Chiavetta USB Ubuntu Server creata</li>
+<li>[ ] Ubuntu installato (<strong>SSH spuntato !</strong>)</li>
+<li>[ ] Script agente lanciato con la chiave API</li>
+<li>[ ] PC visibile 🟢 su https://omenserver.org</li>
 </ul>
 
 <hr />
 
 <blockquote>
-  <p>🖥️ <strong>OmenServer</strong> — L'Omen est le cerveau, les autres PC sont les bras.<br />
+  <p>🖥️ <strong>OmenServer</strong> — L'Omen è il cervello, gli altri PC sono i bracci.<br />
   Tutti connessi, tutto unito, tutto controllato da un'unica dashboard.</p>
 </blockquote>
 

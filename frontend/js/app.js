@@ -791,7 +791,8 @@ const App = {
                     <h3 class="card-title" style="margin:0;">${t('nodes.api_key')}</h3>
                     <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">${t('nodes.api_key_desc')}</p>
                     <div style="display:flex;gap:8px;margin-top:12px;align-items:center;">
-                        <code id="nodes-api-key" style="flex:1;padding:8px 12px;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:6px;font-size:12px;word-break:break-all;color:var(--text-primary);">Chargement...</code>
+                        <code id="nodes-api-key" style="flex:1;padding:8px 12px;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:6px;font-size:12px;word-break:break-all;color:var(--text-primary);">${t('common.loading')}</code>
+                        <button id="nodes-key-toggle" class="btn btn-secondary btn-sm" onclick="App._toggleNodesKeyVisibility()" title="${t('nodes.show_key')}">👁️</button>
                         <button class="btn btn-secondary btn-sm" onclick="App._copyNodesKey()" title="${t('nodes.copy')}">📋</button>
                         <button class="btn btn-secondary btn-sm" onclick="App._resetNodesKey()" style="font-size:11px;">${t('nodes.reset_key')}</button>
                     </div>
@@ -1031,28 +1032,47 @@ const App = {
 
     // --- Nodes API Key ---
 
+    _nodesKeyReal: null,
+    _nodesKeyVisible: false,
+
     async _loadNodesKey() {
         const r = await Auth.apiCall('/api/nodes/key');
         if (!r || !r.ok) return;
         const data = await r.json();
+        this._nodesKeyReal = data.key;
+        this._nodesKeyVisible = false;
         const el = document.getElementById('nodes-api-key');
-        if (el) el.textContent = data.key;
+        if (el) el.textContent = '●●●●●●●●●●●●●●●●●●●●●●●●';
+    },
+
+    _toggleNodesKeyVisibility() {
+        if (!this._nodesKeyReal) return;
+        this._nodesKeyVisible = !this._nodesKeyVisible;
+        const el = document.getElementById('nodes-api-key');
+        const btn = document.getElementById('nodes-key-toggle');
+        if (el) el.textContent = this._nodesKeyVisible ? this._nodesKeyReal : '●●●●●●●●●●●●●●●●●●●●●●●●';
+        if (btn) btn.textContent = this._nodesKeyVisible ? '🙈' : '👁️';
     },
 
     async _copyNodesKey() {
-        const el = document.getElementById('nodes-api-key');
-        if (!el) return;
+        if (!this._nodesKeyReal) return;
         try {
-            await navigator.clipboard.writeText(el.textContent);
+            await navigator.clipboard.writeText(this._nodesKeyReal);
             if (typeof Toast !== 'undefined') Toast.success(Lang.t('nodes.copied'));
         } catch (e) {
-            // Fallback
-            const range = document.createRange();
-            range.selectNode(el);
-            window.getSelection().removeAllRanges();
-            window.getSelection().addRange(range);
-            document.execCommand('copy');
-            if (typeof Toast !== 'undefined') Toast.success(Lang.t('nodes.copied'));
+            // Fallback : temporarily show, select, copy, re-hide
+            const el = document.getElementById('nodes-api-key');
+            if (el) {
+                const wasVisible = this._nodesKeyVisible;
+                el.textContent = this._nodesKeyReal;
+                const range = document.createRange();
+                range.selectNode(el);
+                window.getSelection().removeAllRanges();
+                window.getSelection().addRange(range);
+                document.execCommand('copy');
+                if (!wasVisible) el.textContent = '●●●●●●●●●●●●●●●●●●●●●●●●';
+                if (typeof Toast !== 'undefined') Toast.success(Lang.t('nodes.copied'));
+            }
         }
     },
 
@@ -1061,8 +1081,10 @@ const App = {
         const r = await Auth.apiCall('/api/nodes/key/reset', { method: 'POST' });
         if (r && r.ok) {
             const data = await r.json();
+            this._nodesKeyReal = data.key;
+            this._nodesKeyVisible = false;
             const el = document.getElementById('nodes-api-key');
-            if (el) el.textContent = data.key;
+            if (el) el.textContent = '●●●●●●●●●●●●●●●●●●●●●●●●';
             if (typeof Toast !== 'undefined') Toast.warn(data.message);
         }
     },

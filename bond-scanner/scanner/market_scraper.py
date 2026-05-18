@@ -614,10 +614,11 @@ class MarketScraper:
                                 bond.name = value
 
                 # --- VALUTA ---
-                if key_lower in ('currency', 'tradingcurrency', 'issuecurrency',
-                                 'curr', 'ccy'):
-                    if isinstance(value, str) and len(value) == 3:
-                        bond.currency = value
+                # NON sovrascrivere: la valuta è già impostata correttamente
+                # dal parametro currency di scan_market(). I dati API possono
+                # contenere valori fuorvianti (tradingCurrency, issueCurrency)
+                # che mescolano le obbligazioni tra i fogli Excel.
+                # bond.currency è già impostato in _parse_bond_item().
 
                 # --- VOLUME ---
                 if bond.volume is None:

@@ -81,8 +81,17 @@ app.add_middleware(
 )
 
 
-# --- Middleware Security Headers ---
+# --- Middleware Rate Limiting ---
 from starlette.requests import Request
+from backend.rate_limiter import rate_limit_middleware
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    """Protection contre le bombardement de requêtes (120/min par IP, 10/min login)."""
+    return await rate_limit_middleware(request, call_next)
+
+
+# --- Middleware Security Headers ---
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
