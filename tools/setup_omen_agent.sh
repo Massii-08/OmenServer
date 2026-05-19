@@ -82,12 +82,24 @@ echo '0 1 * * * /usr/sbin/rtcwake -m no -l -t $(date -d "tomorrow 06:00" +\%s) &
 crontab /tmp/current_cron
 rm /tmp/current_cron
 
-# 9. Script de reprise après suspend (reboot pour vider la RAM)
-echo "🔄 Installation du script de reprise post-suspend..."
-curl -sL -o /etc/systemd/system-sleep/omen-resume.sh \
-    https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/omen-resume.sh
-chmod +x /etc/systemd/system-sleep/omen-resume.sh
-echo "✅ omen-resume.sh installé (reboot automatique au réveil pour RAM fraîche)"
+# 9. Service de reprise après suspend (reboot pour vider la RAM)
+echo "🔄 Installation du service de reprise post-suspend..."
+
+# Télécharger le script de post-wake
+curl -sL -o /usr/local/bin/omen-post-wake.sh \
+    https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/omen-post-wake.sh
+chmod +x /usr/local/bin/omen-post-wake.sh
+
+# Télécharger et activer le service systemd
+curl -sL -o /etc/systemd/system/omen-resume.service \
+    https://raw.githubusercontent.com/Massii-08/OmenServer/main/tools/omen-resume.service
+systemctl daemon-reload
+systemctl enable omen-resume.service
+
+# Nettoyer l'ancien hook s'il existe (ne fonctionne plus sur Ubuntu 26.04+)
+rm -f /etc/systemd/system-sleep/omen-resume.sh
+
+echo "✅ omen-resume.service installé (reboot automatique au réveil pour RAM fraîche)"
 
 # 10. Permissions sudo pour rtcwake + systemctl suspend + reboot
 echo "🛡️ Permissions sudo pour suspend/wake/reboot..."

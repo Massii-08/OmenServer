@@ -1,0 +1,13 @@
+[Unit]
+Description=OmenServer Post-Suspend Reboot
+# Se déclenche APRÈS le retour du suspend
+After=suspend.target hibernate.target hybrid-sleep.target suspend-then-hibernate.target
+# N'exécuter que quand on SORT du suspend, pas au boot normal
+RefuseManualStart=false
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/omen-post-wake.sh
+
+[Install]
+WantedBy=suspend.target hibernate.target hybrid-sleep.target suspend-then-hibernate.target
