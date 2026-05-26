@@ -405,10 +405,125 @@ sudo systemctl status cloudflared
 
 ---
 
+## 🎨 Design System v5 — Bento Tech
+
+> **Depuis le 26 mai 2026, le frontend est en Bento Tech v5.** Référence dans la branche
+> `design/bento-tech-mockup` (mockups + MASTER.md). Sur `main`, les tokens et composants
+> sont déjà déployés.
+
+### Tokens canoniques (dans `:root` de `frontend/css/style.css`)
+
+```css
+--bg          #0E0E10    /* page background */
+--bg-elev-1   #161618    /* default surface (cards) */
+--bg-elev-2   #18181B    /* hover state, big cards */
+--bg-elev-3   #1F1F23    /* inputs, avatars, code blocks */
+--border      #27272A    /* hairline */
+--border-strong #3F3F46  /* emphasized */
+--text        #F4F4F5    /* primary */
+--text-muted  #A1A1AA    /* secondary */
+--text-dim    #71717A    /* tertiary, timestamps */
+--accent      #4ADE80    /* CHANGEABLE via data-accent */
+--accent-dim  rgba(74,222,128,.14)
+--danger      #F87171    /* FIXED — semantic only */
+--warning     #FBBF24
+--info        #60A5FA
+--violet      #C084FC    /* developer role */
+--orange      #FB923C    /* money role */
+--font-ui     'Inter'
+--font-mono   'Geist Mono'  /* ALL numbers via font-feature-settings:"tnum" */
+--r-sm/md/lg  8 / 10 / 14 px
+--s-1 .. --s-12  4 .. 48 px (scale 4px base)
+```
+
+### Accent variants (changent uniquement `--accent`)
+
+```css
+[data-accent="blue"]   { --accent: #60A5FA; ... }
+[data-accent="red"]    { --accent: #FB7185; ... }
+[data-accent="yellow"] { --accent: #FACC15; ... }
+/* default green stays in :root */
+```
+
+L'accent est persisté en localStorage (`omen-accent`). Migration auto depuis les anciens
+thèmes (midnight→blue, crimson→red, emerald/default→green) au boot via `App._loadAccent()`.
+
+### Composants Bento (à utiliser en priorité)
+
+| Class | Usage |
+|---|---|
+| `.bento-overview` + `.stat-card` | Grille de stats Dashboard / Network / Tasks |
+| `.bento-overview .stat-card.big` | Card 2× plus grosse (span 2 rows) |
+| `.bot-card-bento` (+ `.b-head/.b-name/.b-actions/.b-desc`) | Bot cards module |
+| `.diag-strip` + `.diag-grid` + `.diag-item` (`.warn`/`.err`) | System health checks |
+| `.badge` (+ `.online`/`.warn`/`.danger`) | Status pills universel |
+| `.role-pill` (`.admin`/`.developer`/`.moderator`/`.money`/`.player`/`.spectator`) | Rôles RBAC |
+| `.access-pill` (`.owner`/`.manage`/`.start`/`.view`) | Per-resource sharing level |
+| `.mod-chip` | `User.allowed_modules` indicator |
+| `.row` + `.row-list` | Compact list items (servers, bots, etc.) |
+| `.events-feed` + `.ev` (+ `.typ.ok/.warn/.err`) | Activity log mono |
+| `.sparkline` | Aréa chart subtil sous big stat |
+| `.machines-grid` + `.machine-card` (+ `.brain`) | Network of machines (omen + agents) |
+| `.users-table` (+ `.u-head/.u-row/.u-name`) | Tableau utilisateurs |
+| `.tasks-table` | Scheduler global |
+| `.mod-grid` + `.mod-card` | Plugin/Mod/Workshop browser |
+| `.dropzone` | Upload zone |
+| `.accent-switcher-mini` + `.accent-dot` | Switcher 4 couleurs dans sidebar footer |
+| `.sv-layout` + `.sv-sidebar` + `.sv-tab` (+ `.active/.share/.danger`) | Server view sidebar |
+
+### Règles d'usage
+
+- **Tous les chiffres** : `font-family: var(--font-mono); font-feature-settings: "tnum"`
+- **Couleurs sémantiques** (`--danger`/`--warning`/`--info`) : **FIXES**, ne suivent JAMAIS l'accent
+- **`--accent`** uniquement pour : status "online", deltas positifs, primary CTA active,
+  nav item actif, role-pill `.admin` (signature owner)
+- **Surfaces** : 3 niveaux (`--bg-elev-1/2/3`), JAMAIS d'ombre, hairline border 1px
+- **Border-radius** : échelle `--r-sm` (8) / `--r-md` (10) / `--r-lg` (14) / `--r-pill` (999) uniquement
+- **Anti-patterns** : pas de gradients (sauf sparkline), pas de glassmorphism, pas d'emoji UI,
+  pas de `box-shadow` flou, pas de hex hardcodé dans les composants
+
+### Coexistence avec le legacy
+
+PR 1-6 ont ajouté les nouveaux tokens **sans supprimer** les anciens (`--bg-primary`, `--accent-green`, etc.).
+PR 7 a appliqué des **overrides `!important`** sur les classes legacy (`.sidebar`, `.module-card`,
+`.btn-primary`, `.status-badge`, etc.) pour les rendre Bento Tech sans toucher au HTML.
+
+**Pour migrer un composant non-encore-refactoré** :
+1. Identifie son HTML render dans `frontend/js/*_module.js` ou `app.js`
+2. Remplace ses classes legacy par les classes Bento ci-dessus
+3. Supprime les inline `style="..."` (les classes font le boulot)
+4. Supprime les overrides `!important` correspondants en bas de `style.css`
+5. Bump `style.css?v=X` dans `index.html` + `CACHE_NAME` dans `sw.js`
+
+### Référence design
+
+- **Mockups interactifs** : `frontend/design-explorations/proposals.html` (5 directions comparison)
+  et `frontend/design-explorations/proposals-v2.html` (Bento Tech 10-page mockup complet)
+- **MASTER.md** : design system formel avec tokens, composants, plan migration
+  (dans la branche `design/bento-tech-mockup`, pas sur `main`)
+- **Backend RBAC** (source de vérité pour rôles, quotas, permissions) :
+  [backend/auth/permissions.py:29](backend/auth/permissions.py:29)
+- **Server view tabs logic** (conditionnels Plugins/Mods/Workshop par type) :
+  [frontend/js/server_view.js:71](frontend/js/server_view.js:71)
+
+---
+
 ## 📝 Historique récent
 
 | Date | Changement |
 |------|-----------|
+| 2026-05-26 | 🎨 Refonte frontend Bento Tech v5 — 11 PRs (tokens, composants, Dashboard, Server view, modules) |
+| 2026-05-26 | 🎨 PR 11 — Polish autofill / form-input / avatars / danger icons |
+| 2026-05-26 | 🎨 PR 10 — Game server list `.server-item` overrides Bento |
+| 2026-05-26 | 🎨 PR 9 — Network module `.bento-overview` stats + speedtest |
+| 2026-05-26 | 🎨 PR 8 — Bots module HTML refactor en `.bot-card-bento` |
+| 2026-05-26 | 🎨 PR 7 — Override massif legacy classes (217 !important) |
+| 2026-05-26 | 🎨 PR 6 — 15 composants restants + fix `.diag-item.err` bg |
+| 2026-05-26 | 🎨 PR 5 — Server view sidebar 240px (strip inline styles) |
+| 2026-05-26 | 🎨 PR 4 — Dashboard refactor + Diagnostic strip API |
+| 2026-05-26 | 🎨 PR 3 — Accent switcher 4 dots + legacy theme migration |
+| 2026-05-26 | 🎨 PR 2 — 11 composants atomiques + composés (`.badge`, `.role-pill`, etc.) |
+| 2026-05-26 | 🎨 PR 1 — Tokens Bento Tech + Geist Mono import (additif) |
 | 2026-05-18 | 🌙 Reboot post-suspend pour RAM fraîche (omen-resume.sh v2) |
 | 2026-05-18 | 🏦 Fix Bond Scanner : ségrégation devise EUR/USD dans les rapports Excel |
 | 2026-05-17 | 🔒 Audit sécurité complet : JWT secret, Docker shell injection, path traversal, RBAC |
