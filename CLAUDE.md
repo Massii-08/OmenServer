@@ -94,7 +94,7 @@ Projet serveur/
 │   ├── index.html              # Shell SPA principal
 │   ├── login.html              # Page de connexion (standalone)
 │   ├── css/
-│   │   └── style.css           # Design system complet (variables CSS, 5 thèmes)
+│   │   └── style.css           # Design system Bento Tech v5 (voir section dédiée)
 │   ├── js/
 │   │   ├── app.js              # Router SPA + Dashboard + App controller
 │   │   ├── auth.js             # Auth.apiCall(), login/logout, token JWT
@@ -193,11 +193,12 @@ Le frontend est une **Single Page Application** sans framework :
 - Chaque module expose un objet global avec une méthode `render(container)` et optionnellement `unload()`
 - Le contenu est injecté via `container.innerHTML`
 
-### Design System (style.css)
-- **Variables CSS** dans `:root` pour les couleurs, espacements, transitions
-- **5 thèmes** : default (violet sombre), midnight, emerald, crimson, light
-- **Composants** : `.card`, `.btn`, `.stat-card`, `.status-badge`, `.console`, `.module-card`
-- **Mini-listes machines** : `.stat-machines-list`, `.stat-machine-item` (dashboard multi-PC)
+### Design System (style.css) — Bento Tech v5
+- **Voir section dédiée** plus bas (`## 🎨 Design System v5 — Bento Tech`) pour les tokens, composants Bento, règles d'usage et catalogue complet.
+- **Variables CSS** dans `:root` (`--bg`, `--bg-elev-1/2/3`, `--text`, `--accent`, `--danger`, etc.)
+- **Theming** : 1 mode dark + 4 accent variants via `data-accent="green|blue|red|yellow"` (default green dans `:root`)
+- **Composants principaux** : `.bento-overview` + `.stat-card`, `.machine-card` (+ `.brain`/`.arm`), `.bot-card-bento`, `.role-pill`, `.badge`, `.diag-strip`, `.row-list`, `.machines-grid` (responsive)
+- **Legacy survivants** : `.card`, `.btn`, `.btn-primary`, `.console`, `.module-card`, `.stat-machines-list` (dashboard multi-PC) — partiellement migrés via overrides PR7
 - **Responsive** : breakpoints à 768px, 480px
 
 ### Internationalisation (lang.js)
