@@ -3228,3 +3228,78 @@ table tr:hover td {
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
+
+/* ============================================================================
+   BENTO TECH v5 — Final polish: autofill + avatars + form fixes (PR 11)
+   ============================================================================ */
+
+/* Kill Chrome's autofill yellow/blue background — keep Bento bg */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active,
+textarea:-webkit-autofill,
+select:-webkit-autofill {
+    -webkit-text-fill-color: var(--text) !important;
+    -webkit-box-shadow: 0 0 0 1000px var(--bg) inset !important;
+    box-shadow: 0 0 0 1000px var(--bg) inset !important;
+    caret-color: var(--text);
+    transition: background-color 5000s ease-in-out 0s;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--r-sm) !important;
+}
+
+/* .form-input override (legacy bg-input + accent-green-glow → Bento) */
+.form-input {
+    background: var(--bg) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--r-sm) !important;
+    color: var(--text) !important;
+    padding: 8px 12px !important;
+    font-size: 13px !important;
+    transition: border var(--t-fast) !important;
+}
+.form-input:focus {
+    border-color: var(--accent) !important;
+    box-shadow: none !important;
+    outline: none !important;
+}
+.form-input::placeholder {
+    color: var(--text-dim) !important;
+}
+.form-label {
+    color: var(--text-muted) !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    margin-bottom: 6px !important;
+    display: block;
+}
+
+/* User avatars (in Utenti list — legacy purple gradient → Bento accent-dim) */
+.users-list .user-avatar,
+.user-list-item .user-avatar,
+[class*="user-avatar"]:not(.sidebar-footer .user-avatar) {
+    background: var(--accent-dim) !important;
+    background-image: none !important;
+    color: var(--accent) !important;
+    border-radius: 50% !important;
+    font-weight: 600;
+    box-shadow: none !important;
+    transition: background var(--t-base), color var(--t-base);
+}
+
+/* Invite code styling */
+.invite-code, [class*="invite-code"] {
+    font-family: var(--font-mono) !important;
+    font-feature-settings: "tnum";
+}
+
+/* Danger icon buttons (the red X to revoke / delete) — toned down to Bento */
+.btn-icon.btn-danger {
+    background: rgba(248, 113, 113, 0.12) !important;
+    color: var(--danger) !important;
+    border: 1px solid rgba(248, 113, 113, 0.3) !important;
+}
+.btn-icon.btn-danger:hover {
+    background: rgba(248, 113, 113, 0.20) !important;
+}
