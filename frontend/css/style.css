@@ -1892,3 +1892,251 @@ canvas {
     border-color: rgba(239, 68, 68, 0.15);
 }
 
+/* ============================================================================
+   BENTO TECH v5 — Atomic & composite components (PR 2)
+   Source: frontend/design-explorations/MASTER.md §4–§5
+   All NEW class names (zero collision with legacy .btn/.card/.console etc.).
+   Inert until referenced — adding these does not change existing UI.
+   ============================================================================ */
+
+/* ===== Bento helper for tabular numbers ===== */
+.bento-mono {
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum";
+}
+
+/* ===== Badge (new — distinct from legacy .status-badge) ===== */
+.badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    border-radius: var(--r-pill);
+    background: var(--bg-elev-3);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+}
+.badge.online {
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-color: transparent;
+}
+.badge.online::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+}
+.badge.warn   { background: rgba(251, 191, 36, 0.12); color: var(--warning); border-color: transparent; }
+.badge.danger { background: rgba(248, 113, 113, 0.12); color: var(--danger); border-color: transparent; }
+
+/* ===== Role pill (matches backend permissions.py roles) ===== */
+.role-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: var(--r-sm);
+    border: 1px solid;
+    letter-spacing: 0.01em;
+}
+.role-pill.admin     { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
+.role-pill.developer { color: var(--violet); border-color: rgba(192, 132, 252, 0.4); background: rgba(192, 132, 252, 0.10); }
+.role-pill.moderator { color: var(--info); border-color: rgba(96, 165, 250, 0.4); background: rgba(96, 165, 250, 0.10); }
+.role-pill.money     { color: var(--orange); border-color: rgba(251, 146, 60, 0.4); background: rgba(251, 146, 60, 0.10); }
+.role-pill.player    { color: var(--text); border-color: var(--border-strong); background: var(--bg-elev-3); }
+.role-pill.spectator { color: var(--text-dim); border-color: var(--border); background: var(--bg-elev-2); }
+
+/* ===== Access pill (per-resource sharing: view_only / start / manage) ===== */
+.access-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--border-strong);
+    color: var(--text-muted);
+    background: var(--bg-elev-3);
+}
+.access-pill.owner  { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
+.access-pill.manage { color: var(--info); border-color: rgba(96, 165, 250, 0.4); background: rgba(96, 165, 250, 0.10); }
+.access-pill.start  { color: var(--text); }
+.access-pill.view   { color: var(--text-dim); background: var(--bg-elev-2); }
+
+/* ===== Module chip (User.allowed_modules) ===== */
+.mod-chip {
+    display: inline-block;
+    padding: 1px 7px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    line-height: 1.5;
+    letter-spacing: 0.02em;
+    color: var(--info);
+    background: rgba(96, 165, 250, 0.10);
+    border: 1px solid rgba(96, 165, 250, 0.30);
+    border-radius: var(--r-sm);
+}
+
+/* ===== Button ghost variant (legacy .btn-primary/.btn-secondary/.btn-danger preserved) ===== */
+.btn-ghost {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+    transition: var(--t-fast);
+}
+.btn-ghost:hover { background: var(--bg-elev-2); }
+
+/* ===== Bento overview grid =====
+   Use class="bento-overview" on the container, then .stat-card inside.
+   The .stat-card here is SCOPED — does not affect legacy .stat-card (line 455). */
+.bento-overview {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: var(--s-3);
+}
+.bento-overview .stat-card {
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    padding: var(--s-5);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.bento-overview .stat-card::before { content: none !important; }  /* nullify legacy ::before from line 464 */
+.bento-overview .stat-card.big {
+    grid-row: span 2;
+    background: var(--bg-elev-2);
+}
+.bento-overview .stat-card .label { color: var(--text-muted); font-size: 12px; }
+.bento-overview .stat-card .value {
+    font-family: var(--font-mono);
+    font-size: 30px;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    font-feature-settings: "tnum";
+    line-height: 1.1;
+}
+.bento-overview .stat-card.big .value { font-size: 48px; margin-top: var(--s-2); }
+.bento-overview .stat-card .value .unit { color: var(--text-dim); font-size: 16px; margin-left: 2px; }
+.bento-overview .stat-card.big .value .unit { font-size: 22px; }
+.bento-overview .stat-card .footer { color: var(--text-dim); font-size: 12px; margin-top: auto; }
+
+/* Delta indicators (used in stat-card footer / row meta) */
+.delta {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-feature-settings: "tnum";
+}
+.delta.up    { color: var(--accent); }
+.delta.down  { color: var(--text-dim); }
+.delta.alert { color: var(--warning); }
+
+/* ===== Row list (compact list item — server-row / bot-row / plugin-row) ===== */
+.row-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+}
+.row {
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: var(--s-3) var(--s-4);
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    gap: var(--s-4);
+    align-items: center;
+    transition: var(--t-fast);
+}
+.row:hover {
+    background: var(--bg-elev-2);
+    border-color: var(--border-strong);
+}
+.row .row-ico {
+    width: 32px;
+    height: 32px;
+    background: var(--bg-elev-3);
+    border-radius: var(--r-sm);
+    display: grid;
+    place-items: center;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+.row .row-info .name { font-weight: 500; font-size: 14px; color: var(--text); }
+.row .row-info .meta {
+    color: var(--text-dim);
+    font-size: 12px;
+    margin-top: 2px;
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum";
+}
+.row .row-stats {
+    display: flex;
+    gap: var(--s-4);
+    color: var(--text-muted);
+    font-size: 12px;
+    font-family: var(--font-mono);
+}
+.row .row-stats .k { color: var(--text-dim); margin-right: 4px; }
+.row .row-actions { display: flex; gap: 6px; align-items: center; }
+
+/* ===== Events feed (activity log — Users / Network / History / Tasks) ===== */
+.events-feed {
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    padding: var(--s-4);
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.7;
+    max-height: 220px;
+    overflow: auto;
+}
+.events-feed .ev {
+    display: grid;
+    grid-template-columns: 90px 80px 1fr;
+    gap: var(--s-3);
+}
+.events-feed .ev .ts { color: var(--text-dim); }
+.events-feed .ev .typ {
+    color: var(--text-muted);
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    padding-top: 2px;
+}
+.events-feed .ev .typ.ok   { color: var(--accent); }
+.events-feed .ev .typ.warn { color: var(--warning); }
+.events-feed .ev .typ.err  { color: var(--danger); }
+.events-feed .ev .msg { color: var(--text); }
+
+/* ===== Sparkline (subtle area chart under big stat) =====
+   Real data path injected via JS — this default polygon is visual reference */
+.sparkline {
+    margin-top: var(--s-3);
+    height: 36px;
+    background: linear-gradient(180deg, var(--accent-dim), transparent);
+    clip-path: polygon(
+        0% 70%, 8% 72%, 16% 60%, 24% 65%, 32% 50%, 40% 55%,
+        48% 40%, 56% 45%, 64% 30%, 72% 35%, 80% 28%, 88% 32%, 100% 25%,
+        100% 100%, 0% 100%
+    );
+    transition: background var(--t-base);
+}
+
