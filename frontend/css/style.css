@@ -832,7 +832,7 @@ canvas {
     right: 0;
     bottom: 0;
     background: rgba(0, 0, 0, 0.7);
-    backdrop-filter: blur(4px);
+    /* backdrop-filter: blur(4px) removed in PR23 — MASTER §6 bans glassmorphism */
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1004,8 +1004,7 @@ canvas {
     cursor: pointer;
     align-items: center;
     justify-content: center;
-    backdrop-filter: blur(10px);
-    box-shadow: var(--shadow-md);
+    /* backdrop-filter + box-shadow removed in PR23 — MASTER §6 (no blur/no shadow flou) */
 }
 
 /* Overlay behind sidebar on mobile */
@@ -1015,7 +1014,7 @@ canvas {
     inset: 0;
     background: rgba(0,0,0,0.5);
     z-index: 99;
-    backdrop-filter: blur(2px);
+    /* backdrop-filter: blur(2px) removed in PR23 — MASTER §6 (no glassmorphism) */
 }
 
 /* ===== TABLET (< 1024px) ===== */
