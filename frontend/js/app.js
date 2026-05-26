@@ -48,6 +48,66 @@ const App = {
 
  // Appliquer la langue sauvegardée sur la sidebar
  if (typeof Lang !== 'undefined') Lang._updateSidebar();
+
+ // PR32 — Background jobs poller : ping /api/bots/yield|scanner/active toutes
+ // les 5s pour détecter quand un job tourne (cross-page awareness). Affiche
+ // un badge sur le nav-tab "Bot" + toast notif quand un job termine.
+ this._startBgJobsPoller();
+ },
+
+ // ============ PR32 — Background jobs tracker (cross-page) ============
+ _activeJobs: {},
+ _bgJobsInterval: null,
+ _startBgJobsPoller() {
+ if (this._bgJobsInterval) return;
+ this._bgJobsInterval = setInterval(() => this._pollBgJobs(), 5000);
+ this._pollBgJobs();
+ },
+ async _pollBgJobs() {
+ try {
+ const fetchActive = (endpoint) => Auth.apiCall(endpoint)
+ .then(r => r && r.ok ? r.json() : { found: false })
+ .catch(() => ({ found: false }));
+ const [yieldJob, scannerJob] = await Promise.all([
+ fetchActive('/api/bots/yield/active'),
+ fetchActive('/api/bots/scanner/active'),
+ ]);
+ const newActive = {};
+ if (yieldJob.found) newActive.yield = yieldJob;
+ if (scannerJob.found) newActive.scanner = scannerJob;
+ // Détection transition running → completed
+ const prev = this._activeJobs || {};
+ for (const [type, prevJob] of Object.entries(prev)) {
+ const cur = newActive[type];
+ if (prevJob.status === 'running' && (!cur || cur.status !== 'running')) {
+ const label = type === 'yield' ? Lang.t('yield.title') : Lang.t('scanner.title');
+ if (typeof Toast !== 'undefined') {
+ Toast.success(`${label} — ${Lang.t('bots.completed') || 'terminé'}`);
+ }
+ }
+ }
+ this._activeJobs = newActive;
+ this._updateJobsBadge();
+ } catch (e) {
+ // Silent fail — pas envie de spam la console pour un poll qui foire
+ }
+ },
+ _updateJobsBadge() {
+ const count = Object.keys(this._activeJobs).length;
+ // Badge sur le nav-tab "Bot"
+ const botTab = document.querySelector('[data-view="bots"]');
+ if (!botTab) return;
+ let badge = botTab.querySelector('.tab-badge');
+ if (count > 0) {
+ if (!badge) {
+ badge = document.createElement('span');
+ badge.className = 'tab-badge';
+ botTab.appendChild(badge);
+ }
+ badge.textContent = count;
+ } else if (badge) {
+ badge.remove();
+ }
  },
 
  /**

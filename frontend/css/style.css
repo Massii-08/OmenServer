@@ -225,6 +225,21 @@ body {
     margin-right: 6px;
     vertical-align: middle;
 }
+/* PR32 — badge count on nav-tab for active background jobs */
+.nav-tab .tab-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-radius: var(--r-pill);
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum";
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.4;
+    vertical-align: middle;
+}
 
 /* Topbar right cluster */
 .topbar-right {
