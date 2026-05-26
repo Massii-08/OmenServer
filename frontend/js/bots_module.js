@@ -25,7 +25,7 @@ const BotsModule = {
                             const u = Auth.getUser();
                             const canCreate = u && (u.is_admin || u.role === 'developer');
                             if (!canCreate) return '';
-                            return `<button class="btn btn-primary" onclick="BotsModule.showCreateForm()">➕ ${Lang.t('bots.new')}</button>`;
+                            return `<button class="btn btn-primary" onclick="BotsModule.showCreateForm()">${Lang.t('bots.new')}</button>`;
                         })()}
                         <button class="btn btn-secondary" onclick="App.navigateTo('hub')">← Hub</button>
                     </div>
@@ -71,15 +71,17 @@ const BotsModule = {
         const grid = document.getElementById('bots-grid');
         if (!grid) return;
 
-        const typeIcons = { trading: '📈', gaming: '🎮', scraper: '🕷️', analysis: '📊', custom: '🐍' };
+        // PR27 — text tickers (mono, 3-char) au lieu d'emojis pour bot types
+        const typeTickers = { trading: 'TRD', gaming: 'GMG', scraper: 'SCR', analysis: 'ANL', custom: 'CST' };
         const statusClassMap = { running: 'online', stopped: '', error: 'danger', idle: '' };
         const statusLabels = { running: Lang.t('bots.running'), stopped: Lang.t('bots.stopped'), error: Lang.t('bots.error') };
 
         // PR 8 — Bento Tech card builder (replaces inline-styled cards)
+        // PR27 — `.b-icon` rendered as mono text ticker chip (game-ico style)
         const buildBotCard = ({ icon, name, type, desc, status, statusLabel, onClick, actions, selected, sharedWithYou }) => `
             <div class="bot-card-bento ${selected ? 'selected' : ''}" onclick="${onClick}">
                 <div class="b-head">
-                    <span class="b-icon">${icon}</span>
+                    <span class="b-icon b-ticker">${icon}</span>
                     <div class="b-name-wrap">
                         <div class="b-name">${name}</div>
                         <div class="b-type">${type}${sharedWithYou ? ' · <span class="b-shared">' + Lang.t('sharing.shared_with_you') + '</span>' : ''}</div>
@@ -96,28 +98,28 @@ const BotsModule = {
 
         // Yield Bot virtual card
         const yieldBotCard = canSeeYield ? buildBotCard({
-            icon: '🏦',
+            icon: 'YLD',
             name: 'Yield Calculator',
             type: 'analysis',
             desc: Lang.t('yield.subtitle'),
             status: 'online',
-            statusLabel: '⚡ ' + Lang.t('modules.active'),
+            statusLabel: Lang.t('modules.active'),
             onClick: 'BotsModule.openYieldBot()',
-            actions: `<button class="btn btn-ghost btn-sm">▶ ${Lang.t('yield.launch')}</button>`,
+            actions: `<button class="btn btn-ghost btn-sm">${Lang.t('yield.launch')}</button>`,
             selected: false,
             sharedWithYou: false,
         }) : '';
 
         // Bond Scanner virtual card
         const scannerBotCard = canSeeScanner ? buildBotCard({
-            icon: '🔍',
+            icon: 'SCN',
             name: 'Bond Scanner',
             type: 'analysis',
             desc: Lang.t('scanner.subtitle'),
             status: 'online',
-            statusLabel: '⚡ ' + Lang.t('modules.active'),
+            statusLabel: Lang.t('modules.active'),
             onClick: 'BotsModule.openBondScanner()',
-            actions: `<button class="btn btn-ghost btn-sm">▶ ${Lang.t('scanner.launch')}</button>`,
+            actions: `<button class="btn btn-ghost btn-sm">${Lang.t('scanner.launch')}</button>`,
             selected: false,
             sharedWithYou: false,
         }) : '';
@@ -136,7 +138,7 @@ const BotsModule = {
         const quotaHtml = u && u.role === 'developer' ? (() => {
             const ownBots = this._bots.filter(b => b.owner_id === u.id).length;
             const isFull = ownBots >= 3;
-            return `<div class="b-quota-row"><span class="bot-quota-badge ${isFull ? 'full' : ''}">${isFull ? '🚫' : '🤖'} ${Lang.t('rbac.bot_quota')}: ${ownBots}/3</span></div>`;
+            return `<div class="b-quota-row"><span class="bot-quota-badge ${isFull ? 'full' : ''}">${Lang.t('rbac.bot_quota')}: ${ownBots}/3</span></div>`;
         })() : '';
 
         const userBotsHtml = this._bots.map(b => {
@@ -146,16 +148,16 @@ const BotsModule = {
 
             const actions = [
                 b.status === 'running'
-                    ? `<button class="btn btn-ghost btn-sm danger-action" onclick="event.stopPropagation();BotsModule.stopBot(${b.id})">⏹ Stop</button>`
-                    : `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();BotsModule.startBot(${b.id})">▶ Start</button>`,
-                canManage ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();BotsModule.openEditor(${b.id})">✏️ Code</button>` : '',
-                canManage ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();BotsModule.showScheduler(${b.id})">⏰ ${Lang.t('bots.schedule')}</button>` : '',
-                isOwner ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();SharingModal.open(${b.id},'bot')" title="${Lang.t('sharing.title')}">👥</button>` : '',
-                isOwner ? `<button class="btn btn-ghost btn-sm danger-action" onclick="event.stopPropagation();BotsModule.deleteBot(${b.id})">🗑</button>` : '',
+                    ? `<button class="btn btn-ghost btn-sm danger-action" onclick="event.stopPropagation();BotsModule.stopBot(${b.id})">Stop</button>`
+                    : `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();BotsModule.startBot(${b.id})">Start</button>`,
+                canManage ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();BotsModule.openEditor(${b.id})">Code</button>` : '',
+                canManage ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();BotsModule.showScheduler(${b.id})">${Lang.t('bots.schedule')}</button>` : '',
+                isOwner ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();SharingModal.open(${b.id},'bot')" title="${Lang.t('sharing.title')}">${Lang.t('sharing.share_btn') || 'Share'}</button>` : '',
+                isOwner ? `<button class="btn btn-ghost btn-sm danger-action" onclick="event.stopPropagation();BotsModule.deleteBot(${b.id})">${Lang.t('common.delete') || 'Del'}</button>` : '',
             ].filter(Boolean).join('');
 
             return buildBotCard({
-                icon: typeIcons[b.bot_type] || '🐍',
+                icon: typeTickers[b.bot_type] || 'BOT',
                 name: b.name,
                 type: b.bot_type,
                 desc: b.description || Lang.t('bots.no_desc'),
@@ -183,7 +185,7 @@ const BotsModule = {
         form.style.display = 'block';
         form.innerHTML = `
             <div class="card">
-                <h3 style="margin:0 0 16px;">➕ ${Lang.t('bots.create')}</h3>
+                <h3 style="margin:0 0 16px;">${Lang.t('bots.create')}</h3>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px;">
                     <div>
                         <label class="form-label">${Lang.t('bots.name')}</label>
@@ -192,11 +194,11 @@ const BotsModule = {
                     <div>
                         <label class="form-label">Type</label>
                         <select id="bot-type" class="form-input">
-                            <option value="custom">🐍 Custom</option>
-                            <option value="trading">📈 Trading</option>
-                            <option value="gaming">🎮 Gaming</option>
-                            <option value="scraper">🕷️ Scraper</option>
-                            <option value="analysis">📊 ${Lang.t('bots.analysis')}</option>
+                            <option value="custom">Custom</option>
+                            <option value="trading">Trading</option>
+                            <option value="gaming">Gaming</option>
+                            <option value="scraper">Scraper</option>
+                            <option value="analysis">${Lang.t('bots.analysis')}</option>
                         </select>
                     </div>
                     <div>
@@ -229,7 +231,7 @@ const BotsModule = {
             document.getElementById('bot-create-form').style.display = 'none';
             await this.loadBots();
         } else {
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${Lang.t('common.error')}`; }
         }
     },
 
@@ -240,7 +242,7 @@ const BotsModule = {
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
             if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error'));
-            else alert(`❌ ${err.detail || Lang.t('common.error')}`);
+            else alert(`${err.detail || Lang.t('common.error')}`);
         }
     },
 
@@ -278,10 +280,10 @@ const BotsModule = {
         detail.innerHTML = `
             <div class="card">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                    <h3 style="margin:0;">📋 ${Lang.t('bots.logs')} — ${bot?.name || 'Bot'}</h3>
+                    <h3 style="margin:0;">${Lang.t('bots.logs')} — ${bot?.name || 'Bot'}</h3>
                     <div style="display:flex;gap:8px;align-items:center;">
                         <span style="font-size:11px;color:var(--text-muted);">${logs.logs.length} ${Lang.t('bots.lines')}</span>
-                        <button class="btn btn-secondary btn-sm" onclick="BotsModule.showBotDetail(${id})">🔄 ${Lang.t('common.refresh')}</button>
+                        <button class="btn btn-secondary btn-sm" onclick="BotsModule.showBotDetail(${id})">${Lang.t('common.refresh')}</button>
                     </div>
                 </div>
                 <div id="bot-logs-terminal" style="background:#0d1117;border-radius:8px;padding:12px;max-height:350px;overflow-y:auto;font-family:'Fira Code',monospace;font-size:12px;line-height:1.6;color:#c9d1d9;">
@@ -316,12 +318,11 @@ const BotsModule = {
             bot_stop: Lang.t('scheduler.bot_stop'),
             bot_restart: Lang.t('scheduler.bot_restart'),
         };
-        const taskIcons = { bot_start: '▶️', bot_stop: '⏹️', bot_restart: '🔄' };
 
         detail.innerHTML = `
             <div class="card">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-                    <h3 style="margin:0;">⏰ ${Lang.t('bots.schedule')} — ${botName}</h3>
+                    <h3 style="margin:0;">${Lang.t('bots.schedule')} — ${botName}</h3>
                     <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bot-detail').style.display='none'">✕</button>
                 </div>
 
@@ -340,8 +341,8 @@ const BotsModule = {
                         <div style="flex:1;min-width:110px;">
                             <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.mode')}</label>
                             <select id="bot-sched-mode" class="form-input" style="margin-top:4px;" onchange="BotsModule._onBotSchedModeChange()">
-                                <option value="interval">⏰ ${Lang.t('scheduler.mode_interval')}</option>
-                                <option value="fixed">📅 ${Lang.t('scheduler.mode_fixed')}</option>
+                                <option value="interval">${Lang.t('scheduler.mode_interval')}</option>
+                                <option value="fixed">${Lang.t('scheduler.mode_fixed')}</option>
                             </select>
                         </div>
                     </div>
@@ -355,13 +356,13 @@ const BotsModule = {
                                 <option value="168">${Lang.t('scheduler.week')}</option>
                             </select>
                         </div>
-                        <button class="btn btn-primary" onclick="BotsModule.createBotTask(${botId})">➕ ${Lang.t('scheduler.add')}</button>
+                        <button class="btn btn-primary" onclick="BotsModule.createBotTask(${botId})">${Lang.t('scheduler.add')}</button>
                     </div>
                     <!-- Mode heure fixe -->
                     <div id="bot-sched-fixed-row" style="display:none;margin-top:8px;">
                         <div style="display:flex;gap:8px;align-items:flex-end;">
                             <div><label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.time')}</label><input type="time" id="bot-sched-time" class="form-input" style="margin-top:4px;" value="08:00" /></div>
-                            <button class="btn btn-primary" onclick="BotsModule.createBotTask(${botId})">➕ ${Lang.t('scheduler.add')}</button>
+                            <button class="btn btn-primary" onclick="BotsModule.createBotTask(${botId})">${Lang.t('scheduler.add')}</button>
                         </div>
                         <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
                             <label style="font-size:12px;color:var(--text-muted);margin-right:4px;">${Lang.t('scheduler.days')}:</label>
@@ -381,7 +382,7 @@ const BotsModule = {
                 <!-- Liste des tâches -->
                 ${taskList.length === 0 ? `
                     <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:13px;">
-                        <div style="font-size:28px;margin-bottom:8px;">📅</div>
+                        
                         ${Lang.t('bots.no_sched_tasks')}
                     </div>
                 ` : `
@@ -390,11 +391,11 @@ const BotsModule = {
                             const locale = Lang.t('common.locale') || 'fr-FR';
                             return `
                             <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);">
-                                <span style="font-size:18px;">${taskIcons[t.task_type] || '📋'}</span>
+                                <span style="font-size:18px;">${taskLabels[t.task_type] || 'Task'}</span>
                                 <div style="flex:1;">
                                     <div style="font-size:13px;font-weight:600;">${taskLabels[t.task_type] || t.task_type}</div>
                                     <div style="font-size:11px;color:var(--text-muted);">
-                                        ${t.schedule_time ? ('⏰ ' + Lang.t('scheduler.at') + ' ' + t.schedule_time + ' (' + (t.schedule_days || 'daily') + ')') : ('⏰ ' + Lang.t('scheduler.every') + ' ' + t.interval_hours + 'h')}
+                                        ${t.schedule_time ? ('' + Lang.t('scheduler.at') + ' ' + t.schedule_time + ' (' + (t.schedule_days || 'daily') + ')') : ('' + Lang.t('scheduler.every') + ' ' + t.interval_hours + 'h')}
                                         ${t.next_run ? ` · ${Lang.t('bots.next_run')}: ${new Date(t.next_run).toLocaleString(locale)}` : ''}
                                         ${t.last_run ? ` · ${Lang.t('bots.last_run')}: ${new Date(t.last_run).toLocaleString(locale)}` : ''}
                                     </div>
@@ -403,8 +404,8 @@ const BotsModule = {
                                     <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.05)'};color:${t.enabled ? 'var(--accent)' : 'var(--text-muted)'};">
                                         ${t.enabled ? '● ' + Lang.t('scheduler.active') : '○ ' + Lang.t('scheduler.inactive')}
                                     </span>
-                                    <button class="btn btn-sm btn-secondary" onclick="BotsModule.toggleBotTask(${t.id}, ${botId})" title="${t.enabled ? 'Pause' : 'Resume'}">${t.enabled ? '⏸' : '▶️'}</button>
-                                    <button class="btn btn-sm btn-secondary" onclick="BotsModule.deleteBotTask(${t.id}, ${botId})" style="color:var(--danger);" title="Delete">🗑️</button>
+                                    <button class="btn btn-sm btn-secondary" onclick="BotsModule.toggleBotTask(${t.id}, ${botId})" title="${t.enabled ? 'Pause' : 'Resume'}">${t.enabled ? 'Pause' : 'Resume'}</button>
+                                    <button class="btn btn-sm btn-secondary" onclick="BotsModule.deleteBotTask(${t.id}, ${botId})" style="color:var(--danger);" title="Delete">Del</button>
                                 </div>
                             </div>`;
                         }).join('')}
@@ -455,7 +456,7 @@ const BotsModule = {
             setTimeout(() => this.showScheduler(botId), 500);
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
 
@@ -488,7 +489,7 @@ const BotsModule = {
                     <div style="display:flex;gap:8px;align-items:center;">
                         <span style="font-size:11px;color:var(--text-muted);">${Lang.t('bots.save_hint')}</span>
                         <span id="code-save-msg" style="font-size:12px;"></span>
-                        <button class="btn btn-primary btn-sm" onclick="BotsModule.saveCode(${id})">💾 ${Lang.t('common.save')}</button>
+                        <button class="btn btn-primary btn-sm" onclick="BotsModule.saveCode(${id})">${Lang.t('common.save')}</button>
                     </div>
                 </div>
                 <textarea id="bot-code-editor" spellcheck="false" style="width:100%;min-height:400px;background:#0d1117;color:#c9d1d9;border:1px solid var(--border);border-radius:8px;padding:16px;font-family:'Fira Code',monospace;font-size:13px;line-height:1.6;resize:vertical;tab-size:4;outline:none;">${data.code.replace(/</g,'&lt;')}</textarea>
@@ -526,7 +527,7 @@ const BotsModule = {
         if (r && r.ok) {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('bots.saved'); }
         } else {
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${Lang.t('common.error')}`; }
         }
     },
 
@@ -616,7 +617,7 @@ const BotsModule = {
         container.innerHTML = `
             <div class="yield-header">
                 <div class="yield-header-left">
-                    <span class="yield-header-icon">🏦</span>
+                    <span class="b-ticker">YLD</span>
                     <div>
                         <h1 style="margin:0;font-size:22px;">${Lang.t('yield.title')}</h1>
                         <p style="color:var(--text-muted);font-size:13px;margin-top:2px;">${Lang.t('yield.subtitle')}</p>
@@ -624,7 +625,7 @@ const BotsModule = {
                 </div>
                 <div style="display:flex;gap:8px;align-items:center;">
                     <span class="yield-usage-badge ${usageClass}">
-                        📊 ${Lang.t('yield.usage')}: ${usage.today_runs}/${usage.max_runs}
+                        ${Lang.t('yield.usage')}: ${usage.today_runs}/${usage.max_runs}
                     </span>
                     <button class="btn btn-secondary btn-sm" onclick="BotsModule.render(BotsModule._container)">
                         ${Lang.t('yield.back_bots')}
@@ -651,13 +652,13 @@ const BotsModule = {
                 <div class="yield-modes">
                     <div class="yield-mode-option ${this._yieldState.mode === 'recalculate' ? 'selected' : ''}"
                         onclick="BotsModule._selectYieldMode('recalculate')">
-                        <span class="yield-mode-icon">⚡</span>
+                        
                         <div class="yield-mode-label">${Lang.t('yield.mode_recalculate')}</div>
                         <div class="yield-mode-desc">${Lang.t('yield.mode_recalculate_desc')}</div>
                     </div>
                     <div class="yield-mode-option ${this._yieldState.mode === 'all' ? 'selected' : ''}"
                         onclick="BotsModule._selectYieldMode('all')">
-                        <span class="yield-mode-icon">🌐</span>
+                        
                         <div class="yield-mode-label">${Lang.t('yield.mode_all')}</div>
                         <div class="yield-mode-desc">${Lang.t('yield.mode_all_desc')}</div>
                     </div>
@@ -677,7 +678,7 @@ const BotsModule = {
                         <span style="font-size:11px;color:var(--text-muted);">110</span>
                     </div>
                     <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">
-                        🔴 ${Lang.t('yield.threshold_above') || 'Rouge si prix'} &gt; <span id="yield-threshold-hint">${this._yieldState.priceThreshold}</span> · ⚫ ${Lang.t('yield.threshold_below') || 'Noir si prix'} ≤ <span id="yield-threshold-hint2">${this._yieldState.priceThreshold}</span>
+                        ${Lang.t('yield.threshold_above') || 'Rouge si prix'} &gt; <span id="yield-threshold-hint">${this._yieldState.priceThreshold}</span> · ⚫ ${Lang.t('yield.threshold_below') || 'Noir si prix'} ≤ <span id="yield-threshold-hint2">${this._yieldState.priceThreshold}</span>
                     </div>
                 </div>
 
@@ -701,7 +702,7 @@ const BotsModule = {
         const sizeKB = (f.size / 1024).toFixed(1);
         return `
             <div class="yield-file-info">
-                <span class="yield-file-icon">📊</span>
+                <span class="b-ticker">XLS</span>
                 <div class="yield-file-details">
                     <div class="yield-file-name">${f.name}</div>
                     <div class="yield-file-meta">${sizeKB} KB</div>
@@ -775,7 +776,7 @@ const BotsModule = {
         this._yieldState.mode = mode;
         document.querySelectorAll('.yield-mode-option').forEach(el => {
             el.classList.toggle('selected', el.textContent.includes(
-                mode === 'recalculate' ? '⚡' : '🌐'
+                ''
             ));
         });
         // Re-select properly via onclick attribute content
@@ -847,7 +848,7 @@ const BotsModule = {
             if (btn) { btn.disabled = false; btn.textContent = Lang.t('yield.launch'); }
             if (errMsg) {
                 errMsg.style.display = 'block';
-                errMsg.textContent = `❌ ${e.message}`;
+                errMsg.textContent = `${e.message}`;
             }
         }
     },
@@ -862,7 +863,7 @@ const BotsModule = {
         container.innerHTML = `
             <div class="yield-header">
                 <div class="yield-header-left">
-                    <span class="yield-header-icon">🏦</span>
+                    <span class="b-ticker">YLD</span>
                     <div>
                         <h1 style="margin:0;font-size:22px;">${Lang.t('yield.title')} — <span class="yield-pulse"></span>${Lang.t('yield.running')}</h1>
                         <p style="color:var(--text-muted);font-size:13px;margin-top:2px;">${this._yieldState.file?.name || ''} · ${modeLabel}</p>
@@ -886,15 +887,15 @@ const BotsModule = {
                 <div class="yield-stats">
                     <div class="yield-stat-card success">
                         <div id="yield-stat-updated" class="yield-stat-value">0</div>
-                        <div class="yield-stat-label">✅ ${Lang.t('yield.updated')}</div>
+                        <div class="yield-stat-label">${Lang.t('yield.updated')}</div>
                     </div>
                     <div class="yield-stat-card warning">
                         <div id="yield-stat-skipped" class="yield-stat-value">0</div>
-                        <div class="yield-stat-label">⚠️ ${Lang.t('yield.skipped')}</div>
+                        <div class="yield-stat-label">${Lang.t('yield.skipped')}</div>
                     </div>
                     <div class="yield-stat-card error">
                         <div id="yield-stat-errors" class="yield-stat-value">0</div>
-                        <div class="yield-stat-label">❌ ${Lang.t('yield.errors')}</div>
+                        <div class="yield-stat-label">${Lang.t('yield.errors')}</div>
                     </div>
                 </div>
             </div>
@@ -902,7 +903,7 @@ const BotsModule = {
             <!-- Logs terminal -->
             <div class="card">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                    <h3 style="margin:0;">📋 ${Lang.t('yield.logs')}</h3>
+                    <h3 style="margin:0;">${Lang.t('yield.logs')}</h3>
                     ${mode === 'all' ? `<button class="btn btn-danger btn-sm" onclick="BotsModule._stopYieldBot()">${Lang.t('yield.stop')}</button>` : ''}
                 </div>
                 <div id="yield-logs" class="yield-terminal">
@@ -988,13 +989,13 @@ const BotsModule = {
         if (!container) return;
 
         const isSuccess = data.status === 'completed';
-        const statusIcon = isSuccess ? '✅' : data.status === 'error' ? '❌' : '⏹';
+        const statusIcon = isSuccess ? 'OK' : data.status === 'error' ? 'ERR' : 'STOP';
         const statusLabel = isSuccess ? Lang.t('yield.completed') : data.status === 'error' ? Lang.t('yield.error') : Lang.t('yield.stopped');
 
         container.innerHTML = `
             <div class="yield-header">
                 <div class="yield-header-left">
-                    <span class="yield-header-icon">🏦</span>
+                    <span class="b-ticker">YLD</span>
                     <div>
                         <h1 style="margin:0;font-size:22px;">${Lang.t('yield.title')} — ${statusIcon} ${statusLabel}</h1>
                         <p style="color:var(--text-muted);font-size:13px;margin-top:2px;">${data.filename || ''}</p>
@@ -1004,20 +1005,20 @@ const BotsModule = {
 
             <!-- Stats résumé -->
             <div class="card" style="margin-bottom:16px;">
-                <h3 style="margin:0 0 16px;">📊 ${Lang.t('yield.summary')}</h3>
+                <h3 style="margin:0 0 16px;">${Lang.t('yield.summary')}</h3>
 
                 <div class="yield-stats">
                     <div class="yield-stat-card success">
                         <div class="yield-stat-value">${data.stats?.updated || 0}</div>
-                        <div class="yield-stat-label">✅ ${Lang.t('yield.updated')}</div>
+                        <div class="yield-stat-label">${Lang.t('yield.updated')}</div>
                     </div>
                     <div class="yield-stat-card warning">
                         <div class="yield-stat-value">${data.stats?.skipped || 0}</div>
-                        <div class="yield-stat-label">⚠️ ${Lang.t('yield.skipped')}</div>
+                        <div class="yield-stat-label">${Lang.t('yield.skipped')}</div>
                     </div>
                     <div class="yield-stat-card error">
                         <div class="yield-stat-value">${data.stats?.errors || 0}</div>
-                        <div class="yield-stat-label">❌ ${Lang.t('yield.errors')}</div>
+                        <div class="yield-stat-label">${Lang.t('yield.errors')}</div>
                     </div>
                 </div>
 
@@ -1041,7 +1042,7 @@ const BotsModule = {
                     ` : ''}
                     ${data.status === 'stopped' && this._yieldState.processedCount > 0 ? `
                         <button class="yield-launch-btn" style="flex:1;margin-top:0;background:var(--danger);" onclick="BotsModule._resumeYieldBot()">
-                            ▶ ${Lang.t('yield.resume')} (${Lang.t('yield.from_bond')} ${this._yieldState.processedCount + 1})
+                            ${Lang.t('yield.resume')} (${Lang.t('yield.from_bond')} ${this._yieldState.processedCount + 1})
                         </button>
                     ` : ''}
                     <button class="btn btn-secondary" style="flex:1;padding:14px;font-size:15px;font-weight:600;" onclick="BotsModule._startNewYieldJob()">
@@ -1053,7 +1054,7 @@ const BotsModule = {
             <!-- Logs -->
             <div class="card">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                    <h3 style="margin:0;">📋 ${Lang.t('yield.logs')} (${data.logs_count || data.logs?.length || 0} ${Lang.t('bots.lines')})</h3>
+                    <h3 style="margin:0;">${Lang.t('yield.logs')} (${data.logs_count || data.logs?.length || 0} ${Lang.t('bots.lines')})</h3>
                 </div>
                 <div class="yield-terminal">
                     ${data.logs && data.logs.length > 0
@@ -1246,7 +1247,7 @@ const BotsModule = {
         container.innerHTML = `
             <div class="yield-header">
                 <div class="yield-header-left">
-                    <span class="yield-header-icon">🔍</span>
+                    <span class="b-ticker">SCN</span>
                     <div>
                         <h1 style="margin:0;font-size:22px;">${Lang.t('scanner.title')}</h1>
                         <p style="color:var(--text-muted);font-size:13px;margin-top:2px;">${Lang.t('scanner.subtitle')}</p>
@@ -1254,7 +1255,7 @@ const BotsModule = {
                 </div>
                 <div style="display:flex;gap:8px;align-items:center;">
                     <span class="yield-usage-badge ${usageClass}">
-                        📊 ${Lang.t('scanner.usage')}: ${usage.today_scans}/${usage.max_scans}
+                        ${Lang.t('scanner.usage')}: ${usage.today_scans}/${usage.max_scans}
                     </span>
                     <button class="btn btn-secondary btn-sm" onclick="BotsModule.render(BotsModule._container)">
                         ${Lang.t('scanner.back_bots')}
@@ -1284,7 +1285,7 @@ const BotsModule = {
                 <!-- Yield minimo -->
                 <div class="yield-threshold-container" style="margin-bottom:14px;padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                        <label style="font-size:13px;font-weight:600;">📈 ${Lang.t('scanner.min_yield')}</label>
+                        <label style="font-size:13px;font-weight:600;">${Lang.t('scanner.min_yield')}</label>
                         <span id="scanner-yield-value" style="font-size:14px;font-weight:700;color:var(--accent);">${s.minYield}%</span>
                     </div>
                     <div style="display:flex;align-items:center;gap:10px;">
@@ -1315,7 +1316,7 @@ const BotsModule = {
                 <!-- Scadenza + Rating + Valute -->
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
                     <div style="padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);">
-                        <label style="font-size:13px;font-weight:600;">📅 ${Lang.t('scanner.maturity')}</label>
+                        <label style="font-size:13px;font-weight:600;">${Lang.t('scanner.maturity')}</label>
                         <select id="scanner-maturity" class="form-input" style="margin-top:8px;"
                             onchange="BotsModule._scannerState.maxMaturity=parseInt(this.value)">
                             <option value="5" ${s.maxMaturity===5?'selected':''}>5 anni</option>
@@ -1376,7 +1377,7 @@ const BotsModule = {
         const s = this._scannerState;
         const currencies = Object.entries(s.currencies).filter(([,v]) => v).map(([k]) => k).join(',');
         if (!currencies) {
-            if (errMsg) { errMsg.style.display = 'block'; errMsg.textContent = '❌ Seleziona almeno una valuta'; }
+            if (errMsg) { errMsg.style.display = 'block'; errMsg.textContent = 'Seleziona almeno una valuta'; }
             if (btn) { btn.disabled = false; btn.textContent = Lang.t('scanner.launch'); }
             return;
         }
@@ -1404,7 +1405,7 @@ const BotsModule = {
             this._renderScannerRunning();
         } catch (e) {
             if (btn) { btn.disabled = false; btn.textContent = Lang.t('scanner.launch'); }
-            if (errMsg) { errMsg.style.display = 'block'; errMsg.textContent = `❌ ${e.message}`; }
+            if (errMsg) { errMsg.style.display = 'block'; errMsg.textContent = `${e.message}`; }
         }
     },
 
@@ -1415,7 +1416,7 @@ const BotsModule = {
         container.innerHTML = `
             <div class="yield-header">
                 <div class="yield-header-left">
-                    <span class="yield-header-icon">🔍</span>
+                    <span class="b-ticker">SCN</span>
                     <div>
                         <h1 style="margin:0;font-size:22px;">${Lang.t('scanner.title')} — <span class="yield-pulse"></span>${Lang.t('scanner.running')}</h1>
                         <p style="color:var(--text-muted);font-size:13px;margin-top:2px;">${Lang.t('scanner.subtitle')}</p>
@@ -1437,26 +1438,26 @@ const BotsModule = {
                 <div class="yield-stats">
                     <div class="yield-stat-card" style="border-left:3px solid var(--info);">
                         <div id="scanner-stat-scanned" class="yield-stat-value">0</div>
-                        <div class="yield-stat-label">📡 ${Lang.t('scanner.scanned')}</div>
+                        <div class="yield-stat-label">${Lang.t('scanner.scanned')}</div>
                     </div>
                     <div class="yield-stat-card success">
                         <div id="scanner-stat-found" class="yield-stat-value">0</div>
-                        <div class="yield-stat-label">✅ ${Lang.t('scanner.found')}</div>
+                        <div class="yield-stat-label">${Lang.t('scanner.found')}</div>
                     </div>
                     <div class="yield-stat-card warning">
                         <div id="scanner-stat-discarded" class="yield-stat-value">0</div>
-                        <div class="yield-stat-label">⚠️ ${Lang.t('scanner.discarded')}</div>
+                        <div class="yield-stat-label">${Lang.t('scanner.discarded')}</div>
                     </div>
                     <div class="yield-stat-card error">
                         <div id="scanner-stat-errors" class="yield-stat-value">0</div>
-                        <div class="yield-stat-label">❌ ${Lang.t('scanner.errors')}</div>
+                        <div class="yield-stat-label">${Lang.t('scanner.errors')}</div>
                     </div>
                 </div>
             </div>
 
             <div class="card">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                    <h3 style="margin:0;">📋 Log</h3>
+                    <h3 style="margin:0;">Log</h3>
                     <button class="btn btn-danger btn-sm" onclick="BotsModule._stopScanner()">${Lang.t('scanner.stop')}</button>
                 </div>
                 <div id="scanner-logs" class="yield-terminal">
@@ -1490,7 +1491,7 @@ const BotsModule = {
             if (pct) pct.textContent = `${data.progress_percent}%`;
 
             const cc = data.completed_currencies || [];
-            if (label && cc.length > 0) label.textContent = `✅ ${cc.join(', ')}`;
+            if (label && cc.length > 0) label.textContent = cc.join(', ');
 
             const ss = data.stats || {};
             const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v || 0; };
@@ -1524,14 +1525,14 @@ const BotsModule = {
         if (!container) return;
 
         const isSuccess = data.status === 'completed';
-        const statusIcon = isSuccess ? '✅' : data.status === 'error' ? '❌' : '⏹';
+        const statusIcon = isSuccess ? 'OK' : data.status === 'error' ? 'ERR' : 'STOP';
         const statusLabel = isSuccess ? Lang.t('scanner.completed') : data.status === 'error' ? Lang.t('scanner.error') : Lang.t('scanner.stopped');
         const ss = data.stats || {};
 
         container.innerHTML = `
             <div class="yield-header">
                 <div class="yield-header-left">
-                    <span class="yield-header-icon">🔍</span>
+                    <span class="b-ticker">SCN</span>
                     <div>
                         <h1 style="margin:0;font-size:22px;">${Lang.t('scanner.title')} — ${statusIcon} ${statusLabel}</h1>
                         <p style="color:var(--text-muted);font-size:13px;margin-top:2px;">${Lang.t('scanner.subtitle')}</p>
@@ -1540,23 +1541,23 @@ const BotsModule = {
             </div>
 
             <div class="card" style="margin-bottom:16px;">
-                <h3 style="margin:0 0 16px;">📊 ${Lang.t('scanner.summary')}</h3>
+                <h3 style="margin:0 0 16px;">${Lang.t('scanner.summary')}</h3>
                 <div class="yield-stats">
                     <div class="yield-stat-card" style="border-left:3px solid var(--info);">
                         <div class="yield-stat-value">${ss.total_scanned || 0}</div>
-                        <div class="yield-stat-label">📡 ${Lang.t('scanner.scanned')}</div>
+                        <div class="yield-stat-label">${Lang.t('scanner.scanned')}</div>
                     </div>
                     <div class="yield-stat-card success">
                         <div class="yield-stat-value">${ss.total_filtered || 0}</div>
-                        <div class="yield-stat-label">✅ ${Lang.t('scanner.found')}</div>
+                        <div class="yield-stat-label">${Lang.t('scanner.found')}</div>
                     </div>
                     <div class="yield-stat-card warning">
                         <div class="yield-stat-value">${ss.total_discarded || 0}</div>
-                        <div class="yield-stat-label">⚠️ ${Lang.t('scanner.discarded')}</div>
+                        <div class="yield-stat-label">${Lang.t('scanner.discarded')}</div>
                     </div>
                     <div class="yield-stat-card error">
                         <div class="yield-stat-value">${ss.total_errors || 0}</div>
-                        <div class="yield-stat-label">❌ ${Lang.t('scanner.errors')}</div>
+                        <div class="yield-stat-label">${Lang.t('scanner.errors')}</div>
                     </div>
                 </div>
 
@@ -1574,7 +1575,7 @@ const BotsModule = {
 
             <div class="card">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                    <h3 style="margin:0;">📋 Log (${data.logs_count || data.logs?.length || 0} ${Lang.t('bots.lines')})</h3>
+                    <h3 style="margin:0;">Log (${data.logs_count || data.logs?.length || 0} ${Lang.t('bots.lines')})</h3>
                 </div>
                 <div class="yield-terminal">
                     ${data.logs && data.logs.length > 0
