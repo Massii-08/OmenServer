@@ -42,10 +42,8 @@ const App = {
         // Démarrer le monitoring
         Monitoring.start();
 
-        // Charger le thème sauvegardé
-        this._loadTheme();
-
-        // Charger l'accent Bento Tech (PR 3) + migration depuis legacy theme
+        // Charger l'accent Bento Tech + migration depuis legacy theme
+        // (système de thèmes legacy purgé en PR 12 — voir CLAUDE.md §Design System v5)
         this._loadAccent();
 
         // Appliquer la langue sauvegardée sur la sidebar
@@ -77,19 +75,6 @@ const App = {
         this.navigateTo(view).then(() => {
             this._skipPush = false;
         });
-    },
-
-    // === THÈMES ===
-    _themes: ['default', 'midnight', 'emerald', 'crimson'],
-    _themeNames: { default: '🌑 Défaut', midnight: '🌊 Midnight', emerald: '🌲 Emerald', crimson: '🔥 Crimson' },
-
-    _loadTheme() {
-        const saved = localStorage.getItem('omen-theme') || 'default';
-        const isLight = localStorage.getItem('omen-light') === 'true';
-        document.documentElement.setAttribute('data-theme', isLight ? 'light' : saved);
-        // Update light mode button icon
-        const lmBtn = document.getElementById('lightmode-btn');
-        if (lmBtn) lmBtn.textContent = isLight ? '🌞' : '🌗';
     },
 
     // === BENTO TECH ACCENT (PR 3) ===
@@ -136,9 +121,8 @@ const App = {
             document.documentElement.setAttribute('data-accent', name);
         }
         this._refreshAccentSwitcher(name);
-        if (typeof Toast !== 'undefined') {
-            const labels = { green: 'Vert', blue: 'Bleu', red: 'Rouge', yellow: 'Jaune' };
-            Toast.info(`Accent: ${labels[name] || name}`);
+        if (typeof Toast !== 'undefined' && typeof Lang !== 'undefined') {
+            Toast.info(`${Lang.t('toast.accent')} ${Lang.t('accent.' + name)}`);
         }
     },
 
@@ -146,36 +130,6 @@ const App = {
         document.querySelectorAll('.accent-switcher-mini .accent-dot').forEach(d => {
             d.classList.toggle('active', d.dataset.acc === active);
         });
-    },
-
-    cycleTheme() {
-        // Only cycle dark themes — light mode is separate toggle
-        if (localStorage.getItem('omen-light') === 'true') return;
-        const current = localStorage.getItem('omen-theme') || 'default';
-        const idx = this._themes.indexOf(current);
-        const next = this._themes[(idx + 1) % this._themes.length];
-        localStorage.setItem('omen-theme', next);
-        document.documentElement.setAttribute('data-theme', next);
-
-        // Feedback visuel
-        const btn = document.getElementById('theme-btn');
-        if (btn) {
-            btn.title = this._themeNames[next];
-            btn.style.transform = 'rotate(360deg)';
-            setTimeout(() => btn.style.transform = '', 300);
-        }
-        if (typeof Toast !== 'undefined') Toast.info(`${Lang.t('toast.theme')} ${this._themeNames[next]}`);
-    },
-
-    toggleLightMode() {
-        const isLight = localStorage.getItem('omen-light') === 'true';
-        const newMode = !isLight;
-        localStorage.setItem('omen-light', newMode.toString());
-        const theme = newMode ? 'light' : (localStorage.getItem('omen-theme') || 'default');
-        document.documentElement.setAttribute('data-theme', theme);
-        const lmBtn = document.getElementById('lightmode-btn');
-        if (lmBtn) lmBtn.textContent = newMode ? '🌞' : '🌗';
-        if (typeof Toast !== 'undefined') Toast.info(newMode ? Lang.t('toast.light_on') : Lang.t('toast.light_off'));
     },
 
     /**

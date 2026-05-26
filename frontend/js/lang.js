@@ -25,8 +25,6 @@ const Lang = {
             'sidebar.network': 'Réseau',
             'sidebar.users': 'Utilisateurs',
             'sidebar.settings': 'Paramètres',
-            'sidebar.theme': 'Changer de thème',
-            'sidebar.lightmode': 'Mode clair/sombre',
             'sidebar.loading': 'Chargement...',
 
             // Login
@@ -232,9 +230,11 @@ const Lang = {
             'rbac.bot_quota_full': 'Quota de bots atteint (3/3)',
 
             // Toast / Alerts
-            'toast.light_on': '☀️ Mode clair activé',
-            'toast.light_off': '🌙 Mode sombre activé',
-            'toast.theme': 'Thème :',
+            'toast.accent': 'Accent :',
+            'accent.green': 'Vert',
+            'accent.blue': 'Bleu',
+            'accent.red': 'Rouge',
+            'accent.yellow': 'Jaune',
             'toast.logout': 'Déconnecté',
 
             // Common
@@ -953,8 +953,6 @@ const Lang = {
             'sidebar.network': 'Network',
             'sidebar.users': 'Users',
             'sidebar.settings': 'Settings',
-            'sidebar.theme': 'Change theme',
-            'sidebar.lightmode': 'Light/dark mode',
             'sidebar.loading': 'Loading...',
 
             // Login
@@ -1160,9 +1158,11 @@ const Lang = {
             'rbac.bot_quota_full': 'Bot quota reached (3/3)',
 
             // Toast / Alerts
-            'toast.light_on': '☀️ Light mode enabled',
-            'toast.light_off': '🌙 Dark mode enabled',
-            'toast.theme': 'Theme:',
+            'toast.accent': 'Accent:',
+            'accent.green': 'Green',
+            'accent.blue': 'Blue',
+            'accent.red': 'Red',
+            'accent.yellow': 'Yellow',
             'toast.logout': 'Logged out',
 
             // Common
@@ -1881,8 +1881,6 @@ const Lang = {
             'sidebar.network': 'Rete',
             'sidebar.users': 'Utenti',
             'sidebar.settings': 'Impostazioni',
-            'sidebar.theme': 'Cambia tema',
-            'sidebar.lightmode': 'Modalità chiara/scura',
             'sidebar.loading': 'Caricamento...',
 
             // Login
@@ -2088,9 +2086,11 @@ const Lang = {
             'rbac.bot_quota_full': 'Quota bot raggiunta (3/3)',
 
             // Toast / Alerts
-            'toast.light_on': '☀️ Modalità chiara attivata',
-            'toast.light_off': '🌙 Modalità scura attivata',
-            'toast.theme': 'Tema:',
+            'toast.accent': 'Accento:',
+            'accent.green': 'Verde',
+            'accent.blue': 'Blu',
+            'accent.red': 'Rosso',
+            'accent.yellow': 'Giallo',
             'toast.logout': 'Disconnesso',
 
             // Common
@@ -2865,11 +2865,6 @@ const Lang = {
         const sub = document.querySelector('.sidebar-subtitle');
         if (sub) sub.textContent = this.t('sidebar.subtitle');
 
-        // Theme buttons
-        const themeBtn = document.getElementById('theme-btn');
-        if (themeBtn) themeBtn.title = this.t('sidebar.theme');
-        const lmBtn = document.getElementById('lightmode-btn');
-        if (lmBtn) lmBtn.title = this.t('sidebar.lightmode');
     },
 
     /**
