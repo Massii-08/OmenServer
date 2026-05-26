@@ -360,6 +360,7 @@ const App = {
 
     /**
      * Affiche la vue Hub avec le monitoring + les modules.
+     * PR 4 — Bento Tech overview + Diagnostic strip
      */
     renderHub(content) {
         const t = (k) => Lang.t(k);
@@ -369,37 +370,47 @@ const App = {
                 <p class="page-subtitle">${t('dashboard.overview')}</p>
             </div>
 
-            <!-- Stats monitoring -->
-            <div class="stats-grid">
-                <div class="stat-card" style="--stat-color: var(--accent-green)">
-                    <div class="stat-label">CPU <span style="font-size:10px;color:var(--text-muted);font-weight:400;">${t('dashboard.disk_combined')}</span></div>
-                    <div class="stat-value"><span id="stat-cpu-value">--</span><span class="stat-unit">%</span></div>
-                    <div id="stat-cpu-machines" class="stat-machines-list"></div>
-                    <div class="stat-bar"><div class="stat-bar-fill" id="stat-cpu-bar" style="width: 0%"></div></div>
+            <!-- Diagnostic strip (PR 4) — system health checks via /api/diagnostic -->
+            <div class="diag-strip" id="diag-strip">
+                <div class="d-head">
+                    <div class="d-title">System diagnostic</div>
+                    <div class="d-summary" id="diag-summary">${t('dashboard.analyzing')}</div>
                 </div>
-                <div class="stat-card" style="--stat-color: var(--accent-blue)">
-                    <div class="stat-label">${t('dashboard.memory')} <span style="font-size:10px;color:var(--text-muted);font-weight:400;">${t('dashboard.disk_combined')}</span></div>
-                    <div class="stat-value"><span id="stat-memory-value">--</span><span class="stat-unit">%</span></div>
-                    <div id="stat-memory-detail" style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">-- / -- Go</div>
-                    <div id="stat-memory-machines" class="stat-machines-list"></div>
-                    <div class="stat-bar"><div class="stat-bar-fill" id="stat-memory-bar" style="width: 0%"></div></div>
-                </div>
-                <div class="stat-card" style="--stat-color: var(--accent-purple)">
-                    <div class="stat-label">${t('dashboard.disk')} <span style="font-size:10px;color:var(--text-muted);font-weight:400;">${t('dashboard.disk_combined')}</span></div>
-                    <div class="stat-value"><span id="stat-disk-value">--</span><span class="stat-unit">%</span></div>
-                    <div id="stat-disk-detail" style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">-- / -- Go</div>
-                    <div id="stat-disk-machines" class="stat-machines-list"></div>
-                    <div class="stat-bar"><div class="stat-bar-fill" id="stat-disk-bar" style="width: 0%"></div></div>
-                </div>
-                <div class="stat-card" style="--stat-color: var(--accent-yellow)">
-                    <div class="stat-label">${t('dashboard.temp')} <span style="font-size:10px;color:var(--text-muted);font-weight:400;">max</span></div>
-                    <div class="stat-value"><span id="stat-temp-value">--</span><span class="stat-unit">°C</span></div>
-                    <div id="stat-temp-machines" class="stat-machines-list"></div>
-                    <div class="stat-bar"><div class="stat-bar-fill" id="stat-temp-bar" style="width: 0%"></div></div>
+                <div class="diag-grid" id="diag-grid">
+                    <!-- populated by App._loadDiagnostic() -->
                 </div>
             </div>
 
-
+            <!-- Stats monitoring — Bento overview (4-col single row).
+                 IDs preserved so monitoring.js continues to write here unchanged. -->
+            <div class="bento-overview" style="grid-template-columns:1fr 1fr 1fr 1fr;grid-template-rows:1fr;">
+                <div class="stat-card">
+                    <div class="label">CPU <span style="color:var(--text-dim);font-size:11px;">${t('dashboard.disk_combined')}</span></div>
+                    <div class="value"><span id="stat-cpu-value">--</span><span class="unit">%</span></div>
+                    <div id="stat-cpu-machines" class="stat-machines-list"></div>
+                    <div class="stat-bar" id="stat-cpu-bar"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">${t('dashboard.memory')} <span style="color:var(--text-dim);font-size:11px;">${t('dashboard.disk_combined')}</span></div>
+                    <div class="value"><span id="stat-memory-value">--</span><span class="unit">%</span></div>
+                    <div id="stat-memory-detail" class="footer">-- / -- Go</div>
+                    <div id="stat-memory-machines" class="stat-machines-list"></div>
+                    <div class="stat-bar" id="stat-memory-bar"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">${t('dashboard.disk')} <span style="color:var(--text-dim);font-size:11px;">${t('dashboard.disk_combined')}</span></div>
+                    <div class="value"><span id="stat-disk-value">--</span><span class="unit">%</span></div>
+                    <div id="stat-disk-detail" class="footer">-- / -- Go</div>
+                    <div id="stat-disk-machines" class="stat-machines-list"></div>
+                    <div class="stat-bar" id="stat-disk-bar"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">${t('dashboard.temp')} <span style="color:var(--text-dim);font-size:11px;">max</span></div>
+                    <div class="value"><span id="stat-temp-value">--</span><span class="unit">°C</span></div>
+                    <div id="stat-temp-machines" class="stat-machines-list"></div>
+                    <div class="stat-bar" id="stat-temp-bar"></div>
+                </div>
+            </div>
 
             <!-- Modules -->
             <div class="page-header">
@@ -417,8 +428,53 @@ const App = {
             </div>
         `;
 
+        // PR 4 — Diagnostic strip (fire and forget — populates async)
+        this._loadDiagnostic();
+
         // Charger les tâches planifiées de tous les serveurs
         this._loadGlobalSchedule();
+    },
+
+    /**
+     * PR 4 — Charge le diagnostic système et l'affiche dans la strip en haut du Dashboard.
+     * Réutilise /api/diagnostic (existant — voir backend/monitoring/diagnostic_router.py).
+     */
+    async _loadDiagnostic() {
+        const grid = document.getElementById('diag-grid');
+        const summary = document.getElementById('diag-summary');
+        if (!grid) return;
+
+        try {
+            const r = await Auth.apiCall('/api/diagnostic');
+            if (!r || !r.ok) {
+                if (summary) summary.textContent = Lang.t('dashboard.diag_error');
+                grid.innerHTML = '';
+                return;
+            }
+            const d = await r.json();
+            const lvlClass = { ok: '', warning: 'warn', critical: 'err' };
+
+            // Summary line
+            if (summary) {
+                const overallTxt = {
+                    ok: Lang.t('dashboard.all_good'),
+                    warning: Lang.t('dashboard.attention'),
+                    critical: Lang.t('dashboard.problems')
+                }[d.overall] || '';
+                summary.textContent = `${overallTxt} · ${d.ok} OK · ${d.warnings} ${Lang.t('dashboard.warnings')} · ${d.criticals} ${Lang.t('dashboard.criticals')}`;
+            }
+
+            // Grid items (no emoji per Bento Tech anti-AI-slop rules — color via class only)
+            grid.innerHTML = (d.checks || []).map(c => `
+                <div class="diag-item ${lvlClass[c.level] || ''}">
+                    <div class="d-l">${c.name}</div>
+                    <div class="d-v">${c.value || ''}</div>
+                </div>
+            `).join('');
+        } catch (e) {
+            if (summary) summary.textContent = Lang.t('dashboard.diag_error');
+            console.error('[Dashboard] Diagnostic failed:', e);
+        }
     },
 
     async _loadGlobalSchedule() {
