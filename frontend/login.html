@@ -6,7 +6,7 @@
     <title>OmenServer — Connexion</title>
     <meta name="description" content="Panel de gestion de serveur dédié polyvalent">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link rel="stylesheet" href="/css/style.css">
+    <link rel="stylesheet" href="/css/style.css?v=81">
     <script src="/js/lang.js"></script>
 </head>
 <body>
@@ -20,7 +20,7 @@
 
             <!-- Bouton langue -->
             <div style="text-align:center;margin-bottom:8px;">
-                <button onclick="LoginPage.toggleLang()" style="background:none;border:1px solid var(--border-color,#333);border-radius:6px;cursor:pointer;font-size:13px;padding:4px 12px;color:var(--text-secondary,#999);" id="login-lang-btn">🌐 EN</button>
+                <button onclick="LoginPage.toggleLang()" style="background:none;border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:13px;padding:4px 12px;color:var(--text-muted);" id="login-lang-btn">🌐 EN</button>
             </div>
 
             <!-- Wizard steps (visible seulement en mode setup) -->
@@ -36,9 +36,9 @@
             <!-- Étape 1 du Wizard : Nom du serveur -->
             <div id="wizard-step-1" class="hidden">
                 <h2 style="font-size: 18px; font-weight: 700; margin-bottom: 8px; text-align: center;">
-                    Bienvenue ! 👋
+                    Bienvenue
                 </h2>
-                <p style="font-size: 13px; color: var(--text-secondary); text-align: center; margin-bottom: 20px;">
+                <p style="font-size: 13px; color: var(--text-muted); text-align: center; margin-bottom: 20px;">
                     Première configuration de ton serveur
                 </p>
                 <div class="form-group">
@@ -56,7 +56,7 @@
                 <h2 style="font-size: 18px; font-weight: 700; margin-bottom: 8px; text-align: center;">
                     Crée ton compte admin
                 </h2>
-                <p style="font-size: 13px; color: var(--text-secondary); text-align: center; margin-bottom: 20px;">
+                <p style="font-size: 13px; color: var(--text-muted); text-align: center; margin-bottom: 20px;">
                     Ce sera le compte principal de ton serveur
                 </p>
                 <div class="form-group">
@@ -91,15 +91,15 @@
                     Se connecter
                 </button>
                 <div style="text-align:center;margin-top:12px;">
-                    <span style="font-size:12px;color:var(--text-secondary);">Tu as un code d'invitation ?</span>
-                    <a href="#" onclick="LoginPage.showJoinForm();return false" style="font-size:12px;color:#4ade80;text-decoration:none;margin-left:4px;">Créer un compte →</a>
+                    <span style="font-size:12px;color:var(--text-muted);">Tu as un code d'invitation ?</span>
+                    <a href="#" onclick="LoginPage.showJoinForm();return false" style="font-size:12px;color:var(--accent);text-decoration:none;margin-left:4px;">Créer un compte →</a>
                 </div>
             </div>
 
             <!-- Formulaire d'inscription par invitation -->
             <div id="join-form" class="hidden">
                 <h2 style="font-size:18px;font-weight:700;margin-bottom:4px;text-align:center;">Rejoindre OmenServer</h2>
-                <p id="join-role-info" style="font-size:12px;color:var(--text-secondary);text-align:center;margin-bottom:16px;"></p>
+                <p id="join-role-info" style="font-size:12px;color:var(--text-muted);text-align:center;margin-bottom:16px;"></p>
                 <div class="form-group">
                     <label class="form-label">Code d'invitation</label>
                     <input type="text" class="form-input" id="join-code" placeholder="aB3kXz9m" style="font-family:monospace;letter-spacing:2px;text-align:center;font-size:16px;">
@@ -117,7 +117,7 @@
                     Créer mon compte
                 </button>
                 <div style="text-align:center;margin-top:12px;">
-                    <a href="#" onclick="LoginPage.showLoginForm();return false" style="font-size:12px;color:var(--text-secondary);text-decoration:none;">← Retour à la connexion</a>
+                    <a href="#" onclick="LoginPage.showLoginForm();return false" style="font-size:12px;color:var(--text-muted);text-decoration:none;">← Retour à la connexion</a>
                 </div>
             </div>
         </div>
@@ -184,12 +184,12 @@
                     const info = document.getElementById('join-role-info');
                     if (r.ok) {
                         const data = await r.json();
-                        if (info) info.textContent = `✅ Invitation valide — Rôle : ${data.role_name}`;
-                        if (info) info.style.color = '#4ade80';
+                        if (info) info.textContent = `Invitation valide — Rôle : ${data.role_name}`;
+                        if (info) info.style.color = 'var(--accent)';
                     } else {
                         const err = await r.json().catch(() => ({}));
-                        if (info) info.textContent = `❌ ${err.detail || 'Code invalide'}`;
-                        if (info) info.style.color = '#ef4444';
+                        if (info) info.textContent = `${err.detail || 'Code invalide'}`;
+                        if (info) info.style.color = 'var(--danger)';
                     }
                 } catch (e) { /* silencieux */ }
             },
