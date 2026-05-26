@@ -45,6 +45,9 @@ const App = {
         // Charger le thème sauvegardé
         this._loadTheme();
 
+        // Charger l'accent Bento Tech (PR 3) + migration depuis legacy theme
+        this._loadAccent();
+
         // Appliquer la langue sauvegardée sur la sidebar
         if (typeof Lang !== 'undefined') Lang._updateSidebar();
     },
@@ -87,6 +90,62 @@ const App = {
         // Update light mode button icon
         const lmBtn = document.getElementById('lightmode-btn');
         if (lmBtn) lmBtn.textContent = isLight ? '🌞' : '🌗';
+    },
+
+    // === BENTO TECH ACCENT (PR 3) ===
+    // 4 accent variants applied via data-accent on <html>.
+    // Legacy themes (midnight/emerald/crimson/default) are mapped to accents
+    // on first load. The legacy theme system continues to work in parallel
+    // until cleanup PR 6.
+    _accents: ['green', 'blue', 'red', 'yellow'],
+    _legacyThemeToAccent: { default: 'green', emerald: 'green', midnight: 'blue', crimson: 'red' },
+
+    _loadAccent() {
+        // 1. One-time migration from legacy theme to accent
+        if (!localStorage.getItem('omen-accent')) {
+            const legacyTheme = localStorage.getItem('omen-theme');
+            const mapped = this._legacyThemeToAccent[legacyTheme];
+            if (mapped) {
+                localStorage.setItem('omen-accent', mapped);
+            }
+        }
+        // 2. Apply accent to <html>
+        const accent = localStorage.getItem('omen-accent') || 'green';
+        if (accent === 'green') {
+            // Default in :root — no attribute needed
+            document.documentElement.removeAttribute('data-accent');
+        } else {
+            document.documentElement.setAttribute('data-accent', accent);
+        }
+        // 3. Update visual state of switcher dots
+        this._refreshAccentSwitcher(accent);
+        // 4. Wire click handlers (idempotent — DOMContentLoaded already fired)
+        document.querySelectorAll('.accent-switcher-mini .accent-dot').forEach(dot => {
+            if (dot.dataset.bound) return;
+            dot.dataset.bound = '1';
+            dot.addEventListener('click', () => this.setAccent(dot.dataset.acc));
+        });
+    },
+
+    setAccent(name) {
+        if (!this._accents.includes(name)) return;
+        localStorage.setItem('omen-accent', name);
+        if (name === 'green') {
+            document.documentElement.removeAttribute('data-accent');
+        } else {
+            document.documentElement.setAttribute('data-accent', name);
+        }
+        this._refreshAccentSwitcher(name);
+        if (typeof Toast !== 'undefined') {
+            const labels = { green: 'Vert', blue: 'Bleu', red: 'Rouge', yellow: 'Jaune' };
+            Toast.info(`Accent: ${labels[name] || name}`);
+        }
+    },
+
+    _refreshAccentSwitcher(active) {
+        document.querySelectorAll('.accent-switcher-mini .accent-dot').forEach(d => {
+            d.classList.toggle('active', d.dataset.acc === active);
+        });
     },
 
     cycleTheme() {

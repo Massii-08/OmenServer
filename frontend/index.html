@@ -12,7 +12,7 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="apple-touch-icon" href="/icon-512.svg">
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/css/style.css?v=69">
+    <link rel="stylesheet" href="/css/style.css?v=70">
 </head>
 <body>
     <div class="app-layout">
@@ -75,7 +75,12 @@
                         <div class="user-role" id="user-role">—</div>
                     </div>
                     <button onclick="Lang.toggle()" title="FR/EN" style="background:none;border:none;cursor:pointer;font-size:16px;padding:4px;" id="lang-btn">🌐</button>
-                    <button onclick="App.cycleTheme()" title="Changer de thème" style="background:none;border:none;cursor:pointer;font-size:18px;padding:4px;" id="theme-btn">🎨</button>
+                    <div class="accent-switcher-mini" id="accent-switcher" title="Couleur d'accent">
+                        <span class="accent-dot" data-acc="green"  title="Vert (défaut)"></span>
+                        <span class="accent-dot" data-acc="blue"   title="Bleu"></span>
+                        <span class="accent-dot" data-acc="red"    title="Rouge"></span>
+                        <span class="accent-dot" data-acc="yellow" title="Jaune"></span>
+                    </div>
                     <button onclick="App.toggleLightMode()" title="Mode clair/sombre" style="background:none;border:none;cursor:pointer;font-size:18px;padding:4px;" id="lightmode-btn">🌗</button>
                 </div>
             </div>
@@ -109,7 +114,7 @@
     <script src="/js/media_module.js?v=84"></script>
     <script src="/js/web_module.js?v=85"></script>
     <script src="/js/network_module.js?v=86"></script>
-    <script src="/js/app.js?v=102"></script>
+    <script src="/js/app.js?v=103"></script>
     <script>
         // Enregistrement du Service Worker (PWA)
         if ('serviceWorker' in navigator) {

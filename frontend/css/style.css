@@ -2140,3 +2140,41 @@ canvas {
     transition: background var(--t-base);
 }
 
+/* ============================================================================
+   BENTO TECH v5 — Accent switcher mini (PR 3)
+   Compact pill version for the legacy sidebar footer.
+   Replaces the old theme cycle button (🎨).
+   Full-size .accent-switcher will come later when topbar is migrated.
+   ============================================================================ */
+.accent-switcher-mini {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 6px;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+}
+.accent-switcher-mini .accent-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: var(--t-fast);
+    box-sizing: border-box;
+}
+.accent-switcher-mini .accent-dot[data-acc="green"]  { background: #4ADE80; }
+.accent-switcher-mini .accent-dot[data-acc="blue"]   { background: #60A5FA; }
+.accent-switcher-mini .accent-dot[data-acc="red"]    { background: #FB7185; }
+.accent-switcher-mini .accent-dot[data-acc="yellow"] { background: #FACC15; }
+.accent-switcher-mini .accent-dot.active {
+    border-color: var(--text);
+    /* Slight ring effect when active */
+    box-shadow: 0 0 0 1px var(--bg-elev-2);
+}
+.accent-switcher-mini .accent-dot:hover {
+    transform: scale(1.15);
+}
+
+
