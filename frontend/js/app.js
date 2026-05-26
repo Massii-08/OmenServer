@@ -550,8 +550,8 @@ const App = {
         }
 
         // Options pour le formulaire
-        const serverOptions = servers.map(s => `<option value="server_${s.id}">🎮 ${s.name}</option>`).join('');
-        const botOptions = bots.map(b => `<option value="bot_${b.id}">🤖 ${b.name}</option>`).join('');
+        const serverOptions = servers.map(s => `<option value="server_${s.id}">${s.name}</option>`).join('');
+        const botOptions = bots.map(b => `<option value="bot_${b.id}">${b.name}</option>`).join('');
         const targetOptions = serverOptions + botOptions;
 
         const formHTML = `
@@ -564,15 +564,15 @@ const App = {
                     <div style="flex:1;min-width:140px;">
                         <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.type')}</label>
                         <select id="hub-sched-type" class="form-input" style="margin-top:4px;">
-                            <option value="backup">💾 ${Lang.t('scheduler.backup')}</option>
-                            <option value="restart">🔄 ${Lang.t('scheduler.restart')}</option>
+                            <option value="backup">${Lang.t('scheduler.backup')}</option>
+                            <option value="restart">${Lang.t('scheduler.restart')}</option>
                         </select>
                     </div>
                     <div style="flex:1;min-width:110px;">
                         <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.mode')}</label>
                         <select id="hub-sched-mode" class="form-input" style="margin-top:4px;" onchange="App._onScheduleModeChange()">
-                            <option value="interval">⏰ ${Lang.t('scheduler.mode_interval')}</option>
-                            <option value="fixed">📅 ${Lang.t('scheduler.mode_fixed')}</option>
+                            <option value="interval">${Lang.t('scheduler.mode_interval')}</option>
+                            <option value="fixed">${Lang.t('scheduler.mode_fixed')}</option>
                         </select>
                     </div>
                 </div>
@@ -588,7 +588,7 @@ const App = {
                             <option value="168">${Lang.t('scheduler.week')}</option>
                         </select>
                     </div>
-                    <button class="btn btn-primary" onclick="App._createScheduledTask()">➕ ${Lang.t('scheduler.add')}</button>
+                    <button class="btn btn-primary" onclick="App._createScheduledTask()">${Lang.t('scheduler.add')}</button>
                 </div>
                 <!-- Mode heure fixe -->
                 <div id="hub-sched-fixed-row" style="display:none;margin-top:8px;">
@@ -597,7 +597,7 @@ const App = {
                             <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.time')}</label>
                             <input type="time" id="hub-sched-time" class="form-input" style="margin-top:4px;" value="08:00" />
                         </div>
-                        <button class="btn btn-primary" onclick="App._createScheduledTask()">➕ ${Lang.t('scheduler.add')}</button>
+                        <button class="btn btn-primary" onclick="App._createScheduledTask()">${Lang.t('scheduler.add')}</button>
                     </div>
                     <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
                         <label style="font-size:12px;color:var(--text-muted);margin-right:4px;">${Lang.t('scheduler.days')}:</label>
@@ -612,7 +612,7 @@ const App = {
                     </div>
                 </div>
                 <div id="hub-sched-msg" style="font-size:12px;margin-top:8px;"></div>
-                <div style="text-align:right;margin-top:8px;"><button class="btn btn-sm btn-secondary" onclick="App._toggleScheduleForm()">✕ ${Lang.t('common.cancel')}</button></div>
+                <div style="text-align:right;margin-top:8px;"><button class="btn btn-sm btn-secondary" onclick="App._toggleScheduleForm()">${Lang.t('common.cancel')}</button></div>
             </div>`;
 
         if (allTasks.length === 0) {
@@ -620,7 +620,7 @@ const App = {
                 <div style="text-align:center;padding:20px;">
                     <div style="font-size:32px;margin-bottom:8px;">📅</div>
                     <div style="color:var(--text-muted);font-size:13px;">${Lang.t('scheduler.no_tasks')}</div>
-                    <button class="btn btn-primary btn-sm" style="margin-top:12px;" onclick="App._toggleScheduleForm()">➕ ${Lang.t('scheduler.create')}</button>
+                    <button class="btn btn-primary btn-sm" style="margin-top:12px;" onclick="App._toggleScheduleForm()">${Lang.t('scheduler.create')}</button>
                 </div>
                 ${formHTML}`;
             // Initialiser les options du type en fonction de la cible
@@ -638,7 +638,7 @@ const App = {
         schedEl.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
                 <div style="font-size:13px;color:var(--text-muted);">${allTasks.length} ${Lang.t('scheduler.tasks_count')} ${servers.length + bots.length} ${Lang.t('scheduler.servers_count')}</div>
-                <button class="btn btn-primary btn-sm" onclick="App._toggleScheduleForm()">➕ ${Lang.t('scheduler.new_task')}</button>
+                <button class="btn btn-primary btn-sm" onclick="App._toggleScheduleForm()">${Lang.t('scheduler.new_task')}</button>
             </div>
             ${formHTML}
             <div style="display:flex;flex-direction:column;gap:6px;">
@@ -647,7 +647,7 @@ const App = {
                         <span style="font-size:18px;">${taskIcons[t.task_type] || '📋'}</span>
                         <div style="flex:1;">
                             <div style="font-size:13px;font-weight:600;">${taskLabels[t.task_type] || t.task_type}</div>
-                            <div style="font-size:11px;color:var(--text-muted);">${t.targetIcon} ${t.targetName} · ${t.schedule_time ? ('⏰ ' + Lang.t('scheduler.at') + ' ' + t.schedule_time + ' (' + (t.schedule_days || 'daily') + ')') : ('⏰ ' + Lang.t('scheduler.every') + ' ' + t.interval_hours + 'h')}</div>
+                            <div style="font-size:11px;color:var(--text-muted);">${t.targetIcon} ${t.targetName} · ${t.schedule_time ? ('' + Lang.t('scheduler.at') + ' ' + t.schedule_time + ' (' + (t.schedule_days || 'daily') + ')') : ('' + Lang.t('scheduler.every') + ' ' + t.interval_hours + 'h')}</div>
                         </div>
                         <div style="display:flex;gap:6px;align-items:center;">
                             <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled !== false ? 'var(--accent-dim)' : 'rgba(255,255,255,0.05)'};color:${t.enabled !== false ? 'var(--accent)' : 'var(--text-muted)'};">${t.enabled !== false ? '● ' + Lang.t('scheduler.active') : '○ ' + Lang.t('scheduler.inactive')}</span>
@@ -679,8 +679,8 @@ const App = {
                 <option value="bot_restart">${Lang.t('scheduler.bot_restart')}</option>`;
         } else {
             typeEl.innerHTML = `
-                <option value="backup">💾 ${Lang.t('scheduler.backup')}</option>
-                <option value="restart">🔄 ${Lang.t('scheduler.restart')}</option>`;
+                <option value="backup">${Lang.t('scheduler.backup')}</option>
+                <option value="restart">${Lang.t('scheduler.restart')}</option>`;
         }
     },
 
@@ -744,7 +744,7 @@ const App = {
             setTimeout(() => this._loadGlobalSchedule(), 500);
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || 'Erreur'}`; }
         }
     },
 
@@ -785,7 +785,7 @@ const App = {
             <div style="background:var(--bg-elev-1);border-radius:12px;padding:20px;border:1px solid var(--border);">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
                     <div>
-                        <div style="font-size:16px;font-weight:700;">${overallLabel[d.overall] || '🩺 Diagnostic'}</div>
+                        <div style="font-size:16px;font-weight:700;">${overallLabel[d.overall] || 'Diagnostic'}</div>
                         <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${d.ok} OK · ${d.warnings} ${Lang.t('dashboard.warnings')} · ${d.criticals} ${Lang.t('dashboard.criticals')}</div>
                     </div>
                     <button onclick="document.getElementById('diagnostic-panel').style.display='none'" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:18px;">✕</button>
@@ -800,7 +800,7 @@ const App = {
                                     <span style="font-size:11px;color:${levelColors[c.level]};font-weight:600;">${levelIcons[c.level]} ${c.value}</span>
                                 </div>
                                 <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${c.message}</div>
-                                ${c.suggestion ? `<div style="font-size:11px;color:${levelColors[c.level]};margin-top:4px;">💡 ${c.suggestion}</div>` : ''}
+                                ${c.suggestion ? `<div style="font-size:11px;color:${levelColors[c.level]};margin-top:4px;">${c.suggestion}</div>` : ''}
                             </div>
                         </div>
                     `).join('')}
@@ -812,7 +812,7 @@ const App = {
      * Kill All — arrête tous les services d'urgence.
      */
     async killAllServers() {
-        if (!confirm('⚠️ ARRÊT D\'URGENCE\n\nCela va arrêter TOUS les serveurs de jeux en cours.\n\nContinuer ?')) return;
+        if (!confirm('ARRÊT D\'URGENCE\n\nCela va arrêter TOUS les serveurs de jeux en cours.\n\nContinuer ?')) return;
 
         const r = await Auth.apiCall('/api/servers');
         if (!r || !r.ok) { if (typeof Toast !== 'undefined') Toast.error('Erreur'); return; }
@@ -827,7 +827,7 @@ const App = {
         }
 
         if (typeof Toast !== 'undefined') Toast.success(`${stopped} serveur(s) arrêté(s)`);
-        else alert(`✅ ${stopped} serveur(s) arrêté(s)`);
+        else alert(`${stopped} serveur(s) arrêté(s)`);
         if (this.currentView === 'hub') {
             this.navigateTo('hub');
         }
@@ -912,15 +912,15 @@ const App = {
                                 <input type="time" id="power-shutdown-hour" class="form-input" value="01:00" />
                             </div>
                             <div>
-                                <label class="form-label">⏰ ${t('power.wake_time')}</label>
+                                <label class="form-label">${t('power.wake_time')}</label>
                                 <input type="time" id="power-wake-hour" class="form-input" value="05:00" />
                             </div>
                         </div>
                         <div style="margin-top:12px;padding:10px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);">
-                            <div style="font-size:12px;color:var(--text-muted);">💡 ${t('power.graceful_info')}</div>
+                            <div style="font-size:12px;color:var(--text-muted);">${t('power.graceful_info')}</div>
                         </div>
                         <div id="power-rtcwake-warn" style="display:none;margin-top:8px;padding:8px 12px;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:8px;font-size:12px;color:var(--warning);">
-                            ⚠️ rtcwake non détecté — le réveil automatique ne fonctionnera pas. Installez util-linux.
+                            rtcwake non détecté — le réveil automatique ne fonctionnera pas. Installez util-linux.
                         </div>
                         <div id="power-last-info" style="margin-top:12px;font-size:12px;color:var(--text-muted);"></div>
                         <div style="display:flex;gap:8px;margin-top:16px;align-items:center;">
@@ -998,7 +998,7 @@ const App = {
         } else if (response) {
             const err = await response.json();
             msgEl.style.color = 'var(--danger)';
-            msgEl.textContent = `❌ ${err.detail || Lang.t('common.error')}`;
+            msgEl.textContent = `${err.detail || Lang.t('common.error')}`;
         }
     },
 
@@ -1018,10 +1018,10 @@ const App = {
             const link = `${location.origin}/login?invite=${data.code}`;
             resultEl.innerHTML = `
                 <div style="background: var(--bg-elev-2); border-radius: 8px; padding: 12px; border: 1px solid var(--accent);">
-                    <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">🔗 Lien d'invitation (${data.role_name})</div>
+                    <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">Lien d'invitation (${data.role_name})</div>
                     <div style="font-family: monospace; font-size: 14px; color: var(--accent); word-break: break-all;">${link}</div>
-                    <button class="btn btn-secondary btn-sm mt-4" onclick="navigator.clipboard.writeText('${link}').then(() => this.textContent = '✅ Copié !')">
-                        📋 Copier le lien
+                    <button class="btn btn-secondary btn-sm mt-4" onclick="navigator.clipboard.writeText('${link}').then(() => this.textContent = 'Copié !')">
+                        Copier le lien
                     </button>
                 </div>
             `;
@@ -1145,7 +1145,7 @@ const App = {
             setTimeout(() => this._loadPowerSchedule(), 500);
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || 'Erreur'}`; }
         }
     },
 
@@ -1160,7 +1160,7 @@ const App = {
             if (typeof Toast !== 'undefined') Toast.info(Lang.t('power.test_launched'));
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || 'Erreur'}`; }
         }
     },
 
@@ -1173,7 +1173,7 @@ const App = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = data.message; }
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || 'Erreur'}`; }
         }
     },
 
@@ -1348,7 +1348,7 @@ const App = {
         if (!listEl) return;
 
         const response = await Auth.apiCall('/api/auth/admin/users');
-        if (!response || !response.ok) { listEl.innerHTML = '<div style="color:var(--danger);">❌ ' + Lang.t('common.error') + '</div>'; return; }
+        if (!response || !response.ok) { listEl.innerHTML = '<div style="color:var(--danger);">' + Lang.t('common.error') + '</div>'; return; }
         const users = await response.json();
         const currentUser = Auth.getUser();
 
@@ -1550,7 +1550,7 @@ const SharingModal = {
         overlay.innerHTML = `
             <div class="modal sharing-modal">
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
-                    <h3 style="margin:0;">👥 ${Lang.t('sharing.title')}</h3>
+                    <h3 style="margin:0;">${Lang.t('sharing.title')}</h3>
                     <button class="btn btn-secondary btn-sm" onclick="SharingModal.close()" style="padding:4px 10px;">✕</button>
                 </div>
                 <div class="sharing-search-wrap">
@@ -1569,12 +1569,12 @@ const SharingModal = {
                         <div style="display:flex;align-items:center;gap:8px;">
                             <select id="sharing-grant-level" class="sharing-access-select">
                                 ${resourceType === 'bot' ? `
-                                    <option value="start" selected>▶️ ${Lang.t('sharing.bot_use')}</option>
-                                    <option value="manage">✏️ ${Lang.t('sharing.bot_edit')}</option>
+                                    <option value="start" selected>${Lang.t('sharing.bot_use')}</option>
+                                    <option value="manage">${Lang.t('sharing.bot_edit')}</option>
                                 ` : `
-                                    <option value="view_only">👁️ ${Lang.t('sharing.view_only')}</option>
-                                    <option value="start" selected>▶️ ${Lang.t('sharing.start')}</option>
-                                    <option value="manage">⚡ ${Lang.t('sharing.manage')}</option>
+                                    <option value="view_only">${Lang.t('sharing.view_only')}</option>
+                                    <option value="start" selected>${Lang.t('sharing.start')}</option>
+                                    <option value="manage">${Lang.t('sharing.manage')}</option>
                                 `}
                             </select>
                             <button class="btn btn-primary btn-sm" onclick="SharingModal._grantAccess()">${Lang.t('sharing.grant')}</button>
@@ -1694,12 +1694,12 @@ const SharingModal = {
                 <div style="display:flex;align-items:center;gap:8px;">
                     <select class="sharing-access-select" onchange="SharingModal._updateAccess(${a.id}, this.value)">
                         ${isBot ? `
-                            <option value="start" ${a.access_level==='start'||a.access_level==='view_only'?'selected':''}>▶️ ${ll.start}</option>
-                            <option value="manage" ${a.access_level==='manage'?'selected':''}>✏️ ${ll.manage}</option>
+                            <option value="start" ${a.access_level==='start'||a.access_level==='view_only'?'selected':''}>${ll.start}</option>
+                            <option value="manage" ${a.access_level==='manage'?'selected':''}>${ll.manage}</option>
                         ` : `
-                            <option value="view_only" ${a.access_level==='view_only'?'selected':''}>👁️ ${ll.view_only}</option>
-                            <option value="start" ${a.access_level==='start'?'selected':''}>▶️ ${ll.start}</option>
-                            <option value="manage" ${a.access_level==='manage'?'selected':''}>⚡ ${ll.manage}</option>
+                            <option value="view_only" ${a.access_level==='view_only'?'selected':''}>${ll.view_only}</option>
+                            <option value="start" ${a.access_level==='start'?'selected':''}>${ll.start}</option>
+                            <option value="manage" ${a.access_level==='manage'?'selected':''}>${ll.manage}</option>
                         `}
                     </select>
                     <button class="btn btn-sm" style="color:var(--danger);background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.2);padding:4px 8px;font-size:11px;" onclick="SharingModal._revokeAccess(${a.id}, '${(a.username||'').replace(/'/g,"\\\\'")}')">${Lang.t('sharing.revoke')}</button>

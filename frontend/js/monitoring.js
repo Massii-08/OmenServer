@@ -191,7 +191,7 @@ const Monitoring = {
                     </div>
                     ${isAdmin ? `
                     <div class="m-actions">
-                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.removeNode('${node.hostname}')" title="${Lang.t('nodes.remove')}">✕ ${Lang.t('nodes.remove')}</button>
+                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.removeNode('${node.hostname}')" title="${Lang.t('nodes.remove')}">${Lang.t('nodes.remove')}</button>
                     </div>
                     ` : ''}
                     `}
@@ -230,7 +230,7 @@ const Monitoring = {
 
         const r = await Auth.apiCall(`/api/nodes/${encodeURIComponent(hostname)}`, { method: 'DELETE' });
         if (r && r.ok) {
-            if (typeof Toast !== 'undefined') Toast.success(`✅ ${hostname} retiré`);
+            if (typeof Toast !== 'undefined') Toast.success(`${hostname} retiré`);
             this.fetchNodes(); // Refresh
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
@@ -277,11 +277,11 @@ const Monitoring = {
                 const err = r ? await r.json().catch(() => ({})) : {};
                 const detail = err.detail || Lang.t('common.error');
                 console.error(`[Power] ${action} failed:`, detail);
-                if (typeof Toast !== 'undefined') Toast.error(`❌ ${actionLabel}: ${detail}`, 8000);
+                if (typeof Toast !== 'undefined') Toast.error(`${actionLabel}: ${detail}`, 8000);
             }
         } catch (e) {
             console.error(`[Power] ${action} exception:`, e);
-            if (typeof Toast !== 'undefined') Toast.error(`❌ ${actionLabel}: ${e.message}`, 8000);
+            if (typeof Toast !== 'undefined') Toast.error(`${actionLabel}: ${e.message}`, 8000);
         }
     },
 
@@ -470,7 +470,7 @@ const Monitoring = {
         // CPU > 95% pendant 3 mesures consécutives
         const cpuHist = this._history.cpu.slice(-3);
         if (cpuHist.length >= 3 && cpuHist.every(v => v > 95)) {
-            fire('cpu_critical', `⚡ CPU critique : ${Math.round(data.cpu.percent)}% — Le processeur est surchargé`);
+            fire('cpu_critical', `CPU critique : ${Math.round(data.cpu.percent)}% — Le processeur est surchargé`);
         }
 
         // RAM > 90%
@@ -480,7 +480,7 @@ const Monitoring = {
 
         // Disque > 95%
         if (data.disk.percent > 95) {
-            fire('disk_full', `💾 Disque quasi plein : ${Math.round(data.disk.percent)}% — Libère de l'espace !`);
+            fire('disk_full', `Disque quasi plein : ${Math.round(data.disk.percent)}% — Libère de l'espace !`);
         }
 
         // Température CPU > 85°C

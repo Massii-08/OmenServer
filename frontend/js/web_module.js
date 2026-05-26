@@ -91,8 +91,8 @@ const WebModule = {
                         ` : ''}
                         <div style="display:flex;gap:6px;">
                             ${s.status === 'running'
-                                ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();WebModule.stopSite(${s.id})" style="font-size:11px;padding:4px 12px;">⏹ Stop</button>`
-                                : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();WebModule.startSite(${s.id})" style="font-size:11px;padding:4px 12px;">▶ Start</button>`
+                                ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();WebModule.stopSite(${s.id})" style="font-size:11px;padding:4px 12px;">Stop</button>`
+                                : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();WebModule.startSite(${s.id})" style="font-size:11px;padding:4px 12px;">Start</button>`
                             }
                             <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.showLogs(${s.id})" style="font-size:11px;padding:4px 12px;">${Lang.t('web.logs_title')}</button>
                             <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.deleteSite(${s.id})" style="font-size:11px;padding:4px 8px;color:var(--danger);">🗑</button>
@@ -159,18 +159,18 @@ const WebModule = {
 
         if (r && r.ok) {
             document.getElementById('web-create-form').style.display = 'none';
-            if (typeof Toast !== 'undefined') Toast.success(`🌐 ${name} ✅`);
+            if (typeof Toast !== 'undefined') Toast.success(`${name} ✅`);
             await this.loadSites();
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
 
     async startSite(id) {
         const r = await Auth.apiCall(`/api/websites/${id}/start`, { method: 'POST' });
         if (r && r.ok) await this.loadSites();
-        else { const err = r ? await r.json().catch(() => ({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error')); else alert(`❌ ${err.detail || Lang.t('common.error')}`); }
+        else { const err = r ? await r.json().catch(() => ({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error')); else alert(`${err.detail || Lang.t('common.error')}`); }
     },
 
     async stopSite(id) {

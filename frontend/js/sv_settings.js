@@ -104,7 +104,7 @@ const SvSettings = {
         return `<div style="margin-top:20px;display:flex;align-items:center;gap:12px;">
             <button class="btn btn-primary" onclick="SvSettings._save()">${Lang.t('sv.set_save')}</button>
             <span id="sv-set-msg" style="font-size:13px;"></span>
-            <span style="font-size:12px;color:var(--text-muted);">⚠️ Un redémarrage peut être nécessaire</span>
+            <span style="font-size:12px;color:var(--text-muted);">Un redémarrage peut être nécessaire</span>
         </div>`;
     },
 
@@ -125,7 +125,7 @@ const SvSettings = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.set_saved'); }
             this._props = {...this._props, ...props};
         } else {
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = '❌ Erreur'; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = 'Erreur'; }
         }
     },
 
@@ -162,7 +162,7 @@ const SvSettings = {
         ${this._field(Lang.t('sv.cfg.world_name'), 'level-name', 'text', {default:'world'})}
         ${this._field(Lang.t('sv.cfg.seed'), 'level-seed', 'text', {placeholder:Lang.t('sv.cfg.seed_hint')})}
         ${this._field(Lang.t('sv.cfg.world_type'), 'level-type', 'select', {options:[
-            {value:'minecraft:normal',label:'🌍 Normal'},{value:'minecraft:flat',label:Lang.t('sv.cfg.flat')},
+            {value:'minecraft:normal',label:'Normal'},{value:'minecraft:flat',label:Lang.t('sv.cfg.flat')},
             {value:'minecraft:large_biomes',label:Lang.t('sv.cfg.large_biomes')},{value:'minecraft:amplified',label:Lang.t('sv.cfg.amplified')}
         ]})}
         ${this._field(Lang.t('sv.cfg.spawn_protection'), 'spawn-protection', 'number', {default:'16'})}
@@ -177,14 +177,14 @@ const SvSettings = {
     _protocolsSub(p) {
         return `
         <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-bottom:20px;">
-            <h3 style="margin:0 0 8px;font-size:15px;">📡 RCON (Remote Console)</h3>
+            <h3 style="margin:0 0 8px;font-size:15px;">RCON (Remote Console)</h3>
             <p style="color:var(--text-muted);font-size:12px;margin-bottom:12px;">${Lang.t('sv.cfg.rcon_desc')}</p>
             ${this._field(Lang.t('sv.cfg.enable_rcon'), 'enable-rcon', 'toggle')}
             ${this._field(Lang.t('sv.cfg.rcon_port'), 'rcon.port', 'number', {default:'25575'})}
             ${this._field(Lang.t('sv.cfg.rcon_pass'), 'rcon.password', 'text', {placeholder:Lang.t('sv.cfg.rcon_pass')})}
         </div>
         <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;">
-            <h3 style="margin:0 0 8px;font-size:15px;">🔍 Query</h3>
+            <h3 style="margin:0 0 8px;font-size:15px;">Query</h3>
             <p style="color:var(--text-muted);font-size:12px;margin-bottom:12px;">${Lang.t('sv.cfg.query_desc')}</p>
             ${this._field(Lang.t('sv.cfg.enable_query'), 'enable-query', 'toggle')}
             ${this._field(Lang.t('sv.cfg.query_port'), 'query.port', 'number', {default:'25565'})}
@@ -236,7 +236,7 @@ const SvSettings = {
         </div>
         <div style="margin-bottom:20px;">
             <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
-                <label class="form-label" style="margin:0;">⚡ CPU</label>
+                <label class="form-label" style="margin:0;">CPU</label>
                 <span id="sv-cpu-val" style="font-family:monospace;font-weight:700;color:var(--accent-orange);font-size:16px;">${s.cpu_percent||100}%</span>
             </div>
             <input type="range" id="sv-cpu-slider" min="25" max="400" step="25" value="${s.cpu_percent||100}"
@@ -259,7 +259,7 @@ const SvSettings = {
             </p>
             <div id="sv-del-zone">
                 <button class="btn" style="background:var(--danger);color:white;" onclick="SvSettings._showDeleteConfirm()">
-                    🗑️ Supprimer ce serveur
+                    Supprimer ce serveur
                 </button>
             </div>
             <div id="sv-del-confirm" style="display:none;margin-top:12px;padding:14px;background:rgba(248,113,113,0.1);border-radius:8px;border:1px solid var(--danger);">
@@ -292,7 +292,7 @@ const SvSettings = {
         if (r && r.ok) {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.cfg.res_applied'); }
         } else {
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = '❌ Erreur'; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = 'Erreur'; }
         }
     },
 
@@ -364,10 +364,10 @@ const SvSettings = {
         });
         if (r && r.ok) {
             const data = await r.json();
-            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${data.message} ${data.note}`; }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `${data.message} ${data.note}`; }
             this._serverData.jvm_flags = flags;
         } else {
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = '❌ Erreur'; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = 'Erreur'; }
         }
     },
 
@@ -392,11 +392,11 @@ const SvSettings = {
 
         const r = await Auth.apiCall(`/api/servers/${this._serverId}`, { method: 'DELETE' });
         if (r && r.ok) {
-            if (typeof Toast !== 'undefined') Toast.success(`🗑️ Serveur '${serverName}' supprimé`);
+            if (typeof Toast !== 'undefined') Toast.success(`Serveur '${serverName}' supprimé`);
             App.navigateTo('game_server');
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
 };

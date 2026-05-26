@@ -243,7 +243,7 @@ const MediaModule = {
             await this._loadLibraries();
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
 
@@ -262,14 +262,14 @@ const MediaModule = {
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
             if (btn) { btn.disabled = false; btn.textContent = Lang.t('media.install_btn'); }
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
 
     async start() {
         const r = await Auth.apiCall('/api/media/start', { method: 'POST' });
         if (r && r.ok) await this.loadStatus();
-        else { const err = r ? await r.json().catch(() => ({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error')); else alert(`❌ ${err.detail || Lang.t('common.error')}`); }
+        else { const err = r ? await r.json().catch(() => ({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error')); else alert(`${err.detail || Lang.t('common.error')}`); }
     },
 
     async stop() {
@@ -287,6 +287,6 @@ const MediaModule = {
 
         const r = await Auth.apiCall('/api/media/reset', { method: 'DELETE' });
         if (r && r.ok) await this.loadStatus();
-        else { const err = r ? await r.json().catch(() => ({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error')); else alert(`❌ ${err.detail || Lang.t('common.error')}`); }
+        else { const err = r ? await r.json().catch(() => ({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error')); else alert(`${err.detail || Lang.t('common.error')}`); }
     },
 };

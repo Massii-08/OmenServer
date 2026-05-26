@@ -97,7 +97,7 @@ const FilesModule = {
         if (!r || !r.ok) {
             const err = r ? await r.json().catch(() => ({})) : {};
             if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error'));
-            else alert(`❌ ${err.detail || Lang.t('common.error')}`);
+            else alert(`${err.detail || Lang.t('common.error')}`);
             return;
         }
 
@@ -136,7 +136,7 @@ const FilesModule = {
 
         const r = await Auth.apiCall(`/api/gdrive/files?folder_id=${this._currentFolder}`);
         if (!r || !r.ok) {
-            filesEl.innerHTML = `<div style="color:var(--danger);padding:12px;">❌ ${Lang.t('common.error')}</div>`;
+            filesEl.innerHTML = `<div style="color:var(--danger);padding:12px;">${Lang.t('common.error')}</div>`;
             return;
         }
 
@@ -182,10 +182,10 @@ const FilesModule = {
         if (r && r.ok) {
             const data = await r.json();
             if (typeof Toast !== 'undefined') Toast.success(data.message);
-            else alert(`✅ ${data.message}`);
+            else alert(`${data.message}`);
         } else {
             if (typeof Toast !== 'undefined') Toast.error(Lang.t('files.download_error'));
-            else alert(`❌ ${Lang.t('files.download_error')}`);
+            else alert(`${Lang.t('files.download_error')}`);
         }
     },
 
@@ -209,11 +209,11 @@ const FilesModule = {
         if (r && r.ok) {
             const data = await r.json();
             if (typeof Toast !== 'undefined') Toast.success(data.message);
-            else alert(`✅ ${data.message}`);
+            else alert(`${data.message}`);
             await this.loadDriveFiles();
         } else {
             if (typeof Toast !== 'undefined') Toast.error(Lang.t('files.upload_error'));
-            else alert(`❌ ${Lang.t('files.upload_error')}`);
+            else alert(`${Lang.t('files.upload_error')}`);
         }
     },
 };

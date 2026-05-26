@@ -51,7 +51,7 @@ const SvFiles = {
         el.innerHTML = `<div style="color:var(--text-muted)">⏳ ${Lang.t('common.loading')}</div>`;
 
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/files?path=${encodeURIComponent(this._currentPath)}`);
-        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">${Lang.t('common.error')}</div>`; return; }
         const data = await r.json();
         const files = data.files || [];
 
@@ -124,7 +124,7 @@ const SvFiles = {
         if (!el) return;
         this._editing = path;
         const fileName = path.split('/').pop();
-        if (bc) bc.innerHTML = this._breadcrumb() + ` <span style="color:var(--text-muted);">/</span> <span style="color:var(--accent);">✏️ ${fileName}</span>`;
+        if (bc) bc.innerHTML = this._breadcrumb() + ` <span style="color:var(--text-muted);">/</span> <span style="color:var(--accent);">${fileName}</span>`;
         el.innerHTML = `<div style="color:var(--text-muted)">${Lang.t('sv.files.loading_file')}</div>`;
 
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/files/content?path=${encodeURIComponent(path)}`);
@@ -200,7 +200,7 @@ const SvFiles = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.files.saved'); }
             setTimeout(() => { if (msg) msg.textContent = ''; }, 2000);
         } else {
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${Lang.t('common.error')}`; }
         }
     },
 
