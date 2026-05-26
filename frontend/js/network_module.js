@@ -47,14 +47,13 @@ const NetworkModule = {
             <!-- Diagnostic panel (caché par défaut) -->
             <div id="diagnostic-panel" style="display:none;margin-bottom:20px;"></div>
 
-            <!-- Réseau de machines -->
+            <!-- Réseau de machines (Bento Tech PR13) -->
             <div style="margin-top:24px;">
                 <div class="page-header" style="margin-bottom:12px;">
-                    <h2 style="font-size: 18px; font-weight: 700;">${Lang.t('nodes.title')} <span id="nodes-count" style="font-size:13px;font-weight:400;color:var(--text-muted);"></span></h2>
+                    <h2 style="font-size: 18px; font-weight: 700;">${Lang.t('nodes.title')} <span id="nodes-count" style="font-size:13px;font-weight:400;color:var(--text-dim);font-family:var(--font-mono);font-feature-settings:'tnum';"></span></h2>
                 </div>
-                <div id="nodes-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;">
-                    <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:13px;grid-column:1/-1;">
-                        <div style="font-size:32px;margin-bottom:8px;">⏳</div>
+                <div id="nodes-grid" class="machines-grid">
+                    <div style="grid-column:1/-1;text-align:center;padding:24px;color:var(--text-dim);font-size:13px;">
                         ${Lang.t('common.loading')}
                     </div>
                 </div>
