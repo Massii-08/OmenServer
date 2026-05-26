@@ -2240,5 +2240,104 @@ canvas {
 .bento-overview .stat-bar { display: none !important; }
 .bento-overview .stat-machines-list { margin-top: var(--s-2); }
 
+/* ============================================================================
+   BENTO TECH v5 — Server view sidebar (PR 5)
+   Refactors the 220px legacy sidebar to a 240px Bento Tech sidebar.
+   All previous inline styles are removed from server_view.js — these
+   classes take over.
+   ============================================================================ */
+.sv-layout {
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+}
+.sv-sidebar {
+    width: 240px;
+    min-width: 240px;
+    background: var(--bg-elev-1);
+    border-right: 1px solid var(--border);
+    padding: var(--s-3) 0;
+    overflow-y: auto;
+}
+.sv-sidebar .sv-server-card {
+    padding: 0 var(--s-4) var(--s-4);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: var(--s-2);
+}
+.sv-sidebar .sv-server-name {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--text);
+}
+.sv-sidebar .sv-status-text {
+    font-size: 12px;
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum";
+    margin-top: 4px;
+}
+.sv-sidebar .sv-action-btns {
+    display: flex;
+    gap: 6px;
+    margin-top: var(--s-3);
+}
+.sv-sidebar .sv-action-btns .btn {
+    flex: 1;
+    justify-content: center;
+}
+
+/* Nav items (replace inline-styled <a> with .sv-tab class) */
+.sv-sidebar .sv-tab {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px var(--s-4);
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 500;
+    border-left: 3px solid transparent;
+    transition: var(--t-fast);
+    text-decoration: none;
+}
+.sv-sidebar .sv-tab:hover {
+    background: var(--bg-elev-2);
+    color: var(--text);
+}
+.sv-sidebar .sv-tab.active {
+    background: var(--bg-elev-2);
+    color: var(--text);
+    border-left-color: var(--accent);
+    font-weight: 600;
+}
+.sv-sidebar .sv-tab .sv-tab-icon {
+    font-size: 14px;
+    width: 16px;
+    display: inline-flex;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+/* Special tab variants */
+.sv-sidebar .sv-tab.share { color: var(--info); }
+.sv-sidebar .sv-tab.share:hover { background: rgba(96, 165, 250, 0.08); }
+.sv-sidebar .sv-tab.danger { color: var(--danger); }
+.sv-sidebar .sv-tab.danger:hover { background: rgba(248, 113, 113, 0.08); }
+
+/* Divider between tab groups */
+.sv-sidebar .sv-nav-divider {
+    border-top: 1px solid var(--border);
+    margin: var(--s-2) var(--s-4);
+    height: 0;
+}
+
+/* Main content area */
+.sv-main {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--s-6);
+    background: var(--bg);
+}
+
 
 
