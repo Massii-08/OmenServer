@@ -2985,20 +2985,12 @@ table tr:hover td {
     box-shadow: 0 8px 32px rgba(0,0,0,0.6) !important;  /* deeper for modal */
 }
 
-/* ===== Numbers everywhere — encourage mono ===== */
-.metric, .number-value, .count, .pct, .price {
-    font-family: var(--font-mono) !important;
-    font-feature-settings: "tnum" !important;
-}
-
-/* ===== Misc legacy → Bento adjustments ===== */
-.gradient-text, .gradient-bg {
-    background: none !important;
-    background-image: none !important;
-    color: var(--accent) !important;
-    -webkit-background-clip: unset !important;
-    -webkit-text-fill-color: unset !important;
-}
+/* PR20 cleanup : 2 orphan rules removed
+   - `.metric, .number-value, .count, .pct, .price` : 0 usage (les chiffres
+     passent maintenant via les composants .bento-overview .stat-card .v,
+     .machine-card .m-stat .v, etc. qui ont déjà font-mono + tnum)
+   - `.gradient-text, .gradient-bg` : 0 usage (le legacy gradient header
+     text a été retiré pendant la refonte) */
 
 /* ============================================================================
    BENTO TECH v5 — Bots module Bento cards (PR 8)
@@ -3215,9 +3207,10 @@ select:-webkit-autofill {
     display: block;
 }
 
-/* User avatars (in Utenti list — legacy purple gradient → Bento accent-dim) */
-.users-list .user-avatar,
-.user-list-item .user-avatar,
+/* User avatars (legacy purple gradient → Bento accent-dim).
+   PR20: `.users-list .user-avatar` et `.user-list-item .user-avatar`
+   étaient orphan, retirés. Le wildcard reste pour capturer
+   sharing-user-avatar et autres variantes dynamiques. */
 [class*="user-avatar"]:not(.sidebar-footer .user-avatar) {
     background: var(--accent-dim) !important;
     background-image: none !important;
@@ -3228,11 +3221,9 @@ select:-webkit-autofill {
     transition: background var(--t-base), color var(--t-base);
 }
 
-/* Invite code styling */
-.invite-code, [class*="invite-code"] {
-    font-family: var(--font-mono) !important;
-    font-feature-settings: "tnum";
-}
+/* PR20 cleanup : `.invite-code` rule removed (0 usage — invite codes
+   maintenant stylés inline avec font-family:var(--font-mono) là où
+   ils apparaissent). */
 
 /* Danger icon buttons (the red X to revoke / delete) — toned down to Bento */
 .btn-icon.btn-danger {
