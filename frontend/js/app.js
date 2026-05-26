@@ -262,7 +262,8 @@ const App = {
         switch (view) {
             case 'hub':
                 this.renderHub(content);
-                await Modules.loadHub();
+                // PR24 — removed Modules.loadHub() (the big emoji module cards)
+                // Hub is now stats + machines + game servers per MASTER mockup
                 break;
 
             case 'game_server':
@@ -366,18 +367,30 @@ const App = {
                 </div>
             </div>
 
-            <!-- Modules -->
-            <div class="page-header">
-                <h2 style="font-size: 18px; font-weight: 700;">${t('modules.title')}</h2>
+            <!-- Network of machines (PR24 — was modules-grid emoji cards before) -->
+            <div class="page-header" style="margin-top:24px;margin-bottom:12px;">
+                <h2 style="font-size: 18px; font-weight: 700;">${t('nodes.title')} <span id="nodes-count" style="font-size:13px;font-weight:400;color:var(--text-dim);font-family:var(--font-mono);font-feature-settings:'tnum';"></span></h2>
             </div>
-            <div id="modules-grid" class="modules-grid"></div>
+            <div id="nodes-grid" class="machines-grid">
+                <div style="grid-column:1/-1;text-align:center;padding:24px;color:var(--text-dim);font-size:13px;">
+                    ${t('common.loading')}
+                </div>
+            </div>
+
+            <!-- Game servers row-list (PR24 — Bento compact rows like MASTER §5) -->
+            <div class="page-header" style="margin-top:28px;margin-bottom:12px;">
+                <h2 style="font-size: 18px; font-weight: 700;">${t('gs.title')}</h2>
+            </div>
+            <div id="hub-servers-list" class="row-list">
+                <div style="text-align:center;padding:16px;color:var(--text-dim);font-size:13px;">${t('common.loading')}</div>
+            </div>
 
             <!-- Planification globale -->
             <div class="page-header" style="margin-top:28px;">
                 <h2 style="font-size: 18px; font-weight: 700;">${t('scheduler.title')}</h2>
                 <p class="page-subtitle">${t('scheduler.subtitle')}</p>
             </div>
-            <div id="hub-scheduler" style="background:var(--bg-elev-1);border-radius:12px;padding:20px;border:1px solid var(--border);">
+            <div id="hub-scheduler" style="background:var(--bg-elev-1);border-radius:var(--r-lg);padding:20px;border:1px solid var(--border);">
                 <div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px;">${t('scheduler.loading')}</div>
             </div>
         `;
@@ -385,8 +398,73 @@ const App = {
         // PR 4 — Diagnostic strip (fire and forget — populates async)
         this._loadDiagnostic();
 
+        // PR24 — Network of machines (reuses Monitoring.renderNodes which writes to #nodes-grid)
+        this._loadHubNodes();
+
+        // PR24 — Game servers compact list
+        this._loadHubServers();
+
         // Charger les tâches planifiées de tous les serveurs
         this._loadGlobalSchedule();
+    },
+
+    /**
+     * PR24 — Charge les machines (Omen + agents) dans le Dashboard.
+     * Réutilise Monitoring.renderNodes qui écrit dans #nodes-grid.
+     */
+    async _loadHubNodes() {
+        if (typeof Monitoring === 'undefined') return;
+        try {
+            if (!Monitoring._serverHostname) await Monitoring._fetchHostname();
+            if (!Monitoring._lastServerData) {
+                const r = await Auth.apiCall('/api/monitoring/stats');
+                if (r && r.ok) Monitoring._lastServerData = await r.json();
+            }
+            const r = await Auth.apiCall('/api/nodes/');
+            const nodes = (r && r.ok) ? await r.json() : [];
+            Monitoring.renderNodes(Array.isArray(nodes) ? nodes : []);
+        } catch (e) {
+            console.error('[Hub] _loadHubNodes failed:', e);
+        }
+    },
+
+    /**
+     * PR24 — Charge les serveurs de jeux en .row-list compacte (mockup MASTER §5).
+     */
+    async _loadHubServers() {
+        const listEl = document.getElementById('hub-servers-list');
+        if (!listEl) return;
+        try {
+            const r = await Auth.apiCall('/api/servers');
+            const servers = (r && r.ok) ? await r.json() : [];
+            if (!servers.length) {
+                listEl.innerHTML = `<div style="text-align:center;padding:16px;color:var(--text-dim);font-size:13px;">${Lang.t('gs.no_servers') || 'Aucun serveur'}</div>`;
+                return;
+            }
+            // Type → 3-letter ticker for the .game-ico (text, not emoji)
+            const ticker = (type) => {
+                const m = { minecraft: 'MC', ark: 'ARK', cs2: 'CS2', csgo: 'CS', valheim: 'VLH', rust: 'RST', factorio: 'FAC', terraria: 'TER', palworld: 'PAL', satisfactory: 'SAT' };
+                return m[type] || (type || 'GAME').slice(0, 3).toUpperCase();
+            };
+            listEl.innerHTML = servers.map(s => {
+                const isRunning = (s.status || '').toLowerCase() === 'running';
+                const badgeClass = isRunning ? 'badge online' : 'badge';
+                const statusText = isRunning ? Lang.t('gs.status_running') || 'online' : Lang.t('gs.status_stopped') || 'offline';
+                return `
+                    <div class="row" onclick="App.navigateTo('server_view', ${s.id})" style="cursor:pointer;">
+                        <div class="row-ico game-ico" style="background:var(--bg-elev-3);color:var(--text);font-family:var(--font-mono);font-size:11px;font-weight:600;letter-spacing:0.05em;width:42px;height:42px;display:flex;align-items:center;justify-content:center;border-radius:var(--r-sm);border:1px solid var(--border);">${ticker(s.game_type || s.type)}</div>
+                        <div class="row-info" style="flex:1;min-width:0;">
+                            <div class="name" style="font-weight:600;font-size:14px;">${s.name}</div>
+                            <div class="meta" style="font-size:12px;color:var(--text-dim);">${s.game_type || s.type || ''} ${s.version ? '· ' + s.version : ''}</div>
+                        </div>
+                        <span class="${badgeClass}">${statusText}</span>
+                    </div>
+                `;
+            }).join('');
+        } catch (e) {
+            console.error('[Hub] _loadHubServers failed:', e);
+            listEl.innerHTML = `<div style="text-align:center;padding:16px;color:var(--danger);font-size:13px;">${Lang.t('common.error')}</div>`;
+        }
     },
 
     /**
