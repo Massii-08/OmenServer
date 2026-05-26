@@ -148,10 +148,168 @@ body {
     -webkit-font-smoothing: antialiased;
 }
 
-/* === LAYOUT PRINCIPAL === */
+/* === LAYOUT PRINCIPAL (PR26 — topbar nav, plus de sidebar) === */
 .app-layout {
     display: flex;
+    flex-direction: column;
     min-height: 100vh;
+}
+
+/* === TOP BAR (Bento Tech v5 — MASTER §6 mockup) === */
+.topbar {
+    display: flex;
+    align-items: center;
+    gap: var(--s-6);
+    padding: var(--s-3) var(--s-6);
+    background: var(--bg-elev-1);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+.topbar .brand {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    font-size: 15px;
+    color: var(--text);
+}
+.topbar .brand .logo {
+    width: 22px;
+    height: 22px;
+    background: var(--accent);
+    color: #0A0A0A;
+    border-radius: var(--r-sm);
+    display: grid;
+    place-items: center;
+    font-weight: 700;
+    font-size: 12px;
+    transition: background var(--t-base, 160ms ease);
+}
+.nav-tabs {
+    display: flex;
+    gap: var(--s-1);
+    flex: 1;
+    overflow-x: auto;
+}
+.nav-tab {
+    padding: 6px 10px;
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 500;
+    border-radius: var(--r-sm);
+    transition: all 120ms ease;
+    white-space: nowrap;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+}
+.nav-tab:hover {
+    background: var(--bg-elev-2);
+    color: var(--text);
+}
+.nav-tab.active {
+    background: var(--bg-elev-2);
+    color: var(--text);
+}
+.nav-tab.active::before {
+    content: "";
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-right: 6px;
+    vertical-align: middle;
+}
+
+/* Topbar right cluster */
+.topbar-right {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+}
+
+/* Language switcher segmented pill */
+.lang-switcher {
+    display: flex;
+    padding: 3px;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+}
+.lang-switcher .lang {
+    padding: 3px 9px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+    border-radius: var(--r-pill);
+    cursor: pointer;
+    transition: all 120ms ease;
+    background: none;
+    border: none;
+    font-family: var(--font-mono);
+}
+.lang-switcher .lang:hover { color: var(--text); }
+.lang-switcher .lang.active {
+    background: var(--bg-elev-3);
+    color: var(--text);
+}
+
+/* User pill (topbar right) */
+.user-pill {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: 4px 10px 4px 4px;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+}
+.user-pill .user-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--accent-dim);
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 12px;
+}
+.user-pill .user-meta {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.15;
+}
+.user-pill .user-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+}
+.user-pill .user-role {
+    font-size: 10px;
+    color: var(--text-dim);
+}
+
+/* Topbar accent switcher (inherits sidebar styling baseline) */
+.topbar .accent-switcher-mini {
+    display: flex;
+    gap: 6px;
+    padding: 4px 8px;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+}
+.topbar .accent-switcher-mini .accent-dot {
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
 }
 
 /* === SIDEBAR === */
@@ -281,9 +439,9 @@ body {
 /* === CONTENU PRINCIPAL === */
 .main-content {
     flex: 1;
-    margin-left: var(--sidebar-width);
+    /* PR26 : margin-left:var(--sidebar-width) removed — topbar layout vertical */
     padding: 28px 32px;
-    min-height: 100vh;
+    min-height: calc(100vh - 56px); /* topbar height ~56px */
 }
 
 /* Mode plein écran pour server_view (sidebar serveur colle au bord) */
