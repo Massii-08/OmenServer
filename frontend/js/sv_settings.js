@@ -125,7 +125,7 @@ const SvSettings = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.set_saved'); }
             this._props = {...this._props, ...props};
         } else {
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '❌ Erreur'; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = '❌ Erreur'; }
         }
     },
 
@@ -252,23 +252,23 @@ const SvSettings = {
         </div>
 
         <!-- Zone dangereuse -->
-        <div style="margin-top:32px;padding:20px;border-radius:10px;border:1px solid rgba(239,68,68,0.3);background:rgba(239,68,68,0.05);">
-            <h3 style="margin:0 0 8px;font-size:15px;color:#ef4444;">${Lang.t('sv.cfg.danger_zone')}</h3>
+        <div style="margin-top:32px;padding:20px;border-radius:10px;border:1px solid rgba(248,113,113,0.3);background:rgba(248,113,113,0.05);">
+            <h3 style="margin:0 0 8px;font-size:15px;color:var(--danger);">${Lang.t('sv.cfg.danger_zone')}</h3>
             <p style="color:var(--text-muted);font-size:12px;margin-bottom:16px;">
                 ${Lang.t('sv.cfg.danger_desc')}
             </p>
             <div id="sv-del-zone">
-                <button class="btn" style="background:#ef4444;color:white;" onclick="SvSettings._showDeleteConfirm()">
+                <button class="btn" style="background:var(--danger);color:white;" onclick="SvSettings._showDeleteConfirm()">
                     🗑️ Supprimer ce serveur
                 </button>
             </div>
-            <div id="sv-del-confirm" style="display:none;margin-top:12px;padding:14px;background:rgba(239,68,68,0.1);border-radius:8px;border:1px solid #ef4444;">
-                <p style="font-size:13px;color:#ef4444;margin-bottom:10px;">
+            <div id="sv-del-confirm" style="display:none;margin-top:12px;padding:14px;background:rgba(248,113,113,0.1);border-radius:8px;border:1px solid var(--danger);">
+                <p style="font-size:13px;color:var(--danger);margin-bottom:10px;">
                     Tape <strong>${s.name}</strong> pour confirmer la suppression :
                 </p>
                 <div style="display:flex;gap:8px;align-items:center;">
-                    <input id="sv-del-input" class="form-input" placeholder="${s.name}" style="flex:1;border-color:#ef4444;" />
-                    <button class="btn" style="background:#ef4444;color:white;" onclick="SvSettings._confirmDelete('${s.name.replace(/'/g, "\\'")}')">
+                    <input id="sv-del-input" class="form-input" placeholder="${s.name}" style="flex:1;border-color:var(--danger);" />
+                    <button class="btn" style="background:var(--danger);color:white;" onclick="SvSettings._confirmDelete('${s.name.replace(/'/g, "\\'")}')">
                         ${Lang.t('sv.cfg.delete_btn')}
                     </button>
                     <button class="btn btn-secondary" onclick="document.getElementById('sv-del-confirm').style.display='none'">
@@ -292,7 +292,7 @@ const SvSettings = {
         if (r && r.ok) {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.cfg.res_applied'); }
         } else {
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '❌ Erreur'; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = '❌ Erreur'; }
         }
     },
 
@@ -367,7 +367,7 @@ const SvSettings = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${data.message} ${data.note}`; }
             this._serverData.jvm_flags = flags;
         } else {
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '❌ Erreur'; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = '❌ Erreur'; }
         }
     },
 
@@ -384,7 +384,7 @@ const SvSettings = {
         const msg = document.getElementById('sv-del-msg');
 
         if (input !== serverName) {
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = Lang.t('sv.cfg.delete_name_mismatch'); }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = Lang.t('sv.cfg.delete_name_mismatch'); }
             return;
         }
 
@@ -396,7 +396,7 @@ const SvSettings = {
             App.navigateTo('game_server');
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
     },
 };

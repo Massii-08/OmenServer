@@ -56,11 +56,11 @@ const MediaModule = {
         const card = document.getElementById('media-status-card');
         if (!card) return;
         card.innerHTML = `
-            <div class="card" style="border:1px solid #ef4444;">
+            <div class="card" style="border:1px solid var(--danger);">
                 <div style="display:flex;align-items:center;gap:12px;">
                     <span style="font-size:32px;">⚠️</span>
                     <div>
-                        <div style="font-weight:700;font-size:15px;color:#ef4444;">${Lang.t('media.docker_unavailable')}</div>
+                        <div style="font-weight:700;font-size:15px;color:var(--danger);">${Lang.t('media.docker_unavailable')}</div>
                         <div style="font-size:13px;color:var(--text-muted);margin-top:4px;">
                             ${Lang.t('media.docker_check')}
                         </div>
@@ -91,15 +91,15 @@ const MediaModule = {
         }
 
         const isRunning = s.status === 'running';
-        const statusColor = isRunning ? '#22c55e' : '#6b7280';
+        const statusColor = isRunning ? 'var(--accent)' : '#6b7280';
         const statusLabel = isRunning ? Lang.t('media.running') : Lang.t('media.stopped');
-        const statusBg = isRunning ? 'rgba(34,197,94,0.08)' : 'rgba(255,255,255,0.04)';
+        const statusBg = isRunning ? 'rgba(74,222,128,0.08)' : 'rgba(255,255,255,0.04)';
 
         card.innerHTML = `
             <div class="card">
                 <div style="display:flex;align-items:center;justify-content:space-between;">
                     <div style="display:flex;align-items:center;gap:16px;">
-                        <div style="width:56px;height:56px;border-radius:12px;background:linear-gradient(135deg,#8b5cf6,#6366f1);display:flex;align-items:center;justify-content:center;font-size:28px;">📺</div>
+                        <div style="width:56px;height:56px;border-radius:12px;background:linear-gradient(135deg,var(--violet),#6366f1);display:flex;align-items:center;justify-content:center;font-size:28px;">📺</div>
                         <div>
                             <div style="font-size:18px;font-weight:700;">Jellyfin</div>
                             <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${Lang.t('media.media_server')}</div>
@@ -152,7 +152,7 @@ const MediaModule = {
                     <button class="btn btn-primary" onclick="MediaModule.start()">${Lang.t('media.start')}</button>
                 `}
                 <button class="btn btn-secondary" onclick="MediaModule.showAddLibrary()">${Lang.t('media.add_library')}</button>
-                <button class="btn btn-secondary" style="color:#ef4444;" onclick="MediaModule.reset()">${Lang.t('media.reinstall')}</button>
+                <button class="btn btn-secondary" style="color:var(--danger);" onclick="MediaModule.reset()">${Lang.t('media.reinstall')}</button>
             </div>
             <div id="media-add-library-form" style="display:none;margin-top:12px;"></div>
         `;
@@ -231,7 +231,7 @@ const MediaModule = {
         const type = document.getElementById('lib-type')?.value || 'movies';
         const msg = document.getElementById('lib-msg');
 
-        if (!name) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = Lang.t('media.name_required'); } return; }
+        if (!name) { if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = Lang.t('media.name_required'); } return; }
 
         const r = await Auth.apiCall('/api/media/libraries', {
             method: 'POST',
@@ -243,7 +243,7 @@ const MediaModule = {
             await this._loadLibraries();
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
     },
 
@@ -262,7 +262,7 @@ const MediaModule = {
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
             if (btn) { btn.disabled = false; btn.textContent = Lang.t('media.install_btn'); }
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
     },
 

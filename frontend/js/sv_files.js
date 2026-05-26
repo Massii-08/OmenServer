@@ -51,7 +51,7 @@ const SvFiles = {
         el.innerHTML = `<div style="color:var(--text-muted)">⏳ ${Lang.t('common.loading')}</div>`;
 
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/files?path=${encodeURIComponent(this._currentPath)}`);
-        if (!r || !r.ok) { el.innerHTML = `<div style="color:#e74c3c">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`; return; }
         const data = await r.json();
         const files = data.files || [];
 
@@ -81,7 +81,7 @@ const SvFiles = {
             const safePath = fullPath.replace(/'/g, "\\'");
 
             if (f.is_dir) {
-                html += `<tr style="cursor:pointer;border-bottom:1px solid var(--border);" onmouseover="this.style.background='rgba(59,130,246,0.05)'" onmouseout="this.style.background='transparent'" onclick="SvFiles._navigate('${safePath}')">
+                html += `<tr style="cursor:pointer;border-bottom:1px solid var(--border);" onmouseover="this.style.background='rgba(96,165,250,0.05)'" onmouseout="this.style.background='transparent'" onclick="SvFiles._navigate('${safePath}')">
                     <td style="padding:8px;">${icon} <strong>${f.name}</strong></td>
                     <td style="padding:8px;color:var(--text-muted);">${size}</td>
                     <td style="padding:8px;color:var(--text-muted);font-size:11px;">${f.modified}</td>
@@ -92,7 +92,7 @@ const SvFiles = {
                 </tr>`;
             } else {
                 const editable = this._isEditable(f.name);
-                html += `<tr style="cursor:pointer;border-bottom:1px solid var(--border);" onmouseover="this.style.background='rgba(59,130,246,0.05)'" onmouseout="this.style.background='transparent'" onclick="${editable ? `SvFiles._openFile('${safePath}')` : ''}">
+                html += `<tr style="cursor:pointer;border-bottom:1px solid var(--border);" onmouseover="this.style.background='rgba(96,165,250,0.05)'" onmouseout="this.style.background='transparent'" onclick="${editable ? `SvFiles._openFile('${safePath}')` : ''}">
                     <td style="padding:8px;">${icon} ${f.name}</td>
                     <td style="padding:8px;color:var(--text-muted);">${size}</td>
                     <td style="padding:8px;color:var(--text-muted);font-size:11px;">${f.modified}</td>
@@ -129,7 +129,7 @@ const SvFiles = {
 
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/files/content?path=${encodeURIComponent(path)}`);
         if (!r || !r.ok) {
-            el.innerHTML = `<div style="color:#e74c3c">${Lang.t('sv.files.cant_read')}</div><br><button class="btn btn-secondary btn-sm" onclick="SvFiles._navigate(SvFiles._currentPath)">${Lang.t('sv.files.back')}</button>`;
+            el.innerHTML = `<div style="color:var(--danger)">${Lang.t('sv.files.cant_read')}</div><br><button class="btn btn-secondary btn-sm" onclick="SvFiles._navigate(SvFiles._currentPath)">${Lang.t('sv.files.back')}</button>`;
             return;
         }
         const data = await r.json();
@@ -200,7 +200,7 @@ const SvFiles = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.files.saved'); }
             setTimeout(() => { if (msg) msg.textContent = ''; }, 2000);
         } else {
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
         }
     },
 
@@ -287,7 +287,7 @@ const SvFiles = {
         if (inp) inp.value = '';
 
         if (prog) {
-            const color = fail === 0 ? 'var(--accent)' : '#e74c3c';
+            const color = fail === 0 ? 'var(--accent)' : 'var(--danger)';
             prog.innerHTML = `<div style="padding:8px 12px;background:var(--bg-elev-1);border-radius:6px;font-size:12px;color:${color};">
                 ${fail === 0 ? '✅' : '⚠️'} ${success} ${Lang.t('sv.files.uploaded')}${fail > 0 ? `, ${fail} ${Lang.t('sv.files.upload_errors')}` : ''}
             </div>`;

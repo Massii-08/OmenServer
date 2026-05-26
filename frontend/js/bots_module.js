@@ -218,7 +218,7 @@ const BotsModule = {
         const desc = document.getElementById('bot-desc')?.value?.trim() || '';
         const msg = document.getElementById('bot-create-msg');
 
-        if (!name) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = Lang.t('bots.name_required'); } return; }
+        if (!name) { if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = Lang.t('bots.name_required'); } return; }
 
         const r = await Auth.apiCall('/api/bots', {
             method: 'POST',
@@ -229,7 +229,7 @@ const BotsModule = {
             document.getElementById('bot-create-form').style.display = 'none';
             await this.loadBots();
         } else {
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
         }
     },
 
@@ -400,11 +400,11 @@ const BotsModule = {
                                     </div>
                                 </div>
                                 <div style="display:flex;gap:6px;align-items:center;">
-                                    <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.05)'};color:${t.enabled ? 'var(--accent)' : 'var(--text-muted)'};">
+                                    <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.05)'};color:${t.enabled ? 'var(--accent)' : 'var(--text-muted)'};">
                                         ${t.enabled ? '● ' + Lang.t('scheduler.active') : '○ ' + Lang.t('scheduler.inactive')}
                                     </span>
                                     <button class="btn btn-sm btn-secondary" onclick="BotsModule.toggleBotTask(${t.id}, ${botId})" title="${t.enabled ? 'Pause' : 'Resume'}">${t.enabled ? '⏸' : '▶️'}</button>
-                                    <button class="btn btn-sm btn-secondary" onclick="BotsModule.deleteBotTask(${t.id}, ${botId})" style="color:#ef4444;" title="Delete">🗑️</button>
+                                    <button class="btn btn-sm btn-secondary" onclick="BotsModule.deleteBotTask(${t.id}, ${botId})" style="color:var(--danger);" title="Delete">🗑️</button>
                                 </div>
                             </div>`;
                         }).join('')}
@@ -451,11 +451,11 @@ const BotsModule = {
         });
 
         if (r && r.ok) {
-            if (msg) { msg.style.color = '#22c55e'; msg.textContent = Lang.t('scheduler.created'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('scheduler.created'); }
             setTimeout(() => this.showScheduler(botId), 500);
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
     },
 
@@ -526,7 +526,7 @@ const BotsModule = {
         if (r && r.ok) {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('bots.saved'); }
         } else {
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
         }
     },
 
@@ -1040,7 +1040,7 @@ const BotsModule = {
                         </button>
                     ` : ''}
                     ${data.status === 'stopped' && this._yieldState.processedCount > 0 ? `
-                        <button class="yield-launch-btn" style="flex:1;margin-top:0;background:linear-gradient(135deg,#f59e0b,#ef4444);" onclick="BotsModule._resumeYieldBot()">
+                        <button class="yield-launch-btn" style="flex:1;margin-top:0;background:linear-gradient(135deg,var(--warning),var(--danger));" onclick="BotsModule._resumeYieldBot()">
                             ▶ ${Lang.t('yield.resume')} (${Lang.t('yield.from_bond')} ${this._yieldState.processedCount + 1})
                         </button>
                     ` : ''}

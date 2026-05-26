@@ -73,7 +73,7 @@ const Auth = {
         banner.id = 'network-error-banner';
         banner.style.cssText = `
             position: fixed; top: 0; left: 0; right: 0; z-index: 10000;
-            background: #e74c3c; color: white; padding: 10px 20px;
+            background: var(--danger); color: white; padding: 10px 20px;
             text-align: center; font-size: 13px; font-weight: 600;
             animation: fadeIn 0.3s ease;
         `;

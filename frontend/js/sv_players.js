@@ -49,7 +49,7 @@ const SvPlayers = {
         
         const endpoint = this._currentSub === 'ops' ? 'ops' : this._currentSub === 'whitelist' ? 'whitelist' : 'banned';
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/players/${endpoint}`);
-        if (!r || !r.ok) { el.innerHTML = `<div style="color:#e74c3c">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`; return; }
         
         const data = await r.json();
         const players = data.players || [];
@@ -126,7 +126,7 @@ const SvPlayers = {
             this._load();
         } else {
             const err = r ? await r.json() : {};
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
     },
 
