@@ -1258,7 +1258,7 @@ const SharingModal = {
  overlay.id = 'sharing-overlay';
  overlay.className = 'modal-overlay';
  overlay.innerHTML = `
- <div class="modal sharing-modal"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;"><h3 style="margin:0;">${Lang.t('sharing.title')}</h3><button class="btn btn-secondary btn-sm" onclick="SharingModal.close()" style="padding:4px 10px;"></button></div><div class="sharing-search-wrap"><input id="sharing-search-input" class="form-input"
+ <div class="modal sharing-modal"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;"><h3 style="margin:0;">${Lang.t('sharing.title')}</h3><button class="btn btn-secondary btn-sm" onclick="SharingModal.close()" style="padding:4px 10px;">${Lang.t('common.close')}</button></div><div class="sharing-search-wrap"><input id="sharing-search-input" class="form-input"
  placeholder="${Lang.t('sharing.search_placeholder')}"
  oninput="SharingModal._onSearch(this.value)"
  autocomplete="off" /></div><div id="sharing-search-results"></div><div id="sharing-grant-form" style="display:none;background:var(--bg-elev-3);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px;"><div style="display:flex;align-items:center;justify-content:space-between;"><div class="sharing-user-info"><div class="sharing-user-avatar" id="sharing-grant-avatar"></div><span id="sharing-grant-username" style="font-weight:600;font-size:13px;"></span></div><div style="display:flex;align-items:center;gap:8px;"><select id="sharing-grant-level" class="sharing-access-select">

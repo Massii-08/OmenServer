@@ -208,6 +208,7 @@ const Lang = {
 
             // Partage de ressources
             'sharing.title': 'Partager',
+            'sharing.share_btn': 'Partager',
             'sharing.search_placeholder': 'Rechercher un utilisateur...',
             'sharing.access_level': "Niveau d'accès",
             'sharing.view_only': 'Voir les infos',
@@ -673,6 +674,7 @@ const Lang = {
             'sv.files.loading_file': '⏳ Chargement du fichier...',
             'sv.files.cant_read': 'Impossible de lire ce fichier (binaire ou trop volumineux)',
             'sv.files.delete_confirm': 'Supprimer',
+            'sv.files.rename': 'Renommer',
             'sv.files.rename_prompt': 'Nouveau nom :',
             'sv.files.new_folder_prompt': 'Nom du nouveau dossier :',
             'sv.files.new_file_prompt': 'Nom du nouveau fichier :',
@@ -1136,6 +1138,7 @@ const Lang = {
 
             // Sharing
             'sharing.title': 'Share',
+            'sharing.share_btn': 'Share',
             'sharing.search_placeholder': 'Search for a user...',
             'sharing.access_level': 'Access level',
             'sharing.view_only': 'View info',
@@ -1601,6 +1604,7 @@ const Lang = {
             'sv.files.loading_file': '⏳ Loading file...',
             'sv.files.cant_read': 'Cannot read this file (binary or too large)',
             'sv.files.delete_confirm': 'Delete',
+            'sv.files.rename': 'Rename',
             'sv.files.rename_prompt': 'New name:',
             'sv.files.new_folder_prompt': 'New folder name:',
             'sv.files.new_file_prompt': 'New file name:',
@@ -2064,6 +2068,7 @@ const Lang = {
 
             // Condivisione
             'sharing.title': 'Condividi',
+            'sharing.share_btn': 'Condividi',
             'sharing.search_placeholder': 'Cerca un utente...',
             'sharing.access_level': 'Livello di accesso',
             'sharing.view_only': 'Solo visualizzazione',
@@ -2529,6 +2534,7 @@ const Lang = {
             'sv.files.loading_file': '⏳ Caricamento file...',
             'sv.files.cant_read': 'Impossibile leggere questo file (binario o troppo grande)',
             'sv.files.delete_confirm': 'Elimina',
+            'sv.files.rename': 'Rinomina',
             'sv.files.rename_prompt': 'Nuovo nome:',
             'sv.files.new_folder_prompt': 'Nome della nuova cartella:',
             'sv.files.new_file_prompt': 'Nome del nuovo file:',

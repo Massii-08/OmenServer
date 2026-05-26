@@ -370,7 +370,7 @@ const GameServer = {
  }
  // Share button for owner only
  if (isOwner) {
- btns += `<button class="btn btn-icon btn-secondary" onclick="SharingModal.open(${server.id},'server')" title="${Lang.t('sharing.title')}">${Lang.t('sharing.share_btn') || 'Share'}</button>`;
+ btns += `<button class="btn btn-icon btn-secondary" onclick="SharingModal.open(${server.id},'server')" title="${Lang.t('sharing.title')}">${Lang.t('sharing.share_btn')}</button>`;
  }
  return btns;
  })()}

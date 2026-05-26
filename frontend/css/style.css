@@ -1853,28 +1853,18 @@ canvas {
 
 .sharing-search-wrap input {
     width: 100%;
-    padding: 10px 14px 10px 36px;
-    background: var(--bg-primary);
-    border: 1px solid var(--border-color);
-    border-radius: var(--border-radius-sm);
-    color: var(--text-primary);
+    padding: 10px 14px;
+    background: var(--bg-elev-3);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    color: var(--text);
     font-size: 13px;
-    transition: border-color var(--transition-fast);
+    transition: border-color .15s ease;
 }
 
 .sharing-search-wrap input:focus {
     outline: none;
-    border-color: var(--accent-blue);
-}
-
-.sharing-search-wrap::before {
-    content: '🔍';
-    position: absolute;
-    left: 10px;
-    top: 50%;
-    transform: translateY(-50%);
-    font-size: 14px;
-    pointer-events: none;
+    border-color: var(--accent);
 }
 
 .sharing-results {

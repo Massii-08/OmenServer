@@ -86,8 +86,8 @@ const SvFiles = {
                     <td style="padding:8px;color:var(--text-muted);">${size}</td>
                     <td style="padding:8px;color:var(--text-muted);font-size:11px;">${f.modified}</td>
                     <td style="padding:8px;text-align:right;">
-                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title=""></button>
-                        <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title=""></button>
+                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title="${Lang.t('sv.files.rename')}">${Lang.t('sv.files.rename')}</button>
+                        <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title="${Lang.t('common.delete')}">${Lang.t('common.delete')}</button>
                     </td>
                 </tr>`;
             } else {
@@ -97,8 +97,8 @@ const SvFiles = {
                     <td style="padding:8px;color:var(--text-muted);">${size}</td>
                     <td style="padding:8px;color:var(--text-muted);font-size:11px;">${f.modified}</td>
                     <td style="padding:8px;text-align:right;">
-                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title=""></button>
-                        <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title=""></button>
+                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title="${Lang.t('sv.files.rename')}">${Lang.t('sv.files.rename')}</button>
+                        <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title="${Lang.t('common.delete')}">${Lang.t('common.delete')}</button>
                     </td>
                 </tr>`;
             }
