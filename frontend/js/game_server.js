@@ -650,7 +650,7 @@ const GameServer = {
  listEl.innerHTML = tasks.map(task => {
  const typeLabel = task.task_type === 'backup' ? Lang.t('scheduler.backup') : Lang.t('scheduler.restart');
  const statusColor = task.enabled ? 'var(--accent)' : 'var(--text-muted)';
- const statusLabel = task.enabled ? '● Actif' : '○ Inactif';
+ const statusLabel = task.enabled ? ' Actif' : ' Inactif';
  const lastRun = task.last_run ? new Date(task.last_run).toLocaleString('fr-FR') : 'Jamais';
  const nextRun = task.next_run && task.enabled ? new Date(task.next_run).toLocaleString('fr-FR') : '—';
 
