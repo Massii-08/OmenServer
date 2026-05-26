@@ -289,7 +289,7 @@ const Lang = {
             'bots.delete_task_confirm': 'Supprimer cette tâche planifiée ?',
 
             // Yield Bot
-            'yield.title': '🏦 Bot Calcul Yield',
+            'yield.title': 'Bot Calcul Yield',
             'yield.subtitle': 'Calcul automatique du rendement des obligations',
             'yield.upload_hint': 'Déposer un fichier Excel (.xlsx) ou cliquer pour sélectionner',
             'yield.mode_recalculate': 'Recalcul seul (rapide, ~1 sec)',
@@ -327,7 +327,7 @@ const Lang = {
             'yield.threshold_above': 'Rouge si prix',
 
             // Bond Scanner
-            'scanner.title': '🔍 Bond Scanner',
+            'scanner.title': 'Bond Scanner',
             'scanner.subtitle': 'Ricerca automatica di obbligazioni sicure',
             'scanner.launch': 'Avvia scansione',
             'scanner.running': 'Scansione in corso...',
@@ -1217,7 +1217,7 @@ const Lang = {
             'bots.delete_task_confirm': 'Delete this scheduled task?',
 
             // Yield Bot
-            'yield.title': '🏦 Bond Yield Calculator',
+            'yield.title': 'Bond Yield Calculator',
             'yield.subtitle': 'Automatic bond yield calculation',
             'yield.upload_hint': 'Drop an Excel file (.xlsx) or click to select',
             'yield.mode_recalculate': 'Recalculate only (fast, ~1 sec)',
@@ -1255,7 +1255,7 @@ const Lang = {
             'yield.threshold_above': 'Red if price',
 
             // Bond Scanner
-            'scanner.title': '🔍 Bond Scanner',
+            'scanner.title': 'Bond Scanner',
             'scanner.subtitle': 'Automatic search for safe bonds',
             'scanner.launch': 'Start scan',
             'scanner.running': 'Scanning...',
@@ -2145,7 +2145,7 @@ const Lang = {
             'bots.delete_task_confirm': 'Eliminare questa attività pianificata?',
 
             // Yield Bot
-            'yield.title': '🏦 Calcolatore Rendimento',
+            'yield.title': 'Calcolatore Rendimento',
             'yield.subtitle': 'Calcolo automatico rendimento obbligazioni',
             'yield.upload_hint': 'Trascinare un file Excel (.xlsx) o cliccare per selezionare',
             'yield.mode_recalculate': 'Solo ricalcolo (veloce, ~1 sec)',
@@ -2183,7 +2183,7 @@ const Lang = {
             'yield.threshold_above': 'Rosso se prezzo',
 
             // Bond Scanner
-            'scanner.title': '🔍 Bond Scanner',
+            'scanner.title': 'Bond Scanner',
             'scanner.subtitle': 'Ricerca automatica di obbligazioni sicure',
             'scanner.launch': 'Avvia scansione',
             'scanner.running': 'Scansione in corso...',
