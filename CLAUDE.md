@@ -193,6 +193,20 @@ Le frontend est une **Single Page Application** sans framework :
 - Chaque module expose un objet global avec une méthode `render(container)` et optionnellement `unload()`
 - Le contenu est injecté via `container.innerHTML`
 
+### Chrome (depuis PR26)
+- **Top bar horizontale** (pas de sidebar verticale) — composant `.topbar` sticky en haut
+- `.brand` à gauche (logo carré accent vert "O" + texte mono "OMENSERVER")
+- `.nav-tabs` au centre (10 tabs : Dashboard / Serveurs / Bots / Fichiers / Média / Web / Réseau / Utilisateurs / Paramètres)
+- `.topbar-right` à droite : `.lang-switcher` (pill segmenté FR/EN/IT) + `.accent-switcher-mini` (4 dots couleurs) + `.user-pill` (avatar accent-dim + nom + rôle)
+- Tab active visible via `::before` dot accent vert
+- Badge `.tab-badge` sur nav-tab quand jobs background tournent (PR32 — `App._pollBgJobs`)
+
+### Background jobs poller (PR32)
+- `App._activeJobs = {}` + `App._bgJobsInterval` poll `/api/bots/yield|scanner/active` toutes les 5s
+- Cross-page awareness : tu lances un job Yield → tu navigues sur Dashboard → le badge `[1]` reste visible sur le tab Bot
+- Toast notif quand un job transition `running → completed`
+- Backend continue toujours via `subprocess.Popen` détaché — c'était purement perceptuel avant PR32
+
 ### Design System (style.css) — Bento Tech v5
 - **Voir section dédiée** plus bas (`## 🎨 Design System v5 — Bento Tech`) pour les tokens, composants Bento, règles d'usage et catalogue complet.
 - **Variables CSS** dans `:root` (`--bg`, `--bg-elev-1/2/3`, `--text`, `--accent`, `--danger`, etc.)
@@ -403,6 +417,12 @@ sudo systemctl status cloudflared
 8. **bcrypt direct** : `auth/utils.py` utilise `bcrypt` directement (pas passlib) avec troncature manuelle à 72 bytes
 9. **Cache Cloudflare/SW** : bumper `?v=XX` dans `index.html` + `CACHE_NAME` dans `sw.js` après chaque modif JS/CSS
 10. **Service Worker PWA** : `sw.js` met en cache les fichiers statiques — bumper `CACHE_NAME` à chaque version
+11. **Cache browser stubborn** : même avec `caches.delete + sw.unregister + Ctrl+Shift+R`, le disk cache peut servir une ancienne version `?v=N` du CSS si N a été utilisé avant. Workaround : bumper à un N franc (`?v=99` au lieu de `?v=83`) pour avoir une URL jamais cachée.
+12. **i18n fallback truthy trap** : `Lang.t('clé.x') || 'fallback'` ne marche PAS car `Lang.t()` retourne la clé elle-même (truthy) si non trouvée. Pattern correct : `(Lang.t('clé.x')||'').startsWith('clé.') ? 'fallback' : Lang.t('clé.x')`.
+13. **Backend emoji propagation** : les Toast notifications viennent souvent de messages backend (`return {"message": "...✅"}`). Stripper les emojis i18n côté frontend ne suffit pas — auditer aussi les `message`/`detail` strings dans `backend/**/*.py` (cf. PR22 — 63 ✅ retirés dans 24 fichiers backend).
+14. **Pattern reconstruction trap** : quand on strip un pattern (emoji, hex, etc.), grep aussi les contextes JS où il peut être RECONSTRUIT côté code (dicts, template literals, concatenations). PR16 a découvert `renderSettings()` avait un dict `{admin:'👑', ...}` qui reconstruisait l'emoji après PR14 RBAC strip — la sidebar montrait "Admin" mais Settings montrait "👑 Admin".
+15. **Regex emoji sweep + `\s*` pitfall** : `EMOJI_RE + \s*` mange les `\n` aussi (regex `\s` inclut newline). Si un commentaire `// ─── Section ───` (où `─` est U+2500 = dans le emoji range Unicode), le strip englobe le `\n` suivant et le commentaire mange la déclaration suivante. Toujours utiliser `[ \t]*` (horizontal whitespace seulement) si on veut préserver les newlines.
+16. **CSP `img-src` restrictif** : par défaut `backend/main.py` n'autorise que `'self' data: blob:` pour les images. Les vignettes CurseForge/Modrinth/Steam Workshop sont CDN externes — il faut les ajouter explicitement à la directive `img-src`. Symptôme : `<img>` avec `naturalSize: 0x0` + `display: none` via `onerror` (silent fail).
 
 ---
 
@@ -464,13 +484,20 @@ thèmes (midnight→blue, crimson→red, emerald/default→green) au boot via `A
 | `.row` + `.row-list` | Compact list items (servers, bots, etc.) |
 | `.events-feed` + `.ev` (+ `.typ.ok/.warn/.err`) | Activity log mono |
 | `.sparkline` | Aréa chart subtil sous big stat |
-| `.machines-grid` + `.machine-card` (+ `.brain`) | Network of machines (omen + agents) |
+| `.machines-grid` + `.machine-card` (+ `.brain`/`.arm`/`.offline`) | Network of machines (omen + agents) |
 | `.users-table` (+ `.u-head/.u-row/.u-name`) | Tableau utilisateurs |
 | `.tasks-table` | Scheduler global |
 | `.mod-grid` + `.mod-card` | Plugin/Mod/Workshop browser |
 | `.dropzone` | Upload zone |
-| `.accent-switcher-mini` + `.accent-dot` | Switcher 4 couleurs dans sidebar footer |
+| `.accent-switcher-mini` + `.accent-dot` | Switcher 4 couleurs (topbar right) |
 | `.sv-layout` + `.sv-sidebar` + `.sv-tab` (+ `.active/.share/.danger`) | Server view sidebar |
+| `.topbar` + `.brand .logo` + `.nav-tabs` + `.nav-tab` | Top bar navigation (PR26) |
+| `.lang-switcher` + `.lang` (`.active`) | Pill segmenté FR/EN/IT (PR26) |
+| `.user-pill` + `.user-avatar` + `.user-meta` | Avatar + nom + rôle (topbar right) |
+| `.tab-badge` | Badge count sur nav-tab (PR32 — background jobs) |
+| `.b-ticker` | Mono text ticker chip (replace emoji avatars, PR27) |
+| `.game-ico` | Idem pour game server cards (`MC`/`ARK`/`CS2`, PR24) |
+| `.login-brand` + `.login-logo` + `.login-brand-text` | Login page brand (matches topbar, PR33) |
 
 ### Règles d'usage
 
@@ -488,6 +515,15 @@ thèmes (midnight→blue, crimson→red, emerald/default→green) au boot via `A
 PR 1-6 ont ajouté les nouveaux tokens **sans supprimer** les anciens (`--bg-primary`, `--accent-green`, etc.).
 PR 7 a appliqué des **overrides `!important`** sur les classes legacy (`.sidebar`, `.module-card`,
 `.btn-primary`, `.status-badge`, etc.) pour les rendre Bento Tech sans toucher au HTML.
+
+**Évolution session 26 mai PM** :
+- PR12 : purge complète du système de thèmes legacy (`_themes`, `cycleTheme`, `toggleLightMode`, `_loadTheme`)
+- PR17/18 : sweep JS automatique de TOUS les `var(--legacy)` et hex hardcodés (~490 substitutions)
+- PR24 : `modules-grid` (6 module-cards emoji) **supprimé du Hub** — la nav passe par la topbar
+- PR26 : sidebar verticale **remplacée** par topbar horizontale
+- PR27-29-34 : sweep nucléaire emojis (lang.js + tous JS modules) — UI 100% text/iconography mono
+- PR31 (backend) : CSP `img-src` étendu pour autoriser `forgecdn.net` + `cdn.modrinth.com` + Steam Workshop + Spigot CDN (modpack thumbnails)
+- PR33 : login.html aligné sur topbar Bento (brand `O OMENSERVER` + pill FR/EN/IT)
 
 **Pour migrer un composant non-encore-refactoré** :
 1. Identifie son HTML render dans `frontend/js/*_module.js` ou `app.js`
@@ -513,6 +549,15 @@ PR 7 a appliqué des **overrides `!important`** sur les classes legacy (`.sideba
 
 | Date | Changement |
 |------|-----------|
+| 2026-05-26 PM | 🔇 PR 34 — Nuclear emoji sweep lang.js + tous JS + login.html (~720 bytes strippés) |
+| 2026-05-26 PM | 🚪 PR 33 — Login page full Bento (brand `O OMENSERVER` + pill FR/EN/IT, plus de gradient text) |
+| 2026-05-26 PM | 🔄 PR 32 — Background bots poller cross-page (`App._activeJobs` + `.tab-badge` + toast notif) |
+| 2026-05-26 PM | 🖼️ PR 31 (backend) — CSP `img-src` étendu (forgecdn/modrinth/Steam Workshop/Spigot CDNs) |
+| 2026-05-26 PM | 🔇 PR 27-30 — Strip emojis bots / modules / server pages (`YLD`/`SCN`/`CST` tickers, text-only buttons) |
+| 2026-05-26 PM | 🏗️ PR 26 — Sidebar → topbar nav horizontale (10 tabs, brand+pill+user-pill à droite) |
+| 2026-05-26 PM | 🏠 PR 24 — Real Bento Hub : kill big emoji module-cards, add `.machines-grid` + `.row-list` |
+| 2026-05-26 PM | 🧹 PR 17-23 — Sweeps JS automatiques (legacy vars, hex, gradients, glassmorphism, ✅ backend Toast msgs) |
+| 2026-05-26 PM | 🩺 PR 12-19 — Bento Tech polish autonome (themes legacy purge, RBAC emojis, login PR15, app.js sweep PR16) |
 | 2026-05-26 | 🎨 Refonte frontend Bento Tech v5 — 11 PRs (tokens, composants, Dashboard, Server view, modules) |
 | 2026-05-26 | 🎨 PR 11 — Polish autofill / form-input / avatars / danger icons |
 | 2026-05-26 | 🎨 PR 10 — Game server list `.server-item` overrides Bento |
