@@ -235,7 +235,7 @@ const App = {
             content.innerHTML = `
                 <div class="text-center" style="padding: 60px; color: var(--text-muted);">
                     <div style="font-size: 48px; margin-bottom: 16px;">🔒</div>
-                    <p style="font-size:16px;font-weight:600;color:var(--text-primary);">${Lang.t('access.denied')}</p>
+                    <p style="font-size:16px;font-weight:600;color:var(--text);">${Lang.t('access.denied')}</p>
                     <p style="margin-top:8px;">${Lang.t('access.denied_msg')}</p>
                     <button class="btn btn-secondary mt-4" onclick="App.navigateTo('hub')">${Lang.t('access.back')}</button>
                 </div>
@@ -250,7 +250,7 @@ const App = {
                 content.innerHTML = `
                     <div class="text-center" style="padding: 60px; color: var(--text-muted);">
                         <div style="font-size: 48px; margin-bottom: 16px;">🔒</div>
-                        <p style="font-size:16px;font-weight:600;color:var(--text-primary);">${Lang.t('access.denied')}</p>
+                        <p style="font-size:16px;font-weight:600;color:var(--text);">${Lang.t('access.denied')}</p>
                         <p style="margin-top:8px;">${Lang.t('access.denied_msg')}</p>
                         <button class="btn btn-secondary mt-4" onclick="App.navigateTo('hub')">${Lang.t('access.back')}</button>
                     </div>
@@ -377,7 +377,7 @@ const App = {
                 <h2 style="font-size: 18px; font-weight: 700;">${t('scheduler.title')}</h2>
                 <p class="page-subtitle">${t('scheduler.subtitle')}</p>
             </div>
-            <div id="hub-scheduler" style="background:var(--bg-secondary);border-radius:12px;padding:20px;border:1px solid var(--border-color);">
+            <div id="hub-scheduler" style="background:var(--bg-elev-1);border-radius:12px;padding:20px;border:1px solid var(--border);">
                 <div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px;">${t('scheduler.loading')}</div>
             </div>
         `;
@@ -477,7 +477,7 @@ const App = {
         const targetOptions = serverOptions + botOptions;
 
         const formHTML = `
-            <div id="hub-schedule-form" style="display:none;margin-bottom:12px;padding:14px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
+            <div id="hub-schedule-form" style="display:none;margin-bottom:12px;padding:14px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);">
                 <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
                     <div style="flex:1;min-width:140px;">
                         <label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.target')}</label>
@@ -565,14 +565,14 @@ const App = {
             ${formHTML}
             <div style="display:flex;flex-direction:column;gap:6px;">
                 ${allTasks.map(t => `
-                    <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
+                    <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);">
                         <span style="font-size:18px;">${taskIcons[t.task_type] || '📋'}</span>
                         <div style="flex:1;">
                             <div style="font-size:13px;font-weight:600;">${taskLabels[t.task_type] || t.task_type}</div>
                             <div style="font-size:11px;color:var(--text-muted);">${t.targetIcon} ${t.targetName} · ${t.schedule_time ? ('⏰ ' + Lang.t('scheduler.at') + ' ' + t.schedule_time + ' (' + (t.schedule_days || 'daily') + ')') : ('⏰ ' + Lang.t('scheduler.every') + ' ' + t.interval_hours + 'h')}</div>
                         </div>
                         <div style="display:flex;gap:6px;align-items:center;">
-                            <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled !== false ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.05)'};color:${t.enabled !== false ? 'var(--accent-green)' : 'var(--text-muted)'};">${t.enabled !== false ? '● ' + Lang.t('scheduler.active') : '○ ' + Lang.t('scheduler.inactive')}</span>
+                            <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled !== false ? 'var(--accent-dim)' : 'rgba(255,255,255,0.05)'};color:${t.enabled !== false ? 'var(--accent)' : 'var(--text-muted)'};">${t.enabled !== false ? '● ' + Lang.t('scheduler.active') : '○ ' + Lang.t('scheduler.inactive')}</span>
                             <button class="btn btn-sm btn-secondary" onclick="App._toggleHubTask(${t.id})" title="${t.enabled ? 'Pause' : 'Resume'}">${t.enabled !== false ? '⏸' : '▶️'}</button>
                             <button class="btn btn-sm btn-danger" onclick="App._deleteHubTask(${t.id})" title="Delete">🗑️</button>
                         </div>
@@ -704,7 +704,7 @@ const App = {
         const overallLabel = { ok: Lang.t('dashboard.all_good'), warning: Lang.t('dashboard.attention'), critical: Lang.t('dashboard.problems') };
 
         panel.innerHTML = `
-            <div style="background:var(--bg-secondary);border-radius:12px;padding:20px;border:1px solid var(--border-color);">
+            <div style="background:var(--bg-elev-1);border-radius:12px;padding:20px;border:1px solid var(--border);">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
                     <div>
                         <div style="font-size:16px;font-weight:700;">${overallLabel[d.overall] || '🩺 Diagnostic'}</div>
@@ -774,7 +774,7 @@ const App = {
                     <h3 class="card-title">${t('settings.account')}</h3>
                     <div style="margin-top: 12px;">
                         <p><strong>${t('settings.user_label')}</strong> ${user ? user.username : '—'}</p>
-                        <p><strong>${t('settings.role_label')}</strong> ${(() => { const rl = { admin: '👑', moderator: '🔧', developer: '💻', money: '💰', player: '🎮', spectator: '👀' }; const r = user?.role || 'player'; return (rl[r] || '🎮') + ' ' + (Lang.t('users.role_' + r) || r); })()}</p>
+                        <p><strong>${t('settings.role_label')}</strong> ${(Lang.t('users.role_' + (user?.role || 'player')))}</p>
                     </div>
                     <button class="btn btn-danger mt-4" onclick="Auth.logout()">
                         ${t('settings.logout')}
@@ -838,7 +838,7 @@ const App = {
                                 <input type="time" id="power-wake-hour" class="form-input" value="05:00" />
                             </div>
                         </div>
-                        <div style="margin-top:12px;padding:10px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
+                        <div style="margin-top:12px;padding:10px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);">
                             <div style="font-size:12px;color:var(--text-muted);">💡 ${t('power.graceful_info')}</div>
                         </div>
                         <div id="power-rtcwake-warn" style="display:none;margin-top:8px;padding:8px 12px;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:8px;font-size:12px;color:#f59e0b;">
@@ -860,7 +860,7 @@ const App = {
                     <h3 class="card-title" style="margin:0;">${t('nodes.api_key')}</h3>
                     <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">${t('nodes.api_key_desc')}</p>
                     <div style="display:flex;gap:8px;margin-top:12px;align-items:center;">
-                        <code id="nodes-api-key" style="flex:1;padding:8px 12px;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:6px;font-size:12px;word-break:break-all;color:var(--text-primary);">${t('common.loading')}</code>
+                        <code id="nodes-api-key" style="flex:1;padding:8px 12px;background:var(--bg-elev-3);border:1px solid var(--border);border-radius:6px;font-size:12px;word-break:break-all;color:var(--text);">${t('common.loading')}</code>
                         <button id="nodes-key-toggle" class="btn btn-secondary btn-sm" onclick="App._toggleNodesKeyVisibility()" title="${t('nodes.show_key')}">👁️</button>
                         <button class="btn btn-secondary btn-sm" onclick="App._copyNodesKey()" title="${t('nodes.copy')}">📋</button>
                         <button class="btn btn-secondary btn-sm" onclick="App._resetNodesKey()" style="font-size:11px;">${t('nodes.reset_key')}</button>
@@ -888,17 +888,17 @@ const App = {
         const msgEl = document.getElementById('password-message');
 
         if (!current || !newPwd || !confirm) {
-            msgEl.style.color = '#e74c3c';
+            msgEl.style.color = 'var(--danger)';
             msgEl.textContent = Lang.t('settings.fill_all');
             return;
         }
         if (newPwd !== confirm) {
-            msgEl.style.color = '#e74c3c';
+            msgEl.style.color = 'var(--danger)';
             msgEl.textContent = Lang.t('settings.pwd_mismatch');
             return;
         }
         if (newPwd.length < 4) {
-            msgEl.style.color = '#e74c3c';
+            msgEl.style.color = 'var(--danger)';
             msgEl.textContent = Lang.t('settings.pwd_min');
             return;
         }
@@ -919,7 +919,7 @@ const App = {
             document.getElementById('confirm-password').value = '';
         } else if (response) {
             const err = await response.json();
-            msgEl.style.color = '#e74c3c';
+            msgEl.style.color = 'var(--danger)';
             msgEl.textContent = `❌ ${err.detail || Lang.t('common.error')}`;
         }
     },
@@ -939,9 +939,9 @@ const App = {
             const data = await response.json();
             const link = `${location.origin}/login?invite=${data.code}`;
             resultEl.innerHTML = `
-                <div style="background: var(--bg-hover); border-radius: 8px; padding: 12px; border: 1px solid var(--accent-green);">
+                <div style="background: var(--bg-hover); border-radius: 8px; padding: 12px; border: 1px solid var(--accent);">
                     <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">🔗 Lien d'invitation (${data.role_name})</div>
-                    <div style="font-family: monospace; font-size: 14px; color: var(--accent-green); word-break: break-all;">${link}</div>
+                    <div style="font-family: monospace; font-size: 14px; color: var(--accent); word-break: break-all;">${link}</div>
                     <button class="btn btn-secondary btn-sm mt-4" onclick="navigator.clipboard.writeText('${link}').then(() => this.textContent = '✅ Copié !')">
                         📋 Copier le lien
                     </button>
@@ -966,11 +966,11 @@ const App = {
         }
 
         listEl.innerHTML = invites.map(inv => `
-            <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border-color); font-size: 13px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px;">
                 <div>
-                    <span style="font-family: monospace; color: var(--accent-blue);">${inv.code}</span>
+                    <span style="font-family: monospace; color: var(--info);">${inv.code}</span>
                     <span style="color: var(--text-muted);"> · ${inv.role_name}</span>
-                    <span style="color: ${inv.is_used ? '#e74c3c' : 'var(--accent-green)'};">
+                    <span style="color: ${inv.is_used ? 'var(--danger)' : 'var(--accent)'};">
                         ${inv.is_used ? ' · Utilisé' : ' · Actif'}
                     </span>
                 </div>
@@ -1004,7 +1004,7 @@ const App = {
 
         if (statusLabel) {
             statusLabel.textContent = config.enabled ? Lang.t('power.enabled') : Lang.t('power.disabled');
-            statusLabel.style.color = config.enabled ? 'var(--accent-green)' : 'var(--text-muted)';
+            statusLabel.style.color = config.enabled ? 'var(--accent)' : 'var(--text-muted)';
         }
 
         if (configDiv) {
@@ -1015,7 +1015,7 @@ const App = {
         if (lastInfo) {
             let html = '';
             if (config.enabled) {
-                html += `<span style="color:var(--accent-green);">● ${Lang.t('power.next_shutdown')}: ${Lang.t('power.tonight')} ${config.shutdown_hour}</span>`;
+                html += `<span style="color:var(--accent);">● ${Lang.t('power.next_shutdown')}: ${Lang.t('power.tonight')} ${config.shutdown_hour}</span>`;
             }
             if (config.last_shutdown) {
                 const d = new Date(config.last_shutdown);
@@ -1040,7 +1040,7 @@ const App = {
 
         if (statusLabel) {
             statusLabel.textContent = enabled ? Lang.t('power.enabled') : Lang.t('power.disabled');
-            statusLabel.style.color = enabled ? 'var(--accent-green)' : 'var(--text-muted)';
+            statusLabel.style.color = enabled ? 'var(--accent)' : 'var(--text-muted)';
         }
         if (configDiv) {
             configDiv.style.opacity = enabled ? '1' : '0.5';
@@ -1061,7 +1061,7 @@ const App = {
         });
 
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('power.saved'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('power.saved'); }
             if (typeof Toast !== 'undefined') Toast.success(Lang.t('power.saved'));
             // Recharger pour mettre à jour les infos
             setTimeout(() => this._loadPowerSchedule(), 500);
@@ -1078,7 +1078,7 @@ const App = {
         const r = await Auth.apiCall('/api/power/test', { method: 'POST' });
 
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('power.test_launched'); }
+            if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('power.test_launched'); }
             if (typeof Toast !== 'undefined') Toast.info(Lang.t('power.test_launched'));
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
@@ -1092,7 +1092,7 @@ const App = {
 
         if (r && r.ok) {
             const data = await r.json();
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = data.message; }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = data.message; }
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
             if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
@@ -1240,15 +1240,15 @@ const App = {
         const pass = document.getElementById('new-user-pass')?.value;
         const role = document.getElementById('new-user-role')?.value || 'player';
         const msg = document.getElementById('create-user-msg');
-        if (!name || !pass) { if (msg) { msg.style.color = '#e74c3c'; msg.textContent = Lang.t('users.fill_fields'); } return; }
-        if (pass.length < 4) { if (msg) { msg.style.color = '#e74c3c'; msg.textContent = Lang.t('users.pass_too_short'); } return; }
+        if (!name || !pass) { if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = Lang.t('users.fill_fields'); } return; }
+        if (pass.length < 4) { if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = Lang.t('users.pass_too_short'); } return; }
 
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('users.creating'); }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('users.creating'); }
         const r = await Auth.apiCall('/api/auth/admin/create-user', {
             method: 'POST', body: JSON.stringify({ username: name, password: pass, is_admin: role === 'admin' })
         });
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('users.created'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('users.created'); }
             document.getElementById('new-user-name').value = '';
             document.getElementById('new-user-pass').value = '';
             // Si le r\u00f4le n'est pas admin, on doit aussi changer le r\u00f4le
@@ -1261,7 +1261,7 @@ const App = {
             this._loadUsersAdmin();
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `\u274c ${err.detail || 'Erreur'}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `\u274c ${err.detail || 'Erreur'}`; }
         }
     },
 
@@ -1307,8 +1307,8 @@ const App = {
                 const permBadges = Object.entries(permLabels).map(function([k, label]) {
                     const has = userPerms.includes(k);
                     return '<span style="font-size:10px;padding:2px 6px;border-radius:4px;'
-                        + 'background:' + (has ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.04)') + ';'
-                        + 'color:' + (has ? 'var(--accent-green)' : 'rgba(255,255,255,0.15)') + ';'
+                        + 'background:' + (has ? 'var(--accent-dim)' : 'rgba(255,255,255,0.04)') + ';'
+                        + 'color:' + (has ? 'var(--accent)' : 'rgba(255,255,255,0.15)') + ';'
                         + 'border:1px solid ' + (has ? 'rgba(34,197,94,0.2)' : 'rgba(255,255,255,0.05)') + ';">'
                         + label + '</span>';
                 }).join('');
@@ -1318,15 +1318,15 @@ const App = {
                         + ' onclick="event.stopPropagation();App._toggleUserModule(' + u.id + ', \'' + m.id + '\', this)"'
                         + ' style="font-size:11px;padding:3px 8px;border-radius:5px;cursor:pointer;user-select:none;transition:all .15s;'
                         + 'background:' + (hasAccess ? 'rgba(59,130,246,0.15)' : 'rgba(255,255,255,0.04)') + ';'
-                        + 'color:' + (hasAccess ? 'var(--accent-blue)' : 'rgba(255,255,255,0.2)') + ';'
+                        + 'color:' + (hasAccess ? 'var(--info)' : 'rgba(255,255,255,0.2)') + ';'
                         + 'border:1px solid ' + (hasAccess ? 'rgba(59,130,246,0.3)' : 'rgba(255,255,255,0.06)') + ';">'
                         + (hasAccess ? '☑' : '☐') + ' ' + m.icon + ' ' + m.label + '</span>';
                 }).join('');
 
-                return '<div style="padding:12px 0;border-bottom:1px solid var(--border-color);">'
+                return '<div style="padding:12px 0;border-bottom:1px solid var(--border);">'
                 + '<div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;" onclick="App._toggleUserDetails(' + u.id + ')">'
                 +   '<div style="display:flex;align-items:center;gap:12px;">'
-                +     '<div style="width:36px;height:36px;border-radius:50%;background:' + (u.is_admin ? 'linear-gradient(135deg,#3b82f6,#8b5cf6)' : 'var(--bg-secondary)') + ';display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:' + (u.is_admin ? 'white' : 'var(--text-muted)') + '">' + u.username.charAt(0).toUpperCase() + '</div>'
+                +     '<div style="width:36px;height:36px;border-radius:50%;background:' + (u.is_admin ? 'linear-gradient(135deg,#3b82f6,#8b5cf6)' : 'var(--bg-elev-1)') + ';display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:' + (u.is_admin ? 'white' : 'var(--text-muted)') + '">' + u.username.charAt(0).toUpperCase() + '</div>'
                 +     '<div>'
                 +       '<div style="font-weight:600;font-size:14px;">' + u.username + '</div>'
                 +       '<div style="font-size:12px;color:var(--text-muted);">' + (roleLabels[u.role] || u.role) + (u.created_at ? ' · ' + Lang.t('users.created_on') + ' ' + new Date(u.created_at).toLocaleDateString() : '') + '</div>'
@@ -1343,7 +1343,7 @@ const App = {
                         +   '<option value="admin"' + (u.role === 'admin' ? ' selected' : '') + '>' + Lang.t('users.role_admin') + '</option>'
                         + '</select>'
                         + '<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();App._confirmDeleteUser(' + u.id + ', \'' + u.username + '\')" style="padding:4px 8px;font-size:12px;">🗑️</button>'
-                        : '<span style="font-size:12px;color:var(--accent-green);font-weight:600;">' + Lang.t('users.you') + '</span>')
+                        : '<span style="font-size:12px;color:var(--accent);font-weight:600;">' + Lang.t('users.you') + '</span>')
                 +     '<span id="user-chevron-' + u.id + '" style="font-size:10px;color:var(--text-muted);transition:transform .2s;">▼</span>'
                 +   '</div>'
                 + '</div>'
@@ -1356,7 +1356,7 @@ const App = {
                     +   '<div style="display:flex;flex-wrap:wrap;gap:4px;" id="user-modules-' + u.id + '">' + moduleBadges + '</div>'
                     + '</div>'
                     : (u.role === 'admin' && u.id !== currentUser?.id
-                        ? '<div style="margin-top:8px;padding-left:48px;"><div style="font-size:11px;color:var(--text-muted);">🧩 Modules : <span style="color:var(--accent-green);">' + Lang.t('users.modules_full') + '</span></div></div>'
+                        ? '<div style="margin-top:8px;padding-left:48px;"><div style="font-size:11px;color:var(--text-muted);">🧩 Modules : <span style="color:var(--accent);">' + Lang.t('users.modules_full') + '</span></div></div>'
                         : ''))
                 + '</div>'
                 + '</div>'
@@ -1407,7 +1407,7 @@ const App = {
         const moduleIcon = el.textContent.split(' ').slice(1).join(' ');
         if (isNowActive) {
             el.style.background = 'rgba(59,130,246,0.15)';
-            el.style.color = 'var(--accent-blue)';
+            el.style.color = 'var(--info)';
             el.style.borderColor = 'rgba(59,130,246,0.3)';
             el.textContent = '☑ ' + moduleIcon;
         } else {
@@ -1482,7 +1482,7 @@ const SharingModal = {
                         autocomplete="off" />
                 </div>
                 <div id="sharing-search-results"></div>
-                <div id="sharing-grant-form" style="display:none;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:8px;padding:12px;margin-bottom:16px;">
+                <div id="sharing-grant-form" style="display:none;background:var(--bg-elev-3);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px;">
                     <div style="display:flex;align-items:center;justify-content:space-between;">
                         <div class="sharing-user-info">
                             <div class="sharing-user-avatar" id="sharing-grant-avatar"></div>
