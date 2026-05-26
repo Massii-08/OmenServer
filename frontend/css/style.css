@@ -1039,46 +1039,52 @@ canvas {
     margin-bottom: 20px;
 }
 
-/* === LOGIN PAGE === */
+/* === LOGIN PAGE (Bento Tech v5 — PR33) === */
 .login-page {
     min-height: 100vh;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--bg-primary);
-    background-image: 
-        radial-gradient(circle at 20% 50%, rgba(16, 185, 129, 0.05) 0%, transparent 50%),
-        radial-gradient(circle at 80% 20%, rgba(59, 130, 246, 0.05) 0%, transparent 50%);
+    background: var(--bg);
+    /* PR33 : radial-gradients removed (MASTER §6 ban gradients) */
 }
 
 .login-card {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: var(--border-radius-lg);
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
     padding: 40px;
     width: 90%;
     max-width: 420px;
-    box-shadow: var(--shadow-lg);
+    /* PR33 : box-shadow removed (MASTER §6 ban shadow flou) */
 }
 
-.login-logo {
-    text-align: center;
-    margin-bottom: 32px;
+/* PR33 : Brand block (matches .topbar .brand pattern) */
+.login-brand {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-2);
+    margin-bottom: var(--s-6);
 }
-
-.login-logo-icon {
-    font-size: 48px;
-    display: block;
-    margin-bottom: 12px;
+.login-brand .login-logo {
+    width: 32px;
+    height: 32px;
+    background: var(--accent);
+    color: #0A0A0A;
+    border-radius: var(--r-sm);
+    display: grid;
+    place-items: center;
+    font-weight: 700;
+    font-size: 16px;
 }
-
-.login-logo-title {
-    font-size: 24px;
-    font-weight: 800;
-    background: linear-gradient(135deg, var(--text-primary), var(--accent-green));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+.login-brand-text {
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum";
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text);
 }
 
 .login-error {

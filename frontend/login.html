@@ -6,21 +6,25 @@
     <title>OmenServer — Connexion</title>
     <meta name="description" content="Panel de gestion de serveur dédié polyvalent">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link rel="stylesheet" href="/css/style.css?v=81">
+    <link rel="stylesheet" href="/css/style.css?v=82">
     <script src="/js/lang.js"></script>
 </head>
 <body>
     <div class="login-page">
         <div class="login-card fade-in">
-            <!-- Logo -->
-            <div class="login-logo">
-                <span class="login-logo-icon">🖥️</span>
-                <div class="login-logo-title" id="login-title">OmenServer</div>
+            <!-- Brand (Bento — same as topbar pattern) -->
+            <div class="login-brand" id="login-brand">
+                <div class="login-logo">O</div>
+                <div class="login-brand-text" id="login-title">OMENSERVER</div>
             </div>
 
-            <!-- Bouton langue -->
-            <div style="text-align:center;margin-bottom:8px;">
-                <button onclick="LoginPage.toggleLang()" style="background:none;border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:13px;padding:4px 12px;color:var(--text-muted);" id="login-lang-btn">🌐 EN</button>
+            <!-- Segmented language pill (FR/EN/IT) -->
+            <div style="display:flex;justify-content:center;margin-bottom:20px;">
+                <div class="lang-switcher" id="login-lang-switcher">
+                    <button class="lang" data-lang="fr" onclick="LoginPage.setLang('fr')">FR</button>
+                    <button class="lang" data-lang="en" onclick="LoginPage.setLang('en')">EN</button>
+                    <button class="lang" data-lang="it" onclick="LoginPage.setLang('it')">IT</button>
+                </div>
             </div>
 
             <!-- Wizard steps (visible seulement en mode setup) -->
@@ -295,16 +299,25 @@
                 }
             },
 
+            setLang(lang) {
+                Lang.set(lang);
+                this.applyLang();
+            },
+
             toggleLang() {
-                Lang.toggle();
+                // Backward-compat — cycles FR → EN → IT → FR
+                const order = ['fr', 'en', 'it'];
+                const next = order[(order.indexOf(Lang.current) + 1) % order.length];
+                Lang.set(next);
                 this.applyLang();
             },
 
             applyLang() {
                 const t = (k) => Lang.t(k);
-                // Lang button
-                const btn = document.getElementById('login-lang-btn');
-                if (btn) btn.textContent = Lang.current === 'fr' ? '🌐 EN' : '🌐 FR';
+                // Segmented lang pill — toggle .active on FR/EN/IT
+                document.querySelectorAll('#login-lang-switcher .lang').forEach(b => {
+                    b.classList.toggle('active', b.dataset.lang === Lang.current);
+                });
 
                 // Login form labels
                 const labels = document.querySelectorAll('#login-form .form-label');
