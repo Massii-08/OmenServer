@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OmenServer — 5 directions de refonte</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;700;800&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  /* ============ PAGE CHROME (neutre) ============ */
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: #1a1a1a;
+    color: #ddd;
+    padding: 40px 24px 80px;
+  }
+  .page-title {
+    max-width: 1200px;
+    margin: 0 auto 48px;
+    text-align: center;
+  }
+  .page-title h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+  .page-title p { color: #888; font-size: 14px; }
+  .proposal {
+    max-width: 1100px;
+    margin: 0 auto 56px;
+    border: 1px solid #333;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .proposal-header {
+    padding: 20px 28px;
+    background: #232323;
+    border-bottom: 1px solid #333;
+  }
+  .proposal-header .num { color: #666; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; }
+  .proposal-header h2 { font-size: 22px; font-weight: 700; margin: 6px 0 8px; color: #fff; }
+  .proposal-header .ref { color: #999; font-size: 13px; }
+  .proposal-header .tags { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .proposal-header .tag {
+    font-size: 11px;
+    padding: 3px 8px;
+    background: #2e2e2e;
+    border: 1px solid #404040;
+    border-radius: 4px;
+    color: #aaa;
+  }
+  .mock {
+    padding: 40px 32px;
+    min-height: 420px;
+  }
+
+  /* =========================================================
+     1️⃣  OPERATOR TERMINAL — k9s / lazygit / tmux
+     ========================================================= */
+  .mock-terminal {
+    background: #0A0E0A;
+    color: #C9D1C9;
+    font-family: 'JetBrains Mono', monospace;
+    padding: 32px;
+  }
+  .mock-terminal .topbar {
+    border-bottom: 1px dashed #2A3A2A;
+    padding-bottom: 12px;
+    margin-bottom: 24px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: #6B8C6B;
+    letter-spacing: 0.05em;
+  }
+  .mock-terminal .topbar .ok { color: #7CE3A0; }
+  .mock-terminal h3 {
+    font-size: 13px;
+    color: #7CE3A0;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 16px;
+    font-weight: 400;
+  }
+  .mock-terminal h3::before { content: "▸ "; }
+  .mock-terminal .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 32px; }
+  .mock-terminal .stat {
+    border: 1px solid #2A3A2A;
+    padding: 16px;
+  }
+  .mock-terminal .stat .label { font-size: 10px; color: #6B8C6B; letter-spacing: 0.15em; text-transform: uppercase; }
+  .mock-terminal .stat .val { font-size: 28px; color: #C9D1C9; margin-top: 6px; font-weight: 400; }
+  .mock-terminal .stat .delta { font-size: 11px; color: #7CE3A0; margin-top: 4px; }
+  .mock-terminal .stat .delta.warn { color: #F0B860; }
+  .mock-terminal .server {
+    border: 1px solid #2A3A2A;
+    padding: 14px 16px;
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    gap: 16px;
+    align-items: center;
+    font-size: 13px;
+  }
+  .mock-terminal .server .dot { color: #7CE3A0; }
+  .mock-terminal .btn {
+    background: transparent;
+    border: 1px solid #7CE3A0;
+    color: #7CE3A0;
+    padding: 6px 14px;
+    font-family: inherit;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    text-transform: uppercase;
+  }
+  .mock-terminal .btn:hover { background: #7CE3A0; color: #0A0E0A; }
+  .mock-terminal .btn.stop { border-color: #E15554; color: #E15554; }
+  .mock-terminal .btn.stop:hover { background: #E15554; color: #0A0E0A; }
+
+  /* =========================================================
+     2️⃣  SWISS OPS — Linear / Vercel / Stripe Dashboard
+     ========================================================= */
+  .mock-swiss {
+    background: #FAFAFA;
+    color: #0A0A0A;
+    font-family: 'Inter', sans-serif;
+    padding: 48px;
+  }
+  .mock-swiss .head { margin-bottom: 40px; }
+  .mock-swiss .eyebrow { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #737373; margin-bottom: 8px; }
+  .mock-swiss h3 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  .mock-swiss .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: #E5E5E5; margin-bottom: 40px; border: 1px solid #E5E5E5; }
+  .mock-swiss .stat { background: #FAFAFA; padding: 24px; }
+  .mock-swiss .stat .label { font-size: 12px; color: #737373; margin-bottom: 12px; }
+  .mock-swiss .stat .val {
+    font-size: 32px; font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+  .mock-swiss .stat .delta { font-size: 13px; color: #16A34A; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .mock-swiss .stat .delta.warn { color: #DC2626; }
+  .mock-swiss .server { border-top: 1px solid #E5E5E5; padding: 16px 4px; display: grid; grid-template-columns: 8px 1fr auto auto; gap: 16px; align-items: center; }
+  .mock-swiss .server:last-of-type { border-bottom: 1px solid #E5E5E5; }
+  .mock-swiss .server .dot { width: 8px; height: 8px; border-radius: 50%; background: #16A34A; }
+  .mock-swiss .server .name { font-size: 14px; font-weight: 500; }
+  .mock-swiss .server .meta { font-size: 13px; color: #737373; font-variant-numeric: tabular-nums; }
+  .mock-swiss .btn {
+    background: #0A0A0A; color: #FAFAFA;
+    border: 1px solid #0A0A0A;
+    padding: 7px 14px;
+    font-size: 13px; font-weight: 500;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .mock-swiss .btn:hover { background: #262626; }
+  .mock-swiss .btn.ghost { background: transparent; color: #0A0A0A; border-color: #E5E5E5; }
+  .mock-swiss .btn.ghost:hover { background: #F5F5F5; }
+
+  /* =========================================================
+     3️⃣  INDUSTRIAL CONSOLE — Tailscale / Fly.io / Plain
+     ========================================================= */
+  .mock-industrial {
+    background: #F7F4ED;
+    color: #1A1A1A;
+    font-family: 'IBM Plex Sans', sans-serif;
+    padding: 40px;
+  }
+  .mock-industrial .head {
+    border-bottom: 1px solid #1A1A1A;
+    padding-bottom: 16px;
+    margin-bottom: 32px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .mock-industrial h3 { font-size: 14px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; }
+  .mock-industrial .head .meta { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #5C5C5C; }
+  .mock-industrial .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0; border: 1px solid #1A1A1A; margin-bottom: 32px; }
+  .mock-industrial .stat { padding: 20px; border-right: 1px solid #1A1A1A; }
+  .mock-industrial .stat:last-child { border-right: 0; }
+  .mock-industrial .stat .label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: #5C5C5C;
+    margin-bottom: 8px;
+  }
+  .mock-industrial .stat .val {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 30px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .mock-industrial .stat .delta { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #2D5F3F; margin-top: 4px; }
+  .mock-industrial .stat .delta.warn { color: #C44536; }
+  .mock-industrial .server {
+    border: 1px solid #1A1A1A;
+    border-top: 0;
+    padding: 14px 16px;
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 16px;
+    align-items: center;
+  }
+  .mock-industrial .server:first-of-type { border-top: 1px solid #1A1A1A; }
+  .mock-industrial .server .name { font-weight: 600; font-size: 14px; }
+  .mock-industrial .server .name::before { content: "● "; color: #2D5F3F; }
+  .mock-industrial .server .meta { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #5C5C5C; }
+  .mock-industrial .btn {
+    background: #1A1A1A; color: #F7F4ED;
+    border: 1px solid #1A1A1A;
+    padding: 6px 14px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    cursor: pointer;
+    font-family: inherit;
+    border-radius: 2px;
+  }
+  .mock-industrial .btn.accent { background: #C44536; border-color: #C44536; }
+
+  /* =========================================================
+     4️⃣  BENTO TECH — Apple bento / Raycast
+     ========================================================= */
+  .mock-bento {
+    background: #0E0E10;
+    color: #F4F4F5;
+    font-family: 'Inter', sans-serif;
+    padding: 36px;
+  }
+  .mock-bento .head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 24px; }
+  .mock-bento h3 { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+  .mock-bento .head .meta { color: #71717A; font-size: 13px; }
+  .mock-bento .grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr;
+    grid-template-rows: auto auto;
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+  .mock-bento .card {
+    background: #161618;
+    border: 1px solid #27272A;
+    border-radius: 14px;
+    padding: 20px;
+  }
+  .mock-bento .card.big { grid-row: span 2; background: #18181B; }
+  .mock-bento .card .label { font-size: 12px; color: #A1A1AA; margin-bottom: 8px; }
+  .mock-bento .card .val {
+    font-family: 'Geist Mono', monospace;
+    font-size: 30px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+  .mock-bento .card.big .val { font-size: 44px; }
+  .mock-bento .card .delta {
+    font-family: 'Geist Mono', monospace;
+    font-size: 12px;
+    color: #4ADE80;
+    margin-top: 4px;
+  }
+  .mock-bento .card .delta.warn { color: #FBBF24; }
+  .mock-bento .card .sparkline {
+    margin-top: 12px;
+    height: 24px;
+    background: linear-gradient(180deg, rgba(74,222,128,0.18), transparent);
+    clip-path: polygon(0 70%, 10% 60%, 25% 65%, 40% 40%, 55% 50%, 70% 30%, 85% 35%, 100% 20%, 100% 100%, 0 100%);
+  }
+  .mock-bento .server {
+    background: #161618;
+    border: 1px solid #27272A;
+    border-radius: 12px;
+    padding: 14px 18px;
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 14px;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .mock-bento .server .name { font-weight: 500; font-size: 14px; }
+  .mock-bento .server .name::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #4ADE80; margin-right: 10px; vertical-align: middle; }
+  .mock-bento .server .meta { color: #A1A1AA; font-size: 13px; font-family: 'Geist Mono', monospace; }
+  .mock-bento .btn {
+    background: #F4F4F5; color: #0E0E10;
+    border: 0;
+    padding: 7px 14px;
+    font-size: 13px; font-weight: 500;
+    border-radius: 8px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .mock-bento .btn.ghost {
+    background: transparent;
+    color: #F4F4F5;
+    border: 1px solid #3F3F46;
+  }
+  .mock-bento .btn.ghost:hover { background: #27272A; }
+
+  /* =========================================================
+     5️⃣  NEO-BRUTALIST SERVER — Acid Console
+     ========================================================= */
+  .mock-brutal {
+    background: #0A0A0A;
+    color: #FAFAFA;
+    font-family: 'Space Grotesk', sans-serif;
+    padding: 40px;
+  }
+  .mock-brutal .head { margin-bottom: 32px; border-bottom: 2px solid #3F3F46; padding-bottom: 16px; }
+  .mock-brutal .eyebrow {
+    display: inline-block;
+    background: #DFE104;
+    color: #0A0A0A;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+  .mock-brutal h3 {
+    font-size: 32px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    text-transform: uppercase;
+  }
+  .mock-brutal .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 32px; }
+  .mock-brutal .stat {
+    background: #0A0A0A;
+    border: 2px solid #3F3F46;
+    padding: 20px;
+  }
+  .mock-brutal .stat .label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: #A1A1AA;
+    margin-bottom: 8px;
+  }
+  .mock-brutal .stat .val {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 38px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+  }
+  .mock-brutal .stat .delta { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #4ADE80; }
+  .mock-brutal .stat .delta.warn { color: #DFE104; }
+  .mock-brutal .stat.highlight { background: #DFE104; color: #0A0A0A; border-color: #DFE104; }
+  .mock-brutal .stat.highlight .label,
+  .mock-brutal .stat.highlight .delta { color: #0A0A0A; }
+  .mock-brutal .server {
+    border: 2px solid #3F3F46;
+    padding: 14px 16px;
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 16px;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .mock-brutal .server .name {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+    font-size: 14px;
+    text-transform: uppercase;
+  }
+  .mock-brutal .server .name::before { content: "▶ "; color: #4ADE80; }
+  .mock-brutal .server .meta { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #A1A1AA; }
+  .mock-brutal .btn {
+    background: #DFE104; color: #0A0A0A;
+    border: 0;
+    padding: 8px 16px;
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 13px; font-weight: 800;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .mock-brutal .btn.ghost { background: transparent; color: #FAFAFA; border: 2px solid #3F3F46; }
+  .mock-brutal .btn.ghost:hover { background: #3F3F46; }
+
+  /* footer note */
+  .foot {
+    max-width: 1100px;
+    margin: 64px auto 0;
+    padding: 24px;
+    border: 1px solid #333;
+    border-radius: 8px;
+    background: #232323;
+    color: #aaa;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .foot strong { color: #fff; }
+</style>
+</head>
+<body>
+
+<div class="page-title">
+  <h1>OmenServer — 5 directions de refonte</h1>
+  <p>Même contenu (3 stats + 2 serveurs + 2 boutons) traité 5 manières différentes. Choisis celle qui te parle.</p>
+</div>
+
+<!-- ===================== 1. OPERATOR TERMINAL ===================== -->
+<div class="proposal">
+  <div class="proposal-header">
+    <div class="num">DIRECTION 01</div>
+    <h2>Operator Terminal</h2>
+    <div class="ref">Réfs : k9s · lazygit · tmux · htop · ce que les vrais sysadmins utilisent</div>
+    <div class="tags">
+      <span class="tag">JetBrains Mono partout</span>
+      <span class="tag">0 radius</span>
+      <span class="tag">vert/ambre/rouge signal</span>
+      <span class="tag">bordures dashed</span>
+      <span class="tag">tech-vrai, pas tech-cosplay</span>
+    </div>
+  </div>
+  <div class="mock mock-terminal">
+    <div class="topbar">
+      <span>OMENSERVER ▸ DASHBOARD</span>
+      <span><span class="ok">●</span> ALL SYSTEMS NOMINAL · UPTIME 14d 03:22</span>
+    </div>
+    <h3>System overview</h3>
+    <div class="grid">
+      <div class="stat">
+        <div class="label">cpu_load</div>
+        <div class="val">23.4%</div>
+        <div class="delta">▼ -2.1% vs 1h</div>
+      </div>
+      <div class="stat">
+        <div class="label">memory</div>
+        <div class="val">11.2/16 GB</div>
+        <div class="delta warn">▲ +0.8% vs 1h</div>
+      </div>
+      <div class="stat">
+        <div class="label">disk_combined</div>
+        <div class="val">847/1383 GB</div>
+        <div class="delta">61.2% used</div>
+      </div>
+    </div>
+    <h3>Game servers</h3>
+    <div class="server" style="margin-bottom:6px">
+      <span class="dot">●</span>
+      <span>minecraft_survival_01 · 1.21.4 · 4/20 players</span>
+      <span style="color:#6B8C6B;font-size:12px">2h 14m</span>
+      <button class="btn stop">[ STOP ]</button>
+    </div>
+    <div class="server">
+      <span class="dot">●</span>
+      <span>ark_island_pve · stable · 2/70 players</span>
+      <span style="color:#6B8C6B;font-size:12px">5d 11h</span>
+      <button class="btn stop">[ STOP ]</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 2. SWISS OPS ===================== -->
+<div class="proposal">
+  <div class="proposal-header">
+    <div class="num">DIRECTION 02</div>
+    <h2>Swiss Ops</h2>
+    <div class="ref">Réfs : Linear · Vercel Dashboard · Stripe · Resend — sobre, premium, anti-décoration</div>
+    <div class="tags">
+      <span class="tag">Inter</span>
+      <span class="tag">light mode par défaut</span>
+      <span class="tag">UN accent (noir profond)</span>
+      <span class="tag">whitespace généreux</span>
+      <span class="tag">tabular nums</span>
+    </div>
+  </div>
+  <div class="mock mock-swiss">
+    <div class="head">
+      <div class="eyebrow">Dashboard</div>
+      <h3>System overview</h3>
+    </div>
+    <div class="grid">
+      <div class="stat">
+        <div class="label">CPU load</div>
+        <div class="val">23.4%</div>
+        <div class="delta">−2.1% last hour</div>
+      </div>
+      <div class="stat">
+        <div class="label">Memory</div>
+        <div class="val">11.2 GB</div>
+        <div class="delta warn">+0.8% last hour</div>
+      </div>
+      <div class="stat">
+        <div class="label">Disk used</div>
+        <div class="val">847 GB</div>
+        <div class="delta">of 1.38 TB</div>
+      </div>
+    </div>
+    <div class="server">
+      <span class="dot"></span>
+      <span class="name">minecraft_survival_01</span>
+      <span class="meta">4 / 20 players · 2h 14m</span>
+      <button class="btn ghost">Stop</button>
+    </div>
+    <div class="server">
+      <span class="dot"></span>
+      <span class="name">ark_island_pve</span>
+      <span class="meta">2 / 70 players · 5d 11h</span>
+      <button class="btn">Manage</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 3. INDUSTRIAL CONSOLE ===================== -->
+<div class="proposal">
+  <div class="proposal-header">
+    <div class="num">DIRECTION 03</div>
+    <h2>Industrial Console</h2>
+    <div class="ref">Réfs : Tailscale admin · Plain.com · Fly.io legacy — papier cream, encre noire, accent industriel</div>
+    <div class="tags">
+      <span class="tag">IBM Plex Sans + Mono</span>
+      <span class="tag">cream #F7F4ED</span>
+      <span class="tag">borders 1px noir franc</span>
+      <span class="tag">aucune ombre</span>
+      <span class="tag">ALL CAPS section headers</span>
+    </div>
+  </div>
+  <div class="mock mock-industrial">
+    <div class="head">
+      <h3>System Overview</h3>
+      <div class="meta">omen-01 · ubuntu 24.04 · 14d 03:22</div>
+    </div>
+    <div class="grid">
+      <div class="stat">
+        <div class="label">CPU Load</div>
+        <div class="val">23.4%</div>
+        <div class="delta">↓ 2.1 PT/H</div>
+      </div>
+      <div class="stat">
+        <div class="label">Memory</div>
+        <div class="val">11.2GB</div>
+        <div class="delta warn">↑ 0.8 PT/H</div>
+      </div>
+      <div class="stat">
+        <div class="label">Disk Used</div>
+        <div class="val">847GB</div>
+        <div class="delta">/ 1383GB</div>
+      </div>
+    </div>
+    <div class="server">
+      <span class="name">minecraft_survival_01</span>
+      <span class="meta">4/20 · 1.21.4 · 2h 14m</span>
+      <button class="btn">Stop</button>
+    </div>
+    <div class="server">
+      <span class="name">ark_island_pve</span>
+      <span class="meta">2/70 · stable · 5d 11h</span>
+      <button class="btn accent">Restart</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 4. BENTO TECH ===================== -->
+<div class="proposal">
+  <div class="proposal-header">
+    <div class="num">DIRECTION 04</div>
+    <h2>Bento Tech</h2>
+    <div class="ref">Réfs : Apple bento boxes · Raycast · Arc Browser — grille modulaire, cards à tailles variées, mono pour les chiffres</div>
+    <div class="tags">
+      <span class="tag">Inter + Geist Mono</span>
+      <span class="tag">cards radius 14px</span>
+      <span class="tag">accent lime uniquement sur deltas</span>
+      <span class="tag">sparkline subtil</span>
+      <span class="tag">hairline borders</span>
+    </div>
+  </div>
+  <div class="mock mock-bento">
+    <div class="head">
+      <h3>System overview</h3>
+      <span class="meta">Last update · 12s ago</span>
+    </div>
+    <div class="grid">
+      <div class="card big">
+        <div class="label">CPU load</div>
+        <div class="val">23.4%</div>
+        <div class="delta">↓ 2.1% last hour</div>
+        <div class="sparkline"></div>
+      </div>
+      <div class="card">
+        <div class="label">Memory</div>
+        <div class="val">11.2<span style="color:#71717A;font-size:18px">/16GB</span></div>
+        <div class="delta warn">↑ 0.8%</div>
+      </div>
+      <div class="card">
+        <div class="label">Disk</div>
+        <div class="val">61<span style="color:#71717A;font-size:18px">%</span></div>
+        <div class="delta">847/1383 GB</div>
+      </div>
+      <div class="card" style="grid-column: span 2;">
+        <div class="label">Uptime</div>
+        <div class="val">14<span style="color:#71717A;font-size:18px">d</span> 03:22</div>
+      </div>
+    </div>
+    <div class="server">
+      <span class="name">minecraft_survival_01</span>
+      <span class="meta">4 / 20 · 2h 14m</span>
+      <button class="btn ghost">Stop</button>
+    </div>
+    <div class="server">
+      <span class="name">ark_island_pve</span>
+      <span class="meta">2 / 70 · 5d 11h</span>
+      <button class="btn">Manage</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 5. NEO-BRUTALIST SERVER ===================== -->
+<div class="proposal">
+  <div class="proposal-header">
+    <div class="num">DIRECTION 05</div>
+    <h2>Neo-Brutalist Server</h2>
+    <div class="ref">Réfs : Vercel Ship pages · brutalism moderne · sites devs underground — noir pur + acid yellow signal</div>
+    <div class="tags">
+      <span class="tag">Space Grotesk 800 + JetBrains Mono</span>
+      <span class="tag">acid yellow signal</span>
+      <span class="tag">2px borders</span>
+      <span class="tag">0 radius / 0 ombre</span>
+      <span class="tag">edgy mais lisible</span>
+    </div>
+  </div>
+  <div class="mock mock-brutal">
+    <div class="head">
+      <span class="eyebrow">DASHBOARD · LIVE</span>
+      <h3>System Overview</h3>
+    </div>
+    <div class="grid">
+      <div class="stat">
+        <div class="label">CPU LOAD</div>
+        <div class="val">23.4%</div>
+        <div class="delta">▼ 2.1% / 1H</div>
+      </div>
+      <div class="stat highlight">
+        <div class="label">MEMORY</div>
+        <div class="val">11.2GB</div>
+        <div class="delta">▲ 0.8% / 1H</div>
+      </div>
+      <div class="stat">
+        <div class="label">DISK</div>
+        <div class="val">61.2%</div>
+        <div class="delta">847/1383 GB</div>
+      </div>
+    </div>
+    <div class="server">
+      <span class="name">minecraft_survival_01</span>
+      <span class="meta">4/20 · 2h 14m</span>
+      <button class="btn ghost">STOP</button>
+    </div>
+    <div class="server">
+      <span class="name">ark_island_pve</span>
+      <span class="meta">2/70 · 5d 11h</span>
+      <button class="btn">RESTART</button>
+    </div>
+  </div>
+</div>
+
+<div class="foot">
+  <strong>Comment choisir ?</strong><br><br>
+  • <strong>01 Operator Terminal</strong> — si tu veux que ça ressemble à un <em>vrai</em> outil sysadmin (k9s/tmux), pas à une démo SaaS. Le plus "tech crédible". Risque : ça peut être perçu comme rétro/cliché si pas dosé.<br><br>
+  • <strong>02 Swiss Ops</strong> — le choix safe-premium. Linear/Vercel font ça. <em>Personne</em> ne dira que c'est moche. Risque : ça peut sembler "trop générique premium" si pas customisé.<br><br>
+  • <strong>03 Industrial Console</strong> — le choix qui distingue. Cream + encre noire, c'est rare sur les dashboards. Sent l'artisanal-sérieux. Risque : moins lisible en sessions longues (light mode dense).<br><br>
+  • <strong>04 Bento Tech</strong> — le choix moderne 2025. Cards modulaires, chiffres mono, accent lime sur trends. Le plus "Mac-friendly". Risque : la mode bento peut vieillir.<br><br>
+  • <strong>05 Neo-Brutalist</strong> — le choix "personnalité forte". Acid yellow + Space Grotesk = on n'oublie pas. Risque : peut fatiguer en usage quotidien si dosé trop fort.<br><br>
+  <strong>Mon avis perso pour OmenServer</strong> : <strong>01 (Operator Terminal)</strong> ou <strong>03 (Industrial Console)</strong> — parce que c'est un panel de sysadmin <em>vraiment utilisé</em> par toi, pas une vitrine. 02 si tu veux la sécurité. Évite 05 sauf si tu assumes une vibe perso forte.
+</div>
+
+</body>
+</html>
