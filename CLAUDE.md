@@ -423,6 +423,9 @@ sudo systemctl status cloudflared
 14. **Pattern reconstruction trap** : quand on strip un pattern (emoji, hex, etc.), grep aussi les contextes JS où il peut être RECONSTRUIT côté code (dicts, template literals, concatenations). PR16 a découvert `renderSettings()` avait un dict `{admin:'👑', ...}` qui reconstruisait l'emoji après PR14 RBAC strip — la sidebar montrait "Admin" mais Settings montrait "👑 Admin".
 15. **Regex emoji sweep + `\s*` pitfall** : `EMOJI_RE + \s*` mange les `\n` aussi (regex `\s` inclut newline). Si un commentaire `// ─── Section ───` (où `─` est U+2500 = dans le emoji range Unicode), le strip englobe le `\n` suivant et le commentaire mange la déclaration suivante. Toujours utiliser `[ \t]*` (horizontal whitespace seulement) si on veut préserver les newlines.
 16. **CSP `img-src` restrictif** : par défaut `backend/main.py` n'autorise que `'self' data: blob:` pour les images. Les vignettes CurseForge/Modrinth/Steam Workshop sont CDN externes — il faut les ajouter explicitement à la directive `img-src`. Symptôme : `<img>` avec `naturalSize: 0x0` + `display: none` via `onerror` (silent fail).
+17. **Emoji-only button trap (PR35)** : les sweeps emojis (PR27-29-34) laissent des `<button>...</button>` complètement vides quand l'emoji était le SEUL contenu visible. Détection : `grep -E "class=\"btn[^\"]*\"[^>]*>\\s*</button>"` sur `frontend/js/`. Fix : toujours remplacer par un label texte i18n via `Lang.t()`. Idem pour les `::before { content: 'emoji' }` CSS qui peuvent laisser un glyph orphelin avec padding incohérent (cf. `.sharing-search-wrap::before` supprimé en PR35).
+18. **`.btn-icon` trap (PR36)** : la classe `.btn-icon` force `width:38px; height:38px; padding:0` (conçue pour emojis carrés). Si on convertit un bouton emoji-only en label texte SANS retirer la classe, le texte déborde et les boutons adjacents se superposent visuellement (vu sur cartes serveur PR36 : "Arrêter Redémarrer Partager" collés). Pattern de détection : `grep -E 'class="[^"]*btn-icon[^"]*"[^>]*>\\${Lang\\.t'`. Fix : retirer `.btn-icon`, garder `.btn-sm` qui a un padding texte normal.
+19. **`cond ? '' : ''` smell (PR36)** : un ternaire dont les 2 branches sont des chaînes vides (`btn.textContent = visible ? '' : ''`) est presque toujours un sweep automatique qui a mangé les 2 branches d'un toggle emoji (`'👁' : '🙈'`, `'▶' : '⏸'`). Détection post-sweep : `grep -E "\\? '' : ''"` sur les JS.
 
 ---
 
@@ -525,6 +528,11 @@ PR 7 a appliqué des **overrides `!important`** sur les classes legacy (`.sideba
 - PR31 (backend) : CSP `img-src` étendu pour autoriser `forgecdn.net` + `cdn.modrinth.com` + Steam Workshop + Spigot CDN (modpack thumbnails)
 - PR33 : login.html aligné sur topbar Bento (brand `O OMENSERVER` + pill FR/EN/IT)
 
+**Évolution session 27 mai (aftermath sweep nucléaire)** :
+- PR35 : 4 boutons devenus vides après PR34 (boutons emoji-only → emoji strippé → contenu vide). Fix : labels texte i18n via `Lang.t()` partout, créer les clés manquantes (`sharing.share_btn`, `sv.files.rename`). Aussi : supprimé `.sharing-search-wrap::before { content: '🔍' }` + migré vars CSS legacy (`--bg-primary`, `--accent-blue`) vers tokens Bento.
+- PR35-bis : oubli cache-bust JS individuels — bumper seulement `style.css?v=` + `sw CACHE_NAME` ne propage pas les fixes JS car le disk cache browser sert encore `lang.js?v=N` (URL inchangée). Toujours bumper le `?v=` de chaque JS modifié dans `index.html`.
+- PR36 : 2 nouveaux symptômes post-PR35 (Massii spotted) — boutons serveur "Arrêter/Redémarrer/Partager" superposés (`.btn-icon` force 38×38px, texte déborde) + boutons Clé API Agents vides (👁/📋 strippés + code `cond ? '' : ''` smell). Fix : retirer `.btn-icon` quand on met du texte + labels i18n sur toggle/copy + placeholder masqué = 40 bullets `•`.
+
 **Pour migrer un composant non-encore-refactoré** :
 1. Identifie son HTML render dans `frontend/js/*_module.js` ou `app.js`
 2. Remplace ses classes legacy par les classes Bento ci-dessus
@@ -549,6 +557,9 @@ PR 7 a appliqué des **overrides `!important`** sur les classes legacy (`.sideba
 
 | Date | Changement |
 |------|-----------|
+| 2026-05-27 | 🩹 PR 36 — Fix btn-icon trap (boutons serveur superposés) + Clé API Agents (👁/📋 strippés, labels i18n + 40 bullets placeholder) |
+| 2026-05-27 | 🧹 PR 35-bis — Bump `?v=` JS individuels (lang/game_server/sv_files/server_view/app) oublié dans PR35 |
+| 2026-05-27 | 🩹 PR 35 — Fix 4 boutons vides post-PR34 : `sharing.share_btn` raw, boutons search Mods/Modpack, loupe modale Partage, actions fichiers (renommer/supprimer) |
 | 2026-05-26 PM | 🔇 PR 34 — Nuclear emoji sweep lang.js + tous JS + login.html (~720 bytes strippés) |
 | 2026-05-26 PM | 🚪 PR 33 — Login page full Bento (brand `O OMENSERVER` + pill FR/EN/IT, plus de gradient text) |
 | 2026-05-26 PM | 🔄 PR 32 — Background bots poller cross-page (`App._activeJobs` + `.tab-badge` + toast notif) |
