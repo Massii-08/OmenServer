@@ -3060,5 +3060,87 @@ table tr:hover td {
     -webkit-text-fill-color: unset !important;
 }
 
-
-
+/* ============================================================================
+   BENTO TECH v5 — Bots module Bento cards (PR 8)
+   Replaces the inline-styled bot cards in BotsModule._renderGrid().
+   ============================================================================ */
+.bots-grid-bento {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: var(--s-3);
+}
+.bot-card-bento {
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    padding: var(--s-5);
+    display: flex; flex-direction: column; gap: var(--s-3);
+    cursor: pointer;
+    transition: var(--t-fast);
+}
+.bot-card-bento:hover {
+    background: var(--bg-elev-2);
+    border-color: var(--border-strong);
+}
+.bot-card-bento.selected {
+    border-color: var(--accent);
+    background: var(--bg-elev-2);
+}
+.bot-card-bento .b-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+}
+.bot-card-bento .b-icon {
+    font-size: 22px;
+    width: 36px;
+    height: 36px;
+    background: var(--bg-elev-3);
+    border-radius: var(--r-sm);
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+}
+.bot-card-bento .b-name-wrap {
+    flex: 1;
+    min-width: 0;
+}
+.bot-card-bento .b-name {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text);
+    letter-spacing: -0.01em;
+}
+.bot-card-bento .b-type {
+    color: var(--text-dim);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    margin-top: 2px;
+    text-transform: lowercase;
+}
+.bot-card-bento .b-shared {
+    color: var(--info);
+}
+.bot-card-bento .b-desc {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+.bot-card-bento .b-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: auto;
+    padding-top: var(--s-2);
+    border-top: 1px solid var(--border);
+}
+.bot-card-bento .b-actions .btn.danger-action {
+    color: var(--danger);
+}
+.bot-card-bento .b-actions .btn.danger-action:hover {
+    background: rgba(248,113,113,0.10) !important;
+    border-color: rgba(248,113,113,0.3) !important;
+}
+.b-quota-row {
+    margin-bottom: var(--s-3);
+}
