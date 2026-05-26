@@ -2724,5 +2724,341 @@ canvas {
    Cleanup of legacy vars will be progressive (per-module migration PRs).
    ============================================================================ */
 
+/* ============================================================================
+   BENTO TECH v5 — Legacy class overrides (PR 7)
+   Retroactively applies Bento Tech aesthetic to every existing class without
+   touching the HTML/JS of each module. CSS cascade priority does the work.
+   ============================================================================ */
+
+/* ===== Main app sidebar (left navigation) ===== */
+.sidebar {
+    background: var(--bg-elev-1) !important;
+    border-right: 1px solid var(--border) !important;
+}
+.sidebar-header {
+    border-bottom: 1px solid var(--border) !important;
+    padding: var(--s-5) var(--s-4) !important;
+}
+.sidebar-logo {
+    background: var(--bg-elev-3) !important;  /* kill the gradient */
+    color: var(--accent) !important;
+    border-radius: var(--r-sm) !important;
+    transition: background var(--t-base), color var(--t-base);
+}
+.sidebar-title {
+    font-weight: 600 !important;
+    letter-spacing: -0.01em !important;
+    color: var(--text) !important;
+}
+.sidebar-subtitle {
+    color: var(--text-dim) !important;
+    font-family: var(--font-mono);
+    font-size: 10px !important;
+    letter-spacing: 0.08em !important;
+}
+.sidebar-nav .nav-section-title {
+    color: var(--text-dim) !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.08em !important;
+    padding: var(--s-3) var(--s-4) 6px !important;
+}
+.sidebar-nav .nav-item {
+    color: var(--text-muted) !important;
+    border-left: 3px solid transparent !important;
+    transition: var(--t-fast) !important;
+    padding: 8px var(--s-4) !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+}
+.sidebar-nav .nav-item:hover {
+    background: var(--bg-elev-2) !important;
+    color: var(--text) !important;
+}
+.sidebar-nav .nav-item.active {
+    background: var(--bg-elev-2) !important;
+    color: var(--text) !important;
+    border-left-color: var(--accent) !important;
+    font-weight: 600 !important;
+}
+.sidebar-footer {
+    border-top: 1px solid var(--border) !important;
+    padding: var(--s-3) var(--s-4) !important;
+    background: var(--bg-elev-1) !important;
+}
+.user-info {
+    background: transparent !important;
+}
+.user-name {
+    color: var(--text) !important;
+    font-weight: 600 !important;
+}
+.user-role {
+    color: var(--text-dim) !important;
+    font-family: var(--font-mono);
+    font-size: 11px !important;
+}
+.user-avatar {
+    background: var(--accent-dim) !important;
+    color: var(--accent) !important;
+    border-radius: 50% !important;
+    transition: background var(--t-base), color var(--t-base);
+}
+
+/* ===== Main content area ===== */
+.main-content {
+    background: var(--bg) !important;
+}
+
+/* ===== Page header (title + subtitle) ===== */
+.page-title {
+    font-weight: 600 !important;
+    letter-spacing: -0.015em !important;
+    color: var(--text) !important;
+}
+.page-subtitle {
+    color: var(--text-dim) !important;
+    font-size: 13px !important;
+}
+
+/* ===== Cards (generic .card) ===== */
+.card {
+    background: var(--bg-elev-1) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--r-lg) !important;
+    transition: var(--t-fast) !important;
+}
+.card:hover {
+    border-color: var(--border-strong) !important;
+    box-shadow: none !important;
+    transform: none !important;
+}
+
+/* ===== Modules grid (Dashboard cards) ===== */
+.modules-grid {
+    gap: var(--s-3) !important;
+}
+.module-card {
+    background: var(--bg-elev-1) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--r-lg) !important;
+    padding: var(--s-5) !important;
+    transition: var(--t-fast) !important;
+    box-shadow: none !important;
+}
+.module-card::before {
+    content: none !important;  /* kill the colored top border */
+}
+.module-card::after {
+    content: none !important;
+}
+.module-card:hover {
+    background: var(--bg-elev-2) !important;
+    border-color: var(--border-strong) !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
+.module-card .module-icon {
+    background: var(--bg-elev-3) !important;
+    color: var(--text-muted) !important;
+    border-radius: var(--r-md) !important;
+    box-shadow: none !important;
+}
+.module-card .module-title {
+    color: var(--text) !important;
+    font-weight: 600 !important;
+    letter-spacing: -0.01em !important;
+}
+.module-card .module-description {
+    color: var(--text-muted) !important;
+    font-size: 13px !important;
+}
+.module-card .module-status {
+    background: var(--accent-dim) !important;
+    color: var(--accent) !important;
+    border: 0 !important;
+    border-radius: var(--r-pill) !important;
+    padding: 2px 8px !important;
+    font-size: 11px !important;
+    font-weight: 500 !important;
+}
+
+/* ===== Buttons (legacy .btn-* variants) ===== */
+.btn-primary {
+    background: var(--accent) !important;
+    color: var(--accent-text) !important;
+    box-shadow: none !important;
+    border: 0 !important;
+    border-radius: var(--r-sm) !important;
+    transition: var(--t-fast) !important;
+}
+.btn-primary:hover {
+    filter: brightness(1.1);
+    transform: none !important;
+    box-shadow: none !important;
+}
+.btn-secondary {
+    background: transparent !important;
+    color: var(--text) !important;
+    border: 1px solid var(--border-strong) !important;
+    border-radius: var(--r-sm) !important;
+}
+.btn-secondary:hover {
+    background: var(--bg-elev-2) !important;
+    box-shadow: none !important;
+    transform: none !important;
+}
+.btn-danger {
+    background: var(--danger) !important;
+    color: var(--bg) !important;
+    border-radius: var(--r-sm) !important;
+    box-shadow: none !important;
+}
+
+/* ===== Status badges (legacy .status-badge) ===== */
+.status-badge {
+    border-radius: var(--r-pill) !important;
+    font-size: 11px !important;
+    font-weight: 500 !important;
+    padding: 2px 8px !important;
+    box-shadow: none !important;
+    border: 0 !important;
+}
+.status-badge.running, .status-badge.active, .status-badge.online {
+    background: var(--accent-dim) !important;
+    color: var(--accent) !important;
+}
+.status-badge.stopped, .status-badge.offline, .status-badge.inactive {
+    background: var(--bg-elev-3) !important;
+    color: var(--text-muted) !important;
+}
+.status-badge.warning {
+    background: rgba(251,191,36,0.12) !important;
+    color: var(--warning) !important;
+}
+.status-badge.error, .status-badge.critical {
+    background: rgba(248,113,113,0.12) !important;
+    color: var(--danger) !important;
+}
+
+/* ===== Inputs (legacy form fields) ===== */
+input[type="text"], input[type="number"], input[type="password"],
+input[type="email"], input[type="search"], input[type="time"], select, textarea {
+    background: var(--bg) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--r-sm) !important;
+    color: var(--text) !important;
+    transition: border var(--t-fast) !important;
+}
+input:focus, select:focus, textarea:focus {
+    border-color: var(--accent) !important;
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+/* ===== Legacy stat-card (when NOT inside .bento-overview) ===== */
+.stat-card:not(.bento-overview .stat-card) {
+    background: var(--bg-elev-1) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--r-lg) !important;
+    box-shadow: none !important;
+    transition: var(--t-fast) !important;
+}
+.stat-card:not(.bento-overview .stat-card)::before {
+    content: none !important;  /* kill colored top border */
+}
+.stat-card:not(.bento-overview .stat-card):hover {
+    border-color: var(--border-strong) !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
+.stat-card .stat-value, .stat-value {
+    font-family: var(--font-mono) !important;
+    font-feature-settings: "tnum" !important;
+    font-weight: 500 !important;
+    letter-spacing: -0.02em !important;
+}
+.stat-card .stat-label, .stat-label {
+    color: var(--text-muted) !important;
+    font-size: 12px !important;
+}
+.stat-card .stat-unit, .stat-unit {
+    color: var(--text-dim) !important;
+}
+
+/* ===== Console / log output ===== */
+.console, .console-output, .log-output, .terminal-output {
+    background: #0A0A0B !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--r-lg) !important;
+    font-family: var(--font-mono) !important;
+    color: #D4D4D8 !important;
+    box-shadow: none !important;
+}
+
+/* ===== Toasts ===== */
+.toast {
+    background: var(--bg-elev-2) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--r-md) !important;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;  /* one allowed shadow for floating notif */
+    color: var(--text) !important;
+}
+.toast.info { border-left: 3px solid var(--info) !important; }
+.toast.success { border-left: 3px solid var(--accent) !important; }
+.toast.warning { border-left: 3px solid var(--warning) !important; }
+.toast.error { border-left: 3px solid var(--danger) !important; }
+
+/* ===== Tables ===== */
+table {
+    border-collapse: collapse !important;
+}
+table th {
+    background: var(--bg-elev-2) !important;
+    color: var(--text-dim) !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase !important;
+    border-bottom: 1px solid var(--border) !important;
+    padding: var(--s-3) var(--s-4) !important;
+    text-align: left;
+}
+table td {
+    border-bottom: 1px solid var(--border) !important;
+    padding: var(--s-3) var(--s-4) !important;
+    color: var(--text) !important;
+}
+table tr:hover td {
+    background: var(--bg-elev-2) !important;
+}
+
+/* ===== Modals ===== */
+.modal-overlay, .overlay {
+    background: rgba(0,0,0,0.6) !important;
+}
+.modal, .modal-content {
+    background: var(--bg-elev-1) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--r-lg) !important;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6) !important;  /* deeper for modal */
+}
+
+/* ===== Numbers everywhere — encourage mono ===== */
+.metric, .number-value, .count, .pct, .price {
+    font-family: var(--font-mono) !important;
+    font-feature-settings: "tnum" !important;
+}
+
+/* ===== Misc legacy → Bento adjustments ===== */
+.gradient-text, .gradient-bg {
+    background: none !important;
+    background-image: none !important;
+    color: var(--accent) !important;
+    -webkit-background-clip: unset !important;
+    -webkit-text-fill-color: unset !important;
+}
+
 
 
