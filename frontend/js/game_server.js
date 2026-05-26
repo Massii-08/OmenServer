@@ -363,14 +363,14 @@ const GameServer = {
  btns = `<button class="btn btn-icon btn-secondary" disabled style="opacity:0.5;">…</button>`;
  } else if (isRunning) {
  btns = canManage ? `
- <button class="btn btn-icon btn-secondary" onclick="GameServer.stopServer(${server.id})" title="${Lang.t('common.stop')}">${Lang.t('common.stop')}</button><button class="btn btn-icon btn-secondary" onclick="GameServer.restartServer(${server.id})" title="${Lang.t('common.restart')}">${Lang.t('common.restart')}</button>
+ <button class="btn btn-secondary btn-sm" onclick="GameServer.stopServer(${server.id})" title="${Lang.t('common.stop')}">${Lang.t('common.stop')}</button><button class="btn btn-secondary btn-sm" onclick="GameServer.restartServer(${server.id})" title="${Lang.t('common.restart')}">${Lang.t('common.restart')}</button>
  ` : '';
  } else {
- btns = canStart ? `<button class="btn btn-icon btn-primary" onclick="GameServer.startServer(${server.id})" title="${Lang.t('common.start')}">${Lang.t('common.start')}</button>` : '';
+ btns = canStart ? `<button class="btn btn-primary btn-sm" onclick="GameServer.startServer(${server.id})" title="${Lang.t('common.start')}">${Lang.t('common.start')}</button>` : '';
  }
  // Share button for owner only
  if (isOwner) {
- btns += `<button class="btn btn-icon btn-secondary" onclick="SharingModal.open(${server.id},'server')" title="${Lang.t('sharing.title')}">${Lang.t('sharing.share_btn')}</button>`;
+ btns += `<button class="btn btn-secondary btn-sm" onclick="SharingModal.open(${server.id},'server')" title="${Lang.t('sharing.title')}">${Lang.t('sharing.share_btn')}</button>`;
  }
  return btns;
  })()}

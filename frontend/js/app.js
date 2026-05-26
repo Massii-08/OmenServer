@@ -726,7 +726,7 @@ const App = {
  ` : ''}
 
  ${isAdmin ? `
- <div class="card"><h3 class="card-title" style="margin:0;">${t('nodes.api_key')}</h3><p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">${t('nodes.api_key_desc')}</p><div style="display:flex;gap:8px;margin-top:12px;align-items:center;"><code id="nodes-api-key" style="flex:1;padding:8px 12px;background:var(--bg-elev-3);border:1px solid var(--border);border-radius:6px;font-size:12px;word-break:break-all;color:var(--text);">${t('common.loading')}</code><button id="nodes-key-toggle" class="btn btn-secondary btn-sm" onclick="App._toggleNodesKeyVisibility()" title="${t('nodes.show_key')}"></button><button class="btn btn-secondary btn-sm" onclick="App._copyNodesKey()" title="${t('nodes.copy')}"></button><button class="btn btn-secondary btn-sm" onclick="App._resetNodesKey()" style="font-size:11px;">${t('nodes.reset_key')}</button></div></div>
+ <div class="card"><h3 class="card-title" style="margin:0;">${t('nodes.api_key')}</h3><p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">${t('nodes.api_key_desc')}</p><div style="display:flex;gap:8px;margin-top:12px;align-items:center;"><code id="nodes-api-key" style="flex:1;padding:8px 12px;background:var(--bg-elev-3);border:1px solid var(--border);border-radius:6px;font-size:12px;word-break:break-all;color:var(--text);">${t('common.loading')}</code><button id="nodes-key-toggle" class="btn btn-secondary btn-sm" onclick="App._toggleNodesKeyVisibility()" title="${t('nodes.show_key')}">${t('nodes.show')}</button><button class="btn btn-secondary btn-sm" onclick="App._copyNodesKey()" title="${t('nodes.copy')}">${t('nodes.copy')}</button><button class="btn btn-secondary btn-sm" onclick="App._resetNodesKey()" style="font-size:11px;">${t('nodes.reset_key')}</button></div></div>
  ` : ''}
  </div>
  `;
@@ -961,7 +961,7 @@ const App = {
  this._nodesKeyReal = data.key;
  this._nodesKeyVisible = false;
  const el = document.getElementById('nodes-api-key');
- if (el) el.textContent = '';
+ if (el) el.textContent = '•'.repeat(40);
  },
 
  _toggleNodesKeyVisibility() {
@@ -969,8 +969,8 @@ const App = {
  this._nodesKeyVisible = !this._nodesKeyVisible;
  const el = document.getElementById('nodes-api-key');
  const btn = document.getElementById('nodes-key-toggle');
- if (el) el.textContent = this._nodesKeyVisible ? this._nodesKeyReal : '';
- if (btn) btn.textContent = this._nodesKeyVisible ? '' : '';
+ if (el) el.textContent = this._nodesKeyVisible ? this._nodesKeyReal : '•'.repeat(40);
+ if (btn) btn.textContent = this._nodesKeyVisible ? Lang.t('nodes.hide') : Lang.t('nodes.show');
  },
 
  async _copyNodesKey() {
