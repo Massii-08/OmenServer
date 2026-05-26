@@ -39,12 +39,12 @@ const ServerView = {
  actionBtns = `<button class="btn btn-sm btn-secondary" disabled style="opacity:0.5;width:100%;">${Lang.t('sv.wait')}</button>`;
  } else if (isRunning) {
  statusColor = 'var(--accent)';
- statusText = '● ' + Lang.t('sv.running');
+ statusText = ' ' + Lang.t('sv.running');
  actionBtns = canManage ? `
  <button class="btn btn-sm btn-secondary" onclick="ServerView.action('stop')">Stop</button><button class="btn btn-sm btn-secondary" onclick="ServerView.action('restart')">Restart</button>` : '';
  } else {
  statusColor = 'var(--text-muted)';
- statusText = '○ ' + Lang.t('sv.stopped');
+ statusText = ' ' + Lang.t('sv.stopped');
  actionBtns = canStart ? `<button class="btn btn-sm btn-primary" onclick="ServerView.action('start')">${Lang.t('common.start')}</button>` : '';
  }
 
@@ -156,12 +156,12 @@ const ServerView = {
  actionBtns = `<button class="btn btn-sm btn-secondary" disabled style="opacity:0.5;width:100%;">${Lang.t('sv.wait')}</button>`;
  } else if (isRunning) {
  statusColor = 'var(--accent)';
- statusText = '● ' + Lang.t('sv.running');
+ statusText = ' ' + Lang.t('sv.running');
  actionBtns = canManage ? `
  <button class="btn btn-sm btn-secondary" onclick="ServerView.action('stop')">Stop</button><button class="btn btn-sm btn-secondary" onclick="ServerView.action('restart')">Restart</button>` : '';
  } else {
  statusColor = 'var(--text-muted)';
- statusText = '○ ' + Lang.t('sv.stopped');
+ statusText = ' ' + Lang.t('sv.stopped');
  actionBtns = canStart ? `<button class="btn btn-sm btn-primary" onclick="ServerView.action('start')">${Lang.t('common.start')}</button>` : '';
  }
 
@@ -211,9 +211,9 @@ const ServerView = {
  const labels = { start: Lang.t('sv.starting'), stop: Lang.t('sv.stopping'), restart: Lang.t('sv.restarting') };
  uptimeHtml = `<span style="color:var(--warning);font-weight:600;"> ${labels[this._pendingAction]}</span>`;
  } else if (isRunning) {
- uptimeHtml = '<span style="color:var(--accent);font-weight:600;">● ' + Lang.t('gs.online') + '</span>';
+ uptimeHtml = '<span style="color:var(--accent);font-weight:600;"> ' + Lang.t('gs.online') + '</span>';
  } else {
- uptimeHtml = '<span style="color:var(--text-muted);">○ ' + Lang.t('gs.offline') + '</span>';
+ uptimeHtml = '<span style="color:var(--text-muted);"> ' + Lang.t('gs.offline') + '</span>';
  }
  
  // Boutons avec gestion du pending
@@ -548,7 +548,7 @@ const ServerView = {
  ? `${Lang.t('scheduler.at')} ${t.schedule_time} (${t.schedule_days || 'daily'})`
  : `${Lang.t('sv.sched.every')} ${t.interval_hours}h`;
  return `
- <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><div><span style="font-weight:600;">${t.task_type==='backup'?'Backup':'Restart'}</span> · ${schedInfo} <span style="color:${t.enabled?'var(--accent)':'var(--text-muted)'};">${t.enabled?Lang.t('sv.sched.active'):Lang.t('sv.sched.inactive')}</span></div><div class="flex gap-2"><button class="btn btn-sm btn-secondary" onclick="ServerView._toggleTask(${t.id})">${t.enabled?'⏸':'▶️'}</button><button class="btn btn-sm btn-danger" onclick="ServerView._deleteTask(${t.id})"></button></div></div>`;
+ <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><div><span style="font-weight:600;">${t.task_type==='backup'?'Backup':'Restart'}</span> · ${schedInfo} <span style="color:${t.enabled?'var(--accent)':'var(--text-muted)'};">${t.enabled?Lang.t('sv.sched.active'):Lang.t('sv.sched.inactive')}</span></div><div class="flex gap-2"><button class="btn btn-sm btn-secondary" onclick="ServerView._toggleTask(${t.id})">${t.enabled?'⏸':''}</button><button class="btn btn-sm btn-danger" onclick="ServerView._deleteTask(${t.id})"></button></div></div>`;
  }).join('');
  },
 
