@@ -12,7 +12,7 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="apple-touch-icon" href="/icon-512.svg">
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/css/style.css?v=83">
+    <link rel="stylesheet" href="/css/style.css?v=84">
 </head>
 <body>
     <div class="app-layout">
@@ -33,36 +33,27 @@
             <!-- Navigation -->
             <nav class="sidebar-nav">
                 <div class="nav-section-label">Général</div>
-                <a class="nav-item active" data-view="hub" onclick="App.navigateTo('hub')">
-                    <span class="nav-item-icon">📊</span> Dashboard
+                <a class="nav-item active" data-view="hub" onclick="App.navigateTo('hub')"> Dashboard
                 </a>
 
                 <div class="nav-section-label">Modules</div>
-                <a class="nav-item" data-view="game_server" onclick="App.navigateTo('game_server')" id="nav-game_server">
-                    <span class="nav-item-icon">🎮</span> Serveurs de jeux
+                <a class="nav-item" data-view="game_server" onclick="App.navigateTo('game_server')" id="nav-game_server"> Serveurs de jeux
                 </a>
-                <a class="nav-item" data-view="bots" onclick="App.navigateTo('bots')" id="nav-bots">
-                    <span class="nav-item-icon">🤖</span> Bots
+                <a class="nav-item" data-view="bots" onclick="App.navigateTo('bots')" id="nav-bots"> Bots
                 </a>
-                <a class="nav-item" data-view="files" onclick="App.navigateTo('files')" id="nav-files">
-                    <span class="nav-item-icon">📁</span> Fichiers
+                <a class="nav-item" data-view="files" onclick="App.navigateTo('files')" id="nav-files"> Fichiers
                 </a>
-                <a class="nav-item" data-view="media" onclick="App.navigateTo('media')" id="nav-media">
-                    <span class="nav-item-icon">📺</span> Média
+                <a class="nav-item" data-view="media" onclick="App.navigateTo('media')" id="nav-media"> Média
                 </a>
-                <a class="nav-item" data-view="web" onclick="App.navigateTo('web')" id="nav-web">
-                    <span class="nav-item-icon">🌐</span> Web
+                <a class="nav-item" data-view="web" onclick="App.navigateTo('web')" id="nav-web"> Web
                 </a>
-                <a class="nav-item" data-view="network" onclick="App.navigateTo('network')" id="nav-network">
-                    <span class="nav-item-icon">📡</span> Réseau
+                <a class="nav-item" data-view="network" onclick="App.navigateTo('network')" id="nav-network"> Réseau
                 </a>
 
                 <div class="nav-section-label">Système</div>
-                <a class="nav-item" data-view="users" onclick="App.navigateTo('users')" id="nav-users" style="display:none;">
-                    <span class="nav-item-icon">👥</span> Utilisateurs
+                <a class="nav-item" data-view="users" onclick="App.navigateTo('users')" id="nav-users" style="display:none;"> Utilisateurs
                 </a>
-                <a class="nav-item" data-view="settings" onclick="App.navigateTo('settings')">
-                    <span class="nav-item-icon">⚙️</span> Paramètres
+                <a class="nav-item" data-view="settings" onclick="App.navigateTo('settings')"> Paramètres
                 </a>
             </nav>
 
@@ -74,7 +65,7 @@
                         <div class="user-name" id="user-name">—</div>
                         <div class="user-role" id="user-role">—</div>
                     </div>
-                    <button onclick="Lang.toggle()" title="FR/EN" style="background:none;border:none;cursor:pointer;font-size:16px;padding:4px;" id="lang-btn">🌐</button>
+                    <button onclick="Lang.toggle()" title="Lingua" style="background:none;border:1px solid var(--border);border-radius:var(--r-sm);cursor:pointer;font-family:var(--font-mono);font-size:11px;font-weight:600;color:var(--text-muted);padding:3px 8px;letter-spacing:0.06em;" id="lang-btn">IT</button>
                     <div class="accent-switcher-mini" id="accent-switcher" title="Couleur d'accent">
                         <span class="accent-dot" data-acc="green"  title="Vert (défaut)"></span>
                         <span class="accent-dot" data-acc="blue"   title="Bleu"></span>
@@ -95,7 +86,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="/js/lang.js?v=105"></script>
+    <script src="/js/lang.js?v=106"></script>
     <script src="/js/toast.js?v=86"></script>
     <script src="/js/auth.js?v=85"></script>
     <script src="/js/monitoring.js?v=90"></script>

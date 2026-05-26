@@ -242,11 +242,7 @@ body {
     font-weight: 500;
 }
 
-.nav-item-icon {
-    font-size: 18px;
-    width: 24px;
-    text-align: center;
-}
+/* .nav-item-icon removed in PR25 — sidebar nav is text-only */
 
 /* Sidebar footer */
 .sidebar-footer {
