@@ -72,7 +72,7 @@ const FilesModule = {
                 <div style="flex:1;">
                     <div style="font-weight:700;font-size:15px;">Google Drive ${status.connected ? Lang.t('files.gdrive_connected') : ''}</div>
                     <div style="font-size:13px;color:var(--text-muted);margin-top:2px;">${status.message}</div>
-                    ${status.email ? `<div style="font-size:12px;color:var(--accent-blue);margin-top:2px;">📧 ${status.email}</div>` : ''}
+                    ${status.email ? `<div style="font-size:12px;color:var(--info);margin-top:2px;">📧 ${status.email}</div>` : ''}
                 </div>
                 ${!status.connected && status.status === 'not_authenticated' ? `
                     <button class="btn btn-primary" onclick="FilesModule.connectGDrive()">${Lang.t('files.connect')}</button>
@@ -155,7 +155,7 @@ const FilesModule = {
             <div style="display:flex;flex-direction:column;gap:2px;">
                 ${files.map(f => `
                     <div style="display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:6px;cursor:pointer;transition:all .1s;"
-                        onmouseover="this.style.background='var(--bg-tertiary)'"
+                        onmouseover="this.style.background='var(--bg-elev-3)'"
                         onmouseout="this.style.background='transparent'"
                         onclick="${f.type === 'folder' ? `FilesModule._currentFolder='${f.id}';FilesModule.loadDriveFiles()` : ''}">
                         <span style="font-size:18px;">${typeIcons[f.type] || '📄'}</span>

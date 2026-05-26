@@ -26,3 +26,4 @@ yield-bot/uploads/
 agentdb.rvf
 agentdb.rvf.lock
 .ruflo/
+.claude/

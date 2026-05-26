@@ -13,7 +13,7 @@ const SvPlayers = {
         return `
         <h2>${Lang.t('sv.pl.title')}</h2>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.pl.desc')}</p>
-        <div id="sv-pl-tabs" style="display:flex;gap:0;margin-bottom:20px;border-bottom:2px solid var(--border-color);">
+        <div id="sv-pl-tabs" style="display:flex;gap:0;margin-bottom:20px;border-bottom:2px solid var(--border);">
             ${this._subTabs()}
         </div>
         <div id="sv-pl-content"><div style="color:var(--text-muted)">⏳ ${Lang.t('common.loading')}</div></div>`;
@@ -27,9 +27,9 @@ const SvPlayers = {
         ];
         return tabs.map(t => `
             <button onclick="SvPlayers.switchSub('${t.id}')" 
-                style="padding:10px 18px;background:${this._currentSub===t.id?'var(--bg-card)':'transparent'};
-                color:${this._currentSub===t.id?'var(--accent-blue)':'var(--text-muted)'};
-                border:none;border-bottom:2px solid ${this._currentSub===t.id?'var(--accent-blue)':'transparent'};
+                style="padding:10px 18px;background:${this._currentSub===t.id?'var(--bg-elev-1)':'transparent'};
+                color:${this._currentSub===t.id?'var(--info)':'var(--text-muted)'};
+                border:none;border-bottom:2px solid ${this._currentSub===t.id?'var(--info)':'transparent'};
                 cursor:pointer;font-size:13px;font-weight:${this._currentSub===t.id?'600':'400'};
                 transition:all .15s;margin-bottom:-2px;">
                 ${t.icon} ${t.label}
@@ -63,7 +63,7 @@ const SvPlayers = {
         
         // Formulaire d'ajout
         let addForm = `
-        <div style="background:var(--bg-secondary);padding:14px;border-radius:8px;margin-bottom:16px;">
+        <div style="background:var(--bg-elev-1);padding:14px;border-radius:8px;margin-bottom:16px;">
             <div style="display:flex;gap:8px;align-items:flex-end;">
                 <div style="flex:1;">
                     <label style="font-size:12px;color:var(--text-muted);">${Lang.t('sv.pl.pseudo')}</label>
@@ -89,8 +89,8 @@ const SvPlayers = {
             list = players.map(p => {
                 const name = p.name || Lang.t('sv.pl.unknown');
                 const extra = this._currentSub === 'banned' ? ` · <span style="color:var(--text-muted);font-size:11px;">${p.reason||Lang.t('sv.pl.no_reason')}</span>` : '';
-                const level = this._currentSub === 'ops' ? ` · <span style="color:var(--accent-blue);font-size:11px;">${Lang.t('sv.pl.level')} ${p.level||4}</span>` : '';
-                return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;">
+                const level = this._currentSub === 'ops' ? ` · <span style="color:var(--info);font-size:11px;">${Lang.t('sv.pl.level')} ${p.level||4}</span>` : '';
+                return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;">
                     <div>
                         <span style="font-weight:600;font-size:14px;">${l.emoji} ${name}</span>${level}${extra}
                     </div>
@@ -121,7 +121,7 @@ const SvPlayers = {
         });
         
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${name} ${Lang.t('sv.pl.added')}`; }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${name} ${Lang.t('sv.pl.added')}`; }
             if (nameEl) nameEl.value = '';
             this._load();
         } else {

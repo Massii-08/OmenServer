@@ -939,7 +939,7 @@ const App = {
             const data = await response.json();
             const link = `${location.origin}/login?invite=${data.code}`;
             resultEl.innerHTML = `
-                <div style="background: var(--bg-hover); border-radius: 8px; padding: 12px; border: 1px solid var(--accent);">
+                <div style="background: var(--bg-elev-2); border-radius: 8px; padding: 12px; border: 1px solid var(--accent);">
                     <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">🔗 Lien d'invitation (${data.role_name})</div>
                     <div style="font-family: monospace; font-size: 14px; color: var(--accent); word-break: break-all;">${link}</div>
                     <button class="btn btn-secondary btn-sm mt-4" onclick="navigator.clipboard.writeText('${link}').then(() => this.textContent = '✅ Copié !')">

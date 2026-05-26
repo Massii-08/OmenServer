@@ -16,7 +16,7 @@ const SvSettings = {
         return `
         <h2>${Lang.t('sv.set_title')}</h2>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.set_desc')}</p>
-        <div id="sv-set-tabs" style="display:flex;gap:0;margin-bottom:20px;border-bottom:2px solid var(--border-color);">
+        <div id="sv-set-tabs" style="display:flex;gap:0;margin-bottom:20px;border-bottom:2px solid var(--border);">
             ${this._subTabs()}
         </div>
         <div id="sv-set-content"><div style="color:var(--text-muted)">${Lang.t('sv.set_loading')}</div></div>`;
@@ -33,9 +33,9 @@ const SvSettings = {
         ];
         return tabs.map(t => `
             <button onclick="SvSettings.switchSub('${t.id}')" id="sv-set-tab-${t.id}"
-                style="padding:10px 18px;background:${this._currentSub===t.id?'var(--bg-card)':'transparent'};
-                color:${this._currentSub===t.id?'var(--accent-blue)':'var(--text-muted)'};
-                border:none;border-bottom:2px solid ${this._currentSub===t.id?'var(--accent-blue)':'transparent'};
+                style="padding:10px 18px;background:${this._currentSub===t.id?'var(--bg-elev-1)':'transparent'};
+                color:${this._currentSub===t.id?'var(--info)':'var(--text-muted)'};
+                border:none;border-bottom:2px solid ${this._currentSub===t.id?'var(--info)':'transparent'};
                 cursor:pointer;font-size:13px;font-weight:${this._currentSub===t.id?'600':'400'};
                 transition:all .15s;margin-bottom:-2px;">
                 ${t.icon} ${t.label}
@@ -85,11 +85,11 @@ const SvSettings = {
         }
         if (type === 'toggle') {
             const checked = val === 'true' ? 'checked' : '';
-            return `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-color);">
+            return `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);">
                 <span style="font-size:13px;">${label}</span>
                 <label style="position:relative;width:44px;height:24px;cursor:pointer;">
                     <input type="checkbox" data-prop="${key}" ${checked} style="opacity:0;width:0;height:0;" onchange="this.parentElement.querySelector('span').style.transform=this.checked?'translateX(20px)':'translateX(0)'">
-                    <span style="position:absolute;top:0;left:0;right:0;bottom:0;background:${checked?'var(--accent-blue)':'var(--border-color)'};border-radius:12px;transition:.2s;"></span>
+                    <span style="position:absolute;top:0;left:0;right:0;bottom:0;background:${checked?'var(--info)':'var(--border)'};border-radius:12px;transition:.2s;"></span>
                     <span style="position:absolute;top:2px;left:2px;width:20px;height:20px;background:white;border-radius:50%;transition:.2s;transform:${checked?'translateX(20px)':'translateX(0)'}"></span>
                 </label>
             </div>`;
@@ -117,12 +117,12 @@ const SvSettings = {
             else props[key] = el.value;
         });
         const msg = document.getElementById('sv-set-msg');
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳ Sauvegarde...'; }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = '⏳ Sauvegarde...'; }
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/properties`, {
             method: 'PUT', body: JSON.stringify({properties: props})
         });
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('sv.set_saved'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.set_saved'); }
             this._props = {...this._props, ...props};
         } else {
             if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '❌ Erreur'; }
@@ -176,14 +176,14 @@ const SvSettings = {
     // --- Sous-onglet Protocoles ---
     _protocolsSub(p) {
         return `
-        <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;margin-bottom:20px;">
+        <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-bottom:20px;">
             <h3 style="margin:0 0 8px;font-size:15px;">📡 RCON (Remote Console)</h3>
             <p style="color:var(--text-muted);font-size:12px;margin-bottom:12px;">${Lang.t('sv.cfg.rcon_desc')}</p>
             ${this._field(Lang.t('sv.cfg.enable_rcon'), 'enable-rcon', 'toggle')}
             ${this._field(Lang.t('sv.cfg.rcon_port'), 'rcon.port', 'number', {default:'25575'})}
             ${this._field(Lang.t('sv.cfg.rcon_pass'), 'rcon.password', 'text', {placeholder:Lang.t('sv.cfg.rcon_pass')})}
         </div>
-        <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
+        <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;">
             <h3 style="margin:0 0 8px;font-size:15px;">🔍 Query</h3>
             <p style="color:var(--text-muted);font-size:12px;margin-bottom:12px;">${Lang.t('sv.cfg.query_desc')}</p>
             ${this._field(Lang.t('sv.cfg.enable_query'), 'enable-query', 'toggle')}
@@ -195,7 +195,7 @@ const SvSettings = {
     // --- Sous-onglet Pack de ressources ---
     _resourcePackSub(p) {
         return `
-        <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;margin-bottom:16px;">
+        <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-bottom:16px;">
             <p style="color:var(--text-muted);font-size:12px;margin-bottom:16px;">
                 ${Lang.t('sv.cfg.rp_desc')}
             </p>
@@ -212,11 +212,11 @@ const SvSettings = {
         const s = this._serverData;
         return `
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;">
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
+            <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;">
                 <div style="font-size:12px;color:var(--text-muted);">${Lang.t('sv.cfg.server_type')}</div>
                 <div style="font-size:15px;margin-top:4px;font-weight:600;">${s.game_type || 'minecraft'}</div>
             </div>
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
+            <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;">
                 <div style="font-size:12px;color:var(--text-muted);">Version</div>
                 <div style="font-size:15px;margin-top:4px;font-weight:600;">${s.version || 'LATEST'}</div>
             </div>
@@ -225,10 +225,10 @@ const SvSettings = {
         <div style="margin-bottom:20px;">
             <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
                 <label class="form-label" style="margin:0;">${Lang.t('sv.cfg.memory')}</label>
-                <span id="sv-ram-val" style="font-family:monospace;font-weight:700;color:var(--accent-blue);font-size:16px;">${((s.memory_mb||1024) / 1024).toFixed(1).replace(/\.0$/, '')} Go</span>
+                <span id="sv-ram-val" style="font-family:monospace;font-weight:700;color:var(--info);font-size:16px;">${((s.memory_mb||1024) / 1024).toFixed(1).replace(/\.0$/, '')} Go</span>
             </div>
             <input type="range" id="sv-ram-slider" min="0.5" max="16" step="0.5" value="${((s.memory_mb||1024) / 1024).toFixed(1)}"
-                style="width:100%;accent-color:var(--accent-blue);cursor:pointer;"
+                style="width:100%;accent-color:var(--info);cursor:pointer;"
                 oninput="document.getElementById('sv-ram-val').textContent=parseFloat(this.value).toFixed(1).replace(/\\.0$/,'')+' Go'" />
             <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-top:4px;">
                 <span>0.5 Go</span><span>16 Go</span>
@@ -285,12 +285,12 @@ const SvSettings = {
         const ram = Math.round(ramGb * 1024);
         const cpu = parseInt(document.getElementById('sv-cpu-slider').value);
         const msg = document.getElementById('sv-res-msg');
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳...'; }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = '⏳...'; }
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/resources`, {
             method: 'PUT', body: JSON.stringify({memory_mb: ram, cpu_percent: cpu})
         });
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('sv.cfg.res_applied'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.cfg.res_applied'); }
         } else {
             if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '❌ Erreur'; }
         }
@@ -336,9 +336,9 @@ const SvSettings = {
         <div style="font-weight:600;margin-bottom:12px;">${Lang.t('sv.cfg.jvm_presets')}</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px;">
             ${presets.map(pr => `
-                <div style="background:var(--bg-secondary);padding:12px;border-radius:8px;cursor:pointer;border:2px solid var(--border-color);transition:all .15s;"
-                    onclick="document.getElementById('sv-jvm-textarea').value='${pr.flags.replace(/'/g, "\\\'")}';"                    onmouseover="this.style.borderColor='var(--accent-blue)'"
-                    onmouseout="this.style.borderColor='var(--border-color)'">
+                <div style="background:var(--bg-elev-1);padding:12px;border-radius:8px;cursor:pointer;border:2px solid var(--border);transition:all .15s;"
+                    onclick="document.getElementById('sv-jvm-textarea').value='${pr.flags.replace(/'/g, "\\\'")}';"                    onmouseover="this.style.borderColor='var(--info)'"
+                    onmouseout="this.style.borderColor='var(--border)'">
                     <div style="font-size:13px;font-weight:600;">${pr.name}</div>
                     <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">${pr.desc}</div>
                 </div>
@@ -358,13 +358,13 @@ const SvSettings = {
     async _saveJvm() {
         const flags = document.getElementById('sv-jvm-textarea')?.value?.trim() || '';
         const msg = document.getElementById('sv-jvm-msg');
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.cfg.jvm_saving'); }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('sv.cfg.jvm_saving'); }
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/jvm-flags`, {
             method: 'PUT', body: JSON.stringify({ jvm_flags: flags })
         });
         if (r && r.ok) {
             const data = await r.json();
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${data.message} ${data.note}`; }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${data.message} ${data.note}`; }
             this._serverData.jvm_flags = flags;
         } else {
             if (msg) { msg.style.color = '#e74c3c'; msg.textContent = '❌ Erreur'; }
@@ -388,7 +388,7 @@ const SvSettings = {
             return;
         }
 
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.cfg.deleting'); }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('sv.cfg.deleting'); }
 
         const r = await Auth.apiCall(`/api/servers/${this._serverId}`, { method: 'DELETE' });
         if (r && r.ok) {

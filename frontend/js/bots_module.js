@@ -326,7 +326,7 @@ const BotsModule = {
                 </div>
 
                 <!-- Formulaire nouvelle tâche -->
-                <div style="background:var(--bg-primary);border-radius:8px;padding:14px;margin-bottom:16px;border:1px solid var(--border-color);">
+                <div style="background:var(--bg-elev-3);border-radius:8px;padding:14px;margin-bottom:16px;border:1px solid var(--border);">
                     <div style="font-size:13px;font-weight:600;margin-bottom:10px;">${Lang.t('bots.new_sched_task')}</div>
                     <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
                         <div style="flex:1;min-width:140px;">
@@ -389,7 +389,7 @@ const BotsModule = {
                         ${taskList.map(t => {
                             const locale = Lang.t('common.locale') || 'fr-FR';
                             return `
-                            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
+                            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);">
                                 <span style="font-size:18px;">${taskIcons[t.task_type] || '📋'}</span>
                                 <div style="flex:1;">
                                     <div style="font-size:13px;font-weight:600;">${taskLabels[t.task_type] || t.task_type}</div>
@@ -400,7 +400,7 @@ const BotsModule = {
                                     </div>
                                 </div>
                                 <div style="display:flex;gap:6px;align-items:center;">
-                                    <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.05)'};color:${t.enabled ? 'var(--accent-green)' : 'var(--text-muted)'};">
+                                    <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.05)'};color:${t.enabled ? 'var(--accent)' : 'var(--text-muted)'};">
                                         ${t.enabled ? '● ' + Lang.t('scheduler.active') : '○ ' + Lang.t('scheduler.inactive')}
                                     </span>
                                     <button class="btn btn-sm btn-secondary" onclick="BotsModule.toggleBotTask(${t.id}, ${botId})" title="${t.enabled ? 'Pause' : 'Resume'}">${t.enabled ? '⏸' : '▶️'}</button>
@@ -491,7 +491,7 @@ const BotsModule = {
                         <button class="btn btn-primary btn-sm" onclick="BotsModule.saveCode(${id})">💾 ${Lang.t('common.save')}</button>
                     </div>
                 </div>
-                <textarea id="bot-code-editor" spellcheck="false" style="width:100%;min-height:400px;background:#0d1117;color:#c9d1d9;border:1px solid var(--border-color);border-radius:8px;padding:16px;font-family:'Fira Code',monospace;font-size:13px;line-height:1.6;resize:vertical;tab-size:4;outline:none;">${data.code.replace(/</g,'&lt;')}</textarea>
+                <textarea id="bot-code-editor" spellcheck="false" style="width:100%;min-height:400px;background:#0d1117;color:#c9d1d9;border:1px solid var(--border);border-radius:8px;padding:16px;font-family:'Fira Code',monospace;font-size:13px;line-height:1.6;resize:vertical;tab-size:4;outline:none;">${data.code.replace(/</g,'&lt;')}</textarea>
             </div>`;
         // Support Tab dans l'éditeur
         const editor = document.getElementById('bot-code-editor');
@@ -516,7 +516,7 @@ const BotsModule = {
     async saveCode(id) {
         const code = document.getElementById('bot-code-editor')?.value || '';
         const msg = document.getElementById('code-save-msg');
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳...'; }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = '⏳...'; }
 
         const r = await Auth.apiCall(`/api/bots/${id}/code`, {
             method: 'PUT',
@@ -524,7 +524,7 @@ const BotsModule = {
         });
 
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('bots.saved'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('bots.saved'); }
         } else {
             if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
         }
@@ -664,15 +664,15 @@ const BotsModule = {
                 </div>
 
                 <!-- Seuil prix coloration -->
-                <div class="yield-threshold-container" style="margin-top:14px;padding:12px 16px;background:var(--bg-primary);border-radius:10px;border:1px solid var(--border-color);">
+                <div class="yield-threshold-container" style="margin-top:14px;padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                         <label style="font-size:13px;font-weight:600;">🎨 ${Lang.t('yield.threshold_label') || 'Seuil coloration prix'}</label>
-                        <span id="yield-threshold-value" style="font-size:14px;font-weight:700;color:var(--accent-blue);min-width:40px;text-align:right;">${this._yieldState.priceThreshold}</span>
+                        <span id="yield-threshold-value" style="font-size:14px;font-weight:700;color:var(--info);min-width:40px;text-align:right;">${this._yieldState.priceThreshold}</span>
                     </div>
                     <div style="display:flex;align-items:center;gap:10px;">
                         <span style="font-size:11px;color:var(--text-muted);">90</span>
                         <input type="range" id="yield-threshold-slider" min="90" max="110" step="0.5" value="${this._yieldState.priceThreshold}"
-                            style="flex:1;accent-color:var(--accent-blue);cursor:pointer;"
+                            style="flex:1;accent-color:var(--info);cursor:pointer;"
                             oninput="BotsModule._onThresholdChange(this.value)">
                         <span style="font-size:11px;color:var(--text-muted);">110</span>
                     </div>
@@ -690,7 +690,7 @@ const BotsModule = {
                     ${Lang.t('yield.launch')}
                 </button>
 
-                <div id="yield-error-msg" style="display:none;margin-top:12px;color:var(--accent-red);font-size:13px;text-align:center;"></div>
+                <div id="yield-error-msg" style="display:none;margin-top:12px;color:var(--danger);font-size:13px;text-align:center;"></div>
             </div>
         `;
     },
@@ -1024,7 +1024,7 @@ const BotsModule = {
                 <!-- Progress bar complète -->
                 <div class="yield-progress-container" style="margin-top:16px;">
                     <div class="yield-progress-bar">
-                        <div class="yield-progress-fill" style="width:${data.progress_percent || 0}%;${!isSuccess ? 'background:linear-gradient(90deg,var(--accent-yellow),var(--accent-red));' : ''}"></div>
+                        <div class="yield-progress-fill" style="width:${data.progress_percent || 0}%;${!isSuccess ? 'background:linear-gradient(90deg,var(--warning),var(--danger));' : ''}"></div>
                     </div>
                     <div class="yield-progress-text" style="margin-top:4px;">
                         <span>${data.progress || ''}</span>
@@ -1267,7 +1267,7 @@ const BotsModule = {
                 <p style="color:var(--text-muted);font-size:13px;margin-bottom:20px;">${Lang.t('scanner.criteria_desc')}</p>
 
                 <!-- Prezzo massimo -->
-                <div class="yield-threshold-container" style="margin-bottom:14px;padding:12px 16px;background:var(--bg-primary);border-radius:10px;border:1px solid var(--border-color);">
+                <div class="yield-threshold-container" style="margin-bottom:14px;padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                         <label style="font-size:13px;font-weight:600;">💰 ${Lang.t('scanner.max_price')}</label>
                         <span id="scanner-price-value" style="font-size:14px;font-weight:700;color:#10b981;">${s.maxPrice}</span>
@@ -1282,7 +1282,7 @@ const BotsModule = {
                 </div>
 
                 <!-- Yield minimo -->
-                <div class="yield-threshold-container" style="margin-bottom:14px;padding:12px 16px;background:var(--bg-primary);border-radius:10px;border:1px solid var(--border-color);">
+                <div class="yield-threshold-container" style="margin-bottom:14px;padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                         <label style="font-size:13px;font-weight:600;">📈 ${Lang.t('scanner.min_yield')}</label>
                         <span id="scanner-yield-value" style="font-size:14px;font-weight:700;color:#10b981;">${s.minYield}%</span>
@@ -1297,7 +1297,7 @@ const BotsModule = {
                 </div>
 
                 <!-- Numero massimo di bond -->
-                <div class="yield-threshold-container" style="margin-bottom:14px;padding:12px 16px;background:var(--bg-primary);border-radius:10px;border:1px solid var(--border-color);">
+                <div class="yield-threshold-container" style="margin-bottom:14px;padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                         <label style="font-size:13px;font-weight:600;">🎯 ${Lang.t('scanner.max_results')}</label>
                         <span id="scanner-maxresults-value" style="font-size:14px;font-weight:700;color:#10b981;">${s.maxResults === 0 ? '∞' : s.maxResults}</span>
@@ -1314,7 +1314,7 @@ const BotsModule = {
 
                 <!-- Scadenza + Rating + Valute -->
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
-                    <div style="padding:12px 16px;background:var(--bg-primary);border-radius:10px;border:1px solid var(--border-color);">
+                    <div style="padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);">
                         <label style="font-size:13px;font-weight:600;">📅 ${Lang.t('scanner.maturity')}</label>
                         <select id="scanner-maturity" class="form-input" style="margin-top:8px;"
                             onchange="BotsModule._scannerState.maxMaturity=parseInt(this.value)">
@@ -1325,7 +1325,7 @@ const BotsModule = {
                             <option value="15" ${s.maxMaturity===15?'selected':''}>15 anni</option>
                         </select>
                     </div>
-                    <div style="padding:12px 16px;background:var(--bg-primary);border-radius:10px;border:1px solid var(--border-color);">
+                    <div style="padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);">
                         <label style="font-size:13px;font-weight:600;">⭐ ${Lang.t('scanner.rating')}</label>
                         <select id="scanner-rating" class="form-input" style="margin-top:8px;"
                             onchange="BotsModule._scannerState.minRating=this.value">
@@ -1338,7 +1338,7 @@ const BotsModule = {
                 </div>
 
                 <!-- Valute -->
-                <div style="padding:12px 16px;background:var(--bg-primary);border-radius:10px;border:1px solid var(--border-color);margin-bottom:20px;">
+                <div style="padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);margin-bottom:20px;">
                     <label style="font-size:13px;font-weight:600;margin-bottom:8px;display:block;">🌍 ${Lang.t('scanner.currencies')}</label>
                     <div style="display:flex;gap:12px;">
                         <label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px;">
@@ -1362,7 +1362,7 @@ const BotsModule = {
                     ${usage.remaining === 0 ? Lang.t('scanner.rate_limit') : Lang.t('scanner.launch')}
                 </button>
 
-                <div id="scanner-error-msg" style="display:none;margin-top:12px;color:var(--accent-red);font-size:13px;text-align:center;"></div>
+                <div id="scanner-error-msg" style="display:none;margin-top:12px;color:var(--danger);font-size:13px;text-align:center;"></div>
             </div>
         `;
     },
@@ -1435,7 +1435,7 @@ const BotsModule = {
                 </div>
 
                 <div class="yield-stats">
-                    <div class="yield-stat-card" style="border-left:3px solid var(--accent-blue);">
+                    <div class="yield-stat-card" style="border-left:3px solid var(--info);">
                         <div id="scanner-stat-scanned" class="yield-stat-value">0</div>
                         <div class="yield-stat-label">📡 ${Lang.t('scanner.scanned')}</div>
                     </div>
@@ -1542,7 +1542,7 @@ const BotsModule = {
             <div class="card" style="margin-bottom:16px;">
                 <h3 style="margin:0 0 16px;">📊 ${Lang.t('scanner.summary')}</h3>
                 <div class="yield-stats">
-                    <div class="yield-stat-card" style="border-left:3px solid var(--accent-blue);">
+                    <div class="yield-stat-card" style="border-left:3px solid var(--info);">
                         <div class="yield-stat-value">${ss.total_scanned || 0}</div>
                         <div class="yield-stat-label">📡 ${Lang.t('scanner.scanned')}</div>
                     </div>

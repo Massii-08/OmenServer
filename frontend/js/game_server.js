@@ -89,7 +89,7 @@ const GameServer = {
                 </div>
             </div>
 
-            <div id="docker-warning" class="hidden" style="background: var(--accent-yellow); color: #000; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; font-size: 13px;">
+            <div id="docker-warning" class="hidden" style="background: var(--warning); color: #000; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; font-size: 13px;">
                 ${Lang.t('gs.docker_warn')}
             </div>
 
@@ -201,7 +201,7 @@ const GameServer = {
                         </div>
                     </div>
                     <div id="create-error" class="login-error"></div>
-                    <div id="create-loading" class="hidden" style="text-align: center; padding: 12px; color: var(--text-secondary); font-size: 13px;">
+                    <div id="create-loading" class="hidden" style="text-align: center; padding: 12px; color: var(--text-muted); font-size: 13px;">
                         ${Lang.t('gs.creating')}
                     </div>
                     <div id="create-buttons" class="flex gap-2 mt-4">
@@ -217,7 +217,7 @@ const GameServer = {
                     <div class="flex justify-between items-center mb-4">
                         <div class="flex items-center gap-3">
                             <h2 class="modal-title" style="margin: 0;">${Lang.t('gs.console_live')}</h2>
-                            <span id="console-status" style="font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--bg-hover); color: var(--text-muted);">${Lang.t('gs.disconnected')}</span>
+                            <span id="console-status" style="font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--bg-elev-2); color: var(--text-muted);">${Lang.t('gs.disconnected')}</span>
                         </div>
                         <button class="btn btn-secondary btn-sm" onclick="GameServer.hideLogsModal()">${Lang.t('gs.close')}</button>
                     </div>
@@ -272,10 +272,10 @@ const GameServer = {
                     <div style="margin-bottom: 24px;">
                         <div class="flex justify-between items-center" style="margin-bottom: 8px;">
                             <label class="form-label" style="margin: 0;">${Lang.t('gs.memory')}</label>
-                            <span id="ram-value" style="font-family: monospace; font-weight: 700; color: var(--accent-blue); font-size: 16px;">2 Go</span>
+                            <span id="ram-value" style="font-family: monospace; font-weight: 700; color: var(--info); font-size: 16px;">2 Go</span>
                         </div>
                         <input type="range" id="ram-slider" min="0.5" max="16" step="0.5" value="2"
-                            style="width: 100%; accent-color: var(--accent-blue); cursor: pointer;"
+                            style="width: 100%; accent-color: var(--info); cursor: pointer;"
                             oninput="document.getElementById('ram-value').textContent = parseFloat(this.value).toFixed(1).replace(/\\.0$/, '') + ' Go'" />
                         <div class="flex justify-between" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
                             <span>0.5 Go</span>
@@ -314,7 +314,7 @@ const GameServer = {
                     </div>
 
                     <!-- Formulaire nouvelle tâche -->
-                    <div style="background: var(--bg-secondary); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+                    <div style="background: var(--bg-elev-1); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
                         <div class="form-label" style="margin-bottom: 8px;">${Lang.t('gs.new_task')}</div>
                         <div class="flex gap-2" style="align-items: flex-end;">
                             <div style="flex: 1;">
@@ -504,7 +504,7 @@ const GameServer = {
             const safeUrl = (m.url||'').replace(/'/g,"\\'");
             const safeName = (m.name||'').replace(/'/g,"\\'");
             return `
-            <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='var(--bg-secondary)'" onclick="GameServer.selectModpack(${m.id}, '${safeName}', '${m.icon_url||''}', '${safeUrl}')">
+            <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-elev-2)'" onmouseout="this.style.background='var(--bg-elev-1)'" onclick="GameServer.selectModpack(${m.id}, '${safeName}', '${m.icon_url||''}', '${safeUrl}')">
                 <img src="${m.icon_url||''}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;" onerror="this.style.display='none'" />
                 <div style="flex:1;min-width:0;">
                     <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.name}</div>
@@ -557,10 +557,10 @@ const GameServer = {
             files.map(f => {
                 const mcVers = (f.game_versions||[]).filter(v => /^\d/.test(v)).join(', ') || '?';
                 const type = f.release_type || '';
-                const typeColor = type === 'Release' ? 'var(--accent-green)' : type === 'Beta' ? 'var(--accent-yellow)' : 'var(--text-muted)';
+                const typeColor = type === 'Release' ? 'var(--accent)' : type === 'Beta' ? 'var(--warning)' : 'var(--text-muted)';
                 const safeName2 = (f.name||'').replace(/'/g,"\\'");
                 return `
-                <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-primary);border-radius:6px;margin-bottom:3px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='var(--bg-primary)'" onclick="GameServer._pickModpackFile(${f.id}, '${safeName2}', '${mcVers}')">
+                <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-elev-3);border-radius:6px;margin-bottom:3px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-elev-2)'" onmouseout="this.style.background='var(--bg-elev-3)'" onclick="GameServer._pickModpackFile(${f.id}, '${safeName2}', '${mcVers}')">
                     <div style="flex:1;">
                         <div style="font-size:12px;font-weight:600;">${f.name}</div>
                         <div style="font-size:10px;color:var(--text-muted);">MC ${mcVers} · ${f.size_mb} Mo · <span style="color:${typeColor};">${type}</span></div>
@@ -581,7 +581,7 @@ const GameServer = {
             <div style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:6px;padding:10px;display:flex;align-items:center;gap:8px;">
                 <span style="font-size:18px;">✅</span>
                 <div>
-                    <div style="font-size:13px;font-weight:600;color:var(--accent-green);">${fileName}</div>
+                    <div style="font-size:13px;font-weight:600;color:var(--accent);">${fileName}</div>
                     <div style="font-size:10px;color:var(--text-muted);">Minecraft ${mcVersion}</div>
                 </div>
             </div>`;
@@ -680,7 +680,7 @@ const GameServer = {
                             ${isPending ? '<span class="spinner-sm"></span>' : `<span class="status-dot ${statusClass}"></span>`}
                             ${statusText}
                         </span>
-                        ${isRunning ? `<span style="font-size:12px;color:var(--accent-blue);font-weight:600;">👥 ${server.player_count || 0}/${server.player_max || 20}</span>` : ''}
+                        ${isRunning ? `<span style="font-size:12px;color:var(--info);font-weight:600;">👥 ${server.player_count || 0}/${server.player_max || 20}</span>` : ''}
                         <div class="server-actions" onclick="event.stopPropagation()">
                             ${(() => {
                                 const u = Auth.getUser();
@@ -922,7 +922,7 @@ const GameServer = {
 
             if (response && response.ok) {
                 if (msgEl) {
-                    msgEl.style.color = 'var(--accent-green)';
+                    msgEl.style.color = 'var(--accent)';
                     msgEl.textContent = '✅ Ressources mises à jour !';
                 }
                 await this.refreshServers();
@@ -983,13 +983,13 @@ const GameServer = {
         listEl.innerHTML = tasks.map(task => {
             const typeEmoji = task.task_type === 'backup' ? '💾' : '🔄';
             const typeLabel = task.task_type === 'backup' ? 'Backup' : 'Redémarrage';
-            const statusColor = task.enabled ? 'var(--accent-green)' : 'var(--text-muted)';
+            const statusColor = task.enabled ? 'var(--accent)' : 'var(--text-muted)';
             const statusLabel = task.enabled ? '● Actif' : '○ Inactif';
             const lastRun = task.last_run ? new Date(task.last_run).toLocaleString('fr-FR') : 'Jamais';
             const nextRun = task.next_run && task.enabled ? new Date(task.next_run).toLocaleString('fr-FR') : '—';
 
             return `
-                <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:8px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:8px;">
                     <div>
                         <div style="font-weight:600;">${typeEmoji} ${typeLabel} auto</div>
                         <div style="font-size:12px;color:var(--text-muted);margin-top:4px;">
@@ -1024,7 +1024,7 @@ const GameServer = {
         });
 
         if (response && response.ok) {
-            if (msgEl) { msgEl.style.color = 'var(--accent-green)'; msgEl.textContent = '✅ Tâche créée !'; }
+            if (msgEl) { msgEl.style.color = 'var(--accent)'; msgEl.textContent = '✅ Tâche créée !'; }
             await this.loadSchedulerTasks();
         } else if (response) {
             const err = await response.json();
@@ -1110,8 +1110,8 @@ const GameServer = {
                              mod.downloads > 1000 ? `${(mod.downloads/1000).toFixed(0)}K` :
                              mod.downloads;
             return `
-                <div style="display:flex;align-items:center;gap:12px;padding:10px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;">
-                    <img src="${mod.icon_url || ''}" alt="" style="width:40px;height:40px;border-radius:6px;background:var(--bg-primary);" onerror="this.style.display='none'" />
+                <div style="display:flex;align-items:center;gap:12px;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;">
+                    <img src="${mod.icon_url || ''}" alt="" style="width:40px;height:40px;border-radius:6px;background:var(--bg-elev-3);" onerror="this.style.display='none'" />
                     <div style="flex:1;min-width:0;">
                         <div style="font-weight:600;font-size:14px;">${mod.name}</div>
                         <div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
@@ -1155,7 +1155,7 @@ const GameServer = {
             const badge = f.release_type === 'Release' ? '🟢' : f.release_type === 'Beta' ? '🟡' : '🔴';
             const hasUrl = f.download_url ? true : false;
             return `
-                <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;">
                     <div>
                         <div style="font-size:13px;">${badge} ${f.name} <span style="color:var(--text-muted);font-size:11px;">(${f.size_mb} Mo)</span></div>
                         <div style="font-size:11px;color:var(--text-muted);">${versions}</div>
@@ -1171,7 +1171,7 @@ const GameServer = {
         if (!id) return;
         const msgEl = document.getElementById('mods-message');
 
-        if (msgEl) { msgEl.style.color = 'var(--accent-blue)'; msgEl.textContent = '⏳ Téléchargement en cours...'; }
+        if (msgEl) { msgEl.style.color = 'var(--info)'; msgEl.textContent = '⏳ Téléchargement en cours...'; }
 
         const response = await Auth.apiCall('/api/mods/install', {
             method: 'POST',
@@ -1179,7 +1179,7 @@ const GameServer = {
         });
 
         if (response && response.ok) {
-            if (msgEl) { msgEl.style.color = 'var(--accent-green)'; msgEl.textContent = `✅ ${modName} installé !`; }
+            if (msgEl) { msgEl.style.color = 'var(--accent)'; msgEl.textContent = `✅ ${modName} installé !`; }
         } else if (response) {
             const err = await response.json();
             if (msgEl) { msgEl.style.color = '#e74c3c'; msgEl.textContent = `❌ ${err.detail || 'Erreur'}`; }
@@ -1207,7 +1207,7 @@ const GameServer = {
 
         listEl.innerHTML = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${mods.length} mod(s) installé(s)</div>` +
             mods.map(m => `
-                <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;">
                     <div>
                         <div style="font-size:13px;">🧩 ${m.filename}</div>
                         <div style="font-size:11px;color:var(--text-muted);">${m.size_mb} Mo</div>
@@ -1224,7 +1224,7 @@ const GameServer = {
         if (response && response.ok) {
             await this.loadInstalledMods();
             const msgEl = document.getElementById('mods-message');
-            if (msgEl) { msgEl.style.color = 'var(--accent-green)'; msgEl.textContent = `🗑️ ${filename} supprimé`; }
+            if (msgEl) { msgEl.style.color = 'var(--accent)'; msgEl.textContent = `🗑️ ${filename} supprimé`; }
         }
     },
 
@@ -1251,7 +1251,7 @@ const GameServer = {
 
         if (statusEl) {
             statusEl.textContent = 'Connexion...';
-            statusEl.style.background = 'var(--accent-yellow)';
+            statusEl.style.background = 'var(--warning)';
             statusEl.style.color = '#000';
         }
 
@@ -1262,7 +1262,7 @@ const GameServer = {
                 if (statusEl) {
                     statusEl.textContent = '🟢 En direct';
                     statusEl.style.background = 'rgba(46, 204, 113, 0.2)';
-                    statusEl.style.color = 'var(--accent-green)';
+                    statusEl.style.color = 'var(--accent)';
                 }
             };
 
@@ -1274,7 +1274,7 @@ const GameServer = {
             this._consoleWS.onclose = () => {
                 if (statusEl) {
                     statusEl.textContent = 'Déconnecté';
-                    statusEl.style.background = 'var(--bg-hover)';
+                    statusEl.style.background = 'var(--bg-elev-2)';
                     statusEl.style.color = 'var(--text-muted)';
                 }
             };
@@ -1297,7 +1297,7 @@ const GameServer = {
         const statusEl = document.getElementById('console-status');
         if (statusEl) {
             statusEl.textContent = 'Mode statique';
-            statusEl.style.background = 'var(--bg-hover)';
+            statusEl.style.background = 'var(--bg-elev-2)';
             statusEl.style.color = 'var(--text-muted)';
         }
         const response = await Auth.apiCall(`/api/servers/${id}/logs?tail=100`);
@@ -1321,10 +1321,10 @@ const GameServer = {
             line.style.color = '#e74c3c';
             line.textContent = `❌ ${text}`;
         } else if (msg.type === 'info') {
-            line.style.color = 'var(--accent-blue)';
+            line.style.color = 'var(--info)';
             line.textContent = text;
         } else {
-            line.style.color = 'var(--text-primary)';
+            line.style.color = 'var(--text)';
             line.textContent = text;
         }
 
@@ -1519,7 +1519,7 @@ const GameServer = {
         }
 
         listEl.innerHTML = backups.map(b => `
-            <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border-color);">
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border);">
                 <div>
                     <div style="font-weight: 600; font-size: 14px;">📦 ${b.filename}</div>
                     <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">

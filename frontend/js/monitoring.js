@@ -424,9 +424,9 @@ const Monitoring = {
 
         // Changer la couleur si la valeur est élevée
         if (barEl) {
-            if (value > 90) barEl.style.background = 'var(--accent-red)';
-            else if (value > 70) barEl.style.background = 'var(--accent-yellow)';
-            else barEl.style.background = 'var(--stat-color, var(--accent-green))';
+            if (value > 90) barEl.style.background = 'var(--danger)';
+            else if (value > 70) barEl.style.background = 'var(--warning)';
+            else barEl.style.background = 'var(--stat-color, var(--accent))';
         }
     },
 
