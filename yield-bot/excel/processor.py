@@ -369,7 +369,18 @@ class BondExcelProcessor:
         """
         if not scraped_name:
             return ''
-        
+
+        # Garde-fou anti-slug : un vrai nom d'émetteur contient toujours un
+        # espace ou une majuscule ("BNP Paribas", "Dell", "POWER FIN"). Un
+        # candidat composé uniquement de minuscules + chiffres + tirets est
+        # un slug URL — sûrement issu d'un widget mal extrait. On refuse,
+        # `update_name` verra `formatted_name` vide et ne touchera pas la cellule.
+        if not (' ' in scraped_name or any(c.isupper() for c in scraped_name)):
+            logger.warning(
+                f"  🚫 Nom scrapé rejeté (slug suspect): {scraped_name!r}"
+            )
+            return ''
+
         # Extraire le nom de l'émetteur depuis le nom scrapé
         # Le nom scrapé de Deutsche Börse est souvent complet, on extrait l'émetteur
         issuer = scraped_name

@@ -178,6 +178,12 @@ class BoerseScraper:
         
         async def capture_response(response):
             url = response.url
+            # Exclure les endpoints qui ne sont PAS des données bond :
+            # - /unleash : feature flags Unleash (toggles avec slugs type
+            #   "boersen-radio-20250805" qui polluaient bond.name)
+            # - /mdstokenservice : auth tokens
+            if '/unleash' in url or '/mdstokenservice' in url:
+                return
             if ('api.live.deutsche-boerse.com' in url or
                 'api.boerse-frankfurt.de' in url):
                 try:
@@ -354,13 +360,13 @@ class BoerseScraper:
         for url, data in responses.items():
             if not isinstance(data, dict):
                 continue
-            
+
             logger.debug(f"  Analisi risposta: {url}")
             logger.debug(f"  Chiavi: {list(data.keys()) if isinstance(data, dict) else 'non-dict'}")
-            
+
             # Cerca ricorsivamente i campi nei dati JSON
             self._extract_fields_recursive(bond, data, depth=0, max_depth=5)
-        
+
         return bond
     
     def _extract_fields_recursive(self, bond: BondData, data: Any, depth: int, max_depth: int):
@@ -413,11 +419,23 @@ class BoerseScraper:
                             bond.issue_date = parsed
                 
                 # --- NOME ---
+                # On retire 'title' (trop générique : matche les feature flags
+                # Unleash chargés en marge — ex: toggles[0].name="boersen-radio-20250805").
+                # On garde 'issuer' qui est la source la plus fiable, observée
+                # dans master_data_bond?isin=... — exposée explicitement par
+                # Deutsche Börse pour identifier l'émetteur.
+                # En plus : anti-slug — un vrai nom d'émetteur a forcément un
+                # espace OU une majuscule.
                 if not bond.name and value is not None:
-                    if key_lower in ('name', 'instrumentname', 'title', 
-                                     'shortname', 'longname', 'designation'):
+                    if key_lower in ('name', 'instrumentname', 'shortname',
+                                     'longname', 'designation', 'issuer'):
                         if isinstance(value, str) and len(value) > 5:
-                            bond.name = value
+                            if ' ' in value or any(c.isupper() for c in value):
+                                bond.name = value
+                            else:
+                                logger.debug(
+                                    f"    🚫 Nom rejeté (slug suspect): {value!r}"
+                                )
                 
                 # --- VALUTA ---
                 if key_lower in ('currency', 'tradingcurrency', 'issuecurrency',
