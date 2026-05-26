@@ -2853,11 +2853,12 @@ const Lang = {
             const el = document.querySelector(`[data-view="${view}"]`);
             if (el) el.textContent = this.t(key);
         });
-        // PR25 — lang button shows current lang code (text-only, no emoji)
-        const langBtn = document.getElementById('lang-btn');
-        if (langBtn) langBtn.textContent = this.current.toUpperCase();
+        // PR26 — lang switcher segmented pill (3 buttons FR/EN/IT, set .active)
+        document.querySelectorAll('.lang-switcher .lang').forEach(b => {
+            b.classList.toggle('active', b.dataset.lang === this.current);
+        });
 
-        // Subtitle
+        // Sidebar subtitle (legacy — kept for backward compat if .sidebar-subtitle exists)
         const sub = document.querySelector('.sidebar-subtitle');
         if (sub) sub.textContent = this.t('sidebar.subtitle');
 

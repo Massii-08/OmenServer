@@ -12,69 +12,48 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="apple-touch-icon" href="/icon-512.svg">
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/css/style.css?v=84">
+    <link rel="stylesheet" href="/css/style.css?v=85">
 </head>
 <body>
     <div class="app-layout">
-        <!-- Mobile hamburger -->
-        <button class="mobile-menu-btn" id="mobile-menu-btn" onclick="document.getElementById('sidebar').classList.toggle('open');document.getElementById('sidebar-overlay').classList.toggle('active')">☰</button>
-        <div class="sidebar-overlay" id="sidebar-overlay" onclick="document.getElementById('sidebar').classList.remove('open');this.classList.remove('active')"></div>
-        <!-- SIDEBAR -->
-        <aside class="sidebar" id="sidebar">
-            <!-- Header -->
-            <div class="sidebar-header">
-                <div class="sidebar-logo">🖥️</div>
-                <div>
-                    <div class="sidebar-title">OmenServer</div>
-                    <div class="sidebar-subtitle" id="sidebar-subtitle">Panel de gestion</div>
-                </div>
+        <!-- TOP BAR (PR26 — replaces sidebar per MASTER §6 mockup) -->
+        <nav class="topbar">
+            <div class="brand">
+                <div class="logo">O</div>
+                <span>OMENSERVER</span>
             </div>
-
-            <!-- Navigation -->
-            <nav class="sidebar-nav">
-                <div class="nav-section-label">Général</div>
-                <a class="nav-item active" data-view="hub" onclick="App.navigateTo('hub')"> Dashboard
-                </a>
-
-                <div class="nav-section-label">Modules</div>
-                <a class="nav-item" data-view="game_server" onclick="App.navigateTo('game_server')" id="nav-game_server"> Serveurs de jeux
-                </a>
-                <a class="nav-item" data-view="bots" onclick="App.navigateTo('bots')" id="nav-bots"> Bots
-                </a>
-                <a class="nav-item" data-view="files" onclick="App.navigateTo('files')" id="nav-files"> Fichiers
-                </a>
-                <a class="nav-item" data-view="media" onclick="App.navigateTo('media')" id="nav-media"> Média
-                </a>
-                <a class="nav-item" data-view="web" onclick="App.navigateTo('web')" id="nav-web"> Web
-                </a>
-                <a class="nav-item" data-view="network" onclick="App.navigateTo('network')" id="nav-network"> Réseau
-                </a>
-
-                <div class="nav-section-label">Système</div>
-                <a class="nav-item" data-view="users" onclick="App.navigateTo('users')" id="nav-users" style="display:none;"> Utilisateurs
-                </a>
-                <a class="nav-item" data-view="settings" onclick="App.navigateTo('settings')"> Paramètres
-                </a>
-            </nav>
-
-            <!-- Footer : infos utilisateur -->
-            <div class="sidebar-footer">
-                <div class="user-info">
+            <div class="nav-tabs" id="nav-tabs">
+                <button class="nav-tab nav-item active" data-view="hub" onclick="App.navigateTo('hub')">Dashboard</button>
+                <button class="nav-tab nav-item" data-view="game_server" onclick="App.navigateTo('game_server')" id="nav-game_server">Serveurs</button>
+                <button class="nav-tab nav-item" data-view="bots" onclick="App.navigateTo('bots')" id="nav-bots">Bots</button>
+                <button class="nav-tab nav-item" data-view="files" onclick="App.navigateTo('files')" id="nav-files">Fichiers</button>
+                <button class="nav-tab nav-item" data-view="media" onclick="App.navigateTo('media')" id="nav-media">Média</button>
+                <button class="nav-tab nav-item" data-view="web" onclick="App.navigateTo('web')" id="nav-web">Web</button>
+                <button class="nav-tab nav-item" data-view="network" onclick="App.navigateTo('network')" id="nav-network">Réseau</button>
+                <button class="nav-tab nav-item" data-view="users" onclick="App.navigateTo('users')" id="nav-users" style="display:none;">Utilisateurs</button>
+                <button class="nav-tab nav-item" data-view="settings" onclick="App.navigateTo('settings')">Paramètres</button>
+            </div>
+            <div class="topbar-right">
+                <div class="lang-switcher" id="lang-switcher">
+                    <button class="lang" data-lang="fr" onclick="Lang.set('fr')">FR</button>
+                    <button class="lang" data-lang="en" onclick="Lang.set('en')">EN</button>
+                    <button class="lang active" data-lang="it" onclick="Lang.set('it')">IT</button>
+                </div>
+                <div class="accent-switcher-mini" id="accent-switcher" title="Couleur d'accent">
+                    <span class="accent-dot" data-acc="green" title="Vert"></span>
+                    <span class="accent-dot" data-acc="blue" title="Bleu"></span>
+                    <span class="accent-dot" data-acc="red" title="Rouge"></span>
+                    <span class="accent-dot" data-acc="yellow" title="Jaune"></span>
+                </div>
+                <div class="user-pill" title="">
                     <div class="user-avatar" id="user-avatar">?</div>
-                    <div style="flex:1;">
+                    <div class="user-meta">
                         <div class="user-name" id="user-name">—</div>
                         <div class="user-role" id="user-role">—</div>
                     </div>
-                    <button onclick="Lang.toggle()" title="Lingua" style="background:none;border:1px solid var(--border);border-radius:var(--r-sm);cursor:pointer;font-family:var(--font-mono);font-size:11px;font-weight:600;color:var(--text-muted);padding:3px 8px;letter-spacing:0.06em;" id="lang-btn">IT</button>
-                    <div class="accent-switcher-mini" id="accent-switcher" title="Couleur d'accent">
-                        <span class="accent-dot" data-acc="green"  title="Vert (défaut)"></span>
-                        <span class="accent-dot" data-acc="blue"   title="Bleu"></span>
-                        <span class="accent-dot" data-acc="red"    title="Rouge"></span>
-                        <span class="accent-dot" data-acc="yellow" title="Jaune"></span>
-                    </div>
                 </div>
             </div>
-        </aside>
+        </nav>
 
         <!-- CONTENU PRINCIPAL -->
         <main class="main-content" id="module-content">
@@ -86,7 +65,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="/js/lang.js?v=106"></script>
+    <script src="/js/lang.js?v=107"></script>
     <script src="/js/toast.js?v=86"></script>
     <script src="/js/auth.js?v=85"></script>
     <script src="/js/monitoring.js?v=90"></script>
