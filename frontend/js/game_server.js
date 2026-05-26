@@ -184,7 +184,7 @@ const GameServer = {
                                 <button class="btn btn-primary btn-sm" onclick="GameServer.searchModpacks()">🔍</button>
                             </div>
                             <div id="modpack-results" style="max-height:200px;overflow-y:auto;"></div>
-                            <div id="modpack-selected" style="display:none;background:linear-gradient(135deg,rgba(74,222,128,0.1),rgba(16,185,129,0.05));border:1px solid rgba(74,222,128,0.3);border-radius:8px;padding:10px;margin-top:8px;">
+                            <div id="modpack-selected" style="display:none;background:var(--accent-dim);border:1px solid rgba(74,222,128,0.3);border-radius:8px;padding:10px;margin-top:8px;">
                             </div>
                         </div>
                     </div>

@@ -99,7 +99,7 @@ const MediaModule = {
             <div class="card">
                 <div style="display:flex;align-items:center;justify-content:space-between;">
                     <div style="display:flex;align-items:center;gap:16px;">
-                        <div style="width:56px;height:56px;border-radius:12px;background:linear-gradient(135deg,var(--violet),#6366f1);display:flex;align-items:center;justify-content:center;font-size:28px;">📺</div>
+                        <div style="width:56px;height:56px;border-radius:12px;background:var(--violet);display:flex;align-items:center;justify-content:center;font-size:28px;">📺</div>
                         <div>
                             <div style="font-size:18px;font-weight:700;">Jellyfin</div>
                             <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${Lang.t('media.media_server')}</div>

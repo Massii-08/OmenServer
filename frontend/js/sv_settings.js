@@ -329,7 +329,7 @@ const SvSettings = {
         ];
 
         return `
-        <div style="background:linear-gradient(135deg, rgba(249,115,22,0.1), rgba(234,88,12,0.05));padding:16px;border-radius:10px;margin-bottom:20px;border:1px solid rgba(249,115,22,0.2);">
+        <div style="background:rgba(251,146,60,0.1);padding:16px;border-radius:10px;margin-bottom:20px;border:1px solid rgba(251,146,60,0.2);">
             <div style="font-size:13px;color:var(--text-muted);">${Lang.t('sv.cfg.jvm_info')}</div>
         </div>
 
