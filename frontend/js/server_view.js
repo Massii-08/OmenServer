@@ -274,7 +274,7 @@ const ServerView = {
                 <div style="font-size:12px;color:var(--text-muted);">${Lang.t('sv.status')}</div>
                 <div style="font-size:14px;margin-top:2px;">${uptimeHtml}</div>
             </div>
-            <div style="background:${isRunning ? 'linear-gradient(135deg, rgba(96,165,250,0.1), rgba(192,132,252,0.1))' : 'var(--bg-elev-1)'};padding:16px;border-radius:10px;text-align:center;border:${isRunning ? '1px solid rgba(96,165,250,0.2)' : 'none'};">
+            <div style="background:${isRunning ? 'rgba(96,165,250,0.1)' : 'var(--bg-elev-1)'};padding:16px;border-radius:10px;text-align:center;border:${isRunning ? '1px solid rgba(96,165,250,0.2)' : 'none'};">
                 <div style="font-size:24px;margin-bottom:4px;">👥</div>
                 <div style="font-size:12px;color:var(--text-muted);">${Lang.t('sv.players')}</div>
                 <div style="font-size:14px;font-weight:600;margin-top:2px;color:${isRunning ? 'var(--info)' : 'var(--text-muted)'};" id="sv-dash-players">${isRunning ? `${s.player_count || 0}/${s.player_max || 20}` : '—'}</div>
@@ -1473,7 +1473,7 @@ const ServerView = {
         if (!data.exists) {
             // Formulaire de création
             el.innerHTML = `
-            <div style="background:linear-gradient(135deg, rgba(192,132,252,0.1), rgba(96,165,250,0.05));padding:20px;border-radius:10px;margin-bottom:16px;border:1px solid rgba(192,132,252,0.2);">
+            <div style="background:rgba(192,132,252,0.1);padding:20px;border-radius:10px;margin-bottom:16px;border:1px solid rgba(192,132,252,0.2);">
                 <div style="font-size:14px;font-weight:600;margin-bottom:8px;">${Lang.t('sv.db.no_db')}</div>
                 <div style="font-size:13px;color:var(--text-muted);">${Lang.t('sv.db.no_db_desc')}</div>
             </div>
@@ -1619,7 +1619,7 @@ const ServerView = {
 
         el.innerHTML = `
         <!-- Seed -->
-        <div style="background:linear-gradient(135deg, rgba(74,222,128,0.1), rgba(16,185,129,0.05));padding:16px;border-radius:10px;margin-bottom:16px;border:1px solid rgba(74,222,128,0.2);">
+        <div style="background:var(--accent-dim);padding:16px;border-radius:10px;margin-bottom:16px;border:1px solid rgba(74,222,128,0.2);">
             <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">${Lang.t('sv.worlds.seed')}</div>
             <div style="font-family:monospace;font-size:16px;font-weight:600;color:var(--accent);">${seed || Lang.t('sv.worlds.random')}</div>
         </div>
@@ -1728,7 +1728,7 @@ const ServerView = {
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.ver.desc')}</p>
 
         <!-- Version actuelle -->
-        <div style="background:linear-gradient(135deg, rgba(96,165,250,0.15), rgba(192,132,252,0.1));padding:20px;border-radius:12px;margin-bottom:20px;border:1px solid rgba(96,165,250,0.3);">
+        <div style="background:rgba(96,165,250,0.15);padding:20px;border-radius:12px;margin-bottom:20px;border:1px solid rgba(96,165,250,0.3);">
             <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">${Lang.t('sv.ver.current')}</div>
             <div style="display:flex;align-items:center;gap:14px;">
                 <span style="font-size:36px;">${current.icon}</span>
@@ -1776,7 +1776,7 @@ const ServerView = {
                         <button class="btn btn-primary btn-sm" onclick="ServerView._searchVerModpacks()">🔍</button>
                     </div>
                     <div id="sv-ver-mp-results" style="max-height:180px;overflow-y:auto;"></div>
-                    <div id="sv-ver-mp-selected" style="display:none;background:linear-gradient(135deg,rgba(74,222,128,0.1),rgba(16,185,129,0.05));border:1px solid rgba(74,222,128,0.3);border-radius:8px;padding:10px;margin-top:8px;"></div>
+                    <div id="sv-ver-mp-selected" style="display:none;background:var(--accent-dim);border:1px solid rgba(74,222,128,0.3);border-radius:8px;padding:10px;margin-top:8px;"></div>
                 </div>
             </div>
         </div>

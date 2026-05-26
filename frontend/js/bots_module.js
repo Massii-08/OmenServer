@@ -1024,7 +1024,7 @@ const BotsModule = {
                 <!-- Progress bar complète -->
                 <div class="yield-progress-container" style="margin-top:16px;">
                     <div class="yield-progress-bar">
-                        <div class="yield-progress-fill" style="width:${data.progress_percent || 0}%;${!isSuccess ? 'background:linear-gradient(90deg,var(--warning),var(--danger));' : ''}"></div>
+                        <div class="yield-progress-fill" style="width:${data.progress_percent || 0}%;${!isSuccess ? 'background:var(--warning);' : ''}"></div>
                     </div>
                     <div class="yield-progress-text" style="margin-top:4px;">
                         <span>${data.progress || ''}</span>
@@ -1040,7 +1040,7 @@ const BotsModule = {
                         </button>
                     ` : ''}
                     ${data.status === 'stopped' && this._yieldState.processedCount > 0 ? `
-                        <button class="yield-launch-btn" style="flex:1;margin-top:0;background:linear-gradient(135deg,var(--warning),var(--danger));" onclick="BotsModule._resumeYieldBot()">
+                        <button class="yield-launch-btn" style="flex:1;margin-top:0;background:var(--danger);" onclick="BotsModule._resumeYieldBot()">
                             ▶ ${Lang.t('yield.resume')} (${Lang.t('yield.from_bond')} ${this._yieldState.processedCount + 1})
                         </button>
                     ` : ''}
@@ -1270,12 +1270,12 @@ const BotsModule = {
                 <div class="yield-threshold-container" style="margin-bottom:14px;padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                         <label style="font-size:13px;font-weight:600;">💰 ${Lang.t('scanner.max_price')}</label>
-                        <span id="scanner-price-value" style="font-size:14px;font-weight:700;color:#10b981;">${s.maxPrice}</span>
+                        <span id="scanner-price-value" style="font-size:14px;font-weight:700;color:var(--accent);">${s.maxPrice}</span>
                     </div>
                     <div style="display:flex;align-items:center;gap:10px;">
                         <span style="font-size:11px;color:var(--text-muted);">85</span>
                         <input type="range" id="scanner-price-slider" min="85" max="110" step="0.5" value="${s.maxPrice}"
-                            style="flex:1;accent-color:#10b981;cursor:pointer;"
+                            style="flex:1;accent-color:var(--accent);cursor:pointer;"
                             oninput="BotsModule._scannerState.maxPrice=parseFloat(this.value);document.getElementById('scanner-price-value').textContent=this.value">
                         <span style="font-size:11px;color:var(--text-muted);">110</span>
                     </div>
@@ -1285,12 +1285,12 @@ const BotsModule = {
                 <div class="yield-threshold-container" style="margin-bottom:14px;padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                         <label style="font-size:13px;font-weight:600;">📈 ${Lang.t('scanner.min_yield')}</label>
-                        <span id="scanner-yield-value" style="font-size:14px;font-weight:700;color:#10b981;">${s.minYield}%</span>
+                        <span id="scanner-yield-value" style="font-size:14px;font-weight:700;color:var(--accent);">${s.minYield}%</span>
                     </div>
                     <div style="display:flex;align-items:center;gap:10px;">
                         <span style="font-size:11px;color:var(--text-muted);">1%</span>
                         <input type="range" id="scanner-yield-slider" min="1" max="10" step="0.5" value="${s.minYield}"
-                            style="flex:1;accent-color:#10b981;cursor:pointer;"
+                            style="flex:1;accent-color:var(--accent);cursor:pointer;"
                             oninput="BotsModule._scannerState.minYield=parseFloat(this.value);document.getElementById('scanner-yield-value').textContent=this.value+'%'">
                         <span style="font-size:11px;color:var(--text-muted);">10%</span>
                     </div>
@@ -1300,12 +1300,12 @@ const BotsModule = {
                 <div class="yield-threshold-container" style="margin-bottom:14px;padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                         <label style="font-size:13px;font-weight:600;">🎯 ${Lang.t('scanner.max_results')}</label>
-                        <span id="scanner-maxresults-value" style="font-size:14px;font-weight:700;color:#10b981;">${s.maxResults === 0 ? '∞' : s.maxResults}</span>
+                        <span id="scanner-maxresults-value" style="font-size:14px;font-weight:700;color:var(--accent);">${s.maxResults === 0 ? '∞' : s.maxResults}</span>
                     </div>
                     <div style="display:flex;align-items:center;gap:10px;">
                         <span style="font-size:11px;color:var(--text-muted);">10</span>
                         <input type="range" id="scanner-maxresults-slider" min="10" max="200" step="10" value="${s.maxResults || 50}"
-                            style="flex:1;accent-color:#10b981;cursor:pointer;"
+                            style="flex:1;accent-color:var(--accent);cursor:pointer;"
                             oninput="BotsModule._scannerState.maxResults=parseInt(this.value);document.getElementById('scanner-maxresults-value').textContent=this.value">
                         <span style="font-size:11px;color:var(--text-muted);">200</span>
                     </div>
@@ -1357,7 +1357,7 @@ const BotsModule = {
                 </div>
 
                 <!-- Launch button -->
-                <button id="scanner-launch-btn" class="yield-launch-btn" style="background:linear-gradient(135deg,#10b981,#059669);"
+                <button id="scanner-launch-btn" class="yield-launch-btn" style="background:var(--accent);"
                     onclick="BotsModule._launchScanner()" ${usage.remaining===0?'disabled':''}>
                     ${usage.remaining === 0 ? Lang.t('scanner.rate_limit') : Lang.t('scanner.launch')}
                 </button>
@@ -1426,7 +1426,7 @@ const BotsModule = {
             <div class="card" style="margin-bottom:16px;">
                 <div class="yield-progress-container">
                     <div class="yield-progress-bar">
-                        <div id="scanner-progress-fill" class="yield-progress-fill" style="width:0%;background:linear-gradient(90deg,#10b981,#059669);"></div>
+                        <div id="scanner-progress-fill" class="yield-progress-fill" style="width:0%;background:var(--accent);"></div>
                     </div>
                     <div class="yield-progress-text">
                         <span id="scanner-progress-label">${Lang.t('scanner.running')}</span>
@@ -1562,7 +1562,7 @@ const BotsModule = {
 
                 <div style="display:flex;gap:12px;margin-top:20px;">
                     ${isSuccess && data.result_file ? `
-                        <button class="yield-launch-btn" style="flex:1;margin-top:0;background:linear-gradient(135deg,#10b981,#059669);" onclick="BotsModule._downloadScannerResult()">
+                        <button class="yield-launch-btn" style="flex:1;margin-top:0;background:var(--accent);" onclick="BotsModule._downloadScannerResult()">
                             ${Lang.t('scanner.download')}
                         </button>
                     ` : ''}
