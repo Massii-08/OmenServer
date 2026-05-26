@@ -3186,6 +3186,24 @@ table tr:hover td {
     place-items: center;
     flex-shrink: 0;
 }
+/* PR27 — mono text ticker remplace les emoji avatars (style game-ico) */
+.bot-card-bento .b-icon.b-ticker,
+.b-ticker {
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum";
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: var(--text);
+    background: var(--bg-elev-3);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    padding: 0 6px;
+    display: inline-grid;
+    place-items: center;
+    min-width: 36px;
+    height: 36px;
+}
 .bot-card-bento .b-name-wrap {
     flex: 1;
     min-width: 0;
