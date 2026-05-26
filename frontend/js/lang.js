@@ -129,7 +129,7 @@ const Lang = {
             'modules.network_desc': 'Surveillance réseau + Wake-on-LAN',
 
             // Scheduler
-            'scheduler.title': '📅 Planification globale',
+            'scheduler.title': 'Planification globale',
             'scheduler.subtitle': 'Tâches planifiées sur tous les serveurs et bots',
             'scheduler.loading': '⏳ Chargement des tâches...',
             'scheduler.no_tasks': 'Aucune tâche planifiée',
@@ -1057,7 +1057,7 @@ const Lang = {
             'modules.network_desc': 'Network monitoring + Wake-on-LAN',
 
             // Scheduler
-            'scheduler.title': '📅 Global Scheduling',
+            'scheduler.title': 'Global Scheduling',
             'scheduler.subtitle': 'Scheduled tasks across all servers and bots',
             'scheduler.loading': '⏳ Loading tasks...',
             'scheduler.no_tasks': 'No scheduled tasks',
@@ -1985,7 +1985,7 @@ const Lang = {
             'modules.network_desc': 'Monitoraggio rete + Wake-on-LAN',
 
             // Scheduler
-            'scheduler.title': '📅 Pianificazione globale',
+            'scheduler.title': 'Pianificazione globale',
             'scheduler.subtitle': 'Attività pianificate su tutti i server e bot',
             'scheduler.loading': '⏳ Caricamento attività...',
             'scheduler.no_tasks': 'Nessuna attività pianificata',
