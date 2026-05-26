@@ -34,7 +34,7 @@ const Toast = {
         this._init();
 
         // Icons functional (status indicators kept per MASTER chip exception)
-        const icons = { success: '●', error: '●', info: 'ℹ', warn: '⚠' };
+        const icons = { success: '', error: '', info: 'ℹ', warn: '' };
         // CSS expects 'warning' not 'warn' for the .toast.warning selector
         const cssType = type === 'warn' ? 'warning' : type;
 
@@ -54,7 +54,7 @@ const Toast = {
         toast.innerHTML = `
             <span style="font-size:14px;flex-shrink:0;line-height:1;">${icons[type]}</span>
             <span style="flex:1;line-height:1.4;">${message}</span>
-            <span style="font-size:14px;color:var(--text-dim);flex-shrink:0;">✕</span>
+            <span style="font-size:14px;color:var(--text-dim);flex-shrink:0;"></span>
         `;
 
         // Click to dismiss

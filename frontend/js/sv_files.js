@@ -33,7 +33,7 @@ const SvFiles = {
 
     _breadcrumb() {
         const parts = this._currentPath.split('/').filter(Boolean);
-        let html = `<span style="cursor:pointer;color:var(--info);" onclick="SvFiles._navigate('/')">🏠 Home</span>`;
+        let html = `<span style="cursor:pointer;color:var(--info);" onclick="SvFiles._navigate('/')">Home</span>`;
         let path = '';
         for (const part of parts) {
             path += '/' + part;
@@ -71,13 +71,13 @@ const SvFiles = {
         if (this._currentPath !== '/') {
             const parent = this._currentPath.split('/').slice(0, -1).join('/') || '/';
             html += `<tr style="cursor:pointer;border-bottom:1px solid var(--border);" onclick="SvFiles._navigate('${parent}')">
-                <td style="padding:8px;">⬆️ <strong>..</strong></td><td></td><td></td><td></td></tr>`;
+                <td style="padding:8px;">⬆<strong>..</strong></td><td></td><td></td><td></td></tr>`;
         }
 
         for (const f of files) {
             const fullPath = (this._currentPath === '/' ? '' : this._currentPath) + '/' + f.name;
             const size = f.is_dir ? '—' : this._formatSize(f.size);
-            const icon = f.is_dir ? '📁' : this._fileIcon(f.name);
+            const icon = f.is_dir ? '' : this._fileIcon(f.name);
             const safePath = fullPath.replace(/'/g, "\\'");
 
             if (f.is_dir) {
@@ -86,8 +86,8 @@ const SvFiles = {
                     <td style="padding:8px;color:var(--text-muted);">${size}</td>
                     <td style="padding:8px;color:var(--text-muted);font-size:11px;">${f.modified}</td>
                     <td style="padding:8px;text-align:right;">
-                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title="✏️">✏️</button>
-                        <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title="🗑️">🗑️</button>
+                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title=""></button>
+                        <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title=""></button>
                     </td>
                 </tr>`;
             } else {
@@ -97,8 +97,8 @@ const SvFiles = {
                     <td style="padding:8px;color:var(--text-muted);">${size}</td>
                     <td style="padding:8px;color:var(--text-muted);font-size:11px;">${f.modified}</td>
                     <td style="padding:8px;text-align:right;">
-                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title="✏️">✏️</button>
-                        <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title="🗑️">🗑️</button>
+                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title=""></button>
+                        <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title=""></button>
                     </td>
                 </tr>`;
             }
@@ -246,8 +246,8 @@ const SvFiles = {
 
     _fileIcon(name) {
         const ext = name.split('.').pop().toLowerCase();
-        const icons = {yml:'📝',yaml:'📝',properties:'⚙️',json:'📋',txt:'📄',log:'📜',jar:'☕',zip:'📦',gz:'📦',tar:'📦',sh:'🔧',bat:'🔧',xml:'📋',toml:'📝',cfg:'⚙️',conf:'⚙️',ini:'⚙️',md:'📖',csv:'📊',png:'🖼️',jpg:'🖼️',gif:'🖼️'};
-        return icons[ext] || '📄';
+        const icons = {yml:'',yaml:'',properties:'',json:'',txt:'',log:'',jar:'',zip:'',gz:'',tar:'',sh:'',bat:'',xml:'',toml:'',cfg:'',conf:'',ini:'',md:'',csv:'',png:'',jpg:'',gif:''};
+        return icons[ext] || '';
     },
 
     _escapeHtml(str) {
@@ -289,7 +289,7 @@ const SvFiles = {
         if (prog) {
             const color = fail === 0 ? 'var(--accent)' : 'var(--danger)';
             prog.innerHTML = `<div style="padding:8px 12px;background:var(--bg-elev-1);border-radius:6px;font-size:12px;color:${color};">
-                ${fail === 0 ? '✅' : '⚠️'} ${success} ${Lang.t('sv.files.uploaded')}${fail > 0 ? `, ${fail} ${Lang.t('sv.files.upload_errors')}` : ''}
+                ${fail === 0 ? '' : ''} ${success} ${Lang.t('sv.files.uploaded')}${fail > 0 ? `, ${fail} ${Lang.t('sv.files.upload_errors')}` : ''}
             </div>`;
             setTimeout(() => { prog.style.display = 'none'; }, 4000);
         }

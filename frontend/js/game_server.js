@@ -656,9 +656,9 @@ const GameServer = {
 
  return `
  <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:8px;"><div><div style="font-weight:600;">${typeLabel} auto</div><div style="font-size:12px;color:var(--text-muted);margin-top:4px;">
- ⏱️ Toutes les ${task.interval_hours}h &nbsp;|&nbsp;
+ ⏱Toutes les ${task.interval_hours}h &nbsp;|&nbsp;
  Dernier: ${lastRun} &nbsp;|&nbsp;
- ⏭️ Prochain: ${nextRun}
+ ⏭Prochain: ${nextRun}
  </div></div><div class="flex gap-2" style="align-items:center;"><span style="color:${statusColor};font-size:12px;font-weight:600;">${statusLabel}</span><button class="btn btn-icon btn-secondary" onclick="GameServer.toggleScheduledTask(${task.id})" title="${task.enabled ? 'Désactiver' : 'Activer'}">
  ${task.enabled ? 'Pause' : 'Resume'}
  </button><button class="btn btn-icon btn-danger" onclick="GameServer.deleteScheduledTask(${task.id})" title="Supprimer">Del</button></div></div>
@@ -769,7 +769,7 @@ const GameServer = {
  <div style="display:flex;align-items:center;gap:12px;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><img src="${mod.icon_url || ''}" alt="" style="width:40px;height:40px;border-radius:6px;background:var(--bg-elev-3);" onerror="this.style.display='none'" /><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:14px;">${mod.name}</div><div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
  ${mod.summary}
  </div><div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
- ${mod.author} · ⬇️ ${downloads}
+ ${mod.author} · ⬇${downloads}
  </div></div><button class="btn btn-primary btn-sm" onclick="GameServer.showModFiles(${mod.id}, '${mod.name.replace(/'/g, "\\'")}')">Installer</button></div>
  `;
  }).join('');

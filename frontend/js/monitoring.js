@@ -182,7 +182,7 @@ const Monitoring = {
                         <button class="btn btn-sm btn-secondary" onclick="Monitoring.nodeAction('${node.hostname}', 'reboot')" title="${Lang.t('nodes.reboot_desc')}">${Lang.t('nodes.reboot')}</button>
                         <button class="btn btn-sm btn-secondary" onclick="Monitoring.nodeAction('${node.hostname}', 'shutdown')" title="${Lang.t('nodes.shutdown_desc')}">${Lang.t('nodes.shutdown')}</button>
                         <div style="flex:1;"></div>
-                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.removeNode('${node.hostname}')" title="${Lang.t('nodes.remove')}">✕</button>
+                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.removeNode('${node.hostname}')" title="${Lang.t('nodes.remove')}"></button>
                     </div>
                     ` : ''}
                     ` : `
@@ -475,7 +475,7 @@ const Monitoring = {
 
         // RAM > 90%
         if (data.memory.percent > 90) {
-            fire('ram_high', `🧠 RAM élevée : ${Math.round(data.memory.percent)}% — ${data.memory.used_gb}/${data.memory.total_gb} Go`);
+            fire('ram_high', `RAM élevée : ${Math.round(data.memory.percent)}% — ${data.memory.used_gb}/${data.memory.total_gb} Go`);
         }
 
         // Disque > 95%
@@ -485,7 +485,7 @@ const Monitoring = {
 
         // Température CPU > 85°C
         if (data.temperature?.available && data.temperature.cpu_temp > 85) {
-            fire('temp_high', `🌡️ Température CPU élevée : ${data.temperature.cpu_temp}°C`);
+            fire('temp_high', `Température CPU élevée : ${data.temperature.cpu_temp}°C`);
         }
     },
 };

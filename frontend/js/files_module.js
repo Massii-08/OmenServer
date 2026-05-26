@@ -26,7 +26,7 @@ const FilesModule = {
             <div id="gdrive-browser" style="display:none;">
                 <div class="card">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-                        <h3 style="margin:0;">☁️ Google Drive</h3>
+                        <h3 style="margin:0;">Google Drive</h3>
                         <div style="display:flex;gap:8px;">
                             <button class="btn btn-primary btn-sm" onclick="document.getElementById('gdrive-upload-input').click()">${Lang.t('files.upload')}</button>
                             <input type="file" id="gdrive-upload-input" style="display:none;" onchange="FilesModule.uploadFile(this)" />
@@ -52,7 +52,7 @@ const FilesModule = {
         if (!r || !r.ok) {
             statusEl.innerHTML = `
                 <div style="display:flex;align-items:center;gap:16px;">
-                    <span style="font-size:32px;">☁️</span>
+                    <span style="font-size:32px;"></span>
                     <div style="flex:1;">
                         <div style="font-weight:700;font-size:15px;">Google Drive</div>
                         <div style="font-size:13px;color:var(--text-muted);margin-top:2px;">${Lang.t('files.gdrive_status_error')}</div>
@@ -64,15 +64,15 @@ const FilesModule = {
         const status = await r.json();
         this._gdriveStatus = status;
 
-        const statusIcons = { connected: '🟢', not_installed: '🔴', no_credentials: '🟡', not_authenticated: '🟡', error: '🔴' };
+        const statusIcons = { connected: '', not_installed: '', no_credentials: '', not_authenticated: '', error: '' };
 
         statusEl.innerHTML = `
             <div style="display:flex;align-items:center;gap:16px;">
-                <span style="font-size:32px;">${statusIcons[status.status] || '⚪'}</span>
+                <span style="font-size:32px;">${statusIcons[status.status] || ''}</span>
                 <div style="flex:1;">
                     <div style="font-weight:700;font-size:15px;">Google Drive ${status.connected ? Lang.t('files.gdrive_connected') : ''}</div>
                     <div style="font-size:13px;color:var(--text-muted);margin-top:2px;">${status.message}</div>
-                    ${status.email ? `<div style="font-size:12px;color:var(--info);margin-top:2px;">📧 ${status.email}</div>` : ''}
+                    ${status.email ? `<div style="font-size:12px;color:var(--info);margin-top:2px;">${status.email}</div>` : ''}
                 </div>
                 ${!status.connected && status.status === 'not_authenticated' ? `
                     <button class="btn btn-primary" onclick="FilesModule.connectGDrive()">${Lang.t('files.connect')}</button>
@@ -149,7 +149,7 @@ const FilesModule = {
             return;
         }
 
-        const typeIcons = { folder: '📁', file: '📄' };
+        const typeIcons = { folder: '', file: '' };
 
         filesEl.innerHTML = `
             <div style="display:flex;flex-direction:column;gap:2px;">
@@ -158,7 +158,7 @@ const FilesModule = {
                         onmouseover="this.style.background='var(--bg-elev-3)'"
                         onmouseout="this.style.background='transparent'"
                         onclick="${f.type === 'folder' ? `FilesModule._currentFolder='${f.id}';FilesModule.loadDriveFiles()` : ''}">
-                        <span style="font-size:18px;">${typeIcons[f.type] || '📄'}</span>
+                        <span style="font-size:18px;">${typeIcons[f.type] || ''}</span>
                         <div style="flex:1;min-width:0;">
                             <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${f.name}</div>
                             <div style="font-size:11px;color:var(--text-muted);">
@@ -167,7 +167,7 @@ const FilesModule = {
                             </div>
                         </div>
                         ${f.type === 'file' ? `
-                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();FilesModule.downloadFile('${f.id}','${f.name}')" style="font-size:11px;padding:2px 8px;">⬇️</button>
+                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();FilesModule.downloadFile('${f.id}','${f.name}')" style="font-size:11px;padding:2px 8px;">⬇</button>
                         ` : ''}
                     </div>
                 `).join('')}

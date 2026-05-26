@@ -281,7 +281,7 @@ const NetworkModule = {
                 <div id="wol-add-form" style="display:none;margin-bottom:12px;"></div>
                 ${devices.length === 0 ? `
                     <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:13px;">
-                        <div style="font-size:32px;margin-bottom:8px;">💻</div>
+                        <div style="font-size:32px;margin-bottom:8px;"></div>
                         ${Lang.t('net.wol_empty')}<br>
                         <span style="font-size:11px;">${Lang.t('net.wol_empty_hint')}</span>
                     </div>
@@ -289,7 +289,7 @@ const NetworkModule = {
                     <div style="display:flex;flex-direction:column;gap:6px;">
                         ${devices.map(d => `
                             <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);">
-                                <span style="font-size:24px;">🖥️</span>
+                                <span style="font-size:24px;"></span>
                                 <div style="flex:1;">
                                     <div style="font-size:14px;font-weight:600;">${d.name}</div>
                                     <div style="font-size:11px;color:var(--text-muted);font-family:monospace;">${d.mac_address}${d.ip_hint ? ' · ' + d.ip_hint : ''}</div>
@@ -300,7 +300,7 @@ const NetworkModule = {
                                         ${Lang.t('net.wol_wake')}
                                     </button>
                                     <button class="btn btn-secondary btn-sm" onclick="NetworkModule.deleteDevice(${d.id})" style="font-size:11px;padding:4px 8px;color:var(--danger);">
-                                        🗑
+                                        
                                     </button>
                                 </div>
                             </div>

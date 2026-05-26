@@ -49,14 +49,14 @@ const WebModule = {
         const grid = document.getElementById('web-sites-grid');
         if (!grid) return;
 
-        const typeIcons = { static: '🌐', node: '⚡', php: '🐘', python: '🐍' };
+        const typeIcons = { static: '', node: '', php: '', python: '' };
         const statusColors = { running: 'var(--accent)', stopped: '#6b7280', error: 'var(--danger)' };
         const statusLabels = { running: Lang.t('web.status_running'), stopped: Lang.t('web.status_stopped'), error: Lang.t('web.status_error') };
 
         if (this._sites.length === 0) {
             grid.innerHTML = `
                 <div style="text-align:center;padding:60px;">
-                    <div style="font-size:48px;margin-bottom:12px;">🌐</div>
+                    <div style="font-size:48px;margin-bottom:12px;"></div>
                     <div style="color:var(--text-muted);font-size:15px;">${Lang.t('web.no_sites')}</div>
                     <div style="color:var(--text-muted);font-size:12px;margin-top:4px;">${Lang.t('web.no_sites_hint')}</div>
                 </div>`;
@@ -71,7 +71,7 @@ const WebModule = {
                         onmouseout="this.style.transform=''">
                         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
                             <div style="display:flex;align-items:center;gap:10px;">
-                                <span style="font-size:28px;">${typeIcons[s.site_type] || '🌐'}</span>
+                                <span style="font-size:28px;">${typeIcons[s.site_type] || ''}</span>
                                 <div>
                                     <div style="font-weight:700;font-size:14px;">${s.name}</div>
                                     <div style="font-size:11px;color:var(--text-muted);">${s.type_label || s.site_type} · Port ${s.port}</div>
@@ -95,7 +95,7 @@ const WebModule = {
                                 : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();WebModule.startSite(${s.id})" style="font-size:11px;padding:4px 12px;">Start</button>`
                             }
                             <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.showLogs(${s.id})" style="font-size:11px;padding:4px 12px;">${Lang.t('web.logs_title')}</button>
-                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.deleteSite(${s.id})" style="font-size:11px;padding:4px 8px;color:var(--danger);">🗑</button>
+                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.deleteSite(${s.id})" style="font-size:11px;padding:4px 8px;color:var(--danger);"></button>
                         </div>
                     </div>
                 `).join('')}
@@ -159,7 +159,7 @@ const WebModule = {
 
         if (r && r.ok) {
             document.getElementById('web-create-form').style.display = 'none';
-            if (typeof Toast !== 'undefined') Toast.success(`${name} ✅`);
+            if (typeof Toast !== 'undefined') Toast.success(`${name} `);
             await this.loadSites();
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
@@ -203,7 +203,7 @@ const WebModule = {
                     <div style="display:flex;gap:8px;align-items:center;">
                         <span style="font-size:11px;color:var(--text-muted);">${data.logs.length} ${Lang.t('web.lines')}</span>
                         <button class="btn btn-secondary btn-sm" onclick="WebModule.showLogs(${id})">${Lang.t('web.refresh')}</button>
-                        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('web-site-detail').style.display='none'">✕</button>
+                        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('web-site-detail').style.display='none'"></button>
                     </div>
                 </div>
                 <div style="background:#0d1117;border-radius:8px;padding:12px;max-height:300px;overflow-y:auto;font-family:'Fira Code',monospace;font-size:12px;line-height:1.6;color:#c9d1d9;">

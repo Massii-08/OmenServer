@@ -24,12 +24,12 @@ const SvSettings = {
 
     _subTabs() {
         const tabs = [
-            {id:'server',icon:'🖥',label:Lang.t('sv.set_server')},
-            {id:'map',icon:'🗺️',label:Lang.t('sv.set_map')},
-            {id:'protocols',icon:'📡',label:Lang.t('sv.set_protocols')},
-            {id:'resourcepack',icon:'🎨',label:Lang.t('sv.set_resourcepack')},
-            {id:'jvm',icon:'☕',label:Lang.t('sv.set_jvm')},
-            {id:'hosting',icon:'🏠',label:Lang.t('sv.set_hosting')},
+            {id:'server',icon:'',label:Lang.t('sv.set_server')},
+            {id:'map',icon:'',label:Lang.t('sv.set_map')},
+            {id:'protocols',icon:'',label:Lang.t('sv.set_protocols')},
+            {id:'resourcepack',icon:'',label:Lang.t('sv.set_resourcepack')},
+            {id:'jvm',icon:'',label:Lang.t('sv.set_jvm')},
+            {id:'hosting',icon:'',label:Lang.t('sv.set_hosting')},
         ];
         return tabs.map(t => `
             <button onclick="SvSettings.switchSub('${t.id}')" id="sv-set-tab-${t.id}"
@@ -137,8 +137,8 @@ const SvSettings = {
             <div>${this._field(Lang.t('sv.cfg.max_players'), 'max-players', 'number', {default:'20'})}</div>
         </div>
         ${this._field(Lang.t('sv.cfg.difficulty'), 'difficulty', 'select', {options:[
-            {value:'peaceful',label:'☮️ Peaceful'},{value:'easy',label:'😊 Easy'},
-            {value:'normal',label:'⚔️ Normal'},{value:'hard',label:'💀 Hard'}
+            {value:'peaceful',label:'Peaceful'},{value:'easy',label:'Easy'},
+            {value:'normal',label:'Normal'},{value:'hard',label:'Hard'}
         ]})}
         ${this._field(Lang.t('sv.cfg.gamemode'), 'gamemode', 'select', {options:[
             {value:'survival',label:Lang.t('sv.cfg.survival')},{value:'creative',label:Lang.t('sv.cfg.creative')},

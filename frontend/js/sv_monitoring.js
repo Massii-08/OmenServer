@@ -32,7 +32,7 @@ const SvMonitoring = {
                 <div id="sv-mon-cpu-info" style="font-size:10px;color:var(--text-muted);margin-top:2px;">—</div>
             </div>
             <div style="background:var(--bg-elev-1);padding:14px;border-radius:10px;text-align:center;border-top:3px solid var(--accent);">
-                <div style="font-size:11px;color:var(--text-muted);">🧠 RAM</div>
+                <div style="font-size:11px;color:var(--text-muted);">RAM</div>
                 <div id="sv-mon-ram" style="font-size:24px;font-weight:700;color:var(--accent);">—</div>
                 <div id="sv-mon-ram-info" style="font-size:10px;color:var(--text-muted);margin-top:2px;">—</div>
             </div>
@@ -56,7 +56,7 @@ const SvMonitoring = {
             </div>
             <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                    <span style="font-size:13px;font-weight:600;">🧠 RAM</span>
+                    <span style="font-size:13px;font-weight:600;">RAM</span>
                     <span id="sv-mon-ram-peak" style="font-size:10px;color:var(--text-muted);">${Lang.t('sv.mon.peak')}: —</span>
                 </div>
                 <canvas id="sv-mon-ram-chart" height="180"></canvas>
