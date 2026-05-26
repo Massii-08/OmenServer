@@ -30,10 +30,10 @@ const Toast = {
 
         const icons = { success: '✅', error: '❌', info: 'ℹ️', warn: '⚠️' };
         const colors = {
-            success: { bg: 'rgba(34,197,94,0.15)', border: 'rgba(34,197,94,0.4)', text: '#22c55e' },
-            error:   { bg: 'rgba(239,68,68,0.15)', border: 'rgba(239,68,68,0.4)', text: '#ef4444' },
-            info:    { bg: 'rgba(59,130,246,0.15)', border: 'rgba(59,130,246,0.4)', text: '#3b82f6' },
-            warn:    { bg: 'rgba(245,158,11,0.15)', border: 'rgba(245,158,11,0.4)', text: '#f59e0b' },
+            success: { bg: 'rgba(74,222,128,0.15)', border: 'rgba(74,222,128,0.4)', text: 'var(--accent)' },
+            error:   { bg: 'rgba(248,113,113,0.15)', border: 'rgba(248,113,113,0.4)', text: 'var(--danger)' },
+            info:    { bg: 'rgba(96,165,250,0.15)', border: 'rgba(96,165,250,0.4)', text: 'var(--info)' },
+            warn:    { bg: 'rgba(251,191,36,0.15)', border: 'rgba(251,191,36,0.4)', text: 'var(--warning)' },
         };
         const c = colors[type] || colors.info;
 

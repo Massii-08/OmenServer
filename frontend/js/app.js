@@ -633,7 +633,7 @@ const App = {
         const interval = parseInt(document.getElementById('hub-sched-interval')?.value) || 6;
         const msg = document.getElementById('hub-sched-msg');
 
-        if (!targetVal) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = Lang.t('scheduler.select_target'); } return; }
+        if (!targetVal) { if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = Lang.t('scheduler.select_target'); } return; }
 
         // Parser "server_3" ou "bot_5"
         const [targetType, targetId] = targetVal.split('_');
@@ -662,11 +662,11 @@ const App = {
         });
 
         if (r && r.ok) {
-            if (msg) { msg.style.color = '#22c55e'; msg.textContent = Lang.t('scheduler.created'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('scheduler.created'); }
             setTimeout(() => this._loadGlobalSchedule(), 500);
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
         }
     },
 
@@ -693,14 +693,14 @@ const App = {
 
         const r = await Auth.apiCall('/api/diagnostic');
         if (!r || !r.ok) {
-            panel.innerHTML = `<div style="color:#ef4444;padding:12px;">${Lang.t('dashboard.diag_error')}</div>`;
+            panel.innerHTML = `<div style="color:var(--danger);padding:12px;">${Lang.t('dashboard.diag_error')}</div>`;
             return;
         }
         const d = await r.json();
 
-        const levelColors = { ok: '#22c55e', warning: '#f59e0b', critical: '#ef4444' };
+        const levelColors = { ok: 'var(--accent)', warning: 'var(--warning)', critical: 'var(--danger)' };
         const levelIcons = { ok: '✅', warning: '⚠️', critical: '🔴' };
-        const levelBg = { ok: 'rgba(34,197,94,0.08)', warning: 'rgba(245,158,11,0.08)', critical: 'rgba(239,68,68,0.08)' };
+        const levelBg = { ok: 'rgba(74,222,128,0.08)', warning: 'rgba(251,191,36,0.08)', critical: 'rgba(248,113,113,0.08)' };
         const overallLabel = { ok: Lang.t('dashboard.all_good'), warning: Lang.t('dashboard.attention'), critical: Lang.t('dashboard.problems') };
 
         panel.innerHTML = `
@@ -841,7 +841,7 @@ const App = {
                         <div style="margin-top:12px;padding:10px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);">
                             <div style="font-size:12px;color:var(--text-muted);">💡 ${t('power.graceful_info')}</div>
                         </div>
-                        <div id="power-rtcwake-warn" style="display:none;margin-top:8px;padding:8px 12px;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:8px;font-size:12px;color:#f59e0b;">
+                        <div id="power-rtcwake-warn" style="display:none;margin-top:8px;padding:8px 12px;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:8px;font-size:12px;color:var(--warning);">
                             ⚠️ rtcwake non détecté — le réveil automatique ne fonctionnera pas. Installez util-linux.
                         </div>
                         <div id="power-last-info" style="margin-top:12px;font-size:12px;color:var(--text-muted);"></div>
@@ -1067,7 +1067,7 @@ const App = {
             setTimeout(() => this._loadPowerSchedule(), 500);
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
         }
     },
 
@@ -1082,7 +1082,7 @@ const App = {
             if (typeof Toast !== 'undefined') Toast.info(Lang.t('power.test_launched'));
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
         }
     },
 
@@ -1095,7 +1095,7 @@ const App = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = data.message; }
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || 'Erreur'}`; }
         }
     },
 
@@ -1270,7 +1270,7 @@ const App = {
         if (!listEl) return;
 
         const response = await Auth.apiCall('/api/auth/admin/users');
-        if (!response || !response.ok) { listEl.innerHTML = '<div style="color:#ef4444;">❌ ' + Lang.t('common.error') + '</div>'; return; }
+        if (!response || !response.ok) { listEl.innerHTML = '<div style="color:var(--danger);">❌ ' + Lang.t('common.error') + '</div>'; return; }
         const users = await response.json();
         const currentUser = Auth.getUser();
 
@@ -1309,7 +1309,7 @@ const App = {
                     return '<span style="font-size:10px;padding:2px 6px;border-radius:4px;'
                         + 'background:' + (has ? 'var(--accent-dim)' : 'rgba(255,255,255,0.04)') + ';'
                         + 'color:' + (has ? 'var(--accent)' : 'rgba(255,255,255,0.15)') + ';'
-                        + 'border:1px solid ' + (has ? 'rgba(34,197,94,0.2)' : 'rgba(255,255,255,0.05)') + ';">'
+                        + 'border:1px solid ' + (has ? 'rgba(74,222,128,0.2)' : 'rgba(255,255,255,0.05)') + ';">'
                         + label + '</span>';
                 }).join('');
                 const moduleBadges = allModules.map(function(m) {
@@ -1317,16 +1317,16 @@ const App = {
                     return '<span data-module="' + m.id + '" data-user="' + u.id + '"'
                         + ' onclick="event.stopPropagation();App._toggleUserModule(' + u.id + ', \'' + m.id + '\', this)"'
                         + ' style="font-size:11px;padding:3px 8px;border-radius:5px;cursor:pointer;user-select:none;transition:all .15s;'
-                        + 'background:' + (hasAccess ? 'rgba(59,130,246,0.15)' : 'rgba(255,255,255,0.04)') + ';'
+                        + 'background:' + (hasAccess ? 'rgba(96,165,250,0.15)' : 'rgba(255,255,255,0.04)') + ';'
                         + 'color:' + (hasAccess ? 'var(--info)' : 'rgba(255,255,255,0.2)') + ';'
-                        + 'border:1px solid ' + (hasAccess ? 'rgba(59,130,246,0.3)' : 'rgba(255,255,255,0.06)') + ';">'
+                        + 'border:1px solid ' + (hasAccess ? 'rgba(96,165,250,0.3)' : 'rgba(255,255,255,0.06)') + ';">'
                         + (hasAccess ? '☑' : '☐') + ' ' + m.icon + ' ' + m.label + '</span>';
                 }).join('');
 
                 return '<div style="padding:12px 0;border-bottom:1px solid var(--border);">'
                 + '<div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;" onclick="App._toggleUserDetails(' + u.id + ')">'
                 +   '<div style="display:flex;align-items:center;gap:12px;">'
-                +     '<div style="width:36px;height:36px;border-radius:50%;background:' + (u.is_admin ? 'linear-gradient(135deg,#3b82f6,#8b5cf6)' : 'var(--bg-elev-1)') + ';display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:' + (u.is_admin ? 'white' : 'var(--text-muted)') + '">' + u.username.charAt(0).toUpperCase() + '</div>'
+                +     '<div style="width:36px;height:36px;border-radius:50%;background:' + (u.is_admin ? 'var(--violet)' : 'var(--bg-elev-1)') + ';display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:' + (u.is_admin ? 'white' : 'var(--text-muted)') + '">' + u.username.charAt(0).toUpperCase() + '</div>'
                 +     '<div>'
                 +       '<div style="font-weight:600;font-size:14px;">' + u.username + '</div>'
                 +       '<div style="font-size:12px;color:var(--text-muted);">' + (roleLabels[u.role] || u.role) + (u.created_at ? ' · ' + Lang.t('users.created_on') + ' ' + new Date(u.created_at).toLocaleDateString() : '') + '</div>'
@@ -1360,10 +1360,10 @@ const App = {
                         : ''))
                 + '</div>'
                 + '</div>'
-                + '<div id="del-confirm-' + u.id + '" style="display:none;background:rgba(239,68,68,0.08);border:1px solid #ef4444;border-radius:8px;padding:10px;margin:4px 0 8px;">'
-                +   '<span style="font-size:12px;color:#ef4444;">' + Lang.t('users.delete_confirm').replace('${name}', u.username) + '</span>'
+                + '<div id="del-confirm-' + u.id + '" style="display:none;background:rgba(248,113,113,0.08);border:1px solid var(--danger);border-radius:8px;padding:10px;margin:4px 0 8px;">'
+                +   '<span style="font-size:12px;color:var(--danger);">' + Lang.t('users.delete_confirm').replace('${name}', u.username) + '</span>'
                 +   '<button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'del-confirm-' + u.id + '\').style.display=\'none\'" style="margin-left:8px;font-size:11px;">' + Lang.t('common.cancel') + '</button>'
-                +   '<button class="btn btn-sm" style="background:#ef4444;color:white;margin-left:4px;font-size:11px;" onclick="App._deleteUserAdmin(' + u.id + ')">' + Lang.t('users.delete_btn') + '</button>'
+                +   '<button class="btn btn-sm" style="background:var(--danger);color:white;margin-left:4px;font-size:11px;" onclick="App._deleteUserAdmin(' + u.id + ')">' + Lang.t('users.delete_btn') + '</button>'
                 + '</div>';
             }).join('');
     },
@@ -1406,9 +1406,9 @@ const App = {
         const isNowActive = el.textContent.includes('☐'); // était inactif, va devenir actif
         const moduleIcon = el.textContent.split(' ').slice(1).join(' ');
         if (isNowActive) {
-            el.style.background = 'rgba(59,130,246,0.15)';
+            el.style.background = 'rgba(96,165,250,0.15)';
             el.style.color = 'var(--info)';
-            el.style.borderColor = 'rgba(59,130,246,0.3)';
+            el.style.borderColor = 'rgba(96,165,250,0.3)';
             el.textContent = '☑ ' + moduleIcon;
         } else {
             el.style.background = 'rgba(255,255,255,0.04)';
@@ -1594,7 +1594,7 @@ const SharingModal = {
         const el = document.getElementById('sharing-access-list');
         if (!el) return;
         const r = await Auth.apiCall(`/api/sharing/resource/${this._resourceType}/${this._resourceId}`);
-        if (!r || !r.ok) { el.innerHTML = '<div style="color:#ef4444;font-size:12px;">Error</div>'; return; }
+        if (!r || !r.ok) { el.innerHTML = '<div style="color:var(--danger);font-size:12px;">Error</div>'; return; }
         const accesses = await r.json();
         if (accesses.length === 0) {
             el.innerHTML = `<div style="text-align:center;padding:16px;color:var(--text-muted);font-size:12px;">${Lang.t('sharing.no_access')}</div>`;
@@ -1624,7 +1624,7 @@ const SharingModal = {
                             <option value="manage" ${a.access_level==='manage'?'selected':''}>⚡ ${ll.manage}</option>
                         `}
                     </select>
-                    <button class="btn btn-sm" style="color:#ef4444;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.2);padding:4px 8px;font-size:11px;" onclick="SharingModal._revokeAccess(${a.id}, '${(a.username||'').replace(/'/g,"\\\\'")}')">${Lang.t('sharing.revoke')}</button>
+                    <button class="btn btn-sm" style="color:var(--danger);background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.2);padding:4px 8px;font-size:11px;" onclick="SharingModal._revokeAccess(${a.id}, '${(a.username||'').replace(/'/g,"\\\\'")}')">${Lang.t('sharing.revoke')}</button>
                 </div>
             </div>
         `).join('');

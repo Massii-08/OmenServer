@@ -50,7 +50,7 @@ const WebModule = {
         if (!grid) return;
 
         const typeIcons = { static: '🌐', node: '⚡', php: '🐘', python: '🐍' };
-        const statusColors = { running: '#22c55e', stopped: '#6b7280', error: '#ef4444' };
+        const statusColors = { running: 'var(--accent)', stopped: '#6b7280', error: 'var(--danger)' };
         const statusLabels = { running: Lang.t('web.status_running'), stopped: Lang.t('web.status_stopped'), error: Lang.t('web.status_error') };
 
         if (this._sites.length === 0) {
@@ -95,7 +95,7 @@ const WebModule = {
                                 : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();WebModule.startSite(${s.id})" style="font-size:11px;padding:4px 12px;">▶ Start</button>`
                             }
                             <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.showLogs(${s.id})" style="font-size:11px;padding:4px 12px;">${Lang.t('web.logs_title')}</button>
-                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.deleteSite(${s.id})" style="font-size:11px;padding:4px 8px;color:#ef4444;">🗑</button>
+                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.deleteSite(${s.id})" style="font-size:11px;padding:4px 8px;color:var(--danger);">🗑</button>
                         </div>
                     </div>
                 `).join('')}
@@ -148,7 +148,7 @@ const WebModule = {
         const gitUrl = document.getElementById('web-git')?.value?.trim() || '';
         const msg = document.getElementById('web-create-msg');
 
-        if (!name) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = Lang.t('web.name_required'); } return; }
+        if (!name) { if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = Lang.t('web.name_required'); } return; }
 
         if (msg) { msg.style.color = 'var(--info)'; msg.textContent = gitUrl ? Lang.t('web.cloning') : Lang.t('web.creating'); }
 
@@ -163,7 +163,7 @@ const WebModule = {
             await this.loadSites();
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
     },
 

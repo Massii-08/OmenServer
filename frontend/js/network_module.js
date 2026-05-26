@@ -252,7 +252,7 @@ const NetworkModule = {
                 <div style="display:flex;align-items:flex-end;gap:2px;height:80px;padding:8px;background:var(--bg-elev-3);border-radius:8px;overflow-x:auto;">
                     ${logs.slice(-60).map(log => {
                         const h = log.latency_ms ? Math.max(4, (log.latency_ms / maxLatency) * 70) : 0;
-                        const color = !log.latency_ms ? '#ef4444' : log.latency_ms < 30 ? '#22c55e' : log.latency_ms < 80 ? '#f59e0b' : '#ef4444';
+                        const color = !log.latency_ms ? 'var(--danger)' : log.latency_ms < 30 ? 'var(--accent)' : log.latency_ms < 80 ? 'var(--warning)' : 'var(--danger)';
                         return `<div style="width:${barWidth}px;height:${h}px;background:${color};border-radius:2px;flex-shrink:0;" title="${log.latency_ms || 'offline'} ms — ${new Date(log.timestamp).toLocaleTimeString(locale)}"></div>`;
                     }).join('')}
                 </div>
@@ -299,7 +299,7 @@ const NetworkModule = {
                                     <button class="btn btn-primary btn-sm" onclick="NetworkModule.wakeDevice(${d.id})" style="font-size:12px;padding:6px 14px;">
                                         ${Lang.t('net.wol_wake')}
                                     </button>
-                                    <button class="btn btn-secondary btn-sm" onclick="NetworkModule.deleteDevice(${d.id})" style="font-size:11px;padding:4px 8px;color:#ef4444;">
+                                    <button class="btn btn-secondary btn-sm" onclick="NetworkModule.deleteDevice(${d.id})" style="font-size:11px;padding:4px 8px;color:var(--danger);">
                                         🗑
                                     </button>
                                 </div>
@@ -344,7 +344,7 @@ const NetworkModule = {
         const ip = document.getElementById('wol-ip')?.value?.trim() || null;
         const msg = document.getElementById('wol-msg');
 
-        if (!name || !mac) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = Lang.t('net.wol_name_mac_required'); } return; }
+        if (!name || !mac) { if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = Lang.t('net.wol_name_mac_required'); } return; }
 
         const r = await Auth.apiCall('/api/network/devices', {
             method: 'POST',
@@ -355,7 +355,7 @@ const NetworkModule = {
             await this._loadDevices();
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
     },
 

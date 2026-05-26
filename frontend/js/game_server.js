@@ -184,7 +184,7 @@ const GameServer = {
                                 <button class="btn btn-primary btn-sm" onclick="GameServer.searchModpacks()">🔍</button>
                             </div>
                             <div id="modpack-results" style="max-height:200px;overflow-y:auto;"></div>
-                            <div id="modpack-selected" style="display:none;background:linear-gradient(135deg,rgba(34,197,94,0.1),rgba(16,185,129,0.05));border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:10px;margin-top:8px;">
+                            <div id="modpack-selected" style="display:none;background:linear-gradient(135deg,rgba(74,222,128,0.1),rgba(16,185,129,0.05));border:1px solid rgba(74,222,128,0.3);border-radius:8px;padding:10px;margin-top:8px;">
                             </div>
                         </div>
                     </div>
@@ -494,7 +494,7 @@ const GameServer = {
         el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px;">⏳ Recherche...</div>';
 
         const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=modpacks`);
-        if (!r || !r.ok) { el.innerHTML = '<div style="color:#ef4444;font-size:12px;">❌ Erreur CurseForge</div>'; return; }
+        if (!r || !r.ok) { el.innerHTML = '<div style="color:var(--danger);font-size:12px;">❌ Erreur CurseForge</div>'; return; }
         const data = await r.json();
         const mods = data.mods || [];
         if (mods.length === 0) { el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">Aucun résultat</div>'; return; }
@@ -542,7 +542,7 @@ const GameServer = {
         // Charger les fichiers du modpack
         const r = await Auth.apiCall(`/api/mods/${id}/files`);
         if (!r || !r.ok) {
-            document.getElementById('modpack-versions').innerHTML = '<div style="color:#ef4444;">❌ Erreur</div>';
+            document.getElementById('modpack-versions').innerHTML = '<div style="color:var(--danger);">❌ Erreur</div>';
             return;
         }
         const files = (await r.json()).files || [];
@@ -578,7 +578,7 @@ const GameServer = {
         const versEl = document.getElementById('modpack-versions');
         if (versEl) {
             versEl.innerHTML = `
-            <div style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:6px;padding:10px;display:flex;align-items:center;gap:8px;">
+            <div style="background:rgba(74,222,128,0.1);border:1px solid rgba(74,222,128,0.3);border-radius:6px;padding:10px;display:flex;align-items:center;gap:8px;">
                 <span style="font-size:18px;">✅</span>
                 <div>
                     <div style="font-size:13px;font-weight:600;color:var(--accent);">${fileName}</div>
@@ -931,14 +931,14 @@ const GameServer = {
             } else if (response) {
                 const err = await response.json();
                 if (msgEl) {
-                    msgEl.style.color = '#e74c3c';
+                    msgEl.style.color = 'var(--danger)';
                     msgEl.textContent = `❌ ${err.detail || 'Erreur'}`;
                 }
             }
         } catch (e) {
             if (btn) { btn.disabled = false; btn.innerHTML = '💾 Appliquer les changements'; }
             if (msgEl) {
-                msgEl.style.color = '#e74c3c';
+                msgEl.style.color = 'var(--danger)';
                 msgEl.textContent = '❌ Erreur réseau';
             }
         }
@@ -1028,7 +1028,7 @@ const GameServer = {
             await this.loadSchedulerTasks();
         } else if (response) {
             const err = await response.json();
-            if (msgEl) { msgEl.style.color = '#e74c3c'; msgEl.textContent = `❌ ${err.detail || 'Erreur'}`; }
+            if (msgEl) { msgEl.style.color = 'var(--danger)'; msgEl.textContent = `❌ ${err.detail || 'Erreur'}`; }
         }
     },
 
@@ -1093,7 +1093,7 @@ const GameServer = {
         const response = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(query)}&category=${category}`);
         if (!response || !response.ok) {
             const err = response ? await response.json() : {};
-            resultsEl.innerHTML = `<div style="text-align:center;padding:20px;color:#e74c3c;">❌ ${err.detail || 'Erreur de recherche'}</div>`;
+            resultsEl.innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">❌ ${err.detail || 'Erreur de recherche'}</div>`;
             return;
         }
 
@@ -1133,7 +1133,7 @@ const GameServer = {
 
         const response = await Auth.apiCall(`/api/mods/${modId}/files`);
         if (!response || !response.ok) {
-            resultsEl.innerHTML = '<div style="text-align:center;padding:20px;color:#e74c3c;">❌ Erreur</div>';
+            resultsEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--danger);">❌ Erreur</div>';
             return;
         }
 
@@ -1182,7 +1182,7 @@ const GameServer = {
             if (msgEl) { msgEl.style.color = 'var(--accent)'; msgEl.textContent = `✅ ${modName} installé !`; }
         } else if (response) {
             const err = await response.json();
-            if (msgEl) { msgEl.style.color = '#e74c3c'; msgEl.textContent = `❌ ${err.detail || 'Erreur'}`; }
+            if (msgEl) { msgEl.style.color = 'var(--danger)'; msgEl.textContent = `❌ ${err.detail || 'Erreur'}`; }
         }
     },
 
@@ -1318,7 +1318,7 @@ const GameServer = {
         const text = msg.data || msg.message || '';
 
         if (msg.type === 'error') {
-            line.style.color = '#e74c3c';
+            line.style.color = 'var(--danger)';
             line.textContent = `❌ ${text}`;
         } else if (msg.type === 'info') {
             line.style.color = 'var(--info)';

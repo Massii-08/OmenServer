@@ -34,7 +34,7 @@ const ServerView = {
         let statusColor, statusText, actionBtns;
         if (isPending) {
             const labels = { start: Lang.t('sv.starting'), stop: Lang.t('sv.stopping'), restart: Lang.t('sv.restarting') };
-            statusColor = '#f59e0b';
+            statusColor = 'var(--warning)';
             statusText = `<span class="spinner-sm"></span> ${labels[this._pendingAction] || '⏳...'}`;
             actionBtns = `<button class="btn btn-sm btn-secondary" disabled style="opacity:0.5;width:100%;">${Lang.t('sv.wait')}</button>`;
         } else if (isRunning) {
@@ -161,7 +161,7 @@ const ServerView = {
         let statusColor, statusText, actionBtns;
         if (isPending) {
             const labels = { start: Lang.t('sv.starting'), stop: Lang.t('sv.stopping'), restart: Lang.t('sv.restarting') };
-            statusColor = '#f59e0b';
+            statusColor = 'var(--warning)';
             statusText = `<span class="spinner-sm"></span> ${labels[this._pendingAction] || '⏳...'}`;
             actionBtns = `<button class="btn btn-sm btn-secondary" disabled style="opacity:0.5;width:100%;">${Lang.t('sv.wait')}</button>`;
         } else if (isRunning) {
@@ -224,7 +224,7 @@ const ServerView = {
         let uptimeHtml;
         if (isPending) {
             const labels = { start: Lang.t('sv.starting'), stop: Lang.t('sv.stopping'), restart: Lang.t('sv.restarting') };
-            uptimeHtml = `<span style="color:#f59e0b;font-weight:600;"><span class="spinner-sm"></span> ${labels[this._pendingAction]}</span>`;
+            uptimeHtml = `<span style="color:var(--warning);font-weight:600;"><span class="spinner-sm"></span> ${labels[this._pendingAction]}</span>`;
         } else if (isRunning) {
             uptimeHtml = '<span style="color:var(--accent);font-weight:600;">● ' + Lang.t('gs.online') + '</span>';
         } else {
@@ -274,7 +274,7 @@ const ServerView = {
                 <div style="font-size:12px;color:var(--text-muted);">${Lang.t('sv.status')}</div>
                 <div style="font-size:14px;margin-top:2px;">${uptimeHtml}</div>
             </div>
-            <div style="background:${isRunning ? 'linear-gradient(135deg, rgba(59,130,246,0.1), rgba(139,92,246,0.1))' : 'var(--bg-elev-1)'};padding:16px;border-radius:10px;text-align:center;border:${isRunning ? '1px solid rgba(59,130,246,0.2)' : 'none'};">
+            <div style="background:${isRunning ? 'linear-gradient(135deg, rgba(96,165,250,0.1), rgba(192,132,252,0.1))' : 'var(--bg-elev-1)'};padding:16px;border-radius:10px;text-align:center;border:${isRunning ? '1px solid rgba(96,165,250,0.2)' : 'none'};">
                 <div style="font-size:24px;margin-bottom:4px;">👥</div>
                 <div style="font-size:12px;color:var(--text-muted);">${Lang.t('sv.players')}</div>
                 <div style="font-size:14px;font-weight:600;margin-top:2px;color:${isRunning ? 'var(--info)' : 'var(--text-muted)'};" id="sv-dash-players">${isRunning ? `${s.player_count || 0}/${s.player_max || 20}` : '—'}</div>
@@ -403,13 +403,13 @@ const ServerView = {
         if (!color) {
             const t = text.toLowerCase();
             if (t.includes('error') || t.includes('exception') || t.includes('severe') || t.includes('failed')) {
-                color = '#ef4444'; // Rouge — erreurs
+                color = 'var(--danger)'; // Rouge — erreurs
             } else if (t.includes('warn')) {
-                color = '#f59e0b'; // Orange — warnings
+                color = 'var(--warning)'; // Orange — warnings
             } else if (t.includes('joined the game') || t.includes('left the game') || t.includes('logged in') || t.includes('lost connection')) {
-                color = '#22c55e'; // Vert — joueurs
+                color = 'var(--accent)'; // Vert — joueurs
             } else if (t.includes('starting minecraft') || t.includes('done (') || t.includes('server started') || t.includes('preparing') || t.includes('loading')) {
-                color = '#a78bfa'; // Violet — démarrage
+                color = 'var(--violet)'; // Violet — démarrage
             } else if (t.includes('info') && t.includes(']: ')) {
                 // Format [HH:MM:SS INFO]: ... — extraire le contenu
                 color = '#8b949e'; // Gris clair — info standard
@@ -437,7 +437,7 @@ const ServerView = {
 
         this._ws.onopen = () => {
             if (statusEl) { statusEl.textContent = '🟢 Connecté'; statusEl.style.color = 'var(--accent)'; }
-            this._appendLog('--- Console connectée ---', '#22c55e');
+            this._appendLog('--- Console connectée ---', 'var(--accent)');
         };
 
         this._ws.onmessage = (e) => {
@@ -446,9 +446,9 @@ const ServerView = {
                 if (msg.type === 'log') {
                     this._appendLog(msg.data);
                 } else if (msg.type === 'info') {
-                    this._appendLog(msg.data, '#3b82f6');
+                    this._appendLog(msg.data, 'var(--info)');
                 } else if (msg.type === 'error') {
-                    this._appendLog('❌ ' + (msg.message || msg.data), '#ef4444');
+                    this._appendLog('❌ ' + (msg.message || msg.data), 'var(--danger)');
                 } else {
                     this._appendLog(JSON.stringify(msg));
                 }
@@ -459,12 +459,12 @@ const ServerView = {
         };
 
         this._ws.onclose = () => {
-            if (statusEl) { statusEl.textContent = '🔴 Déconnecté'; statusEl.style.color = '#ef4444'; }
-            this._appendLog('--- Console déconnectée ---', '#ef4444');
+            if (statusEl) { statusEl.textContent = '🔴 Déconnecté'; statusEl.style.color = 'var(--danger)'; }
+            this._appendLog('--- Console déconnectée ---', 'var(--danger)');
         };
 
         this._ws.onerror = () => {
-            this._appendLog('--- Erreur de connexion WebSocket ---', '#ef4444');
+            this._appendLog('--- Erreur de connexion WebSocket ---', 'var(--danger)');
         };
     },
 
@@ -473,7 +473,7 @@ const ServerView = {
         if (input && input.value.trim() && this._ws && this._ws.readyState === WebSocket.OPEN) {
             const cmd = input.value.trim();
             // Afficher la commande localement
-            this._appendLog('> ' + cmd, '#f59e0b');
+            this._appendLog('> ' + cmd, 'var(--warning)');
             // Envoyer au format attendu par le backend
             this._ws.send(JSON.stringify({type: 'command', data: cmd}));
             input.value = '';
@@ -527,7 +527,7 @@ const ServerView = {
         const r = await Auth.apiCall(`/api/servers/${this.serverId}/backups`);
         const el = document.getElementById('sv-backups-list');
         if (!el) return;
-        if (!r || !r.ok) { el.innerHTML=`<p style="color:#e74c3c">❌ ${Lang.t('common.error')}</p>`; return; }
+        if (!r || !r.ok) { el.innerHTML=`<p style="color:var(--danger)">❌ ${Lang.t('common.error')}</p>`; return; }
         const data = await r.json();
 
         const tab = this._backupTab || 'manual';
@@ -545,10 +545,10 @@ const ServerView = {
             const atLimit = backups.length >= 10;
             banner = `<div style="font-size:12px;color:var(--text-muted);padding:8px 12px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:8px;">
                 📦 ${Lang.t('sv.bk.manual_desc')}
-                <span style="float:right;color:${atLimit ? '#ef4444' : 'var(--accent)'};font-weight:600;">${backups.length}/10</span>
+                <span style="float:right;color:${atLimit ? 'var(--danger)' : 'var(--accent)'};font-weight:600;">${backups.length}/10</span>
             </div>`;
             if (atLimit) {
-                banner += `<div style="font-size:12px;color:#ef4444;padding:6px 12px;margin-bottom:8px;">${Lang.t('sv.bk.limit_reached')}</div>`;
+                banner += `<div style="font-size:12px;color:var(--danger);padding:6px 12px;margin-bottom:8px;">${Lang.t('sv.bk.limit_reached')}</div>`;
             }
         }
 
@@ -597,7 +597,7 @@ const ServerView = {
             if (nameInput) nameInput.value = '';
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
         if (btn) btn.disabled = false;
         this._loadBackups();
@@ -617,7 +617,7 @@ const ServerView = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.bk.renamed'); }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
         this._loadBackups();
     },
@@ -631,7 +631,7 @@ const ServerView = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.bk.restored'); }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
     },
 
@@ -639,11 +639,11 @@ const ServerView = {
         // Inline confirm — remplace le contenu de la carte par une confirmation
         const row = document.getElementById(`sv-bk-${id}`);
         if (!row) return;
-        row.style.background = 'rgba(231,76,60,0.15)';
-        row.style.border = '1px solid rgba(231,76,60,0.3)';
+        row.style.background = 'rgba(248,113,113,0.15)';
+        row.style.border = '1px solid rgba(248,113,113,0.3)';
         row.innerHTML = `
             <div style="flex:1;">
-                <div style="font-weight:600;color:#e74c3c;">⚠️ ${Lang.t('gs.delete_title')}</div>
+                <div style="font-weight:600;color:var(--danger);">⚠️ ${Lang.t('gs.delete_title')}</div>
                 <div style="font-size:12px;color:var(--text-muted);">${Lang.t('gs.delete_warn')}</div>
             </div>
             <div style="display:flex;gap:6px;">
@@ -660,7 +660,7 @@ const ServerView = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.bk.deleted'); }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
         this._loadBackups();
     },
@@ -776,7 +776,7 @@ const ServerView = {
         <h2>${Lang.t('sv.workshop.title')}</h2>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">
             ${Lang.t('sv.workshop.desc')} — <strong>${gameName}</strong>
-            <span style="font-size:11px;padding:2px 8px;background:rgba(25,100,235,0.15);color:#60a5fa;border-radius:20px;margin-left:8px;">App ID ${appId}</span>
+            <span style="font-size:11px;padding:2px 8px;background:rgba(96,165,250,0.15);color:#60a5fa;border-radius:20px;margin-left:8px;">App ID ${appId}</span>
         </p>
 
         <div style="display:flex;gap:4px;margin-bottom:16px;background:var(--bg-elev-1);padding:4px;border-radius:8px;width:fit-content;">
@@ -835,7 +835,7 @@ const ServerView = {
         const r = await Auth.apiCall(`/api/mods/steam/item/${encoded}`);
         if (!r || !r.ok) {
             const err = r ? await r.json().catch(()=>({})) : {};
-            el.innerHTML = `<div style="color:#ef4444">❌ ${err.detail || Lang.t('sv.workshop.invalid_id')}</div>`;
+            el.innerHTML = `<div style="color:var(--danger)">❌ ${err.detail || Lang.t('sv.workshop.invalid_id')}</div>`;
             return;
         }
 
@@ -896,7 +896,7 @@ const ServerView = {
             if (typeof Toast !== 'undefined') Toast.success(`✅ ${name} installé !`);
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
         if (btn) btn.disabled = false;
     },
@@ -907,7 +907,7 @@ const ServerView = {
 
         const r = await Auth.apiCall(`/api/mods/steam/server/${this.serverId}`);
         if (!r || !r.ok) {
-            el.innerHTML = `<div style="color:#ef4444">❌ ${Lang.t('common.error')}</div>`;
+            el.innerHTML = `<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`;
             return;
         }
 
@@ -1022,7 +1022,7 @@ const ServerView = {
         const ver = this.serverData?.version || '';
         const verParam = ver && ver !== 'LATEST' ? `&game_version=${encodeURIComponent(ver)}` : '';
         const r = await Auth.apiCall(`/api/plugins/search?q=${encodeURIComponent(q)}${verParam}`);
-        if (!r || !r.ok) { el.innerHTML = `<div style="color:#e74c3c">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`; return; }
         const data = await r.json();
         const plugins = data.plugins || [];
 
@@ -1050,7 +1050,7 @@ const ServerView = {
         el.innerHTML = `<div style="color:var(--text-muted)">⏳ ${Lang.t('common.loading')}</div>`;
 
         const r = await Auth.apiCall(`/api/plugins/${projectId}/versions`);
-        if (!r || !r.ok) { el.innerHTML = `<div style="color:#e74c3c">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`; return; }
         const data = await r.json();
         const versions = data.versions || [];
 
@@ -1088,7 +1088,7 @@ const ServerView = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${name} ${Lang.t('sv.mod.installed_restart')}`; }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
     },
 
@@ -1150,7 +1150,7 @@ const ServerView = {
         const ver = this.serverData?.version || '';
         const verParam = ver && ver !== 'LATEST' ? `&game_version=${encodeURIComponent(ver)}` : '';
         const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=${cat}${verParam}`);
-        if (!r||!r.ok) { el.innerHTML=`<div style="color:#e74c3c">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r||!r.ok) { el.innerHTML=`<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`; return; }
         const data = await r.json();
         const mods = data.mods||[];
         if (mods.length===0) { el.innerHTML=`<div style="color:var(--text-muted)">${Lang.t('sv.mod.no_results')}</div>`; return; }
@@ -1218,7 +1218,7 @@ const ServerView = {
         const ver = this.serverData?.version || '';
         const verParam = ver && ver !== 'LATEST' ? `&game_version=${encodeURIComponent(ver)}` : '';
         const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=datapacks${verParam}`);
-        if (!r || !r.ok) { el.innerHTML = `<div style="color:#e74c3c">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`; return; }
         const data = await r.json();
         const mods = data.mods || [];
         if (mods.length === 0) { el.innerHTML = `<div style="color:var(--text-muted)">${Lang.t('sv.mod.no_results')}</div>`; return; }
@@ -1244,7 +1244,7 @@ const ServerView = {
         el.innerHTML = `<div style="color:var(--text-muted)">⏳ ${Lang.t('common.loading')}</div>`;
 
         const r = await Auth.apiCall(`/api/mods/${modId}/files`);
-        if (!r||!r.ok) { el.innerHTML = `<div style="color:#e74c3c">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r||!r.ok) { el.innerHTML = `<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`; return; }
         const files = (await r.json()).files || [];
 
         el.innerHTML = `
@@ -1282,7 +1282,7 @@ const ServerView = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${name} ${Lang.t('sv.mod.installed_restart')}`; }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
     },
 
@@ -1371,7 +1371,7 @@ const ServerView = {
         if (statusEl) {
             const labels = { start: Lang.t('sv.starting'), stop: Lang.t('sv.stopping'), restart: Lang.t('sv.restarting') };
             statusEl.innerHTML = `<span class="spinner-sm"></span> ${labels[this._pendingAction] || '⏳...'}`;
-            statusEl.style.color = '#f59e0b';
+            statusEl.style.color = 'var(--warning)';
         }
         if (btnContainer) {
             btnContainer.innerHTML = `<button class="btn btn-sm btn-secondary" disabled style="opacity:0.5;width:100%;">${Lang.t('sv.wait')}</button>`;
@@ -1395,18 +1395,18 @@ const ServerView = {
         <div style="max-width:500px;margin:40px auto;">
             <div style="text-align:center;margin-bottom:24px;">
                 <div style="font-size:48px;margin-bottom:12px;">⚠️</div>
-                <h2 style="color:#ef4444;margin:0;">${Lang.t('sv.delete_title')}</h2>
+                <h2 style="color:var(--danger);margin:0;">${Lang.t('sv.delete_title')}</h2>
                 <p style="color:var(--text-muted);margin-top:8px;font-size:13px;">
                     ${Lang.t('sv.delete_warning')}
                 </p>
             </div>
-            <div style="background:rgba(239,68,68,0.05);border:1px solid rgba(239,68,68,0.3);border-radius:10px;padding:20px;">
+            <div style="background:rgba(248,113,113,0.05);border:1px solid rgba(248,113,113,0.3);border-radius:10px;padding:20px;">
                 <p style="font-size:13px;color:var(--text);margin-bottom:12px;">
-                    ${Lang.t('sv.delete_confirm_text')} <strong style="color:#ef4444;">${s.name}</strong>
+                    ${Lang.t('sv.delete_confirm_text')} <strong style="color:var(--danger);">${s.name}</strong>
                 </p>
-                <input id="sv-delete-input" class="form-input" placeholder="Nom du serveur..." style="border-color:rgba(239,68,68,0.3);margin-bottom:12px;" autocomplete="off" />
+                <input id="sv-delete-input" class="form-input" placeholder="Nom du serveur..." style="border-color:rgba(248,113,113,0.3);margin-bottom:12px;" autocomplete="off" />
                 <div style="display:flex;gap:8px;">
-                    <button class="btn" style="background:#ef4444;color:white;flex:1;" onclick="ServerView._confirmDeleteServer()">
+                    <button class="btn" style="background:var(--danger);color:white;flex:1;" onclick="ServerView._confirmDeleteServer()">
                         ${Lang.t('sv.delete_btn')}
                     </button>
                     <button class="btn btn-secondary" onclick="ServerView.switchTab('dashboard')">
@@ -1427,7 +1427,7 @@ const ServerView = {
         const msg = document.getElementById('sv-delete-msg');
 
         if (input !== s.name) {
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = Lang.t('sv.delete_name_mismatch'); }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = Lang.t('sv.delete_name_mismatch'); }
             return;
         }
 
@@ -1439,7 +1439,7 @@ const ServerView = {
             App.navigateTo('game_server');
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
     },
 
@@ -1467,13 +1467,13 @@ const ServerView = {
         if (!el) return;
 
         const r = await Auth.apiCall(`/api/servers/${this.serverId}/database`);
-        if (!r || !r.ok) { el.innerHTML = `<div style="color:#ef4444;">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger);">❌ ${Lang.t('common.error')}</div>`; return; }
         const data = await r.json();
 
         if (!data.exists) {
             // Formulaire de création
             el.innerHTML = `
-            <div style="background:linear-gradient(135deg, rgba(139,92,246,0.1), rgba(59,130,246,0.05));padding:20px;border-radius:10px;margin-bottom:16px;border:1px solid rgba(139,92,246,0.2);">
+            <div style="background:linear-gradient(135deg, rgba(192,132,252,0.1), rgba(96,165,250,0.05));padding:20px;border-radius:10px;margin-bottom:16px;border:1px solid rgba(192,132,252,0.2);">
                 <div style="font-size:14px;font-weight:600;margin-bottom:8px;">${Lang.t('sv.db.no_db')}</div>
                 <div style="font-size:13px;color:var(--text-muted);">${Lang.t('sv.db.no_db_desc')}</div>
             </div>
@@ -1533,12 +1533,12 @@ const ServerView = {
                     <button class="btn btn-danger btn-sm" onclick="ServerView._confirmDeleteDB()">${Lang.t('sv.db.delete')}</button>
                     <span id="sv-db-msg" style="font-size:13px;"></span>
                 </div>
-                <div id="sv-db-del-confirm" style="display:none;background:rgba(239,68,68,0.1);border:2px solid #ef4444;border-radius:8px;padding:12px;margin-top:8px;">
-                    <div style="font-size:13px;color:#ef4444;font-weight:600;margin-bottom:8px;">${Lang.t('sv.db.delete_confirm')}</div>
+                <div id="sv-db-del-confirm" style="display:none;background:rgba(248,113,113,0.1);border:2px solid var(--danger);border-radius:8px;padding:12px;margin-top:8px;">
+                    <div style="font-size:13px;color:var(--danger);font-weight:600;margin-bottom:8px;">${Lang.t('sv.db.delete_confirm')}</div>
                     <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('sv.db.delete_warn')}</div>
                     <div style="display:flex;gap:8px;">
                         <button class="btn btn-secondary btn-sm" onclick="document.getElementById('sv-db-del-confirm').style.display='none'">${Lang.t('common.cancel')}</button>
-                        <button class="btn btn-sm" style="background:#ef4444;color:white;" onclick="ServerView._deleteDB()">${Lang.t('sv.db.delete_yes')}</button>
+                        <button class="btn btn-sm" style="background:var(--danger);color:white;" onclick="ServerView._deleteDB()">${Lang.t('sv.db.delete_yes')}</button>
                     </div>
                 </div>
             </div>
@@ -1568,7 +1568,7 @@ const ServerView = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.db.created'); }
             setTimeout(() => this._loadDatabase(), 1500);
         } else {
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
         }
     },
 
@@ -1584,7 +1584,7 @@ const ServerView = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.db.deleted'); }
             setTimeout(() => this._loadDatabase(), 1500);
         } else {
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
         }
     },
 
@@ -1603,7 +1603,7 @@ const ServerView = {
 
         const r = await Auth.apiCall(`/api/servers/${this.serverId}/worlds`);
         if (!r || !r.ok) {
-            el.innerHTML = `<div style="color:#ef4444;padding:20px;">${Lang.t('sv.worlds.cant_load')}</div>`;
+            el.innerHTML = `<div style="color:var(--danger);padding:20px;">${Lang.t('sv.worlds.cant_load')}</div>`;
             return;
         }
 
@@ -1619,7 +1619,7 @@ const ServerView = {
 
         el.innerHTML = `
         <!-- Seed -->
-        <div style="background:linear-gradient(135deg, rgba(34,197,94,0.1), rgba(16,185,129,0.05));padding:16px;border-radius:10px;margin-bottom:16px;border:1px solid rgba(34,197,94,0.2);">
+        <div style="background:linear-gradient(135deg, rgba(74,222,128,0.1), rgba(16,185,129,0.05));padding:16px;border-radius:10px;margin-bottom:16px;border:1px solid rgba(74,222,128,0.2);">
             <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">${Lang.t('sv.worlds.seed')}</div>
             <div style="font-family:monospace;font-size:16px;font-weight:600;color:var(--accent);">${seed || Lang.t('sv.worlds.random')}</div>
         </div>
@@ -1643,12 +1643,12 @@ const ServerView = {
                     <button class="btn btn-secondary btn-sm" onclick="ServerView._confirmResetWorld('${w.name}')" style="font-size:12px;">${Lang.t('sv.worlds.reset')}</button>
                 </div>
             </div>
-            <div id="sv-w-confirm-${w.name}" style="display:none;background:rgba(239,68,68,0.1);border:2px solid #ef4444;border-radius:10px;padding:12px;margin-bottom:8px;">
-                <div style="font-size:13px;color:#ef4444;font-weight:600;margin-bottom:8px;">${Lang.t('sv.worlds.reset_confirm')} "${label}" ?</div>
+            <div id="sv-w-confirm-${w.name}" style="display:none;background:rgba(248,113,113,0.1);border:2px solid var(--danger);border-radius:10px;padding:12px;margin-bottom:8px;">
+                <div style="font-size:13px;color:var(--danger);font-weight:600;margin-bottom:8px;">${Lang.t('sv.worlds.reset_confirm')} "${label}" ?</div>
                 <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('sv.worlds.reset_warn')}</div>
                 <div style="display:flex;gap:8px;">
                     <button class="btn btn-secondary btn-sm" onclick="document.getElementById('sv-w-confirm-${w.name}').style.display='none'">${Lang.t('common.cancel')}</button>
-                    <button class="btn btn-sm" style="background:#ef4444;color:white;" onclick="ServerView._resetWorld('${w.name}')">${Lang.t('sv.worlds.reset_yes')}</button>
+                    <button class="btn btn-sm" style="background:var(--danger);color:white;" onclick="ServerView._resetWorld('${w.name}')">${Lang.t('sv.worlds.reset_yes')}</button>
                 </div>
             </div>`;
         }).join('')}
@@ -1675,7 +1675,7 @@ const ServerView = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${Lang.t('sv.db.deleted')}`; }
             setTimeout(() => this._loadWorlds(), 1500);
         } else {
-            if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
         }
     },
 
@@ -1728,7 +1728,7 @@ const ServerView = {
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.ver.desc')}</p>
 
         <!-- Version actuelle -->
-        <div style="background:linear-gradient(135deg, rgba(59,130,246,0.15), rgba(139,92,246,0.1));padding:20px;border-radius:12px;margin-bottom:20px;border:1px solid rgba(59,130,246,0.3);">
+        <div style="background:linear-gradient(135deg, rgba(96,165,250,0.15), rgba(192,132,252,0.1));padding:20px;border-radius:12px;margin-bottom:20px;border:1px solid rgba(96,165,250,0.3);">
             <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">${Lang.t('sv.ver.current')}</div>
             <div style="display:flex;align-items:center;gap:14px;">
                 <span style="font-size:36px;">${current.icon}</span>
@@ -1776,7 +1776,7 @@ const ServerView = {
                         <button class="btn btn-primary btn-sm" onclick="ServerView._searchVerModpacks()">🔍</button>
                     </div>
                     <div id="sv-ver-mp-results" style="max-height:180px;overflow-y:auto;"></div>
-                    <div id="sv-ver-mp-selected" style="display:none;background:linear-gradient(135deg,rgba(34,197,94,0.1),rgba(16,185,129,0.05));border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:10px;margin-top:8px;"></div>
+                    <div id="sv-ver-mp-selected" style="display:none;background:linear-gradient(135deg,rgba(74,222,128,0.1),rgba(16,185,129,0.05));border:1px solid rgba(74,222,128,0.3);border-radius:8px;padding:10px;margin-top:8px;"></div>
                 </div>
             </div>
         </div>
@@ -1784,7 +1784,7 @@ const ServerView = {
         <!-- Option réinstallation -->
         <div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;">
             <div style="font-weight:600;margin-bottom:10px;">${Lang.t('sv.ver.install_mode')}</div>
-            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;border-radius:8px;border:2px solid var(--accent);background:rgba(34,197,94,0.08);margin-bottom:8px;">
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;border-radius:8px;border:2px solid var(--accent);background:rgba(74,222,128,0.08);margin-bottom:8px;">
                 <input type="radio" name="sv-ver-mode" value="keep" checked />
                 <div>
                     <div style="font-size:13px;font-weight:600;">${Lang.t('sv.ver.keep_files')}</div>
@@ -1794,7 +1794,7 @@ const ServerView = {
             <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;border-radius:8px;border:2px solid var(--border);">
                 <input type="radio" name="sv-ver-mode" value="reset" />
                 <div>
-                    <div style="font-size:13px;font-weight:600;color:#ef4444;">${Lang.t('sv.ver.reset_all')}</div>
+                    <div style="font-size:13px;font-weight:600;color:var(--danger);">${Lang.t('sv.ver.reset_all')}</div>
                     <div style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.ver.reset_desc')}</div>
                 </div>
             </label>
@@ -1804,12 +1804,12 @@ const ServerView = {
             <button id="sv-ver-apply-btn" class="btn btn-primary" onclick="ServerView._changeVersion()" style="padding:10px 24px;font-size:14px;">${Lang.t('sv.ver.apply')}</button>
             <span id="sv-ver-msg" style="font-size:13px;"></span>
         </div>
-        <div id="sv-ver-confirm" style="display:none;margin-top:12px;background:rgba(239,68,68,0.1);border:2px solid #ef4444;border-radius:10px;padding:16px;">
-            <div style="font-weight:600;color:#ef4444;margin-bottom:8px;">${Lang.t('sv.ver.confirm_reset')}</div>
+        <div id="sv-ver-confirm" style="display:none;margin-top:12px;background:rgba(248,113,113,0.1);border:2px solid var(--danger);border-radius:10px;padding:16px;">
+            <div style="font-weight:600;color:var(--danger);margin-bottom:8px;">${Lang.t('sv.ver.confirm_reset')}</div>
             <div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">${Lang.t('sv.ver.confirm_reset_desc')}</div>
             <div style="display:flex;gap:8px;">
                 <button class="btn btn-secondary" onclick="document.getElementById('sv-ver-confirm').style.display='none';document.getElementById('sv-ver-apply-btn').style.display='';">${Lang.t('common.cancel')}</button>
-                <button class="btn" style="background:#ef4444;color:white;" onclick="ServerView._changeVersionConfirmed()">${Lang.t('sv.ver.confirm_reset_yes')}</button>
+                <button class="btn" style="background:var(--danger);color:white;" onclick="ServerView._changeVersionConfirmed()">${Lang.t('sv.ver.confirm_reset_yes')}</button>
             </div>
         </div>`;
     },
@@ -1860,7 +1860,7 @@ const ServerView = {
         el.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:8px;">⏳ ${Lang.t('common.loading')}</div>`;
 
         const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=modpacks`);
-        if (!r || !r.ok) { el.innerHTML = `<div style="color:#ef4444;font-size:12px;">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger);font-size:12px;">❌ ${Lang.t('common.error')}</div>`; return; }
         const data = await r.json();
         const mods = data.mods || [];
         if (mods.length === 0) { el.innerHTML = `<div style="color:var(--text-muted);font-size:12px;">${Lang.t('sv.mod.no_results')}</div>`; return; }
@@ -1908,7 +1908,7 @@ const ServerView = {
         // Charger les fichiers du modpack
         const r = await Auth.apiCall(`/api/mods/${id}/files`);
         if (!r || !r.ok) {
-            document.getElementById('sv-ver-mp-versions').innerHTML = `<div style="color:#ef4444;">❌ ${Lang.t('common.error')}</div>`;
+            document.getElementById('sv-ver-mp-versions').innerHTML = `<div style="color:var(--danger);">❌ ${Lang.t('common.error')}</div>`;
             return;
         }
         const files = (await r.json()).files || [];
@@ -1945,7 +1945,7 @@ const ServerView = {
         const versEl = document.getElementById('sv-ver-mp-versions');
         if (versEl) {
             versEl.innerHTML = `
-            <div style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:6px;padding:10px;display:flex;align-items:center;gap:8px;">
+            <div style="background:rgba(74,222,128,0.1);border:1px solid rgba(74,222,128,0.3);border-radius:6px;padding:10px;display:flex;align-items:center;gap:8px;">
                 <span style="font-size:18px;">✅</span>
                 <div>
                     <div style="font-size:13px;font-weight:600;color:var(--accent);">${fileName}</div>
@@ -1972,7 +1972,7 @@ const ServerView = {
         if (version === 'CUSTOM') {
             version = document.getElementById('sv-ver-version-custom')?.value?.trim() || '';
             if (!version) {
-                if (msg) { msg.style.color = '#e74c3c'; msg.textContent = Lang.t('sv.ver.enter_custom'); }
+                if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = Lang.t('sv.ver.enter_custom'); }
                 return;
             }
         }
@@ -2024,7 +2024,7 @@ const ServerView = {
             setTimeout(() => this.switchTab('version'), 1000);
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
     },
 
@@ -2141,10 +2141,10 @@ const ServerView = {
                 const span = document.createElement('span');
                 const t = line.toLowerCase();
                 let color = '#c9d1d9';
-                if (t.includes('error') || t.includes('exception') || t.includes('severe')) color = '#ef4444';
-                else if (t.includes('warn')) color = '#f59e0b';
-                else if (t.includes('joined') || t.includes('logged in')) color = '#22c55e';
-                else if (t.includes('starting') || t.includes('done (') || t.includes('preparing')) color = '#a78bfa';
+                if (t.includes('error') || t.includes('exception') || t.includes('severe')) color = 'var(--danger)';
+                else if (t.includes('warn')) color = 'var(--warning)';
+                else if (t.includes('joined') || t.includes('logged in')) color = 'var(--accent)';
+                else if (t.includes('starting') || t.includes('done (') || t.includes('preparing')) color = 'var(--violet)';
                 else if (t.includes('info')) color = '#8b949e';
                 span.style.color = color;
                 span.textContent = line + '\n';
@@ -2241,7 +2241,7 @@ const ServerView = {
         if (r && r.ok) {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.notif.saved'); }
         } else {
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
         }
     },
 
@@ -2254,7 +2254,7 @@ const ServerView = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.notif.tested'); }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
-            if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
         }
     },
 };

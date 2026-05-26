@@ -36,13 +36,13 @@ const SvMonitoring = {
                 <div id="sv-mon-ram" style="font-size:24px;font-weight:700;color:var(--accent);">—</div>
                 <div id="sv-mon-ram-info" style="font-size:10px;color:var(--text-muted);margin-top:2px;">—</div>
             </div>
-            <div style="background:var(--bg-elev-1);padding:14px;border-radius:10px;text-align:center;border-top:3px solid #f59e0b;">
+            <div style="background:var(--bg-elev-1);padding:14px;border-radius:10px;text-align:center;border-top:3px solid var(--warning);">
                 <div style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.mon.net_in')}</div>
-                <div id="sv-mon-rx" style="font-size:24px;font-weight:700;color:#f59e0b;">—</div>
+                <div id="sv-mon-rx" style="font-size:24px;font-weight:700;color:var(--warning);">—</div>
             </div>
-            <div style="background:var(--bg-elev-1);padding:14px;border-radius:10px;text-align:center;border-top:3px solid #a78bfa;">
+            <div style="background:var(--bg-elev-1);padding:14px;border-radius:10px;text-align:center;border-top:3px solid var(--violet);">
                 <div style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.mon.net_out')}</div>
-                <div id="sv-mon-tx" style="font-size:24px;font-weight:700;color:#a78bfa;">—</div>
+                <div id="sv-mon-tx" style="font-size:24px;font-weight:700;color:var(--violet);">—</div>
             </div>
         </div>
 
@@ -125,14 +125,14 @@ const SvMonitoring = {
         setVal('sv-mon-rx-total', `total: ${d.net_rx_mb} Mo`);
         setVal('sv-mon-tx-total', `total: ${d.net_tx_mb} Mo`);
 
-        this._drawChart('sv-mon-cpu-chart', this._history.cpu, '#3b82f6', 100, '%');
-        this._drawChart('sv-mon-ram-chart', this._history.ram, '#22c55e', 100, '%');
+        this._drawChart('sv-mon-cpu-chart', this._history.cpu, 'var(--info)', 100, '%');
+        this._drawChart('sv-mon-ram-chart', this._history.ram, 'var(--accent)', 100, '%');
 
         const rxDeltas = this._calcDeltas(this._history.net_rx);
         const txDeltas = this._calcDeltas(this._history.net_tx);
         const maxNet = Math.max(0.01, Math.max(...rxDeltas, ...txDeltas));
-        this._drawChart('sv-mon-rx-chart', rxDeltas, '#f59e0b', maxNet, ' Mo');
-        this._drawChart('sv-mon-tx-chart', txDeltas, '#a78bfa', maxNet, ' Mo');
+        this._drawChart('sv-mon-rx-chart', rxDeltas, 'var(--warning)', maxNet, ' Mo');
+        this._drawChart('sv-mon-tx-chart', txDeltas, 'var(--violet)', maxNet, ' Mo');
     },
 
     _calcDeltas(arr) {

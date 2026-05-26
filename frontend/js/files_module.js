@@ -136,7 +136,7 @@ const FilesModule = {
 
         const r = await Auth.apiCall(`/api/gdrive/files?folder_id=${this._currentFolder}`);
         if (!r || !r.ok) {
-            filesEl.innerHTML = `<div style="color:#ef4444;padding:12px;">❌ ${Lang.t('common.error')}</div>`;
+            filesEl.innerHTML = `<div style="color:var(--danger);padding:12px;">❌ ${Lang.t('common.error')}</div>`;
             return;
         }
 
