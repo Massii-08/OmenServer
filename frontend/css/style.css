@@ -2339,5 +2339,390 @@ canvas {
     background: var(--bg);
 }
 
+/* ============================================================================
+   BENTO TECH v5 — PR 6 final cleanup: missing components + bug fixes
+   Source: frontend/design-explorations/MASTER.md §5 + proposals-v2.html
+   These complete the design system. Future module refactors will reference
+   these classes without needing new CSS work.
+   ============================================================================ */
+
+/* Fix the "diag-item OK looks like err when accent=red" bug discovered during
+   PR 4 live verification. Add a subtle bg tint to .err so it's visually
+   distinct from .ok even when both border-left use the same color. */
+.diag-item.err {
+    background: rgba(248, 113, 113, 0.06);
+}
+.diag-item.warn {
+    background: rgba(251, 191, 36, 0.05);
+}
+
+/* ===== Machines grid (Dashboard "Network of machines" section) ===== */
+.machines-grid {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr 1fr;
+    gap: var(--s-3);
+}
+.machine-card {
+    position: relative;
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    padding: var(--s-5);
+    display: flex; flex-direction: column; gap: var(--s-3);
+}
+.machine-card.brain {
+    background: var(--bg-elev-2);
+    border-color: var(--border-strong);
+}
+.machine-card.brain::before {
+    content: "BRAIN";
+    position: absolute; top: var(--s-3); right: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    color: var(--accent);
+    background: var(--accent-dim);
+    padding: 2px 6px;
+    border-radius: var(--r-sm);
+}
+.machine-card .m-head { display: flex; align-items: center; gap: var(--s-2); }
+.machine-card .m-head .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+}
+.machine-card .m-head .name { font-weight: 600; font-size: 14px; }
+.machine-card .m-head .role { color: var(--text-dim); font-size: 12px; }
+.machine-card .m-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--s-3);
+    margin-top: var(--s-2);
+}
+.machine-card .m-stat .l { color: var(--text-dim); font-size: 11px; }
+.machine-card .m-stat .v {
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum";
+    font-size: 15px;
+    font-weight: 500;
+    margin-top: 2px;
+}
+.machine-card .m-actions {
+    display: flex; gap: 6px;
+    margin-top: auto;
+}
+
+/* ===== Runs list (Yield Bot history, Tasks recent runs, etc.) ===== */
+.runs-list .run-row,
+.tasks-recent .run-row {
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: var(--s-3) var(--s-4);
+    display: grid;
+    grid-template-columns: auto 1fr auto auto auto;
+    gap: var(--s-4);
+    align-items: center;
+    margin-bottom: var(--s-2);
+}
+.run-row .ts {
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-feature-settings: "tnum";
+}
+.run-row .fname { font-size: 13px; font-weight: 500; }
+.run-row .fdetail {
+    color: var(--text-dim);
+    font-size: 12px;
+    margin-top: 2px;
+    font-family: var(--font-mono);
+}
+.run-row .dur {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum";
+}
+
+/* ===== Users table (Settings → Users panel + Users page) ===== */
+.users-table {
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    overflow: hidden;
+}
+.users-table .u-head,
+.users-table .u-row {
+    display: grid;
+    grid-template-columns: 1.3fr 0.9fr 1.1fr 1.3fr 0.7fr 0.6fr;
+    gap: var(--s-3);
+    padding: var(--s-3) var(--s-4);
+    align-items: center;
+}
+.users-table .u-head {
+    background: var(--bg-elev-2);
+    color: var(--text-dim);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+}
+.users-table .u-row {
+    border-bottom: 1px solid var(--border);
+    transition: background var(--t-fast);
+}
+.users-table .u-row:last-child { border-bottom: 0; }
+.users-table .u-row:hover { background: var(--bg-elev-2); }
+.users-table .u-name { display: flex; align-items: center; gap: var(--s-3); }
+.users-table .u-name .av {
+    width: 28px; height: 28px;
+    background: var(--bg-elev-3);
+    border-radius: 50%;
+    display: grid; place-items: center;
+    font-size: 11px; font-weight: 600; color: var(--text-muted);
+}
+.users-table .u-name .n { font-weight: 500; font-size: 13px; }
+.users-table .u-name .e {
+    color: var(--text-dim);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    margin-top: 1px;
+}
+.users-table .u-meta {
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum";
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+/* Quota mini bars */
+.quota {
+    display: inline-flex;
+    gap: var(--s-2);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.quota .q { display: flex; align-items: center; gap: 4px; }
+.quota .q .b {
+    display: inline-block;
+    width: 24px; height: 4px;
+    background: var(--bg-elev-3);
+    border-radius: 2px;
+    overflow: hidden;
+    position: relative;
+}
+.quota .q .b::after {
+    content: "";
+    position: absolute; left: 0; top: 0; bottom: 0;
+    background: var(--accent);
+    width: var(--fill, 0%);
+    transition: width var(--t-base), background var(--t-base);
+}
+.quota .q.full .b::after { background: var(--warning); }
+.quota .q .lbl { color: var(--text-dim); }
+
+/* ===== Tasks table (scheduler global page) ===== */
+.tasks-table {
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    overflow: hidden;
+}
+.tasks-table .t-head,
+.tasks-table .t-row {
+    display: grid;
+    grid-template-columns: 1.4fr 1.1fr 1fr 1fr 0.8fr 0.7fr;
+    gap: var(--s-3);
+    padding: var(--s-3) var(--s-4);
+    align-items: center;
+}
+.tasks-table .t-head {
+    background: var(--bg-elev-2);
+    color: var(--text-dim);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+}
+.tasks-table .t-row {
+    border-bottom: 1px solid var(--border);
+    transition: background var(--t-fast);
+}
+.tasks-table .t-row:last-child { border-bottom: 0; }
+.tasks-table .t-row:hover { background: var(--bg-elev-2); }
+.tasks-table .t-name { font-weight: 500; font-size: 13px; }
+.tasks-table .t-sub {
+    color: var(--text-dim);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    margin-top: 2px;
+}
+.tasks-table .t-meta {
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum";
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+/* ===== Search bar + filter chips (Mods/Plugins/Workshop catalog) ===== */
+.search-bar {
+    display: flex;
+    gap: var(--s-2);
+    margin-bottom: var(--s-4);
+}
+.search-bar input {
+    flex: 1;
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    padding: 9px 14px;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    outline: none;
+}
+.search-bar input:focus { border-color: var(--accent); }
+.search-bar select {
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    padding: 9px 12px;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    font-family: var(--font-mono);
+    outline: none;
+}
+
+.filter-chips {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: var(--s-4);
+}
+.filter-chip {
+    padding: 4px 10px;
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+    font-size: 12px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: var(--t-fast);
+}
+.filter-chip:hover { color: var(--text); }
+.filter-chip.active {
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-color: transparent;
+}
+
+/* ===== Mod card grid (Plugin/Mod/Workshop browser) ===== */
+.mod-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--s-3);
+    margin-bottom: var(--s-5);
+}
+.mod-card {
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: var(--s-4);
+    display: flex; flex-direction: column; gap: var(--s-3);
+    transition: var(--t-fast);
+}
+.mod-card:hover {
+    background: var(--bg-elev-2);
+    border-color: var(--border-strong);
+}
+.mod-card .m-ico {
+    width: 40px; height: 40px;
+    background: var(--bg-elev-3);
+    border-radius: var(--r-sm);
+    display: grid; place-items: center;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+.mod-card .m-name { font-weight: 600; font-size: 14px; }
+.mod-card .m-author {
+    color: var(--text-dim);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    margin-top: 2px;
+}
+.mod-card .m-desc {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+.mod-card .m-foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: auto;
+    padding-top: var(--s-2);
+    border-top: 1px solid var(--border);
+}
+
+/* ===== Dropzone (Yield Bot upload + Media upload + Files upload) ===== */
+.dropzone {
+    background: var(--bg-elev-1);
+    border: 1.5px dashed var(--border-strong);
+    border-radius: var(--r-lg);
+    padding: var(--s-10) var(--s-6);
+    text-align: center;
+    transition: var(--t-fast);
+    cursor: pointer;
+}
+.dropzone:hover {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+}
+.dropzone .dz-title { font-weight: 600; font-size: 15px; margin-bottom: 4px; color: var(--text); }
+.dropzone .dz-sub { color: var(--text-dim); font-size: 13px; }
+.dropzone .dz-cta { color: var(--accent); cursor: pointer; transition: color var(--t-base); }
+
+/* ===== Admin pill (page-level admin-only indicator) ===== */
+.admin-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    border-radius: var(--r-sm);
+    margin-left: var(--s-2);
+    vertical-align: middle;
+}
+
+/* ===== Modules chips inline (under username in Users table) ===== */
+.modules-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+/* ============================================================================
+   END OF BENTO TECH v5 design system.
+   Legacy CSS below is preserved for backward-compat — components NOT yet
+   migrated continue to use --bg-primary, --text-primary, --accent-green, etc.
+   When refactoring a module, swap to Bento tokens at the module boundary.
+   Cleanup of legacy vars will be progressive (per-module migration PRs).
+   ============================================================================ */
+
 
 
