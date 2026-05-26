@@ -6,7 +6,7 @@
  */
 
 /* === GOOGLE FONTS === */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap');
 
 /* === VARIABLES CSS === */
 :root {
@@ -151,6 +151,75 @@
     --shadow-glow-green: 0 0 20px rgba(5, 150, 105, 0.15);
     --shadow-glow-red: 0 0 20px rgba(220, 38, 38, 0.12);
 }
+
+/* ============================================================================
+   BENTO TECH v5 — Design tokens (PR 1)
+   Source: frontend/design-explorations/MASTER.md §2
+   Coexists with legacy vars above. Old classes still use legacy tokens
+   until they're refactored (component by component in PR 2-6).
+   ONE intentional override: --text-muted shifts from #6b7280 → #A1A1AA
+   (slightly lighter zinc-400 → better contrast on dark surfaces).
+   ============================================================================ */
+:root {
+    /* Surfaces (3-level depth — replaces --bg-primary/secondary/tertiary etc.) */
+    --bg:        #0E0E10;  /* page background */
+    --bg-elev-1: #161618;  /* base cards, default surface */
+    --bg-elev-2: #18181B;  /* big/featured cards, hover state */
+    --bg-elev-3: #1F1F23;  /* inputs, avatars, code blocks */
+
+    /* Borders */
+    --border:        #27272A;  /* hairline default */
+    --border-strong: #3F3F46;  /* emphasized */
+
+    /* Text */
+    --text:       #F4F4F5;  /* primary */
+    --text-muted: #A1A1AA;  /* secondary — OVERRIDES legacy #6b7280 */
+    --text-dim:   #71717A;  /* tertiary, timestamps */
+
+    /* Accent (changeable via data-accent attribute on <html>) */
+    --accent:      #4ADE80;              /* lime — default */
+    --accent-dim:  rgba(74, 222, 128, 0.14);
+    --accent-text: #0A0A0A;              /* contrast on accent bg */
+
+    /* Semantic (FIXED — never theme-driven) */
+    --danger:  #F87171;
+    --warning: #FBBF24;
+    --info:    #60A5FA;
+    --violet:  #C084FC;  /* developer role */
+    --orange:  #FB923C;  /* money role */
+
+    /* Radii */
+    --r-sm:   8px;
+    --r-md:   10px;
+    --r-lg:   14px;
+    --r-pill: 999px;
+
+    /* Spacing (4px base) */
+    --s-1:  4px;
+    --s-2:  8px;
+    --s-3:  12px;
+    --s-4:  16px;
+    --s-5:  20px;
+    --s-6:  24px;
+    --s-8:  32px;
+    --s-10: 40px;
+    --s-12: 48px;
+
+    /* Typography */
+    --font-ui:   'Inter', system-ui, sans-serif;
+    --font-mono: 'Geist Mono', ui-monospace, monospace;
+
+    /* Motion */
+    --t-fast: 120ms ease;
+    --t-base: 200ms ease;
+}
+
+/* === Bento Tech accent variants ===
+   The default in :root is green. Override --accent via data-accent
+   on <html> for blue / red / yellow signatures. */
+[data-accent="blue"]   { --accent: #60A5FA; --accent-dim: rgba( 96, 165, 250, 0.14); }
+[data-accent="red"]    { --accent: #FB7185; --accent-dim: rgba(251, 113, 133, 0.14); }
+[data-accent="yellow"] { --accent: #FACC15; --accent-dim: rgba(250, 204,  21, 0.14); }
 
 /* === RESET === */
 *, *::before, *::after {
