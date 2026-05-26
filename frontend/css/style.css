@@ -3144,3 +3144,87 @@ table tr:hover td {
 .b-quota-row {
     margin-bottom: var(--s-3);
 }
+
+/* ============================================================================
+   BENTO TECH v5 — Game server list overrides (PR 10)
+   ============================================================================ */
+.server-list {
+    gap: var(--s-2) !important;
+}
+.server-item {
+    background: var(--bg-elev-1) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--r-md) !important;
+    padding: var(--s-3) var(--s-4) !important;
+    transition: var(--t-fast) !important;
+}
+.server-item:hover {
+    background: var(--bg-elev-2) !important;
+    border-color: var(--border-strong) !important;
+}
+.server-info {
+    gap: var(--s-3) !important;
+}
+.server-icon {
+    font-size: 22px !important;
+    width: 36px;
+    height: 36px;
+    background: var(--bg-elev-3);
+    border-radius: var(--r-sm);
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+}
+.server-name {
+    font-weight: 600 !important;
+    font-size: 14px !important;
+    color: var(--text) !important;
+    letter-spacing: -0.01em !important;
+}
+.server-meta {
+    color: var(--text-dim) !important;
+    font-size: 12px !important;
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum";
+    margin-top: 2px;
+}
+.server-actions {
+    gap: 6px !important;
+}
+.server-actions .btn-icon {
+    background: transparent !important;
+    border: 1px solid var(--border-strong) !important;
+    color: var(--text) !important;
+    border-radius: var(--r-sm) !important;
+}
+.server-actions .btn-icon:hover {
+    background: var(--bg-elev-2) !important;
+}
+.server-actions .btn-icon.btn-primary {
+    background: var(--accent) !important;
+    color: var(--accent-text) !important;
+    border-color: var(--accent) !important;
+}
+
+/* Status dot inside .status-badge */
+.status-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    margin-right: 5px;
+}
+.status-badge .spinner-sm {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-right: 5px;
+}
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
