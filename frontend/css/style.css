@@ -2177,4 +2177,68 @@ canvas {
     transform: scale(1.15);
 }
 
+/* ============================================================================
+   BENTO TECH v5 — Diagnostic strip + Dashboard tweaks (PR 4)
+   Source: frontend/design-explorations/MASTER.md §5.7
+   Used on the Hub dashboard above the .bento-overview grid.
+   ============================================================================ */
+.diag-strip {
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    padding: var(--s-4) var(--s-5);
+    margin-bottom: var(--s-5);
+}
+.diag-strip .d-head {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: var(--s-3);
+    gap: var(--s-3);
+}
+.diag-strip .d-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.diag-strip .d-summary {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum";
+}
+.diag-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: var(--s-3);
+}
+.diag-item {
+    display: flex; flex-direction: column; gap: 4px;
+    padding: var(--s-2) var(--s-3);
+    border-radius: var(--r-sm);
+    border-left: 3px solid var(--accent);
+    background: var(--bg-elev-2);
+}
+.diag-item.warn { border-left-color: var(--warning); }
+.diag-item.err  { border-left-color: var(--danger); }
+.diag-item .d-l {
+    color: var(--text-dim);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.diag-item .d-v {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text);
+    font-feature-settings: "tnum";
+}
+.diag-item.warn .d-v { color: var(--warning); }
+.diag-item.err  .d-v { color: var(--danger); }
+
+/* Hide legacy stat-bar inside Bento overview (monitoring.js still writes to it) */
+.bento-overview .stat-bar { display: none !important; }
+.bento-overview .stat-machines-list { margin-top: var(--s-2); }
+
+
 
