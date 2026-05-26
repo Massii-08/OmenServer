@@ -30,16 +30,16 @@ const NetworkModule = {
 
             <!-- Réseau bandwidth -->
             <div style="margin: 20px 0 0; font-size: 13px; color: var(--text-muted);">
-                🌐 ${Lang.t('dashboard.network')} : <span id="stat-network">--</span>
+                ${Lang.t('dashboard.network')} : <span id="stat-network">--</span>
             </div>
 
             <!-- Kill All + Diagnostic -->
             <div style="display:flex;gap:12px;margin:16px 0;align-items:center;">
                 <button class="btn btn-kill-all" onclick="App.killAllServers()" title="${Lang.t('dashboard.kill_all')}">
-                    🔴 ${Lang.t('dashboard.kill_all')}
+                    ${Lang.t('dashboard.kill_all')}
                 </button>
                 <button class="btn btn-secondary" onclick="App.runDiagnostic()" id="diag-btn" style="display:flex;align-items:center;gap:6px;">
-                    🩺 ${Lang.t('dashboard.diagnostic')}
+                    ${Lang.t('dashboard.diagnostic')}
                 </button>
                 <span style="font-size:12px;color:var(--text-muted);">${Lang.t('dashboard.quick_actions')}</span>
             </div>
@@ -355,7 +355,7 @@ const NetworkModule = {
             await this._loadDevices();
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
 
@@ -363,13 +363,13 @@ const NetworkModule = {
         const r = await Auth.apiCall(`/api/network/wake/${id}`, { method: 'POST' });
         if (r && r.ok) {
             const data = await r.json();
-            if (typeof Toast !== 'undefined') Toast.success(`⚡ ${data.message}`);
-            else alert(`⚡ ${data.message}`);
+            if (typeof Toast !== 'undefined') Toast.success(`${data.message}`);
+            else alert(`${data.message}`);
             await this._loadDevices();
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
             if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error'));
-            else alert(`❌ ${err.detail || Lang.t('common.error')}`);
+            else alert(`${err.detail || Lang.t('common.error')}`);
         }
     },
 
@@ -398,6 +398,6 @@ const NetworkModule = {
         a.download = `omenserver-network-${new Date().toISOString().slice(0,10)}.csv`;
         a.click();
         URL.revokeObjectURL(url);
-        Toast.success(`📊 ${logs.length} ${Lang.t('net.csv_success')}`);
+        Toast.success(`${logs.length} ${Lang.t('net.csv_success')}`);
     },
 };

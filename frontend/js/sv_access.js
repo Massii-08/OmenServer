@@ -80,14 +80,14 @@ const SvAccess = {
                 const username = `mc_${this._serverId}`;
                 el.innerHTML = `
                     <div style="padding:12px;background:rgba(251,191,36,0.1);border-radius:8px;border-left:3px solid var(--warning);">
-                        <div style="font-weight:600;margin-bottom:6px;color:var(--warning);">⚠️ ${Lang.t('sv.acc.sftp_not_ready') || 'Service SFTP en cours de configuration'}</div>
+                        <div style="font-weight:600;margin-bottom:6px;color:var(--warning);">${Lang.t('sv.acc.sftp_not_ready') || 'Service SFTP en cours de configuration'}</div>
                         <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
                             ${Lang.t('sv.acc.sftp_not_ready_desc') || 'Le conteneur SFTP sera disponible après le prochain redémarrage du serveur.'}
                         </div>
                         <div style="font-size:12px;color:var(--text-muted);">
                             <strong>${Lang.t('sv.acc.host')}</strong>: ${ip} · <strong>Port</strong>: 2222 · <strong>User</strong>: ${username}
                         </div>
-                        <button class="btn btn-secondary btn-sm" onclick="SvAccess._loadSftpInfo()" style="margin-top:10px;">🔄 ${Lang.t('common.retry') || 'Réessayer'}</button>
+                        <button class="btn btn-secondary btn-sm" onclick="SvAccess._loadSftpInfo()" style="margin-top:10px;">${Lang.t('common.retry') || 'Réessayer'}</button>
                     </div>
                 `;
                 return;
@@ -143,24 +143,24 @@ const SvAccess = {
                         ${Lang.t('sv.acc.copy_creds')}
                     </button>
                     <button class="btn btn-secondary btn-sm" onclick="SvAccess._resetSftpPassword()" style="display:flex;align-items:center;gap:6px;color:var(--warning);">
-                        🔄 ${Lang.t('sv.acc.reset_pw') || 'Nouveau mdp'}
+                        ${Lang.t('sv.acc.reset_pw') || 'Nouveau mdp'}
                     </button>
                 </div>
 
                 <p style="color:var(--text-muted);font-size:11px;margin-top:12px;">
-                    💡 <strong>WinSCP</strong> : ${Lang.t('sv.acc.winscp_hint')}<br>
-                    ⚠️ ${Lang.t('sv.acc.sftp_hint')}
+                    <strong>WinSCP</strong> : ${Lang.t('sv.acc.winscp_hint')}<br>
+                    ${Lang.t('sv.acc.sftp_hint')}
                 </p>
             `;
         } catch(e) {
             const ip = GameServer._serverIP || 'localhost';
             el.innerHTML = `
                 <div style="padding:12px;background:rgba(251,191,36,0.1);border-radius:8px;border-left:3px solid var(--warning);">
-                    <div style="font-weight:600;margin-bottom:6px;color:var(--warning);">⚠️ ${Lang.t('sv.acc.sftp_not_ready') || 'Service SFTP en cours de configuration'}</div>
+                    <div style="font-weight:600;margin-bottom:6px;color:var(--warning);">${Lang.t('sv.acc.sftp_not_ready') || 'Service SFTP en cours de configuration'}</div>
                     <div style="font-size:12px;color:var(--text-muted);">
                         ${Lang.t('sv.acc.sftp_not_ready_desc') || 'Le conteneur SFTP sera disponible après le prochain redémarrage du serveur.'}
                     </div>
-                    <button class="btn btn-secondary btn-sm" onclick="SvAccess._loadSftpInfo()" style="margin-top:10px;">🔄 ${Lang.t('common.retry') || 'Réessayer'}</button>
+                    <button class="btn btn-secondary btn-sm" onclick="SvAccess._loadSftpInfo()" style="margin-top:10px;">${Lang.t('common.retry') || 'Réessayer'}</button>
                 </div>
             `;
         }
@@ -198,7 +198,7 @@ const SvAccess = {
             this._loadPorts();
         } else {
             const err = r ? await r.json() : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
 
@@ -213,7 +213,7 @@ const SvAccess = {
         if (!el) return;
 
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/ports`);
-        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">${Lang.t('common.error')}</div>`; return; }
 
         const data = await r.json();
         const ports = data.ports || [];
@@ -254,14 +254,14 @@ const SvAccess = {
         const ip = GameServer._serverIP || 'localhost';
         const text = `SFTP\nHost: ${ip}\nPort: 2222\nUser: mc_${this._serverId}\nPassword: ${pw}`;
         navigator.clipboard.writeText(text);
-        Toast.success(Lang.t('sv.acc.copied') || '📋 Copié !');
+        Toast.success(Lang.t('sv.acc.copied') || 'Copié !');
     },
 
     async _resetSftpPassword() {
         if (!confirm(Lang.t('sv.acc.reset_confirm') || 'Régénérer le mot de passe SFTP ?')) return;
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/sftp-reset`, { method: 'POST', body: '{}' });
         if (r && r.ok) {
-            Toast.success(Lang.t('sv.acc.reset_ok') || '✅ Mot de passe SFTP régénéré !');
+            Toast.success(Lang.t('sv.acc.reset_ok') || 'Mot de passe SFTP régénéré !');
             this._loadSftpInfo();
         } else {
             Toast.error(Lang.t('common.error'));

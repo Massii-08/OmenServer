@@ -77,7 +77,7 @@ const Auth = {
             text-align: center; font-size: 13px; font-weight: 600;
             animation: fadeIn 0.3s ease;
         `;
-        banner.textContent = '⚠️ Connexion au serveur perdue. Vérification en cours...';
+        banner.textContent = 'Connexion au serveur perdue. Vérification en cours...';
         document.body.appendChild(banner);
 
         // Réessayer toutes les 3 secondes
@@ -87,7 +87,7 @@ const Auth = {
                 if (res.ok) {
                     clearInterval(retry);
                     banner.style.background = '#2ecc71';
-                    banner.textContent = '✅ Connexion rétablie !';
+                    banner.textContent = 'Connexion rétablie !';
                     setTimeout(() => {
                         banner.remove();
                         this._networkErrorVisible = false;

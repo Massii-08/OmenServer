@@ -49,7 +49,7 @@ const SvPlayers = {
         
         const endpoint = this._currentSub === 'ops' ? 'ops' : this._currentSub === 'whitelist' ? 'whitelist' : 'banned';
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/players/${endpoint}`);
-        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">${Lang.t('common.error')}</div>`; return; }
         
         const data = await r.json();
         const players = data.players || [];
@@ -76,7 +76,7 @@ const SvPlayers = {
                     <input type="text" id="sv-pl-reason" class="form-input" placeholder="${Lang.t('sv.pl.reason_placeholder')}" style="margin-top:4px;" />
                 </div>`;
         }
-        addForm += `<button class="btn btn-primary" onclick="SvPlayers._add()">➕ ${l.addLabel}</button>
+        addForm += `<button class="btn btn-primary" onclick="SvPlayers._add()">${l.addLabel}</button>
             </div>
             <div id="sv-pl-msg" style="font-size:13px;margin-top:8px;"></div>
         </div>`;
@@ -121,12 +121,12 @@ const SvPlayers = {
         });
         
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${name} ${Lang.t('sv.pl.added')}`; }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `${name} ${Lang.t('sv.pl.added')}`; }
             if (nameEl) nameEl.value = '';
             this._load();
         } else {
             const err = r ? await r.json() : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
 

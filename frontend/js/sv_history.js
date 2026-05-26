@@ -19,7 +19,7 @@ const SvHistory = {
         if (!el) return;
 
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/activity?limit=50`);
-        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">${Lang.t('common.error')}</div>`; return; }
         const data = await r.json();
         const entries = data.entries || [];
 

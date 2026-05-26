@@ -46,7 +46,7 @@ const ServerView = {
         } else {
             statusColor = 'var(--text-muted)';
             statusText = '○ ' + Lang.t('sv.stopped').replace(/^🔴\s*/, '');
-            actionBtns = canStart ? `<button class="btn btn-sm btn-primary" onclick="ServerView.action('start')">▶️ ${Lang.t('common.start')}</button>` : '';
+            actionBtns = canStart ? `<button class="btn btn-sm btn-primary" onclick="ServerView.action('start')">${Lang.t('common.start')}</button>` : '';
         }
 
         content.innerHTML = `
@@ -173,7 +173,7 @@ const ServerView = {
         } else {
             statusColor = 'var(--text-muted)';
             statusText = '○ ' + Lang.t('sv.stopped').replace(/^🔴\s*/, '');
-            actionBtns = canStart ? `<button class="btn btn-sm btn-primary" onclick="ServerView.action('start')">▶️ ${Lang.t('common.start')}</button>` : '';
+            actionBtns = canStart ? `<button class="btn btn-sm btn-primary" onclick="ServerView.action('start')">${Lang.t('common.start')}</button>` : '';
         }
 
         document.getElementById('sv-sidebar').innerHTML = `
@@ -243,17 +243,17 @@ const ServerView = {
             controlBtns = `<button class="btn btn-secondary" disabled style="flex:1;opacity:0.6;"><span class="spinner-sm"></span> ${pendingLabels[this._pendingAction]}</button>`;
         } else if (isRunning) {
             controlBtns = canManage ? `
-                <button class="btn btn-danger" onclick="ServerView.action('stop')" style="flex:1;">⏹️ ${Lang.t('common.stop')}</button>
-                <button class="btn btn-secondary" onclick="ServerView.action('restart')" style="flex:1;">🔄 ${Lang.t('common.restart')}</button>` : '';
+                <button class="btn btn-danger" onclick="ServerView.action('stop')" style="flex:1;">${Lang.t('common.stop')}</button>
+                <button class="btn btn-secondary" onclick="ServerView.action('restart')" style="flex:1;">${Lang.t('common.restart')}</button>` : '';
         } else {
-            controlBtns = canStart ? `<button class="btn btn-primary" onclick="ServerView.action('start')" style="flex:1;">▶️ ${Lang.t('common.start')}</button>` : '';
+            controlBtns = canStart ? `<button class="btn btn-primary" onclick="ServerView.action('start')" style="flex:1;">${Lang.t('common.start')}</button>` : '';
         }
         
         setTimeout(() => this._loadDashboardStats(), 100);
         
         return `
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
-            <h2 style="margin:0;">📊 ${Lang.t('sv.dashboard')}</h2>
+            <h2 style="margin:0;">${Lang.t('sv.dashboard')}</h2>
             <button class="btn btn-secondary btn-sm" onclick="App.navigateTo('game_server')">${Lang.t('sv.back')}</button>
         </div>
 
@@ -309,12 +309,12 @@ const ServerView = {
                         ` : `
                             <span style="font-size:12px;color:var(--text-muted);font-style:italic;">${Lang.t('sv.no_alias')}</span>
                         `}
-                        ${isOwnerOrAdmin ? `<button class="btn btn-secondary btn-sm" onclick="ServerView._editAlias()" style="padding:3px 10px;font-size:11px;color:var(--accent);border-color:var(--accent);">✏️ ${Lang.t('sv.edit_alias')}</button>` : ''}
+                        ${isOwnerOrAdmin ? `<button class="btn btn-secondary btn-sm" onclick="ServerView._editAlias()" style="padding:3px 10px;font-size:11px;color:var(--accent);border-color:var(--accent);">${Lang.t('sv.edit_alias')}</button>` : ''}
                     </div>
                 </div>
             </div>
             <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;">
-                <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">🏷️ Version</div>
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">Version</div>
                 <div style="font-size:16px;font-weight:600;" data-version-display>${(s.server_type||'VANILLA')} · v${s.version === 'LATEST' ? (this._resolvedVersion || 'latest') : (s.version||'?')}</div>
             </div>
         </div>
@@ -324,10 +324,10 @@ const ServerView = {
         <div style="margin-bottom:20px;">
             <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text-muted);">${Lang.t('sv.quick_actions')}</div>
             <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
-                <button class="btn btn-secondary" onclick="ServerView.switchTab('console')" style="padding:12px 8px;font-size:12px;">💻 ${Lang.t('sv.console')}</button>
+                <button class="btn btn-secondary" onclick="ServerView.switchTab('console')" style="padding:12px 8px;font-size:12px;">${Lang.t('sv.console')}</button>
                 <button class="btn btn-secondary" onclick="ServerView.switchTab('files')" style="padding:12px 8px;font-size:12px;">📁 ${Lang.t('sv.files')}</button>
-                <button class="btn btn-secondary" onclick="ServerView.switchTab('backups')" style="padding:12px 8px;font-size:12px;">💾 ${Lang.t('sv.backups')}</button>
-                <button class="btn btn-secondary" onclick="ServerView.switchTab('players')" style="padding:12px 8px;font-size:12px;">👥 ${Lang.t('sv.players')}</button>
+                <button class="btn btn-secondary" onclick="ServerView.switchTab('backups')" style="padding:12px 8px;font-size:12px;">${Lang.t('sv.backups')}</button>
+                <button class="btn btn-secondary" onclick="ServerView.switchTab('players')" style="padding:12px 8px;font-size:12px;">${Lang.t('sv.players')}</button>
             </div>
         </div>` : ''}
 
@@ -355,18 +355,18 @@ const ServerView = {
         setTimeout(() => this._startConsoleWS(), 100);
         return `
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-            <h2 style="margin:0;">💻 Console</h2>
+            <h2 style="margin:0;">Console</h2>
             <div style="display:flex;gap:8px;">
                 <span id="sv-console-status" style="font-size:11px;padding:4px 8px;border-radius:4px;background:var(--bg-elev-1);color:var(--text-muted);">⏳ ${Lang.t('gs.connecting')}</span>
-                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('sv-console-logs').innerHTML=''">🗑 ${Lang.t('sv.console_clear')}</button>
+                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('sv-console-logs').innerHTML=''">${Lang.t('sv.console_clear')}</button>
             </div>
         </div>
         <div id="sv-console-logs" style="background:#0d1117;color:#c9d1d9;font-family:'Courier New',monospace;font-size:12px;padding:12px;border-radius:8px;height:400px;overflow-y:auto;white-space:pre-wrap;line-height:1.5;"></div>
         <div style="display:flex;gap:8px;margin-top:8px;">
             <input id="sv-console-input" class="form-input" placeholder="${Lang.t('gs.send_cmd')}" style="flex:1;font-family:monospace;" onkeydown="if(event.key==='Enter')ServerView.sendCommand()"/>
-            <button class="btn btn-primary" onclick="ServerView.sendCommand()">📤 ${Lang.t('gs.send')}</button>
+            <button class="btn btn-primary" onclick="ServerView.sendCommand()">${Lang.t('gs.send')}</button>
         </div>
-        <p style="font-size:11px;color:var(--text-muted);margin-top:8px;">💡 Les commandes sont envoyées via rcon-cli. Exemples : <code>say Bonjour</code>, <code>list</code>, <code>op Massii_08</code></p>`;
+        <p style="font-size:11px;color:var(--text-muted);margin-top:8px;">Les commandes sont envoyées via rcon-cli. Exemples : <code>say Bonjour</code>, <code>list</code>, <code>op Massii_08</code></p>`;
     },
 
     async _editAlias() {
@@ -386,7 +386,7 @@ const ServerView = {
         if (r && r.ok) {
             const data = await r.json();
             this.serverData.connect_alias = data.alias;
-            Toast.success(Lang.t('sv.alias_updated') || '✅ Alias mis à jour');
+            Toast.success(Lang.t('sv.alias_updated') || 'Alias mis à jour');
             this.switchTab(this._currentTab || 'dashboard');
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
@@ -436,7 +436,7 @@ const ServerView = {
         const statusEl = document.getElementById('sv-console-status');
 
         this._ws.onopen = () => {
-            if (statusEl) { statusEl.textContent = '🟢 Connecté'; statusEl.style.color = 'var(--accent)'; }
+            if (statusEl) { statusEl.textContent = 'Connecté'; statusEl.style.color = 'var(--accent)'; }
             this._appendLog('--- Console connectée ---', 'var(--accent)');
         };
 
@@ -448,7 +448,7 @@ const ServerView = {
                 } else if (msg.type === 'info') {
                     this._appendLog(msg.data, 'var(--info)');
                 } else if (msg.type === 'error') {
-                    this._appendLog('❌ ' + (msg.message || msg.data), 'var(--danger)');
+                    this._appendLog('' + (msg.message || msg.data), 'var(--danger)');
                 } else {
                     this._appendLog(JSON.stringify(msg));
                 }
@@ -459,7 +459,7 @@ const ServerView = {
         };
 
         this._ws.onclose = () => {
-            if (statusEl) { statusEl.textContent = '🔴 Déconnecté'; statusEl.style.color = 'var(--danger)'; }
+            if (statusEl) { statusEl.textContent = 'Déconnecté'; statusEl.style.color = 'var(--danger)'; }
             this._appendLog('--- Console déconnectée ---', 'var(--danger)');
         };
 
@@ -527,7 +527,7 @@ const ServerView = {
         const r = await Auth.apiCall(`/api/servers/${this.serverId}/backups`);
         const el = document.getElementById('sv-backups-list');
         if (!el) return;
-        if (!r || !r.ok) { el.innerHTML=`<p style="color:var(--danger)">❌ ${Lang.t('common.error')}</p>`; return; }
+        if (!r || !r.ok) { el.innerHTML=`<p style="color:var(--danger)">${Lang.t('common.error')}</p>`; return; }
         const data = await r.json();
 
         const tab = this._backupTab || 'manual';
@@ -538,13 +538,13 @@ const ServerView = {
         let banner = '';
         if (isAuto) {
             banner = `<div style="font-size:12px;color:var(--text-muted);padding:8px 12px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:8px;">
-                🔄 ${Lang.t('sv.bk.auto_desc')}
+                ${Lang.t('sv.bk.auto_desc')}
                 <span style="float:right;color:var(--accent);font-weight:600;">${backups.length}/10</span>
             </div>`;
         } else {
             const atLimit = backups.length >= 10;
             banner = `<div style="font-size:12px;color:var(--text-muted);padding:8px 12px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:8px;">
-                📦 ${Lang.t('sv.bk.manual_desc')}
+                ${Lang.t('sv.bk.manual_desc')}
                 <span style="float:right;color:${atLimit ? 'var(--danger)' : 'var(--accent)'};font-weight:600;">${backups.length}/10</span>
             </div>`;
             if (atLimit) {
@@ -597,7 +597,7 @@ const ServerView = {
             if (nameInput) nameInput.value = '';
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
         if (btn) btn.disabled = false;
         this._loadBackups();
@@ -617,7 +617,7 @@ const ServerView = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.bk.renamed'); }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
         this._loadBackups();
     },
@@ -631,7 +631,7 @@ const ServerView = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.bk.restored'); }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
 
@@ -643,11 +643,11 @@ const ServerView = {
         row.style.border = '1px solid rgba(248,113,113,0.3)';
         row.innerHTML = `
             <div style="flex:1;">
-                <div style="font-weight:600;color:var(--danger);">⚠️ ${Lang.t('gs.delete_title')}</div>
+                <div style="font-weight:600;color:var(--danger);">${Lang.t('gs.delete_title')}</div>
                 <div style="font-size:12px;color:var(--text-muted);">${Lang.t('gs.delete_warn')}</div>
             </div>
             <div style="display:flex;gap:6px;">
-                <button class="btn btn-sm btn-danger" onclick="ServerView._deleteBackup('${id}','${backupType}')">🗑️ ${Lang.t('common.confirm')}</button>
+                <button class="btn btn-sm btn-danger" onclick="ServerView._deleteBackup('${id}','${backupType}')">${Lang.t('common.confirm')}</button>
                 <button class="btn btn-sm btn-secondary" onclick="ServerView._loadBackups()">${Lang.t('common.cancel')}</button>
             </div>`;
     },
@@ -660,7 +660,7 @@ const ServerView = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.bk.deleted'); }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
         this._loadBackups();
     },
@@ -670,8 +670,8 @@ const ServerView = {
         return `<h2>${Lang.t('sv.sched.title')}</h2>
         <div style="background:var(--bg-elev-1);padding:14px;border-radius:8px;margin-bottom:14px;">
             <div class="flex gap-2" style="align-items:flex-end;flex-wrap:wrap;">
-                <div style="flex:1"><label style="font-size:12px;color:var(--text-muted)">${Lang.t('sv.sched.type')}</label><select id="sv-task-type" class="form-input" style="margin-top:4px;"><option value="backup">💾 Backup</option><option value="restart">🔄 Restart</option></select></div>
-                <div style="flex:1"><label style="font-size:12px;color:var(--text-muted)">${Lang.t('scheduler.mode')}</label><select id="sv-task-mode" class="form-input" style="margin-top:4px;" onchange="ServerView._onTaskModeChange()"><option value="interval">⏰ ${Lang.t('scheduler.mode_interval')}</option><option value="fixed">📅 ${Lang.t('scheduler.mode_fixed')}</option></select></div>
+                <div style="flex:1"><label style="font-size:12px;color:var(--text-muted)">${Lang.t('sv.sched.type')}</label><select id="sv-task-type" class="form-input" style="margin-top:4px;"><option value="backup">Backup</option><option value="restart">Restart</option></select></div>
+                <div style="flex:1"><label style="font-size:12px;color:var(--text-muted)">${Lang.t('scheduler.mode')}</label><select id="sv-task-mode" class="form-input" style="margin-top:4px;" onchange="ServerView._onTaskModeChange()"><option value="interval">${Lang.t('scheduler.mode_interval')}</option><option value="fixed">${Lang.t('scheduler.mode_fixed')}</option></select></div>
             </div>
             <!-- Mode intervalle -->
             <div id="sv-task-interval-row" style="display:flex;gap:8px;align-items:flex-end;margin-top:8px;">
@@ -720,11 +720,11 @@ const ServerView = {
         if (tasks.length===0) { el.innerHTML=`<p style="color:var(--text-muted)">${Lang.t('sv.sched.none')}</p>`; return; }
         el.innerHTML = tasks.map(t => {
             const schedInfo = t.schedule_time
-                ? `⏰ ${Lang.t('scheduler.at')} ${t.schedule_time} (${t.schedule_days || 'daily'})`
+                ? `${Lang.t('scheduler.at')} ${t.schedule_time} (${t.schedule_days || 'daily'})`
                 : `${Lang.t('sv.sched.every')} ${t.interval_hours}h`;
             return `
             <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;">
-                <div><span style="font-weight:600;">${t.task_type==='backup'?'💾 Backup':'🔄 Restart'}</span> · ${schedInfo} <span style="color:${t.enabled?'var(--accent)':'var(--text-muted)'};">${t.enabled?Lang.t('sv.sched.active'):Lang.t('sv.sched.inactive')}</span></div>
+                <div><span style="font-weight:600;">${t.task_type==='backup'?'Backup':'Restart'}</span> · ${schedInfo} <span style="color:${t.enabled?'var(--accent)':'var(--text-muted)'};">${t.enabled?Lang.t('sv.sched.active'):Lang.t('sv.sched.inactive')}</span></div>
                 <div class="flex gap-2">
                     <button class="btn btn-sm btn-secondary" onclick="ServerView._toggleTask(${t.id})">${t.enabled?'⏸':'▶️'}</button>
                     <button class="btn btn-sm btn-danger" onclick="ServerView._deleteTask(${t.id})">🗑️</button>
@@ -781,7 +781,7 @@ const ServerView = {
 
         <div style="display:flex;gap:4px;margin-bottom:16px;background:var(--bg-elev-1);padding:4px;border-radius:8px;width:fit-content;">
             <button class="${btnSearch}" onclick="ServerView._workshopMode='search';ServerView.switchTab('workshop')">
-                🔍 ${Lang.t('sv.mod.search')}
+                ${Lang.t('sv.mod.search')}
             </button>
             <button class="${btnInstalled}" onclick="ServerView._workshopMode='installed';ServerView.switchTab('workshop')">
                 ${Lang.t('sv.workshop.installed_tab')}
@@ -805,7 +805,7 @@ const ServerView = {
         return `
         <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-bottom:14px;">
             <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text);">
-                🎮 ${Lang.t('sv.workshop.desc')}
+                ${Lang.t('sv.workshop.desc')}
             </div>
             <div style="display:flex;gap:8px;">
                 <input id="sv-workshop-url" class="form-input"
@@ -817,7 +817,7 @@ const ServerView = {
                 </button>
             </div>
             <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">
-                💡 Depuis Steam : page du mod → barre d'adresse → copiez le lien complet ou juste le numéro
+                Depuis Steam : page du mod → barre d'adresse → copiez le lien complet ou juste le numéro
             </div>
         </div>
         <div id="sv-workshop-result"></div>`;
@@ -835,7 +835,7 @@ const ServerView = {
         const r = await Auth.apiCall(`/api/mods/steam/item/${encoded}`);
         if (!r || !r.ok) {
             const err = r ? await r.json().catch(()=>({})) : {};
-            el.innerHTML = `<div style="color:var(--danger)">❌ ${err.detail || Lang.t('sv.workshop.invalid_id')}</div>`;
+            el.innerHTML = `<div style="color:var(--danger)">${err.detail || Lang.t('sv.workshop.invalid_id')}</div>`;
             return;
         }
 
@@ -861,9 +861,9 @@ const ServerView = {
                     <div style="font-size:16px;font-weight:700;margin-bottom:4px;">${item.title || 'Mod Workshop'}</div>
                     <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">${item.description || ''}</div>
                     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;margin-bottom:6px;">
-                        ${item.file_size_mb ? `<span style="color:var(--text-muted);">📦 ${item.file_size_mb} Mo</span>` : ''}
+                        ${item.file_size_mb ? `<span style="color:var(--text-muted);">${item.file_size_mb} Mo</span>` : ''}
                         <span style="color:var(--text-muted);">⭐ ${subs} ${Lang.t('sv.workshop.subscriptions')}</span>
-                        <a href="${item.url}" target="_blank" style="color:var(--info);font-size:11px;">🔗 Voir sur Steam</a>
+                        <a href="${item.url}" target="_blank" style="color:var(--info);font-size:11px;">Voir sur Steam</a>
                     </div>
                     <div style="margin-bottom:8px;">${tags}</div>
                     <div style="font-size:11px;color:var(--text-muted);">ID: <code style="background:var(--bg-elev-3);padding:1px 5px;border-radius:3px;">${item.id}</code></div>
@@ -892,11 +892,11 @@ const ServerView = {
         });
 
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${name} — ${Lang.t('sv.workshop.installed')}`; }
-            if (typeof Toast !== 'undefined') Toast.success(`✅ ${name} installé !`);
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `${name} — ${Lang.t('sv.workshop.installed')}`; }
+            if (typeof Toast !== 'undefined') Toast.success(`${name} installé !`);
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
         if (btn) btn.disabled = false;
     },
@@ -907,7 +907,7 @@ const ServerView = {
 
         const r = await Auth.apiCall(`/api/mods/steam/server/${this.serverId}`);
         if (!r || !r.ok) {
-            el.innerHTML = `<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`;
+            el.innerHTML = `<div style="color:var(--danger)">${Lang.t('common.error')}</div>`;
             return;
         }
 
@@ -939,7 +939,7 @@ const ServerView = {
                         class="btn btn-sm btn-secondary" title="Voir sur Steam">🔗</a>
                     <button class="btn btn-sm btn-danger"
                         onclick="ServerView._removeWorkshopMod('${m.workshop_id}')">
-                        🗑️ ${Lang.t('sv.mod.remove')}
+                        ${Lang.t('sv.mod.remove')}
                     </button>
                 </div>
             </div>`).join('');
@@ -949,7 +949,7 @@ const ServerView = {
         if (!confirm(`${Lang.t('sv.workshop.remove_confirm')} (ID: ${workshopId}) ?`)) return;
         const r = await Auth.apiCall(`/api/mods/steam/server/${this.serverId}/${workshopId}`, { method: 'DELETE' });
         if (r && r.ok) {
-            if (typeof Toast !== 'undefined') Toast.success(`🗑️ Mod ${workshopId} supprimé`);
+            if (typeof Toast !== 'undefined') Toast.success(`Mod ${workshopId} supprimé`);
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
             if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error'));
@@ -970,7 +970,7 @@ const ServerView = {
         // Default mode based on server type
         if (!this._modMode) this._modMode = isPlugin ? 'plugins' : 'mods';
 
-        const title = isPlugin ? '🔌 Plugins' : '🧩 Mods';
+        const title = isPlugin ? 'Plugins' : '🧩 Mods';
         const desc = isPlugin
             ? `${Lang.t('sv.mod.install_for')} ${st}${ver && ver !== 'LATEST' ? ` (MC ${ver})` : ''}`
             : `${Lang.t('sv.mod.install_mods')} ${st}${ver && ver !== 'LATEST' ? ` (MC ${ver})` : ''}`;
@@ -978,7 +978,7 @@ const ServerView = {
         let buttons = '';
         if (isPlugin) {
             buttons = `
-            <button class="btn btn-sm ${this._modMode==='plugins'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='plugins';ServerView.switchTab('mods')">🔌 ${Lang.t('sv.mod.search')}</button>
+            <button class="btn btn-sm ${this._modMode==='plugins'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='plugins';ServerView.switchTab('mods')">${Lang.t('sv.mod.search')}</button>
             <button class="btn btn-sm ${this._modMode==='installed'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='installed';ServerView.switchTab('mods')">${Lang.t('sv.mod.installed')}</button>`;
         } else {
             buttons = `
@@ -1022,7 +1022,7 @@ const ServerView = {
         const ver = this.serverData?.version || '';
         const verParam = ver && ver !== 'LATEST' ? `&game_version=${encodeURIComponent(ver)}` : '';
         const r = await Auth.apiCall(`/api/plugins/search?q=${encodeURIComponent(q)}${verParam}`);
-        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">${Lang.t('common.error')}</div>`; return; }
         const data = await r.json();
         const plugins = data.plugins || [];
 
@@ -1037,7 +1037,7 @@ const ServerView = {
                 <div style="flex:1;min-width:0;">
                     <div style="font-weight:600;font-size:14px;">${p.name}</div>
                     <div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.description||''}</div>
-                    <div style="margin-top:4px;">${cats} <span style="font-size:10px;color:var(--text-muted);">📥 ${dl} ${Lang.t('sv.mod.downloads')}</span></div>
+                    <div style="margin-top:4px;">${cats} <span style="font-size:10px;color:var(--text-muted);">${dl} ${Lang.t('sv.mod.downloads')}</span></div>
                 </div>
                 <button class="btn btn-primary btn-sm" onclick="ServerView._showPluginVersions('${p.id}','${(p.name||'').replace(/'/g,"\\'")}')">${Lang.t('sv.mod.install')}</button>
             </div>`;
@@ -1050,13 +1050,13 @@ const ServerView = {
         el.innerHTML = `<div style="color:var(--text-muted)">⏳ ${Lang.t('common.loading')}</div>`;
 
         const r = await Auth.apiCall(`/api/plugins/${projectId}/versions`);
-        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">${Lang.t('common.error')}</div>`; return; }
         const data = await r.json();
         const versions = data.versions || [];
 
         el.innerHTML = `
             <button class="btn btn-secondary btn-sm" onclick="ServerView._searchPlugins()">${Lang.t('sv.mod.back')}</button>
-            <span style="font-weight:600;margin-left:8px;font-size:15px;">📦 ${name}</span>
+            <span style="font-weight:600;margin-left:8px;font-size:15px;">${name}</span>
             <span id="sv-plugin-install-msg" style="font-size:12px;margin-left:8px;"></span>
             <div style="margin-top:12px;">
             ${versions.map(v => {
@@ -1085,10 +1085,10 @@ const ServerView = {
         });
 
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${name} ${Lang.t('sv.mod.installed_restart')}`; }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `${name} ${Lang.t('sv.mod.installed_restart')}`; }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
 
@@ -1150,7 +1150,7 @@ const ServerView = {
         const ver = this.serverData?.version || '';
         const verParam = ver && ver !== 'LATEST' ? `&game_version=${encodeURIComponent(ver)}` : '';
         const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=${cat}${verParam}`);
-        if (!r||!r.ok) { el.innerHTML=`<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r||!r.ok) { el.innerHTML=`<div style="color:var(--danger)">${Lang.t('common.error')}</div>`; return; }
         const data = await r.json();
         const mods = data.mods||[];
         if (mods.length===0) { el.innerHTML=`<div style="color:var(--text-muted)">${Lang.t('sv.mod.no_results')}</div>`; return; }
@@ -1218,7 +1218,7 @@ const ServerView = {
         const ver = this.serverData?.version || '';
         const verParam = ver && ver !== 'LATEST' ? `&game_version=${encodeURIComponent(ver)}` : '';
         const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=datapacks${verParam}`);
-        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger)">${Lang.t('common.error')}</div>`; return; }
         const data = await r.json();
         const mods = data.mods || [];
         if (mods.length === 0) { el.innerHTML = `<div style="color:var(--text-muted)">${Lang.t('sv.mod.no_results')}</div>`; return; }
@@ -1231,9 +1231,9 @@ const ServerView = {
                 <div style="flex:1;min-width:0;">
                     <div style="font-weight:600;font-size:13px;">${m.name}</div>
                     <div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.summary||''}</div>
-                    <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">📥 ${dl} ${Lang.t('sv.mod.downloads')}</div>
+                    <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${dl} ${Lang.t('sv.mod.downloads')}</div>
                 </div>
-                <button class="btn btn-primary btn-sm" onclick="ServerView._showDpFiles(${m.id},'${(m.name||'').replace(/'/g,"\\'")}')">📥 ${Lang.t('sv.dp.versions')}</button>
+                <button class="btn btn-primary btn-sm" onclick="ServerView._showDpFiles(${m.id},'${(m.name||'').replace(/'/g,"\\'")}')">${Lang.t('sv.dp.versions')}</button>
             </div>`;
         }).join('');
     },
@@ -1244,12 +1244,12 @@ const ServerView = {
         el.innerHTML = `<div style="color:var(--text-muted)">⏳ ${Lang.t('common.loading')}</div>`;
 
         const r = await Auth.apiCall(`/api/mods/${modId}/files`);
-        if (!r||!r.ok) { el.innerHTML = `<div style="color:var(--danger)">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r||!r.ok) { el.innerHTML = `<div style="color:var(--danger)">${Lang.t('common.error')}</div>`; return; }
         const files = (await r.json()).files || [];
 
         el.innerHTML = `
             <button class="btn btn-secondary btn-sm" onclick="ServerView._searchDatapacks()">${Lang.t('sv.mod.back')}</button>
-            <span style="font-weight:600;margin-left:8px;font-size:15px;">📜 ${name}</span>
+            <span style="font-weight:600;margin-left:8px;font-size:15px;">${name}</span>
             <span id="sv-dp-install-msg" style="font-size:12px;margin-left:8px;"></span>
             <div style="margin-top:12px;">
             ${files.slice(0,10).map(f => {
@@ -1279,10 +1279,10 @@ const ServerView = {
         });
 
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${name} ${Lang.t('sv.mod.installed_restart')}`; }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `${name} ${Lang.t('sv.mod.installed_restart')}`; }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
 
@@ -1308,7 +1308,7 @@ const ServerView = {
                         <div style="font-size:11px;color:var(--text-muted);">${p.is_dir ? Lang.t('sv.dp.folder') : p.size_mb + ' Mo'}</div>
                     </div>
                 </div>
-                <button class="btn btn-sm btn-danger" onclick="ServerView._removeDatapack('${p.filename.replace(/'/g,"\\'")}')">🗑️ ${Lang.t('sv.mod.remove')}</button>
+                <button class="btn btn-sm btn-danger" onclick="ServerView._removeDatapack('${p.filename.replace(/'/g,"\\'")}')">${Lang.t('sv.mod.remove')}</button>
             </div>`).join('');
     },
 
@@ -1435,11 +1435,11 @@ const ServerView = {
 
         const r = await Auth.apiCall(`/api/servers/${this.serverId}`, { method: 'DELETE' });
         if (r && r.ok) {
-            if (typeof Toast !== 'undefined') Toast.success(`🗑️ Serveur '${s.name}' supprimé`);
+            if (typeof Toast !== 'undefined') Toast.success(`Serveur '${s.name}' supprimé`);
             App.navigateTo('game_server');
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
 
@@ -1467,7 +1467,7 @@ const ServerView = {
         if (!el) return;
 
         const r = await Auth.apiCall(`/api/servers/${this.serverId}/database`);
-        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger);">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger);">${Lang.t('common.error')}</div>`; return; }
         const data = await r.json();
 
         if (!data.exists) {
@@ -1509,7 +1509,7 @@ const ServerView = {
             <div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;">
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
                     <div>
-                        <div style="font-size:16px;font-weight:700;">🗄️ MariaDB</div>
+                        <div style="font-size:16px;font-weight:700;">MariaDB</div>
                         <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${data.container_name}</div>
                     </div>
                     <span class="status-badge ${isRunning ? 'online' : 'offline'}">
@@ -1545,7 +1545,7 @@ const ServerView = {
 
             <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;">
                 <div style="font-size:13px;color:var(--text-muted);">
-                    💡 <strong>${Lang.t('sv.db.plugin_hint')}</strong><br>
+                    <strong>${Lang.t('sv.db.plugin_hint')}</strong><br>
                     <code style="font-size:12px;color:var(--info);">address: ${data.host}:${data.port}</code>
                 </div>
             </div>`;
@@ -1568,7 +1568,7 @@ const ServerView = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.db.created'); }
             setTimeout(() => this._loadDatabase(), 1500);
         } else {
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${Lang.t('common.error')}`; }
         }
     },
 
@@ -1584,7 +1584,7 @@ const ServerView = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.db.deleted'); }
             setTimeout(() => this._loadDatabase(), 1500);
         } else {
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${Lang.t('common.error')}`; }
         }
     },
 
@@ -1612,8 +1612,8 @@ const ServerView = {
         const seed = data.seed || `(${Lang.t('sv.worlds.random')})`;
 
         const worldIcons = {
-            'world': '🌍 Overworld',
-            'world_nether': '🔥 Nether',
+            'world': 'Overworld',
+            'world_nether': 'Nether',
             'world_the_end': '🌌 End',
         };
 
@@ -1655,7 +1655,7 @@ const ServerView = {
 
         <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-top:16px;">
             <div style="font-size:13px;color:var(--text-muted);">
-                💡 <strong>${Lang.t('sv.worlds.tip')}</strong>
+                <strong>${Lang.t('sv.worlds.tip')}</strong>
             </div>
         </div>`;
     },
@@ -1672,10 +1672,10 @@ const ServerView = {
         const r = await Auth.apiCall(`/api/servers/${this.serverId}/worlds/${name}`, { method: 'DELETE' });
         if (r && r.ok) {
             const data = await r.json();
-            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${Lang.t('sv.db.deleted')}`; }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `${Lang.t('sv.db.deleted')}`; }
             setTimeout(() => this._loadWorlds(), 1500);
         } else {
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${Lang.t('common.error')}`; }
         }
     },
 
@@ -1702,7 +1702,7 @@ const ServerView = {
 
         if (!isMinecraft) {
             return `
-            <h2>🏷️ ${Lang.t('sv.ver.version')}</h2>
+            <h2>${Lang.t('sv.ver.version')}</h2>
             <p style="color:var(--text-muted);font-size:13px;">${Lang.t('sv.ver.only_mc')}</p>
             <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-top:16px;">
                 <div style="font-size:14px;">${Lang.t('sv.ver.game')} : <strong>${s.game_type}</strong></div>
@@ -1767,7 +1767,7 @@ const ServerView = {
                         🗂️ ${Lang.t('sv.ver.blank')}<br><span style="font-size:10px;font-weight:400;opacity:0.8;">${Lang.t('sv.ver.blank_desc')}</span>
                     </button>
                     <button type="button" id="sv-ver-mp-modpack" class="btn btn-secondary btn-sm" onclick="ServerView._setVerModpackMode('modpack')" style="flex:1;padding:10px;">
-                        📦 Modpack CurseForge<br><span style="font-size:10px;font-weight:400;opacity:0.8;">${Lang.t('sv.ver.modpack_desc')}</span>
+                        Modpack CurseForge<br><span style="font-size:10px;font-weight:400;opacity:0.8;">${Lang.t('sv.ver.modpack_desc')}</span>
                     </button>
                 </div>
                 <div id="sv-ver-mp-search" style="display:none;">
@@ -1860,7 +1860,7 @@ const ServerView = {
         el.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:8px;">⏳ ${Lang.t('common.loading')}</div>`;
 
         const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=modpacks`);
-        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger);font-size:12px;">❌ ${Lang.t('common.error')}</div>`; return; }
+        if (!r || !r.ok) { el.innerHTML = `<div style="color:var(--danger);font-size:12px;">${Lang.t('common.error')}</div>`; return; }
         const data = await r.json();
         const mods = data.mods || [];
         if (mods.length === 0) { el.innerHTML = `<div style="color:var(--text-muted);font-size:12px;">${Lang.t('sv.mod.no_results')}</div>`; return; }
@@ -1876,7 +1876,7 @@ const ServerView = {
                     <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.name}</div>
                     <div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.summary||''}</div>
                 </div>
-                <span style="font-size:10px;color:var(--text-muted);white-space:nowrap;">📥 ${dl}</span>
+                <span style="font-size:10px;color:var(--text-muted);white-space:nowrap;">${dl}</span>
             </div>`;
         }).join('');
     },
@@ -1908,7 +1908,7 @@ const ServerView = {
         // Charger les fichiers du modpack
         const r = await Auth.apiCall(`/api/mods/${id}/files`);
         if (!r || !r.ok) {
-            document.getElementById('sv-ver-mp-versions').innerHTML = `<div style="color:var(--danger);">❌ ${Lang.t('common.error')}</div>`;
+            document.getElementById('sv-ver-mp-versions').innerHTML = `<div style="color:var(--danger);">${Lang.t('common.error')}</div>`;
             return;
         }
         const files = (await r.json()).files || [];
@@ -2017,14 +2017,14 @@ const ServerView = {
 
         if (r && r.ok) {
             const data = await r.json();
-            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${data.message}`; }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `${data.message}`; }
             this._verPageUrl = null;
             this._verFileId = null;
             await this.refreshServer();
             setTimeout(() => this.switchTab('version'), 1000);
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
 
@@ -2172,7 +2172,7 @@ const ServerView = {
                 <input id="sv-notif-webhook" class="form-input" placeholder="https://discord.com/api/webhooks/..." style="flex:1;font-family:monospace;font-size:12px;" />
             </div>
             <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">
-                💡 ${Lang.t('sv.notif.webhook_hint')}
+                ${Lang.t('sv.notif.webhook_hint')}
             </div>
         </div>
 
@@ -2241,7 +2241,7 @@ const ServerView = {
         if (r && r.ok) {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.notif.saved'); }
         } else {
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${Lang.t('common.error')}`; }
         }
     },
 
@@ -2254,7 +2254,7 @@ const ServerView = {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.notif.tested'); }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
-            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
+            if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
 };

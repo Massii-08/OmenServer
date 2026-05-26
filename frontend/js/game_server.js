@@ -121,14 +121,14 @@ const GameServer = {
                         <select class="form-input" id="server-type-select">
                             <option value="VANILLA">🎨 Vanilla</option>
                             <option value="PAPER" selected>📄 Paper (recommandé)</option>
-                            <option value="SPIGOT">🛠️ Spigot</option>
+                            <option value="SPIGOT">Spigot</option>
                             <option value="BUKKIT">🪣 Bukkit</option>
                             <option value="PURPUR">💜 Purpur</option>
                             <option value="FORGE">🔨 Forge</option>
                             <option value="NEOFORGE">✨ NeoForge</option>
                             <option value="FABRIC">🧵 Fabric</option>
                             <option value="QUILT">🧶 Quilt</option>
-                            <option value="MOHIST">🌍 Mohist</option>
+                            <option value="MOHIST">Mohist</option>
                             <option value="CATSERVER">🐱 CatServer</option>
                             <option value="PUFFERFISH">🐡 Pufferfish</option>
                         </select>
@@ -136,7 +136,7 @@ const GameServer = {
                     <div class="form-group" id="version-group">
                         <label class="form-label">${Lang.t('gs.version')}</label>
                         <select class="form-input" id="server-version">
-                            <option value="LATEST">🔄 Dernière version (LATEST)</option>
+                            <option value="LATEST">Dernière version (LATEST)</option>
                             <option value="1.21.4">1.21.4</option>
                             <option value="1.21.3">1.21.3</option>
                             <option value="1.21.2">1.21.2</option>
@@ -162,7 +162,7 @@ const GameServer = {
                             <option value="1.8.9">1.8.9</option>
                             <option value="1.8.8">1.8.8</option>
                             <option value="1.7.10">1.7.10</option>
-                            <option value="CUSTOM">✏️ Version personnalisée...</option>
+                            <option value="CUSTOM">Version personnalisée...</option>
                         </select>
                         <input type="text" class="form-input" id="server-version-custom" placeholder="Ex: 1.12.2, 23w13a (snapshot)..." style="display:none;margin-top:8px;" />
                     </div>
@@ -286,7 +286,7 @@ const GameServer = {
                     <!-- CPU Slider -->
                     <div style="margin-bottom: 24px;">
                         <div class="flex justify-between items-center" style="margin-bottom: 8px;">
-                            <label class="form-label" style="margin: 0;">⚡ CPU</label>
+                            <label class="form-label" style="margin: 0;">CPU</label>
                             <span id="cpu-value" style="font-family: monospace; font-weight: 700; color: var(--accent-orange); font-size: 16px;">100%</span>
                         </div>
                         <input type="range" id="cpu-slider" min="25" max="400" step="25" value="100"
@@ -358,8 +358,8 @@ const GameServer = {
 
                     <!-- Tabs -->
                     <div class="flex gap-2" style="margin-bottom: 12px;">
-                        <button class="btn btn-primary btn-sm" id="mods-tab-search" onclick="GameServer.switchModsTab('search')">🔍 Rechercher</button>
-                        <button class="btn btn-secondary btn-sm" id="mods-tab-installed" onclick="GameServer.switchModsTab('installed')">📦 Installés</button>
+                        <button class="btn btn-primary btn-sm" id="mods-tab-search" onclick="GameServer.switchModsTab('search')">Rechercher</button>
+                        <button class="btn btn-secondary btn-sm" id="mods-tab-installed" onclick="GameServer.switchModsTab('installed')">Installés</button>
                     </div>
 
                     <!-- Tab Recherche -->
@@ -369,14 +369,14 @@ const GameServer = {
                                 onkeydown="if(event.key==='Enter') GameServer.searchMods()" />
                             <select id="mods-category" class="form-input" style="width: 130px;">
                                 <option value="mods">🧩 Mods</option>
-                                <option value="modpacks">📦 Modpacks</option>
+                                <option value="modpacks">Modpacks</option>
                                 <option value="textures">🎨 Textures</option>
-                                <option value="worlds">🌍 Maps</option>
+                                <option value="worlds">Maps</option>
                             </select>
                             <button class="btn btn-primary" onclick="GameServer.searchMods()">🔍</button>
                         </div>
                         <div id="mods-results" style="overflow-y: auto; max-height: 400px;">
-                            <div style="text-align:center;padding:30px;color:var(--text-muted);">🔍 Recherche un mod pour commencer</div>
+                            <div style="text-align:center;padding:30px;color:var(--text-muted);">Recherche un mod pour commencer</div>
                         </div>
                     </div>
 
@@ -494,7 +494,7 @@ const GameServer = {
         el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px;">⏳ Recherche...</div>';
 
         const r = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(q)}&category=modpacks`);
-        if (!r || !r.ok) { el.innerHTML = '<div style="color:var(--danger);font-size:12px;">❌ Erreur CurseForge</div>'; return; }
+        if (!r || !r.ok) { el.innerHTML = '<div style="color:var(--danger);font-size:12px;">Erreur CurseForge</div>'; return; }
         const data = await r.json();
         const mods = data.mods || [];
         if (mods.length === 0) { el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">Aucun résultat</div>'; return; }
@@ -510,7 +510,7 @@ const GameServer = {
                     <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.name}</div>
                     <div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.summary||''}</div>
                 </div>
-                <span style="font-size:10px;color:var(--text-muted);white-space:nowrap;">📥 ${dl}</span>
+                <span style="font-size:10px;color:var(--text-muted);white-space:nowrap;">${dl}</span>
             </div>`;
         }).join('');
     },
@@ -542,7 +542,7 @@ const GameServer = {
         // Charger les fichiers du modpack
         const r = await Auth.apiCall(`/api/mods/${id}/files`);
         if (!r || !r.ok) {
-            document.getElementById('modpack-versions').innerHTML = '<div style="color:var(--danger);">❌ Erreur</div>';
+            document.getElementById('modpack-versions').innerHTML = '<div style="color:var(--danger);">Erreur</div>';
             return;
         }
         const files = (await r.json()).files || [];
@@ -680,7 +680,7 @@ const GameServer = {
                             ${isPending ? '<span class="spinner-sm"></span>' : `<span class="status-dot ${statusClass}"></span>`}
                             ${statusText}
                         </span>
-                        ${isRunning ? `<span style="font-size:12px;color:var(--info);font-weight:600;">👥 ${server.player_count || 0}/${server.player_max || 20}</span>` : ''}
+                        ${isRunning ? `<span style="font-size:12px;color:var(--info);font-weight:600;">${server.player_count || 0}/${server.player_max || 20}</span>` : ''}
                         <div class="server-actions" onclick="event.stopPropagation()">
                             ${(() => {
                                 const u = Auth.getUser();
@@ -831,7 +831,7 @@ const GameServer = {
         if (modal) modal.classList.add('active');
         // Reset le bouton au cas où il était resté en "Suppression..."
         const btn = document.getElementById('delete-confirm-btn');
-        if (btn) { btn.disabled = false; btn.innerHTML = '🗑️ Supprimer'; }
+        if (btn) { btn.disabled = false; btn.innerHTML = 'Supprimer'; }
     },
 
     hideDeleteModal() {
@@ -840,7 +840,7 @@ const GameServer = {
         this._deleteServerId = null;
         // Reset le bouton
         const btn = document.getElementById('delete-confirm-btn');
-        if (btn) { btn.disabled = false; btn.innerHTML = '🗑️ Supprimer'; }
+        if (btn) { btn.disabled = false; btn.innerHTML = 'Supprimer'; }
         // Redémarrer le refresh
         this.startStatusRefresh();
     },
@@ -918,12 +918,12 @@ const GameServer = {
                 body: JSON.stringify({ memory_mb: ram, cpu_percent: cpu }),
             });
 
-            if (btn) { btn.disabled = false; btn.innerHTML = '💾 Appliquer les changements'; }
+            if (btn) { btn.disabled = false; btn.innerHTML = 'Appliquer les changements'; }
 
             if (response && response.ok) {
                 if (msgEl) {
                     msgEl.style.color = 'var(--accent)';
-                    msgEl.textContent = '✅ Ressources mises à jour !';
+                    msgEl.textContent = 'Ressources mises à jour !';
                 }
                 await this.refreshServers();
                 // Fermer après 1s
@@ -932,14 +932,14 @@ const GameServer = {
                 const err = await response.json();
                 if (msgEl) {
                     msgEl.style.color = 'var(--danger)';
-                    msgEl.textContent = `❌ ${err.detail || 'Erreur'}`;
+                    msgEl.textContent = `${err.detail || 'Erreur'}`;
                 }
             }
         } catch (e) {
-            if (btn) { btn.disabled = false; btn.innerHTML = '💾 Appliquer les changements'; }
+            if (btn) { btn.disabled = false; btn.innerHTML = 'Appliquer les changements'; }
             if (msgEl) {
                 msgEl.style.color = 'var(--danger)';
-                msgEl.textContent = '❌ Erreur réseau';
+                msgEl.textContent = 'Erreur réseau';
             }
         }
     },
@@ -994,7 +994,7 @@ const GameServer = {
                         <div style="font-weight:600;">${typeEmoji} ${typeLabel} auto</div>
                         <div style="font-size:12px;color:var(--text-muted);margin-top:4px;">
                             ⏱️ Toutes les ${task.interval_hours}h &nbsp;|&nbsp;
-                            📅 Dernier: ${lastRun} &nbsp;|&nbsp;
+                            Dernier: ${lastRun} &nbsp;|&nbsp;
                             ⏭️ Prochain: ${nextRun}
                         </div>
                     </div>
@@ -1024,11 +1024,11 @@ const GameServer = {
         });
 
         if (response && response.ok) {
-            if (msgEl) { msgEl.style.color = 'var(--accent)'; msgEl.textContent = '✅ Tâche créée !'; }
+            if (msgEl) { msgEl.style.color = 'var(--accent)'; msgEl.textContent = 'Tâche créée !'; }
             await this.loadSchedulerTasks();
         } else if (response) {
             const err = await response.json();
-            if (msgEl) { msgEl.style.color = 'var(--danger)'; msgEl.textContent = `❌ ${err.detail || 'Erreur'}`; }
+            if (msgEl) { msgEl.style.color = 'var(--danger)'; msgEl.textContent = `${err.detail || 'Erreur'}`; }
         }
     },
 
@@ -1093,7 +1093,7 @@ const GameServer = {
         const response = await Auth.apiCall(`/api/mods/search?q=${encodeURIComponent(query)}&category=${category}`);
         if (!response || !response.ok) {
             const err = response ? await response.json() : {};
-            resultsEl.innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">❌ ${err.detail || 'Erreur de recherche'}</div>`;
+            resultsEl.innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">${err.detail || 'Erreur de recherche'}</div>`;
             return;
         }
 
@@ -1121,7 +1121,7 @@ const GameServer = {
                             👤 ${mod.author} · ⬇️ ${downloads}
                         </div>
                     </div>
-                    <button class="btn btn-primary btn-sm" onclick="GameServer.showModFiles(${mod.id}, '${mod.name.replace(/'/g, "\\'")}')">📥 Installer</button>
+                    <button class="btn btn-primary btn-sm" onclick="GameServer.showModFiles(${mod.id}, '${mod.name.replace(/'/g, "\\'")}')">Installer</button>
                 </div>
             `;
         }).join('');
@@ -1133,7 +1133,7 @@ const GameServer = {
 
         const response = await Auth.apiCall(`/api/mods/${modId}/files`);
         if (!response || !response.ok) {
-            resultsEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--danger);">❌ Erreur</div>';
+            resultsEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--danger);">Erreur</div>';
             return;
         }
 
@@ -1179,10 +1179,10 @@ const GameServer = {
         });
 
         if (response && response.ok) {
-            if (msgEl) { msgEl.style.color = 'var(--accent)'; msgEl.textContent = `✅ ${modName} installé !`; }
+            if (msgEl) { msgEl.style.color = 'var(--accent)'; msgEl.textContent = `${modName} installé !`; }
         } else if (response) {
             const err = await response.json();
-            if (msgEl) { msgEl.style.color = 'var(--danger)'; msgEl.textContent = `❌ ${err.detail || 'Erreur'}`; }
+            if (msgEl) { msgEl.style.color = 'var(--danger)'; msgEl.textContent = `${err.detail || 'Erreur'}`; }
         }
     },
 
@@ -1224,7 +1224,7 @@ const GameServer = {
         if (response && response.ok) {
             await this.loadInstalledMods();
             const msgEl = document.getElementById('mods-message');
-            if (msgEl) { msgEl.style.color = 'var(--accent)'; msgEl.textContent = `🗑️ ${filename} supprimé`; }
+            if (msgEl) { msgEl.style.color = 'var(--accent)'; msgEl.textContent = `${filename} supprimé`; }
         }
     },
 
@@ -1260,7 +1260,7 @@ const GameServer = {
 
             this._consoleWS.onopen = () => {
                 if (statusEl) {
-                    statusEl.textContent = '🟢 En direct';
+                    statusEl.textContent = 'En direct';
                     statusEl.style.background = 'rgba(46, 204, 113, 0.2)';
                     statusEl.style.color = 'var(--accent)';
                 }
@@ -1319,7 +1319,7 @@ const GameServer = {
 
         if (msg.type === 'error') {
             line.style.color = 'var(--danger)';
-            line.textContent = `❌ ${text}`;
+            line.textContent = `${text}`;
         } else if (msg.type === 'info') {
             line.style.color = 'var(--info)';
             line.textContent = text;
@@ -1521,14 +1521,14 @@ const GameServer = {
         listEl.innerHTML = backups.map(b => `
             <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border);">
                 <div>
-                    <div style="font-weight: 600; font-size: 14px;">📦 ${b.filename}</div>
+                    <div style="font-weight: 600; font-size: 14px;">${b.filename}</div>
                     <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
-                        🕐 ${b.created_at} · 📊 ${b.size_mb} Mo
+                        🕐 ${b.created_at} · ${b.size_mb} Mo
                     </div>
                 </div>
                 <div class="flex gap-2">
                     <button class="btn btn-secondary btn-sm" onclick="GameServer.restoreBackup('${b.id}')" title="Restaurer">
-                        🔄 Restaurer
+                        Restaurer
                     </button>
                     <button class="btn btn-danger btn-sm" onclick="GameServer.deleteBackup('${b.id}')" title="Supprimer">
                         🗑️
@@ -1555,7 +1555,7 @@ const GameServer = {
 
         if (btn) {
             btn.disabled = false;
-            btn.textContent = '➕ Sauvegarder maintenant';
+            btn.textContent = 'Sauvegarder maintenant';
         }
 
         if (response && response.ok) {
@@ -1571,7 +1571,7 @@ const GameServer = {
      * Restaure une sauvegarde (demande confirmation).
      */
     async restoreBackup(backupId) {
-        if (!confirm('⚠️ Restaurer cette sauvegarde ?\n\nLe serveur doit être arrêté.\nLes données actuelles seront remplacées.')) return;
+        if (!confirm('Restaurer cette sauvegarde ?\n\nLe serveur doit être arrêté.\nLes données actuelles seront remplacées.')) return;
 
         const id = this._currentBackupServerId;
         if (!id) return;
@@ -1580,7 +1580,7 @@ const GameServer = {
 
         if (response && response.ok) {
             if (typeof Toast !== 'undefined') Toast.success('Sauvegarde restaurée avec succès !');
-            else alert('✅ Sauvegarde restaurée avec succès !');
+            else alert('Sauvegarde restaurée avec succès !');
         } else if (response) {
             const err = await response.json();
             if (typeof Toast !== 'undefined') Toast.error(err.detail || 'Impossible de restaurer');

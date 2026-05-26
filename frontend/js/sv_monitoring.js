@@ -27,7 +27,7 @@ const SvMonitoring = {
 
         <div id="sv-mon-status" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">
             <div style="background:var(--bg-elev-1);padding:14px;border-radius:10px;text-align:center;border-top:3px solid var(--info);">
-                <div style="font-size:11px;color:var(--text-muted);">⚡ CPU</div>
+                <div style="font-size:11px;color:var(--text-muted);">CPU</div>
                 <div id="sv-mon-cpu" style="font-size:24px;font-weight:700;color:var(--info);">—</div>
                 <div id="sv-mon-cpu-info" style="font-size:10px;color:var(--text-muted);margin-top:2px;">—</div>
             </div>
@@ -49,7 +49,7 @@ const SvMonitoring = {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
             <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                    <span style="font-size:13px;font-weight:600;">⚡ CPU</span>
+                    <span style="font-size:13px;font-weight:600;">CPU</span>
                     <span id="sv-mon-cpu-peak" style="font-size:10px;color:var(--text-muted);">${Lang.t('sv.mon.peak')}: —</span>
                 </div>
                 <canvas id="sv-mon-cpu-chart" height="180"></canvas>
