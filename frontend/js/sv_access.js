@@ -9,7 +9,7 @@ const SvAccess = {
     render(serverData, serverId) {
         this._serverId = serverId;
         this._serverData = serverData;
-        setTimeout(() =>this._loadPorts(), 50);
+        setTimeout(() => this._loadPorts(), 50);
         const ip = GameServer._serverIP || 'localhost';
         const user = `server_${serverId}`;
         const u = Auth.getUser();
@@ -18,7 +18,7 @@ const SvAccess = {
         const isOwnerOrAdmin = u && (u.is_admin || serverData?.owner_id === u?.id);
 
         // Charger les infos SFTP dynamiquement après le render
-        if (canManage) setTimeout(() =>this._loadSftpInfo(), 200);
+        if (canManage) setTimeout(() => this._loadSftpInfo(), 200);
 
         return `
         <h2>${Lang.t('sv.acc.title')}</h2>
@@ -98,27 +98,27 @@ const SvAccess = {
             el.innerHTML = `
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
                     <span style="font-weight:600;">${Lang.t('sv.acc.sftp_conn')}</span>
-                    <span id="sv-sftp-status" style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(74,222,128,0.15);color:var(--accent);">SFTP</span>
+                    <span id="sv-sftp-status" style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(74,222,128,0.15);color:var(--accent);">📁 SFTP</span>
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
                     <div>
                         <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">${Lang.t('sv.acc.host')}</div>
-                        <div class="form-input" style="font-family:monospace;font-size:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="navigator.clipboard.writeText('${host}');this.querySelector('.cp').textContent='';setTimeout(()=>this.querySelector('.cp').textContent='',1500)">
-                            ${host} <span class="cp" style="font-size:11px;color:var(--text-muted);"></span>
+                        <div class="form-input" style="font-family:monospace;font-size:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="navigator.clipboard.writeText('${host}');this.querySelector('.cp').textContent='✅';setTimeout(()=>this.querySelector('.cp').textContent='📋',1500)">
+                            ${host} <span class="cp" style="font-size:11px;color:var(--text-muted);">📋</span>
                         </div>
                     </div>
                     <div>
                         <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">${Lang.t('sv.acc.server_port')}</div>
-                        <div class="form-input" style="font-family:monospace;font-size:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="navigator.clipboard.writeText('${port}');this.querySelector('.cp').textContent='';setTimeout(()=>this.querySelector('.cp').textContent='',1500)">
-                            ${port} <span class="cp" style="font-size:11px;color:var(--text-muted);"></span>
+                        <div class="form-input" style="font-family:monospace;font-size:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="navigator.clipboard.writeText('${port}');this.querySelector('.cp').textContent='✅';setTimeout(()=>this.querySelector('.cp').textContent='📋',1500)">
+                            ${port} <span class="cp" style="font-size:11px;color:var(--text-muted);">📋</span>
                         </div>
                     </div>
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;">
                     <div>
                         <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">${Lang.t('sv.acc.username')}</div>
-                        <div class="form-input" style="font-family:monospace;font-size:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="navigator.clipboard.writeText('${username}');this.querySelector('.cp').textContent='';setTimeout(()=>this.querySelector('.cp').textContent='',1500)">
-                            ${username} <span class="cp" style="font-size:11px;color:var(--text-muted);"></span>
+                        <div class="form-input" style="font-family:monospace;font-size:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="navigator.clipboard.writeText('${username}');this.querySelector('.cp').textContent='✅';setTimeout(()=>this.querySelector('.cp').textContent='📋',1500)">
+                            ${username} <span class="cp" style="font-size:11px;color:var(--text-muted);">📋</span>
                         </div>
                     </div>
                     <div>
@@ -126,8 +126,8 @@ const SvAccess = {
                         <div class="form-input" style="font-family:monospace;font-size:13px;display:flex;justify-content:space-between;align-items:center;">
                             <span id="sv-sftp-pw" data-pw="${password}">••••••••</span>
                             <div style="display:flex;gap:6px;">
-                                <span style="font-size:11px;color:var(--text-muted);cursor:pointer;" onclick="const el=document.getElementById('sv-sftp-pw');el.textContent=el.textContent==='••••••••'?el.dataset.pw:'••••••••'"></span>
-                                <span style="font-size:11px;color:var(--text-muted);cursor:pointer;" onclick="navigator.clipboard.writeText(document.getElementById('sv-sftp-pw').dataset.pw);this.textContent='';setTimeout(()=>this.textContent='',1500)"></span>
+                                <span style="font-size:11px;color:var(--text-muted);cursor:pointer;" onclick="const el=document.getElementById('sv-sftp-pw');el.textContent=el.textContent==='••••••••'?el.dataset.pw:'••••••••'">👁️</span>
+                                <span style="font-size:11px;color:var(--text-muted);cursor:pointer;" onclick="navigator.clipboard.writeText(document.getElementById('sv-sftp-pw').dataset.pw);this.textContent='✅';setTimeout(()=>this.textContent='📋',1500)">📋</span>
                             </div>
                         </div>
                     </div>
@@ -148,7 +148,7 @@ const SvAccess = {
                 </div>
 
                 <p style="color:var(--text-muted);font-size:11px;margin-top:12px;">
-                    <strong>WinSCP</strong>: ${Lang.t('sv.acc.winscp_hint')}<br>
+                    <strong>WinSCP</strong> : ${Lang.t('sv.acc.winscp_hint')}<br>
                     ${Lang.t('sv.acc.sftp_hint')}
                 </p>
             `;
@@ -180,7 +180,7 @@ const SvAccess = {
             if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = Lang.t('sv.acc.fill_ports'); }
             return;
         }
-        if (hostPort < 1024 || hostPort >65535) {
+        if (hostPort < 1024 || hostPort > 65535) {
             if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = 'Port hôte : 1024-65535'; }
             return;
         }
@@ -228,10 +228,10 @@ const SvAccess = {
         const al = this._serverData?.access_level || 'view_only';
         const canManage = al === 'owner' || al === 'manage';
 
-        el.innerHTML = ports.map(p =>{
+        el.innerHTML = ports.map(p => {
             const isMain = p.is_main || p.host_port === data.main_port;
             const deleteBtn = (!isMain && canManage) ?
-                `<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvAccess._removePort(${p.host_port})" title=""></button>` : '';
+                `<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvAccess._removePort(${p.host_port})" title="🗑️">🗑️</button>` : '';
             const displayAddr = `${serverIp}:${p.host_port}`;
             return `
             <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;${isMain ? 'border-left:3px solid var(--accent);' : 'border-left:3px solid var(--info);'}">

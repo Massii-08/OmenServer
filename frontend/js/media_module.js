@@ -28,7 +28,7 @@ const MediaModule = {
         `;
 
         await this.loadStatus();
-        this._refreshInterval = setInterval(() =>this.loadStatus(), 8000);
+        this._refreshInterval = setInterval(() => this.loadStatus(), 8000);
     },
 
     unload() {
@@ -58,7 +58,7 @@ const MediaModule = {
         card.innerHTML = `
             <div class="card" style="border:1px solid var(--danger);">
                 <div style="display:flex;align-items:center;gap:12px;">
-                    <span style="font-size:32px;"></span>
+                    <span style="font-size:32px;">⚠️</span>
                     <div>
                         <div style="font-weight:700;font-size:15px;color:var(--danger);">${Lang.t('media.docker_unavailable')}</div>
                         <div style="font-size:13px;color:var(--text-muted);margin-top:4px;">
@@ -77,7 +77,7 @@ const MediaModule = {
         if (!s.installed) {
             card.innerHTML = `
                 <div class="card" style="text-align:center;padding:48px;">
-                    <div style="font-size:56px;margin-bottom:16px;"></div>
+                    <div style="font-size:56px;margin-bottom:16px;">📺</div>
                     <div style="font-size:20px;font-weight:700;margin-bottom:8px;">${Lang.t('media.not_installed')}</div>
                     <div style="color:var(--text-muted);font-size:13px;margin-bottom:24px;">
                         ${Lang.t('media.not_installed_desc')}
@@ -99,7 +99,7 @@ const MediaModule = {
             <div class="card">
                 <div style="display:flex;align-items:center;justify-content:space-between;">
                     <div style="display:flex;align-items:center;gap:16px;">
-                        <div style="width:56px;height:56px;border-radius:12px;background:var(--violet);display:flex;align-items:center;justify-content:center;font-size:28px;"></div>
+                        <div style="width:56px;height:56px;border-radius:12px;background:var(--violet);display:flex;align-items:center;justify-content:center;font-size:28px;">📺</div>
                         <div>
                             <div style="font-size:18px;font-weight:700;">Jellyfin</div>
                             <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${Lang.t('media.media_server')}</div>
@@ -167,7 +167,7 @@ const MediaModule = {
         const data = await r.json();
         const libs = data.libraries || [];
 
-        const typeIcons = { films: '', series: '', musique: '', books: '' };
+        const typeIcons = { films: '🎬', series: '📺', musique: '🎵', books: '📚' };
 
         el.innerHTML = `
             <div class="card">
@@ -181,9 +181,9 @@ const MediaModule = {
                     </div>
                 ` : `
                     <div style="display:flex;flex-direction:column;gap:6px;">
-                        ${libs.map(lib =>`
+                        ${libs.map(lib => `
                             <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);">
-                                <span style="font-size:24px;">${typeIcons[lib.name] || ''}</span>
+                                <span style="font-size:24px;">${typeIcons[lib.name] || '📂'}</span>
                                 <div style="flex:1;">
                                     <div style="font-size:14px;font-weight:600;text-transform:capitalize;">${lib.name}</div>
                                     <div style="font-size:11px;color:var(--text-muted);">${lib.file_count} ${Lang.t('media.files')} · ${lib.size_mb} Mo</div>
@@ -242,7 +242,7 @@ const MediaModule = {
             document.getElementById('media-add-library-form').style.display = 'none';
             await this._loadLibraries();
         } else {
-            const err = r ? await r.json().catch(() =>({})) : {};
+            const err = r ? await r.json().catch(() => ({})) : {};
             if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
@@ -258,9 +258,9 @@ const MediaModule = {
 
         if (r && r.ok) {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('media.installed_ok'); }
-            setTimeout(() =>this.loadStatus(), 1500);
+            setTimeout(() => this.loadStatus(), 1500);
         } else {
-            const err = r ? await r.json().catch(() =>({})) : {};
+            const err = r ? await r.json().catch(() => ({})) : {};
             if (btn) { btn.disabled = false; btn.textContent = Lang.t('media.install_btn'); }
             if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
@@ -269,7 +269,7 @@ const MediaModule = {
     async start() {
         const r = await Auth.apiCall('/api/media/start', { method: 'POST' });
         if (r && r.ok) await this.loadStatus();
-        else { const err = r ? await r.json().catch(() =>({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error')); else alert(`${err.detail || Lang.t('common.error')}`); }
+        else { const err = r ? await r.json().catch(() => ({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error')); else alert(`${err.detail || Lang.t('common.error')}`); }
     },
 
     async stop() {
@@ -287,6 +287,6 @@ const MediaModule = {
 
         const r = await Auth.apiCall('/api/media/reset', { method: 'DELETE' });
         if (r && r.ok) await this.loadStatus();
-        else { const err = r ? await r.json().catch(() =>({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error')); else alert(`${err.detail || Lang.t('common.error')}`); }
+        else { const err = r ? await r.json().catch(() => ({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error')); else alert(`${err.detail || Lang.t('common.error')}`); }
     },
 };

@@ -34,7 +34,7 @@ const Toast = {
         this._init();
 
         // Icons functional (status indicators kept per MASTER chip exception)
-        const icons = { success: '', error: '', info: 'ℹ', warn: '' };
+        const icons = { success: '●', error: '●', info: 'ℹ', warn: '⚠' };
         // CSS expects 'warning' not 'warn' for the .toast.warning selector
         const cssType = type === 'warn' ? 'warning' : type;
 
@@ -54,22 +54,22 @@ const Toast = {
         toast.innerHTML = `
             <span style="font-size:14px;flex-shrink:0;line-height:1;">${icons[type]}</span>
             <span style="flex:1;line-height:1.4;">${message}</span>
-            <span style="font-size:14px;color:var(--text-dim);flex-shrink:0;"></span>
+            <span style="font-size:14px;color:var(--text-dim);flex-shrink:0;">✕</span>
         `;
 
         // Click to dismiss
-        toast.addEventListener('click', () =>this._dismiss(toast));
+        toast.addEventListener('click', () => this._dismiss(toast));
 
         this._container.appendChild(toast);
 
         // Animate in
-        requestAnimationFrame(() =>{
+        requestAnimationFrame(() => {
             toast.style.transform = 'translateX(0)';
             toast.style.opacity = '1';
         });
 
         // Auto dismiss
-        const timer = setTimeout(() =>this._dismiss(toast), duration);
+        const timer = setTimeout(() => this._dismiss(toast), duration);
         toast._timer = timer;
     },
 
@@ -79,7 +79,7 @@ const Toast = {
         clearTimeout(toast._timer);
         toast.style.transform = 'translateX(120%)';
         toast.style.opacity = '0';
-        setTimeout(() =>toast.remove(), 400);
+        setTimeout(() => toast.remove(), 400);
     },
 
     success(msg, duration) { this.show(msg, 'success', duration); },

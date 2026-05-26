@@ -53,7 +53,7 @@ const Auth = {
             fetch('/api/auth/logout', {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${token}` },
-            }).catch(() =>{}); // On ignore les erreurs
+            }).catch(() => {}); // On ignore les erreurs
         }
 
         localStorage.removeItem(this.TOKEN_KEY);
@@ -81,14 +81,14 @@ const Auth = {
         document.body.appendChild(banner);
 
         // Réessayer toutes les 3 secondes
-        const retry = setInterval(async () =>{
+        const retry = setInterval(async () => {
             try {
                 const res = await fetch('/api/health');
                 if (res.ok) {
                     clearInterval(retry);
                     banner.style.background = '#2ecc71';
                     banner.textContent = 'Connexion rétablie !';
-                    setTimeout(() =>{
+                    setTimeout(() => {
                         banner.remove();
                         this._networkErrorVisible = false;
                     }, 2000);

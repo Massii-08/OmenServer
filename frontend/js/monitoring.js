@@ -20,7 +20,7 @@ const Monitoring = {
     start() {
         this._fetchHostname(); // Récupérer le hostname du serveur une seule fois
         this.fetchStats(); // Premier appel immédiat
-        this._intervalId = setInterval(() =>this.fetchStats(), this.REFRESH_INTERVAL);
+        this._intervalId = setInterval(() => this.fetchStats(), this.REFRESH_INTERVAL);
     },
 
     /**
@@ -96,7 +96,7 @@ const Monitoring = {
         const serverData = this._lastServerData;
         const serverHostname = this._serverHostname || 'Omen';
         const agentNodes = nodes || [];
-        const onlineAgents = agentNodes.filter(n =>n.online).length;
+        const onlineAgents = agentNodes.filter(n => n.online).length;
         const totalCount = 1 + agentNodes.length;
         const onlineCount = 1 + onlineAgents; // Omen is always online
 
@@ -105,14 +105,14 @@ const Monitoring = {
         }
 
         // Helpers (Bento Tech — no progress bars, value class encodes severity)
-        const sev = (v) =>v >90 ? 'danger' : v >70 ? 'warn' : '';
-        const fmtUptime = (h) =>{
+        const sev = (v) => v > 90 ? 'danger' : v > 70 ? 'warn' : '';
+        const fmtUptime = (h) => {
             if (h == null) return '';
             if (h < 1) return `${Math.round(h * 60)}m`;
             if (h < 24) return `${Math.round(h)}h`;
             return `${Math.round(h / 24)}j ${Math.round(h % 24)}h`;
         };
-        const fmtOfflineSince = (secs) =>{
+        const fmtOfflineSince = (secs) => {
             if (secs < 60) return `${Math.round(secs)}s`;
             if (secs < 3600) return `${Math.round(secs / 60)}m`;
             return `${Math.round(secs / 3600)}h`;
@@ -154,7 +154,7 @@ const Monitoring = {
         }
 
         // === Agents (arms) ===
-        const agentCards = agentNodes.map(node =>{
+        const agentCards = agentNodes.map(node => {
             const uptimeText = fmtUptime(node.uptime_hours);
             const offlineText = node.online
                 ? ''
@@ -182,7 +182,7 @@ const Monitoring = {
                         <button class="btn btn-sm btn-secondary" onclick="Monitoring.nodeAction('${node.hostname}', 'reboot')" title="${Lang.t('nodes.reboot_desc')}">${Lang.t('nodes.reboot')}</button>
                         <button class="btn btn-sm btn-secondary" onclick="Monitoring.nodeAction('${node.hostname}', 'shutdown')" title="${Lang.t('nodes.shutdown_desc')}">${Lang.t('nodes.shutdown')}</button>
                         <div style="flex:1;"></div>
-                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.removeNode('${node.hostname}')" title="${Lang.t('nodes.remove')}"></button>
+                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.removeNode('${node.hostname}')" title="${Lang.t('nodes.remove')}">✕</button>
                     </div>
                     ` : ''}
                     ` : `
@@ -217,7 +217,7 @@ const Monitoring = {
             const data = await r.json();
             if (typeof Toast !== 'undefined') Toast.success(data.message);
         } else {
-            const err = r ? await r.json().catch(() =>({})) : {};
+            const err = r ? await r.json().catch(() => ({})) : {};
             if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error'));
         }
     },
@@ -233,7 +233,7 @@ const Monitoring = {
             if (typeof Toast !== 'undefined') Toast.success(`${hostname} retiré`);
             this.fetchNodes(); // Refresh
         } else {
-            const err = r ? await r.json().catch(() =>({})) : {};
+            const err = r ? await r.json().catch(() => ({})) : {};
             if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error'));
         }
     },
@@ -274,7 +274,7 @@ const Monitoring = {
                     NetworkModule._refreshInterval = null;
                 }
             } else {
-                const err = r ? await r.json().catch(() =>({})) : {};
+                const err = r ? await r.json().catch(() => ({})) : {};
                 const detail = err.detail || Lang.t('common.error');
                 console.error(`[Power] ${action} failed:`, detail);
                 if (typeof Toast !== 'undefined') Toast.error(`${actionLabel}: ${detail}`, 8000);
@@ -288,7 +288,7 @@ const Monitoring = {
     updateUI(data) {
         // Récupérer les nodes en cache pour le calcul combiné
         const nodes = this._lastNodes || [];
-        const onlineNodes = nodes.filter(n =>n.online);
+        const onlineNodes = nodes.filter(n => n.online);
         const serverHostname = this._serverHostname || 'Omen';
 
         // --- CPU : moyenne pondérée par nombre de cœurs ---
@@ -299,7 +299,7 @@ const Monitoring = {
             totalCores += cores;
             weightedCpu += (node.cpu_percent || 0) * cores;
         }
-        const combinedCpu = totalCores >0 ? Math.round((weightedCpu / totalCores) * 10) / 10 : data.cpu.percent;
+        const combinedCpu = totalCores > 0 ? Math.round((weightedCpu / totalCores) * 10) / 10 : data.cpu.percent;
         this.updateStat('cpu', combinedCpu, '%');
 
         // --- RAM : somme de toutes les machines ---
@@ -309,7 +309,7 @@ const Monitoring = {
             totalRamGb += (node.ram_total_gb || 0);
             usedRamGb += (node.ram_used_gb || 0);
         }
-        const combinedRamPercent = totalRamGb >0
+        const combinedRamPercent = totalRamGb > 0
             ? Math.round((usedRamGb / totalRamGb) * 1000) / 10
             : data.memory.percent;
         this.updateStat('memory', combinedRamPercent, '%',
@@ -322,7 +322,7 @@ const Monitoring = {
             totalDiskGb += (node.disk_total_gb || 0);
             usedDiskGb += (node.disk_used_gb || 0);
         }
-        const combinedDiskPercent = totalDiskGb >0
+        const combinedDiskPercent = totalDiskGb > 0
             ? Math.round((usedDiskGb / totalDiskGb) * 1000) / 10
             : 0;
         this.updateStat('disk', combinedDiskPercent, '%',
@@ -402,7 +402,7 @@ const Monitoring = {
             if (items.length === 0) return;
         }
 
-        container.innerHTML = items.map(item =>`
+        container.innerHTML = items.map(item => `
             <div class="stat-machine-item">
                 <span class="stat-machine-name">${item.name}</span>
                 <span class="stat-machine-value">${item.value}${item.cores ? ` <span style="opacity:0.5">(${item.cores}c)</span>` : ''}</span>
@@ -424,8 +424,8 @@ const Monitoring = {
 
         // Changer la couleur si la valeur est élevée
         if (barEl) {
-            if (value >90) barEl.style.background = 'var(--danger)';
-            else if (value >70) barEl.style.background = 'var(--warning)';
+            if (value > 90) barEl.style.background = 'var(--danger)';
+            else if (value > 70) barEl.style.background = 'var(--warning)';
             else barEl.style.background = 'var(--stat-color, var(--accent))';
         }
     },
@@ -439,8 +439,8 @@ const Monitoring = {
         this._history.disk.push(data.disk.percent);
 
         // Garder seulement les X dernières valeurs
-        Object.keys(this._history).forEach(key =>{
-            if (this._history[key].length >this.MAX_HISTORY) {
+        Object.keys(this._history).forEach(key => {
+            if (this._history[key].length > this.MAX_HISTORY) {
                 this._history[key].shift();
             }
         });
@@ -457,7 +457,7 @@ const Monitoring = {
         if (typeof Toast === 'undefined') return;
 
         const now = Date.now();
-        const fire = (key, msg) =>{
+        const fire = (key, msg) => {
             if (this._alertCooldowns[key] && now - this._alertCooldowns[key] < this._ALERT_COOLDOWN) return;
             this._alertCooldowns[key] = now;
             Toast.warn(msg, 6000);
@@ -467,25 +467,25 @@ const Monitoring = {
             if (badge) { badge.textContent = this._alertCount; badge.style.display = 'flex'; }
         };
 
-        // CPU >95% pendant 3 mesures consécutives
+        // CPU > 95% pendant 3 mesures consécutives
         const cpuHist = this._history.cpu.slice(-3);
-        if (cpuHist.length >= 3 && cpuHist.every(v =>v >95)) {
+        if (cpuHist.length >= 3 && cpuHist.every(v => v > 95)) {
             fire('cpu_critical', `CPU critique : ${Math.round(data.cpu.percent)}% — Le processeur est surchargé`);
         }
 
-        // RAM >90%
-        if (data.memory.percent >90) {
-            fire('ram_high', ` RAM élevée : ${Math.round(data.memory.percent)}% — ${data.memory.used_gb}/${data.memory.total_gb} Go`);
+        // RAM > 90%
+        if (data.memory.percent > 90) {
+            fire('ram_high', `🧠 RAM élevée : ${Math.round(data.memory.percent)}% — ${data.memory.used_gb}/${data.memory.total_gb} Go`);
         }
 
-        // Disque >95%
-        if (data.disk.percent >95) {
+        // Disque > 95%
+        if (data.disk.percent > 95) {
             fire('disk_full', `Disque quasi plein : ${Math.round(data.disk.percent)}% — Libère de l'espace !`);
         }
 
-        // Température CPU >85°C
-        if (data.temperature?.available && data.temperature.cpu_temp >85) {
-            fire('temp_high', ` Température CPU élevée : ${data.temperature.cpu_temp}°C`);
+        // Température CPU > 85°C
+        if (data.temperature?.available && data.temperature.cpu_temp > 85) {
+            fire('temp_high', `🌡️ Température CPU élevée : ${data.temperature.cpu_temp}°C`);
         }
     },
 };

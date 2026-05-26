@@ -130,7 +130,7 @@ const ServerView = {
  </a>`;
  }
 
- return tabs.map(t =>`
+ return tabs.map(t => `
  <a class="sv-tab ${this.currentTab===t.id?'active':''}" onclick="ServerView.switchTab('${t.id}')">
  ${t.label}
  </a>
@@ -201,7 +201,7 @@ const ServerView = {
  const isRunning = !isPending && s.status === 'running';
  const addr = `${GameServer._serverIP || 'localhost'}:${s.port||25565}`;
  const displayAlias = s.connect_alias || null;
- const game = GameServer._games?.find(g =>g.id === s.game_type);
+ const game = GameServer._games?.find(g => g.id === s.game_type);
  const gameIcon = game ? game.icon : '';
  const gameName = game ? game.name : (s.game_type || 'minecraft');
  
@@ -209,11 +209,11 @@ const ServerView = {
  let uptimeHtml;
  if (isPending) {
  const labels = { start: Lang.t('sv.starting'), stop: Lang.t('sv.stopping'), restart: Lang.t('sv.restarting') };
- uptimeHtml = `<span style="color:var(--warning);font-weight:600;">${labels[this._pendingAction]}</span>`;
+ uptimeHtml = `<span style="color:var(--warning);font-weight:600;"> ${labels[this._pendingAction]}</span>`;
  } else if (isRunning) {
- uptimeHtml = '<span style="color:var(--accent);font-weight:600;">' + Lang.t('gs.online') + '</span>';
+ uptimeHtml = '<span style="color:var(--accent);font-weight:600;"> ' + Lang.t('gs.online') + '</span>';
  } else {
- uptimeHtml = '<span style="color:var(--text-muted);">' + Lang.t('gs.offline') + '</span>';
+ uptimeHtml = '<span style="color:var(--text-muted);"> ' + Lang.t('gs.offline') + '</span>';
  }
  
  // Boutons avec gestion du pending
@@ -225,7 +225,7 @@ const ServerView = {
  let controlBtns;
  if (isPending) {
  const pendingLabels = { start: Lang.t('sv.starting'), stop: Lang.t('sv.stopping'), restart: Lang.t('sv.restarting') };
- controlBtns = `<button class="btn btn-secondary" disabled style="flex:1;opacity:0.6;">${pendingLabels[this._pendingAction]}</button>`;
+ controlBtns = `<button class="btn btn-secondary" disabled style="flex:1;opacity:0.6;"> ${pendingLabels[this._pendingAction]}</button>`;
  } else if (isRunning) {
  controlBtns = canManage ? `
  <button class="btn btn-danger" onclick="ServerView.action('stop')" style="flex:1;">${Lang.t('common.stop')}</button><button class="btn btn-secondary" onclick="ServerView.action('restart')" style="flex:1;">${Lang.t('common.restart')}</button>` : '';
@@ -233,7 +233,7 @@ const ServerView = {
  controlBtns = canStart ? `<button class="btn btn-primary" onclick="ServerView.action('start')" style="flex:1;">${Lang.t('common.start')}</button>` : '';
  }
  
- setTimeout(() =>this._loadDashboardStats(), 100);
+ setTimeout(() => this._loadDashboardStats(), 100);
  
  return `
  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;"><h2 style="margin:0;">${Lang.t('sv.dashboard')}</h2><button class="btn btn-secondary btn-sm" onclick="App.navigateTo('game_server')">${Lang.t('sv.back')}</button></div><!-- Boutons de contrôle --><div style="display:flex;gap:8px;margin-bottom:20px;">
@@ -247,15 +247,15 @@ const ServerView = {
  ${isOwnerOrAdmin ? `<button class="btn btn-secondary btn-sm" onclick="ServerView._editAlias()" style="padding:3px 10px;font-size:11px;color:var(--accent);border-color:var(--accent);">${Lang.t('sv.edit_alias')}</button>` : ''}
  </div></div></div><div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">Version</div><div style="font-size:16px;font-weight:600;" data-version-display>${(s.server_type||'VANILLA')} · v${s.version === 'LATEST' ? (this._resolvedVersion || 'latest') : (s.version||'?')}</div></div></div><!-- Raccourcis rapides -->
  ${canManage ? `
- <div style="margin-bottom:20px;"><div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text-muted);">${Lang.t('sv.quick_actions')}</div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;"><button class="btn btn-secondary" onclick="ServerView.switchTab('console')" style="padding:12px 8px;font-size:12px;">${Lang.t('sv.console')}</button><button class="btn btn-secondary" onclick="ServerView.switchTab('files')" style="padding:12px 8px;font-size:12px;">${Lang.t('sv.files')}</button><button class="btn btn-secondary" onclick="ServerView.switchTab('backups')" style="padding:12px 8px;font-size:12px;">${Lang.t('sv.backups')}</button><button class="btn btn-secondary" onclick="ServerView.switchTab('players')" style="padding:12px 8px;font-size:12px;">${Lang.t('sv.players')}</button></div></div>` : ''}
+ <div style="margin-bottom:20px;"><div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text-muted);">${Lang.t('sv.quick_actions')}</div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;"><button class="btn btn-secondary" onclick="ServerView.switchTab('console')" style="padding:12px 8px;font-size:12px;">${Lang.t('sv.console')}</button><button class="btn btn-secondary" onclick="ServerView.switchTab('files')" style="padding:12px 8px;font-size:12px;"> ${Lang.t('sv.files')}</button><button class="btn btn-secondary" onclick="ServerView.switchTab('backups')" style="padding:12px 8px;font-size:12px;">${Lang.t('sv.backups')}</button><button class="btn btn-secondary" onclick="ServerView.switchTab('players')" style="padding:12px 8px;font-size:12px;">${Lang.t('sv.players')}</button></div></div>` : ''}
 
- <!-- Stats Docker live --><div id="sv-dash-docker" style="background:var(--bg-elev-1);padding:16px;border-radius:10px;"><div style="font-size:13px;font-weight:600;margin-bottom:8px;">Docker — Ressources en temps réel</div><div style="color:var(--text-muted);font-size:12px;">${Lang.t('common.loading')}</div></div>
+ <!-- Stats Docker live --><div id="sv-dash-docker" style="background:var(--bg-elev-1);padding:16px;border-radius:10px;"><div style="font-size:13px;font-weight:600;margin-bottom:8px;"> Docker — Ressources en temps réel</div><div style="color:var(--text-muted);font-size:12px;">${Lang.t('common.loading')}</div></div>
 
  ${canManage ? `<!-- Mini-logs (manage only) --><div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-top:16px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><span style="font-size:13px;font-weight:600;">${Lang.t('sv.last_logs')}</span><div style="display:flex;gap:6px;align-items:center;"><button class="btn btn-secondary btn-sm" onclick="ServerView._refreshDashLogs()" style="font-size:11px;padding:3px 8px;"></button><button class="btn btn-secondary btn-sm" onclick="ServerView.switchTab('console')" style="font-size:11px;padding:3px 8px;">${Lang.t('sv.open_console')}</button></div></div><div id="sv-dash-logs" style="background:#0d1117;color:#c9d1d9;font-family:'Courier New',monospace;font-size:11px;padding:10px;border-radius:6px;height:180px;overflow-y:auto;white-space:pre-wrap;line-height:1.5;">${Lang.t('common.loading')}</div></div>` : ''}`;
  },
 
  _consoleTab() {
- setTimeout(() =>this._startConsoleWS(), 100);
+ setTimeout(() => this._startConsoleWS(), 100);
  return `
  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;"><h2 style="margin:0;">Console</h2><div style="display:flex;gap:8px;"><span id="sv-console-status" style="font-size:11px;padding:4px 8px;border-radius:4px;background:var(--bg-elev-1);color:var(--text-muted);">⏳ ${Lang.t('gs.connecting')}</span><button class="btn btn-secondary btn-sm" onclick="document.getElementById('sv-console-logs').innerHTML=''">${Lang.t('sv.console_clear')}</button></div></div><div id="sv-console-logs" style="background:#0d1117;color:#c9d1d9;font-family:'Courier New',monospace;font-size:12px;padding:12px;border-radius:8px;height:400px;overflow-y:auto;white-space:pre-wrap;line-height:1.5;"></div><div style="display:flex;gap:8px;margin-top:8px;"><input id="sv-console-input" class="form-input" placeholder="${Lang.t('gs.send_cmd')}" style="flex:1;font-family:monospace;" onkeydown="if(event.key==='Enter')ServerView.sendCommand()"/><button class="btn btn-primary" onclick="ServerView.sendCommand()">${Lang.t('gs.send')}</button></div><p style="font-size:11px;color:var(--text-muted);margin-top:8px;">Les commandes sont envoyées via rcon-cli. Exemples : <code>say Bonjour</code>, <code>list</code>, <code>op Massii_08</code></p>`;
  },
@@ -280,7 +280,7 @@ const ServerView = {
  Toast.success(Lang.t('sv.alias_updated') || 'Alias mis à jour');
  this.switchTab(this._currentTab || 'dashboard');
  } else {
- const err = r ? await r.json().catch(() =>({})) : {};
+ const err = r ? await r.json().catch(() => ({})) : {};
  Toast.error(err.detail || Lang.t('common.error'));
  }
  },
@@ -326,12 +326,12 @@ const ServerView = {
 
  const statusEl = document.getElementById('sv-console-status');
 
- this._ws.onopen = () =>{
+ this._ws.onopen = () => {
  if (statusEl) { statusEl.textContent = 'Connecté'; statusEl.style.color = 'var(--accent)'; }
  this._appendLog('--- Console connectée ---', 'var(--accent)');
  };
 
- this._ws.onmessage = (e) =>{
+ this._ws.onmessage = (e) => {
  try {
  const msg = JSON.parse(e.data);
  if (msg.type === 'log') {
@@ -349,12 +349,12 @@ const ServerView = {
  }
  };
 
- this._ws.onclose = () =>{
+ this._ws.onclose = () => {
  if (statusEl) { statusEl.textContent = 'Déconnecté'; statusEl.style.color = 'var(--danger)'; }
  this._appendLog('--- Console déconnectée ---', 'var(--danger)');
  };
 
- this._ws.onerror = () =>{
+ this._ws.onerror = () => {
  this._appendLog('--- Erreur de connexion WebSocket ---', 'var(--danger)');
  };
  },
@@ -364,7 +364,7 @@ const ServerView = {
  if (input && input.value.trim() && this._ws && this._ws.readyState === WebSocket.OPEN) {
  const cmd = input.value.trim();
  // Afficher la commande localement
- this._appendLog('>' + cmd, 'var(--warning)');
+ this._appendLog('> ' + cmd, 'var(--warning)');
  // Envoyer au format attendu par le backend
  this._ws.send(JSON.stringify({type: 'command', data: cmd}));
  input.value = '';
@@ -372,7 +372,7 @@ const ServerView = {
  },
 
  _backupsTab() {
- setTimeout(() =>this._loadBackups(), 50);
+ setTimeout(() => this._loadBackups(), 50);
  return `<h2>${Lang.t('sv.bk.title')}</h2><p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">${Lang.t('sv.bk.desc')}</p><!-- Formulaire de création manuelle --><div style="background:var(--bg-elev-1);padding:14px;border-radius:10px;margin-bottom:16px;"><div style="font-size:13px;font-weight:600;margin-bottom:8px;">${Lang.t('sv.bk.new')}</div><div style="display:flex;gap:8px;align-items:center;"><input id="sv-backup-name" class="form-input" placeholder="${Lang.t('sv.bk.name_hint')}" style="flex:1;" /><button class="btn btn-primary btn-sm" id="sv-backup-btn" onclick="ServerView._createBackup()">${Lang.t('sv.bk.create')}</button></div></div><!-- Tabs Auto / Manuel --><div style="display:flex;gap:4px;margin-bottom:12px;"><button class="btn btn-sm" id="sv-bk-tab-manual" onclick="ServerView._switchBackupTab('manual')" style="font-weight:600;">${Lang.t('sv.bk.tab_manual')}</button><button class="btn btn-sm btn-secondary" id="sv-bk-tab-auto" onclick="ServerView._switchBackupTab('auto')">${Lang.t('sv.bk.tab_auto')}</button></div><div id="sv-backups-list"><div style="color:var(--text-muted)">${Lang.t('common.loading')}</div></div>`;
  },
 
@@ -427,7 +427,7 @@ const ServerView = {
  return;
  }
  
- el.innerHTML = banner + backups.map(b =>{
+ el.innerHTML = banner + backups.map(b => {
  // Extraire le nom lisible (avant le timestamp)
  const parts = (b.id||'').split('_');
  const displayName = parts.length >= 3 ? parts.slice(0, -2).join('_') : (b.id || b.filename);
@@ -521,8 +521,8 @@ const ServerView = {
  },
 
  _schedulerTab() {
- setTimeout(() =>this._loadTasks(), 50);
- return `<h2>${Lang.t('sv.sched.title')}</h2><div style="background:var(--bg-elev-1);padding:14px;border-radius:8px;margin-bottom:14px;"><div class="flex gap-2" style="align-items:flex-end;flex-wrap:wrap;"><div style="flex:1"><label style="font-size:12px;color:var(--text-muted)">${Lang.t('sv.sched.type')}</label><select id="sv-task-type" class="form-input" style="margin-top:4px;"><option value="backup">Backup</option><option value="restart">Restart</option></select></div><div style="flex:1"><label style="font-size:12px;color:var(--text-muted)">${Lang.t('scheduler.mode')}</label><select id="sv-task-mode" class="form-input" style="margin-top:4px;" onchange="ServerView._onTaskModeChange()"><option value="interval">${Lang.t('scheduler.mode_interval')}</option><option value="fixed">${Lang.t('scheduler.mode_fixed')}</option></select></div></div><!-- Mode intervalle --><div id="sv-task-interval-row" style="display:flex;gap:8px;align-items:flex-end;margin-top:8px;"><div style="flex:1"><label style="font-size:12px;color:var(--text-muted)">${Lang.t('sv.sched.interval')}</label><select id="sv-task-interval" class="form-input" style="margin-top:4px;"><option value="1">1h</option><option value="6" selected>6h</option><option value="12">12h</option><option value="24">24h</option></select></div><button class="btn btn-primary" onclick="ServerView._createTask()"></button></div><!-- Mode heure fixe --><div id="sv-task-fixed-row" style="display:none;margin-top:8px;"><div style="display:flex;gap:8px;align-items:flex-end;"><div><label style="font-size:12px;color:var(--text-muted)">${Lang.t('scheduler.time')}</label><input type="time" id="sv-task-time" class="form-input" style="margin-top:4px;" value="08:00" /></div><button class="btn btn-primary" onclick="ServerView._createTask()"></button></div><div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;"><label style="font-size:12px;color:var(--text-muted);margin-right:4px;">${Lang.t('scheduler.days')}:</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" id="sv-day-daily" checked onchange="ServerView._onSvDailyToggle(this)">${Lang.t('scheduler.daily')}</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="sv-day-check" value="mon" disabled>${Lang.t('scheduler.day_mon')}</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="sv-day-check" value="tue" disabled>${Lang.t('scheduler.day_tue')}</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="sv-day-check" value="wed" disabled>${Lang.t('scheduler.day_wed')}</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="sv-day-check" value="thu" disabled>${Lang.t('scheduler.day_thu')}</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="sv-day-check" value="fri" disabled>${Lang.t('scheduler.day_fri')}</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="sv-day-check" value="sat" disabled>${Lang.t('scheduler.day_sat')}</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="sv-day-check" value="sun" disabled>${Lang.t('scheduler.day_sun')}</label></div></div></div><div id="sv-tasks-list"><div style="color:var(--text-muted)">⏳</div></div>`;
+ setTimeout(() => this._loadTasks(), 50);
+ return `<h2>${Lang.t('sv.sched.title')}</h2><div style="background:var(--bg-elev-1);padding:14px;border-radius:8px;margin-bottom:14px;"><div class="flex gap-2" style="align-items:flex-end;flex-wrap:wrap;"><div style="flex:1"><label style="font-size:12px;color:var(--text-muted)">${Lang.t('sv.sched.type')}</label><select id="sv-task-type" class="form-input" style="margin-top:4px;"><option value="backup">Backup</option><option value="restart">Restart</option></select></div><div style="flex:1"><label style="font-size:12px;color:var(--text-muted)">${Lang.t('scheduler.mode')}</label><select id="sv-task-mode" class="form-input" style="margin-top:4px;" onchange="ServerView._onTaskModeChange()"><option value="interval">${Lang.t('scheduler.mode_interval')}</option><option value="fixed">${Lang.t('scheduler.mode_fixed')}</option></select></div></div><!-- Mode intervalle --><div id="sv-task-interval-row" style="display:flex;gap:8px;align-items:flex-end;margin-top:8px;"><div style="flex:1"><label style="font-size:12px;color:var(--text-muted)">${Lang.t('sv.sched.interval')}</label><select id="sv-task-interval" class="form-input" style="margin-top:4px;"><option value="1">1h</option><option value="6" selected>6h</option><option value="12">12h</option><option value="24">24h</option></select></div><button class="btn btn-primary" onclick="ServerView._createTask()"></button></div><!-- Mode heure fixe --><div id="sv-task-fixed-row" style="display:none;margin-top:8px;"><div style="display:flex;gap:8px;align-items:flex-end;"><div><label style="font-size:12px;color:var(--text-muted)">${Lang.t('scheduler.time')}</label><input type="time" id="sv-task-time" class="form-input" style="margin-top:4px;" value="08:00" /></div><button class="btn btn-primary" onclick="ServerView._createTask()"></button></div><div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;"><label style="font-size:12px;color:var(--text-muted);margin-right:4px;">${Lang.t('scheduler.days')}:</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" id="sv-day-daily" checked onchange="ServerView._onSvDailyToggle(this)"> ${Lang.t('scheduler.daily')}</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="sv-day-check" value="mon" disabled> ${Lang.t('scheduler.day_mon')}</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="sv-day-check" value="tue" disabled> ${Lang.t('scheduler.day_tue')}</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="sv-day-check" value="wed" disabled> ${Lang.t('scheduler.day_wed')}</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="sv-day-check" value="thu" disabled> ${Lang.t('scheduler.day_thu')}</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="sv-day-check" value="fri" disabled> ${Lang.t('scheduler.day_fri')}</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="sv-day-check" value="sat" disabled> ${Lang.t('scheduler.day_sat')}</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" class="sv-day-check" value="sun" disabled> ${Lang.t('scheduler.day_sun')}</label></div></div></div><div id="sv-tasks-list"><div style="color:var(--text-muted)">⏳</div></div>`;
  },
 
  _onTaskModeChange() {
@@ -534,7 +534,7 @@ const ServerView = {
  },
 
  _onSvDailyToggle(cb) {
- document.querySelectorAll('.sv-day-check').forEach(c =>{ c.disabled = cb.checked; if (cb.checked) c.checked = false; });
+ document.querySelectorAll('.sv-day-check').forEach(c => { c.disabled = cb.checked; if (cb.checked) c.checked = false; });
  },
 
  async _loadTasks() {
@@ -543,12 +543,12 @@ const ServerView = {
  if (!r||!r.ok||!el) return;
  const tasks = await r.json();
  if (tasks.length===0) { el.innerHTML=`<p style="color:var(--text-muted)">${Lang.t('sv.sched.none')}</p>`; return; }
- el.innerHTML = tasks.map(t =>{
+ el.innerHTML = tasks.map(t => {
  const schedInfo = t.schedule_time
  ? `${Lang.t('scheduler.at')} ${t.schedule_time} (${t.schedule_days || 'daily'})`
  : `${Lang.t('sv.sched.every')} ${t.interval_hours}h`;
  return `
- <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><div><span style="font-weight:600;">${t.task_type==='backup'?'Backup':'Restart'}</span>· ${schedInfo} <span style="color:${t.enabled?'var(--accent)':'var(--text-muted)'};">${t.enabled?Lang.t('sv.sched.active'):Lang.t('sv.sched.inactive')}</span></div><div class="flex gap-2"><button class="btn btn-sm btn-secondary" onclick="ServerView._toggleTask(${t.id})">${t.enabled?'⏸':''}</button><button class="btn btn-sm btn-danger" onclick="ServerView._deleteTask(${t.id})"></button></div></div>`;
+ <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><div><span style="font-weight:600;">${t.task_type==='backup'?'Backup':'Restart'}</span> · ${schedInfo} <span style="color:${t.enabled?'var(--accent)':'var(--text-muted)'};">${t.enabled?Lang.t('sv.sched.active'):Lang.t('sv.sched.inactive')}</span></div><div class="flex gap-2"><button class="btn btn-sm btn-secondary" onclick="ServerView._toggleTask(${t.id})">${t.enabled?'⏸':''}</button><button class="btn btn-sm btn-danger" onclick="ServerView._deleteTask(${t.id})"></button></div></div>`;
  }).join('');
  },
 
@@ -563,8 +563,8 @@ const ServerView = {
  if (dailyCb && dailyCb.checked) {
  body.schedule_days = 'daily';
  } else {
- const checked = [...document.querySelectorAll('.sv-day-check:checked')].map(c =>c.value);
- body.schedule_days = checked.length >0 ? checked.join(',') : 'daily';
+ const checked = [...document.querySelectorAll('.sv-day-check:checked')].map(c => c.value);
+ body.schedule_days = checked.length > 0 ? checked.join(',') : 'daily';
  }
  } else {
  body.interval_hours = parseInt(document.getElementById('sv-task-interval').value);
@@ -604,7 +604,7 @@ const ServerView = {
 
  _workshopModeContent() {
  if (this._workshopMode === 'installed') {
- setTimeout(() =>this._loadWorkshopMods(), 50);
+ setTimeout(() => this._loadWorkshopMods(), 50);
  return `<div id="sv-workshop-installed"><div style="color:var(--text-muted)">${Lang.t('common.loading')}</div></div>`;
  }
  return this._workshopSearchUI();
@@ -641,14 +641,14 @@ const ServerView = {
  }
 
  const item = await r.json();
- const subs = item.subscriptions >1000000
+ const subs = item.subscriptions > 1000000
  ? `${(item.subscriptions/1000000).toFixed(1)}M`
- : item.subscriptions >1000
+ : item.subscriptions > 1000
  ? `${Math.round(item.subscriptions/1000)}k`
  : item.subscriptions;
 
  const tags = (item.tags || []).slice(0,5)
- .map(t =>`<span style="font-size:10px;padding:1px 6px;background:var(--bg-elev-3);border-radius:4px;margin-right:3px;">${t}</span>`)
+ .map(t => `<span style="font-size:10px;padding:1px 6px;background:var(--bg-elev-3);border-radius:4px;margin-right:3px;">${t}</span>`)
  .join('');
 
  el.innerHTML = `
@@ -707,7 +707,7 @@ const ServerView = {
  }
 
  el.innerHTML = `<p style="color:var(--text-muted);font-size:12px;margin-bottom:10px;">${mods.length} ${Lang.t('sv.workshop.installed_list')}</p>` +
- mods.map(m =>`
+ mods.map(m => `
  <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><div style="display:flex;align-items:center;gap:10px;"><div><div style="font-weight:600;font-size:13px;">Workshop ID: ${m.workshop_id}</div><div style="font-size:11px;color:var(--text-muted);">${m.size_mb} Mo</div></div></div><div style="display:flex;gap:6px;"><a href="https://steamcommunity.com/sharedfiles/filedetails/?id=${m.workshop_id}" target="_blank"
  class="btn btn-sm btn-secondary" title="Voir sur Steam"></a><button class="btn btn-sm btn-danger"
  onclick="ServerView._removeWorkshopMod('${m.workshop_id}')">
@@ -751,7 +751,7 @@ const ServerView = {
  <button class="btn btn-sm ${this._modMode==='plugins'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='plugins';ServerView.switchTab('mods')">${Lang.t('sv.mod.search')}</button><button class="btn btn-sm ${this._modMode==='installed'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='installed';ServerView.switchTab('mods')">${Lang.t('sv.mod.installed')}</button>`;
  } else {
  buttons = `
- <button class="btn btn-sm ${this._modMode==='mods'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='mods';ServerView.switchTab('mods')">${Lang.t('sv.mod.search')}</button><button class="btn btn-sm ${this._modMode==='installed'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='installed';ServerView.switchTab('mods')">${Lang.t('sv.mod.installed')}</button>`;
+ <button class="btn btn-sm ${this._modMode==='mods'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='mods';ServerView.switchTab('mods')"> ${Lang.t('sv.mod.search')}</button><button class="btn btn-sm ${this._modMode==='installed'?'btn-primary':'btn-secondary'}" onclick="ServerView._modMode='installed';ServerView.switchTab('mods')">${Lang.t('sv.mod.installed')}</button>`;
  }
 
  return `<h2>${title}</h2><p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">${desc}</p><div style="display:flex;gap:4px;margin-bottom:16px;background:var(--bg-elev-1);padding:4px;border-radius:8px;width:fit-content;">
@@ -761,7 +761,7 @@ const ServerView = {
 
  _modModeContent() {
  if (this._modMode === 'plugins') return this._pluginsSearch();
- if (this._modMode === 'installed') { setTimeout(() =>this._loadInstalledPlugins(), 50); return `<div id="sv-installed-list"><div style="color:var(--text-muted)">${Lang.t('common.loading')}</div></div>`; }
+ if (this._modMode === 'installed') { setTimeout(() => this._loadInstalledPlugins(), 50); return `<div id="sv-installed-list"><div style="color:var(--text-muted)">${Lang.t('common.loading')}</div></div>`; }
  if (this._modMode === 'mods') return this._modsSearch();
  return '';
  },
@@ -789,9 +789,9 @@ const ServerView = {
 
  if (plugins.length === 0) { el.innerHTML = `<div style="color:var(--text-muted)">${Lang.t('sv.mod.no_results')}</div>`; return; }
 
- el.innerHTML = plugins.map(p =>{
- const dl = p.downloads >1000 ? `${Math.round(p.downloads/1000)}k` : p.downloads;
- const cats = (p.categories||[]).slice(0,3).map(c =>`<span style="font-size:10px;padding:1px 5px;background:var(--bg-elev-3);border-radius:3px;margin-right:3px;">${c}</span>`).join('');
+ el.innerHTML = plugins.map(p => {
+ const dl = p.downloads > 1000 ? `${Math.round(p.downloads/1000)}k` : p.downloads;
+ const cats = (p.categories||[]).slice(0,3).map(c => `<span style="font-size:10px;padding:1px 5px;background:var(--bg-elev-3);border-radius:3px;margin-right:3px;">${c}</span>`).join('');
  return `
  <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><img src="${p.icon_url||''}" style="width:40px;height:40px;border-radius:8px;object-fit:cover;" onerror="this.style.display='none'" /><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:14px;">${p.name}</div><div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.description||''}</div><div style="margin-top:4px;">${cats} <span style="font-size:10px;color:var(--text-muted);">${dl} ${Lang.t('sv.mod.downloads')}</span></div></div><button class="btn btn-primary btn-sm" onclick="ServerView._showPluginVersions('${p.id}','${(p.name||'').replace(/'/g,"\\'")}')">${Lang.t('sv.mod.install')}</button></div>`;
  }).join('');
@@ -809,8 +809,8 @@ const ServerView = {
 
  el.innerHTML = `
  <button class="btn btn-secondary btn-sm" onclick="ServerView._searchPlugins()">${Lang.t('sv.mod.back')}</button><span style="font-weight:600;margin-left:8px;font-size:15px;">${name}</span><div style="margin-top:12px;">
- ${versions.map(v =>{
- const loaders = (v.loaders||[]).map(l =>`<span style="font-size:10px;padding:1px 5px;background:var(--info);color:#fff;border-radius:3px;margin-right:3px;">${l}</span>`).join('');
+ ${versions.map(v => {
+ const loaders = (v.loaders||[]).map(l => `<span style="font-size:10px;padding:1px 5px;background:var(--info);color:#fff;border-radius:3px;margin-right:3px;">${l}</span>`).join('');
  const gameVers = (v.game_versions||[]).slice(-3).join(', ');
  return `
  <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;"><div><span style="font-weight:600;font-size:13px;">${v.name || v.version_number}</span><span style="font-size:11px;color:var(--text-muted);margin-left:6px;">(${v.size_mb} Mo)</span><div style="margin-top:3px;">${loaders} <span style="font-size:10px;color:var(--text-muted);">MC ${gameVers}</span></div></div><button class="btn btn-primary btn-sm" onclick="ServerView._installPlugin('${name.replace(/'/g,"\\'")}','${v.download_url}','${v.filename}')">${Lang.t('sv.mod.install')}</button></div>`;
@@ -851,7 +851,7 @@ const ServerView = {
  }
 
  el.innerHTML = `<p style="color:var(--text-muted);font-size:12px;margin-bottom:8px;">${plugins.length} ${Lang.t('sv.mod.plugin_count')}</p>` +
- plugins.map(p =>`
+ plugins.map(p => `
  <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:4px;"><div style="display:flex;align-items:center;gap:8px;"><div><div style="font-weight:600;font-size:13px;">${p.filename}</div><div style="font-size:11px;color:var(--text-muted);">${p.size_mb} Mo</div></div></div><button class="btn btn-sm btn-danger" onclick="ServerView._removePlugin('${p.filename.replace(/'/g,"\\'")}')">${Lang.t('sv.mod.remove')}</button></div>`).join('');
  },
 
@@ -884,7 +884,7 @@ const ServerView = {
  const data = await r.json();
  const mods = data.mods||[];
  if (mods.length===0) { el.innerHTML=`<div style="color:var(--text-muted)">${Lang.t('sv.mod.no_results')}</div>`; return; }
- el.innerHTML = mods.map(m =>`
+ el.innerHTML = mods.map(m => `
  <div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><img src="${m.icon_url||''}" style="width:36px;height:36px;border-radius:6px;" onerror="this.style.display='none'"/><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:13px;">${m.name}</div><div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.summary||''}</div></div><button class="btn btn-primary btn-sm" onclick="ServerView._showModFiles(${m.id},'${(m.name||'').replace(/'/g,"\\'")}')"></button></div>`).join('');
  },
 
@@ -895,7 +895,7 @@ const ServerView = {
  if (!r||!r.ok) return;
  const files = (await r.json()).files||[];
  el.innerHTML = `<button class="btn btn-secondary btn-sm" onclick="ServerView._searchMods()">${Lang.t('sv.mod.back')}</button><span style="font-weight:600;margin-left:8px;">${name}</span><br><br>` +
- files.slice(0,8).map(f =>`
+ files.slice(0,8).map(f => `
  <div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;"><div><span style="font-size:13px;">${f.name}</span><span style="color:var(--text-muted);font-size:11px;">(${f.size_mb}Mo)</span></div>
  ${f.download_url?`<button class="btn btn-primary btn-sm" onclick="ServerView._installMod('${name.replace(/'/g,"\\'")}','${f.download_url}','${f.name}')"></button>`:''}
  </div>`).join('');
@@ -910,7 +910,7 @@ const ServerView = {
 
  _dpModeContent() {
  if (this._dpMode === 'installed') {
- setTimeout(() =>this._loadInstalledDatapacks(), 50);
+ setTimeout(() => this._loadInstalledDatapacks(), 50);
  return `<div id="sv-dp-installed"><div style="color:var(--text-muted)">${Lang.t('common.loading')}</div></div>`;
  }
  return this._dpSearchUI();
@@ -936,8 +936,8 @@ const ServerView = {
  const mods = data.mods || [];
  if (mods.length === 0) { el.innerHTML = `<div style="color:var(--text-muted)">${Lang.t('sv.mod.no_results')}</div>`; return; }
 
- el.innerHTML = mods.map(m =>{
- const dl = m.downloads >1000000 ? `${(m.downloads/1000000).toFixed(1)}M` : m.downloads >1000 ? `${Math.round(m.downloads/1000)}k` : m.downloads;
+ el.innerHTML = mods.map(m => {
+ const dl = m.downloads > 1000000 ? `${(m.downloads/1000000).toFixed(1)}M` : m.downloads > 1000 ? `${Math.round(m.downloads/1000)}k` : m.downloads;
  return `
  <div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><img src="${m.icon_url||''}" style="width:36px;height:36px;border-radius:6px;" onerror="this.style.display='none'"/><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:13px;">${m.name}</div><div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.summary||''}</div><div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${dl} ${Lang.t('sv.mod.downloads')}</div></div><button class="btn btn-primary btn-sm" onclick="ServerView._showDpFiles(${m.id},'${(m.name||'').replace(/'/g,"\\'")}')">${Lang.t('sv.dp.versions')}</button></div>`;
  }).join('');
@@ -954,12 +954,12 @@ const ServerView = {
 
  el.innerHTML = `
  <button class="btn btn-secondary btn-sm" onclick="ServerView._searchDatapacks()">${Lang.t('sv.mod.back')}</button><span style="font-weight:600;margin-left:8px;font-size:15px;">${name}</span><div style="margin-top:12px;">
- ${files.slice(0,10).map(f =>{
- const mcVers = (f.game_versions||[]).filter(v =>/^\d/.test(v)).join(', ') || '?';
+ ${files.slice(0,10).map(f => {
+ const mcVers = (f.game_versions||[]).filter(v => /^\d/.test(v)).join(', ') || '?';
  const type = f.release_type || '';
  const typeColor = type === 'Release' ? 'var(--accent)' : type === 'Beta' ? 'var(--warning)' : 'var(--text-muted)';
  return `
- <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;"><div><span style="font-size:13px;font-weight:600;">${f.name}</span><span style="color:var(--text-muted);font-size:11px;">(${f.size_mb} Mo)</span><div style="font-size:10px;color:var(--text-muted);margin-top:2px;">MC ${mcVers} · <span style="color:${typeColor};">${type}</span></div></div>
+ <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;"><div><span style="font-size:13px;font-weight:600;">${f.name}</span><span style="color:var(--text-muted);font-size:11px;"> (${f.size_mb} Mo)</span><div style="font-size:10px;color:var(--text-muted);margin-top:2px;">MC ${mcVers} · <span style="color:${typeColor};">${type}</span></div></div>
  ${f.download_url ? `<button class="btn btn-primary btn-sm" onclick="ServerView._installDatapack('${name.replace(/'/g,"\\'") }','${f.download_url}','${f.name}')">${Lang.t('sv.mod.install')}</button>` : ''}
  </div>`;
  }).join('')}
@@ -996,7 +996,7 @@ const ServerView = {
  }
 
  el.innerHTML = `<p style="color:var(--text-muted);font-size:12px;margin-bottom:8px;">${datapacks.length} ${Lang.t('sv.dp.count')}</p>` +
- datapacks.map(p =>`
+ datapacks.map(p => `
  <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:4px;"><div style="display:flex;align-items:center;gap:8px;"><span>${p.is_dir ? '' : ''}</span><div><div style="font-weight:600;font-size:13px;">${p.filename}</div><div style="font-size:11px;color:var(--text-muted);">${p.is_dir ? Lang.t('sv.dp.folder') : p.size_mb + ' Mo'}</div></div></div><button class="btn btn-sm btn-danger" onclick="ServerView._removeDatapack('${p.filename.replace(/'/g,"\\'")}')">${Lang.t('sv.mod.remove')}</button></div>`).join('');
  },
 
@@ -1024,8 +1024,8 @@ const ServerView = {
  const targetState = (act === 'stop') ? 'exited' : 'running';
  const initialDelay = (act === 'start' || act === 'restart') ? 5000 : 2000;
  let attempts = 0;
- setTimeout(() =>{
- const poll = setInterval(async () =>{
+ setTimeout(() => {
+ const poll = setInterval(async () => {
  attempts++;
  await this.refreshServer();
  const s = this.serverData;
@@ -1089,7 +1089,7 @@ const ServerView = {
  ${Lang.t('gs.cancel')}
  </button></div><div id="sv-delete-msg" style="font-size:13px;margin-top:10px;"></div></div></div>`;
 
- setTimeout(() =>document.getElementById('sv-delete-input')?.focus(), 100);
+ setTimeout(() => document.getElementById('sv-delete-input')?.focus(), 100);
  },
 
  async _confirmDeleteServer() {
@@ -1110,7 +1110,7 @@ const ServerView = {
  if (typeof Toast !== 'undefined') Toast.success(`Serveur '${s.name}' supprimé`);
  App.navigateTo('game_server');
  } else {
- const err = r ? await r.json().catch(() =>({})) : {};
+ const err = r ? await r.json().catch(() => ({})) : {};
  if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
  }
  },
@@ -1127,7 +1127,7 @@ const ServerView = {
 
  // --- Base de données MySQL ---
  _databaseTab() {
- setTimeout(() =>this._loadDatabase(), 50);
+ setTimeout(() => this._loadDatabase(), 50);
  return `
  <h2>${Lang.t('sv.db.title')}</h2><p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.db.desc')}</p><div id="sv-db-content"><div style="text-align:center;padding:30px;color:var(--text-muted);">${Lang.t('common.loading')}</div></div>`;
  },
@@ -1168,7 +1168,7 @@ const ServerView = {
  });
  if (r && r.ok) {
  if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.db.created'); }
- setTimeout(() =>this._loadDatabase(), 1500);
+ setTimeout(() => this._loadDatabase(), 1500);
  } else {
  if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${Lang.t('common.error')}`; }
  }
@@ -1184,7 +1184,7 @@ const ServerView = {
  const r = await Auth.apiCall(`/api/servers/${this.serverId}/database`, { method: 'DELETE' });
  if (r && r.ok) {
  if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.db.deleted'); }
- setTimeout(() =>this._loadDatabase(), 1500);
+ setTimeout(() => this._loadDatabase(), 1500);
  } else {
  if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${Lang.t('common.error')}`; }
  }
@@ -1192,7 +1192,7 @@ const ServerView = {
 
  // --- Gestion des mondes ---
  _worldsTab() {
- setTimeout(() =>this._loadWorlds(), 50);
+ setTimeout(() => this._loadWorlds(), 50);
  return `
  <h2>${Lang.t('sv.worlds.title')}</h2><p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.worlds.desc')}</p><div id="sv-worlds-content"><div style="text-align:center;padding:30px;color:var(--text-muted);">${Lang.t('common.loading')}</div></div>`;
  },
@@ -1223,7 +1223,7 @@ const ServerView = {
  <div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;color:var(--text-muted);text-align:center;">
  ${Lang.t('sv.worlds.none')}
  </div>
- ` : worlds.map(w =>{
+ ` : worlds.map(w => {
  const label = worldIcons[w.name] || ` ${w.name}`;
  return `
  <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;"><div><div style="font-size:14px;font-weight:600;">${label}</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${Lang.t('sv.worlds.folder')}: ${w.name}/ · ${Lang.t('sv.worlds.size')}: ${w.size}</div></div><div style="display:flex;gap:6px;align-items:center;"><button class="btn btn-secondary btn-sm" onclick="ServerView._confirmResetWorld('${w.name}')" style="font-size:12px;">${Lang.t('sv.worlds.reset')}</button></div></div><div id="sv-w-confirm-${w.name}" style="display:none;background:rgba(248,113,113,0.1);border:2px solid var(--danger);border-radius:10px;padding:12px;margin-bottom:8px;"><div style="font-size:13px;color:var(--danger);font-weight:600;margin-bottom:8px;">${Lang.t('sv.worlds.reset_confirm')} "${label}" ?</div><div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('sv.worlds.reset_warn')}</div><div style="display:flex;gap:8px;"><button class="btn btn-secondary btn-sm" onclick="document.getElementById('sv-w-confirm-${w.name}').style.display='none'">${Lang.t('common.cancel')}</button><button class="btn btn-sm" style="background:var(--danger);color:white;" onclick="ServerView._resetWorld('${w.name}')">${Lang.t('sv.worlds.reset_yes')}</button></div></div>`;
@@ -1245,7 +1245,7 @@ const ServerView = {
  if (r && r.ok) {
  const data = await r.json();
  if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `${Lang.t('sv.db.deleted')}`; }
- setTimeout(() =>this._loadWorlds(), 1500);
+ setTimeout(() => this._loadWorlds(), 1500);
  } else {
  if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${Lang.t('common.error')}`; }
  }
@@ -1277,7 +1277,7 @@ const ServerView = {
  <h2>${Lang.t('sv.ver.version')}</h2><p style="color:var(--text-muted);font-size:13px;">${Lang.t('sv.ver.only_mc')}</p><div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-top:16px;"><div style="font-size:14px;">${Lang.t('sv.ver.game')} : <strong>${s.game_type}</strong></div><div style="font-size:14px;margin-top:4px;">${Lang.t('sv.ver.version')} : <strong>${s.version || 'LATEST'}</strong></div></div>`;
  }
 
- const current = types.find(t =>t.id === currentType) || types[0];
+ const current = types.find(t => t.id === currentType) || types[0];
 
  const versionOptions = [
  'LATEST','1.21.4','1.21.3','1.21.2','1.21.1','1.21',
@@ -1292,9 +1292,9 @@ const ServerView = {
 
  return `
  <h2>${Lang.t('sv.ver.title')}</h2><p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.ver.desc')}</p><!-- Version actuelle --><div style="background:rgba(96,165,250,0.15);padding:20px;border-radius:12px;margin-bottom:20px;border:1px solid rgba(96,165,250,0.3);"><div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">${Lang.t('sv.ver.current')}</div><div style="display:flex;align-items:center;gap:14px;"><span class="b-ticker">${(current.id||'?').slice(0,3).toUpperCase()}</span><div><div style="font-size:20px;font-weight:700;">${current.name}</div><div style="font-size:14px;color:var(--text-muted);">Minecraft ${currentVer}</div></div></div></div><!-- Sélection du type --><div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;"><div style="font-weight:600;margin-bottom:10px;">${Lang.t('sv.ver.server_type')}</div><select id="sv-ver-type" class="form-input" style="font-size:14px;">
- ${types.map(t =>`<option value="${t.id}" ${t.id === currentType ? 'selected' : ''}>${t.name} — ${t.desc}</option>`).join('')}
+ ${types.map(t => `<option value="${t.id}" ${t.id === currentType ? 'selected' : ''}>${t.name} — ${t.desc}</option>`).join('')}
  </select></div><!-- Version Minecraft --><div id="sv-ver-version-group" style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;"><div style="font-weight:600;margin-bottom:10px;">${Lang.t('sv.ver.mc_version')}</div><select id="sv-ver-version" class="form-input" style="font-size:14px;" onchange="document.getElementById('sv-ver-version-custom').style.display=this.value==='CUSTOM'?'block':'none'"><option value="LATEST" ${currentVer === 'LATEST' ? 'selected' : ''}>${Lang.t('sv.ver.latest')}</option>
- ${versionOptions.filter(v =>v !== 'LATEST').map(v =>`<option value="${v}" ${v === currentVer ? 'selected' : ''}>${v}</option>`).join('')}
+ ${versionOptions.filter(v => v !== 'LATEST').map(v => `<option value="${v}" ${v === currentVer ? 'selected' : ''}>${v}</option>`).join('')}
  <option value="CUSTOM" ${!isKnownVersion && currentVer !== 'LATEST' ? 'selected' : ''}>${Lang.t('sv.ver.custom')}</option></select><input id="sv-ver-version-custom" class="form-input" value="${!isKnownVersion && currentVer !== 'LATEST' ? currentVer : ''}" placeholder="Ex: 1.12.2, 23w13a (snapshot)..." style="display:${!isKnownVersion && currentVer !== 'LATEST' ? 'block' : 'none'};margin-top:8px;" /></div><!-- Modpack CurseForge (affiché pour Forge/Fabric/NeoForge/Quilt) --><div id="sv-ver-modpack-group" style="display:${['FORGE','NEOFORGE','FABRIC','QUILT'].includes(currentType) ? 'block' : 'none'};"><div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;"><div style="font-weight:600;margin-bottom:10px;">${Lang.t('sv.ver.content_mode')}</div><div style="display:flex;gap:8px;margin-bottom:12px;"><button type="button" id="sv-ver-mp-blank" class="btn btn-primary btn-sm" onclick="ServerView._setVerModpackMode('blank')" style="flex:1;padding:10px;">
  ${Lang.t('sv.ver.blank')}<br><span style="font-size:10px;font-weight:400;opacity:0.8;">${Lang.t('sv.ver.blank_desc')}</span></button><button type="button" id="sv-ver-mp-modpack" class="btn btn-secondary btn-sm" onclick="ServerView._setVerModpackMode('modpack')" style="flex:1;padding:10px;">
  Modpack CurseForge<br><span style="font-size:10px;font-weight:400;opacity:0.8;">${Lang.t('sv.ver.modpack_desc')}</span></button></div><div id="sv-ver-mp-search" style="display:none;"><div style="display:flex;gap:6px;margin-bottom:8px;"><input id="sv-ver-mp-q" class="form-input" placeholder="${Lang.t('sv.ver.search_modpack')}" style="flex:1;" onkeydown="if(event.key==='Enter')ServerView._searchVerModpacks()" /><button class="btn btn-primary btn-sm" onclick="ServerView._searchVerModpacks()"></button></div><div id="sv-ver-mp-results" style="max-height:180px;overflow-y:auto;"></div><div id="sv-ver-mp-selected" style="display:none;background:var(--accent-dim);border:1px solid rgba(74,222,128,0.3);border-radius:8px;padding:10px;margin-top:8px;"></div></div></div></div><!-- Option réinstallation --><div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;"><div style="font-weight:600;margin-bottom:10px;">${Lang.t('sv.ver.install_mode')}</div><label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;border-radius:8px;border:2px solid var(--accent);background:rgba(74,222,128,0.08);margin-bottom:8px;"><input type="radio" name="sv-ver-mode" value="keep" checked /><div><div style="font-size:13px;font-weight:600;">${Lang.t('sv.ver.keep_files')}</div><div style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.ver.keep_desc')}</div></div></label><label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;border-radius:8px;border:2px solid var(--border);"><input type="radio" name="sv-ver-mode" value="reset" /><div><div style="font-size:13px;font-weight:600;color:var(--danger);">${Lang.t('sv.ver.reset_all')}</div><div style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.ver.reset_desc')}</div></div></label></div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><button id="sv-ver-apply-btn" class="btn btn-primary" onclick="ServerView._changeVersion()" style="padding:10px 24px;font-size:14px;">${Lang.t('sv.ver.apply')}</button></div><div id="sv-ver-confirm" style="display:none;margin-top:12px;background:rgba(248,113,113,0.1);border:2px solid var(--danger);border-radius:10px;padding:16px;"><div style="font-weight:600;color:var(--danger);margin-bottom:8px;">${Lang.t('sv.ver.confirm_reset')}</div><div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">${Lang.t('sv.ver.confirm_reset_desc')}</div><div style="display:flex;gap:8px;"><button class="btn btn-secondary" onclick="document.getElementById('sv-ver-confirm').style.display='none';document.getElementById('sv-ver-apply-btn').style.display='';">${Lang.t('common.cancel')}</button><button class="btn" style="background:var(--danger);color:white;" onclick="ServerView._changeVersionConfirmed()">${Lang.t('sv.ver.confirm_reset_yes')}</button></div></div>`;
@@ -1307,7 +1307,7 @@ const ServerView = {
  _initVersionListeners() {
  const typeSelect = document.getElementById('sv-ver-type');
  if (typeSelect) {
- typeSelect.addEventListener('change', () =>{
+ typeSelect.addEventListener('change', () => {
  const moddable = ['FORGE','NEOFORGE','FABRIC','QUILT'];
  const group = document.getElementById('sv-ver-modpack-group');
  if (group) group.style.display = moddable.includes(typeSelect.value) ? 'block' : 'none';
@@ -1351,8 +1351,8 @@ const ServerView = {
  const mods = data.mods || [];
  if (mods.length === 0) { el.innerHTML = `<div style="color:var(--text-muted);font-size:12px;">${Lang.t('sv.mod.no_results')}</div>`; return; }
 
- el.innerHTML = mods.map(m =>{
- const dl = m.downloads >1000000 ? `${(m.downloads/1000000).toFixed(1)}M` : m.downloads >1000 ? `${Math.round(m.downloads/1000)}k` : m.downloads;
+ el.innerHTML = mods.map(m => {
+ const dl = m.downloads > 1000000 ? `${(m.downloads/1000000).toFixed(1)}M` : m.downloads > 1000 ? `${Math.round(m.downloads/1000)}k` : m.downloads;
  const safeUrl = (m.url||'').replace(/'/g,"\\'");
  const safeName = (m.name||'').replace(/'/g,"\\'");
  return `
@@ -1391,8 +1391,8 @@ const ServerView = {
  const versEl = document.getElementById('sv-ver-mp-versions');
  if (!versEl) return;
  versEl.innerHTML = `<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">${files.length} ${Lang.t('sv.ver.versions_available')}</div>` +
- files.map(f =>{
- const mcVers = (f.game_versions||[]).filter(v =>/^\d/.test(v)).join(', ') || '?';
+ files.map(f => {
+ const mcVers = (f.game_versions||[]).filter(v => /^\d/.test(v)).join(', ') || '?';
  const type = f.release_type || '';
  const typeColor = type === 'Release' ? 'var(--accent)' : type === 'Beta' ? 'var(--warning)' : 'var(--text-muted)';
  const safeName2 = (f.name||'').replace(/'/g,"\\'");
@@ -1479,9 +1479,9 @@ const ServerView = {
  this._verPageUrl = null;
  this._verFileId = null;
  await this.refreshServer();
- setTimeout(() =>this.switchTab('version'), 1000);
+ setTimeout(() => this.switchTab('version'), 1000);
  } else {
- const err = r ? await r.json().catch(() =>({})) : {};
+ const err = r ? await r.json().catch(() => ({})) : {};
  if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
  }
  },
@@ -1509,11 +1509,11 @@ const ServerView = {
  <div style="font-size:13px;font-weight:600;margin-bottom:10px;">${Lang.t('sv.dash.docker')}</div><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;"><div><div style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.dash.cpu_used')}</div><div style="font-size:18px;font-weight:700;color:var(--info);">${(stats.cpu_percent||0).toFixed(1)}%</div><div style="background:var(--bg-elev-3);height:4px;border-radius:2px;margin-top:4px;"><div style="background:var(--info);height:100%;border-radius:2px;width:${Math.min(stats.cpu_percent||0,100)}%;"></div></div></div><div><div style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.dash.ram_used')}</div><div style="font-size:18px;font-weight:700;color:var(--accent);">${stats.memory_mb ? stats.memory_mb.toFixed(0) : '?'} Mo</div><div style="background:var(--bg-elev-3);height:4px;border-radius:2px;margin-top:4px;"><div style="background:var(--accent);height:100%;border-radius:2px;width:${stats.memory_percent ? Math.min(stats.memory_percent,100) : 0}%;"></div></div></div><div><div style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.dash.network')}</div><div style="font-size:14px;font-weight:600;">↑ ${stats.net_tx_mb ? stats.net_tx_mb.toFixed(1) : '0'} Mo</div><div style="font-size:14px;font-weight:600;">↓ ${stats.net_rx_mb ? stats.net_rx_mb.toFixed(1) : '0'} Mo</div></div></div>`;
  } else {
  el.innerHTML = `
- <div style="font-size:13px;font-weight:600;margin-bottom:8px;">Docker</div><div style="color:var(--text-muted);font-size:12px;">${Lang.t('sv.dash.docker_offline')}</div>`;
+ <div style="font-size:13px;font-weight:600;margin-bottom:8px;"> Docker</div><div style="color:var(--text-muted);font-size:12px;">${Lang.t('sv.dash.docker_offline')}</div>`;
  }
  } catch (e) {
  el.innerHTML = `
- <div style="font-size:13px;font-weight:600;margin-bottom:8px;">Docker</div><div style="color:var(--text-muted);font-size:12px;">${Lang.t('sv.dash.docker_offline')}</div>`;
+ <div style="font-size:13px;font-weight:600;margin-bottom:8px;"> Docker</div><div style="color:var(--text-muted);font-size:12px;">${Lang.t('sv.dash.docker_offline')}</div>`;
  }
  },
 
@@ -1571,7 +1571,7 @@ const ServerView = {
  
  // Color-code each line
  el.innerHTML = '';
- logs.split('\n').forEach(line =>{
+ logs.split('\n').forEach(line => {
  if (!line.trim()) return;
  const span = document.createElement('span');
  const t = line.toLowerCase();
@@ -1596,16 +1596,16 @@ const ServerView = {
 
  // --- Notifications Discord ---
  _notificationsTab() {
- setTimeout(() =>this._loadNotifSettings(), 50);
+ setTimeout(() => this._loadNotifSettings(), 50);
  return `
  <h2>${Lang.t('sv.notif.title')}</h2><p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.notif.desc')}</p><div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;"><div style="font-weight:600;margin-bottom:12px;">${Lang.t('sv.notif.webhook')}</div><div style="display:flex;gap:8px;align-items:center;"><input id="sv-notif-webhook" class="form-input" placeholder="https://discord.com/api/webhooks/..." style="flex:1;font-family:monospace;font-size:12px;" /></div><div style="font-size:11px;color:var(--text-muted);margin-top:6px;">
  ${Lang.t('sv.notif.webhook_hint')}
- </div></div><div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;"><div style="font-weight:600;margin-bottom:12px;">${Lang.t('sv.notif.events')}</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="sv-notif-start" checked />${Lang.t('sv.notif.start')}
- </label><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="sv-notif-stop" checked />${Lang.t('sv.notif.stop')}
- </label><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="sv-notif-crash" checked />${Lang.t('sv.notif.crash')}
- </label><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="sv-notif-backup" checked />${Lang.t('sv.notif.backup')}
- </label><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="sv-notif-join" />${Lang.t('sv.notif.join')}
- </label><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="sv-notif-leave" />${Lang.t('sv.notif.leave')}
+ </div></div><div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;"><div style="font-weight:600;margin-bottom:12px;">${Lang.t('sv.notif.events')}</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="sv-notif-start" checked /> ${Lang.t('sv.notif.start')}
+ </label><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="sv-notif-stop" checked /> ${Lang.t('sv.notif.stop')}
+ </label><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="sv-notif-crash" checked /> ${Lang.t('sv.notif.crash')}
+ </label><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="sv-notif-backup" checked /> ${Lang.t('sv.notif.backup')}
+ </label><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="sv-notif-join" /> ${Lang.t('sv.notif.join')}
+ </label><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="sv-notif-leave" /> ${Lang.t('sv.notif.leave')}
  </label></div></div><div style="display:flex;gap:8px;align-items:center;"><button class="btn btn-primary" onclick="ServerView._saveNotifSettings()">${Lang.t('sv.notif.save')}</button><button class="btn btn-secondary" onclick="ServerView._testNotif()">${Lang.t('sv.notif.test')}</button></div>`;
  },
 
@@ -1614,7 +1614,7 @@ const ServerView = {
  if (!r || !r.ok) return;
  const s = await r.json();
 
- const el = (id) =>document.getElementById(id);
+ const el = (id) => document.getElementById(id);
  if (el('sv-notif-webhook')) el('sv-notif-webhook').value = s.discord_webhook_url || '';
  if (el('sv-notif-start')) el('sv-notif-start').checked = s.notify_server_start !== false;
  if (el('sv-notif-stop')) el('sv-notif-stop').checked = s.notify_server_stop !== false;

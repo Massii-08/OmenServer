@@ -42,7 +42,7 @@ const Modules = {
         const grid = document.getElementById('modules-grid');
         if (!grid) return;
 
-        grid.innerHTML = modules.map(mod =>{
+        grid.innerHTML = modules.map(mod => {
             const name = this._nameKeys[mod.id] ? Lang.t(this._nameKeys[mod.id]) : mod.name;
             const desc = this._descKeys[mod.id] ? Lang.t(this._descKeys[mod.id]) : mod.description;
             const badge = mod.enabled ? Lang.t('modules.active') : Lang.t('modules.soon');
