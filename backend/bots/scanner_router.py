@@ -191,8 +191,8 @@ def _parse_scanner_progress(job: dict, line: str):
         count = int(match.group(1))
         job["stats"]["total_discarded"] = job["stats"].get("total_discarded", 0) + count
 
-    # Bond accettato: "✅ ACCETTATO"
-    if "✅ ACCETTATO" in line:
+    # Bond accettato: "ACCETTATO"
+    if "ACCETTATO" in line:
         job["stats"]["total_filtered"] = job["stats"].get("total_filtered", 0) + 1
 
     # Bond scartato: "❌ Scartato:"

@@ -104,7 +104,7 @@ def install_mod(
             filename=request.filename,
         )
         return {
-            "message": f"✅ Mod '{request.mod_name}' installé !",
+            "message": f"Mod '{request.mod_name}' installé !",
             "filename": request.filename,
             "path": filepath,
         }
@@ -142,7 +142,7 @@ def remove_mod(
     server_data_dir = os.path.join(settings.SERVERS_DATA_DIR, str(server.id))
     try:
         curseforge.remove_mod(server_data_dir, filename)
-        return {"message": f"✅ Mod '{filename}' supprimé"}
+        return {"message": f"Mod '{filename}' supprimé"}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -175,7 +175,7 @@ def install_datapack(
     try:
         _install(server.docker_id, request.download_url, request.filename)
         return {
-            "message": f"✅ Datapack '{request.mod_name}' installé !",
+            "message": f"Datapack '{request.mod_name}' installé !",
             "filename": request.filename,
         }
     except RuntimeError as e:
@@ -219,7 +219,7 @@ def remove_datapack(
 
     try:
         _remove(server.docker_id, filename)
-        return {"message": f"✅ Datapack '{filename}' supprimé"}
+        return {"message": f"Datapack '{filename}' supprimé"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -346,7 +346,7 @@ def remove_workshop_mod(
             app_id=app_id,
             workshop_id=workshop_id,
         )
-        return {"message": f"✅ Mod Workshop {workshop_id} supprimé."}
+        return {"message": f"Mod Workshop {workshop_id} supprimé."}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:

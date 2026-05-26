@@ -213,7 +213,7 @@ def create_game_server(
         except Exception:
             logger.info(f"Téléchargement de {image_name}... (peut prendre quelques minutes)")
             client.images.pull(image_name)
-            logger.info(f"Image {image_name} téléchargée ✅")
+            logger.info(f"Image {image_name} téléchargée")
 
         # Supprimer un conteneur existant avec le même nom (cas de conflit)
         try:

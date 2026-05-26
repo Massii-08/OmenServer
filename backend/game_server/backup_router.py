@@ -130,7 +130,7 @@ def restore_backup(
             docker_id=server.docker_id,
             backup_type=backup_type,
         )
-        return {"message": f"Sauvegarde '{backup_id}' restaurée avec succès ✅"}
+        return {"message": f"Sauvegarde '{backup_id}' restaurée avec succès"}
     except RuntimeError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -181,7 +181,7 @@ def delete_backup(
 
     try:
         backup_manager.delete_backup(server_id, backup_id, backup_type=backup_type)
-        return {"message": f"Sauvegarde supprimée ✅"}
+        return {"message": f"Sauvegarde supprimée"}
     except RuntimeError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

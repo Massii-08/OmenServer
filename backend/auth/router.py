@@ -278,7 +278,7 @@ def change_password(
     current_user.hashed_password = hash_password(request.new_password)
     db.commit()
 
-    return {"message": "Mot de passe modifié avec succès ✅"}
+    return {"message": "Mot de passe modifié avec succès"}
 
 
 @router.post("/logout")
@@ -346,7 +346,7 @@ def change_user_role(
     user.is_admin = (request.role == "admin")
     db.commit()
 
-    return {"message": f"Rôle de '{user.username}' changé en '{request.role}' ✅"}
+    return {"message": f"Rôle de '{user.username}' changé en '{request.role}'"}
 
 
 class UpdateModulesRequest(BaseModel):
@@ -380,7 +380,7 @@ def update_user_modules(
     db.commit()
 
     return {
-        "message": f"Modules de '{user.username}' mis à jour ✅",
+        "message": f"Modules de '{user.username}' mis à jour",
         "allowed_modules": request.allowed_modules,
     }
 
@@ -406,4 +406,4 @@ def delete_user(
     db.delete(user)
     db.commit()
 
-    return {"message": f"Utilisateur '{username}' supprimé ✅"}
+    return {"message": f"Utilisateur '{username}' supprimé"}

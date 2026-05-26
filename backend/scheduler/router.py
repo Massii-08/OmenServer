@@ -195,7 +195,7 @@ def create_task(
     engine.add_task(task)
 
     return {
-        "message": f"✅ Tâche '{task.task_type}' créée (toutes les {task.interval_hours}h)",
+        "message": f"Tâche '{task.task_type}' créée (toutes les {task.interval_hours}h)",
         "task": {
             "id": task.id,
             "server_id": task.server_id,
@@ -233,7 +233,7 @@ def update_task(
     # Mettre à jour dans le scheduler
     engine.update_task(task)
 
-    return {"message": "✅ Tâche mise à jour", "enabled": task.enabled}
+    return {"message": "Tâche mise à jour", "enabled": task.enabled}
 
 
 @router.delete("/{task_id}")
@@ -251,7 +251,7 @@ def delete_task(
 
     db.delete(task)
     db.commit()
-    return {"message": "✅ Tâche supprimée"}
+    return {"message": "Tâche supprimée"}
 
 
 @router.post("/{task_id}/toggle")
@@ -272,5 +272,5 @@ def toggle_task(
 
     engine.update_task(task)
 
-    status_text = "activée ✅" if task.enabled else "désactivée ⏸️"
+    status_text = "activée" if task.enabled else "désactivée ⏸️"
     return {"message": f"Tâche {status_text}", "enabled": task.enabled}

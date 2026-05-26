@@ -189,7 +189,7 @@ def remove_node(hostname: str, current_user: User = Depends(get_current_user)):
     if hostname in _nodes:
         del _nodes[hostname]
         _pending_commands.pop(hostname, None)
-        return {"message": f"✅ '{hostname}' retiré"}
+        return {"message": f"'{hostname}' retiré"}
     else:
         raise HTTPException(status_code=404, detail="PC non trouvé")
 

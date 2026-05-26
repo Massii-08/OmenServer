@@ -77,4 +77,4 @@ def add_activity(
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
 
     log_activity(server_id, current_user.username, entry.action, entry.details)
-    return {"message": "✅ Entrée ajoutée"}
+    return {"message": "Entrée ajoutée"}

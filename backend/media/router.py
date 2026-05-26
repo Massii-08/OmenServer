@@ -177,7 +177,7 @@ async def setup_jellyfin(req: SetupRequest = SetupRequest(), user=Depends(get_cu
             },
         )
 
-        logger.info(f"✅ Jellyfin déployé ! Conteneur: {container.short_id}")
+        logger.info(f"Jellyfin déployé ! Conteneur: {container.short_id}")
         return {
             "success": True,
             "message": "Jellyfin installé et démarré !",

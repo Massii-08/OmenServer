@@ -139,7 +139,7 @@ def delete_invitation(
 
     db.delete(invitation)
     db.commit()
-    return {"message": "Invitation supprimée ✅"}
+    return {"message": "Invitation supprimée"}
 
 
 @router.get("/invite-info/{code}")
@@ -288,7 +288,7 @@ def change_user_role(
     db.commit()
 
     return {
-        "message": f"Rôle de '{user.username}' changé en {ROLE_NAMES.get(request.role)} ✅",
+        "message": f"Rôle de '{user.username}' changé en {ROLE_NAMES.get(request.role)}",
         "user": {
             "id": user.id,
             "username": user.username,
@@ -317,4 +317,4 @@ def delete_user(
 
     db.delete(user)
     db.commit()
-    return {"message": f"Utilisateur '{user.username}' supprimé ✅"}
+    return {"message": f"Utilisateur '{user.username}' supprimé"}

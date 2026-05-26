@@ -184,7 +184,7 @@ def download_mod(download_url: str, dest_dir: str, filename: str) -> str:
             for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)
 
-        logger.info(f"✅ Mod téléchargé: {filename} → {dest_dir}")
+        logger.info(f"Mod téléchargé: {filename} → {dest_dir}")
         return str(filepath)
     except Exception as e:
         logger.error(f"❌ Erreur téléchargement mod: {e}")

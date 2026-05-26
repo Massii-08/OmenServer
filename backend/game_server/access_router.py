@@ -204,7 +204,7 @@ def add_port(
         _rebuild_container_with_ports(server, new_bindings, db)
 
         return {
-            "message": f"✅ Port {request.host_port} ajouté",
+            "message": f"Port {request.host_port} ajouté",
             "host_port": request.host_port,
             "container_port": request.container_port,
         }
@@ -254,7 +254,7 @@ def remove_port(
             raise HTTPException(status_code=404, detail="Port non trouvé")
 
         _rebuild_container_with_ports(server, new_bindings, db)
-        return {"message": f"✅ Port {host_port} supprimé"}
+        return {"message": f"Port {host_port} supprimé"}
     except HTTPException:
         raise
     except Exception as e:

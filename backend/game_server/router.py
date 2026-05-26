@@ -583,7 +583,7 @@ def update_resources(
     db.commit()
 
     return {
-        "message": f"Ressources de '{server.name}' mises à jour ✅",
+        "message": f"Ressources de '{server.name}' mises à jour",
         "memory_mb": server.memory_mb,
         "cpu_percent": server.cpu_percent,
     }
@@ -610,7 +610,7 @@ def update_jvm_flags(
     db.commit()
 
     return {
-        "message": f"Flags JVM de '{server.name}' mis à jour ✅",
+        "message": f"Flags JVM de '{server.name}' mis à jour",
         "jvm_flags": server.jvm_flags,
         "note": "Redémarrez le serveur pour appliquer les changements.",
     }
@@ -746,7 +746,7 @@ def create_database(
         container.start()
 
         return {
-            "message": f"Base de données '{request.db_name}' créée ✅",
+            "message": f"Base de données '{request.db_name}' créée",
             "host": container_name,
             "port": 3306,
             "db_name": request.db_name,
@@ -810,7 +810,7 @@ def delete_database(
     try:
         container = client.containers.get(container_name)
         container.remove(force=True)
-        return {"message": "Base de données supprimée ✅"}
+        return {"message": "Base de données supprimée"}
     except Exception:
         raise HTTPException(status_code=404, detail="Aucune base de données trouvée")
 
