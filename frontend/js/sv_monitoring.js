@@ -14,12 +14,12 @@ const SvMonitoring = {
         this._history = {cpu: [], ram: [], net_rx: [], net_tx: []};
         this._timestamps = [];
         if (this._interval) clearInterval(this._interval);
-        setTimeout(() => {
-            ['sv-mon-cpu-chart','sv-mon-ram-chart','sv-mon-rx-chart','sv-mon-tx-chart'].forEach(id => {
+        setTimeout(() =>{
+            ['sv-mon-cpu-chart','sv-mon-ram-chart','sv-mon-rx-chart','sv-mon-tx-chart'].forEach(id =>{
                 this._drawChart(id, [], '#555', 100, '%');
             });
             this._poll();
-            this._interval = setInterval(() => this._poll(), 3000);
+            this._interval = setInterval(() =>this._poll(), 3000);
         }, 200);
         return `
         <h2>${Lang.t('sv.mon.title')}</h2>
@@ -32,7 +32,7 @@ const SvMonitoring = {
                 <div id="sv-mon-cpu-info" style="font-size:10px;color:var(--text-muted);margin-top:2px;">—</div>
             </div>
             <div style="background:var(--bg-elev-1);padding:14px;border-radius:10px;text-align:center;border-top:3px solid var(--accent);">
-                <div style="font-size:11px;color:var(--text-muted);">🧠 RAM</div>
+                <div style="font-size:11px;color:var(--text-muted);">RAM</div>
                 <div id="sv-mon-ram" style="font-size:24px;font-weight:700;color:var(--accent);">—</div>
                 <div id="sv-mon-ram-info" style="font-size:10px;color:var(--text-muted);margin-top:2px;">—</div>
             </div>
@@ -56,7 +56,7 @@ const SvMonitoring = {
             </div>
             <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                    <span style="font-size:13px;font-weight:600;">🧠 RAM</span>
+                    <span style="font-size:13px;font-weight:600;">RAM</span>
                     <span id="sv-mon-ram-peak" style="font-size:10px;color:var(--text-muted);">${Lang.t('sv.mon.peak')}: —</span>
                 </div>
                 <canvas id="sv-mon-ram-chart" height="180"></canvas>
@@ -94,7 +94,7 @@ const SvMonitoring = {
             return;
         }
 
-        const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+        const setVal = (id, val) =>{ const el = document.getElementById(id); if (el) el.textContent = val; };
         setVal('sv-mon-cpu', d.cpu_percent.toFixed(1) + '%');
         setVal('sv-mon-ram', d.ram_used_mb + ' Mo');
         setVal('sv-mon-rx', d.net_rx_mb + ' Mo');
@@ -107,7 +107,7 @@ const SvMonitoring = {
         this._history.net_rx.push(d.net_rx_mb || 0);
         this._history.net_tx.push(d.net_tx_mb || 0);
 
-        while (this._timestamps.length > this._maxPoints) {
+        while (this._timestamps.length >this._maxPoints) {
             this._timestamps.shift();
             this._history.cpu.shift();
             this._history.ram.shift();
@@ -115,8 +115,8 @@ const SvMonitoring = {
             this._history.net_tx.shift();
         }
 
-        const avg = arr => arr.length ? (arr.reduce((a,b) => a+b, 0) / arr.length).toFixed(1) : '—';
-        const peak = arr => arr.length ? Math.max(...arr).toFixed(1) : '—';
+        const avg = arr =>arr.length ? (arr.reduce((a,b) =>a+b, 0) / arr.length).toFixed(1) : '—';
+        const peak = arr =>arr.length ? Math.max(...arr).toFixed(1) : '—';
 
         setVal('sv-mon-cpu-info', `${Lang.t('sv.mon.avg')}: ${avg(this._history.cpu)}% · ${this._history.cpu.length} pts`);
         setVal('sv-mon-ram-info', `${d.ram_used_mb}/${d.ram_limit_mb || '?'} Mo`);
@@ -233,7 +233,7 @@ const SvMonitoring = {
         ctx.lineWidth = 2;
         ctx.stroke();
 
-        if (data.length > 0) {
+        if (data.length >0) {
             const lastX = pad.left + ((data.length - 1) / (this._maxPoints - 1)) * cw;
             const lastY = pad.top + ch - (Math.min(data[data.length - 1], maxVal) / maxVal) * ch;
 
@@ -254,7 +254,7 @@ const SvMonitoring = {
             ctx.fillStyle = color;
             ctx.font = 'bold 11px Inter, monospace';
             ctx.textAlign = 'left';
-            const labelX = lastX + 10 > w - 50 ? lastX - 45 : lastX + 10;
+            const labelX = lastX + 10 >w - 50 ? lastX - 45 : lastX + 10;
             ctx.fillText(val + unit, labelX, lastY + 4);
         }
     },

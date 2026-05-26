@@ -12,7 +12,7 @@ const SvSettings = {
         this._serverId = serverId;
         this._serverData = serverData;
         this._currentSub = 'server';
-        setTimeout(() => this._loadProperties(), 50);
+        setTimeout(() =>this._loadProperties(), 50);
         return `
         <h2>${Lang.t('sv.set_title')}</h2>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.set_desc')}</p>
@@ -24,14 +24,14 @@ const SvSettings = {
 
     _subTabs() {
         const tabs = [
-            {id:'server',icon:'🖥',label:Lang.t('sv.set_server')},
-            {id:'map',icon:'🗺️',label:Lang.t('sv.set_map')},
-            {id:'protocols',icon:'📡',label:Lang.t('sv.set_protocols')},
-            {id:'resourcepack',icon:'🎨',label:Lang.t('sv.set_resourcepack')},
-            {id:'jvm',icon:'☕',label:Lang.t('sv.set_jvm')},
-            {id:'hosting',icon:'🏠',label:Lang.t('sv.set_hosting')},
+            {id:'server',icon:'',label:Lang.t('sv.set_server')},
+            {id:'map',icon:'',label:Lang.t('sv.set_map')},
+            {id:'protocols',icon:'',label:Lang.t('sv.set_protocols')},
+            {id:'resourcepack',icon:'',label:Lang.t('sv.set_resourcepack')},
+            {id:'jvm',icon:'',label:Lang.t('sv.set_jvm')},
+            {id:'hosting',icon:'',label:Lang.t('sv.set_hosting')},
         ];
-        return tabs.map(t => `
+        return tabs.map(t =>`
             <button onclick="SvSettings.switchSub('${t.id}')" id="sv-set-tab-${t.id}"
                 style="padding:10px 18px;background:${this._currentSub===t.id?'var(--bg-elev-1)':'transparent'};
                 color:${this._currentSub===t.id?'var(--info)':'var(--text-muted)'};
@@ -74,7 +74,7 @@ const SvSettings = {
     _field(label, key, type='text', opts={}) {
         const val = this._props[key] || opts.default || '';
         if (type === 'select' && opts.options) {
-            const options = opts.options.map(o => {
+            const options = opts.options.map(o =>{
                 const selected = String(val) === String(o.value) ? 'selected' : '';
                 return `<option value="${o.value}" ${selected}>${o.label}</option>`;
             }).join('');
@@ -111,7 +111,7 @@ const SvSettings = {
     async _save() {
         const inputs = document.querySelectorAll('[data-prop]');
         const props = {};
-        inputs.forEach(el => {
+        inputs.forEach(el =>{
             const key = el.dataset.prop;
             if (el.type === 'checkbox') props[key] = el.checked ? 'true' : 'false';
             else props[key] = el.value;
@@ -137,8 +137,8 @@ const SvSettings = {
             <div>${this._field(Lang.t('sv.cfg.max_players'), 'max-players', 'number', {default:'20'})}</div>
         </div>
         ${this._field(Lang.t('sv.cfg.difficulty'), 'difficulty', 'select', {options:[
-            {value:'peaceful',label:'☮️ Peaceful'},{value:'easy',label:'😊 Easy'},
-            {value:'normal',label:'⚔️ Normal'},{value:'hard',label:'💀 Hard'}
+            {value:'peaceful',label:' Peaceful'},{value:'easy',label:' Easy'},
+            {value:'normal',label:' Normal'},{value:'hard',label:' Hard'}
         ]})}
         ${this._field(Lang.t('sv.cfg.gamemode'), 'gamemode', 'select', {options:[
             {value:'survival',label:Lang.t('sv.cfg.survival')},{value:'creative',label:Lang.t('sv.cfg.creative')},
@@ -264,7 +264,7 @@ const SvSettings = {
             </div>
             <div id="sv-del-confirm" style="display:none;margin-top:12px;padding:14px;background:rgba(248,113,113,0.1);border-radius:8px;border:1px solid var(--danger);">
                 <p style="font-size:13px;color:var(--danger);margin-bottom:10px;">
-                    Tape <strong>${s.name}</strong> pour confirmer la suppression :
+                    Tape <strong>${s.name}</strong>pour confirmer la suppression :
                 </p>
                 <div style="display:flex;gap:8px;align-items:center;">
                     <input id="sv-del-input" class="form-input" placeholder="${s.name}" style="flex:1;border-color:var(--danger);" />
@@ -335,7 +335,7 @@ const SvSettings = {
 
         <div style="font-weight:600;margin-bottom:12px;">${Lang.t('sv.cfg.jvm_presets')}</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px;">
-            ${presets.map(pr => `
+            ${presets.map(pr =>`
                 <div style="background:var(--bg-elev-1);padding:12px;border-radius:8px;cursor:pointer;border:2px solid var(--border);transition:all .15s;"
                     onclick="document.getElementById('sv-jvm-textarea').value='${pr.flags.replace(/'/g, "\\\'")}';"                    onmouseover="this.style.borderColor='var(--info)'"
                     onmouseout="this.style.borderColor='var(--border)'">
@@ -395,7 +395,7 @@ const SvSettings = {
             if (typeof Toast !== 'undefined') Toast.success(`Serveur '${serverName}' supprimé`);
             App.navigateTo('game_server');
         } else {
-            const err = r ? await r.json().catch(() => ({})) : {};
+            const err = r ? await r.json().catch(() =>({})) : {};
             if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },

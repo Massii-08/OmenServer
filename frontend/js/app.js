@@ -37,7 +37,7 @@ const App = {
  history.replaceState({ view: initialView }, '', `#${initialView}`);
 
  // Écouter les boutons back/forward du navigateur
- window.addEventListener('popstate', (e) => this._handlePopState(e));
+ window.addEventListener('popstate', (e) =>this._handlePopState(e));
 
  // Démarrer le monitoring
  Monitoring.start();
@@ -60,14 +60,14 @@ const App = {
  _bgJobsInterval: null,
  _startBgJobsPoller() {
  if (this._bgJobsInterval) return;
- this._bgJobsInterval = setInterval(() => this._pollBgJobs(), 5000);
+ this._bgJobsInterval = setInterval(() =>this._pollBgJobs(), 5000);
  this._pollBgJobs();
  },
  async _pollBgJobs() {
  try {
- const fetchActive = (endpoint) => Auth.apiCall(endpoint)
- .then(r => r && r.ok ? r.json() : { found: false })
- .catch(() => ({ found: false }));
+ const fetchActive = (endpoint) =>Auth.apiCall(endpoint)
+ .then(r =>r && r.ok ? r.json() : { found: false })
+ .catch(() =>({ found: false }));
  const [yieldJob, scannerJob] = await Promise.all([
  fetchActive('/api/bots/yield/active'),
  fetchActive('/api/bots/scanner/active'),
@@ -98,7 +98,7 @@ const App = {
  const botTab = document.querySelector('[data-view="bots"]');
  if (!botTab) return;
  let badge = botTab.querySelector('.tab-badge');
- if (count > 0) {
+ if (count >0) {
  if (!badge) {
  badge = document.createElement('span');
  badge.className = 'tab-badge';
@@ -132,7 +132,7 @@ const App = {
 
  // Naviguer sans re-pusher dans l'historique
  this._skipPush = true;
- this.navigateTo(view).then(() => {
+ this.navigateTo(view).then(() =>{
  this._skipPush = false;
  });
  },
@@ -165,10 +165,10 @@ const App = {
  // 3. Update visual state of switcher dots
  this._refreshAccentSwitcher(accent);
  // 4. Wire click handlers (idempotent — DOMContentLoaded already fired)
- document.querySelectorAll('.accent-switcher-mini .accent-dot').forEach(dot => {
+ document.querySelectorAll('.accent-switcher-mini .accent-dot').forEach(dot =>{
  if (dot.dataset.bound) return;
  dot.dataset.bound = '1';
- dot.addEventListener('click', () => this.setAccent(dot.dataset.acc));
+ dot.addEventListener('click', () =>this.setAccent(dot.dataset.acc));
  });
  },
 
@@ -187,7 +187,7 @@ const App = {
  },
 
  _refreshAccentSwitcher(active) {
- document.querySelectorAll('.accent-switcher-mini .accent-dot').forEach(d => {
+ document.querySelectorAll('.accent-switcher-mini .accent-dot').forEach(d =>{
  d.classList.toggle('active', d.dataset.acc === active);
  });
  },
@@ -230,7 +230,7 @@ const App = {
 
  // Masquer les modules non autorisés dans la sidebar
  const moduleIds = ['game_server', 'bots', 'files', 'media', 'web'];
- moduleIds.forEach(modId => {
+ moduleIds.forEach(modId =>{
  const navEl = document.getElementById(`nav-${modId}`);
  if (!navEl) return;
  if (user.is_admin || !user.allowed_modules) {
@@ -279,7 +279,7 @@ const App = {
  }
 
  // Mettre à jour la sidebar
- document.querySelectorAll('.nav-item').forEach(item => {
+ document.querySelectorAll('.nav-item').forEach(item =>{
  item.classList.toggle('active', item.dataset.view === view || (view === 'server_view' && item.dataset.view === 'game_server'));
  });
 
@@ -364,7 +364,7 @@ const App = {
  * PR 4 — Bento Tech overview + Diagnostic strip
  */
  renderHub(content) {
- const t = (k) => Lang.t(k);
+ const t = (k) =>Lang.t(k);
  content.innerHTML = `
  <div class="page-header"><h1 class="page-title">${t('dashboard.title')}</h1><p class="page-subtitle">${t('dashboard.overview')}</p></div><!-- Diagnostic strip (PR 4) — system health checks via /api/diagnostic --><div class="diag-strip" id="diag-strip"><div class="d-head"><div class="d-title">System diagnostic</div><div class="d-summary" id="diag-summary">${t('dashboard.analyzing')}</div></div><div class="diag-grid" id="diag-grid"><!-- populated by App._loadDiagnostic() --></div></div><!-- Stats monitoring — Bento overview (4-col single row).
  IDs preserved so monitoring.js continues to write here unchanged. --><div class="bento-overview" style="grid-template-columns:1fr 1fr 1fr 1fr;grid-template-rows:1fr;"><div class="stat-card"><div class="label">CPU <span style="color:var(--text-dim);font-size:11px;">${t('dashboard.disk_combined')}</span></div><div class="value"><span id="stat-cpu-value">--</span><span class="unit">%</span></div><div id="stat-cpu-machines" class="stat-machines-list"></div><div class="stat-bar" id="stat-cpu-bar"></div></div><div class="stat-card"><div class="label">${t('dashboard.memory')} <span style="color:var(--text-dim);font-size:11px;">${t('dashboard.disk_combined')}</span></div><div class="value"><span id="stat-memory-value">--</span><span class="unit">%</span></div><div id="stat-memory-detail" class="footer">-- / -- Go</div><div id="stat-memory-machines" class="stat-machines-list"></div><div class="stat-bar" id="stat-memory-bar"></div></div><div class="stat-card"><div class="label">${t('dashboard.disk')} <span style="color:var(--text-dim);font-size:11px;">${t('dashboard.disk_combined')}</span></div><div class="value"><span id="stat-disk-value">--</span><span class="unit">%</span></div><div id="stat-disk-detail" class="footer">-- / -- Go</div><div id="stat-disk-machines" class="stat-machines-list"></div><div class="stat-bar" id="stat-disk-bar"></div></div><div class="stat-card"><div class="label">${t('dashboard.temp')} <span style="color:var(--text-dim);font-size:11px;">max</span></div><div class="value"><span id="stat-temp-value">--</span><span class="unit">°C</span></div><div id="stat-temp-machines" class="stat-machines-list"></div><div class="stat-bar" id="stat-temp-bar"></div></div></div><!-- Network of machines (PR24 — was modules-grid emoji cards before) --><div class="page-header" style="margin-top:24px;margin-bottom:12px;"><h2 style="font-size: 18px; font-weight: 700;">${t('nodes.title')} <span id="nodes-count" style="font-size:13px;font-weight:400;color:var(--text-dim);font-family:var(--font-mono);font-feature-settings:'tnum';"></span></h2></div><div id="nodes-grid" class="machines-grid"><div style="grid-column:1/-1;text-align:center;padding:24px;color:var(--text-dim);font-size:13px;">
@@ -419,11 +419,11 @@ const App = {
  return;
  }
  // Type → 3-letter ticker for the .game-ico (text, not emoji)
- const ticker = (type) => {
+ const ticker = (type) =>{
  const m = { minecraft: 'MC', ark: 'ARK', cs2: 'CS2', csgo: 'CS', valheim: 'VLH', rust: 'RST', factorio: 'FAC', terraria: 'TER', palworld: 'PAL', satisfactory: 'SAT' };
  return m[type] || (type || 'GAME').slice(0, 3).toUpperCase();
  };
- listEl.innerHTML = servers.map(s => {
+ listEl.innerHTML = servers.map(s =>{
  const isRunning = (s.status || '').toLowerCase() === 'running';
  const badgeClass = isRunning ? 'badge online' : 'badge';
  const statusText = isRunning ? Lang.t('gs.status_running') || 'online' : Lang.t('gs.status_stopped') || 'offline';
@@ -467,7 +467,7 @@ const App = {
  }
 
  // Grid items (no emoji per Bento Tech anti-AI-slop rules — color via class only)
- grid.innerHTML = (d.checks || []).map(c => `
+ grid.innerHTML = (d.checks || []).map(c =>`
  <div class="diag-item ${lvlClass[c.level] || ''}"><div class="d-l">${c.name}</div><div class="d-v">${c.value || ''}</div></div>
  `).join('');
  } catch (e) {
@@ -501,7 +501,7 @@ const App = {
  const data = await tr.json();
  const tasks = data.tasks || data || [];
  if (Array.isArray(tasks)) {
- tasks.forEach(t => allTasks.push({...t, targetName: s.name, targetIcon: '', targetType: 'server'}));
+ tasks.forEach(t =>allTasks.push({...t, targetName: s.name, targetIcon: '', targetType: 'server'}));
  }
  }
  }
@@ -511,29 +511,29 @@ const App = {
  const data = await tr.json();
  const tasks = data.tasks || data || [];
  if (Array.isArray(tasks)) {
- tasks.forEach(t => allTasks.push({...t, targetName: b.name, targetIcon: '', targetType: 'bot'}));
+ tasks.forEach(t =>allTasks.push({...t, targetName: b.name, targetIcon: '', targetType: 'bot'}));
  }
  }
  }
 
  // Options pour le formulaire
- const serverOptions = servers.map(s => `<option value="server_${s.id}">${s.name}</option>`).join('');
- const botOptions = bots.map(b => `<option value="bot_${b.id}">${b.name}</option>`).join('');
+ const serverOptions = servers.map(s =>`<option value="server_${s.id}">${s.name}</option>`).join('');
+ const botOptions = bots.map(b =>`<option value="bot_${b.id}">${b.name}</option>`).join('');
  const targetOptions = serverOptions + botOptions;
 
  const formHTML = `
- <div id="hub-schedule-form" style="display:none;margin-bottom:12px;padding:14px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);"><div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;"><div style="flex:1;min-width:140px;"><label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.target')}</label><select id="hub-sched-target" class="form-input" style="margin-top:4px;" onchange="App._onScheduleTargetChange()">${targetOptions}</select></div><div style="flex:1;min-width:140px;"><label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.type')}</label><select id="hub-sched-type" class="form-input" style="margin-top:4px;"><option value="backup">${Lang.t('scheduler.backup')}</option><option value="restart">${Lang.t('scheduler.restart')}</option></select></div><div style="flex:1;min-width:110px;"><label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.mode')}</label><select id="hub-sched-mode" class="form-input" style="margin-top:4px;" onchange="App._onScheduleModeChange()"><option value="interval">${Lang.t('scheduler.mode_interval')}</option><option value="fixed">${Lang.t('scheduler.mode_fixed')}</option></select></div></div><!-- Mode intervalle --><div id="hub-sched-interval-row" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:8px;"><div style="flex:1;min-width:100px;"><label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.interval')}</label><select id="hub-sched-interval" class="form-input" style="margin-top:4px;"><option value="1">1h</option><option value="6" selected>6h</option><option value="12">12h</option><option value="24">24h</option><option value="168">${Lang.t('scheduler.week')}</option></select></div><button class="btn btn-primary" onclick="App._createScheduledTask()">${Lang.t('scheduler.add')}</button></div><!-- Mode heure fixe --><div id="hub-sched-fixed-row" style="display:none;margin-top:8px;"><div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;"><div><label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.time')}</label><input type="time" id="hub-sched-time" class="form-input" style="margin-top:4px;" value="08:00" /></div><button class="btn btn-primary" onclick="App._createScheduledTask()">${Lang.t('scheduler.add')}</button></div><div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;"><label style="font-size:12px;color:var(--text-muted);margin-right:4px;">${Lang.t('scheduler.days')}:</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" id="hub-day-daily" checked onchange="App._onDailyToggle(this)"> ${Lang.t('scheduler.daily')}</label><label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="mon" disabled> ${Lang.t('scheduler.day_mon')}</label><label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="tue" disabled> ${Lang.t('scheduler.day_tue')}</label><label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="wed" disabled> ${Lang.t('scheduler.day_wed')}</label><label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="thu" disabled> ${Lang.t('scheduler.day_thu')}</label><label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="fri" disabled> ${Lang.t('scheduler.day_fri')}</label><label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="sat" disabled> ${Lang.t('scheduler.day_sat')}</label><label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="sun" disabled> ${Lang.t('scheduler.day_sun')}</label></div></div><div id="hub-sched-msg" style="font-size:12px;margin-top:8px;"></div><div style="text-align:right;margin-top:8px;"><button class="btn btn-sm btn-secondary" onclick="App._toggleScheduleForm()">${Lang.t('common.cancel')}</button></div></div>`;
+ <div id="hub-schedule-form" style="display:none;margin-bottom:12px;padding:14px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);"><div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;"><div style="flex:1;min-width:140px;"><label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.target')}</label><select id="hub-sched-target" class="form-input" style="margin-top:4px;" onchange="App._onScheduleTargetChange()">${targetOptions}</select></div><div style="flex:1;min-width:140px;"><label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.type')}</label><select id="hub-sched-type" class="form-input" style="margin-top:4px;"><option value="backup">${Lang.t('scheduler.backup')}</option><option value="restart">${Lang.t('scheduler.restart')}</option></select></div><div style="flex:1;min-width:110px;"><label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.mode')}</label><select id="hub-sched-mode" class="form-input" style="margin-top:4px;" onchange="App._onScheduleModeChange()"><option value="interval">${Lang.t('scheduler.mode_interval')}</option><option value="fixed">${Lang.t('scheduler.mode_fixed')}</option></select></div></div><!-- Mode intervalle --><div id="hub-sched-interval-row" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:8px;"><div style="flex:1;min-width:100px;"><label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.interval')}</label><select id="hub-sched-interval" class="form-input" style="margin-top:4px;"><option value="1">1h</option><option value="6" selected>6h</option><option value="12">12h</option><option value="24">24h</option><option value="168">${Lang.t('scheduler.week')}</option></select></div><button class="btn btn-primary" onclick="App._createScheduledTask()">${Lang.t('scheduler.add')}</button></div><!-- Mode heure fixe --><div id="hub-sched-fixed-row" style="display:none;margin-top:8px;"><div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;"><div><label style="font-size:12px;color:var(--text-muted);">${Lang.t('scheduler.time')}</label><input type="time" id="hub-sched-time" class="form-input" style="margin-top:4px;" value="08:00" /></div><button class="btn btn-primary" onclick="App._createScheduledTask()">${Lang.t('scheduler.add')}</button></div><div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;"><label style="font-size:12px;color:var(--text-muted);margin-right:4px;">${Lang.t('scheduler.days')}:</label><label style="font-size:12px;cursor:pointer;"><input type="checkbox" id="hub-day-daily" checked onchange="App._onDailyToggle(this)">${Lang.t('scheduler.daily')}</label><label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="mon" disabled>${Lang.t('scheduler.day_mon')}</label><label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="tue" disabled>${Lang.t('scheduler.day_tue')}</label><label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="wed" disabled>${Lang.t('scheduler.day_wed')}</label><label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="thu" disabled>${Lang.t('scheduler.day_thu')}</label><label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="fri" disabled>${Lang.t('scheduler.day_fri')}</label><label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="sat" disabled>${Lang.t('scheduler.day_sat')}</label><label style="font-size:12px;cursor:pointer;" class="hub-day-cb"><input type="checkbox" class="hub-day-check" value="sun" disabled>${Lang.t('scheduler.day_sun')}</label></div></div><div id="hub-sched-msg" style="font-size:12px;margin-top:8px;"></div><div style="text-align:right;margin-top:8px;"><button class="btn btn-sm btn-secondary" onclick="App._toggleScheduleForm()">${Lang.t('common.cancel')}</button></div></div>`;
 
  if (allTasks.length === 0) {
  schedEl.innerHTML = `
  <div style="text-align:center;padding:20px;"><div style="font-size:32px;margin-bottom:8px;"></div><div style="color:var(--text-muted);font-size:13px;">${Lang.t('scheduler.no_tasks')}</div><button class="btn btn-primary btn-sm" style="margin-top:12px;" onclick="App._toggleScheduleForm()">${Lang.t('scheduler.create')}</button></div>
  ${formHTML}`;
  // Initialiser les options du type en fonction de la cible
- setTimeout(() => this._onScheduleTargetChange(), 50);
+ setTimeout(() =>this._onScheduleTargetChange(), 50);
  return;
  }
 
- const taskIcons = { restart: '', backup: '', bot_start: '', bot_stop: '⏹️', bot_restart: '' };
+ const taskIcons = { restart: '', backup: '', bot_start: '', bot_stop: '⏹', bot_restart: '' };
  const taskLabels = {
  restart: Lang.t('scheduler.restart'), backup: Lang.t('scheduler.backup'),
  bot_start: Lang.t('scheduler.bot_start'), bot_stop: Lang.t('scheduler.bot_stop'),
@@ -544,12 +544,12 @@ const App = {
  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><div style="font-size:13px;color:var(--text-muted);">${allTasks.length} ${Lang.t('scheduler.tasks_count')} ${servers.length + bots.length} ${Lang.t('scheduler.servers_count')}</div><button class="btn btn-primary btn-sm" onclick="App._toggleScheduleForm()">${Lang.t('scheduler.new_task')}</button></div>
  ${formHTML}
  <div style="display:flex;flex-direction:column;gap:6px;">
- ${allTasks.map(t => `
+ ${allTasks.map(t =>`
  <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);"><span style="font-size:18px;">${taskIcons[t.task_type] || ''}</span><div style="flex:1;"><div style="font-size:13px;font-weight:600;">${taskLabels[t.task_type] || t.task_type}</div><div style="font-size:11px;color:var(--text-muted);">${t.targetIcon} ${t.targetName} · ${t.schedule_time ? ('' + Lang.t('scheduler.at') + ' ' + t.schedule_time + ' (' + (t.schedule_days || 'daily') + ')') : ('' + Lang.t('scheduler.every') + ' ' + t.interval_hours + 'h')}</div></div><div style="display:flex;gap:6px;align-items:center;"><span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled !== false ? 'var(--accent-dim)' : 'rgba(255,255,255,0.05)'};color:${t.enabled !== false ? 'var(--accent)' : 'var(--text-muted)'};">${t.enabled !== false ? ' ' + Lang.t('scheduler.active') : ' ' + Lang.t('scheduler.inactive')}</span><button class="btn btn-sm btn-secondary" onclick="App._toggleHubTask(${t.id})" title="${t.enabled ? 'Pause' : 'Resume'}">${t.enabled !== false ? '⏸' : ''}</button><button class="btn btn-sm btn-danger" onclick="App._deleteHubTask(${t.id})" title="Delete"></button></div></div>
  `).join('')}
  </div>`;
  // Initialiser les options du type en fonction de la cible
- setTimeout(() => this._onScheduleTargetChange(), 50);
+ setTimeout(() =>this._onScheduleTargetChange(), 50);
  },
 
  /**
@@ -587,7 +587,7 @@ const App = {
 
  _onDailyToggle(cb) {
  const checks = document.querySelectorAll('.hub-day-check');
- checks.forEach(c => {
+ checks.forEach(c =>{
  c.disabled = cb.checked;
  if (cb.checked) c.checked = false;
  });
@@ -615,8 +615,8 @@ const App = {
  if (dailyCb && dailyCb.checked) {
  body.schedule_days = 'daily';
  } else {
- const checked = [...document.querySelectorAll('.hub-day-check:checked')].map(c => c.value);
- body.schedule_days = checked.length > 0 ? checked.join(',') : 'daily';
+ const checked = [...document.querySelectorAll('.hub-day-check:checked')].map(c =>c.value);
+ body.schedule_days = checked.length >0 ? checked.join(',') : 'daily';
  }
  } else {
  body.interval_hours = parseInt(document.getElementById('hub-sched-interval')?.value) || 6;
@@ -629,9 +629,9 @@ const App = {
 
  if (r && r.ok) {
  if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('scheduler.created'); }
- setTimeout(() => this._loadGlobalSchedule(), 500);
+ setTimeout(() =>this._loadGlobalSchedule(), 500);
  } else {
- const err = r ? await r.json().catch(() => ({})) : {};
+ const err = r ? await r.json().catch(() =>({})) : {};
  if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || 'Erreur'}`; }
  }
  },
@@ -671,7 +671,7 @@ const App = {
 
  panel.innerHTML = `
  <div style="background:var(--bg-elev-1);border-radius:12px;padding:20px;border:1px solid var(--border);"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;"><div><div style="font-size:16px;font-weight:700;">${overallLabel[d.overall] || 'Diagnostic'}</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${d.ok} OK · ${d.warnings} ${Lang.t('dashboard.warnings')} · ${d.criticals} ${Lang.t('dashboard.criticals')}</div></div><button onclick="document.getElementById('diagnostic-panel').style.display='none'" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:18px;"></button></div><div style="display:flex;flex-direction:column;gap:6px;">
- ${d.checks.map(c => `
+ ${d.checks.map(c =>`
  <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:${levelBg[c.level]};border-radius:8px;border:1px solid ${levelColors[c.level]}20;"><span style="font-size:20px;">${c.icon}</span><div style="flex:1;min-width:0;"><div style="display:flex;gap:8px;align-items:center;"><span style="font-weight:600;font-size:13px;">${c.name}</span><span style="font-size:11px;color:${levelColors[c.level]};font-weight:600;">${levelIcons[c.level]} ${c.value}</span></div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${c.message}</div>
  ${c.suggestion ? `<div style="font-size:11px;color:${levelColors[c.level]};margin-top:4px;">${c.suggestion}</div>` : ''}
  </div></div>
@@ -710,14 +710,14 @@ const App = {
  renderSettings(content) {
  const user = Auth.getUser();
  const isAdmin = user && user.is_admin;
- const t = (k) => Lang.t(k);
+ const t = (k) =>Lang.t(k);
 
  content.innerHTML = `
- <div class="page-header"><h1 class="page-title">${t('settings.title')}</h1><p class="page-subtitle">${t('settings.subtitle')}</p></div><div style="display: flex; flex-direction: column; gap: 20px; max-width: 600px;"><div class="card"><h3 class="card-title">${t('settings.account')}</h3><div style="margin-top: 12px;"><p><strong>${t('settings.user_label')}</strong> ${user ? user.username : '—'}</p><p><strong>${t('settings.role_label')}</strong> ${(Lang.t('users.role_' + (user?.role || 'player')))}</p></div><button class="btn btn-danger mt-4" onclick="Auth.logout()">
+ <div class="page-header"><h1 class="page-title">${t('settings.title')}</h1><p class="page-subtitle">${t('settings.subtitle')}</p></div><div style="display: flex; flex-direction: column; gap: 20px; max-width: 600px;"><div class="card"><h3 class="card-title">${t('settings.account')}</h3><div style="margin-top: 12px;"><p><strong>${t('settings.user_label')}</strong>${user ? user.username : '—'}</p><p><strong>${t('settings.role_label')}</strong>${(Lang.t('users.role_' + (user?.role || 'player')))}</p></div><button class="btn btn-danger mt-4" onclick="Auth.logout()">
  ${t('settings.logout')}
  </button></div><div class="card"><h3 class="card-title">${t('settings.change_password')}</h3><div style="margin-top: 16px;"><div class="form-group"><label class="form-label">${t('settings.current_password')}</label><input type="password" class="form-input" id="current-password" placeholder="••••••••" /></div><div class="form-group"><label class="form-label">${t('settings.new_password')}</label><input type="password" class="form-input" id="new-password" placeholder="••••••••" /></div><div class="form-group"><label class="form-label">${t('settings.confirm_password')}</label><input type="password" class="form-input" id="confirm-password" placeholder="••••••••" /></div><div id="password-message" style="font-size: 13px; margin-bottom: 12px;"></div><button class="btn btn-primary" onclick="App.changePassword()">
  ${t('settings.change_btn')}
- </button></div></div><div class="card"><h3 class="card-title">${t('settings.language')}</h3><p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">${t('settings.lang_desc')}</p><div style="display: flex; gap: 8px; margin-top: 12px;"><button class="btn ${Lang.current === 'fr' ? 'btn-primary' : 'btn-secondary'}" onclick="Lang.set('fr')" style="flex:1;">🇫🇷 Français</button><button class="btn ${Lang.current === 'en' ? 'btn-primary' : 'btn-secondary'}" onclick="Lang.set('en')" style="flex:1;">🇬🇧 English</button><button class="btn ${Lang.current === 'it' ? 'btn-primary' : 'btn-secondary'}" onclick="Lang.set('it')" style="flex:1;">🇮🇹 Italiano</button></div></div>
+ </button></div></div><div class="card"><h3 class="card-title">${t('settings.language')}</h3><p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">${t('settings.lang_desc')}</p><div style="display: flex; gap: 8px; margin-top: 12px;"><button class="btn ${Lang.current === 'fr' ? 'btn-primary' : 'btn-secondary'}" onclick="Lang.set('fr')" style="flex:1;">Français</button><button class="btn ${Lang.current === 'en' ? 'btn-primary' : 'btn-secondary'}" onclick="Lang.set('en')" style="flex:1;">English</button><button class="btn ${Lang.current === 'it' ? 'btn-primary' : 'btn-secondary'}" onclick="Lang.set('it')" style="flex:1;">Italiano</button></div></div>
 
  ${isAdmin ? `
  <div class="card" id="power-schedule-card"><div style="display:flex;justify-content:space-between;align-items:center;"><div><h3 class="card-title" style="margin:0;">${t('power.title')}</h3><p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">${t('power.desc')}</p></div><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><span id="power-status-label" style="font-size:12px;color:var(--text-muted);">--</span><input type="checkbox" id="power-enabled" onchange="App._onPowerToggle()" style="width:18px;height:18px;cursor:pointer;" /></label></div><div id="power-config" style="margin-top:16px;"><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div><label class="form-label">⏻ ${t('power.shutdown_time')}</label><input type="time" id="power-shutdown-hour" class="form-input" value="01:00" /></div><div><label class="form-label">${t('power.wake_time')}</label><input type="time" id="power-wake-hour" class="form-input" value="05:00" /></div></div><div style="margin-top:12px;padding:10px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);"><div style="font-size:12px;color:var(--text-muted);">${t('power.graceful_info')}</div></div><div id="power-rtcwake-warn" style="display:none;margin-top:8px;padding:8px 12px;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:8px;font-size:12px;color:var(--warning);">
@@ -800,7 +800,7 @@ const App = {
  const data = await response.json();
  const link = `${location.origin}/login?invite=${data.code}`;
  resultEl.innerHTML = `
- <div style="background: var(--bg-elev-2); border-radius: 8px; padding: 12px; border: 1px solid var(--accent);"><div style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">Lien d'invitation (${data.role_name})</div><div style="font-family: monospace; font-size: 14px; color: var(--accent); word-break: break-all;">${link}</div><button class="btn btn-secondary btn-sm mt-4" onclick="navigator.clipboard.writeText('${link}').then(() => this.textContent = 'Copié !')">
+ <div style="background: var(--bg-elev-2); border-radius: 8px; padding: 12px; border: 1px solid var(--accent);"><div style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">Lien d'invitation (${data.role_name})</div><div style="font-family: monospace; font-size: 14px; color: var(--accent); word-break: break-all;">${link}</div><button class="btn btn-secondary btn-sm mt-4" onclick="navigator.clipboard.writeText('${link}').then(() =>this.textContent = 'Copié !')">
  Copier le lien
  </button></div>
  `;
@@ -822,8 +822,8 @@ const App = {
  return;
  }
 
- listEl.innerHTML = invites.map(inv => `
- <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px;"><div><span style="font-family: monospace; color: var(--info);">${inv.code}</span><span style="color: var(--text-muted);"> · ${inv.role_name}</span><span style="color: ${inv.is_used ? 'var(--danger)' : 'var(--accent)'};">
+ listEl.innerHTML = invites.map(inv =>`
+ <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px;"><div><span style="font-family: monospace; color: var(--info);">${inv.code}</span><span style="color: var(--text-muted);">· ${inv.role_name}</span><span style="color: ${inv.is_used ? 'var(--danger)' : 'var(--accent)'};">
  ${inv.is_used ? ' · Utilisé' : ' · Actif'}
  </span></div><button class="btn btn-danger btn-sm" onclick="App.deleteInvitation(${inv.id})" style="padding: 2px 8px; font-size: 11px;"></button></div>
  `).join('');
@@ -865,7 +865,7 @@ const App = {
  if (lastInfo) {
  let html = '';
  if (config.enabled) {
- html += `<span style="color:var(--accent);"> ${Lang.t('power.next_shutdown')}: ${Lang.t('power.tonight')} ${config.shutdown_hour}</span>`;
+ html += `<span style="color:var(--accent);">${Lang.t('power.next_shutdown')}: ${Lang.t('power.tonight')} ${config.shutdown_hour}</span>`;
  }
  if (config.last_shutdown) {
  const d = new Date(config.last_shutdown);
@@ -914,9 +914,9 @@ const App = {
  if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('power.saved'); }
  if (typeof Toast !== 'undefined') Toast.success(Lang.t('power.saved'));
  // Recharger pour mettre à jour les infos
- setTimeout(() => this._loadPowerSchedule(), 500);
+ setTimeout(() =>this._loadPowerSchedule(), 500);
  } else {
- const err = r ? await r.json().catch(() => ({})) : {};
+ const err = r ? await r.json().catch(() =>({})) : {};
  if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || 'Erreur'}`; }
  }
  },
@@ -931,7 +931,7 @@ const App = {
  if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('power.test_launched'); }
  if (typeof Toast !== 'undefined') Toast.info(Lang.t('power.test_launched'));
  } else {
- const err = r ? await r.json().catch(() => ({})) : {};
+ const err = r ? await r.json().catch(() =>({})) : {};
  if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || 'Erreur'}`; }
  }
  },
@@ -944,7 +944,7 @@ const App = {
  const data = await r.json();
  if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = data.message; }
  } else {
- const err = r ? await r.json().catch(() => ({})) : {};
+ const err = r ? await r.json().catch(() =>({})) : {};
  if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || 'Erreur'}`; }
  }
  },
@@ -1011,7 +1011,7 @@ const App = {
  // --- Gestion des utilisateurs ---
 
  renderUsers(content) {
- const t = (k) => Lang.t(k);
+ const t = (k) =>Lang.t(k);
  content.innerHTML = `
  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;"><div><h1 style="margin:0;">${t('users.title')}</h1><p style="color:var(--text-muted);font-size:13px;margin-top:4px;">${t('users.subtitle')}</p></div><button class="btn btn-secondary" onclick="App.navigateTo('hub')">${t('users.back_hub')}</button></div><!-- Invitations --><div class="card" style="margin-bottom:20px;"><div class="flex justify-between items-center"><h3 class="card-title" style="margin: 0;">${t('settings.invitations')}</h3><button class="btn btn-primary btn-sm" onclick="App.createInvitation()">
  ${t('settings.invite_create')}
@@ -1048,7 +1048,7 @@ const App = {
  }
  this._loadUsersAdmin();
  } else {
- const err = r ? await r.json().catch(() => ({})) : {};
+ const err = r ? await r.json().catch(() =>({})) : {};
  if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `\u274c ${err.detail || 'Erreur'}`; }
  }
  },
@@ -1089,7 +1089,7 @@ const App = {
  ];
 
  listEl.innerHTML = users.length === 0 ? '<div style="text-align:center;padding:20px;color:var(--text-muted);">' + Lang.t('users.none') + '</div>' :
- users.map(u => {
+ users.map(u =>{
  const userPerms = rolePerms[u.role] || [];
  const userModules = u.allowed_modules;
  const permBadges = Object.entries(permLabels).map(function([k, label]) {
@@ -1144,7 +1144,7 @@ const App = {
  + '<div style="display:flex;flex-wrap:wrap;gap:4px;" id="user-modules-' + u.id + '">' + moduleBadges + '</div>'
  + '</div>'
  : (u.role === 'admin' && u.id !== currentUser?.id
- ? '<div style="margin-top:8px;padding-left:48px;"><div style="font-size:11px;color:var(--text-muted);"> Modules : <span style="color:var(--accent);">' + Lang.t('users.modules_full') + '</span></div></div>'
+ ? '<div style="margin-top:8px;padding-left:48px;"><div style="font-size:11px;color:var(--text-muted);">Modules : <span style="color:var(--accent);">' + Lang.t('users.modules_full') + '</span></div></div>'
  : ''))
  + '</div>'
  + '</div>'
@@ -1174,7 +1174,7 @@ const App = {
  const currentModules = [];
  let allEnabled = true;
 
- badges.forEach(badge => {
+ badges.forEach(badge =>{
  const mid = badge.dataset.module;
  const isActive = badge.textContent.includes('');
  if (mid === moduleId) {
@@ -1237,7 +1237,7 @@ const App = {
 };
 
 // Lancer l'app quand la page est charg\u00e9e
-document.addEventListener('DOMContentLoaded', () => App.init());
+document.addEventListener('DOMContentLoaded', () =>App.init());
 
 // 
 // SharingModal — Modale de partage de ressources
@@ -1270,16 +1270,16 @@ const SharingModal = {
  </select><button class="btn btn-primary btn-sm" onclick="SharingModal._grantAccess()">${Lang.t('sharing.grant')}</button></div></div></div><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;">${Lang.t('sharing.access_level')}</div><div id="sharing-access-list"><div style="text-align:center;padding:12px;color:var(--text-muted);font-size:12px;">⏳</div></div></div>
  `;
  document.body.appendChild(overlay);
- requestAnimationFrame(() => overlay.classList.add('active'));
+ requestAnimationFrame(() =>overlay.classList.add('active'));
  this._loadAccessList();
- setTimeout(() => document.getElementById('sharing-search-input')?.focus(), 200);
+ setTimeout(() =>document.getElementById('sharing-search-input')?.focus(), 200);
  },
 
  close() {
  const overlay = document.getElementById('sharing-overlay');
  if (overlay) {
  overlay.classList.remove('active');
- setTimeout(() => overlay.remove(), 200);
+ setTimeout(() =>overlay.remove(), 200);
  }
  },
 
@@ -1290,7 +1290,7 @@ const SharingModal = {
  document.getElementById('sharing-grant-form').style.display = 'none';
  return;
  }
- this._searchTimeout = setTimeout(() => this._searchUsers(query), 300);
+ this._searchTimeout = setTimeout(() =>this._searchUsers(query), 300);
  },
 
  async _searchUsers(query) {
@@ -1302,7 +1302,7 @@ const SharingModal = {
  el.innerHTML = '<div style="text-align:center;padding:8px;color:var(--text-muted);font-size:12px;">—</div>';
  return;
  }
- el.innerHTML = users.map(u => `
+ el.innerHTML = users.map(u =>`
  <div class="sharing-user-item" onclick="SharingModal._selectUser(${u.id}, '${u.username.replace(/'/g, "\\\\'")}', '${u.role}')" style="cursor:pointer;"><div class="sharing-user-info"><div class="sharing-user-avatar">${u.username.charAt(0).toUpperCase()}</div><div><div style="font-weight:600;font-size:13px;">${u.username}</div><span class="role-badge ${u.role}">${Lang.t('users.role_' + u.role) || u.role}</span></div></div></div>
  `).join('');
  },
@@ -1337,7 +1337,7 @@ const SharingModal = {
  this._selectedUserId = null;
  this._loadAccessList();
  } else {
- const err = r ? await r.json().catch(() => ({})) : {};
+ const err = r ? await r.json().catch(() =>({})) : {};
  Toast.error(err.detail || Lang.t('common.error'));
  }
  },
@@ -1356,7 +1356,7 @@ const SharingModal = {
  const ll = isBot
  ? { start: Lang.t('sharing.bot_use'), manage: Lang.t('sharing.bot_edit') }
  : { view_only: Lang.t('sharing.view_only'), start: Lang.t('sharing.start'), manage: Lang.t('sharing.manage') };
- el.innerHTML = accesses.map(a => `
+ el.innerHTML = accesses.map(a =>`
  <div class="sharing-user-item" style="margin-bottom:6px;"><div class="sharing-user-info"><div class="sharing-user-avatar">${(a.username||'?').charAt(0).toUpperCase()}</div><div><div style="font-weight:600;font-size:13px;">${a.username}</div><div style="font-size:10px;color:var(--text-muted);">${Lang.t('sharing.granted_by')} ${a.granted_by}</div></div></div><div style="display:flex;align-items:center;gap:8px;"><select class="sharing-access-select" onchange="SharingModal._updateAccess(${a.id}, this.value)">
  ${isBot ? `
  <option value="start" ${a.access_level==='start'||a.access_level==='view_only'?'selected':''}>${ll.start}</option><option value="manage" ${a.access_level==='manage'?'selected':''}>${ll.manage}</option>

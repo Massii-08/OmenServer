@@ -11,7 +11,7 @@ const SvFiles = {
         this._serverId = serverId;
         this._currentPath = '/';
         this._editing = null;
-        setTimeout(() => this._loadDir(), 50);
+        setTimeout(() =>this._loadDir(), 50);
         return `
         <h2>${Lang.t('sv.files.title')}</h2>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">${Lang.t('sv.files.desc')}</p>
@@ -33,12 +33,12 @@ const SvFiles = {
 
     _breadcrumb() {
         const parts = this._currentPath.split('/').filter(Boolean);
-        let html = `<span style="cursor:pointer;color:var(--info);" onclick="SvFiles._navigate('/')">🏠 Home</span>`;
+        let html = `<span style="cursor:pointer;color:var(--info);" onclick="SvFiles._navigate('/')">Home</span>`;
         let path = '';
         for (const part of parts) {
             path += '/' + part;
             const p = path;
-            html += ` <span style="color:var(--text-muted);">/</span> <span style="cursor:pointer;color:var(--info);" onclick="SvFiles._navigate('${p}')">${part}</span>`;
+            html += ` <span style="color:var(--text-muted);">/</span><span style="cursor:pointer;color:var(--info);" onclick="SvFiles._navigate('${p}')">${part}</span>`;
         }
         return html;
     },
@@ -71,13 +71,13 @@ const SvFiles = {
         if (this._currentPath !== '/') {
             const parent = this._currentPath.split('/').slice(0, -1).join('/') || '/';
             html += `<tr style="cursor:pointer;border-bottom:1px solid var(--border);" onclick="SvFiles._navigate('${parent}')">
-                <td style="padding:8px;">⬆️ <strong>..</strong></td><td></td><td></td><td></td></tr>`;
+                <td style="padding:8px;">⬆ <strong>..</strong></td><td></td><td></td><td></td></tr>`;
         }
 
         for (const f of files) {
             const fullPath = (this._currentPath === '/' ? '' : this._currentPath) + '/' + f.name;
             const size = f.is_dir ? '—' : this._formatSize(f.size);
-            const icon = f.is_dir ? '📁' : this._fileIcon(f.name);
+            const icon = f.is_dir ? '' : this._fileIcon(f.name);
             const safePath = fullPath.replace(/'/g, "\\'");
 
             if (f.is_dir) {
@@ -86,8 +86,8 @@ const SvFiles = {
                     <td style="padding:8px;color:var(--text-muted);">${size}</td>
                     <td style="padding:8px;color:var(--text-muted);font-size:11px;">${f.modified}</td>
                     <td style="padding:8px;text-align:right;">
-                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title="✏️">✏️</button>
-                        <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title="🗑️">🗑️</button>
+                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title=""></button>
+                        <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title=""></button>
                     </td>
                 </tr>`;
             } else {
@@ -97,8 +97,8 @@ const SvFiles = {
                     <td style="padding:8px;color:var(--text-muted);">${size}</td>
                     <td style="padding:8px;color:var(--text-muted);font-size:11px;">${f.modified}</td>
                     <td style="padding:8px;text-align:right;">
-                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title="✏️">✏️</button>
-                        <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title="🗑️">🗑️</button>
+                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title=""></button>
+                        <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title=""></button>
                     </td>
                 </tr>`;
             }
@@ -124,7 +124,7 @@ const SvFiles = {
         if (!el) return;
         this._editing = path;
         const fileName = path.split('/').pop();
-        if (bc) bc.innerHTML = this._breadcrumb() + ` <span style="color:var(--text-muted);">/</span> <span style="color:var(--accent);">${fileName}</span>`;
+        if (bc) bc.innerHTML = this._breadcrumb() + ` <span style="color:var(--text-muted);">/</span><span style="color:var(--accent);">${fileName}</span>`;
         el.innerHTML = `<div style="color:var(--text-muted)">${Lang.t('sv.files.loading_file')}</div>`;
 
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/files/content?path=${encodeURIComponent(path)}`);
@@ -152,7 +152,7 @@ const SvFiles = {
         <div style="position:relative;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
             <div style="display:flex;">
                 <div id="sv-file-lines" style="width:45px;background:rgba(0,0,0,0.2);padding:12px 8px;text-align:right;font-family:'Fira Code',monospace;font-size:12px;line-height:1.6;color:var(--text-muted);user-select:none;overflow:hidden;">
-                    ${Array.from({length: lineCount}, (_, i) => i + 1).join('<br>')}
+                    ${Array.from({length: lineCount}, (_, i) =>i + 1).join('<br>')}
                 </div>
                 <textarea id="sv-file-editor" spellcheck="false" style="flex:1;height:calc(100vh - 320px);min-height:400px;font-family:'Fira Code','Courier New',monospace;font-size:12px;background:var(--bg-elev-1);color:var(--text);border:none;padding:12px;resize:none;line-height:1.6;tab-size:4;outline:none;white-space:pre;overflow-wrap:normal;overflow-x:auto;">${this._escapeHtml(data.content)}</textarea>
             </div>
@@ -160,7 +160,7 @@ const SvFiles = {
 
         const editor = document.getElementById('sv-file-editor');
         if (editor) {
-            editor.addEventListener('keydown', (e) => {
+            editor.addEventListener('keydown', (e) =>{
                 if (e.key === 'Tab') {
                     e.preventDefault();
                     const start = editor.selectionStart;
@@ -173,15 +173,15 @@ const SvFiles = {
                     SvFiles._saveFile(path);
                 }
             });
-            editor.addEventListener('scroll', () => {
+            editor.addEventListener('scroll', () =>{
                 const lines = document.getElementById('sv-file-lines');
                 if (lines) lines.scrollTop = editor.scrollTop;
             });
-            editor.addEventListener('input', () => {
+            editor.addEventListener('input', () =>{
                 const lines = document.getElementById('sv-file-lines');
                 if (lines) {
                     const count = editor.value.split('\n').length;
-                    lines.innerHTML = Array.from({length: count}, (_, i) => i + 1).join('<br>');
+                    lines.innerHTML = Array.from({length: count}, (_, i) =>i + 1).join('<br>');
                 }
             });
         }
@@ -198,7 +198,7 @@ const SvFiles = {
         });
         if (r && r.ok) {
             if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.files.saved'); }
-            setTimeout(() => { if (msg) msg.textContent = ''; }, 2000);
+            setTimeout(() =>{ if (msg) msg.textContent = ''; }, 2000);
         } else {
             if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${Lang.t('common.error')}`; }
         }
@@ -217,7 +217,7 @@ const SvFiles = {
         const newPath = dir + '/' + newName;
         Auth.apiCall(`/api/servers/${this._serverId}/files/rename`, {
             method: 'POST', body: JSON.stringify({old_path: path, new_path: newPath})
-        }).then(() => this._loadDir());
+        }).then(() =>this._loadDir());
     },
 
     _promptMkdir() {
@@ -226,7 +226,7 @@ const SvFiles = {
         const path = (this._currentPath === '/' ? '' : this._currentPath) + '/' + name;
         Auth.apiCall(`/api/servers/${this._serverId}/files/mkdir`, {
             method: 'POST', body: JSON.stringify({path})
-        }).then(() => this._loadDir());
+        }).then(() =>this._loadDir());
     },
 
     _promptNewFile() {
@@ -235,7 +235,7 @@ const SvFiles = {
         const path = (this._currentPath === '/' ? '' : this._currentPath) + '/' + name;
         Auth.apiCall(`/api/servers/${this._serverId}/files/content`, {
             method: 'PUT', body: JSON.stringify({path, content: ''})
-        }).then(() => this._loadDir());
+        }).then(() =>this._loadDir());
     },
 
     _formatSize(bytes) {
@@ -246,8 +246,8 @@ const SvFiles = {
 
     _fileIcon(name) {
         const ext = name.split('.').pop().toLowerCase();
-        const icons = {yml:'📝',yaml:'📝',properties:'⚙️',json:'📋',txt:'📄',log:'📜',jar:'☕',zip:'📦',gz:'📦',tar:'📦',sh:'🔧',bat:'🔧',xml:'📋',toml:'📝',cfg:'⚙️',conf:'⚙️',ini:'⚙️',md:'📖',csv:'📊',png:'🖼️',jpg:'🖼️',gif:'🖼️'};
-        return icons[ext] || '📄';
+        const icons = {yml:'',yaml:'',properties:'',json:'',txt:'',log:'',jar:'',zip:'',gz:'',tar:'',sh:'',bat:'',xml:'',toml:'',cfg:'',conf:'',ini:'',md:'',csv:'',png:'',jpg:'',gif:''};
+        return icons[ext] || '';
     },
 
     _escapeHtml(str) {
@@ -264,7 +264,7 @@ const SvFiles = {
             const f = fileList[i];
             if (prog) {
                 prog.innerHTML = `<div style="padding:8px 12px;background:var(--bg-elev-1);border-radius:6px;font-size:12px;">
-                    ⏳ Upload ${i+1}/${fileList.length} : <strong>${f.name}</strong> (${(f.size/1024/1024).toFixed(2)} Mo)...
+                    ⏳ Upload ${i+1}/${fileList.length} : <strong>${f.name}</strong>(${(f.size/1024/1024).toFixed(2)} Mo)...
                 </div>`;
             }
 
@@ -289,9 +289,9 @@ const SvFiles = {
         if (prog) {
             const color = fail === 0 ? 'var(--accent)' : 'var(--danger)';
             prog.innerHTML = `<div style="padding:8px 12px;background:var(--bg-elev-1);border-radius:6px;font-size:12px;color:${color};">
-                ${fail === 0 ? '✅' : '⚠️'} ${success} ${Lang.t('sv.files.uploaded')}${fail > 0 ? `, ${fail} ${Lang.t('sv.files.upload_errors')}` : ''}
+                ${fail === 0 ? '' : ''} ${success} ${Lang.t('sv.files.uploaded')}${fail >0 ? `, ${fail} ${Lang.t('sv.files.upload_errors')}` : ''}
             </div>`;
-            setTimeout(() => { prog.style.display = 'none'; }, 4000);
+            setTimeout(() =>{ prog.style.display = 'none'; }, 4000);
         }
 
         this._loadDir();

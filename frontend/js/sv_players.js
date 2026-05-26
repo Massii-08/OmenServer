@@ -9,7 +9,7 @@ const SvPlayers = {
     render(serverId) {
         this._serverId = serverId;
         this._currentSub = 'ops';
-        setTimeout(() => this._load(), 50);
+        setTimeout(() =>this._load(), 50);
         return `
         <h2>${Lang.t('sv.pl.title')}</h2>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.pl.desc')}</p>
@@ -21,11 +21,11 @@ const SvPlayers = {
 
     _subTabs() {
         const tabs = [
-            {id:'ops',icon:'🛡️',label:Lang.t('sv.pl.ops')},
-            {id:'whitelist',icon:'📋',label:Lang.t('sv.pl.whitelist')},
-            {id:'banned',icon:'🚫',label:Lang.t('sv.pl.banned')},
+            {id:'ops',icon:'',label:Lang.t('sv.pl.ops')},
+            {id:'whitelist',icon:'',label:Lang.t('sv.pl.whitelist')},
+            {id:'banned',icon:'',label:Lang.t('sv.pl.banned')},
         ];
-        return tabs.map(t => `
+        return tabs.map(t =>`
             <button onclick="SvPlayers.switchSub('${t.id}')" 
                 style="padding:10px 18px;background:${this._currentSub===t.id?'var(--bg-elev-1)':'transparent'};
                 color:${this._currentSub===t.id?'var(--info)':'var(--text-muted)'};
@@ -55,9 +55,9 @@ const SvPlayers = {
         const players = data.players || [];
         
         const labels = {
-            ops: {title:Lang.t('sv.pl.ops'), emoji:'🛡️', addLabel:Lang.t('sv.pl.add_op')}, 
-            whitelist: {title:Lang.t('sv.pl.whitelist'), emoji:'📋', addLabel:Lang.t('sv.pl.add_wl')},
-            banned: {title:Lang.t('sv.pl.banned'), emoji:'🚫', addLabel:Lang.t('sv.pl.add_ban')}
+            ops: {title:Lang.t('sv.pl.ops'), emoji:'', addLabel:Lang.t('sv.pl.add_op')}, 
+            whitelist: {title:Lang.t('sv.pl.whitelist'), emoji:'', addLabel:Lang.t('sv.pl.add_wl')},
+            banned: {title:Lang.t('sv.pl.banned'), emoji:'', addLabel:Lang.t('sv.pl.add_ban')}
         };
         const l = labels[this._currentSub];
         
@@ -86,7 +86,7 @@ const SvPlayers = {
         if (players.length === 0) {
             list = `<div style="text-align:center;padding:30px;color:var(--text-muted);">${Lang.t('sv.pl.empty')}</div>`;
         } else {
-            list = players.map(p => {
+            list = players.map(p =>{
                 const name = p.name || Lang.t('sv.pl.unknown');
                 const extra = this._currentSub === 'banned' ? ` · <span style="color:var(--text-muted);font-size:11px;">${p.reason||Lang.t('sv.pl.no_reason')}</span>` : '';
                 const level = this._currentSub === 'ops' ? ` · <span style="color:var(--info);font-size:11px;">${Lang.t('sv.pl.level')} ${p.level||4}</span>` : '';
@@ -94,7 +94,7 @@ const SvPlayers = {
                     <div>
                         <span style="font-weight:600;font-size:14px;">${l.emoji} ${name}</span>${level}${extra}
                     </div>
-                    <button class="btn btn-sm btn-danger" onclick="SvPlayers._remove('${name}')">🗑️</button>
+                    <button class="btn btn-sm btn-danger" onclick="SvPlayers._remove('${name}')"></button>
                 </div>`;
             }).join('');
         }

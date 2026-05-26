@@ -63,7 +63,7 @@ const GameServer = {
  if (!content) return;
 
  // Générer les options du sélecteur de jeux
- const gameOptions = this._games.map(g => 
+ const gameOptions = this._games.map(g =>
  `<option value="${g.id}" data-port="${g.default_port}" data-memory="${g.default_memory_mb}" data-icon="${g.icon}">
  ${g.icon} ${g.name}
  </option>`
@@ -71,7 +71,7 @@ const GameServer = {
 
  content.innerHTML = `
  <div class="page-header flex justify-between items-center"><div><h1 class="page-title">${Lang.t('gs.title')}</h1><p class="page-subtitle">${Lang.t('gs.subtitle')} — ${this._games.length} ${Lang.t('gs.game_label')}</p></div><div class="flex gap-2">
- ${(() => {
+ ${(() =>{
  const u = Auth.getUser();
  const canCreate = u && (u.is_admin || u.role === 'moderator');
  return canCreate ? `<button class="btn btn-primary" onclick="GameServer.showCreateModal()">
@@ -110,12 +110,12 @@ const GameServer = {
  * Copie l'IP dans le presse-papier.
  */
  copyIP() {
- navigator.clipboard.writeText(this._serverIP).then(() => {
+ navigator.clipboard.writeText(this._serverIP).then(() =>{
  // Petit feedback visuel
  const btn = event.target;
  const original = btn.textContent;
  btn.textContent = Lang.t('gs.copied');
- setTimeout(() => btn.textContent = original, 1500);
+ setTimeout(() =>btn.textContent = original, 1500);
  });
  },
 
@@ -134,7 +134,7 @@ const GameServer = {
  if (!select) return;
 
  const gameType = select.value;
- const game = this._games.find(g => g.id === gameType);
+ const game = this._games.find(g =>g.id === gameType);
  if (!game) return;
 
  document.getElementById('server-port').value = game.default_port;
@@ -154,7 +154,7 @@ const GameServer = {
 
  this._updateModpackVisibility();
  const serverTypeEl = document.getElementById('server-type-select');
- if (serverTypeEl) serverTypeEl.onchange = () => this._updateModpackVisibility();
+ if (serverTypeEl) serverTypeEl.onchange = () =>this._updateModpackVisibility();
  },
 
  _updateModpackVisibility() {
@@ -209,8 +209,8 @@ const GameServer = {
  const mods = data.mods || [];
  if (mods.length === 0) { el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">Aucun résultat</div>'; return; }
 
- el.innerHTML = mods.map(m => {
- const dl = m.downloads > 1000000 ? `${(m.downloads/1000000).toFixed(1)}M` : m.downloads > 1000 ? `${Math.round(m.downloads/1000)}k` : m.downloads;
+ el.innerHTML = mods.map(m =>{
+ const dl = m.downloads >1000000 ? `${(m.downloads/1000000).toFixed(1)}M` : m.downloads >1000 ? `${Math.round(m.downloads/1000)}k` : m.downloads;
  const safeUrl = (m.url||'').replace(/'/g,"\\'");
  const safeName = (m.name||'').replace(/'/g,"\\'");
  return `
@@ -249,8 +249,8 @@ const GameServer = {
  const versEl = document.getElementById('modpack-versions');
  if (!versEl) return;
  versEl.innerHTML = `<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">${files.length} version(s) :</div>` +
- files.map(f => {
- const mcVers = (f.game_versions||[]).filter(v => /^\d/.test(v)).join(', ') || '?';
+ files.map(f =>{
+ const mcVers = (f.game_versions||[]).filter(v =>/^\d/.test(v)).join(', ') || '?';
  const type = f.release_type || '';
  const typeColor = type === 'Release' ? 'var(--accent)' : type === 'Beta' ? 'var(--warning)' : 'var(--text-muted)';
  const safeName2 = (f.name||'').replace(/'/g,"\\'");
@@ -311,7 +311,7 @@ const GameServer = {
  return;
  }
 
- list.innerHTML = servers.map(server => {
+ list.innerHTML = servers.map(server =>{
  const pending = this._pendingStates[server.id];
  const isRunning = !pending && server.status === 'running';
  const isPending = !!pending;
@@ -338,7 +338,7 @@ const GameServer = {
  }
 
  // Trouver l'icône du jeu
- const game = this._games.find(g => g.id === server.game_type);
+ const game = this._games.find(g =>g.id === server.game_type);
  const icon = game ? (game.icon || 'GAME') : 'GAME';
  const gameName = game ? game.name : server.game_type;
 
@@ -352,7 +352,7 @@ const GameServer = {
  </span>
  ${isRunning ? `<span style="font-size:12px;color:var(--info);font-weight:600;">${server.player_count || 0}/${server.player_max || 20}</span>` : ''}
  <div class="server-actions" onclick="event.stopPropagation()">
- ${(() => {
+ ${(() =>{
  const u = Auth.getUser();
  const al = server.access_level || 'view_only';
  const canManage = al === 'owner' || al === 'manage';
@@ -380,7 +380,7 @@ const GameServer = {
  },
 
  startStatusRefresh() {
- this._statusInterval = setInterval(() => this.refreshServers(), 5000);
+ this._statusInterval = setInterval(() =>this.refreshServers(), 5000);
  },
 
  // --- Actions serveur ---
@@ -436,8 +436,8 @@ const GameServer = {
  const maxAttempts = 40; // 40 × 3s = 120s max
  // Délai initial : laisser Docker le temps de démarrer
  const initialDelay = (pendingType === 'starting' || pendingType === 'restarting') ? 5000 : 2000;
- setTimeout(() => {
- const interval = setInterval(async () => {
+ setTimeout(() =>{
+ const interval = setInterval(async () =>{
  attempts++;
  try {
  const r = await Auth.apiCall(`/api/servers/${id}`);
@@ -594,7 +594,7 @@ const GameServer = {
  }
  await this.refreshServers();
  // Fermer après 1s
- setTimeout(() => this.hideResourcesModal(), 1000);
+ setTimeout(() =>this.hideResourcesModal(), 1000);
  } else if (response) {
  const err = await response.json();
  if (msgEl) {
@@ -647,7 +647,7 @@ const GameServer = {
  return;
  }
 
- listEl.innerHTML = tasks.map(task => {
+ listEl.innerHTML = tasks.map(task =>{
  const typeLabel = task.task_type === 'backup' ? Lang.t('scheduler.backup') : Lang.t('scheduler.restart');
  const statusColor = task.enabled ? 'var(--accent)' : 'var(--text-muted)';
  const statusLabel = task.enabled ? ' Actif' : ' Inactif';
@@ -656,9 +656,9 @@ const GameServer = {
 
  return `
  <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:8px;"><div><div style="font-weight:600;">${typeLabel} auto</div><div style="font-size:12px;color:var(--text-muted);margin-top:4px;">
- ⏱️ Toutes les ${task.interval_hours}h &nbsp;|&nbsp;
+ ⏱ Toutes les ${task.interval_hours}h &nbsp;|&nbsp;
  Dernier: ${lastRun} &nbsp;|&nbsp;
- ⏭️ Prochain: ${nextRun}
+ ⏭ Prochain: ${nextRun}
  </div></div><div class="flex gap-2" style="align-items:center;"><span style="color:${statusColor};font-size:12px;font-weight:600;">${statusLabel}</span><button class="btn btn-icon btn-secondary" onclick="GameServer.toggleScheduledTask(${task.id})" title="${task.enabled ? 'Désactiver' : 'Activer'}">
  ${task.enabled ? 'Pause' : 'Resume'}
  </button><button class="btn btn-icon btn-danger" onclick="GameServer.deleteScheduledTask(${task.id})" title="Supprimer">Del</button></div></div>
@@ -761,15 +761,15 @@ const GameServer = {
  return;
  }
 
- resultsEl.innerHTML = mods.map(mod => {
- const downloads = mod.downloads > 1000000 ? `${(mod.downloads/1000000).toFixed(1)}M` :
- mod.downloads > 1000 ? `${(mod.downloads/1000).toFixed(0)}K` :
+ resultsEl.innerHTML = mods.map(mod =>{
+ const downloads = mod.downloads >1000000 ? `${(mod.downloads/1000000).toFixed(1)}M` :
+ mod.downloads >1000 ? `${(mod.downloads/1000).toFixed(0)}K` :
  mod.downloads;
  return `
  <div style="display:flex;align-items:center;gap:12px;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><img src="${mod.icon_url || ''}" alt="" style="width:40px;height:40px;border-radius:6px;background:var(--bg-elev-3);" onerror="this.style.display='none'" /><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:14px;">${mod.name}</div><div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
  ${mod.summary}
  </div><div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
- ${mod.author} · ⬇️ ${downloads}
+ ${mod.author} · ⬇ ${downloads}
  </div></div><button class="btn btn-primary btn-sm" onclick="GameServer.showModFiles(${mod.id}, '${mod.name.replace(/'/g, "\\'")}')">Installer</button></div>
  `;
  }).join('');
@@ -795,7 +795,7 @@ const GameServer = {
 
  resultsEl.innerHTML = `
  <div style="margin-bottom:8px;"><button class="btn btn-secondary btn-sm" onclick="GameServer.searchMods()">← Retour</button><span style="font-weight:600;margin-left:8px;">${modName}</span></div>
- ` + files.slice(0, 10).map(f => {
+ ` + files.slice(0, 10).map(f =>{
  const versions = f.game_versions.slice(0, 3).join(', ');
  const badge = f.release_type;
  const hasUrl = f.download_url ? true : false;
@@ -847,7 +847,7 @@ const GameServer = {
  }
 
  listEl.innerHTML = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${mods.length} mod(s) installé(s)</div>` +
- mods.map(m => `
+ mods.map(m =>`
  <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;"><div><div style="font-size:13px;">${m.filename}</div><div style="font-size:11px;color:var(--text-muted);">${m.size_mb} Mo</div></div><button class="btn btn-icon btn-danger" onclick="GameServer.removeMod('${m.filename}')" title="Supprimer">Del</button></div>
  `).join('');
  },
@@ -893,7 +893,7 @@ const GameServer = {
  try {
  this._consoleWS = new WebSocket(wsUrl);
 
- this._consoleWS.onopen = () => {
+ this._consoleWS.onopen = () =>{
  if (statusEl) {
  statusEl.textContent = 'En direct';
  statusEl.style.background = 'rgba(46, 204, 113, 0.2)';
@@ -901,12 +901,12 @@ const GameServer = {
  }
  };
 
- this._consoleWS.onmessage = (event) => {
+ this._consoleWS.onmessage = (event) =>{
  const msg = JSON.parse(event.data);
  this.appendConsoleLine(msg);
  };
 
- this._consoleWS.onclose = () => {
+ this._consoleWS.onclose = () =>{
  if (statusEl) {
  statusEl.textContent = 'Déconnecté';
  statusEl.style.background = 'var(--bg-elev-2)';
@@ -914,7 +914,7 @@ const GameServer = {
  }
  };
 
- this._consoleWS.onerror = () => {
+ this._consoleWS.onerror = () =>{
  // Fallback: charger les logs via API REST
  this.loadStaticLogs(id);
  };
@@ -969,7 +969,7 @@ const GameServer = {
  logsEl.scrollTop = logsEl.scrollHeight;
 
  // Limiter à 500 lignes max (performance)
- while (logsEl.children.length > 500) {
+ while (logsEl.children.length >500) {
  logsEl.removeChild(logsEl.firstChild);
  }
  },
@@ -1020,7 +1020,7 @@ const GameServer = {
  const versionSelect = document.getElementById('server-version');
  const versionCustom = document.getElementById('server-version-custom');
  if (versionSelect && versionCustom) {
- versionSelect.onchange = () => {
+ versionSelect.onchange = () =>{
  versionCustom.style.display = versionSelect.value === 'CUSTOM' ? 'block' : 'none';
  if (versionSelect.value === 'CUSTOM') versionCustom.focus();
  };
@@ -1149,7 +1149,7 @@ const GameServer = {
  return;
  }
 
- listEl.innerHTML = backups.map(b => `
+ listEl.innerHTML = backups.map(b =>`
  <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border);"><div><div style="font-weight: 600; font-size: 14px;">${b.filename}</div><div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
  ${b.created_at} · ${b.size_mb} Mo
  </div></div><div class="flex gap-2"><button class="btn btn-secondary btn-sm" onclick="GameServer.restoreBackup('${b.id}')" title="Restaurer">

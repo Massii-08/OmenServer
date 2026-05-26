@@ -17,7 +17,7 @@ const WebModule = {
                     <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">${Lang.t('web.subtitle')}</p>
                 </div>
                 <div style="display:flex;gap:8px;">
-                    ${(() => { const u = Auth.getUser(); const canCreate = u && (u.is_admin || u.role === 'developer'); return canCreate ? `<button class="btn btn-primary" onclick="WebModule.showCreateForm()">${Lang.t('web.new_site')}</button>` : ''; })()}
+                    ${(() =>{ const u = Auth.getUser(); const canCreate = u && (u.is_admin || u.role === 'developer'); return canCreate ? `<button class="btn btn-primary" onclick="WebModule.showCreateForm()">${Lang.t('web.new_site')}</button>` : ''; })()}
                     <button class="btn btn-secondary" onclick="App.navigateTo('hub')">${Lang.t('net.back_hub')}</button>
                 </div>
             </div>
@@ -28,7 +28,7 @@ const WebModule = {
         `;
 
         await this.loadSites();
-        this._refreshInterval = setInterval(() => this.loadSites(), 6000);
+        this._refreshInterval = setInterval(() =>this.loadSites(), 6000);
     },
 
     unload() {
@@ -49,14 +49,14 @@ const WebModule = {
         const grid = document.getElementById('web-sites-grid');
         if (!grid) return;
 
-        const typeIcons = { static: '🌐', node: '⚡', php: '🐘', python: '🐍' };
+        const typeIcons = { static: '', node: '', php: '', python: '' };
         const statusColors = { running: 'var(--accent)', stopped: '#6b7280', error: 'var(--danger)' };
         const statusLabels = { running: Lang.t('web.status_running'), stopped: Lang.t('web.status_stopped'), error: Lang.t('web.status_error') };
 
         if (this._sites.length === 0) {
             grid.innerHTML = `
                 <div style="text-align:center;padding:60px;">
-                    <div style="font-size:48px;margin-bottom:12px;">🌐</div>
+                    <div style="font-size:48px;margin-bottom:12px;"></div>
                     <div style="color:var(--text-muted);font-size:15px;">${Lang.t('web.no_sites')}</div>
                     <div style="color:var(--text-muted);font-size:12px;margin-top:4px;">${Lang.t('web.no_sites_hint')}</div>
                 </div>`;
@@ -65,13 +65,13 @@ const WebModule = {
 
         grid.innerHTML = `
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;">
-                ${this._sites.map(s => `
+                ${this._sites.map(s =>`
                     <div class="card" style="cursor:pointer;transition:all .15s;"
                         onmouseover="this.style.transform='translateY(-2px)'"
                         onmouseout="this.style.transform=''">
                         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
                             <div style="display:flex;align-items:center;gap:10px;">
-                                <span style="font-size:28px;">${typeIcons[s.site_type] || '🌐'}</span>
+                                <span style="font-size:28px;">${typeIcons[s.site_type] || ''}</span>
                                 <div>
                                     <div style="font-weight:700;font-size:14px;">${s.name}</div>
                                     <div style="font-size:11px;color:var(--text-muted);">${s.type_label || s.site_type} · Port ${s.port}</div>
@@ -95,7 +95,7 @@ const WebModule = {
                                 : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();WebModule.startSite(${s.id})" style="font-size:11px;padding:4px 12px;">Start</button>`
                             }
                             <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.showLogs(${s.id})" style="font-size:11px;padding:4px 12px;">${Lang.t('web.logs_title')}</button>
-                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.deleteSite(${s.id})" style="font-size:11px;padding:4px 8px;color:var(--danger);">🗑</button>
+                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.deleteSite(${s.id})" style="font-size:11px;padding:4px 8px;color:var(--danger);"></button>
                         </div>
                     </div>
                 `).join('')}
@@ -159,10 +159,10 @@ const WebModule = {
 
         if (r && r.ok) {
             document.getElementById('web-create-form').style.display = 'none';
-            if (typeof Toast !== 'undefined') Toast.success(`${name} ✅`);
+            if (typeof Toast !== 'undefined') Toast.success(`${name} `);
             await this.loadSites();
         } else {
-            const err = r ? await r.json().catch(() => ({})) : {};
+            const err = r ? await r.json().catch(() =>({})) : {};
             if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
@@ -170,7 +170,7 @@ const WebModule = {
     async startSite(id) {
         const r = await Auth.apiCall(`/api/websites/${id}/start`, { method: 'POST' });
         if (r && r.ok) await this.loadSites();
-        else { const err = r ? await r.json().catch(() => ({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error')); else alert(`${err.detail || Lang.t('common.error')}`); }
+        else { const err = r ? await r.json().catch(() =>({})) : {}; if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error')); else alert(`${err.detail || Lang.t('common.error')}`); }
     },
 
     async stopSite(id) {
@@ -194,7 +194,7 @@ const WebModule = {
 
         const lr = await Auth.apiCall(`/api/websites/${id}/logs`);
         const data = lr && lr.ok ? await lr.json() : { logs: [] };
-        const site = this._sites.find(s => s.id === id);
+        const site = this._sites.find(s =>s.id === id);
 
         detail.innerHTML = `
             <div class="card">
@@ -203,12 +203,12 @@ const WebModule = {
                     <div style="display:flex;gap:8px;align-items:center;">
                         <span style="font-size:11px;color:var(--text-muted);">${data.logs.length} ${Lang.t('web.lines')}</span>
                         <button class="btn btn-secondary btn-sm" onclick="WebModule.showLogs(${id})">${Lang.t('web.refresh')}</button>
-                        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('web-site-detail').style.display='none'">✕</button>
+                        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('web-site-detail').style.display='none'"></button>
                     </div>
                 </div>
                 <div style="background:#0d1117;border-radius:8px;padding:12px;max-height:300px;overflow-y:auto;font-family:'Fira Code',monospace;font-size:12px;line-height:1.6;color:#c9d1d9;">
-                    ${data.logs.length > 0
-                        ? data.logs.map((l, i) => `<div style="display:flex;gap:8px;"><span style="color:#6b7280;min-width:28px;text-align:right;user-select:none;">${i+1}</span><span>${l.replace(/</g,'&lt;')}</span></div>`).join('')
+                    ${data.logs.length >0
+                        ? data.logs.map((l, i) =>`<div style="display:flex;gap:8px;"><span style="color:#6b7280;min-width:28px;text-align:right;user-select:none;">${i+1}</span><span>${l.replace(/</g,'&lt;')}</span></div>`).join('')
                         : `<div style="color:#6b7280;text-align:center;padding:20px;">${Lang.t('web.logs_empty')}</div>`
                     }
                 </div>

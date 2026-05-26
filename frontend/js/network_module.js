@@ -67,7 +67,7 @@ const NetworkModule = {
         await this._loadHistory();
         await this._loadDevices();
         this._loadNodes();
-        this._refreshInterval = setInterval(() => {
+        this._refreshInterval = setInterval(() =>{
             this.loadStatus();
             this._loadNodes();
         }, 10000);
@@ -240,7 +240,7 @@ const NetworkModule = {
         }
 
         // Dessiner un mini graphique en barres ASCII pour la latence
-        const maxLatency = Math.max(...logs.filter(l => l.latency_ms).map(l => l.latency_ms), 1);
+        const maxLatency = Math.max(...logs.filter(l =>l.latency_ms).map(l =>l.latency_ms), 1);
         const barWidth = Math.max(4, Math.floor(600 / logs.length));
 
         el.innerHTML = `
@@ -250,14 +250,14 @@ const NetworkModule = {
                     <span style="font-size:12px;color:var(--text-muted);">${logs.length} ${Lang.t('net.measurements')}</span>
                 </div>
                 <div style="display:flex;align-items:flex-end;gap:2px;height:80px;padding:8px;background:var(--bg-elev-3);border-radius:8px;overflow-x:auto;">
-                    ${logs.slice(-60).map(log => {
+                    ${logs.slice(-60).map(log =>{
                         const h = log.latency_ms ? Math.max(4, (log.latency_ms / maxLatency) * 70) : 0;
                         const color = !log.latency_ms ? 'var(--danger)' : log.latency_ms < 30 ? 'var(--accent)' : log.latency_ms < 80 ? 'var(--warning)' : 'var(--danger)';
                         return `<div style="width:${barWidth}px;height:${h}px;background:${color};border-radius:2px;flex-shrink:0;" title="${log.latency_ms || 'offline'} ms — ${new Date(log.timestamp).toLocaleTimeString(locale)}"></div>`;
                     }).join('')}
                 </div>
                 <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-top:4px;">
-                    <span>${logs.length > 0 ? new Date(logs[Math.max(0, logs.length-60)].timestamp).toLocaleTimeString(locale) : ''}</span>
+                    <span>${logs.length >0 ? new Date(logs[Math.max(0, logs.length-60)].timestamp).toLocaleTimeString(locale) : ''}</span>
                     <span>${Lang.t('net.now')}</span>
                 </div>
             </div>`;
@@ -281,15 +281,15 @@ const NetworkModule = {
                 <div id="wol-add-form" style="display:none;margin-bottom:12px;"></div>
                 ${devices.length === 0 ? `
                     <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:13px;">
-                        <div style="font-size:32px;margin-bottom:8px;">💻</div>
+                        <div style="font-size:32px;margin-bottom:8px;"></div>
                         ${Lang.t('net.wol_empty')}<br>
                         <span style="font-size:11px;">${Lang.t('net.wol_empty_hint')}</span>
                     </div>
                 ` : `
                     <div style="display:flex;flex-direction:column;gap:6px;">
-                        ${devices.map(d => `
+                        ${devices.map(d =>`
                             <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);">
-                                <span style="font-size:24px;">🖥️</span>
+                                <span style="font-size:24px;"></span>
                                 <div style="flex:1;">
                                     <div style="font-size:14px;font-weight:600;">${d.name}</div>
                                     <div style="font-size:11px;color:var(--text-muted);font-family:monospace;">${d.mac_address}${d.ip_hint ? ' · ' + d.ip_hint : ''}</div>
@@ -300,7 +300,7 @@ const NetworkModule = {
                                         ${Lang.t('net.wol_wake')}
                                     </button>
                                     <button class="btn btn-secondary btn-sm" onclick="NetworkModule.deleteDevice(${d.id})" style="font-size:11px;padding:4px 8px;color:var(--danger);">
-                                        🗑
+                                        
                                     </button>
                                 </div>
                             </div>
@@ -354,7 +354,7 @@ const NetworkModule = {
         if (r && r.ok) {
             await this._loadDevices();
         } else {
-            const err = r ? await r.json().catch(() => ({})) : {};
+            const err = r ? await r.json().catch(() =>({})) : {};
             if (msg) { msg.style.color = 'var(--danger)'; msg.textContent = `${err.detail || Lang.t('common.error')}`; }
         }
     },
@@ -367,7 +367,7 @@ const NetworkModule = {
             else alert(`${data.message}`);
             await this._loadDevices();
         } else {
-            const err = r ? await r.json().catch(() => ({})) : {};
+            const err = r ? await r.json().catch(() =>({})) : {};
             if (typeof Toast !== 'undefined') Toast.error(err.detail || Lang.t('common.error'));
             else alert(`${err.detail || Lang.t('common.error')}`);
         }
@@ -387,7 +387,7 @@ const NetworkModule = {
         if (logs.length === 0) { Toast.warn(Lang.t('net.csv_empty')); return; }
 
         const header = 'Timestamp,Latence (ms),IP Publique,Download (Mbps),Upload (Mbps)\n';
-        const rows = logs.map(l => 
+        const rows = logs.map(l =>
             `${l.timestamp || ''},${l.latency_ms || ''},${l.public_ip || ''},${l.download_mbps || ''},${l.upload_mbps || ''}`
         ).join('\n');
 

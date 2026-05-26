@@ -7,7 +7,7 @@ const SvHistory = {
 
     render(serverId) {
         this._serverId = serverId;
-        setTimeout(() => this._load(), 50);
+        setTimeout(() =>this._load(), 50);
         return `
         <h2>${Lang.t('sv.hist.title')}</h2>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.hist.desc')}</p>
@@ -28,7 +28,7 @@ const SvHistory = {
             return;
         }
 
-        const icons = {start:'▶️',stop:'⏹',restart:'🔄',backup:'💾',console:'💻',settings:'⚙️',file:'📁',mod:'🧩'};
+        const icons = {start:'',stop:'⏹',restart:'',backup:'',console:'',settings:'',file:'',mod:''};
         const locale = Lang.t('common.locale') || 'fr-FR';
 
         el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
@@ -38,8 +38,8 @@ const SvHistory = {
                 <th style="padding:8px;">${Lang.t('sv.hist.action')}</th>
                 <th style="padding:8px;">${Lang.t('sv.hist.details')}</th>
             </tr></thead><tbody>
-            ${entries.map(e => {
-                const icon = Object.entries(icons).find(([k]) => e.action.toLowerCase().includes(k))?.[1] || '📌';
+            ${entries.map(e =>{
+                const icon = Object.entries(icons).find(([k]) =>e.action.toLowerCase().includes(k))?.[1] || '';
                 const date = new Date(e.timestamp).toLocaleString(locale);
                 return `<tr style="border-bottom:1px solid var(--border);">
                     <td style="padding:8px;color:var(--text-muted);font-size:11px;white-space:nowrap;">${date}</td>
