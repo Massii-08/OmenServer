@@ -13,9 +13,7 @@
     /* Couleurs principales */
     --bg-primary: #0f0f1a;
     --bg-secondary: #1a1a2e;
-    --bg-tertiary: #16213e;
     --bg-card: #1e1e36;
-    --bg-card-hover: #252545;
     --bg-input: #252540;
     --bg-sidebar: #12121f;
 
@@ -23,7 +21,6 @@
     --text-primary: #e8e8f0;
     --text-secondary: #9ca3af;
     --text-muted: #6b7280;
-    --text-accent: #10b981;
 
     /* Accents */
     --accent-green: #10b981;
@@ -40,7 +37,6 @@
     --border-active: rgba(16, 185, 129, 0.3);
 
     /* Ombres */
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
     --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.5);
     --shadow-glow-green: 0 0 20px rgba(16, 185, 129, 0.2);
@@ -48,7 +44,6 @@
 
     /* Dimensions */
     --sidebar-width: 260px;
-    --header-height: 60px;
     --border-radius: 12px;
     --border-radius-sm: 8px;
     --border-radius-lg: 16px;

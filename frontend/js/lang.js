@@ -177,7 +177,7 @@ const Lang = {
             'users.password_hint': 'Min. 4 caractères',
             'users.role': 'Rôle',
             'users.create_btn': 'Créer',
-            'users.list_title': '📋 Utilisateurs',
+            'users.list_title': 'Utilisateurs',
             'users.loading': '⏳ Chargement...',
             'users.none': 'Aucun utilisateur',
             'users.fill_fields': '❌ Remplis tous les champs',
@@ -258,7 +258,7 @@ const Lang = {
             'common.admin': 'Administrateur',
 
             // Bots
-            'bots.title': '🤖 Bots & Automatisation',
+            'bots.title': 'Bots & Automatisation',
             'bots.subtitle': 'Déployer et monitorer tes bots Python',
             'bots.new': 'Nouveau bot',
             'bots.create': 'Créer un bot',
@@ -357,7 +357,7 @@ const Lang = {
             'scanner.max_results_hint': 'Ferma la scansione dopo aver trovato questo numero di bond',
 
             // Settings
-            'settings.title': '⚙️ Paramètres',
+            'settings.title': 'Paramètres',
             'settings.subtitle': 'Configuration de ton serveur',
             'settings.account': '👤 Compte',
             'settings.user_label': 'Utilisateur :',
@@ -390,7 +390,7 @@ const Lang = {
             'settings.italian': '🇮🇹 Italiano',
 
             // Power Schedule (extinction/réveil)
-            'power.title': '🌙 Extinction automatique',
+            'power.title': 'Extinction automatique',
             'power.desc': 'Éteindre automatiquement la machine pendant la nuit pour la laisser se reposer',
             'power.enabled': 'Activé',
             'power.disabled': 'Désactivé',
@@ -418,7 +418,7 @@ const Lang = {
             'power.daily': 'Tous les jours',
 
             // Game server list
-            'gs.title': '🎮 Serveurs de jeux',
+            'gs.title': 'Serveurs de jeux',
             'gs.subtitle': 'Gérer et surveiller tes serveurs',
             'gs.create': '➕ Nouveau serveur',
             'gs.no_servers': 'Aucun serveur pour le moment',
@@ -461,7 +461,7 @@ const Lang = {
             'gs.send_cmd': 'Envoie une commande... (ex: say Hello)',
             'gs.send': 'Envoyer',
             'gs.close': '✕ Fermer',
-            'gs.backups_title': '💾 Sauvegardes',
+            'gs.backups_title': 'Sauvegardes',
             'gs.backup_now': '➕ Sauvegarder maintenant',
             'gs.delete_title': 'Supprimer ce serveur ?',
             'gs.delete_warn': 'Cette action est irréversible. Toutes les données seront perdues.',
@@ -537,7 +537,7 @@ const Lang = {
             'sv.docker_offline': 'Le serveur doit être en ligne pour voir les stats.',
 
             // Server settings sub-tabs
-            'sv.set_title': '⚙️ Paramètres',
+            'sv.set_title': 'Paramètres',
             'sv.set_desc': 'Configurez les paramètres et options de votre serveur',
             'sv.set_server': 'Serveur',
             'sv.set_map': 'Map',
@@ -621,7 +621,7 @@ const Lang = {
             'sv.cfg.jvm_saving': '⏳ Sauvegarde...',
 
             // Access tab
-            'sv.acc.title': '🔌 Accès',
+            'sv.acc.title': 'Accès',
             'sv.acc.desc': 'Accédez aux identifiants SFTP et gérez les ports réseau',
             'sv.acc.ports': '🔗 Ports dédiés',
             'sv.acc.add_port': '➕ Ajouter un port',
@@ -655,7 +655,7 @@ const Lang = {
             'sv.acc.sftp_not_ready_desc': 'Le conteneur SFTP sera disponible après le prochain redémarrage du serveur. Vous pouvez utiliser l\'onglet Fichiers en attendant.',
 
             // Files
-            'sv.files.title': '📁 Fichiers',
+            'sv.files.title': 'Fichiers',
             'sv.files.desc': 'Parcourez, éditez et gérez les fichiers de votre serveur',
             'sv.files.upload': '📤 Uploader',
             'sv.files.new_file': '📄 Nouveau fichier',
@@ -680,7 +680,7 @@ const Lang = {
             'sv.files.upload_errors': 'erreur(s)',
 
             // Monitoring
-            'sv.mon.title': '📈 Monitoring temps réel',
+            'sv.mon.title': 'Monitoring temps réel',
             'sv.mon.desc': 'Statistiques en direct · Actualisation toutes les 3s · Historique 3 min',
             'sv.mon.net_in': '📥 Réseau ↓',
             'sv.mon.net_out': '📤 Réseau ↑',
@@ -692,7 +692,7 @@ const Lang = {
             'sv.mon.waiting': '⏳ En attente de données...',
 
             // Players
-            'sv.pl.title': '👥 Joueurs',
+            'sv.pl.title': 'Joueurs',
             'sv.pl.desc': 'Gérez les opérateurs, la whitelist et les joueurs bannis',
             'sv.pl.ops': 'Opérateurs',
             'sv.pl.whitelist': 'Liste blanche',
@@ -711,7 +711,7 @@ const Lang = {
             'sv.pl.added': 'ajouté !',
 
             // History
-            'sv.hist.title': '📜 Historique d\'activité',
+            'sv.hist.title': 'Historique d\'activité',
             'sv.hist.desc': 'Journal des actions effectuées sur ce serveur',
             'sv.hist.date': 'Date',
             'sv.hist.user': 'Utilisateur',
@@ -721,7 +721,7 @@ const Lang = {
             'sv.hist.empty_hint': 'Les actions (start, stop, backup...) apparaîtront ici.',
 
             // Backups
-            'sv.bk.title': '💾 Sauvegardes', 'sv.bk.desc': 'Gérez les sauvegardes de votre serveur',
+            'sv.bk.title': 'Sauvegardes', 'sv.bk.desc': 'Gérez les sauvegardes de votre serveur',
             'sv.bk.new': '➕ Nouvelle sauvegarde', 'sv.bk.name_hint': 'Nom (optionnel, ex: avant-update-1.21)',
             'sv.bk.create': '💾 Créer', 'sv.bk.creating': '⏳ Sauvegarde en cours...', 'sv.bk.created': '✅ Sauvegarde créée !',
             'sv.bk.renamed': '✅ Sauvegarde renommée !', 'sv.bk.rename_prompt': 'Nouveau nom pour la sauvegarde :',
@@ -738,7 +738,7 @@ const Lang = {
             'sv.bk.none_auto': 'Aucun backup automatique',
             'sv.bk.none_manual': 'Aucun backup manuel',
             // Scheduler
-            'sv.sched.title': '⏰ Tâches planifiées', 'sv.sched.type': 'Type', 'sv.sched.interval': 'Intervalle',
+            'sv.sched.title': 'Tâches planifiées', 'sv.sched.type': 'Type', 'sv.sched.interval': 'Intervalle',
             'sv.sched.none': 'Aucune tâche', 'sv.sched.every': 'toutes les',
             'sv.sched.active': '● Actif', 'sv.sched.inactive': '○ Inactif',
             // Plugins/Mods
@@ -756,7 +756,7 @@ const Lang = {
             'sv.mod.search_mod_desc': '🧩 Recherchez un mod sur CurseForge', 'sv.mod.back': '← Retour',
             // Steam Workshop
             'sv.workshop': '🎮 Steam Workshop',
-            'sv.workshop.title': '🎮 Steam Workshop',
+            'sv.workshop.title': 'Steam Workshop',
             'sv.workshop.desc': 'Installer des mods depuis le Steam Workshop',
             'sv.workshop.input_hint': 'URL ou ID Workshop (ex: https://steamcommunity.com/...?id=111111111)',
             'sv.workshop.search_btn': '🔍 Chercher le mod',
@@ -773,13 +773,13 @@ const Lang = {
             'sv.workshop.no_mods_hint': 'Collez une URL Workshop pour installer votre premier mod.',
             'sv.workshop.invalid_id': 'URL ou ID Workshop invalide.',
             // Datapacks
-            'sv.dp.title': '📜 Datapacks', 'sv.dp.desc': 'Installez des datapacks depuis CurseForge pour personnaliser le gameplay',
+            'sv.dp.title': 'Datapacks', 'sv.dp.desc': 'Installez des datapacks depuis CurseForge pour personnaliser le gameplay',
             'sv.dp.search_hint': 'Rechercher un datapack (ex: Timber, Vanilla Tweaks)...',
             'sv.dp.search_desc': '📜 Recherchez un datapack sur CurseForge', 'sv.dp.versions': '📥 Versions',
             'sv.dp.no_installed': 'Aucun datapack installé.', 'sv.dp.no_installed_hint': "Installez des datapacks depuis l'onglet Rechercher.",
             'sv.dp.count': 'datapack(s) dans /data/world/datapacks/', 'sv.dp.folder': 'Dossier', 'sv.dp.remove_confirm': 'Supprimer le datapack',
             // Database
-            'sv.db.title': '🗄️ Base de données', 'sv.db.desc': 'Créez et gérez une base de données MySQL/MariaDB pour vos plugins',
+            'sv.db.title': 'Base de données', 'sv.db.desc': 'Créez et gérez une base de données MySQL/MariaDB pour vos plugins',
             'sv.db.no_db': 'ℹ️ Pas de base de données', 'sv.db.no_db_desc': 'Créez une base MariaDB pour les plugins qui en ont besoin (LuckPerms, AuthMe, etc.)',
             'sv.db.create': '➕ Créer une base de données', 'sv.db.name': 'Nom de la base', 'sv.db.user': 'Utilisateur',
             'sv.db.password': 'Mot de passe', 'sv.db.root_pass': 'Mot de passe root',
@@ -790,7 +790,7 @@ const Lang = {
             'sv.db.deleting': '⏳ Suppression...', 'sv.db.deleted': '✅ Supprimée',
             'sv.db.plugin_hint': 'Utilisez ces infos dans la config de vos plugins MySQL. Ex pour LuckPerms :',
             // Worlds
-            'sv.worlds.title': '🌍 Gestion des mondes', 'sv.worlds.desc': 'Gérez les mondes de votre serveur Minecraft',
+            'sv.worlds.title': 'Gestion des mondes', 'sv.worlds.desc': 'Gérez les mondes de votre serveur Minecraft',
             'sv.worlds.cant_load': "❌ Impossible de charger les mondes. Le serveur doit être en cours d'exécution.",
             'sv.worlds.seed': '🌱 Seed du monde', 'sv.worlds.random': 'Aléatoire', 'sv.worlds.count': '📂 Mondes',
             'sv.worlds.none': 'Aucun monde trouvé. Démarrez le serveur pour générer les mondes.',
@@ -799,7 +799,7 @@ const Lang = {
             'sv.worlds.reset_yes': '🗑️ Oui, supprimer',
             'sv.worlds.tip': "Après la suppression d'un monde, redémarrez le serveur pour qu'il soit regénéré.",
             // Version
-            'sv.ver.title': '🏷️ Version & Type de serveur', 'sv.ver.desc': 'Changez le type de serveur ou la version de Minecraft',
+            'sv.ver.title': 'Version & Type de serveur', 'sv.ver.desc': 'Changez le type de serveur ou la version de Minecraft',
             'sv.ver.only_mc': "La gestion des versions n'est disponible que pour Minecraft Java.",
             'sv.ver.game': 'Jeu', 'sv.ver.version': 'Version', 'sv.ver.current': 'Configuration actuelle',
             'sv.ver.server_type': '📦 Type de serveur', 'sv.ver.mc_version': '🎮 Version Minecraft',
@@ -819,7 +819,7 @@ const Lang = {
             'sv.ver.versions_available': 'version(s) disponible(s) :', 'sv.ver.no_versions': 'Aucune version trouvée',
             'sv.ver.will_install': 'sera installé au démarrage', 'sv.ver.change': 'Changer',
             // Notifications
-            'sv.notif.title': '🔔 Notifications Discord', 'sv.notif.desc': 'Recevez des alertes quand des événements se produisent',
+            'sv.notif.title': 'Notifications Discord', 'sv.notif.desc': 'Recevez des alertes quand des événements se produisent',
             'sv.notif.webhook': '🔗 Webhook Discord',
             'sv.notif.webhook_hint': "Pour créer un webhook : Paramètres du salon Discord → Intégrations → Webhooks → Copier l'URL",
             'sv.notif.events': '📋 Événements à notifier',
@@ -1105,7 +1105,7 @@ const Lang = {
             'users.password_hint': 'Min. 4 characters',
             'users.role': 'Role',
             'users.create_btn': 'Create',
-            'users.list_title': '📋 Users',
+            'users.list_title': 'Users',
             'users.loading': '⏳ Loading...',
             'users.none': 'No users',
             'users.fill_fields': '❌ Fill in all fields',
@@ -1186,7 +1186,7 @@ const Lang = {
             'common.admin': 'Administrator',
 
             // Bots
-            'bots.title': '🤖 Bots & Automation',
+            'bots.title': 'Bots & Automation',
             'bots.subtitle': 'Deploy and monitor your Python bots',
             'bots.new': 'New bot',
             'bots.create': 'Create a bot',
@@ -1285,7 +1285,7 @@ const Lang = {
             'scanner.max_results_hint': 'Stop scanning after finding this many bonds',
 
             // Settings
-            'settings.title': '⚙️ Settings',
+            'settings.title': 'Settings',
             'settings.subtitle': 'Server configuration',
             'settings.account': '👤 Account',
             'settings.user_label': 'User:',
@@ -1318,7 +1318,7 @@ const Lang = {
             'settings.italian': '🇮🇹 Italiano',
 
             // Power Schedule
-            'power.title': '🌙 Auto Shutdown',
+            'power.title': 'Auto Shutdown',
             'power.desc': 'Automatically shut down the machine at night to let it rest',
             'power.enabled': 'Enabled',
             'power.disabled': 'Disabled',
@@ -1346,7 +1346,7 @@ const Lang = {
             'power.daily': 'Every day',
 
             // Game server list
-            'gs.title': '🎮 Game Servers',
+            'gs.title': 'Game Servers',
             'gs.subtitle': 'Manage and monitor your servers',
             'gs.create': '➕ New server',
             'gs.no_servers': 'No servers yet',
@@ -1389,7 +1389,7 @@ const Lang = {
             'gs.send_cmd': 'Send a command... (e.g. say Hello)',
             'gs.send': 'Send',
             'gs.close': '✕ Close',
-            'gs.backups_title': '💾 Backups',
+            'gs.backups_title': 'Backups',
             'gs.backup_now': '➕ Backup now',
             'gs.delete_title': 'Delete this server?',
             'gs.delete_warn': 'This action is irreversible. All data will be lost.',
@@ -1465,7 +1465,7 @@ const Lang = {
             'sv.docker_offline': 'Server must be online to see stats.',
 
             // Server settings sub-tabs
-            'sv.set_title': '⚙️ Settings',
+            'sv.set_title': 'Settings',
             'sv.set_desc': 'Configure your server parameters and options',
             'sv.set_server': 'Server',
             'sv.set_map': 'Map',
@@ -1549,7 +1549,7 @@ const Lang = {
             'sv.cfg.jvm_saving': '⏳ Saving...',
 
             // Access tab
-            'sv.acc.title': '🔌 Access',
+            'sv.acc.title': 'Access',
             'sv.acc.desc': 'Access SFTP credentials and manage network ports',
             'sv.acc.ports': '🔗 Dedicated ports',
             'sv.acc.add_port': '➕ Add a port',
@@ -1583,7 +1583,7 @@ const Lang = {
             'sv.acc.sftp_not_ready_desc': 'The SFTP container will be available after the next server restart. You can use the Files tab in the meantime.',
 
             // Files
-            'sv.files.title': '📁 Files',
+            'sv.files.title': 'Files',
             'sv.files.desc': 'Browse, edit and manage your server files',
             'sv.files.upload': '📤 Upload',
             'sv.files.new_file': '📄 New file',
@@ -1608,7 +1608,7 @@ const Lang = {
             'sv.files.upload_errors': 'error(s)',
 
             // Monitoring
-            'sv.mon.title': '📈 Real-time monitoring',
+            'sv.mon.title': 'Real-time monitoring',
             'sv.mon.desc': 'Live stats · Refreshing every 3s · 3 min history',
             'sv.mon.net_in': '📥 Network ↓',
             'sv.mon.net_out': '📤 Network ↑',
@@ -1620,7 +1620,7 @@ const Lang = {
             'sv.mon.waiting': '⏳ Waiting for data...',
 
             // Players
-            'sv.pl.title': '👥 Players',
+            'sv.pl.title': 'Players',
             'sv.pl.desc': 'Manage operators, whitelist and banned players',
             'sv.pl.ops': 'Operators',
             'sv.pl.whitelist': 'Whitelist',
@@ -1639,7 +1639,7 @@ const Lang = {
             'sv.pl.added': 'added!',
 
             // History
-            'sv.hist.title': '📜 Activity history',
+            'sv.hist.title': 'Activity history',
             'sv.hist.desc': 'Log of actions performed on this server',
             'sv.hist.date': 'Date',
             'sv.hist.user': 'User',
@@ -1649,7 +1649,7 @@ const Lang = {
             'sv.hist.empty_hint': 'Actions (start, stop, backup...) will appear here.',
 
             // Backups
-            'sv.bk.title': '💾 Backups', 'sv.bk.desc': 'Manage your server backups',
+            'sv.bk.title': 'Backups', 'sv.bk.desc': 'Manage your server backups',
             'sv.bk.new': '➕ New backup', 'sv.bk.name_hint': 'Name (optional, e.g. before-update-1.21)',
             'sv.bk.create': '💾 Create', 'sv.bk.creating': '⏳ Backup in progress...', 'sv.bk.created': '✅ Backup created!',
             'sv.bk.renamed': '✅ Backup renamed!', 'sv.bk.rename_prompt': 'New backup name:',
@@ -1666,7 +1666,7 @@ const Lang = {
             'sv.bk.none_auto': 'No automatic backups',
             'sv.bk.none_manual': 'No manual backups',
             // Scheduler
-            'sv.sched.title': '⏰ Scheduled tasks', 'sv.sched.type': 'Type', 'sv.sched.interval': 'Interval',
+            'sv.sched.title': 'Scheduled tasks', 'sv.sched.type': 'Type', 'sv.sched.interval': 'Interval',
             'sv.sched.none': 'No tasks', 'sv.sched.every': 'every',
             'sv.sched.active': '● Active', 'sv.sched.inactive': '○ Inactive',
             // Plugins/Mods
@@ -1684,7 +1684,7 @@ const Lang = {
             'sv.mod.search_mod_desc': '🧩 Search for a mod on CurseForge', 'sv.mod.back': '← Back',
             // Steam Workshop
             'sv.workshop': '🎮 Steam Workshop',
-            'sv.workshop.title': '🎮 Steam Workshop',
+            'sv.workshop.title': 'Steam Workshop',
             'sv.workshop.desc': 'Install mods from the Steam Workshop',
             'sv.workshop.input_hint': 'URL or Workshop ID (e.g. https://steamcommunity.com/...?id=111111111)',
             'sv.workshop.search_btn': '🔍 Find mod',
@@ -1701,13 +1701,13 @@ const Lang = {
             'sv.workshop.no_mods_hint': 'Paste a Workshop URL to install your first mod.',
             'sv.workshop.invalid_id': 'Invalid Workshop URL or ID.',
             // Datapacks
-            'sv.dp.title': '📜 Datapacks', 'sv.dp.desc': 'Install datapacks from CurseForge to customize gameplay',
+            'sv.dp.title': 'Datapacks', 'sv.dp.desc': 'Install datapacks from CurseForge to customize gameplay',
             'sv.dp.search_hint': 'Search for a datapack (e.g. Timber, Vanilla Tweaks)...',
             'sv.dp.search_desc': '📜 Search for a datapack on CurseForge', 'sv.dp.versions': '📥 Versions',
             'sv.dp.no_installed': 'No datapacks installed.', 'sv.dp.no_installed_hint': 'Install datapacks from the Search tab.',
             'sv.dp.count': 'datapack(s) in /data/world/datapacks/', 'sv.dp.folder': 'Folder', 'sv.dp.remove_confirm': 'Remove datapack',
             // Database
-            'sv.db.title': '🗄️ Database', 'sv.db.desc': 'Create and manage a MySQL/MariaDB database for your plugins',
+            'sv.db.title': 'Database', 'sv.db.desc': 'Create and manage a MySQL/MariaDB database for your plugins',
             'sv.db.no_db': 'ℹ️ No database', 'sv.db.no_db_desc': 'Create a MariaDB database for plugins that need it (LuckPerms, AuthMe, etc.)',
             'sv.db.create': '➕ Create a database', 'sv.db.name': 'Database name', 'sv.db.user': 'User',
             'sv.db.password': 'Password', 'sv.db.root_pass': 'Root password',
@@ -1718,7 +1718,7 @@ const Lang = {
             'sv.db.deleting': '⏳ Deleting...', 'sv.db.deleted': '✅ Deleted',
             'sv.db.plugin_hint': 'Use this info in your MySQL plugin config. E.g. for LuckPerms:',
             // Worlds
-            'sv.worlds.title': '🌍 World management', 'sv.worlds.desc': 'Manage your Minecraft server worlds',
+            'sv.worlds.title': 'World management', 'sv.worlds.desc': 'Manage your Minecraft server worlds',
             'sv.worlds.cant_load': '❌ Cannot load worlds. The server must be running.',
             'sv.worlds.seed': '🌱 World seed', 'sv.worlds.random': 'Random', 'sv.worlds.count': '📂 Worlds',
             'sv.worlds.none': 'No worlds found. Start the server to generate worlds.',
@@ -1727,7 +1727,7 @@ const Lang = {
             'sv.worlds.reset_yes': '🗑️ Yes, delete',
             'sv.worlds.tip': 'After deleting a world, restart the server to regenerate it.',
             // Version
-            'sv.ver.title': '🏷️ Version & Server type', 'sv.ver.desc': 'Change server type or Minecraft version',
+            'sv.ver.title': 'Version & Server type', 'sv.ver.desc': 'Change server type or Minecraft version',
             'sv.ver.only_mc': 'Version management is only available for Minecraft Java.',
             'sv.ver.game': 'Game', 'sv.ver.version': 'Version', 'sv.ver.current': 'Current configuration',
             'sv.ver.server_type': '📦 Server type', 'sv.ver.mc_version': '🎮 Minecraft version',
@@ -1747,7 +1747,7 @@ const Lang = {
             'sv.ver.versions_available': 'version(s) available:', 'sv.ver.no_versions': 'No versions found',
             'sv.ver.will_install': 'will be installed on startup', 'sv.ver.change': 'Change',
             // Notifications
-            'sv.notif.title': '🔔 Discord notifications', 'sv.notif.desc': 'Get alerts when events occur',
+            'sv.notif.title': 'Discord notifications', 'sv.notif.desc': 'Get alerts when events occur',
             'sv.notif.webhook': '🔗 Discord Webhook',
             'sv.notif.webhook_hint': 'To create a webhook: Discord channel settings → Integrations → Webhooks → Copy URL',
             'sv.notif.events': '📋 Events to notify',
@@ -2033,7 +2033,7 @@ const Lang = {
             'users.password_hint': 'Min. 4 caratteri',
             'users.role': 'Ruolo',
             'users.create_btn': 'Crea',
-            'users.list_title': '📋 Utenti',
+            'users.list_title': 'Utenti',
             'users.loading': '⏳ Caricamento...',
             'users.none': 'Nessun utente',
             'users.fill_fields': '❌ Compila tutti i campi',
@@ -2114,7 +2114,7 @@ const Lang = {
             'common.admin': 'Amministratore',
 
             // Bots
-            'bots.title': '🤖 Bot e Automazione',
+            'bots.title': 'Bot e Automazione',
             'bots.subtitle': 'Distribuisci e monitora i tuoi bot Python',
             'bots.new': 'Nuovo bot',
             'bots.create': 'Crea un bot',
@@ -2213,7 +2213,7 @@ const Lang = {
             'scanner.max_results_hint': 'Ferma la scansione dopo aver trovato questo numero di bond',
 
             // Settings
-            'settings.title': '⚙️ Impostazioni',
+            'settings.title': 'Impostazioni',
             'settings.subtitle': 'Configurazione del server',
             'settings.account': '👤 Account',
             'settings.user_label': 'Utente:',
@@ -2246,7 +2246,7 @@ const Lang = {
             'settings.italian': '🇮🇹 Italiano',
 
             // Power Schedule
-            'power.title': '🌙 Spegnimento automatico',
+            'power.title': 'Spegnimento automatico',
             'power.desc': 'Spegni automaticamente la macchina di notte per farla riposare',
             'power.enabled': 'Attivato',
             'power.disabled': 'Disattivato',
@@ -2274,7 +2274,7 @@ const Lang = {
             'power.daily': 'Ogni giorno',
 
             // Game server list
-            'gs.title': '🎮 Server di gioco',
+            'gs.title': 'Server di gioco',
             'gs.subtitle': 'Gestisci e monitora i tuoi server',
             'gs.create': '➕ Nuovo server',
             'gs.no_servers': 'Nessun server al momento',
@@ -2317,7 +2317,7 @@ const Lang = {
             'gs.send_cmd': 'Invia un comando... (es: say Hello)',
             'gs.send': 'Invia',
             'gs.close': '✕ Chiudi',
-            'gs.backups_title': '💾 Backup',
+            'gs.backups_title': 'Backup',
             'gs.backup_now': '➕ Backup adesso',
             'gs.delete_title': 'Eliminare questo server?',
             'gs.delete_warn': 'Questa azione è irreversibile. Tutti i dati verranno persi.',
@@ -2393,7 +2393,7 @@ const Lang = {
             'sv.docker_offline': 'Il server deve essere online per vedere le statistiche.',
 
             // Server settings sub-tabs
-            'sv.set_title': '⚙️ Impostazioni',
+            'sv.set_title': 'Impostazioni',
             'sv.set_desc': 'Configura i parametri e le opzioni del server',
             'sv.set_server': 'Server',
             'sv.set_map': 'Mappa',
@@ -2477,7 +2477,7 @@ const Lang = {
             'sv.cfg.jvm_saving': '⏳ Salvataggio...',
 
             // Access tab
-            'sv.acc.title': '🔌 Accesso',
+            'sv.acc.title': 'Accesso',
             'sv.acc.desc': 'Accedi alle credenziali SFTP e gestisci le porte di rete',
             'sv.acc.ports': '🔗 Porte dedicate',
             'sv.acc.add_port': '➕ Aggiungi una porta',
@@ -2511,7 +2511,7 @@ const Lang = {
             'sv.acc.sftp_not_ready_desc': 'Il contenitore SFTP sarà disponibile dopo il prossimo riavvio del server. Puoi usare la scheda File nel frattempo.',
 
             // Files
-            'sv.files.title': '📁 File',
+            'sv.files.title': 'File',
             'sv.files.desc': 'Sfoglia, modifica e gestisci i file del tuo server',
             'sv.files.upload': '📤 Carica',
             'sv.files.new_file': '📄 Nuovo file',
@@ -2536,7 +2536,7 @@ const Lang = {
             'sv.files.upload_errors': 'errore/i',
 
             // Monitoring
-            'sv.mon.title': '📈 Monitoraggio in tempo reale',
+            'sv.mon.title': 'Monitoraggio in tempo reale',
             'sv.mon.desc': 'Statistiche in diretta · Aggiornamento ogni 3s · Storico 3 min',
             'sv.mon.net_in': '📥 Rete ↓',
             'sv.mon.net_out': '📤 Rete ↑',
@@ -2548,7 +2548,7 @@ const Lang = {
             'sv.mon.waiting': '⏳ In attesa di dati...',
 
             // Players
-            'sv.pl.title': '👥 Giocatori',
+            'sv.pl.title': 'Giocatori',
             'sv.pl.desc': 'Gestisci operatori, whitelist e giocatori bannati',
             'sv.pl.ops': 'Operatori',
             'sv.pl.whitelist': 'Lista bianca',
@@ -2567,7 +2567,7 @@ const Lang = {
             'sv.pl.added': 'aggiunto!',
 
             // History
-            'sv.hist.title': '📜 Cronologia attività',
+            'sv.hist.title': 'Cronologia attività',
             'sv.hist.desc': 'Registro delle azioni eseguite su questo server',
             'sv.hist.date': 'Data',
             'sv.hist.user': 'Utente',
@@ -2577,7 +2577,7 @@ const Lang = {
             'sv.hist.empty_hint': 'Le azioni (start, stop, backup...) appariranno qui.',
 
             // Backups
-            'sv.bk.title': '💾 Backup', 'sv.bk.desc': 'Gestisci i backup del tuo server',
+            'sv.bk.title': 'Backup', 'sv.bk.desc': 'Gestisci i backup del tuo server',
             'sv.bk.new': '➕ Nuovo backup', 'sv.bk.name_hint': 'Nome (opzionale, es: prima-update-1.21)',
             'sv.bk.create': '💾 Crea', 'sv.bk.creating': '⏳ Backup in corso...', 'sv.bk.created': '✅ Backup creato!',
             'sv.bk.renamed': '✅ Backup rinominato!', 'sv.bk.rename_prompt': 'Nuovo nome per il backup:',
@@ -2594,7 +2594,7 @@ const Lang = {
             'sv.bk.none_auto': 'Nessun backup automatico',
             'sv.bk.none_manual': 'Nessun backup manuale',
             // Scheduler
-            'sv.sched.title': '⏰ Attività pianificate', 'sv.sched.type': 'Tipo', 'sv.sched.interval': 'Intervallo',
+            'sv.sched.title': 'Attività pianificate', 'sv.sched.type': 'Tipo', 'sv.sched.interval': 'Intervallo',
             'sv.sched.none': 'Nessuna attività', 'sv.sched.every': 'ogni',
             'sv.sched.active': '● Attivo', 'sv.sched.inactive': '○ Inattivo',
             // Plugins/Mods
@@ -2612,7 +2612,7 @@ const Lang = {
             'sv.mod.search_mod_desc': '🧩 Cerca un mod su CurseForge', 'sv.mod.back': '← Indietro',
             // Steam Workshop
             'sv.workshop': '🎮 Steam Workshop',
-            'sv.workshop.title': '🎮 Steam Workshop',
+            'sv.workshop.title': 'Steam Workshop',
             'sv.workshop.desc': 'Installa mod dallo Steam Workshop',
             'sv.workshop.input_hint': 'URL o ID Workshop (es: https://steamcommunity.com/...?id=111111111)',
             'sv.workshop.search_btn': '🔍 Trova mod',
@@ -2629,13 +2629,13 @@ const Lang = {
             'sv.workshop.no_mods_hint': 'Incolla un URL Workshop per installare la tua prima mod.',
             'sv.workshop.invalid_id': 'URL o ID Workshop non valido.',
             // Datapacks
-            'sv.dp.title': '📜 Datapack', 'sv.dp.desc': 'Installa datapack da CurseForge per personalizzare il gameplay',
+            'sv.dp.title': 'Datapack', 'sv.dp.desc': 'Installa datapack da CurseForge per personalizzare il gameplay',
             'sv.dp.search_hint': 'Cerca un datapack (es: Timber, Vanilla Tweaks)...',
             'sv.dp.search_desc': '📜 Cerca un datapack su CurseForge', 'sv.dp.versions': '📥 Versioni',
             'sv.dp.no_installed': 'Nessun datapack installato.', 'sv.dp.no_installed_hint': 'Installa datapack dalla scheda Cerca.',
             'sv.dp.count': 'datapack in /data/world/datapacks/', 'sv.dp.folder': 'Cartella', 'sv.dp.remove_confirm': 'Rimuovere il datapack',
             // Database
-            'sv.db.title': '🗄️ Database', 'sv.db.desc': 'Crea e gestisci un database MySQL/MariaDB per i tuoi plugin',
+            'sv.db.title': 'Database', 'sv.db.desc': 'Crea e gestisci un database MySQL/MariaDB per i tuoi plugin',
             'sv.db.no_db': 'ℹ️ Nessun database', 'sv.db.no_db_desc': 'Crea un database MariaDB per i plugin che lo richiedono (LuckPerms, AuthMe, ecc.)',
             'sv.db.create': '➕ Crea un database', 'sv.db.name': 'Nome del database', 'sv.db.user': 'Utente',
             'sv.db.password': 'Password', 'sv.db.root_pass': 'Password root',
@@ -2646,7 +2646,7 @@ const Lang = {
             'sv.db.deleting': '⏳ Eliminazione...', 'sv.db.deleted': '✅ Eliminato',
             'sv.db.plugin_hint': 'Usa queste info nella config dei tuoi plugin MySQL. Es. per LuckPerms:',
             // Worlds
-            'sv.worlds.title': '🌍 Gestione mondi', 'sv.worlds.desc': 'Gestisci i mondi del tuo server Minecraft',
+            'sv.worlds.title': 'Gestione mondi', 'sv.worlds.desc': 'Gestisci i mondi del tuo server Minecraft',
             'sv.worlds.cant_load': '❌ Impossibile caricare i mondi. Il server deve essere in esecuzione.',
             'sv.worlds.seed': '🌱 Seed del mondo', 'sv.worlds.random': 'Casuale', 'sv.worlds.count': '📂 Mondi',
             'sv.worlds.none': 'Nessun mondo trovato. Avvia il server per generare i mondi.',
@@ -2655,7 +2655,7 @@ const Lang = {
             'sv.worlds.reset_yes': '🗑️ Sì, elimina',
             'sv.worlds.tip': 'Dopo aver eliminato un mondo, riavvia il server per rigenerarlo.',
             // Version
-            'sv.ver.title': '🏷️ Versione e tipo di server', 'sv.ver.desc': 'Cambia il tipo di server o la versione di Minecraft',
+            'sv.ver.title': 'Versione e tipo di server', 'sv.ver.desc': 'Cambia il tipo di server o la versione di Minecraft',
             'sv.ver.only_mc': 'La gestione delle versioni è disponibile solo per Minecraft Java.',
             'sv.ver.game': 'Gioco', 'sv.ver.version': 'Versione', 'sv.ver.current': 'Configurazione attuale',
             'sv.ver.server_type': '📦 Tipo di server', 'sv.ver.mc_version': '🎮 Versione Minecraft',
@@ -2761,7 +2761,7 @@ const Lang = {
             'files.upload_error': 'Errore di upload',
 
             // Notifications
-            'sv.notif.title': '🔔 Notifiche Discord', 'sv.notif.desc': 'Ricevi avvisi quando si verificano eventi',
+            'sv.notif.title': 'Notifiche Discord', 'sv.notif.desc': 'Ricevi avvisi quando si verificano eventi',
             'sv.notif.webhook': '🔗 Webhook Discord',
             'sv.notif.webhook_hint': 'Per creare un webhook: Impostazioni canale Discord → Integrazioni → Webhook → Copia URL',
             'sv.notif.events': '📋 Eventi da notificare',
