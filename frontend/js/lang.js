@@ -167,7 +167,7 @@ const Lang = {
             'scheduler.day_thu': 'Jeu', 'scheduler.day_fri': 'Ven', 'scheduler.day_sat': 'Sam', 'scheduler.day_sun': 'Dim',
 
             // Gestion des utilisateurs
-            'users.title': '👥 Gestion des utilisateurs',
+            'users.title': 'Gestion des utilisateurs',
             'users.subtitle': 'Créer, modifier ou supprimer des comptes',
             'users.back_hub': '← Retour au Hub',
             'users.create_title': '➕ Créer un compte',
@@ -383,7 +383,7 @@ const Lang = {
             'settings.invite_money': 'Financier (Yield Bot)',
             'settings.invite_dev': 'Développeur (bots)',
             'settings.users': '👥 Utilisateurs',
-            'settings.language': '🌐 Langue',
+            'settings.language': 'Langue',
             'settings.lang_desc': 'Choisir la langue de l\'interface',
             'settings.french': '🇫🇷 Français',
             'settings.english': '🇬🇧 English',
@@ -874,7 +874,7 @@ const Lang = {
             'net.csv_success': 'mesures exportées en CSV',
 
             // ─── Web Module ───
-            'web.title': '🌐 Serveur Web',
+            'web.title': 'Serveur Web',
             'web.subtitle': 'Héberger des sites web et APIs via Docker',
             'web.new_site': '➕ Nouveau site',
             'web.no_sites': 'Aucun site web',
@@ -891,7 +891,7 @@ const Lang = {
             'web.logs_empty': 'Aucun log — Démarre le site pour voir les logs',
 
             // ─── Media Module ───
-            'media.title': '📺 Média & Streaming',
+            'media.title': 'Média & Streaming',
             'media.subtitle': 'Serveur Jellyfin — Films, Séries, Musique',
             'media.docker_unavailable': 'Docker non disponible',
             'media.docker_check': 'Vérifie que Docker est installé et lancé sur le serveur.',
@@ -916,7 +916,7 @@ const Lang = {
             'media.reset_confirm': '⚠️ Supprimer Jellyfin ?\n\nLe conteneur sera supprimé mais les fichiers média seront conservés.\n\nContinuer ?',
 
             // ─── Files Module ───
-            'files.title': '📁 Fichiers & Cloud',
+            'files.title': 'Fichiers & Cloud',
             'files.subtitle': 'Cloud personnel + Google Drive',
             'files.checking_gdrive': '⏳ Vérification de Google Drive...',
             'files.gdrive_status_error': 'Impossible de vérifier le statut',
@@ -1095,7 +1095,7 @@ const Lang = {
             'scheduler.day_thu': 'Thu', 'scheduler.day_fri': 'Fri', 'scheduler.day_sat': 'Sat', 'scheduler.day_sun': 'Sun',
 
             // User management
-            'users.title': '👥 User Management',
+            'users.title': 'User Management',
             'users.subtitle': 'Create, edit or delete accounts',
             'users.back_hub': '← Back to Hub',
             'users.create_title': '➕ Create account',
@@ -1311,7 +1311,7 @@ const Lang = {
             'settings.invite_money': 'Finance (Yield Bot)',
             'settings.invite_dev': 'Developer (bots)',
             'settings.users': '👥 Users',
-            'settings.language': '🌐 Language',
+            'settings.language': 'Language',
             'settings.lang_desc': 'Choose the interface language',
             'settings.french': '🇫🇷 Français',
             'settings.english': '🇬🇧 English',
@@ -1802,7 +1802,7 @@ const Lang = {
             'net.csv_success': 'measurements exported as CSV',
 
             // ─── Web Module ───
-            'web.title': '🌐 Web Server',
+            'web.title': 'Web Server',
             'web.subtitle': 'Host websites and APIs via Docker',
             'web.new_site': '➕ New site',
             'web.no_sites': 'No websites',
@@ -1819,7 +1819,7 @@ const Lang = {
             'web.logs_empty': 'No logs — Start the site to see logs',
 
             // ─── Media Module ───
-            'media.title': '📺 Media & Streaming',
+            'media.title': 'Media & Streaming',
             'media.subtitle': 'Jellyfin Server — Movies, TV Shows, Music',
             'media.docker_unavailable': 'Docker unavailable',
             'media.docker_check': 'Check that Docker is installed and running on the server.',
@@ -1844,7 +1844,7 @@ const Lang = {
             'media.reset_confirm': '⚠️ Delete Jellyfin?\n\nThe container will be removed but media files will be kept.\n\nContinue?',
 
             // ─── Files Module ───
-            'files.title': '📁 Files & Cloud',
+            'files.title': 'Files & Cloud',
             'files.subtitle': 'Personal cloud + Google Drive',
             'files.checking_gdrive': '⏳ Checking Google Drive...',
             'files.gdrive_status_error': 'Unable to check status',
@@ -2023,7 +2023,7 @@ const Lang = {
             'scheduler.day_thu': 'Gio', 'scheduler.day_fri': 'Ven', 'scheduler.day_sat': 'Sab', 'scheduler.day_sun': 'Dom',
 
             // Gestione utenti
-            'users.title': '👥 Gestione utenti',
+            'users.title': 'Gestione utenti',
             'users.subtitle': 'Crea, modifica o elimina account',
             'users.back_hub': '← Torna al Hub',
             'users.create_title': '➕ Crea un account',
@@ -2239,7 +2239,7 @@ const Lang = {
             'settings.invite_money': 'Finanziario (Yield Bot)',
             'settings.invite_dev': 'Sviluppatore (bot)',
             'settings.users': '👥 Utenti',
-            'settings.language': '🌐 Lingua',
+            'settings.language': 'Lingua',
             'settings.lang_desc': 'Scegli la lingua dell\'interfaccia',
             'settings.french': '🇫🇷 Français',
             'settings.english': '🇬🇧 English',
@@ -2705,7 +2705,7 @@ const Lang = {
             'net.csv_success': 'misurazioni esportate in CSV',
 
             // ─── Web Module ───
-            'web.title': '🌐 Server Web',
+            'web.title': 'Server Web',
             'web.subtitle': 'Ospita siti web e API tramite Docker',
             'web.new_site': '➕ Nuovo sito',
             'web.no_sites': 'Nessun sito web',
@@ -2722,7 +2722,7 @@ const Lang = {
             'web.logs_empty': 'Nessun log — Avvia il sito per vedere i log',
 
             // ─── Media Module ───
-            'media.title': '📺 Media & Streaming',
+            'media.title': 'Media & Streaming',
             'media.subtitle': 'Server Jellyfin — Film, Serie TV, Musica',
             'media.docker_unavailable': 'Docker non disponibile',
             'media.docker_check': 'Verifica che Docker sia installato e in esecuzione sul server.',
@@ -2747,7 +2747,7 @@ const Lang = {
             'media.reset_confirm': '⚠️ Eliminare Jellyfin?\n\nIl contenitore verrà rimosso ma i file multimediali saranno conservati.\n\nContinuare?',
 
             // ─── Files Module ───
-            'files.title': '📁 File & Cloud',
+            'files.title': 'File & Cloud',
             'files.subtitle': 'Cloud personale + Google Drive',
             'files.checking_gdrive': '⏳ Verifica di Google Drive...',
             'files.gdrive_status_error': 'Impossibile verificare lo stato',
@@ -2819,7 +2819,7 @@ const Lang = {
             App.navigateTo(App.currentView);
         }
         if (typeof Toast !== 'undefined') {
-            const msgs = { fr: '🇫🇷 Français activé', en: '🇬🇧 English enabled', it: '🇮🇹 Italiano attivato' };
+            const msgs = { fr: 'Français activé', en: 'English enabled', it: 'Italiano attivato' };
             Toast.info(msgs[lang] || msgs.en);
         }
     },
@@ -2851,15 +2851,11 @@ const Lang = {
         };
         Object.entries(items).forEach(([view, key]) => {
             const el = document.querySelector(`[data-view="${view}"]`);
-            if (el) {
-                const icon = el.querySelector('.nav-item-icon');
-                if (icon) {
-                    el.textContent = '';
-                    el.appendChild(icon);
-                    el.appendChild(document.createTextNode(' ' + this.t(key)));
-                }
-            }
+            if (el) el.textContent = this.t(key);
         });
+        // PR25 — lang button shows current lang code (text-only, no emoji)
+        const langBtn = document.getElementById('lang-btn');
+        if (langBtn) langBtn.textContent = this.current.toUpperCase();
 
         // Subtitle
         const sub = document.querySelector('.sidebar-subtitle');
