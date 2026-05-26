@@ -2270,7 +2270,7 @@ canvas {
 /* ===== Machines grid (Dashboard "Network of machines" section) ===== */
 .machines-grid {
     display: grid;
-    grid-template-columns: 1.4fr 1fr 1fr;
+    grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
     gap: var(--s-3);
 }
 .machine-card {
@@ -2280,28 +2280,42 @@ canvas {
     border-radius: var(--r-lg);
     padding: var(--s-5);
     display: flex; flex-direction: column; gap: var(--s-3);
+    transition: opacity .2s, border-color .2s;
 }
 .machine-card.brain {
     background: var(--bg-elev-2);
     border-color: var(--border-strong);
 }
-.machine-card.brain::before {
-    content: "BRAIN";
+.machine-card.brain::before,
+.machine-card.arm::before {
     position: absolute; top: var(--s-3); right: var(--s-3);
     font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.12em;
-    color: var(--accent);
-    background: var(--accent-dim);
     padding: 2px 6px;
     border-radius: var(--r-sm);
 }
-.machine-card .m-head { display: flex; align-items: center; gap: var(--s-2); }
+.machine-card.brain::before {
+    content: "BRAIN";
+    color: var(--accent);
+    background: var(--accent-dim);
+}
+.machine-card.arm::before {
+    content: "ARM";
+    color: var(--info);
+    background: rgba(96, 165, 250, 0.14);
+}
+.machine-card.offline {
+    opacity: 0.6;
+}
+.machine-card .m-head { display: flex; align-items: center; gap: var(--s-2); padding-right: 48px; }
 .machine-card .m-head .dot {
     width: 8px; height: 8px;
     border-radius: 50%;
     background: var(--accent);
+    flex-shrink: 0;
 }
+.machine-card.offline .m-head .dot { background: var(--danger); }
 .machine-card .m-head .name { font-weight: 600; font-size: 14px; }
 .machine-card .m-head .role { color: var(--text-dim); font-size: 12px; }
 .machine-card .m-stats {
@@ -2318,9 +2332,29 @@ canvas {
     font-weight: 500;
     margin-top: 2px;
 }
+.machine-card .m-stat .v.warn { color: var(--warning); }
+.machine-card .m-stat .v.danger { color: var(--danger); }
+.machine-card .m-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--s-3);
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum";
+}
 .machine-card .m-actions {
     display: flex; gap: 6px;
     margin-top: auto;
+    padding-top: var(--s-3);
+    border-top: 1px solid var(--border);
+}
+.machine-card .m-offline-msg {
+    text-align: center;
+    padding: var(--s-4) 0;
+    color: var(--text-dim);
+    font-size: 12px;
+    font-family: var(--font-mono);
 }
 
 /* ===== Runs list (Yield Bot history, Tasks recent runs, etc.) ===== */

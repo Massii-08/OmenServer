@@ -104,160 +104,96 @@ const Monitoring = {
             countEl.textContent = `(${onlineCount}/${totalCount})`;
         }
 
-        // Helper: couleur des barres selon la valeur
-        const barColor = (v) => v > 90 ? 'var(--accent-red)' : v > 70 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+        // Helpers (Bento Tech — no progress bars, value class encodes severity)
+        const sev = (v) => v > 90 ? 'danger' : v > 70 ? 'warn' : '';
+        const fmtUptime = (h) => {
+            if (h == null) return '';
+            if (h < 1) return `${Math.round(h * 60)}m`;
+            if (h < 24) return `${Math.round(h)}h`;
+            return `${Math.round(h / 24)}j ${Math.round(h % 24)}h`;
+        };
+        const fmtOfflineSince = (secs) => {
+            if (secs < 60) return `${Math.round(secs)}s`;
+            if (secs < 3600) return `${Math.round(secs / 60)}m`;
+            return `${Math.round(secs / 3600)}h`;
+        };
+        const isAdmin = !!Auth.getUser()?.is_admin;
 
-        // === Carte du serveur Omen (cerveau) — toujours en premier ===
+        // === Omen (brain) — always first ===
         let omenCard = '';
         if (serverData) {
             const cpu = serverData.cpu;
             const mem = serverData.memory;
             const disk = serverData.disk;
             const temp = serverData.temperature;
-            const uptimeH = this._serverUptime || 0;
-
-            let uptimeText = '';
-            if (uptimeH < 1) uptimeText = `${Math.round(uptimeH * 60)} min`;
-            else if (uptimeH < 24) uptimeText = `${Math.round(uptimeH)}h`;
-            else uptimeText = `${Math.round(uptimeH / 24)}j ${Math.round(uptimeH % 24)}h`;
+            const uptimeText = fmtUptime(this._serverUptime);
 
             omenCard = `
-                <div style="background:var(--bg-secondary);border-radius:12px;padding:16px;border:2px solid var(--accent-green);transition:all 0.3s;position:relative;">
-                    <div style="position:absolute;top:8px;right:10px;font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(139,92,246,0.15);color:#a78bfa;font-weight:600;letter-spacing:0.3px;">🧠 ${Lang.t('nodes.brain')}</div>
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                        <div>
-                            <div style="font-weight:700;font-size:14px;">🟢 ${serverHostname}</div>
-                            <div style="font-size:11px;color:var(--text-muted);">${this._serverOS || 'Linux'}</div>
-                        </div>
-                        <div style="text-align:right;margin-top:14px;">
-                            <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(34,197,94,0.15);color:var(--accent-green);">${Lang.t('nodes.online')}</span>
-                        </div>
+                <div class="machine-card brain">
+                    <div class="m-head">
+                        <span class="dot"></span>
+                        <span class="name">${serverHostname}</span>
+                        <span class="role">${this._serverOS || 'Linux'}</span>
                     </div>
-                    <div style="display:flex;flex-direction:column;gap:8px;">
-                        <div>
-                            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
-                                <span>CPU <span style="opacity:0.5">(${cpu.count}c)</span></span>
-                                <span style="font-weight:600;">${Math.round(cpu.percent)}%</span>
-                            </div>
-                            <div style="height:6px;background:var(--bg-primary);border-radius:3px;overflow:hidden;">
-                                <div style="height:100%;width:${Math.min(cpu.percent, 100)}%;background:${barColor(cpu.percent)};border-radius:3px;transition:width 0.5s;"></div>
-                            </div>
-                        </div>
-                        <div>
-                            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
-                                <span>RAM</span>
-                                <span style="font-weight:600;">${mem.used_gb}/${mem.total_gb} Go (${Math.round(mem.percent)}%)</span>
-                            </div>
-                            <div style="height:6px;background:var(--bg-primary);border-radius:3px;overflow:hidden;">
-                                <div style="height:100%;width:${Math.min(mem.percent, 100)}%;background:${barColor(mem.percent)};border-radius:3px;transition:width 0.5s;"></div>
-                            </div>
-                        </div>
-                        <div>
-                            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
-                                <span>Disque</span>
-                                <span style="font-weight:600;">${disk.used_gb}/${disk.total_gb} Go (${Math.round(disk.percent)}%)</span>
-                            </div>
-                            <div style="height:6px;background:var(--bg-primary);border-radius:3px;overflow:hidden;">
-                                <div style="height:100%;width:${Math.min(disk.percent, 100)}%;background:${barColor(disk.percent)};border-radius:3px;transition:width 0.5s;"></div>
-                            </div>
-                        </div>
-                        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-top:4px;">
-                            <span>${temp && temp.available ? `🌡️ ${temp.cpu_temp}°C` : ''}</span>
-                            <span>⏱️ ${uptimeText} ${Lang.t('nodes.uptime')}</span>
-                        </div>
-                        ${Auth.getUser()?.is_admin ? `
-                        <div style="display:flex;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border-color);">
-                            <button class="btn btn-sm btn-secondary" onclick="Monitoring.omenPowerAction('reboot')" style="font-size:11px;padding:3px 8px;" title="${Lang.t('nodes.omen_reboot_desc')}">🔄 ${Lang.t('nodes.reboot')}</button>
-                            <button class="btn btn-sm btn-secondary" onclick="Monitoring.omenPowerAction('shutdown')" style="font-size:11px;padding:3px 8px;color:var(--accent-red);" title="${Lang.t('nodes.omen_shutdown_desc')}">⏻ ${Lang.t('nodes.shutdown')}</button>
-                        </div>
-                        ` : ''}
+                    <div class="m-stats">
+                        <div class="m-stat"><div class="l">CPU ${cpu.count}c</div><div class="v ${sev(cpu.percent)}">${Math.round(cpu.percent)}%</div></div>
+                        <div class="m-stat"><div class="l">RAM</div><div class="v ${sev(mem.percent)}">${mem.used_gb}/${mem.total_gb} Go</div></div>
+                        <div class="m-stat"><div class="l">Disk</div><div class="v ${sev(disk.percent)}">${disk.used_gb}/${disk.total_gb} Go</div></div>
                     </div>
+                    <div class="m-meta">
+                        <span>${temp && temp.available ? `${temp.cpu_temp}°C` : '—'}</span>
+                        <span>${uptimeText ? `${uptimeText} ${Lang.t('nodes.uptime')}` : ''}</span>
+                    </div>
+                    ${isAdmin ? `
+                    <div class="m-actions">
+                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.omenPowerAction('reboot')" title="${Lang.t('nodes.omen_reboot_desc')}">${Lang.t('nodes.reboot')}</button>
+                        <button class="btn btn-sm btn-danger" onclick="Monitoring.omenPowerAction('shutdown')" title="${Lang.t('nodes.omen_shutdown_desc')}">${Lang.t('nodes.shutdown')}</button>
+                    </div>
+                    ` : ''}
                 </div>`;
         }
 
-        // === Cartes des agents (bras) ===
+        // === Agents (arms) ===
         const agentCards = agentNodes.map(node => {
-            const statusColor = node.online ? 'var(--accent-green)' : 'var(--accent-red)';
-            const statusIcon = node.online ? '🟢' : '🔴';
-            const statusText = node.online ? Lang.t('nodes.online') : Lang.t('nodes.offline');
-            const opacity = node.online ? '1' : '0.6';
-
-            // Formater le temps offline
-            let offlineText = '';
-            if (!node.online) {
-                const secs = node.last_seen_seconds_ago;
-                if (secs < 60) offlineText = `${Math.round(secs)}s`;
-                else if (secs < 3600) offlineText = `${Math.round(secs / 60)} min`;
-                else offlineText = `${Math.round(secs / 3600)}h`;
-                offlineText = `${Lang.t('nodes.since')} ${offlineText}`;
-            }
-
-            // Formater l'uptime
-            let uptimeText = '';
-            if (node.uptime_hours < 1) uptimeText = `${Math.round(node.uptime_hours * 60)} min`;
-            else if (node.uptime_hours < 24) uptimeText = `${Math.round(node.uptime_hours)}h`;
-            else uptimeText = `${Math.round(node.uptime_hours / 24)}j ${Math.round(node.uptime_hours % 24)}h`;
+            const uptimeText = fmtUptime(node.uptime_hours);
+            const offlineText = node.online
+                ? ''
+                : `${Lang.t('nodes.since')} ${fmtOfflineSince(node.last_seen_seconds_ago)}`;
 
             return `
-                <div style="background:var(--bg-secondary);border-radius:12px;padding:16px;border:1px solid var(--border-color);opacity:${opacity};transition:all 0.3s;position:relative;">
-                    <div style="position:absolute;top:8px;right:10px;font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(59,130,246,0.15);color:#60a5fa;font-weight:600;letter-spacing:0.3px;">🦾 ${Lang.t('nodes.arm')}</div>
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                        <div>
-                            <div style="font-weight:700;font-size:14px;">${statusIcon} ${node.hostname}</div>
-                            <div style="font-size:11px;color:var(--text-muted);">${node.os}</div>
-                        </div>
-                        <div style="text-align:right;margin-top:14px;">
-                            <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${node.online ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)'};color:${statusColor};">${statusText}</span>
-                            ${!node.online ? `<div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${offlineText}</div>` : ''}
-                        </div>
+                <div class="machine-card arm ${node.online ? '' : 'offline'}">
+                    <div class="m-head">
+                        <span class="dot"></span>
+                        <span class="name">${node.hostname}</span>
+                        <span class="role">${node.os}</span>
                     </div>
                     ${node.online ? `
-                    <div style="display:flex;flex-direction:column;gap:8px;">
-                        <div>
-                            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
-                                <span>CPU <span style="opacity:0.5">(${node.cpu_count}c)</span></span>
-                                <span style="font-weight:600;">${Math.round(node.cpu_percent)}%</span>
-                            </div>
-                            <div style="height:6px;background:var(--bg-primary);border-radius:3px;overflow:hidden;">
-                                <div style="height:100%;width:${Math.min(node.cpu_percent, 100)}%;background:${barColor(node.cpu_percent)};border-radius:3px;transition:width 0.5s;"></div>
-                            </div>
-                        </div>
-                        <div>
-                            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
-                                <span>RAM</span>
-                                <span style="font-weight:600;">${node.ram_used_gb}/${node.ram_total_gb} Go (${Math.round(node.ram_percent)}%)</span>
-                            </div>
-                            <div style="height:6px;background:var(--bg-primary);border-radius:3px;overflow:hidden;">
-                                <div style="height:100%;width:${Math.min(node.ram_percent, 100)}%;background:${barColor(node.ram_percent)};border-radius:3px;transition:width 0.5s;"></div>
-                            </div>
-                        </div>
-                        <div>
-                            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
-                                <span>Disque</span>
-                                <span style="font-weight:600;">${node.disk_used_gb}/${node.disk_total_gb} Go (${Math.round(node.disk_percent)}%)</span>
-                            </div>
-                            <div style="height:6px;background:var(--bg-primary);border-radius:3px;overflow:hidden;">
-                                <div style="height:100%;width:${Math.min(node.disk_percent, 100)}%;background:${barColor(node.disk_percent)};border-radius:3px;transition:width 0.5s;"></div>
-                            </div>
-                        </div>
-                        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-top:4px;">
-                            <span>${node.temperature ? `🌡️ ${node.temperature}°C` : ''}</span>
-                            <span>⏱️ ${uptimeText} ${Lang.t('nodes.uptime')}</span>
-                        </div>
-                        ${Auth.getUser()?.is_admin ? `
-                        <div style="display:flex;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border-color);">
-                            <button class="btn btn-sm btn-secondary" onclick="Monitoring.nodeAction('${node.hostname}', 'reboot')" style="font-size:11px;padding:3px 8px;" title="${Lang.t('nodes.reboot_desc')}">🔄 ${Lang.t('nodes.reboot')}</button>
-                            <button class="btn btn-sm btn-secondary" onclick="Monitoring.nodeAction('${node.hostname}', 'shutdown')" style="font-size:11px;padding:3px 8px;" title="${Lang.t('nodes.shutdown_desc')}">⏻ ${Lang.t('nodes.shutdown')}</button>
-                            <div style="flex:1;"></div>
-                            <button class="btn btn-sm btn-secondary" onclick="Monitoring.removeNode('${node.hostname}')" style="font-size:11px;padding:3px 8px;opacity:0.5;" title="${Lang.t('nodes.remove')}">✕</button>
-                        </div>
-                        ` : ''}
+                    <div class="m-stats">
+                        <div class="m-stat"><div class="l">CPU ${node.cpu_count}c</div><div class="v ${sev(node.cpu_percent)}">${Math.round(node.cpu_percent)}%</div></div>
+                        <div class="m-stat"><div class="l">RAM</div><div class="v ${sev(node.ram_percent)}">${node.ram_used_gb}/${node.ram_total_gb} Go</div></div>
+                        <div class="m-stat"><div class="l">Disk</div><div class="v ${sev(node.disk_percent)}">${node.disk_used_gb}/${node.disk_total_gb} Go</div></div>
                     </div>
+                    <div class="m-meta">
+                        <span>${node.temperature ? `${node.temperature}°C` : '—'}</span>
+                        <span>${uptimeText ? `${uptimeText} ${Lang.t('nodes.uptime')}` : ''}</span>
+                    </div>
+                    ${isAdmin ? `
+                    <div class="m-actions">
+                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.nodeAction('${node.hostname}', 'reboot')" title="${Lang.t('nodes.reboot_desc')}">${Lang.t('nodes.reboot')}</button>
+                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.nodeAction('${node.hostname}', 'shutdown')" title="${Lang.t('nodes.shutdown_desc')}">${Lang.t('nodes.shutdown')}</button>
+                        <div style="flex:1;"></div>
+                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.removeNode('${node.hostname}')" title="${Lang.t('nodes.remove')}">✕</button>
+                    </div>
+                    ` : ''}
                     ` : `
-                    <div style="text-align:center;padding:12px 0;color:var(--text-muted);font-size:12px;">
-                        ⏻ ${Lang.t('nodes.offline')}
-                        ${Auth.getUser()?.is_admin ? `<br><button class="btn btn-sm btn-secondary" onclick="Monitoring.removeNode('${node.hostname}')" style="font-size:10px;padding:2px 6px;margin-top:6px;opacity:0.5;">✕ ${Lang.t('nodes.remove')}</button>` : ''}
+                    <div class="m-offline-msg">
+                        ${Lang.t('nodes.offline')} · ${offlineText}
                     </div>
+                    ${isAdmin ? `
+                    <div class="m-actions">
+                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.removeNode('${node.hostname}')" title="${Lang.t('nodes.remove')}">✕ ${Lang.t('nodes.remove')}</button>
+                    </div>
+                    ` : ''}
                     `}
                 </div>`;
         }).join('');
