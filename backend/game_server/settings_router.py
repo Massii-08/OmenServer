@@ -359,7 +359,7 @@ def update_properties(
         new_content = _build_properties(current, raw)
         _docker_write(server.docker_id, "/data/server.properties", new_content)
 
-        return {"message": "Propriétés mises à jour ✅", "properties": current}
+        return {"message": "Propriétés mises à jour", "properties": current}
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -411,6 +411,6 @@ def update_config_file(
     server = _get_server_or_404(server_id, db)
     try:
         _docker_write(server.docker_id, f"/data/{filename}", request.content)
-        return {"message": f"{filename} mis à jour ✅"}
+        return {"message": f"{filename} mis à jour"}
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))

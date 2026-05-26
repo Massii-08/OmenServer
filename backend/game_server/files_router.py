@@ -155,7 +155,7 @@ def write_file(
 
     try:
         _docker_write(server.docker_id, full_path, request.content)
-        return {"message": f"✅ Fichier sauvegardé", "path": request.path}
+        return {"message": f"Fichier sauvegardé", "path": request.path}
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -173,7 +173,7 @@ def make_directory(
 
     try:
         _docker_exec(server.docker_id, f'mkdir -p "{full_path}"')
-        return {"message": f"✅ Dossier créé", "path": request.path}
+        return {"message": f"Dossier créé", "path": request.path}
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -195,7 +195,7 @@ def delete_file(
 
     try:
         _docker_exec(server.docker_id, f'rm -rf "{full_path}"')
-        return {"message": f"✅ Supprimé", "path": path}
+        return {"message": f"Supprimé", "path": path}
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -214,7 +214,7 @@ def rename_file(
 
     try:
         _docker_exec(server.docker_id, f'mv "{old}" "{new}"')
-        return {"message": f"✅ Renommé", "old": request.old_path, "new": request.new_path}
+        return {"message": f"Renommé", "old": request.old_path, "new": request.new_path}
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -277,7 +277,7 @@ async def upload_file(
         size_mb = round(len(content) / (1024 * 1024), 2)
         logger.info(f"Fichier uploadé: {filename} ({size_mb} Mo) -> {dest_dir}")
         return {
-            "message": f"✅ {filename} uploadé ({size_mb} Mo)",
+            "message": f"{filename} uploadé ({size_mb} Mo)",
             "filename": filename,
             "path": path,
         }

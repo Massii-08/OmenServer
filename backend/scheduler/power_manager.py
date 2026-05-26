@@ -223,7 +223,7 @@ def graceful_shutdown() -> dict:
                         backup_type="auto",
                     )
                     summary["backups_created"] += 1
-                    logger.info(f"🌙 Backup pré-extinction: '{server.name}' ✅")
+                    logger.info(f"🌙 Backup pré-extinction: '{server.name}'")
                 except Exception as e:
                     error_msg = f"Backup '{server.name}' échoué: {e}"
                     summary["errors"].append(error_msg)
@@ -236,7 +236,7 @@ def graceful_shutdown() -> dict:
                     docker_manager.stop_container(server.docker_id)
                     server.status = "stopped"
                     summary["servers_stopped"] += 1
-                    logger.info(f"🌙 Serveur arrêté: '{server.name}' ✅")
+                    logger.info(f"🌙 Serveur arrêté: '{server.name}'")
                 except Exception as e:
                     error_msg = f"Arrêt '{server.name}' échoué: {e}"
                     summary["errors"].append(error_msg)
@@ -249,7 +249,7 @@ def graceful_shutdown() -> dict:
                 from backend.bots.router import _stop_bot_process
                 _stop_bot_process(bot, db)
                 summary["bots_stopped"] += 1
-                logger.info(f"🌙 Bot arrêté: '{bot.name}' ✅")
+                logger.info(f"🌙 Bot arrêté: '{bot.name}'")
             except Exception as e:
                 error_msg = f"Arrêt bot '{bot.name}' échoué: {e}"
                 summary["errors"].append(error_msg)

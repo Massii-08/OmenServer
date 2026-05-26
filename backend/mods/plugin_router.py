@@ -83,7 +83,7 @@ def install_plugin(
             filename=request.filename,
         )
         return {
-            "message": f"✅ Plugin '{request.plugin_name}' installé !",
+            "message": f"Plugin '{request.plugin_name}' installé !",
             "filename": filename,
         }
     except RuntimeError as e:
@@ -123,6 +123,6 @@ def remove_plugin(
 
     try:
         plugin_manager.remove_plugin(server.docker_id, filename)
-        return {"message": f"✅ Plugin '{filename}' supprimé"}
+        return {"message": f"Plugin '{filename}' supprimé"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

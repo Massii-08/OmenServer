@@ -111,7 +111,7 @@ def add_op(
         "bypassesPlayerLimit": False,
     })
     _write_player_file(server.docker_id, "ops", players)
-    return {"message": f"✅ {request.name} ajouté comme opérateur"}
+    return {"message": f"{request.name} ajouté comme opérateur"}
 
 
 @router.delete("/{server_id}/players/ops/{name}")
@@ -126,7 +126,7 @@ def remove_op(
     players = _read_player_file(server.docker_id, "ops")
     players = [p for p in players if p.get("name", "").lower() != name.lower()]
     _write_player_file(server.docker_id, "ops", players)
-    return {"message": f"✅ {name} retiré des opérateurs"}
+    return {"message": f"{name} retiré des opérateurs"}
 
 
 # --- Routes Whitelist ---
@@ -162,7 +162,7 @@ def add_whitelist(
         "name": request.name,
     })
     _write_player_file(server.docker_id, "whitelist", players)
-    return {"message": f"✅ {request.name} ajouté à la whitelist"}
+    return {"message": f"{request.name} ajouté à la whitelist"}
 
 
 @router.delete("/{server_id}/players/whitelist/{name}")
@@ -177,7 +177,7 @@ def remove_whitelist(
     players = _read_player_file(server.docker_id, "whitelist")
     players = [p for p in players if p.get("name", "").lower() != name.lower()]
     _write_player_file(server.docker_id, "whitelist", players)
-    return {"message": f"✅ {name} retiré de la whitelist"}
+    return {"message": f"{name} retiré de la whitelist"}
 
 
 # --- Routes Bannis ---
@@ -215,7 +215,7 @@ def ban_player(
         "source": "OmenServer",
     })
     _write_player_file(server.docker_id, "banned", players)
-    return {"message": f"✅ {request.name} banni du serveur"}
+    return {"message": f"{request.name} banni du serveur"}
 
 
 @router.delete("/{server_id}/players/banned/{name}")
@@ -230,4 +230,4 @@ def unban_player(
     players = _read_player_file(server.docker_id, "banned")
     players = [p for p in players if p.get("name", "").lower() != name.lower()]
     _write_player_file(server.docker_id, "banned", players)
-    return {"message": f"✅ {name} débanni"}
+    return {"message": f"{name} débanni"}

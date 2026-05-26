@@ -98,7 +98,7 @@ def grant_access(
     db.add(access)
     db.commit()
 
-    logger.info(f"✅ Accès accordé: {data.resource_type}#{data.resource_id} → {target_user.username} ({data.access_level})")
+    logger.info(f"Accès accordé: {data.resource_type}#{data.resource_id} → {target_user.username} ({data.access_level})")
     return {
         "message": f"Accès accordé à {target_user.username} ({data.access_level})",
         "access_id": access.id,

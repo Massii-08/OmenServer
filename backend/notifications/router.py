@@ -99,7 +99,7 @@ def update_settings(
 ):
     """Sauvegarde les réglages de notification."""
     _save_settings(settings.dict())
-    return {"message": "✅ Réglages sauvegardés", **settings.dict()}
+    return {"message": "Réglages sauvegardés", **settings.dict()}
 
 
 @router.post("/test")
@@ -118,4 +118,4 @@ async def test_webhook(current_user: User = Depends(get_current_user)):
         server_name="Test",
     )
 
-    return {"message": "✅ Notification test envoyée !"}
+    return {"message": "Notification test envoyée !"}

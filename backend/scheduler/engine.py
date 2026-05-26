@@ -58,7 +58,7 @@ def _execute_task(task_id: int):
                         )
                         # Rotation auto : garder max 10 backups auto
                         backup_manager.cleanup_old_backups(server.id, keep=10, backup_type="auto")
-                        logger.info(f"✅ Backup auto réussi: {result.get('filename', '?')}")
+                        logger.info(f"Backup auto réussi: {result.get('filename', '?')}")
                     except Exception as e:
                         logger.error(f"❌ Backup auto échoué: {e}")
 
@@ -68,7 +68,7 @@ def _execute_task(task_id: int):
                         docker_manager.stop_container(server.docker_id)
                         docker_manager.start_container(server.docker_id)
                         server.status = "running"
-                        logger.info(f"✅ Restart auto réussi: '{server.name}'")
+                        logger.info(f"Restart auto réussi: '{server.name}'")
                     except Exception as e:
                         logger.error(f"❌ Restart auto échoué: {e}")
 
@@ -87,14 +87,14 @@ def _execute_task(task_id: int):
                 if task.task_type == "bot_start":
                     if bot.status != "running":
                         _start_bot_process(bot, db)
-                        logger.info(f"✅ Bot '{bot.name}' démarré par scheduler")
+                        logger.info(f"Bot '{bot.name}' démarré par scheduler")
                     else:
                         logger.info(f"ℹ️ Bot '{bot.name}' déjà en cours")
 
                 elif task.task_type == "bot_stop":
                     if bot.status == "running":
                         _stop_bot_process(bot, db)
-                        logger.info(f"✅ Bot '{bot.name}' arrêté par scheduler")
+                        logger.info(f"Bot '{bot.name}' arrêté par scheduler")
                     else:
                         logger.info(f"ℹ️ Bot '{bot.name}' déjà arrêté")
 
@@ -102,7 +102,7 @@ def _execute_task(task_id: int):
                     if bot.status == "running":
                         _stop_bot_process(bot, db)
                     _start_bot_process(bot, db)
-                    logger.info(f"✅ Bot '{bot.name}' redémarré par scheduler")
+                    logger.info(f"Bot '{bot.name}' redémarré par scheduler")
 
             except Exception as e:
                 logger.error(f"❌ Tâche bot échouée: {e}")

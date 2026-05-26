@@ -177,7 +177,7 @@ def install_workshop_mod(container_id: str, app_id: int, workshop_id: str) -> di
             logger.warning(f"SteamCMD output inattendu: {output[-300:]}")
 
         mod_path = f"{WORKSHOP_BASE_PATH}/{app_id}/{workshop_id}"
-        logger.info(f"✅ Workshop {workshop_id} installé → {mod_path}")
+        logger.info(f"Workshop {workshop_id} installé → {mod_path}")
 
         return {
             "success": True,

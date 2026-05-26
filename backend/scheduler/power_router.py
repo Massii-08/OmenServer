@@ -108,7 +108,7 @@ def update_schedule(
         from backend.scheduler.engine import update_power_job
         update_power_job(config)
 
-        return {"message": "✅ Planning d'extinction mis à jour", "config": config}
+        return {"message": "Planning d'extinction mis à jour", "config": config}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -154,7 +154,7 @@ def cancel_scheduled_shutdown(current_user: User = Depends(get_current_user)):
             capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0:
-            return {"message": "✅ Shutdown programmé annulé"}
+            return {"message": "Shutdown programmé annulé"}
         else:
             return {"message": "ℹ️ Aucun shutdown programmé à annuler"}
     except Exception as e:
@@ -206,7 +206,7 @@ def reboot_server(current_user: User = Depends(get_current_user)):
             if result.returncode != 0:
                 logger.error(f"❌ Reboot échoué (code {result.returncode}): {result.stderr}")
             else:
-                logger.info(f"✅ Commande reboot envoyée: {result.stdout}")
+                logger.info(f"Commande reboot envoyée: {result.stdout}")
         except subprocess.TimeoutExpired:
             logger.error("❌ Reboot timeout — la commande a pris trop de temps")
         except Exception as e:
@@ -263,7 +263,7 @@ def shutdown_server(current_user: User = Depends(get_current_user)):
             if result.returncode != 0:
                 logger.error(f"❌ Shutdown échoué (code {result.returncode}): {result.stderr}")
             else:
-                logger.info(f"✅ Commande shutdown envoyée: {result.stdout}")
+                logger.info(f"Commande shutdown envoyée: {result.stdout}")
         except subprocess.TimeoutExpired:
             logger.error("❌ Shutdown timeout — la commande a pris trop de temps")
         except Exception as e:

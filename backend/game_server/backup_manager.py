@@ -241,7 +241,7 @@ def rename_backup(server_id: int, backup_id: str, new_name: str, backup_type: st
         "id": new_id,
         "filename": new_path.name,
         "size_mb": round(stat.st_size / (1024 * 1024), 1),
-        "message": "Sauvegarde renommée ✅",
+        "message": "Sauvegarde renommée",
     }
 
 
