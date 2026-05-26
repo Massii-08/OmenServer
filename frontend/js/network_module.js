@@ -116,38 +116,30 @@ const NetworkModule = {
         if (!el) return;
         const s = this._status;
 
-        const qualityColors = {
-            excellent: '#22c55e', good: '#22c55e', average: '#f59e0b',
-            poor: '#ef4444', offline: '#ef4444'
-        };
-        const latencyColor = qualityColors[s.quality] || '#6b7280';
+        // Map quality to Bento semantic classes
+        const qualityClass = {
+            excellent: 'up', good: 'up', average: 'alert',
+            poor: 'down', offline: 'down'
+        }[s.quality] || '';
 
+        // PR 9 — Bento overview grid, 4 stats single row
         el.innerHTML = `
-            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
-                <div class="card" style="text-align:center;">
-                    <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('net.status')}</div>
-                    <div style="font-size:20px;font-weight:700;color:${latencyColor};">
-                        ${s.quality_label}
-                    </div>
+            <div class="bento-overview" style="grid-template-columns:1fr 1fr 1fr 1fr;grid-template-rows:1fr;">
+                <div class="stat-card">
+                    <div class="label">${Lang.t('net.status')}</div>
+                    <div class="value"><span class="delta ${qualityClass}">${s.quality_label}</span></div>
                 </div>
-                <div class="card" style="text-align:center;">
-                    <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('net.latency')}</div>
-                    <div style="font-size:24px;font-weight:700;">
-                        ${s.latency_ms !== null ? s.latency_ms : '--'}
-                        <span style="font-size:14px;color:var(--text-muted);">ms</span>
-                    </div>
+                <div class="stat-card">
+                    <div class="label">${Lang.t('net.latency')}</div>
+                    <div class="value">${s.latency_ms !== null ? s.latency_ms : '--'}<span class="unit">ms</span></div>
                 </div>
-                <div class="card" style="text-align:center;">
-                    <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('net.public_ip')}</div>
-                    <div style="font-size:14px;font-weight:600;font-family:monospace;">
-                        ${s.public_ip || '--'}
-                    </div>
+                <div class="stat-card">
+                    <div class="label">${Lang.t('net.public_ip')}</div>
+                    <div class="value" style="font-size:18px;letter-spacing:0;">${s.public_ip || '--'}</div>
                 </div>
-                <div class="card" style="text-align:center;">
-                    <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('net.local_ip')}</div>
-                    <div style="font-size:14px;font-weight:600;font-family:monospace;">
-                        ${s.local_ip || '--'}
-                    </div>
+                <div class="stat-card">
+                    <div class="label">${Lang.t('net.local_ip')}</div>
+                    <div class="value" style="font-size:18px;letter-spacing:0;">${s.local_ip || '--'}</div>
                 </div>
             </div>`;
     },
@@ -205,18 +197,18 @@ const NetworkModule = {
                 st.innerHTML = `
                     <div class="card">
                         <h3 style="margin:0 0 16px;font-size:15px;">${Lang.t('net.speedtest_results')}</h3>
-                        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
-                            <div style="text-align:center;padding:12px;background:var(--bg-primary);border-radius:8px;">
-                                <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">${Lang.t('net.latency')}</div>
-                                <div style="font-size:20px;font-weight:700;">${data.latency_ms || '--'} <span style="font-size:12px;color:var(--text-muted);">ms</span></div>
+                        <div class="bento-overview" style="grid-template-columns:1fr 1fr 1fr;grid-template-rows:1fr;gap:8px;">
+                            <div class="stat-card" style="padding:var(--s-3);">
+                                <div class="label">${Lang.t('net.latency')}</div>
+                                <div class="value" style="font-size:22px;">${data.latency_ms || '--'}<span class="unit">ms</span></div>
                             </div>
-                            <div style="text-align:center;padding:12px;background:var(--bg-primary);border-radius:8px;">
-                                <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Download</div>
-                                <div style="font-size:20px;font-weight:700;color:var(--accent-green);">${data.download_mbps || '--'} <span style="font-size:12px;color:var(--text-muted);">Mbps</span></div>
+                            <div class="stat-card" style="padding:var(--s-3);">
+                                <div class="label">Download</div>
+                                <div class="value" style="font-size:22px;color:var(--accent);">${data.download_mbps || '--'}<span class="unit">Mbps</span></div>
                             </div>
-                            <div style="text-align:center;padding:12px;background:var(--bg-primary);border-radius:8px;">
-                                <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Upload</div>
-                                <div style="font-size:20px;font-weight:700;color:var(--accent-blue);">${data.upload_mbps || '--'} <span style="font-size:12px;color:var(--text-muted);">Mbps</span></div>
+                            <div class="stat-card" style="padding:var(--s-3);">
+                                <div class="label">Upload</div>
+                                <div class="value" style="font-size:22px;color:var(--info);">${data.upload_mbps || '--'}<span class="unit">Mbps</span></div>
                             </div>
                         </div>
                     </div>`;
