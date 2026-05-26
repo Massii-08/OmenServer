@@ -26,35 +26,35 @@ const SvMonitoring = {
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.mon.desc')}</p>
 
         <div id="sv-mon-status" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">
-            <div style="background:var(--bg-secondary);padding:14px;border-radius:10px;text-align:center;border-top:3px solid var(--accent-blue);">
+            <div style="background:var(--bg-elev-1);padding:14px;border-radius:10px;text-align:center;border-top:3px solid var(--info);">
                 <div style="font-size:11px;color:var(--text-muted);">⚡ CPU</div>
-                <div id="sv-mon-cpu" style="font-size:24px;font-weight:700;color:var(--accent-blue);">—</div>
+                <div id="sv-mon-cpu" style="font-size:24px;font-weight:700;color:var(--info);">—</div>
                 <div id="sv-mon-cpu-info" style="font-size:10px;color:var(--text-muted);margin-top:2px;">—</div>
             </div>
-            <div style="background:var(--bg-secondary);padding:14px;border-radius:10px;text-align:center;border-top:3px solid var(--accent-green);">
+            <div style="background:var(--bg-elev-1);padding:14px;border-radius:10px;text-align:center;border-top:3px solid var(--accent);">
                 <div style="font-size:11px;color:var(--text-muted);">🧠 RAM</div>
-                <div id="sv-mon-ram" style="font-size:24px;font-weight:700;color:var(--accent-green);">—</div>
+                <div id="sv-mon-ram" style="font-size:24px;font-weight:700;color:var(--accent);">—</div>
                 <div id="sv-mon-ram-info" style="font-size:10px;color:var(--text-muted);margin-top:2px;">—</div>
             </div>
-            <div style="background:var(--bg-secondary);padding:14px;border-radius:10px;text-align:center;border-top:3px solid #f59e0b;">
+            <div style="background:var(--bg-elev-1);padding:14px;border-radius:10px;text-align:center;border-top:3px solid #f59e0b;">
                 <div style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.mon.net_in')}</div>
                 <div id="sv-mon-rx" style="font-size:24px;font-weight:700;color:#f59e0b;">—</div>
             </div>
-            <div style="background:var(--bg-secondary);padding:14px;border-radius:10px;text-align:center;border-top:3px solid #a78bfa;">
+            <div style="background:var(--bg-elev-1);padding:14px;border-radius:10px;text-align:center;border-top:3px solid #a78bfa;">
                 <div style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.mon.net_out')}</div>
                 <div id="sv-mon-tx" style="font-size:24px;font-weight:700;color:#a78bfa;">—</div>
             </div>
         </div>
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
+            <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                     <span style="font-size:13px;font-weight:600;">⚡ CPU</span>
                     <span id="sv-mon-cpu-peak" style="font-size:10px;color:var(--text-muted);">${Lang.t('sv.mon.peak')}: —</span>
                 </div>
                 <canvas id="sv-mon-cpu-chart" height="180"></canvas>
             </div>
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
+            <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                     <span style="font-size:13px;font-weight:600;">🧠 RAM</span>
                     <span id="sv-mon-ram-peak" style="font-size:10px;color:var(--text-muted);">${Lang.t('sv.mon.peak')}: —</span>
@@ -63,14 +63,14 @@ const SvMonitoring = {
             </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
+            <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                     <span style="font-size:13px;font-weight:600;">${Lang.t('sv.mon.net_in_label')}</span>
                     <span id="sv-mon-rx-total" style="font-size:10px;color:var(--text-muted);">total: —</span>
                 </div>
                 <canvas id="sv-mon-rx-chart" height="140"></canvas>
             </div>
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
+            <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                     <span style="font-size:13px;font-weight:600;">${Lang.t('sv.mon.net_out_label')}</span>
                     <span id="sv-mon-tx-total" style="font-size:10px;color:var(--text-muted);">total: —</span>

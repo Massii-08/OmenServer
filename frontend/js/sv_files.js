@@ -33,12 +33,12 @@ const SvFiles = {
 
     _breadcrumb() {
         const parts = this._currentPath.split('/').filter(Boolean);
-        let html = `<span style="cursor:pointer;color:var(--accent-blue);" onclick="SvFiles._navigate('/')">🏠 Home</span>`;
+        let html = `<span style="cursor:pointer;color:var(--info);" onclick="SvFiles._navigate('/')">🏠 Home</span>`;
         let path = '';
         for (const part of parts) {
             path += '/' + part;
             const p = path;
-            html += ` <span style="color:var(--text-muted);">/</span> <span style="cursor:pointer;color:var(--accent-blue);" onclick="SvFiles._navigate('${p}')">${part}</span>`;
+            html += ` <span style="color:var(--text-muted);">/</span> <span style="cursor:pointer;color:var(--info);" onclick="SvFiles._navigate('${p}')">${part}</span>`;
         }
         return html;
     },
@@ -61,7 +61,7 @@ const SvFiles = {
         }
 
         let html = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
-            <thead><tr style="border-bottom:2px solid var(--border-color);text-align:left;">
+            <thead><tr style="border-bottom:2px solid var(--border);text-align:left;">
                 <th style="padding:8px;">${Lang.t('sv.files.name')}</th>
                 <th style="padding:8px;width:100px;">${Lang.t('sv.files.size')}</th>
                 <th style="padding:8px;width:150px;">${Lang.t('sv.files.modified')}</th>
@@ -70,7 +70,7 @@ const SvFiles = {
 
         if (this._currentPath !== '/') {
             const parent = this._currentPath.split('/').slice(0, -1).join('/') || '/';
-            html += `<tr style="cursor:pointer;border-bottom:1px solid var(--border-color);" onclick="SvFiles._navigate('${parent}')">
+            html += `<tr style="cursor:pointer;border-bottom:1px solid var(--border);" onclick="SvFiles._navigate('${parent}')">
                 <td style="padding:8px;">⬆️ <strong>..</strong></td><td></td><td></td><td></td></tr>`;
         }
 
@@ -81,7 +81,7 @@ const SvFiles = {
             const safePath = fullPath.replace(/'/g, "\\'");
 
             if (f.is_dir) {
-                html += `<tr style="cursor:pointer;border-bottom:1px solid var(--border-color);" onmouseover="this.style.background='rgba(59,130,246,0.05)'" onmouseout="this.style.background='transparent'" onclick="SvFiles._navigate('${safePath}')">
+                html += `<tr style="cursor:pointer;border-bottom:1px solid var(--border);" onmouseover="this.style.background='rgba(59,130,246,0.05)'" onmouseout="this.style.background='transparent'" onclick="SvFiles._navigate('${safePath}')">
                     <td style="padding:8px;">${icon} <strong>${f.name}</strong></td>
                     <td style="padding:8px;color:var(--text-muted);">${size}</td>
                     <td style="padding:8px;color:var(--text-muted);font-size:11px;">${f.modified}</td>
@@ -92,7 +92,7 @@ const SvFiles = {
                 </tr>`;
             } else {
                 const editable = this._isEditable(f.name);
-                html += `<tr style="cursor:pointer;border-bottom:1px solid var(--border-color);" onmouseover="this.style.background='rgba(59,130,246,0.05)'" onmouseout="this.style.background='transparent'" onclick="${editable ? `SvFiles._openFile('${safePath}')` : ''}">
+                html += `<tr style="cursor:pointer;border-bottom:1px solid var(--border);" onmouseover="this.style.background='rgba(59,130,246,0.05)'" onmouseout="this.style.background='transparent'" onclick="${editable ? `SvFiles._openFile('${safePath}')` : ''}">
                     <td style="padding:8px;">${icon} ${f.name}</td>
                     <td style="padding:8px;color:var(--text-muted);">${size}</td>
                     <td style="padding:8px;color:var(--text-muted);font-size:11px;">${f.modified}</td>
@@ -124,7 +124,7 @@ const SvFiles = {
         if (!el) return;
         this._editing = path;
         const fileName = path.split('/').pop();
-        if (bc) bc.innerHTML = this._breadcrumb() + ` <span style="color:var(--text-muted);">/</span> <span style="color:var(--accent-green);">✏️ ${fileName}</span>`;
+        if (bc) bc.innerHTML = this._breadcrumb() + ` <span style="color:var(--text-muted);">/</span> <span style="color:var(--accent);">✏️ ${fileName}</span>`;
         el.innerHTML = `<div style="color:var(--text-muted)">${Lang.t('sv.files.loading_file')}</div>`;
 
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/files/content?path=${encodeURIComponent(path)}`);
@@ -149,12 +149,12 @@ const SvFiles = {
                 <button class="btn btn-primary btn-sm" onclick="SvFiles._saveFile('${safePath}')">${Lang.t('sv.files.save')}</button>
             </div>
         </div>
-        <div style="position:relative;border:1px solid var(--border-color);border-radius:8px;overflow:hidden;">
+        <div style="position:relative;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
             <div style="display:flex;">
                 <div id="sv-file-lines" style="width:45px;background:rgba(0,0,0,0.2);padding:12px 8px;text-align:right;font-family:'Fira Code',monospace;font-size:12px;line-height:1.6;color:var(--text-muted);user-select:none;overflow:hidden;">
                     ${Array.from({length: lineCount}, (_, i) => i + 1).join('<br>')}
                 </div>
-                <textarea id="sv-file-editor" spellcheck="false" style="flex:1;height:calc(100vh - 320px);min-height:400px;font-family:'Fira Code','Courier New',monospace;font-size:12px;background:var(--bg-secondary);color:var(--text-primary);border:none;padding:12px;resize:none;line-height:1.6;tab-size:4;outline:none;white-space:pre;overflow-wrap:normal;overflow-x:auto;">${this._escapeHtml(data.content)}</textarea>
+                <textarea id="sv-file-editor" spellcheck="false" style="flex:1;height:calc(100vh - 320px);min-height:400px;font-family:'Fira Code','Courier New',monospace;font-size:12px;background:var(--bg-elev-1);color:var(--text);border:none;padding:12px;resize:none;line-height:1.6;tab-size:4;outline:none;white-space:pre;overflow-wrap:normal;overflow-x:auto;">${this._escapeHtml(data.content)}</textarea>
             </div>
         </div>`;
 
@@ -191,13 +191,13 @@ const SvFiles = {
         const textarea = document.getElementById('sv-file-editor');
         const msg = document.getElementById('sv-file-msg');
         if (!textarea) return;
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.files.saving'); }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('sv.files.saving'); }
 
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/files/content`, {
             method: 'PUT', body: JSON.stringify({path, content: textarea.value})
         });
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('sv.files.saved'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.files.saved'); }
             setTimeout(() => { if (msg) msg.textContent = ''; }, 2000);
         } else {
             if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
@@ -263,7 +263,7 @@ const SvFiles = {
         for (let i = 0; i < fileList.length; i++) {
             const f = fileList[i];
             if (prog) {
-                prog.innerHTML = `<div style="padding:8px 12px;background:var(--bg-secondary);border-radius:6px;font-size:12px;">
+                prog.innerHTML = `<div style="padding:8px 12px;background:var(--bg-elev-1);border-radius:6px;font-size:12px;">
                     ⏳ Upload ${i+1}/${fileList.length} : <strong>${f.name}</strong> (${(f.size/1024/1024).toFixed(2)} Mo)...
                 </div>`;
             }
@@ -287,8 +287,8 @@ const SvFiles = {
         if (inp) inp.value = '';
 
         if (prog) {
-            const color = fail === 0 ? 'var(--accent-green)' : '#e74c3c';
-            prog.innerHTML = `<div style="padding:8px 12px;background:var(--bg-secondary);border-radius:6px;font-size:12px;color:${color};">
+            const color = fail === 0 ? 'var(--accent)' : '#e74c3c';
+            prog.innerHTML = `<div style="padding:8px 12px;background:var(--bg-elev-1);border-radius:6px;font-size:12px;color:${color};">
                 ${fail === 0 ? '✅' : '⚠️'} ${success} ${Lang.t('sv.files.uploaded')}${fail > 0 ? `, ${fail} ${Lang.t('sv.files.upload_errors')}` : ''}
             </div>`;
             setTimeout(() => { prog.style.display = 'none'; }, 4000);

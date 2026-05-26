@@ -38,7 +38,7 @@ const ServerView = {
             statusText = `<span class="spinner-sm"></span> ${labels[this._pendingAction] || '⏳...'}`;
             actionBtns = `<button class="btn btn-sm btn-secondary" disabled style="opacity:0.5;width:100%;">${Lang.t('sv.wait')}</button>`;
         } else if (isRunning) {
-            statusColor = 'var(--accent-green)';
+            statusColor = 'var(--accent)';
             statusText = '● ' + Lang.t('sv.running').replace(/^🟢\s*/, '');
             actionBtns = canManage ? `
                 <button class="btn btn-sm btn-secondary" onclick="ServerView.action('stop')">⏹</button>
@@ -165,7 +165,7 @@ const ServerView = {
             statusText = `<span class="spinner-sm"></span> ${labels[this._pendingAction] || '⏳...'}`;
             actionBtns = `<button class="btn btn-sm btn-secondary" disabled style="opacity:0.5;width:100%;">${Lang.t('sv.wait')}</button>`;
         } else if (isRunning) {
-            statusColor = 'var(--accent-green)';
+            statusColor = 'var(--accent)';
             statusText = '● ' + Lang.t('sv.running').replace(/^🟢\s*/, '');
             actionBtns = canManage ? `
                 <button class="btn btn-sm btn-secondary" onclick="ServerView.action('stop')">⏹</button>
@@ -226,7 +226,7 @@ const ServerView = {
             const labels = { start: Lang.t('sv.starting'), stop: Lang.t('sv.stopping'), restart: Lang.t('sv.restarting') };
             uptimeHtml = `<span style="color:#f59e0b;font-weight:600;"><span class="spinner-sm"></span> ${labels[this._pendingAction]}</span>`;
         } else if (isRunning) {
-            uptimeHtml = '<span style="color:var(--accent-green);font-weight:600;">● ' + Lang.t('gs.online') + '</span>';
+            uptimeHtml = '<span style="color:var(--accent);font-weight:600;">● ' + Lang.t('gs.online') + '</span>';
         } else {
             uptimeHtml = '<span style="color:var(--text-muted);">○ ' + Lang.t('gs.offline') + '</span>';
         }
@@ -264,27 +264,27 @@ const ServerView = {
 
         <!-- Stats principales -->
         <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px;">
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;text-align:center;">
+            <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;text-align:center;">
                 <div style="font-size:24px;margin-bottom:4px;">${gameIcon}</div>
                 <div style="font-size:12px;color:var(--text-muted);">${Lang.t('sv.game')}</div>
                 <div style="font-size:14px;font-weight:600;margin-top:2px;">${gameName}</div>
             </div>
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;text-align:center;">
+            <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;text-align:center;">
                 <div style="font-size:24px;margin-bottom:4px;">📡</div>
                 <div style="font-size:12px;color:var(--text-muted);">${Lang.t('sv.status')}</div>
                 <div style="font-size:14px;margin-top:2px;">${uptimeHtml}</div>
             </div>
-            <div style="background:${isRunning ? 'linear-gradient(135deg, rgba(59,130,246,0.1), rgba(139,92,246,0.1))' : 'var(--bg-secondary)'};padding:16px;border-radius:10px;text-align:center;border:${isRunning ? '1px solid rgba(59,130,246,0.2)' : 'none'};">
+            <div style="background:${isRunning ? 'linear-gradient(135deg, rgba(59,130,246,0.1), rgba(139,92,246,0.1))' : 'var(--bg-elev-1)'};padding:16px;border-radius:10px;text-align:center;border:${isRunning ? '1px solid rgba(59,130,246,0.2)' : 'none'};">
                 <div style="font-size:24px;margin-bottom:4px;">👥</div>
                 <div style="font-size:12px;color:var(--text-muted);">${Lang.t('sv.players')}</div>
-                <div style="font-size:14px;font-weight:600;margin-top:2px;color:${isRunning ? 'var(--accent-blue)' : 'var(--text-muted)'};" id="sv-dash-players">${isRunning ? `${s.player_count || 0}/${s.player_max || 20}` : '—'}</div>
+                <div style="font-size:14px;font-weight:600;margin-top:2px;color:${isRunning ? 'var(--info)' : 'var(--text-muted)'};" id="sv-dash-players">${isRunning ? `${s.player_count || 0}/${s.player_max || 20}` : '—'}</div>
             </div>
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;text-align:center;">
+            <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;text-align:center;">
                 <div style="font-size:24px;margin-bottom:4px;">🧠</div>
                 <div style="font-size:12px;color:var(--text-muted);">RAM</div>
                 <div style="font-size:14px;font-weight:600;margin-top:2px;" id="sv-dash-ram">${((s.memory_mb||1024) / 1024).toFixed(1).replace(/\.0$/, '')} Go</div>
             </div>
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;text-align:center;">
+            <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;text-align:center;">
                 <div style="font-size:24px;margin-bottom:4px;">⚡</div>
                 <div style="font-size:12px;color:var(--text-muted);">CPU</div>
                 <div style="font-size:14px;font-weight:600;margin-top:2px;" id="sv-dash-cpu">${s.cpu_percent||100}%</div>
@@ -293,27 +293,27 @@ const ServerView = {
 
         <!-- Infos connexion (style Minestrator) -->
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;display:flex;align-items:center;gap:14px;">
+            <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;display:flex;align-items:center;gap:14px;">
                 <div style="width:44px;height:44px;border-radius:50%;background:rgba(74,222,128,0.1);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
                     <span style="font-size:22px;">📍</span>
                 </div>
                 <div style="flex:1;min-width:0;">
                     <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
                         <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText('${addr}');this.textContent='✅';setTimeout(()=>this.textContent='📋',1200)" style="padding:2px 6px;font-size:11px;">📋</button>
-                        <span style="font-family:monospace;font-size:15px;font-weight:700;color:var(--accent-green);">${addr}</span>
+                        <span style="font-family:monospace;font-size:15px;font-weight:700;color:var(--accent);">${addr}</span>
                     </div>
                     <div style="display:flex;align-items:center;gap:8px;">
                         ${displayAlias ? `
                             <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText('${displayAlias}');this.textContent='✅';setTimeout(()=>this.textContent='📋',1200)" style="padding:2px 6px;font-size:11px;">📋</button>
-                            <span style="font-family:monospace;font-size:14px;color:var(--text-primary);">${displayAlias}</span>
+                            <span style="font-family:monospace;font-size:14px;color:var(--text);">${displayAlias}</span>
                         ` : `
                             <span style="font-size:12px;color:var(--text-muted);font-style:italic;">${Lang.t('sv.no_alias')}</span>
                         `}
-                        ${isOwnerOrAdmin ? `<button class="btn btn-secondary btn-sm" onclick="ServerView._editAlias()" style="padding:3px 10px;font-size:11px;color:var(--accent-green);border-color:var(--accent-green);">✏️ ${Lang.t('sv.edit_alias')}</button>` : ''}
+                        ${isOwnerOrAdmin ? `<button class="btn btn-secondary btn-sm" onclick="ServerView._editAlias()" style="padding:3px 10px;font-size:11px;color:var(--accent);border-color:var(--accent);">✏️ ${Lang.t('sv.edit_alias')}</button>` : ''}
                     </div>
                 </div>
             </div>
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
+            <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;">
                 <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">🏷️ Version</div>
                 <div style="font-size:16px;font-weight:600;" data-version-display>${(s.server_type||'VANILLA')} · v${s.version === 'LATEST' ? (this._resolvedVersion || 'latest') : (s.version||'?')}</div>
             </div>
@@ -332,13 +332,13 @@ const ServerView = {
         </div>` : ''}
 
         <!-- Stats Docker live -->
-        <div id="sv-dash-docker" style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
+        <div id="sv-dash-docker" style="background:var(--bg-elev-1);padding:16px;border-radius:10px;">
             <div style="font-size:13px;font-weight:600;margin-bottom:8px;">🐳 Docker — Ressources en temps réel</div>
             <div style="color:var(--text-muted);font-size:12px;">⏳ ${Lang.t('common.loading')}</div>
         </div>
 
         ${canManage ? `<!-- Mini-logs (manage only) -->
-        <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;margin-top:16px;">
+        <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-top:16px;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
                 <span style="font-size:13px;font-weight:600;">${Lang.t('sv.last_logs')}</span>
                 <div style="display:flex;gap:6px;align-items:center;">
@@ -357,7 +357,7 @@ const ServerView = {
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
             <h2 style="margin:0;">💻 Console</h2>
             <div style="display:flex;gap:8px;">
-                <span id="sv-console-status" style="font-size:11px;padding:4px 8px;border-radius:4px;background:var(--bg-secondary);color:var(--text-muted);">⏳ ${Lang.t('gs.connecting')}</span>
+                <span id="sv-console-status" style="font-size:11px;padding:4px 8px;border-radius:4px;background:var(--bg-elev-1);color:var(--text-muted);">⏳ ${Lang.t('gs.connecting')}</span>
                 <button class="btn btn-secondary btn-sm" onclick="document.getElementById('sv-console-logs').innerHTML=''">🗑 ${Lang.t('sv.console_clear')}</button>
             </div>
         </div>
@@ -436,7 +436,7 @@ const ServerView = {
         const statusEl = document.getElementById('sv-console-status');
 
         this._ws.onopen = () => {
-            if (statusEl) { statusEl.textContent = '🟢 Connecté'; statusEl.style.color = 'var(--accent-green)'; }
+            if (statusEl) { statusEl.textContent = '🟢 Connecté'; statusEl.style.color = 'var(--accent)'; }
             this._appendLog('--- Console connectée ---', '#22c55e');
         };
 
@@ -486,7 +486,7 @@ const ServerView = {
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">${Lang.t('sv.bk.desc')}</p>
         
         <!-- Formulaire de création manuelle -->
-        <div style="background:var(--bg-secondary);padding:14px;border-radius:10px;margin-bottom:16px;">
+        <div style="background:var(--bg-elev-1);padding:14px;border-radius:10px;margin-bottom:16px;">
             <div style="font-size:13px;font-weight:600;margin-bottom:8px;">${Lang.t('sv.bk.new')}</div>
             <div style="display:flex;gap:8px;align-items:center;">
                 <input id="sv-backup-name" class="form-input" placeholder="${Lang.t('sv.bk.name_hint')}" style="flex:1;" />
@@ -537,15 +537,15 @@ const ServerView = {
         // Info banner
         let banner = '';
         if (isAuto) {
-            banner = `<div style="font-size:12px;color:var(--text-muted);padding:8px 12px;background:var(--bg-secondary);border-radius:6px;margin-bottom:8px;">
+            banner = `<div style="font-size:12px;color:var(--text-muted);padding:8px 12px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:8px;">
                 🔄 ${Lang.t('sv.bk.auto_desc')}
-                <span style="float:right;color:var(--accent-green);font-weight:600;">${backups.length}/10</span>
+                <span style="float:right;color:var(--accent);font-weight:600;">${backups.length}/10</span>
             </div>`;
         } else {
             const atLimit = backups.length >= 10;
-            banner = `<div style="font-size:12px;color:var(--text-muted);padding:8px 12px;background:var(--bg-secondary);border-radius:6px;margin-bottom:8px;">
+            banner = `<div style="font-size:12px;color:var(--text-muted);padding:8px 12px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:8px;">
                 📦 ${Lang.t('sv.bk.manual_desc')}
-                <span style="float:right;color:${atLimit ? '#ef4444' : 'var(--accent-green)'};font-weight:600;">${backups.length}/10</span>
+                <span style="float:right;color:${atLimit ? '#ef4444' : 'var(--accent)'};font-weight:600;">${backups.length}/10</span>
             </div>`;
             if (atLimit) {
                 banner += `<div style="font-size:12px;color:#ef4444;padding:6px 12px;margin-bottom:8px;">${Lang.t('sv.bk.limit_reached')}</div>`;
@@ -564,7 +564,7 @@ const ServerView = {
             const btype = b.backup_type || tab;
             
             return `
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;" id="sv-bk-${b.id}">
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;" id="sv-bk-${b.id}">
                 <div style="flex:1;min-width:0;">
                     <div style="font-weight:600;font-size:14px;">${isAuto ? '⚙️' : '📦'} ${displayName}</div>
                     <div style="font-size:11px;color:var(--text-muted);">${b.size_mb||'?'} Mo · ${b.created_at||''}</div>
@@ -585,7 +585,7 @@ const ServerView = {
         const backupName = nameInput ? nameInput.value.trim() : '';
         
         if (btn) btn.disabled = true;
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.bk.creating'); }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('sv.bk.creating'); }
         
         const body = backupName ? JSON.stringify({backup_name: backupName}) : null;
         const opts = {method: 'POST'};
@@ -593,7 +593,7 @@ const ServerView = {
         
         const r = await Auth.apiCall(`/api/servers/${this.serverId}/backup`, opts);
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('sv.bk.created'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.bk.created'); }
             if (nameInput) nameInput.value = '';
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
@@ -614,7 +614,7 @@ const ServerView = {
         });
         
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('sv.bk.renamed'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.bk.renamed'); }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
             if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
@@ -625,10 +625,10 @@ const ServerView = {
     async _restoreBackup(id, backupType) {
         if (!confirm(Lang.t('sv.bk.restore_confirm'))) return;
         const msg = document.getElementById('sv-backup-msg');
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.bk.restoring'); }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('sv.bk.restoring'); }
         const r = await Auth.apiCall(`/api/servers/${this.serverId}/restore/${id}?backup_type=${backupType || 'manual'}`,{method:'POST'});
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('sv.bk.restored'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.bk.restored'); }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
             if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
@@ -654,10 +654,10 @@ const ServerView = {
 
     async _deleteBackup(id, backupType) {
         const msg = document.getElementById('sv-backup-msg');
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.bk.deleting'); }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('sv.bk.deleting'); }
         const r = await Auth.apiCall(`/api/servers/${this.serverId}/backups/${id}?backup_type=${backupType || 'manual'}`,{method:'DELETE'});
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('sv.bk.deleted'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.bk.deleted'); }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
             if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
@@ -668,7 +668,7 @@ const ServerView = {
     _schedulerTab() {
         setTimeout(() => this._loadTasks(), 50);
         return `<h2>${Lang.t('sv.sched.title')}</h2>
-        <div style="background:var(--bg-secondary);padding:14px;border-radius:8px;margin-bottom:14px;">
+        <div style="background:var(--bg-elev-1);padding:14px;border-radius:8px;margin-bottom:14px;">
             <div class="flex gap-2" style="align-items:flex-end;flex-wrap:wrap;">
                 <div style="flex:1"><label style="font-size:12px;color:var(--text-muted)">${Lang.t('sv.sched.type')}</label><select id="sv-task-type" class="form-input" style="margin-top:4px;"><option value="backup">💾 Backup</option><option value="restart">🔄 Restart</option></select></div>
                 <div style="flex:1"><label style="font-size:12px;color:var(--text-muted)">${Lang.t('scheduler.mode')}</label><select id="sv-task-mode" class="form-input" style="margin-top:4px;" onchange="ServerView._onTaskModeChange()"><option value="interval">⏰ ${Lang.t('scheduler.mode_interval')}</option><option value="fixed">📅 ${Lang.t('scheduler.mode_fixed')}</option></select></div>
@@ -723,8 +723,8 @@ const ServerView = {
                 ? `⏰ ${Lang.t('scheduler.at')} ${t.schedule_time} (${t.schedule_days || 'daily'})`
                 : `${Lang.t('sv.sched.every')} ${t.interval_hours}h`;
             return `
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;">
-                <div><span style="font-weight:600;">${t.task_type==='backup'?'💾 Backup':'🔄 Restart'}</span> · ${schedInfo} <span style="color:${t.enabled?'var(--accent-green)':'var(--text-muted)'};">${t.enabled?Lang.t('sv.sched.active'):Lang.t('sv.sched.inactive')}</span></div>
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;">
+                <div><span style="font-weight:600;">${t.task_type==='backup'?'💾 Backup':'🔄 Restart'}</span> · ${schedInfo} <span style="color:${t.enabled?'var(--accent)':'var(--text-muted)'};">${t.enabled?Lang.t('sv.sched.active'):Lang.t('sv.sched.inactive')}</span></div>
                 <div class="flex gap-2">
                     <button class="btn btn-sm btn-secondary" onclick="ServerView._toggleTask(${t.id})">${t.enabled?'⏸':'▶️'}</button>
                     <button class="btn btn-sm btn-danger" onclick="ServerView._deleteTask(${t.id})">🗑️</button>
@@ -779,7 +779,7 @@ const ServerView = {
             <span style="font-size:11px;padding:2px 8px;background:rgba(25,100,235,0.15);color:#60a5fa;border-radius:20px;margin-left:8px;">App ID ${appId}</span>
         </p>
 
-        <div style="display:flex;gap:4px;margin-bottom:16px;background:var(--bg-secondary);padding:4px;border-radius:8px;width:fit-content;">
+        <div style="display:flex;gap:4px;margin-bottom:16px;background:var(--bg-elev-1);padding:4px;border-radius:8px;width:fit-content;">
             <button class="${btnSearch}" onclick="ServerView._workshopMode='search';ServerView.switchTab('workshop')">
                 🔍 ${Lang.t('sv.mod.search')}
             </button>
@@ -803,8 +803,8 @@ const ServerView = {
 
     _workshopSearchUI() {
         return `
-        <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;margin-bottom:14px;">
-            <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text-primary);">
+        <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-bottom:14px;">
+            <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text);">
                 🎮 ${Lang.t('sv.workshop.desc')}
             </div>
             <div style="display:flex;gap:8px;">
@@ -847,15 +847,15 @@ const ServerView = {
             : item.subscriptions;
 
         const tags = (item.tags || []).slice(0,5)
-            .map(t => `<span style="font-size:10px;padding:1px 6px;background:var(--bg-primary);border-radius:4px;margin-right:3px;">${t}</span>`)
+            .map(t => `<span style="font-size:10px;padding:1px 6px;background:var(--bg-elev-3);border-radius:4px;margin-right:3px;">${t}</span>`)
             .join('');
 
         el.innerHTML = `
-        <div style="background:var(--bg-secondary);border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,0.06);">
+        <div style="background:var(--bg-elev-1);border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,0.06);">
             <div style="display:flex;gap:14px;padding:16px;align-items:flex-start;">
                 ${item.preview_url
                     ? `<img src="${item.preview_url}" style="width:80px;height:80px;border-radius:8px;object-fit:cover;flex-shrink:0;" onerror="this.style.display='none'" />`
-                    : `<div style="width:80px;height:80px;border-radius:8px;background:var(--bg-primary);display:flex;align-items:center;justify-content:center;font-size:32px;flex-shrink:0;">🎮</div>`
+                    : `<div style="width:80px;height:80px;border-radius:8px;background:var(--bg-elev-3);display:flex;align-items:center;justify-content:center;font-size:32px;flex-shrink:0;">🎮</div>`
                 }
                 <div style="flex:1;min-width:0;">
                     <div style="font-size:16px;font-weight:700;margin-bottom:4px;">${item.title || 'Mod Workshop'}</div>
@@ -863,10 +863,10 @@ const ServerView = {
                     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;margin-bottom:6px;">
                         ${item.file_size_mb ? `<span style="color:var(--text-muted);">📦 ${item.file_size_mb} Mo</span>` : ''}
                         <span style="color:var(--text-muted);">⭐ ${subs} ${Lang.t('sv.workshop.subscriptions')}</span>
-                        <a href="${item.url}" target="_blank" style="color:var(--accent-blue);font-size:11px;">🔗 Voir sur Steam</a>
+                        <a href="${item.url}" target="_blank" style="color:var(--info);font-size:11px;">🔗 Voir sur Steam</a>
                     </div>
                     <div style="margin-bottom:8px;">${tags}</div>
-                    <div style="font-size:11px;color:var(--text-muted);">ID: <code style="background:var(--bg-primary);padding:1px 5px;border-radius:3px;">${item.id}</code></div>
+                    <div style="font-size:11px;color:var(--text-muted);">ID: <code style="background:var(--bg-elev-3);padding:1px 5px;border-radius:3px;">${item.id}</code></div>
                 </div>
             </div>
             <div style="padding:12px 16px;border-top:1px solid rgba(255,255,255,0.05);display:flex;align-items:center;gap:12px;">
@@ -884,7 +884,7 @@ const ServerView = {
         const btn = document.getElementById('sv-workshop-install-btn');
         const msg = document.getElementById('sv-workshop-install-msg');
         if (btn) btn.disabled = true;
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.workshop.installing'); }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('sv.workshop.installing'); }
 
         const r = await Auth.apiCall('/api/mods/steam/install', {
             method: 'POST',
@@ -892,7 +892,7 @@ const ServerView = {
         });
 
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${name} — ${Lang.t('sv.workshop.installed')}`; }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${name} — ${Lang.t('sv.workshop.installed')}`; }
             if (typeof Toast !== 'undefined') Toast.success(`✅ ${name} installé !`);
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
@@ -926,7 +926,7 @@ const ServerView = {
 
         el.innerHTML = `<p style="color:var(--text-muted);font-size:12px;margin-bottom:10px;">${mods.length} ${Lang.t('sv.workshop.installed_list')}</p>` +
             mods.map(m => `
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;">
                 <div style="display:flex;align-items:center;gap:10px;">
                     <span style="font-size:24px;">🎮</span>
                     <div>
@@ -988,7 +988,7 @@ const ServerView = {
 
         return `<h2>${title}</h2>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">${desc}</p>
-        <div style="display:flex;gap:4px;margin-bottom:16px;background:var(--bg-secondary);padding:4px;border-radius:8px;width:fit-content;">
+        <div style="display:flex;gap:4px;margin-bottom:16px;background:var(--bg-elev-1);padding:4px;border-radius:8px;width:fit-content;">
             ${buttons}
         </div>
         <div id="sv-mods-content">${this._modModeContent()}</div>`;
@@ -1030,9 +1030,9 @@ const ServerView = {
 
         el.innerHTML = plugins.map(p => {
             const dl = p.downloads > 1000 ? `${Math.round(p.downloads/1000)}k` : p.downloads;
-            const cats = (p.categories||[]).slice(0,3).map(c => `<span style="font-size:10px;padding:1px 5px;background:var(--bg-primary);border-radius:3px;margin-right:3px;">${c}</span>`).join('');
+            const cats = (p.categories||[]).slice(0,3).map(c => `<span style="font-size:10px;padding:1px 5px;background:var(--bg-elev-3);border-radius:3px;margin-right:3px;">${c}</span>`).join('');
             return `
-            <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;">
+            <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;">
                 <img src="${p.icon_url||''}" style="width:40px;height:40px;border-radius:8px;object-fit:cover;" onerror="this.style.display='none'" />
                 <div style="flex:1;min-width:0;">
                     <div style="font-weight:600;font-size:14px;">${p.name}</div>
@@ -1060,10 +1060,10 @@ const ServerView = {
             <span id="sv-plugin-install-msg" style="font-size:12px;margin-left:8px;"></span>
             <div style="margin-top:12px;">
             ${versions.map(v => {
-                const loaders = (v.loaders||[]).map(l => `<span style="font-size:10px;padding:1px 5px;background:var(--accent-blue);color:#fff;border-radius:3px;margin-right:3px;">${l}</span>`).join('');
+                const loaders = (v.loaders||[]).map(l => `<span style="font-size:10px;padding:1px 5px;background:var(--info);color:#fff;border-radius:3px;margin-right:3px;">${l}</span>`).join('');
                 const gameVers = (v.game_versions||[]).slice(-3).join(', ');
                 return `
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;">
                     <div>
                         <span style="font-weight:600;font-size:13px;">${v.name || v.version_number}</span>
                         <span style="font-size:11px;color:var(--text-muted);margin-left:6px;">(${v.size_mb} Mo)</span>
@@ -1077,7 +1077,7 @@ const ServerView = {
 
     async _installPlugin(name, url, filename) {
         const msg = document.getElementById('sv-plugin-install-msg');
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.mod.installing'); }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('sv.mod.installing'); }
 
         const r = await Auth.apiCall('/api/plugins/install', {
             method: 'POST',
@@ -1085,7 +1085,7 @@ const ServerView = {
         });
 
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${name} ${Lang.t('sv.mod.installed_restart')}`; }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${name} ${Lang.t('sv.mod.installed_restart')}`; }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
             if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
@@ -1109,7 +1109,7 @@ const ServerView = {
 
         el.innerHTML = `<p style="color:var(--text-muted);font-size:12px;margin-bottom:8px;">${plugins.length} ${Lang.t('sv.mod.plugin_count')}</p>` +
             plugins.map(p => `
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:4px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:4px;">
                 <div style="display:flex;align-items:center;gap:8px;">
                     <span>🔌</span>
                     <div>
@@ -1155,7 +1155,7 @@ const ServerView = {
         const mods = data.mods||[];
         if (mods.length===0) { el.innerHTML=`<div style="color:var(--text-muted)">${Lang.t('sv.mod.no_results')}</div>`; return; }
         el.innerHTML = mods.map(m => `
-            <div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;">
+            <div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;">
                 <img src="${m.icon_url||''}" style="width:36px;height:36px;border-radius:6px;" onerror="this.style.display='none'"/>
                 <div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:13px;">${m.name}</div><div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.summary||''}</div></div>
                 <button class="btn btn-primary btn-sm" onclick="ServerView._showModFiles(${m.id},'${(m.name||'').replace(/'/g,"\\'")}')">📥</button>
@@ -1170,7 +1170,7 @@ const ServerView = {
         const files = (await r.json()).files||[];
         el.innerHTML = `<button class="btn btn-secondary btn-sm" onclick="ServerView._searchMods()">${Lang.t('sv.mod.back')}</button><span style="font-weight:600;margin-left:8px;">${name}</span><br><br>` +
             files.slice(0,8).map(f => `
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;">
                 <div><span style="font-size:13px;">${f.name}</span> <span style="color:var(--text-muted);font-size:11px;">(${f.size_mb}Mo)</span></div>
                 ${f.download_url?`<button class="btn btn-primary btn-sm" onclick="ServerView._installMod('${name.replace(/'/g,"\\'")}','${f.download_url}','${f.name}')">📥</button>`:''}
             </div>`).join('');
@@ -1183,7 +1183,7 @@ const ServerView = {
         return `<h2>${Lang.t('sv.dp.title')}</h2>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">${Lang.t('sv.dp.desc')}</p>
 
-        <div style="display:flex;gap:4px;margin-bottom:16px;background:var(--bg-secondary);padding:4px;border-radius:8px;width:fit-content;">
+        <div style="display:flex;gap:4px;margin-bottom:16px;background:var(--bg-elev-1);padding:4px;border-radius:8px;width:fit-content;">
             <button class="btn btn-sm ${this._dpMode==='search'?'btn-primary':'btn-secondary'}" onclick="ServerView._dpMode='search';ServerView.switchTab('datapacks')">${Lang.t('sv.mod.search')}</button>
             <button class="btn btn-sm ${this._dpMode==='installed'?'btn-primary':'btn-secondary'}" onclick="ServerView._dpMode='installed';ServerView.switchTab('datapacks')">${Lang.t('sv.mod.installed')}</button>
         </div>
@@ -1226,7 +1226,7 @@ const ServerView = {
         el.innerHTML = mods.map(m => {
             const dl = m.downloads > 1000000 ? `${(m.downloads/1000000).toFixed(1)}M` : m.downloads > 1000 ? `${Math.round(m.downloads/1000)}k` : m.downloads;
             return `
-            <div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--bg-secondary);border-radius:8px;margin-bottom:6px;">
+            <div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;">
                 <img src="${m.icon_url||''}" style="width:36px;height:36px;border-radius:6px;" onerror="this.style.display='none'"/>
                 <div style="flex:1;min-width:0;">
                     <div style="font-weight:600;font-size:13px;">${m.name}</div>
@@ -1255,9 +1255,9 @@ const ServerView = {
             ${files.slice(0,10).map(f => {
                 const mcVers = (f.game_versions||[]).filter(v => /^\d/.test(v)).join(', ') || '?';
                 const type = f.release_type || '';
-                const typeColor = type === 'Release' ? 'var(--accent-green)' : type === 'Beta' ? 'var(--accent-yellow)' : 'var(--text-muted)';
+                const typeColor = type === 'Release' ? 'var(--accent)' : type === 'Beta' ? 'var(--warning)' : 'var(--text-muted)';
                 return `
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;">
                     <div>
                         <span style="font-size:13px;font-weight:600;">${f.name}</span>
                         <span style="color:var(--text-muted);font-size:11px;"> (${f.size_mb} Mo)</span>
@@ -1271,7 +1271,7 @@ const ServerView = {
 
     async _installDatapack(name, url, filename) {
         const msg = document.getElementById('sv-dp-install-msg');
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.mod.installing'); }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('sv.mod.installing'); }
 
         const r = await Auth.apiCall('/api/mods/datapacks/install', {
             method: 'POST',
@@ -1279,7 +1279,7 @@ const ServerView = {
         });
 
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${name} ${Lang.t('sv.mod.installed_restart')}`; }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${name} ${Lang.t('sv.mod.installed_restart')}`; }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
             if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }
@@ -1300,7 +1300,7 @@ const ServerView = {
 
         el.innerHTML = `<p style="color:var(--text-muted);font-size:12px;margin-bottom:8px;">${datapacks.length} ${Lang.t('sv.dp.count')}</p>` +
             datapacks.map(p => `
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:4px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:4px;">
                 <div style="display:flex;align-items:center;gap:8px;">
                     <span>${p.is_dir ? '📁' : '📜'}</span>
                     <div>
@@ -1401,7 +1401,7 @@ const ServerView = {
                 </p>
             </div>
             <div style="background:rgba(239,68,68,0.05);border:1px solid rgba(239,68,68,0.3);border-radius:10px;padding:20px;">
-                <p style="font-size:13px;color:var(--text-primary);margin-bottom:12px;">
+                <p style="font-size:13px;color:var(--text);margin-bottom:12px;">
                     ${Lang.t('sv.delete_confirm_text')} <strong style="color:#ef4444;">${s.name}</strong>
                 </p>
                 <input id="sv-delete-input" class="form-input" placeholder="Nom du serveur..." style="border-color:rgba(239,68,68,0.3);margin-bottom:12px;" autocomplete="off" />
@@ -1431,7 +1431,7 @@ const ServerView = {
             return;
         }
 
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.deleting'); }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('sv.deleting'); }
 
         const r = await Auth.apiCall(`/api/servers/${this.serverId}`, { method: 'DELETE' });
         if (r && r.ok) {
@@ -1506,7 +1506,7 @@ const ServerView = {
             // Affichage statut
             const isRunning = data.status === 'running';
             el.innerHTML = `
-            <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
+            <div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;">
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
                     <div>
                         <div style="font-size:16px;font-weight:700;">🗄️ MariaDB</div>
@@ -1519,11 +1519,11 @@ const ServerView = {
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-                    <div style="background:var(--bg-card);padding:12px;border-radius:8px;">
+                    <div style="background:var(--bg-elev-1);padding:12px;border-radius:8px;">
                         <div style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.db.host')}</div>
                         <div style="font-family:monospace;font-size:14px;font-weight:600;margin-top:4px;">${data.host}</div>
                     </div>
-                    <div style="background:var(--bg-card);padding:12px;border-radius:8px;">
+                    <div style="background:var(--bg-elev-1);padding:12px;border-radius:8px;">
                         <div style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.db.port')}</div>
                         <div style="font-family:monospace;font-size:14px;font-weight:600;margin-top:4px;">${data.port}</div>
                     </div>
@@ -1543,10 +1543,10 @@ const ServerView = {
                 </div>
             </div>
 
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;">
+            <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;">
                 <div style="font-size:13px;color:var(--text-muted);">
                     💡 <strong>${Lang.t('sv.db.plugin_hint')}</strong><br>
-                    <code style="font-size:12px;color:var(--accent-blue);">address: ${data.host}:${data.port}</code>
+                    <code style="font-size:12px;color:var(--info);">address: ${data.host}:${data.port}</code>
                 </div>
             </div>`;
         }
@@ -1554,7 +1554,7 @@ const ServerView = {
 
     async _createDB() {
         const msg = document.getElementById('sv-db-msg');
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.db.creating'); }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('sv.db.creating'); }
         const r = await Auth.apiCall(`/api/servers/${this.serverId}/database`, {
             method: 'POST',
             body: JSON.stringify({
@@ -1565,7 +1565,7 @@ const ServerView = {
             })
         });
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('sv.db.created'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.db.created'); }
             setTimeout(() => this._loadDatabase(), 1500);
         } else {
             if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
@@ -1578,10 +1578,10 @@ const ServerView = {
 
     async _deleteDB() {
         const msg = document.getElementById('sv-db-msg');
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.db.deleting'); }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('sv.db.deleting'); }
         const r = await Auth.apiCall(`/api/servers/${this.serverId}/database`, { method: 'DELETE' });
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('sv.db.deleted'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.db.deleted'); }
             setTimeout(() => this._loadDatabase(), 1500);
         } else {
             if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
@@ -1621,19 +1621,19 @@ const ServerView = {
         <!-- Seed -->
         <div style="background:linear-gradient(135deg, rgba(34,197,94,0.1), rgba(16,185,129,0.05));padding:16px;border-radius:10px;margin-bottom:16px;border:1px solid rgba(34,197,94,0.2);">
             <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">${Lang.t('sv.worlds.seed')}</div>
-            <div style="font-family:monospace;font-size:16px;font-weight:600;color:var(--accent-green);">${seed || Lang.t('sv.worlds.random')}</div>
+            <div style="font-family:monospace;font-size:16px;font-weight:600;color:var(--accent);">${seed || Lang.t('sv.worlds.random')}</div>
         </div>
 
         <!-- Liste des mondes -->
         <div style="font-weight:600;margin-bottom:12px;">${Lang.t('sv.worlds.count')} (${worlds.length})</div>
         ${worlds.length === 0 ? `
-            <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;color:var(--text-muted);text-align:center;">
+            <div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;color:var(--text-muted);text-align:center;">
                 ${Lang.t('sv.worlds.none')}
             </div>
         ` : worlds.map(w => {
             const label = worldIcons[w.name] || `📁 ${w.name}`;
             return `
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">
+            <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">
                 <div>
                     <div style="font-size:14px;font-weight:600;">${label}</div>
                     <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${Lang.t('sv.worlds.folder')}: ${w.name}/ · ${Lang.t('sv.worlds.size')}: ${w.size}</div>
@@ -1653,7 +1653,7 @@ const ServerView = {
             </div>`;
         }).join('')}
 
-        <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;margin-top:16px;">
+        <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-top:16px;">
             <div style="font-size:13px;color:var(--text-muted);">
                 💡 <strong>${Lang.t('sv.worlds.tip')}</strong>
             </div>
@@ -1667,12 +1667,12 @@ const ServerView = {
     async _resetWorld(name) {
         document.getElementById(`sv-w-confirm-${name}`).style.display = 'none';
         const msg = document.getElementById(`sv-w-msg-${name}`);
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = '⏳...'; }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = '⏳...'; }
 
         const r = await Auth.apiCall(`/api/servers/${this.serverId}/worlds/${name}`, { method: 'DELETE' });
         if (r && r.ok) {
             const data = await r.json();
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${Lang.t('sv.db.deleted')}`; }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${Lang.t('sv.db.deleted')}`; }
             setTimeout(() => this._loadWorlds(), 1500);
         } else {
             if (msg) { msg.style.color = '#ef4444'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
@@ -1704,7 +1704,7 @@ const ServerView = {
             return `
             <h2>🏷️ ${Lang.t('sv.ver.version')}</h2>
             <p style="color:var(--text-muted);font-size:13px;">${Lang.t('sv.ver.only_mc')}</p>
-            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;margin-top:16px;">
+            <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-top:16px;">
                 <div style="font-size:14px;">${Lang.t('sv.ver.game')} : <strong>${s.game_type}</strong></div>
                 <div style="font-size:14px;margin-top:4px;">${Lang.t('sv.ver.version')} : <strong>${s.version || 'LATEST'}</strong></div>
             </div>`;
@@ -1740,7 +1740,7 @@ const ServerView = {
         </div>
 
         <!-- Sélection du type -->
-        <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
+        <div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;">
             <div style="font-weight:600;margin-bottom:10px;">${Lang.t('sv.ver.server_type')}</div>
             <select id="sv-ver-type" class="form-input" style="font-size:14px;">
                 ${types.map(t => `<option value="${t.id}" ${t.id === currentType ? 'selected' : ''}>${t.icon} ${t.name} — ${t.desc}</option>`).join('')}
@@ -1748,7 +1748,7 @@ const ServerView = {
         </div>
 
         <!-- Version Minecraft -->
-        <div id="sv-ver-version-group" style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
+        <div id="sv-ver-version-group" style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;">
             <div style="font-weight:600;margin-bottom:10px;">${Lang.t('sv.ver.mc_version')}</div>
             <select id="sv-ver-version" class="form-input" style="font-size:14px;" onchange="document.getElementById('sv-ver-version-custom').style.display=this.value==='CUSTOM'?'block':'none'">
                 <option value="LATEST" ${currentVer === 'LATEST' ? 'selected' : ''}>${Lang.t('sv.ver.latest')}</option>
@@ -1760,7 +1760,7 @@ const ServerView = {
 
         <!-- Modpack CurseForge (affiché pour Forge/Fabric/NeoForge/Quilt) -->
         <div id="sv-ver-modpack-group" style="display:${['FORGE','NEOFORGE','FABRIC','QUILT'].includes(currentType) ? 'block' : 'none'};">
-            <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
+            <div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;">
                 <div style="font-weight:600;margin-bottom:10px;">${Lang.t('sv.ver.content_mode')}</div>
                 <div style="display:flex;gap:8px;margin-bottom:12px;">
                     <button type="button" id="sv-ver-mp-blank" class="btn btn-primary btn-sm" onclick="ServerView._setVerModpackMode('blank')" style="flex:1;padding:10px;">
@@ -1782,16 +1782,16 @@ const ServerView = {
         </div>
 
         <!-- Option réinstallation -->
-        <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
+        <div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;">
             <div style="font-weight:600;margin-bottom:10px;">${Lang.t('sv.ver.install_mode')}</div>
-            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;border-radius:8px;border:2px solid var(--accent-green);background:rgba(34,197,94,0.08);margin-bottom:8px;">
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;border-radius:8px;border:2px solid var(--accent);background:rgba(34,197,94,0.08);margin-bottom:8px;">
                 <input type="radio" name="sv-ver-mode" value="keep" checked />
                 <div>
                     <div style="font-size:13px;font-weight:600;">${Lang.t('sv.ver.keep_files')}</div>
                     <div style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.ver.keep_desc')}</div>
                 </div>
             </label>
-            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;border-radius:8px;border:2px solid var(--border-color);">
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;border-radius:8px;border:2px solid var(--border);">
                 <input type="radio" name="sv-ver-mode" value="reset" />
                 <div>
                     <div style="font-size:13px;font-weight:600;color:#ef4444;">${Lang.t('sv.ver.reset_all')}</div>
@@ -1870,7 +1870,7 @@ const ServerView = {
             const safeUrl = (m.url||'').replace(/'/g,"\\'");
             const safeName = (m.name||'').replace(/'/g,"\\'");
             return `
-            <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-card);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='var(--bg-card)'" onclick="ServerView._selectVerModpack(${m.id}, '${safeName}', '${m.icon_url||''}', '${safeUrl}')">
+            <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-elev-2)'" onmouseout="this.style.background='var(--bg-elev-1)'" onclick="ServerView._selectVerModpack(${m.id}, '${safeName}', '${m.icon_url||''}', '${safeUrl}')">
                 <img src="${m.icon_url||''}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;" onerror="this.style.display='none'" />
                 <div style="flex:1;min-width:0;">
                     <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.name}</div>
@@ -1923,10 +1923,10 @@ const ServerView = {
             files.map(f => {
                 const mcVers = (f.game_versions||[]).filter(v => /^\d/.test(v)).join(', ') || '?';
                 const type = f.release_type || '';
-                const typeColor = type === 'Release' ? 'var(--accent-green)' : type === 'Beta' ? 'var(--accent-yellow)' : 'var(--text-muted)';
+                const typeColor = type === 'Release' ? 'var(--accent)' : type === 'Beta' ? 'var(--warning)' : 'var(--text-muted)';
                 const safeName2 = (f.name||'').replace(/'/g,"\\'");
                 return `
-                <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-primary);border-radius:6px;margin-bottom:3px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='var(--bg-primary)'" onclick="ServerView._pickVerModpackFile(${f.id}, '${safeName2}', '${mcVers}')">
+                <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-elev-3);border-radius:6px;margin-bottom:3px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-elev-2)'" onmouseout="this.style.background='var(--bg-elev-3)'" onclick="ServerView._pickVerModpackFile(${f.id}, '${safeName2}', '${mcVers}')">
                     <div style="flex:1;">
                         <div style="font-size:12px;font-weight:600;">${f.name}</div>
                         <div style="font-size:10px;color:var(--text-muted);">MC ${mcVers} · ${f.size_mb} Mo · <span style="color:${typeColor};">${type}</span></div>
@@ -1948,7 +1948,7 @@ const ServerView = {
             <div style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:6px;padding:10px;display:flex;align-items:center;gap:8px;">
                 <span style="font-size:18px;">✅</span>
                 <div>
-                    <div style="font-size:13px;font-weight:600;color:var(--accent-green);">${fileName}</div>
+                    <div style="font-size:13px;font-weight:600;color:var(--accent);">${fileName}</div>
                     <div style="font-size:10px;color:var(--text-muted);">Minecraft ${mcVersion} — ${Lang.t('sv.ver.will_install')}</div>
                 </div>
                 <button class="btn btn-secondary btn-sm" onclick="ServerView._selectVerModpack(0,'','','${this._verPageUrl}')" style="font-size:9px;margin-left:auto;">${Lang.t('sv.ver.change')}</button>
@@ -2000,7 +2000,7 @@ const ServerView = {
         const msg = document.getElementById('sv-ver-msg');
         const hasModpack = !!this._verPageUrl;
         if (msg) {
-            msg.style.color = 'var(--accent-blue)';
+            msg.style.color = 'var(--info)';
             msg.textContent = hasModpack
                 ? Lang.t('sv.ver.applying_modpack')
                 : Lang.t('sv.ver.applying');
@@ -2017,7 +2017,7 @@ const ServerView = {
 
         if (r && r.ok) {
             const data = await r.json();
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = `✅ ${data.message}`; }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `✅ ${data.message}`; }
             this._verPageUrl = null;
             this._verFileId = null;
             await this.refreshServer();
@@ -2052,16 +2052,16 @@ const ServerView = {
                     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
                         <div>
                             <div style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.dash.cpu_used')}</div>
-                            <div style="font-size:18px;font-weight:700;color:var(--accent-blue);">${(stats.cpu_percent||0).toFixed(1)}%</div>
-                            <div style="background:var(--bg-primary);height:4px;border-radius:2px;margin-top:4px;">
-                                <div style="background:var(--accent-blue);height:100%;border-radius:2px;width:${Math.min(stats.cpu_percent||0,100)}%;"></div>
+                            <div style="font-size:18px;font-weight:700;color:var(--info);">${(stats.cpu_percent||0).toFixed(1)}%</div>
+                            <div style="background:var(--bg-elev-3);height:4px;border-radius:2px;margin-top:4px;">
+                                <div style="background:var(--info);height:100%;border-radius:2px;width:${Math.min(stats.cpu_percent||0,100)}%;"></div>
                             </div>
                         </div>
                         <div>
                             <div style="font-size:11px;color:var(--text-muted);">${Lang.t('sv.dash.ram_used')}</div>
-                            <div style="font-size:18px;font-weight:700;color:var(--accent-green);">${stats.memory_mb ? stats.memory_mb.toFixed(0) : '?'} Mo</div>
-                            <div style="background:var(--bg-primary);height:4px;border-radius:2px;margin-top:4px;">
-                                <div style="background:var(--accent-green);height:100%;border-radius:2px;width:${stats.memory_percent ? Math.min(stats.memory_percent,100) : 0}%;"></div>
+                            <div style="font-size:18px;font-weight:700;color:var(--accent);">${stats.memory_mb ? stats.memory_mb.toFixed(0) : '?'} Mo</div>
+                            <div style="background:var(--bg-elev-3);height:4px;border-radius:2px;margin-top:4px;">
+                                <div style="background:var(--accent);height:100%;border-radius:2px;width:${stats.memory_percent ? Math.min(stats.memory_percent,100) : 0}%;"></div>
                             </div>
                         </div>
                         <div>
@@ -2166,7 +2166,7 @@ const ServerView = {
         <h2>${Lang.t('sv.notif.title')}</h2>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.notif.desc')}</p>
 
-        <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
+        <div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;">
             <div style="font-weight:600;margin-bottom:12px;">${Lang.t('sv.notif.webhook')}</div>
             <div style="display:flex;gap:8px;align-items:center;">
                 <input id="sv-notif-webhook" class="form-input" placeholder="https://discord.com/api/webhooks/..." style="flex:1;font-family:monospace;font-size:12px;" />
@@ -2176,7 +2176,7 @@ const ServerView = {
             </div>
         </div>
 
-        <div style="background:var(--bg-secondary);padding:20px;border-radius:10px;margin-bottom:16px;">
+        <div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;">
             <div style="font-weight:600;margin-bottom:12px;">${Lang.t('sv.notif.events')}</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
                 <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
@@ -2239,7 +2239,7 @@ const ServerView = {
         });
 
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('sv.notif.saved'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.notif.saved'); }
         } else {
             if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${Lang.t('common.error')}`; }
         }
@@ -2247,11 +2247,11 @@ const ServerView = {
 
     async _testNotif() {
         const msg = document.getElementById('sv-notif-msg');
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('sv.notif.testing'); }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('sv.notif.testing'); }
 
         const r = await Auth.apiCall('/api/notifications/test', { method: 'POST' });
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('sv.notif.tested'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('sv.notif.tested'); }
         } else {
             const err = r ? await r.json().catch(()=>({})) : {};
             if (msg) { msg.style.color = '#e74c3c'; msg.textContent = `❌ ${err.detail || Lang.t('common.error')}`; }

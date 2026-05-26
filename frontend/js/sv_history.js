@@ -32,7 +32,7 @@ const SvHistory = {
         const locale = Lang.t('common.locale') || 'fr-FR';
 
         el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
-            <thead><tr style="border-bottom:2px solid var(--border-color);text-align:left;">
+            <thead><tr style="border-bottom:2px solid var(--border);text-align:left;">
                 <th style="padding:8px;">${Lang.t('sv.hist.date')}</th>
                 <th style="padding:8px;">${Lang.t('sv.hist.user')}</th>
                 <th style="padding:8px;">${Lang.t('sv.hist.action')}</th>
@@ -41,7 +41,7 @@ const SvHistory = {
             ${entries.map(e => {
                 const icon = Object.entries(icons).find(([k]) => e.action.toLowerCase().includes(k))?.[1] || '📌';
                 const date = new Date(e.timestamp).toLocaleString(locale);
-                return `<tr style="border-bottom:1px solid var(--border-color);">
+                return `<tr style="border-bottom:1px solid var(--border);">
                     <td style="padding:8px;color:var(--text-muted);font-size:11px;white-space:nowrap;">${date}</td>
                     <td style="padding:8px;font-weight:600;">${e.username}</td>
                     <td style="padding:8px;">${icon} ${e.action}</td>

@@ -249,7 +249,7 @@ const NetworkModule = {
                     <h3 style="margin:0;font-size:15px;">${Lang.t('net.history_title')}</h3>
                     <span style="font-size:12px;color:var(--text-muted);">${logs.length} ${Lang.t('net.measurements')}</span>
                 </div>
-                <div style="display:flex;align-items:flex-end;gap:2px;height:80px;padding:8px;background:var(--bg-primary);border-radius:8px;overflow-x:auto;">
+                <div style="display:flex;align-items:flex-end;gap:2px;height:80px;padding:8px;background:var(--bg-elev-3);border-radius:8px;overflow-x:auto;">
                     ${logs.slice(-60).map(log => {
                         const h = log.latency_ms ? Math.max(4, (log.latency_ms / maxLatency) * 70) : 0;
                         const color = !log.latency_ms ? '#ef4444' : log.latency_ms < 30 ? '#22c55e' : log.latency_ms < 80 ? '#f59e0b' : '#ef4444';
@@ -288,7 +288,7 @@ const NetworkModule = {
                 ` : `
                     <div style="display:flex;flex-direction:column;gap:6px;">
                         ${devices.map(d => `
-                            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
+                            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);">
                                 <span style="font-size:24px;">🖥️</span>
                                 <div style="flex:1;">
                                     <div style="font-size:14px;font-weight:600;">${d.name}</div>
@@ -315,7 +315,7 @@ const NetworkModule = {
         if (!form) return;
         form.style.display = 'block';
         form.innerHTML = `
-            <div style="padding:12px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
+            <div style="padding:12px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);">
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px;">
                     <div>
                         <label class="form-label">${Lang.t('net.wol_name')}</label>

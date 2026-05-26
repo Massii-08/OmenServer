@@ -83,8 +83,8 @@ const WebModule = {
                         </div>
                         ${s.description ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">${s.description}</div>` : ''}
                         ${s.status === 'running' && s.url ? `
-                            <div style="padding:8px;background:var(--bg-primary);border-radius:6px;border:1px solid var(--border-color);margin-bottom:12px;">
-                                <a href="${s.url}" target="_blank" style="color:var(--accent-blue);font-size:12px;text-decoration:none;font-family:monospace;">
+                            <div style="padding:8px;background:var(--bg-elev-3);border-radius:6px;border:1px solid var(--border);margin-bottom:12px;">
+                                <a href="${s.url}" target="_blank" style="color:var(--info);font-size:12px;text-decoration:none;font-family:monospace;">
                                     ${s.url} ↗
                                 </a>
                             </div>
@@ -150,7 +150,7 @@ const WebModule = {
 
         if (!name) { if (msg) { msg.style.color = '#ef4444'; msg.textContent = Lang.t('web.name_required'); } return; }
 
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = gitUrl ? Lang.t('web.cloning') : Lang.t('web.creating'); }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = gitUrl ? Lang.t('web.cloning') : Lang.t('web.creating'); }
 
         const r = await Auth.apiCall('/api/websites', {
             method: 'POST',

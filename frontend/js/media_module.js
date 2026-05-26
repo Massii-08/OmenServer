@@ -117,10 +117,10 @@ const MediaModule = {
                     </div>
                 </div>
                 ${isRunning ? `
-                    <div style="margin-top:16px;padding:12px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);display:flex;align-items:center;justify-content:space-between;">
+                    <div style="margin-top:16px;padding:12px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;">
                         <div>
                             <div style="font-size:12px;color:var(--text-muted);">${Lang.t('media.access')}</div>
-                            <a href="${s.url}" target="_blank" style="color:var(--accent-blue);font-size:14px;font-weight:600;text-decoration:none;">
+                            <a href="${s.url}" target="_blank" style="color:var(--info);font-size:14px;font-weight:600;text-decoration:none;">
                                 ${s.url} ↗
                             </a>
                         </div>
@@ -182,7 +182,7 @@ const MediaModule = {
                 ` : `
                     <div style="display:flex;flex-direction:column;gap:6px;">
                         ${libs.map(lib => `
-                            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-primary);border-radius:8px;border:1px solid var(--border-color);">
+                            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);">
                                 <span style="font-size:24px;">${typeIcons[lib.name] || '📂'}</span>
                                 <div style="flex:1;">
                                     <div style="font-size:14px;font-weight:600;text-transform:capitalize;">${lib.name}</div>
@@ -252,12 +252,12 @@ const MediaModule = {
         const msg = document.getElementById('media-setup-msg');
 
         if (btn) { btn.disabled = true; btn.textContent = Lang.t('media.installing'); }
-        if (msg) { msg.style.color = 'var(--accent-blue)'; msg.textContent = Lang.t('media.installing_desc'); }
+        if (msg) { msg.style.color = 'var(--info)'; msg.textContent = Lang.t('media.installing_desc'); }
 
         const r = await Auth.apiCall('/api/media/setup', { method: 'POST', body: JSON.stringify({ port: 8096 }) });
 
         if (r && r.ok) {
-            if (msg) { msg.style.color = 'var(--accent-green)'; msg.textContent = Lang.t('media.installed_ok'); }
+            if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = Lang.t('media.installed_ok'); }
             setTimeout(() => this.loadStatus(), 1500);
         } else {
             const err = r ? await r.json().catch(() => ({})) : {};
