@@ -119,7 +119,7 @@ const App = {
  if (!hash) return null;
  // server_view/ID → retourne 'game_server' (on ne peut pas restaurer un server_view sans contexte complet)
  if (hash.startsWith('server_view')) return 'game_server';
- const validViews = ['hub', 'game_server', 'bots', 'files', 'media', 'web', 'network', 'settings', 'users'];
+ const validViews = ['hub', 'game_server', 'bots', 'files', 'media', 'web', 'network', 'sysdoc', 'settings', 'users'];
  return validViews.includes(hash) ? hash : null;
  },
 
@@ -269,6 +269,9 @@ const App = {
  if (this.currentView === 'network' && typeof NetworkModule !== 'undefined') {
  NetworkModule.unload();
  }
+ if (this.currentView === 'sysdoc' && typeof SysDocModule !== 'undefined') {
+ SysDocModule.unload();
+ }
 
  this.currentView = view;
 
@@ -350,6 +353,10 @@ const App = {
 
  case 'network':
  await NetworkModule.render(content);
+ break;
+
+ case 'sysdoc':
+ await SysDocModule.render(content);
  break;
 
  default:
