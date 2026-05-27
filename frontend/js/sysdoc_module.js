@@ -214,6 +214,11 @@ const SysDocModule = {
 
         this._bindModal();
         this._bindStartButton();
+        // Réhydrate les machines connues depuis localStorage AVANT de connecter
+        // → la barre s'affiche avec les machines précédemment vues (offline par défaut),
+        // puis les agent_status:online updateront leur état réel
+        this._loadKnownMachines();
+        this._renderMachineSelector();
         this._refreshOverlay();
         this._fetchConfig();
         this._connect();
@@ -228,6 +233,50 @@ const SysDocModule = {
         } catch (e) {
             console.warn('[sysdoc] fetch /api/sysdoc/me failed', e);
         }
+    },
+
+    _persistKey() {
+        return `sysdoc.machines.${this._username || ''}`;
+    },
+
+    _loadKnownMachines() {
+        try {
+            const raw = localStorage.getItem(this._persistKey());
+            if (!raw) return;
+            const ids = JSON.parse(raw);
+            if (!Array.isArray(ids)) return;
+            ids.forEach(id => {
+                if (!this._machines[id]) {
+                    // Réhydrate offline par défaut — l'agent_status:online des machines
+                    // actuellement connectées sera reçu juste après et corrigera.
+                    this._machines[id] = { agentOnline: false, monitoringActive: false };
+                }
+            });
+        } catch (e) {
+            console.warn('[sysdoc] loadKnownMachines failed', e);
+        }
+    },
+
+    _persistKnownMachines() {
+        try {
+            const ids = Object.keys(this._machines);
+            localStorage.setItem(this._persistKey(), JSON.stringify(ids));
+        } catch (e) {
+            // localStorage full ou disabled — pas grave
+        }
+    },
+
+    _forgetMachine(id) {
+        if (!this._machines[id]) return;
+        delete this._machines[id];
+        this._persistKnownMachines();
+        if (this._selectedMachine === id) {
+            const remaining = Object.keys(this._machines);
+            this._selectedMachine = remaining[0] || null;
+        }
+        this._renderMachineSelector();
+        this._refreshOverlay();
+        if (typeof Toast !== 'undefined') Toast.info(`Machine '${id}' oubliée`);
     },
 
     // ---------- Install panel (OS-aware copy/paste commands) ----------
@@ -618,19 +667,43 @@ chmod 600 .env
             root.style.display = 'none';
             return;
         }
-        // ≥1 machine : afficher le sélecteur (même avec 1 machine, pour exposer "+ Ajouter")
+        // Trier : online d'abord, puis offline alphabétique
+        const sorted = machineIds.sort((a, b) => {
+            const aOn = this._machines[a].agentOnline ? 0 : 1;
+            const bOn = this._machines[b].agentOnline ? 0 : 1;
+            return aOn - bOn || a.localeCompare(b);
+        });
         root.style.display = 'flex';
         root.innerHTML = '';
-        machineIds.forEach(id => {
+        sorted.forEach(id => {
             const state = this._machines[id];
             const btn = document.createElement('button');
-            btn.className = 'machine-pill' + (id === this._selectedMachine ? ' active' : '');
+            btn.className = 'machine-pill' + (id === this._selectedMachine ? ' active' : '') + (state.agentOnline ? '' : ' offline');
             btn.innerHTML = `<span class="machine-pill-dot ${state.agentOnline ? 'online' : 'offline'}"></span><span class="machine-pill-name"></span>`;
             btn.querySelector('.machine-pill-name').textContent = id;
+            btn.title = state.agentOnline ? `Machine ${id} en ligne` : `Machine ${id} hors ligne — lance \`.\\run.bat\` (Windows) ou \`./setup_macos.sh start\` (Mac) pour la reconnecter`;
             btn.onclick = () => this._selectMachine(id);
-            root.appendChild(btn);
+            if (state.agentOnline) {
+                // Online : pill seule, append direct
+                root.appendChild(btn);
+            } else {
+                // Offline : pill + bouton × dans un wrapper (radius right=0 pour la pill, right=full pour ×)
+                const wrap = document.createElement('div');
+                wrap.className = 'machine-pill-wrap';
+                wrap.appendChild(btn);
+                const forget = document.createElement('button');
+                forget.className = 'machine-pill-forget';
+                forget.textContent = '×';
+                forget.title = `Oublier la machine '${id}' (la retire de la barre tant qu'elle ne reconnecte pas)`;
+                forget.onclick = (e) => {
+                    e.stopPropagation();
+                    this._forgetMachine(id);
+                };
+                wrap.appendChild(forget);
+                root.appendChild(wrap);
+            }
         });
-        // Bouton "+ Ajouter un PC" toujours visible quand y'a au moins 1 machine
+        // Bouton "+ Ajouter un PC" toujours visible
         const addBtn = document.createElement('button');
         addBtn.className = 'machine-pill machine-pill-add';
         addBtn.innerHTML = '<span>+ Ajouter un PC</span>';
@@ -739,16 +812,30 @@ chmod 600 .env
         switch (msg.type) {
             case 'machines_update': {
                 const list = (msg.data && msg.data.machines) || [];
-                // Garder ou créer les entrées
-                const newMachines = {};
-                list.forEach(id => {
-                    newMachines[id] = this._machines[id] || { agentOnline: true, monitoringActive: false };
+                const online = new Set(list);
+                // MERGE plutôt que REPLACE : on garde les machines qu'on a déjà connues,
+                // même si elles ne sont plus dans la liste online. Ça permet à
+                // l'utilisateur de voir une pill grise "Windows offline" et savoir que
+                // la machine existe (juste éteinte) plutôt que de "perdre" la machine.
+                Object.keys(this._machines).forEach(id => {
+                    if (!online.has(id)) {
+                        this._machines[id].agentOnline = false;
+                        this._machines[id].monitoringActive = false;
+                    }
                 });
-                this._machines = newMachines;
-                // Si aucune machine sélectionnée ou la sélectionnée a disparu, prendre la 1ère
-                if (!this._selectedMachine || !newMachines[this._selectedMachine]) {
-                    this._selectedMachine = list[0] || null;
-                    if (this._selectedMachine) {
+                list.forEach(id => {
+                    if (this._machines[id]) {
+                        this._machines[id].agentOnline = true;
+                    } else {
+                        this._machines[id] = { agentOnline: true, monitoringActive: false };
+                    }
+                });
+                this._persistKnownMachines();
+                // Si pas de selection ou si la machine sélectionnée n'est plus connue, fallback
+                if (!this._selectedMachine || !this._machines[this._selectedMachine]) {
+                    // Préférer une machine online à une offline
+                    this._selectedMachine = list[0] || Object.keys(this._machines)[0] || null;
+                    if (this._selectedMachine && this._machines[this._selectedMachine].agentOnline) {
                         this._send({ command: 'QUERY_STATE', target_machine: this._selectedMachine });
                         this._send({ command: 'LIST_ACTIONS', target_machine: this._selectedMachine });
                     }

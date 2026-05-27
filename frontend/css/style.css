@@ -4128,3 +4128,66 @@ select:-webkit-autofill {
     color: var(--accent);
 }
 .install-note strong { color: var(--text); }
+
+
+/* SysDoc machine pills — variants offline + wrapper avec bouton "×" oublier */
+.machine-pill-wrap {
+    display: inline-flex;
+    align-items: stretch;
+    gap: 0;
+}
+.machine-pill.offline {
+    color: var(--text-dim);
+    background: var(--bg-elev-1);
+    border-color: var(--border);
+    opacity: 0.7;
+}
+.machine-pill.offline:hover {
+    opacity: 1;
+    color: var(--text-muted);
+}
+.machine-pill.offline.active {
+    border-color: var(--danger);
+    color: var(--danger);
+    background: var(--bg-elev-2);
+    opacity: 1;
+}
+.machine-pill-forget {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 var(--s-2);
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-left: 0;
+    border-radius: 0 var(--r-md) var(--r-md) 0;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    transition: background 120ms, color 120ms;
+}
+.machine-pill-forget:hover {
+    background: var(--danger);
+    color: var(--text);
+    border-color: var(--danger);
+}
+.machine-pill-wrap .machine-pill {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+    border-right: 0;
+}
+.machine-pill-wrap .machine-pill:only-child,
+.machine-pill-wrap:has(.machine-pill:only-child) .machine-pill {
+    /* Pas de bouton × → garder le radius normal */
+    border-radius: var(--r-md);
+    border-right: 1px solid var(--border);
+}
+.machine-pill.machine-pill-add {
+    border-style: dashed;
+    color: var(--text-muted);
+}
+.machine-pill.machine-pill-add:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
