@@ -3883,3 +3883,55 @@ select:-webkit-autofill {
 .kit-action-result.err .kit-action-result-icon { background: var(--danger); }
 .kit-action-result-msg { flex: 1; color: var(--text); }
 .kit-action-result-when { color: var(--text-dim); flex: 0 0 auto; }
+
+
+/* ============================================================================
+   SysDoc — Sélecteur de machines (>1 machine par user)
+   ============================================================================ */
+.sysdoc-machine-selector {
+    display: none;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-3);
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    margin-bottom: var(--s-4);
+    flex-wrap: wrap;
+}
+.machine-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.machine-pill:hover {
+    background: var(--bg-elev-3);
+    border-color: var(--border-strong);
+    color: var(--text);
+}
+.machine-pill.active {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+.machine-pill-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    flex: 0 0 auto;
+}
+.machine-pill-dot.online  { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.machine-pill-dot.offline { background: var(--danger); }
+.machine-pill-name {
+    font-weight: 500;
+}

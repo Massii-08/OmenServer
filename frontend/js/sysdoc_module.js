@@ -29,8 +29,10 @@ const SysDocModule = {
     //   _agentOnline = WS agent connecté au hub ? (info viewer ← hub)
     //   _monitoringActive = la boucle metrics 5s tourne-t-elle côté agent ?
     //                       (info viewer ← agent via msg `agent_state`)
-    _agentOnline: false,
-    _monitoringActive: false,
+    // État par machine — un user peut avoir N machines (Mac + Windows + ...).
+    // _machines[id] = { agentOnline, monitoringActive }
+    _machines: {},
+    _selectedMachine: null,
     // Résultat de la dernière exécution par action_id (pour afficher
     // "Dernière exécution : ..." sous le bouton et éviter le doute UX
     // "j'ai cliqué, mais l'option est toujours là").
@@ -59,6 +61,9 @@ const SysDocModule = {
                     <button class="btn btn-secondary" onclick="App.navigateTo('hub')">${t('common.back_hub') || 'Retour'}</button>
                 </div>
             </div>
+
+            <!-- Sélecteur de machines (visible quand >1 machine connectée) -->
+            <div id="sysdoc-machine-selector" class="sysdoc-machine-selector" style="display:none;"></div>
 
             <!-- Overlay "Démarrer le monitoring" — visible quand l'agent est idle -->
             <div id="sysdoc-start-overlay" class="sysdoc-start-overlay" style="display:none;">
@@ -214,13 +219,14 @@ const SysDocModule = {
         const btn = document.getElementById('sysdoc-start-btn');
         if (!btn) return;
         btn.onclick = () => {
-            if (!this._agentOnline) {
+            const machineId = this._selectedMachine;
+            const state = machineId ? this._machines[machineId] : null;
+            if (!state || !state.agentOnline) {
                 this._logEvent('err', "Agent pas connecté — installe-le d'abord");
                 return;
             }
-            this._logEvent('info', '→ START_MONITORING demandé');
-            if (this._send({ command: 'START_MONITORING' })) {
-                // Optimistic UI : on cache l'overlay direct, l'agent confirme via agent_state
+            this._logEvent('info', `→ START_MONITORING demandé pour ${machineId}`);
+            if (this._send({ command: 'START_MONITORING', target_machine: machineId })) {
                 btn.disabled = true;
                 btn.textContent = '⏳ Démarrage…';
             }
@@ -233,20 +239,26 @@ const SysDocModule = {
         const card = overlay.querySelector('.sysdoc-start-card');
         if (!card) return;
 
+        // État de la machine sélectionnée
+        const machineId = this._selectedMachine;
+        const state = machineId ? this._machines[machineId] : null;
+        const agentOnline = state ? state.agentOnline : false;
+        const monitoringActive = state ? state.monitoringActive : false;
+
         // Cas 1 : monitoring actif → overlay caché, on affiche les données
-        if (this._monitoringActive) {
+        if (monitoringActive) {
             overlay.style.display = 'none';
             return;
         }
 
-        // Cas 2 : agent hors ligne → overlay visible, message d'install
-        if (!this._agentOnline) {
+        // Cas 2 : aucune machine OU agent hors ligne → overlay visible, message d'install
+        if (!machineId || !agentOnline) {
             overlay.style.display = 'flex';
             card.innerHTML = `
                 <div class="sysdoc-start-icon" style="color:var(--danger);">⚠</div>
-                <h2 class="sysdoc-start-title">Agent hors ligne</h2>
+                <h2 class="sysdoc-start-title">Aucun agent connecté</h2>
                 <p class="sysdoc-start-desc">
-                    Aucun agent n'est connecté au hub pour <strong>${this._escape(this._username)}</strong>.
+                    Aucune machine n'a son agent connecté au hub pour <strong>${this._escape(this._username)}</strong>.
                     Installe-le sur ton Mac ou PC Windows depuis <code>tools/diagnostic_agent/</code>
                     (voir le README pour les commandes).
                 </p>
@@ -278,11 +290,18 @@ const SysDocModule = {
     },
 
     unload() {
-        // Avant de fermer la socket, dis à l'agent de stopper la boucle metrics
-        // → l'agent retombe en idle, économie CPU/réseau quand l'utilisateur
-        // navigue ailleurs dans le panel.
-        if (this._socket && this._socket.readyState === WebSocket.OPEN && this._monitoringActive) {
-            try { this._socket.send(JSON.stringify({ command: 'STOP_MONITORING' })); } catch (_) {}
+        // Stop le monitoring de TOUTES les machines actives avant de fermer
+        if (this._socket && this._socket.readyState === WebSocket.OPEN) {
+            for (const [id, state] of Object.entries(this._machines)) {
+                if (state.monitoringActive) {
+                    try {
+                        this._socket.send(JSON.stringify({
+                            command: 'STOP_MONITORING',
+                            target_machine: id,
+                        }));
+                    } catch (_) {}
+                }
+            }
         }
         if (this._reconnectTimer) {
             clearTimeout(this._reconnectTimer);
@@ -293,8 +312,70 @@ const SysDocModule = {
             this._socket = null;
         }
         this._openGroups.clear();
-        this._agentOnline = false;
-        this._monitoringActive = false;
+        this._machines = {};
+        this._selectedMachine = null;
+    },
+
+    // ---------- Machine selection ----------
+    _selectMachine(machineId) {
+        if (this._selectedMachine === machineId) return;
+        // Si on quitte une machine où le monitoring est actif, on l'arrête
+        if (this._selectedMachine && this._machines[this._selectedMachine]?.monitoringActive) {
+            this._send({ command: 'STOP_MONITORING', target_machine: this._selectedMachine });
+        }
+        this._selectedMachine = machineId;
+        this._renderMachineSelector();
+        this._refreshOverlay();
+        // Reset les vues de données quand on change de machine
+        this._resetMetricsUI();
+        // Si la nouvelle machine est online, query son état + catalogue
+        if (this._machines[machineId]?.agentOnline) {
+            this._send({ command: 'QUERY_STATE', target_machine: machineId });
+            this._send({ command: 'LIST_ACTIONS', target_machine: machineId });
+        }
+    },
+
+    _renderMachineSelector() {
+        const root = document.getElementById('sysdoc-machine-selector');
+        if (!root) return;
+        const machineIds = Object.keys(this._machines);
+        if (machineIds.length <= 1) {
+            // 0 ou 1 machine : pas besoin de sélecteur
+            root.style.display = 'none';
+            return;
+        }
+        root.style.display = 'flex';
+        root.innerHTML = '';
+        machineIds.forEach(id => {
+            const state = this._machines[id];
+            const btn = document.createElement('button');
+            btn.className = 'machine-pill' + (id === this._selectedMachine ? ' active' : '');
+            const dot = state.agentOnline ? '🟢' : '⚫';
+            btn.innerHTML = `<span class="machine-pill-dot ${state.agentOnline ? 'online' : 'offline'}"></span><span class="machine-pill-name"></span>`;
+            btn.querySelector('.machine-pill-name').textContent = id;
+            btn.onclick = () => this._selectMachine(id);
+            root.appendChild(btn);
+        });
+    },
+
+    _resetMetricsUI() {
+        // Quand on change de machine, repart de zéro côté UI
+        const reset = (id, val) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = val;
+        };
+        reset('sysdoc-suffering-val', '0');
+        reset('sysdoc-ram-pct', '—');
+        reset('sysdoc-ram-used', '—');
+        reset('sysdoc-ram-total', '—');
+        reset('sysdoc-ram-process', '—');
+        reset('sysdoc-ram-phantom', '—');
+        reset('sysdoc-ram-phantom-2', '—');
+        reset('sysdoc-last-update', '—');
+        reset('sysdoc-proc-count', '0');
+        reset('sysdoc-group-count', '0 groupes');
+        const tbody = document.getElementById('sysdoc-proc-tbody');
+        if (tbody) tbody.innerHTML = '<tr class="empty-row"><td colspan="5">En attente des données…</td></tr>';
     },
 
     // ---------- WS lifecycle ----------
@@ -352,6 +433,15 @@ const SysDocModule = {
             this._logEvent('err', 'Pas de connexion WS active');
             return false;
         }
+        // Backend requires target_machine on viewer→agent commands. If the caller
+        // didn't specify, use _selectedMachine. If still null, refuse.
+        if (!obj.target_machine && this._selectedMachine) {
+            obj = { ...obj, target_machine: this._selectedMachine };
+        }
+        if (!obj.target_machine) {
+            this._logEvent('err', 'Aucune machine sélectionnée');
+            return false;
+        }
         this._socket.send(JSON.stringify(obj));
         return true;
     },
@@ -359,33 +449,74 @@ const SysDocModule = {
     // ---------- Message handlers ----------
     _handleMessage(msg) {
         if (!msg || !msg.type) return;
+        // Tous les messages venant d'un agent sont enrichis avec `machine` par le backend.
+        // On ignore les messages d'autres machines que celle sélectionnée pour les
+        // updates UI (metrics, agent_state), mais on traite TOUJOURS agent_status et
+        // machines_update (qui pilotent la liste des machines).
+        const fromMachine = msg.machine || null;
+        const isForSelected = !fromMachine || fromMachine === this._selectedMachine;
+
         switch (msg.type) {
+            case 'machines_update': {
+                const list = (msg.data && msg.data.machines) || [];
+                // Garder ou créer les entrées
+                const newMachines = {};
+                list.forEach(id => {
+                    newMachines[id] = this._machines[id] || { agentOnline: true, monitoringActive: false };
+                });
+                this._machines = newMachines;
+                // Si aucune machine sélectionnée ou la sélectionnée a disparu, prendre la 1ère
+                if (!this._selectedMachine || !newMachines[this._selectedMachine]) {
+                    this._selectedMachine = list[0] || null;
+                    if (this._selectedMachine) {
+                        this._send({ command: 'QUERY_STATE', target_machine: this._selectedMachine });
+                        this._send({ command: 'LIST_ACTIONS', target_machine: this._selectedMachine });
+                    }
+                }
+                this._renderMachineSelector();
+                this._refreshOverlay();
+                break;
+            }
             case 'metrics':
+                if (!isForSelected) break;
                 this._updateRam((msg.data || {}).ram);
                 this._updateSuffering((msg.data || {}).suffering_index || 0);
                 this._updateProcs((msg.data || {}).processes || []);
                 document.getElementById('sysdoc-last-update').textContent = new Date().toTimeString().slice(0, 8);
                 break;
-            case 'agent_status':
-                this._agentOnline = !!(msg.data && msg.data.online);
-                if (this._agentOnline) {
-                    this._setConn('online', `Agent ${this._username} en ligne`);
-                    this._logEvent('ok', `Agent ${this._username} connecté`);
-                    this._send({ command: 'LIST_ACTIONS' });
-                    this._send({ command: 'QUERY_STATE' });
-                } else {
-                    this._setConn('offline', `Agent ${this._username} hors ligne`);
-                    this._logEvent('warn', `Agent ${this._username} déconnecté`);
-                    this._monitoringActive = false;
+            case 'agent_status': {
+                const machineId = fromMachine || (msg.data && msg.data.machine) || this._selectedMachine;
+                if (!machineId) break;
+                const online = !!(msg.data && msg.data.online);
+                if (!this._machines[machineId]) this._machines[machineId] = { agentOnline: false, monitoringActive: false };
+                this._machines[machineId].agentOnline = online;
+                if (!online) this._machines[machineId].monitoringActive = false;
+                this._renderMachineSelector();
+                if (machineId === this._selectedMachine) {
+                    if (online) {
+                        this._setConn('online', `Agent ${machineId} en ligne`);
+                        this._logEvent('ok', `Agent ${machineId} connecté`);
+                        this._send({ command: 'LIST_ACTIONS', target_machine: machineId });
+                        this._send({ command: 'QUERY_STATE', target_machine: machineId });
+                    } else {
+                        this._setConn('offline', `Agent ${machineId} hors ligne`);
+                        this._logEvent('warn', `Agent ${machineId} déconnecté`);
+                    }
+                    this._refreshOverlay();
                 }
-                this._refreshOverlay();
                 break;
-            case 'agent_state':
-                // L'agent annonce s'il est en mode IDLE ou ACTIVE (monitoring on/off)
-                this._monitoringActive = !!(msg.data && msg.data.monitoring);
-                this._logEvent('info', `Agent state: ${this._monitoringActive ? 'monitoring ACTIF' : 'IDLE'}`);
-                this._refreshOverlay();
+            }
+            case 'agent_state': {
+                const machineId = fromMachine || this._selectedMachine;
+                if (!machineId) break;
+                if (!this._machines[machineId]) this._machines[machineId] = { agentOnline: true, monitoringActive: false };
+                this._machines[machineId].monitoringActive = !!(msg.data && msg.data.monitoring);
+                if (machineId === this._selectedMachine) {
+                    this._logEvent('info', `[${machineId}] Agent state: ${this._machines[machineId].monitoringActive ? 'monitoring ACTIF' : 'IDLE'}`);
+                    this._refreshOverlay();
+                }
                 break;
+            }
             case 'actions_catalog':
                 this._renderCatalog(((msg.data || {}).actions) || []);
                 break;

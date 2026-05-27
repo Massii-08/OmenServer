@@ -1,22 +1,30 @@
 """
 WebSocket router pour le module sysdoc (Diagnostic Bot intégré).
 
-Deux endpoints :
-  - /ws/sysdoc/agent/{username}   ← l'agent Windows/macOS pousse ses métriques
-  - /ws/sysdoc/viewer/{username}  ← le dashboard frontend reçoit et envoie
+Mapping (v4 — multi-machine per user) :
 
-Auth : JWT classique OmenServer via `?token=...` query param.
-  - sub du token DOIT matcher le {username} du path (strict 1:1)
-  - Sauf si le token appartient à un admin → peut viewer n'importe quel agent
+    /ws/sysdoc/agent/{username}/{machine}   ← agent Windows/macOS sur PC <machine>
+                                              de l'utilisateur <username>
+    /ws/sysdoc/viewer/{username}             ← dashboard reçoit TOUTES les
+                                              machines de <username>, sélecteur UI
 
-Relais : le backend ne fait QUE forwarder les messages entre agent et viewer
-appartenant au même username. Aucun traitement métier côté hub — c'est l'agent
-qui exécute les actions (suspend, clear cache, etc.).
+Auth : JWT classique OmenServer via `?token=...` query param. Le `sub` du JWT
+doit matcher le {username} de l'URL (sauf admin qui peut cross-user).
+
+Multi-machine : un user peut avoir plusieurs machines (Mac perso + PC Windows
+gaming + serveur dev). Chaque agent s'identifie par un `machine_id` (default
+= socket.gethostname() côté agent). Le hub relaye :
+  - agent → viewer  : tous les messages enrichis avec `machine` (le viewer
+                      filtre selon sa sélection)
+  - viewer → agent  : la commande doit inclure `target_machine` (le backend
+                      route vers l'agent ciblé)
+  - machines_update : envoyé au viewer à chaque connect/disconnect d'agent
+                      (liste des machines disponibles pour cet user)
 """
 
 import json
 import logging
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Set, List
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -31,50 +39,64 @@ router = APIRouter()
 
 class ConnectionManager:
     """
-    Stocke les sockets agents (strict 1:1) et viewers (N par user) par username.
+    Stocke les sockets agents (N machines par user) et viewers (N par user).
 
-    Pourquoi N viewers par user :
-      - L'utilisateur peut avoir 2 onglets/devices ouverts sur Diagnostic en même
-        temps (PWA mobile + desktop, ou par accident 2 tabs). Forcer le 1:1 fait
-        un combat infini où chaque nouveau tab kicke le précédent (storm de
-        reconnexions à 3s, pollue les logs, consomme du CPU).
-      - On broadcast les metrics de l'agent à TOUS les viewers du user.
-      - Les viewers qui meurent (network drop, tab fermé) sont nettoyés à la
-        prochaine tentative de send.
-
-    Pourquoi 1 agent par user (strict) :
-      - Un user a 1 PC physique. 2 agents pour le même username = bug d'install.
-        On garde le `_replace` qui kicke le précédent pour éviter de polluer
-        avec un agent zombie qui survit après reboot.
+    self.agents = {
+        "Massii08": {
+            "macbook-air-de-stefano": <WebSocket>,
+            "pc-windows-massii":      <WebSocket>,
+        },
+        ...
+    }
     """
 
     def __init__(self):
-        self.agents: Dict[str, WebSocket] = {}
+        self.agents: Dict[str, Dict[str, WebSocket]] = {}
         self.viewers: Dict[str, Set[WebSocket]] = {}
 
-    async def _replace_agent(self, username: str, ws: WebSocket):
-        existing = self.agents.get(username)
+    # ---- Agents ----------------------------------------------------------
+
+    async def register_agent(self, username: str, machine: str, ws: WebSocket):
+        bucket = self.agents.setdefault(username, {})
+        existing = bucket.get(machine)
         if existing is not None:
             try:
                 await existing.close(code=1000, reason="Replaced by new agent connection")
             except Exception:
                 pass
-        self.agents[username] = ws
+        bucket[machine] = ws
+        logger.info(f"[sysdoc] Agent {username}/{machine} connected (total: {len(bucket)} machines).")
 
-    async def register_agent(self, username: str, ws: WebSocket):
-        await self._replace_agent(username, ws)
-        logger.info(f"[sysdoc] Agent {username} connected.")
+    def unregister_agent(self, username: str, machine: str, ws: WebSocket):
+        bucket = self.agents.get(username)
+        if not bucket:
+            return
+        if bucket.get(machine) is ws:
+            del bucket[machine]
+            logger.info(f"[sysdoc] Agent {username}/{machine} disconnected.")
+            if not bucket:
+                del self.agents[username]
+
+    def list_machines(self, username: str) -> List[str]:
+        return sorted(self.agents.get(username, {}).keys())
+
+    async def relay_to_agent(self, username: str, machine: str, message: str) -> bool:
+        agent = self.agents.get(username, {}).get(machine)
+        if agent is None:
+            return False
+        try:
+            await agent.send_text(message)
+            return True
+        except Exception as exc:
+            logger.debug(f"[sysdoc] relay_to_agent({username}/{machine}) failed: {exc}")
+            return False
+
+    # ---- Viewers --------------------------------------------------------
 
     def register_viewer(self, username: str, ws: WebSocket):
-        # Pas de _replace — on ajoute au set
         self.viewers.setdefault(username, set()).add(ws)
         count = len(self.viewers[username])
         logger.info(f"[sysdoc] Viewer {username} connected (total: {count}).")
-
-    def unregister_agent(self, username: str, ws: WebSocket):
-        if self.agents.get(username) is ws:
-            del self.agents[username]
-            logger.info(f"[sysdoc] Agent {username} disconnected.")
 
     def unregister_viewer(self, username: str, ws: WebSocket):
         bucket = self.viewers.get(username)
@@ -86,18 +108,10 @@ class ConnectionManager:
             del self.viewers[username]
         logger.info(f"[sysdoc] Viewer {username} disconnected (remaining: {remaining}).")
 
-    def viewer_count(self, username: str) -> int:
-        return len(self.viewers.get(username, ()))
-
     async def relay_to_viewer(self, username: str, message: str) -> bool:
-        """
-        Broadcast à TOUS les viewers du username. Retourne True si ≥1 viewer
-        a reçu le message. Les sockets dead sont removed du set.
-        """
         bucket = self.viewers.get(username)
         if not bucket:
             return False
-        # Snapshot pour éviter mutation pendant l'itération
         dead: list = []
         delivered = 0
         for viewer in list(bucket):
@@ -113,23 +127,19 @@ class ConnectionManager:
             self.viewers.pop(username, None)
         return delivered > 0
 
-    async def relay_to_agent(self, username: str, message: str) -> bool:
-        agent = self.agents.get(username)
-        if agent is None:
-            return False
-        try:
-            await agent.send_text(message)
-            return True
-        except Exception as exc:
-            logger.debug(f"[sysdoc] relay_to_agent({username}) failed: {exc}")
-            return False
+    async def broadcast_machines_update(self, username: str):
+        """Envoie aux viewers la liste à jour des machines connectées."""
+        machines = self.list_machines(username)
+        await self.relay_to_viewer(
+            username,
+            json.dumps({"type": "machines_update", "data": {"machines": machines}}),
+        )
 
 
 manager = ConnectionManager()
 
 
 def _resolve_username(token: str) -> Optional[str]:
-    """Décode le token et retourne le sub (username), ou None si invalide."""
     if not token:
         return None
     payload = decode_token(token)
@@ -139,7 +149,6 @@ def _resolve_username(token: str) -> Optional[str]:
 
 
 def _is_admin(username: str) -> bool:
-    """Vérifie si le user a is_admin=True (pour autoriser cross-user viewing)."""
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.username == username).first()
@@ -154,15 +163,6 @@ async def _auth_and_accept(
     *,
     allow_admin_cross_user: bool = False,
 ) -> Optional[str]:
-    """
-    Accepte le handshake puis valide le JWT.
-    Retourne le `sub` du token (= username effectif) ou None (et ferme la socket).
-
-    Règle :
-      - sub du token == path_username  → OK
-      - allow_admin_cross_user=True + token est admin → OK (admin peut viewer tous)
-      - sinon → fermeture 1008
-    """
     await websocket.accept()
     token = websocket.query_params.get("token")
     sub = _resolve_username(token)
@@ -176,61 +176,97 @@ async def _auth_and_accept(
     return sub
 
 
-@router.websocket("/ws/sysdoc/agent/{username}")
-async def agent_endpoint(websocket: WebSocket, username: str):
-    """L'agent envoie ici. Messages relayés au viewer du même username."""
-    # Agents : auth strict (pas d'override admin — un agent ne peut représenter qu'un user)
+# ----------------------------------------------------------------------------
+# AGENT endpoint — un par machine de l'utilisateur
+# ----------------------------------------------------------------------------
+
+@router.websocket("/ws/sysdoc/agent/{username}/{machine}")
+async def agent_endpoint(websocket: WebSocket, username: str, machine: str):
+    """L'agent envoie ici. Messages enrichis avec machine_id et relayés au viewer."""
     if await _auth_and_accept(websocket, username, allow_admin_cross_user=False) is None:
         return
 
-    await manager.register_agent(username, websocket)
+    await manager.register_agent(username, machine, websocket)
+    await manager.broadcast_machines_update(username)
     await manager.relay_to_viewer(
         username,
-        json.dumps({"type": "agent_status", "data": {"online": True}}),
+        json.dumps({
+            "type": "agent_status",
+            "data": {"online": True, "machine": machine},
+        }),
     )
 
     try:
         while True:
             data = await websocket.receive_text()
             try:
-                json.loads(data)
+                parsed = json.loads(data)
             except json.JSONDecodeError:
-                logger.debug(f"[sysdoc:agent:{username}] invalid JSON ignored")
+                logger.debug(f"[sysdoc:agent:{username}/{machine}] invalid JSON ignored")
                 continue
-            await manager.relay_to_viewer(username, data)
+            # Enrichit le message avec le machine_id pour que le viewer puisse demux
+            if isinstance(parsed, dict):
+                parsed["machine"] = machine
+                await manager.relay_to_viewer(username, json.dumps(parsed))
+            else:
+                # Pas un objet — relai brut (cas pathologique)
+                await manager.relay_to_viewer(username, data)
     except WebSocketDisconnect:
         pass
     except RuntimeError as exc:
-        # Starlette : "WebSocket is not connected. Need to call accept first." quand
-        # _replace() a fermé la socket sous nos pieds. Traiter comme disconnect.
         if "not connected" in str(exc).lower() or "after sending" in str(exc).lower():
             pass
         else:
             raise
     finally:
-        manager.unregister_agent(username, websocket)
-        if username not in manager.agents:
+        manager.unregister_agent(username, machine, websocket)
+        # Notifier les viewers que cette machine est partie
+        if username not in manager.agents or machine not in manager.agents.get(username, {}):
             await manager.relay_to_viewer(
                 username,
-                json.dumps({"type": "agent_status", "data": {"online": False}}),
+                json.dumps({
+                    "type": "agent_status",
+                    "data": {"online": False, "machine": machine},
+                }),
             )
+            await manager.broadcast_machines_update(username)
 
+
+# ----------------------------------------------------------------------------
+# VIEWER endpoint — un user-level (pas par machine), reçoit tout
+# ----------------------------------------------------------------------------
 
 @router.websocket("/ws/sysdoc/viewer/{username}")
 async def viewer_endpoint(websocket: WebSocket, username: str):
-    """Le dashboard reçoit ici. Messages forward à l'agent du même username."""
-    # Viewers : admin peut viewer d'autres users (utile pour debug / support)
+    """
+    Le dashboard reçoit ici (par user, pas par machine).
+
+    Le viewer reçoit les messages de TOUTES les machines de cet user, taggés
+    avec `machine` (pour pouvoir demux dans l'UI).
+
+    Quand il envoie une commande, il DOIT spécifier `target_machine` :
+        {"command": "START_MONITORING", "target_machine": "macbook-air"}
+    Le backend route vers l'agent de cette machine.
+    """
     sub = await _auth_and_accept(websocket, username, allow_admin_cross_user=True)
     if sub is None:
         return
 
     manager.register_viewer(username, websocket)
 
-    agent_online = username in manager.agents
+    # Envoyer l'état initial : liste des machines + status de chacune
     try:
+        machines = manager.list_machines(username)
         await websocket.send_text(
-            json.dumps({"type": "agent_status", "data": {"online": agent_online}})
+            json.dumps({"type": "machines_update", "data": {"machines": machines}})
         )
+        for m in machines:
+            await websocket.send_text(
+                json.dumps({
+                    "type": "agent_status",
+                    "data": {"online": True, "machine": m},
+                })
+            )
     except Exception:
         pass
 
@@ -238,16 +274,39 @@ async def viewer_endpoint(websocket: WebSocket, username: str):
         while True:
             data = await websocket.receive_text()
             try:
-                json.loads(data)
+                parsed = json.loads(data)
             except json.JSONDecodeError:
                 logger.debug(f"[sysdoc:viewer:{username}] invalid JSON ignored")
                 continue
-            relayed = await manager.relay_to_agent(username, data)
+            if not isinstance(parsed, dict):
+                continue
+
+            target_machine = parsed.get("target_machine")
+            if not target_machine:
+                # Pas de target → on ignore (le viewer doit toujours spécifier)
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "command_result",
+                        "result": {"status": "error", "message": "target_machine manquant dans la commande"},
+                    }))
+                except Exception:
+                    pass
+                continue
+
+            # Strip le target_machine avant de forward (l'agent n'en a pas besoin)
+            forward = {k: v for k, v in parsed.items() if k != "target_machine"}
+            relayed = await manager.relay_to_agent(
+                username, target_machine, json.dumps(forward),
+            )
             if not relayed:
                 try:
                     await websocket.send_text(json.dumps({
                         "type": "command_result",
-                        "result": {"status": "error", "message": "Agent not connected"},
+                        "machine": target_machine,
+                        "result": {
+                            "status": "error",
+                            "message": f"Agent {target_machine} non connecté",
+                        },
                     }))
                 except Exception:
                     pass

@@ -19,6 +19,8 @@ import websockets
 import json
 import jwt
 import os
+import re
+import socket
 import sys
 import time
 
@@ -99,6 +101,13 @@ if not JWT_SECRET:
 
 # Renommée pour cohérence interne, l'ancien nom existe encore pour rétrocompat
 CLIENT_ID = USERNAME
+
+# Machine ID — distingue les multiples PCs du même user (Mac + Windows + ...).
+# Default = hostname système (ex: MacBook-Air-de-Stefano). Override via env var
+# OMEN_AGENT_MACHINE (utile si tu veux des noms plus lisibles, ex: "gaming-pc").
+_raw_machine = os.environ.get("OMEN_AGENT_MACHINE") or socket.gethostname()
+# Sanitize pour URL : remplace tout ce qui n'est pas alphanumérique/tiret/underscore par "-"
+MACHINE = re.sub(r"[^a-zA-Z0-9_-]", "-", _raw_machine).strip("-") or "unknown"
 
 
 def generate_agent_token():
@@ -277,10 +286,11 @@ async def listen_commands_loop(websocket):
 
 async def main():
     token = generate_agent_token()
-    # On cible explicitement le rôle "agent" pour ne pas se mélanger avec le viewer.
-    url = f"{SERVER_URL}/agent/{USERNAME}?token={token}"
+    # Path: /ws/sysdoc/agent/{username}/{machine}
+    # Multi-machine par user → chaque PC s'identifie via son hostname (ou OMEN_AGENT_MACHINE).
+    url = f"{SERVER_URL}/agent/{USERNAME}/{MACHINE}?token={token}"
 
-    print(f"[Agent] Connexion à {SERVER_URL}/agent/{USERNAME} en tant que {USERNAME}...")
+    print(f"[Agent] Connexion à {SERVER_URL}/agent/{USERNAME}/{MACHINE} (machine: {MACHINE})...")
 
     # Floor de 1s entre 2 tentatives de connexion — empêche les reconnect storms quand
     # `listen_commands_loop` exit normalement (le `async with` referme la WS proprement
