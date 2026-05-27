@@ -215,6 +215,7 @@ async def listen_commands_loop(websocket):
                     await _start_monitoring(websocket)
                     continue
 
+
                 if command == "STOP_MONITORING":
                     await _stop_monitoring(websocket)
                     continue
@@ -268,8 +269,11 @@ async def listen_commands_loop(websocket):
 
             except json.JSONDecodeError:
                 print("[Agent] Reçu un message non-JSON")
-    except websockets.exceptions.ConnectionClosed:
-        print("[Agent] Connexion WebSocket fermée par le serveur.")
+    except websockets.exceptions.ConnectionClosed as exc:
+        # Log le code + reason pour diagnostic (1008=auth, 1000=replaced, 1001=going away, etc.)
+        code = getattr(exc, "code", "?")
+        reason = getattr(exc, "reason", "")
+        print(f"[Agent] Connexion WebSocket fermée par le serveur — code={code} reason='{reason}'")
 
 async def main():
     token = generate_agent_token()
