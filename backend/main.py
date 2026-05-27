@@ -277,8 +277,15 @@ async def startup_event():
     start_scheduler()
 
     # Auto-redémarrage des serveurs de jeux
-    # Quand l'Omen reboot ou OmenServer redémarre (auto-deploy),
-    # on vérifie que tous les conteneurs Docker sont bien running.
+    # Quand l'Omen reboot (post-wake) ou OmenServer redémarre (auto-deploy),
+    # on vérifie l'état des conteneurs Docker et on les SYNCHRONISE selon
+    # l'INTENT stocké en DB (srv.status) :
+    #   - DB status="running" + container stopped → AUTO-RESTART (l'utilisateur le voulait running)
+    #   - DB status="stopped" + container stopped → laisser stopped (l'utilisateur l'avait éteint)
+    #   - container running → sync DB
+    # Cette logique respecte l'intent pré-suspend (cf. graceful_shutdown qui
+    # ne touche pas au status), donc un serveur éteint manuellement avant
+    # la nuit reste éteint après le wake.
     try:
         from backend.database import SessionLocal
         from backend.game_server.models import GameServer
@@ -295,6 +302,7 @@ async def startup_event():
                     servers = []  # Skip si Docker n'est pas dispo
 
                 started = 0
+                skipped = 0
                 for srv in servers:
                     try:
                         container = client.containers.get(srv.docker_id)
@@ -304,11 +312,15 @@ async def startup_event():
                                 srv.status = "running"
                                 logger.info(f"🔄 Sync statut: {srv.name} → running")
                         elif container.status in ("exited", "created", "paused"):
-                            # Pas running → le redémarrer
-                            container.start()
-                            srv.status = "running"
-                            started += 1
-                            logger.info(f"🚀 Auto-restart: {srv.name} ({container.status} → running)")
+                            # Pas running → ne rallumer QUE si l'intent DB est "running"
+                            if srv.status == "running":
+                                container.start()
+                                started += 1
+                                logger.info(f"🚀 Auto-restart: {srv.name} (était running avant suspend/crash)")
+                            else:
+                                # Intent DB = stopped → l'utilisateur l'avait éteint, on respecte
+                                skipped += 1
+                                logger.info(f"💤 {srv.name} reste arrêté (intent DB = {srv.status})")
                         else:
                             # État inconnu (restarting, dead, etc.)
                             srv.status = container.status
@@ -318,10 +330,10 @@ async def startup_event():
                         logger.warning(f"❌ Auto-restart échoué: {srv.name} → {e}")
 
                 db.commit()
-                if started > 0:
-                    logger.info(f"🎮 {started} serveur(s) de jeu redémarré(s) automatiquement")
-                else:
-                    logger.info(f"🎮 {len(servers)} serveur(s) de jeu vérifiés — tous OK")
+                logger.info(
+                    f"🎮 Auto-restart: {started} relancé(s), {skipped} laissé(s) arrêté(s), "
+                    f"{len(servers) - started - skipped} déjà OK"
+                )
 
             # Démarrer/recréer le conteneur SFTP
             try:

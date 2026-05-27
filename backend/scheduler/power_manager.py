@@ -230,13 +230,17 @@ def graceful_shutdown() -> dict:
                     logger.warning(f"🌙 {error_msg}")
 
         # 2. Arrêter les serveurs Docker
+        # IMPORTANT : on ne touche PAS `server.status` ici — il sert d'intent
+        # (état désiré) pour le auto-restart au wake dans backend/main.py:startup_event.
+        # Un serveur qui était "running" avant le suspend → reste marqué "running"
+        # en DB → sera redémarré au wake. Un serveur "stopped" (que l'utilisateur
+        # avait éteint manuellement) → reste "stopped" → ne sera PAS rallumé.
         for server in servers:
             if server.docker_id:
                 try:
                     docker_manager.stop_container(server.docker_id)
-                    server.status = "stopped"
                     summary["servers_stopped"] += 1
-                    logger.info(f"🌙 Serveur arrêté: '{server.name}'")
+                    logger.info(f"🌙 Serveur arrêté: '{server.name}' (intent={server.status} préservé pour wake)")
                 except Exception as e:
                     error_msg = f"Arrêt '{server.name}' échoué: {e}"
                     summary["errors"].append(error_msg)

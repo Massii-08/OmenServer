@@ -557,6 +557,7 @@ PR 7 a appliqué des **overrides `!important`** sur les classes legacy (`.sideba
 
 | Date | Changement |
 |------|-----------|
+| 2026-05-27 | 🎮 PR 38 — Auto-restart au wake respecte l'intent : `graceful_shutdown` ne touche plus `srv.status` (intent préservé) + `startup_event` ne relance que les serveurs avec `status="running"` en DB. Effet : un game server éteint manuellement avant la nuit reste éteint au wake, un running reste running. Aussi : améliore le cas crash inattendu (plus de redémarrage en masse). |
 | 2026-05-27 | 🩹 PR 36 — Fix btn-icon trap (boutons serveur superposés) + Clé API Agents (👁/📋 strippés, labels i18n + 40 bullets placeholder) |
 | 2026-05-27 | 🧹 PR 35-bis — Bump `?v=` JS individuels (lang/game_server/sv_files/server_view/app) oublié dans PR35 |
 | 2026-05-27 | 🩹 PR 35 — Fix 4 boutons vides post-PR34 : `sharing.share_btn` raw, boutons search Mods/Modpack, loupe modale Partage, actions fichiers (renommer/supprimer) |
