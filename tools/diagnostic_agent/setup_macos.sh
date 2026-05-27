@@ -194,14 +194,90 @@ print_help() {
     cat <<EOF
 Diagnostic Agent — gestion macOS
 
-  setup_macos.sh             Installation / reconfiguration interactive
-  setup_macos.sh start       Démarrer l'agent
-  setup_macos.sh stop        Arrêter l'agent
-  setup_macos.sh restart     Redémarrer
-  setup_macos.sh status      Voir si tourne + dernières lignes log
-  setup_macos.sh logs        Tail live des logs
-  setup_macos.sh uninstall   Désinstaller (garde .env et venv)
+  setup_macos.sh                Installation / reconfiguration interactive
+  setup_macos.sh start          Démarrer l'agent
+  setup_macos.sh stop           Arrêter l'agent
+  setup_macos.sh restart        Redémarrer
+  setup_macos.sh status         Voir si tourne + dernières lignes log
+  setup_macos.sh logs           Tail live des logs
+  setup_macos.sh uninstall      Désinstaller (garde .env et venv)
+  setup_macos.sh enable-dns-flush   Autoriser l'agent à flush DNS sans password (sudoers)
+  setup_macos.sh disable-dns-flush  Retirer l'autorisation flush DNS
 EOF
+}
+
+# Helpers pour la règle sudoers "flush DNS sans password"
+SUDOERS_FILE="/etc/sudoers.d/omen-diagnostic-agent"
+
+enable_dns_flush() {
+    color "1" "═══════ Autoriser le flush DNS sans password ═══════"
+    echo
+    info "Cette commande va créer une règle sudoers très restrictive :"
+    echo "  - Utilisateur : $(whoami)"
+    echo "  - Commande autorisée : /usr/bin/killall -HUP mDNSResponder"
+    echo "  - Sans password (NOPASSWD)"
+    echo
+    warn "Tu vas devoir taper ton mot de passe macOS UNE SEULE FOIS."
+    echo "  Après ça, l'agent peut flush DNS tout seul, à vie."
+    echo "  Désactivable via : ./setup_macos.sh disable-dns-flush"
+    echo
+    read -rp "Continuer ? [y/N] " confirm
+    if [[ "${confirm,,}" != "y" && "${confirm,,}" != "yes" ]]; then
+        info "Annulé"
+        exit 0
+    fi
+
+    local user="$(whoami)"
+    # Trouver le path absolu de killall (varie selon macOS)
+    local killall_path
+    killall_path="$(which killall)"
+    if [ -z "$killall_path" ]; then
+        err "killall introuvable"
+        exit 1
+    fi
+
+    local rule="${user} ALL=(root) NOPASSWD: ${killall_path} -HUP mDNSResponder"
+
+    # Écrire d'abord dans /tmp puis valider syntaxe avant de déposer dans sudoers.d
+    local tmp="$(mktemp)"
+    cat > "$tmp" <<EOF
+# OmenServer Diagnostic Agent — autorisation flush DNS sans password
+# Géré par setup_macos.sh (enable-dns-flush / disable-dns-flush)
+${rule}
+EOF
+
+    info "Validation de la syntaxe sudoers..."
+    if ! sudo visudo -cf "$tmp"; then
+        err "Syntaxe sudoers invalide — install annulée"
+        rm -f "$tmp"
+        exit 1
+    fi
+    ok "Syntaxe OK"
+
+    info "Installation dans $SUDOERS_FILE (sudo requis)..."
+    sudo install -m 0440 -o root -g wheel "$tmp" "$SUDOERS_FILE"
+    rm -f "$tmp"
+    ok "Règle sudoers installée"
+
+    # Test : essayer la commande sans password
+    info "Test : flush DNS via sudo -n..."
+    if sudo -n "$killall_path" -HUP mDNSResponder 2>/dev/null; then
+        ok "Cache DNS vidé avec succès — l'agent peut maintenant le faire en autonomie"
+    else
+        warn "Le test a échoué. Vérifie le fichier $SUDOERS_FILE manuellement."
+    fi
+    echo
+    info "Redémarre l'agent pour qu'il prenne en compte : ./setup_macos.sh restart"
+}
+
+disable_dns_flush() {
+    if [ ! -f "$SUDOERS_FILE" ]; then
+        warn "Aucune règle installée ($SUDOERS_FILE n'existe pas)"
+        exit 0
+    fi
+    info "Suppression de $SUDOERS_FILE (sudo requis)..."
+    sudo rm -f "$SUDOERS_FILE"
+    ok "Règle supprimée — l'agent ne peut plus flush DNS sans password"
 }
 
 # --- Dispatch ---------------------------------------------------------------
@@ -246,6 +322,12 @@ case "${1:-install}" in
         ;;
     uninstall)
         uninstall_agent
+        ;;
+    enable-dns-flush)
+        enable_dns_flush
+        ;;
+    disable-dns-flush)
+        disable_dns_flush
         ;;
     -h|--help|help)
         print_help

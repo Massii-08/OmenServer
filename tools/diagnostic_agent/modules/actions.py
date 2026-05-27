@@ -170,18 +170,49 @@ def _run_flush_dns_windows() -> Dict[str, Any]:
 
 
 def _run_flush_dns_macos() -> Dict[str, Any]:
-    """mDNSResponder restart — sans sudo. macOS récents, may fail si sandboxé."""
+    """
+    Relance mDNSResponder via `sudo -n` (non-interactive).
+
+    macOS Catalina+ exige sudo pour HUP mDNSResponder. L'agent LaunchAgent
+    tourne en user → on s'appuie sur une règle sudoers PRÉ-INSTALLÉE :
+
+        /etc/sudoers.d/omen-diagnostic-agent
+        <user> ALL=(root) NOPASSWD: /usr/bin/killall -HUP mDNSResponder
+
+    Cette règle est créée par `setup_macos.sh enable-dns-flush` (one-shot,
+    demande sudo une fois pour écrire le fichier sudoers, puis l'agent peut
+    flush DNS sans password à vie).
+
+    Si la règle n'est pas installée, sudo -n échoue immédiatement → on
+    renvoie un message clair indiquant comment l'activer.
+    """
     try:
-        # Tentative sans sudo (souvent permitted pour HUP)
+        # Tentative 1 : sans sudo (au cas où, rarement permis)
         result = subprocess.run(
             ["killall", "-HUP", "mDNSResponder"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
-            return {"status": "success", "message": "mDNSResponder rechargé (cache DNS vidé)."}
-        return {"status": "error",
-                "message": "killall HUP mDNSResponder refusé (sudo requis sur ce macOS).",
-                "output": result.stderr.strip()}
+            return {"status": "success", "message": "Cache DNS vidé (mDNSResponder relancé)."}
+
+        # Tentative 2 : sudo -n (s'appuie sur sudoers.d/omen-diagnostic-agent)
+        result = subprocess.run(
+            ["sudo", "-n", "killall", "-HUP", "mDNSResponder"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return {"status": "success", "message": "Cache DNS vidé (mDNSResponder relancé via sudo)."}
+
+        # Échec : probablement pas de règle sudoers
+        return {
+            "status": "error",
+            "message": (
+                "sudo requis. Active la règle sudoers une fois pour autoriser cette action : "
+                "lance `./setup_macos.sh enable-dns-flush` dans tools/diagnostic_agent/ "
+                "(demande ton password macOS une seule fois)."
+            ),
+            "output": (result.stderr or "").strip(),
+        }
     except (subprocess.SubprocessError, FileNotFoundError) as e:
         return {"status": "error", "message": f"Erreur : {e}"}
 
@@ -285,22 +316,13 @@ _CATALOG: List[Dict[str, Any]] = [
         "runner": _run_flush_dns_windows,
     },
     {
-        # macOS bloque killall mDNSResponder sans sudo depuis Catalina.
-        # L'agent LaunchAgent tourne en user → ne peut pas. On passe en risky
-        # avec instructions pour que l'utilisateur le fasse lui-même via Terminal.
         "id": "flush_dns_macos",
-        "tier": TIER_RISKY,
-        "title": "Vider le cache DNS macOS",
-        "description": "macOS exige sudo pour relancer mDNSResponder. À faire manuellement via Terminal (5 secondes).",
+        "tier": TIER_SAFE,
+        "title": "Vider le cache DNS",
+        "description": "Relance mDNSResponder — utile après un changement de réseau/VPN. Nécessite une autorisation sudoers une seule fois (voir warning).",
         "platforms": ["darwin"],
-        "runner": None,
-        "instructions": [
-            "Ouvrir **Terminal** (Cmd+Espace, taper `Terminal`, Entrée)",
-            "Coller la commande : `sudo killall -HUP mDNSResponder`",
-            "Entrer votre **mot de passe macOS** (le terminal masque la saisie, c'est normal)",
-            "Le cache DNS est vidé immédiatement — utile si certains sites ne chargent plus après un changement de réseau ou de VPN.",
-        ],
-        "warning": "macOS bloque cette commande sans sudo depuis Catalina (≥10.15). C'est une limite système, pas un bug de l'agent.",
+        "runner": _run_flush_dns_macos,
+        "warning": "Première fois ? Lance `./setup_macos.sh enable-dns-flush` dans tools/diagnostic_agent/ pour autoriser l'agent à exécuter cette commande sans password (one-shot, demande sudo une fois).",
     },
 
     # 🟡 MODERATE
