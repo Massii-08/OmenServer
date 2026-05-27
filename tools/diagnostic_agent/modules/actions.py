@@ -285,12 +285,22 @@ _CATALOG: List[Dict[str, Any]] = [
         "runner": _run_flush_dns_windows,
     },
     {
+        # macOS bloque killall mDNSResponder sans sudo depuis Catalina.
+        # L'agent LaunchAgent tourne en user → ne peut pas. On passe en risky
+        # avec instructions pour que l'utilisateur le fasse lui-même via Terminal.
         "id": "flush_dns_macos",
-        "tier": TIER_SAFE,
-        "title": "Recharger mDNSResponder (cache DNS)",
-        "description": "killall -HUP mDNSResponder — équivalent macOS du flush DNS.",
+        "tier": TIER_RISKY,
+        "title": "Vider le cache DNS macOS",
+        "description": "macOS exige sudo pour relancer mDNSResponder. À faire manuellement via Terminal (5 secondes).",
         "platforms": ["darwin"],
-        "runner": _run_flush_dns_macos,
+        "runner": None,
+        "instructions": [
+            "Ouvrir **Terminal** (Cmd+Espace, taper `Terminal`, Entrée)",
+            "Coller la commande : `sudo killall -HUP mDNSResponder`",
+            "Entrer votre **mot de passe macOS** (le terminal masque la saisie, c'est normal)",
+            "Le cache DNS est vidé immédiatement — utile si certains sites ne chargent plus après un changement de réseau ou de VPN.",
+        ],
+        "warning": "macOS bloque cette commande sans sudo depuis Catalina (≥10.15). C'est une limite système, pas un bug de l'agent.",
     },
 
     # 🟡 MODERATE
