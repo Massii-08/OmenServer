@@ -319,10 +319,17 @@ _CATALOG: List[Dict[str, Any]] = [
         "id": "flush_dns_macos",
         "tier": TIER_SAFE,
         "title": "Vider le cache DNS",
-        "description": "Relance mDNSResponder — utile après un changement de réseau/VPN. Nécessite une autorisation sudoers une seule fois (voir warning).",
+        "description": "Relance mDNSResponder — utile après un changement de réseau/VPN. Première utilisation : autoriser via la commande ci-dessous (une seule fois).",
         "platforms": ["darwin"],
         "runner": _run_flush_dns_macos,
-        "warning": "Première fois ? Lance `./setup_macos.sh enable-dns-flush` dans tools/diagnostic_agent/ pour autoriser l'agent à exécuter cette commande sans password (one-shot, demande sudo une fois).",
+        "warning": "macOS exige sudo pour cette commande. L'agent peut le faire sans password si tu lances UNE FOIS la commande ci-dessous (crée une règle sudoers très restrictive, juste pour cette commande spécifique).",
+        "setup_commands": [
+            {
+                "label": "Autoriser le flush DNS sans password (admin · une seule fois)",
+                "command": "cd ~/omenserver-diagnostic-agent && ./setup_macos.sh enable-dns-flush",
+                "note": "Si tu as installé l'agent ailleurs (ex: dans le repo OmenServer source), adapte le `cd` vers ton dossier `tools/diagnostic_agent/`.",
+            }
+        ],
     },
 
     # 🟡 MODERATE

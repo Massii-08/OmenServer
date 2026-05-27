@@ -1102,6 +1102,30 @@ chmod 600 .env
             card.appendChild(w);
         }
 
+        // Setup commands : commandes one-shot à lancer une fois pour activer/configurer
+        // l'action (ex: sudoers entry pour flush_dns_macos). Rendues comme blocs
+        // copy-pastable avec bouton "Copier".
+        if (Array.isArray(action.setup_commands) && action.setup_commands.length > 0) {
+            action.setup_commands.forEach(sc => {
+                const block = document.createElement('div');
+                block.className = 'kit-action-setup';
+                const labelHtml = sc.label ? `<div class="kit-action-setup-label">${this._escape(sc.label)}</div>` : '';
+                const noteHtml = sc.note ? `<div class="kit-action-setup-note">${this._escape(sc.note)}</div>` : '';
+                const cmdId = `cmd-${action.id}-${Math.random().toString(36).slice(2, 8)}`;
+                block.innerHTML = `
+                    ${labelHtml}
+                    <div class="install-code-block kit-action-setup-block">
+                        <button class="install-copy-btn" data-copy-id="${cmdId}">Copier</button>
+                        <pre id="${cmdId}"><code>${this._escape(sc.command || '')}</code></pre>
+                    </div>
+                    ${noteHtml}
+                `;
+                card.appendChild(block);
+            });
+            // Re-bind les boutons Copier (réutilise la même logique que install panel)
+            setTimeout(() => this._bindCopyButtons(), 0);
+        }
+
         const actions = document.createElement('div');
         actions.className = 'kit-action-actions';
 
