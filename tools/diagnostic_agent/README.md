@@ -47,28 +47,55 @@ nssm remove OmenDiagnosticAgent confirm
 
 ---
 
-## 🍎 Installation manuelle (macOS / Linux dev)
+## 🍎 Installation macOS (LaunchAgent — recommandé)
+
+Le `setup_macos.sh` installe l'agent comme **LaunchAgent** macOS : auto-start
+au login, redémarre tout seul si crash, tourne en arrière-plan (pas de fenêtre
+Terminal qui doit rester ouverte).
+
+```bash
+cd "Projet serveur/tools/diagnostic_agent"
+./setup_macos.sh
+```
+
+Le script :
+- Vérifie Python 3
+- Crée `venv/` local + installe deps
+- Prompt interactif : username + hub URL + SECRET_KEY → écrit dans `.env` (mode 600)
+- Génère `~/Library/LaunchAgents/org.omenserver.diagnostic-agent.plist`
+- Charge le LaunchAgent → l'agent tourne **dès maintenant** et à chaque login
+
+**Commandes utiles ensuite** :
+```bash
+./setup_macos.sh status     # voir si tourne + dernières lignes log
+./setup_macos.sh logs       # tail live (Ctrl+C pour quitter)
+./setup_macos.sh stop       # arrêter
+./setup_macos.sh start      # redémarrer
+./setup_macos.sh restart    # bounce
+./setup_macos.sh uninstall  # désinstaller (garde .env)
+```
+
+## 🍎 Lancement manuel (dev rapide, sans installation persistante)
 
 ```bash
 cd "Projet serveur/tools/diagnostic_agent"
 python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+./venv/bin/pip install -r requirements.txt
 
-# Option A — .env local (recommandé)
+# Config via .env local (recommandé — secret pas en cmdline)
 cat > .env <<EOF
-OMEN_AGENT_USERNAME=Massii_08
-OMEN_HUB_URL=ws://localhost:8000/ws/sysdoc
-# Sur le dev local macOS, l'agent auto-charge SECRET_KEY depuis ../../.env
-# du hub — pas besoin de le mettre ici
+OMEN_AGENT_USERNAME=Massii08
+OMEN_HUB_URL=wss://omenserver.org/ws/sysdoc
+OMEN_JWT_SECRET=<copie depuis le .env du hub prod>
 EOF
+chmod 600 .env
 
-# Option B — variables d'environnement directes
-export OMEN_AGENT_USERNAME=Massii_08
-export OMEN_HUB_URL=ws://localhost:8000/ws/sysdoc
-
-python main.py
+./venv/bin/python -u main.py
 ```
+
+Pour le dev local contre le hub local (port 8000), l'agent auto-charge le
+`SECRET_KEY` depuis `../../.env` du hub. Pas besoin de le mettre dans le `.env`
+local de l'agent.
 
 ---
 
