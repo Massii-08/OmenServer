@@ -70,7 +70,6 @@ class MarketScraper:
     async def start(self):
         """Avvia il browser Playwright."""
         from playwright.async_api import async_playwright
-        import shutil
 
         self._playwright = await async_playwright().start()
 
@@ -78,23 +77,33 @@ class MarketScraper:
             "headless": self.headless,
             "args": ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
         }
-        system_chromium = (
-            shutil.which("chromium-browser")
-            or shutil.which("chromium")
-            or shutil.which("google-chrome")
-        )
-        if system_chromium:
-            launch_args["executable_path"] = system_chromium
-            logger.info(f"🌐 Chromium di sistema: {system_chromium}")
 
+        # On préfère le Chromium *bundled* par Playwright. Sur Ubuntu 22.04+,
+        # /usr/bin/chromium-browser est un wrapper du snap chromium qui refuse
+        # de tourner hors d'un cgroup snap (ex: depuis omenserver.service via
+        # systemd) — symptômes : "is not a snap cgroup for tag snap.chromium",
+        # "xdg-settings: not found", exit 1. Donc :
+        #   1) on tente d'abord le Chromium bundled (cas nominal)
+        #   2) si Playwright n'a pas son binaire, fallback sur le système
+        #      MAIS uniquement si ce n'est PAS un wrapper snap.
         try:
             self._browser = await self._playwright.chromium.launch(**launch_args)
-        except Exception:
-            if system_chromium and "executable_path" not in launch_args:
-                launch_args["executable_path"] = system_chromium
-                self._browser = await self._playwright.chromium.launch(**launch_args)
-            else:
-                raise
+            logger.info("🌐 Browser Playwright (Chromium bundled) avviato")
+        except Exception as bundled_err:
+            logger.warning(
+                f"⚠️ Chromium bundled Playwright KO ({type(bundled_err).__name__}): "
+                f"{bundled_err}. Tentative fallback système (non-snap uniquement)."
+            )
+            system_chromium = self._find_non_snap_chromium()
+            if not system_chromium:
+                logger.error(
+                    "❌ Aucun Chromium utilisable. Installe-le avec : "
+                    "`playwright install chromium` dans le venv du bond-scanner."
+                )
+                raise bundled_err
+            launch_args["executable_path"] = system_chromium
+            self._browser = await self._playwright.chromium.launch(**launch_args)
+            logger.info(f"🌐 Browser système avviato (fallback): {system_chromium}")
 
         self._context = await self._browser.new_context(
             user_agent=(
@@ -115,6 +124,49 @@ class MarketScraper:
         if self._playwright:
             await self._playwright.stop()
         logger.info("Browser chiuso")
+
+    @staticmethod
+    def _find_non_snap_chromium():
+        """
+        Cherche un Chromium système qui n'est PAS un wrapper snap.
+
+        Sur Ubuntu 22.04+, `/usr/bin/chromium-browser` est un script qui
+        appelle `snap run chromium`, et le snap chromium ne tourne pas
+        depuis un cgroup non-snap (typique d'un service systemd). On le
+        détecte de deux manières (cumulatives) :
+          1. realpath traverse-t-il /snap/... ?
+          2. les premiers Ko du fichier contiennent-ils 'snap run' / '/snap/' ?
+
+        Returns:
+            Path d'un binaire utilisable, ou None si aucun valide.
+        """
+        import shutil
+        import os
+
+        candidates = [
+            shutil.which("google-chrome-stable"),  # apt google-chrome, jamais snap
+            shutil.which("google-chrome"),
+            shutil.which("chromium"),
+            shutil.which("chromium-browser"),
+        ]
+        for path in candidates:
+            if not path:
+                continue
+            try:
+                real = os.path.realpath(path)
+                if "/snap/" in real:
+                    logger.debug(f"  ⏭️  Skip snap binary: {path} → {real}")
+                    continue
+                with open(path, "rb") as f:
+                    head = f.read(2048)
+                if b"snap run" in head or b"/snap/" in head:
+                    logger.debug(f"  ⏭️  Skip snap wrapper script: {path}")
+                    continue
+            except (OSError, IOError) as e:
+                logger.debug(f"  ⚠️ Ne peut pas inspecter {path}: {e}")
+                continue
+            return path
+        return None
 
     # ================================================================
     #  SCANSIONE DEL MERCATO
