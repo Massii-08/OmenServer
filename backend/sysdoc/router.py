@@ -23,19 +23,27 @@ def get_my_agent_config(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Retourne les infos de connexion pour l'agent Windows/macOS :
-      - username : à utiliser comme `OMEN_AGENT_USERNAME`
-      - hub_url  : à utiliser comme `OMEN_HUB_URL` (sans le segment /agent/<user>)
+    Retourne les infos de connexion pour l'agent Windows/macOS/Linux :
+      - username  : à utiliser comme `OMEN_AGENT_USERNAME`
+      - hub_url   : à utiliser comme `OMEN_HUB_URL` (sans le segment /agent/<user>/<machine>)
+      - is_admin  : si vrai, l'UI peut afficher des options admin-only
+      - secret_key: SEULEMENT pour les admins. Permet à l'UI de pré-remplir les
+                    commandes d'install d'agent. Pour un user non-admin, c'est
+                    None — l'admin doit lui transmettre la valeur par canal sécurisé.
 
-    Pour le secret JWT, l'agent doit recevoir la même `SECRET_KEY` que le hub
-    (pas exposé par l'API par sécurité — passer par le .env de la machine cible
-    en copiant la valeur depuis backend/config.py côté hub).
+    Sécurité : exposer le SECRET_KEY via API même pour les admins n'est pas idéal
+    mais (1) il faut être loggué + authentifié JWT, (2) HTTPS, (3) seul un admin
+    déjà compromis pourrait en abuser et de toute façon il a déjà les droits.
+    Trade-off : UX vs friction. Pour OmenServer (panel personnel), c'est OK.
     """
-    # Reconstruit l'URL WS publique en se basant sur le scheme/host de la requête
     scheme = "wss" if request.url.scheme == "https" else "ws"
     host = request.url.netloc
-    return {
+    response = {
         "username": current_user.username,
         "hub_url": f"{scheme}://{host}/ws/sysdoc",
         "is_admin": bool(current_user.is_admin),
     }
+    if current_user.is_admin:
+        from backend.config import settings
+        response["secret_key"] = settings.SECRET_KEY
+    return response

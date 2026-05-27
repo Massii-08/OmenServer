@@ -3935,3 +3935,148 @@ select:-webkit-autofill {
 .machine-pill-name {
     font-weight: 500;
 }
+
+
+/* ============================================================================
+   SysDoc — Panel install (OS-aware, copy/paste commands)
+   ============================================================================ */
+/* Quand affiché dans l'overlay, on étire la card pour avoir plus d'espace */
+.sysdoc-start-overlay .sysdoc-start-card:has(.install-tabs) {
+    max-width: 900px;
+    width: 100%;
+    text-align: left;
+}
+.install-header { margin-bottom: var(--s-4); text-align: center; }
+.install-title  { margin: 0 0 var(--s-2); font-size: 18px; font-weight: 600; color: var(--text); }
+.install-intro  { margin: 0 0 var(--s-2); color: var(--text-muted); font-size: 13px; line-height: 1.55; }
+.install-hint   { color: var(--text-dim); font-size: 12px; font-family: var(--font-mono); }
+
+.install-tabs {
+    display: flex;
+    gap: var(--s-2);
+    margin-bottom: var(--s-4);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: var(--s-2);
+}
+.install-tab {
+    flex: 1;
+    padding: var(--s-2) var(--s-3);
+    background: var(--bg-elev-3);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 13px;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.install-tab:hover { background: var(--bg-elev-2); color: var(--text); }
+.install-tab.active {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.install-content { color: var(--text-muted); font-size: 13px; line-height: 1.6; }
+.install-steps {
+    margin: 0;
+    padding-left: var(--s-5);
+}
+.install-steps > li {
+    margin-bottom: var(--s-3);
+    color: var(--text);
+}
+.install-steps code {
+    background: var(--bg-elev-3);
+    padding: 1px 6px;
+    border-radius: var(--r-sm);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--accent);
+}
+.install-prompts {
+    margin: var(--s-2) 0 0;
+    padding-left: var(--s-4);
+    list-style: '→ ';
+}
+.install-prompts li {
+    margin: var(--s-2) 0;
+    color: var(--text-muted);
+    font-size: 12.5px;
+}
+.install-prompts code.copyable {
+    cursor: pointer;
+    user-select: all;
+}
+.install-prompts code.copyable:hover {
+    background: var(--accent-dim);
+    color: var(--accent);
+}
+
+.install-code-block {
+    position: relative;
+    margin: var(--s-2) 0;
+    background: var(--bg-elev-3);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    overflow: hidden;
+}
+.install-code-block pre {
+    margin: 0;
+    padding: var(--s-3) var(--s-4);
+    padding-right: 100px;
+    overflow-x: auto;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.55;
+    white-space: pre;
+    background: transparent;
+}
+.install-code-block pre code { background: transparent; padding: 0; color: var(--text); }
+.install-copy-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    padding: 4px 10px;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    border-radius: var(--r-sm);
+    color: var(--accent);
+    font-family: var(--font-ui);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 120ms ease;
+}
+.install-copy-btn:hover { background: rgba(74, 222, 128, 0.22); }
+.install-prompts .install-copy-btn {
+    position: static;
+    margin-left: var(--s-2);
+}
+
+.install-advanced {
+    margin-top: var(--s-4);
+    padding-top: var(--s-3);
+    border-top: 1px dashed var(--border);
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.install-advanced summary {
+    cursor: pointer;
+    color: var(--accent);
+    font-weight: 500;
+    margin-bottom: var(--s-2);
+}
+.install-advanced ol { margin: var(--s-2) 0 0; padding-left: var(--s-5); }
+.install-advanced a  { color: var(--accent); text-decoration: underline; }
+
+.machine-pill.machine-pill-add {
+    border-style: dashed;
+    color: var(--accent);
+    background: transparent;
+}
+.machine-pill.machine-pill-add:hover {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+}

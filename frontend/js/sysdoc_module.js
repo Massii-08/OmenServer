@@ -33,6 +33,9 @@ const SysDocModule = {
     // _machines[id] = { agentOnline, monitoringActive }
     _machines: {},
     _selectedMachine: null,
+    // Config récupérée depuis /api/sysdoc/me (username, hub_url, is_admin, secret_key)
+    _config: null,
+    _showInstallPanel: false,
     // Résultat de la dernière exécution par action_id (pour afficher
     // "Dernière exécution : ..." sous le bouton et éviter le doute UX
     // "j'ai cliqué, mais l'option est toujours là").
@@ -212,7 +215,260 @@ const SysDocModule = {
         this._bindModal();
         this._bindStartButton();
         this._refreshOverlay();
+        this._fetchConfig();
         this._connect();
+    },
+
+    async _fetchConfig() {
+        try {
+            const r = await Auth.apiCall('/api/sysdoc/me');
+            if (r && r.ok) {
+                this._config = await r.json();
+            }
+        } catch (e) {
+            console.warn('[sysdoc] fetch /api/sysdoc/me failed', e);
+        }
+    },
+
+    // ---------- Install panel (OS-aware copy/paste commands) ----------
+    _detectOS() {
+        const ua = (navigator.userAgent || '').toLowerCase();
+        if (ua.includes('mac')) return 'macos';
+        if (ua.includes('windows') || ua.includes('win32') || ua.includes('win64')) return 'windows';
+        if (ua.includes('linux')) return 'linux';
+        return 'unknown';
+    },
+
+    _renderInstallHTML() {
+        const os = this._detectOS();
+        const secret = (this._config && this._config.secret_key) || '<SECRET_KEY_DU_HUB>';
+        const username = (this._config && this._config.username) || this._username;
+        const hubUrl = (this._config && this._config.hub_url) || (location.origin.replace(/^http/, 'ws') + '/ws/sysdoc');
+        const isAdmin = !!(this._config && this._config.is_admin);
+        const hasMachines = Object.keys(this._machines).length > 0;
+
+        const headline = hasMachines
+            ? "Ajouter un nouveau PC à ton diagnostic"
+            : "Aucun agent connecté pour ton compte";
+        const intro = hasMachines
+            ? `Tu as déjà <strong>${Object.keys(this._machines).length}</strong> machine(s) connectée(s). Pour ajouter ce PC ou un autre, suis les étapes pour l'OS choisi.`
+            : `Pour voir les diagnostics, installe l'agent sur le PC que tu veux superviser. Suis les étapes pour ton OS — c'est ~2 minutes.`;
+
+        const closeBtn = hasMachines
+            ? `<button class="btn" style="position:absolute;top:12px;right:12px;" onclick="SysDocModule._closeInstallPanel()">Fermer</button>`
+            : '';
+
+        const secretNote = isAdmin
+            ? `<p class="install-hint">Tu es admin — le <strong>SECRET_KEY</strong> est pré-rempli ci-dessous.</p>`
+            : `<p class="install-hint">Tu n'es pas admin — demande à un admin de te transmettre le <strong>SECRET_KEY</strong> par canal sécurisé.</p>`;
+
+        return `
+            ${closeBtn}
+            <div class="install-header">
+                <h2 class="install-title">📦 ${headline}</h2>
+                <p class="install-intro">${intro}</p>
+                ${secretNote}
+            </div>
+
+            <div class="install-tabs">
+                <button class="install-tab ${os === 'macos' ? 'active' : ''}" data-os="macos">🍎 macOS</button>
+                <button class="install-tab ${os === 'windows' ? 'active' : ''}" data-os="windows">🪟 Windows</button>
+                <button class="install-tab ${os === 'linux' ? 'active' : ''}" data-os="linux">🐧 Linux</button>
+            </div>
+
+            <div class="install-content">
+                ${this._renderInstallContent(os, { username, hubUrl, secret, isAdmin })}
+            </div>
+        `;
+    },
+
+    _renderInstallContent(os, ctx) {
+        if (os === 'macos') return this._installMacOS(ctx);
+        if (os === 'windows') return this._installWindows(ctx);
+        if (os === 'linux') return this._installLinux(ctx);
+        return `<p>OS non détecté. Voir <code>tools/diagnostic_agent/README.md</code> du repo.</p>`;
+    },
+
+    _installMacOS(ctx) {
+        const cd = `cd "/Users/$(whoami)/omenserver-diagnostic-agent"`;
+        const clone = `git clone https://github.com/Massii-08/OmenServer.git "/Users/$(whoami)/omenserver-diagnostic-agent-repo" && mkdir -p "/Users/$(whoami)/omenserver-diagnostic-agent" && cp -R "/Users/$(whoami)/omenserver-diagnostic-agent-repo/tools/diagnostic_agent/"* "/Users/$(whoami)/omenserver-diagnostic-agent/"`;
+        const setup = `cd "/Users/$(whoami)/omenserver-diagnostic-agent" && ./setup_macos.sh`;
+        // Tout-en-un (single block) — l'utilisateur n'aura qu'à taper le mot de passe macOS et coller les 3 réponses au prompt
+        const allInOne = `# === Diagnostic Agent macOS — install one-shot ===
+git clone https://github.com/Massii-08/OmenServer.git /tmp/omenserver-clone 2>/dev/null || (cd /tmp/omenserver-clone && git pull)
+mkdir -p ~/omenserver-diagnostic-agent
+cp -R /tmp/omenserver-clone/tools/diagnostic_agent/. ~/omenserver-diagnostic-agent/
+cd ~/omenserver-diagnostic-agent
+chmod +x setup_macos.sh
+./setup_macos.sh`;
+
+        return `
+            <ol class="install-steps">
+                <li>
+                    <strong>Ouvrir Terminal</strong> (Cmd+Espace, taper <code>Terminal</code>)
+                </li>
+                <li>
+                    <strong>Copier-coller ce bloc</strong> et appuyer Entrée :
+                    ${this._codeBlock(allInOne, 'install-macos-all')}
+                </li>
+                <li>
+                    Le script va te demander 3 valeurs :
+                    <ul class="install-prompts">
+                        <li><strong>Username OmenServer :</strong> <code class="copyable" data-copy="${this._escape(ctx.username)}">${this._escape(ctx.username)}</code> <button class="install-copy-btn" data-copy="${this._escape(ctx.username)}">Copier</button></li>
+                        <li><strong>URL hub :</strong> appuie juste Entrée pour le défaut (<code>${this._escape(ctx.hubUrl)}</code>)</li>
+                        <li><strong>SECRET_KEY :</strong> ${ctx.isAdmin ? `colle cette valeur :<br><code class="copyable" data-copy="${this._escape(ctx.secret)}">${this._escape(ctx.secret)}</code> <button class="install-copy-btn" data-copy="${this._escape(ctx.secret)}">Copier</button>` : `demande à un admin de te le transmettre`}</li>
+                    </ul>
+                </li>
+                <li>
+                    Fini ! L'agent s'installe comme <strong>LaunchAgent</strong> (auto-start au login). Cette page va se mettre à jour dans quelques secondes.
+                </li>
+            </ol>
+            <details class="install-advanced">
+                <summary>Commandes utiles ensuite</summary>
+                ${this._codeBlock(`./setup_macos.sh status   # voir si l'agent tourne
+./setup_macos.sh logs     # tail des logs en live
+./setup_macos.sh stop     # arrêter
+./setup_macos.sh restart  # bounce
+./setup_macos.sh uninstall  # désinstaller`, 'install-macos-tips')}
+            </details>
+        `;
+    },
+
+    _installWindows(ctx) {
+        const cmd = `:: === Diagnostic Agent Windows — install ===
+:: 1. Ouvrir PowerShell ou cmd
+:: 2. Naviguer où tu veux installer (ex: cd %USERPROFILE%)
+git clone https://github.com/Massii-08/OmenServer.git
+cd OmenServer\\tools\\diagnostic_agent
+setup_windows.bat`;
+        return `
+            <ol class="install-steps">
+                <li>
+                    Avoir <strong>Python 3.9+</strong> installé (<a href="https://www.python.org/downloads/" target="_blank">python.org</a>, coche bien "Add Python to PATH")
+                </li>
+                <li>
+                    Avoir <strong>git</strong> installé (<a href="https://git-scm.com/download/win" target="_blank">git-scm.com</a>)
+                </li>
+                <li>
+                    Ouvrir <strong>PowerShell</strong> ou <strong>cmd</strong> et copier-coller :
+                    ${this._codeBlock(cmd, 'install-win-clone')}
+                </li>
+                <li>
+                    Le script va demander 3 valeurs :
+                    <ul class="install-prompts">
+                        <li><strong>Username OmenServer :</strong> <code class="copyable" data-copy="${this._escape(ctx.username)}">${this._escape(ctx.username)}</code> <button class="install-copy-btn" data-copy="${this._escape(ctx.username)}">Copier</button></li>
+                        <li><strong>URL hub :</strong> appuie Entrée pour le défaut (<code>${this._escape(ctx.hubUrl)}</code>)</li>
+                        <li><strong>SECRET_KEY :</strong> ${ctx.isAdmin ? `colle cette valeur :<br><code class="copyable" data-copy="${this._escape(ctx.secret)}">${this._escape(ctx.secret)}</code> <button class="install-copy-btn" data-copy="${this._escape(ctx.secret)}">Copier</button>` : `demande à un admin`}</li>
+                    </ul>
+                </li>
+                <li>
+                    Lancer l'agent : ${this._codeBlock('run.bat', 'install-win-run')}
+                </li>
+            </ol>
+            <details class="install-advanced">
+                <summary>Installation en service Windows (auto-start au boot)</summary>
+                <p>Pour que l'agent démarre automatiquement au boot, installe-le comme service via NSSM :</p>
+                <ol>
+                    <li>Télécharger <a href="https://nssm.cc/download" target="_blank">NSSM</a></li>
+                    <li>Placer <code>nssm.exe</code> dans le dossier <code>diagnostic_agent/</code> ou dans ton PATH</li>
+                    <li>Clic-droit sur <code>install_service.bat</code> → "Exécuter en tant qu'administrateur"</li>
+                </ol>
+            </details>
+        `;
+    },
+
+    _installLinux(ctx) {
+        const cmd = `# === Diagnostic Agent Linux — install ===
+git clone https://github.com/Massii-08/OmenServer.git ~/omenserver-clone
+mkdir -p ~/omenserver-diagnostic-agent
+cp -R ~/omenserver-clone/tools/diagnostic_agent/. ~/omenserver-diagnostic-agent/
+cd ~/omenserver-diagnostic-agent
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
+cat > .env <<EOF
+OMEN_AGENT_USERNAME=${ctx.username}
+OMEN_HUB_URL=${ctx.hubUrl}
+OMEN_JWT_SECRET=${ctx.secret}
+EOF
+chmod 600 .env
+./venv/bin/python -u main.py`;
+
+        return `
+            <ol class="install-steps">
+                <li>
+                    Avoir Python 3.9+ et git installés (apt/yum/pacman selon ta distro)
+                </li>
+                <li>
+                    Copier-coller ce bloc dans ton terminal :
+                    ${this._codeBlock(cmd, 'install-linux')}
+                </li>
+                <li>
+                    L'agent tourne en foreground. Pour systemd (auto-start au boot), suis le pattern du <a href="https://github.com/Massii-08/OmenServer/blob/main/tools/diagnostic_agent/README.md" target="_blank">README</a> (création de <code>omen-diagnostic.service</code>).
+                </li>
+            </ol>
+        `;
+    },
+
+    _codeBlock(code, id) {
+        const safe = this._escape(code);
+        return `
+            <div class="install-code-block">
+                <button class="install-copy-btn" data-copy-id="${id}">Copier</button>
+                <pre id="${id}"><code>${safe}</code></pre>
+            </div>
+        `;
+    },
+
+    _bindInstallPanel() {
+        // Tabs OS
+        document.querySelectorAll('.install-tab').forEach(tab => {
+            tab.onclick = () => {
+                document.querySelectorAll('.install-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                const ctx = {
+                    username: (this._config && this._config.username) || this._username,
+                    hubUrl: (this._config && this._config.hub_url) || (location.origin.replace(/^http/, 'ws') + '/ws/sysdoc'),
+                    secret: (this._config && this._config.secret_key) || '<SECRET_KEY_DU_HUB>',
+                    isAdmin: !!(this._config && this._config.is_admin),
+                };
+                document.querySelector('.install-content').innerHTML = this._renderInstallContent(tab.dataset.os, ctx);
+                this._bindCopyButtons();
+            };
+        });
+        this._bindCopyButtons();
+    },
+
+    _bindCopyButtons() {
+        document.querySelectorAll('.install-copy-btn, .copyable').forEach(el => {
+            el.onclick = async (e) => {
+                e.stopPropagation();
+                let text = el.dataset.copy;
+                if (!text && el.dataset.copyId) {
+                    const target = document.getElementById(el.dataset.copyId);
+                    text = target ? target.textContent : '';
+                }
+                if (!text) return;
+                try {
+                    await navigator.clipboard.writeText(text);
+                    const orig = el.textContent;
+                    el.textContent = '✓ Copié';
+                    setTimeout(() => { el.textContent = orig; }, 1500);
+                    if (typeof Toast !== 'undefined') Toast.success('Copié dans le presse-papier');
+                } catch (err) {
+                    if (typeof Toast !== 'undefined') Toast.error('Copie échouée — copie manuellement');
+                }
+            };
+        });
+    },
+
+    _openInstallPanel() {
+        this._showInstallPanel = true;
+        this._refreshOverlay();
+    },
+
+    _closeInstallPanel() {
+        this._showInstallPanel = false;
+        this._refreshOverlay();
     },
 
     _bindStartButton() {
@@ -251,21 +507,12 @@ const SysDocModule = {
             return;
         }
 
-        // Cas 2 : aucune machine OU agent hors ligne → overlay visible, message d'install
-        if (!machineId || !agentOnline) {
+        // Cas 2 : aucune machine OU agent hors ligne OU user demande "Ajouter un PC"
+        // → afficher le panneau d'install avec commandes prêtes à copier-coller
+        if (!machineId || !agentOnline || this._showInstallPanel) {
             overlay.style.display = 'flex';
-            card.innerHTML = `
-                <div class="sysdoc-start-icon" style="color:var(--danger);">⚠</div>
-                <h2 class="sysdoc-start-title">Aucun agent connecté</h2>
-                <p class="sysdoc-start-desc">
-                    Aucune machine n'a son agent connecté au hub pour <strong>${this._escape(this._username)}</strong>.
-                    Installe-le sur ton Mac ou PC Windows depuis <code>tools/diagnostic_agent/</code>
-                    (voir le README pour les commandes).
-                </p>
-                <p class="sysdoc-start-hint">
-                    Une fois lancé, cette page se réactivera automatiquement.
-                </p>
-            `;
+            card.innerHTML = this._renderInstallHTML();
+            this._bindInstallPanel();
             return;
         }
 
@@ -339,23 +586,29 @@ const SysDocModule = {
         const root = document.getElementById('sysdoc-machine-selector');
         if (!root) return;
         const machineIds = Object.keys(this._machines);
-        if (machineIds.length <= 1) {
-            // 0 ou 1 machine : pas besoin de sélecteur
+        if (machineIds.length === 0) {
+            // 0 machine : pas de sélecteur (le panel install prend la place)
             root.style.display = 'none';
             return;
         }
+        // ≥1 machine : afficher le sélecteur (même avec 1 machine, pour exposer "+ Ajouter")
         root.style.display = 'flex';
         root.innerHTML = '';
         machineIds.forEach(id => {
             const state = this._machines[id];
             const btn = document.createElement('button');
             btn.className = 'machine-pill' + (id === this._selectedMachine ? ' active' : '');
-            const dot = state.agentOnline ? '🟢' : '⚫';
             btn.innerHTML = `<span class="machine-pill-dot ${state.agentOnline ? 'online' : 'offline'}"></span><span class="machine-pill-name"></span>`;
             btn.querySelector('.machine-pill-name').textContent = id;
             btn.onclick = () => this._selectMachine(id);
             root.appendChild(btn);
         });
+        // Bouton "+ Ajouter un PC" toujours visible quand y'a au moins 1 machine
+        const addBtn = document.createElement('button');
+        addBtn.className = 'machine-pill machine-pill-add';
+        addBtn.innerHTML = '<span>+ Ajouter un PC</span>';
+        addBtn.onclick = () => this._openInstallPanel();
+        root.appendChild(addBtn);
     },
 
     _resetMetricsUI() {
