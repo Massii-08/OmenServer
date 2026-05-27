@@ -372,8 +372,11 @@ sudo journalctl -u omenserver -f
 # Auto-deploy (cron, toutes les minutes)
 cat ~/deploy.log
 
-# SSH vers l'Omen (IP peut changer via DHCP — vérifier sur le routeur)
-ssh massii08@192.168.68.72   # ou .66 selon le bail DHCP
+# SSH vers l'Omen (IP peut changer via DHCP)
+# 🔍 Pour trouver l'IP actuelle de l'Omen : ouvrir https://omenserver.org
+#    → module Réseau → "IP locale" affichée. C'est l'IP utilisée par l'Omen.
+#    Plus simple que d'aller checker l'interface du routeur.
+ssh massii08@192.168.68.72   # ou autre IP selon le bail DHCP courant
 
 # Accès distant via Cloudflare Tunnel
 # Automatique via systemd : cloudflared.service
