@@ -12,7 +12,7 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="apple-touch-icon" href="/icon-512.svg">
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/css/style.css?v=100">
+    <link rel="stylesheet" href="/css/style.css?v=101">
 </head>
 <body>
     <div class="app-layout">
@@ -30,6 +30,7 @@
                 <button class="nav-tab nav-item" data-view="media" onclick="App.navigateTo('media')" id="nav-media">Média</button>
                 <button class="nav-tab nav-item" data-view="web" onclick="App.navigateTo('web')" id="nav-web">Web</button>
                 <button class="nav-tab nav-item" data-view="network" onclick="App.navigateTo('network')" id="nav-network">Réseau</button>
+                <button class="nav-tab nav-item" data-view="sysdoc" onclick="App.navigateTo('sysdoc')" id="nav-sysdoc">Diagnostic</button>
                 <button class="nav-tab nav-item" data-view="users" onclick="App.navigateTo('users')" id="nav-users" style="display:none;">Utilisateurs</button>
                 <button class="nav-tab nav-item" data-view="settings" onclick="App.navigateTo('settings')">Paramètres</button>
             </div>
@@ -65,7 +66,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="/js/lang.js?v=112"></script>
+    <script src="/js/lang.js?v=113"></script>
     <script src="/js/toast.js?v=87"></script>
     <script src="/js/auth.js?v=87"></script>
     <script src="/js/monitoring.js?v=92"></script>
@@ -83,7 +84,8 @@
     <script src="/js/media_module.js?v=89"></script>
     <script src="/js/web_module.js?v=89"></script>
     <script src="/js/network_module.js?v=92"></script>
-    <script src="/js/app.js?v=115"></script>
+    <script src="/js/sysdoc_module.js?v=1"></script>
+    <script src="/js/app.js?v=116"></script>
     <script>
         // Enregistrement du Service Worker (PWA)
         if ('serviceWorker' in navigator) {

@@ -152,6 +152,8 @@ from backend.network.router import router as network_router
 from backend.scheduler.power_router import router as power_router
 from backend.monitoring.nodes_router import router as nodes_router
 from backend.auth.sharing_router import router as sharing_router
+from backend.sysdoc.router import router as sysdoc_router
+from backend.sysdoc.ws_router import router as sysdoc_ws_router
 
 app.include_router(auth_router)
 app.include_router(invite_router)
@@ -181,6 +183,8 @@ app.include_router(network_router)
 app.include_router(power_router)
 app.include_router(nodes_router)
 app.include_router(sharing_router)
+app.include_router(sysdoc_router)
+app.include_router(sysdoc_ws_router)
 
 
 # --- Événement de démarrage ---
