@@ -12,7 +12,7 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="apple-touch-icon" href="/icon-512.svg">
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/css/style.css?v=101">
+    <link rel="stylesheet" href="/css/style.css?v=102">
 </head>
 <body>
     <div class="app-layout">
@@ -32,7 +32,6 @@
                 <button class="nav-tab nav-item" data-view="network" onclick="App.navigateTo('network')" id="nav-network">Réseau</button>
                 <button class="nav-tab nav-item" data-view="sysdoc" onclick="App.navigateTo('sysdoc')" id="nav-sysdoc">Diagnostic</button>
                 <button class="nav-tab nav-item" data-view="users" onclick="App.navigateTo('users')" id="nav-users" style="display:none;">Utilisateurs</button>
-                <button class="nav-tab nav-item" data-view="settings" onclick="App.navigateTo('settings')">Paramètres</button>
             </div>
             <div class="topbar-right">
                 <div class="lang-switcher" id="lang-switcher">
@@ -46,11 +45,19 @@
                     <span class="accent-dot" data-acc="red" title="Rouge"></span>
                     <span class="accent-dot" data-acc="yellow" title="Jaune"></span>
                 </div>
-                <div class="user-pill" title="">
-                    <div class="user-avatar" id="user-avatar">?</div>
-                    <div class="user-meta">
-                        <div class="user-name" id="user-name">—</div>
-                        <div class="user-role" id="user-role">—</div>
+                <div class="user-menu-wrap" id="user-menu-wrap">
+                    <button class="user-pill" id="user-pill-btn" onclick="App._toggleUserMenu(event)" aria-haspopup="menu" aria-expanded="false">
+                        <div class="user-avatar" id="user-avatar">?</div>
+                        <div class="user-meta">
+                            <div class="user-name" id="user-name">—</div>
+                            <div class="user-role" id="user-role">—</div>
+                        </div>
+                        <span class="user-caret" aria-hidden="true">▾</span>
+                    </button>
+                    <div class="user-menu" id="user-menu" role="menu" hidden>
+                        <button class="user-menu-item" role="menuitem" onclick="App._userMenuGo('settings')" id="user-menu-settings">Paramètres</button>
+                        <div class="user-menu-sep" aria-hidden="true"></div>
+                        <button class="user-menu-item danger" role="menuitem" onclick="App._userMenuLogout()" id="user-menu-logout">Se déconnecter</button>
                     </div>
                 </div>
             </div>
@@ -66,7 +73,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="/js/lang.js?v=113"></script>
+    <script src="/js/lang.js?v=114"></script>
     <script src="/js/toast.js?v=87"></script>
     <script src="/js/auth.js?v=87"></script>
     <script src="/js/monitoring.js?v=92"></script>
@@ -85,7 +92,7 @@
     <script src="/js/web_module.js?v=89"></script>
     <script src="/js/network_module.js?v=92"></script>
     <script src="/js/sysdoc_module.js?v=1"></script>
-    <script src="/js/app.js?v=116"></script>
+    <script src="/js/app.js?v=117"></script>
     <script>
         // Enregistrement du Service Worker (PWA)
         if ('serviceWorker' in navigator) {

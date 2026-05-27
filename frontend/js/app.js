@@ -222,6 +222,12 @@ const App = {
  roleEl.textContent = Lang.t(roleKey) || (user.is_admin ? Lang.t('users.admin_label') : Lang.t('users.user_label'));
  }
 
+ // PR37 — i18n labels for the user dropdown menu
+ const settingsItem = document.getElementById('user-menu-settings');
+ if (settingsItem) settingsItem.textContent = Lang.t('settings.title');
+ const logoutItem = document.getElementById('user-menu-logout');
+ if (logoutItem) logoutItem.textContent = Lang.t('settings.logout');
+
  // Afficher le lien Utilisateurs et Réseau seulement pour les admins
  const navUsers = document.getElementById('nav-users');
  if (navUsers) navUsers.style.display = user.is_admin ? '' : 'none';
@@ -239,6 +245,58 @@ const App = {
  navEl.style.display = user.allowed_modules.includes(modId) ? '' : 'none';
  }
  });
+ },
+
+ // PR37 — User dropdown menu (Paramètres + Déconnexion accessibles via le profil)
+ _toggleUserMenu(ev) {
+ if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+ const btn = document.getElementById('user-pill-btn');
+ const menu = document.getElementById('user-menu');
+ if (!btn || !menu) return;
+ const open = !menu.hidden;
+ if (open) {
+ this._closeUserMenu();
+ } else {
+ menu.hidden = false;
+ btn.setAttribute('aria-expanded', 'true');
+ // Arm click-outside / Esc listeners exactly once per opening
+ if (!this._userMenuListenersArmed) {
+ this._userMenuListenersArmed = true;
+ setTimeout(() => {
+ document.addEventListener('click', this._userMenuOutsideHandler, true);
+ document.addEventListener('keydown', this._userMenuKeyHandler, true);
+ }, 0);
+ }
+ }
+ },
+ _closeUserMenu() {
+ const btn = document.getElementById('user-pill-btn');
+ const menu = document.getElementById('user-menu');
+ if (menu) menu.hidden = true;
+ if (btn) btn.setAttribute('aria-expanded', 'false');
+ if (this._userMenuListenersArmed) {
+ document.removeEventListener('click', this._userMenuOutsideHandler, true);
+ document.removeEventListener('keydown', this._userMenuKeyHandler, true);
+ this._userMenuListenersArmed = false;
+ }
+ },
+ _userMenuOutsideHandler(ev) {
+ const wrap = document.getElementById('user-menu-wrap');
+ if (wrap && !wrap.contains(ev.target)) App._closeUserMenu();
+ },
+ _userMenuKeyHandler(ev) {
+ if (ev.key === 'Escape') {
+ App._closeUserMenu();
+ document.getElementById('user-pill-btn')?.focus();
+ }
+ },
+ _userMenuGo(view) {
+ this._closeUserMenu();
+ this.navigateTo(view);
+ },
+ _userMenuLogout() {
+ this._closeUserMenu();
+ if (typeof Auth !== 'undefined' && typeof Auth.logout === 'function') Auth.logout();
  },
 
  /**

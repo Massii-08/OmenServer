@@ -2916,6 +2916,10 @@ const Lang = {
         localStorage.setItem('omen-lang', lang);
         // Rafraîchir les éléments statiques de la sidebar
         this._updateSidebar();
+        // PR37 — Refresh user pill + dropdown labels (Paramètres / Se déconnecter)
+        if (typeof App !== 'undefined' && typeof App.updateUserInfo === 'function') {
+            App.updateUserInfo();
+        }
         // Re-rendre la vue active pour appliquer les traductions
         if (typeof App !== 'undefined' && App.currentView) {
             App.navigateTo(App.currentView);
