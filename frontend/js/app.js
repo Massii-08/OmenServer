@@ -227,10 +227,14 @@ const App = {
  if (settingsItem) settingsItem.textContent = Lang.t('settings.title');
  const logoutItem = document.getElementById('user-menu-logout');
  if (logoutItem) logoutItem.textContent = Lang.t('settings.logout');
+ // PR38 — Utilisateurs dans le menu profil (admin-only)
+ const usersItem = document.getElementById('user-menu-users');
+ if (usersItem) {
+ usersItem.textContent = Lang.t('sidebar.users');
+ usersItem.hidden = !user.is_admin;
+ }
 
- // Afficher le lien Utilisateurs et Réseau seulement pour les admins
- const navUsers = document.getElementById('nav-users');
- if (navUsers) navUsers.style.display = user.is_admin ? '' : 'none';
+ // Afficher le lien Réseau seulement pour les admins (Utilisateurs vit maintenant dans le menu profil — cf. PR38)
  const navNetwork = document.getElementById('nav-network');
  if (navNetwork) navNetwork.style.display = user.is_admin ? '' : 'none';
 
