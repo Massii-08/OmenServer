@@ -432,23 +432,105 @@ cd OmenServer\\tools\\diagnostic_agent
                     </div>
                 </li>
             </ol>
-            <details class="install-advanced">
-                <summary>Installation en service Windows (auto-start au boot)</summary>
-                <p>Pour que l'agent démarre automatiquement au boot et survive aux fermetures de fenêtre, installe-le comme service via NSSM :</p>
-                <ol>
-                    <li>Télécharger <a href="https://nssm.cc/download" target="_blank">NSSM</a></li>
-                    <li>Placer <code>nssm.exe</code> dans le dossier <code>diagnostic_agent\\</code> ou dans ton PATH</li>
-                    <li>Clic-droit sur <code>install_service.bat</code> → <strong>"Exécuter en tant qu'administrateur"</strong> (UAC obligatoire)</li>
-                </ol>
+            <details class="install-advanced" open>
+                <summary>🚀 Auto-start au login Windows (testé en prod)</summary>
+                <p><strong>Recommandé : Tâche planifiée Windows + pythonw.exe.</strong> Native, fiable, survit aux fermetures de PowerShell et aux reboots.</p>
+                <p>Ouvre PowerShell <strong>en admin</strong> (touche Win → "powershell" → clic-droit → "Exécuter en tant qu'administrateur"), puis colle ce bloc :</p>
+                ${this._codeBlock(`# Crée une tâche planifiée qui démarre l'agent à chaque login Windows.
+# IMPORTANT : on utilise pythonw.exe (sans console) — sinon Windows tue le
+# process quand tu fermes PowerShell (STATUS_CONTROL_C_EXIT / 0xC000013A).
+
+$agentDir   = "$HOME\\OmenServer\\tools\\diagnostic_agent"
+$pythonwExe = "$agentDir\\venv\\Scripts\\pythonw.exe"
+$mainPy     = "$agentDir\\main.py"
+
+$action    = New-ScheduledTaskAction -Execute $pythonwExe -Argument "\`"$mainPy\`"" -WorkingDirectory $agentDir
+$trigger   = New-ScheduledTaskTrigger -AtLogOn
+$settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive
+
+Register-ScheduledTask -TaskName "OmenDiagnosticAgent" -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description "OmenServer Diagnostic Bot"
+
+# Démarrer immédiatement (sans attendre le prochain login)
+Start-ScheduledTask -TaskName "OmenDiagnosticAgent"`, 'install-win-task')}
+                <div class="install-note">
+                    ⚠ <strong>pythonw.exe</strong> (avec le <code>w</code>) est <strong>obligatoire</strong> au lieu de <code>python.exe</code>. Sinon Windows attache une console au process, et quand tu fermes la PowerShell où tu as lancé la tâche, ça envoie un <code>CTRL_CLOSE_EVENT</code> qui kill l'agent. Avec <code>pythonw.exe</code> : pas de console, pas de signal, pas de kill.
+                </div>
+                <p style="margin-top:12px;"><strong>Gestion ensuite</strong> (n'importe quelle PowerShell, à utiliser UNE PAR UNE selon le besoin) :</p>
+                <div class="install-code-block">
+                    <button class="install-copy-btn" data-copy="Get-ScheduledTaskInfo -TaskName 'OmenDiagnosticAgent' | Format-List">Copier</button>
+                    <pre><code># Voir l'état + dernier code de retour (0 = OK)
+Get-ScheduledTaskInfo -TaskName "OmenDiagnosticAgent" | Format-List</code></pre>
+                </div>
+                <div class="install-code-block">
+                    <button class="install-copy-btn" data-copy="Start-ScheduledTask -TaskName 'OmenDiagnosticAgent'">Copier</button>
+                    <pre><code># Démarrer manuellement (si arrêtée)
+Start-ScheduledTask -TaskName "OmenDiagnosticAgent"</code></pre>
+                </div>
+                <div class="install-code-block">
+                    <button class="install-copy-btn" data-copy="Stop-ScheduledTask -TaskName 'OmenDiagnosticAgent'">Copier</button>
+                    <pre><code># Arrêter temporairement (jusqu'au prochain login)
+Stop-ScheduledTask -TaskName "OmenDiagnosticAgent"</code></pre>
+                </div>
+                <div class="install-code-block">
+                    <button class="install-copy-btn" data-copy="Unregister-ScheduledTask -TaskName 'OmenDiagnosticAgent' -Confirm:`$false">Copier</button>
+                    <pre><code># Désinstaller complètement (à utiliser SEULE, pas en suite des autres)
+Unregister-ScheduledTask -TaskName "OmenDiagnosticAgent" -Confirm:$false</code></pre>
+                </div>
             </details>
+
+            <details class="install-advanced">
+                <summary>🥈 Alternative — Raccourci shell:startup (sans admin)</summary>
+                <p>Si tu n'as PAS les droits admin, ou si tu préfères que ce soit visible dans Démarrage Windows :</p>
+                ${this._codeBlock(`$startup  = [Environment]::GetFolderPath('Startup')
+$agentDir = "$HOME\\OmenServer\\tools\\diagnostic_agent"
+$shortcut = "$startup\\OmenDiagnosticAgent.lnk"
+
+$wshell = New-Object -ComObject WScript.Shell
+$lnk = $wshell.CreateShortcut($shortcut)
+$lnk.TargetPath       = "$agentDir\\venv\\Scripts\\pythonw.exe"
+$lnk.Arguments        = "\`"$agentDir\\main.py\`""
+$lnk.WorkingDirectory = $agentDir
+$lnk.WindowStyle      = 7
+$lnk.Save()
+
+Write-Host "Raccourci créé : $shortcut"`, 'install-win-startup')}
+                <p>Un raccourci <code>.lnk</code> est créé dans <code>shell:startup</code>. Windows lance pythonw.exe à chaque login.</p>
+                <p><strong>Désinstaller :</strong></p>
+                <div class="install-code-block">
+                    <button class="install-copy-btn" data-copy="Remove-Item ([Environment]::GetFolderPath('Startup') + '\\OmenDiagnosticAgent.lnk')">Copier</button>
+                    <pre><code>Remove-Item ([Environment]::GetFolderPath('Startup') + "\\OmenDiagnosticAgent.lnk")</code></pre>
+                </div>
+            </details>
+
+            <details class="install-advanced">
+                <summary>🥉 Alternative — Service Windows via NSSM</summary>
+                <p>Si nssm.cc est <strong>down</strong> (souvent le cas), utilise un package manager :</p>
+                <div class="install-code-block">
+                    <button class="install-copy-btn" data-copy="choco install nssm">Copier</button>
+                    <pre><code># Avec Chocolatey
+choco install nssm</code></pre>
+                </div>
+                <div class="install-code-block">
+                    <button class="install-copy-btn" data-copy="scoop install nssm">Copier</button>
+                    <pre><code># Avec Scoop
+scoop install nssm</code></pre>
+                </div>
+                <ol>
+                    <li>Une fois <code>nssm.exe</code> dans le PATH (ou dans le dossier <code>diagnostic_agent\\</code>)</li>
+                    <li>Clic-droit sur <code>install_service.bat</code> → <strong>"Exécuter en tant qu'administrateur"</strong></li>
+                </ol>
+                <p>Plus lourd que la tâche planifiée, mais tourne comme vrai service Windows (indépendant du login user).</p>
+            </details>
+
             <details class="install-advanced">
                 <summary>Si tu préfères cmd.exe à PowerShell</summary>
-                <p>En cmd (vieux shell Windows), le <code>.\\</code> n'est pas nécessaire. Les commandes deviennent :</p>
+                <p>En cmd (vieux shell Windows), le <code>.\\</code> n'est pas nécessaire :</p>
                 ${this._codeBlock(`cd %USERPROFILE%
 git clone https://github.com/Massii-08/OmenServer.git
 cd OmenServer\\tools\\diagnostic_agent
 setup_windows.bat`, 'install-win-cmd')}
-                <p>Puis pour lancer : <code>run.bat</code> (sans <code>.\\</code>)</p>
+                <p>Pour lancer : <code>run.bat</code> (sans <code>.\\</code>)</p>
             </details>
         `;
     },
