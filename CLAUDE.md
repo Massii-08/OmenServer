@@ -426,6 +426,7 @@ sudo systemctl status cloudflared
 17. **Emoji-only button trap (PR35)** : les sweeps emojis (PR27-29-34) laissent des `<button>...</button>` complètement vides quand l'emoji était le SEUL contenu visible. Détection : `grep -E "class=\"btn[^\"]*\"[^>]*>\\s*</button>"` sur `frontend/js/`. Fix : toujours remplacer par un label texte i18n via `Lang.t()`. Idem pour les `::before { content: 'emoji' }` CSS qui peuvent laisser un glyph orphelin avec padding incohérent (cf. `.sharing-search-wrap::before` supprimé en PR35).
 18. **`.btn-icon` trap (PR36)** : la classe `.btn-icon` force `width:38px; height:38px; padding:0` (conçue pour emojis carrés). Si on convertit un bouton emoji-only en label texte SANS retirer la classe, le texte déborde et les boutons adjacents se superposent visuellement (vu sur cartes serveur PR36 : "Arrêter Redémarrer Partager" collés). Pattern de détection : `grep -E 'class="[^"]*btn-icon[^"]*"[^>]*>\\${Lang\\.t'`. Fix : retirer `.btn-icon`, garder `.btn-sm` qui a un padding texte normal.
 19. **`cond ? '' : ''` smell (PR36)** : un ternaire dont les 2 branches sont des chaînes vides (`btn.textContent = visible ? '' : ''`) est presque toujours un sweep automatique qui a mangé les 2 branches d'un toggle emoji (`'👁' : '🙈'`, `'▶' : '⏸'`). Détection post-sweep : `grep -E "\\? '' : ''"` sur les JS.
+20. **Post-wake reboot manquant sur le cerveau (PR37)** : `omen-resume.service` + `omen-post-wake.sh` (créés 19 mai pour reboot complet après chaque suspend→wake, pour vider la RAM et reset uptime) étaient installés UNIQUEMENT par `tools/setup_omen_agent.sh` (script pour les bras), PAS par `tools/setup_omen.sh` (script du cerveau). Symptôme : `last_shutdown` se met bien à jour chaque nuit à 01:00 (suspend OK) mais uptime accumule indéfiniment (vu 8j+ en prod). Cause : `systemctl suspend` (S3 suspend-to-RAM) ne reset PAS `boot_time` au kernel — `/proc/uptime = now - boot_time` continue à compter le temps endormi. Diagnostic via API : `last_shutdown` récent + uptime ≫ (now − wake_hour) = post-wake reboot KO. Rattrapage manuel one-shot : `sudo cp tools/omen-post-wake.sh /usr/local/bin/ && sudo chmod +x /usr/local/bin/omen-post-wake.sh && sudo cp tools/omen-resume.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable omen-resume.service && sudo rm -f /etc/systemd/system-sleep/omen-resume.sh`.
 
 ---
 
@@ -557,6 +558,7 @@ PR 7 a appliqué des **overrides `!important`** sur les classes legacy (`.sideba
 
 | Date | Changement |
 |------|-----------|
+| 2026-05-27 | 🌙 PR 37 — Fix post-wake reboot manquant sur le cerveau (8j d'uptime non-stop) : `setup_omen.sh` installe enfin `omen-post-wake.sh` + `omen-resume.service` (mirrored from `setup_omen_agent.sh`) |
 | 2026-05-27 | 🩹 PR 36 — Fix btn-icon trap (boutons serveur superposés) + Clé API Agents (👁/📋 strippés, labels i18n + 40 bullets placeholder) |
 | 2026-05-27 | 🧹 PR 35-bis — Bump `?v=` JS individuels (lang/game_server/sv_files/server_view/app) oublié dans PR35 |
 | 2026-05-27 | 🩹 PR 35 — Fix 4 boutons vides post-PR34 : `sharing.share_btn` raw, boutons search Mods/Modpack, loupe modale Partage, actions fichiers (renommer/supprimer) |

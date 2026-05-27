@@ -202,6 +202,24 @@ else
     log_warn "cloudflared non trouve, service tunnel non cree"
 fi
 
+# --- Post-wake reboot (omen-resume.service) ---
+# Le cerveau suspend chaque nuit a 01:00 et se reveille a wake_hour.
+# Sans ce service, le wake-from-suspend ne reset PAS l'uptime kernel,
+# donc la RAM accumule du garbage et l'uptime grossit (8j+ vu en prod).
+# Ce hook force un reboot complet apres chaque wake pour RAM fraiche.
+POST_WAKE_SRC="$PROJECT_DIR/tools/omen-post-wake.sh"
+RESUME_SVC_SRC="$PROJECT_DIR/tools/omen-resume.service"
+if [ -f "$POST_WAKE_SRC" ] && [ -f "$RESUME_SVC_SRC" ]; then
+    cp "$POST_WAKE_SRC" /usr/local/bin/omen-post-wake.sh
+    chmod +x /usr/local/bin/omen-post-wake.sh
+    cp "$RESUME_SVC_SRC" /etc/systemd/system/omen-resume.service
+    # Nettoyer l'ancien hook deprecated (ne marche plus sur Ubuntu 26.04+ systemd)
+    rm -f /etc/systemd/system-sleep/omen-resume.sh
+    log_ok "Service omen-resume.service cree (reboot post-wake pour RAM fraiche)"
+else
+    log_warn "Fichiers post-wake (tools/omen-post-wake.sh + .service) introuvables — reboot post-wake non installe"
+fi
+
 # === Etape 5 : Mettre a jour watchdog.sh avec les bons chemins ===
 echo ""
 echo "--- Etape 5/7 : Mise a jour watchdog.sh ---"
@@ -244,6 +262,12 @@ log_ok "systemd recharge"
 # Activer au demarrage
 systemctl enable omenserver
 log_ok "omenserver active au demarrage"
+
+# Activer le reboot post-wake (si installe)
+if [ -f /etc/systemd/system/omen-resume.service ]; then
+    systemctl enable omen-resume.service 2>/dev/null || true
+    log_ok "omen-resume.service active (reboot automatique au reveil)"
+fi
 
 # Demarrer OmenServer
 systemctl start omenserver
