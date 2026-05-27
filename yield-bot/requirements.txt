@@ -2,3 +2,8 @@ openpyxl>=3.1.0
 playwright>=1.40.0
 pyyaml>=6.0
 apscheduler>=3.10.0
+httpx>=0.24
+# scrapling : framework rating_fetcher (DÉSACTIVÉ par défaut, voir
+# scraper/rating_fetcher.py header). Camoufox embarqué tire ~300MB au premier
+# `scrapling install`. Peser le coût/bénéfice avant d'activer en prod Omen.
+scrapling>=0.2.99

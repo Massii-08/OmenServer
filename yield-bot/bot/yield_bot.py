@@ -10,6 +10,7 @@ Il ricalcolo yield (senza scraping) è illimitato.
 
 import asyncio
 import logging
+import os
 from datetime import date
 from typing import List, Optional
 
@@ -63,7 +64,36 @@ class YieldBot:
             'errors': 0,
             'skipped': 0,
         }
-    
+        # Rating fetcher lazy : on instancie au premier appel pour éviter
+        # de charger scrapling au boot quand on n'en a pas besoin.
+        self._rating_fetcher = None
+
+    def _fetch_rating_fallback(self, isin: str, issuer: str) -> Optional[str]:
+        """
+        Récupère un rating depuis les sources fallback (Fitch/DDG/SEC) quand
+        Deutsche Börse n'en expose pas. Retourne None si rien trouvé.
+
+        Lazy-loaded — n'importe scrapling qu'au premier appel.
+        Cache 30j par ISIN via ~/.cache/yield-bot-ratings.json.
+        """
+        try:
+            if self._rating_fetcher is None:
+                from scraper.rating_fetcher import RatingFetcher
+                # use_camoufox respecte la variable d'env pour pouvoir désactiver
+                # la branche Fitch direct (utile si Camoufox cassé sur Ubuntu 26.04)
+                use_cam = not os.environ.get('YIELD_BOT_DISABLE_CAMOUFOX')
+                self._rating_fetcher = RatingFetcher(use_camoufox=use_cam)
+            rating, agency = self._rating_fetcher.fetch_rating(isin, issuer)
+            if rating:
+                logger.info(f"   📊 Rating récupéré: {rating} ({agency})")
+            return rating
+        except ImportError:
+            logger.debug("   scrapling non installé, skip rating fallback")
+            return None
+        except Exception as e:
+            logger.warning(f"   ⚠️ Rating fetcher exception: {e!r}")
+            return None
+
     def _check_scraping_allowed(self) -> bool:
         """Verifica se lo scraping è permesso (max 5/giorno)."""
         allowed, remaining = check_rate_limit()
@@ -263,6 +293,23 @@ class YieldBot:
             #    Così il nome viene corretto anche se il yield fallisce
             if market_data and not market_data.error:
                 self.processor.update_price(sheet, row, market_data.current_price) if market_data.current_price else None
+
+                # Si Deutsche Börse n'a pas exposé de rating, tente le fetcher
+                # multi-source (Fitch via Scrapling/Camoufox → DDG news → SEC EDGAR).
+                #
+                # ⚠️ Désactivé PAR DÉFAUT (2026-05-28) : les sources publiques
+                # gratuites sont toutes bloquées au moment de l'investigation —
+                # Fitch+Cloudflare, Cbonds ratings paywallés, DDG renvoie sa
+                # homepage JS, Brave rate-limite, Google crash Camoufox,
+                # SEC EDGAR parsing à finaliser. Activable via
+                # YIELD_BOT_ENABLE_RATING_FETCHER=1 quand on a une source qui
+                # marche (intégration FinnHub free tier prévue, cf. daily 2026-05-28).
+                if (not market_data.rating or market_data.rating == '?') and market_data.name:
+                    if os.environ.get('YIELD_BOT_ENABLE_RATING_FETCHER'):
+                        rating_extra = self._fetch_rating_fallback(isin, market_data.name)
+                        if rating_extra:
+                            market_data.rating = rating_extra
+
                 if market_data.rating and market_data.rating != '?':
                     self.processor.update_rating(sheet, row, market_data.rating)
                 self.processor.fill_empty_fields(sheet, row, market_data)
