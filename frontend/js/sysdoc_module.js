@@ -31,6 +31,10 @@ const SysDocModule = {
     //                       (info viewer ← agent via msg `agent_state`)
     _agentOnline: false,
     _monitoringActive: false,
+    // Résultat de la dernière exécution par action_id (pour afficher
+    // "Dernière exécution : ..." sous le bouton et éviter le doute UX
+    // "j'ai cliqué, mais l'option est toujours là").
+    _lastResults: {},
 
     async render(container) {
         const user = Auth.getUser();
@@ -402,6 +406,13 @@ const SysDocModule = {
                     const toastMsg = r.message || `Action ${aid} ${success ? 'OK' : 'KO'}`;
                     (success ? Toast.success : Toast.error)(toastMsg);
                 }
+                // Mémoriser le résultat pour affichage inline sous le bouton
+                this._lastResults[aid] = {
+                    when: Date.now(),
+                    message: r.message || '',
+                    success: success,
+                };
+                this._renderActionResult(aid);
                 // Re-activer les boutons qui étaient en "⏳ En cours…" pour cette action
                 this._restoreActionButton(aid);
                 break;
@@ -629,6 +640,27 @@ const SysDocModule = {
         });
     },
 
+    _renderActionResult(actionId) {
+        const result = this._lastResults[actionId];
+        if (!result) return;
+        const slot = document.querySelector(`.kit-action-result[data-action-id="${CSS.escape(actionId)}"]`);
+        if (!slot) return;
+        const ago = this._relativeTime(result.when);
+        const cls = result.success ? 'ok' : 'err';
+        const icon = result.success ? '✓' : '✗';
+        slot.className = 'kit-action-result ' + cls;
+        slot.innerHTML = `<span class="kit-action-result-icon">${icon}</span> <span class="kit-action-result-msg"></span> <span class="kit-action-result-when">· ${ago}</span>`;
+        slot.querySelector('.kit-action-result-msg').textContent = result.message;
+    },
+
+    _relativeTime(ts) {
+        const elapsed = (Date.now() - ts) / 1000;
+        if (elapsed < 60)   return 'à l’instant';
+        if (elapsed < 3600) return `il y a ${Math.floor(elapsed / 60)} min`;
+        if (elapsed < 86400) return `il y a ${Math.floor(elapsed / 3600)} h`;
+        return new Date(ts).toLocaleString();
+    },
+
     _bulkSuspend(pids, groupName) {
         if (!pids || pids.length === 0) return;
         if (this._send({ command: 'BULK_SUSPEND', payload: { pids } })) {
@@ -745,6 +777,16 @@ const SysDocModule = {
             return card;
         }
         card.appendChild(actions);
+        // Slot pour résultat de la dernière exécution (rempli par _renderActionResult)
+        const resultSlot = document.createElement('div');
+        resultSlot.className = 'kit-action-result';
+        resultSlot.dataset.actionId = action.id;
+        card.appendChild(resultSlot);
+        // Si on a déjà un résultat (ex: re-render après reconnect), l'afficher
+        if (this._lastResults[action.id]) {
+            // Note : on doit attendre que le card soit dans le DOM avant de query
+            setTimeout(() => this._renderActionResult(action.id), 0);
+        }
         return card;
     },
 
