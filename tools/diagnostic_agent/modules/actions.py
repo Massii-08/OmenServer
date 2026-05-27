@@ -71,27 +71,62 @@ def _safe_unlink(path: Path) -> int:
 # ---------------------------------------------------------------------------
 
 def _run_clear_user_caches_macos() -> Dict[str, Any]:
-    """Supprime les caches user > 14 jours. Réversible (les apps recréent)."""
+    """
+    Supprime les fichiers de cache utilisateur > 14 jours.
+
+    Bug fix v3.3 : le check précédent comparait `entry.stat().st_mtime` sur le
+    DOSSIER de cache de chaque app, pas sur les fichiers DEDANS. Sur macOS,
+    quand une app tourne (même brièvement), la mtime du dossier parent est
+    mise à jour → tous les caches actifs paraissent "récents" → 0 supprimés.
+
+    Maintenant on descend récursivement et on supprime fichier par fichier
+    selon leur propre mtime. Préserve les fichiers récents même dans un cache
+    par ailleurs vieux.
+    """
     cache_root = Path.home() / "Library" / "Caches"
     if not cache_root.is_dir():
         return {"status": "error", "message": "Dossier de caches introuvable."}
     cutoff = time.time() - 14 * 86400
     freed = 0
     touched = 0
-    for entry in cache_root.iterdir():
-        # Skip les caches système critiques
-        if entry.name.startswith("com.apple.") and "WebKit" not in entry.name:
+    errors = 0
+
+    for app_cache in cache_root.iterdir():
+        # Skip les caches système Apple sauf WebKit (qui peut être énorme)
+        if app_cache.name.startswith("com.apple.") and "WebKit" not in app_cache.name:
             continue
+        if not app_cache.is_dir():
+            continue
+
+        # Descente récursive — supprime UNIQUEMENT les fichiers > 14j,
+        # préserve les récents
         try:
-            if entry.stat().st_mtime < cutoff:
-                freed += _safe_unlink(entry)
-                touched += 1
-        except OSError:
+            for f in app_cache.rglob("*"):
+                if not f.is_file():
+                    continue
+                try:
+                    st = f.stat()
+                    if st.st_mtime < cutoff:
+                        size = st.st_size
+                        f.unlink()
+                        freed += size
+                        touched += 1
+                except (OSError, PermissionError):
+                    errors += 1
+                    continue
+        except (OSError, PermissionError):
+            errors += 1
             continue
+
+    msg = f"{touched} fichiers >14j supprimés ({_fmt_bytes(freed)} libérés)"
+    if errors > 0:
+        msg += f" · {errors} erreurs (permissions)"
     return {
         "status": "success",
-        "message": f"{touched} caches >14j supprimés ({_fmt_bytes(freed)} libérés)",
+        "message": msg,
         "freed_bytes": freed,
+        "files_deleted": touched,
+        "errors": errors,
     }
 
 

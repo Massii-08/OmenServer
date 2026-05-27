@@ -395,7 +395,15 @@ const SysDocModule = {
                 const aid = (msg.data && msg.data.action_id) || '?';
                 let line = `[${aid}] ${r.message || JSON.stringify(r)}`;
                 if (r.freed_bytes) line += ` (${this._fmtMb(r.freed_bytes / 1048576)})`;
-                this._logEvent(r.status === 'success' ? 'ok' : 'err', line);
+                const success = r.status === 'success';
+                this._logEvent(success ? 'ok' : 'err', line);
+                // Toast immédiat — sinon l'utilisateur ne voit rien si le journal est hors viewport
+                if (typeof Toast !== 'undefined') {
+                    const toastMsg = r.message || `Action ${aid} ${success ? 'OK' : 'KO'}`;
+                    (success ? Toast.success : Toast.error)(toastMsg);
+                }
+                // Re-activer les boutons qui étaient en "⏳ En cours…" pour cette action
+                this._restoreActionButton(aid);
                 break;
             }
         }
@@ -599,6 +607,28 @@ const SysDocModule = {
         return tr;
     },
 
+    _runAction(actionId, btn) {
+        // Feedback immédiat : spinner sur le bouton, disabled le temps du round-trip
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '⏳ En cours…';
+        }
+        // Toast d'attente pour l'utilisateur qui ne regarde pas la trousse
+        if (typeof Toast !== 'undefined') {
+            Toast.info(`Action ${actionId} en cours…`);
+        }
+        this._send({ command: 'RUN_ACTION', payload: { action_id: actionId } });
+        // Safety net : si l'agent ne répond pas dans 30s, on restaure le bouton
+        setTimeout(() => this._restoreActionButton(actionId), 30000);
+    },
+
+    _restoreActionButton(actionId) {
+        document.querySelectorAll(`button[data-action-id="${CSS.escape(actionId)}"]`).forEach(btn => {
+            btn.disabled = false;
+            btn.textContent = btn.dataset.originalLabel || 'Lancer';
+        });
+    },
+
     _bulkSuspend(pids, groupName) {
         if (!pids || pids.length === 0) return;
         if (this._send({ command: 'BULK_SUSPEND', payload: { pids } })) {
@@ -663,17 +693,21 @@ const SysDocModule = {
             const btn = document.createElement('button');
             btn.className = 'btn success';
             btn.textContent = 'Lancer';
-            btn.onclick = () => this._send({ command: 'RUN_ACTION', payload: { action_id: action.id } });
+            btn.dataset.actionId = action.id;
+            btn.dataset.originalLabel = 'Lancer';
+            btn.onclick = () => this._runAction(action.id, btn);
             actions.appendChild(btn);
         } else if (tier === 'moderate') {
             const btn = document.createElement('button');
             btn.className = 'btn warn';
             btn.textContent = 'Lancer (confirmation)';
+            btn.dataset.actionId = action.id;
+            btn.dataset.originalLabel = 'Lancer (confirmation)';
             btn.onclick = () => this._openModal({
                 title: action.title,
                 body: action.confirmation_text || `Cette action va exécuter : ${action.description}`,
                 confirmLabel: 'Confirmer',
-                onConfirm: () => this._send({ command: 'RUN_ACTION', payload: { action_id: action.id } }),
+                onConfirm: () => this._runAction(action.id, btn),
             });
             actions.appendChild(btn);
         } else if (tier === 'risky') {
