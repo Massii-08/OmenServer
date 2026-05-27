@@ -16,7 +16,7 @@ qui exécute les actions (suspend, clear cache, etc.).
 
 import json
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Set
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -30,28 +30,46 @@ router = APIRouter()
 
 
 class ConnectionManager:
-    """Stocke séparément les sockets agents et viewers, indexés par username."""
+    """
+    Stocke les sockets agents (strict 1:1) et viewers (N par user) par username.
+
+    Pourquoi N viewers par user :
+      - L'utilisateur peut avoir 2 onglets/devices ouverts sur Diagnostic en même
+        temps (PWA mobile + desktop, ou par accident 2 tabs). Forcer le 1:1 fait
+        un combat infini où chaque nouveau tab kicke le précédent (storm de
+        reconnexions à 3s, pollue les logs, consomme du CPU).
+      - On broadcast les metrics de l'agent à TOUS les viewers du user.
+      - Les viewers qui meurent (network drop, tab fermé) sont nettoyés à la
+        prochaine tentative de send.
+
+    Pourquoi 1 agent par user (strict) :
+      - Un user a 1 PC physique. 2 agents pour le même username = bug d'install.
+        On garde le `_replace` qui kicke le précédent pour éviter de polluer
+        avec un agent zombie qui survit après reboot.
+    """
 
     def __init__(self):
         self.agents: Dict[str, WebSocket] = {}
-        self.viewers: Dict[str, WebSocket] = {}
+        self.viewers: Dict[str, Set[WebSocket]] = {}
 
-    async def _replace(self, store: Dict[str, WebSocket], key: str, ws: WebSocket):
-        existing = store.get(key)
+    async def _replace_agent(self, username: str, ws: WebSocket):
+        existing = self.agents.get(username)
         if existing is not None:
             try:
-                await existing.close(code=1000, reason="Replaced by new connection")
+                await existing.close(code=1000, reason="Replaced by new agent connection")
             except Exception:
                 pass
-        store[key] = ws
+        self.agents[username] = ws
 
     async def register_agent(self, username: str, ws: WebSocket):
-        await self._replace(self.agents, username, ws)
+        await self._replace_agent(username, ws)
         logger.info(f"[sysdoc] Agent {username} connected.")
 
-    async def register_viewer(self, username: str, ws: WebSocket):
-        await self._replace(self.viewers, username, ws)
-        logger.info(f"[sysdoc] Viewer {username} connected.")
+    def register_viewer(self, username: str, ws: WebSocket):
+        # Pas de _replace — on ajoute au set
+        self.viewers.setdefault(username, set()).add(ws)
+        count = len(self.viewers[username])
+        logger.info(f"[sysdoc] Viewer {username} connected (total: {count}).")
 
     def unregister_agent(self, username: str, ws: WebSocket):
         if self.agents.get(username) is ws:
@@ -59,20 +77,41 @@ class ConnectionManager:
             logger.info(f"[sysdoc] Agent {username} disconnected.")
 
     def unregister_viewer(self, username: str, ws: WebSocket):
-        if self.viewers.get(username) is ws:
+        bucket = self.viewers.get(username)
+        if not bucket:
+            return
+        bucket.discard(ws)
+        remaining = len(bucket)
+        if not bucket:
             del self.viewers[username]
-            logger.info(f"[sysdoc] Viewer {username} disconnected.")
+        logger.info(f"[sysdoc] Viewer {username} disconnected (remaining: {remaining}).")
+
+    def viewer_count(self, username: str) -> int:
+        return len(self.viewers.get(username, ()))
 
     async def relay_to_viewer(self, username: str, message: str) -> bool:
-        viewer = self.viewers.get(username)
-        if viewer is None:
+        """
+        Broadcast à TOUS les viewers du username. Retourne True si ≥1 viewer
+        a reçu le message. Les sockets dead sont removed du set.
+        """
+        bucket = self.viewers.get(username)
+        if not bucket:
             return False
-        try:
-            await viewer.send_text(message)
-            return True
-        except Exception as exc:
-            logger.debug(f"[sysdoc] relay_to_viewer({username}) failed: {exc}")
-            return False
+        # Snapshot pour éviter mutation pendant l'itération
+        dead: list = []
+        delivered = 0
+        for viewer in list(bucket):
+            try:
+                await viewer.send_text(message)
+                delivered += 1
+            except Exception as exc:
+                logger.debug(f"[sysdoc] relay_to_viewer({username}) drop dead socket: {exc}")
+                dead.append(viewer)
+        for ws in dead:
+            bucket.discard(ws)
+        if not bucket:
+            self.viewers.pop(username, None)
+        return delivered > 0
 
     async def relay_to_agent(self, username: str, message: str) -> bool:
         agent = self.agents.get(username)
@@ -185,7 +224,7 @@ async def viewer_endpoint(websocket: WebSocket, username: str):
     if sub is None:
         return
 
-    await manager.register_viewer(username, websocket)
+    manager.register_viewer(username, websocket)
 
     agent_online = username in manager.agents
     try:
