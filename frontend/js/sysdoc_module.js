@@ -25,6 +25,12 @@ const SysDocModule = {
     _reconnectTimer: null,
     _openGroups: new Set(),
     _username: null,
+    // États reçus de l'agent (séparés volontairement) :
+    //   _agentOnline = WS agent connecté au hub ? (info viewer ← hub)
+    //   _monitoringActive = la boucle metrics 5s tourne-t-elle côté agent ?
+    //                       (info viewer ← agent via msg `agent_state`)
+    _agentOnline: false,
+    _monitoringActive: false,
 
     async render(container) {
         const user = Auth.getUser();
@@ -47,6 +53,23 @@ const SysDocModule = {
                 <div style="display:flex;gap:8px;align-items:center;">
                     <span id="sysdoc-conn" class="conn-pill">${t('sysdoc.connecting') || 'Connexion…'}</span>
                     <button class="btn btn-secondary" onclick="App.navigateTo('hub')">${t('common.back_hub') || 'Retour'}</button>
+                </div>
+            </div>
+
+            <!-- Overlay "Démarrer le monitoring" — visible quand l'agent est idle -->
+            <div id="sysdoc-start-overlay" class="sysdoc-start-overlay" style="display:none;">
+                <div class="sysdoc-start-card">
+                    <div class="sysdoc-start-icon">▶</div>
+                    <h2 class="sysdoc-start-title">${t('sysdoc.start_title') || 'Monitoring en pause'}</h2>
+                    <p class="sysdoc-start-desc">
+                        ${t('sysdoc.start_desc') || "L'agent est connecté mais n'envoie pas de données pour économiser CPU/réseau. Clique pour activer le monitoring temps réel."}
+                    </p>
+                    <button id="sysdoc-start-btn" class="btn success" style="font-size:14px;padding:10px 24px;">
+                        ▶ ${t('sysdoc.start_btn') || 'Démarrer le monitoring'}
+                    </button>
+                    <p class="sysdoc-start-hint">
+                        ${t('sysdoc.start_hint') || "Le monitoring s'arrête automatiquement quand tu quittes cet onglet."}
+                    </p>
                 </div>
             </div>
 
@@ -178,10 +201,85 @@ const SysDocModule = {
         `;
 
         this._bindModal();
+        this._bindStartButton();
+        this._refreshOverlay();
         this._connect();
     },
 
+    _bindStartButton() {
+        const btn = document.getElementById('sysdoc-start-btn');
+        if (!btn) return;
+        btn.onclick = () => {
+            if (!this._agentOnline) {
+                this._logEvent('err', "Agent pas connecté — installe-le d'abord");
+                return;
+            }
+            this._logEvent('info', '→ START_MONITORING demandé');
+            if (this._send({ command: 'START_MONITORING' })) {
+                // Optimistic UI : on cache l'overlay direct, l'agent confirme via agent_state
+                btn.disabled = true;
+                btn.textContent = '⏳ Démarrage…';
+            }
+        };
+    },
+
+    _refreshOverlay() {
+        const overlay = document.getElementById('sysdoc-start-overlay');
+        if (!overlay) return;
+        const card = overlay.querySelector('.sysdoc-start-card');
+        if (!card) return;
+
+        // Cas 1 : monitoring actif → overlay caché, on affiche les données
+        if (this._monitoringActive) {
+            overlay.style.display = 'none';
+            return;
+        }
+
+        // Cas 2 : agent hors ligne → overlay visible, message d'install
+        if (!this._agentOnline) {
+            overlay.style.display = 'flex';
+            card.innerHTML = `
+                <div class="sysdoc-start-icon" style="color:var(--danger);">⚠</div>
+                <h2 class="sysdoc-start-title">Agent hors ligne</h2>
+                <p class="sysdoc-start-desc">
+                    Aucun agent n'est connecté au hub pour <strong>${this._escape(this._username)}</strong>.
+                    Installe-le sur ton Mac ou PC Windows depuis <code>tools/diagnostic_agent/</code>
+                    (voir le README pour les commandes).
+                </p>
+                <p class="sysdoc-start-hint">
+                    Une fois lancé, cette page se réactivera automatiquement.
+                </p>
+            `;
+            return;
+        }
+
+        // Cas 3 : agent online mais monitoring inactif → bouton Démarrer
+        const t = (k) => (typeof Lang !== 'undefined' ? Lang.t(k) : k);
+        overlay.style.display = 'flex';
+        card.innerHTML = `
+            <div class="sysdoc-start-icon">▶</div>
+            <h2 class="sysdoc-start-title">${t('sysdoc.start_title') || 'Monitoring en pause'}</h2>
+            <p class="sysdoc-start-desc">
+                ${t('sysdoc.start_desc') || "L'agent est connecté mais n'envoie pas de données pour économiser CPU/réseau. Clique pour activer le monitoring temps réel."}
+            </p>
+            <button id="sysdoc-start-btn" class="btn success" style="font-size:14px;padding:10px 24px;">
+                ▶ ${t('sysdoc.start_btn') || 'Démarrer le monitoring'}
+            </button>
+            <p class="sysdoc-start-hint">
+                ${t('sysdoc.start_hint') || "Le monitoring s'arrête automatiquement quand tu quittes cet onglet."}
+            </p>
+        `;
+        // Re-bind le bouton (innerHTML a recréé le bouton)
+        this._bindStartButton();
+    },
+
     unload() {
+        // Avant de fermer la socket, dis à l'agent de stopper la boucle metrics
+        // → l'agent retombe en idle, économie CPU/réseau quand l'utilisateur
+        // navigue ailleurs dans le panel.
+        if (this._socket && this._socket.readyState === WebSocket.OPEN && this._monitoringActive) {
+            try { this._socket.send(JSON.stringify({ command: 'STOP_MONITORING' })); } catch (_) {}
+        }
         if (this._reconnectTimer) {
             clearTimeout(this._reconnectTimer);
             this._reconnectTimer = null;
@@ -191,6 +289,8 @@ const SysDocModule = {
             this._socket = null;
         }
         this._openGroups.clear();
+        this._agentOnline = false;
+        this._monitoringActive = false;
     },
 
     // ---------- WS lifecycle ----------
@@ -213,6 +313,9 @@ const SysDocModule = {
         this._socket.onopen = () => {
             this._setConn('online', `Hub OK · ${this._username}`);
             this._logEvent('ok', `Connecté au hub en tant que viewer ${this._username}`);
+            // Demande l'état du monitoring à l'agent (pour savoir s'il faut
+            // afficher le bouton "Démarrer" ou directement les données).
+            this._send({ command: 'QUERY_STATE' });
             this._send({ command: 'LIST_ACTIONS' });
         };
         this._socket.onmessage = (e) => {
@@ -260,14 +363,24 @@ const SysDocModule = {
                 document.getElementById('sysdoc-last-update').textContent = new Date().toTimeString().slice(0, 8);
                 break;
             case 'agent_status':
-                if (msg.data && msg.data.online) {
+                this._agentOnline = !!(msg.data && msg.data.online);
+                if (this._agentOnline) {
                     this._setConn('online', `Agent ${this._username} en ligne`);
                     this._logEvent('ok', `Agent ${this._username} connecté`);
                     this._send({ command: 'LIST_ACTIONS' });
+                    this._send({ command: 'QUERY_STATE' });
                 } else {
                     this._setConn('offline', `Agent ${this._username} hors ligne`);
                     this._logEvent('warn', `Agent ${this._username} déconnecté`);
+                    this._monitoringActive = false;
                 }
+                this._refreshOverlay();
+                break;
+            case 'agent_state':
+                // L'agent annonce s'il est en mode IDLE ou ACTIVE (monitoring on/off)
+                this._monitoringActive = !!(msg.data && msg.data.monitoring);
+                this._logEvent('info', `Agent state: ${this._monitoringActive ? 'monitoring ACTIF' : 'IDLE'}`);
+                this._refreshOverlay();
                 break;
             case 'actions_catalog':
                 this._renderCatalog(((msg.data || {}).actions) || []);

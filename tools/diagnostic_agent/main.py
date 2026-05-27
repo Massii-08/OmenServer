@@ -142,14 +142,67 @@ async def send_metrics_loop(websocket):
             print(f"[Agent] Erreur metrics_loop: {e}")
             await asyncio.sleep(5)
 
+# ---------------------------------------------------------------------------
+# État du monitoring (idle ↔ active)
+# ---------------------------------------------------------------------------
+# Par défaut l'agent démarre en IDLE : il garde juste la connexion WS au hub
+# et écoute les commandes. La boucle metrics (qui itère sur tous les processus
+# toutes les 5s) ne tourne QUE quand le frontend envoie START_MONITORING.
+# Quand le dernier viewer ferme la page Diagnostic, il envoie STOP_MONITORING
+# et l'agent retourne en idle → consommation CPU/réseau quasi-nulle.
+
+_monitoring_state = {
+    "active": False,
+    "task": None,  # asyncio.Task de send_metrics_loop quand actif
+}
+
+
+async def _send_state(websocket):
+    """Envoie l'état courant au hub (pour les viewers connectés)."""
+    try:
+        await websocket.send(json.dumps({
+            "type": "agent_state",
+            "data": {"monitoring": _monitoring_state["active"]},
+        }))
+    except Exception as e:
+        print(f"[Agent] _send_state failed: {e}")
+
+
+async def _start_monitoring(websocket):
+    if _monitoring_state["active"]:
+        await _send_state(websocket)  # idempotent — renvoie juste l'état
+        return
+    _monitoring_state["active"] = True
+    _monitoring_state["task"] = asyncio.create_task(send_metrics_loop(websocket))
+    print("[Agent] Monitoring START (metrics 5s active)")
+    await _send_state(websocket)
+
+
+async def _stop_monitoring(websocket):
+    task = _monitoring_state["task"]
+    _monitoring_state["active"] = False
+    _monitoring_state["task"] = None
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    print("[Agent] Monitoring STOP (back to idle)")
+    await _send_state(websocket)
+
+
 async def listen_commands_loop(websocket):
     """
     Écoute les commandes du Hub (Dashboard).
 
     Commandes supportées :
-      - SUSPEND_PROCESS / RESUME_PROCESS  → gel/reprise d'un PID
-      - LIST_ACTIONS                       → renvoie le catalogue d'actions 3 tiers
-      - RUN_ACTION { action_id, payload }  → exécute une action safe/moderate (risky refusée)
+      - START_MONITORING / STOP_MONITORING → toggle la boucle metrics 5s
+      - QUERY_STATE                        → renvoie agent_state courant
+      - SUSPEND_PROCESS / RESUME_PROCESS   → gel/reprise d'un PID
+      - BULK_SUSPEND { pids }              → gel d'une liste de PIDs
+      - LIST_ACTIONS                       → catalogue d'actions 3 tiers
+      - RUN_ACTION { action_id, payload }  → exécute une action safe/moderate
     """
     try:
         async for message in websocket:
@@ -157,6 +210,18 @@ async def listen_commands_loop(websocket):
                 data = json.loads(message)
                 command = data.get("command")
                 payload = data.get("payload", {}) or {}
+
+                if command == "START_MONITORING":
+                    await _start_monitoring(websocket)
+                    continue
+
+                if command == "STOP_MONITORING":
+                    await _stop_monitoring(websocket)
+                    continue
+
+                if command == "QUERY_STATE":
+                    await _send_state(websocket)
+                    continue
 
                 if command == "SUSPEND_PROCESS":
                     pid = payload.get("pid")
@@ -221,22 +286,27 @@ async def main():
         cycle_start = asyncio.get_event_loop().time()
         try:
             async with websockets.connect(url) as websocket:
-                print("[Agent] Connecté au Hub avec succès.")
-                # On lance les deux boucles en parallèle
-                metrics_task = asyncio.create_task(send_metrics_loop(websocket))
-                commands_task = asyncio.create_task(listen_commands_loop(websocket))
-
-                done, pending = await asyncio.wait(
-                    {metrics_task, commands_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-
-                for task in pending:
-                    task.cancel()
+                print("[Agent] Connecté au Hub avec succès (mode IDLE — attente START_MONITORING).")
+                # On démarre uniquement la boucle de commandes. send_metrics_loop
+                # est lancé/arrêté à la demande via START_MONITORING/STOP_MONITORING.
+                # Reset l'état au cas où la connexion précédente avait laissé
+                # _monitoring_state["active"]=True sans pouvoir cancel la task.
+                _monitoring_state["active"] = False
+                _monitoring_state["task"] = None
+                # Annoncer l'état idle aux viewers déjà connectés
+                await _send_state(websocket)
+                # Bloque jusqu'à ce que la connexion ferme (WebSocketDisconnect)
+                # ou que listen_commands_loop sorte sur exception
+                await listen_commands_loop(websocket)
+                # Si on arrive ici, la WS s'est fermée — clean la task metrics si encore là
+                if _monitoring_state["task"] is not None:
+                    _monitoring_state["task"].cancel()
                     try:
-                        await task
+                        await _monitoring_state["task"]
                     except (asyncio.CancelledError, Exception):
                         pass
+                    _monitoring_state["task"] = None
+                    _monitoring_state["active"] = False
 
         except ConnectionRefusedError:
             print("[Agent] Le serveur est inaccessible. Nouvelle tentative dans 5 secondes...")
