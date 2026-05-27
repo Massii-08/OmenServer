@@ -1,42 +1,133 @@
 import psutil
 import os
 import re
+import sys
 
-SAFE_LIST_EXACT_MATCHES = [
-    "explorer.exe",
-    "taskmgr.exe",
-    "smss.exe",
-    "csrss.exe",
-    "wininit.exe",
-    "winlogon.exe",
-    "services.exe",
-    "lsass.exe",
-    "svchost.exe",
-    "spoolsv.exe"
-]
+# ---------------------------------------------------------------------------
+# Safe List — processus critiques à JAMAIS suspendre (sinon OS freeze / panic)
+# ---------------------------------------------------------------------------
+# Matching en 2 passes :
+#   1. NOM exact (case-insensitive) — catch-all même si exe path est inconnu
+#      (les procs root sont souvent sans exe lisible pour un user non-root)
+#   2. PATH prefix — pour catch les procs dont le nom seul ne suffit pas (ex:
+#      tous les binaires sous /System/ sur macOS sont safe par construction)
+#
+# Maintenance : si tu vois "j'ai gelé X et l'OS a freezé" → ajoute X ici.
 
-SAFE_LIST_PATHS = [
-    r"C:\Windows\System32".lower(),
-    r"C:\Windows\SysWOW64".lower()
-]
+_SAFE_LIST_NAMES = {
+    # ---- Windows critique ----
+    "explorer.exe", "taskmgr.exe", "smss.exe", "csrss.exe",
+    "wininit.exe", "winlogon.exe", "services.exe", "lsass.exe",
+    "svchost.exe", "spoolsv.exe", "dwm.exe", "fontdrvhost.exe",
+    "ctfmon.exe", "sihost.exe", "shellexperiencehost.exe",
+    # ---- macOS critique (geler = freeze UI ou perte session) ----
+    # Kernel / init
+    "kernel_task", "launchd",
+    # UI / WindowServer (gel = écran noir/figé)
+    "WindowServer", "loginwindow", "SystemUIServer",
+    "Dock", "Finder", "ControlCenter", "Spotlight",
+    "TextInputMenuAgent", "TextInputSwitcher",
+    # Audio / input (gel = pas de son, clavier figé)
+    "coreaudiod", "hidd", "HIToolboxRuntimeAgent",
+    # Security / auth / network
+    "securityd", "trustd", "opendirectoryd", "tccd",
+    "configd", "wifid", "bluetoothd", "locationd",
+    # Daemon init layer
+    "cfprefsd", "distnoted", "notifyd", "lsd", "lockoutagent",
+    "syslogd", "logd", "diskarbitrationd", "powerd", "thermalmonitord",
+    # Fonts / icons / images
+    "fontd", "iconservicesagent", "imagent", "FontWorker",
+    # Misc background safety net
+    "UserEventAgent", "AirPlayUIAgent", "AirPlayXPCHelper",
+    "ReportCrash", "spindump", "diagnosticd",
+    # ---- Linux critique (au cas où agent sur Linux dev) ----
+    "systemd", "systemd-journal", "systemd-logind",
+    "init", "rcu_sched", "ksoftirqd",
+}
+
+_SAFE_LIST_PATH_PREFIXES_WIN = (
+    r"c:\windows\system32",
+    r"c:\windows\syswow64",
+    r"c:\windows\winsxs",
+    r"c:\windows\servicing",
+    r"c:\windows\immersivecontrolpanel",
+    r"c:\windows\systemapps",
+    r"c:\program files\windowsapps\microsoft.",
+)
+
+_SAFE_LIST_PATH_PREFIXES_MACOS = (
+    "/System/",                       # Apple system binaries (System Integrity Protection)
+    "/usr/libexec/",                  # macOS service binaries (distnoted, etc.)
+    "/usr/sbin/", "/usr/bin/",
+    "/sbin/", "/bin/",
+    "/Library/Apple/",                # Apple-managed extras
+    "/Library/CoreServices/",
+    "/Library/PrivilegedHelperTools/", # SMJobBless privileged helpers
+    "/Library/PrivateFrameworks/",
+    "/Library/SystemExtensions/",
+)
+
+_SAFE_LIST_PATH_PREFIXES_LINUX = (
+    "/usr/bin/", "/usr/sbin/",
+    "/usr/libexec/",
+    "/sbin/", "/bin/",
+    "/lib/systemd/",
+)
+
+
+def _safe_list_path_prefixes():
+    """Retourne les prefixes adaptés à la plateforme courante."""
+    if sys.platform == "win32":
+        return _SAFE_LIST_PATH_PREFIXES_WIN
+    if sys.platform == "darwin":
+        return _SAFE_LIST_PATH_PREFIXES_MACOS
+    if sys.platform.startswith("linux"):
+        return _SAFE_LIST_PATH_PREFIXES_LINUX
+    return ()
+
 
 def is_process_safe(proc_name: str, proc_path: str) -> bool:
     """
     Vérifie si un processus est critique pour le système et ne doit JAMAIS être touché.
+
+    Pass 1 — Nom (case-insensitive) : catch-all pour les procs dont l'exe path
+    n'est pas lisible par l'agent (procs root sur macOS/Linux).
+
+    Pass 2 — Path prefix : couvre tout ce qui vit dans les dossiers système
+    (Windows\\, /System/, /usr/, /Library/Apple/, etc.) sans devoir lister
+    chaque nom de binaire.
+
+    En cas de doute (proc_name vide), on classifie comme SAFE — toujours mieux
+    de ne PAS pouvoir suspendre quelque chose que de suspendre par erreur un
+    proc critique.
     """
     if not proc_name:
-        return True # Doute = Safe
-    
-    if proc_name.lower() in SAFE_LIST_EXACT_MATCHES:
+        return True  # Doute = Safe
+
+    # Pass 1 : nom exact (case-insensitive)
+    if proc_name.lower() in {n.lower() for n in _SAFE_LIST_NAMES}:
         return True
-    
+
+    # Pass 2 : path prefix (case-insensitive sur Windows, sensitive sur Unix)
     if proc_path:
-        proc_path_lower = proc_path.lower()
-        for safe_path in SAFE_LIST_PATHS:
-            if proc_path_lower.startswith(safe_path):
-                return True
-                
+        if sys.platform == "win32":
+            path_norm = proc_path.lower()
+        else:
+            path_norm = proc_path
+        for prefix in _safe_list_path_prefixes():
+            if sys.platform == "win32":
+                if path_norm.startswith(prefix.lower()):
+                    return True
+            else:
+                if path_norm.startswith(prefix):
+                    return True
+
     return False
+
+
+# Rétrocompatibilité — anciens noms exposés au cas où du code externe les utilise
+SAFE_LIST_EXACT_MATCHES = list(_SAFE_LIST_NAMES)
+SAFE_LIST_PATHS = list(_safe_list_path_prefixes())
 
 # ---------------------------------------------------------------------------
 # App grouping — identifie l'application d'origine d'un processus pour pouvoir
