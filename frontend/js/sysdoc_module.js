@@ -335,12 +335,23 @@ chmod +x setup_macos.sh
     },
 
     _installWindows(ctx) {
-        const cmd = `:: === Diagnostic Agent Windows — install ===
-:: 1. Ouvrir PowerShell ou cmd
-:: 2. Naviguer où tu veux installer (ex: cd %USERPROFILE%)
+        // Bloc tout-en-un PowerShell (le shell par défaut sur Windows moderne).
+        // - `cd ~` va dans %USERPROFILE% (= C:\Users\<toi>) où on a les droits d'écrire
+        //   (par défaut PowerShell ouvre dans C:\Windows\system32 où le clone échoue)
+        // - `.\setup_windows.bat` : le préfixe `.\` est OBLIGATOIRE en PowerShell pour
+        //   exécuter un fichier du dossier courant (anti-PATH-hijacking)
+        const cmdClone = `# === Diagnostic Agent Windows (PowerShell) ===
+# Aller dans ton dossier utilisateur (writable, contrairement à system32)
+cd ~
+
+# Cloner le repo
 git clone https://github.com/Massii-08/OmenServer.git
+
+# Aller dans le dossier de l'agent et lancer le setup
 cd OmenServer\\tools\\diagnostic_agent
-setup_windows.bat`;
+.\\setup_windows.bat`;
+        const cmdRun = `.\\run.bat`;
+
         return `
             <ol class="install-steps">
                 <li>
@@ -350,29 +361,45 @@ setup_windows.bat`;
                     Avoir <strong>git</strong> installé (<a href="https://git-scm.com/download/win" target="_blank">git-scm.com</a>)
                 </li>
                 <li>
-                    Ouvrir <strong>PowerShell</strong> ou <strong>cmd</strong> et copier-coller :
-                    ${this._codeBlock(cmd, 'install-win-clone')}
+                    Ouvrir <strong>PowerShell</strong> (touche Windows → tape "powershell" → Entrée), puis copier-coller ce bloc :
+                    ${this._codeBlock(cmdClone, 'install-win-clone')}
+                    <div class="install-note">
+                        ⚠ Le préfixe <code>.\\</code> devant <code>setup_windows.bat</code> est <strong>obligatoire en PowerShell</strong> — sans ça, tu auras une erreur <em>"n'est pas reconnu comme nom d'applet"</em>. C'est une protection contre le PATH hijacking, pas un bug.
+                    </div>
                 </li>
                 <li>
                     Le script va demander 3 valeurs :
                     <ul class="install-prompts">
                         <li><strong>Username OmenServer :</strong> <code class="copyable" data-copy="${this._escape(ctx.username)}">${this._escape(ctx.username)}</code> <button class="install-copy-btn" data-copy="${this._escape(ctx.username)}">Copier</button></li>
-                        <li><strong>URL hub :</strong> appuie Entrée pour le défaut (<code>${this._escape(ctx.hubUrl)}</code>)</li>
-                        <li><strong>SECRET_KEY :</strong> ${ctx.isAdmin ? `colle cette valeur :<br><code class="copyable" data-copy="${this._escape(ctx.secret)}">${this._escape(ctx.secret)}</code> <button class="install-copy-btn" data-copy="${this._escape(ctx.secret)}">Copier</button>` : `demande à un admin`}</li>
+                        <li><strong>URL hub :</strong> appuie juste <strong>Entrée</strong> pour le défaut (<code>${this._escape(ctx.hubUrl)}</code>)</li>
+                        <li><strong>SECRET_KEY :</strong> ${ctx.isAdmin ? `colle cette valeur :<br><code class="copyable" data-copy="${this._escape(ctx.secret)}">${this._escape(ctx.secret)}</code> <button class="install-copy-btn" data-copy="${this._escape(ctx.secret)}">Copier</button><div class="install-note">⚠ L'input est masqué (read -s) — tu ne verras rien quand tu colles. Colle UNE seule fois (Cmd+V/Ctrl+V), puis Entrée. Ne re-presse pas Ctrl+V plusieurs fois.</div>` : `demande à un admin de te le transmettre par canal sécurisé`}</li>
                     </ul>
                 </li>
                 <li>
-                    Lancer l'agent : ${this._codeBlock('run.bat', 'install-win-run')}
+                    Lancer l'agent (toujours en PowerShell, dans le même dossier) :
+                    ${this._codeBlock(cmdRun, 'install-win-run')}
+                    <div class="install-note">
+                        Garde la fenêtre PowerShell <strong>ouverte</strong> tant que tu veux que l'agent tourne. Sinon il s'arrête. Pour qu'il survive après fermeture (auto-start au boot), voir la section "Installation en service" ci-dessous.
+                    </div>
                 </li>
             </ol>
             <details class="install-advanced">
                 <summary>Installation en service Windows (auto-start au boot)</summary>
-                <p>Pour que l'agent démarre automatiquement au boot, installe-le comme service via NSSM :</p>
+                <p>Pour que l'agent démarre automatiquement au boot et survive aux fermetures de fenêtre, installe-le comme service via NSSM :</p>
                 <ol>
                     <li>Télécharger <a href="https://nssm.cc/download" target="_blank">NSSM</a></li>
-                    <li>Placer <code>nssm.exe</code> dans le dossier <code>diagnostic_agent/</code> ou dans ton PATH</li>
-                    <li>Clic-droit sur <code>install_service.bat</code> → "Exécuter en tant qu'administrateur"</li>
+                    <li>Placer <code>nssm.exe</code> dans le dossier <code>diagnostic_agent\\</code> ou dans ton PATH</li>
+                    <li>Clic-droit sur <code>install_service.bat</code> → <strong>"Exécuter en tant qu'administrateur"</strong> (UAC obligatoire)</li>
                 </ol>
+            </details>
+            <details class="install-advanced">
+                <summary>Si tu préfères cmd.exe à PowerShell</summary>
+                <p>En cmd (vieux shell Windows), le <code>.\\</code> n'est pas nécessaire. Les commandes deviennent :</p>
+                ${this._codeBlock(`cd %USERPROFILE%
+git clone https://github.com/Massii-08/OmenServer.git
+cd OmenServer\\tools\\diagnostic_agent
+setup_windows.bat`, 'install-win-cmd')}
+                <p>Puis pour lancer : <code>run.bat</code> (sans <code>.\\</code>)</p>
             </details>
         `;
     },

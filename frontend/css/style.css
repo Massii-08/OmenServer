@@ -4107,3 +4107,24 @@ select:-webkit-autofill {
     margin-top: var(--s-2);
     font-style: italic;
 }
+
+
+/* Install panel — note inline sous une étape (warning subtil) */
+.install-note {
+    margin-top: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    background: var(--bg-elev-3);
+    border-left: 2px solid var(--warning);
+    border-radius: var(--r-sm);
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+.install-note code {
+    background: var(--bg-elev-1);
+    padding: 1px 4px;
+    border-radius: var(--r-sm);
+    font-family: var(--font-mono);
+    color: var(--accent);
+}
+.install-note strong { color: var(--text); }
