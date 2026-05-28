@@ -129,7 +129,12 @@ class ScanCriteria:
             return False, f"Yield {bond.calculated_yield:.4%} < {self.min_yield:.2%}"
 
         # 4. Rating: deve essere ≥ min_rating (Investment Grade)
-        if bond.rating and self.min_rating:
+        # Politica decisa 2026-05-28 : se min_rating è impostato e Fitch non
+        # rate l'emittente (bond.rating is None) → rigetto il bond (non finisce
+        # nell'Excel). Niente cellula vuota, niente "Rating (a verificare)".
+        if self.min_rating:
+            if not bond.rating:
+                return False, "Nessun rating Fitch (politica fitch_only)"
             bond_idx = _rating_index(bond.rating)
             min_idx = _rating_index(self.min_rating)
             if bond_idx > min_idx:
