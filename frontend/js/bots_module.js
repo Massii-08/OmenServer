@@ -1008,10 +1008,11 @@ const BotsModule = {
  maxPrice: 100,
  minYield: 3,
  maxMaturity: 9,
- minRating: 'BBB-',
- maxResults: 50,
+ minRating: 'BBB',          // Task 15 (2026-05-28) — default BBB (was BBB-)
+ targetCount: 100,           // Task 15 — was maxResults: 50
  currencies: { EUR: true, USD: true, GBP: true },
  priceThreshold: 101,
+ ratingKey: null,            // Task 16 — set by _scannerLoadKeyStatus()
  },
 
  async openBondScanner() {
@@ -1072,21 +1073,111 @@ const BotsModule = {
  style="flex:1;accent-color:var(--accent);cursor:pointer;"
  oninput="BotsModule._scannerState.maxPrice=parseFloat(this.value);document.getElementById('scanner-price-value').textContent=this.value"><span style="font-size:11px;color:var(--text-muted);">110</span></div></div><!-- Yield minimo --><div class="yield-threshold-container" style="margin-bottom:14px;padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><label style="font-size:13px;font-weight:600;">${Lang.t('scanner.min_yield')}</label><span id="scanner-yield-value" style="font-size:14px;font-weight:700;color:var(--accent);">${s.minYield}%</span></div><div style="display:flex;align-items:center;gap:10px;"><span style="font-size:11px;color:var(--text-muted);">1%</span><input type="range" id="scanner-yield-slider" min="1" max="10" step="0.5" value="${s.minYield}"
  style="flex:1;accent-color:var(--accent);cursor:pointer;"
- oninput="BotsModule._scannerState.minYield=parseFloat(this.value);document.getElementById('scanner-yield-value').textContent=this.value+'%'"><span style="font-size:11px;color:var(--text-muted);">10%</span></div></div><!-- Numero massimo di bond --><div class="yield-threshold-container" style="margin-bottom:14px;padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><label style="font-size:13px;font-weight:600;"> ${Lang.t('scanner.max_results')}</label><span id="scanner-maxresults-value" style="font-size:14px;font-weight:700;color:var(--accent);">${s.maxResults === 0 ? '∞' : s.maxResults}</span></div><div style="display:flex;align-items:center;gap:10px;"><span style="font-size:11px;color:var(--text-muted);">10</span><input type="range" id="scanner-maxresults-slider" min="10" max="200" step="10" value="${s.maxResults || 50}"
+ oninput="BotsModule._scannerState.minYield=parseFloat(this.value);document.getElementById('scanner-yield-value').textContent=this.value+'%'"><span style="font-size:11px;color:var(--text-muted);">10%</span></div></div><!-- Task 15 — Target count (renamed from "max results") --><div class="yield-threshold-container" style="margin-bottom:14px;padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><label style="font-size:13px;font-weight:600;"> ${Lang.t('scanner.target_count')}</label><span id="scanner-targetcount-value" style="font-size:14px;font-weight:700;color:var(--accent);">${s.targetCount}</span></div><div style="display:flex;align-items:center;gap:10px;"><span style="font-size:11px;color:var(--text-muted);">20</span><input type="range" id="scanner-targetcount-slider" min="20" max="200" step="10" value="${s.targetCount}"
  style="flex:1;accent-color:var(--accent);cursor:pointer;"
- oninput="BotsModule._scannerState.maxResults=parseInt(this.value);document.getElementById('scanner-maxresults-value').textContent=this.value"><span style="font-size:11px;color:var(--text-muted);">200</span></div><div style="font-size:11px;color:var(--text-muted);margin-top:4px;">${Lang.t('scanner.max_results_hint')}</div></div><!-- Scadenza + Rating + Valute --><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;"><div style="padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);"><label style="font-size:13px;font-weight:600;">${Lang.t('scanner.maturity')}</label><select id="scanner-maturity" class="form-input" style="margin-top:8px;"
+ oninput="BotsModule._scannerState.targetCount=parseInt(this.value);document.getElementById('scanner-targetcount-value').textContent=this.value"><span style="font-size:11px;color:var(--text-muted);">200</span></div><div style="font-size:11px;color:var(--text-muted);margin-top:4px;">${Lang.t('scanner.target_count_hint')}</div></div><!-- Scadenza + Rating + Valute --><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;"><div style="padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);"><label style="font-size:13px;font-weight:600;">${Lang.t('scanner.maturity')}</label><select id="scanner-maturity" class="form-input" style="margin-top:8px;"
  onchange="BotsModule._scannerState.maxMaturity=parseInt(this.value)"><option value="5" ${s.maxMaturity===5?'selected':''}>5 anni</option><option value="7" ${s.maxMaturity===7?'selected':''}>7 anni</option><option value="9" ${s.maxMaturity===9?'selected':''}>9 anni</option><option value="12" ${s.maxMaturity===12?'selected':''}>12 anni</option><option value="15" ${s.maxMaturity===15?'selected':''}>15 anni</option></select></div><div style="padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);"><label style="font-size:13px;font-weight:600;">⭐ ${Lang.t('scanner.rating')}</label><select id="scanner-rating" class="form-input" style="margin-top:8px;"
- onchange="BotsModule._scannerState.minRating=this.value"><option value="BBB-" ${s.minRating==='BBB-'?'selected':''}>BBB- (Investment Grade)</option><option value="BBB" ${s.minRating==='BBB'?'selected':''}>BBB</option><option value="A-" ${s.minRating==='A-'?'selected':''}>A-</option><option value="A" ${s.minRating==='A'?'selected':''}>A</option></select></div></div><!-- Valute --><div style="padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);margin-bottom:20px;"><label style="font-size:13px;font-weight:600;margin-bottom:8px;display:block;"> ${Lang.t('scanner.currencies')}</label><div style="display:flex;gap:12px;"><label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="scanner-eur" ${s.currencies.EUR?'checked':''}
+ onchange="BotsModule._scannerState.minRating=this.value"><option value="BBB-" ${s.minRating==='BBB-'?'selected':''}>BBB- (IG floor)</option><option value="BBB" ${s.minRating==='BBB'?'selected':''}>BBB</option><option value="BBB+" ${s.minRating==='BBB+'?'selected':''}>BBB+</option><option value="A-" ${s.minRating==='A-'?'selected':''}>A-</option><option value="A" ${s.minRating==='A'?'selected':''}>A</option><option value="A+" ${s.minRating==='A+'?'selected':''}>A+</option><option value="AA-" ${s.minRating==='AA-'?'selected':''}>AA-</option><option value="AA" ${s.minRating==='AA'?'selected':''}>AA</option><option value="AA+" ${s.minRating==='AA+'?'selected':''}>AA+</option><option value="AAA" ${s.minRating==='AAA'?'selected':''}>AAA</option></select></div></div><!-- Valute --><div style="padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);margin-bottom:20px;"><label style="font-size:13px;font-weight:600;margin-bottom:8px;display:block;"> ${Lang.t('scanner.currencies')}</label><div style="display:flex;gap:12px;"><label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="scanner-eur" ${s.currencies.EUR?'checked':''}
  onchange="BotsModule._scannerState.currencies.EUR=this.checked"> EUR
  </label><label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="scanner-usd" ${s.currencies.USD?'checked':''}
  onchange="BotsModule._scannerState.currencies.USD=this.checked"> USD
  </label><label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="scanner-gbp" ${s.currencies.GBP?'checked':''}
  onchange="BotsModule._scannerState.currencies.GBP=this.checked"> GBP
- </label></div></div><!-- Launch button --><button id="scanner-launch-btn" class="yield-launch-btn" style="background:var(--accent);"
+ </label></div></div><!-- Task 16 (2026-05-28) — Admin Brave key section (visible only if admin) --><div id="scanner-admin-key" data-admin-only="true" style="padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);margin-bottom:20px;display:none;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><label style="font-size:13px;font-weight:600;">${Lang.t('scanner.config_key_title')}</label><div id="scanner-rating-key-actions" style="display:flex;gap:6px;"></div></div><div id="scanner-rating-key-status" style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">…</div><div id="scanner-rating-key-form" style="display:none;margin-top:8px;"><input id="scanner-rating-key-input" type="password" class="form-input" placeholder="BSA…" style="width:100%;font-family:var(--font-mono);font-size:12px;margin-bottom:6px;" /><div style="display:flex;gap:6px;"><button class="btn btn-primary btn-sm" onclick="BotsModule._scannerSaveKey()">${Lang.t('scanner.config_key_set_btn')}</button><button class="btn btn-secondary btn-sm" onclick="BotsModule._scannerCancelKeyEdit()">${Lang.t('common.cancel') || 'Annuler'}</button></div></div><div style="font-size:11px;color:var(--text-dim);margin-top:6px;">${Lang.t('scanner.config_key_hint')} <a href="https://api-dashboard.search.brave.com/app/keys" target="_blank" rel="noopener" style="color:var(--info);">api-dashboard.search.brave.com/app/keys</a> · ${Lang.t('scanner.config_key_explain')}</div></div><!-- Launch button --><button id="scanner-launch-btn" class="yield-launch-btn" style="background:var(--accent);"
  onclick="BotsModule._launchScanner()" ${usage.remaining===0?'disabled':''}>
  ${usage.remaining === 0 ? Lang.t('scanner.rate_limit') : Lang.t('scanner.launch')}
  </button><div id="scanner-error-msg" style="display:none;margin-top:12px;color:var(--danger);font-size:13px;text-align:center;"></div></div>
  `;
+
+ // Task 16 (2026-05-28) — Show admin Brave key section if user is admin,
+ // then load its status. Same pattern que le Yield Bot (ligne 533).
+ const u = (typeof App !== 'undefined' && App.user) ? App.user : null;
+ const isAdmin = u && u.is_admin;
+ if (isAdmin) {
+   const adminBlock = document.getElementById('scanner-admin-key');
+   if (adminBlock) adminBlock.style.display = 'block';
+   setTimeout(() => this._scannerLoadKeyStatus(), 50);
+ }
+ },
+
+ // ================================================================
+ //  Task 16 — Brave Search API key management (admin only)
+ //  Shares data/secrets/brave.key with the Yield Bot.
+ // ================================================================
+
+ async _scannerLoadKeyStatus() {
+   const statusEl = document.getElementById('scanner-rating-key-status');
+   const actionsEl = document.getElementById('scanner-rating-key-actions');
+   if (!statusEl || !actionsEl) return;
+   try {
+     const resp = await Auth.apiCall('/api/bots/scanner/settings/rating-key');
+     if (!resp.ok) throw new Error('HTTP ' + resp.status);
+     const data = await resp.json();
+     if (data.has_key) {
+       const srcLabel = data.source === 'env_var' ? 'env var' : 'file';
+       statusEl.innerHTML = '<span style="color:var(--accent);">✓</span> <strong style="color:var(--text);">' + data.preview + '</strong> <span style="color:var(--text-dim);">· ' + srcLabel + ' · shared w/ Yield Bot</span>';
+       actionsEl.innerHTML = data.source === 'file'
+         ? '<button class="btn btn-secondary btn-sm" onclick="BotsModule._scannerShowKeyEdit()">' + Lang.t('scanner.config_key_set_btn') + '</button>'
+           + '<button class="btn btn-danger btn-sm" onclick="BotsModule._scannerDeleteKey()">' + Lang.t('scanner.config_key_delete_btn') + '</button>'
+         : '<span style="font-size:11px;color:var(--text-dim);">env var (SSH only)</span>';
+     } else {
+       statusEl.innerHTML = '<span style="color:var(--warning);">∅</span> <span style="color:var(--text-muted);">' + Lang.t('scanner.config_key_status_unset') + '</span>';
+       actionsEl.innerHTML = '<button class="btn btn-primary btn-sm" onclick="BotsModule._scannerShowKeyEdit()">' + Lang.t('scanner.config_key_set_btn') + '</button>';
+     }
+   } catch (e) {
+     statusEl.innerHTML = '<span style="color:var(--danger);">✗</span> <span style="color:var(--text-muted);">load error: ' + e.message + '</span>';
+     actionsEl.innerHTML = '';
+   }
+ },
+
+ _scannerShowKeyEdit() {
+   const form = document.getElementById('scanner-rating-key-form');
+   const actions = document.getElementById('scanner-rating-key-actions');
+   if (form) form.style.display = 'block';
+   if (actions) actions.style.display = 'none';
+   const input = document.getElementById('scanner-rating-key-input');
+   if (input) { input.value = ''; input.focus(); }
+ },
+
+ _scannerCancelKeyEdit() {
+   const form = document.getElementById('scanner-rating-key-form');
+   const actions = document.getElementById('scanner-rating-key-actions');
+   if (form) form.style.display = 'none';
+   if (actions) actions.style.display = 'flex';
+ },
+
+ async _scannerSaveKey() {
+   const input = document.getElementById('scanner-rating-key-input');
+   const key = (input && input.value || '').trim();
+   if (!key) { (typeof Toast !== 'undefined' && Toast.warning) ? Toast.warning('Clé vide') : alert('Clé vide'); return; }
+   try {
+     const resp = await Auth.apiCall('/api/bots/scanner/settings/rating-key', {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify({ key }),
+     });
+     const data = await resp.json();
+     if (!resp.ok) { (typeof Toast !== 'undefined' && Toast.error) ? Toast.error(data.detail || 'HTTP ' + resp.status) : alert(data.detail); return; }
+     (typeof Toast !== 'undefined' && Toast.success) ? Toast.success(data.message || 'Clé enregistrée') : null;
+     this._scannerCancelKeyEdit();
+     this._scannerLoadKeyStatus();
+   } catch (e) {
+     (typeof Toast !== 'undefined' && Toast.error) ? Toast.error('save error: ' + e.message) : alert('save error: ' + e.message);
+   }
+ },
+
+ async _scannerDeleteKey() {
+   const ok = confirm('Supprimer la clé Brave ? Le rating fetcher des 2 bots sera désactivé.');
+   if (!ok) return;
+   try {
+     const resp = await Auth.apiCall('/api/bots/scanner/settings/rating-key', { method: 'DELETE' });
+     const data = await resp.json();
+     if (!resp.ok) { (typeof Toast !== 'undefined' && Toast.error) ? Toast.error(data.detail || 'HTTP ' + resp.status) : alert(data.detail); return; }
+     (typeof Toast !== 'undefined' && Toast.success) ? Toast.success(data.message || 'Clé supprimée') : null;
+     this._scannerLoadKeyStatus();
+   } catch (e) {
+     (typeof Toast !== 'undefined' && Toast.error) ? Toast.error('delete error: ' + e.message) : alert('delete error: ' + e.message);
+   }
  },
 
  async _launchScanner() {
@@ -1113,7 +1204,7 @@ const BotsModule = {
  min_rating: s.minRating,
  currencies: currencies,
  price_threshold: s.priceThreshold,
- max_results: s.maxResults || 0,
+ target_count: s.targetCount,  // Task 15 (2026-05-28) — was max_results
  }),
  });
  if (!r || !r.ok) {

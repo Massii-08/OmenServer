@@ -52,6 +52,35 @@ OUTPUTS_DIR = Path(os.environ.get(
     str(_home / "omenserver" / "bots" / "scanner-outputs")
 ))
 
+# Task 16 (2026-05-28) — Brave Search API key (shared avec le Yield Bot).
+# Le fichier est posé par yield_router.py:set_rating_key() OU par le
+# nouveau endpoint scanner_router /settings/rating-key (les 2 écrivent au
+# même endroit). Le Bond Scanner subprocess récupère la clé via env var
+# BRAVE_SEARCH_API_KEY — qu'on injecte ici si pas déjà dans os.environ.
+RATING_KEY_PATH = _project_root / "data" / "secrets" / "brave.key"
+
+
+def _load_rating_key() -> Optional[str]:
+    """Retourne la clé Brave : env var prime, sinon le fichier partagé."""
+    env_key = os.environ.get("BRAVE_SEARCH_API_KEY")
+    if env_key:
+        return env_key
+    if RATING_KEY_PATH.is_file():
+        try:
+            content = RATING_KEY_PATH.read_text(encoding="utf-8").strip()
+            return content or None
+        except Exception as e:
+            logger.warning(f"Can't read shared rating key file: {e!r}")
+    return None
+
+
+def _mask_key(key: str) -> str:
+    """Preview masqué de la clé. Ex: 'BSAB…YpGn' (6 + … + 4)."""
+    if not key or len(key) < 12:
+        return "***"
+    return f"{key[:6]}…{key[-4:]}"
+
+
 # Stockage des jobs en mémoire
 _scanner_jobs: dict[str, dict] = {}
 
@@ -60,10 +89,10 @@ class ScanRequest(BaseModel):
     max_price: float = 100.0
     min_yield: float = 0.03
     max_maturity: int = 9
-    min_rating: str = "BBB-"
+    min_rating: str = "BBB"          # Task 15 (2026-05-28) — default BBB
     currencies: str = "EUR,USD,GBP"
     price_threshold: float = 101.0
-    max_results: int = 0  # 0 = illimitato
+    target_count: int = 100          # Task 15 — was max_results=0
 
 
 # ================================================================
@@ -95,7 +124,7 @@ async def run_scanner(
         "--min-rating", data.min_rating,
         "--currencies", data.currencies,
         "--price-threshold", str(data.price_threshold),
-        "--max-results", str(data.max_results),
+        "--target-count", str(data.target_count),
         "--output", output_path,
     ]
 
@@ -120,6 +149,14 @@ async def run_scanner(
 
     job = _scanner_jobs[job_id]
 
+    # Task 16 — injecte la clé Brave dans l'env si pas déjà présente
+    # (ainsi le fichier data/secrets/brave.key prend effet sans restart).
+    subprocess_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    if "BRAVE_SEARCH_API_KEY" not in subprocess_env:
+        loaded_key = _load_rating_key()
+        if loaded_key:
+            subprocess_env["BRAVE_SEARCH_API_KEY"] = loaded_key
+
     try:
         proc = subprocess.Popen(
             cmd,
@@ -128,7 +165,7 @@ async def run_scanner(
             text=True,
             bufsize=1,
             cwd=str(SCANNER_BOT_DIR),
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            env=subprocess_env,
         )
         job["process"] = proc
 
@@ -501,3 +538,124 @@ async def get_active_scanner_job(
             }
 
     return {"found": False}
+
+
+# ================================================================
+#  SETTINGS — Brave Search API key (Task 16, 2026-05-28)
+# ================================================================
+#
+# Le Bond Scanner et le Yield Bot partagent le MÊME fichier secret
+# `data/secrets/brave.key` (lu par les 2 backends, écrit indifféremment
+# par les 2 admin UIs). C'est un patron "1 secret partagé" : poser la
+# clé via le panneau d'un bot l'active aussi pour l'autre.
+#
+# Sécurité :
+# - Endpoint admin only (require_role("admin")) — pas "money"
+# - La clé n'est JAMAIS retournée en clair (masquée via _mask_key)
+# - Le fichier est chmod 600 (root + propriétaire seulement)
+# - data/secrets/ est dans .gitignore
+
+
+class RatingKeyPayload(BaseModel):
+    key: str
+
+
+@router.get("/settings/rating-key")
+async def get_scanner_rating_key_status(
+    current_user: User = Depends(require_role("admin")),
+):
+    """État de la clé Brave (sans la révéler). Source = env_var > file > none."""
+    env_key = os.environ.get("BRAVE_SEARCH_API_KEY")
+    if env_key:
+        return {
+            "has_key": True,
+            "preview": _mask_key(env_key),
+            "source": "env_var",
+            "path": None,
+            "shared_with": "yield-bot",
+        }
+    if RATING_KEY_PATH.is_file():
+        try:
+            content = RATING_KEY_PATH.read_text(encoding="utf-8").strip()
+            if content:
+                return {
+                    "has_key": True,
+                    "preview": _mask_key(content),
+                    "source": "file",
+                    "path": str(RATING_KEY_PATH),
+                    "shared_with": "yield-bot",
+                }
+        except Exception as e:
+            logger.warning(f"Can't read rating key file: {e!r}")
+
+    return {
+        "has_key": False,
+        "preview": None,
+        "source": None,
+        "path": str(RATING_KEY_PATH),
+        "shared_with": "yield-bot",
+    }
+
+
+@router.post("/settings/rating-key")
+async def set_scanner_rating_key(
+    payload: RatingKeyPayload,
+    current_user: User = Depends(require_role("admin")),
+):
+    """
+    Pose ou remplace la clé Brave Search API.
+
+    Le fichier est partagé avec le Yield Bot — modifier la clé ici la
+    change aussi pour le Yield Bot (et inversement). Validation : la clé
+    doit commencer par 'BSA' et faire au moins 20 caractères.
+    """
+    key = (payload.key or "").strip()
+    if not key:
+        raise HTTPException(400, "La clé est vide")
+    if not key.startswith("BSA"):
+        raise HTTPException(
+            400,
+            "Format inattendu : une clé Brave Search commence par 'BSA'. "
+            "Vérifie que tu as bien copié la clé complète depuis "
+            "api-dashboard.search.brave.com/app/keys"
+        )
+    if len(key) < 20:
+        raise HTTPException(400, "Clé trop courte (< 20 caractères)")
+
+    try:
+        RATING_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        RATING_KEY_PATH.write_text(key, encoding="utf-8")
+        RATING_KEY_PATH.chmod(0o600)
+    except Exception as e:
+        logger.exception("Failed to write rating key")
+        raise HTTPException(500, f"Impossible d'écrire le fichier : {e!r}")
+
+    logger.info(
+        f"Rating key posée par {current_user.username} via Bond Scanner "
+        f"(preview {_mask_key(key)})"
+    )
+    return {
+        "message": "Clé enregistrée. Prochain scan l'utilisera (partagée avec Yield Bot).",
+        "preview": _mask_key(key),
+        "path": str(RATING_KEY_PATH),
+        "shared_with": "yield-bot",
+    }
+
+
+@router.delete("/settings/rating-key")
+async def delete_scanner_rating_key(
+    current_user: User = Depends(require_role("admin")),
+):
+    """Supprime la clé Brave (rating fetcher désactivé pour les 2 bots)."""
+    if not RATING_KEY_PATH.is_file():
+        return {"message": "Aucune clé à supprimer (fichier absent)"}
+    try:
+        RATING_KEY_PATH.unlink()
+    except Exception as e:
+        logger.exception("Failed to delete rating key")
+        raise HTTPException(500, f"Impossible de supprimer : {e!r}")
+    logger.info(
+        f"Rating key supprimée par {current_user.username} via Bond Scanner "
+        f"(impacte aussi Yield Bot)"
+    )
+    return {"message": "Clé supprimée (impact: les 2 bots ne pourront plus récupérer le rating Fitch)"}
