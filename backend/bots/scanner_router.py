@@ -166,6 +166,14 @@ async def run_scanner(
             bufsize=1,
             cwd=str(SCANNER_BOT_DIR),
             env=subprocess_env,
+            # 2026-05-28 : détache le scan dans sa propre session/process group
+            # pour qu'un reload uvicorn (auto-deploy git pull) NE le tue PAS.
+            # Sans ça, un push pendant un scan en cours tuait le subprocess
+            # (le backend est lancé en --reload sur l'Omen). Le scan continue
+            # désormais même si le backend redémarre ; l'Excel est écrit sur
+            # disque indépendamment (le suivi live du panel peut être perdu au
+            # reload, mais le fichier résultat se génère quand même).
+            start_new_session=True,
         )
         job["process"] = proc
 
