@@ -265,13 +265,21 @@ class BraveFitchProvider(RatingProvider):
 
     def _score_title(self, title: str) -> int:
         """
-        Scoring:
-          +2 : HIGH_PREF keyword (upgrades/downgrades/affirms/idr/credit ratings)
-           0 : ISSUE_SPECIFIC keyword (senior notes / junior / sub notes / ...)
-        -999 : REJECT keyword (trust / abs / rmbs / cmbs / ...) — special sentinel
+        Punteggia un titolo Fitch per preferire i hit Issuer.
 
-        REJECT è marcato con uno score profondamente negativo per essere
-        facilmente filtrabile dal chiamante senza una flag separata.
+        Returns:
+            int: punteggio (più alto = più preferito), oppure -999 se il titolo
+            contiene una keyword REJECT (sentinella per scartare i hit, evita
+            di propagare un secondo flag bool al chiamante).
+
+        Scala:
+          +2  : HIGH_PREF keyword (upgrades/downgrades/affirms/idr/credit ratings)
+                → annuncio di rating Issuer, fonte autoritativa.
+           0  : nessun match (neutro). I titoli ISSUE_SPECIFIC come "Senior
+                Notes" / "Sub Notes" sono lasciati a 0 — accettabili come
+                fallback ma sovrascritti dal primo hit Issuer trovato.
+        -999  : REJECT keyword (trust/abs/rmbs/cmbs/grand vacations/...)
+                → securitisation, rating senza rapporto con il bond corporate.
         """
         title_lower = title.lower()
         if any(kw in title_lower for kw in _REJECT):
@@ -279,9 +287,6 @@ class BraveFitchProvider(RatingProvider):
         score = 0
         if any(kw in title_lower for kw in _HIGH_PREF):
             score += 2
-        # ISSUE_SPECIFIC tag est neutre (0). Garde la branche pour clarté.
-        if any(kw in title_lower for kw in _ISSUE_SPECIFIC):
-            score += 0
         return score
 
     # ---- main entry --------------------------------------------------
