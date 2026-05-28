@@ -224,7 +224,19 @@ class MarketScraper:
         neutralisés par CSS le click est instantané, mais on laisse de la
         marge pour le rendu Angular lent (le timeout court 10s de la
         première version causait des faux échecs).
+
+        IMPORTANT (bug headless 2026-05-28) : les boutons page-bar (taille
+        de page "100", pagination "Show page N") sont souvent SOUS le fold
+        dans le viewport headless 1280×900. Sans scroll-into-view, le click
+        est un no-op silencieux → seulement 25 bonds récupérés. On scrolle
+        donc explicitement AVANT le click. force=True (fallback) ne scrolle
+        PAS, d'où le scroll manuel ici.
         """
+        try:
+            await locator.scroll_into_view_if_needed(timeout=5000)
+            await self._page.wait_for_timeout(300)
+        except Exception:
+            pass
         try:
             await locator.click(timeout=20000)
         except Exception as e:

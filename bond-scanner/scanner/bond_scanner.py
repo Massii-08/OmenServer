@@ -22,7 +22,7 @@ from typing import List, Optional
 
 from scanner.models import ScannedBond
 from scanner.market_scraper import MarketScraper
-from scanner.scoring import top_n_per_currency
+from scanner.scoring import top_n_per_currency, compute_quotas
 from scanner.found_store import FoundStore
 from filter.criteria import ScanCriteria
 from calculator.yield_calculator import (
@@ -150,6 +150,15 @@ class BondScanner:
 
         all_filtered_bonds: List[ScannedBond] = []
         seen_isins: set = set()  # Deduplica globale tra scansioni multi-valuta
+
+        # "Continue jusqu'au target" (2026-05-28) : quota par devise. Quand
+        # une devise atteint son quota de bonds VALIDES, on arrête de la
+        # scanner (early-stop) et on passe à la suivante. compute_quotas
+        # répartit le target sur les devises (3 sur EUR seul = 3 ; 3 sur
+        # EUR+USD+GBP = 1/1/1).
+        currencies_list = list(self.criteria.currencies)
+        quotas = compute_quotas(self.target_count, len(currencies_list)) if self.target_count > 0 else []
+        currency_quota = dict(zip(currencies_list, quotas)) if quotas else {}
 
         async with MarketScraper(headless=self.headless) as scraper:
             for currency in self.criteria.currencies:
@@ -310,6 +319,17 @@ class BondScanner:
                                 logger.info(f"    ✅ ACCETTATO ({self.stats['total_filtered']} pool) "
                                             f"— Prezzo: {bond.current_price}, "
                                             f"Yield: {yield_str}, Rating: {bond.rating_display or '?'}")
+
+                                # "Continue jusqu'au target" : early-stop quand
+                                # la devise a atteint son quota de bonds valides.
+                                quota = currency_quota.get(currency)
+                                if quota and currency_stats['filtered'] >= quota:
+                                    logger.info(
+                                        f"  🎯 {currency} : quota atteint "
+                                        f"({currency_stats['filtered']}/{quota}) "
+                                        f"→ passe à la devise suivante"
+                                    )
+                                    break
                             else:
                                 currency_stats['discarded'] += 1
                                 self.stats['total_discarded'] += 1  # ← Aggiornamento IMMEDIATO

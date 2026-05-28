@@ -89,6 +89,8 @@ Esempi:
                         help='Désactive la dédup : re-cherche aussi les bonds déjà livrés')
     parser.add_argument('--reset-found', action='store_true',
                         help='Vide l\'historique des bonds déjà livrés avant de scanner')
+    parser.add_argument('--reset-cache', action='store_true',
+                        help='Vide le cache de ratings (force re-fetch Brave) avant de scanner')
 
     return parser.parse_args()
 
@@ -130,6 +132,16 @@ async def main():
         from scanner.found_store import FoundStore
         n = FoundStore().reset()
         print(f"♻️  Historique dédup vidé : {n} bond effacés.")
+
+    # Reset cache ratings si demandé (avant le scan)
+    if args.reset_cache:
+        from scanner.rating_providers import CACHE_PATH
+        try:
+            if CACHE_PATH.exists():
+                CACHE_PATH.unlink()
+                print("🗑️  Cache ratings vidé (re-fetch Brave au scan).")
+        except OSError as e:
+            print(f"⚠️  Impossible de vider le cache ratings : {e}")
 
     # Lancia la scansione
     scanner = BondScanner(

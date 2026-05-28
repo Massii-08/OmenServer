@@ -705,3 +705,48 @@ async def reset_found(
         raise HTTPException(500, f"Impossible de vider l'historique : {e!r}")
     logger.info(f"Historique dédup vidé par {current_user.username} ({n} bond)")
     return {"message": f"{n} bond effacés de l'historique — ils redeviennent cherchables", "cleared": n}
+
+
+# ================================================================
+#  RATING CACHE — reset (2026-05-28)
+# ================================================================
+#
+# Le cache de ratings ~/.cache/bond-scanner-ratings.json peut être pollué
+# (ex. bug "disabled" du 28/05 qui a caché un faux CCC pour tous les bonds
+# scannés). Cet endpoint le vide pour forcer un re-fetch propre via Brave.
+
+RATING_CACHE_PATH = Path.home() / ".cache" / "bond-scanner-ratings.json"
+
+
+@router.get("/rating-cache-count")
+async def get_rating_cache_count(
+    current_user: User = Depends(require_role("admin", "money")),
+):
+    """Nombre d'entrées dans le cache de ratings."""
+    if not RATING_CACHE_PATH.is_file():
+        return {"count": 0}
+    try:
+        data = json.loads(RATING_CACHE_PATH.read_text())
+        return {"count": len(data) if isinstance(data, dict) else 0}
+    except Exception:
+        return {"count": 0}
+
+
+@router.post("/reset-rating-cache")
+async def reset_rating_cache(
+    current_user: User = Depends(require_role("admin")),
+):
+    """Vide le cache de ratings (force un re-fetch Brave au prochain scan)."""
+    if not RATING_CACHE_PATH.is_file():
+        return {"message": "Aucun cache à vider", "cleared": 0}
+    try:
+        data = json.loads(RATING_CACHE_PATH.read_text())
+        n = len(data) if isinstance(data, dict) else 0
+    except Exception:
+        n = 0
+    try:
+        RATING_CACHE_PATH.unlink()
+    except OSError as e:
+        raise HTTPException(500, f"Impossible de vider le cache : {e!r}")
+    logger.info(f"Rating cache vidé par {current_user.username} ({n} entrées)")
+    return {"message": f"{n} ratings effacés du cache — re-fetch Brave au prochain scan", "cleared": n}
