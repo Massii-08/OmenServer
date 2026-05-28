@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from datetime import date, timedelta
 from pathlib import Path
@@ -149,6 +150,28 @@ AGENCY_RATING_RE = re.compile(
 )
 
 
+# Regex simple pour les TITRES de pages Fitch direct (site:fitchratings.com).
+# Les formats observés :
+#   "Fitch Affirms IBM's IDR at 'A-'; Outlook Stable"
+#   "Fitch Rates Dominion Energy's Senior Notes 'BBB+'"
+#   "Fitch Upgrades Broadcom to 'BBB+'; Outlook Positive"
+#   "Fitch Upgrades AstraZeneca to 'A'; Outlook Positive"
+#
+# Le rating apparaît TOUJOURS entre quotes (simples ou doubles, droites ou
+# courbes). On se contente de chercher la 1ère occurrence quote+rating+quote
+# car le titre Fitch est court et contient au plus 1 rating.
+FITCH_TITLE_RATING_RE = re.compile(
+    r"['\"’“”]"
+    r"(?P<rating>"
+    r"AAA|AA\+|AA-|AA|A\+|A-"
+    r"|BBB\+|BBB-|BBB|BB\+|BB-|BB|B\+|B-"
+    r"|CCC\+|CCC-|CCC|CC|D"
+    r"|A|B|C"
+    r")"
+    r"['\"’“”]"
+)
+
+
 def parse_rating_from_text(text: str) -> Tuple[Optional[str], Optional[str]]:
     """
     Cherche un pattern '<Agency> <verb> <Issuer> at <Rating>' dans un texte.
@@ -234,16 +257,31 @@ class RatingFetcher:
     Récupère le rating d'un bond en essayant plusieurs sources avec fallback.
     """
 
-    def __init__(self, prefer_fitch: bool = True, use_camoufox: bool = True):
+    def __init__(
+        self,
+        prefer_fitch: bool = True,
+        use_camoufox: bool = True,
+        fitch_only: bool = False,
+        brave_api_key: Optional[str] = None,
+    ):
         """
         Args:
             prefer_fitch: Si True, essaie Fitch en premier. Sinon part direct
                           sur les sources fallback (news/SEC).
             use_camoufox: Si True, utilise Scrapling/Camoufox pour Fitch.
                           Mettre False pour skip si Camoufox est cassé.
+            fitch_only: Si True, n'accepte QUE les ratings parsés comme Fitch.
+                        Les S&P/Moody's matchés dans les snippets sont ignorés.
+                        Utilisé par yield_bot pour ne pas polluer l'Excel avec
+                        des ratings autres que Fitch sans validation manuelle.
+            brave_api_key: Clé Brave Search API. Si None, lookup auto via env
+                           var BRAVE_SEARCH_API_KEY. Si absente partout, Brave
+                           Search est skip (pas d'erreur).
         """
         self.prefer_fitch = prefer_fitch
         self.use_camoufox = use_camoufox
+        self.fitch_only = fitch_only
+        self.brave_api_key = brave_api_key or os.environ.get('BRAVE_SEARCH_API_KEY')
         self.cache = _Cache()
 
     def fetch_rating(
@@ -274,8 +312,11 @@ class RatingFetcher:
             )
             return cached['rating'], cached['agency']
 
-        # Ordre des sources selon prefer_fitch
+        # Ordre des sources : Brave en premier si clé dispo (le plus fiable),
+        # puis Fitch direct (Camoufox), puis DDG news, puis SEC EDGAR.
         sources = []
+        if self.brave_api_key:
+            sources.append(('Brave Search', self._try_brave_search))
         if self.prefer_fitch and self.use_camoufox:
             sources.append(('Fitch+Camoufox', self._try_fitch_camoufox))
         sources.append(('DuckDuckGo+news', self._try_ddg_news))
@@ -286,6 +327,17 @@ class RatingFetcher:
                 result = source_fn(isin, issuer)
                 if result and result[0]:
                     rating, agency = result
+
+                    # Mode fitch_only : on n'accepte QUE les ratings dont l'agency
+                    # parsée est "Fitch". Les S&P/Moody's matchés sont rejetés
+                    # silencieusement → on tente la source suivante.
+                    if self.fitch_only and agency != 'Fitch':
+                        logger.debug(
+                            f"  ⊘ {source_name} a trouvé {rating} ({agency}) "
+                            f"mais fitch_only=True → skip"
+                        )
+                        continue
+
                     logger.info(
                         f"  ✏️  Rating {isin} ({issuer}): {rating} "
                         f"({agency}) via {source_name}"
@@ -297,6 +349,168 @@ class RatingFetcher:
                 continue
 
         logger.warning(f"  ❓ Aucun rating trouvé pour {isin} ({issuer})")
+        return None, None
+
+    # ------------------------------------------------------------------
+    #  Source 0 : Brave Search API ciblée site:fitchratings.com
+    # ------------------------------------------------------------------
+    #
+    #  Stratégie décidée 2026-05-28 (cf. daily note) :
+    #  - Source UNIQUE = fitchratings.com (autoritative, pas de news
+    #    intermédiaire qui peut être désactualisée)
+    #  - On ne SCRAPE pas le site (bloqué par Cloudflare + crash Camoufox).
+    #    On lit l'index Brave qui a déjà aspiré les pages Fitch publiques.
+    #  - Le rating est dans le TITLE des pages Fitch, entre quotes :
+    #      "Fitch Affirms IBM's IDR at 'A-'; Outlook Stable"
+    #      "Fitch Upgrades Broadcom to 'BBB+'; Outlook Positive"
+    #      "Fitch Rates Dominion Energy's Senior Notes 'BBB+'"
+    #  - Si Fitch ne rate pas l'issuer → 0 hits dans la SERP → on retourne
+    #    (None, None) → la cellule Excel reste intacte (politique fitch_only).
+    #
+    def _try_brave_search(
+        self, isin: str, issuer: str
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Cherche le rating Fitch d'un issuer en restreignant Brave Search au
+        domaine fitchratings.com.
+        Retourne (rating, "Fitch") ou (None, None).
+        """
+        if not self.brave_api_key:
+            return None, None
+        try:
+            import httpx
+        except ImportError:
+            logger.debug("  ⚠️  httpx non dispo, skip Brave Search")
+            return None, None
+
+        # Strip UNIQUEMENT les suffixes corporate purement légaux.
+        # On NE strip PAS "Worldwide", "Finance", "Holdings", "Capital" car
+        # ils peuvent distinguer 2 entités différentes :
+        #   - "Hilton Worldwide" (corporate hôtelier) vs "Hilton Grand
+        #     Vacations" (timeshare spin-off, rating différent)
+        #   - "AstraZeneca Finance LLC" vs "AstraZeneca PLC" (parent)
+        # Mieux vaut un ∅ qu'un faux rating.
+        issuer_short = issuer
+        for suffix in (
+            ' Inc.', ' Inc', ' Corporation', ' Corp.', ' Corp',
+            ' LLC', ' PLC', ' Plc', ' Ltd.', ' Ltd',
+            ' SA', ' AG', ' NV', ' GmbH', ' SpA',
+        ):
+            if issuer_short.endswith(suffix):
+                issuer_short = issuer_short[: -len(suffix)].strip()
+                break  # un seul strip suffit
+
+        query = f'site:fitchratings.com {issuer_short}'
+        headers = {
+            'X-Subscription-Token': self.brave_api_key,
+            'Accept': 'application/json',
+        }
+        params = {
+            'q': query,
+            'count': 10,
+            'result_filter': 'web',
+        }
+
+        try:
+            r = httpx.get(
+                'https://api.search.brave.com/res/v1/web/search',
+                headers=headers, params=params, timeout=15,
+            )
+        except Exception as e:
+            logger.debug(f"  ⚠️  Brave Search fetch error: {e!r}")
+            return None, None
+
+        if r.status_code == 429:
+            logger.warning(
+                "  ⚠️  Brave Search rate-limited (429). "
+                "Plan free = 1 req/sec — ralentir si batch."
+            )
+            return None, None
+        if r.status_code != 200:
+            logger.debug(
+                f"  ⚠️  Brave Search status={r.status_code} "
+                f"body={r.text[:200]}"
+            )
+            return None, None
+
+        try:
+            data = r.json()
+        except Exception:
+            return None, None
+
+        results = data.get('web', {}).get('results', []) or []
+        if not results:
+            logger.debug(f"  Brave: 0 hit pour {query!r}")
+            return None, None
+
+        # Scoring des hits Fitch :
+        #  +2 : title contient un verbe de rating principal Issuer
+        #       (Upgrades/Downgrades/Affirms) OU "IDR" (Issuer Default Rating)
+        #   0 : title contient "Senior Notes" / "Junior" / "Sub Notes"
+        #       (rating d'émission spécifique, accepté en fallback)
+        HIGH_PREF = ('upgrades', 'downgrades', 'affirms', 'idr',
+                     'credit ratings')
+        ISSUE_SPECIFIC = ('senior notes', 'junior', 'sub notes',
+                          'convertible', 'subordinated')
+        # REJECT : structures de securitisation et autres véhicules qui
+        # n'ont rien à voir avec le bond corporate sous-jacent. Vu sur
+        # "Hilton Grand Vacations Trust 2026-1" (ABS timeshare).
+        REJECT = ('trust', 'grand vacations', 'abs', 'rmbs', 'cmbs',
+                  'presale', 'covered bond', 'mortgage', 'clo', 'spv')
+
+        best: Optional[Tuple[int, str, str]] = None  # (score, rating, url)
+
+        for res in results:
+            url = res.get('url', '') or ''
+            if 'fitchratings.com' not in url.lower():
+                continue  # garde-fou — Brave devrait ne renvoyer que ce site
+            title = res.get('title', '') or ''
+            title_lower = title.lower()
+
+            # Le mot "Fitch" doit apparaître dans le titre — sinon c'est
+            # probablement une page entity sans action de rating récente.
+            if 'fitch' not in title_lower:
+                continue
+
+            # Rejet : structures de securitisation (Trust/ABS/...) — leur
+            # rating n'a aucun rapport avec un bond corporate.
+            if any(kw in title_lower for kw in REJECT):
+                logger.debug(
+                    f"  ⊘ Reject (securitisation): {title[:80]!r}"
+                )
+                continue
+
+            m = FITCH_TITLE_RATING_RE.search(title)
+            if not m:
+                continue
+
+            rating = normalize_rating(m.group('rating'))
+            if not rating:
+                continue
+
+            score = 0
+            if any(kw in title_lower for kw in HIGH_PREF):
+                score += 2
+            if any(kw in title_lower for kw in ISSUE_SPECIFIC):
+                # On accepte mais on préfère un hit Issuer
+                score -= 0  # neutre — meilleur que rien
+            else:
+                # Pas de mot-clé d'émission → c'est probablement le rating
+                # Issuer si HIGH_PREF présent
+                pass
+
+            logger.debug(
+                f"  · score={score:+d} rating={rating} title={title[:80]!r}"
+            )
+
+            if best is None or score > best[0]:
+                best = (score, rating, url)
+
+        if best:
+            _score, rating, hit_url = best
+            logger.debug(f"  ✓ Brave Fitch hit: {rating} via {hit_url}")
+            return rating, 'Fitch'
+
         return None, None
 
     # ------------------------------------------------------------------

@@ -82,7 +82,16 @@ class YieldBot:
                 # use_camoufox respecte la variable d'env pour pouvoir désactiver
                 # la branche Fitch direct (utile si Camoufox cassé sur Ubuntu 26.04)
                 use_cam = not os.environ.get('YIELD_BOT_DISABLE_CAMOUFOX')
-                self._rating_fetcher = RatingFetcher(use_camoufox=use_cam)
+                # fitch_only=True : politique décidée 2026-05-28 (cf. daily note
+                # entrée 14:30). On accepte SEULEMENT des ratings Fitch — pas
+                # de fallback S&P/Moody's converti pour ne pas polluer l'Excel.
+                # Si pas de Fitch trouvé → market_data.rating reste None →
+                # processor.update_rating ne touche pas la cellule.
+                # La clé Brave Search est auto-récupérée via env BRAVE_SEARCH_API_KEY.
+                self._rating_fetcher = RatingFetcher(
+                    use_camoufox=use_cam,
+                    fitch_only=True,
+                )
             rating, agency = self._rating_fetcher.fetch_rating(isin, issuer)
             if rating:
                 logger.info(f"   📊 Rating récupéré: {rating} ({agency})")
