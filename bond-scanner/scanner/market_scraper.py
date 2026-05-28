@@ -163,74 +163,76 @@ class MarketScraper:
     #  SCANSIONE DEL MERCATO
     # ================================================================
 
-    async def _dismiss_overlays(self):
+    async def _kill_overlays(self):
         """
-        Neutralise les overlays Deutsche Börse qui interceptent les clicks.
+        Neutralise DÉFINITIVEMENT les overlays Deutsche Börse via CSS injecté.
 
-        Bug observé en prod 2026-05-28 18:59 : le scan plantait au click de
-        pagination (page 3) parce que deux overlays Angular interceptaient
-        les pointer events :
+        Bug observé en prod 2026-05-28 : le scan plantait au click de
+        pagination parce que deux overlays Angular interceptaient les
+        pointer events :
           - <app-cookie-hint>     : bannière cookies (RGPD)
-          - <app-loading-spinner> : spinner pendant le chargement des données
+          - <app-loading-spinner> : spinner pendant le chargement
 
-        Stratégie :
-          1. Cookie banner → masqué via JS (display:none + pointer-events:none).
-             On NE clique PAS "Accept" : plus fragile (texte localisé DE/EN) et
-             on n'a pas besoin des cookies pour scraper l'API JSON publique.
-          2. Loading spinner → on ATTEND qu'il disparaisse (wait state=hidden).
-             Le masquer serait dangereux : il indique que les données chargent
-             encore, donc on cliquerait trop tôt. Mieux vaut attendre la fin.
+        Première tentative (18:59→19:16) : masquage inline via `evaluate`
+        (el.style.display='none'). ÉCHEC + régression : Angular re-render
+        écrase le style inline, et le `wait_for(spinner hidden)` ajoutait
+        un délai qui décalait le timing du click → page 2 plantait.
 
-        Idempotent : appelé avant chaque click (le banner peut re-render).
+        Approche finale : `add_style_tag` injecte un <style> avec `!important`
+        dans le <head>. Avantages :
+          - `!important` sur stylesheet BAT les styles inline non-important
+            qu'Angular pose lors du re-render → le masquage tient.
+          - La règle CSS s'applique AUSSI aux éléments qui apparaissent
+            APRÈS l'injection (le banner peut charger en retard) — pas
+            besoin de re-masquer avant chaque click.
+          - `display:none` retire l'élément du layout → ne peut plus
+            intercepter les pointer events.
+          - Le <style> dans <head> survit aux changements de route Angular
+            (SPA, pas de full reload) → injection one-shot après goto().
+
+        Le spinner est masqué AUSSI : son seul rôle est visuel. Le timing
+        du chargement est géré par wait_for_load_state("networkidle"), pas
+        par la visibilité du spinner. Le masquer élimine son intercept sans
+        risque de cliquer trop tôt.
         """
-        # 1. Cookie banner : masquage défensif (idempotent)
         try:
-            await self._page.evaluate(
-                """() => {
-                    const sels = [
-                        'app-cookie-hint',
-                        '[class*="cookie-hint"]',
-                        '[class*="cookie-banner"]',
-                        '[class*="cookie-consent"]',
-                    ];
-                    sels.forEach(s => {
-                        document.querySelectorAll(s).forEach(el => {
-                            el.style.display = 'none';
-                            el.style.pointerEvents = 'none';
-                        });
-                    });
-                }"""
-            )
+            await self._page.add_style_tag(content="""
+                app-cookie-hint,
+                [class*="cookie-hint"],
+                [class*="cookie-banner"],
+                [class*="cookie-consent"],
+                app-loading-spinner {
+                    display: none !important;
+                    pointer-events: none !important;
+                    visibility: hidden !important;
+                }
+            """)
+            logger.info("  ✓ Overlays Deutsche Börse neutralisés (CSS !important persistant)")
         except Exception as e:
-            logger.debug(f"  ⚠️ dismiss cookie banner: {e}")
-
-        # 2. Loading spinner : attendre la disparition (max 10s)
-        try:
-            spinner = self._page.locator('app-loading-spinner').first
-            await spinner.wait_for(state='hidden', timeout=10000)
-        except Exception:
-            # Pas de spinner visible (ou déjà parti) = OK, on continue
-            pass
+            logger.debug(f"  ⚠️ add_style_tag overlays: {e}")
 
     async def _click_robust(self, locator):
         """
         Clique un élément avec fallback force=True si un overlay intercepte.
 
-        Filet de sécurité complémentaire à _dismiss_overlays() : si malgré le
-        masquage du cookie banner un overlay ré-apparaît pile au moment du
-        click (race condition Angular re-render), le click normal lève
-        "subtree intercepts pointer events". On retombe alors sur force=True
-        qui bypass le check d'actionabilité et envoie le click directement à
-        l'élément cible.
+        Filet de sécurité complémentaire à _kill_overlays() : si malgré le
+        masquage CSS un overlay ré-apparaît pile au moment du click (race
+        Angular), le click normal lève "subtree intercepts pointer events".
+        On retombe alors sur force=True qui bypass le check d'actionabilité.
+
+        Timeouts généreux (20s normal + 10s force) : avec les overlays
+        neutralisés par CSS le click est instantané, mais on laisse de la
+        marge pour le rendu Angular lent (le timeout court 10s de la
+        première version causait des faux échecs).
         """
         try:
-            await locator.click(timeout=10000)
+            await locator.click(timeout=20000)
         except Exception as e:
             logger.warning(
                 f"  ⚠️ Click normal échoué ({type(e).__name__}), "
                 f"retry avec force=True"
             )
-            await locator.click(force=True, timeout=5000)
+            await locator.click(force=True, timeout=10000)
 
     async def scan_market(self, currency: str = "EUR", max_pages: int = 20) -> List[ScannedBond]:
         """
@@ -292,9 +294,10 @@ class MarketScraper:
             await self._page.wait_for_load_state("networkidle")
             await self._page.wait_for_timeout(2000)
 
-            # Ferme le cookie banner Deutsche Börse + attend la fin du spinner
-            # (sinon les clicks de pagination sont interceptés — bug 28/05 18:59)
-            await self._dismiss_overlays()
+            # Neutralise les overlays (cookie banner + spinner) UNE FOIS via CSS
+            # !important persistant — survit aux re-renders Angular et à la
+            # pagination SPA. Évite que les clicks soient interceptés (bug 28/05).
+            await self._kill_overlays()
 
             # Analizza le risposte API per la lista bond
             bonds_from_api = self._parse_bond_list_responses(api_responses, currency)
@@ -307,7 +310,6 @@ class MarketScraper:
                 btn_100 = self._page.locator('button.page-bar-type-button:has-text("100")').first
                 if await btn_100.is_visible(timeout=3000):
                     api_responses.clear()
-                    await self._dismiss_overlays()  # re-dismiss avant le click
                     await self._click_robust(btn_100)
                     await self._page.wait_for_load_state("networkidle")
                     await self._page.wait_for_timeout(2000)
@@ -360,12 +362,10 @@ class MarketScraper:
                     logger.info(f"  📄 Fine paginazione (pagina {page_num})")
                     break
 
-                # Clicca Next
+                # Clicca Next (overlays déjà neutralisés par _kill_overlays via
+                # CSS persistant — pas besoin de re-dismiss à chaque page)
                 page_num += 1
                 logger.info(f"  📄 Pagina {page_num}...")
-                # Ferme overlays avant le click (cookie banner + spinner peuvent
-                # ré-intercepter à chaque changement de page — bug 28/05 18:59)
-                await self._dismiss_overlays()
                 await self._click_robust(next_btn)
                 await self._page.wait_for_load_state("networkidle")
                 await self._page.wait_for_timeout(1500)
