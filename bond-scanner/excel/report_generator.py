@@ -260,7 +260,9 @@ class ReportGenerator:
         ws[f'F{row}'].alignment = CENTER_ALIGN
         ws[f'F{row}'].border = THIN_BORDER
 
-        ws[f'G{row}'] = bond.rating_display or bond.rating or '?'
+        # No fallback placeholder: if Fitch doesn't rate this issuer, leave
+        # the cell empty (policy "on laisse la cellule telle quelle", 2026-05-28).
+        ws[f'G{row}'] = bond.rating_display or bond.rating or ''
         ws[f'G{row}'].font = font
         ws[f'G{row}'].alignment = CENTER_ALIGN
         ws[f'G{row}'].border = THIN_BORDER
