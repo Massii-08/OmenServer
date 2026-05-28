@@ -303,18 +303,42 @@ class YieldBot:
             if market_data and not market_data.error:
                 self.processor.update_price(sheet, row, market_data.current_price) if market_data.current_price else None
 
-                # Si Deutsche Börse n'a pas exposé de rating, tente le fetcher
-                # Brave Search ciblé site:fitchratings.com (politique Fitch-only,
-                # cf. daily 2026-05-28). Le fetcher s'auto-désactive si aucune
-                # clé Brave n'est trouvée (env var BRAVE_SEARCH_API_KEY OU
-                # fichier data/secrets/brave.key posé via le dashboard admin).
-                # Pas de clé → retourne None → cellule Excel inchangée.
-                if (not market_data.rating or market_data.rating == '?') and market_data.name:
+                # Politique rating fetcher (révisée 2026-05-28 PM) :
+                # - On ne tente le fetcher Brave QUE si la cellule Excel est
+                #   VRAIMENT vide. Si elle contient déjà '?' (= déjà cherché
+                #   aux runs précédents, rien trouvé) ou '-' (= placeholder
+                #   manuel "pas de rating disponible"), on skip pour économiser
+                #   les calls Brave (1000/mois free) et le temps.
+                # - Si le fetcher ne trouve rien → on écrit '?' dans la cellule
+                #   comme marker durable. Aux prochains runs, ce '?' fera skip
+                #   automatiquement → pas de retry inutile mois après mois.
+                # - Si l'utilisateur veut forcer une nouvelle recherche pour
+                #   un bond marqué '?', il efface la cellule manuellement.
+                existing_rating = bond_info.get('rating')
+                if isinstance(existing_rating, str):
+                    existing_rating = existing_rating.strip()
+                cell_is_empty = not existing_rating  # None ou string vide
+
+                scraper_has_rating = (
+                    market_data.rating and market_data.rating != '?'
+                )
+                if not scraper_has_rating and cell_is_empty and market_data.name:
                     rating_extra = self._fetch_rating_fallback(isin, market_data.name)
                     if rating_extra:
                         market_data.rating = rating_extra
+                    else:
+                        # Marker durable pour skip aux runs futurs
+                        market_data.rating = '?'
+                        logger.info(
+                            f"   ❓ Aucun rating Fitch trouvé pour {isin} → "
+                            f"marker '?' posé (skip aux runs futurs)"
+                        )
 
-                if market_data.rating and market_data.rating != '?':
+                # update_rating ne touche QUE les cellules vides ou contenant
+                # '?' (cf. excel/processor.py:245). Donc écrire ici un '?' sur
+                # une cellule vide passe, mais sur '-' ou un rating existant
+                # → no-op (protection contre l'écrasement manuel).
+                if market_data.rating:
                     self.processor.update_rating(sheet, row, market_data.rating)
                 self.processor.fill_empty_fields(sheet, row, market_data)
                 self.processor.update_name(sheet, row, market_data)
