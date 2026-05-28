@@ -68,12 +68,14 @@ bot obbligation/
 | Valute | EUR, USD, GBP | ✅ Oui |
 
 ### Rating
-- Le rating est **récupéré** depuis Deutsche Börse (pas calculé)
-- Champs API cherchés : `rating`, `sprating`, `moodyrating`, `fitchrating`, `creditrating`
-- Préférence Fitch Rating quand disponible
-- ⚠️ Deutsche Börse ne fournit pas toujours le rating → colonne "Rating (to check)"
-- Échelle S&P supportée : AAA → D
-- Conversion Moody's → S&P intégrée (Aaa→AAA, Baa3→BBB-, etc.)
+- Le rating est récupéré **uniquement** via Brave Search API en mode `site:fitchratings.com {issuer}` (mirror Yield Bot, 2026-05-28)
+- Parsing du rating depuis le **titre** des pages Fitch indexées (regex `FITCH_TITLE_RATING_RE`)
+- Politique **fitch_only strict** : pas de fallback S&P / Moody's converti
+- Si Fitch ne rate pas l'émetteur → `bond.rating_display = None` → cellule Excel vide (pas de `'?'` placeholder)
+- Cache `~/.cache/bond-scanner-ratings.json` (TTL 30 jours par ISIN, négatifs inclus pour ne pas re-burn la quota Brave)
+- Clé API : `BRAVE_SEARCH_API_KEY` (partagée avec Yield Bot — 1000 req/mois free largement suffisant pour les 2 bots cumulés)
+- Le `merge_ratings()` legacy n'est plus appelé (1 seule source = pas de fusion)
+- Échelle S&P / conversions Moody's (`MOODY_TO_SP`, `RATING_SCALE`) conservées car consommées par `filter/criteria.py`
 
 ### Formules de Yield (copiées du Yield Bot)
 | Type | Formule |
