@@ -163,6 +163,75 @@ class MarketScraper:
     #  SCANSIONE DEL MERCATO
     # ================================================================
 
+    async def _dismiss_overlays(self):
+        """
+        Neutralise les overlays Deutsche Börse qui interceptent les clicks.
+
+        Bug observé en prod 2026-05-28 18:59 : le scan plantait au click de
+        pagination (page 3) parce que deux overlays Angular interceptaient
+        les pointer events :
+          - <app-cookie-hint>     : bannière cookies (RGPD)
+          - <app-loading-spinner> : spinner pendant le chargement des données
+
+        Stratégie :
+          1. Cookie banner → masqué via JS (display:none + pointer-events:none).
+             On NE clique PAS "Accept" : plus fragile (texte localisé DE/EN) et
+             on n'a pas besoin des cookies pour scraper l'API JSON publique.
+          2. Loading spinner → on ATTEND qu'il disparaisse (wait state=hidden).
+             Le masquer serait dangereux : il indique que les données chargent
+             encore, donc on cliquerait trop tôt. Mieux vaut attendre la fin.
+
+        Idempotent : appelé avant chaque click (le banner peut re-render).
+        """
+        # 1. Cookie banner : masquage défensif (idempotent)
+        try:
+            await self._page.evaluate(
+                """() => {
+                    const sels = [
+                        'app-cookie-hint',
+                        '[class*="cookie-hint"]',
+                        '[class*="cookie-banner"]',
+                        '[class*="cookie-consent"]',
+                    ];
+                    sels.forEach(s => {
+                        document.querySelectorAll(s).forEach(el => {
+                            el.style.display = 'none';
+                            el.style.pointerEvents = 'none';
+                        });
+                    });
+                }"""
+            )
+        except Exception as e:
+            logger.debug(f"  ⚠️ dismiss cookie banner: {e}")
+
+        # 2. Loading spinner : attendre la disparition (max 10s)
+        try:
+            spinner = self._page.locator('app-loading-spinner').first
+            await spinner.wait_for(state='hidden', timeout=10000)
+        except Exception:
+            # Pas de spinner visible (ou déjà parti) = OK, on continue
+            pass
+
+    async def _click_robust(self, locator):
+        """
+        Clique un élément avec fallback force=True si un overlay intercepte.
+
+        Filet de sécurité complémentaire à _dismiss_overlays() : si malgré le
+        masquage du cookie banner un overlay ré-apparaît pile au moment du
+        click (race condition Angular re-render), le click normal lève
+        "subtree intercepts pointer events". On retombe alors sur force=True
+        qui bypass le check d'actionabilité et envoie le click directement à
+        l'élément cible.
+        """
+        try:
+            await locator.click(timeout=10000)
+        except Exception as e:
+            logger.warning(
+                f"  ⚠️ Click normal échoué ({type(e).__name__}), "
+                f"retry avec force=True"
+            )
+            await locator.click(force=True, timeout=5000)
+
     async def scan_market(self, currency: str = "EUR", max_pages: int = 20) -> List[ScannedBond]:
         """
         Scansiona il mercato obbligazionario di Deutsche Börse.
@@ -223,6 +292,10 @@ class MarketScraper:
             await self._page.wait_for_load_state("networkidle")
             await self._page.wait_for_timeout(2000)
 
+            # Ferme le cookie banner Deutsche Börse + attend la fin du spinner
+            # (sinon les clicks de pagination sont interceptés — bug 28/05 18:59)
+            await self._dismiss_overlays()
+
             # Analizza le risposte API per la lista bond
             bonds_from_api = self._parse_bond_list_responses(api_responses, currency)
             if bonds_from_api:
@@ -234,7 +307,8 @@ class MarketScraper:
                 btn_100 = self._page.locator('button.page-bar-type-button:has-text("100")').first
                 if await btn_100.is_visible(timeout=3000):
                     api_responses.clear()
-                    await btn_100.click()
+                    await self._dismiss_overlays()  # re-dismiss avant le click
+                    await self._click_robust(btn_100)
                     await self._page.wait_for_load_state("networkidle")
                     await self._page.wait_for_timeout(2000)
 
@@ -289,7 +363,10 @@ class MarketScraper:
                 # Clicca Next
                 page_num += 1
                 logger.info(f"  📄 Pagina {page_num}...")
-                await next_btn.click()
+                # Ferme overlays avant le click (cookie banner + spinner peuvent
+                # ré-intercepter à chaque changement de page — bug 28/05 18:59)
+                await self._dismiss_overlays()
+                await self._click_robust(next_btn)
                 await self._page.wait_for_load_state("networkidle")
                 await self._page.wait_for_timeout(1500)
 
