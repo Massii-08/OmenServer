@@ -23,6 +23,7 @@ from typing import List, Optional
 from scanner.models import ScannedBond
 from scanner.market_scraper import MarketScraper
 from scanner.scoring import top_n_per_currency
+from scanner.found_store import FoundStore
 from filter.criteria import ScanCriteria
 from calculator.yield_calculator import (
     calculate_yield_at_current_price,
@@ -49,6 +50,7 @@ class BondScanner:
         delay: float = 1.0,
         price_threshold: float = 101.0,
         target_count: int = 20,
+        dedup: bool = True,
     ):
         """
         Args:
@@ -68,6 +70,11 @@ class BondScanner:
         self.delay = delay
         self.price_threshold = price_threshold
         self.target_count = target_count
+        # Dédup persistante inter-scans (2026-05-28) : un bond déjà livré dans
+        # un Excel précédent n'est jamais re-recherché. Économise aussi la
+        # quota Brave. Set dedup=False pour désactiver (ex. test).
+        self.dedup = dedup
+        self.found_store = FoundStore() if dedup else None
         # Task 18 (2026-05-28) : timeout hard di 45 min per evitare scansioni
         # che si bloccano indefinitamente (Brave rate-limit a cascata, Deutsche
         # Börse lento, ecc.). Allo scadere si interrompe la raccolta e si
@@ -174,11 +181,20 @@ class BondScanner:
 
                     logger.info(f"\n📊 {currency}: {len(raw_bonds)} bond trovati sul mercato")
 
-                    # 2. Pre-filtro rapido (prezzo + scadenza)
+                    # 2. Pre-filtro rapido (dédup + prezzo + scadenza)
                     pre_filtered = []
+                    skipped_known = 0
                     for bond in raw_bonds:
                         if self._stopped:
                             break
+
+                        # Dédup persistante : skip les bonds déjà livrés dans
+                        # un Excel précédent (le plus tôt = max d'économie,
+                        # avant enrich ET avant Brave).
+                        if self.found_store and self.found_store.contains(bond.isin):
+                            skipped_known += 1
+                            currency_stats['discarded'] += 1
+                            continue
 
                         # Skip se mancano dati essenziali
                         if bond.current_price is None:
@@ -198,6 +214,12 @@ class BondScanner:
                                 continue
 
                         pre_filtered.append(bond)
+
+                    if skipped_known:
+                        logger.info(
+                            f"  ♻️  Dédup : {skipped_known} bond déjà livrés "
+                            f"dans un scan précédent → ignorés"
+                        )
 
                     logger.info(f"  📋 Pre-filtro: {len(pre_filtered)} candidati "
                                 f"(scartati {currency_stats['discarded']} per prezzo/scadenza/dati mancanti)")
@@ -353,6 +375,18 @@ class BondScanner:
                 1 for b in all_filtered_bonds if b.calculated_yield is not None
             )
             self.stats['output_file'] = output_path
+
+            # Dédup persistante : enregistre les bonds LIVRÉS (top-N final) pour
+            # qu'ils ne réapparaissent jamais dans un scan futur. On enregistre
+            # APRÈS génération de l'Excel pour ne marquer que ce qui a vraiment
+            # été délivré à l'utilisateur.
+            if self.found_store:
+                added = self.found_store.add_many(all_filtered_bonds)
+                self.stats['newly_recorded'] = added
+                logger.info(
+                    f"  ♻️  Dédup : {added} nouveaux bond enregistrés "
+                    f"(total historique : {self.found_store.count()})"
+                )
         else:
             logger.warning("⚠️ Nessuna obbligazione trovata con i criteri specificati!")
             self.stats['output_file'] = None

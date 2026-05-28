@@ -84,6 +84,12 @@ Esempi:
     parser.add_argument('--delay', type=float, default=1.0,
                         help='Pausa tra richieste in secondi (default: 1)')
 
+    # Dédup persistante inter-scans
+    parser.add_argument('--no-dedup', action='store_true',
+                        help='Désactive la dédup : re-cherche aussi les bonds déjà livrés')
+    parser.add_argument('--reset-found', action='store_true',
+                        help='Vide l\'historique des bonds déjà livrés avant de scanner')
+
     return parser.parse_args()
 
 
@@ -119,6 +125,12 @@ async def main():
             f"Opportunita_Bond_{today}.xlsx",
         )
 
+    # Reset dédup si demandé (avant le scan)
+    if args.reset_found:
+        from scanner.found_store import FoundStore
+        n = FoundStore().reset()
+        print(f"♻️  Historique dédup vidé : {n} bond effacés.")
+
     # Lancia la scansione
     scanner = BondScanner(
         criteria=criteria,
@@ -126,6 +138,7 @@ async def main():
         delay=args.delay,
         price_threshold=args.price_threshold,
         target_count=args.target_count,
+        dedup=not args.no_dedup,
     )
 
     try:

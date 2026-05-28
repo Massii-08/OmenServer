@@ -659,3 +659,49 @@ async def delete_scanner_rating_key(
         f"(impacte aussi Yield Bot)"
     )
     return {"message": "Clé supprimée (impact: les 2 bots ne pourront plus récupérer le rating Fitch)"}
+
+
+# ================================================================
+#  DEDUP — Historique des bonds déjà livrés (2026-05-28)
+# ================================================================
+#
+# La dédup persistante du Bond Scanner stocke les ISINs déjà livrés dans
+# ~/.cache/bond-scanner-found-isins.json (écrit par le subprocess bot).
+# Le backend lit/supprime ce fichier directement (même user → même path)
+# sans importer le package bond-scanner.
+
+FOUND_STORE_PATH = Path.home() / ".cache" / "bond-scanner-found-isins.json"
+
+
+@router.get("/found-count")
+async def get_found_count(
+    current_user: User = Depends(require_role("admin", "money")),
+):
+    """Nombre de bonds dans l'historique dédup (déjà livrés)."""
+    if not FOUND_STORE_PATH.is_file():
+        return {"count": 0}
+    try:
+        data = json.loads(FOUND_STORE_PATH.read_text())
+        return {"count": len(data) if isinstance(data, dict) else 0}
+    except Exception:
+        return {"count": 0}
+
+
+@router.post("/reset-found")
+async def reset_found(
+    current_user: User = Depends(require_role("admin")),
+):
+    """Vide l'historique dédup : les bonds déjà livrés redeviennent cherchables."""
+    if not FOUND_STORE_PATH.is_file():
+        return {"message": "Aucun historique à vider", "cleared": 0}
+    try:
+        data = json.loads(FOUND_STORE_PATH.read_text())
+        n = len(data) if isinstance(data, dict) else 0
+    except Exception:
+        n = 0
+    try:
+        FOUND_STORE_PATH.unlink()
+    except OSError as e:
+        raise HTTPException(500, f"Impossible de vider l'historique : {e!r}")
+    logger.info(f"Historique dédup vidé par {current_user.username} ({n} bond)")
+    return {"message": f"{n} bond effacés de l'historique — ils redeviennent cherchables", "cleared": n}
