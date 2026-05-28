@@ -250,6 +250,16 @@ class BraveFitchProvider(RatingProvider):
         self.api_key = api_key or os.environ.get('BRAVE_SEARCH_API_KEY')
         self.cache = cache if cache is not None else _Cache()
         self.timeout = http_timeout_s
+        # Task post-15:30 (2026-05-28) : détection quota Brave épuisée.
+        # Brave renvoie 429 pour 2 cas distincts :
+        #   - throttling per-seconde (1 req/s sur free tier) → transient
+        #   - quota mensuelle dépassée (1000 req/mois free)   → terminal
+        # On détecte le terminal soit par le body (mots-clés 'quota'/'monthly'/
+        # 'exhausted'), soit par 3 x 429 consécutifs (fallback). Une fois le
+        # flag posé, get_rating() court-circuite — pas d'appel HTTP — pour
+        # laisser le scan se finir vite et générer l'Excel avec un banner.
+        self.quota_exhausted: bool = False
+        self._consecutive_429: int = 0
 
     # ---- helpers ----------------------------------------------------
 
@@ -317,6 +327,10 @@ class BraveFitchProvider(RatingProvider):
             logger.debug("    ⚠️  BRAVE_SEARCH_API_KEY assente, skip rating")
             return None
 
+        # 2b. Quota déjà détectée épuisée → court-circuite, pas d'appel HTTP
+        if self.quota_exhausted:
+            return None
+
         # 3. HTTP call
         issuer_short = self._strip_issuer(bond_name)
         if not issuer_short:
@@ -347,10 +361,32 @@ class BraveFitchProvider(RatingProvider):
             return None
 
         if r.status_code == 429:
-            logger.warning(
-                "    ⚠️  Brave rate-limited (429). Free tier = 1 req/sec."
-            )
+            # 429 a deux causes possibles : throttling per-seconde (transient)
+            # OU quota mensuelle dépassée (terminal). On détecte le terminal :
+            body_lower = (r.text or '').lower()
+            quota_keywords = ('quota', 'monthly', 'exhausted', 'limit exceeded',
+                              'plan limit', 'subscription')
+            is_quota_terminal = any(kw in body_lower for kw in quota_keywords)
+
+            self._consecutive_429 += 1
+            if is_quota_terminal or self._consecutive_429 >= 3:
+                self.quota_exhausted = True
+                logger.error(
+                    f"    🚫 BRAVE QUOTA ÉPUISÉE détectée "
+                    f"(consecutive 429={self._consecutive_429}, "
+                    f"body match={is_quota_terminal}). "
+                    f"Interrompo gli appels Brave per il resto dello scan."
+                )
+            else:
+                logger.warning(
+                    f"    ⚠️  Brave 429 transient ({self._consecutive_429}/3). "
+                    f"Body: {r.text[:120]!r}"
+                )
             return None
+
+        # Reset le compteur 429 sur tout autre statut (recovery propre)
+        self._consecutive_429 = 0
+
         if r.status_code != 200:
             logger.debug(
                 f"    ⚠️  Brave status={r.status_code} body={r.text[:200]}"

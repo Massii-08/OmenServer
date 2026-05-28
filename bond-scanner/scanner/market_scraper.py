@@ -395,7 +395,14 @@ class MarketScraper:
             ScannedBond con bond.ratings, bond.rating, bond.rating_display
             aggiornati. Se nessun rating Fitch → bond.rating_display = None.
         """
-        provider = BraveFitchProvider()
+        # Lazy init du provider, ré-utilisé entre les bonds — important pour
+        # que self.quota_exhausted persiste entre les appels (sinon on
+        # re-créerait un provider sans état à chaque bond et le flag serait
+        # toujours False).
+        if not hasattr(self, '_brave_provider') or self._brave_provider is None:
+            self._brave_provider = BraveFitchProvider()
+
+        provider = self._brave_provider
         try:
             rating_info = await provider.get_rating(
                 bond.isin, bond_name=bond.name,
@@ -418,6 +425,19 @@ class MarketScraper:
             )
 
         return bond
+
+    @property
+    def quota_exhausted(self) -> bool:
+        """Vero se la quota Brave Search è stata rilevata come esaurita.
+
+        Bond Scanner check questo flag dopo ogni fetch_ratings per
+        interrompere lo scan in modo gracioso quando il piano free
+        (1000 req/mese) è arrivato a 0.
+        """
+        return bool(
+            getattr(self, '_brave_provider', None)
+            and self._brave_provider.quota_exhausted
+        )
 
     # ================================================================
     #  PARSING DELLE RISPOSTE API

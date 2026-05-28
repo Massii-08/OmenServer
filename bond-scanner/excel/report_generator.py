@@ -131,6 +131,7 @@ class ReportGenerator:
         output_path: str,
         criteria_info: str = "",
         timed_out: bool = False,
+        quota_exhausted: bool = False,
     ) -> str:
         """
         Genera il file Excel con le obbligazioni trovate.
@@ -142,10 +143,24 @@ class ReportGenerator:
             timed_out: Se True, prepende un banner ai criteri segnalando
                        che la scansione è stata interrotta dal timeout
                        45 min (Task 18) e che i risultati sono parziali.
+            quota_exhausted: Se True, prepende un banner sull'esaurimento
+                       della quota Brave Search API (1000 req/mese free
+                       dépassées). Lo scan è stato interrotto perché
+                       impossibile recuperare altri rating Fitch.
 
         Returns:
             Percorso del file generato
         """
+        if quota_exhausted:
+            # Banner prioritario : se la quota è esaurita c'est probablement
+            # la cause principale de l'interruption, à signaler en premier.
+            criteria_info = (
+                "🚫 BRAVE SEARCH API QUOTA ESAURITA — IMPOSSIBILE RECUPERARE "
+                "ALTRI RATING FITCH. RISULTATI PARZIALI (solo i bond rated "
+                "prima dell'esaurimento + quelli già in cache). Pose une "
+                "nouvelle clé via le panel admin OR upgrade le plan Brave. "
+                + criteria_info
+            )
         if timed_out:
             criteria_info = (
                 "⏱ SCANSIONE INTERROTTA A 45 MIN — RISULTATI PARZIALI. "

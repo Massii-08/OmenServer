@@ -81,6 +81,7 @@ class BondScanner:
             'total_errors': 0,
             'by_currency': {},
             'timed_out': False,        # True se _scan_timed_out() ha sparato
+            'quota_exhausted': False,  # True se Brave Search ha sparato 429 quota
             'elapsed_seconds': 0,      # tempo totale della fase scan
         }
         self._stopped = False
@@ -258,6 +259,20 @@ class BondScanner:
                             # Ora paga la chiamata Brave per ottenere il rating Fitch.
                             await scraper.fetch_ratings(bond)
 
+                            # Task post-15:30 (2026-05-28) — Brave quota check.
+                            # Se Brave ha sparato un 429 "quota exhausted"
+                            # (1000 req/mese free dépassées), interrompi tutto
+                            # subito e genera l'Excel con i bond raccolti fin
+                            # qui + banner d'avvertimento.
+                            if scraper.quota_exhausted:
+                                logger.error(
+                                    "\n🚫 BRAVE QUOTA ÉPUISÉE — interrompo lo "
+                                    "scan, genero l'Excel parziale."
+                                )
+                                self._stopped = True
+                                self.stats['quota_exhausted'] = True
+                                break
+
                             # Filtro completo (incl. rating, politica fitch_only)
                             matches, reason = self.criteria.matches(bond)
                             if matches:
@@ -331,6 +346,7 @@ class BondScanner:
                 output_path=output_path,
                 criteria_info=str(self.criteria),
                 timed_out=self.stats.get('timed_out', False),
+                quota_exhausted=self.stats.get('quota_exhausted', False),
             )
 
             self.stats['total_with_yield'] = sum(
