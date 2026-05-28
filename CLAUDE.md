@@ -196,8 +196,8 @@ Le frontend est une **Single Page Application** sans framework :
 ### Chrome (depuis PR26)
 - **Top bar horizontale** (pas de sidebar verticale) — composant `.topbar` sticky en haut
 - `.brand` à gauche (logo carré accent vert "O" + texte mono "OMENSERVER")
-- `.nav-tabs` au centre (10 tabs : Dashboard / Serveurs / Bots / Fichiers / Média / Web / Réseau / Utilisateurs / Paramètres)
-- `.topbar-right` à droite : `.lang-switcher` (pill segmenté FR/EN/IT) + `.accent-switcher-mini` (4 dots couleurs) + `.user-pill` (avatar accent-dim + nom + rôle)
+- `.nav-tabs` au centre (8 tabs depuis PR37/PR38 : Dashboard / Serveurs / Bots / Fichiers / Média / Web / Réseau / Diagnostic) — `flex:1; min-width:0; overflow-x:auto` avec scrollbar custom 4px
+- `.topbar-right` à droite : `.lang-switcher` (pill segmenté FR/EN/IT) + `.accent-switcher-mini` (4 dots couleurs) + `.user-menu-wrap` contenant `.user-pill` (avatar+nom+rôle+caret ▾, button cliquable `aria-haspopup="menu"`) qui ouvre le dropdown `.user-menu` (Utilisateurs admin-only / Paramètres / *sep* / Se déconnecter)
 - Tab active visible via `::before` dot accent vert
 - Badge `.tab-badge` sur nav-tab quand jobs background tournent (PR32 — `App._pollBgJobs`)
 
@@ -397,11 +397,14 @@ sudo journalctl -u omenserver -f
 # Auto-deploy (cron, toutes les minutes)
 cat ~/deploy.log
 
-# SSH vers l'Omen (IP peut changer via DHCP)
-# 🔍 Pour trouver l'IP actuelle de l'Omen : ouvrir https://omenserver.org
-#    → module Réseau → "IP locale" affichée. C'est l'IP utilisée par l'Omen.
-#    Plus simple que d'aller checker l'interface du routeur.
-ssh massii08@192.168.68.72   # ou autre IP selon le bail DHCP courant
+# SSH vers l'Omen
+# ⚠️ L'IP locale CHANGE via DHCP. Ne JAMAIS copier une IP d'un ancien
+#    transcript / exemple — elle sera stale. Procédure obligatoire avant
+#    chaque SSH :
+#       1. Ouvrir https://omenserver.org (tunnel Cloudflare toujours up)
+#       2. Module Réseau → carte "IP locale"
+#       3. SSH avec CETTE IP
+ssh massii08@<IP_LOCALE_DU_MOMENT>
 
 # Accès distant via Cloudflare Tunnel
 # Automatique via systemd : cloudflared.service
@@ -462,6 +465,7 @@ sudo systemctl status cloudflared
 25. **Bloc de commandes "exemples utiles" copy-pasté en bloc** : PowerShell exécute en séquence si l'utilisateur colle plusieurs commandes ensemble. Si y'a un `Unregister-ScheduledTask` ou `rm` dans le lot, la dernière commande exécute et détruit ce que les précédentes ont créé. **Toujours documenter les commandes individuelles dans des blocs SÉPARÉS** avec une note "à utiliser une par une".
 26. **NSSM (`nssm.cc`) souvent down 503** : mainteneur unique. Pour Windows Service alternative : `choco install nssm` / `scoop install nssm`, OU mieux **éviter NSSM totalement** via Tâche planifiée Windows (recommandé maintenant — voir piège #20 pour la version `pythonw.exe`).
 27. **Multi-machine WS path** : le sysdoc utilise `/ws/sysdoc/agent/{username}/{machine}` (pas juste `{username}`). `machine` = `socket.gethostname()` sanitized par défaut, override possible via `OMEN_AGENT_MACHINE` env var. Le ConnectionManager garde un `Dict[user, Dict[machine, WS]]`. Si 2 PCs s'installent avec le MÊME machine_id, ils se kickent (strict 1:1 par machine). Solution : machine_id unique par PC (le hostname suffit usually).
+28. **Backtick PowerShell `` ` `` non échappé dans template literal JS** : quand on embarque du PowerShell dans un `data-copy="..."` à l'intérieur d'un `return \`...\`` JS, **TOUT** `` ` `` dans le HTML embarqué (utilisé en PowerShell comme escape char, ex: `` `$false ``, `` `"...`" ``) ferme prématurément le template literal JS → SyntaxError au parse → module entier non défini → onglet muet (clic = ReferenceError silencieuse en console, DOM figé sur la vue précédente). Vu en commit `871c085` ligne 476 de `sysdoc_module.js` : `` -Confirm:`$false `` cassait le parse → `SysDocModule` undefined → onglet Diagnostic non fonctionnel. **Fix** : soit échapper avec `` \` `` (produit un `` ` `` littéral en sortie), soit retirer le `` ` `` si inutile en PowerShell (cas de `$false`/`$true` qui sont des littéraux natifs et n'ont PAS besoin d'échappement). **Pourquoi pas détecté** : la prod auto-deploy live sur main, et la vue par défaut au boot est `#hub`, pas `#sysdoc` — l'erreur reste silencieuse jusqu'au premier clic sur l'onglet impacté. **Réflexe** : après tout commit qui touche un panel install / code snippets PowerShell embarqués → `node -e "new Function(require('fs').readFileSync('frontend/js/<file>.js','utf8'))"` AVANT de push pour valider le parse.
 
 ---
 
@@ -532,7 +536,8 @@ thèmes (midnight→blue, crimson→red, emerald/default→green) au boot via `A
 | `.sv-layout` + `.sv-sidebar` + `.sv-tab` (+ `.active/.share/.danger`) | Server view sidebar |
 | `.topbar` + `.brand .logo` + `.nav-tabs` + `.nav-tab` | Top bar navigation (PR26) |
 | `.lang-switcher` + `.lang` (`.active`) | Pill segmenté FR/EN/IT (PR26) |
-| `.user-pill` + `.user-avatar` + `.user-meta` | Avatar + nom + rôle (topbar right) |
+| `.user-pill` + `.user-avatar` + `.user-meta` + `.user-caret` | Avatar + nom + rôle (topbar right) — cliquable depuis PR37, ouvre `.user-menu` |
+| `.user-menu-wrap` + `.user-menu` + `.user-menu-item` (+ `.danger`) + `.user-menu-sep` | Dropdown sous le profil avec actions account-scope (Utilisateurs admin-only, Paramètres, Logout) — PR37/PR38 |
 | `.tab-badge` | Badge count sur nav-tab (PR32 — background jobs) |
 | `.b-ticker` | Mono text ticker chip (replace emoji avatars, PR27) |
 | `.game-ico` | Idem pour game server cards (`MC`/`ARK`/`CS2`, PR24) |
@@ -569,6 +574,10 @@ PR 7 a appliqué des **overrides `!important`** sur les classes legacy (`.sideba
 - PR35-bis : oubli cache-bust JS individuels — bumper seulement `style.css?v=` + `sw CACHE_NAME` ne propage pas les fixes JS car le disk cache browser sert encore `lang.js?v=N` (URL inchangée). Toujours bumper le `?v=` de chaque JS modifié dans `index.html`.
 - PR36 : 2 nouveaux symptômes post-PR35 (Massii spotted) — boutons serveur "Arrêter/Redémarrer/Partager" superposés (`.btn-icon` force 38×38px, texte déborde) + boutons Clé API Agents vides (👁/📋 strippés + code `cond ? '' : ''` smell). Fix : retirer `.btn-icon` quand on met du texte + labels i18n sur toggle/copy + placeholder masqué = 40 bullets `•`.
 
+**Évolution session 28 mai (topbar → dropdown profil)** :
+- PR37 : tab "Paramètres" inaccessible (caché derrière `.topbar-right` par overflow-x: auto). Solution > déplacer Paramètres + Déconnexion dans un dropdown sous le `.user-pill` (avatar+nom+rôle+caret ▾). Nouveau composant `.user-menu` : position absolute top:100%+8px right:0, animation `user-menu-in` 140ms (fade+translate), shadow `rgba(0,0,0,0.35)`. JS : `App._toggleUserMenu()` + click-outside (capture phase, armé/désarmé à l'ouverture) + Esc handler + restore focus. `Lang.set()` appelle maintenant `App.updateUserInfo()` pour rafraîchir les labels du dropdown au switch FR/EN/IT (les éléments statiques de la topbar n'étaient pas re-traduits avant). Aussi : `min-width: 0` sur `.nav-tabs` (flex children scrollables nécessitent ça pour shrink correctement).
+- PR38 : extension de PR37 — "Utilisateurs" (auparavant tab admin-only `display:none`) rejoint le même dropdown au-dessus de Paramètres. Visibility via `item.hidden = !user.is_admin` (toggle propre, pas `style.display` inline). Ordre menu : **admin > self > danger** (séparateur hairline avant le danger). Pattern à généraliser : *toute action account-scope future* (changer mdp, switch user, sessions actives, etc.) doit atterrir dans ce même dropdown.
+
 **Pour migrer un composant non-encore-refactoré** :
 1. Identifie son HTML render dans `frontend/js/*_module.js` ou `app.js`
 2. Remplace ses classes legacy par les classes Bento ci-dessus
@@ -593,6 +602,9 @@ PR 7 a appliqué des **overrides `!important`** sur les classes legacy (`.sideba
 
 | Date | Changement |
 |------|-----------|
+| 2026-05-28 | ✨ PR 38 — Utilisateurs (admin-only) rejoint le dropdown profil au-dessus de Paramètres ; tab nav supprimé |
+| 2026-05-28 | ✨ PR 37 — Topbar dropdown profil : Paramètres + Déconnexion sortent de la nav-tabs et vivent sous le `.user-pill` (caret ▾, aria-haspopup, click-outside, Esc, animation 140ms) |
+| 2026-05-28 | 🏦 Activation rating fetcher Yield Bot — Brave Search API ciblée `site:fitchratings.com` (Fitch-only strict). 5/7 ratings "Da papà" extraits (Dominion ×2, Broadcom, IBM, AstraZeneca) ; Hilton/Stryker → cellule intacte (Fitch ne couvre pas). Coût $0/mois (free credits 1000 req). Clé stockée Keychain + `.env` gitignored. |
 | 2026-05-27 | 🩹 PR 36 — Fix btn-icon trap (boutons serveur superposés) + Clé API Agents (👁/📋 strippés, labels i18n + 40 bullets placeholder) |
 | 2026-05-27 | 🧹 PR 35-bis — Bump `?v=` JS individuels (lang/game_server/sv_files/server_view/app) oublié dans PR35 |
 | 2026-05-27 | 🩹 PR 35 — Fix 4 boutons vides post-PR34 : `sharing.share_btn` raw, boutons search Mods/Modpack, loupe modale Partage, actions fichiers (renommer/supprimer) |
