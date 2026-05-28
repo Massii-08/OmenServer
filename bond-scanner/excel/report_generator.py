@@ -166,11 +166,19 @@ class ReportGenerator:
         self._remove_default_sheet()
 
         for sheet_name, currency in SHEET_CURRENCY_MAP.items():
-            sheet_bonds = sorted(
-                groups.get(currency, []),
-                key=lambda b: b.calculated_yield or 0,
-                reverse=True,
-            )
+            # Task 15 (2026-05-28) : i bond arrivano già ordinati per
+            # composite_score desc (calcolato da scanner.scoring). Se il
+            # caller non ha pre-ordinato (legacy), fallback su yield desc.
+            sheet_bonds = groups.get(currency, [])
+            if sheet_bonds and any(b.composite_score for b in sheet_bonds):
+                # Già scored → preserva l'ordine di top_n_per_currency
+                pass
+            else:
+                sheet_bonds = sorted(
+                    sheet_bonds,
+                    key=lambda b: b.calculated_yield or 0,
+                    reverse=True,
+                )
             self._create_standard_sheet(sheet_name, currency, sheet_bonds, criteria_info)
 
         # Salva

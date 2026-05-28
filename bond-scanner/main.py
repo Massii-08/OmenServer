@@ -62,12 +62,15 @@ Esempi:
                         help='Yield minimo come decimale (default: 0.03 = 3%%)')
     parser.add_argument('--max-maturity', type=int, default=9,
                         help='Scadenza massima in anni (default: 9)')
-    parser.add_argument('--min-rating', type=str, default='BBB-',
-                        help='Rating minimo (default: BBB-)')
+    parser.add_argument('--min-rating', type=str, default='BBB',
+                        help='Rating Fitch minimo (default: BBB). Slider UI: BBB- → AAA')
     parser.add_argument('--currencies', type=str, default='EUR,USD,GBP',
                         help='Valute da cercare (default: EUR,USD,GBP)')
-    parser.add_argument('--max-results', type=int, default=0,
-                        help='Numero massimo di bond da trovare (default: 0 = illimitato)')
+    parser.add_argument('--target-count', type=int, default=100,
+                        help='Target di bond nell\'Excel finale (default: 100). '
+                             'Split equilibrato sulle valute selezionate '
+                             '(1 valuta=100, 2=50/50, 3=34/33/33). '
+                             'Scoring Defensive 20%% prezzo / 40%% yield / 40%% rating.')
 
     # Opzioni di output
     parser.add_argument('--output', '-o', type=str, default=None,
@@ -122,7 +125,7 @@ async def main():
         headless=not args.show,
         delay=args.delay,
         price_threshold=args.price_threshold,
-        max_results=args.max_results,
+        target_count=args.target_count,
     )
 
     try:

@@ -22,6 +22,7 @@ from typing import List, Optional
 
 from scanner.models import ScannedBond
 from scanner.market_scraper import MarketScraper
+from scanner.scoring import top_n_per_currency
 from filter.criteria import ScanCriteria
 from calculator.yield_calculator import (
     calculate_yield_at_current_price,
@@ -47,7 +48,7 @@ class BondScanner:
         headless: bool = True,
         delay: float = 1.0,
         price_threshold: float = 101.0,
-        max_results: int = 0,
+        target_count: int = 100,
     ):
         """
         Args:
@@ -55,13 +56,18 @@ class BondScanner:
             headless: Se True, browser invisibile
             delay: Pausa tra le richieste (secondi)
             price_threshold: Soglia di prezzo per la colorazione rosso/nero
-            max_results: Numero massimo di bond da trovare (0 = illimitato)
+            target_count: Numero target di bond nell'Excel finale (Task 15,
+                          2026-05-28). Il pool completo viene comunque scansionato
+                          per avere abbastanza candidati da scorere e ordinare;
+                          alla fine si prendono i top-N per valuta secondo lo
+                          split equilibrato (1 valuta=100, 2=50/50, 3=34/33/33).
+                          0 = nessun cap (rende l'intero pool, sconsigliato).
         """
         self.criteria = criteria or ScanCriteria()
         self.headless = headless
         self.delay = delay
         self.price_threshold = price_threshold
-        self.max_results = max_results
+        self.target_count = target_count
         # Task 18 (2026-05-28) : timeout hard di 45 min per evitare scansioni
         # che si bloccano indefinitamente (Brave rate-limit a cascata, Deutsche
         # Börse lento, ecc.). Allo scadere si interrompe la raccolta e si
@@ -122,8 +128,8 @@ class BondScanner:
         logger.info("🚀 BOND SCANNER — Avvio scansione del mercato")
         logger.info("=" * 60)
         logger.info(f"📋 {self.criteria}")
-        if self.max_results > 0:
-            logger.info(f"🎯 Limite risultati: {self.max_results} bond")
+        if self.target_count > 0:
+            logger.info(f"🎯 Target Excel: {self.target_count} bond ({len(self.criteria.currencies)} valute)")
         logger.info(f"📂 Output: {output_path}")
         logger.info("")
 
@@ -150,7 +156,7 @@ class BondScanner:
                 try:
                     # 1. Scraping del mercato
                     # max_pages alto per garantire che ci siano abbastanza bond
-                    # da filtrare per raggiungere il target max_results
+                    # da filtrare per costituire un pool sufficiente al top-N
                     raw_bonds = await scraper.scan_market(
                         currency=currency,
                         max_pages=30,
@@ -214,11 +220,10 @@ class BondScanner:
                             self.stats['timed_out'] = True
                             break
 
-                        # Controlla se abbiamo raggiunto il limite
-                        if self.max_results > 0 and self.stats['total_filtered'] >= self.max_results:
-                            logger.info(f"\n  🎯 Limite di {self.max_results} bond raggiunto!")
-                            self._stopped = True
-                            break
+                        # Task 15 : niente più early-stop sul count durante lo scan.
+                        # Si raccoglie tutto il pool che passa i filtri, poi
+                        # top_n_per_currency() applica il cap dopo lo scoring.
+                        # Solo timeout + _stopped possono interrompere.
 
                         logger.info(f"\n  [{idx+1}/{len(pre_filtered)}] {bond.name[:50] if bond.name else bond.isin}")
 
@@ -265,8 +270,7 @@ class BondScanner:
                                 currency_stats['filtered'] += 1
                                 self.stats['total_filtered'] += 1  # ← Aggiornamento IMMEDIATO
                                 yield_str = f"{bond.calculated_yield:.4%}" if bond.calculated_yield else '?'
-                                logger.info(f"    ✅ ACCETTATO ({self.stats['total_filtered']}"
-                                            f"{'/' + str(self.max_results) if self.max_results > 0 else ''}) "
+                                logger.info(f"    ✅ ACCETTATO ({self.stats['total_filtered']} pool) "
                                             f"— Prezzo: {bond.current_price}, "
                                             f"Yield: {yield_str}, Rating: {bond.rating_display or '?'}")
                             else:
@@ -289,10 +293,36 @@ class BondScanner:
                     self.stats['total_errors'] += 1
                     self.stats['by_currency'][currency] = {'error': str(e)}
 
-        # 4. Genera il report Excel
+        # 4. Task 15 — scoring composito + top-N per valuta
+        # Si calcola il punteggio Defensive (20% prezzo / 40% yield / 40% rating)
+        # per ogni bond del pool. Poi si prende i top-K per valuta secondo la
+        # quota equilibrata di compute_quotas(target_count, n_valute).
+        if all_filtered_bonds and self.target_count > 0:
+            logger.info(f"\n{'='*60}")
+            logger.info(f"⚖️  Scoring composito + top-{self.target_count} per valuta...")
+            logger.info(f"{'='*60}")
+            top_by_currency = top_n_per_currency(
+                bonds=all_filtered_bonds,
+                target_count=self.target_count,
+                currencies=list(self.criteria.currencies),
+            )
+            # Flatten preservando l'ordine delle valute (= ordine di iterazione
+            # in self.criteria.currencies), e dentro ogni valuta l'ordine
+            # composite-score desc viene già garantito da top_n_per_currency.
+            ordered_bonds: List[ScannedBond] = []
+            for currency in self.criteria.currencies:
+                bonds_for_curr = top_by_currency.get(currency.upper(), [])
+                ordered_bonds.extend(bonds_for_curr)
+                logger.info(
+                    f"  {currency}: {len(bonds_for_curr)} bond selezionati "
+                    f"(pool iniziale {sum(1 for b in all_filtered_bonds if (b.currency or '').upper() == currency.upper())})"
+                )
+            all_filtered_bonds = ordered_bonds
+
+        # 5. Genera il report Excel
         if all_filtered_bonds:
             logger.info(f"\n{'='*60}")
-            logger.info(f"📝 Generazione report Excel...")
+            logger.info(f"📝 Generazione report Excel ({len(all_filtered_bonds)} bond)...")
             logger.info(f"{'='*60}")
 
             generator = ReportGenerator(price_threshold=self.price_threshold)
