@@ -369,7 +369,7 @@ class BraveFitchProvider(RatingProvider):
             is_quota_terminal = any(kw in body_lower for kw in quota_keywords)
 
             self._consecutive_429 += 1
-            if is_quota_terminal or self._consecutive_429 >= 3:
+            if is_quota_terminal or self._consecutive_429 >= 5:
                 self.quota_exhausted = True
                 logger.error(
                     f"    🚫 BRAVE QUOTA ÉPUISÉE détectée "
@@ -379,7 +379,7 @@ class BraveFitchProvider(RatingProvider):
                 )
             else:
                 logger.warning(
-                    f"    ⚠️  Brave 429 transient ({self._consecutive_429}/3). "
+                    f"    ⚠️  Brave 429 transient ({self._consecutive_429}/5). "
                     f"Body: {r.text[:120]!r}"
                 )
             return None

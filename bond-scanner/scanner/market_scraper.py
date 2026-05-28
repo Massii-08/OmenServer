@@ -643,10 +643,63 @@ class MarketScraper:
 
         bond = ScannedBond(isin=isin, currency=currency, fetch_date=date.today())
 
-        # Estrai dati ricorsivamente
+        # Estrai dati ricorsivamente (prix, coupon via keyData.coupon, etc.)
         self._extract_fields_recursive(bond, item, depth=0, max_depth=4)
 
+        # Optimisation 2026-05-28 : le listing fournit déjà le NOM complet
+        # ("ISSUER COUPON% YY/YY") dans name.originalValue. On en extrait
+        # l'émetteur (pour Brave) ET l'année de maturité (dernier /YY).
+        # Combiné au coupon (keyData.coupon) + prix (lastQuote), le bond
+        # devient is_complete() → l'enrich (5s/bond, navigation page détail)
+        # est SKIP pour la majorité → on peut ratisser tout le marché.
+        raw_name = item.get('name')
+        if isinstance(raw_name, dict):
+            raw_name = raw_name.get('originalValue')
+        if isinstance(raw_name, str) and raw_name.strip():
+            issuer, mat_year, coupon = self._parse_name_fields(raw_name)
+            if issuer and len(issuer) >= 3:
+                bond.name = issuer
+            if coupon is not None and bond.coupon_rate is None:
+                # Zéro-coupon ("0,000%") : keyData.coupon est null mais le
+                # nom le donne → permet is_complete() sur ces bonds aussi.
+                bond.coupon_rate = coupon
+            if mat_year and bond.maturity_date is None:
+                # Année seule depuis le nom → on prend fin d'année (approx
+                # suffisante pour le pré-filtre maturité + yield ; l'enrich
+                # du top-N final récupère la date exacte si besoin).
+                try:
+                    bond.maturity_date = date(mat_year, 12, 31)
+                except ValueError:
+                    pass
+
         return bond
+
+    # Regex pour parser le nom listing "ISSUER COUPON% YY/YY".
+    _NAME_COUPON_RE = re.compile(r'\s+\d+(?:[.,]\d+)?\s*%')
+    _NAME_COUPON_VAL_RE = re.compile(r'\s(\d+(?:[.,]\d+)?)\s*%')
+    _NAME_MATUR_RE = re.compile(r'(\d{2})/(\d{2})\s*$')
+
+    def _parse_name_fields(self, name: str):
+        """
+        Parse le nom listing Deutsche Börse "ISSUER COUPON% YY/YY".
+
+        Format ultra-consistant (vérifié sur échantillon réel) :
+          "Deutschland, Bundesrepublik 2% 24/26" → ("Deutschland, Bundesrepublik", 2026, 2.0)
+          "Mizuho Financial Group Inc. 3,21% 26/32" → ("Mizuho Financial Group Inc.", 2032, 3.21)
+          "Argentinien, Republik 0,000%" (sans date) → ("Argentinien, Republik", None, 0.0)
+
+        Returns (issuer, maturity_year, coupon).
+        - maturity_year : 2000+YY du dernier "YY/YY", None si absent.
+        - coupon : float du "X,XX%" (virgule décimale EU → point), None si absent.
+        """
+        if not name:
+            return None, None, None
+        issuer = self._NAME_COUPON_RE.split(name)[0].strip().rstrip(',').strip()
+        m = self._NAME_MATUR_RE.search(name)
+        mat_year = (2000 + int(m.group(2))) if m else None
+        c = self._NAME_COUPON_VAL_RE.search(name)
+        coupon = float(c.group(1).replace(',', '.')) if c else None
+        return (issuer or None), mat_year, coupon
 
     # Valute accettate (codici ISO 3166)
     _VALID_CURRENCIES = {'EUR', 'USD', 'GBP', 'CHF'}

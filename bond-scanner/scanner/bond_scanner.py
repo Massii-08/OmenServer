@@ -93,6 +93,17 @@ class BondScanner:
         }
         self._stopped = False
         self._scan_start: Optional[float] = None  # time.monotonic() al via di scan()
+        # Budget Brave (2026-05-28, demande Massii) : nb max d'appels Brave
+        # par scan. Élevé (1500) car la DÉDUP + le CACHE amortissent : un ISIN
+        # déjà analysé n'est pas re-payé (cache hit), un bond déjà livré est
+        # skippé (found_store). Donc chaque relance trouve du NOUVEAU sans
+        # re-burn la quota. La détection 429 quota-exhausted (rating_providers)
+        # reste le garde-fou si on dépasse les 1000/mois free.
+        self._rating_calls = 0
+        self.rating_budget = 1500
+        # Brave free tier = 1 req/sec → on espace les appels pour éviter les
+        # 429 transitoires (qui seraient pris à tort pour un quota épuisé).
+        self._brave_min_interval = 1.1
 
     def _scan_timed_out(self) -> bool:
         """True se abbiamo superato self.scan_timeout_seconds dall'avvio."""
@@ -287,7 +298,22 @@ class BondScanner:
                                 logger.info(f"    ⊘ Pre-scartato: {pre_reason}")
                                 continue
 
+                            # Budget Brave (2026-05-28) : cap dur sur le nombre
+                            # d'appels Brave par scan pour protéger la quota free
+                            # (1000/mois). Au-delà, on arrête de rater cette devise
+                            # et on classe ce qu'on a. Évite qu'un "tout le marché"
+                            # avec des centaines de survivants ne vide la quota.
+                            if self._rating_calls >= self.rating_budget:
+                                logger.warning(
+                                    f"  💸 Budget Brave atteint ({self.rating_budget} "
+                                    f"appels) → arrêt rating {currency}, classement."
+                                )
+                                break
+
                             # Ora paga la chiamata Brave per ottenere il rating Fitch.
+                            # Respect Brave 1 req/sec (évite les 429 transitoires).
+                            self._rating_calls += 1
+                            await asyncio.sleep(self._brave_min_interval)
                             await scraper.fetch_ratings(bond)
 
                             # Task post-15:30 (2026-05-28) — Brave quota check.
@@ -320,16 +346,12 @@ class BondScanner:
                                             f"— Prezzo: {bond.current_price}, "
                                             f"Yield: {yield_str}, Rating: {bond.rating_display or '?'}")
 
-                                # "Continue jusqu'au target" : early-stop quand
-                                # la devise a atteint son quota de bonds valides.
-                                quota = currency_quota.get(currency)
-                                if quota and currency_stats['filtered'] >= quota:
-                                    logger.info(
-                                        f"  🎯 {currency} : quota atteint "
-                                        f"({currency_stats['filtered']}/{quota}) "
-                                        f"→ passe à la devise suivante"
-                                    )
-                                    break
+                                # Best-N (2026-05-28, demande Massii) : PAS
+                                # d'early-stop. On rate tous les survivants
+                                # jusqu'au budget Brave (1500) / timeout / quota,
+                                # puis top_n_per_currency garde les MEILLEURS par
+                                # rating desc. La dédup + cache font que la
+                                # prochaine relance trouve du nouveau sans re-payer.
                             else:
                                 currency_stats['discarded'] += 1
                                 self.stats['total_discarded'] += 1  # ← Aggiornamento IMMEDIATO

@@ -27,3 +27,4 @@ agentdb.rvf
 agentdb.rvf.lock
 .ruflo/
 .claude/
+bond-scanner/bot/.rate_limit.json

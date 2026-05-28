@@ -189,8 +189,13 @@ def top_n_per_currency(
     result: Dict[str, List[ScannedBond]] = {}
     for currency, quota in zip(currencies, quotas):
         pool = by_currency.get(currency.upper(), [])
+        # Tri "best-N" (demande Massii 2026-05-28) : rating DÉCROISSANT en
+        # priorité (les meilleurs ratings en haut, ratings plus bas vers la
+        # fin), puis composite (yield/prix) comme départage à rating égal.
         pool_sorted = sorted(
-            pool, key=lambda b: b.composite_score, reverse=True,
+            pool,
+            key=lambda b: (_score_rating(b.rating), b.composite_score),
+            reverse=True,
         )
         taken = pool_sorted[:quota]
         if len(taken) < quota:

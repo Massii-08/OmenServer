@@ -92,7 +92,7 @@ class ScanRequest(BaseModel):
     min_rating: str = "BBB"          # Task 15 (2026-05-28) — default BBB
     currencies: str = "EUR,USD,GBP"
     price_threshold: float = 101.0
-    target_count: int = 20           # Range 1-20 (2026-05-28, marché bonds qualité petit)
+    target_count: int = 50           # Range 1-50 (2026-05-28, best-N triés rating desc)
 
 
 # ================================================================
