@@ -18,6 +18,7 @@ import asyncio
 import logging
 import time
 from datetime import date
+from pathlib import Path
 from typing import List, Optional
 
 from scanner.models import ScannedBond
@@ -344,6 +345,19 @@ class BondScanner:
                                 self.stats['quota_exhausted'] = True
                                 break
 
+                            # Garde-fou réserve (2026-05-28, demande Massii) :
+                            # si Brave indique ≤ 50 requêtes restantes ce mois,
+                            # on arrête le scan pour préserver la réserve.
+                            if scraper.brave_quota_low:
+                                logger.error(
+                                    f"\n🛑 RÉSERVE BRAVE BASSE "
+                                    f"({scraper.brave_remaining} ≤ 50 restantes) — "
+                                    f"arrêt préventif, génération Excel partiel."
+                                )
+                                self._stopped = True
+                                self.stats['quota_low'] = True
+                                break
+
                             # Filtro completo (incl. rating, politica fitch_only)
                             matches, reason = self.criteria.matches(bond)
                             if matches:
@@ -387,6 +401,10 @@ class BondScanner:
                     self.stats['total_errors'] += 1
                     self.stats['by_currency'][currency] = {'error': str(e)}
 
+            # Capture la réserve Brave restante AVANT fermeture du scraper
+            # (pour le garde-fou de pré-lancement côté backend).
+            self.stats['brave_remaining'] = scraper.brave_remaining
+
         # 4. Task 15 — scoring composito + top-N per valuta
         # Si calcola il punteggio Defensive (20% prezzo / 40% yield / 40% rating)
         # per ogni bond del pool. Poi si prende i top-K per valuta secondo la
@@ -426,6 +444,7 @@ class BondScanner:
                 criteria_info=str(self.criteria),
                 timed_out=self.stats.get('timed_out', False),
                 quota_exhausted=self.stats.get('quota_exhausted', False),
+                quota_low=self.stats.get('quota_low', False),
             )
 
             self.stats['total_with_yield'] = sum(
@@ -459,6 +478,21 @@ class BondScanner:
                 f"  🚫 {n_seen} bonds rejetés mémorisés (skip 60j ; "
                 f"total seen : {self.seen_store.count()})"
             )
+
+        # Garde-fou réserve Brave (2026-05-28) : persiste le restant mensuel
+        # pour que le backend bloque le lancement d'un scan s'il reste < 50.
+        rem = self.stats.get('brave_remaining')
+        if rem is not None:
+            try:
+                import json as _json
+                p = Path.home() / '.cache' / 'bond-scanner-brave-remaining.json'
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(_json.dumps({
+                    'remaining': rem,
+                    'date': date.today().isoformat(),
+                }))
+            except OSError as e:
+                logger.debug(f"persist brave-remaining: {e}")
 
         # Task 18 — registra il tempo totale della fase scan
         if self._scan_start is not None:

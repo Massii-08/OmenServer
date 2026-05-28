@@ -260,6 +260,38 @@ class BraveFitchProvider(RatingProvider):
         # laisser le scan se finir vite et générer l'Excel avec un banner.
         self.quota_exhausted: bool = False
         self._consecutive_429: int = 0
+        # Réserve de sécurité Brave (demande Massii 2026-05-28).
+        self.remaining_monthly: Optional[int] = None  # dernier X-RateLimit-Remaining mensuel
+        self.quota_low: bool = False                    # True si remaining ≤ buffer
+
+    BRAVE_SAFETY_BUFFER = 50  # on arrête quand il reste ≤ 50 requêtes mensuelles
+
+    def _read_remaining(self, response):
+        """
+        Lit X-RateLimit-Remaining de la réponse Brave et met à jour
+        self.remaining_monthly + self.quota_low.
+
+        Format Brave : "X-RateLimit-Remaining: 1, 1965" → [par_sec, par_mois].
+        On prend la DERNIÈRE valeur (mensuelle). Robuste si une seule valeur.
+        """
+        try:
+            raw = response.headers.get('X-RateLimit-Remaining') or \
+                  response.headers.get('x-ratelimit-remaining')
+            if not raw:
+                return
+            parts = [p.strip() for p in str(raw).split(',') if p.strip()]
+            if not parts:
+                return
+            monthly = int(float(parts[-1]))
+            self.remaining_monthly = monthly
+            if monthly <= self.BRAVE_SAFETY_BUFFER:
+                self.quota_low = True
+                logger.warning(
+                    f"    ⚠️  Réserve Brave basse : {monthly} requêtes restantes "
+                    f"(≤ {self.BRAVE_SAFETY_BUFFER}) → arrêt préventif."
+                )
+        except (ValueError, AttributeError) as e:
+            logger.debug(f"    parse X-RateLimit-Remaining: {e!r}")
 
     # ---- helpers ----------------------------------------------------
 
@@ -359,6 +391,13 @@ class BraveFitchProvider(RatingProvider):
         except Exception as e:
             logger.debug(f"    ⚠️  Brave fetch error: {e!r}")
             return None
+
+        # Réserve de sécurité (2026-05-28, demande Massii) : Brave renvoie
+        # X-RateLimit-Remaining ("<par_sec>, <par_mois>"). On lit le restant
+        # MENSUEL (dernière valeur). Si ≤ BRAVE_SAFETY_BUFFER (50), on lève un
+        # flag quota_low → le scan s'arrête proprement et les nouveaux scans
+        # sont bloqués (garde-fou backend). Protège une réserve de 50 requêtes.
+        self._read_remaining(r)
 
         if r.status_code == 429:
             # 429 a deux causes possibles : throttling per-seconde (transient)

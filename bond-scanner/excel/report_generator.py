@@ -132,6 +132,7 @@ class ReportGenerator:
         criteria_info: str = "",
         timed_out: bool = False,
         quota_exhausted: bool = False,
+        quota_low: bool = False,
     ) -> str:
         """
         Genera il file Excel con le obbligazioni trovate.
@@ -159,6 +160,14 @@ class ReportGenerator:
                 "ALTRI RATING FITCH. RISULTATI PARZIALI (solo i bond rated "
                 "prima dell'esaurimento + quelli già in cache). Pose une "
                 "nouvelle clé via le panel admin OR upgrade le plan Brave. "
+                + criteria_info
+            )
+        if quota_low:
+            # Réserve Brave ≤ 50 → arrêt préventif (garde-fou Massii).
+            criteria_info = (
+                "🛑 RÉSERVE BRAVE ≤ 50 REQUÊTES — SCAN ARRÊTÉ POUR PRÉSERVER "
+                "LA QUOTA. RÉSULTATS PARTIELS. Attends le reset mensuel ou "
+                "augmente le plan Brave pour scanner plus. "
                 + criteria_info
             )
         if timed_out:

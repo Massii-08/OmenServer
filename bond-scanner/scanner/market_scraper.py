@@ -568,6 +568,20 @@ class MarketScraper:
             and self._brave_provider.quota_exhausted
         )
 
+    @property
+    def brave_quota_low(self) -> bool:
+        """True si la réserve Brave est ≤ 50 requêtes (garde-fou Massii)."""
+        return bool(
+            getattr(self, '_brave_provider', None)
+            and self._brave_provider.quota_low
+        )
+
+    @property
+    def brave_remaining(self) -> Optional[int]:
+        """Dernier X-RateLimit-Remaining mensuel lu (None si inconnu)."""
+        p = getattr(self, '_brave_provider', None)
+        return p.remaining_monthly if p else None
+
     # ================================================================
     #  PARSING DELLE RISPOSTE API
     # ================================================================

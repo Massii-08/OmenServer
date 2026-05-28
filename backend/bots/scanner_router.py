@@ -99,12 +99,39 @@ class ScanRequest(BaseModel):
 #  RUN
 # ================================================================
 
+BRAVE_REMAINING_PATH = Path.home() / ".cache" / "bond-scanner-brave-remaining.json"
+BRAVE_SAFETY_BUFFER = 50
+
+
+def _brave_remaining() -> Optional[int]:
+    """Dernier X-RateLimit-Remaining mensuel persisté par le dernier scan."""
+    if not BRAVE_REMAINING_PATH.is_file():
+        return None
+    try:
+        d = json.loads(BRAVE_REMAINING_PATH.read_text())
+        v = d.get("remaining")
+        return int(v) if v is not None else None
+    except Exception:
+        return None
+
+
 @router.post("/run")
 async def run_scanner(
     data: ScanRequest,
     current_user: User = Depends(require_role("admin", "money")),
 ):
     """Lance une scansione del mercato."""
+    # Garde-fou réserve Brave (2026-05-28, demande Massii) : bloque le scan
+    # s'il reste ≤ 50 requêtes Brave ce mois (préserve une réserve de secours).
+    remaining = _brave_remaining()
+    if remaining is not None and remaining <= BRAVE_SAFETY_BUFFER:
+        raise HTTPException(
+            429,
+            f"Réserve Brave trop basse ({remaining} requêtes ≤ {BRAVE_SAFETY_BUFFER}). "
+            f"Scan bloqué pour préserver la réserve. Attends le reset mensuel "
+            f"ou augmente le plan Brave."
+        )
+
     # Générer un job_id
     job_id = str(uuid.uuid4())[:8]
 
