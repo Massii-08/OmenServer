@@ -274,15 +274,59 @@ class RatingFetcher:
                         Les S&P/Moody's matchés dans les snippets sont ignorés.
                         Utilisé par yield_bot pour ne pas polluer l'Excel avec
                         des ratings autres que Fitch sans validation manuelle.
-            brave_api_key: Clé Brave Search API. Si None, lookup auto via env
-                           var BRAVE_SEARCH_API_KEY. Si absente partout, Brave
-                           Search est skip (pas d'erreur).
+            brave_api_key: Clé Brave Search API. Lookup, dans l'ordre :
+                           1. arg explicite
+                           2. env var BRAVE_SEARCH_API_KEY
+                           3. fichier data/secrets/brave.key (gitignored,
+                              posable via le dashboard admin OmenServer)
+                           Si toutes None → Brave Search est skip (pas d'erreur,
+                           le rating_fetcher retournera silencieusement None
+                           pour chaque ISIN).
         """
         self.prefer_fitch = prefer_fitch
         self.use_camoufox = use_camoufox
         self.fitch_only = fitch_only
-        self.brave_api_key = brave_api_key or os.environ.get('BRAVE_SEARCH_API_KEY')
+        self.brave_api_key = (
+            brave_api_key
+            or os.environ.get('BRAVE_SEARCH_API_KEY')
+            or self._load_key_from_file()
+        )
         self.cache = _Cache()
+
+    @staticmethod
+    def _load_key_from_file() -> Optional[str]:
+        """
+        Fallback : cherche la clé Brave dans le fichier data/secrets/brave.key.
+        Ce fichier est créé/maintenu par le dashboard OmenServer (endpoint admin
+        POST /api/bots/yield/settings/rating-key) et chmod 600.
+
+        Cherche dans plusieurs paths candidats parce que le yield-bot tourne en
+        sub-process avec cwd=yield-bot/ depuis OmenServer, mais peut aussi être
+        lancé en standalone depuis ce dossier directement.
+        """
+        candidates = [
+            # Cas standard : yield-bot tourné depuis OmenServer (cwd=yield-bot/)
+            # → la clé est dans ../data/secrets/
+            Path.cwd().parent / 'data' / 'secrets' / 'brave.key',
+            # Cas standalone : si on lance le bot depuis ./yield-bot/ ou ailleurs
+            Path.cwd() / 'data' / 'secrets' / 'brave.key',
+            # Path absolu via la racine du repo OmenServer (3 parents au-dessus
+            # de rating_fetcher.py : scraper/ → yield-bot/ → "Projet serveur"/)
+            Path(__file__).resolve().parent.parent.parent
+                / 'data' / 'secrets' / 'brave.key',
+            # Backup hors repo (utile si quelqu'un veut isoler le secret)
+            Path.home() / '.omen' / 'brave.key',
+        ]
+        for p in candidates:
+            try:
+                if p.is_file():
+                    content = p.read_text(encoding='utf-8').strip()
+                    if content:
+                        logger.debug(f"  ✓ Brave key loaded from {p}")
+                        return content
+            except Exception as e:
+                logger.debug(f"  ⚠️  Can't read {p}: {e!r}")
+        return None
 
     def fetch_rating(
         self,

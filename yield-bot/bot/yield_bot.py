@@ -304,20 +304,15 @@ class YieldBot:
                 self.processor.update_price(sheet, row, market_data.current_price) if market_data.current_price else None
 
                 # Si Deutsche Börse n'a pas exposé de rating, tente le fetcher
-                # multi-source (Fitch via Scrapling/Camoufox → DDG news → SEC EDGAR).
-                #
-                # ⚠️ Désactivé PAR DÉFAUT (2026-05-28) : les sources publiques
-                # gratuites sont toutes bloquées au moment de l'investigation —
-                # Fitch+Cloudflare, Cbonds ratings paywallés, DDG renvoie sa
-                # homepage JS, Brave rate-limite, Google crash Camoufox,
-                # SEC EDGAR parsing à finaliser. Activable via
-                # YIELD_BOT_ENABLE_RATING_FETCHER=1 quand on a une source qui
-                # marche (intégration FinnHub free tier prévue, cf. daily 2026-05-28).
+                # Brave Search ciblé site:fitchratings.com (politique Fitch-only,
+                # cf. daily 2026-05-28). Le fetcher s'auto-désactive si aucune
+                # clé Brave n'est trouvée (env var BRAVE_SEARCH_API_KEY OU
+                # fichier data/secrets/brave.key posé via le dashboard admin).
+                # Pas de clé → retourne None → cellule Excel inchangée.
                 if (not market_data.rating or market_data.rating == '?') and market_data.name:
-                    if os.environ.get('YIELD_BOT_ENABLE_RATING_FETCHER'):
-                        rating_extra = self._fetch_rating_fallback(isin, market_data.name)
-                        if rating_extra:
-                            market_data.rating = rating_extra
+                    rating_extra = self._fetch_rating_fallback(isin, market_data.name)
+                    if rating_extra:
+                        market_data.rating = rating_extra
 
                 if market_data.rating and market_data.rating != '?':
                     self.processor.update_rating(sheet, row, market_data.rating)

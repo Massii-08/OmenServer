@@ -473,6 +473,8 @@ const BotsModule = {
  const usage = this._yieldState.usage || { today_runs: 0, max_runs: 5, remaining: 5 };
  const usageClass = usage.remaining === 0 ? 'danger' : usage.remaining <= 2 ? 'warning' : '';
  const hasFile = this._yieldState.file !== null;
+ const adminUser = Auth.getUser();
+ const isAdmin = adminUser && adminUser.is_admin;
 
  container.innerHTML = `
  <div class="yield-header"><div class="yield-header-left"><span class="b-ticker">YLD</span><div><h1 style="margin:0;font-size:22px;">${Lang.t('yield.title')}</h1><p style="color:var(--text-muted);font-size:13px;margin-top:2px;">${Lang.t('yield.subtitle')}</p></div></div><div style="display:flex;gap:8px;align-items:center;"><span class="yield-usage-badge ${usageClass}">
@@ -496,8 +498,132 @@ const BotsModule = {
  ${Lang.t('yield.threshold_above') || 'Rouge si prix'} &gt; <span id="yield-threshold-hint">${this._yieldState.priceThreshold}</span> · ${Lang.t('yield.threshold_below') || 'Noir si prix'} ≤ <span id="yield-threshold-hint2">${this._yieldState.priceThreshold}</span></div></div><!-- Upload info / summary --><div id="yield-upload-info" style="display:none;margin-top:12px;"></div><!-- Launch button --><button id="yield-launch-btn" class="yield-launch-btn" onclick="BotsModule._launchYieldBot()"
  ${!hasFile ? 'disabled' : ''}>
  ${Lang.t('yield.launch')}
- </button><div id="yield-error-msg" style="display:none;margin-top:12px;color:var(--danger);font-size:13px;text-align:center;"></div></div>
+ </button><div id="yield-error-msg" style="display:none;margin-top:12px;color:var(--danger);font-size:13px;text-align:center;"></div></div>${isAdmin ? `
+<!-- Rating fetcher configuration (admin only) -->
+<div class="card" style="margin-top:16px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+    <h3 style="margin:0;display:flex;align-items:center;gap:10px;">
+      <span class="b-ticker" style="background:var(--bg-elev-3);">RATING</span>
+      <span>${Lang.t('yield.config_title') || 'Rating fetcher'}</span>
+    </h3>
+    <span style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px;">${Lang.t('common.admin_only') || 'Admin only'}</span>
+  </div>
+  <div id="yield-rating-key-status" style="font-size:13px;color:var(--text-muted);font-family:var(--font-mono);padding:10px 14px;background:var(--bg-elev-3);border:1px solid var(--border);border-radius:8px;">
+    ${Lang.t('common.loading') || 'Chargement…'}
+  </div>
+  <div id="yield-rating-key-actions" style="margin-top:12px;display:flex;gap:8px;"></div>
+  <div id="yield-rating-key-form" style="margin-top:12px;display:none;">
+    <input type="password" id="yield-rating-key-input" placeholder="BSA..." autocomplete="off"
+           style="width:100%;padding:10px 12px;background:var(--bg-elev-3);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:var(--font-mono);font-size:13px;box-sizing:border-box;" />
+    <div style="margin-top:10px;display:flex;gap:8px;">
+      <button class="btn btn-primary btn-sm" onclick="BotsModule._saveRatingKey()">${Lang.t('common.save') || 'Enregistrer'}</button>
+      <button class="btn btn-secondary btn-sm" onclick="BotsModule._cancelRatingKeyEdit()">${Lang.t('common.cancel') || 'Annuler'}</button>
+    </div>
+    <div style="margin-top:8px;font-size:11px;color:var(--text-muted);">
+      ${Lang.t('yield.config_key_hint') || 'Récupère ta clé sur'} <a href="https://api-dashboard.search.brave.com/app/keys" target="_blank" rel="noopener" style="color:var(--info);">api-dashboard.search.brave.com/app/keys</a>
+    </div>
+  </div>
+  <div style="margin-top:12px;font-size:11px;color:var(--text-dim);line-height:1.5;">
+    ${Lang.t('yield.config_explain') || 'La clé est utilisée pour récupérer automatiquement le rating Fitch des bonds dont Deutsche Börse ne fournit pas la valeur. Stockée dans <code>data/secrets/brave.key</code> (jamais committée). Plan free Brave : 1000 requêtes/mois, largement suffisant.'}
+  </div>
+</div>
+` : ''}
  `;
+
+ // Load admin-only rating key status (after innerHTML is in the DOM)
+ if (isAdmin) {
+   setTimeout(() => this._loadRatingKeyStatus(), 50);
+ }
+ },
+
+ // ================================================================
+ //  Rating fetcher key management (admin only)
+ // ================================================================
+
+ async _loadRatingKeyStatus() {
+   const statusEl = document.getElementById('yield-rating-key-status');
+   const actionsEl = document.getElementById('yield-rating-key-actions');
+   if (!statusEl || !actionsEl) return;
+   try {
+     const resp = await Auth.apiCall('/api/bots/yield/settings/rating-key');
+     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+     const data = await resp.json();
+     if (data.has_key) {
+       const srcLabel = data.source === 'env_var'
+         ? (Lang.t('yield.config_source_env') || 'variable d\'environnement (système)')
+         : (Lang.t('yield.config_source_file') || 'fichier sécurisé');
+       statusEl.innerHTML = `<span style="color:var(--accent);">✓</span> <strong style="color:var(--text);">${data.preview}</strong> <span style="color:var(--text-dim);">· ${srcLabel}</span>`;
+       actionsEl.innerHTML = data.source === 'file'
+         ? `<button class="btn btn-secondary btn-sm" onclick="BotsModule._showRatingKeyEdit()">${Lang.t('yield.config_change') || 'Changer la clé'}</button>
+            <button class="btn btn-danger btn-sm" onclick="BotsModule._deleteRatingKey()">${Lang.t('yield.config_delete') || 'Supprimer'}</button>`
+         : `<div style="font-size:11px;color:var(--text-dim);">${Lang.t('yield.config_env_locked') || 'Clé fournie par l\'environnement système — utiliser SSH pour la modifier.'}</div>`;
+     } else {
+       statusEl.innerHTML = `<span style="color:var(--warning);">∅</span> <span style="color:var(--text-muted);">${Lang.t('yield.config_no_key') || 'Aucune clé configurée — le rating fetcher est désactivé.'}</span>`;
+       actionsEl.innerHTML = `<button class="btn btn-primary btn-sm" onclick="BotsModule._showRatingKeyEdit()">${Lang.t('yield.config_set') || 'Configurer la clé'}</button>`;
+     }
+   } catch (e) {
+     statusEl.innerHTML = `<span style="color:var(--danger);">✗</span> <span style="color:var(--text-muted);">${Lang.t('yield.config_load_error') || 'Erreur de chargement'} (${e.message})</span>`;
+     actionsEl.innerHTML = '';
+   }
+ },
+
+ _showRatingKeyEdit() {
+   const form = document.getElementById('yield-rating-key-form');
+   const actions = document.getElementById('yield-rating-key-actions');
+   if (form) form.style.display = 'block';
+   if (actions) actions.style.display = 'none';
+   const input = document.getElementById('yield-rating-key-input');
+   if (input) { input.value = ''; input.focus(); }
+ },
+
+ _cancelRatingKeyEdit() {
+   const form = document.getElementById('yield-rating-key-form');
+   const actions = document.getElementById('yield-rating-key-actions');
+   if (form) form.style.display = 'none';
+   if (actions) actions.style.display = 'flex';
+ },
+
+ async _saveRatingKey() {
+   const input = document.getElementById('yield-rating-key-input');
+   const key = (input?.value || '').trim();
+   if (!key) {
+     Toast?.warning(Lang.t('yield.config_key_empty') || 'La clé est vide');
+     return;
+   }
+   try {
+     const resp = await Auth.apiCall('/api/bots/yield/settings/rating-key', {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify({ key }),
+     });
+     const data = await resp.json();
+     if (!resp.ok) {
+       Toast?.error(data.detail || `HTTP ${resp.status}`);
+       return;
+     }
+     Toast?.success(data.message || (Lang.t('yield.config_saved') || 'Clé enregistrée'));
+     this._cancelRatingKeyEdit();
+     this._loadRatingKeyStatus();
+   } catch (e) {
+     Toast?.error((Lang.t('yield.config_save_error') || 'Erreur sauvegarde') + ': ' + e.message);
+   }
+ },
+
+ async _deleteRatingKey() {
+   const ok = confirm(Lang.t('yield.config_delete_confirm') || 'Supprimer la clé Brave Search ? Le rating fetcher sera désactivé.');
+   if (!ok) return;
+   try {
+     const resp = await Auth.apiCall('/api/bots/yield/settings/rating-key', { method: 'DELETE' });
+     const data = await resp.json();
+     if (!resp.ok) {
+       Toast?.error(data.detail || `HTTP ${resp.status}`);
+       return;
+     }
+     Toast?.success(data.message || (Lang.t('yield.config_deleted') || 'Clé supprimée'));
+     this._loadRatingKeyStatus();
+   } catch (e) {
+     Toast?.error((Lang.t('yield.config_delete_error') || 'Erreur suppression') + ': ' + e.message);
+   }
  },
 
  _renderYieldFileInfo() {

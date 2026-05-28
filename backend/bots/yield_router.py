@@ -629,3 +629,136 @@ async def cleanup_yield_job(
     del _yield_jobs[job_id]
 
     return {"message": "Job supprimé"}
+
+
+# ================================================================
+#  SETTINGS — Rating fetcher (Brave Search API key)
+# ================================================================
+#
+# Permet à un admin de poser la clé Brave Search API via le dashboard,
+# sans SSH ni rebuild. La clé est stockée dans data/secrets/brave.key
+# (gitignored, chmod 600) et lue par yield-bot/scraper/rating_fetcher.py
+# en fallback de la variable d'env BRAVE_SEARCH_API_KEY.
+#
+# Sécurité :
+# - Endpoint admin only (require_role("admin")) — pas "money"
+# - La clé n'est JAMAIS retournée en clair dans GET (masquée)
+# - Le fichier est chmod 600 (root + propriétaire seulement)
+# - data/secrets/ est dans .gitignore (jamais commit)
+
+# Path absolu vers le fichier secret (résolu au démarrage du backend).
+# _project_root pointe vers "Projet serveur/" (cf. ligne 43-47 du fichier).
+RATING_KEY_PATH = _project_root / "data" / "secrets" / "brave.key"
+
+
+class RatingKeyPayload(BaseModel):
+    key: str
+
+
+def _mask_key(key: str) -> str:
+    """Retourne un preview masqué de la clé. Ex: 'BSAB…YpGn' (6 + … + 4)."""
+    if not key or len(key) < 12:
+        return "***"
+    return f"{key[:6]}…{key[-4:]}"
+
+
+@router.get("/settings/rating-key")
+async def get_rating_key_status(
+    current_user: User = Depends(require_role("admin")),
+):
+    """
+    Retourne l'état de la clé Brave Search API (sans la révéler).
+
+    Renvoie aussi `env_source` si la clé vient en réalité d'une variable
+    d'env (qui prime sur le fichier) — utile pour debug.
+    """
+    env_key = os.environ.get("BRAVE_SEARCH_API_KEY")
+    if env_key:
+        return {
+            "has_key": True,
+            "preview": _mask_key(env_key),
+            "source": "env_var",
+            "path": None,
+        }
+
+    if RATING_KEY_PATH.is_file():
+        try:
+            content = RATING_KEY_PATH.read_text(encoding="utf-8").strip()
+            if content:
+                return {
+                    "has_key": True,
+                    "preview": _mask_key(content),
+                    "source": "file",
+                    "path": str(RATING_KEY_PATH),
+                }
+        except Exception as e:
+            logger.warning(f"Can't read rating key file: {e!r}")
+
+    return {
+        "has_key": False,
+        "preview": None,
+        "source": None,
+        "path": str(RATING_KEY_PATH),
+    }
+
+
+@router.post("/settings/rating-key")
+async def set_rating_key(
+    payload: RatingKeyPayload,
+    current_user: User = Depends(require_role("admin")),
+):
+    """
+    Pose ou remplace la clé Brave Search API.
+
+    Validation minimale : la clé doit commencer par 'BSA' (préfixe Brave) et
+    faire au moins 20 caractères. Si la validation passe, écrit le fichier
+    avec chmod 600. La clé est utilisée par le yield-bot dès le prochain run
+    (pas besoin de restart le service).
+    """
+    key = (payload.key or "").strip()
+    if not key:
+        raise HTTPException(400, "La clé est vide")
+    if not key.startswith("BSA"):
+        raise HTTPException(
+            400,
+            "Format inattendu : une clé Brave Search commence par 'BSA'. "
+            "Vérifie que tu as bien copié la clé complète depuis "
+            "api-dashboard.search.brave.com/app/keys"
+        )
+    if len(key) < 20:
+        raise HTTPException(400, "Clé trop courte (< 20 caractères)")
+
+    try:
+        RATING_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        RATING_KEY_PATH.write_text(key, encoding="utf-8")
+        # chmod 600 : lisible/écrivable que par le user qui run le backend
+        RATING_KEY_PATH.chmod(0o600)
+    except Exception as e:
+        logger.exception("Failed to write rating key")
+        raise HTTPException(500, f"Impossible d'écrire le fichier : {e!r}")
+
+    logger.info(
+        f"Rating key posée par {current_user.username} "
+        f"(preview {_mask_key(key)})"
+    )
+    return {
+        "message": "Clé enregistrée. Prochain run du Yield Bot l'utilisera.",
+        "preview": _mask_key(key),
+        "path": str(RATING_KEY_PATH),
+    }
+
+
+@router.delete("/settings/rating-key")
+async def delete_rating_key(
+    current_user: User = Depends(require_role("admin")),
+):
+    """Supprime la clé Brave Search API (le fetcher rating se désactive)."""
+    if not RATING_KEY_PATH.is_file():
+        return {"message": "Aucune clé à supprimer (fichier absent)"}
+    try:
+        RATING_KEY_PATH.unlink()
+    except Exception as e:
+        logger.exception("Failed to delete rating key")
+        raise HTTPException(500, f"Impossible de supprimer : {e!r}")
+    logger.info(f"Rating key supprimée par {current_user.username}")
+    return {"message": "Clé supprimée"}
