@@ -1090,9 +1090,10 @@ const BotsModule = {
  `;
 
  // Task 16 (2026-05-28) — Show admin Brave key section if user is admin,
- // then load its status. Same pattern que le Yield Bot (ligne 533).
- const u = (typeof App !== 'undefined' && App.user) ? App.user : null;
- const isAdmin = u && u.is_admin;
+ // then load its status. Same pattern que le Yield Bot : utilise Auth.getUser()
+ // (PAS App.user — qui n'existe pas dans ce contexte, bug trouvé en test 28/05 18:53).
+ const adminUser = (typeof Auth !== 'undefined' && Auth.getUser) ? Auth.getUser() : null;
+ const isAdmin = adminUser && adminUser.is_admin;
  if (isAdmin) {
    const adminBlock = document.getElementById('scanner-admin-key');
    if (adminBlock) adminBlock.style.display = 'block';
