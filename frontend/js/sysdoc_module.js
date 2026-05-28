@@ -892,6 +892,22 @@ chmod 600 .env
         const isForSelected = !fromMachine || fromMachine === this._selectedMachine;
 
         switch (msg.type) {
+            case 'known_machines': {
+                // Liste historique persistée côté backend (data/sysdoc_known_machines.json).
+                // Reçu UNE fois à l'open du viewer, AVANT le machines_update. Init les
+                // machines inconnues en offline ; les agent_status:online qui suivent
+                // bumpent les actually-online à true. Permet à un nouveau browser
+                // (localStorage vide) de découvrir toutes les machines de l'user.
+                const list = (msg.data && msg.data.machines) || [];
+                list.forEach(id => {
+                    if (!this._machines[id]) {
+                        this._machines[id] = { agentOnline: false, monitoringActive: false };
+                    }
+                });
+                this._persistKnownMachines();
+                this._renderMachineSelector();
+                break;
+            }
             case 'machines_update': {
                 const list = (msg.data && msg.data.machines) || [];
                 const online = new Set(list);

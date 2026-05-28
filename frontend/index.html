@@ -13,6 +13,20 @@
     <link rel="apple-touch-icon" href="/icon-512.svg">
     <link rel="manifest" href="/manifest.json">
     <link rel="stylesheet" href="/css/style.css?v=107">
+    <!-- Fallback dark style : visible dans Claude Desktop preview / file:// direct (qui ne résolvent pas /css/style.css absolu).
+         Override total par style.css quand servi par le backend FastAPI. Voir CLAUDE.md / vault concept page. -->
+    <meta name="color-scheme" content="dark">
+    <style>
+        :root { color-scheme: dark; }
+        html, body { background: #0E0E10; color: #F4F4F5; font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif; margin: 0; }
+        h1, h2, h3, h4, p, span, td, th, li, label, a { color: #F4F4F5; }
+        button, input, select, textarea { background: #1F1F23; color: #F4F4F5; border: 1px solid #27272A; border-radius: 8px; padding: 6px 12px; font: inherit; }
+        button:hover { background: #27272A; }
+        .hint, .text-muted, .section-sub, .brand-sub, ::placeholder { color: #A1A1AA; }
+        .mono, code, pre { font-family: ui-monospace, SFMono-Regular, 'Geist Mono', monospace; font-feature-settings: "tnum"; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border-bottom: 1px solid #27272A; padding: 8px 12px; text-align: left; }
+    </style>
 </head>
 <body>
     <div class="app-layout">
@@ -91,7 +105,7 @@
     <script src="/js/media_module.js?v=89"></script>
     <script src="/js/web_module.js?v=89"></script>
     <script src="/js/network_module.js?v=92"></script>
-    <script src="/js/sysdoc_module.js?v=11"></script>
+    <script src="/js/sysdoc_module.js?v=12"></script>
     <script src="/js/app.js?v=118"></script>
     <script>
         // Enregistrement du Service Worker (PWA)

@@ -24,6 +24,8 @@ gaming + serveur dev). Chaque agent s'identifie par un `machine_id` (default
 
 import json
 import logging
+import threading
+from pathlib import Path
 from typing import Dict, Optional, Set, List
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -35,6 +37,67 @@ from backend.auth.models import User
 logger = logging.getLogger("omenserver.sysdoc")
 
 router = APIRouter()
+
+
+# ----------------------------------------------------------------------------
+# Persistance des machines connues — data/sysdoc_known_machines.json
+#
+# Pourquoi : sans ça, un viewer ouvert depuis un nouveau browser (ou avec son
+# localStorage vidé) ne voit QUE les machines actuellement online. Si une
+# machine est éteinte au moment de l'ouverture, elle disparaît visuellement
+# comme si elle n'existait pas. Avec ce JSON, le hub garde trace de toute
+# machine qui s'est connectée au moins une fois et envoie la liste complète
+# au viewer à l'open — le frontend init les machines absentes de la liste
+# online en `agentOnline=false` (pill rouge "offline").
+#
+# Format : { "username": ["machine_id_1", "machine_id_2", ...] }
+# Idempotent à l'ajout ; pas de retrait automatique (le user peut "oublier"
+# une machine via le menu UI ou en supprimant manuellement le JSON).
+# ----------------------------------------------------------------------------
+
+_KNOWN_MACHINES_FILE = Path(__file__).resolve().parent.parent.parent / "data" / "sysdoc_known_machines.json"
+_known_machines_lock = threading.Lock()
+
+
+def _load_known_machines() -> Dict[str, List[str]]:
+    """Charge la map {username: [machine_id, ...]} ; {} si fichier absent/invalide."""
+    if not _KNOWN_MACHINES_FILE.exists():
+        return {}
+    try:
+        with open(_KNOWN_MACHINES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        return {
+            u: [m for m in (lst or []) if isinstance(m, str)]
+            for u, lst in data.items()
+            if isinstance(u, str) and isinstance(lst, list)
+        }
+    except Exception as exc:
+        logger.warning(f"[sysdoc] Failed to load known machines: {exc}")
+        return {}
+
+
+def _add_known_machine(username: str, machine: str) -> None:
+    """Ajoute (username, machine) au JSON si pas déjà présent. Thread-safe, idempotent."""
+    with _known_machines_lock:
+        data = _load_known_machines()
+        lst = data.setdefault(username, [])
+        if machine in lst:
+            return
+        lst.append(machine)
+        try:
+            _KNOWN_MACHINES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(_KNOWN_MACHINES_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            logger.info(f"[sysdoc] Registered known machine {username}/{machine}")
+        except Exception as exc:
+            logger.error(f"[sysdoc] Failed to save known machines: {exc}")
+
+
+def _get_known_machines(username: str) -> List[str]:
+    """Liste triée des machines déjà vues pour un user."""
+    return sorted(_load_known_machines().get(username, []))
 
 
 class ConnectionManager:
@@ -187,6 +250,9 @@ async def agent_endpoint(websocket: WebSocket, username: str, machine: str):
         return
 
     await manager.register_agent(username, machine, websocket)
+    # Persiste la machine pour qu'elle reste visible (offline rouge) même quand
+    # le viewer s'ouvre depuis un autre browser ou avec localStorage vidé.
+    _add_known_machine(username, machine)
     await manager.broadcast_machines_update(username)
     await manager.relay_to_viewer(
         username,
@@ -256,6 +322,16 @@ async def viewer_endpoint(websocket: WebSocket, username: str):
 
     # Envoyer l'état initial : liste des machines + status de chacune
     try:
+        # D'abord : la liste historique persistée côté backend. Permet au viewer
+        # d'afficher les machines déjà connues même si elles sont actuellement
+        # offline (pill rouge). Le frontend init `agentOnline=false` par défaut ;
+        # les agent_status:online qui suivent passent les actually-online à true.
+        known = _get_known_machines(username)
+        if known:
+            await websocket.send_text(
+                json.dumps({"type": "known_machines", "data": {"machines": known}})
+            )
+
         machines = manager.list_machines(username)
         await websocket.send_text(
             json.dumps({"type": "machines_update", "data": {"machines": machines}})
