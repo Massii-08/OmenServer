@@ -213,38 +213,75 @@ class MarketScraper:
 
     async def _click_robust(self, locator):
         """
-        Clique un élément avec fallback force=True si un overlay intercepte.
+        Clique un bouton page-bar Deutsche Börse de façon FIABLE en headless.
 
-        Filet de sécurité complémentaire à _kill_overlays() : si malgré le
-        masquage CSS un overlay ré-apparaît pile au moment du click (race
-        Angular), le click normal lève "subtree intercepts pointer events".
-        On retombe alors sur force=True qui bypass le check d'actionabilité.
+        Bug headless 2026-05-28 (reproduit + diagnostiqué en local) : les
+        boutons page-bar Angular (taille de page "100", pagination "Show
+        page N") NE répondent NI à Playwright `.click()` NI au native
+        `element.click()` — les deux sont des no-ops silencieux (0 nouveau
+        bond_search, données inchangées). Le handler Angular est bindé sur
+        la SÉQUENCE D'ÉVÉNEMENTS POINTER complète. Seul le dispatch manuel
+        de pointerdown+mousedown+pointerup+mouseup+click déclenche le fetch
+        (confirmé : 50→200 liens, +1 bond_search).
 
-        Timeouts généreux (20s normal + 10s force) : avec les overlays
-        neutralisés par CSS le click est instantané, mais on laisse de la
-        marge pour le rendu Angular lent (le timeout court 10s de la
-        première version causait des faux échecs).
-
-        IMPORTANT (bug headless 2026-05-28) : les boutons page-bar (taille
-        de page "100", pagination "Show page N") sont souvent SOUS le fold
-        dans le viewport headless 1280×900. Sans scroll-into-view, le click
-        est un no-op silencieux → seulement 25 bonds récupérés. On scrolle
-        donc explicitement AVANT le click. force=True (fallback) ne scrolle
-        PAS, d'où le scroll manuel ici.
+        Stratégie : scroll-into-view → dispatch de la séquence complète via
+        evaluate sur l'element handle. Fallback Playwright .click() (force)
+        au cas où.
         """
         try:
             await locator.scroll_into_view_if_needed(timeout=5000)
-            await self._page.wait_for_timeout(300)
         except Exception:
             pass
+
+        # Méthode principale : dispatch de la séquence pointer complète.
         try:
-            await locator.click(timeout=20000)
+            handle = await locator.element_handle(timeout=5000)
+            if handle is not None:
+                await self._page.evaluate(
+                    """(el) => {
+                        ['pointerdown','mousedown','pointerup','mouseup','click']
+                          .forEach(type => el.dispatchEvent(new MouseEvent(type, {
+                              bubbles: true, cancelable: true, view: window,
+                          })));
+                    }""",
+                    handle,
+                )
+                return
         except Exception as e:
-            logger.warning(
-                f"  ⚠️ Click normal échoué ({type(e).__name__}), "
-                f"retry avec force=True"
-            )
+            logger.warning(f"  ⚠️ Dispatch click échoué ({type(e).__name__}), fallback Playwright click")
+
+        # Fallback : Playwright click classique (force pour bypass intercept).
+        try:
+            await locator.click(timeout=10000)
+        except Exception:
             await locator.click(force=True, timeout=10000)
+
+    async def _wait_for_bond_search(self, api_responses: dict, timeout_ms: int = 20000):
+        """
+        Attend qu'une nouvelle réponse bond_search arrive dans api_responses.
+
+        Après un click page-bar (dispatch), la requête bond_search part en
+        async et la réponse peut prendre ~10s (mesuré en diag local). Le
+        couple networkidle+timeout fixe était trop court → on parsait avant
+        l'arrivée → "Nessun nuovo bond". On poll donc explicitement la
+        présence d'une clé bond_search dans api_responses (qui est rempli
+        par le handler capture_response), avec un timeout généreux.
+
+        Suppose que api_responses a été .clear() AVANT le click.
+        Returns True si une réponse bond_search est arrivée, False sur timeout.
+        """
+        waited = 0
+        step = 500
+        while waited < timeout_ms:
+            if any('bond_search' in u and 'total_count' not in u for u in api_responses):
+                # Laisse le temps à la réponse complète d'être parsée + à
+                # d'éventuelles réponses complémentaires d'arriver.
+                await self._page.wait_for_timeout(1200)
+                return True
+            await self._page.wait_for_timeout(step)
+            waited += step
+        logger.debug("  ⚠️ _wait_for_bond_search: timeout, aucune réponse bond_search")
+        return False
 
     async def scan_market(self, currency: str = "EUR", max_pages: int = 20) -> List[ScannedBond]:
         """
@@ -323,16 +360,19 @@ class MarketScraper:
                 if await btn_100.is_visible(timeout=3000):
                     api_responses.clear()
                     await self._click_robust(btn_100)
-                    await self._page.wait_for_load_state("networkidle")
-                    await self._page.wait_for_timeout(2000)
+                    # La réponse bond_search peut prendre ~10s (diag local) —
+                    # on poll explicitement au lieu de networkidle (trop court).
+                    await self._wait_for_bond_search(api_responses)
 
                     # Raccogli i bond con 100 risultati
                     bonds_100 = self._parse_bond_list_responses(api_responses, currency)
                     if bonds_100:
                         all_bonds = bonds_100  # Rimpiazza, contiene i primi 25 + altri 75
                         logger.info(f"  📊 Modalità 100/pagina: {len(bonds_100)} bond")
-            except Exception:
-                logger.debug("  ⚠️ Bottone 100/pagina non trovato")
+                    else:
+                        logger.warning("  ⚠️ Click 100 : pas de nouvelle réponse bond_search")
+            except Exception as e:
+                logger.debug(f"  ⚠️ Bottone 100/pagina : {e}")
 
             # Paginazione: clicca "Next" per caricare più risultati
             page_num = 1
@@ -379,8 +419,8 @@ class MarketScraper:
                 page_num += 1
                 logger.info(f"  📄 Pagina {page_num}...")
                 await self._click_robust(next_btn)
-                await self._page.wait_for_load_state("networkidle")
-                await self._page.wait_for_timeout(1500)
+                # Poll explicite de la réponse bond_search (peut prendre ~10s).
+                await self._wait_for_bond_search(api_responses)
 
                 # Raccogli i nuovi bond
                 new_bonds = self._parse_bond_list_responses(api_responses, currency)
