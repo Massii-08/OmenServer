@@ -40,8 +40,9 @@ class TestFitchTitleRegex(unittest.TestCase):
         self.assertEqual(m.group('rating'), 'BBB+')
 
     def test_curly_quotes(self):
-        # Fitch parfois sert des guillemets typographiques
-        m = FITCH_TITLE_RATING_RE.search("Fitch Upgrades AstraZeneca to 'A'; Outlook Positive")
+        # Fitch sert parfois des guillemets typographiques Unicode (U+2018/U+2019).
+        # Le regex doit supporter ces variants en plus des quotes ASCII (U+0027).
+        m = FITCH_TITLE_RATING_RE.search("Fitch Upgrades AstraZeneca to ‘A’; Outlook Positive")
         self.assertIsNotNone(m)
         self.assertEqual(m.group('rating'), 'A')
 
