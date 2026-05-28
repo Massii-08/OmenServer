@@ -23,16 +23,7 @@ from datetime import date, datetime
 from typing import List, Dict, Any, Optional
 
 from scanner.models import ScannedBond, RatingInfo
-from scanner.rating_providers import (
-    ALL_PROVIDERS,
-    DeutscheBoerseApiProvider,
-    BoerseFrankfurtHtmlProvider,
-    BoerseStuttgartProvider,
-    FitchRatingsProvider,
-    IssuerReferenceProvider,
-    is_valid_rating,
-    merge_ratings,
-)
+from scanner.rating_providers import BraveFitchProvider
 
 logger = logging.getLogger(__name__)
 
@@ -390,128 +381,41 @@ class MarketScraper:
 
     async def fetch_ratings(self, bond: ScannedBond) -> ScannedBond:
         """
-        Recupera i rating da fonti multiple (cascade mode).
+        Recupera il rating Fitch tramite Brave Search API.
 
-        Strategia cascade (dal più rapido al più lento):
-        1. Deutsche Börse API (dati già intercettati — istantaneo)
-        2. Börse Frankfurt HTML (pagina già caricata — istantaneo)
-        3. Tabella Emittenti di Riferimento (lookup locale — istantaneo)
-        4. Börse Stuttgart (pagina separata — lento)
-        5. Fitch Ratings (pagina separata — lento)
-
-        I rating trovati vengono combinati in rating_display con la fonte
-        tra parentesi: es. "AA- (DB, REF)" o "AA- (REF) / A+ (FR)".
+        Strategia (2026-05-28, mirror Yield Bot) :
+        - Source UNIQUE = site:fitchratings.com via Brave
+        - Politica fitch_only : nessun fallback S&P/Moody's
+        - Cellula Excel resta vuota se Fitch non rate l'emittente
 
         Args:
-            bond: ScannedBond con l'ISIN e il nome
+            bond: ScannedBond con isin e name popolati
 
         Returns:
-            ScannedBond con ratings, rating e rating_display aggiornati
+            ScannedBond con bond.ratings, bond.rating, bond.rating_display
+            aggiornati. Se nessun rating Fitch → bond.rating_display = None.
         """
-        found_ratings: list = []
-
-        # --- Source 1: Deutsche Börse API (dati già disponibili) ---
+        provider = BraveFitchProvider()
         try:
-            db_provider = DeutscheBoerseApiProvider()
-            api_responses = getattr(self, '_last_api_responses', {})
-            rating = await db_provider.get_rating(bond.isin, api_responses=api_responses)
-            if rating:
-                found_ratings.append(rating)
-        except Exception as e:
-            logger.debug(f"    ⚠️ Errore DB rating: {e}")
-
-        # --- Source 2: Börse Frankfurt HTML (pagina già caricata) ---
-        try:
-            bf_provider = BoerseFrankfurtHtmlProvider()
-            rating = await bf_provider.get_rating(bond.isin, page=self._page)
-            if rating:
-                found_ratings.append(rating)
-        except Exception as e:
-            logger.debug(f"    ⚠️ Errore BF rating: {e}")
-
-        # --- Source 3: Tabella Emittenti (lookup locale istantaneo) ---
-        try:
-            ref_provider = IssuerReferenceProvider()
-            rating = await ref_provider.get_rating(
-                bond.isin, bond_name=bond.name
+            rating_info = await provider.get_rating(
+                bond.isin, bond_name=bond.name,
             )
-            if rating:
-                found_ratings.append(rating)
         except Exception as e:
-            logger.debug(f"    ⚠️ Errore REF rating: {e}")
+            logger.debug(f"    ⚠️  Errore BraveFitchProvider: {e}")
+            rating_info = None
 
-        # --- Source 4+5: Stuttgart + Fitch (solo se nessun rating trovato) ---
-        # Usa pagine SEPARATE per non corrompere la sessione Deutsche Börse
-        if not found_ratings:
-            # 4. Börse Stuttgart
-            stuttgart_page = None
-            try:
-                stuttgart_page = await self._context.new_page()
-
-                # Intercetta le API di Stuttgart per cercare rating nei JSON
-                stuttgart_api: Dict[str, Any] = {}
-
-                async def capture_stuttgart(response):
-                    try:
-                        if response.status == 200:
-                            ct = response.headers.get('content-type', '')
-                            if 'json' in ct:
-                                body = await response.json()
-                                if body:
-                                    stuttgart_api[response.url] = body
-                    except Exception:
-                        pass
-
-                stuttgart_page.on("response", capture_stuttgart)
-
-                bs_provider = BoerseStuttgartProvider()
-                rating = await bs_provider.get_rating(bond.isin, page=stuttgart_page)
-                if rating:
-                    found_ratings.append(rating)
-
-                # Fallback: cerca rating nei JSON API di Stuttgart
-                if not rating and stuttgart_api:
-                    db_provider2 = DeutscheBoerseApiProvider()
-                    for url, data in stuttgart_api.items():
-                        r = db_provider2._search_rating_recursive(data, 0, 5)
-                        if r:
-                            if is_valid_rating(r):
-                                ri = RatingInfo(value=r, source="BS", source_full="Börse Stuttgart")
-                                found_ratings.append(ri)
-                                logger.info(f"    📊 Rating da Börse Stuttgart API: {r}")
-                                break
-
-            except Exception as e:
-                logger.debug(f"    ⚠️ Errore Börse Stuttgart: {e}")
-            finally:
-                if stuttgart_page:
-                    await stuttgart_page.close()
-
-        # 5. Fitch Ratings (solo se ancora nessun rating)
-        if not found_ratings and bond.name:
-            fitch_page = None
-            try:
-                fitch_page = await self._context.new_page()
-                fitch_provider = FitchRatingsProvider()
-                rating = await fitch_provider.get_rating(
-                    bond.isin, page=fitch_page, bond_name=bond.name
-                )
-                if rating:
-                    found_ratings.append(rating)
-            except Exception as e:
-                logger.debug(f"    ⚠️ Errore Fitch Ratings: {e}")
-            finally:
-                if fitch_page:
-                    await fitch_page.close()
-
-        # --- Fusione ---
-        bond.ratings = found_ratings
-        bond.rating, bond.rating_display = merge_ratings(found_ratings)
-
-        if found_ratings:
+        if rating_info:
+            bond.ratings = [rating_info]
+            bond.rating = rating_info.value
+            bond.rating_display = f"{rating_info.value} (Fitch)"
             logger.info(f"    📊 Rating finale: {bond.rating_display}")
         else:
-            logger.info(f"    ⚠️ Nessun rating trovato (DB/BF/REF/BS/FR)")
+            bond.ratings = []
+            bond.rating = None
+            bond.rating_display = None
+            logger.info(
+                f"    ⚠️  Nessun rating Fitch per {bond.isin} ({bond.name[:40]})"
+            )
 
         return bond
 
