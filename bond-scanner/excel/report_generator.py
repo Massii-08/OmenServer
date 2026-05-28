@@ -130,6 +130,7 @@ class ReportGenerator:
         bonds: List[ScannedBond],
         output_path: str,
         criteria_info: str = "",
+        timed_out: bool = False,
     ) -> str:
         """
         Genera il file Excel con le obbligazioni trovate.
@@ -138,10 +139,19 @@ class ReportGenerator:
             bonds: Lista di ScannedBond da includere nel report
             output_path: Percorso del file di output
             criteria_info: Descrizione dei criteri usati (per il titolo)
+            timed_out: Se True, prepende un banner ai criteri segnalando
+                       che la scansione è stata interrotta dal timeout
+                       45 min (Task 18) e che i risultati sono parziali.
 
         Returns:
             Percorso del file generato
         """
+        if timed_out:
+            criteria_info = (
+                "⏱ SCANSIONE INTERROTTA A 45 MIN — RISULTATI PARZIALI. "
+                + criteria_info
+            )
+
         # Raggruppa per valuta
         groups: Dict[str, List[ScannedBond]] = {
             'EUR': [], 'USD': [], 'GBP': [],

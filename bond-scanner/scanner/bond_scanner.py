@@ -16,6 +16,7 @@ Tutti i log sono in italiano 🇮🇹
 
 import asyncio
 import logging
+import time
 from datetime import date
 from typing import List, Optional
 
@@ -61,6 +62,11 @@ class BondScanner:
         self.delay = delay
         self.price_threshold = price_threshold
         self.max_results = max_results
+        # Task 18 (2026-05-28) : timeout hard di 45 min per evitare scansioni
+        # che si bloccano indefinitamente (Brave rate-limit a cascata, Deutsche
+        # Börse lento, ecc.). Allo scadere si interrompe la raccolta e si
+        # genera comunque l'Excel con i bond trovati fin qui.
+        self.scan_timeout_seconds = 45 * 60
         self.stats = {
             'total_scanned': 0,
             'total_filtered': 0,
@@ -68,8 +74,17 @@ class BondScanner:
             'total_discarded': 0,
             'total_errors': 0,
             'by_currency': {},
+            'timed_out': False,        # True se _scan_timed_out() ha sparato
+            'elapsed_seconds': 0,      # tempo totale della fase scan
         }
         self._stopped = False
+        self._scan_start: Optional[float] = None  # time.monotonic() al via di scan()
+
+    def _scan_timed_out(self) -> bool:
+        """True se abbiamo superato self.scan_timeout_seconds dall'avvio."""
+        if self._scan_start is None:
+            return False
+        return (time.monotonic() - self._scan_start) >= self.scan_timeout_seconds
 
     def stop(self):
         """Arresta la scansione in corso."""
@@ -114,6 +129,10 @@ class BondScanner:
 
         # Registra la scansione
         record_scan()
+
+        # Task 18 — avvia il cronometro per il timeout 45 min
+        self._scan_start = time.monotonic()
+        logger.info(f"⏱ Timeout scan impostato a {self.scan_timeout_seconds // 60} min")
 
         all_filtered_bonds: List[ScannedBond] = []
         seen_isins: set = set()  # Deduplica globale tra scansioni multi-valuta
@@ -179,6 +198,20 @@ class BondScanner:
                     # 3. Arricchimento dati + calcolo yield
                     for idx, bond in enumerate(pre_filtered):
                         if self._stopped:
+                            break
+
+                        # Task 18 — timeout 45 min : si interrompe la fase scan,
+                        # si procede comunque alla generazione Excel con quello
+                        # che si è raccolto fin qui (graceful degradation).
+                        if self._scan_timed_out():
+                            elapsed_min = (time.monotonic() - self._scan_start) / 60
+                            logger.warning(
+                                f"\n⏱ TIMEOUT raggiunto ({elapsed_min:.1f} min "
+                                f">= {self.scan_timeout_seconds // 60} min). "
+                                f"Interrompo la raccolta, genero l'Excel parziale."
+                            )
+                            self._stopped = True
+                            self.stats['timed_out'] = True
                             break
 
                         # Controlla se abbiamo raggiunto il limite
@@ -267,6 +300,7 @@ class BondScanner:
                 bonds=all_filtered_bonds,
                 output_path=output_path,
                 criteria_info=str(self.criteria),
+                timed_out=self.stats.get('timed_out', False),
             )
 
             self.stats['total_with_yield'] = sum(
@@ -276,6 +310,10 @@ class BondScanner:
         else:
             logger.warning("⚠️ Nessuna obbligazione trovata con i criteri specificati!")
             self.stats['output_file'] = None
+
+        # Task 18 — registra il tempo totale della fase scan
+        if self._scan_start is not None:
+            self.stats['elapsed_seconds'] = int(time.monotonic() - self._scan_start)
 
         # Riepilogo finale
         self._print_summary(all_filtered_bonds)
