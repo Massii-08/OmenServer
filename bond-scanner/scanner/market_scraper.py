@@ -599,6 +599,46 @@ class MarketScraper:
     # Valute accettate (codici ISO 3166)
     _VALID_CURRENCIES = {'EUR', 'USD', 'GBP', 'CHF'}
 
+    # Valeurs poubelles captées par erreur dans les API UI de Deutsche Börse
+    # (états de widgets, flags, etc.) — NE SONT PAS des noms de bond.
+    _NAME_BLACKLIST = {
+        'disabled', 'enabled', 'true', 'false', 'null', 'none', 'undefined',
+        'loading', 'error', 'default', 'active', 'inactive', 'hidden',
+        'visible', 'expanded', 'collapsed', 'selected', 'unknown', 'n/a',
+    }
+
+    def _looks_like_bond_name(self, value) -> bool:
+        """
+        True se `value` ressemble à un vrai nom de bond / émetteur.
+
+        Garde-fou contre le bug "disabled" (2026-05-28) : la recherche
+        récursive de champs name/title captait des états de widgets UI.
+        Un vrai nom de bond Deutsche Börse (ex. "ALLIANZ SE EO-MED.TERM
+        NOTES 20(28)", "Bundesrepublik Deutschland 0% 31") contient
+        TOUJOURS un espace ou un chiffre. Un mot UI seul ("disabled",
+        "loading") n'en a pas → rejeté.
+
+        Au pire un faux négatif laisse bond.name vide → fetch_ratings()
+        skip (cellule Excel vide). C'est SÛR. Un faux positif produirait
+        un faux rating — c'est ça qu'on élimine.
+        """
+        if not isinstance(value, str):
+            return False
+        v = value.strip()
+        if len(v) < 5 or len(v) > 120:
+            return False
+        if v.lower() in self._NAME_BLACKLIST:
+            return False
+        # Un vrai nom de bond a un espace OU un chiffre (coupon/échéance/type).
+        if ' ' not in v and not any(c.isdigit() for c in v):
+            return False
+        # Exclut slugs média / fichiers / URLs.
+        if any(x in v.lower() for x in
+               ('boersen-radio', 'podcast', '.mp3', '.pdf',
+                'http', '//', 'image', 'video', 'thumbnail')):
+            return False
+        return True
+
     def _enrich_from_api(self, bond: ScannedBond, responses: Dict[str, Any]):
         """Arricchisce un bond con dati dalle API della pagina dettaglio."""
         for url, data in responses.items():
@@ -654,20 +694,16 @@ class MarketScraper:
                             bond.issue_date = parsed
 
                 # --- NOME ---
+                # Bug prod 2026-05-28 19:25 : la recherche récursive captait
+                # un champ name/title="disabled" d'une API UI de Deutsche Börse
+                # → query Brave "site:fitchratings.com disabled" → faux rating
+                # CCC Scripps appliqué à TOUS les bonds. Fix : valider que la
+                # valeur ressemble à un vrai nom de bond (cf. _looks_like_bond_name).
                 if not bond.name and value is not None:
                     if key_lower in ('instrumentname', 'designation', 'longname',
-                                     'shortname'):
-                        if isinstance(value, str) and len(value) > 5:
-                            bond.name = value
-                    elif key_lower in ('name', 'title'):
-                        # 'name' generico: accetta solo se sembra un nome bond
-                        # (esclude nomi di file, media, ecc.)
-                        if isinstance(value, str) and len(value) > 5:
-                            # Ignora nomi che sembrano file/media/slug
-                            if not any(x in value.lower() for x in
-                                       ('boersen-radio', 'podcast', '.mp3', '.pdf',
-                                        'http', '//', 'image', 'video', 'thumbnail')):
-                                bond.name = value
+                                     'shortname', 'name', 'title'):
+                        if self._looks_like_bond_name(value):
+                            bond.name = value.strip()
 
                 # --- VALUTA (solo issueCurrency) ---
                 # ATTENZIONE: il campo 'currency' e 'tradingCurrency' dell'API
