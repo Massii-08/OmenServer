@@ -473,7 +473,7 @@ Start-ScheduledTask -TaskName "OmenDiagnosticAgent"</code></pre>
 Stop-ScheduledTask -TaskName "OmenDiagnosticAgent"</code></pre>
                 </div>
                 <div class="install-code-block">
-                    <button class="install-copy-btn" data-copy="Unregister-ScheduledTask -TaskName 'OmenDiagnosticAgent' -Confirm:`$false">Copier</button>
+                    <button class="install-copy-btn" data-copy="Unregister-ScheduledTask -TaskName 'OmenDiagnosticAgent' -Confirm:$false">Copier</button>
                     <pre><code># Désinstaller complètement (à utiliser SEULE, pas en suite des autres)
 Unregister-ScheduledTask -TaskName "OmenDiagnosticAgent" -Confirm:$false</code></pre>
                 </div>
