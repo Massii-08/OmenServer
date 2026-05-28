@@ -97,12 +97,15 @@ class ScanCriteria:
     min_volume: Optional[float] = None       # Volume minimo in EUR
     max_min_piece: Optional[float] = None    # Pièce minimale max (accessibilità)
 
-    def matches(self, bond) -> Tuple[bool, str]:
+    def matches(self, bond, *, check_rating: bool = True) -> Tuple[bool, str]:
         """
         Verifica se un'obbligazione soddisfa tutti i criteri.
 
         Args:
             bond: ScannedBond da verificare
+            check_rating: Se False, skip il check del rating (Task 13 pattern :
+                          chiamato in modalità "pre-filter" prima di pagare la
+                          Brave Search per ottenere il rating Fitch).
 
         Returns:
             (matches, reason): True se corrisponde, False + motivo se scartata
@@ -132,7 +135,8 @@ class ScanCriteria:
         # Politica decisa 2026-05-28 : se min_rating è impostato e Fitch non
         # rate l'emittente (bond.rating is None) → rigetto il bond (non finisce
         # nell'Excel). Niente cellula vuota, niente "Rating (a verificare)".
-        if self.min_rating:
+        # check_rating=False salta questo blocco (pre-filter mode, Task 13).
+        if check_rating and self.min_rating:
             if not bond.rating:
                 return False, "Nessun rating Fitch (politica fitch_only)"
             bond_idx = _rating_index(bond.rating)

@@ -202,10 +202,25 @@ class BondScanner:
                             else:
                                 logger.info(f"    ⚠️ Dati incompleti — skip yield")
 
-                            # Recupera rating da fonti multiple (cascade)
+                            # Pre-filter (Task 13, 2026-05-28) : verifica
+                            # prezzo/yield/scadenza/valuta PRIMA di pagare la
+                            # quota Brave Search. Risparmia ~80% di chiamate
+                            # API per i bond che già sappiamo non passare i
+                            # criteri di base. La Brave free tier vale 1000
+                            # req/mese — meglio non sprecarla.
+                            pre_match, pre_reason = self.criteria.matches(
+                                bond, check_rating=False,
+                            )
+                            if not pre_match:
+                                currency_stats['discarded'] += 1
+                                self.stats['total_discarded'] += 1
+                                logger.info(f"    ⊘ Pre-scartato: {pre_reason}")
+                                continue
+
+                            # Ora paga la chiamata Brave per ottenere il rating Fitch.
                             await scraper.fetch_ratings(bond)
 
-                            # Filtro completo
+                            # Filtro completo (incl. rating, politica fitch_only)
                             matches, reason = self.criteria.matches(bond)
                             if matches:
                                 # Deduplica globale
