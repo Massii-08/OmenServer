@@ -122,14 +122,16 @@ async def run_scanner(
 ):
     """Lance une scansione del mercato."""
     # Garde-fou réserve Brave (2026-05-28, demande Massii) : bloque le scan
-    # s'il reste ≤ 50 requêtes Brave ce mois (préserve une réserve de secours).
+    # s'il reste ≤ 50 requêtes Brave ce mois. Ces 50 sont RÉSERVÉES au Yield
+    # Bot (clé Brave PARTAGÉE entre les 2 bots) — si le Bond Scanner cramait
+    # tout, le Yield Bot ne pourrait plus récupérer ses ratings Fitch.
     remaining = _brave_remaining()
     if remaining is not None and remaining <= BRAVE_SAFETY_BUFFER:
         raise HTTPException(
             429,
             f"Réserve Brave trop basse ({remaining} requêtes ≤ {BRAVE_SAFETY_BUFFER}). "
-            f"Scan bloqué pour préserver la réserve. Attends le reset mensuel "
-            f"ou augmente le plan Brave."
+            f"Scan bloqué : ces {BRAVE_SAFETY_BUFFER} requêtes sont réservées au "
+            f"Yield Bot (clé partagée). Attends le reset mensuel ou augmente le plan."
         )
 
     # Générer un job_id

@@ -59,23 +59,60 @@ bot obbligation/
 ```
 
 ### Critères de Filtrage (Configurables)
-| Critère | Défaut | Configurable ? |
-|---------|--------|----------------|
-| Prezzo massimo | ≤ 100 (sous la pari) | ✅ Oui |
-| Yield minimo | ≥ 3% | ✅ Oui |
-| Scadenza | ≤ 9 anni | ✅ Oui |
-| Rating minimo | BBB- (Investment Grade) | ✅ Oui |
-| Valute | EUR, USD, GBP | ✅ Oui |
+| Critère | Défaut | Range UI | Configurable ? |
+|---------|--------|----------|----------------|
+| Prezzo massimo | ≤ 100 | slider 85-110 | ✅ Oui |
+| Yield minimo | ≥ 3% | slider 1-10% | ✅ Oui |
+| Scadenza | ≤ 9 anni | dropdown | ✅ Oui |
+| Rating minimo | BBB | dropdown BBB-→AAA | ✅ Oui |
+| Valute | EUR, USD, GBP | checkboxes | ✅ Oui |
+| **Target count** | 50 | **slider 1-100** | ✅ Oui (best-N) |
 
-### Rating
-- Le rating est récupéré **uniquement** via Brave Search API en mode `site:fitchratings.com {issuer}` (mirror Yield Bot, 2026-05-28)
-- Parsing du rating depuis le **titre** des pages Fitch indexées (regex `FITCH_TITLE_RATING_RE`)
-- Politique **fitch_only strict** : pas de fallback S&P / Moody's converti
-- Si Fitch ne rate pas l'émetteur → `bond.rating_display = None` → cellule Excel vide (pas de `'?'` placeholder)
-- Cache `~/.cache/bond-scanner-ratings.json` (TTL 30 jours par ISIN, négatifs inclus pour ne pas re-burn la quota Brave)
-- Clé API : `BRAVE_SEARCH_API_KEY` (partagée avec Yield Bot — 1000 req/mois free largement suffisant pour les 2 bots cumulés)
-- Le `merge_ratings()` legacy n'est plus appelé (1 seule source = pas de fusion)
-- Échelle S&P / conversions Moody's (`MOODY_TO_SP`, `RATING_SCALE`) conservées car consommées par `filter/criteria.py`
+### Pipeline V2 (refonte 2026-05-28) — flux réel
+```
+1. scan_market : pagine 15 pages × 100 = 1500 bonds les plus liquides/devise
+   • Pagination headless via DISPATCH d'événements pointer (pointerdown+
+     mousedown+pointerup+mouseup+click) — Playwright .click() ne marche PAS
+     sur les boutons Angular page-bar en headless (piège #30)
+   • Attente de la réponse bond_search via poll (≈10s async, pas networkidle)
+   • Overlays cookie+spinner neutralisés via add_style_tag CSS !important
+2. Extraction depuis le LISTING (name.originalValue) : émetteur + coupon +
+   maturité (année du "/YY") → 97% des bonds is_complete() SANS enrich
+   (l'enrich page-détail à 5s/bond était le bottleneck → quasi éliminé)
+3. Pré-filtre GRATUIT : found_store + seen_store + prix + yield + maturité
+4. Rating Brave (cache + délai 1.1s anti-429) sur les survivants
+5. Scoring + top-N par devise, trié RATING DÉCROISSANT (best ratings en haut)
+6. Excel + enregistrement dédup
+```
+
+### Rating (Brave/Fitch, mirror Yield Bot)
+- Récupéré **uniquement** via Brave Search API `site:fitchratings.com {issuer}`
+- Parsing du rating depuis le **titre** des pages Fitch (regex `FITCH_TITLE_RATING_RE`)
+- Politique **fitch_only strict** : pas de fallback S&P/Moody's
+- Si Fitch ne rate pas → `rating_display = None`, bond rejeté (pas de cellule vide)
+- Cache `~/.cache/bond-scanner-ratings.json` (TTL 30j, négatifs inclus)
+- Clé `BRAVE_SEARCH_API_KEY` **partagée** avec Yield Bot, posable via panel admin
+  (`data/secrets/brave.key`), free tier ~1000 req/mois
+
+### Dédup persistante (3 stores)
+| Store | Fichier | TTL | Rôle |
+|-------|---------|-----|------|
+| **found** | `~/.cache/bond-scanner-found-isins.json` | permanent | bonds LIVRÉS (Excel) → jamais re-livrés |
+| **seen** | `~/.cache/bond-scanner-seen.json` | **60j** | bonds REJETÉS (yield/rating/no-Fitch) → skippés 60j puis ré-évalués (le prix bouge) |
+| **rating cache** | `~/.cache/bond-scanner-ratings.json` | 30j | ratings (évite de re-payer Brave) |
+- **Overflow** (valides mais hors top-N) → enregistré dans AUCUN store → revient concourir au prochain scan
+- Reset : CLI `--reset-found` (vide found+seen) / endpoint `POST /reset-found` / `--reset-cache`
+
+### Garde-fou réserve Brave (2026-05-28)
+- Brave renvoie `X-RateLimit-Remaining` (par_sec, par_mois). On lit le restant mensuel.
+- Si ≤ **50** : (a) le scan en cours s'arrête (Excel partiel + banner), (b) le lancement d'un nouveau scan est **bloqué** (HTTP 429).
+- Ces 50 sont **réservées au Yield Bot** (clé partagée → sinon il ne pourrait plus rater ses bonds).
+- Restant persisté dans `~/.cache/bond-scanner-brave-remaining.json` pour le check pré-lancement.
+
+### Résilience
+- Scan détaché (`start_new_session=True`) → survit à un reload uvicorn (auto-deploy)
+- Timeout hard 45 min → Excel partiel + banner si dépassé
+- Échelle S&P / conversions Moody's (`MOODY_TO_SP`, `RATING_SCALE`) conservées (consommées par `filter/criteria.py`)
 
 ### Formules de Yield (copiées du Yield Bot)
 | Type | Formule |

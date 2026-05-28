@@ -264,7 +264,9 @@ class BraveFitchProvider(RatingProvider):
         self.remaining_monthly: Optional[int] = None  # dernier X-RateLimit-Remaining mensuel
         self.quota_low: bool = False                    # True si remaining ≤ buffer
 
-    BRAVE_SAFETY_BUFFER = 50  # on arrête quand il reste ≤ 50 requêtes mensuelles
+    # On arrête quand il reste ≤ 50 requêtes mensuelles. Ces 50 sont RÉSERVÉES
+    # au Yield Bot (clé Brave PARTAGÉE) pour qu'il puisse toujours rater ses bonds.
+    BRAVE_SAFETY_BUFFER = 50
 
     def _read_remaining(self, response):
         """
