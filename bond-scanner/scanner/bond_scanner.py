@@ -182,12 +182,13 @@ class BondScanner:
                 logger.info(f"{'─'*60}")
 
                 try:
-                    # 1. Scraping del mercato
-                    # max_pages alto per garantire che ci siano abbastanza bond
-                    # da filtrare per costituire un pool sufficiente al top-N
+                    # 1. Scraping del mercato — 15 pages × 100 = 1500 bonds
+                    # (demande Massii 2026-05-28). Les 1500 plus liquides par
+                    # devise. La dédup fait que les relances livrent du nouveau
+                    # parmi ce pool sans re-payer Brave (cache).
                     raw_bonds = await scraper.scan_market(
                         currency=currency,
-                        max_pages=30,
+                        max_pages=15,
                     )
 
                     currency_stats = {
