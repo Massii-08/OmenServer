@@ -66,10 +66,10 @@ Esempi:
                         help='Rating Fitch minimo (default: BBB). Slider UI: BBB- → AAA')
     parser.add_argument('--currencies', type=str, default='EUR,USD,GBP',
                         help='Valute da cercare (default: EUR,USD,GBP)')
-    parser.add_argument('--target-count', type=int, default=100,
-                        help='Target di bond nell\'Excel finale (default: 100). '
+    parser.add_argument('--target-count', type=int, default=20,
+                        help='Target di bond nell\'Excel finale (default: 20, range 1-20). '
                              'Split equilibrato sulle valute selezionate '
-                             '(1 valuta=100, 2=50/50, 3=34/33/33). '
+                             '(1 valuta=20, 2=10/10, 3=7/7/6). '
                              'Scoring Defensive 20%% prezzo / 40%% yield / 40%% rating.')
 
     # Opzioni di output

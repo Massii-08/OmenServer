@@ -48,7 +48,7 @@ class BondScanner:
         headless: bool = True,
         delay: float = 1.0,
         price_threshold: float = 101.0,
-        target_count: int = 100,
+        target_count: int = 20,
     ):
         """
         Args:
