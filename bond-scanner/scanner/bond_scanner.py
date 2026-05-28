@@ -24,6 +24,7 @@ from scanner.models import ScannedBond
 from scanner.market_scraper import MarketScraper
 from scanner.scoring import top_n_per_currency, compute_quotas
 from scanner.found_store import FoundStore
+from scanner.seen_store import SeenStore
 from filter.criteria import ScanCriteria
 from calculator.yield_calculator import (
     calculate_yield_at_current_price,
@@ -75,6 +76,9 @@ class BondScanner:
         # quota Brave. Set dedup=False pour désactiver (ex. test).
         self.dedup = dedup
         self.found_store = FoundStore() if dedup else None
+        # Mémoire des rejetés (2026-05-28) : skip 60j les bonds évalués-mais-
+        # pas-retenus (yield/rating/no-Fitch) pour ne pas les re-scanner.
+        self.seen_store = SeenStore() if dedup else None
         # Task 18 (2026-05-28) : timeout hard di 45 min per evitare scansioni
         # che si bloccano indefinitamente (Brave rate-limit a cascata, Deutsche
         # Börse lento, ecc.). Allo scadere si interrompe la raccolta e si
@@ -161,6 +165,9 @@ class BondScanner:
 
         all_filtered_bonds: List[ScannedBond] = []
         seen_isins: set = set()  # Deduplica globale tra scansioni multi-valuta
+        # ISINs évalués-mais-rejetés ce scan (yield/rating/no-Fitch) → seront
+        # ajoutés au seen_store en fin de scan (skip 60j au prochain run).
+        rejected_isins: set = set()
 
         # "Continue jusqu'au target" (2026-05-28) : quota par devise. Quand
         # une devise atteint son quota de bonds VALIDES, on arrête de la
@@ -210,9 +217,14 @@ class BondScanner:
                             break
 
                         # Dédup persistante : skip les bonds déjà livrés dans
-                        # un Excel précédent (le plus tôt = max d'économie,
-                        # avant enrich ET avant Brave).
+                        # un Excel précédent (found_store, permanent) OU rejetés
+                        # il y a < 60j (seen_store, TTL). Le plus tôt = max
+                        # d'économie, avant enrich ET avant Brave.
                         if self.found_store and self.found_store.contains(bond.isin):
+                            skipped_known += 1
+                            currency_stats['discarded'] += 1
+                            continue
+                        if self.seen_store and self.seen_store.contains(bond.isin):
                             skipped_known += 1
                             currency_stats['discarded'] += 1
                             continue
@@ -296,6 +308,7 @@ class BondScanner:
                             if not pre_match:
                                 currency_stats['discarded'] += 1
                                 self.stats['total_discarded'] += 1
+                                rejected_isins.add(bond.isin)  # skip 60j (seen_store)
                                 logger.info(f"    ⊘ Pre-scartato: {pre_reason}")
                                 continue
 
@@ -356,6 +369,7 @@ class BondScanner:
                             else:
                                 currency_stats['discarded'] += 1
                                 self.stats['total_discarded'] += 1  # ← Aggiornamento IMMEDIATO
+                                rejected_isins.add(bond.isin)  # skip 60j (seen_store)
                                 logger.info(f"    ❌ Scartato: {reason}")
 
                         except Exception as e:
@@ -433,6 +447,18 @@ class BondScanner:
         else:
             logger.warning("⚠️ Nessuna obbligazione trovata con i criteri specificati!")
             self.stats['output_file'] = None
+
+        # Mémoire des rejetés (2026-05-28) : les bonds évalués-mais-pas-retenus
+        # (yield/rating/no-Fitch) sont mémorisés → skippés 60j au prochain scan.
+        # S'exécute même si 0 trouvé. L'overflow (valides hors top-N) n'est PAS
+        # dedans → il revient concourir au prochain scan.
+        if self.seen_store and rejected_isins:
+            n_seen = self.seen_store.add_many(rejected_isins, reason=self.criteria.min_rating or '')
+            self.stats['newly_seen'] = n_seen
+            logger.info(
+                f"  🚫 {n_seen} bonds rejetés mémorisés (skip 60j ; "
+                f"total seen : {self.seen_store.count()})"
+            )
 
         # Task 18 — registra il tempo totale della fase scan
         if self._scan_start is not None:

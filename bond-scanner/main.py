@@ -127,11 +127,13 @@ async def main():
             f"Opportunita_Bond_{today}.xlsx",
         )
 
-    # Reset dédup si demandé (avant le scan)
+    # Reset dédup si demandé (avant le scan) — vide found (livrés) + seen (rejetés)
     if args.reset_found:
         from scanner.found_store import FoundStore
-        n = FoundStore().reset()
-        print(f"♻️  Historique dédup vidé : {n} bond effacés.")
+        from scanner.seen_store import SeenStore
+        nf = FoundStore().reset()
+        ns = SeenStore().reset()
+        print(f"♻️  Mémoire dédup vidée : {nf} livrés + {ns} rejetés effacés.")
 
     # Reset cache ratings si demandé (avant le scan)
     if args.reset_cache:

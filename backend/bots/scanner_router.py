@@ -679,6 +679,7 @@ async def delete_scanner_rating_key(
 # sans importer le package bond-scanner.
 
 FOUND_STORE_PATH = Path.home() / ".cache" / "bond-scanner-found-isins.json"
+SEEN_STORE_PATH = Path.home() / ".cache" / "bond-scanner-seen.json"
 
 
 @router.get("/found-count")
@@ -699,20 +700,22 @@ async def get_found_count(
 async def reset_found(
     current_user: User = Depends(require_role("admin")),
 ):
-    """Vide l'historique dédup : les bonds déjà livrés redeviennent cherchables."""
-    if not FOUND_STORE_PATH.is_file():
-        return {"message": "Aucun historique à vider", "cleared": 0}
-    try:
-        data = json.loads(FOUND_STORE_PATH.read_text())
-        n = len(data) if isinstance(data, dict) else 0
-    except Exception:
-        n = 0
-    try:
-        FOUND_STORE_PATH.unlink()
-    except OSError as e:
-        raise HTTPException(500, f"Impossible de vider l'historique : {e!r}")
-    logger.info(f"Historique dédup vidé par {current_user.username} ({n} bond)")
-    return {"message": f"{n} bond effacés de l'historique — ils redeviennent cherchables", "cleared": n}
+    """Vide la mémoire dédup : livrés (found) + rejetés (seen) redeviennent cherchables."""
+    cleared = 0
+    for store_path in (FOUND_STORE_PATH, SEEN_STORE_PATH):
+        if not store_path.is_file():
+            continue
+        try:
+            data = json.loads(store_path.read_text())
+            cleared += len(data) if isinstance(data, dict) else 0
+        except Exception:
+            pass
+        try:
+            store_path.unlink()
+        except OSError as e:
+            raise HTTPException(500, f"Impossible de vider {store_path.name} : {e!r}")
+    logger.info(f"Mémoire dédup (found+seen) vidée par {current_user.username} ({cleared} entrées)")
+    return {"message": f"{cleared} bond effacés (livrés + rejetés) — ils redeviennent cherchables", "cleared": cleared}
 
 
 # ================================================================
