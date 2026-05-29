@@ -29,7 +29,7 @@ ne veut pas) → **tes clips réels recombinés selon le contexte**.
 **Pourquoi une phase séparée** : sous-système le plus lourd (mod client **Java/Fabric**, stack absente du reste
 d'OmenServer) **et** dimension **consentement** → isolé proprement (spec mère §14 + plan Phase 1).
 
-**3 jalons** (ordre forcé : calibration et rejeu ont besoin de données déjà capturées) :
+**Jalons** (ordre forcé : calibration et rejeu ont besoin de données déjà capturées) — 1b.1→1b.3 = l'arc cœur, 1b.4 = extension multi-joueurs planifiée :
 
 | Jalon | Contenu | « Installable & utilisable » |
 |---|---|---|
