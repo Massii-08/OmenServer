@@ -127,3 +127,36 @@ def test_apply_event_cape_les_events_a_500():
     for i in range(505):
         mgr._apply_event(s, {"type": "error", "message": str(i)})
     assert len(s["events"]) == 500
+
+
+def test_start_session_passe_le_profil(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc('{"type":"status","state":"spawned"}\n')
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    sid = mgr.start_session("h", 25565, "B", None, "offline", profile="expert")
+    mgr._sessions[sid]["thread"].join(timeout=2)
+    assert "--profile" in captured["cmd"]
+    i = captured["cmd"].index("--profile")
+    assert captured["cmd"][i + 1] == "expert"
+
+
+def test_list_profiles_parse_la_sortie_node(monkeypatch):
+    payload = '[{"id":"evident","level":1,"label":"Évident","summary":"s","tells":["t1"]}]'
+    class R:
+        returncode = 0
+        stdout = payload
+        stderr = ""
+    monkeypatch.setattr(mgr.subprocess, "run", lambda *a, **k: R())
+    profs = mgr.list_profiles()
+    assert profs[0]["id"] == "evident"
+    assert profs[0]["tells"] == ["t1"]
+
+
+def test_list_profiles_retourne_vide_si_node_echoue(monkeypatch):
+    def boom(*a, **k):
+        raise OSError("node introuvable")
+    monkeypatch.setattr(mgr.subprocess, "run", boom)
+    assert mgr.list_profiles() == []

@@ -119,7 +119,7 @@ def has_api_key():
     return bool(_read_api_key())
 
 
-def start_session(host, port, user, model=None, auth="offline"):
+def start_session(host, port, user, model=None, auth="offline", profile=None):
     """Spawn le process Node détaché et enregistre la session. Retourne son id."""
     global _counter
     cmd = [_node_bin(), str(MC_AGENT_DIR / "index.js"),
@@ -127,6 +127,8 @@ def start_session(host, port, user, model=None, auth="offline"):
            "--auth", str(auth or "offline")]
     if model:
         cmd += ["--model", str(model)]
+    if profile:
+        cmd += ["--profile", str(profile)]
     env = dict(os.environ)
     api_key = _read_api_key()  # injecte la clé (fichier ou env) dans l'env du subprocess Node
     if api_key:
@@ -208,3 +210,27 @@ def stop_session(sid):
             proc.terminate()
     s["status"] = "stopped"
     return True
+
+
+_LIST_PROFILES_JS = MC_AGENT_DIR / "bin" / "list-profiles.js"
+
+
+def list_profiles():
+    """Profils + fiches de tells, lus depuis les fichiers Node (source unique). [] si échec."""
+    try:
+        res = subprocess.run(
+            [_node_bin(), str(_LIST_PROFILES_JS)],
+            cwd=str(MC_AGENT_DIR),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if res.returncode != 0 or not res.stdout:
+        return []
+    try:
+        data = json.loads(res.stdout)
+    except (ValueError, TypeError):
+        return []
+    return data if isinstance(data, list) else []
