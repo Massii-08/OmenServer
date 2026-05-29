@@ -6,11 +6,10 @@ const assert = require('node:assert');
 // NB: on n'inclut PAS index.js — il a des effets de bord au chargement (mineflayer.createBot).
 test('tous les modules unitaires se requirent sans throw', () => {
   assert.doesNotThrow(() => {
-    require('../io');
-    require('../state');
-    require('../brain');
-    require('../skills/say');
-    require('../skills/follow');
-    require('../skills/goto');
+    require('../io'); require('../state'); require('../brain');
+    require('../humanize'); require('../profiles');
+    require('../skills/say'); require('../skills/follow'); require('../skills/goto');
+    require('../skills/mineBlock'); require('../skills/attackNearest'); require('../skills/fleeFrom');
+    require('../reflexes');
   });
 });
