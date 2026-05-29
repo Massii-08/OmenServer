@@ -27,3 +27,15 @@ test('onCommand parse les lignes JSON et ignore le bruit', () => {
     resolve();
   }));
 });
+
+test('onCommand rassemble une ligne JSON fragmentée sur plusieurs chunks', () => {
+  const stream = new PassThrough();
+  const got = [];
+  onCommand((cmd) => got.push(cmd), stream);
+  stream.write('{"type":"s');           // moitié 1
+  stream.write('ay","message":"hi"}\n'); // moitié 2 + newline
+  return new Promise((resolve) => setImmediate(() => {
+    assert.deepStrictEqual(got, [{ type: 'say', message: 'hi' }]);
+    resolve();
+  }));
+});

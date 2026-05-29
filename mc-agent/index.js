@@ -38,11 +38,13 @@ bot.once('spawn', () => {
 
 async function runAction(decision) {
   if (decision.action === 'follow') {
-    follow(bot, decision.args);
-    emit({ type: 'action', skill: 'follow', args: decision.args });
+    const ok = follow(bot, decision.args);
+    emit({ type: 'action', skill: 'follow', args: decision.args, success: ok });
   } else if (decision.action === 'goto') {
-    await goto(bot, decision.args);
+    // émettre l'intention AVANT l'await : si le pathfinder throw, le catch émet l'erreur,
+    // mais l'event d'action (tentative) n'est pas perdu.
     emit({ type: 'action', skill: 'goto', args: decision.args });
+    await goto(bot, decision.args);
   }
 }
 
