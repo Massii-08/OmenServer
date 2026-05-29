@@ -35,3 +35,51 @@ def test_pump_lit_un_flux_et_finit_en_stopped():
     assert s["status"] == "stopped"  # flux terminé
     assert len(s["transcript"]) == 1
     assert len(s["events"]) == 2
+
+
+class FakeProc:
+    """Faux subprocess : stdout = flux fini, stdin capturé, pas de vrai process."""
+    def __init__(self, stdout_text):
+        self.stdout = io.StringIO(stdout_text)
+        self.stdin = io.StringIO()
+        self.pid = 4242
+        self._alive = True
+    def poll(self):
+        return None if self._alive else 0
+
+
+def test_has_api_key(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    assert mgr.has_api_key() is True
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert mgr.has_api_key() is False
+
+
+def test_start_session_enregistre_et_pompe(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    created = {}
+    def fake_popen(cmd, **kw):
+        created["cmd"] = cmd
+        created["env_has_key"] = kw.get("env", {}).get("ANTHROPIC_API_KEY") == "sk-test"
+        return FakeProc('{"type":"status","state":"spawned"}\n')
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    sid = mgr.start_session("play.exemple.net", 25565, "TrainBot", "claude-haiku-4-5-20251001")
+    mgr._sessions[sid]["thread"].join(timeout=2)
+    assert created["env_has_key"] is True
+    assert "--host" in created["cmd"] and "play.exemple.net" in created["cmd"]
+    st = mgr.get_status(sid)
+    assert st["status"] in ("spawned", "stopped")
+    assert any(s["id"] == sid for s in mgr.list_active())
+
+
+def test_send_command_ecrit_sur_stdin(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: FakeProc(""))
+    sid = mgr.start_session("h", 25565, "B", None)
+    mgr._sessions[sid]["thread"].join(timeout=2)
+    assert mgr.send_command(sid, {"type": "say", "message": "hi"}) is True
+    assert mgr.send_command(99999, {"type": "say", "message": "x"}) is False
+
+
+def test_get_status_inconnu_retourne_none():
+    assert mgr.get_status(123456) is None
