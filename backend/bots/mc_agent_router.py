@@ -32,7 +32,11 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
     if not mgr.has_api_key():
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY absente de l'environnement")
-    sid = mgr.start_session(req.host, req.port, req.user, req.model)
+    try:
+        sid = mgr.start_session(req.host, req.port, req.user, req.model)
+    except OSError as exc:
+        # ex: Node introuvable (FileNotFoundError) — message propre, pas de traceback en réponse
+        raise HTTPException(status_code=500, detail=f"Impossible de demarrer Node : {exc}")
     return {"session_id": sid}
 
 

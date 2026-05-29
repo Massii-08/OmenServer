@@ -120,7 +120,9 @@ def get_transcript(sid):
 
 
 def list_active():
-    return [_public(s) for s in _sessions.values()
+    # list(...) : snapshot des valeurs avant itération → évite RuntimeError si start_session
+    # insère une session sur un autre thread pendant un poll /active concurrent.
+    return [_public(s) for s in list(_sessions.values())
             if s.get("proc") is None or s["proc"].poll() is None]
 
 

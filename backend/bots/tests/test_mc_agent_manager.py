@@ -1,5 +1,15 @@
 import io
+
+import pytest
+
 from backend.bots import mc_agent_manager as mgr
+
+
+@pytest.fixture(autouse=True)
+def _clean_sessions():
+    """Nettoie le registre global entre les tests (évite les sessions fantômes)."""
+    yield
+    mgr._sessions.clear()
 
 
 def test_parse_event_line_valide():
@@ -83,3 +93,18 @@ def test_send_command_ecrit_sur_stdin(monkeypatch):
 
 def test_get_status_inconnu_retourne_none():
     assert mgr.get_status(123456) is None
+
+
+def test_apply_event_cape_le_transcript_a_200():
+    s = {"status": "starting", "transcript": [], "events": [], "last_error": None}
+    for i in range(205):
+        mgr._apply_event(s, {"type": "chat", "message": str(i)})
+    assert len(s["transcript"]) == 200
+    assert s["transcript"][-1]["message"] == "204"  # garde les plus récents
+
+
+def test_apply_event_cape_les_events_a_500():
+    s = {"status": "starting", "transcript": [], "events": [], "last_error": None}
+    for i in range(505):
+        mgr._apply_event(s, {"type": "error", "message": str(i)})
+    assert len(s["events"]) == 500
