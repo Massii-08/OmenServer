@@ -393,6 +393,7 @@ const Lang = {
             'mcagent.key_saved': 'Cle enregistree',
             'mcagent.key_cleared': 'Cle effacee',
             'mcagent.key_invalid': 'Cle invalide',
+            'mcagent.ms_hint': 'Compte Microsoft (serveur non-cracke) : un code de connexion apparait dans le transcript, va sur microsoft.com/link (1 seule fois).',
 
             // Settings
             'settings.title': 'Paramètres',
@@ -1394,6 +1395,7 @@ const Lang = {
             'mcagent.key_saved': 'Key saved',
             'mcagent.key_cleared': 'Key cleared',
             'mcagent.key_invalid': 'Invalid key',
+            'mcagent.ms_hint': 'Microsoft account (premium server): a login code appears in the transcript, go to microsoft.com/link (one-time).',
 
             // Settings
             'settings.title': 'Settings',
@@ -2395,6 +2397,7 @@ const Lang = {
             'mcagent.key_saved': 'Chiave salvata',
             'mcagent.key_cleared': 'Chiave cancellata',
             'mcagent.key_invalid': 'Chiave non valida',
+            'mcagent.ms_hint': 'Account Microsoft (server premium): un codice di accesso appare nel transcript, vai su microsoft.com/link (una sola volta).',
 
             // Settings
             'settings.title': 'Impostazioni',

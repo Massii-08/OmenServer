@@ -3,6 +3,7 @@
 const mineflayer = require('mineflayer');
 const { pathfinder, Movements } = require('mineflayer-pathfinder');
 const Anthropic = require('@anthropic-ai/sdk');
+const path = require('path');
 const { emit, onCommand } = require('./io');
 const { snapshot } = require('./state');
 const { think, RateLimiter } = require('./brain');
@@ -31,8 +32,11 @@ const botOpts = {
   auth: authMode,
 };
 if (authMode === 'microsoft') {
+  // Compte officiel requis sur un serveur online-mode (refuse les crackés).
   // device-code flow : on surface le code de login dans le transcript.
-  // Aucun mot de passe n'est stocké ; mineflayer met le token en cache.
+  // Aucun mot de passe n'est stocké ; le token est mis en cache dans .mc-auth/
+  // (gitignored) → pas de re-login device-code aux redémarrages suivants.
+  botOpts.profilesFolder = path.join(__dirname, '.mc-auth');
   botOpts.onMsaCode = (data) => emit({
     type: 'msa',
     message: `Connexion Microsoft : va sur ${data.verification_uri} et entre le code ${data.user_code}`,
