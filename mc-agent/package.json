@@ -1,0 +1,15 @@
+{
+  "name": "omen-mc-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Bot Minecraft d'entrainement staff (OmenServer module Bot)",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0",
+    "mineflayer": "^4.20.0",
+    "mineflayer-pathfinder": "^2.4.5"
+  }
+}
