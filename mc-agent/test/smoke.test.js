@@ -10,6 +10,6 @@ test('tous les modules unitaires se requirent sans throw', () => {
     require('../humanize'); require('../profiles'); require('../llm');
     require('../skills/say'); require('../skills/follow'); require('../skills/goto');
     require('../skills/mineBlock'); require('../skills/attackNearest'); require('../skills/fleeFrom');
-    require('../reflexes');
+    require('../reflexes'); require('../triggers');
   });
 });

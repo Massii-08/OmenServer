@@ -18,6 +18,7 @@ const { mineBlock, collectWood } = require('./skills/mineBlock');
 const { attackNearest } = require('./skills/attackNearest');
 const { fleeFrom } = require('./skills/fleeFrom');
 const { installReflexes } = require('./reflexes');
+const { decideReaction } = require('./triggers');
 
 function parseArgs(argv) {
   const o = {};
@@ -36,6 +37,8 @@ const model = args.model || DEFAULT_MODELS[provider] || DEFAULT_MODELS.anthropic
 // maxCalls par défaut 15/min : reste sous le quota/min du free tier Gemini (anti-429).
 const limiter = new RateLimiter(Number(args.maxCalls || 15), 60000);
 const client = createLLMClient(provider); // lit la clé du provider depuis l'environnement
+// Politique de réponse en chat public : 'mention' (défaut) | 'never' | 'always'. Privé (/msg) = toujours.
+const PUBLIC_MODE = (process.env.MC_AGENT_PUBLIC_MODE || 'mention').toLowerCase();
 
 let profile = null;
 try { profile = loadProfile(args.profile || 'intermediaire'); }
@@ -81,9 +84,19 @@ async function runAction(decision) {
   else if (a === 'fleeFrom') { const ok = fleeFrom(bot); emit({ type: 'action', skill: 'fleeFrom', success: ok }); }
 }
 
-bot.on('chat', async (username, message) => {
+function replyTo(reaction, text) {
+  if (reaction.private) bot.whisper(reaction.to, text); // réponse en privé (/tell)
+  else say(bot, text);                                  // réponse en public
+}
+
+// Traite un message entrant (chat public OU whisper privé) selon la politique de réponse.
+// Anti-giveaway + anti-coût : on n'appelle le LLM que si le message nous est adressé.
+async function handleIncoming(username, message, isWhisper) {
   if (username === bot.username) return;
-  emit({ type: 'chat', from: username, message });
+  const reaction = decideReaction({ username, message, isWhisper, botUsername: bot.username, publicMode: PUBLIC_MODE });
+  // On montre le message dans le transcript (contexte formateur), en taguant le canal + s'il est traité.
+  emit({ type: 'chat', from: username, message, private: !!isWhisper, handled: !!reaction });
+  if (!reaction) return; // général non adressé → ignoré (zéro appel LLM)
   try {
     const decision = await think(client, { state: snapshot(bot), message, model, limiter, profile });
     if (!decision) { emit({ type: 'info', message: 'rate-limited' }); return; }
@@ -91,13 +104,16 @@ bot.on('chat', async (username, message) => {
       // Réalisme paramétré (§7.1) : latence humaine + fautes occasionnelles selon le profil.
       const { text, delayMs } = humanizeReply(profile, decision.reply);
       await sleep(delayMs);
-      if (text) { await say(bot, text); emit({ type: 'say', message: text }); }
+      if (text) { replyTo(reaction, text); emit({ type: 'say', message: text, private: reaction.private, to: reaction.to }); }
     }
     await runAction(decision);
   } catch (e) {
     emit({ type: 'error', message: String((e && e.message) || e) });
   }
-});
+}
+
+bot.on('chat', (username, message) => handleIncoming(username, message, false));
+bot.on('whisper', (username, message) => handleIncoming(username, message, true));
 
 bot.on('death', () => emit({ type: 'status', state: 'dead' }));
 bot.on('kicked', (reason) => emit({ type: 'error', message: 'kicked: ' + reason }));
