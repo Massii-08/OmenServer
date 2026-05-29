@@ -366,6 +366,20 @@ const Lang = {
             'scanner.config_key_hint': 'Recupera la tua chiave su',
             'scanner.config_key_explain': 'Condivisa con il Yield Bot. Senza chiave, lo scanner non potrà recuperare i rating Fitch e l\'Excel sarà vuoto.',
 
+            // MC Agent
+            'mcagent.training': 'Entrainement',
+            'mcagent.open': 'Ouvrir',
+            'mcagent.desc': 'Agent Minecraft d entrainement staff (pilote par Claude).',
+            'mcagent.host': 'Serveur',
+            'mcagent.port': 'Port',
+            'mcagent.pseudo': 'Pseudo',
+            'mcagent.start': 'Demarrer',
+            'mcagent.stop': 'Arreter',
+            'mcagent.stopped': 'Arrete',
+            'mcagent.send': 'Envoyer',
+            'mcagent.say_placeholder': 'Parler au bot...',
+            'mcagent.need_host': 'Renseigne l adresse du serveur',
+
             // Settings
             'settings.title': 'Paramètres',
             'settings.subtitle': 'Configuration de ton serveur',
@@ -1339,6 +1353,20 @@ const Lang = {
             'scanner.config_key_hint': 'Get your key at',
             'scanner.config_key_explain': 'Shared with Yield Bot. Without a key the scanner can\'t fetch Fitch ratings and the Excel will be empty.',
 
+            // MC Agent
+            'mcagent.training': 'Training',
+            'mcagent.open': 'Open',
+            'mcagent.desc': 'Staff-training Minecraft agent (Claude-driven).',
+            'mcagent.host': 'Server',
+            'mcagent.port': 'Port',
+            'mcagent.pseudo': 'Username',
+            'mcagent.start': 'Start',
+            'mcagent.stop': 'Stop',
+            'mcagent.stopped': 'Stopped',
+            'mcagent.send': 'Send',
+            'mcagent.say_placeholder': 'Talk to the bot...',
+            'mcagent.need_host': 'Enter the server address',
+
             // Settings
             'settings.title': 'Settings',
             'settings.subtitle': 'Server configuration',
@@ -2311,6 +2339,20 @@ const Lang = {
             'scanner.config_key_delete_btn': 'Rimuovi',
             'scanner.config_key_hint': 'Recupera la tua chiave su',
             'scanner.config_key_explain': 'Condivisa con il Yield Bot. Senza chiave, lo scanner non potrà recuperare i rating Fitch e l\'Excel sarà vuoto.',
+
+            // MC Agent
+            'mcagent.training': 'Addestramento',
+            'mcagent.open': 'Apri',
+            'mcagent.desc': 'Agente Minecraft per addestrare lo staff (guidato da Claude).',
+            'mcagent.host': 'Server',
+            'mcagent.port': 'Porta',
+            'mcagent.pseudo': 'Nome',
+            'mcagent.start': 'Avvia',
+            'mcagent.stop': 'Ferma',
+            'mcagent.stopped': 'Fermato',
+            'mcagent.send': 'Invia',
+            'mcagent.say_placeholder': 'Parla al bot...',
+            'mcagent.need_host': 'Inserisci l indirizzo del server',
 
             // Settings
             'settings.title': 'Impostazioni',

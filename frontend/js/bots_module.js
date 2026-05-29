@@ -100,12 +100,28 @@ const BotsModule = {
  sharedWithYou: false,
  }) : '';
 
+ // MC Agent virtual card (admin-only — feature d'entrainement staff)
+ const canSeeMCAgent = u && u.is_admin;
+ const mcAgentCard = canSeeMCAgent ? buildBotCard({
+ icon: 'MCA',
+ name: 'MC Agent',
+ type: 'gaming',
+ desc: Lang.t('mcagent.desc'),
+ status: '',
+ statusLabel: Lang.t('mcagent.training'),
+ onClick: 'BotsModule.openMCAgent()',
+ actions: `<button class="btn btn-ghost btn-sm">${Lang.t('mcagent.open')}</button>`,
+ selected: false,
+ sharedWithYou: false,
+ }) : '';
+
  if (this._bots.length === 0) {
  grid.innerHTML = `
  ${u && u.role === 'developer' ? `<div class="b-quota-row"><span class="bot-quota-badge">${Lang.t('rbac.bot_quota')}: 0/3</span></div>` : ''}
  <div class="bots-grid-bento">
  ${yieldBotCard}
  ${scannerBotCard}
+ ${mcAgentCard}
  </div>`;
  return;
  }
@@ -151,6 +167,7 @@ const BotsModule = {
  <div class="bots-grid-bento">
  ${yieldBotCard}
  ${scannerBotCard}
+ ${mcAgentCard}
  ${userBotsHtml}
  </div>`;
  },
@@ -1011,6 +1028,90 @@ const BotsModule = {
  this._scannerState.status = null;
  await this._loadScannerUsage();
  this._renderScannerConfig();
+ },
+
+ async openMCAgent() {
+ // Stoppe le poll scanner (évite le bleed) ET un éventuel poll MC Agent résiduel
+ if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
+ if (this._mcAgentTimer) { clearInterval(this._mcAgentTimer); this._mcAgentTimer = null; }
+ this._mcAgentSession = this._mcAgentSession || null;
+ // Conteneur canonique du module (cf. openBondScanner/_renderYield* : this._container set dans render())
+ const el = this._container || document.getElementById('bots-module-container')?.parentElement;
+ if (!el) return;
+ el.innerHTML = `
+ <div class="card">
+ <h3 style="margin:0 0 12px;">MC Agent — ${Lang.t('mcagent.training')}</h3>
+ <div style="display:grid;grid-template-columns:1fr 120px 1fr;gap:10px;margin-bottom:10px;">
+ <div><label class="form-label">${Lang.t('mcagent.host')}</label><input id="mca-host" class="form-input" placeholder="play.exemple.net" /></div>
+ <div><label class="form-label">${Lang.t('mcagent.port')}</label><input id="mca-port" class="form-input" value="25565" /></div>
+ <div><label class="form-label">${Lang.t('mcagent.pseudo')}</label><input id="mca-user" class="form-input" value="TrainBot" /></div>
+ </div>
+ <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
+ <button class="btn btn-primary" onclick="BotsModule.startMCAgent()">${Lang.t('mcagent.start')}</button>
+ <button class="btn btn-secondary btn-sm" onclick="BotsModule.stopMCAgent()">${Lang.t('mcagent.stop')}</button>
+ <span id="mca-msg" style="font-size:13px;color:var(--text-muted);"></span>
+ </div>
+ <div id="mca-transcript" style="background:#0d1117;border-radius:8px;padding:12px;max-height:300px;overflow-y:auto;font-family:'Fira Code',monospace;font-size:12px;line-height:1.6;color:#c9d1d9;"></div>
+ <div style="display:flex;gap:8px;margin-top:10px;">
+ <input id="mca-say" class="form-input" placeholder="${Lang.t('mcagent.say_placeholder')}" style="flex:1;" />
+ <button class="btn btn-secondary" onclick="BotsModule.sayMCAgent()">${Lang.t('mcagent.send')}</button>
+ </div>
+ </div>`;
+ },
+
+ async startMCAgent() {
+ const host = document.getElementById('mca-host').value.trim();
+ const port = parseInt(document.getElementById('mca-port').value, 10) || 25565;
+ const user = document.getElementById('mca-user').value.trim() || 'TrainBot';
+ const msg = document.getElementById('mca-msg');
+ if (!host) { msg.textContent = Lang.t('mcagent.need_host'); return; }
+ const r = await Auth.apiCall('/api/mc-agent/run', {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify({ host, port, user }),
+ });
+ const data = await r.json();
+ if (!r.ok) { msg.textContent = data.detail || 'Erreur'; return; }
+ this._mcAgentSession = data.session_id;
+ msg.textContent = `session #${data.session_id}`;
+ this._mcAgentTimer = setInterval(() => BotsModule.refreshMCAgent(), 3000);
+ },
+
+ async refreshMCAgent() {
+ if (!this._mcAgentSession) return;
+ const r = await Auth.apiCall(`/api/mc-agent/chat/${this._mcAgentSession}`);
+ if (!r.ok) return;
+ const data = await r.json();
+ const box = document.getElementById('mca-transcript');
+ if (!box) { clearInterval(this._mcAgentTimer); return; }
+ box.innerHTML = (data.transcript || []).map((e) =>
+ e.type === 'say'
+ ? `<div style="color:#4ade80;">[bot] ${e.message}</div>`
+ : `<div>&lt;${e.from || '?'}&gt; ${e.message || ''}</div>`
+ ).join('');
+ box.scrollTop = box.scrollHeight;
+ },
+
+ async sayMCAgent() {
+ if (!this._mcAgentSession) return;
+ const input = document.getElementById('mca-say');
+ const message = input.value.trim();
+ if (!message) return;
+ await Auth.apiCall(`/api/mc-agent/say/${this._mcAgentSession}`, {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify({ message }),
+ });
+ input.value = '';
+ },
+
+ async stopMCAgent() {
+ if (!this._mcAgentSession) return;
+ await Auth.apiCall(`/api/mc-agent/stop/${this._mcAgentSession}`, { method: 'POST' });
+ clearInterval(this._mcAgentTimer);
+ const msg = document.getElementById('mca-msg');
+ if (msg) msg.textContent = Lang.t('mcagent.stopped');
+ this._mcAgentSession = null;
  },
 
  async _loadScannerUsage() {
