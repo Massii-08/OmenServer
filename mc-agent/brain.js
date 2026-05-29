@@ -32,4 +32,27 @@ class RateLimiter {
   }
 }
 
-module.exports = { parseDecision, RateLimiter };
+const SYSTEM_PROMPT = [
+  "Tu incarnes un joueur dans une partie Minecraft, dans un cadre d'entrainement de moderation.",
+  "Tu es honnete : si on te demande si tu es un bot, tu peux le confirmer.",
+  'Reponds UNIQUEMENT en JSON : {"reply": string, "action": string|null, "args": object}.',
+  'Actions possibles : "follow" (args {player}), "goto" (args {x,y,z}), ou null (juste parler).',
+].join(' ');
+
+/**
+ * Appelle Claude avec l'état + le message reçu. `client` = SDK Anthropic (injectable pour tests).
+ * Retourne une décision parsée, ou null si le rate-limiter bloque l'appel.
+ */
+async function think(client, { state, message, model, limiter }) {
+  if (limiter && !limiter.tryAcquire()) return null;
+  const resp = await client.messages.create({
+    model,
+    max_tokens: 300,
+    system: SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: `Etat: ${JSON.stringify(state)}\nMessage recu: ${message}` }],
+  });
+  const text = (resp.content || []).map((b) => b.text || '').join('');
+  return parseDecision(text);
+}
+
+module.exports = { parseDecision, RateLimiter, think, SYSTEM_PROMPT };
