@@ -498,42 +498,8 @@ const BotsModule = {
  ${Lang.t('yield.threshold_above') || 'Rouge si prix'} &gt; <span id="yield-threshold-hint">${this._yieldState.priceThreshold}</span> · ${Lang.t('yield.threshold_below') || 'Noir si prix'} ≤ <span id="yield-threshold-hint2">${this._yieldState.priceThreshold}</span></div></div><!-- Upload info / summary --><div id="yield-upload-info" style="display:none;margin-top:12px;"></div><!-- Launch button --><button id="yield-launch-btn" class="yield-launch-btn" onclick="BotsModule._launchYieldBot()"
  ${!hasFile ? 'disabled' : ''}>
  ${Lang.t('yield.launch')}
- </button><div id="yield-error-msg" style="display:none;margin-top:12px;color:var(--danger);font-size:13px;text-align:center;"></div></div>${isAdmin ? `
-<!-- Rating fetcher configuration (admin only) -->
-<div class="card" style="margin-top:16px;">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
-    <h3 style="margin:0;display:flex;align-items:center;gap:10px;">
-      <span class="b-ticker" style="background:var(--bg-elev-3);">RATING</span>
-      <span>${Lang.t('yield.config_title') || 'Rating fetcher'}</span>
-    </h3>
-    <span style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px;">${Lang.t('common.admin_only') || 'Admin only'}</span>
-  </div>
-  <div id="yield-rating-key-status" style="font-size:13px;color:var(--text-muted);font-family:var(--font-mono);padding:10px 14px;background:var(--bg-elev-3);border:1px solid var(--border);border-radius:8px;">
-    ${Lang.t('common.loading') || 'Chargement…'}
-  </div>
-  <div id="yield-rating-key-actions" style="margin-top:12px;display:flex;gap:8px;"></div>
-  <div id="yield-rating-key-form" style="margin-top:12px;display:none;">
-    <input type="password" id="yield-rating-key-input" placeholder="BSA..." autocomplete="off"
-           style="width:100%;padding:10px 12px;background:var(--bg-elev-3);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:var(--font-mono);font-size:13px;box-sizing:border-box;" />
-    <div style="margin-top:10px;display:flex;gap:8px;">
-      <button class="btn btn-primary btn-sm" onclick="BotsModule._saveRatingKey()">${Lang.t('common.save') || 'Enregistrer'}</button>
-      <button class="btn btn-secondary btn-sm" onclick="BotsModule._cancelRatingKeyEdit()">${Lang.t('common.cancel') || 'Annuler'}</button>
-    </div>
-    <div style="margin-top:8px;font-size:11px;color:var(--text-muted);">
-      ${Lang.t('yield.config_key_hint') || 'Récupère ta clé sur'} <a href="https://api-dashboard.search.brave.com/app/keys" target="_blank" rel="noopener" style="color:var(--info);">api-dashboard.search.brave.com/app/keys</a>
-    </div>
-  </div>
-  <div style="margin-top:12px;font-size:11px;color:var(--text-dim);line-height:1.5;">
-    ${Lang.t('yield.config_explain') || 'La clé est utilisée pour récupérer automatiquement le rating Fitch des bonds dont Deutsche Börse ne fournit pas la valeur. Stockée dans <code>data/secrets/brave.key</code> (jamais committée). Plan free Brave : 1000 requêtes/mois, largement suffisant.'}
-  </div>
-</div>
-` : ''}
- `;
+ </button><div id="yield-error-msg" style="display:none;margin-top:12px;color:var(--danger);font-size:13px;text-align:center;"></div></div> `;
 
- // Load admin-only rating key status (after innerHTML is in the DOM)
- if (isAdmin) {
-   setTimeout(() => this._loadRatingKeyStatus(), 50);
- }
  },
 
  // ================================================================
@@ -1083,7 +1049,7 @@ const BotsModule = {
  onchange="BotsModule._scannerState.currencies.USD=this.checked"> USD
  </label><label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="scanner-gbp" ${s.currencies.GBP?'checked':''}
  onchange="BotsModule._scannerState.currencies.GBP=this.checked"> GBP
- </label></div></div><!-- Task 16 (2026-05-28) — Admin Brave key section (visible only if admin) --><div id="scanner-admin-key" data-admin-only="true" style="padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);margin-bottom:20px;display:none;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><label style="font-size:13px;font-weight:600;">${Lang.t('scanner.config_key_title')}</label><div id="scanner-rating-key-actions" style="display:flex;gap:6px;"></div></div><div id="scanner-rating-key-status" style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">…</div><div id="scanner-rating-key-form" style="display:none;margin-top:8px;"><input id="scanner-rating-key-input" type="password" class="form-input" placeholder="BSA…" style="width:100%;font-family:var(--font-mono);font-size:12px;margin-bottom:6px;" /><div style="display:flex;gap:6px;"><button class="btn btn-primary btn-sm" onclick="BotsModule._scannerSaveKey()">${Lang.t('scanner.config_key_set_btn')}</button><button class="btn btn-secondary btn-sm" onclick="BotsModule._scannerCancelKeyEdit()">${Lang.t('common.cancel') || 'Annuler'}</button></div></div><div style="font-size:11px;color:var(--text-dim);margin-top:6px;">${Lang.t('scanner.config_key_hint')} <a href="https://api-dashboard.search.brave.com/app/keys" target="_blank" rel="noopener" style="color:var(--info);">api-dashboard.search.brave.com/app/keys</a> · ${Lang.t('scanner.config_key_explain')}</div></div><!-- Launch button --><button id="scanner-launch-btn" class="yield-launch-btn" style="background:var(--accent);"
+ </label></div></div><!-- Bouton admin : oublier les bonds REJETÉS (seen only ; found préservé) --><div id="scanner-reset-seen" data-admin-only="true" style="padding:12px 16px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);margin-bottom:20px;display:none;"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px;"><div style="font-size:12px;color:var(--text-muted);line-height:1.45;">Réévalue au prochain scan les bonds précédemment écartés (rating/yield/∅). Auto-reset 60j de toute façon.</div><button class="btn btn-secondary btn-sm" style="white-space:nowrap;" onclick="BotsModule._scannerResetSeen()">Oublier les rejetés</button></div></div><!-- Launch button --><button id="scanner-launch-btn" class="yield-launch-btn" style="background:var(--accent);"
  onclick="BotsModule._launchScanner()" ${usage.remaining===0?'disabled':''}>
  ${usage.remaining === 0 ? Lang.t('scanner.rate_limit') : Lang.t('scanner.launch')}
  </button><div id="scanner-error-msg" style="display:none;margin-top:12px;color:var(--danger);font-size:13px;text-align:center;"></div></div>
@@ -1095,9 +1061,8 @@ const BotsModule = {
  const adminUser = (typeof Auth !== 'undefined' && Auth.getUser) ? Auth.getUser() : null;
  const isAdmin = adminUser && adminUser.is_admin;
  if (isAdmin) {
-   const adminBlock = document.getElementById('scanner-admin-key');
+   const adminBlock = document.getElementById('scanner-reset-seen');
    if (adminBlock) adminBlock.style.display = 'block';
-   setTimeout(() => this._scannerLoadKeyStatus(), 50);
  }
  },
 
@@ -1178,6 +1143,19 @@ const BotsModule = {
      this._scannerLoadKeyStatus();
    } catch (e) {
      (typeof Toast !== 'undefined' && Toast.error) ? Toast.error('delete error: ' + e.message) : alert('delete error: ' + e.message);
+   }
+ },
+
+ async _scannerResetSeen() {
+   const ok = confirm('Oublier les bonds rejetés ? Ils reconcourront au prochain scan (sinon auto-reset 60j).');
+   if (!ok) return;
+   try {
+     const resp = await Auth.apiCall('/api/bots/scanner/reset-seen', { method: 'POST' });
+     const data = await resp.json();
+     if (!resp.ok) { (typeof Toast !== 'undefined' && Toast.error) ? Toast.error(data.detail || ('HTTP ' + resp.status)) : alert(data.detail); return; }
+     (typeof Toast !== 'undefined' && Toast.success) ? Toast.success(data.message || 'Rejetés oubliés') : null;
+   } catch (e) {
+     (typeof Toast !== 'undefined' && Toast.error) ? Toast.error('reset error: ' + e.message) : alert('reset error: ' + e.message);
    }
  },
 

@@ -747,6 +747,30 @@ async def reset_found(
     return {"message": f"{cleared} bond effacés (livrés + rejetés) — ils redeviennent cherchables", "cleared": cleared}
 
 
+@router.post("/reset-seen")
+async def reset_seen(
+    current_user: User = Depends(require_role("admin", "money")),
+):
+    """Vide UNIQUEMENT les bonds REJETÉS (seen). Les LIVRÉS (found) restent.
+
+    Les rejetés redeviennent cherchables au prochain scan (sinon ils expirent
+    de toute façon automatiquement après 60 jours, cf. SeenStore TTL).
+    """
+    if not SEEN_STORE_PATH.is_file():
+        return {"message": "Aucun bond rejeté en mémoire", "cleared": 0}
+    try:
+        data = json.loads(SEEN_STORE_PATH.read_text())
+        n = len(data) if isinstance(data, dict) else 0
+    except Exception:
+        n = 0
+    try:
+        SEEN_STORE_PATH.unlink()
+    except OSError as e:
+        raise HTTPException(500, f"Impossible de vider les rejetés : {e!r}")
+    logger.info(f"Seen store vidé par {current_user.username} ({n} rejetés)")
+    return {"message": f"{n} bonds rejetés oubliés — ils reconcourront au prochain scan", "cleared": n}
+
+
 # ================================================================
 #  RATING CACHE — reset (2026-05-28)
 # ================================================================
