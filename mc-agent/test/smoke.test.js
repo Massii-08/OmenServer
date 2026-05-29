@@ -7,7 +7,7 @@ const assert = require('node:assert');
 test('tous les modules unitaires se requirent sans throw', () => {
   assert.doesNotThrow(() => {
     require('../io'); require('../state'); require('../brain');
-    require('../humanize'); require('../profiles');
+    require('../humanize'); require('../profiles'); require('../llm');
     require('../skills/say'); require('../skills/follow'); require('../skills/goto');
     require('../skills/mineBlock'); require('../skills/attackNearest'); require('../skills/fleeFrom');
     require('../reflexes');
