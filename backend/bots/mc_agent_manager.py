@@ -114,8 +114,19 @@ def _node_bin():
     return os.environ.get("MC_AGENT_NODE_BIN", "node")
 
 
+def _provider():
+    """Provider LLM sélectionné (env MC_AGENT_LLM) : 'gemini' (gratuit) ou 'anthropic' (défaut)."""
+    return (os.environ.get("MC_AGENT_LLM") or "anthropic").lower()
+
+
 def has_api_key():
-    """True si une clé Claude est dispo (var d'env OU fichier secret posé via le dashboard)."""
+    """True si la clé du provider LLM sélectionné est dispo.
+
+    - gemini    → GEMINI_API_KEY dans l'environnement (héritée du .env via load_dotenv)
+    - anthropic → ANTHROPIC_API_KEY (var d'env) OU fichier secret posé via le dashboard
+    """
+    if _provider() == "gemini":
+        return bool(os.environ.get("GEMINI_API_KEY"))
     return bool(_read_api_key())
 
 

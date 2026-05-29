@@ -61,9 +61,20 @@ class FakeProc:
 def test_has_api_key(monkeypatch, tmp_path):
     # isole le fallback fichier (sinon un anthropic.key réel rendrait le test flaky)
     monkeypatch.setattr(mgr, "API_KEY_PATH", tmp_path / "none.key")
+    monkeypatch.setenv("MC_AGENT_LLM", "anthropic")  # déterministe même si .env force gemini
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     assert mgr.has_api_key() is True
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert mgr.has_api_key() is False
+
+
+def test_has_api_key_gemini(monkeypatch):
+    """En mode Gemini, c'est GEMINI_API_KEY qui compte (pas la clé Anthropic)."""
+    monkeypatch.setenv("MC_AGENT_LLM", "gemini")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
+    assert mgr.has_api_key() is True
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     assert mgr.has_api_key() is False
 
 
