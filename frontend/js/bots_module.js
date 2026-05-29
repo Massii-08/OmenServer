@@ -1041,10 +1041,20 @@ const BotsModule = {
  el.innerHTML = `
  <div class="card">
  <h3 style="margin:0 0 12px;">MC Agent — ${Lang.t('mcagent.training')}</h3>
- <div style="display:grid;grid-template-columns:1fr 120px 1fr;gap:10px;margin-bottom:10px;">
- <div><label class="form-label">${Lang.t('mcagent.host')}</label><input id="mca-host" class="form-input" placeholder="play.exemple.net" /></div>
+ <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);">
+ <span style="font-size:13px;font-weight:600;">${Lang.t('mcagent.key_title')}</span>
+ <span id="mca-key-status" style="font-size:12px;color:var(--text-muted);">…</span>
+ <input id="mca-key" class="form-input" type="password" placeholder="${Lang.t('mcagent.key_placeholder')}" style="flex:1;min-width:160px;" />
+ <button class="btn btn-secondary btn-sm" onclick="BotsModule.saveMCAgentKey()">${Lang.t('mcagent.key_save')}</button>
+ <button class="btn btn-ghost btn-sm" onclick="BotsModule.clearMCAgentKey()">${Lang.t('mcagent.key_clear')}</button>
+ </div>
+ <div style="display:grid;grid-template-columns:1fr 100px;gap:10px;margin-bottom:10px;">
+ <div><label class="form-label">${Lang.t('mcagent.ip')}</label><input id="mca-host" class="form-input" placeholder="192.168.1.x ou play.exemple.net" /></div>
  <div><label class="form-label">${Lang.t('mcagent.port')}</label><input id="mca-port" class="form-input" value="25565" /></div>
- <div><label class="form-label">${Lang.t('mcagent.pseudo')}</label><input id="mca-user" class="form-input" value="TrainBot" /></div>
+ </div>
+ <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+ <div><label class="form-label">${Lang.t('mcagent.account')}</label><input id="mca-user" class="form-input" value="TrainBot" placeholder="pseudo ou email" /></div>
+ <div><label class="form-label">${Lang.t('mcagent.auth_label')}</label><select id="mca-auth" class="form-input"><option value="offline">${Lang.t('mcagent.auth_offline')}</option><option value="microsoft">${Lang.t('mcagent.auth_microsoft')}</option></select></div>
  </div>
  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
  <button class="btn btn-primary" onclick="BotsModule.startMCAgent()">${Lang.t('mcagent.start')}</button>
@@ -1057,18 +1067,20 @@ const BotsModule = {
  <button class="btn btn-secondary" onclick="BotsModule.sayMCAgent()">${Lang.t('mcagent.send')}</button>
  </div>
  </div>`;
+ this._loadMCAgentKey();
  },
 
  async startMCAgent() {
  const host = document.getElementById('mca-host').value.trim();
  const port = parseInt(document.getElementById('mca-port').value, 10) || 25565;
  const user = document.getElementById('mca-user').value.trim() || 'TrainBot';
+ const auth = document.getElementById('mca-auth').value;
  const msg = document.getElementById('mca-msg');
  if (!host) { msg.textContent = Lang.t('mcagent.need_host'); return; }
  const r = await Auth.apiCall('/api/mc-agent/run', {
  method: 'POST',
  headers: { 'Content-Type': 'application/json' },
- body: JSON.stringify({ host, port, user }),
+ body: JSON.stringify({ host, port, user, auth }),
  });
  if (!r) return;
  const data = await r.json().catch(() => ({}));
@@ -1090,6 +1102,8 @@ const BotsModule = {
  box.innerHTML = (data.transcript || []).map((e) =>
  e.type === 'say'
  ? `<div style="color:var(--accent);">[bot] ${esc(e.message)}</div>`
+ : e.type === 'msa'
+ ? `<div style="color:var(--warning);font-weight:600;">[microsoft] ${esc(e.message)}</div>`
  : `<div>&lt;${esc(e.from || '?')}&gt; ${esc(e.message)}</div>`
  ).join('');
  box.scrollTop = box.scrollHeight;
@@ -1116,6 +1130,38 @@ const BotsModule = {
  const msg = document.getElementById('mca-msg');
  if (msg) msg.textContent = Lang.t('mcagent.stopped');
  this._mcAgentSession = null;
+ },
+
+ async _loadMCAgentKey() {
+ const statusEl = document.getElementById('mca-key-status');
+ if (!statusEl) return;
+ const r = await Auth.apiCall('/api/mc-agent/settings/api-key');
+ if (!r || !r.ok) { statusEl.textContent = ''; return; }
+ const data = await r.json();
+ statusEl.textContent = data.has_key ? `${Lang.t('mcagent.key_set')} (${data.preview})` : Lang.t('mcagent.key_absent');
+ statusEl.style.color = data.has_key ? 'var(--accent)' : 'var(--text-muted)';
+ },
+
+ async saveMCAgentKey() {
+ const input = document.getElementById('mca-key');
+ const key = input.value.trim();
+ if (!key) return;
+ const r = await Auth.apiCall('/api/mc-agent/settings/api-key', {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify({ key }),
+ });
+ if (!r) return;
+ const data = await r.json().catch(() => ({}));
+ if (!r.ok) { Toast.error(data.detail || Lang.t('mcagent.key_invalid')); return; }
+ input.value = '';
+ Toast.success(Lang.t('mcagent.key_saved'));
+ this._loadMCAgentKey();
+ },
+
+ async clearMCAgentKey() {
+ const r = await Auth.apiCall('/api/mc-agent/settings/api-key', { method: 'DELETE' });
+ if (r && r.ok) { Toast.success(Lang.t('mcagent.key_cleared')); this._loadMCAgentKey(); }
  },
 
  async _loadScannerUsage() {

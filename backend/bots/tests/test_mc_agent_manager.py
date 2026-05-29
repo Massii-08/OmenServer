@@ -58,11 +58,29 @@ class FakeProc:
         return None if self._alive else 0
 
 
-def test_has_api_key(monkeypatch):
+def test_has_api_key(monkeypatch, tmp_path):
+    # isole le fallback fichier (sinon un anthropic.key réel rendrait le test flaky)
+    monkeypatch.setattr(mgr, "API_KEY_PATH", tmp_path / "none.key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     assert mgr.has_api_key() is True
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     assert mgr.has_api_key() is False
+
+
+def test_api_key_fichier_roundtrip(monkeypatch, tmp_path):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(mgr, "API_KEY_PATH", tmp_path / "anthropic.key")
+    assert mgr.has_api_key() is False
+    assert mgr.get_api_key_status()["has_key"] is False
+    preview = mgr.set_api_key("sk-ant-abcdef0123456789")
+    assert "…" in preview and "0123456789" not in preview  # masquée
+    assert mgr.has_api_key() is True
+    status = mgr.get_api_key_status()
+    assert status["has_key"] is True and status["source"] == "file"
+    assert mgr._read_api_key() == "sk-ant-abcdef0123456789"
+    assert mgr.clear_api_key() is True
+    assert mgr.has_api_key() is False
+    assert mgr.clear_api_key() is False  # déjà absent
 
 
 def test_start_session_enregistre_et_pompe(monkeypatch):
@@ -77,6 +95,7 @@ def test_start_session_enregistre_et_pompe(monkeypatch):
     mgr._sessions[sid]["thread"].join(timeout=2)
     assert created["env_has_key"] is True
     assert "--host" in created["cmd"] and "play.exemple.net" in created["cmd"]
+    assert "--auth" in created["cmd"]  # auth toujours passé (défaut offline)
     st = mgr.get_status(sid)
     assert st["status"] in ("spawned", "stopped")
     assert any(s["id"] == sid for s in mgr.list_active())

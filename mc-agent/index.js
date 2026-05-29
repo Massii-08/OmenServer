@@ -23,12 +23,22 @@ const model = args.model || 'claude-haiku-4-5-20251001';
 const limiter = new RateLimiter(Number(args.maxCalls || 20), 60000);
 const client = new Anthropic(); // lit ANTHROPIC_API_KEY depuis l'environnement
 
-const bot = mineflayer.createBot({
+const authMode = args.auth === 'microsoft' ? 'microsoft' : 'offline';
+const botOpts = {
   host: args.host,
   port: Number(args.port || 25565),
   username: args.user || 'TrainBot',
-  auth: 'offline',
-});
+  auth: authMode,
+};
+if (authMode === 'microsoft') {
+  // device-code flow : on surface le code de login dans le transcript.
+  // Aucun mot de passe n'est stocké ; mineflayer met le token en cache.
+  botOpts.onMsaCode = (data) => emit({
+    type: 'msa',
+    message: `Connexion Microsoft : va sur ${data.verification_uri} et entre le code ${data.user_code}`,
+  });
+}
+const bot = mineflayer.createBot(botOpts);
 bot.loadPlugin(pathfinder);
 
 bot.once('spawn', () => {

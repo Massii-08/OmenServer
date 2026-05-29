@@ -13,11 +13,62 @@ import threading
 from pathlib import Path
 
 # backend/bots/mc_agent_manager.py → racine projet = parents[2], puis mc-agent/
-MC_AGENT_DIR = Path(__file__).resolve().parents[2] / "mc-agent"
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MC_AGENT_DIR = _PROJECT_ROOT / "mc-agent"
+# Clé Claude posée depuis le dashboard (gitignored, chmod 600). La var d'env prime.
+API_KEY_PATH = _PROJECT_ROOT / "data" / "secrets" / "anthropic.key"
 
 _sessions = {}        # session_id (int) -> dict
 _lock = threading.Lock()
 _counter = 0
+
+
+def _mask_key(key):
+    """Masque une clé pour l'affichage (jamais révélée en clair)."""
+    if not key or len(key) < 12:
+        return "***"
+    return f"{key[:8]}…{key[-4:]}"
+
+
+def _read_api_key():
+    """Clé Claude effective : var d'env (prioritaire) sinon fichier secret, sinon ''."""
+    env_key = os.environ.get("ANTHROPIC_API_KEY")
+    if env_key:
+        return env_key.strip()
+    try:
+        if API_KEY_PATH.is_file():
+            return API_KEY_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    return ""
+
+
+def get_api_key_status():
+    """État de la clé pour le dashboard (sans la révéler)."""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return {"has_key": True, "preview": _mask_key(_read_api_key()), "source": "env_var"}
+    key = _read_api_key()
+    if key:
+        return {"has_key": True, "preview": _mask_key(key), "source": "file"}
+    return {"has_key": False, "preview": None, "source": None}
+
+
+def set_api_key(key):
+    """Écrit la clé Claude dans le fichier secret (chmod 600). Retourne le preview masqué."""
+    key = (key or "").strip()
+    API_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    API_KEY_PATH.write_text(key, encoding="utf-8")
+    API_KEY_PATH.chmod(0o600)
+    return _mask_key(key)
+
+
+def clear_api_key():
+    """Supprime le fichier de clé (la var d'env, si présente, reste prioritaire)."""
+    try:
+        API_KEY_PATH.unlink()
+        return True
+    except FileNotFoundError:
+        return False
 
 
 def parse_event_line(line):
@@ -39,7 +90,8 @@ def _apply_event(session, event):
     etype = event.get("type")
     if etype == "status":
         session["status"] = event.get("state", session["status"])
-    elif etype in ("chat", "say"):
+    elif etype in ("chat", "say", "msa"):
+        # msa = code device-login Microsoft → visible dans le transcript
         session["transcript"].append(event)
         session["transcript"] = session["transcript"][-200:]
     elif etype == "error":
@@ -63,18 +115,22 @@ def _node_bin():
 
 
 def has_api_key():
-    """True si ANTHROPIC_API_KEY est présente dans l'environnement (chargée via .env)."""
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    """True si une clé Claude est dispo (var d'env OU fichier secret posé via le dashboard)."""
+    return bool(_read_api_key())
 
 
-def start_session(host, port, user, model=None):
+def start_session(host, port, user, model=None, auth="offline"):
     """Spawn le process Node détaché et enregistre la session. Retourne son id."""
     global _counter
     cmd = [_node_bin(), str(MC_AGENT_DIR / "index.js"),
-           "--host", str(host), "--port", str(port), "--user", str(user)]
+           "--host", str(host), "--port", str(port), "--user", str(user),
+           "--auth", str(auth or "offline")]
     if model:
         cmd += ["--model", str(model)]
-    env = dict(os.environ)  # hérite ANTHROPIC_API_KEY (chargée par backend.config/.env)
+    env = dict(os.environ)
+    api_key = _read_api_key()  # injecte la clé (fichier ou env) dans l'env du subprocess Node
+    if api_key:
+        env["ANTHROPIC_API_KEY"] = api_key
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
