@@ -141,8 +141,15 @@ async def run_scanner(
     job_dir = OUTPUTS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    # Chemin du fichier de sortie
-    output_path = str(job_dir / f"Opportunita_Bond_{datetime.now().strftime('%Y-%m-%d')}.xlsx")
+    # Chemin du fichier de sortie — suffixe des devises scannées (demande Massii) :
+    #   3 devises → ..._USD_GBP_EURO.xlsx ; EUR seul → ..._EURO.xlsx
+    _CUR_LABEL = {"USD": "USD", "GBP": "GBP", "EUR": "EURO", "CHF": "CHF"}
+    _CUR_ORDER = ["USD", "GBP", "EUR", "CHF"]  # ordre d'affichage fixe
+    _selected = {c.strip().upper() for c in (data.currencies or "").split(",") if c.strip()}
+    cur_suffix = "".join(f"_{_CUR_LABEL[c]}" for c in _CUR_ORDER if c in _selected)
+    output_path = str(
+        job_dir / f"Opportunita_Bond_{datetime.now().strftime('%Y-%m-%d')}{cur_suffix}.xlsx"
+    )
 
     # Construire la commande
     cmd = [
