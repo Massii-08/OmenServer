@@ -36,7 +36,7 @@ d'OmenServer) **et** dimension **consentement** → isolé proprement (spec mèr
 | **1b.1** | Mod Fabric (REC/REC-off) + ingestion + stockage consenti + distillation (**stats `style.json` + bibliothèque de clips de motricité**) + vue des stats | ✅ tu enregistres dès ce jalon |
 | **1b.2** | Les **stats** distillées règlent les params chat/réaction/faute (§7.1) des profils existants | profils crédibilisés sur du vrai humain (chat, latence) |
 | **1b.3** | **Profil `clone-<joueur>` à exécution hybride** : le bot rejoue tes **clips de motricité réelle** pilotés par le cerveau (la partie « mes vrais mouvements ») | nouvel adversaire d'entraînement, motricité = la tienne |
-| **1b.4** | **Profil composite « dream team »** : un joueur par compétence (combat ← le PVPer, parkour/loco ← le mover, mine ← un autre…) — assemblage des clips de **plusieurs** contributeurs consentants | adversaire all-star ; nouveau tell « incohérence de signature inter-compétences » |
+| **1b.4** | **Profil composite « dream team »** : tout le monde joue normalement → **corpus poolé** → je **cure les meilleurs clips de chaque comportement, quel qu'en soit l'auteur** (le PVP du meilleur PVPer, le parkour du meilleur mover…) | adversaire all-star ; nouveau tell « incohérence de signature inter-compétences » |
 
 Une **seule spec** (ce document) couvre l'arc ; implémentation **jalon par jalon**.
 
@@ -284,16 +284,20 @@ visée + idle + cadence réels superposés à la nav du pathfinder) plutôt que 
 
 ## 9.1 Profil composite « dream team » (1b.4)
 
-Extension naturelle de 1b.3 quand **plusieurs** volontaires ont capturé : un profil dont **chaque contexte est
-fourni par le meilleur joueur dans ce domaine**.
+Modèle réel (Massii, 2026-05-30) : **personne n'a de rôle assigné**. Chacun joue **normalement** ; certains se
+révèlent meilleurs au PVP, d'autres au parkour, etc. Toutes les captures forment un **corpus commun** (toujours
+rangé par joueur pour le consentement/effacement, mais **analysé transversalement**). J'analyse ce pool — **sans
+contrainte de délai** — pour en extraire les **meilleurs clips de chaque comportement, quel qu'en soit l'auteur**,
+et assembler le bot ultime. Le « qui est bon à quoi » est **découvert dans les données**, pas déclaré d'avance.
 
 ```js
 // mc-agent/profiles/composite.js
-buildCompositeProfile({ combat: 'AcePVP', locomotion: 'Runner', mine: 'Digger' }, chat: 'AcePVP') → {
+// mapping contexte→clips = SORTIE de ma curation sur le corpus poolé, pas une consigne d'entrée.
+buildCompositeProfile(curation) → {
   id: 'composite-dreamteam', level: 4, label: 'Dream Team',
-  motion: 'clips',                 // clips piochés par contexte chez la source mappée
-  sources: { combat:'AcePVP', locomotion:'Runner', mine:'Digger' },
-  params: <style du contributeur chat choisi>,
+  motion: 'clips',                 // pour chaque contexte : les meilleurs clips du corpus, tout auteur confondu
+  sources: { combat: ['AcePVP#…'], locomotion: ['Runner#…','AcePVP#…'], mine: ['Digger#…'] },
+  params: <style chat d'un contributeur cohérent>,
   tells: [ …tells cognitifs Expert…,
     'Incohérence de signature inter-compétences : le style de visée en COMBAT ne correspond pas à celui ' +
     'du DÉPLACEMENT (mains différentes assemblées) — un vrai joueur garde la même main partout.' ],
@@ -304,13 +308,18 @@ buildCompositeProfile({ combat: 'AcePVP', locomotion: 'Runner', mine: 'Digger' }
   mais **crée un tell documentable** → l'**incohérence de signature entre compétences** (sensibilité/visée qui
   changent selon l'activité). On déplace le tell vers plus subtil **et on l'écrit dans le corrigé**. Passe
   `validateProfile`.
-- **Mapping = un joueur par compétence** (lisible, chaque tell traçable à sa source). Variante « pool mélangé par
-  contexte » = non-goal v1 (signature plus floue, corrigé plus dur à documenter).
+- **Sélection = curation analyste sur le corpus poolé**, pas un mapping déclaré d'avance. Le « qui est bon à quoi »
+  **émerge des données** (jugement humain — temps illimité voulu par Massii — guidé par des **métriques simples**
+  extraites à la distillation : combat = ratio touché/raté + régularité du tracking, parkour = sauts réussis sans
+  chute, minage = blocs/min). Un spécialiste fort **dominera** son contexte → le résultat *ressemble* souvent à
+  « un joueur par compétence », mais c'est **émergent**, pas imposé (et un même contexte peut mixer plusieurs auteurs).
 - ⚠️ **Normalisation** : sensibilités souris différentes → échelles de deltas yaw/pitch différentes entre
   contributeurs. On capture les deltas **réels en jeu** (ce que le serveur voit) donc c'est cohérent, mais un
   calage léger sera validé sur vraies captures.
-- **Placement** : après 1b.3 (le rejeu mono-joueur doit d'abord être prouvé). Aucune refonte requise — c'est un
-  *mapping contexte→source* par-dessus le `clipLibrary`/`replayer` de 1b.3.
+- **Métriques de qualité par contexte** : extraites à la distillation (§7) pour **guider** la curation — elles
+  classent les clips candidats, je tranche. Pas de scoring ML auto en v1.
+- **Placement** : après 1b.3 (le rejeu mono-joueur doit d'abord être prouvé). Aucune refonte requise — c'est une
+  *curation contexte→clips* par-dessus le `clipLibrary`/`replayer` de 1b.3.
 
 ## 10. UI (1b.1 + 1b.3)
 
@@ -380,6 +389,7 @@ Panneau **« Captures »** (admin) : dropzone, liste sessions (date/durée/ticks
 5. **`errorRate`** conservé (taux de gestes ratés/corrections, calé sur les vraies captures).
 6. **Mode batch multi-contributeurs** : équipe de volontaires (~5 h chacun) → remise des `.jsonl` → upload par
    l'admin (attribution auto par header) ; **aucune contrainte de délai** ; flux **continu** (re-distillation).
-7. **Composite « dream team » = jalon planifié 1b.4** (un joueur par compétence), après 1b.3.
+7. **Composite « dream team » = jalon planifié 1b.4** : corpus poolé multi-joueurs → **curation analyste** des
+   meilleurs clips par comportement (émergent — chacun joue normalement, aucun rôle assigné), après 1b.3.
 8. **Division du travail** : distillation auto *digère le volume* ; l'humain *façonne le profil* (clips,
    calibration, tells) ; le bot tourne ensuite en autonomie.
