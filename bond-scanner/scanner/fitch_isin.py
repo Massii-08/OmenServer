@@ -250,16 +250,19 @@ class FitchIsinClient:
         if not isin:
             return None
 
-        # 1. Cache (positif ET négatif)
+        # 1. Cache (positif ET négatif) — UNIQUEMENT les entrées issues de la
+        #    recherche par ISIN (source "Fitch ..."). On IGNORE les entrées
+        #    de l'ère Brave (source "Brave Search/...") qui peuvent polluer le
+        #    cache (TTL 30j) avec des notes par-NOM imprécises → re-fetch Fitch.
         cached = self.cache.get(isin)
-        if cached is not None:
+        if cached is not None and str(cached.get("source", "")).startswith("Fitch"):
             if cached.get("agency") == "Fitch" and cached.get("rating"):
                 return RatingInfo(
                     value=cached["rating"], source="Fitch",
                     source_full="Fitch Ratings (ISIN)",
                     source_url=cached.get("url", FITCH_VERIFY_URL.format(isin=isin)),
                 )
-            return None  # sentinelle négative
+            return None  # sentinelle négative Fitch
 
         if self.unreachable:
             return None

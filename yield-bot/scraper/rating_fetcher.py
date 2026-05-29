@@ -520,13 +520,15 @@ class RatingFetcher:
         if not isin:
             return None, None
 
-        # Cache (positif ET négatif)
+        # Cache (positif ET négatif) — UNIQUEMENT les entrées par ISIN (source
+        # "Fitch ..."). On ignore les entrées de l'ère Brave (recherche par nom)
+        # qui peuvent polluer le cache 30j avec des notes imprécises → re-fetch.
         cached = self.cache.get(isin)
-        if cached is not None:
+        if cached is not None and str(cached.get('source', '')).startswith('Fitch'):
             if cached.get('agency') == 'Fitch' and cached.get('rating'):
                 logger.info(f"  📦 Rating cached: {isin} → {cached['rating']} (Fitch)")
                 return cached['rating'], 'Fitch'
-            return None, None  # sentinelle négative (Fitch ne note pas)
+            return None, None  # sentinelle négative Fitch (Fitch ne note pas)
 
         rating = self._fetch_fitch_isin(isin)
         if rating:

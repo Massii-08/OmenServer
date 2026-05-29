@@ -141,6 +141,25 @@ class TestFitchIsinClientFetch(unittest.TestCase):
         self.assertEqual(ri.value, "A")
         self.assertTrue(ri.source_url.endswith("XS2813774341"))
 
+    def test_brave_era_cache_entry_ignored(self):
+        # Une entrée polluée de l'ère Brave (source "Brave Search") NE doit PAS
+        # être servie → re-fetch Fitch par ISIN (Oncor titre → A).
+        c = self._client()
+        c.cache.set("XS2813774341", "BBB-", "Fitch", "Brave Search")
+        ri = c.fetch("XS2813774341")
+        self.assertIsNotNone(ri)
+        self.assertEqual(ri.value, "A")      # valeur Fitch fraîche, pas le BBB- Brave
+        self.assertTrue(c._session.calls >= 1)  # a bien re-interrogé Fitch
+
+    def test_fitch_cache_entry_is_served(self):
+        # Une entrée "Fitch ISIN" légitime EST servie sans réseau.
+        c = self._client()
+        c.cache.set("XX9999999999", "A+", "Fitch", "Fitch ISIN", url="u")
+        before = c._session.calls
+        ri = c.fetch("XX9999999999")
+        self.assertEqual(ri.value, "A+")
+        self.assertEqual(c._session.calls, before)  # aucun appel réseau
+
     def test_fetch_unknown_none_and_cached(self):
         c = self._client()
         self.assertIsNone(c.fetch("XS1234567890"))
