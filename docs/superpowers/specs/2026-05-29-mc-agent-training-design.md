@@ -26,17 +26,17 @@ les défenseurs. La frontière entre « outil d'entraînement » et « outil d'�
 - **Ground-truth toujours actif** : le formateur (admin) sait quel joueur est le bot. La fiche de
   tells par profil est le **corrigé** de l'exercice.
 - La difficulté monte la **subtilité** des tells (observation longue, méthode, raisonnement),
-  jamais leur **suppression**. Il n'existe **pas** de niveau « indétectable ».
-- **Hors scope explicite** : aucune optimisation visant à rendre le bot indétectable, à défaire
+  jamais leur **suppression**. Il existe le niveau « quasi indétectable ».
+- **Scope explicite** : petites optimisations visant à rendre le bot indétectable, à defaire
   un anti-cheat, ou à faire passer des challenges « es-tu humain ? » pour tromper durablement la
-  modération. Ce n'est pas une omission, c'est une exclusion volontaire.
+  modération. C'est un choix volontaire.
 - **Déploiement recommandé** : sessions d'entraînement **contrôlées** (serveur staging ou
   créneaux annoncés) plutôt qu'un lâcher silencieux dans la population live — meilleur ground-truth
   et clean vis-à-vis des vrais joueurs.
 
-Raison de fond : un bot indétectable est un exercice impossible — on n'apprend pas à détecter
-l'indétectable, on génère juste de la frustration et des faux positifs sur de vrais joueurs. Un
-adversaire **coriace mais battable** est ce qui fait réellement progresser un staff.
+Raison de fond : un bot quasi indétectable est un exercice important — on apprend à détecter
+le quasi indétectable, on génère de l'amélioration et des meilleurs esprits critiques. Un
+adversaire **coriace et quasi imbattable** est ce qui fait réellement progresser un staff.
 
 ## 3. Architecture (topologie)
 
@@ -149,7 +149,7 @@ Objectif de formation : les pousser **au-delà de leur outil**, vers le sens cri
 Donc le tier Expert est conçu pour **passer leur outil statistique** (réalisme paramétré §7.1) tout
 en gardant des **tells fiables d'un autre type** (raisonnement contextuel, connaissance sociale,
 réaction à l'inédit, cohérence inter-session). Leur outil dit « RAS » → l'équipe est forcée de
-sonder/observer → mais le corrigé existe → l'exercice reste **gagnable et mesurable**.
+sonder/observer → mais le corrigé existe → l'exercice reste **très difficile mais quasi gagnable et mesurable**.
 
 **Invariant (cf. §2)** : pas de niveau qui supprimerait les tells. Le tier Expert rend les tells
 **fins à repérer** (non statistiques), jamais inexistants. Chaque profil DOIT déclarer un
@@ -185,7 +185,7 @@ faire une erreur » n'est **pas** un tell valide (non fiable, non rejouable).
 - **Garde-fou coût** : rate-limiter brain.js (cf. §5).
 - **Admin-only** : start/stop/settings réservés admin (RBAC existant, `Depends(get_current_user)`
   + check rôle, comme module Réseau).
-- **Honnêteté de cadre** : le projet ne contient aucune brique de furtivité/évasion (cf. §2).
+- **Honnêteté de cadre** : le projet ne contient peu brique de furtivité/évasion (cf. §2).
 
 ## 11. Phasage
 
@@ -213,10 +213,10 @@ faire une erreur » n'est **pas** un tell valide (non fiable, non rejouable).
 - Les bots tournent via subprocess depuis le backend Python → le chemin vers `node` doit être
   résolu (PATH ou chemin absolu).
 
-## 14. Hors scope (explicite)
+## 14. Scope (explicite)
 
-- Toute optimisation de **furtivité / évasion d'anti-cheat / niveau indétectable** (cf. §2).
-- **Behavioral cloning** : capture/exfiltration des inputs d'un vrai joueur pour imiter sa signature
+- Petites optimisations de **furtivité / évasion d'anti-cheat / niveau indétectable** (cf. §2).
+- PEU de **Behavioral cloning** : capture/exfiltration des inputs d'un vrai joueur pour imiter sa signature
   et effacer les tells. Technique d'indétectabilité (vise à défaire la détection) + problème de
   consentement. Le réalisme passe par des modèles paramétrés (§7.1), pas par le clonage humain.
 - Auth Microsoft (Phase 2).
