@@ -1070,7 +1070,8 @@ const BotsModule = {
  headers: { 'Content-Type': 'application/json' },
  body: JSON.stringify({ host, port, user }),
  });
- const data = await r.json();
+ if (!r) return;
+ const data = await r.json().catch(() => ({}));
  if (!r.ok) { msg.textContent = data.detail || 'Erreur'; return; }
  this._mcAgentSession = data.session_id;
  msg.textContent = `session #${data.session_id}`;
@@ -1080,14 +1081,16 @@ const BotsModule = {
  async refreshMCAgent() {
  if (!this._mcAgentSession) return;
  const r = await Auth.apiCall(`/api/mc-agent/chat/${this._mcAgentSession}`);
- if (!r.ok) return;
+ if (!r || !r.ok) return;
  const data = await r.json();
  const box = document.getElementById('mca-transcript');
- if (!box) { clearInterval(this._mcAgentTimer); return; }
+ if (!box) { clearInterval(this._mcAgentTimer); this._mcAgentTimer = null; return; }
+ // échappe le contenu joueur (chat MC arbitraire) avant innerHTML — anti-XSS
+ const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
  box.innerHTML = (data.transcript || []).map((e) =>
  e.type === 'say'
- ? `<div style="color:#4ade80;">[bot] ${e.message}</div>`
- : `<div>&lt;${e.from || '?'}&gt; ${e.message || ''}</div>`
+ ? `<div style="color:var(--accent);">[bot] ${esc(e.message)}</div>`
+ : `<div>&lt;${esc(e.from || '?')}&gt; ${esc(e.message)}</div>`
  ).join('');
  box.scrollTop = box.scrollHeight;
  },
@@ -1109,6 +1112,7 @@ const BotsModule = {
  if (!this._mcAgentSession) return;
  await Auth.apiCall(`/api/mc-agent/stop/${this._mcAgentSession}`, { method: 'POST' });
  clearInterval(this._mcAgentTimer);
+ this._mcAgentTimer = null;
  const msg = document.getElementById('mca-msg');
  if (msg) msg.textContent = Lang.t('mcagent.stopped');
  this._mcAgentSession = null;
