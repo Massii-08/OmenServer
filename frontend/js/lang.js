@@ -394,6 +394,8 @@ const Lang = {
             'mcagent.key_cleared': 'Cle effacee',
             'mcagent.key_invalid': 'Cle invalide',
             'mcagent.ms_hint': 'Compte Microsoft (serveur non-cracke) : un code de connexion apparait dans le transcript, va sur microsoft.com/link (1 seule fois).',
+            'mcagent.profile': 'Profil',
+            'mcagent.tells_title': 'Fiche de tells (corrige formateur)',
 
             // Settings
             'settings.title': 'Paramètres',
@@ -1396,6 +1398,8 @@ const Lang = {
             'mcagent.key_cleared': 'Key cleared',
             'mcagent.key_invalid': 'Invalid key',
             'mcagent.ms_hint': 'Microsoft account (premium server): a login code appears in the transcript, go to microsoft.com/link (one-time).',
+            'mcagent.profile': 'Profile',
+            'mcagent.tells_title': 'Tells sheet (trainer answer key)',
 
             // Settings
             'settings.title': 'Settings',
@@ -2398,6 +2402,8 @@ const Lang = {
             'mcagent.key_cleared': 'Chiave cancellata',
             'mcagent.key_invalid': 'Chiave non valida',
             'mcagent.ms_hint': 'Account Microsoft (server premium): un codice di accesso appare nel transcript, vai su microsoft.com/link (una sola volta).',
+            'mcagent.profile': 'Profilo',
+            'mcagent.tells_title': 'Scheda dei tells (soluzione formatore)',
 
             // Settings
             'settings.title': 'Impostazioni',

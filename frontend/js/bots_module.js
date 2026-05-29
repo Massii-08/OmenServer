@@ -1055,6 +1055,7 @@ const BotsModule = {
  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
  <div><label class="form-label">${Lang.t('mcagent.account')}</label><input id="mca-user" class="form-input" value="TrainBot" placeholder="pseudo ou email" /></div>
  <div><label class="form-label">${Lang.t('mcagent.auth_label')}</label><select id="mca-auth" class="form-input"><option value="offline">${Lang.t('mcagent.auth_offline')}</option><option value="microsoft">${Lang.t('mcagent.auth_microsoft')}</option></select></div>
+ <div><label class="form-label">${Lang.t('mcagent.profile')}</label><select id="mca-profile" class="form-input" onchange="BotsModule.renderMCAgentTells()"></select></div>
  </div>
  <div style="font-size:11px;color:var(--text-muted);margin:-4px 0 12px;">${Lang.t('mcagent.ms_hint')}</div>
  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
@@ -1062,6 +1063,7 @@ const BotsModule = {
  <button class="btn btn-secondary btn-sm" onclick="BotsModule.stopMCAgent()">${Lang.t('mcagent.stop')}</button>
  <span id="mca-msg" style="font-size:13px;color:var(--text-muted);"></span>
  </div>
+ <div id="mca-tells" style="display:none;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:var(--text-muted);"></div>
  <div id="mca-transcript" style="background:#0d1117;border-radius:8px;padding:12px;max-height:300px;overflow-y:auto;font-family:'Fira Code',monospace;font-size:12px;line-height:1.6;color:#c9d1d9;"></div>
  <div style="display:flex;gap:8px;margin-top:10px;">
  <input id="mca-say" class="form-input" placeholder="${Lang.t('mcagent.say_placeholder')}" style="flex:1;" />
@@ -1069,6 +1071,7 @@ const BotsModule = {
  </div>
  </div>`;
  this._loadMCAgentKey();
+ this.loadMCAgentProfiles();
  },
 
  async startMCAgent() {
@@ -1076,12 +1079,13 @@ const BotsModule = {
  const port = parseInt(document.getElementById('mca-port').value, 10) || 25565;
  const user = document.getElementById('mca-user').value.trim() || 'TrainBot';
  const auth = document.getElementById('mca-auth').value;
+ const profile = (document.getElementById('mca-profile') || {}).value || undefined;
  const msg = document.getElementById('mca-msg');
  if (!host) { msg.textContent = Lang.t('mcagent.need_host'); return; }
  const r = await Auth.apiCall('/api/mc-agent/run', {
  method: 'POST',
  headers: { 'Content-Type': 'application/json' },
- body: JSON.stringify({ host, port, user, auth }),
+ body: JSON.stringify({ host, port, user, auth, profile }),
  });
  if (!r) return;
  const data = await r.json().catch(() => ({}));
@@ -1131,6 +1135,39 @@ const BotsModule = {
  const msg = document.getElementById('mca-msg');
  if (msg) msg.textContent = Lang.t('mcagent.stopped');
  this._mcAgentSession = null;
+ },
+
+ async loadMCAgentProfiles() {
+ const sel = document.getElementById('mca-profile');
+ if (!sel) return;
+ try {
+ const r = await Auth.apiCall('/api/mc-agent/profiles');
+ if (!r.ok) return;
+ const data = await r.json();
+ this._mcAgentProfiles = data.profiles || [];
+ } catch (e) { this._mcAgentProfiles = []; }
+ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+ sel.innerHTML = (this._mcAgentProfiles || []).map((p) =>
+ `<option value="${esc(p.id)}">${esc(p.label)} (niv. ${esc(p.level)})</option>`
+ ).join('');
+ const def = (this._mcAgentProfiles || []).find((p) => p.id === 'intermediaire');
+ if (def) sel.value = 'intermediaire';
+ this.renderMCAgentTells();
+ },
+
+ renderMCAgentTells() {
+ const sel = document.getElementById('mca-profile');
+ const box = document.getElementById('mca-tells');
+ if (!sel || !box) return;
+ const prof = (this._mcAgentProfiles || []).find((p) => p.id === sel.value);
+ if (!prof || !Array.isArray(prof.tells) || !prof.tells.length) { box.style.display = 'none'; return; }
+ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+ box.style.display = 'block';
+ box.innerHTML =
+ `<div style="font-weight:600;color:var(--text);margin-bottom:6px;">${esc(Lang.t('mcagent.tells_title'))} — ${esc(prof.label)}</div>` +
+ `<ul style="margin:0;padding-left:18px;">` +
+ prof.tells.map((t) => `<li style="margin:2px 0;">${esc(t)}</li>`).join('') +
+ `</ul>`;
  },
 
  async _loadMCAgentKey() {
