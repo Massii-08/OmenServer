@@ -78,6 +78,16 @@ def test_has_api_key_gemini(monkeypatch):
     assert mgr.has_api_key() is False
 
 
+def test_has_api_key_groq(monkeypatch):
+    """En mode Groq, c'est GROQ_API_KEY qui compte."""
+    monkeypatch.setenv("MC_AGENT_LLM", "groq")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    assert mgr.has_api_key() is True
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    assert mgr.has_api_key() is False
+
+
 def test_api_key_fichier_roundtrip(monkeypatch, tmp_path):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(mgr, "API_KEY_PATH", tmp_path / "anthropic.key")

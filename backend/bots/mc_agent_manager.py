@@ -123,10 +123,14 @@ def has_api_key():
     """True si la clé du provider LLM sélectionné est dispo.
 
     - gemini    → GEMINI_API_KEY dans l'environnement (héritée du .env via load_dotenv)
+    - groq      → GROQ_API_KEY dans l'environnement
     - anthropic → ANTHROPIC_API_KEY (var d'env) OU fichier secret posé via le dashboard
     """
-    if _provider() == "gemini":
+    prov = _provider()
+    if prov == "gemini":
         return bool(os.environ.get("GEMINI_API_KEY"))
+    if prov == "groq":
+        return bool(os.environ.get("GROQ_API_KEY"))
     return bool(_read_api_key())
 
 

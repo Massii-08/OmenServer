@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { createLLMClient, geminiClient } = require('../llm');
+const { createLLMClient, geminiClient, groqClient } = require('../llm');
 
 // fetch factice : capture la requête et renvoie une réponse contrôlée.
 function fakeFetch(captured, responseObj, ok = true, status = 200) {
@@ -56,5 +56,45 @@ test('geminiClient retourne un texte vide si la réponse n a pas de candidats', 
 
 test('createLLMClient(gemini) retourne un client à interface .messages.create', () => {
   const c = createLLMClient('gemini', { apiKey: 'k' });
+  assert.strictEqual(typeof c.messages.create, 'function');
+});
+
+test('groqClient mappe system+messages vers le format OpenAI et parse la réponse', async () => {
+  const captured = {};
+  const resp = { choices: [{ message: { content: '{"reply":"ok","action":"collectWood","args":{"count":16}}' } }] };
+  const client = groqClient({ apiKey: 'gsk_x', fetchImpl: fakeFetch(captured, resp) });
+  const out = await client.messages.create({
+    model: 'llama-3.3-70b-versatile', max_tokens: 200, system: 'SYS',
+    messages: [{ role: 'user', content: 'coucou' }],
+  });
+  assert.match(captured.url, /api\.groq\.com\/openai\/v1\/chat\/completions/);
+  assert.strictEqual(captured.opts.headers.Authorization, 'Bearer gsk_x');
+  assert.strictEqual(captured.body.model, 'llama-3.3-70b-versatile');
+  assert.strictEqual(captured.body.messages[0].role, 'system');
+  assert.strictEqual(captured.body.messages[0].content, 'SYS');
+  assert.strictEqual(captured.body.messages[1].content, 'coucou');
+  assert.strictEqual(out.content[0].text, '{"reply":"ok","action":"collectWood","args":{"count":16}}');
+});
+
+test('groqClient lève une erreur portant le status sur réponse non-ok', async () => {
+  const captured = {};
+  const client = groqClient({ apiKey: 'k', fetchImpl: fakeFetch(captured, { error: 'x' }, false, 429) });
+  await assert.rejects(
+    client.messages.create({ model: 'm', max_tokens: 10, system: '', messages: [{ role: 'user', content: 'hi' }] }),
+    (e) => e.status === 429,
+  );
+});
+
+test('groqClient omet le message system si vide', async () => {
+  const captured = {};
+  const resp = { choices: [{ message: { content: 'ok' } }] };
+  const client = groqClient({ apiKey: 'k', fetchImpl: fakeFetch(captured, resp) });
+  await client.messages.create({ model: 'm', max_tokens: 10, system: '', messages: [{ role: 'user', content: 'hi' }] });
+  assert.strictEqual(captured.body.messages.length, 1);
+  assert.strictEqual(captured.body.messages[0].role, 'user');
+});
+
+test('createLLMClient(groq) retourne un client à interface .messages.create', () => {
+  const c = createLLMClient('groq', { apiKey: 'k' });
   assert.strictEqual(typeof c.messages.create, 'function');
 });

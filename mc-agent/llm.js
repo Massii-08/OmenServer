@@ -38,12 +38,39 @@ function geminiClient({ apiKey, fetchImpl } = {}) {
   };
 }
 
-/** Fabrique le client LLM selon le provider. 'gemini' → Gemini gratuit ; sinon Anthropic (défaut). */
+/** Client Groq (API OpenAI-compatible) déguisé en client Anthropic-like. Gratuit (free tier, UE OK). */
+function groqClient({ apiKey, fetchImpl } = {}) {
+  const doFetch = fetchImpl || globalThis.fetch;
+  return {
+    messages: {
+      async create({ model, max_tokens, system, messages }) {
+        const msgs = [];
+        if (system) msgs.push({ role: 'system', content: system });
+        for (const m of messages || []) msgs.push({ role: m.role || 'user', content: m.content });
+        const resp = await doFetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({ model, messages: msgs, max_tokens: max_tokens || 300 }),
+        });
+        if (!resp.ok) {
+          const err = new Error(`groq http ${resp.status}`);
+          err.status = resp.status;
+          throw err;
+        }
+        const data = await resp.json();
+        const text = (((data.choices || [])[0] || {}).message || {}).content || '';
+        return { content: [{ type: 'text', text }] };
+      },
+    },
+  };
+}
+
+/** Fabrique le client LLM selon le provider. 'gemini'/'groq' → gratuit ; sinon Anthropic (défaut). */
 function createLLMClient(provider, opts = {}) {
-  if (String(provider).toLowerCase() === 'gemini') {
-    return geminiClient({ apiKey: opts.apiKey || process.env.GEMINI_API_KEY });
-  }
+  const p = String(provider).toLowerCase();
+  if (p === 'gemini') return geminiClient({ apiKey: opts.apiKey || process.env.GEMINI_API_KEY });
+  if (p === 'groq') return groqClient({ apiKey: opts.apiKey || process.env.GROQ_API_KEY });
   return new Anthropic(); // lit ANTHROPIC_API_KEY depuis l'environnement
 }
 
-module.exports = { createLLMClient, geminiClient };
+module.exports = { createLLMClient, geminiClient, groqClient };

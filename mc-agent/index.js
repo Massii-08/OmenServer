@@ -31,7 +31,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const args = parseArgs(process.argv.slice(2));
 // Provider LLM enfichable : MC_AGENT_LLM=gemini (gratuit) sinon Anthropic (défaut). Cf. ./llm.js
 const provider = (process.env.MC_AGENT_LLM || 'anthropic').toLowerCase();
-const model = args.model || (provider === 'gemini' ? 'gemini-2.0-flash' : 'claude-haiku-4-5-20251001');
+const DEFAULT_MODELS = { gemini: 'gemini-2.0-flash', groq: 'llama-3.3-70b-versatile', anthropic: 'claude-haiku-4-5-20251001' };
+const model = args.model || DEFAULT_MODELS[provider] || DEFAULT_MODELS.anthropic;
 // maxCalls par défaut 15/min : reste sous le quota/min du free tier Gemini (anti-429).
 const limiter = new RateLimiter(Number(args.maxCalls || 15), 60000);
 const client = createLLMClient(provider); // lit la clé du provider depuis l'environnement
