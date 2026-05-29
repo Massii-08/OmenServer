@@ -32,27 +32,45 @@ class RateLimiter {
   }
 }
 
+const ACTIONS_DOC =
+  'Actions possibles : "follow" {player}, "goto" {x,y,z}, "mineBlock" {name,count}, ' +
+  '"collectWood" {count}, "attackNearest" {}, "fleeFrom" {}, ou null (juste parler).';
+
+// Prompt de base (profil null). Conservé comme export pour compat (tests Phase 0).
+// Contient la clause d'honnêteté pinée par brain_think.test.js.
 const SYSTEM_PROMPT = [
-  "Tu incarnes un joueur dans une partie Minecraft, dans un cadre d'entrainement de moderation.",
+  "Tu incarnes un joueur dans une partie Minecraft, dans un cadre d'entrainement de moderation (un bot d'exercice).",
   "Tu es honnete : si on te demande si tu es un bot, tu peux le confirmer.",
   'Reponds UNIQUEMENT en JSON : {"reply": string, "action": string|null, "args": object}.',
-  'Actions possibles : "follow" (args {player}), "goto" (args {x,y,z}), ou null (juste parler).',
+  ACTIONS_DOC,
 ].join(' ');
+
+/** Construit le system prompt en injectant la persona du profil (réalisme §7.1). */
+function buildSystemPrompt(profile) {
+  if (!profile) return SYSTEM_PROMPT;
+  return [
+    "Tu incarnes un joueur dans une partie Minecraft (cadre d'entrainement de moderation).",
+    profile.persona || '',
+    'Reponds UNIQUEMENT en JSON : {"reply": string, "action": string|null, "args": object}.',
+    ACTIONS_DOC,
+  ].filter(Boolean).join(' ');
+}
 
 /**
  * Appelle Claude avec l'état + le message reçu. `client` = SDK Anthropic (injectable pour tests).
  * Retourne une décision parsée, ou null si le rate-limiter bloque l'appel.
+ * `profile` : objet profil optionnel (injecte la persona dans le system prompt).
  */
-async function think(client, { state, message, model, limiter }) {
+async function think(client, { state, message, model, limiter, profile = null }) {
   if (limiter && !limiter.tryAcquire()) return null;
   const resp = await client.messages.create({
     model,
     max_tokens: 300,
-    system: SYSTEM_PROMPT,
+    system: buildSystemPrompt(profile),
     messages: [{ role: 'user', content: `Etat: ${JSON.stringify(state)}\nMessage recu: ${message}` }],
   });
   const text = (resp.content || []).map((b) => b.text || '').join('');
   return parseDecision(text);
 }
 
-module.exports = { parseDecision, RateLimiter, think, SYSTEM_PROMPT };
+module.exports = { parseDecision, RateLimiter, think, SYSTEM_PROMPT, buildSystemPrompt };
