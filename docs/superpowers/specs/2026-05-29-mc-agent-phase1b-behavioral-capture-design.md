@@ -36,15 +36,23 @@ d'OmenServer) **et** dimension **consentement** → isolé proprement (spec mèr
 | **1b.1** | Mod Fabric (REC/REC-off) + ingestion + stockage consenti + distillation (**stats `style.json` + bibliothèque de clips de motricité**) + vue des stats | ✅ tu enregistres dès ce jalon |
 | **1b.2** | Les **stats** distillées règlent les params chat/réaction/faute (§7.1) des profils existants | profils crédibilisés sur du vrai humain (chat, latence) |
 | **1b.3** | **Profil `clone-<joueur>` à exécution hybride** : le bot rejoue tes **clips de motricité réelle** pilotés par le cerveau (la partie « mes vrais mouvements ») | nouvel adversaire d'entraînement, motricité = la tienne |
+| **1b.4** | **Profil composite « dream team »** : un joueur par compétence (combat ← le PVPer, parkour/loco ← le mover, mine ← un autre…) — assemblage des clips de **plusieurs** contributeurs consentants | adversaire all-star ; nouveau tell « incohérence de signature inter-compétences » |
 
 Une **seule spec** (ce document) couvre l'arc ; implémentation **jalon par jalon**.
+
+**Mode de travail réel (Massii, 2026-05-30)** : un **groupe de volontaires consentants** joue ~5 h chacun, puis
+remet ses captures ; **aucune contrainte de délai** côté traitement (mode **batch**, pas de temps réel) ; le flux
+est **continu** (de nouvelles captures peuvent arriver plus tard pour affiner). Division du travail : la
+**distillation auto** *digère le volume* (25 h+ → impossible à la main), **l'humain (moi) façonne le profil**
+(choix des clips, calibration, rédaction des tells) par-dessus ; le bot tourne ensuite **en autonomie**.
 
 ## 2. Cadre consentement & invariants (LE garde-fou non négociable)
 
 Exigences de design, pas des recommandations.
 
-- **Joueur-modèle désigné et consentant uniquement** (toi ou un staff volontaire). **JAMAIS** de capture passive
-  visant un joueur lambda comme cible de clonage.
+- **Joueur(s)-modèle désigné(s) et consentant(s) uniquement** (toi + une **équipe de volontaires**). Chacun
+  consent **pour lui-même** et installe le mod sur **son** client. **JAMAIS** de capture passive visant un joueur
+  lambda comme cible de clonage. Le composite 1b.4 = assemblage de **plusieurs** contributeurs **tous** consentants.
 - **Consentement actif et visible (REC / REC-off)** : le mod **ne capture pas** au lancement (`REC-off`). Le
   joueur **démarre explicitement** chaque session (**touche F8**) → HUD **`● REC`**. Il sait *en permanence*
   s'il est enregistré. **Notice de consentement au 1er lancement**. Toute erreur d'I/O coupe la capture → `REC-off`.
@@ -180,6 +188,13 @@ Fabric API). **Cible validée en premier : 1.21.x**, puis estampillage **1.20.x*
 - **Stockage** : `data/mc-captures/<joueur>/session-<epoch>.jsonl` (+ `style.json` + `clips/`). `data/`
   gitignored. **Admin-only**. Pas de DB en v1.
 - **`DELETE`** pour retirer une session / un joueur (droit à l'effacement).
+- **Attribution automatique** : le `player` venant du **header**, c'est sans souci si **un seul admin (toi)
+  uploade les fichiers de toute l'équipe** (les volontaires non-admin te remettent leurs `.jsonl` hors-bande,
+  Discord/USB) — chaque capture atterrit dans le bon dossier joueur toute seule.
+- **Volume (équipe × ~5 h)** : décimation **10 Hz** par défaut + **compression `.gz`** acceptée à l'upload
+  (~10-15 Mo/personne compressé — négligeable sur l'Omen). Limite de taille multipart **généreuse**.
+- **Batch & ré-exécutable** : la distillation se **relance** sur le dossier (enrichi) d'un joueur quand de
+  nouvelles captures arrivent → `style.json` + `clips/` régénérés/cumulés. Aucune contrainte de délai.
 
 ## 7. Distillation (1b.1) → deux sorties
 
@@ -267,6 +282,36 @@ faisabilité. **Repli prévu** si le tout-clip est trop cassant : **clips réels
 visée + idle + cadence réels superposés à la nav du pathfinder) plutôt que clips 100 % pilotes — déjà bien plus
 « toi » que les params synthétiques, et robuste.
 
+## 9.1 Profil composite « dream team » (1b.4)
+
+Extension naturelle de 1b.3 quand **plusieurs** volontaires ont capturé : un profil dont **chaque contexte est
+fourni par le meilleur joueur dans ce domaine**.
+
+```js
+// mc-agent/profiles/composite.js
+buildCompositeProfile({ combat: 'AcePVP', locomotion: 'Runner', mine: 'Digger' }, chat: 'AcePVP') → {
+  id: 'composite-dreamteam', level: 4, label: 'Dream Team',
+  motion: 'clips',                 // clips piochés par contexte chez la source mappée
+  sources: { combat:'AcePVP', locomotion:'Runner', mine:'Digger' },
+  params: <style du contributeur chat choisi>,
+  tells: [ …tells cognitifs Expert…,
+    'Incohérence de signature inter-compétences : le style de visée en COMBAT ne correspond pas à celui ' +
+    'du DÉPLACEMENT (mains différentes assemblées) — un vrai joueur garde la même main partout.' ],
+}
+```
+
+- **Le composite ne dilue pas l'invariant, il le renforce** : il tue encore mieux les tells moteurs *par geste*,
+  mais **crée un tell documentable** → l'**incohérence de signature entre compétences** (sensibilité/visée qui
+  changent selon l'activité). On déplace le tell vers plus subtil **et on l'écrit dans le corrigé**. Passe
+  `validateProfile`.
+- **Mapping = un joueur par compétence** (lisible, chaque tell traçable à sa source). Variante « pool mélangé par
+  contexte » = non-goal v1 (signature plus floue, corrigé plus dur à documenter).
+- ⚠️ **Normalisation** : sensibilités souris différentes → échelles de deltas yaw/pitch différentes entre
+  contributeurs. On capture les deltas **réels en jeu** (ce que le serveur voit) donc c'est cohérent, mais un
+  calage léger sera validé sur vraies captures.
+- **Placement** : après 1b.3 (le rejeu mono-joueur doit d'abord être prouvé). Aucune refonte requise — c'est un
+  *mapping contexte→source* par-dessus le `clipLibrary`/`replayer` de 1b.3.
+
 ## 10. UI (1b.1 + 1b.3)
 
 Panneau **« Captures »** (admin) : dropzone, liste sessions (date/durée/ticks), **voir stats**, **supprimer**.
@@ -333,3 +378,8 @@ Panneau **« Captures »** (admin) : dropzone, liste sessions (date/durée/ticks
 3. **Version validée en premier = 1.21.x** (1.20.x ensuite).
 4. **Keybind REC = F8**.
 5. **`errorRate`** conservé (taux de gestes ratés/corrections, calé sur les vraies captures).
+6. **Mode batch multi-contributeurs** : équipe de volontaires (~5 h chacun) → remise des `.jsonl` → upload par
+   l'admin (attribution auto par header) ; **aucune contrainte de délai** ; flux **continu** (re-distillation).
+7. **Composite « dream team » = jalon planifié 1b.4** (un joueur par compétence), après 1b.3.
+8. **Division du travail** : distillation auto *digère le volume* ; l'humain *façonne le profil* (clips,
+   calibration, tells) ; le bot tourne ensuite en autonomie.
