@@ -310,11 +310,15 @@ async def startup_event():
                                 srv.status = "running"
                                 logger.info(f"🔄 Sync statut: {srv.name} → running")
                         elif container.status in ("exited", "created", "paused"):
-                            # Pas running → le redémarrer
-                            container.start()
-                            srv.status = "running"
-                            started += 1
-                            logger.info(f"🚀 Auto-restart: {srv.name} ({container.status} → running)")
+                            if srv.status == "running":
+                                # État désiré = allumé → on le restaure après reboot/auto-deploy
+                                container.start()
+                                started += 1
+                                logger.info(f"🚀 Auto-restart: {srv.name} ({container.status} → running)")
+                            else:
+                                # Éteint volontairement (status 'stopped'/'error') → on le LAISSE éteint
+                                srv.status = "stopped"
+                                logger.info(f"💤 {srv.name} laissé éteint (arrêt volontaire respecté)")
                         else:
                             # État inconnu (restarting, dead, etc.)
                             srv.status = container.status
