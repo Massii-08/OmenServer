@@ -17,6 +17,7 @@ class RatingInfo:
     value: str        # Es: "AA-", "BBB+", "Baa1"
     source: str       # Tag corto: "DB", "BF", "BS"
     source_full: str  # Nome completo: "Deutsche Börse", "Börse Frankfurt", "Börse Stuttgart"
+    source_url: str = ""  # URL Fitch de la page qui PROUVE le rating (vérifiable à la main)
 
     def __repr__(self) -> str:
         return f"{self.value} ({self.source})"
@@ -46,6 +47,7 @@ class ScannedBond:
     ratings: List[RatingInfo] = field(default_factory=list)  # Tutti i rating trovati
     rating: Optional[str] = None          # Rating finale (per filtro compatibilità)
     rating_display: Optional[str] = None  # Per Excel: "AA- (DB, BS)" o "AA- (DB) / A+ (BS)"
+    rating_url: Optional[str] = None      # URL Fitch vérifiable (lien hypertexte Excel col. G)
 
     # Yield calcolato dal bot
     calculated_yield: Optional[float] = None

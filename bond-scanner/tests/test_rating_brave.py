@@ -7,18 +7,62 @@ No network calls — the live Brave API is exercised manually via
 """
 import asyncio
 import json
+import os
 import tempfile
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
+from unittest import mock
 
 from scanner.rating_providers import (
     FITCH_TITLE_RATING_RE,
+    RATING_MAX_AGE_YEARS,
     BraveFitchProvider,
     _Cache,
+    _url_age_years,
     is_valid_rating,
     normalize_to_sp,
 )
+
+_FIXTURES = os.path.join(os.path.dirname(__file__), 'fixtures', 'brave_results.json')
+
+
+def _load_fixture(key):
+    """Charge une réponse Brave réelle capturée (tests/fixtures/)."""
+    with open(_FIXTURES, encoding='utf-8') as f:
+        return json.load(f)[key]
+
+
+class _FakeSerpResp:
+    """Stub httpx.Response : renvoie une SERP Brave figée (≠ _FakeResp 429)."""
+
+    def __init__(self, results):
+        self.status_code = 200
+        self.text = ''
+        self.headers = {}
+        self._results = results
+
+    def json(self):
+        return {'web': {'results': self._results}}
+
+
+def _fake_async_client(results):
+    """Fabrique une classe httpx.AsyncClient factice servant `results`."""
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **k):
+            return _FakeSerpResp(results)
+
+    return _FakeAsyncClient
 
 
 class TestFitchTitleRegex(unittest.TestCase):
@@ -209,6 +253,248 @@ class TestQuotaExhaustionDetection(unittest.TestCase):
         """Once the flag is set, the provider should be marked as exhausted."""
         self.p.quota_exhausted = True
         self.assertTrue(self.p.quota_exhausted)
+
+
+class TestIssuerIdentityGate(unittest.TestCase):
+    """
+    Régression du bug du 2026-05-29 : un rating Fitch ne doit être accepté
+    QUE s'il provient d'une page Fitch parlant DU MÊME émetteur.
+
+    Bug constaté : recherche 'Iccrea Banca' (petite banque coopérative
+    italienne, non notée par Fitch) → Brave renvoyait des pages d'AUTRES
+    banques, dont "Fitch Affirms ICBC at 'A'" → Iccrea taggé 'A'.
+    ICBC (Bank of China) ≠ Iccrea Banca. Faux positif total.
+    """
+
+    def setUp(self):
+        self.p = BraveFitchProvider(api_key='dummy')
+
+    def test_wrong_issuer_rejected_iccrea_vs_icbc(self):
+        self.assertFalse(self.p._issuer_matches_hit(
+            'Iccrea Banca',
+            "Fitch Affirms ICBC at 'A'; Outlook Stable",
+            'https://www.fitchratings.com/research/banks/'
+            'fitch-affirms-icbc-at-a-outlook-stable-16-05-2025',
+        ))
+
+    def test_correct_issuer_accepted_dominion(self):
+        self.assertTrue(self.p._issuer_matches_hit(
+            'Dominion Energy',
+            "Fitch Rates Dominion Energy's Senior Notes 'BBB+'",
+            'https://www.fitchratings.com/research/corporate-finance/'
+            'fitch-rates-dominion-energy-senior-notes-bbb-06-03-2025',
+        ))
+
+    def test_correct_issuer_accepted_bayerische(self):
+        self.assertTrue(self.p._issuer_matches_hit(
+            'Bayerische Landesbank',
+            "Fitch Affirms Bayerische Landesbank's IDR at 'A-'/Stable",
+            'https://www.fitchratings.com/research/banks/'
+            'fitch-affirms-bayerische-landesbank-idr-at-a-stable-20-04-2018',
+        ))
+
+    def test_match_via_url_slug_when_title_omits_issuer(self):
+        # Le slug de l'URL porte l'identité même si le titre est tronqué.
+        self.assertTrue(self.p._issuer_matches_hit(
+            'Dominion Energy',
+            "Fitch Rates Senior Notes 'BBB+'",
+            'https://www.fitchratings.com/research/corporate-finance/'
+            'fitch-rates-dominion-energy-senior-notes-bbb-06-03-2025',
+        ))
+
+    def test_substring_inside_word_does_not_match(self):
+        # "ubs" ne doit PAS matcher "subsidiary" (match par token, pas substring).
+        self.assertFalse(self.p._issuer_matches_hit(
+            'UBS',
+            "Fitch Affirms Some Bank's Subsidiary at 'A'",
+            'https://www.fitchratings.com/research/banks/some-bank-subsidiary',
+        ))
+
+    def test_all_generic_name_rejected(self):
+        # Nom 100% générique → impossible de vérifier l'identité → rejet.
+        self.assertFalse(self.p._issuer_matches_hit(
+            'Bank Group Holding',
+            "Fitch Affirms SomeBank at 'A'",
+            'https://www.fitchratings.com/research/banks/somebank',
+        ))
+
+    # --- Régression mots géographiques (scan réel 2026-05-29) ---
+
+    def test_german_sovereign_not_matched_by_telefonica_deutschland(self):
+        # Bund allemand (AAA) NE doit PAS être taggé via "Telefonica Deutschland".
+        self.assertFalse(self.p._issuer_matches_hit(
+            'Deutschland, Bundesrepublik',
+            "Fitch Affirms Telefonica Deutschland at 'BBB'; Outlook Stable",
+            'https://www.fitchratings.com/research/corporate-finance/'
+            'fitch-affirms-telefonica-deutschland-at-bbb-outlook-stable-26-09-2025',
+        ))
+
+    def test_dz_bank_not_matched_by_deutsche_bank(self):
+        # DZ BANK ≠ Deutsche Bank : le token "deutsche" ne doit pas suffire.
+        self.assertFalse(self.p._issuer_matches_hit(
+            'DZ BANK AG Deutsche Zentral-Genossenschaftsbank, Frankfurt am Main',
+            "Fitch Affirms Deutsche Bank at 'A-'; Outlook Stable",
+            'https://www.fitchratings.com/research/banks/'
+            'fitch-affirms-deutsche-bank-at-a-outlook-stable-21-06-2024',
+        ))
+
+    def test_deutsche_telekom_still_matches_on_brand(self):
+        # Vrai positif : "deutsche" neutralisé → identité portée par "telekom".
+        self.assertTrue(self.p._issuer_matches_hit(
+            'Deutsche Telekom AG',
+            "Fitch Affirms Deutsche Telekom at 'BBB+'; Outlook Stable",
+            'https://www.fitchratings.com/research/corporate-finance/'
+            'fitch-affirms-deutsche-telekom-at-bbb-outlook-stable-09-08-2023',
+        ))
+
+    def test_single_brand_token_oncor_matches(self):
+        # Marque unique ("oncor") suffit même si "electric delivery" absent du titre.
+        self.assertTrue(self.p._issuer_matches_hit(
+            'Oncor Electric Delivery Co. LLC',
+            "Fitch Rates Oncor's Senior Secured Notes 'A'",
+            'https://www.fitchratings.com/research/corporate-finance/'
+            'fitch-rates-oncor-senior-secured-notes-a-23-09-2025',
+        ))
+
+
+class TestGetRatingEndToEnd(unittest.TestCase):
+    """
+    get_rating() de bout en bout contre des réponses Brave RÉELLES capturées
+    (tests/fixtures/brave_results.json). Prouve que le gate d'identité
+    transforme le faux positif Iccrea en None et garde le vrai Dominion BBB+.
+    """
+
+    def setUp(self):
+        tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+        tmp.close()
+        self.path = Path(tmp.name)
+        self.path.unlink()
+        self.cache = _Cache(self.path)
+
+    def tearDown(self):
+        if self.path.exists():
+            self.path.unlink()
+
+    def _run(self, isin, issuer, fixture_key):
+        provider = BraveFitchProvider(api_key='dummy', cache=self.cache)
+        results = _load_fixture(fixture_key)
+        with mock.patch('httpx.AsyncClient', _fake_async_client(results)):
+            return asyncio.run(provider.get_rating(isin, bond_name=issuer))
+
+    def test_iccrea_false_positive_is_now_none(self):
+        ri = self._run('IT0005000001', 'Iccrea Banca', 'iccrea_banca')
+        self.assertIsNone(ri)
+
+    def test_dominion_true_positive_bbbplus(self):
+        ri = self._run('US25746UCY38', 'Dominion Energy', 'dominion_energy')
+        self.assertIsNotNone(ri)
+        self.assertEqual(ri.value, 'BBB+')
+
+    def test_dominion_carries_verifiable_fitch_url(self):
+        ri = self._run('US25746UCY38', 'Dominion Energy', 'dominion_energy')
+        self.assertIsNotNone(ri)
+        self.assertTrue(ri.source_url.startswith('https://www.fitchratings.com'))
+
+    def _run_crafted(self, issuer, results):
+        provider = BraveFitchProvider(api_key='dummy', cache=self.cache)
+        with mock.patch('httpx.AsyncClient', _fake_async_client(results)):
+            return asyncio.run(provider.get_rating('XS_TEST', bond_name=issuer))
+
+    def test_withdrawn_url_rejected_even_if_title_clean(self):
+        # Titre tronqué SANS "withdraw", mais l'URL le contient (Vodafone West).
+        ri = self._run_crafted('Vodafone Group', [{
+            'url': 'https://www.fitchratings.com/research/corporate-finance/'
+                   'fitch-affirms-vodafone-west-gmbh-at-bbb-withdraws-'
+                   'ratings-15-09-2020',
+            'title': "Fitch Affirms Vodafone West GmbH at 'BBB'",
+        }])
+        self.assertIsNone(ri)
+
+    def test_stale_2009_rating_rejected(self):
+        # GM 'D' de 2009 (faillite) — bon émetteur mais périmé → rejeté.
+        ri = self._run_crafted('General Motors', [{
+            'url': 'https://www.fitchratings.com/research/corporate-finance/'
+                   'fitch-downgrades-general-motors-to-d-unsecured-'
+                   'recoveries-minimal-01-06-2009',
+            'title': "Fitch Downgrades General Motors to 'D'",
+        }])
+        self.assertIsNone(ri)
+
+
+class TestBraveReserveParsing(unittest.TestCase):
+    """
+    Garde-fou réserve Brave : ne doit PAS se déclencher quand le plan n'a
+    AUCUN cap mensuel (limite mensuelle = 0 → métré/pay-as-you-go).
+    Bug 2026-05-29 : header réel 'x-ratelimit-remaining: 49, 0' +
+    'x-ratelimit-limit: 50, 0' était lu comme "0 restant" → quota_low.
+    """
+
+    class _Resp:
+        def __init__(self, headers):
+            self.headers = headers
+
+    def test_no_monthly_cap_does_not_flag_low(self):
+        p = BraveFitchProvider(api_key='dummy')
+        p._read_remaining(self._Resp({
+            'X-RateLimit-Limit': '50, 0',
+            'X-RateLimit-Remaining': '49, 0',
+        }))
+        self.assertFalse(p.quota_low)
+        # remaining_monthly doit être None (pas 0) → ne persiste rien qui
+        # bloquerait le pré-lancement backend.
+        self.assertIsNone(p.remaining_monthly)
+
+    def test_real_monthly_cap_low_flags(self):
+        p = BraveFitchProvider(api_key='dummy')
+        p._read_remaining(self._Resp({
+            'X-RateLimit-Limit': '1, 2000',
+            'X-RateLimit-Remaining': '1, 42',
+        }))
+        self.assertTrue(p.quota_low)
+        self.assertEqual(p.remaining_monthly, 42)
+
+    def test_real_monthly_cap_healthy_does_not_flag(self):
+        p = BraveFitchProvider(api_key='dummy')
+        p._read_remaining(self._Resp({
+            'X-RateLimit-Limit': '1, 2000',
+            'X-RateLimit-Remaining': '1, 800',
+        }))
+        self.assertFalse(p.quota_low)
+
+
+class TestStalenessGuards(unittest.TestCase):
+    """
+    Garde anti-péremption + notation retirée (fix 2026-05-29). Découvert en
+    test : 'General Motors' → 'D' depuis une URL Fitch de 2009 (faillite GM) ;
+    'Vodafone West GmbH ... Withdraws Ratings' (rating retiré).
+    """
+
+    def setUp(self):
+        self.p = BraveFitchProvider(api_key='dummy')
+
+    def test_old_url_age_exceeds_threshold(self):
+        url = ('https://www.fitchratings.com/research/corporate-finance/'
+               'fitch-downgrades-general-motors-to-d-unsecured-recoveries-'
+               'minimal-01-06-2009')
+        age = _url_age_years(url)
+        self.assertIsNotNone(age)
+        self.assertGreater(age, RATING_MAX_AGE_YEARS)
+
+    def test_recent_url_age_under_threshold(self):
+        url = ('https://www.fitchratings.com/research/banks/'
+               'fitch-affirms-citigroup-inc-at-a-f1-outlook-stable-15-08-2025')
+        age = _url_age_years(url)
+        self.assertIsNotNone(age)
+        self.assertLess(age, RATING_MAX_AGE_YEARS)
+
+    def test_no_date_in_url_returns_none(self):
+        self.assertIsNone(_url_age_years(
+            'https://www.fitchratings.com/entity/dominion-energy-12345'))
+
+    def test_withdrawn_rating_rejected_by_score(self):
+        title = ("Fitch Affirms Vodafone West GmbH at 'BBB'; "
+                 "Withdraws Ratings")
+        self.assertLess(self.p._score_title(title), 0)
 
 
 if __name__ == '__main__':

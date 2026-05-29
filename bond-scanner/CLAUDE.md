@@ -85,14 +85,25 @@ bot obbligation/
 6. Excel + enregistrement dédup
 ```
 
-### Rating (Brave/Fitch, mirror Yield Bot)
-- Récupéré **uniquement** via Brave Search API `site:fitchratings.com {issuer}`
-- Parsing du rating depuis le **titre** des pages Fitch (regex `FITCH_TITLE_RATING_RE`)
-- Politique **fitch_only strict** : pas de fallback S&P/Moody's
-- Si Fitch ne rate pas → `rating_display = None`, bond rejeté (pas de cellule vide)
-- Cache `~/.cache/bond-scanner-ratings.json` (TTL 30j, négatifs inclus)
-- Clé `BRAVE_SEARCH_API_KEY` **partagée** avec Yield Bot, posable via panel admin
-  (`data/secrets/brave.key`), free tier ~1000 req/mois
+### Rating (FITCH PAR ISIN — `scanner/fitch_isin.py`, 2026-05-29 PM)
+- **Source UNIQUE = Fitch par ISIN** (Brave abandonné — voir piège #33 racine).
+  L'ISIN est unique → AUCUNE ambiguïté de nom (fini Iccrea→ICBC, Bund→Telefonica).
+- API GraphQL `POST https://api.fitchratings.com/` `search(term:<ISIN>,item:IDENTIFIERS)`
+  via **`curl_cffi` (impersonate chrome)** — imite l'empreinte TLS de Chrome pour passer
+  Cloudflare (un httpx normal est refusé au handshake `TLSV1_ALERT_PROTOCOL_VERSION`).
+- Note rendue = **note du TITRE exact** (`issue` matchant l'ISIN ; ex. Oncor secured → A),
+  fallback sur la note émetteur `entity` Long Term IDR si le titre n'a pas de note propre
+  (décision Massii 2026-05-29). `PREFER_SECURITY_RATING=True` par défaut.
+- `WD`/non-noté → None (émetteur dont Fitch a retiré la note, ex. Mercedes → ∅, correct).
+- **Retry** anti-challenge Cloudflare (1ʳᵉ requête d'une session = parfois HTML, pas JSON) ;
+  `unreachable` seulement après 5 échecs consécutifs.
+- **Rating OBLIGATOIRE** : `criteria.matches()` rejette TOUT bond sans rating vérifié →
+  un bond non noté par Fitch n'entre JAMAIS dans l'Excel.
+- **Lien vérifiable** : cellule G Excel = hyperlien `fitchratings.com/search/?query=<ISIN>`
+  (= la recherche manuelle exacte de Massii).
+- Cache `~/.cache/bond-scanner-ratings.json` (TTL 30j, négatifs inclus, stocke l'URL).
+- ⚠️ **`pip install curl_cffi`** requis dans le venv backend Omen (les bots tournent via
+  `sys.executable` ; l'auto-deploy ne réinstalle pas les deps).
 
 ### Dédup persistante (3 stores)
 | Store | Fichier | TTL | Rôle |

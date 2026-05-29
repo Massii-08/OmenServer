@@ -1,0 +1,153 @@
+{
+ "XS2813774341": {
+  "data": {
+   "search": {
+    "totalHits": 2,
+    "entity": [
+     {
+      "name": "Oncor Electric Delivery Company LLC",
+      "score": 3.5968285,
+      "ratings": [
+       {
+        "ratingTypeDescription": "Long Term Issuer Default Rating",
+        "ratingActionDescription": "Affirmed",
+        "ratingCode": "BBB+",
+        "ratingEffectiveDate": "2026-05-14T04:00:05.000Z"
+       },
+       {
+        "ratingTypeDescription": "Short Term Issuer Default Rating",
+        "ratingActionDescription": "Affirmed",
+        "ratingCode": "F2",
+        "ratingEffectiveDate": "2026-05-14T04:00:05.000Z"
+       }
+      ]
+     }
+    ],
+    "issue": [
+     {
+      "isin": [
+       "XS2813774770",
+       "XS2813774341"
+      ],
+      "currency": "EUR",
+      "couponRate": "3.5% ",
+      "maturityDate": "2031-05-15T04:00:00.000Z",
+      "ratableTypeDescription": "bond/note",
+      "permalink": "oncor-electric-delivery-company-80090747#issues",
+      "ratings": [
+       {
+        "ratingTypeDescription": "Long Term Rating",
+        "ratingActionDescription": "Affirmed",
+        "ratingCode": "A",
+        "ratingEffectiveDate": "2026-05-14T04:00:05.000Z"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "XS2024716099": {
+  "data": {
+   "search": {
+    "totalHits": 2,
+    "entity": [
+     {
+      "name": "Deutsche Telekom AG",
+      "score": 7.5804806,
+      "ratings": [
+       {
+        "ratingTypeDescription": "Long Term Issuer Default Rating",
+        "ratingActionDescription": "Affirmed",
+        "ratingCode": "BBB+",
+        "ratingEffectiveDate": "2026-02-26T05:00:20.000Z"
+       },
+       {
+        "ratingTypeDescription": "Short Term Issuer Default Rating",
+        "ratingActionDescription": "Affirmed",
+        "ratingCode": "F2",
+        "ratingEffectiveDate": "2026-02-26T05:00:20.000Z"
+       }
+      ]
+     }
+    ],
+    "issue": [
+     {
+      "isin": [
+       "XS2024716099"
+      ],
+      "currency": "EUR",
+      "couponRate": "1.375% ",
+      "maturityDate": "2034-07-05T04:00:00.000Z",
+      "ratableTypeDescription": "bond/note",
+      "permalink": "deutsche-telekom-ag-80360263#issues",
+      "ratings": [
+       {
+        "ratingTypeDescription": "Long Term Rating",
+        "ratingActionDescription": "Affirmed",
+        "ratingCode": "BBB+",
+        "ratingEffectiveDate": "2026-02-26T05:00:20.000Z"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "US25746UCY38": {
+  "data": {
+   "search": {
+    "totalHits": 2,
+    "entity": [
+     {
+      "name": "Dominion Energy, Inc.",
+      "score": 8.548614,
+      "ratings": [
+       {
+        "ratingTypeDescription": "Long Term Issuer Default Rating",
+        "ratingActionDescription": "Rating Watch On",
+        "ratingCode": "BBB+",
+        "ratingEffectiveDate": "2026-05-18T04:00:36.000Z"
+       },
+       {
+        "ratingTypeDescription": "Short Term Issuer Default Rating",
+        "ratingActionDescription": "Affirmed",
+        "ratingCode": "F2",
+        "ratingEffectiveDate": "2026-05-18T04:00:36.000Z"
+       }
+      ]
+     }
+    ],
+    "issue": [
+     {
+      "isin": [
+       "US25746UCY38"
+      ],
+      "currency": "USD",
+      "couponRate": "4.25% ",
+      "maturityDate": "2028-06-01T04:00:00.000Z",
+      "ratableTypeDescription": "bond/note",
+      "permalink": "dominion-energy-inc-80089044#issues",
+      "ratings": [
+       {
+        "ratingTypeDescription": "Long Term Rating",
+        "ratingActionDescription": "Rating Watch On",
+        "ratingCode": "BBB+",
+        "ratingEffectiveDate": "2026-05-18T04:00:36.000Z"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "XS1234567890": {
+  "data": {
+   "search": {
+    "totalHits": 0,
+    "entity": [],
+    "issue": []
+   }
+  }
+ }
+}

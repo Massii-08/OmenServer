@@ -172,6 +172,177 @@ FITCH_TITLE_RATING_RE = re.compile(
 )
 
 
+# ============================================================================
+#  VÉRIFICATION D'IDENTITÉ ÉMETTEUR (fix 2026-05-29 — bug Iccrea→ICBC)
+# ============================================================================
+#
+#  Brave `site:fitchratings.com {issuer}` renvoie TOUJOURS des résultats même
+#  si Fitch ne note pas l'émetteur → on extrayait le rating d'une AUTRE entité
+#  (ex. "Iccrea Banca" → "Fitch Affirms ICBC at 'A'" → faux 'A'). On n'accepte
+#  désormais un rating QUE si le token identitaire de l'émetteur apparaît dans
+#  le titre ou le slug de l'URL Fitch. Mirror exact du Bond Scanner
+#  (scanner/rating_providers.py). Si rien trouvé → (None, None) → yield_bot
+#  écrit '?' dans la cellule (politique inchangée).
+
+_GENERIC_NAME_TOKENS = frozenset({
+    'bank', 'banca', 'banque', 'banco', 'banken',
+    'group', 'groupe', 'gruppo', 'grupo',
+    'financial', 'finance', 'financiere', 'finanz',
+    'holding', 'holdings', 'capital', 'capitale',
+    'corporation', 'corp', 'company', 'compagnie', 'compagnia',
+    'inc', 'incorporated', 'sa', 'ag', 'nv', 'plc', 'spa', 'gmbh',
+    'ltd', 'limited', 'llc', 'lp', 'srl', 'se', 'oyj', 'ab', 'asa', 'as',
+    'international', 'internazionale', 'investment', 'investments',
+    'services', 'service', 'trust', 'public', 'co',
+    'energy', 'power', 'utilities', 'utility', 'pharma', 'pharmaceutical',
+    'telecom', 'telecommunications', 'insurance', 'assurance',
+    'real', 'estate', 'properties', 'property', 'industries', 'industrial',
+    'the', 'of', 'and', 'fur', 'von', 'der', 'des', 'du', 'de',
+    'la', 'le', 'el', 'und', 'per', 'azioni', 'am', 'an', 'im',
+    # --- Mots GÉOGRAPHIQUES / nationaux (fix 2026-05-29 bis, mirror Bond Scanner) ---
+    # Ne distinguent PAS un émetteur : "deutschland"→"Telefonica Deutschland",
+    # "deutsche"→"Deutsche Bank". Neutralisés pour tomber sur la vraie marque.
+    'deutsche', 'deutschland', 'deutscher', 'deutsches', 'germany', 'german',
+    'germania', 'bundesrepublik', 'republik', 'republic', 'republica',
+    'repubblica', 'republique', 'kingdom', 'koninkrijk',
+    'kongeriket', 'kongerike', 'federal', 'federale', 'national', 'nationale',
+    'nazionale', 'staat', 'stato', 'etat', 'etats', 'estado',
+    'france', 'french', 'francaise', 'francais', 'frankreich', 'francia',
+    'italia', 'italy', 'italian', 'italiana', 'italiano', 'italie',
+    'espana', 'spain', 'spanish', 'espagne', 'espanola',
+    'america', 'american', 'americas', 'amerika', 'usa',
+    'united', 'britain', 'british', 'england', 'english', 'royaume',
+    'europe', 'european', 'europa', 'europea', 'europeenne', 'europaische',
+    'netherlands', 'nederland', 'dutch', 'niederlande', 'belgium', 'belgique',
+    'belgian', 'belgien', 'luxembourg', 'luxemburg',
+    'sweden', 'swedish', 'sverige', 'norway', 'norwegian', 'norge',
+    'denmark', 'danish', 'danmark', 'finland', 'finnish', 'suomi',
+    'austria', 'osterreich', 'austrian', 'autriche', 'switzerland', 'swiss',
+    'suisse', 'schweiz', 'svizzera', 'japan', 'japanese', 'nippon',
+    'china', 'chinese', 'korea', 'korean', 'canada', 'canadian',
+    'australia', 'australian', 'ireland', 'irish', 'portugal', 'poland',
+})
+
+_NAME_TOKEN_RE = re.compile(r'[a-z0-9]+')
+
+
+def _name_tokens(text: str) -> list:
+    """Tokens alphanumériques minuscules (apostrophes/tirets/espaces = séparateurs)."""
+    if not text:
+        return []
+    return _NAME_TOKEN_RE.findall(text.lower())
+
+
+def _lead_distinctive_token(issuer: str):
+    """1er token identitaire du nom (≥3 lettres, non générique), ou None."""
+    for tok in _name_tokens(issuer):
+        if len(tok) >= 3 and tok not in _GENERIC_NAME_TOKENS:
+            return tok
+    return None
+
+
+def _issuer_matches_hit(issuer: str, title: str, url: str) -> bool:
+    """
+    True si le hit Fitch parle bien DU même émetteur (token identitaire présent
+    dans le titre ou le slug de l'URL). Match par token exact (pas substring).
+    Émetteur 100% générique → rejet (mieux vaut '?' qu'un faux rating).
+    """
+    lead = _lead_distinctive_token(issuer)
+    if not lead:
+        return False
+    haystack = set(_name_tokens(title)) | set(_name_tokens(url))
+    return lead in haystack
+
+
+# Anti-péremption (fix 2026-05-29, mirror Bond Scanner) : les URLs Fitch
+# finissent par la date de l'action (DD-MM-YYYY). On jette les notations de
+# plus de 8 ans (ex. "Fitch Downgrades General Motors to 'D'" de 2009).
+RATING_MAX_AGE_YEARS = 8
+_RATING_URL_DATE_RE = re.compile(r'(\d{2})-(\d{2})-(\d{4})/?\s*$')
+
+
+def _url_age_years(url: str):
+    """Âge (années) d'après la date en fin d'URL Fitch, ou None si non parsable."""
+    if not url:
+        return None
+    m = _RATING_URL_DATE_RE.search(url.strip())
+    if not m:
+        return None
+    try:
+        d = date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+    except ValueError:
+        return None
+    return (date.today() - d).days / 365.25
+
+
+# ============================================================================
+#  FITCH PAR ISIN — source unique (2026-05-29, demande Massii « fitch only ISIN »)
+# ============================================================================
+#
+#  On interroge l'API GraphQL Fitch par ISIN (unique → zéro ambiguïté de nom).
+#  Cloudflare bloque les clients serveur au niveau TLS → curl_cffi (empreinte
+#  Chrome). Par défaut on rend la note ÉMETTEUR Long Term IDR. Cf. le module
+#  jumeau bond-scanner/scanner/fitch_isin.py (même contrat).
+
+FITCH_GRAPHQL_ENDPOINT = "https://api.fitchratings.com/"
+FITCH_VERIFY_URL = "https://www.fitchratings.com/search/?query={isin}"
+_FITCH_SEARCH_QUERY = (
+    "query($t:String!,$i:SearchItem){"
+    "search(term:$t,item:$i){totalHits "
+    "entity{name ratings{ratingTypeDescription ratingCode}} "
+    "issue{isin ratings{ratingTypeDescription ratingCode}}}}"
+)
+_FITCH_HEADERS = {
+    "content-type": "application/json", "accept": "application/json",
+    "origin": "https://www.fitchratings.com", "referer": "https://www.fitchratings.com/",
+}
+_LT_IDR = "long term issuer default rating"
+_LT_ANY = "long term"
+# DÉFAUT = note du TITRE exact (issue matchant l'ISIN), fallback note émetteur
+# (décision Massii 2026-05-29). False → préférer la note émetteur (IDR).
+FITCH_PREFER_SECURITY = True
+
+
+def select_isin_rating(response: dict, isin: str,
+                       prefer_security: bool = FITCH_PREFER_SECURITY):
+    """Extrait la note Fitch (str) pour `isin` depuis la réponse GraphQL, ou None.
+
+    Émetteur Long Term IDR par défaut ; note du titre (issue) si prefer_security.
+    'WD'/'NR' (retiré/non noté) → None via normalize_rating.
+    """
+    if not response or not isin:
+        return None
+    search = response.get("data", {}).get("search") if "data" in response else response.get("search", response)
+    if not isinstance(search, dict):
+        return None
+    issuer = None
+    for e in (search.get("entity") or []):
+        for r in e.get("ratings") or []:
+            if (r.get("ratingTypeDescription") or "").strip().lower() == _LT_IDR:
+                v = normalize_rating((r.get("ratingCode") or "").strip())
+                if v:
+                    issuer = v
+                    break
+        if issuer:
+            break
+    security = None
+    isin_u = isin.strip().upper()
+    for iss in (search.get("issue") or []):
+        if isin_u not in [str(x).strip().upper() for x in (iss.get("isin") or [])]:
+            continue
+        for r in iss.get("ratings") or []:
+            if _LT_ANY in (r.get("ratingTypeDescription") or "").strip().lower():
+                v = normalize_rating((r.get("ratingCode") or "").strip())
+                if v:
+                    security = v
+                    break
+        if security:
+            break
+    if prefer_security and security:
+        return security
+    return issuer or security
+
+
 def parse_rating_from_text(text: str) -> Tuple[Optional[str], Optional[str]]:
     """
     Cherche un pattern '<Agency> <verb> <Issuer> at <Rating>' dans un texte.
@@ -292,6 +463,9 @@ class RatingFetcher:
             or self._load_key_from_file()
         )
         self.cache = _Cache()
+        self._fitch_session = None     # session curl_cffi (Fitch par ISIN)
+        self.fitch_unreachable = False  # True si Cloudflare/TLS bloque
+        self._fitch_fail = 0            # échecs consécutifs (→ unreachable à 5)
 
     @staticmethod
     def _load_key_from_file() -> Optional[str]:
@@ -331,69 +505,87 @@ class RatingFetcher:
     def fetch_rating(
         self,
         isin: str,
-        issuer: str,
+        issuer: str = None,
     ) -> Tuple[Optional[str], Optional[str]]:
         """
-        Récupère un rating pour un bond.
+        Récupère le rating Fitch d'un bond PAR ISIN (2026-05-29, « fitch only ISIN »).
 
-        Args:
-            isin: Code ISIN
-            issuer: Nom de l'émetteur (ex: "Dominion Energy Inc.")
+        `issuer` (le nom) n'est PLUS utilisé : la recherche se fait par ISIN sur
+        Fitch (unique → aucune ambiguïté de nom). Argument conservé pour compat.
 
         Returns:
-            (rating, agency) en notation Fitch/S&P, ou (None, None) si rien
-            n'a été trouvé.
+            (rating, 'Fitch') ou (None, None) si Fitch ne note pas l'ISIN
+            (→ le yield_bot écrit '?' dans la cellule).
         """
-        if not isin or not issuer:
+        if not isin:
             return None, None
 
-        # Cache hit ?
+        # Cache (positif ET négatif)
         cached = self.cache.get(isin)
-        if cached:
-            logger.info(
-                f"  📦 Rating cached: {isin} → {cached['rating']} "
-                f"({cached['agency']} via {cached['source']})"
-            )
-            return cached['rating'], cached['agency']
+        if cached is not None:
+            if cached.get('agency') == 'Fitch' and cached.get('rating'):
+                logger.info(f"  📦 Rating cached: {isin} → {cached['rating']} (Fitch)")
+                return cached['rating'], 'Fitch'
+            return None, None  # sentinelle négative (Fitch ne note pas)
 
-        # Ordre des sources : Brave en premier si clé dispo (le plus fiable),
-        # puis Fitch direct (Camoufox), puis DDG news, puis SEC EDGAR.
-        sources = []
-        if self.brave_api_key:
-            sources.append(('Brave Search', self._try_brave_search))
-        if self.prefer_fitch and self.use_camoufox:
-            sources.append(('Fitch+Camoufox', self._try_fitch_camoufox))
-        sources.append(('DuckDuckGo+news', self._try_ddg_news))
-        sources.append(('SEC EDGAR', self._try_sec_edgar))
+        rating = self._fetch_fitch_isin(isin)
+        if rating:
+            logger.info(f"  ✏️  Rating {isin}: {rating} (Fitch par ISIN)")
+            self.cache.set(isin, rating, 'Fitch', 'Fitch ISIN')
+            return rating, 'Fitch'
 
-        for source_name, source_fn in sources:
-            try:
-                result = source_fn(isin, issuer)
-                if result and result[0]:
-                    rating, agency = result
-
-                    # Mode fitch_only : on n'accepte QUE les ratings dont l'agency
-                    # parsée est "Fitch". Les S&P/Moody's matchés sont rejetés
-                    # silencieusement → on tente la source suivante.
-                    if self.fitch_only and agency != 'Fitch':
-                        logger.debug(
-                            f"  ⊘ {source_name} a trouvé {rating} ({agency}) "
-                            f"mais fitch_only=True → skip"
-                        )
-                        continue
-
-                    logger.info(
-                        f"  ✏️  Rating {isin} ({issuer}): {rating} "
-                        f"({agency}) via {source_name}"
-                    )
-                    self.cache.set(isin, rating, agency, source_name)
-                    return rating, agency
-            except Exception as e:
-                logger.debug(f"  ⚠️  Source {source_name} échec: {e!r}")
-                continue
-
-        logger.warning(f"  ❓ Aucun rating trouvé pour {isin} ({issuer})")
+        self.cache.set(isin, '', '', f'Fitch no-hit ({isin})')
+        logger.info(f"  ❓ Fitch ne note pas l'ISIN {isin}")
         return None, None
+
+    def _fetch_fitch_isin(self, isin: str) -> Optional[str]:
+        """Note Fitch (str) par ISIN via api.fitchratings.com (curl_cffi), ou None.
+
+        curl_cffi imite l'empreinte TLS de Chrome → passe Cloudflare (un httpx
+        normal est refusé au handshake). Note émetteur Long Term IDR par défaut.
+        """
+        if self.fitch_unreachable:
+            return None
+        try:
+            from curl_cffi import requests as creq
+        except ImportError:
+            logger.warning("  ⚠️  curl_cffi non installé — `pip install curl_cffi`")
+            self.fitch_unreachable = True
+            return None
+        if self._fitch_session is None:
+            self._fitch_session = creq.Session(impersonate="chrome")
+        payload = {"query": _FITCH_SEARCH_QUERY, "variables": {"t": isin, "i": "IDENTIFIERS"}}
+        # Retry : la 1ère requête d'une session curl_cffi reçoit parfois un
+        # challenge Cloudflare HTML (200 sans JSON). unreachable seulement après
+        # 5 échecs consécutifs (vrai blocage), pas pour un blip.
+        for i in range(3):
+            try:
+                r = self._fitch_session.post(
+                    FITCH_GRAPHQL_ENDPOINT, json=payload, headers=_FITCH_HEADERS, timeout=25,
+                )
+            except Exception as e:
+                logger.warning(f"  ⚠️  Fitch connexion KO ({isin}): {e!r}")
+                self._fitch_fail += 1
+                if self._fitch_fail >= 5:
+                    self.fitch_unreachable = True
+                return None
+            if r.status_code == 200:
+                try:
+                    data = r.json()
+                except Exception:
+                    import time; time.sleep(0.6 * (i + 1)); continue
+                if isinstance(data, dict) and "data" in data:
+                    self._fitch_fail = 0
+                    return select_isin_rating(data, isin)
+                import time; time.sleep(0.6 * (i + 1)); continue
+            if r.status_code in (403, 429, 503):
+                import time; time.sleep(0.8 * (i + 1)); continue
+            logger.debug(f"  ⚠️  Fitch status={r.status_code} ({isin})")
+            return None
+        self._fitch_fail += 1
+        if self._fitch_fail >= 5:
+            self.fitch_unreachable = True
+        return None
 
     # ------------------------------------------------------------------
     #  Source 0 : Brave Search API ciblée site:fitchratings.com
@@ -500,7 +692,8 @@ class RatingFetcher:
         # n'ont rien à voir avec le bond corporate sous-jacent. Vu sur
         # "Hilton Grand Vacations Trust 2026-1" (ABS timeshare).
         REJECT = ('trust', 'grand vacations', 'abs', 'rmbs', 'cmbs',
-                  'presale', 'covered bond', 'mortgage', 'clo', 'spv')
+                  'presale', 'covered bond', 'mortgage', 'clo', 'spv',
+                  'withdraw')  # notation retirée = plus valide (fix 2026-05-29)
 
         best: Optional[Tuple[int, str, str]] = None  # (score, rating, url)
 
@@ -514,6 +707,12 @@ class RatingFetcher:
             # Le mot "Fitch" doit apparaître dans le titre — sinon c'est
             # probablement une page entity sans action de rating récente.
             if 'fitch' not in title_lower:
+                continue
+
+            # Notation RETIRÉE — souvent visible SEULEMENT dans l'URL (titre
+            # tronqué par Brave), ex. Vodafone West GmbH 2020.
+            if 'withdraw' in url.lower():
+                logger.debug(f"  ⊘ Rating retiré (URL withdraw): {url[-60:]!r}")
                 continue
 
             # Rejet : structures de securitisation (Trust/ABS/...) — leur
@@ -530,6 +729,25 @@ class RatingFetcher:
 
             rating = normalize_rating(m.group('rating'))
             if not rating:
+                continue
+
+            # GARDE-FOU IDENTITÉ (fix 2026-05-29) : le hit doit parler DU bon
+            # émetteur, sinon Brave nous refile le rating d'une autre entité
+            # (Iccrea Banca → ICBC 'A'). Vérifie titre + slug de l'URL.
+            if not _issuer_matches_hit(issuer_short, title, url):
+                logger.debug(
+                    f"  ⊘ Identité émetteur non confirmée ({issuer_short!r}): "
+                    f"{title[:80]!r}"
+                )
+                continue
+
+            # ANTI-PÉREMPTION (fix 2026-05-29) : jette les notations > 8 ans
+            # (ex. GM 'D' de 2009) — trompeuses même si "vraies" sur Fitch.
+            age = _url_age_years(url)
+            if age is not None and age > RATING_MAX_AGE_YEARS:
+                logger.debug(
+                    f"  ⊘ Rating périmé ({age:.0f} ans): {title[:70]!r}"
+                )
                 continue
 
             score = 0

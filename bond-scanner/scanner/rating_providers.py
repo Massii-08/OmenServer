@@ -123,6 +123,122 @@ FITCH_TITLE_RATING_RE = re.compile(
 
 
 # ============================================================================
+#  Vérification d'identité émetteur (fix 2026-05-29 — bug Iccrea→ICBC)
+# ============================================================================
+#
+#  Brave `site:fitchratings.com {issuer}` renvoie TOUJOURS des résultats,
+#  même quand Fitch ne note pas l'émetteur. La SERP contient alors des pages
+#  d'AUTRES émetteurs (même secteur / nom voisin). Sans vérification d'identité
+#  on extrayait le rating de la MAUVAISE entité :
+#    "Iccrea Banca" → "Fitch Affirms ICBC at 'A'" → Iccrea taggé 'A'.
+#    (ICBC = Industrial & Commercial Bank of China ≠ Iccrea Banca.)
+#  C'est EXACTEMENT le symptôme rapporté : un rating introuvable à la main sur
+#  Fitch pour l'émetteur réel. Pire, le score +2 ('Affirms'/'IDR') PRÉFÉRAIT
+#  ces pages-autre-émetteur à la propre page (sans rating) du bon émetteur.
+#
+#  Garde-fou : on n'accepte un rating QUE si le token identitaire de l'émetteur
+#  (1er mot distinctif, ex. "dominion"/"iccrea"/"bayerische") apparaît comme
+#  TOKEN du titre OU du slug de l'URL Fitch. Match par token (pas substring)
+#  → "ubs" ne matche pas "subsidiary".
+
+# Tokens trop génériques pour identifier un émetteur (formes juridiques + mots
+# bancaires/sectoriels ultra-communs, multilingue car bonds EU/US/UK).
+_GENERIC_NAME_TOKENS = frozenset({
+    'bank', 'banca', 'banque', 'banco', 'banken',
+    'group', 'groupe', 'gruppo', 'grupo',
+    'financial', 'finance', 'financiere', 'finanz',
+    'holding', 'holdings', 'capital', 'capitale',
+    'corporation', 'corp', 'company', 'compagnie', 'compagnia',
+    'inc', 'incorporated', 'sa', 'ag', 'nv', 'plc', 'spa', 'gmbh',
+    'ltd', 'limited', 'llc', 'lp', 'srl', 'se', 'oyj', 'ab', 'asa', 'as',
+    'international', 'internazionale', 'investment', 'investments',
+    'services', 'service', 'trust', 'public', 'co',
+    'energy', 'power', 'utilities', 'utility', 'pharma', 'pharmaceutical',
+    'telecom', 'telecommunications', 'insurance', 'assurance',
+    'real', 'estate', 'properties', 'property', 'industries', 'industrial',
+    'the', 'of', 'and', 'fur', 'von', 'der', 'des', 'du', 'de',
+    'la', 'le', 'el', 'und', 'per', 'azioni', 'am', 'an', 'im',
+    # --- Mots GÉOGRAPHIQUES / nationaux (fix 2026-05-29 bis) ---
+    # Ces mots NE distinguent PAS un émetteur : "deutschland" matchait
+    # "Telefonica Deutschland" (→ Bund allemand taggé BBB !) et "deutsche"
+    # matchait "Deutsche Bank" (→ DZ BANK taggé A-). On les neutralise pour
+    # que le token identitaire tombe sur la VRAIE marque (telekom, zentral…).
+    'deutsche', 'deutschland', 'deutscher', 'deutsches', 'germany', 'german',
+    'germania', 'bundesrepublik', 'republik', 'republic', 'republica',
+    'repubblica', 'republique', 'republik', 'kingdom', 'koninkrijk',
+    'kongeriket', 'kongerike', 'federal', 'federale', 'national', 'nationale',
+    'nazionale', 'staat', 'stato', 'etat', 'etats', 'estado',
+    'france', 'french', 'francaise', 'francais', 'frankreich', 'francia',
+    'italia', 'italy', 'italian', 'italiana', 'italiano', 'italie',
+    'espana', 'spain', 'spanish', 'espagne', 'espanola',
+    'america', 'american', 'americas', 'amerika', 'usa',
+    'united', 'britain', 'british', 'england', 'english', 'royaume',
+    'europe', 'european', 'europa', 'europea', 'europeenne', 'europaische',
+    'netherlands', 'nederland', 'dutch', 'niederlande', 'belgium', 'belgique',
+    'belgian', 'belgien', 'luxembourg', 'luxemburg',
+    'sweden', 'swedish', 'sverige', 'norway', 'norwegian', 'norge',
+    'denmark', 'danish', 'danmark', 'finland', 'finnish', 'suomi',
+    'austria', 'osterreich', 'austrian', 'autriche', 'switzerland', 'swiss',
+    'suisse', 'schweiz', 'svizzera', 'japan', 'japanese', 'nippon',
+    'china', 'chinese', 'korea', 'korean', 'canada', 'canadian',
+    'australia', 'australian', 'ireland', 'irish', 'portugal', 'poland',
+})
+
+_NAME_TOKEN_RE = re.compile(r'[a-z0-9]+')
+
+
+def _name_tokens(text: str) -> list:
+    """Tokens alphanumériques minuscules (apostrophes/tirets/espaces = séparateurs)."""
+    if not text:
+        return []
+    return _NAME_TOKEN_RE.findall(text.lower())
+
+
+def _lead_distinctive_token(issuer: str) -> Optional[str]:
+    """
+    1er token *identitaire* du nom (≥3 lettres, non générique).
+
+    "Dominion Energy"        → "dominion"
+    "Iccrea Banca"           → "iccrea"
+    "Bayerische Landesbank"  → "bayerische"
+    "Banco Santander"        → "santander"  (banco générique → ignoré)
+    "Bank Group Holding"     → None         (100% générique → non vérifiable)
+    """
+    for tok in _name_tokens(issuer):
+        if len(tok) >= 3 and tok not in _GENERIC_NAME_TOKENS:
+            return tok
+    return None
+
+
+# Anti-péremption (fix 2026-05-29) : les URLs Fitch finissent par la date de
+# l'action de notation au format DD-MM-YYYY (ex. .../...-d-...-01-06-2009).
+# On rejette les hits trop vieux : un "Fitch Downgrades General Motors to 'D'"
+# de 2009 est techniquement sur Fitch mais GM est BBB- aujourd'hui → trompeur.
+# 8 ans = assez large pour garder une notation stable peu re-publiée (ex.
+# Bayerische Landesbank 2018) tout en tuant les reliques (GM 2009).
+RATING_MAX_AGE_YEARS = 8
+_RATING_URL_DATE_RE = re.compile(r'(\d{2})-(\d{2})-(\d{4})/?\s*$')
+
+
+def _url_age_years(url: str) -> Optional[float]:
+    """Âge (années) de l'action de notation d'après la date en fin d'URL Fitch.
+
+    Renvoie None si aucune date parsable (page entité, format inattendu) →
+    le hit n'est PAS filtré sur l'âge (prudence : on ne jette pas par défaut).
+    """
+    if not url:
+        return None
+    m = _RATING_URL_DATE_RE.search(url.strip())
+    if not m:
+        return None
+    try:
+        d = date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+    except ValueError:
+        return None
+    return (date.today() - d).days / 365.25
+
+
+# ============================================================================
 #  Cache JSON 30-day TTL (porting da yield-bot _Cache)
 # ============================================================================
 
@@ -158,11 +274,12 @@ class _Cache:
             return None
         return entry
 
-    def set(self, isin: str, rating: str, agency: str, source: str):
+    def set(self, isin: str, rating: str, agency: str, source: str, url: str = ''):
         self._data[isin] = {
             'rating': rating,
             'agency': agency,
             'source': source,
+            'url': url,  # URL Fitch vérifiable (fix 2026-05-29)
             'date': date.today().isoformat(),
         }
         self._save()
@@ -216,6 +333,9 @@ _ISSUE_SPECIFIC = (
 _REJECT = (
     'trust', 'grand vacations', 'abs', 'rmbs', 'cmbs',
     'presale', 'covered bond', 'mortgage', 'clo', 'spv',
+    # 'withdraw' (2026-05-29) : une notation RETIRÉE n'est plus valide
+    # (ex. "Fitch Affirms Vodafone West GmbH at 'BBB'; Withdraws Ratings").
+    'withdraw',
 )
 
 
@@ -277,23 +397,53 @@ class BraveFitchProvider(RatingProvider):
         On prend la DERNIÈRE valeur (mensuelle). Robuste si une seule valeur.
         """
         try:
-            raw = response.headers.get('X-RateLimit-Remaining') or \
-                  response.headers.get('x-ratelimit-remaining')
+            headers = response.headers
+            raw = headers.get('X-RateLimit-Remaining') or \
+                headers.get('x-ratelimit-remaining')
             if not raw:
                 return
             parts = [p.strip() for p in str(raw).split(',') if p.strip()]
             if not parts:
                 return
             monthly = int(float(parts[-1]))
-            self.remaining_monthly = monthly
-            if monthly <= self.BRAVE_SAFETY_BUFFER:
+
+            # FIX 2026-05-29 : le plan Brave de Massii est métré (50 req/s,
+            # AUCUN cap mensuel). L'API renvoie alors :
+            #   x-ratelimit-limit:     50, 0
+            #   x-ratelimit-remaining: 49, 0
+            # Le "0" mensuel = "pas de quota mensuel configuré", PAS "0 restant"
+            # (les requêtes répondent 200). Sans ce garde on lisait 0 ≤ 50 →
+            # quota_low=True → scan stoppé après le 1er bond + nouveaux scans
+            # bloqués en boucle. On n'arme la réserve QUE s'il existe un VRAI
+            # cap mensuel (limite mensuelle > 0).
+            raw_limit = headers.get('X-RateLimit-Limit') or \
+                headers.get('x-ratelimit-limit')
+            monthly_limit = None
+            if raw_limit:
+                lparts = [p.strip() for p in str(raw_limit).split(',') if p.strip()]
+                if lparts:
+                    try:
+                        monthly_limit = int(float(lparts[-1]))
+                    except ValueError:
+                        monthly_limit = None
+
+            # limite inconnue (None) → prudence, on garde le comportement
+            # historique ; limite == 0 → plan sans cap mensuel → jamais d'alerte.
+            has_monthly_cap = (monthly_limit is None) or (monthly_limit > 0)
+
+            # Pas de cap mensuel → remaining_monthly n'a pas de sens : on le
+            # met à None (et non 0) pour ne pas persister un "0" qui ferait
+            # bloquer le pré-lancement backend (scanner_router._brave_remaining).
+            self.remaining_monthly = monthly if has_monthly_cap else None
+
+            if has_monthly_cap and monthly <= self.BRAVE_SAFETY_BUFFER:
                 self.quota_low = True
                 logger.warning(
                     f"    ⚠️  Réserve Brave basse : {monthly} requêtes restantes "
                     f"(≤ {self.BRAVE_SAFETY_BUFFER}) → arrêt préventif."
                 )
         except (ValueError, AttributeError) as e:
-            logger.debug(f"    parse X-RateLimit-Remaining: {e!r}")
+            logger.debug(f"    parse X-RateLimit: {e!r}")
 
     # ---- helpers ----------------------------------------------------
 
@@ -333,6 +483,24 @@ class BraveFitchProvider(RatingProvider):
             score += 2
         return score
 
+    def _issuer_matches_hit(self, issuer: str, title: str, url: str) -> bool:
+        """
+        True si le hit Fitch parle bien DE l'émetteur recherché (fix 2026-05-29).
+
+        On exige que le token identitaire de l'émetteur (ex. "dominion",
+        "iccrea", "bayerische") apparaisse comme TOKEN du titre ou du slug de
+        l'URL Fitch. Match par token exact (pas substring) → "ubs" ne matche
+        pas "subsidiary". Si l'émetteur n'a aucun token distinctif (nom 100%
+        générique) → rejet : mieux vaut PAS de rating qu'un faux.
+
+        C'est le garde-fou qui tue le faux positif "Iccrea Banca → ICBC 'A'".
+        """
+        lead = _lead_distinctive_token(issuer)
+        if not lead:
+            return False
+        haystack = set(_name_tokens(title)) | set(_name_tokens(url))
+        return lead in haystack
+
     # ---- main entry --------------------------------------------------
 
     async def get_rating(
@@ -352,6 +520,7 @@ class BraveFitchProvider(RatingProvider):
                     value=cached['rating'],
                     source=self.source_tag,
                     source_full=self.source_name,
+                    source_url=cached.get('url', ''),
                 )
             # Cache entry exists but was None (sentinel for "no Fitch") → skip
             return None
@@ -457,6 +626,11 @@ class BraveFitchProvider(RatingProvider):
             title_lower = title.lower()
             if 'fitch' not in title_lower:
                 continue
+            # Notation RETIRÉE — le signal "withdraw" est souvent SEULEMENT dans
+            # l'URL (titre tronqué par Brave), ex. Vodafone West GmbH 2020.
+            if 'withdraw' in url.lower():
+                logger.debug(f"    ⊘ Rating retiré (URL withdraw): {url[-60:]!r}")
+                continue
             score = self._score_title(title)
             if score < 0:
                 logger.debug(f"    ⊘ Reject: {title[:80]!r}")
@@ -467,6 +641,28 @@ class BraveFitchProvider(RatingProvider):
             rating = normalize_to_sp(m.group('rating'))
             if not rating:
                 continue
+
+            # GARDE-FOU IDENTITÉ (fix 2026-05-29) : le hit doit parler DU bon
+            # émetteur. Sinon Brave nous refile le rating d'une autre entité
+            # (Iccrea Banca → ICBC 'A'). On vérifie titre + slug de l'URL.
+            if not self._issuer_matches_hit(issuer_short, title, url):
+                logger.debug(
+                    f"    ⊘ Identité émetteur non confirmée ({issuer_short!r}): "
+                    f"{title[:80]!r}"
+                )
+                continue
+
+            # ANTI-PÉREMPTION (fix 2026-05-29) : on jette les notations trop
+            # vieilles (ex. GM 'D' de 2009). Un rating périmé est trompeur même
+            # s'il est "vrai" sur Fitch.
+            age = _url_age_years(url)
+            if age is not None and age > RATING_MAX_AGE_YEARS:
+                logger.debug(
+                    f"    ⊘ Rating périmé ({age:.0f} ans > {RATING_MAX_AGE_YEARS}): "
+                    f"{title[:70]!r}"
+                )
+                continue
+
             logger.debug(
                 f"    · score={score:+d} rating={rating} title={title[:80]!r}"
             )
@@ -478,11 +674,12 @@ class BraveFitchProvider(RatingProvider):
             logger.info(
                 f"    📊 Rating da Fitch (Brave): {rating} — {hit_url}"
             )
-            self.cache.set(isin, rating, 'Fitch', 'Brave Search')
+            self.cache.set(isin, rating, 'Fitch', 'Brave Search', url=hit_url)
             return RatingInfo(
                 value=rating,
                 source=self.source_tag,
                 source_full=self.source_name,
+                source_url=hit_url,
             )
 
         # No usable hit despite results returned → still cache as negative

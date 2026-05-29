@@ -36,6 +36,12 @@ requests==2.32.3
 # Requêtes HTTP async (plugin manager)
 httpx==0.28.1
 
+# Rating Fitch par ISIN (Bond Scanner + Yield Bot, 2026-05-29). Imite
+# l'empreinte TLS de Chrome → passe Cloudflare sur api.fitchratings.com
+# (httpx normal est refusé au handshake TLS). ⚠️ à pip-install sur l'Omen :
+# l'auto-deploy ne réinstalle pas les deps automatiquement.
+curl_cffi>=0.7
+
 # Google Drive API (module File & Cloud)
 google-api-python-client>=2.100.0
 google-auth-oauthlib>=1.1.0

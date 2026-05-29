@@ -35,6 +35,9 @@ HEADER_FONT = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
 TITLE_FONT = Font(name="Calibri", size=14, bold=True, color="2F5496")
 DATA_FONT = Font(name="Calibri", size=10, color="000000")
 RED_FONT = Font(name="Calibri", size=10, color="FF0000")
+# Lien hypertexte Fitch (fix 2026-05-29) : le rating de la col. G pointe vers
+# la page Fitch qui le prouve → Massii clique et vérifie à la main.
+LINK_FONT = Font(name="Calibri", size=10, color="0563C1", underline="single")
 CENTER_ALIGN = Alignment(horizontal='center', vertical='center')
 LEFT_ALIGN = Alignment(horizontal='left', vertical='center')
 THIN_BORDER = Border(
@@ -302,10 +305,18 @@ class ReportGenerator:
         ws[f'F{row}'].alignment = CENTER_ALIGN
         ws[f'F{row}'].border = THIN_BORDER
 
-        # No fallback placeholder: if Fitch doesn't rate this issuer, leave
-        # the cell empty (policy "on laisse la cellule telle quelle", 2026-05-28).
-        ws[f'G{row}'] = bond.rating_display or bond.rating or ''
-        ws[f'G{row}'].font = font
+        # Rating Fitch VÉRIFIÉ (politique fitch_only) : un bond sans rating ne
+        # devrait jamais arriver ici (criteria.matches le rejette). Quand on a
+        # l'URL Fitch source, on en fait un LIEN cliquable → Massii ouvre la
+        # page Fitch qui prouve le rating (demande 2026-05-29 : "un vrai que je
+        # peux chercher à la main").
+        rating_text = bond.rating_display or bond.rating or ''
+        ws[f'G{row}'] = rating_text
+        if rating_text and getattr(bond, 'rating_url', None):
+            ws[f'G{row}'].hyperlink = bond.rating_url
+            ws[f'G{row}'].font = LINK_FONT
+        else:
+            ws[f'G{row}'].font = font
         ws[f'G{row}'].alignment = CENTER_ALIGN
         ws[f'G{row}'].border = THIN_BORDER
 

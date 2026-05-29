@@ -16,6 +16,7 @@ Strategia:
 4. Per ogni bond trovato, navigazione alla pagina dettaglio per dati completi
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -23,7 +24,7 @@ from datetime import date, datetime
 from typing import List, Dict, Any, Optional
 
 from scanner.models import ScannedBond, RatingInfo
-from scanner.rating_providers import BraveFitchProvider
+from scanner.fitch_isin import FitchIsinClient
 
 logger = logging.getLogger(__name__)
 
@@ -510,77 +511,66 @@ class MarketScraper:
 
     async def fetch_ratings(self, bond: ScannedBond) -> ScannedBond:
         """
-        Recupera il rating Fitch tramite Brave Search API.
+        Recupera il rating Fitch PAR ISIN (api.fitchratings.com via curl_cffi).
 
-        Strategia (2026-05-28, mirror Yield Bot) :
-        - Source UNIQUE = site:fitchratings.com via Brave
-        - Politica fitch_only : nessun fallback S&P/Moody's
-        - Cellula Excel resta vuota se Fitch non rate l'emittente
-
-        Args:
-            bond: ScannedBond con isin e name popolati
+        Strategia (2026-05-29, demande Massii « fitch only ISIN ») :
+        - Source UNIQUE = recherche Fitch par ISIN (term=ISIN, item=IDENTIFIERS).
+          L'ISIN est unique → ZÉRO ambiguïté de nom (le `name` n'est PAS utilisé).
+        - Politica fitch_only : pas de fallback (ni Brave, ni S&P/Moody's).
+        - Bond exclu si Fitch ne note pas l'ISIN (bond.rating_display = None).
 
         Returns:
-            ScannedBond con bond.ratings, bond.rating, bond.rating_display
-            aggiornati. Se nessun rating Fitch → bond.rating_display = None.
+            ScannedBond avec bond.ratings/rating/rating_display/rating_url MAJ.
         """
-        # Lazy init du provider, ré-utilisé entre les bonds — important pour
-        # que self.quota_exhausted persiste entre les appels (sinon on
-        # re-créerait un provider sans état à chaque bond et le flag serait
-        # toujours False).
-        if not hasattr(self, '_brave_provider') or self._brave_provider is None:
-            self._brave_provider = BraveFitchProvider()
+        # Lazy init du client, réutilisé entre les bonds (session curl_cffi +
+        # cache + flag `unreachable` persistants).
+        if not hasattr(self, '_fitch_client') or self._fitch_client is None:
+            self._fitch_client = FitchIsinClient()
 
-        provider = self._brave_provider
         try:
-            rating_info = await provider.get_rating(
-                bond.isin, bond_name=bond.name,
+            # curl_cffi est synchrone → on l'exécute dans un thread pour ne pas
+            # bloquer la boucle asyncio (Playwright).
+            rating_info = await asyncio.to_thread(
+                self._fitch_client.fetch, bond.isin, bond.name,
             )
         except Exception as e:
-            logger.debug(f"    ⚠️  Errore BraveFitchProvider: {e}")
+            logger.debug(f"    ⚠️  Errore FitchIsinClient: {e}")
             rating_info = None
 
         if rating_info:
             bond.ratings = [rating_info]
             bond.rating = rating_info.value
             bond.rating_display = f"{rating_info.value} (Fitch)"
+            bond.rating_url = rating_info.source_url or None  # lien vérifiable Excel
             logger.info(f"    📊 Rating finale: {bond.rating_display}")
         else:
             bond.ratings = []
             bond.rating = None
             bond.rating_display = None
-            logger.info(
-                f"    ⚠️  Nessun rating Fitch per {bond.isin} ({bond.name[:40]})"
-            )
+            bond.rating_url = None
+            logger.info(f"    ⚠️  Nessun rating Fitch per ISIN {bond.isin}")
 
         return bond
 
     @property
     def quota_exhausted(self) -> bool:
-        """Vero se la quota Brave Search è stata rilevata come esaurita.
-
-        Bond Scanner check questo flag dopo ogni fetch_ratings per
-        interrompere lo scan in modo gracioso quando il piano free
-        (1000 req/mese) è arrivato a 0.
-        """
+        """True si Fitch est devenu injoignable (TLS/Cloudflare) → on arrête le
+        scan proprement et on génère l'Excel partiel. (Nom conservé pour compat
+        avec bond_scanner.py — il n'y a plus de quota Brave.)"""
         return bool(
-            getattr(self, '_brave_provider', None)
-            and self._brave_provider.quota_exhausted
+            getattr(self, '_fitch_client', None)
+            and self._fitch_client.unreachable
         )
 
     @property
     def brave_quota_low(self) -> bool:
-        """True si la réserve Brave est ≤ 50 requêtes (garde-fou Massii)."""
-        return bool(
-            getattr(self, '_brave_provider', None)
-            and self._brave_provider.quota_low
-        )
+        """Obsolète (plus de réserve Brave) — toujours False."""
+        return False
 
     @property
     def brave_remaining(self) -> Optional[int]:
-        """Dernier X-RateLimit-Remaining mensuel lu (None si inconnu)."""
-        p = getattr(self, '_brave_provider', None)
-        return p.remaining_monthly if p else None
+        """Obsolète (plus de quota mensuel Brave) — toujours None (rien à persister)."""
+        return None
 
     # ================================================================
     #  PARSING DELLE RISPOSTE API

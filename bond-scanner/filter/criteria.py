@@ -131,18 +131,21 @@ class ScanCriteria:
         if bond.calculated_yield is not None and bond.calculated_yield < self.min_yield:
             return False, f"Yield {bond.calculated_yield:.4%} < {self.min_yield:.2%}"
 
-        # 4. Rating: deve essere ≥ min_rating (Investment Grade)
-        # Politica decisa 2026-05-28 : se min_rating è impostato e Fitch non
-        # rate l'emittente (bond.rating is None) → rigetto il bond (non finisce
-        # nell'Excel). Niente cellula vuota, niente "Rating (a verificare)".
+        # 4. Rating: OBBLIGATORIO + ≥ min_rating (Investment Grade)
+        # Politica (demande Massii 2026-05-29) : un bond SANS rating Fitch
+        # vérifié ne doit JAMAIS entrer dans l'Excel — "sinon il faut pas
+        # mettre le bond dans la liste". On rejette donc TOUT bond sans rating,
+        # même si min_rating n'est pas défini (avant : rejet seulement si
+        # min_rating set → des bonds sans rating pouvaient passer cellule vide).
         # check_rating=False salta questo blocco (pre-filter mode, Task 13).
-        if check_rating and self.min_rating:
+        if check_rating:
             if not bond.rating:
-                return False, "Nessun rating Fitch (politica fitch_only)"
-            bond_idx = _rating_index(bond.rating)
-            min_idx = _rating_index(self.min_rating)
-            if bond_idx > min_idx:
-                return False, f"Rating {bond.rating} < {self.min_rating}"
+                return False, "Nessun rating Fitch verificato (politica fitch_only)"
+            if self.min_rating:
+                bond_idx = _rating_index(bond.rating)
+                min_idx = _rating_index(self.min_rating)
+                if bond_idx > min_idx:
+                    return False, f"Rating {bond.rating} < {self.min_rating}"
 
         # 5. Valuta: deve essere nella lista
         if bond.currency and bond.currency.upper() not in [c.upper() for c in self.currencies]:
