@@ -396,6 +396,14 @@ const Lang = {
             'mcagent.ms_hint': 'Compte Microsoft (serveur non-cracke) : un code de connexion apparait dans le transcript, va sur microsoft.com/link (1 seule fois).',
             'mcagent.profile': 'Profil',
             'mcagent.tells_title': 'Fiche de tells (corrige formateur)',
+            'mcagent.capture_title': 'Captures (entraînement copie-humaine)',
+            'mcagent.capture_hint': 'Importer un fichier .jsonl enregistré par le mod (touche F8 en jeu).',
+            'mcagent.capture_import': 'Importer une capture',
+            'mcagent.capture_distill': 'Analyser',
+            'mcagent.capture_delete': 'Supprimer',
+            'mcagent.capture_none': 'Aucune capture pour le moment.',
+            'mcagent.capture_sessions': 'sessions',
+            'mcagent.capture_stats': 'Statistiques de style',
 
             // Settings
             'settings.title': 'Paramètres',
@@ -1400,6 +1408,14 @@ const Lang = {
             'mcagent.ms_hint': 'Microsoft account (premium server): a login code appears in the transcript, go to microsoft.com/link (one-time).',
             'mcagent.profile': 'Profile',
             'mcagent.tells_title': 'Tells sheet (trainer answer key)',
+            'mcagent.capture_title': 'Captures (human-copy training)',
+            'mcagent.capture_hint': 'Upload a .jsonl recorded by the mod (press F8 in game).',
+            'mcagent.capture_import': 'Import a capture',
+            'mcagent.capture_distill': 'Analyze',
+            'mcagent.capture_delete': 'Delete',
+            'mcagent.capture_none': 'No capture yet.',
+            'mcagent.capture_sessions': 'sessions',
+            'mcagent.capture_stats': 'Style statistics',
 
             // Settings
             'settings.title': 'Settings',
@@ -2404,6 +2420,14 @@ const Lang = {
             'mcagent.ms_hint': 'Account Microsoft (server premium): un codice di accesso appare nel transcript, vai su microsoft.com/link (una sola volta).',
             'mcagent.profile': 'Profilo',
             'mcagent.tells_title': 'Scheda dei tells (soluzione formatore)',
+            'mcagent.capture_title': 'Catture (addestramento copia-umana)',
+            'mcagent.capture_hint': 'Carica un file .jsonl registrato dal mod (tasto F8 in gioco).',
+            'mcagent.capture_import': 'Importa una cattura',
+            'mcagent.capture_distill': 'Analizza',
+            'mcagent.capture_delete': 'Elimina',
+            'mcagent.capture_none': 'Nessuna cattura per ora.',
+            'mcagent.capture_sessions': 'sessioni',
+            'mcagent.capture_stats': 'Statistiche di stile',
 
             // Settings
             'settings.title': 'Impostazioni',

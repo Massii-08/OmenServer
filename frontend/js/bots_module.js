@@ -1064,6 +1064,15 @@ const BotsModule = {
  <span id="mca-msg" style="font-size:13px;color:var(--text-muted);"></span>
  </div>
  <div id="mca-tells" style="display:none;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:var(--text-muted);"></div>
+ <div style="border-top:1px solid var(--border);margin:14px 0;padding-top:12px;">
+ <div style="font-weight:600;margin-bottom:4px;">${Lang.t('mcagent.capture_title')}</div>
+ <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('mcagent.capture_hint')}</div>
+ <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+ <input id="mca-capfile" type="file" accept=".jsonl,.gz" class="form-input" style="flex:1;min-width:200px;" />
+ <button class="btn btn-secondary btn-sm" onclick="BotsModule.uploadCapture()">${Lang.t('mcagent.capture_import')}</button>
+ </div>
+ <div id="mca-captures"></div>
+ </div>
  <div id="mca-transcript" style="background:#0d1117;border-radius:8px;padding:12px;max-height:300px;overflow-y:auto;font-family:'Fira Code',monospace;font-size:12px;line-height:1.6;color:#c9d1d9;"></div>
  <div style="display:flex;gap:8px;margin-top:10px;">
  <input id="mca-say" class="form-input" placeholder="${Lang.t('mcagent.say_placeholder')}" style="flex:1;" />
@@ -1072,6 +1081,7 @@ const BotsModule = {
  </div>`;
  this._loadMCAgentKey();
  this.loadMCAgentProfiles();
+ this.loadCaptures();
  },
 
  async startMCAgent() {
@@ -1200,6 +1210,61 @@ const BotsModule = {
  async clearMCAgentKey() {
  const r = await Auth.apiCall('/api/mc-agent/settings/api-key', { method: 'DELETE' });
  if (r && r.ok) { Toast.success(Lang.t('mcagent.key_cleared')); this._loadMCAgentKey(); }
+ },
+
+ _escapeHtml(s) {
+ return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
+ { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+ },
+
+ async loadCaptures() {
+ const box = document.getElementById('mca-captures');
+ if (!box) return;
+ try {
+ const r = await Auth.apiCall('/api/mc-agent/captures');
+ const data = await r.json();
+ const caps = (data && data.captures) || [];
+ if (!caps.length) { box.innerHTML = `<div style="font-size:12px;color:var(--text-dim);">${Lang.t('mcagent.capture_none')}</div>`; return; }
+ box.innerHTML = caps.map((c) => {
+ const p = this._escapeHtml(c.player);
+ const mb = (c.bytes / 1048576).toFixed(1);
+ return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 8px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:8px;margin-bottom:6px;">
+ <span style="font-family:var(--font-mono);">${p} — ${c.sessions} ${Lang.t('mcagent.capture_sessions')} (${mb} Mo)</span>
+ <span style="display:flex;gap:6px;">
+ <button class="btn btn-ghost btn-sm" onclick="BotsModule.distillCapture('${p}')">${Lang.t('mcagent.capture_distill')}</button>
+ <button class="btn btn-ghost btn-sm" onclick="BotsModule.deleteCapture('${p}')">${Lang.t('mcagent.capture_delete')}</button>
+ </span></div>
+ <div id="mca-style-${p}" style="font-size:12px;color:var(--text-muted);margin:-2px 0 8px 8px;"></div>`;
+ }).join('');
+ } catch (e) { box.innerHTML = `<div style="color:var(--danger);font-size:12px;">${this._escapeHtml(String(e))}</div>`; }
+ },
+
+ async uploadCapture() {
+ const input = document.getElementById('mca-capfile');
+ if (!input || !input.files || !input.files[0]) return;
+ const fd = new FormData();
+ fd.append('file', input.files[0]);
+ const r = await Auth.apiCall('/api/mc-agent/captures', { method: 'POST', body: fd });
+ if (r.ok) { input.value = ''; Toast.success(Lang.t('mcagent.capture_import')); this.loadCaptures(); }
+ else { const e = await r.json().catch(() => ({})); Toast.error(e.detail || 'Upload KO'); }
+ },
+
+ async distillCapture(player) {
+ const r = await Auth.apiCall(`/api/mc-agent/captures/${encodeURIComponent(player)}/distill`, { method: 'POST' });
+ const data = await r.json().catch(() => ({}));
+ const el = document.getElementById('mca-style-' + player);
+ if (r.ok && el) {
+ const dp = (data.style && data.style.derivedParams) || {};
+ const chat = dp.chat || {};
+ el.innerHTML = `${Lang.t('mcagent.capture_stats')} — latence chat ${this._escapeHtml(chat.latencyMeanMs)}±${this._escapeHtml(chat.latencyStdMs)}ms · ` +
+ `fautes ${this._escapeHtml(chat.typoRate)} · jitter ${this._escapeHtml(dp.movementJitter)} · ${this._escapeHtml(data.clips)} clips`;
+ }
+ },
+
+ async deleteCapture(player) {
+ if (!confirm(player + ' ?')) return;
+ const r = await Auth.apiCall(`/api/mc-agent/captures/${encodeURIComponent(player)}`, { method: 'DELETE' });
+ if (r.ok) this.loadCaptures();
  },
 
  async _loadScannerUsage() {
