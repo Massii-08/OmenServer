@@ -23,6 +23,16 @@ def _app(admin=True):
     return app
 
 
+def _app_role(role, is_admin=False):
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(cap.router)
+    class _U:
+        def __init__(self): self.role = role; self.is_admin = is_admin; self.username = "tester1"
+    app.dependency_overrides[get_current_user] = lambda: _U()
+    return app
+
+
 @pytest.fixture(autouse=True)
 def tmp_root(tmp_path, monkeypatch):
     from backend.bots import mc_capture_store as store
@@ -94,3 +104,73 @@ def test_delete_player():
     assert client.delete("/api/mc-agent/captures/Bob").status_code == 200
     r = client.get("/api/mc-agent/captures")
     assert all(p["player"] != "Bob" for p in r.json()["captures"])
+
+
+def test_rectester_can_upload(tmp_root):
+    from fastapi.testclient import TestClient
+    client = TestClient(_app_role("rectester"))
+    files = {"file": ("s.jsonl", io.BytesIO(_jsonl("BobMC")), "application/octet-stream")}
+    r = client.post("/api/mc-agent/captures", files=files)
+    assert r.status_code == 200
+    assert r.json()["owner"] == "tester1"
+
+
+def test_rectester_list_is_filtered_to_own(tmp_root):
+    from fastapi.testclient import TestClient
+    c1 = TestClient(_app_role("rectester"))
+    c1.post("/api/mc-agent/captures", files={"file": ("s.jsonl", io.BytesIO(_jsonl("BobMC")), "application/octet-stream")})
+    ca = TestClient(_app(admin=True))
+    ca.post("/api/mc-agent/captures", files={"file": ("s.jsonl", io.BytesIO(_jsonl("AliceMC")), "application/octet-stream")})
+    r = c1.get("/api/mc-agent/captures")
+    players = {p["player"] for p in r.json()["captures"]}
+    assert players == {"BobMC"}
+
+
+def test_rectester_cannot_distill(tmp_root):
+    from fastapi.testclient import TestClient
+    client = TestClient(_app_role("rectester"))
+    client.post("/api/mc-agent/captures", files={"file": ("s.jsonl", io.BytesIO(_jsonl("BobMC")), "application/octet-stream")})
+    assert client.post("/api/mc-agent/captures/BobMC/distill").status_code == 403
+
+
+def test_rectester_cannot_get_style(tmp_root):
+    from fastapi.testclient import TestClient
+    assert TestClient(_app_role("rectester")).get("/api/mc-agent/captures/BobMC/style").status_code == 403
+
+
+def test_player_role_cannot_upload(tmp_root):
+    from fastapi.testclient import TestClient
+    client = TestClient(_app_role("player"))
+    files = {"file": ("s.jsonl", io.BytesIO(_jsonl("BobMC")), "application/octet-stream")}
+    assert client.post("/api/mc-agent/captures", files=files).status_code == 403
+
+
+def test_rectester_delete_own_ok_other_403(tmp_root):
+    from fastapi.testclient import TestClient
+    c1 = TestClient(_app_role("rectester"))
+    c1.post("/api/mc-agent/captures", files={"file": ("s.jsonl", io.BytesIO(_jsonl("BobMC")), "application/octet-stream")})
+    TestClient(_app(admin=True)).post("/api/mc-agent/captures",
+        files={"file": ("s.jsonl", io.BytesIO(_jsonl("AliceMC")), "application/octet-stream")})
+    assert c1.delete("/api/mc-agent/captures/BobMC/s.jsonl").status_code == 200
+    assert c1.delete("/api/mc-agent/captures/AliceMC/s.jsonl").status_code == 403
+
+
+def test_download_mod_versions(tmp_root):
+    from fastapi.testclient import TestClient
+    client = TestClient(_app_role("rectester"))
+    lst = client.get("/api/mc-agent/mod")
+    assert lst.status_code == 200
+    assert any("1.21" in v["version"] for v in lst.json()["versions"])
+    dl = client.get("/api/mc-agent/mod/1.21.4")
+    assert dl.status_code == 200
+
+
+def test_download_mod_rejects_bad_version(tmp_root):
+    from fastapi.testclient import TestClient
+    assert TestClient(_app_role("rectester")).get("/api/mc-agent/mod/9.9.9").status_code == 404
+
+
+def test_download_mod_path_traversal_blocked(tmp_root):
+    from fastapi.testclient import TestClient
+    r = TestClient(_app_role("rectester")).get("/api/mc-agent/mod/..%2F..%2Fetc%2Fpasswd")
+    assert r.status_code in (404, 400)

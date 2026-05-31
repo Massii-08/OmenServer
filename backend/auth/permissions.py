@@ -30,6 +30,10 @@ ROLE_PERMISSIONS = {
     "spectator": [
         "view",              # Voir le statut des serveurs/bots
     ],
+    "rectester": [
+        "view",
+        "mc_capture",        # Capture comportementale MC : upload/list/suppression de SES sessions + download du mod
+    ],
     "player": [
         "view",
         "start",             # Allumer un serveur (si invité)
