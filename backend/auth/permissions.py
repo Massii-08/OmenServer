@@ -96,7 +96,7 @@ ROLE_NAMES = {
 }
 
 # Liste ordonnée des rôles (pour la validation)
-VALID_ROLES = ["spectator", "player", "money", "moderator", "developer", "admin"]
+VALID_ROLES = ["spectator", "rectester", "player", "money", "moderator", "developer", "admin"]
 
 # Rôles que les non-admins peuvent assigner via invitation
 INVITABLE_ROLES = ["player"]
