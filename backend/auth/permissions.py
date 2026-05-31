@@ -92,6 +92,7 @@ ROLE_PERMISSIONS = {
 # Noms affichables des rôles (Bento Tech v5 — pas d'emoji UI, voir MASTER §6)
 ROLE_NAMES = {
     "spectator": "Spectateur",
+    "rectester": "Testeur REC",
     "player": "Joueur",
     "money": "Money",
     "moderator": "Modérateur",
