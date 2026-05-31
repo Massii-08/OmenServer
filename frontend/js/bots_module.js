@@ -101,7 +101,7 @@ const BotsModule = {
  }) : '';
 
  // MC Agent virtual card (admin-only — feature d'entrainement staff)
- const canSeeMCAgent = u && u.is_admin;
+ const canSeeMCAgent = u && (u.is_admin || u.role === 'rectester');
  const mcAgentCard = canSeeMCAgent ? buildBotCard({
  icon: 'MCA',
  name: 'MC Agent',
