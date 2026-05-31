@@ -51,8 +51,13 @@ def parse_header(payload):
     return header
 
 
-def save_capture(payload, filename):
-    """Valide le header, range le fichier sous data/mc-captures/<player>/. Retourne un info dict."""
+def save_capture(payload, filename, owner=None):
+    """Valide le header, range le fichier sous data/mc-captures/<player>/. Retourne un info dict.
+
+    owner = compte OmenServer uploadeur (distinct du pseudo MC du header). Si fourni, on
+    écrit un sidecar `<fichier>.owner` à côté de la capture → permet « chacun voit ses
+    propres captures, admin voit tout ».
+    """
     header = parse_header(payload)
     player = _safe_player(header["player"])
     safe_file = _SAFE_NAME.sub("_", str(filename or "session.jsonl"))
@@ -62,12 +67,27 @@ def save_capture(payload, filename):
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / safe_file
     target.write_bytes(payload)
+    if owner:
+        (target_dir / (safe_file + ".owner")).write_text(str(owner), encoding="utf-8")
     return {"player": player, "file": safe_file, "bytes": len(payload),
-            "mc": header.get("mc"), "startedAt": header.get("startedAt")}
+            "owner": owner, "mc": header.get("mc"), "startedAt": header.get("startedAt")}
 
 
-def list_captures():
-    """Liste les captures groupées par joueur : [{player, sessions, bytes}]."""
+def _session_owner(player_dir, session_file):
+    """Lit le compte uploadeur d'une session (sidecar .owner), ou None si absent."""
+    owner_path = player_dir / (session_file + ".owner")
+    try:
+        return owner_path.read_text(encoding="utf-8").strip() if owner_path.is_file() else None
+    except OSError:
+        return None
+
+
+def list_captures(owner=None):
+    """Liste les captures groupées par joueur : [{player, sessions, bytes, files}].
+
+    owner=None → tout (admin) ; sinon → uniquement les sessions uploadées par ce compte
+    (filtrées via le sidecar .owner). Ne compte JAMAIS les sidecars .owner comme sessions.
+    """
     if not CAPTURES_DIR.is_dir():
         return []
     out = []
@@ -75,6 +95,10 @@ def list_captures():
         if not player_dir.is_dir():
             continue
         files = [f for f in player_dir.iterdir() if f.suffix in (".jsonl", ".gz")]
+        if owner is not None:
+            files = [f for f in files if _session_owner(player_dir, f.name) == owner]
+        if not files:
+            continue
         out.append({
             "player": player_dir.name,
             "sessions": len(files),
@@ -84,17 +108,29 @@ def list_captures():
     return out
 
 
-def delete_capture(player, filename):
-    """Supprime une session (filename donné) ou tout un joueur (filename=None). False si absent."""
+def delete_capture(player, filename, requester=None):
+    """Supprime une session (filename donné) ou tout un joueur (filename=None). False si absent.
+
+    requester=None → admin (aucune vérif d'owner). Sinon → la suppression d'une session
+    n'est autorisée que si `requester` est l'owner enregistré (sidecar .owner). La
+    suppression d'un joueur entier (filename=None) reste réservée à l'admin.
+    """
     safe = _safe_player(player)
     player_dir = CAPTURES_DIR / safe
     if not player_dir.is_dir():
         return False
     if filename is None:
+        if requester is not None:
+            return False
         shutil.rmtree(player_dir)
         return True
     target = player_dir / _SAFE_NAME.sub("_", str(filename))
     if not target.is_file():
         return False
+    if requester is not None and _session_owner(player_dir, target.name) != requester:
+        return False
     target.unlink()
+    owner_sidecar = player_dir / (target.name + ".owner")
+    if owner_sidecar.is_file():
+        owner_sidecar.unlink()
     return True

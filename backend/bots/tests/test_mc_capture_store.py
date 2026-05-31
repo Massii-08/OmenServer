@@ -86,3 +86,50 @@ def test_delete_player_removes_all(tmp_root):
 
 def test_delete_unknown_returns_false(tmp_root):
     assert store.delete_capture("Ghost", None) is False
+
+
+def test_save_capture_records_owner(tmp_root):
+    info = store.save_capture(_valid_jsonl("BobMC"), "s1.jsonl", owner="bob_account")
+    assert info["owner"] == "bob_account"
+    owner_file = tmp_root / "BobMC" / "s1.jsonl.owner"
+    assert owner_file.is_file()
+    assert owner_file.read_text(encoding="utf-8").strip() == "bob_account"
+
+
+def test_list_captures_filters_by_owner(tmp_root):
+    store.save_capture(_valid_jsonl("BobMC"), "s1.jsonl", owner="bob")
+    store.save_capture(_valid_jsonl("AliceMC"), "s1.jsonl", owner="alice")
+    bob_view = store.list_captures(owner="bob")
+    players = {p["player"] for p in bob_view}
+    assert players == {"BobMC"}
+
+
+def test_list_captures_admin_sees_all(tmp_root):
+    store.save_capture(_valid_jsonl("BobMC"), "s1.jsonl", owner="bob")
+    store.save_capture(_valid_jsonl("AliceMC"), "s1.jsonl", owner="alice")
+    assert len(store.list_captures(owner=None)) == 2
+
+
+def test_owner_view_counts_only_own_sessions(tmp_root):
+    store.save_capture(_valid_jsonl("TeamMC"), "s1.jsonl", owner="bob")
+    store.save_capture(_valid_jsonl("TeamMC"), "s2.jsonl", owner="alice")
+    bob = [p for p in store.list_captures(owner="bob") if p["player"] == "TeamMC"][0]
+    assert bob["sessions"] == 1
+
+
+def test_delete_capture_owner_can_delete_own(tmp_root):
+    store.save_capture(_valid_jsonl("BobMC"), "s1.jsonl", owner="bob")
+    assert store.delete_capture("BobMC", "s1.jsonl", requester="bob") is True
+    assert not (tmp_root / "BobMC" / "s1.jsonl").exists()
+    assert not (tmp_root / "BobMC" / "s1.jsonl.owner").exists()
+
+
+def test_delete_capture_non_owner_refused(tmp_root):
+    store.save_capture(_valid_jsonl("BobMC"), "s1.jsonl", owner="bob")
+    assert store.delete_capture("BobMC", "s1.jsonl", requester="mallory") is False
+    assert (tmp_root / "BobMC" / "s1.jsonl").exists()
+
+
+def test_delete_capture_admin_bypasses_owner(tmp_root):
+    store.save_capture(_valid_jsonl("BobMC"), "s1.jsonl", owner="bob")
+    assert store.delete_capture("BobMC", "s1.jsonl", requester=None) is True
