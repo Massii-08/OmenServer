@@ -20,9 +20,13 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
-java {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+// Java cible paramétrable (-Pjava_version=17 pour MC 1.20.x ; défaut 21 pour 1.21.x).
+// Java cible paramétrable : -Pjava_version=17 pour MC 1.20.x ; défaut 21 pour 1.21.x.
+// On pilote UNIQUEMENT via options.release (compatible avec le --release injecté par Loom) ;
+// pas de sourceCompatibility/targetCompatibility en parallèle (sinon "invalid source release").
+def javaRelease = (project.findProperty('java_version') ?: '21').toString().toInteger()
+tasks.withType(JavaCompile).configureEach {
+    options.release = javaRelease
 }
 
 test { useJUnitPlatform() }
