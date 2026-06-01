@@ -44,7 +44,6 @@
                 <button class="nav-tab nav-item" data-view="media" onclick="App.navigateTo('media')" id="nav-media">Média</button>
                 <button class="nav-tab nav-item" data-view="web" onclick="App.navigateTo('web')" id="nav-web">Web</button>
                 <button class="nav-tab nav-item" data-view="network" onclick="App.navigateTo('network')" id="nav-network">Réseau</button>
-                <button class="nav-tab nav-item" data-view="sysdoc" onclick="App.navigateTo('sysdoc')" id="nav-sysdoc">Diagnostic</button>
             </div>
             <div class="topbar-right">
                 <div class="lang-switcher" id="lang-switcher">
@@ -68,6 +67,7 @@
                         <span class="user-caret" aria-hidden="true">▾</span>
                     </button>
                     <div class="user-menu" id="user-menu" role="menu" hidden>
+                        <button class="user-menu-item" role="menuitem" onclick="App._userMenuGo('sysdoc')" id="user-menu-sysdoc">Diagnostic</button>
                         <button class="user-menu-item" role="menuitem" onclick="App._userMenuGo('users')" id="user-menu-users" hidden>Utilisateurs</button>
                         <button class="user-menu-item" role="menuitem" onclick="App._userMenuGo('settings')" id="user-menu-settings">Paramètres</button>
                         <div class="user-menu-sep" aria-hidden="true"></div>
@@ -87,7 +87,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="/js/lang.js?v=123"></script>
+    <script src="/js/lang.js?v=200"></script>
     <script src="/js/toast.js?v=87"></script>
     <script src="/js/auth.js?v=87"></script>
     <script src="/js/monitoring.js?v=92"></script>
@@ -101,12 +101,12 @@
     <script src="/js/sv_history.js?v=88"></script>
     <script src="/js/server_view.js?v=99"></script>
     <script src="/js/files_module.js?v=88"></script>
-    <script src="/js/bots_module.js?v=123"></script>
+    <script src="/js/bots_module.js?v=200"></script>
     <script src="/js/media_module.js?v=89"></script>
     <script src="/js/web_module.js?v=89"></script>
     <script src="/js/network_module.js?v=92"></script>
     <script src="/js/sysdoc_module.js?v=12"></script>
-    <script src="/js/app.js?v=123"></script>
+    <script src="/js/app.js?v=200"></script>
     <script>
         // Enregistrement du Service Worker (PWA)
         if ('serviceWorker' in navigator) {
