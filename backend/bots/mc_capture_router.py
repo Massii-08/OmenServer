@@ -26,9 +26,22 @@ _MAX_BYTES = 200 * 1024 * 1024  # 200 Mo : large (équipe × ~5h compressé rest
 
 # backend/bots/mc_capture_router.py → racine projet = parents[2]
 _MOD_DIST = Path(__file__).resolve().parents[2] / "mc-capture-mod" / "dist"
+# Versions Fabric MC pour lesquelles on builde le mod. La fonction
+# ``list_mod_versions`` filtre par ``Path.is_file()``, donc une version listée ici
+# mais dont le jar n'a pas encore été buildé est silencieusement absente côté API
+# (zéro régression côté UI). Pour builder une version manquante :
+#     cd mc-capture-mod && ./build-all-versions.sh 1.20.4
+# (sans argument = builde TOUTES les versions de la matrice).
 _MOD_JARS = {
-    "1.21.4": "mc-capture-0.1.0-mc1.21.4.jar",
+    # 1.20.x — Java 17
     "1.20.1": "mc-capture-0.1.0-mc1.20.1.jar",
+    "1.20.4": "mc-capture-0.1.0-mc1.20.4.jar",
+    "1.20.6": "mc-capture-0.1.0-mc1.20.6.jar",
+    # 1.21.x — Java 21
+    "1.21":   "mc-capture-0.1.0-mc1.21.jar",
+    "1.21.1": "mc-capture-0.1.0-mc1.21.1.jar",
+    "1.21.4": "mc-capture-0.1.0-mc1.21.4.jar",
+    "1.21.5": "mc-capture-0.1.0-mc1.21.5.jar",
 }
 
 
