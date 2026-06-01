@@ -136,7 +136,7 @@ def has_api_key():
     return bool(_read_api_key())
 
 
-def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None):
+def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr"):
     """Spawn le process Node détaché et enregistre la session. Retourne son id.
 
     `commands` : liste d'objets {cmd,syntax,desc} (whitelist serveur). Écrite dans un fichier
@@ -153,6 +153,8 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
         cmd += ["--model", str(model)]
     if profile:
         cmd += ["--profile", str(profile)]
+    if language:
+        cmd += ["--lang", str(language)]
     cmds_path = None
     if commands:
         RUNS_DIR.mkdir(parents=True, exist_ok=True)

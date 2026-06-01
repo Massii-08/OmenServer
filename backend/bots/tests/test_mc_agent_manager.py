@@ -267,3 +267,26 @@ def test_start_session_stores_server_id(monkeypatch, tmp_path):
     # défaut : None quand non fourni (lancement manuel)
     sid2 = mgr.start_session("h", 25565, "U")
     assert mgr.get_status(sid2)["server_id"] is None
+
+
+def test_start_session_adds_lang_flag(monkeypatch):
+    import io
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter(())
+            self.pid = 4324
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    sid = mgr.start_session("h", 25565, "TrainBot", None, "offline", None, None, None, language="it")
+    assert "--lang" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--lang") + 1] == "it"
