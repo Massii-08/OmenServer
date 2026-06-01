@@ -223,6 +223,8 @@ const App = {
  }
 
  // PR37 — i18n labels for the user dropdown menu
+ const sysdocItem = document.getElementById('user-menu-sysdoc');
+ if (sysdocItem) sysdocItem.textContent = Lang.t('dashboard.diagnostic');
  const settingsItem = document.getElementById('user-menu-settings');
  if (settingsItem) settingsItem.textContent = Lang.t('settings.title');
  const logoutItem = document.getElementById('user-menu-logout');
