@@ -36,7 +36,7 @@ def test_run_400_si_pas_de_cle(monkeypatch):
 def test_run_demarre_une_session(monkeypatch):
     captured = {}
     monkeypatch.setattr(mgr, "has_api_key", lambda: True)
-    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None):
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None):
         captured["auth"] = auth
         return 7
     monkeypatch.setattr(mgr, "start_session", fake_start)
@@ -114,7 +114,7 @@ def test_profiles_retourne_la_liste(monkeypatch):
 def test_run_transmet_le_profil(monkeypatch):
     monkeypatch.setattr(mgr, "has_api_key", lambda: True)
     captured = {}
-    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None):
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None):
         captured["profile"] = profile
         return 11
     monkeypatch.setattr(mgr, "start_session", fake_start)
@@ -173,7 +173,7 @@ def test_run_with_server_id_resolves_commands(monkeypatch):
                         lambda srv: [{"cmd": "/home", "syntax": "/home", "desc": "h"}])
     captured = {}
 
-    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None):
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None):
         captured.update(host=host, profile=profile, commands=commands)
         return 9
 
@@ -189,3 +189,34 @@ def test_run_400_sans_host_ni_server_id(monkeypatch):
     monkeypatch.setattr(mgr, "has_api_key", lambda: True)
     c = make_client()
     assert c.post("/api/mc-agent/run", json={}).status_code == 400
+
+
+def test_create_server_accepts_trusted_and_trade(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(r.servers_store, "create_server", lambda payload: (captured.update(payload) or {"id": "ab12cd", **payload}))
+    c = make_client()
+    resp = c.post("/api/mc-agent/servers", json={"name": "X", "trusted": ["Bob"], "trade": {"acceptCmd": "/t accept"}})
+    assert resp.status_code == 200
+    assert captured["trusted"] == ["Bob"]
+    assert captured["trade"]["acceptCmd"] == "/t accept"
+
+
+def test_run_with_server_id_passes_policy(monkeypatch):
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    monkeypatch.setattr(r.servers_store, "get_server", lambda sid: {
+        "id": sid, "host": "play.x", "port": 25565, "user": "Bot",
+        "auth": "offline", "intelligence": "expert", "commands": [], "custom": [],
+        "trusted": ["Bob"], "trade": None})
+    monkeypatch.setattr(r.servers_store, "resolve_commands", lambda srv: [])
+    monkeypatch.setattr(r.servers_store, "resolve_policy", lambda srv: {"trusted": ["Bob"], "trade": None})
+    captured = {}
+
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None):
+        captured["policy"] = policy
+        return 11
+
+    monkeypatch.setattr(mgr, "start_session", fake_start)
+    c = make_client()
+    resp = c.post("/api/mc-agent/run", json={"server_id": "abc"})
+    assert resp.status_code == 200
+    assert captured["policy"]["trusted"] == ["Bob"]

@@ -44,6 +44,8 @@ class ServerPayload(BaseModel):
     intelligence: str = "intermediaire"
     commands: list = []
     custom: list = []
+    trusted: list = []
+    trade: Optional[dict] = None
 
 
 @router.post("/run")
@@ -52,7 +54,7 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
     if not mgr.has_api_key():
         raise HTTPException(status_code=400, detail="Aucune cle Claude configuree (renseigne-la dans le bot)")
     host, port, user = req.host, req.port, req.user
-    auth, profile, commands = req.auth, req.profile, None
+    auth, profile, commands, policy = req.auth, req.profile, None, None
     if req.server_id:
         srv = servers_store.get_server(req.server_id)
         if not srv:
@@ -60,11 +62,12 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
         host, port, user = srv["host"], srv["port"], srv["user"]
         auth, profile = srv["auth"], srv["intelligence"]
         commands = servers_store.resolve_commands(srv)
+        policy = servers_store.resolve_policy(srv)
     if not host:
         raise HTTPException(status_code=400, detail="host requis (ou choisis un profil serveur)")
     auth = auth if auth in ("offline", "microsoft") else "offline"
     try:
-        sid = mgr.start_session(host, port, user, req.model, auth, profile, commands)
+        sid = mgr.start_session(host, port, user, req.model, auth, profile, commands, policy)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Impossible de demarrer Node : {exc}")
     return {"session_id": sid}
