@@ -1,0 +1,21 @@
+[
+  { "id": "msg", "cmd": "/msg", "syntax": "/msg <joueur> <message>", "desc": "Envoie un message privé", "category": "communication" },
+  { "id": "r", "cmd": "/r", "syntax": "/r <message>", "desc": "Répond au dernier message privé", "category": "communication" },
+  { "id": "me", "cmd": "/me", "syntax": "/me <action>", "desc": "Décrit une action à la 3e personne", "category": "communication" },
+  { "id": "mail", "cmd": "/mail", "syntax": "/mail send <joueur> <message>", "desc": "Envoie un courrier hors-ligne", "category": "communication" },
+  { "id": "tpa", "cmd": "/tpa", "syntax": "/tpa <joueur>", "desc": "Demande à se téléporter vers un joueur", "category": "teleport" },
+  { "id": "tpahere", "cmd": "/tpahere", "syntax": "/tpahere <joueur>", "desc": "Demande à un joueur de venir à toi", "category": "teleport" },
+  { "id": "tpaccept", "cmd": "/tpaccept", "syntax": "/tpaccept", "desc": "Accepte une demande de téléportation", "category": "teleport" },
+  { "id": "tpdeny", "cmd": "/tpdeny", "syntax": "/tpdeny", "desc": "Refuse une demande de téléportation", "category": "teleport" },
+  { "id": "home", "cmd": "/home", "syntax": "/home [nom]", "desc": "Téléporte à un point d'attache", "category": "teleport" },
+  { "id": "sethome", "cmd": "/sethome", "syntax": "/sethome [nom]", "desc": "Définit un point d'attache", "category": "teleport" },
+  { "id": "spawn", "cmd": "/spawn", "syntax": "/spawn", "desc": "Téléporte au spawn", "category": "teleport" },
+  { "id": "warp", "cmd": "/warp", "syntax": "/warp <nom>", "desc": "Téléporte à un warp public", "category": "teleport" },
+  { "id": "back", "cmd": "/back", "syntax": "/back", "desc": "Retourne à la position précédente", "category": "teleport" },
+  { "id": "rtp", "cmd": "/rtp", "syntax": "/rtp", "desc": "Téléportation aléatoire", "category": "teleport" },
+  { "id": "pay", "cmd": "/pay", "syntax": "/pay <joueur> <montant>", "desc": "Donne de l'argent à un joueur", "category": "economy" },
+  { "id": "balance", "cmd": "/balance", "syntax": "/balance", "desc": "Affiche ton solde", "category": "economy" },
+  { "id": "afk", "cmd": "/afk", "syntax": "/afk", "desc": "Passe en absent", "category": "status" },
+  { "id": "list", "cmd": "/list", "syntax": "/list", "desc": "Liste les joueurs connectés", "category": "status" },
+  { "id": "seen", "cmd": "/seen", "syntax": "/seen <joueur>", "desc": "Dernière connexion d'un joueur", "category": "status" }
+]
