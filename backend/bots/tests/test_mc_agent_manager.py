@@ -181,3 +181,36 @@ def test_list_profiles_retourne_vide_si_node_echoue(monkeypatch):
         raise OSError("node introuvable")
     monkeypatch.setattr(mgr.subprocess, "run", boom)
     assert mgr.list_profiles() == []
+
+
+import io
+import json as _json
+
+
+def test_start_session_writes_commands_file(monkeypatch, tmp_path):
+    from backend.bots import mc_agent_manager as mgr
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter(())
+            self.pid = 4321
+
+        def poll(self):
+            return None
+
+    captured = {}
+
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    sid = mgr.start_session("h", 25565, "U",
+                            commands=[{"cmd": "/home", "syntax": "/home", "desc": "h"}])
+    assert isinstance(sid, int)
+    assert "--commands" in captured["cmd"]
+    path = captured["cmd"][captured["cmd"].index("--commands") + 1]
+    data = _json.loads(open(path).read())
+    assert data[0]["cmd"] == "/home"

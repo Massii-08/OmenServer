@@ -15,6 +15,8 @@ from pathlib import Path
 # backend/bots/mc_agent_manager.py → racine projet = parents[2], puis mc-agent/
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MC_AGENT_DIR = _PROJECT_ROOT / "mc-agent"
+# Fichiers temp de whitelist de commandes par session (dossier propre au bot, PAS data/servers/).
+RUNS_DIR = _PROJECT_ROOT / "data" / "mc_agent_runs"
 # Clé Claude posée depuis le dashboard (gitignored, chmod 600). La var d'env prime.
 API_KEY_PATH = _PROJECT_ROOT / "data" / "secrets" / "anthropic.key"
 
@@ -134,9 +136,16 @@ def has_api_key():
     return bool(_read_api_key())
 
 
-def start_session(host, port, user, model=None, auth="offline", profile=None):
-    """Spawn le process Node détaché et enregistre la session. Retourne son id."""
+def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None):
+    """Spawn le process Node détaché et enregistre la session. Retourne son id.
+
+    `commands` : liste d'objets {cmd,syntax,desc} (whitelist serveur). Écrite dans un fichier
+    temp passé au bot via --commands (le bot ne tapera que ces commandes).
+    """
     global _counter
+    with _lock:
+        _counter += 1
+        sid = _counter
     cmd = [_node_bin(), str(MC_AGENT_DIR / "index.js"),
            "--host", str(host), "--port", str(port), "--user", str(user),
            "--auth", str(auth or "offline")]
@@ -144,6 +153,12 @@ def start_session(host, port, user, model=None, auth="offline", profile=None):
         cmd += ["--model", str(model)]
     if profile:
         cmd += ["--profile", str(profile)]
+    cmds_path = None
+    if commands:
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        cmds_path = RUNS_DIR / f"cmds-{sid}.json"
+        cmds_path.write_text(json.dumps(commands), encoding="utf-8")
+        cmd += ["--commands", str(cmds_path)]
     env = dict(os.environ)
     api_key = _read_api_key()  # injecte la clé (fichier ou env) dans l'env du subprocess Node
     if api_key:
@@ -159,13 +174,10 @@ def start_session(host, port, user, model=None, auth="offline", profile=None):
         env=env,
         start_new_session=True,  # détaché : survit à un reload uvicorn (cf. piège #30f)
     )
-    with _lock:
-        _counter += 1
-        sid = _counter
     session = {
         "id": sid, "proc": proc, "status": "starting",
         "transcript": [], "events": [], "last_error": None,
-        "host": host, "user": user,
+        "host": host, "user": user, "cmds_path": str(cmds_path) if cmds_path else None,
     }
     _sessions[sid] = session
     t = threading.Thread(target=_pump, args=(session, proc.stdout), daemon=True)
@@ -224,6 +236,12 @@ def stop_session(sid):
         except (ProcessLookupError, PermissionError, OSError):
             proc.terminate()
     s["status"] = "stopped"
+    cmds_path = s.get("cmds_path")
+    if cmds_path:
+        try:
+            os.unlink(cmds_path)
+        except OSError:
+            pass
     return True
 
 
