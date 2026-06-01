@@ -70,6 +70,32 @@ def _clean_custom(raw):
     return out
 
 
+def _clean_trusted(raw):
+    """Liste de pseudos de confiance : strings trim, dédup insensible casse, cap 50/32 car."""
+    out, seen = [], set()
+    for u in raw or []:
+        if not isinstance(u, str):
+            continue
+        name = u.strip()[:32]
+        key = name.lower()
+        if name and key not in seen:
+            seen.add(key)
+            out.append(name)
+        if len(out) >= 50:
+            break
+    return out
+
+
+def _clean_trade(raw):
+    """Config trade optionnelle : {acceptCmd, requestPattern} ; None si pas d'acceptCmd."""
+    if not isinstance(raw, dict):
+        return None
+    accept = raw.get("acceptCmd")
+    if not isinstance(accept, str) or not accept.strip():
+        return None
+    return {"acceptCmd": accept.strip()[:60], "requestPattern": str(raw.get("requestPattern") or "")[:200]}
+
+
 def _clean_server(payload, sid):
     """Normalise/valide un payload de profil serveur (anti-injection, bornes, défauts sûrs)."""
     catalog_ids = _catalog_ids()
@@ -95,6 +121,8 @@ def _clean_server(payload, sid):
         "intelligence": intelligence,
         "commands": commands,
         "custom": _clean_custom(payload.get("custom")),
+        "trusted": _clean_trusted(payload.get("trusted")),
+        "trade": _clean_trade(payload.get("trade")),
     }
 
 
@@ -148,3 +176,8 @@ def resolve_commands(server):
     for c in server.get("custom", []):
         out.append({"cmd": c["cmd"], "syntax": c.get("syntax", c["cmd"]), "desc": c.get("desc", "")})
     return out
+
+
+def resolve_policy(server):
+    """Profil → policy {trusted, trade} pour le bot (gating ordres + auto-accept TP/trade)."""
+    return {"trusted": server.get("trusted", []), "trade": server.get("trade")}
