@@ -173,6 +173,8 @@ Projet serveur/
 |-----------|--------|
 | **OS prod** | Ubuntu Server (HP Omen) |
 | **OS dev** | macOS |
+| **RAM** | **15 Go** (relevé live 2026-06-01 : ~3.4 Go utilisés au repos, ~11 Go dispo) |
+| **CPU** | **12 threads** (idle downclock 800 MHz, ~2-3 % au repos) |
 | **Stockage** | HDD 914 Go (`/`) + SSD NVMe 469 Go (`/mnt/ssd`) = **1.3 To** |
 | **Python** | 3.9+ (venv dans `./venv/`) |
 | **DB** | SQLite (`data/omenserver.db`) |
