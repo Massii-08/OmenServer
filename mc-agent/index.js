@@ -19,6 +19,7 @@ const { attackNearest } = require('./skills/attackNearest');
 const { fleeFrom } = require('./skills/fleeFrom');
 const { installReflexes } = require('./reflexes');
 const { decideReaction } = require('./triggers');
+const { loadCommands, isAllowed, buildCommandDocs } = require('./commands');
 
 function parseArgs(argv) {
   const o = {};
@@ -43,6 +44,10 @@ const PUBLIC_MODE = (process.env.MC_AGENT_PUBLIC_MODE || 'mention').toLowerCase(
 let profile = null;
 try { profile = loadProfile(args.profile || 'intermediaire'); }
 catch (e) { emit({ type: 'error', message: 'profil invalide: ' + e.message }); }
+
+// Commandes serveur autorisées (fichier JSON écrit par le backend, passé via --commands).
+const whitelist = loadCommands(args.commands);
+const commandDocs = buildCommandDocs(whitelist); // bloc injecté dans le system prompt LLM
 
 const authMode = args.auth === 'microsoft' ? 'microsoft' : 'offline';
 const botOpts = {
@@ -85,8 +90,17 @@ async function runAction(decision) {
 }
 
 function replyTo(reaction, text) {
+  if (!isAllowed(text, whitelist)) { emit({ type: 'blocked_command', command: text }); return; }
   if (reaction.private) bot.whisper(reaction.to, text); // réponse en privé (/tell)
   else say(bot, text);                                  // réponse en public
+}
+
+// Exécute la commande serveur décidée par le LLM, UNIQUEMENT si elle est whitelistée.
+function runCommand(decision) {
+  const cmd = decision.command;
+  if (!cmd) return;
+  if (isAllowed(cmd, whitelist)) { bot.chat(String(cmd)); emit({ type: 'command', command: cmd }); }
+  else { emit({ type: 'blocked_command', command: cmd }); }
 }
 
 // Traite un message entrant (chat public OU whisper privé) selon la politique de réponse.
@@ -98,7 +112,7 @@ async function handleIncoming(username, message, isWhisper) {
   emit({ type: 'chat', from: username, message, private: !!isWhisper, handled: !!reaction });
   if (!reaction) return; // général non adressé → ignoré (zéro appel LLM)
   try {
-    const decision = await think(client, { state: snapshot(bot), message, model, limiter, profile });
+    const decision = await think(client, { state: snapshot(bot), message, model, limiter, profile, commandDocs });
     if (!decision) { emit({ type: 'info', message: 'rate-limited' }); return; }
     if (decision.reply) {
       // Réalisme paramétré (§7.1) : latence humaine + fautes occasionnelles selon le profil.
@@ -107,6 +121,7 @@ async function handleIncoming(username, message, isWhisper) {
       if (text) { replyTo(reaction, text); emit({ type: 'say', message: text, private: reaction.private, to: reaction.to }); }
     }
     await runAction(decision);
+    runCommand(decision);
   } catch (e) {
     emit({ type: 'error', message: String((e && e.message) || e) });
   }
