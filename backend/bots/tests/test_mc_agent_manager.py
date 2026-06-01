@@ -89,6 +89,9 @@ def test_has_api_key_groq(monkeypatch):
 
 
 def test_api_key_fichier_roundtrip(monkeypatch, tmp_path):
+    # Pinne le provider sur anthropic : sinon un .env avec MC_AGENT_LLM=groq + GROQ_API_KEY
+    # (chargé par backend.config) ferait passer has_api_key() par Groq → faux négatif ici.
+    monkeypatch.setenv("MC_AGENT_LLM", "anthropic")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(mgr, "API_KEY_PATH", tmp_path / "anthropic.key")
     assert mgr.has_api_key() is False
