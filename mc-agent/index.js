@@ -21,6 +21,18 @@ const { installReflexes } = require('./reflexes');
 const { decideReaction } = require('./triggers');
 const { loadCommands, isAllowed, buildCommandDocs } = require('./commands');
 const { loadPolicy, isTrusted, parseTpRequest, parseTradeRequest, gateDecision, buildTrustDocs } = require('./trust');
+const { parseOrder } = require('./orders');
+const { createTaskController } = require('./tasks');
+const { createMemory } = require('./memory');
+const { bestWeapon } = require('./tools');
+const { gather } = require('./skills/gather');
+const { mineDown } = require('./skills/mineDown');
+const { guard } = require('./skills/guard');
+const { giveItem, giveAll } = require('./skills/give');
+const { craftItem } = require('./skills/craft');
+const { deposit } = require('./skills/deposit');
+const { equipItem, eat } = require('./skills/equip');
+const { loiter } = require('./skills/loiter');
 
 function parseArgs(argv) {
   const o = {};
@@ -53,6 +65,36 @@ const commandDocs = buildCommandDocs(whitelist); // bloc injecté dans le system
 // Politique de confiance : gens autorisés à donner des ordres + auto-accept TP/trade.
 const policy = loadPolicy(args.policy);
 const trustDocs = buildTrustDocs(policy.trusted);
+
+// Langue parlée par le LLM (champ reply) : fr|en|it. Défaut fr.
+const lang = String(args.lang || 'fr').toLowerCase();
+const taskCtl = createTaskController();
+const memory = createMemory();
+
+const DONE = { fr: 'fait', en: 'done', it: 'fatto' };
+const FAILS = {
+  not_found: { fr: 'introuvable', en: 'not found', it: 'non trovato' },
+  no_block: { fr: 'quel bloc ?', en: 'which block?', it: 'quale blocco?' },
+  no_item: { fr: 'rien à donner', en: 'nothing to give', it: 'niente da dare' },
+  empty: { fr: 'inventaire vide', en: 'inventory empty', it: 'inventario vuoto' },
+  no_food: { fr: 'pas de nourriture', en: 'no food', it: 'niente cibo' },
+  full: { fr: 'pas faim', en: 'not hungry', it: 'non ho fame' },
+  no_recipe: { fr: 'pas de recette', en: 'no recipe', it: 'nessuna ricetta' },
+  unknown_item: { fr: 'objet inconnu', en: 'unknown item', it: 'oggetto sconosciuto' },
+  no_chest: { fr: 'pas de coffre', en: 'no chest', it: 'nessuna cassa' },
+  not_visible: { fr: 'je ne te vois pas', en: "can't see you", it: 'non ti vedo' },
+  void_below: { fr: 'le vide en dessous', en: 'void below', it: 'vuoto sotto' },
+  danger_below: { fr: 'danger en dessous', en: 'danger below', it: 'pericolo sotto' },
+};
+function doneWord() { return DONE[lang] || DONE.en; }
+function failMsg(reason) { const m = FAILS[reason]; return m ? (m[lang] || m.en) : (reason || 'erreur'); }
+function ackPrivate(sender, text) { if (sender && text) { try { bot.whisper(sender, text); } catch (e) {} } }
+
+function stopMotion() {
+  try { bot.pathfinder && bot.pathfinder.setGoal(null); } catch (e) {}
+  try { bot.pvp && bot.pvp.stop(); } catch (e) {}
+  ['forward', 'back', 'left', 'right', 'sneak', 'jump'].forEach((c) => { try { bot.setControlState(c, false); } catch (e) {} });
+}
 
 const authMode = args.auth === 'microsoft' ? 'microsoft' : 'offline';
 const botOpts = {
@@ -108,25 +150,124 @@ function runCommand(decision) {
   else { emit({ type: 'blocked_command', command: cmd }); }
 }
 
+// Exécute une commande directe (déterministe, ZÉRO LLM). Retours en /msg privé à l'émetteur.
+async function executeOrder(order, sender) {
+  const a = order.args || {};
+  emit({ type: 'order', verb: order.verb, by: sender });
+  switch (order.verb) {
+    case 'take': {
+      const token = taskCtl.begin('take', stopMotion);
+      const r = await gather(bot, a, token);
+      if (token.cancelled) break;
+      ackPrivate(sender, r.ok ? doneWord() : failMsg(r.reason));
+      break;
+    }
+    case 'mineDown': {
+      const token = taskCtl.begin('mineDown', stopMotion);
+      const r = await mineDown(bot, a, token);
+      if (token.cancelled) break;
+      ackPrivate(sender, r.ok ? doneWord() : failMsg(r.reason));
+      break;
+    }
+    case 'follow': {
+      taskCtl.begin('follow', stopMotion);
+      if (!follow(bot, { player: sender })) ackPrivate(sender, failMsg('not_visible'));
+      break;
+    }
+    case 'come': {
+      taskCtl.begin('come', stopMotion);
+      const ent = bot.players[sender] && bot.players[sender].entity;
+      if (!ent || !ent.position) { ackPrivate(sender, failMsg('not_visible')); break; }
+      await goto(bot, { x: ent.position.x, y: ent.position.y, z: ent.position.z });
+      ackPrivate(sender, doneWord());
+      break;
+    }
+    case 'goto': {
+      taskCtl.begin('goto', stopMotion);
+      await goto(bot, a);
+      ackPrivate(sender, doneWord());
+      break;
+    }
+    case 'guard': {
+      const token = taskCtl.begin('guard', () => {});
+      taskCtl.setCleanup(guard(bot, token));
+      break;
+    }
+    case 'stop': {
+      taskCtl.begin('loiter', () => {});
+      taskCtl.setCleanup(loiter(bot, profile));
+      break;
+    }
+    case 'afk': {
+      taskCtl.cancel();
+      stopMotion();
+      if (isAllowed('/afk', whitelist)) { bot.chat('/afk'); emit({ type: 'command', command: '/afk' }); }
+      break;
+    }
+    case 'pvp': {
+      taskCtl.begin('pvp', () => { try { bot.pvp.stop(); } catch (e) {} });
+      const ent = bot.players[a.player] && bot.players[a.player].entity;
+      if (!ent) { ackPrivate(sender, failMsg('not_visible')); break; }
+      const w = bestWeapon(bot);
+      if (w) { try { await bot.equip(w, 'hand'); } catch (e) {} }
+      try { bot.pvp.attack(ent); } catch (e) {}
+      break;
+    }
+    case 'tpa': {
+      const target = a.target === 'me' ? sender : a.target;
+      const cmd = '/tpa ' + target;
+      if (isAllowed(cmd, whitelist)) { bot.chat(cmd); emit({ type: 'command', command: cmd }); }
+      else { emit({ type: 'blocked_command', command: cmd }); }
+      break;
+    }
+    case 'give': { const r = await giveItem(bot, a, sender); if (!r.ok) ackPrivate(sender, failMsg(r.reason)); break; }
+    case 'giveAll': { const r = await giveAll(bot, a, sender); ackPrivate(sender, r.ok ? doneWord() : failMsg(r.reason)); break; }
+    case 'craft': { const r = await craftItem(bot, a); if (!r.ok) ackPrivate(sender, failMsg(r.reason)); break; }
+    case 'deposit': { const r = await deposit(bot); ackPrivate(sender, r.ok ? doneWord() : failMsg(r.reason)); break; }
+    case 'equip': { const r = await equipItem(bot, a); if (!r.ok) ackPrivate(sender, failMsg(r.reason)); break; }
+    case 'eat': { const r = await eat(bot); if (!r.ok) ackPrivate(sender, failMsg(r.reason)); break; }
+    default: break;
+  }
+  emit({ type: 'order_done', verb: order.verb });
+}
+
 // Traite un message entrant (chat public OU whisper privé) selon la politique de réponse.
 // Anti-giveaway + anti-coût : on n'appelle le LLM que si le message nous est adressé.
 async function handleIncoming(username, message, isWhisper) {
   if (username === bot.username) return;
+
+  // Pré-filtre commandes directes : UNIQUEMENT en /msg privé, ZÉRO appel LLM.
+  if (isWhisper) {
+    const order = parseOrder(message);
+    if (order) {
+      const allowed = isTrusted(username, policy.trusted) || (policy.trusted || []).length === 0;
+      emit({ type: 'chat', from: username, message, private: true, handled: allowed });
+      if (allowed) {
+        try { await executeOrder(order, username); }
+        catch (e) { emit({ type: 'error', message: String((e && e.message) || e) }); }
+      } else {
+        emit({ type: 'order_ignored', by: username });
+      }
+      return; // ne descend jamais vers le LLM
+    }
+  }
+
   const reaction = decideReaction({ username, message, isWhisper, botUsername: bot.username, publicMode: PUBLIC_MODE });
-  // On montre le message dans le transcript (contexte formateur), en taguant le canal + s'il est traité.
   emit({ type: 'chat', from: username, message, private: !!isWhisper, handled: !!reaction });
-  if (!reaction) return; // général non adressé → ignoré (zéro appel LLM)
+  if (!reaction) return;
   try {
-    const decision0 = await think(client, { state: snapshot(bot), message, model, limiter, profile, commandDocs, trustDocs, sender: username });
+    const history = memory.history(username);
+    const decision0 = await think(client, { state: snapshot(bot), message, model, limiter, profile, commandDocs, trustDocs, sender: username, history, lang });
     if (!decision0) { emit({ type: 'info', message: 'rate-limited' }); return; }
     const decision = gateDecision(decision0, username, policy.trusted);
-    if (decision !== decision0) { emit({ type: 'order_refused', from: username }); } // ordre d'un non-trusted retiré
+    if (decision !== decision0) { emit({ type: 'order_refused', from: username }); }
     if (decision.reply) {
-      // Réalisme paramétré (§7.1) : latence humaine + fautes occasionnelles selon le profil.
       const { text, delayMs } = humanizeReply(profile, decision.reply);
       await sleep(delayMs);
       if (text) { replyTo(reaction, text); emit({ type: 'say', message: text, private: reaction.private, to: reaction.to }); }
     }
+    memory.append(username, 'user', message);
+    if (decision.reply) memory.append(username, 'assistant', decision.reply);
     await runAction(decision);
     runCommand(decision);
   } catch (e) {
