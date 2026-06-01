@@ -26,14 +26,19 @@ cd "$(dirname "$0")"
 # Valeurs basées sur https://fabricmc.net/develop (juin 2026). Si un build échoue
 # avec "Could not resolve dependency", chercher la dernière yarn/fabric-api pour
 # cette version MC sur fabricmc.net et corriger ici.
+# Valeurs vérifiées via les maven-metadata.xml RÉELS (curl + grep, juin 2026) :
+#   - yarn      : https://maven.fabricmc.net/net/fabricmc/yarn/maven-metadata.xml
+#   - fabric-api: https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/maven-metadata.xml
+# Re-vérifier avec :
+#   curl -s <metadata-url> | grep -oE "X+build\.[0-9]+|[0-9]+\.[0-9]+\.[0-9]+\+X" | sort -V | tail -1
 read -r -d '' VERSION_MATRIX <<'EOF' || true
-1.20.1|17|1.20.1+build.10|0.16.10|0.92.6+1.20.1
-1.20.4|17|1.20.4+build.3|0.16.10|0.97.8+1.20.4
+1.20.1|17|1.20.1+build.10|0.16.10|0.92.9+1.20.1
+1.20.4|17|1.20.4+build.3|0.16.10|0.97.3+1.20.4
 1.20.6|21|1.20.6+build.3|0.16.10|0.100.8+1.20.6
 1.21|21|1.21+build.9|0.16.10|0.102.0+1.21
-1.21.1|21|1.21.1+build.3|0.16.10|0.115.5+1.21.1
+1.21.1|21|1.21.1+build.3|0.16.10|0.116.12+1.21.1
 1.21.4|21|1.21.4+build.8|0.16.10|0.119.4+1.21.4
-1.21.5|21|1.21.5+build.1|0.16.10|0.124.0+1.21.5
+1.21.5|21|1.21.5+build.1|0.16.10|0.128.2+1.21.5
 EOF
 
 # === Args : filtrer les versions à builder ===
