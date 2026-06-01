@@ -107,6 +107,45 @@ def test_api_key_fichier_roundtrip(monkeypatch, tmp_path):
     assert mgr.clear_api_key() is False  # déjà absent
 
 
+def test_get_api_key_status_groq(monkeypatch):
+    """Mode Groq : le statut reflète GROQ_API_KEY (pas la clé Claude) et n'est PAS éditable
+    depuis l'UI (le champ sk-ant- ne concerne qu'Anthropic ; la clé Groq vit dans le .env)."""
+    monkeypatch.setenv("MC_AGENT_LLM", "groq")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test123456789")
+    s = mgr.get_api_key_status()
+    assert s["has_key"] is True
+    assert s["provider"] == "groq"
+    assert s["label"] == "Groq"
+    assert s["editable"] is False
+    assert s["preview"] is None  # on ne révèle jamais la clé du .env
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    s2 = mgr.get_api_key_status()
+    assert s2["has_key"] is False
+    assert s2["label"] == "Groq" and s2["editable"] is False
+
+
+def test_get_api_key_status_gemini(monkeypatch):
+    """Mode Gemini : statut sur GEMINI_API_KEY, non éditable."""
+    monkeypatch.setenv("MC_AGENT_LLM", "gemini")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza_test")
+    s = mgr.get_api_key_status()
+    assert s["has_key"] is True
+    assert s["provider"] == "gemini" and s["label"] == "Gemini" and s["editable"] is False
+
+
+def test_get_api_key_status_anthropic_reste_editable(monkeypatch, tmp_path):
+    """Mode Anthropic : champ toujours éditable depuis l'UI (comportement historique préservé)."""
+    monkeypatch.setenv("MC_AGENT_LLM", "anthropic")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(mgr, "API_KEY_PATH", tmp_path / "anthropic.key")
+    s = mgr.get_api_key_status()
+    assert s["provider"] == "anthropic" and s["label"] == "Claude"
+    assert s["editable"] is True
+    assert s["has_key"] is False  # aucune clé posée
+
+
 def test_start_session_enregistre_et_pompe(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     created = {}

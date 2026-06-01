@@ -1070,11 +1070,13 @@ const BotsModule = {
  body.innerHTML = `
  ${BotsModule._mcaModBlock()}
  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);">
- <span style="font-size:13px;font-weight:600;">${Lang.t('mcagent.key_title')}</span>
+ <span id="mca-key-title" style="font-size:13px;font-weight:600;">${Lang.t('mcagent.key_word')}</span>
  <span id="mca-key-status" style="font-size:12px;color:var(--text-muted);">…</span>
+ <span id="mca-key-edit" style="display:flex;gap:8px;flex:1;min-width:160px;align-items:center;">
  <input id="mca-key" class="form-input" type="password" placeholder="${Lang.t('mcagent.key_placeholder')}" style="flex:1;min-width:160px;" />
  <button class="btn btn-secondary btn-sm" onclick="BotsModule.saveMCAgentKey()">${Lang.t('mcagent.key_save')}</button>
  <button class="btn btn-ghost btn-sm" onclick="BotsModule.clearMCAgentKey()">${Lang.t('mcagent.key_clear')}</button>
+ </span>
  </div>
  <div style="margin-bottom:10px;">
  <label class="form-label">${Lang.t('mcagent.cfg.profile_select')}</label>
@@ -1540,7 +1542,19 @@ const BotsModule = {
  const r = await Auth.apiCall('/api/mc-agent/settings/api-key');
  if (!r || !r.ok) { statusEl.textContent = ''; return; }
  const data = await r.json();
+ const titleEl = document.getElementById('mca-key-title');
+ const editEl = document.getElementById('mca-key-edit');
+ const label = data.label || 'Claude';
+ // Titre dynamique selon le provider LLM actif : « Clé Groq » / « Clé Gemini » / « Clé Claude ».
+ if (titleEl) titleEl.textContent = `${Lang.t('mcagent.key_word')} ${label}`;
+ // groq/gemini : la clé vit dans le .env serveur → champ NON éditable ici (on le masque).
+ const editable = data.editable !== false;
+ if (editEl) editEl.style.display = editable ? 'flex' : 'none';
+ if (editable) {
  statusEl.textContent = data.has_key ? `${Lang.t('mcagent.key_set')} (${data.preview})` : Lang.t('mcagent.key_absent');
+ } else {
+ statusEl.textContent = data.has_key ? Lang.t('mcagent.key_env_set') : Lang.t('mcagent.key_env_absent');
+ }
  statusEl.style.color = data.has_key ? 'var(--accent)' : 'var(--text-muted)';
  },
 

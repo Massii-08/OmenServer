@@ -45,14 +45,35 @@ def _read_api_key():
     return ""
 
 
+# Provider LLM → libellé affiché + var d'env de la clé (pour les providers gérés par .env).
+_PROVIDER_LABELS = {"groq": "Groq", "gemini": "Gemini", "anthropic": "Claude"}
+_PROVIDER_ENV_VAR = {"groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY"}
+
+
 def get_api_key_status():
-    """État de la clé pour le dashboard (sans la révéler)."""
+    """État de la clé pour le dashboard (sans la révéler), CONSCIENT du provider LLM actif.
+
+    - groq / gemini → la clé vit dans le .env serveur (var d'env). NON éditable depuis l'UI
+      (le champ `sk-ant-` ne concerne qu'Anthropic). On rapporte juste sa présence.
+    - anthropic     → clé éditable via le dashboard (var d'env OU fichier secret).
+
+    Toujours renvoie `has_key`/`preview`/`source` (rétro-compat) + `provider`/`label`/`editable`.
+    """
+    prov = _provider()
+    if prov in _PROVIDER_ENV_VAR:
+        present = bool(os.environ.get(_PROVIDER_ENV_VAR[prov]))
+        return {"has_key": present, "preview": None, "source": "env" if present else None,
+                "provider": prov, "label": _PROVIDER_LABELS[prov], "editable": False}
+    # anthropic (défaut) — comportement historique, champ éditable
     if os.environ.get("ANTHROPIC_API_KEY"):
-        return {"has_key": True, "preview": _mask_key(_read_api_key()), "source": "env_var"}
+        return {"has_key": True, "preview": _mask_key(_read_api_key()), "source": "env_var",
+                "provider": "anthropic", "label": "Claude", "editable": True}
     key = _read_api_key()
     if key:
-        return {"has_key": True, "preview": _mask_key(key), "source": "file"}
-    return {"has_key": False, "preview": None, "source": None}
+        return {"has_key": True, "preview": _mask_key(key), "source": "file",
+                "provider": "anthropic", "label": "Claude", "editable": True}
+    return {"has_key": False, "preview": None, "source": None,
+            "provider": "anthropic", "label": "Claude", "editable": True}
 
 
 def set_api_key(key):
