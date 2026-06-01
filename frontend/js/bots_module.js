@@ -1288,7 +1288,7 @@ const BotsModule = {
  },
 
  newServerProfile() {
- this._mcaEditing = { id: null, name: '', host: '', port: 25565, user: 'TrainBot', auth: 'offline', intelligence: 'intermediaire', commands: [], custom: [] };
+ this._mcaEditing = { id: null, name: '', host: '', port: 25565, user: 'TrainBot', auth: 'offline', intelligence: 'intermediaire', commands: [], custom: [], trusted: [], trade: { acceptCmd: '', requestPattern: '' } };
  this._renderServerEditor();
  },
 
@@ -1297,6 +1297,8 @@ const BotsModule = {
  if (!s) return;
  this._mcaEditing = JSON.parse(JSON.stringify(s));
  if (!Array.isArray(this._mcaEditing.custom)) this._mcaEditing.custom = [];
+ if (!Array.isArray(this._mcaEditing.trusted)) this._mcaEditing.trusted = [];
+ if (!this._mcaEditing.trade || typeof this._mcaEditing.trade !== 'object') this._mcaEditing.trade = { acceptCmd: '', requestPattern: '' };
  this._renderServerEditor();
  },
 
@@ -1325,6 +1327,12 @@ const BotsModule = {
  <span style="color:var(--text-dim);">${this._escapeHtml(c.syntax || '')}</span>
  <button class="btn btn-ghost btn-sm" onclick="BotsModule.removeCustomCommand(${i})">×</button>
  </div>`).join('');
+ const trusted = (e.trusted || []).map((name, i) => `
+ <span style="display:inline-flex;align-items:center;gap:4px;background:var(--bg-elev-3);border:1px solid var(--border);border-radius:999px;padding:2px 8px;margin:2px 6px 2px 0;font-size:12px;">
+ <span style="font-family:var(--font-mono);">${this._escapeHtml(name)}</span>
+ <button class="btn btn-ghost btn-sm" style="padding:0 4px;" onclick="BotsModule.removeTrustedPlayer(${i})">×</button>
+ </span>`).join('');
+ const trade = e.trade || { acceptCmd: '', requestPattern: '' };
  box.innerHTML = `
  <div style="background:var(--bg-elev-2);border:1px solid var(--border);border-radius:10px;padding:14px;">
  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
@@ -1354,6 +1362,20 @@ const BotsModule = {
  <input id="mca-e-cdesc" class="form-input" placeholder="${Lang.t('mcagent.cfg.custom_desc')}" style="flex:1;min-width:140px;" />
  <button class="btn btn-secondary btn-sm" onclick="BotsModule.addCustomCommand()">${Lang.t('mcagent.cfg.srv_custom_add')}</button>
  </div>
+ <div style="font-weight:600;font-size:13px;margin:14px 0 4px;">${Lang.t('mcagent.cfg.trusted_title')}</div>
+ <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">${Lang.t('mcagent.cfg.trusted_hint')}</div>
+ <div id="mca-e-trusted">${trusted || `<span style="font-size:12px;color:var(--text-dim);">${Lang.t('mcagent.cfg.trusted_empty')}</span>`}</div>
+ <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">
+ <input id="mca-e-trusted-add" class="form-input" placeholder="${Lang.t('mcagent.cfg.trusted_ph')}" style="flex:1;min-width:140px;" onkeydown="if(event.key==='Enter'){event.preventDefault();BotsModule.addTrustedPlayer();}" />
+ <button class="btn btn-secondary btn-sm" onclick="BotsModule.addTrustedPlayer()">${Lang.t('mcagent.cfg.trusted_add')}</button>
+ </div>
+ <div style="font-weight:600;font-size:13px;margin:14px 0 4px;">${Lang.t('mcagent.cfg.trade_title')}</div>
+ <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">${Lang.t('mcagent.cfg.trade_hint')}</div>
+ <div style="display:flex;gap:6px;flex-wrap:wrap;">
+ <input id="mca-e-trade-cmd" class="form-input" value="${this._escapeHtml(trade.acceptCmd || '')}" placeholder="${Lang.t('mcagent.cfg.trade_cmd_ph')}" style="max-width:200px;" />
+ <input id="mca-e-trade-pat" class="form-input" value="${this._escapeHtml(trade.requestPattern || '')}" placeholder="${Lang.t('mcagent.cfg.trade_pattern_ph')}" style="flex:1;min-width:160px;" />
+ </div>
+ <div style="font-size:11px;color:var(--text-dim);margin-top:14px;padding-top:10px;border-top:1px solid var(--border);">${Lang.t('mcagent.cfg.key_shared_note')}</div>
  <div style="display:flex;gap:8px;margin-top:14px;">
  <button class="btn btn-primary" onclick="BotsModule.saveServerProfile()">${Lang.t('mcagent.cfg.srv_save')}</button>
  <button class="btn btn-ghost" onclick="BotsModule.cancelServerEdit()">${Lang.t('mcagent.cfg.srv_cancel')}</button>
@@ -1372,6 +1394,9 @@ const BotsModule = {
  if (g('mca-e-auth') !== undefined) e.auth = g('mca-e-auth');
  if (g('mca-e-intel') !== undefined) e.intelligence = g('mca-e-intel');
  e.commands = Array.from(document.querySelectorAll('.mca-cmd-cb')).filter((cb) => cb.checked).map((cb) => cb.value);
+ const tc = document.getElementById('mca-e-trade-cmd');
+ const tp = document.getElementById('mca-e-trade-pat');
+ if (tc || tp) e.trade = { acceptCmd: tc ? tc.value.trim() : '', requestPattern: tp ? tp.value.trim() : '' };
  },
 
  addCustomCommand() {
@@ -1391,10 +1416,27 @@ const BotsModule = {
  this._renderServerEditor();
  },
 
+ addTrustedPlayer() {
+ const inp = document.getElementById('mca-e-trusted-add');
+ const name = (inp && inp.value || '').trim();
+ if (!name) return;
+ this._captureEditorState();
+ this._mcaEditing.trusted = this._mcaEditing.trusted || [];
+ if (!this._mcaEditing.trusted.some((t) => t.toLowerCase() === name.toLowerCase())) this._mcaEditing.trusted.push(name);
+ this._renderServerEditor();
+ },
+
+ removeTrustedPlayer(i) {
+ this._captureEditorState();
+ this._mcaEditing.trusted.splice(i, 1);
+ this._renderServerEditor();
+ },
+
  async saveServerProfile() {
  this._captureEditorState();
  const e = this._mcaEditing;
- const payload = { name: e.name || 'Sans nom', host: e.host || '', port: e.port || 25565, user: e.user || 'TrainBot', auth: e.auth || 'offline', intelligence: e.intelligence || 'intermediaire', commands: e.commands || [], custom: e.custom || [] };
+ const trade = (e.trade && (e.trade.acceptCmd || '').trim()) ? { acceptCmd: e.trade.acceptCmd.trim(), requestPattern: (e.trade.requestPattern || '').trim() } : null;
+ const payload = { name: e.name || 'Sans nom', host: e.host || '', port: e.port || 25565, user: e.user || 'TrainBot', auth: e.auth || 'offline', intelligence: e.intelligence || 'intermediaire', commands: e.commands || [], custom: e.custom || [], trusted: e.trusted || [], trade };
  const url = e.id ? `/api/mc-agent/servers/${encodeURIComponent(e.id)}` : '/api/mc-agent/servers';
  const r = await Auth.apiCall(url, { method: e.id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
  if (!r || !r.ok) { Toast.error(Lang.t('mcagent.cfg.srv_save_err')); return; }
