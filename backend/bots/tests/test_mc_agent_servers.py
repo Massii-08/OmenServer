@@ -108,3 +108,14 @@ def test_resolve_policy_empty(tmp_store):
     s = ss.create_server({"name": "X"})
     pol = ss.resolve_policy(s)
     assert pol == {"trusted": [], "trade": None}
+
+
+def test_clean_server_language_default_and_valid(tmp_path, monkeypatch):
+    import backend.bots.mc_agent_servers as s
+    monkeypatch.setattr(s, "SERVERS_PATH", tmp_path / "srv.json")
+    srv = s.create_server({"name": "X", "host": "h"})
+    assert srv["language"] == "fr"  # défaut
+    srv2 = s.create_server({"name": "Y", "host": "h", "language": "it"})
+    assert srv2["language"] == "it"
+    srv3 = s.create_server({"name": "Z", "host": "h", "language": "xx"})
+    assert srv3["language"] == "fr"  # invalide → défaut

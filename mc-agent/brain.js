@@ -46,8 +46,16 @@ const SYSTEM_PROMPT = [
   ACTIONS_DOC,
 ].join(' ');
 
-/** Construit le system prompt : persona + commandes serveur dispo + gens de confiance. */
-function buildSystemPrompt(profile, commandDocs = '', trustDocs = '') {
+const LANG_NAMES = { fr: 'francais', en: 'anglais', it: 'italien' };
+
+/** Bloc langue pour le system prompt. '' si langue inconnue/absente. */
+function buildLangDocs(lang) {
+  const name = LANG_NAMES[String(lang || '').toLowerCase()];
+  return name ? `Ecris TOUJOURS le champ "reply" en ${name}.` : '';
+}
+
+/** Construit le system prompt : persona + commandes serveur + gens de confiance + langue. */
+function buildSystemPrompt(profile, commandDocs = '', trustDocs = '', langDocs = '') {
   const base = profile
     ? [
         "Tu incarnes un joueur dans une partie Minecraft (cadre d'entrainement de moderation).",
@@ -58,6 +66,7 @@ function buildSystemPrompt(profile, commandDocs = '', trustDocs = '') {
     : [SYSTEM_PROMPT];
   if (commandDocs) base.push(commandDocs);
   if (trustDocs) base.push(trustDocs);
+  if (langDocs) base.push(langDocs);
   return base.filter(Boolean).join(' ');
 }
 
@@ -66,17 +75,21 @@ function buildSystemPrompt(profile, commandDocs = '', trustDocs = '') {
  * Retourne une décision parsée, ou null si le rate-limiter bloque l'appel.
  * `profile` : objet profil optionnel (injecte la persona dans le system prompt).
  */
-async function think(client, { state, message, model, limiter, profile = null, commandDocs = '', trustDocs = '', sender = '' }) {
+async function think(client, { state, message, model, limiter, profile = null, commandDocs = '', trustDocs = '', sender = '', history = [], lang = '' }) {
   if (limiter && !limiter.tryAcquire()) return null;
   const fromLine = sender ? `De: ${sender}\n` : '';
+  const prior = (Array.isArray(history) ? history : []).map((h) => ({
+    role: h && h.role === 'assistant' ? 'assistant' : 'user',
+    content: String((h && h.content) || ''),
+  }));
   const resp = await client.messages.create({
     model,
     max_tokens: 300,
-    system: buildSystemPrompt(profile, commandDocs, trustDocs),
-    messages: [{ role: 'user', content: `Etat: ${JSON.stringify(state)}\n${fromLine}Message recu: ${message}` }],
+    system: buildSystemPrompt(profile, commandDocs, trustDocs, buildLangDocs(lang)),
+    messages: [...prior, { role: 'user', content: `Etat: ${JSON.stringify(state)}\n${fromLine}Message recu: ${message}` }],
   });
   const text = (resp.content || []).map((b) => b.text || '').join('');
   return parseDecision(text);
 }
 
-module.exports = { parseDecision, RateLimiter, think, SYSTEM_PROMPT, buildSystemPrompt };
+module.exports = { parseDecision, RateLimiter, think, SYSTEM_PROMPT, buildSystemPrompt, buildLangDocs };

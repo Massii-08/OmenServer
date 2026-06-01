@@ -1084,7 +1084,7 @@ const BotsModule = {
  </div>
  <div style="display:grid;grid-template-columns:1fr 100px;gap:10px;margin-bottom:10px;">
  <div><label class="form-label">${Lang.t('mcagent.ip')}</label><input id="mca-host" class="form-input" placeholder="192.168.1.x ou play.exemple.net" /></div>
- <div><label class="form-label">${Lang.t('mcagent.port')}</label><input id="mca-port" class="form-input" value="25565" /></div>
+ <div><label class="form-label">${Lang.t('mcagent.port')}</label><input id="mca-port" class="form-input" placeholder="25565" /></div>
  </div>
  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
  <div><label class="form-label">${Lang.t('mcagent.account')}</label><input id="mca-user" class="form-input" value="TrainBot" placeholder="pseudo ou email" /></div>
@@ -1098,6 +1098,10 @@ const BotsModule = {
  <span id="mca-msg" style="font-size:13px;color:var(--text-muted);"></span>
  </div>
  <div id="mca-tells" style="display:none;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:var(--text-muted);"></div>
+ <details class="card" style="margin-top:12px;">
+ <summary style="cursor:pointer;font-weight:600;">${Lang.t('mcagent.commands_title')}</summary>
+ <div style="font-family:var(--font-mono);font-size:12px;line-height:1.7;margin-top:8px;white-space:pre-wrap;">${Lang.t('mcagent.commands_help')}</div>
+ </details>
  <div style="border-top:1px solid var(--border);margin:14px 0;padding-top:12px;">
  <div style="font-weight:600;margin-bottom:4px;">${Lang.t('mcagent.capture_title')}</div>
  <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('mcagent.capture_hint')}</div>
@@ -1326,7 +1330,7 @@ const BotsModule = {
  },
 
  newServerProfile() {
- this._mcaEditing = { id: null, name: '', host: '', port: 25565, user: 'TrainBot', auth: 'offline', intelligence: 'intermediaire', commands: [], custom: [], trusted: [], trade: { acceptCmd: '', requestPattern: '' } };
+ this._mcaEditing = { id: null, name: '', host: '', port: 25565, user: 'TrainBot', auth: 'offline', intelligence: 'intermediaire', language: 'fr', commands: [], custom: [], trusted: [], trade: { acceptCmd: '', requestPattern: '' } };
  this._renderServerEditor();
  },
 
@@ -1381,8 +1385,14 @@ const BotsModule = {
  <option value="intermediaire" ${e.intelligence === 'intermediaire' ? 'selected' : ''}>Intermédiaire</option>
  <option value="expert" ${e.intelligence === 'expert' ? 'selected' : ''}>Expert</option>
  </select></div>
+ <div><label class="form-label">${Lang.t('mcagent.cfg.srv_language')}</label>
+ <select id="mca-e-lang" class="form-input">
+ <option value="fr" ${(e.language||'fr') === 'fr' ? 'selected' : ''}>Français</option>
+ <option value="en" ${e.language === 'en' ? 'selected' : ''}>English</option>
+ <option value="it" ${e.language === 'it' ? 'selected' : ''}>Italiano</option>
+ </select></div>
  <div><label class="form-label">${Lang.t('mcagent.ip')}</label><input id="mca-e-host" class="form-input" value="${this._escapeHtml(e.host)}" /></div>
- <div><label class="form-label">${Lang.t('mcagent.port')}</label><input id="mca-e-port" class="form-input" value="${e.port}" /></div>
+ <div><label class="form-label">${Lang.t('mcagent.port')}</label><input id="mca-e-port" class="form-input" placeholder="25565" value="${e.port || ''}" /></div>
  <div><label class="form-label">${Lang.t('mcagent.account')}</label><input id="mca-e-user" class="form-input" value="${this._escapeHtml(e.user)}" /></div>
  <div><label class="form-label">${Lang.t('mcagent.auth_label')}</label>
  <select id="mca-e-auth" class="form-input">
@@ -1431,6 +1441,7 @@ const BotsModule = {
  if (g('mca-e-user') !== undefined) e.user = g('mca-e-user');
  if (g('mca-e-auth') !== undefined) e.auth = g('mca-e-auth');
  if (g('mca-e-intel') !== undefined) e.intelligence = g('mca-e-intel');
+ if (g('mca-e-lang') !== undefined) e.language = g('mca-e-lang');
  e.commands = Array.from(document.querySelectorAll('.mca-cmd-cb')).filter((cb) => cb.checked).map((cb) => cb.value);
  const tc = document.getElementById('mca-e-trade-cmd');
  const tp = document.getElementById('mca-e-trade-pat');
@@ -1474,7 +1485,7 @@ const BotsModule = {
  this._captureEditorState();
  const e = this._mcaEditing;
  const trade = (e.trade && (e.trade.acceptCmd || '').trim()) ? { acceptCmd: e.trade.acceptCmd.trim(), requestPattern: (e.trade.requestPattern || '').trim() } : null;
- const payload = { name: e.name || 'Sans nom', host: e.host || '', port: e.port || 25565, user: e.user || 'TrainBot', auth: e.auth || 'offline', intelligence: e.intelligence || 'intermediaire', commands: e.commands || [], custom: e.custom || [], trusted: e.trusted || [], trade };
+ const payload = { name: e.name || 'Sans nom', host: e.host || '', port: e.port || 25565, user: e.user || 'TrainBot', auth: e.auth || 'offline', intelligence: e.intelligence || 'intermediaire', language: e.language || 'fr', commands: e.commands || [], custom: e.custom || [], trusted: e.trusted || [], trade };
  const url = e.id ? `/api/mc-agent/servers/${encodeURIComponent(e.id)}` : '/api/mc-agent/servers';
  const r = await Auth.apiCall(url, { method: e.id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
  if (!r || !r.ok) { Toast.error(Lang.t('mcagent.cfg.srv_save_err')); return; }

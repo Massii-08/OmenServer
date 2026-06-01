@@ -36,7 +36,7 @@ def test_run_400_si_pas_de_cle(monkeypatch):
 def test_run_demarre_une_session(monkeypatch):
     captured = {}
     monkeypatch.setattr(mgr, "has_api_key", lambda: True)
-    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None):
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr"):
         captured["auth"] = auth
         return 7
     monkeypatch.setattr(mgr, "start_session", fake_start)
@@ -114,7 +114,7 @@ def test_profiles_retourne_la_liste(monkeypatch):
 def test_run_transmet_le_profil(monkeypatch):
     monkeypatch.setattr(mgr, "has_api_key", lambda: True)
     captured = {}
-    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None):
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr"):
         captured["profile"] = profile
         return 11
     monkeypatch.setattr(mgr, "start_session", fake_start)
@@ -173,7 +173,7 @@ def test_run_with_server_id_resolves_commands(monkeypatch):
                         lambda srv: [{"cmd": "/home", "syntax": "/home", "desc": "h"}])
     captured = {}
 
-    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None):
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr"):
         captured.update(host=host, profile=profile, commands=commands)
         return 9
 
@@ -211,7 +211,7 @@ def test_run_with_server_id_passes_policy(monkeypatch):
     monkeypatch.setattr(r.servers_store, "resolve_policy", lambda srv: {"trusted": ["Bob"], "trade": None})
     captured = {}
 
-    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None):
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr"):
         captured["policy"] = policy
         return 11
 
@@ -233,7 +233,7 @@ def test_run_with_server_id_passes_server_id(monkeypatch):
     monkeypatch.setattr(r.servers_store, "resolve_policy", lambda srv: {"trusted": [], "trade": None})
     captured = {}
 
-    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None):
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr"):
         captured["server_id"] = server_id
         return 12
 
@@ -242,3 +242,25 @@ def test_run_with_server_id_passes_server_id(monkeypatch):
     resp = c.post("/api/mc-agent/run", json={"server_id": "abc"})
     assert resp.status_code == 200
     assert captured["server_id"] == "abc"
+
+
+def test_run_passes_language_from_server_profile(monkeypatch):
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    captured = {}
+
+    def fake_start(host, port, user, model=None, auth="offline", profile=None,
+                   commands=None, policy=None, server_id=None, language="fr"):
+        captured["language"] = language
+        return 7
+
+    monkeypatch.setattr(mgr, "start_session", fake_start)
+    monkeypatch.setattr(r.servers_store, "get_server", lambda sid: {
+        "id": sid, "host": "h", "port": 25565, "user": "Bot", "auth": "offline",
+        "intelligence": "intermediaire", "language": "it", "commands": [], "custom": [],
+        "trusted": [], "trade": None})
+    monkeypatch.setattr(r.servers_store, "resolve_commands", lambda srv: [])
+    monkeypatch.setattr(r.servers_store, "resolve_policy", lambda srv: {"trusted": [], "trade": None})
+    c = make_client()
+    resp = c.post("/api/mc-agent/run", json={"server_id": "abc"})
+    assert resp.status_code == 200
+    assert captured["language"] == "it"

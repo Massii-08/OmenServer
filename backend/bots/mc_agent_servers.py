@@ -18,6 +18,7 @@ CATALOG_PATH = _PROJECT_ROOT / "mc-agent" / "commands-catalog.json"
 
 VALID_INTELLIGENCE = ("evident", "intermediaire", "expert")
 VALID_AUTH = ("offline", "microsoft")
+VALID_LANGUAGE = ("fr", "en", "it")
 _SAFE_ID = re.compile(r"^[a-z0-9]+$")
 
 
@@ -106,6 +107,9 @@ def _clean_server(payload, sid):
     auth = payload.get("auth")
     if auth not in VALID_AUTH:
         auth = "offline"
+    language = payload.get("language")
+    if language not in VALID_LANGUAGE:
+        language = "fr"
     try:
         port = int(payload.get("port") or 25565)
     except (TypeError, ValueError):
@@ -119,6 +123,7 @@ def _clean_server(payload, sid):
         "user": str(payload.get("user") or "TrainBot")[:48],
         "auth": auth,
         "intelligence": intelligence,
+        "language": language,
         "commands": commands,
         "custom": _clean_custom(payload.get("custom")),
         "trusted": _clean_trusted(payload.get("trusted")),
