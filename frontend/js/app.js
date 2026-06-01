@@ -1193,6 +1193,7 @@ const App = {
  + (u.id !== currentUser?.id
  ? '<select class="form-input" style="font-size:12px;padding:4px 8px;width:auto;" onchange="event.stopPropagation();App._changeRoleAdmin(' + u.id + ', this.value)" onclick="event.stopPropagation()">'
  + '<option value="spectator"' + (u.role === 'spectator' ? ' selected' : '') + '>' + Lang.t('users.role_spectator') + '</option>'
+ + '<option value="rectester"' + (u.role === 'rectester' ? ' selected' : '') + '>' + Lang.t('users.role_rectester') + '</option>'
  + '<option value="player"' + (u.role === 'player' ? ' selected' : '') + '>' + Lang.t('users.role_player') + '</option>'
  + '<option value="money"' + (u.role === 'money' ? ' selected' : '') + '>' + Lang.t('users.role_money') + '</option>'
  + '<option value="moderator"' + (u.role === 'moderator' ? ' selected' : '') + '>' + Lang.t('users.role_moderator') + '</option>'

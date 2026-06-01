@@ -1038,9 +1038,13 @@ const BotsModule = {
  // Conteneur canonique du module (cf. openBondScanner/_renderYield* : this._container set dans render())
  const el = this._container || document.getElementById('bots-module-container')?.parentElement;
  if (!el) return;
+ const __mcaU = (typeof Auth !== 'undefined' && Auth.getUser) ? Auth.getUser() : null;
+ this._mcaRecTester = !!(__mcaU && !__mcaU.is_admin && __mcaU.role === 'rectester');
+ if (this._mcaRecTester) return this._renderMCAgentRecTester(el);
  el.innerHTML = `
  <div class="card">
  <h3 style="margin:0 0 12px;">MC Agent — ${Lang.t('mcagent.training')}</h3>
+ ${BotsModule._mcaModBlock()}
  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);">
  <span style="font-size:13px;font-weight:600;">${Lang.t('mcagent.key_title')}</span>
  <span id="mca-key-status" style="font-size:12px;color:var(--text-muted);">…</span>
@@ -1081,7 +1085,76 @@ const BotsModule = {
  </div>`;
  this._loadMCAgentKey();
  this.loadMCAgentProfiles();
+ this.loadModVersions();
  this.loadCaptures();
+ },
+
+ _mcaModBlock() {
+ return `
+ <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+ <div style="font-weight:600;margin-bottom:6px;">${Lang.t('mcagent.mod_download')}</div>
+ <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('mcagent.mod_pick')}</div>
+ <div id="mca-mod-versions" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+ <details style="margin-top:10px;">
+ <summary style="cursor:pointer;font-size:13px;">${Lang.t('mcagent.tuto_title')}</summary>
+ <ol style="font-size:12px;color:var(--text-muted);line-height:1.7;margin:8px 0 0;padding-left:18px;">
+ <li>${Lang.t('mcagent.tuto_s1')} <a href="https://fabricmc.net/use/installer/" target="_blank" rel="noopener">fabricmc.net/use/installer</a></li>
+ <li>${Lang.t('mcagent.tuto_s2')} <a href="https://modrinth.com/mod/fabric-api" target="_blank" rel="noopener">modrinth.com/mod/fabric-api</a></li>
+ <li>${Lang.t('mcagent.tuto_s3')}</li>
+ <li>${Lang.t('mcagent.tuto_s4')}</li>
+ <li>${Lang.t('mcagent.tuto_s5')}</li>
+ </ol>
+ </details>
+ </div>`;
+ },
+
+ _renderMCAgentRecTester(el) {
+ el.innerHTML = `
+ <div class="card">
+ <h3 style="margin:0 0 12px;">MC Agent — ${Lang.t('mcagent.training')}</h3>
+ ${this._mcaModBlock()}
+ <div style="border-top:1px solid var(--border);margin:14px 0;padding-top:12px;">
+ <div style="font-weight:600;margin-bottom:4px;">${Lang.t('mcagent.my_captures')}</div>
+ <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('mcagent.capture_hint')}</div>
+ <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+ <input id="mca-capfile" type="file" accept=".jsonl,.gz" class="form-input" style="flex:1;min-width:200px;" />
+ <button class="btn btn-secondary btn-sm" onclick="BotsModule.uploadCapture()">${Lang.t('mcagent.capture_import')}</button>
+ </div>
+ <div id="mca-captures"></div>
+ </div>
+ </div>`;
+ this.loadModVersions();
+ this.loadCaptures();
+ },
+
+ async loadModVersions() {
+ const box = document.getElementById('mca-mod-versions');
+ if (!box) return;
+ try {
+ const r = await Auth.apiCall('/api/mc-agent/mod');
+ const data = await r.json();
+ const vers = (data && data.versions) || [];
+ box.innerHTML = vers.length
+ ? vers.map((v) => `<button class="btn btn-secondary btn-sm" onclick="BotsModule.downloadMod('${this._escapeHtml(v.version)}')">MC ${this._escapeHtml(v.version)}</button>`).join('')
+ : `<span style="font-size:12px;color:var(--text-dim);">—</span>`;
+ } catch (e) { /* silencieux */ }
+ },
+
+ async downloadMod(version) {
+ const r = await Auth.apiCall('/api/mc-agent/mod/' + encodeURIComponent(version));
+ if (!r || !r.ok) { Toast.error(Lang.t('mcagent.mod_download')); return; }
+ const blob = await r.blob();
+ const url = URL.createObjectURL(blob);
+ const a = document.createElement('a');
+ a.href = url; a.download = `mc-capture-${version}.jar`;
+ document.body.appendChild(a); a.click(); a.remove();
+ URL.revokeObjectURL(url);
+ },
+
+ async deleteSession(player, file) {
+ const r = await Auth.apiCall(`/api/mc-agent/captures/${encodeURIComponent(player)}/${encodeURIComponent(file)}`, { method: 'DELETE' });
+ if (r && r.ok) this.loadCaptures();
+ else Toast.error(Lang.t('mcagent.capture_delete'));
  },
 
  async startMCAgent() {
@@ -1231,8 +1304,8 @@ const BotsModule = {
  return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 8px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:8px;margin-bottom:6px;">
  <span style="font-family:var(--font-mono);">${p} — ${c.sessions} ${Lang.t('mcagent.capture_sessions')} (${mb} Mo)</span>
  <span style="display:flex;gap:6px;">
- <button class="btn btn-ghost btn-sm" onclick="BotsModule.distillCapture('${p}')">${Lang.t('mcagent.capture_distill')}</button>
- <button class="btn btn-ghost btn-sm" onclick="BotsModule.deleteCapture('${p}')">${Lang.t('mcagent.capture_delete')}</button>
+ ${this._mcaRecTester ? '' : `<button class="btn btn-ghost btn-sm" onclick="BotsModule.distillCapture('${p}')">${Lang.t('mcagent.capture_distill')}</button>`}
+ ${(c.files || []).map((f) => `<button class="btn btn-ghost btn-sm" onclick="BotsModule.deleteSession('${p}','${this._escapeHtml(f)}')" title="${this._escapeHtml(f)}">${Lang.t('mcagent.capture_delete')}</button>`).join('')}
  </span></div>
  <div id="mca-style-${p}" style="font-size:12px;color:var(--text-muted);margin:-2px 0 8px 8px;"></div>`;
  }).join('');
