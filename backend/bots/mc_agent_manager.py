@@ -136,7 +136,7 @@ def has_api_key():
     return bool(_read_api_key())
 
 
-def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None):
+def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None):
     """Spawn le process Node détaché et enregistre la session. Retourne son id.
 
     `commands` : liste d'objets {cmd,syntax,desc} (whitelist serveur). Écrite dans un fichier
@@ -159,6 +159,12 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
         cmds_path = RUNS_DIR / f"cmds-{sid}.json"
         cmds_path.write_text(json.dumps(commands), encoding="utf-8")
         cmd += ["--commands", str(cmds_path)]
+    policy_path = None
+    if policy:
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        policy_path = RUNS_DIR / f"policy-{sid}.json"
+        policy_path.write_text(json.dumps(policy), encoding="utf-8")
+        cmd += ["--policy", str(policy_path)]
     env = dict(os.environ)
     api_key = _read_api_key()  # injecte la clé (fichier ou env) dans l'env du subprocess Node
     if api_key:
@@ -177,7 +183,9 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
     session = {
         "id": sid, "proc": proc, "status": "starting",
         "transcript": [], "events": [], "last_error": None,
-        "host": host, "user": user, "cmds_path": str(cmds_path) if cmds_path else None,
+        "host": host, "user": user,
+        "cmds_path": str(cmds_path) if cmds_path else None,
+        "policy_path": str(policy_path) if policy_path else None,
     }
     _sessions[sid] = session
     t = threading.Thread(target=_pump, args=(session, proc.stdout), daemon=True)
@@ -236,12 +244,13 @@ def stop_session(sid):
         except (ProcessLookupError, PermissionError, OSError):
             proc.terminate()
     s["status"] = "stopped"
-    cmds_path = s.get("cmds_path")
-    if cmds_path:
-        try:
-            os.unlink(cmds_path)
-        except OSError:
-            pass
+    for key in ("cmds_path", "policy_path"):
+        p = s.get(key)
+        if p:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
     return True
 
 
