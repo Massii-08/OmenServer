@@ -53,4 +53,4 @@ function installReflexes(bot, opts = {}) {
   return { react };
 }
 
-module.exports = { tryEat, shouldFlee, installReflexes, HUNGER_THRESHOLD, HEALTH_THRESHOLD };
+module.exports = { tryEat, shouldFlee, installReflexes, HUNGER_THRESHOLD, HEALTH_THRESHOLD, FOODS };
