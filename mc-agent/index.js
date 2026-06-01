@@ -20,6 +20,7 @@ const { fleeFrom } = require('./skills/fleeFrom');
 const { installReflexes } = require('./reflexes');
 const { decideReaction } = require('./triggers');
 const { loadCommands, isAllowed, buildCommandDocs } = require('./commands');
+const { loadPolicy, isTrusted, parseTpRequest, parseTradeRequest, gateDecision, buildTrustDocs } = require('./trust');
 
 function parseArgs(argv) {
   const o = {};
@@ -48,6 +49,10 @@ catch (e) { emit({ type: 'error', message: 'profil invalide: ' + e.message }); }
 // Commandes serveur autorisées (fichier JSON écrit par le backend, passé via --commands).
 const whitelist = loadCommands(args.commands);
 const commandDocs = buildCommandDocs(whitelist); // bloc injecté dans le system prompt LLM
+
+// Politique de confiance : gens autorisés à donner des ordres + auto-accept TP/trade.
+const policy = loadPolicy(args.policy);
+const trustDocs = buildTrustDocs(policy.trusted);
 
 const authMode = args.auth === 'microsoft' ? 'microsoft' : 'offline';
 const botOpts = {
@@ -112,8 +117,10 @@ async function handleIncoming(username, message, isWhisper) {
   emit({ type: 'chat', from: username, message, private: !!isWhisper, handled: !!reaction });
   if (!reaction) return; // général non adressé → ignoré (zéro appel LLM)
   try {
-    const decision = await think(client, { state: snapshot(bot), message, model, limiter, profile, commandDocs });
-    if (!decision) { emit({ type: 'info', message: 'rate-limited' }); return; }
+    const decision0 = await think(client, { state: snapshot(bot), message, model, limiter, profile, commandDocs, trustDocs, sender: username });
+    if (!decision0) { emit({ type: 'info', message: 'rate-limited' }); return; }
+    const decision = gateDecision(decision0, username, policy.trusted);
+    if (decision !== decision0) { emit({ type: 'order_refused', from: username }); } // ordre d'un non-trusted retiré
     if (decision.reply) {
       // Réalisme paramétré (§7.1) : latence humaine + fautes occasionnelles selon le profil.
       const { text, delayMs } = humanizeReply(profile, decision.reply);
@@ -129,6 +136,22 @@ async function handleIncoming(username, message, isWhisper) {
 
 bot.on('chat', (username, message) => handleIncoming(username, message, false));
 bot.on('whisper', (username, message) => handleIncoming(username, message, true));
+
+// Auto-accept des demandes TP (et trade) UNIQUEMENT des gens de confiance, et seulement si
+// la commande d'acceptation est cochée dans la whitelist (synergie avec la config commandes).
+bot.on('messagestr', (msg) => {
+  const tpWho = parseTpRequest(msg);
+  if (tpWho && isTrusted(tpWho, policy.trusted) && isAllowed('/tpaccept', whitelist)) {
+    bot.chat('/tpaccept'); emit({ type: 'command', command: '/tpaccept', reason: 'tp:' + tpWho });
+    return;
+  }
+  if (policy.trade) {
+    const trWho = parseTradeRequest(msg, policy.trade);
+    if (trWho && isTrusted(trWho, policy.trusted) && isAllowed(policy.trade.acceptCmd, whitelist)) {
+      bot.chat(policy.trade.acceptCmd); emit({ type: 'command', command: policy.trade.acceptCmd, reason: 'trade:' + trWho });
+    }
+  }
+});
 
 bot.on('death', () => emit({ type: 'status', state: 'dead' }));
 bot.on('kicked', (reason) => emit({ type: 'error', message: 'kicked: ' + reason }));
