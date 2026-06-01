@@ -245,3 +245,25 @@ def test_start_session_writes_policy_file(monkeypatch, tmp_path):
     path = captured["cmd"][captured["cmd"].index("--policy") + 1]
     data = _json.loads(open(path).read())
     assert data["trusted"] == ["Bob"]
+
+
+def test_start_session_stores_server_id(monkeypatch, tmp_path):
+    """La session retient le server_id (profil) → /active permet de mapper carte ↔ session."""
+    from backend.bots import mc_agent_manager as mgr
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter(())
+            self.pid = 4323
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: FakeProc())
+    sid = mgr.start_session("h", 25565, "U", server_id="ab12cd")
+    assert mgr.get_status(sid)["server_id"] == "ab12cd"
+    # défaut : None quand non fourni (lancement manuel)
+    sid2 = mgr.start_session("h", 25565, "U")
+    assert mgr.get_status(sid2)["server_id"] is None

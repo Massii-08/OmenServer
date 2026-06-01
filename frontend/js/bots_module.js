@@ -1265,7 +1265,18 @@ const BotsModule = {
  const data = await r.json();
  this._mcaServers = data.servers || [];
  } catch (e) { this._mcaServers = []; }
+ await this._loadActiveByServer();
  this._renderServerList();
+ },
+
+ // Mappe server_id -> session_id pour les bots actuellement en ligne (savoir afficher Lancer ou Arrêter).
+ async _loadActiveByServer() {
+ this._mcaActiveByServer = {};
+ try {
+ const r = await Auth.apiCall('/api/mc-agent/active');
+ const data = await r.json();
+ (data.sessions || []).forEach((s) => { if (s.server_id) this._mcaActiveByServer[s.server_id] = s.id; });
+ } catch (e) { /* silencieux */ }
  },
 
  _renderServerList() {
@@ -1274,17 +1285,44 @@ const BotsModule = {
  const servers = this._mcaServers || [];
  if (!servers.length) { list.innerHTML = `<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">${Lang.t('mcagent.cfg.srv_empty')}</div>`; return; }
  const intel = { evident: 'Évident', intermediaire: 'Intermédiaire', expert: 'Expert' };
- list.innerHTML = servers.map((s) => `
+ const active = this._mcaActiveByServer || {};
+ list.innerHTML = servers.map((s) => {
+ const sid = active[s.id];
+ const online = sid != null;
+ const runBtn = online
+ ? `<button class="btn btn-sm" style="background:var(--danger);color:#fff;border-color:var(--danger);" onclick="BotsModule.leaveServerProfile(${sid})">${Lang.t('mcagent.cfg.srv_stop')}</button>`
+ : `<button class="btn btn-primary btn-sm" onclick="BotsModule.launchServerProfile('${this._escapeHtml(s.id)}')">${Lang.t('mcagent.cfg.srv_launch')}</button>`;
+ const dot = online ? `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);margin-right:6px;vertical-align:middle;" title="${Lang.t('mcagent.cfg.srv_online')}"></span>` : '';
+ return `
  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
  <div>
- <div style="font-weight:600;">${this._escapeHtml(s.name)}</div>
+ <div style="font-weight:600;">${dot}${this._escapeHtml(s.name)}</div>
  <div style="font-size:12px;color:var(--text-muted);font-family:var(--font-mono);">${this._escapeHtml(s.host || '?')}:${s.port} · ${this._escapeHtml(intel[s.intelligence] || s.intelligence)} · ${(s.commands || []).length + (s.custom || []).length} ${Lang.t('mcagent.cfg.srv_cmd_count')}</div>
  </div>
  <div style="display:flex;gap:6px;">
+ ${runBtn}
  <button class="btn btn-secondary btn-sm" onclick="BotsModule.editServerProfile('${this._escapeHtml(s.id)}')">${Lang.t('mcagent.cfg.srv_edit')}</button>
  <button class="btn btn-ghost btn-sm" onclick="BotsModule.deleteServerProfile('${this._escapeHtml(s.id)}')">${Lang.t('mcagent.cfg.srv_delete')}</button>
  </div>
- </div>`).join('');
+ </div>`;
+ }).join('');
+ },
+
+ // Lance le bot directement depuis la carte du profil (join). Recharge la liste pour basculer en Arrêter.
+ async launchServerProfile(id) {
+ const r = await Auth.apiCall('/api/mc-agent/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ server_id: id }) });
+ if (!r) return;
+ const data = await r.json().catch(() => ({}));
+ if (!r.ok) { Toast.error(data.detail || Lang.t('mcagent.cfg.srv_launch_err')); return; }
+ Toast.success(Lang.t('mcagent.cfg.srv_launched') + ' #' + data.session_id);
+ this.loadServerProfiles();
+ },
+
+ // Arrête le bot en ligne pour ce profil (leave).
+ async leaveServerProfile(sid) {
+ const r = await Auth.apiCall('/api/mc-agent/stop/' + sid, { method: 'POST' });
+ if (r && r.ok) Toast.success(Lang.t('mcagent.cfg.srv_stopped'));
+ this.loadServerProfiles();
  },
 
  newServerProfile() {

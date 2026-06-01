@@ -136,7 +136,7 @@ def has_api_key():
     return bool(_read_api_key())
 
 
-def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None):
+def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None):
     """Spawn le process Node détaché et enregistre la session. Retourne son id.
 
     `commands` : liste d'objets {cmd,syntax,desc} (whitelist serveur). Écrite dans un fichier
@@ -183,7 +183,7 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
     session = {
         "id": sid, "proc": proc, "status": "starting",
         "transcript": [], "events": [], "last_error": None,
-        "host": host, "user": user,
+        "host": host, "user": user, "server_id": server_id,
         "cmds_path": str(cmds_path) if cmds_path else None,
         "policy_path": str(policy_path) if policy_path else None,
     }
@@ -199,6 +199,7 @@ def _public(session):
     return {
         "id": session["id"], "status": session["status"], "host": session["host"],
         "user": session["user"], "last_error": session["last_error"],
+        "server_id": session.get("server_id"),
     }
 
 

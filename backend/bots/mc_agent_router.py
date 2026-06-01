@@ -67,7 +67,7 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="host requis (ou choisis un profil serveur)")
     auth = auth if auth in ("offline", "microsoft") else "offline"
     try:
-        sid = mgr.start_session(host, port, user, req.model, auth, profile, commands, policy)
+        sid = mgr.start_session(host, port, user, req.model, auth, profile, commands, policy, server_id=req.server_id)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Impossible de demarrer Node : {exc}")
     return {"session_id": sid}
