@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from backend.auth.utils import get_current_user
 from backend.auth.models import User
 from backend.bots import mc_agent_manager as mgr
+from backend.bots import mc_agent_servers as servers_store
 
 router = APIRouter(prefix="/api/mc-agent", tags=["mc-agent"])
 
@@ -17,12 +18,13 @@ def _require_admin(user):
 
 
 class StartReq(BaseModel):
-    host: str                       # IP ou domaine du serveur MC
+    host: str = ""                  # vide si on lance via server_id
     port: int = 25565
     user: str = "TrainBot"          # pseudo (offline) OU email du compte (microsoft)
     auth: str = "offline"           # "offline" | "microsoft"
     model: Optional[str] = None     # Python 3.9 : pas de `str | None` (piège #1)
     profile: Optional[str] = None   # id de profil de comportement (evident/intermediaire/expert)
+    server_id: Optional[str] = None # si fourni : charge un profil serveur (connexion + commandes)
 
 
 class SayReq(BaseModel):
@@ -33,16 +35,37 @@ class ApiKeyPayload(BaseModel):
     key: str
 
 
+class ServerPayload(BaseModel):
+    name: str = "Sans nom"
+    host: str = ""
+    port: int = 25565
+    user: str = "TrainBot"
+    auth: str = "offline"
+    intelligence: str = "intermediaire"
+    commands: list = []
+    custom: list = []
+
+
 @router.post("/run")
 def run(req: StartReq, current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
     if not mgr.has_api_key():
         raise HTTPException(status_code=400, detail="Aucune cle Claude configuree (renseigne-la dans le bot)")
-    auth = req.auth if req.auth in ("offline", "microsoft") else "offline"
+    host, port, user = req.host, req.port, req.user
+    auth, profile, commands = req.auth, req.profile, None
+    if req.server_id:
+        srv = servers_store.get_server(req.server_id)
+        if not srv:
+            raise HTTPException(status_code=404, detail="Profil serveur introuvable")
+        host, port, user = srv["host"], srv["port"], srv["user"]
+        auth, profile = srv["auth"], srv["intelligence"]
+        commands = servers_store.resolve_commands(srv)
+    if not host:
+        raise HTTPException(status_code=400, detail="host requis (ou choisis un profil serveur)")
+    auth = auth if auth in ("offline", "microsoft") else "offline"
     try:
-        sid = mgr.start_session(req.host, req.port, req.user, req.model, auth, req.profile)
+        sid = mgr.start_session(host, port, user, req.model, auth, profile, commands)
     except OSError as exc:
-        # ex: Node introuvable (FileNotFoundError) — message propre, pas de traceback en réponse
         raise HTTPException(status_code=500, detail=f"Impossible de demarrer Node : {exc}")
     return {"session_id": sid}
 
@@ -117,4 +140,40 @@ def stop(sid: int, current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
     if not mgr.stop_session(sid):
         raise HTTPException(status_code=404, detail="Session introuvable")
+    return {"ok": True}
+
+
+@router.get("/commands-catalog")
+def commands_catalog(current_user: User = Depends(get_current_user)):
+    """Catalogue de commandes prédéfinies pour la checklist (admin-only)."""
+    _require_admin(current_user)
+    return {"catalog": servers_store.load_catalog()}
+
+
+@router.get("/servers")
+def list_servers(current_user: User = Depends(get_current_user)):
+    _require_admin(current_user)
+    return {"servers": servers_store.load_servers()}
+
+
+@router.post("/servers")
+def create_server(payload: ServerPayload, current_user: User = Depends(get_current_user)):
+    _require_admin(current_user)
+    return servers_store.create_server(payload.model_dump())
+
+
+@router.put("/servers/{sid}")
+def update_server(sid: str, payload: ServerPayload, current_user: User = Depends(get_current_user)):
+    _require_admin(current_user)
+    s = servers_store.update_server(sid, payload.model_dump())
+    if not s:
+        raise HTTPException(status_code=404, detail="Profil introuvable")
+    return s
+
+
+@router.delete("/servers/{sid}")
+def delete_server(sid: str, current_user: User = Depends(get_current_user)):
+    _require_admin(current_user)
+    if not servers_store.delete_server(sid):
+        raise HTTPException(status_code=404, detail="Profil introuvable")
     return {"ok": True}
