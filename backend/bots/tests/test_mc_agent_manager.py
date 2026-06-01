@@ -61,9 +61,30 @@ class FakeProc:
 def test_has_api_key(monkeypatch, tmp_path):
     # isole le fallback fichier (sinon un anthropic.key réel rendrait le test flaky)
     monkeypatch.setattr(mgr, "API_KEY_PATH", tmp_path / "none.key")
+    monkeypatch.setenv("MC_AGENT_LLM", "anthropic")  # déterministe même si .env force gemini
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     assert mgr.has_api_key() is True
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert mgr.has_api_key() is False
+
+
+def test_has_api_key_gemini(monkeypatch):
+    """En mode Gemini, c'est GEMINI_API_KEY qui compte (pas la clé Anthropic)."""
+    monkeypatch.setenv("MC_AGENT_LLM", "gemini")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
+    assert mgr.has_api_key() is True
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    assert mgr.has_api_key() is False
+
+
+def test_has_api_key_groq(monkeypatch):
+    """En mode Groq, c'est GROQ_API_KEY qui compte."""
+    monkeypatch.setenv("MC_AGENT_LLM", "groq")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    assert mgr.has_api_key() is True
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     assert mgr.has_api_key() is False
 
 
@@ -127,3 +148,36 @@ def test_apply_event_cape_les_events_a_500():
     for i in range(505):
         mgr._apply_event(s, {"type": "error", "message": str(i)})
     assert len(s["events"]) == 500
+
+
+def test_start_session_passe_le_profil(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc('{"type":"status","state":"spawned"}\n')
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    sid = mgr.start_session("h", 25565, "B", None, "offline", profile="expert")
+    mgr._sessions[sid]["thread"].join(timeout=2)
+    assert "--profile" in captured["cmd"]
+    i = captured["cmd"].index("--profile")
+    assert captured["cmd"][i + 1] == "expert"
+
+
+def test_list_profiles_parse_la_sortie_node(monkeypatch):
+    payload = '[{"id":"evident","level":1,"label":"Évident","summary":"s","tells":["t1"]}]'
+    class R:
+        returncode = 0
+        stdout = payload
+        stderr = ""
+    monkeypatch.setattr(mgr.subprocess, "run", lambda *a, **k: R())
+    profs = mgr.list_profiles()
+    assert profs[0]["id"] == "evident"
+    assert profs[0]["tells"] == ["t1"]
+
+
+def test_list_profiles_retourne_vide_si_node_echoue(monkeypatch):
+    def boom(*a, **k):
+        raise OSError("node introuvable")
+    monkeypatch.setattr(mgr.subprocess, "run", boom)
+    assert mgr.list_profiles() == []

@@ -101,7 +101,7 @@ const BotsModule = {
  }) : '';
 
  // MC Agent virtual card (admin-only — feature d'entrainement staff)
- const canSeeMCAgent = u && u.is_admin;
+ const canSeeMCAgent = u && (u.is_admin || u.role === 'rectester');
  const mcAgentCard = canSeeMCAgent ? buildBotCard({
  icon: 'MCA',
  name: 'MC Agent',
@@ -1038,9 +1038,13 @@ const BotsModule = {
  // Conteneur canonique du module (cf. openBondScanner/_renderYield* : this._container set dans render())
  const el = this._container || document.getElementById('bots-module-container')?.parentElement;
  if (!el) return;
+ const __mcaU = (typeof Auth !== 'undefined' && Auth.getUser) ? Auth.getUser() : null;
+ this._mcaRecTester = !!(__mcaU && !__mcaU.is_admin && __mcaU.role === 'rectester');
+ if (this._mcaRecTester) return this._renderMCAgentRecTester(el);
  el.innerHTML = `
  <div class="card">
  <h3 style="margin:0 0 12px;">MC Agent — ${Lang.t('mcagent.training')}</h3>
+ ${BotsModule._mcaModBlock()}
  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;background:var(--bg-elev-3);border-radius:10px;border:1px solid var(--border);">
  <span style="font-size:13px;font-weight:600;">${Lang.t('mcagent.key_title')}</span>
  <span id="mca-key-status" style="font-size:12px;color:var(--text-muted);">…</span>
@@ -1055,12 +1059,23 @@ const BotsModule = {
  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
  <div><label class="form-label">${Lang.t('mcagent.account')}</label><input id="mca-user" class="form-input" value="TrainBot" placeholder="pseudo ou email" /></div>
  <div><label class="form-label">${Lang.t('mcagent.auth_label')}</label><select id="mca-auth" class="form-input"><option value="offline">${Lang.t('mcagent.auth_offline')}</option><option value="microsoft">${Lang.t('mcagent.auth_microsoft')}</option></select></div>
+ <div><label class="form-label">${Lang.t('mcagent.profile')}</label><select id="mca-profile" class="form-input" onchange="BotsModule.renderMCAgentTells()"></select></div>
  </div>
  <div style="font-size:11px;color:var(--text-muted);margin:-4px 0 12px;">${Lang.t('mcagent.ms_hint')}</div>
  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
  <button class="btn btn-primary" onclick="BotsModule.startMCAgent()">${Lang.t('mcagent.start')}</button>
  <button class="btn btn-secondary btn-sm" onclick="BotsModule.stopMCAgent()">${Lang.t('mcagent.stop')}</button>
  <span id="mca-msg" style="font-size:13px;color:var(--text-muted);"></span>
+ </div>
+ <div id="mca-tells" style="display:none;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:var(--text-muted);"></div>
+ <div style="border-top:1px solid var(--border);margin:14px 0;padding-top:12px;">
+ <div style="font-weight:600;margin-bottom:4px;">${Lang.t('mcagent.capture_title')}</div>
+ <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('mcagent.capture_hint')}</div>
+ <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+ <input id="mca-capfile" type="file" accept=".jsonl,.gz" class="form-input" style="flex:1;min-width:200px;" />
+ <button class="btn btn-secondary btn-sm" onclick="BotsModule.uploadCapture()">${Lang.t('mcagent.capture_import')}</button>
+ </div>
+ <div id="mca-captures"></div>
  </div>
  <div id="mca-transcript" style="background:#0d1117;border-radius:8px;padding:12px;max-height:300px;overflow-y:auto;font-family:'Fira Code',monospace;font-size:12px;line-height:1.6;color:#c9d1d9;"></div>
  <div style="display:flex;gap:8px;margin-top:10px;">
@@ -1069,6 +1084,77 @@ const BotsModule = {
  </div>
  </div>`;
  this._loadMCAgentKey();
+ this.loadMCAgentProfiles();
+ this.loadModVersions();
+ this.loadCaptures();
+ },
+
+ _mcaModBlock() {
+ return `
+ <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+ <div style="font-weight:600;margin-bottom:6px;">${Lang.t('mcagent.mod_download')}</div>
+ <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('mcagent.mod_pick')}</div>
+ <div id="mca-mod-versions" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+ <details style="margin-top:10px;">
+ <summary style="cursor:pointer;font-size:13px;">${Lang.t('mcagent.tuto_title')}</summary>
+ <ol style="font-size:12px;color:var(--text-muted);line-height:1.7;margin:8px 0 0;padding-left:18px;">
+ <li>${Lang.t('mcagent.tuto_s1')} <a href="https://fabricmc.net/use/installer/" target="_blank" rel="noopener">fabricmc.net/use/installer</a></li>
+ <li>${Lang.t('mcagent.tuto_s2')} <a href="https://modrinth.com/mod/fabric-api" target="_blank" rel="noopener">modrinth.com/mod/fabric-api</a></li>
+ <li>${Lang.t('mcagent.tuto_s3')}</li>
+ <li>${Lang.t('mcagent.tuto_s4')}</li>
+ <li>${Lang.t('mcagent.tuto_s5')}</li>
+ </ol>
+ </details>
+ </div>`;
+ },
+
+ _renderMCAgentRecTester(el) {
+ el.innerHTML = `
+ <div class="card">
+ <h3 style="margin:0 0 12px;">MC Agent — ${Lang.t('mcagent.training')}</h3>
+ ${this._mcaModBlock()}
+ <div style="border-top:1px solid var(--border);margin:14px 0;padding-top:12px;">
+ <div style="font-weight:600;margin-bottom:4px;">${Lang.t('mcagent.my_captures')}</div>
+ <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('mcagent.capture_hint')}</div>
+ <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+ <input id="mca-capfile" type="file" accept=".jsonl,.gz" class="form-input" style="flex:1;min-width:200px;" />
+ <button class="btn btn-secondary btn-sm" onclick="BotsModule.uploadCapture()">${Lang.t('mcagent.capture_import')}</button>
+ </div>
+ <div id="mca-captures"></div>
+ </div>
+ </div>`;
+ this.loadModVersions();
+ this.loadCaptures();
+ },
+
+ async loadModVersions() {
+ const box = document.getElementById('mca-mod-versions');
+ if (!box) return;
+ try {
+ const r = await Auth.apiCall('/api/mc-agent/mod');
+ const data = await r.json();
+ const vers = (data && data.versions) || [];
+ box.innerHTML = vers.length
+ ? vers.map((v) => `<button class="btn btn-secondary btn-sm" onclick="BotsModule.downloadMod('${this._escapeHtml(v.version)}')">MC ${this._escapeHtml(v.version)}</button>`).join('')
+ : `<span style="font-size:12px;color:var(--text-dim);">—</span>`;
+ } catch (e) { /* silencieux */ }
+ },
+
+ async downloadMod(version) {
+ const r = await Auth.apiCall('/api/mc-agent/mod/' + encodeURIComponent(version));
+ if (!r || !r.ok) { Toast.error(Lang.t('mcagent.mod_download')); return; }
+ const blob = await r.blob();
+ const url = URL.createObjectURL(blob);
+ const a = document.createElement('a');
+ a.href = url; a.download = `mc-capture-${version}.jar`;
+ document.body.appendChild(a); a.click(); a.remove();
+ URL.revokeObjectURL(url);
+ },
+
+ async deleteSession(player, file) {
+ const r = await Auth.apiCall(`/api/mc-agent/captures/${encodeURIComponent(player)}/${encodeURIComponent(file)}`, { method: 'DELETE' });
+ if (r && r.ok) this.loadCaptures();
+ else Toast.error(Lang.t('mcagent.capture_delete'));
  },
 
  async startMCAgent() {
@@ -1076,12 +1162,13 @@ const BotsModule = {
  const port = parseInt(document.getElementById('mca-port').value, 10) || 25565;
  const user = document.getElementById('mca-user').value.trim() || 'TrainBot';
  const auth = document.getElementById('mca-auth').value;
+ const profile = (document.getElementById('mca-profile') || {}).value || undefined;
  const msg = document.getElementById('mca-msg');
  if (!host) { msg.textContent = Lang.t('mcagent.need_host'); return; }
  const r = await Auth.apiCall('/api/mc-agent/run', {
  method: 'POST',
  headers: { 'Content-Type': 'application/json' },
- body: JSON.stringify({ host, port, user, auth }),
+ body: JSON.stringify({ host, port, user, auth, profile }),
  });
  if (!r) return;
  const data = await r.json().catch(() => ({}));
@@ -1133,6 +1220,39 @@ const BotsModule = {
  this._mcAgentSession = null;
  },
 
+ async loadMCAgentProfiles() {
+ const sel = document.getElementById('mca-profile');
+ if (!sel) return;
+ try {
+ const r = await Auth.apiCall('/api/mc-agent/profiles');
+ if (!r.ok) return;
+ const data = await r.json();
+ this._mcAgentProfiles = data.profiles || [];
+ } catch (e) { this._mcAgentProfiles = []; }
+ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+ sel.innerHTML = (this._mcAgentProfiles || []).map((p) =>
+ `<option value="${esc(p.id)}">${esc(p.label)} (niv. ${esc(p.level)})</option>`
+ ).join('');
+ const def = (this._mcAgentProfiles || []).find((p) => p.id === 'intermediaire');
+ if (def) sel.value = 'intermediaire';
+ this.renderMCAgentTells();
+ },
+
+ renderMCAgentTells() {
+ const sel = document.getElementById('mca-profile');
+ const box = document.getElementById('mca-tells');
+ if (!sel || !box) return;
+ const prof = (this._mcAgentProfiles || []).find((p) => p.id === sel.value);
+ if (!prof || !Array.isArray(prof.tells) || !prof.tells.length) { box.style.display = 'none'; return; }
+ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+ box.style.display = 'block';
+ box.innerHTML =
+ `<div style="font-weight:600;color:var(--text);margin-bottom:6px;">${esc(Lang.t('mcagent.tells_title'))} — ${esc(prof.label)}</div>` +
+ `<ul style="margin:0;padding-left:18px;">` +
+ prof.tells.map((t) => `<li style="margin:2px 0;">${esc(t)}</li>`).join('') +
+ `</ul>`;
+ },
+
  async _loadMCAgentKey() {
  const statusEl = document.getElementById('mca-key-status');
  if (!statusEl) return;
@@ -1163,6 +1283,61 @@ const BotsModule = {
  async clearMCAgentKey() {
  const r = await Auth.apiCall('/api/mc-agent/settings/api-key', { method: 'DELETE' });
  if (r && r.ok) { Toast.success(Lang.t('mcagent.key_cleared')); this._loadMCAgentKey(); }
+ },
+
+ _escapeHtml(s) {
+ return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
+ { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+ },
+
+ async loadCaptures() {
+ const box = document.getElementById('mca-captures');
+ if (!box) return;
+ try {
+ const r = await Auth.apiCall('/api/mc-agent/captures');
+ const data = await r.json();
+ const caps = (data && data.captures) || [];
+ if (!caps.length) { box.innerHTML = `<div style="font-size:12px;color:var(--text-dim);">${Lang.t('mcagent.capture_none')}</div>`; return; }
+ box.innerHTML = caps.map((c) => {
+ const p = this._escapeHtml(c.player);
+ const mb = (c.bytes / 1048576).toFixed(1);
+ return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 8px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:8px;margin-bottom:6px;">
+ <span style="font-family:var(--font-mono);">${p} — ${c.sessions} ${Lang.t('mcagent.capture_sessions')} (${mb} Mo)</span>
+ <span style="display:flex;gap:6px;">
+ ${this._mcaRecTester ? '' : `<button class="btn btn-ghost btn-sm" onclick="BotsModule.distillCapture('${p}')">${Lang.t('mcagent.capture_distill')}</button>`}
+ ${(c.files || []).map((f) => `<button class="btn btn-ghost btn-sm" onclick="BotsModule.deleteSession('${p}','${this._escapeHtml(f)}')" title="${this._escapeHtml(f)}">${Lang.t('mcagent.capture_delete')}</button>`).join('')}
+ </span></div>
+ <div id="mca-style-${p}" style="font-size:12px;color:var(--text-muted);margin:-2px 0 8px 8px;"></div>`;
+ }).join('');
+ } catch (e) { box.innerHTML = `<div style="color:var(--danger);font-size:12px;">${this._escapeHtml(String(e))}</div>`; }
+ },
+
+ async uploadCapture() {
+ const input = document.getElementById('mca-capfile');
+ if (!input || !input.files || !input.files[0]) return;
+ const fd = new FormData();
+ fd.append('file', input.files[0]);
+ const r = await Auth.apiCall('/api/mc-agent/captures', { method: 'POST', body: fd });
+ if (r.ok) { input.value = ''; Toast.success(Lang.t('mcagent.capture_import')); this.loadCaptures(); }
+ else { const e = await r.json().catch(() => ({})); Toast.error(e.detail || 'Upload KO'); }
+ },
+
+ async distillCapture(player) {
+ const r = await Auth.apiCall(`/api/mc-agent/captures/${encodeURIComponent(player)}/distill`, { method: 'POST' });
+ const data = await r.json().catch(() => ({}));
+ const el = document.getElementById('mca-style-' + player);
+ if (r.ok && el) {
+ const dp = (data.style && data.style.derivedParams) || {};
+ const chat = dp.chat || {};
+ el.innerHTML = `${Lang.t('mcagent.capture_stats')} — latence chat ${this._escapeHtml(chat.latencyMeanMs)}±${this._escapeHtml(chat.latencyStdMs)}ms · ` +
+ `fautes ${this._escapeHtml(chat.typoRate)} · jitter ${this._escapeHtml(dp.movementJitter)} · ${this._escapeHtml(data.clips)} clips`;
+ }
+ },
+
+ async deleteCapture(player) {
+ if (!confirm(player + ' ?')) return;
+ const r = await Auth.apiCall(`/api/mc-agent/captures/${encodeURIComponent(player)}`, { method: 'DELETE' });
+ if (r.ok) this.loadCaptures();
  },
 
  async _loadScannerUsage() {

@@ -1,0 +1,32 @@
+plugins {
+    id 'fabric-loom' version '1.10.5'
+    id 'java'
+}
+
+version = project.mod_version
+group = project.maven_group
+base { archivesName = project.archives_base_name }
+
+repositories { mavenCentral() }
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// Java cible paramétrable (-Pjava_version=17 pour MC 1.20.x ; défaut 21 pour 1.21.x).
+// Java cible paramétrable : -Pjava_version=17 pour MC 1.20.x ; défaut 21 pour 1.21.x.
+// On pilote UNIQUEMENT via options.release (compatible avec le --release injecté par Loom) ;
+// pas de sourceCompatibility/targetCompatibility en parallèle (sinon "invalid source release").
+def javaRelease = (project.findProperty('java_version') ?: '21').toString().toInteger()
+tasks.withType(JavaCompile).configureEach {
+    options.release = javaRelease
+}
+
+test { useJUnitPlatform() }

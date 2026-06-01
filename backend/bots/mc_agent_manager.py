@@ -114,12 +114,27 @@ def _node_bin():
     return os.environ.get("MC_AGENT_NODE_BIN", "node")
 
 
+def _provider():
+    """Provider LLM sélectionné (env MC_AGENT_LLM) : 'gemini' (gratuit) ou 'anthropic' (défaut)."""
+    return (os.environ.get("MC_AGENT_LLM") or "anthropic").lower()
+
+
 def has_api_key():
-    """True si une clé Claude est dispo (var d'env OU fichier secret posé via le dashboard)."""
+    """True si la clé du provider LLM sélectionné est dispo.
+
+    - gemini    → GEMINI_API_KEY dans l'environnement (héritée du .env via load_dotenv)
+    - groq      → GROQ_API_KEY dans l'environnement
+    - anthropic → ANTHROPIC_API_KEY (var d'env) OU fichier secret posé via le dashboard
+    """
+    prov = _provider()
+    if prov == "gemini":
+        return bool(os.environ.get("GEMINI_API_KEY"))
+    if prov == "groq":
+        return bool(os.environ.get("GROQ_API_KEY"))
     return bool(_read_api_key())
 
 
-def start_session(host, port, user, model=None, auth="offline"):
+def start_session(host, port, user, model=None, auth="offline", profile=None):
     """Spawn le process Node détaché et enregistre la session. Retourne son id."""
     global _counter
     cmd = [_node_bin(), str(MC_AGENT_DIR / "index.js"),
@@ -127,6 +142,8 @@ def start_session(host, port, user, model=None, auth="offline"):
            "--auth", str(auth or "offline")]
     if model:
         cmd += ["--model", str(model)]
+    if profile:
+        cmd += ["--profile", str(profile)]
     env = dict(os.environ)
     api_key = _read_api_key()  # injecte la clé (fichier ou env) dans l'env du subprocess Node
     if api_key:
@@ -208,3 +225,27 @@ def stop_session(sid):
             proc.terminate()
     s["status"] = "stopped"
     return True
+
+
+_LIST_PROFILES_JS = MC_AGENT_DIR / "bin" / "list-profiles.js"
+
+
+def list_profiles():
+    """Profils + fiches de tells, lus depuis les fichiers Node (source unique). [] si échec."""
+    try:
+        res = subprocess.run(
+            [_node_bin(), str(_LIST_PROFILES_JS)],
+            cwd=str(MC_AGENT_DIR),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if res.returncode != 0 or not res.stdout:
+        return []
+    try:
+        data = json.loads(res.stdout)
+    except (ValueError, TypeError):
+        return []
+    return data if isinstance(data, list) else []

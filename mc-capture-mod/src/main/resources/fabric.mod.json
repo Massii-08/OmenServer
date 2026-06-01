@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "mc_capture",
+  "version": "${version}",
+  "name": "OmenCapture",
+  "description": "Enregistreur d'inputs consenti (REC/F8) pour l'entrainement de la moderation OmenServer.",
+  "environment": "client",
+  "entrypoints": { "client": ["org.omen.capture.CaptureMod"] },
+  "depends": { "fabricloader": ">=0.16.0", "minecraft": ">=1.20 <1.22", "fabric-api": "*" }
+}

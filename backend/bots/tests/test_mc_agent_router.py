@@ -36,7 +36,7 @@ def test_run_400_si_pas_de_cle(monkeypatch):
 def test_run_demarre_une_session(monkeypatch):
     captured = {}
     monkeypatch.setattr(mgr, "has_api_key", lambda: True)
-    def fake_start(host, port, user, model=None, auth="offline"):
+    def fake_start(host, port, user, model=None, auth="offline", profile=None):
         captured["auth"] = auth
         return 7
     monkeypatch.setattr(mgr, "start_session", fake_start)
@@ -95,3 +95,30 @@ def test_delete_api_key(monkeypatch):
     c = make_client()
     resp = c.delete("/api/mc-agent/settings/api-key")
     assert resp.status_code == 200 and called.get("done") is True
+
+
+def test_profiles_admin_only():
+    c = make_client(is_admin=False)
+    assert c.get("/api/mc-agent/profiles").status_code == 403
+
+
+def test_profiles_retourne_la_liste(monkeypatch):
+    monkeypatch.setattr(mgr, "list_profiles",
+                        lambda: [{"id": "expert", "level": 3, "label": "Expert", "summary": "s", "tells": ["t"]}])
+    c = make_client()
+    resp = c.get("/api/mc-agent/profiles")
+    assert resp.status_code == 200
+    assert resp.json()["profiles"][0]["id"] == "expert"
+
+
+def test_run_transmet_le_profil(monkeypatch):
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    captured = {}
+    def fake_start(host, port, user, model=None, auth="offline", profile=None):
+        captured["profile"] = profile
+        return 11
+    monkeypatch.setattr(mgr, "start_session", fake_start)
+    c = make_client()
+    resp = c.post("/api/mc-agent/run", json={"host": "h", "profile": "expert"})
+    assert resp.status_code == 200
+    assert captured["profile"] == "expert"

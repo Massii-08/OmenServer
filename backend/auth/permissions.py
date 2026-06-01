@@ -30,6 +30,10 @@ ROLE_PERMISSIONS = {
     "spectator": [
         "view",              # Voir le statut des serveurs/bots
     ],
+    "rectester": [
+        "view",
+        "mc_capture",        # Capture comportementale MC : upload/list/suppression de SES sessions + download du mod
+    ],
     "player": [
         "view",
         "start",             # Allumer un serveur (si invité)
@@ -88,6 +92,7 @@ ROLE_PERMISSIONS = {
 # Noms affichables des rôles (Bento Tech v5 — pas d'emoji UI, voir MASTER §6)
 ROLE_NAMES = {
     "spectator": "Spectateur",
+    "rectester": "Testeur REC",
     "player": "Joueur",
     "money": "Money",
     "moderator": "Modérateur",
@@ -96,7 +101,7 @@ ROLE_NAMES = {
 }
 
 # Liste ordonnée des rôles (pour la validation)
-VALID_ROLES = ["spectator", "player", "money", "moderator", "developer", "admin"]
+VALID_ROLES = ["spectator", "rectester", "player", "money", "moderator", "developer", "admin"]
 
 # Rôles que les non-admins peuvent assigner via invitation
 INVITABLE_ROLES = ["player"]

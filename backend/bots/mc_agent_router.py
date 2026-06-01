@@ -22,6 +22,7 @@ class StartReq(BaseModel):
     user: str = "TrainBot"          # pseudo (offline) OU email du compte (microsoft)
     auth: str = "offline"           # "offline" | "microsoft"
     model: Optional[str] = None     # Python 3.9 : pas de `str | None` (piège #1)
+    profile: Optional[str] = None   # id de profil de comportement (evident/intermediaire/expert)
 
 
 class SayReq(BaseModel):
@@ -39,7 +40,7 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="Aucune cle Claude configuree (renseigne-la dans le bot)")
     auth = req.auth if req.auth in ("offline", "microsoft") else "offline"
     try:
-        sid = mgr.start_session(req.host, req.port, req.user, req.model, auth)
+        sid = mgr.start_session(req.host, req.port, req.user, req.model, auth, req.profile)
     except OSError as exc:
         # ex: Node introuvable (FileNotFoundError) — message propre, pas de traceback en réponse
         raise HTTPException(status_code=500, detail=f"Impossible de demarrer Node : {exc}")
@@ -76,6 +77,13 @@ def delete_api_key(current_user: User = Depends(get_current_user)):
 def active(current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
     return {"sessions": mgr.list_active()}
+
+
+@router.get("/profiles")
+def profiles(current_user: User = Depends(get_current_user)):
+    """Liste des profils de comportement + leurs fiches de tells (corrigé formateur)."""
+    _require_admin(current_user)
+    return {"profiles": mgr.list_profiles()}
 
 
 @router.get("/status/{sid}")
