@@ -25,6 +25,7 @@ class StartReq(BaseModel):
     model: Optional[str] = None     # Python 3.9 : pas de `str | None` (piège #1)
     profile: Optional[str] = None   # id de profil de comportement (evident/intermediaire/expert)
     server_id: Optional[str] = None # si fourni : charge un profil serveur (connexion + commandes)
+    language: str = "fr"            # langue du champ reply LLM : fr | en | it
 
 
 class SayReq(BaseModel):
@@ -42,6 +43,7 @@ class ServerPayload(BaseModel):
     user: str = "TrainBot"
     auth: str = "offline"
     intelligence: str = "intermediaire"
+    language: str = "fr"
     commands: list = []
     custom: list = []
     trusted: list = []
@@ -55,19 +57,21 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="Aucune cle Claude configuree (renseigne-la dans le bot)")
     host, port, user = req.host, req.port, req.user
     auth, profile, commands, policy = req.auth, req.profile, None, None
+    language = req.language
     if req.server_id:
         srv = servers_store.get_server(req.server_id)
         if not srv:
             raise HTTPException(status_code=404, detail="Profil serveur introuvable")
         host, port, user = srv["host"], srv["port"], srv["user"]
         auth, profile = srv["auth"], srv["intelligence"]
+        language = srv.get("language", "fr")
         commands = servers_store.resolve_commands(srv)
         policy = servers_store.resolve_policy(srv)
     if not host:
         raise HTTPException(status_code=400, detail="host requis (ou choisis un profil serveur)")
     auth = auth if auth in ("offline", "microsoft") else "offline"
     try:
-        sid = mgr.start_session(host, port, user, req.model, auth, profile, commands, policy, server_id=req.server_id)
+        sid = mgr.start_session(host, port, user, req.model, auth, profile, commands, policy, server_id=req.server_id, language=language)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Impossible de demarrer Node : {exc}")
     return {"session_id": sid}
