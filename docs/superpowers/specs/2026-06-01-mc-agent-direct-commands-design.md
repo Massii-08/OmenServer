@@ -207,8 +207,8 @@ fenêtre + TTL ; le `RateLimiter`/min protège toujours. C'est le prix explicite
   `bot.whisper(sender, text)`. **Jamais** de chat public. (Un whisper = **zéro token LLM** :
   l'interdit « ne me réponds pas » de l'utilisateur visait l'appel LLM, pas un ack local.)
 - **Politique d'ack** (déterministe, non négociable) :
-  - **Tâche qui se termine** (`take`, `mine down`, `deposit`, `goto`, `give all`) → whisper `done`.
-  - **Commande continue ou instantanée** (`follow me`, `come`, `stop`, `afk`, `guard`, `pvp`,
+  - **Tâche qui se termine** (`take`, `mine down`, `deposit`, `goto`, `come`, `give all`) → whisper `done`.
+  - **Commande continue ou instantanée** (`follow me`, `stop`, `afk`, `guard`, `pvp`,
     `equip`, `eat`, `give`, `craft`, `tpa`) → **silencieux** si succès.
   - **Tout échec** (bloc/objet/recette/coffre introuvable, joueur invisible, danger…) → whisper la raison.
 - `done` localisé : `fr=fait`, `en=done`, `it=fatto`.
