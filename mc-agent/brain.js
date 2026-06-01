@@ -46,8 +46,8 @@ const SYSTEM_PROMPT = [
   ACTIONS_DOC,
 ].join(' ');
 
-/** Construit le system prompt : persona du profil (réalisme §7.1) + commandes serveur dispo. */
-function buildSystemPrompt(profile, commandDocs = '') {
+/** Construit le system prompt : persona + commandes serveur dispo + gens de confiance. */
+function buildSystemPrompt(profile, commandDocs = '', trustDocs = '') {
   const base = profile
     ? [
         "Tu incarnes un joueur dans une partie Minecraft (cadre d'entrainement de moderation).",
@@ -57,6 +57,7 @@ function buildSystemPrompt(profile, commandDocs = '') {
       ]
     : [SYSTEM_PROMPT];
   if (commandDocs) base.push(commandDocs);
+  if (trustDocs) base.push(trustDocs);
   return base.filter(Boolean).join(' ');
 }
 
@@ -65,13 +66,14 @@ function buildSystemPrompt(profile, commandDocs = '') {
  * Retourne une décision parsée, ou null si le rate-limiter bloque l'appel.
  * `profile` : objet profil optionnel (injecte la persona dans le system prompt).
  */
-async function think(client, { state, message, model, limiter, profile = null, commandDocs = '' }) {
+async function think(client, { state, message, model, limiter, profile = null, commandDocs = '', trustDocs = '', sender = '' }) {
   if (limiter && !limiter.tryAcquire()) return null;
+  const fromLine = sender ? `De: ${sender}\n` : '';
   const resp = await client.messages.create({
     model,
     max_tokens: 300,
-    system: buildSystemPrompt(profile, commandDocs),
-    messages: [{ role: 'user', content: `Etat: ${JSON.stringify(state)}\nMessage recu: ${message}` }],
+    system: buildSystemPrompt(profile, commandDocs, trustDocs),
+    messages: [{ role: 'user', content: `Etat: ${JSON.stringify(state)}\n${fromLine}Message recu: ${message}` }],
   });
   const text = (resp.content || []).map((b) => b.text || '').join('');
   return parseDecision(text);
