@@ -12,6 +12,7 @@ function parseDecision(text) {
     reply: typeof obj.reply === 'string' ? obj.reply : '',
     action: typeof obj.action === 'string' ? obj.action : null,
     args: (obj.args && typeof obj.args === 'object') ? obj.args : {},
+    command: typeof obj.command === 'string' ? obj.command : null,
   };
 }
 
@@ -45,15 +46,18 @@ const SYSTEM_PROMPT = [
   ACTIONS_DOC,
 ].join(' ');
 
-/** Construit le system prompt en injectant la persona du profil (réalisme §7.1). */
-function buildSystemPrompt(profile) {
-  if (!profile) return SYSTEM_PROMPT;
-  return [
-    "Tu incarnes un joueur dans une partie Minecraft (cadre d'entrainement de moderation).",
-    profile.persona || '',
-    'Reponds UNIQUEMENT en JSON : {"reply": string, "action": string|null, "args": object}.',
-    ACTIONS_DOC,
-  ].filter(Boolean).join(' ');
+/** Construit le system prompt : persona du profil (réalisme §7.1) + commandes serveur dispo. */
+function buildSystemPrompt(profile, commandDocs = '') {
+  const base = profile
+    ? [
+        "Tu incarnes un joueur dans une partie Minecraft (cadre d'entrainement de moderation).",
+        profile.persona || '',
+        'Reponds UNIQUEMENT en JSON : {"reply": string, "action": string|null, "args": object, "command": string|null}.',
+        ACTIONS_DOC,
+      ]
+    : [SYSTEM_PROMPT];
+  if (commandDocs) base.push(commandDocs);
+  return base.filter(Boolean).join(' ');
 }
 
 /**
@@ -61,12 +65,12 @@ function buildSystemPrompt(profile) {
  * Retourne une décision parsée, ou null si le rate-limiter bloque l'appel.
  * `profile` : objet profil optionnel (injecte la persona dans le system prompt).
  */
-async function think(client, { state, message, model, limiter, profile = null }) {
+async function think(client, { state, message, model, limiter, profile = null, commandDocs = '' }) {
   if (limiter && !limiter.tryAcquire()) return null;
   const resp = await client.messages.create({
     model,
     max_tokens: 300,
-    system: buildSystemPrompt(profile),
+    system: buildSystemPrompt(profile, commandDocs),
     messages: [{ role: 'user', content: `Etat: ${JSON.stringify(state)}\nMessage recu: ${message}` }],
   });
   const text = (resp.content || []).map((b) => b.text || '').join('');

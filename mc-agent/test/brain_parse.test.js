@@ -5,7 +5,7 @@ const { parseDecision, RateLimiter } = require('../brain');
 
 test('parseDecision lit du JSON simple', () => {
   const d = parseDecision('{"reply":"salut","action":"follow","args":{"player":"Massii"}}');
-  assert.deepStrictEqual(d, { reply: 'salut', action: 'follow', args: { player: 'Massii' } });
+  assert.deepStrictEqual(d, { reply: 'salut', action: 'follow', args: { player: 'Massii' }, command: null });
 });
 
 test('parseDecision tolère les fences ```json', () => {
