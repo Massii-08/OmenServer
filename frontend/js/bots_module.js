@@ -1288,7 +1288,6 @@ const BotsModule = {
  if (!list) return;
  const servers = this._mcaServers || [];
  if (!servers.length) { list.innerHTML = `<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">${Lang.t('mcagent.cfg.srv_empty')}</div>`; return; }
- const intel = { evident: 'Évident', intermediaire: 'Intermédiaire', expert: 'Expert' };
  const active = this._mcaActiveByServer || {};
  list.innerHTML = servers.map((s) => {
  const sid = active[s.id];
@@ -1301,7 +1300,7 @@ const BotsModule = {
  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
  <div>
  <div style="font-weight:600;">${dot}${this._escapeHtml(s.name)}</div>
- <div style="font-size:12px;color:var(--text-muted);font-family:var(--font-mono);">${this._escapeHtml(s.host || '?')}:${s.port} · ${this._escapeHtml(intel[s.intelligence] || s.intelligence)} · ${(s.commands || []).length + (s.custom || []).length} ${Lang.t('mcagent.cfg.srv_cmd_count')}</div>
+ <div style="font-size:12px;color:var(--text-muted);font-family:var(--font-mono);">${this._escapeHtml(s.host || '?')}:${s.port} · ${this._escapeHtml(this._mcaProfileLabel(s.intelligence, s.intelligence))} · ${(s.commands || []).length + (s.custom || []).length} ${Lang.t('mcagent.cfg.srv_cmd_count')}</div>
  </div>
  <div style="display:flex;gap:6px;">
  ${runBtn}
@@ -1381,9 +1380,9 @@ const BotsModule = {
  <div><label class="form-label">${Lang.t('mcagent.cfg.srv_name')}</label><input id="mca-e-name" class="form-input" value="${this._escapeHtml(e.name)}" /></div>
  <div><label class="form-label">${Lang.t('mcagent.cfg.srv_intelligence')}</label>
  <select id="mca-e-intel" class="form-input">
- <option value="evident" ${e.intelligence === 'evident' ? 'selected' : ''}>Évident</option>
- <option value="intermediaire" ${e.intelligence === 'intermediaire' ? 'selected' : ''}>Intermédiaire</option>
- <option value="expert" ${e.intelligence === 'expert' ? 'selected' : ''}>Expert</option>
+ <option value="evident" ${e.intelligence === 'evident' ? 'selected' : ''}>${Lang.t('mcagent.profiles.evident')}</option>
+ <option value="intermediaire" ${e.intelligence === 'intermediaire' ? 'selected' : ''}>${Lang.t('mcagent.profiles.intermediaire')}</option>
+ <option value="expert" ${e.intelligence === 'expert' ? 'selected' : ''}>${Lang.t('mcagent.profiles.expert')}</option>
  </select></div>
  <div><label class="form-label">${Lang.t('mcagent.cfg.srv_language')}</label>
  <select id="mca-e-lang" class="form-input">
@@ -1550,6 +1549,19 @@ const BotsModule = {
  this._mcAgentSession = null;
  },
 
+ // Libellé d'un profil traduit par id (fallback texte backend si clé i18n absente — piège #12).
+ _mcaProfileLabel(id, fb) {
+ const key = 'mcagent.profiles.' + id;
+ const v = Lang.t(key);
+ return v === key ? (fb || id) : v;
+ },
+ // Tell #idx d'un profil traduit par id (fallback texte backend si clé i18n absente).
+ _mcaProfileTell(id, idx, fb) {
+ const key = 'mcagent.tells.' + id + '.' + idx;
+ const v = Lang.t(key);
+ return v === key ? fb : v;
+ },
+
  async loadMCAgentProfiles() {
  const sel = document.getElementById('mca-profile');
  if (!sel) return;
@@ -1561,7 +1573,7 @@ const BotsModule = {
  } catch (e) { this._mcAgentProfiles = []; }
  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
  sel.innerHTML = (this._mcAgentProfiles || []).map((p) =>
- `<option value="${esc(p.id)}">${esc(p.label)} (niv. ${esc(p.level)})</option>`
+ `<option value="${esc(p.id)}">${esc(this._mcaProfileLabel(p.id, p.label))} (${esc(Lang.t('mcagent.level_abbr'))} ${esc(p.level)})</option>`
  ).join('');
  const def = (this._mcAgentProfiles || []).find((p) => p.id === 'intermediaire');
  if (def) sel.value = 'intermediaire';
@@ -1577,9 +1589,9 @@ const BotsModule = {
  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
  box.style.display = 'block';
  box.innerHTML =
- `<div style="font-weight:600;color:var(--text);margin-bottom:6px;">${esc(Lang.t('mcagent.tells_title'))} — ${esc(prof.label)}</div>` +
+ `<div style="font-weight:600;color:var(--text);margin-bottom:6px;">${esc(Lang.t('mcagent.tells_title'))} — ${esc(this._mcaProfileLabel(prof.id, prof.label))}</div>` +
  `<ul style="margin:0;padding-left:18px;">` +
- prof.tells.map((t) => `<li style="margin:2px 0;">${esc(t)}</li>`).join('') +
+ prof.tells.map((t, i) => `<li style="margin:2px 0;">${esc(this._mcaProfileTell(prof.id, i, t))}</li>`).join('') +
  `</ul>`;
  },
 
