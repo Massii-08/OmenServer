@@ -129,13 +129,31 @@ async function withCraftingTable(fn) {
   return r;
 }
 
-// Craft "intelligent" : tente direct (2×2, ou table déjà à portée) ; si pas de recette faute de table
-// (craft 3×3), pose une table portable, re-tente, puis reprend la table.
+// Craft "intelligent" : tente direct (2×2, ou table déjà à portée) ; si pas de recette / craft échoué
+// faute de table (craft 3×3), pose une table portable, re-tente, puis reprend la table.
 async function craftSmart(args) {
   const r = await craftItem(bot, args);
   if (r.ok) return r;
-  if (r.reason === 'no_recipe') return withCraftingTable(() => craftItem(bot, args));
+  if (r.reason === 'no_recipe' || r.reason === 'craft_failed') return withCraftingTable(() => craftItem(bot, args));
   return r;
+}
+
+// Garde-fou anti-freeze : pathfinder/collectBlock peuvent rester bloqués indéfiniment sur une cible
+// inatteignable (terrain) → on borne CHAQUE skill dans le temps. Au timeout : on coupe le mouvement
+// et on rend {ok:false,reason:'timeout'} → le planner re-dérive (au lieu de geler pour toujours).
+const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
+function withTimeout(promise, ms, onTimeout) {
+  return new Promise((resolve) => {
+    let done = false;
+    const t = setTimeout(() => {
+      if (done) return; done = true;
+      try { onTimeout && onTimeout(); } catch (e) {}
+      resolve({ ok: false, reason: 'timeout' });
+    }, ms);
+    Promise.resolve(promise)
+      .then((r) => { if (!done) { done = true; clearTimeout(t); resolve(r); } })
+      .catch(() => { if (!done) { done = true; clearTimeout(t); resolve({ ok: false, reason: 'error' }); } });
+  });
 }
 
 // Dispatch d'un but de la chaîne vers le skill réel (0 token).
@@ -162,7 +180,9 @@ async function startAutonomous(sender) {
   taskToken = taskCtl.begin('autonomous', stopMotion);
   emit({ type: 'autonomous_start', objective: 'stone_pickaxe' });
   const res = await runPlanner(bot, {
-    chain: MVP_CHAIN, runSkill: runGoalSkill, ctxExtra,
+    chain: MVP_CHAIN,
+    runSkill: (g) => withTimeout(runGoalSkill(g), SKILL_TIMEOUT_MS, () => { try { stopMotion(); } catch (e) {} }),
+    ctxExtra,
     onStep: (g) => emit({ type: 'goal', name: g.name }),
   }, taskToken);
   if (taskToken.cancelled) return; // préempté par une commande
