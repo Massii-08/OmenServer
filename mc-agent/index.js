@@ -33,6 +33,13 @@ const { craftItem } = require('./skills/craft');
 const { deposit } = require('./skills/deposit');
 const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
+const fs = require('fs');
+const { runPlanner } = require('./planner');
+const { MVP_CHAIN } = require('./goals');
+const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
+const { _nearestTable } = require('./skills/craft'); // craftItem déjà importé plus haut
+const { placeBlockNear } = require('./skills/placeBlockNear');
+const { classifyAuthPrompt, genPassword } = require('./auth');
 
 function parseArgs(argv) {
   const o = {};
@@ -70,6 +77,90 @@ const trustDocs = buildTrustDocs(policy.trusted);
 const lang = String(args.lang || 'fr').toLowerCase();
 const taskCtl = createTaskController();
 const memory = createMemory();
+
+// --- Planner autonome (Phase 3) : le but autonome = tâche par défaut de taskCtl ---
+const worldFile = args.world || path.join(__dirname, '..', 'data', `mc_agent_world_${args.user || 'TrainBot'}.json`);
+const world = loadWorld(worldFile);
+let taskToken = { cancelled: true };
+let deathTimes = [];
+let authDone = false;
+
+// Store secrets local (mot de passe AuthMe). data/ gitignored, perms 600. JAMAIS dans emit/logs.
+const secretsFile = args.secrets || path.join(__dirname, '..', 'data', `mc_agent_secret_${args.user || 'TrainBot'}.json`);
+function readPw() {
+  try { return JSON.parse(fs.readFileSync(secretsFile, 'utf8')).authmePassword || null; }
+  catch (e) { return args.authpw || null; }
+}
+function writePw(pw) {
+  try {
+    fs.mkdirSync(path.dirname(secretsFile), { recursive: true });
+    fs.writeFileSync(secretsFile, JSON.stringify({ authmePassword: pw }), { mode: 0o600 });
+  } catch (e) { emit({ type: 'error', message: 'secrets write failed' }); }
+}
+
+function ctxExtra() { return { hasTable: !!_nearestTable(bot) }; }
+
+// Dispatch d'un but de la chaîne vers le skill réel (0 token).
+async function runGoalSkill(goal) {
+  if (goal.skill === 'gatherLog') {
+    const logName = Object.keys(bot.registry.blocksByName).find((n) => n.endsWith('_log')) || 'oak_log';
+    return gather(bot, { name: logName, count: goal.args.count }, taskToken);
+  }
+  if (goal.skill === 'gather') return gather(bot, goal.args, taskToken);
+  if (goal.skill === 'craftPlanks') {
+    const log = bot.inventory.items().find((i) => i.name.endsWith('_log'));
+    if (!log) return { ok: false, reason: 'not_found' };
+    return craftItem(bot, { name: log.name.replace('_log', '_planks'), count: goal.args.count });
+  }
+  if (goal.skill === 'craft') return craftItem(bot, goal.args);
+  if (goal.skill === 'placeTable') return placeBlockNear(bot, 'crafting_table');
+  return { ok: false, reason: 'unknown_skill' };
+}
+
+// Lance (ou relance) la boucle autonome ; le planner re-dérive depuis l'état courant.
+async function startAutonomous(sender) {
+  setObjective(world, { type: 'stone_pickaxe', status: 'in_progress' });
+  saveWorld(worldFile, world);
+  taskToken = taskCtl.begin('autonomous', stopMotion);
+  emit({ type: 'autonomous_start', objective: 'stone_pickaxe' });
+  const res = await runPlanner(bot, {
+    chain: MVP_CHAIN, runSkill: runGoalSkill, ctxExtra,
+    onStep: (g) => emit({ type: 'goal', name: g.name }),
+  }, taskToken);
+  if (taskToken.cancelled) return; // préempté par une commande
+  if (res.done) { clearObjective(world); saveWorld(worldFile, world); if (sender) ackPrivate(sender, doneWord()); emit({ type: 'autonomous_done' }); }
+  else if (res.stalled) { if (sender) ackPrivate(sender, failMsg('not_found')); emit({ type: 'autonomous_stalled', goal: res.goal }); }
+}
+
+// Bootstrap AuthMe : écoute le prompt ~3s ; /login si pw connu sinon /register (pw généré, stocké local).
+function tryAuth() {
+  let pw = readPw();
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; bot.removeListener('messagestr', onMsg); resolve(); } };
+    const onMsg = (msg) => {
+      const kind = classifyAuthPrompt(msg);
+      if (kind === 'login' && pw) { bot.chat(`/login ${pw}`); emit({ type: 'auth', action: 'login' }); finish(); }
+      else if (kind === 'register') {
+        if (!pw) { pw = genPassword(); writePw(pw); emit({ type: 'auth', action: 'generated_pw' }); }
+        bot.chat(`/register ${pw} ${pw}`); emit({ type: 'auth', action: 'register' }); finish();
+      }
+    };
+    bot.on('messagestr', onMsg);
+    setTimeout(finish, 3000); // pas de prompt (serveur sans login) → on continue
+  });
+}
+
+async function onSpawn() {
+  bot.pathfinder.setMovements(new Movements(bot));
+  installReflexes(bot, { emit, fleeFrom });
+  emit({ type: 'status', state: 'spawned', username: bot.username, profile: profile ? profile.id : null });
+  if (!authDone) { await tryAuth(); authDone = true; }
+  if (world.objective && world.objective.status === 'in_progress') {
+    emit({ type: 'autonomous_resume', objective: world.objective.type });
+    startAutonomous(null);
+  }
+}
 
 const DONE = { fr: 'fait', en: 'done', it: 'fatto' };
 const FAILS = {
@@ -119,11 +210,7 @@ bot.loadPlugin(pathfinder);
 bot.loadPlugin(pvp);
 bot.loadPlugin(collectBlock);
 
-bot.once('spawn', () => {
-  bot.pathfinder.setMovements(new Movements(bot));
-  installReflexes(bot, { emit, fleeFrom });
-  emit({ type: 'status', state: 'spawned', username: bot.username, profile: profile ? profile.id : null });
-});
+bot.on('spawn', () => { onSpawn().catch((e) => emit({ type: 'error', message: String((e && e.message) || e) })); });
 
 async function runAction(decision) {
   const a = decision.action;
@@ -226,7 +313,13 @@ async function executeOrder(order, sender) {
     case 'deposit': { const r = await deposit(bot); ackPrivate(sender, r.ok ? doneWord() : failMsg(r.reason)); break; }
     case 'equip': { const r = await equipItem(bot, a); if (!r.ok) ackPrivate(sender, failMsg(r.reason)); break; }
     case 'eat': { const r = await eat(bot); if (!r.ok) ackPrivate(sender, failMsg(r.reason)); break; }
+    case 'startAutonomous': { startAutonomous(sender); break; } // tâche de fond : ne pas await
     default: break;
+  }
+  // Reprise de l'objectif autonome après une commande transitoire (préemption → resume).
+  const transient = !['stop', 'afk', 'guard', 'follow', 'pvp', 'startAutonomous'].includes(order.verb);
+  if (transient && world.objective && world.objective.status === 'in_progress') {
+    startAutonomous(null); // le planner re-dérive depuis l'état courant
   }
   emit({ type: 'order_done', verb: order.verb });
 }
@@ -294,7 +387,17 @@ bot.on('messagestr', (msg) => {
   }
 });
 
-bot.on('death', () => emit({ type: 'status', state: 'dead' }));
+bot.on('death', () => {
+  emit({ type: 'status', state: 'dead' });
+  // Garde-fou anti-boucle de mort : 3 morts / 10 min → stop + notifie (sinon respawn → onSpawn → reprise).
+  deathTimes.push(Date.now());
+  deathTimes = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000);
+  if (deathTimes.length >= 3) {
+    taskCtl.cancel();
+    if (world.objective) { world.objective.status = 'paused'; saveWorld(worldFile, world); }
+    emit({ type: 'autonomous_stalled', reason: 'death_loop' });
+  }
+});
 bot.on('kicked', (reason) => emit({ type: 'error', message: 'kicked: ' + reason }));
 bot.on('error', (e) => emit({ type: 'error', message: String((e && e.message) || e) }));
 bot.on('end', () => { emit({ type: 'status', state: 'disconnected' }); process.exit(0); });

@@ -27,6 +27,8 @@ function parseOrder(text) {
     case 'eat': return { verb: 'eat', args: {} };
     case 'deposit': return { verb: 'deposit', args: {} };
     case 'guard': return { verb: 'guard', args: {} };
+    case 'start':
+    case 'mvp': return { verb: 'startAutonomous', args: {} }; // lance l'objectif autonome MVP
     case 'take':
       if (!p[1]) return null;
       return { verb: 'take', args: { name: p[1], count: Math.max(1, _int(p[2], 1)) } };
