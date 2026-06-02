@@ -100,6 +100,14 @@ function writePw(pw) {
 
 function ctxExtra() { return { hasTable: !!_nearestTable(bot) }; }
 
+// Avant un craft, se rapprocher d'une table existante (les recettes 3×3 exigent une table <=6 blocs).
+async function ensureNearTable() {
+  if (_nearestTable(bot)) return;
+  const def = bot.registry && bot.registry.blocksByName && bot.registry.blocksByName.crafting_table;
+  const b = def ? bot.findBlock({ matching: [def.id], maxDistance: 64 }) : null;
+  if (b) { try { await goto(bot, { x: b.position.x, y: b.position.y, z: b.position.z }); } catch (e) {} }
+}
+
 // Dispatch d'un but de la chaîne vers le skill réel (0 token).
 async function runGoalSkill(goal) {
   if (goal.skill === 'gatherLog') {
@@ -112,7 +120,7 @@ async function runGoalSkill(goal) {
     if (!log) return { ok: false, reason: 'not_found' };
     return craftItem(bot, { name: log.name.replace('_log', '_planks'), count: goal.args.count });
   }
-  if (goal.skill === 'craft') return craftItem(bot, goal.args);
+  if (goal.skill === 'craft') { await ensureNearTable(); return craftItem(bot, goal.args); }
   if (goal.skill === 'placeTable') return placeBlockNear(bot, 'crafting_table');
   return { ok: false, reason: 'unknown_skill' };
 }
