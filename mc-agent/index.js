@@ -100,26 +100,16 @@ function writePw(pw) {
 
 function ctxExtra() { return { hasTable: !!_nearestTable(bot) }; }
 
-// Avant un craft 3×3 : garantir une table de craft <=6 blocs. Si aucune joignable
-// (ex. le bot a creusé loin pour le cobble), il en fabrique/pose une SUR PLACE.
+// Avant un craft 3×3 : se rapprocher d'une table de craft existante (recettes 3×3 = table <=6 blocs).
+// NOTE robustesse terrain (suivi) : si le bot a creusé loin/en sous-sol pour le cobble, il peut ne plus
+// pouvoir rejoindre/poser une table → le craft échoue proprement (stall informatif) plutôt que de
+// drainer les ressources. Le "poser une table sur place" fiable dépend d'un placeBlockNear robuste en
+// sous-sol (chantier skill séparé, cf. limites gather/collectBlock/pathfinder).
 async function ensureNearTable() {
   if (_nearestTable(bot)) return;
   const def = bot.registry && bot.registry.blocksByName && bot.registry.blocksByName.crafting_table;
   const b = def ? bot.findBlock({ matching: [def.id], maxDistance: 48 }) : null;
-  if (b) {
-    try { await goto(bot, { x: b.position.x, y: b.position.y, z: b.position.z }); } catch (e) {}
-    if (_nearestTable(bot)) return;
-  }
-  // Aucune table joignable -> en fabriquer une ici (planches depuis une bûche si besoin) puis poser.
-  const has = (n) => bot.inventory.items().some((i) => i.name === n);
-  if (!has('crafting_table')) {
-    if (!bot.inventory.items().some((i) => i.name.endsWith('_planks'))) {
-      const log = bot.inventory.items().find((i) => i.name.endsWith('_log'));
-      if (log) { try { await craftItem(bot, { name: log.name.replace('_log', '_planks'), count: 1 }); } catch (e) {} }
-    }
-    try { await craftItem(bot, { name: 'crafting_table', count: 1 }); } catch (e) {}
-  }
-  await placeBlockNear(bot, 'crafting_table');
+  if (b) { try { await goto(bot, { x: b.position.x, y: b.position.y, z: b.position.z }); } catch (e) {} }
 }
 
 // Dispatch d'un but de la chaîne vers le skill réel (0 token).
