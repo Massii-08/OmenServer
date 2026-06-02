@@ -11,7 +11,7 @@ function makeBot({ y = -54, yaw = -Math.PI / 2, world = {}, inv = null, gathered
     { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
     { name: 'cobblestone', count: 32, type: 'block' },
   ];
-  const calls = { dig: [], placeBlock: [], gather: [] };
+  const calls = { dig: [], placeBlock: [], gather: [], goto: [] };
   const bot = {
     entity: { position: pos(0, y, 0), yaw },
     registry: { blocksByName: {
@@ -63,6 +63,20 @@ function makeBot({ y = -54, yaw = -Math.PI / 2, world = {}, inv = null, gathered
         }
       }
       return null;
+    },
+    // Pathfinder mocké : déplace la position du bot vers la cible du goal (téléport synchrone).
+    // Le vrai mineflayer-pathfinder marche jusqu'au goal ; ici on simule l'effet net pour que
+    // les digs suivants soient logiquement "à portée" depuis la nouvelle position.
+    pathfinder: {
+      async goto(goal) {
+        const tx = (goal && (goal.x !== undefined ? goal.x : (goal.target && goal.target.x)));
+        const ty = (goal && (goal.y !== undefined ? goal.y : (goal.target && goal.target.y)));
+        const tz = (goal && (goal.z !== undefined ? goal.z : (goal.target && goal.target.z)));
+        if (typeof tx === 'number' && typeof ty === 'number' && typeof tz === 'number') {
+          calls.goto.push({ x: tx, y: ty, z: tz });
+          bot.entity.position = pos(tx, ty, tz);
+        }
+      },
     },
     collectBlock: {
       async collect(block) {
@@ -142,4 +156,13 @@ test('branchMine : Y dans la tolérance ±2 (Y=-52 OK)', async () => {
   const r = await branchMine(bot, { targetY: -54, mainLength: 4 });
   // ne doit PAS retourner wrong_depth
   assert.notStrictEqual(r.reason, 'wrong_depth');
+});
+
+test('branchMine : pathfinder.goto appelé entre les digs (bot avance vraiment)', async () => {
+  // Garantit que le risque #5 (digs hors range) est mitigé : on doit voir au moins 1 goto par
+  // pair (foot+head) du tunnel principal — avant le dig, on s'approche de la cible.
+  const { bot, calls } = makeBot({ y: -54 });
+  await branchMine(bot, { targetY: -54, mainLength: 6, branchSpacing: 999, branchLength: 0 });
+  // mainLength=6 → 6 paliers → au moins 6 gotos pour le tunnel principal.
+  assert.ok(calls.goto.length >= 6, `pathfinder.goto should be called per palier (got ${calls.goto.length})`);
 });

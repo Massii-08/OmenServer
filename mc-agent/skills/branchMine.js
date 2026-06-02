@@ -4,8 +4,30 @@
 // `branchSpacing` blocs. Anti-lave : sondage 6-voisins avant chaque dig ; lave détectée → murage
 // avec cobblestone (réserve ≥8 sinon `cobble_low`). Opportuniste : si un ore diamant/iron/coal
 // est visible dans le voisinage du bloc miné, on le ramasse via gather (collectBlock).
+//
+// /!\ Important : avant chaque paire de digs (foot+head), on appelle pathfinder.goto pour
+// s'APPROCHER de la cible (GoalNear range 3). Sans ça, le bot reste à la position de départ et
+// dès que i≥6-7 le bloc cible est hors range mineflayer (~6 blocs) → bot.dig échoue silencieusement
+// → stall (risque #5 du rapport build précédent).
 const { bestToolFor } = require('../tools');
 const { gather } = require('./gather');
+
+// Pathfinder.goals — utilisé uniquement pour le DÉPLACEMENT entre digs. Charge optionnelle (tests).
+let goals;
+try { goals = require('mineflayer-pathfinder').goals; } catch (e) { goals = null; }
+function buildNearGoal(x, y, z, range = 3) {
+  if (goals && goals.GoalNear) return new goals.GoalNear(x, y, z, range);
+  return { x, y, z };
+}
+
+// Rapproche le bot d'une cible avant le dig. Si le pathfinder est indisponible (tests sans mock),
+// no-op silencieux. Si la cible est inaccessible, on ne fait pas échouer : le dig direct prendra
+// le relais et échouera proprement avec dig_failed si vraiment hors range.
+async function approach(bot, target, range = 3) {
+  if (!bot.pathfinder || !bot.pathfinder.goto) return;
+  try { await bot.pathfinder.goto(buildNearGoal(target.x, target.y, target.z, range)); }
+  catch (e) { /* cible bloquée → on tente quand même le dig direct */ }
+}
 
 const COBBLE_RESERVE_MIN = 8;
 const COBBLE_TARGET_INIT = 16;
@@ -148,7 +170,13 @@ async function branchMine(bot, opts = {}, token = null) {
   const left = leftOf(dir);
   const oresBefore = snapshotOres(bot);
 
-  // Cap arrondi sur la grille : positions cibles à miner = pieds (Y0) puis tête (Y0+1).
+  // Point de départ figé : on calcule les cibles depuis CE point, jamais depuis la position
+  // courante (sinon les targets dériveraient à mesure que le bot avance via pathfinder).
+  const origin = bot.entity.position;
+  const ox = Math.floor(origin.x);
+  const oy = Math.floor(origin.y);
+  const oz = Math.floor(origin.z);
+
   let i = 1;
   let stopReason = null;
 
@@ -158,13 +186,11 @@ async function branchMine(bot, opts = {}, token = null) {
     if (countItem(bot, 'cobblestone') < COBBLE_RESERVE_MIN) { stopReason = 'cobble_low'; break; }
     if (countItem(bot, 'diamond') >= 1) break;                         // objectif rempli
 
-    const base = bot.entity.position;
-    const fx = Math.floor(base.x);
-    const fy = Math.floor(base.y);
-    const fz = Math.floor(base.z);
-    // Tunnel 1×2 : pieds + tête. On creuse à i blocs devant le point de départ logique.
-    const footTarget = p(fx + dir.dx * i, fy, fz + dir.dz * i);
+    // Tunnel 1×2 : pieds + tête. Targets calculés depuis origin (point fixe).
+    const footTarget = p(ox + dir.dx * i, oy, oz + dir.dz * i);
     const headTarget = p(footTarget.x, footTarget.y + 1, footTarget.z);
+    // Approche AVANT le dig : sinon hors range à i>=6 (cf. risque #5). GoalNear 3 = arrive à ≤3 blocs.
+    await approach(bot, footTarget, 3);
     for (const t of [footTarget, headTarget]) {
       const r = await safeDigAndOpportunism(bot, t, token);
       if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
@@ -179,6 +205,8 @@ async function branchMine(bot, opts = {}, token = null) {
           if (countItem(bot, 'cobblestone') < COBBLE_RESERVE_MIN) { stopReason = 'cobble_low'; break outer; }
           const ft = p(footTarget.x + side.dx * j, footTarget.y, footTarget.z + side.dz * j);
           const ht = p(ft.x, ft.y + 1, ft.z);
+          // Approche aussi avant la branche — j peut monter à 8, donc range hors limite sans goto.
+          await approach(bot, ft, 3);
           for (const t of [ft, ht]) {
             const r = await safeDigAndOpportunism(bot, t, token);
             if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
