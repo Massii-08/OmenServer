@@ -25,9 +25,11 @@ function anyPlanks(inv) {
 const W = (c) => invCount(c.inv, 'wooden_pickaxe') >= 1; // pioche bois obtenue → tout l'amont est fait
 const S = (c) => invCount(c.inv, 'stone_pickaxe') >= 1;  // objectif final
 const MVP_CHAIN = [
-  { name: 'logs',          met: (c) => anyLog(c.inv) >= 3 || anyPlanks(c.inv) >= 9 || c.hasTable || W(c) || S(c),
+  // ⚠️ logs/planks NE dépendent PAS de hasTable : une table qui traîne (run précédent) ne veut pas
+  // dire qu'on a du bois. Seuil planches bas (≥2) + monotone via W/S → pas d'oscillation, pas de re-récolte.
+  { name: 'logs',          met: (c) => anyLog(c.inv) >= 3 || anyPlanks(c.inv) >= 2 || W(c) || S(c),
     skill: 'gatherLog',    args: { count: 3 } },
-  { name: 'planks',        met: (c) => anyPlanks(c.inv) >= 9 || c.hasTable || W(c) || S(c),
+  { name: 'planks',        met: (c) => anyPlanks(c.inv) >= 2 || W(c) || S(c),
     skill: 'craftPlanks',  args: { count: 3 } }, // 3×4 = 12 planks (couvre table 4 + sticks 2 + pioche bois 3)
   { name: 'crafting_table',met: (c) => invCount(c.inv, 'crafting_table') >= 1 || c.hasTable || W(c) || S(c),
     skill: 'craft',        args: { name: 'crafting_table', count: 1 } },
