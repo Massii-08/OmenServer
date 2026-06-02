@@ -40,6 +40,8 @@ const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldM
 const { _nearestTable } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { placeBlockNear } = require('./skills/placeBlockNear');
 const { smelt } = require('./skills/smelt');
+const { descendDiagonal } = require('./skills/descendDiagonal');
+const { branchMine } = require('./skills/branchMine');
 const { classifyAuthPrompt, genPassword } = require('./auth');
 
 function parseArgs(argv) {
@@ -99,7 +101,10 @@ function writePw(pw) {
   } catch (e) { emit({ type: 'error', message: 'secrets write failed' }); }
 }
 
-function ctxExtra() { return { hasTable: !!_nearestTable(bot) }; }
+function ctxExtra() {
+  const pos = bot && bot.entity && bot.entity.position;
+  return { hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined };
+}
 
 // Table de craft PORTABLE : le bot garde 1 crafting_table en poche et la pose/reprend à la demande
 // pour chaque craft 3×3 (anti-stranding — la table vient au bot, où qu'il soit, surface OU sous-sol).
@@ -169,6 +174,9 @@ async function smeltWithFurnace(input, output, count) {
 // inatteignable (terrain) → on borne CHAQUE skill dans le temps. Au timeout : on coupe le mouvement
 // et on rend {ok:false,reason:'timeout'} → le planner re-dérive (au lieu de geler pour toujours).
 const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
+// Skills DIAMANT longs par nature (descente y=64→-54 + branch mining 48 blocs) → 6 min/chacun.
+const SKILL_TIMEOUTS = { descendDiagonal: 360000, branchMine: 360000 };
+function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
     let done = false;
@@ -200,6 +208,8 @@ async function runGoalSkill(goal) {
   }
   if (goal.skill === 'craft') return craftSmart(goal.args);    // pose une table portable si craft 3×3
   if (goal.skill === 'smeltIron') return smeltWithFurnace('raw_iron', 'iron_ingot', goal.args.count || 3);
+  if (goal.skill === 'descendDiagonal') return descendDiagonal(bot, goal.args || {}, taskToken);
+  if (goal.skill === 'branchMine') return branchMine(bot, goal.args || {}, taskToken);
   return { ok: false, reason: 'unknown_skill' };
 }
 
@@ -214,7 +224,7 @@ async function startAutonomous(sender) {
   emit({ type: 'autonomous_start', objective: objType });
   const res = await runPlanner(bot, {
     chain,
-    runSkill: (g) => withTimeout(runGoalSkill(g), SKILL_TIMEOUT_MS, () => { try { stopMotion(); } catch (e) {} }),
+    runSkill: (g) => withTimeout(runGoalSkill(g), timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} }),
     ctxExtra,
     onStep: (g) => emit({ type: 'goal', name: g.name }),
   }, taskToken);
