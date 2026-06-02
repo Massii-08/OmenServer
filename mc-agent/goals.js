@@ -31,10 +31,8 @@ const MVP_CHAIN = [
     skill: 'gatherLog',    args: { count: 3 } },
   { name: 'planks',        met: (c) => anyPlanks(c.inv) >= 2 || W(c) || S(c),
     skill: 'craftPlanks',  args: { count: 3 } }, // 3×4 = 12 planks (couvre table 4 + sticks 2 + pioche bois 3)
-  { name: 'crafting_table',met: (c) => invCount(c.inv, 'crafting_table') >= 1 || c.hasTable || W(c) || S(c),
+  { name: 'crafting_table',met: (c) => invCount(c.inv, 'crafting_table') >= 1 || W(c) || S(c),
     skill: 'craft',        args: { name: 'crafting_table', count: 1 } },
-  { name: 'place_table',   met: (c) => c.hasTable || W(c) || S(c),
-    skill: 'placeTable',   args: {} },
   { name: 'sticks',        met: (c) => invCount(c.inv, 'stick') >= 2 || S(c),
     skill: 'craft',        args: { name: 'stick', count: 1 } }, // 1×4 = 4 sticks (2 pioche bois + 2 pioche pierre)
   { name: 'wooden_pickaxe',met: (c) => W(c) || S(c),
