@@ -43,10 +43,48 @@ const MVP_CHAIN = [
     skill: 'craft',        args: { name: 'stone_pickaxe', count: 1 } },
 ];
 
+// --- Chaîne FER « zéro → pioche fer » (étend la chaîne pierre : on a besoin d'une pioche pierre pour
+// miner le minerai de fer, puis four+smelt). MONOTONE via W/S/F/I + cobble SCINDÉ (pick vs four) car
+// le cobble est consommé en 2 fois (3 pour la pioche pierre, 8 pour le four) → 2 buts gatés chacun par
+// son artefact aval, sinon ré-oscillation. Combustible smelt = bois (planches/bûches), pas de charbon.
+const F = (c) => invCount(c.inv, 'furnace') >= 1;       // four obtenu (gardé en poche, posé/repris)
+const I = (c) => invCount(c.inv, 'iron_pickaxe') >= 1;  // objectif final fer → tout l'amont est fait
+const IRON_CHAIN = [
+  { name: 'logs',           met: (c) => anyLog(c.inv) >= 5 || anyPlanks(c.inv) >= 8 || W(c) || I(c),
+    skill: 'gatherLog',     args: { count: 6 } },
+  { name: 'planks',         met: (c) => anyPlanks(c.inv) >= 8 || W(c) || I(c),
+    skill: 'craftPlanks',   args: { count: 6 } }, // ~24 planks : table 4 + sticks 4 + pioche bois 3 + combustible + marge
+  { name: 'crafting_table', met: (c) => invCount(c.inv, 'crafting_table') >= 1 || W(c) || I(c),
+    skill: 'craft',         args: { name: 'crafting_table', count: 1 } },
+  { name: 'sticks',         met: (c) => invCount(c.inv, 'stick') >= 2 || I(c),
+    skill: 'craft',         args: { name: 'stick', count: 2 } }, // 2×4 = 8 sticks (3 pioches × 2, reste ≥2)
+  { name: 'wooden_pickaxe', met: (c) => W(c) || I(c),
+    skill: 'craft',         args: { name: 'wooden_pickaxe', count: 1 } },
+  { name: 'cobble_pick',    met: (c) => invCount(c.inv, 'cobblestone') >= 3 || S(c) || I(c),
+    skill: 'gather',        args: { name: 'stone', count: 3 } },
+  { name: 'stone_pickaxe',  met: (c) => S(c) || I(c),
+    skill: 'craft',         args: { name: 'stone_pickaxe', count: 1 } },
+  { name: 'cobble_furnace', met: (c) => invCount(c.inv, 'cobblestone') >= 8 || F(c) || I(c),
+    skill: 'gather',        args: { name: 'stone', count: 8 } },
+  { name: 'furnace',        met: (c) => F(c) || I(c),
+    skill: 'craft',         args: { name: 'furnace', count: 1 } },
+  { name: 'iron_ore',       met: (c) => invCount(c.inv, 'raw_iron') >= 3 || invCount(c.inv, 'iron_ingot') >= 3 || I(c),
+    skill: 'gather',        args: { name: ['iron_ore', 'deepslate_iron_ore'], count: 3 } }, // pioche pierre → raw_iron
+  { name: 'iron_ingot',     met: (c) => invCount(c.inv, 'iron_ingot') >= 3 || I(c),
+    skill: 'smeltIron',     args: { count: 3 } }, // four portable + combustible bois
+  { name: 'iron_pickaxe',   met: (c) => I(c),
+    skill: 'craft',         args: { name: 'iron_pickaxe', count: 1 } },
+];
+
+/** Sélectionne la chaîne de buts selon le type d'objectif (défaut : pioche pierre). */
+function chainFor(objective) {
+  return objective === 'iron_pickaxe' ? IRON_CHAIN : MVP_CHAIN;
+}
+
 /** Premier but non satisfait dans l'ordre, ou null si tout est fait. */
 function firstUnmet(chain, ctx) {
   for (const g of chain) { if (!g.met(ctx)) return g; }
   return null;
 }
 
-module.exports = { buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, firstUnmet };
+module.exports = { buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, chainFor, firstUnmet };

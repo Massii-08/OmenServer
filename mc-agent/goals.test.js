@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { invCount, buildCtxInv, MVP_CHAIN, firstUnmet } = require('./goals');
+const { invCount, buildCtxInv, MVP_CHAIN, IRON_CHAIN, chainFor, firstUnmet } = require('./goals');
 
 // Faux bot : inventaire = liste d'items {name, count}
 function fakeBot(items) {
@@ -50,4 +50,43 @@ test('a une table en inventaire (pas posee) -> but suivant = sticks', () => {
 test('a table + planks + sticks -> but suivant = wooden_pickaxe', () => {
   const ctx = { inv: { crafting_table: 1, oak_planks: 6, stick: 4 }, hasTable: false };
   assert.strictEqual(firstUnmet(MVP_CHAIN, ctx).name, 'wooden_pickaxe');
+});
+
+// --- Chaîne FER ---
+
+test('chainFor selectionne MVP (pierre) ou IRON selon l\'objectif', () => {
+  assert.strictEqual(chainFor('iron_pickaxe'), IRON_CHAIN);
+  assert.strictEqual(chainFor('stone_pickaxe'), MVP_CHAIN);
+  assert.strictEqual(chainFor(undefined), MVP_CHAIN);  // défaut
+});
+
+test('ordre exact de la chaine FER (12 buts, cobble scindé pick/four)', () => {
+  assert.deepStrictEqual(
+    IRON_CHAIN.map((g) => g.name),
+    ['logs', 'planks', 'crafting_table', 'sticks', 'wooden_pickaxe',
+     'cobble_pick', 'stone_pickaxe', 'cobble_furnace', 'furnace',
+     'iron_ore', 'iron_ingot', 'iron_pickaxe'],
+  );
+});
+
+test('IRON firstUnmet : vide -> logs ; pioche fer -> null (tout fait)', () => {
+  assert.strictEqual(firstUnmet(IRON_CHAIN, { inv: {} }).name, 'logs');
+  assert.strictEqual(firstUnmet(IRON_CHAIN, { inv: { iron_pickaxe: 1 } }), null);
+});
+
+test('IRON firstUnmet : a four + 3 raw_iron (pioches+sticks) -> iron_ingot (smelt)', () => {
+  // état réaliste mi-chaîne : pioches bois+pierre, four en poche, sticks restants, minerai miné
+  const ctx = { inv: { wooden_pickaxe: 1, stone_pickaxe: 1, furnace: 1, stick: 4, raw_iron: 3 } };
+  assert.strictEqual(firstUnmet(IRON_CHAIN, ctx).name, 'iron_ingot');
+});
+
+test('IRON firstUnmet : lingots fondus -> iron_pickaxe (dernier but)', () => {
+  const ctx = { inv: { wooden_pickaxe: 1, stone_pickaxe: 1, furnace: 1, stick: 4, iron_ingot: 3 } };
+  assert.strictEqual(firstUnmet(IRON_CHAIN, ctx).name, 'iron_pickaxe');
+});
+
+test('IRON cobble scindé : 3 cobble + pioche pierre -> cobble_furnace (pas re-pick)', () => {
+  // après la pioche pierre (S), cobble_pick est gaté par S ; il reste à gather les 8 du four
+  const ctx = { inv: { wooden_pickaxe: 1, stone_pickaxe: 1, stick: 4 } };
+  assert.strictEqual(firstUnmet(IRON_CHAIN, ctx).name, 'cobble_furnace');
 });

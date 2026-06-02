@@ -35,10 +35,11 @@ const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
 const fs = require('fs');
 const { runPlanner } = require('./planner');
-const { MVP_CHAIN } = require('./goals');
+const { chainFor } = require('./goals');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
 const { _nearestTable } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { placeBlockNear } = require('./skills/placeBlockNear');
+const { smelt } = require('./skills/smelt');
 const { classifyAuthPrompt, genPassword } = require('./auth');
 
 function parseArgs(argv) {
@@ -104,15 +105,15 @@ function ctxExtra() { return { hasTable: !!_nearestTable(bot) }; }
 // pour chaque craft 3×3 (anti-stranding — la table vient au bot, où qu'il soit, surface OU sous-sol).
 // Remplace l'ancien ensureNearTable (qui exigeait de REVENIR à une table fixe → échouait après
 // le creusage du cobble, cf. revert table-on-spot). placeBlockNear gère désormais le sous-sol.
-async function reclaimBlock(pos) {
+async function reclaimBlock(pos, blockName = 'crafting_table') {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       let b = pos ? bot.blockAt(pos) : null;
-      if (!b || b.name !== 'crafting_table') {
-        const def = bot.registry.blocksByName.crafting_table;
+      if (!b || b.name !== blockName) {
+        const def = bot.registry.blocksByName[blockName];
         b = def ? bot.findBlock({ matching: [def.id], maxDistance: 4 }) : null;
       }
-      if (!b) return;                              // plus de table posée → déjà reprise
+      if (!b) return;                              // plus de bloc posé → déjà repris
       await bot.collectBlock.collect(b);
       return;                                      // repris
     } catch (e) { /* retry une fois */ }
@@ -135,6 +136,32 @@ async function craftSmart(args) {
   const r = await craftItem(bot, args);
   if (r.ok) return r;
   if (r.reason === 'no_recipe' || r.reason === 'craft_failed') return withCraftingTable(() => craftItem(bot, args));
+  return r;
+}
+
+// Combustibles acceptés pour le smelt : charbon + TOUTES planches/bûches (PAS les bâtons, réservés
+// aux pioches). Le bot a des planches en rab après les crafts → le smelt les brûle.
+function fuelNames() {
+  const names = ['coal', 'charcoal'];
+  for (const n of Object.keys((bot.registry && bot.registry.itemsByName) || {})) {
+    if (n.endsWith('_planks') || n.endsWith('_log')) names.push(n);
+  }
+  return names;
+}
+
+// Four PORTABLE (même esprit que la table) : pose un four à côté du bot si aucun à portée, fond, puis
+// le reprend → le bot garde 1 four en poche et fond où qu'il soit (surface OU fond du tunnel à fer).
+async function smeltWithFurnace(input, output, count) {
+  const fdef = bot.registry.blocksByName.furnace;
+  const near = fdef ? bot.findBlock({ matching: [fdef.id], maxDistance: 4 }) : null;
+  let pos = null;
+  if (!near) {
+    const place = await placeBlockNear(bot, 'furnace');
+    if (!place.ok) return { ok: false, reason: 'no_furnace' };
+    pos = place.pos;
+  }
+  const r = await smelt(bot, { input, output, count, fuel: fuelNames() }, taskToken);
+  if (pos) await reclaimBlock(pos, 'furnace');     // garder le four PORTABLE
   return r;
 }
 
@@ -167,20 +194,26 @@ async function runGoalSkill(goal) {
   if (goal.skill === 'craftPlanks') {
     const log = bot.inventory.items().find((i) => i.name.endsWith('_log'));
     if (!log) return { ok: false, reason: 'not_found' };
-    return craftItem(bot, { name: log.name.replace('_log', '_planks'), count: goal.args.count });
+    // ne pas sur-demander : convertir au plus le nb de bûches de cette essence (sinon bot.craft throw)
+    const same = bot.inventory.items().filter((i) => i.name === log.name).reduce((s, i) => s + i.count, 0);
+    return craftItem(bot, { name: log.name.replace('_log', '_planks'), count: Math.min(goal.args.count || 1, same) });
   }
   if (goal.skill === 'craft') return craftSmart(goal.args);    // pose une table portable si craft 3×3
+  if (goal.skill === 'smeltIron') return smeltWithFurnace('raw_iron', 'iron_ingot', goal.args.count || 3);
   return { ok: false, reason: 'unknown_skill' };
 }
 
 // Lance (ou relance) la boucle autonome ; le planner re-dérive depuis l'état courant.
 async function startAutonomous(sender) {
-  setObjective(world, { type: 'stone_pickaxe', status: 'in_progress' });
+  // objectif : depuis le world (seedé par le backend/launch), sinon --objective, sinon pioche pierre.
+  const objType = (world.objective && world.objective.type) || args.objective || 'stone_pickaxe';
+  setObjective(world, { type: objType, status: 'in_progress' });
   saveWorld(worldFile, world);
+  const chain = chainFor(objType);               // pioche pierre (MVP) ou pioche fer (IRON_CHAIN)
   taskToken = taskCtl.begin('autonomous', stopMotion);
-  emit({ type: 'autonomous_start', objective: 'stone_pickaxe' });
+  emit({ type: 'autonomous_start', objective: objType });
   const res = await runPlanner(bot, {
-    chain: MVP_CHAIN,
+    chain,
     runSkill: (g) => withTimeout(runGoalSkill(g), SKILL_TIMEOUT_MS, () => { try { stopMotion(); } catch (e) {} }),
     ctxExtra,
     onStep: (g) => emit({ type: 'goal', name: g.name }),
