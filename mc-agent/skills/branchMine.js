@@ -11,6 +11,9 @@
 // → stall (risque #5 du rapport build précédent).
 const { bestToolFor } = require('../tools');
 const { gather } = require('./gather');
+const { Vec3 } = require('vec3');
+let _emit; try { _emit = require('../io').emit; } catch (e) { _emit = () => {}; }
+function dbg(_label, payload) { try { _emit({ type: 'dbg', from: 'branchMine', ...payload }); } catch (e) {} }
 
 // Pathfinder.goals — utilisé uniquement pour le DÉPLACEMENT entre digs. Charge optionnelle (tests).
 let goals;
@@ -60,8 +63,10 @@ function cardinalFromYaw(yaw) {
 // Perpendiculaire 90° gauche d'un cap.
 function leftOf(dir) { return { dx: -dir.dz, dz: dir.dx }; }
 
-// Pos relative typée pour blockAt.
-function p(x, y, z) { return { x, y, z, offset(dx, dy, dz) { return p(x + dx, y + dy, z + dz); } }; }
+// Pos = Vec3 (mineflayer's blockAt et placeBlock font des `.floored()` internes : un POJO throw
+// `TypeError: pos.floored is not a function`, smoke phase A v3 a confirmé). On garde l'API offset
+// pour ne pas casser les tests qui patchent blockAt avec des POJO comparables.
+function p(x, y, z) { return new Vec3(x, y, z); }
 
 // Probe 6 voisins (±x, ±y, ±z) du bloc cible — détecte lave/source/flowing.
 function neighborsHaveLava(bot, target) {
@@ -110,13 +115,18 @@ function oresInNeighborhood(bot, target) {
 
 // Mine un bloc avec garde-fou lave + opportunisme ore. Retourne {ok, walled?:bool}.
 async function safeDigAndOpportunism(bot, target, token) {
+  dbg('safeDig', { phase: 'safeDig:enter', target: { x: target.x, y: target.y, z: target.z } });
   // Anti-lave 6-voisins.
-  const lava = neighborsHaveLava(bot, target);
+  let lava;
+  try { lava = neighborsHaveLava(bot, target); }
+  catch (e) { dbg('safeDig', { phase: 'safeDig:neighborsThrew', err: String(e && e.message || e).slice(0,200) }); return { ok: false, reason: 'neighbor_err' }; }
   if (lava) {
     const walled = await wallLava(bot, lava.ahead);
     if (!walled) return { ok: false, walled: false, reason: 'lava_unwallable' };
   }
   const block = bot.blockAt(target);
+  // Diag : tracer la cible et ce que blockAt voit (smoke phase A — bot resté figé).
+  try { dbg('safeDig', { phase: 'safeDig:probe', target: { x: target.x, y: target.y, z: target.z }, blockName: block ? block.name : null, bb: block ? block.boundingBox : null }); } catch (e) {}
   if (!block || block.boundingBox !== 'block') return { ok: true };       // déjà air → rien à faire
   if (isLava(block.name)) return { ok: false, reason: 'lava_at_target' };
 
@@ -129,7 +139,20 @@ async function safeDigAndOpportunism(bot, target, token) {
 
   const tool = bestToolFor(bot, block);
   if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
-  try { await bot.dig(block); } catch (e) { return { ok: false, reason: 'dig_failed' }; }
+  // collectBlock.collect : pathfind → dig → walk over drop → pickup (sinon le drop reste au sol et
+  // l'inventaire ne change jamais → planner stall après 4 iters sans progrès, cf. smoke phase A 1).
+  try { dbg('safeDig', { phase: 'safeDig:try', target: { x: target.x, y: target.y, z: target.z }, name: block.name }); } catch (e) {}
+  try {
+    if (bot.collectBlock && bot.collectBlock.collect) {
+      await bot.collectBlock.collect(block);
+    } else {
+      await bot.dig(block);
+    }
+    try { dbg('safeDig', { phase: 'safeDig:ok', target: { x: target.x, y: target.y, z: target.z } }); } catch (e) {}
+  } catch (e) {
+    try { dbg('safeDig', { phase: 'safeDig:fail', target: { x: target.x, y: target.y, z: target.z }, err: String(e && e.message || e).slice(0, 200) }); } catch (e2) {}
+    return { ok: false, reason: 'dig_failed' };
+  }
 
   // Opportunisme : si un ore est visible dans le voisinage (révélé par le dig), on tente de le ramasser.
   if (token && token.cancelled) return { ok: true };
@@ -158,8 +181,9 @@ async function branchMine(bot, opts = {}, token = null) {
   const branchLength = opts.branchLength || 8;
 
   const start = bot.entity && bot.entity.position;
-  if (!start) return { ok: false, reason: 'no_pos' };
-  if (Math.abs(start.y - targetY) > 2) return { ok: false, reason: 'wrong_depth' };
+  dbg('start', { phase: 'branchMine:enter', y: start ? start.y : null, x: start ? start.x : null, z: start ? start.z : null, targetY, mainLength, hasPF: !!(bot.pathfinder && bot.pathfinder.goto), hasCB: !!(bot.collectBlock && bot.collectBlock.collect), cobble: countItem(bot, 'cobblestone') });
+  if (!start) { dbg('start', { phase: 'branchMine:bail', reason: 'no_pos' }); return { ok: false, reason: 'no_pos' }; }
+  if (Math.abs(start.y - targetY) > 2) { dbg('start', { phase: 'branchMine:bail', reason: 'wrong_depth', startY: start.y, targetY }); return { ok: false, reason: 'wrong_depth' }; }
 
   if (countItem(bot, 'cobblestone') < COBBLE_TARGET_INIT / 2) {
     // tolère un peu en dessous de 16 (gather peut en avoir consommé) mais on garde la réserve mini.
@@ -177,6 +201,8 @@ async function branchMine(bot, opts = {}, token = null) {
   const oy = Math.floor(origin.y);
   const oz = Math.floor(origin.z);
 
+  dbg('start', { phase: 'branchMine:loop_start', dir, origin: { ox, oy, oz } });
+
   let i = 1;
   let stopReason = null;
 
@@ -189,10 +215,14 @@ async function branchMine(bot, opts = {}, token = null) {
     // Tunnel 1×2 : pieds + tête. Targets calculés depuis origin (point fixe).
     const footTarget = p(ox + dir.dx * i, oy, oz + dir.dz * i);
     const headTarget = p(footTarget.x, footTarget.y + 1, footTarget.z);
+    dbg('iter', { phase: 'branchMine:iter', i, footTarget: { x: footTarget.x, y: footTarget.y, z: footTarget.z } });
     // Approche AVANT le dig : sinon hors range à i>=6 (cf. risque #5). GoalNear 3 = arrive à ≤3 blocs.
-    await approach(bot, footTarget, 3);
+    try { await approach(bot, footTarget, 3); } catch (e) { dbg('iter', { phase: 'branchMine:approachThrew', err: String(e).slice(0,150) }); }
+    dbg('iter', { phase: 'branchMine:postApproach', i, pos: { x: Math.floor(bot.entity.position.x), y: Math.floor(bot.entity.position.y), z: Math.floor(bot.entity.position.z) } });
     for (const t of [footTarget, headTarget]) {
-      const r = await safeDigAndOpportunism(bot, t, token);
+      let r;
+      try { r = await safeDigAndOpportunism(bot, t, token); }
+      catch (e) { dbg('iter', { phase: 'branchMine:safeDigThrew', err: String(e).slice(0,150) }); r = { ok: false, reason: 'threw' }; }
       if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
     }
 
