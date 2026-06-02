@@ -83,7 +83,7 @@ const worldFile = args.world || path.join(__dirname, '..', 'data', `mc_agent_wor
 const world = loadWorld(worldFile);
 let taskToken = { cancelled: true };
 let deathTimes = [];
-let authDone = false;
+let bootDone = false; // réflexes/mouvements/auth = une seule fois par connexion (pas à chaque respawn)
 
 // Store secrets local (mot de passe AuthMe). data/ gitignored, perms 600. JAMAIS dans emit/logs.
 const secretsFile = args.secrets || path.join(__dirname, '..', 'data', `mc_agent_secret_${args.user || 'TrainBot'}.json`);
@@ -152,10 +152,14 @@ function tryAuth() {
 }
 
 async function onSpawn() {
-  bot.pathfinder.setMovements(new Movements(bot));
-  installReflexes(bot, { emit, fleeFrom });
   emit({ type: 'status', state: 'spawned', username: bot.username, profile: profile ? profile.id : null });
-  if (!authDone) { await tryAuth(); authDone = true; }
+  if (!bootDone) {
+    // une seule fois par connexion : sinon 'spawn' (respawn) ré-ajoute des listeners (fuite, MaxListeners)
+    bot.pathfinder.setMovements(new Movements(bot));
+    installReflexes(bot, { emit, fleeFrom });
+    await tryAuth();
+    bootDone = true;
+  }
   if (world.objective && world.objective.status === 'in_progress') {
     emit({ type: 'autonomous_resume', objective: world.objective.type });
     startAutonomous(null);
