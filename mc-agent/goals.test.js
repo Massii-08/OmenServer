@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { invCount, buildCtxInv, MVP_CHAIN, IRON_CHAIN, chainFor, firstUnmet } = require('./goals');
+const { invCount, buildCtxInv, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, chainFor, firstUnmet } = require('./goals');
 
 // Faux bot : inventaire = liste d'items {name, count}
 function fakeBot(items) {
@@ -89,4 +89,76 @@ test('IRON cobble scindé : 3 cobble + pioche pierre -> cobble_furnace (pas re-p
   // après la pioche pierre (S), cobble_pick est gaté par S ; il reste à gather les 8 du four
   const ctx = { inv: { wooden_pickaxe: 1, stone_pickaxe: 1, stick: 4 } };
   assert.strictEqual(firstUnmet(IRON_CHAIN, ctx).name, 'cobble_furnace');
+});
+
+// --- Chaîne DIAMANT ---
+
+test('chainFor("diamond") selectionne DIAMOND_CHAIN', () => {
+  assert.strictEqual(chainFor('diamond'), DIAMOND_CHAIN);
+});
+
+test('DIAMOND_CHAIN contient les 12 buts IRON + 3 buts diamant en queue', () => {
+  const names = DIAMOND_CHAIN.map((g) => g.name);
+  assert.deepStrictEqual(
+    names,
+    ['logs', 'planks', 'crafting_table', 'sticks', 'wooden_pickaxe',
+     'cobble_pick', 'stone_pickaxe', 'cobble_furnace', 'furnace',
+     'iron_ore', 'iron_ingot', 'iron_pickaxe',
+     'cobble_buffer', 'descend_y54', 'branch_mine'],
+  );
+});
+
+test('DIAMOND firstUnmet : inventaire vide -> logs (1er but)', () => {
+  assert.strictEqual(firstUnmet(DIAMOND_CHAIN, { inv: {} }).name, 'logs');
+});
+
+test('DIAMOND firstUnmet : pioche fer obtenue -> cobble_buffer (16 cobble pour murage)', () => {
+  const ctx = { inv: { iron_pickaxe: 1, stick: 4 }, y: 64 };
+  assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx).name, 'cobble_buffer');
+});
+
+test('DIAMOND firstUnmet : pioche fer + 16 cobble + Y=64 -> descend_y54', () => {
+  const ctx = { inv: { iron_pickaxe: 1, cobblestone: 16, stick: 4 }, y: 64 };
+  assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx).name, 'descend_y54');
+});
+
+test('DIAMOND firstUnmet : Y atteint -54, pioche fer, cobble -> branch_mine', () => {
+  const ctx = { inv: { iron_pickaxe: 1, cobblestone: 16, stick: 4 }, y: -54 };
+  assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx).name, 'branch_mine');
+});
+
+test('DIAMOND firstUnmet : diamant obtenu -> null (objectif atteint)', () => {
+  // ⚠️ monotonie : tout l'amont doit redevenir "satisfait" via le gating |D
+  const ctx = { inv: { diamond: 1 }, y: -54 };
+  assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx), null);
+});
+
+test('DIAMOND monotonie : diamond:1 satisfait TOUS les buts amont (même si ressources consommées)', () => {
+  // Cas réaliste : on a miné un diamant, les cobble/iron/sticks/planks/logs ont été consommés.
+  // Aucun but ne doit redevenir "non satisfait" → firstUnmet = null.
+  const ctx = { inv: { diamond: 1 }, y: -54 };
+  for (const goal of DIAMOND_CHAIN) {
+    assert.ok(goal.met(ctx), `but "${goal.name}" devrait etre satisfait quand diamond:1`);
+  }
+});
+
+test('DIAMOND descend_y54 : met=false si y=64, true si y<=-52, true si diamond:1', () => {
+  const goal = DIAMOND_CHAIN.find((g) => g.name === 'descend_y54');
+  assert.strictEqual(goal.met({ inv: {}, y: 64 }), false);
+  assert.strictEqual(goal.met({ inv: {}, y: -52 }), true);
+  assert.strictEqual(goal.met({ inv: {}, y: -54 }), true);
+  assert.strictEqual(goal.met({ inv: { diamond: 1 }, y: 64 }), true);
+});
+
+test('DIAMOND cobble_buffer : met=true si cobble>=16 OU diamond:1', () => {
+  const goal = DIAMOND_CHAIN.find((g) => g.name === 'cobble_buffer');
+  assert.strictEqual(goal.met({ inv: { cobblestone: 15 } }), false);
+  assert.strictEqual(goal.met({ inv: { cobblestone: 16 } }), true);
+  assert.strictEqual(goal.met({ inv: { diamond: 1 } }), true);
+});
+
+test('DIAMOND : le but iron_pickaxe N\'est PLUS le dernier (le diamant l\'est)', () => {
+  const names = DIAMOND_CHAIN.map((g) => g.name);
+  assert.notStrictEqual(names[names.length - 1], 'iron_pickaxe');
+  assert.strictEqual(names[names.length - 1], 'branch_mine');
 });

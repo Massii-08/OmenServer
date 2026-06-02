@@ -76,9 +76,33 @@ const IRON_CHAIN = [
     skill: 'craft',         args: { name: 'iron_pickaxe', count: 1 } },
 ];
 
+// --- Chaîne DIAMANT « zéro → ≥1 diamant ». Étend IRON_CHAIN (pioche fer requise pour drop diamant)
+// puis ajoute 3 buts diamant : buffer cobble (anti-lave murage) → descente Y≤-52 (escalier 1×2
+// diagonal) → branch mining à Y=-54. MONOTONIE via D : tous les buts amont héritent d'un `|| D(c)`
+// pour ne pas redevenir "non satisfaits" quand le cobble/iron est consommé après obtention du diamant.
+const D = (c) => invCount(c.inv, 'diamond') >= 1;          // objectif final
+function withFinal(goal, final) {
+  return Object.assign({}, goal, { met: (c) => goal.met(c) || final(c) });
+}
+const DIAMOND_CHAIN = [
+  ...IRON_CHAIN.map((g) => withFinal(g, D)),
+  // 16 cobble = ~stack/2 : assez pour murer 2-3 nappes de lave + bridging. Monotone via D.
+  { name: 'cobble_buffer', met: (c) => invCount(c.inv, 'cobblestone') >= 16 || D(c),
+    skill: 'gather',       args: { name: 'stone', count: 16 } },
+  // Y cible -54 : juste au-dessus de la nappe de lave (Y=-55→-63, cf. spec). On accepte y<=-52
+  // (marge de tolérance — l'escalier descend par paliers, on s'arrête dès qu'on franchit le seuil).
+  { name: 'descend_y54',   met: (c) => (c.y !== undefined && c.y <= -52) || D(c),
+    skill: 'descendDiagonal', args: { targetY: -54 } },
+  // mainLength 48 = 16 branches latérales × espacement 3 (cf. spec §3 branch mining).
+  { name: 'branch_mine',   met: (c) => D(c),
+    skill: 'branchMine',   args: { targetY: -54, mainLength: 48, branchSpacing: 3, branchLength: 8 } },
+];
+
 /** Sélectionne la chaîne de buts selon le type d'objectif (défaut : pioche pierre). */
 function chainFor(objective) {
-  return objective === 'iron_pickaxe' ? IRON_CHAIN : MVP_CHAIN;
+  if (objective === 'diamond') return DIAMOND_CHAIN;
+  if (objective === 'iron_pickaxe') return IRON_CHAIN;
+  return MVP_CHAIN;
 }
 
 /** Premier but non satisfait dans l'ordre, ou null si tout est fait. */
@@ -87,4 +111,4 @@ function firstUnmet(chain, ctx) {
   return null;
 }
 
-module.exports = { buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, chainFor, firstUnmet };
+module.exports = { buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, chainFor, firstUnmet };
