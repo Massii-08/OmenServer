@@ -91,10 +91,15 @@ const DIAMOND_CHAIN = [
     skill: 'gather',       args: { name: 'stone', count: 16 } },
   // Y cible -54 : juste au-dessus de la nappe de lave (Y=-55→-63, cf. spec). On accepte y<=-52
   // (marge de tolérance — l'escalier descend par paliers, on s'arrête dès qu'on franchit le seuil).
+  // progress = profondeur courante : descendre fait baisser y → compte comme progrès (sinon le
+  // détecteur de stall, qui ne regarde que l'inventaire, tuerait la descente en faux positif).
   { name: 'descend_y54',   met: (c) => (c.y !== undefined && c.y <= -52) || D(c),
+    progress: (c) => (c.y !== undefined ? Math.round(c.y) : null),
     skill: 'descendDiagonal', args: { targetY: -54 } },
   // mainLength 48 = 16 branches latérales × espacement 3 (cf. spec §3 branch mining).
+  // progress = avancée du tunnel (x,z) + nb diamants : creuser/avancer compte comme progrès.
   { name: 'branch_mine',   met: (c) => D(c),
+    progress: (c) => [invCount(c.inv, 'diamond'), c.x !== undefined ? Math.round(c.x) : null, c.z !== undefined ? Math.round(c.z) : null],
     skill: 'branchMine',   args: { targetY: -54, mainLength: 48, branchSpacing: 3, branchLength: 8 } },
 ];
 

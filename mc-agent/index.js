@@ -103,7 +103,7 @@ function writePw(pw) {
 
 function ctxExtra() {
   const pos = bot && bot.entity && bot.entity.position;
-  return { hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined };
+  return { hasTable: !!_nearestTable(bot), x: pos ? pos.x : undefined, y: pos ? pos.y : undefined, z: pos ? pos.z : undefined };
 }
 
 // Table de craft PORTABLE : le bot garde 1 crafting_table en poche et la pose/reprend à la demande

@@ -150,6 +150,20 @@ test('DIAMOND descend_y54 : met=false si y=64, true si y<=-52, true si diamond:1
   assert.strictEqual(goal.met({ inv: { diamond: 1 }, y: 64 }), true);
 });
 
+// Anti-faux-stall : les buts movement-based déclarent progress(ctx) (consommé par le planner).
+// Sans ça, descendre/avancer (qui ne change pas l'inventaire) est vu comme "aucun progrès" → stall.
+test('DIAMOND descend_y54 + branch_mine déclarent progress() sensible à la position', () => {
+  const descend = DIAMOND_CHAIN.find((g) => g.name === 'descend_y54');
+  const branch  = DIAMOND_CHAIN.find((g) => g.name === 'branch_mine');
+  assert.strictEqual(typeof descend.progress, 'function');
+  assert.strictEqual(typeof branch.progress, 'function');
+  // descend : progress doit CHANGER quand y baisse (sinon faux stall pendant la descente).
+  assert.notDeepStrictEqual(descend.progress({ inv: {}, y: 64 }), descend.progress({ inv: {}, y: 20 }));
+  // branch_mine : progress doit CHANGER quand le bot avance (x/z) OU trouve un diamant.
+  assert.notDeepStrictEqual(branch.progress({ inv: {}, x: 100, z: 100 }), branch.progress({ inv: {}, x: 108, z: 100 }));
+  assert.notDeepStrictEqual(branch.progress({ inv: {}, x: 100, z: 100 }), branch.progress({ inv: { diamond: 1 }, x: 100, z: 100 }));
+});
+
 test('DIAMOND cobble_buffer : met=true si cobble>=16 OU diamond:1', () => {
   const goal = DIAMOND_CHAIN.find((g) => g.name === 'cobble_buffer');
   assert.strictEqual(goal.met({ inv: { cobblestone: 15 } }), false);

@@ -51,3 +51,26 @@ test('runPlanner abandonne après maxStalls sans progrès (fallback)', async () 
   assert.strictEqual(res.stalled, true);
   assert.strictEqual(res.goal, 'a');
 });
+
+// Régression : un but "movement-based" (descend_y54) progresse par la POSITION, pas par
+// l'inventaire. Le détecteur de stall ne doit PAS le tuer en faux positif. Le but déclare
+// `progress(ctx)` ; le planner doit l'utiliser pour mesurer le progrès.
+// Reproduit le stall live observé : bot qui descend jusqu'à Y-54 mais planner stallé sur descend_y54.
+test('runPlanner ne stalle pas sur un but qui progresse via goal.progress (position)', async () => {
+  let y = 64;                                   // surface → cible -54
+  const bot = { inventory: { items: () => [] } }; // inventaire toujours vide pendant la descente
+  const chain = [
+    { name: 'descend', skill: 'descend',
+      met: (c) => (c.y !== undefined && c.y <= -52),
+      progress: (c) => (c.y !== undefined ? Math.round(c.y) : null) },
+  ];
+  const ctxExtra = () => ({ y });
+  const calls = [];
+  const runSkill = async (goal) => { calls.push(goal.name); y -= 20; return { ok: true }; }; // descend de 20/run
+  const token = { cancelled: false };
+  // maxStalls=4 : SANS le fix, le planner stalle au 4e run (y=-16, pas encore <=-52) car
+  // l'inventaire ne change jamais → faux stall. AVEC le fix : y change → stalls reset → atteint -56.
+  const res = await runPlanner(bot, { chain, runSkill, ctxExtra, maxStalls: 4 }, token);
+  assert.strictEqual(res.done, true, 'doit atteindre la profondeur cible sans faux stall');
+  assert.ok(calls.length >= 6, `attendu >=6 descentes (64→-56), eu ${calls.length}`);
+});
