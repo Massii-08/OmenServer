@@ -1,14 +1,16 @@
 'use strict';
-// Escalier diagonal 1×2 : à chaque pas, mine devant (yeux) + devant-bas (pieds) puis "avance"
-// d'1 bloc le long d'un cap cardinal. Le bot reste TOUJOURS sur du solide. Anti-lave codé en dur :
-// scan 5 voisins (devant, devant-bas, devant-haut, devant×2, devant-bas×2) avant CHAQUE dig.
-//
-// Vise Y target (-54 par défaut, juste au-dessus de la nappe de lave Y=-55→-63 du diamant).
-// Pas de pathfinder ici (anti-freeze) : pur bot.dig + téléport implicite (le bloc miné devient
-// l'emplacement libre pour le pas suivant ; pour la translation horizontale, on s'appuie sur
-// bot.entity.position qui reflète le résultat du dig + chute naturelle).
+// Escalier diagonal 1×2 : à chaque palier, mine devant-bas (la marche) + devant (la tête)
+// puis AVANCE physiquement via pathfinder.goto(GoalNear(footStepPos, 1)) — sinon le bot reste
+// sur place et le dig du palier suivant tombe hors range (~6 blocs max, mineflayer).
+// Anti-lave codé en dur : scan 5 voisins (devant, devant-bas, devant-haut, devant×2, devant-bas×2)
+// avant CHAQUE dig. Vise Y target (-54 par défaut, juste au-dessus de la nappe de lave Y=-55→-63).
 const { bestToolFor } = require('../tools');
 const { DANGER, VOID } = require('./mineDown');                // mêmes ensembles → 1 source de vérité
+
+// Pathfinder est requis ici uniquement pour le DÉPLACEMENT (digs faits à la main). Pas de canDig
+// custom pour ne pas que pathfinder mine autre chose que les blocs déjà ouverts par notre dig.
+let goals;
+try { goals = require('mineflayer-pathfinder').goals; } catch (e) { goals = null; }
 
 // Cap arrondi au plus proche des 4 cardinaux. yaw mineflayer : 0 = sud, -π/2 = est, π = nord, π/2 = ouest.
 // On veut retourner {dx, dz} ∈ {(1,0), (-1,0), (0,1), (0,-1)}.
@@ -24,10 +26,18 @@ function cardinalFromYaw(yaw) {
 
 function isLava(name) { return name === 'lava' || name === 'flowing_lava'; }
 
+// Construit un GoalNear si pathfinder dispo (range=1 = arrive sur le bloc exact ou un voisin).
+// Fallback : objet POJO accepté par notre fake-bot (tests).
+function buildGoal(x, y, z) {
+  if (goals && goals.GoalNear) return new goals.GoalNear(x, y, z, 1);
+  return { x, y, z };
+}
+
 async function descendDiagonal(bot, { targetY = -54, maxDepth = 200 } = {}, token = null) {
   let reachedY = bot.entity && bot.entity.position ? bot.entity.position.y : 0;
   if (reachedY <= targetY) return { ok: true, reachedY };
 
+  // Cap arrondi UNE FOIS au début — on garde l'alignement à la grille pour toute la descente.
   const dir = cardinalFromYaw(bot.entity.yaw || 0);
   let steps = 0;
 
@@ -71,17 +81,14 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200 } = {}, toke
       try { await bot.dig(t); } catch (e) { return { ok: false, reachedY, reason: 'dig_failed' }; }
     }
 
-    // Avance : on "déplace" le bot d'1 bloc en diagonale (descente naturelle). Pour les tests on
-    // simule en mutant directement la position ; en prod, le bot tombe naturellement après le dig
-    // de la case devant-bas (gravity) — on aide via setControlState(forward) bref.
-    try {
-      bot.entity.position = bot.entity.position.offset(dir.dx, -1, dir.dz);
-    } catch (e) { /* en prod position est un Vec3 immuable côté lecture ; offset retourne un nouveau */ }
-    try {
-      bot.setControlState('forward', true);
-      if (bot.waitForTicks) await bot.waitForTicks(6);
-      bot.setControlState('forward', false);
-    } catch (e) {}
+    // AVANCE : pathfinder.goto vers la marche (devant-bas) — c'est le seul moyen FIABLE de
+    // déplacer le bot horizontalement en prod (mineflayer écrase toute mutation directe de
+    // bot.entity.position au tick suivant). En tests, le fake-bot simule le téléport.
+    if (bot.pathfinder && bot.pathfinder.goto) {
+      try {
+        await bot.pathfinder.goto(buildGoal(aheadLow.x, aheadLow.y, aheadLow.z));
+      } catch (e) { /* cible peut être inaccessible ponctuellement — on retentera au prochain tour */ }
+    }
 
     steps++;
   }

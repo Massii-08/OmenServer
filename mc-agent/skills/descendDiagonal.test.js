@@ -8,7 +8,7 @@ const { descendDiagonal } = require('./descendDiagonal');
 function pos(x, y, z) { return { x, y, z, offset(dx, dy, dz) { return pos(x + dx, y + dy, z + dz); } }; }
 
 function makeBot({ startY = 10, world = {}, yaw = 0 } = {}) {
-  const calls = { dig: [], equip: [], setControlState: [], lookAt: [] };
+  const calls = { dig: [], equip: [], setControlState: [], lookAt: [], goto: [] };
   const bot = {
     entity: { position: pos(0, startY, 0), yaw },
     registry: { blocksByName: {
@@ -40,6 +40,20 @@ function makeBot({ startY = 10, world = {}, yaw = 0 } = {}) {
     setControlState(c, v) { calls.setControlState.push([c, v]); },
     async lookAt(p) { calls.lookAt.push(p); },
     async waitForTicks(n) { /* no-op */ },
+    // Pathfinder mocké : déplace réellement la position du bot vers la cible du goal.
+    // Le vrai mineflayer-pathfinder lit/écrit en continu bot.entity.position ; pour les tests
+    // on simule juste l'effet net (téléport synchrone à la cible).
+    pathfinder: {
+      async goto(goal) {
+        const tx = (goal && (goal.x !== undefined ? goal.x : (goal.target && goal.target.x)));
+        const ty = (goal && (goal.y !== undefined ? goal.y : (goal.target && goal.target.y)));
+        const tz = (goal && (goal.z !== undefined ? goal.z : (goal.target && goal.target.z)));
+        if (typeof tx === 'number' && typeof ty === 'number' && typeof tz === 'number') {
+          calls.goto.push({ x: tx, y: ty, z: tz });
+          bot.entity.position = pos(tx, ty, tz);
+        }
+      },
+    },
   };
   return { bot, calls, world };
 }
@@ -106,4 +120,16 @@ test('descendDiagonal : déjà à Y target -> ok immédiat sans miner', async ()
   const r = await descendDiagonal(bot, { targetY: -54, maxDepth: 50 });
   assert.strictEqual(r.ok, true);
   assert.strictEqual(calls.dig.length, 0);
+});
+
+test('descendDiagonal : pathfinder.goto appelé après chaque palier (déplacement réel)', async () => {
+  // Vérifie que la nouvelle implémentation utilise pathfinder pour AVANCER (vs mutation position).
+  const { bot, calls } = makeBot({ startY: 10, yaw: -Math.PI / 2 });
+  await descendDiagonal(bot, { targetY: 7, maxDepth: 10 });
+  assert.ok(calls.goto.length >= 1, `pathfinder.goto should be called at least once (got ${calls.goto.length})`);
+  // chaque goto avance la position du bot d'une marche diagonale (cap +x, -y) → x croît, y décroît.
+  if (calls.goto.length >= 2) {
+    assert.ok(calls.goto[1].x > calls.goto[0].x || calls.goto[1].y < calls.goto[0].y,
+      'consecutive goto targets should progress diagonally');
+  }
 });
