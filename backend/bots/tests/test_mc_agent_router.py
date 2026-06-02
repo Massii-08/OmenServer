@@ -296,3 +296,19 @@ def test_run_passes_objective(monkeypatch):
     resp = c.post("/api/mc-agent/run", json={"host": "play.x.net", "user": "TrainBot", "autonomous": True, "objective": "iron_pickaxe"})
     assert resp.status_code == 200
     assert captured["objective"] == "iron_pickaxe"
+
+
+def test_run_passes_diamond_objective(monkeypatch):
+    """POST /run avec objective:diamond → transmis à start_session (sélectionne DIAMOND_CHAIN)."""
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    captured = {}
+
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe"):
+        captured["objective"] = objective
+        return 9
+
+    monkeypatch.setattr(mgr, "start_session", fake_start)
+    c = make_client()
+    resp = c.post("/api/mc-agent/run", json={"host": "play.x.net", "user": "TrainBot", "autonomous": True, "objective": "diamond"})
+    assert resp.status_code == 200
+    assert captured["objective"] == "diamond"
