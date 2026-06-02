@@ -375,3 +375,49 @@ def test_stop_session_cleans_world_file(monkeypatch, tmp_path):
     assert os.path.exists(wp)
     mgr.stop_session(sid)
     assert not os.path.exists(wp)
+
+
+def test_start_session_objective_seeds_iron_in_world(monkeypatch, tmp_path):
+    """objective='iron_pickaxe' -> le world.json seedé porte ce type (sélectionne la chaîne fer Node)."""
+    import io
+    import json as _json
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter(())
+            self.pid = 4328
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: (captured.__setitem__("cmd", cmd) or FakeProc()))
+    sid = mgr.start_session("h", 25565, "U", autonomous=True, objective="iron_pickaxe")
+    wp = captured["cmd"][captured["cmd"].index("--world") + 1]
+    data = _json.loads(open(wp).read())
+    assert data["objective"]["type"] == "iron_pickaxe"
+
+
+def test_start_session_invalid_objective_defaults_stone(monkeypatch, tmp_path):
+    """Un objective inconnu retombe sur stone_pickaxe (anti-injection)."""
+    import io
+    import json as _json
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter(())
+            self.pid = 4329
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: (captured.__setitem__("cmd", cmd) or FakeProc()))
+    sid = mgr.start_session("h", 25565, "U", autonomous=True, objective="rm -rf")
+    wp = captured["cmd"][captured["cmd"].index("--world") + 1]
+    data = _json.loads(open(wp).read())
+    assert data["objective"]["type"] == "stone_pickaxe"

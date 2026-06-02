@@ -36,7 +36,7 @@ def test_run_400_si_pas_de_cle(monkeypatch):
 def test_run_demarre_une_session(monkeypatch):
     captured = {}
     monkeypatch.setattr(mgr, "has_api_key", lambda: True)
-    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False):
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe"):
         captured["auth"] = auth
         return 7
     monkeypatch.setattr(mgr, "start_session", fake_start)
@@ -114,7 +114,7 @@ def test_profiles_retourne_la_liste(monkeypatch):
 def test_run_transmet_le_profil(monkeypatch):
     monkeypatch.setattr(mgr, "has_api_key", lambda: True)
     captured = {}
-    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False):
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe"):
         captured["profile"] = profile
         return 11
     monkeypatch.setattr(mgr, "start_session", fake_start)
@@ -173,7 +173,7 @@ def test_run_with_server_id_resolves_commands(monkeypatch):
                         lambda srv: [{"cmd": "/home", "syntax": "/home", "desc": "h"}])
     captured = {}
 
-    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False):
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe"):
         captured.update(host=host, profile=profile, commands=commands)
         return 9
 
@@ -211,7 +211,7 @@ def test_run_with_server_id_passes_policy(monkeypatch):
     monkeypatch.setattr(r.servers_store, "resolve_policy", lambda srv: {"trusted": ["Bob"], "trade": None})
     captured = {}
 
-    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False):
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe"):
         captured["policy"] = policy
         return 11
 
@@ -233,7 +233,7 @@ def test_run_with_server_id_passes_server_id(monkeypatch):
     monkeypatch.setattr(r.servers_store, "resolve_policy", lambda srv: {"trusted": [], "trade": None})
     captured = {}
 
-    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False):
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe"):
         captured["server_id"] = server_id
         return 12
 
@@ -249,7 +249,7 @@ def test_run_passes_language_from_server_profile(monkeypatch):
     captured = {}
 
     def fake_start(host, port, user, model=None, auth="offline", profile=None,
-                   commands=None, policy=None, server_id=None, language="fr", autonomous=False):
+                   commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe"):
         captured["language"] = language
         return 7
 
@@ -271,7 +271,7 @@ def test_run_passes_autonomous_flag(monkeypatch):
     monkeypatch.setattr(mgr, "has_api_key", lambda: True)
     captured = {}
 
-    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False):
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe"):
         captured["autonomous"] = autonomous
         return 7
 
@@ -280,3 +280,19 @@ def test_run_passes_autonomous_flag(monkeypatch):
     resp = c.post("/api/mc-agent/run", json={"host": "play.x.net", "user": "TrainBot", "autonomous": True})
     assert resp.status_code == 200
     assert captured["autonomous"] is True
+
+
+def test_run_passes_objective(monkeypatch):
+    """POST /run avec objective:iron_pickaxe → transmis à start_session (sélectionne la chaîne fer)."""
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    captured = {}
+
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe"):
+        captured["objective"] = objective
+        return 7
+
+    monkeypatch.setattr(mgr, "start_session", fake_start)
+    c = make_client()
+    resp = c.post("/api/mc-agent/run", json={"host": "play.x.net", "user": "TrainBot", "autonomous": True, "objective": "iron_pickaxe"})
+    assert resp.status_code == 200
+    assert captured["objective"] == "iron_pickaxe"

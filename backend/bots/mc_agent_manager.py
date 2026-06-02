@@ -136,16 +136,22 @@ def has_api_key():
     return bool(_read_api_key())
 
 
-def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False):
+VALID_OBJECTIVES = ("stone_pickaxe", "iron_pickaxe")
+
+
+def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe"):
     """Spawn le process Node détaché et enregistre la session. Retourne son id.
 
     `commands` : liste d'objets {cmd,syntax,desc} (whitelist serveur). Écrite dans un fichier
     temp passé au bot via --commands (le bot ne tapera que ces commandes).
-    `autonomous` : si True, seed un world.json avec l'objectif MVP (stone_pickaxe) + passe --world →
-    le bot lance la boucle planner (zéro→pioche pierre) dès le spawn (reprise-au-spawn, 0 token LLM).
+    `autonomous` : si True, seed un world.json avec `objective` (pioche pierre OU pioche fer) +
+    passe --world → le bot lance la boucle planner dès le spawn (reprise-au-spawn, 0 token LLM).
+    `objective` : 'stone_pickaxe' (défaut) | 'iron_pickaxe' — sélectionne la chaîne de buts côté Node.
     Le mot de passe AuthMe est géré côté Node (self-persist dans data/mc_agent_secret_<user>.json,
     chmod 600) — pas besoin de --authpw ici (et surtout PAS dans mc_agent_servers.json, exposé par l'API).
     """
+    if objective not in VALID_OBJECTIVES:
+        objective = "stone_pickaxe"
     global _counter
     with _lock:
         _counter += 1
@@ -177,7 +183,7 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
         world_path = RUNS_DIR / f"world-{sid}.json"
         world_path.write_text(json.dumps({
             "home": None, "chests": [], "waypoints": [],
-            "objective": {"type": "stone_pickaxe", "status": "in_progress"},
+            "objective": {"type": objective, "status": "in_progress"},
         }), encoding="utf-8")
         cmd += ["--world", str(world_path)]
     env = dict(os.environ)
