@@ -1098,6 +1098,7 @@ const BotsModule = {
  <select id="mca-objective" class="form-input" style="max-width:260px;margin-bottom:12px;">
  <option value="stone_pickaxe">${Lang.t('mcagent.obj_stone')}</option>
  <option value="iron_pickaxe">${Lang.t('mcagent.obj_iron')}</option>
+ <option value="diamond">${Lang.t('mcagent.obj_diamond')}</option>
  </select>
  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
  <button class="btn btn-primary" onclick="BotsModule.startMCAgent()">${Lang.t('mcagent.start')}</button>
