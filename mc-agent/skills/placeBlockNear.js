@@ -18,6 +18,14 @@ const NON_DIGGABLE = new Set([
   'bedrock', 'water', 'lava', 'flowing_water', 'flowing_lava',
 ]);
 
+// Blocs "remblai" sacrifiables pour créer un sol manquant (Pass 3). On EXCLUT cobblestone
+// (réservé au craft de la pioche pierre) et la table elle-même.
+const SUPPORT_BLOCKS = new Set([
+  'dirt', 'coarse_dirt', 'rooted_dirt', 'grass_block', 'gravel', 'sand', 'red_sand',
+  'stone', 'andesite', 'diorite', 'granite', 'tuff', 'deepslate', 'cobbled_deepslate',
+  'netherrack', 'dripstone_block', 'calcite', 'mud', 'clay',
+]);
+
 /**
  * Pose itemName sur le sol adjacent au bot.
  * Retourne { ok:true, pos:Vec3 } ou { ok:false, reason:string }.
@@ -73,6 +81,47 @@ async function placeBlockNear(bot, itemName) {
       await bot.placeBlock(ground, new Vec3(0, 1, 0));
       return { ok: true, pos: base.plus(d) };
     } catch (e) { /* essaie la direction suivante */ }
+  }
+
+  // ── Pass 3 : "piédestal" — voisins ET sols-voisins en air (le bot a miné autour de lui en récoltant
+  // le cobble). On comble le sol d'une case voisine avec un bloc de remblai (posé contre la face
+  // LATÉRALE du bloc sous les pieds = seul solide adjacent garanti), puis on pose la table dessus. ──
+  const floor = bot.blockAt(base.offset(0, -1, 0));        // bloc sous les pieds (solide : le bot est dessus)
+  if (floor && floor.boundingBox === 'block') {
+    const support = bot.inventory.items().find((i) => SUPPORT_BLOCKS.has(i.name));
+    if (support) {
+      for (const d of dirs) {
+        const cellPos = base.plus(d);                      // case voisine (niveau pieds) → ira la table
+        const underPos = base.plus(d).offset(0, -1, 0);    // sol manquant (== floor.position + d)
+        const under = bot.blockAt(underPos);
+        if (under && under.boundingBox === 'block') continue;   // sol déjà présent → Pass 1/2 gère
+
+        const cell = bot.blockAt(cellPos);
+        // la case voisine doit être (ou devenir) vide pour accueillir la table
+        if (cell && cell.boundingBox === 'block') {
+          if (NON_DIGGABLE.has(cell.name)) continue;
+          try {
+            const tool = bestToolFor(bot, cell);
+            if (tool) await bot.equip(tool, 'hand');
+            await bot.dig(cell);
+          } catch (e) { continue; }
+        } else if (cell && cell.name !== 'air' && !REPLACEABLE.has(cell.name)) {
+          continue;
+        }
+
+        try {
+          // 1) poser le remblai pour combler underPos (réf = floor, face = d → floor + d == underPos)
+          await bot.equip(support, 'hand');
+          await bot.placeBlock(floor, d);
+          // 2) poser la table sur le remblai fraîchement posé
+          const sup = bot.blockAt(underPos);
+          if (!sup || sup.boundingBox !== 'block') continue;
+          await bot.equip(item, 'hand');
+          await bot.placeBlock(sup, new Vec3(0, 1, 0));
+          return { ok: true, pos: cellPos };
+        } catch (e) { /* essaie la direction suivante */ }
+      }
+    }
   }
 
   return { ok: false, reason: 'no_space' };
