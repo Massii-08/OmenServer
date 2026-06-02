@@ -136,11 +136,15 @@ def has_api_key():
     return bool(_read_api_key())
 
 
-def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr"):
+def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False):
     """Spawn le process Node détaché et enregistre la session. Retourne son id.
 
     `commands` : liste d'objets {cmd,syntax,desc} (whitelist serveur). Écrite dans un fichier
     temp passé au bot via --commands (le bot ne tapera que ces commandes).
+    `autonomous` : si True, seed un world.json avec l'objectif MVP (stone_pickaxe) + passe --world →
+    le bot lance la boucle planner (zéro→pioche pierre) dès le spawn (reprise-au-spawn, 0 token LLM).
+    Le mot de passe AuthMe est géré côté Node (self-persist dans data/mc_agent_secret_<user>.json,
+    chmod 600) — pas besoin de --authpw ici (et surtout PAS dans mc_agent_servers.json, exposé par l'API).
     """
     global _counter
     with _lock:
@@ -167,6 +171,15 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
         policy_path = RUNS_DIR / f"policy-{sid}.json"
         policy_path.write_text(json.dumps(policy), encoding="utf-8")
         cmd += ["--policy", str(policy_path)]
+    world_path = None
+    if autonomous:
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        world_path = RUNS_DIR / f"world-{sid}.json"
+        world_path.write_text(json.dumps({
+            "home": None, "chests": [], "waypoints": [],
+            "objective": {"type": "stone_pickaxe", "status": "in_progress"},
+        }), encoding="utf-8")
+        cmd += ["--world", str(world_path)]
     env = dict(os.environ)
     api_key = _read_api_key()  # injecte la clé (fichier ou env) dans l'env du subprocess Node
     if api_key:
@@ -188,6 +201,7 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
         "host": host, "user": user, "server_id": server_id,
         "cmds_path": str(cmds_path) if cmds_path else None,
         "policy_path": str(policy_path) if policy_path else None,
+        "world_path": str(world_path) if world_path else None,
     }
     _sessions[sid] = session
     t = threading.Thread(target=_pump, args=(session, proc.stdout), daemon=True)
@@ -247,7 +261,7 @@ def stop_session(sid):
         except (ProcessLookupError, PermissionError, OSError):
             proc.terminate()
     s["status"] = "stopped"
-    for key in ("cmds_path", "policy_path"):
+    for key in ("cmds_path", "policy_path", "world_path"):
         p = s.get(key)
         if p:
             try:

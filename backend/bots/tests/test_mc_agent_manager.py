@@ -290,3 +290,88 @@ def test_start_session_adds_lang_flag(monkeypatch):
     sid = mgr.start_session("h", 25565, "TrainBot", None, "offline", None, None, None, language="it")
     assert "--lang" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--lang") + 1] == "it"
+
+
+def test_start_session_autonomous_seeds_world_objective(monkeypatch, tmp_path):
+    """autonomous=True → écrit un world.json avec l'objectif MVP + passe --world (le bot
+    reprend la boucle planner au spawn). C'est le mécanisme « lancer en autonome » du dashboard."""
+    import io
+    import json as _json
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter(())
+            self.pid = 4325
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    sid = mgr.start_session("h", 25565, "U", autonomous=True)
+    assert "--world" in captured["cmd"]
+    path = captured["cmd"][captured["cmd"].index("--world") + 1]
+    data = _json.loads(open(path).read())
+    assert data["objective"]["type"] == "stone_pickaxe"
+    assert data["objective"]["status"] == "in_progress"
+    # la session retient le chemin world pour le nettoyer au stop
+    assert mgr._sessions[sid].get("world_path") == str(path)
+
+
+def test_start_session_no_world_when_not_autonomous(monkeypatch, tmp_path):
+    """Par défaut (mode réactif) : pas de --world, pas d'objectif seedé."""
+    import io
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter(())
+            self.pid = 4326
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    sid = mgr.start_session("h", 25565, "U")
+    assert "--world" not in captured["cmd"]
+    assert mgr._sessions[sid].get("world_path") is None
+
+
+def test_stop_session_cleans_world_file(monkeypatch, tmp_path):
+    """stop_session supprime le world.json temp (comme cmds/policy)."""
+    import io
+    import os
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter(())
+            self.pid = 4327
+        def poll(self):
+            return None
+        def terminate(self):
+            pass
+
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: FakeProc())
+    # neutralise le kill réel (pid factice) → ne touche aucun process de la machine
+    monkeypatch.setattr(mgr.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(mgr.os, "killpg", lambda pgid, sig: None)
+    sid = mgr.start_session("h", 25565, "U", autonomous=True)
+    wp = mgr._sessions[sid]["world_path"]
+    assert os.path.exists(wp)
+    mgr.stop_session(sid)
+    assert not os.path.exists(wp)
