@@ -3,7 +3,15 @@
 const { bestToolFor, bestWeapon } = require('../tools');
 
 function _ids(bot, name) {
-  const def = bot.registry && bot.registry.blocksByName && bot.registry.blocksByName[name];
+  if (!bot.registry || !bot.registry.blocksByName) return null;
+  if (Array.isArray(name)) {
+    const ids = name
+      .map((n) => bot.registry.blocksByName[n])
+      .filter(Boolean)
+      .map((def) => def.id);
+    return ids.length > 0 ? ids : null;
+  }
+  const def = bot.registry.blocksByName[name];
   return def ? [def.id] : null;
 }
 
@@ -29,13 +37,13 @@ async function defendIfNeeded(bot) {
 }
 
 /** Récolte `count`× le bloc `name` le + proche. {ok, reason?/got}. `token` = annulation. */
-async function gather(bot, { name, count = 1 } = {}, token = null) {
-  if (!name) return { ok: false, reason: 'no_block' };
+async function gather(bot, { name, count = 1, maxDistance = 64 } = {}, token = null) {
+  if (!name || (Array.isArray(name) && name.length === 0)) return { ok: false, reason: 'no_block' };
   let got = 0;
   for (let i = 0; i < count; i++) {
     if (token && token.cancelled) return { ok: true, got, cancelled: true };
     await defendIfNeeded(bot);
-    const block = bot.findBlock({ matching: _ids(bot, name), maxDistance: 48 });
+    const block = bot.findBlock({ matching: _ids(bot, name), maxDistance });
     if (!block) {
       if (got === 0) return { ok: false, reason: 'not_found' };
       break;
