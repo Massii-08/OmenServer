@@ -174,8 +174,9 @@ async function smeltWithFurnace(input, output, count) {
 // inatteignable (terrain) → on borne CHAQUE skill dans le temps. Au timeout : on coupe le mouvement
 // et on rend {ok:false,reason:'timeout'} → le planner re-dérive (au lieu de geler pour toujours).
 const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
-// Skills DIAMANT longs par nature (descente y=64→-54 + branch mining 48 blocs) → 6 min/chacun.
-const SKILL_TIMEOUTS = { descendDiagonal: 360000, branchMine: 360000 };
+// Skills DIAMANT longs par nature : descente y=64→-54 (118 blocs × ~4s avec pathfinder = trop juste
+// à 6 min) + branch mining 48 + 2×8 branches (~64 blocs avec pathfinder entre chaque dig). 15 min/chacun.
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
