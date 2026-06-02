@@ -100,23 +100,50 @@ function writePw(pw) {
 
 function ctxExtra() { return { hasTable: !!_nearestTable(bot) }; }
 
-// Avant un craft 3×3 : se rapprocher d'une table de craft existante (recettes 3×3 = table <=6 blocs).
-// NOTE robustesse terrain (suivi) : si le bot a creusé loin/en sous-sol pour le cobble, il peut ne plus
-// pouvoir rejoindre/poser une table → le craft échoue proprement (stall informatif) plutôt que de
-// drainer les ressources. Le "poser une table sur place" fiable dépend d'un placeBlockNear robuste en
-// sous-sol (chantier skill séparé, cf. limites gather/collectBlock/pathfinder).
-async function ensureNearTable() {
-  if (_nearestTable(bot)) return;
-  const def = bot.registry && bot.registry.blocksByName && bot.registry.blocksByName.crafting_table;
-  const b = def ? bot.findBlock({ matching: [def.id], maxDistance: 48 }) : null;
-  if (b) { try { await goto(bot, { x: b.position.x, y: b.position.y, z: b.position.z }); } catch (e) {} }
+// Table de craft PORTABLE : le bot garde 1 crafting_table en poche et la pose/reprend à la demande
+// pour chaque craft 3×3 (anti-stranding — la table vient au bot, où qu'il soit, surface OU sous-sol).
+// Remplace l'ancien ensureNearTable (qui exigeait de REVENIR à une table fixe → échouait après
+// le creusage du cobble, cf. revert table-on-spot). placeBlockNear gère désormais le sous-sol.
+async function reclaimBlock(pos) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      let b = pos ? bot.blockAt(pos) : null;
+      if (!b || b.name !== 'crafting_table') {
+        const def = bot.registry.blocksByName.crafting_table;
+        b = def ? bot.findBlock({ matching: [def.id], maxDistance: 4 }) : null;
+      }
+      if (!b) return;                              // plus de table posée → déjà reprise
+      await bot.collectBlock.collect(b);
+      return;                                      // repris
+    } catch (e) { /* retry une fois */ }
+  }
+}
+
+// Garantit une table à portée le temps d'exécuter fn (un craft), puis reprend la table si on l'a posée.
+async function withCraftingTable(fn) {
+  if (_nearestTable(bot)) return fn();             // table déjà accessible (la nôtre, ou un reste)
+  const place = await placeBlockNear(bot, 'crafting_table');
+  if (!place.ok) return { ok: false, reason: 'no_table' };
+  const r = await fn();
+  await reclaimBlock(place.pos);                   // garder la table PORTABLE (1 seule)
+  return r;
+}
+
+// Craft "intelligent" : tente direct (2×2, ou table déjà à portée) ; si pas de recette faute de table
+// (craft 3×3), pose une table portable, re-tente, puis reprend la table.
+async function craftSmart(args) {
+  const r = await craftItem(bot, args);
+  if (r.ok) return r;
+  if (r.reason === 'no_recipe') return withCraftingTable(() => craftItem(bot, args));
+  return r;
 }
 
 // Dispatch d'un but de la chaîne vers le skill réel (0 token).
 async function runGoalSkill(goal) {
   if (goal.skill === 'gatherLog') {
-    const logName = Object.keys(bot.registry.blocksByName).find((n) => n.endsWith('_log')) || 'oak_log';
-    return gather(bot, { name: logName, count: goal.args.count }, taskToken);
+    // arbre le plus proche de N'IMPORTE quelle essence (pas oak hardcodé) — robustesse terrain
+    const logNames = Object.keys(bot.registry.blocksByName).filter((n) => n.endsWith('_log'));
+    return gather(bot, { name: logNames.length ? logNames : 'oak_log', count: goal.args.count }, taskToken);
   }
   if (goal.skill === 'gather') return gather(bot, goal.args, taskToken);
   if (goal.skill === 'craftPlanks') {
@@ -124,8 +151,7 @@ async function runGoalSkill(goal) {
     if (!log) return { ok: false, reason: 'not_found' };
     return craftItem(bot, { name: log.name.replace('_log', '_planks'), count: goal.args.count });
   }
-  if (goal.skill === 'craft') { await ensureNearTable(); return craftItem(bot, goal.args); }
-  if (goal.skill === 'placeTable') return placeBlockNear(bot, 'crafting_table');
+  if (goal.skill === 'craft') return craftSmart(goal.args);    // pose une table portable si craft 3×3
   return { ok: false, reason: 'unknown_skill' };
 }
 
@@ -167,7 +193,13 @@ async function onSpawn() {
   emit({ type: 'status', state: 'spawned', username: bot.username, profile: profile ? profile.id : null });
   if (!bootDone) {
     // une seule fois par connexion : sinon 'spawn' (respawn) ré-ajoute des listeners (fuite, MaxListeners)
-    bot.pathfinder.setMovements(new Movements(bot));
+    // Movements : défense en profondeur contre le stranding au minage (la table portable est le vrai fix).
+    const moves = new Movements(bot);
+    moves.canDig = true;            // doit pouvoir miner pour atteindre le cobble
+    moves.allow1by1towers = true;   // peut remonter en colonne (cobble en poche) → pas coincé au fond
+    moves.allowParkour = true;
+    if (typeof moves.maxDropDown === 'number') moves.maxDropDown = 4; // limite les chutes profondes
+    bot.pathfinder.setMovements(moves);
     installReflexes(bot, { emit, fleeFrom });
     await tryAuth();
     bootDone = true;
