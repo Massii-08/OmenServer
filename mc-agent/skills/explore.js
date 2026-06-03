@@ -135,6 +135,10 @@ async function explore(bot, opts = {}) {
           const d = distTo(cur);
           if (d < lastD - 8) { lastD = d; continue; } // on s'est rapproché → persiste
           if (attempts >= 2) break;                   // 2 tentatives sans progrès → anneaux
+          // Rejet sans progrès (souvent NoPath TRANSITOIRE : chunks pas encore chargés autour d'un
+          // bot frais/tp, vu live HarvT8) → petite grâce avant l'unique retry.
+          const grace = opts.directedRetryDelayMs !== undefined ? opts.directedRetryDelayMs : 1500;
+          if (grace) await new Promise((r) => setTimeout(r, grace));
         }
       }
     }

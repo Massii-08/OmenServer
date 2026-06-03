@@ -226,9 +226,25 @@ test('explore : goto dirigé interrompu SANS progrès → 2 tentatives max puis 
     return realGoto(goal);
   };
   const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 600, z: 0 }], biomes: [] } } };
-  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w' });
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', directedRetryDelayMs: 0 });
   assert.strictEqual(res.ok, true, 'trouvé via les anneaux');
   assert.notStrictEqual(res.directed, true, 'directed abandonné après 2 tentatives sans progrès');
+});
+
+test('explore : rejet sans progrès → grâce (délai) AVANT le retry — chunks transitoires (HarvT8)', async () => {
+  const { bot } = makeBot({ target: pos(100, 70, 0) });
+  const realGoto = bot.pathfinder.goto;
+  let n = 0;
+  const stamps = [];
+  bot.pathfinder.goto = async (goal) => {
+    stamps.push(Date.now());
+    if (n++ === 0) throw new Error('NoPath'); // rejet immédiat (chunks pas chargés)
+    return realGoto(goal);
+  };
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 100, z: 0 }], biomes: [] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', directedRetryDelayMs: 120 });
+  assert.strictEqual(res.directed, true, 'le retry post-grâce a réussi');
+  assert.ok(stamps[1] - stamps[0] >= 100, `≥100ms écoulées entre les 2 tentatives (mesuré ${stamps[1] - stamps[0]}ms)`);
 });
 
 test('explore : goto dirigé qui hang → timeout borné → retombe en anneaux', async () => {
