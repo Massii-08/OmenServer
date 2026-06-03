@@ -379,6 +379,10 @@ async function onSpawn() {
     moves.allow1by1towers = true;   // peut remonter en colonne (cobble en poche) → pas coincé au fond
     moves.allowParkour = true;
     if (typeof moves.maxDropDown === 'number') moves.maxDropDown = 4; // limite les chutes profondes
+    // Anti-noyade (vu live HarvT7 : drowned ×3 en trajet dirigé) : l'eau coûte CHER au pathfinder →
+    // il contourne les lacs/rivières quand un chemin terrestre existe (coût fini : traverse encore
+    // si c'est la SEULE option ; le réflexe oxygène de reflexes.js est le filet de sécurité).
+    if (typeof moves.liquidCost === 'number') moves.liquidCost = 20;
     bot.pathfinder.setMovements(moves);
     installReflexes(bot, { emit, fleeFrom });
     await tryAuth();

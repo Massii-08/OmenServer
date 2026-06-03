@@ -34,11 +34,14 @@ function shouldFlee(bot) {
   return !!creeper;
 }
 
+const OXYGEN_THRESHOLD = 5;   // sur 20 — en dessous : urgence remonter
+
 /** Branche les réflexes sur le bot. opts: { emit, fleeFrom } injectables. */
 function installReflexes(bot, opts = {}) {
   const emit = opts.emit || (() => {});
   const flee = opts.fleeFrom || (() => {});
   let fleeing = false;
+  let surfacing = false;
 
   const react = () => {
     tryEat(bot).then((ate) => { if (ate) emit({ type: 'reflex', action: 'eat' }); }).catch(() => {});
@@ -49,8 +52,28 @@ function installReflexes(bot, opts = {}) {
     }
   };
 
+  // Anti-noyade (vu live HarvT7 : drowned ×3 — pathfinder traverse l'eau, flee sous l'eau → air
+  // épuisé). Air bas → on coupe TOUT goal (la traversée/le flee) et on remonte (jump). PRIORITAIRE
+  // sur les autres réflexes : un mort ne fuit plus.
+  const breathe = () => {
+    const o2 = bot.oxygenLevel;
+    if (o2 == null) return;
+    if (o2 <= OXYGEN_THRESHOLD) {
+      if (!surfacing) {
+        surfacing = true;
+        try { bot.pathfinder && bot.pathfinder.setGoal && bot.pathfinder.setGoal(null); } catch (e) {}
+        try { bot.setControlState && bot.setControlState('jump', true); } catch (e) {}
+        emit({ type: 'reflex', action: 'surface' });
+      }
+    } else if (surfacing && o2 >= 15) { // hystérésis : on relâche une fois l'air franchement revenu
+      surfacing = false;
+      try { bot.setControlState && bot.setControlState('jump', false); } catch (e) {}
+    }
+  };
+
   bot.on('health', react);
-  return { react };
+  bot.on('breath', breathe);
+  return { react, breathe };
 }
 
 module.exports = { tryEat, shouldFlee, installReflexes, HUNGER_THRESHOLD, HEALTH_THRESHOLD, FOODS };
