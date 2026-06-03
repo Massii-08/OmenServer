@@ -62,10 +62,11 @@ Fichier : `data/mc_agent_world_memory/<group_id>.json`
 - Au lancement, le manager écrit la mémoire courante du groupe dans un fichier temp passé via
   **`--world-memory <file>`** (même pattern que `--world` / `--commands` / `--policy`,
   cf. pièges #38/#39/#40).
-- Les **récolteurs** : `explore` consulte la partition du monde courant via une table
-  **matériau→biome** (`*_log → forest/taiga/jungle`, `sand → desert/beach`, `cactus → desert`, …) :
-  si un biome correspondant est connu à coords C (à portée raisonnable, cap ex. 1500 blocs) →
-  **voyage dirigé vers C d'abord**, puis re-scan en anneaux ; sinon → recherche en anneaux actuelle.
+- Les **récolteurs** : `explore` consulte la partition du monde courant via les **associations
+  matériau↔biome APPRISES** (index `finds` du store, cf. §13 — robuste aux biomes custom des
+  datapacks ; table vanilla `*_log→forest/taiga`, `sand→desert`… = simple **amorce**) : si un biome
+  connu pour contenir M est à coords C (à portée raisonnable, cap ex. 1500 blocs) → **voyage dirigé
+  vers C d'abord**, puis re-scan en anneaux ; sinon → recherche en anneaux actuelle.
 - Les **caves connues** sont aussi exploitables par les récolteurs (Phase 2) pour trouver des minerais
   exposés.
 
@@ -168,3 +169,20 @@ Puis bascule en **mode cartographie**.
   si fer rare (registry-gated, cf. §5.1 ; sans effet sur 1.21.4 qui n'a pas le cuivre-outil).
 - **Secteurs** : **recouvrement léger** (360/N + marge) → pas de trou aux frontières.
 - **Entrées de grotte** : **coords seulement** (x,y,z) — pas de taille/direction en Phase 1.
+
+## 13. Datapacks (biomes / caves / structures modifiés)
+
+Les serveurs ont des **datapacks** → biomes/caves/structures custom. Le design est agnostique :
+
+- **Biomes** : le store enregistre ce que le serveur rapporte (`block.biome`), vanilla **ou** custom —
+  aucune validation contre une liste vanilla. ⚠️ mineflayer peut ne livrer qu'un **id numérique** pour
+  un biome custom → on stocke **`name` ET `id`** ; dédup/match sur `name` si présent, sinon `id` ; on
+  ne jette **jamais** un biome juste parce que son nom est inconnu.
+- **Matériau↔biome = APPRIS, pas codé en dur** : un datapack peut placer une ressource dans un biome
+  custom. Quand un bot récolte M dans le biome B → on enregistre l'association (index `finds` du
+  store : `M → {biome, x, z}`). Les récolteurs frais utilisent ces associations **observées** (§4).
+  Table vanilla = amorce/fallback. (Index `finds` : store en **1a**, exploité en **1d**.)
+- **Caves** : détection **géométrique** (colonnes d'air) → indépendante des datapacks (best-effort).
+- **Structures (Phase 2)** : `/locate structure <id>` accepte les **ids custom** → l'admin fournit la
+  liste des ids de structures custom **par groupe** ; le fallback **cluster d'entités** est agnostique.
+- **Robustesse code** : nulle part on ne hardcode/valide contre une liste vanilla (biomes/structures).

@@ -78,3 +78,48 @@ def test_save_load_delete_roundtrip(tmp_path):
 def test_load_missing_or_bad_id_returns_empty(tmp_path):
     assert wm.load("nope", base_dir=tmp_path)["worlds"] == {}
     assert wm.load("../etc", base_dir=tmp_path)["worlds"] == {}  # id invalide (traversal) → vide, pas de crash
+
+
+# --- Datapacks : biomes custom (id sans nom) + index d'associations apprises (finds) ---
+
+def test_add_biome_with_id_no_name():
+    m = wm.empty_memory("g")
+    wm.add_biome(m, "w", None, 10, 20, at="t1", id=42)  # biome custom sans nom connu → gardé via id
+    biomes = m["worlds"]["w"]["biomes"]
+    assert len(biomes) == 1
+    assert biomes[0]["id"] == 42
+    assert not biomes[0].get("name")
+
+
+def test_add_biome_dedup_by_id_when_no_name():
+    m = wm.empty_memory("g")
+    wm.add_biome(m, "w", None, 10, 20, at="t1", id=42)
+    wm.add_biome(m, "w", None, 30, 40, at="t2", id=42)   # même cellule + même id → dédup
+    wm.add_biome(m, "w", None, 10, 20, at="t3", id=99)   # même cellule, id différent → distinct
+    assert len(m["worlds"]["w"]["biomes"]) == 2
+
+
+def test_add_biome_drops_only_if_no_name_and_no_id():
+    m = wm.empty_memory("g")
+    wm.add_biome(m, "w", None, 0, 0, at="t1", id=None)  # ni nom ni id → ignoré (rien à indexer)
+    w = m["worlds"].get("w")
+    assert w is None or w["biomes"] == []
+
+
+def test_add_find_and_dedup():
+    m = wm.empty_memory("g")
+    wm.add_find(m, "w", "oak_log", "forest", 100, 50, at="t1")
+    wm.add_find(m, "w", "oak_log", "forest", 120, 60, at="t2")  # même (matériau,biome) → dédup, coords MAJ
+    wm.add_find(m, "w", "oak_log", "taiga", 200, 0, at="t3")    # autre biome → distinct
+    finds = m["worlds"]["w"]["finds"]
+    assert len(finds) == 2
+    oak_forest = [f for f in finds if f["biome"] == "forest"][0]
+    assert oak_forest["x"] == 120 and oak_forest["at"] == "t2"
+
+
+def test_apply_event_material_found():
+    m = wm.empty_memory("g")
+    wm.apply_event(m, {"type": "material_found", "world": "w", "material": "iron_ore",
+                       "biome": "datapack:crystal_hills", "x": 5, "z": 9}, at="t1")  # biome custom OK
+    finds = m["worlds"]["w"]["finds"]
+    assert len(finds) == 1 and finds[0]["material"] == "iron_ore" and finds[0]["biome"] == "datapack:crystal_hills"
