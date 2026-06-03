@@ -137,8 +137,23 @@ async function reclaimBlock(pos, blockName = 'crafting_table') {
 }
 
 // Garantit une table à portée le temps d'exécuter fn (un craft), puis reprend la table si on l'a posée.
+// ⚠️ findBlock(6) > portée d'interaction (~4.5) : une table « proche » peut être INATTEIGNABLE (jungle :
+// posée sous la canopée pendant que le bot est dans l'arbre) → on s'en APPROCHE d'abord ; si le craft
+// échoue quand même, on pose une table portable en fallback (vu live MapT1 : stall wooden_pickaxe ×4).
 async function withCraftingTable(fn) {
-  if (_nearestTable(bot)) return fn();             // table déjà accessible (la nôtre, ou un reste)
+  const t = _nearestTable(bot);
+  if (t) {
+    try {
+      if (bot.entity.position.distanceTo(t.position) > 3) {
+        await withTimeout(
+          bot.pathfinder.goto(new pfGoals.GoalNear(t.position.x, t.position.y, t.position.z, 2)),
+          30000, () => { try { stopMotion(); } catch (e) {} }
+        );
+      }
+    } catch (e) { /* pas de chemin → on tentera la table portable */ }
+    const r0 = await fn();
+    if (r0.ok) return r0;                          // table existante atteinte → craft passé
+  }
   const place = await placeBlockNear(bot, 'crafting_table');
   if (!place.ok) return { ok: false, reason: 'no_table' };
   const r = await fn();

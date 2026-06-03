@@ -183,3 +183,21 @@ test('runMapper : survie prioritaire — hostile×3 → fuit avant de bouger (su
   assert.ok(fled >= 1, 'fleeFrom jamais appelé malgré 3 hostiles');
   assert.ok(events.some((e) => e.type === 'survival' && e.action === 'flee'));
 });
+
+test('runMapper : résout le nom de biome via bot.registry quand block.biome n\'a qu\'un id (vu live 1.21.4)', async () => {
+  const bot = fakeMapperBot();
+  bot.registry.biomes = { 28: { name: 'jungle' } };
+  bot.blockAt = (p) => ({ name: 'stone', boundingBox: 'block', biome: { id: 28 } }); // PAS de name
+  const events = [];
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: (e) => { events.push(e); if (events.filter((x) => x.type === 'biome_seen').length >= 2) token.cancelled = true; },
+    goto: async (wp) => { bot.entity.position = vec3(wp.x, 64, wp.z); },
+    step: 80, batchRadius: 160, sleep: async () => {},
+  }, token);
+  const biomes = events.filter((e) => e.type === 'biome_seen');
+  assert.ok(biomes.length >= 1);
+  assert.strictEqual(biomes[0].name, 'jungle'); // résolu via registry, pas null
+  assert.strictEqual(biomes[0].id, 28);
+});

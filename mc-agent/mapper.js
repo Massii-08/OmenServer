@@ -84,7 +84,15 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
       biomeCells.add(ck);
       try {
         const block = bot.blockAt(bot.entity.position.floored ? bot.entity.position.floored() : bot.entity.position);
-        if (block && block.biome) emit(biomeSeenEvent(worldKey, block, p));
+        if (block && block.biome) {
+          // mineflayer 1.21.x ne livre souvent que l'id → résoudre le nom via le registry (les noms
+          // alimentent l'amorce vanilla des récolteurs ; un biome custom datapack reste id-only, OK).
+          let biome = block.biome;
+          if (biome.name == null && biome.id != null && bot.registry && bot.registry.biomes && bot.registry.biomes[biome.id]) {
+            biome = { name: bot.registry.biomes[biome.id].name, id: biome.id };
+          }
+          emit(biomeSeenEvent(worldKey, { biome }, p));
+        }
       } catch (e) { /* chunk non chargé → on émettra à la prochaine cellule */ }
     }
     try {
