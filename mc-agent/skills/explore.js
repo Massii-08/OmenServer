@@ -113,10 +113,15 @@ async function explore(bot, opts = {}) {
       // y de la cible : une CAVE porte le y de son entrée (GoalNear 3D précis, le pathfinder peut
       // creuser) ; un find/biome n'a que x,z → on garde l'altitude courante.
       const ty = (typeof target.y === 'number') ? target.y : origin.y;
-      // 2 tentatives : un goto peut être interrompu PONCTUELLEMENT (réflexe flee → GoalChanged, vu
-      // live HarvT7) → on reprend SA route une fois. Un TIMEOUT (cible gelée/inatteignable 240s) ne
-      // mérite pas de 2e chance → anneaux directement.
-      for (let attempt = 0; attempt < 2; attempt++) {
+      // Persistance dirigée : un goto peut être interrompu en RAFALE (réflexes flee/surface →
+      // GoalChanged, vu live HarvT7 barbotant dans une rivière) → on reprend SA route tant que
+      // chaque tentative RAPPROCHE de la cible (>8 blocs), avec 1 retry de grâce sans progrès.
+      // Un TIMEOUT (cible gelée/inatteignable 240s) ne mérite pas de 2e chance → anneaux.
+      const distTo = (p) => Math.sqrt((p.x - target.x) ** 2 + (p.z - target.z) ** 2);
+      let lastD = distTo(origin);
+      let attempts = 0;
+      while (attempts < 6) {
+        attempts++;
         try {
           await gotoWithTimeout(bot, buildNearGoal(target.x, ty, target.z, 8), directedGotoTimeoutMs);
           if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
@@ -126,7 +131,10 @@ async function explore(bot, opts = {}) {
         } catch (e) {
           if (e && e.message === 'goto_timeout') break; // gelé → anneaux
           if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
-          // interruption ponctuelle → retente une fois (attempt 1), sinon anneaux
+          const cur = (bot.entity && bot.entity.position) || origin;
+          const d = distTo(cur);
+          if (d < lastD - 8) { lastD = d; continue; } // on s'est rapproché → persiste
+          if (attempts >= 2) break;                   // 2 tentatives sans progrès → anneaux
         }
       }
     }

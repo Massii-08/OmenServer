@@ -195,6 +195,42 @@ test('explore : goto dirigé interrompu (GoalChanged ponctuel, ex. réflexe flee
   assert.strictEqual(n, 2, 'goto dirigé tenté 2 fois');
 });
 
+test('explore : goto dirigé interrompu PLUSIEURS fois mais le bot PROGRESSE → persiste jusqu\'à la cible', async () => {
+  // Vu live : réflexe surface (eau) coupe le goal en rafale → le retry fixe (1×) était consommé
+  // pendant le barbotage. Tant que chaque tentative RAPPROCHE de la cible, on persiste.
+  const { bot, calls } = makeBot({ target: pos(400, 70, 0) });
+  const realGoto = bot.pathfinder.goto;
+  let n = 0;
+  bot.pathfinder.goto = async (goal) => {
+    n++;
+    if (n <= 3) { // 3 interruptions, mais on avance de 120 blocs à chaque fois
+      const p = bot.entity.position;
+      bot.entity.position = pos(p.x + 120, p.y, p.z);
+      throw new Error('GoalChanged');
+    }
+    return realGoto(goal);
+  };
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 400, z: 0 }], biomes: [] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w' });
+  assert.strictEqual(res.directed, true, 'la persistance directed a fini par atteindre la cible');
+  assert.strictEqual(n, 4, '4 tentatives (3 interrompues avec progrès + 1 finale)');
+});
+
+test('explore : goto dirigé interrompu SANS progrès → 2 tentatives max puis anneaux', async () => {
+  const { bot } = makeBot({ target: pos(100, 70, 0) });
+  const realGoto = bot.pathfinder.goto;
+  let n = 0;
+  bot.pathfinder.goto = async (goal) => {
+    n++;
+    if (n <= 2) throw new Error('GoalChanged'); // interrompu, bot IMMOBILE (pas de progrès)
+    return realGoto(goal);
+  };
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 600, z: 0 }], biomes: [] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w' });
+  assert.strictEqual(res.ok, true, 'trouvé via les anneaux');
+  assert.notStrictEqual(res.directed, true, 'directed abandonné après 2 tentatives sans progrès');
+});
+
 test('explore : goto dirigé qui hang → timeout borné → retombe en anneaux', async () => {
   const { bot, calls } = makeBot({ target: pos(100, 70, 0) });
   const realGoto = bot.pathfinder.goto;
