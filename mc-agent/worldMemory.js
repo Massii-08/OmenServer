@@ -58,6 +58,19 @@ function readBiome(block) {
   return { name: b.name || null, id: (b.id !== undefined ? b.id : null) };
 }
 
+/**
+ * Comme readBiome, mais résout le nom via bot.registry quand mineflayer ne livre que l'id.
+ * ⚠️ live 1.21.4 : block.biome.name est une chaîne VIDE ('' — pas null/undefined) → test falsy.
+ * Un biome custom datapack absent du registry reste id-only (jamais jeté, cf. §13 spec).
+ */
+function resolveBiome(bot, block) {
+  const { name, id } = readBiome(block);
+  if (name || id == null) return { name, id };
+  const reg = bot && bot.registry && bot.registry.biomes;
+  const hit = reg && reg[id];
+  return { name: (hit && hit.name) || null, id };
+}
+
 function biomeSeenEvent(world, block, pos) {
   const { name, id } = readBiome(block);
   return { type: 'biome_seen', world, name, id, x: Math.round(pos.x), z: Math.round(pos.z) };
@@ -107,6 +120,6 @@ function directedTarget(memory, world, material, from, opts = {}) {
 }
 
 module.exports = {
-  vanillaHint, parseMemory, loadMemory, worldKey, readBiome,
+  vanillaHint, parseMemory, loadMemory, worldKey, readBiome, resolveBiome,
   biomeSeenEvent, caveFoundEvent, materialFoundEvent, directedTarget,
 };

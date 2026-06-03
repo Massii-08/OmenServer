@@ -63,3 +63,19 @@ test('directedTarget : rien de connu → null ; hors maxDist → null', () => {
   const mem = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 9000, z: 0 }] } } };
   assert.strictEqual(wm.directedTarget(mem, 'w', 'oak_log', { x: 0, z: 0 }, { maxDist: 1500 }), null);
 });
+
+// --- resolveBiome (#2 retours live : biome.name = '' en 1.21.4, résolu via registry) ---
+const { resolveBiome } = require('./worldMemory');
+
+test('resolveBiome : nom vide + id -> résolu via bot.registry.biomes', () => {
+  const bot = { registry: { biomes: { 28: { name: 'jungle' } } } };
+  assert.deepStrictEqual(resolveBiome(bot, { biome: { name: '', id: 28 } }), { name: 'jungle', id: 28 });
+  assert.deepStrictEqual(resolveBiome(bot, { biome: { id: 28 } }), { name: 'jungle', id: 28 });
+});
+
+test('resolveBiome : nom déjà présent -> inchangé ; id inconnu du registry -> id-only (datapack)', () => {
+  const bot = { registry: { biomes: {} } };
+  assert.deepStrictEqual(resolveBiome(bot, { biome: { name: 'forest', id: 4 } }), { name: 'forest', id: 4 });
+  assert.deepStrictEqual(resolveBiome(bot, { biome: { name: '', id: 999 } }), { name: null, id: 999 });
+  assert.deepStrictEqual(resolveBiome(bot, null), { name: null, id: null });
+});

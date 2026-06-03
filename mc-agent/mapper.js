@@ -12,7 +12,7 @@
 const { nextWaypoints } = require('./skills/explore');
 const { sectorRange, filterToSector, skipMapped } = require('./sectors');
 const { detectCaveEntrance } = require('./caves');
-const { biomeSeenEvent, caveFoundEvent } = require('./worldMemory');
+const { biomeSeenEvent, caveFoundEvent, resolveBiome } = require('./worldMemory');
 const { survivalTick } = require('./survival');
 
 const GRID = 128;          // même grille que le store backend (quantif/dédup)
@@ -85,14 +85,9 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
       try {
         const block = bot.blockAt(bot.entity.position.floored ? bot.entity.position.floored() : bot.entity.position);
         if (block && block.biome) {
-          // mineflayer 1.21.x ne livre souvent que l'id → résoudre le nom via le registry (les noms
-          // alimentent l'amorce vanilla des récolteurs ; un biome custom datapack reste id-only, OK).
-          // ⚠️ live 1.21.4 : biome.name = '' (chaîne VIDE, pas null) → !name, pas == null
-          let biome = block.biome;
-          if (!biome.name && biome.id != null && bot.registry && bot.registry.biomes && bot.registry.biomes[biome.id]) {
-            biome = { name: bot.registry.biomes[biome.id].name, id: biome.id };
-          }
-          emit(biomeSeenEvent(worldKey, { biome }, p));
+          // resolveBiome (worldMemory) : nom résolu via registry quand mineflayer ne livre que l'id
+          // (live 1.21.4 : biome.name = '' — les noms alimentent l'amorce vanilla des récolteurs).
+          emit(biomeSeenEvent(worldKey, { biome: resolveBiome(bot, block) }, p));
         }
       } catch (e) { /* chunk non chargé → on émettra à la prochaine cellule */ }
     }

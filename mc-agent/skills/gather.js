@@ -2,7 +2,7 @@
 // `take <bloc> [n]` : récolte n× le bloc le + proche avec le meilleur outil, en se défendant.
 const { bestToolFor, bestWeapon } = require('../tools');
 const { explore } = require('./explore');
-const { materialFoundEvent } = require('../worldMemory');
+const { materialFoundEvent, resolveBiome } = require('../worldMemory');
 
 function _ids(bot, name) {
   if (!bot.registry || !bot.registry.blocksByName) return null;
@@ -62,9 +62,17 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
     }
     const tool = bestToolFor(bot, block);
     if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
-    const biomeName = block.biome && block.biome.name;  // capturé avant collect (le bloc devient air)
+    // resolveBiome : en 1.21.4 block.biome.name est '' → résolu via registry (sinon material_found muet)
+    const biomeName = resolveBiome(bot, block).name;    // capturé avant collect (le bloc devient air)
     try { await bot.collectBlock.collect(block); got++; }
-    catch (e) { if (got === 0) return { ok: false, reason: 'collect_failed' }; break; }
+    catch (e) {
+      // #2 retours live : un dig peut être interrompu (aggro/mouvement/désync) → re-équipe et retente UNE fois
+      try {
+        const tool2 = bestToolFor(bot, block);
+        if (tool2) { try { await bot.equip(tool2, 'hand'); } catch (e2) {} }
+        await bot.collectBlock.collect(block); got++;
+      } catch (e2) { if (got === 0) return { ok: false, reason: 'collect_failed' }; break; }
+    }
     // Boucle d'apprentissage (1d) : note "ce matériau a été trouvé dans ce biome ici" → mémoire du
     // groupe (event material_found capté par le manager). Robuste datapacks (on n'apprend que l'observé).
     if (bot._emit && bot._worldKey && block.name && biomeName) {
