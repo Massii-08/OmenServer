@@ -78,6 +78,10 @@ Avant de cartographier, le bot se fait un **kit minimal pierre/fer** (réutilise
 existantes, version réduite) :
 - bois → planches → établi → bâtons → pioche bois → **pioche pierre** + **épée pierre** ;
 - optionnel rapide : four + 2-3 fer → **épée fer** (+ 1 pièce d'armure si trivial).
+- **fallback cuivre** si le fer est rare à proximité : épée/outils/armure **cuivre** — **registry-gated**
+  (utilisé UNIQUEMENT si `copper_sword`/`copper_pickaxe`/… existent dans `bot.registry`, c.-à-d. vanilla
+  **1.21.9+** ou serveur moddé/datapack). ⚠️ Sur la **1.21.4** (serveur de test) le cuivre-outil n'existe
+  pas → pas de fallback → on reste à la pierre. Robuste à la version.
 - But : pouvoir **se défendre un minimum** et **creuser** (abri / accès cave), pas une chaîne complète.
 Puis bascule en **mode cartographie**.
 
@@ -158,9 +162,9 @@ Puis bascule en **mode cartographie**.
   d'entités) ; (d) `explore` lui-même **pas encore validé live** (bloqué réseau) → 1a/1b en dépendent
   pour le smoke final.
 
-## 12. Questions ouvertes
+## 12. Décisions (résolues 2026-06-03)
 
-- Mini-kit : s'arrêter à la **pierre** (épée+pioche) suffit, ou pousser jusqu'au **fer** (épée+armure) ?
-  (proposé : pierre obligatoire, fer « si trivial/rapide ».)
-- Secteurs : largeur fixe (360/N) ou recouvrement léger pour ne pas laisser de trous aux frontières ?
-- Caches caves : faut-il aussi noter la **profondeur/►direction** de l'entrée, ou juste les coords ?
+- **Mini-kit** : pierre (épée+pioche) **obligatoire** → fer « si trivial/rapide » → **fallback cuivre**
+  si fer rare (registry-gated, cf. §5.1 ; sans effet sur 1.21.4 qui n'a pas le cuivre-outil).
+- **Secteurs** : **recouvrement léger** (360/N + marge) → pas de trou aux frontières.
+- **Entrées de grotte** : **coords seulement** (x,y,z) — pas de taille/direction en Phase 1.
