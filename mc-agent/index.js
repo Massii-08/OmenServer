@@ -393,13 +393,21 @@ async function tryKitUpgrade() {
   } catch (e) { /* best-effort : on cartographie à la pierre */ }
 }
 
+// Exécute un skill de but avec timeout + TÉLÉMÉTRIE d'échec : sans la raison dans les logs live,
+// un stall est indiagnosticable à distance (vécu Surv2 : stone_sword ×5 sans explication).
+async function runSkillWithTelemetry(g) {
+  const r = await withTimeout(runGoalSkill(g), timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} });
+  if (!r || r.ok === false) emit({ type: 'goal_failed', name: g.name, reason: (r && r.reason) || 'unknown' });
+  return r;
+}
+
 // Boucle cartographe (objectif `mapper`) : mini-kit pierre via planner → upgrade best-effort →
 // cartographie CONTINUE (ne « finit » jamais — seule l'annulation/stop l'arrête).
 async function startMapper() {
   const kitChain = chainFor('mapper');
   const runKit = () => runPlanner(bot, {
     chain: kitChain,
-    runSkill: (g) => withTimeout(runGoalSkill(g), timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} }),
+    runSkill: (g) => runSkillWithTelemetry(g),
     ctxExtra,
     onStep: (g) => emit({ type: 'goal', name: g.name }),
   }, taskToken);
@@ -456,7 +464,7 @@ async function startAutonomous(sender) {
   const chain = chainFor(objType);               // pioche pierre (MVP) ou pioche fer (IRON_CHAIN)
   const res = await runPlanner(bot, {
     chain,
-    runSkill: (g) => withTimeout(runGoalSkill(g), timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} }),
+    runSkill: (g) => runSkillWithTelemetry(g),
     ctxExtra,
     onStep: (g) => emit({ type: 'goal', name: g.name }),
   }, taskToken);
