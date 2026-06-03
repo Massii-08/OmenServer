@@ -137,3 +137,27 @@ test('explore : biais dirigé via amorce vanilla (biomes connus, pas de finds)',
   assert.strictEqual(res.directed, true);
   assert.ok(Math.abs(calls.goto[0].x - 200) <= 1, 'allé au biome forest connu (amorce *_log)');
 });
+
+test('explore : biais caves (1d) — minerai → va à l\'entrée de grotte connue la + proche', async () => {
+  const { bot, calls } = makeBot({ target: pos(300, 70, -100) }); // minerai exposé près de la cave
+  const memory = { worlds: { w: { finds: [], biomes: [], caves: [
+    { x: 300, y: 45, z: -100 }, { x: 2000, y: 30, z: 2000 },
+  ] } } };
+  const emits = [];
+  const res = await explore(bot, { name: 'iron_ore', matching: [42], memory, worldKey: 'w', emit: (e) => emits.push(e) });
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(res.directed, true, 'trouvé via le biais cave');
+  assert.strictEqual(calls.goto.length, 1, 'un seul déplacement, direct à la cave');
+  assert.ok(Math.abs(calls.goto[0].x - 300) <= 1 && Math.abs(calls.goto[0].z - (-100)) <= 1, 'allé à la cave la + proche');
+  const ev = emits.find((e) => e.type === 'explore_directed');
+  assert.ok(ev && ev.cave === true, 'event explore_directed taggé cave:true');
+});
+
+test('explore : mémoire muette pour ce matériau → fallback aveugle (anneaux) intact', async () => {
+  const { bot, calls } = makeBot({ target: pos(100, 70, 0) });
+  const memory = { worlds: { w: { finds: [{ material: 'sand', biome: 'desert', x: 500, z: 500 }], biomes: [], caves: [] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w' });
+  assert.strictEqual(res.ok, true, 'trouvé quand même via les anneaux');
+  assert.notStrictEqual(res.directed, true, 'pas de ciblage dirigé (rien de connu pour oak_log)');
+  assert.ok(calls.goto.length >= 1, 'recherche en anneaux effectuée');
+});

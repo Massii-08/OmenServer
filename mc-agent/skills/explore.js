@@ -84,7 +84,7 @@ async function explore(bot, opts = {}) {
       if (target) break;
     }
     if (target) {
-      if (emit) { try { emit({ type: 'explore_directed', x: Math.round(target.x), z: Math.round(target.z), biome: target.biome, learned: !!target.learned }); } catch (e) {} }
+      if (emit) { try { emit({ type: 'explore_directed', x: Math.round(target.x), z: Math.round(target.z), biome: target.biome, learned: !!target.learned, cave: !!target.cave }); } catch (e) {} }
       try {
         if (bot.pathfinder && bot.pathfinder.goto) await bot.pathfinder.goto(buildNearGoal(target.x, origin.y, target.z, 8));
         if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
