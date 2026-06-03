@@ -336,10 +336,12 @@ async function startMapper() {
       const ctx = Object.assign({ inv: buildCtxInv(bot) }, ctxExtra());
       if (firstUnmet(kitChain, ctx)) { emit({ type: 'mapper_kit_retry' }); await runKit(); }
     },
-    // chaque déplacement borné (anti-freeze pathfinder, cf. withTimeout) ; timeout → waypoint suivant
+    // chaque jambe bornée (anti-freeze pathfinder, cf. withTimeout) ; timeout → virage + jambe suivante.
+    // 45s : une jambe fait 8-64 blocs à pied — si ce n'est pas atteint en 45s, c'est inatteignable
+    // (vu live MapT7B : 120s × jambes ratées en jungle dense = mapper figé de longues minutes).
     goto: (wp) => withTimeout(
       bot.pathfinder.goto(new pfGoals.GoalNear(wp.x, wp.y, wp.z, 8)),
-      120000, () => { try { stopMotion(); } catch (e) {} }
+      45000, () => { try { stopMotion(); } catch (e) {} }
     ).then((r) => { if (r && r.ok === false) throw new Error(r.reason || 'goto_failed'); }),
   }, taskToken);
 }

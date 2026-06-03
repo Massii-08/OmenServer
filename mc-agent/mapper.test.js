@@ -379,3 +379,24 @@ test('surfaceYAt : trouve le 1er bloc plein en descendant ; null si non chargé'
   const unloaded = { blockAt: () => null };
   assert.strictEqual(surfaceYAt(unloaded, 0, 0, 100), null);
 });
+
+test('runMapper : 2 jambes ratées d\'affilée → 3e jambe COURTE (8-24 blocs) pour se dégager', async () => {
+  const bot = fakeMapperBot();
+  const attempts = [];
+  let fails = 0;
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async (wp) => {
+      const here = bot.entity.position;
+      attempts.push(Math.sqrt((wp.x - here.x) ** 2 + (wp.z - here.z) ** 2));
+      if (fails < 2) { fails++; throw new Error('no_path'); }      // 2 échecs
+      bot.entity.position = vec3(wp.x, 64, wp.z);                  // puis ça passe
+      if (attempts.length >= 3) token.cancelled = true;
+    },
+    sleep: async () => {},
+  }, token);
+  assert.ok(attempts.length >= 3);
+  assert.ok(attempts[2] <= 24 + 1e-6, `3e jambe ${attempts[2].toFixed(0)} blocs — pas raccourcie`);
+});

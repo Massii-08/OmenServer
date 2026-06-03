@@ -215,6 +215,7 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   let arrivals = 0;
   let blockedStreak = 0;   // jambes bloquées d'affilée (île/cul-de-sac → souffler, anti boucle chaude)
   let surfaceTries = 0;    // remontées surface d'affilée (anti boucle si la remontée n'aboutit pas)
+  let failStreak = 0;      // jambes inatteignables d'affilée (→ jambes courtes pour se dégager)
   record(); // la cellule de départ compte
 
   while (!token.cancelled) {
@@ -274,14 +275,19 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
     }
 
     blockedStreak = 0;
+    // après des échecs consécutifs : jambes COURTES (8-24) pour se dégager du terrain difficile
+    // (jungle dense, falaises) au lieu de re-payer un long timeout sur une cible lointaine.
+    if (failStreak >= 2) target = legTarget(here, heading, rng, { minDist: 8, maxDist: 24 });
     try { await doGoto({ x: target.x, y: here.y, z: target.z }); }
     catch (e) {
       // jambe inatteignable (falaise/mur) : dégager les lianes (#9) puis tourner franchement
+      failStreak++;
       try { await clearSnares(bot); } catch (e2) {}
       heading = clampToSector(_norm(heading + Math.PI / 2 + rng() * Math.PI), sec);
-      emit({ type: 'mapper_turn', reason: 'unreachable' });
+      emit({ type: 'mapper_turn', reason: 'unreachable', streak: failStreak });
       continue;
     }
+    failStreak = 0;
     record();
     arrivals++;
     // hook périodique (ex. : re-tenter le mini-kit s'il avait stallé) — best-effort, jamais bloquant
