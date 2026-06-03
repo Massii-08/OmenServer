@@ -197,9 +197,13 @@ async function runGoalSkill(goal) {
   if (goal.skill === 'gatherLog') {
     // arbre le plus proche de N'IMPORTE quelle essence (pas oak hardcodé) — robustesse terrain
     const logNames = Object.keys(bot.registry.blocksByName).filter((n) => n.endsWith('_log'));
-    return gather(bot, { name: logNames.length ? logNames : 'oak_log', count: goal.args.count }, taskToken);
+    // explore:true → si aucun arbre à portée, le bot VOYAGE pour en trouver (autonomie ressources).
+    return gather(bot, { name: logNames.length ? logNames : 'oak_log', count: goal.args.count, explore: true }, taskToken);
   }
-  if (goal.skill === 'gather') return gather(bot, goal.args, taskToken);
+  // explore:true sur les gather de la chaîne autonome (bois/pierre/minerai) → le bot va chercher
+  // la ressource si elle n'est pas dans le voisinage. (Les gather opportunistes internes — branchMine
+  // maxDistance:6 — appellent gather() directement SANS explore → pas de roaming en plein tunnel.)
+  if (goal.skill === 'gather') return gather(bot, { ...goal.args, explore: true }, taskToken);
   if (goal.skill === 'craftPlanks') {
     const log = bot.inventory.items().find((i) => i.name.endsWith('_log'));
     if (!log) return { ok: false, reason: 'not_found' };
@@ -254,6 +258,7 @@ function tryAuth() {
 }
 
 async function onSpawn() {
+  bot._mcaProfile = profile; // expose le profil au skill explore (jitter humanisation ∝ movementJitter)
   emit({ type: 'status', state: 'spawned', username: bot.username, profile: profile ? profile.id : null });
   if (!bootDone) {
     // une seule fois par connexion : sinon 'spawn' (respawn) ré-ajoute des listeners (fuite, MaxListeners)

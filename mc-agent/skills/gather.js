@@ -1,6 +1,7 @@
 'use strict';
 // `take <bloc> [n]` : récolte n× le bloc le + proche avec le meilleur outil, en se défendant.
 const { bestToolFor, bestWeapon } = require('../tools');
+const { explore } = require('./explore');
 
 function _ids(bot, name) {
   if (!bot.registry || !bot.registry.blocksByName) return null;
@@ -37,13 +38,23 @@ async function defendIfNeeded(bot) {
 }
 
 /** Récolte `count`× le bloc `name` le + proche. {ok, reason?/got}. `token` = annulation. */
-async function gather(bot, { name, count = 1, maxDistance = 64 } = {}, token = null) {
+async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplore = false } = {}, token = null) {
   if (!name || (Array.isArray(name) && name.length === 0)) return { ok: false, reason: 'no_block' };
   let got = 0;
+  let explorations = 0;
   for (let i = 0; i < count; i++) {
     if (token && token.cancelled) return { ok: true, got, cancelled: true };
     await defendIfNeeded(bot);
-    const block = bot.findBlock({ matching: _ids(bot, name), maxDistance });
+    let block = bot.findBlock({ matching: _ids(bot, name), maxDistance });
+    // Rien à portée → exploration de surface autonome (opt-in `explore`, borné). Le bot voyage en
+    // anneaux et re-scanne jusqu'à trouver. Désactivé par défaut : les gather opportunistes (type
+    // branchMine à maxDistance:6 sur un minerai entrevu) ne doivent PAS partir roamer 256 blocs.
+    if (!block && doExplore && explorations <= count) {
+      explorations++;
+      const ex = await explore(bot, { name, matching: _ids(bot, name), scanRadius: maxDistance, token });
+      if (token && token.cancelled) return { ok: true, got, cancelled: true };
+      if (ex && ex.ok) block = bot.findBlock({ matching: _ids(bot, name), maxDistance });
+    }
     if (!block) {
       if (got === 0) return { ok: false, reason: 'not_found' };
       break;
