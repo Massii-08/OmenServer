@@ -106,6 +106,21 @@ function _pos(bot) {
 }
 
 /**
+ * Y de SURFACE à (x,z) : premier bloc non-air en descendant depuis fromY (chunks chargés only).
+ * null si colonne non chargée. Sert à détecter « enterré » (le kit laisse le bot au fond du trou
+ * à cobble → sans remontée, le mapper TUNNELLERAIT entre ses jambes au lieu de mapper la surface).
+ */
+function surfaceYAt(bot, x, z, fromY) {
+  if (!bot || typeof bot.blockAt !== 'function') return null;
+  for (let y = fromY; y > fromY - 120; y--) {
+    const b = bot.blockAt(_v(Math.floor(x), y, Math.floor(z)));
+    if (!b) return null;                                   // non chargé → pas d'info
+    if (b.name !== 'air' && b.boundingBox !== 'empty') return y;
+  }
+  return null;
+}
+
+/**
  * runMapper(bot, opts, token) — marche cartographique continue. Retourne {ok:true, cancelled:true}
  * à l'annulation (seule sortie).
  *  opts.worldKey  : clé de monde (label || dimension) — obligatoire pour les events
@@ -199,6 +214,7 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   let sectorKey = JSON.stringify(getSector() || null);
   let arrivals = 0;
   let blockedStreak = 0;   // jambes bloquées d'affilée (île/cul-de-sac → souffler, anti boucle chaude)
+  let surfaceTries = 0;    // remontées surface d'affilée (anti boucle si la remontée n'aboutit pas)
   record(); // la cellule de départ compte
 
   while (!token.cancelled) {
@@ -206,6 +222,21 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
     if (token.cancelled) break;
     await settleSurvival();
     if (token.cancelled) break;
+
+    // ENTERRÉ (fin de kit au fond du trou à cobble, chute en grotte) → REMONTER à la surface
+    // d'abord : le cartographe mappe la SURFACE, il ne tunnelle pas entre ses jambes.
+    // Borné (3 essais d'affilée) : si la remontée n'aboutit pas, on mappe quand même (best-effort).
+    {
+      const p = _pos(bot);
+      const top = surfaceYAt(bot, p.x, p.z, Math.floor(p.y) + 80);
+      if (top != null && top - p.y > 6 && surfaceTries < 3) {
+        surfaceTries++;
+        emit({ type: 'mapper_surface', from: Math.floor(p.y), to: top });
+        try { await doGoto({ x: p.x, y: top + 1, z: p.z }); } catch (e) { /* best-effort, on retentera */ }
+        continue;
+      }
+      if (top == null || top - p.y <= 6) surfaceTries = 0;   // surfacé (ou pas d'info) → compteur remis
+    }
 
     // re-balance live des secteurs (le manager re-pousse {index,count} quand N change)
     const sec = getSector();
@@ -261,4 +292,4 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   return { ok: true, cancelled: true };
 }
 
-module.exports = { drawHeading, driftHeading, legTarget, isOceanCell, waterAhead, cellKey, runMapper, GRID };
+module.exports = { drawHeading, driftHeading, legTarget, isOceanCell, waterAhead, surfaceYAt, cellKey, runMapper, GRID };

@@ -334,7 +334,9 @@ test('runMapper : hook onPeriodic appelé tous les periodicEvery arrivées (re-t
 test('runMapper : résout le nom de biome via bot.registry quand block.biome n\'a qu\'un id (vu live 1.21.4)', async () => {
   const bot = fakeMapperBot();
   bot.registry.biomes = { 28: { name: 'jungle' } };
-  bot.blockAt = (p) => ({ name: 'stone', boundingBox: 'block', biome: { id: 28, name: '' } });
+  bot.blockAt = (p) => (p.y > 63
+    ? { name: 'air', boundingBox: 'empty', biome: { id: 28, name: '' } }
+    : { name: 'stone', boundingBox: 'block', biome: { id: 28, name: '' } });
   const events = [];
   const token = { cancelled: false };
   await runMapper(bot, {
@@ -347,4 +349,33 @@ test('runMapper : résout le nom de biome via bot.registry quand block.biome n\'
   assert.ok(biomes.length >= 1);
   assert.strictEqual(biomes[0].name, 'jungle'); // résolu via registry, pas null
   assert.strictEqual(biomes[0].id, 28);
+});
+
+test('runMapper : ENTERRÉ au démarrage (fin de kit au fond du trou) → remonte à la surface AVANT de mapper', async () => {
+  const bot = fakeMapperBot();
+  bot.entity.position = vec3(0, 40, 0);             // 24 blocs sous la surface (y=63 = stone top)
+  const events = [];
+  const gotos = [];
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: (e) => { events.push(e); },
+    goto: async (wp) => {
+      gotos.push(wp);
+      bot.entity.position = vec3(wp.x, wp.y != null ? wp.y : 64, wp.z);
+      if (gotos.length >= 3) token.cancelled = true;
+    },
+    sleep: async () => {},
+  }, token);
+  const surf = events.find((e) => e.type === 'mapper_surface');
+  assert.ok(surf, 'mapper_surface jamais émis (le bot tunnellerait sous terre)');
+  assert.ok(gotos[0].y > 60, `1er goto vers y=${gotos[0].y} — pas une remontée surface`);
+});
+
+test('surfaceYAt : trouve le 1er bloc plein en descendant ; null si non chargé', () => {
+  const bot = fakeMapperBot();                       // stone ≤63, air au-dessus
+  const { surfaceYAt } = require('./mapper');
+  assert.strictEqual(surfaceYAt(bot, 0, 0, 100), 63);
+  const unloaded = { blockAt: () => null };
+  assert.strictEqual(surfaceYAt(unloaded, 0, 0, 100), null);
 });
