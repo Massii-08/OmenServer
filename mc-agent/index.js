@@ -219,9 +219,10 @@ async function smeltWithFurnace(input, output, count) {
 const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // Skills DIAMANT longs par nature : descente y=64→-54 (118 blocs × ~4s avec pathfinder = trop juste
 // à 6 min) + branch mining 48 + 2×8 branches (~64 blocs avec pathfinder entre chaque dig). 15 min/chacun.
-// gather : 8 min — un trajet DIRIGÉ légitime peut faire ≤1500 blocs (mémoire de monde) ; sûr car
-// chaque goto interne d'explore est borné individuellement (directed 240s / waypoint 90s).
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, gather: 480000 };
+// gather/gatherLog : 8 min — un trajet DIRIGÉ légitime peut faire ≤1500 blocs (mémoire de monde) ;
+// sûr car chaque goto interne d'explore est borné individuellement (directed 240s / waypoint 90s).
+// gatherLog aligné sur gather (les DEUX passent explore:true — revue indépendante #6).
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, gather: 480000, gatherLog: 480000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
