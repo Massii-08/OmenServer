@@ -1,28 +1,32 @@
 'use strict';
-// Boucle de cartographie du bot « cartographe » (1b, 0 LLM) — ERRANCE ORGANIQUE (#4 retours live :
-// « pas des cercles, trop suspect » — un joueur humain n'explore pas en anneaux) :
-//  - cible suivante tirée AU HASARD : cap biaisé continuation (±60°, parfois grand virage),
-//    distance variable 48-144 blocs — aucune géométrie régulière détectable ;
-//  - ÉVITE LES OCÉANS (#5) : cellules de biome océan connues + échantillon du terrain droit devant
-//    (surface = eau → autre cap) ; s'il finit quand même à l'eau → unstuck.js (#1) ;
-//  - secteur multi-mappers (sectors.js) : la cible vue depuis la MAISON reste dans le wedge,
-//    lu LIVE via getSector (re-balance stdin du manager) ;
-//  - skip des cellules déjà mappées (mémoire bootstrap du groupe + cellules locales) ;
-//  - FALLBACK : plus aucune cible valable autour → RETOUR AU SPAWN (home) puis repart dans une
-//    autre direction aléatoire (backoff anti boucle chaude) ;
+// Boucle de cartographie du bot « cartographe » (1b, 0 LLM) — MARCHE ALÉATOIRE PERSISTANTE
+// (#4 final, re-précision Massii) : le bot bouge comme un VRAI joueur qui explore —
+//  - une DIRECTION GÉNÉRALE qui DÉRIVE lentement et aléatoirement (forte autocorrélation de cap :
+//    virages doux ±~25°/jambe, bifurcation franche occasionnelle ≤90°) → ni cercles, ni ligne
+//    parfaitement droite, ni allées-retours systématiques ; progression GLOBALE vers du terrain neuf ;
+//  - obstacles (océan connu #5, eau droit devant, jambe inatteignable) → TOURNE franchement et
+//    continue depuis sa position — JAMAIS de retour à un point comme mode de balayage ;
+//  - cellules déjà mappées : biais doux pour s'en écarter (les traverser ponctuellement = OK,
+//    la dédup gère) ; couverture incomplète assumée (N mappers × caps différents) ;
+//  - secteur multi-mappers (sectors.js) : cap initial tiré DANS le wedge, re-tiré s'il en dérive,
+//    re-balance LIVE via getSector (stdin manager) ;
+//  - cluster anti-stuck (#1 eau / #8 flottant / #9 lianes) vérifié à chaque itération ;
 //  - à chaque arrivée : biome → biome_seen ; entrée de grotte (caves.js) → cave_found ;
 //    dédup locale par cellule 128 (le store backend dédup aussi, ceinture+bretelles) ;
 //  - survie « basique + » (survival.js) re-tickée avant chaque déplacement, cap anti-blocage.
 // Ne retourne JAMAIS sauf annulation du token (c'est un rôle, pas une tâche finie).
-const { sectorRange, headingOf, inSector, isCellMapped } = require('./sectors');
+const { sectorRange, inSector, isCellMapped } = require('./sectors');
 const { detectCaveEntrance } = require('./caves');
 const { biomeSeenEvent, caveFoundEvent, resolveBiome } = require('./worldMemory');
 const { survivalTick } = require('./survival');
-const { isInWater, escapeWater, WATER } = require('./unstuck');
+const { isInWater, escapeWater, clearSnares, isFloatingStuck, recoverFloating, WATER } = require('./unstuck');
 let vec3; try { vec3 = require('vec3'); } catch (e) { vec3 = null; }
 
 const GRID = 128;          // même grille que le store backend (quantif/dédup)
 const SURVIVAL_CAP = 10;   // re-ticks survie max avant de reprendre la route (anti-blocage)
+const TAU = 2 * Math.PI;
+
+function _norm(a) { return ((a % TAU) + TAU) % TAU; }
 
 /** Clé de cellule quantifiée (grille 128, floor — cohérent côté négatif). */
 function cellKey(x, z, grid = GRID) {
@@ -64,45 +68,36 @@ function waterAhead(bot, from, target, opts = {}) {
   return false;
 }
 
-/**
- * Tire la PROCHAINE CIBLE d'errance (#4). PUR (rng injectable), testable.
- *  pos         : position courante {x,y,z}
- *  opts.rng    : () => [0,1)            opts.lastHeading : cap précédent (biais continuation 70%)
- *  opts.sector : {index,count}|null     (cible vue depuis HOME dans le wedge)
- *  opts.memory/worldKey/localSeen      : skip cellules mappées + océans connus
- *  opts.home   : point d'ancrage        opts.maxRange : borne (déf 1024) autour de home
- *  opts.isLand : (x,z)=>bool            (échantillon terrain — eau droit devant → autre cap)
- * → {x, z, heading} | null (rien de valable → l'appelant rentre à la maison)
- */
-function pickWanderTarget(pos, opts = {}) {
-  const rng = opts.rng || Math.random;
-  const minDist = opts.minDist || 48;
-  const maxDist = opts.maxDist || 144;
-  const tries = opts.tries || 14;
-  const home = opts.home || pos;
-  const maxRange = opts.maxRange || 1024;
-  const range = (opts.sector && opts.sector.count > 1)
-    ? sectorRange(opts.sector.index, opts.sector.count, opts.overlapDeg) : null;
-  for (let i = 0; i < tries; i++) {
-    let heading;
-    if (opts.lastHeading != null && rng() < 0.7) {
-      heading = opts.lastHeading + (rng() * 2 - 1) * (Math.PI / 3);   // continue ±60° (organique)
-    } else {
-      heading = rng() * 2 * Math.PI;                                   // grand changement de cap
+/** Tire un cap initial : uniforme dans le wedge du mapper (secteur), sinon 0..2π. PUR. */
+function drawHeading(rng, sector, overlapDeg) {
+  if (sector && sector.count > 1) {
+    const range = sectorRange(sector.index, sector.count, overlapDeg);
+    if (!range.full) {
+      const width = _norm(range.end - range.start) || TAU;
+      return _norm(range.start + rng() * width);
     }
-    const dist = minDist + rng() * (maxDist - minDist);
-    const x = pos.x + dist * Math.cos(heading);
-    const z = pos.z + dist * Math.sin(heading);
-    const dx = x - home.x, dz = z - home.z;
-    if (Math.sqrt(dx * dx + dz * dz) > maxRange) continue;             // trop loin de la maison
-    if (range && !inSector(headingOf(home, { x, z }), range)) continue; // hors du wedge du mapper
-    if (opts.memory && opts.worldKey && isCellMapped(opts.memory, opts.worldKey, x, z, opts.grid || GRID)) continue;
-    if (opts.localSeen && opts.localSeen.has(cellKey(x, z, opts.grid || GRID))) continue;
-    if (isOceanCell(opts.memory, opts.worldKey, x, z, opts.grid || GRID)) continue; // océan connu (#5)
-    if (opts.isLand && !opts.isLand(x, z)) continue;                   // eau droit devant (#5)
-    return { x, z, heading };
   }
-  return null;
+  return rng() * TAU;
+}
+
+/**
+ * Fait ÉVOLUER le cap (marche aléatoire persistante, #4 final) : dérive douce ±driftRad (déf ~25°),
+ * rare bifurcation franche ≤90° (proba bigTurnP, déf 8%). PUR — jamais un cap fixe (ligne droite
+ * robotique), jamais un saut de cap à chaque tick (erratique).
+ */
+function driftHeading(heading, rng, opts = {}) {
+  const driftRad = opts.driftRad != null ? opts.driftRad : Math.PI / 7;   // ±~25°
+  const bigTurnP = opts.bigTurnP != null ? opts.bigTurnP : 0.08;
+  if (rng() < bigTurnP) return _norm(heading + (rng() * 2 - 1) * (Math.PI / 2)); // bifurcation ponctuelle
+  return _norm(heading + (rng() * 2 - 1) * driftRad);                            // virage doux
+}
+
+/** Prochaine jambe de marche le long du cap : distance variable 24-64 blocs. PUR. */
+function legTarget(pos, heading, rng, opts = {}) {
+  const minDist = opts.minDist || 24;
+  const maxDist = opts.maxDist || 64;
+  const dist = minDist + rng() * (maxDist - minDist);
+  return { x: pos.x + dist * Math.cos(heading), z: pos.z + dist * Math.sin(heading) };
 }
 
 function _pos(bot) {
@@ -111,29 +106,31 @@ function _pos(bot) {
 }
 
 /**
- * runMapper(bot, opts, token) — errance cartographique continue. Retourne {ok:true, cancelled:true}
+ * runMapper(bot, opts, token) — marche cartographique continue. Retourne {ok:true, cancelled:true}
  * à l'annulation (seule sortie).
  *  opts.worldKey  : clé de monde (label || dimension) — obligatoire pour les events
- *  opts.memory    : mémoire bootstrap du groupe (skip cellules mappées + océans connus)
- *  opts.getSector : () => {index,count}|null — lu à chaque cible (re-balance live via stdin)
+ *  opts.memory    : mémoire bootstrap du groupe (océans connus + biais cellules mappées)
+ *  opts.getSector : () => {index,count}|null — lu à chaque jambe (re-balance live via stdin)
  *  opts.emit      : hook events ; opts.goto : injectable (défaut pathfinder.goto GoalNear)
- *  opts.fleeFrom  : injecté dans survivalTick ; opts.sleep/rng : injectables (tests)
- *  opts.home/maxRange/minDist/maxDist : géométrie de l'errance
+ *  opts.fleeFrom  : injecté dans survivalTick ; opts.sleep/rng/now : injectables (tests)
+ *  opts.onPeriodic/periodicEvery : hook toutes les N arrivées (ex. re-tentative kit)
  */
 async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   const worldKey = opts.worldKey || 'unknown';
   const emit = opts.emit || (() => {});
   const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const rng = opts.rng || Math.random;
+  const now = opts.now || (() => Date.now());
   const getSector = opts.getSector || (() => opts.sector || null);
   const memory = opts.memory || null;
+  const periodicEvery = opts.periodicEvery || 10;
 
   const doGoto = opts.goto || (async (wp) => {
     const { goals } = require('mineflayer-pathfinder');
     await bot.pathfinder.goto(new goals.GoalNear(wp.x, wp.y, wp.z, 8));
   });
 
-  const localSeen = new Set();   // cellules visitées (skip planif)
+  const localSeen = new Set();   // cellules visitées
   const biomeCells = new Set();  // cellules dont le biome a été émis
   const caveCells = new Set();   // cellules dont une grotte a été émise
 
@@ -172,40 +169,88 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
     }
   }
 
-  const home = opts.home || _pos(bot);   // point d'ancrage (« au pire il reviendra au spawn »)
-  const maxRange = opts.maxRange || 1024;
-  const periodicEvery = opts.periodicEvery || 10;
-  let lastHeading = null;
-  let misses = 0;                        // tirages sans cible valable d'affilée (backoff)
-  let arrivals = 0;                      // arrivées réussies (déclenche onPeriodic, ex. re-tentative kit)
+  // Cluster anti-stuck (#1 eau / #8 flottant / #9 lianes) — appelé à chaque itération.
+  // lastSample = DÉBUT de l'épisode « en l'air sans bouger » (conservé tant que l'épisode dure,
+  // sinon l'immobilité ne dépasserait jamais minMs et le flottant ne serait jamais détecté).
+  let lastSample = null;
+  async function antiStuck() {
+    if (isInWater(bot)) { await escapeWater(bot, { emit, sleep }); lastSample = null; return; }
+    try { await clearSnares(bot); } catch (e) {}                       // #9 : lianes adjacentes
+    const p = _pos(bot);
+    const cur = { x: p.x, z: p.z, t: now() };
+    const onGround = !!(bot.entity && bot.entity.onGround);
+    const moved = lastSample ? Math.sqrt((cur.x - lastSample.x) ** 2 + (cur.z - lastSample.z) ** 2) : Infinity;
+    if (onGround || moved >= 0.35) { lastSample = cur; return; }       // état sain → nouvel échantillon
+    if (isFloatingStuck(lastSample, cur, { onGround, inWater: false })) {
+      await recoverFloating(bot, { emit, sleep });                     // #8 : relâcher tout, retomber
+      lastSample = null;
+    }
+    // épisode en cours (pas encore minMs) → on GARDE l'échantillon de départ
+  }
+
+  // Cap si la dérive sort du wedge du mapper (secteur actif) → re-tire DANS le wedge.
+  function clampToSector(heading, sector) {
+    if (!sector || sector.count <= 1) return heading;
+    const range = sectorRange(sector.index, sector.count, opts.overlapDeg);
+    return inSector(heading, range) ? heading : drawHeading(rng, sector, opts.overlapDeg);
+  }
+
+  let heading = opts.initialHeading != null ? _norm(opts.initialHeading) : drawHeading(rng, getSector(), opts.overlapDeg);
+  let sectorKey = JSON.stringify(getSector() || null);
+  let arrivals = 0;
+  let blockedStreak = 0;   // jambes bloquées d'affilée (île/cul-de-sac → souffler, anti boucle chaude)
   record(); // la cellule de départ compte
 
   while (!token.cancelled) {
-    // #1 : dans l'eau ? s'en extraire AVANT toute autre chose (sinon le pathfinder rame dans l'angle)
-    if (isInWater(bot)) { await escapeWater(bot, { emit, sleep }); if (token.cancelled) break; }
+    await antiStuck();
+    if (token.cancelled) break;
     await settleSurvival();
     if (token.cancelled) break;
 
-    const here = _pos(bot);
-    const target = pickWanderTarget(here, {
-      rng, lastHeading, sector: getSector(), memory, worldKey, localSeen,
-      home, maxRange, minDist: opts.minDist, maxDist: opts.maxDist,
-      isLand: (x, z) => !waterAhead(bot, here, { x, z }),
-    });
+    // re-balance live des secteurs (le manager re-pousse {index,count} quand N change)
+    const sec = getSector();
+    const sk = JSON.stringify(sec || null);
+    if (sk !== sectorKey) { sectorKey = sk; heading = drawHeading(rng, sec, opts.overlapDeg); }
 
-    if (!target) {
-      // plus rien de valable autour (tout mappé / océans) → retour maison + nouveau cap (#4 fallback)
-      misses++;
-      emit({ type: 'mapper_return_home', misses });
-      try { await doGoto({ x: home.x, y: home.y, z: home.z }); } catch (e) { /* best-effort */ }
-      lastHeading = null;                                       // repart dans une direction aléatoire
-      await sleep(Math.min(misses, 6) * (opts.idleMs || 5000)); // backoff anti boucle chaude
+    // le cap DÉRIVE doucement (random walk persistant), confiné au wedge si secteur
+    heading = clampToSector(driftHeading(heading, rng, opts), sec);
+
+    const here = _pos(bot);
+    let target = legTarget(here, heading, rng, opts);
+
+    // obstacles : océan connu / eau droit devant → TOURNE franchement (90-180°) et continue —
+    // jamais de retour à un point. Si tout est bloqué (île) : souffle un peu puis re-essaie.
+    let turned = 0;
+    while ((isOceanCell(memory, worldKey, target.x, target.z) || waterAhead(bot, here, target)) && turned < 6) {
+      heading = clampToSector(_norm(heading + (rng() < 0.5 ? 1 : -1) * (Math.PI / 2 + rng() * Math.PI / 2)), sec);
+      target = legTarget(here, heading, rng, opts);
+      turned++;
+    }
+    if (turned >= 6) {
+      blockedStreak++;
+      emit({ type: 'mapper_blocked', streak: blockedStreak });
+      await sleep(opts.idleMs || 10000);
       continue;
     }
+    if (turned > 0) emit({ type: 'mapper_turn', reason: 'water' });
 
-    misses = 0;
-    lastHeading = target.heading;
-    try { await doGoto({ x: target.x, y: here.y, z: target.z }); } catch (e) { continue; } // inatteignable → autre cap
+    // cellule déjà mappée droit devant → biais doux pour s'en écarter (la traverser parfois = OK,
+    // c'est humain ; la dédup évite les doublons) — 1 seul re-tirage, pas d'oscillation.
+    if ((localSeen.has(cellKey(target.x, target.z)) ||
+         (memory && isCellMapped(memory, worldKey, target.x, target.z, GRID))) && rng() < 0.7) {
+      heading = clampToSector(driftHeading(heading, rng, { driftRad: Math.PI / 4, bigTurnP: 0 }), sec);
+      target = legTarget(here, heading, rng, opts);
+    }
+
+    blockedStreak = 0;
+    try { await doGoto({ x: target.x, y: here.y, z: target.z }); }
+    catch (e) {
+      // jambe inatteignable (falaise/mur) : dégager les lianes (#9) puis tourner franchement
+      try { await clearSnares(bot); } catch (e2) {}
+      heading = clampToSector(_norm(heading + Math.PI / 2 + rng() * Math.PI), sec);
+      emit({ type: 'mapper_turn', reason: 'unreachable' });
+      continue;
+    }
     record();
     arrivals++;
     // hook périodique (ex. : re-tenter le mini-kit s'il avait stallé) — best-effort, jamais bloquant
@@ -216,4 +261,4 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   return { ok: true, cancelled: true };
 }
 
-module.exports = { pickWanderTarget, isOceanCell, waterAhead, cellKey, runMapper, GRID };
+module.exports = { drawHeading, driftHeading, legTarget, isOceanCell, waterAhead, cellKey, runMapper, GRID };

@@ -91,4 +91,72 @@ async function escapeWater(bot, opts = {}) {
   return { ok };
 }
 
-module.exports = { isInWater, findLandTarget, escapeWater, WATER };
+// --- #9 retours live : LIANES & pièges traversables (le pathfinder s'y accroche) -----------------
+// Blocs-pièges cassables à mains nues (instantané ou quasi) : on les dégage au lieu de pousser dessus.
+const SNARES = new Set([
+  'vine', 'cave_vines', 'cave_vines_plant', 'twisting_vines', 'twisting_vines_plant',
+  'weeping_vines', 'weeping_vines_plant', 'glow_lichen', 'cobweb', 'sweet_berry_bush',
+]);
+
+/**
+ * Casse les lianes/toiles ADJACENTES (pieds, tête, 4 voisins × 2 niveaux). Best-effort, rapide,
+ * no-op si rien. Retourne le nb de blocs dégagés.
+ */
+async function clearSnares(bot) {
+  if (!bot || typeof bot.blockAt !== 'function' || typeof bot.dig !== 'function') return 0;
+  const p = bot.entity && bot.entity.position;
+  if (!p) return 0;
+  const feet = p.floored ? p.floored() : { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) };
+  const at = (dx, dy, dz) => (feet.offset ? feet.offset(dx, dy, dz) : { x: feet.x + dx, y: feet.y + dy, z: feet.z + dz });
+  const cells = [at(0, 0, 0), at(0, 1, 0)];
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    cells.push(at(dx, 0, dz), at(dx, 1, dz));
+  }
+  let cleared = 0;
+  for (const c of cells) {
+    try {
+      const b = bot.blockAt(c);
+      if (b && SNARES.has(b.name)) { await bot.dig(b); cleared++; }
+    } catch (e) { /* best-effort */ }
+  }
+  return cleared;
+}
+
+// --- #8 retours live : FLOTTANT/SUSPENDU hors saut = état physiquement implausible ----------------
+
+/**
+ * PUR : le bot est-il « coincé en l'air » ? (pas au sol, pas dans l'eau, position horizontale
+ * quasi inchangée entre 2 échantillons espacés d'au moins minMs). samples = {x,z,t}.
+ */
+function isFloatingStuck(prev, cur, { onGround, inWater, minMs = 1500, eps = 0.35 } = {}) {
+  if (onGround || inWater || !prev || !cur) return false;
+  if (cur.t - prev.t < minMs) return false;
+  const d = Math.sqrt((cur.x - prev.x) ** 2 + (cur.z - prev.z) ** 2);
+  return d < eps;
+}
+
+/**
+ * Recovery #8 : RELÂCHER TOUT (clearControlStates), couper le pathfinder, laisser retomber au sol.
+ * Borné. Retourne {ok} (ok = au sol à la fin).
+ */
+async function recoverFloating(bot, opts = {}) {
+  const emit = opts.emit || (() => {});
+  const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  emit({ type: 'unstuck', cause: 'floating' });
+  try {
+    if (typeof bot.clearControlStates === 'function') bot.clearControlStates();
+    else ['forward', 'back', 'left', 'right', 'jump', 'sneak'].forEach((c) => { try { bot.setControlState(c, false); } catch (e) {} });
+  } catch (e) {}
+  try { bot.pathfinder && bot.pathfinder.setGoal(null); } catch (e) {}
+  await clearSnares(bot);                               // souvent la cause : lianes/toile (#9)
+  const t0 = Date.now();
+  const timeoutMs = opts.timeoutMs || 4000;
+  while (!(bot.entity && bot.entity.onGround) && Date.now() - t0 < timeoutMs) {
+    await sleep(200);
+  }
+  const ok = !!(bot.entity && bot.entity.onGround);
+  emit({ type: 'unstuck_done', cause: 'floating', ok });
+  return { ok };
+}
+
+module.exports = { isInWater, findLandTarget, escapeWater, WATER, SNARES, clearSnares, isFloatingStuck, recoverFloating };

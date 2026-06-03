@@ -68,3 +68,55 @@ test('escapeWater : borné dans le temps — rend ok:false si toujours dans l\'e
 test('WATER couvre les blocs aquatiques courants', () => {
   for (const n of ['water', 'flowing_water', 'kelp', 'seagrass']) assert.ok(WATER.has(n));
 });
+
+// --- #9 lianes / #8 flottant ---
+const { clearSnares, isFloatingStuck, recoverFloating, SNARES } = require('./unstuck');
+
+test('clearSnares : casse les lianes adjacentes (pieds/tête/voisins), no-op sinon', async () => {
+  const dug = [];
+  const bot = {
+    entity: { position: vec3(0.5, 64, 0.5) },
+    blockAt(p) {
+      if (p.x === 0 && p.y === 65 && p.z === 0) return { name: 'vine', boundingBox: 'empty', position: p };
+      if (p.x === 1 && p.y === 64 && p.z === 0) return { name: 'cobweb', boundingBox: 'empty', position: p };
+      return { name: 'air', boundingBox: 'empty', position: p };
+    },
+    dig: async (b) => { dug.push(b.name); },
+  };
+  const n = await clearSnares(bot);
+  assert.strictEqual(n, 2);
+  assert.ok(dug.includes('vine') && dug.includes('cobweb'));
+  // monde propre → 0
+  bot.blockAt = (p) => ({ name: 'air', boundingBox: 'empty', position: p });
+  assert.strictEqual(await clearSnares(bot), 0);
+});
+
+test('isFloatingStuck : flottant immobile ≥1.5s → true ; au sol / dans l\'eau / en mouvement → false', () => {
+  const prev = { x: 0, z: 0, t: 0 };
+  assert.ok(isFloatingStuck(prev, { x: 0.1, z: 0, t: 2000 }, { onGround: false, inWater: false }));
+  assert.ok(!isFloatingStuck(prev, { x: 0.1, z: 0, t: 2000 }, { onGround: true, inWater: false }));
+  assert.ok(!isFloatingStuck(prev, { x: 0.1, z: 0, t: 2000 }, { onGround: false, inWater: true }));
+  assert.ok(!isFloatingStuck(prev, { x: 5, z: 5, t: 2000 }, { onGround: false, inWater: false }));   // bouge
+  assert.ok(!isFloatingStuck(prev, { x: 0.1, z: 0, t: 800 }, { onGround: false, inWater: false }));  // trop tôt
+});
+
+test('recoverFloating : relâche TOUT + coupe le pathfinder + retombe au sol', async () => {
+  let cleared = 0, goalCleared = 0, polls = 0;
+  const bot = {
+    entity: { position: vec3(0, 66, 0), onGround: false },
+    clearControlStates() { cleared++; },
+    pathfinder: { setGoal: (g) => { if (g === null) goalCleared++; } },
+    blockAt: (p) => ({ name: 'air', boundingBox: 'empty', position: p }),
+    dig: async () => {},
+  };
+  const r = await recoverFloating(bot, {
+    sleep: async () => { polls++; if (polls >= 2) bot.entity.onGround = true; }, // retombe après 2 polls
+  });
+  assert.ok(r.ok);
+  assert.strictEqual(cleared, 1);
+  assert.ok(goalCleared >= 1);
+});
+
+test('SNARES couvre lianes jungle + cave vines + cobweb', () => {
+  for (const n of ['vine', 'cave_vines', 'twisting_vines', 'weeping_vines', 'cobweb']) assert.ok(SNARES.has(n), n);
+});

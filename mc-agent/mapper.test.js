@@ -1,10 +1,11 @@
 'use strict';
-// Boucle de cartographie (1b) : ERRANCE ORGANIQUE (#4 — pas de cercles), anti-océan (#5),
-// secteur multi-mappers, skip cellules mappées, fallback retour maison, biome_seen / cave_found.
+// Boucle de cartographie (1b) : MARCHE ALÉATOIRE PERSISTANTE (#4 final — ni cercles, ni ligne
+// parfaite, ni allées-retours), anti-océan (#5), cluster anti-stuck (#1/#8/#9), secteurs,
+// biome_seen / cave_found.
 const { test } = require('node:test');
 const assert = require('node:assert');
 const vec3 = require('vec3');
-const { pickWanderTarget, isOceanCell, waterAhead, cellKey, runMapper } = require('./mapper');
+const { drawHeading, driftHeading, legTarget, isOceanCell, waterAhead, cellKey, runMapper } = require('./mapper');
 const { headingOf, sectorRange, inSector } = require('./sectors');
 
 // rng déterministe cyclant sur une séquence
@@ -29,67 +30,39 @@ test('isOceanCell : cellule avec biome océan connu → true ; terre/inconnu →
   assert.ok(!isOceanCell(null, 'overworld', 310, 50));
 });
 
-// --- pickWanderTarget (pur) ---
+// --- drawHeading / driftHeading / legTarget (purs, #4 final) ---
 
-test('pickWanderTarget : cible à distance [minDist..maxDist], heading rendu', () => {
-  const pos = { x: 0, y: 64, z: 0 };
-  const t = pickWanderTarget(pos, { rng: seqRng([0.3, 0.5]), minDist: 48, maxDist: 144 });
-  assert.ok(t && typeof t.heading === 'number');
-  const d = Math.sqrt(t.x * t.x + t.z * t.z);
-  assert.ok(d >= 48 - 1e-9 && d <= 144 + 1e-9, `distance ${d} hors [48..144]`);
-});
-
-test('pickWanderTarget : caps ALÉATOIRES — pas de quadrillage régulier (deux seeds ≠ deux cibles ≠)', () => {
-  const pos = { x: 0, y: 64, z: 0 };
-  const a = pickWanderTarget(pos, { rng: seqRng([0.1, 0.5]) });
-  const b = pickWanderTarget(pos, { rng: seqRng([0.8, 0.2]) });
-  assert.ok(Math.abs(a.heading - b.heading) > 0.5, 'les caps devraient différer (aléatoire)');
-});
-
-test('pickWanderTarget : biais continuation — 70% des tirages restent à ±60° du cap précédent', () => {
-  const pos = { x: 0, y: 64, z: 0 };
-  // rng: 0.5 (<0.7 → continuation), 0.5 (delta=0), 0.5 (dist)
-  const t = pickWanderTarget(pos, { rng: seqRng([0.5]), lastHeading: 1.0 });
-  assert.ok(Math.abs(t.heading - 1.0) <= Math.PI / 3 + 1e-9, 'cap hors du cône de continuation');
-});
-
-test('pickWanderTarget : secteur — la cible vue depuis HOME reste dans le wedge du mapper', () => {
-  const home = { x: 0, y: 64, z: 0 };
+test('drawHeading : sans secteur → uniforme 0..2π ; avec secteur → DANS le wedge', () => {
+  assert.ok(Math.abs(drawHeading(seqRng([0.5]), null) - Math.PI) < 1e-9);
   const range = sectorRange(1, 2);
-  for (let s = 0; s < 20; s++) {
-    const t = pickWanderTarget({ x: 10, y: 64, z: 5 }, {
-      rng: seqRng([(s * 37 % 100) / 100, 0.6, 0.2, 0.9]), sector: { index: 1, count: 2 }, home,
-    });
-    if (!t) continue; // tirage épuisé → acceptable
-    assert.ok(inSector(headingOf(home, t), range), `cible hors secteur: ${t.x},${t.z}`);
+  for (const r of [0.05, 0.3, 0.6, 0.95]) {
+    const h = drawHeading(seqRng([r]), { index: 1, count: 2 });
+    assert.ok(inSector(h, range), `cap ${h} hors wedge (r=${r})`);
   }
 });
 
-test('pickWanderTarget : skip cellules mappées (mémoire + localSeen) et océans connus', () => {
-  const pos = { x: 0, y: 64, z: 0 };
-  const rng = seqRng([0.0, 0.5]); // heading 0 (est), dist médiane → cellule (64..96, ~0)
-  const t0 = pickWanderTarget(pos, { rng: seqRng([0.0, 0.5]) });
-  // 1) la cellule de t0 en mémoire → un tirage identique doit donner autre chose (ou null)
-  const memory = { worlds: { w: { biomes: [{ name: 'plains', x: t0.x, z: t0.z }], caves: [] } } };
-  const t1 = pickWanderTarget(pos, { rng: seqRng([0.0, 0.5]), memory, worldKey: 'w', tries: 1 });
-  assert.strictEqual(t1, null, 'cellule mappée → tirage rejeté');
-  // 2) même cellule en biome océan → rejetée aussi
-  const memOcean = { worlds: { w: { biomes: [{ name: 'ocean', x: t0.x, z: t0.z }], caves: [] } } };
-  assert.strictEqual(pickWanderTarget(pos, { rng: seqRng([0.0, 0.5]), memory: memOcean, worldKey: 'w', tries: 1 }), null);
-  // 3) localSeen
-  const seen = new Set([cellKey(t0.x, t0.z)]);
-  assert.strictEqual(pickWanderTarget(pos, { rng: seqRng([0.0, 0.5]), localSeen: seen, tries: 1 }), null);
+test('driftHeading : dérive DOUCE bornée ±~25° (forte autocorrélation, pas de saut de cap)', () => {
+  // rng: 0.5 (pas de bifurcation, 0.5 ≥ 0.08), puis delta — extrêmes 0 et 1
+  const hMin = driftHeading(1.0, seqRng([0.5, 0]));   // delta = -driftRad
+  const hMax = driftHeading(1.0, seqRng([0.5, 1]));   // delta = +driftRad
+  assert.ok(Math.abs(hMin - (1.0 - Math.PI / 7)) < 1e-9);
+  assert.ok(Math.abs(hMax - (1.0 + Math.PI / 7)) < 1e-9);
+  // delta médian → cap inchangé (pas de biais systématique)
+  assert.ok(Math.abs(driftHeading(1.0, seqRng([0.5, 0.5])) - 1.0) < 1e-9);
 });
 
-test('pickWanderTarget : borne maxRange autour de home + isLand rejette l\'eau', () => {
-  // trop loin de la maison → rejeté
-  const far = pickWanderTarget({ x: 2000, y: 64, z: 0 }, {
-    rng: seqRng([0.0, 0.5]), home: { x: 0, y: 64, z: 0 }, maxRange: 1024, tries: 1,
-  });
-  assert.strictEqual(far, null);
-  // isLand false partout → null (l'appelant rentre à la maison)
-  const wet = pickWanderTarget({ x: 0, y: 64, z: 0 }, { rng: seqRng([0.3, 0.5]), isLand: () => false, tries: 5 });
-  assert.strictEqual(wet, null);
+test('driftHeading : bifurcation franche OCCASIONNELLE (proba 8%) bornée ±90°', () => {
+  // rng: 0.01 (< 0.08 → bifurcation), 1 (delta max = +90°)
+  const h = driftHeading(1.0, seqRng([0.01, 1]));
+  assert.ok(Math.abs(h - (1.0 + Math.PI / 2)) < 1e-9);
+});
+
+test('legTarget : jambe de 24-64 blocs le long du cap', () => {
+  const t = legTarget({ x: 0, y: 64, z: 0 }, 0, seqRng([0.5])); // est, dist médiane 44
+  assert.ok(Math.abs(t.x - 44) < 1e-9 && Math.abs(t.z) < 1e-9);
+  const tMin = legTarget({ x: 0, y: 64, z: 0 }, 0, seqRng([0]));
+  const tMax = legTarget({ x: 0, y: 64, z: 0 }, 0, seqRng([1]));
+  assert.ok(Math.abs(tMin.x - 24) < 1e-9 && Math.abs(tMax.x - 64) < 1e-9);
 });
 
 // --- waterAhead (fake bot Vec3) ---
@@ -112,19 +85,22 @@ test('waterAhead : surface d\'eau droit devant → true ; terre → false ; non 
 
 // --- runMapper (boucle, fake bot Vec3) ---
 
-function fakeMapperBot({ caveAt = null } = {}) {
-  // sol = pierre pleine ; biome dépend de x ; option : colonne d'air (grotte) sous (caveAt.x, caveAt.z)
+function fakeMapperBot({ caveBeyond = null } = {}) {
+  // sol = pierre pleine ; biome dépend de x ; option : colonnes d'air (grottes) au-delà d'un rayon
   const bot = {
-    entity: { position: vec3(0, 64, 0), isInWater: false },
+    entity: { position: vec3(0, 64, 0), isInWater: false, onGround: true },
     entities: {},
     health: 20, food: 20,
     inventory: { items: () => [] },
     nearestEntity: () => null,
     findBlocks: () => [],
     setControlState: () => {},
+    clearControlStates: () => {},
+    dig: async () => {},
     blockAt(p) {
-      if (caveAt && Math.floor(p.x) === caveAt.x && Math.floor(p.z) === caveAt.z && p.y < 64 && p.y > 64 - 10) {
-        return { name: 'air', boundingBox: 'empty', biome: { name: 'plains', id: 1 } };
+      if (caveBeyond != null && p.y < 64 && p.y > 64 - 10) {
+        const d = Math.sqrt(p.x * p.x + p.z * p.z);
+        if (d > caveBeyond) return { name: 'air', boundingBox: 'empty', biome: { name: 'plains', id: 1 } };
       }
       if (p.y > 63) return { name: 'air', boundingBox: 'empty', biome: { name: 'plains', id: 1 } };
       const biome = p.x >= 200 ? { name: 'desert', id: 5 } : { name: 'plains', id: 1 };
@@ -138,7 +114,7 @@ function fakeMapperBot({ caveAt = null } = {}) {
   return bot;
 }
 
-test('runMapper : émet biome_seen en errance, dédup par cellule, NE s\'arrête PAS après une trouvaille', async () => {
+test('runMapper : émet biome_seen en marchant, dédup par cellule, NE s\'arrête PAS après une trouvaille', async () => {
   const bot = fakeMapperBot();
   const events = [];
   const token = { cancelled: false };
@@ -146,57 +122,103 @@ test('runMapper : émet biome_seen en errance, dédup par cellule, NE s\'arrête
     worldKey: 'overworld',
     emit: (e) => {
       events.push(e);
-      if (events.filter((x) => x.type === 'biome_seen').length >= 8 || events.length > 600) token.cancelled = true;
+      if (events.filter((x) => x.type === 'biome_seen').length >= 6 || events.length > 800) token.cancelled = true;
     },
     goto: async (wp) => { bot.entity.position = vec3(wp.x, 64, wp.z); },
     sleep: async () => {},
   }, token);
   const biomes = events.filter((e) => e.type === 'biome_seen');
-  assert.ok(biomes.length >= 8, `seulement ${biomes.length} biome_seen — la boucle s'est arrêtée trop tôt`);
+  assert.ok(biomes.length >= 6, `seulement ${biomes.length} biome_seen — la boucle s'est arrêtée trop tôt`);
   const cells = biomes.map((e) => cellKey(e.x, e.z));
   assert.strictEqual(new Set(cells).size, cells.length, 'biome_seen dupliqué dans une même cellule');
   assert.ok(biomes.every((e) => e.world === 'overworld'));
 });
 
-test('runMapper : détecte une entrée de grotte en route → cave_found (coords seulement)', async () => {
-  // reproduit le 1er tirage avec le même rng ET le même état (cellule d'origine déjà vue par le
-  // record() initial) → la grotte est SOUS la 1re cible ; dist 0.9 → sort de la cellule d'origine
-  const seq = [0.0, 0.9];
-  const first = pickWanderTarget({ x: 0, y: 64, z: 0 }, { rng: seqRng(seq), localSeen: new Set([cellKey(0, 0)]) });
-  const cave = { x: Math.floor(first.x), z: Math.floor(first.z) };
-  const bot = fakeMapperBot({ caveAt: cave });
+test('runMapper #4 : PROGRESSION GLOBALE — pas d\'oscillation ni de cercles (s\'éloigne du départ)', async () => {
+  const bot = fakeMapperBot();
+  const hops = [];
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async (wp) => { hops.push({ x: wp.x, z: wp.z }); bot.entity.position = vec3(wp.x, 64, wp.z); if (hops.length >= 12) token.cancelled = true; },
+    sleep: async () => {},
+  }, token);
+  assert.ok(hops.length >= 12);
+  // progression globale : la position finale est LOIN du départ (pas de boucle sur place)
+  const last = hops[hops.length - 1];
+  const distFinal = Math.sqrt(last.x * last.x + last.z * last.z);
+  assert.ok(distFinal > 100, `dist finale ${distFinal.toFixed(0)} — le bot tourne en rond`);
+  // pas d'allées-retours SYSTÉMATIQUES : une cellule peut être re-visitée UNE fois (backtrack
+  // ponctuel humain, jambes consécutives dans la même cellule = une seule visite), pas en boucle.
+  const visits = {};
+  let prevCell = null;
+  for (const h of hops) {
+    const k = cellKey(h.x, h.z);
+    if (k !== prevCell) { visits[k] = (visits[k] || 0) + 1; prevCell = k; }
+  }
+  assert.ok(Math.max(...Object.values(visits)) <= 2, 'oscillation détectée (cellule re-visitée 3+ fois)');
+});
+
+test('runMapper #4 : caps AUTOCORRÉLÉS — virages doux entre jambes consécutives (pas erratique)', async () => {
+  const bot = fakeMapperBot();
+  const hops = [{ x: 0, z: 0 }];
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    // bigTurnP 0 → uniquement la dérive douce (le test vérifie la borne ±45° incluant le biais cellule)
+    bigTurnP: 0,
+    emit: () => {},
+    goto: async (wp) => { hops.push({ x: wp.x, z: wp.z }); bot.entity.position = vec3(wp.x, 64, wp.z); if (hops.length >= 10) token.cancelled = true; },
+    sleep: async () => {},
+  }, token);
+  let soft = 0, total = 0;
+  for (let i = 2; i < hops.length; i++) {
+    const h1 = Math.atan2(hops[i - 1].z - hops[i - 2].z, hops[i - 1].x - hops[i - 2].x);
+    const h2 = Math.atan2(hops[i].z - hops[i - 1].z, hops[i].x - hops[i - 1].x);
+    let d = Math.abs(h2 - h1) % (2 * Math.PI);
+    if (d > Math.PI) d = 2 * Math.PI - d;
+    total++;
+    if (d <= Math.PI / 2 + 1e-9) soft++; // virage ≤90° (dérive 25° + biais cellule 45°)
+  }
+  assert.ok(soft / total >= 0.8, `${soft}/${total} virages doux — locomotion erratique`);
+});
+
+test('runMapper : détecte les entrées de grotte en route → cave_found (coords seulement)', async () => {
+  // colonnes d'air (grottes) partout au-delà de 30 blocs du spawn → la marche en croise vite une
+  const bot = fakeMapperBot({ caveBeyond: 30 });
   const events = [];
   const token = { cancelled: false };
   await runMapper(bot, {
     worldKey: 'overworld',
-    rng: seqRng(seq),
-    emit: (e) => { events.push(e); if (e.type === 'cave_found' || events.length > 80) token.cancelled = true; },
+    emit: (e) => { events.push(e); if (e.type === 'cave_found' || events.length > 100) token.cancelled = true; },
     goto: async (wp) => { bot.entity.position = vec3(wp.x, 64, wp.z); },
     sleep: async () => {},
   }, token);
   const caves = events.filter((e) => e.type === 'cave_found');
-  assert.strictEqual(caves.length, 1);
+  assert.ok(caves.length >= 1, 'aucune cave_found émise');
   assert.strictEqual(caves[0].world, 'overworld');
-  assert.strictEqual(caves[0].x, cave.x);
-  assert.ok(typeof caves[0].y === 'number' && typeof caves[0].z === 'number');
+  assert.ok(typeof caves[0].x === 'number' && typeof caves[0].y === 'number' && typeof caves[0].z === 'number');
 });
 
-test('runMapper : secteur live (getSector) — toutes les cibles vues depuis home dans le wedge', async () => {
+test('runMapper : secteur live (getSector) — la marche reste dans le wedge (cibles vues du départ)', async () => {
   const bot = fakeMapperBot();
   const gotos = [];
   const token = { cancelled: false };
   const home = { x: 0, y: 64, z: 0 };
   await runMapper(bot, {
     worldKey: 'overworld',
-    emit: () => { if (gotos.length >= 6) token.cancelled = true; },
+    emit: () => { if (gotos.length >= 8) token.cancelled = true; },
     goto: async (wp) => { gotos.push({ x: wp.x, z: wp.z }); bot.entity.position = vec3(wp.x, 64, wp.z); },
     getSector: () => ({ index: 1, count: 2 }),
     sleep: async () => {},
   }, token);
   assert.ok(gotos.length > 0);
-  const range = sectorRange(1, 2);
-  for (const g of gotos) {
-    assert.ok(inSector(headingOf(home, g), range), `cible hors secteur: ${g.x},${g.z}`);
+  // le CAP de chaque jambe reste dans le wedge → la trajectoire globale aussi (tolérance overlap)
+  const range = sectorRange(1, 2, 35); // wedge élargi de la marge de dérive par jambe
+  for (let i = 1; i < gotos.length; i++) {
+    const h = headingOf(gotos[i - 1], gotos[i]);
+    assert.ok(inSector(h, range), `jambe ${i} hors wedge (cap ${h.toFixed(2)})`);
   }
 });
 
@@ -210,24 +232,26 @@ test('runMapper : token déjà annulé → retour immédiat sans goto', async ()
   assert.strictEqual(moved, 0);
 });
 
-test('runMapper : tout mappé autour → FALLBACK retour maison (mapper_return_home + goto home)', async () => {
+test('runMapper #5 : océan partout devant → tourne (mapper_turn/mapper_blocked), PAS de goto vers l\'eau', async () => {
   const bot = fakeMapperBot();
-  bot.entity.position = vec3(500, 64, 500);
-  // mémoire couvrant TOUT le rayon maxRange autour de home → aucune cible valable
-  const biomes = [];
-  for (let x = -1280; x <= 1280; x += 128) for (let z = -1280; z <= 1280; z += 128) biomes.push({ name: 'plains', x, z });
-  const memory = { worlds: { overworld: { biomes, caves: [] } } };
+  // toute la surface est de l'eau sauf la cellule de départ → toutes les jambes bloquées
+  bot.blockAt = (p) => {
+    if (p.y > 63) return { name: 'air', boundingBox: 'empty', biome: { name: 'plains', id: 1 } };
+    const d = Math.sqrt(p.x * p.x + p.z * p.z);
+    if (d > 10) return { name: 'water', boundingBox: 'empty', biome: { name: 'ocean', id: 0 } };
+    return { name: 'stone', boundingBox: 'block', biome: { name: 'plains', id: 1 } };
+  };
   const events = [];
-  const gotos = [];
+  let moved = 0;
   const token = { cancelled: false };
   await runMapper(bot, {
-    worldKey: 'overworld', memory,
-    home: { x: 500, y: 64, z: 500 }, maxRange: 512,
-    emit: (e) => { events.push(e); if (e.type === 'mapper_return_home') token.cancelled = true; },
-    goto: async (wp) => { gotos.push(wp); },
+    worldKey: 'overworld',
+    emit: (e) => { events.push(e); if (e.type === 'mapper_blocked') token.cancelled = true; },
+    goto: async () => { moved++; },
     sleep: async () => {},
   }, token);
-  assert.ok(events.some((e) => e.type === 'mapper_return_home'));
+  assert.strictEqual(moved, 0, 'le bot a marché vers l\'océan');
+  assert.ok(events.some((e) => e.type === 'mapper_blocked'));
 });
 
 test('runMapper : survie prioritaire — hostile×3 → fuit avant de bouger (survivalTick branché)', async () => {
@@ -249,7 +273,7 @@ test('runMapper : survie prioritaire — hostile×3 → fuit avant de bouger (su
   assert.ok(events.some((e) => e.type === 'survival' && e.action === 'flee'));
 });
 
-test('runMapper : dans l\'eau au départ → escapeWater AVANT de router (#1)', async () => {
+test('runMapper #1 : dans l\'eau au départ → escapeWater AVANT de router', async () => {
   const bot = fakeMapperBot();
   bot.entity.isInWater = true;
   bot.findBlocks = () => [vec3(8, 64, 0)];           // une terre ferme à 8 blocs
@@ -273,6 +297,40 @@ test('runMapper : dans l\'eau au départ → escapeWater AVANT de router (#1)', 
   assert.ok(events.some((e) => e.type === 'unstuck' && e.cause === 'water'), 'escapeWater jamais déclenché');
 });
 
+test('runMapper #8 : flottant immobile → recoverFloating (relâche tout, retombe)', async () => {
+  const bot = fakeMapperBot();
+  bot.entity.onGround = false;                        // suspendu en l'air
+  let released = 0;
+  bot.clearControlStates = () => { released++; bot.entity.onGround = true; }; // retombe dès le release
+  let t = 0;
+  const events = [];
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    now: () => { t += 1000; return t; },               // chaque échantillon espacé d'1s
+    emit: (e) => { events.push(e); if (events.some((x) => x.type === 'unstuck_done' && x.cause === 'floating')) token.cancelled = true; },
+    goto: async () => { /* n'avance pas : le bot est coincé */ },
+    sleep: async () => {},
+  }, token);
+  assert.ok(released >= 1, 'clearControlStates jamais appelé');
+  assert.ok(events.some((e) => e.type === 'unstuck' && e.cause === 'floating'));
+});
+
+test('runMapper : hook onPeriodic appelé tous les periodicEvery arrivées (re-tentative kit)', async () => {
+  const bot = fakeMapperBot();
+  let periodic = 0;
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async (wp) => { bot.entity.position = vec3(wp.x, 64, wp.z); },
+    onPeriodic: async () => { periodic++; if (periodic >= 2) token.cancelled = true; },
+    periodicEvery: 3,
+    sleep: async () => {},
+  }, token);
+  assert.ok(periodic >= 2, `onPeriodic appelé ${periodic} fois (attendu ≥2)`);
+});
+
 test('runMapper : résout le nom de biome via bot.registry quand block.biome n\'a qu\'un id (vu live 1.21.4)', async () => {
   const bot = fakeMapperBot();
   bot.registry.biomes = { 28: { name: 'jungle' } };
@@ -289,19 +347,4 @@ test('runMapper : résout le nom de biome via bot.registry quand block.biome n\'
   assert.ok(biomes.length >= 1);
   assert.strictEqual(biomes[0].name, 'jungle'); // résolu via registry, pas null
   assert.strictEqual(biomes[0].id, 28);
-});
-
-test('runMapper : hook onPeriodic appelé tous les periodicEvery arrivées (re-tentative kit)', async () => {
-  const bot = fakeMapperBot();
-  let periodic = 0;
-  const token = { cancelled: false };
-  await runMapper(bot, {
-    worldKey: 'overworld',
-    emit: () => {},
-    goto: async (wp) => { bot.entity.position = vec3(wp.x, 64, wp.z); },
-    onPeriodic: async () => { periodic++; if (periodic >= 2) token.cancelled = true; },
-    periodicEvery: 3,
-    sleep: async () => {},
-  }, token);
-  assert.ok(periodic >= 2, `onPeriodic appelé ${periodic} fois (attendu ≥2)`);
 });
