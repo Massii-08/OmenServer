@@ -215,7 +215,19 @@ function fuelNames() {
 // le four brûle l'input qu'on veut fondre).
 async function smeltWithFurnace(input, output, count, fuelOverride) {
   const fdef = bot.registry.blocksByName.furnace;
-  const near = fdef ? bot.findBlock({ matching: [fdef.id], maxDistance: 4 }) : null;
+  let near = fdef ? bot.findBlock({ matching: [fdef.id], maxDistance: 4 }) : null;
+  // Four PERDU (reclaim raté lors d'une fonte précédente — vécu live Surv1) : avant d'échouer ou
+  // de re-crafter, on va RÉCUPÉRER un four posé à ≤24 blocs (le nôtre, abandonné).
+  if (!near && !bot.inventory.items().some((i) => i.name === 'furnace')) {
+    const lost = fdef ? bot.findBlock({ matching: [fdef.id], maxDistance: 24 }) : null;
+    if (lost) {
+      try {
+        await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(lost.position.x, lost.position.y, lost.position.z, 2)),
+          30000, () => { try { stopMotion(); } catch (e) {} });
+      } catch (e) {}
+      near = bot.findBlock({ matching: [fdef.id], maxDistance: 4 });
+    }
+  }
   let pos = null;
   if (!near) {
     const place = await placeBlockNear(bot, 'furnace');
@@ -225,7 +237,13 @@ async function smeltWithFurnace(input, output, count, fuelOverride) {
     await sleep(300);
   }
   const r = await smelt(bot, { input, output, count, fuel: fuelOverride || fuelNames() }, taskToken);
-  if (pos) { await sleep(250); await reclaimBlock(pos, 'furnace'); } // garder le four PORTABLE
+  if (pos) {
+    await sleep(250);
+    await reclaimBlock(pos, 'furnace');            // garder le four PORTABLE
+    if (!bot.inventory.items().some((i) => i.name === 'furnace')) {
+      emit({ type: 'reclaim_failed', block: 'furnace' }); // pas revenu en poche (récupérable ≤24 plus tard)
+    }
+  }
   return r;
 }
 
@@ -276,7 +294,8 @@ async function smeltCharcoalGoal(count) {
     const log = bot.inventory.items().find((i) => i.name.endsWith('_log'));
     if (log) await craftItem(bot, { name: log.name.replace('_log', '_planks'), count: 1 });
   }
-  const fuel = ['coal', 'charcoal'].concat(
+  // ⚠️ PAS de 'charcoal' dans le fuel ici : on ne brûle pas le produit qu'on fabrique (vécu Surv1)
+  const fuel = ['coal'].concat(
     Object.keys(bot.registry.itemsByName).filter((n) => n.endsWith('_planks')));
   // fond l'essence la plus abondante (l'input du smelt est un nom d'item exact)
   const byName = {};
