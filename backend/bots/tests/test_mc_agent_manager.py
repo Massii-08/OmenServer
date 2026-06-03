@@ -527,3 +527,117 @@ def test_start_session_invalid_objective_defaults_stone(monkeypatch, tmp_path):
     wp = captured["cmd"][captured["cmd"].index("--world") + 1]
     data = _json.loads(open(wp).read())
     assert data["objective"]["type"] == "stone_pickaxe"
+
+
+# --- Cartographe (1b/1c) : objectif mapper + secteurs auto-assignés + re-balance live ---
+
+class _MapperProc:
+    """Faux subprocess pour les tests mapper : stdin capturé ligne à ligne, vivant jusqu'à kill()."""
+    def __init__(self):
+        import io as _io
+        self.stdin = _io.StringIO()
+        self.stdout = iter(())
+        self.pid = 5000
+        self._alive = True
+    def poll(self):
+        return None if self._alive else 0
+
+
+def _spawn_mapper(monkeypatch, tmp_path, captured_cmds, server_id="grp1"):
+    procs = []
+    def fake_popen(cmd, **kw):
+        captured_cmds.append(cmd)
+        p = _MapperProc()
+        procs.append(p)
+        return p
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path / "wm")
+    sid = mgr.start_session("h", 25565, "Mapper", server_id=server_id,
+                            autonomous=True, objective="mapper")
+    return sid, procs[-1]
+
+
+def test_mapper_objectif_valide():
+    assert "mapper" in mgr.VALID_OBJECTIVES
+
+
+def test_start_session_mapper_seul_secteur_0_sur_1(monkeypatch, tmp_path):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+    sid, _ = _spawn_mapper(monkeypatch, tmp_path, cmds)
+    cmd = cmds[-1]
+    assert "--sector-index" in cmd and cmd[cmd.index("--sector-index") + 1] == "0"
+    assert "--sector-count" in cmd and cmd[cmd.index("--sector-count") + 1] == "1"
+    assert mgr._sessions[sid]["objective"] == "mapper"
+
+
+def test_deux_mappers_rebalance_le_premier(monkeypatch, tmp_path):
+    """Le 2e mapper du groupe est lancé avec (1,2) ET le 1er reçoit {'type':'sector',0,2} sur stdin."""
+    import json as _json
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+    sid1, p1 = _spawn_mapper(monkeypatch, tmp_path, cmds)
+    sid2, p2 = _spawn_mapper(monkeypatch, tmp_path, cmds)
+    cmd2 = cmds[-1]
+    assert cmd2[cmd2.index("--sector-index") + 1] == "1"
+    assert cmd2[cmd2.index("--sector-count") + 1] == "2"
+    lines = [l for l in p1.stdin.getvalue().splitlines() if l.strip()]
+    sectors = [_json.loads(l) for l in lines if '"sector"' in l]
+    assert sectors and sectors[-1] == {"type": "sector", "index": 0, "count": 2}
+
+
+def test_stop_mapper_rebalance_le_survivant(monkeypatch, tmp_path):
+    """Stop d'un des 2 mappers → le survivant repasse en cercle complet (count 1)."""
+    import json as _json
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(mgr.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(mgr.os, "killpg", lambda pgid, sig: None)
+    cmds = []
+    sid1, p1 = _spawn_mapper(monkeypatch, tmp_path, cmds)
+    sid2, p2 = _spawn_mapper(monkeypatch, tmp_path, cmds)
+    p2._alive = False  # le process 2 meurt avec le stop
+    mgr.stop_session(sid2)
+    lines = [l for l in p1.stdin.getvalue().splitlines() if l.strip()]
+    sectors = [_json.loads(l) for l in lines if '"sector"' in l]
+    assert sectors[-1] == {"type": "sector", "index": 0, "count": 1}
+
+
+def test_mapper_autre_groupe_pas_compte(monkeypatch, tmp_path):
+    """Les mappers d'un AUTRE groupe n'influencent pas l'assignation de secteur."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+    _spawn_mapper(monkeypatch, tmp_path, cmds, server_id="grpA")
+    _spawn_mapper(monkeypatch, tmp_path, cmds, server_id="grpB")
+    cmd2 = cmds[-1]
+    assert cmd2[cmd2.index("--sector-index") + 1] == "0"
+    assert cmd2[cmd2.index("--sector-count") + 1] == "1"
+
+
+def test_non_mapper_pas_de_secteur(monkeypatch, tmp_path):
+    """Un objectif non-mapper ne reçoit PAS d'args secteur."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+    def fake_popen(cmd, **kw):
+        cmds.append(cmd)
+        return _MapperProc()
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path / "wm")
+    mgr.start_session("h", 25565, "U", server_id="grp1", autonomous=True, objective="stone_pickaxe")
+    assert "--sector-index" not in cmds[-1]
+
+
+def test_start_session_passe_world_label(monkeypatch, tmp_path):
+    """world_label → --world-label (monde de minage)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+    def fake_popen(cmd, **kw):
+        cmds.append(cmd)
+        return _MapperProc()
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path / "wm")
+    mgr.start_session("h", 25565, "U", server_id="grp1", world_label="mining")
+    cmd = cmds[-1]
+    assert "--world-label" in cmd and cmd[cmd.index("--world-label") + 1] == "mining"

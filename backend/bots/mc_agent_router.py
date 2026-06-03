@@ -28,7 +28,8 @@ class StartReq(BaseModel):
     server_id: Optional[str] = None # si fourni : charge un profil serveur (connexion + commandes)
     language: str = "fr"            # langue du champ reply LLM : fr | en | it
     autonomous: bool = False        # True → lance la boucle planner au spawn (0 LLM)
-    objective: str = "stone_pickaxe"  # objectif autonome : stone_pickaxe | iron_pickaxe
+    objective: str = "stone_pickaxe"  # objectif autonome : stone_pickaxe | iron_pickaxe | diamond | mapper
+    world_label: Optional[str] = None  # clé de monde explicite (ex. "mining") — sinon dimension auto
 
 
 class SayReq(BaseModel):
@@ -74,7 +75,7 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="host requis (ou choisis un profil serveur)")
     auth = auth if auth in ("offline", "microsoft") else "offline"
     try:
-        sid = mgr.start_session(host, port, user, req.model, auth, profile, commands, policy, server_id=req.server_id, language=language, autonomous=req.autonomous, objective=req.objective)
+        sid = mgr.start_session(host, port, user, req.model, auth, profile, commands, policy, server_id=req.server_id, language=language, autonomous=req.autonomous, objective=req.objective, world_label=req.world_label)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Impossible de demarrer Node : {exc}")
     return {"session_id": sid}

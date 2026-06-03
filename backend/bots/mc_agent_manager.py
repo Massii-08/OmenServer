@@ -141,6 +141,12 @@ def _pump(session, stream):
         if event:
             _apply_event(session, event)
     session["status"] = "stopped"
+    # un cartographe mort (crash/kick, pas via stop_session) → les survivants se re-partagent le cercle
+    if session.get("objective") == "mapper":
+        try:
+            _rebalance_sectors(session.get("server_id"))
+        except Exception:  # noqa: BLE001 — thread de pompe : ne jamais le laisser crasher
+            pass
 
 
 def _node_bin():
@@ -168,7 +174,30 @@ def has_api_key():
     return bool(_read_api_key())
 
 
-VALID_OBJECTIVES = ("stone_pickaxe", "iron_pickaxe", "diamond")
+VALID_OBJECTIVES = ("stone_pickaxe", "iron_pickaxe", "diamond", "mapper")
+
+
+def _active_mappers(group_id):
+    """Sessions cartographe VIVANTES d'un groupe, triées par id (ordre de lancement stable)."""
+    if not group_id:
+        return []
+    return sorted(
+        (s for s in list(_sessions.values())
+         if s.get("server_id") == group_id and s.get("objective") == "mapper"
+         and s.get("proc") and s["proc"].poll() is None),
+        key=lambda s: s["id"],
+    )
+
+
+def _rebalance_sectors(group_id):
+    """Re-pousse les secteurs (360/N + recouvrement, calcul côté Node) aux mappers actifs du groupe.
+
+    Appelé quand N change (lancement/arrêt d'un mapper) : chaque bot reçoit {'type':'sector',index,count}
+    sur stdin → effet au prochain batch de waypoints (pas de redémarrage)."""
+    mappers = _active_mappers(group_id)
+    n = len(mappers)
+    for i, s in enumerate(mappers):
+        send_command(s["id"], {"type": "sector", "index": i, "count": n})
 
 
 def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None):
@@ -227,6 +256,11 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
         cmd += ["--world-memory", str(wm_path)]
     if world_label:
         cmd += ["--world-label", str(world_label)]  # monde de minage (overworld-type séparé)
+    # Multi-cartographes (1c) : secteur assigné au lancement (i = nb de mappers déjà actifs du groupe),
+    # puis re-balancé live pour TOUS via stdin (cf. _rebalance_sectors, appelé plus bas).
+    if objective == "mapper" and autonomous:
+        k = len(_active_mappers(server_id))
+        cmd += ["--sector-index", str(k), "--sector-count", str(k + 1)]
     env = dict(os.environ)
     api_key = _read_api_key()  # injecte la clé (fichier ou env) dans l'env du subprocess Node
     if api_key:
@@ -246,6 +280,7 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
         "id": sid, "proc": proc, "status": "starting",
         "transcript": [], "events": [], "last_error": None,
         "host": host, "user": user, "server_id": server_id,
+        "objective": objective if autonomous else None,
         "cmds_path": str(cmds_path) if cmds_path else None,
         "policy_path": str(policy_path) if policy_path else None,
         "world_path": str(world_path) if world_path else None,
@@ -255,6 +290,8 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
     t = threading.Thread(target=_pump, args=(session, proc.stdout), daemon=True)
     t.start()
     session["thread"] = t
+    if objective == "mapper" and autonomous:
+        _rebalance_sectors(server_id)  # les mappers déjà actifs resserrent leur wedge (N a changé)
     return sid
 
 
@@ -316,6 +353,8 @@ def stop_session(sid):
                 os.unlink(p)
             except OSError:
                 pass
+    if s.get("objective") == "mapper":
+        _rebalance_sectors(s.get("server_id"))  # les survivants élargissent leur wedge
     return True
 
 
