@@ -139,7 +139,7 @@ Puis bascule en **mode cartographie**.
 | **1b — Cartographe (1 bot)** | objectif `mapper` : mini-kit pierre/fer → survie (défense min + nourriture) → boucle cartographie → `biome_seen` + `cave_found`. | offline (unit) + smoke live. |
 | **1c — Multi-cartographes** | N mappers : secteurs au lancement + skip cellules mappées. | offline (unit) + smoke live. |
 | **1d — Récolteurs consomment** | `explore` biais dirigé via table matériau→biome + caves connues. | offline (unit) + smoke live. |
-| **Phase 2 — Structures** | `/locate` (si op) + cluster d'entités → registre → liste structures admin. | LAN pour valider `/locate`. |
+| **Phase 2 — Structures** | auto-découverte ids (`tabComplete` si op) + `/locate` + cluster d'entités (agnostique) → registre → liste admin. Saisie manuelle = fallback optionnel. | LAN pour valider. |
 
 ## 10. Tests
 
@@ -183,6 +183,13 @@ Les serveurs ont des **datapacks** → biomes/caves/structures custom. Le design
   store : `M → {biome, x, z}`). Les récolteurs frais utilisent ces associations **observées** (§4).
   Table vanilla = amorce/fallback. (Index `finds` : store en **1a**, exploité en **1d**.)
 - **Caves** : détection **géométrique** (colonnes d'air) → indépendante des datapacks (best-effort).
-- **Structures (Phase 2)** : `/locate structure <id>` accepte les **ids custom** → l'admin fournit la
-  liste des ids de structures custom **par groupe** ; le fallback **cluster d'entités** est agnostique.
+- **Structures (Phase 2)** : ids découverts **automatiquement** (aucune saisie admin requise en général) :
+  1. **bot op** → `bot.tabComplete('/locate structure ')` renvoie tous les ids valides (vanilla **+
+     datapack**) → le bot fait `/locate structure <id>` pour chacun. Zéro effort admin.
+  2. **cluster d'entités** (toujours, sans permission ni id) → structures à signature de mobs (bastion,
+     donjon…), agnostique aux datapacks.
+  3. **opportuniste** : le cartographe tombe dessus en se baladant.
+  4. **saisie manuelle = dernier recours uniquement** (bot non-op ET structure custom sans signature) :
+     ids collés dans l'onglet groupe — **optionnel**.
+  ⚠️ à confirmer live : `tabComplete` renvoie bien les ids selon les permissions du bot.
 - **Robustesse code** : nulle part on ne hardcode/valide contre une liste vanilla (biomes/structures).
