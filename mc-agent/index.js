@@ -1,7 +1,7 @@
 'use strict';
 // Point d'entrée de l'agent Minecraft. Lancé par le backend Python en subprocess.
 const mineflayer = require('mineflayer');
-const { pathfinder, Movements } = require('mineflayer-pathfinder');
+const { pathfinder, Movements, goals: pfGoals } = require('mineflayer-pathfinder');
 const { plugin: pvp } = require('mineflayer-pvp');
 const { plugin: collectBlock } = require('mineflayer-collectblock');
 const { createLLMClient } = require('./llm');
@@ -43,6 +43,8 @@ const { smelt } = require('./skills/smelt');
 const { descendDiagonal } = require('./skills/descendDiagonal');
 const { branchMine } = require('./skills/branchMine');
 const { classifyAuthPrompt, genPassword } = require('./auth');
+const { loadMemory, worldKey } = require('./worldMemory');
+const { runMapper } = require('./mapper');
 
 function parseArgs(argv) {
   const o = {};
@@ -87,6 +89,15 @@ const world = loadWorld(worldFile);
 let taskToken = { cancelled: true };
 let deathTimes = [];
 let bootDone = false; // réflexes/mouvements/auth = une seule fois par connexion (pas à chaque respawn)
+
+// --- Mémoire de monde (1a/1b) : bootstrap du groupe (--world-memory) + clé de monde (--world-label).
+// Posés sur le bot au spawn : gather y émet material_found ; explore y lit le biais dirigé ;
+// le mapper y lit les cellules déjà mappées.
+const worldMemoryBootstrap = loadMemory(args['world-memory']);
+// Secteur multi-cartographes (1c) : assigné au lancement (--sector-index/--sector-count) puis
+// RE-BALANCÉ live par le manager via stdin {type:'sector',index,count} quand N change.
+let mapperSector = (args['sector-index'] !== undefined && args['sector-count'] !== undefined)
+  ? { index: Number(args['sector-index']), count: Number(args['sector-count']) } : null;
 
 // Store secrets local (mot de passe AuthMe). data/ gitignored, perms 600. JAMAIS dans emit/logs.
 const secretsFile = args.secrets || path.join(__dirname, '..', 'data', `mc_agent_secret_${args.user || 'TrainBot'}.json`);
@@ -218,15 +229,75 @@ async function runGoalSkill(goal) {
   return { ok: false, reason: 'unknown_skill' };
 }
 
+// Upgrade kit du cartographe (spec §5.1) : fer « si rapide » (minerai visible ≤32 blocs, sinon on
+// n'insiste pas) → sinon fallback CUIVRE registry-gated (copper_sword n'existe qu'en 1.21.9+/moddé ;
+// sur 1.21.4 ce bloc est inerte). Best-effort : chaque étape bornée, tout échec = on part à la pierre.
+async function tryKitUpgrade() {
+  const reg = bot.registry;
+  const oreIds = (names) => names.map((n) => reg.blocksByName[n]).filter(Boolean).map((b) => b.id);
+  const tryMetal = async (ores, raw, ingot, sword) => {
+    if (!reg.itemsByName[sword]) return false;                       // registry-gated (cuivre)
+    const ids = oreIds(ores);
+    if (!ids.length || !bot.findBlock({ matching: ids, maxDistance: 32 })) return false; // pas « rapide »
+    // four : 8 cobble + craft (si pas déjà en poche)
+    if (!bot.inventory.items().some((i) => i.name === 'furnace')) {
+      const c = await withTimeout(gather(bot, { name: 'stone', count: 8 }, taskToken), 120000, stopMotion);
+      if (!c.ok || taskToken.cancelled) return false;
+      const f = await craftSmart({ name: 'furnace', count: 1 });
+      if (!f.ok) return false;
+    }
+    const g = await withTimeout(gather(bot, { name: ores, count: 3 }, taskToken), 180000, stopMotion);
+    if (!g.ok || taskToken.cancelled) return false;
+    const s = await withTimeout(smeltWithFurnace(raw, ingot, 2), 120000, stopMotion);
+    if (!s.ok || taskToken.cancelled) return false;
+    const c2 = await craftSmart({ name: sword, count: 1 });
+    if (c2.ok) emit({ type: 'mapper_kit_upgrade', metal: ingot });
+    return c2.ok;
+  };
+  try {
+    if (await tryMetal(['iron_ore', 'deepslate_iron_ore'], 'raw_iron', 'iron_ingot', 'iron_sword')) return;
+    await tryMetal(['copper_ore', 'deepslate_copper_ore'], 'raw_copper', 'copper_ingot', 'copper_sword');
+  } catch (e) { /* best-effort : on cartographie à la pierre */ }
+}
+
+// Boucle cartographe (objectif `mapper`) : mini-kit pierre via planner → upgrade best-effort →
+// cartographie CONTINUE (ne « finit » jamais — seule l'annulation/stop l'arrête).
+async function startMapper() {
+  const res = await runPlanner(bot, {
+    chain: chainFor('mapper'),
+    runSkill: (g) => withTimeout(runGoalSkill(g), timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} }),
+    ctxExtra,
+    onStep: (g) => emit({ type: 'goal', name: g.name }),
+  }, taskToken);
+  if (taskToken.cancelled) return;
+  if (res.stalled) emit({ type: 'mapper_kit_stalled', goal: res.goal }); // on cartographie quand même (dégradé)
+  else await tryKitUpgrade();
+  if (taskToken.cancelled) return;
+  emit({ type: 'mapper_started', world: bot._worldKey, sector: mapperSector });
+  await runMapper(bot, {
+    worldKey: bot._worldKey,
+    memory: bot._worldMemory,
+    getSector: () => mapperSector,
+    emit,
+    fleeFrom,
+    // chaque déplacement borné (anti-freeze pathfinder, cf. withTimeout) ; timeout → waypoint suivant
+    goto: (wp) => withTimeout(
+      bot.pathfinder.goto(new pfGoals.GoalNear(wp.x, wp.y, wp.z, 8)),
+      120000, () => { try { stopMotion(); } catch (e) {} }
+    ).then((r) => { if (r && r.ok === false) throw new Error(r.reason || 'goto_failed'); }),
+  }, taskToken);
+}
+
 // Lance (ou relance) la boucle autonome ; le planner re-dérive depuis l'état courant.
 async function startAutonomous(sender) {
   // objectif : depuis le world (seedé par le backend/launch), sinon --objective, sinon pioche pierre.
   const objType = (world.objective && world.objective.type) || args.objective || 'stone_pickaxe';
   setObjective(world, { type: objType, status: 'in_progress' });
   saveWorld(worldFile, world);
-  const chain = chainFor(objType);               // pioche pierre (MVP) ou pioche fer (IRON_CHAIN)
   taskToken = taskCtl.begin('autonomous', stopMotion);
   emit({ type: 'autonomous_start', objective: objType });
+  if (objType === 'mapper') return startMapper(); // rôle continu : jamais « done »
+  const chain = chainFor(objType);               // pioche pierre (MVP) ou pioche fer (IRON_CHAIN)
   const res = await runPlanner(bot, {
     chain,
     runSkill: (g) => withTimeout(runGoalSkill(g), timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} }),
@@ -259,6 +330,12 @@ function tryAuth() {
 
 async function onSpawn() {
   bot._mcaProfile = profile; // expose le profil au skill explore (jitter humanisation ∝ movementJitter)
+  // Mémoire de monde : gather émet material_found (apprentissage matériau↔biome), explore lit le
+  // biais dirigé, le mapper skippe les cellules déjà mappées. _worldKey re-résolu à chaque spawn
+  // (la dimension peut changer : portail nether/end) ; le label explicite (--world-label) prime.
+  bot._emit = emit;
+  bot._worldMemory = worldMemoryBootstrap;
+  bot._worldKey = worldKey(bot, args['world-label']);
   emit({ type: 'status', state: 'spawned', username: bot.username, profile: profile ? profile.id : null });
   if (!bootDone) {
     // une seule fois par connexion : sinon 'spawn' (respawn) ré-ajoute des listeners (fuite, MaxListeners)
@@ -522,4 +599,10 @@ bot.on('end', () => { emit({ type: 'status', state: 'disconnected' }); process.e
 onCommand((cmd) => {
   if (cmd.type === 'say') say(bot, cmd.message);
   else if (cmd.type === 'quit') bot.quit();
+  // Re-balance multi-cartographes : le manager re-pousse {index,count} quand N change dans le groupe.
+  // Lu live par runMapper via getSector() → effet au prochain batch (pas de redémarrage).
+  else if (cmd.type === 'sector' && cmd.count >= 1) {
+    mapperSector = { index: Number(cmd.index) || 0, count: Number(cmd.count) };
+    emit({ type: 'sector_set', index: mapperSector.index, count: mapperSector.count });
+  }
 });
