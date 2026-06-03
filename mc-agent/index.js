@@ -35,7 +35,7 @@ const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
 const fs = require('fs');
 const { runPlanner } = require('./planner');
-const { chainFor } = require('./goals');
+const { chainFor, buildCtxInv, firstUnmet } = require('./goals');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
 const { _nearestTable } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { placeBlockNear } = require('./skills/placeBlockNear');
@@ -45,7 +45,7 @@ const { branchMine } = require('./skills/branchMine');
 const { classifyAuthPrompt, genPassword } = require('./auth');
 const { loadMemory, worldKey } = require('./worldMemory');
 const { runMapper } = require('./mapper');
-const { isInWater, escapeWater } = require('./unstuck');
+const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
 
 function parseArgs(argv) {
   const o = {};
@@ -167,8 +167,20 @@ async function withCraftingTable(fn) {
     const r0 = await fn();
     if (r0.ok) return r0;                          // table existante atteinte → craft passé
   }
-  const place = await placeBlockNear(bot, 'crafting_table');
-  if (!place.ok) return { ok: false, reason: 'no_table' };
+  let place = await placeBlockNear(bot, 'crafting_table');
+  if (!place.ok) {
+    // sol encombré (feuillage jungle, pente) → se déplacer vers un sol dégagé proche et re-tenter
+    // UNE fois (vu live MapT4 : stall wooden_pickaxe avec table+planks+sticks en poche, pose impossible).
+    const spot = findLandTarget(bot, 24);
+    if (spot) {
+      try {
+        await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(spot.x, spot.y + 1, spot.z, 1)),
+          30000, () => { try { stopMotion(); } catch (e) {} });
+      } catch (e) {}
+      place = await placeBlockNear(bot, 'crafting_table');
+    }
+    if (!place.ok) return { ok: false, reason: 'no_table' };
+  }
   await waitForBlock(place.pos, 'crafting_table'); // #3 : ne pas ouvrir la table avant qu'elle existe
   await sleep(300);                                // settle pose→ouverture (serveur + humanisation)
   const r = await fn();
@@ -299,12 +311,14 @@ async function tryKitUpgrade() {
 // Boucle cartographe (objectif `mapper`) : mini-kit pierre via planner → upgrade best-effort →
 // cartographie CONTINUE (ne « finit » jamais — seule l'annulation/stop l'arrête).
 async function startMapper() {
-  const res = await runPlanner(bot, {
-    chain: chainFor('mapper'),
+  const kitChain = chainFor('mapper');
+  const runKit = () => runPlanner(bot, {
+    chain: kitChain,
     runSkill: (g) => withTimeout(runGoalSkill(g), timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} }),
     ctxExtra,
     onStep: (g) => emit({ type: 'goal', name: g.name }),
   }, taskToken);
+  const res = await runKit();
   if (taskToken.cancelled) return;
   if (res.stalled) emit({ type: 'mapper_kit_stalled', goal: res.goal }); // on cartographie quand même (dégradé)
   else await tryKitUpgrade();
@@ -316,6 +330,12 @@ async function startMapper() {
     getSector: () => mapperSector,
     emit,
     fleeFrom,
+    // kit incomplet (stall terrain au départ) → re-tenté discrètement toutes les ~10 arrivées :
+    // le terrain a changé (le bot a bougé), la pose de table a souvent une 2e chance ailleurs.
+    onPeriodic: async () => {
+      const ctx = Object.assign({ inv: buildCtxInv(bot) }, ctxExtra());
+      if (firstUnmet(kitChain, ctx)) { emit({ type: 'mapper_kit_retry' }); await runKit(); }
+    },
     // chaque déplacement borné (anti-freeze pathfinder, cf. withTimeout) ; timeout → waypoint suivant
     goto: (wp) => withTimeout(
       bot.pathfinder.goto(new pfGoals.GoalNear(wp.x, wp.y, wp.z, 8)),

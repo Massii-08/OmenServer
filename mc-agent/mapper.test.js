@@ -290,3 +290,18 @@ test('runMapper : résout le nom de biome via bot.registry quand block.biome n\'
   assert.strictEqual(biomes[0].name, 'jungle'); // résolu via registry, pas null
   assert.strictEqual(biomes[0].id, 28);
 });
+
+test('runMapper : hook onPeriodic appelé tous les periodicEvery arrivées (re-tentative kit)', async () => {
+  const bot = fakeMapperBot();
+  let periodic = 0;
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async (wp) => { bot.entity.position = vec3(wp.x, 64, wp.z); },
+    onPeriodic: async () => { periodic++; if (periodic >= 2) token.cancelled = true; },
+    periodicEvery: 3,
+    sleep: async () => {},
+  }, token);
+  assert.ok(periodic >= 2, `onPeriodic appelé ${periodic} fois (attendu ≥2)`);
+});

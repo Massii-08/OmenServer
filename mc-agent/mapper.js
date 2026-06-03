@@ -174,8 +174,10 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
 
   const home = opts.home || _pos(bot);   // point d'ancrage (« au pire il reviendra au spawn »)
   const maxRange = opts.maxRange || 1024;
+  const periodicEvery = opts.periodicEvery || 10;
   let lastHeading = null;
   let misses = 0;                        // tirages sans cible valable d'affilée (backoff)
+  let arrivals = 0;                      // arrivées réussies (déclenche onPeriodic, ex. re-tentative kit)
   record(); // la cellule de départ compte
 
   while (!token.cancelled) {
@@ -205,6 +207,11 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
     lastHeading = target.heading;
     try { await doGoto({ x: target.x, y: here.y, z: target.z }); } catch (e) { continue; } // inatteignable → autre cap
     record();
+    arrivals++;
+    // hook périodique (ex. : re-tenter le mini-kit s'il avait stallé) — best-effort, jamais bloquant
+    if (opts.onPeriodic && arrivals % periodicEvery === 0) {
+      try { await opts.onPeriodic(); } catch (e) { /* le mapping continue */ }
+    }
   }
   return { ok: true, cancelled: true };
 }
