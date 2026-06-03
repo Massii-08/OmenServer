@@ -243,3 +243,24 @@ test('MAPPER_KIT : sticks adaptatifs — la hache/torches comptent dans le besoi
   // TOUT fait → 0 stick requis
   assert.ok(g.met({ inv: { stone_pickaxe: 1, stone_sword: 1, stone_axe: 1, torch: 8, cooked_beef: 4, furnace: 1, crafting_table: 1 } }));
 });
+
+test('MAPPER_KIT régression Surv3 : 3 planches SANS table -> re-dérive vers le bois (pas crafting_table qui boucle)', () => {
+  // vécu live : table = 4 planches ; avec 3 le craft échouait en boucle (no_recipe → no_table ×9).
+  // attendu : le planner repart chercher du bois (logs car 0 bûche) au lieu de marteler le craft.
+  const ctx = { inv: { wooden_pickaxe: 1, stick: 8, oak_planks: 3 } };
+  assert.strictEqual(firstUnmet(MAPPER_KIT, ctx).name, 'logs');
+  // avec des bûches en poche : logs met → c'est planks qui re-craft
+  const ctx2 = { inv: { wooden_pickaxe: 1, stick: 8, oak_planks: 3, oak_log: 3 } };
+  assert.strictEqual(firstUnmet(MAPPER_KIT, ctx2).name, 'planks');
+});
+
+test('MAPPER_KIT planksNeed : couvre table(4) + pioche bois(3) + sticks manquants (arrondi par lot de 4)', () => {
+  const g = MAPPER_KIT.find((x) => x.name === 'planks');
+  // rien : table 4 + pioche 3 + sticks 8 manquants → 2 lots × 2 planches = 4 → besoin 11 (>8 cap? non capé)
+  assert.ok(!g.met({ inv: { oak_planks: 8 } }), '8 planches ne couvrent pas tout le départ');
+  // table + pioche bois faites, sticks pleins → besoin 0 → met même sans planche
+  assert.ok(g.met({ inv: { wooden_pickaxe: 1, crafting_table: 1, stick: 8 } }));
+  // table faite, pioche faite, 0 stick (besoin 7 sticks → 2 lots → 4 planches)
+  assert.ok(!g.met({ inv: { wooden_pickaxe: 1, crafting_table: 1, oak_planks: 3 } }));
+  assert.ok(g.met({ inv: { wooden_pickaxe: 1, crafting_table: 1, oak_planks: 4 } }));
+});

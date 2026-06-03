@@ -181,7 +181,7 @@ async function withCraftingTable(fn) {
       } catch (e) {}
       place = await placeBlockNear(bot, 'crafting_table');
     }
-    if (!place.ok) return { ok: false, reason: 'no_table' };
+    if (!place.ok) return { ok: false, reason: 'no_table:' + (place.reason || '?') }; // sous-raison (diagnostic live)
   }
   await waitForBlock(place.pos, 'crafting_table'); // #3 : ne pas ouvrir la table avant qu'elle existe
   await sleep(300);                                // settle pose→ouverture (serveur + humanisation)

@@ -123,12 +123,20 @@ function sticksNeed(c) {
   return Math.min(need, 8);
 }
 const sticksOK = (c) => { const n = sticksNeed(c); return n === 0 || invCount(c.inv, 'stick') >= n; };
-// bois plus nécessaire : pioche (bois ou pierre) + table en poche + sticks suffisants pour la suite
-const woodOK = (c) => (W(c) || S(c)) && invCount(c.inv, 'crafting_table') >= 1 && sticksOK(c);
+// Planches NÉCESSAIRES pour la suite : table (4 si manquante) + pioche bois (3 si manquante)
+// + sticks manquants (1 lot de 4 sticks = 2 planches). ⚠️ vécu Surv3 : un seuil fixe « ≥2 » laissait
+// le craft de table boucler à 3 planches (recette = 4) → comptabilité RÉELLE, pas de seuil arbitraire.
+function planksNeed(c) {
+  const stickShort = Math.max(0, sticksNeed(c) - invCount(c.inv, 'stick'));
+  return (invCount(c.inv, 'crafting_table') >= 1 ? 0 : 4)
+       + ((W(c) || S(c)) ? 0 : 3)
+       + Math.ceil(stickShort / 4) * 2;
+}
+const planksOK = (c) => { const n = planksNeed(c); return n === 0 || anyPlanks(c.inv) >= n; };
 const MAPPER_KIT = [
-  { name: 'logs',           met: (c) => anyLog(c.inv) >= 3 || anyPlanks(c.inv) >= 2 || woodOK(c),
+  { name: 'logs',           met: (c) => anyLog(c.inv) >= 3 || planksOK(c),
     skill: 'gatherLog',     args: { count: 4 } },
-  { name: 'planks',         met: (c) => anyPlanks(c.inv) >= 2 || woodOK(c),
+  { name: 'planks',         met: (c) => planksOK(c),
     skill: 'craftPlanks',   args: { count: 4 } }, // 4×4 = 16 planks (table 4 + sticks 6 + pioche bois 3 + marge)
   { name: 'crafting_table', met: (c) => invCount(c.inv, 'crafting_table') >= 1 || K(c),
     skill: 'craft',         args: { name: 'crafting_table', count: 1 } },
