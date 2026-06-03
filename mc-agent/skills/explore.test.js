@@ -119,3 +119,21 @@ test('explore : jitter d\'humanisation ∝ movementJitter du profil', async () =
   await explore(d2.bot, { name: 'oak_log', matching: [17], step: 80, maxRadius: 80, rng: () => 0.5 });
   assert.ok(Math.abs((c.calls.goto[0].x - d2.calls.goto[0].x)) < jitterMax, 'jitter défaut < jitter profil mj=1');
 });
+
+test('explore : biais dirigé — va direct au biome connu (mémoire) sans ratisser', async () => {
+  const { bot, calls } = makeBot({ target: pos(640, 70, 128) }); // bois loin, mais connu de la mémoire
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 640, z: 128 }], biomes: [] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w' });
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(res.directed, true, 'trouvé via le ciblage dirigé');
+  assert.strictEqual(calls.goto.length, 1, 'un seul déplacement (pas de recherche en anneaux)');
+  assert.ok(Math.abs(calls.goto[0].x - 640) <= 1 && Math.abs(calls.goto[0].z - 128) <= 1, 'allé droit au biome connu');
+});
+
+test('explore : biais dirigé via amorce vanilla (biomes connus, pas de finds)', async () => {
+  const { bot, calls } = makeBot({ target: pos(200, 70, 0) });
+  const memory = { worlds: { w: { finds: [], biomes: [{ name: 'forest', x: 200, z: 0 }] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w' });
+  assert.strictEqual(res.directed, true);
+  assert.ok(Math.abs(calls.goto[0].x - 200) <= 1, 'allé au biome forest connu (amorce *_log)');
+});

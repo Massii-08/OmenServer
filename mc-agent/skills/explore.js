@@ -8,6 +8,7 @@
 // goals.GoalNear : déplacement vers un point à `range` près. Chargé optionnellement (tests legacy).
 let goals;
 try { goals = require('mineflayer-pathfinder').goals; } catch (e) { goals = null; }
+const { directedTarget } = require('../worldMemory');
 
 // Nb de points sur un anneau de rayon r pour garder un espacement d'arc ≤ arcSpacing (recouvrement
 // des disques de scan → pas de trou de couverture). Min 4.
@@ -69,6 +70,29 @@ async function explore(bot, opts = {}) {
   const prof = opts.profile || bot._mcaProfile || null;
   const mj = (prof && prof.params && prof.params.movementJitter) || 0.1;
   const jitterMax = step * 0.15 * mj; // petit décalage humain, bien < marge de recouvrement
+
+  // BIAIS DIRIGÉ : si la mémoire de monde du groupe sait où trouver `name`, on y va D'ABORD
+  // (associations apprises sinon amorce vanilla) → un bot frais file au bon biome au lieu de chercher
+  // à l'aveugle. Lu via bot._worldMemory/_worldKey (posés par index.js au spawn) ou via opts (tests).
+  const memory = opts.memory || bot._worldMemory || null;
+  const wkey = opts.worldKey || bot._worldKey || null;
+  if (memory && wkey) {
+    const mats = Array.isArray(opts.name) ? opts.name : (opts.name ? [opts.name] : []);
+    let target = null;
+    for (const mat of mats) {
+      target = directedTarget(memory, wkey, mat, origin, { maxDist: opts.directedMaxDist || 1500 });
+      if (target) break;
+    }
+    if (target) {
+      if (emit) { try { emit({ type: 'explore_directed', x: Math.round(target.x), z: Math.round(target.z), biome: target.biome, learned: !!target.learned }); } catch (e) {} }
+      try {
+        if (bot.pathfinder && bot.pathfinder.goto) await bot.pathfinder.goto(buildNearGoal(target.x, origin.y, target.z, 8));
+        if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
+        const hit = bot.findBlock({ matching, maxDistance: scanRadius });
+        if (hit) return { ok: true, found: hit.position, traveled: 0, directed: true };
+      } catch (e) { /* cible inatteignable → on retombe sur la recherche en anneaux */ }
+    }
+  }
 
   const wps = nextWaypoints({ x: origin.x, y: origin.y, z: origin.z }, { step, maxRadius });
   for (const wp of wps) {
