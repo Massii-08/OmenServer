@@ -41,12 +41,16 @@ async function defendIfNeeded(bot) {
 /** Récolte `count`× le bloc `name` le + proche. {ok, reason?/got}. `token` = annulation. */
 async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplore = false } = {}, token = null) {
   if (!name || (Array.isArray(name) && name.length === 0)) return { ok: false, reason: 'no_block' };
+  // Bloc inconnu du registre (faute de frappe, version) → not_found NET. Jamais findBlock(matching:null)
+  // (comportement indéfini mineflayer) ni exploration pour une cible qui n'existe pas.
+  const ids = _ids(bot, name);
+  if (!ids) return { ok: false, reason: 'not_found' };
   let got = 0;
   let explorations = 0;
   for (let i = 0; i < count; i++) {
     if (token && token.cancelled) return { ok: true, got, cancelled: true };
     await defendIfNeeded(bot);
-    let block = bot.findBlock({ matching: _ids(bot, name), maxDistance });
+    let block = bot.findBlock({ matching: ids, maxDistance });
     // Rien à portée → exploration de surface autonome (opt-in `explore`, borné). Le bot voyage en
     // anneaux et re-scanne jusqu'à trouver. Désactivé par défaut : les gather opportunistes (type
     // branchMine à maxDistance:6 sur un minerai entrevu) ne doivent PAS partir roamer 256 blocs.
@@ -54,9 +58,9 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
       explorations++;
       // emit : les events explore (explore_directed/explore_waypoint) remontent dans le flux stdout
       // du bot → observables en live (run.log / manager). Sans ça le biais dirigé est invisible.
-      const ex = await explore(bot, { name, matching: _ids(bot, name), scanRadius: maxDistance, token, emit: bot._emit || null });
+      const ex = await explore(bot, { name, matching: ids, scanRadius: maxDistance, token, emit: bot._emit || null });
       if (token && token.cancelled) return { ok: true, got, cancelled: true };
-      if (ex && ex.ok) block = bot.findBlock({ matching: _ids(bot, name), maxDistance });
+      if (ex && ex.ok) block = bot.findBlock({ matching: ids, maxDistance });
     }
     if (!block) {
       if (got === 0) return { ok: false, reason: 'not_found' };

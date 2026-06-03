@@ -153,6 +153,47 @@ test('explore : biais caves (1d) — minerai → va à l\'entrée de grotte conn
   assert.ok(ev && ev.cave === true, 'event explore_directed taggé cave:true');
 });
 
+test('explore : cible dirigée ÉPUISÉE (rien sur place) → continue en anneaux derrière', async () => {
+  // Le gisement appris a été vidé : le bot arrive, scan vide → la recherche en anneaux reprend
+  // depuis sa position (le directed n'est qu'un préfixe, jamais un cul-de-sac).
+  const { bot, calls } = makeBot({ target: pos(90, 70, 130) }); // vraie ressource ailleurs, trouvable en anneaux
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 600, z: 0 }], biomes: [] } } };
+  // findBlock ne voit la cible que ≤64 : à (600,0) il n'y a RIEN → directed miss → anneaux depuis (600,0)...
+  // (le fake téléporte le bot à chaque goto, la géométrie reste cohérente)
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w' });
+  assert.strictEqual(calls.goto.length >= 2, true, 'directed (1) puis waypoints anneaux derrière');
+  assert.ok(Math.abs(calls.goto[0].x - 600) <= 1, 'a d\'abord tenté la cible apprise');
+  assert.strictEqual(res.ok, false, 'pas trouvé ici (ressource hors des anneaux post-directed) mais PAS de hang');
+});
+
+test('explore : goto dirigé qui hang → timeout borné → retombe en anneaux', async () => {
+  const { bot, calls } = makeBot({ target: pos(100, 70, 0) });
+  const realGoto = bot.pathfinder.goto;
+  let hangs = 0;
+  bot.pathfinder.goto = async (goal) => {
+    if (hangs++ === 0) return new Promise(() => {}); // 1er goto (directed) ne resolve JAMAIS
+    return realGoto(goal);
+  };
+  bot.pathfinder.setGoal = () => {}; // stop du goto au timeout
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 600, z: 0 }], biomes: [] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', directedGotoTimeoutMs: 40, gotoTimeoutMs: 5000 });
+  assert.strictEqual(res.ok, true, 'trouvé via les anneaux malgré le goto dirigé gelé');
+  assert.notStrictEqual(res.directed, true);
+});
+
+test('explore : waypoint goto qui hang → timeout → waypoint suivant (pas de gel du skill)', async () => {
+  const { bot, calls } = makeBot({ target: pos(100, 70, 0) });
+  const realGoto = bot.pathfinder.goto;
+  let n = 0;
+  bot.pathfinder.goto = async (goal) => {
+    if (n++ === 0) return new Promise(() => {}); // 1er waypoint gelé
+    return realGoto(goal);
+  };
+  bot.pathfinder.setGoal = () => {};
+  const res = await explore(bot, { name: 'oak_log', matching: [17], gotoTimeoutMs: 40 });
+  assert.strictEqual(res.ok, true, 'trouvé via les waypoints suivants malgré le 1er gelé');
+});
+
 test('explore : mémoire muette pour ce matériau → fallback aveugle (anneaux) intact', async () => {
   const { bot, calls } = makeBot({ target: pos(100, 70, 0) });
   const memory = { worlds: { w: { finds: [{ material: 'sand', biome: 'desert', x: 500, z: 500 }], biomes: [], caves: [] } } };

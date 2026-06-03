@@ -47,6 +47,25 @@ function buildNearGoal(x, y, z, range) {
   return { x, y, z };
 }
 
+// goto borné : pathfinder.goto peut rester gelé INDÉFINIMENT sur une cible inatteignable
+// (océan, surplomb) → timeout → setGoal(null) + reject → l'appelant passe à la suite
+// (directed → anneaux ; waypoint → waypoint suivant). Le skill ne gèle jamais.
+function gotoWithTimeout(bot, goal, ms) {
+  if (!(bot.pathfinder && bot.pathfinder.goto)) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const t = setTimeout(() => {
+      if (done) return; done = true;
+      try { bot.pathfinder.setGoal && bot.pathfinder.setGoal(null); } catch (e) {}
+      reject(new Error('goto_timeout'));
+    }, ms);
+    bot.pathfinder.goto(goal).then(
+      (v) => { if (!done) { done = true; clearTimeout(t); resolve(v); } },
+      (e) => { if (!done) { done = true; clearTimeout(t); reject(e); } }
+    );
+  });
+}
+
 /**
  * explore(bot, opts) → {ok:true, found:pos, traveled} | {ok:false, reason:'not_found'|'cancelled'|'no_pos'}
  *  name      : nom du bloc (pour log)            matching : ids findBlock (résolus par l'appelant)
@@ -62,6 +81,9 @@ async function explore(bot, opts = {}) {
   const rng = opts.rng || Math.random;
   const token = opts.token || null;
   const emit = opts.emit || null;
+  // Bornes des gotos (cf. gotoWithTimeout) : trajet dirigé long (≤1500 blocs) vs hop de waypoint.
+  const directedGotoTimeoutMs = opts.directedGotoTimeoutMs || 240000;
+  const gotoTimeoutMs = opts.gotoTimeoutMs || 90000;
 
   const origin = bot.entity && bot.entity.position;
   if (!origin) return { ok: false, reason: 'no_pos' };
@@ -86,23 +108,26 @@ async function explore(bot, opts = {}) {
     if (target) {
       if (emit) { try { emit({ type: 'explore_directed', x: Math.round(target.x), z: Math.round(target.z), biome: target.biome, learned: !!target.learned, cave: !!target.cave }); } catch (e) {} }
       try {
-        if (bot.pathfinder && bot.pathfinder.goto) await bot.pathfinder.goto(buildNearGoal(target.x, origin.y, target.z, 8));
+        await gotoWithTimeout(bot, buildNearGoal(target.x, origin.y, target.z, 8), directedGotoTimeoutMs);
         if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
         const hit = bot.findBlock({ matching, maxDistance: scanRadius });
         if (hit) return { ok: true, found: hit.position, traveled: 0, directed: true };
-      } catch (e) { /* cible inatteignable → on retombe sur la recherche en anneaux */ }
+      } catch (e) { /* cible inatteignable ou goto gelé (timeout) → on retombe sur les anneaux */ }
     }
   }
 
-  const wps = nextWaypoints({ x: origin.x, y: origin.y, z: origin.z }, { step, maxRadius });
+  // Anneaux centrés sur la position COURANTE (≠ origin) : après un trajet dirigé vers une cible
+  // épuisée, on ratisse AUTOUR du gisement appris (bon prior local) au lieu de retraverser la carte.
+  const ringOrigin = (bot.entity && bot.entity.position) || origin;
+  const wps = nextWaypoints({ x: ringOrigin.x, y: ringOrigin.y, z: ringOrigin.z }, { step, maxRadius });
   for (const wp of wps) {
     if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
     const gx = wp.x + (rng() * 2 - 1) * jitterMax;
     const gz = wp.z + (rng() * 2 - 1) * jitterMax;
     if (emit) { try { emit({ type: 'explore_waypoint', x: Math.round(gx), z: Math.round(gz), r: Math.round(wp.r) }); } catch (e) {} }
     try {
-      if (bot.pathfinder && bot.pathfinder.goto) await bot.pathfinder.goto(buildNearGoal(gx, wp.y, gz, 8));
-    } catch (e) { continue; } // waypoint inatteignable (mur/eau/chunk non chargé) → on tente le suivant
+      await gotoWithTimeout(bot, buildNearGoal(gx, wp.y, gz, 8), gotoTimeoutMs);
+    } catch (e) { continue; } // waypoint inatteignable ou goto gelé (timeout) → on tente le suivant
     if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
     const block = bot.findBlock({ matching, maxDistance: scanRadius });
     if (block) return { ok: true, found: block.position, traveled: wp.r };

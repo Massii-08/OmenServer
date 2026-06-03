@@ -101,6 +101,18 @@ test('gather(explore:true) : les events explore (explore_directed) remontent via
   assert.strictEqual(ev.learned, true);
 });
 
+test('gather : bloc inconnu du registry → not_found immédiat (jamais findBlock(matching:null))', async () => {
+  const { bot, calls } = makeBot({ target: pos(10, 70, 0) });
+  let badMatching = false;
+  const origFind = bot.findBlock.bind(bot);
+  bot.findBlock = (o) => { if (!o || o.matching == null) badMatching = true; return origFind(o); };
+  const res = await gather(bot, { name: 'totally_unknown_block', count: 1, explore: true });
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.reason, 'not_found');
+  assert.strictEqual(badMatching, false, 'findBlock jamais appelé avec matching null/undefined');
+  assert.strictEqual(calls.goto.length, 0, 'pas d\'exploration pour un bloc que le registre ne connaît pas');
+});
+
 test('gather : pas de material_found sans worldKey (manuel) ni sans biome connu (datapack)', async () => {
   const a = makeBot({ target: pos(10, 70, 0), biome: 'forest' }); // pas de worldKey (lancement manuel)
   await gather(a.bot, { name: 'oak_log', count: 1 });
