@@ -290,6 +290,9 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
     failStreak = 0;
     record();
     arrivals++;
+    // hook à chaque arrivée (ex. : chasse opportuniste si le stock de nourriture est bas et qu'une
+    // proie est en vue — sans attendre la re-tentative périodique du kit) — best-effort
+    if (opts.onArrive) { try { await opts.onArrive(); } catch (e) { /* le mapping continue */ } }
     // hook périodique (ex. : re-tenter le mini-kit s'il avait stallé) — best-effort, jamais bloquant
     if (opts.onPeriodic && arrivals % periodicEvery === 0) {
       try { await opts.onPeriodic(); } catch (e) { /* le mapping continue */ }

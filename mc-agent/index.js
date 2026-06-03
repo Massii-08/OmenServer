@@ -37,6 +37,7 @@ const fs = require('fs');
 const { runPlanner } = require('./planner');
 const { chainFor, buildCtxInv, firstUnmet, cookedCount } = require('./goals');
 const { huntPassive } = require('./skills/hunt');
+const { nearestPassive } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
 const { _nearestTable } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { placeBlockNear } = require('./skills/placeBlockNear');
@@ -419,6 +420,19 @@ async function startMapper() {
     onPeriodic: async () => {
       const ctx = Object.assign({ inv: buildCtxInv(bot) }, ctxExtra());
       if (firstUnmet(kitChain, ctx)) { emit({ type: 'mapper_kit_retry' }); await runKit(); }
+    },
+    // CHASSE OPPORTUNISTE (vécu Surv1 : le retry périodique coïncide rarement avec des proies à
+    // portée → stock jamais constitué) : à chaque arrivée, si le stock cuit est bas ET qu'une proie
+    // passe à ≤24 blocs → on la tue MAINTENANT (cru en poche ; la cuisson se fait au retry du kit).
+    onArrive: async () => {
+      const inv = buildCtxInv(bot);
+      const rawHave = Object.keys(RAW2COOKED).reduce((s, n) => s + (inv[n] || 0), 0);
+      const missing = 4 - cookedCount(inv) - rawHave;
+      if (missing <= 0) return;
+      if (!nearestPassive(bot, 24)) return;
+      const r = await withTimeout(huntPassive(bot, { count: Math.min(missing, 2), maxDistance: 24 }, taskToken),
+        60000, () => { try { stopMotion(); } catch (e) {} });
+      if (r && r.kills) emit({ type: 'opportunistic_hunt', kills: r.kills });
     },
     // chaque jambe bornée (anti-freeze pathfinder, cf. withTimeout) ; timeout → virage + jambe suivante.
     // 45s : une jambe fait 8-64 blocs à pied — si ce n'est pas atteint en 45s, c'est inatteignable

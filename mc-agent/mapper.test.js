@@ -400,3 +400,17 @@ test('runMapper : 2 jambes ratées d\'affilée → 3e jambe COURTE (8-24 blocs) 
   assert.ok(attempts.length >= 3);
   assert.ok(attempts[2] <= 24 + 1e-6, `3e jambe ${attempts[2].toFixed(0)} blocs — pas raccourcie`);
 });
+
+test('runMapper : hook onArrive appelé à CHAQUE arrivée (chasse opportuniste du kit)', async () => {
+  const bot = fakeMapperBot();
+  let arrivals = 0;
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async (wp) => { bot.entity.position = vec3(wp.x, 64, wp.z); },
+    onArrive: async () => { arrivals++; if (arrivals >= 4) token.cancelled = true; },
+    sleep: async () => {},
+  }, token);
+  assert.ok(arrivals >= 4, `onArrive appelé ${arrivals} fois`);
+});
