@@ -98,10 +98,39 @@ const DIAMOND_CHAIN = [
     skill: 'branchMine',   args: { targetY: -54, mainLength: 48, branchSpacing: 3, branchLength: 8 } },
 ];
 
+// --- Chaîne MAPPER_KIT (cartographe) : pierre épée+pioche OBLIGATOIRE avant de cartographier.
+// Version réduite des chaînes existantes : assez pour se défendre + creuser, PAS une chaîne complète.
+// (L'upgrade fer « si rapide » + fallback cuivre registry-gated est best-effort côté index.js,
+// HORS chaîne — un échec d'upgrade ne doit pas staller le planner.) Cobble SCINDÉ pick(3)/sword(2)
+// comme IRON_CHAIN (consommé en 2 fois) ; MONOTONE via W/S/SS.
+const SS = (c) => invCount(c.inv, 'stone_sword') >= 1;   // épée pierre obtenue
+const K = (c) => S(c) && SS(c);                          // kit complet (pioche + épée pierre)
+const MAPPER_KIT = [
+  { name: 'logs',           met: (c) => anyLog(c.inv) >= 3 || anyPlanks(c.inv) >= 2 || W(c) || S(c) || K(c),
+    skill: 'gatherLog',     args: { count: 3 } },
+  { name: 'planks',         met: (c) => anyPlanks(c.inv) >= 2 || W(c) || S(c) || K(c),
+    skill: 'craftPlanks',   args: { count: 3 } }, // 3×4 = 12 planks (table 4 + sticks 4 + pioche bois 3 + marge)
+  { name: 'crafting_table', met: (c) => invCount(c.inv, 'crafting_table') >= 1 || W(c) || S(c) || K(c),
+    skill: 'craft',         args: { name: 'crafting_table', count: 1 } },
+  { name: 'sticks',         met: (c) => invCount(c.inv, 'stick') >= 4 || K(c),
+    skill: 'craft',         args: { name: 'stick', count: 2 } }, // 2×4 = 8 sticks (2+2+1 = 5 requis, marge)
+  { name: 'wooden_pickaxe', met: (c) => W(c) || S(c) || K(c),
+    skill: 'craft',         args: { name: 'wooden_pickaxe', count: 1 } },
+  { name: 'cobble_pick',    met: (c) => invCount(c.inv, 'cobblestone') >= 3 || S(c) || K(c),
+    skill: 'gather',        args: { name: 'stone', count: 3 } },
+  { name: 'stone_pickaxe',  met: (c) => S(c) || K(c),
+    skill: 'craft',         args: { name: 'stone_pickaxe', count: 1 } },
+  { name: 'cobble_sword',   met: (c) => invCount(c.inv, 'cobblestone') >= 2 || SS(c) || K(c),
+    skill: 'gather',        args: { name: 'stone', count: 2 } },
+  { name: 'stone_sword',    met: (c) => SS(c) || K(c),
+    skill: 'craft',         args: { name: 'stone_sword', count: 1 } },
+];
+
 /** Sélectionne la chaîne de buts selon le type d'objectif (défaut : pioche pierre). */
 function chainFor(objective) {
   if (objective === 'diamond') return DIAMOND_CHAIN;
   if (objective === 'iron_pickaxe') return IRON_CHAIN;
+  if (objective === 'mapper') return MAPPER_KIT;
   return MVP_CHAIN;
 }
 
@@ -111,4 +140,4 @@ function firstUnmet(chain, ctx) {
   return null;
 }
 
-module.exports = { buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, chainFor, firstUnmet };
+module.exports = { buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, MAPPER_KIT, chainFor, firstUnmet };

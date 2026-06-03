@@ -162,3 +162,56 @@ test('DIAMOND : le but iron_pickaxe N\'est PLUS le dernier (le diamant l\'est)',
   assert.notStrictEqual(names[names.length - 1], 'iron_pickaxe');
   assert.strictEqual(names[names.length - 1], 'branch_mine');
 });
+
+// --- Chaîne MAPPER_KIT (cartographe : pierre épée+pioche obligatoire) ---
+
+const { MAPPER_KIT } = require('./goals');
+
+test('chainFor(mapper) renvoie MAPPER_KIT', () => {
+  assert.strictEqual(chainFor('mapper'), MAPPER_KIT);
+});
+
+test('MAPPER_KIT ordre exact (9 buts, cobble scindé pick/sword)', () => {
+  assert.deepStrictEqual(
+    MAPPER_KIT.map((g) => g.name),
+    ['logs', 'planks', 'crafting_table', 'sticks', 'wooden_pickaxe',
+     'cobble_pick', 'stone_pickaxe', 'cobble_sword', 'stone_sword'],
+  );
+});
+
+test('MAPPER_KIT : inventaire vide -> 1er but = logs', () => {
+  assert.strictEqual(firstUnmet(MAPPER_KIT, { inv: {} }).name, 'logs');
+});
+
+test('MAPPER_KIT : pioche pierre obtenue -> but suivant = cobble_sword', () => {
+  // cobble consommé par la pioche (3) -> il en reste 2 -> cobble_sword met (>=2)
+  const ctx = { inv: { stone_pickaxe: 1, stick: 4, cobblestone: 2, crafting_table: 1 } };
+  assert.strictEqual(firstUnmet(MAPPER_KIT, ctx).name, 'stone_sword');
+  // cobble épuisé -> re-gather 2
+  const ctx2 = { inv: { stone_pickaxe: 1, stick: 4, crafting_table: 1 } };
+  assert.strictEqual(firstUnmet(MAPPER_KIT, ctx2).name, 'cobble_sword');
+});
+
+test('MAPPER_KIT monotonie : kit complet (pioche+épée pierre) satisfait TOUT (ressources consommées)', () => {
+  const ctx = { inv: { stone_pickaxe: 1, stone_sword: 1 } };
+  for (const goal of MAPPER_KIT) {
+    assert.ok(goal.met(ctx), `but "${goal.name}" devrait etre satisfait avec le kit complet`);
+  }
+  assert.strictEqual(firstUnmet(MAPPER_KIT, ctx), null);
+});
+
+test('MAPPER_KIT monotonie : pioche pierre seule satisfait tout l\'amont bois/table', () => {
+  const ctx = { inv: { stone_pickaxe: 1 } };
+  for (const name of ['logs', 'planks', 'crafting_table', 'wooden_pickaxe', 'cobble_pick', 'stone_pickaxe']) {
+    const goal = MAPPER_KIT.find((g) => g.name === name);
+    assert.ok(goal.met(ctx), `but "${name}" devrait etre satisfait avec stone_pickaxe`);
+  }
+});
+
+test('MAPPER_KIT sticks : 4 requis (2 pioche bois + 2 pioche pierre + 1 épée, crafts en 2 lots)', () => {
+  const goal = MAPPER_KIT.find((g) => g.name === 'sticks');
+  assert.strictEqual(goal.met({ inv: { stick: 3 } }), false);
+  assert.strictEqual(goal.met({ inv: { stick: 4 } }), true);
+  assert.strictEqual(goal.met({ inv: { stone_pickaxe: 1, stone_sword: 1 } }), true); // kit final
+  assert.deepStrictEqual(goal.args, { name: 'stick', count: 2 });
+});
