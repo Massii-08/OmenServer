@@ -178,6 +178,23 @@ test('explore : cible dirigée ÉPUISÉE (rien sur place) → continue en anneau
   assert.strictEqual(res.ok, false, 'pas trouvé ici (ressource hors des anneaux post-directed) mais PAS de hang');
 });
 
+test('explore : goto dirigé interrompu (GoalChanged ponctuel, ex. réflexe flee) → RE-TENTE le directed avant les anneaux', async () => {
+  // Vu live HarvT7 : un flee pendant le trajet dirigé → goto rejette → explore dégradait en anneaux
+  // pour tout l'appel. Un humain interrompu reprend SA route : on redonne UNE chance au directed.
+  const { bot, calls } = makeBot({ target: pos(300, 70, -100) });
+  const realGoto = bot.pathfinder.goto;
+  let n = 0;
+  bot.pathfinder.goto = async (goal) => {
+    if (n++ === 0) throw new Error('GoalChanged'); // 1re tentative interrompue (réflexe)
+    return realGoto(goal);
+  };
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 300, z: -100 }], biomes: [] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w' });
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(res.directed, true, 'trouvé via le directed RE-TENTÉ (pas dégradé en anneaux)');
+  assert.strictEqual(n, 2, 'goto dirigé tenté 2 fois');
+});
+
 test('explore : goto dirigé qui hang → timeout borné → retombe en anneaux', async () => {
   const { bot, calls } = makeBot({ target: pos(100, 70, 0) });
   const realGoto = bot.pathfinder.goto;

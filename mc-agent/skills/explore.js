@@ -110,15 +110,25 @@ async function explore(bot, opts = {}) {
     }
     if (target) {
       if (emit) { try { emit({ type: 'explore_directed', x: Math.round(target.x), z: Math.round(target.z), biome: target.biome, learned: !!target.learned, cave: !!target.cave }); } catch (e) {} }
-      try {
-        // y de la cible : une CAVE porte le y de son entrée (GoalNear 3D précis, le pathfinder peut
-        // creuser) ; un find/biome n'a que x,z → on garde l'altitude courante.
-        const ty = (typeof target.y === 'number') ? target.y : origin.y;
-        await gotoWithTimeout(bot, buildNearGoal(target.x, ty, target.z, 8), directedGotoTimeoutMs);
-        if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
-        const hit = bot.findBlock({ matching, maxDistance: scanRadius });
-        if (hit) return { ok: true, found: hit.position, traveled: 0, directed: true };
-      } catch (e) { /* cible inatteignable ou goto gelé (timeout) → on retombe sur les anneaux */ }
+      // y de la cible : une CAVE porte le y de son entrée (GoalNear 3D précis, le pathfinder peut
+      // creuser) ; un find/biome n'a que x,z → on garde l'altitude courante.
+      const ty = (typeof target.y === 'number') ? target.y : origin.y;
+      // 2 tentatives : un goto peut être interrompu PONCTUELLEMENT (réflexe flee → GoalChanged, vu
+      // live HarvT7) → on reprend SA route une fois. Un TIMEOUT (cible gelée/inatteignable 240s) ne
+      // mérite pas de 2e chance → anneaux directement.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await gotoWithTimeout(bot, buildNearGoal(target.x, ty, target.z, 8), directedGotoTimeoutMs);
+          if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
+          const hit = bot.findBlock({ matching, maxDistance: scanRadius });
+          if (hit) return { ok: true, found: hit.position, traveled: 0, directed: true };
+          break; // arrivé mais rien sur place (cible épuisée) → anneaux depuis ici
+        } catch (e) {
+          if (e && e.message === 'goto_timeout') break; // gelé → anneaux
+          if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
+          // interruption ponctuelle → retente une fois (attempt 1), sinon anneaux
+        }
+      }
     }
   }
 
