@@ -52,7 +52,9 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
     // branchMine à maxDistance:6 sur un minerai entrevu) ne doivent PAS partir roamer 256 blocs.
     if (!block && doExplore && explorations <= count) {
       explorations++;
-      const ex = await explore(bot, { name, matching: _ids(bot, name), scanRadius: maxDistance, token });
+      // emit : les events explore (explore_directed/explore_waypoint) remontent dans le flux stdout
+      // du bot → observables en live (run.log / manager). Sans ça le biais dirigé est invisible.
+      const ex = await explore(bot, { name, matching: _ids(bot, name), scanRadius: maxDistance, token, emit: bot._emit || null });
       if (token && token.cancelled) return { ok: true, got, cancelled: true };
       if (ex && ex.ok) block = bot.findBlock({ matching: _ids(bot, name), maxDistance });
     }

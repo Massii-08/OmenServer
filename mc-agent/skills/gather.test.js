@@ -91,6 +91,16 @@ test('gather : émet material_found (matériau↔biome) sur récolte réussie �
   assert.strictEqual(ev.world, 'minecraft:overworld');
 });
 
+test('gather(explore:true) : les events explore (explore_directed) remontent via bot._emit — observabilité live', async () => {
+  const { bot, calls } = makeBot({ target: pos(200, 70, 0), worldKey: 'w' }); // hors 64 blocs
+  bot._worldMemory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 200, z: 0 }], biomes: [] } } };
+  const res = await gather(bot, { name: 'oak_log', count: 1, explore: true });
+  assert.strictEqual(res.ok, true);
+  const ev = calls.emits.find((e) => e.type === 'explore_directed');
+  assert.ok(ev, 'explore_directed émis dans le flux stdout du bot (run.log)');
+  assert.strictEqual(ev.learned, true);
+});
+
 test('gather : pas de material_found sans worldKey (manuel) ni sans biome connu (datapack)', async () => {
   const a = makeBot({ target: pos(10, 70, 0), biome: 'forest' }); // pas de worldKey (lancement manuel)
   await gather(a.bot, { name: 'oak_log', count: 1 });

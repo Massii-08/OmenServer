@@ -470,7 +470,9 @@ async function executeOrder(order, sender) {
   switch (order.verb) {
     case 'take': {
       const token = taskCtl.begin('take', stopMotion);
-      const r = await gather(bot, a, token);
+      // explore:true : un take ORDONNÉ peut voyager (biais dirigé via la carte du groupe si la
+      // ressource est connue, sinon anneaux bornés ≤256). Annulable par `stop` comme toute tâche.
+      const r = await gather(bot, { ...a, explore: true }, token);
       if (token.cancelled) break;
       ackPrivate(sender, r.ok ? doneWord() : failMsg(r.reason));
       break;
@@ -642,5 +644,11 @@ onCommand((cmd) => {
   else if (cmd.type === 'start') {
     if (cmd.objective) { setObjective(world, { type: String(cmd.objective), status: 'in_progress' }); saveWorld(worldFile, world); }
     startAutonomous(null);
+  }
+  // Ordre direct injecté par le harness/manager (même chemin déterministe que le /msg joueur).
+  else if (cmd.type === 'order' && cmd.text) {
+    const order = parseOrder(String(cmd.text));
+    if (order) executeOrder(order, cmd.sender || 'console').catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
+    else emit({ type: 'error', message: 'order non reconnu: ' + cmd.text });
   }
 });
