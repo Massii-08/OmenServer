@@ -2,6 +2,7 @@
 // `take <bloc> [n]` : récolte n× le bloc le + proche avec le meilleur outil, en se défendant.
 const { bestToolFor, bestWeapon } = require('../tools');
 const { explore } = require('./explore');
+const { materialFoundEvent } = require('../worldMemory');
 
 function _ids(bot, name) {
   if (!bot.registry || !bot.registry.blocksByName) return null;
@@ -61,8 +62,14 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
     }
     const tool = bestToolFor(bot, block);
     if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
+    const biomeName = block.biome && block.biome.name;  // capturé avant collect (le bloc devient air)
     try { await bot.collectBlock.collect(block); got++; }
     catch (e) { if (got === 0) return { ok: false, reason: 'collect_failed' }; break; }
+    // Boucle d'apprentissage (1d) : note "ce matériau a été trouvé dans ce biome ici" → mémoire du
+    // groupe (event material_found capté par le manager). Robuste datapacks (on n'apprend que l'observé).
+    if (bot._emit && bot._worldKey && block.name && biomeName) {
+      try { bot._emit(materialFoundEvent(bot._worldKey, block.name, biomeName, block.position)); } catch (e) {}
+    }
   }
   return { ok: true, got };
 }

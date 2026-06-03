@@ -14,21 +14,23 @@ function pos(x, y, z) {
 
 // Fake bot : un bloc cible à `target` ; findBlock le voit si bot ≤ maxDistance. goto téléporte.
 // collectBlock retire la cible + ajoute au sac.
-function makeBot({ target = null } = {}) {
-  const calls = { goto: [], collect: [] };
+function makeBot({ target = null, biome = null, worldKey = null } = {}) {
+  const calls = { goto: [], collect: [], emits: [] };
   const inv = [];
   let tgt = target;
   const bot = {
     entity: { position: pos(0, 70, 0), yaw: 0 },
     registry: { blocksByName: { oak_log: { id: 17 } } },
     inventory: { items: () => inv.slice() },
+    _worldKey: worldKey,
+    _emit: (ev) => calls.emits.push(ev),
     nearestEntity() { return null; },
     pvp: { attack() {} },
     async equip() {},
     findBlock({ matching, maxDistance }) {
       if (!tgt) return null;
       return bot.entity.position.distanceTo(tgt) <= (maxDistance || 64)
-        ? { name: 'oak_log', position: tgt, boundingBox: 'block' } : null;
+        ? { name: 'oak_log', position: tgt, boundingBox: 'block', biome: biome ? { name: biome } : undefined } : null;
     },
     pathfinder: {
       async goto(goal) {
@@ -76,4 +78,24 @@ test('gather : bois déjà à portée → récolte direct sans explorer', async 
   assert.strictEqual(res.ok, true);
   assert.strictEqual(res.got, 1);
   assert.strictEqual(calls.goto.length, 0, 'pas besoin d\'explorer si déjà à portée');
+});
+
+test('gather : émet material_found (matériau↔biome) sur récolte réussie — boucle d\'apprentissage', async () => {
+  const { bot, calls } = makeBot({ target: pos(10, 70, 0), biome: 'forest', worldKey: 'minecraft:overworld' });
+  const res = await gather(bot, { name: 'oak_log', count: 1 });
+  assert.strictEqual(res.ok, true);
+  const ev = calls.emits.find((e) => e.type === 'material_found');
+  assert.ok(ev, 'un event material_found émis');
+  assert.strictEqual(ev.material, 'oak_log');
+  assert.strictEqual(ev.biome, 'forest');
+  assert.strictEqual(ev.world, 'minecraft:overworld');
+});
+
+test('gather : pas de material_found sans worldKey (manuel) ni sans biome connu (datapack)', async () => {
+  const a = makeBot({ target: pos(10, 70, 0), biome: 'forest' }); // pas de worldKey (lancement manuel)
+  await gather(a.bot, { name: 'oak_log', count: 1 });
+  assert.strictEqual(a.calls.emits.filter((e) => e.type === 'material_found').length, 0);
+  const b = makeBot({ target: pos(10, 70, 0), worldKey: 'w' }); // biome inconnu (mineflayer sans nom)
+  await gather(b.bot, { name: 'oak_log', count: 1 });
+  assert.strictEqual(b.calls.emits.filter((e) => e.type === 'material_found').length, 0);
 });
