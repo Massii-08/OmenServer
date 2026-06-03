@@ -47,11 +47,11 @@ function needHunt(bot) {
   return bot.food != null && bot.food <= HUNT_HUNGER && !hasFood(bot);
 }
 
-/** Mob passif chassable le plus proche dans le rayon (null si aucun). */
+/** Mob passif chassable le plus proche dans le rayon (null si aucun). Ignore les entités mortes. */
 function nearestPassive(bot, radius = 24) {
   const self = bot.entity && bot.entity.position;
   if (!self) return null;
-  const e = bot.nearestEntity((x) => x && PASSIVE_FOOD_MOBS.has(x.name) && x.position);
+  const e = bot.nearestEntity((x) => x && PASSIVE_FOOD_MOBS.has(x.name) && x.position && x.isValid !== false);
   if (!e) return null;
   const d = e.position.distanceTo ? e.position.distanceTo(self) : Infinity;
   return d <= radius ? e : null;

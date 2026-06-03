@@ -35,7 +35,8 @@ const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
 const fs = require('fs');
 const { runPlanner } = require('./planner');
-const { chainFor, buildCtxInv, firstUnmet } = require('./goals');
+const { chainFor, buildCtxInv, firstUnmet, cookedCount } = require('./goals');
+const { huntPassive } = require('./skills/hunt');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
 const { _nearestTable } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { placeBlockNear } = require('./skills/placeBlockNear');
@@ -210,7 +211,9 @@ function fuelNames() {
 
 // Four PORTABLE (même esprit que la table) : pose un four à côté du bot si aucun à portée, fond, puis
 // le reprend → le bot garde 1 four en poche et fond où qu'il soit (surface OU fond du tunnel à fer).
-async function smeltWithFurnace(input, output, count) {
+// `fuelOverride` : liste de combustibles imposée (ex. charbon de bois : EXCLURE les bûches, sinon
+// le four brûle l'input qu'on veut fondre).
+async function smeltWithFurnace(input, output, count, fuelOverride) {
   const fdef = bot.registry.blocksByName.furnace;
   const near = fdef ? bot.findBlock({ matching: [fdef.id], maxDistance: 4 }) : null;
   let pos = null;
@@ -221,7 +224,7 @@ async function smeltWithFurnace(input, output, count) {
     await waitForBlock(pos, 'furnace');            // #3 : même règle que la table (pose async serveur)
     await sleep(300);
   }
-  const r = await smelt(bot, { input, output, count, fuel: fuelNames() }, taskToken);
+  const r = await smelt(bot, { input, output, count, fuel: fuelOverride || fuelNames() }, taskToken);
   if (pos) { await sleep(250); await reclaimBlock(pos, 'furnace'); } // garder le four PORTABLE
   return r;
 }
@@ -248,6 +251,66 @@ function withTimeout(promise, ms, onTimeout) {
   });
 }
 
+// --- Kit de survie : charbon de bois + chasse/cuisson (phase « bot parfait ») ---------------------
+
+const RAW2COOKED = {
+  beef: 'cooked_beef', porkchop: 'cooked_porkchop', chicken: 'cooked_chicken',
+  mutton: 'cooked_mutton', rabbit: 'cooked_rabbit', cod: 'cooked_cod', salmon: 'cooked_salmon',
+};
+function _invTotal(filter) {
+  return bot.inventory.items().filter(filter).reduce((s, i) => s + i.count, 0);
+}
+
+// Charbon de bois : s'assure d'avoir `count` bûches (gather+explore au besoin) puis les fond.
+// ⚠️ fuel = planches/charbon UNIQUEMENT (jamais de bûches — c'est l'input). Si aucune planche :
+// convertit 1 bûche en planches d'abord.
+async function smeltCharcoalGoal(count) {
+  const logNames = Object.keys(bot.registry.blocksByName).filter((n) => n.endsWith('_log'));
+  const logsHave = () => _invTotal((i) => i.name.endsWith('_log'));
+  if (logsHave() < count + 1) { // +1 bûche de marge pour le combustible éventuel
+    const g = await gather(bot, { name: logNames, count: count + 1 - logsHave(), explore: true }, taskToken);
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    if (!g.ok && logsHave() < count) return { ok: false, reason: 'no_logs' };
+  }
+  if (_invTotal((i) => i.name.endsWith('_planks')) < 2) {
+    const log = bot.inventory.items().find((i) => i.name.endsWith('_log'));
+    if (log) await craftItem(bot, { name: log.name.replace('_log', '_planks'), count: 1 });
+  }
+  const fuel = ['coal', 'charcoal'].concat(
+    Object.keys(bot.registry.itemsByName).filter((n) => n.endsWith('_planks')));
+  // fond l'essence la plus abondante (l'input du smelt est un nom d'item exact)
+  const byName = {};
+  for (const i of bot.inventory.items()) if (i.name.endsWith('_log')) byName[i.name] = (byName[i.name] || 0) + i.count;
+  const top = Object.entries(byName).sort((a, b) => b[1] - a[1])[0];
+  if (!top) return { ok: false, reason: 'no_logs' };
+  return smeltWithFurnace(top[0], 'charcoal', Math.min(count, top[1]), fuel);
+}
+
+// Stock de nourriture CUITE : chasse des passifs proches (jusqu'à 3 vagues) puis cuit tout le cru.
+// Pas de proie → on cuit ce qu'on a ; rien du tout → échec propre (le planner re-tentera ailleurs
+// via la re-tentative périodique du kit — le bot aura bougé).
+async function huntCookGoal(target) {
+  const cooked = () => cookedCount(buildCtxInv(bot));
+  const raw = () => _invTotal((i) => RAW2COOKED[i.name]);
+  for (let wave = 0; wave < 3 && cooked() + raw() < target; wave++) {
+    const r = await withTimeout(
+      huntPassive(bot, { count: target - cooked() - raw(), maxDistance: 32 }, taskToken),
+      120000, () => { try { stopMotion(); } catch (e) {} });
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    if (!r || !r.ok) break;
+  }
+  let cookedAny = false;
+  for (const [rawName, cookedName] of Object.entries(RAW2COOKED)) {
+    const n = _invTotal((i) => i.name === rawName);
+    if (!n) continue;
+    const s = await smeltWithFurnace(rawName, cookedName, n);
+    if (s.ok) cookedAny = true;
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  }
+  if (cooked() >= target || cookedAny) return { ok: true, got: cooked() };
+  return { ok: false, reason: 'no_prey' };
+}
+
 // Dispatch d'un but de la chaîne vers le skill réel (0 token).
 async function runGoalSkill(goal) {
   // #1 retours live : coincé dans l'eau → s'en sortir AVANT de tenter le skill (sinon le pathfinder
@@ -272,6 +335,8 @@ async function runGoalSkill(goal) {
   }
   if (goal.skill === 'craft') return craftSmart(goal.args);    // pose une table portable si craft 3×3
   if (goal.skill === 'smeltIron') return smeltWithFurnace('raw_iron', 'iron_ingot', goal.args.count || 3);
+  if (goal.skill === 'smeltCharcoal') return smeltCharcoalGoal(goal.args.count || 2);
+  if (goal.skill === 'huntCook') return huntCookGoal(goal.args.target || 4);
   if (goal.skill === 'descendDiagonal') return descendDiagonal(bot, goal.args || {}, taskToken);
   if (goal.skill === 'branchMine') return branchMine(bot, goal.args || {}, taskToken);
   return { ok: false, reason: 'unknown_skill' };
