@@ -26,6 +26,29 @@ const SUPPORT_BLOCKS = new Set([
   'netherrack', 'dripstone_block', 'calcite', 'mud', 'clay',
 ]);
 
+// #6 retours live : TOUTE pose se fait contre la face d'un bloc PLEIN réel (sinon pose illégale →
+// bloc flottant, flag anti-cheat, signature de bot). Référence re-validée juste avant la pose.
+const MAX_PLACE_REACH = 5; // ~4.5 depuis les yeux + coussin (les refs ici sont adjacentes de toute façon)
+function _refOk(bot, ref) {
+  if (!ref || ref.boundingBox !== 'block') return false;
+  const p = ref.position;
+  if (p && p.distanceTo && bot.entity && bot.entity.position) {
+    if (p.distanceTo(bot.entity.position) > MAX_PLACE_REACH) return false;
+  }
+  return true;
+}
+
+// #6 : confirme que le bloc EXISTE vraiment après la pose (1er check immédiat, puis poll court) —
+// une pose fantôme (désync client/serveur) ne doit JAMAIS être traitée comme un succès.
+async function _confirmPlaced(bot, pos, tries = 6, delayMs = 200) {
+  for (let i = 0; i < tries; i++) {
+    const b = bot.blockAt(pos);
+    if (b && b.boundingBox === 'block') return true;
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return false;
+}
+
 /**
  * Pose itemName sur le sol adjacent au bot.
  * Retourne { ok:true, pos:Vec3 } ou { ok:false, reason:string }.
@@ -54,8 +77,10 @@ async function placeBlockNear(bot, itemName) {
     if (!REPLACEABLE.has(target.name)) continue;         // not a free cell
 
     try {
+      if (!_refOk(bot, ground)) continue;            // #6 : jamais de pose sans référence pleine
       await bot.equip(item, 'hand');
       await bot.placeBlock(ground, new Vec3(0, 1, 0));
+      if (!(await _confirmPlaced(bot, targetPos))) continue;  // #6 : pose fantôme → autre direction
       return { ok: true, pos: base.plus(d) };
     } catch (e) { /* essaie la direction suivante */ }
   }
@@ -77,8 +102,10 @@ async function placeBlockNear(bot, itemName) {
       const tool = bestToolFor(bot, target);
       if (tool) await bot.equip(tool, 'hand');
       await bot.dig(target);
+      if (!_refOk(bot, bot.blockAt(groundPos))) continue;  // #6 : re-vérifie après le dig
       await bot.equip(item, 'hand');                     // re-equip after dig
       await bot.placeBlock(ground, new Vec3(0, 1, 0));
+      if (!(await _confirmPlaced(bot, targetPos))) continue;  // #6 : pose fantôme → autre direction
       return { ok: true, pos: base.plus(d) };
     } catch (e) { /* essaie la direction suivante */ }
   }
@@ -111,13 +138,16 @@ async function placeBlockNear(bot, itemName) {
 
         try {
           // 1) poser le remblai pour combler underPos (réf = floor, face = d → floor + d == underPos)
+          if (!_refOk(bot, floor)) continue;             // #6 : le sol sous les pieds doit être plein
           await bot.equip(support, 'hand');
           await bot.placeBlock(floor, d);
+          if (!(await _confirmPlaced(bot, underPos))) continue;   // #6 : remblai fantôme → stop
           // 2) poser la table sur le remblai fraîchement posé
           const sup = bot.blockAt(underPos);
-          if (!sup || sup.boundingBox !== 'block') continue;
+          if (!_refOk(bot, sup)) continue;               // #6 : référence pleine obligatoire
           await bot.equip(item, 'hand');
           await bot.placeBlock(sup, new Vec3(0, 1, 0));
+          if (!(await _confirmPlaced(bot, cellPos))) continue;    // #6 : pose fantôme → autre direction
           return { ok: true, pos: cellPos };
         } catch (e) { /* essaie la direction suivante */ }
       }
