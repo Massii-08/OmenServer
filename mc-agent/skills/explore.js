@@ -100,10 +100,13 @@ async function explore(bot, opts = {}) {
   const wkey = opts.worldKey || bot._worldKey || null;
   if (memory && wkey) {
     const mats = Array.isArray(opts.name) ? opts.name : (opts.name ? [opts.name] : []);
-    let target = null;
+    // Cible la + PROCHE tous matériaux confondus (un birch_log à 100 blocs bat un oak_log à 1400).
+    let target = null, targetD = Infinity;
     for (const mat of mats) {
-      target = directedTarget(memory, wkey, mat, origin, { maxDist: opts.directedMaxDist || 1500 });
-      if (target) break;
+      const t = directedTarget(memory, wkey, mat, origin, { maxDist: opts.directedMaxDist || 1500 });
+      if (!t) continue;
+      const d = Math.sqrt((t.x - origin.x) ** 2 + (t.z - origin.z) ** 2);
+      if (d < targetD) { target = t; targetD = d; }
     }
     if (target) {
       if (emit) { try { emit({ type: 'explore_directed', x: Math.round(target.x), z: Math.round(target.z), biome: target.biome, learned: !!target.learned, cave: !!target.cave }); } catch (e) {} }

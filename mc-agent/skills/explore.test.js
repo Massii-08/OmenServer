@@ -153,6 +153,18 @@ test('explore : biais caves (1d) — minerai → va à l\'entrée de grotte conn
   assert.ok(ev && ev.cave === true, 'event explore_directed taggé cave:true');
 });
 
+test('explore : multi-matériaux → cible dirigée la + PROCHE tous noms confondus (pas le 1er qui matche)', async () => {
+  const { bot, calls } = makeBot({ target: pos(100, 70, 50) });
+  const memory = { worlds: { w: { finds: [
+    { material: 'oak_log', biome: 'forest', x: 1400, z: 0 },   // 1er du tableau mais LOIN
+    { material: 'birch_log', biome: 'forest', x: 100, z: 50 }, // 2e mais tout proche
+  ], biomes: [] } } };
+  const res = await explore(bot, { name: ['oak_log', 'birch_log'], matching: [17, 18], memory, worldKey: 'w' });
+  assert.strictEqual(res.directed, true);
+  assert.ok(Math.abs(calls.goto[0].x - 100) <= 1 && Math.abs(calls.goto[0].z - 50) <= 1,
+    `allé au gisement le + proche (birch), pas au 1er nom du tableau (goto=${JSON.stringify(calls.goto[0])})`);
+});
+
 test('explore : cible dirigée ÉPUISÉE (rien sur place) → continue en anneaux derrière', async () => {
   // Le gisement appris a été vidé : le bot arrive, scan vide → la recherche en anneaux reprend
   // depuis sa position (le directed n'est qu'un préfixe, jamais un cul-de-sac).
