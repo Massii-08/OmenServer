@@ -637,4 +637,10 @@ onCommand((cmd) => {
     mapperSector = { index: Number(cmd.index) || 0, count: Number(cmd.count) };
     emit({ type: 'sector_set', index: mapperSector.index, count: mapperSector.count });
   }
+  // Déclenchement autonome DIFFÉRÉ (tests live / manager) : connecter le bot idle, le positionner
+  // (tp), PUIS lancer l'objectif depuis sa position courante (objectif explicite sinon --objective).
+  else if (cmd.type === 'start') {
+    if (cmd.objective) { setObjective(world, { type: String(cmd.objective), status: 'in_progress' }); saveWorld(worldFile, world); }
+    startAutonomous(null);
+  }
 });
