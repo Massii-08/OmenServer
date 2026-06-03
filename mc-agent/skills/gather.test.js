@@ -113,6 +113,43 @@ test('gather : bloc inconnu du registry → not_found immédiat (jamais findBloc
   assert.strictEqual(calls.goto.length, 0, 'pas d\'exploration pour un bloc que le registre ne connaît pas');
 });
 
+test('gather(explore:true) : cible locale INATTEIGNABLE (collect échoue ×2) → tente explore/directed avant d\'abandonner', async () => {
+  // Vu live HarvT6 : diamant enterré vu par findBlock(64) mais immin able → collect_failed direct,
+  // alors que la carte connaissait une cave. Le local raté ne doit pas court-circuiter la mémoire.
+  const { bot, calls } = makeBot({ target: pos(10, 20, 0), worldKey: 'w' }); // « enterré » sous le bot
+  bot._worldMemory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 300, z: 0 }], biomes: [] } } };
+  let collectCalls = 0;
+  const goodTarget = pos(300, 70, 0);
+  bot.collectBlock.collect = async (b) => {
+    collectCalls++;
+    if (b.position.y === 20) throw new Error('unreachable'); // la cible enterrée échoue TOUJOURS
+    calls.collect.push(b);
+  };
+  // après le voyage dirigé, findBlock rend la VRAIE cible près de la cave apprise
+  const origFind = bot.findBlock.bind(bot);
+  bot.findBlock = ({ maxDistance }) => {
+    const d1 = bot.entity.position.distanceTo(pos(10, 20, 0));
+    const d2 = bot.entity.position.distanceTo(goodTarget);
+    if (d2 <= (maxDistance || 64)) return { name: 'oak_log', position: goodTarget, boundingBox: 'block' };
+    if (d1 <= (maxDistance || 64)) return { name: 'oak_log', position: pos(10, 20, 0), boundingBox: 'block' };
+    return null;
+  };
+  const res = await gather(bot, { name: 'oak_log', count: 1, explore: true });
+  assert.strictEqual(res.ok, true, `récolté via le directed malgré l'échec local (res=${JSON.stringify(res)})`);
+  assert.ok(calls.collect.length >= 1, 'la cible dirigée a été récoltée');
+});
+
+test('gather : échec final → mouvement résiduel STOPPÉ (setGoal(null), pas de creusage fantôme)', async () => {
+  const { bot } = makeBot({ target: pos(10, 20, 0) });
+  let goalCleared = false;
+  bot.pathfinder.setGoal = (g) => { if (g === null) goalCleared = true; };
+  bot.collectBlock.collect = async () => { throw new Error('unreachable'); };
+  const res = await gather(bot, { name: 'oak_log', count: 1 });
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.reason, 'collect_failed');
+  assert.strictEqual(goalCleared, true, 'pathfinder.setGoal(null) appelé après l\'échec (anti-creusage fantôme)');
+});
+
 test('gather : pas de material_found sans worldKey (manuel) ni sans biome connu (datapack)', async () => {
   const a = makeBot({ target: pos(10, 70, 0), biome: 'forest' }); // pas de worldKey (lancement manuel)
   await gather(a.bot, { name: 'oak_log', count: 1 });

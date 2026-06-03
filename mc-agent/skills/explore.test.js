@@ -206,6 +206,13 @@ test('explore : waypoint goto qui hang → timeout → waypoint suivant (pas de 
   assert.strictEqual(res.ok, true, 'trouvé via les waypoints suivants malgré le 1er gelé');
 });
 
+test('explore : cible cave avec y → le goal dirigé vise le y de l\'ENTRÉE (pas origin.y)', async () => {
+  const { bot, calls } = makeBot({ target: pos(300, 45, -100) });
+  const memory = { worlds: { w: { finds: [], biomes: [], caves: [{ x: 300, y: 45, z: -100 }] } } };
+  await explore(bot, { name: 'iron_ore', matching: [42], memory, worldKey: 'w' });
+  assert.strictEqual(calls.goto[0].y, 45, 'goal au y de l\'entrée de cave (GoalNear 3D précis)');
+});
+
 test('explore : mémoire muette pour ce matériau → fallback aveugle (anneaux) intact', async () => {
   const { bot, calls } = makeBot({ target: pos(100, 70, 0) });
   const memory = { worlds: { w: { finds: [{ material: 'sand', biome: 'desert', x: 500, z: 500 }], biomes: [], caves: [] } } };

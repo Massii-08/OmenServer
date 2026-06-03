@@ -28,6 +28,16 @@ function nearbyHostile(bot, radius = 4) {
   });
 }
 
+// Coupe le mouvement résiduel après un échec de collect : collectBlock peut laisser son goal
+// pathfinder actif → le bot continuerait de creuser/marcher vers une cible morte (vu live HarvT6 :
+// creusage fantôme vers un diamant inatteignable, danger lave + anti-tell).
+function stopResidual(bot) {
+  try { bot.pathfinder && bot.pathfinder.setGoal && bot.pathfinder.setGoal(null); } catch (e) {}
+  try {
+    if (bot.setControlState) ['forward', 'back', 'left', 'right', 'sneak', 'jump'].forEach((c) => bot.setControlState(c, false));
+  } catch (e) {}
+}
+
 /** Si un hostile est proche : équipe la meilleure arme et l'attaque. true si défense engagée. */
 async function defendIfNeeded(bot) {
   const foe = nearbyHostile(bot);
@@ -47,10 +57,15 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
   if (!ids) return { ok: false, reason: 'not_found' };
   let got = 0;
   let explorations = 0;
+  // Cibles dont le collect a échoué ×2 (enterrées/inatteignables, vu live HarvT6) : on ne s'y
+  // racharne pas — findBlock les ignore → l'explore/directed peut chercher AILLEURS.
+  const failed = new Set();
+  const keyOf = (p) => `${p.x},${p.y},${p.z}`;
   for (let i = 0; i < count; i++) {
     if (token && token.cancelled) return { ok: true, got, cancelled: true };
     await defendIfNeeded(bot);
     let block = bot.findBlock({ matching: ids, maxDistance });
+    if (block && failed.has(keyOf(block.position))) block = null; // cible déjà ratée = comme absente
     // Rien à portée → exploration de surface autonome (opt-in `explore`, borné). Le bot voyage en
     // anneaux et re-scanne jusqu'à trouver. Désactivé par défaut : les gather opportunistes (type
     // branchMine à maxDistance:6 sur un minerai entrevu) ne doivent PAS partir roamer 256 blocs.
@@ -60,7 +75,10 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
       // du bot → observables en live (run.log / manager). Sans ça le biais dirigé est invisible.
       const ex = await explore(bot, { name, matching: ids, scanRadius: maxDistance, token, emit: bot._emit || null });
       if (token && token.cancelled) return { ok: true, got, cancelled: true };
-      if (ex && ex.ok) block = bot.findBlock({ matching: ids, maxDistance });
+      if (ex && ex.ok) {
+        block = bot.findBlock({ matching: ids, maxDistance });
+        if (block && failed.has(keyOf(block.position))) block = null;
+      }
     }
     if (!block) {
       if (got === 0) return { ok: false, reason: 'not_found' };
@@ -77,7 +95,13 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
         const tool2 = bestToolFor(bot, block);
         if (tool2) { try { await bot.equip(tool2, 'hand'); } catch (e2) {} }
         await bot.collectBlock.collect(block); got++;
-      } catch (e2) { if (got === 0) return { ok: false, reason: 'collect_failed' }; break; }
+      } catch (e2) {
+        stopResidual(bot);                       // collectBlock laisse son goal actif → creusage fantôme
+        failed.add(keyOf(block.position));       // ne plus viser cette cible morte
+        if (doExplore && explorations <= count) { i--; continue; } // l'explore du tour suivant cherche AILLEURS
+        if (got === 0) return { ok: false, reason: 'collect_failed' };
+        break;
+      }
     }
     // Boucle d'apprentissage (1d) : note "ce matériau a été trouvé dans ce biome ici" → mémoire du
     // groupe (event material_found capté par le manager). Robuste datapacks (on n'apprend que l'observé).

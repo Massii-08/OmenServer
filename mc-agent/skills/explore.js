@@ -111,7 +111,10 @@ async function explore(bot, opts = {}) {
     if (target) {
       if (emit) { try { emit({ type: 'explore_directed', x: Math.round(target.x), z: Math.round(target.z), biome: target.biome, learned: !!target.learned, cave: !!target.cave }); } catch (e) {} }
       try {
-        await gotoWithTimeout(bot, buildNearGoal(target.x, origin.y, target.z, 8), directedGotoTimeoutMs);
+        // y de la cible : une CAVE porte le y de son entrée (GoalNear 3D précis, le pathfinder peut
+        // creuser) ; un find/biome n'a que x,z → on garde l'altitude courante.
+        const ty = (typeof target.y === 'number') ? target.y : origin.y;
+        await gotoWithTimeout(bot, buildNearGoal(target.x, ty, target.z, 8), directedGotoTimeoutMs);
         if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
         const hit = bot.findBlock({ matching, maxDistance: scanRadius });
         if (hit) return { ok: true, found: hit.position, traveled: 0, directed: true };
