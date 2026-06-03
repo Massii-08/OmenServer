@@ -282,6 +282,28 @@ test('explore : cible cave avec y → le goal dirigé vise le y de l\'ENTRÉE (p
   assert.strictEqual(calls.goto[0].y, 45, 'goal au y de l\'entrée de cave (GoalNear 3D précis)');
 });
 
+test('explore : directed mort-né (NoPath persistant au spawn) → RAPPEL dirigé au changement d\'anneau réussit', async () => {
+  // Vu live HarvT9 : chunks pas chargés → le préambule dirigé échoue ; mais après quelques waypoints
+  // le monde est chargé → on RE-TENTE la route dirigée à chaque nouvel anneau au lieu de tout ratisser.
+  const { bot, calls } = makeBot({ target: pos(400, 70, 100) }); // loin : introuvable au 1er anneau (scan 64)
+  const realGoto = bot.pathfinder.goto;
+  let directedTries = 0;
+  bot.pathfinder.goto = async (goal) => {
+    // le goal dirigé vise exactement (400,*,100) ; les waypoints d'anneaux, d'autres coords
+    const isDirected = goal && Math.abs(goal.x - 400) < 1.5 && Math.abs(goal.z - 100) < 1.5;
+    if (isDirected) {
+      directedTries++;
+      if (directedTries <= 2) throw new Error('NoPath'); // préambule (2 tentatives) échoue
+    }
+    return realGoto(goal); // rappel à l'anneau suivant : réussit
+  };
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 400, z: 100 }], biomes: [] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', directedRetryDelayMs: 0 });
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(res.directed, true, 'trouvé via le RAPPEL dirigé (pas un ratissage complet)');
+  assert.ok(directedTries >= 3, `le directed a été re-tenté après le préambule (tries=${directedTries})`);
+});
+
 test('explore : mémoire muette pour ce matériau → fallback aveugle (anneaux) intact', async () => {
   const { bot, calls } = makeBot({ target: pos(100, 70, 0) });
   const memory = { worlds: { w: { finds: [{ material: 'sand', biome: 'desert', x: 500, z: 500 }], biomes: [], caves: [] } } };
