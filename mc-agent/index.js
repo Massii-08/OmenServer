@@ -45,6 +45,7 @@ const { branchMine } = require('./skills/branchMine');
 const { classifyAuthPrompt, genPassword } = require('./auth');
 const { loadMemory, worldKey } = require('./worldMemory');
 const { runMapper } = require('./mapper');
+const { isInWater, escapeWater } = require('./unstuck');
 
 function parseArgs(argv) {
   const o = {};
@@ -237,6 +238,9 @@ function withTimeout(promise, ms, onTimeout) {
 
 // Dispatch d'un but de la chaîne vers le skill réel (0 token).
 async function runGoalSkill(goal) {
+  // #1 retours live : coincé dans l'eau → s'en sortir AVANT de tenter le skill (sinon le pathfinder
+  // rame dans l'angle jusqu'au timeout, le planner re-dérive, et ça recommence).
+  if (isInWater(bot)) await escapeWater(bot, { emit });
   if (goal.skill === 'gatherLog') {
     // arbre le plus proche de N'IMPORTE quelle essence (pas oak hardcodé) — robustesse terrain
     const logNames = Object.keys(bot.registry.blocksByName).filter((n) => n.endsWith('_log'));
