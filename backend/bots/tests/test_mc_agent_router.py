@@ -312,3 +312,56 @@ def test_run_passes_diamond_objective(monkeypatch):
     resp = c.post("/api/mc-agent/run", json={"host": "play.x.net", "user": "TrainBot", "autonomous": True, "objective": "diamond"})
     assert resp.status_code == 200
     assert captured["objective"] == "diamond"
+
+
+def test_delete_server_cascade(monkeypatch):
+    """DELETE /servers/{sid} → supprime le profil + cascade (stop bots + oubli mémoire)."""
+    monkeypatch.setattr(r.servers_store, "delete_server", lambda sid: True)
+    calls = {}
+
+    def fake_stop(gid):
+        calls["stop"] = gid
+        return 2
+
+    def fake_forget(gid):
+        calls["forget"] = gid
+        return True
+
+    monkeypatch.setattr(mgr, "stop_group", fake_stop)
+    monkeypatch.setattr(mgr, "forget_group", fake_forget)
+    c = make_client()
+    resp = c.delete("/api/mc-agent/servers/ab12cd")
+    assert resp.status_code == 200
+    assert resp.json()["bots_stopped"] == 2
+    assert calls["stop"] == "ab12cd" and calls["forget"] == "ab12cd"
+
+
+def test_delete_server_404_no_cascade(monkeypatch):
+    """Profil inexistant → 404, aucune cascade déclenchée."""
+    monkeypatch.setattr(r.servers_store, "delete_server", lambda sid: False)
+    calls = {}
+    monkeypatch.setattr(mgr, "stop_group", lambda gid: calls.setdefault("stop", gid))
+    monkeypatch.setattr(mgr, "forget_group", lambda gid: calls.setdefault("forget", gid))
+    c = make_client()
+    assert c.delete("/api/mc-agent/servers/zzzz").status_code == 404
+    assert calls == {}
+
+
+def test_delete_server_admin_only():
+    c = make_client(is_admin=False)
+    assert c.delete("/api/mc-agent/servers/ab12cd").status_code == 403
+
+
+def test_server_memory_endpoint(monkeypatch):
+    """GET /servers/{sid}/memory → renvoie la mémoire de monde (admin)."""
+    fake_mem = {"group_id": "ab12cd", "worlds": {"w": {"biomes": [{"name": "forest", "x": 0, "z": 0}], "caves": [], "finds": []}}}
+    monkeypatch.setattr(r.world_memory, "load", lambda sid: fake_mem)
+    c = make_client()
+    resp = c.get("/api/mc-agent/servers/ab12cd/memory")
+    assert resp.status_code == 200
+    assert resp.json()["worlds"]["w"]["biomes"][0]["name"] == "forest"
+
+
+def test_server_memory_admin_only():
+    c = make_client(is_admin=False)
+    assert c.get("/api/mc-agent/servers/ab12cd/memory").status_code == 403

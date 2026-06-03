@@ -8,6 +8,7 @@ from backend.auth.utils import get_current_user
 from backend.auth.models import User
 from backend.bots import mc_agent_manager as mgr
 from backend.bots import mc_agent_servers as servers_store
+from backend.bots import mc_agent_world_memory as world_memory
 
 router = APIRouter(prefix="/api/mc-agent", tags=["mc-agent"])
 
@@ -185,4 +186,14 @@ def delete_server(sid: str, current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
     if not servers_store.delete_server(sid):
         raise HTTPException(status_code=404, detail="Profil introuvable")
-    return {"ok": True}
+    # cascade : supprimer le groupe stoppe tous ses bots ET sa mémoire de monde (libère le disque de l'Omen)
+    stopped = mgr.stop_group(sid)
+    mgr.forget_group(sid)
+    return {"ok": True, "bots_stopped": stopped}
+
+
+@router.get("/servers/{sid}/memory")
+def server_memory(sid: str, current_user: User = Depends(get_current_user)):
+    """Mémoire de monde d'un groupe (biomes/caves/finds par monde) pour la vue admin."""
+    _require_admin(current_user)
+    return world_memory.load(sid)

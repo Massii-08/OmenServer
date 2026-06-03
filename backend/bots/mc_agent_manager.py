@@ -10,7 +10,10 @@ import os
 import signal
 import subprocess
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
+
+from . import mc_agent_world_memory as world_memory
 
 # backend/bots/mc_agent_manager.py → racine projet = parents[2], puis mc-agent/
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -23,6 +26,12 @@ API_KEY_PATH = _PROJECT_ROOT / "data" / "secrets" / "anthropic.key"
 _sessions = {}        # session_id (int) -> dict
 _lock = threading.Lock()
 _counter = 0
+
+# Mémoire de monde partagée par groupe (server_id) : cache en mémoire + verrou (un seul écrivain,
+# le process backend). Les events bot biome_seen/cave_found/material_found y sont routés.
+_WM_EVENTS = ("biome_seen", "cave_found", "material_found")
+_wm_lock = threading.Lock()
+_wm_cache = {}        # group_id -> memory dict
 
 
 def _mask_key(key):
@@ -87,6 +96,26 @@ def parse_event_line(line):
     return obj
 
 
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _record_world_memory(group_id, event):
+    """Route un event de trouvaille (biome/cave/material) vers le store du groupe, sous verrou.
+
+    Cache en mémoire par groupe → évite de relire le fichier à chaque event ; persistance au fil de
+    l'eau (save par event, débit faible) pour que la carte survive à la mort d'un bot."""
+    if not group_id:
+        return
+    with _wm_lock:
+        mem = _wm_cache.get(group_id)
+        if mem is None:
+            mem = world_memory.load(group_id)
+            _wm_cache[group_id] = mem
+        world_memory.apply_event(mem, event, at=_now_iso())
+        world_memory.save(group_id, mem)
+
+
 def _apply_event(session, event):
     """Met à jour l'état d'une session selon l'event reçu."""
     etype = event.get("type")
@@ -100,6 +129,9 @@ def _apply_event(session, event):
         session["last_error"] = event.get("message")
     session["events"].append(event)
     session["events"] = session["events"][-500:]
+    # mémoire de monde partagée : route les trouvailles vers le store du groupe (server_id)
+    if etype in _WM_EVENTS and session.get("server_id"):
+        _record_world_memory(session["server_id"], event)
 
 
 def _pump(session, stream):
@@ -139,7 +171,7 @@ def has_api_key():
 VALID_OBJECTIVES = ("stone_pickaxe", "iron_pickaxe", "diamond")
 
 
-def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe"):
+def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None):
     """Spawn le process Node détaché et enregistre la session. Retourne son id.
 
     `commands` : liste d'objets {cmd,syntax,desc} (whitelist serveur). Écrite dans un fichier
@@ -186,6 +218,15 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
             "objective": {"type": objective, "status": "in_progress"},
         }), encoding="utf-8")
         cmd += ["--world", str(world_path)]
+    # Bootstrap mémoire de monde : passe la mémoire courante du groupe au bot (il sait où chercher).
+    wm_path = None
+    if server_id:
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        wm_path = RUNS_DIR / f"worldmem-{sid}.json"
+        wm_path.write_text(json.dumps(world_memory.load(server_id)), encoding="utf-8")
+        cmd += ["--world-memory", str(wm_path)]
+    if world_label:
+        cmd += ["--world-label", str(world_label)]  # monde de minage (overworld-type séparé)
     env = dict(os.environ)
     api_key = _read_api_key()  # injecte la clé (fichier ou env) dans l'env du subprocess Node
     if api_key:
@@ -208,6 +249,7 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
         "cmds_path": str(cmds_path) if cmds_path else None,
         "policy_path": str(policy_path) if policy_path else None,
         "world_path": str(world_path) if world_path else None,
+        "wm_path": str(wm_path) if wm_path else None,
     }
     _sessions[sid] = session
     t = threading.Thread(target=_pump, args=(session, proc.stdout), daemon=True)
@@ -267,7 +309,7 @@ def stop_session(sid):
         except (ProcessLookupError, PermissionError, OSError):
             proc.terminate()
     s["status"] = "stopped"
-    for key in ("cmds_path", "policy_path", "world_path"):
+    for key in ("cmds_path", "policy_path", "world_path", "wm_path"):
         p = s.get(key)
         if p:
             try:
@@ -275,6 +317,25 @@ def stop_session(sid):
             except OSError:
                 pass
     return True
+
+
+def stop_group(group_id):
+    """Arrête toutes les sessions actives d'un groupe (server_id). Retourne le nb arrêté."""
+    if not group_id:
+        return 0
+    n = 0
+    for sid, s in list(_sessions.items()):
+        if s.get("server_id") == group_id and s.get("proc") and s["proc"].poll() is None:
+            if stop_session(sid):
+                n += 1
+    return n
+
+
+def forget_group(group_id):
+    """Cascade : oublie le cache mémoire + supprime le fichier mémoire du groupe. True si supprimé."""
+    with _wm_lock:
+        _wm_cache.pop(group_id, None)
+    return world_memory.delete_memory(group_id)
 
 
 _LIST_PROFILES_JS = MC_AGENT_DIR / "bin" / "list-profiles.js"

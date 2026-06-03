@@ -377,6 +377,83 @@ def test_stop_session_cleans_world_file(monkeypatch, tmp_path):
     assert not os.path.exists(wp)
 
 
+def test_start_session_passe_world_memory(monkeypatch, tmp_path):
+    """server_id présent → bootstrap : écrit la mémoire du groupe + passe --world-memory au bot."""
+    import io
+    import json as _json
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO(); self.stdout = iter(()); self.pid = 4400
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path / "wm")
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    sid = mgr.start_session("h", 25565, "U", server_id="ab12cd")
+    assert "--world-memory" in captured["cmd"]
+    path = captured["cmd"][captured["cmd"].index("--world-memory") + 1]
+    assert "worlds" in _json.loads(open(path).read())  # mémoire (vide ici) passée au bot
+    assert mgr._sessions[sid].get("wm_path") == str(path)
+
+
+def test_apply_event_route_biome_vers_store(monkeypatch, tmp_path):
+    """Un event biome_seen d'une session avec server_id est écrit dans le store du groupe."""
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path)
+    mgr._wm_cache.pop("ab12cd", None)
+    s = {"status": "x", "transcript": [], "events": [], "last_error": None, "server_id": "ab12cd"}
+    mgr._apply_event(s, {"type": "biome_seen", "world": "w", "name": "forest", "x": 10, "z": 20})
+    mem = mgr.world_memory.load("ab12cd")
+    assert mem["worlds"]["w"]["biomes"][0]["name"] == "forest"
+    mgr._wm_cache.pop("ab12cd", None)
+
+
+def test_apply_event_no_store_without_server_id(monkeypatch, tmp_path):
+    """Sans server_id (lancement manuel) : aucune écriture de mémoire (pas de groupe)."""
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path)
+    s = {"status": "x", "transcript": [], "events": [], "last_error": None, "server_id": None}
+    mgr._apply_event(s, {"type": "biome_seen", "world": "w", "name": "forest", "x": 0, "z": 0})
+    assert list(tmp_path.glob("*.json")) == []
+
+
+def test_forget_group_cascade(monkeypatch, tmp_path):
+    """forget_group supprime le fichier mémoire + vide le cache (cascade suppression de groupe)."""
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path)
+    m = mgr.world_memory.empty_memory("ab12cd")
+    mgr.world_memory.add_biome(m, "w", "forest", 0, 0, at="t1")
+    mgr.world_memory.save("ab12cd", m)
+    mgr._wm_cache["ab12cd"] = m
+    assert mgr.forget_group("ab12cd") is True
+    assert "ab12cd" not in mgr._wm_cache
+    assert mgr.world_memory.load("ab12cd")["worlds"] == {}
+
+
+def test_stop_group_stops_only_its_sessions(monkeypatch):
+    """stop_group arrête les sessions du groupe ciblé, pas celles des autres groupes."""
+    mgr._sessions.clear()
+    monkeypatch.setattr(mgr.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(mgr.os, "killpg", lambda pgid, sig: None)
+
+    class P:
+        def __init__(self): self.pid = 12345
+        def poll(self): return None
+        def terminate(self): pass
+
+    mgr._sessions[1] = {"id": 1, "proc": P(), "server_id": "g6", "status": "running"}
+    mgr._sessions[2] = {"id": 2, "proc": P(), "server_id": "g6", "status": "running"}
+    mgr._sessions[3] = {"id": 3, "proc": P(), "server_id": "g7", "status": "running"}
+    assert mgr.stop_group("g6") == 2
+    assert mgr._sessions[1]["status"] == "stopped" and mgr._sessions[2]["status"] == "stopped"
+    assert mgr._sessions[3]["status"] == "running"
+
+
 def test_start_session_objective_seeds_iron_in_world(monkeypatch, tmp_path):
     """objective='iron_pickaxe' -> le world.json seedé porte ce type (sélectionne la chaîne fer Node)."""
     import io
