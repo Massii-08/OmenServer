@@ -1095,11 +1095,15 @@ const BotsModule = {
  <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--text-muted);cursor:pointer;margin-bottom:8px;">
  <input type="checkbox" id="mca-autonomous" /> ${Lang.t('mcagent.autonomous')}
  </label>
- <select id="mca-objective" class="form-input" style="max-width:260px;margin-bottom:12px;">
+ <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+ <select id="mca-objective" class="form-input" style="max-width:260px;">
  <option value="stone_pickaxe">${Lang.t('mcagent.obj_stone')}</option>
  <option value="iron_pickaxe">${Lang.t('mcagent.obj_iron')}</option>
  <option value="diamond">${Lang.t('mcagent.obj_diamond')}</option>
+ <option value="mapper">${Lang.t('mcagent.obj_mapper')}</option>
  </select>
+ <input id="mca-world-label" class="form-input" style="max-width:200px;" placeholder="${Lang.t('mcagent.world_label')}" />
+ </div>
  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
  <button class="btn btn-primary" onclick="BotsModule.startMCAgent()">${Lang.t('mcagent.start')}</button>
  <button class="btn btn-secondary btn-sm" onclick="BotsModule.stopMCAgent()">${Lang.t('mcagent.stop')}</button>
@@ -1205,9 +1209,11 @@ const BotsModule = {
  // Mode autonome : le bot lance la boucle planner (zéro→pioche pierre/fer) dès le spawn, 0 LLM.
  const autonomous = !!(document.getElementById('mca-autonomous') || {}).checked;
  const objective = (document.getElementById('mca-objective') || {}).value || 'stone_pickaxe';
+ // Clé de monde explicite (monde de minage) — vide = dimension auto côté bot
+ const worldLabel = ((document.getElementById('mca-world-label') || {}).value || '').trim() || undefined;
  let bodyData;
  if (serverId) {
- bodyData = { server_id: serverId, autonomous, objective };
+ bodyData = { server_id: serverId, autonomous, objective, world_label: worldLabel };
  } else {
  const host = document.getElementById('mca-host').value.trim();
  if (!host) { msg.textContent = Lang.t('mcagent.need_host'); return; }
@@ -1215,7 +1221,7 @@ const BotsModule = {
  const user = document.getElementById('mca-user').value.trim() || 'TrainBot';
  const auth = document.getElementById('mca-auth').value;
  const profile = (document.getElementById('mca-profile') || {}).value || undefined;
- bodyData = { host, port, user, auth, profile, autonomous, objective };
+ bodyData = { host, port, user, auth, profile, autonomous, objective, world_label: worldLabel };
  }
  const r = await Auth.apiCall('/api/mc-agent/run', {
  method: 'POST',
