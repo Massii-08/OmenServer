@@ -121,6 +121,18 @@ function ctxExtra() {
 // pour chaque craft 3×3 (anti-stranding — la table vient au bot, où qu'il soit, surface OU sous-sol).
 // Remplace l'ancien ensureNearTable (qui exigeait de REVENIR à une table fixe → échouait après
 // le creusage du cobble, cf. revert table-on-spot). placeBlockNear gère désormais le sous-sol.
+// #3 retours live : après placeBlock, le bloc n'existe pas INSTANTANÉMENT côté client (aller-retour
+// serveur) → on poll jusqu'à le voir avant de l'utiliser (sinon openContainer/craft sur du vide).
+async function waitForBlock(pos, blockName, timeoutMs = 2000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    const b = pos ? bot.blockAt(pos) : null;
+    if (b && b.name === blockName) return true;
+    await sleep(120);
+  }
+  return false;
+}
+
 async function reclaimBlock(pos, blockName = 'crafting_table') {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -156,7 +168,10 @@ async function withCraftingTable(fn) {
   }
   const place = await placeBlockNear(bot, 'crafting_table');
   if (!place.ok) return { ok: false, reason: 'no_table' };
+  await waitForBlock(place.pos, 'crafting_table'); // #3 : ne pas ouvrir la table avant qu'elle existe
+  await sleep(300);                                // settle pose→ouverture (serveur + humanisation)
   const r = await fn();
+  await sleep(250);                                // craft 100% terminé AVANT de casser la table
   await reclaimBlock(place.pos);                   // garder la table PORTABLE (1 seule)
   return r;
 }
@@ -190,9 +205,11 @@ async function smeltWithFurnace(input, output, count) {
     const place = await placeBlockNear(bot, 'furnace');
     if (!place.ok) return { ok: false, reason: 'no_furnace' };
     pos = place.pos;
+    await waitForBlock(pos, 'furnace');            // #3 : même règle que la table (pose async serveur)
+    await sleep(300);
   }
   const r = await smelt(bot, { input, output, count, fuel: fuelNames() }, taskToken);
-  if (pos) await reclaimBlock(pos, 'furnace');     // garder le four PORTABLE
+  if (pos) { await sleep(250); await reclaimBlock(pos, 'furnace'); } // garder le four PORTABLE
   return r;
 }
 
