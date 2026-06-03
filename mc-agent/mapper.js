@@ -87,8 +87,9 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
         if (block && block.biome) {
           // mineflayer 1.21.x ne livre souvent que l'id → résoudre le nom via le registry (les noms
           // alimentent l'amorce vanilla des récolteurs ; un biome custom datapack reste id-only, OK).
+          // ⚠️ live 1.21.4 : biome.name = '' (chaîne VIDE, pas null) → !name, pas == null
           let biome = block.biome;
-          if (biome.name == null && biome.id != null && bot.registry && bot.registry.biomes && bot.registry.biomes[biome.id]) {
+          if (!biome.name && biome.id != null && bot.registry && bot.registry.biomes && bot.registry.biomes[biome.id]) {
             biome = { name: bot.registry.biomes[biome.id].name, id: biome.id };
           }
           emit(biomeSeenEvent(worldKey, { biome }, p));

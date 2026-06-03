@@ -102,17 +102,26 @@ const DIAMOND_CHAIN = [
 // Version réduite des chaînes existantes : assez pour se défendre + creuser, PAS une chaîne complète.
 // (L'upgrade fer « si rapide » + fallback cuivre registry-gated est best-effort côté index.js,
 // HORS chaîne — un échec d'upgrade ne doit pas staller le planner.) Cobble SCINDÉ pick(3)/sword(2)
-// comme IRON_CHAIN (consommé en 2 fois) ; MONOTONE via W/S/SS.
+// comme IRON_CHAIN (consommé en 2 fois).
+// ⚠️ DEADLOCK vécu live (MapT2) : avec un guard W/S sur logs/planks, une fois la pioche bois crafted
+// le bot ne peut PLUS re-récolter de bois → sticks impossibles à 1 planche → stall. Le bois est un
+// CONSOMMABLE encore requis jusqu'au bout du kit → logs/planks ne sont gardés que par K (kit complet) ;
+// leurs seuils bas (≥2 planches) évitent l'oscillation (on ne re-récolte que si on est VRAIMENT court).
 const SS = (c) => invCount(c.inv, 'stone_sword') >= 1;   // épée pierre obtenue
 const K = (c) => S(c) && SS(c);                          // kit complet (pioche + épée pierre)
+// sticks suffisants pour la suite du kit (4 avant la pioche pierre ; 1 seul après — il ne reste que l'épée)
+const sticksOK = (c) => invCount(c.inv, 'stick') >= 4 || (S(c) && invCount(c.inv, 'stick') >= 1);
+// bois plus nécessaire : pioche (bois ou pierre) + table en poche + sticks suffisants → on ne re-récolte pas
+const woodOK = (c) => (W(c) || S(c)) && invCount(c.inv, 'crafting_table') >= 1 && sticksOK(c);
 const MAPPER_KIT = [
-  { name: 'logs',           met: (c) => anyLog(c.inv) >= 3 || anyPlanks(c.inv) >= 2 || W(c) || S(c) || K(c),
+  { name: 'logs',           met: (c) => anyLog(c.inv) >= 3 || anyPlanks(c.inv) >= 2 || woodOK(c) || K(c),
     skill: 'gatherLog',     args: { count: 3 } },
-  { name: 'planks',         met: (c) => anyPlanks(c.inv) >= 2 || W(c) || S(c) || K(c),
+  { name: 'planks',         met: (c) => anyPlanks(c.inv) >= 2 || woodOK(c) || K(c),
     skill: 'craftPlanks',   args: { count: 3 } }, // 3×4 = 12 planks (table 4 + sticks 4 + pioche bois 3 + marge)
-  { name: 'crafting_table', met: (c) => invCount(c.inv, 'crafting_table') >= 1 || W(c) || S(c) || K(c),
+  { name: 'crafting_table', met: (c) => invCount(c.inv, 'crafting_table') >= 1 || K(c),
     skill: 'craft',         args: { name: 'crafting_table', count: 1 } },
-  { name: 'sticks',         met: (c) => invCount(c.inv, 'stick') >= 4 || K(c),
+  // après la pioche pierre il ne reste qu'à crafter l'épée (1 stick) → seuil réduit à 1 (sticksOK)
+  { name: 'sticks',         met: (c) => sticksOK(c) || K(c),
     skill: 'craft',         args: { name: 'stick', count: 2 } }, // 2×4 = 8 sticks (2+2+1 = 5 requis, marge)
   { name: 'wooden_pickaxe', met: (c) => W(c) || S(c) || K(c),
     skill: 'craft',         args: { name: 'wooden_pickaxe', count: 1 } },

@@ -187,7 +187,8 @@ test('runMapper : survie prioritaire — hostile×3 → fuit avant de bouger (su
 test('runMapper : résout le nom de biome via bot.registry quand block.biome n\'a qu\'un id (vu live 1.21.4)', async () => {
   const bot = fakeMapperBot();
   bot.registry.biomes = { 28: { name: 'jungle' } };
-  bot.blockAt = (p) => ({ name: 'stone', boundingBox: 'block', biome: { id: 28 } }); // PAS de name
+  // live 1.21.4 : name est une chaîne VIDE (pas undefined) → la résolution doit couvrir les 2 cas
+  bot.blockAt = (p) => ({ name: 'stone', boundingBox: 'block', biome: { id: 28, name: '' } });
   const events = [];
   const token = { cancelled: false };
   await runMapper(bot, {

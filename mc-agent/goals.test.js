@@ -200,18 +200,29 @@ test('MAPPER_KIT monotonie : kit complet (pioche+épée pierre) satisfait TOUT (
   assert.strictEqual(firstUnmet(MAPPER_KIT, ctx), null);
 });
 
-test('MAPPER_KIT monotonie : pioche pierre seule satisfait tout l\'amont bois/table', () => {
-  const ctx = { inv: { stone_pickaxe: 1 } };
-  for (const name of ['logs', 'planks', 'crafting_table', 'wooden_pickaxe', 'cobble_pick', 'stone_pickaxe']) {
+test('MAPPER_KIT : bois plus nécessaire (pioche+table+sticks ok) -> logs/planks satisfaits sans bois', () => {
+  // pas de re-récolte inutile : tout ce qui consomme encore du bois est couvert
+  const ctx = { inv: { stone_pickaxe: 1, crafting_table: 1, stick: 1 } };
+  for (const name of ['logs', 'planks', 'crafting_table', 'sticks', 'wooden_pickaxe', 'cobble_pick', 'stone_pickaxe']) {
     const goal = MAPPER_KIT.find((g) => g.name === name);
-    assert.ok(goal.met(ctx), `but "${name}" devrait etre satisfait avec stone_pickaxe`);
+    assert.ok(goal.met(ctx), `but "${name}" devrait etre satisfait (bois plus nécessaire)`);
   }
+  assert.strictEqual(firstUnmet(MAPPER_KIT, ctx).name, 'cobble_sword');
 });
 
-test('MAPPER_KIT sticks : 4 requis (2 pioche bois + 2 pioche pierre + 1 épée, crafts en 2 lots)', () => {
+test('MAPPER_KIT régression deadlock MapT2 : court en sticks ET en planches -> re-dérive vers logs (pas de stall)', () => {
+  // état live exact du stall : pioche bois + 2 sticks + 1 planche + 1 bûche + table
+  const ctx = { inv: { wooden_pickaxe: 1, stick: 2, jungle_planks: 1, jungle_log: 1, crafting_table: 1 } };
+  const first = firstUnmet(MAPPER_KIT, ctx);
+  assert.strictEqual(first.name, 'logs', 'le kit doit pouvoir RE-récolter du bois quand il en manque');
+});
+
+test('MAPPER_KIT sticks : 4 requis avant la pioche pierre, 1 suffit après (il ne reste que l\'épée)', () => {
   const goal = MAPPER_KIT.find((g) => g.name === 'sticks');
   assert.strictEqual(goal.met({ inv: { stick: 3 } }), false);
   assert.strictEqual(goal.met({ inv: { stick: 4 } }), true);
+  assert.strictEqual(goal.met({ inv: { stone_pickaxe: 1, stick: 1 } }), true);  // post-pioche : 1 suffit
+  assert.strictEqual(goal.met({ inv: { stone_pickaxe: 1 } }), false);           // 0 stick : épée impossible
   assert.strictEqual(goal.met({ inv: { stone_pickaxe: 1, stone_sword: 1 } }), true); // kit final
   assert.deepStrictEqual(goal.args, { name: 'stick', count: 2 });
 });
