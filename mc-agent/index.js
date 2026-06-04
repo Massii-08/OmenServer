@@ -50,7 +50,7 @@ const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
 const { isNight, shelterUntilDawn } = require('./skills/shelter');
 const { depositFiltered } = require('./skills/deposit');
-const { nextAction, marathonCounts, miningYFor, RESERVES } = require('./marathon');
+const { nextAction, marathonCounts, miningYFor, RESERVES, cookedFood, woodUnits } = require('./marathon');
 const { scaffoldCount } = require('./skills/branchMine');
 
 function parseArgs(argv) {
@@ -633,18 +633,40 @@ async function marathonDeposit() {
 }
 
 // Supply run SURFACE : bois + nourriture (un seul trip combiné), puis la boucle redescendra.
+// P11 (run#10b : boucle restock infinie, zone de spawn vidée de ses proies) : (a) retour HONNÊTE
+// (ok:false si les réserves restent basses → l'anti-stall de la boucle marathon s'enclenche) ;
+// (b) ROAMING par sauts de ~48 blocs quand AUCUNE proie à portée (huntPassive ne roame pas) ;
+// (c) sous-tâches conditionnelles (ne re-gather pas du bois déjà au niveau).
 async function marathonRestock() {
   if (world.surface) {
     const g = await gotoPos(world.surface, 8, 10 * 60 * 1000);
     if (g && g.ok === false) emit({ type: 'marathon_surface_failed' });
   }
-  const logNames = Object.keys(bot.registry.blocksByName).filter((n) => n.endsWith('_log'));
-  await withTimeout(gather(bot, { name: logNames, count: RESERVES.woodTarget, explore: true }, taskToken),
-    timeoutFor('gatherLog'), () => { try { stopMotion(); } catch (e) {} });
-  if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
-  await withTimeout(huntCookGoal(RESERVES.foodTarget), timeoutFor('huntCook'),
-    () => { try { stopMotion(); } catch (e) {} });
-  return { ok: true }; // best-effort : même partiel, la boucle re-dérive (re-restock si encore bas)
+  const inv = () => buildCtxInv(bot);
+  if (woodUnits(inv()) < RESERVES.woodTarget) {
+    const logNames = Object.keys(bot.registry.blocksByName).filter((n) => n.endsWith('_log'));
+    await withTimeout(gather(bot, { name: logNames, count: RESERVES.woodTarget, explore: true }, taskToken),
+      timeoutFor('gatherLog'), () => { try { stopMotion(); } catch (e) {} });
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  }
+  for (let hop = 0; hop < 3 && cookedFood(inv()) < RESERVES.foodTarget; hop++) {
+    if (!nearestPassive(bot, 32)) {
+      // aucune proie en vue : saute ~48 blocs dans une direction aléatoire et re-scanne
+      const a = Math.random() * 2 * Math.PI;
+      const p = bot.entity.position;
+      emit({ type: 'restock_roam', hop, x: Math.round(p.x + Math.cos(a) * 48), z: Math.round(p.z + Math.sin(a) * 48) });
+      await gotoPos({ x: p.x + Math.cos(a) * 48, y: p.y, z: p.z + Math.sin(a) * 48 }, 8, 120000);
+      if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+      if (!nearestPassive(bot, 32)) continue;
+    }
+    await withTimeout(huntCookGoal(RESERVES.foodTarget), timeoutFor('huntCook'),
+      () => { try { stopMotion(); } catch (e) {} });
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  }
+  const okFood = cookedFood(inv()) >= RESERVES.foodLow;
+  const okWood = woodUnits(inv()) >= RESERVES.woodLow;
+  if (okFood && okWood) return { ok: true };
+  return { ok: false, reason: 'restock_incomplete:' + (okFood ? '' : 'food') + (okWood ? '' : '+wood') };
 }
 
 // Torches sur place : bâtons (planches→sticks) + charbon (miné ou charbon de bois) → craft.
