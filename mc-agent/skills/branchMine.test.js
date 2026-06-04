@@ -39,9 +39,9 @@ function makeBot({ y = -54, yaw = -Math.PI / 2, world = {}, inv = null, gathered
       world[key] = 'air';
       // si c'était un ore, on simule l'ajout à l'inventaire (gather mocké via flag gathered)
     },
-    async equip() {},
+    async equip(item) { bot._held = item && item.name; },
     async placeBlock(ref, face) {
-      calls.placeBlock.push({ ref: ref.position, face });
+      calls.placeBlock.push({ ref: ref.position, face, item: bot._held });
       // simule : la case (ref + face) devient cobblestone
       const key = `${ref.position.x + face.x},${ref.position.y + face.y},${ref.position.z + face.z}`;
       world[key] = 'cobblestone';
@@ -281,4 +281,16 @@ test('H3: organic — détour vers un diamant ciblable hors du tunnel (jamais pa
   const r = await branchMine(bot, { targetY: -54, mainLength: 6, branchSpacing: 999, branchLength: 0,
     organic: true, rng: () => 0.99, stopWhen: () => false });
   assert.ok(r.ores.diamond >= 1, `diamant à portée non ramassé (ores=${JSON.stringify(r.ores)})`);
+});
+
+test('P29: organic — pose une torche tous les ~8 blocs (anti-spawn, les morts nocturnes de tunnel)', async () => {
+  const { bot, calls } = makeBot({ y: -54, inv: [
+    { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
+    { name: 'cobblestone', count: 32, type: 'block' },
+    { name: 'torch', count: 16, type: 'block' },
+  ] });
+  await branchMine(bot, { targetY: -54, mainLength: 18, branchSpacing: 999, branchLength: 0,
+    organic: true, rng: () => 0.99, stopWhen: () => false });
+  const torchPlaces = calls.placeBlock.filter((p) => p.item === 'torch');
+  assert.ok(torchPlaces.length >= 2, `attendu ≥2 torches posées sur 18 blocs (got ${torchPlaces.length})`);
 });

@@ -255,6 +255,21 @@ async function branchMine(bot, opts = {}, token = null) {
       if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
     }
 
+    // P29 (mort #4 en tunnel sombre, 56 torches en poche jamais posées) : éclairer le tunnel
+    // tous les ~8 blocs — anti-spawn hostile, et c'est ce qu'un humain fait.
+    if (organic && i % 8 === 0) {
+      const torch = bot.inventory.items().find((it) => it.name === 'torch');
+      if (torch) {
+        try {
+          const floor = bot.blockAt(p(footTarget.x, footTarget.y - 1, footTarget.z));
+          if (floor && floor.boundingBox === 'block') {
+            await bot.equip(torch, 'hand');
+            await bot.placeBlock(floor, { x: 0, y: 1, z: 0 });
+          }
+        } catch (e) { /* pose ratée → tant pis, prochaine occasion */ }
+      }
+    }
+
     // H3 (organique) : détour COURT vers tout ore précieux à portée (exposé ou enterré ≤5) —
     // jamais passer devant un diamant. gather borne le pathing à maxDistance 6.
     if (organic) {
