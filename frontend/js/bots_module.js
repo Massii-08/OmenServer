@@ -1695,7 +1695,7 @@ const BotsModule = {
  </select></div>
  <div><label class="form-label">${Lang.t('mcagent.ip')}</label><input id="mca-e-host" class="form-input" value="${this._escapeHtml(e.host)}" /></div>
  <div><label class="form-label">${Lang.t('mcagent.port')}</label><input id="mca-e-port" class="form-input" placeholder="25565" value="${e.port || ''}" /></div>
- <div><label class="form-label">${Lang.t('mcagent.account')}</label><input id="mca-e-user" class="form-input" value="${this._escapeHtml(e.user)}" /></div>
+ ${this._mcaGroupId ? '' : `<div><label class="form-label">${Lang.t('mcagent.account')}</label><input id="mca-e-user" class="form-input" value="${this._escapeHtml(e.user)}" /></div>`}
  <div><label class="form-label">${Lang.t('mcagent.auth_label')}</label>
  <select id="mca-e-auth" class="form-input">
  <option value="offline" ${e.auth === 'offline' ? 'selected' : ''}>${Lang.t('mcagent.auth_offline')}</option>
@@ -1804,25 +1804,39 @@ const BotsModule = {
  async saveServerProfile() {
  this._captureEditorState();
  const e = this._mcaEditing;
- const wasNew = !e.id;
+ // On vient de la vue groupe (Modifier) si _mcaGroupId est posé ; sinon c'est « Créer un groupe ».
+ const fromGroup = !!this._mcaGroupId;
+ // ⚠️ Ne JAMAIS envoyer `bots` : le backend préserve le roster (les comptes sont gérés dans l'onglet Bots ouvriers).
  const trade = (e.trade && (e.trade.acceptCmd || '').trim()) ? { acceptCmd: e.trade.acceptCmd.trim(), requestPattern: (e.trade.requestPattern || '').trim() } : null;
  const payload = { name: e.name || 'Sans nom', host: e.host || '', port: e.port || 25565, user: e.user || 'TrainBot', auth: e.auth || 'offline', intelligence: e.intelligence || 'intermediaire', language: e.language || 'fr', commands: e.commands || [], custom: e.custom || [], trusted: e.trusted || [], trade, has_login: !!e.has_login, login_command: e.login_command || '/login {pwd}' };
  const url = e.id ? `/api/mc-agent/servers/${encodeURIComponent(e.id)}` : '/api/mc-agent/servers';
  const r = await Auth.apiCall(url, { method: e.id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
  if (!r || !r.ok) { Toast.error(Lang.t('mcagent.cfg.srv_save_err')); return; }
  this._mcaEditing = null;
- // Après création → bascule sur Mes serveurs. Après édition d'un groupe → revient à la liste.
- if (wasNew) { this._mcaGroupId = null; this._mcaView = 'list'; }
- else this._mcaGroupId = null;
- this._mcaView = 'list';
- this._renderMCARoot();
+ if (fromGroup) {
+  // Édition depuis la vue groupe → on RESTE dans le groupe (onglet Modifier).
+  this._mcaGroupTab = 'edit';
+  this._renderMCARoot();
+ } else {
+  // Création d'un groupe → liste niveau 1.
+  this._mcaGroupId = null;
+  this._mcaView = 'list';
+  this._renderMCARoot();
+ }
  },
 
  cancelServerEdit() {
+ const fromGroup = !!this._mcaGroupId;
  this._mcaEditing = null;
- this._mcaGroupId = null;
- this._mcaView = 'list';
- this._renderMCARoot();
+ if (fromGroup) {
+  // Annulation depuis la vue groupe → re-render la vue groupe (onglet Modifier).
+  this._mcaGroupTab = 'edit';
+  this._renderMCARoot();
+ } else {
+  this._mcaGroupId = null;
+  this._mcaView = 'list';
+  this._renderMCARoot();
+ }
  },
 
  async deleteServerProfile(id) {
