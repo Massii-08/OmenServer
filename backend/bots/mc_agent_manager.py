@@ -10,10 +10,13 @@ import os
 import signal
 import subprocess
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import mc_agent_world_memory as world_memory
+from . import mc_agent_servers as servers_store
+from . import mc_agent_secrets
 
 # backend/bots/mc_agent_manager.py → racine projet = parents[2], puis mc-agent/
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -134,6 +137,20 @@ def _apply_event(session, event):
         _record_world_memory(session["server_id"], event)
 
 
+def _cleanup_session_files(session):
+    """Supprime les fichiers temp de la session (dont login-<sid>.txt = secret en clair).
+
+    Appelé par stop_session ET en fin de pompe (mort naturelle : crash/kick/déco) —
+    sinon les fichiers login chmod 600 s'accumulent dans RUNS_DIR (finding revue)."""
+    for key in ("cmds_path", "policy_path", "world_path", "wm_path", "login_path"):
+        p = session.get(key)
+        if p:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+
 def _pump(session, stream):
     """Boucle de lecture du stdout du process : applique chaque event jusqu'à la fin du flux."""
     for line in stream:
@@ -141,7 +158,9 @@ def _pump(session, stream):
         if event:
             _apply_event(session, event)
     session["status"] = "stopped"
-    # un cartographe mort (crash/kick, pas via stop_session) → les survivants se re-partagent le cercle
+    # mort naturelle (crash/kick, pas via stop_session) : nettoyer les fichiers temp ici aussi
+    _cleanup_session_files(session)
+    # un cartographe mort → les survivants se re-partagent le cercle
     if session.get("objective") == "mapper":
         try:
             _rebalance_sectors(session.get("server_id"))
@@ -176,6 +195,10 @@ def has_api_key():
 
 VALID_OBJECTIVES = ("stone_pickaxe", "iron_pickaxe", "diamond", "mapper")
 
+# Délai entre deux spawns d'un batch de cartographes : Paper throttle les connexions rapprochées
+# depuis la même IP (connection-throttle 4000ms par défaut) → sans étalement, ECONNRESET.
+MAPPER_SPAWN_STAGGER_S = 4.5
+
 
 def _active_mappers(group_id):
     """Sessions cartographe VIVANTES d'un groupe, triées par id (ordre de lancement stable)."""
@@ -200,16 +223,26 @@ def _rebalance_sectors(group_id):
         send_command(s["id"], {"type": "sector", "index": i, "count": n})
 
 
-def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None):
+def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, commands=None,
+               policy=None, server_id=None, language="fr", autonomous=False,
+               objective="stone_pickaxe", world_label=None, login_command=None,
+               sector_index=None, sector_count=None):
     """Spawn le process Node détaché et enregistre la session. Retourne son id.
+
+    Point monkeypatchable des lancements par roster (start_for_bot/start_mappers).
 
     `commands` : liste d'objets {cmd,syntax,desc} (whitelist serveur). Écrite dans un fichier
     temp passé au bot via --commands (le bot ne tapera que ces commandes).
     `autonomous` : si True, seed un world.json avec `objective` (pioche pierre OU pioche fer) +
     passe --world → le bot lance la boucle planner dès le spawn (reprise-au-spawn, 0 token LLM).
-    `objective` : 'stone_pickaxe' (défaut) | 'iron_pickaxe' | 'diamond' — sélectionne la chaîne de buts côté Node.
-    Le mot de passe AuthMe est géré côté Node (self-persist dans data/mc_agent_secret_<user>.json,
-    chmod 600) — pas besoin de --authpw ici (et surtout PAS dans mc_agent_servers.json, exposé par l'API).
+    `objective` : 'stone_pickaxe' (défaut) | 'iron_pickaxe' | 'diamond' | 'mapper' — sélectionne la chaîne de buts côté Node.
+    `login_command` : commande de login résolue (ex. '/login monMdp') si le serveur a un login.
+    Écrite dans un fichier temp chmod 600 et passée via --login-command <path> → le secret ne
+    transite JAMAIS par l'argv ni par un event/log/exception (cf. piège secrets).
+    `sector_index`/`sector_count` : si fournis (mapper batch), priment sur le calcul auto du secteur.
+    Le mot de passe AuthMe (serveur sans login serveur dédié) est géré côté Node (self-persist dans
+    data/mc_agent_secret_<user>.json, chmod 600) — pas besoin de --authpw ici (et surtout PAS dans
+    mc_agent_servers.json, exposé par l'API).
     """
     if objective not in VALID_OBJECTIVES:
         objective = "stone_pickaxe"
@@ -256,11 +289,24 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
         cmd += ["--world-memory", str(wm_path)]
     if world_label:
         cmd += ["--world-label", str(world_label)]  # monde de minage (overworld-type séparé)
-    # Multi-cartographes (1c) : secteur assigné au lancement (i = nb de mappers déjà actifs du groupe),
-    # puis re-balancé live pour TOUS via stdin (cf. _rebalance_sectors, appelé plus bas).
+    # Login serveur automatique : la commande résolue (avec le secret) est écrite dans un fichier
+    # temp chmod 600 et passée via --login-command <path>. JAMAIS dans l'argv (anti-fuite).
+    login_path = None
+    if login_command:
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        login_path = RUNS_DIR / f"login-{sid}.txt"
+        login_path.write_text(str(login_command), encoding="utf-8")
+        os.chmod(login_path, 0o600)
+        cmd += ["--login-command", str(login_path)]
+    # Multi-cartographes (1c) : secteur assigné au lancement. Si fourni explicitement (mapper batch),
+    # on respecte sector_index/sector_count ; sinon calcul auto (i = nb de mappers déjà actifs du groupe).
+    # Re-balancé live pour TOUS via stdin (cf. _rebalance_sectors, appelé plus bas).
     if objective == "mapper" and autonomous:
-        k = len(_active_mappers(server_id))
-        cmd += ["--sector-index", str(k), "--sector-count", str(k + 1)]
+        if sector_index is not None and sector_count is not None:
+            cmd += ["--sector-index", str(sector_index), "--sector-count", str(sector_count)]
+        else:
+            k = len(_active_mappers(server_id))
+            cmd += ["--sector-index", str(k), "--sector-count", str(k + 1)]
     env = dict(os.environ)
     api_key = _read_api_key()  # injecte la clé (fichier ou env) dans l'env du subprocess Node
     if api_key:
@@ -285,6 +331,7 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
         "policy_path": str(policy_path) if policy_path else None,
         "world_path": str(world_path) if world_path else None,
         "wm_path": str(wm_path) if wm_path else None,
+        "login_path": str(login_path) if login_path else None,
     }
     _sessions[sid] = session
     t = threading.Thread(target=_pump, args=(session, proc.stdout), daemon=True)
@@ -293,6 +340,115 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
     if objective == "mapper" and autonomous:
         _rebalance_sectors(server_id)  # les mappers déjà actifs resserrent leur wedge (N a changé)
     return sid
+
+
+def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None):
+    """Lancement manuel (path historique du router + compat tests). Délègue à `_spawn_bot`."""
+    return _spawn_bot(host, port, user, model=model, auth=auth, profile=profile,
+                      commands=commands, policy=policy, server_id=server_id, language=language,
+                      autonomous=autonomous, objective=objective, world_label=world_label)
+
+
+def _resolve_login_command(group, group_id, bot_id, secret):
+    """Résout la commande de login (secret substitué) si le groupe en exige une, sinon None.
+
+    Lève ValueError si le serveur a un login mais qu'aucun secret n'est enregistré pour ce bot.
+    La commande retournée contient le secret en clair → l'appelant ne doit JAMAIS la logger.
+    """
+    if not group.get("has_login"):
+        return None
+    if not secret:
+        raise ValueError("Secret manquant pour ce bot (le serveur a un login)")
+    template = group.get("login_command") or "/login {pwd}"
+    return template.replace("{pwd}", secret)
+
+
+def _online_usernames(group_id):
+    """Set (minuscule) des usernames actuellement en ligne dans le groupe (sessions vivantes)."""
+    out = set()
+    for s in list(_sessions.values()):
+        if s.get("server_id") != group_id:
+            continue
+        proc = s.get("proc")
+        if proc is None or proc.poll() is None:
+            out.add(str(s.get("user") or "").lower())
+    return out
+
+
+def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="stone_pickaxe", world_label=None):
+    """Lance un bot du roster d'un groupe (résout connexion + compte + login + intelligence).
+
+    Lève LookupError si le groupe ou le bot est introuvable, ValueError si le compte est déjà en
+    ligne ou s'il manque un secret alors que le serveur exige un login.
+    """
+    group = servers_store.get_server(group_id)
+    if not group:
+        raise LookupError("Groupe introuvable")
+    bot = next((b for b in group.get("bots", []) if b.get("id") == bot_id), None)
+    if not bot:
+        raise LookupError("Bot introuvable")
+    if bot["username"].lower() in _online_usernames(group_id):
+        raise ValueError("Ce compte est déjà en ligne")
+    secret = mc_agent_secrets.get_secret(group_id, bot_id)
+    login_command = _resolve_login_command(group, group_id, bot_id, secret)
+    return _spawn_bot(
+        host=group["host"], port=group["port"], user=bot["username"], auth=bot["auth"],
+        profile=group["intelligence"], commands=servers_store.resolve_commands(group),
+        policy=servers_store.resolve_policy(group), server_id=group_id,
+        language=group.get("language", "fr"), autonomous=autonomous, objective=objective,
+        world_label=world_label, model=model, login_command=login_command,
+    )
+
+
+def start_mappers(group_id, count):
+    """Lance jusqu'à `count` cartographes du roster (role=mapper) non déjà en ligne.
+
+    Les secteurs sont répartis 0..k-1 / count=k sur les bots EFFECTIVEMENT lancés. Un bot dont le
+    secret manque (serveur à login) est SKIPPÉ (pas d'exception qui tuerait le batch). Retourne
+    {'sessions':[sids], 'launched':n, 'available':nb_dispo, 'skipped':[usernames]}.
+    """
+    group = servers_store.get_server(group_id)
+    if not group:
+        raise LookupError("Groupe introuvable")
+    online = _online_usernames(group_id)
+    dispo = [b for b in group.get("bots", [])
+             if b.get("role") == "mapper" and b["username"].lower() not in online]
+    available = len(dispo)
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        count = 0
+    k = min(max(count, 0), available)
+    if k == 0:
+        return {"sessions": [], "launched": 0, "available": available, "skipped": []}
+    # 1re passe : résout chaque bot retenu (secret/login) en SKIPPANT ceux sans secret requis.
+    runnable = []  # (username, auth, login_command)
+    skipped = []
+    for bot in dispo[:k]:
+        secret = mc_agent_secrets.get_secret(group_id, bot["id"])
+        try:
+            login_command = _resolve_login_command(group, group_id, bot["id"], secret)
+        except ValueError:
+            skipped.append(bot["username"])
+            continue
+        runnable.append((bot["username"], bot["auth"], login_command))
+    n = len(runnable)
+    sessions = []
+    commands = servers_store.resolve_commands(group)
+    policy = servers_store.resolve_policy(group)
+    for i, (username, auth, login_command) in enumerate(runnable):
+        # Étale les connexions : les serveurs MC throttlent les joins rapprochés depuis la même IP
+        # (Paper connection-throttle 4s par défaut) → le 2e bot simultané meurt en ECONNRESET (vécu live).
+        if i > 0:
+            time.sleep(MAPPER_SPAWN_STAGGER_S)
+        sid = _spawn_bot(
+            host=group["host"], port=group["port"], user=username, auth=auth,
+            profile=group["intelligence"], commands=commands, policy=policy,
+            server_id=group_id, language=group.get("language", "fr"), autonomous=True,
+            objective="mapper", login_command=login_command, sector_index=i, sector_count=n,
+        )
+        sessions.append(sid)
+    return {"sessions": sessions, "launched": n, "available": available, "skipped": skipped}
 
 
 def _public(session):
@@ -346,13 +502,7 @@ def stop_session(sid):
         except (ProcessLookupError, PermissionError, OSError):
             proc.terminate()
     s["status"] = "stopped"
-    for key in ("cmds_path", "policy_path", "world_path", "wm_path"):
-        p = s.get(key)
-        if p:
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
+    _cleanup_session_files(s)
     if s.get("objective") == "mapper":
         _rebalance_sectors(s.get("server_id"))  # les survivants élargissent leur wedge
     return True

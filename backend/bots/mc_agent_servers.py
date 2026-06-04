@@ -35,13 +35,33 @@ def _catalog_ids():
     return {c.get("id") for c in load_catalog() if isinstance(c, dict) and c.get("id")}
 
 
+def _migrate(server):
+    """Ajoute bots[0] depuis `user` si la clé 'bots' est absente (legacy). Idempotent."""
+    if "bots" in server:
+        return server, False
+    server["bots"] = [{"id": _gen_id(set()), "role": "worker",
+                       "username": str(server.get("user") or "TrainBot")[:48],
+                       "auth": server.get("auth") if server.get("auth") in VALID_AUTH else "offline"}]
+    return server, True
+
+
 def load_servers():
     """Liste des profils serveur persistés. [] si fichier absent/illisible."""
     try:
         data = json.loads(SERVERS_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
-    return data if isinstance(data, list) else []
+    if not isinstance(data, list):
+        return []
+    changed = False
+    for i, item in enumerate(data):
+        if isinstance(item, dict):
+            data[i], migrated = _migrate(item)
+            if migrated:
+                changed = True
+    if changed:
+        _save_servers(data)
+    return data
 
 
 def _save_servers(servers):
@@ -56,6 +76,32 @@ def _gen_id(existing):
         if cand not in existing:
             return cand
     raise RuntimeError("id generation failed")
+
+
+VALID_ROLE = ("worker", "mapper")
+
+
+def _clean_bots(raw):
+    """Roster : liste de {id, role, username, auth}. Ignore les entrées invalides, cap 20."""
+    out, seen = [], set()
+    for b in raw or []:
+        if not isinstance(b, dict):
+            continue
+        username = str(b.get("username") or "").strip()[:48]
+        if not username:
+            continue
+        role = b.get("role") if b.get("role") in VALID_ROLE else "worker"
+        auth = b.get("auth") if b.get("auth") in VALID_AUTH else "offline"
+        bid = str(b.get("id") or "")
+        if not _SAFE_ID.match(bid):
+            bid = _gen_id(seen)
+        if bid in seen:
+            continue
+        seen.add(bid)
+        out.append({"id": bid, "role": role, "username": username, "auth": auth})
+        if len(out) >= 20:
+            break
+    return out
 
 
 def _clean_custom(raw):
@@ -128,6 +174,9 @@ def _clean_server(payload, sid):
         "custom": _clean_custom(payload.get("custom")),
         "trusted": _clean_trusted(payload.get("trusted")),
         "trade": _clean_trade(payload.get("trade")),
+        "has_login": bool(payload.get("has_login")),
+        "login_command": str(payload.get("login_command") or "/login {pwd}")[:60],
+        "bots": _clean_bots(payload.get("bots")),
     }
 
 
@@ -146,10 +195,59 @@ def update_server(sid, payload):
     servers = load_servers()
     for i, s in enumerate(servers):
         if s.get("id") == sid:
-            servers[i] = _clean_server(payload, sid)
+            updated = _clean_server(payload, sid)
+            # Préserve le roster existant si le payload ne transporte pas de clé 'bots'
+            if "bots" not in payload:
+                updated["bots"] = s.get("bots", [])
+            servers[i] = updated
             _save_servers(servers)
             return servers[i]
     return None
+
+
+def add_bot(sid, role=None, username=None, auth=None):
+    """Ajoute un bot au roster du groupe. Retourne le bot créé, ou None si invalide/doublon."""
+    if not _SAFE_ID.match(str(sid or "")):
+        return None
+    servers = load_servers()
+    for i, s in enumerate(servers):
+        if s.get("id") != sid:
+            continue
+        entry = _clean_bots([{"role": role, "username": username, "auth": auth}])
+        if not entry:
+            return None
+        bot = entry[0]
+        roster = s.get("bots", [])
+        # Anti-doublon insensible à la casse
+        existing_names = {b.get("username", "").lower() for b in roster}
+        if bot["username"].lower() in existing_names:
+            return None
+        # Id unique par rapport aux ids déjà présents dans le roster
+        existing_ids = {b.get("id") for b in roster}
+        bot["id"] = _gen_id(existing_ids)
+        roster.append(bot)
+        servers[i]["bots"] = roster
+        _save_servers(servers)
+        return bot
+    return None
+
+
+def remove_bot(sid, bot_id):
+    """Retire un bot du roster du groupe. Retourne True si supprimé, False sinon."""
+    if not _SAFE_ID.match(str(sid or "")):
+        return False
+    servers = load_servers()
+    for i, s in enumerate(servers):
+        if s.get("id") != sid:
+            continue
+        roster = s.get("bots", [])
+        new_roster = [b for b in roster if b.get("id") != bot_id]
+        if len(new_roster) == len(roster):
+            return False
+        servers[i]["bots"] = new_roster
+        _save_servers(servers)
+        return True
+    return False
 
 
 def delete_server(sid):
