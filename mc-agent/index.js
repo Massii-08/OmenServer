@@ -924,6 +924,11 @@ async function startMarathon() {
   let lastAction = null;
   let sameFails = 0;
   let stallStreak = 0; // P21 : escalade de la distance de relocalisation (zone entière pourrie)
+  // P28 (runs #28-32 : pathfinder client PARALYSÉ — serveur OK (OnGround, survival, 0 effet) mais
+  // AUCUN goto ne bouge le bot = désync mineflayer) : N échecs consécutifs SANS déplacement →
+  // reconnexion (exit 42, relancé par le superviseur) — le teleport packet de re-join resync tout.
+  let paraPos = null;
+  let paraCount = 0;
   while (!taskToken.cancelled) {
     // Massii B : tick anti-stuck eau À CHAQUE itération (tous contextes : supply run, descente,
     // voyage…) — un vrai joueur sort de l'eau en 1-2 s, jamais de flottage sur place.
@@ -1043,6 +1048,16 @@ async function startMarathon() {
       emit({ type: 'marathon_action_failed', action, reason: (r && r.reason) || 'unknown' });
       sameFails = action === lastAction ? sameFails + 1 : 1;
       lastAction = action;
+      // P28 : détecteur de paralysie (échecs répétés sans bouger d'1 bloc)
+      const pp = bot.entity.position;
+      if (paraPos && Math.hypot(pp.x - paraPos.x, pp.z - paraPos.z) < 1.5) paraCount++;
+      else { paraCount = 0; paraPos = { x: pp.x, z: pp.z }; }
+      if (paraCount >= 6) {
+        emit({ type: 'paralysis_reconnect', x: Math.round(pp.x), y: Math.round(pp.y), z: Math.round(pp.z) });
+        try { saveWorld(worldFile, world); } catch (e) {}
+        setTimeout(() => process.exit(42), 500);
+        return;
+      }
       // P22 : iron/descend ont DÉJÀ retenté en interne (rounds) → 1 échec suffit pour relocaliser.
       const failThreshold = (action === 'iron' || action === 'descend') ? 1 : 3;
       if (sameFails >= failThreshold) {
