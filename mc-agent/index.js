@@ -371,7 +371,16 @@ async function runGoalSkill(goal) {
     const same = bot.inventory.items().filter((i) => i.name === log.name).reduce((s, i) => s + i.count, 0);
     return craftItem(bot, { name: log.name.replace('_log', '_planks'), count: Math.min(goal.args.count || 1, same) });
   }
-  if (goal.skill === 'craft') return craftSmart(goal.args);    // pose une table portable si craft 3×3
+  if (goal.skill === 'craft') {
+    // torches : adapter le nb de lots au charbon disponible (1 charbon → 1 lot de 4 au lieu d'un
+    // craft_failed ; le but torches reste unmet → la chaîne refait du charbon puis le 2e lot).
+    if (goal.args.name === 'torch') {
+      const coalHave = _invTotal((i) => i.name === 'coal' || i.name === 'charcoal');
+      if (coalHave < 1) return { ok: false, reason: 'no_coal' };
+      return craftSmart({ name: 'torch', count: Math.min(goal.args.count || 2, coalHave) });
+    }
+    return craftSmart(goal.args);    // pose une table portable si craft 3×3
+  }
   if (goal.skill === 'smeltIron') return smeltWithFurnace('raw_iron', 'iron_ingot', goal.args.count || 3);
   if (goal.skill === 'smeltCharcoal') return smeltCharcoalGoal(goal.args.count || 2);
   if (goal.skill === 'huntCook') return huntCookGoal(goal.args.target || 4);

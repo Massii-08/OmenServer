@@ -135,7 +135,7 @@ function planksNeed(c) {
 const planksOK = (c) => { const n = planksNeed(c); return n === 0 || anyPlanks(c.inv) >= n; };
 const MAPPER_KIT = [
   { name: 'logs',           met: (c) => anyLog(c.inv) >= 3 || planksOK(c),
-    skill: 'gatherLog',     args: { count: 4 } },
+    skill: 'gatherLog',     args: { count: 6 } }, // 6 : planches + 2 bûches charbon + fuel (vécu Surv6 : re-gather long en plein kit)
   { name: 'planks',         met: (c) => planksOK(c),
     skill: 'craftPlanks',   args: { count: 4 } }, // 4×4 = 16 planks (table 4 + sticks 6 + pioche bois 3 + marge)
   { name: 'crafting_table', met: (c) => invCount(c.inv, 'crafting_table') >= 1 || K(c),

@@ -189,7 +189,11 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   // sinon l'immobilité ne dépasserait jamais minMs et le flottant ne serait jamais détecté).
   let lastSample = null;
   async function antiStuck() {
-    if (isInWater(bot)) { await escapeWater(bot, { emit, sleep }); lastSample = null; return; }
+    if (isInWater(bot)) {
+      const r = await escapeWater(bot, { emit, sleep });
+      lastSample = null;
+      return { waterEscapeFailed: !(r && r.ok) };
+    }
     try { await clearSnares(bot); } catch (e) {}                       // #9 : lianes adjacentes
     const p = _pos(bot);
     const cur = { x: p.x, z: p.z, t: now() };
@@ -219,7 +223,10 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   record(); // la cellule de départ compte
 
   while (!token.cancelled) {
-    await antiStuck();
+    const stuck = await antiStuck();
+    // évasion d'eau RATÉE (pas de terre ≤48 : il s'est engagé au large, vécu Surv6 ×9) →
+    // DEMI-TOUR franc : on repart d'où on vient au lieu de continuer vers le large.
+    if (stuck && stuck.waterEscapeFailed) heading = _norm(heading + Math.PI);
     if (token.cancelled) break;
     await settleSurvival();
     if (token.cancelled) break;
