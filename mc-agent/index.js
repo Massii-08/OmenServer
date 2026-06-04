@@ -969,6 +969,7 @@ async function startMarathon() {
             () => { try { stopMotion(); } catch (e) {} });
         }
         if (!taskToken.cancelled) {
+          const homeDist0 = Math.hypot(bot.entity.position.x - world.home.x, bot.entity.position.z - world.home.z);
           // P24/P25 : un goal 3D souterrain à 750 blocs = no_path A* ; et MÊME un saut XZ de 96
           // échoue depuis SOUS TERRE (path horizontal souterrain = coût de creusage explosif).
           // → (1) SURFACE d'abord (tunnel vertical = pas cher), (2) sauts XZ de 64 en marchant,
@@ -1027,7 +1028,11 @@ async function startMarathon() {
           }
           const d2 = homeDistNow();
           emit({ type: 'go_home', arrived: d2 <= 16, dist: Math.round(d2) });
-          r = d2 <= 16 ? { ok: true } : { ok: false, reason: 'still_far:' + Math.round(d2) };
+          // P32 : un trek qui PROGRESSE (≥40 blocs nets) est un SUCCÈS de boucle — sinon la
+          // relocalisation anti-stall (P21, direction aléatoire) détruisait le progrès du retour.
+          if (d2 <= 16) r = { ok: true };
+          else if (homeDist0 - d2 >= 40) r = { ok: true, partial: true };
+          else r = { ok: false, reason: 'still_far:' + Math.round(d2) };
         }
       }
       else if (action === 'scaffold') r = await withTimeout(gather(bot, { name: ['stone', 'deepslate'], count: 16 }, taskToken), 5 * 60 * 1000, stopMotion);
