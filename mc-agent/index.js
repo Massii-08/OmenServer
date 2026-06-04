@@ -847,6 +847,13 @@ bot.loadPlugin(collectBlock);
 
 bot.on('spawn', () => { onSpawn().catch((e) => emit({ type: 'error', message: String((e && e.message) || e) })); });
 
+// Télémétrie mémoire (vécu Marathon run#1 : OOM 2 Go en 116 s, indiagnosticable sans ça) :
+// RSS + heap toutes les 30 s → corrélable avec le skill actif dans le même log.
+setInterval(() => {
+  const m = process.memoryUsage();
+  emit({ type: 'mem', rss_mb: Math.round(m.rss / 1048576), heap_mb: Math.round(m.heapUsed / 1048576) });
+}, 30000).unref();
+
 async function runAction(decision) {
   const a = decision.action;
   const args2 = decision.args || {};

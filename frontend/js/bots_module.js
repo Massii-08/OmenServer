@@ -1101,6 +1101,7 @@ const BotsModule = {
  <option value="iron_pickaxe">${Lang.t('mcagent.obj_iron')}</option>
  <option value="diamond">${Lang.t('mcagent.obj_diamond')}</option>
  <option value="mapper">${Lang.t('mcagent.obj_mapper')}</option>
+ <option value="marathon">${Lang.t('mcagent.obj_marathon')}</option>
  </select>
  <input id="mca-world-label" class="form-input" style="max-width:200px;" placeholder="${Lang.t('mcagent.world_label')}" />
  </div>

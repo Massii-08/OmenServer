@@ -174,7 +174,7 @@ def has_api_key():
     return bool(_read_api_key())
 
 
-VALID_OBJECTIVES = ("stone_pickaxe", "iron_pickaxe", "diamond", "mapper")
+VALID_OBJECTIVES = ("stone_pickaxe", "iron_pickaxe", "diamond", "mapper", "marathon")
 
 
 def _active_mappers(group_id):

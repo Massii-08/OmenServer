@@ -28,7 +28,7 @@ class StartReq(BaseModel):
     server_id: Optional[str] = None # si fourni : charge un profil serveur (connexion + commandes)
     language: str = "fr"            # langue du champ reply LLM : fr | en | it
     autonomous: bool = False        # True → lance la boucle planner au spawn (0 LLM)
-    objective: str = "stone_pickaxe"  # objectif autonome : stone_pickaxe | iron_pickaxe | diamond | mapper
+    objective: str = "stone_pickaxe"  # objectif autonome : stone_pickaxe | iron_pickaxe | diamond | mapper | marathon
     world_label: Optional[str] = None  # clé de monde explicite (ex. "mining") — sinon dimension auto
 
 
