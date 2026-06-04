@@ -723,6 +723,7 @@ async function establishBase() {
   world.home = { x: place.pos.x, y: place.pos.y, z: place.pos.z };
   world.chests = (world.chests || []).concat([world.home]);
   world.banked = world.banked || {};
+  world.sethomeSet = false; // P42b : nouvelle base → re-ancrer le /sethome
   saveWorld(worldFile, world);
   emit({ type: 'marathon_base', x: world.home.x, y: world.home.y, z: world.home.z });
   // P42 : si le serveur le permet (Essentials), ancrer un /sethome — le respawn post-mort
@@ -785,6 +786,11 @@ async function marathonDeposit() {
     return r;
   }
   world.banked = r.chest;             // source de vérité = contenu du coffre RELU après dépôt
+  // P42b : ancrer le /sethome à la PROCHAINE visite réussie de la base (les bases créées avant
+  // P42 n'en avaient pas → les morts en trek continuaient à coûter 45 min).
+  if (!world.sethomeSet) {
+    try { bot.chat('/sethome mbase'); world.sethomeSet = true; emit({ type: 'sethome_attempt', at: 'deposit' }); } catch (e) {}
+  }
   saveWorld(worldFile, world);
   emit({ type: 'marathon_deposit', deposited: r.deposited, banked: world.banked });
   return r;
