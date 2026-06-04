@@ -155,3 +155,112 @@ brancher + durcir `pillarUp` (sneak + apex + **vérif-après-pose + retry**) ; (
 
 **Critère (live)** : le bot monte en pilier / sort d'un trou **du premier coup** la plupart du temps
 (retry invisible si rate) ; plus de « galère à poser sous les pieds ».
+
+## 2026-06-04 — E. X-RAY TROP BRIDÉ → stealth (réussir à prendre les ores, mais pas obvious) `[HAUTE PRIORITÉ — RÉVISE A]`
+
+**Constat de Massii (en jeu)** : depuis le retour A, le bot **ne fonce plus** sur les ores (bien !) **MAIS
+il est devenu trop con → il n'arrive plus à prendre les diamants/lapis/redstone/or**. Or l'objectif
+marathon EXIGE 64 de chaque. Massii : « il faut qu'il réussisse **quand même** à prendre les diamants,
+lapis… il faut **juste** que le x-ray ne soit pas obvious. »
+
+→ **A est allé trop loin** (isExposed strict + branch-mine aveugle = inefficace). Le bon équilibre =
+**STEALTH X-RAY** : le bot **SAIT** où sont les ores et s'en sert pour être **EFFICACE**, mais
+l'**EXÉCUTION** ressemble à un joueur qui branch-mine dans une bonne zone et a « de la chance ».
+Ni beeline évident, ni aveugle inutile.
+
+**À faire (ré-équilibrage de A — ne PAS revenir au beeline)** :
+1. **Le ciblage d'ore via findBlock REVIENT, mais BORNÉ.** Il sert à deux choses :
+   - **(a) Biais directionnel** : orienter les tunnels de branch-mine **VERS** la zone la plus riche en
+     ore connue au bon Y (au lieu d'un cap fixe aveugle) → le bot creuse « par hasard » là où il y a du
+     diamant.
+   - **(b) Approche COURTE** : quand un ore connu est **proche** du tunnel courant (≤ ~**4-5 blocs**),
+     faire un petit embranchement/détour pour l'exposer et le prendre.
+2. **L'interdit reste l'approche LONGUE** : **JAMAIS** un forage droit de >5-6 blocs à travers la roche
+   pleine pile vers un ore unique (= le tell évident). La distance max de « dig droit vers un ore » est le
+   **paramètre clé** : court = humain, long = x-ray obvious. (Garder un knob `MAX_ORE_APPROACH` ~5.)
+3. **Throttle / humanisation** (anti-plugin « luck ») : parfois **ignorer** un ore connu, varier le
+   rythme, miner du déchet, ne pas afficher un ratio diamant/pierre surhumain.
+4. **Anti-xray serveur reste ON** (acquis de A) : densité d'ore aberrante (faux ores engine-mode 2) →
+   branch-mine pur (efficacité sacrifiée, c'est forcé sur ces serveurs).
+5. `isExposed` reste pour les grabs **immédiats** ; l'approche courte (b) peut creuser ≤ qq blocs vers un
+   ore non encore exposé (c'est ça, « tomber dessus » de façon plausible).
+
+**Critère (live)** : le bot **récupère effectivement** diamants/lapis/redstone/or et **progresse vers
+64×4** ; ET on ne le voit **JAMAIS** percer un long tunnel droit pile vers un filon caché — ça ressemble
+à du branch-mining humain chanceux dans une bonne zone. + test offline : un ore à 4 blocs = approche
+autorisée ; un ore à 20 blocs en roche pleine = refusé (pas de beeline).
+
+## 2026-06-04 — F. Coffre : casser le bloc AU-DESSUS à la pose (sinon inouvrable) `[renforcement de P17]`
+
+**Constat de Massii (en jeu)** : quand le bot pose un coffre, il doit **se rappeler de casser le bloc
+au-dessus** — un coffre sous un bloc **opaque/solide** est **INOUVRABLE** en vanilla → pas de dépôt.
+
+**Déjà fait** : **P17** (`acf298c`) dégage le dessus à `establishBase` + retry après dig au deposit.
+Si Massii le voit ENCORE → soit le run observé est d'avant P17, soit P17 n'est **pas universel**.
+
+**À faire (rendre universel + robuste)** :
+1. **TOUTE pose de coffre** (pas juste `establishBase`) dégage le bloc directement au-dessus
+   (`chestPos.offset(0,1,0)` ; si solide → dig + ramasser le drop) **à la pose**.
+2. **Vérifier l'ouvrabilité** avant de compter le coffre comme utilisable (et avant chaque deposit) ;
+   si `open` échoue → re-dégager le dessus + retry (déjà l'esprit de P17).
+3. Idéal : le bloc au-dessus **et** la case devant (accès) sont dégagés.
+
+**Critère (live)** : le bot pose un coffre en sous-sol et **l'ouvre / dépose du premier coup**, sans
+boucle « re-base ».
+
+## 2026-06-04 — G. Pillaring TOUJOURS cassé malgré D → tout passer par le PATHFINDER + diagnostics `[HAUTE PRIORITÉ — D pas suffisant]`
+
+**Constat de Massii (en jeu)** : malgré D (scafoldingBlocks posés + pillarUp durci), le bot **galère
+TOUJOURS** à monter en sautant+plaçant. → Signe qu'il fait encore du **pillaring MANUEL** (jump+place)
+quelque part, et c'est **fondamentalement instable** en mineflayer.
+
+**À faire** :
+1. **Router TOUTE ascension par le pathfinder** (et PAS le jump+place manuel) : pour sortir d'un trou /
+   monter une marche / regagner la surface → donner un **goal pathfinder** à destination (GoalY / GoalBlock /
+   GoalNear) avec `scafoldingBlocks` (1 f) + `allow1by1towers=true`. **allow1by1towers fait justement
+   sortir d'un trou 1×1.** **Auditer chaque appel de `pillarUp` / jump+place manuel et le convertir en
+   goal pathfinder.** Le manuel ne reste qu'en ultime fallback.
+2. **Toujours avoir du bloc de scaffolding** (cobble/dirt) en inventaire quand il doit grimper (sinon
+   pathfinder ne peut PAS scaffolder → échec). Vérifier ça dans le gate.
+3. **DIAGNOSTICS obligatoires** : logguer CHAQUE tentative de montée + la **raison** d'échec (pas de
+   matériau / `placeBlock` threw / tombé / pathfinder a abandonné / no_path) → le prochain run nous **DIT**
+   pourquoi au lieu de deviner. (On tourne en rond sur ce bug, il faut la cause réelle.)
+4. Failure modes manuels connus si on doit garder un fallback : reference block = le bloc qu'on a
+   **quitté** (offset 0,-1,0 quand on est en l'air), pas l'air sous les pieds en plein saut ; pose **à
+   l'apex** ; `placeBlock` async + échoue (#296) → verify+retry ; jamais dans l'eau (#54).
+
+**Critère (live)** : le bot **sort d'un trou de 3-4 blocs / monte une marche du premier coup** (retry
+invisible) ; et **les logs montrent la cause** de tout échec de montée restant.
+
+## 2026-06-04 — H. Minage : tunnels trop précis + économie d'outils + NE PAS rater les ores `[HAUTE PRIORITÉ — renforce E]`
+
+**Constats de Massii (en jeu)** :
+1. La technique de tunnel est **TROP PRÉCISE / régulière** → tell robot. Un humain mine imprécis.
+2. Casser **les 2 blocs** (pied+tête = tunnel 1×2) **use trop la durabilité** des outils. Idée Massii :
+   plus malin de ne creuser **que les blocs à hauteur de tête**.
+3. **Le bot PEUT utiliser les données carto / world-memory** (Massii le **confirme**) — et il **rate les
+   ores** : vu **passer devant des diamants 2 fois** sans les prendre (= trop con depuis A, cf. E).
+
+**À faire** :
+1. **IMPRÉCISION organique des tunnels** (anti-tell) : pas de ligne parfaitement droite ni de gabarit
+   pixel-perfect. Micro-variations : léger zig-zag ±1 bloc, hauteur/alignement pas parfaitement
+   constants, déviations occasionnelles — comme un humain. (Pendant du « random walk persistant » du
+   cartographe, version minage : direction générale tenue, **exécution imparfaite**.)
+2. **ÉCONOMIE D'OUTILS** : réduire les blocs cassés par distance. Idée Massii = creuser à hauteur de
+   tête seulement. ⚠️ **Contrainte MC** : un joueur a besoin de **2 blocs de haut** pour marcher → un
+   tunnel **1-haut n'est PAS traversable** debout. À valider en jeu, options :
+   - tunnel **principal 2-haut** (pour circuler) MAIS **branches 1-haut** (juste exposer l'ore, on n'y
+     marche pas) ;
+   - **espacer** davantage les branches (ex. tous les 3 blocs — on voit l'ore à ≤2 → moins de blocs par
+     ore exposé) ;
+   - ne miner que là où ça **expose réellement** de l'ore ; pas de salles/strip inutiles.
+   But = **minimiser blocs-cassés/distance** (les pioches durent plus) tout en restant traversable.
+3. **UTILISER les données carto + NE PAS rater les ores (renforce E)** : OUI, exploite la world-memory
+   pour savoir où sont les ores ; et surtout **prends les ores que tu longes** — s'il passe à portée
+   d'un diamant (exposé OU ≤ `MAX_ORE_APPROACH` ~5) il **DOIT** faire le petit détour pour le prendre,
+   **jamais passer devant** comme un idiot. (Massii l'a vu rater 2 diamants → c'est exactement le
+   stealth x-ray de E : efficace **mais** discret.)
+
+**Critère (live)** : tunnels d'allure **imparfaite/humaine** (pas un gabarit régulier) ; **moins de
+blocs cassés** par distance (outils durent plus) ; le bot **ne passe JAMAIS à côté d'un diamant proche**
+sans le prendre, et il **progresse vers 64×4**.

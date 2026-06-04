@@ -25,7 +25,7 @@ const { parseOrder } = require('./orders');
 const { createTaskController } = require('./tasks');
 const { createMemory } = require('./memory');
 const { bestWeapon, bestToolFor } = require('./tools');
-const { gather, findExposedOre } = require('./skills/gather');
+const { gather, findExposedOre, PRECIOUS_ORES } = require('./skills/gather');
 const { mineDown } = require('./skills/mineDown');
 const { guard } = require('./skills/guard');
 const { giveItem, giveAll } = require('./skills/give');
@@ -697,6 +697,11 @@ async function marathonDeposit() {
   if (!world.home) return { ok: false, reason: 'no_base' };
   const g = await gotoPos(world.home, 2, 8 * 60 * 1000);
   if (g && g.ok === false) emit({ type: 'marathon_goto_base_failed' }); // on tente quand même (peut être à côté)
+  // F (Massii) : vérifier l'OUVRABILITÉ avant d'essayer — un bloc a pu tomber/être posé au-dessus.
+  try {
+    const above0 = bot.blockAt(new Vec3(world.home.x, world.home.y + 1, world.home.z));
+    if (above0 && above0.boundingBox === 'block' && above0.name !== 'chest') await bot.dig(above0);
+  } catch (e) {}
   let r = await depositFiltered(bot, { only: MARATHON_VALUABLES, surplus: marathonSurplus() });
   if (!r.ok && r.reason === 'open_failed' && world.home) {
     // P17 : coffre présent mais inouvrable (bloc au-dessus, gravier tombé…) → dégager + retry
@@ -838,10 +843,23 @@ async function marathonDescend(targetY) {
   return descendRobust(targetY);
 }
 
+// G (Massii) : TOUTE ascension passe par le pathfinder (GoalY + scafoldingBlocks + allow1by1towers
+// sortent d'un trou 1×1 nativement) — avec scaffolding GARANTI en poche + DIAGNOSTICS systématiques.
 async function marathonAscend(targetY) {
+  const from = Math.round(bot.entity.position.y);
+  if (scaffoldCount(bot) < 8) {                       // sans bloc, le pathfinder ne peut PAS scaffolder
+    await withTimeout(gather(bot, { name: ['stone', 'deepslate'], count: 8 }, taskToken),
+      120000, () => { try { stopMotion(); } catch (e) {} });
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  }
   const p = bot.entity.position;
   const goal = pfGoals.GoalY ? new pfGoals.GoalY(targetY) : new pfGoals.GoalNear(p.x, targetY, p.z, 8);
-  return withTimeout(bot.pathfinder.goto(goal), 10 * 60 * 1000, () => { try { stopMotion(); } catch (e) {} });
+  const r = await withTimeout(bot.pathfinder.goto(goal), 10 * 60 * 1000, () => { try { stopMotion(); } catch (e) {} });
+  const to = Math.round(bot.entity.position.y);
+  const ok = to >= targetY - 2;
+  emit({ type: 'ascend_attempt', from, to, target: targetY, scaffold: scaffoldCount(bot), ok,
+    reason: ok ? undefined : ((r && r.reason) || 'pathfinder_gave_up') });
+  return ok ? { ok: true } : { ok: false, reason: (r && r.reason) || 'ascend_failed' };
 }
 
 async function startMarathon() {
@@ -897,8 +915,22 @@ async function startMarathon() {
       else if (action === 'descend') r = await withTimeout(marathonDescend(miningYFor(counts)), 15 * 60 * 1000, stopMotion);
       else if (action === 'ascend') r = await marathonAscend(miningYFor(counts));
       else if (action === 'mine') {
+        // E : biais directionnel SUBTIL — orienter le tunnel vers la zone la plus riche connue
+        // (le tunnel reste un branch-mine légit ; on ne fonce jamais sur un bloc précis).
+        try {
+          const ids = [...PRECIOUS_ORES].map((n) => bot.registry.blocksByName[n]).filter(Boolean).map((b) => b.id);
+          const cands = (bot.findBlocks && ids.length) ? bot.findBlocks({ matching: ids, maxDistance: 32, count: 8 }) : [];
+          if (cands && cands.length) {
+            const c = cands[Math.min(2, cands.length - 1)]; // pas le plus proche pile (subtil)
+            const pme = bot.entity.position;
+            const yaw = Math.atan2(pme.x - c.x, c.z - pme.z); // convention mineflayer
+            await bot.look(yaw, 0, true);
+            emit({ type: 'mine_bias', x: Math.round(c.x), z: Math.round(c.z) });
+          }
+        } catch (e) {}
         r = await withTimeout(branchMine(bot, {
-          targetY: miningYFor(counts), mainLength: 24, branchSpacing: 3, branchLength: 8,
+          targetY: miningYFor(counts), mainLength: 24, branchSpacing: 3, branchLength: 3,
+          organic: true, branchStyle: 'peek',           // Massii H : zig-zag + branches 1-haut + détours
           stopWhen: (b) => (b.inventory && b.inventory.emptySlotCount ? b.inventory.emptySlotCount() : 99) <= RESERVES.invFullSlots,
         }, taskToken), 15 * 60 * 1000, stopMotion);
         if (r && r.ores) emit({ type: 'marathon_mined', ores: r.ores });

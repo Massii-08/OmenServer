@@ -63,7 +63,21 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
     const roof = bot.blockAt(bot.entity.position.floored().offset(0, 2, 0));
     if (roof && roof.boundingBox === 'block') await bot.dig(roof);
   } catch (e) {}
-  const up = await pillarUp(bot, { height: 2 }, token, { sleep: deps.pillarSleep || deps.sleep });
+  // G (Massii) : sortie via PATHFINDER d'abord (scafoldingBlocks + allow1by1towers gèrent le trou
+  // 1×1 nativement, bien plus fiable que le jump+place manuel) ; pillarUp = ultime fallback.
+  let up = { ok: false };
+  try {
+    const goals = require('mineflayer-pathfinder').goals;
+    if (goals && goals.GoalY && bot.pathfinder && bot.pathfinder.goto) {
+      const fromY = Math.floor(bot.entity.position.y);
+      await Promise.race([
+        bot.pathfinder.goto(new goals.GoalY(fromY + 2)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('ascend_timeout')), 30000)),
+      ]);
+      if (Math.floor(bot.entity.position.y) >= fromY + 2) up = { ok: true, via: 'pathfinder' };
+    }
+  } catch (e) {}
+  if (!up.ok) up = await pillarUp(bot, { height: 2 }, token, { sleep: deps.pillarSleep || deps.sleep });
   emit({ type: 'shelter', action: 'out', ok: up.ok });
   return { ok: true };
 }
