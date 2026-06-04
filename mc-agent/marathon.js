@@ -143,7 +143,17 @@ function nextAction(ctx) {
   return 'mine';
 }
 
+/** P45 : agrège le contenu de TOUS les coffres connus (le churn de bases ne perd plus le butin). */
+function sumBanked(chestContents) {
+  const out = {};
+  for (const key of Object.keys(chestContents || {})) {
+    const c = chestContents[key] || {};
+    for (const it of Object.keys(c)) out[it] = (out[it] || 0) + c[it];
+  }
+  return out;
+}
+
 module.exports = {
-  MARATHON_TARGETS, RESERVES, COOKED,
+  MARATHON_TARGETS, RESERVES, COOKED, sumBanked,
   marathonCounts, marathonMet, miningYFor, cookedFood, woodUnits, nextAction,
 };

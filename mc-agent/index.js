@@ -51,7 +51,7 @@ const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget, fillBelow, recoverFloating } = require('./unstuck');
 const { isNight, shelterUntilDawn } = require('./skills/shelter');
 const { depositFiltered } = require('./skills/deposit');
-const { nextAction, marathonCounts, miningYFor, RESERVES, cookedFood, woodUnits } = require('./marathon');
+const { nextAction, marathonCounts, miningYFor, RESERVES, cookedFood, woodUnits, sumBanked } = require('./marathon');
 const { scaffoldCount } = require('./skills/branchMine');
 
 function parseArgs(argv) {
@@ -640,7 +640,7 @@ function marathonCtx() {
   const pos = bot.entity && bot.entity.position;
   return {
     inv: buildCtxInv(bot),
-    banked: world.banked || {},
+    banked: sumBanked(world.chestContents || (world.home && world.banked ? { home: world.banked } : {})), // P45
     y: pos ? pos.y : undefined,
     emptySlots: bot.inventory && bot.inventory.emptySlotCount ? bot.inventory.emptySlotCount() : undefined,
     hasBase: !!world.home,
@@ -780,12 +780,15 @@ async function marathonDeposit() {
     r = await depositFiltered(bot, { only: MARATHON_VALUABLES, surplus: marathonSurplus() });
   }
   if (!r.ok) {
-    // coffre introuvable/cassé → re-base au prochain tour ; banked re-lu au prochain dépôt réussi
+    // coffre introuvable/cassé À SA POSITION → purger SON entrée (P45), re-base au prochain tour
     emit({ type: 'marathon_chest_lost', reason: r.reason });
+    if (world.chestContents) delete world.chestContents[`${world.home.x},${world.home.y},${world.home.z}`];
     world.home = null; saveWorld(worldFile, world);
     return r;
   }
-  world.banked = r.chest;             // source de vérité = contenu du coffre RELU après dépôt
+  world.banked = r.chest;             // legacy (lecture seule) — la vérité est chestContents (P45)
+  world.chestContents = world.chestContents || {};
+  world.chestContents[`${world.home.x},${world.home.y},${world.home.z}`] = r.chest;
   // P42b : ancrer le /sethome à la PROCHAINE visite réussie de la base (les bases créées avant
   // P42 n'en avaient pas → les morts en trek continuaient à coûter 45 min).
   if (!world.sethomeSet) {

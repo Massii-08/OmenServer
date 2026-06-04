@@ -282,3 +282,17 @@ test('P41: armuré → pas d\'action armor', () => {
   ctx.inv = Object.assign({}, ctx.inv, { iron_ingot: 8 });
   assert.strictEqual(nextAction(ctx), 'mine');
 });
+
+// P45 : le churn de bases (re-base P39/chest_lost) remettait banked à zéro — les coffres
+// orphelins gardent le butin. banked = SOMME de tous les coffres connus.
+const { sumBanked } = require('./marathon');
+test('P45: sumBanked agrège tous les coffres connus', () => {
+  const banked = sumBanked({
+    '931,-58,108': { redstone: 13, cobblestone: 218 },
+    '823,54,109': { redstone: 4, diorite: 11 },
+    '794,79,104': {},
+  });
+  assert.strictEqual(banked.redstone, 17);
+  assert.strictEqual(banked.cobblestone, 218);
+  assert.strictEqual(banked.diorite, 11);
+});
