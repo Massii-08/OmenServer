@@ -156,7 +156,7 @@ brancher + durcir `pillarUp` (sneak + apex + **vérif-après-pose + retry**) ; (
 **Critère (live)** : le bot monte en pilier / sort d'un trou **du premier coup** la plupart du temps
 (retry invisible si rate) ; plus de « galère à poser sous les pieds ».
 
-## 2026-06-04 — E. X-RAY TROP BRIDÉ → stealth (réussir à prendre les ores, mais pas obvious) `[HAUTE PRIORITÉ — RÉVISE A]`
+## 2026-06-04 — E. X-RAY TROP BRIDÉ → stealth (réussir à prendre les ores, mais pas obvious) `[traité — MAX_ORE_APPROACH 5 (enterré proche prenable, longue percée interdite), throttle 25% communs jamais les 4 cibles, biais mine_bias vers zone riche ; commit 4c89752]`
 
 **Constat de Massii (en jeu)** : depuis le retour A, le bot **ne fonce plus** sur les ores (bien !) **MAIS
 il est devenu trop con → il n'arrive plus à prendre les diamants/lapis/redstone/or**. Or l'objectif
@@ -190,7 +190,8 @@ Ni beeline évident, ni aveugle inutile.
 à du branch-mining humain chanceux dans une bonne zone. + test offline : un ore à 4 blocs = approche
 autorisée ; un ore à 20 blocs en roche pleine = refusé (pas de beeline).
 
-## 2026-06-04 — F. Coffre : casser le bloc AU-DESSUS à la pose (sinon inouvrable) `[renforcement de P17]`
+## 2026-06-04 — F. Coffre : casser le bloc AU-DESSUS à la pose (sinon inouvrable) `[traité — pré-dégagement systématique avant CHAQUE deposit + retry (P17 universalisé) ; commit 13648fd]`
+
 
 **Constat de Massii (en jeu)** : quand le bot pose un coffre, il doit **se rappeler de casser le bloc
 au-dessus** — un coffre sous un bloc **opaque/solide** est **INOUVRABLE** en vanilla → pas de dépôt.
@@ -208,7 +209,7 @@ Si Massii le voit ENCORE → soit le run observé est d'avant P17, soit P17 n'es
 **Critère (live)** : le bot pose un coffre en sous-sol et **l'ouvre / dépose du premier coup**, sans
 boucle « re-base ».
 
-## 2026-06-04 — G. Pillaring TOUJOURS cassé malgré D → tout passer par le PATHFINDER + diagnostics `[HAUTE PRIORITÉ — D pas suffisant]`
+## 2026-06-04 — G. Pillaring TOUJOURS cassé malgré D → tout passer par le PATHFINDER + diagnostics `[traité — ascensions 100% pathfinder (GoalY+scaffold garanti+diagnostics ascend_attempt), shelter pathfinder-first ; commit 13648fd]`
 
 **Constat de Massii (en jeu)** : malgré D (scafoldingBlocks posés + pillarUp durci), le bot **galère
 TOUJOURS** à monter en sautant+plaçant. → Signe qu'il fait encore du **pillaring MANUEL** (jump+place)
@@ -232,7 +233,7 @@ quelque part, et c'est **fondamentalement instable** en mineflayer.
 **Critère (live)** : le bot **sort d'un trou de 3-4 blocs / monte une marche du premier coup** (retry
 invisible) ; et **les logs montrent la cause** de tout échec de montée restant.
 
-## 2026-06-04 — H. Minage : tunnels trop précis + économie d'outils + NE PAS rater les ores `[HAUTE PRIORITÉ — renforce E]`
+## 2026-06-04 — H. Minage : tunnels trop précis + économie d'outils + NE PAS rater les ores `[traité — H1 zig-zag ±2, H2 branches peek 1-haut ≤3, H3 détour précieux ≤5 jamais raté + world-memory bias ; commit 4019f3f]`
 
 **Constats de Massii (en jeu)** :
 1. La technique de tunnel est **TROP PRÉCISE / régulière** → tell robot. Un humain mine imprécis.
