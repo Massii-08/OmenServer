@@ -121,6 +121,18 @@ def test_clean_server_language_default_and_valid(tmp_path, monkeypatch):
     assert srv3["language"] == "fr"  # invalide → défaut
 
 
+def test_migration_legacy_profile_gets_first_bot(tmp_path, monkeypatch):
+    from backend.bots import mc_agent_servers as S
+    monkeypatch.setattr(S, "SERVERS_PATH", tmp_path / "srv.json")
+    S._save_servers([{"id": "abc123", "name": "Old", "host": "h", "user": "OldBot", "auth": "offline"}])
+    one = S.load_servers()[0]
+    assert len(one["bots"]) == 1
+    assert one["bots"][0]["username"] == "OldBot" and one["bots"][0]["role"] == "worker"
+    bid = one["bots"][0]["id"]
+    two = S.load_servers()[0]                    # idempotent
+    assert len(two["bots"]) == 1 and two["bots"][0]["id"] == bid
+
+
 def test_clean_server_has_roster_and_login_fields():
     from backend.bots import mc_agent_servers as S
     s = S._clean_server({"name": "X", "host": "h", "has_login": True,

@@ -35,13 +35,33 @@ def _catalog_ids():
     return {c.get("id") for c in load_catalog() if isinstance(c, dict) and c.get("id")}
 
 
+def _migrate(server):
+    """Ajoute bots[0] depuis `user` si la clé 'bots' est absente (legacy). Idempotent."""
+    if "bots" in server:
+        return server, False
+    server["bots"] = [{"id": _gen_id(set()), "role": "worker",
+                       "username": str(server.get("user") or "TrainBot")[:48],
+                       "auth": server.get("auth") if server.get("auth") in VALID_AUTH else "offline"}]
+    return server, True
+
+
 def load_servers():
     """Liste des profils serveur persistés. [] si fichier absent/illisible."""
     try:
         data = json.loads(SERVERS_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
-    return data if isinstance(data, list) else []
+    if not isinstance(data, list):
+        return []
+    changed = False
+    for i, item in enumerate(data):
+        if isinstance(item, dict):
+            data[i], migrated = _migrate(item)
+            if migrated:
+                changed = True
+    if changed:
+        _save_servers(data)
+    return data
 
 
 def _save_servers(servers):
