@@ -990,7 +990,8 @@ async function startMarathon() {
             const tz = pme.z + (world.home.z - pme.z) / before * step;
             const goal = pfGoals.GoalNearXZ ? new pfGoals.GoalNearXZ(tx, tz, 8)
               : new pfGoals.GoalNear(tx, pme.y, tz, 8);
-            await withTimeout(bot.pathfinder.goto(goal), 2 * 60 * 1000, () => { try { stopMotion(); } catch (e) {} });
+            // 45 s/saut : 64 blocs se marchent en <40 s — un pathfinder vivant BOUGE (P28 fail-fast)
+            await withTimeout(bot.pathfinder.goto(goal), 45 * 1000, () => { try { stopMotion(); } catch (e) {} });
             if (isInWater(bot)) await escapeWater(bot, { emit });
             if (homeDistNow() >= before - 8) {
               noProg++;
@@ -1052,7 +1053,7 @@ async function startMarathon() {
       const pp = bot.entity.position;
       if (paraPos && Math.hypot(pp.x - paraPos.x, pp.z - paraPos.z) < 1.5) paraCount++;
       else { paraCount = 0; paraPos = { x: pp.x, z: pp.z }; }
-      if (paraCount >= 6) {
+      if (paraCount >= 4) {
         emit({ type: 'paralysis_reconnect', x: Math.round(pp.x), y: Math.round(pp.y), z: Math.round(pp.z) });
         try { saveWorld(worldFile, world); } catch (e) {}
         setTimeout(() => process.exit(42), 500);
