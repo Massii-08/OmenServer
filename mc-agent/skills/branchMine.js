@@ -10,7 +10,7 @@
 // dès que i≥6-7 le bloc cible est hors range mineflayer (~6 blocs) → bot.dig échoue silencieusement
 // → stall (risque #5 du rapport build précédent).
 const { bestToolFor } = require('../tools');
-const { gather } = require('./gather');
+const { gather, findTargetableOre, PRECIOUS_ORES } = require('./gather');
 const { Vec3 } = require('vec3');
 let _emit; try { _emit = require('../io').emit; } catch (e) { _emit = () => {}; }
 function dbg(_label, payload) { try { _emit({ type: 'dbg', from: 'branchMine', ...payload }); } catch (e) {} }
@@ -193,6 +193,14 @@ async function branchMine(bot, opts = {}, token = null) {
   const mainLength = opts.mainLength || 32;
   const branchSpacing = opts.branchSpacing || 3;
   const branchLength = opts.branchLength || 8;
+  // Massii H : mode ORGANIQUE (opt-in marathon, legacy inchangé) —
+  //  H1 zig-zag ±2 (direction tenue, exécution imparfaite) ; H2 branches « peek » 1-haut ≤3
+  //  (économie d'outils : on n'y marche pas, on expose) ; H3 détour court vers tout ore précieux
+  //  ciblable (exposé ou ≤5) — on ne passe JAMAIS devant un diamant.
+  const organic = !!opts.organic;
+  const rng = opts.rng || Math.random;
+  const peek = opts.branchStyle === 'peek';
+  let lateral = 0;
   // Condition d'arrêt configurable (marathon : inventaire plein / segment fini) ;
   // défaut rétro-compat DIAMOND_CHAIN : 1 diamant en poche suffit.
   const stopWhen = opts.stopWhen || ((b) => countItem(b, 'diamond') >= 1);
@@ -230,7 +238,11 @@ async function branchMine(bot, opts = {}, token = null) {
     if (stopWhen(bot)) break;                                          // objectif rempli
 
     // Tunnel 1×2 : pieds + tête. Targets calculés depuis origin (point fixe).
-    const footTarget = p(ox + dir.dx * i, oy, oz + dir.dz * i);
+    if (organic && rng() < 0.25) {                       // H1 : dérive latérale occasionnelle
+      lateral += rng() < 0.5 ? -1 : 1;
+      if (lateral > 2) lateral = 2; else if (lateral < -2) lateral = -2;
+    }
+    const footTarget = p(ox + dir.dx * i + left.dx * lateral, oy, oz + dir.dz * i + left.dz * lateral);
     const headTarget = p(footTarget.x, footTarget.y + 1, footTarget.z);
     dbg('iter', { phase: 'branchMine:iter', i, footTarget: { x: footTarget.x, y: footTarget.y, z: footTarget.z } });
     // Approche AVANT le dig : sinon hors range à i>=6 (cf. risque #5). GoalNear 3 = arrive à ≤3 blocs.
@@ -243,15 +255,30 @@ async function branchMine(bot, opts = {}, token = null) {
       if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
     }
 
+    // H3 (organique) : détour COURT vers tout ore précieux à portée (exposé ou enterré ≤5) —
+    // jamais passer devant un diamant. gather borne le pathing à maxDistance 6.
+    if (organic) {
+      const near = findTargetableOre(bot, [...PRECIOUS_ORES], 5, rng);
+      if (near) { try { await gather(bot, { name: [near.name], count: 8, maxDistance: 6, rng }, token); } catch (e) {} }
+    }
+
     // Branches latérales alternées à intervalles de branchSpacing — gauche puis droite (i et i+1 décalés).
     if (i > 0 && i % branchSpacing === 0) {
+      const bl = peek ? Math.min(3, branchLength) : branchLength; // H2 : peek ≤3 (portée sans y entrer)
       for (const side of [left, { dx: -left.dx, dz: -left.dz }]) {
-        for (let j = 1; j <= branchLength; j++) {
+        for (let j = 1; j <= bl; j++) {
           if (token && token.cancelled) break;
           if (stopWhen(bot)) break outer;
           if (scaffoldCount(bot) < COBBLE_RESERVE_MIN) { stopReason = 'cobble_low'; break outer; }
           const ft = p(footTarget.x + side.dx * j, footTarget.y, footTarget.z + side.dz * j);
           const ht = p(ft.x, ft.y + 1, ft.z);
+          if (peek) {
+            // H2 : trou d'observation 1-haut à hauteur de TÊTE seulement — moitié moins de blocs
+            // cassés, on ne marche pas dedans (pas d'approach), l'ore exposé est ramassé par gather.
+            const r = await safeDigAndOpportunism(bot, ht, token);
+            if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
+            continue;
+          }
           // Approche aussi avant la branche — j peut monter à 8, donc range hors limite sans goto.
           await approach(bot, ft, 3);
           for (const t of [ft, ht]) {

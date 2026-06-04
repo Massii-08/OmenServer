@@ -239,3 +239,46 @@ test('marathon: redstone + or comptés dans le delta ores', async () => {
   assert.ok(r.ores.redstone >= 1, `redstone=${r.ores.redstone}`);
   assert.ok(r.ores.gold >= 1, `gold=${r.ores.gold}`);
 });
+
+// --- Massii H : mode organique (zig-zag, branches peek, détour précieux) ---------------------------
+
+test('H1: organic — zig-zag latéral ±2, direction générale tenue', async () => {
+  const { bot, calls } = makeBot({ y: -54 });
+  // rng force la dérive à CHAQUE palier (0.1 < 0.25 puis 0.9 → +1)
+  const seq = [0.1, 0.9];
+  let k = 0;
+  await branchMine(bot, { targetY: -54, mainLength: 8, branchSpacing: 999, branchLength: 0,
+    organic: true, rng: () => seq[(k++) % 2], stopWhen: () => false });
+  // yaw -π/2 = +x → la latérale est sur z. Au moins un goto dévié en z, et x avance toujours.
+  const zs = calls.goto.map((g) => g.z);
+  assert.ok(zs.some((z) => z !== 0), `attendu une dérive latérale (zs=${zs.join(',')})`);
+  const xs = calls.goto.map((g) => g.x);
+  for (let i2 = 1; i2 < xs.length; i2++) assert.ok(xs[i2] >= xs[i2 - 1], 'x doit avancer (direction tenue)');
+});
+
+test('H2: branches peek — hauteur de tête SEULEMENT (économie outils), pas de pied cassé', async () => {
+  const world = {};
+  const { bot } = makeBot({ y: -54, world });
+  await branchMine(bot, { targetY: -54, mainLength: 4, branchSpacing: 2, branchLength: 3,
+    organic: true, branchStyle: 'peek', rng: () => 0.99, stopWhen: () => false });
+  // les branches partent de x=2 (i=2, spacing 2) latéralement en z : pieds (y=-54) jamais creusés en branche
+  const dugFeet = Object.keys(world).filter((key) => {
+    const [x, y, z] = key.split(',').map(Number);
+    return world[key] === 'air' && y === -54 && z !== 0; // hors tunnel principal (z=0)
+  });
+  assert.strictEqual(dugFeet.length, 0, `pieds de branche creusés: ${dugFeet.join(' | ')}`);
+  const dugHeads = Object.keys(world).filter((key) => {
+    const [x, y, z] = key.split(',').map(Number);
+    return world[key] === 'air' && y === -53 && z !== 0;
+  });
+  assert.ok(dugHeads.length > 0, 'des trous d\'observation tête doivent exister');
+});
+
+test('H3: organic — détour vers un diamant ciblable hors du tunnel (jamais passer devant)', async () => {
+  // diamant EXPOSÉ à 3 blocs latéralement du tunnel (z=3), pas sur le chemin
+  const world = { '2,-54,3': 'deepslate_diamond_ore', '2,-54,4': 'air' };
+  const { bot } = makeBot({ y: -54, world });
+  const r = await branchMine(bot, { targetY: -54, mainLength: 6, branchSpacing: 999, branchLength: 0,
+    organic: true, rng: () => 0.99, stopWhen: () => false });
+  assert.ok(r.ores.diamond >= 1, `diamant à portée non ramassé (ores=${JSON.stringify(r.ores)})`);
+});
