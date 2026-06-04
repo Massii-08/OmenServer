@@ -137,3 +137,178 @@ test('explore : biais dirigé via amorce vanilla (biomes connus, pas de finds)',
   assert.strictEqual(res.directed, true);
   assert.ok(Math.abs(calls.goto[0].x - 200) <= 1, 'allé au biome forest connu (amorce *_log)');
 });
+
+test('explore : biais caves (1d) — minerai → va à l\'entrée de grotte connue la + proche', async () => {
+  const { bot, calls } = makeBot({ target: pos(300, 70, -100) }); // minerai exposé près de la cave
+  const memory = { worlds: { w: { finds: [], biomes: [], caves: [
+    { x: 300, y: 45, z: -100 }, { x: 2000, y: 30, z: 2000 },
+  ] } } };
+  const emits = [];
+  const res = await explore(bot, { name: 'iron_ore', matching: [42], memory, worldKey: 'w', emit: (e) => emits.push(e) });
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(res.directed, true, 'trouvé via le biais cave');
+  assert.strictEqual(calls.goto.length, 1, 'un seul déplacement, direct à la cave');
+  assert.ok(Math.abs(calls.goto[0].x - 300) <= 1 && Math.abs(calls.goto[0].z - (-100)) <= 1, 'allé à la cave la + proche');
+  const ev = emits.find((e) => e.type === 'explore_directed');
+  assert.ok(ev && ev.cave === true, 'event explore_directed taggé cave:true');
+});
+
+test('explore : multi-matériaux → cible dirigée la + PROCHE tous noms confondus (pas le 1er qui matche)', async () => {
+  const { bot, calls } = makeBot({ target: pos(100, 70, 50) });
+  const memory = { worlds: { w: { finds: [
+    { material: 'oak_log', biome: 'forest', x: 1400, z: 0 },   // 1er du tableau mais LOIN
+    { material: 'birch_log', biome: 'forest', x: 100, z: 50 }, // 2e mais tout proche
+  ], biomes: [] } } };
+  const res = await explore(bot, { name: ['oak_log', 'birch_log'], matching: [17, 18], memory, worldKey: 'w' });
+  assert.strictEqual(res.directed, true);
+  assert.ok(Math.abs(calls.goto[0].x - 100) <= 1 && Math.abs(calls.goto[0].z - 50) <= 1,
+    `allé au gisement le + proche (birch), pas au 1er nom du tableau (goto=${JSON.stringify(calls.goto[0])})`);
+});
+
+test('explore : cible dirigée ÉPUISÉE (rien sur place) → continue en anneaux derrière', async () => {
+  // Le gisement appris a été vidé : le bot arrive, scan vide → la recherche en anneaux reprend
+  // depuis sa position (le directed n'est qu'un préfixe, jamais un cul-de-sac).
+  const { bot, calls } = makeBot({ target: pos(90, 70, 130) }); // vraie ressource ailleurs, trouvable en anneaux
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 600, z: 0 }], biomes: [] } } };
+  // findBlock ne voit la cible que ≤64 : à (600,0) il n'y a RIEN → directed miss → anneaux depuis (600,0)...
+  // (le fake téléporte le bot à chaque goto, la géométrie reste cohérente)
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w' });
+  assert.strictEqual(calls.goto.length >= 2, true, 'directed (1) puis waypoints anneaux derrière');
+  assert.ok(Math.abs(calls.goto[0].x - 600) <= 1, 'a d\'abord tenté la cible apprise');
+  assert.strictEqual(res.ok, false, 'pas trouvé ici (ressource hors des anneaux post-directed) mais PAS de hang');
+});
+
+test('explore : goto dirigé interrompu (GoalChanged ponctuel, ex. réflexe flee) → RE-TENTE le directed avant les anneaux', async () => {
+  // Vu live HarvT7 : un flee pendant le trajet dirigé → goto rejette → explore dégradait en anneaux
+  // pour tout l'appel. Un humain interrompu reprend SA route : on redonne UNE chance au directed.
+  const { bot, calls } = makeBot({ target: pos(300, 70, -100) });
+  const realGoto = bot.pathfinder.goto;
+  let n = 0;
+  bot.pathfinder.goto = async (goal) => {
+    if (n++ === 0) throw new Error('GoalChanged'); // 1re tentative interrompue (réflexe)
+    return realGoto(goal);
+  };
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 300, z: -100 }], biomes: [] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w' });
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(res.directed, true, 'trouvé via le directed RE-TENTÉ (pas dégradé en anneaux)');
+  assert.strictEqual(n, 2, 'goto dirigé tenté 2 fois');
+});
+
+test('explore : goto dirigé interrompu PLUSIEURS fois mais le bot PROGRESSE → persiste jusqu\'à la cible', async () => {
+  // Vu live : réflexe surface (eau) coupe le goal en rafale → le retry fixe (1×) était consommé
+  // pendant le barbotage. Tant que chaque tentative RAPPROCHE de la cible, on persiste.
+  const { bot, calls } = makeBot({ target: pos(400, 70, 0) });
+  const realGoto = bot.pathfinder.goto;
+  let n = 0;
+  bot.pathfinder.goto = async (goal) => {
+    n++;
+    if (n <= 3) { // 3 interruptions, mais on avance de 120 blocs à chaque fois
+      const p = bot.entity.position;
+      bot.entity.position = pos(p.x + 120, p.y, p.z);
+      throw new Error('GoalChanged');
+    }
+    return realGoto(goal);
+  };
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 400, z: 0 }], biomes: [] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w' });
+  assert.strictEqual(res.directed, true, 'la persistance directed a fini par atteindre la cible');
+  assert.strictEqual(n, 4, '4 tentatives (3 interrompues avec progrès + 1 finale)');
+});
+
+test('explore : goto dirigé interrompu SANS progrès → 2 tentatives max puis anneaux', async () => {
+  const { bot } = makeBot({ target: pos(100, 70, 0) });
+  const realGoto = bot.pathfinder.goto;
+  let n = 0;
+  bot.pathfinder.goto = async (goal) => {
+    n++;
+    if (n <= 2) throw new Error('GoalChanged'); // interrompu, bot IMMOBILE (pas de progrès)
+    return realGoto(goal);
+  };
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 600, z: 0 }], biomes: [] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', directedRetryDelayMs: 0 });
+  assert.strictEqual(res.ok, true, 'trouvé via les anneaux');
+  assert.notStrictEqual(res.directed, true, 'directed abandonné après 2 tentatives sans progrès');
+});
+
+test('explore : rejet sans progrès → grâce (délai) AVANT le retry — chunks transitoires (HarvT8)', async () => {
+  const { bot } = makeBot({ target: pos(100, 70, 0) });
+  const realGoto = bot.pathfinder.goto;
+  let n = 0;
+  const stamps = [];
+  bot.pathfinder.goto = async (goal) => {
+    stamps.push(Date.now());
+    if (n++ === 0) throw new Error('NoPath'); // rejet immédiat (chunks pas chargés)
+    return realGoto(goal);
+  };
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 100, z: 0 }], biomes: [] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', directedRetryDelayMs: 120 });
+  assert.strictEqual(res.directed, true, 'le retry post-grâce a réussi');
+  assert.ok(stamps[1] - stamps[0] >= 100, `≥100ms écoulées entre les 2 tentatives (mesuré ${stamps[1] - stamps[0]}ms)`);
+});
+
+test('explore : goto dirigé qui hang → timeout borné → retombe en anneaux', async () => {
+  const { bot, calls } = makeBot({ target: pos(100, 70, 0) });
+  const realGoto = bot.pathfinder.goto;
+  let hangs = 0;
+  bot.pathfinder.goto = async (goal) => {
+    if (hangs++ === 0) return new Promise(() => {}); // 1er goto (directed) ne resolve JAMAIS
+    return realGoto(goal);
+  };
+  bot.pathfinder.setGoal = () => {}; // stop du goto au timeout
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 600, z: 0 }], biomes: [] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', directedGotoTimeoutMs: 40, gotoTimeoutMs: 5000 });
+  assert.strictEqual(res.ok, true, 'trouvé via les anneaux malgré le goto dirigé gelé');
+  assert.notStrictEqual(res.directed, true);
+});
+
+test('explore : waypoint goto qui hang → timeout → waypoint suivant (pas de gel du skill)', async () => {
+  const { bot, calls } = makeBot({ target: pos(100, 70, 0) });
+  const realGoto = bot.pathfinder.goto;
+  let n = 0;
+  bot.pathfinder.goto = async (goal) => {
+    if (n++ === 0) return new Promise(() => {}); // 1er waypoint gelé
+    return realGoto(goal);
+  };
+  bot.pathfinder.setGoal = () => {};
+  const res = await explore(bot, { name: 'oak_log', matching: [17], gotoTimeoutMs: 40 });
+  assert.strictEqual(res.ok, true, 'trouvé via les waypoints suivants malgré le 1er gelé');
+});
+
+test('explore : cible cave avec y → le goal dirigé vise le y de l\'ENTRÉE (pas origin.y)', async () => {
+  const { bot, calls } = makeBot({ target: pos(300, 45, -100) });
+  const memory = { worlds: { w: { finds: [], biomes: [], caves: [{ x: 300, y: 45, z: -100 }] } } };
+  await explore(bot, { name: 'iron_ore', matching: [42], memory, worldKey: 'w' });
+  assert.strictEqual(calls.goto[0].y, 45, 'goal au y de l\'entrée de cave (GoalNear 3D précis)');
+});
+
+test('explore : directed mort-né (NoPath persistant au spawn) → RAPPEL dirigé au changement d\'anneau réussit', async () => {
+  // Vu live HarvT9 : chunks pas chargés → le préambule dirigé échoue ; mais après quelques waypoints
+  // le monde est chargé → on RE-TENTE la route dirigée à chaque nouvel anneau au lieu de tout ratisser.
+  const { bot, calls } = makeBot({ target: pos(400, 70, 100) }); // loin : introuvable au 1er anneau (scan 64)
+  const realGoto = bot.pathfinder.goto;
+  let directedTries = 0;
+  bot.pathfinder.goto = async (goal) => {
+    // le goal dirigé vise exactement (400,*,100) ; les waypoints d'anneaux, d'autres coords
+    const isDirected = goal && Math.abs(goal.x - 400) < 1.5 && Math.abs(goal.z - 100) < 1.5;
+    if (isDirected) {
+      directedTries++;
+      if (directedTries <= 2) throw new Error('NoPath'); // préambule (2 tentatives) échoue
+    }
+    return realGoto(goal); // rappel à l'anneau suivant : réussit
+  };
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 400, z: 100 }], biomes: [] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', directedRetryDelayMs: 0 });
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(res.directed, true, 'trouvé via le RAPPEL dirigé (pas un ratissage complet)');
+  assert.ok(directedTries >= 3, `le directed a été re-tenté après le préambule (tries=${directedTries})`);
+});
+
+test('explore : mémoire muette pour ce matériau → fallback aveugle (anneaux) intact', async () => {
+  const { bot, calls } = makeBot({ target: pos(100, 70, 0) });
+  const memory = { worlds: { w: { finds: [{ material: 'sand', biome: 'desert', x: 500, z: 500 }], biomes: [], caves: [] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w' });
+  assert.strictEqual(res.ok, true, 'trouvé quand même via les anneaux');
+  assert.notStrictEqual(res.directed, true, 'pas de ciblage dirigé (rien de connu pour oak_log)');
+  assert.ok(calls.goto.length >= 1, 'recherche en anneaux effectuée');
+});

@@ -47,6 +47,25 @@ function buildNearGoal(x, y, z, range) {
   return { x, y, z };
 }
 
+// goto borné : pathfinder.goto peut rester gelé INDÉFINIMENT sur une cible inatteignable
+// (océan, surplomb) → timeout → setGoal(null) + reject → l'appelant passe à la suite
+// (directed → anneaux ; waypoint → waypoint suivant). Le skill ne gèle jamais.
+function gotoWithTimeout(bot, goal, ms) {
+  if (!(bot.pathfinder && bot.pathfinder.goto)) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const t = setTimeout(() => {
+      if (done) return; done = true;
+      try { bot.pathfinder.setGoal && bot.pathfinder.setGoal(null); } catch (e) {}
+      reject(new Error('goto_timeout'));
+    }, ms);
+    bot.pathfinder.goto(goal).then(
+      (v) => { if (!done) { done = true; clearTimeout(t); resolve(v); } },
+      (e) => { if (!done) { done = true; clearTimeout(t); reject(e); } }
+    );
+  });
+}
+
 /**
  * explore(bot, opts) → {ok:true, found:pos, traveled} | {ok:false, reason:'not_found'|'cancelled'|'no_pos'}
  *  name      : nom du bloc (pour log)            matching : ids findBlock (résolus par l'appelant)
@@ -62,6 +81,9 @@ async function explore(bot, opts = {}) {
   const rng = opts.rng || Math.random;
   const token = opts.token || null;
   const emit = opts.emit || null;
+  // Bornes des gotos (cf. gotoWithTimeout) : trajet dirigé long (≤1500 blocs) vs hop de waypoint.
+  const directedGotoTimeoutMs = opts.directedGotoTimeoutMs || 240000;
+  const gotoTimeoutMs = opts.gotoTimeoutMs || 90000;
 
   const origin = bot.entity && bot.entity.position;
   if (!origin) return { ok: false, reason: 'no_pos' };
@@ -76,33 +98,86 @@ async function explore(bot, opts = {}) {
   // à l'aveugle. Lu via bot._worldMemory/_worldKey (posés par index.js au spawn) ou via opts (tests).
   const memory = opts.memory || bot._worldMemory || null;
   const wkey = opts.worldKey || bot._worldKey || null;
+  let dTarget = null, dTy = origin.y; // hoistés : réutilisés par le RAPPEL dirigé pendant les anneaux
   if (memory && wkey) {
     const mats = Array.isArray(opts.name) ? opts.name : (opts.name ? [opts.name] : []);
-    let target = null;
+    // Cible la + PROCHE tous matériaux confondus (un birch_log à 100 blocs bat un oak_log à 1400).
+    let target = null, targetD = Infinity;
     for (const mat of mats) {
-      target = directedTarget(memory, wkey, mat, origin, { maxDist: opts.directedMaxDist || 1500 });
-      if (target) break;
+      const t = directedTarget(memory, wkey, mat, origin, { maxDist: opts.directedMaxDist || 1500 });
+      if (!t) continue;
+      const d = Math.sqrt((t.x - origin.x) ** 2 + (t.z - origin.z) ** 2);
+      if (d < targetD) { target = t; targetD = d; }
     }
     if (target) {
-      if (emit) { try { emit({ type: 'explore_directed', x: Math.round(target.x), z: Math.round(target.z), biome: target.biome, learned: !!target.learned }); } catch (e) {} }
-      try {
-        if (bot.pathfinder && bot.pathfinder.goto) await bot.pathfinder.goto(buildNearGoal(target.x, origin.y, target.z, 8));
-        if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
-        const hit = bot.findBlock({ matching, maxDistance: scanRadius });
-        if (hit) return { ok: true, found: hit.position, traveled: 0, directed: true };
-      } catch (e) { /* cible inatteignable → on retombe sur la recherche en anneaux */ }
+      dTarget = target;
+      if (emit) { try { emit({ type: 'explore_directed', x: Math.round(target.x), z: Math.round(target.z), biome: target.biome, learned: !!target.learned, cave: !!target.cave }); } catch (e) {} }
+      // y de la cible : une CAVE porte le y de son entrée (GoalNear 3D précis, le pathfinder peut
+      // creuser) ; un find/biome n'a que x,z → on garde l'altitude courante.
+      const ty = (typeof target.y === 'number') ? target.y : origin.y;
+      dTy = ty;
+      // Persistance dirigée : un goto peut être interrompu en RAFALE (réflexes flee/surface →
+      // GoalChanged, vu live HarvT7 barbotant dans une rivière) → on reprend SA route tant que
+      // chaque tentative RAPPROCHE de la cible (>8 blocs), avec 1 retry de grâce sans progrès.
+      // Un TIMEOUT (cible gelée/inatteignable 240s) ne mérite pas de 2e chance → anneaux.
+      const distTo = (p) => Math.sqrt((p.x - target.x) ** 2 + (p.z - target.z) ** 2);
+      let lastD = distTo(origin);
+      let attempts = 0;
+      while (attempts < 6) {
+        attempts++;
+        try {
+          await gotoWithTimeout(bot, buildNearGoal(target.x, ty, target.z, 8), directedGotoTimeoutMs);
+          if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
+          const hit = bot.findBlock({ matching, maxDistance: scanRadius });
+          if (hit) return { ok: true, found: hit.position, traveled: 0, directed: true };
+          break; // arrivé mais rien sur place (cible épuisée) → anneaux depuis ici
+        } catch (e) {
+          if (e && e.message === 'goto_timeout') break; // gelé → anneaux
+          if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
+          const cur = (bot.entity && bot.entity.position) || origin;
+          const d = distTo(cur);
+          if (d < lastD - 8) { lastD = d; continue; } // on s'est rapproché → persiste
+          if (attempts >= 2) break;                   // 2 tentatives sans progrès → anneaux
+          // Rejet sans progrès (souvent NoPath TRANSITOIRE : chunks pas encore chargés autour d'un
+          // bot frais/tp, vu live HarvT8) → petite grâce avant l'unique retry.
+          const grace = opts.directedRetryDelayMs !== undefined ? opts.directedRetryDelayMs : 4000;
+          if (grace) await new Promise((r) => setTimeout(r, grace));
+        }
+      }
     }
   }
 
-  const wps = nextWaypoints({ x: origin.x, y: origin.y, z: origin.z }, { step, maxRadius });
+  // Anneaux centrés sur la position COURANTE (≠ origin) : après un trajet dirigé vers une cible
+  // épuisée, on ratisse AUTOUR du gisement appris (bon prior local) au lieu de retraverser la carte.
+  const ringOrigin = (bot.entity && bot.entity.position) || origin;
+  const wps = nextWaypoints({ x: ringOrigin.x, y: ringOrigin.y, z: ringOrigin.z }, { step, maxRadius });
+  // RAPPEL dirigé : si le préambule dirigé est mort-né (NoPath transitoire — chunks pas chargés au
+  // spawn/tp frais, vu live HarvT9), on RE-TENTE la route dirigée au début de chaque NOUVEL anneau
+  // (le bot a bougé → monde chargé) au lieu de ratisser toute la spirale. Borné à 3 rappels.
+  let curRing = step, ringRecalls = 3;
   for (const wp of wps) {
     if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
+    if (dTarget && wp.r !== curRing) {
+      curRing = wp.r;
+      if (ringRecalls > 0) {
+        ringRecalls--;
+        try {
+          await gotoWithTimeout(bot, buildNearGoal(dTarget.x, dTy, dTarget.z, 8), directedGotoTimeoutMs);
+          if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
+          const hit = bot.findBlock({ matching, maxDistance: scanRadius });
+          if (hit) return { ok: true, found: hit.position, traveled: 0, directed: true };
+          ringRecalls = 0; // arrivé mais rien sur place (cible épuisée) → plus de rappel
+        } catch (e) {
+          if (e && e.message === 'goto_timeout') ringRecalls = 0; // gelé → on n'insiste plus
+        }
+      }
+    }
     const gx = wp.x + (rng() * 2 - 1) * jitterMax;
     const gz = wp.z + (rng() * 2 - 1) * jitterMax;
     if (emit) { try { emit({ type: 'explore_waypoint', x: Math.round(gx), z: Math.round(gz), r: Math.round(wp.r) }); } catch (e) {} }
     try {
-      if (bot.pathfinder && bot.pathfinder.goto) await bot.pathfinder.goto(buildNearGoal(gx, wp.y, gz, 8));
-    } catch (e) { continue; } // waypoint inatteignable (mur/eau/chunk non chargé) → on tente le suivant
+      await gotoWithTimeout(bot, buildNearGoal(gx, wp.y, gz, 8), gotoTimeoutMs);
+    } catch (e) { continue; } // waypoint inatteignable ou goto gelé (timeout) → on tente le suivant
     if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
     const block = bot.findBlock({ matching, maxDistance: scanRadius });
     if (block) return { ok: true, found: block.position, traveled: wp.r };
@@ -110,4 +185,4 @@ async function explore(bot, opts = {}) {
   return { ok: false, reason: 'not_found' };
 }
 
-module.exports = { explore, nextWaypoints, pointsOnRing };
+module.exports = { explore, nextWaypoints, pointsOnRing, gotoWithTimeout };

@@ -273,7 +273,9 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // à 6 min) + branch mining 48 + 2×8 branches (~64 blocs avec pathfinder entre chaque dig). 15 min/chacun.
 // huntCook = 3 vagues de chasse + cuisson au four (vécu Surv5 : tué à 90s en pleine chasse) ;
 // smeltCharcoal = gather bûches éventuel + fonte (180s de smelt max).
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, huntCook: 480000, smeltCharcoal: 300000, gatherLog: 240000 };  // gatherLog 4 min : explore vers une forêt lointaine (Surv11 : ×12 timeouts à 90s)
+// gather/gatherLog : 8 min — un trajet DIRIGÉ légitime peut faire ≤1500 blocs (mémoire de monde) ;
+// sûr car chaque goto interne d'explore est borné individuellement (directed 240s / waypoint 90s).
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, huntCook: 480000, smeltCharcoal: 300000, gather: 480000, gatherLog: 480000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
@@ -612,6 +614,10 @@ async function onSpawn() {
     moves.allow1by1towers = true;   // peut remonter en colonne (cobble en poche) → pas coincé au fond
     moves.allowParkour = true;
     if (typeof moves.maxDropDown === 'number') moves.maxDropDown = 4; // limite les chutes profondes
+    // Anti-noyade (vu live HarvT7 : drowned ×3 en trajet dirigé) : l'eau coûte CHER au pathfinder →
+    // il contourne les lacs/rivières quand un chemin terrestre existe (coût fini : traverse encore
+    // si c'est la SEULE option ; le réflexe oxygène de reflexes.js est le filet de sécurité).
+    if (typeof moves.liquidCost === 'number') moves.liquidCost = 20;
     bot.pathfinder.setMovements(moves);
     installReflexes(bot, { emit, fleeFrom });
     // TÉLÉPORTATION (#10) : détecte tout TP (admin /tp, /home, portail, respawn) → émet
@@ -713,7 +719,9 @@ async function executeOrder(order, sender) {
   switch (order.verb) {
     case 'take': {
       const token = taskCtl.begin('take', stopMotion);
-      const r = await gather(bot, a, token);
+      // explore:true : un take ORDONNÉ peut voyager (biais dirigé via la carte du groupe si la
+      // ressource est connue, sinon anneaux bornés ≤256). Annulable par `stop` comme toute tâche.
+      const r = await gather(bot, { ...a, explore: true }, token);
       if (token.cancelled) break;
       ackPrivate(sender, r.ok ? doneWord() : failMsg(r.reason));
       break;
@@ -883,5 +891,17 @@ onCommand((cmd) => {
   else if (cmd.type === 'sector' && cmd.count >= 1) {
     mapperSector = { index: Number(cmd.index) || 0, count: Number(cmd.count) };
     emit({ type: 'sector_set', index: mapperSector.index, count: mapperSector.count });
+  }
+  // Déclenchement autonome DIFFÉRÉ (tests live / manager) : connecter le bot idle, le positionner
+  // (tp), PUIS lancer l'objectif depuis sa position courante (objectif explicite sinon --objective).
+  else if (cmd.type === 'start') {
+    if (cmd.objective) { setObjective(world, { type: String(cmd.objective), status: 'in_progress' }); saveWorld(worldFile, world); }
+    startAutonomous(null);
+  }
+  // Ordre direct injecté par le harness/manager (même chemin déterministe que le /msg joueur).
+  else if (cmd.type === 'order' && cmd.text) {
+    const order = parseOrder(String(cmd.text));
+    if (order) executeOrder(order, cmd.sender || 'console').catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
+    else emit({ type: 'error', message: 'order non reconnu: ' + cmd.text });
   }
 });
