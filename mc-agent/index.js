@@ -48,7 +48,7 @@ const { branchMine } = require('./skills/branchMine');
 const { classifyAuthPrompt, genPassword } = require('./auth');
 const { loadMemory, worldKey } = require('./worldMemory');
 const { runMapper } = require('./mapper');
-const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
+const { isInWater, escapeWater, findLandTarget, fillBelow, recoverFloating } = require('./unstuck');
 const { isNight, shelterUntilDawn } = require('./skills/shelter');
 const { depositFiltered } = require('./skills/deposit');
 const { nextAction, marathonCounts, miningYFor, RESERVES, cookedFood, woodUnits } = require('./marathon');
@@ -635,9 +635,28 @@ function marathonCtx() {
   };
 }
 
+// P27 (runs #28-31 : pathfinder PARALYSÉ — toutes les actions no-op, dist 752 inchangée) :
+// le bot était À CHEVAL sur une arête, centre au-dessus du VIDE (rcon : below=air, pas de chute,
+// porté par la lèvre voisine) → le nœud de départ A* est invalide → AUCUN goto ne démarre.
+// Remède déterministe : REMBLAI sous les pieds (fillBelow) → sol réel → pathfinder repart.
+async function ensureGrounded() {
+  try {
+    if (isInWater(bot)) return;
+    const feet = bot.entity.position.floored();
+    const below = bot.blockAt(feet.offset(0, -1, 0));
+    if (below && below.boundingBox !== 'block') {
+      const f = await fillBelow(bot);
+      emit({ type: 'unstuck', cause: 'straddle', ok: f.ok, reason: f.reason });
+      if (!f.ok) await recoverFloating(bot, { emit });
+      await sleep(500);
+    }
+  } catch (e) {}
+}
+
 async function gotoPos(p, range, ms) {
   // Massii B : jamais partir en voyage en pataugeant — on sort de l'eau d'abord.
   if (isInWater(bot)) await escapeWater(bot, { emit });
+  await ensureGrounded();
   const r = await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(p.x, p.y, p.z, range)), ms,
     () => { try { stopMotion(); } catch (e) {} });
   // arrivé (ou timeout) DANS l'eau → évasion immédiate (le voyage a pu router dans un lac)
@@ -909,6 +928,7 @@ async function startMarathon() {
     // Massii B : tick anti-stuck eau À CHAQUE itération (tous contextes : supply run, descente,
     // voyage…) — un vrai joueur sort de l'eau en 1-2 s, jamais de flottage sur place.
     if (isInWater(bot)) await escapeWater(bot, { emit });
+    await ensureGrounded();                          // P27 : jamais à cheval sur le vide (A* mort)
     await settleSurvivalKit();                       // menaces/faim d'abord
     if (taskToken.cancelled) return;
     const ctx = marathonCtx();
