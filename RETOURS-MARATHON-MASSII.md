@@ -291,12 +291,21 @@ plus vite que le branch-mining aveugle).
    prochaine caverne connue** (pipeline : récolte ici → trajet vers la suivante → récolte ; pas
    littéralement les deux en même temps). Réutiliser le ciblage `directedTarget` cave-aware du récolteur
    s'il existe, sinon l'ajouter (lire `caves[]`, choisir la + proche non encore visitée).
-4. ⚙️ **WIRING (IMPORTANT)** : pour consommer les **vraies** données du cartographe, le bot marathon doit
-   lire le **MÊME store world-memory que le cartographe écrit** (le `--world-memory` doit pointer sur le
-   fichier `data/mc_agent_world_memory/<group>.json` partagé du **même serveur**, **pas** une fixture) —
-   et le **re-lire périodiquement** (le cartographe ajoute des caves pendant que le marathon tourne ; le
-   bootstrap au lancement n'est qu'un snapshot). Tant que la carte est **vide** (cartographe pas encore
-   lancé) → **branch-mining fallback**, sans bloquer.
+4. ⚙️ **WIRING (VÉRIFIÉ 23h — CASSÉ en l'état, corriger en PRIORITÉ)** :
+   - ❌ Le bot marathon tourne actuellement **SANS `--world-memory`** (juste `--world worldB.json` = son
+     état perso) → il ne lit **AUCUN** store cave. **AJOUTE `--world-memory <path>` au lancement** du bot
+     (harness `~/mc-marathon-test/` + `supervise.sh`).
+   - ❌ Les **2 worktrees ont des `data/mc_agent_world_memory/` SÉPARÉS** → aucun partage par défaut. Le
+     cartographe écrit dans **SON** worktree :
+     `/Users/massimiliano/omenserver Project/Projet serveur/.claude/worktrees/feat+mc-agent-world-memory/data/mc_agent_world_memory/c207db.json`
+     (group `c207db`, même serveur de test `100.108.50.70:25566`).
+   - ✅ **Solution** : le marathon pointe `--world-memory` sur **CE fichier absolu** (worktree cartographe)
+     et le **RE-LIT périodiquement** (les caves s'ajoutent en continu ; le bootstrap au lancement n'est
+     qu'un snapshot). ⚠️ **Vérifie le nom du fichier** après lancement du cartographe :
+     `ls -t ".../feat+mc-agent-world-memory/data/mc_agent_world_memory/"` → le + récent = le store vivant.
+   - ⚠️ **Dépendance externe** : le cartographe (autre session) a **0 cave** émise à ce jour (`cave_found`
+     jamais déclenché en jeu). Tant que `caves[]` reste vide → **branch-mining fallback**, sans bloquer.
+     La stratégie cave-first ne s'active que quand le cartographe produit vraiment des caves.
 5. **Sécurité** : grottes = mobs/lave/chutes → garder le kit survie (armure/épée/torches déjà là),
    éclairer en avançant, pathfinder évite lave/vide.
 

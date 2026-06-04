@@ -105,6 +105,24 @@ function findExposedOre(bot, names, maxDistance = 32, rng) {
 }
 const findTargetableOre = findExposedOre; // alias sémantique (E)
 
+// P51 (OOM ×6, snapshot : Generators/__awaiter par millions) : la boucle interne de collectblock
+// SPINNE quand un drop est inatteignable (itemDrop ré-appendé, jamais ramassé) → ~15 Mo/s de
+// promesses. On BORNE chaque collect (race) + cancelTask au timeout.
+async function collectBounded(bot, block, ms = 25000) {
+  let to = null;
+  try {
+    await Promise.race([
+      bot.collectBlock.collect(block),
+      new Promise((_, rej) => { to = setTimeout(() => rej(new Error('collect_timeout')), ms); }),
+    ]);
+  } finally {
+    if (to) clearTimeout(to);
+  }
+}
+async function cancelCollect(bot) {
+  try { if (bot.collectBlock && bot.collectBlock.cancelTask) await bot.collectBlock.cancelTask(); } catch (e) {}
+}
+
 // Clé de blacklist d'une position (cibles incollectables, cf. P7).
 function _key(p) { return `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}`; }
 
@@ -159,14 +177,16 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
     if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
     // resolveBiome : en 1.21.4 block.biome.name est '' → résolu via registry (sinon material_found muet)
     const biomeName = resolveBiome(bot, block).name;    // capturé avant collect (le bloc devient air)
-    try { await bot.collectBlock.collect(block); got++; }
+    try { await collectBounded(bot, block); got++; }
     catch (e) {
+      await cancelCollect(bot);               // P51 : stoppe la boucle interne qui spinne
       // #2 retours live : un dig peut être interrompu (aggro/mouvement/désync) → re-équipe et retente UNE fois
       try {
         const tool2 = bestToolFor(bot, block);
         if (tool2) { try { await bot.equip(tool2, 'hand'); } catch (e2) {} }
-        await bot.collectBlock.collect(block); got++;
+        await collectBounded(bot, block); got++;
       } catch (e2) {
+        await cancelCollect(bot);
         blacklist.add(_key(block.position));  // cible morte → on tente la SUIVANTE (P7)
         continue;
       }
@@ -181,4 +201,4 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
   return { ok: false, reason: blacklist.size > 0 ? 'collect_failed' : 'not_found' };
 }
 
-module.exports = { gather, nearbyHostile, defendIfNeeded, isExposed, findExposedOre, findTargetableOre, oreTargetable, ORE_BLOCKS, PRECIOUS_ORES, MAX_ORE_APPROACH };
+module.exports = { gather, nearbyHostile, defendIfNeeded, isExposed, findExposedOre, findTargetableOre, oreTargetable, collectBounded, cancelCollect, ORE_BLOCKS, PRECIOUS_ORES, MAX_ORE_APPROACH };

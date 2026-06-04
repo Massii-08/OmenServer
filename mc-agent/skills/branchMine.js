@@ -10,7 +10,7 @@
 // dès que i≥6-7 le bloc cible est hors range mineflayer (~6 blocs) → bot.dig échoue silencieusement
 // → stall (risque #5 du rapport build précédent).
 const { bestToolFor } = require('../tools');
-const { gather, findTargetableOre, PRECIOUS_ORES } = require('./gather');
+const { gather, findTargetableOre, PRECIOUS_ORES, collectBounded, cancelCollect } = require('./gather');
 const { Vec3 } = require('vec3');
 let _emit; try { _emit = require('../io').emit; } catch (e) { _emit = () => {}; }
 function dbg(_label, payload) { try { _emit({ type: 'dbg', from: 'branchMine', ...payload }); } catch (e) {} }
@@ -158,7 +158,8 @@ async function safeDigAndOpportunism(bot, target, token) {
   try { dbg('safeDig', { phase: 'safeDig:try', target: { x: target.x, y: target.y, z: target.z }, name: block.name }); } catch (e) {}
   try {
     if (bot.collectBlock && bot.collectBlock.collect) {
-      await bot.collectBlock.collect(block);
+      try { await collectBounded(bot, block); }
+      catch (e) { await cancelCollect(bot); throw e; }   // P51 : jamais de spin interne illimité
     } else {
       await bot.dig(block);
     }

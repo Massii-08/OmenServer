@@ -25,7 +25,7 @@ const { parseOrder } = require('./orders');
 const { createTaskController } = require('./tasks');
 const { createMemory } = require('./memory');
 const { bestWeapon, bestToolFor } = require('./tools');
-const { gather, findExposedOre, PRECIOUS_ORES } = require('./skills/gather');
+const { gather, findExposedOre, PRECIOUS_ORES, collectBounded, cancelCollect } = require('./skills/gather');
 const { mineDown } = require('./skills/mineDown');
 const { guard } = require('./skills/guard');
 const { giveItem, giveAll } = require('./skills/give');
@@ -155,7 +155,7 @@ async function reclaimBlock(pos, blockName = 'crafting_table') {
       // four perdu en boucle). collectBlock n'équipe rien (mineflayer-tool non chargé).
       const tool = bestToolFor(bot, b);
       if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
-      await bot.collectBlock.collect(b);
+      try { await collectBounded(bot, b, 15000); } catch (e) { await cancelCollect(bot); throw e; } // P51
       return;                                      // repris
     } catch (e) { /* retry une fois */ }
   }
