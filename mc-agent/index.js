@@ -1219,6 +1219,10 @@ async function onSpawn() {
     } else { moves.scafoldingBlocks = scafIds; }
     bot.pathfinder.setMovements(moves);
     try { bot.pathfinder.thinkTimeout = 10000; } catch (e) {} // P31 : budget A* explicite
+    // P38 (P2 ÉLUCIDÉ) : cible inatteignable (lapis derrière lave à y12) → l'open set A* de
+    // collectBlock/pathfinder explose le heap (69→750 Mo en <30 s, OOM run#44). searchRadius
+    // borne STRUCTURELLEMENT l'expansion (défaut -1 = illimité). 48 > hops de trek (24).
+    try { bot.pathfinder.searchRadius = 48; } catch (e) {}
     installReflexes(bot, { emit, fleeFrom });
     await tryAuth();
     bootDone = true;
