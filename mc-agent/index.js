@@ -1116,8 +1116,10 @@ async function startMarathon() {
         return;
       }
       // P22 : iron/descend ont DÉJÀ retenté en interne (rounds) → 1 échec suffit pour relocaliser.
+      // P37 : go_home JAMAIS relocalisé aléatoirement (sabote le trek <40 nets dans les cratères ;
+      // ses pas-de-côté internes gèrent, le détecteur de paralysie couvre le gel réel).
       const failThreshold = (action === 'iron' || action === 'descend') ? 1 : 3;
-      if (sameFails >= failThreshold) {
+      if (action !== 'go_home' && sameFails >= failThreshold) {
         // P21 (run#25 : lave+vides dans TOUTES les directions, le shuffle ≤24 re-tirait dans la
         // même poche) : relocalisation à distance CROISSANTE — la géologie change vraiment à 50-150
         // blocs, pas à 20.
