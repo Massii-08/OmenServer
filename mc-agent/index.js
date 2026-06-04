@@ -24,7 +24,7 @@ const { loadPolicy, isTrusted, parseTpRequest, parseTradeRequest, gateDecision, 
 const { parseOrder } = require('./orders');
 const { createTaskController } = require('./tasks');
 const { createMemory } = require('./memory');
-const { bestWeapon } = require('./tools');
+const { bestWeapon, bestToolFor } = require('./tools');
 const { gather } = require('./skills/gather');
 const { mineDown } = require('./skills/mineDown');
 const { guard } = require('./skills/guard');
@@ -146,6 +146,10 @@ async function reclaimBlock(pos, blockName = 'crafting_table') {
         b = def ? bot.findBlock({ matching: [def.id], maxDistance: 4 }) : null;
       }
       if (!b) return;                              // plus de bloc posé → déjà repris
+      // ⚠️ ÉQUIPER LE BON OUTIL (vécu Surv5 : un FOUR cassé sans pioche en main NE DROP PAS →
+      // four perdu en boucle). collectBlock n'équipe rien (mineflayer-tool non chargé).
+      const tool = bestToolFor(bot, b);
+      if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
       await bot.collectBlock.collect(b);
       return;                                      // repris
     } catch (e) { /* retry une fois */ }
@@ -255,7 +259,9 @@ async function smeltWithFurnace(input, output, count, fuelOverride) {
 const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // Skills DIAMANT longs par nature : descente y=64→-54 (118 blocs × ~4s avec pathfinder = trop juste
 // à 6 min) + branch mining 48 + 2×8 branches (~64 blocs avec pathfinder entre chaque dig). 15 min/chacun.
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000 };
+// huntCook = 3 vagues de chasse + cuisson au four (vécu Surv5 : tué à 90s en pleine chasse) ;
+// smeltCharcoal = gather bûches éventuel + fonte (180s de smelt max).
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, huntCook: 480000, smeltCharcoal: 300000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
