@@ -119,3 +119,12 @@ def test_clean_server_language_default_and_valid(tmp_path, monkeypatch):
     assert srv2["language"] == "it"
     srv3 = s.create_server({"name": "Z", "host": "h", "language": "xx"})
     assert srv3["language"] == "fr"  # invalide → défaut
+
+
+def test_clean_server_has_roster_and_login_fields():
+    from backend.bots import mc_agent_servers as S
+    s = S._clean_server({"name": "X", "host": "h", "has_login": True,
+                         "login_command": "/login {pwd}", "bots": "pasuneliste"}, "abc123")
+    assert s["bots"] == []                      # défaut sûr (string → [])
+    assert s["has_login"] is True
+    assert s["login_command"] == "/login {pwd}"

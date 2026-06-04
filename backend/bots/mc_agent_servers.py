@@ -58,6 +58,32 @@ def _gen_id(existing):
     raise RuntimeError("id generation failed")
 
 
+VALID_ROLE = ("worker", "mapper")
+
+
+def _clean_bots(raw):
+    """Roster : liste de {id, role, username, auth}. Ignore les entrées invalides, cap 20."""
+    out, seen = [], set()
+    for b in raw or []:
+        if not isinstance(b, dict):
+            continue
+        username = str(b.get("username") or "").strip()[:48]
+        if not username:
+            continue
+        role = b.get("role") if b.get("role") in VALID_ROLE else "worker"
+        auth = b.get("auth") if b.get("auth") in VALID_AUTH else "offline"
+        bid = str(b.get("id") or "")
+        if not _SAFE_ID.match(bid):
+            bid = _gen_id(seen)
+        if bid in seen:
+            continue
+        seen.add(bid)
+        out.append({"id": bid, "role": role, "username": username, "auth": auth})
+        if len(out) >= 20:
+            break
+    return out
+
+
 def _clean_custom(raw):
     """Garde les commandes custom valides (objet avec cmd commençant par /)."""
     out = []
@@ -128,6 +154,9 @@ def _clean_server(payload, sid):
         "custom": _clean_custom(payload.get("custom")),
         "trusted": _clean_trusted(payload.get("trusted")),
         "trade": _clean_trade(payload.get("trade")),
+        "has_login": bool(payload.get("has_login")),
+        "login_command": str(payload.get("login_command") or "/login {pwd}")[:60],
+        "bots": _clean_bots(payload.get("bots")),
     }
 
 
