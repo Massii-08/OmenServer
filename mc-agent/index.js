@@ -645,6 +645,7 @@ function marathonCtx() {
     emptySlots: bot.inventory && bot.inventory.emptySlotCount ? bot.inventory.emptySlotCount() : undefined,
     hasBase: !!world.home,
     hunger: bot.food, // P12 : la vraie faim gate le restock (le stock seul est trop strict)
+    armored: !!(bot.inventory && bot.inventory.slots && bot.inventory.slots[6]), // P41
     foodCompromise: restockFoodFails >= 3 && bot.food != null && bot.food >= 16,
     homeDist: (world.home && pos) ? Math.hypot(pos.x - world.home.x, pos.z - world.home.z) : undefined,
   };
@@ -715,6 +716,9 @@ async function establishBase() {
   world.banked = world.banked || {};
   saveWorld(worldFile, world);
   emit({ type: 'marathon_base', x: world.home.x, y: world.home.y, z: world.home.z });
+  // P42 : si le serveur le permet (Essentials), ancrer un /sethome — le respawn post-mort
+  // devient un /home instantané au lieu d'un trek de 45 min à travers les cratères.
+  try { bot.chat('/sethome mbase'); emit({ type: 'sethome_attempt' }); } catch (e) {}
   // table permanente (best-effort) : pas de table à portée → en poser une SANS reclaim
   if (!_nearestTable(bot)) {
     if (!bot.inventory.items().some((i) => i.name === 'crafting_table') && await ensurePlanks(4)) {
@@ -1009,6 +1013,7 @@ async function startMarathon() {
       else if (action === 'restock') r = await withTimeout(marathonRestock(), 15 * 60 * 1000, stopMotion);
       else if (action === 'torches') r = await withTimeout(marathonTorches(), 6 * 60 * 1000, stopMotion);
       else if (action === 'iron') r = await withTimeout(gatherIronGoal(9), timeoutFor('gatherIron'), stopMotion);
+      else if (action === 'armor') r = await withTimeout(runGoalSkill({ skill: 'craftArmor', args: { name: 'iron_chestplate', ingots: 8 } }), 6 * 60 * 1000, stopMotion);
       else if (action === 'go_home') {
         // P23 : trek de retour — abri d'abord si nuit (le trek nocturne tue, vécu run#23/27),
         // puis pathfinder vers la base, budget large (~760 blocs possibles après respawn).
@@ -1158,6 +1163,16 @@ async function startAutonomous(sender) {
   saveWorld(worldFile, world);
   taskToken = taskCtl.begin('autonomous', stopMotion);
   emit({ type: 'autonomous_start', objective: objType });
+  // P42 : loin de la base (respawn au spawn monde) → tenter /home (Essentials) avant le trek.
+  if (world.home) {
+    const p0h = bot.entity.position;
+    if (Math.hypot(p0h.x - world.home.x, p0h.z - world.home.z) > 200) {
+      try { bot.chat('/home mbase'); emit({ type: 'home_attempt' }); } catch (e) {}
+      await sleep(6000); // warmup téléport Essentials
+      const d = Math.hypot(bot.entity.position.x - world.home.x, bot.entity.position.z - world.home.z);
+      emit({ type: 'home_result', dist: Math.round(d), teleported: d <= 32 });
+    }
+  }
   // RÉCUPÉRATION POST-MORT (vécu Surv4 : chaque mort = kit perdu = re-kit de zéro = spirale) :
   // les items restent 5 min au sol → on retourne les ramasser AVANT de reprendre (borné, best-effort).
   // P10 : la mort persiste dans world.json → la récupération survit à un restart du process.

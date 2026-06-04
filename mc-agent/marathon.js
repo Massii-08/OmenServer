@@ -130,6 +130,11 @@ function nextAction(ctx) {
     return 'iron';
   }
 
+  // Armure (P41) : plastron dès que le fer le permet — le kit seul ne tournait que pioches=0.
+  if (ctx.armored === false
+      && n(ctx.inv, 'iron_ingot') + n(ctx.inv, 'raw_iron') >= 8
+      && n(ctx.inv, 'iron_chestplate') < 1) return 'armor';
+
   // Base (coffre posé, world.home) : exigée dès qu'on arrive en profondeur — les deposits en dépendent.
   if (!ctx.hasBase) return atDepth ? 'base' : 'descend';
 

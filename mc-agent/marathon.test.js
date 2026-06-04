@@ -269,3 +269,16 @@ test('P33: inventaire plein + base à >200 blocs → go_home (pas deposit)', () 
   const ctx = okCtx({ hunger: 20, homeDist: 500, emptySlots: 1 });
   assert.strictEqual(nextAction(ctx), 'go_home');
 });
+
+// P41 : l'armure n'était acquise QUE par le kit (picks=0) → jamais en pratique. Règle LOW dédiée.
+test('P41: pas d\'armure + 8 fers en stock → armor (hors kit)', () => {
+  const ctx = okCtx({ hunger: 20, armored: false });
+  ctx.inv = Object.assign({}, ctx.inv, { iron_ingot: 8 });
+  assert.strictEqual(nextAction(ctx), 'armor');
+});
+
+test('P41: armuré → pas d\'action armor', () => {
+  const ctx = okCtx({ hunger: 20, armored: true });
+  ctx.inv = Object.assign({}, ctx.inv, { iron_ingot: 8 });
+  assert.strictEqual(nextAction(ctx), 'mine');
+});
