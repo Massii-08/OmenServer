@@ -1233,7 +1233,7 @@ const BotsModule = {
    </div>
    <div style="display:flex;gap:6px;">
     ${actionBtn}
-    <button class="btn btn-ghost btn-sm" onclick="BotsModule.deleteWorkerBot('${this._escapeHtml(b.id)}','${this._escapeHtml(b.username)}')">${Lang.t('mcagent.bot.delete')}</button>
+    <button class="btn btn-ghost btn-sm" onclick="BotsModule.deleteWorkerBot('${this._escapeHtml(b.id)}')">${Lang.t('mcagent.bot.delete')}</button>
    </div>
   </div>
   <div id="mca-w-msa-${this._escapeHtml(b.id)}"></div>`;
@@ -1315,10 +1315,12 @@ const BotsModule = {
  await this._reloadGroupWorkers();
  },
 
- async deleteWorkerBot(botId, username) {
- if (!confirm(Lang.t('mcagent.bot.confirm_delete').replace('{name}', username || ''))) return;
+ async deleteWorkerBot(botId) {
  const g = this._mcaGroup();
  if (!g) return;
+ // nom récupéré par lookup (jamais de username dans un onclick : breakout de chaîne possible)
+ const name = ((g.bots || []).find((b) => b.id === botId) || {}).username || '';
+ if (!confirm(Lang.t('mcagent.bot.confirm_delete').replace('{name}', name))) return;
  const r = await Auth.apiCall(`/api/mc-agent/servers/${encodeURIComponent(g.id)}/bots/${encodeURIComponent(botId)}`, { method: 'DELETE' });
  if (!r || !r.ok) { Toast.error(Lang.t('mcagent.bot.delete_err')); return; }
  await this._reloadGroupWorkers();
@@ -1959,7 +1961,7 @@ const BotsModule = {
    </div>
    <div style="display:flex;gap:6px;">
     ${actionBtn}
-    <button class="btn btn-ghost btn-sm" onclick="BotsModule.deleteMapperBot('${this._escapeHtml(b.id)}','${this._escapeHtml(b.username)}')">${Lang.t('mcagent.bot.delete')}</button>
+    <button class="btn btn-ghost btn-sm" onclick="BotsModule.deleteMapperBot('${this._escapeHtml(b.id)}')">${Lang.t('mcagent.bot.delete')}</button>
    </div>
   </div>`;
  }).join('');
@@ -2035,10 +2037,11 @@ const BotsModule = {
  await this._reloadGroupMappers();
  },
 
- async deleteMapperBot(botId, username) {
- if (!confirm(Lang.t('mcagent.bot.confirm_delete').replace('{name}', username || ''))) return;
+ async deleteMapperBot(botId) {
  const g = this._mcaGroup();
  if (!g) return;
+ const name = ((g.bots || []).find((b) => b.id === botId) || {}).username || '';
+ if (!confirm(Lang.t('mcagent.bot.confirm_delete').replace('{name}', name))) return;
  const r = await Auth.apiCall(`/api/mc-agent/servers/${encodeURIComponent(g.id)}/bots/${encodeURIComponent(botId)}`, { method: 'DELETE' });
  if (!r || !r.ok) { Toast.error(Lang.t('mcagent.bot.delete_err')); return; }
  await this._reloadGroupMappers();

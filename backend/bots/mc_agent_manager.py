@@ -137,6 +137,20 @@ def _apply_event(session, event):
         _record_world_memory(session["server_id"], event)
 
 
+def _cleanup_session_files(session):
+    """Supprime les fichiers temp de la session (dont login-<sid>.txt = secret en clair).
+
+    Appelé par stop_session ET en fin de pompe (mort naturelle : crash/kick/déco) —
+    sinon les fichiers login chmod 600 s'accumulent dans RUNS_DIR (finding revue)."""
+    for key in ("cmds_path", "policy_path", "world_path", "wm_path", "login_path"):
+        p = session.get(key)
+        if p:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+
 def _pump(session, stream):
     """Boucle de lecture du stdout du process : applique chaque event jusqu'à la fin du flux."""
     for line in stream:
@@ -144,7 +158,9 @@ def _pump(session, stream):
         if event:
             _apply_event(session, event)
     session["status"] = "stopped"
-    # un cartographe mort (crash/kick, pas via stop_session) → les survivants se re-partagent le cercle
+    # mort naturelle (crash/kick, pas via stop_session) : nettoyer les fichiers temp ici aussi
+    _cleanup_session_files(session)
+    # un cartographe mort → les survivants se re-partagent le cercle
     if session.get("objective") == "mapper":
         try:
             _rebalance_sectors(session.get("server_id"))
@@ -486,13 +502,7 @@ def stop_session(sid):
         except (ProcessLookupError, PermissionError, OSError):
             proc.terminate()
     s["status"] = "stopped"
-    for key in ("cmds_path", "policy_path", "world_path", "wm_path", "login_path"):
-        p = s.get(key)
-        if p:
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
+    _cleanup_session_files(s)
     if s.get("objective") == "mapper":
         _rebalance_sectors(s.get("server_id"))  # les survivants élargissent leur wedge
     return True

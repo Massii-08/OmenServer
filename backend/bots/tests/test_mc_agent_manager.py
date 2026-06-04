@@ -833,6 +833,15 @@ def test_spawn_writes_login_file_not_argv(monkeypatch, tmp_path):
     monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(mgr.os, "getpgid", lambda pid: pid)
     monkeypatch.setattr(mgr.os, "killpg", lambda pgid, sig: None)
+
+    # Pompe neutralisée : le stdout du fake proc est fini d'office → la pompe nettoierait les
+    # fichiers temp (mort naturelle) AVANT nos assertions. Ici on teste le chemin stop_session.
+    class _DeadThread:
+        def __init__(self, *a, **kw):
+            pass
+        def start(self):
+            pass
+    monkeypatch.setattr(mgr.threading, "Thread", _DeadThread)
     sid = mgr._spawn_bot("h", 25565, "U", login_command="/login abc")
     cmd = captured["cmd"]
     assert "--login-command" in cmd
@@ -844,6 +853,24 @@ def test_spawn_writes_login_file_not_argv(monkeypatch, tmp_path):
     assert mgr._sessions[sid].get("login_path") == lp
     mgr.stop_session(sid)
     assert not os.path.exists(lp)  # nettoyé au stop
+
+
+def test_natural_death_cleans_login_file(monkeypatch, tmp_path):
+    """Mort naturelle du bot (fin du flux stdout, SANS stop_session) → fichiers temp nettoyés.
+
+    Régression revue finale : le login-<sid>.txt contient le secret en clair — il ne doit pas
+    s'accumuler dans RUNS_DIR quand un bot crashe/est kické (cas fréquent des cartographes)."""
+    import os
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: _MapperProc())
+    sid = mgr._spawn_bot("h", 25565, "U", login_command="/login abc")
+    s = mgr._sessions[sid]
+    lp = s["login_path"]
+    assert os.path.exists(lp)
+    s["thread"].join(timeout=5)  # _MapperProc.stdout est fini → la pompe se termine seule
+    assert s["status"] == "stopped"
+    assert not os.path.exists(lp)  # nettoyé par la pompe, sans stop_session
 
 
 def test_spawn_bot_uses_explicit_sectors(monkeypatch, tmp_path):
