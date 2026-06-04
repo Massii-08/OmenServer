@@ -430,19 +430,9 @@ async function runGoalSkill(goal) {
     }
     if (bot.entity.position.y > 18) {
       phase('descend');
-      const d = await withTimeout(descendDiagonal(bot, { targetY: 16 }, taskToken),
-        480000, () => { try { stopMotion(); } catch (e) {} });
+      const d = await descendRobust(16);  // P5/P9 : escalier ⇄ mineDown alternés, borné
       if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
-      // Fallback puits 1×1 (P5) : l'escalier exige de MARCHER (goto) — impossible au fond d'un
-      // puits étroit. mineDown creuse DROIT SOUS LES PIEDS (zéro déplacement horizontal requis).
-      if (!d.ok && bot.entity.position.y > 18) {
-        phase('descend_fallback_minedown');
-        const depth = Math.max(1, Math.floor(bot.entity.position.y) - 16);
-        await withTimeout(mineDown(bot, { depth }, taskToken), 300000,
-          () => { try { stopMotion(); } catch (e) {} });
-        if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
-      }
-      if (bot.entity.position.y > 24) return { ok: false, reason: 'descend:' + (d.reason || 'stuck') };
+      if (!d.ok && bot.entity.position.y > 24) return { ok: false, reason: 'descend:' + (d.reason || 'stuck') };
     }
     phase('branch_mine');
     const bm = await branchMine(bot, {
@@ -686,15 +676,40 @@ async function marathonSparePickaxe() {
   return craftSmart({ name: 'iron_pickaxe', count: 1 });
 }
 
+// Descente ROBUSTE (P9, run#9 : ×5 stalls action=descend) : l'escalier diagonal échoue dans les
+// puits/reliefs piégeux (no_progress) ; mineDown casse le cas puits mais s'arrête sur danger.
+// On ALTERNE les deux (+ petit déplacement entre rounds pour changer le terrain), borné.
+async function descendRobust(targetY) {
+  const atTarget = () => bot.entity.position.y <= targetY + 2;
+  for (let round = 0; round < 4; round++) {
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    if (atTarget()) return { ok: true };
+    const d = await withTimeout(descendDiagonal(bot, { targetY }, taskToken), 480000,
+      () => { try { stopMotion(); } catch (e) {} });
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    if (atTarget()) return { ok: true };
+    emit({ type: 'descend_round', round, y: Math.round(bot.entity.position.y), stair: (d && d.reason) || 'ok' });
+    const depth = Math.max(1, Math.floor(bot.entity.position.y) - targetY);
+    await withTimeout(mineDown(bot, { depth }, taskToken), 300000,
+      () => { try { stopMotion(); } catch (e) {} });
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    if (atTarget()) return { ok: true };
+    // ni l'un ni l'autre n'a abouti : bouger un peu change le contexte terrain pour le round suivant
+    const spot = findLandTarget(bot, 16);
+    if (spot) await gotoPos({ x: spot.x, y: spot.y + 1, z: spot.z }, 2, 60 * 1000);
+  }
+  return atTarget() ? { ok: true } : { ok: false, reason: 'descend_stuck' };
+}
+
 async function marathonDescend(targetY) {
   // base existante en profondeur → pathfinder y retourne (réutilise l'escalier creusé) ;
-  // sinon (1er voyage / base perdue) → escalier diagonal.
+  // sinon (1er voyage / base perdue) → descente robuste.
   if (world.home && world.home.y <= targetY + 4) {
     const g = await gotoPos(world.home, 3, 10 * 60 * 1000);
     if (!(g && g.ok === false)) return { ok: true };
     emit({ type: 'marathon_goto_base_failed', phase: 'descend' });
   }
-  return descendDiagonal(bot, { targetY }, taskToken);
+  return descendRobust(targetY);
 }
 
 async function marathonAscend(targetY) {
@@ -780,6 +795,8 @@ async function startAutonomous(sender) {
   emit({ type: 'autonomous_start', objective: objType });
   // RÉCUPÉRATION POST-MORT (vécu Surv4 : chaque mort = kit perdu = re-kit de zéro = spirale) :
   // les items restent 5 min au sol → on retourne les ramasser AVANT de reprendre (borné, best-effort).
+  // P10 : la mort persiste dans world.json → la récupération survit à un restart du process.
+  if (!lastDeath && world.lastDeath) lastDeath = world.lastDeath;
   if (lastDeath && Date.now() - lastDeath.t < 4 * 60 * 1000) {
     const d = lastDeath; lastDeath = null;
     emit({ type: 'death_recovery', x: Math.round(d.x), y: Math.round(d.y), z: Math.round(d.z) });
@@ -1086,7 +1103,12 @@ let lastDeath = null; // {x,y,z,t} — pour retourner ramasser ses items au resp
 bot.on('death', () => {
   emit({ type: 'status', state: 'dead' });
   const p = bot.entity && bot.entity.position;
-  if (p) lastDeath = { x: p.x, y: p.y, z: p.z, t: Date.now() };
+  if (p) {
+    lastDeath = { x: p.x, y: p.y, z: p.z, t: Date.now() };
+    // P10 : persister la mort — un restart du process (crash/redeploy) perdait la position
+    // → pas de récupération d'items à la reprise alors qu'ils restent 5 min au sol.
+    try { world.lastDeath = lastDeath; saveWorld(worldFile, world); } catch (e) {}
+  }
   // Garde-fou anti-boucle de mort : 3 morts / 10 min → stop + notifie (sinon respawn → onSpawn → reprise).
   deathTimes.push(Date.now());
   deathTimes = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000);

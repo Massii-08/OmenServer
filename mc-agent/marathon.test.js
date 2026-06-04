@@ -146,3 +146,17 @@ test('nextAction: cobbled_deepslate compte comme scaffold (pas de faux scaffold-
   ctx.inv = Object.assign({}, ctx.inv, { cobblestone: 0, cobbled_deepslate: 20 });
   assert.strictEqual(nextAction(ctx), 'mine');
 });
+
+// P8 (run#9) : la branche !hasBase court-circuitait food/bois → le bot DESCENDAIT le ventre vide
+// (« ne jamais partir miner le ventre vide » est une règle cœur de la mission).
+test('P8: nourriture basse SANS base → restock AVANT toute descente', () => {
+  const ctx = okCtx({ hasBase: false, y: 53 });
+  ctx.inv = Object.assign({}, ctx.inv, { cooked_beef: 0 });
+  assert.strictEqual(nextAction(ctx), 'restock');
+});
+
+test('P8: bois bas SANS base → restock avant descente', () => {
+  const ctx = okCtx({ hasBase: false, y: 53 });
+  ctx.inv = Object.assign({}, ctx.inv, { oak_log: 0, oak_planks: 0 });
+  assert.strictEqual(nextAction(ctx), 'restock');
+});

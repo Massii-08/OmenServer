@@ -70,18 +70,13 @@ function nextAction(ctx) {
   const targetY = miningYFor(counts);
   const atDepth = ctx.y !== undefined && ctx.y <= targetY + 2;
 
-  // Base (coffre posé, world.home) : exigée dès qu'on est en profondeur — les deposits en dépendent.
-  if (!ctx.hasBase) {
-    if (atDepth || (ctx.emptySlots !== undefined && ctx.emptySlots <= RESERVES.invFullSlots)) {
-      // inventaire plein sans base : on pose la base ICI (le coffre est dans le kit)
-      return atDepth ? 'base' : (ctx.emptySlots <= RESERVES.invFullSlots ? 'base' : 'descend');
-    }
-    return 'descend';
+  // Inventaire plein : déposer (ou poser la base ICI — le coffre du kit est en poche).
+  if (ctx.emptySlots !== undefined && ctx.emptySlots <= RESERVES.invFullSlots) {
+    return ctx.hasBase ? 'deposit' : 'base';
   }
 
-  if (ctx.emptySlots !== undefined && ctx.emptySlots <= RESERVES.invFullSlots) return 'deposit';
-
-  // Réserves de SURFACE (food + bois) → un seul trip combiné.
+  // Réserves de SURFACE (food + bois) → un seul trip combiné. ⚠️ AVANT toute logique de descente
+  // (P8 vécu run#9 : la branche !hasBase court-circuitait ce check → descente le ventre vide).
   if (cookedFood(ctx.inv) < RESERVES.foodLow) return 'restock';
   if (woodUnits(ctx.inv) < RESERVES.woodLow) return 'restock';
 
@@ -98,6 +93,9 @@ function nextAction(ctx) {
   // Pioche de rechange : 2 pioches fer en poche dès que le fer du tunnel le permet.
   if (n(ctx.inv, 'iron_pickaxe') < 2
       && n(ctx.inv, 'iron_ingot') + n(ctx.inv, 'raw_iron') >= 3) return 'spare_pickaxe';
+
+  // Base (coffre posé, world.home) : exigée dès qu'on arrive en profondeur — les deposits en dépendent.
+  if (!ctx.hasBase) return atDepth ? 'base' : 'descend';
 
   if (ctx.y !== undefined && ctx.y > targetY + 2) return 'descend';
   if (ctx.y !== undefined && ctx.y < targetY - 2) return 'ascend';
