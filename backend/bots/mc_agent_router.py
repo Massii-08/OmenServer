@@ -2,7 +2,7 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.auth.utils import get_current_user
 from backend.auth.models import User
@@ -27,6 +27,7 @@ class StartReq(BaseModel):
     model: Optional[str] = None     # Python 3.9 : pas de `str | None` (piège #1)
     profile: Optional[str] = None   # id de profil de comportement (evident/intermediaire/expert)
     server_id: Optional[str] = None # si fourni : charge un profil serveur (connexion + commandes)
+    bot_id: Optional[str] = None    # si fourni (avec server_id) : lance ce compte du roster
     language: str = "fr"            # langue du champ reply LLM : fr | en | it
     autonomous: bool = False        # True → lance la boucle planner au spawn (0 LLM)
     objective: str = "stone_pickaxe"  # objectif autonome : stone_pickaxe | iron_pickaxe | diamond | mapper
@@ -35,6 +36,10 @@ class StartReq(BaseModel):
 
 class SayReq(BaseModel):
     message: str
+
+
+class MappersStartReq(BaseModel):
+    count: int = Field(default=1, ge=1, le=20)
 
 
 class ApiKeyPayload(BaseModel):
@@ -72,6 +77,19 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
     if not mgr.has_api_key():
         raise HTTPException(status_code=400, detail="Aucune cle Claude configuree (renseigne-la dans le bot)")
+    # Lancement par compte du roster : résolution complète côté manager (groupe + bot + login).
+    if req.server_id and req.bot_id:
+        try:
+            sid = mgr.start_for_bot(req.server_id, req.bot_id, model=req.model,
+                                    autonomous=req.autonomous, objective=req.objective,
+                                    world_label=req.world_label)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Impossible de demarrer Node : {exc}")
+        return {"session_id": sid}
     host, port, user = req.host, req.port, req.user
     auth, profile, commands, policy = req.auth, req.profile, None, None
     language = req.language
@@ -243,6 +261,20 @@ def delete_bot(sid: str, bot_id: str, current_user: User = Depends(get_current_u
         raise HTTPException(status_code=404, detail="Bot introuvable")
     mc_agent_secrets.delete_secret(sid, bot_id)
     return {"ok": True}
+
+
+@router.post("/servers/{sid}/mappers/start")
+def start_mappers(sid: str, req: MappersStartReq, current_user: User = Depends(get_current_user)):
+    """Lance N cartographes du roster du groupe (secteurs auto, cap au nb dispo). Admin-only."""
+    _require_admin(current_user)
+    if not mgr.has_api_key():
+        raise HTTPException(status_code=400, detail="Aucune cle Claude configuree (renseigne-la dans le bot)")
+    try:
+        return mgr.start_mappers(sid, req.count)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Impossible de demarrer Node : {exc}")
 
 
 @router.get("/servers/{sid}/memory")

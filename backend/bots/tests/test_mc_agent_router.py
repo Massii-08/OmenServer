@@ -613,3 +613,101 @@ def test_delete_server_cascade_secrets(bot_env):
     # Le fichier secrets du groupe ne doit plus exister
     secrets_file = bot_env["secrets_dir"] / "ab12cd.json"
     assert not secrets_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# Task 6 : /run par bot_id (start_for_bot) + endpoint mappers/start
+# ---------------------------------------------------------------------------
+
+def test_run_with_bot_id_calls_start_for_bot(monkeypatch):
+    """server_id + bot_id → délègue à start_for_bot (résolution roster)."""
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    captured = {}
+
+    def fake_for_bot(gid, bot_id, model=None, autonomous=False, objective="stone_pickaxe", world_label=None):
+        captured.update(gid=gid, bot_id=bot_id, autonomous=autonomous, objective=objective)
+        return 55
+
+    monkeypatch.setattr(mgr, "start_for_bot", fake_for_bot)
+    c = make_client()
+    resp = c.post("/api/mc-agent/run", json={"server_id": "abc", "bot_id": "def123", "autonomous": True, "objective": "iron_pickaxe"})
+    assert resp.status_code == 200 and resp.json()["session_id"] == 55
+    assert captured == {"gid": "abc", "bot_id": "def123", "autonomous": True, "objective": "iron_pickaxe"}
+
+
+def test_run_with_bot_id_lookup_404(monkeypatch):
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    def boom(*a, **k):
+        raise LookupError("Bot introuvable")
+    monkeypatch.setattr(mgr, "start_for_bot", boom)
+    c = make_client()
+    resp = c.post("/api/mc-agent/run", json={"server_id": "abc", "bot_id": "zzz"})
+    assert resp.status_code == 404
+
+
+def test_run_with_bot_id_value_error_400(monkeypatch):
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    def boom(*a, **k):
+        raise ValueError("Ce compte est déjà en ligne")
+    monkeypatch.setattr(mgr, "start_for_bot", boom)
+    c = make_client()
+    resp = c.post("/api/mc-agent/run", json={"server_id": "abc", "bot_id": "def"})
+    assert resp.status_code == 400
+    assert "déjà en ligne" in resp.json()["detail"]
+
+
+def test_run_without_bot_id_unchanged(monkeypatch):
+    """server_id SANS bot_id → comportement manuel inchangé (start_session, pas start_for_bot)."""
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    monkeypatch.setattr(r.servers_store, "get_server", lambda sid: {
+        "id": sid, "host": "play.x", "port": 25565, "user": "Bot", "auth": "offline",
+        "intelligence": "expert", "commands": [], "custom": [], "trusted": [], "trade": None})
+    monkeypatch.setattr(r.servers_store, "resolve_commands", lambda srv: [])
+    monkeypatch.setattr(r.servers_store, "resolve_policy", lambda srv: {"trusted": [], "trade": None})
+    monkeypatch.setattr(mgr, "start_for_bot", lambda *a, **k: pytest.fail("ne doit pas être appelé"))
+    monkeypatch.setattr(mgr, "start_session", lambda *a, **k: 8)
+    c = make_client()
+    resp = c.post("/api/mc-agent/run", json={"server_id": "abc"})
+    assert resp.status_code == 200 and resp.json()["session_id"] == 8
+
+
+def test_mappers_start_endpoint(monkeypatch):
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    captured = {}
+    def fake_mappers(gid, count):
+        captured.update(gid=gid, count=count)
+        return {"sessions": [1, 2], "launched": 2, "available": 3, "skipped": []}
+    monkeypatch.setattr(mgr, "start_mappers", fake_mappers)
+    c = make_client()
+    resp = c.post("/api/mc-agent/servers/abc/mappers/start", json={"count": 2})
+    assert resp.status_code == 200
+    assert resp.json()["launched"] == 2 and captured == {"gid": "abc", "count": 2}
+
+
+def test_mappers_start_admin_only():
+    c = make_client(is_admin=False)
+    assert c.post("/api/mc-agent/servers/abc/mappers/start", json={"count": 1}).status_code == 403
+
+
+def test_mappers_start_404_groupe_inconnu(monkeypatch):
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    def boom(gid, count):
+        raise LookupError("Groupe introuvable")
+    monkeypatch.setattr(mgr, "start_mappers", boom)
+    c = make_client()
+    assert c.post("/api/mc-agent/servers/zzz/mappers/start", json={"count": 1}).status_code == 404
+
+
+def test_mappers_start_400_si_pas_de_cle(monkeypatch):
+    monkeypatch.setattr(mgr, "has_api_key", lambda: False)
+    c = make_client()
+    assert c.post("/api/mc-agent/servers/abc/mappers/start", json={"count": 1}).status_code == 400
+
+
+def test_mappers_start_count_borne(monkeypatch):
+    """count hors borne (0 ou >20) → 422 (validation Pydantic)."""
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    monkeypatch.setattr(mgr, "start_mappers", lambda gid, count: {"sessions": [], "launched": 0, "available": 0, "skipped": []})
+    c = make_client()
+    assert c.post("/api/mc-agent/servers/abc/mappers/start", json={"count": 0}).status_code == 422
+    assert c.post("/api/mc-agent/servers/abc/mappers/start", json={"count": 99}).status_code == 422
