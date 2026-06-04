@@ -6,8 +6,12 @@ from backend.bots import mc_agent_manager as mgr
 
 
 @pytest.fixture(autouse=True)
-def _clean_sessions():
-    """Nettoie le registre global entre les tests (évite les sessions fantômes)."""
+def _clean_sessions(monkeypatch):
+    """Nettoie le registre global entre les tests (évite les sessions fantômes).
+
+    Neutralise aussi l'étalement anti-throttle des batches de mappers (sleep 4.5s
+    entre spawns en prod) — la suite resterait correcte mais deviendrait lente."""
+    monkeypatch.setattr(mgr, "MAPPER_SPAWN_STAGGER_S", 0)
     yield
     mgr._sessions.clear()
 
@@ -689,6 +693,21 @@ def test_start_mappers_assigns_sectors(monkeypatch, tmp_path):
     assert all(c["sector_count"] == 3 for c in calls)
     assert all(c["objective"] == "mapper" and c["autonomous"] is True for c in calls)
     assert {c["user"] for c in calls} == {"M1", "M2", "M3"}
+
+
+def test_start_mappers_staggers_spawns(monkeypatch, tmp_path):
+    """Les spawns d'un batch sont étalés (anti connection-throttle MC : ECONNRESET vécu live).
+
+    n spawns → n-1 sleeps de MAPPER_SPAWN_STAGGER_S (pas de sleep avant le premier)."""
+    bots = [{"role": "mapper", "username": "M1"}, {"role": "mapper", "username": "M2"},
+            {"role": "mapper", "username": "M3"}]
+    gid, _ = _seed_group(tmp_path, monkeypatch, bots)
+    monkeypatch.setattr(mgr, "MAPPER_SPAWN_STAGGER_S", 4.5)
+    sleeps = []
+    monkeypatch.setattr(mgr.time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(mgr, "_spawn_bot", lambda **kw: 1)
+    mgr.start_mappers(gid, 3)
+    assert sleeps == [4.5, 4.5]
 
 
 def test_start_mappers_zero_dispo(monkeypatch, tmp_path):

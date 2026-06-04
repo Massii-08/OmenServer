@@ -10,6 +10,7 @@ import os
 import signal
 import subprocess
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -177,6 +178,10 @@ def has_api_key():
 
 
 VALID_OBJECTIVES = ("stone_pickaxe", "iron_pickaxe", "diamond", "mapper")
+
+# Délai entre deux spawns d'un batch de cartographes : Paper throttle les connexions rapprochées
+# depuis la même IP (connection-throttle 4000ms par défaut) → sans étalement, ECONNRESET.
+MAPPER_SPAWN_STAGGER_S = 4.5
 
 
 def _active_mappers(group_id):
@@ -416,6 +421,10 @@ def start_mappers(group_id, count):
     commands = servers_store.resolve_commands(group)
     policy = servers_store.resolve_policy(group)
     for i, (username, auth, login_command) in enumerate(runnable):
+        # Étale les connexions : les serveurs MC throttlent les joins rapprochés depuis la même IP
+        # (Paper connection-throttle 4s par défaut) → le 2e bot simultané meurt en ECONNRESET (vécu live).
+        if i > 0:
+            time.sleep(MAPPER_SPAWN_STAGGER_S)
         sid = _spawn_bot(
             host=group["host"], port=group["port"], user=username, auth=auth,
             profile=group["intelligence"], commands=commands, policy=policy,
