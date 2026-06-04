@@ -39,6 +39,7 @@ const BotsModule = {
  clearInterval(this._refreshInterval);
  this._refreshInterval = null;
  }
+ this._mcaMapStop();
  // Ne PAS arrêter le polling yield ici — le backend continue de tourner
  // On nettoie seulement l'interval, le jobId reste en mémoire pour reconnexion
  if (this._yieldState.pollInterval) {
@@ -1033,6 +1034,7 @@ const BotsModule = {
  async openMCAgent() {
  if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
  if (this._mcAgentTimer) { clearInterval(this._mcAgentTimer); this._mcAgentTimer = null; }
+ this._mcaMapStop();
  this._mcAgentSession = this._mcAgentSession || null;
  const el = this._container || document.getElementById('bots-module-container')?.parentElement;
  if (!el) return;
@@ -1053,13 +1055,16 @@ const BotsModule = {
  <div style="display:flex;gap:6px;margin:0 0 14px;border-bottom:1px solid var(--border);">
  ${tabBtn('launch', Lang.t('mcagent.cfg.tab_launch'))}
  ${tabBtn('servers', Lang.t('mcagent.cfg.tab_servers'))}
+ ${tabBtn('map', Lang.t('mcagent.map.tab'))}
  </div>
  <div id="mca-tabbody"></div>`;
  if (t === 'servers') this._renderMCAServers();
+ else if (t === 'map') this._renderMCAMap();
  else this._renderMCALaunch();
  },
 
  switchMCATab(tab) {
+ this._mcaMapStop(); // coupe l'auto-refresh + le listener resize de la carte quand on quitte l'onglet
  this._mcaTab = tab;
  this._renderMCARoot();
  },
@@ -1522,6 +1527,438 @@ const BotsModule = {
  const r = await Auth.apiCall(`/api/mc-agent/servers/${encodeURIComponent(id)}`, { method: 'DELETE' });
  if (r && r.ok) this.loadServerProfiles();
  else Toast.error(Lang.t('mcagent.cfg.srv_delete_err'));
+ },
+
+ // ============ MC AGENT — CARTE (mémoire de monde) ============
+ // Viewer 100% frontend : lit GET /api/mc-agent/servers/{sid}/memory (worlds → biomes/caves/finds,
+ // coords quantifiées sur grille 128 côté backend). Aucune logique bot ici.
+ // Canvas top-down : x monde → droite, z monde → bas (nord en haut, convention F3 Minecraft).
+
+ _mcaMap: null,
+
+ _mcaMapState() {
+ if (!this._mcaMap) this._mcaMap = {
+ sid: null, world: null, data: null,
+ view: { cx: 0, cz: 0, scale: 0.6 }, // centre (blocs monde) + zoom (px/bloc)
+ hidden: {}, // couches masquées via la légende ('b:<biome>' / 'm:<matériau>' / 'caves')
+ fitted: {}, // monde → true après auto-cadrage (on ne re-cadre jamais sous l'utilisateur)
+ timer: null, drag: null, resize: null,
+ };
+ return this._mcaMap;
+ },
+
+ _mcaMapStop() {
+ const m = this._mcaMap;
+ if (!m) return;
+ if (m.timer) { clearInterval(m.timer); m.timer = null; }
+ if (m.resize) { window.removeEventListener('resize', m.resize); m.resize = null; }
+ m.drag = null;
+ },
+
+ async _renderMCAMap() {
+ const body = document.getElementById('mca-tabbody');
+ if (!body) return;
+ this._mcaMapStop();
+ body.innerHTML = `
+ <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+ <select id="mca-map-server" class="form-input" style="max-width:230px;" onchange="BotsModule._mcaMapPickServer(this.value)"></select>
+ <select id="mca-map-world" class="form-input" style="max-width:170px;" onchange="BotsModule._mcaMapPickWorld(this.value)"></select>
+ <button class="btn btn-secondary btn-sm" onclick="BotsModule._mcaMapRefresh()">${Lang.t('mcagent.map.refresh')}</button>
+ <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-muted);cursor:pointer;">
+ <input type="checkbox" id="mca-map-auto" onchange="BotsModule._mcaMapAutoToggle(this.checked)" /> ${Lang.t('mcagent.map.auto')}
+ </label>
+ <button class="btn btn-ghost btn-sm" onclick="BotsModule._mcaMapFit(true)">${Lang.t('mcagent.map.recenter')}</button>
+ <span id="mca-map-updated" style="font-size:11px;color:var(--text-dim);font-family:var(--font-mono);margin-left:auto;"></span>
+ </div>
+ <div style="position:relative;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#0B0B0D;">
+ <canvas id="mca-map-canvas" style="display:block;width:100%;height:440px;cursor:grab;touch-action:none;"></canvas>
+ <div id="mca-map-empty" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:20px;color:var(--text-muted);font-size:13px;pointer-events:none;"></div>
+ <div id="mca-map-coords" style="position:absolute;left:10px;bottom:8px;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);background:rgba(14,14,16,.78);padding:2px 8px;border-radius:6px;pointer-events:none;"></div>
+ </div>
+ <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">${Lang.t('mcagent.map.hint')}</div>
+ <div id="mca-map-legend" style="margin-top:10px;"></div>`;
+ this._mcaMapBindCanvas();
+ await this._mcaMapLoadServers();
+ },
+
+ async _mcaMapLoadServers() {
+ const m = this._mcaMapState();
+ const sel = document.getElementById('mca-map-server');
+ if (!sel) return;
+ try {
+ const r = await Auth.apiCall('/api/mc-agent/servers');
+ const data = await r.json();
+ this._mcaServers = data.servers || [];
+ } catch (e) { this._mcaServers = this._mcaServers || []; }
+ const servers = this._mcaServers;
+ if (!servers.length) {
+ sel.innerHTML = '<option value="">—</option>';
+ this._mcaMapShowEmpty(Lang.t('mcagent.map.no_server'));
+ this._mcaMapDraw();
+ return;
+ }
+ if (!m.sid || !servers.some((s) => s.id === m.sid)) m.sid = servers[0].id;
+ sel.innerHTML = servers.map((s) => `<option value="${this._escapeHtml(s.id)}" ${s.id === m.sid ? 'selected' : ''}>${this._escapeHtml(s.name)}</option>`).join('');
+ await this._mcaMapRefresh();
+ },
+
+ _mcaMapPickServer(sid) {
+ const m = this._mcaMapState();
+ m.sid = sid; m.world = null; m.fitted = {}; m.hidden = {};
+ this._mcaMapRefresh();
+ },
+
+ _mcaMapPickWorld(w) {
+ const m = this._mcaMapState();
+ m.world = w;
+ this._mcaMapSync();
+ },
+
+ async _mcaMapRefresh() {
+ const m = this._mcaMapState();
+ if (!m.sid) return;
+ try {
+ const r = await Auth.apiCall(`/api/mc-agent/servers/${encodeURIComponent(m.sid)}/memory`);
+ if (!r || !r.ok) throw new Error('HTTP ' + (r ? r.status : '?'));
+ m.data = await r.json();
+ } catch (e) {
+ this._mcaMapShowEmpty(Lang.t('mcagent.map.load_err'));
+ return;
+ }
+ this._mcaMapSync();
+ },
+
+ _mcaMapAutoToggle(on) {
+ const m = this._mcaMapState();
+ if (m.timer) { clearInterval(m.timer); m.timer = null; }
+ // poll ~3s pour voir la carte se remplir en live pendant un run cartographe
+ if (on) m.timer = setInterval(() => {
+ if (document.getElementById('mca-map-canvas')) this._mcaMapRefresh();
+ else this._mcaMapStop();
+ }, 3000);
+ },
+
+ // Mondes vanilla d'abord dans un ordre stable, puis les labels custom (ex. "mining") alphabétiques.
+ _mcaMapWorlds() {
+ const m = this._mcaMapState();
+ const keys = Object.keys((m.data && m.data.worlds) || {});
+ const order = { overworld: 0, nether: 1, the_nether: 1, the_end: 2, end: 2 };
+ return keys.sort((a, b) => ((a in order ? order[a] : 9) - (b in order ? order[b] : 9)) || a.localeCompare(b));
+ },
+
+ _mcaMapWorld() {
+ const m = this._mcaMapState();
+ return (m.data && m.data.worlds && m.world) ? m.data.worlds[m.world] : null;
+ },
+
+ _mcaMapSync() {
+ const m = this._mcaMapState();
+ const worlds = this._mcaMapWorlds();
+ if (!m.world || !worlds.includes(m.world)) m.world = worlds[0] || null;
+ const wsel = document.getElementById('mca-map-world');
+ if (wsel) wsel.innerHTML = worlds.length
+ ? worlds.map((w) => `<option value="${this._escapeHtml(w)}" ${w === m.world ? 'selected' : ''}>${this._escapeHtml(w)}</option>`).join('')
+ : '<option value="">—</option>';
+ const upd = document.getElementById('mca-map-updated');
+ if (upd) {
+ const at = m.data && m.data.updated_at;
+ const locale = Lang.t('common.locale') || 'fr-FR';
+ upd.textContent = `${Lang.t('mcagent.map.updated')}: ${at ? new Date(at).toLocaleString(locale) : Lang.t('mcagent.map.never')}`;
+ }
+ const world = this._mcaMapWorld();
+ const has = !!world && ((world.biomes || []).length + (world.caves || []).length + (world.finds || []).length) > 0;
+ this._mcaMapShowEmpty(has ? null : Lang.t('mcagent.map.empty'));
+ if (has && m.world && !m.fitted[m.world]) this._mcaMapFit(false);
+ this._mcaMapLegend();
+ this._mcaMapDraw();
+ },
+
+ _mcaMapShowEmpty(msg) {
+ const el = document.getElementById('mca-map-empty');
+ if (!el) return;
+ el.style.display = msg ? 'flex' : 'none';
+ if (msg) el.textContent = msg;
+ },
+
+ // Cadre la vue sur l'étendue des données du monde courant (90% du canvas).
+ _mcaMapFit(redraw) {
+ const m = this._mcaMapState();
+ const world = this._mcaMapWorld();
+ const cv = document.getElementById('mca-map-canvas');
+ if (!cv) return;
+ let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+ const seen = (x, z, span) => {
+ minX = Math.min(minX, x); maxX = Math.max(maxX, x + (span || 0));
+ minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z + (span || 0));
+ };
+ if (world) {
+ (world.biomes || []).forEach((b) => seen(b.x, b.z, 128));
+ (world.caves || []).forEach((c) => seen(c.x, c.z, 0));
+ (world.finds || []).forEach((f) => seen(f.x, f.z, 0));
+ }
+ if (minX === Infinity) { m.view = { cx: 0, cz: 0, scale: 0.6 }; if (redraw) this._mcaMapDraw(); return; }
+ const w = cv.clientWidth || 800, h = cv.clientHeight || 440;
+ m.view.cx = (minX + maxX) / 2;
+ m.view.cz = (minZ + maxZ) / 2;
+ const scale = Math.min(w / Math.max(maxX - minX, 128), h / Math.max(maxZ - minZ, 128)) * 0.9;
+ m.view.scale = Math.min(4, Math.max(0.02, scale));
+ if (m.world) m.fitted[m.world] = true;
+ if (redraw) this._mcaMapDraw();
+ },
+
+ _mcaHash(s) {
+ let h = 0;
+ for (let i = 0; i < s.length; i++) h = ((h * 31) + s.charCodeAt(i)) | 0;
+ return Math.abs(h);
+ },
+
+ // Couleur stable par biome — teinte thématique (océan bleu, désert sable…) + jitter hashé pour
+ // distinguer les variantes ; fallback 100% hashé pour les biomes custom de datapack (cf. spec §13).
+ _MCA_BIOME_RULES: [
+ [/ocean|river|water|aquifer/, 215, 55, 30],
+ [/frozen|snow|ice|grove/, 200, 30, 56],
+ [/desert|beach|badland|sand|dune/, 38, 50, 42],
+ [/jungle|bamboo/, 100, 55, 26],
+ [/swamp|mangrove|bog/, 75, 32, 22],
+ [/savanna/, 62, 45, 32],
+ [/taiga/, 165, 38, 26],
+ [/forest|wood|birch|cherry/, 120, 42, 27],
+ [/plain|meadow|field|pasture/, 90, 48, 34],
+ [/mushroom/, 295, 35, 34],
+ [/peak|mountain|hill|slope|stony|windswept|gravel/, 220, 8, 40],
+ [/nether|basalt|soul|crimson|warped|delta/, 0, 55, 28],
+ [/\bend\b|void|barren/, 55, 25, 42],
+ [/cave|deep|dripstone|lush/, 28, 38, 24],
+ ],
+
+ _mcaBiomeColor(name) {
+ const n = String(name).toLowerCase();
+ const h = this._mcaHash('b:' + n);
+ for (const [re, hue, s, l] of this._MCA_BIOME_RULES) {
+ if (re.test(n)) return `hsl(${(hue + (h % 25) - 12 + 360) % 360},${s}%,${l + (h % 7) - 3}%)`;
+ }
+ return `hsl(${h % 360},38%,30%)`;
+ },
+
+ // Couleurs fixes pour les matériaux courants (lisibilité immédiate), hash vif pour le reste.
+ _MCA_MAT_COLORS: {
+ diamond: '#4DD8E6', diamond_ore: '#4DD8E6', deepslate_diamond_ore: '#4DD8E6',
+ iron: '#E8C5A8', iron_ore: '#E8C5A8', deepslate_iron_ore: '#E8C5A8', raw_iron: '#E8C5A8',
+ coal: '#9AA0A6', coal_ore: '#9AA0A6', deepslate_coal_ore: '#9AA0A6',
+ copper_ore: '#E77C56', gold_ore: '#FACC15', redstone_ore: '#F87171',
+ lapis_ore: '#60A5FA', emerald_ore: '#4ADE80',
+ },
+
+ _mcaMatColor(mat) {
+ const key = String(mat).toLowerCase();
+ if (this._MCA_MAT_COLORS[key]) return this._MCA_MAT_COLORS[key];
+ if (/log|wood|plank/.test(key)) return '#B08968';
+ const h = this._mcaHash('m:' + key);
+ return `hsl(${h % 360},80%,64%)`;
+ },
+
+ _mcaMapBindCanvas() {
+ const m = this._mcaMapState();
+ const cv = document.getElementById('mca-map-canvas');
+ if (!cv) return;
+ m.resize = () => this._mcaMapDraw();
+ window.addEventListener('resize', m.resize);
+ const pos = (ev) => { const r = cv.getBoundingClientRect(); return { x: ev.clientX - r.left, y: ev.clientY - r.top }; };
+ cv.addEventListener('pointerdown', (ev) => {
+ ev.preventDefault();
+ cv.setPointerCapture(ev.pointerId);
+ const p = pos(ev);
+ m.drag = { x: p.x, y: p.y, cx: m.view.cx, cz: m.view.cz };
+ cv.style.cursor = 'grabbing';
+ });
+ cv.addEventListener('pointermove', (ev) => {
+ const p = pos(ev);
+ if (m.drag) {
+ m.view.cx = m.drag.cx - (p.x - m.drag.x) / m.view.scale;
+ m.view.cz = m.drag.cz - (p.y - m.drag.y) / m.view.scale;
+ this._mcaMapDraw();
+ }
+ this._mcaMapCoords(p, cv);
+ });
+ const end = () => { m.drag = null; cv.style.cursor = 'grab'; };
+ cv.addEventListener('pointerup', end);
+ cv.addEventListener('pointercancel', end);
+ cv.addEventListener('pointerleave', () => {
+ const el = document.getElementById('mca-map-coords');
+ if (el) el.textContent = '';
+ });
+ cv.addEventListener('wheel', (ev) => {
+ ev.preventDefault();
+ const p = pos(ev);
+ const w = cv.clientWidth, h = cv.clientHeight;
+ const v = m.view;
+ // zoom centré sur le curseur : le point monde sous la souris reste sous la souris
+ const wx = v.cx + (p.x - w / 2) / v.scale;
+ const wz = v.cz + (p.y - h / 2) / v.scale;
+ v.scale = Math.min(8, Math.max(0.02, v.scale * Math.exp(-ev.deltaY * 0.0015)));
+ v.cx = wx - (p.x - w / 2) / v.scale;
+ v.cz = wz - (p.y - h / 2) / v.scale;
+ this._mcaMapDraw();
+ this._mcaMapCoords(p, cv);
+ }, { passive: false });
+ },
+
+ // Lecture des coords monde sous le curseur + biome de la cellule survolée.
+ _mcaMapCoords(p, cv) {
+ const el = document.getElementById('mca-map-coords');
+ if (!el) return;
+ const v = this._mcaMapState().view;
+ const w = cv.clientWidth, h = cv.clientHeight;
+ const wx = Math.round(v.cx + (p.x - w / 2) / v.scale);
+ const wz = Math.round(v.cz + (p.y - h / 2) / v.scale);
+ const cx = Math.floor(wx / 128) * 128, cz = Math.floor(wz / 128) * 128;
+ const world = this._mcaMapWorld();
+ const b = world ? (world.biomes || []).find((bb) => bb.x === cx && bb.z === cz) : null;
+ el.textContent = `x ${wx} · z ${wz}` + (b ? ` · ${b.name || ('#' + b.id)}` : '');
+ },
+
+ _mcaMapDraw() {
+ const m = this._mcaMapState();
+ const cv = document.getElementById('mca-map-canvas');
+ if (!cv) return;
+ const dpr = window.devicePixelRatio || 1;
+ const w = cv.clientWidth, h = cv.clientHeight;
+ if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+ cv.width = Math.round(w * dpr);
+ cv.height = Math.round(h * dpr);
+ }
+ const ctx = cv.getContext('2d');
+ ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+ ctx.fillStyle = '#0B0B0D';
+ ctx.fillRect(0, 0, w, h);
+ const v = m.view;
+ const toX = (x) => (x - v.cx) * v.scale + w / 2;
+ const toY = (z) => (z - v.cz) * v.scale + h / 2;
+ const world = this._mcaMapWorld();
+ if (!world) { this._mcaMapScaleBar(ctx, w, h); return; }
+ const hid = m.hidden;
+ // 1. biomes — cases 128×128 (joint hairline 1px quand assez zoomé)
+ const cell = 128 * v.scale;
+ const gap = cell > 6 ? 1 : 0;
+ for (const b of world.biomes || []) {
+ const key = b.name || ('#' + b.id);
+ if (hid['b:' + key]) continue;
+ const x0 = toX(b.x), y0 = toY(b.z);
+ if (x0 > w || y0 > h || x0 + cell < 0 || y0 + cell < 0) continue;
+ ctx.fillStyle = this._mcaBiomeColor(key);
+ ctx.fillRect(x0, y0, Math.max(cell - gap, 1), Math.max(cell - gap, 1));
+ }
+ // 2. grille 128 discrète (si assez zoomé pour qu'elle ait un sens)
+ if (v.scale >= 0.12) {
+ ctx.strokeStyle = 'rgba(244,244,245,0.05)';
+ ctx.lineWidth = 1;
+ const step = cell;
+ let gx = toX(Math.floor((v.cx - w / 2 / v.scale) / 128) * 128);
+ for (; gx <= w; gx += step) { ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, h); ctx.stroke(); }
+ let gy = toY(Math.floor((v.cz - h / 2 / v.scale) / 128) * 128);
+ for (; gy <= h; gy += step) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke(); }
+ }
+ // 3. croix d'origine (0,0) — repère spawn
+ const ox = toX(0), oy = toY(0);
+ if (ox >= -8 && ox <= w + 8 && oy >= -8 && oy <= h + 8) {
+ ctx.strokeStyle = 'rgba(244,244,245,0.4)';
+ ctx.lineWidth = 1;
+ ctx.beginPath();
+ ctx.moveTo(ox - 6, oy); ctx.lineTo(ox + 6, oy);
+ ctx.moveTo(ox, oy - 6); ctx.lineTo(ox, oy + 6);
+ ctx.stroke();
+ }
+ // 4. grottes — triangles (entrées, y réel dispo au survol via légende)
+ if (!hid.caves) {
+ for (const c of world.caves || []) {
+ const x = toX(c.x), y = toY(c.z);
+ if (x < -8 || y < -8 || x > w + 8 || y > h + 8) continue;
+ ctx.fillStyle = 'rgba(14,14,16,0.85)';
+ ctx.strokeStyle = '#F4F4F5';
+ ctx.lineWidth = 1.4;
+ ctx.beginPath();
+ ctx.moveTo(x, y - 5); ctx.lineTo(x + 4.5, y + 3.5); ctx.lineTo(x - 4.5, y + 3.5);
+ ctx.closePath();
+ ctx.fill(); ctx.stroke();
+ }
+ }
+ // 5. trouvailles — losanges colorés par matériau
+ for (const f of world.finds || []) {
+ if (hid['m:' + f.material]) continue;
+ const x = toX(f.x), y = toY(f.z);
+ if (x < -8 || y < -8 || x > w + 8 || y > h + 8) continue;
+ ctx.fillStyle = this._mcaMatColor(f.material);
+ ctx.strokeStyle = 'rgba(14,14,16,0.9)';
+ ctx.lineWidth = 1;
+ ctx.beginPath();
+ ctx.moveTo(x, y - 5); ctx.lineTo(x + 5, y); ctx.lineTo(x, y + 5); ctx.lineTo(x - 5, y);
+ ctx.closePath();
+ ctx.fill(); ctx.stroke();
+ }
+ this._mcaMapScaleBar(ctx, w, h);
+ },
+
+ // Barre d'échelle (bas-droite) : longueur en blocs, puissance de 2 calée sur 40-180px.
+ _mcaMapScaleBar(ctx, w, h) {
+ const v = this._mcaMapState().view;
+ let blocks = 128;
+ let px = blocks * v.scale;
+ while (px < 40 && blocks < 65536) { blocks *= 2; px = blocks * v.scale; }
+ while (px > 180 && blocks > 16) { blocks /= 2; px = blocks * v.scale; }
+ const x = w - px - 14, y = h - 14;
+ ctx.strokeStyle = 'rgba(244,244,245,0.7)';
+ ctx.lineWidth = 1.5;
+ ctx.beginPath();
+ ctx.moveTo(x, y); ctx.lineTo(x + px, y);
+ ctx.moveTo(x, y - 4); ctx.lineTo(x, y + 4);
+ ctx.moveTo(x + px, y - 4); ctx.lineTo(x + px, y + 4);
+ ctx.stroke();
+ ctx.fillStyle = 'rgba(244,244,245,0.7)';
+ ctx.font = '10px "Geist Mono", monospace'; // ctx.font ne résout pas les vars CSS
+ ctx.textAlign = 'center';
+ ctx.fillText(String(blocks), x + px / 2, y - 6);
+ },
+
+ // Légende cliquable : chips biomes (carrés) / matériaux (losanges) / grottes (triangle) avec compte.
+ _mcaMapLegend() {
+ const box = document.getElementById('mca-map-legend');
+ if (!box) return;
+ const m = this._mcaMapState();
+ const world = this._mcaMapWorld();
+ if (!world) { box.innerHTML = ''; return; }
+ const counts = (arr, key) => {
+ const o = {};
+ (arr || []).forEach((e) => { const k = key(e); o[k] = (o[k] || 0) + 1; });
+ return o;
+ };
+ const biomes = counts(world.biomes, (b) => b.name || ('#' + b.id));
+ const mats = counts(world.finds, (f) => f.material);
+ const chip = (k, label, color, count, shape) => {
+ const sw = shape === 'diamond'
+ ? `<span style="display:inline-block;width:9px;height:9px;background:${color};transform:rotate(45deg);border-radius:2px;"></span>`
+ : shape === 'tri'
+ ? `<span style="display:inline-block;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid ${color};"></span>`
+ : `<span style="display:inline-block;width:10px;height:10px;background:${color};border-radius:3px;"></span>`;
+ return `<button type="button" data-k="${this._escapeHtml(k)}" class="mca-map-chip" style="display:inline-flex;align-items:center;gap:6px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:999px;padding:3px 10px;margin:2px 6px 2px 0;font-size:12px;cursor:pointer;color:var(--text);opacity:${m.hidden[k] ? 0.35 : 1};">${sw}<span>${this._escapeHtml(label)}</span><span style="color:var(--text-dim);font-family:var(--font-mono);">${count}</span></button>`;
+ };
+ const bioChips = Object.keys(biomes).sort((a, b) => biomes[b] - biomes[a] || a.localeCompare(b))
+ .map((k) => chip('b:' + k, k, this._mcaBiomeColor(k), biomes[k])).join('');
+ const matChips = Object.keys(mats).sort()
+ .map((k) => chip('m:' + k, k, this._mcaMatColor(k), mats[k], 'diamond')).join('');
+ const caveChip = (world.caves || []).length
+ ? chip('caves', Lang.t('mcagent.map.caves'), '#F4F4F5', (world.caves || []).length, 'tri') : '';
+ const section = (title, chips) => chips
+ ? `<div style="margin-bottom:6px;"><div style="font-size:11px;text-transform:uppercase;color:var(--text-dim);margin-bottom:3px;">${title}</div>${chips}</div>` : '';
+ box.innerHTML =
+ section(Lang.t('mcagent.map.biomes'), bioChips) +
+ section(Lang.t('mcagent.map.finds'), matChips) +
+ section(Lang.t('mcagent.map.caves'), caveChip);
+ box.querySelectorAll('.mca-map-chip').forEach((el) => el.addEventListener('click', () => {
+ const k = el.getAttribute('data-k');
+ m.hidden[k] = !m.hidden[k];
+ el.style.opacity = m.hidden[k] ? 0.35 : 1;
+ this._mcaMapDraw();
+ }));
  },
 
  async refreshMCAgent() {
