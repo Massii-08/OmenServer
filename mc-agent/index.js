@@ -985,7 +985,9 @@ async function startMarathon() {
             const before = homeDistNow();
             if (before <= 24) break;
             const pme = bot.entity.position;
-            const step = Math.min(64, before);
+            // P31 : hops 24 — la zone spawn est CRIBLÉE de trous/eau/lave (37 runs de tests) ;
+            // un hop de 64 y fait exploser la frontière A* (goto accepté, jamais exécuté).
+            const step = Math.min(24, before);
             const tx = pme.x + (world.home.x - pme.x) / before * step;
             const tz = pme.z + (world.home.z - pme.z) / before * step;
             const goal = pfGoals.GoalNearXZ ? new pfGoals.GoalNearXZ(tx, tz, 8)
@@ -1175,6 +1177,7 @@ async function onSpawn() {
       for (const id of scafIds) if (!moves.scafoldingBlocks.includes(id)) moves.scafoldingBlocks.push(id);
     } else { moves.scafoldingBlocks = scafIds; }
     bot.pathfinder.setMovements(moves);
+    try { bot.pathfinder.thinkTimeout = 10000; } catch (e) {} // P31 : budget A* explicite
     installReflexes(bot, { emit, fleeFrom });
     await tryAuth();
     bootDone = true;
