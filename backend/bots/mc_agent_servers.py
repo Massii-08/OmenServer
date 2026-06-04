@@ -195,10 +195,59 @@ def update_server(sid, payload):
     servers = load_servers()
     for i, s in enumerate(servers):
         if s.get("id") == sid:
-            servers[i] = _clean_server(payload, sid)
+            updated = _clean_server(payload, sid)
+            # Préserve le roster existant si le payload ne transporte pas de clé 'bots'
+            if "bots" not in payload:
+                updated["bots"] = s.get("bots", [])
+            servers[i] = updated
             _save_servers(servers)
             return servers[i]
     return None
+
+
+def add_bot(sid, role=None, username=None, auth=None):
+    """Ajoute un bot au roster du groupe. Retourne le bot créé, ou None si invalide/doublon."""
+    if not _SAFE_ID.match(str(sid or "")):
+        return None
+    servers = load_servers()
+    for i, s in enumerate(servers):
+        if s.get("id") != sid:
+            continue
+        entry = _clean_bots([{"role": role, "username": username, "auth": auth}])
+        if not entry:
+            return None
+        bot = entry[0]
+        roster = s.get("bots", [])
+        # Anti-doublon insensible à la casse
+        existing_names = {b.get("username", "").lower() for b in roster}
+        if bot["username"].lower() in existing_names:
+            return None
+        # Id unique par rapport aux ids déjà présents dans le roster
+        existing_ids = {b.get("id") for b in roster}
+        bot["id"] = _gen_id(existing_ids)
+        roster.append(bot)
+        servers[i]["bots"] = roster
+        _save_servers(servers)
+        return bot
+    return None
+
+
+def remove_bot(sid, bot_id):
+    """Retire un bot du roster du groupe. Retourne True si supprimé, False sinon."""
+    if not _SAFE_ID.match(str(sid or "")):
+        return False
+    servers = load_servers()
+    for i, s in enumerate(servers):
+        if s.get("id") != sid:
+            continue
+        roster = s.get("bots", [])
+        new_roster = [b for b in roster if b.get("id") != bot_id]
+        if len(new_roster) == len(roster):
+            return False
+        servers[i]["bots"] = new_roster
+        _save_servers(servers)
+        return True
+    return False
 
 
 def delete_server(sid):

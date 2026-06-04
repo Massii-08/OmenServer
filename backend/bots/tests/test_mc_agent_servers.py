@@ -140,3 +140,23 @@ def test_clean_server_has_roster_and_login_fields():
     assert s["bots"] == []                      # défaut sûr (string → [])
     assert s["has_login"] is True
     assert s["login_command"] == "/login {pwd}"
+
+
+def test_add_remove_bot(tmp_path, monkeypatch):
+    from backend.bots import mc_agent_servers as S
+    monkeypatch.setattr(S, "SERVERS_PATH", tmp_path / "srv.json")
+    g = S.create_server({"name": "G", "host": "h"})
+    b = S.add_bot(g["id"], role="mapper", username="Mapper1", auth="offline")
+    assert b["role"] == "mapper" and b["username"] == "Mapper1"
+    assert S.add_bot(g["id"], role="mapper", username="mapper1", auth="offline") is None  # dup casse
+    assert S.remove_bot(g["id"], b["id"]) is True
+    assert S.get_server(g["id"])["bots"] == []
+
+
+def test_update_server_preserves_roster_when_payload_has_no_bots(tmp_path, monkeypatch):
+    from backend.bots import mc_agent_servers as S
+    monkeypatch.setattr(S, "SERVERS_PATH", tmp_path / "srv.json")
+    g = S.create_server({"name": "G", "host": "h"})
+    S.add_bot(g["id"], role="worker", username="W1", auth="offline")
+    out = S.update_server(g["id"], {"name": "G2", "host": "h"})
+    assert [b["username"] for b in out["bots"]] == ["W1"]
