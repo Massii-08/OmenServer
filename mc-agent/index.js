@@ -719,22 +719,28 @@ async function marathonRestock() {
 }
 
 // Torches sur place : bâtons (planches→sticks) + charbon (miné ou charbon de bois) → craft.
+// Retour basé sur le PROGRÈS (run#17 : convergence lente 0→8 mais chaque action finissait sur un
+// échec spurieux de dernier lot → faux stall) : si le stock de torches a augmenté, c'est un succès.
 async function marathonTorches() {
   const count = (n) => _invTotal((i) => i.name === n);
-  if (count('stick') < 2) {
+  const before = count('torch');
+  const coalNeed = Math.ceil((RESERVES.torchReady - before) / 4);
+  if (count('stick') < Math.min(8, coalNeed)) {
     if (!bot.inventory.items().some((i) => i.name.endsWith('_planks'))) {
       const log = bot.inventory.items().find((i) => i.name.endsWith('_log'));
       if (log) await craftItem(bot, { name: log.name.replace('_log', '_planks'), count: 1 });
     }
-    await craftSmart({ name: 'stick', count: 1 });
+    await craftSmart({ name: 'stick', count: 2 }); // 2 lots = 8 bâtons
   }
-  if (count('coal') + count('charcoal') < 1) {
-    const sc = await smeltCharcoalGoal(4); // gros lots (cible ~48 torches, Massii 12:15)
-    if (!sc.ok) return sc;
+  if (count('coal') + count('charcoal') < coalNeed) {
+    const sc = await smeltCharcoalGoal(Math.min(8, coalNeed)); // gros lots (cible ~48 torches)
+    if (!sc.ok && count('coal') + count('charcoal') < 1) return count('torch') > before ? { ok: true } : sc;
   }
   const coalHave = count('coal') + count('charcoal');
-  if (coalHave < 1) return { ok: false, reason: 'no_coal' };
-  return craftSmart({ name: 'torch', count: Math.min(8, coalHave) }); // jusqu'à 32 torches/action
+  if (coalHave < 1) return count('torch') > before ? { ok: true } : { ok: false, reason: 'no_coal' };
+  const r = await craftSmart({ name: 'torch', count: Math.min(16, coalHave) });
+  if (count('torch') > before) return { ok: true, made: count('torch') - before };
+  return r;
 }
 
 // Pioche fer de RECHANGE (≥2 en poche) dès que le fer du tunnel le permet.
