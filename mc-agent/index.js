@@ -637,8 +637,24 @@ async function gotoPos(p, range, ms) {
   return r;
 }
 
+// Garantit n planches en poche (bûches→planches au besoin). P16 (run#19 : base stall —
+// craft chest no_recipe avec 98 unités de bois 100% BÛCHES, même classe que P14).
+async function ensurePlanks(n) {
+  const have = () => _invTotal((i) => i.name.endsWith('_planks'));
+  for (let guard = 0; guard < 8 && have() < n; guard++) {
+    const log = bot.inventory.items().find((i) => i.name.endsWith('_log'));
+    if (!log) break;
+    const c = await craftItem(bot, { name: log.name.replace('_log', '_planks'), count: Math.max(1, Math.ceil((n - have()) / 4)) });
+    if (!c.ok) break;
+  }
+  return have() >= n;
+}
+
 // Pose le coffre de base à la profondeur de minage → world.home (les dépôts en dépendent).
+// Massii C (option 3) : la base reçoit aussi une table de craft PERMANENTE (jamais reprise) —
+// un humain laisse sa table à sa base ; le cycle portable ne sert plus que loin en minage.
 async function establishBase() {
+  await ensurePlanks(12); // coffre 8 + table permanente 4 (best-effort, P16)
   if (!bot.inventory.items().some((i) => i.name === 'chest')) {
     const c = await craftSmart({ name: 'chest', count: 1 });
     if (!c.ok) return { ok: false, reason: 'no_chest_item:' + (c.reason || '?') };
@@ -651,6 +667,16 @@ async function establishBase() {
   world.banked = world.banked || {};
   saveWorld(worldFile, world);
   emit({ type: 'marathon_base', x: world.home.x, y: world.home.y, z: world.home.z });
+  // table permanente (best-effort) : pas de table à portée → en poser une SANS reclaim
+  if (!_nearestTable(bot)) {
+    if (!bot.inventory.items().some((i) => i.name === 'crafting_table') && await ensurePlanks(4)) {
+      try { await craftItem(bot, { name: 'crafting_table', count: 1 }); } catch (e) {}
+    }
+    if (bot.inventory.items().some((i) => i.name === 'crafting_table')) {
+      const t = await placeBlockNear(bot, 'crafting_table');
+      if (t.ok) { await waitForBlock(t.pos, 'crafting_table'); emit({ type: 'marathon_base_table' }); }
+    }
+  }
   return { ok: true };
 }
 
