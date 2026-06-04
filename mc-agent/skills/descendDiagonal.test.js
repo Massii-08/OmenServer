@@ -133,3 +133,39 @@ test('descendDiagonal : pathfinder.goto appelé après chaque palier (déplaceme
       'consecutive goto targets should progress diagonally');
   }
 });
+
+// --- P4 (Marathon run#4) : le vrai mineflayer fait pos.floored() dans blockAt → un POJO throw.
+// Fake-bot FIDÈLE : blockAt exige .floored() comme en prod. Le skill doit passer des Vec3.
+test('P4: blockAt exigeant .floored() (comme mineflayer) ne fait pas crasher la descente', async () => {
+  const { descendDiagonal: dd } = require('./descendDiagonal');
+  const calls = { dig: 0 };
+  const mkpos = (x, y, z) => ({ x, y, z, offset(dx, dy, dz) { return mkpos(x + dx, y + dy, z + dz); } });
+  const bot = {
+    entity: { position: mkpos(0, 10, 0), yaw: 0 },
+    registry: { blocksByName: { stone: { id: 1 } } },
+    inventory: { items: () => [{ name: 'stone_pickaxe', count: 1, type: 'pickaxe' }] },
+    blockAt(p) {
+      if (typeof p.floored !== 'function') throw new TypeError('pos.floored is not a function');
+      const q = p.floored();
+      const bp = bot.entity.position;
+      if (q.x === Math.floor(bp.x) && q.z === Math.floor(bp.z)
+          && (q.y === Math.floor(bp.y) || q.y === Math.floor(bp.y) + 1)) {
+        return { name: 'air', position: q, boundingBox: 'empty' };
+      }
+      return { name: 'stone', position: q, boundingBox: 'block' };
+    },
+    async dig(b) {
+      calls.dig++;
+      // simule la descente : le pathfinder mock téléporte ensuite
+    },
+    async equip() {},
+    pathfinder: { async goto(goal) {
+      const t = goal.target || goal;
+      if (typeof t.x === 'number') bot.entity.position = mkpos(t.x, t.y, t.z);
+    } },
+  };
+  const r = await dd(bot, { targetY: 8, maxDepth: 10 });
+  assert.notStrictEqual(r.reason, 'dig_failed');
+  assert.ok(r.ok, `descente attendue ok (got ${JSON.stringify(r)})`);
+  assert.ok(calls.dig > 0, 'doit avoir miné des marches');
+});

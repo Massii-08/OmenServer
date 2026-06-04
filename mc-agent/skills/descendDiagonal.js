@@ -6,6 +6,11 @@
 // avant CHAQUE dig. Vise Y target (-54 par défaut, juste au-dessus de la nappe de lave Y=-55→-63).
 const { bestToolFor } = require('../tools');
 const { DANGER, VOID } = require('./mineDown');                // mêmes ensembles → 1 source de vérité
+// ⚠️ P4 (Marathon run#4) : blockAt mineflayer fait pos.floored() en interne → un POJO {x,y,z}
+// throw TypeError (même piège que branchMine #35, corrigé là-bas en Vec3, jamais ici — le skill
+// n'avait jamais tourné en prod réelle). Tous les blockAt passent par P() désormais.
+const { Vec3 } = require('vec3');
+function P(q) { return new Vec3(q.x, q.y, q.z); }
 
 // Pathfinder est requis ici uniquement pour le DÉPLACEMENT (digs faits à la main). Pas de canDig
 // custom pour ne pas que pathfinder mine autre chose que les blocs déjà ouverts par notre dig.
@@ -59,7 +64,7 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200 } = {}, toke
     const ahead2 = { x: fx + 2 * dir.dx, y: fy, z: fz + 2 * dir.dz };
     const ahead2Low = { x: ahead2.x, y: fy - 1, z: ahead2.z };
 
-    const probes = [ahead, aheadLow, aheadHigh, ahead2, ahead2Low].map((q) => bot.blockAt(q));
+    const probes = [ahead, aheadLow, aheadHigh, ahead2, ahead2Low].map((q) => bot.blockAt(P(q)));
     for (const b of probes) {
       if (b && isLava(b.name)) return { ok: false, reachedY, reason: 'lava_ahead' };
     }
@@ -71,7 +76,7 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200 } = {}, toke
     }
 
     // Cibles à miner : devant-bas (la marche descend) puis devant (la tête passe).
-    const targets = [aheadLow, ahead].map((q) => bot.blockAt(q));
+    const targets = [aheadLow, ahead].map((q) => bot.blockAt(P(q)));
     for (const t of targets) {
       if (!t) continue;                                       // unloaded → skip
       if (VOID.has(t.name)) continue;                         // déjà air → rien à faire
