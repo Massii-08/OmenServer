@@ -99,3 +99,31 @@ test('gather : pas de material_found sans worldKey (manuel) ni sans biome connu 
   await gather(b.bot, { name: 'oak_log', count: 1 });
   assert.strictEqual(b.calls.emits.filter((e) => e.type === 'material_found').length, 0);
 });
+
+// --- P7 (Marathon run#8) : bûche de canopée inatteignable → findBlock retourne TOUJOURS la même
+// cible, collect échoue, boucle infinie de collect_failed. gather doit BLACKLISTER la cible morte
+// et passer à la suivante (findBlocks), au lieu de re-buter éternellement sur la première.
+test('P7: cible incollectable → blacklist + récolte la suivante', async () => {
+  const inv = [];
+  const bad = pos(5, 80, 0);   // canopée flottante : collect échoue toujours
+  const good = pos(6, 70, 0);  // tronc accessible
+  const bot = {
+    entity: { position: pos(0, 70, 0), yaw: 0 },
+    registry: { blocksByName: { oak_log: { id: 17 } } },
+    inventory: { items: () => inv.slice() },
+    nearestEntity() { return null; },
+    pvp: { attack() {} },
+    async equip() {},
+    findBlocks() { return [bad, good]; },
+    findBlock() { return { name: 'oak_log', position: bad, boundingBox: 'block' }; },
+    blockAt(p) { return { name: 'oak_log', position: p, boundingBox: 'block' }; },
+    pathfinder: { async goto() {} },
+    collectBlock: { async collect(block) {
+      if (block.position.y === 80) throw new Error('unreachable');
+      inv.push({ name: 'oak_log', count: 1 });
+    } },
+  };
+  const r = await gather(bot, { name: 'oak_log', count: 1 });
+  assert.strictEqual(r.ok, true, `attendu ok (got ${JSON.stringify(r)})`);
+  assert.strictEqual(r.got, 1);
+});

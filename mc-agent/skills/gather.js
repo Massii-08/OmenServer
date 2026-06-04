@@ -39,26 +39,51 @@ async function defendIfNeeded(bot) {
 }
 
 /** Récolte `count`× le bloc `name` le + proche. {ok, reason?/got}. `token` = annulation. */
+// Clé de blacklist d'une position (cibles incollectables, cf. P7).
+function _key(p) { return `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}`; }
+
+// Cible la + proche HORS blacklist. findBlocks (candidats multiples) si dispo, sinon findBlock.
+function _findTarget(bot, ids, maxDistance, blacklist) {
+  if (typeof bot.findBlocks === 'function') {
+    const cands = bot.findBlocks({ matching: ids, maxDistance, count: 24 }) || [];
+    for (const p of cands) {
+      if (blacklist.has(_key(p))) continue;
+      const b = bot.blockAt ? bot.blockAt(p) : null;
+      if (b && b.boundingBox === 'block') return b;
+    }
+    return null;
+  }
+  const b = bot.findBlock({ matching: ids, maxDistance });
+  return b && !blacklist.has(_key(b.position)) ? b : null;
+}
+
 async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplore = false } = {}, token = null) {
   if (!name || (Array.isArray(name) && name.length === 0)) return { ok: false, reason: 'no_block' };
+  const ids = _ids(bot, name);
   let got = 0;
   let explorations = 0;
-  for (let i = 0; i < count; i++) {
+  let attempts = 0;
+  // P7 (Marathon run#8) : une cible INCOLLECTABLE (bûche de canopée flottante laissée par une
+  // récolte précédente) était re-choisie en boucle par findBlock → collect_failed infini. On
+  // blackliste la cible morte et on passe à la SUIVANTE ; borné par `attempts`.
+  const blacklist = new Set();
+  while (got < count && attempts < count * 5) {
+    attempts++;
     if (token && token.cancelled) return { ok: true, got, cancelled: true };
     await defendIfNeeded(bot);
-    let block = bot.findBlock({ matching: _ids(bot, name), maxDistance });
+    let block = _findTarget(bot, ids, maxDistance, blacklist);
     // Rien à portée → exploration de surface autonome (opt-in `explore`, borné). Le bot voyage en
     // anneaux et re-scanne jusqu'à trouver. Désactivé par défaut : les gather opportunistes (type
     // branchMine à maxDistance:6 sur un minerai entrevu) ne doivent PAS partir roamer 256 blocs.
     if (!block && doExplore && explorations <= count) {
       explorations++;
-      const ex = await explore(bot, { name, matching: _ids(bot, name), scanRadius: maxDistance, token });
+      const ex = await explore(bot, { name, matching: ids, scanRadius: maxDistance, token });
       if (token && token.cancelled) return { ok: true, got, cancelled: true };
-      if (ex && ex.ok) block = bot.findBlock({ matching: _ids(bot, name), maxDistance });
+      if (ex && ex.ok) block = _findTarget(bot, ids, maxDistance, blacklist);
     }
     if (!block) {
-      if (got === 0) return { ok: false, reason: 'not_found' };
-      break;
+      if (got > 0) break;
+      return { ok: false, reason: blacklist.size > 0 ? 'collect_failed' : 'not_found' };
     }
     const tool = bestToolFor(bot, block);
     if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
@@ -71,7 +96,10 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
         const tool2 = bestToolFor(bot, block);
         if (tool2) { try { await bot.equip(tool2, 'hand'); } catch (e2) {} }
         await bot.collectBlock.collect(block); got++;
-      } catch (e2) { if (got === 0) return { ok: false, reason: 'collect_failed' }; break; }
+      } catch (e2) {
+        blacklist.add(_key(block.position));  // cible morte → on tente la SUIVANTE (P7)
+        continue;
+      }
     }
     // Boucle d'apprentissage (1d) : note "ce matériau a été trouvé dans ce biome ici" → mémoire du
     // groupe (event material_found capté par le manager). Robuste datapacks (on n'apprend que l'observé).
@@ -79,7 +107,8 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
       try { bot._emit(materialFoundEvent(bot._worldKey, block.name, biomeName, block.position)); } catch (e) {}
     }
   }
-  return { ok: true, got };
+  if (got > 0) return { ok: true, got };
+  return { ok: false, reason: blacklist.size > 0 ? 'collect_failed' : 'not_found' };
 }
 
 module.exports = { gather, nearbyHostile, defendIfNeeded };
