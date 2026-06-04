@@ -720,12 +720,30 @@ async function establishBase() {
     const above = bot.blockAt(new Vec3(place.pos.x, place.pos.y + 1, place.pos.z));
     if (above && above.boundingBox === 'block') await bot.dig(above);
   } catch (e) {}
-  world.home = { x: place.pos.x, y: place.pos.y, z: place.pos.z };
-  world.chests = (world.chests || []).concat([world.home]);
+  const chestPos = { x: place.pos.x, y: place.pos.y, z: place.pos.z };
+  world.chests = (world.chests || []).concat([chestPos]);
   world.banked = world.banked || {};
-  world.sethomeSet = false; // P42b : nouvelle base → re-ancrer le /sethome
+  // P46 : un coffre d'URGENCE hors profondeur de minage = CACHE (compté dans banked via
+  // chestContents) mais PAS home — le churn surface↔profondeur re-créait des homes hauts
+  // que P39 abandonnait aussitôt (coffre + 8 planches gaspillés à chaque cycle).
+  const countsB = marathonCounts(buildCtxInv(bot), sumBanked(world.chestContents || {}));
+  const isHome = chestPos.y <= miningYFor(countsB) + 12;
+  if (isHome) {
+    world.home = chestPos;
+    world.sethomeSet = false; // P42b : nouvelle base → re-ancrer le /sethome
+    emit({ type: 'marathon_base', x: chestPos.x, y: chestPos.y, z: chestPos.z });
+  } else {
+    emit({ type: 'marathon_cache', x: chestPos.x, y: chestPos.y, z: chestPos.z });
+  }
   saveWorld(worldFile, world);
-  emit({ type: 'marathon_base', x: world.home.x, y: world.home.y, z: world.home.z });
+  // Dans les DEUX cas : vider l'inventaire MAINTENANT dans ce coffre (on l'a posé parce que plein)
+  const rd = await depositFiltered(bot, { only: MARATHON_VALUABLES, surplus: marathonSurplus() });
+  if (rd.ok) {
+    world.chestContents = world.chestContents || {};
+    world.chestContents[`${chestPos.x},${chestPos.y},${chestPos.z}`] = rd.chest;
+    saveWorld(worldFile, world);
+    emit({ type: 'marathon_deposit', deposited: rd.deposited, banked: sumBanked(world.chestContents) });
+  }
   // P42 : si le serveur le permet (Essentials), ancrer un /sethome — le respawn post-mort
   // devient un /home instantané au lieu d'un trek de 45 min à travers les cratères.
   try { bot.chat('/sethome mbase'); emit({ type: 'sethome_attempt' }); } catch (e) {}
