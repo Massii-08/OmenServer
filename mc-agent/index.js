@@ -44,7 +44,7 @@ const { placeBlockNear } = require('./skills/placeBlockNear');
 const { smelt } = require('./skills/smelt');
 const { descendDiagonal } = require('./skills/descendDiagonal');
 const { branchMine } = require('./skills/branchMine');
-const { classifyAuthPrompt, genPassword } = require('./auth');
+const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
 const { loadMemory, worldKey } = require('./worldMemory');
 const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
@@ -116,6 +116,16 @@ function writePw(pw) {
     fs.mkdirSync(path.dirname(secretsFile), { recursive: true });
     fs.writeFileSync(secretsFile, JSON.stringify({ authmePassword: pw }), { mode: 0o600 });
   } catch (e) { emit({ type: 'error', message: 'secrets write failed' }); }
+}
+
+// Login serveur configuré par l'admin (--login-command <path>) : commande complète AVEC le secret
+// (substitué côté backend). Lue depuis un fichier temp chmod 600. JAMAIS émise/loggée (contient le pw).
+function readLoginCommand() {
+  if (!args['login-command']) return null;
+  try {
+    const cmd = fs.readFileSync(args['login-command'], 'utf8').trim();
+    return cmd || null;
+  } catch (e) { return null; }
 }
 
 function ctxExtra() {
@@ -556,18 +566,28 @@ async function startAutonomous(sender) {
   else if (res.stalled) { if (sender) ackPrivate(sender, failMsg('not_found')); emit({ type: 'autonomous_stalled', goal: res.goal }); }
 }
 
-// Bootstrap AuthMe : écoute le prompt ~3s ; /login si pw connu sinon /register (pw généré, stocké local).
+// Bootstrap AuthMe : écoute le prompt ~3s. Login serveur configuré (--login-command) → chatte la
+// commande de l'admin (secret déjà inclus, jamais émis) ; sinon self-persist : /login si pw connu,
+// /register sinon (pw généré + stocké local). La décision est déléguée à resolveAuthChat (pur, testé)
+// — index.js ne fait que générer/persister le pw au besoin puis brancher bot.chat sans logger la commande.
 function tryAuth() {
   let pw = readPw();
+  const loginCommand = readLoginCommand();
   return new Promise((resolve) => {
     let done = false;
     const finish = () => { if (!done) { done = true; bot.removeListener('messagestr', onMsg); resolve(); } };
     const onMsg = (msg) => {
       const kind = classifyAuthPrompt(msg);
-      if (kind === 'login' && pw) { bot.chat(`/login ${pw}`); emit({ type: 'auth', action: 'login' }); finish(); }
-      else if (kind === 'register') {
-        if (!pw) { pw = genPassword(); writePw(pw); emit({ type: 'auth', action: 'generated_pw' }); }
-        bot.chat(`/register ${pw} ${pw}`); emit({ type: 'auth', action: 'register' }); finish();
+      if (!kind) return;
+      // register self-persist : génère + stocke un pw si on n'en a pas (sauf si login serveur dédié).
+      if (kind === 'register' && !loginCommand && !pw) {
+        pw = genPassword(); writePw(pw); emit({ type: 'auth', action: 'generated_pw' });
+      }
+      const decision = resolveAuthChat({ kind, loginCommand, pw });
+      if (decision) {
+        bot.chat(decision.chat);                       // contient le secret → jamais émis ni loggé
+        emit({ type: 'auth', action: decision.action }); // event SANS la commande
+        finish();
       }
     };
     bot.on('messagestr', onMsg);

@@ -20,4 +20,30 @@ function genPassword() {
   return 'A' + pw + '7';
 }
 
-module.exports = { classifyAuthPrompt, genPassword };
+/**
+ * Décide quelle chaîne chatter pour s'authentifier (fonction pure, testable).
+ *
+ * - login + loginCommand (login serveur configuré par l'admin) → chatte la commande telle quelle
+ *   (le secret y est déjà substitué côté backend) ; PAS de /login {pw} self-persist.
+ * - login + pw (pas de loginCommand, AuthMe self-persist) → /login {pw}
+ * - login sans rien → null (on ne peut pas se connecter)
+ * - register + pw → /register {pw} {pw} (loginCommand ignorée : register n'utilise jamais le login)
+ * - register sans pw → null (l'appelant doit générer/persister un pw au préalable)
+ * - kind null → null
+ *
+ * @returns {{chat:string, action:'login'|'register'}|null}
+ */
+function resolveAuthChat({ kind, loginCommand, pw } = {}) {
+  if (kind === 'login') {
+    if (loginCommand) return { chat: loginCommand, action: 'login' };
+    if (pw) return { chat: `/login ${pw}`, action: 'login' };
+    return null;
+  }
+  if (kind === 'register') {
+    if (pw) return { chat: `/register ${pw} ${pw}`, action: 'register' };
+    return null;
+  }
+  return null;
+}
+
+module.exports = { classifyAuthPrompt, genPassword, resolveAuthChat };
