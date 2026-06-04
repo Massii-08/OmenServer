@@ -669,6 +669,12 @@ async function establishBase() {
   const place = await placeBlockNear(bot, 'chest');
   if (!place.ok) return { ok: false, reason: 'place_failed:' + (place.reason || '?') };
   await waitForBlock(place.pos, 'chest');
+  // P17 (run#20 : open_failed en boucle) : un coffre avec un bloc SOLIDE juste au-dessus est
+  // INOUVRABLE (vanilla). En tunnel 1×2, placeBlockNear peut le coller sous le plafond → dégager.
+  try {
+    const above = bot.blockAt(new Vec3(place.pos.x, place.pos.y + 1, place.pos.z));
+    if (above && above.boundingBox === 'block') await bot.dig(above);
+  } catch (e) {}
   world.home = { x: place.pos.x, y: place.pos.y, z: place.pos.z };
   world.chests = (world.chests || []).concat([world.home]);
   world.banked = world.banked || {};
@@ -691,7 +697,15 @@ async function marathonDeposit() {
   if (!world.home) return { ok: false, reason: 'no_base' };
   const g = await gotoPos(world.home, 2, 8 * 60 * 1000);
   if (g && g.ok === false) emit({ type: 'marathon_goto_base_failed' }); // on tente quand même (peut être à côté)
-  const r = await depositFiltered(bot, { only: MARATHON_VALUABLES, surplus: marathonSurplus() });
+  let r = await depositFiltered(bot, { only: MARATHON_VALUABLES, surplus: marathonSurplus() });
+  if (!r.ok && r.reason === 'open_failed' && world.home) {
+    // P17 : coffre présent mais inouvrable (bloc au-dessus, gravier tombé…) → dégager + retry
+    try {
+      const above = bot.blockAt(new Vec3(world.home.x, world.home.y + 1, world.home.z));
+      if (above && above.boundingBox === 'block' && above.name !== 'chest') await bot.dig(above);
+    } catch (e) {}
+    r = await depositFiltered(bot, { only: MARATHON_VALUABLES, surplus: marathonSurplus() });
+  }
   if (!r.ok) {
     // coffre introuvable/cassé → re-base au prochain tour ; banked re-lu au prochain dépôt réussi
     emit({ type: 'marathon_chest_lost', reason: r.reason });
