@@ -666,6 +666,15 @@ async function ensureGrounded() {
       if (!f.ok) await recoverFloating(bot, { emit });
       await sleep(500);
     }
+    // P43 (run#48 : onGround:false + vel≈0 à y75, gel) : suspendu-gelé même avec sol « solide »
+    // sous les pieds côté client — relâcher les contrôles + retomber, sinon remblai.
+    if (bot.entity && !bot.entity.onGround) {
+      const v = bot.entity.velocity || { x: 0, y: 0, z: 0 };
+      if (Math.abs(v.x) + Math.abs(v.y) + Math.abs(v.z) < 0.02) {
+        await recoverFloating(bot, { emit });
+        if (!bot.entity.onGround) { await fillBelow(bot); await sleep(500); }
+      }
+    }
   } catch (e) {}
 }
 
