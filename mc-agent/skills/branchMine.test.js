@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { branchMine } = require('./branchMine');
+const { branchMine, ORE_NAMES } = require('./branchMine');
 
 function pos(x, y, z) { return { x, y, z, offset(dx, dy, dz) { return pos(x + dx, y + dy, z + dz); } }; }
 
@@ -19,7 +19,10 @@ function makeBot({ y = -54, yaw = -Math.PI / 2, world = {}, inv = null, gathered
       diamond_ore: { id: 56 }, deepslate_diamond_ore: { id: 57 },
       iron_ore: { id: 58 }, deepslate_iron_ore: { id: 59 },
       coal_ore: { id: 60 }, deepslate_coal_ore: { id: 61 },
-      cobblestone: { id: 4 },
+      redstone_ore: { id: 62 }, deepslate_redstone_ore: { id: 63 },
+      lapis_ore: { id: 64 }, deepslate_lapis_ore: { id: 65 },
+      gold_ore: { id: 66 }, deepslate_gold_ore: { id: 67 },
+      cobblestone: { id: 4 }, cobbled_deepslate: { id: 5 },
       lava: { id: 10 }, flowing_lava: { id: 11 },
       air: { id: 0 }, cave_air: { id: 0 },
     } },
@@ -85,6 +88,9 @@ function makeBot({ y = -54, yaw = -Math.PI / 2, world = {}, inv = null, gathered
         if (drop === 'diamond_ore' || drop === 'deepslate_diamond_ore') drop = 'diamond';
         if (drop === 'iron_ore' || drop === 'deepslate_iron_ore') drop = 'raw_iron';
         if (drop === 'coal_ore' || drop === 'deepslate_coal_ore') drop = 'coal';
+        if (drop === 'redstone_ore' || drop === 'deepslate_redstone_ore') drop = 'redstone';
+        if (drop === 'lapis_ore' || drop === 'deepslate_lapis_ore') drop = 'lapis_lazuli';
+        if (drop === 'gold_ore' || drop === 'deepslate_gold_ore') drop = 'raw_gold';
         const existing = inventory.find((i) => i.name === drop);
         if (existing) existing.count += 1;
         else inventory.push({ name: drop, count: 1, type: 'item' });
@@ -165,4 +171,71 @@ test('branchMine : pathfinder.goto appelé entre les digs (bot avance vraiment)'
   await branchMine(bot, { targetY: -54, mainLength: 6, branchSpacing: 999, branchLength: 0 });
   // mainLength=6 → 6 paliers → au moins 6 gotos pour le tunnel principal.
   assert.ok(calls.goto.length >= 6, `pathfinder.goto should be called per palier (got ${calls.goto.length})`);
+});
+
+// --- Extensions MARATHON (64× diamant/redstone/lapis/or) ---------------------------------------
+
+test('marathon: ORE_NAMES couvre redstone/lapis/or (+ variantes deepslate)', () => {
+  for (const n of ['redstone_ore', 'deepslate_redstone_ore', 'lapis_ore', 'deepslate_lapis_ore',
+    'gold_ore', 'deepslate_gold_ore']) {
+    assert.ok(ORE_NAMES.has(n), `${n} doit être dans ORE_NAMES`);
+  }
+});
+
+test('marathon: réserve scaffold compte cobbled_deepslate (pas de cobble_low à tort)', async () => {
+  const { bot } = makeBot({ y: -54, inv: [
+    { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
+    { name: 'cobbled_deepslate', count: 32, type: 'block' },
+  ] });
+  const r = await branchMine(bot, { targetY: -54, mainLength: 4, branchSpacing: 999, branchLength: 0 });
+  assert.notStrictEqual(r.reason, 'cobble_low');
+  assert.strictEqual(r.ok, true);
+});
+
+test('marathon: mure la lave avec cobbled_deepslate quand pas de cobblestone', async () => {
+  const world = { '2,-54,0': 'lava' };
+  const { bot, calls } = makeBot({ y: -54, world, inv: [
+    { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
+    { name: 'cobbled_deepslate', count: 32, type: 'block' },
+  ] });
+  await branchMine(bot, { targetY: -54, mainLength: 6, branchSpacing: 999, branchLength: 0 });
+  assert.ok(calls.placeBlock.length > 0, 'doit murer la lave avec le deepslate cobble');
+});
+
+test('marathon: stopWhen custom stoppe le tunnel (ex: inventaire plein)', async () => {
+  let probes = 0;
+  const { bot, calls } = makeBot({ y: -54 });
+  const r = await branchMine(bot, {
+    targetY: -54, mainLength: 100, branchSpacing: 999, branchLength: 0,
+    stopWhen: () => { probes++; return probes > 3; }, // s'arrête après 3 paliers
+  });
+  assert.strictEqual(r.ok, true);
+  assert.ok(calls.goto.length <= 6, `tunnel court attendu (got ${calls.goto.length} gotos)`);
+});
+
+test('marathon: stopWhen défaut = 1 diamant (rétro-compat DIAMOND_CHAIN)', async () => {
+  const { bot, calls } = makeBot({ y: -54, inv: [
+    { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
+    { name: 'cobblestone', count: 32, type: 'block' },
+    { name: 'diamond', count: 1, type: 'item' },
+  ] });
+  await branchMine(bot, { targetY: -54, mainLength: 100, branchSpacing: 999, branchLength: 0 });
+  assert.strictEqual(calls.goto.length, 0, 'diamant déjà en poche → ne mine pas');
+});
+
+test('marathon: lapis_ore sur le chemin → ramassé via gather (ores.lapis)', async () => {
+  const world = { '2,-54,0': 'deepslate_lapis_ore' };
+  const { bot } = makeBot({ y: -54, world });
+  const r = await branchMine(bot, { targetY: -54, mainLength: 6, branchSpacing: 999, branchLength: 0,
+    stopWhen: () => false });
+  assert.ok(r.ores && r.ores.lapis >= 1, `ores.lapis=${r.ores && r.ores.lapis} attendu >= 1`);
+});
+
+test('marathon: redstone + or comptés dans le delta ores', async () => {
+  const world = { '2,-54,0': 'deepslate_redstone_ore', '4,-54,0': 'deepslate_gold_ore' };
+  const { bot } = makeBot({ y: -54, world });
+  const r = await branchMine(bot, { targetY: -54, mainLength: 8, branchSpacing: 999, branchLength: 0,
+    stopWhen: () => false });
+  assert.ok(r.ores.redstone >= 1, `redstone=${r.ores.redstone}`);
+  assert.ok(r.ores.gold >= 1, `gold=${r.ores.gold}`);
 });

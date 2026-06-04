@@ -41,12 +41,22 @@ function countItem(bot, name) {
   return (bot.inventory.items() || []).filter((i) => i.name === name).reduce((s, i) => s + i.count, 0);
 }
 
-// Compteurs ores ramassés via gather (delta vs avant).
+// Réserve de murage : à Y deepslate (≤0) le minage produit du cobbled_deepslate, PAS du cobblestone
+// → compter les deux, sinon la réserve semble « épuisée » à tort en plein filon (panne long-terme P1).
+const SCAFFOLD_NAMES = ['cobblestone', 'cobbled_deepslate'];
+function scaffoldCount(bot) {
+  return SCAFFOLD_NAMES.reduce((s, n) => s + countItem(bot, n), 0);
+}
+
+// Compteurs ores ramassés via gather (delta vs avant). Marathon : 4 minerais cibles + fer/charbon.
 function snapshotOres(bot) {
   return {
     diamond: countItem(bot, 'diamond'),
     iron: countItem(bot, 'raw_iron') + countItem(bot, 'iron_ingot'),
     coal: countItem(bot, 'coal'),
+    redstone: countItem(bot, 'redstone'),
+    lapis: countItem(bot, 'lapis_lazuli'),
+    gold: countItem(bot, 'raw_gold') + countItem(bot, 'gold_ingot'),
   };
 }
 
@@ -81,7 +91,7 @@ function neighborsHaveLava(bot, target) {
 // Tente de poser un bloc de cobble pour murer la lave à `where`. On utilise placeBlock contre une
 // face solide adjacente. Retourne true si placé, false sinon (pas grave : on changera de direction).
 async function wallLava(bot, where) {
-  const cob = bot.inventory.items().find((i) => i.name === 'cobblestone');
+  const cob = bot.inventory.items().find((i) => SCAFFOLD_NAMES.includes(i.name));
   if (!cob) return false;
   // Cherche un voisin solide auquel attacher le cobble.
   const dirs = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
@@ -102,6 +112,10 @@ const ORE_NAMES = new Set([
   'diamond_ore', 'deepslate_diamond_ore',
   'iron_ore', 'deepslate_iron_ore',
   'coal_ore', 'deepslate_coal_ore',
+  // marathon : redstone/lapis/or (variantes deepslate incluses)
+  'redstone_ore', 'deepslate_redstone_ore',
+  'lapis_ore', 'deepslate_lapis_ore',
+  'gold_ore', 'deepslate_gold_ore',
 ]);
 function oresInNeighborhood(bot, target) {
   const found = [];
@@ -179,15 +193,18 @@ async function branchMine(bot, opts = {}, token = null) {
   const mainLength = opts.mainLength || 32;
   const branchSpacing = opts.branchSpacing || 3;
   const branchLength = opts.branchLength || 8;
+  // Condition d'arrêt configurable (marathon : inventaire plein / segment fini) ;
+  // défaut rétro-compat DIAMOND_CHAIN : 1 diamant en poche suffit.
+  const stopWhen = opts.stopWhen || ((b) => countItem(b, 'diamond') >= 1);
 
   const start = bot.entity && bot.entity.position;
   dbg('start', { phase: 'branchMine:enter', y: start ? start.y : null, x: start ? start.x : null, z: start ? start.z : null, targetY, mainLength, hasPF: !!(bot.pathfinder && bot.pathfinder.goto), hasCB: !!(bot.collectBlock && bot.collectBlock.collect), cobble: countItem(bot, 'cobblestone') });
   if (!start) { dbg('start', { phase: 'branchMine:bail', reason: 'no_pos' }); return { ok: false, reason: 'no_pos' }; }
   if (Math.abs(start.y - targetY) > 2) { dbg('start', { phase: 'branchMine:bail', reason: 'wrong_depth', startY: start.y, targetY }); return { ok: false, reason: 'wrong_depth' }; }
 
-  if (countItem(bot, 'cobblestone') < COBBLE_TARGET_INIT / 2) {
+  if (scaffoldCount(bot) < COBBLE_TARGET_INIT / 2) {
     // tolère un peu en dessous de 16 (gather peut en avoir consommé) mais on garde la réserve mini.
-    if (countItem(bot, 'cobblestone') < COBBLE_RESERVE_MIN) return { ok: false, reason: 'cobble_low' };
+    if (scaffoldCount(bot) < COBBLE_RESERVE_MIN) return { ok: false, reason: 'cobble_low' };
   }
 
   const dir = cardinalFromYaw((bot.entity.yaw || 0));
@@ -209,8 +226,8 @@ async function branchMine(bot, opts = {}, token = null) {
   outer:
   while (i <= mainLength) {
     if (token && token.cancelled) return { ok: true, cancelled: true, ores: deltaOres(oresBefore, snapshotOres(bot)), gotDiamond: countItem(bot, 'diamond') > 0 };
-    if (countItem(bot, 'cobblestone') < COBBLE_RESERVE_MIN) { stopReason = 'cobble_low'; break; }
-    if (countItem(bot, 'diamond') >= 1) break;                         // objectif rempli
+    if (scaffoldCount(bot) < COBBLE_RESERVE_MIN) { stopReason = 'cobble_low'; break; }
+    if (stopWhen(bot)) break;                                          // objectif rempli
 
     // Tunnel 1×2 : pieds + tête. Targets calculés depuis origin (point fixe).
     const footTarget = p(ox + dir.dx * i, oy, oz + dir.dz * i);
@@ -231,8 +248,8 @@ async function branchMine(bot, opts = {}, token = null) {
       for (const side of [left, { dx: -left.dx, dz: -left.dz }]) {
         for (let j = 1; j <= branchLength; j++) {
           if (token && token.cancelled) break;
-          if (countItem(bot, 'diamond') >= 1) break outer;
-          if (countItem(bot, 'cobblestone') < COBBLE_RESERVE_MIN) { stopReason = 'cobble_low'; break outer; }
+          if (stopWhen(bot)) break outer;
+          if (scaffoldCount(bot) < COBBLE_RESERVE_MIN) { stopReason = 'cobble_low'; break outer; }
           const ft = p(footTarget.x + side.dx * j, footTarget.y, footTarget.z + side.dz * j);
           const ht = p(ft.x, ft.y + 1, ft.z);
           // Approche aussi avant la branche — j peut monter à 8, donc range hors limite sans goto.
@@ -259,7 +276,9 @@ async function branchMine(bot, opts = {}, token = null) {
 }
 
 function deltaOres(a, b) {
-  return { diamond: Math.max(0, b.diamond - a.diamond), iron: Math.max(0, b.iron - a.iron), coal: Math.max(0, b.coal - a.coal) };
+  const out = {};
+  for (const k of Object.keys(b)) out[k] = Math.max(0, (b[k] || 0) - (a[k] || 0));
+  return out;
 }
 
-module.exports = { branchMine, cardinalFromYaw, leftOf };
+module.exports = { branchMine, cardinalFromYaw, leftOf, ORE_NAMES, SCAFFOLD_NAMES, scaffoldCount };
