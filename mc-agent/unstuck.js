@@ -74,7 +74,20 @@ async function escapeWater(bot, opts = {}) {
   // cap de nage FIXE quand aucune terre n'est en vue (vécu Surv7 : fond d'un trou inondé, 25 échecs
   // en re-scannant sur place) — on nage AVEC PERSISTANCE dans une direction en re-scannant la terre.
   let swimYaw = null;
+  const start0 = bot.entity && bot.entity.position
+    ? { x: bot.entity.position.x, z: bot.entity.position.z } : null;
   while (isInWater(bot) && Date.now() - t0 < timeoutMs) {
+    // P26 : >15 s dans l'eau SANS progrès horizontal = puits/colonne (la nage reglisse) →
+    // COMBLER sous les pieds (1 bloc/passe, le bot monte) au lieu de nager pour rien.
+    if (start0 && Date.now() - t0 > 15000) {
+      const pn = bot.entity.position;
+      if (Math.hypot(pn.x - start0.x, pn.z - start0.z) < 3) {
+        const f = await fillBelow(bot);
+        emit({ type: 'unstuck', cause: 'water', phase: 'fill', ok: f.ok, reason: f.reason });
+        await sleep(800); // laisser le bot se hisser sur le bloc posé
+        continue;
+      }
+    }
     const land = findLandTarget(bot, opts.maxDistance || 48);
     if (land) {
       await _withTimeout(doGoto(land), opts.gotoTimeoutMs || 15000, () => {
@@ -164,4 +177,32 @@ async function recoverFloating(bot, opts = {}) {
   return { ok };
 }
 
-module.exports = { isInWater, findLandTarget, escapeWater, WATER, SNARES, clearSnares, isFloatingStuck, recoverFloating };
+// P26 (run#30 : puits d'eau 1×1, boucle infinie d'évasion par la nage) : COMBLER la colonne d'eau
+// sous les pieds — pose un scaffold dans la cellule d'eau du dessous, contre une paroi solide
+// (même mécanique que le murage de lave). Répété par l'appelant, le bot monte d'1 bloc par pose.
+const SCAFFOLD_FILL = ['cobblestone', 'cobbled_deepslate', 'dirt', 'netherrack', 'granite', 'diorite', 'andesite'];
+async function fillBelow(bot) {
+  const item = bot.inventory.items().find((i) => SCAFFOLD_FILL.includes(i.name));
+  if (!item) return { ok: false, reason: 'no_blocks' };
+  const feet = bot.entity.position.floored ? bot.entity.position.floored()
+    : { x: Math.floor(bot.entity.position.x), y: Math.floor(bot.entity.position.y), z: Math.floor(bot.entity.position.z) };
+  const cell = feet.offset ? feet.offset(0, -1, 0) : { x: feet.x, y: feet.y - 1, z: feet.z };
+  const at = bot.blockAt(cell);
+  if (!at || at.boundingBox === 'block') return { ok: false, reason: 'below_solid' };
+  // face d'appui : une paroi SOLIDE adjacente à la cellule, face orientée vers elle
+  const dirs = [[1, 0, 0], [-1, 0, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+  for (const [dx, dy, dz] of dirs) {
+    const refPos = cell.offset ? cell.offset(-dx, -dy, -dz)
+      : { x: cell.x - dx, y: cell.y - dy, z: cell.z - dz };
+    const ref = bot.blockAt(refPos);
+    if (!ref || ref.boundingBox !== 'block') continue;
+    try {
+      await bot.equip(item, 'hand');
+      await bot.placeBlock(ref, { x: dx, y: dy, z: dz });
+      return { ok: true };
+    } catch (e) { /* face suivante */ }
+  }
+  return { ok: false, reason: 'no_face' };
+}
+
+module.exports = { isInWater, findLandTarget, escapeWater, fillBelow, WATER, SNARES, clearSnares, isFloatingStuck, recoverFloating };

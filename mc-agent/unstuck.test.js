@@ -120,3 +120,45 @@ test('recoverFloating : relâche TOUT + coupe le pathfinder + retombe au sol', a
 test('SNARES couvre lianes jungle + cave vines + cobweb', () => {
   for (const n of ['vine', 'cave_vines', 'twisting_vines', 'weeping_vines', 'cobweb']) assert.ok(SNARES.has(n), n);
 });
+
+// --- P26 (run#30) : puits d'eau 1×1 — la nage atteint la surface puis regl isse → boucle infinie
+// unstuck water. Sortie déterministe = COMBLER la colonne sous les pieds (pose contre la paroi).
+const { fillBelow } = require('./unstuck');
+
+test('P26: fillBelow pose un scaffold dans la cellule d\'eau sous les pieds (contre la paroi)', async () => {
+  const mkpos = (x, y, z) => ({ x, y, z, offset(dx, dy, dz) { return mkpos(x + dx, y + dy, z + dz); },
+    floored() { return mkpos(Math.floor(x), Math.floor(y), Math.floor(z)); } });
+  const placed = [];
+  const bot = {
+    entity: { position: mkpos(0.5, 59.4, 0.5) },
+    inventory: { items: () => [{ name: 'cobblestone', count: 32 }] },
+    blockAt(p) {
+      const q = p.floored ? p.floored() : p;
+      // colonne d'eau en (0, *, 0) ; parois pierre tout autour
+      if (q.x === 0 && q.z === 0) return { name: 'water', position: q, boundingBox: 'empty' };
+      return { name: 'stone', position: q, boundingBox: 'block' };
+    },
+    async equip() {},
+    async placeBlock(ref, face) { placed.push({ ref: { x: ref.position.x, y: ref.position.y, z: ref.position.z }, face }); },
+  };
+  const r = await fillBelow(bot);
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.strictEqual(placed.length, 1);
+  // la pose vise la cellule (0,58,0) : ref = une paroi adjacente, face pointant vers la cellule
+  const tgt = { x: placed[0].ref.x + placed[0].face.x, y: placed[0].ref.y + placed[0].face.y, z: placed[0].ref.z + placed[0].face.z };
+  assert.deepStrictEqual(tgt, { x: 0, y: 58, z: 0 });
+});
+
+test('P26: fillBelow sans scaffold en poche → no_blocks (pas de throw)', async () => {
+  const mkpos = (x, y, z) => ({ x, y, z, offset(dx, dy, dz) { return mkpos(x + dx, y + dy, z + dz); },
+    floored() { return mkpos(Math.floor(x), Math.floor(y), Math.floor(z)); } });
+  const bot = {
+    entity: { position: mkpos(0.5, 59.4, 0.5) },
+    inventory: { items: () => [] },
+    blockAt() { return { name: 'water', boundingBox: 'empty', position: mkpos(0, 58, 0) }; },
+    async equip() {}, async placeBlock() {},
+  };
+  const r = await fillBelow(bot);
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'no_blocks');
+});
