@@ -1603,7 +1603,9 @@ bot.on('death', () => {
 });
 bot.on('kicked', (reason) => emit({ type: 'error', message: 'kicked: ' + reason }));
 bot.on('error', (e) => emit({ type: 'error', message: String((e && e.message) || e) }));
-bot.on('end', () => { emit({ type: 'status', state: 'disconnected' }); process.exit(0); });
+// P50 : une DÉCONNEXION n'est pas un arrêt volontaire — exit 43 → le superviseur relance
+// (le serveur kick/réseau ; seul un quit explicite sort en 0).
+bot.on('end', () => { emit({ type: 'status', state: 'disconnected' }); process.exit(43); });
 
 onCommand((cmd) => {
   if (cmd.type === 'say') say(bot, cmd.message);
