@@ -634,6 +634,7 @@ function marathonSurplus() {
 // Compromis nourriture : ≥3 restocks food ratés d'affilée (monde sans animaux) + faim pleine
 // → le gate READY de descente n'attend plus l'impossible (cf. nextAction.foodCompromise).
 let restockFoodFails = 0;
+let depositFarFails = 0; // P39 : constats consécutifs « pas à la base » → re-base en profondeur
 
 function marathonCtx() {
   const pos = bot.entity && bot.entity.position;
@@ -731,11 +732,24 @@ async function marathonDeposit() {
   if (!world.home) return { ok: false, reason: 'no_base' };
   const g = await gotoPos(world.home, 2, 8 * 60 * 1000);
   if (g && g.ok === false) emit({ type: 'marathon_goto_base_failed' }); // on tente quand même (peut être à côté)
-  // P33 : ne JAMAIS conclure chest_lost quand on n'est PAS à la base (goto raté en route) —
-  // c'est un échec de trajet, pas un coffre perdu.
+  // P33/P39 : ne JAMAIS conclure chest_lost quand on n'est PAS à la base — en 3D (vécu run#45 :
+  // bot à y20 SOUS la base de surface y87, dxz≤16 → « à la base », coffre à 67 blocs verticaux).
   {
     const dHome = Math.hypot(bot.entity.position.x - world.home.x, bot.entity.position.z - world.home.z);
-    if (dHome > 16) return { ok: false, reason: 'not_at_base:' + Math.round(dHome) };
+    const dy = Math.abs(bot.entity.position.y - world.home.y);
+    if (dHome > 16 || dy > 10) {
+      // P39 : base structurellement inatteignable depuis la mine (surface vs profondeur,
+      // searchRadius 48 < dy) → après 3 constats, RE-BASER là où on mine vraiment.
+      depositFarFails++;
+      if (depositFarFails >= 3) {
+        emit({ type: 'marathon_base_relocate', from: world.home, dy: Math.round(dy) });
+        world.home = null; saveWorld(worldFile, world);
+        depositFarFails = 0;
+        return { ok: false, reason: 'base_relocating' };
+      }
+      return { ok: false, reason: 'not_at_base:' + Math.round(dHome) + '/' + Math.round(dy) };
+    }
+    depositFarFails = 0;
   }
   // F (Massii) : vérifier l'OUVRABILITÉ avant d'essayer — un bloc a pu tomber/être posé au-dessus.
   try {
