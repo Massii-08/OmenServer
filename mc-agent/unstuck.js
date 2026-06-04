@@ -63,7 +63,7 @@ function _withTimeout(promise, ms, onTimeout) {
 async function escapeWater(bot, opts = {}) {
   const emit = opts.emit || (() => {});
   const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
-  const timeoutMs = opts.timeoutMs || 30000;
+  const timeoutMs = opts.timeoutMs || 60000;  // 60s : traverser un plan d'eau prend du temps (Surv7)
   const t0 = Date.now();
   emit({ type: 'unstuck', cause: 'water' });
   const doGoto = opts.goto || (async (p) => {
@@ -71,6 +71,9 @@ async function escapeWater(bot, opts = {}) {
     await bot.pathfinder.goto(new pfGoals.GoalNear(p.x, p.y + 1, p.z, 1));
   });
   try { bot.setControlState('jump', true); } catch (e) {}   // nage vers la surface
+  // cap de nage FIXE quand aucune terre n'est en vue (vécu Surv7 : fond d'un trou inondé, 25 échecs
+  // en re-scannant sur place) — on nage AVEC PERSISTANCE dans une direction en re-scannant la terre.
+  let swimYaw = null;
   while (isInWater(bot) && Date.now() - t0 < timeoutMs) {
     const land = findLandTarget(bot, opts.maxDistance || 48);
     if (land) {
@@ -78,9 +81,11 @@ async function escapeWater(bot, opts = {}) {
         try { bot.pathfinder && bot.pathfinder.setGoal(null); } catch (e) {}
       });
     } else {
-      // pas de terre en vue (chunks) : nage vers l'avant en sautant pour sortir de l'angle
+      // pas de terre en vue : nage persistante au cap fixe (jump maintenu = surface), 3s par segment
+      if (swimYaw == null) swimYaw = (bot.entity && bot.entity.yaw) || 0;
+      try { if (bot.look) await bot.look(swimYaw, 0, true); } catch (e) {}
       try { bot.setControlState('forward', true); } catch (e) {}
-      await sleep(1500);
+      await sleep(3000);
       try { bot.setControlState('forward', false); } catch (e) {}
     }
     await sleep(300);
