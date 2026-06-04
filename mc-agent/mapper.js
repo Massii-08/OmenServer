@@ -129,6 +129,7 @@ function surfaceYAt(bot, x, z, fromY) {
  *  opts.emit      : hook events ; opts.goto : injectable (défaut pathfinder.goto GoalNear)
  *  opts.fleeFrom  : injecté dans survivalTick ; opts.sleep/rng/now : injectables (tests)
  *  opts.onPeriodic/periodicEvery : hook toutes les N arrivées (ex. re-tentative kit)
+ *  opts.teleport  : watcher TP (teleport.js, #10) — pending consommé en tête de boucle → RÉ-ANCRAGE
  */
 async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   const worldKey = opts.worldKey || 'unknown';
@@ -223,6 +224,20 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   record(); // la cellule de départ compte
 
   while (!token.cancelled) {
+    // TÉLÉPORTATION (#10) : le bot a sauté (admin /tp, /home, portail…) → RÉ-ANCRAGE au lieu réel.
+    // Origine de mapping = position ACTUELLE, heading propre re-tiré (dans le wedge si secteur),
+    // baseline anti-stuck remise à zéro (le saut n'est PAS un blocage), compteurs d'échec purgés
+    // (ils décrivaient l'ANCIEN terrain). JAMAIS de retour à pied à l'ancien lieu : le TP est un
+    // moyen de DIRIGER le bot (Massii le TP dans une zone → il mappe DE LÀ).
+    if (opts.teleport && opts.teleport.peek()) {
+      const tp = opts.teleport.consume();
+      const r = (p) => ({ x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
+      emit({ type: 'mapper_reanchor', from: r(tp.from), to: r(tp.to) });
+      lastSample = null;
+      blockedStreak = 0; surfaceTries = 0; failStreak = 0;
+      heading = drawHeading(rng, getSector(), opts.overlapDeg);
+      record(); // la cellule d'arrivée compte tout de suite (coords RÉELLES)
+    }
     const stuck = await antiStuck();
     // évasion d'eau RATÉE (pas de terre ≤48 : il s'est engagé au large, vécu Surv6 ×9) →
     // DEMI-TOUR franc : on repart d'où on vient au lieu de continuer vers le large.

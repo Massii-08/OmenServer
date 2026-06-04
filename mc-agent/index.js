@@ -48,6 +48,7 @@ const { classifyAuthPrompt, genPassword } = require('./auth');
 const { loadMemory, worldKey } = require('./worldMemory');
 const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
+const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
 const { isNight, shelterUntilDawn } = require('./skills/shelter');
 
 function parseArgs(argv) {
@@ -86,6 +87,7 @@ const trustDocs = buildTrustDocs(policy.trusted);
 const lang = String(args.lang || 'fr').toLowerCase();
 const taskCtl = createTaskController();
 const memory = createMemory();
+const tpWatch = createTeleportWatcher(); // #10 : suivi de position → détection TP + ré-ancrage mapper
 
 // --- Planner autonome (Phase 3) : le but autonome = tâche par défaut de taskCtl ---
 const worldFile = args.world || path.join(__dirname, '..', 'data', `mc_agent_world_${args.user || 'TrainBot'}.json`);
@@ -491,6 +493,7 @@ async function startMapper() {
     worldKey: bot._worldKey,
     memory: bot._worldMemory,
     getSector: () => mapperSector,
+    teleport: tpWatch, // #10 : TP détecté → ré-ancrage (heading propre depuis la position réelle)
     emit,
     fleeFrom,
     // kit incomplet (stall terrain au départ) → re-tenté discrètement toutes les ~10 arrivées :
@@ -591,6 +594,14 @@ async function onSpawn() {
     if (typeof moves.maxDropDown === 'number') moves.maxDropDown = 4; // limite les chutes profondes
     bot.pathfinder.setMovements(moves);
     installReflexes(bot, { emit, fleeFrom });
+    // TÉLÉPORTATION (#10) : détecte tout TP (admin /tp, /home, portail, respawn) → émet
+    // teleport_detected{from,to} + ABANDONNE le goal pathfinder (il visait l'ancienne position —
+    // jamais y retourner à pied). Le mapper consomme le pending pour se ré-ancrer (mapper.js).
+    tpWatch.anchor(bot.entity && bot.entity.position);
+    wireTeleportDetection(bot, tpWatch, {
+      emit,
+      onTeleport: () => { try { stopMotion(); } catch (e) {} },
+    });
     await tryAuth();
     bootDone = true;
   }
