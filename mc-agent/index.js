@@ -631,6 +631,7 @@ function marathonCtx() {
     hasBase: !!world.home,
     hunger: bot.food, // P12 : la vraie faim gate le restock (le stock seul est trop strict)
     foodCompromise: restockFoodFails >= 3 && bot.food != null && bot.food >= 16,
+    homeDist: (world.home && pos) ? Math.hypot(pos.x - world.home.x, pos.z - world.home.z) : undefined,
   };
 }
 
@@ -935,6 +936,20 @@ async function startMarathon() {
       else if (action === 'restock') r = await withTimeout(marathonRestock(), 15 * 60 * 1000, stopMotion);
       else if (action === 'torches') r = await withTimeout(marathonTorches(), 6 * 60 * 1000, stopMotion);
       else if (action === 'iron') r = await withTimeout(gatherIronGoal(9), timeoutFor('gatherIron'), stopMotion);
+      else if (action === 'go_home') {
+        // P23 : trek de retour — abri d'abord si nuit (le trek nocturne tue, vécu run#23/27),
+        // puis pathfinder vers la base, budget large (~760 blocs possibles après respawn).
+        if (isNight(bot)) {
+          await withTimeout(shelterUntilDawn(bot, taskToken, { emit }), 13 * 60 * 1000,
+            () => { try { stopMotion(); } catch (e) {} });
+        }
+        if (!taskToken.cancelled) {
+          const g = await gotoPos(world.home, 3, 25 * 60 * 1000);
+          const d2 = Math.hypot(bot.entity.position.x - world.home.x, bot.entity.position.z - world.home.z);
+          emit({ type: 'go_home', arrived: d2 <= 16, dist: Math.round(d2) });
+          r = d2 <= 16 ? { ok: true } : { ok: false, reason: 'still_far:' + Math.round(d2) };
+        }
+      }
       else if (action === 'scaffold') r = await withTimeout(gather(bot, { name: ['stone', 'deepslate'], count: 16 }, taskToken), 5 * 60 * 1000, stopMotion);
       else if (action === 'spare_pickaxe') r = await withTimeout(marathonSparePickaxe(), 6 * 60 * 1000, stopMotion);
       else if (action === 'descend') r = await withTimeout(marathonDescend(miningYFor(counts)), 15 * 60 * 1000, stopMotion);

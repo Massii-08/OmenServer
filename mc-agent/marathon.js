@@ -79,6 +79,10 @@ function nextAction(ctx) {
     return ctx.hasBase ? 'deposit' : 'base';
   }
 
+  // P23 (3 morts près du spawn monde) : après un RESPAWN loin de la base (>200 blocs), rentrer
+  // D'ABORD — travailler sur place re-mourait dans la même zone hostile, à 760 blocs du coffre.
+  if (ctx.hasBase && ctx.homeDist !== undefined && ctx.homeDist > 200) return 'go_home';
+
   // GATE DE DESCENTE (Massii 12:15) : tant qu'on est EN HAUT (pas à la profondeur de minage),
   // on ne descend que PLEINEMENT chargé — bois ~1 stack, bouffe ~16, 3 pioches, ~48 torches.
   // ctx.foodCompromise : monde sans animaux (restocks food ratés ×3, faim pleine) → on n'attend

@@ -247,3 +247,15 @@ test('P18: 1 pioche restante SANS fer → iron (re-mine immédiat, jamais tomber
   ctx.inv = Object.assign({}, ctx.inv, { iron_pickaxe: 1 });
   assert.strictEqual(nextAction(ctx), 'iron');
 });
+
+// P23 (3 morts au spawn monde) : respawn à 760 blocs de la base → le bot travaillait SUR PLACE
+// (zone hostile) au lieu de rentrer. Règle : loin de la base (>200) → go_home d'abord.
+test('P23: loin de la base (>200 blocs) → go_home avant tout travail local', () => {
+  const ctx = okCtx({ hunger: 20, homeDist: 760, y: 64 });
+  assert.strictEqual(nextAction(ctx), 'go_home');
+});
+
+test('P23: proche de la base → comportement normal (pas de go_home)', () => {
+  const ctx = okCtx({ hunger: 20, homeDist: 12 });
+  assert.strictEqual(nextAction(ctx), 'mine');
+});
