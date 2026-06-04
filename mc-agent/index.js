@@ -164,6 +164,12 @@ async function reclaimBlock(pos, blockName = 'crafting_table') {
 // posée sous la canopée pendant que le bot est dans l'arbre) → on s'en APPROCHE d'abord ; si le craft
 // échoue quand même, on pose une table portable en fallback (vu live MapT1 : stall wooden_pickaxe ×4).
 async function withCraftingTable(fn) {
+  // P13b : table perdue (mort) ET non posée à portée → se la refabriquer (2×2, 4 planches) au lieu
+  // d'échouer no_table en boucle. Best-effort : sans planches on tombe sur l'échec normal.
+  if (!_nearestTable(bot) && !bot.inventory.items().some((i) => i.name === 'crafting_table')
+      && bot.inventory.items().some((i) => i.name.endsWith('_planks'))) {
+    try { await craftItem(bot, { name: 'crafting_table', count: 1 }); } catch (e) {}
+  }
   const t = _nearestTable(bot);
   if (t) {
     try {
@@ -236,6 +242,21 @@ async function smeltWithFurnace(input, output, count, fuelOverride) {
       } catch (e) {}
       near = bot.findBlock({ matching: [fdef.id], maxDistance: 4 });
     }
+  }
+  // P13 (run#12 : torches → no_furnace en boucle) : four perdu à une MORT et jamais re-crafté hors
+  // kit → s'auto-réparer ici (8 cobble → craft), comme la table portable. Couvre smelt/huntCook/torches.
+  if (!near && !bot.inventory.items().some((i) => i.name === 'furnace')) {
+    if (scaffoldCount(bot) < 8) {
+      const sdef = bot.registry.blocksByName.stone;
+      if (sdef && !bot.findBlock({ matching: [sdef.id], maxDistance: 32 })) {
+        await withTimeout(mineDown(bot, { depth: 4 }, taskToken), 60000, () => { try { stopMotion(); } catch (e) {} });
+      }
+      await withTimeout(gather(bot, { name: ['stone', 'deepslate'], count: 8 }, taskToken),
+        120000, () => { try { stopMotion(); } catch (e) {} });
+      if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    }
+    const c = await craftSmart({ name: 'furnace', count: 1 });
+    if (!c.ok) return { ok: false, reason: 'no_furnace_craft:' + (c.reason || '?') };
   }
   let pos = null;
   if (!near) {
