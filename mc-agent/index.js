@@ -261,7 +261,7 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // à 6 min) + branch mining 48 + 2×8 branches (~64 blocs avec pathfinder entre chaque dig). 15 min/chacun.
 // huntCook = 3 vagues de chasse + cuisson au four (vécu Surv5 : tué à 90s en pleine chasse) ;
 // smeltCharcoal = gather bûches éventuel + fonte (180s de smelt max).
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, huntCook: 480000, smeltCharcoal: 300000 };
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, huntCook: 480000, smeltCharcoal: 300000, gatherLog: 240000 };  // gatherLog 4 min : explore vers une forêt lointaine (Surv11 : ×12 timeouts à 90s)
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
