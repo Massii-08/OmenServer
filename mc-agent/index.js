@@ -765,10 +765,12 @@ async function descendRobust(targetY) {
       () => { try { stopMotion(); } catch (e) {} });
     if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
     if (atTarget()) return { ok: true };
-    emit({ type: 'descend_round', round, y: Math.round(bot.entity.position.y), stair: (d && d.reason) || 'ok' });
     const depth = Math.max(1, Math.floor(bot.entity.position.y) - targetY);
-    await withTimeout(mineDown(bot, { depth }, taskToken), 300000,
+    const m = await withTimeout(mineDown(bot, { depth }, taskToken), 300000,
       () => { try { stopMotion(); } catch (e) {} });
+    emit({ type: 'descend_round', round, y: Math.round(bot.entity.position.y),
+      stair: (d && d.reason) || 'ok', stairDetail: (d && d.detail) || undefined,
+      mine: (m && m.reason) || 'ok', mined: (m && m.dug) || 0 });
     if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
     if (atTarget()) return { ok: true };
     // ni l'un ni l'autre n'a abouti : bouger un peu change le contexte terrain pour le round suivant

@@ -87,7 +87,7 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200 } = {}, toke
       if (DANGER.has(t.name)) return { ok: false, reachedY, reason: 'lava_ahead' };
       const tool = bestToolFor(bot, t);
       if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
-      try { await bot.dig(t); } catch (e) { return { ok: false, reachedY, reason: 'dig_failed' }; }
+      try { await bot.dig(t); } catch (e) { return { ok: false, reachedY, reason: 'dig_failed', detail: String((e && e.message) || e).slice(0, 100) }; }
     }
 
     // AVANCE : pathfinder.goto vers la marche (devant-bas) — c'est le seul moyen FIABLE de

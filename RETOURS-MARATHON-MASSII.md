@@ -97,3 +97,61 @@ boucle mapper où il était câblé.
 **Critère de validation (live)** : le bot **traverse ou longe l'eau sans rester bloqué** ; s'il tombe
 dedans, il en **sort en quelques secondes** vers la terre ; aucun épisode « flotte/patauge sur place ».
 + test offline : détection in-water+no-progress → évasion déclenchée.
+
+## 2026-06-04 — C. Table de craft posée ET cassée « en même temps » → suspect `[HAUTE PRIORITÉ]`
+
+**Constat de Massii (en jeu)** : le bot **pose la table de craft et la détruit quasi en même temps**
+→ très suspect. Comportement voulu = **poser la table → crafter ce dont il a besoin → PUIS la casser**.
+Le cycle place→craft→reclaim de `withCraftingTable`/`craftSmart` (piège #41) est trop serré / mal
+séquencé → visuellement ça ressemble à pose+casse instantanées, répétées.
+
+**Ce qui existe déjà** : retour #3 du cartographe (waitForBlock après pose + délais pose→craft→reclaim +
+reclaim **seulement** après craft 100 % fini). À ré-appliquer / durcir côté marathon (qui crafte BEAUCOUP).
+
+**À faire** :
+1. **BATCH les crafts** : quand plusieurs crafts sont nécessaires (kit, réserves, recraft), poser
+   **UNE** table, faire **TOUS** les crafts en attente à cette table, PUIS la reprendre. Jamais
+   place+reclaim par craft individuel.
+2. **Séquence + dwell minimum** : poser → `waitForBlock` (poll `bot.blockAt` jusqu'à voir
+   `crafting_table`) → petit délai humain → craft(s) → petit délai → reclaim. **INTERDIT** de poser et
+   casser dans le même tick / < ~1 s au même endroit (c'est le tell visuel).
+3. **Encore plus humain (option)** : à la BASE, poser une table **PERMANENTE** (ne pas la reprendre) ;
+   le place/reclaim portable seulement loin en minage. Un humain laisse sa table à sa base.
+
+**Critère (live)** : on voit le bot poser la table, crafter plusieurs trucs, **puis** (éventuellement) la
+reprendre — jamais pose+casse simultanées. + test offline : séquence place→(craft×N)→reclaim, dwell mini.
+
+## 2026-06-04 — D. Difficulté à placer un bloc SOUS ses pieds (pillaring) `[HAUTE PRIORITÉ]` (recherche web faite)
+
+**Constat de Massii (en jeu)** : le bot galère toujours à poser un bloc sous ses pieds (monter en
+pilier / sortir d'un trou / bridger). Le skill `pillarUp` du cartographe existe (pose à l'apex via
+`velocity.y`, 8 tests) mais « pas encore branché dans un flux auto » → le marathon ne l'utilise pas
+fiablement.
+
+**Techniques correctes (mineflayer — recherche 2026-06-04)** :
+1. ✅ **PRÉFÉRER le scaffolding intégré du pathfinder** pour tout « atteindre une position plus haute /
+   sortir d'un trou / franchir un gap » : sur l'objet `Movements` →
+   `movements.scafoldingBlocks = [mcData.itemsByName.cobblestone.id, mcData.itemsByName.dirt.id]`
+   ⚠️ **TYPO DE LA LIB : c'est `scafoldingBlocks` (UN seul 'f' au milieu) — `scaffoldingBlocks` ne marche
+   PAS (échec silencieux).** + `movements.allow1by1towers = true` (défaut). Le pathfinder gère le timing
+   apex/pose **en interne** → bien plus fiable que la pose manuelle. À câbler partout où le bot doit monter.
+2. **Pose manuelle sous les pieds** (hors pathfinder) : `bot.placeBlock(referenceBlock, faceVector)` où
+   `referenceBlock` = un bloc **SOLIDE adjacent** (ex. `bot.blockAt(pos.offset(0,-1,0))` = bloc sous le
+   bot) et `faceVector = Vec3(0,1,0)` (face SUPÉRIEURE). On ne peut PAS poser contre de l'air → il FAUT
+   un bloc de référence solide. Pour monter : `sneak` ON (anti-marcher-hors-bord) + look vers le bas +
+   jump + poser sur la face sup du bloc sous soi **À L'APEX** (`velocity.y` passe de + à ~0).
+3. ⚠️ **`placeBlock` échoue aléatoirement** (pathfinder issue #296) → TOUJOURS **vérifier après pose**
+   (`bot.blockAt(target)` est bien le bloc) + **retry** N fois ; sinon le bot tombe.
+4. ⚠️ **Eau** (pathfinder issue #54) : poser un bloc sous soi en nageant est foireux → **sortir de
+   l'eau D'ABORD** (synergie retour B) avant de piller.
+
+Refs : `github.com/PrismarineJS/mineflayer-pathfinder` (`Movements.scafoldingBlocks`/`allow1by1towers` ;
+issues #54 eau, #296 fail aléatoire) ; `mineflayer` issue #2577 (placeBlock sous les pieds). Vérifier les
+signatures exactes dans `node_modules/mineflayer-pathfinder/index.d.ts`.
+
+**À faire** : (1) câbler le scaffolding pathfinder (`scafoldingBlocks` = cobble/dirt) sur les Movements
+du marathon → laisser le pathfinder gérer les montées ; (2) pour les poses délibérées hors-path,
+brancher + durcir `pillarUp` (sneak + apex + **vérif-après-pose + retry**) ; (3) jamais piller dans l'eau.
+
+**Critère (live)** : le bot monte en pilier / sort d'un trou **du premier coup** la plupart du temps
+(retry invisible si rate) ; plus de « galère à poser sous les pieds ».
