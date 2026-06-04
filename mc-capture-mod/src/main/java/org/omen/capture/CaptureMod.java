@@ -40,37 +40,16 @@ public class CaptureMod implements ClientModInitializer {
         });
     }
 
-    /**
-     * Construit la keybind F8 de façon multi-version (réflexion) — UN seul codebase compile
-     * de 1.20.1 à 1.21.11. MC 1.21.6+ : le 4e arg de {@code new KeyBinding(...)} est devenu un
-     * {@code KeyBinding.Category} (record, on prend la catégorie builtin MISC). MC ≤1.21.5 :
-     * c'est une String (clé i18n de catégorie). La réflexion évite de référencer en dur un type
-     * absent de l'autre génération d'API (sinon la compilation croisée échoue).
-     */
-    private static KeyBinding makeToggleKey() {
-        final String tk = "key.mc_capture.toggle";
-        try {
-            Class<?> categoryClass = Class.forName("net.minecraft.client.option.KeyBinding$Category");
-            Object misc = categoryClass.getField("MISC").get(null);
-            return (KeyBinding) KeyBinding.class
-                    .getConstructor(String.class, InputUtil.Type.class, int.class, categoryClass)
-                    .newInstance(tk, InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F8, misc);
-        } catch (ClassNotFoundException pre1216) {
-            try {
-                return (KeyBinding) KeyBinding.class
-                        .getConstructor(String.class, InputUtil.Type.class, int.class, String.class)
-                        .newInstance(tk, InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F8, "key.categories.misc");
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException("KeyBinding (categorie String) introuvable", e);
-            }
-        } catch (ReflectiveOperationException e) {
-            throw new RuntimeException("KeyBinding (categorie Category) introuvable", e);
-        }
-    }
-
     @Override
     public void onInitializeClient() {
-        toggleKey = KeyBindingHelper.registerKeyBinding(makeToggleKey());
+        // MC 1.21.6+ : 4e arg de KeyBinding = KeyBinding.Category (record) ; on prend la builtin MISC.
+        // ⚠️ Référence DIRECTE obligatoire — PAS de réflexion par nom yarn : loom remappe au build les
+        // noms de classes/membres MC (yarn → intermediary) mais PAS les String. Un
+        // Class.forName("net.minecraft.client.option.KeyBinding$Category") échoue donc au RUNTIME sur
+        // un client remappé (ClassNotFoundException) → crash de l'entrypoint client. Conséquence : ce
+        // code cible MC 1.21.6+ ; les jars ≤1.21.5 sont figés/committés (cf. build-all-versions.sh).
+        toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.mc_capture.toggle", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F8, KeyBinding.Category.MISC));
 
         RecHud.register();
 

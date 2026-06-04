@@ -26,7 +26,10 @@ cd "$(dirname "$0")"
 #    1.10.5 / Gradle 8.12 échouait ("Unsupported unpick version"). La toolchain est désormais
 #    loom 1.16.3 (build.gradle) + Gradle 9.4.1 (gradle-wrapper.properties) — compatible 1.20.1
 #    → 1.21.11. De plus 1.21.6+ a cassé des API (KeyBinding.Category record, GameProfile.name())
-#    → CaptureMod.java gère les 2 générations en réflexion (1 seul codebase, cf. compile-check).
+#    → CaptureMod.java cible MC 1.21.6+ en référence DIRECTE (KeyBinding.Category.MISC). PAS de
+#    réflexion par nom yarn : loom ne remappe pas les String → Class.forName(<yarn>) crashe au
+#    RUNTIME sur client remappé. Les jars ≤1.21.5 sont FIGÉS (committés) ; rebuild d'une version
+#    ≤1.21.5 = checkout du code d'avant 2026-06-04 (sinon échec de compil KeyBinding.Category).
 # Format : <mc_version>|<java_release>|<yarn_mappings>|<loader_version>|<fabric_api_version>
 # Valeurs basées sur https://fabricmc.net/develop (juin 2026). Si un build échoue
 # avec "Could not resolve dependency", chercher la dernière yarn/fabric-api pour
