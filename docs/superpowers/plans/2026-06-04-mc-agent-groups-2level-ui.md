@@ -2,7 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Réorganiser l'UI MC Agent en navigation 2 niveaux (Créer groupe / Mes serveurs → vue groupe : Bots ouvriers / Carte / Modifier), avec des bots persistants par groupe (chacun son compte + secret mémorisé) et le lancement de 1+ cartographes depuis l'onglet Carte.
+**Goal:** Réorganiser l'UI MC Agent en navigation 2 niveaux (Créer groupe / Groupes → vue groupe : **Multi-bot** / **Mapping**), avec des bots persistants par groupe (chacun cracké/offline OU compte officiel Microsoft) et le lancement de plusieurs cartographes + un **bouton « ouvrir la carte »** dans l'onglet Mapping.
+
+> ## ⚠️ CORRECTION DESIGN (Massii, 2026-06-04 PM) — AUTORITAIRE, prime sur les Tasks 8-12 ci-dessous
+> **Navigation exacte voulue :**
+> - À l'ouverture de MC Agent = **2 onglets niveau 1** : **« Créer groupe »** et **« Groupes »**.
+> - **« Créer groupe »** : formulaire (IP/port, **commandes**, **authentification/login**) → crée un groupe qui apparaît dans la liste de l'onglet **« Groupes »**.
+> - **« Groupes »** : liste des groupes créés, **cliquables**. Clic sur un groupe (ex. « test serveur ») → ouvre la **vue du groupe**.
+> - **Vue du groupe = EXACTEMENT 2 onglets** (PAS 3, pas d'onglet « Modifier ») :
+>   - **« Multi-bot »** : créer **plusieurs bots** ouvriers (qui font tout), en choisissant pour chacun **cracké/offline** OU **compte officiel Microsoft**. Liste + start/stop.
+>   - **« Mapping »** : créer **plusieurs bots cartographes** (même UI de création que Multi-bot, mais role mapper) + un **BOUTON « Ouvrir la carte »** qui affiche la **carte du serveur** où tournent ces bots (modale/panneau ; réutilise le viewer carte existant scopé au groupe).
+> - **Édition des réglages du groupe** : PAS un onglet → un petit **bouton/engrenage ⚙ « réglages »** dans l'en-tête de la vue groupe (décision prise en autonomie ; rouvre le formulaire de création pré-rempli → `PUT /servers/{id}`).
+> **Le backend (Tasks 1-7) est inchangé** : role `worker` = onglet Multi-bot, role `mapper` = onglet Mapping. Seuls les noms/structure frontend changent (voir cette correction, pas les anciens noms « Bots ouvriers/Carte/Modifier »).
 
 **Architecture:** Le « groupe » étend le profil serveur existant (`data/mc_agent_servers.json`) avec un roster `bots[]` + flags login ; les secrets (mdp AuthMe / token MS) vivent dans un fichier séparé chmod 600 hors API. Le frontend (`frontend/js/bots_module.js`) passe de 3 onglets plats à 2 niveaux. Le moteur bot (objectif `mapper`, secteurs, world-memory) est réutilisé tel quel.
 

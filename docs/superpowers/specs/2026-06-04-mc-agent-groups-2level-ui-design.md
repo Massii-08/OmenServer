@@ -18,22 +18,24 @@ Restructurer l'UI MC Agent (actuellement onglets plats *Lancer / Serveurs / Cart
 ## 2. Navigation (2 niveaux)
 
 ```
-MC-Agent (à l'ouverture)
+MC-Agent (à l'ouverture) = 2 onglets niveau 1
 │
-├─ Onglet « Créer un groupe »   → formulaire de création (nom, IP/port, commandes, login/auth, réglages)
+├─ Onglet « Créer groupe »   → formulaire : IP/port, commandes, authentification/login → crée un groupe
 │
-└─ Onglet « Mes serveurs »       → liste des groupes créés (cartes cliquables : nom, IP, nb bots, statut)
+└─ Onglet « Groupes »         → liste des groupes créés (cartes cliquables : nom, IP, nb bots, statut)
         │
-        └─ (clic sur un groupe) → VUE DU GROUPE, 3 sous-onglets :
-               ├─ « Bots ouvriers » → bouton [+ Bot ouvrier] · liste des ouvriers · start/stop chacun
-               ├─ « Carte »         → carte du groupe (auto-refresh) + section Cartographes :
-               │                       bouton [+ Cartographe] · liste · lancer 1 ou plusieurs · start/stop
-               └─ « Modifier »      → éditer la config générale du groupe
+        └─ (clic sur un groupe, ex. « test serveur ») → VUE DU GROUPE = EXACTEMENT 2 onglets :
+               ├─ « Multi-bot » → créer plusieurs bots OUVRIERS (chacun : cracké/offline OU compte officiel
+               │                  Microsoft) · liste · start/stop
+               └─ « Mapping »   → créer plusieurs bots CARTOGRAPHES (même UI, role mapper) · liste · start/stop
+                                  · lancer N · + BOUTON « Ouvrir la carte » (carte du serveur où tournent ces bots)
+          (+ petit engrenage ⚙ « réglages » dans l'en-tête → édite la config du groupe via PUT /servers/{id})
 ```
 
 - Niveau 1 = **gestion des groupes** (créer / lister).
-- Niveau 2 = **vue d'un groupe** (ses bots + sa carte + ses réglages). Un fil d'Ariane / bouton « ← retour » ramène à la liste.
-- État de navigation persistant en mémoire JS (`BotsModule._mca*`) ; pas besoin de routing hash dédié (rester dans le pattern SPA existant).
+- Niveau 2 = **vue d'un groupe** = **2 onglets** : Multi-bot (ouvriers) + Mapping (cartographes + bouton carte). Pas d'onglet « Modifier » → un engrenage ⚙ dans l'en-tête. Fil d'Ariane / « ← retour » ramène à la liste.
+- La **carte** s'ouvre via un **bouton** dans Mapping (modale/panneau) — réutilise le viewer carte existant scopé au `group_id`.
+- État de navigation persistant en mémoire JS (`BotsModule._mca*`) ; pas de routing hash dédié (pattern SPA existant).
 
 ---
 
