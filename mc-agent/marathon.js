@@ -93,7 +93,9 @@ function nextAction(ctx) {
   // pas l'impossible, la nourriture ne bloque plus (le bois/torches/pioches restent exigés).
   const preparing = ctx.y !== undefined && ctx.y > targetY + 2;
   if (preparing) {
-    if (woodUnits(ctx.inv) < RESERVES.woodReady) return 'restock';
+    // P48 : zone re-déforestée → woodCompromise (3 restocks bois ratés + ≥24 unités en poche).
+    if (woodUnits(ctx.inv) < RESERVES.woodReady
+        && !(ctx.woodCompromise && woodUnits(ctx.inv) >= 24)) return 'restock';
     if (cookedFood(ctx.inv) < RESERVES.foodReady && !ctx.foodCompromise) return 'restock';
     if (n(ctx.inv, 'iron_pickaxe') < RESERVES.pickaxesReady) {
       return (n(ctx.inv, 'iron_ingot') + n(ctx.inv, 'raw_iron') >= 3) ? 'spare_pickaxe' : 'iron';

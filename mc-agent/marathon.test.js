@@ -296,3 +296,14 @@ test('P45: sumBanked agrège tous les coffres connus', () => {
   assert.strictEqual(banked.cobblestone, 218);
   assert.strictEqual(banked.diorite, 11);
 });
+
+// P48 : zones re-déforestées → restock bois ∞ alors que 43 unités suffisent largement.
+test('P48: woodCompromise (3 restocks bois ratés + ≥24 unités) → la descente passe', () => {
+  const ctx = loadedCtx({ inv: { oak_log: 30, oak_planks: 0 }, woodCompromise: true });
+  assert.strictEqual(nextAction(ctx), 'descend');
+});
+
+test('P48: sans compromise, bois <64 bloque toujours (Massii READY)', () => {
+  const ctx = loadedCtx({ inv: { oak_log: 30, oak_planks: 0 } });
+  assert.strictEqual(nextAction(ctx), 'restock');
+});

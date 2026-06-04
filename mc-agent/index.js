@@ -634,6 +634,7 @@ function marathonSurplus() {
 // Compromis nourriture : ≥3 restocks food ratés d'affilée (monde sans animaux) + faim pleine
 // → le gate READY de descente n'attend plus l'impossible (cf. nextAction.foodCompromise).
 let restockFoodFails = 0;
+let restockWoodFails = 0; // P48 : miroir bois du compromis nourriture
 let depositFarFails = 0; // P39 : constats consécutifs « pas à la base » → re-base en profondeur
 
 function marathonCtx() {
@@ -647,6 +648,7 @@ function marathonCtx() {
     hunger: bot.food, // P12 : la vraie faim gate le restock (le stock seul est trop strict)
     armored: !!(bot.inventory && bot.inventory.slots && bot.inventory.slots[6]), // P41
     foodCompromise: restockFoodFails >= 3 && bot.food != null && bot.food >= 16,
+    woodCompromise: restockWoodFails >= 3,
     homeDist: (world.home && pos) ? Math.hypot(pos.x - world.home.x, pos.z - world.home.z) : undefined,
   };
 }
@@ -1179,7 +1181,8 @@ async function startMarathon() {
     // suivi du compromis nourriture (gate READY) : ratés food consécutifs vs succès
     if (action === 'restock') {
       if (r && r.ok === false && String(r.reason || '').includes('food')) restockFoodFails++;
-      else if (r && r.ok) restockFoodFails = 0;
+      if (r && r.ok === false && String(r.reason || '').includes('wood')) restockWoodFails++;
+      if (r && r.ok) { restockFoodFails = 0; restockWoodFails = 0; }
     }
     if (!r || r.ok === false) {
       emit({ type: 'marathon_action_failed', action, reason: (r && r.reason) || 'unknown' });
