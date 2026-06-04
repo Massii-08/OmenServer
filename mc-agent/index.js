@@ -590,6 +590,7 @@ function marathonCtx() {
     y: pos ? pos.y : undefined,
     emptySlots: bot.inventory && bot.inventory.emptySlotCount ? bot.inventory.emptySlotCount() : undefined,
     hasBase: !!world.home,
+    hunger: bot.food, // P12 : la vraie faim gate le restock (le stock seul est trop strict)
   };
 }
 

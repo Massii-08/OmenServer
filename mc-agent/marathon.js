@@ -77,7 +77,11 @@ function nextAction(ctx) {
 
   // Réserves de SURFACE (food + bois) → un seul trip combiné. ⚠️ AVANT toute logique de descente
   // (P8 vécu run#9 : la branche !hasBase court-circuitait ce check → descente le ventre vide).
-  if (cookedFood(ctx.inv) < RESERVES.foodLow) return 'restock';
+  // P12 (run#11 : zone sans animaux → restock infini avec faim 20/20) : le stock de bouffe est une
+  // ASSURANCE — on ne bloque que si le stock est bas ET que la faim est réellement entamée (≤12).
+  // ctx.hunger absent (anciens appels/tests) → comportement strict conservé.
+  if (cookedFood(ctx.inv) < RESERVES.foodLow
+      && (ctx.hunger === undefined || ctx.hunger <= 12)) return 'restock';
   if (woodUnits(ctx.inv) < RESERVES.woodLow) return 'restock';
 
   // Torches : craftables sur place si charbon dispo (le bois vient d'être garanti ci-dessus).

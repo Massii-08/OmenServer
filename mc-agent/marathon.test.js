@@ -160,3 +160,23 @@ test('P8: bois bas SANS base → restock avant descente', () => {
   ctx.inv = Object.assign({}, ctx.inv, { oak_log: 0, oak_planks: 0 });
   assert.strictEqual(nextAction(ctx), 'restock');
 });
+
+// P12 (run#11) : zone sans animaux → restock infini alors que la FAIM est pleine (20/20).
+// Le stock de bouffe est une ASSURANCE : on ne bloque la progression que si (stock bas ET faim entamée).
+test('P12: stock 0 mais faim pleine → on continue (mine), pas de restock bloquant', () => {
+  const ctx = okCtx({ hunger: 20 });
+  ctx.inv = Object.assign({}, ctx.inv, { cooked_beef: 0 });
+  assert.strictEqual(nextAction(ctx), 'mine');
+});
+
+test('P12: stock 0 ET faim entamée (≤12) → restock', () => {
+  const ctx = okCtx({ hunger: 11 });
+  ctx.inv = Object.assign({}, ctx.inv, { cooked_beef: 0 });
+  assert.strictEqual(nextAction(ctx), 'restock');
+});
+
+test('P12: hunger absent (rétro-compat tests) → comportement strict conservé', () => {
+  const ctx = okCtx();
+  ctx.inv = Object.assign({}, ctx.inv, { cooked_beef: 0 });
+  assert.strictEqual(nextAction(ctx), 'restock');
+});
