@@ -1057,8 +1057,19 @@ async function startMarathon() {
             // P31 : hops 24 — la zone spawn est CRIBLÉE de trous/eau/lave (37 runs de tests) ;
             // un hop de 64 y fait exploser la frontière A* (goto accepté, jamais exécuté).
             const step = Math.min(24, before);
-            const tx = pme.x + (world.home.x - pme.x) / before * step;
-            const tz = pme.z + (world.home.z - pme.z) / before * step;
+            let tx = pme.x + (world.home.x - pme.x) / before * step;
+            let tz = pme.z + (world.home.z - pme.z) / before * step;
+            // P44 : cible de hop proche d'un point de mort connu → décalage perpendiculaire 40
+            for (const ds of (world.deathSpots || [])) {
+              if (Math.hypot(tx - ds.x, tz - ds.z) < 32) {
+                const px2 = -(world.home.z - pme.z) / before;
+                const pz2 = (world.home.x - pme.x) / before;
+                const side = ((tx - ds.x) * px2 + (tz - ds.z) * pz2) >= 0 ? 1 : -1;
+                tx += px2 * 40 * side; tz += pz2 * 40 * side;
+                emit({ type: 'go_home_avoid_deathspot', ds, side });
+                break;
+              }
+            }
             const goal = pfGoals.GoalNearXZ ? new pfGoals.GoalNearXZ(tx, tz, 8)
               : new pfGoals.GoalNear(tx, pme.y, tz, 8);
             // 45 s/saut : 64 blocs se marchent en <40 s — un pathfinder vivant BOUGE (P28 fail-fast)
@@ -1519,9 +1530,13 @@ bot.on('death', () => {
   const p = bot.entity && bot.entity.position;
   if (p) {
     lastDeath = { x: p.x, y: p.y, z: p.z, t: Date.now() };
-    // P10 : persister la mort — un restart du process (crash/redeploy) perdait la position
-    // → pas de récupération d'items à la reprise alors qu'ils restent 5 min au sol.
-    try { world.lastDeath = lastDeath; saveWorld(worldFile, world); } catch (e) {}
+    // P10 : persister la mort. P44 : mémoriser les POINTS DE MORT (morts #8/#9 aux MÊMES
+    // coordonnées : piège fixe sur le couloir de trek) → les hops go_home les évitent.
+    try {
+      world.lastDeath = lastDeath;
+      world.deathSpots = ((world.deathSpots || []).concat([{ x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) }])).slice(-20);
+      saveWorld(worldFile, world);
+    } catch (e) {}
   }
   // Garde-fou anti-boucle de mort : 3 morts / 10 min → stop + notifie (sinon respawn → onSpawn → reprise).
   deathTimes.push(Date.now());
