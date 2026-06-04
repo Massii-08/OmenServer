@@ -37,7 +37,7 @@ const fs = require('fs');
 const { runPlanner } = require('./planner');
 const { chainFor, buildCtxInv, firstUnmet, cookedCount } = require('./goals');
 const { huntPassive } = require('./skills/hunt');
-const { nearestPassive } = require('./survival');
+const { nearestPassive, survivalTick } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
 const { _nearestTable } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { placeBlockNear } = require('./skills/placeBlockNear');
@@ -48,6 +48,7 @@ const { classifyAuthPrompt, genPassword } = require('./auth');
 const { loadMemory, worldKey } = require('./worldMemory');
 const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
+const { isNight, shelterUntilDawn } = require('./skills/shelter');
 
 function parseArgs(argv) {
   const o = {};
@@ -393,9 +394,35 @@ async function tryKitUpgrade() {
   } catch (e) { /* best-effort : on cartographie à la pierre */ }
 }
 
+// SURVIE PENDANT LE KIT (vécu Surv4 : 7 morts nocturnes — le planner n'avait AUCUNE survie active,
+// seuls les réflexes minimaux) : avant chaque skill, on règle les menaces comme le fait la boucle
+// mapper (combat 1-2 hostiles / fuite si submergé ou PV bas / manger), avec cap anti-blocage.
+async function settleSurvivalKit() {
+  for (let i = 0; i < 10; i++) {
+    if (taskToken.cancelled) return;
+    const action = await survivalTick(bot, { fleeFrom, emit });
+    if (!action) return;
+    await sleep(1500);
+  }
+}
+
 // Exécute un skill de but avec timeout + TÉLÉMÉTRIE d'échec : sans la raison dans les logs live,
 // un stall est indiagnosticable à distance (vécu Surv2 : stone_sword ×5 sans explication).
+let lastShelterT = 0; // anti re-trigger : 1 abri par nuit max
+
 async function runSkillWithTelemetry(g) {
+  await settleSurvivalKit();                                  // survie d'abord, le craft ensuite
+  if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  // NUIT + (mort récente OU PV bas) pendant le kit → ABRI jusqu'à l'aube (vécu Surv4 : 7 morts
+  // nocturnes en boucle ; un trou couvert coûte 2 blocs et sauve le kit).
+  const deathsRecent = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000).length;
+  if (isNight(bot) && (deathsRecent >= 1 || (bot.health != null && bot.health <= 10))
+      && Date.now() - lastShelterT > 10 * 60 * 1000) {
+    lastShelterT = Date.now();
+    await withTimeout(shelterUntilDawn(bot, taskToken, { emit }), 13 * 60 * 1000,
+      () => { try { stopMotion(); } catch (e) {} });
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  }
   const r = await withTimeout(runGoalSkill(g), timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} });
   if (!r || r.ok === false) emit({ type: 'goal_failed', name: g.name, reason: (r && r.reason) || 'unknown' });
   return r;
@@ -460,6 +487,16 @@ async function startAutonomous(sender) {
   saveWorld(worldFile, world);
   taskToken = taskCtl.begin('autonomous', stopMotion);
   emit({ type: 'autonomous_start', objective: objType });
+  // RÉCUPÉRATION POST-MORT (vécu Surv4 : chaque mort = kit perdu = re-kit de zéro = spirale) :
+  // les items restent 5 min au sol → on retourne les ramasser AVANT de reprendre (borné, best-effort).
+  if (lastDeath && Date.now() - lastDeath.t < 4 * 60 * 1000) {
+    const d = lastDeath; lastDeath = null;
+    emit({ type: 'death_recovery', x: Math.round(d.x), y: Math.round(d.y), z: Math.round(d.z) });
+    await withTimeout(
+      bot.pathfinder.goto(new pfGoals.GoalNear(d.x, d.y, d.z, 1)),
+      90000, () => { try { stopMotion(); } catch (e) {} });
+    await sleep(1500); // laisser le pickup aspirer les items au sol
+  }
   if (objType === 'mapper') return startMapper(); // rôle continu : jamais « done »
   const chain = chainFor(objType);               // pioche pierre (MVP) ou pioche fer (IRON_CHAIN)
   const res = await runPlanner(bot, {
@@ -745,8 +782,12 @@ bot.on('messagestr', (msg) => {
   }
 });
 
+let lastDeath = null; // {x,y,z,t} — pour retourner ramasser ses items au respawn (despawn 5 min)
+
 bot.on('death', () => {
   emit({ type: 'status', state: 'dead' });
+  const p = bot.entity && bot.entity.position;
+  if (p) lastDeath = { x: p.x, y: p.y, z: p.z, t: Date.now() };
   // Garde-fou anti-boucle de mort : 3 morts / 10 min → stop + notifie (sinon respawn → onSpawn → reprise).
   deathTimes.push(Date.now());
   deathTimes = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000);
