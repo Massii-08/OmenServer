@@ -1037,6 +1037,7 @@ const BotsModule = {
  if (this._mcAgentTimer) { clearInterval(this._mcAgentTimer); this._mcAgentTimer = null; }
  this._mcaMapStop();
  this._mcaWorkersStop();
+ this._mcaMapViewerOpen = false;
  this._mcAgentSession = this._mcAgentSession || null;
  const el = this._container || document.getElementById('bots-module-container')?.parentElement;
  if (!el) return;
@@ -1044,9 +1045,10 @@ const BotsModule = {
  this._mcaRecTester = !!(__mcaU && !__mcaU.is_admin && __mcaU.role === 'rectester');
  if (this._mcaRecTester) return this._renderMCAgentRecTester(el);
  // Navigation 2 niveaux :
- //  niveau 1 : _mcaView ∈ {create,list,tools} (défaut 'list')
- //  niveau 2 : _mcaGroupId non-null → vue groupe, sous-onglets _mcaGroupTab ∈ {workers,map,edit}
- this._mcaView = this._mcaView || 'list';
+ //  niveau 1 : _mcaView ∈ {create,list} (défaut 'list')
+ //  niveau 2 : _mcaGroupId non-null → vue groupe, sous-onglets _mcaGroupTab ∈ {workers,map}
+ //             (édition des réglages via l'engrenage ⚙ de l'en-tête, plus par onglet)
+ this._mcaView = (this._mcaView === 'create') ? 'create' : 'list';
  this._mcaGroupId = this._mcaGroupId || null;
  this._mcaGroupTab = this._mcaGroupTab || 'workers';
  el.innerHTML = `<div class="card"><h3 style="margin:0 0 12px;">MC Agent — ${Lang.t('mcagent.training')}</h3><div id="mca-root"></div></div>`;
@@ -1063,11 +1065,9 @@ const BotsModule = {
  <div style="display:flex;gap:6px;margin:0 0 14px;border-bottom:1px solid var(--border);">
  ${tabBtn('create', Lang.t('mcagent.nav.create'))}
  ${tabBtn('list', Lang.t('mcagent.nav.list'))}
- ${tabBtn('tools', Lang.t('mcagent.nav.tools'))}
  </div>
  <div id="mca-tabbody"></div>`;
  if (v === 'create') this._renderGroupCreate();
- else if (v === 'tools') this._renderMCALaunch();
  else this._renderGroupList();
  },
 
@@ -1076,6 +1076,8 @@ const BotsModule = {
  this._mcaWorkersStop();
  this._mcaGroupId = null;
  this._mcaEditing = null;
+ this._mcaSettingsOpen = false;
+ this._mcaMapViewerOpen = false;
  this._mcaView = view;
  this._renderMCARoot();
  },
@@ -1085,6 +1087,8 @@ const BotsModule = {
  this._mcaMapStop();
  this._mcaWorkersStop();
  this._mcaWorkerForm = false;
+ this._mcaSettingsOpen = false;
+ this._mcaMapViewerOpen = false;
  this._mcaGroupId = id;
  this._mcaGroupTab = 'workers';
  this._renderMCARoot();
@@ -1095,6 +1099,8 @@ const BotsModule = {
  this._mcaWorkersStop();
  this._mcaGroupId = null;
  this._mcaEditing = null;
+ this._mcaSettingsOpen = false;
+ this._mcaMapViewerOpen = false;
  this._mcaView = 'list';
  this._renderMCARoot();
  },
@@ -1103,6 +1109,8 @@ const BotsModule = {
  this._mcaMapStop();
  this._mcaWorkersStop();
  this._mcaWorkerForm = false;
+ this._mcaSettingsOpen = false;
+ this._mcaMapViewerOpen = false;
  this._mcaGroupTab = tab;
  this._renderMCARoot();
  },
@@ -1126,7 +1134,9 @@ const BotsModule = {
   g = this._mcaGroup();
  }
  if (!g) { this.backToList(); return; }
- const tab = this._mcaGroupTab || 'workers';
+ // Réglages du groupe : ouverts via l'engrenage ⚙ de l'en-tête (panneau dépliable, plus d'onglet « Modifier »).
+ const settingsOpen = !!this._mcaSettingsOpen;
+ const tab = (this._mcaGroupTab === 'map') ? 'map' : 'workers';
  const tabBtn = (id, label) => `<button class="btn btn-ghost btn-sm" style="border-radius:0;border-bottom:2px solid ${tab === id ? 'var(--accent)' : 'transparent'};" onclick="BotsModule.switchMCAGroupTab('${id}')">${label}</button>`;
  root.innerHTML = `
  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
@@ -1135,16 +1145,16 @@ const BotsModule = {
  <div style="font-weight:600;">${this._escapeHtml(g.name)}</div>
  <div style="font-size:12px;color:var(--text-muted);font-family:var(--font-mono);">${this._escapeHtml(g.host || '?')}:${g.port}</div>
  </div>
+ <button class="btn ${settingsOpen ? 'btn-secondary' : 'btn-ghost'} btn-sm" style="margin-left:auto;" aria-expanded="${settingsOpen}" title="${Lang.t('mcagent.group.settings')}" onclick="BotsModule.toggleGroupSettings()">⚙ ${Lang.t('mcagent.group.settings')}</button>
  </div>
- <div style="display:flex;gap:6px;margin:0 0 14px;border-bottom:1px solid var(--border);">
+ ${settingsOpen ? '' : `<div style="display:flex;gap:6px;margin:0 0 14px;border-bottom:1px solid var(--border);">
  ${tabBtn('workers', Lang.t('mcagent.nav.workers'))}
  ${tabBtn('map', Lang.t('mcagent.nav.map'))}
- ${tabBtn('edit', Lang.t('mcagent.nav.edit'))}
- </div>
+ </div>`}
  <div id="mca-tabbody"></div>`;
  const body = document.getElementById('mca-tabbody');
- if (tab === 'edit') {
-  // réutilise l'éditeur (pré-rempli) — finalisé Task 12
+ if (settingsOpen) {
+  // Panneau réglages (engrenage) : réutilise l'éditeur (pré-rempli).
   this._mcaEditing = JSON.parse(JSON.stringify(g));
   if (!Array.isArray(this._mcaEditing.custom)) this._mcaEditing.custom = [];
   if (!Array.isArray(this._mcaEditing.trusted)) this._mcaEditing.trusted = [];
@@ -1156,6 +1166,14 @@ const BotsModule = {
  } else {
   this._renderGroupWorkers();
  }
+ },
+
+ // Ouvre/ferme le panneau réglages du groupe (engrenage ⚙). Coupe les timers carte/workers à l'ouverture.
+ toggleGroupSettings() {
+ this._mcaSettingsOpen = !this._mcaSettingsOpen;
+ if (this._mcaSettingsOpen) { this._mcaMapStop(); this._mcaWorkersStop(); this._mcaMapViewerOpen = false; }
+ else { this._mcaEditing = null; }
+ this._renderMCARoot();
  },
 
  // ============ Task 10 — Onglet « Bots ouvriers » ============
@@ -1641,12 +1659,15 @@ const BotsModule = {
  }).join('');
  },
 
- // Ouvre directement la vue groupe sur l'onglet Modifier.
+ // Ouvre directement la vue groupe avec le panneau réglages (engrenage ⚙) déplié.
  openGroupEdit(id) {
  this._mcaMapStop();
  this._mcaWorkersStop();
+ this._mcaWorkerForm = false;
+ this._mcaMapViewerOpen = false;
  this._mcaGroupId = id;
- this._mcaGroupTab = 'edit';
+ this._mcaGroupTab = 'workers';
+ this._mcaSettingsOpen = true;
  this._renderMCARoot();
  },
 
@@ -1816,8 +1837,8 @@ const BotsModule = {
  if (!r || !r.ok) { Toast.error(Lang.t('mcagent.cfg.srv_save_err')); return; }
  this._mcaEditing = null;
  if (fromGroup) {
-  // Édition depuis la vue groupe → on RESTE dans le groupe (onglet Modifier).
-  this._mcaGroupTab = 'edit';
+  // Édition depuis la vue groupe → on FERME le panneau réglages et on revient à la vue groupe.
+  this._mcaSettingsOpen = false;
   this._renderMCARoot();
  } else {
   // Création d'un groupe → liste niveau 1.
@@ -1831,8 +1852,8 @@ const BotsModule = {
  const fromGroup = !!this._mcaGroupId;
  this._mcaEditing = null;
  if (fromGroup) {
-  // Annulation depuis la vue groupe → re-render la vue groupe (onglet Modifier).
-  this._mcaGroupTab = 'edit';
+  // Annulation depuis la vue groupe → ferme le panneau réglages, retour à la vue groupe.
+  this._mcaSettingsOpen = false;
   this._renderMCARoot();
  } else {
   this._mcaGroupId = null;
@@ -1885,7 +1906,19 @@ const BotsModule = {
  const m = this._mcaMapState();
  // scope : la carte ne montre QUE la mémoire de monde de ce groupe
  if (m.sid !== group.id) { m.sid = group.id; m.world = null; m.fitted = {}; m.hidden = {}; m.data = null; }
+ const viewerOpen = !!this._mcaMapViewerOpen;
+ // Contenu PRINCIPAL = gestion des cartographes. La carte n'est PAS inline : elle vit derrière
+ // le bouton « Ouvrir la carte » (panneau dépliable). Auto-refresh + resize armés UNIQUEMENT
+ // quand la carte est ouverte (cf. _openMapViewer).
  body.innerHTML = `
+ <div style="border-bottom:1px solid var(--border);margin:0 0 14px;padding-bottom:14px;">
+ <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+ <div style="font-weight:600;">${Lang.t('mcagent.map.mappers_title')}</div>
+ <button class="btn ${viewerOpen ? 'btn-secondary' : 'btn-primary'} btn-sm" style="margin-left:auto;" aria-expanded="${viewerOpen}" onclick="BotsModule.toggleMapViewer()">${viewerOpen ? Lang.t('mcagent.map.close_map') : Lang.t('mcagent.map.open_map')}</button>
+ </div>
+ <div style="font-size:12px;color:var(--text-muted);">${Lang.t('mcagent.map.mappers_hint')}</div>
+ </div>
+ <div id="mca-map-viewer" style="display:${viewerOpen ? 'block' : 'none'};margin-bottom:18px;">
  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
  <select id="mca-map-world" class="form-input" style="max-width:170px;" onchange="BotsModule._mcaMapPickWorld(this.value)"></select>
  <button class="btn btn-secondary btn-sm" onclick="BotsModule._mcaMapRefresh()">${Lang.t('mcagent.map.refresh')}</button>
@@ -1902,22 +1935,30 @@ const BotsModule = {
  </div>
  <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">${Lang.t('mcagent.map.hint')}</div>
  <div id="mca-map-legend" style="margin-top:10px;"></div>
- <div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:14px;">
- <div style="font-weight:600;margin-bottom:4px;">${Lang.t('mcagent.map.mappers_title')}</div>
- <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">${Lang.t('mcagent.map.mappers_hint')}</div>
- <div id="mca-map-mappers"><div style="font-size:12px;color:var(--text-dim);">…</div></div>
- </div>`;
- this._mcaMapBindCanvas();
+ </div>
+ <div id="mca-map-mappers"><div style="font-size:12px;color:var(--text-dim);">…</div></div>`;
  await this._reloadGroupMappers();
- await this._mcaMapRefresh();
- // Auto-refresh statut des cartographes dans le même tick que la carte (timer m.timer géré
- // par _mcaMapAutoToggle). On rafraîchit aussi un statut léger toutes les 5s tant que l'onglet
- // map est visible, en réutilisant la même infra que les workers (pas de timer empilé).
+ if (viewerOpen) {
+  // (Re)montage de la carte : bind canvas + 1ère charge + arme l'auto-refresh des cartographes.
+  this._mcaMapBindCanvas();
+  await this._mcaMapRefresh();
+ }
+ // Auto-refresh statut des cartographes (5s) tant que l'onglet map est visible — indépendant de la carte.
  this._mcaWorkersStop();
  this._mcaWorkersTimer = setInterval(() => {
-  if (this._mcaGroupId && this._mcaGroupTab === 'map' && document.getElementById('mca-map-mappers')) BotsModule._refreshMappersStatus();
+  if (this._mcaGroupId && this._mcaGroupTab === 'map' && !this._mcaSettingsOpen && document.getElementById('mca-map-mappers')) BotsModule._refreshMappersStatus();
   else BotsModule._mcaWorkersStop();
  }, 5000);
+ },
+
+ // Ouvre/ferme la carte (panneau dépliable de l'onglet Mapping).
+ // ⚠️ Les timers carte (m.timer auto-refresh) + le listener resize ne tournent QUE carte ouverte :
+ //    _mcaMapStop() les coupe à la fermeture (pas de fuite de timer).
+ toggleMapViewer() {
+ this._mcaMapViewerOpen = !this._mcaMapViewerOpen;
+ if (!this._mcaMapViewerOpen) this._mcaMapStop(); // coupe auto-refresh carte + resize
+ const g = this._mcaGroup();
+ if (g) this._renderGroupMap(g);
  },
 
  // Recharge groupe + sessions actives puis re-render du roster cartographes.
