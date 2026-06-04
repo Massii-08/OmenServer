@@ -439,3 +439,37 @@ test('runMapper : ÎLE (3 cycles bloqués) → TRAVERSÉE à la nage (mapper_cro
   const d = Math.sqrt(cross.x * cross.x + cross.z * cross.z);
   assert.ok(d >= 100 - 1e-6, `traversée trop courte (${d.toFixed(0)})`);
 });
+
+test('runMapper : note les minerais EXPOSÉS en route → exposed_ore_found (coords 3D, dédup par bloc)', async () => {
+  const bot = fakeMapperBot();
+  bot.registry.blocksByName = { iron_ore: { id: 10 } };
+  // findBlocks voit 2 iron_ore : (12,60,-7) EXPOSÉ (voisin air au-dessus), (13,60,-7) ENTERRÉ.
+  bot.findBlocks = () => [vec3(12, 60, -7), vec3(13, 60, -7)];
+  const base = bot.blockAt.bind(bot);
+  bot.blockAt = (p) => {
+    if (p.y === 60 && p.z === -7 && (p.x === 12 || p.x === 13)) {
+      return { name: 'iron_ore', boundingBox: 'block', biome: { name: 'plains', id: 1 } };
+    }
+    if (p.x === 12 && p.y === 61 && p.z === -7) {
+      return { name: 'air', boundingBox: 'empty', biome: { name: 'plains', id: 1 } }; // la face exposée
+    }
+    return base(p);
+  };
+  const events = [];
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: (e) => {
+      events.push(e);
+      // plusieurs arrivées (≥3 biomes) pour PROUVER la dédup : le même ore re-scanné n'est émis qu'1×
+      if (events.filter((x) => x.type === 'biome_seen').length >= 3 || events.length > 800) token.cancelled = true;
+    },
+    goto: async (wp) => { bot.entity.position = vec3(wp.x, 64, wp.z); },
+    sleep: async () => {},
+  }, token);
+  const ores = events.filter((e) => e.type === 'exposed_ore_found');
+  assert.strictEqual(ores.length, 1, `attendu 1 exposed_ore_found (dédup), reçu ${ores.length}`);
+  assert.deepStrictEqual(ores[0], { type: 'exposed_ore_found', world: 'overworld', material: 'iron_ore', x: 12, y: 60, z: -7 });
+  // rien d'autre ne change : les biomes continuent d'être émis normalement
+  assert.ok(events.filter((e) => e.type === 'biome_seen').length >= 3);
+});
