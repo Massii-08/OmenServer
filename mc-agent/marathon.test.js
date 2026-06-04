@@ -48,10 +48,13 @@ test('nextAction: done quand M(c) atteint (inv + banked)', () => {
   assert.strictEqual(nextAction(ctx), 'done');
 });
 
-test('nextAction: pickaxe est CRITIQUE (avant tout le reste) si aucune pioche fer', () => {
+test('nextAction: pickaxe critique… mais inventaire PLEIN passe avant (P34 : crafter sans slot = wedge)', () => {
   const ctx = okCtx({ emptySlots: 0 });
   ctx.inv = Object.assign({}, ctx.inv, { iron_pickaxe: 0 });
-  assert.strictEqual(nextAction(ctx), 'pickaxe');
+  assert.strictEqual(nextAction(ctx), 'deposit');
+  const ctx2 = okCtx({ emptySlots: 10 });
+  ctx2.inv = Object.assign({}, ctx2.inv, { iron_pickaxe: 0 });
+  assert.strictEqual(nextAction(ctx2), 'pickaxe');
 });
 
 test('nextAction: base si pas de base et arrivé en profondeur', () => {

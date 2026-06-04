@@ -67,20 +67,21 @@ function nextAction(ctx) {
   const counts = marathonCounts(ctx.inv, ctx.banked);
   if (marathonMet(counts)) return 'done';
 
-  // Sans pioche fer, rien ne mine le diamant/redstone/or → re-kit prioritaire absolu.
-  if (n(ctx.inv, 'iron_pickaxe') < 1) return 'pickaxe';
-
   // Tolérance ±2 alignée sur le garde-fou wrong_depth de branchMine.
   const targetY = miningYFor(counts);
   const atDepth = ctx.y !== undefined && ctx.y <= targetY + 2;
 
-  // Inventaire plein : déposer (ou poser la base ICI — le coffre du kit est en poche).
+  // Inventaire plein AVANT tout (P34, run#40 : pioche cassée avec slots 0 → le kit ne peut RIEN
+  // crafter sans place → wedge ; déposer ne demande pas de pioche).
   // P33 : base à >200 blocs → RENTRER d'abord (déposer exige d'être à la base ; sinon faux
   // chest_lost → re-base en route → banked orphelin, vécu run#39 : 13 redstone perdus de vue).
   if (ctx.emptySlots !== undefined && ctx.emptySlots <= RESERVES.invFullSlots) {
     if (ctx.hasBase && ctx.homeDist !== undefined && ctx.homeDist > 200) return 'go_home';
     return ctx.hasBase ? 'deposit' : 'base';
   }
+
+  // Sans pioche fer, rien ne mine le diamant/redstone/or → re-kit prioritaire.
+  if (n(ctx.inv, 'iron_pickaxe') < 1) return 'pickaxe';
 
   // P23 (3 morts près du spawn monde) : après un RESPAWN loin de la base (>200 blocs), rentrer
   // D'ABORD — travailler sur place re-mourait dans la même zone hostile, à 760 blocs du coffre.
