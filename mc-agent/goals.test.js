@@ -301,3 +301,9 @@ test('marathon: food consommable → kit redevient unmet quand mangé', () => {
     cooked_beef: 0, torch: 8, chest: 1, cobblestone: 16, oak_planks: 24, stick: 12 };
   assert.strictEqual(firstUnmet(MARATHON_KIT, { inv }).name, 'food_stock');
 });
+
+test('marathon: iron_ore utilise gatherIron (recherche profonde, pas le gather surface)', () => {
+  const g = MARATHON_KIT.find((x) => x.name === 'iron_ore');
+  assert.strictEqual(g.skill, 'gatherIron');
+  assert.strictEqual(g.args.count, 3);
+});

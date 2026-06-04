@@ -211,9 +211,11 @@ const MARATHON_KIT = [
     skill: 'gather',        args: { name: 'stone', count: 8 } },
   { name: 'furnace',        met: (c) => FN(c),
     skill: 'craft',         args: { name: 'furnace', count: 1 } },
-  // pioche FER (clé du marathon : diamant/redstone/or inminables sans elle)
+  // pioche FER (clé du marathon : diamant/redstone/or inminables sans elle).
+  // gatherIron ≠ gather : le fer n'est PRESQUE JAMAIS exposé en surface (vécu Marathon run#2 :
+  // ×20 timeouts de 90s en roaming) → si pas visible ≤32, on CREUSE à Y=16 (pic du fer) + branch mine.
   { name: 'iron_ore',       met: (c) => invCount(c.inv, 'raw_iron') >= 3 || invCount(c.inv, 'iron_ingot') >= 3 || IP(c),
-    skill: 'gather',        args: { name: ['iron_ore', 'deepslate_iron_ore'], count: 3 } },
+    skill: 'gatherIron',    args: { count: 3 } },
   { name: 'iron_ingot',     met: (c) => invCount(c.inv, 'iron_ingot') >= 3 || IP(c),
     skill: 'smeltIron',     args: { count: 3 } },
   { name: 'iron_pickaxe',   met: (c) => IP(c),

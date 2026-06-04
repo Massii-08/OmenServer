@@ -51,6 +51,7 @@ const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
 const { isNight, shelterUntilDawn } = require('./skills/shelter');
 const { depositFiltered } = require('./skills/deposit');
 const { nextAction, marathonCounts, miningYFor, RESERVES } = require('./marathon');
+const { scaffoldCount } = require('./skills/branchMine');
 
 function parseArgs(argv) {
   const o = {};
@@ -263,7 +264,7 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // à 6 min) + branch mining 48 + 2×8 branches (~64 blocs avec pathfinder entre chaque dig). 15 min/chacun.
 // huntCook = 3 vagues de chasse + cuisson au four (vécu Surv5 : tué à 90s en pleine chasse) ;
 // smeltCharcoal = gather bûches éventuel + fonte (180s de smelt max).
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, huntCook: 480000, smeltCharcoal: 300000, gatherLog: 240000 };  // gatherLog 4 min : explore vers une forêt lointaine (Surv11 : ×12 timeouts à 90s)
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, huntCook: 480000, smeltCharcoal: 300000, gatherLog: 240000, gatherIron: 900000 };  // gatherLog 4 min : explore vers une forêt lointaine (Surv11 : ×12 timeouts à 90s) ; gatherIron 15 min : descente Y16 + branch mine (Marathon run#2 : 90s ridicules → boucle infinie)
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
@@ -399,6 +400,36 @@ async function runGoalSkill(goal) {
       return craftSmart({ name: 'torch', count: Math.min(goal.args.count || 2, coalHave) });
     }
     return craftSmart(goal.args);    // pose une table portable si craft 3×3
+  }
+  if (goal.skill === 'gatherIron') {
+    // Recherche de fer ROBUSTE (vécu Marathon run#2 : ×20 timeouts en roaming surface) :
+    // 1) visible ≤32 → gather direct ; 2) sinon DESCENTE Y=16 (pic du fer 1.18+) + branch mine
+    //    avec arrêt dès `count` raw_iron (le tunnel ramasse aussi charbon/cuivre au passage).
+    const need = goal.args.count || 3;
+    const ironHave = () => _invTotal((i) => i.name === 'raw_iron' || i.name === 'iron_ingot');
+    const ids = ['iron_ore', 'deepslate_iron_ore']
+      .map((n) => bot.registry.blocksByName[n]).filter(Boolean).map((b) => b.id);
+    if (ids.length && bot.findBlock({ matching: ids, maxDistance: 32 })) {
+      const g = await gather(bot, { name: ['iron_ore', 'deepslate_iron_ore'], count: need, explore: false }, taskToken);
+      if (g.ok || ironHave() >= need) return { ok: true };
+    }
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    // réserve de murage avant de creuser (la lave à Y16 existe aussi)
+    if (scaffoldCount(bot) < 12) {
+      await gather(bot, { name: ['stone', 'deepslate'], count: 12 - scaffoldCount(bot) }, taskToken);
+      if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    }
+    if (bot.entity.position.y > 18) {
+      const d = await descendDiagonal(bot, { targetY: 16 }, taskToken);
+      if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+      if (!d.ok) return { ok: false, reason: 'descend:' + (d.reason || '?') };
+    }
+    const bm = await branchMine(bot, {
+      targetY: Math.floor(bot.entity.position.y), mainLength: 40, branchSpacing: 3, branchLength: 6,
+      stopWhen: () => ironHave() >= need,
+    }, taskToken);
+    if (ironHave() >= need) return { ok: true };
+    return { ok: false, reason: 'iron_not_found:' + ((bm && bm.reason) || 'tunnel_dry') };
   }
   if (goal.skill === 'smeltIron') return smeltWithFurnace('raw_iron', 'iron_ingot', goal.args.count || 3);
   if (goal.skill === 'smeltCharcoal') return smeltCharcoalGoal(goal.args.count || 2);
