@@ -944,21 +944,40 @@ async function startMarathon() {
             () => { try { stopMotion(); } catch (e) {} });
         }
         if (!taskToken.cancelled) {
-          // P24 (run#28 : dist 753 inchangée) : un goal 3D souterrain à 750 blocs = no_path A*.
-          // Trek par SAUTS XZ de ~96 blocs (Y libre, le pathfinder suit le relief), 3D à l'arrivée.
+          // P24/P25 : un goal 3D souterrain à 750 blocs = no_path A* ; et MÊME un saut XZ de 96
+          // échoue depuis SOUS TERRE (path horizontal souterrain = coût de creusage explosif).
+          // → (1) SURFACE d'abord (tunnel vertical = pas cher), (2) sauts XZ de 64 en marchant,
+          // (3) saut bloqué → pas-de-côté aléatoire 16 et on continue (au lieu d'abandonner).
           const homeDistNow = () => Math.hypot(bot.entity.position.x - world.home.x, bot.entity.position.z - world.home.z);
-          for (let hop = 0; hop < 12 && !taskToken.cancelled; hop++) {
+          if (bot.entity.position.y < 55) {
+            await withTimeout(bot.pathfinder.goto(pfGoals.GoalY ? new pfGoals.GoalY(66)
+              : new pfGoals.GoalNear(bot.entity.position.x, 66, bot.entity.position.z, 8)),
+              5 * 60 * 1000, () => { try { stopMotion(); } catch (e) {} });
+            emit({ type: 'go_home_surfaced', y: Math.round(bot.entity.position.y) });
+          }
+          let noProg = 0;
+          for (let hop = 0; hop < 18 && !taskToken.cancelled && noProg < 3; hop++) {
             const before = homeDistNow();
             if (before <= 24) break;
             const pme = bot.entity.position;
-            const step = Math.min(96, before);
+            const step = Math.min(64, before);
             const tx = pme.x + (world.home.x - pme.x) / before * step;
             const tz = pme.z + (world.home.z - pme.z) / before * step;
             const goal = pfGoals.GoalNearXZ ? new pfGoals.GoalNearXZ(tx, tz, 8)
               : new pfGoals.GoalNear(tx, pme.y, tz, 8);
-            await withTimeout(bot.pathfinder.goto(goal), 3 * 60 * 1000, () => { try { stopMotion(); } catch (e) {} });
+            await withTimeout(bot.pathfinder.goto(goal), 2 * 60 * 1000, () => { try { stopMotion(); } catch (e) {} });
             if (isInWater(bot)) await escapeWater(bot, { emit });
-            if (homeDistNow() >= before - 8) { emit({ type: 'go_home_no_progress', dist: Math.round(homeDistNow()) }); break; }
+            if (homeDistNow() >= before - 8) {
+              noProg++;
+              emit({ type: 'go_home_no_progress', dist: Math.round(homeDistNow()), noProg });
+              // pas-de-côté : contourner l'obstacle local (falaise/ravin) au lieu de rester planté
+              const a = Math.random() * 2 * Math.PI;
+              const sp = bot.entity.position;
+              await withTimeout(bot.pathfinder.goto(pfGoals.GoalNearXZ
+                ? new pfGoals.GoalNearXZ(sp.x + Math.cos(a) * 16, sp.z + Math.sin(a) * 16, 4)
+                : new pfGoals.GoalNear(sp.x + Math.cos(a) * 16, sp.y, sp.z + Math.sin(a) * 16, 4)),
+                60 * 1000, () => { try { stopMotion(); } catch (e) {} });
+            } else { noProg = 0; }
           }
           if (!taskToken.cancelled && homeDistNow() <= 24) {
             await gotoPos(world.home, 3, 3 * 60 * 1000);
