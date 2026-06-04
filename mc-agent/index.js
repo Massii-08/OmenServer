@@ -901,6 +901,7 @@ async function startMarathon() {
 
   let lastAction = null;
   let sameFails = 0;
+  let stallStreak = 0; // P21 : escalade de la distance de relocalisation (zone entière pourrie)
   while (!taskToken.cancelled) {
     // Massii B : tick anti-stuck eau À CHAQUE itération (tous contextes : supply run, descente,
     // voyage…) — un vrai joueur sort de l'eau en 1-2 s, jamais de flottage sur place.
@@ -968,14 +969,19 @@ async function startMarathon() {
       emit({ type: 'marathon_action_failed', action, reason: (r && r.reason) || 'unknown' });
       sameFails = action === lastAction ? sameFails + 1 : 1;
       lastAction = action;
-      if (sameFails >= 5) {
-        // anti-blocage : bouger ailleurs change le contexte terrain (pose/gather/path re-tentables)
-        emit({ type: 'marathon_stalled', action });
-        const spot = findLandTarget(bot, 24);
-        if (spot) await gotoPos({ x: spot.x, y: spot.y + 1, z: spot.z }, 2, 60 * 1000);
+      if (sameFails >= 3) {
+        // P21 (run#25 : lave+vides dans TOUTES les directions, le shuffle ≤24 re-tirait dans la
+        // même poche) : relocalisation à distance CROISSANTE — la géologie change vraiment à 50-150
+        // blocs, pas à 20.
+        stallStreak++;
+        const dist = Math.min(144, 48 + 32 * stallStreak);
+        const a = Math.random() * 2 * Math.PI;
+        const pme = bot.entity.position;
+        emit({ type: 'marathon_stalled', action, relocate: dist });
+        await gotoPos({ x: pme.x + Math.cos(a) * dist, y: pme.y, z: pme.z + Math.sin(a) * dist }, 8, 4 * 60 * 1000);
         sameFails = 0;
       }
-    } else { sameFails = 0; lastAction = action; }
+    } else { sameFails = 0; lastAction = action; stallStreak = 0; }
     await sleep(800);
   }
 }
