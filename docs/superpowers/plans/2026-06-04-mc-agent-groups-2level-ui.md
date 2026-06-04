@@ -357,3 +357,16 @@ def test_login_command_passed_when_has_login(monkeypatch):
 - **Sécurité** : les secrets ne doivent JAMAIS apparaître dans une réponse API, un log, ou `mc_agent_servers.json`. Tests dédiés (Task 4, 5).
 - **Réutilisation** : objectif `mapper`, secteurs (`--sector-index/count`), world-memory, viewer carte = EXISTANT, ne pas réécrire.
 - **Pas de merge prod** sans validation live + accord Massii.
+
+---
+
+## ✅ Exécution (2026-06-04, session autonome subagent-driven)
+
+**14/14 tasks faites** — branche `feat/mc-agent-groups-ui`, **PAS mergée** (revue Massii requise).
+
+- Backend Tasks 1-7 : TDD strict (209 pytest ✓, dont migration idempotente, no-leak secrets, start_mappers secteurs, login_command jamais argv/log). Node 342 ✓ (`resolveAuthChat`).
+- Frontend Tasks 8-12 : nav 2 niveaux + groupe (workers/map/edit) — vérifiée visuellement à chaque task (Chrome headless CDP, console 0 erreur).
+- Task 11 LIVE : 2 cartographes lancés depuis l'onglet Carte → serveur test Omen (Tailscale), carte remplie en temps réel (secteurs divergents), stop UI, cascade delete vérifiée sur disque.
+- Fix live : `MAPPER_SPAWN_STAGGER_S=4.5s` (connection-throttle Paper → ECONNRESET du 2e bot simultané).
+- Revue finale (subagent) : 1 Important corrigé (`_cleanup_session_files` aussi à la mort naturelle — fichier login en clair ne s'accumule plus) + 1 Mineur corrigé (onclick id-only, username jamais dans un handler). Restent en suivi cosmétique : clés i18n `*_soon` mortes, `args.authpw` legacy Node, UX d'attente du batch N mappers (requête sync ~4.5s/bot).
+- Déviation assumée : niveau 1 = 3 onglets (Créer / Mes serveurs / **Outils** = ancien panneau Lancer complet, zéro perte fonctionnelle).
