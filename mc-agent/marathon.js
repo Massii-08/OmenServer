@@ -115,9 +115,12 @@ function nextAction(ctx) {
   // Réserve de murage (lave) : à sec en profondeur → re-miner de la pierre/deepslate sur place.
   if (n(ctx.inv, 'cobblestone') + n(ctx.inv, 'cobbled_deepslate') < 8) return 'scaffold';
 
-  // Pioche de rechange : 2 pioches fer en poche dès que le fer du tunnel le permet.
-  if (n(ctx.inv, 'iron_pickaxe') < 2
-      && n(ctx.inv, 'iron_ingot') + n(ctx.inv, 'raw_iron') >= 3) return 'spare_pickaxe';
+  // Pioche de rechange : JAMAIS sous 2 pioches (P18, run#22 : 2 cassées + 0 fer → picks 0 →
+  // kit stall à -55 → mort). Fer dispo → craft ; sinon on va re-miner du fer TOUT DE SUITE.
+  if (n(ctx.inv, 'iron_pickaxe') < 2) {
+    if (n(ctx.inv, 'iron_ingot') + n(ctx.inv, 'raw_iron') >= 3) return 'spare_pickaxe';
+    return 'iron';
+  }
 
   // Base (coffre posé, world.home) : exigée dès qu'on arrive en profondeur — les deposits en dépendent.
   if (!ctx.hasBase) return atDepth ? 'base' : 'descend';

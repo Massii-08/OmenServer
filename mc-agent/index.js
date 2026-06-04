@@ -274,7 +274,7 @@ async function smeltWithFurnace(input, output, count, fuelOverride) {
   let pos = null;
   if (!near) {
     const place = await placeBlockNear(bot, 'furnace');
-    if (!place.ok) return { ok: false, reason: 'no_furnace' };
+    if (!place.ok) return { ok: false, reason: 'no_furnace:' + (place.reason || '?') }; // P18 diag
     pos = place.pos;
     await waitForBlock(pos, 'furnace');            // #3 : même règle que la table (pose async serveur)
     await sleep(300);
@@ -1285,7 +1285,8 @@ bot.on('messagestr', (msg) => {
 let lastDeath = null; // {x,y,z,t} — pour retourner ramasser ses items au respawn (despawn 5 min)
 
 bot.on('death', () => {
-  emit({ type: 'status', state: 'dead' });
+  const dp = bot.entity && bot.entity.position;
+  emit({ type: 'status', state: 'dead', x: dp ? Math.round(dp.x) : null, y: dp ? Math.round(dp.y) : null, z: dp ? Math.round(dp.z) : null, health: bot.health, food: bot.food });
   const p = bot.entity && bot.entity.position;
   if (p) {
     lastDeath = { x: p.x, y: p.y, z: p.z, t: Date.now() };

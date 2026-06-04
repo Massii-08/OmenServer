@@ -108,10 +108,10 @@ test('nextAction: spare_pickaxe quand 1 seule pioche fer et du fer en stock', ()
   assert.strictEqual(nextAction(ctx), 'spare_pickaxe');
 });
 
-test('nextAction: 1 seule pioche SANS fer → mine quand tout le reste va (le fer viendra du tunnel)', () => {
+test('nextAction: 1 seule pioche SANS fer → iron (P18 a remplacé l\'ancien laisser-faire)', () => {
   const ctx = okCtx();
   ctx.inv = Object.assign({}, ctx.inv, { iron_pickaxe: 1 });
-  assert.strictEqual(nextAction(ctx), 'mine');
+  assert.strictEqual(nextAction(ctx), 'iron');
 });
 
 test('nextAction: descend si trop haut par rapport au Y de minage (chargé)', () => {
@@ -238,4 +238,12 @@ test('gate READY ne s\'applique PAS en profondeur (les seuils LOW restent les d�
   const ctx = okCtx({ hunger: 20 });
   ctx.inv = Object.assign({}, ctx.inv, { torch: 12, cooked_beef: 6, oak_log: 6 });
   assert.strictEqual(nextAction(ctx), 'mine');
+});
+
+// P18 (run#22) : les 2 pioches cassées + 0 fer en poche → picks 0 → kit stall à -55 → mort.
+// Règle : picks <2 ⇒ spare si fer dispo, SINON aller miner du fer tout de suite (action iron).
+test('P18: 1 pioche restante SANS fer → iron (re-mine immédiat, jamais tomber à 0)', () => {
+  const ctx = okCtx({ hunger: 20 });
+  ctx.inv = Object.assign({}, ctx.inv, { iron_pickaxe: 1 });
+  assert.strictEqual(nextAction(ctx), 'iron');
 });
