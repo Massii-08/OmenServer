@@ -4,7 +4,7 @@
 > t'arrêter (intègre-les dans la boucle test→améliore). Relis ce fichier à CHAQUE itération.
 > Le + récent en bas. Marque `[traité]` une fois intégré + testé + commité.
 
-## 2026-06-04 ~12:15 — Réserves AVANT descente : viser GROS, pas « pas vide »
+## 2026-06-04 ~12:15 — Réserves AVANT descente : viser GROS, pas « pas vide » `[traité — gate READY (bois 64u/food 16/torches 48/3 pioches) + action iron + recraft souterrain via table/four portables ; foodCompromise si monde sans animaux ; 383 tests verts]`
 
 **Constat de Massii (en observant le bot en jeu)** : avant de descendre en cave/mine, le bot doit
 emporter **BEAUCOUP** de nourriture ET de ressources de surface (bois surtout) — assez pour

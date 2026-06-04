@@ -5,18 +5,22 @@
 
 const MARATHON_TARGETS = { diamond: 64, redstone: 64, lapis_lazuli: 64, gold: 64 };
 
-// Seuils de réserve — les DÉCLENCHEURS de retour base/surface (cœur de la mission long-terme).
+// Seuils de réserve à DEUX niveaux (retour Massii 2026-06-04 12:15 : « descendre CHARGÉ ») :
+//  - LOW   = déclencheurs de secours EN PROFONDEUR (remonter seulement si vraiment bas) ;
+//  - READY = gate de DESCENTE (on ne descend que pleinement chargé — un gros chargement initial
+//    vaut mieux que beaucoup d'allers-retours : chaque remontée est longue et dangereuse).
 const RESERVES = {
-  foodLow: 3,        // portions cuites : en-dessous → supply run surface
-  foodTarget: 6,
-  woodLow: 2,        // "unités bois" = bûches + planches/4 : en-dessous → supply run surface
-  woodTarget: 8,     // bûches à re-gather en surface
-  torchLow: 4,       // torches : en-dessous → craft (charbon+bâtons) ou restock si pas de quoi
-  torchTarget: 12,
-  invFullSlots: 2,   // slots vides ≤ 2 → déposer au coffre de base
-  scaffoldKeep: 32,  // cobble(+deepslate) gardé au deposit (murage lave + bridging)
-  ironKeep: 6,       // fer gardé au deposit (pioche de rechange)
-  coalKeep: 16,      // charbon gardé au deposit (torches)
+  foodLow: 3,         // portions cuites : en-dessous (ET faim entamée) → supply run surface
+  foodReady: 16,      // gate descente : grosse réserve cuite (vers un stack)
+  woodLow: 4,         // "unités bois" = bûches + planches/4 : en-dessous → supply run surface
+  woodReady: 64,      // gate descente : ~1 stack de bûches équivalent (table+bâtons+pioches+torches)
+  torchLow: 4,        // torches : en-dessous → craft (charbon+bâtons) ou restock si pas de quoi
+  torchReady: 48,     // gate descente : long branch-mine éclairé sans remontée
+  pickaxesReady: 3,   // gate descente : 2-3 pioches fer pré-craftées (rechange sous terre)
+  invFullSlots: 2,    // slots vides ≤ 2 → déposer au coffre de base
+  scaffoldKeep: 32,   // cobble(+deepslate) gardé au deposit (murage lave + bridging)
+  ironKeep: 9,        // fer gardé au deposit (3 pioches de rechange potentielles)
+  coalKeep: 16,       // charbon gardé au deposit (torches)
 };
 
 function n(inv, name) { return (inv && inv[name]) || 0; }
@@ -73,6 +77,23 @@ function nextAction(ctx) {
   // Inventaire plein : déposer (ou poser la base ICI — le coffre du kit est en poche).
   if (ctx.emptySlots !== undefined && ctx.emptySlots <= RESERVES.invFullSlots) {
     return ctx.hasBase ? 'deposit' : 'base';
+  }
+
+  // GATE DE DESCENTE (Massii 12:15) : tant qu'on est EN HAUT (pas à la profondeur de minage),
+  // on ne descend que PLEINEMENT chargé — bois ~1 stack, bouffe ~16, 3 pioches, ~48 torches.
+  // ctx.foodCompromise : monde sans animaux (restocks food ratés ×3, faim pleine) → on n'attend
+  // pas l'impossible, la nourriture ne bloque plus (le bois/torches/pioches restent exigés).
+  const preparing = ctx.y !== undefined && ctx.y > targetY + 2;
+  if (preparing) {
+    if (woodUnits(ctx.inv) < RESERVES.woodReady) return 'restock';
+    if (cookedFood(ctx.inv) < RESERVES.foodReady && !ctx.foodCompromise) return 'restock';
+    if (n(ctx.inv, 'iron_pickaxe') < RESERVES.pickaxesReady) {
+      return (n(ctx.inv, 'iron_ingot') + n(ctx.inv, 'raw_iron') >= 3) ? 'spare_pickaxe' : 'iron';
+    }
+    if (n(ctx.inv, 'torch') < RESERVES.torchReady) {
+      if (n(ctx.inv, 'coal') + n(ctx.inv, 'charcoal') >= 1 || woodUnits(ctx.inv) >= 2) return 'torches';
+      return 'restock';
+    }
   }
 
   // Réserves de SURFACE (food + bois) → un seul trip combiné. ⚠️ AVANT toute logique de descente

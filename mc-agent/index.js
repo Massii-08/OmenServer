@@ -422,14 +422,24 @@ async function runGoalSkill(goal) {
     }
     return craftSmart(goal.args);    // pose une table portable si craft 3×3
   }
-  if (goal.skill === 'gatherIron') {
-    // Recherche de fer ROBUSTE (vécu Marathon run#2 : ×20 timeouts en roaming surface) :
-    // 1) visible ≤32 → gather direct ; 2) sinon DESCENTE Y=16 (pic du fer 1.18+) + branch mine
-    //    avec arrêt dès `count` raw_iron (le tunnel ramasse aussi charbon/cuivre au passage).
-    // ⚠️ CHAQUE phase est bornée individuellement (vécu run#3 : fer VISIBLE ≤32 mais inatteignable
-    // → collectBlock/A* pend SANS timeout interne → 15 min de gel sur place, retry, re-gel —
-    // même mécanique suspectée pour P2/OOM : l'open set A* alloue sans borne sur cible impossible).
-    const need = goal.args.count || 3;
+  if (goal.skill === 'gatherIron') return gatherIronGoal(goal.args.count || 3);
+  if (goal.skill === 'smeltIron') return smeltWithFurnace('raw_iron', 'iron_ingot', goal.args.count || 3);
+  if (goal.skill === 'smeltCharcoal') return smeltCharcoalGoal(goal.args.count || 2);
+  if (goal.skill === 'huntCook') return huntCookGoal(goal.args.target || 4);
+  if (goal.skill === 'descendDiagonal') return descendDiagonal(bot, goal.args || {}, taskToken);
+  if (goal.skill === 'branchMine') return branchMine(bot, goal.args || {}, taskToken);
+  return { ok: false, reason: 'unknown_skill' };
+}
+
+// Recherche de fer ROBUSTE (vécu Marathon run#2 : ×20 timeouts en roaming surface) :
+// 1) visible ≤32 → gather direct ; 2) sinon DESCENTE Y=16 (pic du fer 1.18+) + branch mine
+//    avec arrêt dès `need` raw_iron (le tunnel ramasse aussi charbon/cuivre au passage).
+// ⚠️ CHAQUE phase est bornée individuellement (vécu run#3 : fer VISIBLE ≤32 mais inatteignable
+// → collectBlock/A* pend SANS timeout interne → 15 min de gel sur place, retry, re-gel —
+// même mécanique suspectée pour P2/OOM : l'open set A* alloue sans borne sur cible impossible).
+// Réutilisée par le kit (goal gatherIron) ET l'action marathon 'iron' (pioches de secours, Massii 12:15).
+async function gatherIronGoal(need) {
+  {
     const ironHave = () => _invTotal((i) => i.name === 'raw_iron' || i.name === 'iron_ingot');
     const ids = ['iron_ore', 'deepslate_iron_ore']
       .map((n) => bot.registry.blocksByName[n]).filter(Boolean).map((b) => b.id);
@@ -463,12 +473,6 @@ async function runGoalSkill(goal) {
     if (ironHave() >= need) return { ok: true };
     return { ok: false, reason: 'iron_not_found:' + ((bm && bm.reason) || 'tunnel_dry') };
   }
-  if (goal.skill === 'smeltIron') return smeltWithFurnace('raw_iron', 'iron_ingot', goal.args.count || 3);
-  if (goal.skill === 'smeltCharcoal') return smeltCharcoalGoal(goal.args.count || 2);
-  if (goal.skill === 'huntCook') return huntCookGoal(goal.args.target || 4);
-  if (goal.skill === 'descendDiagonal') return descendDiagonal(bot, goal.args || {}, taskToken);
-  if (goal.skill === 'branchMine') return branchMine(bot, goal.args || {}, taskToken);
-  return { ok: false, reason: 'unknown_skill' };
 }
 
 // Upgrade kit du cartographe (spec §5.1) : fer « si rapide » (minerai visible ≤32 blocs, sinon on
@@ -603,6 +607,10 @@ function marathonSurplus() {
   };
 }
 
+// Compromis nourriture : ≥3 restocks food ratés d'affilée (monde sans animaux) + faim pleine
+// → le gate READY de descente n'attend plus l'impossible (cf. nextAction.foodCompromise).
+let restockFoodFails = 0;
+
 function marathonCtx() {
   const pos = bot.entity && bot.entity.position;
   return {
@@ -612,6 +620,7 @@ function marathonCtx() {
     emptySlots: bot.inventory && bot.inventory.emptySlotCount ? bot.inventory.emptySlotCount() : undefined,
     hasBase: !!world.home,
     hunger: bot.food, // P12 : la vraie faim gate le restock (le stock seul est trop strict)
+    foodCompromise: restockFoodFails >= 3 && bot.food != null && bot.food >= 16,
   };
 }
 
@@ -665,13 +674,16 @@ async function marathonRestock() {
     if (g && g.ok === false) emit({ type: 'marathon_surface_failed' });
   }
   const inv = () => buildCtxInv(bot);
-  if (woodUnits(inv()) < RESERVES.woodTarget) {
+  // Bois : viser le PLEIN chargement (~1 stack d'unités, Massii 12:15), par passes bornées —
+  // chaque restock en rajoute, le gate de descente re-vérifie.
+  if (woodUnits(inv()) < RESERVES.woodReady) {
     const logNames = Object.keys(bot.registry.blocksByName).filter((n) => n.endsWith('_log'));
-    await withTimeout(gather(bot, { name: logNames, count: RESERVES.woodTarget, explore: true }, taskToken),
+    const missing = Math.min(32, RESERVES.woodReady - woodUnits(inv())); // passe bornée (32 bûches max)
+    await withTimeout(gather(bot, { name: logNames, count: missing, explore: true }, taskToken),
       timeoutFor('gatherLog'), () => { try { stopMotion(); } catch (e) {} });
     if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
   }
-  for (let hop = 0; hop < 3 && cookedFood(inv()) < RESERVES.foodTarget; hop++) {
+  for (let hop = 0; hop < 3 && cookedFood(inv()) < RESERVES.foodReady; hop++) {
     if (!nearestPassive(bot, 32)) {
       // aucune proie en vue : saute ~48 blocs dans une direction aléatoire et re-scanne
       const a = Math.random() * 2 * Math.PI;
@@ -681,12 +693,14 @@ async function marathonRestock() {
       if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
       if (!nearestPassive(bot, 32)) continue;
     }
-    await withTimeout(huntCookGoal(RESERVES.foodTarget), timeoutFor('huntCook'),
+    await withTimeout(huntCookGoal(RESERVES.foodReady), timeoutFor('huntCook'),
       () => { try { stopMotion(); } catch (e) {} });
     if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
   }
-  const okFood = cookedFood(inv()) >= RESERVES.foodLow;
-  const okWood = woodUnits(inv()) >= RESERVES.woodLow;
+  // Retour honnête vs les seuils READY (gate de descente) — l'anti-stall + foodCompromise
+  // s'appuient dessus. Un restock partiel reste un échec tant que le plein n'est pas fait.
+  const okFood = cookedFood(inv()) >= RESERVES.foodReady;
+  const okWood = woodUnits(inv()) >= RESERVES.woodReady;
   if (okFood && okWood) return { ok: true };
   return { ok: false, reason: 'restock_incomplete:' + (okFood ? '' : 'food') + (okWood ? '' : '+wood') };
 }
@@ -702,12 +716,12 @@ async function marathonTorches() {
     await craftSmart({ name: 'stick', count: 1 });
   }
   if (count('coal') + count('charcoal') < 1) {
-    const sc = await smeltCharcoalGoal(2);
+    const sc = await smeltCharcoalGoal(4); // gros lots (cible ~48 torches, Massii 12:15)
     if (!sc.ok) return sc;
   }
   const coalHave = count('coal') + count('charcoal');
   if (coalHave < 1) return { ok: false, reason: 'no_coal' };
-  return craftSmart({ name: 'torch', count: Math.min(3, coalHave) });
+  return craftSmart({ name: 'torch', count: Math.min(8, coalHave) }); // jusqu'à 32 torches/action
 }
 
 // Pioche fer de RECHANGE (≥2 en poche) dès que le fer du tunnel le permet.
@@ -800,6 +814,7 @@ async function startMarathon() {
       else if (action === 'deposit') r = await withTimeout(marathonDeposit(), 10 * 60 * 1000, stopMotion);
       else if (action === 'restock') r = await withTimeout(marathonRestock(), 15 * 60 * 1000, stopMotion);
       else if (action === 'torches') r = await withTimeout(marathonTorches(), 6 * 60 * 1000, stopMotion);
+      else if (action === 'iron') r = await withTimeout(gatherIronGoal(9), timeoutFor('gatherIron'), stopMotion);
       else if (action === 'scaffold') r = await withTimeout(gather(bot, { name: ['stone', 'deepslate'], count: 16 }, taskToken), 5 * 60 * 1000, stopMotion);
       else if (action === 'spare_pickaxe') r = await withTimeout(marathonSparePickaxe(), 6 * 60 * 1000, stopMotion);
       else if (action === 'descend') r = await withTimeout(marathonDescend(miningYFor(counts)), 15 * 60 * 1000, stopMotion);
@@ -813,6 +828,11 @@ async function startMarathon() {
       }
     } catch (e) { r = { ok: false, reason: String((e && e.message) || e).slice(0, 120) }; }
     if (taskToken.cancelled) return;
+    // suivi du compromis nourriture (gate READY) : ratés food consécutifs vs succès
+    if (action === 'restock') {
+      if (r && r.ok === false && String(r.reason || '').includes('food')) restockFoodFails++;
+      else if (r && r.ok) restockFoodFails = 0;
+    }
     if (!r || r.ok === false) {
       emit({ type: 'marathon_action_failed', action, reason: (r && r.reason) || 'unknown' });
       sameFails = action === lastAction ? sameFails + 1 : 1;

@@ -59,8 +59,12 @@ test('nextAction: base si pas de base et arrivé en profondeur', () => {
   assert.strictEqual(nextAction(ctx), 'base');
 });
 
-test('nextAction: pas de base exigée tant qu\'on est en surface (descend d\'abord)', () => {
-  const ctx = okCtx({ hasBase: false, y: 64 });
+test('nextAction: pas de base exigée tant qu\'on est en surface (descend d\'abord, si CHARGÉ)', () => {
+  const ctx = okCtx({ hasBase: false, y: 64, hunger: 20 });
+  // gate READY (Massii 12:15) : la descente exige le plein chargement
+  ctx.inv = Object.assign({}, ctx.inv, {
+    iron_pickaxe: 3, cooked_beef: 16, torch: 48, oak_log: 64, coal: 12,
+  });
   assert.strictEqual(nextAction(ctx), 'descend');
 });
 
@@ -110,8 +114,11 @@ test('nextAction: 1 seule pioche SANS fer → mine quand tout le reste va (le fe
   assert.strictEqual(nextAction(ctx), 'mine');
 });
 
-test('nextAction: descend si trop haut par rapport au Y de minage', () => {
-  const ctx = okCtx({ y: 30 });
+test('nextAction: descend si trop haut par rapport au Y de minage (chargé)', () => {
+  const ctx = okCtx({ y: 30, hunger: 20 });
+  ctx.inv = Object.assign({}, ctx.inv, {
+    iron_pickaxe: 3, cooked_beef: 16, torch: 48, oak_log: 64, coal: 12,
+  });
   assert.strictEqual(nextAction(ctx), 'descend');
 });
 
@@ -179,4 +186,56 @@ test('P12: hunger absent (rétro-compat tests) → comportement strict conservé
   const ctx = okCtx();
   ctx.inv = Object.assign({}, ctx.inv, { cooked_beef: 0 });
   assert.strictEqual(nextAction(ctx), 'restock');
+});
+
+// --- Retour Massii 12:15 : « descendre CHARGÉ » — gate READY avant descente -----------------------
+function loadedCtx(over = {}) {
+  return okCtx(Object.assign({ y: 60, hasBase: false, hunger: 20 }, over, {
+    inv: Object.assign({
+      iron_pickaxe: 3, stone_sword: 1, crafting_table: 1, furnace: 1,
+      cooked_beef: 16, torch: 48, oak_log: 56, oak_planks: 32, stick: 8,
+      cobblestone: 32, coal: 12,
+    }, (over.inv || {})),
+  }));
+}
+
+test('gate READY: bois insuffisant (<64 unités) en surface → restock, pas de descente', () => {
+  const ctx = loadedCtx({ inv: { oak_log: 6, oak_planks: 8 } });
+  assert.strictEqual(nextAction(ctx), 'restock');
+});
+
+test('gate READY: nourriture < 16 en surface → restock (sauf compromise)', () => {
+  const ctx = loadedCtx({ inv: { cooked_beef: 4 } });
+  assert.strictEqual(nextAction(ctx), 'restock');
+});
+
+test('gate READY: foodCompromise (monde sans animaux, faim pleine) → la descente passe', () => {
+  const ctx = loadedCtx({ inv: { cooked_beef: 0 }, foodCompromise: true });
+  assert.strictEqual(nextAction(ctx), 'descend');
+});
+
+test('gate READY: 1 seule pioche + fer en stock → spare_pickaxe avant de descendre', () => {
+  const ctx = loadedCtx({ inv: { iron_pickaxe: 1, raw_iron: 6 } });
+  assert.strictEqual(nextAction(ctx), 'spare_pickaxe');
+});
+
+test('gate READY: 1 seule pioche SANS fer → iron (aller chercher du fer à Y16)', () => {
+  const ctx = loadedCtx({ inv: { iron_pickaxe: 1 } });
+  assert.strictEqual(nextAction(ctx), 'iron');
+});
+
+test('gate READY: torches < 48 en surface (charbon dispo) → torches', () => {
+  const ctx = loadedCtx({ inv: { torch: 10 } });
+  assert.strictEqual(nextAction(ctx), 'torches');
+});
+
+test('gate READY: tout chargé → descend', () => {
+  assert.strictEqual(nextAction(loadedCtx()), 'descend');
+});
+
+test('gate READY ne s\'applique PAS en profondeur (les seuils LOW restent les déclencheurs)', () => {
+  // en bas avec des réserves « moyennes » (au-dessus des LOW, en-dessous des READY) → on mine
+  const ctx = okCtx({ hunger: 20 });
+  ctx.inv = Object.assign({}, ctx.inv, { torch: 12, cooked_beef: 6, oak_log: 6 });
+  assert.strictEqual(nextAction(ctx), 'mine');
 });
