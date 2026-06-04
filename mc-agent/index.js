@@ -501,6 +501,14 @@ async function gatherIronGoal(need) {
       const d = await descendRobust(16);  // P5/P9 : escalier ⇄ mineDown alternés, borné
       if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
       if (!d.ok && bot.entity.position.y > 24) return { ok: false, reason: 'descend:' + (d.reason || 'stuck') };
+    } else if (bot.entity.position.y < 4) {
+      // P53 (run#62 : chasse au fer À SEC à -53, tunnels lava/timeout en boucle) : le fer est
+      // RARE sous 0 (pic Y=16) → REMONTER à la bande de fer avant de tunneler.
+      phase('ascend_ironband');
+      await withTimeout(bot.pathfinder.goto(pfGoals.GoalY ? new pfGoals.GoalY(15)
+        : new pfGoals.GoalNear(bot.entity.position.x, 15, bot.entity.position.z, 8)),
+        5 * 60 * 1000, () => { try { stopMotion(); } catch (e) {} });
+      if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
     }
     phase('branch_mine');
     const bm = await branchMine(bot, {
