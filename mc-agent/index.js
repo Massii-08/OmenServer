@@ -1019,6 +1019,10 @@ async function startMarathon() {
   // reconnexion (exit 42, relancé par le superviseur) — le teleport packet de re-join resync tout.
   let paraPos = null;
   let paraCount = 0;
+  // P49 (run#57 : boucle base_table+deposit IDENTIQUES — transferts fantômes, chaque action « ok »
+  // → aucun détecteur ne tire) : signature d'état stricte répétée ×6 → reconnexion resync.
+  let lastSig = null;
+  let sigCount = 0;
   while (!taskToken.cancelled) {
     // Massii B : tick anti-stuck eau À CHAQUE itération (tous contextes : supply run, descente,
     // voyage…) — un vrai joueur sort de l'eau en 1-2 s, jamais de flottage sur place.
@@ -1050,6 +1054,18 @@ async function startMarathon() {
       wood: woodUnits(ctx.inv), cooked: cookedFood(ctx.inv),
       torch: ctx.inv.torch || 0, picks: ctx.inv.iron_pickaxe || 0, hunger: ctx.hunger,
     });
+    {
+      const pp9 = bot.entity.position;
+      const sig = action + '|' + ctx.emptySlots + '|' + JSON.stringify(counts) + '|'
+        + (Math.floor(pp9.x / 8)) + ',' + (Math.floor(pp9.y / 8)) + ',' + (Math.floor(pp9.z / 8));
+      if (sig === lastSig) { sigCount++; } else { sigCount = 0; lastSig = sig; }
+      if (sigCount >= 6) {
+        emit({ type: 'loop_reconnect', sig });
+        try { saveWorld(worldFile, world); } catch (e) {}
+        setTimeout(() => process.exit(42), 500);
+        return;
+      }
+    }
     if (action === 'done') {
       clearObjective(world); saveWorld(worldFile, world);
       emit({ type: 'autonomous_done', objective: 'marathon', counts });
