@@ -24,6 +24,7 @@ WORLD_MEMORY_DIR = _PROJECT_ROOT / "data" / "mc_agent_world_memory"
 _SAFE_ID = re.compile(r"^[a-z0-9]+$")
 GRID = 128   # taille de cellule (quantification x,z) : 1 entrée par région de 128²
 CAP = 500    # entrées max par (monde, type) ; au-delà on jette les plus vieilles
+ORE_CAP = 1000  # minerais exposés max par monde (coords 3D précises) ; anti-débordement disque
 
 
 def _q(v):
@@ -40,6 +41,7 @@ def _world(memory, world):
     w.setdefault("biomes", [])
     w.setdefault("caves", [])
     w.setdefault("finds", [])
+    w.setdefault("ores", [])
     return w
 
 
@@ -97,6 +99,25 @@ def add_find(memory, world, material, biome, x, z, at=None, cap=CAP):
     return memory
 
 
+def add_ore(memory, world, material, x, y, z, at=None, cap=ORE_CAP):
+    """Enregistre un minerai exposé (coords 3D PRÉCISES, dédup par position de bloc exacte, capé).
+
+    Cartographe : un bloc de minerai vu en surface/grotte (`material` à (x,y,z) entiers). Dédup par
+    position EXACTE — si un minerai existe déjà à ce bloc, il est REMPLACÉ (matériau + récence MAJ).
+    Sert au bot ressource pour aller miner droit sur le bloc. Mute + retourne memory."""
+    if not world or not material:
+        return memory
+    w = _world(memory, world)
+    bx, by, bz = int(x), int(y), int(z)
+    w["ores"] = [o for o in w["ores"] if not (o["x"] == bx and o["y"] == by and o["z"] == bz)]
+    w["ores"].append({"material": str(material), "x": bx, "y": by, "z": bz, "at": at})
+    if len(w["ores"]) > cap:
+        w["ores"] = w["ores"][-cap:]  # garde les plus récents
+    if at:
+        memory["updated_at"] = at
+    return memory
+
+
 def apply_event(memory, event, at=None):
     """Applique un event bot à la mémoire. Ignore les types inconnus / champs manquants (pas de crash)."""
     if not isinstance(event, dict):
@@ -111,6 +132,8 @@ def apply_event(memory, event, at=None):
             return add_cave(memory, world, event["x"], event["y"], event["z"], at=at)
         if t == "material_found":
             return add_find(memory, world, event["material"], event["biome"], event["x"], event["z"], at=at)
+        if t == "exposed_ore_found":
+            return add_ore(memory, world, event["material"], event["x"], event["y"], event["z"], at=at)
     except (KeyError, TypeError, ValueError):
         return memory
     return memory

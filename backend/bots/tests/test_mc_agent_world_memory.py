@@ -123,3 +123,85 @@ def test_apply_event_material_found():
                        "biome": "datapack:crystal_hills", "x": 5, "z": 9}, at="t1")  # biome custom OK
     finds = m["worlds"]["w"]["finds"]
     assert len(finds) == 1 and finds[0]["material"] == "iron_ore" and finds[0]["biome"] == "datapack:crystal_hills"
+
+
+# --- Cartographe : minerais exposés (ores, coords 3D précises) ---
+
+def test_add_ore_adds_3d_coords_and_material():
+    m = wm.empty_memory("g")
+    wm.add_ore(m, "w", "iron_ore", 312, 47, -88, at="t1")
+    ores = m["worlds"]["w"]["ores"]
+    assert len(ores) == 1
+    o = ores[0]
+    assert o["material"] == "iron_ore"
+    assert o["x"] == 312 and o["y"] == 47 and o["z"] == -88
+    assert all(isinstance(o[k], int) for k in ("x", "y", "z"))  # coords int
+
+
+def test_add_ore_dedup_by_exact_block_position():
+    m = wm.empty_memory("g")
+    wm.add_ore(m, "w", "iron_ore", 312, 47, -88, at="t1")
+    wm.add_ore(m, "w", "diamond_ore", 312, 47, -88, at="t2")  # même bloc → REMPLACÉ
+    ores = m["worlds"]["w"]["ores"]
+    assert len(ores) == 1
+    assert ores[0]["material"] == "diamond_ore" and ores[0]["at"] == "t2"
+
+
+def test_add_ore_distinct_positions_same_material():
+    m = wm.empty_memory("g")
+    wm.add_ore(m, "w", "iron_ore", 0, 40, 0, at="t1")
+    wm.add_ore(m, "w", "iron_ore", 0, 41, 0, at="t2")  # y diffère → distinct
+    wm.add_ore(m, "w", "iron_ore", 1, 40, 0, at="t3")  # x diffère → distinct
+    assert len(m["worlds"]["w"]["ores"]) == 3
+
+
+def test_add_ore_cap_keeps_most_recent():
+    m = wm.empty_memory("g")
+    cap = 5
+    for i in range(cap + 10):
+        wm.add_ore(m, "w", "iron_ore", i, 40, 0, at=f"t{i}", cap=cap)
+    ores = m["worlds"]["w"]["ores"]
+    assert len(ores) == cap
+    xs = [o["x"] for o in ores]
+    assert xs == list(range(10, 10 + cap))  # les plus récents
+
+
+def test_add_ore_falsy_world_or_material_noop():
+    m = wm.empty_memory("g")
+    wm.add_ore(m, "", "iron_ore", 0, 40, 0, at="t1")   # world falsy → no-op
+    wm.add_ore(m, "w", "", 0, 40, 0, at="t2")          # material falsy → no-op
+    assert m["worlds"].get("w") is None or m["worlds"]["w"]["ores"] == []
+    assert m["updated_at"] is None
+
+
+def test_apply_event_exposed_ore_found():
+    m = wm.empty_memory("g")
+    wm.apply_event(m, {"type": "exposed_ore_found", "world": "w", "material": "diamond_ore",
+                       "x": 100, "y": 12, "z": -50}, at="t1")
+    ores = m["worlds"]["w"]["ores"]
+    assert len(ores) == 1
+    assert ores[0]["material"] == "diamond_ore"
+    assert ores[0]["x"] == 100 and ores[0]["y"] == 12 and ores[0]["z"] == -50
+
+
+def test_apply_event_exposed_ore_found_missing_field_no_crash():
+    m = wm.empty_memory("g")
+    wm.apply_event(m, {"type": "exposed_ore_found", "world": "w",
+                       "material": "iron_ore", "x": 5, "z": 9}, at="t1")  # pas de y → ignoré
+    w = m["worlds"].get("w")
+    assert w is None or w["ores"] == []
+
+
+def test_world_seed_has_empty_ores():
+    m = wm.empty_memory("g")
+    w = wm._world(m, "w")
+    assert w["ores"] == []
+
+
+def test_save_load_roundtrip_preserves_ores(tmp_path):
+    m = wm.empty_memory("g7")
+    wm.add_ore(m, "w", "iron_ore", 312, 47, -88, at="t1")
+    assert wm.save("g7", m, base_dir=tmp_path) is True
+    loaded = wm.load("g7", base_dir=tmp_path)
+    ore = loaded["worlds"]["w"]["ores"][0]
+    assert ore["material"] == "iron_ore" and ore["x"] == 312 and ore["y"] == 47 and ore["z"] == -88
