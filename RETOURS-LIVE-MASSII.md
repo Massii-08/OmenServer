@@ -103,5 +103,17 @@ Massii reclarifie : **« tout droit » NE veut PAS dire une ligne droite parfait
 | 7 | Pillaring → skill `pillarUp` (pose à l'APEX du saut via `velocity.y`) | ✅ offline | 8 tests ; pas encore branché dans un flux auto |
 | 8 | Flottant contre un mur → `isFloatingStuck` + `recoverFloating` (`clearControlStates` + retombée) | ✅ | Tests + branché dans la boucle mapper |
 | 9 | Lianes → `clearSnares` (vines/cobweb/berry bush cassées, pieds+tête+voisins) | ✅ | Tests + branché (boucle mapper + échec de jambe) |
+| 10 | Téléportation → `teleport.js` (forcedMove + delta>16 → `teleport_detected{from,to}` + stopMotion) + ré-ancrage `mapper_reanchor` (heading propre, reset anti-stuck/streaks, jamais de retour à pied) | ✅ | Live TpTest1 : `/tp 123,64,69 → 750,~,750` → `teleport_detected`+`mapper_reanchor` (from/to exacts), `biome_seen deep_cold_ocean (779,759)` aussitôt, mappe depuis la zone TP |
 
-Bonus : remontée SURFACE avant de mapper (le kit laisse le bot au fond du trou à cobble) · jambes courtes après 2 échecs (jungle dense) · timeout de jambe 45s · re-tentative périodique du kit pendant le mapping. **Node 313 ✓ · Python 143 ✓.**
+Bonus : remontée SURFACE avant de mapper (le kit laisse le bot au fond du trou à cobble) · jambes courtes après 2 échecs (jungle dense) · timeout de jambe 45s · re-tentative périodique du kit pendant le mapping. **Node 336 ✓ · Python 143 ✓.**
+
+## 10. 🌀 TÉLÉPORTATION — le bot doit COMPRENDRE où il est après un TP (PRIORITÉ HAUTE)
+- Demande de Massii : « si le bot est TP quelque part, il doit comprendre où il est ».
+- Contexte : un bot peut être téléporté à tout moment — admin `/tp`, commandes qu'il lance lui-même (`/home`/`/spawn`/`/tpaccept`), plugin, portail… Sa position saute d'un coup. Il ne doit PAS se mélanger les pinceaux.
+- À FAIRE (côté bot mc-agent, robustesse cartographe — PAS la carte) :
+  - **DÉTECTER le TP** : `bot.on('forcedMove', …)` (téléport serveur) ET/OU un delta de position > seuil (saut bien au-delà de la vitesse de marche en 1 tick).
+  - **RE-ANCRER au nouveau lieu** : origine/référence de mapping = position ACTUELLE ; repartir sur un heading propre d'ici ; **RESET du baseline anti-stuck** (le saut ne doit pas être lu comme un blocage) ; ré-évaluer le secteur/cellule (multi-mapper) ; **ABANDONNER tout goal pathfinder en cours** (il visait l'ancienne position) — surtout **NE PAS essayer de retourner à pied** à l'endroit d'avant.
+  - **CONTINUER à enregistrer la mémoire aux coords RÉELLES** (déjà le cas → la carte reste correcte, aucune fausse traînée ancien↔nouveau point).
+  - Bonus télémétrie : event `teleport_detected{from,to}` (la carte pourra marquer « bot ici »).
+- **Cas d'usage clé** : Massii TP le bot dans une zone à cartographier → le bot doit ACCEPTER sa nouvelle position comme point de départ et mapper DE LÀ. Le TP devient un **moyen de diriger** le bot vers une zone.
+- Vaut aussi pour les autres modes (survie/commandes) : après un TP, recalculer depuis la nouvelle position, jamais revenir aveuglément à l'ancienne.
