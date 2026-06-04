@@ -25,7 +25,7 @@ const { parseOrder } = require('./orders');
 const { createTaskController } = require('./tasks');
 const { createMemory } = require('./memory');
 const { bestWeapon, bestToolFor } = require('./tools');
-const { gather, findExposedOre, PRECIOUS_ORES, collectBounded, cancelCollect } = require('./skills/gather');
+const { gather, findExposedOre, PRECIOUS_ORES, collectBounded, cancelCollect, digAndPickup } = require('./skills/gather');
 const { mineDown } = require('./skills/mineDown');
 const { guard } = require('./skills/guard');
 const { giveItem, giveAll } = require('./skills/give');
@@ -155,7 +155,7 @@ async function reclaimBlock(pos, blockName = 'crafting_table') {
       // four perdu en boucle). collectBlock n'équipe rien (mineflayer-tool non chargé).
       const tool = bestToolFor(bot, b);
       if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
-      try { await collectBounded(bot, b, 15000); } catch (e) { await cancelCollect(bot); throw e; } // P51
+      await digAndPickup(bot, b); // P52 : dig manuel + marche (plus de collectblock en prod)
       return;                                      // repris
     } catch (e) { /* retry une fois */ }
   }
@@ -1304,6 +1304,7 @@ async function onSpawn() {
   // biais dirigé, le mapper skippe les cellules déjà mappées. _worldKey re-résolu à chaque spawn
   // (la dimension peut changer : portail nether/end) ; le label explicite (--world-label) prime.
   bot._emit = emit;
+  bot._realDig = true; // P52 : active le chemin dig-manuel (les fake-bots de test ne l'ont pas)
   bot._worldMemory = worldMemoryBootstrap;
   bot._worldKey = worldKey(bot, args['world-label']);
   emit({ type: 'status', state: 'spawned', username: bot.username, profile: profile ? profile.id : null });

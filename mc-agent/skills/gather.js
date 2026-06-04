@@ -108,6 +108,29 @@ const findTargetableOre = findExposedOre; // alias sémantique (E)
 // P51 (OOM ×6, snapshot : Generators/__awaiter par millions) : la boucle interne de collectblock
 // SPINNE quand un drop est inatteignable (itemDrop ré-appendé, jamais ramassé) → ~15 Mo/s de
 // promesses. On BORNE chaque collect (race) + cancelTask au timeout.
+// P52 (OOM ~13 s, 75 Mo/s — le drop d'un ore tombé en LAVE fait chasser une entité par la lib
+// en GoalFollow DYNAMIQUE = un A* par tick) : en PROD on n'utilise PLUS collectblock — dig manuel
+// + marche SUR la case (goal statique = UN calcul A*, borné). Drop en lave = perdu (correct).
+// Les fake-bots de test (sans bot._realDig) gardent leur mock collectBlock.
+let _goals2; try { _goals2 = require('mineflayer-pathfinder').goals; } catch (e) { _goals2 = null; }
+async function digAndPickup(bot, block) {
+  if (!bot._realDig || typeof bot.dig !== 'function') {
+    return collectBounded(bot, block);              // chemin tests/fallback
+  }
+  const tool = bestToolFor(bot, block);
+  if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
+  await bot.dig(block);
+  if (bot.pathfinder && bot.pathfinder.goto && _goals2 && _goals2.GoalBlock) {
+    try {
+      await Promise.race([
+        bot.pathfinder.goto(new _goals2.GoalBlock(block.position.x, block.position.y, block.position.z)),
+        new Promise((r) => setTimeout(r, 6000)),
+      ]);
+    } catch (e) {}
+  }
+  await new Promise((r) => setTimeout(r, 350));     // aspiration du drop
+}
+
 async function collectBounded(bot, block, ms = 25000) {
   let to = null;
   try {
@@ -177,14 +200,14 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
     if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
     // resolveBiome : en 1.21.4 block.biome.name est '' → résolu via registry (sinon material_found muet)
     const biomeName = resolveBiome(bot, block).name;    // capturé avant collect (le bloc devient air)
-    try { await collectBounded(bot, block); got++; }
+    try { await digAndPickup(bot, block); got++; }
     catch (e) {
       await cancelCollect(bot);               // P51 : stoppe la boucle interne qui spinne
       // #2 retours live : un dig peut être interrompu (aggro/mouvement/désync) → re-équipe et retente UNE fois
       try {
         const tool2 = bestToolFor(bot, block);
         if (tool2) { try { await bot.equip(tool2, 'hand'); } catch (e2) {} }
-        await collectBounded(bot, block); got++;
+        await digAndPickup(bot, block); got++;
       } catch (e2) {
         await cancelCollect(bot);
         blacklist.add(_key(block.position));  // cible morte → on tente la SUIVANTE (P7)
@@ -201,4 +224,4 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
   return { ok: false, reason: blacklist.size > 0 ? 'collect_failed' : 'not_found' };
 }
 
-module.exports = { gather, nearbyHostile, defendIfNeeded, isExposed, findExposedOre, findTargetableOre, oreTargetable, collectBounded, cancelCollect, ORE_BLOCKS, PRECIOUS_ORES, MAX_ORE_APPROACH };
+module.exports = { gather, nearbyHostile, defendIfNeeded, isExposed, findExposedOre, findTargetableOre, oreTargetable, collectBounded, cancelCollect, digAndPickup, ORE_BLOCKS, PRECIOUS_ORES, MAX_ORE_APPROACH };
