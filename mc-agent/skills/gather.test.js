@@ -131,27 +131,32 @@ test('P7: cible incollectable → blacklist + récolte la suivante', async () =>
 // --- Retour Massii A (anti-détection) : JAMAIS de beeline vers un ore CACHÉ -----------------------
 const { isExposed } = require('./gather');
 
-function oreBot({ exposed }) {
-  // un diamond_ore à (5,10,0) ; ses 6 voisins : pierre partout, sauf 1 face air si exposed
-  const ore = pos(5, 10, 0);
+function oreBot({ exposed, at = null, name = 'deepslate_diamond_ore', id = 57 }) {
+  // un ore à `at` (déf (5,10,0)) ; voisins : pierre partout, sauf 1 face air si exposed
+  const ore = at || pos(5, 10, 0);
   const bot = {
     entity: { position: pos(0, 10, 0), yaw: 0 },
-    registry: { blocksByName: { deepslate_diamond_ore: { id: 57 }, stone: { id: 1 }, air: { id: 0 } } },
+    registry: { blocksByName: { [name]: { id }, stone: { id: 1 }, air: { id: 0 } } },
     inventory: { items: () => [{ name: 'iron_pickaxe', count: 1 }] },
     nearestEntity() { return null; },
     pvp: { attack() {} },
     async equip() {},
-    findBlock() { return { name: 'deepslate_diamond_ore', position: ore, boundingBox: 'block' }; },
+    findBlock() { return { name, position: ore, boundingBox: 'block' }; },
     findBlocks() { return [ore]; },
     blockAt(p) {
       const q = typeof p.floored === 'function' ? p.floored() : p;
-      if (q.x === 5 && q.y === 10 && q.z === 0) return { name: 'deepslate_diamond_ore', position: q, boundingBox: 'block' };
-      if (exposed && q.x === 6 && q.y === 10 && q.z === 0) return { name: 'air', position: q, boundingBox: 'empty' };
+      if (q.x === ore.x && q.y === ore.y && q.z === ore.z) return { name, position: q, boundingBox: 'block' };
+      if (exposed && q.x === ore.x + 1 && q.y === ore.y && q.z === ore.z) return { name: 'air', position: q, boundingBox: 'empty' };
       return { name: 'stone', position: q, boundingBox: 'block' };
     },
     pathfinder: { async goto() {} },
-    collectBlock: { async collect(b) { bot._collected = (bot._collected || 0) + 1; } },
+    collectBlock: { async collect(b) { bot._collected = (bot._collected || 0) + 1; inv_push(); } },
   };
+  function inv_push() {
+    const drop = name.includes('diamond') ? 'diamond' : name.includes('iron') ? 'raw_iron' : 'item';
+    const items = bot.inventory.items();
+    bot.inventory.items = () => items.concat([{ name: drop, count: 1 }]);
+  }
   return bot;
 }
 
@@ -160,11 +165,27 @@ test('anti-xray: isExposed vrai si ≥1 face air, faux si 100% enterré', () => 
   assert.strictEqual(isExposed(oreBot({ exposed: false }), pos(5, 10, 0)), false);
 });
 
-test('anti-xray: gather REFUSE un ore enterré (pas de beeline x-ray)', async () => {
-  const bot = oreBot({ exposed: false });
-  const r = await gather(bot, { name: 'deepslate_diamond_ore', count: 1 });
+test('stealth x-ray (E): ore enterré LOIN (>MAX_ORE_APPROACH) refusé — jamais de longue percée', async () => {
+  const bot = oreBot({ exposed: false, at: pos(20, 10, 0) });
+  const r = await gather(bot, { name: 'deepslate_diamond_ore', count: 1, rng: () => 0.99 });
   assert.strictEqual(r.ok, false);
-  assert.ok(!bot._collected, 'ne doit PAS avoir percé vers l\'ore caché');
+  assert.ok(!bot._collected, 'ne doit PAS avoir percé 20 blocs vers l\'ore caché');
+});
+
+test('stealth x-ray (E): ore enterré PROCHE (≤5) prenable — approche courte plausible', async () => {
+  const bot = oreBot({ exposed: false, at: pos(4, 10, 0) });
+  const r = await gather(bot, { name: 'deepslate_diamond_ore', count: 1, rng: () => 0.99 });
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+});
+
+test('stealth x-ray (E): throttle humain — les ores COMMUNS (fer/charbon) parfois ignorés, jamais les 4 cibles', async () => {
+  // rng → 0 : throttle déclenché. Fer enterré proche → ignoré ; diamant enterré proche → pris quand même.
+  const iron = oreBot({ exposed: false, at: pos(4, 10, 0), name: 'deepslate_iron_ore', id: 59 });
+  const r1 = await gather(iron, { name: 'deepslate_iron_ore', count: 1, rng: () => 0 });
+  assert.strictEqual(r1.ok, false, 'fer enterré proche + throttle → ignoré');
+  const dia = oreBot({ exposed: false, at: pos(4, 10, 0) });
+  const r2 = await gather(dia, { name: 'deepslate_diamond_ore', count: 1, rng: () => 0 });
+  assert.strictEqual(r2.ok, true, 'diamant JAMAIS ignoré (H3)');
 });
 
 test('anti-xray: gather accepte un ore À FLANC DE PAROI (1 face air)', async () => {

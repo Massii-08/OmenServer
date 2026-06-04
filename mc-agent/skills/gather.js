@@ -56,6 +56,30 @@ const NONSOLID = new Set(['air', 'cave_air', 'void_air', 'water', 'flowing_water
 let Vec3; try { Vec3 = require('vec3').Vec3; } catch (e) { Vec3 = null; }
 function _v(x, y, z) { return Vec3 ? new Vec3(x, y, z) : { x, y, z }; }
 
+// E (révision de A) : approche courte autorisée vers un ore enterré — un joueur « au pif » creuse
+// parfois 3-5 blocs vers une veine (bruit, intuition). L'INTERDIT = la longue percée droite.
+const MAX_ORE_APPROACH = 5;
+// Les 4 cibles marathon ne sont JAMAIS throttlées (H3 : on ne passe pas devant un diamant) ;
+// les communs (fer/charbon/cuivre) sont parfois ignorés (ratio humain).
+const PRECIOUS_ORES = new Set(['diamond_ore', 'deepslate_diamond_ore', 'redstone_ore', 'deepslate_redstone_ore',
+  'lapis_ore', 'deepslate_lapis_ore', 'gold_ore', 'deepslate_gold_ore', 'emerald_ore', 'deepslate_emerald_ore']);
+const ORE_THROTTLE = 0.25; // ~1 ore commun sur 4 ignoré
+
+function _dist(bot, p) {
+  const b = bot.entity && bot.entity.position;
+  if (!b) return Infinity;
+  return Math.sqrt((b.x - p.x) ** 2 + (b.y - p.y) ** 2 + (b.z - p.z) ** 2);
+}
+
+/** Un ore est-il ciblable façon humaine ? exposé = oui ; enterré = seulement à ≤MAX_ORE_APPROACH. */
+function oreTargetable(bot, p, name, rng) {
+  if (!ORE_BLOCKS.has(name)) return true;                       // pas un ore → pas de règle
+  const near = _dist(bot, p) <= MAX_ORE_APPROACH;
+  if (!isExposed(bot, p) && !near) return false;                // longue percée interdite (le tell)
+  if (!PRECIOUS_ORES.has(name) && (rng || Math.random)() < ORE_THROTTLE) return false; // throttle communs
+  return true;
+}
+
 /** L'ore en `p` a-t-il ≥1 face visible (air/liquide) ? Un ore 100% enterré n'est JAMAIS une cible. */
 function isExposed(bot, p) {
   const fx = Math.floor(p.x), fy = Math.floor(p.y), fz = Math.floor(p.z);
@@ -66,42 +90,44 @@ function isExposed(bot, p) {
   return false;
 }
 
-/** Premier ore EXPOSÉ parmi `names` à ≤maxDistance, ou null (→ le code appelant branch-mine). */
-function findExposedOre(bot, names, maxDistance = 32) {
+/** Premier ore CIBLABLE façon humaine (exposé, ou enterré ≤MAX_ORE_APPROACH) parmi `names`. */
+function findExposedOre(bot, names, maxDistance = 32, rng) {
   const ids = _ids(bot, names);
   if (!ids) return null;
   let cands = [];
   if (typeof bot.findBlocks === 'function') cands = bot.findBlocks({ matching: ids, maxDistance, count: 16 }) || [];
   else { const b = bot.findBlock({ matching: ids, maxDistance }); if (b) cands = [b.position]; }
   for (const p of cands) {
-    if (isExposed(bot, p)) { const b = bot.blockAt(_v(p.x, p.y, p.z)); if (b) return b; }
+    const b = bot.blockAt(_v(p.x, p.y, p.z));
+    if (b && oreTargetable(bot, p, b.name, rng)) return b;
   }
   return null;
 }
+const findTargetableOre = findExposedOre; // alias sémantique (E)
 
 // Clé de blacklist d'une position (cibles incollectables, cf. P7).
 function _key(p) { return `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}`; }
 
 // Cible la + proche HORS blacklist. findBlocks (candidats multiples) si dispo, sinon findBlock.
-function _findTarget(bot, ids, maxDistance, blacklist) {
+function _findTarget(bot, ids, maxDistance, blacklist, rng) {
   if (typeof bot.findBlocks === 'function') {
     const cands = bot.findBlocks({ matching: ids, maxDistance, count: 24 }) || [];
     for (const p of cands) {
       if (blacklist.has(_key(p))) continue;
       const b = bot.blockAt ? bot.blockAt(p) : null;
       if (!b || b.boundingBox !== 'block') continue;
-      if (ORE_BLOCKS.has(b.name) && !isExposed(bot, p)) continue; // anti-xray (Massii A)
+      if (!oreTargetable(bot, p, b.name, rng)) continue;        // stealth x-ray (Massii A→E)
       return b;
     }
     return null;
   }
   const b = bot.findBlock({ matching: ids, maxDistance });
   if (!b || blacklist.has(_key(b.position))) return null;
-  if (ORE_BLOCKS.has(b.name) && !isExposed(bot, b.position)) return null; // anti-xray (Massii A)
+  if (!oreTargetable(bot, b.position, b.name, rng)) return null; // stealth x-ray (Massii A→E)
   return b;
 }
 
-async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplore = false } = {}, token = null) {
+async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplore = false, rng } = {}, token = null) {
   if (!name || (Array.isArray(name) && name.length === 0)) return { ok: false, reason: 'no_block' };
   const ids = _ids(bot, name);
   let got = 0;
@@ -115,7 +141,7 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
     attempts++;
     if (token && token.cancelled) return { ok: true, got, cancelled: true };
     await defendIfNeeded(bot);
-    let block = _findTarget(bot, ids, maxDistance, blacklist);
+    let block = _findTarget(bot, ids, maxDistance, blacklist, rng);
     // Rien à portée → exploration de surface autonome (opt-in `explore`, borné). Le bot voyage en
     // anneaux et re-scanne jusqu'à trouver. Désactivé par défaut : les gather opportunistes (type
     // branchMine à maxDistance:6 sur un minerai entrevu) ne doivent PAS partir roamer 256 blocs.
@@ -123,7 +149,7 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
       explorations++;
       const ex = await explore(bot, { name, matching: ids, scanRadius: maxDistance, token });
       if (token && token.cancelled) return { ok: true, got, cancelled: true };
-      if (ex && ex.ok) block = _findTarget(bot, ids, maxDistance, blacklist);
+      if (ex && ex.ok) block = _findTarget(bot, ids, maxDistance, blacklist, rng);
     }
     if (!block) {
       if (got > 0) break;
@@ -155,4 +181,4 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
   return { ok: false, reason: blacklist.size > 0 ? 'collect_failed' : 'not_found' };
 }
 
-module.exports = { gather, nearbyHostile, defendIfNeeded, isExposed, findExposedOre, ORE_BLOCKS };
+module.exports = { gather, nearbyHostile, defendIfNeeded, isExposed, findExposedOre, findTargetableOre, oreTargetable, ORE_BLOCKS, PRECIOUS_ORES, MAX_ORE_APPROACH };
