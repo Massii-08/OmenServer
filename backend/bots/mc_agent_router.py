@@ -58,6 +58,8 @@ class ServerPayload(BaseModel):
     custom: list = []
     trusted: list = []
     trade: Optional[dict] = None
+    has_login: bool = False
+    login_command: str = "/login {pwd}"
 
 
 class BotPayload(BaseModel):
