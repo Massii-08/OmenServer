@@ -405,25 +405,37 @@ async function runGoalSkill(goal) {
     // Recherche de fer ROBUSTE (vécu Marathon run#2 : ×20 timeouts en roaming surface) :
     // 1) visible ≤32 → gather direct ; 2) sinon DESCENTE Y=16 (pic du fer 1.18+) + branch mine
     //    avec arrêt dès `count` raw_iron (le tunnel ramasse aussi charbon/cuivre au passage).
+    // ⚠️ CHAQUE phase est bornée individuellement (vécu run#3 : fer VISIBLE ≤32 mais inatteignable
+    // → collectBlock/A* pend SANS timeout interne → 15 min de gel sur place, retry, re-gel —
+    // même mécanique suspectée pour P2/OOM : l'open set A* alloue sans borne sur cible impossible).
     const need = goal.args.count || 3;
     const ironHave = () => _invTotal((i) => i.name === 'raw_iron' || i.name === 'iron_ingot');
     const ids = ['iron_ore', 'deepslate_iron_ore']
       .map((n) => bot.registry.blocksByName[n]).filter(Boolean).map((b) => b.id);
+    const phase = (p) => emit({ type: 'gatherIron_phase', phase: p, y: Math.round(bot.entity.position.y), iron: ironHave() });
     if (ids.length && bot.findBlock({ matching: ids, maxDistance: 32 })) {
-      const g = await gather(bot, { name: ['iron_ore', 'deepslate_iron_ore'], count: need, explore: false }, taskToken);
+      phase('visible_gather');
+      const g = await withTimeout(
+        gather(bot, { name: ['iron_ore', 'deepslate_iron_ore'], count: need, explore: false }, taskToken),
+        120000, () => { try { stopMotion(); } catch (e) {} });
       if (g.ok || ironHave() >= need) return { ok: true };
     }
     if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
     // réserve de murage avant de creuser (la lave à Y16 existe aussi)
     if (scaffoldCount(bot) < 12) {
-      await gather(bot, { name: ['stone', 'deepslate'], count: 12 - scaffoldCount(bot) }, taskToken);
+      phase('scaffold');
+      await withTimeout(gather(bot, { name: ['stone', 'deepslate'], count: 12 - scaffoldCount(bot) }, taskToken),
+        120000, () => { try { stopMotion(); } catch (e) {} });
       if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
     }
     if (bot.entity.position.y > 18) {
-      const d = await descendDiagonal(bot, { targetY: 16 }, taskToken);
+      phase('descend');
+      const d = await withTimeout(descendDiagonal(bot, { targetY: 16 }, taskToken),
+        480000, () => { try { stopMotion(); } catch (e) {} });
       if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
       if (!d.ok) return { ok: false, reason: 'descend:' + (d.reason || '?') };
     }
+    phase('branch_mine');
     const bm = await branchMine(bot, {
       targetY: Math.floor(bot.entity.position.y), mainLength: 40, branchSpacing: 3, branchLength: 6,
       stopWhen: () => ironHave() >= need,
