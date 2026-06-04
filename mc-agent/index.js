@@ -830,6 +830,11 @@ async function descendRobust(targetY) {
   for (let round = 0; round < 4; round++) {
     if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
     if (atTarget()) return { ok: true };
+    // P20 (run#24 : lava_ahead ×4 au MÊME cap) : l'escalier suit le yaw — la lave est DEVANT,
+    // pas partout → quart de tour à chaque nouveau round avant de retenter.
+    if (round > 0) {
+      try { await bot.look(((bot.entity.yaw || 0) + Math.PI / 2) % (2 * Math.PI), 0, true); } catch (e) {}
+    }
     const d = await withTimeout(descendDiagonal(bot, { targetY }, taskToken), 480000,
       () => { try { stopMotion(); } catch (e) {} });
     if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
