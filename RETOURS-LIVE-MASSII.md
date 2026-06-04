@@ -117,3 +117,15 @@ Bonus : remontée SURFACE avant de mapper (le kit laisse le bot au fond du trou 
   - Bonus télémétrie : event `teleport_detected{from,to}` (la carte pourra marquer « bot ici »).
 - **Cas d'usage clé** : Massii TP le bot dans une zone à cartographier → le bot doit ACCEPTER sa nouvelle position comme point de départ et mapper DE LÀ. Le TP devient un **moyen de diriger** le bot vers une zone.
 - Vaut aussi pour les autres modes (survie/commandes) : après un TP, recalculer depuis la nouvelle position, jamais revenir aveuglément à l'ancienne.
+
+## 11. 🕳️ cave_found ne fire JAMAIS en jeu (0 cave dans le store malgré le mapping)
+- Constat Massii (04/06) : `c207db.json` = 9 biomes / 2 finds / **0 cave** — la détection d'entrée de grotte n'a jamais déclenché en jeu (juste testée offline). Le bot MARATHON consomme les `cave_found` pour récolter les ores exposés → sans caves, pas de cibles.
+- Cause : `detectCaveEntrance` ne scannait que la colonne **sous les pieds** — or le pathfinder évite PRÉCISÉMENT de marcher au-dessus des trous → ne fire qu'en cas accidentel (bot coincé sur une lèvre).
+- Fix : `findCaveEntranceNear` (caves.js) — scan du VOISINAGE : (a) trou sous une lèvre = colonne d'air ≥4 ancrée sous le plan du bot, murée ≥2 côtés (rejette pentes douces + falaises ouvertes) ; (b) bouche à flanc de colline = ouverture 2-haut toiturée pénétrant ≥2 blocs (rejette les alcôves) ; (c) sous-les-pieds conservé. ~1000 blockAt/appel max (record() par jambe). 9 tests dédiés.
+- Harness local `~/mc-carto-test/harness.py` = ÉCRIVAIN UNIQUE du store (flock + save atomique après chaque event) ; bot frais bootstrappé `--world-memory` ; marathon (supervise.sh) relit le fichier à chaque relance.
+- ✅ **VALIDÉ LIVE (04/06 23:55)** : CartoCave (100.108.50.70:25566, groupe c207db) → **4 `cave_found` en ~15 min de mapping**, tous écrits dans `c207db.json` au fil de l'eau : (157,70,2) · (228,70,386) · (76,67,317) · (-20,69,272) — 4 cellules différentes sur ~450 blocs de trajet. Biomes 10→15 pendant le même run. Le marathon relit le fichier à chaque relance → 4 cibles dispo. 345 tests Node ✓.
+
+## 12. 🌳 [CANDIDAT] Bot PERCHÉ (arbre/à-pic ~157,75,2) — boucle floating/unreachable sans issue
+- Constat (04/06, vu 2×) : CartoC (prod TestMulti) puis CartoCave se figent au MÊME endroit (~157, y75, z2, savanna près du spawn) : `mapper_turn unreachable` en boucle + `unstuck floating → ok:false` répété — `recoverFloating` ne retombe pas (le bot est DEBOUT sur un bloc perché, pas suspendu → clearControlStates ne change rien) et le pathfinder ne trouve aucune jambe atteignable depuis le perchoir.
+- Une fois TP ailleurs (`spreadplayers`), le bot repart impeccablement (`teleport_detected`+`mapper_reanchor` #10 ✓) et mappe/trouve des caves sans accroc → le bug est UNIQUEMENT la sortie du perchoir.
+- Piste : détecter le pattern « unreachable streak ≥ N + position figée + y > sol voisin » → descente contrôlée (casser le bloc sous soi / pillar-down, ou viser un GoalY au sol) plutôt que recoverFloating.
