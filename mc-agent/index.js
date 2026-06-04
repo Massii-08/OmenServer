@@ -622,8 +622,13 @@ function marathonCtx() {
 }
 
 async function gotoPos(p, range, ms) {
-  return withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(p.x, p.y, p.z, range)), ms,
+  // Massii B : jamais partir en voyage en pataugeant — on sort de l'eau d'abord.
+  if (isInWater(bot)) await escapeWater(bot, { emit });
+  const r = await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(p.x, p.y, p.z, range)), ms,
     () => { try { stopMotion(); } catch (e) {} });
+  // arrivé (ou timeout) DANS l'eau → évasion immédiate (le voyage a pu router dans un lac)
+  if (isInWater(bot)) await escapeWater(bot, { emit });
+  return r;
 }
 
 // Pose le coffre de base à la profondeur de minage → world.home (les dépôts en dépendent).
@@ -796,6 +801,9 @@ async function startMarathon() {
   let lastAction = null;
   let sameFails = 0;
   while (!taskToken.cancelled) {
+    // Massii B : tick anti-stuck eau À CHAQUE itération (tous contextes : supply run, descente,
+    // voyage…) — un vrai joueur sort de l'eau en 1-2 s, jamais de flottage sur place.
+    if (isInWater(bot)) await escapeWater(bot, { emit });
     await settleSurvivalKit();                       // menaces/faim d'abord
     if (taskToken.cancelled) return;
     const ctx = marathonCtx();
@@ -926,6 +934,10 @@ async function onSpawn() {
     moves.canDig = true;            // doit pouvoir miner pour atteindre le cobble
     moves.allow1by1towers = true;   // peut remonter en colonne (cobble en poche) → pas coincé au fond
     moves.allowParkour = true;
+    // Massii B : ne router dans l'eau que s'il n'y a AUCUNE alternative terrestre (un bot qui
+    // patauge = signature). S'applique à TOUS les goto (les Movements sont globaux au pathfinder).
+    if (typeof moves.liquidCost === 'number') moves.liquidCost = 25;
+    else moves.liquidCost = 25;
     if (typeof moves.maxDropDown === 'number') moves.maxDropDown = 4; // limite les chutes profondes
     bot.pathfinder.setMovements(moves);
     installReflexes(bot, { emit, fleeFrom });

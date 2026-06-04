@@ -38,7 +38,7 @@ de « beaucoup »), et qu'il n'y a pas de **réparation/recraft d'outil sous ter
 **casse une pioche en bas et en recrafte une SANS remonter**, et ne remonte que rarement (réserve
 réellement épuisée). + test offline des seuils (gate) et du recraft souterrain.
 
-## 2026-06-04 — A. Comportement trop DIRECT avec les minerais → humaniser (anti-détection) `[HAUTE PRIORITÉ]`
+## 2026-06-04 — A. Comportement trop DIRECT avec les minerais → humaniser (anti-détection) `[traité — isExposed sur tout ciblage d'ore (gather/gatherIron/charcoal/kit), fallback naturel branch-mine, anti-xray serveur neutralisé ; 4 tests ; commit badaef0]`
 
 **Constat de Massii (en jeu)** : le bot **fonce en ligne droite à travers la roche, pile vers les
 filons** → c'est le tell n°1 d'un bot (x-ray visible), et sur les serveurs sérieux un plugin de
@@ -71,7 +71,7 @@ pierre vers un filon caché ; il branch-mine et **tombe** sur les ores en les ex
 ratio valuables/pierre plausibles. + tests offline : `isExposed` (ore enterré rejeté / ore à flanc
 de paroi accepté), fallback anti-xray sur densité aberrante.
 
-## 2026-06-04 — B. Reste TROP SOUVENT bloqué dans l'eau → très suspect `[HAUTE PRIORITÉ]`
+## 2026-06-04 — B. Reste TROP SOUVENT bloqué dans l'eau → très suspect `[traité — tick isInWater→escapeWater à chaque itération marathon + entrée/sortie de gotoPos, liquidCost 25 global sur les Movements ; unstuck.js réutilisé (9 tests verts)]`
 
 **Constat de Massii (en jeu)** : le bot **reste très souvent coincé dans l'eau** → ultra suspect
 (un vrai joueur sort de l'eau en 1-2 s ; un bot qui patauge/flotte sur place = signature évidente).
