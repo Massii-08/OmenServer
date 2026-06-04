@@ -134,3 +134,15 @@ test('cibles: 64 de chaque, constantes exportées', () => {
   assert.deepStrictEqual(MARATHON_TARGETS, { diamond: 64, redstone: 64, lapis_lazuli: 64, gold: 64 });
   assert.ok(RESERVES.foodLow >= 2 && RESERVES.torchLow >= 2);
 });
+
+test('nextAction: scaffold quand réserve de murage à sec en profondeur', () => {
+  const ctx = okCtx();
+  ctx.inv = Object.assign({}, ctx.inv, { cobblestone: 3 });
+  assert.strictEqual(nextAction(ctx), 'scaffold');
+});
+
+test('nextAction: cobbled_deepslate compte comme scaffold (pas de faux scaffold-low)', () => {
+  const ctx = okCtx();
+  ctx.inv = Object.assign({}, ctx.inv, { cobblestone: 0, cobbled_deepslate: 20 });
+  assert.strictEqual(nextAction(ctx), 'mine');
+});

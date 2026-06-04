@@ -172,11 +172,73 @@ const MAPPER_KIT = [
     skill: 'craft',         args: { name: 'torch', count: 2 } }, // 2×4 = 8 torches
 ];
 
+// --- Chaîne MARATHON_KIT = kit du mineur LONGUE DURÉE (06/04) : tout le MAPPER_KIT (outils pierre
+// + four + food + torches) + PIOCHE FER (mine diamant/redstone/or) + COFFRE (base de dépôt) +
+// buffer scaffold (murage lave). La phase de collecte (boucle marathon, index.js) prend le relais
+// après le kit ; le kit RE-SERT après une mort non récupérée (monotone → ne refait que le manquant).
+const IP = (c) => invCount(c.inv, 'iron_pickaxe') >= 1;
+// Le coffre quitte l'inventaire quand la base est posée → on OR avec hasBase (sinon re-craft en boucle).
+const CHEST = (c) => invCount(c.inv, 'chest') >= 1 || !!c.hasBase;
+// Scaffold = cobble + deepslate cobble (à Y<0 le minage donne du cobbled_deepslate, cf. P1).
+function scaffoldInv(inv) { return invCount(inv, 'cobblestone') + invCount(inv, 'cobbled_deepslate'); }
+// Planches : besoin mapper + 8 pour le coffre s'il manque encore.
+function planksNeedM(c) { return planksNeed(c) + (CHEST(c) ? 0 : 8); }
+const planksOKM = (c) => { const n2 = planksNeedM(c); return n2 === 0 || anyPlanks(c.inv) >= n2; };
+const MARATHON_KIT = [
+  { name: 'logs',           met: (c) => anyLog(c.inv) >= 3 || planksOKM(c),
+    skill: 'gatherLog',     args: { count: 8 } }, // 8 : planches (kit+coffre) + charbon + fuel
+  { name: 'planks',         met: (c) => planksOKM(c),
+    skill: 'craftPlanks',   args: { count: 6 } }, // 6×4 = 24 (table 4 + sticks + pioche 3 + coffre 8)
+  { name: 'crafting_table', met: (c) => invCount(c.inv, 'crafting_table') >= 1 || K(c),
+    skill: 'craft',         args: { name: 'crafting_table', count: 1 } },
+  { name: 'sticks',         met: (c) => sticksOK(c),
+    skill: 'craft',         args: { name: 'stick', count: 3 } },
+  { name: 'wooden_pickaxe', met: (c) => W(c) || S(c) || K(c) || IP(c),
+    skill: 'craft',         args: { name: 'wooden_pickaxe', count: 1 } },
+  { name: 'cobble_pick',    met: (c) => invCount(c.inv, 'cobblestone') >= 3 || S(c) || IP(c),
+    skill: 'gather',        args: { name: 'stone', count: 3 } },
+  { name: 'stone_pickaxe',  met: (c) => S(c) || IP(c),
+    skill: 'craft',         args: { name: 'stone_pickaxe', count: 1 } },
+  { name: 'cobble_sword',   met: (c) => invCount(c.inv, 'cobblestone') >= 2 || SS(c),
+    skill: 'gather',        args: { name: 'stone', count: 2 } },
+  { name: 'stone_sword',    met: (c) => SS(c),
+    skill: 'craft',         args: { name: 'stone_sword', count: 1 } },
+  { name: 'cobble_axe',     met: (c) => invCount(c.inv, 'cobblestone') >= 3 || A(c),
+    skill: 'gather',        args: { name: 'stone', count: 3 } },
+  { name: 'stone_axe',      met: (c) => A(c),
+    skill: 'craft',         args: { name: 'stone_axe', count: 1 } },
+  { name: 'cobble_furnace', met: (c) => invCount(c.inv, 'cobblestone') >= 8 || FN(c),
+    skill: 'gather',        args: { name: 'stone', count: 8 } },
+  { name: 'furnace',        met: (c) => FN(c),
+    skill: 'craft',         args: { name: 'furnace', count: 1 } },
+  // pioche FER (clé du marathon : diamant/redstone/or inminables sans elle)
+  { name: 'iron_ore',       met: (c) => invCount(c.inv, 'raw_iron') >= 3 || invCount(c.inv, 'iron_ingot') >= 3 || IP(c),
+    skill: 'gather',        args: { name: ['iron_ore', 'deepslate_iron_ore'], count: 3 } },
+  { name: 'iron_ingot',     met: (c) => invCount(c.inv, 'iron_ingot') >= 3 || IP(c),
+    skill: 'smeltIron',     args: { count: 3 } },
+  { name: 'iron_pickaxe',   met: (c) => IP(c),
+    skill: 'craft',         args: { name: 'iron_pickaxe', count: 1 } },
+  // consommables (re-deviennent unmet quand consommés → reconstitués au re-run du kit)
+  { name: 'food_stock',     met: (c) => cookedCount(c.inv) >= 4,
+    skill: 'huntCook',      args: { target: 4 } },
+  { name: 'charcoal',       met: (c) => (invCount(c.inv, 'charcoal') + invCount(c.inv, 'coal')) >= 2 || TORCH(c),
+    skill: 'smeltCharcoal', args: { count: 2 } },
+  { name: 'torches',        met: (c) => TORCH(c),
+    skill: 'craft',         args: { name: 'torch', count: 2 } },
+  // coffre de base (8 planches) — part en poche, posé en profondeur par la boucle marathon
+  { name: 'chest',          met: (c) => CHEST(c),
+    skill: 'craft',         args: { name: 'chest', count: 1 } },
+  // buffer de murage lave pour la descente + le branch mining
+  { name: 'scaffold_buffer', met: (c) => scaffoldInv(c.inv) >= 16,
+    skill: 'gather',        args: { name: 'stone', count: 16 } },
+];
+
 /** Sélectionne la chaîne de buts selon le type d'objectif (défaut : pioche pierre). */
 function chainFor(objective) {
   if (objective === 'diamond') return DIAMOND_CHAIN;
   if (objective === 'iron_pickaxe') return IRON_CHAIN;
   if (objective === 'mapper') return MAPPER_KIT;
+  if (objective === 'marathon') return MARATHON_KIT;
   return MVP_CHAIN;
 }
 
@@ -186,4 +248,4 @@ function firstUnmet(chain, ctx) {
   return null;
 }
 
-module.exports = { buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, MAPPER_KIT, chainFor, firstUnmet };
+module.exports = { buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, MAPPER_KIT, MARATHON_KIT, scaffoldInv, chainFor, firstUnmet };

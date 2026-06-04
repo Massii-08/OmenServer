@@ -66,8 +66,9 @@ function nextAction(ctx) {
   // Sans pioche fer, rien ne mine le diamant/redstone/or → re-kit prioritaire absolu.
   if (n(ctx.inv, 'iron_pickaxe') < 1) return 'pickaxe';
 
+  // Tolérance ±2 alignée sur le garde-fou wrong_depth de branchMine.
   const targetY = miningYFor(counts);
-  const atDepth = ctx.y !== undefined && ctx.y <= targetY + 4;
+  const atDepth = ctx.y !== undefined && ctx.y <= targetY + 2;
 
   // Base (coffre posé, world.home) : exigée dès qu'on est en profondeur — les deposits en dépendent.
   if (!ctx.hasBase) {
@@ -91,12 +92,15 @@ function nextAction(ctx) {
     return 'restock';
   }
 
+  // Réserve de murage (lave) : à sec en profondeur → re-miner de la pierre/deepslate sur place.
+  if (n(ctx.inv, 'cobblestone') + n(ctx.inv, 'cobbled_deepslate') < 8) return 'scaffold';
+
   // Pioche de rechange : 2 pioches fer en poche dès que le fer du tunnel le permet.
   if (n(ctx.inv, 'iron_pickaxe') < 2
       && n(ctx.inv, 'iron_ingot') + n(ctx.inv, 'raw_iron') >= 3) return 'spare_pickaxe';
 
-  if (ctx.y !== undefined && ctx.y > targetY + 4) return 'descend';
-  if (ctx.y !== undefined && ctx.y < targetY - 6) return 'ascend';
+  if (ctx.y !== undefined && ctx.y > targetY + 2) return 'descend';
+  if (ctx.y !== undefined && ctx.y < targetY - 2) return 'ascend';
   return 'mine';
 }
 

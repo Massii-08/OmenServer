@@ -264,3 +264,40 @@ test('MAPPER_KIT planksNeed : couvre table(4) + pioche bois(3) + sticks manquant
   assert.ok(!g.met({ inv: { wooden_pickaxe: 1, crafting_table: 1, oak_planks: 3 } }));
   assert.ok(g.met({ inv: { wooden_pickaxe: 1, crafting_table: 1, oak_planks: 4 } }));
 });
+
+// --- MARATHON_KIT --------------------------------------------------------------------------------
+const { MARATHON_KIT, scaffoldInv } = require('./goals');
+
+test('marathon: chainFor("marathon") retourne MARATHON_KIT', () => {
+  assert.strictEqual(chainFor('marathon'), MARATHON_KIT);
+});
+
+test('marathon: kit vide → 1er but = logs ; pioche fer présente → saute tout l\'amont outillage', () => {
+  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv: {} }).name, 'logs');
+  // kit complet sauf consommables : la pioche fer rend l'amont outillage met
+  const inv = { iron_pickaxe: 1, stone_sword: 1, stone_axe: 1, furnace: 1, crafting_table: 1,
+    cooked_beef: 4, torch: 8, chest: 1, cobblestone: 16, oak_planks: 24, stick: 12 };
+  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv }), null);
+});
+
+test('marathon: coffre gated par hasBase (posé → pas de re-craft)', () => {
+  const inv = { iron_pickaxe: 1, stone_sword: 1, stone_axe: 1, furnace: 1, crafting_table: 1,
+    cooked_beef: 4, torch: 8, cobblestone: 16, oak_planks: 24, stick: 12 };
+  // sans base ni coffre → but chest
+  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv }).name, 'chest');
+  // base posée → chest met malgré 0 coffre en poche
+  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv, hasBase: true }), null);
+});
+
+test('marathon: scaffold_buffer accepte le cobbled_deepslate (P1)', () => {
+  assert.strictEqual(scaffoldInv({ cobbled_deepslate: 16 }), 16);
+  const inv = { iron_pickaxe: 1, stone_sword: 1, stone_axe: 1, furnace: 1, crafting_table: 1,
+    cooked_beef: 4, torch: 8, chest: 1, cobbled_deepslate: 16, oak_planks: 24, stick: 12 };
+  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv }), null);
+});
+
+test('marathon: food consommable → kit redevient unmet quand mangé', () => {
+  const inv = { iron_pickaxe: 1, stone_sword: 1, stone_axe: 1, furnace: 1, crafting_table: 1,
+    cooked_beef: 0, torch: 8, chest: 1, cobblestone: 16, oak_planks: 24, stick: 12 };
+  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv }).name, 'food_stock');
+});

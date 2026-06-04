@@ -49,6 +49,8 @@ const { loadMemory, worldKey } = require('./worldMemory');
 const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
 const { isNight, shelterUntilDawn } = require('./skills/shelter');
+const { depositFiltered } = require('./skills/deposit');
+const { nextAction, marathonCounts, miningYFor, RESERVES } = require('./marathon');
 
 function parseArgs(argv) {
   const o = {};
@@ -522,6 +524,200 @@ async function startMapper() {
   }, taskToken);
 }
 
+// --- MARATHON : 64× diamant/redstone/lapis/or (inventaire + coffre de base), réserves maintenues —
+// boucle nextAction (pur, ./marathon.js) → dispatch ici. Conçue pour tourner DES HEURES.
+
+// Valuables déposés au coffre de base ; les réserves de travail restent en poche (surplus déposé).
+const MARATHON_VALUABLES = ['diamond', 'redstone', 'lapis_lazuli', 'raw_gold', 'gold_ingot',
+  'emerald', 'amethyst_shard'];
+function marathonSurplus() {
+  return {
+    cobblestone: RESERVES.scaffoldKeep, cobbled_deepslate: RESERVES.scaffoldKeep,
+    raw_iron: RESERVES.ironKeep, iron_ingot: RESERVES.ironKeep,
+    coal: RESERVES.coalKeep, charcoal: RESERVES.coalKeep,
+    // junk de minage : tout au coffre (slots inventaire = la denrée rare en profondeur)
+    granite: 0, diorite: 0, andesite: 0, tuff: 0, gravel: 0, flint: 0, dirt: 0,
+  };
+}
+
+function marathonCtx() {
+  const pos = bot.entity && bot.entity.position;
+  return {
+    inv: buildCtxInv(bot),
+    banked: world.banked || {},
+    y: pos ? pos.y : undefined,
+    emptySlots: bot.inventory && bot.inventory.emptySlotCount ? bot.inventory.emptySlotCount() : undefined,
+    hasBase: !!world.home,
+  };
+}
+
+async function gotoPos(p, range, ms) {
+  return withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(p.x, p.y, p.z, range)), ms,
+    () => { try { stopMotion(); } catch (e) {} });
+}
+
+// Pose le coffre de base à la profondeur de minage → world.home (les dépôts en dépendent).
+async function establishBase() {
+  if (!bot.inventory.items().some((i) => i.name === 'chest')) {
+    const c = await craftSmart({ name: 'chest', count: 1 });
+    if (!c.ok) return { ok: false, reason: 'no_chest_item:' + (c.reason || '?') };
+  }
+  const place = await placeBlockNear(bot, 'chest');
+  if (!place.ok) return { ok: false, reason: 'place_failed:' + (place.reason || '?') };
+  await waitForBlock(place.pos, 'chest');
+  world.home = { x: place.pos.x, y: place.pos.y, z: place.pos.z };
+  world.chests = (world.chests || []).concat([world.home]);
+  world.banked = world.banked || {};
+  saveWorld(worldFile, world);
+  emit({ type: 'marathon_base', x: world.home.x, y: world.home.y, z: world.home.z });
+  return { ok: true };
+}
+
+async function marathonDeposit() {
+  if (!world.home) return { ok: false, reason: 'no_base' };
+  const g = await gotoPos(world.home, 2, 8 * 60 * 1000);
+  if (g && g.ok === false) emit({ type: 'marathon_goto_base_failed' }); // on tente quand même (peut être à côté)
+  const r = await depositFiltered(bot, { only: MARATHON_VALUABLES, surplus: marathonSurplus() });
+  if (!r.ok) {
+    // coffre introuvable/cassé → re-base au prochain tour ; banked re-lu au prochain dépôt réussi
+    emit({ type: 'marathon_chest_lost', reason: r.reason });
+    world.home = null; saveWorld(worldFile, world);
+    return r;
+  }
+  world.banked = r.chest;             // source de vérité = contenu du coffre RELU après dépôt
+  saveWorld(worldFile, world);
+  emit({ type: 'marathon_deposit', deposited: r.deposited, banked: world.banked });
+  return r;
+}
+
+// Supply run SURFACE : bois + nourriture (un seul trip combiné), puis la boucle redescendra.
+async function marathonRestock() {
+  if (world.surface) {
+    const g = await gotoPos(world.surface, 8, 10 * 60 * 1000);
+    if (g && g.ok === false) emit({ type: 'marathon_surface_failed' });
+  }
+  const logNames = Object.keys(bot.registry.blocksByName).filter((n) => n.endsWith('_log'));
+  await withTimeout(gather(bot, { name: logNames, count: RESERVES.woodTarget, explore: true }, taskToken),
+    timeoutFor('gatherLog'), () => { try { stopMotion(); } catch (e) {} });
+  if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  await withTimeout(huntCookGoal(RESERVES.foodTarget), timeoutFor('huntCook'),
+    () => { try { stopMotion(); } catch (e) {} });
+  return { ok: true }; // best-effort : même partiel, la boucle re-dérive (re-restock si encore bas)
+}
+
+// Torches sur place : bâtons (planches→sticks) + charbon (miné ou charbon de bois) → craft.
+async function marathonTorches() {
+  const count = (n) => _invTotal((i) => i.name === n);
+  if (count('stick') < 2) {
+    if (!bot.inventory.items().some((i) => i.name.endsWith('_planks'))) {
+      const log = bot.inventory.items().find((i) => i.name.endsWith('_log'));
+      if (log) await craftItem(bot, { name: log.name.replace('_log', '_planks'), count: 1 });
+    }
+    await craftSmart({ name: 'stick', count: 1 });
+  }
+  if (count('coal') + count('charcoal') < 1) {
+    const sc = await smeltCharcoalGoal(2);
+    if (!sc.ok) return sc;
+  }
+  const coalHave = count('coal') + count('charcoal');
+  if (coalHave < 1) return { ok: false, reason: 'no_coal' };
+  return craftSmart({ name: 'torch', count: Math.min(3, coalHave) });
+}
+
+// Pioche fer de RECHANGE (≥2 en poche) dès que le fer du tunnel le permet.
+async function marathonSparePickaxe() {
+  if (_invTotal((i) => i.name === 'iron_ingot') < 3) {
+    const s = await smeltWithFurnace('raw_iron', 'iron_ingot', 3);
+    if (!s.ok) return s;
+  }
+  if (_invTotal((i) => i.name === 'stick') < 2) await craftSmart({ name: 'stick', count: 1 });
+  return craftSmart({ name: 'iron_pickaxe', count: 1 });
+}
+
+async function marathonDescend(targetY) {
+  // base existante en profondeur → pathfinder y retourne (réutilise l'escalier creusé) ;
+  // sinon (1er voyage / base perdue) → escalier diagonal.
+  if (world.home && world.home.y <= targetY + 4) {
+    const g = await gotoPos(world.home, 3, 10 * 60 * 1000);
+    if (!(g && g.ok === false)) return { ok: true };
+    emit({ type: 'marathon_goto_base_failed', phase: 'descend' });
+  }
+  return descendDiagonal(bot, { targetY }, taskToken);
+}
+
+async function marathonAscend(targetY) {
+  const p = bot.entity.position;
+  const goal = pfGoals.GoalY ? new pfGoals.GoalY(targetY) : new pfGoals.GoalNear(p.x, targetY, p.z, 8);
+  return withTimeout(bot.pathfinder.goto(goal), 10 * 60 * 1000, () => { try { stopMotion(); } catch (e) {} });
+}
+
+async function startMarathon() {
+  // ancre de surface (restock trips) : figée la 1re fois qu'on voit le bot en surface
+  const p0 = bot.entity && bot.entity.position;
+  if (!world.surface && p0 && p0.y >= 55) {
+    world.surface = { x: Math.floor(p0.x), y: Math.floor(p0.y), z: Math.floor(p0.z) };
+    saveWorld(worldFile, world);
+  }
+  const kitChain = chainFor('marathon');
+  const runKit = () => runPlanner(bot, {
+    chain: kitChain,
+    runSkill: (g) => runSkillWithTelemetry(g),
+    ctxExtra: () => Object.assign(ctxExtra(), { hasBase: !!world.home }),
+    onStep: (g) => emit({ type: 'goal', name: g.name }),
+  }, taskToken);
+
+  let lastAction = null;
+  let sameFails = 0;
+  while (!taskToken.cancelled) {
+    await settleSurvivalKit();                       // menaces/faim d'abord
+    if (taskToken.cancelled) return;
+    const ctx = marathonCtx();
+    const counts = marathonCounts(ctx.inv, ctx.banked);
+    const action = nextAction(ctx);
+    emit({ type: 'marathon', action, counts, y: ctx.y !== undefined ? Math.round(ctx.y) : null, slots: ctx.emptySlots });
+    if (action === 'done') {
+      clearObjective(world); saveWorld(worldFile, world);
+      emit({ type: 'autonomous_done', objective: 'marathon', counts });
+      return;
+    }
+    let r = { ok: false, reason: 'unknown_action' };
+    try {
+      if (action === 'pickaxe') {
+        const k = await runKit();
+        r = k.done ? { ok: true } : { ok: false, reason: k.stalled ? 'kit_stalled:' + k.goal : 'kit_cancelled' };
+      } else if (action === 'base') r = await withTimeout(establishBase(), 3 * 60 * 1000, stopMotion);
+      else if (action === 'deposit') r = await withTimeout(marathonDeposit(), 10 * 60 * 1000, stopMotion);
+      else if (action === 'restock') r = await withTimeout(marathonRestock(), 15 * 60 * 1000, stopMotion);
+      else if (action === 'torches') r = await withTimeout(marathonTorches(), 6 * 60 * 1000, stopMotion);
+      else if (action === 'scaffold') r = await withTimeout(gather(bot, { name: ['stone', 'deepslate'], count: 16 }, taskToken), 5 * 60 * 1000, stopMotion);
+      else if (action === 'spare_pickaxe') r = await withTimeout(marathonSparePickaxe(), 6 * 60 * 1000, stopMotion);
+      else if (action === 'descend') r = await withTimeout(marathonDescend(miningYFor(counts)), 15 * 60 * 1000, stopMotion);
+      else if (action === 'ascend') r = await marathonAscend(miningYFor(counts));
+      else if (action === 'mine') {
+        r = await withTimeout(branchMine(bot, {
+          targetY: miningYFor(counts), mainLength: 24, branchSpacing: 3, branchLength: 8,
+          stopWhen: (b) => (b.inventory && b.inventory.emptySlotCount ? b.inventory.emptySlotCount() : 99) <= RESERVES.invFullSlots,
+        }, taskToken), 15 * 60 * 1000, stopMotion);
+        if (r && r.ores) emit({ type: 'marathon_mined', ores: r.ores });
+      }
+    } catch (e) { r = { ok: false, reason: String((e && e.message) || e).slice(0, 120) }; }
+    if (taskToken.cancelled) return;
+    if (!r || r.ok === false) {
+      emit({ type: 'marathon_action_failed', action, reason: (r && r.reason) || 'unknown' });
+      sameFails = action === lastAction ? sameFails + 1 : 1;
+      lastAction = action;
+      if (sameFails >= 5) {
+        // anti-blocage : bouger ailleurs change le contexte terrain (pose/gather/path re-tentables)
+        emit({ type: 'marathon_stalled', action });
+        const spot = findLandTarget(bot, 24);
+        if (spot) await gotoPos({ x: spot.x, y: spot.y + 1, z: spot.z }, 2, 60 * 1000);
+        sameFails = 0;
+      }
+    } else { sameFails = 0; lastAction = action; }
+    await sleep(800);
+  }
+}
+
 // Lance (ou relance) la boucle autonome ; le planner re-dérive depuis l'état courant.
 async function startAutonomous(sender) {
   // objectif : depuis le world (seedé par le backend/launch), sinon --objective, sinon pioche pierre.
@@ -541,6 +737,7 @@ async function startAutonomous(sender) {
     await sleep(1500); // laisser le pickup aspirer les items au sol
   }
   if (objType === 'mapper') return startMapper(); // rôle continu : jamais « done »
+  if (objType === 'marathon') return startMarathon(); // 64×4 minerais, boucle longue durée
   const chain = chainFor(objType);               // pioche pierre (MVP) ou pioche fer (IRON_CHAIN)
   const res = await runPlanner(bot, {
     chain,
