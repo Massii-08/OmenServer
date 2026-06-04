@@ -702,10 +702,24 @@ async function ensurePlanks(n) {
   return have() >= n;
 }
 
+// P47 (run#55 : slots 0 + pas de coffre-item → craft impossible → wedge base) : libérer des
+// slots en JETANT le junk le moins utile (ordre croissant d'utilité, on s'arrête dès que libéré).
+const JUNK_TOSS = ['gravel', 'flint', 'dirt', 'tuff', 'andesite', 'diorite', 'granite', 'cobbled_deepslate', 'cobblestone'];
+async function freeSlots(n) {
+  const free = () => (bot.inventory && bot.inventory.emptySlotCount ? bot.inventory.emptySlotCount() : 9);
+  for (const name of JUNK_TOSS) {
+    if (free() >= n) return true;
+    const it = bot.inventory.items().find((i) => i.name === name);
+    if (it) { try { await bot.toss(it.type, null, it.count); emit({ type: 'junk_tossed', item: name, count: it.count }); } catch (e) {} }
+  }
+  return free() >= n;
+}
+
 // Pose le coffre de base à la profondeur de minage → world.home (les dépôts en dépendent).
 // Massii C (option 3) : la base reçoit aussi une table de craft PERMANENTE (jamais reprise) —
 // un humain laisse sa table à sa base ; le cycle portable ne sert plus que loin en minage.
 async function establishBase() {
+  await freeSlots(3);     // P47 : crafts impossibles à inventaire plein (résultat sans slot)
   await ensurePlanks(12); // coffre 8 + table permanente 4 (best-effort, P16)
   if (!bot.inventory.items().some((i) => i.name === 'chest')) {
     const c = await craftSmart({ name: 'chest', count: 1 });
