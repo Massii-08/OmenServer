@@ -352,7 +352,18 @@ async function runGoalSkill(goal) {
   // explore:true sur les gather de la chaîne autonome (bois/pierre/minerai) → le bot va chercher
   // la ressource si elle n'est pas dans le voisinage. (Les gather opportunistes internes — branchMine
   // maxDistance:6 — appellent gather() directement SANS explore → pas de roaming en plein tunnel.)
-  if (goal.skill === 'gather') return gather(bot, { ...goal.args, explore: true }, taskToken);
+  if (goal.skill === 'gather') {
+    // PIERRE : inutile de roamer (timeouts ×3 vécus Surv6) — la couche de pierre est à 3-5 blocs
+    // sous l'herbe PARTOUT → pas de pierre visible ≤32 ? on creuse 4 blocs et on mine sur place.
+    if (goal.args.name === 'stone') {
+      const def = bot.registry.blocksByName.stone;
+      if (def && !bot.findBlock({ matching: [def.id], maxDistance: 32 })) {
+        await mineDown(bot, { depth: 4 }, taskToken);
+        if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+      }
+    }
+    return gather(bot, { ...goal.args, explore: true }, taskToken);
+  }
   if (goal.skill === 'craftPlanks') {
     const log = bot.inventory.items().find((i) => i.name.endsWith('_log'));
     if (!log) return { ok: false, reason: 'not_found' };
