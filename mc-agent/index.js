@@ -961,6 +961,15 @@ async function startMarathon() {
     }
     await settleSurvivalKit();                       // menaces/faim d'abord
     if (taskToken.cancelled) return;
+    // P36 (mort #6, surface de nuit) : NUIT + SURFACE → abri jusqu'à l'aube, quelle que soit
+    // l'action prévue (treks/grind/relocations nocturnes = 1re cause de mortalité pré-armure).
+    if (isNight(bot) && bot.entity.position.y >= 50 && Date.now() - lastShelterT > 10 * 60 * 1000) {
+      lastShelterT = Date.now();
+      emit({ type: 'marathon_shelter', y: Math.round(bot.entity.position.y) });
+      await withTimeout(shelterUntilDawn(bot, taskToken, { emit }), 13 * 60 * 1000,
+        () => { try { stopMotion(); } catch (e) {} });
+      if (taskToken.cancelled) return;
+    }
     const ctx = marathonCtx();
     const counts = marathonCounts(ctx.inv, ctx.banked);
     const action = nextAction(ctx);
