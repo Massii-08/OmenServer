@@ -220,6 +220,13 @@ const MARATHON_KIT = [
     skill: 'smeltIron',     args: { count: 3 } },
   { name: 'iron_pickaxe',   met: (c) => IP(c),
     skill: 'craft',         args: { name: 'iron_pickaxe', count: 1 } },
+  // ARMURE (P35 : 5 morts en ~4h de runs — plastron fer = ~60% de la réduction de dégâts).
+  // `c.armored` = plastron ÉQUIPÉ (les slots d'armure ne sont PAS dans inventory.items()).
+  { name: 'armor_iron',     met: (c) => invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot') >= 8
+                                      || invCount(c.inv, 'iron_chestplate') >= 1 || !!c.armored,
+    skill: 'gatherIron',    args: { count: 8 } },
+  { name: 'iron_chestplate', met: (c) => invCount(c.inv, 'iron_chestplate') >= 1 || !!c.armored,
+    skill: 'craftArmor',    args: { name: 'iron_chestplate', ingots: 8 } },
   // consommables (re-deviennent unmet quand consommés → reconstitués au re-run du kit)
   { name: 'food_stock',     met: (c) => cookedCount(c.inv) >= 4,
     skill: 'huntCook',      args: { target: 4 } },

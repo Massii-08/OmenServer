@@ -277,33 +277,45 @@ test('marathon: kit vide → 1er but = logs ; pioche fer présente → saute tou
   // kit complet sauf consommables : la pioche fer rend l'amont outillage met
   const inv = { iron_pickaxe: 1, stone_sword: 1, stone_axe: 1, furnace: 1, crafting_table: 1,
     cooked_beef: 4, torch: 8, chest: 1, cobblestone: 16, oak_planks: 24, stick: 12 };
-  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv }), null);
+  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv, armored: true }), null);
 });
 
 test('marathon: coffre gated par hasBase (posé → pas de re-craft)', () => {
   const inv = { iron_pickaxe: 1, stone_sword: 1, stone_axe: 1, furnace: 1, crafting_table: 1,
     cooked_beef: 4, torch: 8, cobblestone: 16, oak_planks: 24, stick: 12 };
   // sans base ni coffre → but chest
-  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv }).name, 'chest');
+  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv, armored: true }).name, 'chest');
   // base posée → chest met malgré 0 coffre en poche
-  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv, hasBase: true }), null);
+  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv, hasBase: true, armored: true }), null);
 });
 
 test('marathon: scaffold_buffer accepte le cobbled_deepslate (P1)', () => {
   assert.strictEqual(scaffoldInv({ cobbled_deepslate: 16 }), 16);
   const inv = { iron_pickaxe: 1, stone_sword: 1, stone_axe: 1, furnace: 1, crafting_table: 1,
     cooked_beef: 4, torch: 8, chest: 1, cobbled_deepslate: 16, oak_planks: 24, stick: 12 };
-  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv }), null);
+  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv, armored: true }), null);
 });
 
 test('marathon: food consommable → kit redevient unmet quand mangé', () => {
   const inv = { iron_pickaxe: 1, stone_sword: 1, stone_axe: 1, furnace: 1, crafting_table: 1,
     cooked_beef: 0, torch: 8, chest: 1, cobblestone: 16, oak_planks: 24, stick: 12 };
-  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv }).name, 'food_stock');
+  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv, armored: true }).name, 'food_stock');
 });
 
 test('marathon: iron_ore utilise gatherIron (recherche profonde, pas le gather surface)', () => {
   const g = MARATHON_KIT.find((x) => x.name === 'iron_ore');
   assert.strictEqual(g.skill, 'gatherIron');
   assert.strictEqual(g.args.count, 3);
+});
+
+test('P35: armure — armor_iron/iron_chestplate dans MARATHON_KIT, gated par c.armored (équipée = hors inventaire)', () => {
+  const inv = { iron_pickaxe: 1, stone_sword: 1, stone_axe: 1, furnace: 1, crafting_table: 1,
+    cooked_beef: 4, torch: 8, chest: 1, cobblestone: 16, oak_planks: 24, stick: 12 };
+  // pas d'armure ni de fer → premier unmet = armor_iron
+  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv, hasBase: true }).name, 'armor_iron');
+  // plastron ÉQUIPÉ (hors inventaire) → kit complet
+  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv, hasBase: true, armored: true }), null);
+  // plastron en poche → kit complet aussi
+  const inv2 = Object.assign({}, inv, { iron_chestplate: 1 });
+  assert.strictEqual(firstUnmet(MARATHON_KIT, { inv: inv2, hasBase: true }), null);
 });

@@ -122,7 +122,8 @@ function writePw(pw) {
 
 function ctxExtra() {
   const pos = bot && bot.entity && bot.entity.position;
-  return { hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined };
+  return { hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined,
+    armored: !!(bot.inventory && bot.inventory.slots && bot.inventory.slots[6]) }; // slot torse
 }
 
 // Table de craft PORTABLE : le bot garde 1 crafting_table en poche et la pose/reprend à la demande
@@ -435,6 +436,19 @@ async function runGoalSkill(goal) {
     return craftSmart(goal.args);    // pose une table portable si craft 3×3
   }
   if (goal.skill === 'gatherIron') return gatherIronGoal(goal.args.count || 3);
+  if (goal.skill === 'craftArmor') {
+    // P35 : fondre le fer manquant puis crafter + ÉQUIPER (le slot armure sort de l'inventaire)
+    const ingots = () => _invTotal((i) => i.name === 'iron_ingot');
+    if (ingots() < (goal.args.ingots || 8) && _invTotal((i) => i.name === 'raw_iron') > 0) {
+      const sm = await smeltWithFurnace('raw_iron', 'iron_ingot', (goal.args.ingots || 8) - ingots());
+      if (!sm.ok && ingots() < (goal.args.ingots || 8)) return sm;
+    }
+    const c = await craftSmart({ name: goal.args.name || 'iron_chestplate', count: 1 });
+    if (!c.ok) return c;
+    const piece = bot.inventory.items().find((i) => i.name === (goal.args.name || 'iron_chestplate'));
+    if (piece) { try { await bot.equip(piece, 'torso'); emit({ type: 'armor_equipped', item: piece.name }); } catch (e) {} }
+    return { ok: true };
+  }
   if (goal.skill === 'smeltIron') return smeltWithFurnace('raw_iron', 'iron_ingot', goal.args.count || 3);
   if (goal.skill === 'smeltCharcoal') return smeltCharcoalGoal(goal.args.count || 2);
   if (goal.skill === 'huntCook') return huntCookGoal(goal.args.target || 4);
@@ -940,6 +954,11 @@ async function startMarathon() {
     // voyage…) — un vrai joueur sort de l'eau en 1-2 s, jamais de flottage sur place.
     if (isInWater(bot)) await escapeWater(bot, { emit });
     await ensureGrounded();                          // P27 : jamais à cheval sur le vide (A* mort)
+    // P35 : plastron en poche mais torse nu (respawn/récup) → ré-équiper
+    if (bot.inventory && bot.inventory.slots && !bot.inventory.slots[6]) {
+      const cp = bot.inventory.items().find((i) => i.name === 'iron_chestplate');
+      if (cp) { try { await bot.equip(cp, 'torso'); } catch (e) {} }
+    }
     await settleSurvivalKit();                       // menaces/faim d'abord
     if (taskToken.cancelled) return;
     const ctx = marathonCtx();
