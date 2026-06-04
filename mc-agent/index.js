@@ -991,8 +991,23 @@ async function startMarathon() {
             const goal = pfGoals.GoalNearXZ ? new pfGoals.GoalNearXZ(tx, tz, 8)
               : new pfGoals.GoalNear(tx, pme.y, tz, 8);
             // 45 s/saut : 64 blocs se marchent en <40 s — un pathfinder vivant BOUGE (P28 fail-fast)
-            await withTimeout(bot.pathfinder.goto(goal), 45 * 1000, () => { try { stopMotion(); } catch (e) {} });
+            // P30-diag : capturer l'ERREUR RÉELLE du goto (withTimeout l'avalait) + l'état moteur.
+            let gotoErr = null;
+            try {
+              await Promise.race([
+                bot.pathfinder.goto(goal),
+                new Promise((_, rej) => setTimeout(() => rej(new Error('hop_timeout_45s')), 45000)),
+              ]);
+            } catch (e) { gotoErr = String((e && e.message) || e).slice(0, 120); try { stopMotion(); } catch (e2) {} }
             if (isInWater(bot)) await escapeWater(bot, { emit });
+            if (homeDistNow() >= before - 8) {
+              const v = bot.entity.velocity || {};
+              emit({ type: 'go_home_diag', gotoErr,
+                onGround: bot.entity.onGround,
+                vel: { x: +(v.x || 0).toFixed(2), y: +(v.y || 0).toFixed(2), z: +(v.z || 0).toFixed(2) },
+                controls: ['forward', 'jump', 'sneak'].map((c) => (bot.getControlState ? (bot.getControlState(c) ? 1 : 0) : -1)).join(''),
+                isMoving: bot.pathfinder && typeof bot.pathfinder.isMoving === 'function' ? bot.pathfinder.isMoving() : null });
+            }
             if (homeDistNow() >= before - 8) {
               noProg++;
               emit({ type: 'go_home_no_progress', dist: Math.round(homeDistNow()), noProg });
