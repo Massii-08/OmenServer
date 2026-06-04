@@ -265,3 +265,42 @@ invisible) ; et **les logs montrent la cause** de tout échec de montée restant
 **Critère (live)** : tunnels d'allure **imparfaite/humaine** (pas un gabarit régulier) ; **moins de
 blocs cassés** par distance (outils durent plus) ; le bot **ne passe JAMAIS à côté d'un diamant proche**
 sans le prendre, et il **progresse vers 64×4**.
+
+## 2026-06-04 — I. PRIORISER LES CAVERNES (données cartographe) > branch-mining `[HAUTE PRIORITÉ — stratégie]`
+
+**Demande de Massii** : le bot doit **prioriser les cavernes** plutôt que toujours branch-miner.
+Workflow voulu :
+1. Aller à une **caverne localisée par le bot cartographe** (données `cave_found` de la world-memory).
+2. Y **chercher/récolter les minéraux** (les ores y sont naturellement **EXPOSÉS** = récolte facile
+   ET **100 % légit**, zéro x-ray) ; + **stealth x-ray (E)** pour les ores proches juste cachés.
+3. **En même temps / ensuite**, se diriger vers une **AUTRE caverne** connue (données cartographe).
+> ⚠️ Massii lance **le cartographe maintenant** → la world-memory va se remplir de `cave_found`.
+
+**Pourquoi c'est la bonne stratégie** : les ores **exposés dans une grotte = la façon la plus LÉGIT de
+miner** (aucun tell x-ray, ils sont visibles) — ça sert l'anti-détection ET l'efficacité (objectif 64×4
+plus vite que le branch-mining aveugle).
+
+**À faire** :
+1. **Stratégie CAVE-FIRST** : si des cavernes connues (`caves[]` de la world-memory) sont à portée
+   raisonnable → le bot **va à la plus proche/riche AU LIEU** de branch-miner. Le **branch-mining devient
+   le FALLBACK** (aucune caverne connue à portée).
+2. **Dans la caverne** : récolter les ores **exposés** (diamant/lapis/redstone/or/fer/charbon) ; explorer
+   les ramifications de la grotte pour en exposer plus ; **stealth x-ray (E, ≤ MAX_ORE_APPROACH)** pour
+   les ores proches juste cachés ; **éclairer** (torches = sûr + humain).
+3. **CAVE-HOPPING** : une fois une caverne dépouillée (ou en perdant en richesse), **router vers la
+   prochaine caverne connue** (pipeline : récolte ici → trajet vers la suivante → récolte ; pas
+   littéralement les deux en même temps). Réutiliser le ciblage `directedTarget` cave-aware du récolteur
+   s'il existe, sinon l'ajouter (lire `caves[]`, choisir la + proche non encore visitée).
+4. ⚙️ **WIRING (IMPORTANT)** : pour consommer les **vraies** données du cartographe, le bot marathon doit
+   lire le **MÊME store world-memory que le cartographe écrit** (le `--world-memory` doit pointer sur le
+   fichier `data/mc_agent_world_memory/<group>.json` partagé du **même serveur**, **pas** une fixture) —
+   et le **re-lire périodiquement** (le cartographe ajoute des caves pendant que le marathon tourne ; le
+   bootstrap au lancement n'est qu'un snapshot). Tant que la carte est **vide** (cartographe pas encore
+   lancé) → **branch-mining fallback**, sans bloquer.
+5. **Sécurité** : grottes = mobs/lave/chutes → garder le kit survie (armure/épée/torches déjà là),
+   éclairer en avançant, pathfinder évite lave/vide.
+
+**Critère (live)** : quand des caves sont connues, le bot **va en grotte** et récolte les ores **exposés**
+(pas de branch-mine systématique) ; il **enchaîne les cavernes** via les données cartographe ; et il
+**accumule plus vite** vers 64×4. Test offline : sélection de la cave la + proche non visitée depuis
+`caves[]` ; fallback branch-mine si `caves[]` vide.
