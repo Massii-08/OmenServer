@@ -419,6 +419,13 @@ def test_apply_event_route_biome_vers_store(monkeypatch, tmp_path):
     mgr._wm_cache.pop("ab12cd", None)
 
 
+def test_wm_events_includes_ore_events():
+    """Les events de minerais exposés sont routés vers le store du groupe (cf. _apply_event)."""
+    assert "exposed_ore_found" in mgr._WM_EVENTS
+    assert "ore_mined" in mgr._WM_EVENTS
+    assert "ore_gone" in mgr._WM_EVENTS
+
+
 def test_apply_event_no_store_without_server_id(monkeypatch, tmp_path):
     """Sans server_id (lancement manuel) : aucune écriture de mémoire (pas de groupe)."""
     monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path)
@@ -885,3 +892,8 @@ def test_spawn_bot_uses_explicit_sectors(monkeypatch, tmp_path):
     cmd = captured["cmd"]
     assert cmd[cmd.index("--sector-index") + 1] == "2"
     assert cmd[cmd.index("--sector-count") + 1] == "5"
+
+
+def test_resource_is_valid_objective():
+    """'resource' (bot ressource : mine les ores exposés de la carte) est un objectif valide."""
+    assert "resource" in mgr.VALID_OBJECTIVES

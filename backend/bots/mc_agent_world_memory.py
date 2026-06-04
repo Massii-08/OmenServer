@@ -9,9 +9,13 @@ Datapack-agnostique (cf. spec §13) : on enregistre le biome rapporté par le se
 numérique si le nom est inconnu), jamais de validation contre une liste vanilla. Les associations
 matériau↔biome sont APPRISES (index `finds`) → robustes aux biomes custom.
 
-Écriture backend-médiée : les bots émettent des events stdout (biome_seen / cave_found / material_found)
-que le manager applique via apply_event() puis sauvegarde sous verrou (un seul écrivain). Les fonctions
-add_*/apply_event sont PURES (mutent le dict mémoire) → testables sans I/O ; load/save/delete gèrent le fichier.
+Écriture backend-médiée : les bots émettent des events stdout (biome_seen / cave_found / material_found /
+exposed_ore_found / ore_mined / ore_gone) que le manager applique via apply_event() puis sauvegarde sous
+verrou (un seul écrivain). Les fonctions add_*/remove_*/apply_event sont PURES (mutent le dict mémoire) →
+testables sans I/O ; load/save/delete gèrent le fichier.
+
+La store `ores` est PARTICULIÈRE : positions 3D EXACTES (non quantifiées grille) de minerais EXPOSÉS notés
+par un cartographe ; dédup par position exacte (x,y,z) ; remove_ore les retire quand minés/disparus.
 """
 import json
 import re
@@ -40,6 +44,7 @@ def _world(memory, world):
     w.setdefault("biomes", [])
     w.setdefault("caves", [])
     w.setdefault("finds", [])
+    w.setdefault("ores", [])
     return w
 
 
@@ -97,6 +102,39 @@ def add_find(memory, world, material, biome, x, z, at=None, cap=CAP):
     return memory
 
 
+def add_ore(memory, world, material, x, y, z, at=None, cap=CAP):
+    """Note un minerai EXPOSÉ à sa position 3D EXACTE (coords RÉELLES int, PAS quantifiées grille).
+
+    Dédup par position (int x,y,z) : une entrée existante à cette position est REMPLACÉE (le material
+    peut être corrigé). Cap → garde les plus récentes. Ignoré si world ou material falsy.
+    Mute + retourne memory."""
+    if not world or not material:
+        return memory
+    w = _world(memory, world)
+    ix, iy, iz = int(x), int(y), int(z)
+    w["ores"] = [o for o in w["ores"] if not (o["x"] == ix and o["y"] == iy and o["z"] == iz)]
+    w["ores"].append({"material": str(material), "x": ix, "y": iy, "z": iz, "at": at})
+    if len(w["ores"]) > cap:
+        w["ores"] = w["ores"][-cap:]  # garde les plus récentes
+    if at:
+        memory["updated_at"] = at
+    return memory
+
+
+def remove_ore(memory, world, x, y, z, at=None):
+    """Retire TOUTE entrée de minerai à la position 3D exacte (int). No-op silencieux si monde/entrée
+    absents. MAJ updated_at seulement si `at` et si quelque chose a été retiré. Mute + retourne."""
+    w = memory.get("worlds", {}).get(world)
+    if not w or not w.get("ores"):
+        return memory
+    ix, iy, iz = int(x), int(y), int(z)
+    before = len(w["ores"])
+    w["ores"] = [o for o in w["ores"] if not (o["x"] == ix and o["y"] == iy and o["z"] == iz)]
+    if at and len(w["ores"]) != before:
+        memory["updated_at"] = at
+    return memory
+
+
 def apply_event(memory, event, at=None):
     """Applique un event bot à la mémoire. Ignore les types inconnus / champs manquants (pas de crash)."""
     if not isinstance(event, dict):
@@ -111,6 +149,10 @@ def apply_event(memory, event, at=None):
             return add_cave(memory, world, event["x"], event["y"], event["z"], at=at)
         if t == "material_found":
             return add_find(memory, world, event["material"], event["biome"], event["x"], event["z"], at=at)
+        if t == "exposed_ore_found":
+            return add_ore(memory, world, event["material"], event["x"], event["y"], event["z"], at=at)
+        if t in ("ore_mined", "ore_gone"):
+            return remove_ore(memory, world, event["x"], event["y"], event["z"], at=at)
     except (KeyError, TypeError, ValueError):
         return memory
     return memory

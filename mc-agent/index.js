@@ -48,6 +48,8 @@ const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
 const { loadMemory, worldKey } = require('./worldMemory');
 const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
+const { runResource } = require('./skills/resource');
+const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
 const { isNight, shelterUntilDawn } = require('./skills/shelter');
 
@@ -537,6 +539,76 @@ async function startMapper() {
   }, taskToken);
 }
 
+// --- Bot RESSOURCE (objectif `resource`, role worker) : mine les minerais EXPOSÉS de la carte ----
+
+// Meilleur palier de pioche en poche (-1 = aucune) : filtre les cibles inminables (diamant sans fer).
+function bestPickTier() {
+  const items = (bot.inventory && bot.inventory.items()) || [];
+  let best = -1;
+  for (const it of items) {
+    if (it && it.name && it.name.endsWith('_pickaxe')) best = Math.max(best, tierRank(it.name));
+  }
+  return best;
+}
+
+// Navigation bornée vers un minerai (x,y,z exact) avec PERSISTANCE PAR PROGRÈS (pattern explore
+// dirigé) : un goto interrompu par les réflexes (flee/surface → GoalChanged) est repris tant qu'on
+// se RAPPROCHE ; un timeout (240s, cible gelée) ou 2 tentatives sans progrès → unreachable (throw).
+async function gotoOreBounded(t) {
+  const dist = () => {
+    const p = bot.entity && bot.entity.position;
+    if (!p) return Infinity;
+    return Math.sqrt((p.x - t.x) ** 2 + (p.y - t.y) ** 2 + (p.z - t.z) ** 2);
+  };
+  let lastD = dist();
+  let noProgress = 0;
+  for (let attempts = 0; attempts < 6; attempts++) {
+    const r = await withTimeout(
+      bot.pathfinder.goto(new pfGoals.GoalNear(t.x, t.y, t.z, 2)),
+      240000, () => { try { stopMotion(); } catch (e) {} });
+    if (taskToken.cancelled) return;
+    if (!(r && r.ok === false)) return;                     // arrivé (goto résolu)
+    if (r.reason === 'timeout') throw new Error('unreachable'); // gelé 240s → pas de 2e chance
+    const d = dist();
+    if (d < lastD - 8) { lastD = d; noProgress = 0; continue; } // progrès → persiste
+    noProgress++;
+    if (noProgress >= 2) throw new Error('unreachable');
+    await sleep(4000); // grâce : NoPath transitoire (chunks pas chargés autour d'un bot frais/tp)
+  }
+  throw new Error('unreachable');
+}
+
+// Boucle ressource : kit pioche minimal si nécessaire (zéro→pioche pierre, chaîne existante), puis
+// mine les ores de la carte un à un. Liste vide/épuisée → idle PROPRE (immobile, réflexes survie ON).
+async function startResource() {
+  // Sans pioche, rien ne droppe : on passe d'abord par le kit pierre (réutilise le planner).
+  if (bestPickTier() < 0) {
+    const res = await runPlanner(bot, {
+      chain: chainFor('stone_pickaxe'),
+      runSkill: (g) => runSkillWithTelemetry(g),
+      ctxExtra,
+      onStep: (g) => emit({ type: 'goal', name: g.name }),
+    }, taskToken);
+    if (taskToken.cancelled) return;
+    if (res.stalled) emit({ type: 'resource_kit_stalled', goal: res.goal }); // dégradé : on tente quand même
+  }
+  const r = await runResource(bot, {
+    emit,
+    goto: gotoOreBounded,
+    pickTier: bestPickTier,
+    deposit: () => deposit(bot),
+    onTarget: async () => {
+      if (isInWater(bot)) await escapeWater(bot, { emit });
+      await settleSurvivalKit();
+    },
+  }, taskToken);
+  if (taskToken.cancelled) return;
+  // Fini (carte épuisée ou vide) : objectif clos + idle propre — plus de mouvement volontaire,
+  // les réflexes (manger/fuir/respirer) restent branchés. Un nouveau start relancera la boucle.
+  clearObjective(world); saveWorld(worldFile, world);
+  emit({ type: 'resource_idle', mined: (r && r.mined) || 0 });
+}
+
 // Lance (ou relance) la boucle autonome ; le planner re-dérive depuis l'état courant.
 async function startAutonomous(sender) {
   // objectif : depuis le world (seedé par le backend/launch), sinon --objective, sinon pioche pierre.
@@ -556,6 +628,7 @@ async function startAutonomous(sender) {
     await sleep(1500); // laisser le pickup aspirer les items au sol
   }
   if (objType === 'mapper') return startMapper(); // rôle continu : jamais « done »
+  if (objType === 'resource') return startResource(); // mine les ores EXPOSÉS de la carte du groupe
   const chain = chainFor(objType);               // pioche pierre (MVP) ou pioche fer (IRON_CHAIN)
   const res = await runPlanner(bot, {
     chain,
