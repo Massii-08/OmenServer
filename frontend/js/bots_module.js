@@ -1715,6 +1715,13 @@ const BotsModule = {
  // Couleur stable par biome — teinte thématique (océan bleu, désert sable…) + jitter hashé pour
  // distinguer les variantes ; fallback 100% hashé pour les biomes custom de datapack (cf. spec §13).
  _MCA_BIOME_RULES: [
+ // spécifiques d'abord (crimson/warped avant /forest/, lush/deep_dark avant /cave/)
+ [/crimson/, 355, 50, 30],
+ [/warped/, 175, 45, 28],
+ [/nether|basalt|soul|magma|delta/, 8, 55, 26],
+ [/lush/, 130, 45, 28],
+ [/deep_dark|sculk/, 245, 25, 26],
+ [/dripstone/, 28, 42, 30],
  [/ocean|river|water|aquifer/, 215, 55, 30],
  [/frozen|snow|ice|grove/, 200, 30, 56],
  [/desert|beach|badland|sand|dune/, 38, 50, 42],
@@ -1726,9 +1733,8 @@ const BotsModule = {
  [/plain|meadow|field|pasture/, 90, 48, 34],
  [/mushroom/, 295, 35, 34],
  [/peak|mountain|hill|slope|stony|windswept|gravel/, 220, 8, 40],
- [/nether|basalt|soul|crimson|warped|delta/, 0, 55, 28],
  [/\bend\b|void|barren/, 55, 25, 42],
- [/cave|deep|dripstone|lush/, 28, 38, 24],
+ [/cave|deep/, 28, 38, 24],
  ],
 
  _mcaBiomeColor(name) {
