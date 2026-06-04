@@ -184,13 +184,13 @@ test('MAPPER_KIT régression deadlock MapT2 : court en sticks ET en planches -> 
 
 // --- Extension SURVIE du kit mapper (hache + four + nourriture cuite + torches) ---
 
-test('MAPPER_KIT étendu : ordre complet (pioche→épée→hache→four→charbon→torches→nourriture)', () => {
+test('MAPPER_KIT étendu : ordre complet — NOURRITURE avant torches (vécu Surv8 : le stall charbon bloquait la cuisson)', () => {
   assert.deepStrictEqual(
     MAPPER_KIT.map((g) => g.name),
     ['logs', 'planks', 'crafting_table', 'sticks', 'wooden_pickaxe',
      'cobble_pick', 'stone_pickaxe', 'cobble_sword', 'stone_sword',
      'cobble_axe', 'stone_axe', 'cobble_furnace', 'furnace',
-     'charcoal', 'torches', 'food_stock'],
+     'food_stock', 'charcoal', 'torches'],
   );
 });
 

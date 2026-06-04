@@ -161,14 +161,15 @@ const MAPPER_KIT = [
     skill: 'gather',        args: { name: 'stone', count: 8 } },
   { name: 'furnace',        met: (c) => FN(c),
     skill: 'craft',         args: { name: 'furnace', count: 1 } },
-  // charbon de BOIS (2 bûches fondues au four ; le skill auto-récolte les bûches s'il en manque)
+  // stock de nourriture CUITE AVANT les torches (vécu Surv8 : le stall charbon bloquait la cuisson
+  // — la viande restait crue en poche). Consommable : redevient unmet quand mangé → re-chasse.
+  { name: 'food_stock',     met: (c) => cookedCount(c.inv) >= 4,
+    skill: 'huntCook',      args: { target: 4 } },
+  // charbon : MINE du coal_ore si visible (commun), sinon charbon de BOIS (bûches fondues au four)
   { name: 'charcoal',       met: (c) => (invCount(c.inv, 'charcoal') + invCount(c.inv, 'coal')) >= 2 || TORCH(c),
     skill: 'smeltCharcoal', args: { count: 2 } },
   { name: 'torches',        met: (c) => TORCH(c),
     skill: 'craft',         args: { name: 'torch', count: 2 } }, // 2×4 = 8 torches
-  // stock de nourriture CUITE — consommable : redevient unmet quand mangé → re-chasse (maintenance)
-  { name: 'food_stock',     met: (c) => cookedCount(c.inv) >= 4,
-    skill: 'huntCook',      args: { target: 4 } },
 ];
 
 /** Sélectionne la chaîne de buts selon le type d'objectif (défaut : pioche pierre). */

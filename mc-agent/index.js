@@ -291,16 +291,33 @@ function _invTotal(filter) {
 // ⚠️ fuel = planches/charbon UNIQUEMENT (jamais de bûches — c'est l'input). Si aucune planche :
 // convertit 1 bûche en planches d'abord.
 async function smeltCharcoalGoal(count) {
+  // 0) du COAL_ORE visible ? le miner direct (commun, plus simple que le charbon de bois — Surv8 :
+  //    20 échecs no_fuel en plaines sans arbres alors que la pierre regorge de charbon).
+  const coalDefs = ['coal_ore', 'deepslate_coal_ore'].map((n) => bot.registry.blocksByName[n]).filter(Boolean);
+  if (coalDefs.length && bot.findBlock({ matching: coalDefs.map((b) => b.id), maxDistance: 32 })) {
+    const g = await gather(bot, { name: ['coal_ore', 'deepslate_coal_ore'], count, explore: false }, taskToken);
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    if (g.ok && _invTotal((i) => i.name === 'coal') >= count) return { ok: true };
+  }
+  // 1) charbon de bois : il faut count bûches À FONDRE + de quoi alimenter le four (planches)
   const logNames = Object.keys(bot.registry.blocksByName).filter((n) => n.endsWith('_log'));
   const logsHave = () => _invTotal((i) => i.name.endsWith('_log'));
-  if (logsHave() < count + 1) { // +1 bûche de marge pour le combustible éventuel
+  const planksHave = () => _invTotal((i) => i.name.endsWith('_planks'));
+  emit({ type: 'charcoal_state', logs: logsHave(), planks: planksHave() }); // télémétrie (no_fuel ×20 inexpliqués)
+  if (logsHave() < count + 1) { // +1 bûche → planches de combustible
     const g = await gather(bot, { name: logNames, count: count + 1 - logsHave(), explore: true }, taskToken);
     if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
     if (!g.ok && logsHave() < count) return { ok: false, reason: 'no_logs' };
   }
-  if (_invTotal((i) => i.name.endsWith('_planks')) < 2) {
+  if (planksHave() < 2) {
     const log = bot.inventory.items().find((i) => i.name.endsWith('_log'));
-    if (log) await craftItem(bot, { name: log.name.replace('_log', '_planks'), count: 1 });
+    if (log) {
+      const c = await craftItem(bot, { name: log.name.replace('_log', '_planks'), count: 1 });
+      if (!c.ok) emit({ type: 'charcoal_state', planks_craft_failed: c.reason });
+    }
+  }
+  if (planksHave() < 1 && _invTotal((i) => i.name === 'coal') < 1) {
+    return { ok: false, reason: 'no_fuel_planks' };             // diagnostic PRÉCIS (≠ no_fuel du smelt)
   }
   // ⚠️ PAS de 'charcoal' dans le fuel ici : on ne brûle pas le produit qu'on fabrique (vécu Surv1)
   const fuel = ['coal'].concat(
