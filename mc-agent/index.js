@@ -25,7 +25,7 @@ const { parseOrder } = require('./orders');
 const { createTaskController } = require('./tasks');
 const { createMemory } = require('./memory');
 const { bestWeapon, bestToolFor } = require('./tools');
-const { gather } = require('./skills/gather');
+const { gather, findExposedOre } = require('./skills/gather');
 const { mineDown } = require('./skills/mineDown');
 const { guard } = require('./skills/guard');
 const { giveItem, giveAll } = require('./skills/give');
@@ -317,8 +317,7 @@ function _invTotal(filter) {
 async function smeltCharcoalGoal(count) {
   // 0) du COAL_ORE visible ? le miner direct (commun, plus simple que le charbon de bois — Surv8 :
   //    20 échecs no_fuel en plaines sans arbres alors que la pierre regorge de charbon).
-  const coalDefs = ['coal_ore', 'deepslate_coal_ore'].map((n) => bot.registry.blocksByName[n]).filter(Boolean);
-  if (coalDefs.length && bot.findBlock({ matching: coalDefs.map((b) => b.id), maxDistance: 32 })) {
+  if (findExposedOre(bot, ['coal_ore', 'deepslate_coal_ore'], 32)) { // anti-xray (Massii A) : exposé seulement
     const g = await gather(bot, { name: ['coal_ore', 'deepslate_coal_ore'], count, explore: false }, taskToken);
     if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
     if (g.ok && _invTotal((i) => i.name === 'coal') >= count) return { ok: true };
@@ -441,10 +440,9 @@ async function runGoalSkill(goal) {
 async function gatherIronGoal(need) {
   {
     const ironHave = () => _invTotal((i) => i.name === 'raw_iron' || i.name === 'iron_ingot');
-    const ids = ['iron_ore', 'deepslate_iron_ore']
-      .map((n) => bot.registry.blocksByName[n]).filter(Boolean).map((b) => b.id);
     const phase = (p) => emit({ type: 'gatherIron_phase', phase: p, y: Math.round(bot.entity.position.y), iron: ironHave() });
-    if (ids.length && bot.findBlock({ matching: ids, maxDistance: 32 })) {
+    // anti-xray (Massii A) : on ne « voit » un fer que s'il est EXPOSÉ — sinon branch-mine légit
+    if (findExposedOre(bot, ['iron_ore', 'deepslate_iron_ore'], 32)) {
       phase('visible_gather');
       const g = await withTimeout(
         gather(bot, { name: ['iron_ore', 'deepslate_iron_ore'], count: need, explore: false }, taskToken),
@@ -483,8 +481,7 @@ async function tryKitUpgrade() {
   const oreIds = (names) => names.map((n) => reg.blocksByName[n]).filter(Boolean).map((b) => b.id);
   const tryMetal = async (ores, raw, ingot, sword) => {
     if (!reg.itemsByName[sword]) return false;                       // registry-gated (cuivre)
-    const ids = oreIds(ores);
-    if (!ids.length || !bot.findBlock({ matching: ids, maxDistance: 32 })) return false; // pas « rapide »
+    if (!findExposedOre(bot, ores, 32)) return false; // pas « rapide » (et jamais x-ray — Massii A)
     // four : 8 cobble + craft (si pas déjà en poche)
     if (!bot.inventory.items().some((i) => i.name === 'furnace')) {
       const c = await withTimeout(gather(bot, { name: 'stone', count: 8 }, taskToken), 120000, stopMotion);

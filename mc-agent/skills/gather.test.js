@@ -127,3 +127,64 @@ test('P7: cible incollectable → blacklist + récolte la suivante', async () =>
   assert.strictEqual(r.ok, true, `attendu ok (got ${JSON.stringify(r)})`);
   assert.strictEqual(r.got, 1);
 });
+
+// --- Retour Massii A (anti-détection) : JAMAIS de beeline vers un ore CACHÉ -----------------------
+const { isExposed } = require('./gather');
+
+function oreBot({ exposed }) {
+  // un diamond_ore à (5,10,0) ; ses 6 voisins : pierre partout, sauf 1 face air si exposed
+  const ore = pos(5, 10, 0);
+  const bot = {
+    entity: { position: pos(0, 10, 0), yaw: 0 },
+    registry: { blocksByName: { deepslate_diamond_ore: { id: 57 }, stone: { id: 1 }, air: { id: 0 } } },
+    inventory: { items: () => [{ name: 'iron_pickaxe', count: 1 }] },
+    nearestEntity() { return null; },
+    pvp: { attack() {} },
+    async equip() {},
+    findBlock() { return { name: 'deepslate_diamond_ore', position: ore, boundingBox: 'block' }; },
+    findBlocks() { return [ore]; },
+    blockAt(p) {
+      const q = typeof p.floored === 'function' ? p.floored() : p;
+      if (q.x === 5 && q.y === 10 && q.z === 0) return { name: 'deepslate_diamond_ore', position: q, boundingBox: 'block' };
+      if (exposed && q.x === 6 && q.y === 10 && q.z === 0) return { name: 'air', position: q, boundingBox: 'empty' };
+      return { name: 'stone', position: q, boundingBox: 'block' };
+    },
+    pathfinder: { async goto() {} },
+    collectBlock: { async collect(b) { bot._collected = (bot._collected || 0) + 1; } },
+  };
+  return bot;
+}
+
+test('anti-xray: isExposed vrai si ≥1 face air, faux si 100% enterré', () => {
+  assert.strictEqual(isExposed(oreBot({ exposed: true }), pos(5, 10, 0)), true);
+  assert.strictEqual(isExposed(oreBot({ exposed: false }), pos(5, 10, 0)), false);
+});
+
+test('anti-xray: gather REFUSE un ore enterré (pas de beeline x-ray)', async () => {
+  const bot = oreBot({ exposed: false });
+  const r = await gather(bot, { name: 'deepslate_diamond_ore', count: 1 });
+  assert.strictEqual(r.ok, false);
+  assert.ok(!bot._collected, 'ne doit PAS avoir percé vers l\'ore caché');
+});
+
+test('anti-xray: gather accepte un ore À FLANC DE PAROI (1 face air)', async () => {
+  const bot = oreBot({ exposed: true });
+  const r = await gather(bot, { name: 'deepslate_diamond_ore', count: 1 });
+  assert.strictEqual(r.ok, true);
+});
+
+test('anti-xray: les blocs NON-ore (bois/pierre) ne sont pas filtrés', async () => {
+  // un log enterré (cas absurde mais : le filtre ne s'applique qu'aux ORES)
+  const ore = pos(5, 10, 0);
+  const bot = oreBot({ exposed: false });
+  bot.registry.blocksByName.oak_log = { id: 17 };
+  bot.findBlock = () => ({ name: 'oak_log', position: ore, boundingBox: 'block' });
+  bot.findBlocks = () => [ore];
+  bot.blockAt = (p) => {
+    const q = typeof p.floored === 'function' ? p.floored() : p;
+    if (q.x === 5 && q.y === 10 && q.z === 0) return { name: 'oak_log', position: q, boundingBox: 'block' };
+    return { name: 'stone', position: q, boundingBox: 'block' };
+  };
+  const r = await gather(bot, { name: 'oak_log', count: 1 });
+  assert.strictEqual(r.ok, true);
+});

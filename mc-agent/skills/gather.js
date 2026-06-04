@@ -39,6 +39,46 @@ async function defendIfNeeded(bot) {
 }
 
 /** Récolte `count`× le bloc `name` le + proche. {ok, reason?/got}. `token` = annulation. */
+// --- Anti-détection ore (retour Massii A) ---------------------------------------------------------
+// JAMAIS de beeline vers un ore CACHÉ : findBlock voit à travers la roche (x-ray de fait) → tell n°1
+// d'un bot + flag des plugins de détection statistique. On ne cible un ORE que s'il est EXPOSÉ
+// (≥1 face air/non-solide — ce qu'un joueur pourrait voir). Bonus : ça neutralise aussi l'anti-xray
+// serveur (engine-mode 2 = faux ores ENTERRÉS côté client → jamais exposés → jamais ciblés ;
+// mode 1 = ores cachés invisibles → rien à cibler) → fallback naturel = branch-mine légit.
+// ⚠️ dupliqué de branchMine.ORE_NAMES (require croisé impossible : branchMine require gather).
+const ORE_BLOCKS = new Set([
+  'diamond_ore', 'deepslate_diamond_ore', 'iron_ore', 'deepslate_iron_ore',
+  'coal_ore', 'deepslate_coal_ore', 'redstone_ore', 'deepslate_redstone_ore',
+  'lapis_ore', 'deepslate_lapis_ore', 'gold_ore', 'deepslate_gold_ore',
+  'copper_ore', 'deepslate_copper_ore', 'emerald_ore', 'deepslate_emerald_ore',
+]);
+const NONSOLID = new Set(['air', 'cave_air', 'void_air', 'water', 'flowing_water', 'lava', 'flowing_lava']);
+let Vec3; try { Vec3 = require('vec3').Vec3; } catch (e) { Vec3 = null; }
+function _v(x, y, z) { return Vec3 ? new Vec3(x, y, z) : { x, y, z }; }
+
+/** L'ore en `p` a-t-il ≥1 face visible (air/liquide) ? Un ore 100% enterré n'est JAMAIS une cible. */
+function isExposed(bot, p) {
+  const fx = Math.floor(p.x), fy = Math.floor(p.y), fz = Math.floor(p.z);
+  for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+    const b = bot.blockAt(_v(fx + dx, fy + dy, fz + dz));
+    if (b && (NONSOLID.has(b.name) || b.boundingBox === 'empty')) return true;
+  }
+  return false;
+}
+
+/** Premier ore EXPOSÉ parmi `names` à ≤maxDistance, ou null (→ le code appelant branch-mine). */
+function findExposedOre(bot, names, maxDistance = 32) {
+  const ids = _ids(bot, names);
+  if (!ids) return null;
+  let cands = [];
+  if (typeof bot.findBlocks === 'function') cands = bot.findBlocks({ matching: ids, maxDistance, count: 16 }) || [];
+  else { const b = bot.findBlock({ matching: ids, maxDistance }); if (b) cands = [b.position]; }
+  for (const p of cands) {
+    if (isExposed(bot, p)) { const b = bot.blockAt(_v(p.x, p.y, p.z)); if (b) return b; }
+  }
+  return null;
+}
+
 // Clé de blacklist d'une position (cibles incollectables, cf. P7).
 function _key(p) { return `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}`; }
 
@@ -49,12 +89,16 @@ function _findTarget(bot, ids, maxDistance, blacklist) {
     for (const p of cands) {
       if (blacklist.has(_key(p))) continue;
       const b = bot.blockAt ? bot.blockAt(p) : null;
-      if (b && b.boundingBox === 'block') return b;
+      if (!b || b.boundingBox !== 'block') continue;
+      if (ORE_BLOCKS.has(b.name) && !isExposed(bot, p)) continue; // anti-xray (Massii A)
+      return b;
     }
     return null;
   }
   const b = bot.findBlock({ matching: ids, maxDistance });
-  return b && !blacklist.has(_key(b.position)) ? b : null;
+  if (!b || blacklist.has(_key(b.position))) return null;
+  if (ORE_BLOCKS.has(b.name) && !isExposed(bot, b.position)) return null; // anti-xray (Massii A)
+  return b;
 }
 
 async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplore = false } = {}, token = null) {
@@ -111,4 +155,4 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
   return { ok: false, reason: blacklist.size > 0 ? 'collect_failed' : 'not_found' };
 }
 
-module.exports = { gather, nearbyHostile, defendIfNeeded };
+module.exports = { gather, nearbyHostile, defendIfNeeded, isExposed, findExposedOre, ORE_BLOCKS };
