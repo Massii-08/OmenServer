@@ -268,6 +268,20 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
     if (turned >= 6) {
       blockedStreak++;
       emit({ type: 'mapper_blocked', streak: blockedStreak });
+      if (blockedStreak >= 3) {
+        // ÎLE/PÉNINSULE (vécu Surv10 : 29 cycles bloqués sur place) — TOUTES les directions mènent
+        // à l'eau → on TRAVERSE à la nage vers la terre suivante, comme un vrai joueur (cap tiré,
+        // jambe longue SANS veto eau ; un timeout en pleine eau est rattrapé par escapeWater qui
+        // nage en persistance au cap → on atterrit de l'autre côté).
+        const crossHeading = clampToSector(drawHeading(rng, sec, opts.overlapDeg), sec);
+        const cross = legTarget(here, crossHeading, rng, { minDist: 100, maxDist: 160 });
+        emit({ type: 'mapper_crossing', heading: Number(crossHeading.toFixed(2)) });
+        try { await doGoto({ x: cross.x, y: here.y, z: cross.z }); } catch (e) { /* escapeWater prend le relais */ }
+        heading = crossHeading;
+        blockedStreak = 0;
+        record();
+        continue;
+      }
       await sleep(opts.idleMs || 10000);
       continue;
     }

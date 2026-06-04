@@ -414,3 +414,28 @@ test('runMapper : hook onArrive appelé à CHAQUE arrivée (chasse opportuniste 
   }, token);
   assert.ok(arrivals >= 4, `onArrive appelé ${arrivals} fois`);
 });
+
+test('runMapper : ÎLE (3 cycles bloqués) → TRAVERSÉE à la nage (mapper_crossing, jambe sans veto eau)', async () => {
+  const bot = fakeMapperBot();
+  // île : eau partout au-delà de 10 blocs
+  bot.blockAt = (p) => {
+    if (p.y > 63) return { name: 'air', boundingBox: 'empty', biome: { name: 'plains', id: 1 } };
+    const d = Math.sqrt(p.x * p.x + p.z * p.z);
+    if (d > 10) return { name: 'water', boundingBox: 'empty', biome: { name: 'ocean', id: 0 } };
+    return { name: 'stone', boundingBox: 'block', biome: { name: 'plains', id: 1 } };
+  };
+  const events = [];
+  const gotos = [];
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: (e) => { events.push(e); if (e.type === 'mapper_crossing') token.cancelled = true; },
+    goto: async (wp) => { gotos.push(wp); },
+    sleep: async () => {},
+  }, token);
+  assert.ok(events.some((e) => e.type === 'mapper_crossing'), 'jamais de traversée malgré le blocage');
+  // la jambe de traversée est LONGUE (≥100) — c'est un cap assumé vers l'autre rive
+  const cross = gotos[gotos.length - 1];
+  const d = Math.sqrt(cross.x * cross.x + cross.z * cross.z);
+  assert.ok(d >= 100 - 1e-6, `traversée trop courte (${d.toFixed(0)})`);
+});
