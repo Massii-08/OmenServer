@@ -16,7 +16,7 @@
 //  - survie « basique + » (survival.js) re-tickée avant chaque déplacement, cap anti-blocage.
 // Ne retourne JAMAIS sauf annulation du token (c'est un rôle, pas une tâche finie).
 const { sectorRange, inSector, isCellMapped } = require('./sectors');
-const { detectCaveEntrance } = require('./caves');
+const { findCaveEntranceNear } = require('./caves');
 const { biomeSeenEvent, caveFoundEvent, resolveBiome } = require('./worldMemory');
 const { survivalTick } = require('./survival');
 const { isInWater, escapeWater, clearSnares, isFloatingStuck, recoverFloating, WATER } = require('./unstuck');
@@ -167,7 +167,7 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
       } catch (e) { /* chunk non chargé → on émettra à la prochaine cellule */ }
     }
     try {
-      const cave = detectCaveEntrance(bot, p);
+      const cave = findCaveEntranceNear(bot, p); // voisinage élargi (lèvre + flanc), pas que sous les pieds
       if (cave.found) {
         const cck = cellKey(cave.pos.x, cave.pos.z);
         if (!caveCells.has(cck)) { caveCells.add(cck); emit(caveFoundEvent(worldKey, cave.pos)); }
