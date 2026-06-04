@@ -1152,7 +1152,7 @@ const BotsModule = {
   body.innerHTML = `<div id="mca-srv-editor"></div>`;
   this._renderServerEditor();
  } else if (tab === 'map') {
-  body.innerHTML = `<div style="font-size:13px;color:var(--text-muted);padding:18px 0;">${Lang.t('mcagent.nav.map_soon')}</div>`;
+  this._renderGroupMap(g);
  } else {
   this._renderGroupWorkers();
  }
@@ -1872,13 +1872,19 @@ const BotsModule = {
  m.drag = null;
  },
 
- async _renderMCAMap() {
+ // ============ Task 11 — Onglet « Carte » scopé au groupe + section Cartographes ============
+ // Viewer carte = même machinerie _mcaMap* MAIS scopé : m.sid = group.id figé (plus de
+ // sélecteur de serveur). Sous la carte, roster des bots role==='mapper' (lancement individuel
+ // + lancement de N cartographes via /servers/{sid}/mappers/start).
+ async _renderGroupMap(group) {
  const body = document.getElementById('mca-tabbody');
- if (!body) return;
+ if (!body || !group) return;
  this._mcaMapStop();
+ const m = this._mcaMapState();
+ // scope : la carte ne montre QUE la mémoire de monde de ce groupe
+ if (m.sid !== group.id) { m.sid = group.id; m.world = null; m.fitted = {}; m.hidden = {}; m.data = null; }
  body.innerHTML = `
  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
- <select id="mca-map-server" class="form-input" style="max-width:230px;" onchange="BotsModule._mcaMapPickServer(this.value)"></select>
  <select id="mca-map-world" class="form-input" style="max-width:170px;" onchange="BotsModule._mcaMapPickWorld(this.value)"></select>
  <button class="btn btn-secondary btn-sm" onclick="BotsModule._mcaMapRefresh()">${Lang.t('mcagent.map.refresh')}</button>
  <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-muted);cursor:pointer;">
@@ -1893,36 +1899,191 @@ const BotsModule = {
  <div id="mca-map-coords" style="position:absolute;left:10px;bottom:8px;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);background:rgba(14,14,16,.78);padding:2px 8px;border-radius:6px;pointer-events:none;"></div>
  </div>
  <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">${Lang.t('mcagent.map.hint')}</div>
- <div id="mca-map-legend" style="margin-top:10px;"></div>`;
+ <div id="mca-map-legend" style="margin-top:10px;"></div>
+ <div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:14px;">
+ <div style="font-weight:600;margin-bottom:4px;">${Lang.t('mcagent.map.mappers_title')}</div>
+ <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">${Lang.t('mcagent.map.mappers_hint')}</div>
+ <div id="mca-map-mappers"><div style="font-size:12px;color:var(--text-dim);">…</div></div>
+ </div>`;
  this._mcaMapBindCanvas();
- await this._mcaMapLoadServers();
- },
-
- async _mcaMapLoadServers() {
- const m = this._mcaMapState();
- const sel = document.getElementById('mca-map-server');
- if (!sel) return;
- try {
- const r = await Auth.apiCall('/api/mc-agent/servers');
- const data = await r.json();
- this._mcaServers = data.servers || [];
- } catch (e) { this._mcaServers = this._mcaServers || []; }
- const servers = this._mcaServers;
- if (!servers.length) {
- sel.innerHTML = '<option value="">—</option>';
- this._mcaMapShowEmpty(Lang.t('mcagent.map.no_server'));
- this._mcaMapDraw();
- return;
- }
- if (!m.sid || !servers.some((s) => s.id === m.sid)) m.sid = servers[0].id;
- sel.innerHTML = servers.map((s) => `<option value="${this._escapeHtml(s.id)}" ${s.id === m.sid ? 'selected' : ''}>${this._escapeHtml(s.name)}</option>`).join('');
+ await this._reloadGroupMappers();
  await this._mcaMapRefresh();
+ // Auto-refresh statut des cartographes dans le même tick que la carte (timer m.timer géré
+ // par _mcaMapAutoToggle). On rafraîchit aussi un statut léger toutes les 5s tant que l'onglet
+ // map est visible, en réutilisant la même infra que les workers (pas de timer empilé).
+ this._mcaWorkersStop();
+ this._mcaWorkersTimer = setInterval(() => {
+  if (this._mcaGroupId && this._mcaGroupTab === 'map' && document.getElementById('mca-map-mappers')) BotsModule._refreshMappersStatus();
+  else BotsModule._mcaWorkersStop();
+ }, 5000);
  },
 
- _mcaMapPickServer(sid) {
- const m = this._mcaMapState();
- m.sid = sid; m.world = null; m.fitted = {}; m.hidden = {};
- this._mcaMapRefresh();
+ // Recharge groupe + sessions actives puis re-render du roster cartographes.
+ async _reloadGroupMappers() {
+ try {
+  const r = await Auth.apiCall('/api/mc-agent/servers');
+  const data = await r.json();
+  this._mcaServers = data.servers || [];
+ } catch (e) { this._mcaServers = this._mcaServers || []; }
+ await this._loadActiveByServer();
+ this._renderMappersBody();
+ },
+
+ async _refreshMappersStatus() {
+ await this._loadActiveByServer();
+ this._renderMappersBody();
+ },
+
+ _renderMappersBody() {
+ const root = document.getElementById('mca-map-mappers');
+ const g = this._mcaGroup();
+ if (!root || !g) return;
+ const mappers = (g.bots || []).filter((b) => b.role === 'mapper');
+ const showForm = !!this._mcaMapperForm;
+ const rows = mappers.map((b) => {
+  const sess = this._botSession(b.username);
+  const online = !!sess;
+  const authBadge = `<span style="font-size:11px;color:var(--text-dim);font-family:var(--font-mono);">${this._escapeHtml(b.auth || 'offline')}</span>`;
+  const secretBadge = b.has_secret ? `<span class="badge" title="${Lang.t('mcagent.bot.secret_saved')}" style="margin-left:4px;">${Lang.t('mcagent.bot.secret_ok')}</span>` : '';
+  const onlineBadge = online
+   ? `<span class="badge online" style="margin-left:6px;">${Lang.t('mcagent.bot.online')} · #${this._escapeHtml(String(sess.id))}</span>`
+   : `<span class="badge" style="margin-left:6px;">${Lang.t('mcagent.bot.offline')}</span>`;
+  const actionBtn = online
+   ? `<button class="btn btn-secondary btn-sm" onclick="BotsModule.stopMapperBot('${this._escapeHtml(String(sess.id))}')">${Lang.t('mcagent.bot.stop')}</button>`
+   : `<button class="btn btn-primary btn-sm" onclick="BotsModule.startMapperBot('${this._escapeHtml(b.id)}')">${Lang.t('mcagent.bot.launch')}</button>`;
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
+   <div>
+    <div style="font-weight:600;font-family:var(--font-mono);">${this._escapeHtml(b.username)}${onlineBadge}</div>
+    <div style="margin-top:2px;">${authBadge}${secretBadge}</div>
+   </div>
+   <div style="display:flex;gap:6px;">
+    ${actionBtn}
+    <button class="btn btn-ghost btn-sm" onclick="BotsModule.deleteMapperBot('${this._escapeHtml(b.id)}','${this._escapeHtml(b.username)}')">${Lang.t('mcagent.bot.delete')}</button>
+   </div>
+  </div>`;
+ }).join('');
+ root.innerHTML = `
+ <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+  <label class="form-label" style="margin:0;">${Lang.t('mcagent.map.start_n')}</label>
+  <input type="number" id="mca-map-count" min="1" max="20" value="2" class="form-input" style="max-width:90px;" />
+  <button class="btn btn-primary btn-sm" onclick="BotsModule.startNMappers()">${Lang.t('mcagent.map.start_n_btn')}</button>
+ </div>
+ ${mappers.length ? rows : `<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">${Lang.t('mcagent.map.empty_roster')}</div>`}
+ <div style="margin-top:8px;">
+  ${showForm ? this._renderMapperForm(g) : `<button class="btn btn-secondary btn-sm" onclick="BotsModule.toggleMapperForm(true)">${Lang.t('mcagent.map.add')}</button>`}
+ </div>`;
+ if (showForm) this._wireMapperForm(g);
+ },
+
+ _renderMapperForm(g) {
+ return `
+ <div style="background:var(--bg-elev-3);border:1px solid var(--border);border-radius:10px;padding:14px;">
+  <div style="font-weight:600;font-size:13px;margin-bottom:10px;">${Lang.t('mcagent.map.add_title')}</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+   <div><label class="form-label">${Lang.t('mcagent.bot.username')}</label><input id="mca-mp-user" class="form-input" placeholder="${Lang.t('mcagent.bot.username_ph')}" /></div>
+   <div><label class="form-label">${Lang.t('mcagent.auth_label')}</label>
+    <select id="mca-mp-auth" class="form-input" onchange="BotsModule._toggleMapperSecret()">
+     <option value="offline">${Lang.t('mcagent.auth_offline')}</option>
+     <option value="microsoft">${Lang.t('mcagent.auth_microsoft')}</option>
+    </select></div>
+  </div>
+  <div id="mca-mp-secret-wrap" style="display:${g.has_login ? 'block' : 'none'};margin-top:10px;">
+   <label class="form-label">${Lang.t('mcagent.bot.secret')}</label>
+   <input id="mca-mp-secret" class="form-input" type="password" autocomplete="new-password" placeholder="${Lang.t('mcagent.bot.secret_ph')}" style="max-width:280px;" />
+   <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">${Lang.t('mcagent.bot.secret_hint')}</div>
+  </div>
+  <div style="display:flex;gap:8px;margin-top:14px;">
+   <button class="btn btn-primary btn-sm" onclick="BotsModule.createMapperBot()">${Lang.t('mcagent.bot.create')}</button>
+   <button class="btn btn-ghost btn-sm" onclick="BotsModule.toggleMapperForm(false)">${Lang.t('mcagent.cfg.srv_cancel')}</button>
+  </div>
+ </div>`;
+ },
+
+ _wireMapperForm(g) { this._toggleMapperSecret(); },
+
+ _toggleMapperSecret() {
+ const g = this._mcaGroup();
+ const wrap = document.getElementById('mca-mp-secret-wrap');
+ const authEl = document.getElementById('mca-mp-auth');
+ if (!wrap || !authEl || !g) return;
+ const show = !!g.has_login && authEl.value === 'offline';
+ wrap.style.display = show ? 'block' : 'none';
+ },
+
+ toggleMapperForm(on) {
+ this._mcaMapperForm = !!on;
+ this._renderMappersBody();
+ },
+
+ async createMapperBot() {
+ const g = this._mcaGroup();
+ if (!g) return;
+ const username = (document.getElementById('mca-mp-user') || {}).value;
+ const auth = (document.getElementById('mca-mp-auth') || {}).value || 'offline';
+ const u = (username || '').trim();
+ if (!u) { Toast.error(Lang.t('mcagent.bot.username_required')); return; }
+ const secretEl = document.getElementById('mca-mp-secret');
+ const payload = { role: 'mapper', username: u, auth };
+ if (g.has_login && auth === 'offline' && secretEl && secretEl.value) payload.secret = secretEl.value;
+ const r = await Auth.apiCall(`/api/mc-agent/servers/${encodeURIComponent(g.id)}/bots`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+ });
+ const data = await (r ? r.json().catch(() => ({})) : Promise.resolve({}));
+ if (!r || !r.ok) { Toast.error((data && data.detail) || Lang.t('mcagent.bot.create_err')); return; }
+ this._mcaMapperForm = false;
+ await this._reloadGroupMappers();
+ },
+
+ async deleteMapperBot(botId, username) {
+ if (!confirm(Lang.t('mcagent.bot.confirm_delete').replace('{name}', username || ''))) return;
+ const g = this._mcaGroup();
+ if (!g) return;
+ const r = await Auth.apiCall(`/api/mc-agent/servers/${encodeURIComponent(g.id)}/bots/${encodeURIComponent(botId)}`, { method: 'DELETE' });
+ if (!r || !r.ok) { Toast.error(Lang.t('mcagent.bot.delete_err')); return; }
+ await this._reloadGroupMappers();
+ },
+
+ async startMapperBot(botId) {
+ const g = this._mcaGroup();
+ if (!g) return;
+ const r = await Auth.apiCall('/api/mc-agent/run', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ server_id: g.id, bot_id: botId, objective: 'mapper', autonomous: true }),
+ });
+ const data = await (r ? r.json().catch(() => ({})) : Promise.resolve({}));
+ if (!r || !r.ok) { Toast.error((data && data.detail) || Lang.t('mcagent.bot.launch_err')); return; }
+ await this._reloadGroupMappers();
+ },
+
+ async stopMapperBot(sessionId) {
+ const r = await Auth.apiCall(`/api/mc-agent/stop/${encodeURIComponent(sessionId)}`, { method: 'POST' });
+ if (!r || !r.ok) { Toast.error(Lang.t('mcagent.bot.stop_err')); return; }
+ await this._reloadGroupMappers();
+ },
+
+ // Lance N cartographes d'un coup (comptes mapper offline disponibles).
+ async startNMappers() {
+ const g = this._mcaGroup();
+ if (!g) return;
+ const el = document.getElementById('mca-map-count');
+ let count = parseInt((el && el.value) || '0', 10);
+ if (!Number.isFinite(count) || count < 1) count = 1;
+ if (count > 20) count = 20;
+ const r = await Auth.apiCall(`/api/mc-agent/servers/${encodeURIComponent(g.id)}/mappers/start`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ count }),
+ });
+ const data = await (r ? r.json().catch(() => ({})) : Promise.resolve({}));
+ if (!r || !r.ok) { Toast.error((data && data.detail) || Lang.t('mcagent.bot.launch_err')); return; }
+ const launched = data.launched || 0;
+ const available = (data.available != null) ? data.available : launched;
+ let summary = Lang.t('mcagent.map.started').replace('{launched}', launched).replace('{available}', available);
+ if (Array.isArray(data.skipped) && data.skipped.length) {
+  summary += ' · ' + Lang.t('mcagent.map.skipped').replace('{names}', data.skipped.join(', '));
+ }
+ Toast.success(summary);
+ if (launched < count) Toast.info(Lang.t('mcagent.map.need_more'));
+ await this._reloadGroupMappers();
  },
 
  _mcaMapPickWorld(w) {
