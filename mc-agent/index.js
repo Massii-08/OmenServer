@@ -1232,7 +1232,9 @@ async function onSpawn() {
       for (const id of scafIds) if (!moves.scafoldingBlocks.includes(id)) moves.scafoldingBlocks.push(id);
     } else { moves.scafoldingBlocks = scafIds; }
     bot.pathfinder.setMovements(moves);
-    try { bot.pathfinder.thinkTimeout = 10000; } catch (e) {} // P31 : budget A* explicite
+    // P40 : thinkTimeout 3s (PAS 10 — l'A* alloue ~70 Mo/s sur cible inatteignable : 10 s ≈ 700 Mo
+    // transitoires = OOM à 768 ; 3 s reste ample pour tout chemin local légitime).
+    try { bot.pathfinder.thinkTimeout = 3000; } catch (e) {}
     // P38 (P2 ÉLUCIDÉ) : cible inatteignable (lapis derrière lave à y12) → l'open set A* de
     // collectBlock/pathfinder explose le heap (69→750 Mo en <30 s, OOM run#44). searchRadius
     // borne STRUCTURELLEMENT l'expansion (défaut -1 = illimité). 48 > hops de trek (24).
