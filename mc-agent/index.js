@@ -944,8 +944,26 @@ async function startMarathon() {
             () => { try { stopMotion(); } catch (e) {} });
         }
         if (!taskToken.cancelled) {
-          const g = await gotoPos(world.home, 3, 25 * 60 * 1000);
-          const d2 = Math.hypot(bot.entity.position.x - world.home.x, bot.entity.position.z - world.home.z);
+          // P24 (run#28 : dist 753 inchangée) : un goal 3D souterrain à 750 blocs = no_path A*.
+          // Trek par SAUTS XZ de ~96 blocs (Y libre, le pathfinder suit le relief), 3D à l'arrivée.
+          const homeDistNow = () => Math.hypot(bot.entity.position.x - world.home.x, bot.entity.position.z - world.home.z);
+          for (let hop = 0; hop < 12 && !taskToken.cancelled; hop++) {
+            const before = homeDistNow();
+            if (before <= 24) break;
+            const pme = bot.entity.position;
+            const step = Math.min(96, before);
+            const tx = pme.x + (world.home.x - pme.x) / before * step;
+            const tz = pme.z + (world.home.z - pme.z) / before * step;
+            const goal = pfGoals.GoalNearXZ ? new pfGoals.GoalNearXZ(tx, tz, 8)
+              : new pfGoals.GoalNear(tx, pme.y, tz, 8);
+            await withTimeout(bot.pathfinder.goto(goal), 3 * 60 * 1000, () => { try { stopMotion(); } catch (e) {} });
+            if (isInWater(bot)) await escapeWater(bot, { emit });
+            if (homeDistNow() >= before - 8) { emit({ type: 'go_home_no_progress', dist: Math.round(homeDistNow()) }); break; }
+          }
+          if (!taskToken.cancelled && homeDistNow() <= 24) {
+            await gotoPos(world.home, 3, 3 * 60 * 1000);
+          }
+          const d2 = homeDistNow();
           emit({ type: 'go_home', arrived: d2 <= 16, dist: Math.round(d2) });
           r = d2 <= 16 ? { ok: true } : { ok: false, reason: 'still_far:' + Math.round(d2) };
         }
