@@ -9,6 +9,7 @@ from backend.auth.models import User
 from backend.bots import mc_agent_manager as mgr
 from backend.bots import mc_agent_servers as servers_store
 from backend.bots import mc_agent_world_memory as world_memory
+from backend.bots import mc_agent_secrets
 
 router = APIRouter(prefix="/api/mc-agent", tags=["mc-agent"])
 
@@ -52,6 +53,18 @@ class ServerPayload(BaseModel):
     custom: list = []
     trusted: list = []
     trade: Optional[dict] = None
+
+
+class BotPayload(BaseModel):
+    """Payload de création d'un bot dans un groupe (roster).
+
+    Le champ `secret` (mot de passe AuthMe, token…) est stocké séparément
+    et ne doit JAMAIS être renvoyé dans les réponses API.
+    """
+    role: str = "worker"
+    username: str
+    auth: str = "offline"
+    secret: Optional[str] = None  # stocké via mc_agent_secrets, jamais réémis
 
 
 @router.post("/run")
@@ -164,7 +177,18 @@ def commands_catalog(current_user: User = Depends(get_current_user)):
 @router.get("/servers")
 def list_servers(current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
-    return {"servers": servers_store.load_servers()}
+    servers = servers_store.load_servers()
+    # Enrichit chaque bot avec has_secret (sans muter le fichier persisté)
+    enriched = []
+    for srv in servers:
+        srv_copy = dict(srv)
+        sid = srv_copy.get("id", "")
+        bots_copy = []
+        for bot in srv_copy.get("bots", []):
+            bots_copy.append({**bot, "has_secret": mc_agent_secrets.has_secret(sid, bot.get("id", ""))})
+        srv_copy["bots"] = bots_copy
+        enriched.append(srv_copy)
+    return {"servers": enriched}
 
 
 @router.post("/servers")
@@ -187,10 +211,38 @@ def delete_server(sid: str, current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
     if not servers_store.delete_server(sid):
         raise HTTPException(status_code=404, detail="Profil introuvable")
-    # cascade : supprimer le groupe stoppe tous ses bots ET sa mémoire de monde (libère le disque de l'Omen)
+    # cascade : supprimer le groupe stoppe tous ses bots, oublie sa mémoire de monde
+    # et supprime les secrets du groupe (libère le disque de l'Omen)
     stopped = mgr.stop_group(sid)
     mgr.forget_group(sid)
+    mc_agent_secrets.delete_group_secrets(sid)
     return {"ok": True, "bots_stopped": stopped}
+
+
+@router.post("/servers/{sid}/bots")
+def create_bot(sid: str, payload: BotPayload, current_user: User = Depends(get_current_user)):
+    """Ajoute un bot au roster du groupe (admin-only).
+
+    Le secret est stocké séparément via mc_agent_secrets — il ne figure JAMAIS
+    dans la réponse, même partiellement.
+    """
+    _require_admin(current_user)
+    bot = servers_store.add_bot(sid, role=payload.role, username=payload.username, auth=payload.auth)
+    if bot is None:
+        raise HTTPException(status_code=400, detail="Bot invalide ou username deja present")
+    if payload.secret:
+        mc_agent_secrets.set_secret(sid, bot["id"], payload.secret)
+    return {**bot, "has_secret": mc_agent_secrets.has_secret(sid, bot["id"])}
+
+
+@router.delete("/servers/{sid}/bots/{bot_id}")
+def delete_bot(sid: str, bot_id: str, current_user: User = Depends(get_current_user)):
+    """Retire un bot du roster et supprime son secret (admin-only)."""
+    _require_admin(current_user)
+    if not servers_store.remove_bot(sid, bot_id):
+        raise HTTPException(status_code=404, detail="Bot introuvable")
+    mc_agent_secrets.delete_secret(sid, bot_id)
+    return {"ok": True}
 
 
 @router.get("/servers/{sid}/memory")
