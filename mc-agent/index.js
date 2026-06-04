@@ -701,7 +701,12 @@ async function marathonRestock() {
   // s'appuient dessus. Un restock partiel reste un échec tant que le plein n'est pas fait.
   const okFood = cookedFood(inv()) >= RESERVES.foodReady;
   const okWood = woodUnits(inv()) >= RESERVES.woodReady;
-  if (okFood && okWood) return { ok: true };
+  if (okFood && okWood) {
+    // camp de surface = là où le restock a RÉUSSI (le terrain s'use, les ressources se déplacent)
+    const p = bot.entity.position;
+    if (p && p.y >= 55) { world.surface = { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) }; saveWorld(worldFile, world); }
+    return { ok: true };
+  }
   return { ok: false, reason: 'restock_incomplete:' + (okFood ? '' : 'food') + (okWood ? '' : '+wood') };
 }
 
@@ -799,7 +804,13 @@ async function startMarathon() {
     const ctx = marathonCtx();
     const counts = marathonCounts(ctx.inv, ctx.banked);
     const action = nextAction(ctx);
-    emit({ type: 'marathon', action, counts, y: ctx.y !== undefined ? Math.round(ctx.y) : null, slots: ctx.emptySlots });
+    emit({
+      type: 'marathon', action, counts,
+      y: ctx.y !== undefined ? Math.round(ctx.y) : null, slots: ctx.emptySlots,
+      // réserves (gate READY) : observables sans rcon (la sortie NBT est tronquée à 132 chars)
+      wood: woodUnits(ctx.inv), cooked: cookedFood(ctx.inv),
+      torch: ctx.inv.torch || 0, picks: ctx.inv.iron_pickaxe || 0, hunger: ctx.hunger,
+    });
     if (action === 'done') {
       clearObjective(world); saveWorld(worldFile, world);
       emit({ type: 'autonomous_done', objective: 'marathon', counts });
