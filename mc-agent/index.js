@@ -827,7 +827,7 @@ async function marathonSparePickaxe() {
 // On ALTERNE les deux (+ petit déplacement entre rounds pour changer le terrain), borné.
 async function descendRobust(targetY) {
   const atTarget = () => bot.entity.position.y <= targetY + 2;
-  for (let round = 0; round < 4; round++) {
+  for (let round = 0; round < 3; round++) {
     if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
     if (atTarget()) return { ok: true };
     // P20 (run#24 : lava_ahead ×4 au MÊME cap) : l'escalier suit le yaw — la lave est DEVANT,
@@ -835,12 +835,14 @@ async function descendRobust(targetY) {
     if (round > 0) {
       try { await bot.look(((bot.entity.yaw || 0) + Math.PI / 2) % (2 * Math.PI), 0, true); } catch (e) {}
     }
-    const d = await withTimeout(descendDiagonal(bot, { targetY }, taskToken), 480000,
+    // P22 : budgets SERRÉS — une descente honnête progresse vite ; coincé = échouer vite et
+    // laisser la RELOCALISATION (P21) changer de géologie au lieu de brûler 15 min sur place.
+    const d = await withTimeout(descendDiagonal(bot, { targetY }, taskToken), 180000,
       () => { try { stopMotion(); } catch (e) {} });
     if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
     if (atTarget()) return { ok: true };
     const depth = Math.max(1, Math.floor(bot.entity.position.y) - targetY);
-    const m = await withTimeout(mineDown(bot, { depth }, taskToken), 300000,
+    const m = await withTimeout(mineDown(bot, { depth }, taskToken), 120000,
       () => { try { stopMotion(); } catch (e) {} });
     emit({ type: 'descend_round', round, y: Math.round(bot.entity.position.y),
       stair: (d && d.reason) || 'ok', stairDetail: (d && d.detail) || undefined,
@@ -969,7 +971,9 @@ async function startMarathon() {
       emit({ type: 'marathon_action_failed', action, reason: (r && r.reason) || 'unknown' });
       sameFails = action === lastAction ? sameFails + 1 : 1;
       lastAction = action;
-      if (sameFails >= 3) {
+      // P22 : iron/descend ont DÉJÀ retenté en interne (rounds) → 1 échec suffit pour relocaliser.
+      const failThreshold = (action === 'iron' || action === 'descend') ? 1 : 3;
+      if (sameFails >= failThreshold) {
         // P21 (run#25 : lave+vides dans TOUTES les directions, le shuffle ≤24 re-tirait dans la
         // même poche) : relocalisation à distance CROISSANTE — la géologie change vraiment à 50-150
         // blocs, pas à 20.
