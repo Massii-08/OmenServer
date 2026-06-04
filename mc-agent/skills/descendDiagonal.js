@@ -45,6 +45,10 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200 } = {}, toke
   // Cap arrondi UNE FOIS au début — on garde l'alignement à la grille pour toute la descente.
   const dir = cardinalFromYaw(bot.entity.yaw || 0);
   let steps = 0;
+  // Garde NO-PROGRESS (P5, Marathon run#5) : coincé dans un puits 1×1, le goto ne déplace jamais
+  // le bot → sans cette garde la boucle tournait en silence jusqu'au timeout externe (8 min).
+  let lastFY = Math.floor(bot.entity.position.y);
+  let sameY = 0;
 
   while (steps < maxDepth) {
     if (token && token.cancelled) return { ok: true, reachedY, cancelled: true };
@@ -90,12 +94,19 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200 } = {}, toke
     // déplacer le bot horizontalement en prod (mineflayer écrase toute mutation directe de
     // bot.entity.position au tick suivant). En tests, le fake-bot simule le téléport.
     if (bot.pathfinder && bot.pathfinder.goto) {
+      // goto borné (15 s) : un pathfinder qui ne trouve pas peut calculer indéfiniment (P3b/P5).
       try {
-        await bot.pathfinder.goto(buildGoal(aheadLow.x, aheadLow.y, aheadLow.z));
+        await Promise.race([
+          bot.pathfinder.goto(buildGoal(aheadLow.x, aheadLow.y, aheadLow.z)),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('goto_timeout')), 15000)),
+        ]);
       } catch (e) { /* cible peut être inaccessible ponctuellement — on retentera au prochain tour */ }
     }
 
     steps++;
+    const fyNow = Math.floor(bot.entity.position.y);
+    if (fyNow === lastFY) { sameY++; } else { sameY = 0; lastFY = fyNow; }
+    if (sameY >= 8) return { ok: false, reachedY: bot.entity.position.y, reason: 'no_progress' };
   }
 
   return { ok: false, reachedY, reason: 'max_depth' };

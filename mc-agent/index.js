@@ -433,7 +433,16 @@ async function runGoalSkill(goal) {
       const d = await withTimeout(descendDiagonal(bot, { targetY: 16 }, taskToken),
         480000, () => { try { stopMotion(); } catch (e) {} });
       if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
-      if (!d.ok) return { ok: false, reason: 'descend:' + (d.reason || '?') };
+      // Fallback puits 1×1 (P5) : l'escalier exige de MARCHER (goto) — impossible au fond d'un
+      // puits étroit. mineDown creuse DROIT SOUS LES PIEDS (zéro déplacement horizontal requis).
+      if (!d.ok && bot.entity.position.y > 18) {
+        phase('descend_fallback_minedown');
+        const depth = Math.max(1, Math.floor(bot.entity.position.y) - 16);
+        await withTimeout(mineDown(bot, { depth }, taskToken), 300000,
+          () => { try { stopMotion(); } catch (e) {} });
+        if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+      }
+      if (bot.entity.position.y > 24) return { ok: false, reason: 'descend:' + (d.reason || 'stuck') };
     }
     phase('branch_mine');
     const bm = await branchMine(bot, {

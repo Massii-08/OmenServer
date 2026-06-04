@@ -169,3 +169,27 @@ test('P4: blockAt exigeant .floored() (comme mineflayer) ne fait pas crasher la 
   assert.ok(r.ok, `descente attendue ok (got ${JSON.stringify(r)})`);
   assert.ok(calls.dig > 0, 'doit avoir miné des marches');
 });
+
+// --- P5 (Marathon run#5) : coincé dans un puits 1×1, le goto ne déplace JAMAIS le bot →
+// la boucle tournait jusqu'au timeout externe (8 min) sans diagnostic. Garde no-progress exigée.
+test('P5: goto inopérant (puits 1×1) → no_progress rapide, pas une boucle infinie', async () => {
+  const { descendDiagonal: dd } = require('./descendDiagonal');
+  const mkpos = (x, y, z) => ({ x, y, z, offset(dx, dy, dz) { return mkpos(x + dx, y + dy, z + dz); } });
+  let digs = 0;
+  const bot = {
+    entity: { position: mkpos(0, 54, 0), yaw: 0 },
+    registry: { blocksByName: { stone: { id: 1 } } },
+    inventory: { items: () => [{ name: 'stone_pickaxe', count: 1, type: 'pickaxe' }] },
+    blockAt(p) {
+      const q = typeof p.floored === 'function' ? p.floored() : p;
+      return { name: 'stone', position: q, boundingBox: 'block' };
+    },
+    async dig() { digs++; },
+    async equip() {},
+    pathfinder: { async goto() { /* ne bouge JAMAIS (mur infranchissable simulé) */ } },
+  };
+  const r = await dd(bot, { targetY: 16, maxDepth: 200 });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'no_progress');
+  assert.ok(digs < 40, `doit abandonner vite (digs=${digs})`);
+});
