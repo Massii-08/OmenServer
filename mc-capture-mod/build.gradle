@@ -1,5 +1,5 @@
 plugins {
-    id 'fabric-loom' version '1.10.5'
+    id 'fabric-loom' version '1.16.3'
     id 'java'
 }
 
@@ -27,6 +27,16 @@ dependencies {
 def javaRelease = (project.findProperty('java_version') ?: '21').toString().toInteger()
 tasks.withType(JavaCompile).configureEach {
     options.release = javaRelease
+}
+
+// Substitue ${version} dans fabric.mod.json au build (sinon le jar embarque le placeholder
+// littéral → version invalide pour Fabric Loader). Scopé à ce SEUL fichier : expand interprète
+// tous les ${...} (Groovy template), ne pas l'élargir aux autres ressources.
+processResources {
+    inputs.property "version", project.version
+    filesMatching("fabric.mod.json") {
+        expand "version": project.version
+    }
 }
 
 test { useJUnitPlatform() }

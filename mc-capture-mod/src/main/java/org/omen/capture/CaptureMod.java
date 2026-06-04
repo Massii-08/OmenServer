@@ -40,10 +40,37 @@ public class CaptureMod implements ClientModInitializer {
         });
     }
 
+    /**
+     * Construit la keybind F8 de façon multi-version (réflexion) — UN seul codebase compile
+     * de 1.20.1 à 1.21.11. MC 1.21.6+ : le 4e arg de {@code new KeyBinding(...)} est devenu un
+     * {@code KeyBinding.Category} (record, on prend la catégorie builtin MISC). MC ≤1.21.5 :
+     * c'est une String (clé i18n de catégorie). La réflexion évite de référencer en dur un type
+     * absent de l'autre génération d'API (sinon la compilation croisée échoue).
+     */
+    private static KeyBinding makeToggleKey() {
+        final String tk = "key.mc_capture.toggle";
+        try {
+            Class<?> categoryClass = Class.forName("net.minecraft.client.option.KeyBinding$Category");
+            Object misc = categoryClass.getField("MISC").get(null);
+            return (KeyBinding) KeyBinding.class
+                    .getConstructor(String.class, InputUtil.Type.class, int.class, categoryClass)
+                    .newInstance(tk, InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F8, misc);
+        } catch (ClassNotFoundException pre1216) {
+            try {
+                return (KeyBinding) KeyBinding.class
+                        .getConstructor(String.class, InputUtil.Type.class, int.class, String.class)
+                        .newInstance(tk, InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F8, "key.categories.misc");
+            } catch (ReflectiveOperationException e) {
+                throw new RuntimeException("KeyBinding (categorie String) introuvable", e);
+            }
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException("KeyBinding (categorie Category) introuvable", e);
+        }
+    }
+
     @Override
     public void onInitializeClient() {
-        toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.mc_capture.toggle", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F8, "key.categories.mc_capture"));
+        toggleKey = KeyBindingHelper.registerKeyBinding(makeToggleKey());
 
         RecHud.register();
 
@@ -59,7 +86,9 @@ public class CaptureMod implements ClientModInitializer {
         ClientReceiveMessageEvents.CHAT.register((message, signedMessage, sender, params, receptionTimestamp) -> {
             if (RECORDER.isRecording()) {
                 String txt = message.getString();
-                String from = sender != null ? sender.getName() : null;
+                // 1.21.6+ : GameProfile est un record (name()) ; on lit plutôt le nom d'émetteur
+                // via params.name() (Text) — API stable de 1.20.1 à 1.21.11, évite GameProfile.
+                String from = sender != null ? params.name().getString() : null;
                 RECORDER.recordChat(elapsed(), "chat_in", from, txt, txt.length());
             }
         });
@@ -78,7 +107,9 @@ public class CaptureMod implements ClientModInitializer {
             consentShown = true;
         }
         startMs = System.currentTimeMillis();
-        String name = client.player != null ? client.player.getGameProfile().getName() : "unknown";
+        // getName() (Entity → Text) est stable toutes versions ; getGameProfile().getName()
+        // casse en 1.21.6+ (GameProfile devenu record → name()).
+        String name = client.player != null ? client.player.getName().getString() : "unknown";
         String mc = client.getGameVersion();
         RECORDER.start(name, mc, "0.1.0", startMs, 20);
         if (client.player != null) {
