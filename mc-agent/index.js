@@ -986,6 +986,13 @@ async function onSpawn() {
     if (typeof moves.liquidCost === 'number') moves.liquidCost = 25;
     else moves.liquidCost = 25;
     if (typeof moves.maxDropDown === 'number') moves.maxDropDown = 4; // limite les chutes profondes
+    // Massii D : scaffolding INTÉGRÉ du pathfinder (montées/sorties de trou gérées en interne,
+    // apex/pose fiables). ⚠️ TYPO DE LA LIB : `scafoldingBlocks` (UN seul f) — vérifié index.d.ts:243.
+    const scafIds = ['cobblestone', 'dirt', 'cobbled_deepslate']
+      .map((n) => bot.registry.itemsByName[n]).filter(Boolean).map((i) => i.id);
+    if (Array.isArray(moves.scafoldingBlocks)) {
+      for (const id of scafIds) if (!moves.scafoldingBlocks.includes(id)) moves.scafoldingBlocks.push(id);
+    } else { moves.scafoldingBlocks = scafIds; }
     bot.pathfinder.setMovements(moves);
     installReflexes(bot, { emit, fleeFrom });
     await tryAuth();

@@ -38,6 +38,12 @@ async function waitForApex(bot, opts = {}) {
  */
 async function pillarUp(bot, { height = 1 } = {}, token = null, opts = {}) {
   const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  // Massii D (pathfinder #54) : poser sous soi en NAGEANT est foireux → refuser, sortir de l'eau d'abord.
+  try {
+    const feet0 = bot.entity.position.floored ? bot.entity.position.floored() : bot.entity.position;
+    const b0 = bot.blockAt(feet0);
+    if (b0 && (b0.name === 'water' || b0.name === 'flowing_water')) return { ok: false, placed: 0, reason: 'in_water' };
+  } catch (e) {}
   let placed = 0;
   for (let i = 0; i < height; i++) {
     if (token && token.cancelled) return { ok: placed > 0, placed, cancelled: true };
@@ -52,6 +58,7 @@ async function pillarUp(bot, { height = 1 } = {}, token = null, opts = {}) {
     try { await bot.equip(item, 'hand'); } catch (e) { return { ok: placed > 0, placed, reason: 'equip_failed' }; }
 
     let success = false;
+    try { bot.setControlState('sneak', true); } catch (e) {}  // Massii D2 : anti-glissade hors du bord
     for (let attempt = 0; attempt < 2 && !success; attempt++) {
       try { bot.setControlState('jump', true); } catch (e) {}
       const apex = await waitForApex(bot, { sleep, timeoutMs: opts.apexTimeoutMs || 1500, pollMs: opts.pollMs });
@@ -64,6 +71,7 @@ async function pillarUp(bot, { height = 1 } = {}, token = null, opts = {}) {
       } catch (e) { /* pose ratée (timing) → retry */ }
       if (!success) await sleep(250);                        // retomber avant de retenter
     }
+    try { bot.setControlState('sneak', false); } catch (e) {}
     if (!success) return { ok: placed > 0, placed, reason: 'place_failed' };
     placed++;
   }

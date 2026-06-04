@@ -98,7 +98,7 @@ boucle mapper où il était câblé.
 dedans, il en **sort en quelques secondes** vers la terre ; aucun épisode « flotte/patauge sur place ».
 + test offline : détection in-water+no-progress → évasion déclenchée.
 
-## 2026-06-04 — C. Table de craft posée ET cassée « en même temps » → suspect `[HAUTE PRIORITÉ]`
+## 2026-06-04 — C. Table de craft posée ET cassée « en même temps » → suspect `[traité — reclaim différé 12s (burst=1 pose, 5 tests fake-timers) + dwell 800ms + table PERMANENTE à la base]`
 
 **Constat de Massii (en jeu)** : le bot **pose la table de craft et la détruit quasi en même temps**
 → très suspect. Comportement voulu = **poser la table → crafter ce dont il a besoin → PUIS la casser**.
@@ -121,7 +121,7 @@ reclaim **seulement** après craft 100 % fini). À ré-appliquer / durcir côté
 **Critère (live)** : on voit le bot poser la table, crafter plusieurs trucs, **puis** (éventuellement) la
 reprendre — jamais pose+casse simultanées. + test offline : séquence place→(craft×N)→reclaim, dwell mini.
 
-## 2026-06-04 — D. Difficulté à placer un bloc SOUS ses pieds (pillaring) `[HAUTE PRIORITÉ]` (recherche web faite)
+## 2026-06-04 — D. Difficulté à placer un bloc SOUS ses pieds (pillaring) `[traité — scafoldingBlocks (1 f, vérifié index.d.ts:243) cobble/dirt/deepslate sur les Movements + pillarUp : garde in_water (#54) + sneak + verify/retry (déjà présents)]`
 
 **Constat de Massii (en jeu)** : le bot galère toujours à poser un bloc sous ses pieds (monter en
 pilier / sortir d'un trou / bridger). Le skill `pillarUp` du cartographe existe (pose à l'apex via
