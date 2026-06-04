@@ -259,3 +259,10 @@ test('P23: proche de la base → comportement normal (pas de go_home)', () => {
   const ctx = okCtx({ hunger: 20, homeDist: 12 });
   assert.strictEqual(nextAction(ctx), 'mine');
 });
+
+// P33 (run#39) : inventaire plein LOIN de la base → deposit échoue → faux chest_lost → re-base
+// en route → banked orphelin. Il faut RENTRER d'abord.
+test('P33: inventaire plein + base à >200 blocs → go_home (pas deposit)', () => {
+  const ctx = okCtx({ hunger: 20, homeDist: 500, emptySlots: 1 });
+  assert.strictEqual(nextAction(ctx), 'go_home');
+});

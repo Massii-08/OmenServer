@@ -717,6 +717,12 @@ async function marathonDeposit() {
   if (!world.home) return { ok: false, reason: 'no_base' };
   const g = await gotoPos(world.home, 2, 8 * 60 * 1000);
   if (g && g.ok === false) emit({ type: 'marathon_goto_base_failed' }); // on tente quand même (peut être à côté)
+  // P33 : ne JAMAIS conclure chest_lost quand on n'est PAS à la base (goto raté en route) —
+  // c'est un échec de trajet, pas un coffre perdu.
+  {
+    const dHome = Math.hypot(bot.entity.position.x - world.home.x, bot.entity.position.z - world.home.z);
+    if (dHome > 16) return { ok: false, reason: 'not_at_base:' + Math.round(dHome) };
+  }
   // F (Massii) : vérifier l'OUVRABILITÉ avant d'essayer — un bloc a pu tomber/être posé au-dessus.
   try {
     const above0 = bot.blockAt(new Vec3(world.home.x, world.home.y + 1, world.home.z));

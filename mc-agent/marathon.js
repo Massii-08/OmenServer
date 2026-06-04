@@ -75,7 +75,10 @@ function nextAction(ctx) {
   const atDepth = ctx.y !== undefined && ctx.y <= targetY + 2;
 
   // Inventaire plein : déposer (ou poser la base ICI — le coffre du kit est en poche).
+  // P33 : base à >200 blocs → RENTRER d'abord (déposer exige d'être à la base ; sinon faux
+  // chest_lost → re-base en route → banked orphelin, vécu run#39 : 13 redstone perdus de vue).
   if (ctx.emptySlots !== undefined && ctx.emptySlots <= RESERVES.invFullSlots) {
+    if (ctx.hasBase && ctx.homeDist !== undefined && ctx.homeDist > 200) return 'go_home';
     return ctx.hasBase ? 'deposit' : 'base';
   }
 
