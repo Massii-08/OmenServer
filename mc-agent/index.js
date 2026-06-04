@@ -729,9 +729,26 @@ async function marathonDeposit() {
 // (b) ROAMING par sauts de ~48 blocs quand AUCUNE proie à portée (huntPassive ne roame pas) ;
 // (c) sous-tâches conditionnelles (ne re-gather pas du bois déjà au niveau).
 async function marathonRestock() {
+  // P19 (run#23 : mort à 760 blocs — l'ancre de surface datait d'AVANT la re-localisation →
+  // le supply run traversait la map de nuit). Ancre > 150 blocs = STALE → on butine LOCALEMENT :
+  // si sous terre, remonter ICI (tunnel pathfinder), puis roam-hunt/bois autour de la position.
   if (world.surface) {
-    const g = await gotoPos(world.surface, 8, 10 * 60 * 1000);
-    if (g && g.ok === false) emit({ type: 'marathon_surface_failed' });
+    const p0 = bot.entity.position;
+    const dxz = Math.hypot(p0.x - world.surface.x, p0.z - world.surface.z);
+    if (dxz <= 150) {
+      const g = await gotoPos(world.surface, 8, 10 * 60 * 1000);
+      if (g && g.ok === false) emit({ type: 'marathon_surface_failed' });
+    } else {
+      emit({ type: 'restock_local', staleAnchorDist: Math.round(dxz) });
+      world.surface = null; saveWorld(worldFile, world); // sera re-posée au prochain restock réussi
+    }
+  }
+  if (bot.entity.position.y < 50) {
+    // sous terre sans ancre proche : remonter sur place (GoalY + scaffolding, cf. G)
+    const up = await withTimeout(bot.pathfinder.goto(pfGoals.GoalY ? new pfGoals.GoalY(62)
+      : new pfGoals.GoalNear(bot.entity.position.x, 62, bot.entity.position.z, 8)),
+      10 * 60 * 1000, () => { try { stopMotion(); } catch (e) {} });
+    if (up && up.ok === false) emit({ type: 'marathon_surface_failed', phase: 'local_ascent' });
   }
   const inv = () => buildCtxInv(bot);
   // Bois : viser le PLEIN chargement (~1 stack d'unités, Massii 12:15), par passes bornées —
