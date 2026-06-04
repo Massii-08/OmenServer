@@ -164,11 +164,17 @@ async function reclaimBlock(pos, blockName = 'crafting_table') {
 // posée sous la canopée pendant que le bot est dans l'arbre) → on s'en APPROCHE d'abord ; si le craft
 // échoue quand même, on pose une table portable en fallback (vu live MapT1 : stall wooden_pickaxe ×4).
 async function withCraftingTable(fn) {
-  // P13b : table perdue (mort) ET non posée à portée → se la refabriquer (2×2, 4 planches) au lieu
-  // d'échouer no_table en boucle. Best-effort : sans planches on tombe sur l'échec normal.
-  if (!_nearestTable(bot) && !bot.inventory.items().some((i) => i.name === 'crafting_table')
-      && bot.inventory.items().some((i) => i.name.endsWith('_planks'))) {
-    try { await craftItem(bot, { name: 'crafting_table', count: 1 }); } catch (e) {}
+  // P13b/P14 : table perdue (mort OU reclaim raté) ET non posée à portée → se la refabriquer (2×2).
+  // P14 (run#16 : no_table:unknown_item en boucle avec 66 bûches en poche !) : le self-heal exigeait
+  // des PLANCHES — avec un stock 100% bûches il ne se déclenchait jamais → bûche→planches d'abord.
+  if (!_nearestTable(bot) && !bot.inventory.items().some((i) => i.name === 'crafting_table')) {
+    if (!bot.inventory.items().some((i) => i.name.endsWith('_planks'))) {
+      const log = bot.inventory.items().find((i) => i.name.endsWith('_log'));
+      if (log) { try { await craftItem(bot, { name: log.name.replace('_log', '_planks'), count: 1 }); } catch (e) {} }
+    }
+    if (bot.inventory.items().some((i) => i.name.endsWith('_planks'))) {
+      try { await craftItem(bot, { name: 'crafting_table', count: 1 }); } catch (e) {}
+    }
   }
   const t = _nearestTable(bot);
   if (t) {
