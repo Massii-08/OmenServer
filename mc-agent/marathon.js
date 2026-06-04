@@ -145,6 +145,19 @@ function nextAction(ctx) {
   return 'mine';
 }
 
+/** Massii I (cave-first) : cave la + proche NON visitée ≤ maxDist (XZ), ou null → fallback branch-mine. */
+function pickNextCave(caves, pos, visited, maxDist = 200) {
+  let best = null;
+  let bestD = Infinity;
+  for (const c of caves || []) {
+    const key = `${c.x},${c.y},${c.z}`;
+    if ((visited || []).includes(key)) continue;
+    const d = Math.hypot(pos.x - c.x, pos.z - c.z);
+    if (d <= maxDist && d < bestD) { best = c; bestD = d; }
+  }
+  return best;
+}
+
 /** P45 : agrège le contenu de TOUS les coffres connus (le churn de bases ne perd plus le butin). */
 function sumBanked(chestContents) {
   const out = {};
@@ -156,6 +169,6 @@ function sumBanked(chestContents) {
 }
 
 module.exports = {
-  MARATHON_TARGETS, RESERVES, COOKED, sumBanked,
+  MARATHON_TARGETS, RESERVES, COOKED, sumBanked, pickNextCave,
   marathonCounts, marathonMet, miningYFor, cookedFood, woodUnits, nextAction,
 };

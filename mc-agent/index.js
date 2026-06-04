@@ -51,7 +51,7 @@ const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget, fillBelow, recoverFloating } = require('./unstuck');
 const { isNight, shelterUntilDawn } = require('./skills/shelter');
 const { depositFiltered } = require('./skills/deposit');
-const { nextAction, marathonCounts, miningYFor, RESERVES, cookedFood, woodUnits, sumBanked } = require('./marathon');
+const { nextAction, marathonCounts, miningYFor, RESERVES, cookedFood, woodUnits, sumBanked, pickNextCave } = require('./marathon');
 const { scaffoldCount } = require('./skills/branchMine');
 
 function parseArgs(argv) {
@@ -102,6 +102,18 @@ let bootDone = false; // réflexes/mouvements/auth = une seule fois par connexio
 // Posés sur le bot au spawn : gather y émet material_found ; explore y lit le biais dirigé ;
 // le mapper y lit les cellules déjà mappées.
 const worldMemoryBootstrap = loadMemory(args['world-memory']);
+// Massii I.4 : le store du CARTOGRAPHE (worktree partagé via --world-memory) se remplit en continu
+// → re-lecture périodique (le bootstrap n'est qu'un snapshot).
+if (args['world-memory']) {
+  setInterval(() => {
+    try {
+      const fresh = loadMemory(args['world-memory']);
+      if (fresh && fresh.worlds && Object.keys(fresh.worlds).length) {
+        if (typeof bot !== 'undefined' && bot) bot._worldMemory = fresh;
+      }
+    } catch (e) {}
+  }, 60000).unref();
+}
 // Secteur multi-cartographes (1c) : assigné au lancement (--sector-index/--sector-count) puis
 // RE-BALANCÉ live par le manager via stdin {type:'sector',index,count} quand N change.
 let mapperSector = (args['sector-index'] !== undefined && args['sector-count'] !== undefined)
@@ -1172,6 +1184,16 @@ async function startMarathon() {
       else if (action === 'descend') r = await withTimeout(marathonDescend(miningYFor(counts)), 15 * 60 * 1000, stopMotion);
       else if (action === 'ascend') r = await marathonAscend(miningYFor(counts));
       else if (action === 'mine') {
+        // Massii I : CAVE-FIRST — une caverne connue (cartographe) à portée ? On y va : les ores
+        // y sont EXPOSÉS (récolte 100% légit + rapide). Branch-mine = FALLBACK.
+        const wkeyC = bot._worldKey;
+        const memC = bot._worldMemory;
+        const cavesC = (memC && memC.worlds && memC.worlds[wkeyC] && memC.worlds[wkeyC].caves) || [];
+        const caveC = pickNextCave(cavesC, bot.entity.position, world.visitedCaves || []);
+        if (caveC) {
+          r = await withTimeout(caveMine(caveC), 15 * 60 * 1000, stopMotion);
+          if (r && r.ores) emit({ type: 'marathon_mined', ores: r.ores, via: 'cave' });
+        } else {
         // E : biais directionnel SUBTIL — orienter le tunnel vers la zone la plus riche connue
         // (le tunnel reste un branch-mine légit ; on ne fonce jamais sur un bloc précis).
         try {
@@ -1191,6 +1213,7 @@ async function startMarathon() {
           stopWhen: (b) => (b.inventory && b.inventory.emptySlotCount ? b.inventory.emptySlotCount() : 99) <= RESERVES.invFullSlots,
         }, taskToken), 15 * 60 * 1000, stopMotion);
         if (r && r.ores) emit({ type: 'marathon_mined', ores: r.ores });
+        }
       }
     } catch (e) { r = { ok: false, reason: String((e && e.message) || e).slice(0, 120) }; }
     if (taskToken.cancelled) return;
@@ -1234,6 +1257,55 @@ async function startMarathon() {
     await sleep(800);
   }
 }
+
+// Massii I : minage de CAVERNE — y aller, récolter tous les ores CIBLABLES (exposés + stealth ≤5),
+// éclairer, puis marquer la cave visitée (cave-hopping : la boucle choisira la suivante).
+const ALL_TARGET_ORES = ['diamond_ore', 'deepslate_diamond_ore', 'redstone_ore', 'deepslate_redstone_ore',
+  'lapis_ore', 'deepslate_lapis_ore', 'gold_ore', 'deepslate_gold_ore',
+  'iron_ore', 'deepslate_iron_ore', 'coal_ore', 'deepslate_coal_ore'];
+async function caveMine(cave) {
+  const key = `${cave.x},${cave.y},${cave.z}`;
+  emit({ type: 'cave_target', x: cave.x, y: cave.y, z: cave.z });
+  const before = (function snap() {
+    const inv = buildCtxInv(bot);
+    return ['diamond', 'redstone', 'lapis_lazuli', 'raw_gold', 'raw_iron', 'coal']
+      .reduce((o, n) => { o[n] = inv[n] || 0; return o; }, {});
+  })();
+  const g = await gotoPos(cave, 4, 6 * 60 * 1000);
+  const dC = Math.hypot(bot.entity.position.x - cave.x, bot.entity.position.z - cave.z);
+  if (dC > 24) {
+    // inatteignable (pour l'instant) → marquer visitée pour ne pas boucler dessus
+    world.visitedCaves = (world.visitedCaves || []).concat([key]).slice(-64);
+    saveWorld(worldFile, world);
+    return { ok: false, reason: 'cave_unreachable:' + Math.round(dC) };
+  }
+  let dryScans = 0;
+  let torchT = 0;
+  while (dryScans < 2 && !taskToken.cancelled) {
+    const ore = findTargetableOreIdx(bot, ALL_TARGET_ORES, 24);
+    if (!ore) { dryScans++; await sleep(800); continue; }
+    dryScans = 0;
+    await withTimeout(gather(bot, { name: [ore.name], count: 8, maxDistance: 24 }, taskToken),
+      120000, () => { try { stopMotion(); } catch (e) {} });
+    if (Date.now() - torchT > 30000) {  // P29 : éclairer la grotte en avançant
+      torchT = Date.now();
+      const torch = bot.inventory.items().find((i) => i.name === 'torch');
+      const floor = bot.blockAt(bot.entity.position.floored().offset(0, -1, 0));
+      if (torch && floor && floor.boundingBox === 'block') {
+        try { await bot.equip(torch, 'hand'); await bot.placeBlock(floor, new Vec3(0, 1, 0)); } catch (e) {}
+      }
+    }
+    if ((bot.inventory.emptySlotCount ? bot.inventory.emptySlotCount() : 9) <= RESERVES.invFullSlots) break;
+  }
+  world.visitedCaves = (world.visitedCaves || []).concat([key]).slice(-64);
+  saveWorld(worldFile, world);
+  const after = buildCtxInv(bot);
+  const ores = { diamond: (after.diamond || 0) - before.diamond, redstone: (after.redstone || 0) - before.redstone,
+    lapis: (after.lapis_lazuli || 0) - before.lapis_lazuli, gold: (after.raw_gold || 0) - before.raw_gold,
+    iron: (after.raw_iron || 0) - before.raw_iron, coal: (after.coal || 0) - before.coal };
+  return { ok: true, ores };
+}
+const findTargetableOreIdx = require('./skills/gather').findTargetableOre;
 
 // Lance (ou relance) la boucle autonome ; le planner re-dérive depuis l'état courant.
 async function startAutonomous(sender) {

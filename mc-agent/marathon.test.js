@@ -307,3 +307,19 @@ test('P48: sans compromise, bois <64 bloque toujours (Massii READY)', () => {
   const ctx = loadedCtx({ inv: { oak_log: 30, oak_planks: 0 } });
   assert.strictEqual(nextAction(ctx), 'restock');
 });
+
+// Massii I : cave-first — sélection de la cave la + proche NON visitée, fallback si vide.
+const { pickNextCave } = require('./marathon');
+test('I: pickNextCave choisit la plus proche non visitée, dans le rayon', () => {
+  const caves = [{ x: 100, y: -20, z: 0 }, { x: 30, y: -30, z: 0 }, { x: 500, y: -10, z: 0 }];
+  const c = pickNextCave(caves, { x: 0, y: -50, z: 0 }, []);
+  assert.deepStrictEqual({ x: c.x, z: c.z }, { x: 30, z: 0 });
+  // la plus proche visitée → la suivante
+  const c2 = pickNextCave(caves, { x: 0, y: -50, z: 0 }, ['30,-30,0']);
+  assert.strictEqual(c2.x, 100);
+});
+test('I: pickNextCave null si vide / toutes visitées / hors rayon', () => {
+  assert.strictEqual(pickNextCave([], { x: 0, y: 0, z: 0 }, []), null);
+  assert.strictEqual(pickNextCave([{ x: 10, y: 0, z: 0 }], { x: 0, y: 0, z: 0 }, ['10,0,0']), null);
+  assert.strictEqual(pickNextCave([{ x: 900, y: 0, z: 0 }], { x: 0, y: 0, z: 0 }, [], 200), null);
+});

@@ -266,7 +266,7 @@ invisible) ; et **les logs montrent la cause** de tout échec de montée restant
 blocs cassés** par distance (outils durent plus) ; le bot **ne passe JAMAIS à côté d'un diamant proche**
 sans le prendre, et il **progresse vers 64×4**.
 
-## 2026-06-04 — I. PRIORISER LES CAVERNES (données cartographe) > branch-mining `[HAUTE PRIORITÉ — stratégie]`
+## 2026-06-04 — I. PRIORISER LES CAVERNES (données cartographe) > branch-mining `[traité — wiring : --world-memory partagé (fichier le + récent du worktree cartographe, résolu à chaque relance superviseur) + re-lecture 60s ; cave-first : pickNextCave (2 tests) + caveMine (récolte ciblable 24, torches, cave-hopping via visitedCaves, inatteignable=skip) ; branch-mine = fallback tant que caves[] vide]`
 
 **Demande de Massii** : le bot doit **prioriser les cavernes** plutôt que toujours branch-miner.
 Workflow voulu :
