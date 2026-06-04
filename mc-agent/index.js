@@ -35,6 +35,7 @@ const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
 const fs = require('fs');
 const { runPlanner } = require('./planner');
+const { createStickyReclaim } = require('./stickyReclaim');
 const { chainFor, buildCtxInv, firstUnmet, cookedCount } = require('./goals');
 const { huntPassive } = require('./skills/hunt');
 const { nearestPassive, survivalTick } = require('./survival');
@@ -204,12 +205,18 @@ async function withCraftingTable(fn) {
     if (!place.ok) return { ok: false, reason: 'no_table:' + (place.reason || '?') }; // sous-raison (diagnostic live)
   }
   await waitForBlock(place.pos, 'crafting_table'); // #3 : ne pas ouvrir la table avant qu'elle existe
-  await sleep(300);                                // settle pose→ouverture (serveur + humanisation)
+  await sleep(800);                                // dwell humain pose→ouverture (Massii C : jamais <1s)
   const r = await fn();
-  await sleep(250);                                // craft 100% terminé AVANT de casser la table
-  await reclaimBlock(place.pos);                   // garder la table PORTABLE (1 seule)
+  await sleep(800);                                // craft 100% terminé + dwell AVANT tout reclaim
+  // Massii C : reclaim DIFFÉRÉ (12 s) — un burst de crafts partage UNE pose ; jamais pose+casse
+  // instantanées. La table de BASE (permanente, _nearestTable) court-circuite tout ce chemin.
+  stickyTable.schedule({ x: place.pos.x, y: place.pos.y, z: place.pos.z });
   return r;
 }
+
+// Reclaim différé de la table portable (cf. stickyReclaim.js — testé avec fake timers).
+const stickyTable = createStickyReclaim((p) => reclaimBlock(new Vec3(p.x, p.y, p.z), 'crafting_table'));
+const { Vec3 } = require('vec3');
 
 // Craft "intelligent" : tente direct (2×2, ou table déjà à portée) ; si pas de recette / craft échoué
 // faute de table (craft 3×3), pose une table portable, re-tente, puis reprend la table.
