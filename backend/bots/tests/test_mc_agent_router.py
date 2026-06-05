@@ -721,3 +721,54 @@ def test_mappers_start_count_borne(monkeypatch):
     c = make_client()
     assert c.post("/api/mc-agent/servers/abc/mappers/start", json={"count": 0}).status_code == 422
     assert c.post("/api/mc-agent/servers/abc/mappers/start", json={"count": 99}).status_code == 422
+
+
+# --- Quota (bots ressources multi-quota) ---
+
+def test_run_passes_quota(monkeypatch):
+    """POST /run avec quota → start_session reçoit le dict filtré (types connus, int > 0)."""
+    captured = {}
+
+    def fake_start(*a, **kw):
+        captured.update(kw)
+        return 42
+
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    monkeypatch.setattr(mgr, "start_session", fake_start)
+    client = make_client()
+    resp = client.post("/api/mc-agent/run", json={
+        "host": "h", "user": "U", "objective": "resource",
+        "quota": {"diamond": 15, "gold": 15, "redstone": 64, "lapis": 64, "iron": 64,
+                  "emerald": 9, "diamondX": "nope"},
+    })
+    assert resp.status_code == 200
+    assert captured["quota"] == {"diamond": 15, "gold": 15, "redstone": 64, "lapis": 64, "iron": 64}
+
+
+def test_run_quota_invalid_values_rejected(monkeypatch):
+    """Valeurs non entières/négatives → 400 (pas de crash subprocess plus tard)."""
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    client = make_client()
+    resp = client.post("/api/mc-agent/run", json={
+        "host": "h", "user": "U", "objective": "resource", "quota": {"diamond": -3},
+    })
+    assert resp.status_code == 400
+
+
+def test_run_roster_passes_quota(monkeypatch):
+    """POST /run server_id+bot_id : quota transmis à start_for_bot."""
+    captured = {}
+
+    def fake_start_for_bot(gid, bid, **kw):
+        captured.update(kw)
+        return 7
+
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    monkeypatch.setattr(mgr, "start_for_bot", fake_start_for_bot)
+    client = make_client()
+    resp = client.post("/api/mc-agent/run", json={
+        "server_id": "ab12cd", "bot_id": "b1", "objective": "resource",
+        "autonomous": True, "quota": {"iron": 64},
+    })
+    assert resp.status_code == 200
+    assert captured["quota"] == {"iron": 64}

@@ -375,3 +375,19 @@ test('oresFoundEvent : event batché {type:ores_found, world, ores}', () => {
   assert.deepStrictEqual(ev.ores[0], { material: 'iron_ore', x: 1, y: 40, z: -4, exposed: true });  // floored
   assert.deepStrictEqual(ev.ores[1], { material: 'diamond_ore', x: 2, y: -50, z: 3, exposed: false });
 });
+
+test('nextOreTarget : allowTypes restreint aux types de base demandés (mode quota)', () => {
+  const memory = { worlds: { w: { ores: [
+    { material: 'deepslate_diamond_ore', x: 100, y: -55, z: 0 },
+    { material: 'iron_ore', x: 1, y: 40, z: 0 },
+    { material: 'redstone_ore', x: 2, y: -20, z: 0 },
+  ] } } };
+  const from = { x: 0, y: 40, z: 0 };
+  // seul iron est encore manquant → l'iron_ore est choisi malgré la priorité diamant
+  const t = ores.nextOreTarget(memory, 'w', from, { allowTypes: ['iron'] });
+  assert.strictEqual(t.material, 'iron_ore');
+  // aucun type permis présent → null
+  assert.strictEqual(ores.nextOreTarget(memory, 'w', from, { allowTypes: ['gold'] }), null);
+  // sans allowTypes : comportement inchangé (diamant prioritaire)
+  assert.strictEqual(ores.nextOreTarget(memory, 'w', from, {}).material, 'deepslate_diamond_ore');
+});

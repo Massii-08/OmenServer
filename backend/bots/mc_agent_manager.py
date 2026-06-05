@@ -131,6 +131,10 @@ def _apply_event(session, event):
         session["transcript"] = session["transcript"][-200:]
     elif etype == "error":
         session["last_error"] = event.get("message")
+    elif etype == "quota_progress":
+        session["quota"] = event.get("counts")        # barres de progression dashboard
+    elif etype == "quota_done":
+        session["quota_done"] = True
     session["events"].append(event)
     session["events"] = session["events"][-500:]
     # mémoire de monde partagée : route les trouvailles vers le store du groupe (server_id)
@@ -143,7 +147,7 @@ def _cleanup_session_files(session):
 
     Appelé par stop_session ET en fin de pompe (mort naturelle : crash/kick/déco) —
     sinon les fichiers login chmod 600 s'accumulent dans RUNS_DIR (finding revue)."""
-    for key in ("cmds_path", "policy_path", "world_path", "wm_path", "login_path"):
+    for key in ("cmds_path", "policy_path", "world_path", "wm_path", "quota_path", "login_path"):
         p = session.get(key)
         if p:
             try:
@@ -227,7 +231,7 @@ def _rebalance_sectors(group_id):
 def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, commands=None,
                policy=None, server_id=None, language="fr", autonomous=False,
                objective="stone_pickaxe", world_label=None, login_command=None,
-               sector_index=None, sector_count=None):
+               sector_index=None, sector_count=None, quota=None):
     """Spawn le process Node détaché et enregistre la session. Retourne son id.
 
     Point monkeypatchable des lancements par roster (start_for_bot/start_mappers).
@@ -282,12 +286,29 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
         }), encoding="utf-8")
         cmd += ["--world", str(world_path)]
     # Bootstrap mémoire de monde : passe la mémoire courante du groupe au bot (il sait où chercher).
+    #  - objectif `resource` : chemin LIVE du fichier du groupe (lecture seule + --wm-live → le bot
+    #    re-lit pendant que les cartographes alimentent) + fichier de claims partagé du groupe
+    #    (anti-collision entre bots ressources ; PAS nettoyé par session, TTL interne).
+    #  - autres objectifs : SNAPSHOT worldmem-<sid>.json (comportement historique).
     wm_path = None
-    if server_id:
+    if server_id and objective == "resource":
+        world_memory.WORLD_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        live = world_memory.WORLD_MEMORY_DIR / f"{server_id}.json"
+        cmd += ["--world-memory", str(live), "--wm-live", "1"]
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        cmd += ["--claims", str(RUNS_DIR / f"claims-{server_id}.json")]
+    elif server_id:
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
         wm_path = RUNS_DIR / f"worldmem-{sid}.json"
         wm_path.write_text(json.dumps(world_memory.load(server_id)), encoding="utf-8")
         cmd += ["--world-memory", str(wm_path)]
+    # Quota multi-matériaux (bots ressources) : sidecar quota-<sid>.json + --quota (nettoyé au stop).
+    quota_path = None
+    if quota:
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        quota_path = RUNS_DIR / f"quota-{sid}.json"
+        quota_path.write_text(json.dumps(quota), encoding="utf-8")
+        cmd += ["--quota", str(quota_path)]
     if world_label:
         cmd += ["--world-label", str(world_label)]  # monde de minage (overworld-type séparé)
     # Login serveur automatique : la commande résolue (avec le secret) est écrite dans un fichier
@@ -332,6 +353,7 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
         "policy_path": str(policy_path) if policy_path else None,
         "world_path": str(world_path) if world_path else None,
         "wm_path": str(wm_path) if wm_path else None,
+        "quota_path": str(quota_path) if quota_path else None,
         "login_path": str(login_path) if login_path else None,
     }
     _sessions[sid] = session
@@ -343,11 +365,12 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     return sid
 
 
-def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None):
+def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None, quota=None):
     """Lancement manuel (path historique du router + compat tests). Délègue à `_spawn_bot`."""
     return _spawn_bot(host, port, user, model=model, auth=auth, profile=profile,
                       commands=commands, policy=policy, server_id=server_id, language=language,
-                      autonomous=autonomous, objective=objective, world_label=world_label)
+                      autonomous=autonomous, objective=objective, world_label=world_label,
+                      quota=quota)
 
 
 def _resolve_login_command(group, group_id, bot_id, secret):
@@ -376,7 +399,7 @@ def _online_usernames(group_id):
     return out
 
 
-def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="stone_pickaxe", world_label=None):
+def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="stone_pickaxe", world_label=None, quota=None):
     """Lance un bot du roster d'un groupe (résout connexion + compte + login + intelligence).
 
     Lève LookupError si le groupe ou le bot est introuvable, ValueError si le compte est déjà en
@@ -397,7 +420,7 @@ def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="sto
         profile=group["intelligence"], commands=servers_store.resolve_commands(group),
         policy=servers_store.resolve_policy(group), server_id=group_id,
         language=group.get("language", "fr"), autonomous=autonomous, objective=objective,
-        world_label=world_label, model=model, login_command=login_command,
+        world_label=world_label, model=model, login_command=login_command, quota=quota,
     )
 
 
@@ -458,6 +481,7 @@ def _public(session):
         "id": session["id"], "status": session["status"], "host": session["host"],
         "user": session["user"], "last_error": session["last_error"],
         "server_id": session.get("server_id"),
+        "quota": session.get("quota"), "quota_done": session.get("quota_done", False),
     }
 
 

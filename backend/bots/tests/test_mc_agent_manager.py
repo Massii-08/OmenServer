@@ -897,3 +897,94 @@ def test_spawn_bot_uses_explicit_sectors(monkeypatch, tmp_path):
 def test_resource_is_valid_objective():
     """'resource' (bot ressource : mine les ores exposés de la carte) est un objectif valide."""
     assert "resource" in mgr.VALID_OBJECTIVES
+
+
+# --- Mode quota (bots ressources multi-quota) ---
+
+def _fake_spawn_env(monkeypatch, tmp_path):
+    import io
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO(); self.stdout = iter(()); self.pid = 4400
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path / "wm")
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    return captured
+
+
+def test_spawn_quota_sidecar_et_flag(monkeypatch, tmp_path):
+    """quota fourni → sidecar quota-<sid>.json + --quota ; nettoyé au stop."""
+    import json as _json
+    captured = _fake_spawn_env(monkeypatch, tmp_path)
+    sid = mgr.start_session("h", 25565, "U", server_id="ab12cd", objective="resource",
+                            quota={"diamond": 15, "iron": 64})
+    cmd = captured["cmd"]
+    assert "--quota" in cmd
+    qpath = cmd[cmd.index("--quota") + 1]
+    assert _json.loads(open(qpath).read()) == {"diamond": 15, "iron": 64}
+    assert mgr._sessions[sid].get("quota_path") == str(qpath)
+    mgr._cleanup_session_files(mgr._sessions[sid])
+    import os as _os
+    assert not _os.path.exists(qpath)
+
+
+def test_spawn_resource_wm_live_et_claims(monkeypatch, tmp_path):
+    """objective=resource + server_id → --world-memory pointe le fichier LIVE du groupe
+    + --wm-live 1 + --claims claims-<group>.json (partagé, PAS nettoyé par session)."""
+    captured = _fake_spawn_env(monkeypatch, tmp_path)
+    sid = mgr.start_session("h", 25565, "U", server_id="ab12cd", objective="resource")
+    cmd = captured["cmd"]
+    assert "--wm-live" in cmd
+    wm = cmd[cmd.index("--world-memory") + 1]
+    assert wm.endswith("ab12cd.json") and "wm" in wm          # chemin LIVE du groupe
+    assert "--claims" in cmd
+    claims = cmd[cmd.index("--claims") + 1]
+    assert claims.endswith("claims-ab12cd.json")
+    # le claims path n'est PAS dans les fichiers nettoyés par session (partagé entre bots)
+    s = mgr._sessions[sid]
+    assert "claims" not in {k: v for k, v in s.items() if k.endswith("_path") and v}.get("claims_path", "")
+    assert s.get("wm_path") is None                            # pas de snapshot à nettoyer
+
+
+def test_spawn_non_resource_garde_snapshot(monkeypatch, tmp_path):
+    """Les autres objectifs gardent le SNAPSHOT (worldmem-<sid>.json), pas de --wm-live."""
+    captured = _fake_spawn_env(monkeypatch, tmp_path)
+    mgr.start_session("h", 25565, "U", server_id="ab12cd", objective="mapper")
+    cmd = captured["cmd"]
+    assert "--wm-live" not in cmd
+    assert "--claims" not in cmd
+    wm = cmd[cmd.index("--world-memory") + 1]
+    assert "worldmem-" in wm
+
+
+def test_apply_event_quota_progress_session(monkeypatch, tmp_path):
+    """quota_progress → session['quota'] ; quota_done → session['quota_done']."""
+    s = {"status": "x", "transcript": [], "events": [], "last_error": None, "server_id": None}
+    counts = {"diamond": {"have": 3, "target": 15}}
+    mgr._apply_event(s, {"type": "quota_progress", "counts": counts})
+    assert s["quota"] == counts
+    mgr._apply_event(s, {"type": "quota_done", "mined": 9})
+    assert s["quota_done"] is True
+
+
+def test_public_expose_quota(monkeypatch):
+    """_public inclut quota/quota_done (affichage barres dashboard)."""
+    s = {"id": 1, "status": "running", "host": "h", "user": "U", "last_error": None,
+         "server_id": "ab12cd", "quota": {"iron": {"have": 1, "target": 64}}, "quota_done": False}
+    pub = mgr._public(s)
+    assert pub["quota"] == {"iron": {"have": 1, "target": 64}}
+    assert pub["quota_done"] is False
+
+
+def test_wm_events_includes_ores_found():
+    assert "ores_found" in mgr._WM_EVENTS

@@ -49,6 +49,8 @@ const { loadMemory, worldKey } = require('./worldMemory');
 const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
 const { runResource } = require('./skills/resource');
+const { junkItems } = require('./quota');
+const { createClaims } = require('./claims');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
 const { isNight, shelterUntilDawn } = require('./skills/shelter');
@@ -580,6 +582,21 @@ async function gotoOreBounded(t) {
 
 // Boucle ressource : kit pioche minimal si nécessaire (zéro→pioche pierre, chaîne existante), puis
 // mine les ores de la carte un à un. Liste vide/épuisée → idle PROPRE (immobile, réflexes survie ON).
+// Toss du junk de creusage (mode quota, sous terre : pas de coffre — on garde pioches/bouffe/quota).
+async function tossJunk(b) {
+  const items = (b.inventory && b.inventory.items()) || [];
+  for (const it of junkItems(items)) {
+    try { await b.toss(it.type, null, it.count); } catch (e) { /* slot bougé → tant pis */ }
+  }
+}
+
+// Quota --quota <path> : {type: n} (JSON, validé par quota.normalizeQuota côté runResource).
+function loadQuota() {
+  if (!args.quota) return null;
+  try { return JSON.parse(require('fs').readFileSync(String(args.quota), 'utf8')); }
+  catch (e) { return null; }
+}
+
 async function startResource() {
   // Sans pioche, rien ne droppe : on passe d'abord par le kit pierre (réutilise le planner).
   if (bestPickTier() < 0) {
@@ -592,11 +609,22 @@ async function startResource() {
     if (taskToken.cancelled) return;
     if (res.stalled) emit({ type: 'resource_kit_stalled', goal: res.goal }); // dégradé : on tente quand même
   }
+  const quota = loadQuota();
+  // Claims anti-collision (fichier partagé du groupe) — seulement si fourni par le manager.
+  const claims = args.claims ? createClaims(String(args.claims), { username: bot.username }) : null;
+  // Mémoire LIVE (--wm-live) : re-lecture du fichier du groupe à chaque tour d'attente —
+  // les cartographes alimentent la carte PENDANT que les bots ressources minent.
+  const reloadMemory = (args['wm-live'] && args['world-memory'])
+    ? () => loadMemory(args['world-memory']) : null;
   const r = await runResource(bot, {
     emit,
     goto: gotoOreBounded,
     pickTier: bestPickTier,
     deposit: () => deposit(bot),
+    quota,
+    claims,
+    reloadMemory,
+    cleanup: quota ? tossJunk : null,
     onTarget: async () => {
       if (isInWater(bot)) await escapeWater(bot, { emit });
       await settleSurvivalKit();

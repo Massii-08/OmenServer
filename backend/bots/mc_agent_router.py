@@ -32,6 +32,7 @@ class StartReq(BaseModel):
     autonomous: bool = False        # True → lance la boucle planner au spawn (0 LLM)
     objective: str = "stone_pickaxe"  # objectif autonome : stone_pickaxe | iron_pickaxe | diamond | mapper | resource
     world_label: Optional[str] = None  # clé de monde explicite (ex. "mining") — sinon dimension auto
+    quota: Optional[dict] = None    # mode quota (objectif resource) : {diamond|gold|redstone|lapis|iron: n>0}
 
 
 class SayReq(BaseModel):
@@ -74,17 +75,47 @@ class BotPayload(BaseModel):
     secret: Optional[str] = None  # stocké via mc_agent_secrets, jamais réémis
 
 
+_QUOTA_TYPES = ("diamond", "gold", "redstone", "lapis", "iron")
+
+
+def _clean_quota(quota):
+    """Filtre le quota demandé : types connus uniquement, valeurs int > 0. None si vide.
+
+    Lève ValueError si une valeur d'un type CONNU est invalide (mieux qu'un échec silencieux
+    côté bot) ; les types inconnus sont simplement ignorés."""
+    if not quota:
+        return None
+    out = {}
+    for t in _QUOTA_TYPES:
+        if t not in quota:
+            continue
+        try:
+            v = int(quota[t])
+        except (TypeError, ValueError):
+            raise ValueError(f"Quota invalide pour {t}")
+        if v <= 0:
+            raise ValueError(f"Quota invalide pour {t} (doit etre > 0)")
+        out[t] = v
+    return out or None
+
+
 @router.post("/run")
 def run(req: StartReq, current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
     if not mgr.has_api_key():
         raise HTTPException(status_code=400, detail="Aucune cle Claude configuree (renseigne-la dans le bot)")
+    try:
+        quota = _clean_quota(req.quota)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     # Lancement par compte du roster : résolution complète côté manager (groupe + bot + login).
     if req.server_id and req.bot_id:
         try:
+            # quota passé seulement si présent (rétro-compat monkeypatchs/tests existants)
+            extra = {"quota": quota} if quota else {}
             sid = mgr.start_for_bot(req.server_id, req.bot_id, model=req.model,
                                     autonomous=req.autonomous, objective=req.objective,
-                                    world_label=req.world_label)
+                                    world_label=req.world_label, **extra)
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
         except ValueError as exc:
@@ -108,7 +139,8 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="host requis (ou choisis un profil serveur)")
     auth = auth if auth in ("offline", "microsoft") else "offline"
     try:
-        sid = mgr.start_session(host, port, user, req.model, auth, profile, commands, policy, server_id=req.server_id, language=language, autonomous=req.autonomous, objective=req.objective, world_label=req.world_label)
+        extra = {"quota": quota} if quota else {}
+        sid = mgr.start_session(host, port, user, req.model, auth, profile, commands, policy, server_id=req.server_id, language=language, autonomous=req.autonomous, objective=req.objective, world_label=req.world_label, **extra)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Impossible de demarrer Node : {exc}")
     return {"session_id": sid}
