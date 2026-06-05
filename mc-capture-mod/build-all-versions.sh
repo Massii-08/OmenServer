@@ -22,6 +22,14 @@ set -uo pipefail
 cd "$(dirname "$0")"
 
 # === Matrice des versions ===
+# ⚠️ TOOLCHAIN (2026-06-04) : MC 1.21.6+ embarque des mappings yarn en unpick v3 → fabric-loom
+#    1.10.5 / Gradle 8.12 échouait ("Unsupported unpick version"). La toolchain est désormais
+#    loom 1.16.3 (build.gradle) + Gradle 9.4.1 (gradle-wrapper.properties) — compatible 1.20.1
+#    → 1.21.11. De plus 1.21.6+ a cassé des API (KeyBinding.Category record, GameProfile.name())
+#    → CaptureMod.java cible MC 1.21.6+ en référence DIRECTE (KeyBinding.Category.MISC). PAS de
+#    réflexion par nom yarn : loom ne remappe pas les String → Class.forName(<yarn>) crashe au
+#    RUNTIME sur client remappé. Les jars ≤1.21.5 sont FIGÉS (committés) ; rebuild d'une version
+#    ≤1.21.5 = checkout du code d'avant 2026-06-04 (sinon échec de compil KeyBinding.Category).
 # Format : <mc_version>|<java_release>|<yarn_mappings>|<loader_version>|<fabric_api_version>
 # Valeurs basées sur https://fabricmc.net/develop (juin 2026). Si un build échoue
 # avec "Could not resolve dependency", chercher la dernière yarn/fabric-api pour
@@ -39,6 +47,7 @@ read -r -d '' VERSION_MATRIX <<'EOF' || true
 1.21.1|21|1.21.1+build.3|0.16.10|0.116.12+1.21.1
 1.21.4|21|1.21.4+build.8|0.16.10|0.119.4+1.21.4
 1.21.5|21|1.21.5+build.1|0.16.10|0.128.2+1.21.5
+1.21.11|21|1.21.11+build.6|0.16.10|0.141.4+1.21.11
 EOF
 
 # === Args : filtrer les versions à builder ===

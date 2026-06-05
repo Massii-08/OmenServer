@@ -1,7 +1,7 @@
 'use strict';
 // Point d'entrée de l'agent Minecraft. Lancé par le backend Python en subprocess.
 const mineflayer = require('mineflayer');
-const { pathfinder, Movements } = require('mineflayer-pathfinder');
+const { pathfinder, Movements, goals: pfGoals } = require('mineflayer-pathfinder');
 const { plugin: pvp } = require('mineflayer-pvp');
 const { plugin: collectBlock } = require('mineflayer-collectblock');
 const { createLLMClient } = require('./llm');
@@ -24,7 +24,7 @@ const { loadPolicy, isTrusted, parseTpRequest, parseTradeRequest, gateDecision, 
 const { parseOrder } = require('./orders');
 const { createTaskController } = require('./tasks');
 const { createMemory } = require('./memory');
-const { bestWeapon } = require('./tools');
+const { bestWeapon, bestToolFor } = require('./tools');
 const { gather } = require('./skills/gather');
 const { mineDown } = require('./skills/mineDown');
 const { guard } = require('./skills/guard');
@@ -35,14 +35,21 @@ const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
 const fs = require('fs');
 const { runPlanner } = require('./planner');
-const { chainFor } = require('./goals');
+const { chainFor, buildCtxInv, firstUnmet, cookedCount } = require('./goals');
+const { huntPassive } = require('./skills/hunt');
+const { nearestPassive, survivalTick } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
 const { _nearestTable } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { placeBlockNear } = require('./skills/placeBlockNear');
 const { smelt } = require('./skills/smelt');
 const { descendDiagonal } = require('./skills/descendDiagonal');
 const { branchMine } = require('./skills/branchMine');
-const { classifyAuthPrompt, genPassword } = require('./auth');
+const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
+const { loadMemory, worldKey } = require('./worldMemory');
+const { runMapper } = require('./mapper');
+const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
+const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
+const { isNight, shelterUntilDawn } = require('./skills/shelter');
 
 function parseArgs(argv) {
   const o = {};
@@ -80,6 +87,7 @@ const trustDocs = buildTrustDocs(policy.trusted);
 const lang = String(args.lang || 'fr').toLowerCase();
 const taskCtl = createTaskController();
 const memory = createMemory();
+const tpWatch = createTeleportWatcher(); // #10 : suivi de position → détection TP + ré-ancrage mapper
 
 // --- Planner autonome (Phase 3) : le but autonome = tâche par défaut de taskCtl ---
 const worldFile = args.world || path.join(__dirname, '..', 'data', `mc_agent_world_${args.user || 'TrainBot'}.json`);
@@ -87,6 +95,15 @@ const world = loadWorld(worldFile);
 let taskToken = { cancelled: true };
 let deathTimes = [];
 let bootDone = false; // réflexes/mouvements/auth = une seule fois par connexion (pas à chaque respawn)
+
+// --- Mémoire de monde (1a/1b) : bootstrap du groupe (--world-memory) + clé de monde (--world-label).
+// Posés sur le bot au spawn : gather y émet material_found ; explore y lit le biais dirigé ;
+// le mapper y lit les cellules déjà mappées.
+const worldMemoryBootstrap = loadMemory(args['world-memory']);
+// Secteur multi-cartographes (1c) : assigné au lancement (--sector-index/--sector-count) puis
+// RE-BALANCÉ live par le manager via stdin {type:'sector',index,count} quand N change.
+let mapperSector = (args['sector-index'] !== undefined && args['sector-count'] !== undefined)
+  ? { index: Number(args['sector-index']), count: Number(args['sector-count']) } : null;
 
 // Store secrets local (mot de passe AuthMe). data/ gitignored, perms 600. JAMAIS dans emit/logs.
 const secretsFile = args.secrets || path.join(__dirname, '..', 'data', `mc_agent_secret_${args.user || 'TrainBot'}.json`);
@@ -101,6 +118,16 @@ function writePw(pw) {
   } catch (e) { emit({ type: 'error', message: 'secrets write failed' }); }
 }
 
+// Login serveur configuré par l'admin (--login-command <path>) : commande complète AVEC le secret
+// (substitué côté backend). Lue depuis un fichier temp chmod 600. JAMAIS émise/loggée (contient le pw).
+function readLoginCommand() {
+  if (!args['login-command']) return null;
+  try {
+    const cmd = fs.readFileSync(args['login-command'], 'utf8').trim();
+    return cmd || null;
+  } catch (e) { return null; }
+}
+
 function ctxExtra() {
   const pos = bot && bot.entity && bot.entity.position;
   return { hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined };
@@ -110,6 +137,18 @@ function ctxExtra() {
 // pour chaque craft 3×3 (anti-stranding — la table vient au bot, où qu'il soit, surface OU sous-sol).
 // Remplace l'ancien ensureNearTable (qui exigeait de REVENIR à une table fixe → échouait après
 // le creusage du cobble, cf. revert table-on-spot). placeBlockNear gère désormais le sous-sol.
+// #3 retours live : après placeBlock, le bloc n'existe pas INSTANTANÉMENT côté client (aller-retour
+// serveur) → on poll jusqu'à le voir avant de l'utiliser (sinon openContainer/craft sur du vide).
+async function waitForBlock(pos, blockName, timeoutMs = 2000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    const b = pos ? bot.blockAt(pos) : null;
+    if (b && b.name === blockName) return true;
+    await sleep(120);
+  }
+  return false;
+}
+
 async function reclaimBlock(pos, blockName = 'crafting_table') {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -119,6 +158,10 @@ async function reclaimBlock(pos, blockName = 'crafting_table') {
         b = def ? bot.findBlock({ matching: [def.id], maxDistance: 4 }) : null;
       }
       if (!b) return;                              // plus de bloc posé → déjà repris
+      // ⚠️ ÉQUIPER LE BON OUTIL (vécu Surv5 : un FOUR cassé sans pioche en main NE DROP PAS →
+      // four perdu en boucle). collectBlock n'équipe rien (mineflayer-tool non chargé).
+      const tool = bestToolFor(bot, b);
+      if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
       await bot.collectBlock.collect(b);
       return;                                      // repris
     } catch (e) { /* retry une fois */ }
@@ -126,11 +169,41 @@ async function reclaimBlock(pos, blockName = 'crafting_table') {
 }
 
 // Garantit une table à portée le temps d'exécuter fn (un craft), puis reprend la table si on l'a posée.
+// ⚠️ findBlock(6) > portée d'interaction (~4.5) : une table « proche » peut être INATTEIGNABLE (jungle :
+// posée sous la canopée pendant que le bot est dans l'arbre) → on s'en APPROCHE d'abord ; si le craft
+// échoue quand même, on pose une table portable en fallback (vu live MapT1 : stall wooden_pickaxe ×4).
 async function withCraftingTable(fn) {
-  if (_nearestTable(bot)) return fn();             // table déjà accessible (la nôtre, ou un reste)
-  const place = await placeBlockNear(bot, 'crafting_table');
-  if (!place.ok) return { ok: false, reason: 'no_table' };
+  const t = _nearestTable(bot);
+  if (t) {
+    try {
+      if (bot.entity.position.distanceTo(t.position) > 3) {
+        await withTimeout(
+          bot.pathfinder.goto(new pfGoals.GoalNear(t.position.x, t.position.y, t.position.z, 2)),
+          30000, () => { try { stopMotion(); } catch (e) {} }
+        );
+      }
+    } catch (e) { /* pas de chemin → on tentera la table portable */ }
+    const r0 = await fn();
+    if (r0.ok) return r0;                          // table existante atteinte → craft passé
+  }
+  let place = await placeBlockNear(bot, 'crafting_table');
+  if (!place.ok) {
+    // sol encombré (feuillage jungle, pente) → se déplacer vers un sol dégagé proche et re-tenter
+    // UNE fois (vu live MapT4 : stall wooden_pickaxe avec table+planks+sticks en poche, pose impossible).
+    const spot = findLandTarget(bot, 24);
+    if (spot) {
+      try {
+        await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(spot.x, spot.y + 1, spot.z, 1)),
+          30000, () => { try { stopMotion(); } catch (e) {} });
+      } catch (e) {}
+      place = await placeBlockNear(bot, 'crafting_table');
+    }
+    if (!place.ok) return { ok: false, reason: 'no_table:' + (place.reason || '?') }; // sous-raison (diagnostic live)
+  }
+  await waitForBlock(place.pos, 'crafting_table'); // #3 : ne pas ouvrir la table avant qu'elle existe
+  await sleep(300);                                // settle pose→ouverture (serveur + humanisation)
   const r = await fn();
+  await sleep(250);                                // craft 100% terminé AVANT de casser la table
   await reclaimBlock(place.pos);                   // garder la table PORTABLE (1 seule)
   return r;
 }
@@ -156,17 +229,39 @@ function fuelNames() {
 
 // Four PORTABLE (même esprit que la table) : pose un four à côté du bot si aucun à portée, fond, puis
 // le reprend → le bot garde 1 four en poche et fond où qu'il soit (surface OU fond du tunnel à fer).
-async function smeltWithFurnace(input, output, count) {
+// `fuelOverride` : liste de combustibles imposée (ex. charbon de bois : EXCLURE les bûches, sinon
+// le four brûle l'input qu'on veut fondre).
+async function smeltWithFurnace(input, output, count, fuelOverride) {
   const fdef = bot.registry.blocksByName.furnace;
-  const near = fdef ? bot.findBlock({ matching: [fdef.id], maxDistance: 4 }) : null;
+  let near = fdef ? bot.findBlock({ matching: [fdef.id], maxDistance: 4 }) : null;
+  // Four PERDU (reclaim raté lors d'une fonte précédente — vécu live Surv1) : avant d'échouer ou
+  // de re-crafter, on va RÉCUPÉRER un four posé à ≤24 blocs (le nôtre, abandonné).
+  if (!near && !bot.inventory.items().some((i) => i.name === 'furnace')) {
+    const lost = fdef ? bot.findBlock({ matching: [fdef.id], maxDistance: 24 }) : null;
+    if (lost) {
+      try {
+        await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(lost.position.x, lost.position.y, lost.position.z, 2)),
+          30000, () => { try { stopMotion(); } catch (e) {} });
+      } catch (e) {}
+      near = bot.findBlock({ matching: [fdef.id], maxDistance: 4 });
+    }
+  }
   let pos = null;
   if (!near) {
     const place = await placeBlockNear(bot, 'furnace');
     if (!place.ok) return { ok: false, reason: 'no_furnace' };
     pos = place.pos;
+    await waitForBlock(pos, 'furnace');            // #3 : même règle que la table (pose async serveur)
+    await sleep(300);
   }
-  const r = await smelt(bot, { input, output, count, fuel: fuelNames() }, taskToken);
-  if (pos) await reclaimBlock(pos, 'furnace');     // garder le four PORTABLE
+  const r = await smelt(bot, { input, output, count, fuel: fuelOverride || fuelNames() }, taskToken);
+  if (pos) {
+    await sleep(250);
+    await reclaimBlock(pos, 'furnace');            // garder le four PORTABLE
+    if (!bot.inventory.items().some((i) => i.name === 'furnace')) {
+      emit({ type: 'reclaim_failed', block: 'furnace' }); // pas revenu en poche (récupérable ≤24 plus tard)
+    }
+  }
   return r;
 }
 
@@ -176,7 +271,9 @@ async function smeltWithFurnace(input, output, count) {
 const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // Skills DIAMANT longs par nature : descente y=64→-54 (118 blocs × ~4s avec pathfinder = trop juste
 // à 6 min) + branch mining 48 + 2×8 branches (~64 blocs avec pathfinder entre chaque dig). 15 min/chacun.
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000 };
+// huntCook = 3 vagues de chasse + cuisson au four (vécu Surv5 : tué à 90s en pleine chasse) ;
+// smeltCharcoal = gather bûches éventuel + fonte (180s de smelt max).
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, huntCook: 480000, smeltCharcoal: 300000, gatherLog: 240000 };  // gatherLog 4 min : explore vers une forêt lointaine (Surv11 : ×12 timeouts à 90s)
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
@@ -192,14 +289,110 @@ function withTimeout(promise, ms, onTimeout) {
   });
 }
 
+// --- Kit de survie : charbon de bois + chasse/cuisson (phase « bot parfait ») ---------------------
+
+const RAW2COOKED = {
+  beef: 'cooked_beef', porkchop: 'cooked_porkchop', chicken: 'cooked_chicken',
+  mutton: 'cooked_mutton', rabbit: 'cooked_rabbit', cod: 'cooked_cod', salmon: 'cooked_salmon',
+};
+function _invTotal(filter) {
+  return bot.inventory.items().filter(filter).reduce((s, i) => s + i.count, 0);
+}
+
+// Charbon de bois : s'assure d'avoir `count` bûches (gather+explore au besoin) puis les fond.
+// ⚠️ fuel = planches/charbon UNIQUEMENT (jamais de bûches — c'est l'input). Si aucune planche :
+// convertit 1 bûche en planches d'abord.
+async function smeltCharcoalGoal(count) {
+  // 0) du COAL_ORE visible ? le miner direct (commun, plus simple que le charbon de bois — Surv8 :
+  //    20 échecs no_fuel en plaines sans arbres alors que la pierre regorge de charbon).
+  const coalDefs = ['coal_ore', 'deepslate_coal_ore'].map((n) => bot.registry.blocksByName[n]).filter(Boolean);
+  if (coalDefs.length && bot.findBlock({ matching: coalDefs.map((b) => b.id), maxDistance: 32 })) {
+    const g = await gather(bot, { name: ['coal_ore', 'deepslate_coal_ore'], count, explore: false }, taskToken);
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    if (g.ok && _invTotal((i) => i.name === 'coal') >= count) return { ok: true };
+  }
+  // 1) charbon de bois : il faut count bûches À FONDRE + de quoi alimenter le four (planches)
+  const logNames = Object.keys(bot.registry.blocksByName).filter((n) => n.endsWith('_log'));
+  const logsHave = () => _invTotal((i) => i.name.endsWith('_log'));
+  const planksHave = () => _invTotal((i) => i.name.endsWith('_planks'));
+  emit({ type: 'charcoal_state', logs: logsHave(), planks: planksHave() }); // télémétrie (no_fuel ×20 inexpliqués)
+  if (logsHave() < count + 1) { // +1 bûche → planches de combustible
+    const g = await gather(bot, { name: logNames, count: count + 1 - logsHave(), explore: true }, taskToken);
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    if (!g.ok && logsHave() < count) return { ok: false, reason: 'no_logs' };
+  }
+  if (planksHave() < 2) {
+    const log = bot.inventory.items().find((i) => i.name.endsWith('_log'));
+    if (log) {
+      const c = await craftItem(bot, { name: log.name.replace('_log', '_planks'), count: 1 });
+      if (!c.ok) emit({ type: 'charcoal_state', planks_craft_failed: c.reason });
+    }
+  }
+  if (planksHave() < 1 && _invTotal((i) => i.name === 'coal') < 1) {
+    return { ok: false, reason: 'no_fuel_planks' };             // diagnostic PRÉCIS (≠ no_fuel du smelt)
+  }
+  // ⚠️ PAS de 'charcoal' dans le fuel ici : on ne brûle pas le produit qu'on fabrique (vécu Surv1)
+  const fuel = ['coal'].concat(
+    Object.keys(bot.registry.itemsByName).filter((n) => n.endsWith('_planks')));
+  // fond l'essence la plus abondante (l'input du smelt est un nom d'item exact)
+  const byName = {};
+  for (const i of bot.inventory.items()) if (i.name.endsWith('_log')) byName[i.name] = (byName[i.name] || 0) + i.count;
+  const top = Object.entries(byName).sort((a, b) => b[1] - a[1])[0];
+  if (!top) return { ok: false, reason: 'no_logs' };
+  return smeltWithFurnace(top[0], 'charcoal', Math.min(count, top[1]), fuel);
+}
+
+// Stock de nourriture CUITE : chasse des passifs proches (jusqu'à 3 vagues) puis cuit tout le cru.
+// Pas de proie → on cuit ce qu'on a ; rien du tout → échec propre (le planner re-tentera ailleurs
+// via la re-tentative périodique du kit — le bot aura bougé).
+async function huntCookGoal(target) {
+  const cooked = () => cookedCount(buildCtxInv(bot));
+  const raw = () => _invTotal((i) => RAW2COOKED[i.name]);
+  for (let wave = 0; wave < 3 && cooked() + raw() < target; wave++) {
+    const r = await withTimeout(
+      huntPassive(bot, { count: target - cooked() - raw(), maxDistance: 32 }, taskToken),
+      120000, () => { try { stopMotion(); } catch (e) {} });
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    if (!r || !r.ok) break;
+  }
+  let cookedAny = false;
+  for (const [rawName, cookedName] of Object.entries(RAW2COOKED)) {
+    const n = _invTotal((i) => i.name === rawName);
+    if (!n) continue;
+    const s = await smeltWithFurnace(rawName, cookedName, n);
+    if (s.ok) cookedAny = true;
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  }
+  if (cooked() >= target || cookedAny) return { ok: true, got: cooked() };
+  return { ok: false, reason: 'no_prey' };
+}
+
 // Dispatch d'un but de la chaîne vers le skill réel (0 token).
 async function runGoalSkill(goal) {
+  // #1 retours live : coincé dans l'eau → s'en sortir AVANT de tenter le skill (sinon le pathfinder
+  // rame dans l'angle jusqu'au timeout, le planner re-dérive, et ça recommence).
+  if (isInWater(bot)) await escapeWater(bot, { emit });
   if (goal.skill === 'gatherLog') {
     // arbre le plus proche de N'IMPORTE quelle essence (pas oak hardcodé) — robustesse terrain
     const logNames = Object.keys(bot.registry.blocksByName).filter((n) => n.endsWith('_log'));
-    return gather(bot, { name: logNames.length ? logNames : 'oak_log', count: goal.args.count }, taskToken);
+    // explore:true → si aucun arbre à portée, le bot VOYAGE pour en trouver (autonomie ressources).
+    return gather(bot, { name: logNames.length ? logNames : 'oak_log', count: goal.args.count, explore: true }, taskToken);
   }
-  if (goal.skill === 'gather') return gather(bot, goal.args, taskToken);
+  // explore:true sur les gather de la chaîne autonome (bois/pierre/minerai) → le bot va chercher
+  // la ressource si elle n'est pas dans le voisinage. (Les gather opportunistes internes — branchMine
+  // maxDistance:6 — appellent gather() directement SANS explore → pas de roaming en plein tunnel.)
+  if (goal.skill === 'gather') {
+    // PIERRE : inutile de roamer (timeouts ×3 vécus Surv6) — la couche de pierre est à 3-5 blocs
+    // sous l'herbe PARTOUT → pas de pierre visible ≤32 ? on creuse 4 blocs et on mine sur place.
+    if (goal.args.name === 'stone') {
+      const def = bot.registry.blocksByName.stone;
+      if (def && !bot.findBlock({ matching: [def.id], maxDistance: 32 })) {
+        await mineDown(bot, { depth: 4 }, taskToken);
+        if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+      }
+    }
+    return gather(bot, { ...goal.args, explore: true }, taskToken);
+  }
   if (goal.skill === 'craftPlanks') {
     const log = bot.inventory.items().find((i) => i.name.endsWith('_log'));
     if (!log) return { ok: false, reason: 'not_found' };
@@ -207,11 +400,139 @@ async function runGoalSkill(goal) {
     const same = bot.inventory.items().filter((i) => i.name === log.name).reduce((s, i) => s + i.count, 0);
     return craftItem(bot, { name: log.name.replace('_log', '_planks'), count: Math.min(goal.args.count || 1, same) });
   }
-  if (goal.skill === 'craft') return craftSmart(goal.args);    // pose une table portable si craft 3×3
+  if (goal.skill === 'craft') {
+    // torches : adapter le nb de lots au charbon disponible (1 charbon → 1 lot de 4 au lieu d'un
+    // craft_failed ; le but torches reste unmet → la chaîne refait du charbon puis le 2e lot).
+    if (goal.args.name === 'torch') {
+      const coalHave = _invTotal((i) => i.name === 'coal' || i.name === 'charcoal');
+      if (coalHave < 1) return { ok: false, reason: 'no_coal' };
+      return craftSmart({ name: 'torch', count: Math.min(goal.args.count || 2, coalHave) });
+    }
+    return craftSmart(goal.args);    // pose une table portable si craft 3×3
+  }
   if (goal.skill === 'smeltIron') return smeltWithFurnace('raw_iron', 'iron_ingot', goal.args.count || 3);
+  if (goal.skill === 'smeltCharcoal') return smeltCharcoalGoal(goal.args.count || 2);
+  if (goal.skill === 'huntCook') return huntCookGoal(goal.args.target || 4);
   if (goal.skill === 'descendDiagonal') return descendDiagonal(bot, goal.args || {}, taskToken);
   if (goal.skill === 'branchMine') return branchMine(bot, goal.args || {}, taskToken);
   return { ok: false, reason: 'unknown_skill' };
+}
+
+// Upgrade kit du cartographe (spec §5.1) : fer « si rapide » (minerai visible ≤32 blocs, sinon on
+// n'insiste pas) → sinon fallback CUIVRE registry-gated (copper_sword n'existe qu'en 1.21.9+/moddé ;
+// sur 1.21.4 ce bloc est inerte). Best-effort : chaque étape bornée, tout échec = on part à la pierre.
+async function tryKitUpgrade() {
+  const reg = bot.registry;
+  const oreIds = (names) => names.map((n) => reg.blocksByName[n]).filter(Boolean).map((b) => b.id);
+  const tryMetal = async (ores, raw, ingot, sword) => {
+    if (!reg.itemsByName[sword]) return false;                       // registry-gated (cuivre)
+    const ids = oreIds(ores);
+    if (!ids.length || !bot.findBlock({ matching: ids, maxDistance: 32 })) return false; // pas « rapide »
+    // four : 8 cobble + craft (si pas déjà en poche)
+    if (!bot.inventory.items().some((i) => i.name === 'furnace')) {
+      const c = await withTimeout(gather(bot, { name: 'stone', count: 8 }, taskToken), 120000, stopMotion);
+      if (!c.ok || taskToken.cancelled) return false;
+      const f = await craftSmart({ name: 'furnace', count: 1 });
+      if (!f.ok) return false;
+    }
+    const g = await withTimeout(gather(bot, { name: ores, count: 3 }, taskToken), 180000, stopMotion);
+    if (!g.ok || taskToken.cancelled) return false;
+    const s = await withTimeout(smeltWithFurnace(raw, ingot, 2), 120000, stopMotion);
+    if (!s.ok || taskToken.cancelled) return false;
+    const c2 = await craftSmart({ name: sword, count: 1 });
+    if (c2.ok) emit({ type: 'mapper_kit_upgrade', metal: ingot });
+    return c2.ok;
+  };
+  try {
+    if (await tryMetal(['iron_ore', 'deepslate_iron_ore'], 'raw_iron', 'iron_ingot', 'iron_sword')) return;
+    await tryMetal(['copper_ore', 'deepslate_copper_ore'], 'raw_copper', 'copper_ingot', 'copper_sword');
+  } catch (e) { /* best-effort : on cartographie à la pierre */ }
+}
+
+// SURVIE PENDANT LE KIT (vécu Surv4 : 7 morts nocturnes — le planner n'avait AUCUNE survie active,
+// seuls les réflexes minimaux) : avant chaque skill, on règle les menaces comme le fait la boucle
+// mapper (combat 1-2 hostiles / fuite si submergé ou PV bas / manger), avec cap anti-blocage.
+async function settleSurvivalKit() {
+  for (let i = 0; i < 10; i++) {
+    if (taskToken.cancelled) return;
+    const action = await survivalTick(bot, { fleeFrom, emit });
+    if (!action) return;
+    await sleep(1500);
+  }
+}
+
+// Exécute un skill de but avec timeout + TÉLÉMÉTRIE d'échec : sans la raison dans les logs live,
+// un stall est indiagnosticable à distance (vécu Surv2 : stone_sword ×5 sans explication).
+let lastShelterT = 0; // anti re-trigger : 1 abri par nuit max
+
+async function runSkillWithTelemetry(g) {
+  await settleSurvivalKit();                                  // survie d'abord, le craft ensuite
+  if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  // NUIT + (mort récente OU PV bas) pendant le kit → ABRI jusqu'à l'aube (vécu Surv4 : 7 morts
+  // nocturnes en boucle ; un trou couvert coûte 2 blocs et sauve le kit).
+  const deathsRecent = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000).length;
+  if (isNight(bot) && (deathsRecent >= 1 || (bot.health != null && bot.health <= 10))
+      && Date.now() - lastShelterT > 10 * 60 * 1000) {
+    lastShelterT = Date.now();
+    await withTimeout(shelterUntilDawn(bot, taskToken, { emit }), 13 * 60 * 1000,
+      () => { try { stopMotion(); } catch (e) {} });
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  }
+  const r = await withTimeout(runGoalSkill(g), timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} });
+  if (!r || r.ok === false) emit({ type: 'goal_failed', name: g.name, reason: (r && r.reason) || 'unknown' });
+  return r;
+}
+
+// Boucle cartographe (objectif `mapper`) : mini-kit pierre via planner → upgrade best-effort →
+// cartographie CONTINUE (ne « finit » jamais — seule l'annulation/stop l'arrête).
+async function startMapper() {
+  const kitChain = chainFor('mapper');
+  const runKit = () => runPlanner(bot, {
+    chain: kitChain,
+    runSkill: (g) => runSkillWithTelemetry(g),
+    ctxExtra,
+    onStep: (g) => emit({ type: 'goal', name: g.name }),
+  }, taskToken);
+  const res = await runKit();
+  if (taskToken.cancelled) return;
+  if (res.stalled) emit({ type: 'mapper_kit_stalled', goal: res.goal }); // on cartographie quand même (dégradé)
+  else await tryKitUpgrade();
+  if (taskToken.cancelled) return;
+  emit({ type: 'mapper_started', world: bot._worldKey, sector: mapperSector });
+  await runMapper(bot, {
+    worldKey: bot._worldKey,
+    memory: bot._worldMemory,
+    getSector: () => mapperSector,
+    teleport: tpWatch, // #10 : TP détecté → ré-ancrage (heading propre depuis la position réelle)
+    emit,
+    fleeFrom,
+    // kit incomplet (stall terrain au départ) → re-tenté discrètement toutes les ~10 arrivées :
+    // le terrain a changé (le bot a bougé), la pose de table a souvent une 2e chance ailleurs.
+    onPeriodic: async () => {
+      const ctx = Object.assign({ inv: buildCtxInv(bot) }, ctxExtra());
+      if (firstUnmet(kitChain, ctx)) { emit({ type: 'mapper_kit_retry' }); await runKit(); }
+    },
+    // CHASSE OPPORTUNISTE (vécu Surv1 : le retry périodique coïncide rarement avec des proies à
+    // portée → stock jamais constitué) : à chaque arrivée, si le stock cuit est bas ET qu'une proie
+    // passe à ≤24 blocs → on la tue MAINTENANT (cru en poche ; la cuisson se fait au retry du kit).
+    onArrive: async () => {
+      const inv = buildCtxInv(bot);
+      const rawHave = Object.keys(RAW2COOKED).reduce((s, n) => s + (inv[n] || 0), 0);
+      const missing = 4 - cookedCount(inv) - rawHave;
+      if (missing <= 0) return;
+      if (!nearestPassive(bot, 24)) return;
+      const r = await withTimeout(huntPassive(bot, { count: Math.min(missing, 2), maxDistance: 24 }, taskToken),
+        60000, () => { try { stopMotion(); } catch (e) {} });
+      if (r && r.kills) emit({ type: 'opportunistic_hunt', kills: r.kills });
+    },
+    // chaque jambe bornée (anti-freeze pathfinder, cf. withTimeout) ; timeout → virage + jambe suivante.
+    // 45s : une jambe fait 8-64 blocs à pied — si ce n'est pas atteint en 45s, c'est inatteignable
+    // (vu live MapT7B : 120s × jambes ratées en jungle dense = mapper figé de longues minutes).
+    goto: (wp) => withTimeout(
+      bot.pathfinder.goto(new pfGoals.GoalNear(wp.x, wp.y, wp.z, 8)),
+      45000, () => { try { stopMotion(); } catch (e) {} }
+    ).then((r) => { if (r && r.ok === false) throw new Error(r.reason || 'goto_failed'); }),
+  }, taskToken);
 }
 
 // Lance (ou relance) la boucle autonome ; le planner re-dérive depuis l'état courant.
@@ -220,12 +541,23 @@ async function startAutonomous(sender) {
   const objType = (world.objective && world.objective.type) || args.objective || 'stone_pickaxe';
   setObjective(world, { type: objType, status: 'in_progress' });
   saveWorld(worldFile, world);
-  const chain = chainFor(objType);               // pioche pierre (MVP) ou pioche fer (IRON_CHAIN)
   taskToken = taskCtl.begin('autonomous', stopMotion);
   emit({ type: 'autonomous_start', objective: objType });
+  // RÉCUPÉRATION POST-MORT (vécu Surv4 : chaque mort = kit perdu = re-kit de zéro = spirale) :
+  // les items restent 5 min au sol → on retourne les ramasser AVANT de reprendre (borné, best-effort).
+  if (lastDeath && Date.now() - lastDeath.t < 4 * 60 * 1000) {
+    const d = lastDeath; lastDeath = null;
+    emit({ type: 'death_recovery', x: Math.round(d.x), y: Math.round(d.y), z: Math.round(d.z) });
+    await withTimeout(
+      bot.pathfinder.goto(new pfGoals.GoalNear(d.x, d.y, d.z, 1)),
+      90000, () => { try { stopMotion(); } catch (e) {} });
+    await sleep(1500); // laisser le pickup aspirer les items au sol
+  }
+  if (objType === 'mapper') return startMapper(); // rôle continu : jamais « done »
+  const chain = chainFor(objType);               // pioche pierre (MVP) ou pioche fer (IRON_CHAIN)
   const res = await runPlanner(bot, {
     chain,
-    runSkill: (g) => withTimeout(runGoalSkill(g), timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} }),
+    runSkill: (g) => runSkillWithTelemetry(g),
     ctxExtra,
     onStep: (g) => emit({ type: 'goal', name: g.name }),
   }, taskToken);
@@ -234,18 +566,28 @@ async function startAutonomous(sender) {
   else if (res.stalled) { if (sender) ackPrivate(sender, failMsg('not_found')); emit({ type: 'autonomous_stalled', goal: res.goal }); }
 }
 
-// Bootstrap AuthMe : écoute le prompt ~3s ; /login si pw connu sinon /register (pw généré, stocké local).
+// Bootstrap AuthMe : écoute le prompt ~3s. Login serveur configuré (--login-command) → chatte la
+// commande de l'admin (secret déjà inclus, jamais émis) ; sinon self-persist : /login si pw connu,
+// /register sinon (pw généré + stocké local). La décision est déléguée à resolveAuthChat (pur, testé)
+// — index.js ne fait que générer/persister le pw au besoin puis brancher bot.chat sans logger la commande.
 function tryAuth() {
   let pw = readPw();
+  const loginCommand = readLoginCommand();
   return new Promise((resolve) => {
     let done = false;
     const finish = () => { if (!done) { done = true; bot.removeListener('messagestr', onMsg); resolve(); } };
     const onMsg = (msg) => {
       const kind = classifyAuthPrompt(msg);
-      if (kind === 'login' && pw) { bot.chat(`/login ${pw}`); emit({ type: 'auth', action: 'login' }); finish(); }
-      else if (kind === 'register') {
-        if (!pw) { pw = genPassword(); writePw(pw); emit({ type: 'auth', action: 'generated_pw' }); }
-        bot.chat(`/register ${pw} ${pw}`); emit({ type: 'auth', action: 'register' }); finish();
+      if (!kind) return;
+      // register self-persist : génère + stocke un pw si on n'en a pas (sauf si login serveur dédié).
+      if (kind === 'register' && !loginCommand && !pw) {
+        pw = genPassword(); writePw(pw); emit({ type: 'auth', action: 'generated_pw' });
+      }
+      const decision = resolveAuthChat({ kind, loginCommand, pw });
+      if (decision) {
+        bot.chat(decision.chat);                       // contient le secret → jamais émis ni loggé
+        emit({ type: 'auth', action: decision.action }); // event SANS la commande
+        finish();
       }
     };
     bot.on('messagestr', onMsg);
@@ -254,6 +596,13 @@ function tryAuth() {
 }
 
 async function onSpawn() {
+  bot._mcaProfile = profile; // expose le profil au skill explore (jitter humanisation ∝ movementJitter)
+  // Mémoire de monde : gather émet material_found (apprentissage matériau↔biome), explore lit le
+  // biais dirigé, le mapper skippe les cellules déjà mappées. _worldKey re-résolu à chaque spawn
+  // (la dimension peut changer : portail nether/end) ; le label explicite (--world-label) prime.
+  bot._emit = emit;
+  bot._worldMemory = worldMemoryBootstrap;
+  bot._worldKey = worldKey(bot, args['world-label']);
   emit({ type: 'status', state: 'spawned', username: bot.username, profile: profile ? profile.id : null });
   if (!bootDone) {
     // une seule fois par connexion : sinon 'spawn' (respawn) ré-ajoute des listeners (fuite, MaxListeners)
@@ -265,6 +614,14 @@ async function onSpawn() {
     if (typeof moves.maxDropDown === 'number') moves.maxDropDown = 4; // limite les chutes profondes
     bot.pathfinder.setMovements(moves);
     installReflexes(bot, { emit, fleeFrom });
+    // TÉLÉPORTATION (#10) : détecte tout TP (admin /tp, /home, portail, respawn) → émet
+    // teleport_detected{from,to} + ABANDONNE le goal pathfinder (il visait l'ancienne position —
+    // jamais y retourner à pied). Le mapper consomme le pending pour se ré-ancrer (mapper.js).
+    tpWatch.anchor(bot.entity && bot.entity.position);
+    wireTeleportDetection(bot, tpWatch, {
+      emit,
+      onTeleport: () => { try { stopMotion(); } catch (e) {} },
+    });
     await tryAuth();
     bootDone = true;
   }
@@ -499,8 +856,12 @@ bot.on('messagestr', (msg) => {
   }
 });
 
+let lastDeath = null; // {x,y,z,t} — pour retourner ramasser ses items au respawn (despawn 5 min)
+
 bot.on('death', () => {
   emit({ type: 'status', state: 'dead' });
+  const p = bot.entity && bot.entity.position;
+  if (p) lastDeath = { x: p.x, y: p.y, z: p.z, t: Date.now() };
   // Garde-fou anti-boucle de mort : 3 morts / 10 min → stop + notifie (sinon respawn → onSpawn → reprise).
   deathTimes.push(Date.now());
   deathTimes = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000);
@@ -517,4 +878,10 @@ bot.on('end', () => { emit({ type: 'status', state: 'disconnected' }); process.e
 onCommand((cmd) => {
   if (cmd.type === 'say') say(bot, cmd.message);
   else if (cmd.type === 'quit') bot.quit();
+  // Re-balance multi-cartographes : le manager re-pousse {index,count} quand N change dans le groupe.
+  // Lu live par runMapper via getSector() → effet au prochain batch (pas de redémarrage).
+  else if (cmd.type === 'sector' && cmd.count >= 1) {
+    mapperSector = { index: Number(cmd.index) || 0, count: Number(cmd.count) };
+    emit({ type: 'sector_set', index: mapperSector.index, count: mapperSector.count });
+  }
 });

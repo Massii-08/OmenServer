@@ -270,3 +270,39 @@ describe('placeBlockNear', () => {
   });
 
 });
+
+// ─── #6 retours live : jamais de bloc flottant / pose fantôme ────────────────
+
+describe('placeBlockNear — garde-fou anti-pose-illégale (#6)', () => {
+
+  it('pose fantôme (placeBlock sans effet serveur) → ok:false, jamais un succès silencieux', async () => {
+    const bot = makeBot({
+      position: [0, 64, 0],
+      blocks: {
+        '1,63,0': { name: 'stone', boundingBox: 'block' },  // sol solide à l'est
+        '1,64,0': { name: 'air', boundingBox: 'empty' },    // case libre
+      },
+      inventory: ['crafting_table'],
+    });
+    // simule une désync : le placeBlock ne crée RIEN dans le monde
+    bot.placeBlock = async (refBlock, face) => { bot._placeBlockCalls.push({ refBlock, face }); };
+    const result = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(result.ok, false, 'une pose non confirmée ne doit JAMAIS être un succès');
+  });
+
+  it('chaque placeBlock utilise une référence PLEINE (boundingBox block) — jamais sans support', async () => {
+    const bot = makeBot({
+      position: [0, 64, 0],
+      blocks: {
+        '1,63,0': { name: 'stone', boundingBox: 'block' },
+        '1,64,0': { name: 'air', boundingBox: 'empty' },
+      },
+      inventory: ['crafting_table'],
+    });
+    const result = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(result.ok, true);
+    for (const call of bot._placeBlockCalls) {
+      assert.equal(call.refBlock.boundingBox, 'block', 'référence de pose non pleine');
+    }
+  });
+});

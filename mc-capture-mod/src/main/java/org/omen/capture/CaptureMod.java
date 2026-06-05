@@ -42,8 +42,14 @@ public class CaptureMod implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
+        // MC 1.21.6+ : 4e arg de KeyBinding = KeyBinding.Category (record) ; on prend la builtin MISC.
+        // ⚠️ Référence DIRECTE obligatoire — PAS de réflexion par nom yarn : loom remappe au build les
+        // noms de classes/membres MC (yarn → intermediary) mais PAS les String. Un
+        // Class.forName("net.minecraft.client.option.KeyBinding$Category") échoue donc au RUNTIME sur
+        // un client remappé (ClassNotFoundException) → crash de l'entrypoint client. Conséquence : ce
+        // code cible MC 1.21.6+ ; les jars ≤1.21.5 sont figés/committés (cf. build-all-versions.sh).
         toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.mc_capture.toggle", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F8, "key.categories.mc_capture"));
+                "key.mc_capture.toggle", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F8, KeyBinding.Category.MISC));
 
         RecHud.register();
 
@@ -59,7 +65,9 @@ public class CaptureMod implements ClientModInitializer {
         ClientReceiveMessageEvents.CHAT.register((message, signedMessage, sender, params, receptionTimestamp) -> {
             if (RECORDER.isRecording()) {
                 String txt = message.getString();
-                String from = sender != null ? sender.getName() : null;
+                // 1.21.6+ : GameProfile est un record (name()) ; on lit plutôt le nom d'émetteur
+                // via params.name() (Text) — API stable de 1.20.1 à 1.21.11, évite GameProfile.
+                String from = sender != null ? params.name().getString() : null;
                 RECORDER.recordChat(elapsed(), "chat_in", from, txt, txt.length());
             }
         });
@@ -78,7 +86,9 @@ public class CaptureMod implements ClientModInitializer {
             consentShown = true;
         }
         startMs = System.currentTimeMillis();
-        String name = client.player != null ? client.player.getGameProfile().getName() : "unknown";
+        // getName() (Entity → Text) est stable toutes versions ; getGameProfile().getName()
+        // casse en 1.21.6+ (GameProfile devenu record → name()).
+        String name = client.player != null ? client.player.getName().getString() : "unknown";
         String mc = client.getGameVersion();
         RECORDER.start(name, mc, "0.1.0", startMs, 20);
         if (client.player != null) {

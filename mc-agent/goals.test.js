@@ -162,3 +162,105 @@ test('DIAMOND : le but iron_pickaxe N\'est PLUS le dernier (le diamant l\'est)',
   assert.notStrictEqual(names[names.length - 1], 'iron_pickaxe');
   assert.strictEqual(names[names.length - 1], 'branch_mine');
 });
+
+// --- Chaîne MAPPER_KIT (kit de survie du cartographe : outils pierre + four + torches + nourriture) ---
+
+const { MAPPER_KIT } = require('./goals');
+
+test('chainFor(mapper) renvoie MAPPER_KIT', () => {
+  assert.strictEqual(chainFor('mapper'), MAPPER_KIT);
+});
+
+test('MAPPER_KIT : inventaire vide -> 1er but = logs', () => {
+  assert.strictEqual(firstUnmet(MAPPER_KIT, { inv: {} }).name, 'logs');
+});
+
+test('MAPPER_KIT régression deadlock MapT2 : court en sticks ET en planches -> re-dérive vers logs (pas de stall)', () => {
+  // état live exact du stall : pioche bois + 2 sticks + 1 planche + 1 bûche + table
+  const ctx = { inv: { wooden_pickaxe: 1, stick: 2, jungle_planks: 1, jungle_log: 1, crafting_table: 1 } };
+  const first = firstUnmet(MAPPER_KIT, ctx);
+  assert.strictEqual(first.name, 'logs', 'le kit doit pouvoir RE-récolter du bois quand il en manque');
+});
+
+// --- Extension SURVIE du kit mapper (hache + four + nourriture cuite + torches) ---
+
+test('MAPPER_KIT étendu : ordre complet — NOURRITURE avant torches (vécu Surv8 : le stall charbon bloquait la cuisson)', () => {
+  assert.deepStrictEqual(
+    MAPPER_KIT.map((g) => g.name),
+    ['logs', 'planks', 'crafting_table', 'sticks', 'wooden_pickaxe',
+     'cobble_pick', 'stone_pickaxe', 'cobble_sword', 'stone_sword',
+     'cobble_axe', 'stone_axe', 'cobble_furnace', 'furnace',
+     'food_stock', 'charcoal', 'torches'],
+  );
+});
+
+test('MAPPER_KIT : kit pierre fait -> but suivant = cobble_axe (la hache vient après l\'épée)', () => {
+  const ctx = { inv: { stone_pickaxe: 1, stone_sword: 1, crafting_table: 1, stick: 4 } };
+  assert.strictEqual(firstUnmet(MAPPER_KIT, ctx).name, 'cobble_axe');
+});
+
+test('MAPPER_KIT : kit COMPLET (outils+four+torches+nourriture) -> firstUnmet null', () => {
+  const ctx = { inv: {
+    stone_pickaxe: 1, stone_sword: 1, stone_axe: 1, crafting_table: 1, furnace: 1,
+    torch: 8, cooked_beef: 4, stick: 2,
+  } };
+  assert.strictEqual(firstUnmet(MAPPER_KIT, ctx), null);
+});
+
+test('MAPPER_KIT MAINTENANCE : nourriture mangée -> food_stock redevient le but (re-chasse)', () => {
+  const full = { inv: { stone_pickaxe: 1, stone_sword: 1, stone_axe: 1, crafting_table: 1, furnace: 1, torch: 8, cooked_beef: 4, stick: 2 } };
+  assert.strictEqual(firstUnmet(MAPPER_KIT, full), null);
+  const hungry = { inv: { ...full.inv, cooked_beef: 1 } };       // stock tombé à 1
+  assert.strictEqual(firstUnmet(MAPPER_KIT, hungry).name, 'food_stock');
+});
+
+test('MAPPER_KIT : food_stock accepte toute nourriture CUITE (somme), pas le cru', () => {
+  const g = MAPPER_KIT.find((x) => x.name === 'food_stock');
+  const base = { stone_pickaxe: 1, stone_sword: 1, stone_axe: 1, crafting_table: 1, furnace: 1, torch: 8, stick: 2 };
+  assert.ok(g.met({ inv: { ...base, cooked_porkchop: 2, cooked_chicken: 2 } }));
+  assert.ok(g.met({ inv: { ...base, bread: 4 } }));
+  assert.ok(!g.met({ inv: { ...base, beef: 6 } }));              // cru ≠ stock
+});
+
+test('MAPPER_KIT : torches via charbon de bois — charcoal met si coal OU charcoal >= 2, torches >= 8', () => {
+  const gc = MAPPER_KIT.find((x) => x.name === 'charcoal');
+  assert.ok(gc.met({ inv: { charcoal: 2 } }));
+  assert.ok(gc.met({ inv: { coal: 2 } }));
+  assert.ok(gc.met({ inv: { torch: 8 } }));                      // torches déjà faites → étape passée
+  assert.ok(!gc.met({ inv: { charcoal: 1 } }));
+  const gt = MAPPER_KIT.find((x) => x.name === 'torches');
+  assert.ok(gt.met({ inv: { torch: 8 } }));
+  assert.ok(!gt.met({ inv: { torch: 7 } }));
+});
+
+test('MAPPER_KIT : sticks adaptatifs — la hache/torches comptent dans le besoin restant', () => {
+  const g = MAPPER_KIT.find((x) => x.name === 'sticks');
+  // pioche+épée faites, hache PAS faite, torches PAS faites → besoin 2 (hache) + 2 (torches) = 4
+  assert.ok(!g.met({ inv: { stone_pickaxe: 1, stone_sword: 1, stick: 3 } }));
+  assert.ok(g.met({ inv: { stone_pickaxe: 1, stone_sword: 1, stick: 4 } }));
+  // tout fait sauf torches → besoin 2
+  assert.ok(g.met({ inv: { stone_pickaxe: 1, stone_sword: 1, stone_axe: 1, stick: 2 } }));
+  // TOUT fait → 0 stick requis
+  assert.ok(g.met({ inv: { stone_pickaxe: 1, stone_sword: 1, stone_axe: 1, torch: 8, cooked_beef: 4, furnace: 1, crafting_table: 1 } }));
+});
+
+test('MAPPER_KIT régression Surv3 : 3 planches SANS table -> re-dérive vers le bois (pas crafting_table qui boucle)', () => {
+  // vécu live : table = 4 planches ; avec 3 le craft échouait en boucle (no_recipe → no_table ×9).
+  // attendu : le planner repart chercher du bois (logs car 0 bûche) au lieu de marteler le craft.
+  const ctx = { inv: { wooden_pickaxe: 1, stick: 8, oak_planks: 3 } };
+  assert.strictEqual(firstUnmet(MAPPER_KIT, ctx).name, 'logs');
+  // avec des bûches en poche : logs met → c'est planks qui re-craft
+  const ctx2 = { inv: { wooden_pickaxe: 1, stick: 8, oak_planks: 3, oak_log: 3 } };
+  assert.strictEqual(firstUnmet(MAPPER_KIT, ctx2).name, 'planks');
+});
+
+test('MAPPER_KIT planksNeed : couvre table(4) + pioche bois(3) + sticks manquants (arrondi par lot de 4)', () => {
+  const g = MAPPER_KIT.find((x) => x.name === 'planks');
+  // rien : table 4 + pioche 3 + sticks 8 manquants → 2 lots × 2 planches = 4 → besoin 11 (>8 cap? non capé)
+  assert.ok(!g.met({ inv: { oak_planks: 8 } }), '8 planches ne couvrent pas tout le départ');
+  // table + pioche bois faites, sticks pleins → besoin 0 → met même sans planche
+  assert.ok(g.met({ inv: { wooden_pickaxe: 1, crafting_table: 1, stick: 8 } }));
+  // table faite, pioche faite, 0 stick (besoin 7 sticks → 2 lots → 4 planches)
+  assert.ok(!g.met({ inv: { wooden_pickaxe: 1, crafting_table: 1, oak_planks: 3 } }));
+  assert.ok(g.met({ inv: { wooden_pickaxe: 1, crafting_table: 1, oak_planks: 4 } }));
+});

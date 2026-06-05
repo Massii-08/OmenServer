@@ -119,3 +119,44 @@ def test_clean_server_language_default_and_valid(tmp_path, monkeypatch):
     assert srv2["language"] == "it"
     srv3 = s.create_server({"name": "Z", "host": "h", "language": "xx"})
     assert srv3["language"] == "fr"  # invalide → défaut
+
+
+def test_migration_legacy_profile_gets_first_bot(tmp_path, monkeypatch):
+    from backend.bots import mc_agent_servers as S
+    monkeypatch.setattr(S, "SERVERS_PATH", tmp_path / "srv.json")
+    S._save_servers([{"id": "abc123", "name": "Old", "host": "h", "user": "OldBot", "auth": "offline"}])
+    one = S.load_servers()[0]
+    assert len(one["bots"]) == 1
+    assert one["bots"][0]["username"] == "OldBot" and one["bots"][0]["role"] == "worker"
+    bid = one["bots"][0]["id"]
+    two = S.load_servers()[0]                    # idempotent
+    assert len(two["bots"]) == 1 and two["bots"][0]["id"] == bid
+
+
+def test_clean_server_has_roster_and_login_fields():
+    from backend.bots import mc_agent_servers as S
+    s = S._clean_server({"name": "X", "host": "h", "has_login": True,
+                         "login_command": "/login {pwd}", "bots": "pasuneliste"}, "abc123")
+    assert s["bots"] == []                      # défaut sûr (string → [])
+    assert s["has_login"] is True
+    assert s["login_command"] == "/login {pwd}"
+
+
+def test_add_remove_bot(tmp_path, monkeypatch):
+    from backend.bots import mc_agent_servers as S
+    monkeypatch.setattr(S, "SERVERS_PATH", tmp_path / "srv.json")
+    g = S.create_server({"name": "G", "host": "h"})
+    b = S.add_bot(g["id"], role="mapper", username="Mapper1", auth="offline")
+    assert b["role"] == "mapper" and b["username"] == "Mapper1"
+    assert S.add_bot(g["id"], role="mapper", username="mapper1", auth="offline") is None  # dup casse
+    assert S.remove_bot(g["id"], b["id"]) is True
+    assert S.get_server(g["id"])["bots"] == []
+
+
+def test_update_server_preserves_roster_when_payload_has_no_bots(tmp_path, monkeypatch):
+    from backend.bots import mc_agent_servers as S
+    monkeypatch.setattr(S, "SERVERS_PATH", tmp_path / "srv.json")
+    g = S.create_server({"name": "G", "host": "h"})
+    S.add_bot(g["id"], role="worker", username="W1", auth="offline")
+    out = S.update_server(g["id"], {"name": "G2", "host": "h"})
+    assert [b["username"] for b in out["bots"]] == ["W1"]

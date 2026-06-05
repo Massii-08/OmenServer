@@ -6,8 +6,12 @@ from backend.bots import mc_agent_manager as mgr
 
 
 @pytest.fixture(autouse=True)
-def _clean_sessions():
-    """Nettoie le registre global entre les tests (évite les sessions fantômes)."""
+def _clean_sessions(monkeypatch):
+    """Nettoie le registre global entre les tests (évite les sessions fantômes).
+
+    Neutralise aussi l'étalement anti-throttle des batches de mappers (sleep 4.5s
+    entre spawns en prod) — la suite resterait correcte mais deviendrait lente."""
+    monkeypatch.setattr(mgr, "MAPPER_SPAWN_STAGGER_S", 0)
     yield
     mgr._sessions.clear()
 
@@ -377,6 +381,83 @@ def test_stop_session_cleans_world_file(monkeypatch, tmp_path):
     assert not os.path.exists(wp)
 
 
+def test_start_session_passe_world_memory(monkeypatch, tmp_path):
+    """server_id présent → bootstrap : écrit la mémoire du groupe + passe --world-memory au bot."""
+    import io
+    import json as _json
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO(); self.stdout = iter(()); self.pid = 4400
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path / "wm")
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    sid = mgr.start_session("h", 25565, "U", server_id="ab12cd")
+    assert "--world-memory" in captured["cmd"]
+    path = captured["cmd"][captured["cmd"].index("--world-memory") + 1]
+    assert "worlds" in _json.loads(open(path).read())  # mémoire (vide ici) passée au bot
+    assert mgr._sessions[sid].get("wm_path") == str(path)
+
+
+def test_apply_event_route_biome_vers_store(monkeypatch, tmp_path):
+    """Un event biome_seen d'une session avec server_id est écrit dans le store du groupe."""
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path)
+    mgr._wm_cache.pop("ab12cd", None)
+    s = {"status": "x", "transcript": [], "events": [], "last_error": None, "server_id": "ab12cd"}
+    mgr._apply_event(s, {"type": "biome_seen", "world": "w", "name": "forest", "x": 10, "z": 20})
+    mem = mgr.world_memory.load("ab12cd")
+    assert mem["worlds"]["w"]["biomes"][0]["name"] == "forest"
+    mgr._wm_cache.pop("ab12cd", None)
+
+
+def test_apply_event_no_store_without_server_id(monkeypatch, tmp_path):
+    """Sans server_id (lancement manuel) : aucune écriture de mémoire (pas de groupe)."""
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path)
+    s = {"status": "x", "transcript": [], "events": [], "last_error": None, "server_id": None}
+    mgr._apply_event(s, {"type": "biome_seen", "world": "w", "name": "forest", "x": 0, "z": 0})
+    assert list(tmp_path.glob("*.json")) == []
+
+
+def test_forget_group_cascade(monkeypatch, tmp_path):
+    """forget_group supprime le fichier mémoire + vide le cache (cascade suppression de groupe)."""
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path)
+    m = mgr.world_memory.empty_memory("ab12cd")
+    mgr.world_memory.add_biome(m, "w", "forest", 0, 0, at="t1")
+    mgr.world_memory.save("ab12cd", m)
+    mgr._wm_cache["ab12cd"] = m
+    assert mgr.forget_group("ab12cd") is True
+    assert "ab12cd" not in mgr._wm_cache
+    assert mgr.world_memory.load("ab12cd")["worlds"] == {}
+
+
+def test_stop_group_stops_only_its_sessions(monkeypatch):
+    """stop_group arrête les sessions du groupe ciblé, pas celles des autres groupes."""
+    mgr._sessions.clear()
+    monkeypatch.setattr(mgr.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(mgr.os, "killpg", lambda pgid, sig: None)
+
+    class P:
+        def __init__(self): self.pid = 12345
+        def poll(self): return None
+        def terminate(self): pass
+
+    mgr._sessions[1] = {"id": 1, "proc": P(), "server_id": "g6", "status": "running"}
+    mgr._sessions[2] = {"id": 2, "proc": P(), "server_id": "g6", "status": "running"}
+    mgr._sessions[3] = {"id": 3, "proc": P(), "server_id": "g7", "status": "running"}
+    assert mgr.stop_group("g6") == 2
+    assert mgr._sessions[1]["status"] == "stopped" and mgr._sessions[2]["status"] == "stopped"
+    assert mgr._sessions[3]["status"] == "running"
+
+
 def test_start_session_objective_seeds_iron_in_world(monkeypatch, tmp_path):
     """objective='iron_pickaxe' -> le world.json seedé porte ce type (sélectionne la chaîne fer Node)."""
     import io
@@ -450,3 +531,357 @@ def test_start_session_invalid_objective_defaults_stone(monkeypatch, tmp_path):
     wp = captured["cmd"][captured["cmd"].index("--world") + 1]
     data = _json.loads(open(wp).read())
     assert data["objective"]["type"] == "stone_pickaxe"
+
+
+# --- Cartographe (1b/1c) : objectif mapper + secteurs auto-assignés + re-balance live ---
+
+class _MapperProc:
+    """Faux subprocess pour les tests mapper : stdin capturé ligne à ligne, vivant jusqu'à kill()."""
+    def __init__(self):
+        import io as _io
+        self.stdin = _io.StringIO()
+        self.stdout = iter(())
+        self.pid = 5000
+        self._alive = True
+    def poll(self):
+        return None if self._alive else 0
+
+
+def _spawn_mapper(monkeypatch, tmp_path, captured_cmds, server_id="grp1"):
+    procs = []
+    def fake_popen(cmd, **kw):
+        captured_cmds.append(cmd)
+        p = _MapperProc()
+        procs.append(p)
+        return p
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path / "wm")
+    sid = mgr.start_session("h", 25565, "Mapper", server_id=server_id,
+                            autonomous=True, objective="mapper")
+    return sid, procs[-1]
+
+
+def test_mapper_objectif_valide():
+    assert "mapper" in mgr.VALID_OBJECTIVES
+
+
+def test_start_session_mapper_seul_secteur_0_sur_1(monkeypatch, tmp_path):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+    sid, _ = _spawn_mapper(monkeypatch, tmp_path, cmds)
+    cmd = cmds[-1]
+    assert "--sector-index" in cmd and cmd[cmd.index("--sector-index") + 1] == "0"
+    assert "--sector-count" in cmd and cmd[cmd.index("--sector-count") + 1] == "1"
+    assert mgr._sessions[sid]["objective"] == "mapper"
+
+
+def test_deux_mappers_rebalance_le_premier(monkeypatch, tmp_path):
+    """Le 2e mapper du groupe est lancé avec (1,2) ET le 1er reçoit {'type':'sector',0,2} sur stdin."""
+    import json as _json
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+    sid1, p1 = _spawn_mapper(monkeypatch, tmp_path, cmds)
+    sid2, p2 = _spawn_mapper(monkeypatch, tmp_path, cmds)
+    cmd2 = cmds[-1]
+    assert cmd2[cmd2.index("--sector-index") + 1] == "1"
+    assert cmd2[cmd2.index("--sector-count") + 1] == "2"
+    lines = [l for l in p1.stdin.getvalue().splitlines() if l.strip()]
+    sectors = [_json.loads(l) for l in lines if '"sector"' in l]
+    assert sectors and sectors[-1] == {"type": "sector", "index": 0, "count": 2}
+
+
+def test_stop_mapper_rebalance_le_survivant(monkeypatch, tmp_path):
+    """Stop d'un des 2 mappers → le survivant repasse en cercle complet (count 1)."""
+    import json as _json
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(mgr.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(mgr.os, "killpg", lambda pgid, sig: None)
+    cmds = []
+    sid1, p1 = _spawn_mapper(monkeypatch, tmp_path, cmds)
+    sid2, p2 = _spawn_mapper(monkeypatch, tmp_path, cmds)
+    p2._alive = False  # le process 2 meurt avec le stop
+    mgr.stop_session(sid2)
+    lines = [l for l in p1.stdin.getvalue().splitlines() if l.strip()]
+    sectors = [_json.loads(l) for l in lines if '"sector"' in l]
+    assert sectors[-1] == {"type": "sector", "index": 0, "count": 1}
+
+
+def test_mapper_autre_groupe_pas_compte(monkeypatch, tmp_path):
+    """Les mappers d'un AUTRE groupe n'influencent pas l'assignation de secteur."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+    _spawn_mapper(monkeypatch, tmp_path, cmds, server_id="grpA")
+    _spawn_mapper(monkeypatch, tmp_path, cmds, server_id="grpB")
+    cmd2 = cmds[-1]
+    assert cmd2[cmd2.index("--sector-index") + 1] == "0"
+    assert cmd2[cmd2.index("--sector-count") + 1] == "1"
+
+
+def test_non_mapper_pas_de_secteur(monkeypatch, tmp_path):
+    """Un objectif non-mapper ne reçoit PAS d'args secteur."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+    def fake_popen(cmd, **kw):
+        cmds.append(cmd)
+        return _MapperProc()
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path / "wm")
+    mgr.start_session("h", 25565, "U", server_id="grp1", autonomous=True, objective="stone_pickaxe")
+    assert "--sector-index" not in cmds[-1]
+
+
+def test_start_session_passe_world_label(monkeypatch, tmp_path):
+    """world_label → --world-label (monde de minage)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+    def fake_popen(cmd, **kw):
+        cmds.append(cmd)
+        return _MapperProc()
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path / "wm")
+    mgr.start_session("h", 25565, "U", server_id="grp1", world_label="mining")
+    cmd = cmds[-1]
+    assert "--world-label" in cmd and cmd[cmd.index("--world-label") + 1] == "mining"
+
+
+# ---------------------------------------------------------------------------
+# Task 6/7 : lancement par bot du roster (start_for_bot / start_mappers) +
+# login automatique (login_command, secret jamais en argv)
+# ---------------------------------------------------------------------------
+
+def _seed_group(tmp_path, monkeypatch, bots, has_login=False, login_command="/login {pwd}"):
+    """Crée un groupe réel via le store (isolé sur tmp_path) + isole les secrets.
+
+    Retourne (group_id, secrets_dir). `bots` = liste de dicts partiels
+    {role, username, auth}. Les secrets sont posés à part par l'appelant.
+    """
+    import json as _json
+    servers_file = tmp_path / "mc_agent_servers.json"
+    catalog_file = tmp_path / "commands-catalog.json"
+    secrets_dir = tmp_path / "mc_agent_secrets"
+    catalog_file.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(mgr.servers_store, "SERVERS_PATH", servers_file)
+    monkeypatch.setattr(mgr.servers_store, "CATALOG_PATH", catalog_file)
+    monkeypatch.setattr(mgr.mc_agent_secrets, "SECRETS_DIR", secrets_dir)
+    grp = mgr.servers_store.create_server({
+        "name": "G", "host": "play.x", "port": 25570, "auth": "offline",
+        "intelligence": "expert", "language": "it",
+        "has_login": has_login, "login_command": login_command, "bots": [],
+    })
+    gid = grp["id"]
+    for b in bots:
+        created = mgr.servers_store.add_bot(gid, role=b.get("role", "worker"),
+                                            username=b["username"], auth=b.get("auth", "offline"))
+        b["id"] = created["id"]
+    return gid, secrets_dir
+
+
+def test_start_mappers_assigns_sectors(monkeypatch, tmp_path):
+    """start_mappers lance min(count, dispo) mappers avec des secteurs 0..k-1 / count=k."""
+    bots = [{"role": "mapper", "username": "M1"}, {"role": "mapper", "username": "M2"},
+            {"role": "mapper", "username": "M3"}, {"role": "worker", "username": "W1"}]
+    gid, _ = _seed_group(tmp_path, monkeypatch, bots)
+    calls = []
+    monkeypatch.setattr(mgr, "_spawn_bot", lambda **kw: (calls.append(kw) or (1000 + len(calls))))
+    res = mgr.start_mappers(gid, 5)
+    assert res["launched"] == 3 and res["available"] == 3
+    assert len(calls) == 3
+    assert [c["sector_index"] for c in calls] == [0, 1, 2]
+    assert all(c["sector_count"] == 3 for c in calls)
+    assert all(c["objective"] == "mapper" and c["autonomous"] is True for c in calls)
+    assert {c["user"] for c in calls} == {"M1", "M2", "M3"}
+
+
+def test_start_mappers_staggers_spawns(monkeypatch, tmp_path):
+    """Les spawns d'un batch sont étalés (anti connection-throttle MC : ECONNRESET vécu live).
+
+    n spawns → n-1 sleeps de MAPPER_SPAWN_STAGGER_S (pas de sleep avant le premier)."""
+    bots = [{"role": "mapper", "username": "M1"}, {"role": "mapper", "username": "M2"},
+            {"role": "mapper", "username": "M3"}]
+    gid, _ = _seed_group(tmp_path, monkeypatch, bots)
+    monkeypatch.setattr(mgr, "MAPPER_SPAWN_STAGGER_S", 4.5)
+    sleeps = []
+    monkeypatch.setattr(mgr.time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(mgr, "_spawn_bot", lambda **kw: 1)
+    mgr.start_mappers(gid, 3)
+    assert sleeps == [4.5, 4.5]
+
+
+def test_start_mappers_zero_dispo(monkeypatch, tmp_path):
+    """Aucun mapper dans le roster → launched 0, available 0, aucune session."""
+    gid, _ = _seed_group(tmp_path, monkeypatch, [{"role": "worker", "username": "W1"}])
+    monkeypatch.setattr(mgr, "_spawn_bot", lambda **kw: 1)
+    res = mgr.start_mappers(gid, 3)
+    assert res == {"sessions": [], "launched": 0, "available": 0, "skipped": []}
+
+
+def test_start_mappers_skips_online_username(monkeypatch, tmp_path):
+    """Un mapper dont le username est déjà en ligne (session active du groupe) est exclu du dispo."""
+    bots = [{"role": "mapper", "username": "M1"}, {"role": "mapper", "username": "M2"}]
+    gid, _ = _seed_group(tmp_path, monkeypatch, bots)
+
+    class P:
+        def poll(self):
+            return None
+    mgr._sessions[9001] = {"id": 9001, "proc": P(), "server_id": gid, "user": "M1", "status": "running"}
+    try:
+        calls = []
+        monkeypatch.setattr(mgr, "_spawn_bot", lambda **kw: (calls.append(kw) or 1))
+        res = mgr.start_mappers(gid, 5)
+        assert res["available"] == 1 and res["launched"] == 1
+        assert calls[0]["user"] == "M2"
+    finally:
+        mgr._sessions.pop(9001, None)
+
+
+def test_start_mappers_skips_missing_secret_with_login(monkeypatch, tmp_path):
+    """Mapper sans secret sur un serveur à login → SKIPPÉ (pas d'exception), signalé dans skipped."""
+    bots = [{"role": "mapper", "username": "M1"}, {"role": "mapper", "username": "M2"}]
+    gid, _ = _seed_group(tmp_path, monkeypatch, bots, has_login=True)
+    # M1 a un secret, M2 non
+    mgr.mc_agent_secrets.set_secret(gid, bots[0]["id"], "pw1")
+    calls = []
+    monkeypatch.setattr(mgr, "_spawn_bot", lambda **kw: (calls.append(kw) or 1))
+    res = mgr.start_mappers(gid, 5)
+    assert res["launched"] == 1
+    assert res["skipped"] == ["M2"]
+    assert calls[0]["user"] == "M1"
+    # secteurs recomptés sur les bots EFFECTIVEMENT lancés
+    assert calls[0]["sector_count"] == 1 and calls[0]["sector_index"] == 0
+
+
+def test_start_for_bot_resolves_account(monkeypatch, tmp_path):
+    """start_for_bot résout host/port/langue du groupe + le compte (username/auth) du bot."""
+    bots = [{"role": "worker", "username": "W1", "auth": "offline"}]
+    gid, _ = _seed_group(tmp_path, monkeypatch, bots)
+    captured = {}
+    monkeypatch.setattr(mgr, "_spawn_bot", lambda **kw: (captured.update(kw) or 42))
+    sid = mgr.start_for_bot(gid, bots[0]["id"])
+    assert sid == 42
+    assert captured["host"] == "play.x" and captured["port"] == 25570
+    assert captured["user"] == "W1" and captured["auth"] == "offline"
+    assert captured["language"] == "it" and captured["profile"] == "expert"
+    assert captured["server_id"] == gid
+    assert captured.get("login_command") is None  # pas de login sur ce serveur
+
+
+def test_start_for_bot_group_introuvable(monkeypatch, tmp_path):
+    gid, _ = _seed_group(tmp_path, monkeypatch, [{"username": "W1"}])
+    with pytest.raises(LookupError):
+        mgr.start_for_bot("zzzzzz", "ffffff")
+
+
+def test_start_for_bot_bot_introuvable(monkeypatch, tmp_path):
+    gid, _ = _seed_group(tmp_path, monkeypatch, [{"username": "W1"}])
+    monkeypatch.setattr(mgr, "_spawn_bot", lambda **kw: 1)
+    with pytest.raises(LookupError):
+        mgr.start_for_bot(gid, "ffffff")
+
+
+def test_start_for_bot_blocks_same_username_online(monkeypatch, tmp_path):
+    """Si un compte du groupe est déjà en ligne (même username), relance refusée (ValueError)."""
+    bots = [{"role": "worker", "username": "W1"}]
+    gid, _ = _seed_group(tmp_path, monkeypatch, bots)
+
+    class P:
+        def poll(self):
+            return None
+    mgr._sessions[9100] = {"id": 9100, "proc": P(), "server_id": gid, "user": "w1", "status": "running"}
+    try:
+        monkeypatch.setattr(mgr, "_spawn_bot", lambda **kw: 1)
+        with pytest.raises(ValueError):
+            mgr.start_for_bot(gid, bots[0]["id"])
+    finally:
+        mgr._sessions.pop(9100, None)
+
+
+def test_start_for_bot_missing_secret_with_login_raises(monkeypatch, tmp_path):
+    """Serveur à login + pas de secret pour ce bot → ValueError (lancement manuel d'un seul bot)."""
+    bots = [{"role": "worker", "username": "W1"}]
+    gid, _ = _seed_group(tmp_path, monkeypatch, bots, has_login=True)
+    monkeypatch.setattr(mgr, "_spawn_bot", lambda **kw: 1)
+    with pytest.raises(ValueError):
+        mgr.start_for_bot(gid, bots[0]["id"])
+
+
+def test_login_command_passed_when_has_login(monkeypatch, tmp_path):
+    """has_login + secret → _spawn_bot reçoit login_command avec le secret substitué."""
+    bots = [{"role": "worker", "username": "W1"}]
+    gid, _ = _seed_group(tmp_path, monkeypatch, bots, has_login=True, login_command="/login {pwd}")
+    mgr.mc_agent_secrets.set_secret(gid, bots[0]["id"], "abc")
+    captured = {}
+    monkeypatch.setattr(mgr, "_spawn_bot", lambda **kw: (captured.update(kw) or 1))
+    mgr.start_for_bot(gid, bots[0]["id"])
+    assert captured["login_command"] == "/login abc"
+
+
+def test_spawn_writes_login_file_not_argv(monkeypatch, tmp_path):
+    """_spawn_bot(login_command=...) écrit un fichier temp chmod 600, passe --login-command <path>,
+    et NE met JAMAIS le secret dans l'argv. stop_session nettoie le fichier."""
+    import os
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return _MapperProc()
+
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(mgr.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(mgr.os, "killpg", lambda pgid, sig: None)
+
+    # Pompe neutralisée : le stdout du fake proc est fini d'office → la pompe nettoierait les
+    # fichiers temp (mort naturelle) AVANT nos assertions. Ici on teste le chemin stop_session.
+    class _DeadThread:
+        def __init__(self, *a, **kw):
+            pass
+        def start(self):
+            pass
+    monkeypatch.setattr(mgr.threading, "Thread", _DeadThread)
+    sid = mgr._spawn_bot("h", 25565, "U", login_command="/login abc")
+    cmd = captured["cmd"]
+    assert "--login-command" in cmd
+    lp = cmd[cmd.index("--login-command") + 1]
+    assert os.path.exists(lp)
+    assert open(lp).read() == "/login abc"
+    assert (os.stat(lp).st_mode & 0o777) == 0o600
+    assert "abc" not in cmd and "/login abc" not in cmd  # secret jamais en argv
+    assert mgr._sessions[sid].get("login_path") == lp
+    mgr.stop_session(sid)
+    assert not os.path.exists(lp)  # nettoyé au stop
+
+
+def test_natural_death_cleans_login_file(monkeypatch, tmp_path):
+    """Mort naturelle du bot (fin du flux stdout, SANS stop_session) → fichiers temp nettoyés.
+
+    Régression revue finale : le login-<sid>.txt contient le secret en clair — il ne doit pas
+    s'accumuler dans RUNS_DIR quand un bot crashe/est kické (cas fréquent des cartographes)."""
+    import os
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: _MapperProc())
+    sid = mgr._spawn_bot("h", 25565, "U", login_command="/login abc")
+    s = mgr._sessions[sid]
+    lp = s["login_path"]
+    assert os.path.exists(lp)
+    s["thread"].join(timeout=5)  # _MapperProc.stdout est fini → la pompe se termine seule
+    assert s["status"] == "stopped"
+    assert not os.path.exists(lp)  # nettoyé par la pompe, sans stop_session
+
+
+def test_spawn_bot_uses_explicit_sectors(monkeypatch, tmp_path):
+    """sector_index/sector_count explicites priment sur le calcul auto (compat mapper batch)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path / "wm")
+    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: (captured.__setitem__("cmd", cmd) or _MapperProc()))
+    mgr._spawn_bot("h", 25565, "M", server_id="grp1", autonomous=True, objective="mapper",
+                   sector_index=2, sector_count=5)
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--sector-index") + 1] == "2"
+    assert cmd[cmd.index("--sector-count") + 1] == "5"

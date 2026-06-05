@@ -42,6 +42,7 @@ _MOD_JARS = {
     "1.21.1": "mc-capture-0.1.0-mc1.21.1.jar",
     "1.21.4": "mc-capture-0.1.0-mc1.21.4.jar",
     "1.21.5": "mc-capture-0.1.0-mc1.21.5.jar",
+    "1.21.11": "mc-capture-0.1.0-mc1.21.11.jar",
 }
 
 

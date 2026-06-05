@@ -39,6 +39,8 @@ const BotsModule = {
  clearInterval(this._refreshInterval);
  this._refreshInterval = null;
  }
+ this._mcaMapStop();
+ this._mcaWorkersStop();
  // Ne PAS arrêter le polling yield ici — le backend continue de tourner
  // On nettoie seulement l'interval, le jobId reste en mémoire pour reconnexion
  if (this._yieldState.pollInterval) {
@@ -1033,13 +1035,22 @@ const BotsModule = {
  async openMCAgent() {
  if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
  if (this._mcAgentTimer) { clearInterval(this._mcAgentTimer); this._mcAgentTimer = null; }
+ this._mcaMapStop();
+ this._mcaWorkersStop();
+ this._mcaMapViewerOpen = false;
  this._mcAgentSession = this._mcAgentSession || null;
  const el = this._container || document.getElementById('bots-module-container')?.parentElement;
  if (!el) return;
  const __mcaU = (typeof Auth !== 'undefined' && Auth.getUser) ? Auth.getUser() : null;
  this._mcaRecTester = !!(__mcaU && !__mcaU.is_admin && __mcaU.role === 'rectester');
  if (this._mcaRecTester) return this._renderMCAgentRecTester(el);
- this._mcaTab = this._mcaTab || 'launch';
+ // Navigation 2 niveaux :
+ //  niveau 1 : _mcaView ∈ {create,list} (défaut 'list')
+ //  niveau 2 : _mcaGroupId non-null → vue groupe, sous-onglets _mcaGroupTab ∈ {workers,map}
+ //             (édition des réglages via l'engrenage ⚙ de l'en-tête, plus par onglet)
+ this._mcaView = (this._mcaView === 'create') ? 'create' : 'list';
+ this._mcaGroupId = this._mcaGroupId || null;
+ this._mcaGroupTab = this._mcaGroupTab || 'workers';
  el.innerHTML = `<div class="card"><h3 style="margin:0 0 12px;">MC Agent — ${Lang.t('mcagent.training')}</h3><div id="mca-root"></div></div>`;
  this._renderMCARoot();
  },
@@ -1047,21 +1058,338 @@ const BotsModule = {
  _renderMCARoot() {
  const root = document.getElementById('mca-root');
  if (!root) return;
- const t = this._mcaTab || 'launch';
- const tabBtn = (id, label) => `<button class="btn btn-ghost btn-sm" style="border-radius:0;border-bottom:2px solid ${t === id ? 'var(--accent)' : 'transparent'};" onclick="BotsModule.switchMCATab('${id}')">${label}</button>`;
+ if (this._mcaGroupId) { this._renderMCAGroup(); return; }
+ const v = this._mcaView || 'list';
+ const tabBtn = (id, label) => `<button class="btn btn-ghost btn-sm" style="border-radius:0;border-bottom:2px solid ${v === id ? 'var(--accent)' : 'transparent'};" onclick="BotsModule.switchMCAView('${id}')">${label}</button>`;
  root.innerHTML = `
  <div style="display:flex;gap:6px;margin:0 0 14px;border-bottom:1px solid var(--border);">
- ${tabBtn('launch', Lang.t('mcagent.cfg.tab_launch'))}
- ${tabBtn('servers', Lang.t('mcagent.cfg.tab_servers'))}
+ ${tabBtn('create', Lang.t('mcagent.nav.create'))}
+ ${tabBtn('list', Lang.t('mcagent.nav.list'))}
+ ${tabBtn('mod', Lang.t('mcagent.nav.mod'))}
  </div>
  <div id="mca-tabbody"></div>`;
- if (t === 'servers') this._renderMCAServers();
- else this._renderMCALaunch();
+ if (v === 'create') this._renderGroupCreate();
+ else if (v === 'mod') this._renderMCAMod();
+ else this._renderGroupList();
  },
 
- switchMCATab(tab) {
- this._mcaTab = tab;
+ switchMCAView(view) {
+ this._mcaMapStop(); // coupe l'auto-refresh + le listener resize de la carte quand on quitte la vue
+ this._mcaWorkersStop();
+ this._mcaGroupId = null;
+ this._mcaEditing = null;
+ this._mcaSettingsOpen = false;
+ this._mcaMapViewerOpen = false;
+ this._mcaView = view;
  this._renderMCARoot();
+ },
+
+ // ----- Navigation niveau 2 (vue groupe) -----
+ openGroup(id) {
+ this._mcaMapStop();
+ this._mcaWorkersStop();
+ this._mcaWorkerForm = false;
+ this._mcaSettingsOpen = false;
+ this._mcaMapViewerOpen = false;
+ this._mcaGroupId = id;
+ this._mcaGroupTab = 'workers';
+ this._renderMCARoot();
+ },
+
+ backToList() {
+ this._mcaMapStop();
+ this._mcaWorkersStop();
+ this._mcaGroupId = null;
+ this._mcaEditing = null;
+ this._mcaSettingsOpen = false;
+ this._mcaMapViewerOpen = false;
+ this._mcaView = 'list';
+ this._renderMCARoot();
+ },
+
+ switchMCAGroupTab(tab) {
+ this._mcaMapStop();
+ this._mcaWorkersStop();
+ this._mcaWorkerForm = false;
+ this._mcaSettingsOpen = false;
+ this._mcaMapViewerOpen = false;
+ this._mcaGroupTab = tab;
+ this._renderMCARoot();
+ },
+
+ _mcaGroup() {
+ return (this._mcaServers || []).find((x) => x.id === this._mcaGroupId) || null;
+ },
+
+ async _renderMCAGroup() {
+ const root = document.getElementById('mca-root');
+ if (!root) return;
+ // recharge la liste des groupes si on n'a pas le courant en mémoire (ex. reload direct)
+ let g = this._mcaGroup();
+ if (!g) {
+  await this._ensureCatalog();
+  try {
+   const r = await Auth.apiCall('/api/mc-agent/servers');
+   const data = await r.json();
+   this._mcaServers = data.servers || [];
+  } catch (e) { this._mcaServers = this._mcaServers || []; }
+  g = this._mcaGroup();
+ }
+ if (!g) { this.backToList(); return; }
+ // Réglages du groupe : ouverts via l'engrenage ⚙ de l'en-tête (panneau dépliable, plus d'onglet « Modifier »).
+ const settingsOpen = !!this._mcaSettingsOpen;
+ const tab = (this._mcaGroupTab === 'map') ? 'map' : 'workers';
+ const tabBtn = (id, label) => `<button class="btn btn-ghost btn-sm" style="border-radius:0;border-bottom:2px solid ${tab === id ? 'var(--accent)' : 'transparent'};" onclick="BotsModule.switchMCAGroupTab('${id}')">${label}</button>`;
+ root.innerHTML = `
+ <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+ <button class="btn btn-ghost btn-sm" onclick="BotsModule.backToList()">${Lang.t('mcagent.nav.back')}</button>
+ <div>
+ <div style="font-weight:600;">${this._escapeHtml(g.name)}</div>
+ <div style="font-size:12px;color:var(--text-muted);font-family:var(--font-mono);">${this._escapeHtml(g.host || '?')}:${g.port}</div>
+ </div>
+ <button class="btn ${settingsOpen ? 'btn-secondary' : 'btn-ghost'} btn-sm" style="margin-left:auto;" aria-expanded="${settingsOpen}" title="${Lang.t('mcagent.group.settings')}" onclick="BotsModule.toggleGroupSettings()">⚙ ${Lang.t('mcagent.group.settings')}</button>
+ </div>
+ ${settingsOpen ? '' : `<div style="display:flex;gap:6px;margin:0 0 14px;border-bottom:1px solid var(--border);">
+ ${tabBtn('workers', Lang.t('mcagent.nav.workers'))}
+ ${tabBtn('map', Lang.t('mcagent.nav.map'))}
+ </div>`}
+ <div id="mca-tabbody"></div>`;
+ const body = document.getElementById('mca-tabbody');
+ if (settingsOpen) {
+  // Panneau réglages (engrenage) : réutilise l'éditeur (pré-rempli).
+  this._mcaEditing = JSON.parse(JSON.stringify(g));
+  if (!Array.isArray(this._mcaEditing.custom)) this._mcaEditing.custom = [];
+  if (!Array.isArray(this._mcaEditing.trusted)) this._mcaEditing.trusted = [];
+  if (!this._mcaEditing.trade || typeof this._mcaEditing.trade !== 'object') this._mcaEditing.trade = { acceptCmd: '', requestPattern: '' };
+  body.innerHTML = `<div id="mca-srv-editor"></div>`;
+  this._renderServerEditor();
+ } else if (tab === 'map') {
+  this._renderGroupMap(g);
+ } else {
+  this._renderGroupWorkers();
+ }
+ },
+
+ // Ouvre/ferme le panneau réglages du groupe (engrenage ⚙). Coupe les timers carte/workers à l'ouverture.
+ toggleGroupSettings() {
+ this._mcaSettingsOpen = !this._mcaSettingsOpen;
+ if (this._mcaSettingsOpen) { this._mcaMapStop(); this._mcaWorkersStop(); this._mcaMapViewerOpen = false; }
+ else { this._mcaEditing = null; }
+ this._renderMCARoot();
+ },
+
+ // ============ Task 10 — Onglet « Bots ouvriers » ============
+ // Roster des bots role==='worker' du groupe : création (form inline), lancement
+ // (companion = LLM sans autonomous | objectifs autonomes), stop, suppression.
+ // Statut en ligne matché sur GET /api/mc-agent/active (s.user === bot.username, casse-insensible).
+
+ _mcaWorkersStop() {
+ if (this._mcaWorkersTimer) { clearInterval(this._mcaWorkersTimer); this._mcaWorkersTimer = null; }
+ },
+
+ async _renderGroupWorkers() {
+ const body = document.getElementById('mca-tabbody');
+ if (!body) return;
+ this._mcaWorkersStop();
+ body.innerHTML = `<div id="mca-w-root" style="padding-top:6px;"><div style="font-size:12px;color:var(--text-dim);">…</div></div>`;
+ await this._reloadGroupWorkers();
+ // Auto-refresh léger du statut en ligne tant que l'onglet workers est affiché.
+ this._mcaWorkersTimer = setInterval(() => {
+  if (this._mcaGroupId && this._mcaGroupTab === 'workers' && document.getElementById('mca-w-root')) BotsModule._refreshWorkersStatus();
+  else BotsModule._mcaWorkersStop();
+ }, 5000);
+ },
+
+ // Recharge le groupe + sessions actives et re-render complet du roster.
+ async _reloadGroupWorkers() {
+ try {
+  const r = await Auth.apiCall('/api/mc-agent/servers');
+  const data = await r.json();
+  this._mcaServers = data.servers || [];
+ } catch (e) { this._mcaServers = this._mcaServers || []; }
+ await this._loadActiveByServer();
+ this._renderWorkersBody();
+ },
+
+ // Recharge uniquement les sessions actives puis re-render (auto-refresh 5s).
+ async _refreshWorkersStatus() {
+ await this._loadActiveByServer();
+ this._renderWorkersBody();
+ },
+
+ // Sessions actives du groupe courant (liste).
+ _groupSessions() {
+ return (this._mcaActiveByServer || {})[this._mcaGroupId] || [];
+ },
+
+ // Session en ligne d'un bot, matchée par username (insensible casse).
+ _botSession(username) {
+ const u = (username || '').toLowerCase();
+ return this._groupSessions().find((s) => (s.user || '').toLowerCase() === u) || null;
+ },
+
+ _renderWorkersBody() {
+ const root = document.getElementById('mca-w-root');
+ const g = this._mcaGroup();
+ if (!root || !g) return;
+ const workers = (g.bots || []).filter((b) => b.role === 'worker');
+ const showForm = !!this._mcaWorkerForm;
+ const rows = workers.map((b) => {
+  const sess = this._botSession(b.username);
+  const online = !!sess;
+  const authBadge = `<span style="font-size:11px;color:var(--text-dim);font-family:var(--font-mono);">${this._escapeHtml(b.auth || 'offline')}</span>`;
+  const secretBadge = b.has_secret ? `<span class="badge" title="${Lang.t('mcagent.bot.secret_saved')}" style="margin-left:4px;">${Lang.t('mcagent.bot.secret_ok')}</span>` : '';
+  const onlineBadge = online
+   ? `<span class="badge online" style="margin-left:6px;">${Lang.t('mcagent.bot.online')} · #${this._escapeHtml(String(sess.id))}</span>`
+   : `<span class="badge" style="margin-left:6px;">${Lang.t('mcagent.bot.offline')}</span>`;
+  const actionBtn = online
+   ? `<button class="btn btn-secondary btn-sm" onclick="BotsModule.stopWorkerBot('${this._escapeHtml(String(sess.id))}')">${Lang.t('mcagent.bot.stop')}</button>`
+   : `<button class="btn btn-primary btn-sm" onclick="BotsModule.startWorkerBot('${this._escapeHtml(b.id)}')">${Lang.t('mcagent.bot.launch')}</button>`;
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
+   <div>
+    <div style="font-weight:600;font-family:var(--font-mono);">${this._escapeHtml(b.username)}${onlineBadge}</div>
+    <div style="margin-top:2px;">${authBadge}${secretBadge}</div>
+   </div>
+   <div style="display:flex;gap:6px;">
+    ${actionBtn}
+    <button class="btn btn-ghost btn-sm" onclick="BotsModule.deleteWorkerBot('${this._escapeHtml(b.id)}')">${Lang.t('mcagent.bot.delete')}</button>
+   </div>
+  </div>
+  <div id="mca-w-msa-${this._escapeHtml(b.id)}"></div>`;
+ }).join('');
+ root.innerHTML = `
+ <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+  <label class="form-label" style="margin:0;">${Lang.t('mcagent.bot.mode')}</label>
+  <select id="mca-w-objective" class="form-input" style="max-width:240px;">
+   <option value="companion">${Lang.t('mcagent.bot.mode_companion')}</option>
+   <option value="stone_pickaxe">${Lang.t('mcagent.obj_stone')}</option>
+   <option value="iron_pickaxe">${Lang.t('mcagent.obj_iron')}</option>
+   <option value="diamond">${Lang.t('mcagent.obj_diamond')}</option>
+  </select>
+ </div>
+ ${workers.length ? rows : `<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">${Lang.t('mcagent.bot.empty')}</div>`}
+ <div style="margin-top:8px;">
+  ${showForm ? this._renderWorkerForm(g) : `<button class="btn btn-secondary btn-sm" onclick="BotsModule.toggleWorkerForm(true)">${Lang.t('mcagent.bot.add')}</button>`}
+ </div>`;
+ if (showForm) this._wireWorkerForm(g);
+ },
+
+ _renderWorkerForm(g) {
+ return `
+ <div style="background:var(--bg-elev-3);border:1px solid var(--border);border-radius:10px;padding:14px;">
+  <div style="font-weight:600;font-size:13px;margin-bottom:10px;">${Lang.t('mcagent.bot.add_title')}</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+   <div><label class="form-label">${Lang.t('mcagent.bot.username')}</label><input id="mca-w-user" class="form-input" placeholder="${Lang.t('mcagent.bot.username_ph')}" /></div>
+   <div><label class="form-label">${Lang.t('mcagent.auth_label')}</label>
+    <select id="mca-w-auth" class="form-input" onchange="BotsModule._toggleWorkerSecret()">
+     <option value="offline">${Lang.t('mcagent.auth_offline')}</option>
+     <option value="microsoft">${Lang.t('mcagent.auth_microsoft')}</option>
+    </select></div>
+  </div>
+  <div id="mca-w-secret-wrap" style="display:${g.has_login ? 'block' : 'none'};margin-top:10px;">
+   <label class="form-label">${Lang.t('mcagent.bot.secret')}</label>
+   <input id="mca-w-secret" class="form-input" type="password" autocomplete="new-password" placeholder="${Lang.t('mcagent.bot.secret_ph')}" style="max-width:280px;" />
+   <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">${Lang.t('mcagent.bot.secret_hint')}</div>
+  </div>
+  <div style="display:flex;gap:8px;margin-top:14px;">
+   <button class="btn btn-primary btn-sm" onclick="BotsModule.createWorkerBot()">${Lang.t('mcagent.bot.create')}</button>
+   <button class="btn btn-ghost btn-sm" onclick="BotsModule.toggleWorkerForm(false)">${Lang.t('mcagent.cfg.srv_cancel')}</button>
+  </div>
+ </div>`;
+ },
+
+ // Le champ secret n'est utile que pour les comptes offline sur un serveur à login.
+ _wireWorkerForm(g) { this._toggleWorkerSecret(); },
+
+ _toggleWorkerSecret() {
+ const g = this._mcaGroup();
+ const wrap = document.getElementById('mca-w-secret-wrap');
+ const authEl = document.getElementById('mca-w-auth');
+ if (!wrap || !authEl || !g) return;
+ const show = !!g.has_login && authEl.value === 'offline';
+ wrap.style.display = show ? 'block' : 'none';
+ },
+
+ toggleWorkerForm(on) {
+ this._mcaWorkerForm = !!on;
+ this._renderWorkersBody();
+ },
+
+ async createWorkerBot() {
+ const g = this._mcaGroup();
+ if (!g) return;
+ const username = (document.getElementById('mca-w-user') || {}).value;
+ const auth = (document.getElementById('mca-w-auth') || {}).value || 'offline';
+ const u = (username || '').trim();
+ if (!u) { Toast.error(Lang.t('mcagent.bot.username_required')); return; }
+ const secretEl = document.getElementById('mca-w-secret');
+ const payload = { role: 'worker', username: u, auth };
+ if (g.has_login && auth === 'offline' && secretEl && secretEl.value) payload.secret = secretEl.value;
+ const r = await Auth.apiCall(`/api/mc-agent/servers/${encodeURIComponent(g.id)}/bots`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+ });
+ const data = await (r ? r.json().catch(() => ({})) : Promise.resolve({}));
+ if (!r || !r.ok) { Toast.error((data && data.detail) || Lang.t('mcagent.bot.create_err')); return; }
+ this._mcaWorkerForm = false;
+ await this._reloadGroupWorkers();
+ },
+
+ async deleteWorkerBot(botId) {
+ const g = this._mcaGroup();
+ if (!g) return;
+ // nom récupéré par lookup (jamais de username dans un onclick : breakout de chaîne possible)
+ const name = ((g.bots || []).find((b) => b.id === botId) || {}).username || '';
+ if (!confirm(Lang.t('mcagent.bot.confirm_delete').replace('{name}', name))) return;
+ const r = await Auth.apiCall(`/api/mc-agent/servers/${encodeURIComponent(g.id)}/bots/${encodeURIComponent(botId)}`, { method: 'DELETE' });
+ if (!r || !r.ok) { Toast.error(Lang.t('mcagent.bot.delete_err')); return; }
+ await this._reloadGroupWorkers();
+ },
+
+ async startWorkerBot(botId) {
+ const g = this._mcaGroup();
+ if (!g) return;
+ const mode = (document.getElementById('mca-w-objective') || {}).value || 'companion';
+ const bot = (g.bots || []).find((b) => b.id === botId) || {};
+ const body = { server_id: g.id, bot_id: botId };
+ // companion = compagnon LLM (pas d'autonomie) ; sinon objectif planner autonome.
+ if (mode !== 'companion') { body.autonomous = true; body.objective = mode; }
+ const r = await Auth.apiCall('/api/mc-agent/run', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+ });
+ const data = await (r ? r.json().catch(() => ({})) : Promise.resolve({}));
+ if (!r || !r.ok) { Toast.error((data && data.detail) || Lang.t('mcagent.bot.launch_err')); return; }
+ await this._reloadGroupWorkers();
+ // Microsoft device-code : on cherche l'event msa dans le transcript de la session fraîche.
+ if (bot.auth === 'microsoft' && data.session_id) this._pollWorkerMsa(botId, data.session_id);
+ },
+
+ async stopWorkerBot(sessionId) {
+ const r = await Auth.apiCall(`/api/mc-agent/stop/${encodeURIComponent(sessionId)}`, { method: 'POST' });
+ if (!r || !r.ok) { Toast.error(Lang.t('mcagent.bot.stop_err')); return; }
+ await this._reloadGroupWorkers();
+ },
+
+ // Cherche l'event device-login Microsoft (type:'msa') dans les 1ères secondes ; rien trouvé = compte déjà lié.
+ async _pollWorkerMsa(botId, sessionId, attempt) {
+ attempt = attempt || 0;
+ if (attempt >= 4) return;
+ if (!(this._mcaGroupId === (this._mcaGroup() || {}).id && this._mcaGroupTab === 'workers')) return;
+ try {
+  const r = await Auth.apiCall(`/api/mc-agent/chat/${encodeURIComponent(sessionId)}`);
+  const data = await r.json().catch(() => ({}));
+  const msa = ((data && data.transcript) || []).find((e) => e.type === 'msa');
+  if (msa) {
+   const box = document.getElementById('mca-w-msa-' + botId);
+   if (box) box.innerHTML = `
+   <div style="background:var(--bg-elev-3);border:1px solid var(--accent);border-radius:8px;padding:10px 12px;margin:-2px 0 8px;">
+    <div style="font-weight:600;font-size:12px;margin-bottom:4px;">${Lang.t('mcagent.bot.msa_title')}</div>
+    <div style="font-size:12px;color:var(--text-muted);white-space:pre-wrap;font-family:var(--font-mono);">${this._escapeHtml(msa.message || '')}</div>
+   </div>`;
+   return;
+  }
+ } catch (e) { /* silencieux */ }
+ setTimeout(() => BotsModule._pollWorkerMsa(botId, sessionId, attempt + 1), 3000);
  },
 
  _renderMCALaunch() {
@@ -1095,11 +1423,15 @@ const BotsModule = {
  <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--text-muted);cursor:pointer;margin-bottom:8px;">
  <input type="checkbox" id="mca-autonomous" /> ${Lang.t('mcagent.autonomous')}
  </label>
- <select id="mca-objective" class="form-input" style="max-width:260px;margin-bottom:12px;">
+ <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+ <select id="mca-objective" class="form-input" style="max-width:260px;">
  <option value="stone_pickaxe">${Lang.t('mcagent.obj_stone')}</option>
  <option value="iron_pickaxe">${Lang.t('mcagent.obj_iron')}</option>
  <option value="diamond">${Lang.t('mcagent.obj_diamond')}</option>
+ <option value="mapper">${Lang.t('mcagent.obj_mapper')}</option>
  </select>
+ <input id="mca-world-label" class="form-input" style="max-width:200px;" placeholder="${Lang.t('mcagent.world_label')}" />
+ </div>
  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
  <button class="btn btn-primary" onclick="BotsModule.startMCAgent()">${Lang.t('mcagent.start')}</button>
  <button class="btn btn-secondary btn-sm" onclick="BotsModule.stopMCAgent()">${Lang.t('mcagent.stop')}</button>
@@ -1137,7 +1469,7 @@ const BotsModule = {
  <div style="font-weight:600;margin-bottom:6px;">${Lang.t('mcagent.mod_download')}</div>
  <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('mcagent.mod_pick')}</div>
  <div id="mca-mod-versions" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
- <details style="margin-top:10px;">
+ <details open style="margin-top:10px;">
  <summary style="cursor:pointer;font-size:13px;">${Lang.t('mcagent.tuto_title')}</summary>
  <ol style="font-size:12px;color:var(--text-muted);line-height:1.7;margin:8px 0 0;padding-left:18px;">
  <li>${Lang.t('mcagent.tuto_s1')} <a href="https://fabricmc.net/use/installer/" target="_blank" rel="noopener">fabricmc.net/use/installer</a></li>
@@ -1148,6 +1480,26 @@ const BotsModule = {
  </ol>
  </details>
  </div>`;
+ },
+
+ // Onglet « Mods & REC » (niveau 1) : télécharger le mod client + tuto d'install + déposer les captures (REC).
+ _renderMCAMod() {
+ const body = document.getElementById('mca-tabbody');
+ if (!body) return;
+ body.innerHTML = `
+ <div style="font-size:12px;color:var(--text-muted);margin:0 0 12px;">${Lang.t('mcagent.mod_tab_intro')}</div>
+ ${BotsModule._mcaModBlock()}
+ <div style="border-top:1px solid var(--border);margin:14px 0;padding-top:12px;">
+ <div style="font-weight:600;margin-bottom:4px;">${Lang.t('mcagent.my_captures')}</div>
+ <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('mcagent.capture_hint')}</div>
+ <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+ <input id="mca-capfile" type="file" accept=".jsonl,.gz" class="form-input" style="flex:1;min-width:200px;" />
+ <button class="btn btn-secondary btn-sm" onclick="BotsModule.uploadCapture()">${Lang.t('mcagent.capture_import')}</button>
+ </div>
+ <div id="mca-captures"></div>
+ </div>`;
+ this.loadModVersions();
+ this.loadCaptures();
  },
 
  _renderMCAgentRecTester(el) {
@@ -1205,9 +1557,11 @@ const BotsModule = {
  // Mode autonome : le bot lance la boucle planner (zéro→pioche pierre/fer) dès le spawn, 0 LLM.
  const autonomous = !!(document.getElementById('mca-autonomous') || {}).checked;
  const objective = (document.getElementById('mca-objective') || {}).value || 'stone_pickaxe';
+ // Clé de monde explicite (monde de minage) — vide = dimension auto côté bot
+ const worldLabel = ((document.getElementById('mca-world-label') || {}).value || '').trim() || undefined;
  let bodyData;
  if (serverId) {
- bodyData = { server_id: serverId, autonomous, objective };
+ bodyData = { server_id: serverId, autonomous, objective, world_label: worldLabel };
  } else {
  const host = document.getElementById('mca-host').value.trim();
  if (!host) { msg.textContent = Lang.t('mcagent.need_host'); return; }
@@ -1215,7 +1569,7 @@ const BotsModule = {
  const user = document.getElementById('mca-user').value.trim() || 'TrainBot';
  const auth = document.getElementById('mca-auth').value;
  const profile = (document.getElementById('mca-profile') || {}).value || undefined;
- bodyData = { host, port, user, auth, profile, autonomous, objective };
+ bodyData = { host, port, user, auth, profile, autonomous, objective, world_label: worldLabel };
  }
  const r = await Auth.apiCall('/api/mc-agent/run', {
  method: 'POST',
@@ -1261,15 +1615,20 @@ const BotsModule = {
  } catch (e) { this._mcaCatalog = []; }
  },
 
- _renderMCAServers() {
+ // ----- Niveau 1 : Créer un groupe (réutilise l'éditeur serveur) -----
+ _renderGroupCreate() {
  const body = document.getElementById('mca-tabbody');
  if (!body) return;
- body.innerHTML = `
- <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
- <button class="btn btn-primary btn-sm" onclick="BotsModule.newServerProfile()">${Lang.t('mcagent.cfg.srv_new')}</button>
- </div>
- <div id="mca-srv-list"></div>
- <div id="mca-srv-editor"></div>`;
+ this._mcaEditing = { id: null, name: '', host: '', port: 25565, user: 'TrainBot', auth: 'offline', intelligence: 'intermediaire', language: 'fr', commands: [], custom: [], trusted: [], trade: { acceptCmd: '', requestPattern: '' }, has_login: false, login_command: '/login {pwd}' };
+ body.innerHTML = `<div id="mca-srv-editor"></div>`;
+ this._ensureCatalog().then(() => this._renderServerEditor());
+ },
+
+ // ----- Niveau 1 : Mes serveurs (cartes de groupes) -----
+ _renderGroupList() {
+ const body = document.getElementById('mca-tabbody');
+ if (!body) return;
+ body.innerHTML = `<div id="mca-srv-list" style="font-size:12px;color:var(--text-dim);padding:8px 0;">…</div>`;
  this.loadServerProfiles();
  },
 
@@ -1284,13 +1643,15 @@ const BotsModule = {
  this._renderServerList();
  },
 
- // Mappe server_id -> session_id pour les bots actuellement en ligne (savoir afficher Lancer ou Arrêter).
+ // Mappe server_id -> LISTE de sessions en ligne (un groupe peut avoir plusieurs bots actifs).
  async _loadActiveByServer() {
  this._mcaActiveByServer = {};
  try {
  const r = await Auth.apiCall('/api/mc-agent/active');
  const data = await r.json();
- (data.sessions || []).forEach((s) => { if (s.server_id) this._mcaActiveByServer[s.server_id] = s.id; });
+ (data.sessions || []).forEach((s) => {
+ if (s.server_id) (this._mcaActiveByServer[s.server_id] || (this._mcaActiveByServer[s.server_id] = [])).push(s);
+ });
  } catch (e) { /* silencieux */ }
  },
 
@@ -1301,65 +1662,41 @@ const BotsModule = {
  if (!servers.length) { list.innerHTML = `<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">${Lang.t('mcagent.cfg.srv_empty')}</div>`; return; }
  const active = this._mcaActiveByServer || {};
  list.innerHTML = servers.map((s) => {
- const sid = active[s.id];
- const online = sid != null;
- const runBtn = online
- ? `<button class="btn btn-sm" style="background:var(--danger);color:#fff;border-color:var(--danger);" onclick="BotsModule.leaveServerProfile(${sid})">${Lang.t('mcagent.cfg.srv_stop')}</button>`
- : `<button class="btn btn-primary btn-sm" onclick="BotsModule.launchServerProfile('${this._escapeHtml(s.id)}')">${Lang.t('mcagent.cfg.srv_launch')}</button>`;
+ const sessions = active[s.id] || [];
+ const online = sessions.length > 0;
  const dot = online ? `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);margin-right:6px;vertical-align:middle;" title="${Lang.t('mcagent.cfg.srv_online')}"></span>` : '';
+ const onlineBadge = online ? `<span class="badge online" style="margin-left:6px;">${sessions.length} ${Lang.t('mcagent.nav.online')}</span>` : '';
+ const nbBots = (s.bots || []).length;
  return `
- <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
+ <div onclick="BotsModule.openGroup('${this._escapeHtml(s.id)}')" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
  <div>
- <div style="font-weight:600;">${dot}${this._escapeHtml(s.name)}</div>
- <div style="font-size:12px;color:var(--text-muted);font-family:var(--font-mono);">${this._escapeHtml(s.host || '?')}:${s.port} · ${this._escapeHtml(this._mcaProfileLabel(s.intelligence, s.intelligence))} · ${(s.commands || []).length + (s.custom || []).length} ${Lang.t('mcagent.cfg.srv_cmd_count')}</div>
+ <div style="font-weight:600;">${dot}${this._escapeHtml(s.name)}${onlineBadge}</div>
+ <div style="font-size:12px;color:var(--text-muted);font-family:var(--font-mono);">${this._escapeHtml(s.host || '?')}:${s.port} · ${nbBots} ${Lang.t('mcagent.nav.bots_count')}</div>
  </div>
- <div style="display:flex;gap:6px;">
- ${runBtn}
- <button class="btn btn-secondary btn-sm" onclick="BotsModule.editServerProfile('${this._escapeHtml(s.id)}')">${Lang.t('mcagent.cfg.srv_edit')}</button>
+ <div style="display:flex;gap:6px;" onclick="event.stopPropagation();">
+ <button class="btn btn-secondary btn-sm" onclick="BotsModule.openGroupEdit('${this._escapeHtml(s.id)}')">${Lang.t('mcagent.cfg.srv_edit')}</button>
  <button class="btn btn-ghost btn-sm" onclick="BotsModule.deleteServerProfile('${this._escapeHtml(s.id)}')">${Lang.t('mcagent.cfg.srv_delete')}</button>
  </div>
  </div>`;
  }).join('');
  },
 
- // Lance le bot directement depuis la carte du profil (join). Recharge la liste pour basculer en Arrêter.
- async launchServerProfile(id) {
- const r = await Auth.apiCall('/api/mc-agent/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ server_id: id }) });
- if (!r) return;
- const data = await r.json().catch(() => ({}));
- if (!r.ok) { Toast.error(data.detail || Lang.t('mcagent.cfg.srv_launch_err')); return; }
- Toast.success(Lang.t('mcagent.cfg.srv_launched') + ' #' + data.session_id);
- this.loadServerProfiles();
- },
-
- // Arrête le bot en ligne pour ce profil (leave).
- async leaveServerProfile(sid) {
- const r = await Auth.apiCall('/api/mc-agent/stop/' + sid, { method: 'POST' });
- if (r && r.ok) Toast.success(Lang.t('mcagent.cfg.srv_stopped'));
- this.loadServerProfiles();
- },
-
- newServerProfile() {
- this._mcaEditing = { id: null, name: '', host: '', port: 25565, user: 'TrainBot', auth: 'offline', intelligence: 'intermediaire', language: 'fr', commands: [], custom: [], trusted: [], trade: { acceptCmd: '', requestPattern: '' } };
- this._renderServerEditor();
- },
-
- editServerProfile(id) {
- const s = (this._mcaServers || []).find((x) => x.id === id);
- if (!s) return;
- this._mcaEditing = JSON.parse(JSON.stringify(s));
- if (!Array.isArray(this._mcaEditing.custom)) this._mcaEditing.custom = [];
- if (!Array.isArray(this._mcaEditing.trusted)) this._mcaEditing.trusted = [];
- if (!this._mcaEditing.trade || typeof this._mcaEditing.trade !== 'object') this._mcaEditing.trade = { acceptCmd: '', requestPattern: '' };
- this._renderServerEditor();
+ // Ouvre directement la vue groupe avec le panneau réglages (engrenage ⚙) déplié.
+ openGroupEdit(id) {
+ this._mcaMapStop();
+ this._mcaWorkersStop();
+ this._mcaWorkerForm = false;
+ this._mcaMapViewerOpen = false;
+ this._mcaGroupId = id;
+ this._mcaGroupTab = 'workers';
+ this._mcaSettingsOpen = true;
+ this._renderMCARoot();
  },
 
  _renderServerEditor() {
  const box = document.getElementById('mca-srv-editor');
  const e = this._mcaEditing;
  if (!box || !e) return;
- const listEl = document.getElementById('mca-srv-list');
- if (listEl) listEl.style.display = 'none';
  const checked = new Set(e.commands || []);
  const cats = { communication: [], teleport: [], economy: [], status: [] };
  (this._mcaCatalog || []).forEach((c) => { (cats[c.category] || (cats[c.category] = [])).push(c); });
@@ -1403,7 +1740,7 @@ const BotsModule = {
  </select></div>
  <div><label class="form-label">${Lang.t('mcagent.ip')}</label><input id="mca-e-host" class="form-input" value="${this._escapeHtml(e.host)}" /></div>
  <div><label class="form-label">${Lang.t('mcagent.port')}</label><input id="mca-e-port" class="form-input" placeholder="25565" value="${e.port || ''}" /></div>
- <div><label class="form-label">${Lang.t('mcagent.account')}</label><input id="mca-e-user" class="form-input" value="${this._escapeHtml(e.user)}" /></div>
+ ${this._mcaGroupId ? '' : `<div><label class="form-label">${Lang.t('mcagent.account')}</label><input id="mca-e-user" class="form-input" value="${this._escapeHtml(e.user)}" /></div>`}
  <div><label class="form-label">${Lang.t('mcagent.auth_label')}</label>
  <select id="mca-e-auth" class="form-input">
  <option value="offline" ${e.auth === 'offline' ? 'selected' : ''}>${Lang.t('mcagent.auth_offline')}</option>
@@ -1433,6 +1770,14 @@ const BotsModule = {
  <input id="mca-e-trade-cmd" class="form-input" value="${this._escapeHtml(trade.acceptCmd || '')}" placeholder="${Lang.t('mcagent.cfg.trade_cmd_ph')}" style="max-width:200px;" />
  <input id="mca-e-trade-pat" class="form-input" value="${this._escapeHtml(trade.requestPattern || '')}" placeholder="${Lang.t('mcagent.cfg.trade_pattern_ph')}" style="flex:1;min-width:160px;" />
  </div>
+ <div style="font-weight:600;font-size:13px;margin:14px 0 4px;">${Lang.t('mcagent.group.login_title')}</div>
+ <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--text-muted);cursor:pointer;margin-bottom:6px;">
+ <input type="checkbox" id="mca-e-haslogin" ${e.has_login ? 'checked' : ''} onchange="BotsModule._toggleLoginCmd(this.checked)" /> ${Lang.t('mcagent.group.has_login')}
+ </label>
+ <div id="mca-e-logincmd-wrap" style="display:${e.has_login ? 'block' : 'none'};">
+ <input id="mca-e-logincmd" class="form-input" value="${this._escapeHtml(e.login_command || '/login {pwd}')}" placeholder="/login {pwd}" style="max-width:280px;" />
+ <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">${Lang.t('mcagent.group.login_hint')}</div>
+ </div>
  <div style="font-size:11px;color:var(--text-dim);margin-top:14px;padding-top:10px;border-top:1px solid var(--border);">${Lang.t('mcagent.cfg.key_shared_note')}</div>
  <div style="display:flex;gap:8px;margin-top:14px;">
  <button class="btn btn-primary" onclick="BotsModule.saveServerProfile()">${Lang.t('mcagent.cfg.srv_save')}</button>
@@ -1456,6 +1801,16 @@ const BotsModule = {
  const tc = document.getElementById('mca-e-trade-cmd');
  const tp = document.getElementById('mca-e-trade-pat');
  if (tc || tp) e.trade = { acceptCmd: tc ? tc.value.trim() : '', requestPattern: tp ? tp.value.trim() : '' };
+ const hl = document.getElementById('mca-e-haslogin');
+ if (hl) e.has_login = !!hl.checked;
+ const lc = document.getElementById('mca-e-logincmd');
+ if (lc) e.login_command = lc.value.trim() || '/login {pwd}';
+ },
+
+ // Affiche/masque le champ commande de login selon la checkbox (sans re-render complet).
+ _toggleLoginCmd(on) {
+ const wrap = document.getElementById('mca-e-logincmd-wrap');
+ if (wrap) wrap.style.display = on ? 'block' : 'none';
  },
 
  addCustomCommand() {
@@ -1494,21 +1849,39 @@ const BotsModule = {
  async saveServerProfile() {
  this._captureEditorState();
  const e = this._mcaEditing;
+ // On vient de la vue groupe (Modifier) si _mcaGroupId est posé ; sinon c'est « Créer un groupe ».
+ const fromGroup = !!this._mcaGroupId;
+ // ⚠️ Ne JAMAIS envoyer `bots` : le backend préserve le roster (les comptes sont gérés dans l'onglet Bots ouvriers).
  const trade = (e.trade && (e.trade.acceptCmd || '').trim()) ? { acceptCmd: e.trade.acceptCmd.trim(), requestPattern: (e.trade.requestPattern || '').trim() } : null;
- const payload = { name: e.name || 'Sans nom', host: e.host || '', port: e.port || 25565, user: e.user || 'TrainBot', auth: e.auth || 'offline', intelligence: e.intelligence || 'intermediaire', language: e.language || 'fr', commands: e.commands || [], custom: e.custom || [], trusted: e.trusted || [], trade };
+ const payload = { name: e.name || 'Sans nom', host: e.host || '', port: e.port || 25565, user: e.user || 'TrainBot', auth: e.auth || 'offline', intelligence: e.intelligence || 'intermediaire', language: e.language || 'fr', commands: e.commands || [], custom: e.custom || [], trusted: e.trusted || [], trade, has_login: !!e.has_login, login_command: e.login_command || '/login {pwd}' };
  const url = e.id ? `/api/mc-agent/servers/${encodeURIComponent(e.id)}` : '/api/mc-agent/servers';
  const r = await Auth.apiCall(url, { method: e.id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
  if (!r || !r.ok) { Toast.error(Lang.t('mcagent.cfg.srv_save_err')); return; }
  this._mcaEditing = null;
- const ed = document.getElementById('mca-srv-editor'); if (ed) ed.innerHTML = '';
- const list = document.getElementById('mca-srv-list'); if (list) list.style.display = '';
- this.loadServerProfiles();
+ if (fromGroup) {
+  // Édition depuis la vue groupe → on FERME le panneau réglages et on revient à la vue groupe.
+  this._mcaSettingsOpen = false;
+  this._renderMCARoot();
+ } else {
+  // Création d'un groupe → liste niveau 1.
+  this._mcaGroupId = null;
+  this._mcaView = 'list';
+  this._renderMCARoot();
+ }
  },
 
  cancelServerEdit() {
+ const fromGroup = !!this._mcaGroupId;
  this._mcaEditing = null;
- const ed = document.getElementById('mca-srv-editor'); if (ed) ed.innerHTML = '';
- const list = document.getElementById('mca-srv-list'); if (list) list.style.display = '';
+ if (fromGroup) {
+  // Annulation depuis la vue groupe → ferme le panneau réglages, retour à la vue groupe.
+  this._mcaSettingsOpen = false;
+  this._renderMCARoot();
+ } else {
+  this._mcaGroupId = null;
+  this._mcaView = 'list';
+  this._renderMCARoot();
+ }
  },
 
  async deleteServerProfile(id) {
@@ -1516,6 +1889,626 @@ const BotsModule = {
  const r = await Auth.apiCall(`/api/mc-agent/servers/${encodeURIComponent(id)}`, { method: 'DELETE' });
  if (r && r.ok) this.loadServerProfiles();
  else Toast.error(Lang.t('mcagent.cfg.srv_delete_err'));
+ },
+
+ // ============ MC AGENT — CARTE (mémoire de monde) ============
+ // Viewer 100% frontend : lit GET /api/mc-agent/servers/{sid}/memory (worlds → biomes/caves/finds,
+ // coords quantifiées sur grille 128 côté backend). Aucune logique bot ici.
+ // Canvas top-down : x monde → droite, z monde → bas (nord en haut, convention F3 Minecraft).
+
+ _mcaMap: null,
+
+ _mcaMapState() {
+ if (!this._mcaMap) this._mcaMap = {
+ sid: null, world: null, data: null,
+ view: { cx: 0, cz: 0, scale: 0.6 }, // centre (blocs monde) + zoom (px/bloc)
+ hidden: {}, // couches masquées via la légende ('b:<biome>' / 'm:<matériau>' / 'caves')
+ fitted: {}, // monde → true après auto-cadrage (on ne re-cadre jamais sous l'utilisateur)
+ timer: null, drag: null, resize: null,
+ };
+ return this._mcaMap;
+ },
+
+ _mcaMapStop() {
+ const m = this._mcaMap;
+ if (!m) return;
+ if (m.timer) { clearInterval(m.timer); m.timer = null; }
+ if (m.resize) { window.removeEventListener('resize', m.resize); m.resize = null; }
+ m.drag = null;
+ },
+
+ // ============ Task 11 — Onglet « Carte » scopé au groupe + section Cartographes ============
+ // Viewer carte = même machinerie _mcaMap* MAIS scopé : m.sid = group.id figé (plus de
+ // sélecteur de serveur). Sous la carte, roster des bots role==='mapper' (lancement individuel
+ // + lancement de N cartographes via /servers/{sid}/mappers/start).
+ async _renderGroupMap(group) {
+ const body = document.getElementById('mca-tabbody');
+ if (!body || !group) return;
+ this._mcaMapStop();
+ const m = this._mcaMapState();
+ // scope : la carte ne montre QUE la mémoire de monde de ce groupe
+ if (m.sid !== group.id) { m.sid = group.id; m.world = null; m.fitted = {}; m.hidden = {}; m.data = null; }
+ const viewerOpen = !!this._mcaMapViewerOpen;
+ // Contenu PRINCIPAL = gestion des cartographes. La carte n'est PAS inline : elle vit derrière
+ // le bouton « Ouvrir la carte » (panneau dépliable). Auto-refresh + resize armés UNIQUEMENT
+ // quand la carte est ouverte (cf. _openMapViewer).
+ body.innerHTML = `
+ <div style="border-bottom:1px solid var(--border);margin:0 0 14px;padding-bottom:14px;">
+ <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+ <div style="font-weight:600;">${Lang.t('mcagent.map.mappers_title')}</div>
+ <button class="btn ${viewerOpen ? 'btn-secondary' : 'btn-primary'} btn-sm" style="margin-left:auto;" aria-expanded="${viewerOpen}" onclick="BotsModule.toggleMapViewer()">${viewerOpen ? Lang.t('mcagent.map.close_map') : Lang.t('mcagent.map.open_map')}</button>
+ </div>
+ <div style="font-size:12px;color:var(--text-muted);">${Lang.t('mcagent.map.mappers_hint')}</div>
+ </div>
+ <div id="mca-map-viewer" style="display:${viewerOpen ? 'block' : 'none'};margin-bottom:18px;">
+ <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+ <select id="mca-map-world" class="form-input" style="max-width:170px;" onchange="BotsModule._mcaMapPickWorld(this.value)"></select>
+ <button class="btn btn-secondary btn-sm" onclick="BotsModule._mcaMapRefresh()">${Lang.t('mcagent.map.refresh')}</button>
+ <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-muted);cursor:pointer;">
+ <input type="checkbox" id="mca-map-auto" onchange="BotsModule._mcaMapAutoToggle(this.checked)" /> ${Lang.t('mcagent.map.auto')}
+ </label>
+ <button class="btn btn-ghost btn-sm" onclick="BotsModule._mcaMapFit(true)">${Lang.t('mcagent.map.recenter')}</button>
+ <span id="mca-map-updated" style="font-size:11px;color:var(--text-dim);font-family:var(--font-mono);margin-left:auto;"></span>
+ </div>
+ <div style="position:relative;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#0B0B0D;">
+ <canvas id="mca-map-canvas" style="display:block;width:100%;height:440px;cursor:grab;touch-action:none;"></canvas>
+ <div id="mca-map-empty" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:20px;color:var(--text-muted);font-size:13px;pointer-events:none;"></div>
+ <div id="mca-map-coords" style="position:absolute;left:10px;bottom:8px;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);background:rgba(14,14,16,.78);padding:2px 8px;border-radius:6px;pointer-events:none;"></div>
+ </div>
+ <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">${Lang.t('mcagent.map.hint')}</div>
+ <div id="mca-map-legend" style="margin-top:10px;"></div>
+ </div>
+ <div id="mca-map-mappers"><div style="font-size:12px;color:var(--text-dim);">…</div></div>`;
+ await this._reloadGroupMappers();
+ if (viewerOpen) {
+  // (Re)montage de la carte : bind canvas + 1ère charge + arme l'auto-refresh des cartographes.
+  this._mcaMapBindCanvas();
+  await this._mcaMapRefresh();
+ }
+ // Auto-refresh statut des cartographes (5s) tant que l'onglet map est visible — indépendant de la carte.
+ this._mcaWorkersStop();
+ this._mcaWorkersTimer = setInterval(() => {
+  if (this._mcaGroupId && this._mcaGroupTab === 'map' && !this._mcaSettingsOpen && document.getElementById('mca-map-mappers')) BotsModule._refreshMappersStatus();
+  else BotsModule._mcaWorkersStop();
+ }, 5000);
+ },
+
+ // Ouvre/ferme la carte (panneau dépliable de l'onglet Mapping).
+ // ⚠️ Les timers carte (m.timer auto-refresh) + le listener resize ne tournent QUE carte ouverte :
+ //    _mcaMapStop() les coupe à la fermeture (pas de fuite de timer).
+ toggleMapViewer() {
+ this._mcaMapViewerOpen = !this._mcaMapViewerOpen;
+ if (!this._mcaMapViewerOpen) this._mcaMapStop(); // coupe auto-refresh carte + resize
+ const g = this._mcaGroup();
+ if (g) this._renderGroupMap(g);
+ },
+
+ // Recharge groupe + sessions actives puis re-render du roster cartographes.
+ async _reloadGroupMappers() {
+ try {
+  const r = await Auth.apiCall('/api/mc-agent/servers');
+  const data = await r.json();
+  this._mcaServers = data.servers || [];
+ } catch (e) { this._mcaServers = this._mcaServers || []; }
+ await this._loadActiveByServer();
+ this._renderMappersBody();
+ },
+
+ async _refreshMappersStatus() {
+ await this._loadActiveByServer();
+ this._renderMappersBody();
+ },
+
+ _renderMappersBody() {
+ const root = document.getElementById('mca-map-mappers');
+ const g = this._mcaGroup();
+ if (!root || !g) return;
+ const mappers = (g.bots || []).filter((b) => b.role === 'mapper');
+ const showForm = !!this._mcaMapperForm;
+ const rows = mappers.map((b) => {
+  const sess = this._botSession(b.username);
+  const online = !!sess;
+  const authBadge = `<span style="font-size:11px;color:var(--text-dim);font-family:var(--font-mono);">${this._escapeHtml(b.auth || 'offline')}</span>`;
+  const secretBadge = b.has_secret ? `<span class="badge" title="${Lang.t('mcagent.bot.secret_saved')}" style="margin-left:4px;">${Lang.t('mcagent.bot.secret_ok')}</span>` : '';
+  const onlineBadge = online
+   ? `<span class="badge online" style="margin-left:6px;">${Lang.t('mcagent.bot.online')} · #${this._escapeHtml(String(sess.id))}</span>`
+   : `<span class="badge" style="margin-left:6px;">${Lang.t('mcagent.bot.offline')}</span>`;
+  const actionBtn = online
+   ? `<button class="btn btn-secondary btn-sm" onclick="BotsModule.stopMapperBot('${this._escapeHtml(String(sess.id))}')">${Lang.t('mcagent.bot.stop')}</button>`
+   : `<button class="btn btn-primary btn-sm" onclick="BotsModule.startMapperBot('${this._escapeHtml(b.id)}')">${Lang.t('mcagent.bot.launch')}</button>`;
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
+   <div>
+    <div style="font-weight:600;font-family:var(--font-mono);">${this._escapeHtml(b.username)}${onlineBadge}</div>
+    <div style="margin-top:2px;">${authBadge}${secretBadge}</div>
+   </div>
+   <div style="display:flex;gap:6px;">
+    ${actionBtn}
+    <button class="btn btn-ghost btn-sm" onclick="BotsModule.deleteMapperBot('${this._escapeHtml(b.id)}')">${Lang.t('mcagent.bot.delete')}</button>
+   </div>
+  </div>`;
+ }).join('');
+ root.innerHTML = `
+ <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+  <label class="form-label" style="margin:0;">${Lang.t('mcagent.map.start_n')}</label>
+  <input type="number" id="mca-map-count" min="1" max="20" value="2" class="form-input" style="max-width:90px;" />
+  <button class="btn btn-primary btn-sm" onclick="BotsModule.startNMappers()">${Lang.t('mcagent.map.start_n_btn')}</button>
+ </div>
+ ${mappers.length ? rows : `<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">${Lang.t('mcagent.map.empty_roster')}</div>`}
+ <div style="margin-top:8px;">
+  ${showForm ? this._renderMapperForm(g) : `<button class="btn btn-secondary btn-sm" onclick="BotsModule.toggleMapperForm(true)">${Lang.t('mcagent.map.add')}</button>`}
+ </div>`;
+ if (showForm) this._wireMapperForm(g);
+ },
+
+ _renderMapperForm(g) {
+ return `
+ <div style="background:var(--bg-elev-3);border:1px solid var(--border);border-radius:10px;padding:14px;">
+  <div style="font-weight:600;font-size:13px;margin-bottom:10px;">${Lang.t('mcagent.map.add_title')}</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+   <div><label class="form-label">${Lang.t('mcagent.bot.username')}</label><input id="mca-mp-user" class="form-input" placeholder="${Lang.t('mcagent.bot.username_ph')}" /></div>
+   <div><label class="form-label">${Lang.t('mcagent.auth_label')}</label>
+    <select id="mca-mp-auth" class="form-input" onchange="BotsModule._toggleMapperSecret()">
+     <option value="offline">${Lang.t('mcagent.auth_offline')}</option>
+     <option value="microsoft">${Lang.t('mcagent.auth_microsoft')}</option>
+    </select></div>
+  </div>
+  <div id="mca-mp-secret-wrap" style="display:${g.has_login ? 'block' : 'none'};margin-top:10px;">
+   <label class="form-label">${Lang.t('mcagent.bot.secret')}</label>
+   <input id="mca-mp-secret" class="form-input" type="password" autocomplete="new-password" placeholder="${Lang.t('mcagent.bot.secret_ph')}" style="max-width:280px;" />
+   <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">${Lang.t('mcagent.bot.secret_hint')}</div>
+  </div>
+  <div style="display:flex;gap:8px;margin-top:14px;">
+   <button class="btn btn-primary btn-sm" onclick="BotsModule.createMapperBot()">${Lang.t('mcagent.bot.create')}</button>
+   <button class="btn btn-ghost btn-sm" onclick="BotsModule.toggleMapperForm(false)">${Lang.t('mcagent.cfg.srv_cancel')}</button>
+  </div>
+ </div>`;
+ },
+
+ _wireMapperForm(g) { this._toggleMapperSecret(); },
+
+ _toggleMapperSecret() {
+ const g = this._mcaGroup();
+ const wrap = document.getElementById('mca-mp-secret-wrap');
+ const authEl = document.getElementById('mca-mp-auth');
+ if (!wrap || !authEl || !g) return;
+ const show = !!g.has_login && authEl.value === 'offline';
+ wrap.style.display = show ? 'block' : 'none';
+ },
+
+ toggleMapperForm(on) {
+ this._mcaMapperForm = !!on;
+ this._renderMappersBody();
+ },
+
+ async createMapperBot() {
+ const g = this._mcaGroup();
+ if (!g) return;
+ const username = (document.getElementById('mca-mp-user') || {}).value;
+ const auth = (document.getElementById('mca-mp-auth') || {}).value || 'offline';
+ const u = (username || '').trim();
+ if (!u) { Toast.error(Lang.t('mcagent.bot.username_required')); return; }
+ const secretEl = document.getElementById('mca-mp-secret');
+ const payload = { role: 'mapper', username: u, auth };
+ if (g.has_login && auth === 'offline' && secretEl && secretEl.value) payload.secret = secretEl.value;
+ const r = await Auth.apiCall(`/api/mc-agent/servers/${encodeURIComponent(g.id)}/bots`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+ });
+ const data = await (r ? r.json().catch(() => ({})) : Promise.resolve({}));
+ if (!r || !r.ok) { Toast.error((data && data.detail) || Lang.t('mcagent.bot.create_err')); return; }
+ this._mcaMapperForm = false;
+ await this._reloadGroupMappers();
+ },
+
+ async deleteMapperBot(botId) {
+ const g = this._mcaGroup();
+ if (!g) return;
+ const name = ((g.bots || []).find((b) => b.id === botId) || {}).username || '';
+ if (!confirm(Lang.t('mcagent.bot.confirm_delete').replace('{name}', name))) return;
+ const r = await Auth.apiCall(`/api/mc-agent/servers/${encodeURIComponent(g.id)}/bots/${encodeURIComponent(botId)}`, { method: 'DELETE' });
+ if (!r || !r.ok) { Toast.error(Lang.t('mcagent.bot.delete_err')); return; }
+ await this._reloadGroupMappers();
+ },
+
+ async startMapperBot(botId) {
+ const g = this._mcaGroup();
+ if (!g) return;
+ const r = await Auth.apiCall('/api/mc-agent/run', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ server_id: g.id, bot_id: botId, objective: 'mapper', autonomous: true }),
+ });
+ const data = await (r ? r.json().catch(() => ({})) : Promise.resolve({}));
+ if (!r || !r.ok) { Toast.error((data && data.detail) || Lang.t('mcagent.bot.launch_err')); return; }
+ await this._reloadGroupMappers();
+ },
+
+ async stopMapperBot(sessionId) {
+ const r = await Auth.apiCall(`/api/mc-agent/stop/${encodeURIComponent(sessionId)}`, { method: 'POST' });
+ if (!r || !r.ok) { Toast.error(Lang.t('mcagent.bot.stop_err')); return; }
+ await this._reloadGroupMappers();
+ },
+
+ // Lance N cartographes d'un coup (comptes mapper offline disponibles).
+ async startNMappers() {
+ const g = this._mcaGroup();
+ if (!g) return;
+ const el = document.getElementById('mca-map-count');
+ let count = parseInt((el && el.value) || '0', 10);
+ if (!Number.isFinite(count) || count < 1) count = 1;
+ if (count > 20) count = 20;
+ const r = await Auth.apiCall(`/api/mc-agent/servers/${encodeURIComponent(g.id)}/mappers/start`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ count }),
+ });
+ const data = await (r ? r.json().catch(() => ({})) : Promise.resolve({}));
+ if (!r || !r.ok) { Toast.error((data && data.detail) || Lang.t('mcagent.bot.launch_err')); return; }
+ const launched = data.launched || 0;
+ const available = (data.available != null) ? data.available : launched;
+ let summary = Lang.t('mcagent.map.started').replace('{launched}', launched).replace('{available}', available);
+ if (Array.isArray(data.skipped) && data.skipped.length) {
+  summary += ' · ' + Lang.t('mcagent.map.skipped').replace('{names}', data.skipped.join(', '));
+ }
+ Toast.success(summary);
+ if (launched < count) Toast.info(Lang.t('mcagent.map.need_more'));
+ await this._reloadGroupMappers();
+ },
+
+ _mcaMapPickWorld(w) {
+ const m = this._mcaMapState();
+ m.world = w;
+ this._mcaMapSync();
+ },
+
+ async _mcaMapRefresh() {
+ const m = this._mcaMapState();
+ if (!m.sid) return;
+ try {
+ const r = await Auth.apiCall(`/api/mc-agent/servers/${encodeURIComponent(m.sid)}/memory`);
+ if (!r || !r.ok) throw new Error('HTTP ' + (r ? r.status : '?'));
+ m.data = await r.json();
+ } catch (e) {
+ this._mcaMapShowEmpty(Lang.t('mcagent.map.load_err'));
+ return;
+ }
+ this._mcaMapSync();
+ },
+
+ _mcaMapAutoToggle(on) {
+ const m = this._mcaMapState();
+ if (m.timer) { clearInterval(m.timer); m.timer = null; }
+ // poll ~3s pour voir la carte se remplir en live pendant un run cartographe
+ if (on) m.timer = setInterval(() => {
+ if (document.getElementById('mca-map-canvas')) this._mcaMapRefresh();
+ else this._mcaMapStop();
+ }, 3000);
+ },
+
+ // Mondes vanilla d'abord dans un ordre stable, puis les labels custom (ex. "mining") alphabétiques.
+ _mcaMapWorlds() {
+ const m = this._mcaMapState();
+ const keys = Object.keys((m.data && m.data.worlds) || {});
+ const order = { overworld: 0, nether: 1, the_nether: 1, the_end: 2, end: 2 };
+ return keys.sort((a, b) => ((a in order ? order[a] : 9) - (b in order ? order[b] : 9)) || a.localeCompare(b));
+ },
+
+ _mcaMapWorld() {
+ const m = this._mcaMapState();
+ return (m.data && m.data.worlds && m.world) ? m.data.worlds[m.world] : null;
+ },
+
+ _mcaMapSync() {
+ const m = this._mcaMapState();
+ const worlds = this._mcaMapWorlds();
+ if (!m.world || !worlds.includes(m.world)) m.world = worlds[0] || null;
+ const wsel = document.getElementById('mca-map-world');
+ if (wsel) wsel.innerHTML = worlds.length
+ ? worlds.map((w) => `<option value="${this._escapeHtml(w)}" ${w === m.world ? 'selected' : ''}>${this._escapeHtml(w)}</option>`).join('')
+ : '<option value="">—</option>';
+ const upd = document.getElementById('mca-map-updated');
+ if (upd) {
+ const at = m.data && m.data.updated_at;
+ const locale = Lang.t('common.locale') || 'fr-FR';
+ upd.textContent = `${Lang.t('mcagent.map.updated')}: ${at ? new Date(at).toLocaleString(locale) : Lang.t('mcagent.map.never')}`;
+ }
+ const world = this._mcaMapWorld();
+ const has = !!world && ((world.biomes || []).length + (world.caves || []).length + (world.finds || []).length) > 0;
+ this._mcaMapShowEmpty(has ? null : Lang.t('mcagent.map.empty'));
+ if (has && m.world && !m.fitted[m.world]) this._mcaMapFit(false);
+ this._mcaMapLegend();
+ this._mcaMapDraw();
+ },
+
+ _mcaMapShowEmpty(msg) {
+ const el = document.getElementById('mca-map-empty');
+ if (!el) return;
+ el.style.display = msg ? 'flex' : 'none';
+ if (msg) el.textContent = msg;
+ },
+
+ // Cadre la vue sur l'étendue des données du monde courant (90% du canvas).
+ _mcaMapFit(redraw) {
+ const m = this._mcaMapState();
+ const world = this._mcaMapWorld();
+ const cv = document.getElementById('mca-map-canvas');
+ if (!cv) return;
+ let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+ const seen = (x, z, span) => {
+ minX = Math.min(minX, x); maxX = Math.max(maxX, x + (span || 0));
+ minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z + (span || 0));
+ };
+ if (world) {
+ (world.biomes || []).forEach((b) => seen(b.x, b.z, 128));
+ (world.caves || []).forEach((c) => seen(c.x, c.z, 0));
+ (world.finds || []).forEach((f) => seen(f.x, f.z, 0));
+ }
+ if (minX === Infinity) { m.view = { cx: 0, cz: 0, scale: 0.6 }; if (redraw) this._mcaMapDraw(); return; }
+ const w = cv.clientWidth || 800, h = cv.clientHeight || 440;
+ m.view.cx = (minX + maxX) / 2;
+ m.view.cz = (minZ + maxZ) / 2;
+ const scale = Math.min(w / Math.max(maxX - minX, 128), h / Math.max(maxZ - minZ, 128)) * 0.9;
+ m.view.scale = Math.min(4, Math.max(0.02, scale));
+ if (m.world) m.fitted[m.world] = true;
+ if (redraw) this._mcaMapDraw();
+ },
+
+ _mcaHash(s) {
+ let h = 0;
+ for (let i = 0; i < s.length; i++) h = ((h * 31) + s.charCodeAt(i)) | 0;
+ return Math.abs(h);
+ },
+
+ // Couleur stable par biome — teinte thématique (océan bleu, désert sable…) + jitter hashé pour
+ // distinguer les variantes ; fallback 100% hashé pour les biomes custom de datapack (cf. spec §13).
+ _MCA_BIOME_RULES: [
+ // spécifiques d'abord (crimson/warped avant /forest/, lush/deep_dark avant /cave/)
+ [/crimson/, 355, 50, 30],
+ [/warped/, 175, 45, 28],
+ [/nether|basalt|soul|magma|delta/, 8, 55, 26],
+ [/lush/, 130, 45, 28],
+ [/deep_dark|sculk/, 245, 25, 26],
+ [/dripstone/, 28, 42, 30],
+ [/ocean|river|water|aquifer/, 215, 55, 30],
+ [/frozen|snow|ice|grove/, 200, 30, 56],
+ [/desert|beach|badland|sand|dune/, 38, 50, 42],
+ [/jungle|bamboo/, 100, 55, 26],
+ [/swamp|mangrove|bog/, 75, 32, 22],
+ [/savanna/, 62, 45, 32],
+ [/taiga/, 165, 38, 26],
+ [/forest|wood|birch|cherry/, 120, 42, 27],
+ [/plain|meadow|field|pasture/, 90, 48, 34],
+ [/mushroom/, 295, 35, 34],
+ [/peak|mountain|hill|slope|stony|windswept|gravel/, 220, 8, 40],
+ [/\bend\b|void|barren/, 55, 25, 42],
+ [/cave|deep/, 28, 38, 24],
+ ],
+
+ _mcaBiomeColor(name) {
+ const n = String(name).toLowerCase();
+ const h = this._mcaHash('b:' + n);
+ for (const [re, hue, s, l] of this._MCA_BIOME_RULES) {
+ if (re.test(n)) return `hsl(${(hue + (h % 25) - 12 + 360) % 360},${s}%,${l + (h % 7) - 3}%)`;
+ }
+ return `hsl(${h % 360},38%,30%)`;
+ },
+
+ // Couleurs fixes pour les matériaux courants (lisibilité immédiate), hash vif pour le reste.
+ _MCA_MAT_COLORS: {
+ diamond: '#4DD8E6', diamond_ore: '#4DD8E6', deepslate_diamond_ore: '#4DD8E6',
+ iron: '#E8C5A8', iron_ore: '#E8C5A8', deepslate_iron_ore: '#E8C5A8', raw_iron: '#E8C5A8',
+ coal: '#9AA0A6', coal_ore: '#9AA0A6', deepslate_coal_ore: '#9AA0A6',
+ copper_ore: '#E77C56', gold_ore: '#FACC15', redstone_ore: '#F87171',
+ lapis_ore: '#60A5FA', emerald_ore: '#4ADE80',
+ },
+
+ _mcaMatColor(mat) {
+ const key = String(mat).toLowerCase();
+ if (this._MCA_MAT_COLORS[key]) return this._MCA_MAT_COLORS[key];
+ if (/log|wood|plank/.test(key)) return '#B08968';
+ const h = this._mcaHash('m:' + key);
+ return `hsl(${h % 360},80%,64%)`;
+ },
+
+ _mcaMapBindCanvas() {
+ const m = this._mcaMapState();
+ const cv = document.getElementById('mca-map-canvas');
+ if (!cv) return;
+ m.resize = () => this._mcaMapDraw();
+ window.addEventListener('resize', m.resize);
+ const pos = (ev) => { const r = cv.getBoundingClientRect(); return { x: ev.clientX - r.left, y: ev.clientY - r.top }; };
+ cv.addEventListener('pointerdown', (ev) => {
+ ev.preventDefault();
+ cv.setPointerCapture(ev.pointerId);
+ const p = pos(ev);
+ m.drag = { x: p.x, y: p.y, cx: m.view.cx, cz: m.view.cz };
+ cv.style.cursor = 'grabbing';
+ });
+ cv.addEventListener('pointermove', (ev) => {
+ const p = pos(ev);
+ if (m.drag) {
+ m.view.cx = m.drag.cx - (p.x - m.drag.x) / m.view.scale;
+ m.view.cz = m.drag.cz - (p.y - m.drag.y) / m.view.scale;
+ this._mcaMapDraw();
+ }
+ this._mcaMapCoords(p, cv);
+ });
+ const end = () => { m.drag = null; cv.style.cursor = 'grab'; };
+ cv.addEventListener('pointerup', end);
+ cv.addEventListener('pointercancel', end);
+ cv.addEventListener('pointerleave', () => {
+ const el = document.getElementById('mca-map-coords');
+ if (el) el.textContent = '';
+ });
+ cv.addEventListener('wheel', (ev) => {
+ ev.preventDefault();
+ const p = pos(ev);
+ const w = cv.clientWidth, h = cv.clientHeight;
+ const v = m.view;
+ // zoom centré sur le curseur : le point monde sous la souris reste sous la souris
+ const wx = v.cx + (p.x - w / 2) / v.scale;
+ const wz = v.cz + (p.y - h / 2) / v.scale;
+ v.scale = Math.min(8, Math.max(0.02, v.scale * Math.exp(-ev.deltaY * 0.0015)));
+ v.cx = wx - (p.x - w / 2) / v.scale;
+ v.cz = wz - (p.y - h / 2) / v.scale;
+ this._mcaMapDraw();
+ this._mcaMapCoords(p, cv);
+ }, { passive: false });
+ },
+
+ // Lecture des coords monde sous le curseur + biome de la cellule survolée.
+ _mcaMapCoords(p, cv) {
+ const el = document.getElementById('mca-map-coords');
+ if (!el) return;
+ const v = this._mcaMapState().view;
+ const w = cv.clientWidth, h = cv.clientHeight;
+ const wx = Math.round(v.cx + (p.x - w / 2) / v.scale);
+ const wz = Math.round(v.cz + (p.y - h / 2) / v.scale);
+ const cx = Math.floor(wx / 128) * 128, cz = Math.floor(wz / 128) * 128;
+ const world = this._mcaMapWorld();
+ const b = world ? (world.biomes || []).find((bb) => bb.x === cx && bb.z === cz) : null;
+ el.textContent = `x ${wx} · z ${wz}` + (b ? ` · ${b.name || ('#' + b.id)}` : '');
+ },
+
+ _mcaMapDraw() {
+ const m = this._mcaMapState();
+ const cv = document.getElementById('mca-map-canvas');
+ if (!cv) return;
+ const dpr = window.devicePixelRatio || 1;
+ const w = cv.clientWidth, h = cv.clientHeight;
+ if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+ cv.width = Math.round(w * dpr);
+ cv.height = Math.round(h * dpr);
+ }
+ const ctx = cv.getContext('2d');
+ ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+ ctx.fillStyle = '#0B0B0D';
+ ctx.fillRect(0, 0, w, h);
+ const v = m.view;
+ const toX = (x) => (x - v.cx) * v.scale + w / 2;
+ const toY = (z) => (z - v.cz) * v.scale + h / 2;
+ const world = this._mcaMapWorld();
+ if (!world) { this._mcaMapScaleBar(ctx, w, h); return; }
+ const hid = m.hidden;
+ // 1. biomes — cases 128×128 (joint hairline 1px quand assez zoomé)
+ const cell = 128 * v.scale;
+ const gap = cell > 6 ? 1 : 0;
+ for (const b of world.biomes || []) {
+ const key = b.name || ('#' + b.id);
+ if (hid['b:' + key]) continue;
+ const x0 = toX(b.x), y0 = toY(b.z);
+ if (x0 > w || y0 > h || x0 + cell < 0 || y0 + cell < 0) continue;
+ ctx.fillStyle = this._mcaBiomeColor(key);
+ ctx.fillRect(x0, y0, Math.max(cell - gap, 1), Math.max(cell - gap, 1));
+ }
+ // 2. grille 128 discrète (si assez zoomé pour qu'elle ait un sens)
+ if (v.scale >= 0.12) {
+ ctx.strokeStyle = 'rgba(244,244,245,0.05)';
+ ctx.lineWidth = 1;
+ const step = cell;
+ let gx = toX(Math.floor((v.cx - w / 2 / v.scale) / 128) * 128);
+ for (; gx <= w; gx += step) { ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, h); ctx.stroke(); }
+ let gy = toY(Math.floor((v.cz - h / 2 / v.scale) / 128) * 128);
+ for (; gy <= h; gy += step) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke(); }
+ }
+ // 3. croix d'origine (0,0) — repère spawn
+ const ox = toX(0), oy = toY(0);
+ if (ox >= -8 && ox <= w + 8 && oy >= -8 && oy <= h + 8) {
+ ctx.strokeStyle = 'rgba(244,244,245,0.4)';
+ ctx.lineWidth = 1;
+ ctx.beginPath();
+ ctx.moveTo(ox - 6, oy); ctx.lineTo(ox + 6, oy);
+ ctx.moveTo(ox, oy - 6); ctx.lineTo(ox, oy + 6);
+ ctx.stroke();
+ }
+ // 4. grottes — triangles (entrées, y réel dispo au survol via légende)
+ if (!hid.caves) {
+ for (const c of world.caves || []) {
+ const x = toX(c.x), y = toY(c.z);
+ if (x < -8 || y < -8 || x > w + 8 || y > h + 8) continue;
+ ctx.fillStyle = 'rgba(14,14,16,0.85)';
+ ctx.strokeStyle = '#F4F4F5';
+ ctx.lineWidth = 1.4;
+ ctx.beginPath();
+ ctx.moveTo(x, y - 5); ctx.lineTo(x + 4.5, y + 3.5); ctx.lineTo(x - 4.5, y + 3.5);
+ ctx.closePath();
+ ctx.fill(); ctx.stroke();
+ }
+ }
+ // 5. trouvailles — losanges colorés par matériau
+ for (const f of world.finds || []) {
+ if (hid['m:' + f.material]) continue;
+ const x = toX(f.x), y = toY(f.z);
+ if (x < -8 || y < -8 || x > w + 8 || y > h + 8) continue;
+ ctx.fillStyle = this._mcaMatColor(f.material);
+ ctx.strokeStyle = 'rgba(14,14,16,0.9)';
+ ctx.lineWidth = 1;
+ ctx.beginPath();
+ ctx.moveTo(x, y - 5); ctx.lineTo(x + 5, y); ctx.lineTo(x, y + 5); ctx.lineTo(x - 5, y);
+ ctx.closePath();
+ ctx.fill(); ctx.stroke();
+ }
+ this._mcaMapScaleBar(ctx, w, h);
+ },
+
+ // Barre d'échelle (bas-droite) : longueur en blocs, puissance de 2 calée sur 40-180px.
+ _mcaMapScaleBar(ctx, w, h) {
+ const v = this._mcaMapState().view;
+ let blocks = 128;
+ let px = blocks * v.scale;
+ while (px < 40 && blocks < 65536) { blocks *= 2; px = blocks * v.scale; }
+ while (px > 180 && blocks > 16) { blocks /= 2; px = blocks * v.scale; }
+ const x = w - px - 14, y = h - 14;
+ ctx.strokeStyle = 'rgba(244,244,245,0.7)';
+ ctx.lineWidth = 1.5;
+ ctx.beginPath();
+ ctx.moveTo(x, y); ctx.lineTo(x + px, y);
+ ctx.moveTo(x, y - 4); ctx.lineTo(x, y + 4);
+ ctx.moveTo(x + px, y - 4); ctx.lineTo(x + px, y + 4);
+ ctx.stroke();
+ ctx.fillStyle = 'rgba(244,244,245,0.7)';
+ ctx.font = '10px "Geist Mono", monospace'; // ctx.font ne résout pas les vars CSS
+ ctx.textAlign = 'center';
+ ctx.fillText(String(blocks), x + px / 2, y - 6);
+ },
+
+ // Légende cliquable : chips biomes (carrés) / matériaux (losanges) / grottes (triangle) avec compte.
+ _mcaMapLegend() {
+ const box = document.getElementById('mca-map-legend');
+ if (!box) return;
+ const m = this._mcaMapState();
+ const world = this._mcaMapWorld();
+ if (!world) { box.innerHTML = ''; return; }
+ const counts = (arr, key) => {
+ const o = {};
+ (arr || []).forEach((e) => { const k = key(e); o[k] = (o[k] || 0) + 1; });
+ return o;
+ };
+ const biomes = counts(world.biomes, (b) => b.name || ('#' + b.id));
+ const mats = counts(world.finds, (f) => f.material);
+ const chip = (k, label, color, count, shape) => {
+ const sw = shape === 'diamond'
+ ? `<span style="display:inline-block;width:9px;height:9px;background:${color};transform:rotate(45deg);border-radius:2px;"></span>`
+ : shape === 'tri'
+ ? `<span style="display:inline-block;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid ${color};"></span>`
+ : `<span style="display:inline-block;width:10px;height:10px;background:${color};border-radius:3px;"></span>`;
+ return `<button type="button" data-k="${this._escapeHtml(k)}" class="mca-map-chip" style="display:inline-flex;align-items:center;gap:6px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:999px;padding:3px 10px;margin:2px 6px 2px 0;font-size:12px;cursor:pointer;color:var(--text);opacity:${m.hidden[k] ? 0.35 : 1};">${sw}<span>${this._escapeHtml(label)}</span><span style="color:var(--text-dim);font-family:var(--font-mono);">${count}</span></button>`;
+ };
+ const bioChips = Object.keys(biomes).sort((a, b) => biomes[b] - biomes[a] || a.localeCompare(b))
+ .map((k) => chip('b:' + k, k, this._mcaBiomeColor(k), biomes[k])).join('');
+ const matChips = Object.keys(mats).sort()
+ .map((k) => chip('m:' + k, k, this._mcaMatColor(k), mats[k], 'diamond')).join('');
+ const caveChip = (world.caves || []).length
+ ? chip('caves', Lang.t('mcagent.map.caves'), '#F4F4F5', (world.caves || []).length, 'tri') : '';
+ const section = (title, chips) => chips
+ ? `<div style="margin-bottom:6px;"><div style="font-size:11px;text-transform:uppercase;color:var(--text-dim);margin-bottom:3px;">${title}</div>${chips}</div>` : '';
+ box.innerHTML =
+ section(Lang.t('mcagent.map.biomes'), bioChips) +
+ section(Lang.t('mcagent.map.finds'), matChips) +
+ section(Lang.t('mcagent.map.caves'), caveChip);
+ box.querySelectorAll('.mca-map-chip').forEach((el) => el.addEventListener('click', () => {
+ const k = el.getAttribute('data-k');
+ m.hidden[k] = !m.hidden[k];
+ el.style.opacity = m.hidden[k] ? 0.35 : 1;
+ this._mcaMapDraw();
+ }));
  },
 
  async refreshMCAgent() {
