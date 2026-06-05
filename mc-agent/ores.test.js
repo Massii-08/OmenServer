@@ -167,7 +167,7 @@ test('nextOreTarget : entrées invalides / monde absent / memory null → null p
 });
 
 // ─── Détection des minerais exposés (cartographe) ───
-const { ORE_NAMES, isExposed, scanExposedOres, exposedOreFoundEvent } = require('./ores');
+const { ORE_NAMES, QUOTA_ORE_NAMES, isExposed, scanExposedOres, scanAllOres, exposedOreFoundEvent, oresFoundEvent } = require('./ores');
 
 // Fake monde 3D : fonction (x,y,z) → nom de bloc. blockAt construit le bloc.
 // boundingBox 'empty' pour air/cave_air/void_air/water/lava, 'block' sinon ; null pour 'unloaded'.
@@ -318,4 +318,60 @@ test('ORE_NAMES contient les minerais clés', () => {
   for (const n of ['coal_ore', 'iron_ore', 'diamond_ore', 'deepslate_diamond_ore', 'ancient_debris']) {
     assert.ok(ORE_NAMES.includes(n), `manque ${n}`);
   }
+});
+
+// ─── scanAllOres : scan COMPLET (exposés + enfouis, flag exposed) ───
+const v = (x, y, z) => ({ x, y, z });
+
+test('scanAllOres : retourne exposés ET enfouis avec flag exposed', () => {
+  const world = (x, y, z) => {
+    if (x === 5 && y === 40 && z === 5) return 'iron_ore';        // exposé (air au-dessus)
+    if (x === 5 && y === 41 && z === 5) return 'air';
+    if (x === 8 && y === -50 && z === 8) return 'deepslate_diamond_ore'; // enterré (stone autour)
+    return 'stone';
+  };
+  const bot = makeBot(world);
+  bot.registry = { blocksByName: { iron_ore: { id: 10 }, deepslate_diamond_ore: { id: 11 } } };
+  bot.findBlocks = () => [v(5, 40, 5), v(8, -50, 8)];
+  const out = scanAllOres(bot);
+  assert.strictEqual(out.length, 2);
+  const exp = out.find((o) => o.material === 'iron_ore');
+  const bur = out.find((o) => o.material === 'deepslate_diamond_ore');
+  assert.deepStrictEqual(exp, { material: 'iron_ore', x: 5, y: 40, z: 5, exposed: true });
+  assert.deepStrictEqual(bur, { material: 'deepslate_diamond_ore', x: 8, y: -50, z: 8, exposed: false });
+});
+
+test('scanAllOres : ne matche que QUOTA_ORE_NAMES (5 matériaux × 2 variantes)', () => {
+  assert.strictEqual(QUOTA_ORE_NAMES.length, 10);
+  for (const m of ['diamond', 'gold', 'redstone', 'lapis', 'iron']) {
+    assert.ok(QUOTA_ORE_NAMES.includes(m + '_ore'), m + '_ore manquant');
+    assert.ok(QUOTA_ORE_NAMES.includes('deepslate_' + m + '_ore'), 'deepslate_' + m + '_ore manquant');
+  }
+  // registry sans certains noms → skip silencieux (vieille version MC)
+  const bot = makeBot(() => 'stone');
+  bot.registry = { blocksByName: { iron_ore: { id: 10 } } };
+  let asked = null;
+  bot.findBlocks = (q) => { asked = q.matching; return []; };
+  scanAllOres(bot);
+  assert.deepStrictEqual(asked, [10]);
+});
+
+test('scanAllOres : best-effort — bot incomplet → []', () => {
+  assert.deepStrictEqual(scanAllOres(null), []);
+  assert.deepStrictEqual(scanAllOres({}), []);
+  const bot = makeBot(() => 'stone');
+  bot.registry = null; bot.findBlocks = () => { throw new Error('boom'); };
+  assert.deepStrictEqual(scanAllOres(bot), []);
+});
+
+test('oresFoundEvent : event batché {type:ores_found, world, ores}', () => {
+  const ev = oresFoundEvent('overworld', [
+    { material: 'iron_ore', x: 1.7, y: 40.2, z: -3.9, exposed: true },
+    { material: 'diamond_ore', x: 2, y: -50, z: 3, exposed: false },
+  ]);
+  assert.strictEqual(ev.type, 'ores_found');
+  assert.strictEqual(ev.world, 'overworld');
+  assert.strictEqual(ev.ores.length, 2);
+  assert.deepStrictEqual(ev.ores[0], { material: 'iron_ore', x: 1, y: 40, z: -4, exposed: true });  // floored
+  assert.deepStrictEqual(ev.ores[1], { material: 'diamond_ore', x: 2, y: -50, z: 3, exposed: false });
 });

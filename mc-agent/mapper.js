@@ -17,7 +17,7 @@
 // Ne retourne JAMAIS sauf annulation du token (c'est un rôle, pas une tâche finie).
 const { sectorRange, inSector, isCellMapped } = require('./sectors');
 const { detectCaveEntrance } = require('./caves');
-const { scanExposedOres, exposedOreFoundEvent } = require('./ores');
+const { scanAllOres, oresFoundEvent } = require('./ores');
 const { biomeSeenEvent, caveFoundEvent, resolveBiome } = require('./worldMemory');
 const { survivalTick } = require('./survival');
 const { isInWater, escapeWater, clearSnares, isFloatingStuck, recoverFloating, WATER } = require('./unstuck');
@@ -150,7 +150,7 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   const localSeen = new Set();   // cellules visitées
   const biomeCells = new Set();  // cellules dont le biome a été émis
   const caveCells = new Set();   // cellules dont une grotte a été émise
-  const oreSeen = new Set();     // minerais exposés déjà émis (dédup par position de BLOC 3D)
+  const oreSeen = new Set();     // minerais déjà émis (dédup par position de BLOC 3D)
 
   // Note la position courante : biome (1×/cellule) + entrée de grotte éventuelle.
   function record() {
@@ -175,13 +175,16 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
         if (!caveCells.has(cck)) { caveCells.add(cck); emit(caveFoundEvent(worldKey, cave.pos)); }
       }
     } catch (e) { /* best-effort */ }
-    // minerais EXPOSÉS dans les chunks chargés (ores.js — pour le bot ressource) : scan à chaque
-    // arrivée, surface OU sous-sol ; dédup par position de bloc → chaque ore émis UNE fois.
+    // minerais dans les chunks chargés (ores.js — pour les bots ressources) : scan COMPLET
+    // (exposés + enfouis, flag exposed) à chaque arrivée ; dédup par position de bloc ; émission
+    // BATCHÉE (1 event = 1 write backend, le fichier mémoire est gros).
     try {
-      for (const ore of scanExposedOres(bot)) {
+      const fresh = [];
+      for (const ore of scanAllOres(bot)) {
         const ok = ore.x + ',' + ore.y + ',' + ore.z;
-        if (!oreSeen.has(ok)) { oreSeen.add(ok); emit(exposedOreFoundEvent(worldKey, ore.material, ore)); }
+        if (!oreSeen.has(ok)) { oreSeen.add(ok); fresh.push(ore); }
       }
+      if (fresh.length) emit(oresFoundEvent(worldKey, fresh));
     } catch (e) { /* best-effort */ }
   }
 

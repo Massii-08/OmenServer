@@ -28,7 +28,7 @@ WORLD_MEMORY_DIR = _PROJECT_ROOT / "data" / "mc_agent_world_memory"
 _SAFE_ID = re.compile(r"^[a-z0-9]+$")
 GRID = 128   # taille de cellule (quantification x,z) : 1 entrée par région de 128²
 CAP = 500    # entrées max par (monde, type) ; au-delà on jette les plus vieilles
-ORE_CAP = 1000  # minerais exposés max par monde (coords 3D précises) ; anti-débordement disque
+ORE_CAP = 4000  # minerais max par monde (coords 3D précises, scan complet) ; anti-débordement disque
 
 
 def _q(v):
@@ -103,7 +103,7 @@ def add_find(memory, world, material, biome, x, z, at=None, cap=CAP):
     return memory
 
 
-def add_ore(memory, world, material, x, y, z, at=None, cap=ORE_CAP):
+def add_ore(memory, world, material, x, y, z, at=None, cap=ORE_CAP, exposed=True):
     """Note un minerai à sa position 3D EXACTE (coords RÉELLES int, PAS quantifiées grille).
 
     Cartographe : un bloc de minerai vu dans les chunks chargés (`material` à (x,y,z) entiers).
@@ -115,7 +115,8 @@ def add_ore(memory, world, material, x, y, z, at=None, cap=ORE_CAP):
     w = _world(memory, world)
     ix, iy, iz = int(x), int(y), int(z)
     w["ores"] = [o for o in w["ores"] if not (o["x"] == ix and o["y"] == iy and o["z"] == iz)]
-    w["ores"].append({"material": str(material), "x": ix, "y": iy, "z": iz, "at": at})
+    w["ores"].append({"material": str(material), "x": ix, "y": iy, "z": iz, "at": at,
+                      "exposed": bool(exposed)})
     if len(w["ores"]) > cap:
         w["ores"] = w["ores"][-cap:]  # garde les plus récentes
     if at:
@@ -153,6 +154,18 @@ def apply_event(memory, event, at=None):
             return add_find(memory, world, event["material"], event["biome"], event["x"], event["z"], at=at)
         if t == "exposed_ore_found":
             return add_ore(memory, world, event["material"], event["x"], event["y"], event["z"], at=at)
+        if t == "ores_found":
+            ores = event.get("ores")
+            if isinstance(ores, list):
+                for o in ores:
+                    if not isinstance(o, dict):
+                        continue
+                    try:
+                        add_ore(memory, world, o.get("material"), o["x"], o["y"], o["z"],
+                                at=at, exposed=o.get("exposed", True))
+                    except (KeyError, TypeError, ValueError):
+                        continue          # entrée malformée → skip, le reste du batch passe
+            return memory
         if t in ("ore_mined", "ore_gone"):
             return remove_ore(memory, world, event["x"], event["y"], event["z"], at=at)
     except (KeyError, TypeError, ValueError):

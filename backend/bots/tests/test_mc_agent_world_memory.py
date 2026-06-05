@@ -246,3 +246,61 @@ def test_save_load_preserves_ores(tmp_path):
     loaded = wm.load("g7", base_dir=tmp_path)
     ores = loaded["worlds"]["w"]["ores"]
     assert len(ores) == 1 and ores[0]["material"] == "diamond_ore" and ores[0]["y"] == 11
+
+
+# --- Scan complet : flag exposed + event batché ores_found ---
+
+def test_add_ore_exposed_flag_default_true():
+    m = wm.empty_memory("g")
+    wm.add_ore(m, "w", "iron_ore", 1, 2, 3, at="t1")
+    assert m["worlds"]["w"]["ores"][0]["exposed"] is True
+
+
+def test_add_ore_exposed_false_stored():
+    m = wm.empty_memory("g")
+    wm.add_ore(m, "w", "deepslate_diamond_ore", 1, -55, 3, at="t1", exposed=False)
+    o = m["worlds"]["w"]["ores"][0]
+    assert o["exposed"] is False and o["material"] == "deepslate_diamond_ore"
+
+
+def test_apply_event_ores_found_batch():
+    m = wm.empty_memory("g")
+    wm.apply_event(m, {"type": "ores_found", "world": "w", "ores": [
+        {"material": "iron_ore", "x": 1, "y": 40, "z": 2, "exposed": True},
+        {"material": "diamond_ore", "x": 5, "y": -52, "z": 9, "exposed": False},
+    ]}, at="t1")
+    ores = m["worlds"]["w"]["ores"]
+    assert len(ores) == 2
+    assert {o["material"] for o in ores} == {"iron_ore", "diamond_ore"}
+    assert m["updated_at"] == "t1"
+
+
+def test_apply_event_ores_found_skips_bad_entries():
+    m = wm.empty_memory("g")
+    wm.apply_event(m, {"type": "ores_found", "world": "w", "ores": [
+        {"material": "iron_ore", "x": 1, "y": 40, "z": 2},          # ok (exposed défaut True)
+        {"material": "", "x": 1, "y": 1, "z": 1},                    # material falsy → skip
+        {"material": "gold_ore", "x": "nan", "y": 1, "z": 1},        # coord invalide → skip
+        "pas_un_dict",                                                # type invalide → skip
+    ]}, at="t1")
+    ores = m["worlds"]["w"]["ores"]
+    assert len(ores) == 1 and ores[0]["material"] == "iron_ore" and ores[0]["exposed"] is True
+
+
+def test_apply_event_ores_found_not_a_list_no_crash():
+    m = wm.empty_memory("g")
+    wm.apply_event(m, {"type": "ores_found", "world": "w", "ores": "oops"}, at="t1")
+    wm.apply_event(m, {"type": "ores_found", "world": "w"}, at="t2")
+    w = m["worlds"].get("w")
+    assert w is None or w.get("ores", []) == []
+
+
+def test_apply_event_exposed_ore_found_legacy_sets_exposed_true():
+    m = wm.empty_memory("g")
+    wm.apply_event(m, {"type": "exposed_ore_found", "world": "w", "material": "iron_ore",
+                       "x": 1, "y": 2, "z": 3}, at="t1")
+    assert m["worlds"]["w"]["ores"][0]["exposed"] is True
+
+
+def test_ore_cap_is_4000():
+    assert wm.ORE_CAP == 4000

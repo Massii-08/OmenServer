@@ -185,7 +185,61 @@ function exposedOreFoundEvent(world, material, pos) {
   };
 }
 
+
+// Matériaux QUOTA (bots ressources multi-quota) : les 5 nécessaires, variantes stone + deepslate.
+// Sous-ensemble d'ORE_NAMES — le scan complet se limite à eux pour borner la taille de la carte.
+const QUOTA_ORE_NAMES = [
+  'diamond_ore', 'deepslate_diamond_ore',
+  'gold_ore', 'deepslate_gold_ore',
+  'redstone_ore', 'deepslate_redstone_ore',
+  'lapis_ore', 'deepslate_lapis_ore',
+  'iron_ore', 'deepslate_iron_ore',
+];
+
+/**
+ * Scan COMPLET des minerais dans les chunks chargés (exposés ET enfouis — serveur offline sans
+ * anti-xray : le cache client contient tout le Y, données légitimes). Chaque entrée porte
+ * `exposed` (calculé via isExposed) : le bot ressource sait s'il devra creuser l'approche finale.
+ * Limité aux QUOTA_ORE_NAMES par défaut. Best-effort, jamais de crash. → [{material,x,y,z,exposed}]
+ */
+function scanAllOres(bot, opts = {}) {
+  const { maxDistance = 128, count = 1500, names = QUOTA_ORE_NAMES } = opts;
+  try {
+    if (!bot || typeof bot.blockAt !== 'function' || typeof bot.findBlocks !== 'function') return [];
+    const reg = bot.registry && bot.registry.blocksByName;
+    if (!reg) return [];
+    const ids = [];
+    for (const name of names) {
+      const hit = reg[name];
+      if (hit && typeof hit.id === 'number') ids.push(hit.id); // skip noms absents (vieille version)
+    }
+    if (ids.length === 0) return [];
+    const positions = bot.findBlocks({ matching: ids, maxDistance, count }) || [];
+    const out = [];
+    for (const p of positions) {
+      const x = Math.floor(p.x), y = Math.floor(p.y), z = Math.floor(p.z);
+      const block = bot.blockAt(_at(x, y, z));
+      if (!block) continue;                               // chunk non chargé → skip
+      out.push({ material: block.name, x, y, z, exposed: isExposed(bot, p) });
+    }
+    return out;
+  } catch (e) {
+    return [];                                            // best-effort, jamais de crash
+  }
+}
+
+// Event BATCHÉ (1 write backend par scan, pas 1 par ore — le fichier mémoire est gros).
+function oresFoundEvent(world, ores) {
+  return {
+    type: 'ores_found', world,
+    ores: (ores || []).map((o) => ({
+      material: o.material, x: Math.floor(o.x), y: Math.floor(o.y), z: Math.floor(o.z),
+      exposed: !!o.exposed,
+    })),
+  };
+}
+
 module.exports = {
   TIERS, DEFAULT_PRIORITY, oreBase, requiredPickTier, listOres, oreKey, nextOreTarget,
-  ORE_NAMES, isExposed, scanExposedOres, exposedOreFoundEvent,
+  ORE_NAMES, QUOTA_ORE_NAMES, isExposed, scanExposedOres, scanAllOres, exposedOreFoundEvent, oresFoundEvent,
 };
