@@ -28,7 +28,9 @@ WORLD_MEMORY_DIR = _PROJECT_ROOT / "data" / "mc_agent_world_memory"
 _SAFE_ID = re.compile(r"^[a-z0-9]+$")
 GRID = 128   # taille de cellule (quantification x,z) : 1 entrée par région de 128²
 CAP = 500    # entrées max par (monde, type) ; au-delà on jette les plus vieilles
-ORE_CAP = 4000  # minerais max par monde (coords 3D précises, scan complet) ; anti-débordement disque
+ORE_CAP = 800   # minerais max par (monde, TYPE de base) — cap PAR TYPE : le fer (ultra-commun,
+                # ~85% des entrées d'un scan complet) ne doit pas évincer les 9 diamants du monde.
+                # 5 types quota × 800 = 4000 max par monde (disque borné comme avant).
 
 
 def _q(v):
@@ -103,6 +105,16 @@ def add_find(memory, world, material, biome, x, z, at=None, cap=CAP):
     return memory
 
 
+def _ore_base(material):
+    """Type de base d'un minerai : strip deepslate_/nether_ + _ore (miroir de ores.js oreBase)."""
+    m = str(material or "")
+    if m.startswith("deepslate_"):
+        m = m[10:]
+    elif m.startswith("nether_"):
+        m = m[7:]
+    return m[:-4] if m.endswith("_ore") else m
+
+
 def add_ore(memory, world, material, x, y, z, at=None, cap=ORE_CAP, exposed=True):
     """Note un minerai à sa position 3D EXACTE (coords RÉELLES int, PAS quantifiées grille).
 
@@ -117,8 +129,11 @@ def add_ore(memory, world, material, x, y, z, at=None, cap=ORE_CAP, exposed=True
     w["ores"] = [o for o in w["ores"] if not (o["x"] == ix and o["y"] == iy and o["z"] == iz)]
     w["ores"].append({"material": str(material), "x": ix, "y": iy, "z": iz, "at": at,
                       "exposed": bool(exposed)})
-    if len(w["ores"]) > cap:
-        w["ores"] = w["ores"][-cap:]  # garde les plus récentes
+    base = _ore_base(material)
+    same = [o for o in w["ores"] if _ore_base(o["material"]) == base]
+    if len(same) > cap:
+        drop = {id(o) for o in same[:len(same) - cap]}   # les plus VIEILLES de CE type
+        w["ores"] = [o for o in w["ores"] if id(o) not in drop]
     if at:
         memory["updated_at"] = at
     return memory

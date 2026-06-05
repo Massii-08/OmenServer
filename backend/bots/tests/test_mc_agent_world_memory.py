@@ -302,5 +302,22 @@ def test_apply_event_exposed_ore_found_legacy_sets_exposed_true():
     assert m["worlds"]["w"]["ores"][0]["exposed"] is True
 
 
-def test_ore_cap_is_4000():
-    assert wm.ORE_CAP == 4000
+def test_ore_cap_is_800_per_type():
+    assert wm.ORE_CAP == 800   # supersédé : cap PAR TYPE (cf. test_add_ore_cap_is_per_base_type)
+
+
+# --- Cap PAR TYPE (le fer ne doit pas évincer les diamants) ---
+
+def test_add_ore_cap_is_per_base_type():
+    m = wm.empty_memory("g")
+    # 1 diamant puis un déluge de fer au-delà du cap : le diamant SURVIT
+    wm.add_ore(m, "w", "deepslate_diamond_ore", 0, -55, 0, at="t0", cap=5)
+    for i in range(1, 12):
+        wm.add_ore(m, "w", "iron_ore", i, 40, 0, at=f"t{i}", cap=5)
+    ores = m["worlds"]["w"]["ores"]
+    bases = [o["material"] for o in ores]
+    assert "deepslate_diamond_ore" in bases            # pas évincé par le fer
+    assert sum(1 for b in bases if b.endswith("iron_ore")) == 5   # fer capé à 5
+    assert len(ores) == 6
+
+
