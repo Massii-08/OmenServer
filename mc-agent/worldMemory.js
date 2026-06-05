@@ -28,6 +28,12 @@ function vanillaHint(material) {
   return VANILLA_HINTS[material] || [];
 }
 
+/** `material` est-il un minerai ? (suffixe `_ore` couvre les variantes deepslate/nether ; + ancient_debris). */
+function isOre(material) {
+  if (!material || typeof material !== 'string') return false;
+  return material.endsWith('_ore') || material === 'ancient_debris';
+}
+
 /** Parse le contenu JSON d'une mémoire. {worlds:{}} si invalide. */
 function parseMemory(text) {
   try {
@@ -116,10 +122,16 @@ function directedTarget(memory, world, material, from, opts = {}) {
     const fromBiomes = pickNearest(biomes.map((b) => ({ x: b.x, z: b.z, biome: b.name })));
     if (fromBiomes) return { ...fromBiomes, learned: false };
   }
+
+  // 3) minerai → entrée de grotte connue la + proche (minerais exposés ; spec §4 « caves exploitables »)
+  if (isOre(material)) {
+    const fromCaves = pickNearest((w.caves || []).map((c) => ({ x: c.x, z: c.z, y: c.y, biome: null })));
+    if (fromCaves) return { ...fromCaves, learned: false, cave: true };
+  }
   return null;
 }
 
 module.exports = {
-  vanillaHint, parseMemory, loadMemory, worldKey, readBiome, resolveBiome,
+  vanillaHint, isOre, parseMemory, loadMemory, worldKey, readBiome, resolveBiome,
   biomeSeenEvent, caveFoundEvent, materialFoundEvent, directedTarget,
 };

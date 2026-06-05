@@ -64,6 +64,39 @@ test('directedTarget : rien de connu → null ; hors maxDist → null', () => {
   assert.strictEqual(wm.directedTarget(mem, 'w', 'oak_log', { x: 0, z: 0 }, { maxDist: 1500 }), null);
 });
 
+// --- biais caves (1d) : un minerai sans find appris ni amorce → entrée de grotte connue la + proche ---
+
+test('isOre : *_ore (deepslate inclus) + ancient_debris ; pas le bois/sable', () => {
+  assert.strictEqual(wm.isOre('iron_ore'), true);
+  assert.strictEqual(wm.isOre('deepslate_diamond_ore'), true);
+  assert.strictEqual(wm.isOre('ancient_debris'), true);
+  assert.strictEqual(wm.isOre('oak_log'), false);
+  assert.strictEqual(wm.isOre('sand'), false);
+  assert.strictEqual(wm.isOre(null), false);
+});
+
+test('directedTarget : minerai sans find → cave connue la + proche (cave:true)', () => {
+  const mem = { worlds: { w: { finds: [], biomes: [], caves: [
+    { x: 100, y: 40, z: -50 }, { x: 900, y: 30, z: 900 },
+  ] } } };
+  const t = wm.directedTarget(mem, 'w', 'iron_ore', { x: 0, z: 0 });
+  assert.deepStrictEqual(t, { x: 100, z: -50, y: 40, biome: null, learned: false, cave: true });
+});
+
+test('directedTarget : find appris du minerai prime sur la cave', () => {
+  const mem = { worlds: { w: { finds: [{ material: 'iron_ore', biome: 'plains', x: 300, z: 0 }],
+    biomes: [], caves: [{ x: 100, y: 40, z: -50 }] } } };
+  const t = wm.directedTarget(mem, 'w', 'iron_ore', { x: 0, z: 0 });
+  assert.deepStrictEqual(t, { x: 300, z: 0, biome: 'plains', learned: true });
+});
+
+test('directedTarget : non-minerai → caves ignorées ; cave hors maxDist → null', () => {
+  const mem = { worlds: { w: { finds: [], biomes: [], caves: [{ x: 100, y: 40, z: -50 }] } } };
+  assert.strictEqual(wm.directedTarget(mem, 'w', 'oak_log', { x: 0, z: 0 }), null);
+  const far = { worlds: { w: { finds: [], biomes: [], caves: [{ x: 9000, y: 40, z: 0 }] } } };
+  assert.strictEqual(wm.directedTarget(far, 'w', 'iron_ore', { x: 0, z: 0 }, { maxDist: 1500 }), null);
+});
+
 // --- resolveBiome (#2 retours live : biome.name = '' en 1.21.4, résolu via registry) ---
 const { resolveBiome } = require('./worldMemory');
 

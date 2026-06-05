@@ -48,6 +48,8 @@ const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
 const { loadMemory, worldKey } = require('./worldMemory');
 const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
+const { runResource } = require('./skills/resource');
+const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
 const { isNight, shelterUntilDawn } = require('./skills/shelter');
 
@@ -273,7 +275,9 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // à 6 min) + branch mining 48 + 2×8 branches (~64 blocs avec pathfinder entre chaque dig). 15 min/chacun.
 // huntCook = 3 vagues de chasse + cuisson au four (vécu Surv5 : tué à 90s en pleine chasse) ;
 // smeltCharcoal = gather bûches éventuel + fonte (180s de smelt max).
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, huntCook: 480000, smeltCharcoal: 300000, gatherLog: 240000 };  // gatherLog 4 min : explore vers une forêt lointaine (Surv11 : ×12 timeouts à 90s)
+// gather/gatherLog : 8 min — un trajet DIRIGÉ légitime peut faire ≤1500 blocs (mémoire de monde) ;
+// sûr car chaque goto interne d'explore est borné individuellement (directed 240s / waypoint 90s).
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, huntCook: 480000, smeltCharcoal: 300000, gather: 480000, gatherLog: 480000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
@@ -535,6 +539,76 @@ async function startMapper() {
   }, taskToken);
 }
 
+// --- Bot RESSOURCE (objectif `resource`, role worker) : mine les minerais EXPOSÉS de la carte ----
+
+// Meilleur palier de pioche en poche (-1 = aucune) : filtre les cibles inminables (diamant sans fer).
+function bestPickTier() {
+  const items = (bot.inventory && bot.inventory.items()) || [];
+  let best = -1;
+  for (const it of items) {
+    if (it && it.name && it.name.endsWith('_pickaxe')) best = Math.max(best, tierRank(it.name));
+  }
+  return best;
+}
+
+// Navigation bornée vers un minerai (x,y,z exact) avec PERSISTANCE PAR PROGRÈS (pattern explore
+// dirigé) : un goto interrompu par les réflexes (flee/surface → GoalChanged) est repris tant qu'on
+// se RAPPROCHE ; un timeout (240s, cible gelée) ou 2 tentatives sans progrès → unreachable (throw).
+async function gotoOreBounded(t) {
+  const dist = () => {
+    const p = bot.entity && bot.entity.position;
+    if (!p) return Infinity;
+    return Math.sqrt((p.x - t.x) ** 2 + (p.y - t.y) ** 2 + (p.z - t.z) ** 2);
+  };
+  let lastD = dist();
+  let noProgress = 0;
+  for (let attempts = 0; attempts < 6; attempts++) {
+    const r = await withTimeout(
+      bot.pathfinder.goto(new pfGoals.GoalNear(t.x, t.y, t.z, 2)),
+      240000, () => { try { stopMotion(); } catch (e) {} });
+    if (taskToken.cancelled) return;
+    if (!(r && r.ok === false)) return;                     // arrivé (goto résolu)
+    if (r.reason === 'timeout') throw new Error('unreachable'); // gelé 240s → pas de 2e chance
+    const d = dist();
+    if (d < lastD - 8) { lastD = d; noProgress = 0; continue; } // progrès → persiste
+    noProgress++;
+    if (noProgress >= 2) throw new Error('unreachable');
+    await sleep(4000); // grâce : NoPath transitoire (chunks pas chargés autour d'un bot frais/tp)
+  }
+  throw new Error('unreachable');
+}
+
+// Boucle ressource : kit pioche minimal si nécessaire (zéro→pioche pierre, chaîne existante), puis
+// mine les ores de la carte un à un. Liste vide/épuisée → idle PROPRE (immobile, réflexes survie ON).
+async function startResource() {
+  // Sans pioche, rien ne droppe : on passe d'abord par le kit pierre (réutilise le planner).
+  if (bestPickTier() < 0) {
+    const res = await runPlanner(bot, {
+      chain: chainFor('stone_pickaxe'),
+      runSkill: (g) => runSkillWithTelemetry(g),
+      ctxExtra,
+      onStep: (g) => emit({ type: 'goal', name: g.name }),
+    }, taskToken);
+    if (taskToken.cancelled) return;
+    if (res.stalled) emit({ type: 'resource_kit_stalled', goal: res.goal }); // dégradé : on tente quand même
+  }
+  const r = await runResource(bot, {
+    emit,
+    goto: gotoOreBounded,
+    pickTier: bestPickTier,
+    deposit: () => deposit(bot),
+    onTarget: async () => {
+      if (isInWater(bot)) await escapeWater(bot, { emit });
+      await settleSurvivalKit();
+    },
+  }, taskToken);
+  if (taskToken.cancelled) return;
+  // Fini (carte épuisée ou vide) : objectif clos + idle propre — plus de mouvement volontaire,
+  // les réflexes (manger/fuir/respirer) restent branchés. Un nouveau start relancera la boucle.
+  clearObjective(world); saveWorld(worldFile, world);
+  emit({ type: 'resource_idle', mined: (r && r.mined) || 0 });
+}
+
 // Lance (ou relance) la boucle autonome ; le planner re-dérive depuis l'état courant.
 async function startAutonomous(sender) {
   // objectif : depuis le world (seedé par le backend/launch), sinon --objective, sinon pioche pierre.
@@ -554,6 +628,7 @@ async function startAutonomous(sender) {
     await sleep(1500); // laisser le pickup aspirer les items au sol
   }
   if (objType === 'mapper') return startMapper(); // rôle continu : jamais « done »
+  if (objType === 'resource') return startResource(); // mine les ores EXPOSÉS de la carte du groupe
   const chain = chainFor(objType);               // pioche pierre (MVP) ou pioche fer (IRON_CHAIN)
   const res = await runPlanner(bot, {
     chain,
@@ -612,6 +687,10 @@ async function onSpawn() {
     moves.allow1by1towers = true;   // peut remonter en colonne (cobble en poche) → pas coincé au fond
     moves.allowParkour = true;
     if (typeof moves.maxDropDown === 'number') moves.maxDropDown = 4; // limite les chutes profondes
+    // Anti-noyade (vu live HarvT7 : drowned ×3 en trajet dirigé) : l'eau coûte CHER au pathfinder →
+    // il contourne les lacs/rivières quand un chemin terrestre existe (coût fini : traverse encore
+    // si c'est la SEULE option ; le réflexe oxygène de reflexes.js est le filet de sécurité).
+    if (typeof moves.liquidCost === 'number') moves.liquidCost = 20;
     bot.pathfinder.setMovements(moves);
     installReflexes(bot, { emit, fleeFrom });
     // TÉLÉPORTATION (#10) : détecte tout TP (admin /tp, /home, portail, respawn) → émet
@@ -713,7 +792,9 @@ async function executeOrder(order, sender) {
   switch (order.verb) {
     case 'take': {
       const token = taskCtl.begin('take', stopMotion);
-      const r = await gather(bot, a, token);
+      // explore:true : un take ORDONNÉ peut voyager (biais dirigé via la carte du groupe si la
+      // ressource est connue, sinon anneaux bornés ≤256). Annulable par `stop` comme toute tâche.
+      const r = await gather(bot, { ...a, explore: true }, token);
       if (token.cancelled) break;
       ackPrivate(sender, r.ok ? doneWord() : failMsg(r.reason));
       break;
@@ -883,5 +964,17 @@ onCommand((cmd) => {
   else if (cmd.type === 'sector' && cmd.count >= 1) {
     mapperSector = { index: Number(cmd.index) || 0, count: Number(cmd.count) };
     emit({ type: 'sector_set', index: mapperSector.index, count: mapperSector.count });
+  }
+  // Déclenchement autonome DIFFÉRÉ (tests live / manager) : connecter le bot idle, le positionner
+  // (tp), PUIS lancer l'objectif depuis sa position courante (objectif explicite sinon --objective).
+  else if (cmd.type === 'start') {
+    if (cmd.objective) { setObjective(world, { type: String(cmd.objective), status: 'in_progress' }); saveWorld(worldFile, world); }
+    startAutonomous(null);
+  }
+  // Ordre direct injecté par le harness/manager (même chemin déterministe que le /msg joueur).
+  else if (cmd.type === 'order' && cmd.text) {
+    const order = parseOrder(String(cmd.text));
+    if (order) executeOrder(order, cmd.sender || 'console').catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
+    else emit({ type: 'error', message: 'order non reconnu: ' + cmd.text });
   }
 });

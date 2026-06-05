@@ -31,8 +31,9 @@ _lock = threading.Lock()
 _counter = 0
 
 # Mémoire de monde partagée par groupe (server_id) : cache en mémoire + verrou (un seul écrivain,
-# le process backend). Les events bot biome_seen/cave_found/material_found y sont routés.
-_WM_EVENTS = ("biome_seen", "cave_found", "material_found")
+# le process backend). Les events bot biome_seen/cave_found/material_found + exposed_ore_found/
+# ore_mined/ore_gone (minerais exposés notés par un cartographe) y sont routés.
+_WM_EVENTS = ("biome_seen", "cave_found", "material_found", "exposed_ore_found", "ore_mined", "ore_gone")
 _wm_lock = threading.Lock()
 _wm_cache = {}        # group_id -> memory dict
 
@@ -193,7 +194,7 @@ def has_api_key():
     return bool(_read_api_key())
 
 
-VALID_OBJECTIVES = ("stone_pickaxe", "iron_pickaxe", "diamond", "mapper")
+VALID_OBJECTIVES = ("stone_pickaxe", "iron_pickaxe", "diamond", "mapper", "resource")
 
 # Délai entre deux spawns d'un batch de cartographes : Paper throttle les connexions rapprochées
 # depuis la même IP (connection-throttle 4000ms par défaut) → sans étalement, ECONNRESET.
@@ -235,7 +236,7 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     temp passé au bot via --commands (le bot ne tapera que ces commandes).
     `autonomous` : si True, seed un world.json avec `objective` (pioche pierre OU pioche fer) +
     passe --world → le bot lance la boucle planner dès le spawn (reprise-au-spawn, 0 token LLM).
-    `objective` : 'stone_pickaxe' (défaut) | 'iron_pickaxe' | 'diamond' | 'mapper' — sélectionne la chaîne de buts côté Node.
+    `objective` : 'stone_pickaxe' (défaut) | 'iron_pickaxe' | 'diamond' | 'mapper' | 'resource' — sélectionne la chaîne/boucle côté Node.
     `login_command` : commande de login résolue (ex. '/login monMdp') si le serveur a un login.
     Écrite dans un fichier temp chmod 600 et passée via --login-command <path> → le secret ne
     transite JAMAIS par l'argv ni par un event/log/exception (cf. piège secrets).

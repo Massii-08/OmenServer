@@ -123,3 +123,111 @@ def test_apply_event_material_found():
                        "biome": "datapack:crystal_hills", "x": 5, "z": 9}, at="t1")  # biome custom OK
     finds = m["worlds"]["w"]["finds"]
     assert len(finds) == 1 and finds[0]["material"] == "iron_ore" and finds[0]["biome"] == "datapack:crystal_hills"
+
+
+# --- Minerais exposés (ores) : positions 3D EXACTES, non quantifiées ---
+
+def test_add_ore_exact_position():
+    m = wm.empty_memory("g")
+    wm.add_ore(m, "w", "iron_ore", 312, 47, -88, at="t1")
+    ores = m["worlds"]["w"]["ores"]
+    assert len(ores) == 1
+    o = ores[0]
+    assert o["material"] == "iron_ore"
+    assert o["x"] == 312 and o["y"] == 47 and o["z"] == -88  # coords RÉELLES, non quantifiées
+    assert o["at"] == "t1"
+    assert m["updated_at"] == "t1"
+
+
+def test_add_ore_dedup_by_exact_position():
+    m = wm.empty_memory("g")
+    wm.add_ore(m, "w", "iron_ore", 312, 47, -88, at="t1")
+    wm.add_ore(m, "w", "diamond_ore", 312, 47, -88, at="t2")  # même position exacte → remplacé
+    ores = m["worlds"]["w"]["ores"]
+    assert len(ores) == 1
+    assert ores[0]["material"] == "diamond_ore"  # material corrigé
+    assert ores[0]["at"] == "t2"
+
+
+def test_add_ore_distinct_positions_not_quantized():
+    m = wm.empty_memory("g")
+    wm.add_ore(m, "w", "iron_ore", 312, 47, -88, at="t1")
+    wm.add_ore(m, "w", "iron_ore", 313, 47, -88, at="t2")  # +1 en x → distinct (PAS quantifié)
+    assert len(m["worlds"]["w"]["ores"]) == 2
+
+
+def test_add_ore_cap_drops_oldest():
+    m = wm.empty_memory("g")
+    for i in range(5):
+        wm.add_ore(m, "w", "iron_ore", i, 50, 0, at=f"t{i}", cap=3)
+    ores = m["worlds"]["w"]["ores"]
+    assert len(ores) == 3
+    xs = [o["x"] for o in ores]
+    assert 0 not in xs and 1 not in xs  # plus vieux jetés
+    assert 4 in xs
+
+
+def test_add_ore_falsy_world_or_material_ignored():
+    m = wm.empty_memory("g")
+    wm.add_ore(m, "", "iron_ore", 1, 2, 3, at="t1")     # world falsy → ignoré
+    wm.add_ore(m, "w", "", 1, 2, 3, at="t2")            # material falsy → ignoré
+    wm.add_ore(m, "w", None, 1, 2, 3, at="t3")          # material None → ignoré
+    w = m["worlds"].get("w")
+    assert w is None or w["ores"] == []
+
+
+def test_remove_ore_exact():
+    m = wm.empty_memory("g")
+    wm.add_ore(m, "w", "iron_ore", 312, 47, -88, at="t1")
+    wm.add_ore(m, "w", "iron_ore", 313, 47, -88, at="t2")
+    wm.remove_ore(m, "w", 312, 47, -88, at="t3")
+    ores = m["worlds"]["w"]["ores"]
+    assert len(ores) == 1
+    assert ores[0]["x"] == 313
+    assert m["updated_at"] == "t3"  # MAJ car quelque chose retiré
+
+
+def test_remove_ore_noop_when_absent():
+    m = wm.empty_memory("g")
+    wm.add_ore(m, "w", "iron_ore", 312, 47, -88, at="t1")
+    wm.remove_ore(m, "w", 999, 0, 0, at="t2")  # position inexistante → no-op
+    assert len(m["worlds"]["w"]["ores"]) == 1
+    assert m["updated_at"] == "t1"  # rien retiré → updated_at inchangé
+    wm.remove_ore(m, "absent_world", 0, 0, 0, at="t3")  # monde absent → no-op silencieux
+
+
+def test_apply_event_exposed_ore_found():
+    m = wm.empty_memory("g")
+    wm.apply_event(m, {"type": "exposed_ore_found", "world": "w", "material": "diamond_ore",
+                       "x": 100, "y": 11, "z": -5}, at="t1")
+    ores = m["worlds"]["w"]["ores"]
+    assert len(ores) == 1 and ores[0]["material"] == "diamond_ore" and ores[0]["y"] == 11
+
+
+def test_apply_event_ore_mined_and_gone_remove():
+    m = wm.empty_memory("g")
+    wm.add_ore(m, "w", "iron_ore", 100, 11, -5, at="t1")
+    wm.add_ore(m, "w", "iron_ore", 200, 11, -5, at="t1")
+    wm.apply_event(m, {"type": "ore_mined", "world": "w", "x": 100, "y": 11, "z": -5}, at="t2")
+    assert len(m["worlds"]["w"]["ores"]) == 1
+    wm.apply_event(m, {"type": "ore_gone", "world": "w", "x": 200, "y": 11, "z": -5}, at="t3")
+    assert m["worlds"]["w"]["ores"] == []
+
+
+def test_apply_event_ore_events_missing_fields_no_crash():
+    m = wm.empty_memory("g")
+    wm.apply_event(m, {"type": "exposed_ore_found", "world": "w"}, at="t1")       # champs manquants
+    wm.apply_event(m, {"type": "ore_mined", "world": "w"}, at="t2")              # champs manquants
+    wm.apply_event(m, {"type": "exposed_ore_found", "world": "w", "material": "iron_ore",
+                       "x": "nan", "y": 1, "z": 2}, at="t3")                      # x invalide
+    w = m["worlds"].get("w")
+    assert w is None or w.get("ores", []) == []
+
+
+def test_save_load_preserves_ores(tmp_path):
+    m = wm.empty_memory("g7")
+    wm.add_ore(m, "w", "diamond_ore", 100, 11, -5, at="t1")
+    assert wm.save("g7", m, base_dir=tmp_path) is True
+    loaded = wm.load("g7", base_dir=tmp_path)
+    ores = loaded["worlds"]["w"]["ores"]
+    assert len(ores) == 1 and ores[0]["material"] == "diamond_ore" and ores[0]["y"] == 11
