@@ -1065,9 +1065,11 @@ const BotsModule = {
  <div style="display:flex;gap:6px;margin:0 0 14px;border-bottom:1px solid var(--border);">
  ${tabBtn('create', Lang.t('mcagent.nav.create'))}
  ${tabBtn('list', Lang.t('mcagent.nav.list'))}
+ ${tabBtn('mod', Lang.t('mcagent.nav.mod'))}
  </div>
  <div id="mca-tabbody"></div>`;
  if (v === 'create') this._renderGroupCreate();
+ else if (v === 'mod') this._renderMCAMod();
  else this._renderGroupList();
  },
 
@@ -1467,7 +1469,7 @@ const BotsModule = {
  <div style="font-weight:600;margin-bottom:6px;">${Lang.t('mcagent.mod_download')}</div>
  <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('mcagent.mod_pick')}</div>
  <div id="mca-mod-versions" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
- <details style="margin-top:10px;">
+ <details open style="margin-top:10px;">
  <summary style="cursor:pointer;font-size:13px;">${Lang.t('mcagent.tuto_title')}</summary>
  <ol style="font-size:12px;color:var(--text-muted);line-height:1.7;margin:8px 0 0;padding-left:18px;">
  <li>${Lang.t('mcagent.tuto_s1')} <a href="https://fabricmc.net/use/installer/" target="_blank" rel="noopener">fabricmc.net/use/installer</a></li>
@@ -1478,6 +1480,26 @@ const BotsModule = {
  </ol>
  </details>
  </div>`;
+ },
+
+ // Onglet « Mods & REC » (niveau 1) : télécharger le mod client + tuto d'install + déposer les captures (REC).
+ _renderMCAMod() {
+ const body = document.getElementById('mca-tabbody');
+ if (!body) return;
+ body.innerHTML = `
+ <div style="font-size:12px;color:var(--text-muted);margin:0 0 12px;">${Lang.t('mcagent.mod_tab_intro')}</div>
+ ${BotsModule._mcaModBlock()}
+ <div style="border-top:1px solid var(--border);margin:14px 0;padding-top:12px;">
+ <div style="font-weight:600;margin-bottom:4px;">${Lang.t('mcagent.my_captures')}</div>
+ <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('mcagent.capture_hint')}</div>
+ <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+ <input id="mca-capfile" type="file" accept=".jsonl,.gz" class="form-input" style="flex:1;min-width:200px;" />
+ <button class="btn btn-secondary btn-sm" onclick="BotsModule.uploadCapture()">${Lang.t('mcagent.capture_import')}</button>
+ </div>
+ <div id="mca-captures"></div>
+ </div>`;
+ this.loadModVersions();
+ this.loadCaptures();
  },
 
  _renderMCAgentRecTester(el) {
