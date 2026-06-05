@@ -28,6 +28,7 @@ WORLD_MEMORY_DIR = _PROJECT_ROOT / "data" / "mc_agent_world_memory"
 _SAFE_ID = re.compile(r"^[a-z0-9]+$")
 GRID = 128   # taille de cellule (quantification x,z) : 1 entrée par région de 128²
 CAP = 500    # entrées max par (monde, type) ; au-delà on jette les plus vieilles
+ORE_CAP = 1000  # minerais exposés max par monde (coords 3D précises) ; anti-débordement disque
 
 
 def _q(v):
@@ -102,12 +103,13 @@ def add_find(memory, world, material, biome, x, z, at=None, cap=CAP):
     return memory
 
 
-def add_ore(memory, world, material, x, y, z, at=None, cap=CAP):
-    """Note un minerai EXPOSÉ à sa position 3D EXACTE (coords RÉELLES int, PAS quantifiées grille).
+def add_ore(memory, world, material, x, y, z, at=None, cap=ORE_CAP):
+    """Note un minerai à sa position 3D EXACTE (coords RÉELLES int, PAS quantifiées grille).
 
-    Dédup par position (int x,y,z) : une entrée existante à cette position est REMPLACÉE (le material
-    peut être corrigé). Cap → garde les plus récentes. Ignoré si world ou material falsy.
-    Mute + retourne memory."""
+    Cartographe : un bloc de minerai vu dans les chunks chargés (`material` à (x,y,z) entiers).
+    Dédup par position EXACTE — une entrée existante à ce bloc est REMPLACÉE (matériau + récence
+    MAJ). Sert au bot ressource pour aller miner droit sur le bloc. Cap → garde les plus récentes.
+    Ignoré si world ou material falsy. Mute + retourne memory."""
     if not world or not material:
         return memory
     w = _world(memory, world)

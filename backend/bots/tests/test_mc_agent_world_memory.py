@@ -196,6 +196,21 @@ def test_remove_ore_noop_when_absent():
     wm.remove_ore(m, "absent_world", 0, 0, 0, at="t3")  # monde absent → no-op silencieux
 
 
+def test_apply_event_exposed_ore_found_missing_y_no_crash():
+    m = wm.empty_memory("g")
+    wm.apply_event(m, {"type": "exposed_ore_found", "world": "w",
+                       "material": "iron_ore", "x": 5, "z": 9}, at="t1")  # pas de y → ignoré
+    w = m["worlds"].get("w")
+    assert w is None or w["ores"] == []
+
+
+def test_world_seed_has_empty_ores():
+    m = wm.empty_memory("g")
+    w = wm._world(m, "w")
+    assert w["ores"] == []
+
+
+
 def test_apply_event_exposed_ore_found():
     m = wm.empty_memory("g")
     wm.apply_event(m, {"type": "exposed_ore_found", "world": "w", "material": "diamond_ore",

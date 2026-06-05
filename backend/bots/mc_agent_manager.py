@@ -32,7 +32,7 @@ _counter = 0
 
 # Mémoire de monde partagée par groupe (server_id) : cache en mémoire + verrou (un seul écrivain,
 # le process backend). Les events bot biome_seen/cave_found/material_found + exposed_ore_found/
-# ore_mined/ore_gone (minerais exposés notés par un cartographe) y sont routés.
+# ore_mined/ore_gone (minerais notés par un cartographe, retirés quand minés/disparus) y sont routés.
 _WM_EVENTS = ("biome_seen", "cave_found", "material_found", "exposed_ore_found", "ore_mined", "ore_gone")
 _wm_lock = threading.Lock()
 _wm_cache = {}        # group_id -> memory dict
