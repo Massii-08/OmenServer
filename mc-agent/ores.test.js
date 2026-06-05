@@ -391,3 +391,13 @@ test('nextOreTarget : allowTypes restreint aux types de base demandés (mode quo
   // sans allowTypes : comportement inchangé (diamant prioritaire)
   assert.strictEqual(ores.nextOreTarget(memory, 'w', from, {}).material, 'deepslate_diamond_ore');
 });
+
+test('scanAllOres : portée par défaut couvre la deepslate diamond depuis la surface (≥200)', () => {
+  const bot = makeBot(() => 'stone');
+  bot.registry = { blocksByName: { iron_ore: { id: 10 } } };
+  let captured = null;
+  bot.findBlocks = (q) => { captured = q; return []; };
+  scanAllOres(bot);
+  assert.ok(captured.maxDistance >= 200, `maxDistance ${captured.maxDistance} trop court pour y=-59 depuis la surface`);
+  assert.ok(captured.count >= 2000);
+});

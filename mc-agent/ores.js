@@ -208,7 +208,10 @@ const QUOTA_ORE_NAMES = [
  * Limité aux QUOTA_ORE_NAMES par défaut. Best-effort, jamais de crash. → [{material,x,y,z,exposed}]
  */
 function scanAllOres(bot, opts = {}) {
-  const { maxDistance = 128, count = 1500, names = QUOTA_ORE_NAMES } = opts;
+  // maxDistance 256 : un mapper en SURFACE (y≈70) doit voir la deepslate diamond à y=-59
+  // (distance verticale ~129 — à 128 les diamants seraient invisibles). findBlocks skip les
+  // sections sans id matché au palette → coût borné même avec ce rayon.
+  const { maxDistance = 256, count = 3000, names = QUOTA_ORE_NAMES } = opts;
   try {
     if (!bot || typeof bot.blockAt !== 'function' || typeof bot.findBlocks !== 'function') return [];
     const reg = bot.registry && bot.registry.blocksByName;
