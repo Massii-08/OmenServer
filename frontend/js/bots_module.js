@@ -1228,6 +1228,45 @@ const BotsModule = {
  return this._groupSessions().find((s) => (s.user || '').toLowerCase() === u) || null;
  },
 
+ // Couleur par TYPE de minerai (5 types quota — fixes, indépendantes de l'accent).
+ _oreBase(mat) {
+ let m = String(mat || '');
+ if (m.startsWith('deepslate_')) m = m.slice(10);
+ if (m.endsWith('_ore')) m = m.slice(0, -4);
+ return m;
+ },
+ _oreColor(mat) {
+ const c = { diamond: '#4DD0E1', gold: '#FACC15', redstone: '#F87171', lapis: '#60A5FA', iron: '#D9C9A3' };
+ return c[this._oreBase(mat)] || '#A1A1AA';
+ },
+
+ // Barres de progression quota d'une session (sess.quota = {type:{have,target}}, cf. backend).
+ _quotaBars(sess) {
+ const q = sess.quota || {};
+ const types = ['diamond', 'gold', 'redstone', 'lapis', 'iron'].filter((t) => q[t]);
+ if (!types.length) return '';
+ const doneBadge = sess.quota_done
+  ? `<span class="badge online" style="margin-left:8px;">${Lang.t('mcagent.quota.done')}</span>` : '';
+ const bars = types.map((t) => {
+  const have = Math.max(0, Number(q[t].have) || 0);
+  const target = Math.max(1, Number(q[t].target) || 1);
+  const pct = Math.min(100, Math.round((have / target) * 100));
+  return `
+  <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+   <span style="width:64px;font-size:11px;color:var(--text-muted);font-family:var(--font-mono);">${this._escapeHtml(t)}</span>
+   <div style="flex:1;height:6px;background:var(--bg-elev-3);border-radius:999px;overflow:hidden;">
+    <div style="width:${pct}%;height:100%;background:${this._oreColor(t)};border-radius:999px;"></div>
+   </div>
+   <span style="width:62px;text-align:right;font-size:11px;font-family:var(--font-mono);color:${have >= target ? 'var(--accent)' : 'var(--text-muted)'};">${have}/${target}</span>
+  </div>`;
+ }).join('');
+ return `
+ <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">
+  <div style="font-size:11px;text-transform:uppercase;color:var(--text-dim);">${Lang.t('mcagent.quota.title')}${doneBadge}</div>
+  ${bars}
+ </div>`;
+ },
+
  _renderWorkersBody() {
  const root = document.getElementById('mca-w-root');
  const g = this._mcaGroup();
@@ -1245,16 +1284,20 @@ const BotsModule = {
   const actionBtn = online
    ? `<button class="btn btn-secondary btn-sm" onclick="BotsModule.stopWorkerBot('${this._escapeHtml(String(sess.id))}')">${Lang.t('mcagent.bot.stop')}</button>`
    : `<button class="btn btn-primary btn-sm" onclick="BotsModule.startWorkerBot('${this._escapeHtml(b.id)}')">${Lang.t('mcagent.bot.launch')}</button>`;
+  const quotaBlock = (online && sess.quota) ? this._quotaBars(sess) : '';
   return `
-  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
-   <div>
-    <div style="font-weight:600;font-family:var(--font-mono);">${this._escapeHtml(b.username)}${onlineBadge}</div>
-    <div style="margin-top:2px;">${authBadge}${secretBadge}</div>
+  <div style="padding:10px 12px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
+   <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+    <div>
+     <div style="font-weight:600;font-family:var(--font-mono);">${this._escapeHtml(b.username)}${onlineBadge}</div>
+     <div style="margin-top:2px;">${authBadge}${secretBadge}</div>
+    </div>
+    <div style="display:flex;gap:6px;">
+     ${actionBtn}
+     <button class="btn btn-ghost btn-sm" onclick="BotsModule.deleteWorkerBot('${this._escapeHtml(b.id)}')">${Lang.t('mcagent.bot.delete')}</button>
+    </div>
    </div>
-   <div style="display:flex;gap:6px;">
-    ${actionBtn}
-    <button class="btn btn-ghost btn-sm" onclick="BotsModule.deleteWorkerBot('${this._escapeHtml(b.id)}')">${Lang.t('mcagent.bot.delete')}</button>
-   </div>
+   ${quotaBlock}
   </div>
   <div id="mca-w-msa-${this._escapeHtml(b.id)}"></div>`;
  }).join('');
@@ -1266,6 +1309,7 @@ const BotsModule = {
    <option value="stone_pickaxe">${Lang.t('mcagent.obj_stone')}</option>
    <option value="iron_pickaxe">${Lang.t('mcagent.obj_iron')}</option>
    <option value="diamond">${Lang.t('mcagent.obj_diamond')}</option>
+   <option value="resource">${Lang.t('mcagent.obj_resource')}</option>
   </select>
  </div>
  ${workers.length ? rows : `<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">${Lang.t('mcagent.bot.empty')}</div>`}
@@ -1354,6 +1398,8 @@ const BotsModule = {
  const body = { server_id: g.id, bot_id: botId };
  // companion = compagnon LLM (pas d'autonomie) ; sinon objectif planner autonome.
  if (mode !== 'companion') { body.autonomous = true; body.objective = mode; }
+ // Bot ressource : quota mission par défaut (15💎/15 or/64 redstone/64 lapis/64 fer)
+ if (mode === 'resource') body.quota = { diamond: 15, gold: 15, redstone: 64, lapis: 64, iron: 64 };
  const r = await Auth.apiCall('/api/mc-agent/run', {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
  });
@@ -2210,7 +2256,7 @@ const BotsModule = {
  upd.textContent = `${Lang.t('mcagent.map.updated')}: ${at ? new Date(at).toLocaleString(locale) : Lang.t('mcagent.map.never')}`;
  }
  const world = this._mcaMapWorld();
- const has = !!world && ((world.biomes || []).length + (world.caves || []).length + (world.finds || []).length) > 0;
+ const has = !!world && ((world.biomes || []).length + (world.caves || []).length + (world.finds || []).length + (world.ores || []).length) > 0;
  this._mcaMapShowEmpty(has ? null : Lang.t('mcagent.map.empty'));
  if (has && m.world && !m.fitted[m.world]) this._mcaMapFit(false);
  this._mcaMapLegend();
@@ -2239,6 +2285,7 @@ const BotsModule = {
  (world.biomes || []).forEach((b) => seen(b.x, b.z, 128));
  (world.caves || []).forEach((c) => seen(c.x, c.z, 0));
  (world.finds || []).forEach((f) => seen(f.x, f.z, 0));
+ (world.ores || []).forEach((o) => seen(o.x, o.z, 0));
  }
  if (minX === Infinity) { m.view = { cx: 0, cz: 0, scale: 0.6 }; if (redraw) this._mcaMapDraw(); return; }
  const w = cv.clientWidth || 800, h = cv.clientHeight || 440;
@@ -2432,6 +2479,21 @@ const BotsModule = {
  ctx.fill(); ctx.stroke();
  }
  }
+ // 4bis. minerais (scan cartographe) — carrés colorés par type ; exposé = plein, enfoui = creux
+ for (const o of world.ores || []) {
+ if (hid['o:' + this._oreBase(o.material)]) continue;
+ const x = toX(o.x), y = toY(o.z);
+ if (x < -6 || y < -6 || x > w + 6 || y > h + 6) continue;
+ const col = this._oreColor(o.material);
+ if (o.exposed !== false) {
+ ctx.fillStyle = col;
+ ctx.fillRect(x - 2.5, y - 2.5, 5, 5);
+ } else {
+ ctx.strokeStyle = col;
+ ctx.lineWidth = 1.2;
+ ctx.strokeRect(x - 2.5, y - 2.5, 5, 5);
+ }
+ }
  // 5. trouvailles — losanges colorés par matériau
  for (const f of world.finds || []) {
  if (hid['m:' + f.material]) continue;
@@ -2483,6 +2545,7 @@ const BotsModule = {
  };
  const biomes = counts(world.biomes, (b) => b.name || ('#' + b.id));
  const mats = counts(world.finds, (f) => f.material);
+ const oreCounts = counts(world.ores, (o) => this._oreBase(o.material));
  const chip = (k, label, color, count, shape) => {
  const sw = shape === 'diamond'
  ? `<span style="display:inline-block;width:9px;height:9px;background:${color};transform:rotate(45deg);border-radius:2px;"></span>`
@@ -2495,12 +2558,15 @@ const BotsModule = {
  .map((k) => chip('b:' + k, k, this._mcaBiomeColor(k), biomes[k])).join('');
  const matChips = Object.keys(mats).sort()
  .map((k) => chip('m:' + k, k, this._mcaMatColor(k), mats[k], 'diamond')).join('');
+ const oreChips = ['diamond', 'gold', 'redstone', 'lapis', 'iron'].filter((k) => oreCounts[k])
+ .map((k) => chip('o:' + k, k, this._oreColor(k), oreCounts[k])).join('');
  const caveChip = (world.caves || []).length
  ? chip('caves', Lang.t('mcagent.map.caves'), '#F4F4F5', (world.caves || []).length, 'tri') : '';
  const section = (title, chips) => chips
  ? `<div style="margin-bottom:6px;"><div style="font-size:11px;text-transform:uppercase;color:var(--text-dim);margin-bottom:3px;">${title}</div>${chips}</div>` : '';
  box.innerHTML =
  section(Lang.t('mcagent.map.biomes'), bioChips) +
+ section(Lang.t('mcagent.map.ores'), oreChips) +
  section(Lang.t('mcagent.map.finds'), matChips) +
  section(Lang.t('mcagent.map.caves'), caveChip);
  box.querySelectorAll('.mca-map-chip').forEach((el) => el.addEventListener('click', () => {
