@@ -1240,6 +1240,20 @@ const BotsModule = {
  return c[this._oreBase(mat)] || '#A1A1AA';
  },
 
+ // Couleur + initiale par TYPE de structure (fixes, lisibles sur fond biome).
+ _structColor(kind) {
+ const c = { village: '#4ADE80', mineshaft: '#D9C9A3', stronghold: '#C084FC', dungeon: '#F87171',
+  ancient_city: '#60A5FA', ruined_portal: '#FB923C', desert_pyramid: '#FACC15', jungle_pyramid: '#34D399',
+  pillager_outpost: '#F472B6', shipwreck: '#94A3B8', monument: '#22D3EE', fortress: '#EF4444' };
+ return c[kind] || '#A1A1AA';
+ },
+ _structInitial(kind) {
+ const i = { village: 'V', mineshaft: 'M', stronghold: 'S', dungeon: 'D', ancient_city: 'A',
+  ruined_portal: 'P', desert_pyramid: 'T', jungle_pyramid: 'T', pillager_outpost: 'O',
+  shipwreck: 'W', monument: 'Mo', fortress: 'F' };
+ return i[kind] || '?';
+ },
+
  // Barres de progression quota d'une session (sess.quota = {type:{have,target}}, cf. backend).
  _quotaBars(sess) {
  const q = sess.quota || {};
@@ -2256,7 +2270,7 @@ const BotsModule = {
  upd.textContent = `${Lang.t('mcagent.map.updated')}: ${at ? new Date(at).toLocaleString(locale) : Lang.t('mcagent.map.never')}`;
  }
  const world = this._mcaMapWorld();
- const has = !!world && ((world.biomes || []).length + (world.caves || []).length + (world.finds || []).length + (world.ores || []).length) > 0;
+ const has = !!world && ((world.biomes || []).length + (world.caves || []).length + (world.finds || []).length + (world.structures || []).length) > 0;
  this._mcaMapShowEmpty(has ? null : Lang.t('mcagent.map.empty'));
  if (has && m.world && !m.fitted[m.world]) this._mcaMapFit(false);
  this._mcaMapLegend();
@@ -2285,7 +2299,7 @@ const BotsModule = {
  (world.biomes || []).forEach((b) => seen(b.x, b.z, 128));
  (world.caves || []).forEach((c) => seen(c.x, c.z, 0));
  (world.finds || []).forEach((f) => seen(f.x, f.z, 0));
- (world.ores || []).forEach((o) => seen(o.x, o.z, 0));
+ (world.structures || []).forEach((st) => seen(st.x, st.z, 0));
  }
  if (minX === Infinity) { m.view = { cx: 0, cz: 0, scale: 0.6 }; if (redraw) this._mcaMapDraw(); return; }
  const w = cv.clientWidth || 800, h = cv.clientHeight || 440;
@@ -2479,20 +2493,25 @@ const BotsModule = {
  ctx.fill(); ctx.stroke();
  }
  }
- // 4bis. minerais (scan cartographe) — carrés colorés par type ; exposé = plein, enfoui = creux
- for (const o of world.ores || []) {
- if (hid['o:' + this._oreBase(o.material)]) continue;
- const x = toX(o.x), y = toY(o.z);
- if (x < -6 || y < -6 || x > w + 6 || y > h + 6) continue;
- const col = this._oreColor(o.material);
- if (o.exposed !== false) {
+ // 4bis. STRUCTURES (phase 2) — pastille colorée + initiale par type (les minerais sont une
+ // donnée INTERNE bot, retirée de la carte joueurs).
+ for (const st of world.structures || []) {
+ if (hid['s:' + st.kind]) continue;
+ const x = toX(st.x), y = toY(st.z);
+ if (x < -8 || y < -8 || x > w + 8 || y > h + 8) continue;
+ const col = this._structColor(st.kind);
  ctx.fillStyle = col;
- ctx.fillRect(x - 2.5, y - 2.5, 5, 5);
- } else {
- ctx.strokeStyle = col;
+ ctx.beginPath();
+ ctx.arc(x, y, 6, 0, Math.PI * 2);
+ ctx.fill();
+ ctx.strokeStyle = 'rgba(14,14,16,0.9)';
  ctx.lineWidth = 1.2;
- ctx.strokeRect(x - 2.5, y - 2.5, 5, 5);
- }
+ ctx.stroke();
+ ctx.fillStyle = '#0E0E10';
+ ctx.font = 'bold 8px var(--font-mono), monospace';
+ ctx.textAlign = 'center';
+ ctx.textBaseline = 'middle';
+ ctx.fillText(this._structInitial(st.kind), x, y + 0.5);
  }
  // 5. trouvailles — losanges colorés par matériau
  for (const f of world.finds || []) {
@@ -2545,7 +2564,7 @@ const BotsModule = {
  };
  const biomes = counts(world.biomes, (b) => b.name || ('#' + b.id));
  const mats = counts(world.finds, (f) => f.material);
- const oreCounts = counts(world.ores, (o) => this._oreBase(o.material));
+ const structCounts = counts(world.structures, (st) => st.kind);
  const chip = (k, label, color, count, shape) => {
  const sw = shape === 'diamond'
  ? `<span style="display:inline-block;width:9px;height:9px;background:${color};transform:rotate(45deg);border-radius:2px;"></span>`
@@ -2558,15 +2577,15 @@ const BotsModule = {
  .map((k) => chip('b:' + k, k, this._mcaBiomeColor(k), biomes[k])).join('');
  const matChips = Object.keys(mats).sort()
  .map((k) => chip('m:' + k, k, this._mcaMatColor(k), mats[k], 'diamond')).join('');
- const oreChips = ['diamond', 'gold', 'redstone', 'lapis', 'iron'].filter((k) => oreCounts[k])
- .map((k) => chip('o:' + k, k, this._oreColor(k), oreCounts[k])).join('');
+ const structChips = Object.keys(structCounts).sort()
+ .map((k) => chip('s:' + k, k.replace(/_/g, ' '), this._structColor(k), structCounts[k])).join('');
  const caveChip = (world.caves || []).length
  ? chip('caves', Lang.t('mcagent.map.caves'), '#F4F4F5', (world.caves || []).length, 'tri') : '';
  const section = (title, chips) => chips
  ? `<div style="margin-bottom:6px;"><div style="font-size:11px;text-transform:uppercase;color:var(--text-dim);margin-bottom:3px;">${title}</div>${chips}</div>` : '';
  box.innerHTML =
  section(Lang.t('mcagent.map.biomes'), bioChips) +
- section(Lang.t('mcagent.map.ores'), oreChips) +
+ section(Lang.t('mcagent.map.structures'), structChips) +
  section(Lang.t('mcagent.map.finds'), matChips) +
  section(Lang.t('mcagent.map.caves'), caveChip);
  box.querySelectorAll('.mca-map-chip').forEach((el) => el.addEventListener('click', () => {
