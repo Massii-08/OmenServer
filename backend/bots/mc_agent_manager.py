@@ -175,9 +175,18 @@ def _pump(session, stream):
     # watchdog, crash) → respawn auto après 15 s (l'inventaire persiste → quota préservé).
     # Jamais si l'utilisateur a stoppé (user_stopped) ; cap 12 respawns (anti-boucle folle).
     rs = session.get("respawn")
+    # Garde CRASH-ON-SPAWN : une session qui meurt < 15 s après son spawn, 3 fois d'affilée,
+    # est ABANDONNÉE — le cap global (12) ne couvrait pas ce mode : join→crash 4 s→respawn 15 s
+    # à l'infini (vécu phase 2, V2Res1 : kit cassé → starved-exit immédiat en boucle).
+    lifetime = time.time() - session.get("spawned_at", 0)
+    fast_fails = (session.get("fast_fail_count", 0) + 1) if lifetime < 15 else 0
     if (rs and session.get("objective") == "resource"
             and not session.get("user_stopped")
             and session.get("respawn_count", 0) < 12):
+        if fast_fails >= 3:
+            session["events"].append({"type": "respawn_given_up", "why": "crash_on_spawn",
+                                      "fast_fails": fast_fails})
+            return
         def _do_respawn():
             try:
                 new_sid = start_for_bot(rs["group_id"], rs["bot_id"], model=rs.get("model"),
@@ -187,6 +196,7 @@ def _pump(session, stream):
                 ns = _sessions.get(new_sid)
                 if ns is not None:
                     ns["respawn_count"] = session.get("respawn_count", 0) + 1
+                    ns["fast_fail_count"] = fast_fails
             except Exception:  # noqa: BLE001 — best-effort (compte déjà en ligne, groupe parti…)
                 pass
         timer = threading.Timer(15.0, _do_respawn)
@@ -380,6 +390,7 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
         "world_path": str(world_path) if world_path else None,
         "wm_path": str(wm_path) if wm_path else None,
         "quota_path": str(quota_path) if quota_path else None,
+        "spawned_at": time.time(),
         "login_path": str(login_path) if login_path else None,
     }
     _sessions[sid] = session

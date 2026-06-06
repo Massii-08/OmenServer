@@ -193,6 +193,13 @@ async function withCraftingTable(fn) {
     const r0 = await fn();
     if (r0.ok) return r0;                          // table existante atteinte → craft passé
   }
+  // Barreau manquant de l'échelle (vécu V2Res1 en crash-loop) : table PERDUE (kick avant
+  // reclaim) → placeBlockNear échouait 'unknown_item' pour toujours. Une table se re-craft
+  // en 2×2 SANS table (4 planks) → on la re-fabrique avant de la poser.
+  const hasTableItem = ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'crafting_table');
+  if (!hasTableItem) {
+    try { await craftItem(bot, { name: 'crafting_table', count: 1 }); } catch (e) { /* best-effort */ }
+  }
   let place = await placeBlockNear(bot, 'crafting_table');
   if (!place.ok) {
     // sol encombré (feuillage jungle, pente) → se déplacer vers un sol dégagé proche et re-tenter

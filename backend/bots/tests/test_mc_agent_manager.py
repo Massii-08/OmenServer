@@ -1080,3 +1080,53 @@ def test_pump_respawn_capped(monkeypatch):
                "wm_path": None, "quota_path": None, "login_path": None}
     mgr._pump(session, io.StringIO(""))
     assert calls == []
+
+
+def test_pump_gives_up_on_crash_on_spawn(monkeypatch):
+    """3 morts < 15 s d'affilée → ABANDON (plus de respawn) + event respawn_given_up."""
+    import io
+    calls = []
+    monkeypatch.setattr(mgr, "start_for_bot", lambda *a, **k: calls.append(a) or 99)
+
+    class FakeTimer:
+        def __init__(self, delay, fn): self.fn = fn; self.daemon = False
+        def start(self): self.fn()
+
+    monkeypatch.setattr(mgr.threading, "Timer", FakeTimer)
+    session = {"status": "running", "transcript": [], "events": [], "last_error": None,
+               "objective": "resource", "respawn_count": 4, "fast_fail_count": 2,
+               "spawned_at": mgr.time.time() - 4,          # morte 4 s après le spawn (3e fois)
+               "respawn": {"group_id": "g", "bot_id": "b"},
+               "cmds_path": None, "policy_path": None, "world_path": None,
+               "wm_path": None, "quota_path": None, "login_path": None}
+    mgr._pump(session, io.StringIO(""))
+    assert calls == []                                     # PAS de respawn
+    assert any(e.get("type") == "respawn_given_up" for e in session["events"])
+
+
+def test_pump_fast_fail_count_propagates_and_resets(monkeypatch):
+    """Mort rapide n°1-2 → respawn avec fast_fail_count hérité ; vie longue → compteur remis à 0."""
+    import io
+    spawned = {}
+    monkeypatch.setattr(mgr, "start_for_bot", lambda *a, **k: 99)
+
+    class FakeTimer:
+        def __init__(self, delay, fn): self.fn = fn; self.daemon = False
+        def start(self): self.fn()
+
+    monkeypatch.setattr(mgr.threading, "Timer", FakeTimer)
+    mgr._sessions[99] = {"events": [], "transcript": [], "last_error": None, "status": "x"}
+    base = {"status": "running", "transcript": [], "events": [], "last_error": None,
+            "objective": "resource", "respawn_count": 0,
+            "respawn": {"group_id": "g", "bot_id": "b"},
+            "cmds_path": None, "policy_path": None, "world_path": None,
+            "wm_path": None, "quota_path": None, "login_path": None}
+    # mort rapide n°1 (fast_fail_count absent → 1)
+    s1 = dict(base, spawned_at=mgr.time.time() - 3, events=[])
+    mgr._pump(s1, io.StringIO(""))
+    assert mgr._sessions[99]["fast_fail_count"] == 1
+    # vie LONGUE (>15 s) → compteur remis à 0
+    s2 = dict(base, spawned_at=mgr.time.time() - 120, fast_fail_count=2, events=[])
+    mgr._pump(s2, io.StringIO(""))
+    assert mgr._sessions[99]["fast_fail_count"] == 0
+    mgr._sessions.pop(99, None)
