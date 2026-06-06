@@ -18,6 +18,9 @@ try { goals = require('mineflayer-pathfinder').goals; } catch (e) { goals = null
 function isLava(name) { return name === 'lava' || name === 'flowing_lava'; }
 
 function buildGoal(x, y, z) {
+  // GoalBlock (exact) et pas GoalNear(1) : range 1 permettait de rester AU-DESSUS de la
+  // marche creusée (vécu live : yo-yo 57↔62, jamais de descente nette).
+  if (goals && goals.GoalBlock) return new goals.GoalBlock(x, y, z);
   if (goals && goals.GoalNear) return new goals.GoalNear(x, y, z, 1);
   return { x, y, z };
 }
@@ -29,6 +32,7 @@ function buildGoal(x, y, z) {
  */
 async function tunnelTo(bot, target, opts = {}, token = null) {
   const maxSteps = opts.maxSteps || 320;
+  let lastDir = null;   // hystérésis de cap : on garde l'axe tant qu'il reste utile (anti-spirale)
   const dist = () => {
     const p = bot.entity && bot.entity.position;
     if (!p) return Infinity;
@@ -53,9 +57,15 @@ async function tunnelTo(bot, target, opts = {}, token = null) {
     // dessous (pas d'écart horizontal), on garde un cap stable dérivé du pas (jamais creuser
     // droit sous ses pieds — leçon mineDown : le bot off-center ne tombe pas).
     let dir;
-    if (Math.abs(dxT) >= Math.abs(dzT) && dxT !== 0) dir = { dx: Math.sign(dxT), dz: 0 };
+    // Hystérésis : si le cap précédent réduit ENCORE la distance sur son axe, on le garde —
+    // recalculer l'axe dominant à chaque pas faisait zigzaguer l'escalier (spirale → le bot
+    // remontait ses propres marches). On ne tourne que quand l'axe est épuisé.
+    if (lastDir && ((lastDir.dx && Math.sign(dxT) === lastDir.dx) || (lastDir.dz && Math.sign(dzT) === lastDir.dz))) {
+      dir = lastDir;
+    } else if (Math.abs(dxT) >= Math.abs(dzT) && dxT !== 0) dir = { dx: Math.sign(dxT), dz: 0 };
     else if (dzT !== 0) dir = { dx: 0, dz: Math.sign(dzT) };
-    else dir = { dx: 1, dz: 0 };                              // pile en dessous → diagonale est
+    else dir = lastDir || { dx: 1, dz: 0 };                   // pile en dessous → cap stable
+    lastDir = dir;
 
     const descending = dyT < -1;
 

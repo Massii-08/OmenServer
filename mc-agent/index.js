@@ -564,6 +564,7 @@ async function gotoOreBounded(t) {
     return Math.sqrt((p.x - t.x) ** 2 + (p.y - t.y) ** 2 + (p.z - t.z) ** 2);
   };
   if (dist() <= 4) return;                                     // déjà à portée de collect
+  emit({ type: 'ore_approach', phase: 'direct', x: t.x, y: t.y, z: t.z, d: Math.round(dist()) });
 
   // Phase 1 — goto direct BREF (90 s) : suffit pour les ores exposées/accessibles par grotte.
   // On ne s'acharne pas : pathfinder ne sait PAS traverser 60 blocs de roche pleine (A*
@@ -577,6 +578,7 @@ async function gotoOreBounded(t) {
 
   const below = (bot.entity && bot.entity.position ? bot.entity.position.y : 0) - t.y;
   if (below > 4) {
+    emit({ type: 'ore_approach', phase: 'xz', x: t.x, z: t.z, d: Math.round(dist()) });
     // Phase 2 — cible ENFOUIE : se placer À LA VERTICALE (surface, XZ) puis creuser l'approche
     // à la main (tunnelTo : marches 1×2 anti-lave orientées cible, pattern descendDiagonal).
     let lastD = dist();
@@ -594,10 +596,12 @@ async function gotoOreBounded(t) {
       await sleep(3000);
     }
     if (taskToken.cancelled) return;
+    emit({ type: 'ore_approach', phase: 'tunnel', d: Math.round(dist()) });
     const dug = await withTimeout(
       tunnelTo(bot, t, {}, taskToken),
       720000, () => { try { stopMotion(); } catch (e) {} });
     if (taskToken.cancelled) return;
+    emit({ type: 'tunnel_result', ok: !!(dug && dug.ok), reason: (dug && dug.reason) || null, d: Math.round(dist()) });
     if (dug && dug.ok && dist() <= 6) return;
     throw new Error('unreachable');                            // lave/échec → claim relâchée
   }
@@ -639,6 +643,13 @@ function loadQuota() {
 }
 
 async function startResource() {
+  // Anti-race inventaire : au spawn, les packets d'inventaire peuvent arriver APRÈS
+  // startAutonomous → bestPickTier lisait un inventaire VIDE → un bot DÉJÀ équipé partait
+  // en phase kit (vécu live : ResBot avec pioche diamant à errer en quête de bois).
+  for (let w = 0; w < 10 && ((bot.inventory && bot.inventory.items()) || []).length === 0; w++) {
+    await sleep(500);
+    if (taskToken.cancelled) return;
+  }
   // Sans pioche, rien ne droppe : on passe d'abord par le kit pierre (réutilise le planner).
   if (bestPickTier() < 0) {
     const res = await runPlanner(bot, {
