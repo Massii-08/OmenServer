@@ -178,6 +178,13 @@ async function runResource(bot, opts = {}, token = null) {
     catch (e) {
       _stopResidual(bot);
       if (claims) claims.release(key);
+      // Skip aussi les voisins de la MÊME veine (≤4 blocs) : ils partagent le même barrage
+      // (lave/inaccessible) — sinon on re-paie l'approche ratée pour chaque bloc de la veine.
+      for (const o of listOres(memory, wkey)) {
+        if (Math.abs(o.x - target.x) <= 4 && Math.abs(o.y - target.y) <= 4 && Math.abs(o.z - target.z) <= 4) {
+          skip.add(oreKey(o));
+        }
+      }
       emit({ type: 'resource_unreachable', x: target.x, y: target.y, z: target.z });
       continue;
     }

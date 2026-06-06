@@ -37,6 +37,7 @@ function buildGoal(x, y, z) {
 async function tunnelTo(bot, target, opts = {}, token = null) {
   const maxSteps = opts.maxSteps || 320;
   let lastDir = null;   // hystérésis de cap : on garde l'axe tant qu'il reste utile (anti-spirale)
+  let axisSwaps = 0;    // lave devant → on tente UNE fois l'axe perpendiculaire avant d'abandonner
   const dist = () => {
     const p = bot.entity && bot.entity.position;
     if (!p) return Infinity;
@@ -81,8 +82,15 @@ async function tunnelTo(bot, target, opts = {}, token = null) {
     const ahead2 = { x: fx + 2 * dir.dx, y: fy, z: fz + 2 * dir.dz };
     const ahead2Low = { x: ahead2.x, y: fy - 1, z: ahead2.z };
     const probes = [ahead, aheadLow, aheadHigh, ahead2, ahead2Low].map((q) => bot.blockAt(_at(q)));
-    for (const b of probes) {
-      if (b && isLava(b.name)) return { ok: false, reachedDist: dist(), reason: 'lava_ahead' };
+    if (probes.some((b) => b && isLava(b.name))) {
+      // Poche de lave sur CET axe : tente une fois l'axe perpendiculaire (vers la cible si
+      // possible) avant d'abandonner — beaucoup de veines ne sont gardées que d'un côté.
+      if (axisSwaps < 1) {
+        axisSwaps++;
+        lastDir = dir.dx ? { dx: 0, dz: Math.sign(dzT) || 1 } : { dx: Math.sign(dxT) || 1, dz: 0 };
+        continue;
+      }
+      return { ok: false, reachedDist: dist(), reason: 'lava_ahead' };
     }
 
     // Cibles à miner : descente = marche (devant-bas + devant) ; horizontal = corridor

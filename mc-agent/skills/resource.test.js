@@ -487,3 +487,24 @@ test('quota : sélection PLUS PROCHE d\'abord (pas diamant d\'abord) — réduit
   assert.equal(r.done, true);
   assert.deepEqual(order, ['iron_ore', 'deepslate_diamond_ore']);  // le PROCHE d'abord
 });
+
+test('unreachable → skip de toute la veine (voisins ≤4 blocs), pas re-tentés', async () => {
+  const blocks = { '50,40,0': { name: 'iron_ore', position: { x: 50, y: 40, z: 0 } } };
+  const bot = makeQuotaBot({ blocks });
+  const tried = [];
+  const r = await runResource(bot, {
+    memory: mem([
+      { material: 'iron_ore', x: 10, y: 40, z: 0 },   // veine inatteignable…
+      { material: 'iron_ore', x: 11, y: 41, z: 0 },   // …voisin (≤4) → skip groupé
+      { material: 'iron_ore', x: 50, y: 40, z: 0 },   // loin → atteignable
+    ]),
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async (t) => { tried.push(`${t.x},${t.y},${t.z}`); if (t.x < 40) throw new Error('unreachable'); },
+    quota: { iron: 1 },
+  });
+  assert.equal(r.done, true);
+  const veinTried = tried.filter((t) => t === '10,40,0' || t === '11,41,0');
+  assert.equal(veinTried.length, 1, `1 seul membre de la veine doit être tenté (${tried})`);
+  assert.deepEqual(bot._dug, ['50,40,0']);
+});
