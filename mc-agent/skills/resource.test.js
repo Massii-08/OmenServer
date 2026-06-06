@@ -623,3 +623,54 @@ test('phase2 : ensureGear appelé avec les types manquants à chaque itération'
   assert.ok(gearCalls.length >= 1);
   assert.deepEqual(gearCalls[0], ['iron']);
 });
+
+test('phase2 : ≥4 unreachable consécutifs → relocate (zone pourrie) + reset, puis reprise', async () => {
+  const blocks = { '300,40,0': { name: 'iron_ore', position: { x: 300, y: 40, z: 0 } } };
+  const bot = makeQuotaBot({ blocks });
+  let relocated = 0;
+  let calls = 0;
+  const ores = [
+    { material: 'iron_ore', x: 10, y: 40, z: 0 },
+    { material: 'iron_ore', x: 20, y: 40, z: 10 },
+    { material: 'iron_ore', x: 30, y: 40, z: 20 },
+    { material: 'iron_ore', x: 40, y: 40, z: 30 },
+    { material: 'iron_ore', x: 50, y: 40, z: 40 },
+  ];
+  const r = await runResource(bot, {
+    memory: mem(ores),
+    worldKey: 'overworld',
+    emit: () => {},
+    quota: { iron: 1 },
+    sleep: async () => {},
+    reloadMemory: () => mem([{ material: 'iron_ore', x: 300, y: 40, z: 0 }]),
+    failRelocateAt: 4,
+    maxTargetDist: 1000,
+    goto: async (t) => {
+      calls++;
+      if (t.x < 200) throw new Error('unreachable');   // toute la zone de spawn est pourrie
+      bot.entity.position = { x: t.x, y: t.y, z: t.z };
+    },
+    relocate: async () => { relocated++; bot.entity.position = { x: 290, y: 64, z: 0 }; },
+  });
+  assert.equal(relocated, 1, 'relocate après 4 échecs consécutifs');
+  assert.equal(r.done, true);                          // après relocate + reload → cible saine minée
+});
+
+test('phase2 : cibles mappées au-delà de maxTargetDist ignorées → mineFor local', async () => {
+  const bot = makeQuotaBot({});
+  const minedFor = [];
+  const r = await runResource(bot, {
+    memory: mem([{ material: 'iron_ore', x: 5000, y: 40, z: 0 }]),   // l'autre bout de la carte
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async () => { throw new Error('ne devrait jamais y aller'); },
+    quota: { iron: 1 },
+    pickTier: () => 2,
+    sleep: async () => {},
+    maxTargetDist: 200,
+    reloadMemory: () => mem([{ material: 'iron_ore', x: 5000, y: 40, z: 0 }]),
+    mineFor: async (t) => { minedFor.push(t); bot._items.push({ name: 'raw_iron', count: 1 }); return { ok: true }; },
+  });
+  assert.equal(r.done, true);
+  assert.deepEqual(minedFor, ['iron']);                // mineFor local, pas de trek de 5000 blocs
+});

@@ -65,8 +65,9 @@ function _dist3(a, b) {
  * Prochaine cible de minage : priorité (matériau) puis distance 3D à `from`.
  * opts = { skip?: Set|Array de clés oreKey, pickTier?: number, priority?: string[],
  *          allowTypes?: Set|Array de matériaux de BASE (mode quota : seuls les types
- *          encore manquants sont visés) }.
- * Exclut skip + ce qui dépasse pickTier + hors allowTypes ; dédup par oreKey. Ore ou null.
+ *          encore manquants sont visés), maxDist?: number (cibles au-delà ignorées —
+ *          mieux vaut miner LOCAL que traverser la carte, phase 2) }.
+ * Exclut skip + tier + types + distance ; dédup par oreKey. Ore ou null.
  */
 function nextOreTarget(memory, world, from, opts = {}) {
   const priority = (opts && opts.priority) || DEFAULT_PRIORITY;
@@ -76,6 +77,7 @@ function nextOreTarget(memory, world, from, opts = {}) {
     : Array.isArray(opts.allowTypes) ? new Set(opts.allowTypes) : null;
   const hasTierFilter = typeof opts.pickTier === 'number';
 
+  const maxDist2 = (typeof opts.maxDist === 'number' && from) ? opts.maxDist * opts.maxDist : null;
   const seen = new Set();
   const cands = [];
   for (const o of listOres(memory, world)) {
@@ -85,6 +87,10 @@ function nextOreTarget(memory, world, from, opts = {}) {
     if (skipSet && skipSet.has(key)) continue;
     if (allowSet && !allowSet.has(oreBase(o.material))) continue;
     if (hasTierFilter && requiredPickTier(o.material) > opts.pickTier) continue;
+    if (maxDist2 != null) {
+      const dx = o.x - from.x, dy = o.y - from.y, dz = o.z - from.z;
+      if (dx * dx + dy * dy + dz * dz > maxDist2) continue;
+    }
     cands.push(o);
   }
   if (!cands.length) return null;

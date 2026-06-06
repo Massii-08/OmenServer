@@ -89,12 +89,15 @@ async function runResource(bot, opts = {}, token = null) {
   const relocate = opts.relocate || null;
   const ensureGear = opts.ensureGear || null;
   const maxRelocations = opts.maxRelocations != null ? opts.maxRelocations : 8;
+  const maxTargetDist = opts.maxTargetDist != null ? opts.maxTargetDist : 200;
+  const failRelocateAt = opts.failRelocateAt != null ? opts.failRelocateAt : 4;
 
   const skip = new Set();        // cibles traitées (minées/absentes/ratées) : on ne re-vise jamais 2×
   const busyUntil = new Map();   // oreKey → ts : claimée par un autre bot, re-éligible après
   let mined = 0;
   let idleSince = null;
   let relocations = 0;
+  let failStreak = 0;            // unreachable consécutifs : zone pourrie (lac…) → relocate
   let lastProgress = '';
 
   function emitProgress() {
@@ -141,6 +144,7 @@ async function runResource(bot, opts = {}, token = null) {
     const target = nextOreTarget(memory, wkey, from, {
       skip: skipNow, allowTypes,
       priority: tracker ? [] : undefined,
+      maxDist: tracker ? maxTargetDist : undefined,   // phase 2 : miner LOCAL, pas traverser la carte
       pickTier: (typeof tier === 'number' ? tier : undefined),
     });
 
@@ -247,6 +251,19 @@ async function runResource(bot, opts = {}, token = null) {
         }
       }
       emit({ type: 'resource_unreachable', x: target.x, y: target.y, z: target.z });
+      // Série d'échecs = zone POURRIE (lac/aquifère — vécu live : 3 bots en boucle d'eau 35 min,
+      // jamais affamés car il restait toujours « une cible suivante » dans la même zone) →
+      // relocalisation FRANCHE vers la région du bot + reset des exclusions locales.
+      failStreak++;
+      if (failStreak >= failRelocateAt && relocate && relocations < maxRelocations) {
+        relocations++;
+        failStreak = 0;
+        emit({ type: 'resource_relocate', n: relocations, cause: 'fail_streak' });
+        try { await relocate(); } catch (e2) { /* best-effort */ }
+        skip.clear(); busyUntil.clear();
+        if (token && token.cancelled) return { ok: true, mined, cancelled: true };
+        if (reload) memory = reload() || memory;
+      }
       continue;
     }
     if (token && token.cancelled) return { ok: true, mined, cancelled: true };
@@ -282,6 +299,7 @@ async function runResource(bot, opts = {}, token = null) {
 
     if (okMine) {
       mined++;
+      failStreak = 0;
       emit({ type: 'ore_mined', world: wkey, material: target.material, x: target.x, y: target.y, z: target.z });
       emitProgress();
     } else {
