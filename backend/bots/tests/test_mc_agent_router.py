@@ -772,3 +772,14 @@ def test_run_roster_passes_quota(monkeypatch):
     })
     assert resp.status_code == 200
     assert captured["quota"] == {"iron": 64}
+
+
+def test_events_endpoint(monkeypatch):
+    """GET /events/{sid} : 200 admin avec events, 404 inconnu, 403 non-admin."""
+    mgr._sessions[991] = {"events": [{"type": "ore_approach", "phase": "tunnel"}]}
+    client = make_client()
+    r1 = client.get("/api/mc-agent/events/991")
+    assert r1.status_code == 200 and r1.json()["events"][0]["phase"] == "tunnel"
+    assert client.get("/api/mc-agent/events/9999").status_code == 404
+    assert make_client(is_admin=False).get("/api/mc-agent/events/991").status_code == 403
+    mgr._sessions.pop(991, None)

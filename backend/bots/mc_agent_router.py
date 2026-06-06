@@ -194,6 +194,16 @@ def status(sid: int, current_user: User = Depends(get_current_user)):
     return s
 
 
+@router.get("/events/{sid}")
+def events(sid: int, current_user: User = Depends(get_current_user)):
+    """Events bruts d'une session (telemetrie ore_approach/tunnel_result/quota_*) — debug admin."""
+    _require_admin(current_user)
+    s = mgr._sessions.get(sid)
+    if not s:
+        raise HTTPException(status_code=404, detail="Session introuvable")
+    return {"events": list(s.get("events", []))[-200:]}
+
+
 @router.get("/chat/{sid}")
 def chat(sid: int, current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
