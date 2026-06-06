@@ -625,7 +625,7 @@ async function gotoOreBounded(t) {
     emit({ type: 'ore_approach', phase: 'tunnel', d: Math.round(dist()) });
     const dug = await withTimeout(
       tunnelTo(bot, t, {}, taskToken),
-      720000, () => { try { stopMotion(); } catch (e) {} });
+      420000, () => { try { stopMotion(); } catch (e) {} });
     if (taskToken.cancelled) return;
     emit({ type: 'tunnel_result', ok: !!(dug && dug.ok), reason: (dug && dug.reason) || null, d: Math.round(dist()) });
     if (dug && dug.ok && dist() <= 6) return;
@@ -718,10 +718,31 @@ function regionCenter() {
   const jitter = ((h >> 4) % 200) - 100;
   return { x: base.x + dx + jitter, z: base.z + dz + jitter };
 }
+let _relocSeq = 0;
 async function relocateToRegion() {
-  const c = regionCenter();
+  // Cellule TERRE tirée de la mémoire de monde (biomes non-océan/rivière, ≥256 du spawn) :
+  // le quadrant hashé de V2Res4 tombait en plein OCÉAN → relocalisations inutiles en boucle
+  // (vécu phase 2). Rotation déterministe par bot (_relocSeq) → zones différentes à chaque fois.
+  let c = null;
+  try {
+    const memNow = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
+    const w = memNow && memNow.worlds && memNow.worlds[bot._worldKey];
+    const land = ((w && w.biomes) || []).filter((b) => {
+      const n = String(b.name || '');
+      if (!n || n.includes('ocean') || n.includes('river') || n.includes('beach')) return false;
+      const ddx = b.x - 208, ddz = b.z - 528;
+      return (ddx * ddx + ddz * ddz) > 256 * 256;
+    });
+    if (land.length) {
+      let h = 0;
+      for (const ch of String(bot.username || 'bot')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+      const pick = land[(h + (_relocSeq++) * 7919) % land.length];
+      c = { x: pick.x + 64, z: pick.z + 64 };
+    }
+  } catch (e) { /* fallback quadrant */ }
+  if (!c) c = regionCenter();
   emit({ type: 'resource_warp', x: c.x, z: c.z });
-  try { bot.chat('/spreadplayers ' + c.x + ' ' + c.z + ' 0 220 false ' + bot.username); } catch (e) {}
+  try { bot.chat('/spreadplayers ' + c.x + ' ' + c.z + ' 0 120 false ' + bot.username); } catch (e) {}
   await sleep(5000);                                     // atterrissage + chunks
 }
 
@@ -1134,6 +1155,17 @@ bot.on('death', () => {
 bot.on('kicked', (reason) => emit({ type: 'error', message: 'kicked: ' + reason }));
 bot.on('error', (e) => emit({ type: 'error', message: String((e && e.message) || e) }));
 bot.on('end', () => { emit({ type: 'status', state: 'disconnected' }); process.exit(0); });
+// Watchdog connexion : un « Timed out » côté serveur peut laisser le socket client MUET sans
+// event 'end' (vécu phase 2 : bot zombie, quota figé, jamais respawné). Pas de physicsTick
+// pendant 90 s → on se suicide proprement, le manager auto-respawne la session resource.
+let _lastTick = Date.now();
+bot.on('physicsTick', () => { _lastTick = Date.now(); });
+setInterval(() => {
+  if (Date.now() - _lastTick > 90000) {
+    emit({ type: 'error', message: 'connection_watchdog: 90s sans tick' });
+    process.exit(1);
+  }
+}, 30000);
 
 onCommand((cmd) => {
   if (cmd.type === 'say') say(bot, cmd.message);

@@ -171,6 +171,27 @@ def _pump(session, stream):
             _rebalance_sectors(session.get("server_id"))
         except Exception:  # noqa: BLE001 — thread de pompe : ne jamais le laisser crasher
             pass
+    # Self-healing (phase 2) : session RESOURCE morte naturellement (kick « Timed out »,
+    # watchdog, crash) → respawn auto après 15 s (l'inventaire persiste → quota préservé).
+    # Jamais si l'utilisateur a stoppé (user_stopped) ; cap 12 respawns (anti-boucle folle).
+    rs = session.get("respawn")
+    if (rs and session.get("objective") == "resource"
+            and not session.get("user_stopped")
+            and session.get("respawn_count", 0) < 12):
+        def _do_respawn():
+            try:
+                new_sid = start_for_bot(rs["group_id"], rs["bot_id"], model=rs.get("model"),
+                                        autonomous=rs.get("autonomous", True),
+                                        objective=rs.get("objective", "resource"),
+                                        world_label=rs.get("world_label"), quota=rs.get("quota"))
+                ns = _sessions.get(new_sid)
+                if ns is not None:
+                    ns["respawn_count"] = session.get("respawn_count", 0) + 1
+            except Exception:  # noqa: BLE001 — best-effort (compte déjà en ligne, groupe parti…)
+                pass
+        timer = threading.Timer(15.0, _do_respawn)
+        timer.daemon = True
+        timer.start()
 
 
 def _node_bin():
@@ -420,13 +441,22 @@ def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="sto
         raise ValueError("Ce compte est déjà en ligne")
     secret = mc_agent_secrets.get_secret(group_id, bot_id)
     login_command = _resolve_login_command(group, group_id, bot_id, secret)
-    return _spawn_bot(
+    sid = _spawn_bot(
         host=group["host"], port=group["port"], user=bot["username"], auth=bot["auth"],
         profile=group["intelligence"], commands=servers_store.resolve_commands(group),
         policy=servers_store.resolve_policy(group), server_id=group_id,
         language=group.get("language", "fr"), autonomous=autonomous, objective=objective,
         world_label=world_label, model=model, login_command=login_command, quota=quota,
     )
+    # Self-healing (phase 2) : mémorise QUOI respawner si le process meurt naturellement
+    # (kick/Timed out/watchdog) — l'inventaire du compte persiste, le quota repart d'où il était.
+    sess = _sessions.get(sid)
+    if sess is not None:
+        sess["respawn"] = {"group_id": group_id, "bot_id": bot_id, "model": model,
+                           "autonomous": autonomous, "objective": objective,
+                           "world_label": world_label, "quota": quota}
+        sess.setdefault("respawn_count", 0)
+    return sid
 
 
 def start_mappers(group_id, count):
@@ -525,6 +555,7 @@ def stop_session(sid):
     s = _sessions.get(sid)
     if not s:
         return False
+    s["user_stopped"] = True          # pas d'auto-respawn après un stop volontaire
     proc = s.get("proc")
     if proc and proc.poll() is None:
         try:

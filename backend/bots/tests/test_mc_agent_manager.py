@@ -1000,3 +1000,83 @@ def test_public_expose_quota(monkeypatch):
 
 def test_wm_events_includes_ores_found():
     assert "ores_found" in mgr._WM_EVENTS
+
+
+# --- Phase 2 : self-healing (auto-respawn des sessions resource mortes) ---
+
+def test_pump_respawns_dead_resource_session(monkeypatch):
+    """Mort naturelle d'une session resource → start_for_bot re-déclenché (timer)."""
+    import io
+    calls = {}
+
+    def fake_start_for_bot(gid, bid, **kw):
+        calls.update({"gid": gid, "bid": bid, **kw})
+        return 99
+
+    monkeypatch.setattr(mgr, "start_for_bot", fake_start_for_bot)
+
+    fired = {}
+
+    class FakeTimer:
+        def __init__(self, delay, fn):
+            fired["delay"] = delay
+            self.fn = fn
+            self.daemon = False
+        def start(self):
+            self.fn()          # exécute immédiatement (pas d'attente en test)
+
+    monkeypatch.setattr(mgr.threading, "Timer", FakeTimer)
+    mgr._sessions[99] = {"events": [], "transcript": [], "last_error": None, "status": "x"}
+    session = {
+        "status": "running", "transcript": [], "events": [], "last_error": None,
+        "objective": "resource", "server_id": "ab12cd", "respawn_count": 1,
+        "respawn": {"group_id": "ab12cd", "bot_id": "b1", "model": None,
+                    "autonomous": True, "objective": "resource", "world_label": None,
+                    "quota": {"iron": 64}},
+        "cmds_path": None, "policy_path": None, "world_path": None,
+        "wm_path": None, "quota_path": None, "login_path": None,
+    }
+    mgr._pump(session, io.StringIO(""))   # flux vide → fin immédiate (mort naturelle)
+    assert calls.get("gid") == "ab12cd" and calls.get("bid") == "b1"
+    assert calls.get("quota") == {"iron": 64}
+    assert fired["delay"] == 15.0
+    assert mgr._sessions[99]["respawn_count"] == 2
+    mgr._sessions.pop(99, None)
+
+
+def test_pump_no_respawn_when_user_stopped(monkeypatch):
+    import io
+    calls = []
+    monkeypatch.setattr(mgr, "start_for_bot", lambda *a, **k: calls.append(a) or 99)
+
+    class FakeTimer:
+        def __init__(self, delay, fn): self.fn = fn; self.daemon = False
+        def start(self): self.fn()
+
+    monkeypatch.setattr(mgr.threading, "Timer", FakeTimer)
+    session = {"status": "running", "transcript": [], "events": [], "last_error": None,
+               "objective": "resource", "user_stopped": True, "respawn_count": 0,
+               "respawn": {"group_id": "g", "bot_id": "b"},
+               "cmds_path": None, "policy_path": None, "world_path": None,
+               "wm_path": None, "quota_path": None, "login_path": None}
+    mgr._pump(session, io.StringIO(""))
+    assert calls == []
+
+
+def test_pump_respawn_capped(monkeypatch):
+    import io
+    calls = []
+    monkeypatch.setattr(mgr, "start_for_bot", lambda *a, **k: calls.append(a) or 99)
+
+    class FakeTimer:
+        def __init__(self, delay, fn): self.fn = fn; self.daemon = False
+        def start(self): self.fn()
+
+    monkeypatch.setattr(mgr.threading, "Timer", FakeTimer)
+    session = {"status": "running", "transcript": [], "events": [], "last_error": None,
+               "objective": "resource", "respawn_count": 12,
+               "respawn": {"group_id": "g", "bot_id": "b"},
+               "cmds_path": None, "policy_path": None, "world_path": None,
+               "wm_path": None, "quota_path": None, "login_path": None}
+    mgr._pump(session, io.StringIO(""))
+    assert calls == []

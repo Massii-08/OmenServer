@@ -90,7 +90,7 @@ async function runResource(bot, opts = {}, token = null) {
   const ensureGear = opts.ensureGear || null;
   const maxRelocations = opts.maxRelocations != null ? opts.maxRelocations : 8;
   const maxTargetDist = opts.maxTargetDist != null ? opts.maxTargetDist : 200;
-  const failRelocateAt = opts.failRelocateAt != null ? opts.failRelocateAt : 4;
+  const failRelocateAt = opts.failRelocateAt != null ? opts.failRelocateAt : 2;  // un échec ≈ 8-12 min (vécu) — fuir vite les zones d'eau
 
   const skip = new Set();        // cibles traitées (minées/absentes/ratées) : on ne re-vise jamais 2×
   const busyUntil = new Map();   // oreKey → ts : claimée par un autre bot, re-éligible après
