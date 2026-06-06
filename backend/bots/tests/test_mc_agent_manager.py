@@ -956,13 +956,25 @@ def test_spawn_resource_wm_live_et_claims(monkeypatch, tmp_path):
     assert s.get("wm_path") is None                            # pas de snapshot à nettoyer
 
 
-def test_spawn_non_resource_garde_snapshot(monkeypatch, tmp_path):
-    """Les autres objectifs gardent le SNAPSHOT (worldmem-<sid>.json), pas de --wm-live."""
+def test_spawn_mapper_wm_live_et_frontier(monkeypatch, tmp_path):
+    """Phase 2 : mapper → mémoire LIVE + --frontier (couverture partagée), pas de claims."""
     captured = _fake_spawn_env(monkeypatch, tmp_path)
     mgr.start_session("h", 25565, "U", server_id="ab12cd", objective="mapper")
     cmd = captured["cmd"]
-    assert "--wm-live" not in cmd
+    assert "--wm-live" in cmd
+    assert "--frontier" in cmd
     assert "--claims" not in cmd
+    wm = cmd[cmd.index("--world-memory") + 1]
+    assert wm.endswith("ab12cd.json")
+
+
+def test_spawn_autres_objectifs_gardent_snapshot(monkeypatch, tmp_path):
+    """Les objectifs hors resource/mapper gardent le SNAPSHOT (worldmem-<sid>.json)."""
+    captured = _fake_spawn_env(monkeypatch, tmp_path)
+    mgr.start_session("h", 25565, "U", server_id="ab12cd", objective="stone_pickaxe")
+    cmd = captured["cmd"]
+    assert "--wm-live" not in cmd
+    assert "--frontier" not in cmd
     wm = cmd[cmd.index("--world-memory") + 1]
     assert "worldmem-" in wm
 

@@ -47,6 +47,7 @@ const { branchMine } = require('./skills/branchMine');
 const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
 const { loadMemory, worldKey } = require('./worldMemory');
 const { runMapper } = require('./mapper');
+const { LOCATE_KINDS, parseLocateResponse, structureFoundEvent } = require('./structures');
 const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
 const { runResource } = require('./skills/resource');
 const { tunnelTo } = require('./skills/tunnelTo');
@@ -506,9 +507,36 @@ async function startMapper() {
   else await tryKitUpgrade();
   if (taskToken.cancelled) return;
   emit({ type: 'mapper_started', world: bot._worldKey, sector: mapperSector });
+  // ── Phase 2 : rotation /locate (bot OP) — 1 structure/60 s, réponse op parsée en messagestr.
+  // Échec silencieux si pas op / serveur sans la structure (réponse d'erreur non matchée).
+  let locateIdx = 0;
+  let pendingLocate = null;
+  const locateTimer = args.frontier ? setInterval(() => {
+    if (taskToken.cancelled) { clearInterval(locateTimer); return; }
+    const item = LOCATE_KINDS[locateIdx++ % LOCATE_KINDS.length];
+    pendingLocate = { kind: item.kind, at: Date.now() };
+    try { bot.chat('/locate structure ' + item.arg); } catch (e) { /* best-effort */ }
+  }, 60000) : null;
+  if (args.frontier) {
+    bot.on('messagestr', (msg) => {
+      if (!pendingLocate || Date.now() - pendingLocate.at > 10000) return;
+      const r = parseLocateResponse(msg);
+      if (!r) return;
+      emit(structureFoundEvent(bot._worldKey, pendingLocate.kind, { x: r.x, y: 64, z: r.z }));
+      pendingLocate = null;
+    });
+  }
+  // Warp self-service (bot OP) : /spreadplayers ≈ tp SÛR en surface près de (x,z).
+  const warp = args.frontier ? (async (x, z) => {
+    bot.chat('/spreadplayers ' + Math.round(x) + ' ' + Math.round(z) + ' 0 48 false ' + bot.username);
+  }) : null;
   await runMapper(bot, {
     worldKey: bot._worldKey,
     memory: bot._worldMemory,
+    frontier: !!args.frontier,
+    warp,
+    reloadMemory: (args['wm-live'] && args['world-memory'])
+      ? () => loadMemory(args['world-memory']) : null,
     getSector: () => mapperSector,
     teleport: tpWatch, // #10 : TP détecté → ré-ancrage (heading propre depuis la position réelle)
     emit,

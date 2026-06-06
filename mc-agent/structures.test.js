@@ -67,3 +67,39 @@ test('findSignature : nether_bricks → fortress ; rien → found:false', () => 
   const empty = { registry: { blocksByName: {} }, findBlock: () => null };
   assert.strictEqual(st.findSignature(empty).found, false);
 });
+
+// ─── Phase 2 : signatures étendues + event + rotation /locate ───
+
+test('findAllSignatures : retourne 1 hit par type présent (village via bell, mineshaft via rail)', () => {
+  const world = { bell: { x: 10, y: 70, z: 5 }, rail: { x: -20, y: 30, z: 8 } };
+  const bot = {
+    registry: { blocksByName: { bell: { id: 1 }, rail: { id: 2 }, end_portal_frame: { id: 3 },
+      crying_obsidian: { id: 4 }, mossy_cobblestone: { id: 5 }, nether_bricks: { id: 6 },
+      reinforced_deepslate: { id: 7 }, sculk_catalyst: { id: 8 }, infested_cobblestone: { id: 9 }, nether_brick: { id: 10 } } },
+    findBlock({ matching }) {
+      if (matching.includes(1)) return { name: 'bell', position: world.bell };
+      if (matching.includes(2)) return { name: 'rail', position: world.rail };
+      return null;
+    },
+  };
+  const out = require('./structures').findAllSignatures(bot);
+  const types = out.map((o) => o.type).sort();
+  assert.deepStrictEqual(types, ['mineshaft', 'village']);
+});
+
+test('structureFoundEvent : event {type, world, kind, x, y, z} floored, y manquant → 64', () => {
+  const { structureFoundEvent } = require('./structures');
+  const ev = structureFoundEvent('overworld', 'village', { x: 10.7, y: 64.2, z: -3.9 });
+  assert.deepStrictEqual(ev, { type: 'structure_found', world: 'overworld', kind: 'village', x: 10, y: 64, z: -4 });
+  const ev2 = structureFoundEvent('overworld', 'shipwreck', { x: 1, z: 2 });
+  assert.strictEqual(ev2.y, 64);
+});
+
+test('LOCATE_KINDS : rotation couvre les structures demandées (tags génériques)', () => {
+  const { LOCATE_KINDS } = require('./structures');
+  const kinds = LOCATE_KINDS.map((k) => k.kind);
+  for (const k of ['village', 'mineshaft', 'stronghold', 'ancient_city', 'ruined_portal']) {
+    assert.ok(kinds.includes(k), k);
+  }
+  assert.ok(LOCATE_KINDS.every((k) => k.arg.includes('minecraft')));
+});

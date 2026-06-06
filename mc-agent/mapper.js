@@ -18,6 +18,8 @@
 const { sectorRange, inSector, isCellMapped } = require('./sectors');
 const { detectCaveEntrance } = require('./caves');
 const { scanAllOres, oresFoundEvent } = require('./ores');
+const { findAllSignatures, findSpawner, structureFoundEvent } = require('./structures');
+const { nextFrontierCell } = require('./frontier');
 const { biomeSeenEvent, caveFoundEvent, resolveBiome } = require('./worldMemory');
 const { survivalTick } = require('./survival');
 const { isInWater, escapeWater, clearSnares, isFloatingStuck, recoverFloating, WATER } = require('./unstuck');
@@ -151,6 +153,9 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   const biomeCells = new Set();  // cellules dont le biome a été émis
   const caveCells = new Set();   // cellules dont une grotte a été émise
   const oreSeen = new Set();     // minerais déjà émis (dédup par position de BLOC 3D)
+  const structSeen = new Set();  // structures émises (dédup type+cellule 64 — le backend dédup aussi)
+  const frontierSkip = new Set(); // cellules frontière en échec (eau/inatteignable) — on n'y reboucle pas
+  let legs = 0;                  // compteur de jambes (re-lecture mémoire live périodique)
 
   // Note la position courante : biome (1×/cellule) + entrée de grotte éventuelle.
   function record() {
@@ -185,6 +190,17 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
         if (!oreSeen.has(ok)) { oreSeen.add(ok); fresh.push(ore); }
       }
       if (fresh.length) emit(oresFoundEvent(worldKey, fresh));
+    } catch (e) { /* best-effort */ }
+    // structures (phase 2) : blocs-signatures + spawner à portée → structure_found (dédup locale
+    // type+cellule 64 ; village/mineshaft/stronghold/donjon… — l'anti-xray ne masque pas ces blocs).
+    try {
+      const hits = findAllSignatures(bot, { maxDistance: 64 });
+      const sp = findSpawner(bot, { maxDistance: 48 });
+      if (sp.found) hits.push({ type: sp.type, pos: sp.pos });
+      for (const h of hits) {
+        const sk = h.type + ':' + Math.floor(h.pos.x / 64) + ',' + Math.floor(h.pos.z / 64);
+        if (!structSeen.has(sk)) { structSeen.add(sk); emit(structureFoundEvent(worldKey, h.type, h.pos)); }
+      }
     } catch (e) { /* best-effort */ }
   }
 
@@ -278,6 +294,44 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
     const sec = getSector();
     const sk = JSON.stringify(sec || null);
     if (sk !== sectorKey) { sectorKey = sk; heading = drawHeading(rng, sec, opts.overlapDeg); }
+
+    // ── Mode FRONTIÈRE (phase 2, opts.frontier) : remplir la cellule NON couverte la plus
+    // proche au lieu de marcher au cap. Mémoire LIVE re-lue toutes les 3 jambes (les autres
+    // mappers couvrent en parallèle). Frontière lointaine (> warpDist) + warp dispo → self-warp
+    // (bot op, /spreadplayers) : on repart d'un point frais SANS retraverser le déjà-fait.
+    if (opts.frontier) {
+      legs++;
+      if (opts.reloadMemory && legs % 3 === 0) {
+        try { memory = opts.reloadMemory() || memory; } catch (e) { /* best-effort */ }
+      }
+      const here0 = _pos(bot);
+      const cell = nextFrontierCell(memory, worldKey, localSeen, here0, { skip: frontierSkip });
+      if (cell) {
+        const fd = Math.sqrt((cell.center.x - here0.x) ** 2 + (cell.center.z - here0.z) ** 2);
+        if (fd > (opts.warpDist || 220) && opts.warp) {
+          emit({ type: 'mapper_warp', to: cell.key, d: Math.round(fd) });
+          try { await opts.warp(cell.center.x, cell.center.z); } catch (e) { /* best-effort */ }
+          await sleep(opts.warpSettleMs != null ? opts.warpSettleMs : 4000);  // chunks + chute spreadplayers
+          record();
+          continue;
+        }
+        if (!isOceanCell(memory, worldKey, cell.center.x, cell.center.z)
+            && !waterAhead(bot, here0, cell.center)) {
+          try {
+            await doGoto({ x: cell.center.x, y: here0.y, z: cell.center.z });
+            record();
+            continue;
+          } catch (e) {
+            frontierSkip.add(cell.key);          // inatteignable → on n'y reboucle pas
+            emit({ type: 'mapper_frontier_skip', cell: cell.key });
+            // fallthrough : jambe aléatoire pour se dégager
+          }
+        } else {
+          frontierSkip.add(cell.key);            // eau → couverte « par constat »
+        }
+      }
+      // cell null (tout couvert dans le rayon) ou échec → marche aléatoire ci-dessous
+    }
 
     // le cap DÉRIVE doucement (random walk persistant), confiné au wedge si secteur
     heading = clampToSector(driftHeading(heading, rng, opts), sec);

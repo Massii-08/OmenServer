@@ -291,12 +291,17 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     #    (anti-collision entre bots ressources ; PAS nettoyé par session, TTL interne).
     #  - autres objectifs : SNAPSHOT worldmem-<sid>.json (comportement historique).
     wm_path = None
-    if server_id and objective == "resource":
+    if server_id and objective in ("resource", "mapper"):
+        # resource ET mapper (phase 2 frontière) lisent la mémoire LIVE du groupe : les mappers
+        # voient la couverture des autres en quasi-temps réel (frontières disjointes).
         world_memory.WORLD_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
         live = world_memory.WORLD_MEMORY_DIR / f"{server_id}.json"
         cmd += ["--world-memory", str(live), "--wm-live", "1"]
-        RUNS_DIR.mkdir(parents=True, exist_ok=True)
-        cmd += ["--claims", str(RUNS_DIR / f"claims-{server_id}.json")]
+        if objective == "resource":
+            RUNS_DIR.mkdir(parents=True, exist_ok=True)
+            cmd += ["--claims", str(RUNS_DIR / f"claims-{server_id}.json")]
+        else:
+            cmd += ["--frontier", "1"]          # exploration par frontière + warp + /locate
     elif server_id:
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
         wm_path = RUNS_DIR / f"worldmem-{sid}.json"

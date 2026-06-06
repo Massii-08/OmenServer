@@ -67,6 +67,10 @@ function findSpawner(bot, { maxDistance = 48 } = {}) {
 // Blocs-signature HIGH-SIGNAL uniquement (best-effort, datapack-agnostique). On évite stone_bricks/rail
 // (trop communs → faux positifs). Le rating définitif d'une structure vient de /locate quand dispo.
 const SIGNATURE = [
+  { type: 'village', blocks: ['bell'] },                                        // 1 village = 1 cloche
+  { type: 'mineshaft', blocks: ['rail'] },                                      // rails naturels (pas de joueurs ici)
+  { type: 'stronghold', blocks: ['end_portal_frame'] },                         // définitif
+  { type: 'ruined_portal', blocks: ['crying_obsidian'] },
   { type: 'dungeon', blocks: ['mossy_cobblestone', 'infested_cobblestone'] },
   { type: 'fortress', blocks: ['nether_bricks', 'nether_brick'] },             // pertinent dans le Nether
   { type: 'ancient_city', blocks: ['reinforced_deepslate', 'sculk_catalyst'] }, // uniques à l'ancient city
@@ -81,6 +85,37 @@ function findSignature(bot, { maxDistance = 32 } = {}) {
   return { found: false };
 }
 
+/** TOUTES les signatures à portée (1 par type) — pour le scan cartographe. */
+function findAllSignatures(bot, { maxDistance = 64 } = {}) {
+  const out = [];
+  for (const sig of SIGNATURE) {
+    const ids = _blockIds(bot, sig.blocks);
+    if (!ids) continue;
+    const b = bot.findBlock({ matching: ids, maxDistance });
+    if (b) out.push({ type: sig.type, pos: b.position });
+  }
+  return out;
+}
+
+// Rotation /locate (bot OP) : tags génériques = 1 commande couvre les variantes.
+const LOCATE_KINDS = [
+  { kind: 'village', arg: '#minecraft:village' },
+  { kind: 'mineshaft', arg: '#minecraft:mineshaft' },
+  { kind: 'stronghold', arg: 'minecraft:stronghold' },
+  { kind: 'desert_pyramid', arg: 'minecraft:desert_pyramid' },
+  { kind: 'pillager_outpost', arg: 'minecraft:pillager_outpost' },
+  { kind: 'ancient_city', arg: 'minecraft:ancient_city' },
+  { kind: 'ruined_portal', arg: '#minecraft:ruined_portal' },
+  { kind: 'shipwreck', arg: '#minecraft:shipwreck' },
+  { kind: 'monument', arg: 'minecraft:monument' },
+];
+
+function structureFoundEvent(world, kind, pos) {
+  return { type: 'structure_found', world, kind,
+           x: Math.floor(pos.x), y: Math.floor(pos.y === undefined ? 64 : pos.y), z: Math.floor(pos.z) };
+}
+
 module.exports = {
   parseStructureIds, parseLocateResponse, isHostile, detectMobCluster, findSpawner, findSignature,
+  findAllSignatures, LOCATE_KINDS, structureFoundEvent, SIGNATURE,
 };

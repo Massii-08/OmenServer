@@ -477,3 +477,55 @@ test('runMapper : scan COMPLET des minerais en route → ores_found batché (exp
   // rien d'autre ne change : les biomes continuent d'être émis normalement
   assert.ok(events.filter((e) => e.type === 'biome_seen').length >= 3);
 });
+
+test('runMapper : émet structure_found (bell→village) avec dédup type+cellule', async () => {
+  const bot = fakeMapperBot();
+  bot.registry.blocksByName = { ...bot.registry.blocksByName, bell: { id: 50 } };
+  bot.findBlock = ({ matching }) => matching.includes(50)
+    ? { name: 'bell', position: vec3(40, 70, 12) } : null;
+  const events = [];
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: (e) => {
+      events.push(e);
+      if (events.filter((x) => x.type === 'biome_seen').length >= 3 || events.length > 800) token.cancelled = true;
+    },
+    goto: async (wp) => { bot.entity.position = vec3(wp.x, 64, wp.z); },
+    sleep: async () => {},
+  }, token);
+  const st = events.filter((e) => e.type === 'structure_found');
+  assert.strictEqual(st.length, 1, `dédup : 1 seul structure_found attendu (${st.length})`);
+  assert.deepStrictEqual(st[0], { type: 'structure_found', world: 'overworld', kind: 'village', x: 40, y: 70, z: 12 });
+});
+
+test('runMapper frontier : vise la cellule non couverte la plus proche, warp si lointaine', async () => {
+  const bot = fakeMapperBot();
+  const gotos = [];
+  const warps = [];
+  const events = [];
+  const token = { cancelled: false };
+  // mémoire : tout couvert autour du spawn SAUF une cellule adjacente — puis tout couvert → warp
+  const biomes = [];
+  for (let x = -512; x <= 512; x += 128) for (let z = -512; z <= 512; z += 128) {
+    if (!(x === 128 && z === 0)) biomes.push({ name: 'plains', x, z });
+  }
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    memory: { worlds: { overworld: { biomes } } },
+    frontier: true,
+    warp: async (x, z) => { warps.push({ x, z }); bot.entity.position = vec3(x, 64, z); },
+    warpDist: 220,
+    warpSettleMs: 0,
+    emit: (e) => { events.push(e); if (warps.length >= 1 || events.length > 600) token.cancelled = true; },
+    goto: async (wp) => { gotos.push({ x: wp.x, z: wp.z }); bot.entity.position = vec3(wp.x, 64, wp.z); },
+    sleep: async () => {},
+  }, token);
+  // 1re cible frontière = centre de la cellule (128,0) → (192, 64)
+  assert.ok(gotos.length >= 1);
+  assert.strictEqual(Math.round(gotos[0].x), 192);
+  assert.strictEqual(Math.round(gotos[0].z), 64);
+  // ensuite tout est couvert près du bot → warp vers une cellule lointaine
+  assert.ok(warps.length >= 1, 'warp attendu quand la frontière est lointaine');
+  assert.ok(events.some((e) => e.type === 'mapper_warp'));
+});
