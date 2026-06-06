@@ -512,12 +512,14 @@ async function startMapper() {
   // Échec silencieux si pas op / serveur sans la structure (réponse d'erreur non matchée).
   let locateIdx = 0;
   let pendingLocate = null;
+  // 180 s + jitter par bot : un /locate sur structure non générée fouille les region files —
+  // ×5 mappers à 60 s ça a contribué au freeze serveur 49 s (vécu phase 2).
   const locateTimer = args.frontier ? setInterval(() => {
     if (taskToken.cancelled) { clearInterval(locateTimer); return; }
     const item = LOCATE_KINDS[locateIdx++ % LOCATE_KINDS.length];
     pendingLocate = { kind: item.kind, at: Date.now() };
     try { bot.chat('/locate structure ' + item.arg); } catch (e) { /* best-effort */ }
-  }, 60000) : null;
+  }, 180000 + Math.floor(Math.random() * 60000)) : null;
   if (args.frontier) {
     bot.on('messagestr', (msg) => {
       if (!pendingLocate || Date.now() - pendingLocate.at > 10000) return;
