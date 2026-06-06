@@ -10,6 +10,7 @@
 // Anti-lave : mêmes 5 sondages que descendDiagonal avant CHAQUE pas ; lave → abandon propre
 // (le caller relâche la claim, un autre bot — ou un autre angle — retentera).
 const { bestToolFor } = require('../tools');
+const { cheapestPickFor } = require('../gear');
 const { DANGER, VOID } = require('./mineDown');                // mêmes ensembles → 1 source de vérité
 
 let goals;
@@ -105,7 +106,12 @@ async function tunnelTo(bot, target, opts = {}, token = null) {
     for (const t of digBlocks) {
       if (!t) continue;                                       // unloaded → skip
       if (VOID.has(t.name)) continue;                         // déjà air → rien à faire
-      const tool = bestToolFor(bot, t);
+      // Roche nue → pioche LA MOINS CHÈRE (la durabilité fer/diamant est réservée aux ores —
+      // un tunnel d'approche = des centaines de blocs). Ore → meilleure pioche (bestToolFor).
+      const cheapName = cheapestPickFor((bot.inventory && bot.inventory.items()) || [], t.name);
+      let tool = null;
+      if (cheapName) tool = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === cheapName);
+      if (!tool) tool = bestToolFor(bot, t);
       if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
       try { await bot.dig(t); } catch (e) { return { ok: false, reachedDist: dist(), reason: 'dig_failed' }; }
     }

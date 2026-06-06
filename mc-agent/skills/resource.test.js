@@ -508,3 +508,118 @@ test('unreachable → skip de toute la veine (voisins ≤4 blocs), pas re-tenté
   assert.equal(veinTried.length, 1, `1 seul membre de la veine doit être tenté (${tried})`);
   assert.deepEqual(bot._dug, ['50,40,0']);
 });
+
+// ─── Phase 2 : minage réel anti-xray (mineFor / relocate / ensureGear) ───
+
+test('phase2 : carte vide → mineFor(type le plus manquant minable), puis recount', async () => {
+  const bot = makeQuotaBot({});
+  const minedFor = [];
+  const events = [];
+  const r = await runResource(bot, {
+    memory: mem([]),
+    worldKey: 'overworld',
+    emit: (e) => events.push(e),
+    goto: async () => {},
+    quota: { iron: 2, lapis: 1 },
+    pickTier: () => 2,                                  // stone pick : fer et lapis minables
+    sleep: async () => {},
+    reloadMemory: () => mem([]),
+    mineFor: async (t) => {
+      minedFor.push(t);
+      // simule la récolte : crédite l'inventaire
+      bot._items.push({ name: t === 'iron' ? 'raw_iron' : 'lapis_lazuli', count: 2 });
+      return { ok: true };
+    },
+  });
+  assert.equal(r.done, true);
+  assert.ok(minedFor.length >= 1);
+  assert.ok(['iron', 'lapis'].includes(minedFor[0]));   // déficits égaux (100%) → l'un des deux
+  assert.ok(events.some((e) => e.type === 'resource_mine_for'));
+});
+
+test('phase2 : manque tier 3 sans pioche fer → bootstrap mineFor(iron)', async () => {
+  const bot = makeQuotaBot({ inv: [{ name: 'raw_iron', count: 64 }, { name: 'lapis_lazuli', count: 64 },
+    { name: 'redstone', count: 64 }, { name: 'raw_gold', count: 15 }] });
+  const minedFor = [];
+  let calls = 0;
+  const r = await runResource(bot, {
+    memory: mem([]),
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async () => {},
+    quota: { diamond: 1, iron: 1 },                     // diamant manque, fer déjà servi
+    pickTier: () => 2,                                  // PAS de pioche fer
+    sleep: async () => {},
+    reloadMemory: () => mem([]),
+    mineFor: async (t) => {
+      minedFor.push(t);
+      if (++calls >= 2) bot._items.push({ name: 'diamond', count: 1 });  // fin du test
+      return { ok: true };
+    },
+  });
+  assert.equal(minedFor[0], 'iron');                    // bootstrap : miner du fer pour la pioche
+  assert.equal(r.done, true);
+});
+
+test('phase2 : mineFor échoue → relocate + reset, puis reprise', async () => {
+  const bot = makeQuotaBot({});
+  let relocated = 0;
+  let fails = 0;
+  const r = await runResource(bot, {
+    memory: mem([]),
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async () => {},
+    quota: { iron: 1 },
+    pickTier: () => 2,
+    sleep: async () => {},
+    reloadMemory: () => mem([]),
+    mineFor: async () => {
+      if (++fails <= 2) return { ok: false, reason: 'lava' };
+      bot._items.push({ name: 'raw_iron', count: 1 });
+      return { ok: true };
+    },
+    relocate: async () => { relocated++; },
+  });
+  assert.equal(r.done, true);
+  assert.equal(relocated, 2);                           // 2 échecs → 2 relocalisations
+});
+
+test('phase2 : starvation sans mineFor → relocate (cap maxRelocations) puis starved', async () => {
+  const bot = makeQuotaBot({});
+  let relocated = 0;
+  let t = 0;
+  const r = await runResource(bot, {
+    memory: mem([]),
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async () => {},
+    quota: { iron: 1 },
+    sleep: async () => { t += 60000; },
+    now: () => t,
+    maxIdleMs: 120000,
+    maxRelocations: 2,
+    reloadMemory: () => mem([]),
+    relocate: async () => { relocated++; },
+  });
+  assert.equal(relocated, 2);
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'starved');
+});
+
+test('phase2 : ensureGear appelé avec les types manquants à chaque itération', async () => {
+  const blocks = { '10,40,5': { name: 'iron_ore', position: { x: 10, y: 40, z: 5 } } };
+  const bot = makeQuotaBot({ blocks });
+  const gearCalls = [];
+  const r = await runResource(bot, {
+    memory: mem([{ material: 'iron_ore', x: 10, y: 40, z: 5 }]),
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async () => {},
+    quota: { iron: 1 },
+    ensureGear: async (types) => { gearCalls.push([...types]); },
+  });
+  assert.equal(r.done, true);
+  assert.ok(gearCalls.length >= 1);
+  assert.deepEqual(gearCalls[0], ['iron']);
+});

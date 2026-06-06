@@ -52,6 +52,7 @@ const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
 const { runResource } = require('./skills/resource');
 const { tunnelTo } = require('./skills/tunnelTo');
 const { junkItems } = require('./quota');
+const { Y_OPT, pickaxePlan } = require('./gear');
 const { createClaims } = require('./claims');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
@@ -665,6 +666,63 @@ function loadQuota() {
   catch (e) { return null; }
 }
 
+// ── Phase 2 : maintenance d'outillage (craft stone/iron pick depuis les matériaux minés).
+async function ensureGearFor(neededTypes) {
+  const items = (bot.inventory && bot.inventory.items()) || [];
+  const plan = pickaxePlan(items.map((i) => ({ name: i.name, count: i.count })), neededTypes);
+  if (!plan.craft) return;
+  if (plan.craft === 'iron_pickaxe') {
+    // lingots manquants mais raw_iron en poche → fonte d'abord (four portable du kit)
+    const count = (n) => items.filter((i) => i.name === n).reduce((a, i) => a + i.count, 0);
+    if (count('iron_ingot') < 3 && count('raw_iron') >= 3) {
+      try { await smeltWithFurnace('raw_iron', 'iron_ingot', 3); } catch (e) { /* best-effort */ }
+    }
+  }
+  try {
+    const r = await craftSmart({ name: plan.craft, count: 1 });
+    emit({ type: 'gear_craft', item: plan.craft, ok: !!(r && r.ok), why: plan.why });
+  } catch (e) { emit({ type: 'gear_craft', item: plan.craft, ok: false, why: plan.why }); }
+}
+
+// ── Phase 2 : branch-mine RÉEL au Y optimal du type (anti-xray : on ne voit plus à travers
+// la roche — on mine comme un joueur). Descente diagonale puis branchMine (anti-lave +
+// collecte opportuniste des ores exposés par NOS digs — l'anti-xray les révèle au block update).
+async function mineForType(type) {
+  const targetY = Y_OPT[type] !== undefined ? Y_OPT[type] : -58;
+  const p = bot.entity && bot.entity.position;
+  if (!p) return { ok: false, reason: 'no_pos' };
+  if (p.y < targetY - 6) return { ok: false, reason: 'below_target' };   // remonter = relocate (warp surface)
+  if (p.y > targetY + 2) {
+    const d = await withTimeout(descendDiagonal(bot, { targetY }, taskToken), 600000,
+      () => { try { stopMotion(); } catch (e) {} });
+    if (taskToken.cancelled) return { ok: true };
+    if (!(d && d.ok)) return { ok: false, reason: (d && d.reason) || 'descend_failed' };
+  }
+  const r = await withTimeout(branchMine(bot, { targetY, mainLength: 24, branchLength: 8 }, taskToken),
+    900000, () => { try { stopMotion(); } catch (e) {} });
+  if (taskToken.cancelled) return { ok: true };
+  return (r && r.ok) ? r : { ok: false, reason: (r && r.reason) || 'branch_failed' };
+}
+
+// ── Phase 2 : self-warp vers la RÉGION du bot (quadrant stable dérivé du username autour du
+// spawn) — auto-récupération de starvation/échec sans intervention humaine (bot OP requis).
+function regionCenter() {
+  const base = { x: 208, z: 528 };                       // spawn monde du serveur de test
+  let h = 0;
+  for (const c of String(bot.username || 'bot')) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  const quad = h % 4;
+  const dx = (quad & 1) ? 520 : -520;
+  const dz = (quad & 2) ? 520 : -520;
+  const jitter = ((h >> 4) % 200) - 100;
+  return { x: base.x + dx + jitter, z: base.z + dz + jitter };
+}
+async function relocateToRegion() {
+  const c = regionCenter();
+  emit({ type: 'resource_warp', x: c.x, z: c.z });
+  try { bot.chat('/spreadplayers ' + c.x + ' ' + c.z + ' 0 220 false ' + bot.username); } catch (e) {}
+  await sleep(5000);                                     // atterrissage + chunks
+}
+
 async function startResource() {
   // Anti-race inventaire : au spawn, les packets d'inventaire peuvent arriver APRÈS
   // startAutonomous → bestPickTier lisait un inventaire VIDE → un bot DÉJÀ équipé partait
@@ -673,16 +731,29 @@ async function startResource() {
     await sleep(500);
     if (taskToken.cancelled) return;
   }
-  // Sans pioche, rien ne droppe : on passe d'abord par le kit pierre (réutilise le planner).
-  if (bestPickTier() < 0) {
+  // Phase 2 : kit complet jusqu'à la PIOCHE FER (diamant/or/redstone l'exigent — minage réel,
+  // plus de rcon-give). Re-check du palier EN COURS de chaîne (sub-token : si une pioche fer
+  // arrive autrement — coffre, give — le kit s'interrompt au lieu d'errer pour du bois).
+  if (bestPickTier() < 3) {
+    const kitToken = { cancelled: false };
+    const poll = setInterval(() => {
+      if (taskToken.cancelled || bestPickTier() >= 3) kitToken.cancelled = true;
+    }, 5000);
     const res = await runPlanner(bot, {
-      chain: chainFor('stone_pickaxe'),
+      chain: chainFor('iron_pickaxe'),
       runSkill: (g) => runSkillWithTelemetry(g),
       ctxExtra,
       onStep: (g) => emit({ type: 'goal', name: g.name }),
-    }, taskToken);
+    }, kitToken);
+    clearInterval(poll);
     if (taskToken.cancelled) return;
     if (res.stalled) emit({ type: 'resource_kit_stalled', goal: res.goal }); // dégradé : on tente quand même
+    // Stock de bâtons (≥16) : de quoi re-crafter ~8 pioches en sous-sol (cobble infini là-bas).
+    try {
+      const sticks = ((bot.inventory && bot.inventory.items()) || [])
+        .filter((i) => i.name === 'stick').reduce((a, i) => a + i.count, 0);
+      if (sticks < 16) await craftSmart({ name: 'stick', count: 16 - sticks });
+    } catch (e) { /* best-effort */ }
   }
   const quota = loadQuota();
   // Claims anti-collision (fichier partagé du groupe) — seulement si fourni par le manager.
@@ -700,6 +771,9 @@ async function startResource() {
     claims,
     reloadMemory,
     cleanup: quota ? tossJunk : null,
+    mineFor: quota ? mineForType : null,
+    relocate: quota ? relocateToRegion : null,
+    ensureGear: quota ? ensureGearFor : null,
     onTarget: async () => {
       if (isInWater(bot)) await escapeWater(bot, { emit });
       await settleSurvivalKit();

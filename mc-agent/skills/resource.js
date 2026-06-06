@@ -18,6 +18,7 @@ const { nextOreTarget, oreKey, listOres } = require('../ores');
 const { bestToolFor } = require('../tools');
 const { isOre } = require('../worldMemory');
 const { createQuotaTracker } = require('../quota');
+const { TIER_FOR, mostLackingType } = require('../gear');
 
 let vec3; try { vec3 = require('vec3'); } catch (e) { vec3 = null; }
 function _pos(t) { return vec3 ? vec3(t.x, t.y, t.z) : { x: t.x, y: t.y, z: t.z }; }
@@ -51,6 +52,10 @@ function _items(bot) {
  *  claims    : {tryClaim(key), refresh(key), release(key)} — anti-collision multi-bots
  *  reloadMemory : () => memory — re-lecture de la carte live (mode quota)
  *  cleanup   : async (bot) => void — toss du junk quand l'inventaire est plein (mode quota)
+ *  mineFor   : async (type) => {ok} — phase 2 anti-xray : BRANCH-MINE au Y optimal du type
+ *              quand la carte n'a aucune cible (minage réel > attente passive)
+ *  relocate  : async () => void — self-warp vers une zone fraîche (auto-récupération starvation)
+ *  ensureGear: async (neededTypes) => void — maintenance pioches (craft stone/iron pick)
  *  sleep/now/waitMs/maxIdleMs/collectTimeoutMs : injectables (tests)
  */
 async function runResource(bot, opts = {}, token = null) {
@@ -80,10 +85,16 @@ async function runResource(bot, opts = {}, token = null) {
       (e) => { if (!done) { done = true; clearTimeout(t); reject(e); } });
   });
 
+  const mineFor = opts.mineFor || null;
+  const relocate = opts.relocate || null;
+  const ensureGear = opts.ensureGear || null;
+  const maxRelocations = opts.maxRelocations != null ? opts.maxRelocations : 8;
+
   const skip = new Set();        // cibles traitées (minées/absentes/ratées) : on ne re-vise jamais 2×
   const busyUntil = new Map();   // oreKey → ts : claimée par un autre bot, re-éligible après
   let mined = 0;
   let idleSince = null;
+  let relocations = 0;
   let lastProgress = '';
 
   function emitProgress() {
@@ -110,6 +121,11 @@ async function runResource(bot, opts = {}, token = null) {
 
     const from = bot.entity && bot.entity.position;
     if (!from) return { ok: false, reason: 'no_pos', mined };
+    // Maintenance d'outillage (phase 2) : pioche d'avance / palier requis — AVANT de viser.
+    if (ensureGear && tracker) {
+      try { await ensureGear(tracker.remainingTypes(_items(bot))); } catch (e) { /* best-effort */ }
+      if (token && token.cancelled) return { ok: true, mined, cancelled: true };
+    }
     const tier = typeof pickTier === 'function' ? pickTier() : pickTier;
 
     // Exclusions du tour : déjà traitées + claimées par d'autres (re-éligibles après délai).
@@ -129,9 +145,54 @@ async function runResource(bot, opts = {}, token = null) {
     });
 
     if (!target) {
-      if (!reload) break;                              // legacy : carte épuisée → done
+      if (!reload && !mineFor) break;                  // legacy : carte épuisée → done
+      // ── Phase 2 (anti-xray) : pas de cible mappée → MINER POUR DE VRAI. Branch-mine au Y
+      // optimal du type LE PLUS manquant minable avec la pioche courante ; si le manque exige
+      // un palier qu'on n'a pas (diamant sans pioche fer) → miner du FER d'abord (bootstrap).
+      if (mineFor && tracker) {
+        const prog = tracker.progress(_items(bot));
+        let mtype = null;
+        const ranked = Object.entries(prog)
+          .filter(([, v]) => v.have < v.target)
+          .sort((a, b) => ((b[1].target - b[1].have) / b[1].target) - ((a[1].target - a[1].have) / a[1].target))
+          .map(([t]) => t);
+        const tierNow = typeof tier === 'number' ? tier : -1;
+        mtype = ranked.find((t) => (TIER_FOR[t] || 0) <= tierNow) || null;
+        if (!mtype && ranked.length && tierNow >= 2) mtype = 'iron';    // bootstrap palier fer
+        if (mtype) {
+          idleSince = null;
+          emit({ type: 'resource_mine_for', material: mtype });
+          let r = null;
+          try { r = await mineFor(mtype); } catch (e) { r = { ok: false, reason: 'error' }; }
+          emit({ type: 'resource_mine_for_done', material: mtype, ok: !!(r && r.ok), reason: (r && r.reason) || null });
+          if (token && token.cancelled) return { ok: true, mined, cancelled: true };
+          if (reload) memory = reload() || memory;
+          // échec du branch mining (lave/stall) → re-dérive : relocalisation vers une zone fraîche
+          if (!(r && r.ok) && relocate && relocations < maxRelocations) {
+            relocations++;
+            emit({ type: 'resource_relocate', n: relocations });
+            try { await relocate(); } catch (e) { /* best-effort */ }
+            skip.clear(); busyUntil.clear();
+            if (token && token.cancelled) return { ok: true, mined, cancelled: true };
+          }
+          continue;
+        }
+      }
+      if (!reload) break;
       if (idleSince == null) idleSince = now;
       if (now - idleSince > maxIdleMs) {
+        // ── Auto-récupération (phase 2) : starvation → self-warp zone fraîche + reset des
+        // exclusions locales (les claims/échecs d'ici ne valent rien là-bas), puis on repart.
+        if (relocate && relocations < maxRelocations) {
+          relocations++;
+          emit({ type: 'resource_relocate', n: relocations });
+          try { await relocate(); } catch (e) { /* best-effort */ }
+          skip.clear(); busyUntil.clear();
+          idleSince = null;
+          if (token && token.cancelled) return { ok: true, mined, cancelled: true };
+          if (reload) memory = reload() || memory;
+          continue;
+        }
         emit({ type: 'resource_starved', mined, idleMs: now - idleSince });
         return { ok: false, reason: 'starved', mined };
       }
