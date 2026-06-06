@@ -564,15 +564,19 @@ async function gotoOreBounded(t) {
   };
   let lastD = dist();
   let noProgress = 0;
-  for (let attempts = 0; attempts < 6; attempts++) {
+  // Persistance par PROGRÈS, y compris après timeout : un tunnel d'approche vers une ore
+  // profonde (60+ blocs de deepslate) prend largement plus de 240 s — l'ancien « timeout →
+  // unreachable direct » faisait PING-PONGER les bots entre claims sans jamais finir un
+  // tunnel (vécu live : 3 bots, 0 ore en 25 min). Tant que la distance baisse (≥8 blocs
+  // par tranche de 300 s), on continue de creuser ; 2 tranches SANS progrès → unreachable.
+  for (let attempts = 0; attempts < 12; attempts++) {
     const r = await withTimeout(
       bot.pathfinder.goto(new pfGoals.GoalNear(t.x, t.y, t.z, 2)),
-      240000, () => { try { stopMotion(); } catch (e) {} });
+      300000, () => { try { stopMotion(); } catch (e) {} });
     if (taskToken.cancelled) return;
     if (!(r && r.ok === false)) return;                     // arrivé (goto résolu)
-    if (r.reason === 'timeout') throw new Error('unreachable'); // gelé 240s → pas de 2e chance
     const d = dist();
-    if (d < lastD - 8) { lastD = d; noProgress = 0; continue; } // progrès → persiste
+    if (d < lastD - 8) { lastD = d; noProgress = 0; continue; } // progrès (même après timeout) → persiste
     noProgress++;
     if (noProgress >= 2) throw new Error('unreachable');
     await sleep(4000); // grâce : NoPath transitoire (chunks pas chargés autour d'un bot frais/tp)
