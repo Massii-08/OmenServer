@@ -66,7 +66,12 @@ function pickaxePlan(items, neededTypes) {
   const sticks = counts.stick || 0;
 
   if (needTier3 && !hasTier3) {
-    if ((counts.iron_ingot || 0) >= 3 && sticks >= 2) return { craft: 'iron_pickaxe', why: 'tier3_needed' };
+    // raw_iron compte aussi : le caller (ensureGearFor) fond raw→ingot AVANT le craft —
+    // exiger les lingots ici créait un œuf-et-poule (mine du fer ×50 sans jamais crafter,
+    // vécu phase 2 : 2 bots bloqués à 3-5 diamants avec 64 raw_iron en poche).
+    if (((counts.iron_ingot || 0) >= 3 || (counts.raw_iron || 0) >= 3) && sticks >= 2) {
+      return { craft: 'iron_pickaxe', why: 'tier3_needed' };
+    }
     if (picks.length === 0 && (counts.cobblestone || 0) >= 3 && sticks >= 2) {
       return { craft: 'stone_pickaxe', why: 'no_pick' };      // au moins miner du fer en attendant
     }

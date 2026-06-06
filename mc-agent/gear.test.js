@@ -68,3 +68,8 @@ test('TIER_FOR : diamant/or/redstone exigent fer (3), lapis/fer pierre (2)', () 
   assert.strictEqual(TIER_FOR.lapis, 2);
   assert.strictEqual(TIER_FOR.iron, 2);
 });
+
+test('pickaxePlan : raw_iron (sans lingots) suffit — la fonte est faite par le caller', () => {
+  const items = [{ name: 'stone_pickaxe', count: 1 }, { name: 'raw_iron', count: 30 }, { name: 'stick', count: 8 }];
+  assert.deepStrictEqual(pickaxePlan(items, ['diamond']), { craft: 'iron_pickaxe', why: 'tier3_needed' });
+});
