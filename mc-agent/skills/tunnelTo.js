@@ -32,7 +32,7 @@ function buildGoal(x, y, z) {
 /**
  * tunnelTo(bot, target, opts, token) → {ok:true[, cancelled]} | {ok:false, reachedDist, reason}
  * S'arrête à ≤3 blocs de la cible (le collect — portée dig ~6 — prend le relais).
- * reasons : lava_ahead | dig_failed | target_above | max_steps | no_pos
+ * reasons : lava_ahead | water_ahead | dig_failed | target_above | max_steps | no_pos
  */
 async function tunnelTo(bot, target, opts = {}, token = null) {
   const maxSteps = opts.maxSteps || 320;
@@ -81,27 +81,30 @@ async function tunnelTo(bot, target, opts = {}, token = null) {
     const aheadHigh = { x: ahead.x, y: fy + 1, z: ahead.z };
     const ahead2 = { x: fx + 2 * dir.dx, y: fy, z: fz + 2 * dir.dz };
     const ahead2Low = { x: ahead2.x, y: fy - 1, z: ahead2.z };
+    // LIQUIDES : lave = mortelle, eau = inonde le tunnel (le réflexe oxygène fait yo-yoter le
+    // bot). Dans les deux cas : on tente UNE fois l'axe perpendiculaire (les poches/aquifères
+    // ne barrent souvent qu'un côté — vécu live : 10/10 aborts par "lava" qui étaient de
+    // l'EAU d'aquifère), sinon abandon avec la VRAIE raison.
     const probes = [ahead, aheadLow, aheadHigh, ahead2, ahead2Low].map((q) => bot.blockAt(_at(q)));
-    if (probes.some((b) => b && isLava(b.name))) {
-      // Poche de lave sur CET axe : tente une fois l'axe perpendiculaire (vers la cible si
-      // possible) avant d'abandonner — beaucoup de veines ne sont gardées que d'un côté.
+    const digTargets = descending ? [aheadLow, ahead] : [ahead, aheadHigh];
+    const stepCell = descending ? aheadLow : ahead;
+    const digBlocks = digTargets.map((q) => bot.blockAt(_at(q)));
+    const liquid = probes.find((b) => b && isLava(b.name))
+      || digBlocks.find((b) => b && DANGER.has(b.name));
+    if (liquid) {
       if (axisSwaps < 1) {
         axisSwaps++;
         lastDir = dir.dx ? { dx: 0, dz: Math.sign(dzT) || 1 } : { dx: Math.sign(dxT) || 1, dz: 0 };
         continue;
       }
-      return { ok: false, reachedDist: dist(), reason: 'lava_ahead' };
+      return { ok: false, reachedDist: dist(), reason: isLava(liquid.name) ? 'lava_ahead' : 'water_ahead' };
     }
 
     // Cibles à miner : descente = marche (devant-bas + devant) ; horizontal = corridor
     // (devant + devant-haut). La cible du déplacement = la case des PIEDS après le pas.
-    const digTargets = descending ? [aheadLow, ahead] : [ahead, aheadHigh];
-    const stepCell = descending ? aheadLow : ahead;
-    for (const q of digTargets) {
-      const t = bot.blockAt(_at(q));
+    for (const t of digBlocks) {
       if (!t) continue;                                       // unloaded → skip
       if (VOID.has(t.name)) continue;                         // déjà air → rien à faire
-      if (DANGER.has(t.name)) return { ok: false, reachedDist: dist(), reason: 'lava_ahead' };
       const tool = bestToolFor(bot, t);
       if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
       try { await bot.dig(t); } catch (e) { return { ok: false, reachedDist: dist(), reason: 'dig_failed' }; }

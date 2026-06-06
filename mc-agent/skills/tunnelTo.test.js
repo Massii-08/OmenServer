@@ -95,3 +95,21 @@ test('tunnelTo : cible pile en dessous → diagonale stable (jamais droit sous l
   // aucun dig à la verticale exacte du bot au moment du dig
   assert.ok(calls.dig.length > 0);
 });
+
+test('tunnelTo : eau sur l\'axe → swap perpendiculaire, puis water_ahead (pas lava_ahead)', async () => {
+  // eau sur TOUTE la tranche x>0 (axe est bloqué) ET z>0 (perpendiculaire aussi) → 2 échecs
+  const world = {};
+  for (let y = 55; y <= 61; y++) { world[`1,${y},0`] = 'water'; world[`0,${y},1`] = 'water'; world[`1,${y},1`] = 'water'; }
+  const { bot } = makeBot({ start: [0, 60, 0], world });
+  const r = await tunnelTo(bot, { x: 12, y: 10, z: 8 });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'water_ahead');
+});
+
+test('tunnelTo : lave sur un axe, libre sur l\'autre → contourne et continue', async () => {
+  const world = { '1,59,0': 'lava', '1,60,0': 'lava' };     // axe est bloqué
+  const { bot, calls } = makeBot({ start: [0, 60, 0], world });
+  const r = await tunnelTo(bot, { x: 8, y: 40, z: 8 });      // cible sud-est : z libre
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.ok(calls.dig.length > 0);
+});
