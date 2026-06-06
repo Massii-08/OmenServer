@@ -98,6 +98,7 @@ async function runResource(bot, opts = {}, token = null) {
   let idleSince = null;
   let relocations = 0;
   let failStreak = 0;            // unreachable consécutifs : zone pourrie (lac…) → relocate
+  let ironBootstraps = 0;        // mineFor('iron') de bootstrap consécutifs SANS gain de palier
   let lastProgress = '';
 
   function emitProgress() {
@@ -162,7 +163,20 @@ async function runResource(bot, opts = {}, token = null) {
           .map(([t]) => t);
         const tierNow = typeof tier === 'number' ? tier : -1;
         mtype = ranked.find((t) => (TIER_FOR[t] || 0) <= tierNow) || null;
-        if (!mtype && ranked.length && tierNow >= 2) mtype = 'iron';    // bootstrap palier fer
+        let isBootstrap = false;
+        if (!mtype && ranked.length && tierNow >= 2) { mtype = 'iron'; isBootstrap = true; }  // bootstrap palier fer
+        // Impasse de bootstrap : miner du fer ne sert à rien sans STICKS pour crafter la pioche
+        // (vécu : ×50 mineFor('iron') ok sans jamais progresser — il faut du BOIS = surface =
+        // le kit complet). 3 bootstraps sans gain de palier → sortie starved → respawn → kit.
+        if (isBootstrap) {
+          ironBootstraps++;
+          if (ironBootstraps > 3) {
+            emit({ type: 'resource_starved', mined, why: 'bootstrap_dead_end' });
+            return { ok: false, reason: 'starved', mined };
+          }
+        } else {
+          ironBootstraps = 0;
+        }
         if (mtype) {
           emit({ type: 'resource_mine_for', material: mtype });
           let r = null;
