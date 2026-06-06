@@ -49,6 +49,7 @@ const { loadMemory, worldKey } = require('./worldMemory');
 const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
 const { runResource } = require('./skills/resource');
+const { tunnelTo } = require('./skills/tunnelTo');
 const { junkItems } = require('./quota');
 const { createClaims } = require('./claims');
 const { tierRank } = require('./tools');
@@ -562,27 +563,63 @@ async function gotoOreBounded(t) {
     if (!p) return Infinity;
     return Math.sqrt((p.x - t.x) ** 2 + (p.y - t.y) ** 2 + (p.z - t.z) ** 2);
   };
+  if (dist() <= 4) return;                                     // déjà à portée de collect
+
+  // Phase 1 — goto direct BREF (90 s) : suffit pour les ores exposées/accessibles par grotte.
+  // On ne s'acharne pas : pathfinder ne sait PAS traverser 60 blocs de roche pleine (A*
+  // explose → chemins partiels qui plafonnent en surface — vécu live, 3 bots à l'arrêt).
+  const direct = await withTimeout(
+    bot.pathfinder.goto(new pfGoals.GoalNear(t.x, t.y, t.z, 2)),
+    90000, () => { try { stopMotion(); } catch (e) {} });
+  if (taskToken.cancelled) return;
+  if (!(direct && direct.ok === false)) return;                // arrivé
+  if (dist() <= 5) return;                                     // assez proche (collect range ~6)
+
+  const below = (bot.entity && bot.entity.position ? bot.entity.position.y : 0) - t.y;
+  if (below > 4) {
+    // Phase 2 — cible ENFOUIE : se placer À LA VERTICALE (surface, XZ) puis creuser l'approche
+    // à la main (tunnelTo : marches 1×2 anti-lave orientées cible, pattern descendDiagonal).
+    let lastD = dist();
+    let noProgress = 0;
+    for (let attempts = 0; attempts < 4; attempts++) {
+      const r = await withTimeout(
+        bot.pathfinder.goto(new pfGoals.GoalNearXZ(t.x, t.z, 2)),
+        180000, () => { try { stopMotion(); } catch (e) {} });
+      if (taskToken.cancelled) return;
+      if (!(r && r.ok === false)) break;                       // au-dessus de la cible
+      const d = dist();
+      if (d < lastD - 8) { lastD = d; noProgress = 0; continue; }
+      noProgress++;
+      if (noProgress >= 2) throw new Error('unreachable');
+      await sleep(3000);
+    }
+    if (taskToken.cancelled) return;
+    const dug = await withTimeout(
+      tunnelTo(bot, t, {}, taskToken),
+      720000, () => { try { stopMotion(); } catch (e) {} });
+    if (taskToken.cancelled) return;
+    if (dug && dug.ok && dist() <= 6) return;
+    throw new Error('unreachable');                            // lave/échec → claim relâchée
+  }
+
+  // Phase 3 — cible au niveau / au-dessus : persistance par progrès (tranches 300 s).
   let lastD = dist();
   let noProgress = 0;
-  // Persistance par PROGRÈS, y compris après timeout : un tunnel d'approche vers une ore
-  // profonde (60+ blocs de deepslate) prend largement plus de 240 s — l'ancien « timeout →
-  // unreachable direct » faisait PING-PONGER les bots entre claims sans jamais finir un
-  // tunnel (vécu live : 3 bots, 0 ore en 25 min). Tant que la distance baisse (≥8 blocs
-  // par tranche de 300 s), on continue de creuser ; 2 tranches SANS progrès → unreachable.
   for (let attempts = 0; attempts < 12; attempts++) {
     const r = await withTimeout(
       bot.pathfinder.goto(new pfGoals.GoalNear(t.x, t.y, t.z, 2)),
       300000, () => { try { stopMotion(); } catch (e) {} });
     if (taskToken.cancelled) return;
-    if (!(r && r.ok === false)) return;                     // arrivé (goto résolu)
+    if (!(r && r.ok === false)) return;                        // arrivé (goto résolu)
     const d = dist();
-    if (d < lastD - 8) { lastD = d; noProgress = 0; continue; } // progrès (même après timeout) → persiste
+    if (d < lastD - 8) { lastD = d; noProgress = 0; continue; } // progrès → persiste
     noProgress++;
     if (noProgress >= 2) throw new Error('unreachable');
-    await sleep(4000); // grâce : NoPath transitoire (chunks pas chargés autour d'un bot frais/tp)
+    await sleep(4000);
   }
   throw new Error('unreachable');
 }
+
 
 // Boucle ressource : kit pioche minimal si nécessaire (zéro→pioche pierre, chaîne existante), puis
 // mine les ores de la carte un à un. Liste vide/épuisée → idle PROPRE (immobile, réflexes survie ON).
