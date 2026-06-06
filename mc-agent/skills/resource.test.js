@@ -466,3 +466,24 @@ test('collect gelé → borné par collectTimeoutMs, le bot passe à la cible su
   assert.equal(r.done, true);                          // a fini malgré le gel (cible suivante)
   assert.ok(collect(events, 'resource_failed').length >= 1 || bot._dug.length >= 1);
 }); 
+
+test('quota : sélection PLUS PROCHE d\'abord (pas diamant d\'abord) — réduit le voyage', async () => {
+  const blocks = {
+    '5,60,0': { name: 'iron_ore', position: { x: 5, y: 60, z: 0 } },
+    '100,-55,0': { name: 'deepslate_diamond_ore', position: { x: 100, y: -55, z: 0 } },
+  };
+  const bot = makeQuotaBot({ blocks });
+  const order = [];
+  const r = await runResource(bot, {
+    memory: mem([
+      { material: 'deepslate_diamond_ore', x: 100, y: -55, z: 0 },
+      { material: 'iron_ore', x: 5, y: 60, z: 0 },
+    ]),
+    worldKey: 'overworld',
+    emit: (e) => { if (e.type === 'resource_target') order.push(e.material); },
+    goto: async () => {},
+    quota: { diamond: 1, iron: 1 },
+  });
+  assert.equal(r.done, true);
+  assert.deepEqual(order, ['iron_ore', 'deepslate_diamond_ore']);  // le PROCHE d'abord
+});

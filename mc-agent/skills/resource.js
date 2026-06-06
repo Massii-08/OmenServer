@@ -119,8 +119,12 @@ async function runResource(bot, opts = {}, token = null) {
       if (until > now) skipNow.add(k); else busyUntil.delete(k);
     }
     const allowTypes = tracker ? tracker.remainingTypes(_items(bot)) : undefined;
+    // Mode quota : PLUS PROCHE d'abord (priority vide → tie → distance) — le quota exige TOUS
+    // les types, la rareté n'arbitre rien ; diamant-d'abord forçait un long tunnel par cible
+    // (vécu live : ~3-6 min/ore). Hors quota : priorité rareté inchangée.
     const target = nextOreTarget(memory, wkey, from, {
       skip: skipNow, allowTypes,
+      priority: tracker ? [] : undefined,
       pickTier: (typeof tier === 'number' ? tier : undefined),
     });
 
@@ -191,7 +195,9 @@ async function runResource(bot, opts = {}, token = null) {
 
     // Équipe la bonne pioche puis mine. collectBlock gère l'approche fine + le ramassage du drop.
     // Re-équipe + retente UNE fois (dig interrompu par aggro/désync, pattern gather).
-    if (claims) claims.refresh(key);                   // le dig peut être long
+    // refresh post-goto : un tunnel d'approche >120 s faisait EXPIRER la claim en route
+    // (tryClaim au départ seulement) → un autre bot pouvait viser la même ore.
+    if (claims) claims.refresh(key) || claims.tryClaim(key);
     const tool = bestToolFor(bot, block);
     if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
     let okMine = false;
