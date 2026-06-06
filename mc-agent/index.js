@@ -718,7 +718,7 @@ function regionCenter() {
   const jitter = ((h >> 4) % 200) - 100;
   return { x: base.x + dx + jitter, z: base.z + dz + jitter };
 }
-let _relocSeq = 0;
+let _relocSeq = Math.floor(Math.random() * 997);   // graine par process : pas la même 1re cellule à chaque respawn
 async function relocateToRegion() {
   // Cellule TERRE tirée de la mémoire de monde (biomes non-océan/rivière, ≥256 du spawn) :
   // le quadrant hashé de V2Res4 tombait en plein OCÉAN → relocalisations inutiles en boucle
@@ -803,6 +803,13 @@ async function startResource() {
     },
   }, taskToken);
   if (taskToken.cancelled) return;
+  // STARVED (mode quota) : kit cassé / région stérile / échecs en série — un idle ÉTERNEL ici
+  // bloquait le self-healing (process vivant = pas de respawn backend, vécu Res3 55 min).
+  // On SORT : le manager respawne en 15 s → kit complet re-tenté depuis un état frais.
+  if (r && r.ok === false && r.reason === 'starved' && args.quota) {
+    emit({ type: 'resource_exit_for_respawn', mined: (r && r.mined) || 0 });
+    process.exit(2);
+  }
   // Fini (carte épuisée ou vide) : objectif clos + idle propre — plus de mouvement volontaire,
   // les réflexes (manger/fuir/respirer) restent branchés. Un nouveau start relancera la boucle.
   clearObjective(world); saveWorld(worldFile, world);
