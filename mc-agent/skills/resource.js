@@ -164,19 +164,33 @@ async function runResource(bot, opts = {}, token = null) {
         mtype = ranked.find((t) => (TIER_FOR[t] || 0) <= tierNow) || null;
         if (!mtype && ranked.length && tierNow >= 2) mtype = 'iron';    // bootstrap palier fer
         if (mtype) {
-          idleSince = null;
           emit({ type: 'resource_mine_for', material: mtype });
           let r = null;
-          try { r = await mineFor(mtype); } catch (e) { r = { ok: false, reason: 'error' }; }
-          emit({ type: 'resource_mine_for_done', material: mtype, ok: !!(r && r.ok), reason: (r && r.reason) || null });
+          try { r = await mineFor(mtype); }
+          catch (e) { r = { ok: false, reason: 'error', detail: String((e && e.message) || e).slice(0, 120) }; }
+          emit({ type: 'resource_mine_for_done', material: mtype, ok: !!(r && r.ok),
+                 reason: (r && r.reason) || null, detail: (r && r.detail) || undefined });
           if (token && token.cancelled) return { ok: true, mined, cancelled: true };
           if (reload) memory = reload() || memory;
-          // échec du branch mining (lave/stall) → re-dérive : relocalisation vers une zone fraîche
-          if (!(r && r.ok) && relocate && relocations < maxRelocations) {
-            relocations++;
-            emit({ type: 'resource_relocate', n: relocations });
-            try { await relocate(); } catch (e) { /* best-effort */ }
-            skip.clear(); busyUntil.clear();
+          if (r && r.ok) {
+            idleSince = null;
+          } else {
+            // Échec : pause + comptabilité d'inactivité — un mineFor qui throw en boucle
+            // SPINNAIT à l'infini une fois le cap de relocalisations épuisé (vécu : ×100
+            // events/min). starved → return → l'auto-respawn backend redonne un état frais.
+            if (relocate && relocations < maxRelocations) {
+              relocations++;
+              emit({ type: 'resource_relocate', n: relocations });
+              try { await relocate(); } catch (e) { /* best-effort */ }
+              skip.clear(); busyUntil.clear();
+              if (token && token.cancelled) return { ok: true, mined, cancelled: true };
+            }
+            if (idleSince == null) idleSince = clock();
+            if (clock() - idleSince > maxIdleMs) {
+              emit({ type: 'resource_starved', mined, idleMs: clock() - idleSince });
+              return { ok: false, reason: 'starved', mined };
+            }
+            await sleep(waitMs);
             if (token && token.cancelled) return { ok: true, mined, cancelled: true };
           }
           continue;
