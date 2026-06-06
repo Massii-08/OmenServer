@@ -28,9 +28,9 @@ WORLD_MEMORY_DIR = _PROJECT_ROOT / "data" / "mc_agent_world_memory"
 _SAFE_ID = re.compile(r"^[a-z0-9]+$")
 GRID = 128   # taille de cellule (quantification x,z) : 1 entrée par région de 128²
 CAP = 500    # entrées max par (monde, type) ; au-delà on jette les plus vieilles
-ORE_CAP = 800   # minerais max par (monde, TYPE de base) — cap PAR TYPE : le fer (ultra-commun,
-                # ~85% des entrées d'un scan complet) ne doit pas évincer les 9 diamants du monde.
-                # 5 types quota × 800 = 4000 max par monde (disque borné comme avant).
+ORE_CAP = 50000  # phase 2 anti-xray : liste SPARSE (exposés only) — on ne tronque JAMAIS un ore
+                 # nécessaire. Le cap reste par type (héritage phase 1) mais ne mord plus en pratique.
+STRUCT_GRID = 64  # dédup structures : 1 entrée par (kind, cellule 64²) — un village couvre ~3 cellules
 
 
 def _q(v):
@@ -48,6 +48,7 @@ def _world(memory, world):
     w.setdefault("caves", [])
     w.setdefault("finds", [])
     w.setdefault("ores", [])
+    w.setdefault("structures", [])
     return w
 
 
@@ -153,6 +154,29 @@ def remove_ore(memory, world, x, y, z, at=None):
     return memory
 
 
+def add_structure(memory, world, kind, x, y, z, at=None, cap=CAP):
+    """Note une structure (village/mineshaft/dungeon/stronghold/...) à sa position.
+
+    Dédup par (kind, cellule STRUCT_GRID) : une structure s'étale sur plusieurs blocs — la
+    re-détection à 30 blocs n'ajoute pas un doublon, elle REMPLACE (position+récence MAJ).
+    Ignoré si world/kind falsy. Mute + retourne memory."""
+    if not world or not kind:
+        return memory
+    w = _world(memory, world)
+    qx = (int(x) // STRUCT_GRID) * STRUCT_GRID
+    qz = (int(z) // STRUCT_GRID) * STRUCT_GRID
+    def _cell(s):
+        return ((int(s["x"]) // STRUCT_GRID) * STRUCT_GRID, (int(s["z"]) // STRUCT_GRID) * STRUCT_GRID)
+    w["structures"] = [s for s in w["structures"]
+                       if not (s["kind"] == kind and _cell(s) == (qx, qz))]
+    w["structures"].append({"kind": str(kind), "x": int(x), "y": int(y), "z": int(z), "at": at})
+    if len(w["structures"]) > cap:
+        w["structures"] = w["structures"][-cap:]
+    if at:
+        memory["updated_at"] = at
+    return memory
+
+
 def apply_event(memory, event, at=None):
     """Applique un event bot à la mémoire. Ignore les types inconnus / champs manquants (pas de crash)."""
     if not isinstance(event, dict):
@@ -183,6 +207,8 @@ def apply_event(memory, event, at=None):
             return memory
         if t in ("ore_mined", "ore_gone"):
             return remove_ore(memory, world, event["x"], event["y"], event["z"], at=at)
+        if t == "structure_found":
+            return add_structure(memory, world, event["kind"], event["x"], event["y"], event["z"], at=at)
     except (KeyError, TypeError, ValueError):
         return memory
     return memory

@@ -302,8 +302,8 @@ def test_apply_event_exposed_ore_found_legacy_sets_exposed_true():
     assert m["worlds"]["w"]["ores"][0]["exposed"] is True
 
 
-def test_ore_cap_is_800_per_type():
-    assert wm.ORE_CAP == 800   # supersédé : cap PAR TYPE (cf. test_add_ore_cap_is_per_base_type)
+def test_ore_cap_phase2_huge():
+    assert wm.ORE_CAP >= 50000  # phase 2 : pas de troncature (supersède le 800/type de la phase 1)
 
 
 # --- Cap PAR TYPE (le fer ne doit pas évincer les diamants) ---
@@ -321,3 +321,57 @@ def test_add_ore_cap_is_per_base_type():
     assert len(ores) == 6
 
 
+
+
+# --- Phase 2 : structures + ores sans troncature ---
+
+def test_add_structure_basic():
+    m = wm.empty_memory("g")
+    wm.add_structure(m, "w", "village", 320, 64, -480, at="t1")
+    st = m["worlds"]["w"]["structures"]
+    assert len(st) == 1
+    s = st[0]
+    assert s["kind"] == "village" and s["x"] == 320 and s["y"] == 64 and s["z"] == -480
+    assert m["updated_at"] == "t1"
+
+
+def test_add_structure_dedup_by_kind_and_cell():
+    m = wm.empty_memory("g")
+    wm.add_structure(m, "w", "mineshaft", 100, 20, 100, at="t1")
+    wm.add_structure(m, "w", "mineshaft", 110, 25, 90, at="t2")    # même cellule 64 → remplacé
+    wm.add_structure(m, "w", "dungeon", 100, 20, 100, at="t3")     # autre kind même cellule → distinct
+    wm.add_structure(m, "w", "mineshaft", 400, 20, 100, at="t4")   # autre cellule → distinct
+    st = m["worlds"]["w"]["structures"]
+    assert len(st) == 3
+    kinds = sorted((s["kind"], s["x"]) for s in st)
+    assert kinds == [("dungeon", 100), ("mineshaft", 110), ("mineshaft", 400)]
+
+
+def test_add_structure_falsy_ignored():
+    m = wm.empty_memory("g")
+    wm.add_structure(m, "", "village", 1, 2, 3, at="t1")
+    wm.add_structure(m, "w", "", 1, 2, 3, at="t2")
+    w = m["worlds"].get("w")
+    assert w is None or w.get("structures", []) == []
+
+
+def test_apply_event_structure_found():
+    m = wm.empty_memory("g")
+    wm.apply_event(m, {"type": "structure_found", "world": "w", "kind": "stronghold",
+                       "x": -800, "y": 30, "z": 1200}, at="t1")
+    st = m["worlds"]["w"]["structures"]
+    assert len(st) == 1 and st[0]["kind"] == "stronghold"
+    # champs manquants → no-crash
+    wm.apply_event(m, {"type": "structure_found", "world": "w", "kind": "village"}, at="t2")
+    assert len(m["worlds"]["w"]["structures"]) == 1
+
+
+def test_ore_cap_no_truncation_phase2():
+    # anti-xray : liste sparse, on ne droppe JAMAIS un ore nécessaire
+    assert wm.ORE_CAP >= 50000
+
+
+def test_world_seed_has_structures():
+    m = wm.empty_memory("g")
+    w = wm._world(m, "w")
+    assert w["structures"] == []
