@@ -14,6 +14,10 @@ const { DANGER, VOID } = require('./mineDown');                // mêmes ensembl
 
 let goals;
 try { goals = require('mineflayer-pathfinder').goals; } catch (e) { goals = null; }
+// Vrai Vec3 pour bot.blockAt (leçon dcd874d / piège #41 : un POJO nu throw .floored en prod —
+// c'était LE crash silencieux de la v1 : tunnel_result reason:'error' à chaque approche).
+let vec3; try { vec3 = require('vec3'); } catch (e) { vec3 = null; }
+function _at(q) { return vec3 ? vec3(q.x, q.y, q.z) : q; }
 
 function isLava(name) { return name === 'lava' || name === 'flowing_lava'; }
 
@@ -76,7 +80,7 @@ async function tunnelTo(bot, target, opts = {}, token = null) {
     const aheadHigh = { x: ahead.x, y: fy + 1, z: ahead.z };
     const ahead2 = { x: fx + 2 * dir.dx, y: fy, z: fz + 2 * dir.dz };
     const ahead2Low = { x: ahead2.x, y: fy - 1, z: ahead2.z };
-    const probes = [ahead, aheadLow, aheadHigh, ahead2, ahead2Low].map((q) => bot.blockAt(q));
+    const probes = [ahead, aheadLow, aheadHigh, ahead2, ahead2Low].map((q) => bot.blockAt(_at(q)));
     for (const b of probes) {
       if (b && isLava(b.name)) return { ok: false, reachedDist: dist(), reason: 'lava_ahead' };
     }
@@ -86,7 +90,7 @@ async function tunnelTo(bot, target, opts = {}, token = null) {
     const digTargets = descending ? [aheadLow, ahead] : [ahead, aheadHigh];
     const stepCell = descending ? aheadLow : ahead;
     for (const q of digTargets) {
-      const t = bot.blockAt(q);
+      const t = bot.blockAt(_at(q));
       if (!t) continue;                                       // unloaded → skip
       if (VOID.has(t.name)) continue;                         // déjà air → rien à faire
       if (DANGER.has(t.name)) return { ok: false, reachedDist: dist(), reason: 'lava_ahead' };

@@ -579,21 +579,16 @@ async function gotoOreBounded(t) {
   const below = (bot.entity && bot.entity.position ? bot.entity.position.y : 0) - t.y;
   if (below > 4) {
     emit({ type: 'ore_approach', phase: 'xz', x: t.x, z: t.z, d: Math.round(dist()) });
-    // Phase 2 — cible ENFOUIE : se placer À LA VERTICALE (surface, XZ) puis creuser l'approche
-    // à la main (tunnelTo : marches 1×2 anti-lave orientées cible, pattern descendDiagonal).
-    let lastD = dist();
-    let noProgress = 0;
-    for (let attempts = 0; attempts < 4; attempts++) {
+    // Phase 2 — cible ENFOUIE : rapprochement XZ BEST-EFFORT (un NoPath instantané sur une
+    // cible à 150+ blocs ne doit PAS tuer l'approche — vécu live), puis tunnelTo fait LE
+    // RESTE (il creuse aussi l'horizontal : marches 1×2 anti-lave orientées cible).
+    for (let attempts = 0; attempts < 2; attempts++) {
       const r = await withTimeout(
-        bot.pathfinder.goto(new pfGoals.GoalNearXZ(t.x, t.z, 2)),
-        180000, () => { try { stopMotion(); } catch (e) {} });
+        bot.pathfinder.goto(new pfGoals.GoalNearXZ(t.x, t.z, 16)),
+        120000, () => { try { stopMotion(); } catch (e) {} });
       if (taskToken.cancelled) return;
-      if (!(r && r.ok === false)) break;                       // au-dessus de la cible
-      const d = dist();
-      if (d < lastD - 8) { lastD = d; noProgress = 0; continue; }
-      noProgress++;
-      if (noProgress >= 2) throw new Error('unreachable');
-      await sleep(3000);
+      if (!(r && r.ok === false)) break;                       // arrivé au-dessus (ou proche)
+      await sleep(2000);                                        // NoPath transitoire → 1 retry
     }
     if (taskToken.cancelled) return;
     emit({ type: 'ore_approach', phase: 'tunnel', d: Math.round(dist()) });
