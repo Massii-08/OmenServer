@@ -154,6 +154,7 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   const caveCells = new Set();   // cellules dont une grotte a été émise
   const oreSeen = new Set();     // minerais déjà émis (dédup par position de BLOC 3D)
   const structSeen = new Set();  // structures émises (dédup type+cellule 64 — le backend dédup aussi)
+  let lastScanCell = null;       // cellule du dernier scan d'ores (1 scan/cellule : findBlocks coûte cher)
   const frontierSkip = new Set(); // cellules frontière en échec (eau/inatteignable) — on n'y reboucle pas
   let legs = 0;                  // compteur de jambes (re-lecture mémoire live périodique)
 
@@ -180,21 +181,25 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
         if (!caveCells.has(cck)) { caveCells.add(cck); emit(caveFoundEvent(worldKey, cave.pos)); }
       }
     } catch (e) { /* best-effort */ }
-    // minerais dans les chunks chargés (ores.js — pour les bots ressources) : scan COMPLET
-    // (exposés + enfouis, flag exposed) à chaque arrivée ; dédup par position de bloc ; émission
-    // BATCHÉE (1 event = 1 write backend, le fichier mémoire est gros).
-    try {
-      const fresh = [];
-      for (const ore of scanAllOres(bot)) {
-        const ok = ore.x + ',' + ore.y + ',' + ore.z;
-        if (!oreSeen.has(ok)) { oreSeen.add(ok); fresh.push(ore); }
-      }
-      if (fresh.length) emit(oresFoundEvent(worldKey, fresh));
-    } catch (e) { /* best-effort */ }
+    // minerais dans les chunks chargés (ores.js — pour les bots ressources) : 1 SEUL scan par
+    // cellule 128 (findBlocks sur une région à grottes = 10-20 M de lectures de blocs — un scan
+    // par arrivée bloquait l'event loop node → keepalive raté → « Timed out » ×6 mappers, vécu
+    // phase 2). Rayon 128 suffit : la frontière visite chaque cellule. Émission BATCHÉE.
+    if (ck !== lastScanCell) {
+      lastScanCell = ck;
+      try {
+        const fresh = [];
+        for (const ore of scanAllOres(bot, { maxDistance: 128, count: 1200 })) {
+          const ok = ore.x + ',' + ore.y + ',' + ore.z;
+          if (!oreSeen.has(ok)) { oreSeen.add(ok); fresh.push(ore); }
+        }
+        if (fresh.length) emit(oresFoundEvent(worldKey, fresh));
+      } catch (e) { /* best-effort */ }
+    }
     // structures (phase 2) : blocs-signatures + spawner à portée → structure_found (dédup locale
     // type+cellule 64 ; village/mineshaft/stronghold/donjon… — l'anti-xray ne masque pas ces blocs).
     try {
-      const hits = findAllSignatures(bot, { maxDistance: 64 });
+      const hits = findAllSignatures(bot, { maxDistance: 48 });
       const sp = findSpawner(bot, { maxDistance: 48 });
       if (sp.found) hits.push({ type: sp.type, pos: sp.pos });
       for (const h of hits) {
