@@ -438,3 +438,31 @@ test('legacy sans quota : comportement inchangé (carte épuisée → done, pas 
   assert.equal(collect(events, 'quota_progress').length, 0);
   assert.equal(collect(events, 'resource_waiting').length, 0);
 });
+
+test('collect gelé → borné par collectTimeoutMs, le bot passe à la cible suivante (anti-freeze)', async () => {
+  const blocks = {
+    '10,40,5': { name: 'iron_ore', position: { x: 10, y: 40, z: 5 } },
+    '12,40,5': { name: 'iron_ore', position: { x: 12, y: 40, z: 5 } },
+  };
+  const bot = makeQuotaBot({ blocks });
+  const origCollect = bot.collectBlock.collect;
+  let first = true;
+  bot.collectBlock.collect = async (b) => {
+    if (first) { first = false; return new Promise(() => {}); }  // gèle pour TOUJOURS (1er + retry → 2 gels)
+    return origCollect(b);
+  };
+  const events = [];
+  const r = await runResource(bot, {
+    memory: mem([
+      { material: 'iron_ore', x: 10, y: 40, z: 5 },
+      { material: 'iron_ore', x: 12, y: 40, z: 5 },
+    ]),
+    worldKey: 'overworld',
+    emit: (e) => events.push(e),
+    goto: async () => {},
+    quota: { iron: 1 },
+    collectTimeoutMs: 30,                              // gel borné à 30 ms en test
+  });
+  assert.equal(r.done, true);                          // a fini malgré le gel (cible suivante)
+  assert.ok(collect(events, 'resource_failed').length >= 1 || bot._dug.length >= 1);
+}); 

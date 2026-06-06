@@ -51,7 +51,7 @@ function _items(bot) {
  *  claims    : {tryClaim(key), refresh(key), release(key)} — anti-collision multi-bots
  *  reloadMemory : () => memory — re-lecture de la carte live (mode quota)
  *  cleanup   : async (bot) => void — toss du junk quand l'inventaire est plein (mode quota)
- *  sleep/now/waitMs/maxIdleMs : injectables (tests)
+ *  sleep/now/waitMs/maxIdleMs/collectTimeoutMs : injectables (tests)
  */
 async function runResource(bot, opts = {}, token = null) {
   const emit = opts.emit || (() => {});
@@ -69,6 +69,16 @@ async function runResource(bot, opts = {}, token = null) {
   const clock = opts.now || Date.now;
   const waitMs = opts.waitMs != null ? opts.waitMs : 5000;
   const maxIdleMs = opts.maxIdleMs != null ? opts.maxIdleMs : 600000;
+  // collectBlock peut geler INDÉFINIMENT (cible inminable après l'approche : lave, désync —
+  // vécu live ResBot1 figé 25 min). Même garde-fou que le planner (piège #41d) : borne dure.
+  const collectTimeoutMs = opts.collectTimeoutMs != null ? opts.collectTimeoutMs : 90000;
+  const collectBounded = (block) => new Promise((resolve, reject) => {
+    let done = false;
+    const t = setTimeout(() => { if (!done) { done = true; _stopResidual(bot); reject(new Error('collect_timeout')); } }, collectTimeoutMs);
+    bot.collectBlock.collect(block).then(
+      (v) => { if (!done) { done = true; clearTimeout(t); resolve(v); } },
+      (e) => { if (!done) { done = true; clearTimeout(t); reject(e); } });
+  });
 
   const skip = new Set();        // cibles traitées (minées/absentes/ratées) : on ne re-vise jamais 2×
   const busyUntil = new Map();   // oreKey → ts : claimée par un autre bot, re-éligible après
@@ -185,12 +195,12 @@ async function runResource(bot, opts = {}, token = null) {
     const tool = bestToolFor(bot, block);
     if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
     let okMine = false;
-    try { await bot.collectBlock.collect(block); okMine = true; }
+    try { await collectBounded(block); okMine = true; }
     catch (e) {
       try {
         const tool2 = bestToolFor(bot, block);
         if (tool2) { try { await bot.equip(tool2, 'hand'); } catch (e2) {} }
-        await bot.collectBlock.collect(block); okMine = true;
+        await collectBounded(block); okMine = true;
       } catch (e2) { _stopResidual(bot); }
     }
     if (claims) claims.release(key);                   // minée OU ratée : claim libérée
