@@ -142,18 +142,32 @@ test('descendDiagonal : pathfinder.goto appelé après chaque palier (déplaceme
 
 // --- Phase 3 : anti-chute (pont au-dessus des grottes) -------------------------------------------
 
-test('descendDiagonal : vide >=2 sous la marche -> PONT pose (placeBlock) puis continue', async () => {
-  // gap de grotte sous la 1re marche : (0,8,1) et (0,7,1) air — yaw 0 => dir {dx:0,dz:1}
+test('descendDiagonal : petit gap SURVIVABLE -> SAUTE (pas de pont, affinage joueur réel)', async () => {
+  // gap de 2 d'air sous la marche, sol dur juste dessous : chute ~3 blocs = 0 dégât → on saute
   const world = { '0,8,1': 'air', '0,7,1': 'air' };
   const { bot, calls } = makeBot({ startY: 10, world, yaw: 0 });
+  bot.health = 20;
+  const r = await descendDiagonal(bot, { targetY: 5, maxDepth: 20 });
+  assert.strictEqual((calls.placeBlock || []).length, 0, 'aucun pont : la chute est un raccourci');
+  assert.strictEqual(r.ok, true);
+});
+
+test('descendDiagonal : gouffre PROFOND (>1/2 PV) -> PONT pose (placeBlock) puis continue', async () => {
+  // colonne d'air y=8..-9 sous la marche : chute ~18 blocs (~15 HP) > 10 (moitié de 20) → pont
+  const world = {};
+  for (let y = 8; y >= -9; y--) world[`0,${y},1`] = 'air';
+  const { bot, calls } = makeBot({ startY: 10, world, yaw: 0 });
+  bot.health = 20;
   const r = await descendDiagonal(bot, { targetY: 5, maxDepth: 20 });
   assert.ok((calls.placeBlock || []).length >= 1, 'un pont a été posé');
   assert.strictEqual(r.ok, true, 'la descente continue après le pont');
 });
 
-test('descendDiagonal : vide sous la marche SANS placeBlock -> drop_ahead (pas de chute)', async () => {
-  const world = { '0,8,1': 'air', '0,7,1': 'air' };
+test('descendDiagonal : gouffre profond SANS placeBlock -> drop_ahead (pas de chute mortelle)', async () => {
+  const world = {};
+  for (let y = 8; y >= -9; y--) world[`0,${y},1`] = 'air';
   const { bot } = makeBot({ startY: 10, world, yaw: 0 });
+  bot.health = 20;
   delete bot.placeBlock;
   const r = await descendDiagonal(bot, { targetY: 5, maxDepth: 20 });
   assert.strictEqual(r.ok, false);

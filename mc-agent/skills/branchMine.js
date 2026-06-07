@@ -24,6 +24,7 @@
 // → stall (risque #5 du rapport build précédent).
 const { bestToolFor } = require('../tools');
 const { cheapestPickFor } = require('../gear');
+const { assessDrop, safeToDrop } = require('./fallCheck');
 const { gather } = require('./gather');
 const { Vec3 } = require('vec3');
 let _emit; try { _emit = require('../io').emit; } catch (e) { _emit = () => {}; }
@@ -162,13 +163,18 @@ function oresInNeighborhood(bot, target) {
 }
 
 // ANTI-CHUTE (phase 3, vécu V3Res3 « fell from a high place ») : sol absent sous la case des
-// pieds (plafond de grotte) → PONT avec un bloc de murage avant d'y poser le pied. true si sûr.
+// pieds (plafond de grotte). PONT d'abord (garde le PLAN de minage — retomber 5 blocs plus bas
+// casse le rythme du tunnel) ; pose impossible → chute acceptée si SURVIVABLE (≤ ½ PV / eau,
+// affinage « joueur réel ») — approach() re-pathera. true = on peut continuer.
 async function ensureFloor(bot, footTarget) {
   const u1 = bot.blockAt(p(footTarget.x, footTarget.y - 1, footTarget.z));
   if (!u1 || u1.boundingBox === 'block' || isLava(u1.name)) return true; // sol ok (la lave est gérée par neighborsHaveLava)
   const u2 = bot.blockAt(p(footTarget.x, footTarget.y - 2, footTarget.z));
   if (u2 && u2.boundingBox === 'block') return true;                     // trou d'1 : chute bénigne
-  return wallLava(bot, p(footTarget.x, footTarget.y - 1, footTarget.z)); // pont (même pose que le murage)
+  if (await wallLava(bot, p(footTarget.x, footTarget.y - 1, footTarget.z))) return true; // pont posé
+  const a = assessDrop(bot, { x: footTarget.x, y: footTarget.y - 1, z: footTarget.z },
+    { blockAt: (q) => bot.blockAt(p(q.x, q.y, q.z)) });
+  return safeToDrop(a, bot.health);                                      // chute « joueur réel » ou stop
 }
 
 // Mine un bloc avec garde-fou lave + opportunisme ore. Retourne {ok, walled?:bool}.
@@ -247,6 +253,7 @@ async function branchMine(bot, opts = {}, token = null) {
   const branchLength = opts.branchLength || 8;
   const stopOre = opts.stopOre || null;                  // {items:[...], count:n} — delta depuis le départ
   const torchEvery = opts.torchEvery || 0;
+  const rng = opts.rng || Math.random;
   const debug = !!opts.debug;
 
   const start = bot.entity && bot.entity.position;
@@ -278,6 +285,7 @@ async function branchMine(bot, opts = {}, token = null) {
 
   let i = 1;
   let stopReason = null;
+  let nextTorchAt = torchEvery > 0 ? torchEvery : Infinity;   // 1re torche après ~torchEvery paliers
 
   outer:
   while (i <= mainLength) {
@@ -299,9 +307,19 @@ async function branchMine(bot, opts = {}, token = null) {
       catch (e) { if (debug) dbg('iter', { phase: 'branchMine:safeDigThrew', err: String(e).slice(0,150) }); r = { ok: false, reason: 'threw' }; }
       if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
     }
-    // Torche tous les torchEvery paliers (phase B mob-aware) — best-effort, jamais bloquant.
-    if (torchEvery > 0 && i % torchEvery === 0) {
-      try { await placeTorch(bot, footTarget); } catch (e) { /* best-effort */ }
+    // Torches « joueur réel » (affinage Massii 07/06) : basées sur la LUMIÈRE + jitter — pose
+    // SEULEMENT si l'endroit est sombre (< seuil spawn mob, lumière inconnue = sombre) et pas
+    // de cadence métronomique (prochaine pose à torchEvery + 0..torchEvery-1 paliers aléatoires).
+    if (i >= nextTorchAt) {
+      nextTorchAt = i + torchEvery + Math.floor(rng() * torchEvery);
+      let light = 0;
+      try {
+        const cell = bot.blockAt(footTarget);
+        if (cell && cell.light !== undefined && cell.light !== null) light = cell.light;
+      } catch (e) { /* inconnue = sombre */ }
+      if (light < 8) {
+        try { await placeTorch(bot, footTarget); } catch (e) { /* best-effort */ }
+      }
     }
 
     // Branches latérales alternées à intervalles de branchSpacing — gauche puis droite (i et i+1 décalés).

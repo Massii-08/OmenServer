@@ -11,6 +11,7 @@
 // (le caller relâche la claim, un autre bot — ou un autre angle — retentera).
 const { bestToolFor } = require('../tools');
 const { cheapestPickFor } = require('../gear');
+const { assessDrop, safeToDrop } = require('./fallCheck');     // saut « joueur réel » vs pont
 const { DANGER, VOID } = require('./mineDown');                // mêmes ensembles → 1 source de vérité
 
 let goals;
@@ -119,21 +120,28 @@ async function tunnelTo(bot, target, opts = {}, token = null) {
       return { ok: false, reachedDist: dist(), reason: isLava(liquid.name) ? 'lava_ahead' : 'water_ahead' };
     }
 
-    // ANTI-CHUTE (phase 3, vécu V3Res3 « fell from a high place ») : vide ≥2 sous la case du
-    // pas (plafond de grotte) → PONT (bloc de remblai), sinon on tourne comme pour un liquide.
+    // ANTI-CHUTE « joueur réel » (affinage Massii 07/06) : vide ≥2 sous la case du pas →
+    // chute SURVIVABLE (≤ ½ PV / eau en bas) sans dépasser la cible → on SAUTE (raccourci).
+    // Sinon PONT ; pose impossible → on tourne comme pour un liquide.
     {
       const u1 = bot.blockAt(_at({ x: stepCell.x, y: stepCell.y - 1, z: stepCell.z }));
       const u2 = bot.blockAt(_at({ x: stepCell.x, y: stepCell.y - 2, z: stepCell.z }));
       if (u1 && VOID.has(u1.name) && u2 && VOID.has(u2.name)) {
-        const bridged = await _bridge(bot, { x: stepCell.x, y: stepCell.y - 1, z: stepCell.z });
-        if (!bridged) {
-          if (axisSwaps < 1) {
-            axisSwaps++;
-            lastDir = dir.dx ? { dx: 0, dz: Math.sign(dzT) || 1 } : { dx: Math.sign(dxT) || 1, dz: 0 };
-            continue;
+        const a = assessDrop(bot, { x: stepCell.x, y: stepCell.y - 1, z: stepCell.z },
+          { blockAt: (q) => bot.blockAt(_at(q)) });
+        const noOvershoot = (stepCell.y - 1 - a.depth) >= Math.floor(target.y) - 4;
+        if (!(safeToDrop(a, bot.health) && noOvershoot)) {
+          const bridged = await _bridge(bot, { x: stepCell.x, y: stepCell.y - 1, z: stepCell.z });
+          if (!bridged) {
+            if (axisSwaps < 1) {
+              axisSwaps++;
+              lastDir = dir.dx ? { dx: 0, dz: Math.sign(dzT) || 1 } : { dx: Math.sign(dxT) || 1, dz: 0 };
+              continue;
+            }
+            return { ok: false, reachedDist: dist(), reason: 'drop_ahead' };
           }
-          return { ok: false, reachedDist: dist(), reason: 'drop_ahead' };
         }
+        // sinon : chute acceptée — le pas se fait, on retombe plus près de la cible
       }
     }
 

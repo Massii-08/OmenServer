@@ -6,6 +6,7 @@
 // avant CHAQUE dig. Vise Y target (-54 par défaut, juste au-dessus de la nappe de lave Y=-55→-63).
 const { bestToolFor } = require('../tools');
 const { cheapestPickFor } = require('../gear');
+const { assessDrop, safeToDrop } = require('./fallCheck');     // saut « joueur réel » vs pont
 const { DANGER, VOID } = require('./mineDown');                // mêmes ensembles → 1 source de vérité
 // Vrai Vec3 pour bot.blockAt (leçon dcd874d, déjà appliquée à branchMine/tunnelTo — PAS ici :
 // un POJO nu throw .floored en vrai mineflayer → mineFor 'error' en boucle, vécu phase 2).
@@ -96,15 +97,22 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200 } = {}, toke
       }
     }
 
-    // ANTI-CHUTE (phase 3, vécu V3Res3 « fell from a high place ») : si le sol SOUS la marche
-    // est du vide ≥2 (plafond de grotte percé), on PONTE — un bloc de remblai posé contre une
-    // face solide — avant de poser le pied. Échec de pose → drop_ahead (l'appelant tourne).
+    // ANTI-CHUTE « joueur réel » (affinage Massii 07/06) : vide ≥2 sous la marche → on évalue
+    // la chute. Survivable (dégâts ≤ ½ PV, ou EAU en bas) ET pas d'overshoot sous targetY →
+    // on SAUTE (la chute est un raccourci de descente, bien plus rapide qu'un pont). Sinon
+    // pont (remblai) ; pose impossible → drop_ahead (l'appelant tourne).
     {
       const under1 = bot.blockAt(_at({ x: aheadLow.x, y: aheadLow.y - 1, z: aheadLow.z }));
       const under2 = bot.blockAt(_at({ x: aheadLow.x, y: aheadLow.y - 2, z: aheadLow.z }));
       if (under1 && VOID.has(under1.name) && under2 && VOID.has(under2.name)) {
-        const bridged = await bridgeGap(bot, { x: aheadLow.x, y: aheadLow.y - 1, z: aheadLow.z });
-        if (!bridged) return { ok: false, reachedY, reason: 'drop_ahead' };
+        const a = assessDrop(bot, { x: aheadLow.x, y: aheadLow.y - 1, z: aheadLow.z },
+          { blockAt: (q) => bot.blockAt(_at(q)) });
+        const noOvershoot = (aheadLow.y - 1 - a.depth) >= targetY - 6;
+        if (!(safeToDrop(a, bot.health) && noOvershoot)) {
+          const bridged = await bridgeGap(bot, { x: aheadLow.x, y: aheadLow.y - 1, z: aheadLow.z });
+          if (!bridged) return { ok: false, reachedY, reason: 'drop_ahead' };
+        }
+        // sinon : on laisse le pas se faire — le bot tombe, la boucle reprend du nouveau y
       }
     }
 

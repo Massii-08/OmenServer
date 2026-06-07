@@ -261,16 +261,30 @@ test('branchMine : mure la lave avec cobbled_deepslate quand pas de cobblestone'
   assert.ok(calls.placeBlock.length > 0, 'murage avec cobbled_deepslate');
 });
 
-test('branchMine : torchEvery pose une torche tous les N paliers', async () => {
+test('branchMine : torches posées dans le NOIR avec cadence jitterée (rng injecté)', async () => {
   const { bot, calls } = makeBot({ y: -54, inv: [
     { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
     { name: 'cobblestone', count: 32, type: 'block' },
     { name: 'torch', count: 8, type: 'block' },
   ] });
-  await branchMine(bot, { targetY: -54, mainLength: 9, branchSpacing: 999, branchLength: 0, torchEvery: 4 });
-  // paliers 4 et 8 → 2 poses (placeBlock face up sur le bloc sous les pieds)
+  // rng 0 → jitter nul → poses à i=4 et i=8 ; lumière inconnue (fake) = sombre → pose
+  await branchMine(bot, { targetY: -54, mainLength: 9, branchSpacing: 999, branchLength: 0, torchEvery: 4, rng: () => 0 });
   const up = calls.placeBlock.filter((c) => c.face && c.face.y === 1);
   assert.ok(up.length >= 2, `au moins 2 torches posées (got ${up.length})`);
+});
+
+test('branchMine : endroit ÉCLAIRÉ → pas de torche (économie + naturel)', async () => {
+  const { bot, calls } = makeBot({ y: -54, inv: [
+    { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
+    { name: 'cobblestone', count: 32, type: 'block' },
+    { name: 'torch', count: 8, type: 'block' },
+  ] });
+  // toutes les cases lues rapportent une lumière 12 (déjà éclairé)
+  const origBlockAt = bot.blockAt.bind(bot);
+  bot.blockAt = (q) => { const b = origBlockAt(q); if (b) b.light = 12; return b; };
+  await branchMine(bot, { targetY: -54, mainLength: 9, branchSpacing: 999, branchLength: 0, torchEvery: 4, rng: () => 0 });
+  const up = calls.placeBlock.filter((c) => c.face && c.face.y === 1);
+  assert.strictEqual(up.length, 0, 'aucune torche en zone éclairée');
 });
 
 test('branchMine : torchEvery sans torche en poche → continue sans bloquer', async () => {
