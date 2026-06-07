@@ -75,6 +75,12 @@ function installReflexes(bot, opts = {}) {
   const attack = opts.attack || null;
   const onWaterStuck = opts.onWaterStuck || null;
   const now = opts.now || Date.now;
+  // DÉLAI DE RÉACTION humain (anti-tell #3 : 0 ms = aimbot/ban). reactionMs() → ms avant
+  // l'ACTION physique (manger/fuir/riposter/murer) ; schedule(fn,ms) = minuterie (injectables).
+  // Défaut 0 → exécution SYNCHRONE (rétro-compat tests) ; index.js passe un vrai délai humain.
+  const schedule = opts.schedule || ((fn, ms) => setTimeout(fn, ms));
+  const reactionMs = opts.reactionMs || (() => 0);
+  const act = (fn) => { const ms = reactionMs() || 0; if (ms > 0) schedule(fn, ms); else fn(); };
   let fleeing = false;
   let surfacing = false;
   let lastHealth = null;
@@ -85,15 +91,17 @@ function installReflexes(bot, opts = {}) {
   const onPanic = opts.onPanic || null;
   let lastPanic = 0;
   const react = () => {
-    tryEat(bot).then((ate) => { if (ate) emit({ type: 'reflex', action: 'eat' }); }).catch(() => {});
+    // manger : décision synchrone, ACTION après le délai de réaction humain.
+    act(() => { tryEat(bot).then((ate) => { if (ate) emit({ type: 'reflex', action: 'eat' }); }).catch(() => {}); });
     // PANIC WALL (Massii survie mobs) : PV critiques → en plus de fuir, se MURER (poser des
     // blocs autour) pour casser le contact mêlée et manger à l'abri. Cooldown 20 s.
     if (onPanic && bot.health != null && bot.health <= HEALTH_THRESHOLD) {
       const t = now();
-      if (t - lastPanic >= 20000) { lastPanic = t; try { onPanic(); } catch (e) {} }
+      if (t - lastPanic >= 20000) { lastPanic = t; act(() => { try { onPanic(); } catch (e) {} }); }
     }
     if (shouldFlee(bot)) {
-      if (!fleeing) { flee(bot); emit({ type: 'reflex', action: 'flee' }); fleeing = true; }
+      // décision + télémétrie synchrones ; la FUITE part après le temps de réaction.
+      if (!fleeing) { fleeing = true; emit({ type: 'reflex', action: 'flee' }); act(() => { try { flee(bot); } catch (e) {} }); }
       lastHealth = bot.health;
       return;
     }
@@ -105,7 +113,8 @@ function installReflexes(bot, opts = {}) {
       const foe = meleeAssailant(bot);
       if (foe && !fighting) {
         fighting = true;
-        try { attack(foe); emit({ type: 'reflex', action: 'fight', mob: foe.name }); } catch (e) {}
+        emit({ type: 'reflex', action: 'fight', mob: foe.name });
+        act(() => { try { attack(foe); } catch (e) {} });   // riposte après le temps de réaction
         // re-autorise une riposte après 5 s (le pvp plugin poursuit la cible entre-temps)
         setTimeout(() => { fighting = false; }, 5000);
       }

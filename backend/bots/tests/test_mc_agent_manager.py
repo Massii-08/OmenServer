@@ -297,7 +297,7 @@ def test_start_session_adds_lang_flag(monkeypatch):
 
 
 def test_start_session_stealth_flag(monkeypatch):
-    """stealth=True → --stealth 1 dans la cmd ; défaut (False) → absent (phase 3 : humanisation off)."""
+    """stealth=True → --stealth 1 ; défaut → pas de --stealth MAIS --humanize présent (paquet 1)."""
     import io
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     captured = {}
@@ -320,6 +320,8 @@ def test_start_session_stealth_flag(monkeypatch):
     assert captured["cmd"][captured["cmd"].index("--stealth") + 1] == "1"
     mgr.start_session("h", 25565, "TrainBot2")
     assert "--stealth" not in captured["cmd"]
+    # paquet 1 : le lancement manuel est HUMANISÉ par défaut (bot face à de vrais joueurs)
+    assert "--humanize" in captured["cmd"]
 
 
 def test_start_mappers_sets_respawn_memo_and_humanize(monkeypatch, tmp_path):

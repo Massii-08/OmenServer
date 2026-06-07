@@ -9,7 +9,7 @@ const path = require('path');
 const { emit, onCommand } = require('./io');
 const { snapshot } = require('./state');
 const { think, RateLimiter } = require('./brain');
-const { humanizeReply } = require('./humanize');
+const { humanizeReply, nextLook, sampleReactionDelay } = require('./humanize');
 const { loadProfile } = require('./profiles');
 const { say } = require('./skills/say');
 const { follow } = require('./skills/follow');
@@ -1202,6 +1202,7 @@ async function onSpawn() {
     moves.canDig = true;            // doit pouvoir miner pour atteindre le cobble
     moves.allow1by1towers = true;   // peut remonter en colonne (cobble en poche) → pas coincé au fond
     moves.allowParkour = true;
+    moves.allowSprinting = true;    // anti-tell (paquet 1) : un humain sprinte en voyage (pathfinder gère)
     if (typeof moves.maxDropDown === 'number') moves.maxDropDown = 4; // limite les chutes profondes
     // Anti-noyade (vu live HarvT7 : drowned ×3 en trajet dirigé) : l'eau coûte CHER au pathfinder →
     // il contourne les lacs/rivières quand un chemin terrestre existe (coût fini : traverse encore
@@ -1212,6 +1213,10 @@ async function onSpawn() {
     let lastWaterRescueAt = 0; // escalade : 2e rescue <5 min → warp dur (aquifère inextirpable)
     installReflexes(bot, {
       emit, fleeFrom,
+      // DÉLAI DE RÉACTION humain sur les réflexes (anti aimbot 0 ms / anti-ban) — TOUJOURS actif
+      // (sécurité, pas seulement en humanize) : ~300 ms par défaut (les captures ne mesurent pas
+      // encore reaction.*). Coût nul sur le minage (ce n'est pas un réflexe). Cf. paquet 1.
+      reactionMs: () => sampleReactionDelay(profile && profile.params),
       // RIPOSTE (phase B) : frappé par un hostile mêlée au contact → meilleure arme + pvp.
       // Le plugin poursuit la cible ; les boucles (resource/mapper) reprennent leur goto après
       // (interruption gérée comme un flee : retry/timeout).
@@ -1313,7 +1318,9 @@ function ackPrivate(sender, text) { if (sender && text) { try { bot.whisper(send
 function stopMotion() {
   try { bot.pathfinder && bot.pathfinder.setGoal(null); } catch (e) {}
   try { bot.pvp && bot.pvp.stop(); } catch (e) {}
-  ['forward', 'back', 'left', 'right', 'sneak', 'jump'].forEach((c) => { try { bot.setControlState(c, false); } catch (e) {} });
+  // stop-pour-répondre (paquet 1) : on fige aussi le BRAS (un humain lâche le clic pour taper).
+  try { if (bot.targetDigBlock && bot.stopDigging) bot.stopDigging(); } catch (e) {}
+  ['forward', 'back', 'left', 'right', 'sneak', 'jump', 'sprint'].forEach((c) => { try { bot.setControlState(c, false); } catch (e) {} });
 }
 
 const authMode = args.auth === 'microsoft' ? 'microsoft' : 'offline';
@@ -1645,6 +1652,26 @@ setInterval(async () => {
   } catch (e) { /* timer : ne crash jamais */ }
   finally { _armorBusy = false; }
 }, 90000);
+
+// ── Anti-tell motricité (paquet 1) : BRUIT DE VISÉE au repos — un humain ne fige jamais sa tête
+// (vraies captures : la vue « respire » même à l'arrêt, figé strict ~0 %). Dérive DOUCE (nextLook
+// mode idle : micro-mouvements + rares petits coups d'œil, AUCUN geste brusque — exigence Massii).
+// UNIQUEMENT si humanisé ET inactif : pas pendant un dig (vise le bloc), un déplacement (pathfinder
+// mène la visée) ou un combat (pvp vise). Mode utilitaire pur (resource souterrain, non vu) = OFF.
+// force=false → bot.look interpole à vitesse de souris finie (pas de snap).
+if (HUMANIZE) {
+  setInterval(() => {
+    try {
+      if (!bot.entity) return;
+      if (bot.targetDigBlock) return;
+      if (bot.pathfinder && bot.pathfinder.goal) return;
+      if (bot.pvp && bot.pvp.target) return;
+      const cur = { yaw: bot.entity.yaw || 0, pitch: bot.entity.pitch || 0 };
+      const nx = nextLook(cur, (profile && profile.params) || {}, Math.random, { mode: 'idle' });
+      bot.look(nx.yaw, nx.pitch, false);
+    } catch (e) { /* best-effort : ne crash jamais */ }
+  }, 180 + Math.floor(Math.random() * 120)); // ~180-300 ms : cadence de micro-ajustement humaine
+}
 
 onCommand((cmd) => {
   if (cmd.type === 'say') say(bot, cmd.message);

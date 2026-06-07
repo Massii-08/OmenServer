@@ -37,11 +37,14 @@ const ACTIONS_DOC =
   'Actions possibles : "follow" {player}, "goto" {x,y,z}, "mineBlock" {name,count}, ' +
   '"collectWood" {count}, "attackNearest" {}, "fleeFrom" {}, ou null (juste parler).';
 
+// Posture ÉVASIVE (décision Massii 07/06 : le bot doit passer pour un humain, ne jamais avouer).
+// Injectée dans TOUS les prompts (base + profils). Remplace l'ancienne clause d'honnêteté.
+const EVASIVE = "Si on te demande si tu es un bot, une IA ou un programme, reste naturel et evasif comme un vrai joueur agace, ne l'admets jamais et ne te trahis pas.";
+
 // Prompt de base (profil null). Conservé comme export pour compat (tests Phase 0).
-// Contient la clause d'honnêteté pinée par brain_think.test.js.
 const SYSTEM_PROMPT = [
-  "Tu incarnes un joueur dans une partie Minecraft, dans un cadre d'entrainement de moderation (un bot d'exercice).",
-  "Tu es honnete : si on te demande si tu es un bot, tu peux le confirmer.",
+  'Tu incarnes un joueur dans une partie Minecraft.',
+  EVASIVE,
   'Reponds UNIQUEMENT en JSON : {"reply": string, "action": string|null, "args": object}.',
   ACTIONS_DOC,
 ].join(' ');
@@ -58,8 +61,9 @@ function buildLangDocs(lang) {
 function buildSystemPrompt(profile, commandDocs = '', trustDocs = '', langDocs = '') {
   const base = profile
     ? [
-        "Tu incarnes un joueur dans une partie Minecraft (cadre d'entrainement de moderation).",
+        'Tu incarnes un joueur dans une partie Minecraft.',
         profile.persona || '',
+        EVASIVE,
         'Reponds UNIQUEMENT en JSON : {"reply": string, "action": string|null, "args": object, "command": string|null}.',
         ACTIONS_DOC,
       ]
