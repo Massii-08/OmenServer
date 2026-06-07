@@ -118,10 +118,12 @@ function installReflexes(bot, opts = {}) {
         try { bot.setControlState && bot.setControlState('jump', true); } catch (e) {}
         emit({ type: 'reflex', action: 'surface' });
         // BARBOTAGE : épisodes répétés = le bot flotte sans sortir → évasion d'eau musclée.
+        // Seuil 2 (vécu V3Res1 : noyade ×3 en 7 min — chaque épisode est une quasi-noyade,
+        // attendre le 4e laissait mourir sous les plafonds d'aquifère).
         const t = now();
         surfaceEpisodes.push(t);
         surfaceEpisodes = surfaceEpisodes.filter((x) => t - x <= 90000);
-        if (onWaterStuck && surfaceEpisodes.length >= 4 && t - lastRescue >= 60000) {
+        if (onWaterStuck && surfaceEpisodes.length >= 2 && t - lastRescue >= 45000) {
           lastRescue = t;
           surfaceEpisodes = [];
           emit({ type: 'reflex', action: 'water_rescue' });

@@ -19,13 +19,12 @@ test('listPicks/bestTier : tri par palier, -1 sans pioche', () => {
   assert.strictEqual(bestTier([]), -1);
 });
 
-test('cheapestPickFor : PHASE 3 vitesse — toujours la meilleure pioche (roche comme ore)', () => {
+test('cheapestPickFor : roche → la moins chère (durabilité fer > gain vitesse) ; ore → la meilleure', () => {
   const items = [{ name: 'stone_pickaxe', count: 1 }, { name: 'iron_pickaxe', count: 1 }];
-  assert.strictEqual(cheapestPickFor(items, 'deepslate'), 'iron_pickaxe');
-  assert.strictEqual(cheapestPickFor(items, 'stone'), 'iron_pickaxe');
+  assert.strictEqual(cheapestPickFor(items, 'deepslate'), 'stone_pickaxe');
+  assert.strictEqual(cheapestPickFor(items, 'stone'), 'stone_pickaxe');
   assert.strictEqual(cheapestPickFor(items, 'deepslate_diamond_ore'), 'iron_pickaxe');
   assert.strictEqual(cheapestPickFor(items, 'ancient_debris'), 'iron_pickaxe');
-  assert.strictEqual(cheapestPickFor([{ name: 'stone_pickaxe', count: 1 }], 'deepslate'), 'stone_pickaxe');
   assert.strictEqual(cheapestPickFor([], 'stone'), null);
 });
 

@@ -160,19 +160,19 @@ test('riposte : PV bas (≤ seuil) → fuite prioritaire, pas de combat', () => 
 
 // --- Phase 3 : watchdog barbotage (onWaterStuck) -------------------------------------------------
 
-test('onWaterStuck : 4 épisodes de surfacing en <90s → rescue déclenché (1 fois, cooldown)', () => {
+test('onWaterStuck : 2 épisodes de surfacing en <90s → rescue déclenché (1 fois, cooldown)', () => {
   let t = 0;
   let rescues = 0;
   const events = [];
   const bot = fakeBotO2();
   installReflexes(bot, { emit: (e) => events.push(e), fleeFrom() {}, now: () => t,
     onWaterStuck: () => rescues++ });
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 2; i++) {
     bot.oxygenLevel = 3; bot.calls.handlers.breath();   // épisode i
     bot.oxygenLevel = 20; bot.calls.handlers.breath();  // air revenu (fin d'épisode)
     t += 10000;
   }
-  assert.strictEqual(rescues, 1, 'rescue après le 4e épisode');
+  assert.strictEqual(rescues, 1, 'rescue dès le 2e épisode (chaque épisode = quasi-noyade)');
   assert.ok(events.some((e) => e.action === 'water_rescue'));
   // épisodes suivants dans le cooldown 60 s → pas de 2e rescue
   bot.oxygenLevel = 3; bot.calls.handlers.breath();

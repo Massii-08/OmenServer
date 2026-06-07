@@ -23,6 +23,7 @@
 // dès que i≥6-7 le bloc cible est hors range mineflayer (~6 blocs) → bot.dig échoue silencieusement
 // → stall (risque #5 du rapport build précédent).
 const { bestToolFor } = require('../tools');
+const { cheapestPickFor } = require('../gear');
 const { gather } = require('./gather');
 const { Vec3 } = require('vec3');
 let _emit; try { _emit = require('../io').emit; } catch (e) { _emit = () => {}; }
@@ -194,13 +195,26 @@ async function safeDigAndOpportunism(bot, target, token, debug) {
 
   // ROCHE NUE → dig DIRECT (phase 3) : collectBlock re-pathfindait vers CHAQUE drop (~1-2 s/bloc
   // de surcoût × milliers de blocs). Les drops tombent dans le tunnel 1×2 — le bot les aspire en
-  // avançant (approach() du palier suivant passe dessus).
-  await equipCached(bot, bestToolFor(bot, block));
+  // avançant (approach() du palier suivant passe dessus). Pioche la MOINS CHÈRE pour la roche
+  // (la durabilité fer = 3 lingots/250 blocs, plus cher que le gain de vitesse — vécu V3Res1).
+  const pickName = cheapestPickFor((bot.inventory && bot.inventory.items()) || [], block.name);
+  let tool = pickName ? ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === pickName) : null;
+  if (!tool) tool = bestToolFor(bot, block);
+  await equipCached(bot, tool);
   try {
     await bot.dig(block);
   } catch (e) {
     if (debug) { try { dbg('safeDig', { phase: 'safeDig:fail', target: { x: target.x, y: target.y, z: target.z }, err: String(e && e.message || e).slice(0, 200) }); } catch (e2) {} }
     return { ok: false, reason: 'dig_failed' };
+  }
+
+  // ANTI-GRAVIER (vécu V3Res4 « suffocated in a wall ») : un bloc à GRAVITÉ au-dessus de la case
+  // creusée tombe sur la tête du bot. On le mine tant qu'il en retombe (≤4, colonnes de gravier).
+  for (let g = 0; g < 4; g++) {
+    const above = bot.blockAt(p(target.x, target.y + 1, target.z));
+    if (!above || (above.name !== 'gravel' && above.name !== 'sand')) break;
+    await equipCached(bot, bestToolFor(bot, above));
+    try { await bot.dig(above); } catch (e) { break; }
   }
 
   // Opportunisme : si un ore est visible dans le voisinage (révélé par le dig), on tente de le ramasser.

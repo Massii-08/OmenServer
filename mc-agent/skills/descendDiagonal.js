@@ -5,6 +5,7 @@
 // Anti-lave codé en dur : scan 5 voisins (devant, devant-bas, devant-haut, devant×2, devant-bas×2)
 // avant CHAQUE dig. Vise Y target (-54 par défaut, juste au-dessus de la nappe de lave Y=-55→-63).
 const { bestToolFor } = require('../tools');
+const { cheapestPickFor } = require('../gear');
 const { DANGER, VOID } = require('./mineDown');                // mêmes ensembles → 1 source de vérité
 // Vrai Vec3 pour bot.blockAt (leçon dcd874d, déjà appliquée à branchMine/tunnelTo — PAS ici :
 // un POJO nu throw .floored en vrai mineflayer → mineFor 'error' en boucle, vécu phase 2).
@@ -113,8 +114,11 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200 } = {}, toke
       if (!t) continue;                                       // unloaded → skip
       if (VOID.has(t.name)) continue;                         // déjà air → rien à faire
       if (DANGER.has(t.name)) return { ok: false, reachedY, reason: 'lava_ahead' };
-      const tool = bestToolFor(bot, t);
+      // Pioche la moins chère pour la roche (durabilité fer > gain de vitesse, vécu V3Res1) +
       // equip avec cache (phase 3) : ne ré-équipe pas l'outil déjà en main.
+      const pickName = cheapestPickFor((bot.inventory && bot.inventory.items()) || [], t.name);
+      let tool = pickName ? ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === pickName) : null;
+      if (!tool) tool = bestToolFor(bot, t);
       if (tool && !(bot.heldItem && bot.heldItem.name === tool.name)) {
         try { await bot.equip(tool, 'hand'); } catch (e) {}
       }
