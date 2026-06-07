@@ -1084,6 +1084,7 @@ async function onSpawn() {
     if (typeof moves.liquidCost === 'number') moves.liquidCost = 20;
     bot.pathfinder.setMovements(moves);
     let waterRescue = null; // évasion d'eau en cours (jamais 2 en parallèle)
+    let lastWaterRescueAt = 0; // escalade : 2e rescue <5 min → warp dur (aquifère inextirpable)
     installReflexes(bot, {
       emit, fleeFrom,
       // RIPOSTE (phase B) : frappé par un hostile mêlée au contact → meilleure arme + pvp.
@@ -1097,9 +1098,22 @@ async function onSpawn() {
       // BARBOTAGE (phase 3, vécu V3Res1/4 : 199 épisodes O2 en 30 min pendant le kit) : le
       // réflexe oxygène fait flotter mais ne SORT pas de l'eau → escapeWater global (nage
       // persistante vers la terre), quel que soit la tâche en cours.
+      // ESCALADE (vécu run B : 3 bots PARALYSÉS dans des aquifères souterrains — la nage ne
+      // trouve aucune terre atteignable, water_rescue re-tirait à vide ×N) : un 2e rescue en
+      // <5 min = l'évasion a ÉCHOUÉ → WARP dur vers une terre fraîche (bot OP), la tâche en
+      // cours se re-dérive (goto échoue → cible suivante).
       onWaterStuck: () => {
         if (waterRescue) return;
-        waterRescue = escapeWater(bot, { emit })
+        const nowMs = Date.now();
+        const escalate = nowMs - lastWaterRescueAt < 5 * 60 * 1000;
+        lastWaterRescueAt = nowMs;
+        waterRescue = (escalate
+          ? (async () => {
+              emit({ type: 'water_rescue_warp' });
+              try { stopMotion(); } catch (e) {}
+              await relocateToRegion();
+            })()
+          : escapeWater(bot, { emit }))
           .catch(() => {})
           .finally(() => { waterRescue = null; });
       },
