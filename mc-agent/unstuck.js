@@ -133,8 +133,11 @@ async function clearSnares(bot) {
  * PUR : le bot est-il « coincé en l'air » ? (pas au sol, pas dans l'eau, position horizontale
  * quasi inchangée entre 2 échantillons espacés d'au moins minMs). samples = {x,z,t}.
  */
-function isFloatingStuck(prev, cur, { onGround, inWater, minMs = 1500, eps = 0.35 } = {}) {
+function isFloatingStuck(prev, cur, { onGround, inWater, vy, minMs = 1500, eps = 0.35, maxVy = 0.12 } = {}) {
   if (onGround || inWater || !prev || !cur) return false;
+  // En train de TOMBER ou de MONTER (saut/chute/pilier en cours) ≠ coincé : un bot réellement
+  // coincé-flottant a une vélocité verticale ≈ 0. Garde optionnelle (rétro-compat si vy absent).
+  if (vy != null && Math.abs(vy) > maxVy) return false;
   if (cur.t - prev.t < minMs) return false;
   const d = Math.sqrt((cur.x - prev.x) ** 2 + (cur.z - prev.z) ** 2);
   return d < eps;

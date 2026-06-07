@@ -49,7 +49,7 @@ const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
 const { loadMemory, worldKey } = require('./worldMemory');
 const { runMapper } = require('./mapper');
 const { LOCATE_KINDS, parseLocateResponse, structureFoundEvent } = require('./structures');
-const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
+const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating } = require('./unstuck');
 const { runResource } = require('./skills/resource');
 const { tunnelTo } = require('./skills/tunnelTo');
 const { junkItems, ITEMS_FOR } = require('./quota');
@@ -1208,6 +1208,19 @@ async function onSpawn() {
     // il contourne les lacs/rivières quand un chemin terrestre existe (coût fini : traverse encore
     // si c'est la SEULE option ; le réflexe oxygène de reflexes.js est le filet de sécurité).
     if (typeof moves.liquidCost === 'number') moves.liquidCost = 20;
+    // PILIER (Massii « monte mal en pilier ») : le pathfinder ne toure (`allow1by1towers`) qu'avec
+    // ses `scafoldingBlocks` — défaut = **dirt + cobblestone UNIQUEMENT** (mineflayer-pathfinder
+    // movements.js:75-77). Un bot qui mine de la deepslate n'a que du cobbled_deepslate/tuff →
+    // liste vide d'utilisables → INCAPABLE de remonter en pilier (sortir d'un tunnel/trou).
+    // On élargit aux blocs sacrifiables réellement en poche (mêmes familles que pillarUp.SCAFFOLD).
+    try {
+      const scaffoldNames = ['cobblestone', 'cobbled_deepslate', 'dirt', 'coarse_dirt', 'stone',
+        'deepslate', 'tuff', 'granite', 'diorite', 'andesite', 'netherrack', 'gravel', 'grass_block'];
+      const ids = scaffoldNames
+        .map((n) => bot.registry.itemsByName[n] && bot.registry.itemsByName[n].id)
+        .filter((x) => x != null);
+      if (ids.length) moves.scafoldingBlocks = ids;
+    } catch (e) { /* best-effort : garde le défaut dirt+cobblestone */ }
     bot.pathfinder.setMovements(moves);
     let waterRescue = null; // évasion d'eau en cours (jamais 2 en parallèle)
     let lastWaterRescueAt = 0; // escalade : 2e rescue <5 min → warp dur (aquifère inextirpable)
@@ -1608,6 +1621,31 @@ setInterval(async () => {
     try { stopMotion(); } catch (e) {}                                   // le goto rejette → re-path
   } catch (e) { /* watchdog : ne crash jamais */ }
 }, 6000);
+
+// Anti-stuck FLOTTANT (#8) — ÉTAIT DU CODE MORT : recoverFloating/isFloatingStuck définis+testés
+// mais JAMAIS branchés. Le jam-watchdog ci-dessus ne couvre QUE les blocages AVEC goal pathfinder
+// actif ; un bot coincé EN L'AIR sans goal (rebord, liane/toile #9, échec de pilier, retombée
+// bloquée) n'était jamais récupéré → « se bloque ». Échantillonne pos+sol+eau+vélocité toutes les
+// 2 s ; coincé-flottant (≈0 mouvement horizontal ET vy≈0, pas en chute/saut) → relâche tout +
+// dégage les lianes + laisse retomber. Borné, ne crash jamais, no-op pendant un dig (légitime).
+let _floatPrev = null;
+let _floatBusy = false;
+setInterval(async () => {
+  try {
+    if (_floatBusy || !bot.entity || !bot.entity.position) return;
+    if (bot.targetDigBlock) { _floatPrev = null; return; }            // minage sur place = légitime
+    const p = bot.entity.position;
+    const vy = (bot.entity.velocity && bot.entity.velocity.y) || 0;
+    const cur = { x: p.x, z: p.z, t: Date.now() };
+    if (isFloatingStuck(_floatPrev, cur, { onGround: !!bot.entity.onGround, inWater: isInWater(bot), vy })) {
+      _floatPrev = null;
+      _floatBusy = true;
+      try { await recoverFloating(bot, { emit }); } finally { _floatBusy = false; }
+      return;
+    }
+    _floatPrev = cur;
+  } catch (e) { _floatBusy = false; }
+}, 2000);
 
 // Watchdog connexion : un « Timed out » côté serveur peut laisser le socket client MUET sans
 // event 'end' (vécu phase 2 : bot zombie, quota figé, jamais respawné). Pas de physicsTick
