@@ -9,6 +9,17 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
 import org.lwjgl.glfw.GLFW;
+import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
+import net.minecraft.util.ActionResult;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.mob.HostileEntity;
+import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.block.BlockState;
+import net.minecraft.registry.Registries;
+import java.util.HashSet;
+import java.util.Set;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -26,6 +37,13 @@ public class CaptureMod implements ClientModInitializer {
     private static long startMs = 0;
 
     private KeyBinding toggleKey;
+
+    // --- État de détection d'events comportementaux (1b.2), réinitialisé à chaque REC start ---
+    private int lastHealth = -1;                 // -1 = pas encore échantillonné (pas de faux 'damage' au start)
+    private final Set<Integer> seenMobs = new HashSet<>();
+    private BlockPos breakingPos = null;         // bloc visé en cours de minage (attaque maintenue)
+    private String breakingName = null;
+    private int mobScanCounter = 0;              // throttle du scan d'entités (~toutes les 10 ticks)
 
     private static Recorder newFileRecorder() {
         return new Recorder(() -> {
@@ -71,6 +89,15 @@ public class CaptureMod implements ClientModInitializer {
                 RECORDER.recordChat(elapsed(), "chat_in", from, txt, txt.length());
             }
         });
+
+        // ATTACK (1b.2) : le joueur frappe une entité → event combat (contexte 'combat' de segment_clips).
+        // AttackEntityCallback = API Fabric stable ; PASS = ne pas annuler l'attaque.
+        AttackEntityCallback.EVENT.register((player, world, hand, entity, hitResult) -> {
+            if (RECORDER.isRecording() && entity != null) {
+                RECORDER.recordAttack(elapsed(), Registries.ENTITY_TYPE.getId(entity.getType()).toString());
+            }
+            return ActionResult.PASS;
+        });
     }
 
     private void toggleRecording(MinecraftClient client) {
@@ -91,6 +118,8 @@ public class CaptureMod implements ClientModInitializer {
         String name = client.player != null ? client.player.getName().getString() : "unknown";
         String mc = client.getGameVersion();
         RECORDER.start(name, mc, "0.1.0", startMs, 20);
+        // reset de l'état de détection d'events pour la nouvelle session (pas de faux 'damage' au start)
+        lastHealth = -1; seenMobs.clear(); breakingPos = null; breakingName = null; mobScanCounter = 0;
         if (client.player != null) {
             String msg = RECORDER.isRecording() ? "[OmenCapture] ● REC" : "[OmenCapture] Echec demarrage (REC-off)";
             client.player.sendMessage(net.minecraft.text.Text.literal(msg), false);
@@ -122,5 +151,41 @@ public class CaptureMod implements ClientModInitializer {
         r.food = p.getHungerManager().getFoodLevel();
         r.held = p.getMainHandStack().getItem().toString();
         RECORDER.recordTick(r);
+
+        // --- Events comportementaux dérivés du tick (client-side, APIs version-stables 1.20.1→1.21.11) ---
+        // DAMAGE : chute de PV depuis le dernier tick = stimulus (pas d'event dégâts client fiable en MP).
+        int hp = (int) p.getHealth();
+        if (lastHealth >= 0 && hp < lastHealth) RECORDER.recordDamage(elapsed(), lastHealth - hp, hp);
+        lastHealth = hp;
+
+        // MOB_APPEAR : un hostile entre dans le rayon (~16 blocs). Scan throttlé (~0.5 s) pour le coût ;
+        // seenMobs = hostiles déjà signalés (ré-apparition après éloignement = nouveau stimulus).
+        if (++mobScanCounter % 10 == 0 && client.world != null) {
+            Set<Integer> near = new HashSet<>();
+            for (Entity e : client.world.getEntities()) {
+                if (e instanceof HostileEntity && e.squaredDistanceTo(p) <= 256.0) {
+                    near.add(e.getId());
+                    if (!seenMobs.contains(e.getId())) {
+                        RECORDER.recordMobAppear(elapsed(),
+                                Registries.ENTITY_TYPE.getId(e.getType()).toString(),
+                                Math.sqrt(e.squaredDistanceTo(p)));
+                    }
+                }
+            }
+            seenMobs.clear();
+            seenMobs.addAll(near);
+        }
+
+        // BLOCK_BREAK : le bloc visé pendant le minage (attaque maintenue) disparaît = cassé.
+        HitResult ct = client.crosshairTarget;
+        if (opt.attackKey.isPressed() && ct != null && ct.getType() == HitResult.Type.BLOCK && client.world != null) {
+            BlockPos bp = ((BlockHitResult) ct).getBlockPos();
+            BlockState st = client.world.getBlockState(bp);
+            if (!st.isAir()) { breakingPos = bp; breakingName = Registries.BLOCK.getId(st.getBlock()).toString(); }
+        }
+        if (breakingPos != null && client.world != null && client.world.getBlockState(breakingPos).isAir()) {
+            RECORDER.recordBlockBreak(elapsed(), breakingName);
+            breakingPos = null;
+        }
     }
 }
