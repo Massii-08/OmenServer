@@ -157,3 +157,38 @@ test('riposte : PV bas (≤ seuil) → fuite prioritaire, pas de combat', () => 
   assert.strictEqual(attacked.length, 0);
   assert.ok(fled >= 1);
 });
+
+// --- Phase 3 : watchdog barbotage (onWaterStuck) -------------------------------------------------
+
+test('onWaterStuck : 4 épisodes de surfacing en <90s → rescue déclenché (1 fois, cooldown)', () => {
+  let t = 0;
+  let rescues = 0;
+  const events = [];
+  const bot = fakeBotO2();
+  installReflexes(bot, { emit: (e) => events.push(e), fleeFrom() {}, now: () => t,
+    onWaterStuck: () => rescues++ });
+  for (let i = 0; i < 4; i++) {
+    bot.oxygenLevel = 3; bot.calls.handlers.breath();   // épisode i
+    bot.oxygenLevel = 20; bot.calls.handlers.breath();  // air revenu (fin d'épisode)
+    t += 10000;
+  }
+  assert.strictEqual(rescues, 1, 'rescue après le 4e épisode');
+  assert.ok(events.some((e) => e.action === 'water_rescue'));
+  // épisodes suivants dans le cooldown 60 s → pas de 2e rescue
+  bot.oxygenLevel = 3; bot.calls.handlers.breath();
+  bot.oxygenLevel = 20; bot.calls.handlers.breath();
+  assert.strictEqual(rescues, 1);
+});
+
+test('onWaterStuck : épisodes espacés (>90s) → jamais déclenché', () => {
+  let t = 0;
+  let rescues = 0;
+  const bot = fakeBotO2();
+  installReflexes(bot, { emit() {}, fleeFrom() {}, now: () => t, onWaterStuck: () => rescues++ });
+  for (let i = 0; i < 6; i++) {
+    bot.oxygenLevel = 3; bot.calls.handlers.breath();
+    bot.oxygenLevel = 20; bot.calls.handlers.breath();
+    t += 120000;                                        // 2 min entre épisodes
+  }
+  assert.strictEqual(rescues, 0);
+});

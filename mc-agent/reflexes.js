@@ -64,16 +64,23 @@ function meleeAssailant(bot) {
 
 const OXYGEN_THRESHOLD = 5;   // sur 20 — en dessous : urgence remonter
 
-/** Branche les réflexes sur le bot. opts: { emit, fleeFrom, attack } injectables.
- *  attack(target) : riposte (phase B) — fourni par index.js (équipe la meilleure arme + pvp). */
+/** Branche les réflexes sur le bot. opts: { emit, fleeFrom, attack, onWaterStuck, now } injectables.
+ *  attack(target) : riposte (phase B) — fourni par index.js (équipe la meilleure arme + pvp).
+ *  onWaterStuck() : appelé quand le bot BARBOTE (≥4 épisodes de surfacing en 90 s) — le réflexe
+ *  oxygène le fait flotter mais rien ne le SORT de l'eau (vécu V3Res1/4 : 199 épisodes en 30 min
+ *  pendant le kit, et une noyade sous plafond d'aquifère). Cooldown 60 s entre invocations. */
 function installReflexes(bot, opts = {}) {
   const emit = opts.emit || (() => {});
   const flee = opts.fleeFrom || (() => {});
   const attack = opts.attack || null;
+  const onWaterStuck = opts.onWaterStuck || null;
+  const now = opts.now || Date.now;
   let fleeing = false;
   let surfacing = false;
   let lastHealth = null;
   let fighting = false;
+  let surfaceEpisodes = [];     // timestamps des débuts d'épisode de surfacing
+  let lastRescue = -Infinity;   // -∞ : le 1er rescue n'est jamais bloqué par le cooldown
 
   const react = () => {
     tryEat(bot).then((ate) => { if (ate) emit({ type: 'reflex', action: 'eat' }); }).catch(() => {});
@@ -110,6 +117,16 @@ function installReflexes(bot, opts = {}) {
         try { bot.pathfinder && bot.pathfinder.setGoal && bot.pathfinder.setGoal(null); } catch (e) {}
         try { bot.setControlState && bot.setControlState('jump', true); } catch (e) {}
         emit({ type: 'reflex', action: 'surface' });
+        // BARBOTAGE : épisodes répétés = le bot flotte sans sortir → évasion d'eau musclée.
+        const t = now();
+        surfaceEpisodes.push(t);
+        surfaceEpisodes = surfaceEpisodes.filter((x) => t - x <= 90000);
+        if (onWaterStuck && surfaceEpisodes.length >= 4 && t - lastRescue >= 60000) {
+          lastRescue = t;
+          surfaceEpisodes = [];
+          emit({ type: 'reflex', action: 'water_rescue' });
+          try { onWaterStuck(); } catch (e) {}
+        }
       }
     } else if (surfacing && o2 >= 15) { // hystérésis : on relâche une fois l'air franchement revenu
       surfacing = false;

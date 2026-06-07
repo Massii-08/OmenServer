@@ -751,6 +751,18 @@ async function mineForType(type, needed) {
         lavaTurns++;
         if (lavaTurns > 3) return { ok: false, reason: why };   // 4 cardinaux barrés → vraie impasse
         try { await bot.look(((bot.entity && bot.entity.yaw) || 0) + Math.PI / 2, 0, true); } catch (e) {}
+        // LONGER LA PAROI (vécu V3Res2 : drop_ahead en boucle au bord d'une méga-grotte 1.18 —
+        // re-descendre du MÊME point re-trouve le même gouffre) : ~8 blocs dans la nouvelle
+        // direction avant de re-tenter, pathfinder borné (il contourne ou échoue vite).
+        try {
+          const yawNow = (bot.entity && bot.entity.yaw) || 0;
+          const px = bot.entity.position.x - Math.sin(yawNow) * 8;
+          const pz = bot.entity.position.z + Math.cos(yawNow) * 8;
+          await withTimeout(
+            bot.pathfinder.goto(new pfGoals.GoalNearXZ(px, pz, 2)),
+            20000, () => { try { stopMotion(); } catch (e) {} });
+        } catch (e) { /* best-effort */ }
+        if (taskToken.cancelled) return { ok: true };
         continue;
       }
       if (why === 'timeout' || why === 'dig_failed') continue;  // progrès conservé → on re-descend
@@ -1008,6 +1020,7 @@ async function onSpawn() {
     // si c'est la SEULE option ; le réflexe oxygène de reflexes.js est le filet de sécurité).
     if (typeof moves.liquidCost === 'number') moves.liquidCost = 20;
     bot.pathfinder.setMovements(moves);
+    let waterRescue = null; // évasion d'eau en cours (jamais 2 en parallèle)
     installReflexes(bot, {
       emit, fleeFrom,
       // RIPOSTE (phase B) : frappé par un hostile mêlée au contact → meilleure arme + pvp.
@@ -1017,6 +1030,15 @@ async function onSpawn() {
         const w = bestWeapon(bot);
         const go = () => { try { bot.pvp.attack(foe); } catch (e) {} };
         if (w) { bot.equip(w, 'hand').then(go, go); } else { go(); }
+      },
+      // BARBOTAGE (phase 3, vécu V3Res1/4 : 199 épisodes O2 en 30 min pendant le kit) : le
+      // réflexe oxygène fait flotter mais ne SORT pas de l'eau → escapeWater global (nage
+      // persistante vers la terre), quel que soit la tâche en cours.
+      onWaterStuck: () => {
+        if (waterRescue) return;
+        waterRescue = escapeWater(bot, { emit })
+          .catch(() => {})
+          .finally(() => { waterRescue = null; });
       },
     });
     // TÉLÉPORTATION (#10) : détecte tout TP (admin /tp, /home, portail, respawn) → émet
