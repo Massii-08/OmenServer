@@ -110,6 +110,7 @@ const worldFile = args.world || path.join(__dirname, '..', 'data', `mc_agent_wor
 const world = loadWorld(worldFile);
 let taskToken = { cancelled: true };
 let deathTimes = [];
+let _escapeOnSpawn = false; // anti-camping : 2 morts <60 s → warp + re-spawnpoint au prochain spawn
 let bootDone = false; // réflexes/mouvements/auth = une seule fois par connexion (pas à chaque respawn)
 
 // --- Mémoire de monde (1a/1b) : bootstrap du groupe (--world-memory) + clé de monde (--world-label).
@@ -939,6 +940,10 @@ async function startResource() {
       }
       const sticks = cnt('stick');
       if (sticks < 16) await craftSmart({ name: 'stick', count: 16 - sticks });
+      // ÉPÉE (phase B, vécu V3Res1 : duel zombie À LA PIOCHE perdu 6× — bestWeapon n'avait
+      // rien de mieux). Une épée pierre = 2 cobble + 1 stick : la riposte devient gagnante.
+      const hasSword = ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name.endsWith('_sword'));
+      if (!hasSword) { try { await craftSmart({ name: 'stone_sword', count: 1 }); } catch (e) {} }
     } catch (e) { /* best-effort */ }
   }
   // SPAWNPOINT post-kit (phase 3) : le spawn du monde est un LAC déforesté — chaque mort y
@@ -1109,6 +1114,14 @@ async function onSpawn() {
     });
     await tryAuth();
     bootDone = true;
+  }
+  // ANTI-CAMPING (phase B) : mort en rafale → on FUIT la zone du spawnpoint campé AVANT de
+  // reprendre (warp terre fraîche + ré-ancrage du respawn ici). Casse les boucles zombie-camp.
+  if (_escapeOnSpawn) {
+    _escapeOnSpawn = false;
+    emit({ type: 'death_camp_escape' });
+    try { await relocateToRegion(); } catch (e) { /* best-effort */ }
+    try { bot.chat('/spawnpoint'); } catch (e) {}
   }
   if (world.objective && world.objective.status === 'in_progress') {
     emit({ type: 'autonomous_resume', objective: world.objective.type });
@@ -1359,10 +1372,16 @@ bot.on('death', () => {
   emit({ type: 'status', state: 'dead' });
   const p = bot.entity && bot.entity.position;
   if (p) lastDeath = { x: p.x, y: p.y, z: p.z, t: Date.now() };
-  // Garde-fou anti-boucle de mort : 3 morts / 10 min → stop + notifie (sinon respawn → onSpawn → reprise).
   deathTimes.push(Date.now());
   deathTimes = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000);
-  if (deathTimes.length >= 3) {
+  // ANTI-CAMPING (phase B, vécu V3Res1 : zombie campé sur le spawnpoint = 6 morts en 51 s,
+  // et l'ancienne pause à 3 morts le laissait IDLE en punching-ball) : 2 morts en <60 s →
+  // au prochain spawn, WARP ailleurs + ré-ancrage du spawnpoint (le camping est cassé net).
+  const burst = deathTimes.filter((t) => Date.now() - t < 60000).length;
+  if (burst >= 2) _escapeOnSpawn = true;
+  // Garde-fou ultime (relevé 3→5 : le warp anti-camping gère les boucles courtes) :
+  // 5 morts / 10 min → pause objectif + notifie (le self-healing backend reprendra).
+  if (deathTimes.length >= 5) {
     taskCtl.cancel();
     if (world.objective) { world.objective.status = 'paused'; saveWorld(worldFile, world); }
     emit({ type: 'autonomous_stalled', reason: 'death_loop' });
