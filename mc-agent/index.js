@@ -207,6 +207,14 @@ async function withCraftingTable(fn) {
   // en 2×2 SANS table (4 planks) → on la re-fabrique avant de la poser.
   const hasTableItem = ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'crafting_table');
   if (!hasTableItem) {
+    // Re-craft 2×2 (4 planks). Planks manquantes mais BÛCHES en poche → planches d'abord
+    // (essence du log en main — phase 3, complète le fix V2Res1).
+    const items = (bot.inventory && bot.inventory.items()) || [];
+    const planks = items.filter((i) => i.name.endsWith('_planks')).reduce((a, i) => a + i.count, 0);
+    if (planks < 4) {
+      const log = items.find((i) => i.name.endsWith('_log'));
+      if (log) { try { await craftItem(bot, { name: log.name.replace('_log', '_planks'), count: 1 }); } catch (e) { /* best-effort */ } }
+    }
     try { await craftItem(bot, { name: 'crafting_table', count: 1 }); } catch (e) { /* best-effort */ }
   }
   let place = await placeBlockNear(bot, 'crafting_table');
