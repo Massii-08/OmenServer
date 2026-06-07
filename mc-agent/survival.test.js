@@ -5,8 +5,8 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const vec3 = require('vec3');
 const {
-  combatDecision, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick,
-  SWARM_COUNT, LOW_HEALTH, HUNT_HUNGER, EAT_HUNGER, RAW_FOODS,
+  combatDecision, isArmored, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick,
+  SWARM_COUNT, LOW_HEALTH, SWARM_UNARMORED, LOW_HEALTH_UNARMORED, HUNT_HUNGER, EAT_HUNGER, RAW_FOODS,
 } = require('./survival');
 
 // --- Fake bot (vrai Vec3, leçon dcd874d) ---
@@ -55,6 +55,28 @@ test('combatDecision : PV bas + au moins 1 hostile -> flee', () => {
 });
 test('combatDecision : PV bas mais 0 hostile -> null (rien à fuir)', () => {
   assert.strictEqual(combatDecision({ health: 4, hostileCount: 0 }), null);
+});
+
+// --- combatDecision armor-aware (paquet 2 : anti « mort par combo » sans armure) ---
+test('combatDecision : SANS armure → fuit dès 2 hostiles (vs 3 avec)', () => {
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: 2, armored: false }), 'flee');
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: 2, armored: true }), 'fight');
+});
+test('combatDecision : SANS armure → fuit dès PV ≤ 12 (vs ≤ 8 avec)', () => {
+  assert.strictEqual(combatDecision({ health: LOW_HEALTH_UNARMORED, hostileCount: 1, armored: false }), 'flee');
+  assert.strictEqual(combatDecision({ health: 11, hostileCount: 1, armored: true }), 'fight'); // 11 > 8 → se bat avec armure
+});
+test('combatDecision : AVEC armure garde les seuils courageux (rétro-compat défaut)', () => {
+  assert.strictEqual(combatDecision({ health: 9, hostileCount: 1, armored: true }), 'fight');
+  assert.strictEqual(combatDecision({ health: 9, hostileCount: 1 }), 'fight'); // défaut (sans flag) = courageux
+  assert.ok(SWARM_UNARMORED < SWARM_COUNT && LOW_HEALTH_UNARMORED > LOW_HEALTH);
+});
+test('isArmored : vrai si une pièce dans les slots 5-8, faux sinon', () => {
+  const armored = { inventory: { slots: [null, null, null, null, null, { name: 'iron_chestplate' }, null, null, null] } };
+  const bare = { inventory: { slots: [null, null, null, null, null, null, null, null, null] } };
+  assert.strictEqual(isArmored(armored), true);
+  assert.strictEqual(isArmored(bare), false);
+  assert.strictEqual(isArmored({}), false); // pas d'inventaire → faux (pas de throw)
 });
 
 // --- nearbyHostiles ---

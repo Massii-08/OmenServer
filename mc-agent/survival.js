@@ -8,8 +8,13 @@
 const { FOODS } = require('./reflexes');
 const { bestWeapon } = require('./tools');
 
-const SWARM_COUNT = 3;   // ≥3 hostiles = submergé → fuite
-const LOW_HEALTH = 8;    // PV ≤ 8 (4 cœurs) → fuite (retraite jusqu'à régénération)
+const SWARM_COUNT = 3;   // ≥3 hostiles = submergé → fuite (AVEC armure)
+const LOW_HEALTH = 8;    // PV ≤ 8 (4 cœurs) → fuite (AVEC armure)
+// SANS armure : plus prudent (anti « mort par combo » — un coup dur de 9 PV pouvait tuer avant
+// même de croiser le seuil de fuite). L'armure = levier de survie #1 (Massii) → on se bat
+// bravement AVEC, on bat en retraite plus tôt SANS.
+const SWARM_UNARMORED = 2;      // ≥2 hostiles sans armure = on décroche
+const LOW_HEALTH_UNARMORED = 12; // PV ≤ 12 (6 cœurs) sans armure = on décroche
 const HUNT_HUNGER = 12;  // faim ≤ 12 et rien à manger → chasse un passif
 const EAT_HUNGER = 14;   // faim ≤ 14 et nourriture en poche → mange (plus tôt que les réflexes)
 
@@ -18,12 +23,27 @@ const RAW_FOODS = new Set(['beef', 'porkchop', 'chicken', 'mutton', 'rabbit', 'c
 // Mobs passifs chassables pour se nourrir (drop de la viande).
 const PASSIVE_FOOD_MOBS = new Set(['cow', 'pig', 'chicken', 'sheep', 'rabbit', 'mooshroom']);
 
-/** Décision de combat PURE : 'flee' (submergé ou PV bas), 'fight' (1-2 hostiles), null (calme). */
-function combatDecision({ health, hostileCount }) {
+/**
+ * Décision de combat PURE : 'flee' (submergé ou PV bas), 'fight' (1-2 hostiles), null (calme).
+ * `armored` (optionnel) : SANS armure (false) → seuils prudents (fuit dès 2 hostiles ou PV ≤ 12),
+ * anti « mort par combo ». Avec armure OU inconnu → seuils historiques courageux (rétro-compat).
+ */
+function combatDecision({ health, hostileCount, armored }) {
   if (!hostileCount) return null;
-  if (hostileCount >= SWARM_COUNT) return 'flee';
-  if (health != null && health <= LOW_HEALTH) return 'flee';
+  const swarm = armored === false ? SWARM_UNARMORED : SWARM_COUNT;
+  const lowHp = armored === false ? LOW_HEALTH_UNARMORED : LOW_HEALTH;
+  if (hostileCount >= swarm) return 'flee';
+  if (health != null && health <= lowHp) return 'flee';
   return 'fight';
+}
+
+/** A-t-on au moins une pièce d'armure portée (slots inventaire 5-8) ? Proxy de robustesse combat. */
+function isArmored(bot) {
+  try {
+    const slots = bot.inventory && bot.inventory.slots;
+    if (!slots) return false;
+    return slots.slice(5, 9).some((it) => it && it.name);
+  } catch (e) { return false; }
 }
 
 /** Hostiles (kind mineflayer 'Hostile mobs') dans le rayon. */
@@ -77,7 +97,7 @@ async function eatAny(bot) {
 async function survivalTick(bot, deps = {}) {
   const emit = deps.emit || (() => {});
   const hostiles = nearbyHostiles(bot, 10);
-  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length });
+  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot) });
   if (decision === 'flee') {
     try { deps.fleeFrom && deps.fleeFrom(bot); } catch (e) {}
     emit({ type: 'survival', action: 'flee', hostiles: hostiles.length });
@@ -105,6 +125,7 @@ async function survivalTick(bot, deps = {}) {
 }
 
 module.exports = {
-  combatDecision, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick,
-  SWARM_COUNT, LOW_HEALTH, HUNT_HUNGER, EAT_HUNGER, RAW_FOODS, PASSIVE_FOOD_MOBS,
+  combatDecision, isArmored, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick,
+  SWARM_COUNT, LOW_HEALTH, SWARM_UNARMORED, LOW_HEALTH_UNARMORED, HUNT_HUNGER, EAT_HUNGER,
+  RAW_FOODS, PASSIVE_FOOD_MOBS,
 };
