@@ -170,6 +170,9 @@ def _clean_server(payload, sid):
         "auth": auth,
         "intelligence": intelligence,
         "language": language,
+        # Mode furtif (phase 3) : humanisation (latence chat, loiter, jitter explore) — OFF par
+        # défaut, les bots utilitaires vont à vitesse machine. Toggle gardé pour plus tard.
+        "stealth": bool(payload.get("stealth")),
         "commands": commands,
         "custom": _clean_custom(payload.get("custom")),
         "trusted": _clean_trusted(payload.get("trusted")),

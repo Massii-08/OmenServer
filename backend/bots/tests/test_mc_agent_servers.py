@@ -82,6 +82,16 @@ def test_resolve_commands(tmp_store):
     assert all("syntax" in c for c in resolved)
 
 
+def test_create_stealth_default_false_and_persisted(tmp_store):
+    """Phase 3 : stealth (humanisation) OFF par défaut, persisté en bool quand fourni."""
+    s = ss.create_server({"name": "X"})
+    assert s["stealth"] is False
+    s2 = ss.create_server({"name": "Y", "stealth": True})
+    assert s2["stealth"] is True
+    s3 = ss.create_server({"name": "Z", "stealth": "truthy-string"})
+    assert s3["stealth"] is True
+
+
 def test_create_sanitises_trusted(tmp_store):
     s = ss.create_server({"name": "X", "trusted": ["Massii_08", " massii_08 ", "Pote2", 42, ""]})
     # dédup insensible à la casse + trim + drop non-string/vide

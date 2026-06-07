@@ -81,7 +81,10 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200 } = {}, toke
       if (VOID.has(t.name)) continue;                         // déjà air → rien à faire
       if (DANGER.has(t.name)) return { ok: false, reachedY, reason: 'lava_ahead' };
       const tool = bestToolFor(bot, t);
-      if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
+      // equip avec cache (phase 3) : ne ré-équipe pas l'outil déjà en main.
+      if (tool && !(bot.heldItem && bot.heldItem.name === tool.name)) {
+        try { await bot.equip(tool, 'hand'); } catch (e) {}
+      }
       try { await bot.dig(t); } catch (e) { return { ok: false, reachedY, reason: 'dig_failed' }; }
     }
 

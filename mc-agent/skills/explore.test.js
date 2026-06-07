@@ -100,24 +100,36 @@ test('explore : token.cancelled arrête tout de suite', async () => {
   assert.strictEqual(calls.goto.length, 0, 'aucun déplacement si annulé d\'emblée');
 });
 
-test('explore : jitter d\'humanisation ∝ movementJitter du profil', async () => {
+test('explore : jitter d\'humanisation ∝ movementJitter du profil (mode FURTIF)', async () => {
   // NB : GoalNear floore les coords → on compare l'ÉCART entre 2 runs (jitter 0 vs +max), robuste au floor.
+  // Phase 3 : le jitter n'existe qu'en mode furtif (stealth:true) — défaut utilitaire = 0.
   const profile = { params: { movementJitter: 1 } };
   const jitterMax = 80 * 0.15 * 1; // = 12
   const a = makeBot({ target: null, profile });
-  await explore(a.bot, { name: 'oak_log', matching: [17], step: 80, maxRadius: 80, rng: () => 0.5 }); // jitter 0
+  await explore(a.bot, { name: 'oak_log', matching: [17], step: 80, maxRadius: 80, rng: () => 0.5, stealth: true }); // jitter 0
   const b = makeBot({ target: null, profile });
-  await explore(b.bot, { name: 'oak_log', matching: [17], step: 80, maxRadius: 80, rng: () => 1 });   // jitter +max
+  await explore(b.bot, { name: 'oak_log', matching: [17], step: 80, maxRadius: 80, rng: () => 1, stealth: true });   // jitter +max
   const dx = b.calls.goto[0].x - a.calls.goto[0].x;
   const dz = b.calls.goto[0].z - a.calls.goto[0].z;
   assert.ok(Math.abs(dx - jitterMax) <= 1, `x décalé d'environ +jitterMax (dx=${dx})`);
   assert.ok(Math.abs(dz - jitterMax) <= 1, `z décalé d'environ +jitterMax (dz=${dz})`);
   // profil sans jitter spécifié → jitter par défaut (0.1), bien plus petit
   const c = makeBot({ target: null });
-  await explore(c.bot, { name: 'oak_log', matching: [17], step: 80, maxRadius: 80, rng: () => 1 });
+  await explore(c.bot, { name: 'oak_log', matching: [17], step: 80, maxRadius: 80, rng: () => 1, stealth: true });
   const d2 = makeBot({ target: null });
-  await explore(d2.bot, { name: 'oak_log', matching: [17], step: 80, maxRadius: 80, rng: () => 0.5 });
+  await explore(d2.bot, { name: 'oak_log', matching: [17], step: 80, maxRadius: 80, rng: () => 0.5, stealth: true });
   assert.ok(Math.abs((c.calls.goto[0].x - d2.calls.goto[0].x)) < jitterMax, 'jitter défaut < jitter profil mj=1');
+});
+
+test('explore : PAS de jitter hors furtif (défaut utilitaire phase 3)', async () => {
+  const profile = { params: { movementJitter: 1 } };
+  const a = makeBot({ target: null, profile });
+  await explore(a.bot, { name: 'oak_log', matching: [17], step: 80, maxRadius: 80, rng: () => 1 });   // rng extrême
+  const b = makeBot({ target: null, profile });
+  await explore(b.bot, { name: 'oak_log', matching: [17], step: 80, maxRadius: 80, rng: () => 0.5 });
+  // sans stealth, le rng n'influence PAS les waypoints (jitter = 0)
+  assert.strictEqual(a.calls.goto[0].x, b.calls.goto[0].x);
+  assert.strictEqual(a.calls.goto[0].z, b.calls.goto[0].z);
 });
 
 test('explore : biais dirigé — va direct au biome connu (mémoire) sans ratisser', async () => {

@@ -90,7 +90,10 @@ async function explore(bot, opts = {}) {
   if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
 
   const prof = opts.profile || bot._mcaProfile || null;
-  const mj = (prof && prof.params && prof.params.movementJitter) || 0.1;
+  // Jitter d'humanisation SEULEMENT en mode furtif (phase 3) : un bot utilitaire vise les
+  // waypoints exacts (trajet direct). opts.stealth prime ; sinon bot._mcaStealth (posé au spawn).
+  const stealth = opts.stealth !== undefined ? !!opts.stealth : !!bot._mcaStealth;
+  const mj = stealth ? ((prof && prof.params && prof.params.movementJitter) || 0.1) : 0;
   const jitterMax = step * 0.15 * mj; // petit décalage humain, bien < marge de recouvrement
 
   // BIAIS DIRIGÉ : si la mémoire de monde du groupe sait où trouver `name`, on y va D'ABORD

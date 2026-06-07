@@ -19,7 +19,10 @@ function makeBot({ y = -54, yaw = -Math.PI / 2, world = {}, inv = null, gathered
       diamond_ore: { id: 56 }, deepslate_diamond_ore: { id: 57 },
       iron_ore: { id: 58 }, deepslate_iron_ore: { id: 59 },
       coal_ore: { id: 60 }, deepslate_coal_ore: { id: 61 },
-      cobblestone: { id: 4 },
+      gold_ore: { id: 62 }, deepslate_gold_ore: { id: 63 },
+      redstone_ore: { id: 64 }, deepslate_redstone_ore: { id: 65 },
+      lapis_ore: { id: 66 }, deepslate_lapis_ore: { id: 67 },
+      cobblestone: { id: 4 }, cobbled_deepslate: { id: 5 }, torch: { id: 12 },
       lava: { id: 10 }, flowing_lava: { id: 11 },
       air: { id: 0 }, cave_air: { id: 0 },
     } },
@@ -85,6 +88,9 @@ function makeBot({ y = -54, yaw = -Math.PI / 2, world = {}, inv = null, gathered
         if (drop === 'diamond_ore' || drop === 'deepslate_diamond_ore') drop = 'diamond';
         if (drop === 'iron_ore' || drop === 'deepslate_iron_ore') drop = 'raw_iron';
         if (drop === 'coal_ore' || drop === 'deepslate_coal_ore') drop = 'coal';
+        if (drop === 'gold_ore' || drop === 'deepslate_gold_ore') drop = 'raw_gold';
+        if (drop === 'redstone_ore' || drop === 'deepslate_redstone_ore') drop = 'redstone';
+        if (drop === 'lapis_ore' || drop === 'deepslate_lapis_ore') drop = 'lapis_lazuli';
         const existing = inventory.find((i) => i.name === drop);
         if (existing) existing.count += 1;
         else inventory.push({ name: drop, count: 1, type: 'item' });
@@ -165,4 +171,110 @@ test('branchMine : pathfinder.goto appelé entre les digs (bot avance vraiment)'
   await branchMine(bot, { targetY: -54, mainLength: 6, branchSpacing: 999, branchLength: 0 });
   // mainLength=6 → 6 paliers → au moins 6 gotos pour le tunnel principal.
   assert.ok(calls.goto.length >= 6, `pathfinder.goto should be called per palier (got ${calls.goto.length})`);
+});
+
+// ── PHASE 3 (vitesse + quota) ──────────────────────────────────────────────────────────────
+
+test('branchMine : legacy sans stopOre — bail immédiat si diamant déjà en poche', async () => {
+  const { bot, calls } = makeBot({ y: -54, inv: [
+    { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
+    { name: 'cobblestone', count: 32, type: 'block' },
+    { name: 'diamond', count: 1, type: 'item' },
+  ] });
+  const r = await branchMine(bot, { targetY: -54, mainLength: 10 });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(calls.dig.length, 0, 'aucun dig : objectif DIAMOND_CHAIN déjà rempli');
+});
+
+test('branchMine : stopOre delta — mine MÊME avec des diamants déjà en poche (mode quota)', async () => {
+  // Le bot PORTE 5 diamants (quota en cours). stopOre demande +2 : il doit creuser, pas bailer.
+  const world = { '2,-54,0': 'deepslate_diamond_ore', '4,-54,0': 'deepslate_diamond_ore' };
+  const { bot, calls } = makeBot({ y: -54, world, inv: [
+    { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
+    { name: 'cobblestone', count: 32, type: 'block' },
+    { name: 'diamond', count: 5, type: 'item' },
+  ] });
+  const r = await branchMine(bot, { targetY: -54, mainLength: 10, branchSpacing: 999, branchLength: 0,
+    stopOre: { items: ['diamond'], count: 2 } });
+  assert.strictEqual(r.ok, true);
+  assert.ok(calls.dig.length > 0 || calls.gather.length > 0, 'doit creuser malgré les diamants en poche');
+  assert.ok(r.ores.diamond >= 2, `delta diamants ${r.ores.diamond} >= 2`);
+});
+
+test('branchMine : stopOre atteint → arrêt avant mainLength', async () => {
+  // 1 diamant sur le chemin, stopOre count 1 → le tunnel s'arrête vite (pas 50 paliers).
+  const world = { '2,-54,0': 'deepslate_diamond_ore' };
+  const { bot, calls } = makeBot({ y: -54, world });
+  await branchMine(bot, { targetY: -54, mainLength: 50, branchSpacing: 999, branchLength: 0,
+    stopOre: { items: ['diamond'], count: 1 } });
+  assert.ok(calls.goto.length < 10, `arrêt rapide une fois le quota delta atteint (gotos=${calls.goto.length})`);
+});
+
+test('branchMine : heading imposé prime sur le yaw', async () => {
+  // yaw = est (+x) mais heading {dx:0,dz:1} → le tunnel doit aller vers +z.
+  const { bot, calls } = makeBot({ y: -54, yaw: -Math.PI / 2 });
+  await branchMine(bot, { targetY: -54, mainLength: 4, branchSpacing: 999, branchLength: 0,
+    heading: { dx: 0, dz: 1 } });
+  assert.ok(calls.goto.every((g) => g.x === 0), 'aucun déplacement en x');
+  assert.ok(calls.goto.some((g) => g.z >= 3), 'progression en +z');
+});
+
+test('branchMine : retourne le heading utilisé (persistance entre calls)', async () => {
+  const { bot } = makeBot({ y: -54, yaw: -Math.PI / 2 });
+  const r = await branchMine(bot, { targetY: -54, mainLength: 2, branchSpacing: 999, branchLength: 0 });
+  assert.deepStrictEqual(r.heading, { dx: 1, dz: 0 });
+});
+
+test('branchMine : roche nue minée via bot.dig direct (pas collectBlock)', async () => {
+  const { bot, calls } = makeBot({ y: -54 });
+  await branchMine(bot, { targetY: -54, mainLength: 4, branchSpacing: 999, branchLength: 0 });
+  assert.ok(calls.dig.length > 0, 'la roche passe par bot.dig');
+  assert.strictEqual(calls.gather.length, 0, 'collectBlock réservé aux ores');
+});
+
+test('branchMine : ramasse le redstone/lapis/or voisins (ORE_NAMES étendu)', async () => {
+  const world = { '2,-54,0': 'deepslate_redstone_ore', '4,-54,0': 'deepslate_lapis_ore', '6,-54,0': 'deepslate_gold_ore' };
+  const { bot, calls } = makeBot({ y: -54, world });
+  await branchMine(bot, { targetY: -54, mainLength: 10, branchSpacing: 999, branchLength: 0 });
+  assert.ok(calls.gather.includes('redstone'), 'redstone ramassé');
+  assert.ok(calls.gather.includes('lapis_lazuli'), 'lapis ramassé');
+  assert.ok(calls.gather.includes('raw_gold'), 'or ramassé');
+});
+
+test('branchMine : cobbled_deepslate compte comme réserve de murage (pas de cobble_low)', async () => {
+  const { bot } = makeBot({ y: -54, inv: [
+    { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
+    { name: 'cobbled_deepslate', count: 32, type: 'block' },
+  ] });
+  const r = await branchMine(bot, { targetY: -54, mainLength: 4, branchSpacing: 999, branchLength: 0 });
+  assert.strictEqual(r.ok, true);
+  assert.notStrictEqual(r.reason, 'cobble_low');
+});
+
+test('branchMine : mure la lave avec cobbled_deepslate quand pas de cobblestone', async () => {
+  const world = { '2,-54,0': 'lava' };
+  const { bot, calls } = makeBot({ y: -54, world, inv: [
+    { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
+    { name: 'cobbled_deepslate', count: 32, type: 'block' },
+  ] });
+  await branchMine(bot, { targetY: -54, mainLength: 6, branchSpacing: 999, branchLength: 0 });
+  assert.ok(calls.placeBlock.length > 0, 'murage avec cobbled_deepslate');
+});
+
+test('branchMine : torchEvery pose une torche tous les N paliers', async () => {
+  const { bot, calls } = makeBot({ y: -54, inv: [
+    { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
+    { name: 'cobblestone', count: 32, type: 'block' },
+    { name: 'torch', count: 8, type: 'block' },
+  ] });
+  await branchMine(bot, { targetY: -54, mainLength: 9, branchSpacing: 999, branchLength: 0, torchEvery: 4 });
+  // paliers 4 et 8 → 2 poses (placeBlock face up sur le bloc sous les pieds)
+  const up = calls.placeBlock.filter((c) => c.face && c.face.y === 1);
+  assert.ok(up.length >= 2, `au moins 2 torches posées (got ${up.length})`);
+});
+
+test('branchMine : torchEvery sans torche en poche → continue sans bloquer', async () => {
+  const { bot } = makeBot({ y: -54 });
+  const r = await branchMine(bot, { targetY: -54, mainLength: 6, branchSpacing: 999, branchLength: 0, torchEvery: 2 });
+  assert.strictEqual(r.ok, true);
 });

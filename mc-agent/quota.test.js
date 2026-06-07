@@ -82,6 +82,20 @@ test('junkItems : vide/null → []', () => {
   assert.deepStrictEqual(junkItems(null), []);
 });
 
+test('junkItems : phase 3 — garde sticks/coal/planks (impasse pioche) + 1 stack cobbled_deepslate', () => {
+  const items = [
+    { name: 'stick', count: 16 },              // gardé : re-craft pioches sous terre
+    { name: 'coal', count: 12 },               // gardé : torches + four
+    { name: 'oak_planks', count: 8 },          // gardé : re-craft table/sticks
+    { name: 'cobbled_deepslate', count: 64 },  // gardé (1er stack = murage)
+    { name: 'cobbled_deepslate', count: 30 },  // jeté (surplus)
+    { name: 'tuff', count: 40 },               // junk
+  ];
+  const junk = junkItems(items);
+  const names = junk.map((i) => i.name + ':' + i.count).sort();
+  assert.deepStrictEqual(names, ['cobbled_deepslate:30', 'tuff:40']);
+});
+
 // ─── invariants ───
 
 test('QUOTA_TYPES et DEFAULT_QUOTA couvrent les 5 types mission', () => {

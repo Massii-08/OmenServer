@@ -37,16 +37,17 @@ function bestTier(items) {
 }
 
 /**
- * Nom de la pioche LA MOINS CHÈRE adéquate pour un bloc. Ore → la MEILLEURE (vitesse + le
- * palier requis) ; roche nue (stone/deepslate/etc.) → la moins chère qui casse (stone pick).
- * null si aucune pioche.
+ * Pioche à utiliser pour un bloc. PHASE 3 (vitesse) : TOUJOURS la meilleure en poche — l'ancienne
+ * politique « la moins chère pour la roche » économisait la durabilité fer mais coûtait ~50% de
+ * vitesse sur la deepslate (stone 1.13 s vs iron 0.75 s/bloc × milliers de blocs de tunnel).
+ * Le fer est l'ore le plus abondant (~85% de la carte) et ensureGear re-craft les pioches →
+ * la vitesse prime. Trade-off durabilité : ~3 lingots / 250 blocs, couvert par le minage courant.
+ * null si aucune pioche. (Nom conservé pour compat appelants — la sémantique est « pick à employer ».)
  */
 function cheapestPickFor(items, blockName) {
   const picks = listPicks(items);
   if (!picks.length) return null;
-  const isOre = typeof blockName === 'string' && (blockName.endsWith('_ore') || blockName === 'ancient_debris');
-  if (isOre) return picks[picks.length - 1].name;            // meilleure pour l'ore
-  return picks[0].name;                                       // la moins chère pour la roche
+  return picks[picks.length - 1].name;                       // la meilleure, roche comme ore
 }
 
 /**

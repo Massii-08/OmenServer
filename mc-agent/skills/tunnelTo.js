@@ -106,13 +106,15 @@ async function tunnelTo(bot, target, opts = {}, token = null) {
     for (const t of digBlocks) {
       if (!t) continue;                                       // unloaded → skip
       if (VOID.has(t.name)) continue;                         // déjà air → rien à faire
-      // Roche nue → pioche LA MOINS CHÈRE (la durabilité fer/diamant est réservée aux ores —
-      // un tunnel d'approche = des centaines de blocs). Ore → meilleure pioche (bestToolFor).
-      const cheapName = cheapestPickFor((bot.inventory && bot.inventory.items()) || [], t.name);
+      // PHASE 3 : meilleure pioche pour tout (cheapestPickFor = vitesse d'abord désormais) +
+      // equip avec CACHE (on ne ré-équipe pas l'outil déjà en main : ~50-100 ms/bloc économisés).
+      const pickName = cheapestPickFor((bot.inventory && bot.inventory.items()) || [], t.name);
       let tool = null;
-      if (cheapName) tool = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === cheapName);
+      if (pickName) tool = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === pickName);
       if (!tool) tool = bestToolFor(bot, t);
-      if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
+      if (tool && !(bot.heldItem && bot.heldItem.name === tool.name)) {
+        try { await bot.equip(tool, 'hand'); } catch (e) {}
+      }
       try { await bot.dig(t); } catch (e) { return { ok: false, reachedDist: dist(), reason: 'dig_failed' }; }
     }
 

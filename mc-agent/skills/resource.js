@@ -178,9 +178,12 @@ async function runResource(bot, opts = {}, token = null) {
           ironBootstraps = 0;
         }
         if (mtype) {
-          emit({ type: 'resource_mine_for', material: mtype });
+          // Phase 3 : on passe AUSSI le manque restant → branchMine s'arrête sur le DELTA récolté
+          // (l'ancien stop absolu `diamond>=1` rendait branchMine inopérant dès le 1er diamant).
+          const needed = Math.max(1, (prog[mtype] ? prog[mtype].target - prog[mtype].have : 1));
+          emit({ type: 'resource_mine_for', material: mtype, needed });
           let r = null;
-          try { r = await mineFor(mtype); }
+          try { r = await mineFor(mtype, needed); }
           catch (e) { r = { ok: false, reason: 'error', detail: String((e && e.message) || e).slice(0, 120) }; }
           emit({ type: 'resource_mine_for_done', material: mtype, ok: !!(r && r.ok),
                  reason: (r && r.reason) || null, detail: (r && r.detail) || undefined });

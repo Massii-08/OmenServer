@@ -1798,6 +1798,10 @@ const BotsModule = {
  <option value="en" ${e.language === 'en' ? 'selected' : ''}>English</option>
  <option value="it" ${e.language === 'it' ? 'selected' : ''}>Italiano</option>
  </select></div>
+ <div><label class="form-label">${Lang.t('mcagent.cfg.srv_stealth')}</label>
+ <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted);min-height:38px;">
+ <input type="checkbox" id="mca-e-stealth" ${e.stealth ? 'checked' : ''} /> ${Lang.t('mcagent.cfg.srv_stealth_hint')}
+ </label></div>
  <div><label class="form-label">${Lang.t('mcagent.ip')}</label><input id="mca-e-host" class="form-input" value="${this._escapeHtml(e.host)}" /></div>
  <div><label class="form-label">${Lang.t('mcagent.port')}</label><input id="mca-e-port" class="form-input" placeholder="25565" value="${e.port || ''}" /></div>
  ${this._mcaGroupId ? '' : `<div><label class="form-label">${Lang.t('mcagent.account')}</label><input id="mca-e-user" class="form-input" value="${this._escapeHtml(e.user)}" /></div>`}
@@ -1857,6 +1861,8 @@ const BotsModule = {
  if (g('mca-e-auth') !== undefined) e.auth = g('mca-e-auth');
  if (g('mca-e-intel') !== undefined) e.intelligence = g('mca-e-intel');
  if (g('mca-e-lang') !== undefined) e.language = g('mca-e-lang');
+ const stl = document.getElementById('mca-e-stealth');
+ if (stl) e.stealth = !!stl.checked;
  e.commands = Array.from(document.querySelectorAll('.mca-cmd-cb')).filter((cb) => cb.checked).map((cb) => cb.value);
  const tc = document.getElementById('mca-e-trade-cmd');
  const tp = document.getElementById('mca-e-trade-pat');
@@ -1913,7 +1919,7 @@ const BotsModule = {
  const fromGroup = !!this._mcaGroupId;
  // ⚠️ Ne JAMAIS envoyer `bots` : le backend préserve le roster (les comptes sont gérés dans l'onglet Bots ouvriers).
  const trade = (e.trade && (e.trade.acceptCmd || '').trim()) ? { acceptCmd: e.trade.acceptCmd.trim(), requestPattern: (e.trade.requestPattern || '').trim() } : null;
- const payload = { name: e.name || 'Sans nom', host: e.host || '', port: e.port || 25565, user: e.user || 'TrainBot', auth: e.auth || 'offline', intelligence: e.intelligence || 'intermediaire', language: e.language || 'fr', commands: e.commands || [], custom: e.custom || [], trusted: e.trusted || [], trade, has_login: !!e.has_login, login_command: e.login_command || '/login {pwd}' };
+ const payload = { name: e.name || 'Sans nom', host: e.host || '', port: e.port || 25565, user: e.user || 'TrainBot', auth: e.auth || 'offline', intelligence: e.intelligence || 'intermediaire', language: e.language || 'fr', stealth: !!e.stealth, commands: e.commands || [], custom: e.custom || [], trusted: e.trusted || [], trade, has_login: !!e.has_login, login_command: e.login_command || '/login {pwd}' };
  const url = e.id ? `/api/mc-agent/servers/${encodeURIComponent(e.id)}` : '/api/mc-agent/servers';
  const r = await Auth.apiCall(url, { method: e.id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
  if (!r || !r.ok) { Toast.error(Lang.t('mcagent.cfg.srv_save_err')); return; }

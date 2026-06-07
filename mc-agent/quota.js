@@ -93,21 +93,27 @@ function createQuotaTracker(quota) {
 // est du junk de creusage qui sature l'inventaire.
 const _KEEP_EXACT = new Set([
   ...Object.values(ITEMS_FOR).flat(),
-  'crafting_table', 'torch', 'furnace', 'chest', 'cobblestone', // cobble : remblai/réparation d'urgence (1 stack max géré par le caller)
+  'crafting_table', 'torch', 'furnace', 'chest',
+  // Consommables d'autonomie sous terre (phase 3 — leur toss créait des impasses, type V2Res1) :
+  'stick',            // re-craft des pioches (pas de bois en sous-sol → sticks jetés = impasse)
+  'coal', 'charcoal', // torches (phase B) + combustible four
 ]);
-const _KEEP_SUFFIX = ['_pickaxe', '_axe', '_shovel', '_sword', '_helmet', '_chestplate', '_leggings', '_boots'];
+// Blocs gardés à 1 STACK chacun (le surplus est du junk de creusage) :
+const _KEEP_ONE_STACK = new Set(['cobblestone', 'cobbled_deepslate']); // remblai + murage anti-lave
+const _KEEP_SUFFIX = ['_pickaxe', '_axe', '_shovel', '_sword', '_helmet', '_chestplate', '_leggings', '_boots',
+  '_planks']; // planks : re-craft table/sticks en sous-sol
 const _KEEP_FOOD = new Set(['bread', 'cooked_beef', 'cooked_porkchop', 'cooked_chicken', 'cooked_mutton',
   'baked_potato', 'carrot', 'apple', 'golden_apple', 'cooked_cod', 'cooked_salmon']);
 
 /** Items à JETER d'une liste d'inventaire (mode quota). Pur. */
 function junkItems(items) {
   const out = [];
-  let cobbleKept = 0;
+  const stackKept = {};                     // name → 1 si un stack a déjà été gardé
   for (const it of items || []) {
     if (!it || !it.name) continue;
-    if (it.name === 'cobblestone') {
-      // garde 1 stack de cobble (remblai), jette le surplus
-      if (cobbleKept === 0) { cobbleKept = 1; continue; }
+    if (_KEEP_ONE_STACK.has(it.name)) {
+      // garde 1 stack (remblai/murage), jette le surplus
+      if (!stackKept[it.name]) { stackKept[it.name] = 1; continue; }
       out.push(it); continue;
     }
     if (_KEEP_EXACT.has(it.name) || _KEEP_FOOD.has(it.name)) continue;

@@ -51,8 +51,11 @@ const { LOCATE_KINDS, parseLocateResponse, structureFoundEvent } = require('./st
 const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
 const { runResource } = require('./skills/resource');
 const { tunnelTo } = require('./skills/tunnelTo');
-const { junkItems } = require('./quota');
+const { junkItems, ITEMS_FOR } = require('./quota');
 const { Y_OPT, pickaxePlan } = require('./gear');
+// Torche tous les N paliers de branch-mine (mob-aware phase B) — best-effort : sans torche
+// en poche le minage continue sans (zéro coût en peaceful, sécurité en non-pacifique).
+const TORCH_EVERY = 8;
 const { createClaims } = require('./claims');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
@@ -81,6 +84,12 @@ const PUBLIC_MODE = (process.env.MC_AGENT_PUBLIC_MODE || 'mention').toLowerCase(
 let profile = null;
 try { profile = loadProfile(args.profile || 'intermediaire'); }
 catch (e) { emit({ type: 'error', message: 'profil invalide: ' + e.message }); }
+
+// Mode FURTIF (--stealth 1) : humanisation activée (latence/typos chat, loiter vivant, jitter
+// explore). OFF PAR DÉFAUT (phase 3) : les bots utilitaires (ressources/cartographes) vont à
+// vitesse machine — plus rapide mais plus détectable comme bot par un serveur anti-bot
+// (trade-off assumé : notre serveur est le nôtre). Le profil reste utilisé pour le LLM.
+const STEALTH = String(args.stealth || '') === '1';
 
 // Commandes serveur autorisées (fichier JSON écrit par le backend, passé via --commands).
 const whitelist = loadCommands(args.commands);
@@ -639,20 +648,22 @@ async function gotoOreBounded(t) {
     throw new Error('unreachable');                            // lave/échec → claim relâchée
   }
 
-  // Phase 3 — cible au niveau / au-dessus : persistance par progrès (tranches 300 s).
+  // Cible au niveau / au-dessus : persistance par progrès. PHASE 3 (mouvement décisif) :
+  // tranches 120 s (au lieu de 300) et verdict après 2 tranches sans progrès — un goto gelé
+  // coûtait jusqu'à 10 min de sur-place/twitch avant le verdict unreachable.
   let lastD = dist();
   let noProgress = 0;
-  for (let attempts = 0; attempts < 12; attempts++) {
+  for (let attempts = 0; attempts < 8; attempts++) {
     const r = await withTimeout(
       bot.pathfinder.goto(new pfGoals.GoalNear(t.x, t.y, t.z, 2)),
-      300000, () => { try { stopMotion(); } catch (e) {} });
+      120000, () => { try { stopMotion(); } catch (e) {} });
     if (taskToken.cancelled) return;
     if (!(r && r.ok === false)) return;                        // arrivé (goto résolu)
     const d = dist();
     if (d < lastD - 8) { lastD = d; noProgress = 0; continue; } // progrès → persiste
     noProgress++;
     if (noProgress >= 2) throw new Error('unreachable');
-    await sleep(4000);
+    await sleep(2000);
   }
   throw new Error('unreachable');
 }
@@ -696,7 +707,7 @@ async function ensureGearFor(neededTypes) {
 // ── Phase 2 : branch-mine RÉEL au Y optimal du type (anti-xray : on ne voit plus à travers
 // la roche — on mine comme un joueur). Descente diagonale puis branchMine (anti-lave +
 // collecte opportuniste des ores exposés par NOS digs — l'anti-xray les révèle au block update).
-async function mineForType(type) {
+async function mineForType(type, needed) {
   const targetY = Y_OPT[type] !== undefined ? Y_OPT[type] : -58;
   const p = bot.entity && bot.entity.position;
   if (!p) return { ok: false, reason: 'no_pos' };
@@ -707,9 +718,21 @@ async function mineForType(type) {
     if (taskToken.cancelled) return { ok: true };
     if (!(d && d.ok)) return { ok: false, reason: (d && d.reason) || 'descend_failed' };
   }
-  const r = await withTimeout(branchMine(bot, { targetY, mainLength: 24, branchLength: 8 }, taskToken),
-    900000, () => { try { stopMotion(); } catch (e) {} });
+  // Phase 3 : stop sur DELTA récolté (mode quota — le bot PORTE déjà des items du type) +
+  // cap PERSISTANT entre calls (le tunnel continue tout droit au lieu de se recroiser).
+  const stopOre = { items: ITEMS_FOR[type] || [type], count: Math.max(1, Number(needed) || 1) };
+  const r = await withTimeout(branchMine(bot, {
+    targetY, mainLength: 24, branchLength: 8, stopOre,
+    heading: bot._branchHeading || null,
+    torchEvery: TORCH_EVERY,
+  }, taskToken), 900000, () => { try { stopMotion(); } catch (e) {} });
   if (taskToken.cancelled) return { ok: true };
+  if (r && r.heading) bot._branchHeading = r.heading;
+  // Lave en travers du tunnel principal : on TOURNE (perpendiculaire) pour le prochain call —
+  // persister le même cap re-tamponnerait la même nappe à l'infini.
+  if (r && r.reason === 'lava' && bot._branchHeading) {
+    bot._branchHeading = { dx: -bot._branchHeading.dz, dz: bot._branchHeading.dx };
+  }
   return (r && r.ok) ? r : { ok: false, reason: (r && r.reason) || 'branch_failed' };
 }
 
@@ -886,6 +909,7 @@ function tryAuth() {
 
 async function onSpawn() {
   bot._mcaProfile = profile; // expose le profil au skill explore (jitter humanisation ∝ movementJitter)
+  bot._mcaStealth = STEALTH; // explore : jitter humanisation SEULEMENT en mode furtif (phase 3)
   // Mémoire de monde : gather émet material_found (apprentissage matériau↔biome), explore lit le
   // biais dirigé, le mapper skippe les cellules déjà mappées. _worldKey re-résolu à chaque spawn
   // (la dimension peut changer : portail nether/end) ; le label explicite (--world-label) prime.
@@ -1045,8 +1069,15 @@ async function executeOrder(order, sender) {
       break;
     }
     case 'stop': {
-      taskCtl.begin('loiter', () => {});
-      taskCtl.setCleanup(loiter(bot, profile));
+      if (STEALTH) {
+        // furtif : « stop = vivant » (loiter anti-tell, piège #40)
+        taskCtl.begin('loiter', () => {});
+        taskCtl.setCleanup(loiter(bot, profile));
+      } else {
+        // utilitaire (défaut phase 3) : stop = immobile net, zéro geste parasite
+        taskCtl.cancel();
+        stopMotion();
+      }
       break;
     }
     case 'afk': {
@@ -1119,8 +1150,11 @@ async function handleIncoming(username, message, isWhisper) {
     const decision = gateDecision(decision0, username, policy.trusted);
     if (decision !== decision0) { emit({ type: 'order_refused', from: username }); }
     if (decision.reply) {
-      const { text, delayMs } = humanizeReply(profile, decision.reply);
-      await sleep(delayMs);
+      // Furtif : latence humaine + typos. Sinon (défaut utilitaire) : réponse immédiate, verbatim.
+      const { text, delayMs } = STEALTH
+        ? humanizeReply(profile, decision.reply)
+        : { text: String(decision.reply), delayMs: 0 };
+      if (delayMs > 0) await sleep(delayMs);
       if (text) { replyTo(reaction, text); emit({ type: 'say', message: text, private: reaction.private, to: reaction.to }); }
     }
     memory.append(username, 'user', message);

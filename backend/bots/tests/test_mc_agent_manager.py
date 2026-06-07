@@ -296,6 +296,32 @@ def test_start_session_adds_lang_flag(monkeypatch):
     assert captured["cmd"][captured["cmd"].index("--lang") + 1] == "it"
 
 
+def test_start_session_stealth_flag(monkeypatch):
+    """stealth=True → --stealth 1 dans la cmd ; défaut (False) → absent (phase 3 : humanisation off)."""
+    import io
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter(())
+            self.pid = 4325
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    mgr.start_session("h", 25565, "TrainBot", stealth=True)
+    assert "--stealth" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--stealth") + 1] == "1"
+    mgr.start_session("h", 25565, "TrainBot2")
+    assert "--stealth" not in captured["cmd"]
+
+
 def test_start_session_autonomous_seeds_world_objective(monkeypatch, tmp_path):
     """autonomous=True → écrit un world.json avec l'objectif MVP + passe --world (le bot
     reprend la boucle planner au spawn). C'est le mécanisme « lancer en autonome » du dashboard."""

@@ -262,7 +262,7 @@ def _rebalance_sectors(group_id):
 def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, commands=None,
                policy=None, server_id=None, language="fr", autonomous=False,
                objective="stone_pickaxe", world_label=None, login_command=None,
-               sector_index=None, sector_count=None, quota=None):
+               sector_index=None, sector_count=None, quota=None, stealth=False):
     """Spawn le process Node détaché et enregistre la session. Retourne son id.
 
     Point monkeypatchable des lancements par roster (start_for_bot/start_mappers).
@@ -295,6 +295,9 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
         cmd += ["--profile", str(profile)]
     if language:
         cmd += ["--lang", str(language)]
+    if stealth:
+        # Mode furtif (phase 3) : humanisation (latence chat, loiter, jitter) — off par défaut.
+        cmd += ["--stealth", "1"]
     cmds_path = None
     if commands:
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
@@ -402,12 +405,12 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     return sid
 
 
-def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None, quota=None):
+def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, stealth=False):
     """Lancement manuel (path historique du router + compat tests). Délègue à `_spawn_bot`."""
     return _spawn_bot(host, port, user, model=model, auth=auth, profile=profile,
                       commands=commands, policy=policy, server_id=server_id, language=language,
                       autonomous=autonomous, objective=objective, world_label=world_label,
-                      quota=quota)
+                      quota=quota, stealth=stealth)
 
 
 def _resolve_login_command(group, group_id, bot_id, secret):
@@ -458,6 +461,7 @@ def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="sto
         policy=servers_store.resolve_policy(group), server_id=group_id,
         language=group.get("language", "fr"), autonomous=autonomous, objective=objective,
         world_label=world_label, model=model, login_command=login_command, quota=quota,
+        stealth=bool(group.get("stealth")),
     )
     # Self-healing (phase 2) : mémorise QUOI respawner si le process meurt naturellement
     # (kick/Timed out/watchdog) — l'inventaire du compte persiste, le quota repart d'où il était.
@@ -516,6 +520,7 @@ def start_mappers(group_id, count):
             profile=group["intelligence"], commands=commands, policy=policy,
             server_id=group_id, language=group.get("language", "fr"), autonomous=True,
             objective="mapper", login_command=login_command, sector_index=i, sector_count=n,
+            stealth=bool(group.get("stealth")),
         )
         sessions.append(sid)
     return {"sessions": sessions, "launched": n, "available": available, "skipped": skipped}
