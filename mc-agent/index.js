@@ -760,7 +760,7 @@ async function ensureArmor(neededIronRemaining) {
   //    bot re-mine le quota fer, l'armure survit aux morts (keepInventory). Le gate quota-strict
   //    bloquait tout (armorPlan null en boucle, vécu : 0 armure craftée). Smelt FORCÉ du raw_iron
   //    nécessaire si les lingots manquent pour la pièce la moins chère.
-  const ironKeep = 8;
+  const ironKeep = 8;       // buffer fer total préservé pour le quota (appliqué AU GATE ci-dessous)
   const nextPiece = ARMOR_PIECES.find((pc) => !worn.has(pc.name) && !items().some((i) => i.name === pc.name));
   if (nextPiece) {
     const totalIron = cnt('raw_iron') + cnt('iron_ingot');
@@ -771,7 +771,11 @@ async function ensureArmor(neededIronRemaining) {
       }
     }
   }
-  const plan = armorPlan(items(), { have: worn, ironKeep });
+  // armorPlan ironKeep=0 : le buffer fer est DÉJÀ enforced par le gate totalIron ci-dessus —
+  // le ré-appliquer sur les seuls lingots (armorPlan ne compte QUE iron_ingot) le double-comptait
+  // → spendable négatif → 0 armure craftée (vécu live, fer haut mais pioche fer consomme les
+  //   lingots et il n'en reste jamais 8+).
+  const plan = armorPlan(items(), { have: worn, ironKeep: 0 });
   if (plan) {
     try {
       const r = await craftSmart({ name: plan.craft, count: 1 });
