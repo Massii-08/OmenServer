@@ -748,6 +748,7 @@ function _wornArmor() {
 }
 async function ensureArmor(neededIronRemaining) {
   const items = () => ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, count: i.count }));
+  const cnt = (n) => items().filter((i) => i.name === n).reduce((a, i) => a + i.count, 0);
   const worn = _wornArmor();
   // 1) Équiper les pièces déjà en poche mais pas portées.
   for (const piece of ARMOR_PIECES) {
@@ -755,16 +756,19 @@ async function ensureArmor(neededIronRemaining) {
     const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === piece.name);
     if (it) { try { await bot.equip(it, ARMOR_SLOTS[piece.slot]); worn.add(piece.name); } catch (e) {} }
   }
-  // 2) Craft la prochaine pièce si fer en excès (préserve le quota fer + 4 marge).
-  const ironKeep = Math.max(0, (Number(neededIronRemaining) || 0)) + 4;
-  // smelt un peu de raw_iron en lingots si besoin pour la pièce la moins chère (4 lingots)
-  const cnt = (n) => items().filter((i) => i.name === n).reduce((a, i) => a + i.count, 0);
-  const plan0 = armorPlan(items(), { have: worn, ironKeep });
-  if (!plan0) {
-    // pas assez de LINGOTS mais peut-être assez de raw_iron au-dessus du quota+marge → fondre.
-    const raw = cnt('raw_iron');
-    if (raw >= 4 && (cnt('iron_ingot') + raw) - ironKeep >= 4) {
-      try { await smeltWithFurnace('raw_iron', 'iron_ingot', Math.min(8, raw)); } catch (e) {}
+  // 2) Craft la prochaine pièce. ironKeep FIXE bas (8) — l'armure PRIME (survie #1 Massii) : le
+  //    bot re-mine le quota fer, l'armure survit aux morts (keepInventory). Le gate quota-strict
+  //    bloquait tout (armorPlan null en boucle, vécu : 0 armure craftée). Smelt FORCÉ du raw_iron
+  //    nécessaire si les lingots manquent pour la pièce la moins chère.
+  const ironKeep = 8;
+  const nextPiece = ARMOR_PIECES.find((pc) => !worn.has(pc.name) && !items().some((i) => i.name === pc.name));
+  if (nextPiece) {
+    const totalIron = cnt('raw_iron') + cnt('iron_ingot');
+    if (totalIron - ironKeep >= nextPiece.ingots) {
+      const need = nextPiece.ingots - cnt('iron_ingot');
+      if (need > 0 && cnt('raw_iron') >= need) {
+        try { await smeltWithFurnace('raw_iron', 'iron_ingot', need); } catch (e) {}
+      }
     }
   }
   const plan = armorPlan(items(), { have: worn, ironKeep });
