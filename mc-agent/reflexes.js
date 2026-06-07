@@ -82,8 +82,16 @@ function installReflexes(bot, opts = {}) {
   let surfaceEpisodes = [];     // timestamps des débuts d'épisode de surfacing
   let lastRescue = -Infinity;   // -∞ : le 1er rescue n'est jamais bloqué par le cooldown
 
+  const onPanic = opts.onPanic || null;
+  let lastPanic = 0;
   const react = () => {
     tryEat(bot).then((ate) => { if (ate) emit({ type: 'reflex', action: 'eat' }); }).catch(() => {});
+    // PANIC WALL (Massii survie mobs) : PV critiques → en plus de fuir, se MURER (poser des
+    // blocs autour) pour casser le contact mêlée et manger à l'abri. Cooldown 20 s.
+    if (onPanic && bot.health != null && bot.health <= HEALTH_THRESHOLD) {
+      const t = now();
+      if (t - lastPanic >= 20000) { lastPanic = t; try { onPanic(); } catch (e) {} }
+    }
     if (shouldFlee(bot)) {
       if (!fleeing) { flee(bot); emit({ type: 'reflex', action: 'flee' }); fleeing = true; }
       lastHealth = bot.health;

@@ -53,7 +53,7 @@ const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
 const { runResource } = require('./skills/resource');
 const { tunnelTo } = require('./skills/tunnelTo');
 const { junkItems, ITEMS_FOR } = require('./quota');
-const { Y_OPT, pickaxePlan } = require('./gear');
+const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES } = require('./gear');
 // Torche tous les N paliers de branch-mine (mob-aware phase B) — best-effort : sans torche
 // en poche le minage continue sans (zéro coût en peaceful, sécurité en non-pacifique).
 const TORCH_EVERY = 8;
@@ -731,6 +731,68 @@ async function ensureGearFor(neededTypes) {
   } catch (e) { emit({ type: 'gear_craft', item: plan.craft, ok: false, why: plan.why }); _gearFailAt = Date.now(); }
 }
 
+// ── Phase B SURVIE (Massii) : ARMURE de fer = levier #1. Équipe toute pièce d'armure déjà en
+// poche (slot vide), puis craft la pièce manquante la moins chère SI le bot a du fer en LARGE
+// excès du quota (ironKeep = manque quota restant + 4 marge → on ne sacrifie pas l'objectif fer).
+// + BOUCLIER (6 planks + 1 lingot) en main secondaire (anti-squelette). Best-effort, borné.
+const ARMOR_SLOTS = { feet: 'feet', head: 'head', legs: 'legs', torso: 'torso' };
+function _wornArmor() {
+  // pièces d'armure ACTUELLEMENT portées (slots 5-8) — pour ne pas re-équiper/re-crafter.
+  const worn = new Set();
+  try {
+    for (const it of (bot.inventory && bot.inventory.slots ? bot.inventory.slots.slice(5, 9) : [])) {
+      if (it && it.name) worn.add(it.name);
+    }
+  } catch (e) {}
+  return worn;
+}
+async function ensureArmor(neededIronRemaining) {
+  const items = () => ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, count: i.count }));
+  const worn = _wornArmor();
+  // 1) Équiper les pièces déjà en poche mais pas portées.
+  for (const piece of ARMOR_PIECES) {
+    if (worn.has(piece.name)) continue;
+    const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === piece.name);
+    if (it) { try { await bot.equip(it, ARMOR_SLOTS[piece.slot]); worn.add(piece.name); } catch (e) {} }
+  }
+  // 2) Craft la prochaine pièce si fer en excès (préserve le quota fer + 4 marge).
+  const ironKeep = Math.max(0, (Number(neededIronRemaining) || 0)) + 4;
+  // smelt un peu de raw_iron en lingots si besoin pour la pièce la moins chère (4 lingots)
+  const cnt = (n) => items().filter((i) => i.name === n).reduce((a, i) => a + i.count, 0);
+  const plan0 = armorPlan(items(), { have: worn, ironKeep });
+  if (!plan0) {
+    // pas assez de LINGOTS mais peut-être assez de raw_iron au-dessus du quota+marge → fondre.
+    const raw = cnt('raw_iron');
+    if (raw >= 4 && (cnt('iron_ingot') + raw) - ironKeep >= 4) {
+      try { await smeltWithFurnace('raw_iron', 'iron_ingot', Math.min(8, raw)); } catch (e) {}
+    }
+  }
+  const plan = armorPlan(items(), { have: worn, ironKeep });
+  if (plan) {
+    try {
+      const r = await craftSmart({ name: plan.craft, count: 1 });
+      if (r && r.ok) {
+        const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === plan.craft);
+        if (it) { try { await bot.equip(it, ARMOR_SLOTS[plan.slot]); } catch (e) {} }
+        emit({ type: 'gear_craft', item: plan.craft, ok: true, why: 'armor' });
+      }
+    } catch (e) {}
+  }
+  // 3) Bouclier (anti-projectile) : craft + garde en off-hand.
+  const hasShield = ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'shield')
+    || worn.has('shield') || (bot.inventory && bot.inventory.slots && bot.inventory.slots[45] && bot.inventory.slots[45].name === 'shield');
+  const planks = items().filter((i) => i.name.endsWith('_planks')).reduce((a, i) => a + i.count, 0);
+  if (!hasShield && planks >= 6 && cnt('iron_ingot') >= 1) {
+    try {
+      const r = await craftSmart({ name: 'shield', count: 1 });
+      if (r && r.ok) {
+        const sh = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === 'shield');
+        if (sh) { try { await bot.equip(sh, 'off-hand'); emit({ type: 'gear_craft', item: 'shield', ok: true, why: 'armor' }); } catch (e) {} }
+      }
+    } catch (e) {}
+  }
+}
+
 // ── Phase B : stock de torches (mob-aware) — 1 charbon + 1 stick = 4 torches. Best-effort :
 // sans charbon (le branch-mine en croise sans arrêt) ni sticks, on mine sans torches.
 async function ensureTorches() {
@@ -1019,8 +1081,16 @@ async function startResource() {
     // gear/smelt/craft n'était couvert par AUCUN timeout, le watchdog physicsTick ne voit rien) :
     // même règle que tout appel mineflayer long (#42b).
     ensureGear: quota ? (async (types) => {
-      await withTimeout((async () => { await ensureGearFor(types); await ensureTorches(); })(),
-        180000, () => { try { stopMotion(); } catch (e) {} });
+      const ironLeft = (() => {                          // fer quota restant → ironKeep d'ensureArmor
+        try {
+          const inv = (bot.inventory && bot.inventory.items()) || [];
+          const have = inv.filter((i) => i.name === 'raw_iron' || i.name === 'iron_ingot').reduce((a, i) => a + i.count, 0);
+          return Math.max(0, ((quota && quota.iron) || 0) - have);
+        } catch (e) { return 0; }
+      })();
+      await withTimeout((async () => {
+        await ensureGearFor(types); await ensureTorches(); await ensureArmor(ironLeft);
+      })(), 240000, () => { try { stopMotion(); } catch (e) {} });
     }) : null,
     onTarget: async () => {
       if (isInWater(bot)) await escapeWater(bot, { emit });
@@ -1149,6 +1219,29 @@ async function onSpawn() {
       // trouve aucune terre atteignable, water_rescue re-tirait à vide ×N) : un 2e rescue en
       // <5 min = l'évasion a ÉCHOUÉ → WARP dur vers une terre fraîche (bot OP), la tâche en
       // cours se re-dérive (goto échoue → cible suivante).
+      // PANIC WALL (Massii survie mobs) : PV critiques → poser des blocs sur les 4 côtés
+      // (tête+pieds) pour couper le contact mêlée, puis manger. Best-effort, non bloquant.
+      onPanic: () => {
+        (async () => {
+          try {
+            const wall = ((bot.inventory && bot.inventory.items()) || [])
+              .find((i) => ['cobblestone', 'cobbled_deepslate', 'dirt', 'netherrack'].includes(i.name)
+                || i.name.endsWith('_planks') || i.name === 'stone' || i.name === 'deepslate');
+            if (!wall || typeof bot.placeBlock !== 'function') return;
+            try { bot.pathfinder && bot.pathfinder.setGoal && bot.pathfinder.setGoal(null); } catch (e) {}
+            const fp = bot.entity.position.floored();
+            for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+              for (const dy of [0, 1]) {
+                try {
+                  const ref = bot.blockAt(vec3Lib(fp.x + dx, fp.y + dy - 1, fp.z + dz));
+                  if (ref && ref.boundingBox === 'block') { await bot.equip(wall, 'hand'); await bot.placeBlock(ref, vec3Lib(0, 1, 0)); }
+                } catch (e) { /* face occupée → suivant */ }
+              }
+            }
+            try { await eat(bot); } catch (e) {}
+          } catch (e) { /* best-effort */ }
+        })();
+      },
       onWaterStuck: () => {
         if (waterRescue) return;
         const nowMs = Date.now();

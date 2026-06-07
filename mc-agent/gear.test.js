@@ -73,3 +73,25 @@ test('pickaxePlan : raw_iron (sans lingots) suffit — la fonte est faite par le
   const items = [{ name: 'stone_pickaxe', count: 1 }, { name: 'raw_iron', count: 30 }, { name: 'stick', count: 8 }];
   assert.deepStrictEqual(pickaxePlan(items, ['diamond']), { craft: 'iron_pickaxe', why: 'tier3_needed' });
 });
+
+const { armorPlan } = require('./gear');
+
+test('armorPlan : bottes d\'abord (moins chères), respecte ironKeep', () => {
+  // 6 lingots, ironKeep 0 → bottes (4) puis casque (5)
+  assert.deepStrictEqual(armorPlan([{ name: 'iron_ingot', count: 6 }]).craft, 'iron_boots');
+  // ironKeep 4 → spendable 2 → rien
+  assert.strictEqual(armorPlan([{ name: 'iron_ingot', count: 6 }], { ironKeep: 4 }), null);
+});
+
+test('armorPlan : saute les pièces déjà portées/possédées', () => {
+  const items = [{ name: 'iron_ingot', count: 20 }, { name: 'iron_boots', count: 1 }];
+  // boots en poche → planifie le casque
+  assert.strictEqual(armorPlan(items).craft, 'iron_helmet');
+  // boots portées (have) → idem
+  assert.strictEqual(armorPlan([{ name: 'iron_ingot', count: 20 }], { have: ['iron_boots'] }).craft, 'iron_helmet');
+});
+
+test('armorPlan : set complet possédé → null', () => {
+  assert.strictEqual(armorPlan([{ name: 'iron_ingot', count: 30 }],
+    { have: ['iron_boots', 'iron_helmet', 'iron_leggings', 'iron_chestplate'] }), null);
+});

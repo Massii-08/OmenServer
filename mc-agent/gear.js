@@ -99,4 +99,36 @@ function mostLackingType(progress) {
   return best;
 }
 
-module.exports = { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType };
+// ── Armure de fer (survie mobs #1, Massii) : coût en lingots par pièce + slot d'équipement.
+// On craft du moins cher au plus cher (bottes→casque→jambières→plastron) pour gagner de la
+// protection tôt. On ne touche au fer que si le bot en a LARGEMENT (buffer ≥ ironKeep) — le
+// quota fer (64) doit rester atteignable ; un set complet = 24 lingots.
+const ARMOR_PIECES = [
+  { name: 'iron_boots', slot: 'feet', ingots: 4 },
+  { name: 'iron_helmet', slot: 'head', ingots: 5 },
+  { name: 'iron_leggings', slot: 'legs', ingots: 7 },
+  { name: 'iron_chestplate', slot: 'torso', ingots: 8 },
+];
+
+/**
+ * Plan d'armure : prochaine pièce à crafter (la moins chère manquante) compte tenu des lingots
+ * dispos ET d'un buffer fer à préserver pour le quota. items = [{name,count}], opts:
+ *  - have : ensemble des pièces DÉJÀ portées/possédées (noms)
+ *  - ironKeep : lingots-équivalents de fer à NE PAS consommer (déf 0)
+ * → { craft, slot, ingots } | null. (pur/testable)
+ */
+function armorPlan(items, opts = {}) {
+  const have = new Set(opts.have || []);
+  const cnt = (n) => (items || []).filter((i) => i.name === n).reduce((a, i) => a + (i.count || 0), 0);
+  const ingots = cnt('iron_ingot');
+  const ironKeep = opts.ironKeep || 0;
+  const spendable = ingots - ironKeep;                        // lingots qu'on s'autorise à fondre en armure
+  for (const piece of ARMOR_PIECES) {
+    if (have.has(piece.name)) continue;
+    if (((items || []).some((i) => i.name === piece.name))) continue; // déjà en poche → à équiper, pas crafter
+    if (spendable >= piece.ingots) return { craft: piece.name, slot: piece.slot, ingots: piece.ingots };
+  }
+  return null;
+}
+
+module.exports = { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, armorPlan, ARMOR_PIECES };
