@@ -561,7 +561,7 @@ test('phase2 : manque tier 3 sans pioche fer → bootstrap mineFor(iron)', async
   assert.equal(r.done, true);
 });
 
-test('phase2 : mineFor échoue → relocate + reset, puis reprise', async () => {
+test('phase3 : mineFor échoue ×2 → PAS de relocate (un timeout de descente = progrès conservé)', async () => {
   const bot = makeQuotaBot({});
   let relocated = 0;
   let fails = 0;
@@ -575,14 +575,82 @@ test('phase2 : mineFor échoue → relocate + reset, puis reprise', async () => 
     sleep: async () => {},
     reloadMemory: () => mem([]),
     mineFor: async () => {
-      if (++fails <= 2) return { ok: false, reason: 'lava' };
+      if (++fails <= 2) return { ok: false, reason: 'timeout' };
       bot._items.push({ name: 'raw_iron', count: 1 });
       return { ok: true };
     },
     relocate: async () => { relocated++; },
   });
   assert.equal(r.done, true);
-  assert.equal(relocated, 2);                           // 2 échecs → 2 relocalisations
+  assert.equal(relocated, 0);                           // <3 échecs consécutifs → on insiste sur place
+});
+
+test('phase3 : mineFor échoue ×3 consécutifs → relocate + reset, puis reprise', async () => {
+  const bot = makeQuotaBot({});
+  let relocated = 0;
+  let fails = 0;
+  const r = await runResource(bot, {
+    memory: mem([]),
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async () => {},
+    quota: { iron: 1 },
+    pickTier: () => 2,
+    sleep: async () => {},
+    reloadMemory: () => mem([]),
+    mineFor: async () => {
+      if (++fails <= 3) return { ok: false, reason: 'lava' };
+      bot._items.push({ name: 'raw_iron', count: 1 });
+      return { ok: true };
+    },
+    relocate: async () => { relocated++; },
+  });
+  assert.equal(r.done, true);
+  assert.equal(relocated, 1);                           // 3 échecs → 1 relocalisation, puis reprise
+});
+
+test('phase3 : pickTier 2 (pas de pioche fer) → le FER passe devant le lapis (bootstrap by design)', async () => {
+  const bot = makeQuotaBot({});
+  const minedFor = [];
+  await runResource(bot, {
+    memory: mem([]),
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async () => {},
+    quota: { lapis: 1, iron: 1 },                       // lapis AVANT iron dans l'ordre des clés
+    pickTier: () => 2,
+    sleep: async () => {},
+    reloadMemory: () => mem([]),
+    mineFor: async (t) => {
+      minedFor.push(t);
+      bot._items.push({ name: t === 'iron' ? 'raw_iron' : 'lapis_lazuli', count: 1 });
+      return { ok: true };
+    },
+  });
+  assert.equal(minedFor[0], 'iron');                    // fer d'abord tant que tier < 3
+});
+
+test('phase3 : SANS pioche (tier<2) + rien de minable → starved no_pickaxe rapide', async () => {
+  const bot = makeQuotaBot({});
+  const events = [];
+  let t = 0;
+  const r = await runResource(bot, {
+    memory: mem([]),
+    worldKey: 'overworld',
+    emit: (e) => events.push(e),
+    goto: async () => {},
+    quota: { iron: 1 },
+    pickTier: () => -1,                                 // aucune pioche (kit raté)
+    sleep: async () => { t += 30000; },
+    now: () => t,
+    noPickMaxMs: 120000,
+    maxIdleMs: 3600000,                                 // l'ancien chemin (10 min × relocations) ne doit PAS être nécessaire
+    reloadMemory: () => mem([]),
+    mineFor: async () => ({ ok: true }),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'starved');
+  assert.ok(events.some((e) => e.type === 'resource_starved' && e.why === 'no_pickaxe'));
 });
 
 test('phase2 : starvation sans mineFor → relocate (cap maxRelocations) puis starved', async () => {

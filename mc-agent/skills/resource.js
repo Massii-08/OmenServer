@@ -99,6 +99,11 @@ async function runResource(bot, opts = {}, token = null) {
   let relocations = 0;
   let failStreak = 0;            // unreachable consécutifs : zone pourrie (lac…) → relocate
   let ironBootstraps = 0;        // mineFor('iron') de bootstrap consécutifs SANS gain de palier
+  let mineForFails = 0;          // mineFor ratés consécutifs : relocate seulement à ≥3 (phase 3 —
+                                 // un timeout de descente N'EST PAS une zone pourrie : le warp
+                                 // surface détruisait la progression de descente, vécu V3Res4 ×5)
+  let noPickSince = null;        // depuis quand on attend SANS pioche (tier<2) : starved rapide
+  const noPickMaxMs = opts.noPickMaxMs != null ? opts.noPickMaxMs : 120000;
   let lastProgress = '';
 
   function emitProgress() {
@@ -163,8 +168,24 @@ async function runResource(bot, opts = {}, token = null) {
           .map(([t]) => t);
         const tierNow = typeof tier === 'number' ? tier : -1;
         mtype = ranked.find((t) => (TIER_FOR[t] || 0) <= tierNow) || null;
+        // Phase 3 : tant qu'on n'a PAS la pioche fer, le FER passe devant tout (il débloque
+        // diamant/or/redstone, Y=16 est peu profond et peu laveux) — bootstrap PAR DESIGN.
+        // (Avant : l'ordre des ratios faisait miner du lapis à Y=0 avec la pioche pierre.)
+        if (tierNow >= 2 && tierNow < 3 && ranked.includes('iron')) mtype = 'iron';
         let isBootstrap = false;
         if (!mtype && ranked.length && tierNow >= 2) { mtype = 'iron'; isBootstrap = true; }  // bootstrap palier fer
+        // SANS pioche pierre (kit raté), RIEN n'est minable : attendre 10 min × 8 relocations
+        // était une éternité passive (vécu V3Res1 : resource_waiting ×178). Starved RAPIDE →
+        // exit → respawn backend → kit re-tenté depuis un état frais.
+        if (!mtype && ranked.length && tierNow < 2) {
+          if (noPickSince == null) noPickSince = clock();
+          if (clock() - noPickSince > noPickMaxMs) {
+            emit({ type: 'resource_starved', mined, why: 'no_pickaxe' });
+            return { ok: false, reason: 'starved', mined };
+          }
+        } else {
+          noPickSince = null;
+        }
         // Impasse de bootstrap : miner du fer ne sert à rien sans STICKS pour crafter la pioche
         // (vécu : ×50 mineFor('iron') ok sans jamais progresser — il faut du BOIS = surface =
         // le kit complet). 3 bootstraps sans gain de palier → sortie starved → respawn → kit.
@@ -191,13 +212,19 @@ async function runResource(bot, opts = {}, token = null) {
           if (reload) memory = reload() || memory;
           if (r && r.ok) {
             idleSince = null;
+            mineForFails = 0;
           } else {
             // Échec : pause + comptabilité d'inactivité — un mineFor qui throw en boucle
             // SPINNAIT à l'infini une fois le cap de relocalisations épuisé (vécu : ×100
             // events/min). starved → return → l'auto-respawn backend redonne un état frais.
-            if (relocate && relocations < maxRelocations) {
+            // Phase 3 : relocate seulement après 3 échecs CONSÉCUTIFS — un timeout de descente
+            // a fait du PROGRÈS (y a baissé) ; le warp surface le détruisait (vécu V3Res4 :
+            // 5 timeouts → 5 warps → starved sans avoir jamais atteint Y-58).
+            mineForFails++;
+            if (mineForFails >= 3 && relocate && relocations < maxRelocations) {
               relocations++;
-              emit({ type: 'resource_relocate', n: relocations });
+              mineForFails = 0;
+              emit({ type: 'resource_relocate', n: relocations, cause: 'mine_for_fails' });
               try { await relocate(); } catch (e) { /* best-effort */ }
               skip.clear(); busyUntil.clear();
               if (token && token.cancelled) return { ok: true, mined, cancelled: true };

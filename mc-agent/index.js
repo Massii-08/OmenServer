@@ -713,10 +713,30 @@ async function mineForType(type, needed) {
   if (!p) return { ok: false, reason: 'no_pos' };
   if (p.y < targetY - 6) return { ok: false, reason: 'below_target' };   // remonter = relocate (warp surface)
   if (p.y > targetY + 2) {
-    const d = await withTimeout(descendDiagonal(bot, { targetY }, taskToken), 600000,
-      () => { try { stopMotion(); } catch (e) {} });
-    if (taskToken.cancelled) return { ok: true };
-    if (!(d && d.ok)) return { ok: false, reason: (d && d.reason) || 'descend_failed' };
+    // Phase 3 : descente PERSISTANTE — un timeout a fait du progrès (y a baissé), on REPREND de
+    // la position courante au lieu d'échouer (l'échec → relocate-surface détruisait tout, vécu
+    // V3Res4 ×5). Lave/vide devant → ROTATION 90° puis re-descente (une nappe barre rarement
+    // les 4 cardinaux) au lieu de retenter le même mur (vécu V3Res2 : lava_ahead ×5 même cap).
+    let lavaTurns = 0;
+    for (let att = 0; att < 6; att++) {
+      const d = await withTimeout(descendDiagonal(bot, { targetY }, taskToken), 600000,
+        () => { try { stopMotion(); } catch (e) {} });
+      if (taskToken.cancelled) return { ok: true };
+      if (d && d.ok) break;
+      const yNow = (bot.entity && bot.entity.position) ? bot.entity.position.y : 999;
+      if (yNow <= targetY + 2) break;                    // arrivé malgré le reason (edge)
+      const why = (d && d.reason) || 'timeout';
+      if (why === 'lava_ahead' || why === 'air_at_y_-50') {
+        lavaTurns++;
+        if (lavaTurns > 3) return { ok: false, reason: why };   // 4 cardinaux barrés → vraie impasse
+        try { await bot.look(((bot.entity && bot.entity.yaw) || 0) + Math.PI / 2, 0, true); } catch (e) {}
+        continue;
+      }
+      if (why === 'timeout' || why === 'dig_failed') continue;  // progrès conservé → on re-descend
+      return { ok: false, reason: why };                 // max_depth/no_pos → la boucle décide
+    }
+    const yEnd = (bot.entity && bot.entity.position) ? bot.entity.position.y : 999;
+    if (yEnd > targetY + 2) return { ok: false, reason: 'descend_failed' };
   }
   // Phase 3 : stop sur DELTA récolté (mode quota — le bot PORTE déjà des items du type) +
   // cap PERSISTANT entre calls (le tunnel continue tout droit au lieu de se recroiser).
@@ -784,22 +804,35 @@ async function startResource() {
     await sleep(500);
     if (taskToken.cancelled) return;
   }
-  // Phase 2 : kit complet jusqu'à la PIOCHE FER (diamant/or/redstone l'exigent — minage réel,
-  // plus de rcon-give). Re-check du palier EN COURS de chaîne (sub-token : si une pioche fer
-  // arrive autrement — coffre, give — le kit s'interrompt au lieu d'errer pour du bois).
+  // Phase 3 : kit SANS la chasse au fer de surface — sous anti-xray le fer exposé en surface est
+  // rarissime (vécu V3Res2 : 5 goal_failed = ~25 min d'anneaux stériles). On s'arrête au FOUR
+  // (pioche pierre + table + sticks + four) ; le FER vient du branch-mining à Y=16, bootstrap
+  // déterministe de la boucle ressource (resource.js privilégie 'iron' tant que tier < 3).
+  // Kit raté SANS pioche pierre (spawn déforesté par les runs précédents) → RELOCATE zone fraîche
+  // (arbres intacts) + retry — le respawn seul rejouait le kit au même endroit stérile.
   if (bestPickTier() < 3) {
-    const kitToken = { cancelled: false };
-    const poll = setInterval(() => {
-      if (taskToken.cancelled || bestPickTier() >= 3) kitToken.cancelled = true;
-    }, 5000);
-    const res = await runPlanner(bot, {
-      chain: chainFor('iron_pickaxe'),
-      runSkill: (g) => runSkillWithTelemetry(g),
-      ctxExtra,
-      onStep: (g) => emit({ type: 'goal', name: g.name }),
-    }, kitToken);
-    clearInterval(poll);
-    if (taskToken.cancelled) return;
+    const fullChain = chainFor('iron_pickaxe');
+    const cutAt = fullChain.findIndex((g) => g.name === 'iron_ore');
+    const kitChain = cutAt >= 0 ? fullChain.slice(0, cutAt) : fullChain;
+    let res = { stalled: false };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const kitToken = { cancelled: false };
+      const poll = setInterval(() => {
+        if (taskToken.cancelled || bestPickTier() >= 3) kitToken.cancelled = true;
+      }, 5000);
+      res = await runPlanner(bot, {
+        chain: kitChain,
+        runSkill: (g) => runSkillWithTelemetry(g),
+        ctxExtra,
+        onStep: (g) => emit({ type: 'goal', name: g.name }),
+      }, kitToken);
+      clearInterval(poll);
+      if (taskToken.cancelled) return;
+      if (!res.stalled || bestPickTier() >= 2) break;   // kit ok (ou au moins la pioche pierre)
+      emit({ type: 'resource_kit_relocate', attempt: attempt + 1, goal: res.goal });
+      try { await relocateToRegion(); } catch (e) { /* best-effort */ }
+      if (taskToken.cancelled) return;
+    }
     if (res.stalled) emit({ type: 'resource_kit_stalled', goal: res.goal }); // dégradé : on tente quand même
     // Stock de bâtons (≥16) : de quoi re-crafter ~8 pioches en sous-sol (cobble infini là-bas).
     try {
