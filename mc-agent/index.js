@@ -1614,6 +1614,38 @@ setInterval(() => {
   }
 }, 30000);
 
+// TIMER ARMURE (Massii survie #1) : ensureArmor était appelé au HAUT de la boucle resource, qui
+// n'itère quasi jamais (le bot passe ~tout son temps DANS mineForType/branchMine ≤900s) → 0 armure
+// craftée live malgré le fer plein. Timer INDÉPENDANT : toutes les 90 s, hors dig, en session
+// resource, si une pièce d'armure manque et que le fer dépasse le buffer → en craft/équipe UNE.
+// Borné, best-effort, jamais throw ; n'interrompt pas un dig en cours (immobile = légitime).
+let _armorBusy = false;
+setInterval(async () => {
+  try {
+    if (_armorBusy) return;
+    if ((world.objective && world.objective.type) !== 'resource') return;
+    if (bot.targetDigBlock) return;                       // pas en plein minage
+    if (taskToken && taskToken.cancelled) return;
+    const worn = _wornArmor();
+    if (ARMOR_PIECES.every((pc) => worn.has(pc.name))) {  // set complet → équipe juste un éventuel reliquat
+      const sh = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === 'shield');
+      if (sh) { try { await bot.equip(sh, 'off-hand'); } catch (e) {} }
+      return;
+    }
+    const ironLeft = (() => {
+      try {
+        const inv = (bot.inventory && bot.inventory.items()) || [];
+        const have = inv.filter((i) => i.name === 'raw_iron' || i.name === 'iron_ingot').reduce((a, i) => a + i.count, 0);
+        const q = loadQuota() || {};
+        return Math.max(0, ((q && q.iron) || 0) - have);
+      } catch (e) { return 0; }
+    })();
+    _armorBusy = true;
+    await withTimeout(ensureArmor(ironLeft), 150000, () => { try { stopMotion(); } catch (e) {} });
+  } catch (e) { /* timer : ne crash jamais */ }
+  finally { _armorBusy = false; }
+}, 90000);
+
 onCommand((cmd) => {
   if (cmd.type === 'say') say(bot, cmd.message);
   else if (cmd.type === 'quit') bot.quit();
