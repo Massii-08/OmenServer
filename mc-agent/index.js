@@ -698,7 +698,12 @@ function loadQuota() {
 }
 
 // ── Phase 2 : maintenance d'outillage (craft stone/iron pick depuis les matériaux minés).
+// Backoff après échec (phase 3, vécu V3Res3 : gear_craft FAIL ×11 — le craft raté était RETENTÉ
+// à chaque itération de cible, et chaque tentative = goto table + pose ≈ 30 s → ~40 min perdues.
+// Le manque de matériaux ne change pas en 10 s : on retente au plus toutes les 2 min.
+let _gearFailAt = 0;
 async function ensureGearFor(neededTypes) {
+  if (Date.now() - _gearFailAt < 120000) return;
   const items = (bot.inventory && bot.inventory.items()) || [];
   const plan = pickaxePlan(items.map((i) => ({ name: i.name, count: i.count })), neededTypes);
   if (!plan.craft) return;
@@ -712,7 +717,8 @@ async function ensureGearFor(neededTypes) {
   try {
     const r = await craftSmart({ name: plan.craft, count: 1 });
     emit({ type: 'gear_craft', item: plan.craft, ok: !!(r && r.ok), why: plan.why });
-  } catch (e) { emit({ type: 'gear_craft', item: plan.craft, ok: false, why: plan.why }); }
+    if (!(r && r.ok)) _gearFailAt = Date.now();
+  } catch (e) { emit({ type: 'gear_craft', item: plan.craft, ok: false, why: plan.why }); _gearFailAt = Date.now(); }
 }
 
 // ── Phase B : stock de torches (mob-aware) — 1 charbon + 1 stick = 4 torches. Best-effort :
