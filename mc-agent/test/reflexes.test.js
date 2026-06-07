@@ -95,3 +95,65 @@ test('réflexe oxygène : air confortable → aucun effet', () => {
   assert.strictEqual(bot.calls.controls.length, 0);
   assert.strictEqual(bot.calls.goals.length, 0);
 });
+
+// --- Phase B : riposte combat + manger pour régénérer -------------------------------------------
+
+test('tryEat (phase B) : blessé + faim sous le seuil de régen → mange même non affamé', async () => {
+  const bot = fakeBot({ food: 15, health: 10, hasFood: true }); // 15 > seuil faim (6) mais < régen (18)
+  assert.strictEqual(await tryEat(bot), true);
+});
+
+test('tryEat (phase B) : blessé mais faim pleine (régen active) → ne mange pas', async () => {
+  const bot = fakeBot({ food: 20, health: 10, hasFood: true });
+  assert.strictEqual(await tryEat(bot), false);
+});
+
+test('riposte : PV en baisse + zombie au contact → attack(zombie) + reflex fight', () => {
+  const zombie = { type: 'mob', name: 'zombie', position: { x: 2, y: 64, z: 0, distanceTo: () => 2 } };
+  const events = [];
+  const attacked = [];
+  const bot = fakeBot({ health: 20, threat: zombie });
+  installReflexes(bot, { emit: (e) => events.push(e), fleeFrom() {}, attack: (t) => attacked.push(t) });
+  bot.calls.handlers.health();                 // baseline (lastHealth = 20)
+  bot.health = 16;                             // frappé
+  bot.calls.handlers.health();
+  assert.strictEqual(attacked.length, 1);
+  assert.strictEqual(attacked[0].name, 'zombie');
+  assert.ok(events.some((e) => e.type === 'reflex' && e.action === 'fight' && e.mob === 'zombie'));
+});
+
+test('riposte : pas de baisse de PV → pas d attaque (le zombie passe au loin)', () => {
+  const zombie = { type: 'mob', name: 'zombie', position: { x: 2, y: 64, z: 0, distanceTo: () => 2 } };
+  const attacked = [];
+  const bot = fakeBot({ health: 20, threat: zombie });
+  installReflexes(bot, { emit() {}, fleeFrom() {}, attack: (t) => attacked.push(t) });
+  bot.calls.handlers.health();
+  bot.calls.handlers.health();                 // PV stables
+  assert.strictEqual(attacked.length, 0);
+});
+
+test('riposte : creeper proche → FUITE (shouldFlee), jamais d attaque', () => {
+  const creeper = { type: 'mob', name: 'creeper', position: { x: 3, y: 64, z: 0, distanceTo: () => 3 } };
+  const attacked = [];
+  let fled = 0;
+  const bot = fakeBot({ health: 20, threat: creeper });
+  installReflexes(bot, { emit() {}, fleeFrom: () => fled++, attack: (t) => attacked.push(t) });
+  bot.calls.handlers.health();
+  bot.health = 16;                             // frappé (explosion proche…)
+  bot.calls.handlers.health();
+  assert.strictEqual(attacked.length, 0, 'pas de riposte sur un creeper');
+  assert.ok(fled >= 1, 'fuite déclenchée');
+});
+
+test('riposte : PV bas (≤ seuil) → fuite prioritaire, pas de combat', () => {
+  const zombie = { type: 'mob', name: 'zombie', position: { x: 2, y: 64, z: 0, distanceTo: () => 2 } };
+  const attacked = [];
+  let fled = 0;
+  const bot = fakeBot({ health: 20, threat: zombie });
+  installReflexes(bot, { emit() {}, fleeFrom: () => fled++, attack: (t) => attacked.push(t) });
+  bot.calls.handlers.health();
+  bot.health = 5;                              // critique
+  bot.calls.handlers.health();
+  assert.strictEqual(attacked.length, 0);
+  assert.ok(fled >= 1);
+});

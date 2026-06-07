@@ -1,10 +1,14 @@
 'use strict';
 // Réflexes déterministes (ZÉRO appel LLM) : survie de base. Manger quand faim basse,
-// fuir quand PV bas ou creeper proche. Pilotés par les events natifs de Mineflayer.
+// fuir quand PV bas ou creeper proche, RIPOSTER quand attaqué au corps-à-corps (phase B).
+// Pilotés par les events natifs de Mineflayer.
 
 const HUNGER_THRESHOLD = 6;   // sur 20
 const HEALTH_THRESHOLD = 6;   // sur 20
 const CREEPER_RADIUS = 6;     // blocs
+// Phase B (régen) : blessé, on mange dès que la faim ne permet plus la régen naturelle (≥18).
+const HURT_HEALTH = 14;       // en dessous : on veut régénérer
+const REGEN_FOOD = 17;        // en dessous de 18 la régen s'arrête → on remange
 
 const FOODS = new Set([
   'bread', 'apple', 'cooked_beef', 'cooked_porkchop', 'cooked_chicken', 'cooked_mutton',
@@ -12,9 +16,21 @@ const FOODS = new Set([
   'cooked_rabbit', 'beetroot', 'sweet_berries', 'mushroom_stew',
 ]);
 
-/** Mange si faim basse et nourriture dispo. Retourne true si une consommation a eu lieu. */
+// Hostiles au corps-à-corps qu'on RIPOSTE (phase B). PAS le creeper (fuite, il explose) ;
+// le squelette tire à distance → riposte seulement s'il est déjà au contact (≤ MELEE_RADIUS).
+const MELEE_HOSTILES = new Set([
+  'zombie', 'husk', 'drowned', 'zombie_villager', 'skeleton', 'stray', 'wither_skeleton',
+  'spider', 'cave_spider', 'silverfish', 'slime', 'magma_cube', 'pillager', 'vindicator',
+  'vex', 'witch', 'endermite', 'zombified_piglin', 'piglin', 'hoglin', 'bogged', 'breeze',
+]);
+const MELEE_RADIUS = 5;       // blocs — un assaillant au contact
+
+/** Mange si faim basse — OU si blessé et que la faim ne permet plus la régen (phase B). */
 async function tryEat(bot) {
-  if (bot.food == null || bot.food > HUNGER_THRESHOLD) return false;
+  if (bot.food == null) return false;
+  const hungry = bot.food <= HUNGER_THRESHOLD;
+  const needRegen = bot.health != null && bot.health <= HURT_HEALTH && bot.food <= REGEN_FOOD;
+  if (!hungry && !needRegen) return false;
   const items = (bot.inventory && bot.inventory.items()) || [];
   const food = items.find((it) => FOODS.has(it.name));
   if (!food) return false;
@@ -34,22 +50,52 @@ function shouldFlee(bot) {
   return !!creeper;
 }
 
+/** Hostile mêlée au contact (≤ MELEE_RADIUS) — la cible de riposte. null sinon. */
+function meleeAssailant(bot) {
+  const self = (bot.entity && bot.entity.position) || null;
+  if (!self || typeof bot.nearestEntity !== 'function') return null;
+  return bot.nearestEntity((e) => {
+    if (!e || e.type !== 'mob' || !MELEE_HOSTILES.has(e.name) || !e.position) return false;
+    if (typeof e.position.distanceTo === 'function') return e.position.distanceTo(self) <= MELEE_RADIUS;
+    const d = Math.sqrt((e.position.x - self.x) ** 2 + (e.position.y - self.y) ** 2 + (e.position.z - self.z) ** 2);
+    return d <= MELEE_RADIUS;
+  });
+}
+
 const OXYGEN_THRESHOLD = 5;   // sur 20 — en dessous : urgence remonter
 
-/** Branche les réflexes sur le bot. opts: { emit, fleeFrom } injectables. */
+/** Branche les réflexes sur le bot. opts: { emit, fleeFrom, attack } injectables.
+ *  attack(target) : riposte (phase B) — fourni par index.js (équipe la meilleure arme + pvp). */
 function installReflexes(bot, opts = {}) {
   const emit = opts.emit || (() => {});
   const flee = opts.fleeFrom || (() => {});
+  const attack = opts.attack || null;
   let fleeing = false;
   let surfacing = false;
+  let lastHealth = null;
+  let fighting = false;
 
   const react = () => {
     tryEat(bot).then((ate) => { if (ate) emit({ type: 'reflex', action: 'eat' }); }).catch(() => {});
     if (shouldFlee(bot)) {
       if (!fleeing) { flee(bot); emit({ type: 'reflex', action: 'flee' }); fleeing = true; }
-    } else {
-      fleeing = false;
+      lastHealth = bot.health;
+      return;
     }
+    fleeing = false;
+    // RIPOSTE (phase B) : PV en baisse (on vient d'être frappé), pas en zone de fuite, et un
+    // hostile mêlée au contact → on se défend au lieu d'encaisser en minant. Creeper exclu
+    // (shouldFlee le gère). Un seul déclenchement par assaut (anti-spam : fighting).
+    if (attack && bot.health != null && lastHealth != null && bot.health < lastHealth) {
+      const foe = meleeAssailant(bot);
+      if (foe && !fighting) {
+        fighting = true;
+        try { attack(foe); emit({ type: 'reflex', action: 'fight', mob: foe.name }); } catch (e) {}
+        // re-autorise une riposte après 5 s (le pvp plugin poursuit la cible entre-temps)
+        setTimeout(() => { fighting = false; }, 5000);
+      }
+    }
+    lastHealth = bot.health;
   };
 
   // Anti-noyade (vu live HarvT7 : drowned ×3 — pathfinder traverse l'eau, flee sous l'eau → air
@@ -76,4 +122,4 @@ function installReflexes(bot, opts = {}) {
   return { react, breathe };
 }
 
-module.exports = { tryEat, shouldFlee, installReflexes, HUNGER_THRESHOLD, HEALTH_THRESHOLD, FOODS };
+module.exports = { tryEat, shouldFlee, meleeAssailant, installReflexes, HUNGER_THRESHOLD, HEALTH_THRESHOLD, FOODS, MELEE_HOSTILES };

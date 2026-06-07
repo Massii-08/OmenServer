@@ -704,6 +704,19 @@ async function ensureGearFor(neededTypes) {
   } catch (e) { emit({ type: 'gear_craft', item: plan.craft, ok: false, why: plan.why }); }
 }
 
+// ── Phase B : stock de torches (mob-aware) — 1 charbon + 1 stick = 4 torches. Best-effort :
+// sans charbon (le branch-mine en croise sans arrêt) ni sticks, on mine sans torches.
+async function ensureTorches() {
+  const items = (bot.inventory && bot.inventory.items()) || [];
+  const count = (n) => items.filter((i) => i.name === n).reduce((a, i) => a + i.count, 0);
+  if (count('torch') >= 8) return;
+  if ((count('coal') + count('charcoal')) < 1 || count('stick') < 1) return;
+  try {
+    const r = await craftSmart({ name: 'torch', count: 8 });
+    if (r && r.ok) emit({ type: 'gear_craft', item: 'torch', ok: true, why: 'mob_aware' });
+  } catch (e) { /* best-effort */ }
+}
+
 // ── Phase 2 : branch-mine RÉEL au Y optimal du type (anti-xray : on ne voit plus à travers
 // la roche — on mine comme un joueur). Descente diagonale puis branchMine (anti-lave +
 // collecte opportuniste des ores exposés par NOS digs — l'anti-xray les révèle au block update).
@@ -859,7 +872,7 @@ async function startResource() {
     cleanup: quota ? tossJunk : null,
     mineFor: quota ? mineForType : null,
     relocate: quota ? relocateToRegion : null,
-    ensureGear: quota ? ensureGearFor : null,
+    ensureGear: quota ? (async (types) => { await ensureGearFor(types); await ensureTorches(); }) : null,
     onTarget: async () => {
       if (isInWater(bot)) await escapeWater(bot, { emit });
       await settleSurvivalKit();
@@ -963,7 +976,17 @@ async function onSpawn() {
     // si c'est la SEULE option ; le réflexe oxygène de reflexes.js est le filet de sécurité).
     if (typeof moves.liquidCost === 'number') moves.liquidCost = 20;
     bot.pathfinder.setMovements(moves);
-    installReflexes(bot, { emit, fleeFrom });
+    installReflexes(bot, {
+      emit, fleeFrom,
+      // RIPOSTE (phase B) : frappé par un hostile mêlée au contact → meilleure arme + pvp.
+      // Le plugin poursuit la cible ; les boucles (resource/mapper) reprennent leur goto après
+      // (interruption gérée comme un flee : retry/timeout).
+      attack: (foe) => {
+        const w = bestWeapon(bot);
+        const go = () => { try { bot.pvp.attack(foe); } catch (e) {} };
+        if (w) { bot.equip(w, 'hand').then(go, go); } else { go(); }
+      },
+    });
     // TÉLÉPORTATION (#10) : détecte tout TP (admin /tp, /home, portail, respawn) → émet
     // teleport_detected{from,to} + ABANDONNE le goal pathfinder (il visait l'ancienne position —
     // jamais y retourner à pied). Le mapper consomme le pending pour se ré-ancrer (mapper.js).
