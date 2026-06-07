@@ -179,7 +179,11 @@ def _pump(session, stream):
     # est ABANDONNÉE — le cap global (12) ne couvrait pas ce mode : join→crash 4 s→respawn 15 s
     # à l'infini (vécu phase 2, V2Res1 : kit cassé → starved-exit immédiat en boucle).
     lifetime = time.time() - session.get("spawned_at", 0)
-    fast_fails = (session.get("fast_fail_count", 0) + 1) if lifetime < 15 else 0
+    # Un kick « Connection throttled » est un refus AVANT spawn (collision de joins), pas un
+    # crash du bot : il ne compte pas pour la garde crash-on-spawn (sinon 3 collisions = abandon).
+    _err = str(session.get("last_error") or "").lower()
+    _throttled = "throttled" in _err
+    fast_fails = 0 if _throttled else ((session.get("fast_fail_count", 0) + 1) if lifetime < 15 else 0)
     if (rs and session.get("objective") == "resource"
             and not session.get("user_stopped")
             and session.get("respawn_count", 0) < 12):
@@ -199,7 +203,8 @@ def _pump(session, stream):
                     ns["fast_fail_count"] = fast_fails
             except Exception:  # noqa: BLE001 — best-effort (compte déjà en ligne, groupe parti…)
                 pass
-        timer = threading.Timer(15.0, _do_respawn)
+        # Jitter anti-synchronisation : des morts simultanées ne re-spawnent plus en phase.
+        timer = threading.Timer(15.0 + (hash(str(session.get("user"))) % 80) / 10.0, _do_respawn)
         timer.daemon = True
         timer.start()
 
@@ -234,6 +239,23 @@ VALID_OBJECTIVES = ("stone_pickaxe", "iron_pickaxe", "diamond", "mapper", "resou
 # Délai entre deux spawns d'un batch de cartographes : Paper throttle les connexions rapprochées
 # depuis la même IP (connection-throttle 4000ms par défaut) → sans étalement, ECONNRESET.
 MAPPER_SPAWN_STAGGER_S = 4.5
+
+# Sérialiseur GLOBAL de spawns (phase 3) : Paper throttle les joins <4 s depuis la même IP
+# (tous nos bots = localhost). Des morts SIMULTANÉES (freeze serveur → kicks en masse)
+# re-spawnaient toutes à t+15 s → re-collision à chaque cycle → 3 « Connection throttled »
+# = respawn_given_up (vécu V3Res3 : chaîne 7→10→14 toutes throttled → bot à terre).
+SPAWN_MIN_INTERVAL_S = 6.0
+_spawn_gate = threading.Lock()
+_last_spawn_at = [0.0]
+
+
+def _spawn_gate_wait():
+    """Attend que le créneau de join soit libre (≥ SPAWN_MIN_INTERVAL_S depuis le dernier)."""
+    with _spawn_gate:
+        wait = _last_spawn_at[0] + SPAWN_MIN_INTERVAL_S - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        _last_spawn_at[0] = time.time()
 
 
 def _active_mappers(group_id):
@@ -372,6 +394,7 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     api_key = _read_api_key()  # injecte la clé (fichier ou env) dans l'env du subprocess Node
     if api_key:
         env["ANTHROPIC_API_KEY"] = api_key
+    _spawn_gate_wait()  # anti « Connection throttled » (joins espacés, cf. SPAWN_MIN_INTERVAL_S)
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,

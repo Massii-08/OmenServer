@@ -1065,7 +1065,7 @@ def test_pump_respawns_dead_resource_session(monkeypatch):
     mgr._pump(session, io.StringIO(""))   # flux vide → fin immédiate (mort naturelle)
     assert calls.get("gid") == "ab12cd" and calls.get("bid") == "b1"
     assert calls.get("quota") == {"iron": 64}
-    assert fired["delay"] == 15.0
+    assert 15.0 <= fired["delay"] < 23.0  # 15 s + jitter anti-synchronisation (phase 3)
     assert mgr._sessions[99]["respawn_count"] == 2
     mgr._sessions.pop(99, None)
 
