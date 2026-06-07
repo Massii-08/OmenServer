@@ -145,11 +145,18 @@ async function tunnelTo(bot, target, opts = {}, token = null) {
       }
     }
 
+    // SANS PIOCHE : jamais de roche à la main (vécu V3Res4) → bail, l'appelant récupère.
+    if (!((bot.inventory && bot.inventory.items()) || []).some((i) => i.name && i.name.endsWith('_pickaxe'))) {
+      return { ok: false, reachedDist: dist(), reason: 'no_pickaxe' };
+    }
     // Cibles à miner : descente = marche (devant-bas + devant) ; horizontal = corridor
     // (devant + devant-haut). La cible du déplacement = la case des PIEDS après le pas.
     for (const t of digBlocks) {
       if (!t) continue;                                       // unloaded → skip
       if (VOID.has(t.name)) continue;                         // déjà air → rien à faire
+      // Reachability « vrai joueur » : bloc ni visible ni à portée → on passe (re-tenté au pas suivant).
+      if (typeof bot.canSeeBlock === 'function' && !bot.canSeeBlock(t)) continue;
+      if (typeof bot.canDigBlock === 'function' && !bot.canDigBlock(t)) continue;
       // PHASE 3 : meilleure pioche pour tout (cheapestPickFor = vitesse d'abord désormais) +
       // equip avec CACHE (on ne ré-équipe pas l'outil déjà en main : ~50-100 ms/bloc économisés).
       const pickName = cheapestPickFor((bot.inventory && bot.inventory.items()) || [], t.name);

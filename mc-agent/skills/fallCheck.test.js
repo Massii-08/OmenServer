@@ -40,3 +40,9 @@ test('safeToDrop : eau = toujours oui, même blessé ; lave/vide/unknown = jamai
   assert.strictEqual(safeToDrop({ depth: 24, surface: 'void' }, 20), false);
   assert.strictEqual(safeToDrop({ depth: 3, surface: 'unknown' }, 20), false);
 });
+
+test('safeToDrop (Massii) : PV < 75% → refus même pour une petite chute (sauf eau)', () => {
+  assert.strictEqual(safeToDrop({ depth: 4, surface: 'solid' }, 14), false); // 14 < 15
+  assert.strictEqual(safeToDrop({ depth: 4, surface: 'solid' }, 15), true);
+  assert.strictEqual(safeToDrop({ depth: 10, surface: 'water' }, 6), true);  // eau = toujours ok
+});

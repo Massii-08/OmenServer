@@ -184,7 +184,7 @@ def _pump(session, stream):
     _err = str(session.get("last_error") or "").lower()
     _throttled = "throttled" in _err
     fast_fails = 0 if _throttled else ((session.get("fast_fail_count", 0) + 1) if lifetime < 15 else 0)
-    if (rs and session.get("objective") == "resource"
+    if (rs and session.get("objective") in ("resource", "mapper")
             and not session.get("user_stopped")
             and session.get("respawn_count", 0) < 12):
         if fast_fails >= 3:
@@ -196,11 +196,14 @@ def _pump(session, stream):
                 new_sid = start_for_bot(rs["group_id"], rs["bot_id"], model=rs.get("model"),
                                         autonomous=rs.get("autonomous", True),
                                         objective=rs.get("objective", "resource"),
-                                        world_label=rs.get("world_label"), quota=rs.get("quota"))
+                                        world_label=rs.get("world_label"), quota=rs.get("quota"),
+                                        humanize=rs.get("humanize", False))
                 ns = _sessions.get(new_sid)
                 if ns is not None:
                     ns["respawn_count"] = session.get("respawn_count", 0) + 1
                     ns["fast_fail_count"] = fast_fails
+                if rs.get("objective") == "mapper":
+                    _rebalance_sectors(rs["group_id"])  # le revenant reprend un secteur cohérent
             except Exception:  # noqa: BLE001 — best-effort (compte déjà en ligne, groupe parti…)
                 pass
         # Jitter anti-synchronisation : des morts simultanées ne re-spawnent plus en phase.
@@ -284,7 +287,7 @@ def _rebalance_sectors(group_id):
 def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, commands=None,
                policy=None, server_id=None, language="fr", autonomous=False,
                objective="stone_pickaxe", world_label=None, login_command=None,
-               sector_index=None, sector_count=None, quota=None, stealth=False):
+               sector_index=None, sector_count=None, quota=None, stealth=False, humanize=False):
     """Spawn le process Node détaché et enregistre la session. Retourne son id.
 
     Point monkeypatchable des lancements par roster (start_for_bot/start_mappers).
@@ -320,6 +323,10 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     if stealth:
         # Mode furtif (phase 3) : humanisation (latence chat, loiter, jitter) — off par défaut.
         cmd += ["--stealth", "1"]
+    if humanize and not stealth:
+        # Humanisation ciblée (spec cartographes) : déplacements naturels + latence de réponse
+        # + stop-pour-répondre, SANS le loiter. STEALTH l'implique déjà côté bot.
+        cmd += ["--humanize", "1"]
     cmds_path = None
     if commands:
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
@@ -462,7 +469,7 @@ def _online_usernames(group_id):
     return out
 
 
-def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="stone_pickaxe", world_label=None, quota=None):
+def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, humanize=False):
     """Lance un bot du roster d'un groupe (résout connexion + compte + login + intelligence).
 
     Lève LookupError si le groupe ou le bot est introuvable, ValueError si le compte est déjà en
@@ -484,7 +491,7 @@ def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="sto
         policy=servers_store.resolve_policy(group), server_id=group_id,
         language=group.get("language", "fr"), autonomous=autonomous, objective=objective,
         world_label=world_label, model=model, login_command=login_command, quota=quota,
-        stealth=bool(group.get("stealth")),
+        stealth=bool(group.get("stealth")), humanize=humanize,
     )
     # Self-healing (phase 2) : mémorise QUOI respawner si le process meurt naturellement
     # (kick/Timed out/watchdog) — l'inventaire du compte persiste, le quota repart d'où il était.
@@ -519,7 +526,7 @@ def start_mappers(group_id, count):
     if k == 0:
         return {"sessions": [], "launched": 0, "available": available, "skipped": []}
     # 1re passe : résout chaque bot retenu (secret/login) en SKIPPANT ceux sans secret requis.
-    runnable = []  # (username, auth, login_command)
+    runnable = []  # (bot_id, username, auth, login_command)
     skipped = []
     for bot in dispo[:k]:
         secret = mc_agent_secrets.get_secret(group_id, bot["id"])
@@ -528,12 +535,12 @@ def start_mappers(group_id, count):
         except ValueError:
             skipped.append(bot["username"])
             continue
-        runnable.append((bot["username"], bot["auth"], login_command))
+        runnable.append((bot["id"], bot["username"], bot["auth"], login_command))
     n = len(runnable)
     sessions = []
     commands = servers_store.resolve_commands(group)
     policy = servers_store.resolve_policy(group)
-    for i, (username, auth, login_command) in enumerate(runnable):
+    for i, (bot_id, username, auth, login_command) in enumerate(runnable):
         # Étale les connexions : les serveurs MC throttlent les joins rapprochés depuis la même IP
         # (Paper connection-throttle 4s par défaut) → le 2e bot simultané meurt en ECONNRESET (vécu live).
         if i > 0:
@@ -543,8 +550,16 @@ def start_mappers(group_id, count):
             profile=group["intelligence"], commands=commands, policy=policy,
             server_id=group_id, language=group.get("language", "fr"), autonomous=True,
             objective="mapper", login_command=login_command, sector_index=i, sector_count=n,
-            stealth=bool(group.get("stealth")),
+            stealth=bool(group.get("stealth")), humanize=True,
         )
+        # Self-healing mapper (Massii #1) : un cartographe tué par les mobs REVIENT (mêmes
+        # règles que resource : 15 s + jitter, cap 12, garde crash-on-spawn, spawn gate).
+        sess = _sessions.get(sid)
+        if sess is not None:
+            sess["respawn"] = {"group_id": group_id, "bot_id": bot_id, "model": None,
+                               "autonomous": True, "objective": "mapper",
+                               "world_label": None, "quota": None, "humanize": True}
+            sess.setdefault("respawn_count", 0)
         sessions.append(sid)
     return {"sessions": sessions, "launched": n, "available": available, "skipped": skipped}
 

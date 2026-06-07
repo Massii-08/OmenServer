@@ -116,12 +116,22 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200 } = {}, toke
       }
     }
 
-    // Cibles à miner : devant-bas (la marche descend) puis devant (la tête passe).
-    const targets = [aheadLow, ahead].map((q) => bot.blockAt(_at(q)));
+    // SANS PIOCHE : on ne creuse JAMAIS la roche à la main (~9 s/bloc deepslate, absurde —
+    // vécu V3Res4). L'appelant déclenche la récupération de pioche.
+    if (!((bot.inventory && bot.inventory.items()) || []).some((i) => i.name && i.name.endsWith('_pickaxe'))) {
+      return { ok: false, reachedY, reason: 'no_pickaxe' };
+    }
+    // Cibles à miner : DEVANT (les yeux, face adjacente visible) PUIS devant-bas — l'ordre
+    // inverse minait la marche À TRAVERS LE COIN (irréaliste, vécu V3Res3). Chaque dig est
+    // gaté reachability (ligne de vue + portée) quand mineflayer expose les checks.
+    const targets = [ahead, aheadLow].map((q) => bot.blockAt(_at(q)));
     for (const t of targets) {
       if (!t) continue;                                       // unloaded → skip
       if (VOID.has(t.name)) continue;                         // déjà air → rien à faire
       if (DANGER.has(t.name)) return { ok: false, reachedY, reason: 'lava_ahead' };
+      // Reachability « vrai joueur » : pas de minage en diagonale à travers un coin.
+      if (typeof bot.canSeeBlock === 'function' && !bot.canSeeBlock(t)) continue; // re-tenté après le bloc visible
+      if (typeof bot.canDigBlock === 'function' && !bot.canDigBlock(t)) continue;
       // Pioche la moins chère pour la roche (durabilité fer > gain de vitesse, vécu V3Res1) +
       // equip avec cache (phase 3) : ne ré-équipe pas l'outil déjà en main.
       const pickName = cheapestPickFor((bot.inventory && bot.inventory.items()) || [], t.name);

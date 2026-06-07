@@ -27,15 +27,18 @@ function assessDrop(bot, cell, opts = {}) {
 }
 
 /**
- * Chute acceptable « comme un joueur » ? Eau = toujours oui (0 dégât). Sol dur : dégâts estimés
- * (depth+1−3 HP, chute depuis le niveau des pieds) ≤ 50% des PV courants. Lave/vide/inconnu = non.
+ * Chute acceptable « comme un joueur » ? Eau = toujours oui (0 dégât). Sol dur : il faut être
+ * EN FORME (PV ≥ 75% — correction Massii : des chutes répétées à moitié de vie s'accumulent et
+ * tuent) ET dégâts estimés (depth+1−3 HP) ≤ 50% des PV courants. Lave/vide/inconnu = non.
+ * Sous 75% : pont/évitement, on laisse la régen remonter avant de retenter.
  */
 function safeToDrop(assessment, health) {
   if (!assessment) return false;
   if (assessment.surface === 'water') return true;
   if (assessment.surface !== 'solid') return false;
-  const dmg = Math.max(0, (assessment.depth + 1) - 3);
   const hp = (health == null ? 20 : health);
+  if (hp < 15) return false;                                  // < ~75% : pas de chute volontaire
+  const dmg = Math.max(0, (assessment.depth + 1) - 3);
   return dmg <= Math.max(1, hp / 2);
 }
 

@@ -25,6 +25,7 @@ const { parseOrder } = require('./orders');
 const { createTaskController } = require('./tasks');
 const { createMemory } = require('./memory');
 const { bestWeapon, bestToolFor } = require('./tools');
+const vec3Lib = require('vec3'); // watchdog anti-jam (blocs barrants)
 const { gather } = require('./skills/gather');
 const { mineDown } = require('./skills/mineDown');
 const { guard } = require('./skills/guard');
@@ -85,11 +86,14 @@ let profile = null;
 try { profile = loadProfile(args.profile || 'intermediaire'); }
 catch (e) { emit({ type: 'error', message: 'profil invalide: ' + e.message }); }
 
-// Mode FURTIF (--stealth 1) : humanisation activée (latence/typos chat, loiter vivant, jitter
-// explore). OFF PAR DÉFAUT (phase 3) : les bots utilitaires (ressources/cartographes) vont à
-// vitesse machine — plus rapide mais plus détectable comme bot par un serveur anti-bot
-// (trade-off assumé : notre serveur est le nôtre). Le profil reste utilisé pour le LLM.
+// Mode FURTIF (--stealth 1) : humanisation COMPLÈTE y compris loiter (« stop = vivant »).
+// OFF PAR DÉFAUT (phase 3) : les bots utilitaires vont à vitesse machine.
 const STEALTH = String(args.stealth || '') === '1';
+// HUMANISATION ciblée (--humanize 1, spec cartographes Massii 07/06) : déplacements naturels
+// (jitter explore), latence de réponse humaine ET STOP-POUR-RÉPONDRE (un humain lâche ses
+// touches pour taper — bouger en répondant = tell de bot). SANS le loiter (gestes bizarres,
+// réservé à STEALTH). STEALTH implique HUMANIZE.
+const HUMANIZE = STEALTH || String(args.humanize || '') === '1';
 
 // Commandes serveur autorisées (fichier JSON écrit par le backend, passé via --commands).
 const whitelist = loadCommands(args.commands);
@@ -738,8 +742,46 @@ async function ensureTorches() {
 // ── Phase 2 : branch-mine RÉEL au Y optimal du type (anti-xray : on ne voit plus à travers
 // la roche — on mine comme un joueur). Descente diagonale puis branchMine (anti-lave +
 // collecte opportuniste des ores exposés par NOS digs — l'anti-xray les révèle au block update).
+// ── Récupération de pioche (Massii #5) : JAMAIS de minage à la main. 1) craft SUR PLACE
+// (buffers sticks/planks/table du rab post-kit — un stone pick = 3 cobble + 2 sticks) ;
+// 2) sinon EXPÉDITION BOIS : position SAUVÉE, warp forêt (bot OP), gather logs, craft
+// planks→sticks→pioche, puis /tp RETOUR EXACT au spot — pas de respawn, on ne perd pas la mine.
+async function recoverPickaxe() {
+  emit({ type: 'pick_recovery' });
+  try { await ensureGearFor(['iron']); } catch (e) { /* best-effort */ }
+  if (bestPickTier() >= 0) return { ok: true };
+  try { await craftSmart({ name: 'stone_pickaxe', count: 1 }); } catch (e) {}
+  if (bestPickTier() >= 0) return { ok: true };
+  const pp = bot.entity && bot.entity.position;
+  const p0 = pp ? { x: Math.floor(pp.x), y: Math.floor(pp.y), z: Math.floor(pp.z) } : null;
+  emit({ type: 'pick_recovery_trip', from: p0 });
+  await relocateToRegion({ forest: true });
+  if (taskToken.cancelled) return { ok: false };
+  const logNames = Object.keys((bot.registry && bot.registry.blocksByName) || {}).filter((n) => n.endsWith('_log'));
+  try { await withTimeout(gather(bot, { name: logNames, count: 4, explore: true }, taskToken), 240000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+  try {
+    const log = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name.endsWith('_log'));
+    if (log) await craftItem(bot, { name: log.name.replace('_log', '_planks'), count: 3 });
+    await craftSmart({ name: 'stick', count: 4 });
+    await craftSmart({ name: 'stone_pickaxe', count: 1 });
+    if (bestPickTier() < 0) await craftSmart({ name: 'wooden_pickaxe', count: 1 });
+  } catch (e) { /* best-effort */ }
+  if (p0) {
+    try { bot.chat('/tp @s ' + p0.x + ' ' + p0.y + ' ' + p0.z); } catch (e) {}
+    await sleep(3000);
+  }
+  return { ok: bestPickTier() >= 0 };
+}
+
 async function mineForType(type, needed) {
   const targetY = Y_OPT[type] !== undefined ? Y_OPT[type] : -58;
+  // SANS PIOCHE (Massii #5) : récupération AVANT toute tentative — les skills refusent
+  // désormais de creuser à la main (no_pickaxe).
+  if (bestPickTier() < 0) {
+    const r0 = await withTimeout(recoverPickaxe(), 420000, () => { try { stopMotion(); } catch (e) {} });
+    if (taskToken.cancelled) return { ok: true };
+    if (!(r0 && r0.ok)) return { ok: false, reason: 'no_pickaxe' };
+  }
   const p = bot.entity && bot.entity.position;
   if (!p) return { ok: false, reason: 'no_pos' };
   if (p.y < targetY - 6) return { ok: false, reason: 'below_target' };   // remonter = relocate (warp surface)
@@ -1062,7 +1104,7 @@ function tryAuth() {
 
 async function onSpawn() {
   bot._mcaProfile = profile; // expose le profil au skill explore (jitter humanisation ∝ movementJitter)
-  bot._mcaStealth = STEALTH; // explore : jitter humanisation SEULEMENT en mode furtif (phase 3)
+  bot._mcaStealth = HUMANIZE; // explore : jitter de déplacement humain (furtif OU humanize cartographe)
   // Mémoire de monde : gather émet material_found (apprentissage matériau↔biome), explore lit le
   // biais dirigé, le mapper skippe les cellules déjà mappées. _worldKey re-résolu à chaque spawn
   // (la dimension peut changer : portail nether/end) ; le label explicite (--world-label) prime.
@@ -1345,10 +1387,13 @@ async function handleIncoming(username, message, isWhisper) {
     const decision = gateDecision(decision0, username, policy.trusted);
     if (decision !== decision0) { emit({ type: 'order_refused', from: username }); }
     if (decision.reply) {
-      // Furtif : latence humaine + typos. Sinon (défaut utilitaire) : réponse immédiate, verbatim.
-      const { text, delayMs } = STEALTH
+      // Humanisé : latence naturelle + typos + STOP-POUR-RÉPONDRE (on lâche les touches le
+      // temps de taper — la tâche reprend seule : son goto interrompu re-path). Sinon
+      // (utilitaire pur) : réponse immédiate, verbatim, sans s'arrêter.
+      const { text, delayMs } = HUMANIZE
         ? humanizeReply(profile, decision.reply)
         : { text: String(decision.reply), delayMs: 0 };
+      if (HUMANIZE) { try { stopMotion(); } catch (e) {} }
       if (delayMs > 0) await sleep(delayMs);
       if (text) { replyTo(reaction, text); emit({ type: 'say', message: text, private: reaction.private, to: reaction.to }); }
     }
@@ -1404,6 +1449,45 @@ bot.on('death', () => {
 bot.on('kicked', (reason) => emit({ type: 'error', message: 'kicked: ' + reason }));
 bot.on('error', (e) => emit({ type: 'error', message: String((e && e.message) || e) }));
 bot.on('end', () => { emit({ type: 'status', state: 'disconnected' }); process.exit(0); });
+
+// Watchdog ANTI-JAM (Massii, vécu V3Res1 : SAUT INFINI contre un mur de 2 — zéro progrès
+// horizontal avec un goal pathfinder actif, sans dig en cours) : position quasi inchangée
+// ≥18 s pendant un goto → coupe le saut, CREUSE les blocs qui barrent (tête/pieds/au-dessus,
+// s'ils sont minables) puis stopMotion → la tâche re-path/re-dérive. Couvre aussi les
+// cartographes figés en jambe (même signature). Jamais pendant un dig (immobile = légitime).
+let _jamSample = null;
+setInterval(async () => {
+  try {
+    if (!bot.entity || !bot.entity.position) return;
+    const p = bot.entity.position;
+    const digging = !!bot.targetDigBlock;
+    const hasGoal = !!(bot.pathfinder && bot.pathfinder.goal);
+    const now = Date.now();
+    if (!hasGoal || digging) { _jamSample = null; return; }
+    if (!_jamSample) { _jamSample = { x: p.x, z: p.z, t: now }; return; }
+    const d = Math.sqrt((p.x - _jamSample.x) ** 2 + (p.z - _jamSample.z) ** 2);
+    if (d >= 0.8) { _jamSample = { x: p.x, z: p.z, t: now }; return; }   // ça avance → resample
+    if (now - _jamSample.t < 18000) return;                              // pas encore un jam
+    _jamSample = null;
+    emit({ type: 'unjam', x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) });
+    try { bot.setControlState('jump', false); } catch (e) {}
+    const yaw = (bot.entity && bot.entity.yaw) || 0;
+    const jdx = Math.round(-Math.sin(yaw)), jdz = Math.round(Math.cos(yaw));
+    for (const dy of [1, 0, 2]) {                                        // tête, pieds, au-dessus
+      try {
+        const b = bot.blockAt(vec3Lib(Math.floor(p.x) + jdx, Math.floor(p.y) + dy, Math.floor(p.z) + jdz));
+        if (b && b.boundingBox === 'block'
+            && (typeof bot.canDigBlock !== 'function' || bot.canDigBlock(b))) {
+          const tool = bestToolFor(bot, b);
+          if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
+          await bot.dig(b);
+        }
+      } catch (e) { /* best-effort */ }
+    }
+    try { stopMotion(); } catch (e) {}                                   // le goto rejette → re-path
+  } catch (e) { /* watchdog : ne crash jamais */ }
+}, 6000);
+
 // Watchdog connexion : un « Timed out » côté serveur peut laisser le socket client MUET sans
 // event 'end' (vécu phase 2 : bot zombie, quota figé, jamais respawné). Pas de physicsTick
 // pendant 90 s → on se suicide proprement, le manager auto-respawne la session resource.

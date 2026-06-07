@@ -203,10 +203,23 @@ async function safeDigAndOpportunism(bot, target, token, debug) {
   // de surcoût × milliers de blocs). Les drops tombent dans le tunnel 1×2 — le bot les aspire en
   // avançant (approach() du palier suivant passe dessus). Pioche la MOINS CHÈRE pour la roche
   // (la durabilité fer = 3 lingots/250 blocs, plus cher que le gain de vitesse — vécu V3Res1).
+  // SANS PIOCHE : jamais de minage à la MAIN (~9 s/bloc deepslate, vécu V3Res4) → bail propre,
+  // l'appelant déclenche la récupération de pioche.
   const pickName = cheapestPickFor((bot.inventory && bot.inventory.items()) || [], block.name);
-  let tool = pickName ? ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === pickName) : null;
+  if (!pickName) return { ok: false, reason: 'no_pickaxe' };
+  let tool = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === pickName) || null;
   if (!tool) tool = bestToolFor(bot, block);
   await equipCached(bot, tool);
+  // Reachability « vrai joueur » (vécu V3Res3 : dig en diagonale à travers un coin) : si le bloc
+  // n'est ni visible ni à portée, on se RAPPROCHE une fois ; toujours pas → dig_failed (skip).
+  if ((typeof bot.canSeeBlock === 'function' && !bot.canSeeBlock(block))
+      || (typeof bot.canDigBlock === 'function' && !bot.canDigBlock(block))) {
+    await approach(bot, target, 1);
+    if ((typeof bot.canSeeBlock === 'function' && !bot.canSeeBlock(block))
+        || (typeof bot.canDigBlock === 'function' && !bot.canDigBlock(block))) {
+      return { ok: false, reason: 'dig_failed' };
+    }
+  }
   try {
     await bot.dig(block);
   } catch (e) {
@@ -306,6 +319,7 @@ async function branchMine(bot, opts = {}, token = null) {
       try { r = await safeDigAndOpportunism(bot, t, token, debug); }
       catch (e) { if (debug) dbg('iter', { phase: 'branchMine:safeDigThrew', err: String(e).slice(0,150) }); r = { ok: false, reason: 'threw' }; }
       if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
+      if (!r.ok && r.reason === 'no_pickaxe') { stopReason = 'no_pickaxe'; break outer; } // jamais à la main (Massii #5)
     }
     // Torches « joueur réel » (affinage Massii 07/06) : basées sur la LUMIÈRE + jitter — pose
     // SEULEMENT si l'endroit est sombre (< seuil spawn mob, lumière inconnue = sombre) et pas
@@ -340,6 +354,7 @@ async function branchMine(bot, opts = {}, token = null) {
           for (const t of [ft, ht]) {
             const r = await safeDigAndOpportunism(bot, t, token, debug);
             if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
+            if (!r.ok && r.reason === 'no_pickaxe') { stopReason = 'no_pickaxe'; break outer; }
           }
         }
       }

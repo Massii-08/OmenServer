@@ -335,6 +335,29 @@ async function runResource(bot, opts = {}, token = null) {
       emit({ type: 'ore_gone', world: wkey, x: target.x, y: target.y, z: target.z });
       continue;
     }
+    // RÈGLE EAU DURE (Massii, vécu V3Res2) : un ore DANS l'eau ou en caverne inondée (eau dans
+    // les 6 voisins) n'est JAMAIS une cible — même un diamant. Skip + toute la veine, comme un
+    // barrage (le bot ne plonge plus dans les aquifères pour une cible).
+    {
+      const WATER = new Set(['water', 'flowing_water', 'bubble_column', 'kelp', 'kelp_plant', 'seagrass', 'tall_seagrass']);
+      let wet = WATER.has(block.name);
+      if (!wet && bot.blockAt) {
+        for (const [dx, dy, dz] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]) {
+          const nb = bot.blockAt(_pos({ x: target.x + dx, y: target.y + dy, z: target.z + dz }));
+          if (nb && WATER.has(nb.name)) { wet = true; break; }
+        }
+      }
+      if (wet) {
+        if (claims) claims.release(key);
+        for (const o of listOres(memory, wkey)) {
+          if (Math.abs(o.x - target.x) <= 4 && Math.abs(o.y - target.y) <= 4 && Math.abs(o.z - target.z) <= 4) {
+            skip.add(oreKey(o));
+          }
+        }
+        emit({ type: 'ore_wet', world: wkey, x: target.x, y: target.y, z: target.z });
+        continue;
+      }
+    }
 
     // Équipe la bonne pioche puis mine. collectBlock gère l'approche fine + le ramassage du drop.
     // Re-équipe + retente UNE fois (dig interrompu par aggro/désync, pattern gather).

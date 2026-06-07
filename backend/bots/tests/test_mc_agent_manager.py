@@ -322,6 +322,40 @@ def test_start_session_stealth_flag(monkeypatch):
     assert "--stealth" not in captured["cmd"]
 
 
+def test_start_mappers_sets_respawn_memo_and_humanize(monkeypatch, tmp_path):
+    """Spec cartographes : self-healing (memo respawn objective=mapper) + humanisation ciblée."""
+    import io
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter(())
+            self.pid = 5001
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: cmds.append(cmd) or FakeProc())
+    monkeypatch.setattr(mgr, "MAPPER_SPAWN_STAGGER_S", 0)
+    monkeypatch.setattr(mgr.servers_store, "get_server", lambda gid: {
+        "id": gid, "host": "h", "port": 25565, "intelligence": "intermediaire",
+        "language": "fr", "has_login": False, "stealth": False,
+        "bots": [{"id": "m1", "role": "mapper", "username": "Map1", "auth": "offline"}],
+    })
+    monkeypatch.setattr(mgr.servers_store, "resolve_commands", lambda g: None)
+    monkeypatch.setattr(mgr.servers_store, "resolve_policy", lambda g: None)
+    monkeypatch.setattr(mgr.mc_agent_secrets, "get_secret", lambda gid, bid: None)
+    out = mgr.start_mappers("g1", 1)
+    assert out["launched"] == 1
+    assert "--humanize" in cmds[-1]
+    sid = out["sessions"][0]
+    sess = mgr._sessions.get(sid)
+    assert sess is not None and sess.get("respawn", {}).get("objective") == "mapper"
+    assert sess["respawn"].get("humanize") is True
+    mgr._sessions.pop(sid, None)
+
+
 def test_start_session_autonomous_seeds_world_objective(monkeypatch, tmp_path):
     """autonomous=True → écrit un world.json avec l'objectif MVP + passe --world (le bot
     reprend la boucle planner au spawn). C'est le mécanisme « lancer en autonome » du dashboard."""

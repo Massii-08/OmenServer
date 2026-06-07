@@ -303,3 +303,12 @@ test('branchMine : trou de grotte sous la prochaine case -> pont posé (placeBlo
   assert.ok(calls.placeBlock.length >= 1, 'pont posé au-dessus du vide');
   assert.strictEqual(r.ok, true);
 });
+
+test('branchMine (Massii #5) : AUCUNE pioche → no_pickaxe, zéro dig à la main', async () => {
+  const { bot, calls } = makeBot({ y: -54, inv: [
+    { name: 'cobblestone', count: 32, type: 'block' },
+  ] });
+  const r = await branchMine(bot, { targetY: -54, mainLength: 4, branchSpacing: 999, branchLength: 0 });
+  assert.strictEqual(calls.dig.length, 0, 'pas un seul bloc de roche creusé à la main');
+  assert.strictEqual(r.ok, false);
+});
