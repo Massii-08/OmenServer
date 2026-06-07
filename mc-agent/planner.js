@@ -17,6 +17,8 @@ async function runPlanner(bot, opts, token) {
   const ctxExtra = opts.ctxExtra || (() => ({}));
   const maxStalls = opts.maxStalls || 4;
   let stalls = 0;
+  let failStreak = 0;   // échecs EXPLICITES consécutifs du même but ({ok:false} du skill)
+  let lastGoal = null;
 
   while (true) {
     if (token && token.cancelled) return { cancelled: true };
@@ -32,8 +34,18 @@ async function runPlanner(bot, opts, token) {
     const _by = ctx.y !== undefined ? Math.floor(ctx.y) : 0;
     const before = JSON.stringify(ctx.inv) + '|' + (ctx.hasTable ? 1 : 0) + '|' + _bx + ',' + _by + ',' + _bz;
     if (opts.onStep) { try { opts.onStep(goal); } catch (e) {} }
-    try { await runSkill(goal, bot); } catch (e) { /* compté comme stall */ }
+    let result = null;
+    try { result = await runSkill(goal, bot); } catch (e) { result = { ok: false }; }
     if (token && token.cancelled) return { cancelled: true };
+
+    // Échecs explicites (phase 3, vécu V3Res2/4) : le fingerprint POSITION empêchait tout stall
+    // sur un but EXPLORATOIRE (gatherLog en anneaux = position qui change à chaque tentative →
+    // stalls remis à 0 → boucle infinie logs timeout). Un skill qui RÉPOND {ok:false} 4× de
+    // suite sur le même but = stall, peu importe le déplacement.
+    if (goal.name !== lastGoal) { lastGoal = goal.name; failStreak = 0; }
+    if (result && result.ok === false) failStreak++;
+    else if (result && result.ok) failStreak = 0;
+    if (failStreak >= maxStalls) return { stalled: true, goal: goal.name };
 
     const ctx2 = Object.assign({ inv: buildCtxInv(bot) }, ctxExtra());
     const _ax = bot && bot.entity && bot.entity.position ? Math.floor(bot.entity.position.x) : 0;

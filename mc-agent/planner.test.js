@@ -51,3 +51,35 @@ test('runPlanner abandonne après maxStalls sans progrès (fallback)', async () 
   assert.strictEqual(res.stalled, true);
   assert.strictEqual(res.goal, 'a');
 });
+
+test('phase3 : but exploratoire qui ÉCHOUE en bougeant → stall quand même (failStreak)', async () => {
+  // vécu V3Res2/4 : gatherLog en anneaux change la position à chaque tentative → le fingerprint
+  // position remettait stalls à 0 → boucle infinie. 4 {ok:false} consécutifs = stalled.
+  let x = 0;
+  const bot = { inventory: { items: () => [] }, entity: { position: { get x() { return x; }, y: 64, z: 0 } } };
+  const chain = [{ name: 'logs', met: () => false, skill: 'gatherLog', args: {} }];
+  const r = await runPlanner(bot, {
+    chain,
+    runSkill: async () => { x += 50; return { ok: false, reason: 'timeout' }; }, // bouge ET échoue
+    ctxExtra: () => ({}),
+  }, null);
+  assert.deepStrictEqual(r, { stalled: true, goal: 'logs' });
+});
+
+test('phase3 : succès intermittents remettent le failStreak à zéro', async () => {
+  let x = 0;
+  let calls = 0;
+  const items = [];
+  const bot = { inventory: { items: () => items.slice() }, entity: { position: { get x() { return x; }, y: 64, z: 0 } } };
+  const chain = [{ name: 'logs', met: (c) => (c.inv.oak_log || 0) >= 2, skill: 'gatherLog', args: {} }];
+  const r = await runPlanner(bot, {
+    chain,
+    runSkill: async () => {
+      calls++; x += 50;
+      if (calls % 3 === 0) { items.push({ name: 'oak_log', count: 1 }); return { ok: true }; } // progrès périodique
+      return { ok: false, reason: 'timeout' };
+    },
+    ctxExtra: () => ({}),
+  }, null);
+  assert.deepStrictEqual(r, { done: true }); // 2 logs récoltés (6 calls) sans stall intermédiaire
+});
