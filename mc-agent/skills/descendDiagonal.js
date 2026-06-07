@@ -30,6 +30,27 @@ function cardinalFromYaw(yaw) {
 
 function isLava(name) { return name === 'lava' || name === 'flowing_lava'; }
 
+// Blocs de remblai pour ponter un vide (mêmes matériaux que le murage anti-lave de branchMine).
+const BRIDGE_BLOCKS = ['cobblestone', 'cobbled_deepslate', 'dirt'];
+
+/** Pose un bloc de remblai à `where` contre une face solide adjacente. true si posé. */
+async function bridgeGap(bot, where) {
+  const items = (bot.inventory && bot.inventory.items()) || [];
+  const mat = items.find((i) => BRIDGE_BLOCKS.includes(i.name));
+  if (!mat || typeof bot.placeBlock !== 'function') return false;
+  const dirs = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+  for (const [dx, dy, dz] of dirs) {
+    const ref = bot.blockAt(_at({ x: where.x - dx, y: where.y - dy, z: where.z - dz }));
+    if (!ref || ref.boundingBox !== 'block') continue;
+    try {
+      await bot.equip(mat, 'hand');
+      await bot.placeBlock(ref, { x: dx, y: dy, z: dz });
+      return true;
+    } catch (e) { /* autre face */ }
+  }
+  return false;
+}
+
 // Construit un GoalNear si pathfinder dispo (range=1 = arrive sur le bloc exact ou un voisin).
 // Fallback : objet POJO accepté par notre fake-bot (tests).
 function buildGoal(x, y, z) {
@@ -71,6 +92,18 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200 } = {}, toke
     if (p.y <= -49) {
       for (const b of probes) {
         if (b && VOID.has(b.name)) return { ok: false, reachedY, reason: 'air_at_y_-50' };
+      }
+    }
+
+    // ANTI-CHUTE (phase 3, vécu V3Res3 « fell from a high place ») : si le sol SOUS la marche
+    // est du vide ≥2 (plafond de grotte percé), on PONTE — un bloc de remblai posé contre une
+    // face solide — avant de poser le pied. Échec de pose → drop_ahead (l'appelant tourne).
+    {
+      const under1 = bot.blockAt(_at({ x: aheadLow.x, y: aheadLow.y - 1, z: aheadLow.z }));
+      const under2 = bot.blockAt(_at({ x: aheadLow.x, y: aheadLow.y - 2, z: aheadLow.z }));
+      if (under1 && VOID.has(under1.name) && under2 && VOID.has(under2.name)) {
+        const bridged = await bridgeGap(bot, { x: aheadLow.x, y: aheadLow.y - 1, z: aheadLow.z });
+        if (!bridged) return { ok: false, reachedY, reason: 'drop_ahead' };
       }
     }
 

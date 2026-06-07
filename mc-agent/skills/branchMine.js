@@ -160,6 +160,16 @@ function oresInNeighborhood(bot, target) {
   return found;
 }
 
+// ANTI-CHUTE (phase 3, vécu V3Res3 « fell from a high place ») : sol absent sous la case des
+// pieds (plafond de grotte) → PONT avec un bloc de murage avant d'y poser le pied. true si sûr.
+async function ensureFloor(bot, footTarget) {
+  const u1 = bot.blockAt(p(footTarget.x, footTarget.y - 1, footTarget.z));
+  if (!u1 || u1.boundingBox === 'block' || isLava(u1.name)) return true; // sol ok (la lave est gérée par neighborsHaveLava)
+  const u2 = bot.blockAt(p(footTarget.x, footTarget.y - 2, footTarget.z));
+  if (u2 && u2.boundingBox === 'block') return true;                     // trou d'1 : chute bénigne
+  return wallLava(bot, p(footTarget.x, footTarget.y - 1, footTarget.z)); // pont (même pose que le murage)
+}
+
 // Mine un bloc avec garde-fou lave + opportunisme ore. Retourne {ok, walled?:bool}.
 async function safeDigAndOpportunism(bot, target, token, debug) {
   // Anti-lave 6-voisins.
@@ -267,6 +277,8 @@ async function branchMine(bot, opts = {}, token = null) {
     if (debug) dbg('iter', { phase: 'branchMine:iter', i, footTarget: { x: footTarget.x, y: footTarget.y, z: footTarget.z } });
     // Approche AVANT le dig : sinon hors range à i>=6 (cf. risque #5). GoalNear 3 = arrive à ≤3 blocs.
     try { await approach(bot, footTarget, 3); } catch (e) { if (debug) dbg('iter', { phase: 'branchMine:approachThrew', err: String(e).slice(0,150) }); }
+    // Sol manquant sous la prochaine case (grotte) → ponté, sinon on arrête le tunnel ici (anti-chute).
+    try { if (!(await ensureFloor(bot, footTarget))) { stopReason = 'drop'; break; } } catch (e) { /* best-effort */ }
     for (const t of [footTarget, headTarget]) {
       let r;
       try { r = await safeDigAndOpportunism(bot, t, token, debug); }
@@ -289,6 +301,10 @@ async function branchMine(bot, opts = {}, token = null) {
           const ht = p(ft.x, ft.y + 1, ft.z);
           // Approche aussi avant la branche — j peut monter à 8, donc range hors limite sans goto.
           await approach(bot, ft, 3);
+          // Anti-chute : trou de grotte dans la branche → ponté, sinon la branche s'arrête là.
+          let floorOk = true;
+          try { floorOk = await ensureFloor(bot, ft); } catch (e) { /* best-effort */ }
+          if (!floorOk) break;                                         // branche suivante
           for (const t of [ft, ht]) {
             const r = await safeDigAndOpportunism(bot, t, token, debug);
             if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
@@ -303,7 +319,8 @@ async function branchMine(bot, opts = {}, token = null) {
   const oresAfter = snapshotOres(bot);
   const gotDiamond = oresAfter.diamond >= 1;
   return {
-    ok: !stopReason || stopReason === 'lava',
+    // lava/drop = arrêts PROPRES (progrès partiel, l'appelant tourne le cap) — pas des échecs.
+    ok: !stopReason || stopReason === 'lava' || stopReason === 'drop',
     gotDiamond,
     ores: deltaOres(oresBefore, oresAfter),
     reason: stopReason || undefined,

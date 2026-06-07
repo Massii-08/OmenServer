@@ -37,6 +37,12 @@ function makeBot({ startY = 10, world = {}, yaw = 0 } = {}) {
       world[key] = 'air';
     },
     async equip(item, slot) { calls.equip.push({ name: item.name, slot }); },
+    async placeBlock(ref, face) {
+      calls.placeBlock = calls.placeBlock || [];
+      calls.placeBlock.push({ ref: ref.position, face });
+      const key = `${ref.position.x + face.x},${ref.position.y + face.y},${ref.position.z + face.z}`;
+      world[key] = 'cobblestone';
+    },
     setControlState(c, v) { calls.setControlState.push([c, v]); },
     async lookAt(p) { calls.lookAt.push(p); },
     async waitForTicks(n) { /* no-op */ },
@@ -132,4 +138,24 @@ test('descendDiagonal : pathfinder.goto appelé après chaque palier (déplaceme
     assert.ok(calls.goto[1].x > calls.goto[0].x || calls.goto[1].y < calls.goto[0].y,
       'consecutive goto targets should progress diagonally');
   }
+});
+
+// --- Phase 3 : anti-chute (pont au-dessus des grottes) -------------------------------------------
+
+test('descendDiagonal : vide >=2 sous la marche -> PONT pose (placeBlock) puis continue', async () => {
+  // gap de grotte sous la 1re marche : (0,8,1) et (0,7,1) air — yaw 0 => dir {dx:0,dz:1}
+  const world = { '0,8,1': 'air', '0,7,1': 'air' };
+  const { bot, calls } = makeBot({ startY: 10, world, yaw: 0 });
+  const r = await descendDiagonal(bot, { targetY: 5, maxDepth: 20 });
+  assert.ok((calls.placeBlock || []).length >= 1, 'un pont a été posé');
+  assert.strictEqual(r.ok, true, 'la descente continue après le pont');
+});
+
+test('descendDiagonal : vide sous la marche SANS placeBlock -> drop_ahead (pas de chute)', async () => {
+  const world = { '0,8,1': 'air', '0,7,1': 'air' };
+  const { bot } = makeBot({ startY: 10, world, yaw: 0 });
+  delete bot.placeBlock;
+  const r = await descendDiagonal(bot, { targetY: 5, maxDepth: 20 });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'drop_ahead');
 });

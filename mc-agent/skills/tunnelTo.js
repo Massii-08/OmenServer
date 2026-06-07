@@ -22,6 +22,24 @@ function _at(q) { return vec3 ? vec3(q.x, q.y, q.z) : q; }
 
 function isLava(name) { return name === 'lava' || name === 'flowing_lava'; }
 
+// Pont anti-chute : pose un bloc de remblai à `where` contre une face solide. true si posé.
+const _BRIDGE = ['cobblestone', 'cobbled_deepslate', 'dirt'];
+async function _bridge(bot, where) {
+  const items = (bot.inventory && bot.inventory.items()) || [];
+  const mat = items.find((i) => _BRIDGE.includes(i.name));
+  if (!mat || typeof bot.placeBlock !== 'function') return false;
+  for (const [dx, dy, dz] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]) {
+    const ref = bot.blockAt(_at({ x: where.x - dx, y: where.y - dy, z: where.z - dz }));
+    if (!ref || ref.boundingBox !== 'block') continue;
+    try {
+      await bot.equip(mat, 'hand');
+      await bot.placeBlock(ref, { x: dx, y: dy, z: dz });
+      return true;
+    } catch (e) { /* autre face */ }
+  }
+  return false;
+}
+
 function buildGoal(x, y, z) {
   // GoalBlock (exact) et pas GoalNear(1) : range 1 permettait de rester AU-DESSUS de la
   // marche creusée (vécu live : yo-yo 57↔62, jamais de descente nette).
@@ -99,6 +117,24 @@ async function tunnelTo(bot, target, opts = {}, token = null) {
         continue;
       }
       return { ok: false, reachedDist: dist(), reason: isLava(liquid.name) ? 'lava_ahead' : 'water_ahead' };
+    }
+
+    // ANTI-CHUTE (phase 3, vécu V3Res3 « fell from a high place ») : vide ≥2 sous la case du
+    // pas (plafond de grotte) → PONT (bloc de remblai), sinon on tourne comme pour un liquide.
+    {
+      const u1 = bot.blockAt(_at({ x: stepCell.x, y: stepCell.y - 1, z: stepCell.z }));
+      const u2 = bot.blockAt(_at({ x: stepCell.x, y: stepCell.y - 2, z: stepCell.z }));
+      if (u1 && VOID.has(u1.name) && u2 && VOID.has(u2.name)) {
+        const bridged = await _bridge(bot, { x: stepCell.x, y: stepCell.y - 1, z: stepCell.z });
+        if (!bridged) {
+          if (axisSwaps < 1) {
+            axisSwaps++;
+            lastDir = dir.dx ? { dx: 0, dz: Math.sign(dzT) || 1 } : { dx: Math.sign(dxT) || 1, dz: 0 };
+            continue;
+          }
+          return { ok: false, reachedDist: dist(), reason: 'drop_ahead' };
+        }
+      }
     }
 
     // Cibles à miner : descente = marche (devant-bas + devant) ; horizontal = corridor

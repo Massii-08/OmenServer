@@ -747,7 +747,7 @@ async function mineForType(type, needed) {
       const yNow = (bot.entity && bot.entity.position) ? bot.entity.position.y : 999;
       if (yNow <= targetY + 2) break;                    // arrivé malgré le reason (edge)
       const why = (d && d.reason) || 'timeout';
-      if (why === 'lava_ahead' || why === 'air_at_y_-50') {
+      if (why === 'lava_ahead' || why === 'air_at_y_-50' || why === 'drop_ahead') {
         lavaTurns++;
         if (lavaTurns > 3) return { ok: false, reason: why };   // 4 cardinaux barrés → vraie impasse
         try { await bot.look(((bot.entity && bot.entity.yaw) || 0) + Math.PI / 2, 0, true); } catch (e) {}
@@ -769,9 +769,9 @@ async function mineForType(type, needed) {
   }, taskToken), 900000, () => { try { stopMotion(); } catch (e) {} });
   if (taskToken.cancelled) return { ok: true };
   if (r && r.heading) bot._branchHeading = r.heading;
-  // Lave en travers du tunnel principal : on TOURNE (perpendiculaire) pour le prochain call —
-  // persister le même cap re-tamponnerait la même nappe à l'infini.
-  if (r && r.reason === 'lava' && bot._branchHeading) {
+  // Lave/gouffre en travers du tunnel principal : on TOURNE (perpendiculaire) pour le prochain
+  // call — persister le même cap re-tamponnerait le même obstacle à l'infini.
+  if (r && (r.reason === 'lava' || r.reason === 'drop') && bot._branchHeading) {
     bot._branchHeading = { dx: -bot._branchHeading.dz, dz: bot._branchHeading.dx };
   }
   return (r && r.ok) ? r : { ok: false, reason: (r && r.reason) || 'branch_failed' };
@@ -790,20 +790,27 @@ function regionCenter() {
   return { x: base.x + dx + jitter, z: base.z + dz + jitter };
 }
 let _relocSeq = Math.floor(Math.random() * 997);   // graine par process : pas la même 1re cellule à chaque respawn
-async function relocateToRegion() {
+async function relocateToRegion(opts = {}) {
   // Cellule TERRE tirée de la mémoire de monde (biomes non-océan/rivière, ≥256 du spawn) :
   // le quadrant hashé de V2Res4 tombait en plein OCÉAN → relocalisations inutiles en boucle
   // (vécu phase 2). Rotation déterministe par bot (_relocSeq) → zones différentes à chaque fois.
+  // opts.forest (phase 3) : viser un biome À ARBRES — le kit-relocate atterrissait en plaine/
+  // désert sans bois (vécu V3Res2 : gatherLog not_found ×4 même après relocate).
+  const FOREST_HINTS = ['forest', 'taiga', 'jungle', 'birch', 'grove', 'wooded', 'swamp'];
   let c = null;
   try {
     const memNow = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
     const w = memNow && memNow.worlds && memNow.worlds[bot._worldKey];
-    const land = ((w && w.biomes) || []).filter((b) => {
+    let land = ((w && w.biomes) || []).filter((b) => {
       const n = String(b.name || '');
       if (!n || n.includes('ocean') || n.includes('river') || n.includes('beach')) return false;
       const ddx = b.x - 208, ddz = b.z - 528;
       return (ddx * ddx + ddz * ddz) > 256 * 256;
     });
+    if (opts.forest) {
+      const wooded = land.filter((b) => FOREST_HINTS.some((h) => String(b.name || '').includes(h)));
+      if (wooded.length) land = wooded;                  // fallback : terre quelconque si aucune forêt mappée
+    }
     if (land.length) {
       let h = 0;
       for (const ch of String(bot.username || 'bot')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
@@ -835,6 +842,23 @@ async function startResource() {
     const fullChain = chainFor('iron_pickaxe');
     const cutAt = fullChain.findIndex((g) => g.name === 'iron_ore');
     const kitChain = cutAt >= 0 ? fullChain.slice(0, cutAt) : fullChain;
+    // Pré-check bois (phase 3) : le spawn est DÉFORESTÉ par les runs précédents — la 1re
+    // tentative de kit y brûlait jusqu'à 8 min d'anneaux gatherLog stériles. Pas de bûche
+    // visible ≤48 ET rien en poche → relocate-forêt AVANT le kit.
+    try {
+      const inv0 = (bot.inventory && bot.inventory.items()) || [];
+      const hasWood = inv0.some((i) => i.name.endsWith('_log') || i.name.endsWith('_planks'));
+      if (bestPickTier() < 2 && !hasWood) {
+        const logIds = Object.entries((bot.registry && bot.registry.blocksByName) || {})
+          .filter(([n]) => n.endsWith('_log')).map(([, d]) => d.id);
+        const near = logIds.length ? bot.findBlock({ matching: logIds, maxDistance: 48 }) : null;
+        if (!near) {
+          emit({ type: 'resource_kit_relocate', attempt: 0, goal: 'logs' });
+          await relocateToRegion({ forest: true });
+          if (taskToken.cancelled) return;
+        }
+      }
+    } catch (e) { /* best-effort */ }
     let res = { stalled: false };
     for (let attempt = 0; attempt < 3; attempt++) {
       const kitToken = { cancelled: false };
@@ -851,7 +875,7 @@ async function startResource() {
       if (taskToken.cancelled) return;
       if (!res.stalled || bestPickTier() >= 2) break;   // kit ok (ou au moins la pioche pierre)
       emit({ type: 'resource_kit_relocate', attempt: attempt + 1, goal: res.goal });
-      try { await relocateToRegion(); } catch (e) { /* best-effort */ }
+      try { await relocateToRegion({ forest: true }); } catch (e) { /* best-effort */ }
       if (taskToken.cancelled) return;
     }
     if (res.stalled) emit({ type: 'resource_kit_stalled', goal: res.goal }); // dégradé : on tente quand même

@@ -278,3 +278,14 @@ test('branchMine : torchEvery sans torche en poche → continue sans bloquer', a
   const r = await branchMine(bot, { targetY: -54, mainLength: 6, branchSpacing: 999, branchLength: 0, torchEvery: 2 });
   assert.strictEqual(r.ok, true);
 });
+
+// --- Phase 3 : anti-chute (sol manquant ponté) ---------------------------------------------------
+
+test('branchMine : trou de grotte sous la prochaine case -> pont posé (placeBlock vers le bas)', async () => {
+  // sous footTarget (2,-54,0) : (2,-55,0) ET (2,-56,0) air → gap de grotte
+  const world = { '2,-55,0': 'air', '2,-56,0': 'air' };
+  const { bot, calls } = makeBot({ y: -54, world });
+  const r = await branchMine(bot, { targetY: -54, mainLength: 4, branchSpacing: 999, branchLength: 0 });
+  assert.ok(calls.placeBlock.length >= 1, 'pont posé au-dessus du vide');
+  assert.strictEqual(r.ok, true);
+});
