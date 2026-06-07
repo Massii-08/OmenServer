@@ -174,6 +174,26 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
         }
       } catch (e) { /* chunk non chargé → on émettra à la prochaine cellule */ }
     }
+    // COUVERTURE PLEINE (phase 3, demande Massii) : le biome n'était noté que SOUS le bot —
+    // les cellules VOISINES où on détecte structures (≤48) / ores (≤128) restaient « blanches »
+    // sur la carte (structure sans biome). On échantillonne aussi les 8 cellules adjacentes
+    // (centres à ±GRID) si leurs chunks sont chargés — gratuit (lecture mémoire client).
+    for (const dx of [-GRID, 0, GRID]) {
+      for (const dz of [-GRID, 0, GRID]) {
+        if (dx === 0 && dz === 0) continue;
+        const nx = Math.floor((p.x + dx) / GRID) * GRID + GRID / 2;
+        const nz = Math.floor((p.z + dz) / GRID) * GRID + GRID / 2;
+        const nk = cellKey(nx, nz);
+        if (biomeCells.has(nk)) continue;
+        try {
+          const nb = bot.blockAt(_v(nx, Math.floor(p.y), nz));
+          if (nb && nb.biome) {
+            biomeCells.add(nk);
+            emit(biomeSeenEvent(worldKey, { biome: resolveBiome(bot, nb) }, { x: nx, y: p.y, z: nz }));
+          }
+        } catch (e) { /* chunk voisin non chargé → plus tard */ }
+      }
+    }
     try {
       const cave = detectCaveEntrance(bot, p);
       if (cave.found) {
