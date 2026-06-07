@@ -306,7 +306,10 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // smeltCharcoal = gather bûches éventuel + fonte (180s de smelt max).
 // gather/gatherLog : 8 min — un trajet DIRIGÉ légitime peut faire ≤1500 blocs (mémoire de monde) ;
 // sûr car chaque goto interne d'explore est borné individuellement (directed 240s / waypoint 90s).
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, huntCook: 480000, smeltCharcoal: 300000, gather: 480000, gatherLog: 480000 };
+// gatherLog 180s (phase 3) : une chasse au bois honnête (biais dirigé + anneaux ≤128) tient en
+// <3 min — au-delà la zone est déforestée et le kit-relocate forêt est plus rentable que d'insister
+// (vécu V3Res1/4 : 480s × 4 tentatives = 32 min d'anneaux stériles avant le stall).
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, huntCook: 480000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
@@ -860,7 +863,11 @@ async function startResource() {
     try {
       const inv0 = (bot.inventory && bot.inventory.items()) || [];
       const hasWood = inv0.some((i) => i.name.endsWith('_log') || i.name.endsWith('_planks'));
-      if (bestPickTier() < 2 && !hasWood) {
+      const hasTable = inv0.some((i) => i.name === 'crafting_table');
+      // Du bois sera nécessaire si : pas de pioche (kit complet) OU table perdue (re-craft 3×3
+      // impossible sans elle — un bot tier 2 SANS table a besoin de bois autant qu'un bot nu).
+      const needsWood = (bestPickTier() < 2 || !hasTable) && !hasWood;
+      if (needsWood) {
         const logIds = Object.entries((bot.registry && bot.registry.blocksByName) || {})
           .filter(([n]) => n.endsWith('_log')).map(([, d]) => d.id);
         const near = logIds.length ? bot.findBlock({ matching: logIds, maxDistance: 48 }) : null;
@@ -885,7 +892,12 @@ async function startResource() {
       }, kitToken);
       clearInterval(poll);
       if (taskToken.cancelled) return;
-      if (!res.stalled || bestPickTier() >= 2) break;   // kit ok (ou au moins la pioche pierre)
+      if (!res.stalled) break;                          // kit complet
+      // Stall sur un but BOIS (logs/planks/table) → la zone est déforestée, quel que soit le
+      // palier de pioche (vécu V3Res1/4 : tier 2 SANS table → logs not_found en boucle, la
+      // relocalisation ne s'armait que pour tier<2). Autre stall avec pioche pierre → dégradé.
+      const woodStall = ['logs', 'planks', 'crafting_table'].includes(res.goal);
+      if (!woodStall && bestPickTier() >= 2) break;     // stall non-bois avec pioche → on tente la mine
       emit({ type: 'resource_kit_relocate', attempt: attempt + 1, goal: res.goal });
       try { await relocateToRegion({ forest: true }); } catch (e) { /* best-effort */ }
       if (taskToken.cancelled) return;
@@ -898,6 +910,10 @@ async function startResource() {
       if (sticks < 16) await craftSmart({ name: 'stick', count: 16 - sticks });
     } catch (e) { /* best-effort */ }
   }
+  // SPAWNPOINT post-kit (phase 3) : le spawn du monde est un LAC déforesté — chaque mort y
+  // renvoyait le bot (re-nage + re-voyage ~10 min). Bot OP → ancre son respawn ICI (zone kit
+  // saine, équipée). Une mort ne coûte plus que le retour à la mine.
+  try { bot.chat('/spawnpoint'); emit({ type: 'command', command: '/spawnpoint', reason: 'kit_done' }); } catch (e) {}
   const quota = loadQuota();
   // Claims anti-collision (fichier partagé du groupe) — seulement si fourni par le manager.
   const claims = args.claims ? createClaims(String(args.claims), { username: bot.username }) : null;
@@ -946,13 +962,18 @@ async function startAutonomous(sender) {
   emit({ type: 'autonomous_start', objective: objType });
   // RÉCUPÉRATION POST-MORT (vécu Surv4 : chaque mort = kit perdu = re-kit de zéro = spirale) :
   // les items restent 5 min au sol → on retourne les ramasser AVANT de reprendre (borné, best-effort).
-  if (lastDeath && Date.now() - lastDeath.t < 4 * 60 * 1000) {
+  // keepInventory ON → rien au sol → l'aller-retour de récupération (90 s) est du pur gaspillage.
+  // Heuristique : inventaire NON vide au respawn = keepInventory actif → skip (phase 3).
+  const invAfterDeath = (bot.inventory && bot.inventory.items()) || [];
+  if (lastDeath && Date.now() - lastDeath.t < 4 * 60 * 1000 && invAfterDeath.length === 0) {
     const d = lastDeath; lastDeath = null;
     emit({ type: 'death_recovery', x: Math.round(d.x), y: Math.round(d.y), z: Math.round(d.z) });
     await withTimeout(
       bot.pathfinder.goto(new pfGoals.GoalNear(d.x, d.y, d.z, 1)),
       90000, () => { try { stopMotion(); } catch (e) {} });
     await sleep(1500); // laisser le pickup aspirer les items au sol
+  } else if (lastDeath) {
+    lastDeath = null; // inventaire conservé (keepInventory) → reprise directe
   }
   if (objType === 'mapper') return startMapper(); // rôle continu : jamais « done »
   if (objType === 'resource') return startResource(); // mine les ores EXPOSÉS de la carte du groupe
