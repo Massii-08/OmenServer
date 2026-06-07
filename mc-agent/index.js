@@ -823,10 +823,21 @@ async function relocateToRegion(opts = {}) {
       return (ddx * ddx + ddz * ddz) > 256 * 256;
     });
     if (opts.forest) {
-      const wooded = land.filter((b) => FOREST_HINTS.some((h) => String(b.name || '').includes(h)));
-      if (wooded.length) land = wooded;                  // fallback : terre quelconque si aucune forêt mappée
+      // 1er choix : un endroit où une BÛCHE a été VUE (memory.finds, alimenté en live par les
+      // material_found des autres bots) — une cellule « biome forêt » peut être pelée (vécu
+      // V3Res2 : warp en forêt nominale, 158 waypoints sans un arbre).
+      const logFinds = ((w && w.finds) || []).filter((f) => String(f.material || '').endsWith('_log'));
+      if (logFinds.length) {
+        let h = 0;
+        for (const ch of String(bot.username || 'bot')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+        const pick = logFinds[(h + (_relocSeq++) * 7919) % logFinds.length];
+        c = { x: pick.x, z: pick.z };
+      } else {
+        const wooded = land.filter((b) => FOREST_HINTS.some((hh) => String(b.name || '').includes(hh)));
+        if (wooded.length) land = wooded;                // fallback : terre quelconque si aucune forêt mappée
+      }
     }
-    if (land.length) {
+    if (!c && land.length) {
       let h = 0;
       for (const ch of String(bot.username || 'bot')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
       const pick = land[(h + (_relocSeq++) * 7919) % land.length];
@@ -835,7 +846,9 @@ async function relocateToRegion(opts = {}) {
   } catch (e) { /* fallback quadrant */ }
   if (!c) c = regionCenter();
   emit({ type: 'resource_warp', x: c.x, z: c.z });
-  try { bot.chat('/spreadplayers ' + c.x + ' ' + c.z + ' 0 120 false ' + bot.username); } catch (e) {}
+  // mode forêt : spread serré (48) — atterrir À CÔTÉ des arbres confirmés, pas à 120 blocs.
+  const spread = opts.forest ? 48 : 120;
+  try { bot.chat('/spreadplayers ' + c.x + ' ' + c.z + ' 0 ' + spread + ' false ' + bot.username); } catch (e) {}
   await sleep(5000);                                     // atterrissage + chunks
 }
 
