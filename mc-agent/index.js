@@ -115,6 +115,7 @@ const world = loadWorld(worldFile);
 let taskToken = { cancelled: true };
 let deathTimes = [];
 let _escapeOnSpawn = false; // anti-camping : 2 morts <60 s → warp + re-spawnpoint au prochain spawn
+let _convoPauseUntil = 0;   // stop-pour-répondre : gèle les gotos pendant réflexion+frappe (HUMANIZE)
 let bootDone = false; // réflexes/mouvements/auth = une seule fois par connexion (pas à chaque respawn)
 
 // --- Mémoire de monde (1a/1b) : bootstrap du groupe (--world-memory) + clé de monde (--world-label).
@@ -598,10 +599,14 @@ async function startMapper() {
     // chaque jambe bornée (anti-freeze pathfinder, cf. withTimeout) ; timeout → virage + jambe suivante.
     // 45s : une jambe fait 8-64 blocs à pied — si ce n'est pas atteint en 45s, c'est inatteignable
     // (vu live MapT7B : 120s × jambes ratées en jungle dense = mapper figé de longues minutes).
-    goto: (wp) => withTimeout(
-      bot.pathfinder.goto(new pfGoals.GoalNear(wp.x, wp.y, wp.z, 8)),
-      45000, () => { try { stopMotion(); } catch (e) {} }
-    ).then((r) => { if (r && r.ok === false) throw new Error(r.reason || 'goto_failed'); }),
+    goto: async (wp) => {
+      // stop-pour-répondre : pas de nouvelle jambe tant que le bot « tape » sa réponse.
+      while (Date.now() < _convoPauseUntil) await sleep(250);
+      const r = await withTimeout(
+        bot.pathfinder.goto(new pfGoals.GoalNear(wp.x, wp.y, wp.z, 8)),
+        45000, () => { try { stopMotion(); } catch (e) {} });
+      if (r && r.ok === false) throw new Error(r.reason || 'goto_failed');
+    },
   }, taskToken);
 }
 
@@ -1380,6 +1385,13 @@ async function handleIncoming(username, message, isWhisper) {
   const reaction = decideReaction({ username, message, isWhisper, botUsername: bot.username, publicMode: PUBLIC_MODE });
   emit({ type: 'chat', from: username, message, private: !!isWhisper, handled: !!reaction });
   if (!reaction) return;
+  // STOP-POUR-RÉPONDRE (spec cartographes) : on s'arrête DÈS qu'on nous adresse la parole —
+  // pendant la « réflexion » (LLM) et la « frappe » (latence humanisée) le bot reste immobile
+  // (_convoPauseUntil gèle les prochains gotos des boucles), puis reprend après l'envoi.
+  if (HUMANIZE) {
+    _convoPauseUntil = Date.now() + 15000;            // borne dure (libérée à l'envoi)
+    try { stopMotion(); } catch (e) {}
+  }
   try {
     const history = memory.history(username);
     const decision0 = await think(client, { state: snapshot(bot), message, model, limiter, profile, commandDocs, trustDocs, sender: username, history, lang });
@@ -1396,6 +1408,7 @@ async function handleIncoming(username, message, isWhisper) {
       if (HUMANIZE) { try { stopMotion(); } catch (e) {} }
       if (delayMs > 0) await sleep(delayMs);
       if (text) { replyTo(reaction, text); emit({ type: 'say', message: text, private: reaction.private, to: reaction.to }); }
+      if (HUMANIZE) _convoPauseUntil = Date.now();     // message parti → on reprend la route
     }
     memory.append(username, 'user', message);
     if (decision.reply) memory.append(username, 'assistant', decision.reply);
