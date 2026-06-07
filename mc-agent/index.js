@@ -916,10 +916,22 @@ async function startResource() {
       if (taskToken.cancelled) return;
     }
     if (res.stalled) emit({ type: 'resource_kit_stalled', goal: res.goal }); // dégradé : on tente quand même
-    // Stock de bâtons (≥16) : de quoi re-crafter ~8 pioches en sous-sol (cobble infini là-bas).
+    // RAB DE SURVIE post-kit (phase 3) : une mort pendant un craft = table POSÉE perdue → chaque
+    // respawn repartait en chasse au bois (l'impôt récurrent, vécu V3Res1/3 à chaque mort).
+    // Tampon : planks ≥12 (3 re-crafts de table), 2e table de RECHANGE, sticks ≥16 (~8 pioches).
     try {
-      const sticks = ((bot.inventory && bot.inventory.items()) || [])
-        .filter((i) => i.name === 'stick').reduce((a, i) => a + i.count, 0);
+      const cnt = (n) => ((bot.inventory && bot.inventory.items()) || [])
+        .filter((i) => i.name === n).reduce((a, i) => a + i.count, 0);
+      const planksCnt = () => ((bot.inventory && bot.inventory.items()) || [])
+        .filter((i) => i.name.endsWith('_planks')).reduce((a, i) => a + i.count, 0);
+      if (planksCnt() < 12) {
+        const log = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name.endsWith('_log'));
+        if (log) { try { await craftItem(bot, { name: log.name.replace('_log', '_planks'), count: Math.ceil((12 - planksCnt()) / 4) }); } catch (e) {} }
+      }
+      if (cnt('crafting_table') < 2 && planksCnt() >= 8) {
+        try { await craftSmart({ name: 'crafting_table', count: 1 }); } catch (e) {}
+      }
+      const sticks = cnt('stick');
       if (sticks < 16) await craftSmart({ name: 'stick', count: 16 - sticks });
     } catch (e) { /* best-effort */ }
   }
