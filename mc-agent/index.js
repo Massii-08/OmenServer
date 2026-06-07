@@ -957,7 +957,13 @@ async function startResource() {
     cleanup: quota ? tossJunk : null,
     mineFor: quota ? mineForType : null,
     relocate: quota ? relocateToRegion : null,
-    ensureGear: quota ? (async (types) => { await ensureGearFor(types); await ensureTorches(); }) : null,
+    // BORNÉ (vécu V3Res2 figé 40 min, events morts mais socket vivant — un hang dans la chaîne
+    // gear/smelt/craft n'était couvert par AUCUN timeout, le watchdog physicsTick ne voit rien) :
+    // même règle que tout appel mineflayer long (#42b).
+    ensureGear: quota ? (async (types) => {
+      await withTimeout((async () => { await ensureGearFor(types); await ensureTorches(); })(),
+        180000, () => { try { stopMotion(); } catch (e) {} });
+    }) : null,
     onTarget: async () => {
       if (isInWater(bot)) await escapeWater(bot, { emit });
       await settleSurvivalKit();
