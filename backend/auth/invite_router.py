@@ -18,7 +18,7 @@ Routes:
     DELETE /api/auth/users/{id}        → Supprimer un utilisateur (admin only)
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -33,11 +33,52 @@ from backend.auth.permissions import VALID_ROLES, ROLE_NAMES
 router = APIRouter(prefix="/api/auth", tags=["Invitations & Utilisateurs"])
 
 
+# --- Helpers ---
+
+def _is_expired(invitation: Invitation) -> bool:
+    """Un code est échu si expires_at est passé. expires_at=None → jamais."""
+    if invitation.expires_at is None:
+        return False
+    exp = invitation.expires_at
+    # SQLite stocke des datetimes naïfs → on les considère UTC pour comparer.
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    return exp <= datetime.now(timezone.utc)
+
+
+def _purge_expired(db: Session) -> None:
+    """Supprime définitivement les invitations échues (disparaissent de la liste)."""
+    now = datetime.now(timezone.utc)
+    expired = [
+        inv for inv in db.query(Invitation).filter(Invitation.expires_at.isnot(None)).all()
+        if _is_expired(inv)
+    ]
+    for inv in expired:
+        db.delete(inv)
+    if expired:
+        db.commit()
+
+
+def _serialize(inv: Invitation) -> dict:
+    """Représentation d'une invitation pour le dashboard."""
+    return {
+        "id": inv.id,
+        "code": inv.code,
+        "role": inv.role,
+        "role_name": ROLE_NAMES.get(inv.role, inv.role),
+        "uses": inv.uses or 0,
+        "never_expires": inv.expires_at is None,
+        "expires_at": inv.expires_at.strftime("%d/%m/%Y %H:%M") if inv.expires_at else None,
+        "created_at": inv.created_at.strftime("%d/%m/%Y %H:%M") if inv.created_at else "",
+    }
+
+
 # --- Schémas ---
 
 class CreateInvitationRequest(BaseModel):
     role: str = "player"
-    max_uses: int = 1
+    # Durée de validité en minutes. None ou <=0 → le code n'expire jamais.
+    expires_in_minutes: Optional[int] = None
 
 class JoinRequest(BaseModel):
     username: str
@@ -75,24 +116,24 @@ def create_invitation(
             detail=f"Rôle invalide. Choix possibles: {', '.join(r for r in VALID_ROLES if r != 'admin')}"
         )
 
+    # Échéance : si une durée est fournie, on calcule la date d'expiration.
+    expires_at = None
+    if request.expires_in_minutes and request.expires_in_minutes > 0:
+        # Plafond raisonnable : 2 ans (anti-débordement / valeurs absurdes)
+        minutes = min(request.expires_in_minutes, 60 * 24 * 365 * 2)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+
     invitation = Invitation(
         role=request.role,
         created_by=current_user.id,
-        max_uses=max(1, request.max_uses),
+        expires_at=expires_at,
+        max_uses=0,  # 0 = utilisations illimitées ; la seule limite est le temps
     )
     db.add(invitation)
     db.commit()
     db.refresh(invitation)
 
-    return {
-        "id": invitation.id,
-        "code": invitation.code,
-        "role": invitation.role,
-        "role_name": ROLE_NAMES.get(invitation.role, invitation.role),
-        "max_uses": invitation.max_uses,
-        "uses": 0,
-        "created_at": invitation.created_at.strftime("%d/%m/%Y %H:%M"),
-    }
+    return _serialize(invitation)
 
 
 @router.get("/invitations")
@@ -104,23 +145,12 @@ def list_invitations(
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Réservé aux administrateurs")
 
+    # Les codes échus disparaissent de la liste (purge à l'affichage).
+    _purge_expired(db)
+
     invitations = db.query(Invitation).order_by(Invitation.created_at.desc()).all()
 
-    return {
-        "invitations": [
-            {
-                "id": inv.id,
-                "code": inv.code,
-                "role": inv.role,
-                "role_name": ROLE_NAMES.get(inv.role, inv.role),
-                "max_uses": inv.max_uses,
-                "uses": inv.uses,
-                "is_used": inv.uses >= inv.max_uses,
-                "created_at": inv.created_at.strftime("%d/%m/%Y %H:%M"),
-            }
-            for inv in invitations
-        ]
-    }
+    return {"invitations": [_serialize(inv) for inv in invitations]}
 
 
 @router.delete("/invitations/{invitation_id}")
@@ -150,8 +180,10 @@ def get_invite_info(code: str, db: Session = Depends(get_db)):
     if not invitation:
         raise HTTPException(status_code=404, detail="Code d'invitation invalide")
 
-    if invitation.uses >= invitation.max_uses:
-        raise HTTPException(status_code=410, detail="Cette invitation a déjà été utilisée")
+    if _is_expired(invitation):
+        db.delete(invitation)
+        db.commit()
+        raise HTTPException(status_code=410, detail="Ce code d'invitation a expiré")
 
     return {
         "valid": True,
@@ -184,8 +216,10 @@ def join_with_invite(
     if not invitation:
         raise HTTPException(status_code=404, detail="Code d'invitation invalide")
 
-    if invitation.uses >= invitation.max_uses:
-        raise HTTPException(status_code=410, detail="Cette invitation a déjà été utilisée")
+    if _is_expired(invitation):
+        db.delete(invitation)
+        db.commit()
+        raise HTTPException(status_code=410, detail="Ce code d'invitation a expiré")
 
     # Vérifier le username
     if not request.username or len(request.username) < 2:
@@ -208,14 +242,10 @@ def join_with_invite(
     )
     db.add(new_user)
 
-    # Marquer l'invitation comme utilisée
-    invitation.uses += 1
+    # Compteur informatif : le code reste valide tant qu'il n'est pas échu.
+    invitation.uses = (invitation.uses or 0) + 1
     invitation.used_by = new_user.id
     invitation.used_at = datetime.now(timezone.utc)
-
-    # Si l'invitation a atteint ses utilisations max → la supprimer
-    if invitation.uses >= invitation.max_uses:
-        db.delete(invitation)
 
     db.commit()
     db.refresh(new_user)

@@ -858,21 +858,43 @@ const App = {
 
  // --- Invitations ---
 
+ _toggleInviteCustom() {
+ const sel = document.getElementById('invite-expiry');
+ const custom = document.getElementById('invite-custom-expiry');
+ if (sel && custom) custom.style.display = (sel.value === 'custom') ? 'flex' : 'none';
+ },
+
+ _inviteExpiryMinutes() {
+ const sel = document.getElementById('invite-expiry');
+ if (!sel) return 0;
+ if (sel.value === 'custom') {
+ const val = parseInt(document.getElementById('invite-custom-value').value, 10);
+ const unit = parseInt(document.getElementById('invite-custom-unit').value, 10) || 1;
+ if (!val || val <= 0) return 0;
+ return val * unit;
+ }
+ return parseInt(sel.value, 10) || 0;
+ },
+
  async createInvitation() {
  const role = document.getElementById('invite-role').value;
  const resultEl = document.getElementById('invite-result');
+ const minutes = this._inviteExpiryMinutes();
 
  const response = await Auth.apiCall('/api/auth/invitations', {
  method: 'POST',
- body: JSON.stringify({ role, max_uses: 1 }),
+ body: JSON.stringify({ role, expires_in_minutes: minutes > 0 ? minutes : null }),
  });
 
  if (response && response.ok) {
  const data = await response.json();
  const link = `${location.origin}/login?invite=${data.code}`;
+ const exp = data.never_expires
+ ? Lang.t('settings.invite_permanent')
+ : `${Lang.t('settings.invite_expires_at')} ${data.expires_at}`;
  resultEl.innerHTML = `
- <div style="background: var(--bg-elev-2); border-radius: 8px; padding: 12px; border: 1px solid var(--accent);"><div style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">Lien d'invitation (${data.role_name})</div><div style="font-family: monospace; font-size: 14px; color: var(--accent); word-break: break-all;">${link}</div><button class="btn btn-secondary btn-sm mt-4" onclick="navigator.clipboard.writeText('${link}').then(() => this.textContent = 'Copié !')">
- Copier le lien
+ <div style="background: var(--bg-elev-2); border-radius: 8px; padding: 12px; border: 1px solid var(--accent);"><div style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">${Lang.t('settings.invite_link')} (${data.role_name}) · ${exp}</div><div style="font-family: monospace; font-size: 14px; color: var(--accent); word-break: break-all;">${link}</div><button class="btn btn-secondary btn-sm mt-4" onclick="navigator.clipboard.writeText('${link}').then(() => this.textContent = '${Lang.t('settings.invite_copied')}')">
+ ${Lang.t('settings.invite_copy')}
  </button></div>
  `;
  this.loadInvitations();
@@ -889,15 +911,19 @@ const App = {
  const invites = data.invitations || [];
 
  if (invites.length === 0) {
- listEl.innerHTML = '<div style="text-align: center; padding: 16px; color: var(--text-muted); font-size: 13px;">Aucune invitation</div>';
+ listEl.innerHTML = `<div style="text-align: center; padding: 16px; color: var(--text-muted); font-size: 13px;">${Lang.t('settings.invite_none')}</div>`;
  return;
  }
 
- listEl.innerHTML = invites.map(inv => `
- <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px;"><div><span style="font-family: monospace; color: var(--info);">${inv.code}</span><span style="color: var(--text-muted);"> · ${inv.role_name}</span><span style="color: ${inv.is_used ? 'var(--danger)' : 'var(--accent)'};">
- ${inv.is_used ? ' · Utilisé' : ' · Actif'}
- </span></div><button class="btn btn-danger btn-sm" onclick="App.deleteInvitation(${inv.id})" style="padding: 2px 8px; font-size: 11px;"></button></div>
- `).join('');
+ listEl.innerHTML = invites.map(inv => {
+ const expLabel = inv.never_expires
+ ? Lang.t('settings.invite_permanent')
+ : `${Lang.t('settings.invite_expires_at')} ${inv.expires_at}`;
+ const usesLabel = `${inv.uses} ${Lang.t('settings.invite_uses')}`;
+ return `
+ <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px;"><div><span style="font-family: monospace; color: var(--info);">${inv.code}</span><span style="color: var(--text-muted);"> · ${inv.role_name}</span><span style="color: ${inv.never_expires ? 'var(--accent)' : 'var(--warning)'};"> · ${expLabel}</span><span style="color: var(--text-dim);"> · ${usesLabel}</span></div><button class="btn btn-danger btn-sm" onclick="App.deleteInvitation(${inv.id})" style="padding: 2px 8px; font-size: 11px;">${Lang.t('settings.invite_delete')}</button></div>
+ `;
+ }).join('');
  },
 
  async deleteInvitation(id) {
@@ -1088,7 +1114,7 @@ const App = {
  ${t('settings.invite_create')}
  </button></div><p style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">
  ${t('settings.invite_desc')}
- </p><div style="display: flex; gap: 8px; margin-top: 12px;"><select class="form-input" id="invite-role" style="flex: 1;"><option value="spectator">${t('settings.invite_spectator')}</option><option value="rectester">${t('settings.invite_rectester')}</option><option value="player" selected>${t('settings.invite_player')}</option><option value="money">${t('settings.invite_money')}</option><option value="moderator">${t('settings.invite_mod')}</option><option value="developer">${t('settings.invite_dev')}</option></select></div><div id="invite-result" style="margin-top: 12px;"></div><div id="invitations-list" style="margin-top: 16px;"><div style="text-align: center; padding: 16px; color: var(--text-muted); font-size: 13px;">${t('common.loading')}</div></div></div><!-- Créer un utilisateur --><div class="card" style="margin-bottom:20px;"><h3 style="margin:0 0 16px;">${t('users.create_title')}</h3><div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end;"><div><label class="form-label">${t('users.username')}</label><input id="new-user-name" class="form-input" placeholder="${t('users.username_hint')}" /></div><div><label class="form-label">${t('users.password')}</label><input id="new-user-pass" class="form-input" type="password" placeholder="${t('users.password_hint')}" /></div><div><label class="form-label">${t('users.role')}</label><select id="new-user-role" class="form-input"><option value="spectator">${t('users.role_spectator')}</option><option value="rectester">${t('users.role_rectester')}</option><option value="player" selected>${t('users.role_player')}</option><option value="money">${t('users.role_money')}</option><option value="moderator">${t('users.role_moderator')}</option><option value="developer">${t('users.role_developer')}</option><option value="admin">${t('users.role_admin')}</option></select></div><button class="btn btn-primary" onclick="App.createUser()" style="height:38px;">${t('users.create_btn')}</button></div><div id="create-user-msg" style="font-size:13px;margin-top:8px;"></div></div><!-- Liste des utilisateurs --><div class="card"><h3 style="margin:0 0 16px;">${t('users.list_title')}</h3><div id="users-admin-list"><div style="text-align:center;padding:20px;color:var(--text-muted);">${t('users.loading')}</div></div></div>
+ </p><div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;"><select class="form-input" id="invite-role" style="flex: 1; min-width: 140px;"><option value="spectator">${t('settings.invite_spectator')}</option><option value="rectester">${t('settings.invite_rectester')}</option><option value="player" selected>${t('settings.invite_player')}</option><option value="money">${t('settings.invite_money')}</option><option value="moderator">${t('settings.invite_mod')}</option><option value="developer">${t('settings.invite_dev')}</option></select><select class="form-input" id="invite-expiry" style="flex: 1; min-width: 140px;" onchange="App._toggleInviteCustom()"><option value="0">${t('settings.invite_expiry_never')}</option><option value="60">${t('settings.invite_expiry_1h')}</option><option value="360">${t('settings.invite_expiry_6h')}</option><option value="1440">${t('settings.invite_expiry_1d')}</option><option value="10080" selected>${t('settings.invite_expiry_7d')}</option><option value="43200">${t('settings.invite_expiry_30d')}</option><option value="custom">${t('settings.invite_expiry_custom')}</option></select></div><div id="invite-custom-expiry" style="display: none; gap: 8px; margin-top: 8px;"><input type="number" min="1" id="invite-custom-value" class="form-input" placeholder="10" style="flex: 1;" /><select class="form-input" id="invite-custom-unit" style="flex: 1;"><option value="1">${t('settings.invite_unit_minutes')}</option><option value="60" selected>${t('settings.invite_unit_hours')}</option><option value="1440">${t('settings.invite_unit_days')}</option></select></div><div id="invite-result" style="margin-top: 12px;"></div><div id="invitations-list" style="margin-top: 16px;"><div style="text-align: center; padding: 16px; color: var(--text-muted); font-size: 13px;">${t('common.loading')}</div></div></div><!-- Créer un utilisateur --><div class="card" style="margin-bottom:20px;"><h3 style="margin:0 0 16px;">${t('users.create_title')}</h3><div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end;"><div><label class="form-label">${t('users.username')}</label><input id="new-user-name" class="form-input" placeholder="${t('users.username_hint')}" /></div><div><label class="form-label">${t('users.password')}</label><input id="new-user-pass" class="form-input" type="password" placeholder="${t('users.password_hint')}" /></div><div><label class="form-label">${t('users.role')}</label><select id="new-user-role" class="form-input"><option value="spectator">${t('users.role_spectator')}</option><option value="rectester">${t('users.role_rectester')}</option><option value="player" selected>${t('users.role_player')}</option><option value="money">${t('users.role_money')}</option><option value="moderator">${t('users.role_moderator')}</option><option value="developer">${t('users.role_developer')}</option><option value="admin">${t('users.role_admin')}</option></select></div><button class="btn btn-primary" onclick="App.createUser()" style="height:38px;">${t('users.create_btn')}</button></div><div id="create-user-msg" style="font-size:13px;margin-top:8px;"></div></div><!-- Liste des utilisateurs --><div class="card"><h3 style="margin:0 0 16px;">${t('users.list_title')}</h3><div id="users-admin-list"><div style="text-align:center;padding:20px;color:var(--text-muted);">${t('users.loading')}</div></div></div>
  `;
  this.loadInvitations();
  this._loadUsersAdmin();

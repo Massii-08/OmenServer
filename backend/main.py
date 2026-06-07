@@ -222,6 +222,10 @@ async def startup_event():
             ("game_servers", "sftp_password", "VARCHAR(50)"),
             ("bots", "owner_id", "INTEGER REFERENCES users(id)"),
             ("websites", "owner_id", "INTEGER REFERENCES users(id)"),
+            # Invitations multi-usage avec échéance temporelle
+            ("invitations", "expires_at", "DATETIME"),
+            ("invitations", "max_uses", "INTEGER DEFAULT 0"),
+            ("invitations", "uses", "INTEGER DEFAULT 0"),
         ]
         for table, column, col_type in migrations:
             try:
