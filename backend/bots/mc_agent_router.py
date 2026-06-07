@@ -126,6 +126,7 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
     host, port, user = req.host, req.port, req.user
     auth, profile, commands, policy = req.auth, req.profile, None, None
     language = req.language
+    stealth = False
     if req.server_id:
         srv = servers_store.get_server(req.server_id)
         if not srv:
@@ -133,6 +134,7 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
         host, port, user = srv["host"], srv["port"], srv["user"]
         auth, profile = srv["auth"], srv["intelligence"]
         language = srv.get("language", "fr")
+        stealth = bool(srv.get("stealth"))
         commands = servers_store.resolve_commands(srv)
         policy = servers_store.resolve_policy(srv)
     if not host:
@@ -140,6 +142,8 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
     auth = auth if auth in ("offline", "microsoft") else "offline"
     try:
         extra = {"quota": quota} if quota else {}
+        if stealth:
+            extra["stealth"] = True  # passé seulement si actif (rétro-compat monkeypatchs/tests)
         sid = mgr.start_session(host, port, user, req.model, auth, profile, commands, policy, server_id=req.server_id, language=language, autonomous=req.autonomous, objective=req.objective, world_label=req.world_label, **extra)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Impossible de demarrer Node : {exc}")
