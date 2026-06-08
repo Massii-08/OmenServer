@@ -1228,7 +1228,7 @@ const App = {
  + '<option value="developer"' + (u.role === 'developer' ? ' selected' : '') + '>' + Lang.t('users.role_developer') + '</option>'
  + '<option value="admin"' + (u.role === 'admin' ? ' selected' : '') + '>' + Lang.t('users.role_admin') + '</option>'
  + '</select>'
- + '<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();App._confirmDeleteUser(' + u.id + ', \'' + u.username + '\')" style="padding:4px 8px;font-size:12px;"></button>'
+ + '<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();App._confirmDeleteUser(' + u.id + ', \'' + u.username + '\')" style="padding:4px 8px;font-size:12px;">' + Lang.t('users.delete_btn') + '</button>'
  : '<span style="font-size:12px;color:var(--accent);font-weight:600;">' + Lang.t('users.you') + '</span>')
  + '<span id="user-chevron-' + u.id + '" style="font-size:10px;color:var(--text-muted);transition:transform .2s;"></span>'
  + '</div>'
