@@ -94,7 +94,7 @@ const SvPlayers = {
                     <div>
                         <span style="font-weight:600;font-size:14px;">${l.emoji} ${name}</span>${level}${extra}
                     </div>
-                    <button class="btn btn-sm btn-danger" onclick="SvPlayers._remove('${name}')"></button>
+                    <button class="btn btn-sm btn-danger" onclick="SvPlayers._remove('${name}')">${Lang.t('nodes.remove')}</button>
                 </div>`;
             }).join('');
         }

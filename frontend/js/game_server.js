@@ -232,7 +232,7 @@ const GameServer = {
 
  el.style.display = 'block';
  el.innerHTML = `
- <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;"><img src="${iconUrl}" style="width:36px;height:36px;border-radius:8px;" onerror="this.style.display='none'" /><div style="flex:1;"><div style="font-size:14px;font-weight:700;">${name}</div><div style="font-size:10px;color:var(--text-muted);">${Lang.t('common.loading')}</div></div><button class="btn btn-secondary btn-sm" onclick="GameServer._clearModpack()" style="font-size:10px;"></button></div><div id="modpack-versions"><div style="color:var(--text-muted);font-size:12px;">${Lang.t('common.loading')}</div></div>`;
+ <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;"><img src="${iconUrl}" style="width:36px;height:36px;border-radius:8px;" onerror="this.style.display='none'" /><div style="flex:1;"><div style="font-size:14px;font-weight:700;">${name}</div><div style="font-size:10px;color:var(--text-muted);">${Lang.t('common.loading')}</div></div><button class="btn btn-secondary btn-sm" onclick="GameServer._clearModpack()" style="font-size:10px;">${Lang.t('nodes.remove')}</button></div><div id="modpack-versions"><div style="color:var(--text-muted);font-size:12px;">${Lang.t('common.loading')}</div></div>`;
 
  // Charger les fichiers du modpack
  const r = await Auth.apiCall(`/api/mods/${id}/files`);
@@ -801,7 +801,7 @@ const GameServer = {
  const hasUrl = f.download_url ? true : false;
  return `
  <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;"><div><div style="font-size:13px;">${badge} ${f.name} <span style="color:var(--text-muted);font-size:11px;">(${f.size_mb} Mo)</span></div><div style="font-size:11px;color:var(--text-muted);">${versions}</div></div>
- ${hasUrl ? `<button class="btn btn-primary btn-sm" onclick="GameServer.installMod('${modName.replace(/'/g, "\\'")}', '${f.download_url}', '${f.name}')"></button>` : '<span style="font-size:11px;color:var(--text-muted);">Non dispo</span>'}
+ ${hasUrl ? `<button class="btn btn-primary btn-sm" onclick="GameServer.installMod('${modName.replace(/'/g, "\\'")}', '${f.download_url}', '${f.name}')">${Lang.t('sv.mod.install')}</button>` : '<span style="font-size:11px;color:var(--text-muted);">Non dispo</span>'}
  </div>
  `;
  }).join('');

@@ -182,7 +182,7 @@ const Monitoring = {
                         <button class="btn btn-sm btn-secondary" onclick="Monitoring.nodeAction('${node.hostname}', 'reboot')" title="${Lang.t('nodes.reboot_desc')}">${Lang.t('nodes.reboot')}</button>
                         <button class="btn btn-sm btn-secondary" onclick="Monitoring.nodeAction('${node.hostname}', 'shutdown')" title="${Lang.t('nodes.shutdown_desc')}">${Lang.t('nodes.shutdown')}</button>
                         <div style="flex:1;"></div>
-                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.removeNode('${node.hostname}')" title="${Lang.t('nodes.remove')}"></button>
+                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.removeNode('${node.hostname}')" title="${Lang.t('nodes.remove')}">${Lang.t('nodes.remove')}</button>
                     </div>
                     ` : ''}
                     ` : `
