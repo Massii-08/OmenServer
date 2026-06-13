@@ -887,9 +887,16 @@ async function provisionStartKit() {
     const gives = ['diamond_pickaxe 1', 'diamond_sword 1', 'iron_helmet 1', 'iron_chestplate 1',
       'iron_leggings 1', 'iron_boots 1', 'shield 1', 'cooked_beef 64', 'cobblestone 128', 'torch 64',
       'crafting_table 1', 'oak_planks 16', 'stick 16', 'coal 16'];
+    // DÉLAI INITIAL : les TOUTES PREMIÈRES commandes chat juste après le spawn sont PERDUES (le serveur
+    // n'a pas fini d'enregistrer le joueur — vécu live : /give diamond_pickaxe+sword (les 2 premières)
+    // absentes des logs serveur alors que les suivantes passaient → bot sans pioche → kit-bois). On
+    // laisse le chat s'établir avant le 1er /give critique.
+    await sleep(2000);
     // ESPACER les commandes (≥300 ms) : /give en rafale = spam chat → kick serveur (vécu run #1bis :
     // "kicked: [object Object]" → disconnected). L'anti-spam vanilla coupe à ~3 msg/s.
     for (const g of gives) { try { bot.chat('/give ' + u + ' ' + g); } catch (e) {} await sleep(350); }
+    // Filet : ré-envoyer la pioche (la plus critique) en DERNIER aussi — si la 1re passe était trop tôt.
+    try { bot.chat('/give ' + u + ' diamond_pickaxe 1'); } catch (e) {} await sleep(350);
     // Attendre que l'inventaire reflète le /give (sinon bestPickTier lit l'ancien inv vide → refait le kit).
     for (let w = 0; w < 20; w++) {
       await sleep(400);
