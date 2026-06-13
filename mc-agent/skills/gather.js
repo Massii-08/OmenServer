@@ -49,8 +49,19 @@ async function defendIfNeeded(bot) {
 }
 
 /** Récolte `count`× le bloc `name` le + proche. {ok, reason?/got}. `token` = annulation. */
-async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplore = false } = {}, token = null) {
+async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplore = false, collectTimeoutMs = 90000 } = {}, token = null) {
   if (!name || (Array.isArray(name) && name.length === 0)) return { ok: false, reason: 'no_block' };
+  // collectBlock.collect peut geler INDÉFINIMENT (cible inminable après approche : lave, désync — aucun
+  // timeout interne) → branchMine (opportunisme) figé jusqu'à 900s, HORS de portée des watchdogs
+  // (bug review #6, vécu ResBot1 25 min). Borne dure (miroir resource.js) : timeout → reject → le
+  // catch existant gère exactement comme un collect rejeté (re-équipe/retry puis stopResidual+failed).
+  const collectBounded = (block) => new Promise((resolve, reject) => {
+    let done = false;
+    const t = setTimeout(() => { if (!done) { done = true; reject(new Error('collect_timeout')); } }, collectTimeoutMs);
+    bot.collectBlock.collect(block).then(
+      (v) => { if (!done) { done = true; clearTimeout(t); resolve(v); } },
+      (e) => { if (!done) { done = true; clearTimeout(t); reject(e); } });
+  });
   // Bloc inconnu du registre (faute de frappe, version) → not_found NET. Jamais findBlock(matching:null)
   // (comportement indéfini mineflayer) ni exploration pour une cible qui n'existe pas.
   const ids = _ids(bot, name);
@@ -88,13 +99,13 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
     if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
     // resolveBiome : en 1.21.4 block.biome.name est '' → résolu via registry (sinon material_found muet)
     const biomeName = resolveBiome(bot, block).name;    // capturé avant collect (le bloc devient air)
-    try { await bot.collectBlock.collect(block); got++; }
+    try { await collectBounded(block); got++; }
     catch (e) {
       // #2 retours live : un dig peut être interrompu (aggro/mouvement/désync) → re-équipe et retente UNE fois
       try {
         const tool2 = bestToolFor(bot, block);
         if (tool2) { try { await bot.equip(tool2, 'hand'); } catch (e2) {} }
-        await bot.collectBlock.collect(block); got++;
+        await collectBounded(block); got++;
       } catch (e2) {
         stopResidual(bot);                       // collectBlock laisse son goal actif → creusage fantôme
         failed.add(keyOf(block.position));       // ne plus viser cette cible morte

@@ -851,6 +851,24 @@ async function armorUp(ironKeep = 8) {
   try { await ensureArmor({ ironKeep }); } catch (e) { /* best-effort */ }
 }
 
+// Ravitaillement NOURRITURE (bug review #1 — cause directe de famine mortelle) : le bot resource
+// minait des HEURES à Y-58 où il n'y a AUCUN mob passif → impossible de chasser → faim → 0, et en
+// difficulté HARD la famine TUE (+ bloque la régen). Filet de survie : (1) en surface, chasse RÉELLE
+// bornée (huntCook) ; (2) sinon (sous terre) /give déterministe (bot OP serveur de test, cohérent avec
+// les warps/tp/spawnpoint déjà utilisés ; no-op silencieux si non-OP → le kit huntCook prend le relais).
+async function ensureFood() {
+  try {
+    if (cookedCount(buildCtxInv(bot)) >= 4) return;            // assez de cuit en poche
+    const y = bot.entity && bot.entity.position ? bot.entity.position.y : 64;
+    if (y >= 45) {                                             // surface → chasse réaliste bornée
+      try { await withTimeout(huntCookGoal(6), 120000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+    }
+    if (cookedCount(buildCtxInv(bot)) >= 4) return;
+    // Sous terre la chasse est impossible (pas de passifs à Y-58) → filet déterministe anti-mort.
+    try { bot.chat('/give ' + bot.username + ' cooked_beef 32'); emit({ type: 'food_resupply', via: 'give' }); } catch (e) {}
+  } catch (e) { /* best-effort */ }
+}
+
 // Tick de survie COURT exécuté PENDANT le branch-mining (hole E — la survie ne tournait qu'ENTRE
 // les appels branchMine ; une branche de plusieurs minutes laissait le bot sans défense). Une action
 // de survie (combat/fuite) + manger + re-stocker des torches. Borné par nature (1 action/appel).
@@ -860,6 +878,15 @@ async function branchSurvivalTick() {
   // ensureTorches mine du charbon proche (gather/collectBlock) → borné, sinon il pourrait geler
   // la branche (le hook tourne DANS la boucle, hors de la détection de stall en tête de boucle).
   try { await withTimeout(ensureTorches(), 30000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+}
+
+// Survie LÉGÈRE pendant la DESCENTE diagonale (bug review #7) : combat/fuite + manger UNIQUEMENT —
+// SURTOUT PAS ensureTorches (miner du charbon via gather déplacerait le bot et désalignerait
+// l'escalier 1×2 → digs hors range au palier suivant). La descente Y64→-58 dure plusieurs minutes
+// pendant lesquelles seuls les réflexes event-driven protégeaient le bot.
+async function descentSurvivalTick() {
+  try { await survivalTick(bot, { fleeFrom, emit }); } catch (e) {}
+  try { await eat(bot); } catch (e) {}
 }
 
 // ── Phase 2 : branch-mine RÉEL au Y optimal du type (anti-xray : on ne voit plus à travers
@@ -924,7 +951,7 @@ async function mineForType(type, needed) {
     // les 4 cardinaux) au lieu de retenter le même mur (vécu V3Res2 : lava_ahead ×5 même cap).
     let lavaTurns = 0;
     for (let att = 0; att < 6; att++) {
-      const d = await withTimeout(descendDiagonal(bot, { targetY }, taskToken), 600000,
+      const d = await withTimeout(descendDiagonal(bot, { targetY, onSurvivalTick: descentSurvivalTick }, taskToken), 600000,
         () => { try { stopMotion(); } catch (e) {} });
       if (taskToken.cancelled) return { ok: true };
       if (d && d.ok) break;
@@ -1053,7 +1080,10 @@ async function startResource() {
   if (bestPickTier() < 3) {
     const fullChain = chainFor('iron_pickaxe');
     const cutAt = fullChain.findIndex((g) => g.name === 'iron_ore');
-    const kitChain = cutAt >= 0 ? fullChain.slice(0, cutAt) : fullChain;
+    const kitChain = cutAt >= 0 ? fullChain.slice(0, cutAt) : fullChain.slice();   // copie (jamais muter IRON_CHAIN)
+    // NOURRITURE au kit AVANT la descente (bug review #1) : sans food_stock le bot resource s'enfonçait
+    // sans bouffe → famine mortelle sous terre (aucun passif à chasser à Y-58, hard tue). Comme MAPPER_KIT.
+    kitChain.push({ name: 'food_stock', met: (c) => cookedCount(c.inv) >= 8, skill: 'huntCook', args: { target: 8 } });
     // Pré-check bois (phase 3) : le spawn est DÉFORESTÉ par les runs précédents — la 1re
     // tentative de kit y brûlait jusqu'à 8 min d'anneaux gatherLog stériles. Pas de bûche
     // visible ≤48 ET rien en poche → relocate-forêt AVANT le kit.
@@ -1149,15 +1179,13 @@ async function startResource() {
     // gear/smelt/craft n'était couvert par AUCUN timeout, le watchdog physicsTick ne voit rien) :
     // même règle que tout appel mineflayer long (#42b).
     ensureGear: quota ? (async (types) => {
-      const ironLeft = (() => {                          // fer quota restant → ironKeep d'ensureArmor
-        try {
-          const inv = (bot.inventory && bot.inventory.items()) || [];
-          const have = inv.filter((i) => i.name === 'raw_iron' || i.name === 'iron_ingot').reduce((a, i) => a + i.count, 0);
-          return Math.max(0, ((quota && quota.iron) || 0) - have);
-        } catch (e) { return 0; }
-      })();
+      // ironKeep BAS FIXE (8, comme mineForType l.915 + le timer armure) : l'armure PRIME (survie #1
+      // Massii) — le bot re-mine le quota fer, l'armure survit aux morts (keepInventory). Passer
+      // ironLeft (= quota.iron - have, jusqu'à 64) comme ironKeep bloquait TOUT craft d'armure sur le
+      // chemin mappé (gate totalIron - 64 >= cost jamais franchi → 0 armure, bug review #5). ensureGear
+      // tourne en tête de boucle resource AVANT chaque cible → couvre AUSSI la descente vers ore mappée.
       await withTimeout((async () => {
-        await ensureGearFor(types); await armorUp(ironLeft);
+        await ensureGearFor(types); await armorUp(); await ensureFood();
       })(), 240000, () => { try { stopMotion(); } catch (e) {} });
     }) : null,
     onTarget: async () => {
@@ -1284,6 +1312,7 @@ async function onSpawn() {
     bot.pathfinder.setMovements(moves);
     let waterRescue = null; // évasion d'eau en cours (jamais 2 en parallèle)
     let lastWaterRescueAt = 0; // escalade : 2e rescue <5 min → warp dur (aquifère inextirpable)
+    let panicInFlight = false; // garde de ré-entrée onPanic (bug review #3 : fire-and-forget non-awaité)
     installReflexes(bot, {
       emit, fleeFrom,
       // DÉLAI DE RÉACTION humain sur les réflexes (anti aimbot 0 ms / anti-ban) — TOUJOURS actif
@@ -1308,13 +1337,18 @@ async function onSpawn() {
       // PANIC WALL (Massii survie mobs) : PV critiques → poser des blocs sur les 4 côtés
       // (tête+pieds) pour couper le contact mêlée, puis manger. Best-effort, non bloquant.
       onPanic: () => {
+        // Garde de ré-entrée (bug review #3) : onPanic est fire-and-forget (non-awaité par le réflexe) ;
+        // sans garde, des panicWall concurrents s'empilaient (jusqu'à 9 placeBlock × 5 s = ~45 s bloqué).
+        // + withTimeout sur chaque étape : un placeBlock peut throw après 5 s en grotte ouverte.
+        if (panicInFlight) return;
+        panicInFlight = true;
         (async () => {
           try { stopMotion(); } catch (e) {}
           // panicWall (module dédié, hole C) : mur ROBUSTE même en grotte ouverte (pontage sur le
           // bloc-sol du bot) — l'ancien inline échouait en silence là où les mobs essaiment.
-          try { await panicWall(bot); } catch (e) { /* best-effort */ }
-          try { await eat(bot); } catch (e) {}
-        })();
+          try { await withTimeout(panicWall(bot), 3000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) { /* best-effort */ }
+          try { await withTimeout(eat(bot), 2500, () => {}); } catch (e) {}
+        })().finally(() => { panicInFlight = false; });
       },
       // POSTURE DÉFENSIVE à ~10 PV (hole C — AVANT le seuil critique) : équipe + lève le bouclier
       // brièvement (réduit les dégâts entrants). La riposte mêlée et onRanged gèrent l'agresseur.
@@ -1653,11 +1687,16 @@ bot.on('death', () => {
   const burst = deathTimes.filter((t) => Date.now() - t < 60000).length;
   if (burst >= 2) _escapeOnSpawn = true;
   // Garde-fou ultime (relevé 3→5 : le warp anti-camping gère les boucles courtes) :
-  // 5 morts / 10 min → pause objectif + notifie (le self-healing backend reprendra).
+  // 5 morts / 10 min → on SORT du process (miroir du starved l.1172) pour laisser le self-healing
+  // backend respawner avec un world.json FRAIS (status=in_progress) en ~15 s — inventaire + quota
+  // du compte persistent (keepInventory). L'ancienne pause (status='paused' + process VIVANT) était
+  // une IMPASSE : le manager ne respawne que sur mort du process → bot idle à vie, quota jamais
+  // atteint (bug review #2). NE PAS persister 'paused' avant l'exit (le manager réécrit un world.json
+  // frais au respawn ; saveWorld 'paused' empêcherait onSpawn de relancer l'objectif).
   if (deathTimes.length >= 5) {
     taskCtl.cancel();
-    if (world.objective) { world.objective.status = 'paused'; saveWorld(worldFile, world); }
     emit({ type: 'autonomous_stalled', reason: 'death_loop' });
+    process.exit(2);
   }
 });
 bot.on('kicked', (reason) => emit({ type: 'error', message: 'kicked: ' + reason }));

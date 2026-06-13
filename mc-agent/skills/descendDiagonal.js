@@ -60,7 +60,7 @@ function buildGoal(x, y, z) {
   return { x, y, z };
 }
 
-async function descendDiagonal(bot, { targetY = -54, maxDepth = 200 } = {}, token = null) {
+async function descendDiagonal(bot, { targetY = -54, maxDepth = 200, onSurvivalTick = null, survivalEvery = 4 } = {}, token = null) {
   let reachedY = bot.entity && bot.entity.position ? bot.entity.position.y : 0;
   if (reachedY <= targetY) return { ok: true, reachedY };
 
@@ -70,6 +70,13 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200 } = {}, toke
 
   while (steps < maxDepth) {
     if (token && token.cancelled) return { ok: true, reachedY, cancelled: true };
+    // SURVIE PENDANT LA DESCENTE (hole E / bug review #7) : la descente Y64→-58 dure plusieurs minutes,
+    // pendant lesquelles AUCUNE survie ne tournait (réflexes event-driven seuls). Hook LÉGER tous les
+    // survivalEvery paliers : combat/fuite/manger UNIQUEMENT (l'appelant n'y met PAS ensureTorches —
+    // miner du charbon déplacerait le bot et désalignerait l'escalier). Best-effort, jamais bloquant.
+    if (onSurvivalTick && steps % survivalEvery === 0) {
+      try { await onSurvivalTick(steps); } catch (e) { /* survie best-effort */ }
+    }
 
     const p = bot.entity.position;
     const fx = Math.floor(p.x);

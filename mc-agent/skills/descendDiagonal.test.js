@@ -71,6 +71,17 @@ test('descendDiagonal : descend OK 5 paliers de stone, reachedY décroît', asyn
   assert.ok(r.reachedY <= 5, `reachedY=${r.reachedY} should be <= 5`);
 });
 
+test('descendDiagonal : onSurvivalTick appelé pendant la descente (survie continue) — bug review #7', async () => {
+  // La descente Y64→-58 dure plusieurs minutes ; sans hook, AUCUNE survie ne tourne (réflexes seuls).
+  const { bot } = makeBot({ startY: 20 });
+  const ticks = [];
+  const r = await descendDiagonal(bot, { targetY: 5, maxDepth: 40, onSurvivalTick: (s) => { ticks.push(s); }, survivalEvery: 4 });
+  assert.strictEqual(r.ok, true);
+  assert.ok(ticks.length >= 1, `onSurvivalTick appelé au moins 1× pendant la descente (ticks=${JSON.stringify(ticks)})`);
+  assert.strictEqual(ticks[0], 0, 'survie dès le 1er palier');
+  assert.ok(ticks.every((s) => s % 4 === 0), 'cadence survivalEvery respectée');
+});
+
 test('descendDiagonal : token.cancelled stoppe net', async () => {
   const { bot } = makeBot({ startY: 10 });
   const r = await descendDiagonal(bot, { targetY: -10, maxDepth: 100 }, { cancelled: true });

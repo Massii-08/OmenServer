@@ -150,6 +150,21 @@ test('gather : échec final → mouvement résiduel STOPPÉ (setGoal(null), pas 
   assert.strictEqual(goalCleared, true, 'pathfinder.setGoal(null) appelé après l\'échec (anti-creusage fantôme)');
 });
 
+test('gather : collect qui HANG est borné (collectTimeoutMs) → ne fige pas, collect_failed — bug review #6', async () => {
+  // collectBlock.collect peut ne JAMAIS se résoudre (cible inminable/désync) → sans borne, branchMine
+  // (gather opportuniste) gèle jusqu'à 900s, hors de portée des watchdogs. La borne doit rejeter et
+  // laisser le catch retomber proprement (retry borné puis collect_failed), pas hang.
+  const { bot } = makeBot({ target: pos(10, 70, 0) });
+  let collectCalls = 0;
+  bot.collectBlock.collect = () => { collectCalls++; return new Promise(() => {}); }; // hang éternel
+  const t0 = Date.now();
+  const res = await gather(bot, { name: 'oak_log', count: 1, collectTimeoutMs: 40 });
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.reason, 'collect_failed');
+  assert.ok(collectCalls >= 2, `a retenté une fois malgré le hang (collectCalls=${collectCalls})`);
+  assert.ok(Date.now() - t0 < 2000, 'borné (pas de hang)');
+});
+
 test('gather : pas de material_found sans worldKey (manuel) ni sans biome connu (datapack)', async () => {
   const a = makeBot({ target: pos(10, 70, 0), biome: 'forest' }); // pas de worldKey (lancement manuel)
   await gather(a.bot, { name: 'oak_log', count: 1 });

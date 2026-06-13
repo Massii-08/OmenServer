@@ -351,24 +351,25 @@ async function branchMine(bot, opts = {}, token = null) {
   let lastProgressAt = now();
   let lastPosKey = flooredPos();
   let lastOreSignal = oreSignal();
+  // Détection de stall FACTORISÉE (réutilisée boucle principale ET branches latérales — bug review
+  // #4 : les for-j de branches, jusqu'à branchLength×2 cibles = plusieurs min, n'avaient NI survie NI
+  // détection de stall → un bot coincé dans une branche stallait jusqu'au timeout 900s). true = stall.
+  const checkStall = () => {
+    const posKey = flooredPos();
+    const oreNow = oreSignal();
+    if (posKey !== lastPosKey || oreNow > lastOreSignal) {
+      lastProgressAt = now(); lastPosKey = posKey; lastOreSignal = oreNow;
+      return false;
+    }
+    return now() - lastProgressAt > stallMs;
+  };
 
   outer:
   while (i <= mainLength) {
     if (token && token.cancelled) return { ok: true, cancelled: true, ores: deltaOres(oresBefore, snapshotOres(bot)), gotDiamond: countItem(bot, 'diamond') > 0, heading: dir };
     // Stall : aucun progrès (position figée + aucun ore récolté) depuis > stallMs → échec réel
     // (l'appelant relocate). On échantillonne EN TÊTE de boucle.
-    {
-      const posKey = flooredPos();
-      const oreNow = oreSignal();
-      if (posKey !== lastPosKey || oreNow > lastOreSignal) {
-        lastProgressAt = now();
-        lastPosKey = posKey;
-        lastOreSignal = oreNow;
-      } else if (now() - lastProgressAt > stallMs) {
-        stopReason = 'stalled';
-        break;
-      }
-    }
+    if (checkStall()) { stopReason = 'stalled'; break; }
     if (countWallable(bot) < COBBLE_RESERVE_MIN) { stopReason = 'cobble_low'; break; }
     if (stopReached()) break;                                          // objectif rempli
 
@@ -414,6 +415,12 @@ async function branchMine(bot, opts = {}, token = null) {
           if (token && token.cancelled) break;
           if (stopReached()) break outer;
           if (countWallable(bot) < COBBLE_RESERVE_MIN) { stopReason = 'cobble_low'; break outer; }
+          // Survie + détection de stall DANS la branche (bug review #4) : sans ça, une branche de
+          // plusieurs minutes laissait le bot sans défense (mobs) et un blocage stallait 900s.
+          if (checkStall()) { stopReason = 'stalled'; break outer; }
+          if (onSurvivalTick && (j === 1 || j % survivalEvery === 0)) {
+            try { await onSurvivalTick('branch' + j); } catch (e) { /* best-effort */ }
+          }
           const ft = p(footTarget.x + side.dx * j, footTarget.y, footTarget.z + side.dz * j);
           const ht = p(ft.x, ft.y + 1, ft.z);
           // Approche aussi avant la branche — j peut monter à 8, donc range hors limite sans goto.

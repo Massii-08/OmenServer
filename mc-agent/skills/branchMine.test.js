@@ -354,3 +354,18 @@ test('approach is time-bounded', async () => {
   });
   assert.ok(r && typeof r.ok === 'boolean', 'branchMine doit retourner (pas de hang)');
 });
+
+test('branchMine : onSurvivalTick tourne AUSSI dans les branches latérales — bug review #4', async () => {
+  // Le hook survie ne tournait QUE dans la boucle principale ; les for-j de branches (plusieurs min)
+  // laissaient le bot sans défense. Vérifie qu'un tag 'branchN' apparaît (survie dans la branche).
+  const { bot } = makeBot({ y: -54 });
+  const ticks = [];
+  await branchMine(bot, {
+    targetY: -54, mainLength: 6, branchSpacing: 3, branchLength: 4,
+    survivalEvery: 4, onSurvivalTick: (tag) => { ticks.push(tag); },
+  });
+  assert.ok(
+    ticks.some((t) => typeof t === 'string' && t.startsWith('branch')),
+    `survie appelée dans une branche latérale (ticks=${JSON.stringify(ticks)})`,
+  );
+});
