@@ -307,6 +307,46 @@ async function runResource(bot, opts = {}, token = null) {
       if (token && token.cancelled) return { ok: true, mined, cancelled: true };
     }
 
+    // §3.G — MINAGE HUMAIN (mode quota, exigence Massii §1.6) : la cible mappée = CAP/région, JAMAIS un
+    // beeline X-ray sur le bloc. On strip-mine VERS sa région (mineFor DIRIGÉ au Y optimal via heading) ;
+    // le flood-fill (branchMine) vide les veines découvertes. Le bot ne fonce jamais pile sur le bloc —
+    // il le « découvre » en creusant. (Mode legacy SANS mineFor : beeline direct ci-dessous, inchangé.)
+    if (mineFor) {
+      const _from = bot.entity && bot.entity.position;
+      const heading = _from
+        ? { dx: Math.sign(Math.round(target.x - _from.x)), dz: Math.sign(Math.round(target.z - _from.z)) }
+        : null;
+      emit({ type: 'resource_region', material: target.material, toward: { x: target.x, y: target.y, z: target.z }, heading });
+      const _prog = tracker ? tracker.progress(_items(bot)) : null;
+      const _needed = _prog && _prog[target.material] ? Math.max(1, _prog[target.material].target - _prog[target.material].have) : 1;
+      const _haveBefore = _prog && _prog[target.material] ? _prog[target.material].have : 0;
+      let _rr = null;
+      try { _rr = await mineFor(target.material, _needed, { heading }); }
+      catch (e) { _rr = { ok: false, reason: 'error', detail: String((e && e.message) || e).slice(0, 120) }; }
+      if (claims) claims.release(key);
+      if (token && token.cancelled) return { ok: true, mined, cancelled: true };
+      if (reload) memory = reload() || memory;
+      const _haveAfter = tracker ? (tracker.progress(_items(bot))[target.material] || { have: 0 }).have : 0;
+      if (_haveAfter > _haveBefore) { mined += (_haveAfter - _haveBefore); emit({ type: 'ore_mined', world: wkey, material: target.material }); emitProgress(); }
+      if (_rr && _rr.ok) { idleSince = null; mineForFails = 0; failStreak = 0; }
+      else {
+        mineForFails++;
+        if (mineForFails >= 3 && relocate && relocations < maxRelocations) {
+          relocations++; mineForFails = 0;
+          emit({ type: 'resource_relocate', n: relocations, cause: 'region_mine_fails' });
+          try { await relocate(); } catch (e) { /* best-effort */ }
+          skip.clear(); busyUntil.clear();
+          if (token && token.cancelled) return { ok: true, mined, cancelled: true };
+          if (reload) memory = reload() || memory;
+        }
+        if (idleSince == null) idleSince = clock();
+        if (clock() - idleSince > maxIdleMs) { emit({ type: 'resource_starved', mined, idleMs: clock() - idleSince }); return { ok: false, reason: 'starved', mined }; }
+        await sleep(waitMs);
+        if (token && token.cancelled) return { ok: true, mined, cancelled: true };
+      }
+      continue;
+    }
+
     // Navigation bornée vers la position exacte. Throw = inatteignable → skip local SANS retirer
     // de la carte + release de la claim (un autre bot — mieux placé/équipé — pourra retenter).
     try { await doGoto(target); }

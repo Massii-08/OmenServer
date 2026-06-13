@@ -962,7 +962,7 @@ async function recoverPickaxe() {
   return { ok: bestPickTier() >= 0 };
 }
 
-async function mineForType(type, needed) {
+async function mineForType(type, needed, opts = {}) {
   const targetY = Y_OPT[type] !== undefined ? Y_OPT[type] : -58;
   // SANS PIOCHE (Massii #5) : récupération AVANT toute tentative — les skills refusent
   // désormais de creuser à la main (no_pickaxe).
@@ -1026,7 +1026,9 @@ async function mineForType(type, needed) {
   const stopOre = { items: ITEMS_FOR[type] || [type], count: Math.max(1, Number(needed) || 1) };
   const r = await withTimeout(branchMine(bot, {
     targetY, mainLength: 24, branchLength: 8, stopOre,
-    heading: bot._branchHeading || null,
+    // §3.G : cap EXPLICITE vers la région mappée (fourni par resource.js) prioritaire sur le cap
+    // persistant — le strip-mining PROGRESSE vers la zone du minerai sans goto-beeline sur le bloc.
+    heading: (opts && opts.heading) || bot._branchHeading || null,
     torchEvery: 4,                          // hole B : torches plus fréquentes (était TORCH_EVERY=8)
     approachTimeoutMs: 20000,               // hole E : goto d'approche borné → plus de hang en branche
     survivalEvery: 4,

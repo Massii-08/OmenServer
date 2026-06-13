@@ -742,3 +742,32 @@ test('phase2 : cibles mappées au-delà de maxTargetDist ignorées → mineFor l
   assert.equal(r.done, true);
   assert.deepEqual(minedFor, ['iron']);                // mineFor local, pas de trek de 5000 blocs
 });
+
+test('§3.G : cible mappée + quota → mineFor DIRIGÉ (heading), ZÉRO goto-beeline sur le bloc (anti-X-ray)', async () => {
+  const bot = makeQuotaBot({});
+  let gotoCalls = 0;
+  const mineForCalls = [];
+  const events = [];
+  await runResource(bot, {
+    memory: mem([{ material: 'diamond', x: 40, y: -58, z: 20 }]),   // région mappée (deep, y<0)
+    worldKey: 'overworld',
+    emit: (e) => events.push(e),
+    goto: async () => { gotoCalls++; },                              // NE DOIT PAS être appelé
+    quota: { diamond: 1 },
+    pickTier: () => 3,
+    sleep: async () => {},
+    reloadMemory: () => mem([]),
+    mineFor: async (t, n, o) => {
+      mineForCalls.push({ t, heading: o && o.heading });
+      bot._items.push({ name: 'diamond', count: 1 });               // crédite → quota_done
+      return { ok: true };
+    },
+  });
+  assert.equal(gotoCalls, 0, 'AUCUN goto direct sur le bloc mappé (pas de beeline X-ray)');
+  assert.ok(mineForCalls.length >= 1, 'mineFor (strip-mining dirigé) appelé');
+  assert.equal(mineForCalls[0].t, 'diamond');
+  assert.ok(mineForCalls[0].heading && typeof mineForCalls[0].heading.dx === 'number',
+    'mineFor reçoit un heading (cap vers la région, pas une cible exacte)');
+  assert.ok(events.some((e) => e.type === 'resource_region'), 'émet resource_region (direction, pas beeline)');
+  assert.ok(!events.some((e) => e.type === 'ore_approach'), 'pas d\'ore_approach (le beeline est désactivé en quota)');
+});
