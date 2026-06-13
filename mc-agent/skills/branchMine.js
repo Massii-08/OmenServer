@@ -192,6 +192,58 @@ function oresInNeighborhood(bot, target) {
   return found;
 }
 
+// Famille d'ore : variante normale + deepslate = même veine logique (diamond_ore ↔ deepslate_diamond_ore).
+function oreFamily(name) {
+  return String(name || '').replace(/^deepslate_/, '').replace(/_ore$/, '');
+}
+
+// 26 voisins (faces+arêtes+coins) : une veine MC peut être connectée en diagonale.
+const NEIGH_26 = (() => {
+  const out = [];
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+    if (dx || dy || dz) out.push([dx, dy, dz]);
+  }
+  return out;
+})();
+
+// FLOOD-FILL d'une veine (§1.6/§3.G — minage HUMAIN, jamais X-ray) : dès qu'un ore est exposé, on vide
+// TOUTE la veine connectée du même type (BFS 26-voisins) avant de reprendre la branche — un mineur
+// humain SUIT la veine ; un X-rayer s'arrête sur 1 bloc. Borné (maxVein) ; gather → drops ramassés.
+async function floodFillVein(bot, start, token, maxVein = 64) {
+  const b0 = bot.blockAt(p(start.x, start.y, start.z));
+  if (!b0 || !ORE_NAMES.has(b0.name)) return 0;
+  const fam = oreFamily(b0.name);
+  const seen = new Set();
+  const queue = [[start.x, start.y, start.z]];
+  let mined = 0;
+  while (queue.length && mined < maxVein) {
+    if (token && token.cancelled) break;
+    const [x, y, z] = queue.shift();
+    const k = x + ',' + y + ',' + z;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const b = bot.blockAt(p(x, y, z));
+    if (!b || !ORE_NAMES.has(b.name) || oreFamily(b.name) !== fam) continue;
+    // collectBlock.collect(b) = mine CE bloc précis (positionnel, ≠ gather qui prend le plus proche)
+    // + ramasse le drop. Borné (un collect peut geler, piège #42). Échec → on saute ce bloc.
+    try { await withTimeout(bot.collectBlock.collect(b), 30000); mined++; }
+    catch (e) { continue; }
+    for (const [dx, dy, dz] of NEIGH_26) queue.push([x + dx, y + dy, z + dz]);
+  }
+  return mined;
+}
+
+// Positions (pas noms) des ores dans le voisinage 6-faces — pour lancer un flood-fill sur chacun.
+function oreNeighborPositions(bot, target) {
+  const found = [];
+  for (const [dx, dy, dz] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]) {
+    const pos = { x: target.x + dx, y: target.y + dy, z: target.z + dz };
+    const b = bot.blockAt(p(pos.x, pos.y, pos.z));
+    if (b && ORE_NAMES.has(b.name)) found.push(pos);
+  }
+  return found;
+}
+
 // ANTI-CHUTE (phase 3, vécu V3Res3 « fell from a high place ») : sol absent sous la case des
 // pieds (plafond de grotte). PONT d'abord (garde le PLAN de minage — retomber 5 blocs plus bas
 // casse le rythme du tunnel) ; pose impossible → chute acceptée si SURVIVABLE (≤ ½ PV / eau,
@@ -223,9 +275,10 @@ async function safeDigAndOpportunism(bot, target, token, debug, loopOpts) {
   if (!block || block.boundingBox !== 'block') return { ok: true };       // déjà air → rien à faire
   if (isLava(block.name)) return { ok: false, reason: 'lava_at_target' };
 
-  // Si le bloc cible EST un ore utile, passe par gather (collectBlock → drop ramassé à coup sûr).
+  // Si le bloc cible EST un ore utile : §3.G → on vide la VEINE ENTIÈRE (flood-fill), pas juste ce
+  // bloc — allure mineur humain (suit la veine), jamais X-ray (1 bloc puis repart).
   if (ORE_NAMES.has(block.name)) {
-    try { await gather(bot, { name: [block.name], count: 1, maxDistance: 6 }, token); }
+    try { await floodFillVein(bot, target, token); }
     catch (e) { /* fallback dig direct ci-dessous */ }
     return { ok: true };
   }
@@ -267,13 +320,11 @@ async function safeDigAndOpportunism(bot, target, token, debug, loopOpts) {
     try { await bot.dig(above); } catch (e) { break; }
   }
 
-  // Opportunisme : si un ore est visible dans le voisinage (révélé par le dig), on tente de le ramasser.
+  // Opportunisme → FLOOD-FILL (§3.G) : chaque ore révélé aux abords par le dig déclenche l'extraction
+  // de sa VEINE ENTIÈRE (un humain suit la veine), pas juste le bloc voisin.
   if (token && token.cancelled) return { ok: true };
-  const oresAround = oresInNeighborhood(bot, target);
-  if (oresAround.length > 0) {
-    try {
-      await gather(bot, { name: oresAround, count: oresAround.length, maxDistance: 6 }, token);
-    } catch (e) { /* opportuniste : on continue */ }
+  for (const pos of oreNeighborPositions(bot, target)) {
+    try { await floodFillVein(bot, pos, token); } catch (e) { /* opportuniste : on continue */ }
   }
   return { ok: true };
 }
@@ -457,4 +508,4 @@ function deltaOres(a, b) {
   return { diamond: Math.max(0, b.diamond - a.diamond), iron: Math.max(0, b.iron - a.iron), coal: Math.max(0, b.coal - a.coal) };
 }
 
-module.exports = { branchMine, cardinalFromYaw, leftOf, ORE_NAMES, WALL_BLOCKS };
+module.exports = { branchMine, cardinalFromYaw, leftOf, ORE_NAMES, WALL_BLOCKS, floodFillVein, oreFamily };

@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { branchMine } = require('./branchMine');
+const { branchMine, floodFillVein } = require('./branchMine');
 
 function pos(x, y, z) { return { x, y, z, offset(dx, dy, dz) { return pos(x + dx, y + dy, z + dz); } }; }
 
@@ -368,4 +368,31 @@ test('branchMine : onSurvivalTick tourne AUSSI dans les branches latérales — 
     ticks.some((t) => typeof t === 'string' && t.startsWith('branch')),
     `survie appelée dans une branche latérale (ticks=${JSON.stringify(ticks)})`,
   );
+});
+
+test('floodFillVein : vide TOUTE la veine connectée (§3.G minage humain), pas juste 1 bloc', async () => {
+  // 6 deepslate_diamond connectés (faces+diagonale) + 1 isolé du même type NON connecté (≠ veine).
+  const vein = ['0,-58,0', '1,-58,0', '1,-58,1', '1,-59,1', '2,-59,1', '2,-59,2'];
+  const isolated = '10,-58,10';
+  const all = new Set([...vein, isolated]);
+  const mined = [];
+  const k = (q) => `${Math.floor(q.x)},${Math.floor(q.y)},${Math.floor(q.z)}`;
+  const bot = {
+    blockAt(q) {
+      return all.has(k(q))
+        ? { name: 'deepslate_diamond_ore', position: { x: Math.floor(q.x), y: Math.floor(q.y), z: Math.floor(q.z) } }
+        : { name: 'deepslate', boundingBox: 'block' };
+    },
+    collectBlock: { async collect(b) { all.delete(k(b.position)); mined.push(k(b.position)); } },
+  };
+  const n = await floodFillVein(bot, { x: 0, y: -58, z: 0 }, null);
+  assert.strictEqual(n, 6, `mine les 6 blocs de la veine connectée (got ${n}, mined=${JSON.stringify(mined)})`);
+  assert.ok(!mined.includes(isolated), 'le bloc isolé (non connecté) n\'est PAS miné (pas de X-ray global)');
+  assert.ok(all.has(isolated), 'le bloc isolé reste en place');
+});
+
+test('floodFillVein : bloc de départ non-ore → 0 (no-op)', async () => {
+  const bot = { blockAt: () => ({ name: 'deepslate', boundingBox: 'block' }), collectBlock: { async collect() {} } };
+  const n = await floodFillVein(bot, { x: 0, y: -58, z: 0 }, null);
+  assert.strictEqual(n, 0);
 });
