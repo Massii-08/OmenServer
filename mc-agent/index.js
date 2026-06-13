@@ -879,7 +879,9 @@ async function provisionStartKit() {
     const u = bot.username;
     const gives = ['iron_pickaxe 1', 'iron_sword 1', 'cooked_beef 64', 'cobblestone 128', 'torch 64',
       'crafting_table 1', 'oak_planks 32', 'stick 16', 'raw_iron 32', 'coal 32'];
-    for (const g of gives) { try { bot.chat('/give ' + u + ' ' + g); } catch (e) {} }
+    // ESPACER les commandes (≥300 ms) : 10 /give en rafale = spam chat → kick serveur (vécu run #1bis :
+    // ResBot1/2 "kicked: [object Object]" → disconnected immédiat). L'anti-spam vanilla coupe à ~3 msg/s.
+    for (const g of gives) { try { bot.chat('/give ' + u + ' ' + g); } catch (e) {} await sleep(350); }
     // Attendre que l'inventaire reflète le /give (sinon bestPickTier lit l'ancien inv vide → refait le kit).
     for (let w = 0; w < 20; w++) {
       await sleep(400);
