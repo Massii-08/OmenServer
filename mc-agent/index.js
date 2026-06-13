@@ -869,6 +869,26 @@ async function ensureFood() {
   } catch (e) { /* best-effort */ }
 }
 
+// Kit de départ DÉTERMINISTE (serveur de test, bot OP) : /give de quoi descendre miner + survivre +
+// crafter SON armure, pour SAUTER le kit-bois de surface — déforesté par les runs précédents (piège
+// #41) + mobs nocturnes = le bot roamait 140+ waypoints pour du bois et mourait en boucle SANS jamais
+// atteindre la profondeur (vécu : 0 diamant, ~12 respawns/25 min). No-op silencieux si non-OP (vrai
+// serveur → kit-bois autonome en fallback). L'armure reste CRAFTÉE (ensureArmor + le raw_iron donné).
+async function provisionStartKit() {
+  try {
+    const u = bot.username;
+    const gives = ['iron_pickaxe 1', 'iron_sword 1', 'cooked_beef 64', 'cobblestone 128', 'torch 64',
+      'crafting_table 1', 'oak_planks 32', 'stick 16', 'raw_iron 32', 'coal 32'];
+    for (const g of gives) { try { bot.chat('/give ' + u + ' ' + g); } catch (e) {} }
+    // Attendre que l'inventaire reflète le /give (sinon bestPickTier lit l'ancien inv vide → refait le kit).
+    for (let w = 0; w < 20; w++) {
+      await sleep(400);
+      if (((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'iron_pickaxe')) break;
+    }
+    emit({ type: 'resource_start_kit_provisioned' });
+  } catch (e) { /* best-effort : non-OP → kit autonome */ }
+}
+
 // Tick de survie COURT exécuté PENDANT le branch-mining (hole E — la survie ne tournait qu'ENTRE
 // les appels branchMine ; une branche de plusieurs minutes laissait le bot sans défense). Une action
 // de survie (combat/fuite) + manger + re-stocker des torches. Borné par nature (1 action/appel).
@@ -1077,13 +1097,16 @@ async function startResource() {
   // déterministe de la boucle ressource (resource.js privilégie 'iron' tant que tier < 3).
   // Kit raté SANS pioche pierre (spawn déforesté par les runs précédents) → RELOCATE zone fraîche
   // (arbres intacts) + retry — le respawn seul rejouait le kit au même endroit stérile.
+  // Kit de départ déterministe (OP) AVANT le kit-bois : provisionne → bestPickTier devient 3 → le
+  // kit-bois mortel de surface est sauté, le bot descend miner directement. No-op si non-OP → kit-bois.
+  if (bestPickTier() < 3) { await provisionStartKit(); if (taskToken.cancelled) return; }
   if (bestPickTier() < 3) {
     const fullChain = chainFor('iron_pickaxe');
     const cutAt = fullChain.findIndex((g) => g.name === 'iron_ore');
     const kitChain = cutAt >= 0 ? fullChain.slice(0, cutAt) : fullChain.slice();   // copie (jamais muter IRON_CHAIN)
-    // NOURRITURE au kit AVANT la descente (bug review #1) : sans food_stock le bot resource s'enfonçait
-    // sans bouffe → famine mortelle sous terre (aucun passif à chasser à Y-58, hard tue). Comme MAPPER_KIT.
-    kitChain.push({ name: 'food_stock', met: (c) => cookedCount(c.inv) >= 8, skill: 'huntCook', args: { target: 8 } });
+    // NB : PAS de food_stock huntCook au kit — il STALLE le kit quand il n'y a pas de mob passif à
+    // proximité (event no_prey → resource_kit_stalled, vécu live ResBot2). La nourriture est gérée par
+    // provisionStartKit (/give au départ) + ensureFood (filet en boucle) — sans jamais bloquer le kit.
     // Pré-check bois (phase 3) : le spawn est DÉFORESTÉ par les runs précédents — la 1re
     // tentative de kit y brûlait jusqu'à 8 min d'anneaux gatherLog stériles. Pas de bûche
     // visible ≤48 ET rien en poche → relocate-forêt AVANT le kit.
