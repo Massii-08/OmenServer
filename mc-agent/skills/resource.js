@@ -179,11 +179,11 @@ async function runResource(bot, opts = {}, token = null) {
         // diamant/or/redstone, Y=16 est peu profond et peu laveux) — bootstrap PAR DESIGN.
         // (Avant : l'ordre des ratios faisait miner du lapis à Y=0 avec la pioche pierre.)
         if (tierNow >= 2 && tierNow < 3 && ranked.includes('iron')) mtype = 'iron';
-        // DoD diamant + deep-first : pioche fer+ (tier>=3) et diamant encore manquant → branch-mine
-        // DIAMANT (descend Y-58, deepslate SEC) en priorité. Le branch-mine -58 collecte AUSSI
-        // redstone/lapis/gold/iron deepslate (même Y) → remplit le quota multi-type sans repasser par
-        // les aquifères shallow où les bots se noient (vécu live : 0💎 en 28 min, coincés dans l'eau y0-40).
-        if (tierNow >= 3 && prog.diamond && prog.diamond.have < prog.diamond.target) mtype = 'diamond';
+        // NB : PAS de forçage mtype='diamond' — il bloquait le bot à y-58 (diamant rare) en ne
+        // collectant QUE le redstone en opportunisme (red plein vite, mais lapis/iron JAMAIS car pas
+        // à y-58) → quota_done IMPOSSIBLE (lap/iro=0, vécu live run #16). Le ranked.find (ratio) ci-dessus
+        // mine le type LE PLUS MANQUANT à son Y optimal (lapis y0, iron y16, diamant y-58) → tous les
+        // types se complètent (nearest-first du brief §2).
         let isBootstrap = false;
         if (!mtype && ranked.length && tierNow >= 2) { mtype = 'iron'; isBootstrap = true; }  // bootstrap palier fer
         // SANS pioche pierre (kit raté), RIEN n'est minable : attendre 10 min × 8 relocations
