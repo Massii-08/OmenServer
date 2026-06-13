@@ -95,7 +95,7 @@ const WebModule = {
                                 : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();WebModule.startSite(${s.id})" style="font-size:11px;padding:4px 12px;">Start</button>`
                             }
                             <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.showLogs(${s.id})" style="font-size:11px;padding:4px 12px;">${Lang.t('web.logs_title')}</button>
-                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.deleteSite(${s.id})" style="font-size:11px;padding:4px 8px;color:var(--danger);"></button>
+                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();WebModule.deleteSite(${s.id})" style="font-size:11px;padding:4px 8px;color:var(--danger);">${Lang.t('common.delete')}</button>
                         </div>
                     </div>
                 `).join('')}
@@ -203,7 +203,7 @@ const WebModule = {
                     <div style="display:flex;gap:8px;align-items:center;">
                         <span style="font-size:11px;color:var(--text-muted);">${data.logs.length} ${Lang.t('web.lines')}</span>
                         <button class="btn btn-secondary btn-sm" onclick="WebModule.showLogs(${id})">${Lang.t('web.refresh')}</button>
-                        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('web-site-detail').style.display='none'"></button>
+                        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('web-site-detail').style.display='none'">${Lang.t('common.close')}</button>
                     </div>
                 </div>
                 <div style="background:#0d1117;border-radius:8px;padding:12px;max-height:300px;overflow-y:auto;font-family:'Fira Code',monospace;font-size:12px;line-height:1.6;color:#c9d1d9;">

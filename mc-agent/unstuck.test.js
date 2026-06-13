@@ -100,6 +100,15 @@ test('isFloatingStuck : flottant immobile ≥1.5s → true ; au sol / dans l\'ea
   assert.ok(!isFloatingStuck(prev, { x: 0.1, z: 0, t: 800 }, { onGround: false, inWater: false }));  // trop tôt
 });
 
+test('isFloatingStuck : en CHUTE/SAUT (vy fort) → false (pas coincé) ; vy≈0 → true', () => {
+  const prev = { x: 0, z: 0, t: 0 };
+  const cur = { x: 0.1, z: 0, t: 2000 };                                  // immobile horizontalement
+  assert.ok(!isFloatingStuck(prev, cur, { onGround: false, inWater: false, vy: -1.2 })); // chute
+  assert.ok(!isFloatingStuck(prev, cur, { onGround: false, inWater: false, vy: 0.42 }));  // saut (montée)
+  assert.ok(isFloatingStuck(prev, cur, { onGround: false, inWater: false, vy: 0.02 }));   // vraiment coincé
+  assert.ok(isFloatingStuck(prev, cur, { onGround: false, inWater: false }));             // vy absent = rétro-compat
+});
+
 test('recoverFloating : relâche TOUT + coupe le pathfinder + retombe au sol', async () => {
   let cleared = 0, goalCleared = 0, polls = 0;
   const bot = {

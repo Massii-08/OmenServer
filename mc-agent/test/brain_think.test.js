@@ -30,8 +30,9 @@ test('think retourne null si le rate-limiter bloque', async () => {
   assert.strictEqual(d, null);
 });
 
-test('SYSTEM_PROMPT exige une réponse JSON et l\'honnêteté', () => {
+test('SYSTEM_PROMPT exige une réponse JSON et la posture évasive (ne jamais avouer être un bot)', () => {
   assert.match(SYSTEM_PROMPT, /JSON/);
-  assert.match(SYSTEM_PROMPT, /honn[êe]te/i);   // contrat d'honnêteté pinné (pas le fallback "bot")
-  assert.match(SYSTEM_PROMPT, /confirmer/i);
+  // contrat ÉVASIF pinné (décision Massii 07/06 : le bot passe pour humain, ne se trahit pas)
+  assert.match(SYSTEM_PROMPT, /[ée]vasif/i);
+  assert.match(SYSTEM_PROMPT, /jamais/i);
 });

@@ -9,7 +9,7 @@ const path = require('path');
 const { emit, onCommand } = require('./io');
 const { snapshot } = require('./state');
 const { think, RateLimiter } = require('./brain');
-const { humanizeReply } = require('./humanize');
+const { humanizeReply, nextLook, sampleReactionDelay } = require('./humanize');
 const { loadProfile } = require('./profiles');
 const { say } = require('./skills/say');
 const { follow } = require('./skills/follow');
@@ -49,7 +49,7 @@ const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
 const { loadMemory, worldKey } = require('./worldMemory');
 const { runMapper } = require('./mapper');
 const { LOCATE_KINDS, parseLocateResponse, structureFoundEvent } = require('./structures');
-const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
+const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating } = require('./unstuck');
 const { runResource } = require('./skills/resource');
 const { tunnelTo } = require('./skills/tunnelTo');
 const { junkItems, ITEMS_FOR } = require('./quota');
@@ -1262,16 +1262,34 @@ async function onSpawn() {
     moves.canDig = true;            // doit pouvoir miner pour atteindre le cobble
     moves.allow1by1towers = true;   // peut remonter en colonne (cobble en poche) → pas coincé au fond
     moves.allowParkour = true;
+    moves.allowSprinting = true;    // anti-tell (paquet 1) : un humain sprinte en voyage (pathfinder gère)
     if (typeof moves.maxDropDown === 'number') moves.maxDropDown = 4; // limite les chutes profondes
     // Anti-noyade (vu live HarvT7 : drowned ×3 en trajet dirigé) : l'eau coûte CHER au pathfinder →
     // il contourne les lacs/rivières quand un chemin terrestre existe (coût fini : traverse encore
     // si c'est la SEULE option ; le réflexe oxygène de reflexes.js est le filet de sécurité).
     if (typeof moves.liquidCost === 'number') moves.liquidCost = 20;
+    // PILIER (Massii « monte mal en pilier ») : le pathfinder ne toure (`allow1by1towers`) qu'avec
+    // ses `scafoldingBlocks` — défaut = **dirt + cobblestone UNIQUEMENT** (mineflayer-pathfinder
+    // movements.js:75-77). Un bot qui mine de la deepslate n'a que du cobbled_deepslate/tuff →
+    // liste vide d'utilisables → INCAPABLE de remonter en pilier (sortir d'un tunnel/trou).
+    // On élargit aux blocs sacrifiables réellement en poche (mêmes familles que pillarUp.SCAFFOLD).
+    try {
+      const scaffoldNames = ['cobblestone', 'cobbled_deepslate', 'dirt', 'coarse_dirt', 'stone',
+        'deepslate', 'tuff', 'granite', 'diorite', 'andesite', 'netherrack', 'gravel', 'grass_block'];
+      const ids = scaffoldNames
+        .map((n) => bot.registry.itemsByName[n] && bot.registry.itemsByName[n].id)
+        .filter((x) => x != null);
+      if (ids.length) moves.scafoldingBlocks = ids;
+    } catch (e) { /* best-effort : garde le défaut dirt+cobblestone */ }
     bot.pathfinder.setMovements(moves);
     let waterRescue = null; // évasion d'eau en cours (jamais 2 en parallèle)
     let lastWaterRescueAt = 0; // escalade : 2e rescue <5 min → warp dur (aquifère inextirpable)
     installReflexes(bot, {
       emit, fleeFrom,
+      // DÉLAI DE RÉACTION humain sur les réflexes (anti aimbot 0 ms / anti-ban) — TOUJOURS actif
+      // (sécurité, pas seulement en humanize) : ~300 ms par défaut (les captures ne mesurent pas
+      // encore reaction.*). Coût nul sur le minage (ce n'est pas un réflexe). Cf. paquet 1.
+      reactionMs: () => sampleReactionDelay(profile && profile.params),
       // RIPOSTE (phase B) : frappé par un hostile mêlée au contact → meilleure arme + pvp.
       // Le plugin poursuit la cible ; les boucles (resource/mapper) reprennent leur goto après
       // (interruption gérée comme un flee : retry/timeout).
@@ -1393,7 +1411,9 @@ function ackPrivate(sender, text) { if (sender && text) { try { bot.whisper(send
 function stopMotion() {
   try { bot.pathfinder && bot.pathfinder.setGoal(null); } catch (e) {}
   try { bot.pvp && bot.pvp.stop(); } catch (e) {}
-  ['forward', 'back', 'left', 'right', 'sneak', 'jump'].forEach((c) => { try { bot.setControlState(c, false); } catch (e) {} });
+  // stop-pour-répondre (paquet 1) : on fige aussi le BRAS (un humain lâche le clic pour taper).
+  try { if (bot.targetDigBlock && bot.stopDigging) bot.stopDigging(); } catch (e) {}
+  ['forward', 'back', 'left', 'right', 'sneak', 'jump', 'sprint'].forEach((c) => { try { bot.setControlState(c, false); } catch (e) {} });
 }
 
 const authMode = args.auth === 'microsoft' ? 'microsoft' : 'offline';
@@ -1682,6 +1702,31 @@ setInterval(async () => {
   } catch (e) { /* watchdog : ne crash jamais */ }
 }, 6000);
 
+// Anti-stuck FLOTTANT (#8) — ÉTAIT DU CODE MORT : recoverFloating/isFloatingStuck définis+testés
+// mais JAMAIS branchés. Le jam-watchdog ci-dessus ne couvre QUE les blocages AVEC goal pathfinder
+// actif ; un bot coincé EN L'AIR sans goal (rebord, liane/toile #9, échec de pilier, retombée
+// bloquée) n'était jamais récupéré → « se bloque ». Échantillonne pos+sol+eau+vélocité toutes les
+// 2 s ; coincé-flottant (≈0 mouvement horizontal ET vy≈0, pas en chute/saut) → relâche tout +
+// dégage les lianes + laisse retomber. Borné, ne crash jamais, no-op pendant un dig (légitime).
+let _floatPrev = null;
+let _floatBusy = false;
+setInterval(async () => {
+  try {
+    if (_floatBusy || !bot.entity || !bot.entity.position) return;
+    if (bot.targetDigBlock) { _floatPrev = null; return; }            // minage sur place = légitime
+    const p = bot.entity.position;
+    const vy = (bot.entity.velocity && bot.entity.velocity.y) || 0;
+    const cur = { x: p.x, z: p.z, t: Date.now() };
+    if (isFloatingStuck(_floatPrev, cur, { onGround: !!bot.entity.onGround, inWater: isInWater(bot), vy })) {
+      _floatPrev = null;
+      _floatBusy = true;
+      try { await recoverFloating(bot, { emit }); } finally { _floatBusy = false; }
+      return;
+    }
+    _floatPrev = cur;
+  } catch (e) { _floatBusy = false; }
+}, 2000);
+
 // Watchdog connexion : un « Timed out » côté serveur peut laisser le socket client MUET sans
 // event 'end' (vécu phase 2 : bot zombie, quota figé, jamais respawné). Pas de physicsTick
 // pendant 90 s → on se suicide proprement, le manager auto-respawne la session resource.
@@ -1722,6 +1767,26 @@ setInterval(async () => {
   } catch (e) { /* timer : ne crash jamais */ }
   finally { _armorBusy = false; }
 }, 90000);
+
+// ── Anti-tell motricité (paquet 1) : BRUIT DE VISÉE au repos — un humain ne fige jamais sa tête
+// (vraies captures : la vue « respire » même à l'arrêt, figé strict ~0 %). Dérive DOUCE (nextLook
+// mode idle : micro-mouvements + rares petits coups d'œil, AUCUN geste brusque — exigence Massii).
+// UNIQUEMENT si humanisé ET inactif : pas pendant un dig (vise le bloc), un déplacement (pathfinder
+// mène la visée) ou un combat (pvp vise). Mode utilitaire pur (resource souterrain, non vu) = OFF.
+// force=false → bot.look interpole à vitesse de souris finie (pas de snap).
+if (HUMANIZE) {
+  setInterval(() => {
+    try {
+      if (!bot.entity) return;
+      if (bot.targetDigBlock) return;
+      if (bot.pathfinder && bot.pathfinder.goal) return;
+      if (bot.pvp && bot.pvp.target) return;
+      const cur = { yaw: bot.entity.yaw || 0, pitch: bot.entity.pitch || 0 };
+      const nx = nextLook(cur, (profile && profile.params) || {}, Math.random, { mode: 'idle' });
+      bot.look(nx.yaw, nx.pitch, false);
+    } catch (e) { /* best-effort : ne crash jamais */ }
+  }, 180 + Math.floor(Math.random() * 120)); // ~180-300 ms : cadence de micro-ajustement humaine
+}
 
 onCommand((cmd) => {
   if (cmd.type === 'say') say(bot, cmd.message);

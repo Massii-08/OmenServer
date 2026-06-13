@@ -24,3 +24,19 @@ test('fleeFrom pose un goal de fuite et retourne true si menace présente', () =
 test('fleeFrom retourne false si aucune menace', () => {
   assert.strictEqual(fleeFrom(fakeBot({ threat: null })), false);
 });
+
+// --- paquet 2 : fuir les HOSTILES, jamais les passifs ---
+test('fleeFrom IGNORE un passif (vache) → false, aucun goal posé', () => {
+  const cow = { type: 'mob', name: 'cow', position: { x: 2, y: 64, z: 0 } };
+  const bot = fakeBot({ threat: cow });
+  assert.strictEqual(fleeFrom(bot), false);
+  assert.strictEqual(bot.calls.goals.length, 0);
+});
+test('fleeFrom fuit un zombie (hostile mêlée connu)', () => {
+  const zombie = { type: 'mob', name: 'zombie', position: { x: 2, y: 64, z: 0 } };
+  assert.strictEqual(fleeFrom(fakeBot({ threat: zombie })), true);
+});
+test('fleeFrom fuit via kind=Hostile mobs (nom moddé inconnu)', () => {
+  const mob = { type: 'mob', name: 'some_modded_mob', kind: 'Hostile mobs', position: { x: 2, y: 64, z: 0 } };
+  assert.strictEqual(fleeFrom(fakeBot({ threat: mob })), true);
+});

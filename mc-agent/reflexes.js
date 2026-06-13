@@ -100,6 +100,12 @@ function installReflexes(bot, opts = {}) {
   const attack = opts.attack || null;
   const onWaterStuck = opts.onWaterStuck || null;
   const now = opts.now || Date.now;
+  // DÉLAI DE RÉACTION humain (anti-tell #3 : 0 ms = aimbot/ban). reactionMs() → ms avant
+  // l'ACTION physique (manger/fuir/riposter/murer) ; schedule(fn,ms) = minuterie (injectables).
+  // Défaut 0 → exécution SYNCHRONE (rétro-compat tests) ; index.js passe un vrai délai humain.
+  const schedule = opts.schedule || ((fn, ms) => setTimeout(fn, ms));
+  const reactionMs = opts.reactionMs || (() => 0);
+  const act = (fn) => { const ms = reactionMs() || 0; if (ms > 0) schedule(fn, ms); else fn(); };
   let fleeing = false;
   let surfacing = false;
   let lastHealth = null;
@@ -116,34 +122,39 @@ function installReflexes(bot, opts = {}) {
   let lastPanicHealth = null;   // PV au dernier panic — re-tire plus vite si ça rebaisse (attaque soutenue)
   let lastDefensive = -Infinity; // idem : 1er palier défensif jamais bloqué
   const react = () => {
-    tryEat(bot).then((ate) => { if (ate) emit({ type: 'reflex', action: 'eat' }); }).catch(() => {});
+    // manger : décision synchrone, ACTION après le délai de réaction humain.
+    act(() => { tryEat(bot).then((ate) => { if (ate) emit({ type: 'reflex', action: 'eat' }); }).catch(() => {}); });
     // PANIC WALL (Massii survie mobs) : PV critiques → en plus de fuir, se MURER (poser des
     // blocs autour) pour casser le contact mêlée et manger à l'abri. Cooldown panicCooldownMs (8 s
     // par défaut). Sous ATTAQUE SOUTENUE (les PV ont rebaissé depuis le dernier mur) on re-mure
     // deux fois plus vite (panicCooldownMs/2) : le mur précédent a percé, faut re-colmater.
     if (onPanic && bot.health != null && bot.health <= HEALTH_THRESHOLD) {
       const t = now();
+      // Cooldown configurable (hole C : 8 s vs 20 s d'origine) ; sous attaque soutenue (PV rebaissés
+      // depuis le dernier mur) on re-mure 2× plus vite. act() = délai de réaction humain (anti-tell
+      // paquet 1 ; 0 ms en test → synchrone).
       const sustained = lastPanicHealth != null && bot.health < lastPanicHealth;
       const cd = sustained ? panicCooldownMs / 2 : panicCooldownMs;
       if (t - lastPanic >= cd) {
         lastPanic = t; lastPanicHealth = bot.health;
-        try { onPanic(); } catch (e) {}
+        act(() => { try { onPanic(); } catch (e) {} });
       }
     }
     // PALIER DÉFENSIF (hole C) : bande (HEALTH_THRESHOLD, DEFENSIVE_HEALTH] PV — avant le critique,
     // lever le bouclier / se repositionner. Au-dessus du seuil de fuite (la fuite possède ≤ seuil),
     // en dessous de DEFENSIVE_HEALTH. Cooldown defensiveCooldownMs (6 s). Cible = assaillant mêlée
-    // OU tireur à distance le plus pressant.
+    // OU tireur à distance le plus pressant. act() = délai de réaction humain (anti-tell paquet 1).
     if (onDefensive && bot.health != null && bot.health <= DEFENSIVE_HEALTH && bot.health > HEALTH_THRESHOLD) {
       const t = now();
       if (t - lastDefensive >= defensiveCooldownMs) {
         lastDefensive = t;
         const threat = meleeAssailant(bot) || rangedThreat(bot) || null;
-        try { onDefensive(threat); } catch (e) {}
+        act(() => { try { onDefensive(threat); } catch (e) {} });
       }
     }
     if (shouldFlee(bot)) {
-      if (!fleeing) { flee(bot); emit({ type: 'reflex', action: 'flee' }); fleeing = true; }
+      // décision + télémétrie synchrones ; la FUITE part après le temps de réaction.
+      if (!fleeing) { fleeing = true; emit({ type: 'reflex', action: 'flee' }); act(() => { try { flee(bot); } catch (e) {} }); }
       lastHealth = bot.health;
       return;
     }
@@ -156,7 +167,8 @@ function installReflexes(bot, opts = {}) {
       const foe = meleeAssailant(bot);
       if (foe && !fighting) {
         fighting = true;
-        try { attack(foe); emit({ type: 'reflex', action: 'fight', mob: foe.name }); } catch (e) {}
+        emit({ type: 'reflex', action: 'fight', mob: foe.name });
+        act(() => { try { attack(foe); } catch (e) {} });   // riposte après le temps de réaction
         // re-autorise une riposte après 5 s (le pvp plugin poursuit la cible entre-temps)
         setTimeout(() => { fighting = false; }, 5000);
       } else if (onRanged && !foe && !fighting) {

@@ -46,4 +46,21 @@ class RecorderTest {
         rec.recordTick(r);                  // ON → écrit
         assertTrue(out.size() > 0);
     }
+
+    @Test
+    void recordEventsOnlyWhenRecording() {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        Recorder rec = new Recorder(() -> out);
+        rec.recordAttack(1, "zombie");          // OFF → ignoré
+        rec.recordMobAppear(1, "zombie", 5);
+        rec.recordDamage(1, 2, 18);
+        rec.recordBlockBreak(1, "stone");
+        assertEquals(0, out.size());
+        rec.start("p", "1.21.11", "0.1.0", 1L, 20);
+        rec.recordAttack(2, "zombie");          // ON → écrit
+        rec.recordDamage(3, 2.0, 18);
+        rec.recordBlockBreak(4, "stone");
+        rec.recordMobAppear(5, "creeper", 6.0);
+        assertTrue(out.size() > 0);
+    }
 }

@@ -231,7 +231,7 @@ const SvAccess = {
         el.innerHTML = ports.map(p => {
             const isMain = p.is_main || p.host_port === data.main_port;
             const deleteBtn = (!isMain && canManage) ?
-                `<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvAccess._removePort(${p.host_port})" title=""></button>` : '';
+                `<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvAccess._removePort(${p.host_port})" title="${Lang.t('nodes.remove')}">${Lang.t('nodes.remove')}</button>` : '';
             const displayAddr = `${serverIp}:${p.host_port}`;
             return `
             <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;${isMain ? 'border-left:3px solid var(--accent);' : 'border-left:3px solid var(--info);'}">

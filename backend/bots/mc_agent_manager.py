@@ -435,12 +435,17 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     return sid
 
 
-def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, stealth=False):
-    """Lancement manuel (path historique du router + compat tests). Délègue à `_spawn_bot`."""
+def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, stealth=False, humanize=True):
+    """Lancement manuel (path historique du router + compat tests). Délègue à `_spawn_bot`.
+
+    `humanize` par DÉFAUT True (paquet 1 anti-tell, décision Massii 07/06) : un bot lancé
+    manuellement partage le serveur avec de vrais joueurs → motricité/latence/réaction humaines
+    + posture évasive (nie être un bot). Passer humanize=False pour un grind pur non observé.
+    """
     return _spawn_bot(host, port, user, model=model, auth=auth, profile=profile,
                       commands=commands, policy=policy, server_id=server_id, language=language,
                       autonomous=autonomous, objective=objective, world_label=world_label,
-                      quota=quota, stealth=stealth)
+                      quota=quota, stealth=stealth, humanize=humanize)
 
 
 def _resolve_login_command(group, group_id, bot_id, secret):

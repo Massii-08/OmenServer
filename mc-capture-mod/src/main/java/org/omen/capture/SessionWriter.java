@@ -68,4 +68,30 @@ public class SessionWriter {
         b.append(",\"len\":").append(len).append("}");
         writeLine(b.toString());
     }
+
+    private static String num1(double v) { return String.valueOf(Math.round(v * 10.0) / 10.0); }
+
+    // --- Events comportementaux (1b.2) : stimulus/combat/minage → calibration réaction + clips.
+    // Types alignés 1:1 sur mc_capture_distill.py (mob_appear/damage = _reaction_times ; attack =
+    // contexte 'combat' de segment_clips ; block_break = cadence de minage, futur).
+
+    /** Un hostile entre dans le rayon de vue (stimulus de réaction). */
+    public void writeMobAppear(long t, String mob, double dist) {
+        writeLine("{\"t\":" + t + ",\"type\":\"mob_appear\",\"mob\":\"" + esc(mob) + "\",\"dist\":" + num1(dist) + "}");
+    }
+
+    /** Le joueur encaisse des dégâts (stimulus de réaction). `amount` = PV perdus, `health` = PV restants. */
+    public void writeDamage(long t, double amount, int health) {
+        writeLine("{\"t\":" + t + ",\"type\":\"damage\",\"amount\":" + num1(amount) + ",\"hp\":" + health + "}");
+    }
+
+    /** Le joueur attaque une entité (contexte combat). */
+    public void writeAttack(long t, String target) {
+        writeLine("{\"t\":" + t + ",\"type\":\"attack\",\"target\":\"" + esc(target) + "\"}");
+    }
+
+    /** Le joueur casse un bloc (cadence/pattern de minage). */
+    public void writeBlockBreak(long t, String block) {
+        writeLine("{\"t\":" + t + ",\"type\":\"block_break\",\"block\":\"" + esc(block) + "\"}");
+    }
 }
