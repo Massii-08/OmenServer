@@ -880,7 +880,11 @@ async function provisionStartKit() {
     // Armure FINIE (pas raw_iron à crafter) : le craft prend ~45 s en surface → le bot mourait des mobs
     // AVANT de la porter (vécu live : death_loop en surface pendant l'équipement). Pièces données =
     // équipées instantanément par ensureArmor → protégé dès le spawn, puis descend.
-    const gives = ['iron_pickaxe 1', 'iron_sword 1', 'iron_helmet 1', 'iron_chestplate 1',
+    // Pioche DIAMANT (tier 3) — PAS iron (tier 2) : TIER_FOR.diamond=3 → seule une pioche tier 3 mine
+    // le diamant_ore (vécu live : avec iron_pickaxe, 0💎 minable, le bot minait du fer Y16 + bestPickTier
+    // restait <3 → kit-bois en boucle). diamond_pickaxe → bestPickTier=3 → saute le kit + mine diamant +
+    // active le forçage mtype='diamond' (tierNow>=3) → branch-mine Y-58. Armure FER (suffit à survivre).
+    const gives = ['diamond_pickaxe 1', 'diamond_sword 1', 'iron_helmet 1', 'iron_chestplate 1',
       'iron_leggings 1', 'iron_boots 1', 'shield 1', 'cooked_beef 64', 'cobblestone 128', 'torch 64',
       'crafting_table 1', 'oak_planks 16', 'stick 16', 'coal 16'];
     // ESPACER les commandes (≥300 ms) : /give en rafale = spam chat → kick serveur (vécu run #1bis :
@@ -889,7 +893,7 @@ async function provisionStartKit() {
     // Attendre que l'inventaire reflète le /give (sinon bestPickTier lit l'ancien inv vide → refait le kit).
     for (let w = 0; w < 20; w++) {
       await sleep(400);
-      if (((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'iron_pickaxe')) break;
+      if (((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'diamond_pickaxe')) break;
     }
     // Équiper l'armure IMMÉDIATEMENT (sinon le bot reste nu jusqu'au 1er ensureGear → mort surface).
     try { await ensureArmor({ ironKeep: 0 }); } catch (e) { /* best-effort */ }
