@@ -90,6 +90,9 @@ async function runResource(bot, opts = {}, token = null) {
   const ensureGear = opts.ensureGear || null;
   const maxRelocations = opts.maxRelocations != null ? opts.maxRelocations : 8;
   const maxTargetDist = opts.maxTargetDist != null ? opts.maxTargetDist : 200;
+  // DEEP-FIRST : en mode quota, on ignore les cibles mappées au-dessus de ce Y (couches aquifères
+  // 1.18, y>0 = noyade/floating mortels live) → descente forcée vers le deepslate SEC (diamants inclus).
+  const deepQuotaY = opts.deepQuotaY != null ? opts.deepQuotaY : 0;
   const failRelocateAt = opts.failRelocateAt != null ? opts.failRelocateAt : 2;  // un échec ≈ 8-12 min (vécu) — fuir vite les zones d'eau
 
   const skip = new Set();        // cibles traitées (minées/absentes/ratées) : on ne re-vise jamais 2×
@@ -147,12 +150,16 @@ async function runResource(bot, opts = {}, token = null) {
     // Mode quota : PLUS PROCHE d'abord (priority vide → tie → distance) — le quota exige TOUS
     // les types, la rareté n'arbitre rien ; diamant-d'abord forçait un long tunnel par cible
     // (vécu live : ~3-6 min/ore). Hors quota : priorité rareté inchangée.
-    const target = nextOreTarget(memory, wkey, from, {
+    let target = nextOreTarget(memory, wkey, from, {
       skip: skipNow, allowTypes,
       priority: tracker ? [] : undefined,
       maxDist: tracker ? maxTargetDist : undefined,   // phase 2 : miner LOCAL, pas traverser la carte
       pickTier: (typeof tier === 'number' ? tier : undefined),
     });
+    // DEEP-FIRST (anti-aquifère §1.5 + DoD diamant) : en mode quota, ignorer une cible mappée SHALLOW
+    // (y > deepQuotaY = couches pleines d'eau en 1.18) → tomber dans mineFor qui DESCEND vers le
+    // deepslate sec. Évite le barbotage/noyade/floating mortels (vécu live : reflex surface en boucle).
+    if (tracker && target && typeof target.y === 'number' && target.y > deepQuotaY && mineFor) target = null;
 
     if (!target) {
       if (!reload && !mineFor) break;                  // legacy : carte épuisée → done
@@ -172,6 +179,11 @@ async function runResource(bot, opts = {}, token = null) {
         // diamant/or/redstone, Y=16 est peu profond et peu laveux) — bootstrap PAR DESIGN.
         // (Avant : l'ordre des ratios faisait miner du lapis à Y=0 avec la pioche pierre.)
         if (tierNow >= 2 && tierNow < 3 && ranked.includes('iron')) mtype = 'iron';
+        // DoD diamant + deep-first : pioche fer+ (tier>=3) et diamant encore manquant → branch-mine
+        // DIAMANT (descend Y-58, deepslate SEC) en priorité. Le branch-mine -58 collecte AUSSI
+        // redstone/lapis/gold/iron deepslate (même Y) → remplit le quota multi-type sans repasser par
+        // les aquifères shallow où les bots se noient (vécu live : 0💎 en 28 min, coincés dans l'eau y0-40).
+        if (tierNow >= 3 && prog.diamond && prog.diamond.have < prog.diamond.target) mtype = 'diamond';
         let isBootstrap = false;
         if (!mtype && ranked.length && tierNow >= 2) { mtype = 'iron'; isBootstrap = true; }  // bootstrap palier fer
         // SANS pioche pierre (kit raté), RIEN n'est minable : attendre 10 min × 8 relocations

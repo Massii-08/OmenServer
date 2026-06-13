@@ -1774,6 +1774,8 @@ setInterval(async () => {
 // dégage les lianes + laisse retomber. Borné, ne crash jamais, no-op pendant un dig (légitime).
 let _floatPrev = null;
 let _floatBusy = false;
+let _floatFails = 0;   // recoverFloating ok:false consécutifs → escalade (vécu live ResBot2 : floating
+                       // ok:false EN BOUCLE, jamais résolu = blocage §1.5 — il flotte hors d'atteinte du sol)
 setInterval(async () => {
   try {
     if (_floatBusy || !bot.entity || !bot.entity.position) return;
@@ -1784,7 +1786,15 @@ setInterval(async () => {
     if (isFloatingStuck(_floatPrev, cur, { onGround: !!bot.entity.onGround, inWater: isInWater(bot), vy })) {
       _floatPrev = null;
       _floatBusy = true;
-      try { await recoverFloating(bot, { emit }); } finally { _floatBusy = false; }
+      let res;
+      try { res = await recoverFloating(bot, { emit }); } finally { _floatBusy = false; }
+      // ESCALADE (bug live #floating) : recoverFloating attend onGround ; si le bot flotte coincé
+      // (rebord/niche/bulle) il ne retombe jamais → ok:false EN BOUCLE. 3 échecs consécutifs → on SORT
+      // (miroir starved/death_loop) → le manager respawne frais, hors de la niche. keepInventory garde tout.
+      if (res && res.ok === false) {
+        _floatFails++;
+        if (_floatFails >= 3) { emit({ type: 'autonomous_stalled', reason: 'floating_unrecoverable' }); process.exit(2); }
+      } else { _floatFails = 0; }
       return;
     }
     _floatPrev = cur;
