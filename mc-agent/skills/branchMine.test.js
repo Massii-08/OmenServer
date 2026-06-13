@@ -312,3 +312,45 @@ test('branchMine (Massii #5) : AUCUNE pioche → no_pickaxe, zéro dig à la mai
   assert.strictEqual(calls.dig.length, 0, 'pas un seul bloc de roche creusé à la main');
   assert.strictEqual(r.ok, false);
 });
+
+// --- Hole E : bornage / détection de stall / hook de survie pendant le tunnel ----------------
+
+test('branchMine aborts with reason stalled', async () => {
+  // Le bot creuse (deepslate plein, cobble OK, Y=targetY) mais ne BOUGE jamais : on neutralise
+  // le téléport du pathfinder mocké → bot.entity.position reste figé et aucun ore n'est ramassé.
+  // L'horloge injectée AVANCE à chaque lecture → au bout de quelques itérations sans progrès,
+  // now()-lastProgressAt dépasse stallMs → la boucle doit casser avec reason 'stalled'.
+  const { bot } = makeBot({ y: -54 });
+  bot.pathfinder.goto = async () => {};                  // n'avance PAS le bot (position figée)
+  let t = 0;
+  const now = () => { t += 4000; return t; };            // +4s par lecture (monotone)
+  const r = await branchMine(bot, {
+    targetY: -54, mainLength: 50, branchSpacing: 999, branchLength: 0,
+    now, stallMs: 5000,
+  });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'stalled');
+});
+
+test('branchMine survival hook fires every survivalEvery iters', async () => {
+  const { bot } = makeBot({ y: -54 });
+  const ticks = [];
+  await branchMine(bot, {
+    targetY: -54, mainLength: 8, branchSpacing: 999, branchLength: 0,
+    survivalEvery: 2,
+    onSurvivalTick: async (i) => { ticks.push(i); },
+  });
+  assert.ok(ticks.length > 0, `onSurvivalTick doit être appelé (got ${ticks.length})`);
+});
+
+test('approach is time-bounded', async () => {
+  // goto ne se résout JAMAIS — sans bornage, branchMine resterait suspendu pour toujours.
+  // Avec approachTimeoutMs=20, withTimeout doit relâcher et branchMine doit retourner.
+  const { bot } = makeBot({ y: -54 });
+  bot.pathfinder.goto = () => new Promise(() => {});      // jamais résolu
+  const r = await branchMine(bot, {
+    targetY: -54, mainLength: 3, branchSpacing: 999, branchLength: 0,
+    approachTimeoutMs: 20,
+  });
+  assert.ok(r && typeof r.ok === 'boolean', 'branchMine doit retourner (pas de hang)');
+});

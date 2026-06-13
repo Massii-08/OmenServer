@@ -131,4 +131,32 @@ function armorPlan(items, opts = {}) {
   return null;
 }
 
-module.exports = { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, armorPlan, ARMOR_PIECES };
+/**
+ * Gate « ok pour descendre en profondeur » : bottes + casque + un bouclier (n'importe quel
+ * palier d'armure suffit). worn = tableau OU Set de noms d'items équipés. (pur/testable)
+ */
+function isMinimallyArmored(worn, hasShield) {
+  const names = Array.from(worn || []);
+  const hasBoots = names.some((n) => typeof n === 'string' && n.endsWith('_boots'));
+  const hasHelmet = names.some((n) => typeof n === 'string' && n.endsWith('_helmet'));
+  return hasBoots && hasHelmet && hasShield === true;
+}
+
+/**
+ * Plan bouclier (rend testable la logique inline d'index.js). items = [{name,count}].
+ * → { craft: 'shield' } si (pas de bouclier) ET (≥6 planches, tout type) ET (≥1 lingot fer) ;
+ * sinon null. (pur/testable)
+ */
+function shieldPlan(items, hasShield) {
+  if (hasShield) return null;
+  const planks = (items || [])
+    .filter((i) => i && typeof i.name === 'string' && i.name.endsWith('_planks'))
+    .reduce((a, i) => a + (i.count || 0), 0);
+  const iron = (items || [])
+    .filter((i) => i && i.name === 'iron_ingot')
+    .reduce((a, i) => a + (i.count || 0), 0);
+  if (planks >= 6 && iron >= 1) return { craft: 'shield' };
+  return null;
+}
+
+module.exports = { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, armorPlan, ARMOR_PIECES, isMinimallyArmored, shieldPlan };

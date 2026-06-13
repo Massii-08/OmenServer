@@ -95,3 +95,30 @@ test('armorPlan : set complet possédé → null', () => {
   assert.strictEqual(armorPlan([{ name: 'iron_ingot', count: 30 }],
     { have: ['iron_boots', 'iron_helmet', 'iron_leggings', 'iron_chestplate'] }), null);
 });
+
+const { isMinimallyArmored, shieldPlan } = require('./gear');
+
+test('isMinimallyArmored : bottes + casque + bouclier (array)', () => {
+  assert.strictEqual(isMinimallyArmored(['iron_boots', 'iron_helmet'], true), true);
+  assert.strictEqual(isMinimallyArmored(['iron_boots', 'iron_helmet'], false), false);
+  assert.strictEqual(isMinimallyArmored(['iron_boots'], true), false);          // pas de casque
+  assert.strictEqual(isMinimallyArmored(['iron_helmet'], true), false);         // pas de bottes
+});
+
+test('isMinimallyArmored : accepte un Set + tout palier d\'armure', () => {
+  assert.strictEqual(isMinimallyArmored(new Set(['iron_boots', 'iron_helmet']), true), true);
+  assert.strictEqual(isMinimallyArmored(new Set(['iron_boots']), true), false);
+  // n'importe quel palier compte (diamant)
+  assert.strictEqual(isMinimallyArmored(['diamond_boots', 'diamond_helmet'], true), true);
+});
+
+test('shieldPlan : 6 planks + 1 fer + pas de bouclier → craft', () => {
+  const items = [{ name: 'oak_planks', count: 6 }, { name: 'iron_ingot', count: 1 }];
+  assert.deepStrictEqual(shieldPlan(items, false), { craft: 'shield' });
+  // bouclier déjà présent → null
+  assert.strictEqual(shieldPlan(items, true), null);
+  // 5 planks → null
+  assert.strictEqual(shieldPlan([{ name: 'oak_planks', count: 5 }, { name: 'iron_ingot', count: 1 }], false), null);
+  // 0 fer → null
+  assert.strictEqual(shieldPlan([{ name: 'oak_planks', count: 6 }], false), null);
+});

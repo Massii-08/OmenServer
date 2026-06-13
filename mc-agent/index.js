@@ -53,7 +53,7 @@ const { isInWater, escapeWater, findLandTarget } = require('./unstuck');
 const { runResource } = require('./skills/resource');
 const { tunnelTo } = require('./skills/tunnelTo');
 const { junkItems, ITEMS_FOR } = require('./quota');
-const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES } = require('./gear');
+const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES, isMinimallyArmored, shieldPlan } = require('./gear');
 // Torche tous les N paliers de branch-mine (mob-aware phase B) — best-effort : sans torche
 // en poche le minage continue sans (zéro coût en peaceful, sécurité en non-pacifique).
 const TORCH_EVERY = 8;
@@ -61,6 +61,7 @@ const { createClaims } = require('./claims');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
 const { isNight, shelterUntilDawn } = require('./skills/shelter');
+const { panicWall } = require('./skills/panicWall');
 
 function parseArgs(argv) {
   const o = {};
@@ -414,6 +415,11 @@ async function runGoalSkill(goal) {
   // #1 retours live : coincé dans l'eau → s'en sortir AVANT de tenter le skill (sinon le pathfinder
   // rame dans l'angle jusqu'au timeout, le planner re-dérive, et ça recommence).
   if (isInWater(bot)) await escapeWater(bot, { emit });
+  // ARMURE-AVANT-PROFONDEUR pour le chemin planner (chaîne diamant + kit mappeur, hole A §1.3) :
+  // avant une descente/branche, tente armure+bouclier (best-effort, borné, idempotent si déjà armé).
+  if (goal.skill === 'descendDiagonal' || goal.skill === 'branchMine') {
+    try { await withTimeout(armorUp(), 120000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+  }
   if (goal.skill === 'gatherLog') {
     // arbre le plus proche de N'IMPORTE quelle essence (pas oak hardcodé) — robustesse terrain
     const logNames = Object.keys(bot.registry.blocksByName).filter((n) => n.endsWith('_log'));
@@ -486,9 +492,12 @@ async function tryKitUpgrade() {
     return c2.ok;
   };
   try {
-    if (await tryMetal(['iron_ore', 'deepslate_iron_ore'], 'raw_iron', 'iron_ingot', 'iron_sword')) return;
-    await tryMetal(['copper_ore', 'deepslate_copper_ore'], 'raw_copper', 'copper_ingot', 'copper_sword');
+    const gotIron = await tryMetal(['iron_ore', 'deepslate_iron_ore'], 'raw_iron', 'iron_ingot', 'iron_sword');
+    if (!gotIron) await tryMetal(['copper_ore', 'deepslate_copper_ore'], 'raw_copper', 'copper_ingot', 'copper_sword');
   } catch (e) { /* best-effort : on cartographie à la pierre */ }
+  // Mappeur exposé aux mobs (hole A §1.3) : enfile armure+bouclier avec le fer du kit-upgrade
+  // (ironKeep=0 : pas de quota fer à préserver). Best-effort — sans fer en poche, no-op.
+  try { await armorUp(0); } catch (e) { /* best-effort */ }
 }
 
 // SURVIE PENDANT LE KIT (vécu Surv4 : 7 morts nocturnes — le planner n'avait AUCUNE survie active,
@@ -507,19 +516,26 @@ async function settleSurvivalKit() {
 // un stall est indiagnosticable à distance (vécu Surv2 : stone_sword ×5 sans explication).
 let lastShelterT = 0; // anti re-trigger : 1 abri par nuit max
 
-async function runSkillWithTelemetry(g) {
-  await settleSurvivalKit();                                  // survie d'abord, le craft ensuite
-  if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
-  // NUIT + (mort récente OU PV bas) pendant le kit → ABRI jusqu'à l'aube (vécu Surv4 : 7 morts
-  // nocturnes en boucle ; un trou couvert coûte 2 blocs et sauve le kit).
+// Abri nocturne PARTAGÉ (kit + roaming mappeur, hole §1.4) : nuit + (mort récente OU PV ≤10) + pas
+// d'abri depuis 10 min → trou couvert jusqu'à l'aube (borné 13 min). Retourne true si on s'est abrité.
+async function maybeNightShelter() {
   const deathsRecent = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000).length;
   if (isNight(bot) && (deathsRecent >= 1 || (bot.health != null && bot.health <= 10))
       && Date.now() - lastShelterT > 10 * 60 * 1000) {
     lastShelterT = Date.now();
     await withTimeout(shelterUntilDawn(bot, taskToken, { emit }), 13 * 60 * 1000,
       () => { try { stopMotion(); } catch (e) {} });
-    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    return true;
   }
+  return false;
+}
+
+async function runSkillWithTelemetry(g) {
+  await settleSurvivalKit();                                  // survie d'abord, le craft ensuite
+  if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  // NUIT + (mort récente OU PV bas) pendant le kit → ABRI jusqu'à l'aube (vécu Surv4 : 7 morts
+  // nocturnes en boucle ; un trou couvert coûte 2 blocs et sauve le kit).
+  if (await maybeNightShelter() && taskToken.cancelled) return { ok: false, reason: 'cancelled' };
   const r = await withTimeout(runGoalSkill(g), timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} });
   if (!r || r.ok === false) emit({ type: 'goal_failed', name: g.name, reason: (r && r.reason) || 'unknown' });
   return r;
@@ -582,6 +598,8 @@ async function startMapper() {
     onPeriodic: async () => {
       const ctx = Object.assign({ inv: buildCtxInv(bot) }, ctxExtra());
       if (firstUnmet(kitChain, ctx)) { emit({ type: 'mapper_kit_retry' }); await runKit(); }
+      try { await armorUp(0); } catch (e) { /* best-effort */ }   // hole A : le mappeur s'arme aussi
+      try { await maybeNightShelter(); } catch (e) {}             // hole §1.4 : abri nocturne en roaming
     },
     // CHASSE OPPORTUNISTE (vécu Surv1 : le retry périodique coïncide rarement avec des proies à
     // portée → stock jamais constitué) : à chaque arrivée, si le stock cuit est bas ET qu'une proie
@@ -746,7 +764,7 @@ function _wornArmor() {
   } catch (e) {}
   return worn;
 }
-async function ensureArmor(neededIronRemaining) {
+async function ensureArmor(opts = {}) {
   const items = () => ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, count: i.count }));
   const cnt = (n) => items().filter((i) => i.name === n).reduce((a, i) => a + i.count, 0);
   const worn = _wornArmor();
@@ -760,7 +778,7 @@ async function ensureArmor(neededIronRemaining) {
   //    bot re-mine le quota fer, l'armure survit aux morts (keepInventory). Le gate quota-strict
   //    bloquait tout (armorPlan null en boucle, vécu : 0 armure craftée). Smelt FORCÉ du raw_iron
   //    nécessaire si les lingots manquent pour la pièce la moins chère.
-  const ironKeep = 8;
+  const ironKeep = opts.ironKeep != null ? opts.ironKeep : 8;
   const nextPiece = ARMOR_PIECES.find((pc) => !worn.has(pc.name) && !items().some((i) => i.name === pc.name));
   if (nextPiece) {
     const totalIron = cnt('raw_iron') + cnt('iron_ingot');
@@ -786,7 +804,7 @@ async function ensureArmor(neededIronRemaining) {
   const hasShield = ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'shield')
     || worn.has('shield') || (bot.inventory && bot.inventory.slots && bot.inventory.slots[45] && bot.inventory.slots[45].name === 'shield');
   const planks = items().filter((i) => i.name.endsWith('_planks')).reduce((a, i) => a + i.count, 0);
-  if (!hasShield && planks >= 6 && cnt('iron_ingot') >= 1) {
+  if (shieldPlan(items(), hasShield)) {
     try {
       const r = await craftSmart({ name: 'shield', count: 1 });
       if (r && r.ok) {
@@ -797,17 +815,47 @@ async function ensureArmor(neededIronRemaining) {
   }
 }
 
-// ── Phase B : stock de torches (mob-aware) — 1 charbon + 1 stick = 4 torches. Best-effort :
-// sans charbon (le branch-mine en croise sans arrêt) ni sticks, on mine sans torches.
+// ── Phase B : stock de torches (mob-aware) PROACTIF (hole B — éclairer = moins de mobs = moins de
+// morts). Manque de charbon → mine le charbon EXPOSÉ tout proche (≤24, JAMAIS de roaming en plein
+// tunnel) ; manque de sticks → en craft depuis les planches du kit. Best-effort, jamais bloquant.
 async function ensureTorches() {
-  const items = (bot.inventory && bot.inventory.items()) || [];
-  const count = (n) => items.filter((i) => i.name === n).reduce((a, i) => a + i.count, 0);
+  const inv = () => (bot.inventory && bot.inventory.items()) || [];
+  const count = (n) => inv().filter((i) => i.name === n).reduce((a, i) => a + i.count, 0);
   if (count('torch') >= 8) return;
-  if ((count('coal') + count('charcoal')) < 1 || count('stick') < 1) return;
+  if ((count('coal') + count('charcoal')) < 1) {
+    const coalDefs = ['coal_ore', 'deepslate_coal_ore'].map((n) => bot.registry.blocksByName[n]).filter(Boolean);
+    if (coalDefs.length && bot.findBlock({ matching: coalDefs.map((b) => b.id), maxDistance: 24 })) {
+      try { await gather(bot, { name: ['coal_ore', 'deepslate_coal_ore'], count: 3, explore: false }, taskToken); } catch (e) { /* best-effort */ }
+    }
+  }
+  if (count('stick') < 1) {
+    const planks = inv().find((i) => i.name.endsWith('_planks'));
+    if (planks) { try { await craftSmart({ name: 'stick', count: 4 }); } catch (e) {} }
+  }
+  if ((count('coal') + count('charcoal')) < 1 || count('stick') < 1) return; // toujours rien → on mine sans
   try {
     const r = await craftSmart({ name: 'torch', count: 8 });
     if (r && r.ok) emit({ type: 'gear_craft', item: 'torch', ok: true, why: 'mob_aware' });
   } catch (e) { /* best-effort */ }
+}
+
+// Cycle d'équipement de survie réutilisable (hole A — mappeurs + ressource + porte avant-profondeur
+// l'appellent) : torches proactives + armure de fer + bouclier. ironKeep = fer à préserver pour un
+// quota (mappeur = 0, il n'a pas de quota fer ; ressource = fer-quota-restant).
+async function armorUp(ironKeep = 8) {
+  try { await ensureTorches(); } catch (e) { /* best-effort */ }
+  try { await ensureArmor({ ironKeep }); } catch (e) { /* best-effort */ }
+}
+
+// Tick de survie COURT exécuté PENDANT le branch-mining (hole E — la survie ne tournait qu'ENTRE
+// les appels branchMine ; une branche de plusieurs minutes laissait le bot sans défense). Une action
+// de survie (combat/fuite) + manger + re-stocker des torches. Borné par nature (1 action/appel).
+async function branchSurvivalTick() {
+  try { await survivalTick(bot, { fleeFrom, emit }); } catch (e) {}
+  try { await eat(bot); } catch (e) {}
+  // ensureTorches mine du charbon proche (gather/collectBlock) → borné, sinon il pourrait geler
+  // la branche (le hook tourne DANS la boucle, hors de la détection de stall en tête de boucle).
+  try { await withTimeout(ensureTorches(), 30000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
 }
 
 // ── Phase 2 : branch-mine RÉEL au Y optimal du type (anti-xray : on ne voit plus à travers
@@ -852,6 +900,15 @@ async function mineForType(type, needed) {
     const r0 = await withTimeout(recoverPickaxe(), 420000, () => { try { stopMotion(); } catch (e) {} });
     if (taskToken.cancelled) return { ok: true };
     if (!(r0 && r0.ok)) return { ok: false, reason: 'no_pickaxe' };
+  }
+  // PORTE ARMURE-AVANT-PROFONDEUR (hole A, survie #1 Massii) : avant de s'enfoncer vers un Y profond
+  // (≤0 : diamant/redstone -58, or -16), enfile armure+bouclier si pas déjà minimalement équipé.
+  // Best-effort, sans deadlock — le fer vient du palier fer Y=16 peu profond, miné en premier.
+  if (targetY <= 0) {
+    const worn = [..._wornArmor()];
+    const hasShield = (bot.inventory && bot.inventory.slots && bot.inventory.slots[45] && bot.inventory.slots[45].name === 'shield')
+      || ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'shield');
+    if (!isMinimallyArmored(worn, hasShield)) { try { await withTimeout(armorUp(), 180000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) { /* best-effort */ } }
   }
   const p = bot.entity && bot.entity.position;
   if (!p) return { ok: false, reason: 'no_pos' };
@@ -900,13 +957,16 @@ async function mineForType(type, needed) {
   const r = await withTimeout(branchMine(bot, {
     targetY, mainLength: 24, branchLength: 8, stopOre,
     heading: bot._branchHeading || null,
-    torchEvery: TORCH_EVERY,
+    torchEvery: 4,                          // hole B : torches plus fréquentes (était TORCH_EVERY=8)
+    approachTimeoutMs: 20000,               // hole E : goto d'approche borné → plus de hang en branche
+    survivalEvery: 4,
+    onSurvivalTick: branchSurvivalTick,     // hole E : survie + éclairage PENDANT la branche
   }, taskToken), 900000, () => { try { stopMotion(); } catch (e) {} });
   if (taskToken.cancelled) return { ok: true };
   if (r && r.heading) bot._branchHeading = r.heading;
   // Lave/gouffre en travers du tunnel principal : on TOURNE (perpendiculaire) pour le prochain
   // call — persister le même cap re-tamponnerait le même obstacle à l'infini.
-  if (r && (r.reason === 'lava' || r.reason === 'drop') && bot._branchHeading) {
+  if (r && (r.reason === 'lava' || r.reason === 'drop' || r.reason === 'stalled') && bot._branchHeading) {
     bot._branchHeading = { dx: -bot._branchHeading.dz, dz: bot._branchHeading.dx };
   }
   return (r && r.ok) ? r : { ok: false, reason: (r && r.reason) || 'branch_failed' };
@@ -1093,7 +1153,7 @@ async function startResource() {
         } catch (e) { return 0; }
       })();
       await withTimeout((async () => {
-        await ensureGearFor(types); await ensureTorches(); await ensureArmor(ironLeft);
+        await ensureGearFor(types); await armorUp(ironLeft);
       })(), 240000, () => { try { stopMotion(); } catch (e) {} });
     }) : null,
     onTarget: async () => {
@@ -1227,25 +1287,45 @@ async function onSpawn() {
       // (tête+pieds) pour couper le contact mêlée, puis manger. Best-effort, non bloquant.
       onPanic: () => {
         (async () => {
+          try { stopMotion(); } catch (e) {}
+          // panicWall (module dédié, hole C) : mur ROBUSTE même en grotte ouverte (pontage sur le
+          // bloc-sol du bot) — l'ancien inline échouait en silence là où les mobs essaiment.
+          try { await panicWall(bot); } catch (e) { /* best-effort */ }
+          try { await eat(bot); } catch (e) {}
+        })();
+      },
+      // POSTURE DÉFENSIVE à ~10 PV (hole C — AVANT le seuil critique) : équipe + lève le bouclier
+      // brièvement (réduit les dégâts entrants). La riposte mêlée et onRanged gèrent l'agresseur.
+      onDefensive: () => {
+        (async () => {
           try {
-            const wall = ((bot.inventory && bot.inventory.items()) || [])
-              .find((i) => ['cobblestone', 'cobbled_deepslate', 'dirt', 'netherrack'].includes(i.name)
-                || i.name.endsWith('_planks') || i.name === 'stone' || i.name === 'deepslate');
-            if (!wall || typeof bot.placeBlock !== 'function') return;
-            try { bot.pathfinder && bot.pathfinder.setGoal && bot.pathfinder.setGoal(null); } catch (e) {}
-            const fp = bot.entity.position.floored();
-            for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-              for (const dy of [0, 1]) {
-                try {
-                  const ref = bot.blockAt(vec3Lib(fp.x + dx, fp.y + dy - 1, fp.z + dz));
-                  if (ref && ref.boundingBox === 'block') { await bot.equip(wall, 'hand'); await bot.placeBlock(ref, vec3Lib(0, 1, 0)); }
-                } catch (e) { /* face occupée → suivant */ }
-              }
+            const sh = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === 'shield');
+            if (sh) {
+              const off = bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
+              if (!off || off.name !== 'shield') { try { await bot.equip(sh, 'off-hand'); } catch (e) {} }
             }
-            try { await eat(bot); } catch (e) {}
+            try { bot.activateItem(true); } catch (e) {}          // lève le bouclier (main secondaire)
+            setTimeout(() => { try { bot.deactivateItem(); } catch (e) {} }, 2000);
           } catch (e) { /* best-effort */ }
         })();
       },
+      // SQUELETTE À DISTANCE (hole D) : charge bouclier levé et tue-le en mêlée (supprime la source
+      // de flèches) — plus efficace qu'encaisser en kitant. Le plugin pvp gère l'approche. Best-effort.
+      onRanged: (foe) => {
+        (async () => {
+          try {
+            const sh = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === 'shield');
+            if (sh) {
+              const off = bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
+              if (!off || off.name !== 'shield') { try { await bot.equip(sh, 'off-hand'); } catch (e) {} }
+            }
+            const w = bestWeapon(bot);
+            if (w) { try { await bot.equip(w, 'hand'); } catch (e) {} }
+            try { bot.pvp.attack(foe); } catch (e) {}
+          } catch (e) { /* best-effort */ }
+        })();
+      },
+      panicCooldownMs: 8000,
       onWaterStuck: () => {
         if (waterRescue) return;
         const nowMs = Date.now();

@@ -38,13 +38,43 @@ function buildNearGoal(x, y, z, range = 3) {
   return { x, y, z };
 }
 
+// Borne un await : RÉSOUT (ne rejette jamais) après ms si la promesse n'a pas tranché. Sert à
+// éviter qu'un pathfinder.goto reste suspendu indéfiniment au milieu d'une branche (hole E :
+// goto sans timeout = hang éternel → quota figé toute la nuit). Le timer N'EST PAS unref() :
+// quand la vraie promesse ne se résout JAMAIS (le cas même qu'on garde), il doit maintenir
+// l'event-loop en vie le temps de tirer et résoudre ; clearTimeout dès que la promesse tranche.
+function withTimeout(promise, ms) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    const timer = setTimeout(() => finish({ timedOut: true }), ms);
+    Promise.resolve(promise).then((v) => { clearTimeout(timer); finish(v); },
+      () => { clearTimeout(timer); finish({ rejected: true }); });
+  });
+}
+
+// Stoppe au mieux le mouvement du bot (après un timeout d'approche) : coupe le goal pathfinder
+// puis remet à zéro les control states qui pourraient laisser le bot dériver.
+function stopMotion(bot) {
+  try { if (bot.pathfinder && bot.pathfinder.setGoal) bot.pathfinder.setGoal(null); } catch (e) {}
+  if (typeof bot.setControlState === 'function') {
+    for (const c of ['forward', 'back', 'left', 'right', 'jump', 'sneak']) {
+      try { bot.setControlState(c, false); } catch (e) {}
+    }
+  }
+}
+
 // Rapproche le bot d'une cible avant le dig. Si le pathfinder est indisponible (tests sans mock),
 // no-op silencieux. Si la cible est inaccessible, on ne fait pas échouer : le dig direct prendra
-// le relais et échouera proprement avec dig_failed si vraiment hors range.
-async function approach(bot, target, range = 3) {
+// le relais et échouera proprement avec dig_failed si vraiment hors range. Le goto est BORNÉ
+// (opts.approachTimeoutMs, déf 20s) : sur timeout on coupe le mouvement et on rend la main.
+async function approach(bot, target, range = 3, opts = null) {
   if (!bot.pathfinder || !bot.pathfinder.goto) return;
-  try { await bot.pathfinder.goto(buildNearGoal(target.x, target.y, target.z, range)); }
-  catch (e) { /* cible bloquée → on tente quand même le dig direct */ }
+  const ms = (opts && opts.approachTimeoutMs) || 20000;
+  try {
+    const res = await withTimeout(bot.pathfinder.goto(buildNearGoal(target.x, target.y, target.z, range)), ms);
+    if (res && res.timedOut) stopMotion(bot);   // goto trop long → on arrête le mouvement
+  } catch (e) { /* cible bloquée → on tente quand même le dig direct */ }
 }
 
 const COBBLE_RESERVE_MIN = 8;
@@ -178,7 +208,8 @@ async function ensureFloor(bot, footTarget) {
 }
 
 // Mine un bloc avec garde-fou lave + opportunisme ore. Retourne {ok, walled?:bool}.
-async function safeDigAndOpportunism(bot, target, token, debug) {
+// `loopOpts` (optionnel) porte le bornage d'approche (approachTimeoutMs) jusqu'au approach() interne.
+async function safeDigAndOpportunism(bot, target, token, debug, loopOpts) {
   // Anti-lave 6-voisins.
   let lava;
   try { lava = neighborsHaveLava(bot, target); }
@@ -214,7 +245,7 @@ async function safeDigAndOpportunism(bot, target, token, debug) {
   // n'est ni visible ni à portée, on se RAPPROCHE une fois ; toujours pas → dig_failed (skip).
   if ((typeof bot.canSeeBlock === 'function' && !bot.canSeeBlock(block))
       || (typeof bot.canDigBlock === 'function' && !bot.canDigBlock(block))) {
-    await approach(bot, target, 1);
+    await approach(bot, target, 1, loopOpts);
     if ((typeof bot.canSeeBlock === 'function' && !bot.canSeeBlock(block))
         || (typeof bot.canDigBlock === 'function' && !bot.canDigBlock(block))) {
       return { ok: false, reason: 'dig_failed' };
@@ -268,6 +299,12 @@ async function branchMine(bot, opts = {}, token = null) {
   const torchEvery = opts.torchEvery || 0;
   const rng = opts.rng || Math.random;
   const debug = !!opts.debug;
+  // Hole E — détection de stall interne + hook de survie PENDANT le tunnel (avant, survie/lumière
+  // ne tournaient qu'ENTRE les appels branchMine, pas durant les branches de plusieurs minutes).
+  const now = opts.now || Date.now;                      // horloge injectable (tests déterministes)
+  const stallMs = opts.stallMs || 30000;                 // pas de progrès > stallMs → 'stalled'
+  const onSurvivalTick = opts.onSurvivalTick || null;    // async, opt-in
+  const survivalEvery = opts.survivalEvery || 4;
 
   const start = bot.entity && bot.entity.position;
   dbg('start', { phase: 'branchMine:enter', y: start ? start.y : null, x: start ? start.x : null, z: start ? start.z : null, targetY, mainLength, wall: countWallable(bot) });
@@ -300,23 +337,57 @@ async function branchMine(bot, opts = {}, token = null) {
   let stopReason = null;
   let nextTorchAt = torchEvery > 0 ? torchEvery : Infinity;   // 1re torche après ~torchEvery paliers
 
+  // Suivi de PROGRÈS (hole E) : le bot a progressé si sa position floorée a bougé d'≥1 bloc
+  // OU si le compteur d'ores a augmenté (PAS i — i avance même quand le bot est physiquement
+  // coincé sur des digs qui échouent). Signal ore = quota stopOre + ores ramassés (diamant/fer/charbon).
+  const flooredPos = () => {
+    const pp = bot.entity && bot.entity.position;
+    return pp ? `${Math.floor(pp.x)},${Math.floor(pp.y)},${Math.floor(pp.z)}` : 'none';
+  };
+  const oreSignal = () => {
+    const o = snapshotOres(bot);
+    return (stopOre ? countItems(bot, stopOre.items) : 0) + o.diamond + o.iron + o.coal;
+  };
+  let lastProgressAt = now();
+  let lastPosKey = flooredPos();
+  let lastOreSignal = oreSignal();
+
   outer:
   while (i <= mainLength) {
     if (token && token.cancelled) return { ok: true, cancelled: true, ores: deltaOres(oresBefore, snapshotOres(bot)), gotDiamond: countItem(bot, 'diamond') > 0, heading: dir };
+    // Stall : aucun progrès (position figée + aucun ore récolté) depuis > stallMs → échec réel
+    // (l'appelant relocate). On échantillonne EN TÊTE de boucle.
+    {
+      const posKey = flooredPos();
+      const oreNow = oreSignal();
+      if (posKey !== lastPosKey || oreNow > lastOreSignal) {
+        lastProgressAt = now();
+        lastPosKey = posKey;
+        lastOreSignal = oreNow;
+      } else if (now() - lastProgressAt > stallMs) {
+        stopReason = 'stalled';
+        break;
+      }
+    }
     if (countWallable(bot) < COBBLE_RESERVE_MIN) { stopReason = 'cobble_low'; break; }
     if (stopReached()) break;                                          // objectif rempli
+
+    // Survie/lumière PENDANT le tunnel (hole E) : tous les survivalEvery paliers, hook opt-in.
+    if (onSurvivalTick && i % survivalEvery === 0) {
+      try { await onSurvivalTick(i); } catch (e) { /* best-effort : ne casse pas le minage */ }
+    }
 
     // Tunnel 1×2 : pieds + tête. Targets calculés depuis origin (point fixe).
     const footTarget = p(ox + dir.dx * i, oy, oz + dir.dz * i);
     const headTarget = p(footTarget.x, footTarget.y + 1, footTarget.z);
     if (debug) dbg('iter', { phase: 'branchMine:iter', i, footTarget: { x: footTarget.x, y: footTarget.y, z: footTarget.z } });
     // Approche AVANT le dig : sinon hors range à i>=6 (cf. risque #5). GoalNear 3 = arrive à ≤3 blocs.
-    try { await approach(bot, footTarget, 3); } catch (e) { if (debug) dbg('iter', { phase: 'branchMine:approachThrew', err: String(e).slice(0,150) }); }
+    try { await approach(bot, footTarget, 3, opts); } catch (e) { if (debug) dbg('iter', { phase: 'branchMine:approachThrew', err: String(e).slice(0,150) }); }
     // Sol manquant sous la prochaine case (grotte) → ponté, sinon on arrête le tunnel ici (anti-chute).
     try { if (!(await ensureFloor(bot, footTarget))) { stopReason = 'drop'; break; } } catch (e) { /* best-effort */ }
     for (const t of [footTarget, headTarget]) {
       let r;
-      try { r = await safeDigAndOpportunism(bot, t, token, debug); }
+      try { r = await safeDigAndOpportunism(bot, t, token, debug, opts); }
       catch (e) { if (debug) dbg('iter', { phase: 'branchMine:safeDigThrew', err: String(e).slice(0,150) }); r = { ok: false, reason: 'threw' }; }
       if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
       if (!r.ok && r.reason === 'no_pickaxe') { stopReason = 'no_pickaxe'; break outer; } // jamais à la main (Massii #5)
@@ -346,13 +417,13 @@ async function branchMine(bot, opts = {}, token = null) {
           const ft = p(footTarget.x + side.dx * j, footTarget.y, footTarget.z + side.dz * j);
           const ht = p(ft.x, ft.y + 1, ft.z);
           // Approche aussi avant la branche — j peut monter à 8, donc range hors limite sans goto.
-          await approach(bot, ft, 3);
+          await approach(bot, ft, 3, opts);
           // Anti-chute : trou de grotte dans la branche → ponté, sinon la branche s'arrête là.
           let floorOk = true;
           try { floorOk = await ensureFloor(bot, ft); } catch (e) { /* best-effort */ }
           if (!floorOk) break;                                         // branche suivante
           for (const t of [ft, ht]) {
-            const r = await safeDigAndOpportunism(bot, t, token, debug);
+            const r = await safeDigAndOpportunism(bot, t, token, debug, opts);
             if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
             if (!r.ok && r.reason === 'no_pickaxe') { stopReason = 'no_pickaxe'; break outer; }
           }

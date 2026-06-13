@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { tryEat, shouldFlee, installReflexes } = require('../reflexes');
+const { tryEat, shouldFlee, installReflexes, rangedThreat, DEFENSIVE_HEALTH } = require('../reflexes');
 
 function fakeBot({ food = 20, health = 20, hasFood = true, threat = null } = {}) {
   const calls = { equipped: [], consumed: 0, handlers: {} };
@@ -191,4 +191,146 @@ test('onWaterStuck : épisodes espacés (>90s) → jamais déclenché', () => {
     t += 120000;                                        // 2 min entre épisodes
   }
   assert.strictEqual(rescues, 0);
+});
+
+// --- Hole C : palier DÉFENSIF (avant critique) — bande (6,10] PV : lever bouclier / repositionner.
+// Au-dessus du seuil de fuite (6), en dessous de 10. Opt-in via onDefensive.
+
+test('onDefensive : 9 PV (bande défensive) + assaillant mêlée → onDefensive(threat)', () => {
+  const zombie = { type: 'mob', name: 'zombie', position: { x: 2, y: 64, z: 0, distanceTo: () => 2 } };
+  const defended = [];
+  let t = 0;
+  const bot = fakeBot({ health: 9, threat: zombie });
+  installReflexes(bot, { emit() {}, fleeFrom() {}, now: () => t,
+    onDefensive: (threat) => defended.push(threat) });
+  bot.calls.handlers.health();
+  assert.strictEqual(defended.length, 1, 'défensif déclenché à 9 PV');
+  assert.strictEqual(defended[0].name, 'zombie', 'menace passée = assaillant mêlée');
+});
+
+test('onDefensive : 5 PV → NON (la fuite possède cette bande, sous le seuil)', () => {
+  const zombie = { type: 'mob', name: 'zombie', position: { x: 2, y: 64, z: 0, distanceTo: () => 2 } };
+  const defended = [];
+  let fled = 0;
+  const bot = fakeBot({ health: 5, threat: zombie });
+  installReflexes(bot, { emit() {}, fleeFrom: () => fled++, now: () => 0,
+    onDefensive: () => defended.push(1) });
+  bot.calls.handlers.health();
+  assert.strictEqual(defended.length, 0, 'pas de défensif sous le seuil de fuite');
+  assert.ok(fled >= 1, 'fuite prioritaire à 5 PV');
+});
+
+test('onDefensive : 11 PV → NON (au-dessus de DEFENSIVE_HEALTH)', () => {
+  const zombie = { type: 'mob', name: 'zombie', position: { x: 2, y: 64, z: 0, distanceTo: () => 2 } };
+  const defended = [];
+  const bot = fakeBot({ health: 11, threat: zombie });
+  installReflexes(bot, { emit() {}, fleeFrom() {}, now: () => 0,
+    onDefensive: () => defended.push(1) });
+  bot.calls.handlers.health();
+  assert.strictEqual(defended.length, 0, 'pas de défensif au-dessus de la bande');
+});
+
+test('DEFENSIVE_HEALTH exporté = 10', () => {
+  assert.strictEqual(DEFENSIVE_HEALTH, 10);
+});
+
+// --- Hole D : menace À DISTANCE (squelette/stray/bogged) dans [6,16] blocs ----------------------
+
+test('rangedThreat : squelette à distance 10 → détecté', () => {
+  const skel = { type: 'mob', name: 'skeleton', position: { x: 10, y: 64, z: 0, distanceTo: () => 10 } };
+  const bot = fakeBot({ health: 20, threat: skel });
+  const foe = rangedThreat(bot);
+  assert.ok(foe, 'squelette à portée d arc détecté');
+  assert.strictEqual(foe.name, 'skeleton');
+});
+
+test('rangedThreat : squelette au CONTACT (distance 3) → ignoré (mêlée, pas ranged)', () => {
+  const skel = { type: 'mob', name: 'skeleton', position: { x: 3, y: 64, z: 0, distanceTo: () => 3 } };
+  const bot = fakeBot({ health: 20, threat: skel });
+  assert.strictEqual(rangedThreat(bot), null, 'distance < 6 → hors bande ranged');
+});
+
+test('rangedThreat : zombie à distance 10 → null (pas un tireur)', () => {
+  const zombie = { type: 'mob', name: 'zombie', position: { x: 10, y: 64, z: 0, distanceTo: () => 10 } };
+  const bot = fakeBot({ health: 20, threat: zombie });
+  assert.strictEqual(rangedThreat(bot), null);
+});
+
+test('onRanged : squelette à distance 10 + PV en baisse + aucun assaillant mêlée → onRanged(skel)', () => {
+  const skel = { type: 'mob', name: 'skeleton', position: { x: 10, y: 64, z: 0, distanceTo: () => 10 } };
+  const ranged = [];
+  const melee = [];
+  const bot = fakeBot({ health: 20, threat: skel });
+  installReflexes(bot, { emit() {}, fleeFrom() {}, attack: (t) => melee.push(t),
+    onRanged: (foe) => ranged.push(foe) });
+  bot.calls.handlers.health();           // baseline (lastHealth = 20)
+  bot.health = 18;                       // touché par une flèche
+  bot.calls.handlers.health();
+  assert.strictEqual(melee.length, 0, 'pas de riposte mêlée (squelette hors contact)');
+  assert.strictEqual(ranged.length, 1, 'riposte ranged déclenchée');
+  assert.strictEqual(ranged[0].name, 'skeleton');
+});
+
+test('onRanged : la riposte MÊLÉE est prioritaire (zombie au contact → pas de onRanged)', () => {
+  const zombie = { type: 'mob', name: 'zombie', position: { x: 2, y: 64, z: 0, distanceTo: () => 2 } };
+  const ranged = [];
+  const melee = [];
+  const bot = fakeBot({ health: 20, threat: zombie });
+  installReflexes(bot, { emit() {}, fleeFrom() {}, attack: (t) => melee.push(t),
+    onRanged: (foe) => ranged.push(foe) });
+  bot.calls.handlers.health();
+  bot.health = 16;
+  bot.calls.handlers.health();
+  assert.strictEqual(melee.length, 1, 'mêlée déclenchée');
+  assert.strictEqual(ranged.length, 0, 'ranged non déclenché (mêlée prioritaire)');
+});
+
+// --- Hole C : cooldown panic configurable + re-trigger plus rapide sous attaque soutenue --------
+
+test('panic : cooldown par défaut 8s (pas 20s) — re-tire après 8s même PV stable', () => {
+  const panics = [];
+  let t = 0;
+  const bot = fakeBot({ health: 5 });
+  installReflexes(bot, { emit() {}, fleeFrom() {}, now: () => t, onPanic: () => panics.push(t) });
+  bot.calls.handlers.health();                 // panic #1 à t=0
+  assert.strictEqual(panics.length, 1);
+  t = 7000; bot.calls.handlers.health();       // 7 s < 8 s → pas encore
+  assert.strictEqual(panics.length, 1, 'pas de re-panic avant 8 s à PV stable');
+  t = 8000; bot.calls.handlers.health();       // 8 s → re-panic
+  assert.strictEqual(panics.length, 2, 're-panic à 8 s (nouveau défaut)');
+});
+
+test('panic : sous attaque soutenue (PV qui rebaisse) → re-tire après 4s (cooldown/2)', () => {
+  const panics = [];
+  let t = 0;
+  const bot = fakeBot({ health: 6 });
+  installReflexes(bot, { emit() {}, fleeFrom() {}, now: () => t, onPanic: () => panics.push(t) });
+  bot.calls.handlers.health();                 // panic #1 à t=0 (health 6 = au seuil)
+  assert.strictEqual(panics.length, 1);
+  t = 4000; bot.health = 4;                     // PV ont rebaissé (attaque soutenue)
+  bot.calls.handlers.health();                  // 4 s + PV en baisse → re-panic
+  assert.strictEqual(panics.length, 2, 're-wall rapide (4 s) sous attaque soutenue');
+});
+
+test('panic : PV stables → PAS de re-trigger rapide à 4s (attend les 8s pleins)', () => {
+  const panics = [];
+  let t = 0;
+  const bot = fakeBot({ health: 5 });
+  installReflexes(bot, { emit() {}, fleeFrom() {}, now: () => t, onPanic: () => panics.push(t) });
+  bot.calls.handlers.health();                 // panic #1
+  t = 4000; bot.calls.handlers.health();        // 4 s mais PV inchangés → pas de re-trigger rapide
+  assert.strictEqual(panics.length, 1, 'cooldown/2 réservé à la baisse de PV');
+});
+
+test('panic : cooldown configurable via panicCooldownMs', () => {
+  const panics = [];
+  let t = 0;
+  const bot = fakeBot({ health: 5 });
+  installReflexes(bot, { emit() {}, fleeFrom() {}, now: () => t, panicCooldownMs: 2000,
+    onPanic: () => panics.push(t) });
+  bot.calls.handlers.health();                 // #1 à t=0
+  t = 1999; bot.calls.handlers.health();        // < 2 s → non
+  assert.strictEqual(panics.length, 1);
+  t = 2000; bot.calls.handlers.health();        // 2 s → oui
+  assert.strictEqual(panics.length, 2);
 });
