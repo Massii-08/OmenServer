@@ -27,7 +27,12 @@ WORLD_MEMORY_DIR = _PROJECT_ROOT / "data" / "mc_agent_world_memory"
 
 _SAFE_ID = re.compile(r"^[a-z0-9]+$")
 GRID = 128   # taille de cellule (quantification x,z) : 1 entrée par région de 128²
-CAP = 500    # entrées max par (monde, type) ; au-delà on jette les plus vieilles
+CAP = 500    # plafond héritage (caves/finds) ; au-delà on jette les plus vieilles
+BIOME_CAP = 20000  # la carte EST le produit : une cellule biome (~60 o, dédup par 128²) ne doit
+                   # JAMAIS être évincée en exploration normale. 20000 ≈ 1,2 Mo max sur disque.
+                   # (Ancien CAP=500 tronquait la carte à 500 cellules — la gauche/ouest, mappée en
+                   # premier, disparaissait ; pire depuis la couverture 8-voisins qui ajoute ~9/scan.)
+STRUCT_CAP = 5000  # structures = contenu carte aussi → plafond large (mêmes raisons que BIOME_CAP)
 ORE_CAP = 50000  # phase 2 anti-xray : liste SPARSE (exposés only) — on ne tronque JAMAIS un ore
                  # nécessaire. Le cap reste par type (héritage phase 1) mais ne mord plus en pratique.
 STRUCT_GRID = 64  # dédup structures : 1 entrée par (kind, cellule 64²) — un village couvre ~3 cellules
@@ -52,7 +57,7 @@ def _world(memory, world):
     return w
 
 
-def add_biome(memory, world, name, x, z, at=None, cap=CAP, id=None):
+def add_biome(memory, world, name, x, z, at=None, cap=BIOME_CAP, id=None):
     """Ajoute un biome (coords quantifiées, dédup par (cellule, identité), capé). Mute + retourne memory.
 
     Identité = `name` si présent, sinon `id` (biome custom de datapack non nommé par mineflayer).
@@ -154,7 +159,7 @@ def remove_ore(memory, world, x, y, z, at=None):
     return memory
 
 
-def add_structure(memory, world, kind, x, y, z, at=None, cap=CAP):
+def add_structure(memory, world, kind, x, y, z, at=None, cap=STRUCT_CAP):
     """Note une structure (village/mineshaft/dungeon/stronghold/...) à sa position.
 
     Dédup par (kind, cellule STRUCT_GRID) : une structure s'étale sur plusieurs blocs — la

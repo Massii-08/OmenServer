@@ -375,3 +375,22 @@ def test_world_seed_has_structures():
     m = wm.empty_memory("g")
     w = wm._world(m, "w")
     assert w["structures"] == []
+
+
+def test_biome_default_cap_does_not_truncate_normal_exploration():
+    # Régression bug carte : l'ancien défaut (CAP=500) tronquait la carte à 500 cellules →
+    # la gauche/ouest (mappée en premier = plus vieille) disparaissait + îlots déconnectés.
+    # La légende du site sommait EXACTEMENT 500. Le défaut biome doit être large.
+    assert wm.BIOME_CAP >= 20000
+    m = wm.empty_memory("g")
+    for i in range(600):  # 600 cellules distinctes (>500) toutes nommées "forest"
+        wm.add_biome(m, "w", "forest", i * 300, 0, at=f"t{i}")
+    assert len(m["worlds"]["w"]["biomes"]) == 600  # aucune évincée
+
+
+def test_structure_default_cap_is_generous():
+    assert wm.STRUCT_CAP >= 5000
+    m = wm.empty_memory("g")
+    for i in range(600):  # 600 cellules distinctes (>500 héritage)
+        wm.add_structure(m, "w", "mineshaft", i * 200, 30, 0, at=f"t{i}")
+    assert len(m["worlds"]["w"]["structures"]) == 600
