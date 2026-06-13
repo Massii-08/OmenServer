@@ -778,7 +778,7 @@ async function ensureArmor(opts = {}) {
   //    bot re-mine le quota fer, l'armure survit aux morts (keepInventory). Le gate quota-strict
   //    bloquait tout (armorPlan null en boucle, vécu : 0 armure craftée). Smelt FORCÉ du raw_iron
   //    nécessaire si les lingots manquent pour la pièce la moins chère.
-  const ironKeep = opts.ironKeep != null ? opts.ironKeep : 8;
+  const ironKeep = opts.ironKeep != null ? opts.ironKeep : 8;  // buffer fer au GATE (mappeur=0, resource=8)
   const nextPiece = ARMOR_PIECES.find((pc) => !worn.has(pc.name) && !items().some((i) => i.name === pc.name));
   if (nextPiece) {
     const totalIron = cnt('raw_iron') + cnt('iron_ingot');
@@ -789,7 +789,11 @@ async function ensureArmor(opts = {}) {
       }
     }
   }
-  const plan = armorPlan(items(), { have: worn, ironKeep });
+  // armorPlan ironKeep=0 : le buffer fer est DÉJÀ enforced par le gate totalIron ci-dessus —
+  // le ré-appliquer sur les seuls lingots (armorPlan ne compte QUE iron_ingot) le double-comptait
+  // → spendable négatif → 0 armure craftée (vécu live, fer haut mais pioche fer consomme les
+  //   lingots et il n'en reste jamais 8+).
+  const plan = armorPlan(items(), { have: worn, ironKeep: 0 });
   if (plan) {
     try {
       const r = await craftSmart({ name: plan.craft, count: 1 });
@@ -1689,6 +1693,35 @@ setInterval(() => {
     process.exit(1);
   }
 }, 30000);
+
+// TIMER ARMURE (Massii survie #1, hole A/D) : ensureArmor était appelé au HAUT de la boucle, qui
+// n'itère quasi jamais (le bot passe ~tout son temps DANS mineForType/branchMine ≤900s) → 0 armure
+// craftée live malgré le fer plein. Timer INDÉPENDANT : toutes les 90 s, hors dig, pour TOUT bot
+// exposé en profondeur (resource | diamond | mapper), si une pièce d'armure manque et que le fer
+// dépasse le buffer → en craft/équipe UNE. ironKeep=8 pour resource (a un quota fer à préserver),
+// 0 sinon (mappeur/diamant : l'armure PRIME, aucun fer à garder). Borné, best-effort, jamais throw ;
+// n'interrompt pas un dig en cours (immobile = légitime).
+const _ARMOR_TIMER_OBJ = new Set(['resource', 'diamond', 'mapper']);
+let _armorBusy = false;
+setInterval(async () => {
+  try {
+    if (_armorBusy) return;
+    const objType = (world.objective && world.objective.type) || '';
+    if (!_ARMOR_TIMER_OBJ.has(objType)) return;
+    if (bot.targetDigBlock) return;                       // pas en plein minage
+    if (taskToken && taskToken.cancelled) return;
+    const worn = _wornArmor();
+    if (ARMOR_PIECES.every((pc) => worn.has(pc.name))) {  // set complet → équipe juste un éventuel reliquat
+      const sh = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === 'shield');
+      if (sh) { try { await bot.equip(sh, 'off-hand'); } catch (e) {} }
+      return;
+    }
+    const ironKeep = objType === 'resource' ? 8 : 0;
+    _armorBusy = true;
+    await withTimeout(ensureArmor({ ironKeep }), 150000, () => { try { stopMotion(); } catch (e) {} });
+  } catch (e) { /* timer : ne crash jamais */ }
+  finally { _armorBusy = false; }
+}, 90000);
 
 onCommand((cmd) => {
   if (cmd.type === 'say') say(bot, cmd.message);
