@@ -4,6 +4,10 @@
 // rejoindre la TERRE FERME la plus proche (bloc solide, 2 airs au-dessus, hors eau). Borné dans le
 // temps (jamais de boucle infinie) ; chaque goto interne est lui-même bordé.
 let pfGoals; try { pfGoals = require('mineflayer-pathfinder').goals; } catch (e) { pfGoals = null; }
+// H6 : pillarUp pour ÉMERGER d'une grotte/ravin inondé (bot sur le sol, eau au-dessus → pose des blocs
+// sous ses pieds pour remonter à l'air) quand AUCUNE terre n'est en vue — au lieu de nager indéfiniment
+// et se noyer (vécu live : 9-14 noyades/35 min). No-op si flottant (pas de support sous les pieds).
+let _pillarUp; try { _pillarUp = require('./skills/pillarUp').pillarUp; } catch (e) { _pillarUp = null; }
 
 const WATER = new Set(['water', 'flowing_water', 'seagrass', 'tall_seagrass', 'kelp', 'kelp_plant', 'bubble_column']);
 
@@ -74,9 +78,11 @@ async function escapeWater(bot, opts = {}) {
   // cap de nage FIXE quand aucune terre n'est en vue (vécu Surv7 : fond d'un trou inondé, 25 échecs
   // en re-scannant sur place) — on nage AVEC PERSISTANCE dans une direction en re-scannant la terre.
   let swimYaw = null;
+  let noLand = 0;
   while (isInWater(bot) && Date.now() - t0 < timeoutMs) {
     const land = findLandTarget(bot, opts.maxDistance || 48);
     if (land) {
+      noLand = 0;
       await _withTimeout(doGoto(land), opts.gotoTimeoutMs || 15000, () => {
         try { bot.pathfinder && bot.pathfinder.setGoal(null); } catch (e) {}
       });
@@ -87,6 +93,15 @@ async function escapeWater(bot, opts = {}) {
       try { bot.setControlState('forward', true); } catch (e) {}
       await sleep(3000);
       try { bot.setControlState('forward', false); } catch (e) {}
+      noLand++;
+      // H6 : 2 segments sans terre, toujours noyé → PILLAR UP pour ÉMERGER (grotte/ravin inondé). Le
+      // bot sur le sol pose des blocs sous lui pour remonter à l'air. No-op si flottant (no_support).
+      if (_pillarUp && noLand >= 2 && isInWater(bot)) {
+        try { bot.setControlState('jump', false); } catch (e) {}
+        try { await _pillarUp(bot, { height: opts.pillarHeight || 6 }, null, { sleep }); } catch (e) {}
+        try { if (isInWater(bot)) bot.setControlState('jump', true); } catch (e) {}
+        noLand = 0;
+      }
     }
     await sleep(300);
   }
