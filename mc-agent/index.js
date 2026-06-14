@@ -10,6 +10,7 @@ const { emit, onCommand } = require('./io');
 const { snapshot } = require('./state');
 const { think, RateLimiter } = require('./brain');
 const { humanizeReply, nextLook, sampleReactionDelay } = require('./humanize');
+const { loadStyle } = require('./style');   // capture-clone : params humains depuis style.json (--style)
 const { loadProfile } = require('./profiles');
 const { say } = require('./skills/say');
 const { follow } = require('./skills/follow');
@@ -86,6 +87,13 @@ const PUBLIC_MODE = (process.env.MC_AGENT_PUBLIC_MODE || 'mention').toLowerCase(
 let profile = null;
 try { profile = loadProfile(args.profile || 'intermediaire'); }
 catch (e) { emit({ type: 'error', message: 'profil invalide: ' + e.message }); }
+
+// Capture-clone (étape B) : --style <style.json> distillé d'un VRAI joueur → params humains
+// (reaction réelle / lookJitter / chat) qui REMPLACENT les défauts du profil pour l'humanisation.
+// Sans --style → styleParams=null → humanizeParams = profil (comportement EXACTEMENT inchangé).
+const styleParams = loadStyle(args.style);
+const humanizeParams = styleParams || (profile && profile.params) || {};
+if (styleParams) emit({ type: 'style_loaded', player: styleParams._player, reaction: styleParams.reaction, lookJitter: styleParams.lookJitter });
 
 // Mode FURTIF (--stealth 1) : humanisation COMPLÈTE y compris loiter (« stop = vivant »).
 // OFF PAR DÉFAUT (phase 3) : les bots utilitaires vont à vitesse machine.
@@ -1486,7 +1494,7 @@ async function onSpawn() {
       // DÉLAI DE RÉACTION humain sur les réflexes (anti aimbot 0 ms / anti-ban) — TOUJOURS actif
       // (sécurité, pas seulement en humanize) : ~300 ms par défaut (les captures ne mesurent pas
       // encore reaction.*). Coût nul sur le minage (ce n'est pas un réflexe). Cf. paquet 1.
-      reactionMs: () => sampleReactionDelay(profile && profile.params),
+      reactionMs: () => sampleReactionDelay(humanizeParams),   // capture-clone : réaction humaine réelle si --style
       // RIPOSTE (phase B) : frappé par un hostile mêlée au contact → meilleure arme + pvp.
       // Le plugin poursuit la cible ; les boucles (resource/mapper) reprennent leur goto après
       // (interruption gérée comme un flee : retry/timeout).
@@ -2085,7 +2093,7 @@ if (HUMANIZE) {
       if (bot.pathfinder && bot.pathfinder.goal) return;
       if (bot.pvp && bot.pvp.target) return;
       const cur = { yaw: bot.entity.yaw || 0, pitch: bot.entity.pitch || 0 };
-      const nx = nextLook(cur, (profile && profile.params) || {}, Math.random, { mode: 'idle' });
+      const nx = nextLook(cur, humanizeParams, Math.random, { mode: 'idle' });   // capture-clone : visée ∝ jitter humain
       bot.look(nx.yaw, nx.pitch, false);
     } catch (e) { /* best-effort : ne crash jamais */ }
   }, 180 + Math.floor(Math.random() * 120)); // ~180-300 ms : cadence de micro-ajustement humaine
