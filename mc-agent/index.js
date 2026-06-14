@@ -884,7 +884,13 @@ async function provisionStartKit() {
     // le diamant_ore (vécu live : avec iron_pickaxe, 0💎 minable, le bot minait du fer Y16 + bestPickTier
     // restait <3 → kit-bois en boucle). diamond_pickaxe → bestPickTier=3 → saute le kit + mine diamant +
     // active le forçage mtype='diamond' (tierNow>=3) → branch-mine Y-58. Armure FER (suffit à survivre).
-    const hasPick = () => ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'diamond_pickaxe');
+    const hasPick = () => ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'diamond_pickaxe' || i.name === 'netherite_pickaxe');
+    // RESPAWN (keepInventory) : le bot GARDE sa pioche → NE PAS re-/give le kit. Sinon on réinjecte
+    // 128 cobble + 64 food + … à CHAQUE respawn → l'inventaire SATURE → le prochain /give pioche est
+    // DROPPÉ par le serveur ("Not enough space, 1 diamond pickaxe was lost" — vécu live : 0 pioche
+    // malgré l'OP, inv plein de résidus 11 h de runs) → kit-bois en boucle. On ré-équipe juste l'armure
+    // (gratuit, items déjà en poche) et on sort.
+    if (hasPick()) { try { await ensureArmor({ ironKeep: 0 }); } catch (e) {} emit({ type: 'resource_start_kit_skipped_haspick' }); return; }
     const gives = ['diamond_sword 1', 'iron_helmet 1', 'iron_chestplate 1',
       'iron_leggings 1', 'iron_boots 1', 'shield 1', 'cooked_beef 64', 'cobblestone 128', 'torch 64',
       'crafting_table 1', 'oak_planks 16', 'stick 16', 'coal 16'];
@@ -892,18 +898,21 @@ async function provisionStartKit() {
     // n'a pas fini d'enregistrer le joueur — vécu live : /give absentes des logs serveur). On laisse le
     // chat s'établir avant le 1er /give critique.
     await sleep(2000);
-    // RETRY ROBUSTE sur la PIOCHE (l'item critique) : bot.chat /give est chaotique (commandes droppées
-    // par intermittence au spawn). Sans la pioche → bestPickTier<3 → KIT-BOIS en boucle → quota reset
-    // (vécu : 14 respawns → kit-bois). On re-give + vérifie jusqu'à 5× AVANT le reste du kit.
+    // FAIRE DE LA PLACE : pas de pioche + inventaire potentiellement PLEIN (résidus de creusage gardés
+    // par keepInventory) → le /give pioche est DROPPÉ faute de slot libre. On jette le junk (junkItems
+    // garde outils/quota/bouffe/1 stack cobble — jamais la pioche ni les ores) AVANT, puis ENTRE chaque
+    // tentative tant que la pioche n'a pas atterri. C'est LA cause-racine du « 0 pioche → kit-bois ».
+    try { await tossJunk(bot); } catch (e) {}
     for (let attempt = 0; attempt < 5 && !hasPick(); attempt++) {
       try { bot.chat('/give ' + u + ' diamond_pickaxe 1'); } catch (e) {}
       for (let w = 0; w < 8 && !hasPick(); w++) await sleep(400);   // poll ~3.2 s
+      if (!hasPick()) { try { await tossJunk(bot); } catch (e) {} } // inv encore plein → re-libère un slot
     }
     // ESPACER les commandes (≥300 ms) : /give en rafale = spam chat → kick serveur (anti-spam vanilla ~3 msg/s).
     for (const g of gives) { try { bot.chat('/give ' + u + ' ' + g); } catch (e) {} await sleep(300); }
     // Équiper l'armure IMMÉDIATEMENT (sinon le bot reste nu jusqu'au 1er ensureGear → mort surface).
     try { await ensureArmor({ ironKeep: 0 }); } catch (e) { /* best-effort */ }
-    emit({ type: 'resource_start_kit_provisioned' });
+    emit({ type: 'resource_start_kit_provisioned', hadPick: hasPick() });
   } catch (e) { /* best-effort : non-OP → kit autonome */ }
 }
 
