@@ -1364,8 +1364,10 @@ async function onSpawn() {
     bot.pathfinder.setMovements(moves);
     let waterRescue = null; // évasion d'eau en cours (jamais 2 en parallèle)
     let waterEscapeFails = 0; // escapades LOCALES échouées d'affilée → escalade warp SEULEMENT à 3 (vrai
-                              // blocage). PAS d'escalade temporelle : à profondeur diamant les aquifères
-                              // sont fréquents, des rencontres rapprochées sont NORMALES (pas un blocage).
+                              // blocage). PAS d'escalade temporelle agressive : à profondeur diamant les
+                              // aquifères sont fréquents, des rencontres rapprochées sont NORMALES.
+    let waterStuckTimes = []; // horodatages onWaterStuck (fenêtre 4 min) : zone PERSISTAMMENT humide
+                              // (≥4 en 4 min) = escapeWater sort mais le bot y retombe → warp (vécu ResBot3).
     let panicInFlight = false; // garde de ré-entrée onPanic (bug review #3 : fire-and-forget non-awaité)
     installReflexes(bot, {
       emit, fleeFrom,
@@ -1438,18 +1440,31 @@ async function onSpawn() {
       panicCooldownMs: 8000,
       onWaterStuck: () => {
         if (waterRescue) return;
-        // Escapade LOCALE par défaut (RESTER au fond). Le warp-vers-surface (relocateToRegion) détruisait
-        // la productivité : un bot productif à y-58 touche un aquifère → warp en surface LOINTAINE →
-        // re-descente complète (minutes) → re-eau → boucle, diamants stagnants (vécu live ResBot1/2/3 :
-        // 0 progrès diamant en 20 min, tous en boucle water_rescue→warp). On n'escalade au warp QUE si
-        // l'escapade locale ÉCHOUE 3× d'affilée (vraiment coincé dans l'eau, pas juste un aquifère de plus).
+        // Escapade LOCALE par défaut (RESTER au fond). Le warp-vers-surface détruisait la productivité :
+        // un bot productif à y-58 touche un aquifère → warp en surface LOINTAINE → re-descente complète →
+        // re-eau → boucle, diamants stagnants (vécu live : 0 progrès diamant en 20 min, tous en boucle).
+        const nowMs = Date.now();
+        waterStuckTimes.push(nowMs);
+        waterStuckTimes = waterStuckTimes.filter((x) => nowMs - x <= 4 * 60 * 1000);
+        // Zone PERSISTAMMENT humide (vécu ResBot3 : escapeWater sort mais le bot y retombe sans cesse →
+        // ne déclenche jamais d'échec → jamais de warp → §1.5 violé) : ≥4 water-stuck en 4 min = il faut
+        // QUITTER le biome noyé. Seuil HAUT → n'affecte pas les aquifères transitoires (ResBot1/2 en
+        // touchent 1-2 et s'en sortent). Sinon : escapade locale, warp seulement après 3 échecs d'affilée.
+        const persistentlyWet = waterStuckTimes.length >= 4;
         waterRescue = (async () => {
+          if (persistentlyWet) {
+            waterStuckTimes = []; waterEscapeFails = 0;
+            emit({ type: 'water_rescue_warp', reason: 'persistent_wet' });
+            try { stopMotion(); } catch (e) {}
+            await relocateToRegion();
+            return;
+          }
           const r = await escapeWater(bot, { emit });
           if (r && r.ok === false) {
             waterEscapeFails += 1;
             if (waterEscapeFails >= 3) {
-              waterEscapeFails = 0;
-              emit({ type: 'water_rescue_warp' });
+              waterEscapeFails = 0; waterStuckTimes = [];
+              emit({ type: 'water_rescue_warp', reason: 'escape_failed' });
               try { stopMotion(); } catch (e) {}
               await relocateToRegion();
             }
