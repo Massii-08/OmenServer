@@ -23,7 +23,7 @@ function makeBot({ y = -54, yaw = -Math.PI / 2, world = {}, inv = null, gathered
       redstone_ore: { id: 64 }, deepslate_redstone_ore: { id: 65 },
       lapis_ore: { id: 66 }, deepslate_lapis_ore: { id: 67 },
       cobblestone: { id: 4 }, cobbled_deepslate: { id: 5 }, torch: { id: 12 },
-      lava: { id: 10 }, flowing_lava: { id: 11 },
+      lava: { id: 10 }, flowing_lava: { id: 11 }, water: { id: 8 }, flowing_water: { id: 9 },
       air: { id: 0 }, cave_air: { id: 0 },
     } },
     inventory: { items: () => inventory.slice() },
@@ -138,6 +138,15 @@ test('branchMine : lave devant -> mure avec cobble (placeBlock appelé)', async 
   const { bot, calls } = makeBot({ y: -54, world });
   await branchMine(bot, { targetY: -54, mainLength: 6, branchSpacing: 3, branchLength: 4 });
   assert.ok(calls.placeBlock.length > 0, 'should have placed cobble to wall lava');
+});
+
+test('branchMine : eau voisine -> scelle avec cobble AVANT de miner (placeBlock appelé)', async () => {
+  // Aquifère à profondeur diamant : sans scellement le tunnel se noie → boucle anti-noyade/warp
+  // (vécu live ResBot1/3). On vérifie que la face d'eau est murée (placeBlock) comme pour la lave.
+  const world = { '2,-54,0': 'water' };
+  const { bot, calls } = makeBot({ y: -54, world });
+  await branchMine(bot, { targetY: -54, mainLength: 6, branchSpacing: 3, branchLength: 4 });
+  assert.ok(calls.placeBlock.length > 0, 'should have placed cobble to seal water');
 });
 
 test('branchMine : cobble<8 -> reason cobble_low', async () => {

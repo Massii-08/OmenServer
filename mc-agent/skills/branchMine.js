@@ -84,6 +84,7 @@ const COBBLE_TARGET_INIT = 16;
 const WALL_BLOCKS = ['cobblestone', 'cobbled_deepslate'];
 
 function isLava(name) { return name === 'lava' || name === 'flowing_lava'; }
+function isWater(name) { return name === 'water' || name === 'flowing_water'; }
 
 function countItem(bot, name) {
   return (bot.inventory.items() || []).filter((i) => i.name === name).reduce((s, i) => s + i.count, 0);
@@ -136,6 +137,18 @@ function neighborsHaveLava(bot, target) {
     if (b && isLava(b.name)) return { ahead: p(target.x + dx, target.y + dy, target.z + dz), block: b };
   }
   return null;
+}
+
+// Probe 6 voisins — détecte l'EAU (source/flowing). Retourne TOUTES les positions d'eau (à sceller
+// chacune), car un aquifère a souvent plusieurs faces ouvertes. [] si sec.
+function neighborsHaveWater(bot, target) {
+  const d = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+  const out = [];
+  for (const [dx, dy, dz] of d) {
+    const b = bot.blockAt(p(target.x + dx, target.y + dy, target.z + dz));
+    if (b && isWater(b.name)) out.push(p(target.x + dx, target.y + dy, target.z + dz));
+  }
+  return out;
 }
 
 // Tente de poser un bloc de murage (cobble OU cobbled_deepslate) pour murer la lave à `where`.
@@ -270,6 +283,16 @@ async function safeDigAndOpportunism(bot, target, token, debug, loopOpts) {
     const walled = await wallLava(bot, lava.ahead);
     if (!walled) return { ok: false, walled: false, reason: 'lava_unwallable' };
   }
+  // Anti-EAU (aquifères à profondeur diamant, frein #1 live) : sceller l'eau voisine AVANT de miner.
+  // Sinon le tunnel se noie → réflexe anti-noyade → surface → water_rescue → warp → re-descend →
+  // re-eau (vécu live ResBot1/3 : boucle eau, 0 minage). On mure chaque face d'eau via wallLava
+  // (générique : mure n'importe quel fluide). Best-effort : eau non scellée → on mine quand même
+  // (le réflexe anti-noyade reste le filet), jamais bloquant.
+  try {
+    for (const w of neighborsHaveWater(bot, target)) {
+      try { await wallLava(bot, w); } catch (e) { /* face suivante */ }
+    }
+  } catch (e) { /* best-effort, ne jamais bloquer le minage */ }
   const block = bot.blockAt(target);
   if (debug) { try { dbg('safeDig', { phase: 'safeDig:probe', target: { x: target.x, y: target.y, z: target.z }, blockName: block ? block.name : null }); } catch (e) {} }
   if (!block || block.boundingBox !== 'block') return { ok: true };       // déjà air → rien à faire
