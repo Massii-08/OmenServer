@@ -191,3 +191,86 @@ def segment_clips(records, player):
     if frames and len(frames) >= _CLIP_MIN_FRAMES:
         clips.append({"ctx": cur_ctx, "player": player, "durTicks": len(frames), "frames": frames})
     return clips
+
+
+# ── CLI de (re)distillation (capture-clone §3.A) — relancer quand de nouvelles REC arrivent ──────
+# Usage : python -m backend.bots.mc_capture_distill [captures_dir] [out_dir]
+#   captures_dir (déf data/mc-captures) : un sous-dossier par joueur, *.jsonl dedans.
+#   out_dir      (déf data/mc-captures-distilled) : écrit <player>/style.json + <player>/clips/<ctx>.json.
+# Produit AUSSI un "_all" (corpus tous joueurs fusionné) = style/clips plus robustes. Stdlib only.
+def _read_player_payloads(captures_dir, player):
+    import os
+    import glob
+    pdir = os.path.join(captures_dir, player)
+    return sorted(glob.glob(os.path.join(pdir, "*.jsonl")))
+
+
+def distill_to_dir(payload_files, out_player_dir, player):
+    """Distille une liste de fichiers .jsonl → out_player_dir/{style.json, clips/<ctx>.json}."""
+    import os
+    payloads = []
+    all_records = []
+    for f in payload_files:
+        with open(f, "rb") as fh:
+            data = fh.read()
+        payloads.append(data)
+        _, recs = load_records(data)
+        all_records.extend(recs)
+    if not payloads:
+        return None
+    style = distill_style(payloads, player)
+    clips = segment_clips(all_records, player)
+    os.makedirs(out_player_dir, exist_ok=True)
+    with open(os.path.join(out_player_dir, "style.json"), "w") as fh:
+        json.dump(style, fh, indent=2)
+    by_ctx = {}
+    for c in clips:
+        by_ctx.setdefault(c.get("ctx") or "idle", []).append(c)
+    cdir = os.path.join(out_player_dir, "clips")
+    os.makedirs(cdir, exist_ok=True)
+    # purge d'anciens clips (re-distillation propre)
+    for old in os.listdir(cdir):
+        if old.endswith(".json"):
+            try:
+                os.remove(os.path.join(cdir, old))
+            except OSError:
+                pass
+    for ctx, cs in by_ctx.items():
+        with open(os.path.join(cdir, str(ctx) + ".json"), "w") as fh:
+            json.dump(cs, fh)
+    ticks = sum(1 for r in all_records if r.get("type") == "tick")
+    return {"player": player, "sessions": len(payload_files), "ticks": ticks,
+            "clips": len(clips), "ctx": {k: len(v) for k, v in by_ctx.items()}}
+
+
+def main(argv=None):
+    import os
+    import sys
+    args = argv if argv is not None else sys.argv[1:]
+    captures_dir = args[0] if len(args) > 0 else "data/mc-captures"
+    out_dir = args[1] if len(args) > 1 else "data/mc-captures-distilled"
+    if not os.path.isdir(captures_dir):
+        print("captures_dir introuvable:", captures_dir)
+        return []
+    players = sorted(d for d in os.listdir(captures_dir)
+                     if os.path.isdir(os.path.join(captures_dir, d)) and not d.startswith("_"))
+    summary = []
+    all_files = []
+    for p in players:
+        files = _read_player_payloads(captures_dir, p)
+        all_files.extend(files)
+        r = distill_to_dir(files, os.path.join(out_dir, p), p)
+        if r:
+            summary.append(r)
+            print("distilled", json.dumps(r))
+    # corpus combiné tous joueurs
+    if all_files:
+        r = distill_to_dir(all_files, os.path.join(out_dir, "_all"), "_all")
+        if r:
+            summary.append(r)
+            print("distilled", json.dumps(r))
+    return summary
+
+
+if __name__ == "__main__":
+    main()
