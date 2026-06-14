@@ -22,7 +22,7 @@ function nearbyHostile(bot, radius = 4) {
   const self = bot.entity && bot.entity.position;
   if (!self) return null;
   return bot.nearestEntity((e) => {
-    if (!e || e.type !== 'mob' || e.kind !== 'Hostile mobs' || !e.position) return false;
+    if (!e || (e.type !== 'mob' && e.type !== 'hostile') || e.kind !== 'Hostile mobs' || !e.position) return false;
     const d = e.position.distanceTo ? e.position.distanceTo(self) : 999;
     return d <= radius;
   });

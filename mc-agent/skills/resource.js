@@ -108,6 +108,9 @@ async function runResource(bot, opts = {}, token = null) {
                                  // surface détruisait la progression de descente, vécu V3Res4 ×5)
   let noPickSince = null;        // depuis quand on attend SANS pioche (tier<2) : starved rapide
   const noPickMaxMs = opts.noPickMaxMs != null ? opts.noPickMaxMs : 120000;
+  let fullStreak = 0;           // H4 : cleanups SUR PLACE consécutifs sur inv plein (cap pour éviter de figer)
+  const invFull = () => !!(bot.inventory && typeof bot.inventory.emptySlotCount === 'function'
+    && bot.inventory.emptySlotCount() <= 1);  // H4 : ne JAMAIS warper surface tant que l'inv est plein
   let zeroYield = 0;             // branches mineFor "ok" mais 0 GAIN du type cherché = épuisé local
                                  // → relocate (DoD : dia figé car branchMine -58 vide "réussit", vécu live)
   let lastProgress = '';
@@ -368,6 +371,15 @@ async function runResource(bot, opts = {}, token = null) {
         // mappés (non exposés) → on les trouve au VOLUME en couvrant du terrain -58 FRAIS. 3 branches
         // dirigées sans gain → relocate (sortir de la zone re-minée).
         if (_haveAfter <= _haveBefore) {
+          // H4 : 0 gain car inventaire PLEIN (diamants minés tombés au sol, pas ramassés) = PAS un
+          // épuisement → nettoyer SUR PLACE (toss junk + creuse devant) + re-tenter la MÊME zone,
+          // JAMAIS warper en surface (vécu : ResBot2 trouvait des diamants puis se TP sans les prendre).
+          if (invFull() && cleanup && fullStreak < 5) {
+            fullStreak++;
+            try { await cleanup(bot); } catch (e) { /* best-effort */ }
+            emit({ type: 'resource_cleanup', reason: 'full_after_mine' });
+            continue;
+          }
           zeroYield++;
           if (zeroYield >= 3 && relocate && relocations < maxRelocations) {
             relocations++; zeroYield = 0;
@@ -378,7 +390,7 @@ async function runResource(bot, opts = {}, token = null) {
             skip.clear(); busyUntil.clear();
             if (reload) memory = reload() || memory;
           }
-        } else { zeroYield = 0; }
+        } else { zeroYield = 0; fullStreak = 0; }
       }
       else {
         mineForFails++;

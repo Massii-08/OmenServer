@@ -122,6 +122,22 @@ test('riposte : PV en baisse + zombie au contact → attack(zombie) + reflex fig
   assert.ok(events.some((e) => e.type === 'reflex' && e.action === 'fight' && e.mob === 'zombie'));
 });
 
+test('H1/1.21 : zombie type:"hostile" (MC 1.21) au contact → attack FIRE (régression combat-mort)', () => {
+  // Depuis MC 1.19+/mineflayer 4.37, les hostiles ont e.type==="hostile" (plus "mob"). Avant le fix,
+  // meleeAssailant gatait sur type==="mob" → null → riposte morte → 8 morts/45min. Ce test échouerait
+  // AVANT le fix (mock type:"hostile") et passe après (la garde accepte "mob" OU "hostile").
+  const zombie = { type: 'hostile', name: 'zombie', position: { x: 2, y: 64, z: 0, distanceTo: () => 2 } };
+  const events = [];
+  const attacked = [];
+  const bot = fakeBot({ health: 20, threat: zombie });
+  installReflexes(bot, { emit: (e) => events.push(e), fleeFrom() {}, attack: (t) => attacked.push(t) });
+  bot.calls.handlers.health();
+  bot.health = 16;
+  bot.calls.handlers.health();
+  assert.strictEqual(attacked.length, 1, 'la riposte doit FIRE même quand e.type==="hostile" (MC 1.21)');
+  assert.strictEqual(attacked[0].name, 'zombie');
+});
+
 test('riposte : pas de baisse de PV → pas d attaque (le zombie passe au loin)', () => {
   const zombie = { type: 'mob', name: 'zombie', position: { x: 2, y: 64, z: 0, distanceTo: () => 2 } };
   const attacked = [];

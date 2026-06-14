@@ -55,7 +55,7 @@ function shouldFlee(bot) {
   if (bot.health != null && bot.health <= HEALTH_THRESHOLD) return true;
   const self = (bot.entity && bot.entity.position) || { x: 0, y: 0, z: 0 };
   const creeper = bot.nearestEntity((e) =>
-    e && e.type === 'mob' && e.name === 'creeper' && e.position &&
+    e && (e.type === 'mob' || e.type === 'hostile') && e.name === 'creeper' && e.position &&
     e.position.distanceTo ? e.position.distanceTo(self) <= CREEPER_RADIUS
                           : e && e.name === 'creeper');
   return !!creeper;
@@ -66,7 +66,7 @@ function meleeAssailant(bot) {
   const self = (bot.entity && bot.entity.position) || null;
   if (!self || typeof bot.nearestEntity !== 'function') return null;
   return bot.nearestEntity((e) => {
-    if (!e || e.type !== 'mob' || !MELEE_HOSTILES.has(e.name) || !e.position) return false;
+    if (!e || (e.type !== 'mob' && e.type !== 'hostile') || !MELEE_HOSTILES.has(e.name) || !e.position) return false;
     if (typeof e.position.distanceTo === 'function') return e.position.distanceTo(self) <= MELEE_RADIUS;
     const d = Math.sqrt((e.position.x - self.x) ** 2 + (e.position.y - self.y) ** 2 + (e.position.z - self.z) ** 2);
     return d <= MELEE_RADIUS;
@@ -79,7 +79,7 @@ function rangedThreat(bot) {
   const self = (bot.entity && bot.entity.position) || null;
   if (!self || typeof bot.nearestEntity !== 'function') return null;
   return bot.nearestEntity((e) => {
-    if (!e || e.type !== 'mob' || !RANGED.has(e.name) || !e.position) return false;
+    if (!e || (e.type !== 'mob' && e.type !== 'hostile') || !RANGED.has(e.name) || !e.position) return false;
     const d = (typeof e.position.distanceTo === 'function')
       ? e.position.distanceTo(self)
       : Math.sqrt((e.position.x - self.x) ** 2 + (e.position.y - self.y) ** 2 + (e.position.z - self.z) ** 2);

@@ -8,7 +8,7 @@ function snapshot(bot) {
   const pos = (bot.entity && bot.entity.position) || { x: 0, y: 0, z: 0 };
   const players = Object.keys(bot.players || {}).filter((n) => n !== bot.username);
   const nearbyMobs = Object.values(bot.entities || {})
-    .filter((e) => e && e.type === 'mob' && e.position)
+    .filter((e) => e && (e.type === 'mob' || e.type === 'hostile') && e.position)
     .map((e) => ({ name: e.name, distance: round(e.position.distanceTo(pos)) }))
     .sort((a, b) => a.distance - b.distance)
     .slice(0, 5);

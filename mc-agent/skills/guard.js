@@ -3,7 +3,7 @@
 const { bestWeapon } = require('../tools');
 
 function nearestHostile(bot) {
-  return bot.nearestEntity((e) => e && e.type === 'mob' && e.kind === 'Hostile mobs' && e.position);
+  return bot.nearestEntity((e) => e && (e.type === 'mob' || e.type === 'hostile') && e.kind === 'Hostile mobs' && e.position);
 }
 
 /** Un cycle de garde : si hostile, équipe l'arme + attaque. Testable sans timer. */

@@ -643,6 +643,21 @@ function bestPickTier() {
 // Navigation bornée vers un minerai (x,y,z exact) avec PERSISTANCE PAR PROGRÈS (pattern explore
 // dirigé) : un goto interrompu par les réflexes (flee/surface → GoalChanged) est repris tant qu'on
 // se RAPPROCHE ; un timeout (240s, cible gelée) ou 2 tentatives sans progrès → unreachable (throw).
+// H5 : case OUVERTE (air/cave_air) adjacente à un minerai exposé — pour ARRIVER DANS la grotte par
+// l'ouverture en pathfinding normal, JAMAIS creuser droit sur les coords du bloc (= X-ray). null si
+// entouré de roche pleine (→ fallback adjacence). Eau exclue (on ne plonge pas dans une nappe).
+function openNeighborOf(pos) {
+  const OFFS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+  for (const [dx, dy, dz] of OFFS) {
+    const b = bot.blockAt(vec3Lib(pos.x + dx, pos.y + dy, pos.z + dz));
+    if (b && (b.name === 'air' || b.name === 'cave_air' || b.name === 'void_air'
+        || (b.boundingBox === 'empty' && b.name !== 'lava' && b.name !== 'water'))) {
+      return { x: pos.x + dx, y: pos.y + dy, z: pos.z + dz };
+    }
+  }
+  return null;
+}
+
 async function gotoOreBounded(t) {
   const dist = () => {
     const p = bot.entity && bot.entity.position;
@@ -716,6 +731,29 @@ async function tossJunk(b) {
   for (const it of junkItems(items)) {
     try { await b.toss(it.type, null, it.count); } catch (e) { /* slot bougé → tant pis */ }
   }
+}
+
+// H4 : libérer un slot SUR PLACE (JAMAIS remonter en surface sur inventaire plein). tossJunk d'abord
+// (garde quota/outils/bouffe, jamais le quota, jamais re-ramassé) ; si toujours plein → creuser DEVANT
+// (idiome du watchdog anti-jam) pour ouvrir de l'espace, puis re-toss. Branché comme `cleanup` du
+// runResource → empêche le dump-surface qui abandonnait les diamants au sol (vécu live ResBot2).
+async function makeRoomInPlace(b) {
+  try { await tossJunk(b); } catch (e) {}
+  if (b.inventory && typeof b.inventory.emptySlotCount === 'function' && b.inventory.emptySlotCount() > 1) return;
+  try {
+    const p = b.entity && b.entity.position; if (!p) return;
+    const yaw = (b.entity && b.entity.yaw) || 0;
+    const fdx = Math.round(-Math.sin(yaw)), fdz = Math.round(Math.cos(yaw));
+    for (const dy of [0, 1]) {                                    // tête + pieds DEVANT le bot
+      const blk = b.blockAt(vec3Lib(Math.floor(p.x) + fdx, Math.floor(p.y) + dy, Math.floor(p.z) + fdz));
+      if (blk && blk.boundingBox === 'block' && (typeof b.canDigBlock !== 'function' || b.canDigBlock(blk))) {
+        const tool = bestToolFor(b, blk);
+        if (tool) { try { await b.equip(tool, 'hand'); } catch (e) {} }
+        try { await b.dig(blk); } catch (e) {}
+      }
+    }
+    try { await tossJunk(b); } catch (e) {}
+  } catch (e) { /* best-effort, jamais throw */ }
 }
 
 // Quota --quota <path> : {type: n} (JSON, validé par quota.normalizeQuota côté runResource).
@@ -908,8 +946,25 @@ async function provisionStartKit() {
       for (let w = 0; w < 8 && !hasPick(); w++) await sleep(400);   // poll ~3.2 s
       if (!hasPick()) { try { await tossJunk(bot); } catch (e) {} } // inv encore plein → re-libère un slot
     }
+    // H3 : ne /give que les items MANQUANTS — sinon la re-entrée (respawn SANS pioche, inv saturé) re-donne
+    // 'diamond_sword 1' à chaque fois → 6 épées accumulées (saturent l'inv → aggravent le drop de pioche,
+    // cercle vicieux). Épée(≥fer)/armure/bouclier/table déjà en poche → exclus ; consommables toujours.
+    const _inv = () => (bot.inventory && bot.inventory.items()) || [];
+    const _worn = _wornArmor();
+    const _have = (n) => _inv().some((i) => i.name === n) || (_worn && _worn.has && _worn.has(n));
+    const _SWT = ['wooden', 'stone', 'iron', 'golden', 'diamond', 'netherite'];
+    const _hasSwordTier = (tier) => _inv().some((i) => i.name.endsWith('_sword') && _SWT.indexOf(i.name.replace('_sword', '')) >= tier);
+    const toGive = gives.filter((g) => {
+      const name = g.split(' ')[0];
+      if (name === 'diamond_sword') return !_hasSwordTier(2);     // déjà épée ≥ fer → pas de doublon
+      if (name === 'shield') return !_have('shield');
+      if (name === 'crafting_table') return !_have('crafting_table');
+      if (name.startsWith('iron_') && (name.endsWith('_helmet') || name.endsWith('_chestplate')
+          || name.endsWith('_leggings') || name.endsWith('_boots'))) return !_have(name);  // 1 pièce/slot
+      return true;                                                // consommables (food/cobble/torch/coal/planks/stick)
+    });
     // ESPACER les commandes (≥300 ms) : /give en rafale = spam chat → kick serveur (anti-spam vanilla ~3 msg/s).
-    for (const g of gives) { try { bot.chat('/give ' + u + ' ' + g); } catch (e) {} await sleep(300); }
+    for (const g of toGive) { try { bot.chat('/give ' + u + ' ' + g); } catch (e) {} await sleep(300); }
     // Équiper l'armure IMMÉDIATEMENT (sinon le bot reste nu jusqu'au 1er ensureGear → mort surface).
     try { await ensureArmor({ ironKeep: 0 }); } catch (e) { /* best-effort */ }
     emit({ type: 'resource_start_kit_provisioned', hadPick: hasPick() });
@@ -1246,7 +1301,7 @@ async function startResource() {
     quota,
     claims,
     reloadMemory,
-    cleanup: quota ? tossJunk : null,
+    cleanup: quota ? makeRoomInPlace : null,
     mineFor: quota ? mineForType : null,
     relocate: quota ? relocateToRegion : null,
     // G-bis : MINAGE EN GROTTE des diamants EXPOSÉS (visibles → pas X-ray, stratégie joueur réelle). Le
@@ -1255,8 +1310,25 @@ async function startResource() {
     // doit jamais hang). nextOreTarget priorise déjà les exposés ; resource.js route ici si target.exposed.
     mineExposed: quota ? (async (target) => {
       await withTimeout((async () => {
-        await gotoOreBounded(target);
+        // H5 : ARRIVER DANS LA GROTTE par l'ouverture, JAMAIS de tunnel droit sur les coords (= X-ray ;
+        // et gotoOreBounded échouait water_ahead/max_steps → ore_mined=0). On vise la case d'AIR adjacente
+        // (exposition confirmée par le mapper) en pathfinding SANS CREUSAGE (canDig=false) → le bot
+        // rejoint le diamant par la grotte EXISTANTE + s'arrête à reach du minerai VISIBLE. Si pas relié
+        // sans creuser → cave_unreachable → resource.js skip+relocate (jamais d'X-ray, raffine §3.G/G-bis).
+        const air = openNeighborOf(target);
+        const goal = air ? new pfGoals.GoalNear(air.x, air.y, air.z, 1)
+                         : new pfGoals.GoalGetToBlock(target.x, target.y, target.z);
+        const prevMoves = bot.pathfinder.movements;
+        let r = null;
+        try {
+          const noDig = new Movements(bot);
+          try { Object.assign(noDig, prevMoves); } catch (e) {}
+          noDig.canDig = false;                                  // anti-X-ray : rejoindre la grotte, pas creuser
+          bot.pathfinder.setMovements(noDig);
+          r = await withTimeout(bot.pathfinder.goto(goal), 120000, () => { try { stopMotion(); } catch (e) {} });
+        } finally { try { if (prevMoves) bot.pathfinder.setMovements(prevMoves); } catch (e) {} }
         if (taskToken.cancelled) return;
+        if (r && r.ok === false) throw new Error('cave_unreachable'); // pas creuser droit → skip+relocate
         try { await floodFillVein(bot, target, taskToken); } catch (e) { /* best-effort */ }
       })(), 180000, () => { try { stopMotion(); } catch (e) {} });
     }) : null,
@@ -1913,6 +1985,43 @@ setInterval(async () => {
     _floatPrev = cur;
   } catch (e) { _floatBusy = false; }
 }, 2000);
+
+// H2 — Watchdog ANTI-OSCILLATION-OCÉAN : un bot qui nage en SURFACE d'un océan profond garde son O2
+// plein → toute la chaîne d'évasion (gated sur la baisse d'oxygène) ne se déclenche JAMAIS → allers-
+// retours sans progrès (vécu live ResBot1 figé à 11, diamants gelés). Aucun bot ne doit entrer/rester
+// dans un océan ni y construire un pont. Détection : in-water + AUCUNE terre ferme à ≤24 (sinon =
+// rivière/rivage, se traverse à la nage → on n'agit pas) + <12 blocs de progrès NET sur 20 s → escapade
+// + relocate FORCÉ vers la terre (relocateToRegion filtre déjà ocean/river/beach). Settle-aware (pas
+// de double-warp post-spawn). Borné, ne crash jamais.
+let _oceanBusy = false;
+let _oceanSample = null;
+setInterval(async () => {
+  try {
+    if (Date.now() < _floatSettleUntil) { _oceanSample = null; return; }   // settle post-spawn/warp
+    if (_oceanBusy || !bot.entity || !bot.entity.position) return;
+    if (bot.targetDigBlock) { _oceanSample = null; return; }               // minage sur place = légitime
+    if (!isInWater(bot)) { _oceanSample = null; return; }
+    if (findLandTarget(bot, 24)) { _oceanSample = null; return; }          // terre proche → rivière, nage seul
+    const p = bot.entity.position; const now = Date.now();
+    if (!_oceanSample) { _oceanSample = { x: p.x, z: p.z, t: now }; return; }
+    if (now - _oceanSample.t < 20000) return;                              // fenêtre 20 s
+    const d = Math.sqrt((p.x - _oceanSample.x) ** 2 + (p.z - _oceanSample.z) ** 2);
+    if (d >= 12) { _oceanSample = { x: p.x, z: p.z, t: now }; return; }    // progrès net → resample
+    // océan confirmé : in-water, pas de terre à 24, <12 blocs nets en 20 s = oscillation
+    _oceanSample = null; _oceanBusy = true;
+    try {
+      emit({ type: 'ocean_stuck', x: Math.floor(p.x), z: Math.floor(p.z) });
+      try { stopMotion(); } catch (e) {}
+      try { await escapeWater(bot, { emit, maxDistance: 64 }); } catch (e) {}
+      if (isInWater(bot)) {                                                // toujours noyé → warp terre ferme
+        _floatSettleUntil = Date.now() + 15000;
+        emit({ type: 'water_rescue_warp', reason: 'ocean_oscillation' });
+        try { stopMotion(); } catch (e) {}
+        try { await relocateToRegion(); } catch (e) {}
+      }
+    } finally { _oceanBusy = false; }
+  } catch (e) { _oceanBusy = false; }
+}, 5000);
 
 // Watchdog connexion : un « Timed out » côté serveur peut laisser le socket client MUET sans
 // event 'end' (vécu phase 2 : bot zombie, quota figé, jamais respawné). Pas de physicsTick
