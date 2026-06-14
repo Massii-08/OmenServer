@@ -1363,7 +1363,9 @@ async function onSpawn() {
     } catch (e) { /* best-effort : garde le défaut dirt+cobblestone */ }
     bot.pathfinder.setMovements(moves);
     let waterRescue = null; // évasion d'eau en cours (jamais 2 en parallèle)
-    let lastWaterRescueAt = 0; // escalade : 2e rescue <5 min → warp dur (aquifère inextirpable)
+    let waterEscapeFails = 0; // escapades LOCALES échouées d'affilée → escalade warp SEULEMENT à 3 (vrai
+                              // blocage). PAS d'escalade temporelle : à profondeur diamant les aquifères
+                              // sont fréquents, des rencontres rapprochées sont NORMALES (pas un blocage).
     let panicInFlight = false; // garde de ré-entrée onPanic (bug review #3 : fire-and-forget non-awaité)
     installReflexes(bot, {
       emit, fleeFrom,
@@ -1436,16 +1438,25 @@ async function onSpawn() {
       panicCooldownMs: 8000,
       onWaterStuck: () => {
         if (waterRescue) return;
-        const nowMs = Date.now();
-        const escalate = nowMs - lastWaterRescueAt < 5 * 60 * 1000;
-        lastWaterRescueAt = nowMs;
-        waterRescue = (escalate
-          ? (async () => {
+        // Escapade LOCALE par défaut (RESTER au fond). Le warp-vers-surface (relocateToRegion) détruisait
+        // la productivité : un bot productif à y-58 touche un aquifère → warp en surface LOINTAINE →
+        // re-descente complète (minutes) → re-eau → boucle, diamants stagnants (vécu live ResBot1/2/3 :
+        // 0 progrès diamant en 20 min, tous en boucle water_rescue→warp). On n'escalade au warp QUE si
+        // l'escapade locale ÉCHOUE 3× d'affilée (vraiment coincé dans l'eau, pas juste un aquifère de plus).
+        waterRescue = (async () => {
+          const r = await escapeWater(bot, { emit });
+          if (r && r.ok === false) {
+            waterEscapeFails += 1;
+            if (waterEscapeFails >= 3) {
+              waterEscapeFails = 0;
               emit({ type: 'water_rescue_warp' });
               try { stopMotion(); } catch (e) {}
               await relocateToRegion();
-            })()
-          : escapeWater(bot, { emit }))
+            }
+          } else {
+            waterEscapeFails = 0;   // sortie réussie → on reste au fond, pas de warp
+          }
+        })()
           .catch(() => {})
           .finally(() => { waterRescue = null; });
       },
