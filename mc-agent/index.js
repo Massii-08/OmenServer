@@ -884,24 +884,23 @@ async function provisionStartKit() {
     // le diamant_ore (vécu live : avec iron_pickaxe, 0💎 minable, le bot minait du fer Y16 + bestPickTier
     // restait <3 → kit-bois en boucle). diamond_pickaxe → bestPickTier=3 → saute le kit + mine diamant +
     // active le forçage mtype='diamond' (tierNow>=3) → branch-mine Y-58. Armure FER (suffit à survivre).
-    const gives = ['diamond_pickaxe 1', 'diamond_sword 1', 'iron_helmet 1', 'iron_chestplate 1',
+    const hasPick = () => ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'diamond_pickaxe');
+    const gives = ['diamond_sword 1', 'iron_helmet 1', 'iron_chestplate 1',
       'iron_leggings 1', 'iron_boots 1', 'shield 1', 'cooked_beef 64', 'cobblestone 128', 'torch 64',
       'crafting_table 1', 'oak_planks 16', 'stick 16', 'coal 16'];
     // DÉLAI INITIAL : les TOUTES PREMIÈRES commandes chat juste après le spawn sont PERDUES (le serveur
-    // n'a pas fini d'enregistrer le joueur — vécu live : /give diamond_pickaxe+sword (les 2 premières)
-    // absentes des logs serveur alors que les suivantes passaient → bot sans pioche → kit-bois). On
-    // laisse le chat s'établir avant le 1er /give critique.
+    // n'a pas fini d'enregistrer le joueur — vécu live : /give absentes des logs serveur). On laisse le
+    // chat s'établir avant le 1er /give critique.
     await sleep(2000);
-    // ESPACER les commandes (≥300 ms) : /give en rafale = spam chat → kick serveur (vécu run #1bis :
-    // "kicked: [object Object]" → disconnected). L'anti-spam vanilla coupe à ~3 msg/s.
-    for (const g of gives) { try { bot.chat('/give ' + u + ' ' + g); } catch (e) {} await sleep(350); }
-    // Filet : ré-envoyer la pioche (la plus critique) en DERNIER aussi — si la 1re passe était trop tôt.
-    try { bot.chat('/give ' + u + ' diamond_pickaxe 1'); } catch (e) {} await sleep(350);
-    // Attendre que l'inventaire reflète le /give (sinon bestPickTier lit l'ancien inv vide → refait le kit).
-    for (let w = 0; w < 20; w++) {
-      await sleep(400);
-      if (((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'diamond_pickaxe')) break;
+    // RETRY ROBUSTE sur la PIOCHE (l'item critique) : bot.chat /give est chaotique (commandes droppées
+    // par intermittence au spawn). Sans la pioche → bestPickTier<3 → KIT-BOIS en boucle → quota reset
+    // (vécu : 14 respawns → kit-bois). On re-give + vérifie jusqu'à 5× AVANT le reste du kit.
+    for (let attempt = 0; attempt < 5 && !hasPick(); attempt++) {
+      try { bot.chat('/give ' + u + ' diamond_pickaxe 1'); } catch (e) {}
+      for (let w = 0; w < 8 && !hasPick(); w++) await sleep(400);   // poll ~3.2 s
     }
+    // ESPACER les commandes (≥300 ms) : /give en rafale = spam chat → kick serveur (anti-spam vanilla ~3 msg/s).
+    for (const g of gives) { try { bot.chat('/give ' + u + ' ' + g); } catch (e) {} await sleep(300); }
     // Équiper l'armure IMMÉDIATEMENT (sinon le bot reste nu jusqu'au 1er ensureGear → mort surface).
     try { await ensureArmor({ ironKeep: 0 }); } catch (e) { /* best-effort */ }
     emit({ type: 'resource_start_kit_provisioned' });
