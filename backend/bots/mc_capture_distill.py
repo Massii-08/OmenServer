@@ -205,9 +205,15 @@ def _read_player_payloads(captures_dir, player):
     return sorted(glob.glob(os.path.join(pdir, "*.jsonl")))
 
 
-def distill_to_dir(payload_files, out_player_dir, player):
-    """Distille une liste de fichiers .jsonl → out_player_dir/{style.json, clips/<ctx>.json}."""
+def distill_to_dir(payload_files, out_player_dir, player, max_per_ctx=2500):
+    """Distille une liste de fichiers .jsonl → out_player_dir/{style.json, clips/<ctx>.json}.
+
+    max_per_ctx : cap d'ÉCHANTILLON REPRÉSENTATIF par contexte (clips légers → clone déployable en
+    flotte ; sans cap idle.json atteint 57 M = impraticable à charger par bot). Échantillon aléatoire
+    STABLE (seed fixe → re-distillation reproductible). 0/None = aucun cap. Le clip player tire au
+    hasard de toute façon → un sous-échantillon représentatif ne dégrade pas la fidélité."""
     import os
+    import random
     payloads = []
     all_records = []
     for f in payload_files:
@@ -226,6 +232,16 @@ def distill_to_dir(payload_files, out_player_dir, player):
     by_ctx = {}
     for c in clips:
         by_ctx.setdefault(c.get("ctx") or "idle", []).append(c)
+    # cap représentatif par contexte (échantillon aléatoire stable) — pas de cap SILENCIEUX : on
+    # journalise le nombre d'origine vs gardé pour chaque ctx tronqué.
+    capped = {}
+    if max_per_ctx:
+        rng = random.Random(1729)
+        for ctx in list(by_ctx):
+            cs = by_ctx[ctx]
+            if len(cs) > max_per_ctx:
+                capped[ctx] = {"from": len(cs), "kept": max_per_ctx}
+                by_ctx[ctx] = rng.sample(cs, max_per_ctx)
     cdir = os.path.join(out_player_dir, "clips")
     os.makedirs(cdir, exist_ok=True)
     # purge d'anciens clips (re-distillation propre)
@@ -240,7 +256,8 @@ def distill_to_dir(payload_files, out_player_dir, player):
             json.dump(cs, fh)
     ticks = sum(1 for r in all_records if r.get("type") == "tick")
     return {"player": player, "sessions": len(payload_files), "ticks": ticks,
-            "clips": len(clips), "ctx": {k: len(v) for k, v in by_ctx.items()}}
+            "clips": len(clips), "ctx": {k: len(v) for k, v in by_ctx.items()},
+            "max_per_ctx": max_per_ctx, "capped": capped}
 
 
 def main(argv=None):
@@ -249,6 +266,11 @@ def main(argv=None):
     args = argv if argv is not None else sys.argv[1:]
     captures_dir = args[0] if len(args) > 0 else "data/mc-captures"
     out_dir = args[1] if len(args) > 1 else "data/mc-captures-distilled"
+    # 3e arg optionnel : cap clips/ctx (déf 2500 ; 0 = aucun cap). Clips légers → clone fleet-deployable.
+    try:
+        max_per_ctx = int(args[2]) if len(args) > 2 else 2500
+    except (ValueError, TypeError):
+        max_per_ctx = 2500
     if not os.path.isdir(captures_dir):
         print("captures_dir introuvable:", captures_dir)
         return []
@@ -259,13 +281,13 @@ def main(argv=None):
     for p in players:
         files = _read_player_payloads(captures_dir, p)
         all_files.extend(files)
-        r = distill_to_dir(files, os.path.join(out_dir, p), p)
+        r = distill_to_dir(files, os.path.join(out_dir, p), p, max_per_ctx=max_per_ctx)
         if r:
             summary.append(r)
             print("distilled", json.dumps(r))
     # corpus combiné tous joueurs
     if all_files:
-        r = distill_to_dir(all_files, os.path.join(out_dir, "_all"), "_all")
+        r = distill_to_dir(all_files, os.path.join(out_dir, "_all"), "_all", max_per_ctx=max_per_ctx)
         if r:
             summary.append(r)
             print("distilled", json.dumps(r))
