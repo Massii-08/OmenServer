@@ -347,7 +347,24 @@ async function runResource(bot, opts = {}, token = null) {
       if (reload) memory = reload() || memory;
       const _haveAfter = tracker ? (tracker.progress(_items(bot))[target.material] || { have: 0 }).have : 0;
       if (_haveAfter > _haveBefore) { mined += (_haveAfter - _haveBefore); emit({ type: 'ore_mined', world: wkey, material: target.material }); emitProgress(); }
-      if (_rr && _rr.ok) { idleSince = null; mineForFails = 0; failStreak = 0; }
+      if (_rr && _rr.ok) {
+        idleSince = null; mineForFails = 0; failStreak = 0;
+        // §3.G ANTI-STAGNATION (vécu live : ResBot2 figé à 38, ~20 blocs en 20 min) : branche OK mais
+        // 0 diamant gagné = on re-mine une zone -58 ÉPUISÉE en re-ciblant des diamants mappés SHALLOW
+        // (cave-exposés y>-40, JAMAIS atteints à -58 où on mine). Les diamants -58 ENFOUIS ne sont pas
+        // mappés (non exposés) → on les trouve au VOLUME en couvrant du terrain -58 FRAIS. 3 branches
+        // dirigées sans gain → relocate (sortir de la zone re-minée).
+        if (_haveAfter <= _haveBefore) {
+          zeroYield++;
+          if (zeroYield >= 3 && relocate && relocations < maxRelocations) {
+            relocations++; zeroYield = 0;
+            emit({ type: 'resource_relocate', n: relocations, cause: 'region_depleted', material: target.material });
+            try { await relocate(); } catch (e) { /* best-effort */ }
+            skip.clear(); busyUntil.clear();
+            if (reload) memory = reload() || memory;
+          }
+        } else { zeroYield = 0; }
+      }
       else {
         mineForFails++;
         if (mineForFails >= 3 && relocate && relocations < maxRelocations) {
