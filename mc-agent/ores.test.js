@@ -91,6 +91,18 @@ test('nextOreTarget : proximité 3D (pas horizontale) départage à priorité é
   assert.deepStrictEqual({ x: t.x, y: t.y, z: t.z }, { x: 0, y: 0, z: 50 });
 });
 
+test('nextOreTarget : EXPOSÉ prime sur la distance, à priorité égale (G-bis)', () => {
+  const mem = { worlds: { w: { ores: [
+    { material: 'diamond_ore', x: 0, y: 0, z: 5, exposed: false },  // proche mais enterré
+    { material: 'diamond_ore', x: 0, y: 0, z: 40, exposed: true },  // loin mais EXPOSÉ (grotte)
+  ] } } };
+  const t = ores.nextOreTarget(mem, 'w', { x: 0, y: 0, z: 0 });
+  assert.strictEqual(t.z, 40, 'le diamant exposé (grotte) doit primer sur l\'enterré plus proche');
+  // preferExposed:false → rétro-compat distance pure
+  const t2 = ores.nextOreTarget(mem, 'w', { x: 0, y: 0, z: 0 }, { preferExposed: false });
+  assert.strictEqual(t2.z, 5, 'preferExposed:false → plus proche (distance pure)');
+});
+
 test('nextOreTarget : dédup par position exacte', () => {
   const mem = { worlds: { w: { ores: [
     { material: 'iron_ore', x: 7, y: 8, z: 9 },

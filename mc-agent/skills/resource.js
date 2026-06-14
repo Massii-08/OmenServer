@@ -93,6 +93,7 @@ async function runResource(bot, opts = {}, token = null) {
   // DEEP-FIRST : en mode quota, on ignore les cibles mappées au-dessus de ce Y (couches aquifères
   // 1.18, y>0 = noyade/floating mortels live) → descente forcée vers le deepslate SEC (diamants inclus).
   const deepQuotaY = opts.deepQuotaY != null ? opts.deepQuotaY : 0;
+  const mineExposed = opts.mineExposed || null;   // G-bis : minage en grotte des diamants EXPOSÉS
   const failRelocateAt = opts.failRelocateAt != null ? opts.failRelocateAt : 2;  // un échec ≈ 8-12 min (vécu) — fuir vite les zones d'eau
 
   const skip = new Set();        // cibles traitées (minées/absentes/ratées) : on ne re-vise jamais 2×
@@ -161,7 +162,10 @@ async function runResource(bot, opts = {}, token = null) {
     // DEEP-FIRST (anti-aquifère §1.5 + DoD diamant) : en mode quota, ignorer une cible mappée SHALLOW
     // (y > deepQuotaY = couches pleines d'eau en 1.18) → tomber dans mineFor qui DESCEND vers le
     // deepslate sec. Évite le barbotage/noyade/floating mortels (vécu live : reflex surface en boucle).
-    if (tracker && target && typeof target.y === 'number' && target.y > deepQuotaY && mineFor) target = null;
+    // G-bis : on N'ANNULE PAS une cible EXPOSÉE même shallow (y>deepQuotaY) — un diamant exposé en
+    // grotte est visible/minable direct (cible prioritaire), pas une couche d'eau à fuir. Seuls les
+    // ores ENTERRÉS shallow sont nulls → mineFor descend vers le deepslate sec.
+    if (tracker && target && typeof target.y === 'number' && target.y > deepQuotaY && mineFor && !target.exposed) target = null;
 
     if (!target) {
       if (!reload && !mineFor) break;                  // legacy : carte épuisée → done
@@ -335,13 +339,22 @@ async function runResource(bot, opts = {}, token = null) {
       const heading = _from
         ? { dx: Math.sign(Math.round(target.x - _from.x)), dz: Math.sign(Math.round(target.z - _from.z)) }
         : null;
-      emit({ type: 'resource_region', material: target.material, toward: { x: target.x, y: target.y, z: target.z }, heading });
       const _prog = tracker ? tracker.progress(_items(bot)) : null;
       const _needed = _prog && _prog[target.material] ? Math.max(1, _prog[target.material].target - _prog[target.material].have) : 1;
       const _haveBefore = _prog && _prog[target.material] ? _prog[target.material].have : 0;
       let _rr = null;
-      try { _rr = await mineFor(target.material, _needed, { heading }); }
-      catch (e) { _rr = { ok: false, reason: 'error', detail: String((e && e.message) || e).slice(0, 120) }; }
+      if (target.exposed && mineExposed) {
+        // G-bis : diamant EXPOSÉ en grotte → on y VA + vide la veine (VISIBLE = pas X-ray, stratégie
+        // joueur ; bien plus facile/SEC que le strip-mine -58 noyé). nextOreTarget les priorise déjà.
+        emit({ type: 'resource_cave', material: target.material, x: target.x, y: target.y, z: target.z });
+        try { await mineExposed(target); _rr = { ok: true }; }
+        catch (e) { _rr = { ok: false, reason: 'error', detail: String((e && e.message) || e).slice(0, 120) }; }
+      } else {
+        // BURIED (non exposé) → strip-mining DIRIGÉ vers la région (heading), JAMAIS beeline (§3.G).
+        emit({ type: 'resource_region', material: target.material, toward: { x: target.x, y: target.y, z: target.z }, heading });
+        try { _rr = await mineFor(target.material, _needed, { heading }); }
+        catch (e) { _rr = { ok: false, reason: 'error', detail: String((e && e.message) || e).slice(0, 120) }; }
+      }
       if (claims) claims.release(key);
       if (token && token.cancelled) return { ok: true, mined, cancelled: true };
       if (reload) memory = reload() || memory;

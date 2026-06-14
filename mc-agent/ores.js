@@ -101,12 +101,20 @@ function nextOreTarget(memory, world, from, opts = {}) {
     return i === -1 ? priority.length : i;
   };
 
-  let best = null, bestPrio = Infinity, bestDist = Infinity;
+  // Tri : priorité matériau → EXPOSÉ d'abord (G-bis : un diamant exposé en grotte est VISIBLE/minable
+  // direct, bien plus facile + sec que le strip-mine aveugle à -58 ; c'est la stratégie joueur réelle)
+  // → distance. `exposed` ignoré jusqu'ici (le mappeur le capture mais le bot ressource ne s'en servait
+  // pas). opts.preferExposed=false pour rétro-compat (legacy/tests purs distance).
+  const preferExposed = opts.preferExposed !== false;
+  let best = null, bestPrio = Infinity, bestExp = -1, bestDist = Infinity;
   for (const o of cands) {
     const p = prioIndex(o.material);
+    const ex = (preferExposed && o.exposed) ? 1 : 0;
     const d = _dist3(o, from);
-    if (p < bestPrio || (p === bestPrio && d < bestDist)) {
-      best = o; bestPrio = p; bestDist = d;
+    if (p < bestPrio
+        || (p === bestPrio && ex > bestExp)
+        || (p === bestPrio && ex === bestExp && d < bestDist)) {
+      best = o; bestPrio = p; bestExp = ex; bestDist = d;
     }
   }
   return best;

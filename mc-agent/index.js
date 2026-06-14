@@ -44,7 +44,7 @@ const { _nearestTable } = require('./skills/craft'); // craftItem déjà import�
 const { placeBlockNear } = require('./skills/placeBlockNear');
 const { smelt } = require('./skills/smelt');
 const { descendDiagonal } = require('./skills/descendDiagonal');
-const { branchMine } = require('./skills/branchMine');
+const { branchMine, floodFillVein } = require('./skills/branchMine');
 const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
 const { loadMemory, worldKey } = require('./worldMemory');
 const { runMapper } = require('./mapper');
@@ -1227,6 +1227,17 @@ async function startResource() {
     cleanup: quota ? tossJunk : null,
     mineFor: quota ? mineForType : null,
     relocate: quota ? relocateToRegion : null,
+    // G-bis : MINAGE EN GROTTE des diamants EXPOSÉS (visibles → pas X-ray, stratégie joueur réelle). Le
+    // bot VA à l'ore (goto borné, accessible par grotte) puis VIDE la veine connectée (floodFill). Bien
+    // plus facile + SEC que le strip-mine aveugle à -58 noyé (frein #1 live). Borné 180s (goto+veine ne
+    // doit jamais hang). nextOreTarget priorise déjà les exposés ; resource.js route ici si target.exposed.
+    mineExposed: quota ? (async (target) => {
+      await withTimeout((async () => {
+        await gotoOreBounded(target);
+        if (taskToken.cancelled) return;
+        try { await floodFillVein(bot, target, taskToken); } catch (e) { /* best-effort */ }
+      })(), 180000, () => { try { stopMotion(); } catch (e) {} });
+    }) : null,
     // BORNÉ (vécu V3Res2 figé 40 min, events morts mais socket vivant — un hang dans la chaîne
     // gear/smelt/craft n'était couvert par AUCUN timeout, le watchdog physicsTick ne voit rien) :
     // même règle que tout appel mineflayer long (#42b).

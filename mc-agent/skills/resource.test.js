@@ -771,3 +771,26 @@ test('§3.G : cible mappée + quota → mineFor DIRIGÉ (heading), ZÉRO goto-be
   assert.ok(events.some((e) => e.type === 'resource_region'), 'émet resource_region (direction, pas beeline)');
   assert.ok(!events.some((e) => e.type === 'ore_approach'), 'pas d\'ore_approach (le beeline est désactivé en quota)');
 });
+
+test('G-bis : diamant EXPOSÉ (même shallow) → mineExposed (grotte: goto+floodFill), PAS mineFor strip', async () => {
+  const bot = makeQuotaBot({});
+  const mineExposedCalls = [];
+  const mineForCalls = [];
+  const events = [];
+  await runResource(bot, {
+    memory: mem([{ material: 'diamond', x: 30, y: 5, z: 10, exposed: true }]),  // exposé en grotte, shallow
+    worldKey: 'overworld',
+    emit: (e) => events.push(e),
+    goto: async () => {},
+    quota: { diamond: 1 },
+    pickTier: () => 3,
+    sleep: async () => {},
+    reloadMemory: () => mem([]),
+    mineFor: async (t) => { mineForCalls.push(t); return { ok: true }; },
+    mineExposed: async (t) => { mineExposedCalls.push(t); bot._items.push({ name: 'diamond', count: 1 }); },
+  });
+  assert.equal(mineExposedCalls.length, 1, 'mineExposed appelé pour le diamant exposé (minage grotte)');
+  assert.equal(mineForCalls.length, 0, 'mineFor (strip-mine -58) PAS appelé pour un exposé');
+  assert.ok(events.some((e) => e.type === 'resource_cave'), 'émet resource_cave (minage en grotte)');
+  assert.ok(!events.some((e) => e.type === 'resource_region'), 'pas de resource_region (exposé = grotte, pas strip dirigé)');
+});
