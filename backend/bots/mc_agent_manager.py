@@ -7,6 +7,7 @@ permet de piloter chaque session (stop, say). Pattern miroir de Yield/Scanner.
 """
 import json
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -23,6 +24,9 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MC_AGENT_DIR = _PROJECT_ROOT / "mc-agent"
 # Fichiers temp de whitelist de commandes par session (dossier propre au bot, PAS data/servers/).
 RUNS_DIR = _PROJECT_ROOT / "data" / "mc_agent_runs"
+# Captures REC distillées (mc_capture_distill.py) : data/mc-captures-distilled/<joueur>/{style.json, clips/}.
+# Si un groupe a `clone_player`, _spawn_bot passe --style/--clips → le bot rejoue la motricité humaine réelle.
+DISTILLED_DIR = _PROJECT_ROOT / "data" / "mc-captures-distilled"
 # Clé Claude posée depuis le dashboard (gitignored, chmod 600). La var d'env prime.
 API_KEY_PATH = _PROJECT_ROOT / "data" / "secrets" / "anthropic.key"
 
@@ -327,6 +331,28 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
         # Humanisation ciblée (spec cartographes) : déplacements naturels + latence de réponse
         # + stop-pour-répondre, SANS le loiter. STEALTH l'implique déjà côté bot.
         cmd += ["--humanize", "1"]
+    # Capture-clone : si le profil serveur a `clone_player` ET que ses captures REC sont distillées
+    # (DISTILLED_DIR/<joueur>/{style.json,clips/}), passe --style/--clips → le bot rejoue la motricité
+    # HUMAINE réelle (swing anti-snap, wobble de visée, latence de réaction). Best-effort + rétro-compat
+    # strict : pas de groupe / pas de clone_player / pas de distillation → AUCUN flag → comportement
+    # EXACTEMENT inchangé. Le respawn (start_for_bot, même server_id) re-résout → clone préservé gratis.
+    if server_id:
+        try:
+            _grp = servers_store.get_server(server_id) or {}
+            _player = _grp.get("clone_player")
+        except Exception:  # noqa: BLE001 — lecture du groupe best-effort, jamais bloquante au spawn
+            _player = None
+        if _player:
+            # Assainit le nom (anti path-traversal) : charset pseudo MC + underscore (_all). Les '/'
+            # et '.' sont retirés → '..' impossible → aucune évasion de DISTILLED_DIR.
+            _safe = re.sub(r"[^A-Za-z0-9_]", "", str(_player))
+            if _safe:
+                _style_p = DISTILLED_DIR / _safe / "style.json"
+                _clips_p = DISTILLED_DIR / _safe / "clips"
+                if _style_p.is_file():
+                    cmd += ["--style", str(_style_p)]
+                if _clips_p.is_dir():
+                    cmd += ["--clips", str(_clips_p)]
     cmds_path = None
     if commands:
         RUNS_DIR.mkdir(parents=True, exist_ok=True)

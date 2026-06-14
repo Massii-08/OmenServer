@@ -1192,3 +1192,78 @@ def test_pump_fast_fail_count_propagates_and_resets(monkeypatch):
     mgr._pump(s2, io.StringIO(""))
     assert mgr._sessions[99]["fast_fail_count"] == 0
     mgr._sessions.pop(99, None)
+
+
+# ── Capture-clone : câblage --style/--clips au niveau du groupe (clone_player) ──
+# Si le profil serveur a `clone_player` ET que ses captures REC sont distillées
+# (data/mc-captures-distilled/<joueur>/), _spawn_bot passe --style/--clips au bot →
+# il rejoue la motricité humaine réelle. Best-effort + rétro-compat strict (absent → inchangé).
+
+def _setup_distilled(tmp_path, monkeypatch, player="Massitom2008"):
+    distilled = tmp_path / "distilled"
+    pdir = distilled / player
+    (pdir / "clips").mkdir(parents=True)
+    (pdir / "style.json").write_text('{"player":"%s"}' % player, encoding="utf-8")
+    monkeypatch.setattr(mgr, "DISTILLED_DIR", distilled)
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.world_memory, "load", lambda gid: {})
+    return pdir
+
+
+def _capture_cmd(monkeypatch):
+    captured = {}
+
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc("")
+
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    return captured
+
+
+def test_spawn_clone_player_passe_style_et_clips(monkeypatch, tmp_path):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    pdir = _setup_distilled(tmp_path, monkeypatch)
+    monkeypatch.setattr(mgr.servers_store, "get_server",
+                        lambda gid: {"host": "h", "port": 25566, "clone_player": "Massitom2008"})
+    captured = _capture_cmd(monkeypatch)
+    mgr.start_session("h", 25566, "Bot", None, server_id="grp1")
+    cmd = captured["cmd"]
+    assert "--style" in cmd
+    assert cmd[cmd.index("--style") + 1] == str(pdir / "style.json")
+    assert "--clips" in cmd
+    assert cmd[cmd.index("--clips") + 1] == str(pdir / "clips")
+
+
+def test_spawn_sans_clone_player_inchange(monkeypatch, tmp_path):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    _setup_distilled(tmp_path, monkeypatch)
+    monkeypatch.setattr(mgr.servers_store, "get_server",
+                        lambda gid: {"host": "h", "port": 25566})  # pas de clone_player
+    captured = _capture_cmd(monkeypatch)
+    mgr.start_session("h", 25566, "Bot", None, server_id="grp1")
+    assert "--style" not in captured["cmd"]
+    assert "--clips" not in captured["cmd"]
+
+
+def test_spawn_clone_player_distill_absent_inchange(monkeypatch, tmp_path):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    _setup_distilled(tmp_path, monkeypatch)  # distille Massitom2008 uniquement
+    monkeypatch.setattr(mgr.servers_store, "get_server",
+                        lambda gid: {"host": "h", "port": 25566, "clone_player": "Inconnu99"})
+    captured = _capture_cmd(monkeypatch)
+    mgr.start_session("h", 25566, "Bot", None, server_id="grp1")
+    assert "--style" not in captured["cmd"]  # pas de distillation pour Inconnu99 → best-effort
+    assert "--clips" not in captured["cmd"]
+
+
+def test_clone_player_path_traversal_neutralise(monkeypatch, tmp_path):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    _setup_distilled(tmp_path, monkeypatch)
+    monkeypatch.setattr(mgr.servers_store, "get_server",
+                        lambda gid: {"host": "h", "port": 25566, "clone_player": "../../etc"})
+    captured = _capture_cmd(monkeypatch)
+    mgr.start_session("h", 25566, "Bot", None, server_id="grp1")
+    # nom assaini → aucune évasion de DISTILLED_DIR, aucun fichier ne matche → pas de flags
+    assert "--style" not in captured["cmd"]
+    assert "--clips" not in captured["cmd"]
