@@ -89,7 +89,7 @@ async function runResource(bot, opts = {}, token = null) {
   const relocate = opts.relocate || null;
   const ensureGear = opts.ensureGear || null;
   const maxRelocations = opts.maxRelocations != null ? opts.maxRelocations : 8;
-  const maxTargetDist = opts.maxTargetDist != null ? opts.maxTargetDist : 200;
+  const maxTargetDist = opts.maxTargetDist != null ? opts.maxTargetDist : 2000;
   // DEEP-FIRST : en mode quota, on ignore les cibles mappées au-dessus de ce Y (couches aquifères
   // 1.18, y>0 = noyade/floating mortels live) → descente forcée vers le deepslate SEC (diamants inclus).
   const deepQuotaY = opts.deepQuotaY != null ? opts.deepQuotaY : 0;
