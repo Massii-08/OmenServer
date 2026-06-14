@@ -1450,7 +1450,10 @@ async function onSpawn() {
         // ne déclenche jamais d'échec → jamais de warp → §1.5 violé) : ≥4 water-stuck en 4 min = il faut
         // QUITTER le biome noyé. Seuil HAUT → n'affecte pas les aquifères transitoires (ResBot1/2 en
         // touchent 1-2 et s'en sortent). Sinon : escapade locale, warp seulement après 3 échecs d'affilée.
-        const persistentlyWet = waterStuckTimes.length >= 4;
+        // Seuil 3 (baissé de 4) : onWaterStuck est gaté à ~1/45 s par le réflexe breathe → en 4 min on
+        // n'atteint que ~3 invocations même en aquifère continu (vécu live ResBot2 : 88 reflex surface,
+        // 3 onWaterStuck, JAMAIS de warp → figé à miner 0 dans l'eau). 3 = warp hors de l'aquifère.
+        const persistentlyWet = waterStuckTimes.length >= 3;
         waterRescue = (async () => {
           if (persistentlyWet) {
             waterStuckTimes = []; waterEscapeFails = 0;
