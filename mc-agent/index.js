@@ -1076,7 +1076,29 @@ async function relocateToRegion(opts = {}) {
   try {
     const memNow = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
     const w = memNow && memNow.worlds && memNow.worlds[bot._worldKey];
-    let land = ((w && w.biomes) || []).filter((b) => {
+    // G-bis step 3 : relocate DIAMANT → viser un CLUSTER DENSE de diamants EXPOSÉS (grotte mappée),
+    // PAS une case biome au hasard. Le bot atterrit À L'APLOMB d'une grotte à diamants visibles → la
+    // reach devient courte (vécu : sinon le diamant exposé est à ~100 blocs → goto échoue water/max_steps
+    // → 0 extraction). Cellules 48×48, ≥3 diamants exposés, hors zone actuelle, rotation par bot.
+    if (opts.diamondCluster && w && Array.isArray(w.ores)) {
+      const cur = bot.entity && bot.entity.position;
+      const cells = new Map();
+      for (const o of w.ores) {
+        if (!o || !o.exposed || !String(o.material || '').includes('diamond')) continue;
+        if (cur && Math.abs(o.x - cur.x) < 80 && Math.abs(o.z - cur.z) < 80) continue;  // pas la zone épuisée
+        const k = Math.floor(o.x / 48) + ',' + Math.floor(o.z / 48);
+        const e = cells.get(k) || { n: 0, x: Math.floor(o.x / 48) * 48 + 24, z: Math.floor(o.z / 48) * 48 + 24 };
+        e.n++; cells.set(k, e);
+      }
+      const ranked = [...cells.values()].filter((e) => e.n >= 3).sort((a, b) => b.n - a.n);
+      if (ranked.length) {
+        let h = 0; for (const ch of String(bot.username || 'bot')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+        const pick = ranked[(h + (_relocSeq++) * 7) % Math.min(ranked.length, 12)];
+        c = { x: pick.x, z: pick.z };
+        emit({ type: 'resource_warp', x: c.x, z: c.z, cluster: pick.n });
+      }
+    }
+    let land = (!c ? ((w && w.biomes) || []) : []).filter((b) => {
       const n = String(b.name || '');
       if (!n || n.includes('ocean') || n.includes('river') || n.includes('beach')) return false;
       const ddx = b.x - 208, ddz = b.z - 528;

@@ -243,7 +243,7 @@ async function runResource(bot, opts = {}, token = null) {
               if (zeroYield >= 3 && relocate && relocations < maxRelocations) {
                 relocations++; zeroYield = 0;
                 emit({ type: 'resource_relocate', n: relocations, cause: 'local_depleted', material: mtype });
-                try { await relocate(); } catch (e) { /* best-effort */ }
+                try { await relocate({ diamondCluster: mtype === 'diamond' }); } catch (e) { /* best-effort */ }
                 skip.clear(); busyUntil.clear();
                 if (reload) memory = reload() || memory;
               }
@@ -372,7 +372,9 @@ async function runResource(bot, opts = {}, token = null) {
           if (zeroYield >= 3 && relocate && relocations < maxRelocations) {
             relocations++; zeroYield = 0;
             emit({ type: 'resource_relocate', n: relocations, cause: 'region_depleted', material: target.material });
-            try { await relocate(); } catch (e) { /* best-effort */ }
+            // G-bis : si on chasse le diamant, viser un CLUSTER de diamants EXPOSÉS (grotte) pour
+            // atterrir à reach courte, pas une case biome au hasard.
+            try { await relocate({ diamondCluster: String(target.material || '').includes('diamond') }); } catch (e) { /* best-effort */ }
             skip.clear(); busyUntil.clear();
             if (reload) memory = reload() || memory;
           }
