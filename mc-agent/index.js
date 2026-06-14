@@ -12,7 +12,7 @@ const { think, RateLimiter } = require('./brain');
 const { humanizeReply, nextLook, sampleReactionDelay } = require('./humanize');
 const { loadStyle } = require('./style');   // capture-clone : params humains depuis style.json (--style)
 const { loadClips, createClipPlayer } = require('./clips');   // capture-clone : rejeu motricité (--clips)
-const { humanAimSwing } = require('./aim');   // capture-clone (E) : swing de visée humain (anti snap-aim)
+const { humanAimSwing, jitterLook } = require('./aim');   // capture-clone (E) : swing + wobble de visée humain
 const { loadProfile } = require('./profiles');
 const { say } = require('./skills/say');
 const { follow } = require('./skills/follow');
@@ -1487,6 +1487,24 @@ async function onSpawn() {
   bot._worldMemory = worldMemoryBootstrap;
   bot._worldKey = worldKey(bot, args['world-label']);
   emit({ type: 'status', state: 'spawned', username: bot.username, profile: profile ? profile.id : null });
+  // Capture-clone (E, frontière) : wobble de visée humain GLOBAL. On wrappe bot.look UNE fois → TOUTE
+  // visée en hérite (pathfinder à chaque tick, pvp tracking, collectBlock dig, nos tours) → micro-
+  // instabilité humaine qui tue le « tracking parfait » (dernier tell en jeu actif). Borné petit, réduit
+  // en déplacement (anti-misstep pathfinder → la cible reste dans la tolérance, pathfinder corrige au
+  // tick suivant). humanAim only → rétro-compat (sans style/clips, bot.look reste l'original exact).
+  if (humanAim && typeof bot.look === 'function' && !bot._humanLookWrapped) {
+    bot._humanLookWrapped = true;
+    const _origLook = bot.look.bind(bot);
+    const baseJitter = Math.max(0, Math.min(1, (humanizeParams && humanizeParams.lookJitter) || 0)) * 3; // 0..3°
+    if (baseJitter > 0) {
+      bot.look = function (yaw, pitch, force) {
+        const moving = !!(bot.pathfinder && bot.pathfinder.isMoving && bot.pathfinder.isMoving());
+        const j = jitterLook(yaw, pitch, { jitterDeg: baseJitter, moving });
+        return _origLook(j.yaw, j.pitch, force);
+      };
+      emit({ type: 'human_look_wrap', jitterDeg: Math.round(baseJitter * 100) / 100 });
+    }
+  }
   if (!bootDone) {
     // une seule fois par connexion : sinon 'spawn' (respawn) ré-ajoute des listeners (fuite, MaxListeners)
     // Movements : défense en profondeur contre le stranding au minage (la table portable est le vrai fix).

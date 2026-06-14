@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { aimSwingSteps, wrapRad, DEG } = require('./aim');
+const { aimSwingSteps, jitterLook, wrapRad, DEG } = require('./aim');
 
 test('aimSwingSteps : atterrit EXACTEMENT sur la cible (dernier pas === to)', () => {
   const to = { yaw: 1.2, pitch: -0.3 };
@@ -58,6 +58,34 @@ test('aimSwingSteps : wrap yaw → chemin le plus court (pas le tour complet)', 
   const steps = aimSwingSteps(from, to, { jitterDeg: 0, maxStepDeg: 18 });
   // 20° → ceil(20/18)=2 pas ; court chemin → faible nombre de pas
   assert.ok(steps.length <= 2, 'wrap = chemin court (peu de pas)');
+});
+
+test('jitterLook : wobble borné par jitterDeg (cible dans la tolérance)', () => {
+  const j = 2;
+  for (let k = 0; k < 50; k++) {
+    const r = jitterLook(1.0, 0.2, { jitterDeg: j, rng: Math.random });
+    assert.ok(Math.abs(r.yaw - 1.0) <= j * DEG + 1e-9, 'yaw wobble ≤ jitterDeg');
+    assert.ok(Math.abs(r.pitch - 0.2) <= j * DEG + 1e-9, 'pitch wobble ≤ jitterDeg');
+  }
+});
+
+test('jitterLook : déplacement (moving) → wobble réduit (anti-misstep pathfinder)', () => {
+  // rng=1 → décalage max +j ; moving doit donner 0.4× du still
+  const still = jitterLook(0, 0, { jitterDeg: 10, moving: false, rng: () => 1 });
+  const moving = jitterLook(0, 0, { jitterDeg: 10, moving: true, rng: () => 1 });
+  assert.ok(Math.abs(moving.yaw) < Math.abs(still.yaw), 'moving wobble < still');
+  assert.ok(Math.abs(Math.abs(moving.yaw) - 0.4 * Math.abs(still.yaw)) < 1e-9);
+});
+
+test('jitterLook : pitch clampé ±π/2', () => {
+  const r = jitterLook(0, Math.PI / 2 - 0.001, { jitterDeg: 30, rng: () => 1 });
+  assert.ok(r.pitch <= Math.PI / 2 + 1e-9);
+});
+
+test('jitterLook : jitterDeg=0 → identité (rétro-compat)', () => {
+  const r = jitterLook(1.23, -0.45, { jitterDeg: 0 });
+  assert.strictEqual(r.yaw, 1.23);
+  assert.strictEqual(r.pitch, -0.45);
 });
 
 test('wrapRad : ramène dans [-π, π]', () => {

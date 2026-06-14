@@ -74,4 +74,23 @@ async function humanAimSwing(bot, to, opts = {}) {
   }
 }
 
-module.exports = { aimSwingSteps, humanAimSwing, wrapRad, DEG };
+/**
+ * Wobble humain borné appliqué à UNE visée (yaw,pitch radians). C'est le « tracking imparfait »
+ * humain : un bot vise parfaitement (tell n°1 en jeu actif), un humain a une micro-instabilité
+ * constante. Conçu pour wrapper bot.look → TOUTE visée (pathfinder/pvp/dig/tours) en hérite, sans
+ * combattre chaque plugin. BORNÉ PETIT (±jitterDeg, réduit en déplacement `moving` pour ne pas
+ * dévier le pathfinder → misstep) → la cible reste dans la tolérance (pathfinder corrige au tick
+ * suivant ; attaques/dig atterrissent : un mob ~0.6 bloc, un bloc 1 bloc, à portée 3-4 blocs 2°≈0.1
+ * bloc). PUR (rng injectable). jitterDeg=0 → identité (rétro-compat). pitch clampé ±π/2.
+ */
+function jitterLook(yaw, pitch, opts = {}) {
+  const { jitterDeg = 2, moving = false, rng = Math.random } = opts;
+  if (!jitterDeg || jitterDeg <= 0) return { yaw, pitch };
+  const j = (moving ? jitterDeg * 0.4 : jitterDeg) * DEG;   // déplacement → wobble réduit (anti-misstep)
+  let p = pitch + (rng() * 2 - 1) * j;
+  if (p > Math.PI / 2) p = Math.PI / 2;
+  if (p < -Math.PI / 2) p = -Math.PI / 2;
+  return { yaw: yaw + (rng() * 2 - 1) * j, pitch: p };
+}
+
+module.exports = { aimSwingSteps, humanAimSwing, jitterLook, wrapRad, DEG };
