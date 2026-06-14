@@ -472,8 +472,8 @@ test('runMapper : scan COMPLET des minerais en route → ores_found batché (exp
   const ores = batches[0].ores;
   assert.strictEqual(batches[0].world, 'overworld');
   assert.strictEqual(ores.length, 2);
-  assert.deepStrictEqual(ores.find((o) => o.x === 12), { material: 'iron_ore', x: 12, y: 60, z: -7, exposed: true });
-  assert.deepStrictEqual(ores.find((o) => o.x === 13), { material: 'iron_ore', x: 13, y: 60, z: -7, exposed: false });
+  assert.deepStrictEqual(ores.find((o) => o.x === 12), { material: 'iron_ore', x: 12, y: 60, z: -7, exposed: true, wet: false });
+  assert.deepStrictEqual(ores.find((o) => o.x === 13), { material: 'iron_ore', x: 13, y: 60, z: -7, exposed: false, wet: false });
   // rien d'autre ne change : les biomes continuent d'être émis normalement
   assert.ok(events.filter((e) => e.type === 'biome_seen').length >= 3);
 });

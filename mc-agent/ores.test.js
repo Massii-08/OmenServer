@@ -103,6 +103,15 @@ test('nextOreTarget : EXPOSÉ prime sur la distance, à priorité égale (G-bis)
   assert.strictEqual(t2.z, 5, 'preferExposed:false → plus proche (distance pure)');
 });
 
+test('nextOreTarget : NOYÉ (wet) mis EN DERNIER, sous le sec enterré (H7 anti-noyade)', () => {
+  const mem = { worlds: { w: { ores: [
+    { material: 'diamond_ore', x: 0, y: 0, z: 5, exposed: true, wet: true },    // exposé MAIS noyé (proche)
+    { material: 'diamond_ore', x: 0, y: 0, z: 30, exposed: false, wet: false }, // enterré SEC (loin)
+  ] } } };
+  const t = ores.nextOreTarget(mem, 'w', { x: 0, y: 0, z: 0 });
+  assert.strictEqual(t.z, 30, 'le sec enterré doit primer sur l\'exposé NOYÉ (évite la noyade)');
+});
+
 test('nextOreTarget : dédup par position exacte', () => {
   const mem = { worlds: { w: { ores: [
     { material: 'iron_ore', x: 7, y: 8, z: 9 },
@@ -349,8 +358,8 @@ test('scanAllOres : retourne exposés ET enfouis avec flag exposed', () => {
   assert.strictEqual(out.length, 2);
   const exp = out.find((o) => o.material === 'iron_ore');
   const bur = out.find((o) => o.material === 'deepslate_diamond_ore');
-  assert.deepStrictEqual(exp, { material: 'iron_ore', x: 5, y: 40, z: 5, exposed: true });
-  assert.deepStrictEqual(bur, { material: 'deepslate_diamond_ore', x: 8, y: -50, z: 8, exposed: false });
+  assert.deepStrictEqual(exp, { material: 'iron_ore', x: 5, y: 40, z: 5, exposed: true, wet: false });
+  assert.deepStrictEqual(bur, { material: 'deepslate_diamond_ore', x: 8, y: -50, z: 8, exposed: false, wet: false });
 });
 
 test('scanAllOres : ne matche que QUOTA_ORE_NAMES (5 matériaux × 2 variantes)', () => {
@@ -384,8 +393,8 @@ test('oresFoundEvent : event batché {type:ores_found, world, ores}', () => {
   assert.strictEqual(ev.type, 'ores_found');
   assert.strictEqual(ev.world, 'overworld');
   assert.strictEqual(ev.ores.length, 2);
-  assert.deepStrictEqual(ev.ores[0], { material: 'iron_ore', x: 1, y: 40, z: -4, exposed: true });  // floored
-  assert.deepStrictEqual(ev.ores[1], { material: 'diamond_ore', x: 2, y: -50, z: 3, exposed: false });
+  assert.deepStrictEqual(ev.ores[0], { material: 'iron_ore', x: 1, y: 40, z: -4, exposed: true, wet: false });  // floored
+  assert.deepStrictEqual(ev.ores[1], { material: 'diamond_ore', x: 2, y: -50, z: 3, exposed: false, wet: false });
 });
 
 test('nextOreTarget : allowTypes restreint aux types de base demandés (mode quota)', () => {

@@ -121,7 +121,7 @@ def _ore_base(material):
     return m[:-4] if m.endswith("_ore") else m
 
 
-def add_ore(memory, world, material, x, y, z, at=None, cap=ORE_CAP, exposed=True):
+def add_ore(memory, world, material, x, y, z, at=None, cap=ORE_CAP, exposed=True, wet=False):
     """Note un minerai à sa position 3D EXACTE (coords RÉELLES int, PAS quantifiées grille).
 
     Cartographe : un bloc de minerai vu dans les chunks chargés (`material` à (x,y,z) entiers).
@@ -134,7 +134,7 @@ def add_ore(memory, world, material, x, y, z, at=None, cap=ORE_CAP, exposed=True
     ix, iy, iz = int(x), int(y), int(z)
     w["ores"] = [o for o in w["ores"] if not (o["x"] == ix and o["y"] == iy and o["z"] == iz)]
     w["ores"].append({"material": str(material), "x": ix, "y": iy, "z": iz, "at": at,
-                      "exposed": bool(exposed)})
+                      "exposed": bool(exposed), "wet": bool(wet)})  # H7 : wet = grotte/poche noyée → évitée
     base = _ore_base(material)
     same = [o for o in w["ores"] if _ore_base(o["material"]) == base]
     if len(same) > cap:
@@ -206,7 +206,7 @@ def apply_event(memory, event, at=None):
                         continue
                     try:
                         add_ore(memory, world, o.get("material"), o["x"], o["y"], o["z"],
-                                at=at, exposed=o.get("exposed", True))
+                                at=at, exposed=o.get("exposed", True), wet=o.get("wet", False))
                     except (KeyError, TypeError, ValueError):
                         continue          # entrée malformée → skip, le reste du batch passe
             return memory

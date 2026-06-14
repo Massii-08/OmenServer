@@ -105,16 +105,24 @@ function nextOreTarget(memory, world, from, opts = {}) {
   // direct, bien plus facile + sec que le strip-mine aveugle à -58 ; c'est la stratégie joueur réelle)
   // → distance. `exposed` ignoré jusqu'ici (le mappeur le capture mais le bot ressource ne s'en servait
   // pas). opts.preferExposed=false pour rétro-compat (legacy/tests purs distance).
+  // H7 : score = sec-exposé (grotte minable, idéal) 2 > sec-enterré (strip) 1 > NOYÉ (adjacent eau) 0.
+  // Un minerai `wet` (grotte/poche inondée) est mis EN DERNIER (anti-noyade : isExposed comptait l'eau
+  // comme expo → cave-first y fonçait → noyade). opts.preferExposed=false → rétro-compat distance pure.
   const preferExposed = opts.preferExposed !== false;
-  let best = null, bestPrio = Infinity, bestExp = -1, bestDist = Infinity;
+  const score = (o) => {
+    if (!preferExposed) return 0;
+    if (o.wet) return 0;                                    // adjacent à l'eau → évité
+    return o.exposed ? 2 : 1;                               // sec exposé > sec enterré
+  };
+  let best = null, bestPrio = Infinity, bestScore = -1, bestDist = Infinity;
   for (const o of cands) {
     const p = prioIndex(o.material);
-    const ex = (preferExposed && o.exposed) ? 1 : 0;
+    const s = score(o);
     const d = _dist3(o, from);
     if (p < bestPrio
-        || (p === bestPrio && ex > bestExp)
-        || (p === bestPrio && ex === bestExp && d < bestDist)) {
-      best = o; bestPrio = p; bestExp = ex; bestDist = d;
+        || (p === bestPrio && s > bestScore)
+        || (p === bestPrio && s === bestScore && d < bestDist)) {
+      best = o; bestPrio = p; bestScore = s; bestDist = d;
     }
   }
   return best;
@@ -161,6 +169,21 @@ function isExposed(bot, pos) {
   const x = Math.floor(pos.x), y = Math.floor(pos.y), z = Math.floor(pos.z);
   for (const [dx, dy, dz] of _OFFS) {
     if (_isOpen(bot.blockAt(_at(x + dx, y + dy, z + dz)))) return true;
+  }
+  return false;
+}
+
+const _WATER = new Set(['water', 'flowing_water', 'seagrass', 'tall_seagrass', 'kelp', 'kelp_plant', 'bubble_column']);
+// H7 (cause-racine des noyades) : un minerai est-il ADJACENT À L'EAU ? (≥1 voisin = eau). isExposed
+// compte l'eau comme exposition → un diamant en grotte NOYÉE était `exposed:true` = « facile » → le
+// cave-first y fonçait → noyade + 0 extraction (la garde anti-noyade skip le floodFill). On tague `wet`
+// pour que nextOreTarget/cave-first ne ciblent QUE les diamants secs (air-exposés).
+function isWaterAdjacent(bot, pos) {
+  if (!pos || !bot || typeof bot.blockAt !== 'function') return false;
+  const x = Math.floor(pos.x), y = Math.floor(pos.y), z = Math.floor(pos.z);
+  for (const [dx, dy, dz] of _OFFS) {
+    const b = bot.blockAt(_at(x + dx, y + dy, z + dz));
+    if (b && _WATER.has(b.name)) return true;
   }
   return false;
 }
@@ -242,7 +265,7 @@ function scanAllOres(bot, opts = {}) {
       const x = Math.floor(p.x), y = Math.floor(p.y), z = Math.floor(p.z);
       const block = bot.blockAt(_at(x, y, z));
       if (!block) continue;                               // chunk non chargé → skip
-      out.push({ material: block.name, x, y, z, exposed: isExposed(bot, p) });
+      out.push({ material: block.name, x, y, z, exposed: isExposed(bot, p), wet: isWaterAdjacent(bot, p) });
     }
     return out;
   } catch (e) {
@@ -256,7 +279,7 @@ function oresFoundEvent(world, ores) {
     type: 'ores_found', world,
     ores: (ores || []).map((o) => ({
       material: o.material, x: Math.floor(o.x), y: Math.floor(o.y), z: Math.floor(o.z),
-      exposed: !!o.exposed,
+      exposed: !!o.exposed, wet: !!o.wet,                  // H7 : `wet` persisté → bots évitent les noyés
     })),
   };
 }

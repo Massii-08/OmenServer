@@ -346,7 +346,7 @@ async function runResource(bot, opts = {}, token = null) {
       const _needed = _prog && _prog[target.material] ? Math.max(1, _prog[target.material].target - _prog[target.material].have) : 1;
       const _haveBefore = _prog && _prog[target.material] ? _prog[target.material].have : 0;
       let _rr = null;
-      if (target.exposed && mineExposed) {
+      if (target.exposed && !target.wet && mineExposed) {   // H7 : cave-mining SEULEMENT si SEC (pas noyé)
         // G-bis : diamant EXPOSÉ en grotte → on y VA + vide la veine (VISIBLE = pas X-ray, stratégie
         // joueur ; bien plus facile/SEC que le strip-mine -58 noyé). nextOreTarget les priorise déjà.
         emit({ type: 'resource_cave', material: target.material, x: target.x, y: target.y, z: target.z });
