@@ -1456,7 +1456,7 @@ async function onSpawn() {
     tpWatch.anchor(bot.entity && bot.entity.position);
     wireTeleportDetection(bot, tpWatch, {
       emit,
-      onTeleport: () => { try { stopMotion(); } catch (e) {} },
+      onTeleport: () => { try { stopMotion(); } catch (e) {} _floatSettleUntil = Date.now() + 15000; },
     });
     await tryAuth();
     bootDone = true;
@@ -1525,7 +1525,7 @@ bot.loadPlugin(pathfinder);
 bot.loadPlugin(pvp);
 bot.loadPlugin(collectBlock);
 
-bot.on('spawn', () => { onSpawn().catch((e) => emit({ type: 'error', message: String((e && e.message) || e) })); });
+bot.on('spawn', () => { _floatSettleUntil = Date.now() + 15000; onSpawn().catch((e) => emit({ type: 'error', message: String((e && e.message) || e) })); });
 
 async function runAction(decision) {
   const a = decision.action;
@@ -1803,27 +1803,51 @@ let _floatPrev = null;
 let _floatBusy = false;
 let _floatFails = 0;   // recoverFloating ok:false consécutifs → escalade (vécu live ResBot2 : floating
                        // ok:false EN BOUCLE, jamais résolu = blocage §1.5 — il flotte hors d'atteinte du sol)
+let _floatHits = 0;    // détections consécutives (exiger 2 = ~4 s) avant d'agir (anti faux-positif transitoire)
+let _floatSettleUntil = 0; // horodatage jusqu'auquel on N'ARME PAS la détection (post-spawn/téléport :
+                       // chunk en cours de chargement → onGround faux alors que le bot est juste immobile)
 setInterval(async () => {
   try {
     if (_floatBusy || !bot.entity || !bot.entity.position) return;
-    if (bot.targetDigBlock) { _floatPrev = null; return; }            // minage sur place = légitime
+    if (bot.targetDigBlock) { _floatPrev = null; _floatHits = 0; return; } // minage sur place = légitime
+    // SETTLE post-spawn/téléport : juste après un warp (spawnpoint, /spreadplayers, water-rescue,
+    // respawn) le chunk se charge → bot.entity.onGround reste FAUX qq s alors que le bot est immobile
+    // en positionnement → FAUX POSITIF floating → recoverFloating coupe le branchMine + ok:false EN
+    // BOUCLE → process.exit → respawn même spot → CRASH-LOOP (vécu live ResBot3 : 10→13→16). On laisse
+    // la physique se stabiliser avant d'armer la détection.
+    if (Date.now() < _floatSettleUntil) { _floatPrev = null; _floatHits = 0; _floatFails = 0; return; }
     const p = bot.entity.position;
     const vy = (bot.entity.velocity && bot.entity.velocity.y) || 0;
     const cur = { x: p.x, z: p.z, t: Date.now() };
     if (isFloatingStuck(_floatPrev, cur, { onGround: !!bot.entity.onGround, inWater: isInWater(bot), vy })) {
+      // EXIGER 2 détections consécutives (~4 s de flottement continu) : une seule peut être un
+      // transitoire (positionnement en début de branche, micro-lag) et recoverFloating COUPE le
+      // goal/mining → on interromprait du minage légitime.
+      _floatHits += 1;
+      if (_floatHits < 2) { _floatPrev = cur; return; }
+      _floatHits = 0;
       _floatPrev = null;
       _floatBusy = true;
       let res;
       try { res = await recoverFloating(bot, { emit }); } finally { _floatBusy = false; }
-      // ESCALADE (bug live #floating) : recoverFloating attend onGround ; si le bot flotte coincé
-      // (rebord/niche/bulle) il ne retombe jamais → ok:false EN BOUCLE. 3 échecs consécutifs → on SORT
-      // (miroir starved/death_loop) → le manager respawne frais, hors de la niche. keepInventory garde tout.
+      // ESCALADE GRADUÉE (ne plus crash-looper) : recoverFloating attend onGround ; s'il flotte coincé
+      // (rebord/niche/bulle) il ne retombe jamais → ok:false. 3 échecs → 1 RELOCATE (warp terre fraîche,
+      // casse la niche) + settle ; seulement 6 échecs → process.exit en dernier recours (le manager
+      // respawne frais). keepInventory garde tout.
       if (res && res.ok === false) {
         _floatFails++;
-        if (_floatFails >= 3) { emit({ type: 'autonomous_stalled', reason: 'floating_unrecoverable' }); process.exit(2); }
+        if (_floatFails === 3) {
+          emit({ type: 'unstuck', cause: 'floating_relocate' });
+          _floatSettleUntil = Date.now() + 15000;
+          try { stopMotion(); } catch (e) {}
+          relocateToRegion().catch(() => {});
+        } else if (_floatFails >= 6) {
+          emit({ type: 'autonomous_stalled', reason: 'floating_unrecoverable' }); process.exit(2);
+        }
       } else { _floatFails = 0; }
       return;
     }
+    _floatHits = 0;
     _floatPrev = cur;
   } catch (e) { _floatBusy = false; }
 }, 2000);
