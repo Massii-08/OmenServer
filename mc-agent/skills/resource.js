@@ -107,6 +107,8 @@ async function runResource(bot, opts = {}, token = null) {
                                  // surface détruisait la progression de descente, vécu V3Res4 ×5)
   let noPickSince = null;        // depuis quand on attend SANS pioche (tier<2) : starved rapide
   const noPickMaxMs = opts.noPickMaxMs != null ? opts.noPickMaxMs : 120000;
+  let zeroYield = 0;             // branches mineFor "ok" mais 0 GAIN du type cherché = épuisé local
+                                 // → relocate (DoD : dia figé car branchMine -58 vide "réussit", vécu live)
   let lastProgress = '';
 
   function emitProgress() {
@@ -225,6 +227,23 @@ async function runResource(bot, opts = {}, token = null) {
           if (r && r.ok) {
             idleSince = null;
             mineForFails = 0;
+            // RELOCATE sur ÉPUISEMENT LOCAL (DoD diamant) : mineFor "réussit" (branche complétée) mais
+            // 0 GAIN du type cherché → le minerai est épuisé localement. Sans ça, le bot branch-mine du
+            // -58 vide EN BOUCLE sans jamais relocaliser (la branche "réussit" → idle jamais armé →
+            // dia figé, vécu live ResBot2 dia:27 figé ~45 min). 3 branches sans gain → terrain frais.
+            const haveBefore = (prog[mtype] && prog[mtype].have) || 0;
+            const progAfter = tracker.progress(_items(bot));
+            const haveAfter = (progAfter[mtype] && progAfter[mtype].have) || 0;
+            if (haveAfter <= haveBefore) {
+              zeroYield++;
+              if (zeroYield >= 3 && relocate && relocations < maxRelocations) {
+                relocations++; zeroYield = 0;
+                emit({ type: 'resource_relocate', n: relocations, cause: 'local_depleted', material: mtype });
+                try { await relocate(); } catch (e) { /* best-effort */ }
+                skip.clear(); busyUntil.clear();
+                if (reload) memory = reload() || memory;
+              }
+            } else { zeroYield = 0; }
           } else {
             // Échec : pause + comptabilité d'inactivité — un mineFor qui throw en boucle
             // SPINNAIT à l'infini une fois le cap de relocalisations épuisé (vécu : ×100
