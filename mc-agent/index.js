@@ -11,6 +11,7 @@ const { snapshot } = require('./state');
 const { think, RateLimiter } = require('./brain');
 const { humanizeReply, nextLook, sampleReactionDelay } = require('./humanize');
 const { loadStyle } = require('./style');   // capture-clone : params humains depuis style.json (--style)
+const { loadClips, createClipPlayer } = require('./clips');   // capture-clone : rejeu motricité (--clips)
 const { loadProfile } = require('./profiles');
 const { say } = require('./skills/say');
 const { follow } = require('./skills/follow');
@@ -94,6 +95,11 @@ catch (e) { emit({ type: 'error', message: 'profil invalide: ' + e.message }); }
 const styleParams = loadStyle(args.style);
 const humanizeParams = styleParams || (profile && profile.params) || {};
 if (styleParams) emit({ type: 'style_loaded', player: styleParams._player, reaction: styleParams.reaction, lookJitter: styleParams.lookJitter });
+// Capture-clone (étape D) : --clips <dir> distillé → rejeu de la MOTRICITÉ humaine réelle (Δyaw/Δpitch
+// par contexte) sur la visée. Sans --clips → clipPlayer=null → nextLook (modèle) inchangé.
+const _clipsByCtx = loadClips(args.clips);
+const clipPlayer = (args.clips && Object.keys(_clipsByCtx).length) ? createClipPlayer(_clipsByCtx) : null;
+if (clipPlayer) emit({ type: 'clips_loaded', ctxs: Object.keys(_clipsByCtx) });
 
 // Mode FURTIF (--stealth 1) : humanisation COMPLÈTE y compris loiter (« stop = vivant »).
 // OFF PAR DÉFAUT (phase 3) : les bots utilitaires vont à vitesse machine.
@@ -2093,8 +2099,20 @@ if (HUMANIZE) {
       if (bot.pathfinder && bot.pathfinder.goal) return;
       if (bot.pvp && bot.pvp.target) return;
       const cur = { yaw: bot.entity.yaw || 0, pitch: bot.entity.pitch || 0 };
-      const nx = nextLook(cur, humanizeParams, Math.random, { mode: 'idle' });   // capture-clone : visée ∝ jitter humain
-      bot.look(nx.yaw, nx.pitch, false);
+      // Capture-clone étape D : si --clips, REJOUER la motricité de visée HUMAINE RÉELLE (Δyaw/Δpitch
+      // du clip idle — degrés → radians ×DEG) ; sinon le MODÈLE nextLook (étape C). « La copie » :
+      // on reproduit COMMENT l'humain bougeait la caméra, pas une courbe lisse de bot.
+      const _clip = clipPlayer ? clipPlayer.next('idle') : null;
+      if (_clip) {
+        const DEG = Math.PI / 180;
+        const yaw = cur.yaw + (_clip.dyaw || 0) * DEG;
+        let pitch = cur.pitch + (_clip.dpitch || 0) * DEG;
+        pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));   // borne pitch (±90°)
+        bot.look(yaw, pitch, false);
+      } else {
+        const nx = nextLook(cur, humanizeParams, Math.random, { mode: 'idle' });   // capture-clone : visée ∝ jitter humain
+        bot.look(nx.yaw, nx.pitch, false);
+      }
     } catch (e) { /* best-effort : ne crash jamais */ }
   }, 180 + Math.floor(Math.random() * 120)); // ~180-300 ms : cadence de micro-ajustement humaine
 }
