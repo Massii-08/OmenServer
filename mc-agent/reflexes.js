@@ -212,7 +212,7 @@ function installReflexes(bot, opts = {}) {
         const t = now();
         surfaceEpisodes.push(t);
         surfaceEpisodes = surfaceEpisodes.filter((x) => t - x <= 90000);
-        if (onWaterStuck && surfaceEpisodes.length >= 2 && t - lastRescue >= 45000) {
+        if (onWaterStuck && surfaceEpisodes.length >= 2 && t - lastRescue >= 20000) {
           lastRescue = t;
           surfaceEpisodes = [];
           emit({ type: 'reflex', action: 'water_rescue' });
