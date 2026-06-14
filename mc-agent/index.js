@@ -1310,25 +1310,32 @@ async function startResource() {
     // doit jamais hang). nextOreTarget priorise déjà les exposés ; resource.js route ici si target.exposed.
     mineExposed: quota ? (async (target) => {
       await withTimeout((async () => {
-        // H5 : ARRIVER DANS LA GROTTE par l'ouverture, JAMAIS de tunnel droit sur les coords (= X-ray ;
-        // et gotoOreBounded échouait water_ahead/max_steps → ore_mined=0). On vise la case d'AIR adjacente
-        // (exposition confirmée par le mapper) en pathfinding SANS CREUSAGE (canDig=false) → le bot
-        // rejoint le diamant par la grotte EXISTANTE + s'arrête à reach du minerai VISIBLE. Si pas relié
-        // sans creuser → cave_unreachable → resource.js skip+relocate (jamais d'X-ray, raffine §3.G/G-bis).
+        // H5 : viser la case d'AIR voisine (ouverture grotte), JAMAIS le bloc solide (= tunnel X-ray).
         const air = openNeighborOf(target);
         const goal = air ? new pfGoals.GoalNear(air.x, air.y, air.z, 1)
                          : new pfGoals.GoalGetToBlock(target.x, target.y, target.z);
         const prevMoves = bot.pathfinder.movements;
+        // Phase 1 (anti-X-ray) : rejoindre la grotte SANS creuser (canDig=false). Phase 2 (fallback
+        // extraction) : si la grotte n'est pas walkable, AUTORISER le creusage vers l'OUVERTURE — sinon
+        // 0 extraction (vécu : canDig=false seul → cave_unreachable en boucle, dia figé à 41).
         let r = null;
         try {
           const noDig = new Movements(bot);
           try { Object.assign(noDig, prevMoves); } catch (e) {}
-          noDig.canDig = false;                                  // anti-X-ray : rejoindre la grotte, pas creuser
+          noDig.canDig = false;
           bot.pathfinder.setMovements(noDig);
-          r = await withTimeout(bot.pathfinder.goto(goal), 120000, () => { try { stopMotion(); } catch (e) {} });
-        } finally { try { if (prevMoves) bot.pathfinder.setMovements(prevMoves); } catch (e) {} }
+          r = await withTimeout(bot.pathfinder.goto(goal), 60000, () => { try { stopMotion(); } catch (e) {} });
+        } catch (e) { r = { ok: false }; }
+        finally { try { if (prevMoves) bot.pathfinder.setMovements(prevMoves); } catch (e) {} }
         if (taskToken.cancelled) return;
-        if (r && r.ok === false) throw new Error('cave_unreachable'); // pas creuser droit → skip+relocate
+        if (r && r.ok === false) {                              // phase 2 : creuser jusqu'à l'ouverture
+          try { r = await withTimeout(bot.pathfinder.goto(goal), 90000, () => { try { stopMotion(); } catch (e) {} }); }
+          catch (e) { throw new Error('cave_unreachable'); }
+        }
+        if (taskToken.cancelled) return;
+        // Anti-noyade : ne JAMAIS floodFill en pleine eau (grotte inondée → noyade, 6 morts vécues) →
+        // sortir d'abord ; toujours dans l'eau après → on abandonne cette veine (skip+relocate).
+        if (isInWater(bot)) { try { await escapeWater(bot, { emit }); } catch (e) {} if (isInWater(bot)) return; }
         try { await floodFillVein(bot, target, taskToken); } catch (e) { /* best-effort */ }
       })(), 180000, () => { try { stopMotion(); } catch (e) {} });
     }) : null,
