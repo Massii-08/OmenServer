@@ -12,6 +12,7 @@ const { think, RateLimiter } = require('./brain');
 const { humanizeReply, nextLook, sampleReactionDelay } = require('./humanize');
 const { loadStyle } = require('./style');   // capture-clone : params humains depuis style.json (--style)
 const { loadClips, createClipPlayer } = require('./clips');   // capture-clone : rejeu motricité (--clips)
+const { humanAimSwing } = require('./aim');   // capture-clone (E) : swing de visée humain (anti snap-aim)
 const { loadProfile } = require('./profiles');
 const { say } = require('./skills/say');
 const { follow } = require('./skills/follow');
@@ -100,6 +101,31 @@ if (styleParams) emit({ type: 'style_loaded', player: styleParams._player, react
 const _clipsByCtx = loadClips(args.clips);
 const clipPlayer = (args.clips && Object.keys(_clipsByCtx).length) ? createClipPlayer(_clipsByCtx) : null;
 if (clipPlayer) emit({ type: 'clips_loaded', ctxs: Object.keys(_clipsByCtx) });
+// Capture-clone (étape E) : visée d'ACQUISITION humaine. ON ssi --style/--clips → les look-ats
+// DÉLIBÉRÉS de notre code (demi-tours, faire face à un joueur) deviennent des SWINGS humains
+// (anti snap-aim, tell n°1) au lieu d'un bot.look instantané. OFF → comportement EXACTEMENT inchangé.
+// (Visées INTERNES des plugins — pvp.attack re-track, collectBlock pour le dig, pathfinder pour la
+//  marche — restent gérées par eux : frontière clone-hybride documentée dans le rapport.)
+const humanAim = !!(clipPlayer || styleParams);
+const _aimJitterDeg = (humanizeParams && humanizeParams.lookJitter ? humanizeParams.lookJitter : 0.15) * 20;
+// Helper : tourne la caméra vers (yaw,pitch) en swing humain si humanAim, sinon snap instantané.
+// `bot` est capturé par closure (créé plus bas, à l'appel `bot` existe). clipCtx → motricité réelle.
+async function aimSwingTo(yaw, pitch, clipCtx) {
+  if (humanAim) {
+    let clipFrames = null;
+    if (clipPlayer && clipCtx) { const c = clipPlayer.next(clipCtx); if (c && Array.isArray(c.frames)) clipFrames = c.frames; }
+    try { await humanAimSwing(bot, { yaw, pitch }, { jitterDeg: _aimJitterDeg, clipFrames }); return; } catch (e) {}
+  }
+  try { await bot.look(yaw, pitch, true); } catch (e) {}
+}
+// yaw/pitch pour faire face à un point (MÊME formule que mineflayer bot.lookAt → signe pitch correct).
+function entityYawPitch(toPos) {
+  const e = bot.entity; if (!e || !e.position) return null;
+  const ex = e.position.x, ey = e.position.y + (e.height || 1.62), ez = e.position.z;
+  const dx = toPos.x - ex, dy = toPos.y - ey, dz = toPos.z - ez;
+  const ground = Math.sqrt(dx * dx + dz * dz);
+  return { yaw: Math.atan2(-dx, -dz), pitch: Math.atan2(dy, ground) };
+}
 
 // Mode FURTIF (--stealth 1) : humanisation COMPLÈTE y compris loiter (« stop = vivant »).
 // OFF PAR DÉFAUT (phase 3) : les bots utilitaires vont à vitesse machine.
@@ -1077,7 +1103,7 @@ async function mineForType(type, needed, opts = {}) {
       if (why === 'lava_ahead' || why === 'air_at_y_-50' || why === 'drop_ahead') {
         lavaTurns++;
         if (lavaTurns > 3) return { ok: false, reason: why };   // 4 cardinaux barrés → vraie impasse
-        try { await bot.look(((bot.entity && bot.entity.yaw) || 0) + Math.PI / 2, 0, true); } catch (e) {}
+        await aimSwingTo(((bot.entity && bot.entity.yaw) || 0) + Math.PI / 2, 0, 'turn');  // capture-clone E : swing humain si humanAim, sinon snap
         // LONGER LA PAROI (vécu V3Res2 : drop_ahead en boucle au bord d'une méga-grotte 1.18 —
         // re-descendre du MÊME point re-trouve le même gouffre) : ~8 blocs dans la nouvelle
         // direction avant de re-tenter, pathfinder borné (il contourne ou échoue vite).
@@ -1695,6 +1721,12 @@ async function runAction(decision) {
 
 function replyTo(reaction, text) {
   if (!isAllowed(text, whitelist)) { emit({ type: 'blocked_command', command: text }); return; }
+  // capture-clone E : un humain se TOURNE vers son interlocuteur avant de parler (swing, anti snap).
+  // Fire-and-forget (n'attend pas le swing pour parler). humanAim only → rétro-compat.
+  if (humanAim && reaction.to) {
+    const ent = bot.players[reaction.to] && bot.players[reaction.to].entity;
+    if (ent && ent.position) { const yp = entityYawPitch(ent.position); if (yp) aimSwingTo(yp.yaw, yp.pitch, 'turn'); }
+  }
   if (reaction.private) bot.whisper(reaction.to, text); // réponse en privé (/tell)
   else say(bot, text);                                  // réponse en public
 }
