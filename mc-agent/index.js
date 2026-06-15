@@ -846,6 +846,10 @@ async function ensureArmor(opts = {}) {
   const items = () => ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, count: i.count }));
   const cnt = (n) => items().filter((i) => i.name === n).reduce((a, i) => a + i.count, 0);
   const worn = _wornArmor();
+  // bug #4 : déjà 4 pièces d'armure (TOUTE matière — ex. diamant du kit OP) → ne RIEN faire. Sinon le
+  // craft ci-dessous re-fabriquerait du FER et l'équiperait PAR-DESSUS le diamant (downgrade). Slot-agnostique.
+  const _SLOT_SUF = ['_helmet', '_chestplate', '_leggings', '_boots'];
+  if (_SLOT_SUF.filter((suf) => [...worn].some((w) => String(w).endsWith(suf))).length >= 4) return;
   // 1) Équiper les pièces déjà en poche mais pas portées.
   for (const piece of ARMOR_PIECES) {
     if (worn.has(piece.name)) continue;
@@ -969,8 +973,19 @@ async function provisionStartKit() {
     // malgré l'OP, inv plein de résidus 11 h de runs) → kit-bois en boucle. On ré-équipe juste l'armure
     // (gratuit, items déjà en poche) et on sort.
     if (hasPick()) { try { await ensureArmor({ ironKeep: 0 }); } catch (e) {} emit({ type: 'resource_start_kit_skipped_haspick' }); return; }
-    const gives = ['diamond_sword 1', 'iron_helmet 1', 'iron_chestplate 1',
-      'iron_leggings 1', 'iron_boots 1', 'shield 1', 'cooked_beef 64', 'cobblestone 128', 'torch 64',
+    // bug #4 (keepInv=false) : ARMURE DIAMANT donnée + équipée EN PREMIER (avant la pioche). Le bot
+    // respawn NU et se faisait tuer PENDANT le provisionnement (5-20s de /give) → starve loop. Diamant
+    // (pas fer) = survie bien meilleure en hard ; équipée DIRECTEMENT (bot.equip) → protégé en ~2s.
+    await sleep(1500);                                  // les tout 1ers /give post-spawn sont perdus (serveur enregistre)
+    for (const [name, slot] of [['diamond_boots', 'feet'], ['diamond_leggings', 'legs'], ['diamond_chestplate', 'torso'], ['diamond_helmet', 'head']]) {
+      if (_wornArmor().has(name)) continue;
+      try { bot.chat('/give ' + u + ' ' + name + ' 1'); } catch (e) {}
+      for (let w = 0; w < 8 && !((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === name); w++) await sleep(300);
+      const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === name);
+      if (it) { try { await bot.equip(it, slot); } catch (e) {} }
+    }
+    emit({ type: 'resource_kit_armor', armor: 'diamond' });
+    const gives = ['diamond_sword 1', 'shield 1', 'cooked_beef 64', 'cobblestone 128', 'torch 64',
       'crafting_table 1', 'oak_planks 16', 'stick 16', 'coal 16'];
     // DÉLAI INITIAL : les TOUTES PREMIÈRES commandes chat juste après le spawn sont PERDUES (le serveur
     // n'a pas fini d'enregistrer le joueur — vécu live : /give absentes des logs serveur). On laisse le
