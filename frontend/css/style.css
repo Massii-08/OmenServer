@@ -4206,9 +4206,9 @@ select:-webkit-autofill {
    Gaté par .view-enter (retiré après 1s par anim.js) → aucune ré-animation
    aux refresh internes (le poll monitoring réécrit nodes-grid en continu). */
 #module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > * {
-    animation: omen-rise .5s cubic-bezier(.2, .7, .2, 1) backwards;
+    animation: omen-rise .55s cubic-bezier(.2, .7, .2, 1) backwards;
 }
-@keyframes omen-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes omen-rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
 #module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(2) { animation-delay: .045s; }
 #module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(3) { animation-delay: .09s; }
 #module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(4) { animation-delay: .135s; }
@@ -4224,21 +4224,33 @@ select:-webkit-autofill {
 
 /* Signature : carte cerveau « vivante » (accent qui respire, sans blur).
    ::before est déjà pris par le label BRAIN → on utilise ::after. */
+.machine-card.brain { animation: omen-brain-glow 3s ease-in-out infinite; }
 .machine-card.brain::after {
     content: "";
     position: absolute;
     inset: -1px;
     border-radius: var(--r-lg);
-    border: 1px solid var(--accent);
-    opacity: .14;
+    border: 1.5px solid var(--accent);
+    opacity: .2;
     pointer-events: none;
-    animation: omen-breathe 3.4s ease-in-out infinite;
+    animation: omen-breathe 3s ease-in-out infinite;
 }
-@keyframes omen-breathe { 0%, 100% { opacity: .12; } 50% { opacity: .42; } }
+@keyframes omen-breathe { 0%, 100% { opacity: .18; } 50% { opacity: .85; } }
+@keyframes omen-brain-glow { 0%, 100% { border-color: var(--border-strong); } 50% { border-color: var(--accent); } }
 
-/* Heartbeat : pastille « en ligne » qui pulse doucement */
-.machine-card:not(.offline) .m-head .dot { animation: omen-dot-pulse 2.4s ease-in-out infinite; }
-@keyframes omen-dot-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.78); } }
+/* Heartbeat : pastille « en ligne » + anneau « ping » qui s'étend (clairement vivant) */
+.machine-card:not(.offline) .m-head .dot { position: relative; animation: omen-dot-pulse 2.4s ease-in-out infinite; }
+.machine-card:not(.offline) .m-head .dot::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 1.5px solid var(--accent);
+    pointer-events: none;
+    animation: omen-ping 2.2s ease-out infinite;
+}
+@keyframes omen-dot-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .55; transform: scale(.82); } }
+@keyframes omen-ping { 0% { transform: scale(1); opacity: .7; } 100% { transform: scale(3); opacity: 0; } }
 
 /* Login : entrée premium de la marque (pur CSS, classes existantes) */
 .login-brand .login-logo { animation: omen-logo-in .55s cubic-bezier(.2, .7, .2, 1) both; }
@@ -4266,8 +4278,10 @@ select:-webkit-autofill {
 @media (prefers-reduced-motion: reduce) {
     #module-content.view-enter,
     #module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *,
+    .machine-card.brain,
     .machine-card.brain::after,
     .machine-card:not(.offline) .m-head .dot,
+    .machine-card:not(.offline) .m-head .dot::after,
     .login-brand .login-logo,
     .login-brand-text,
     .skel {
