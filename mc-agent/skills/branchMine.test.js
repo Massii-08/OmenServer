@@ -379,8 +379,8 @@ test('branchMine : onSurvivalTick tourne AUSSI dans les branches latérales — 
   );
 });
 
-test('floodFillVein : vide TOUTE la veine connectée (§3.G minage humain), pas juste 1 bloc', async () => {
-  // 6 deepslate_diamond connectés (faces+diagonale) + 1 isolé du même type NON connecté (≠ veine).
+test('floodFillVein : vide TOUTE la veine connectée FACE par face (§3.G minage humain), pas juste 1 bloc', async () => {
+  // 6 deepslate_diamond connectés ORTHOGONALEMENT (chaque maillon partage une face) + 1 isolé NON connecté.
   const vein = ['0,-58,0', '1,-58,0', '1,-58,1', '1,-59,1', '2,-59,1', '2,-59,2'];
   const isolated = '10,-58,10';
   const all = new Set([...vein, isolated]);
@@ -398,6 +398,28 @@ test('floodFillVein : vide TOUTE la veine connectée (§3.G minage humain), pas 
   assert.strictEqual(n, 6, `mine les 6 blocs de la veine connectée (got ${n}, mined=${JSON.stringify(mined)})`);
   assert.ok(!mined.includes(isolated), 'le bloc isolé (non connecté) n\'est PAS miné (pas de X-ray global)');
   assert.ok(all.has(isolated), 'le bloc isolé reste en place');
+});
+
+test('floodFillVein : un ore connecté SEULEMENT en DIAGONALE n\'est PAS miné (bug #1 anti X-ray)', async () => {
+  // Départ (0,-58,0) + un voisin de FACE (1,-58,0) + un ore relié uniquement par un COIN (2,-57,1 :
+  // distance Manhattan ≥2 de tout bloc de la veine de face) → un humain ne peut pas le casser à travers
+  // le coin → il doit être SACRIFIÉ (jamais miné).
+  const face = ['0,-58,0', '1,-58,0'];
+  const diagOnly = '2,-57,1';                       // seulement en diagonale du reste → occlus
+  const all = new Set([...face, diagOnly]);
+  const mined = [];
+  const k = (q) => `${Math.floor(q.x)},${Math.floor(q.y)},${Math.floor(q.z)}`;
+  const bot = {
+    blockAt(q) {
+      return all.has(k(q))
+        ? { name: 'deepslate_diamond_ore', position: { x: Math.floor(q.x), y: Math.floor(q.y), z: Math.floor(q.z) } }
+        : { name: 'deepslate', boundingBox: 'block' };
+    },
+    collectBlock: { async collect(b) { all.delete(k(b.position)); mined.push(k(b.position)); } },
+  };
+  const n = await floodFillVein(bot, { x: 0, y: -58, z: 0 }, null);
+  assert.strictEqual(n, 2, `seuls les 2 blocs face-connectés sont minés (got ${n}, mined=${JSON.stringify(mined)})`);
+  assert.ok(!mined.includes(diagOnly), 'le bloc diagonal-seul n\'est JAMAIS miné (anti X-ray à travers un coin)');
 });
 
 test('floodFillVein : bloc de départ non-ore → 0 (no-op)', async () => {

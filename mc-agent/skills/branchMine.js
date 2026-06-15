@@ -210,18 +210,15 @@ function oreFamily(name) {
   return String(name || '').replace(/^deepslate_/, '').replace(/_ore$/, '');
 }
 
-// 26 voisins (faces+arêtes+coins) : une veine MC peut être connectée en diagonale.
-const NEIGH_26 = (() => {
-  const out = [];
-  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
-    if (dx || dy || dz) out.push([dx, dy, dz]);
-  }
-  return out;
-})();
+// 6 voisins ORTHOGONAUX (faces) UNIQUEMENT — bug #1 (Massii, tell X-ray) : on suit la veine FACE par
+// face, JAMAIS par les arêtes/coins. Un mineur humain ne peut pas casser un bloc connecté seulement en
+// diagonale (occlus par le coin) → suivre la diagonale = tell X-ray direct. On SACRIFIE les blocs
+// diagonaux-seuls (ils ont peut-être leur propre face exposée ailleurs → trouvés comme veine séparée).
+const NEIGH_FACES = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
 
 // FLOOD-FILL d'une veine (§1.6/§3.G — minage HUMAIN, jamais X-ray) : dès qu'un ore est exposé, on vide
-// TOUTE la veine connectée du même type (BFS 26-voisins) avant de reprendre la branche — un mineur
-// humain SUIT la veine ; un X-rayer s'arrête sur 1 bloc. Borné (maxVein) ; gather → drops ramassés.
+// TOUTE la veine connectée du même type (BFS 6-FACES orthogonales) avant de reprendre la branche — un
+// mineur humain SUIT la veine face par face ; un X-rayer casse à travers les coins. Borné (maxVein).
 async function floodFillVein(bot, start, token, maxVein = 64) {
   const b0 = bot.blockAt(p(start.x, start.y, start.z));
   if (!b0 || !ORE_NAMES.has(b0.name)) return 0;
@@ -241,7 +238,7 @@ async function floodFillVein(bot, start, token, maxVein = 64) {
     // + ramasse le drop. Borné (un collect peut geler, piège #42). Échec → on saute ce bloc.
     try { await withTimeout(bot.collectBlock.collect(b), 30000); mined++; }
     catch (e) { continue; }
-    for (const [dx, dy, dz] of NEIGH_26) queue.push([x + dx, y + dy, z + dz]);
+    for (const [dx, dy, dz] of NEIGH_FACES) queue.push([x + dx, y + dy, z + dz]);  // faces seulement (anti X-ray)
   }
   return mined;
 }

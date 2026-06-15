@@ -1360,23 +1360,21 @@ async function startResource() {
         const goal = air ? new pfGoals.GoalNear(air.x, air.y, air.z, 1)
                          : new pfGoals.GoalGetToBlock(target.x, target.y, target.z);
         const prevMoves = bot.pathfinder.movements;
-        // Phase 1 (anti-X-ray) : rejoindre la grotte SANS creuser (canDig=false). Phase 2 (fallback
-        // extraction) : si la grotte n'est pas walkable, AUTORISER le creusage vers l'OUVERTURE — sinon
-        // 0 extraction (vécu : canDig=false seul → cave_unreachable en boucle, dia figé à 41).
+        // ANTI X-RAY (bug #1 Massii) : on rejoint la grotte UNIQUEMENT par un chemin WALKABLE
+        // (canDig=false) — JAMAIS en creusant un tunnel droit vers le diamant (un humain ne sait pas
+        // qu'un diamant est derrière la roche → creuser dessus = tell X-ray direct). Grotte non
+        // walkable → on SACRIFIE ce diamant (cave_unreachable → skip) ; la non-détectabilité prime.
         let r = null;
         try {
           const noDig = new Movements(bot);
           try { Object.assign(noDig, prevMoves); } catch (e) {}
           noDig.canDig = false;
           bot.pathfinder.setMovements(noDig);
-          r = await withTimeout(bot.pathfinder.goto(goal), 60000, () => { try { stopMotion(); } catch (e) {} });
+          r = await withTimeout(bot.pathfinder.goto(goal), 90000, () => { try { stopMotion(); } catch (e) {} });
         } catch (e) { r = { ok: false }; }
         finally { try { if (prevMoves) bot.pathfinder.setMovements(prevMoves); } catch (e) {} }
         if (taskToken.cancelled) return;
-        if (r && r.ok === false) {                              // phase 2 : creuser jusqu'à l'ouverture
-          try { r = await withTimeout(bot.pathfinder.goto(goal), 90000, () => { try { stopMotion(); } catch (e) {} }); }
-          catch (e) { throw new Error('cave_unreachable'); }
-        }
+        if (r && r.ok === false) throw new Error('cave_unreachable');   // walkable-only : jamais creuser vers le diamant
         if (taskToken.cancelled) return;
         // Anti-noyade : ne JAMAIS floodFill en pleine eau (grotte inondée → noyade, 6 morts vécues) →
         // sortir d'abord ; toujours dans l'eau après → on abandonne cette veine (skip+relocate).
