@@ -93,6 +93,18 @@ test('nearbyHostiles : filtre kind=Hostile mobs ET rayon', () => {
   assert.strictEqual(hostiles[0].name, 'zombie');
 });
 
+test('nearbyHostiles : EXCLUT l\'enderman (neutre, bug #3) même classé Hostile mobs', () => {
+  const { bot } = fakeBot({
+    entities: [
+      fakeEntity('enderman', 'Hostile mobs', { x: 3, y: 64, z: 0 }),  // proche MAIS neutre → exclu
+      fakeEntity('zombie', 'Hostile mobs', { x: 4, y: 64, z: 0 }),    // proche, vrai hostile
+    ],
+  });
+  const hostiles = nearbyHostiles(bot, 10);
+  assert.strictEqual(hostiles.length, 1, 'l\'enderman ne doit jamais être ciblé');
+  assert.strictEqual(hostiles[0].name, 'zombie');
+});
+
 // --- nourriture ---
 test('hasFood : vrai avec du cuit, vrai avec du cru, faux sans rien', () => {
   assert.ok(hasFood(fakeBot({ items: [['bread', 1]] }).bot));

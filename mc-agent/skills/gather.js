@@ -1,6 +1,7 @@
 'use strict';
 // `take <bloc> [n]` : récolte n× le bloc le + proche avec le meilleur outil, en se défendant.
 const { bestToolFor, bestWeapon } = require('../tools');
+const { NEUTRAL_NO_PROVOKE } = require('../survival');   // bug #3 (Massii) : jamais l'enderman (neutre)
 const { explore } = require('./explore');
 const { materialFoundEvent, resolveBiome } = require('../worldMemory');
 
@@ -23,6 +24,7 @@ function nearbyHostile(bot, radius = 4) {
   if (!self) return null;
   return bot.nearestEntity((e) => {
     if (!e || (e.type !== 'mob' && e.type !== 'hostile') || e.kind !== 'Hostile mobs' || !e.position) return false;
+    if (NEUTRAL_NO_PROVOKE.has(e.name)) return false;   // bug #3 : jamais l'enderman (neutre)
     const d = e.position.distanceTo ? e.position.distanceTo(self) : 999;
     return d <= radius;
   });

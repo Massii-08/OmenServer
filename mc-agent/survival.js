@@ -20,6 +20,10 @@ const SWARM_UNARMORED = 2;      // ≥2 hostiles sans armure = on décroche
 const LOW_HEALTH_UNARMORED = 16; // PV ≤ 16 (8 cœurs) sans armure = on décroche TÔT
 const HUNT_HUNGER = 12;  // faim ≤ 12 et rien à manger → chasse un passif
 const EAT_HUNGER = 14;   // faim ≤ 14 et nourriture en poche → mange (plus tôt que les réflexes)
+// bug #3 (Massii) : mobs NEUTRES à NE JAMAIS attaquer/cibler. L'enderman est classé 'Hostile mobs' par
+// mineflayer mais reste NEUTRE (passif sauf si on le frappe OU le regarde en face) → l'attaquer l'aggro
+// → mort (téléporte + tape fort). Exclu de nearbyHostiles → jamais riposté/ciblé.
+const NEUTRAL_NO_PROVOKE = new Set(['enderman']);
 
 // Viandes crues OK à manger (la chasse en rapporte ; pas d'effet négatif sauf chicken 30% hunger, acceptable).
 const RAW_FOODS = new Set(['beef', 'porkchop', 'chicken', 'mutton', 'rabbit', 'cod', 'salmon']);
@@ -54,7 +58,7 @@ function nearbyHostiles(bot, radius = 10) {
   const self = bot.entity && bot.entity.position;
   if (!self) return [];
   return Object.values(bot.entities || {}).filter((e) =>
-    e && e.kind === 'Hostile mobs' && e.position &&
+    e && e.kind === 'Hostile mobs' && !NEUTRAL_NO_PROVOKE.has(e.name) && e.position &&   // bug #3 : jamais l'enderman
     (e.position.distanceTo ? e.position.distanceTo(self) <= radius : false));
 }
 
@@ -130,5 +134,5 @@ async function survivalTick(bot, deps = {}) {
 module.exports = {
   combatDecision, isArmored, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick,
   SWARM_COUNT, LOW_HEALTH, SWARM_UNARMORED, LOW_HEALTH_UNARMORED, HUNT_HUNGER, EAT_HUNGER,
-  RAW_FOODS, PASSIVE_FOOD_MOBS,
+  RAW_FOODS, PASSIVE_FOOD_MOBS, NEUTRAL_NO_PROVOKE,
 };
