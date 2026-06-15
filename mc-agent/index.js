@@ -1187,6 +1187,13 @@ async function relocateToRegion(opts = {}) {
   // near-spawn vérifiée sèche). Au-delà → ignoré, fallback regionCenter (spawn±520, déjà borné).
   const HOME_RANGE = 800;
   let c = null;
+  // bug #4 : après une NOYADE, relocaliser vers le SEC near-spawn VÉRIFIÉ (0/48 eau y-59), PAS le
+  // quadrant (souvent humide) du bot — sinon il warpe hors de l'eau pour y RETOMBER (boucle noyade).
+  if (opts.nearSpawn) {
+    const jx = ((_relocSeq++ * 53) % 160) - 80, jz = ((_relocSeq * 97) % 160) - 80;   // spawn (208,528) ±80
+    c = { x: 208 + jx, z: 528 + jz };
+    emit({ type: 'resource_warp', x: c.x, z: c.z, near_spawn: true });
+  }
   try {
     const memNow = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
     const w = memNow && memNow.worlds && memNow.worlds[bot._worldKey];
@@ -1672,7 +1679,7 @@ async function onSpawn() {
             waterStuckTimes = []; waterEscapeFails = 0;
             emit({ type: 'water_rescue_warp', reason: drowning ? 'drowning' : 'persistent_wet' });
             try { stopMotion(); } catch (e) {}
-            await relocateToRegion();
+            await relocateToRegion({ nearSpawn: true });   // bug #4 : vers le SEC near-spawn, pas le quadrant humide
             return;
           }
           const r = await escapeWater(bot, { emit });
@@ -1682,7 +1689,7 @@ async function onSpawn() {
               waterEscapeFails = 0; waterStuckTimes = [];
               emit({ type: 'water_rescue_warp', reason: 'escape_failed' });
               try { stopMotion(); } catch (e) {}
-              await relocateToRegion();
+              await relocateToRegion({ nearSpawn: true });   // bug #4 : vers le SEC near-spawn
             }
           } else {
             waterEscapeFails = 0;   // sortie réussie → on reste au fond, pas de warp
