@@ -195,6 +195,25 @@ async function runResource(bot, opts = {}, token = null) {
         // types se complètent (nearest-first du brief §2).
         let isBootstrap = false;
         if (!mtype && ranked.length && tierNow >= 2) { mtype = 'iron'; isBootstrap = true; }  // bootstrap palier fer
+        // bug #1 (Massii, soir) : le DIAMANT ne se GRID-MINE JAMAIS. Si le fallback visait le diamant
+        // (carte sans diamant exposé reachable) → RELOCALISER vers un cluster EXPOSÉ (cave-hop, grotte
+        // suivante) au lieu de strip-miner en grille. Plus de relocations → on rabat sur un AUTRE type
+        // minable (fer/lapis), jamais le diamant en grille ; sinon mtype=null (attente, pas de grid).
+        if (mtype === 'diamond') {
+          if (relocate && relocations < maxRelocations) {
+            relocations++;
+            emit({ type: 'resource_relocate', n: relocations, cause: 'cavehop_diamond' });
+            try { await relocate({ diamondCluster: true }); } catch (e) { /* best-effort */ }
+            skip.clear(); busyUntil.clear();
+            if (reload) memory = reload() || memory;
+            continue;
+          }
+          // plus de relocations + cave-hop épuisé : rabat sur un AUTRE type minable ; AUCUN → STARVED
+          // (jamais de grid pour le diamant, jamais de spin idle) → le manager respawn / on abandonne.
+          const _alt = ranked.find((t) => t !== 'diamond' && (TIER_FOR[t] || 0) <= tierNow) || null;
+          if (!_alt) { emit({ type: 'resource_starved', mined, why: 'cavehop_exhausted' }); return { ok: false, reason: 'starved', mined }; }
+          mtype = _alt;
+        }
         // SANS pioche pierre (kit raté), RIEN n'est minable : attendre 10 min × 8 relocations
         // était une éternité passive (vécu V3Res1 : resource_waiting ×178). Starved RAPIDE →
         // exit → respawn backend → kit re-tenté depuis un état frais.
@@ -358,19 +377,23 @@ async function runResource(bot, opts = {}, token = null) {
       const _needed = _prog && _prog[target.material] ? Math.max(1, _prog[target.material].target - _prog[target.material].have) : 1;
       const _haveBefore = _prog && _prog[target.material] ? _prog[target.material].have : 0;
       let _rr = null;
-      // bug #4 (Massii) : cave-first SEULEMENT si le diamant est à PORTÉE DE MARCHE (Δy ≤ 24). Un cluster
-      // PROFOND atteint par un warp-surface (bot y64, diamant y-10) n'est PAS walkable sans creuser droit
-      // (= X-ray, interdit #1) → le bot bouclait warp-surface→combat→relocate, 0 extraction. Profond →
-      // strip-mine DESCENDANT (mineFor, comme un humain qui creuse vers -58). Réaliste ET productif.
-      const _walkReach = !_from || Math.abs(target.y - _from.y) <= 24;
-      if (target.exposed && !target.wet && _walkReach && mineExposed) {   // H7+#4 : cave si SEC ET à portée de marche
-        // G-bis : diamant EXPOSÉ en grotte PROCHE → on y VA + vide la veine (VISIBLE = pas X-ray, stratégie
-        // joueur ; bien plus facile/SEC que le strip-mine -58 noyé). nextOreTarget les priorise déjà.
+      const _isDiamond = String(target.material || '').includes('diamond');
+      // bug #1 (Massii, soir) : DIAMANT = CAVE-HOPPING uniquement, JAMAIS de strip-mine en grille (= tell).
+      //  - EXPOSÉ (visible en grotte) → cave-first : mineExposed marche/creuse-SERPENTE jusqu'à la grotte,
+      //    quelle que soit la profondeur (le creusage d'approche serpentant est ré-autorisé, clarif #3) ;
+      //  - ENTERRÉ (non exposé) → on le SACRIFIE (pas de grid) → le cave-hop le trouvera exposé ailleurs.
+      // (Mon ancien gate Δy du #4-part1 envoyait les diamants profonds au strip-mine → SUPPRIMÉ.)
+      // Les AUTRES ores (fer/lapis/…) gardent le strip-mining dirigé (Massii vise les diamants).
+      if (target.exposed && !target.wet && mineExposed) {            // cave-first : TOUT exposé sec
         emit({ type: 'resource_cave', material: target.material, x: target.x, y: target.y, z: target.z });
         try { await mineExposed(target); _rr = { ok: true }; }
         catch (e) { _rr = { ok: false, reason: 'error', detail: String((e && e.message) || e).slice(0, 120) }; }
+      } else if (_isDiamond) {
+        // diamant ENTERRÉ → PAS de strip-mine en grille → on le sacrifie (cave-hop only, exigence Massii).
+        emit({ type: 'resource_skip_buried_diamond', x: target.x, y: target.y, z: target.z });
+        _rr = { ok: true };                                          // pas un échec ; déjà skip → cible suivante
       } else {
-        // BURIED (non exposé) → strip-mining DIRIGÉ vers la région (heading), JAMAIS beeline (§3.G).
+        // AUTRES ores enterrés (fer/lapis/…) → strip-mining DIRIGÉ vers la région (heading), pas beeline.
         emit({ type: 'resource_region', material: target.material, toward: { x: target.x, y: target.y, z: target.z }, heading });
         try { _rr = await mineFor(target.material, _needed, { heading }); }
         catch (e) { _rr = { ok: false, reason: 'error', detail: String((e && e.message) || e).slice(0, 120) }; }

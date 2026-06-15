@@ -537,22 +537,46 @@ test('quota+mineFor : EAU live près d\'une cible NON-flaggée → ore_wet, vein
   assert.equal(r.ok, false);                               // sacrifiée + pas de repli → starved (pas de noyade)
 });
 
-test('quota : diamant exposé PROFOND (Δy>24, warp-surface) → strip-mine descendant, PAS cave-first (bug #4)', async () => {
+test('quota : diamant exposé PROFOND → cave-first (cave-hopping #1, plus de gate Δy ni de strip-mine)', async () => {
   const bot = makeQuotaBot({});                          // entity à y=64
   let caveCalled = 0, branchCalled = 0;
   const token = { cancelled: false };
   await runResource(bot, {
-    memory: mem([{ material: 'diamond_ore', x: 5, y: -10, z: 5, exposed: true, wet: false }]), // PROFOND (Δy=74)
+    memory: mem([{ material: 'diamond_ore', x: 5, y: -10, z: 5, exposed: true, wet: false }]), // profond MAIS exposé
     worldKey: 'overworld',
     emit: () => {},
     goto: async () => {},
     quota: { diamond: 1 },
     sleep: async () => {},
-    mineExposed: async () => { caveCalled++; },
+    mineExposed: async () => { caveCalled++; token.cancelled = true; },
     mineFor: async () => { branchCalled++; token.cancelled = true; return { ok: true }; },
   }, token);
-  assert.equal(caveCalled, 0, 'cave-first NON utilisé pour un diamant profond hors de portée de marche');
-  assert.ok(branchCalled >= 1, 'strip-mine descendant (mineFor) utilisé à la place');
+  assert.ok(caveCalled >= 1, 'diamant exposé (même profond) → cave-first (le creusage serpentant reach)');
+  assert.equal(branchCalled, 0, 'JAMAIS de strip-mine en grille pour le diamant (bug #1 Massii)');
+});
+
+test('quota : diamant ENTERRÉ (non exposé) → SKIP, jamais de grid strip-mine (cave-hop only #1)', async () => {
+  const bot = makeQuotaBot({});                          // entity à y=64
+  let caveCalled = 0, branchCalled = 0, skipped = false;
+  let t = 0;
+  const r = await runResource(bot, {
+    memory: mem([{ material: 'diamond_ore', x: 5, y: -10, z: 5, exposed: false, wet: false }]), // ENTERRÉ
+    worldKey: 'overworld',
+    emit: (e) => { if (e.type === 'resource_skip_buried_diamond') skipped = true; },
+    goto: async () => {},
+    quota: { diamond: 1 },
+    sleep: async () => {},
+    now: () => (t += 60000),
+    maxIdleMs: 120000,
+    pickTier: () => 3,                                   // pioche diamant (tierNow=3)
+    mineExposed: async () => { caveCalled++; },
+    mineFor: async () => { branchCalled++; return { ok: true }; },
+    reloadMemory: () => mem([{ material: 'diamond_ore', x: 5, y: -10, z: 5, exposed: false, wet: false }]),
+  });
+  assert.ok(skipped, 'le diamant enterré est SKIP (resource_skip_buried_diamond)');
+  assert.equal(branchCalled, 0, 'JAMAIS de strip-mine (mineFor) pour un diamant enterré');
+  assert.equal(caveCalled, 0, 'pas de cave-first non plus (pas exposé)');
+  assert.equal(r.ok, false);                             // pas de cave dispo → starved (jamais de grid)
 });
 
 test('quota : diamant exposé PROCHE (Δy≤24) → cave-first (rétro-compat G-bis)', async () => {
@@ -806,29 +830,29 @@ test('phase2 : cibles mappées au-delà de maxTargetDist ignorées → mineFor l
   assert.deepEqual(minedFor, ['iron']);                // mineFor local, pas de trek de 5000 blocs
 });
 
-test('§3.G : cible mappée + quota → mineFor DIRIGÉ (heading), ZÉRO goto-beeline sur le bloc (anti-X-ray)', async () => {
+test('§3.G : ore ENTERRÉ non-diamant (fer) mappé → mineFor DIRIGÉ (heading), ZÉRO beeline (le diamant = cave-hop, cf. test dédié)', async () => {
   const bot = makeQuotaBot({});
   let gotoCalls = 0;
   const mineForCalls = [];
   const events = [];
   await runResource(bot, {
-    memory: mem([{ material: 'diamond', x: 40, y: -58, z: 20 }]),   // région mappée (deep, y<0)
+    memory: mem([{ material: 'iron_ore', x: 40, y: -16, z: 20 }]),   // région mappée enterrée PROFONDE (fer → strip-mine dirigé)
     worldKey: 'overworld',
     emit: (e) => events.push(e),
     goto: async () => { gotoCalls++; },                              // NE DOIT PAS être appelé
-    quota: { diamond: 1 },
+    quota: { iron: 1 },
     pickTier: () => 3,
     sleep: async () => {},
     reloadMemory: () => mem([]),
     mineFor: async (t, n, o) => {
       mineForCalls.push({ t, heading: o && o.heading });
-      bot._items.push({ name: 'diamond', count: 1 });               // crédite → quota_done
+      bot._items.push({ name: 'raw_iron', count: 1 });               // crédite → quota_done
       return { ok: true };
     },
   });
   assert.equal(gotoCalls, 0, 'AUCUN goto direct sur le bloc mappé (pas de beeline X-ray)');
   assert.ok(mineForCalls.length >= 1, 'mineFor (strip-mining dirigé) appelé');
-  assert.equal(mineForCalls[0].t, 'diamond');
+  assert.equal(mineForCalls[0].t, 'iron_ore');
   assert.ok(mineForCalls[0].heading && typeof mineForCalls[0].heading.dx === 'number',
     'mineFor reçoit un heading (cap vers la région, pas une cible exacte)');
   assert.ok(events.some((e) => e.type === 'resource_region'), 'émet resource_region (direction, pas beeline)');
