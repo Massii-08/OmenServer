@@ -4224,19 +4224,19 @@ select:-webkit-autofill {
 
 /* Signature : carte cerveau « vivante » (accent qui respire, sans blur).
    ::before est déjà pris par le label BRAIN → on utilise ::after. */
-.machine-card.brain { animation: omen-brain-glow 3s ease-in-out infinite; }
+/* NB : la bordure de la carte est verrouillée par des règles legacy !important
+   (impossible à animer) → le halo passe par ::after (notre pseudo-élément, libre). */
 .machine-card.brain::after {
     content: "";
     position: absolute;
-    inset: -1px;
+    inset: -2px;
     border-radius: var(--r-lg);
-    border: 1.5px solid var(--accent);
-    opacity: .2;
+    border: 2px solid var(--accent);
+    opacity: .3;
     pointer-events: none;
-    animation: omen-breathe 3s ease-in-out infinite;
+    animation: omen-breathe 2.4s ease-in-out infinite;
 }
-@keyframes omen-breathe { 0%, 100% { opacity: .18; } 50% { opacity: .85; } }
-@keyframes omen-brain-glow { 0%, 100% { border-color: var(--border-strong); } 50% { border-color: var(--accent); } }
+@keyframes omen-breathe { 0%, 100% { opacity: .3; transform: scale(1); } 50% { opacity: .95; transform: scale(1.012); } }
 
 /* Heartbeat : pastille « en ligne » + anneau « ping » qui s'étend (clairement vivant) */
 .machine-card:not(.offline) .m-head .dot { position: relative; animation: omen-dot-pulse 2.4s ease-in-out infinite; }
