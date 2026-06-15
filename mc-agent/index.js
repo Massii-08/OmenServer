@@ -1647,10 +1647,15 @@ async function onSpawn() {
         // n'atteint que ~3 invocations même en aquifère continu (vécu live ResBot2 : 88 reflex surface,
         // 3 onWaterStuck, JAMAIS de warp → figé à miner 0 dans l'eau). 3 = warp hors de l'aquifère.
         const persistentlyWet = waterStuckTimes.length >= 3;
+        // EMERGENCY anti-noyade (bug #4, vécu ResBot3 keepInv=false : noyade sous un aquifère COUVERT
+        // AVANT le warp 3-strikes → perte pioche → starve→respawn). Oxygène CRITIQUE → on warpe DE SUITE
+        // (bypass escapeWater + le seuil) : sortir de l'eau prime, une noyade sous keepInventory = catastrophe.
+        const _o2 = bot.oxygenLevel;
+        const drowning = typeof _o2 === 'number' && _o2 <= 4;
         waterRescue = (async () => {
-          if (persistentlyWet) {
+          if (persistentlyWet || drowning) {
             waterStuckTimes = []; waterEscapeFails = 0;
-            emit({ type: 'water_rescue_warp', reason: 'persistent_wet' });
+            emit({ type: 'water_rescue_warp', reason: drowning ? 'drowning' : 'persistent_wet' });
             try { stopMotion(); } catch (e) {}
             await relocateToRegion();
             return;

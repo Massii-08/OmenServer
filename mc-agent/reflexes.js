@@ -88,6 +88,7 @@ function rangedThreat(bot) {
 }
 
 const OXYGEN_THRESHOLD = 5;   // sur 20 — en dessous : urgence remonter
+const DROWN_CRITICAL = 2;     // sur 20 — quasi-noyade : rescue IMMÉDIAT (bypass le gate 2-épisodes), bug #4
 
 /** Branche les réflexes sur le bot. opts: { emit, fleeFrom, attack, onWaterStuck, now } injectables.
  *  attack(target) : riposte (phase B) — fourni par index.js (équipe la meilleure arme + pvp).
@@ -219,6 +220,14 @@ function installReflexes(bot, opts = {}) {
           try { onWaterStuck(); } catch (e) {}
         }
       }
+      // EMERGENCY (bug #4, aquifère COUVERT, vécu ResBot3 keepInv=false) : oxygène CRITIQUE → rescue
+      // IMMÉDIAT, bypass le gate 2-épisodes/20s (l'index.js onWaterStuck warpe de suite à cet O2).
+      // Cooldown court (3 s) anti-spam. Sans ça : noyade avant le warp 3-strikes → perte pioche → starve.
+      if (onWaterStuck && o2 <= DROWN_CRITICAL && now() - lastRescue >= 3000) {
+        lastRescue = now();
+        emit({ type: 'reflex', action: 'water_rescue', emergency: true });
+        try { onWaterStuck(); } catch (e) {}
+      }
     } else if (surfacing && o2 >= 15) { // hystérésis : on relâche une fois l'air franchement revenu
       surfacing = false;
       try { bot.setControlState && bot.setControlState('jump', false); } catch (e) {}
@@ -230,4 +239,4 @@ function installReflexes(bot, opts = {}) {
   return { react, breathe };
 }
 
-module.exports = { tryEat, shouldFlee, meleeAssailant, rangedThreat, installReflexes, HUNGER_THRESHOLD, HEALTH_THRESHOLD, DEFENSIVE_HEALTH, FOODS, MELEE_HOSTILES, RANGED };
+module.exports = { tryEat, shouldFlee, meleeAssailant, rangedThreat, installReflexes, HUNGER_THRESHOLD, HEALTH_THRESHOLD, DEFENSIVE_HEALTH, OXYGEN_THRESHOLD, DROWN_CRITICAL, FOODS, MELEE_HOSTILES, RANGED };
