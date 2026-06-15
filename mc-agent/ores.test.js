@@ -103,13 +103,33 @@ test('nextOreTarget : EXPOSÉ prime sur la distance, à priorité égale (G-bis)
   assert.strictEqual(t2.z, 5, 'preferExposed:false → plus proche (distance pure)');
 });
 
-test('nextOreTarget : NOYÉ (wet) mis EN DERNIER, sous le sec enterré (H7 anti-noyade)', () => {
+test('nextOreTarget : NOYÉ (wet) EXCLU → le sec enterré est choisi (H7+ anti-noyade)', () => {
   const mem = { worlds: { w: { ores: [
     { material: 'diamond_ore', x: 0, y: 0, z: 5, exposed: true, wet: true },    // exposé MAIS noyé (proche)
     { material: 'diamond_ore', x: 0, y: 0, z: 30, exposed: false, wet: false }, // enterré SEC (loin)
   ] } } };
   const t = ores.nextOreTarget(mem, 'w', { x: 0, y: 0, z: 0 });
   assert.strictEqual(t.z, 30, 'le sec enterré doit primer sur l\'exposé NOYÉ (évite la noyade)');
+});
+
+test('nextOreTarget : wet EXCLU même SEULE cible (H7+ exclusion DURE — on sacrifie, survie prime)', () => {
+  const mem = { worlds: { w: { ores: [
+    { material: 'diamond_ore', x: 0, y: 0, z: 5, exposed: true, wet: true },   // SEUL diamant, mais NOYÉ
+  ] } } };
+  // preferExposed par défaut (mode quota/cave) → AUCUNE cible : le diamant noyé est sacrifié (jamais l'eau)
+  assert.strictEqual(ores.nextOreTarget(mem, 'w', { x: 0, y: 0, z: 0 }), null);
+  // preferExposed:false (legacy distance pure) → wet encore éligible (rétro-compat stricte)
+  const t2 = ores.nextOreTarget(mem, 'w', { x: 0, y: 0, z: 0 }, { preferExposed: false });
+  assert.strictEqual(t2 && t2.z, 5);
+});
+
+test('nextOreTarget : diamant noyé sacrifié → bascule sur un autre type SEC', () => {
+  const mem = { worlds: { w: { ores: [
+    { material: 'diamond_ore', x: 0, y: 0, z: 3, exposed: true, wet: true },   // diamant NOYÉ (prioritaire mais exclu)
+    { material: 'gold_ore', x: 0, y: 0, z: 10, exposed: true, wet: false },     // or SEC
+  ] } } };
+  const t = ores.nextOreTarget(mem, 'w', { x: 0, y: 0, z: 0 });
+  assert.strictEqual(t && t.material, 'gold_ore', 'diamant noyé exclu → or sec choisi (jamais l\'eau)');
 });
 
 test('nextOreTarget : dédup par position exacte', () => {
@@ -188,7 +208,7 @@ test('nextOreTarget : entrées invalides / monde absent / memory null → null p
 });
 
 // ─── Détection des minerais exposés (cartographe) ───
-const { ORE_NAMES, QUOTA_ORE_NAMES, isExposed, scanExposedOres, scanAllOres, exposedOreFoundEvent, oresFoundEvent } = require('./ores');
+const { ORE_NAMES, QUOTA_ORE_NAMES, isExposed, isWaterAdjacent, scanExposedOres, scanAllOres, exposedOreFoundEvent, oresFoundEvent } = require('./ores');
 
 // Fake monde 3D : fonction (x,y,z) → nom de bloc. blockAt construit le bloc.
 // boundingBox 'empty' pour air/cave_air/void_air/water/lava, 'block' sinon ; null pour 'unloaded'.
@@ -222,9 +242,11 @@ test('isExposed : voisin cave_air → true', () => {
   assert.strictEqual(isExposed(makeBot(w), { x: 10, y: 64, z: 0 }), true);
 });
 
-test('isExposed : voisin water (minerai visible sous l\'eau) → true', () => {
+test('isExposed : voisin water SEUL → false (H7+ : eau ≠ exposition, grotte noyée évitée)', () => {
+  // L'eau ne compte PLUS comme exposition : un minerai dont la seule face ouverte donne sur l'eau
+  // est en zone NOYÉE — pas une cible « visible sèche ». Décision Massii : la survie prime, on sacrifie.
   const w = (x, y, z) => (x === 10 && y === 64 && z === 1) ? 'water' : 'stone';
-  assert.strictEqual(isExposed(makeBot(w), { x: 10, y: 64, z: 0 }), true);
+  assert.strictEqual(isExposed(makeBot(w), { x: 10, y: 64, z: 0 }), false);
 });
 
 test('isExposed : 5 stone + 1 lava (lave seule) → false', () => {
@@ -249,6 +271,42 @@ test('isExposed : voisin null (chunk non chargé) + 5 stone → false', () => {
 test('isExposed : bot sans blockAt → false', () => {
   assert.strictEqual(isExposed({}, { x: 10, y: 64, z: 0 }), false);
   assert.strictEqual(isExposed(null, { x: 10, y: 64, z: 0 }), false);
+});
+
+// ─── isWaterAdjacent (H7+ : flag `wet` anti-noyade, rayon élargi) ─────────────
+
+test('isWaterAdjacent : eau en voisin direct (face) → true', () => {
+  const w = (x, y, z) => (x === 11 && y === 64 && z === 0) ? 'water' : 'stone';
+  assert.strictEqual(isWaterAdjacent(makeBot(w), { x: 10, y: 64, z: 0 }), true);
+});
+
+test('isWaterAdjacent : eau en DIAGONALE dist-1 → true (la veine floodFill l\'atteint)', () => {
+  const w = (x, y, z) => (x === 11 && y === 65 && z === 0) ? 'water' : 'stone';  // coin haut +x
+  assert.strictEqual(isWaterAdjacent(makeBot(w), { x: 10, y: 64, z: 0 }), true);
+});
+
+test('isWaterAdjacent : eau à 2 blocs (cardinal) → true (anti-percée en minant la roche entre deux)', () => {
+  const w = (x, y, z) => (x === 12 && y === 64 && z === 0) ? 'water' : 'stone';  // +x dist 2
+  assert.strictEqual(isWaterAdjacent(makeBot(w), { x: 10, y: 64, z: 0 }), true);
+});
+
+test('isWaterAdjacent : eau à 3 blocs → false (hors rayon, pas une menace immédiate)', () => {
+  const w = (x, y, z) => (x === 13 && y === 64 && z === 0) ? 'water' : 'stone';  // +x dist 3
+  assert.strictEqual(isWaterAdjacent(makeBot(w), { x: 10, y: 64, z: 0 }), false);
+});
+
+test('isWaterAdjacent : aucune eau dans le rayon → false (sec)', () => {
+  assert.strictEqual(isWaterAdjacent(makeBot(() => 'stone'), { x: 10, y: 64, z: 0 }), false);
+});
+
+test('isWaterAdjacent : kelp / flowing_water comptent comme eau', () => {
+  assert.strictEqual(isWaterAdjacent(makeBot((x, y, z) => (x === 11 && y === 64 && z === 0) ? 'kelp' : 'stone'), { x: 10, y: 64, z: 0 }), true);
+  assert.strictEqual(isWaterAdjacent(makeBot((x, y, z) => (x === 9 && y === 64 && z === 0) ? 'flowing_water' : 'stone'), { x: 10, y: 64, z: 0 }), true);
+});
+
+test('isWaterAdjacent : bot sans blockAt → false', () => {
+  assert.strictEqual(isWaterAdjacent({}, { x: 10, y: 64, z: 0 }), false);
+  assert.strictEqual(isWaterAdjacent(null, { x: 10, y: 64, z: 0 }), false);
 });
 
 // ─── scanExposedOres ─────────────────────────────────────────────────────────

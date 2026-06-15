@@ -509,6 +509,34 @@ test('unreachable → skip de toute la veine (voisins ≤4 blocs), pas re-tenté
   assert.deepEqual(bot._dug, ['50,40,0']);
 });
 
+test('quota+mineFor : EAU live près d\'une cible NON-flaggée → ore_wet, veine sacrifiée (garde dure, point #3)', async () => {
+  // Cible diamant SANS flag wet en mémoire (périmée) mais EAU réelle à 1 bloc → la garde live doit
+  // l'abandonner (skip + voisins) : jamais l'eau, même un diamant (anti-noyade, décision Massii).
+  const blocks = {
+    '10,-50,5': { name: 'diamond_ore', position: { x: 10, y: -50, z: 5 } },
+    '11,-50,5': { name: 'water', position: { x: 11, y: -50, z: 5 } },     // eau adjacente LIVE
+  };
+  const bot = makeQuotaBot({ blocks });
+  const events = [];
+  let t = 0;
+  const r = await runResource(bot, {
+    memory: mem([{ material: 'diamond_ore', x: 10, y: -50, z: 5 }]),       // PAS de wet flag (stale)
+    worldKey: 'overworld',
+    emit: (e) => events.push(e),
+    goto: async () => {},
+    quota: { diamond: 1 },
+    sleep: async () => {},
+    now: () => (t += 60000),
+    maxIdleMs: 180000,
+    deepQuotaY: 0,                                          // y=-50 < 0 → pas annulé par le deep-first
+    mineFor: async () => ({ ok: false }),                  // pas de repli → starved (jamais de noyade)
+    reloadMemory: () => mem([{ material: 'diamond_ore', x: 10, y: -50, z: 5 }]),
+  });
+  assert.ok(collect(events, 'ore_wet').some((e) => e.x === 10 && e.z === 5), 'ore_wet émis sur la cible noyée');
+  assert.equal(collect(events, 'ore_mined').length, 0, 'la cible noyée n\'est JAMAIS minée');
+  assert.equal(r.ok, false);                               // sacrifiée + pas de repli → starved (pas de noyade)
+});
+
 // ─── Phase 2 : minage réel anti-xray (mineFor / relocate / ensureGear) ───
 
 test('phase2 : carte vide → mineFor(type le plus manquant minable), puis recount', async () => {

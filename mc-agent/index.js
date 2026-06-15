@@ -1179,7 +1179,7 @@ async function relocateToRegion(opts = {}) {
       const cur = bot.entity && bot.entity.position;
       const cells = new Map();
       for (const o of w.ores) {
-        if (!o || !o.exposed || !String(o.material || '').includes('diamond')) continue;
+        if (!o || !o.exposed || o.wet || !String(o.material || '').includes('diamond')) continue;  // jamais un cluster NOYÉ (H7+)
         if (cur && Math.abs(o.x - cur.x) < 80 && Math.abs(o.z - cur.z) < 80) continue;  // pas la zone épuisée
         const k = Math.floor(o.x / 48) + ',' + Math.floor(o.z / 48);
         const e = cells.get(k) || { n: 0, x: Math.floor(o.x / 48) * 48 + 24, z: Math.floor(o.z / 48) * 48 + 24 };

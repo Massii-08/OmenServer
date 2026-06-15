@@ -76,6 +76,11 @@ function nextOreTarget(memory, world, from, opts = {}) {
   const allowSet = opts.allowTypes instanceof Set ? opts.allowTypes
     : Array.isArray(opts.allowTypes) ? new Set(opts.allowTypes) : null;
   const hasTierFilter = typeof opts.pickTier === 'number';
+  // H7+ EXCLUSION DURE des minerais NOYÉS (wet) : active par défaut en mode quota/cave-first
+  // (preferExposed≠false). Un minerai adjacent à l'eau n'est JAMAIS une cible — même seul, même
+  // prioritaire (diamant) : on le SACRIFIE, la survie prime (décision Massii). Legacy distance-pure
+  // (preferExposed:false) → wet encore éligible (rétro-compat stricte). opts.excludeWet force la valeur.
+  const excludeWet = opts.excludeWet != null ? !!opts.excludeWet : (opts.preferExposed !== false);
 
   const maxDist2 = (typeof opts.maxDist === 'number' && from) ? opts.maxDist * opts.maxDist : null;
   const seen = new Set();
@@ -85,6 +90,7 @@ function nextOreTarget(memory, world, from, opts = {}) {
     if (seen.has(key)) continue;       // dédup par position
     seen.add(key);
     if (skipSet && skipSet.has(key)) continue;
+    if (excludeWet && o.wet) continue;                 // noyé → jamais ciblé (exclusion DURE, anti-noyade)
     if (allowSet && !allowSet.has(oreBase(o.material))) continue;
     if (hasTierFilter && requiredPickTier(o.material) > opts.pickTier) continue;
     if (maxDist2 != null) {
@@ -147,12 +153,15 @@ const ORE_NAMES = [
 ];
 
 const _AIR = new Set(['air', 'cave_air', 'void_air']);
+const _WATER = new Set(['water', 'flowing_water', 'seagrass', 'tall_seagrass', 'kelp', 'kelp_plant', 'bubble_column']);
 // Un voisin est « ouvert » (= exposition) s'il est de l'air, OU tout bloc traversable (boundingBox
-// 'empty') SAUF la lave. L'eau passe le filtre → compte comme exposition (minerai visible/minable).
+// 'empty') SAUF la lave ET SAUF l'eau. H7+ (décision Massii, survie prime) : l'eau ne compte PLUS
+// comme exposition — un minerai dont la seule face ouverte donne sur l'eau est en zone NOYÉE, pas une
+// cible sèche minable → isExposed false → le cave-first ne le ciblera jamais (anti-noyade à la racine).
 function _isOpen(block) {
   if (!block) return false;                              // non chargé/inconnu → pas une exposition (conservateur)
   if (_AIR.has(block.name)) return true;
-  return block.boundingBox === 'empty' && block.name !== 'lava';
+  return block.boundingBox === 'empty' && block.name !== 'lava' && !_WATER.has(block.name);
 }
 
 // Les 6 voisins orthogonaux (±x, ±y, ±z).
@@ -173,17 +182,22 @@ function isExposed(bot, pos) {
   return false;
 }
 
-const _WATER = new Set(['water', 'flowing_water', 'seagrass', 'tall_seagrass', 'kelp', 'kelp_plant', 'bubble_column']);
-// H7 (cause-racine des noyades) : un minerai est-il ADJACENT À L'EAU ? (≥1 voisin = eau). isExposed
-// compte l'eau comme exposition → un diamant en grotte NOYÉE était `exposed:true` = « facile » → le
-// cave-first y fonçait → noyade + 0 extraction (la garde anti-noyade skip le floodFill). On tague `wet`
-// pour que nextOreTarget/cave-first ne ciblent QUE les diamants secs (air-exposés).
+// H7+ (cause-racine des noyades) : un minerai est-il ADJACENT À L'EAU ? Rayon élargi à une BOÎTE
+// Chebyshev-2 (±2 sur chaque axe) : l'eau à ≤2 blocs est une menace (en minant la roche entre deux
+// on PERCE → noyade, vécu live). `_isOpen` ne compte plus l'eau comme exposition (isExposed false) ;
+// on tague `wet` pour que nextOreTarget EXCLUE DUREMENT ces minerais — jamais l'eau, on sacrifie le
+// minerai (décision Massii, la survie prime). _WATER est défini plus haut (partagé avec _isOpen).
 function isWaterAdjacent(bot, pos) {
   if (!pos || !bot || typeof bot.blockAt !== 'function') return false;
   const x = Math.floor(pos.x), y = Math.floor(pos.y), z = Math.floor(pos.z);
-  for (const [dx, dy, dz] of _OFFS) {
-    const b = bot.blockAt(_at(x + dx, y + dy, z + dz));
-    if (b && _WATER.has(b.name)) return true;
+  for (let dx = -2; dx <= 2; dx++) {
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        if (dx === 0 && dy === 0 && dz === 0) continue;    // le bloc du minerai lui-même
+        const b = bot.blockAt(_at(x + dx, y + dy, z + dz));
+        if (b && _WATER.has(b.name)) return true;           // 1re eau trouvée → wet (early-exit)
+      }
+    }
   }
   return false;
 }
@@ -286,5 +300,5 @@ function oresFoundEvent(world, ores) {
 
 module.exports = {
   TIERS, DEFAULT_PRIORITY, oreBase, requiredPickTier, listOres, oreKey, nextOreTarget,
-  ORE_NAMES, QUOTA_ORE_NAMES, isExposed, scanExposedOres, scanAllOres, exposedOreFoundEvent, oresFoundEvent,
+  ORE_NAMES, QUOTA_ORE_NAMES, isExposed, isWaterAdjacent, scanExposedOres, scanAllOres, exposedOreFoundEvent, oresFoundEvent,
 };

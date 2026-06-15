@@ -14,7 +14,7 @@
 //    re-lecture (les cartographes ajoutent encore) ; au-delà de maxIdleMs sans cible → starved ;
 //  - inventaire plein → opts.cleanup (toss du junk de creusage — sous terre il n'y a pas de coffre,
 //    et le deposit legacy jetterait AUSSI la pioche) ; sinon deposit legacy + noteBanked.
-const { nextOreTarget, oreKey, listOres } = require('../ores');
+const { nextOreTarget, oreKey, listOres, isWaterAdjacent } = require('../ores');
 const { bestToolFor } = require('../tools');
 const { isOre } = require('../worldMemory');
 const { createQuotaTracker } = require('../quota');
@@ -338,6 +338,18 @@ async function runResource(bot, opts = {}, token = null) {
     // le flood-fill (branchMine) vide les veines découvertes. Le bot ne fonce jamais pile sur le bloc —
     // il le « découvre » en creusant. (Mode legacy SANS mineFor : beeline direct ci-dessous, inchangé.)
     if (mineFor) {
+      // RÈGLE EAU DURE en MODE QUOTA (point #3 — la version legacy ~l.480 est INATTEIGNABLE ici : elle
+      // vit APRÈS le `continue` de ce bloc). Re-vérif LIVE autour de la cible (si chunk chargé) : eau à
+      // ≤2 blocs → on ABANDONNE la veine entière (skip + voisins), jamais l'eau même pour un diamant
+      // (anti stale-memory / flag wet manquant). target.wet couvre le flag mappé ; isWaterAdjacent le live.
+      if (target.wet || isWaterAdjacent(bot, target)) {
+        if (claims) claims.release(key);
+        for (const o of listOres(memory, wkey)) {
+          if (Math.abs(o.x - target.x) <= 4 && Math.abs(o.y - target.y) <= 4 && Math.abs(o.z - target.z) <= 4) skip.add(oreKey(o));
+        }
+        emit({ type: 'ore_wet', world: wkey, x: target.x, y: target.y, z: target.z });
+        continue;
+      }
       const _from = bot.entity && bot.entity.position;
       const heading = _from
         ? { dx: Math.sign(Math.round(target.x - _from.x)), dz: Math.sign(Math.round(target.z - _from.z)) }
