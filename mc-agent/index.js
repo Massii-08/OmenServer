@@ -1360,21 +1360,37 @@ async function startResource() {
         const goal = air ? new pfGoals.GoalNear(air.x, air.y, air.z, 1)
                          : new pfGoals.GoalGetToBlock(target.x, target.y, target.z);
         const prevMoves = bot.pathfinder.movements;
-        // ANTI X-RAY (bug #1 Massii) : on rejoint la grotte UNIQUEMENT par un chemin WALKABLE
-        // (canDig=false) — JAMAIS en creusant un tunnel droit vers le diamant (un humain ne sait pas
-        // qu'un diamant est derrière la roche → creuser dessus = tell X-ray direct). Grotte non
-        // walkable → on SACRIFIE ce diamant (cave_unreachable → skip) ; la non-détectabilité prime.
+        // CAVE-FIRST (bug #3 Massii). Phase 1 : rejoindre la grotte SANS creuser (canDig=false) — le
+        // chemin le plus humain (on entre par l'ouverture). Phase 2 (clarif #3) : pas walkable → creuser
+        // POUR ATTEINDRE est AUTORISÉ (ne PAS sacrifier le diamant), MAIS le tunnel doit SERPENTER (un
+        // tunnel parfaitement droit vers une grotte est AUSSI un tell X-ray) → on creuse via un point
+        // intermédiaire décalé LATÉRALEMENT (coude aléatoire), pas en ligne droite.
         let r = null;
         try {
           const noDig = new Movements(bot);
           try { Object.assign(noDig, prevMoves); } catch (e) {}
           noDig.canDig = false;
           bot.pathfinder.setMovements(noDig);
-          r = await withTimeout(bot.pathfinder.goto(goal), 90000, () => { try { stopMotion(); } catch (e) {} });
+          r = await withTimeout(bot.pathfinder.goto(goal), 60000, () => { try { stopMotion(); } catch (e) {} });
         } catch (e) { r = { ok: false }; }
         finally { try { if (prevMoves) bot.pathfinder.setMovements(prevMoves); } catch (e) {} }
         if (taskToken.cancelled) return;
-        if (r && r.ok === false) throw new Error('cave_unreachable');   // walkable-only : jamais creuser vers le diamant
+        if (r && r.ok === false) {                              // phase 2 : creuser en SERPENTANT (clarif #3)
+          const p0 = bot.entity && bot.entity.position;
+          if (p0) {
+            const dx = target.x - p0.x, dz = target.z - p0.z;
+            const len = Math.sqrt(dx * dx + dz * dz) || 1;
+            const off = (3 + Math.floor(Math.random() * 4)) * (Math.random() < 0.5 ? 1 : -1);  // ±3..6 latéral
+            const mx = Math.round(p0.x + dx * 0.5 - (dz / len) * off);   // mi-chemin, décalé perpendiculaire = coude
+            const mz = Math.round(p0.z + dz * 0.5 + (dx / len) * off);
+            const my = Math.round((p0.y + target.y) / 2);
+            emit({ type: 'cave_meander', mx, my, mz });
+            try { await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(mx, my, mz, 2)), 60000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+            if (taskToken.cancelled) return;
+          }
+          try { r = await withTimeout(bot.pathfinder.goto(goal), 90000, () => { try { stopMotion(); } catch (e) {} }); }
+          catch (e) { throw new Error('cave_unreachable'); }
+        }
         if (taskToken.cancelled) return;
         // Anti-noyade : ne JAMAIS floodFill en pleine eau (grotte inondée → noyade, 6 morts vécues) →
         // sortir d'abord ; toujours dans l'eau après → on abandonne cette veine (skip+relocate).
