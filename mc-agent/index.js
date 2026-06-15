@@ -1501,6 +1501,10 @@ async function onSpawn() {
     const baseJitter = Math.max(0, Math.min(1, (humanizeParams && humanizeParams.lookJitter) || 0)) * 3; // 0..3°
     if (baseJitter > 0) {
       bot.look = function (yaw, pitch, force) {
+        // bug #2 (Massii) : pendant un DIG actif → regard FIXE (wobble COUPÉ). Le jitter faisait
+        // regarder à côté du bloc → dig avorté → re-path → saut → diamant laissé. L'humanisation ne
+        // doit JAMAIS empêcher l'action de réussir (garde bornée : l'allure est humaine, le dig réussit).
+        if (bot.targetDigBlock) return _origLook(yaw, pitch, force);
         const moving = !!(bot.pathfinder && bot.pathfinder.isMoving && bot.pathfinder.isMoving());
         const j = jitterLook(yaw, pitch, { jitterDeg: baseJitter, moving });
         return _origLook(j.yaw, j.pitch, force);
@@ -2101,7 +2105,13 @@ setInterval(async () => {
 // event 'end' (vécu phase 2 : bot zombie, quota figé, jamais respawné). Pas de physicsTick
 // pendant 90 s → on se suicide proprement, le manager auto-respawne la session resource.
 let _lastTick = Date.now();
-bot.on('physicsTick', () => { _lastTick = Date.now(); });
+bot.on('physicsTick', () => {
+  _lastTick = Date.now();
+  // bug #2 (Massii) : pendant un DIG actif, FORCER jump OFF — le bot sautait en minant (parkour
+  // résiduel pathfinder/collectBlock) → le bloc sortait de portée → dig avorté + diamant laissé.
+  // Le dig se fait à l'arrêt à sa position → couper le saut est sûr. setControlState n'émet qu'au changement.
+  if (bot.targetDigBlock) { try { bot.setControlState('jump', false); } catch (e) {} }
+});
 setInterval(() => {
   if (Date.now() - _lastTick > 90000) {
     emit({ type: 'error', message: 'connection_watchdog: 90s sans tick' });
