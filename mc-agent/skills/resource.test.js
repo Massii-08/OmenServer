@@ -537,6 +537,41 @@ test('quota+mineFor : EAU live près d\'une cible NON-flaggée → ore_wet, vein
   assert.equal(r.ok, false);                               // sacrifiée + pas de repli → starved (pas de noyade)
 });
 
+test('quota : diamant exposé PROFOND (Δy>24, warp-surface) → strip-mine descendant, PAS cave-first (bug #4)', async () => {
+  const bot = makeQuotaBot({});                          // entity à y=64
+  let caveCalled = 0, branchCalled = 0;
+  const token = { cancelled: false };
+  await runResource(bot, {
+    memory: mem([{ material: 'diamond_ore', x: 5, y: -10, z: 5, exposed: true, wet: false }]), // PROFOND (Δy=74)
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async () => {},
+    quota: { diamond: 1 },
+    sleep: async () => {},
+    mineExposed: async () => { caveCalled++; },
+    mineFor: async () => { branchCalled++; token.cancelled = true; return { ok: true }; },
+  }, token);
+  assert.equal(caveCalled, 0, 'cave-first NON utilisé pour un diamant profond hors de portée de marche');
+  assert.ok(branchCalled >= 1, 'strip-mine descendant (mineFor) utilisé à la place');
+});
+
+test('quota : diamant exposé PROCHE (Δy≤24) → cave-first (rétro-compat G-bis)', async () => {
+  const bot = makeQuotaBot({});                          // entity à y=64
+  let caveCalled = 0;
+  const token = { cancelled: false };
+  await runResource(bot, {
+    memory: mem([{ material: 'diamond_ore', x: 5, y: 60, z: 5, exposed: true, wet: false }]),  // Δy=4 → à portée
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async () => {},
+    quota: { diamond: 1 },
+    sleep: async () => {},
+    mineExposed: async () => { caveCalled++; token.cancelled = true; },
+    mineFor: async () => { token.cancelled = true; return { ok: true }; },
+  }, token);
+  assert.ok(caveCalled >= 1, 'diamant exposé proche → cave-first (comportement G-bis préservé)');
+});
+
 // ─── Phase 2 : minage réel anti-xray (mineFor / relocate / ensureGear) ───
 
 test('phase2 : carte vide → mineFor(type le plus manquant minable), puis recount', async () => {
@@ -800,13 +835,13 @@ test('§3.G : cible mappée + quota → mineFor DIRIGÉ (heading), ZÉRO goto-be
   assert.ok(!events.some((e) => e.type === 'ore_approach'), 'pas d\'ore_approach (le beeline est désactivé en quota)');
 });
 
-test('G-bis : diamant EXPOSÉ (même shallow) → mineExposed (grotte: goto+floodFill), PAS mineFor strip', async () => {
-  const bot = makeQuotaBot({});
+test('G-bis : diamant EXPOSÉ à PORTÉE de marche → mineExposed (grotte: goto+floodFill), PAS mineFor strip', async () => {
+  const bot = makeQuotaBot({});                                                 // bot à y=64
   const mineExposedCalls = [];
   const mineForCalls = [];
   const events = [];
   await runResource(bot, {
-    memory: mem([{ material: 'diamond', x: 30, y: 5, z: 10, exposed: true }]),  // exposé en grotte, shallow
+    memory: mem([{ material: 'diamond', x: 30, y: 60, z: 10, exposed: true }]),  // exposé en grotte, Δy=4 (à portée, bug #4)
     worldKey: 'overworld',
     emit: (e) => events.push(e),
     goto: async () => {},

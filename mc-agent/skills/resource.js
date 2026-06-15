@@ -358,8 +358,13 @@ async function runResource(bot, opts = {}, token = null) {
       const _needed = _prog && _prog[target.material] ? Math.max(1, _prog[target.material].target - _prog[target.material].have) : 1;
       const _haveBefore = _prog && _prog[target.material] ? _prog[target.material].have : 0;
       let _rr = null;
-      if (target.exposed && !target.wet && mineExposed) {   // H7 : cave-mining SEULEMENT si SEC (pas noyé)
-        // G-bis : diamant EXPOSÉ en grotte → on y VA + vide la veine (VISIBLE = pas X-ray, stratégie
+      // bug #4 (Massii) : cave-first SEULEMENT si le diamant est à PORTÉE DE MARCHE (Δy ≤ 24). Un cluster
+      // PROFOND atteint par un warp-surface (bot y64, diamant y-10) n'est PAS walkable sans creuser droit
+      // (= X-ray, interdit #1) → le bot bouclait warp-surface→combat→relocate, 0 extraction. Profond →
+      // strip-mine DESCENDANT (mineFor, comme un humain qui creuse vers -58). Réaliste ET productif.
+      const _walkReach = !_from || Math.abs(target.y - _from.y) <= 24;
+      if (target.exposed && !target.wet && _walkReach && mineExposed) {   // H7+#4 : cave si SEC ET à portée de marche
+        // G-bis : diamant EXPOSÉ en grotte PROCHE → on y VA + vide la veine (VISIBLE = pas X-ray, stratégie
         // joueur ; bien plus facile/SEC que le strip-mine -58 noyé). nextOreTarget les priorise déjà.
         emit({ type: 'resource_cave', material: target.material, x: target.x, y: target.y, z: target.z });
         try { await mineExposed(target); _rr = { ok: true }; }
