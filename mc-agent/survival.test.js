@@ -62,7 +62,7 @@ test('combatDecision : SANS armure → fuit dès 2 hostiles (vs 3 avec)', () => 
   assert.strictEqual(combatDecision({ health: 20, hostileCount: 2, armored: false }), 'flee');
   assert.strictEqual(combatDecision({ health: 20, hostileCount: 2, armored: true }), 'fight');
 });
-test('combatDecision : SANS armure → fuit dès PV ≤ 12 (vs ≤ 8 avec)', () => {
+test('combatDecision : SANS armure → fuit dès PV ≤ 16 (vs ≤ 8 avec)', () => {
   assert.strictEqual(combatDecision({ health: LOW_HEALTH_UNARMORED, hostileCount: 1, armored: false }), 'flee');
   assert.strictEqual(combatDecision({ health: 11, hostileCount: 1, armored: true }), 'fight'); // 11 > 8 → se bat avec armure
 });

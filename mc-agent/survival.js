@@ -14,7 +14,10 @@ const LOW_HEALTH = 8;    // PV ≤ 8 (4 cœurs) → fuite (AVEC armure)
 // même de croiser le seuil de fuite). L'armure = levier de survie #1 (Massii) → on se bat
 // bravement AVEC, on bat en retraite plus tôt SANS.
 const SWARM_UNARMORED = 2;      // ≥2 hostiles sans armure = on décroche
-const LOW_HEALTH_UNARMORED = 12; // PV ≤ 12 (6 cœurs) sans armure = on décroche
+// bug #4 (keepInv=false) : 12→16. Live, TOUTES les morts restantes = fight→flee→dead (la fuite arrivait
+// trop tard, le bot mourait PENDANT). Sans armure (cas keepInv=false post-mort) on décroche à 8 cœurs
+// → plus de marge pour s'échapper avant le combo mortel. La survie prime sur quelques coups d'épée.
+const LOW_HEALTH_UNARMORED = 16; // PV ≤ 16 (8 cœurs) sans armure = on décroche TÔT
 const HUNT_HUNGER = 12;  // faim ≤ 12 et rien à manger → chasse un passif
 const EAT_HUNGER = 14;   // faim ≤ 14 et nourriture en poche → mange (plus tôt que les réflexes)
 
