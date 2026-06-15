@@ -4191,3 +4191,87 @@ select:-webkit-autofill {
     color: var(--accent);
     border-color: var(--accent);
 }
+
+/* ============================================================
+   Vie & micro-animations (anim.js) — Bento Tech v5
+   Pur CSS, sobre, conforme MASTER (pas de blur/gradient/glow).
+   Tout est coupé par prefers-reduced-motion en fin de section.
+   ============================================================ */
+
+/* Entrée de page : fondu doux du conteneur à chaque navigation */
+#module-content.view-enter { animation: omen-fade .34s ease both; }
+@keyframes omen-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* Stagger des cartes : entrée décalée, UNIQUEMENT à la navigation.
+   Gaté par .view-enter (retiré après 1s par anim.js) → aucune ré-animation
+   aux refresh internes (le poll monitoring réécrit nodes-grid en continu). */
+#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > * {
+    animation: omen-rise .5s cubic-bezier(.2, .7, .2, 1) backwards;
+}
+@keyframes omen-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(2) { animation-delay: .045s; }
+#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(3) { animation-delay: .09s; }
+#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(4) { animation-delay: .135s; }
+#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(5) { animation-delay: .18s; }
+#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(6) { animation-delay: .225s; }
+#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(n+7) { animation-delay: .27s; }
+
+/* Hover : léger lift sur les cartes qui n'avaient pas de hover défini */
+.stat-card { transition: transform .18s ease, border-color .18s ease; }
+.stat-card:hover { transform: translateY(-2px); border-color: var(--border-strong); }
+.machine-card.arm { transition: opacity .2s, border-color .2s, transform .18s ease; }
+.machine-card.arm:hover { transform: translateY(-2px); border-color: var(--border-strong); }
+
+/* Signature : carte cerveau « vivante » (accent qui respire, sans blur).
+   ::before est déjà pris par le label BRAIN → on utilise ::after. */
+.machine-card.brain::after {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    border-radius: var(--r-lg);
+    border: 1px solid var(--accent);
+    opacity: .14;
+    pointer-events: none;
+    animation: omen-breathe 3.4s ease-in-out infinite;
+}
+@keyframes omen-breathe { 0%, 100% { opacity: .12; } 50% { opacity: .42; } }
+
+/* Heartbeat : pastille « en ligne » qui pulse doucement */
+.machine-card:not(.offline) .m-head .dot { animation: omen-dot-pulse 2.4s ease-in-out infinite; }
+@keyframes omen-dot-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.78); } }
+
+/* Login : entrée premium de la marque (pur CSS, classes existantes) */
+.login-brand .login-logo { animation: omen-logo-in .55s cubic-bezier(.2, .7, .2, 1) both; }
+@keyframes omen-logo-in { from { opacity: 0; transform: scale(.78); } to { opacity: 1; transform: none; } }
+.login-brand-text { animation: omen-wordmark-in .6s ease both .1s; }
+@keyframes omen-wordmark-in {
+    from { opacity: 0; transform: translateY(4px); letter-spacing: .26em; }
+    to   { opacity: 1; transform: none; letter-spacing: .08em; }
+}
+
+/* Skeletons de chargement (Anim.skeleton) — pulse d'opacité, pas de gradient */
+.skel-wrap { display: flex; flex-direction: column; gap: var(--s-3); }
+.skel {
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    animation: omen-skel 1.4s ease-in-out infinite;
+}
+.skel-card { height: 128px; }
+.skel-row  { height: 56px; }
+.skel-line { height: 14px; border-radius: var(--r-sm); }
+@keyframes omen-skel { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+
+/* Garde-fou accessibilité : coupe TOUTE la couche « vie » */
+@media (prefers-reduced-motion: reduce) {
+    #module-content.view-enter,
+    #module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *,
+    .machine-card.brain::after,
+    .machine-card:not(.offline) .m-head .dot,
+    .login-brand .login-logo,
+    .login-brand-text,
+    .skel {
+        animation: none !important;
+    }
+    .stat-card:hover, .machine-card.arm:hover { transform: none !important; }
+}

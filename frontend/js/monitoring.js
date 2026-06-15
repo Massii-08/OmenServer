@@ -418,7 +418,17 @@ const Monitoring = {
         const barEl = document.getElementById(`stat-${id}-bar`);
         const detailEl = document.getElementById(`stat-${id}-detail`);
 
-        if (valueEl) valueEl.textContent = Math.round(value);
+        if (valueEl) {
+            const target = Math.round(value);
+            const cur = (valueEl.textContent || '').trim();
+            // Count-up au 1er affichage seulement (valeur initiale '--') ;
+            // set direct aux refresh suivants (sinon ça « compte » sans arrêt).
+            if (typeof Anim !== 'undefined' && (cur === '--' || cur === '' || isNaN(parseInt(cur, 10)))) {
+                Anim.countUp(valueEl, target);
+            } else {
+                valueEl.textContent = target;
+            }
+        }
         if (barEl) barEl.style.width = `${Math.min(value, 100)}%`;
         if (detailEl && detail) detailEl.textContent = detail;
 
