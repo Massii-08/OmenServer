@@ -1167,6 +1167,10 @@ async function relocateToRegion(opts = {}) {
   // opts.forest (phase 3) : viser un biome À ARBRES — le kit-relocate atterrissait en plaine/
   // désert sans bois (vécu V3Res2 : gatherLog not_found ×4 même après relocate).
   const FOREST_HINTS = ['forest', 'taiga', 'jungle', 'birch', 'grove', 'wooded', 'swamp'];
+  // Anti-dispersion (vécu live : ResBot warpé à ~3000 blocs vers des régions humides/inconnues → noyades,
+  // morts mob, 0 extraction). On garde les relocations dans le rayon SEC near-spawn (couche profonde
+  // near-spawn vérifiée sèche). Au-delà → ignoré, fallback regionCenter (spawn±520, déjà borné).
+  const HOME_RANGE = 800;
   let c = null;
   try {
     const memNow = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
@@ -1181,6 +1185,7 @@ async function relocateToRegion(opts = {}) {
       for (const o of w.ores) {
         if (!o || !o.exposed || o.wet || !String(o.material || '').includes('diamond')) continue;  // jamais un cluster NOYÉ (H7+)
         if (cur && Math.abs(o.x - cur.x) < 80 && Math.abs(o.z - cur.z) < 80) continue;  // pas la zone épuisée
+        if ((o.x - 208) ** 2 + (o.z - 528) ** 2 > HOME_RANGE * HOME_RANGE) continue;   // anti-dispersion : reste near-spawn (sec)
         const k = Math.floor(o.x / 48) + ',' + Math.floor(o.z / 48);
         const e = cells.get(k) || { n: 0, x: Math.floor(o.x / 48) * 48 + 24, z: Math.floor(o.z / 48) * 48 + 24 };
         e.n++; cells.set(k, e);
@@ -1196,8 +1201,8 @@ async function relocateToRegion(opts = {}) {
     let land = (!c ? ((w && w.biomes) || []) : []).filter((b) => {
       const n = String(b.name || '');
       if (!n || n.includes('ocean') || n.includes('river') || n.includes('beach')) return false;
-      const ddx = b.x - 208, ddz = b.z - 528;
-      return (ddx * ddx + ddz * ddz) > 256 * 256;
+      const ddx = b.x - 208, ddz = b.z - 528; const d2 = ddx * ddx + ddz * ddz;
+      return d2 > 256 * 256 && d2 < HOME_RANGE * HOME_RANGE;   // anti-dispersion : 256..HOME_RANGE du spawn
     });
     if (opts.forest) {
       // 1er choix : un endroit où une BÛCHE a été VUE (memory.finds, alimenté en live par les
