@@ -51,6 +51,7 @@ const { branchMine, floodFillVein } = require('./skills/branchMine');
 const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
 const { loadMemory, worldKey } = require('./worldMemory');
 const { driestCell } = require('./ores');                  // warp near-spawn DRY-AWARE (anti boucle noyade)
+const { recordAnchor, pickDryAnchor } = require('./anchors'); // ancres profondes SÈCHES (anti boucle de noyade)
 const { runMapper } = require('./mapper');
 const { LOCATE_KINDS, parseLocateResponse, structureFoundEvent } = require('./structures');
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating } = require('./unstuck');
@@ -1033,6 +1034,16 @@ async function provisionStartKit() {
 async function branchSurvivalTick() {
   try { await survivalTick(bot, { fleeFrom, emit }); } catch (e) {}
   try { await eat(bot); } catch (e) {}
+  // Ancre profonde SÈCHE : on est dans le branch-mine (y≈-58). Si l'OXYGÈNE est plein (= hors de
+  // l'eau, sur la terre ferme du tunnel) ET on est profond, on mémorise la position comme refuge sec.
+  // Sur une noyade ultérieure, le warp anti-noyade /tp ICI au lieu de re-monter en surface dans le
+  // même aquifère (anti boucle de noyade, vécu live ResBot2). Voir anchors.js + onWaterStuck.
+  try {
+    const _p = bot.entity && bot.entity.position;
+    if (_p && _p.y < 8 && typeof bot.oxygenLevel === 'number' && bot.oxygenLevel === 20) {
+      bot._dryAnchors = recordAnchor(bot._dryAnchors, _p, { max: 4, minSep: 24 });
+    }
+  } catch (e) {}
   // BUG A (junk non jeté) : branchMine n'a AUCUN cleanup → le junk de creusage (cobble/deepslate/
   // tuff/dripstone…) sature l'inventaire en minage profond → les diamants minés sont VOIDÉS faute
   // de slot (« Not enough space, diamond was lost » — vécu ResBot1 : 1005 junk + inv plein). Le
@@ -1726,7 +1737,18 @@ async function onSpawn() {
             waterStuckTimes = []; waterEscapeFails = 0;
             emit({ type: 'water_rescue_warp', reason: drowning ? 'drowning' : 'persistent_wet' });
             try { stopMotion(); } catch (e) {}
-            await relocateToRegion({ nearSpawn: true });   // bug #4 : vers le SEC near-spawn, pas le quadrant humide
+            // 1er choix : /tp DIRECT vers une ancre profonde SÈCHE déjà minée, LOIN du point de noyade.
+            // Casse la boucle (re-warp surface → re-descente 160 blocs → même aquifère → re-noyade,
+            // vécu live ResBot2 : warp dry:false en boucle) ET économise la re-descente (= débit).
+            const _cur = bot.entity && bot.entity.position;
+            const _anchor = pickDryAnchor(bot._dryAnchors, _cur, 24);
+            if (_anchor) {
+              emit({ type: 'dry_anchor_warp', x: _anchor.x, y: _anchor.y, z: _anchor.z });
+              try { bot.chat('/tp @s ' + _anchor.x + ' ' + _anchor.y + ' ' + _anchor.z); } catch (e) {}
+              await sleep(2500);                          // atterrissage (teleport_detected abandonne le goal pathfinder)
+            } else {
+              await relocateToRegion({ nearSpawn: true }); // pas d'ancre encore → fallback SEC near-spawn (surface)
+            }
             return;
           }
           const r = await escapeWater(bot, { emit });
