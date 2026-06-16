@@ -184,3 +184,26 @@ test('descendDiagonal : gouffre profond SANS placeBlock -> drop_ahead (pas de ch
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.reason, 'drop_ahead');
 });
+
+test('descendDiagonal : EAU devant -> stop reason=water_ahead (anti-noyade descente, BUG live 16/06)', async () => {
+  // Les probes ne sondaient QUE la lave → l'eau d'une poche d'aquifère localisée passait → le bot
+  // creusait/avançait dedans → noyade → warp surface → re-descente en boucle (vécu ResBot1 16/06).
+  const world = { '1,10,0': 'water' };
+  const { bot } = makeBot({ startY: 10, world, yaw: -Math.PI / 2 });   // cap est = x+1
+  const r = await descendDiagonal(bot, { targetY: -10, maxDepth: 50 });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'water_ahead');
+});
+
+test('descendDiagonal : chute finissant dans l\'EAU sans pont -> water_ahead (JAMAIS sauter dans une nappe)', async () => {
+  // safeToDrop traite l'eau comme un atterrissage SÛR (anti dégâts de chute) — correct pour la
+  // motricité naturelle, MAIS une nappe profonde NOIE en descente minière. On ponte ; sans pont
+  // possible → water_ahead (l'appelant tourne), jamais le saut noyade.
+  const world = { '0,8,1': 'air', '0,7,1': 'air', '0,6,1': 'air', '0,5,1': 'water' };
+  const { bot } = makeBot({ startY: 10, world, yaw: 0 });
+  bot.health = 20;
+  delete bot.placeBlock;
+  const r = await descendDiagonal(bot, { targetY: 0, maxDepth: 20 });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'water_ahead');
+});

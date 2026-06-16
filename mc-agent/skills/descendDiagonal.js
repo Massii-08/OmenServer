@@ -31,6 +31,7 @@ function cardinalFromYaw(yaw) {
 }
 
 function isLava(name) { return name === 'lava' || name === 'flowing_lava'; }
+function isWater(name) { return name === 'water' || name === 'flowing_water'; }
 
 // Blocs de remblai pour ponter un vide (mêmes matériaux que le murage anti-lave de branchMine).
 const BRIDGE_BLOCKS = ['cobblestone', 'cobbled_deepslate', 'dirt'];
@@ -96,6 +97,9 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200, onSurvivalT
     const probes = [ahead, aheadLow, aheadHigh, ahead2, ahead2Low].map((q) => bot.blockAt(_at(q)));
     for (const b of probes) {
       if (b && isLava(b.name)) return { ok: false, reachedY, reason: 'lava_ahead' };
+      // EAU devant (anti-noyade descente, BUG live 16/06) : une poche d'aquifère localisée → on
+      // TOURNE (l'appelant longe 8 blocs dans une nouvelle direction), jamais creuser/avancer dedans.
+      if (b && isWater(b.name)) return { ok: false, reachedY, reason: 'water_ahead' };
     }
     // À Y≤-50, l'air devant signale grotte/lave/chute → on s'arrête (cf. spec §3 anti-lave).
     if (p.y <= -49) {
@@ -115,9 +119,13 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200, onSurvivalT
         const a = assessDrop(bot, { x: aheadLow.x, y: aheadLow.y - 1, z: aheadLow.z },
           { blockAt: (q) => bot.blockAt(_at(q)) });
         const noOvershoot = (aheadLow.y - 1 - a.depth) >= targetY - 6;
-        if (!(safeToDrop(a, bot.health) && noOvershoot)) {
+        // EAU en bas (anti-noyade descente, BUG live 16/06) : safeToDrop la croit sûre (anti dégâts de
+        // chute) MAIS une nappe profonde NOIE. On ne SAUTE JAMAIS dans l'eau en descente → pont ; sans
+        // pont possible → water_ahead (l'appelant tourne), jamais le saut noyade.
+        const landingWater = (a.surface === 'water');
+        if (landingWater || !(safeToDrop(a, bot.health) && noOvershoot)) {
           const bridged = await bridgeGap(bot, { x: aheadLow.x, y: aheadLow.y - 1, z: aheadLow.z });
-          if (!bridged) return { ok: false, reachedY, reason: 'drop_ahead' };
+          if (!bridged) return { ok: false, reachedY, reason: landingWater ? 'water_ahead' : 'drop_ahead' };
         }
         // sinon : on laisse le pas se faire — le bot tombe, la boucle reprend du nouveau y
       }
@@ -135,6 +143,7 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200, onSurvivalT
     for (const t of targets) {
       if (!t) continue;                                       // unloaded → skip
       if (VOID.has(t.name)) continue;                         // déjà air → rien à faire
+      if (isWater(t.name)) return { ok: false, reachedY, reason: 'water_ahead' };  // ne JAMAIS creuser dans l'eau
       if (DANGER.has(t.name)) return { ok: false, reachedY, reason: 'lava_ahead' };
       // Reachability « vrai joueur » : pas de minage en diagonale à travers un coin.
       if (typeof bot.canSeeBlock === 'function' && !bot.canSeeBlock(t)) continue; // re-tenté après le bloc visible

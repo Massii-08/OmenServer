@@ -1116,7 +1116,7 @@ async function mineForType(type, needed, opts = {}) {
       const yNow = (bot.entity && bot.entity.position) ? bot.entity.position.y : 999;
       if (yNow <= targetY + 2) break;                    // arrivé malgré le reason (edge)
       const why = (d && d.reason) || 'timeout';
-      if (why === 'lava_ahead' || why === 'air_at_y_-50' || why === 'drop_ahead') {
+      if (why === 'lava_ahead' || why === 'water_ahead' || why === 'air_at_y_-50' || why === 'drop_ahead') {
         lavaTurns++;
         if (lavaTurns > 3) return { ok: false, reason: why };   // 4 cardinaux barrés → vraie impasse
         await aimSwingTo(((bot.entity && bot.entity.yaw) || 0) + Math.PI / 2, 0, 'turn');  // capture-clone E : swing humain si humanAim, sinon snap
