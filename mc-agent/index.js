@@ -1243,8 +1243,20 @@ async function relocateToRegion(opts = {}) {
         ? driestCell(wNS.ores, { base: hb, range: HOME_RANGE, cellSize: 96, minOres: 12 }) : null;
       if (dry) { center = { x: dry.x, z: dry.z }; foundDry = true; }
     } catch (e) { /* fallback : la base homeBase() est déjà le spawn sec */ }
-    const jx = ((_relocSeq++ * 53) % 80) - 40, jz = ((_relocSeq * 97) % 80) - 40;   // ±40 autour de la cellule sèche
-    c = { x: center.x + jx, z: center.z + jz };
+    if (foundDry) {
+      const jx = ((_relocSeq++ * 53) % 80) - 40, jz = ((_relocSeq * 97) % 80) - 40;   // ±40 autour de la cellule sèche
+      c = { x: center.x + jx, z: center.z + jz };
+    } else {
+      // Aucune cellule sèche mappée (mémoire des bots resource = VIDE) : le ±40 retombait dans la
+      // MÊME colonne humide → re-descente → re-noyade au MÊME y-59 (vécu live ResBot3 : drowning warp
+      // dry:false en boucle sur x298,z-2397). On EXPLORE en SPIRALE (golden-angle, rayon croissant
+      // 120..360, dans HOME_RANGE) → chaque noyade atterrit dans une COLONNE DIFFÉRENTE → on finit
+      // par sortir de l'aquifère, tout en restant near-spawn (zone réputée sèche, anti-dispersion).
+      const n = _relocSeq++;
+      const ang = (n * 2.39996323) % (Math.PI * 2);                 // golden angle → couverture régulière
+      const rad = 120 + ((n % 4) * 80);                             // 120,200,280,360 (< HOME_RANGE 800)
+      c = { x: Math.round(hb.x + Math.cos(ang) * rad), z: Math.round(hb.z + Math.sin(ang) * rad) };
+    }
     emit({ type: 'resource_warp', x: c.x, z: c.z, near_spawn: true, dry: foundDry });
   }
   try {
