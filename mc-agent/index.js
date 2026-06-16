@@ -1033,6 +1033,20 @@ async function provisionStartKit() {
 async function branchSurvivalTick() {
   try { await survivalTick(bot, { fleeFrom, emit }); } catch (e) {}
   try { await eat(bot); } catch (e) {}
+  // BUG A (junk non jeté) : branchMine n'a AUCUN cleanup → le junk de creusage (cobble/deepslate/
+  // tuff/dripstone…) sature l'inventaire en minage profond → les diamants minés sont VOIDÉS faute
+  // de slot (« Not enough space, diamond was lost » — vécu ResBot1 : 1005 junk + inv plein). Le
+  // `cleanup` de resource.js n'est atteint QUE dans le chemin collecte-cible, jamais en serpentin.
+  // On vide ICI (hook tous les `survivalEvery` blocs) DÈS que l'inventaire se remplit. junkItems
+  // garde diamants/outils/armure/food/1 stack cobble+deepslate (réserve de murage > COBBLE_RESERVE_MIN)
+  // → jamais la pioche ni les ores. Gardé sur emptySlotCount pour ne pas tosser à chaque tick.
+  try {
+    if (bot.inventory && typeof bot.inventory.emptySlotCount === 'function'
+        && bot.inventory.emptySlotCount() <= 6) {
+      await tossJunk(bot);
+      emit({ type: 'branch_cleanup', empty: bot.inventory.emptySlotCount() });
+    }
+  } catch (e) { /* best-effort : jamais bloquer la branche */ }
   // ensureTorches mine du charbon proche (gather/collectBlock) → borné, sinon il pourrait geler
   // la branche (le hook tourne DANS la boucle, hors de la détection de stall en tête de boucle).
   try { await withTimeout(ensureTorches(), 30000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
