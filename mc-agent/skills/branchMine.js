@@ -292,6 +292,13 @@ async function safeDigAndOpportunism(bot, target, token, debug, loopOpts) {
   } catch (e) { /* best-effort, ne jamais bloquer le minage */ }
   const block = bot.blockAt(target);
   if (debug) { try { dbg('safeDig', { phase: 'safeDig:probe', target: { x: target.x, y: target.y, z: target.z }, blockName: block ? block.name : null }); } catch (e) {} }
+  // Survie PRIME (BUG #1 Massii, noyade live à -53) : NE JAMAIS creuser dans / avancer vers l'eau.
+  // Le boundingBox de l'eau = 'empty' → l'ancien `!== 'block'` la prenait pour de l'AIR et le bot
+  // y AVANÇAIT (vécu : nappe à profondeur diamant → noyade → water_rescue → re-descente en boucle,
+  // 0 minage). On la traite comme un obstacle DUR → l'appelant TOURNE vers le sec (heading
+  // perpendiculaire, comme l'anti-chute) : on N'ENTRE PAS, on sacrifie ce tunnel. Le scellement
+  // best-effort ci-dessus gère l'eau ADJACENTE (face) ; ici c'est la case CIBLE qui est mouillée.
+  if (block && isWater(block.name)) return { ok: false, reason: 'water_ahead' };
   if (!block || block.boundingBox !== 'block') return { ok: true };       // déjà air → rien à faire
   if (isLava(block.name)) return { ok: false, reason: 'lava_at_target' };
 
@@ -461,14 +468,24 @@ async function branchMine(bot, opts = {}, token = null) {
       try { floorOk = await ensureFloor(bot, footTarget); } catch (e) { /* best-effort */ }
       if (!floorOk) { heading = (rng() < 0.5) ? leftOf(heading) : { dx: heading.dz, dz: -heading.dx }; stepsLeft = 4 + Math.floor(rng() * 5); continue; }
       let hardStop = false;
+      let wetTurn = false;
       for (const t of [footTarget, headTarget]) {
         let r;
         try { r = await safeDigAndOpportunism(bot, t, token, debug, opts); }
         catch (e) { r = { ok: false, reason: 'threw' }; }
+        // Eau devant (survie prime, BUG #1) : on N'ENTRE PAS → on TOURNE vers le sec (serpentin),
+        // la branche continue ailleurs au lieu de se noyer. ≠ lave (hardStop) : l'eau est contournable.
+        if (!r.ok && r.reason === 'water_ahead') { wetTurn = true; break; }
         if (!r.ok && r.reason === 'lava_unwallable') { stopReasonS = 'lava'; hardStop = true; break; }
         if (!r.ok && r.reason === 'no_pickaxe') { stopReasonS = 'no_pickaxe'; hardStop = true; break; }
       }
       if (hardStop) break;
+      if (wetTurn) {                                          // demi-tour anti-noyade, on reste SEC
+        if (debug) { try { dbg('branch', { phase: 'branch:water_turn', x: cx, y: oy, z: cz }); } catch (e) {} }
+        heading = (rng() < 0.5) ? leftOf(heading) : { dx: heading.dz, dz: -heading.dx };
+        stepsLeft = 4 + Math.floor(rng() * 5);
+        continue;
+      }
       cx += heading.dx; cz += heading.dz;                  // le front a avancé (case minée)
       if (n >= nextTorchAtS) {
         nextTorchAtS = n + torchEvery + Math.floor(rng() * torchEvery);

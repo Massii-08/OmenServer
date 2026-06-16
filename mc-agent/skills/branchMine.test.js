@@ -149,6 +149,18 @@ test('branchMine : eau voisine -> scelle avec cobble AVANT de miner (placeBlock 
   assert.ok(calls.placeBlock.length > 0, 'should have placed cobble to seal water');
 });
 
+test('branchMine : EAU DEVANT (case cible) -> TOURNE, ne creuse JAMAIS dans l eau (anti-noyade #1)', async () => {
+  // BUG #1 Massii (live -53) : la case CIBLE est de l'eau (boundingBox 'empty' = prise pour de l'air)
+  // → le bot y avançait → noyade → water_rescue → re-descente en boucle, 0 minage. Fix : water_ahead →
+  // demi-tour vers le sec, on N'ENTRE PAS (survie prime, on sacrifie ce tunnel).
+  const world = { '1,-54,0': 'water', '1,-53,0': 'water' };   // foot+tête du 1er pas (heading +x)
+  const { bot, calls } = makeBot({ y: -54, world });
+  await branchMine(bot, { targetY: -54, mainLength: 8, branchLength: 4, heading: { dx: 1, dz: 0 } });
+  assert.ok(calls.dig.every((b) => !String(b.name || '').includes('water')),
+    'ne doit JAMAIS creuser un bloc d eau (le bot a tourné vers le sec)');
+  assert.ok(calls.dig.length > 0, 'doit continuer à miner ailleurs (serpentin sec), pas se figer');
+});
+
 test('branchMine : cobble<8 -> reason cobble_low', async () => {
   const { bot } = makeBot({ y: -54, inv: [
     { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
