@@ -1285,6 +1285,22 @@ async function relocateToRegion(opts = {}) {
 }
 
 async function startResource() {
+  // [INSTRUMENTATION TEMP — diag évaporation items 16/06] sonde l'inventaire toutes les 2 s × 50 s :
+  // capte le moment EXACT où le kit (pioche/cobble) disparaît (idle GARDE, autonome PERD → c'est dans
+  // ce chemin). À RETIRER une fois la cause trouvée.
+  {
+    let _ip = 0;
+    const _ipIv = setInterval(() => {
+      try {
+        const its = (bot.inventory && bot.inventory.items()) || [];
+        const picks = its.filter((i) => i.name && i.name.endsWith('_pickaxe')).map((i) => i.name);
+        const cob = its.filter((i) => i.name === 'cobblestone' || i.name === 'cobbled_deepslate').reduce((s, i) => s + (i.count || 0), 0);
+        emit({ type: 'inv_probe', t: _ip * 2, n: its.length, picks, cob,
+          y: Math.round((bot.entity && bot.entity.position && bot.entity.position.y) || 0) });
+      } catch (e) {}
+      if (++_ip > 25) clearInterval(_ipIv);
+    }, 2000);
+  }
   // Anti-race inventaire : au spawn, les packets d'inventaire peuvent arriver APRÈS
   // startAutonomous → bestPickTier lisait un inventaire VIDE → un bot DÉJÀ équipé partait
   // en phase kit (vécu live : ResBot avec pioche diamant à errer en quête de bois).
