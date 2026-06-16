@@ -206,7 +206,13 @@ async function runResource(bot, opts = {}, token = null) {
         // suivante) au lieu de strip-miner en grille. Plus de relocations → on rabat sur un AUTRE type
         // minable (fer/lapis), jamais le diamant en grille ; sinon mtype=null (attente, pas de grid).
         if (mtype === 'diamond') {
-          if (relocate && relocations < maxRelocations) {
+          // Cave-hop UNIQUEMENT s'il existe des clusters de diamants EXPOSÉS mappés (grottes) à drainer.
+          // Sinon (carte vide / grottes épuisées) → on NE relocate PAS : on laisse le MINAGE PROFOND
+          // SERPENTIN ci-dessous descendre à y≈-58 (BUG PRIO 3.1 live 16/06 : les diamants enterrés ne
+          // sont PAS dans les grottes ; le cave-hop bouclait en surface sans JAMAIS descendre, vécu ResBot1).
+          const _hasCaveDiamond = listOres(memory, wkey).some(
+            (o) => o && o.exposed && !o.wet && String(o.material || '').includes('diamond'));
+          if (_hasCaveDiamond && relocate && relocations < maxRelocations) {
             relocations++;
             emit({ type: 'resource_relocate', n: relocations, cause: 'cavehop_diamond' });
             try { await relocate({ diamondCluster: true }); } catch (e) { /* best-effort */ }
@@ -214,11 +220,8 @@ async function runResource(bot, opts = {}, token = null) {
             if (reload) memory = reload() || memory;
             continue;
           }
-          // plus de relocations + cave-hop épuisé : rabat sur un AUTRE type minable ; AUCUN → STARVED
-          // (jamais de grid pour le diamant, jamais de spin idle) → le manager respawn / on abandonne.
-          const _alt = ranked.find((t) => t !== 'diamond' && (TIER_FOR[t] || 0) <= tierNow) || null;
-          if (!_alt) { emit({ type: 'resource_starved', mined, why: 'cavehop_exhausted' }); return { ok: false, reason: 'starved', mined }; }
-          mtype = _alt;
+          // pas de grotte à diamants exploitable → minage profond SERPENTIN direct (mtype reste 'diamond',
+          // flow vers le bloc de minage ci-dessous avec l'option serpentine ; JAMAIS de grille).
         }
         // SANS pioche pierre (kit raté), RIEN n'est minable : attendre 10 min × 8 relocations
         // était une éternité passive (vécu V3Res1 : resource_waiting ×178). Starved RAPIDE →
@@ -248,9 +251,11 @@ async function runResource(bot, opts = {}, token = null) {
           // Phase 3 : on passe AUSSI le manque restant → branchMine s'arrête sur le DELTA récolté
           // (l'ancien stop absolu `diamond>=1` rendait branchMine inopérant dès le 1er diamant).
           const needed = Math.max(1, (prog[mtype] ? prog[mtype].target - prog[mtype].have : 1));
+          const _serp = (mtype === 'diamond');   // diamant enterré (Path B) → galerie SERPENTINE anti-grille (anti-tell X-ray)
+          if (_serp) emit({ type: 'resource_deep_serpentine', material: mtype, fallback: 'no_mapped_cave' });
           emit({ type: 'resource_mine_for', material: mtype, needed });
           let r = null;
-          try { r = await mineFor(mtype, needed); }
+          try { r = await mineFor(mtype, needed, _serp ? { serpentine: true } : undefined); }
           catch (e) { r = { ok: false, reason: 'error', detail: String((e && e.message) || e).slice(0, 120) }; }
           emit({ type: 'resource_mine_for_done', material: mtype, ok: !!(r && r.ok),
                  reason: (r && r.reason) || null, detail: (r && r.detail) || undefined });

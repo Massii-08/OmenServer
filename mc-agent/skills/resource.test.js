@@ -628,6 +628,35 @@ test('quota : diamant EXPOSÉ dont le cave-first ÉCHOUE → REPLI minage profon
   assert.ok(lastOpts && lastOpts.serpentine === true, 'repli en mode SERPENTIN');
 });
 
+test('quota : carte VIDE + diamant manquant → MINAGE PROFOND SERPENTIN (Path B, BUG PRIO 3.1 live 16/06)', async () => {
+  // Monde FRAIS (mémoire vide) : nextOreTarget ne retourne RIEN → Path B (branch-mine). AUCUNE grotte à
+  // diamants mappée → le bot doit DESCENDRE deep-serpentine, PAS cave-hop-relocate en boucle EN SURFACE
+  // (vécu live ResBot1 16/06 : resource_relocate cavehop_diamond n:1,2,3 sans jamais miner ni descendre).
+  const bot = makeQuotaBot({});
+  let branchCalled = 0, lastOpts = null, cavehopRelocates = 0, deepEmitted = false;
+  const token = { cancelled: false };
+  await runResource(bot, {
+    memory: mem([]),                                      // CARTE VIDE (monde frais → aucune cible mappée)
+    worldKey: 'overworld',
+    emit: (e) => {
+      if (e.type === 'resource_relocate' && e.cause === 'cavehop_diamond') cavehopRelocates++;
+      if (e.type === 'resource_deep_serpentine') deepEmitted = true;
+    },
+    goto: async () => {},
+    quota: { diamond: 1 },
+    sleep: async () => {},
+    pickTier: () => 3,                                    // pioche diamant (tierNow=3)
+    relocate: async () => {},                             // dispo, mais NE doit PAS être cave-hop-bouclé
+    mineExposed: async () => {},
+    mineFor: async (mat, n, o) => { branchCalled++; lastOpts = o; token.cancelled = true; return { ok: true }; },
+    reloadMemory: () => mem([]),
+  }, token);
+  assert.equal(cavehopRelocates, 0, 'PAS de cave-hop relocate quand AUCUNE grotte à diamants n\'est mappée');
+  assert.ok(branchCalled >= 1, 'minage profond appelé (le bot DESCEND au lieu de warper en surface en boucle)');
+  assert.ok(lastOpts && lastOpts.serpentine === true, 'minage profond en mode SERPENTIN (anti-grille)');
+  assert.ok(deepEmitted, 'event resource_deep_serpentine émis');
+});
+
 test('quota : diamant exposé PROCHE (Δy≤24) → cave-first (rétro-compat G-bis)', async () => {
   const bot = makeQuotaBot({});                          // entity à y=64
   let caveCalled = 0;
