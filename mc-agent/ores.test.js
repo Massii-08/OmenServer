@@ -480,3 +480,29 @@ test('scanAllOres : portée par défaut couvre la deepslate diamond depuis la su
   assert.ok(captured.maxDistance >= 200, `maxDistance ${captured.maxDistance} trop court pour y=-59 depuis la surface`);
   assert.ok(captured.count >= 2000);
 });
+
+// --- driestCell (warp near-spawn DRY-AWARE — anti boucle de noyade, BUG PRIO #4/2.4) ---
+test('driestCell : choisit la cellule la PLUS SÈCHE près du spawn (anti boucle de noyade)', () => {
+  // 2 cellules mappées near-spawn : l'une noyée (wet), l'autre sèche. Le warp doit viser la SÈCHE
+  // — le hardcodé (208,528) tombait dans l'eau en world_fresh2 (24-36% wet) → drown loop live.
+  const o = [];
+  for (let i = 0; i < 8; i++) o.push({ material: 'iron_ore', x: 50 + i, y: 30, z: 50, wet: true });   // WET ~ (50,50)
+  for (let i = 0; i < 8; i++) o.push({ material: 'diamond_ore', x: 300 + i, y: -50, z: 300, wet: false }); // SEC ~ (300,300)
+  const c = ores.driestCell(o, { base: { x: 0, z: 0 }, range: 800, cellSize: 96 });
+  assert.ok(c, 'une cellule sèche est trouvée');
+  assert.ok(Math.abs(c.x - 300) < 96 && Math.abs(c.z - 300) < 96, `centre sec attendu ~ (300,300), got (${c.x},${c.z})`);
+  assert.strictEqual(c.wetFraction, 0, `cellule choisie sèche (wetFraction=${c.wetFraction})`);
+});
+
+test('driestCell : ignore les cellules HORS rayon near-spawn (anti-dispersion)', () => {
+  const o = [];
+  for (let i = 0; i < 8; i++) o.push({ material: 'iron_ore', x: 5000 + i, y: 30, z: 5000, wet: false });
+  const c = ores.driestCell(o, { base: { x: 0, z: 0 }, range: 800, cellSize: 96 });
+  assert.strictEqual(c, null, 'aucune cellule dans le rayon → null (l\'appelant retombe sur le hardcodé)');
+});
+
+test('driestCell : exige un minimum de minerais mappés (cellule réelle, pas du bruit)', () => {
+  const o = [{ material: 'iron_ore', x: 100, y: 30, z: 100, wet: false }];
+  const c = ores.driestCell(o, { base: { x: 0, z: 0 }, range: 800, cellSize: 96, minOres: 8 });
+  assert.strictEqual(c, null, 'cellule sous le seuil minOres → null');
+});

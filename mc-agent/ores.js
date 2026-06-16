@@ -298,7 +298,47 @@ function oresFoundEvent(world, ores) {
   };
 }
 
+/**
+ * PUR — cellule mappée la PLUS SÈCHE autour de `base`, pour un warp near-spawn DRY-AWARE (BUG PRIO
+ * #4/2.4 : le warp hardcodé (208,528) tombait dans l'eau en world_fresh2 (24-36% wet) → le bot se
+ * noyait, re-warpait au même point mouillé, re-noyait → 0 minage, vécu live). On regroupe les ores en
+ * cellules `cellSize`, et on retient la cellule (dans le rayon `range`, ≥ `minOres` minerais) dont la
+ * FRACTION d'ores `wet` est la plus basse (tie → la plus proche de base). → {x,z,wetFraction} ou null
+ * (aucune cellule éligible → l'appelant retombe sur son point hardcodé). opts = {base,range,cellSize,minOres}.
+ */
+function driestCell(ores, opts = {}) {
+  const base = opts.base || { x: 0, z: 0 };
+  const range = typeof opts.range === 'number' ? opts.range : 800;
+  const cell = typeof opts.cellSize === 'number' ? opts.cellSize : 96;
+  const minOres = typeof opts.minOres === 'number' ? opts.minOres : 8;
+  if (!Array.isArray(ores) || !ores.length) return null;
+  const r2 = range * range;
+  const cells = new Map();
+  for (const o of ores) {
+    if (!o || !Number.isFinite(o.x) || !Number.isFinite(o.z)) continue;
+    const dx = o.x - base.x, dz = o.z - base.z;
+    if (dx * dx + dz * dz > r2) continue;                  // hors rayon near-spawn
+    const cx = Math.floor(o.x / cell), cz = Math.floor(o.z / cell);
+    const k = cx + ',' + cz;
+    const e = cells.get(k) || { n: 0, wet: 0, cx, cz };
+    e.n++; if (o.wet) e.wet++;
+    cells.set(k, e);
+  }
+  let best = null;
+  for (const e of cells.values()) {
+    if (e.n < minOres) continue;                           // cellule "réelle" (pas du bruit)
+    const frac = e.wet / e.n;
+    const x = e.cx * cell + Math.floor(cell / 2), z = e.cz * cell + Math.floor(cell / 2);
+    const d2 = (x - base.x) ** 2 + (z - base.z) ** 2;
+    if (!best || frac < best.frac || (frac === best.frac && d2 < best.d2)) {
+      best = { x, z, frac, d2 };
+    }
+  }
+  return best ? { x: best.x, z: best.z, wetFraction: best.frac } : null;
+}
+
 module.exports = {
   TIERS, DEFAULT_PRIORITY, oreBase, requiredPickTier, listOres, oreKey, nextOreTarget,
   ORE_NAMES, QUOTA_ORE_NAMES, isExposed, isWaterAdjacent, scanExposedOres, scanAllOres, exposedOreFoundEvent, oresFoundEvent,
+  driestCell,
 };

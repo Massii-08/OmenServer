@@ -50,6 +50,7 @@ const { descendDiagonal } = require('./skills/descendDiagonal');
 const { branchMine, floodFillVein } = require('./skills/branchMine');
 const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
 const { loadMemory, worldKey } = require('./worldMemory');
+const { driestCell } = require('./ores');                  // warp near-spawn DRY-AWARE (anti boucle noyade)
 const { runMapper } = require('./mapper');
 const { LOCATE_KINDS, parseLocateResponse, structureFoundEvent } = require('./structures');
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating } = require('./unstuck');
@@ -1192,12 +1193,22 @@ async function relocateToRegion(opts = {}) {
   // near-spawn vérifiée sèche). Au-delà → ignoré, fallback regionCenter (spawn±520, déjà borné).
   const HOME_RANGE = 800;
   let c = null;
-  // bug #4 : après une NOYADE, relocaliser vers le SEC near-spawn VÉRIFIÉ (0/48 eau y-59), PAS le
-  // quadrant (souvent humide) du bot — sinon il warpe hors de l'eau pour y RETOMBER (boucle noyade).
+  // bug #4 / BUG PRIO 2.4 : après une NOYADE, relocaliser vers le SEC near-spawn. Le hardcodé (208,528)
+  // était SUPPOSÉ sec mais TOMBE DANS L'EAU en world_fresh2 (24-36% wet) → le bot warpe hors de l'eau
+  // pour y RETOMBER → boucle de noyade, 0 minage (vécu live session 1). Fix DRY-AWARE : on vise la
+  // cellule mappée la PLUS SÈCHE near-spawn (driestCell, depuis la mémoire de monde) ; fallback hardcodé.
   if (opts.nearSpawn) {
-    const jx = ((_relocSeq++ * 53) % 160) - 80, jz = ((_relocSeq * 97) % 160) - 80;   // spawn (208,528) ±80
-    c = { x: 208 + jx, z: 528 + jz };
-    emit({ type: 'resource_warp', x: c.x, z: c.z, near_spawn: true });
+    let center = { x: 208, z: 528 };
+    try {
+      const memNS = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
+      const wNS = memNS && memNS.worlds && memNS.worlds[bot._worldKey];
+      const dry = (wNS && Array.isArray(wNS.ores))
+        ? driestCell(wNS.ores, { base: { x: 208, z: 528 }, range: HOME_RANGE, cellSize: 96, minOres: 12 }) : null;
+      if (dry) center = { x: dry.x, z: dry.z };
+    } catch (e) { /* fallback hardcodé (208,528) */ }
+    const jx = ((_relocSeq++ * 53) % 80) - 40, jz = ((_relocSeq * 97) % 80) - 40;   // ±40 autour de la cellule sèche
+    c = { x: center.x + jx, z: center.z + jz };
+    emit({ type: 'resource_warp', x: c.x, z: c.z, near_spawn: true, dry: !(center.x === 208 && center.z === 528) });
   }
   try {
     const memNow = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
