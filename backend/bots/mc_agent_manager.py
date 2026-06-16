@@ -530,7 +530,7 @@ def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="sto
     if sess is not None:
         sess["respawn"] = {"group_id": group_id, "bot_id": bot_id, "model": model,
                            "autonomous": autonomous, "objective": objective,
-                           "world_label": world_label, "quota": quota}
+                           "world_label": world_label, "quota": quota, "humanize": humanize}
         sess.setdefault("respawn_count", 0)
     return sid
 
