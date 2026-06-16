@@ -435,6 +435,63 @@ async function branchMine(bot, opts = {}, token = null) {
     return now() - lastProgressAt > stallMs;
   };
 
+  // ── MODE SERPENTIN (BUG PRIO 3.1 Massii — minage profond du DIAMANT sans grille/tell X-ray).
+  // UNE SEULE galerie 1×2 ONDULANTE : on avance 1 bloc à la fois dans le cap courant, et on TOURNE
+  // 90° (gauche/droite tirés au sort) à des intervalles IRRÉGULIERS (segments de 4..8 blocs). Aucune
+  // branche symétrique régulière. Réutilise tout l'arsenal de branchMine (scellement eau+lave par
+  // safeDigAndOpportunism, flood-fill des veines, anti-chute, survie, torches) → reste SEC à -58.
+  if (opts.serpentine) {
+    let cx = ox, cz = oz;                                   // front de taille (cumulatif : la galerie tourne)
+    let heading = { dx: dir.dx, dz: dir.dz };
+    let stepsLeft = 4 + Math.floor(rng() * 5);              // longueur du 1er segment (4..8, irrégulier)
+    let stopReasonS = null;
+    let nextTorchAtS = torchEvery > 0 ? torchEvery : Infinity;
+    for (let n = 1; n <= mainLength; n++) {
+      if (token && token.cancelled) return { ok: true, cancelled: true, ores: deltaOres(oresBefore, snapshotOres(bot)), gotDiamond: countItem(bot, 'diamond') > 0, heading };
+      if (checkStall()) { stopReasonS = 'stalled'; break; }
+      if (countWallable(bot) < COBBLE_RESERVE_MIN) { stopReasonS = 'cobble_low'; break; }
+      if (stopReached()) break;                             // quota du type rempli
+      if (onSurvivalTick && n % survivalEvery === 0) { try { await onSurvivalTick(n); } catch (e) { /* best-effort */ } }
+      const footTarget = p(cx + heading.dx, oy, cz + heading.dz);
+      const headTarget = p(footTarget.x, footTarget.y + 1, footTarget.z);
+      try { await approach(bot, footTarget, 3, opts); } catch (e) { /* dig direct prendra le relais */ }
+      // Anti-chute : trou sous la prochaine case (grotte/ravin) → on ne s'y jette PAS, on TOURNE
+      // (le serpentin contourne au lieu de tomber/stopper — plus robuste qu'un break sur 1er trou).
+      let floorOk = true;
+      try { floorOk = await ensureFloor(bot, footTarget); } catch (e) { /* best-effort */ }
+      if (!floorOk) { heading = (rng() < 0.5) ? leftOf(heading) : { dx: heading.dz, dz: -heading.dx }; stepsLeft = 4 + Math.floor(rng() * 5); continue; }
+      let hardStop = false;
+      for (const t of [footTarget, headTarget]) {
+        let r;
+        try { r = await safeDigAndOpportunism(bot, t, token, debug, opts); }
+        catch (e) { r = { ok: false, reason: 'threw' }; }
+        if (!r.ok && r.reason === 'lava_unwallable') { stopReasonS = 'lava'; hardStop = true; break; }
+        if (!r.ok && r.reason === 'no_pickaxe') { stopReasonS = 'no_pickaxe'; hardStop = true; break; }
+      }
+      if (hardStop) break;
+      cx += heading.dx; cz += heading.dz;                  // le front a avancé (case minée)
+      if (n >= nextTorchAtS) {
+        nextTorchAtS = n + torchEvery + Math.floor(rng() * torchEvery);
+        let light = 0;
+        try { const cell = bot.blockAt(footTarget); if (cell && cell.light != null) light = cell.light; } catch (e) { /* inconnue = sombre */ }
+        if (light < 8) { try { await placeTorch(bot, footTarget); } catch (e) { /* best-effort */ } }
+      }
+      // VIRAGE à intervalle IRRÉGULIER (jamais métronomique = pas une grille).
+      if (--stepsLeft <= 0) {
+        heading = (rng() < 0.5) ? leftOf(heading) : { dx: heading.dz, dz: -heading.dx };
+        stepsLeft = 4 + Math.floor(rng() * 5);
+      }
+    }
+    const oresAfterS = snapshotOres(bot);
+    return {
+      ok: !stopReasonS || stopReasonS === 'lava' || stopReasonS === 'drop',
+      gotDiamond: oresAfterS.diamond >= 1,
+      ores: deltaOres(oresBefore, oresAfterS),
+      reason: stopReasonS || undefined,
+      heading,
+    };
+  }
+
   outer:
   while (i <= mainLength) {
     if (token && token.cancelled) return { ok: true, cancelled: true, ores: deltaOres(oresBefore, snapshotOres(bot)), gotDiamond: countItem(bot, 'diamond') > 0, heading: dir };

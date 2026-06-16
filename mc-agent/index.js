@@ -1142,8 +1142,13 @@ async function mineForType(type, needed, opts = {}) {
   // Phase 3 : stop sur DELTA récolté (mode quota — le bot PORTE déjà des items du type) +
   // cap PERSISTANT entre calls (le tunnel continue tout droit au lieu de se recroiser).
   const stopOre = { items: ITEMS_FOR[type] || [type], count: Math.max(1, Number(needed) || 1) };
+  // BUG PRIO 3.1 (Massii 16/06) : le DIAMANT se mine en galerie SERPENTINE (ondulante, virages
+  // irréguliers), JAMAIS en grille de branches métronomiques (= tell X-ray refusé). mainLength plus
+  // long en serpentin (couvre + de terrain frais à -58 → + de diamants au volume). Les autres types
+  // gardent la grille de branches efficace. opts.serpentine force le mode (repli cave-first raté).
+  const _serpentine = (type === 'diamond') || !!(opts && opts.serpentine);
   const r = await withTimeout(branchMine(bot, {
-    targetY, mainLength: 24, branchLength: 8, stopOre,
+    targetY, mainLength: _serpentine ? 48 : 24, branchLength: 8, stopOre, serpentine: _serpentine,
     // §3.G : cap EXPLICITE vers la région mappée (fourni par resource.js) prioritaire sur le cap
     // persistant — le strip-mining PROGRESSE vers la zone du minerai sans goto-beeline sur le bloc.
     heading: (opts && opts.heading) || bot._branchHeading || null,

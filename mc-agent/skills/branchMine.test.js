@@ -166,6 +166,50 @@ test('branchMine : ramasse opportunément le fer voisin', async () => {
   assert.ok(r.ores.iron >= 1, `ores.iron=${r.ores.iron} should be >= 1`);
 });
 
+// ── MODE SERPENTIN (BUG PRIO 3.1 Massii — minage profond diamant SANS grille) ──────────────
+// PRNG déterministe (LCG) : la variabilité serpentine doit être reproductible pour le test.
+function seededRng(seed) {
+  let s = (seed >>> 0) || 1;
+  return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+}
+
+test('branchMine serpentin : marche CONTINUE qui VIRE à intervalles VARIÉS (zéro branche en grille, anti-tell X-ray)', async () => {
+  // Massii refuse le quadrillage régulier pour le diamant. Le mode serpentin doit creuser UNE
+  // SEULE galerie ondulante (chaque pas = 1 bloc adjacent — pas de saut de branche), qui change de
+  // direction à des intervalles IRRÉGULIERS (jamais métronomique).
+  const { bot, calls } = makeBot({ y: -54 });
+  await branchMine(bot, { targetY: -54, mainLength: 60, serpentine: true, rng: seededRng(7) });
+  // Chemin = digs au niveau des pieds (y=-54), dans l'ordre de creusage.
+  const foot = calls.dig.filter((b) => b.position.y === -54).map((b) => ({ x: b.position.x, z: b.position.z }));
+  assert.ok(foot.length >= 20, `assez de blocs minés (${foot.length})`);
+  // 1) CONTINUITÉ : marche adjacente. Pas = 1 bloc ; au plus 2 quand la galerie RECROISE une case
+  //    déjà creusée (= air, non re-minée → un cran sauté dans la séquence des digs, légitime). Une
+  //    GRILLE saute par branchLength (≥4, ici 9 : fin de branche → autre côté) ⇒ test KO pour la grille.
+  let maxStep = 0;
+  for (let i = 1; i < foot.length; i++) {
+    maxStep = Math.max(maxStep, Math.abs(foot[i].x - foot[i - 1].x) + Math.abs(foot[i].z - foot[i - 1].z));
+  }
+  assert.ok(maxStep <= 2, `marche continue adjacente attendue (serpentin), maxStep=${maxStep} (grille = sauts ≥4)`);
+  // 2) VIRE au moins 2 fois (ce n'est pas une ligne droite).
+  const dirs = [];
+  for (let i = 1; i < foot.length; i++) dirs.push(Math.sign(foot[i].x - foot[i - 1].x) + ',' + Math.sign(foot[i].z - foot[i - 1].z));
+  const turnAt = [];
+  for (let i = 1; i < dirs.length; i++) if (dirs[i] !== dirs[i - 1]) turnAt.push(i);
+  assert.ok(turnAt.length >= 2, `le tunnel VIRE ≥2× (serpentin), got ${turnAt.length}`);
+  // 3) Intervalles entre virages VARIÉS (irrégulier = pas un motif régulier/métronomique).
+  const gaps = [];
+  for (let i = 1; i < turnAt.length; i++) gaps.push(turnAt[i] - turnAt[i - 1]);
+  assert.ok(new Set(gaps).size >= 2, `intervalles de virage VARIÉS attendus (irrégulier), gaps=${JSON.stringify(gaps)}`);
+});
+
+test('branchMine serpentin : ramasse le diamant croisé sur son chemin (le but du minage profond)', async () => {
+  // Un diamant enterré pile sur la galerie serpentine doit être extrait (flood-fill veine).
+  const world = { '1,-54,0': 'deepslate_diamond_ore' };
+  const { bot } = makeBot({ y: -54, world });
+  const r = await branchMine(bot, { targetY: -54, mainLength: 20, serpentine: true, rng: seededRng(3) });
+  assert.ok(r.ores.diamond >= 1, `diamant ramassé attendu, ores.diamond=${r.ores.diamond}`);
+});
+
 test('branchMine : Y dans la tolérance ±2 (Y=-52 OK)', async () => {
   const { bot } = makeBot({ y: -52 });
   const r = await branchMine(bot, { targetY: -54, mainLength: 4 });

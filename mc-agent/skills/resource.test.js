@@ -467,7 +467,11 @@ test('collect gelé → borné par collectTimeoutMs, le bot passe à la cible su
   assert.ok(collect(events, 'resource_failed').length >= 1 || bot._dug.length >= 1);
 }); 
 
-test('quota : sélection PLUS PROCHE d\'abord (pas diamant d\'abord) — réduit le voyage', async () => {
+test('quota : DIAMANT prioritaire quand son quota manque (BUG PRIO 3.1 — débit diamant, supersede #42a)', async () => {
+  // Résolution Massii 16/06 : le diamant est le goulot de la DoD (64) ; les autres types se
+  // remplissent vite. Le nearest-first laissait le bot rafler le fer exposé proche et ne JAMAIS
+  // viser le diamant profond (vécu live : 0💎 en 1h40). Tant que le quota diamant n'est pas atteint,
+  // le diamant passe DEVANT (le minage profond serpentin évite le « long tunnel par diamant » de #42a).
   const blocks = {
     '5,60,0': { name: 'iron_ore', position: { x: 5, y: 60, z: 0 } },
     '100,-55,0': { name: 'deepslate_diamond_ore', position: { x: 100, y: -55, z: 0 } },
@@ -485,7 +489,29 @@ test('quota : sélection PLUS PROCHE d\'abord (pas diamant d\'abord) — réduit
     quota: { diamond: 1, iron: 1 },
   });
   assert.equal(r.done, true);
-  assert.deepEqual(order, ['iron_ore', 'deepslate_diamond_ore']);  // le PROCHE d'abord
+  assert.deepEqual(order, ['deepslate_diamond_ore', 'iron_ore']);  // le DIAMANT d'abord (quota manquant)
+});
+
+test('quota : revient au PLUS PROCHE quand le quota diamant est REMPLI (gold/fer/… nearest-first)', async () => {
+  // Quand le diamant est déjà servi, plus de priorité diamant → nearest-first classique (réduit le
+  // voyage pour les types restants). Garantit que la priorité diamant est bien GATÉE sur "unmet".
+  const blocks = {
+    '5,60,0': { name: 'iron_ore', position: { x: 5, y: 60, z: 0 } },
+    '100,40,0': { name: 'gold_ore', position: { x: 100, y: 40, z: 0 } },
+  };
+  const bot = makeQuotaBot({ blocks, inv: [{ name: 'diamond', count: 1 }] });  // diamant déjà à 1/1
+  const order = [];
+  await runResource(bot, {
+    memory: mem([
+      { material: 'gold_ore', x: 100, y: 40, z: 0 },
+      { material: 'iron_ore', x: 5, y: 60, z: 0 },
+    ]),
+    worldKey: 'overworld',
+    emit: (e) => { if (e.type === 'resource_target') order.push(e.material); },
+    goto: async () => {},
+    quota: { diamond: 1, iron: 1, gold: 1 },
+  });
+  assert.equal(order[0], 'iron_ore', `proche d'abord quand diamant rempli (got ${order})`);
 });
 
 test('unreachable → skip de toute la veine (voisins ≤4 blocs), pas re-tentés', async () => {
@@ -555,28 +581,51 @@ test('quota : diamant exposé PROFOND → cave-first (cave-hopping #1, plus de g
   assert.equal(branchCalled, 0, 'JAMAIS de strip-mine en grille pour le diamant (bug #1 Massii)');
 });
 
-test('quota : diamant ENTERRÉ (non exposé) → SKIP, jamais de grid strip-mine (cave-hop only #1)', async () => {
+test('quota : diamant ENTERRÉ (hors-grotte) → MINAGE PROFOND SERPENTIN (BUG PRIO 3.1, plus de skip)', async () => {
+  // Résolution Massii 16/06 : quand les grottes ne donnent plus, on creuse les diamants enterrés au
+  // VOLUME via une galerie SERPENTINE à y≈-58 (jamais une grille). L'ancien SKIP plafonnait le débit.
   const bot = makeQuotaBot({});                          // entity à y=64
-  let caveCalled = 0, branchCalled = 0, skipped = false;
-  let t = 0;
+  let caveCalled = 0, branchCalled = 0, deepEmitted = false, lastOpts = null;
+  const token = { cancelled: false };
   const r = await runResource(bot, {
     memory: mem([{ material: 'diamond_ore', x: 5, y: -10, z: 5, exposed: false, wet: false }]), // ENTERRÉ
     worldKey: 'overworld',
-    emit: (e) => { if (e.type === 'resource_skip_buried_diamond') skipped = true; },
+    emit: (e) => { if (e.type === 'resource_deep_serpentine') deepEmitted = true; },
     goto: async () => {},
     quota: { diamond: 1 },
     sleep: async () => {},
-    now: () => (t += 60000),
-    maxIdleMs: 120000,
     pickTier: () => 3,                                   // pioche diamant (tierNow=3)
     mineExposed: async () => { caveCalled++; },
-    mineFor: async () => { branchCalled++; return { ok: true }; },
+    mineFor: async (mat, n, o) => { branchCalled++; lastOpts = o; token.cancelled = true; return { ok: true }; },
     reloadMemory: () => mem([{ material: 'diamond_ore', x: 5, y: -10, z: 5, exposed: false, wet: false }]),
-  });
-  assert.ok(skipped, 'le diamant enterré est SKIP (resource_skip_buried_diamond)');
-  assert.equal(branchCalled, 0, 'JAMAIS de strip-mine (mineFor) pour un diamant enterré');
-  assert.equal(caveCalled, 0, 'pas de cave-first non plus (pas exposé)');
-  assert.equal(r.ok, false);                             // pas de cave dispo → starved (jamais de grid)
+  }, token);
+  assert.ok(deepEmitted, 'event resource_deep_serpentine émis pour le diamant enterré');
+  assert.ok(branchCalled >= 1, 'mineFor (minage profond) appelé pour le diamant enterré');
+  assert.ok(lastOpts && lastOpts.serpentine === true, 'minage profond en mode SERPENTIN (pas de grille)');
+  assert.equal(caveCalled, 0, 'pas de cave-first (pas exposé)');
+});
+
+test('quota : diamant EXPOSÉ dont le cave-first ÉCHOUE → REPLI minage profond serpentin (anti-boucle surface)', async () => {
+  // Diamant exposé trop profond/inatteignable à pied : mineExposed throw → au lieu de boucler
+  // (relocate-surface), on bascule sur le minage profond SERPENTIN du même secteur.
+  const bot = makeQuotaBot({});
+  let caveCalled = 0, branchCalled = 0, lastOpts = null;
+  const token = { cancelled: false };
+  await runResource(bot, {
+    memory: mem([{ material: 'deepslate_diamond_ore', x: 5, y: -55, z: 5, exposed: true, wet: false }]),
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async () => {},
+    quota: { diamond: 1 },
+    sleep: async () => {},
+    pickTier: () => 3,
+    mineExposed: async () => { caveCalled++; throw new Error('cave_unreachable'); },
+    mineFor: async (mat, n, o) => { branchCalled++; lastOpts = o; token.cancelled = true; return { ok: true }; },
+    reloadMemory: () => mem([{ material: 'deepslate_diamond_ore', x: 5, y: -55, z: 5, exposed: true, wet: false }]),
+  }, token);
+  assert.ok(caveCalled >= 1, 'cave-first tenté en premier (priorité)');
+  assert.ok(branchCalled >= 1, 'repli minage profond après échec cave-first');
+  assert.ok(lastOpts && lastOpts.serpentine === true, 'repli en mode SERPENTIN');
 });
 
 test('quota : diamant exposé PROCHE (Δy≤24) → cave-first (rétro-compat G-bis)', async () => {

@@ -153,12 +153,18 @@ async function runResource(bot, opts = {}, token = null) {
       if (until > now) skipNow.add(k); else busyUntil.delete(k);
     }
     const allowTypes = tracker ? tracker.remainingTypes(_items(bot)) : undefined;
-    // Mode quota : PLUS PROCHE d'abord (priority vide → tie → distance) — le quota exige TOUS
-    // les types, la rareté n'arbitre rien ; diamant-d'abord forçait un long tunnel par cible
-    // (vécu live : ~3-6 min/ore). Hors quota : priorité rareté inchangée.
+    // BUG PRIO 3.1 (résolution Massii 16/06 — débit diamant) : le diamant est le GOULOT de la DoD
+    // (64) ; les autres types se remplissent vite + le minage profond serpentin en récolte AUSSI au
+    // passage (redstone/fer/lapis du deepslate). Tant que le quota diamant manque, le diamant passe
+    // DEVANT (priority:['diamond']) → exposé visé→cave-first, enterré→deep serpentine. Sinon le
+    // nearest-first laissait le bot rafler le fer exposé proche sans JAMAIS viser le diamant profond
+    // (vécu live : 0💎 en 1h40). Quota diamant REMPLI → on revient au PLUS PROCHE (réduit le voyage).
+    // Le deep-serpentine évite le « long tunnel par diamant » que le nearest-first (#42a) craignait.
+    const _wantsDiamond = !!allowTypes && (allowTypes instanceof Set
+      ? allowTypes.has('diamond') : (Array.isArray(allowTypes) && allowTypes.includes('diamond')));
     let target = nextOreTarget(memory, wkey, from, {
       skip: skipNow, allowTypes,
-      priority: tracker ? [] : undefined,
+      priority: tracker ? (_wantsDiamond ? ['diamond'] : []) : undefined,
       maxDist: tracker ? maxTargetDist : undefined,   // phase 2 : miner LOCAL, pas traverser la carte
       pickTier: (typeof tier === 'number' ? tier : undefined),
     });
@@ -378,20 +384,28 @@ async function runResource(bot, opts = {}, token = null) {
       const _haveBefore = _prog && _prog[target.material] ? _prog[target.material].have : 0;
       let _rr = null;
       const _isDiamond = String(target.material || '').includes('diamond');
-      // bug #1 (Massii, soir) : DIAMANT = CAVE-HOPPING uniquement, JAMAIS de strip-mine en grille (= tell).
-      //  - EXPOSÉ (visible en grotte) → cave-first : mineExposed marche/creuse-SERPENTE jusqu'à la grotte,
-      //    quelle que soit la profondeur (le creusage d'approche serpentant est ré-autorisé, clarif #3) ;
-      //  - ENTERRÉ (non exposé) → on le SACRIFIE (pas de grid) → le cave-hop le trouvera exposé ailleurs.
-      // (Mon ancien gate Δy du #4-part1 envoyait les diamants profonds au strip-mine → SUPPRIMÉ.)
-      // Les AUTRES ores (fer/lapis/…) gardent le strip-mining dirigé (Massii vise les diamants).
-      if (target.exposed && !target.wet && mineExposed) {            // cave-first : TOUT exposé sec
+      // DIAMANT (bug #1 Massii soir + BUG PRIO 3.1 résolution 16/06) : JAMAIS de strip-mine en GRILLE.
+      //  - EXPOSÉ (visible en grotte) → CAVE-FIRST prioritaire : mineExposed marche/creuse-SERPENTE
+      //    jusqu'à la grotte ; ÉCHEC (trop profond/pas de chemin) → REPLI minage profond SERPENTIN
+      //    (au lieu de boucler/relocate-surface qui détruisait la descente, vécu live) ;
+      //  - ENTERRÉ (hors-grotte) → MINAGE PROFOND SERPENTIN direct à y≈-58 (résolution 16/06 : on
+      //    creuse les diamants au volume en ondulant — anti-tell X-ray, eau scellée par branchMine).
+      // Les AUTRES ores (fer/lapis/…) gardent le cave-first si exposé, sinon le strip-mining dirigé.
+      const _deepSerpentine = async (fallback) => {
+        emit({ type: 'resource_deep_serpentine', material: target.material, x: target.x, y: target.y, z: target.z, ...(fallback ? { fallback } : {}) });
+        try { return await mineFor(target.material, _needed, { serpentine: true }); }
+        catch (e) { return { ok: false, reason: 'error', detail: String((e && e.message) || e).slice(0, 120) }; }
+      };
+      if (_isDiamond && target.exposed && !target.wet && mineExposed) {  // diamant exposé : cave-first PUIS repli profond
+        emit({ type: 'resource_cave', material: target.material, x: target.x, y: target.y, z: target.z });
+        try { await mineExposed(target); _rr = { ok: true }; }
+        catch (e) { _rr = await _deepSerpentine('cave_failed'); }       // grotte inatteignable → minage profond
+      } else if (_isDiamond) {
+        _rr = await _deepSerpentine(null);                              // diamant enterré → minage profond serpentin
+      } else if (target.exposed && !target.wet && mineExposed) {        // autres ores exposés → cave-first (inchangé)
         emit({ type: 'resource_cave', material: target.material, x: target.x, y: target.y, z: target.z });
         try { await mineExposed(target); _rr = { ok: true }; }
         catch (e) { _rr = { ok: false, reason: 'error', detail: String((e && e.message) || e).slice(0, 120) }; }
-      } else if (_isDiamond) {
-        // diamant ENTERRÉ → PAS de strip-mine en grille → on le sacrifie (cave-hop only, exigence Massii).
-        emit({ type: 'resource_skip_buried_diamond', x: target.x, y: target.y, z: target.z });
-        _rr = { ok: true };                                          // pas un échec ; déjà skip → cible suivante
       } else {
         // AUTRES ores enterrés (fer/lapis/…) → strip-mining DIRIGÉ vers la région (heading), pas beeline.
         emit({ type: 'resource_region', material: target.material, toward: { x: target.x, y: target.y, z: target.z }, heading });
