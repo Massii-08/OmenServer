@@ -1168,10 +1168,21 @@ async function mineForType(type, needed, opts = {}) {
   return (r && r.ok) ? r : { ok: false, reason: (r && r.reason) || 'branch_failed' };
 }
 
+// Base "near-spawn" du serveur de test : dérivée du POINT DE SPAWN RÉEL du monde courant
+// (robuste à tout reset/déplacement de worldspawn — ex. world_dry1 = savane sèche), avec
+// fallback historique (208,528) tant que bot.spawnPoint n'est pas encore connu.
+function homeBase() {
+  try {
+    const sp = bot && bot.spawnPoint;
+    if (sp && Number.isFinite(sp.x) && Number.isFinite(sp.z)) return { x: Math.round(sp.x), z: Math.round(sp.z) };
+  } catch (e) {}
+  return { x: 208, z: 528 };
+}
+
 // ── Phase 2 : self-warp vers la RÉGION du bot (quadrant stable dérivé du username autour du
 // spawn) — auto-récupération de starvation/échec sans intervention humaine (bot OP requis).
 function regionCenter() {
-  const base = { x: 208, z: 528 };                       // spawn monde du serveur de test
+  const base = homeBase();                               // spawn monde réel (fallback 208,528)
   let h = 0;
   for (const c of String(bot.username || 'bot')) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   const quad = h % 4;
@@ -1192,23 +1203,24 @@ async function relocateToRegion(opts = {}) {
   // morts mob, 0 extraction). On garde les relocations dans le rayon SEC near-spawn (couche profonde
   // near-spawn vérifiée sèche). Au-delà → ignoré, fallback regionCenter (spawn±520, déjà borné).
   const HOME_RANGE = 800;
+  const hb = homeBase();                                 // base near-spawn dynamique (= spawnPoint réel, savane sèche)
   let c = null;
   // bug #4 / BUG PRIO 2.4 : après une NOYADE, relocaliser vers le SEC near-spawn. Le hardcodé (208,528)
   // était SUPPOSÉ sec mais TOMBE DANS L'EAU en world_fresh2 (24-36% wet) → le bot warpe hors de l'eau
   // pour y RETOMBER → boucle de noyade, 0 minage (vécu live session 1). Fix DRY-AWARE : on vise la
   // cellule mappée la PLUS SÈCHE near-spawn (driestCell, depuis la mémoire de monde) ; fallback hardcodé.
   if (opts.nearSpawn) {
-    let center = { x: 208, z: 528 };
+    let center = { x: hb.x, z: hb.z }; let foundDry = false;
     try {
       const memNS = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
       const wNS = memNS && memNS.worlds && memNS.worlds[bot._worldKey];
       const dry = (wNS && Array.isArray(wNS.ores))
-        ? driestCell(wNS.ores, { base: { x: 208, z: 528 }, range: HOME_RANGE, cellSize: 96, minOres: 12 }) : null;
-      if (dry) center = { x: dry.x, z: dry.z };
-    } catch (e) { /* fallback hardcodé (208,528) */ }
+        ? driestCell(wNS.ores, { base: hb, range: HOME_RANGE, cellSize: 96, minOres: 12 }) : null;
+      if (dry) { center = { x: dry.x, z: dry.z }; foundDry = true; }
+    } catch (e) { /* fallback : la base homeBase() est déjà le spawn sec */ }
     const jx = ((_relocSeq++ * 53) % 80) - 40, jz = ((_relocSeq * 97) % 80) - 40;   // ±40 autour de la cellule sèche
     c = { x: center.x + jx, z: center.z + jz };
-    emit({ type: 'resource_warp', x: c.x, z: c.z, near_spawn: true, dry: !(center.x === 208 && center.z === 528) });
+    emit({ type: 'resource_warp', x: c.x, z: c.z, near_spawn: true, dry: foundDry });
   }
   try {
     const memNow = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
@@ -1223,7 +1235,7 @@ async function relocateToRegion(opts = {}) {
       for (const o of w.ores) {
         if (!o || !o.exposed || o.wet || !String(o.material || '').includes('diamond')) continue;  // jamais un cluster NOYÉ (H7+)
         if (cur && Math.abs(o.x - cur.x) < 80 && Math.abs(o.z - cur.z) < 80) continue;  // pas la zone épuisée
-        if ((o.x - 208) ** 2 + (o.z - 528) ** 2 > HOME_RANGE * HOME_RANGE) continue;   // anti-dispersion : reste near-spawn (sec)
+        if ((o.x - hb.x) ** 2 + (o.z - hb.z) ** 2 > HOME_RANGE * HOME_RANGE) continue;   // anti-dispersion : reste near-spawn (sec)
         const k = Math.floor(o.x / 48) + ',' + Math.floor(o.z / 48);
         const e = cells.get(k) || { n: 0, x: Math.floor(o.x / 48) * 48 + 24, z: Math.floor(o.z / 48) * 48 + 24 };
         e.n++; cells.set(k, e);
@@ -1239,7 +1251,7 @@ async function relocateToRegion(opts = {}) {
     let land = (!c ? ((w && w.biomes) || []) : []).filter((b) => {
       const n = String(b.name || '');
       if (!n || n.includes('ocean') || n.includes('river') || n.includes('beach')) return false;
-      const ddx = b.x - 208, ddz = b.z - 528; const d2 = ddx * ddx + ddz * ddz;
+      const ddx = b.x - hb.x, ddz = b.z - hb.z; const d2 = ddx * ddx + ddz * ddz;
       return d2 > 256 * 256 && d2 < HOME_RANGE * HOME_RANGE;   // anti-dispersion : 256..HOME_RANGE du spawn
     });
     if (opts.forest) {
