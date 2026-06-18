@@ -391,6 +391,13 @@ const Lang = {
             'harvester.back': 'Retour',
             'harvester.demo': 'Pré-remplir l\'exemple (books.toscrape)',
             'harvester.invalid_json': 'JSON invalide',
+            'harvester.instructions': 'Ce que tu veux extraire (langage naturel)',
+            'harvester.generate': 'Générer la recette (IA)',
+            'harvester.generating': 'Génération en cours…',
+            'harvester.difficulty': 'Difficulté',
+            'harvester.preview': 'Aperçu (échantillon)',
+            'harvester.setup_error': 'Échec de la génération IA',
+            'harvester.generated_ok': 'Recette générée — vérifie/édite puis lance',
 
             // MC Agent
             'mcagent.training': 'Entrainement',
@@ -1599,6 +1606,13 @@ const Lang = {
             'harvester.back': 'Back',
             'harvester.demo': 'Prefill the example (books.toscrape)',
             'harvester.invalid_json': 'Invalid JSON',
+            'harvester.instructions': 'What you want to extract (natural language)',
+            'harvester.generate': 'Generate recipe (AI)',
+            'harvester.generating': 'Generating…',
+            'harvester.difficulty': 'Difficulty',
+            'harvester.preview': 'Preview (sample)',
+            'harvester.setup_error': 'AI generation failed',
+            'harvester.generated_ok': 'Recipe generated — review/edit then launch',
 
             // MC Agent
             'mcagent.training': 'Training',
@@ -2807,6 +2821,13 @@ const Lang = {
             'harvester.back': 'Indietro',
             'harvester.demo': 'Precompila l\'esempio (books.toscrape)',
             'harvester.invalid_json': 'JSON non valido',
+            'harvester.instructions': 'Cosa vuoi estrarre (linguaggio naturale)',
+            'harvester.generate': 'Genera ricetta (IA)',
+            'harvester.generating': 'Generazione in corso…',
+            'harvester.difficulty': 'Difficoltà',
+            'harvester.preview': 'Anteprima (campione)',
+            'harvester.setup_error': 'Generazione IA fallita',
+            'harvester.generated_ok': 'Ricetta generata — controlla/modifica poi avvia',
 
             // MC Agent
             'mcagent.training': 'Addestramento',

@@ -54,6 +54,13 @@ const HarvesterModule = {
           </div>
           <label class="form-label">${Lang.t('harvester.form_url')}</label>
           <input id="hrv-url" class="form-input" value="https://books.toscrape.com/catalogue/page-1.html" />
+          <label class="form-label">${Lang.t('harvester.instructions')}</label>
+          <textarea id="hrv-instructions" class="form-input" rows="2" placeholder="ex: titre, prix, disponibilité de chaque livre"></textarea>
+          <div style="margin:8px 0;display:flex;gap:8px;align-items:center;">
+            <button class="btn btn-secondary" id="hrv-gen-btn" onclick="HarvesterModule.generate()">${Lang.t('harvester.generate')}</button>
+            <span id="hrv-gen-status" style="font-size:12px;color:var(--text-dim);"></span>
+          </div>
+          <div id="hrv-preview"></div>
           <label class="form-label">${Lang.t('harvester.form_recipe')}</label>
           <textarea id="hrv-recipe" class="form-input" rows="10" style="font-family:var(--font-mono);">${this._demoRecipe()}</textarea>
           <label class="form-label">${Lang.t('harvester.form_plan')}</label>
@@ -63,6 +70,48 @@ const HarvesterModule = {
             <button class="btn btn-ghost" onclick="BotsModule.render(BotsModule._container)">${Lang.t('harvester.back')}</button>
           </div>
         </div>`;
+    },
+
+    async generate() {
+        const url = document.getElementById('hrv-url').value.trim();
+        const instructions = document.getElementById('hrv-instructions').value.trim();
+        const btn = document.getElementById('hrv-gen-btn');
+        const status = document.getElementById('hrv-gen-status');
+        if (btn) btn.disabled = true;
+        if (status) status.textContent = Lang.t('harvester.generating');
+        try {
+            const r = await Auth.apiCall('/api/bots/harvester/setup', {
+                method: 'POST',
+                body: JSON.stringify({ url, instructions }),
+            });
+            if (!r || !r.ok) {
+                const detail = r ? (await r.json().catch(() => ({}))).detail : '';
+                if (status) status.textContent = Lang.t('harvester.setup_error') + (detail ? ': ' + detail : '');
+                return;
+            }
+            const data = await r.json();
+            document.getElementById('hrv-recipe').value = JSON.stringify(data.recipe, null, 2);
+            document.getElementById('hrv-plan').value = JSON.stringify(data.plan || {}, null, 2);
+            if (status) status.textContent = Lang.t('harvester.generated_ok') + ' · ' + Lang.t('harvester.difficulty') + ': ' + data.difficulty;
+            this._renderPreview(data.sample || []);
+        } catch (e) {
+            if (status) status.textContent = Lang.t('harvester.setup_error');
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    },
+
+    _renderPreview(sample) {
+        const host = document.getElementById('hrv-preview');
+        if (!host) return;
+        if (!sample.length) { host.innerHTML = ''; return; }
+        const cols = Object.keys(sample[0]);
+        const head = cols.map(function (c) { return '<th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border);">' + c + '</th>'; }).join('');
+        const rows = sample.slice(0, 5).map(function (rec) {
+            return '<tr>' + cols.map(function (c) { return '<td style="padding:4px 8px;border-bottom:1px solid var(--border);">' + (rec[c] || '') + '</td>'; }).join('') + '</tr>';
+        }).join('');
+        host.innerHTML = '<div class="form-label" style="margin-top:12px;">' + Lang.t('harvester.preview') + '</div>' +
+            '<div style="overflow:auto;"><table style="border-collapse:collapse;font-family:var(--font-mono);font-size:12px;width:100%;"><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
     },
 
     async start() {
