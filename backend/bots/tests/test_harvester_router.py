@@ -115,3 +115,25 @@ def test_data_unknown_job_404(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     assert c.get("/api/bots/harvester/data/nope",
                  headers={"X-Feed-Key": "x"}).status_code == 404
+
+
+def test_run_rejects_non_http_scheme(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = json.loads(json.dumps(GOOD_BODY))
+    body["url"] = "file:///etc/passwd"
+    r = c.post("/api/bots/harvester/run", json=body)
+    assert r.status_code == 400
+
+
+def test_data_csv_neutralizes_formula_injection(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    resp = c.post("/api/bots/harvester/run", json=GOOD_BODY).json()
+    job_id, feed_key = resp["job_id"], resp["feed_key"]
+    from backend.bots.harvester.store import Store
+    store = Store(str(tmp_path / job_id / "store.json"))
+    store.add_record({"title": "=1+2"})
+    store.save()
+    csv_resp = c.get("/api/bots/harvester/data/{0}?format=csv".format(job_id),
+                     headers={"X-Feed-Key": feed_key})
+    assert csv_resp.status_code == 200
+    assert "'=1+2" in csv_resp.text  # leading '=' neutralised with apostrophe

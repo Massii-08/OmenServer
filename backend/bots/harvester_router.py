@@ -15,9 +15,10 @@ import sys
 import threading
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
@@ -105,6 +106,10 @@ def _launch_subprocess(run_dir: str, job: Dict[str, Any]) -> None:
 @router.post("/run")
 def run_harvester(data: RunRequest, current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
+
+    # n'accepte que http(s) (rejette file://, gopher://, etc.)
+    if urlparse(data.url).scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="URL doit être http(s)")
 
     # no-PII gate sur les NOMS de champ de la recette (fail fast au lancement)
     try:
@@ -204,8 +209,17 @@ def harvester_stop(job_id: str, current_user: User = Depends(get_current_user)):
     return {"status": "stopped", "job_id": job_id}
 
 
+def _csv_safe(value: Any) -> str:
+    """Neutralise l'injection de formule CSV (Excel/Sheets) : préfixe d'une
+    apostrophe toute valeur commençant par = + - @ tab ou CR."""
+    s = "" if value is None else str(value)
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
+
+
 @router.get("/data/{job_id}")
-def harvester_data(job_id: str, request: Request, format: str = "json",
+def harvester_data(job_id: str, format: str = "json",
                    x_feed_key: Optional[str] = Header(default=None)):
     """API privée : renvoie les records accumulés. Gated par X-Feed-Key
     (pas par login → consommable par un client externe)."""
@@ -226,7 +240,7 @@ def harvester_data(job_id: str, request: Request, format: str = "json",
         writer = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
         writer.writeheader()
         for rec in records:
-            writer.writerow(rec)
+            writer.writerow({k: _csv_safe(v) for k, v in rec.items()})
         return PlainTextResponse(buf.getvalue(), media_type="text/csv")
 
     return {"job_id": job_id, "count": len(records), "records": records}
