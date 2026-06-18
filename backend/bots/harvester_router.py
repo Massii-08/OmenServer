@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
+import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
@@ -25,8 +26,10 @@ from pydantic import BaseModel
 from backend.auth.models import User
 from backend.auth.utils import get_current_user
 from backend.bots.harvester.config import HarvestConfig
+from backend.bots.harvester.llm import _claude
 from backend.bots.harvester.policy import PII_FIELDS
 from backend.bots.harvester.recipe import Recipe
+from backend.bots.harvester.setup import build_setup
 from backend.bots.harvester.store import Store
 
 logger = logging.getLogger(__name__)
@@ -51,6 +54,11 @@ class RunRequest(BaseModel):
     recipe: Dict[str, Any]
     plan: Dict[str, Any] = {}
     pacing: Dict[str, Any] = {}
+
+
+class SetupRequest(BaseModel):
+    url: str
+    instructions: str = ""
 
 
 def _run_dir(job_id: str) -> Path:
@@ -103,6 +111,19 @@ def _launch_subprocess(run_dir: str, job: Dict[str, Any]) -> None:
     t.start()
 
 
+def _fetch_full(url):
+    """Un GET httpx unique pour l'échantillon de setup → (status, headers, text)."""
+    with httpx.Client(timeout=20.0, follow_redirects=True,
+                      headers={"User-Agent": "OmenHarvester/0.1 (+https://omenserver.org)"}) as client:
+        resp = client.get(url)
+        return resp.status_code, dict(resp.headers), resp.text
+
+
+def _run_setup(url, instructions):
+    """Orchestre le setup avec les vraies dépendances (Claude CLI + httpx)."""
+    return build_setup(url, instructions, fetch_full=_fetch_full, claude=_claude)
+
+
 @router.post("/run")
 def run_harvester(data: RunRequest, current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
@@ -153,6 +174,30 @@ def run_harvester(data: RunRequest, current_user: User = Depends(get_current_use
     _launch_subprocess(str(run_dir), job)
 
     return {"job_id": job_id, "feed_key": feed_key}
+
+
+@router.post("/setup")
+def setup_harvester(data: SetupRequest, current_user: User = Depends(get_current_user)):
+    _require_admin(current_user)
+    if urlparse(data.url).scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="URL doit être http(s)")
+    try:
+        preview = _run_setup(data.url, data.instructions)
+    except Exception as e:  # LLM/fetch failure → surfaced to the operator
+        logger.warning("[Harvester] setup failed: %r", e)
+        raise HTTPException(status_code=502, detail="Setup IA échoué: {0}".format(str(e)[:200]))
+    # no-PII gate sur la recette générée par Claude
+    try:
+        recipe = Recipe.from_dict(preview["recipe"])
+    except (KeyError, TypeError):
+        raise HTTPException(status_code=502, detail="Recette générée invalide")
+    for name in recipe.field_names():
+        if name.lower() in PII_FIELDS:
+            raise HTTPException(
+                status_code=400,
+                detail="La recette générée contient un champ PII: '{0}'".format(name),
+            )
+    return preview
 
 
 def _disk_counts(job_id: str) -> Optional[Dict[str, int]]:

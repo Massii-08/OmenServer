@@ -137,3 +137,56 @@ def test_data_csv_neutralizes_formula_injection(tmp_path, monkeypatch):
                      headers={"X-Feed-Key": feed_key})
     assert csv_resp.status_code == 200
     assert "'=1+2" in csv_resp.text  # leading '=' neutralised with apostrophe
+
+
+def test_setup_refuses_non_admin(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch, is_admin=False)
+    r = c.post("/api/bots/harvester/setup",
+               json={"url": "https://books.toscrape.com/", "instructions": "titles"})
+    assert r.status_code == 403
+
+
+def test_setup_returns_preview(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    preview = {
+        "url": "https://books.toscrape.com/",
+        "difficulty": "facile",
+        "recipe": {"item_selector": {"tag": "article", "class": "product_pod"},
+                   "fields": {"title": {"selector": [{"tag": "h3"}, {"tag": "a"}],
+                                        "extract": "attr:title"}}},
+        "plan": {"mode": "pagination", "next_selector": {"tag": "li", "class": "next"}},
+        "pacing": {"min_interval_s": 1.5, "jitter": [0.5, 2.0]},
+        "sample": [{"title": "Book One"}],
+    }
+    monkeypatch.setattr(hr, "_run_setup", lambda url, instructions: preview)
+    r = c.post("/api/bots/harvester/setup",
+               json={"url": "https://books.toscrape.com/", "instructions": "titles"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["difficulty"] == "facile"
+    assert body["sample"] == [{"title": "Book One"}]
+    assert body["recipe"]["item_selector"]["class"] == "product_pod"
+
+
+def test_setup_rejects_generated_pii_field(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    preview = {
+        "url": "u", "difficulty": "facile",
+        "recipe": {"item_selector": {"tag": "article"},
+                   "fields": {"email": {"extract": "text"}}},
+        "plan": {}, "pacing": {}, "sample": [],
+    }
+    monkeypatch.setattr(hr, "_run_setup", lambda url, instructions: preview)
+    r = c.post("/api/bots/harvester/setup", json={"url": "https://x.test/", "instructions": "x"})
+    assert r.status_code == 400
+
+
+def test_setup_surfaces_llm_failure_as_502(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom(url, instructions):
+        raise RuntimeError("claude cli rc=2")
+
+    monkeypatch.setattr(hr, "_run_setup", boom)
+    r = c.post("/api/bots/harvester/setup", json={"url": "https://x.test/", "instructions": "x"})
+    assert r.status_code == 502
