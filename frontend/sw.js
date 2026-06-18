@@ -7,7 +7,7 @@
  * Pour désactiver : supprimer ce fichier + la ligne d'enregistrement dans index.html.
  */
 
-const CACHE_NAME = 'omenserver-v111';
+const CACHE_NAME = 'omenserver-v112';
 const STATIC_ASSETS = [
     '/',
     '/css/style.css',
@@ -22,6 +22,7 @@ const STATIC_ASSETS = [
     '/js/sv_monitoring.js',
     '/js/files_module.js',
     '/js/bots_module.js',
+    '/js/harvester_module.js',
     '/js/media_module.js',
     '/js/web_module.js',
     '/js/network_module.js',

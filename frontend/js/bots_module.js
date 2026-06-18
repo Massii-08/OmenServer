@@ -117,6 +117,21 @@ const BotsModule = {
  sharedWithYou: false,
  }) : '';
 
+        // AI Harvester virtual card (admin-only — R&D scraping + API privée)
+        const canSeeHarvester = u && u.is_admin;
+        const harvesterCard = canSeeHarvester ? buildBotCard({
+            icon: 'HRV',
+            name: 'AI Harvester',
+            type: 'data',
+            desc: Lang.t('harvester.desc'),
+            status: 'online',
+            statusLabel: Lang.t('modules.active'),
+            onClick: 'BotsModule.openHarvester()',
+            actions: `<button class="btn btn-ghost btn-sm">${Lang.t('harvester.launch')}</button>`,
+            selected: false,
+            sharedWithYou: false,
+        }) : '';
+
  if (this._bots.length === 0) {
  grid.innerHTML = `
  ${u && u.role === 'developer' ? `<div class="b-quota-row"><span class="bot-quota-badge">${Lang.t('rbac.bot_quota')}: 0/3</span></div>` : ''}
@@ -124,6 +139,7 @@ const BotsModule = {
  ${yieldBotCard}
  ${scannerBotCard}
  ${mcAgentCard}
+ ${harvesterCard}
  </div>`;
  return;
  }
@@ -170,6 +186,7 @@ const BotsModule = {
  ${yieldBotCard}
  ${scannerBotCard}
  ${mcAgentCard}
+ ${harvesterCard}
  ${userBotsHtml}
  </div>`;
  },
@@ -1054,6 +1071,15 @@ const BotsModule = {
  el.innerHTML = `<div class="card"><h3 style="margin:0 0 12px;">MC Agent — ${Lang.t('mcagent.training')}</h3><div id="mca-root"></div></div>`;
  this._renderMCARoot();
  },
+
+    openHarvester() {
+        const u = (typeof Auth !== 'undefined' && Auth.getUser) ? Auth.getUser() : null;
+        if (!u || !u.is_admin) return;
+        if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
+        if (typeof HarvesterModule !== 'undefined') {
+            HarvesterModule.render(this._container);
+        }
+    },
 
  _renderMCARoot() {
  const root = document.getElementById('mca-root');
