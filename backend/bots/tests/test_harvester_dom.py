@@ -54,3 +54,41 @@ def test_void_elements_do_not_nest():
     div = find_first(root, {"tag": "div"})
     # img is void -> p is a sibling of img, both direct children of div
     assert [c.tag for c in div.children] == ["img", "p"]
+
+
+def test_implied_close_p_siblings():
+    root = parse_html("<div><p>one<p>two</div>")
+    div = find_first(root, {"tag": "div"})
+    ps = [c for c in div.children if c.tag == "p"]
+    assert len(ps) == 2
+    assert ps[0].text() == "one"
+    assert ps[1].text() == "two"
+
+
+def test_implied_close_li_siblings():
+    root = parse_html("<ul><li>one<li>two<li>three</ul>")
+    ul = find_first(root, {"tag": "ul"})
+    lis = [c for c in ul.children if c.tag == "li"]
+    assert [li.text() for li in lis] == ["one", "two", "three"]
+
+
+def test_block_element_closes_open_p():
+    root = parse_html("<p>intro<div>block</div>")
+    ps = find_all(root, {"tag": "p"})
+    assert len(ps) == 1
+    assert ps[0].text() == "intro"  # the div is NOT absorbed into p
+    div = find_first(root, {"tag": "div"})
+    assert div.text() == "block"
+
+
+def test_table_implied_cells():
+    root = parse_html("<table><tr><td>a<td>b</tr></table>")
+    tds = find_all(root, {"tag": "td"})
+    assert [td.text() for td in tds] == ["a", "b"]
+
+
+def test_well_formed_p_unaffected():
+    root = parse_html("<div><p>x</p><p>y</p></div>")
+    div = find_first(root, {"tag": "div"})
+    ps = [c for c in div.children if c.tag == "p"]
+    assert [p.text() for p in ps] == ["x", "y"]

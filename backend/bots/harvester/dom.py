@@ -12,6 +12,32 @@ VOID_TAGS = frozenset({
     "link", "meta", "param", "source", "track", "wbr",
 })
 
+# Fermetures implicites (sous-ensemble HTML pertinent au scraping). Quand une de
+# ces balises s'ouvre, on ferme les éléments-frères encore ouverts au sommet de
+# la pile, p.ex. `<li>a<li>b` = 2 frères (pas imbriqués). Sans ça, le 1er record
+# absorbait le contenu du suivant sur du HTML laxiste (fermetures omises).
+_IMPLIED_SIBLING_CLOSE = {
+    "li": {"li"},
+    "option": {"option"},
+    "dd": {"dd", "dt"},
+    "dt": {"dd", "dt"},
+    "tr": {"tr", "td", "th"},
+    "td": {"td", "th"},
+    "th": {"td", "th"},
+    "thead": {"thead", "tbody", "tfoot"},
+    "tbody": {"thead", "tbody", "tfoot"},
+    "tfoot": {"thead", "tbody", "tfoot"},
+    "p": {"p"},
+}
+
+# Éléments de bloc qui ferment un <p> ouvert au sommet de la pile.
+_BLOCK_CLOSES_P = frozenset({
+    "address", "article", "aside", "blockquote", "details", "div", "dl",
+    "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3",
+    "h4", "h5", "h6", "header", "hr", "main", "menu", "nav", "ol", "p", "pre",
+    "section", "table", "ul",
+})
+
 
 class Node(object):
     def __init__(self, tag: str, attrs: Optional[Dict[str, str]] = None) -> None:
@@ -49,7 +75,18 @@ class _TreeBuilder(HTMLParser):
         top.children.append(node)
         top._content.append(node)
 
+    def _implied_close(self, new_tag: str) -> None:
+        # un bloc qui s'ouvre ferme un <p> resté ouvert au sommet
+        if (new_tag in _BLOCK_CLOSES_P and len(self._stack) > 1
+                and self._stack[-1].tag.lower() == "p"):
+            self._stack.pop()
+        closes = _IMPLIED_SIBLING_CLOSE.get(new_tag)
+        if closes:
+            while len(self._stack) > 1 and self._stack[-1].tag.lower() in closes:
+                self._stack.pop()
+
     def handle_starttag(self, tag, attrs):
+        self._implied_close(tag.lower())
         node = Node(tag, {k: (v if v is not None else "") for k, v in attrs})
         self._append_child(node)
         if tag.lower() not in VOID_TAGS:
