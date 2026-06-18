@@ -2,9 +2,29 @@
 
 Zéro LLM, zéro dépendance : repose sur dom.py. Une recette décrit comment
 transformer un HTML en liste de records (un par élément 'item')."""
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from backend.bots.harvester.dom import Node, find_all, find_first, parse_html
+
+
+def resolve_selector(item: Node, sel: Union[Dict[str, str], List[Dict[str, str]], None]) -> Optional[Node]:
+    """Résout un sélecteur de champ relatif à `item`.
+
+    - None    → l'item lui-même.
+    - dict    → 1er descendant matchant {tag/class}.
+    - list    → chaîne descendante (ex: [{tag:'h3'},{tag:'a'}] = le <a> DANS le
+      <h3>) : indispensable quand plusieurs <a> existent dans l'item et qu'on
+      veut le bon (ex: books.toscrape a l'ancre image AVANT l'ancre titre)."""
+    if sel is None:
+        return item
+    if isinstance(sel, list):
+        node = item  # type: Optional[Node]
+        for step in sel:
+            if node is None:
+                return None
+            node = find_first(node, step)
+        return node
+    return find_first(item, sel)
 
 
 def apply_extract(node: Optional[Node], extract_spec: str) -> str:
@@ -46,8 +66,7 @@ class Recipe(object):
         for item in find_all(root, self.item_selector):
             rec = {}  # type: Dict[str, str]
             for field, spec in self.fields.items():
-                sel = spec.get("selector")
-                node = find_first(item, sel) if sel else item
+                node = resolve_selector(item, spec.get("selector"))
                 rec[field] = apply_extract(node, spec.get("extract", "text"))
             records.append(rec)
         return records

@@ -11,7 +11,7 @@ const HarvesterModule = {
         return JSON.stringify({
             item_selector: { tag: 'article', class: 'product_pod' },
             fields: {
-                title: { selector: { tag: 'a' }, extract: 'attr:title' },
+                title: { selector: [{ tag: 'h3' }, { tag: 'a' }], extract: 'attr:title' },
                 price: { selector: { tag: 'p', class: 'price_color' }, extract: 'text' },
                 availability: { selector: { tag: 'p', class: 'availability' }, extract: 'text' },
                 rating: { selector: { tag: 'p', class: 'star-rating' }, extract: 'class:1' },
