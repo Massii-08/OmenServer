@@ -42,5 +42,11 @@ class HarvestConfig(object):
 
     def save(self, run_dir: str) -> None:
         os.makedirs(run_dir, exist_ok=True)
-        with open(os.path.join(run_dir, "config.json"), "w", encoding="utf-8") as f:
+        path = os.path.join(run_dir, "config.json")
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, ensure_ascii=False, indent=2)
+        # config.json porte des secrets (feed_key, éventuels creds proxy) -> 600
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass

@@ -3,6 +3,7 @@
 Charge config.json + store.json depuis run_dir, construit l'engine httpx, et
 boucle. Émet la progression en lignes JSON sur stdout (capturées par le router).
 fetcher injectable → test offline (run_harvest)."""
+import functools
 import json
 import os
 import sys
@@ -25,13 +26,66 @@ def _emit(obj: Dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
-def _build_fetcher(tier, rate, url):
-    """Sélection du tier de fetch. Défaut = httpx (P1). 'stealth' = tier P3b
-    (squelette pluggable, évasion à implémenter par l'utilisateur). Tout autre
-    valeur retombe sur httpx."""
+def _as_int(value, default, lo=None, hi=None):
+    """int() tolérant + bornage. Une valeur de plan éditée à la main ('60.0',
+    'abc', None) ne crashe jamais -> retombe sur le défaut, puis clamp [lo,hi]."""
+    try:
+        n = int(float(value))
+    except (TypeError, ValueError):
+        n = default
+    if lo is not None:
+        n = max(lo, n)
+    if hi is not None:
+        n = min(hi, n)
+    return n
+
+
+def _as_float(value, default, lo=None, hi=None):
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        n = default
+    if lo is not None:
+        n = max(lo, n)
+    if hi is not None:
+        n = min(hi, n)
+    return n
+
+
+def _build_fetcher(tier, rate, url, plan=None, run_dir=None):
+    """Sélection du tier de fetch. Défaut = httpx. 'stealth' = patchright + options
+    lues du plan : proxy, pace_min/max, max_wait, retries, wait_after (settle JS),
+    locale, timezone, rewarm_every. Valeurs bornées + tolérantes (jamais de crash
+    sur un plan édité à la main). Tout autre tier retombe sur httpx."""
+    plan = plan or {}
     if tier == "stealth":
-        from backend.bots.harvester.fetch_stealth import StealthFetcher
-        return StealthFetcher(rate, warm_url=url)
+        from backend.bots.harvester.fetch_stealth import StealthFetcher, jitter_delay
+        proxy = plan.get("proxy")
+        if isinstance(proxy, str):
+            proxy = {"server": proxy}     # confort : une URL string -> dict playwright
+        if isinstance(proxy, dict) and not proxy.get("server"):
+            proxy = None                  # proxy sans 'server' -> ignoré (pas de crash opaque)
+        elif not isinstance(proxy, (dict, type(None))):
+            proxy = None
+        browser_opts = {
+            "proxy": proxy,
+            "locale": plan.get("locale"),
+            "timezone_id": plan.get("timezone"),
+            "settle_ms": _as_int(plan.get("wait_after", 0), 0, lo=0, hi=30000),
+        }
+        has_pace = ("pace_min" in plan) or ("pace_max" in plan)
+        pmin = _as_float(plan.get("pace_min"), 3.0, lo=0.1, hi=120.0)
+        pmax = _as_float(plan.get("pace_max"), 8.0, lo=0.1, hi=120.0)
+        pmin, pmax = sorted((pmin, pmax))   # fenêtre toujours bien formée (min<=max)
+        jitter = (functools.partial(jitter_delay, lo=pmin, hi=pmax)
+                  if has_pace else jitter_delay)
+        return StealthFetcher(
+            rate, warm_url=url, jitter=jitter,
+            max_wait_s=_as_int(plan.get("max_wait"), 35, lo=1, hi=120),
+            retries=_as_int(plan.get("retries"), 2, lo=1, hi=10),
+            run_dir=run_dir, browser_opts=browser_opts,
+            rewarm_every=_as_int(plan.get("rewarm_every"), 0, lo=0, hi=10000),
+        )
     return HttpxFetcher(rate)
 
 
@@ -64,25 +118,27 @@ def run_harvest(run_dir: str, fetcher: Optional[Any] = None,
         pacing.get("min_interval_s", 1.5), cfg.url, robots_get)
     pacer = AdaptivePacer(base_interval)
 
-    if fetcher is None:
-        # le pacer gouverne l'espacement -> le RateLimiter du fetcher est un
-        # simple plancher a 0 (pas de double-pacing).
-        rate = RateLimiter(0.0)
-        tier = (cfg.plan or {}).get("fetch_tier", "httpx")
-        fetcher = _build_fetcher(tier, rate, cfg.url)
-
     def should_stop():
         return os.path.isfile(os.path.join(run_dir, STOP_FILE))
 
     def on_progress(counts):
         _emit({"type": "progress", "counts": counts})
 
-    eng = Engine(store, cfg.recipe, fetcher, FieldPolicy(allowed=cfg.recipe.field_names()),
-                 cfg.plan, on_progress=on_progress, should_stop=should_stop, pacer=pacer,
-                 on_event=_emit)
+    # Build du fetcher DANS le try : une option de plan invalide (proxy mal formé,
+    # etc.) est surfacée en {"type":"error"} au lieu de tuer le subprocess en
+    # silence avant le démarrage du moteur.
     try:
+        if fetcher is None:
+            # le pacer gouverne l'espacement -> RateLimiter plancher a 0.
+            rate = RateLimiter(0.0)
+            tier = (cfg.plan or {}).get("fetch_tier", "httpx")
+            fetcher = _build_fetcher(tier, rate, cfg.url, cfg.plan, run_dir)
+        eng = Engine(store, cfg.recipe, fetcher,
+                     FieldPolicy(allowed=cfg.recipe.field_names()), cfg.plan,
+                     on_progress=on_progress, should_stop=should_stop, pacer=pacer,
+                     on_event=_emit)
         eng.run()
-    except Exception as e:  # noqa: BLE001 — surfaced as a final log line
+    except Exception as e:  # noqa: BLE001 — toute erreur (config/proxy/run) -> log
         _emit({"type": "error", "message": repr(e)})
         return 1
     _emit({"type": "done", "counts": store.counts()})

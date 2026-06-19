@@ -76,6 +76,16 @@ def test_run_launches_and_returns_feed_key(tmp_path, monkeypatch):
     assert cfg_path.is_file()
 
 
+def test_run_config_json_is_chmod_600(tmp_path, monkeypatch):
+    # config.json porte des secrets (feed_key, creds proxy) -> permissions 600
+    import os
+    import stat
+    c, _ = make_client(tmp_path, monkeypatch)
+    job_id = c.post("/api/bots/harvester/run", json=GOOD_BODY).json()["job_id"]
+    mode = stat.S_IMODE(os.stat(str(tmp_path / job_id / "config.json")).st_mode)
+    assert mode == 0o600
+
+
 def test_status_and_active(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     job_id = c.post("/api/bots/harvester/run", json=GOOD_BODY).json()["job_id"]

@@ -40,6 +40,10 @@ PACE_MAX = float(os.environ.get("FEEDSMITH_PACE_MAX", "8.0"))
 # Default base dir for the persistent per-host Chrome profiles (N2).
 PROFILE_BASE = os.environ.get("FEEDSMITH_PROFILE_BASE", "/tmp/feedsmith_stealth")
 
+# Cap des dumps de diagnostic par run (anti remplissage disque si la cible
+# bloque en boucle). Quelques échantillons suffisent à diagnostiquer.
+MAX_BLOCK_DUMPS = int(os.environ.get("FEEDSMITH_MAX_BLOCK_DUMPS", "20"))
+
 # Cloudflare interstitial title tokens (EN/FR). Deliberately narrow so a real
 # page title never matches.
 _CHALLENGE_TOKENS = (
@@ -144,6 +148,8 @@ class BrowserSession(typing.Protocol):
 
     def interact(self) -> None: ...  # human behavioural noise (mouse/scroll)
 
+    def screenshot(self, path: str) -> None: ...  # diagnostic au blocage
+
 
 class StealthFetcher:
     """Anti-detection fetcher: paces like a human, warms cf_clearance on the
@@ -164,9 +170,13 @@ class StealthFetcher:
         max_wait_s: int = 35,
         retries: int = 2,
         profile_base: str = PROFILE_BASE,
+        run_dir: Optional[str] = None,
+        browser_opts: Optional[dict] = None,
+        rewarm_every: int = 0,
     ) -> None:
-        """Configure pacing, warm URL, challenge wait budget, retries, and the
-        per-host persistent-profile base dir."""
+        """Configure pacing, warm URL, challenge wait budget, retries, per-host
+        profile, diagnostics run_dir, browser options (proxy/locale/tz/settle),
+        and periodic cf_clearance re-warm (0 = jamais)."""
         self.rate = rate
         self._session = session
         self.warm_url = warm_url
@@ -175,15 +185,49 @@ class StealthFetcher:
         self.max_wait_s = max_wait_s
         self.retries = retries
         self._profile_base = profile_base
+        self.run_dir = run_dir
+        self._browser_opts = browser_opts or {}
+        self.rewarm_every = rewarm_every
         self._warmed = False
+        self._req_count = 0
+        # seed depuis les dumps existants -> une reprise n'écrase pas les anciens
+        self._block_n = 0
+        if run_dir:
+            try:
+                import glob
+                self._block_n = len(glob.glob(
+                    os.path.join(run_dir, "blocks", "block-*.html")))
+            except Exception:  # noqa: BLE001
+                pass
 
     def _ensure_session(self) -> "BrowserSession":
         """Return the injected session, or lazily build the real patchright one
-        with a stable per-host profile (N2)."""
+        with a stable per-host profile (N2) + browser options."""
         if self._session is None:
             profile = profile_for(self._profile_base, self.warm_url or "")
-            self._session = PatchrightBrowserSession(profile=profile)
+            self._session = PatchrightBrowserSession(profile=profile,
+                                                     **self._browser_opts)
         return self._session
+
+    def _dump_block(self, session: "BrowserSession", url: str) -> None:
+        """Diagnostic au blocage : enregistre screenshot + HTML dans run_dir/blocks
+        pour que l'opérateur voie CE qui bloque (Turnstile ? IP ? rate-limit ?).
+        Best-effort, ne lève jamais."""
+        if not self.run_dir or self._block_n >= MAX_BLOCK_DUMPS:
+            return  # cap : pas de remplissage disque si la cible bloque en boucle
+        try:
+            d = os.path.join(self.run_dir, "blocks")
+            os.makedirs(d, exist_ok=True)
+            self._block_n += 1
+            base = os.path.join(d, "block-{0}".format(self._block_n))
+            shot = getattr(session, "screenshot", None)
+            if callable(shot):
+                shot(base + ".png")
+            with open(base + ".html", "w", encoding="utf-8") as f:
+                f.write("<!-- blocked url: {0} -->\n".format(url))
+                f.write(session.content() or "")
+        except Exception:  # noqa: BLE001 — diagnostic best-effort
+            pass
 
     def _wait_resolved(self, session: "BrowserSession") -> bool:
         """Poll the page title until the CF challenge clears or budget runs out."""
@@ -207,6 +251,11 @@ class StealthFetcher:
         session = self._ensure_session()
         self.rate.wait()
         self._sleep(self._jitter())  # human pacing (anti speed-flag)
+        # re-warm périodique du cf_clearance (cookie ~30 min) pour les longs runs
+        if self.rewarm_every and self._req_count > 0 \
+                and self._req_count % self.rewarm_every == 0:
+            self._warmed = False
+        self._req_count += 1
         self._warm(session)
 
         last_error: Optional[str] = None
@@ -226,6 +275,7 @@ class StealthFetcher:
             self._warmed = False
             self._warm(session)
 
+        self._dump_block(session, url)  # diagnostic : screenshot + HTML au blocage
         # PushbackError (sous-classe de FetchError) -> l'engine recule (pacer)
         # et réessaie l'URL au lieu de la marteler ou de l'abandonner sèchement.
         raise PushbackError(
@@ -252,10 +302,19 @@ class PatchrightBrowserSession:
         self,
         profile: str = PROFILE_BASE,
         headless: bool = False,
+        proxy=None,
+        locale=None,
+        timezone_id=None,
+        settle_ms: int = 0,
     ) -> None:
-        """Store the persistent profile dir and headless flag."""
+        """Profil persistant + options : proxy (dict playwright), locale,
+        timezone_id (cohérence fingerprint), settle_ms (attente JS post-goto)."""
         self.profile = profile
         self.headless = headless
+        self.proxy = proxy
+        self.locale = locale
+        self.timezone_id = timezone_id
+        self.settle_ms = settle_ms
         self._pw = None
         self._ctx = None
         self._page = None
@@ -277,14 +336,19 @@ class PatchrightBrowserSession:
             channel="chrome",
             headless=self.headless,
             no_viewport=True,
+            proxy=self.proxy,             # None = pas de proxy
+            locale=self.locale,
+            timezone_id=self.timezone_id,
             args=["--no-sandbox", "--disable-dev-shm-usage"],
         )
         self._page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
 
     def goto(self, url: str) -> None:
-        """Navigate to ``url`` (domcontentloaded, 60s timeout)."""
+        """Navigate to ``url`` (domcontentloaded, 60s) + settle JS optionnel."""
         self._ensure()
         self._page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        if self.settle_ms:
+            self._page.wait_for_timeout(self.settle_ms)   # contenu rendu en JS
 
     def title(self) -> str:
         """Return the current page title."""
@@ -295,6 +359,14 @@ class PatchrightBrowserSession:
         """Return the current page HTML."""
         self._ensure()
         return self._page.content()
+
+    def screenshot(self, path: str) -> None:
+        """Capture la page (diagnostic au blocage). Best-effort."""
+        self._ensure()
+        try:
+            self._page.screenshot(path=path)   # viewport (borné), pas full_page
+        except Exception:  # noqa: BLE001 — diagnostic best-effort
+            pass
 
     def interact(self) -> None:
         """Behavioural noise (N1): a few human-ish mouse moves + a scroll.
