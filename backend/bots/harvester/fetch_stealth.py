@@ -31,7 +31,7 @@ import typing
 from typing import Callable, Optional
 from urllib.parse import urlsplit
 
-from backend.bots.harvester.fetch import FetchError, RateLimiter
+from backend.bots.harvester.fetch import FetchError, PushbackError, RateLimiter
 
 # Human pacing bounds between requests (anti speed-flag); overridable via env.
 PACE_MIN = float(os.environ.get("FEEDSMITH_PACE_MIN", "3.0"))
@@ -58,6 +58,31 @@ def is_challenge(title: str) -> bool:
     if not t:
         return True
     return any(tok in t for tok in _CHALLENGE_TOKENS)
+
+
+# Body markers (B): a challenge page can have a benign <title> but the HTML
+# still carries Turnstile / CF-challenge widgets. Narrow enough that a real
+# page never matches.
+_CHALLENGE_HTML_MARKERS = (
+    "cf-turnstile",
+    "__cf_chl",
+    "cf_chl_opt",
+    "/cdn-cgi/challenge-platform",
+    "challenge-platform",
+    "cf-mitigated",
+    "just a moment",
+    "checking your browser",
+    "attention required",
+)
+
+
+def is_challenge_html(html: str) -> bool:
+    """True if the page BODY carries Cloudflare challenge markers (B).
+
+    Catches the case where the title looks fine but we were actually served an
+    interstitial / Turnstile widget instead of the real content."""
+    t = (html or "").lower()
+    return any(m in t for m in _CHALLENGE_HTML_MARKERS)
 
 
 def jitter_delay(
@@ -184,13 +209,22 @@ class StealthFetcher:
             session.goto(url)
             _interact(session)  # N1: look human before reading the DOM
             if self._wait_resolved(session):
-                return session.content()
-            last_error = "Cloudflare challenge unresolved"
+                html = session.content()
+                # B: even if the title cleared, the body may still be an
+                # interstitial / Turnstile -> never accept it as content.
+                if not is_challenge_html(html):
+                    return html
+                last_error = "challenge markers in body"
+            else:
+                last_error = "Cloudflare challenge unresolved"
             # cookie may have gone cold -> re-warm before the next attempt.
             self._warmed = False
             self._warm(session)
 
-        raise FetchError("GET {0} blocked: {1}".format(url, last_error))
+        # PushbackError (sous-classe de FetchError) -> l'engine recule (pacer)
+        # et réessaie l'URL au lieu de la marteler ou de l'abandonner sèchement.
+        raise PushbackError(
+            "GET {0} blocked: {1}".format(url, last_error), retry_after=None)
 
 
 class PatchrightBrowserSession:

@@ -24,6 +24,10 @@ def make_client(tmp_path, monkeypatch, is_admin=True):
         launched["run_dir"] = run_dir
         job["status"] = "running"
         job["process"] = None
+        # mirror the real launch contract: a pidfile (live pid) so the
+        # disk-based status reconstruction (A) sees the run as "running".
+        import os as _os
+        hr._pid_path(run_dir).write_text(str(_os.getpid()), encoding="utf-8")
         return None
 
     monkeypatch.setattr(hr, "_launch_subprocess", fake_launch)

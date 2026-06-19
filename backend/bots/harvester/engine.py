@@ -20,7 +20,8 @@ class Engine(object):
                  on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
                  should_stop: Optional[Callable[[], bool]] = None,
                  error_backoff_s: float = 10.0,
-                 pacer=None, max_pushback_retries: int = 5) -> None:
+                 pacer=None, max_pushback_retries: int = 5,
+                 on_event: Optional[Callable[[Dict[str, Any]], None]] = None) -> None:
         self.store = store
         self.recipe = recipe
         self.fetcher = fetcher
@@ -29,15 +30,21 @@ class Engine(object):
         self._sleep = sleep
         self._jitter = jitter
         self._on_progress = on_progress
+        self._on_event = on_event
         self._should_stop = should_stop or (lambda: False)
         self.error_backoff_s = error_backoff_s
         self._pacer = pacer
         self.max_pushback_retries = max_pushback_retries
         self._pushbacks = {}  # type: Dict[str, int]
+        self._empty = {}  # type: Dict[str, int]   # pages 0-record (B)
 
     def _progress(self) -> None:
         if self._on_progress:
             self._on_progress(self.store.counts())
+
+    def _event(self, obj: Dict[str, Any]) -> None:
+        if self._on_event:
+            self._on_event(obj)
 
     def _pace(self) -> None:
         if self._pacer is not None:
@@ -83,9 +90,24 @@ class Engine(object):
             self._sleep(self.error_backoff_s)
             return True
 
-        for raw in self.recipe.extract(html):
+        extracted = list(self.recipe.extract(html))
+        for raw in extracted:
             clean = self.policy.validate(raw)   # PolicyViolation -> propagates (fatal)
             self.store.add_record(clean)
+
+        if not extracted:
+            # B: page 0-record -> signal de soft-block (visibilité opérateur)
+            self._event({"type": "zero_items", "url": url})
+            if self.plan.get("pushback_on_empty") and self._pacer is not None:
+                nb = self._empty.get(url, 0) + 1
+                self._empty[url] = nb
+                if nb < self.max_pushback_retries:
+                    self._pacer.penalize(None)
+                    self.store.save()
+                    self._progress()
+                    self._pace()
+                    return True   # réessaie la MÊME url (pas de done/pagination)
+                self.store.add_error()   # abandon après N essais -> on poursuit
 
         if self.plan.get("mode") == "pagination":
             nxt = next_page_url(html, url, self.plan.get("next_selector") or {})

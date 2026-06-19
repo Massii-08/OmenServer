@@ -10,9 +10,10 @@ from typing import Any, Dict, Optional
 
 from backend.bots.harvester.config import HarvestConfig
 from backend.bots.harvester.engine import Engine
-from backend.bots.harvester.fetch import HttpxFetcher, RateLimiter
+from backend.bots.harvester.fetch import DEFAULT_UA, HttpxFetcher, RateLimiter
 from backend.bots.harvester.pacing import AdaptivePacer
 from backend.bots.harvester.policy import FieldPolicy
+from backend.bots.harvester.robots import resolve_base_interval
 from backend.bots.harvester.store import Store
 
 # fichier sentinelle posé par le router pour demander l'arrêt propre
@@ -34,14 +35,30 @@ def _build_fetcher(tier, rate, url):
     return HttpxFetcher(rate)
 
 
-def run_harvest(run_dir: str, fetcher: Optional[Any] = None) -> int:
+def _default_robots_get(url):
+    """GET robots.txt en httpx (prod). Best-effort -> '' si erreur/4xx-5xx."""
+    import httpx
+    with httpx.Client(timeout=10.0, follow_redirects=True,
+                      headers={"User-Agent": DEFAULT_UA}) as c:
+        r = c.get(url)
+        return r.text if r.status_code < 400 else ""
+
+
+def run_harvest(run_dir: str, fetcher: Optional[Any] = None,
+                robots_get: Optional[Any] = None) -> int:
     cfg = HarvestConfig.load(run_dir)
     store = Store.load(os.path.join(run_dir, "store.json"))
     if store.next_todo() is None and not store.counts()["done"]:
         store.add_todo(cfg.url)
 
     pacing = cfg.pacing or {}
-    base_interval = float(pacing.get("min_interval_s", 1.5))
+    # C: plancher de pacing = max(configuré, Crawl-delay robots.txt). En prod
+    # (fetcher None) on lit robots.txt en httpx ; en test (fetcher injecté) on
+    # ne touche pas au réseau sauf si robots_get est fourni.
+    if robots_get is None and fetcher is None:
+        robots_get = _default_robots_get
+    base_interval = resolve_base_interval(
+        pacing.get("min_interval_s", 1.5), cfg.url, robots_get)
     pacer = AdaptivePacer(base_interval)
 
     if fetcher is None:
@@ -58,7 +75,8 @@ def run_harvest(run_dir: str, fetcher: Optional[Any] = None) -> int:
         _emit({"type": "progress", "counts": counts})
 
     eng = Engine(store, cfg.recipe, fetcher, FieldPolicy(allowed=cfg.recipe.field_names()),
-                 cfg.plan, on_progress=on_progress, should_stop=should_stop, pacer=pacer)
+                 cfg.plan, on_progress=on_progress, should_stop=should_stop, pacer=pacer,
+                 on_event=_emit)
     try:
         eng.run()
     except Exception as e:  # noqa: BLE001 — surfaced as a final log line
