@@ -13,6 +13,39 @@ class FetchError(Exception):
     pass
 
 
+class PushbackError(FetchError):
+    """Le serveur demande de ralentir (429/Retry-After) ou nous challenge.
+    Porte le status + un éventuel délai Retry-After (secondes)."""
+
+    def __init__(self, message, status=None, retry_after=None):
+        FetchError.__init__(self, message)
+        self.status = status
+        self.retry_after = retry_after
+
+
+_CHALLENGE_TOKENS = (
+    "just a moment",
+    "checking your browser",
+    "attention required",
+    "verify you are human",
+    "cf-challenge",
+)
+
+
+def is_challenge(text):
+    t = (text or "").lower()
+    return any(tok in t for tok in _CHALLENGE_TOKENS)
+
+
+def _parse_retry_after(value):
+    if not value:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None  # HTTP-date form ignored (we just fall back to multiplicative)
+
+
 class RateLimiter(object):
     """Garantit un intervalle minimal entre deux retours de wait()."""
 
@@ -66,12 +99,22 @@ class HttpxFetcher(object):
             self.rate.wait()
             try:
                 resp = client.get(url)
-                if resp.status_code >= 400:
-                    last = "HTTP {0}".format(resp.status_code)
-                else:
-                    return resp.text
             except httpx.HTTPError as e:
                 last = repr(e)
+            else:
+                sc = resp.status_code
+                # pushback : surfacé tout de suite (l'engine adapte le pacing)
+                if sc == 429 or (sc == 503 and resp.headers.get("Retry-After")):
+                    raise PushbackError(
+                        "HTTP {0}".format(sc), status=sc,
+                        retry_after=_parse_retry_after(resp.headers.get("Retry-After")))
+                if sc >= 400:
+                    last = "HTTP {0}".format(sc)
+                else:
+                    text = resp.text
+                    if is_challenge(text):
+                        raise PushbackError("challenge page", status=sc, retry_after=None)
+                    return text
             if attempt < self.retries - 1:
-                self._sleep(1.0 * (attempt + 1))  # linear back-off
+                self._sleep(1.0 * (attempt + 1))  # linear back-off (transient errors)
         raise FetchError("GET {0} failed: {1}".format(url, last))
