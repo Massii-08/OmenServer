@@ -153,6 +153,65 @@ def rehydrate_jobs(is_alive=_pid_alive) -> None:
             _harvester_jobs[d.name] = job
 
 
+# Survie réelle au restart : une moisson tuée par le cgroup (restart/auto-deploy)
+# est RELANCÉE au démarrage et reprend depuis la frontière persistée sur disque.
+RESUME_MAX_AGE_S = 24 * 3600  # ne pas ressusciter un run abandonné depuis > 24h
+
+
+def _has_pending(run_dir) -> bool:
+    sp = Path(run_dir) / "store.json"
+    if not sp.is_file():
+        return False
+    return Store.load(str(sp)).next_todo() is not None
+
+
+def _should_resume(run_dir, is_alive=_pid_alive, now=None,
+                   max_age_s=RESUME_MAX_AGE_S) -> bool:
+    """True si le run a été INTERROMPU (pas d'arrêt volontaire, plus de process
+    vivant) et qu'il reste du todo -> à reprendre. Garde de fraîcheur : un run
+    abandonné depuis trop longtemps n'est pas ressuscité (now optionnel)."""
+    if (Path(run_dir) / "stop.flag").is_file():
+        return False                      # arrêt volontaire
+    pid = _read_pid(run_dir)
+    if pid and is_alive(pid):
+        return False                      # déjà en cours
+    sp = Path(run_dir) / "store.json"
+    if not sp.is_file():
+        return False
+    if now is not None:
+        try:
+            if now - os.path.getmtime(str(sp)) > max_age_s:
+                return False
+        except OSError:
+            return False
+    return Store.load(str(sp)).next_todo() is not None
+
+
+def resume_interrupted_runs(launch=None, is_alive=_pid_alive, now=None):
+    """Relance les moissons interrompues depuis leur frontière. Appelé au
+    DÉMARRAGE de l'app (pas à l'import -> aucun effet de bord en test)."""
+    import time as _time
+    if now is None:
+        now = _time.time()
+    launch = launch or _launch_subprocess
+    base = Path(HARVESTER_RUNS_DIR)
+    if not base.is_dir():
+        return []
+    resumed = []
+    for d in sorted(base.iterdir()):
+        if not d.is_dir() or not _should_resume(str(d), is_alive, now):
+            continue
+        job = _job_from_disk(str(d), d.name, is_alive) or {"job_id": d.name, "logs": []}
+        job["status"] = "running"
+        _harvester_jobs[d.name] = job
+        try:
+            launch(str(d), job)           # reprend depuis la frontière
+            resumed.append(d.name)
+        except Exception:  # noqa: BLE001 — un run qui refuse de relancer ne bloque pas les autres
+            pass
+    return resumed
+
+
 def _launch_subprocess(run_dir: str, job: Dict[str, Any]) -> None:
     """Lance `python -m backend.bots.harvester <run_dir>` détaché + thread logs."""
     subprocess_env = {**os.environ, "PYTHONUNBUFFERED": "1"}

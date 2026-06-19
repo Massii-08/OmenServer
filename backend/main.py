@@ -353,6 +353,17 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"Erreur auto-restart serveurs: {e}")
 
+    # Reprise auto des moissons interrompues (tuées par le restart/auto-deploy).
+    # Le store frontier persiste sur disque -> on relance depuis là où elles en
+    # étaient, sans toucher à systemd. Survie réelle au restart pour le harvester.
+    try:
+        from backend.bots.harvester_router import resume_interrupted_runs
+        resumed = resume_interrupted_runs()
+        if resumed:
+            logger.info(f"🌾 Harvester: {len(resumed)} moisson(s) reprise(s) depuis la frontière: {resumed}")
+    except Exception as e:
+        logger.warning(f"Harvester resume au démarrage échoué: {e}")
+
     logger.info(f"🚀 {settings.SERVER_NAME} est prêt ! → http://localhost:{settings.PORT}")
 
 
