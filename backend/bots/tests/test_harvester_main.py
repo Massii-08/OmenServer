@@ -37,3 +37,28 @@ def test_run_harvest_writes_store(tmp_path, monkeypatch):
     written = Store.load(str(tmp_path / "store.json"))
     assert written.records() == [{"title": "A"}]
     assert written.counts()["done"] == 1
+
+
+def test_build_engine_uses_adaptive_pacer_from_config(tmp_path, monkeypatch):
+    from backend.bots.harvester import __main__ as entry
+    from backend.bots.harvester.pacing import AdaptivePacer
+
+    cfg = dict(CFG)
+    cfg["pacing"] = {"min_interval_s": 7.0, "jitter": [0.0, 0.0]}
+    HarvestConfig.from_dict(cfg).save(str(tmp_path))
+    store = Store(str(tmp_path / "store.json"))
+    store.add_todo(cfg["url"])
+    store.save()
+
+    captured = {}
+    real_engine = entry.Engine
+
+    def spy_engine(*args, **kwargs):
+        captured["pacer"] = kwargs.get("pacer")
+        return real_engine(*args, **kwargs)
+
+    monkeypatch.setattr(entry, "Engine", spy_engine)
+    rc = entry.run_harvest(str(tmp_path), fetcher=FakeFetcher())
+    assert rc == 0
+    assert isinstance(captured["pacer"], AdaptivePacer)
+    assert captured["pacer"].base == 7.0

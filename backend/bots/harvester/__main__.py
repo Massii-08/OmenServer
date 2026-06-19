@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 from backend.bots.harvester.config import HarvestConfig
 from backend.bots.harvester.engine import Engine
 from backend.bots.harvester.fetch import HttpxFetcher, RateLimiter
+from backend.bots.harvester.pacing import AdaptivePacer
 from backend.bots.harvester.policy import FieldPolicy
 from backend.bots.harvester.store import Store
 
@@ -32,14 +33,14 @@ def run_harvest(run_dir: str, fetcher: Optional[Any] = None) -> int:
         store.add_todo(cfg.url)
 
     pacing = cfg.pacing or {}
+    base_interval = float(pacing.get("min_interval_s", 1.5))
+    pacer = AdaptivePacer(base_interval)
+
     if fetcher is None:
-        rate = RateLimiter(float(pacing.get("min_interval_s", 1.5)))
+        # le pacer gouverne l'espacement -> le RateLimiter du fetcher est un
+        # simple plancher a 0 (pas de double-pacing).
+        rate = RateLimiter(0.0)
         fetcher = HttpxFetcher(rate)
-
-    jit = pacing.get("jitter") or [0.0, 0.0]
-
-    def jitter():
-        return random.uniform(float(jit[0]), float(jit[1]))
 
     def should_stop():
         return os.path.isfile(os.path.join(run_dir, STOP_FILE))
@@ -48,7 +49,7 @@ def run_harvest(run_dir: str, fetcher: Optional[Any] = None) -> int:
         _emit({"type": "progress", "counts": counts})
 
     eng = Engine(store, cfg.recipe, fetcher, FieldPolicy(allowed=cfg.recipe.field_names()),
-                 cfg.plan, jitter=jitter, on_progress=on_progress, should_stop=should_stop)
+                 cfg.plan, on_progress=on_progress, should_stop=should_stop, pacer=pacer)
     try:
         eng.run()
     except Exception as e:  # noqa: BLE001 — surfaced as a final log line
