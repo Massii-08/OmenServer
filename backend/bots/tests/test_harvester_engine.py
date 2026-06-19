@@ -139,3 +139,71 @@ def test_engine_sitemap_mode_no_pagination(tmp_path):
     eng.run()
     assert fetcher.calls == ["https://x.test/page-1.html"]  # no next-link followed
     assert store.records() == [{"title": "A", "price": "£1"}]
+
+
+from backend.bots.harvester.fetch import PushbackError
+from backend.bots.harvester.pacing import AdaptivePacer
+
+
+class PushbackThenOkFetcher(object):
+    """429 the first `n` times for page-1, then serves normally."""
+    def __init__(self, pages, fail_times):
+        self.pages = pages
+        self.fail_times = fail_times
+        self.calls = []
+
+    def get(self, url):
+        self.calls.append(url)
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise PushbackError("429", status=429, retry_after=None)
+        return self.pages[url]
+
+
+def test_engine_pushback_retries_same_url_and_penalizes(tmp_path):
+    store = _store(tmp_path)
+    store.add_todo("https://x.test/page-1.html")
+    pacer = AdaptivePacer(2.0, backoff_factor=2.0)
+    slept = []
+    fetcher = PushbackThenOkFetcher({"https://x.test/page-1.html": PAGE2}, fail_times=2)
+    eng = Engine(store, Recipe.from_dict(LISTING_RECIPE), fetcher,
+                 FieldPolicy(allowed=["title", "price"]), {"mode": "sitemap"},
+                 sleep=lambda s: slept.append(s), pacer=pacer)
+    eng.run()
+    # page-1 fetched 3x (2 pushbacks + 1 success), never abandoned
+    assert fetcher.calls == ["https://x.test/page-1.html"] * 3
+    assert store.records() == [{"title": "B", "price": "£2"}]
+    assert store.counts()["done"] == 1
+    assert store.counts()["errors"] == 0
+    # interval grew on the 2 pushbacks (4, then 8) then relaxed once on success (->4)
+    assert 4.0 in slept and 8.0 in slept
+
+
+def test_engine_pushback_gives_up_after_max_retries(tmp_path):
+    store = _store(tmp_path)
+    store.add_todo("https://x.test/page-1.html")
+
+    class AlwaysPushback(object):
+        def get(self, url):
+            raise PushbackError("429", status=429, retry_after=None)
+
+    pacer = AdaptivePacer(1.0, max_interval_s=100.0)
+    eng = Engine(store, Recipe.from_dict(LISTING_RECIPE), AlwaysPushback(),
+                 FieldPolicy(allowed=["title", "price"]), {"mode": "sitemap"},
+                 sleep=lambda s: None, pacer=pacer, max_pushback_retries=3)
+    eng.run()
+    assert store.counts()["errors"] == 1
+    assert store.counts()["done"] == 1   # abandoned after the cap so the loop ends
+
+
+def test_engine_paces_by_pacer_interval_on_success(tmp_path):
+    store = _store(tmp_path)
+    store.add_todo("https://x.test/page-1.html")
+    pacer = AdaptivePacer(3.0)
+    slept = []
+    fetcher = FakeFetcher({"https://x.test/page-1.html": PAGE2})
+    eng = Engine(store, Recipe.from_dict(LISTING_RECIPE), fetcher,
+                 FieldPolicy(allowed=["title", "price"]), {"mode": "sitemap"},
+                 sleep=lambda s: slept.append(s), pacer=pacer)
+    eng.run()
+    assert 3.0 in slept   # paced by pacer.interval(), not jitter

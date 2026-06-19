@@ -10,7 +10,7 @@ import time
 from typing import Any, Callable, Dict, Optional
 
 from backend.bots.harvester.crawl import next_page_url
-from backend.bots.harvester.fetch import FetchError
+from backend.bots.harvester.fetch import FetchError, PushbackError
 
 
 class Engine(object):
@@ -19,7 +19,8 @@ class Engine(object):
                  jitter: Optional[Callable[[], float]] = None,
                  on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
                  should_stop: Optional[Callable[[], bool]] = None,
-                 error_backoff_s: float = 10.0) -> None:
+                 error_backoff_s: float = 10.0,
+                 pacer=None, max_pushback_retries: int = 5) -> None:
         self.store = store
         self.recipe = recipe
         self.fetcher = fetcher
@@ -30,10 +31,19 @@ class Engine(object):
         self._on_progress = on_progress
         self._should_stop = should_stop or (lambda: False)
         self.error_backoff_s = error_backoff_s
+        self._pacer = pacer
+        self.max_pushback_retries = max_pushback_retries
+        self._pushbacks = {}  # type: Dict[str, int]
 
     def _progress(self) -> None:
         if self._on_progress:
             self._on_progress(self.store.counts())
+
+    def _pace(self) -> None:
+        if self._pacer is not None:
+            self._sleep(self._pacer.interval())
+        elif self._jitter is not None:
+            self._sleep(self._jitter())
 
     def step(self) -> bool:
         if self._should_stop():
@@ -44,6 +54,27 @@ class Engine(object):
 
         try:
             html = self.fetcher.get(url)
+        except PushbackError as e:
+            if self._pacer is not None:
+                self._pacer.penalize(e.retry_after)
+                n = self._pushbacks.get(url, 0) + 1
+                self._pushbacks[url] = n
+                self.store.save()
+                self._progress()
+                self._pace()  # wait the (now larger) interval
+                if n >= self.max_pushback_retries:
+                    # give up on this url so the loop can converge
+                    self.store.add_error()
+                    self.store.mark_done(url)
+                    self.store.save()
+                return True
+            # no pacer -> treat like a generic error (P1 behaviour)
+            self.store.add_error()
+            self.store.mark_done(url)
+            self.store.save()
+            self._progress()
+            self._sleep(self.error_backoff_s)
+            return True
         except FetchError:
             self.store.add_error()
             self.store.mark_done(url)
@@ -64,8 +95,9 @@ class Engine(object):
         self.store.mark_done(url)
         self.store.save()
         self._progress()
-        if self._jitter is not None:
-            self._sleep(self._jitter())
+        if self._pacer is not None:
+            self._pacer.relax()
+        self._pace()
         return True
 
     def run(self) -> None:
