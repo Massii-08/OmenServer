@@ -54,6 +54,24 @@ def test_is_challenge_html_false_on_real_page():
     assert not is_challenge_html('<html><body><h3>A real book</h3></body></html>')
 
 
+def test_is_challenge_html_detects_more_cf_markers():
+    # page d'erreur/challenge CF native : porte toujours Ray ID + cf-error-details
+    assert is_challenge_html('<script>window._cf_chl_ctx = {}</script>')
+    assert is_challenge_html('<p>Cloudflare Ray ID: 8ab12cd34</p>')
+    assert is_challenge_html('<div class="cf-error-details">Error 1020</div>')
+
+
+def test_is_challenge_html_no_false_positive_on_array_id():
+    # 'ray id' nu collisionnerait avec 'array id' -> on utilise des marqueurs précis
+    assert not is_challenge_html('<table><th>array id</th><td>data</td></table>')
+
+
+def test_is_challenge_html_no_false_positive_on_blog_about_error_codes():
+    # un article qui PARLE d'une erreur CF ne doit pas être pris pour un blocage
+    assert not is_challenge_html(
+        '<article>Tuto : résoudre une Cloudflare Error 1020 sur votre site</article>')
+
+
 def test_challenge_body_with_benign_title_is_not_returned():
     # titre bénin mais corps = widget Turnstile -> doit lever PushbackError
     s = HtmlSession('<div class="cf-turnstile">verify</div>', title="Welcome")

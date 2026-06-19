@@ -71,6 +71,11 @@ const HarvesterModule = {
             <span>${Lang.t('harvester.stealth')}</span>
           </label>
           <div class="form-hint">${Lang.t('harvester.stealth_hint')}</div>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;font-size:14px;">
+            <input type="checkbox" id="hrv-dedupe" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;" />
+            <span>${Lang.t('harvester.dedupe')}</span>
+          </label>
+          <div class="form-hint">${Lang.t('harvester.dedupe_hint')}</div>
           <div style="margin-top:14px;display:flex;gap:8px;">
             <button class="btn btn-primary" onclick="HarvesterModule.start()">${Lang.t('harvester.start')}</button>
             <button class="btn btn-ghost" onclick="BotsModule.render(BotsModule._container)">${Lang.t('harvester.back')}</button>
@@ -129,11 +134,14 @@ const HarvesterModule = {
             if (typeof Toast !== 'undefined') Toast.error(Lang.t('harvester.invalid_json'));
             return;
         }
-        // Toggle Mode furtif → force le tier stealth dans le plan (sinon httpx par défaut).
+        // Toggles → plan : Mode furtif (tier stealth) + Déduplication des records.
         const stealthEl = document.getElementById('hrv-stealth');
+        const dedupeEl = document.getElementById('hrv-dedupe');
         if (plan && typeof plan === 'object') {
             if (stealthEl && stealthEl.checked) plan.fetch_tier = 'stealth';
             else delete plan.fetch_tier;
+            if (dedupeEl && dedupeEl.checked) plan.dedupe = true;
+            else delete plan.dedupe;
         }
         const url = document.getElementById('hrv-url').value.trim();
         const r = await Auth.apiCall('/api/bots/harvester/run', {

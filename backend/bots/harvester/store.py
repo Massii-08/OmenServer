@@ -8,13 +8,20 @@ from typing import Any, Dict, List, Optional
 
 
 class Store(object):
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, dedupe: bool = False) -> None:
         self.path = path
+        self._dedupe = dedupe
         self._todo = []            # type: List[str]   # queued, ordered
         self._done = []            # type: List[str]   # completed (ordered)
         self._seen = set()         # type: set         # every url ever queued/done/errored
         self._records = []         # type: List[Dict[str, Any]]
+        self._record_keys = set()  # type: set         # hashes de records (si dedupe)
         self._errors = 0
+
+    @staticmethod
+    def _rec_key(rec: Dict[str, Any]) -> str:
+        # clé stable insensible à l'ordre des champs
+        return json.dumps(rec, sort_keys=True, ensure_ascii=False)
 
     def add_todo(self, url: str) -> bool:
         if url in self._seen:
@@ -33,8 +40,17 @@ class Store(object):
         if url not in self._done:
             self._done.append(url)
 
-    def add_record(self, rec: Dict[str, Any]) -> None:
+    def add_record(self, rec: Dict[str, Any]) -> bool:
+        """Ajoute un record. En mode dedupe, un record dont TOUS les champs sont
+        identiques à un record DÉJÀ collecté (sur l'ensemble du run, pas juste la
+        page) est ignoré -> retourne False ; sinon True. Dédup globale."""
+        if self._dedupe:
+            key = self._rec_key(rec)
+            if key in self._record_keys:
+                return False
+            self._record_keys.add(key)
         self._records.append(rec)
+        return True
 
     def add_error(self) -> None:
         self._errors += 1
@@ -69,8 +85,8 @@ class Store(object):
         os.replace(tmp, self.path)
 
     @classmethod
-    def load(cls, path: str) -> "Store":
-        s = cls(path)
+    def load(cls, path: str, dedupe: bool = False) -> "Store":
+        s = cls(path, dedupe=dedupe)
         if not os.path.isfile(path):
             return s
         try:
@@ -83,4 +99,8 @@ class Store(object):
         s._seen = set(d.get("seen", [])) | set(s._todo) | set(s._done)
         s._records = list(d.get("records", []))
         s._errors = int(d.get("errors", 0))
+        if dedupe:
+            # reprise : reconstruit l'index des records déjà stockés -> une page
+            # re-fetchée après interruption ne re-duplique pas ses records.
+            s._record_keys = set(s._rec_key(r) for r in s._records)
         return s

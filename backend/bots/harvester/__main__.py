@@ -47,7 +47,10 @@ def _default_robots_get(url):
 def run_harvest(run_dir: str, fetcher: Optional[Any] = None,
                 robots_get: Optional[Any] = None) -> int:
     cfg = HarvestConfig.load(run_dir)
-    store = Store.load(os.path.join(run_dir, "store.json"))
+    # strict `is True` : le seul producteur légitime (frontend) envoie un booléen
+    # JSON true ; évite qu'un plan édité à la main avec "dedupe":"false" l'active.
+    store = Store.load(os.path.join(run_dir, "store.json"),
+                       dedupe=(cfg.plan or {}).get("dedupe") is True)
     if store.next_todo() is None and not store.counts()["done"]:
         store.add_todo(cfg.url)
 

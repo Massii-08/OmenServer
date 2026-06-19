@@ -67,9 +67,14 @@ _CHALLENGE_HTML_MARKERS = (
     "cf-turnstile",
     "__cf_chl",
     "cf_chl_opt",
+    "_cf_chl_ctx",
     "/cdn-cgi/challenge-platform",
     "challenge-platform",
     "cf-mitigated",
+    "cf-error-details",
+    "cloudflare ray id",  # 'ray id' nu collisionnerait avec 'array id' ;
+    # 'error 1020' nu écarté : trop générique (un blog parlant de l'erreur CF
+    # matcherait) — la page 1020 native porte de toute façon Ray ID + cf-error-details.
     "just a moment",
     "checking your browser",
     "attention required",

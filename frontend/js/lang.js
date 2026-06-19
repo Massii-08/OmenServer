@@ -407,6 +407,8 @@ const Lang = {
             'harvester.download_json': 'Télécharger JSON',
             'harvester.tier_stealth': 'furtif',
             'harvester.tier_httpx': 'standard',
+            'harvester.dedupe': 'Dédupliquer les records',
+            'harvester.dedupe_hint': 'Ignore tout record dont tous les champs sont identiques à un déjà collecté (utile quand des pages se chevauchent ; peut fusionner de vraies lignes identiques).',
 
             // MC Agent
             'mcagent.training': 'Entrainement',
@@ -1631,6 +1633,8 @@ const Lang = {
             'harvester.download_json': 'Download JSON',
             'harvester.tier_stealth': 'stealth',
             'harvester.tier_httpx': 'standard',
+            'harvester.dedupe': 'Deduplicate records',
+            'harvester.dedupe_hint': 'Skip any record identical on every field to one already collected (useful when pages overlap; may merge genuinely identical rows).',
 
             // MC Agent
             'mcagent.training': 'Training',
@@ -2855,6 +2859,8 @@ const Lang = {
             'harvester.download_json': 'Scarica JSON',
             'harvester.tier_stealth': 'furtivo',
             'harvester.tier_httpx': 'standard',
+            'harvester.dedupe': 'Deduplica i record',
+            'harvester.dedupe_hint': 'Ignora ogni record identico su tutti i campi a uno già raccolto (utile quando le pagine si sovrappongono; può unire righe realmente identiche).',
 
             // MC Agent
             'mcagent.training': 'Addestramento',
