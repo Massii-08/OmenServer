@@ -398,6 +398,8 @@ const Lang = {
             'harvester.preview': 'Aperçu (échantillon)',
             'harvester.setup_error': 'Échec de la génération IA',
             'harvester.generated_ok': 'Recette générée — vérifie/édite puis lance',
+            'harvester.stealth': 'Mode furtif (anti-Cloudflare)',
+            'harvester.stealth_hint': 'Ouvre un vrai Chrome (patchright) pour les cibles protégées par Cloudflare. Plus lent, opt-in.',
 
             // MC Agent
             'mcagent.training': 'Entrainement',
@@ -1613,6 +1615,8 @@ const Lang = {
             'harvester.preview': 'Preview (sample)',
             'harvester.setup_error': 'AI generation failed',
             'harvester.generated_ok': 'Recipe generated — review/edit then launch',
+            'harvester.stealth': 'Stealth mode (anti-Cloudflare)',
+            'harvester.stealth_hint': 'Launches a real Chrome (patchright) for Cloudflare-protected targets. Slower, opt-in.',
 
             // MC Agent
             'mcagent.training': 'Training',
@@ -2828,6 +2832,8 @@ const Lang = {
             'harvester.preview': 'Anteprima (campione)',
             'harvester.setup_error': 'Generazione IA fallita',
             'harvester.generated_ok': 'Ricetta generata — controlla/modifica poi avvia',
+            'harvester.stealth': 'Modalità furtiva (anti-Cloudflare)',
+            'harvester.stealth_hint': 'Avvia un vero Chrome (patchright) per target protetti da Cloudflare. Più lento, opt-in.',
 
             // MC Agent
             'mcagent.training': 'Addestramento',

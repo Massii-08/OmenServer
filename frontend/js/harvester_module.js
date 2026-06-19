@@ -65,6 +65,11 @@ const HarvesterModule = {
           <textarea id="hrv-recipe" class="form-input" rows="10" style="font-family:var(--font-mono);">${this._demoRecipe()}</textarea>
           <label class="form-label">${Lang.t('harvester.form_plan')}</label>
           <textarea id="hrv-plan" class="form-input" rows="4" style="font-family:var(--font-mono);">${this._demoPlan()}</textarea>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer;font-size:14px;">
+            <input type="checkbox" id="hrv-stealth" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;" />
+            <span>${Lang.t('harvester.stealth')}</span>
+          </label>
+          <div class="form-hint">${Lang.t('harvester.stealth_hint')}</div>
           <div style="margin-top:14px;display:flex;gap:8px;">
             <button class="btn btn-primary" onclick="HarvesterModule.start()">${Lang.t('harvester.start')}</button>
             <button class="btn btn-ghost" onclick="BotsModule.render(BotsModule._container)">${Lang.t('harvester.back')}</button>
@@ -122,6 +127,12 @@ const HarvesterModule = {
         } catch (e) {
             if (typeof Toast !== 'undefined') Toast.error(Lang.t('harvester.invalid_json'));
             return;
+        }
+        // Toggle Mode furtif → force le tier stealth dans le plan (sinon httpx par défaut).
+        const stealthEl = document.getElementById('hrv-stealth');
+        if (plan && typeof plan === 'object') {
+            if (stealthEl && stealthEl.checked) plan.fetch_tier = 'stealth';
+            else delete plan.fetch_tier;
         }
         const url = document.getElementById('hrv-url').value.trim();
         const r = await Auth.apiCall('/api/bots/harvester/run', {
