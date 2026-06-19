@@ -1,9 +1,11 @@
-"""Tests du SQUELETTE stealth (P3b) : on vérifie l'échafaudage pluggable
-(la coquille respecte le contrat + la sélection de tier dispatche), PAS la
-logique d'évasion (qui n'est volontairement pas fournie → NotImplementedError)."""
-import pytest
+"""Tests d'INTÉGRATION du tier stealth (P3b) : on vérifie que le tier se branche
+(construction sans toucher patchright + sélection de tier qui dispatche).
 
-from backend.bots.harvester.fetch import FetchError, HttpxFetcher, RateLimiter
+La logique d'évasion (warm / attente du challenge / retries) vit dans
+StealthFetcher et est testable offline par injection d'un faux BrowserSession —
+mais ces tests-là sont l'affaire de l'opérateur (porter `test_stealth.py` de
+Feedsmith). Ici on ne teste QUE le câblage dans le harvester."""
+from backend.bots.harvester.fetch import HttpxFetcher, RateLimiter
 from backend.bots.harvester.fetch_stealth import StealthFetcher
 
 
@@ -12,24 +14,11 @@ def _rate():
 
 
 def test_stealth_constructs_without_touching_patchright():
-    # construire la coquille ne doit RIEN tenter (pas d'import patchright au ctor)
+    # construire la classe ne doit RIEN importer de patchright (lazy au 1er get)
     f = StealthFetcher(_rate(), warm_url="https://x.test/")
     assert f.warm_url == "https://x.test/"
     assert f.rate is not None
-
-
-def test_stealth_get_is_not_implemented():
-    f = StealthFetcher(_rate())
-    with pytest.raises(NotImplementedError):
-        f.get("https://x.test/")
-
-
-def test_stealth_ensure_browser_never_silently_succeeds():
-    # patchright absent (CI/Mac) -> FetchError clair ; présent -> NotImplementedError.
-    # Dans les deux cas : ne réussit JAMAIS en silence (la coquille est un stub).
-    f = StealthFetcher(_rate())
-    with pytest.raises((FetchError, NotImplementedError)):
-        f._ensure_browser()
+    assert callable(f.get)
 
 
 def test_build_fetcher_defaults_to_httpx():
