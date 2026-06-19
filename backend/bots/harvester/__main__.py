@@ -5,9 +5,7 @@ boucle. Émet la progression en lignes JSON sur stdout (capturées par le router
 fetcher injectable → test offline (run_harvest)."""
 import json
 import os
-import random
 import sys
-import time
 from typing import Any, Dict, Optional
 
 from backend.bots.harvester.config import HarvestConfig
