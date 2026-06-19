@@ -24,6 +24,16 @@ def _emit(obj: Dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
+def _build_fetcher(tier, rate, url):
+    """Sélection du tier de fetch. Défaut = httpx (P1). 'stealth' = tier P3b
+    (squelette pluggable, évasion à implémenter par l'utilisateur). Tout autre
+    valeur retombe sur httpx."""
+    if tier == "stealth":
+        from backend.bots.harvester.fetch_stealth import StealthFetcher
+        return StealthFetcher(rate, warm_url=url)
+    return HttpxFetcher(rate)
+
+
 def run_harvest(run_dir: str, fetcher: Optional[Any] = None) -> int:
     cfg = HarvestConfig.load(run_dir)
     store = Store.load(os.path.join(run_dir, "store.json"))
@@ -38,7 +48,8 @@ def run_harvest(run_dir: str, fetcher: Optional[Any] = None) -> int:
         # le pacer gouverne l'espacement -> le RateLimiter du fetcher est un
         # simple plancher a 0 (pas de double-pacing).
         rate = RateLimiter(0.0)
-        fetcher = HttpxFetcher(rate)
+        tier = (cfg.plan or {}).get("fetch_tier", "httpx")
+        fetcher = _build_fetcher(tier, rate, cfg.url)
 
     def should_stop():
         return os.path.isfile(os.path.join(run_dir, STOP_FILE))
