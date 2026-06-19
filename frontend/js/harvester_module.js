@@ -32,6 +32,7 @@ const HarvesterModule = {
         } catch (e) { /* ignore */ }
         if (active && active.job_id) {
             this._jobId = active.job_id;
+            this._feedKey = active.feed_key || this._feedKey;  // dispo dès le 1er rendu
             this._renderRunning(active);
             this._startPolling();
         } else {
@@ -154,29 +155,36 @@ const HarvesterModule = {
     _renderRunning(state) {
         const c = this._container;
         const counts = state.counts || { records: 0, done: 0, errors: 0 };
-        const keyBlock = this._feedKey ? `
-          <div style="margin-top:14px;">
-            <label class="form-label">${Lang.t('harvester.feed_key')}</label>
-            <code style="display:block;padding:8px;background:var(--bg-elev-3);border-radius:var(--r-sm);word-break:break-all;">${this._feedKey}</code>
-            <div class="form-hint">${Lang.t('harvester.feed_key_hint')}</div>
-          </div>` : '';
+        const tierLabel = state.tier === 'stealth' ? Lang.t('harvester.tier_stealth')
+            : (state.tier ? Lang.t('harvester.tier_httpx') : '');
         c.innerHTML = `
         <div class="card">
           <div class="b-head" style="margin-bottom:12px;">
             <span class="b-icon b-ticker">HRV</span>
             <div class="b-name-wrap"><div class="b-name">${Lang.t('harvester.title')}</div>
             <div class="b-type">${Lang.t('harvester.running')}</div></div>
-            <span class="badge online" id="hrv-status">running</span>
+            <span class="badge" id="hrv-tier" style="margin-left:auto;">${tierLabel}</span>
+            <span class="badge online" id="hrv-status" style="margin-left:6px;">running</span>
           </div>
           <div class="bento-overview" style="margin-bottom:12px;">
             <div class="stat-card"><div class="stat-label">${Lang.t('harvester.records')}</div><div class="stat-value" id="hrv-records">${counts.records || 0}</div></div>
             <div class="stat-card"><div class="stat-label">${Lang.t('harvester.pages_done')}</div><div class="stat-value" id="hrv-done">${counts.done || 0}</div></div>
+            <div class="stat-card"><div class="stat-label">${Lang.t('harvester.queue')}</div><div class="stat-value" id="hrv-todo">${counts.todo || 0}</div></div>
             <div class="stat-card"><div class="stat-label">${Lang.t('harvester.errors')}</div><div class="stat-value" id="hrv-errors">${counts.errors || 0}</div></div>
           </div>
-          ${keyBlock}
-          <div style="margin-top:14px;display:flex;gap:8px;">
+          <div style="margin-top:14px;">
+            <label class="form-label">${Lang.t('harvester.feed_key')}</label>
+            <div style="display:flex;gap:8px;align-items:flex-start;">
+              <code id="hrv-feedkey" style="flex:1;display:block;padding:8px;background:var(--bg-elev-3);border-radius:var(--r-sm);word-break:break-all;">${this._feedKey || '—'}</code>
+              <button class="btn btn-sm btn-ghost" onclick="HarvesterModule.copyKey()">${Lang.t('harvester.copy_key')}</button>
+            </div>
+            <div class="form-hint">${Lang.t('harvester.feed_key_hint')}</div>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
             <button class="btn btn-danger" onclick="HarvesterModule.stop()">${Lang.t('harvester.stop')}</button>
             <button class="btn btn-ghost" onclick="HarvesterModule.viewData()">${Lang.t('harvester.view_data')}</button>
+            <button class="btn btn-ghost" onclick="HarvesterModule.download('csv')">${Lang.t('harvester.download_csv')}</button>
+            <button class="btn btn-ghost" onclick="HarvesterModule.download('json')">${Lang.t('harvester.download_json')}</button>
             <button class="btn btn-ghost" onclick="BotsModule.render(BotsModule._container)">${Lang.t('harvester.back')}</button>
           </div>
           <pre id="hrv-data" style="margin-top:12px;max-height:240px;overflow:auto;font-family:var(--font-mono);font-size:12px;"></pre>
@@ -199,9 +207,23 @@ const HarvesterModule = {
             const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
             set('hrv-records', counts.records || 0);
             set('hrv-done', counts.done || 0);
+            set('hrv-todo', counts.todo || 0);
             set('hrv-errors', counts.errors || 0);
+            if (data.feed_key) { this._feedKey = data.feed_key; set('hrv-feedkey', data.feed_key); }
+            const tierEl = document.getElementById('hrv-tier');
+            if (tierEl && data.tier) {
+                tierEl.textContent = data.tier === 'stealth'
+                    ? Lang.t('harvester.tier_stealth') : Lang.t('harvester.tier_httpx');
+            }
             const st = document.getElementById('hrv-status');
-            if (st) st.textContent = data.status;
+            if (st) {
+                st.textContent = data.status;
+                const cls = data.status === 'running' ? 'online'
+                    : (data.status === 'interrupted' || data.status === 'error' ? 'warn' : '');
+                st.className = 'badge' + (cls ? ' ' + cls : '');
+            }
+            // 'interrupted' n'est PAS terminal : le run sera repris au prochain
+            // boot -> on continue de poller pour voir le retour à 'running'.
             if (['completed', 'error', 'stopped'].includes(data.status)) {
                 clearInterval(this._pollInterval); this._pollInterval = null;
             }
@@ -223,5 +245,30 @@ const HarvesterModule = {
         const data = await r.json();
         const el = document.getElementById('hrv-data');
         if (el) el.textContent = JSON.stringify(data.records.slice(0, 20), null, 2);
+    },
+
+    async copyKey() {
+        if (!this._feedKey) return;
+        try {
+            await navigator.clipboard.writeText(this._feedKey);
+            if (typeof Toast !== 'undefined' && Toast.success) Toast.success(Lang.t('harvester.key_copied'));
+        } catch (e) { /* clipboard indisponible (http non sécurisé) — ignore */ }
+    },
+
+    async download(format) {
+        if (!this._jobId || !this._feedKey) return;
+        const r = await Auth.apiCall(`/api/bots/harvester/data/${this._jobId}?format=${format}`, {
+            headers: { 'X-Feed-Key': this._feedKey },
+        });
+        if (!r || !r.ok) return;
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `harvest-${this._jobId}.${format}`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
     },
 };

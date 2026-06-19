@@ -357,10 +357,13 @@ async def startup_event():
     # Le store frontier persiste sur disque -> on relance depuis là où elles en
     # étaient, sans toucher à systemd. Survie réelle au restart pour le harvester.
     try:
-        from backend.bots.harvester_router import resume_interrupted_runs
+        from backend.bots.harvester_router import purge_old_runs, resume_interrupted_runs
         resumed = resume_interrupted_runs()
         if resumed:
             logger.info(f"🌾 Harvester: {len(resumed)} moisson(s) reprise(s) depuis la frontière: {resumed}")
+        purged = purge_old_runs()
+        if purged:
+            logger.info(f"🧹 Harvester: {len(purged)} run(s) ancien(s) purgé(s)")
     except Exception as e:
         logger.warning(f"Harvester resume au démarrage échoué: {e}")
 

@@ -17,14 +17,15 @@ _RECIPE = {"item_selector": {"tag": "div"},
            "fields": {"x": {"selector": {"tag": "a"}, "extract": "text"}}}
 
 
-def _seed_run(tmp_path, job_id, *, pid=None, stop=False, records=0):
+def _seed_run(tmp_path, job_id, *, pid=None, stop=False, records=0, todo=True):
     run_dir = tmp_path / job_id
     run_dir.mkdir(parents=True, exist_ok=True)
     cfg = HarvestConfig(url="https://ex.test/p1", recipe=Recipe.from_dict(_RECIPE),
                         plan={"mode": "pagination"}, pacing={}, feed_key="K-" + job_id)
     cfg.save(str(run_dir))
     s = Store(str(run_dir / "store.json"))
-    s.add_todo("https://ex.test/p1")
+    if todo:
+        s.add_todo("https://ex.test/p1")
     for i in range(records):
         s.add_record({"x": str(i)})
     s.save()
@@ -45,14 +46,33 @@ def test_status_stopped_when_flag_and_pid_dead(tmp_path):
     assert R._status_from_disk(rd, is_alive=lambda p: False) == "stopped"
 
 
-def test_status_completed_when_pid_dead_no_flag(tmp_path):
-    rd = _seed_run(tmp_path, "j3", pid=4242)
+def test_status_stopped_takes_precedence_over_alive_pid(tmp_path):
+    # stop.flag prime même si le subprocess n'a pas encore lu le flag (pid vivant)
+    rd = _seed_run(tmp_path, "j2b", pid=4242, stop=True)
+    assert R._status_from_disk(rd, is_alive=lambda p: True) == "stopped"
+
+
+def test_status_interrupted_when_pid_dead_with_todo(tmp_path):
+    # tué par un restart, todo restant -> interrompu (sera repris), pas completed
+    rd = _seed_run(tmp_path, "j3", pid=4242, todo=True)
+    assert R._status_from_disk(rd, is_alive=lambda p: False) == "interrupted"
+
+
+def test_status_completed_when_pid_dead_no_todo(tmp_path):
+    rd = _seed_run(tmp_path, "j3b", pid=4242, todo=False)
     assert R._status_from_disk(rd, is_alive=lambda p: False) == "completed"
 
 
-def test_status_completed_when_no_pidfile(tmp_path):
-    rd = _seed_run(tmp_path, "j4")
+def test_status_completed_when_no_pidfile_no_todo(tmp_path):
+    rd = _seed_run(tmp_path, "j4", todo=False)
     assert R._status_from_disk(rd, is_alive=lambda p: True) == "completed"
+
+
+def test_job_from_disk_includes_tier(tmp_path):
+    rd = _seed_run(tmp_path, "j6", pid=4242)
+    # le seeder met un plan sans fetch_tier -> défaut httpx
+    job = R._job_from_disk(rd, "j6", is_alive=lambda p: True)
+    assert job["tier"] == "httpx"
 
 
 def test_job_from_disk_rebuilds_feedkey_url_counts(tmp_path):

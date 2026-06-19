@@ -96,13 +96,15 @@ def _pid_alive(pid) -> bool:
 
 def _status_from_disk(run_dir, is_alive=_pid_alive) -> str:
     """Statut reconstruit depuis le disque. stop.flag prime (arrêt collant) ;
-    sinon pid vivant -> running ; sinon -> completed (fini de lui-même)."""
+    pid vivant -> running ; pid mort -> interrupted s'il reste du todo (tué par
+    un restart ; repris au prochain boot s'il est récent, cf. RESUME_MAX_AGE_S),
+    sinon completed (a fini de lui-même)."""
     if (Path(run_dir) / "stop.flag").is_file():
         return "stopped"
     pid = _read_pid(run_dir)
     if pid and is_alive(pid):
         return "running"
-    return "completed"
+    return "interrupted" if _has_pending(run_dir) else "completed"
 
 
 def _read_log_tail(run_dir, limit: int = 200):
@@ -132,6 +134,7 @@ def _job_from_disk(run_dir, job_id, is_alive=_pid_alive):
         "counts": counts,
         "feed_key": cfg.feed_key,
         "url": cfg.url,
+        "tier": (cfg.plan or {}).get("fetch_tier", "httpx"),
         "user": "?",
     }
 
@@ -210,6 +213,44 @@ def resume_interrupted_runs(launch=None, is_alive=_pid_alive, now=None):
         except Exception:  # noqa: BLE001 — un run qui refuse de relancer ne bloque pas les autres
             pass
     return resumed
+
+
+RUN_RETENTION_DAYS = 14  # purge des runs inactifs depuis > N jours (anti-accumulation)
+
+
+def purge_old_runs(now=None, max_age_days=RUN_RETENTION_DAYS, is_alive=_pid_alive):
+    """Supprime les run dirs inactifs depuis plus de ``max_age_days`` (ancre =
+    mtime du store.json). Ne touche JAMAIS un run vivant. Appelé au démarrage."""
+    import shutil
+    import time as _time
+    if now is None:
+        now = _time.time()
+    base = Path(HARVESTER_RUNS_DIR)
+    if not base.is_dir():
+        return []
+    cutoff = float(max_age_days) * 86400.0
+    purged = []
+    for d in sorted(base.iterdir()):
+        if not d.is_dir():
+            continue
+        pid = _read_pid(str(d))
+        if pid and is_alive(pid):
+            continue                      # jamais purger un run en cours
+        ref = d / "store.json"
+        if not ref.is_file():
+            ref = d
+        try:
+            if now - os.path.getmtime(str(ref)) <= cutoff:
+                continue
+        except OSError:
+            continue
+        try:
+            shutil.rmtree(str(d))
+            _harvester_jobs.pop(d.name, None)
+            purged.append(d.name)
+        except OSError:
+            pass
+    return purged
 
 
 def _launch_subprocess(run_dir: str, job: Dict[str, Any]) -> None:
@@ -337,6 +378,7 @@ def run_harvester(data: RunRequest, current_user: User = Depends(get_current_use
         "counts": {"todo": 1, "done": 0, "records": 0, "errors": 0},
         "feed_key": feed_key,
         "url": data.url,
+        "tier": (data.plan or {}).get("fetch_tier", "httpx"),
         "user": getattr(current_user, "username", "?"),
     }
     _harvester_jobs[job_id] = job
@@ -397,6 +439,7 @@ def harvester_status(job_id: str, current_user: User = Depends(get_current_user)
         "logs": job["logs"][-50:] or _read_log_tail(str(_run_dir(job_id)), 50),
         "feed_key": job["feed_key"],
         "url": job["url"],
+        "tier": job.get("tier", "httpx"),
     }
 
 
@@ -412,7 +455,9 @@ def harvester_active(current_user: User = Depends(get_current_user)):
         if status in ("starting", "running"):
             return {"job_id": job["job_id"], "status": status,
                     "counts": _disk_counts(job["job_id"]) or job["counts"],
-                    "url": job["url"]}
+                    "url": job["url"],
+                    "feed_key": job.get("feed_key"),
+                    "tier": job.get("tier", "httpx")}
     return None
 
 
@@ -459,6 +504,15 @@ def harvester_data(job_id: str, format: str = "json",
 
     store_path = run_dir / "store.json"
     records = Store.load(str(store_path)).records() if store_path.is_file() else []
+
+    # Consommation = activité : repousse la rétention. Un feed encore tiré par un
+    # client externe ne doit JAMAIS être auto-purgé, même si la moisson a fini
+    # d'écrire (sinon perte de données silencieuse à J+14 — cf. revue adversariale).
+    try:
+        if store_path.is_file():
+            os.utime(str(store_path), None)  # mtime -> maintenant
+    except OSError:
+        pass
 
     if format == "csv":
         cols = cfg.recipe.field_names()

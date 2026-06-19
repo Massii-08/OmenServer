@@ -121,6 +121,27 @@ def test_data_unknown_job_404(tmp_path, monkeypatch):
                  headers={"X-Feed-Key": "x"}).status_code == 404
 
 
+def test_data_read_touches_mtime_for_retention(tmp_path, monkeypatch):
+    # Consommer /data doit rafraîchir le mtime de store.json -> un feed encore
+    # tiré n'est jamais auto-purgé (fix revue : perte de données silencieuse).
+    import os
+    import time
+    c, _ = make_client(tmp_path, monkeypatch)
+    resp = c.post("/api/bots/harvester/run", json=GOOD_BODY).json()
+    job_id, feed_key = resp["job_id"], resp["feed_key"]
+    from backend.bots.harvester.store import Store
+    sp = tmp_path / job_id / "store.json"
+    store = Store(str(sp))
+    store.add_record({"title": "A"})
+    store.save()
+    old = time.time() - 30 * 86400
+    os.utime(str(sp), (old, old))
+    ok = c.get("/api/bots/harvester/data/{0}".format(job_id),
+               headers={"X-Feed-Key": feed_key})
+    assert ok.status_code == 200
+    assert os.path.getmtime(str(sp)) > old + 86400   # mtime poussé à ~maintenant
+
+
 def test_run_rejects_non_http_scheme(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     body = json.loads(json.dumps(GOOD_BODY))

@@ -400,6 +400,13 @@ const Lang = {
             'harvester.generated_ok': 'Recette générée — vérifie/édite puis lance',
             'harvester.stealth': 'Mode furtif (anti-Cloudflare)',
             'harvester.stealth_hint': 'Ouvre un vrai Chrome (patchright) pour les cibles protégées par Cloudflare. Plus lent, opt-in.',
+            'harvester.queue': 'File restante',
+            'harvester.copy_key': 'Copier la clé',
+            'harvester.key_copied': 'Clé copiée',
+            'harvester.download_csv': 'Télécharger CSV',
+            'harvester.download_json': 'Télécharger JSON',
+            'harvester.tier_stealth': 'furtif',
+            'harvester.tier_httpx': 'standard',
 
             // MC Agent
             'mcagent.training': 'Entrainement',
@@ -1617,6 +1624,13 @@ const Lang = {
             'harvester.generated_ok': 'Recipe generated — review/edit then launch',
             'harvester.stealth': 'Stealth mode (anti-Cloudflare)',
             'harvester.stealth_hint': 'Launches a real Chrome (patchright) for Cloudflare-protected targets. Slower, opt-in.',
+            'harvester.queue': 'Queue left',
+            'harvester.copy_key': 'Copy key',
+            'harvester.key_copied': 'Key copied',
+            'harvester.download_csv': 'Download CSV',
+            'harvester.download_json': 'Download JSON',
+            'harvester.tier_stealth': 'stealth',
+            'harvester.tier_httpx': 'standard',
 
             // MC Agent
             'mcagent.training': 'Training',
@@ -2834,6 +2848,13 @@ const Lang = {
             'harvester.generated_ok': 'Ricetta generata — controlla/modifica poi avvia',
             'harvester.stealth': 'Modalità furtiva (anti-Cloudflare)',
             'harvester.stealth_hint': 'Avvia un vero Chrome (patchright) per target protetti da Cloudflare. Più lento, opt-in.',
+            'harvester.queue': 'Coda rimasta',
+            'harvester.copy_key': 'Copia chiave',
+            'harvester.key_copied': 'Chiave copiata',
+            'harvester.download_csv': 'Scarica CSV',
+            'harvester.download_json': 'Scarica JSON',
+            'harvester.tier_stealth': 'furtivo',
+            'harvester.tier_httpx': 'standard',
 
             // MC Agent
             'mcagent.training': 'Addestramento',
