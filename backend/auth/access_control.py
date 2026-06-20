@@ -21,12 +21,22 @@ Usage dans un router:
 
 import logging
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from backend.auth.models import User
 from backend.auth.shared_access import SharedAccess, VALID_ACCESS_LEVELS
 
 logger = logging.getLogger("omenserver.access_control")
+
+
+def require_resource_access(user, resource_type, resource_id, db, min_level="view_only"):
+    """Garde d'autorisation factorisé : lève HTTPException(403) si ``user`` n'a
+    pas le niveau ``min_level`` sur la ressource. À appeler en tête des endpoints
+    qui agissent sur une ressource (anti-IDOR) — admin/owner/shared sont gérés
+    par ``can_access_resource``."""
+    if not can_access_resource(user, resource_type, resource_id, db, min_level):
+        raise HTTPException(status_code=403, detail="Accès refusé à cette ressource")
 
 
 def _access_level_rank(level: str) -> int:

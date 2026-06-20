@@ -924,6 +924,7 @@ def test_spawn_writes_login_file_not_argv(monkeypatch, tmp_path):
     assert not os.path.exists(lp)  # nettoyé au stop
 
 
+@pytest.mark.real_pump_cleanup
 def test_natural_death_cleans_login_file(monkeypatch, tmp_path):
     """Mort naturelle du bot (fin du flux stdout, SANS stop_session) → fichiers temp nettoyés.
 
