@@ -43,10 +43,14 @@ class HarvestConfig(object):
     def save(self, run_dir: str) -> None:
         os.makedirs(run_dir, exist_ok=True)
         path = os.path.join(run_dir, "config.json")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, ensure_ascii=False, indent=2)
-        # config.json porte des secrets (feed_key, éventuels creds proxy) -> 600
+        # config.json porte des secrets (feed_key, éventuels creds proxy) -> le
+        # fichier NAÎT en 0o600 (création atomique via os.open, pas de fenêtre
+        # world-readable), et os.fchmod couvre un fichier pré-existant aux
+        # autres permissions. Même posture que unblocker_config.save.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            os.chmod(path, 0o600)
-        except OSError:
+            os.fchmod(fd, 0o600)
+        except (AttributeError, OSError):
             pass
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, ensure_ascii=False, indent=2)

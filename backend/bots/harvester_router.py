@@ -129,15 +129,18 @@ def _read_log_tail(run_dir, limit: int = 200):
 
 
 def _open_run_log(run_dir):
-    """Ouvre run.log en append + chmod 600 (cohérent avec config.json : un log de
-    run peut contenir des traces sensibles -> même posture que les secrets)."""
+    """Ouvre run.log en append + 0o600 (cohérent avec config.json : un log de
+    run peut contenir des traces sensibles -> même posture que les secrets). Le
+    fichier NAÎT en 0o600 (création atomique via os.open, pas de fenêtre
+    world-readable) ; os.fchmod couvre un fichier pré-existant aux autres
+    permissions. Même posture que unblocker_config.save."""
     path = os.path.join(run_dir, "run.log")
-    logf = open(path, "a", encoding="utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        os.chmod(path, 0o600)
-    except OSError:
+        os.fchmod(fd, 0o600)
+    except (AttributeError, OSError):
         pass
-    return logf
+    return os.fdopen(fd, "a", encoding="utf-8")
 
 
 # run.log n'est PAS borné (1 ligne/page) -> on ne lit que la fin pour la reco.

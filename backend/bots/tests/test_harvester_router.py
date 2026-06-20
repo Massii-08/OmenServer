@@ -305,6 +305,27 @@ def test_open_run_log_is_chmod_600(tmp_path):
         logf.close()
 
 
+def test_open_run_log_is_600_even_if_chmod_unavailable(tmp_path, monkeypatch):
+    # défense en profondeur : run.log doit NAÎTRE en 0o600 (création atomique),
+    # pas via un chmod post-création (fenêtre 0o644 + reste 0o644 si chmod échoue).
+    import os
+    import stat
+
+    def _boom(*a, **k):
+        raise OSError("chmod unavailable")
+    monkeypatch.setattr(hr.os, "chmod", _boom)
+    if hasattr(hr.os, "fchmod"):
+        monkeypatch.setattr(hr.os, "fchmod", _boom)
+    d = tmp_path / "runZ"
+    d.mkdir()
+    logf = hr._open_run_log(str(d))
+    try:
+        mode = stat.S_IMODE(os.stat(str(d / "run.log")).st_mode)
+        assert mode == 0o600
+    finally:
+        logf.close()
+
+
 # ---- revue #2/#6 : lecture bornée (tail) + cache positif ------------------
 
 def test_recommend_from_log_finds_recommendation_in_large_log(tmp_path):
