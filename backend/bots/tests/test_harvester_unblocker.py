@@ -298,6 +298,9 @@ def test_build_fetcher_unblocker_returns_unblocker():
 def test_build_fetcher_unblocker_without_config_builds_but_get_raises(monkeypatch):
     monkeypatch.delenv("HARVESTER_UNBLOCKER_ENDPOINT", raising=False)
     monkeypatch.delenv("HARVESTER_UNBLOCKER_KEY", raising=False)
+    # isole aussi la config persistante (sinon un fichier réel rendrait le test flaky)
+    from backend.bots.harvester import unblocker_config as uc
+    monkeypatch.setattr(uc, "load", lambda path=None: {})
     # build NE doit PAS crasher (cohérent avec stealth : l'absence de dépendance
     # n'est surfacée qu'à l'exécution) — on injecte un client pour rester offline.
     f = _build_fetcher("unblocker", _rate(), "https://t.test/p",
@@ -306,6 +309,33 @@ def test_build_fetcher_unblocker_without_config_builds_but_get_raises(monkeypatc
     f._client = RecordingClient(resp=FakeResp(text="x"))
     with pytest.raises(FetchError):
         f.get("https://t.test/p")
+
+
+def test_build_fetcher_reads_persistent_config(monkeypatch):
+    # clé/endpoint posés depuis l'UI (fichier persistant) -> utilisés quand le
+    # plan ne les fournit pas (priorité : plan > fichier > env).
+    from backend.bots.harvester import unblocker_config as uc
+    monkeypatch.setattr(uc, "load", lambda path=None: {
+        "endpoint": "https://saved.test/v1", "key": "SAVEDKEY",
+        "render_js": True, "method": "GET", "key_in": "query"})
+    f = _build_fetcher("unblocker", _rate(), "https://t.test/p",
+                       {"fetch_tier": "unblocker"}, None)
+    assert f._endpoint == "https://saved.test/v1"
+    assert f._api_key == "SAVEDKEY"
+    assert f.render_js is True
+    assert f.method == "GET"
+    assert f.key_in == "query"
+
+
+def test_build_fetcher_plan_overrides_persistent_config(monkeypatch):
+    from backend.bots.harvester import unblocker_config as uc
+    monkeypatch.setattr(uc, "load", lambda path=None: {
+        "endpoint": "https://saved.test/v1", "key": "SAVEDKEY"})
+    f = _build_fetcher("unblocker", _rate(), "https://t.test/p",
+                       {"fetch_tier": "unblocker", "unblocker_endpoint": "https://plan.test/v2",
+                        "unblocker_key": "PLANKEY"}, None)
+    assert f._endpoint == "https://plan.test/v2"
+    assert f._api_key == "PLANKEY"
 
 
 def test_build_fetcher_unblocker_bad_numeric_falls_back():

@@ -32,6 +32,7 @@ from backend.bots.harvester.policy import PII_FIELDS
 from backend.bots.harvester.recipe import Recipe
 from backend.bots.harvester.setup import build_setup
 from backend.bots.harvester.store import Store
+from backend.bots.harvester import unblocker_config
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,16 @@ class RunRequest(BaseModel):
 class SetupRequest(BaseModel):
     url: str
     instructions: str = ""
+
+
+class UnblockerConfigRequest(BaseModel):
+    endpoint: str = ""
+    key: str = ""              # vide -> on garde la clé déjà enregistrée
+    render_js: bool = False
+    method: str = "POST"
+    key_in: str = "body"
+    key_param: str = "apikey"
+    result_field: str = ""
 
 
 def _run_dir(job_id: str) -> Path:
@@ -476,6 +487,48 @@ def _job_recommend(job):
     if found:
         job["recommend"] = found
     return found
+
+
+@router.get("/unblocker-config")
+def get_unblocker_config(current_user: User = Depends(get_current_user)):
+    """Vue publique de la config débloqueur (clé MASQUÉE). Admin-only."""
+    _require_admin(current_user)
+    return unblocker_config.public_view(unblocker_config.load())
+
+
+@router.post("/unblocker-config")
+def set_unblocker_config(data: UnblockerConfigRequest,
+                         current_user: User = Depends(get_current_user)):
+    """Enregistre la config débloqueur (clé en chmod 600). Clé vide -> on garde
+    l'existante (permet d'ajuster l'endpoint sans recoller la clé). Admin-only."""
+    _require_admin(current_user)
+    endpoint = data.endpoint.strip()
+    if endpoint and urlparse(endpoint).scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Endpoint doit être http(s)")
+    existing = unblocker_config.load()
+    cfg = {
+        "endpoint": endpoint,
+        "render_js": bool(data.render_js),
+        "method": (data.method or "POST").upper(),
+        "key_in": data.key_in if data.key_in in ("body", "header", "query") else "body",
+        "key_param": (data.key_param or "apikey").strip() or "apikey",
+        "result_field": data.result_field.strip(),
+    }
+    new_key = data.key.strip()
+    if new_key:
+        cfg["key"] = new_key
+    elif existing.get("key"):
+        cfg["key"] = existing["key"]          # conservée
+    unblocker_config.save(cfg)
+    return unblocker_config.public_view(cfg)
+
+
+@router.post("/unblocker-config/clear")
+def clear_unblocker_config(current_user: User = Depends(get_current_user)):
+    """Oublie la config débloqueur (supprime le fichier). Admin-only."""
+    _require_admin(current_user)
+    unblocker_config.clear()
+    return {"configured": False}
 
 
 def _disk_counts(job_id: str) -> Optional[Dict[str, int]]:

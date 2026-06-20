@@ -61,19 +61,22 @@ def _build_fetcher(tier, rate, url, plan=None, run_dir=None):
     plan = plan or {}
     if tier == "unblocker":
         from backend.bots.harvester.fetch_unblocker import UnblockerFetcher
+        from backend.bots.harvester import unblocker_config
+        # priorité : plan (par-run) > config persistante (UI) > env (dans le fetcher)
+        saved = unblocker_config.load()
         extra = plan.get("unblocker_params")
         return UnblockerFetcher(
             rate,
-            endpoint=plan.get("unblocker_endpoint"),    # None -> env
-            api_key=plan.get("unblocker_key"),          # None -> env
-            render_js=bool(plan.get("render_js", False)),
+            endpoint=plan.get("unblocker_endpoint") or saved.get("endpoint"),    # None -> env
+            api_key=plan.get("unblocker_key") or saved.get("key"),               # None -> env
+            render_js=bool(plan.get("render_js", saved.get("render_js", False))),
             params=extra if isinstance(extra, dict) else None,
-            method=plan.get("unblocker_method") or "POST",
+            method=plan.get("unblocker_method") or saved.get("method") or "POST",
             url_param=plan.get("unblocker_url_param") or "url",
-            key_param=plan.get("unblocker_key_param") or "apikey",
-            key_in=plan.get("unblocker_key_in") or "body",
+            key_param=plan.get("unblocker_key_param") or saved.get("key_param") or "apikey",
+            key_in=plan.get("unblocker_key_in") or saved.get("key_in") or "body",
             render_param=plan.get("unblocker_render_param") or "render_js",
-            result_field=plan.get("unblocker_result_field"),
+            result_field=plan.get("unblocker_result_field") or saved.get("result_field") or None,
             error_field=plan.get("unblocker_error_field", "error"),
             status_field=plan.get("unblocker_status_field"),
             timeout=_as_float(plan.get("unblocker_timeout"), 90.0, lo=5.0, hi=300.0),

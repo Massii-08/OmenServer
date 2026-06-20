@@ -91,6 +91,32 @@ const HarvesterModule = {
             <span>${Lang.t('harvester.unblocker')}</span>
           </label>
           <div class="form-hint">${Lang.t('harvester.unblocker_hint')}</div>
+          <details id="hrv-unb-settings" style="margin-top:8px;border:1px solid var(--border);border-radius:var(--r-md);padding:0 12px;">
+            <summary style="cursor:pointer;padding:10px 0;font-size:13px;color:var(--text-muted);">${Lang.t('harvester.unblocker_settings')} · <span id="hrv-unb-status" style="color:var(--text-dim);">—</span></summary>
+            <div style="padding-bottom:12px;">
+              <label class="form-label">${Lang.t('harvester.unblocker_endpoint')}</label>
+              <input id="hrv-unb-endpoint" class="form-input" placeholder="https://api.zenrows.com/v1/" />
+              <label class="form-label">${Lang.t('harvester.unblocker_key_label')}</label>
+              <input id="hrv-unb-key" class="form-input" type="password" autocomplete="off" placeholder="${Lang.t('harvester.unblocker_key_ph')}" />
+              <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
+                <div style="flex:1;min-width:110px;"><label class="form-label">${Lang.t('harvester.unblocker_method')}</label>
+                  <select id="hrv-unb-method" class="form-input"><option value="POST">POST</option><option value="GET">GET</option></select></div>
+                <div style="flex:1;min-width:110px;"><label class="form-label">${Lang.t('harvester.unblocker_keyplace')}</label>
+                  <select id="hrv-unb-keyin" class="form-input"><option value="body">body</option><option value="query">query</option><option value="header">header</option></select></div>
+                <div style="flex:1;min-width:110px;"><label class="form-label">${Lang.t('harvester.unblocker_keyparam')}</label>
+                  <input id="hrv-unb-keyparam" class="form-input" value="apikey" /></div>
+              </div>
+              <label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;font-size:14px;">
+                <input type="checkbox" id="hrv-unb-render" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;" />
+                <span>${Lang.t('harvester.unblocker_render')}</span>
+              </label>
+              <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <button class="btn btn-sm btn-primary" onclick="HarvesterModule.saveUnblockerConfig()">${Lang.t('harvester.unblocker_save')}</button>
+                <button class="btn btn-sm btn-ghost" onclick="HarvesterModule.clearUnblockerConfig()">${Lang.t('harvester.unblocker_clear')}</button>
+                <span id="hrv-unb-msg" style="font-size:12px;color:var(--text-dim);"></span>
+              </div>
+            </div>
+          </details>
           <label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;font-size:14px;">
             <input type="checkbox" id="hrv-dedupe" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;" />
             <span>${Lang.t('harvester.dedupe')}</span>
@@ -101,6 +127,62 @@ const HarvesterModule = {
             <button class="btn btn-ghost" onclick="BotsModule.render(BotsModule._container)">${Lang.t('harvester.back')}</button>
           </div>
         </div>`;
+        this._loadUnblockerConfig();   // pré-remplit l'état (clé masquée) du débloqueur
+    },
+
+    async _loadUnblockerConfig() {
+        try {
+            const r = await Auth.apiCall('/api/bots/harvester/unblocker-config');
+            if (!r || !r.ok) return;
+            const d = await r.json();
+            const set = (id, v) => { const e = document.getElementById(id); if (e) e.value = v; };
+            set('hrv-unb-endpoint', d.endpoint || '');
+            set('hrv-unb-method', d.method || 'POST');
+            set('hrv-unb-keyin', d.key_in || 'body');
+            set('hrv-unb-keyparam', d.key_param || 'apikey');
+            const render = document.getElementById('hrv-unb-render');
+            if (render) render.checked = !!d.render_js;
+            const status = document.getElementById('hrv-unb-status');
+            if (status) {
+                status.textContent = d.configured
+                    ? (Lang.t('harvester.unblocker_configured') + (d.key_masked ? ' · ' + d.key_masked : ''))
+                    : Lang.t('harvester.unblocker_notconfigured');
+            }
+        } catch (e) { /* ignore */ }
+    },
+
+    async saveUnblockerConfig() {
+        const v = id => ((document.getElementById(id) || {}).value || '');
+        const body = {
+            endpoint: v('hrv-unb-endpoint').trim(),
+            key: v('hrv-unb-key'),                 // vide -> le backend garde l'actuelle
+            method: v('hrv-unb-method'),
+            key_in: v('hrv-unb-keyin'),
+            key_param: v('hrv-unb-keyparam').trim(),
+            render_js: !!(document.getElementById('hrv-unb-render') || {}).checked,
+        };
+        const msg = document.getElementById('hrv-unb-msg');
+        const r = await Auth.apiCall('/api/bots/harvester/unblocker-config', {
+            method: 'POST', body: JSON.stringify(body),
+        });
+        if (!r || !r.ok) {
+            const d = r ? (await r.json().catch(() => ({}))) : {};
+            if (msg) msg.textContent = d.detail || 'Error';
+            return;
+        }
+        const key = document.getElementById('hrv-unb-key');
+        if (key) key.value = '';                   // ne jamais garder la clé en clair dans le champ
+        if (msg) msg.textContent = Lang.t('harvester.unblocker_saved');
+        this._loadUnblockerConfig();
+    },
+
+    async clearUnblockerConfig() {
+        await Auth.apiCall('/api/bots/harvester/unblocker-config/clear', { method: 'POST' });
+        const key = document.getElementById('hrv-unb-key');
+        if (key) key.value = '';
+        const msg = document.getElementById('hrv-unb-msg');
+        if (msg) msg.textContent = '';
+        this._loadUnblockerConfig();
     },
 
     async generate() {

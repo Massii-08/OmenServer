@@ -326,3 +326,80 @@ def test_status_caches_recommendation_on_job(tmp_path, monkeypatch):
     c.get("/api/bots/harvester/status/{0}".format(job_id))   # 1er poll -> lit + cache
     cached = hr._harvester_jobs[job_id].get("recommend")
     assert cached is not None and cached["tier"] == "unblocker"
+
+
+# ---- config persistante du débloqueur (clé posée depuis l'UI) -------------
+
+def _isolate_ucfg(tmp_path, monkeypatch):
+    from backend.bots.harvester import unblocker_config as uc
+    p = str(tmp_path / "unblocker_cfg.json")
+    monkeypatch.setattr(uc, "DEFAULT_PATH", p)
+    return p
+
+
+def test_unblocker_config_requires_admin(tmp_path, monkeypatch):
+    _isolate_ucfg(tmp_path, monkeypatch)
+    c, _ = make_client(tmp_path, monkeypatch, is_admin=False)
+    assert c.get("/api/bots/harvester/unblocker-config").status_code == 403
+    assert c.post("/api/bots/harvester/unblocker-config",
+                  json={"endpoint": "https://a/v1", "key": "K"}).status_code == 403
+
+
+def test_unblocker_config_get_when_empty(tmp_path, monkeypatch):
+    _isolate_ucfg(tmp_path, monkeypatch)
+    c, _ = make_client(tmp_path, monkeypatch)
+    r = c.get("/api/bots/harvester/unblocker-config")
+    assert r.status_code == 200
+    assert r.json()["configured"] is False
+
+
+def test_unblocker_config_save_and_get_masks_key(tmp_path, monkeypatch):
+    _isolate_ucfg(tmp_path, monkeypatch)
+    c, _ = make_client(tmp_path, monkeypatch)
+    r = c.post("/api/bots/harvester/unblocker-config",
+               json={"endpoint": "https://api.test/v1", "key": "SUPERSECRETKEY",
+                     "render_js": True, "method": "GET", "key_in": "query"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["configured"] is True
+    assert body["method"] == "GET"
+    # 🔒 la clé brute ne sort JAMAIS, même juste après l'avoir posée
+    assert "SUPERSECRETKEY" not in r.text
+    # GET ne fuit pas non plus
+    g = c.get("/api/bots/harvester/unblocker-config")
+    assert "SUPERSECRETKEY" not in g.text
+    assert g.json()["configured"] is True
+
+
+def test_unblocker_config_update_keeps_existing_key(tmp_path, monkeypatch):
+    # poser endpoint+clé, puis re-poster SANS clé -> la clé est conservée
+    p = _isolate_ucfg(tmp_path, monkeypatch)
+    c, _ = make_client(tmp_path, monkeypatch)
+    c.post("/api/bots/harvester/unblocker-config",
+           json={"endpoint": "https://a/v1", "key": "KEEPME"})
+    c.post("/api/bots/harvester/unblocker-config",
+           json={"endpoint": "https://b/v2", "key": ""})
+    from backend.bots.harvester import unblocker_config as uc
+    saved = uc.load(p)
+    assert saved["endpoint"] == "https://b/v2"
+    assert saved["key"] == "KEEPME"     # conservée
+
+
+def test_unblocker_config_rejects_non_http_endpoint(tmp_path, monkeypatch):
+    _isolate_ucfg(tmp_path, monkeypatch)
+    c, _ = make_client(tmp_path, monkeypatch)
+    r = c.post("/api/bots/harvester/unblocker-config",
+               json={"endpoint": "ftp://bad/x", "key": "K"})
+    assert r.status_code == 400
+
+
+def test_unblocker_config_clear(tmp_path, monkeypatch):
+    p = _isolate_ucfg(tmp_path, monkeypatch)
+    c, _ = make_client(tmp_path, monkeypatch)
+    c.post("/api/bots/harvester/unblocker-config",
+           json={"endpoint": "https://a/v1", "key": "K"})
+    r = c.post("/api/bots/harvester/unblocker-config/clear")
+    assert r.status_code == 200
+    assert r.json()["configured"] is False
+    from backend.bots.harvester import unblocker_config as uc
+    assert uc.load(p) == {}
