@@ -62,3 +62,27 @@ def test_build_engine_uses_adaptive_pacer_from_config(tmp_path, monkeypatch):
     assert rc == 0
     assert isinstance(captured["pacer"], AdaptivePacer)
     assert captured["pacer"].base == 7.0
+
+
+class AlwaysPushbackFetcher(object):
+    def get(self, url):
+        from backend.bots.harvester.fetch import PushbackError
+        raise PushbackError("429", status=429, retry_after=None)
+
+
+def test_run_harvest_emits_tier_recommendation(tmp_path, capsys):
+    # Seam complet engine -> _emit(stdout) : un blocage persistant émet bien
+    # une ligne JSON recommend_tier (captée ensuite par le router en run.log).
+    cfg = dict(CFG)
+    cfg["plan"] = {"mode": "sitemap"}
+    cfg["pacing"] = {"min_interval_s": 0.0, "jitter": [0.0, 0.0]}
+    HarvestConfig.from_dict(cfg).save(str(tmp_path))
+    store = Store(str(tmp_path / "store.json"))
+    store.add_todo(cfg["url"])
+    store.save()
+
+    rc = entry.run_harvest(str(tmp_path), fetcher=AlwaysPushbackFetcher())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert '"recommend_tier"' in out
+    assert '"tier": "unblocker"' in out

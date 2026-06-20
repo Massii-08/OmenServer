@@ -117,6 +117,57 @@ def _read_log_tail(run_dir, limit: int = 200):
         return []
 
 
+def _open_run_log(run_dir):
+    """Ouvre run.log en append + chmod 600 (cohérent avec config.json : un log de
+    run peut contenir des traces sensibles -> même posture que les secrets)."""
+    path = os.path.join(run_dir, "run.log")
+    logf = open(path, "a", encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return logf
+
+
+# run.log n'est PAS borné (1 ligne/page) -> on ne lit que la fin pour la reco.
+# La reco est émise UNE fois quand la cible bloque (le run stalle alors -> peu de
+# lignes ensuite) donc elle reste dans le tail. Un run qui REPART produit >tail
+# de logs après : la reco devenue obsolète disparaît de /status, ce qui est voulu.
+_RECO_TAIL_BYTES = 65536
+
+
+def _recommend_from_log(run_dir, max_bytes=_RECO_TAIL_BYTES):
+    """Reconstruit la DERNIÈRE reco de tier (`recommend_tier`) depuis la FIN de
+    run.log (lecture bornée -> O(tail), pas O(fichier) à chaque poll). Survit au
+    restart uvicorn. None si aucune. Ne porte JAMAIS de secret (l'event =
+    tier/raison/url/compteur)."""
+    p = Path(run_dir) / "run.log"
+    if not p.is_file():
+        return None
+    try:
+        size = p.stat().st_size
+        with open(str(p), "rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()             # jette la 1re ligne partielle
+            data = f.read()
+        text = data.decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    found = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or "recommend_tier" not in line:
+            continue
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        if msg.get("type") == "recommend_tier":
+            found = msg                  # garde la plus récente du tail
+    return found
+
+
 def _job_from_disk(run_dir, job_id, is_alive=_pid_alive):
     """Reconstruit un job depuis config.json + store.json (None si pas de
     config -> dossier incomplet)."""
@@ -135,6 +186,7 @@ def _job_from_disk(run_dir, job_id, is_alive=_pid_alive):
         "feed_key": cfg.feed_key,
         "url": cfg.url,
         "tier": (cfg.plan or {}).get("fetch_tier", "httpx"),
+        "recommend": _recommend_from_log(str(run_dir)),
         "user": "?",
     }
 
@@ -280,7 +332,7 @@ def _launch_subprocess(run_dir: str, job: Dict[str, Any]) -> None:
     def _capture(p, j):
         # logs persistés sur disque -> survivent au restart uvicorn (A)
         try:
-            logf = open(os.path.join(run_dir, "run.log"), "a", encoding="utf-8")
+            logf = _open_run_log(run_dir)
         except OSError:
             logf = None
         try:
@@ -301,6 +353,8 @@ def _launch_subprocess(run_dir: str, job: Dict[str, Any]) -> None:
                     msg = json.loads(stripped)
                     if msg.get("type") in ("progress", "done") and "counts" in msg:
                         j["counts"] = msg["counts"]
+                    elif msg.get("type") == "recommend_tier":
+                        j["recommend"] = msg     # surfacé par /status et /active
                 except ValueError:
                     pass
         except Exception:
@@ -411,6 +465,19 @@ def setup_harvester(data: SetupRequest, current_user: User = Depends(get_current
     return preview
 
 
+def _job_recommend(job):
+    """Reco de tier pour un job : valeur en mémoire (posée par le thread _capture)
+    sinon relecture du tail de run.log. Le résultat positif est CACHÉ sur le job
+    -> une fois trouvée, plus aucun re-scan disque (revue #2/#6)."""
+    rec = job.get("recommend")
+    if rec:
+        return rec
+    found = _recommend_from_log(str(_run_dir(job["job_id"])))
+    if found:
+        job["recommend"] = found
+    return found
+
+
 def _disk_counts(job_id: str) -> Optional[Dict[str, int]]:
     store_path = _run_dir(job_id) / "store.json"
     if not store_path.is_file():
@@ -440,6 +507,7 @@ def harvester_status(job_id: str, current_user: User = Depends(get_current_user)
         "feed_key": job["feed_key"],
         "url": job["url"],
         "tier": job.get("tier", "httpx"),
+        "recommend": _job_recommend(job),
     }
 
 
@@ -457,7 +525,8 @@ def harvester_active(current_user: User = Depends(get_current_user)):
                     "counts": _disk_counts(job["job_id"]) or job["counts"],
                     "url": job["url"],
                     "feed_key": job.get("feed_key"),
-                    "tier": job.get("tier", "httpx")}
+                    "tier": job.get("tier", "httpx"),
+                    "recommend": _job_recommend(job)}
     return None
 
 

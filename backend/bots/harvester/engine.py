@@ -21,6 +21,7 @@ class Engine(object):
                  should_stop: Optional[Callable[[], bool]] = None,
                  error_backoff_s: float = 10.0,
                  pacer=None, max_pushback_retries: int = 5,
+                 recommend_after: int = 5,
                  on_event: Optional[Callable[[Dict[str, Any]], None]] = None) -> None:
         self.store = store
         self.recipe = recipe
@@ -35,8 +36,13 @@ class Engine(object):
         self.error_backoff_s = error_backoff_s
         self._pacer = pacer
         self.max_pushback_retries = max_pushback_retries
+        self.recommend_after = recommend_after
         self._pushbacks = {}  # type: Dict[str, int]
         self._empty = {}  # type: Dict[str, int]   # pages 0-record (B)
+        # reco de tier : blocages consécutifs SANS progrès (remis à 0 sur tout
+        # fetch réussi) ; l'événement n'est émis qu'UNE fois par run.
+        self._consec_pushbacks = 0
+        self._recommended = False
 
     def _progress(self) -> None:
         if self._on_progress:
@@ -45,6 +51,27 @@ class Engine(object):
     def _event(self, obj: Dict[str, Any]) -> None:
         if self._on_event:
             self._on_event(obj)
+
+    def _maybe_recommend(self, url: str) -> None:
+        """Au seuil de blocages consécutifs, recommande UNE fois le tier
+        'unblocker' (sauf s'il est déjà actif). Déterministe — aucun LLM."""
+        if self._recommended or self._consec_pushbacks < self.recommend_after:
+            return
+        tier = (self.plan or {}).get("fetch_tier", "httpx")
+        if tier == "unblocker":
+            return  # déjà au tier le plus haut, rien à recommander
+        self._recommended = True
+        self._event({
+            "type": "recommend_tier",
+            "tier": "unblocker",
+            "from_tier": tier,
+            "consecutive_blocks": self._consec_pushbacks,
+            "url": url,
+            "reason": ("{0} blocages consécutifs sur ce run (Cloudflare / anti-bot) "
+                       "sans contournement — le tier '{1}' ne passe pas. Essaie le "
+                       "tier Débloqueur (API managée).").format(
+                           self._consec_pushbacks, tier),
+        })
 
     def _pace(self) -> None:
         if self._pacer is not None:
@@ -62,6 +89,9 @@ class Engine(object):
         try:
             html = self.fetcher.get(url)
         except PushbackError as e:
+            # blocage : streak +1 -> recommande le tier débloqueur au seuil
+            self._consec_pushbacks += 1
+            self._maybe_recommend(url)
             if self._pacer is not None:
                 self._pacer.penalize(e.retry_after)
                 n = self._pushbacks.get(url, 0) + 1
@@ -83,12 +113,18 @@ class Engine(object):
             self._sleep(self.error_backoff_s)
             return True
         except FetchError:
+            # échec NON-blocage (4xx/5xx/timeout) -> casse le streak de blocages :
+            # 'consécutifs' = strictement des PushbackError d'affilée (reco fiable).
+            self._consec_pushbacks = 0
             self.store.add_error()
             self.store.mark_done(url)
             self.store.save()
             self._progress()
             self._sleep(self.error_backoff_s)
             return True
+
+        # fetch réussi -> le streak de blocages repart de zéro
+        self._consec_pushbacks = 0
 
         extracted = list(self.recipe.extract(html))
         for raw in extracted:

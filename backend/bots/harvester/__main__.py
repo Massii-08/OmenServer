@@ -55,9 +55,30 @@ def _as_float(value, default, lo=None, hi=None):
 def _build_fetcher(tier, rate, url, plan=None, run_dir=None):
     """Sélection du tier de fetch. Défaut = httpx. 'stealth' = patchright + options
     lues du plan : proxy, pace_min/max, max_wait, retries, wait_after (settle JS),
-    locale, timezone, rewarm_every. Valeurs bornées + tolérantes (jamais de crash
-    sur un plan édité à la main). Tout autre tier retombe sur httpx."""
+    locale, timezone, rewarm_every. 'unblocker' = API managée de débloquage
+    (endpoint/clé en env, surchargés par le plan). Valeurs bornées + tolérantes
+    (jamais de crash sur un plan édité à la main). Tout autre tier -> httpx."""
     plan = plan or {}
+    if tier == "unblocker":
+        from backend.bots.harvester.fetch_unblocker import UnblockerFetcher
+        extra = plan.get("unblocker_params")
+        return UnblockerFetcher(
+            rate,
+            endpoint=plan.get("unblocker_endpoint"),    # None -> env
+            api_key=plan.get("unblocker_key"),          # None -> env
+            render_js=bool(plan.get("render_js", False)),
+            params=extra if isinstance(extra, dict) else None,
+            method=plan.get("unblocker_method") or "POST",
+            url_param=plan.get("unblocker_url_param") or "url",
+            key_param=plan.get("unblocker_key_param") or "apikey",
+            key_in=plan.get("unblocker_key_in") or "body",
+            render_param=plan.get("unblocker_render_param") or "render_js",
+            result_field=plan.get("unblocker_result_field"),
+            error_field=plan.get("unblocker_error_field", "error"),
+            status_field=plan.get("unblocker_status_field"),
+            timeout=_as_float(plan.get("unblocker_timeout"), 90.0, lo=5.0, hi=300.0),
+            retries=_as_int(plan.get("unblocker_retries"), 2, lo=1, hi=10),
+        )
     if tier == "stealth":
         from backend.bots.harvester.fetch_stealth import StealthFetcher, jitter_delay
         proxy = plan.get("proxy")

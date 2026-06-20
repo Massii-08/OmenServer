@@ -44,6 +44,21 @@ const HarvesterModule = {
         if (this._pollInterval) { clearInterval(this._pollInterval); this._pollInterval = null; }
     },
 
+    // Les tiers sont mutuellement exclusifs (un seul fetch_tier) : cocher l'un
+    // décoche l'autre.
+    _exclusiveTier(which) {
+        const s = document.getElementById('hrv-stealth');
+        const u = document.getElementById('hrv-unblocker');
+        if (which === 'stealth' && s && s.checked && u) u.checked = false;
+        if (which === 'unblocker' && u && u.checked && s) s.checked = false;
+    },
+
+    _tierLabel(tier) {
+        if (tier === 'stealth') return Lang.t('harvester.tier_stealth');
+        if (tier === 'unblocker') return Lang.t('harvester.tier_unblocker');
+        return tier ? Lang.t('harvester.tier_httpx') : '';
+    },
+
     _renderForm() {
         const c = this._container;
         c.innerHTML = `
@@ -67,10 +82,15 @@ const HarvesterModule = {
           <label class="form-label">${Lang.t('harvester.form_plan')}</label>
           <textarea id="hrv-plan" class="form-input" rows="4" style="font-family:var(--font-mono);">${this._demoPlan()}</textarea>
           <label style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer;font-size:14px;">
-            <input type="checkbox" id="hrv-stealth" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;" />
+            <input type="checkbox" id="hrv-stealth" onchange="HarvesterModule._exclusiveTier('stealth')" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;" />
             <span>${Lang.t('harvester.stealth')}</span>
           </label>
           <div class="form-hint">${Lang.t('harvester.stealth_hint')}</div>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;font-size:14px;">
+            <input type="checkbox" id="hrv-unblocker" onchange="HarvesterModule._exclusiveTier('unblocker')" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;" />
+            <span>${Lang.t('harvester.unblocker')}</span>
+          </label>
+          <div class="form-hint">${Lang.t('harvester.unblocker_hint')}</div>
           <label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;font-size:14px;">
             <input type="checkbox" id="hrv-dedupe" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;" />
             <span>${Lang.t('harvester.dedupe')}</span>
@@ -134,11 +154,14 @@ const HarvesterModule = {
             if (typeof Toast !== 'undefined') Toast.error(Lang.t('harvester.invalid_json'));
             return;
         }
-        // Toggles → plan : Mode furtif (tier stealth) + Déduplication des records.
+        // Toggles → plan : tier de fetch (furtif OU débloqueur, exclusifs) +
+        // déduplication des records.
         const stealthEl = document.getElementById('hrv-stealth');
+        const unblockerEl = document.getElementById('hrv-unblocker');
         const dedupeEl = document.getElementById('hrv-dedupe');
         if (plan && typeof plan === 'object') {
-            if (stealthEl && stealthEl.checked) plan.fetch_tier = 'stealth';
+            if (unblockerEl && unblockerEl.checked) plan.fetch_tier = 'unblocker';
+            else if (stealthEl && stealthEl.checked) plan.fetch_tier = 'stealth';
             else delete plan.fetch_tier;
             if (dedupeEl && dedupeEl.checked) plan.dedupe = true;
             else delete plan.dedupe;
@@ -163,8 +186,7 @@ const HarvesterModule = {
     _renderRunning(state) {
         const c = this._container;
         const counts = state.counts || { records: 0, done: 0, errors: 0 };
-        const tierLabel = state.tier === 'stealth' ? Lang.t('harvester.tier_stealth')
-            : (state.tier ? Lang.t('harvester.tier_httpx') : '');
+        const tierLabel = this._tierLabel(state.tier);
         c.innerHTML = `
         <div class="card">
           <div class="b-head" style="margin-bottom:12px;">
@@ -174,6 +196,7 @@ const HarvesterModule = {
             <span class="badge" id="hrv-tier" style="margin-left:auto;">${tierLabel}</span>
             <span class="badge online" id="hrv-status" style="margin-left:6px;">running</span>
           </div>
+          <div id="hrv-reco" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:var(--r-md);background:var(--bg-elev-3);border:1px solid var(--warning);color:var(--text);font-size:13px;"></div>
           <div class="bento-overview" style="margin-bottom:12px;">
             <div class="stat-card"><div class="stat-label">${Lang.t('harvester.records')}</div><div class="stat-value" id="hrv-records">${counts.records || 0}</div></div>
             <div class="stat-card"><div class="stat-label">${Lang.t('harvester.pages_done')}</div><div class="stat-value" id="hrv-done">${counts.done || 0}</div></div>
@@ -219,9 +242,21 @@ const HarvesterModule = {
             set('hrv-errors', counts.errors || 0);
             if (data.feed_key) { this._feedKey = data.feed_key; set('hrv-feedkey', data.feed_key); }
             const tierEl = document.getElementById('hrv-tier');
-            if (tierEl && data.tier) {
-                tierEl.textContent = data.tier === 'stealth'
-                    ? Lang.t('harvester.tier_stealth') : Lang.t('harvester.tier_httpx');
+            if (tierEl && data.tier) tierEl.textContent = this._tierLabel(data.tier);
+            // Reco de tier : la cible bloque -> bandeau visible (sauf si déjà au
+            // tier débloqueur). Le déclencheur est déterministe côté moteur.
+            const recoEl = document.getElementById('hrv-reco');
+            if (recoEl) {
+                if (data.recommend && data.tier !== 'unblocker') {
+                    // label i18n + compteur neutre (la `reason` du moteur est en FR
+                    // -> on ne la concatène pas pour éviter un bandeau bilingue).
+                    const n = data.recommend.consecutive_blocks;
+                    const suffix = (typeof n === 'number' && n > 0) ? ' (' + n + ')' : '';
+                    recoEl.textContent = Lang.t('harvester.reco_unblocker') + suffix;
+                    recoEl.style.display = '';
+                } else {
+                    recoEl.style.display = 'none';
+                }
             }
             const st = document.getElementById('hrv-status');
             if (st) {

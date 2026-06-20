@@ -225,3 +225,104 @@ def test_setup_surfaces_llm_failure_as_502(tmp_path, monkeypatch):
     monkeypatch.setattr(hr, "_run_setup", boom)
     r = c.post("/api/bots/harvester/setup", json={"url": "https://x.test/", "instructions": "x"})
     assert r.status_code == 502
+
+
+# ---- P3c : recommandation de tier surfacée -------------------------------
+
+def _write_log(run_dir, lines):
+    (run_dir / "run.log").write_text(
+        "\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8")
+
+
+def test_recommend_from_log_reads_last_recommendation(tmp_path):
+    d = tmp_path / "run1"
+    d.mkdir()
+    _write_log(d, [
+        {"type": "progress", "counts": {}},
+        {"type": "recommend_tier", "tier": "unblocker", "reason": "a"},
+        {"type": "recommend_tier", "tier": "unblocker", "reason": "b"},
+    ])
+    r = hr._recommend_from_log(str(d))
+    assert r is not None and r["reason"] == "b"
+
+
+def test_recommend_from_log_none_without_event(tmp_path):
+    d = tmp_path / "run2"
+    d.mkdir()
+    _write_log(d, [{"type": "progress", "counts": {}}])
+    assert hr._recommend_from_log(str(d)) is None
+
+
+def test_status_surfaces_tier_recommendation(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    job_id = c.post("/api/bots/harvester/run", json=GOOD_BODY).json()["job_id"]
+    reco = {"type": "recommend_tier", "tier": "unblocker", "from_tier": "httpx",
+            "consecutive_blocks": 5, "url": "https://x.test/p", "reason": "bloqué"}
+    _write_log(tmp_path / job_id, [{"type": "progress", "counts": {}}, reco])
+    s = c.get("/api/bots/harvester/status/{0}".format(job_id))
+    assert s.status_code == 200
+    body = s.json()
+    assert body["recommend"]["tier"] == "unblocker"
+    assert body["recommend"]["reason"] == "bloqué"
+
+
+def test_active_surfaces_tier_recommendation(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    job_id = c.post("/api/bots/harvester/run", json=GOOD_BODY).json()["job_id"]
+    reco = {"type": "recommend_tier", "tier": "unblocker", "reason": "bloqué"}
+    _write_log(tmp_path / job_id, [reco])
+    a = c.get("/api/bots/harvester/active")
+    assert a.status_code == 200
+    assert a.json()["recommend"]["tier"] == "unblocker"
+
+
+def test_status_active_never_leak_unblocker_key(tmp_path, monkeypatch):
+    # 🔒 la clé du débloqueur (passée dans le plan) atterrit dans config.json
+    # (chmod 600) mais ne doit JAMAIS sortir par /status ou /active.
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = json.loads(json.dumps(GOOD_BODY))
+    body["plan"] = {"fetch_tier": "unblocker", "unblocker_key": "SUPERSECRETKEY"}
+    job_id = c.post("/api/bots/harvester/run", json=body).json()["job_id"]
+    s = c.get("/api/bots/harvester/status/{0}".format(job_id))
+    a = c.get("/api/bots/harvester/active")
+    assert "SUPERSECRETKEY" not in s.text
+    assert "SUPERSECRETKEY" not in a.text
+    assert s.json()["tier"] == "unblocker"   # le tier reste visible
+
+
+# ---- revue #5 : run.log en chmod 600 (cohérent avec config.json) ----------
+
+def test_open_run_log_is_chmod_600(tmp_path):
+    import os
+    import stat
+    d = tmp_path / "runX"
+    d.mkdir()
+    logf = hr._open_run_log(str(d))
+    try:
+        mode = stat.S_IMODE(os.stat(str(d / "run.log")).st_mode)
+        assert mode == 0o600
+    finally:
+        logf.close()
+
+
+# ---- revue #2/#6 : lecture bornée (tail) + cache positif ------------------
+
+def test_recommend_from_log_finds_recommendation_in_large_log(tmp_path):
+    d = tmp_path / "big"
+    d.mkdir()
+    lines = [json.dumps({"type": "progress", "counts": {}}) for _ in range(2000)]
+    lines.append(json.dumps({"type": "recommend_tier", "tier": "unblocker", "reason": "x"}))
+    lines += [json.dumps({"type": "progress", "counts": {}}) for _ in range(10)]
+    (d / "run.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    r = hr._recommend_from_log(str(d))
+    assert r is not None and r["tier"] == "unblocker"   # trouvé même dans un gros log
+
+
+def test_status_caches_recommendation_on_job(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    job_id = c.post("/api/bots/harvester/run", json=GOOD_BODY).json()["job_id"]
+    _write_log(tmp_path / job_id, [
+        {"type": "recommend_tier", "tier": "unblocker", "reason": "bloqué"}])
+    c.get("/api/bots/harvester/status/{0}".format(job_id))   # 1er poll -> lit + cache
+    cached = hr._harvester_jobs[job_id].get("recommend")
+    assert cached is not None and cached["tier"] == "unblocker"
