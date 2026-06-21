@@ -28,14 +28,24 @@ function sampleDelay(params, rng = Math.random) {
 /**
  * Délai de RÉACTION (ms) avant un réflexe physique (manger/fuir/riposter/remonter/se murer).
  * Anti-tell #3 : un humain ne réagit jamais en 0 ms à l'event moteur (= aimbot/ban). Calibré
- * sur reaction.meanMs/stdMs des captures si présents (le mod 0.1.0 ne les loggue pas encore →
- * défaut humain ~300 ms). Plancher 120 ms (réflexe mini), plafond mean+3*std.
+ * sur reaction.meanMs/stdMs des captures.
+ *
+ * Distribution LOGNORMALE (pas normale) calée sur la moyenne/écart-type ARITHMÉTIQUES réels :
+ * les vraies réactions (Massitom2008, 06/21 : moyenne 393 ms, MÉDIANE 198 ms, p90 850 ms) sont
+ * fortement droitières — réflexe rapide ~200 ms, avec une queue jusqu'à ~1 s (distraction/mid-action).
+ * Une normale(mean,std) donnerait une médiane ≈ moyenne (393) → trop lent en typique ET symétrique.
+ * La lognormale reproduit médiane ≈ 200 ms + queue lourde à partir des mêmes moments.
+ * Plancher 120 ms (réflexe mini anti-aimbot), plafond mean+3*std (réflexe toujours à temps).
  */
 function sampleReactionDelay(params, rng = Math.random) {
   const r = (params && params.reaction) || {};
   const mean = r.meanMs == null ? 300 : r.meanMs;
   const std = r.stdMs == null ? 110 : r.stdMs;
-  const ms = mean + _gauss(rng) * std;
+  const m = mean > 1 ? mean : 1;
+  const variance = std > 0 ? std * std : 0;
+  const sigma2 = Math.log(1 + variance / (m * m));   // params lognormale ↔ moments arithmétiques
+  const mu = Math.log(m) - sigma2 / 2;
+  const ms = Math.exp(mu + Math.sqrt(sigma2) * _gauss(rng));
   return Math.round(Math.min(Math.max(ms, 120), mean + 3 * std));
 }
 

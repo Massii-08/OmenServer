@@ -84,6 +84,48 @@ def _synthetic_session(blocks=12):
     return "\n".join(lines)
 
 
+def test_movement_jitter_wraps_yaw_angles():
+    """Calibration Massitom2008 : la gigue de visée DOIT wrapper le yaw angulaire.
+    Sans wrap, des oscillations autour de 0/360 (ex. 358° ↔ 2° = 4° réels) explosent à ~356°
+    → movementJitter ~21° au lieu de ~5° → styleToParams ÷30 → bots ~4× trop nerveux (tell)."""
+    import random as _r
+    _r.seed(1)
+    y = 175.0
+    recs = []
+    for _ in range(400):                 # marche aléatoire ±6°/tick autour de la limite ±180
+        y = ((y + _r.uniform(-6, 6) + 180) % 360) - 180
+        recs.append({"type": "tick", "yaw": y})
+    j = distill._movement_jitter(recs)
+    assert j is not None
+    # deltas WRAPPÉS = uniform(-6,6) → pstdev ≈ 3.5° ; sans wrap chaque franchissement de ±180
+    # injecte un pic ±360 → pstdev exploserait bien au-dessus de 8.
+    assert j < 8, f"jitter doit refléter les deltas WRAPPÉS (~3.5°), pas les pics ±360 (got {j})"
+
+
+def test_chat_latency_does_not_pair_across_sessions(tmp_path):
+    """Bug réel (style.json prod = 98 250 ms) : un chat_in en fin de session A apparié à un
+    chat_out en début de session B → latence absurde. L'appariement doit être PAR session."""
+    import json as _json
+    hdr = _json.dumps({"player": "X", "schema": 1, "sampleHz": 20})
+    a = (hdr + "\n" + _json.dumps({"type": "chat_in", "t": 1000})).encode()         # dangling in
+    b = (hdr + "\n" + _json.dumps({"type": "chat_out", "t": 900000, "text": "hi"})).encode()  # orphan out
+    style = distill.distill_style([a, b], player="X")
+    # aucun appariement intra-session valide → on retombe sur le défaut sain (1500), JAMAIS 900000.
+    assert style["chat"]["latencyMeanMs"] < 60000
+
+
+def test_chat_latency_merges_valid_pairs_across_sessions(tmp_path):
+    """Les paires VALIDES intra-session de plusieurs captures se cumulent (2000 + 4000 → moy 3000)."""
+    import json as _json
+    hdr = _json.dumps({"player": "X", "schema": 1, "sampleHz": 20})
+    a = (hdr + "\n" + _json.dumps({"type": "chat_in", "t": 1000})
+         + "\n" + _json.dumps({"type": "chat_out", "t": 3000, "text": "a"})).encode()  # 2000ms
+    b = (hdr + "\n" + _json.dumps({"type": "chat_in", "t": 1000})
+         + "\n" + _json.dumps({"type": "chat_out", "t": 5000, "text": "b"})).encode()  # 4000ms
+    style = distill.distill_style([a, b], player="X")
+    assert style["chat"]["latencyMeanMs"] == 3000
+
+
 def test_distill_caps_clips_per_ctx(tmp_path):
     """max_per_ctx tronque chaque contexte à un échantillon représentatif (clips légers, fleet)."""
     import json as _json

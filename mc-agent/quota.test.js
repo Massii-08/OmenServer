@@ -21,6 +21,20 @@ test('countItems : compte par type logique (iron = raw_iron + iron_ingot)', () =
   assert.deepStrictEqual(countItems(items), { diamond: 3, gold: 2, redstone: 10, lapis: 7, iron: 9 });
 });
 
+test('countItems : gold = raw_gold + gold_ingot (livraison en lingots fondus, exigence Massii)', () => {
+  // Sans ce fix, fondre raw_gold → gold_ingot FAISAIT CHUTER le compteur or (gold_ingot ignoré).
+  assert.deepStrictEqual(countItems([{ name: 'gold_ingot', count: 6 }]).gold, 6);
+  assert.deepStrictEqual(countItems([{ name: 'raw_gold', count: 4 }, { name: 'gold_ingot', count: 5 }]).gold, 9);
+});
+
+test('tracker : fondre raw_gold → gold_ingot NE FAIT PAS chuter le quota or', () => {
+  const tk = createQuotaTracker({ gold: 8 });
+  assert.strictEqual(tk.progress([{ name: 'raw_gold', count: 8 }]).gold.have, 8);
+  // après fonte : 8 raw_gold deviennent 8 gold_ingot → toujours 8 (pas 0).
+  assert.strictEqual(tk.progress([{ name: 'gold_ingot', count: 8 }]).gold.have, 8);
+  assert.ok(tk.met([{ name: 'gold_ingot', count: 8 }]), 'quota or atteint en lingots fondus');
+});
+
 test('countItems : liste vide/null → tous zéro', () => {
   assert.deepStrictEqual(countItems([]), { diamond: 0, gold: 0, redstone: 0, lapis: 0, iron: 0 });
   assert.deepStrictEqual(countItems(null), { diamond: 0, gold: 0, redstone: 0, lapis: 0, iron: 0 });

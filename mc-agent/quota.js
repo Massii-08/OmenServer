@@ -5,10 +5,12 @@
 // récoltés — le dépôt ne fait pas perdre le compte). Le bot s'arrête quand TOUT est atteint.
 
 // Items comptés par type (ce que droppe le minerai, pioche non-silk-touch) :
-//  - iron compte raw_iron ET iron_ingot (un lingot fondu reste du fer récolté).
+//  - iron compte raw_iron ET iron_ingot, gold compte raw_gold ET gold_ingot : un lingot fondu reste
+//    du métal récolté (exigence Massii : LIVRER des lingots fondus). Sans gold_ingot dans la liste,
+//    fondre raw_gold → gold_ingot faisait CHUTER le compteur or à 0.
 const ITEMS_FOR = {
   diamond: ['diamond'],
-  gold: ['raw_gold'],
+  gold: ['raw_gold', 'gold_ingot'],
   redstone: ['redstone'],
   lapis: ['lapis_lazuli'],
   iron: ['raw_iron', 'iron_ingot'],

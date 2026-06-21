@@ -88,12 +88,19 @@ def _reaction_times(records):
     return times
 
 
+def _wrap_deg(d):
+    """Ramène un delta angulaire dans [-180, 180] (le yaw MC wrappe → 358°↔2° = 4°, pas 356°)."""
+    return ((d + 180) % 360) - 180
+
+
 def _movement_jitter(records):
-    """Écart-type des deltas de yaw entre ticks consécutifs (proxy de gigue de visée)."""
+    """Écart-type des deltas de yaw entre ticks consécutifs (proxy de gigue de visée).
+    Delta WRAPPÉ obligatoire : sans wrap, les oscillations autour de la limite ±180 explosent à
+    ~356° → movementJitter faussé ~21° au lieu de ~5° → bots ~4× trop nerveux (tell, calib 06/21)."""
     yaws = [r.get("yaw") for r in records if r.get("type") == "tick" and r.get("yaw") is not None]
     if len(yaws) < 2:
         return None
-    deltas = [abs(yaws[i + 1] - yaws[i]) for i in range(len(yaws) - 1)]
+    deltas = [abs(_wrap_deg(yaws[i + 1] - yaws[i])) for i in range(len(yaws) - 1)]
     try:
         return round(statistics.pstdev(deltas), 3)
     except statistics.StatisticsError:
@@ -111,12 +118,16 @@ def _mean_std(values):
 def distill_style(payloads, player):
     """Agrège ≥1 captures d'un joueur en un style.json (forme spec §7.1)."""
     all_records = []
+    chat_lat = []
+    react = []
     for p in payloads:
         _, recs = load_records(p)
         all_records.extend(recs)
-
-    chat_lat = _chat_latencies(all_records)
-    react = _reaction_times(all_records)
+        # Appariement chat_in→chat_out ET stimulus→réaction PAR session : sinon un chat_in (ou un
+        # mob_appear) en fin de session A s'apparie au chat_out (tick) de session B → latence absurde
+        # (bug prod : latencyMeanMs=98 250 ms). Les listes sont ensuite cumulées entre sessions.
+        chat_lat.extend(_chat_latencies(recs))
+        react.extend(_reaction_times(recs))
     lat_mean, lat_std = _mean_std(chat_lat)
     re_mean, re_std = _mean_std(react)
     typo = _typo_rate(all_records)

@@ -1321,6 +1321,31 @@ async function relocateToRegion(opts = {}) {
   await sleep(5000);                                     // atterrissage + chunks
 }
 
+// FONTE FINALE (exigence Massii : LIVRER des lingots d'or/fer FONDUS, pas du minerai brut).
+// Appelée UNIQUEMENT quand le quota est atteint (rare) → ne peut pas casser la boucle de minage.
+// Fond tout le raw_iron/raw_gold restant en lingots via le four portable du kit. Best-effort,
+// borné par smeltWithFurnace (180s/lot) + garde anti-boucle (pas de progrès → stop). Le four ne
+// traite qu'1 item/10s → on boucle par lots (un lot peut être tronqué par le timeout, on reprend).
+async function finalizeSmelt() {
+  const cnt = (n) => ((bot.inventory && bot.inventory.items()) || [])
+    .filter((i) => i.name === n).reduce((a, i) => a + i.count, 0);
+  for (const [raw, ingot] of [['raw_iron', 'iron_ingot'], ['raw_gold', 'gold_ingot']]) {
+    let n = cnt(raw);
+    let guard = 0;
+    while (n > 0 && guard < 12) {
+      guard += 1;
+      const batch = Math.min(n, 32);
+      let s = null;
+      try { s = await withTimeout(smeltWithFurnace(raw, ingot, batch), 200000, stopMotion); }
+      catch (e) { s = { ok: false, reason: 'error' }; }
+      const after = cnt(raw);
+      emit({ type: 'finalize_smelt', raw, ingot, requested: batch, smelted: n - after, ok: !!(s && s.ok) });
+      if (after >= n) break;            // aucun progrès (pas de four/fuel) → on arrête (best-effort)
+      n = after;
+    }
+  }
+}
+
 async function startResource() {
   // NB : « l'évaporation d'items » (rapport 16/06) était un FAUX diagnostic — `data get entity
   // <joueur EN LIGNE>` est trompeur sur Paper (NBT périmé/tronqué). Le compte autoritaire (`clear`
@@ -1515,6 +1540,10 @@ async function startResource() {
   if (r && r.ok === false && r.reason === 'starved' && args.quota) {
     emit({ type: 'resource_exit_for_respawn', mined: (r && r.mined) || 0 });
     process.exit(2);
+  }
+  // Quota ATTEINT (r.done) → fonte finale : le brut récolté devient des LINGOTS livrés (or/fer).
+  if (r && r.done && args.quota) {
+    try { await finalizeSmelt(); } catch (e) { /* best-effort */ }
   }
   // Fini (carte épuisée ou vide) : objectif clos + idle propre — plus de mouvement volontaire,
   // les réflexes (manger/fuir/respirer) restent branchés. Un nouveau start relancera la boucle.
