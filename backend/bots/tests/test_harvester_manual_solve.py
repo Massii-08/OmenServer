@@ -76,3 +76,100 @@ def test_no_click_method_is_tolerated_and_still_pushes_back():
     s = NoClickSession('<div class="cf-turnstile">x</div>', title="Welcome")
     with pytest.raises(PushbackError):
         _sf(s).get("https://site.test/x")
+
+
+class FlipSession(object):
+    """Reste en challenge jusqu'au Nᵉ appel de title(), puis propre."""
+    def __init__(self, flip_after):
+        self.flip_after = flip_after
+        self.title_calls = 0
+        self.gotos = 0
+
+    def goto(self, url):
+        self.gotos += 1
+
+    def title(self):
+        self.title_calls += 1
+        return "Real" if self.title_calls > self.flip_after else "Just a moment..."
+
+    def content(self):
+        return ("<html>clean</html>" if self.title_calls > self.flip_after
+                else '<div class="cf-turnstile">x</div>')
+
+    def interact(self):
+        pass
+
+    def click_turnstile(self):
+        return False  # l'auto-click ne suffit pas (vrai puzzle) -> manual solve
+
+
+def _counter_clock(start=0.0, step=1.0):
+    state = {"t": start}
+
+    def clock():
+        v = state["t"]
+        state["t"] += step
+        return v
+    return clock
+
+
+def test_await_manual_solve_resolves_and_returns_html():
+    s = FlipSession(flip_after=2)
+    events = []
+    f = _sf(s, on_event=events.append, manual_solve=True,
+            manual_solve_timeout=100, solve_poll_s=0.0,
+            clock=lambda: 0.0, should_stop=lambda: False)
+    out = f._await_manual_solve(s, "https://site.test/x")
+    assert out == "<html>clean</html>"
+    types = [e["type"] for e in events]
+    assert types == ["awaiting_manual_solve", "manual_solve_resolved"]
+
+
+def test_await_manual_solve_times_out_returns_none():
+    s = FlipSession(flip_after=9999)  # jamais résolu
+    events = []
+    f = _sf(s, on_event=events.append, manual_solve=True,
+            manual_solve_timeout=3, solve_poll_s=0.0,
+            clock=_counter_clock(), should_stop=lambda: False)
+    out = f._await_manual_solve(s, "https://site.test/x")
+    assert out is None
+    assert [e["type"] for e in events] == ["awaiting_manual_solve", "manual_solve_timeout"]
+
+
+def test_await_manual_solve_aborts_on_stop():
+    s = FlipSession(flip_after=9999)
+    events = []
+    f = _sf(s, on_event=events.append, manual_solve=True,
+            manual_solve_timeout=100, solve_poll_s=0.0,
+            clock=lambda: 0.0, should_stop=lambda: True)
+    assert f._await_manual_solve(s, "https://site.test/x") is None
+    assert [e["type"] for e in events] == ["awaiting_manual_solve", "manual_solve_timeout"]
+
+
+def test_await_manual_solve_notifies_once_with_url():
+    s = FlipSession(flip_after=1)
+    sent = []
+    f = _sf(s, manual_solve=True, manual_solve_timeout=100, solve_poll_s=0.0,
+            clock=lambda: 0.0, should_stop=lambda: False, notify=sent.append)
+    f._await_manual_solve(s, "https://site.test/captcha")
+    assert len(sent) == 1
+    assert "https://site.test/captcha" in sent[0]
+
+
+def test_get_manual_solve_off_raises_pushback():
+    # manual_solve OFF (défaut) -> comportement legacy (PushbackError)
+    s = FlipSession(flip_after=9999)
+    with pytest.raises(PushbackError):
+        _sf(s).get("https://site.test/x")
+
+
+def test_get_falls_back_to_pushback_on_solve_timeout():
+    # manual_solve ON mais jamais résolu -> awaiting puis timeout -> PushbackError
+    s = FlipSession(flip_after=9999)
+    events = []
+    f = _sf(s, on_event=events.append, manual_solve=True, manual_solve_timeout=3,
+            solve_poll_s=0.0, clock=_counter_clock(), should_stop=lambda: False)
+    with pytest.raises(PushbackError):
+        f.get("https://site.test/x")
+    assert "awaiting_manual_solve" in [e["type"] for e in events]
+    assert "manual_solve_timeout" in [e["type"] for e in events]

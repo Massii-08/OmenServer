@@ -188,6 +188,13 @@ class StealthFetcher:
         run_dir: Optional[str] = None,
         browser_opts: Optional[dict] = None,
         rewarm_every: int = 0,
+        on_event: Optional[Callable[[dict], None]] = None,
+        notify: Optional[Callable[[str], None]] = None,
+        manual_solve: bool = False,
+        manual_solve_timeout: int = 1800,
+        solve_poll_s: float = 3.0,
+        should_stop: Optional[Callable[[], bool]] = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """Configure pacing, warm URL, challenge wait budget, retries, per-host
         profile, diagnostics run_dir, browser options (proxy/locale/tz/settle),
@@ -203,6 +210,20 @@ class StealthFetcher:
         self.run_dir = run_dir
         self._browser_opts = browser_opts or {}
         self.rewarm_every = rewarm_every
+        self._on_event = on_event
+        self._notify = notify
+        self.manual_solve = manual_solve
+        self.manual_solve_timeout = manual_solve_timeout
+        self.solve_poll_s = solve_poll_s
+        self._clock = clock
+        if should_stop is not None:
+            self._should_stop = should_stop
+        elif run_dir:
+            # arrêt propre pendant l'attente : le router pose stop.flag dans run_dir
+            self._should_stop = lambda: os.path.isfile(
+                os.path.join(run_dir, "stop.flag"))
+        else:
+            self._should_stop = lambda: False
         self._warmed = False
         self._req_count = 0
         # seed depuis les dumps existants -> une reprise n'écrase pas les anciens
@@ -285,6 +306,10 @@ class StealthFetcher:
             self._warm(session)
 
         self._dump_block(session, url)  # diagnostic : screenshot + HTML au blocage
+        if self.manual_solve:
+            html = self._await_manual_solve(session, url)
+            if html is not None:
+                return html
         return self._raise_block(url, last_error)
 
     def _attempt(self, session: "BrowserSession", url: str):
@@ -316,6 +341,51 @@ class StealthFetcher:
         (pacer) et réessaie l'URL au lieu de la marteler. Surchargé en B."""
         raise PushbackError(
             "GET {0} blocked: {1}".format(url, last_error), retry_after=None)
+
+    def _emit_event(self, obj: dict) -> None:
+        """Émet un event (JSON line stdout via on_event=_emit) -> run.log -> router.
+        Best-effort : ne fait jamais échouer un fetch."""
+        if self._on_event:
+            try:
+                self._on_event(obj)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _do_notify(self, text: str) -> None:
+        """Notif best-effort (Telegram). Ne lève jamais."""
+        if self._notify:
+            try:
+                self._notify(text)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _await_manual_solve(self, session: "BrowserSession", url: str):
+        """Pause : garde la page ouverte, notifie, poll en LECTURE SEULE jusqu'à
+        résolution / timeout / stop. Retourne le HTML résolu, ou None.
+
+        Ne navigue ni n'interagit pendant l'attente (ne se bat pas avec les clics
+        humains via noVNC) ; un seul re-goto si le titre est clean mais le corps
+        porte encore des marqueurs."""
+        start = self._clock()
+        self._emit_event({"type": "awaiting_manual_solve", "url": url,
+                          "since": start, "timeout_s": self.manual_solve_timeout})
+        self._do_notify(
+            "\U0001F512 CAPTCHA a resoudre sur {0} - ouvre le bot Harvester sur "
+            "omenserver.org".format(url))
+        while self._clock() - start < self.manual_solve_timeout:
+            if self._should_stop():
+                break
+            if not is_challenge(session.title()):
+                html = session.content()
+                if is_challenge_html(html):
+                    session.goto(url)       # un seul refresh post-résolution
+                    html = session.content()
+                if not is_challenge_html(html):
+                    self._emit_event({"type": "manual_solve_resolved", "url": url})
+                    return html
+            self._sleep(self.solve_poll_s)
+        self._emit_event({"type": "manual_solve_timeout", "url": url})
+        return None
 
 
 class PatchrightBrowserSession:
