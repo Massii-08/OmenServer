@@ -120,11 +120,11 @@ const MediaModule = {
                     <div style="margin-top:16px;padding:12px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;">
                         <div>
                             <div style="font-size:12px;color:var(--text-muted);">${Lang.t('media.access')}</div>
-                            <a href="${s.url}" target="_blank" style="color:var(--info);font-size:14px;font-weight:600;text-decoration:none;">
-                                ${s.url} ↗
+                            <a href="${/^https?:\/\//i.test(s.url)?esc(s.url):'#'}" target="_blank" rel="noopener noreferrer" style="color:var(--info);font-size:14px;font-weight:600;text-decoration:none;">
+                                ${esc(s.url)} ↗
                             </a>
                         </div>
-                        <button class="btn btn-primary btn-sm" onclick="window.open('${s.url}', '_blank')" style="font-size:12px;">
+                        <button class="btn btn-primary btn-sm" data-url="${esc(s.url)}" onclick="window.open(this.dataset.url, '_blank')" style="font-size:12px;">
                             ${Lang.t('media.open')}
                         </button>
                     </div>
@@ -185,10 +185,10 @@ const MediaModule = {
                             <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);">
                                 <span style="font-size:24px;">${typeIcons[lib.name] || ''}</span>
                                 <div style="flex:1;">
-                                    <div style="font-size:14px;font-weight:600;text-transform:capitalize;">${lib.name}</div>
-                                    <div style="font-size:11px;color:var(--text-muted);">${lib.file_count} ${Lang.t('media.files')} · ${lib.size_mb} Mo</div>
+                                    <div style="font-size:14px;font-weight:600;text-transform:capitalize;">${esc(lib.name)}</div>
+                                    <div style="font-size:11px;color:var(--text-muted);">${esc(lib.file_count)} ${Lang.t('media.files')} · ${esc(lib.size_mb)} Mo</div>
                                 </div>
-                                <span style="font-size:11px;color:var(--text-muted);font-family:monospace;">${lib.path}</span>
+                                <span style="font-size:11px;color:var(--text-muted);font-family:monospace;">${esc(lib.path)}</span>
                             </div>
                         `).join('')}
                     </div>

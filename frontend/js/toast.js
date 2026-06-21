@@ -51,11 +51,20 @@ const Toast = {
             transition:transform 0.35s cubic-bezier(0.4,0,0.2,1), opacity 0.35s ease;
             opacity:0;
         `;
-        toast.innerHTML = `
-            <span style="font-size:14px;flex-shrink:0;line-height:1;">${icons[type]}</span>
-            <span style="flex:1;line-height:1.4;">${message}</span>
-            <span style="font-size:14px;color:var(--text-dim);flex-shrink:0;"></span>
-        `;
+        // XSS : le message vient souvent de réponses backend / agents (noms de
+        // ressources, pseudos, erreurs) → JAMAIS via innerHTML. On construit le
+        // toast en DOM et on pose le message via textContent (auto-échappé).
+        const iconEl = document.createElement('span');
+        iconEl.style.cssText = 'font-size:14px;flex-shrink:0;line-height:1;';
+        iconEl.textContent = icons[type] || '';
+        const msgEl = document.createElement('span');
+        msgEl.style.cssText = 'flex:1;line-height:1.4;';
+        msgEl.textContent = (message == null ? '' : String(message));
+        const tailEl = document.createElement('span');
+        tailEl.style.cssText = 'font-size:14px;color:var(--text-dim);flex-shrink:0;';
+        toast.appendChild(iconEl);
+        toast.appendChild(msgEl);
+        toast.appendChild(tailEl);
 
         // Click to dismiss
         toast.addEventListener('click', () => this._dismiss(toast));

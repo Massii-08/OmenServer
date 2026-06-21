@@ -9,6 +9,10 @@ const App = {
  // Vue actuellement affichée
  currentView: 'hub',
 
+ // Alias de l'échappement HTML global (défini dans lang.js → window.esc).
+ // Permet d'écrire App.esc(...) dans les modules qui ont déjà App en scope.
+ esc(s) { return window.esc(s); },
+
  /**
  * Initialisation au chargement de la page.
  */
@@ -502,7 +506,7 @@ const App = {
  const badgeClass = isRunning ? 'badge online' : 'badge';
  const statusText = isRunning ? Lang.t('gs.status_running') || 'online' : Lang.t('gs.status_stopped') || 'offline';
  return `
- <div class="row" onclick="App.navigateTo('server_view', ${s.id})" style="cursor:pointer;"><div class="row-ico game-ico" style="background:var(--bg-elev-3);color:var(--text);font-family:var(--font-mono);font-size:11px;font-weight:600;letter-spacing:0.05em;width:42px;height:42px;display:flex;align-items:center;justify-content:center;border-radius:var(--r-sm);border:1px solid var(--border);">${ticker(s.game_type || s.type)}</div><div class="row-info" style="flex:1;min-width:0;"><div class="name" style="font-weight:600;font-size:14px;">${s.name}</div><div class="meta" style="font-size:12px;color:var(--text-dim);">${s.game_type || s.type || ''} ${s.version ? '· ' + s.version : ''}</div></div><span class="${badgeClass}">${statusText}</span></div>
+ <div class="row" onclick="App.navigateTo('server_view', ${s.id})" style="cursor:pointer;"><div class="row-ico game-ico" style="background:var(--bg-elev-3);color:var(--text);font-family:var(--font-mono);font-size:11px;font-weight:600;letter-spacing:0.05em;width:42px;height:42px;display:flex;align-items:center;justify-content:center;border-radius:var(--r-sm);border:1px solid var(--border);">${esc(ticker(s.game_type || s.type))}</div><div class="row-info" style="flex:1;min-width:0;"><div class="name" style="font-weight:600;font-size:14px;">${esc(s.name)}</div><div class="meta" style="font-size:12px;color:var(--text-dim);">${esc(s.game_type || s.type || '')} ${s.version ? '· ' + esc(s.version) : ''}</div></div><span class="${badgeClass}">${statusText}</span></div>
  `;
  }).join('');
  } catch (e) {
@@ -542,7 +546,7 @@ const App = {
 
  // Grid items (no emoji per Bento Tech anti-AI-slop rules — color via class only)
  grid.innerHTML = (d.checks || []).map(c => `
- <div class="diag-item ${lvlClass[c.level] || ''}"><div class="d-l">${c.name}</div><div class="d-v">${c.value || ''}</div></div>
+ <div class="diag-item ${lvlClass[c.level] || ''}"><div class="d-l">${esc(c.name)}</div><div class="d-v">${esc(c.value || '')}</div></div>
  `).join('');
  } catch (e) {
  if (summary) summary.textContent = Lang.t('dashboard.diag_error');
@@ -591,8 +595,8 @@ const App = {
  }
 
  // Options pour le formulaire
- const serverOptions = servers.map(s => `<option value="server_${s.id}">${s.name}</option>`).join('');
- const botOptions = bots.map(b => `<option value="bot_${b.id}">${b.name}</option>`).join('');
+ const serverOptions = servers.map(s => `<option value="server_${s.id}">${esc(s.name)}</option>`).join('');
+ const botOptions = bots.map(b => `<option value="bot_${b.id}">${esc(b.name)}</option>`).join('');
  const targetOptions = serverOptions + botOptions;
 
  const formHTML = `
@@ -619,7 +623,7 @@ const App = {
  ${formHTML}
  <div style="display:flex;flex-direction:column;gap:6px;">
  ${allTasks.map(t => `
- <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);"><span style="font-size:18px;">${taskIcons[t.task_type] || ''}</span><div style="flex:1;"><div style="font-size:13px;font-weight:600;">${taskLabels[t.task_type] || t.task_type}</div><div style="font-size:11px;color:var(--text-muted);">${t.targetIcon} ${t.targetName} · ${t.schedule_time ? ('' + Lang.t('scheduler.at') + ' ' + t.schedule_time + ' (' + (t.schedule_days || 'daily') + ')') : ('' + Lang.t('scheduler.every') + ' ' + t.interval_hours + 'h')}</div></div><div style="display:flex;gap:6px;align-items:center;"><span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled !== false ? 'var(--accent-dim)' : 'rgba(255,255,255,0.05)'};color:${t.enabled !== false ? 'var(--accent)' : 'var(--text-muted)'};">${t.enabled !== false ? ' ' + Lang.t('scheduler.active') : ' ' + Lang.t('scheduler.inactive')}</span><button class="btn btn-sm btn-secondary" onclick="App._toggleHubTask(${t.id})" title="${t.enabled ? 'Pause' : 'Resume'}">${t.enabled !== false ? Lang.t('common.pause') : Lang.t('common.resume')}</button><button class="btn btn-sm btn-danger" onclick="App._deleteHubTask(${t.id})" title="Delete">${Lang.t('common.delete')}</button></div></div>
+ <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);"><span style="font-size:18px;">${taskIcons[t.task_type] || ''}</span><div style="flex:1;"><div style="font-size:13px;font-weight:600;">${taskLabels[t.task_type] || t.task_type}</div><div style="font-size:11px;color:var(--text-muted);">${t.targetIcon} ${esc(t.targetName)} · ${t.schedule_time ? ('' + Lang.t('scheduler.at') + ' ' + esc(t.schedule_time) + ' (' + esc(t.schedule_days || 'daily') + ')') : ('' + Lang.t('scheduler.every') + ' ' + esc(t.interval_hours) + 'h')}</div></div><div style="display:flex;gap:6px;align-items:center;"><span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${t.enabled !== false ? 'var(--accent-dim)' : 'rgba(255,255,255,0.05)'};color:${t.enabled !== false ? 'var(--accent)' : 'var(--text-muted)'};">${t.enabled !== false ? ' ' + Lang.t('scheduler.active') : ' ' + Lang.t('scheduler.inactive')}</span><button class="btn btn-sm btn-secondary" onclick="App._toggleHubTask(${t.id})" title="${t.enabled ? 'Pause' : 'Resume'}">${t.enabled !== false ? Lang.t('common.pause') : Lang.t('common.resume')}</button><button class="btn btn-sm btn-danger" onclick="App._deleteHubTask(${t.id})" title="Delete">${Lang.t('common.delete')}</button></div></div>
  `).join('')}
  </div>`;
  // Initialiser les options du type en fonction de la cible
@@ -746,8 +750,8 @@ const App = {
  panel.innerHTML = `
  <div style="background:var(--bg-elev-1);border-radius:12px;padding:20px;border:1px solid var(--border);"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;"><div><div style="font-size:16px;font-weight:700;">${overallLabel[d.overall] || 'Diagnostic'}</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${d.ok} OK · ${d.warnings} ${Lang.t('dashboard.warnings')} · ${d.criticals} ${Lang.t('dashboard.criticals')}</div></div><button onclick="document.getElementById('diagnostic-panel').style.display='none'" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:13px;">${Lang.t('common.close')}</button></div><div style="display:flex;flex-direction:column;gap:6px;">
  ${d.checks.map(c => `
- <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:${levelBg[c.level]};border-radius:8px;border:1px solid ${levelColors[c.level]}20;"><span style="font-size:20px;">${c.icon}</span><div style="flex:1;min-width:0;"><div style="display:flex;gap:8px;align-items:center;"><span style="font-weight:600;font-size:13px;">${c.name}</span><span style="font-size:11px;color:${levelColors[c.level]};font-weight:600;">${levelIcons[c.level]} ${c.value}</span></div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${c.message}</div>
- ${c.suggestion ? `<div style="font-size:11px;color:${levelColors[c.level]};margin-top:4px;">${c.suggestion}</div>` : ''}
+ <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:${levelBg[c.level]};border-radius:8px;border:1px solid ${levelColors[c.level]}20;"><span style="font-size:20px;">${esc(c.icon)}</span><div style="flex:1;min-width:0;"><div style="display:flex;gap:8px;align-items:center;"><span style="font-weight:600;font-size:13px;">${esc(c.name)}</span><span style="font-size:11px;color:${levelColors[c.level]};font-weight:600;">${levelIcons[c.level]} ${esc(c.value)}</span></div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${esc(c.message)}</div>
+ ${c.suggestion ? `<div style="font-size:11px;color:${levelColors[c.level]};margin-top:4px;">${esc(c.suggestion)}</div>` : ''}
  </div></div>
  `).join('')}
  </div></div>`;
@@ -1214,9 +1218,9 @@ const App = {
  return '<div style="padding:12px 0;border-bottom:1px solid var(--border);">'
  + '<div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;" onclick="App._toggleUserDetails(' + u.id + ')">'
  + '<div style="display:flex;align-items:center;gap:12px;">'
- + '<div style="width:36px;height:36px;border-radius:50%;background:' + (u.is_admin ? 'var(--violet)' : 'var(--bg-elev-1)') + ';display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:' + (u.is_admin ? 'white' : 'var(--text-muted)') + '">' + u.username.charAt(0).toUpperCase() + '</div>'
+ + '<div style="width:36px;height:36px;border-radius:50%;background:' + (u.is_admin ? 'var(--violet)' : 'var(--bg-elev-1)') + ';display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:' + (u.is_admin ? 'white' : 'var(--text-muted)') + '">' + esc((u.username || '?').charAt(0).toUpperCase()) + '</div>'
  + '<div>'
- + '<div style="font-weight:600;font-size:14px;">' + u.username + '</div>'
+ + '<div style="font-weight:600;font-size:14px;">' + esc(u.username) + '</div>'
  + '<div style="font-size:12px;color:var(--text-muted);">' + (roleLabels[u.role] || u.role) + (u.created_at ? ' · ' + Lang.t('users.created_on') + ' ' + new Date(u.created_at).toLocaleDateString() : '') + '</div>'
  + '</div>'
  + '</div>'
@@ -1231,7 +1235,7 @@ const App = {
  + '<option value="developer"' + (u.role === 'developer' ? ' selected' : '') + '>' + Lang.t('users.role_developer') + '</option>'
  + '<option value="admin"' + (u.role === 'admin' ? ' selected' : '') + '>' + Lang.t('users.role_admin') + '</option>'
  + '</select>'
- + '<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();App._confirmDeleteUser(' + u.id + ', \'' + u.username + '\')" style="padding:4px 8px;font-size:12px;">' + Lang.t('users.delete_btn') + '</button>'
+ + '<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();App._confirmDeleteUser(' + u.id + ')" style="padding:4px 8px;font-size:12px;">' + Lang.t('users.delete_btn') + '</button>'
  : '<span style="font-size:12px;color:var(--accent);font-weight:600;">' + Lang.t('users.you') + '</span>')
  + '<span id="user-chevron-' + u.id + '" style="font-size:10px;color:var(--text-muted);transition:transform .2s;"></span>'
  + '</div>'
@@ -1250,7 +1254,7 @@ const App = {
  + '</div>'
  + '</div>'
  + '<div id="del-confirm-' + u.id + '" style="display:none;background:rgba(248,113,113,0.08);border:1px solid var(--danger);border-radius:8px;padding:10px;margin:4px 0 8px;">'
- + '<span style="font-size:12px;color:var(--danger);">' + Lang.t('users.delete_confirm').replace('${name}', u.username) + '</span>'
+ + '<span style="font-size:12px;color:var(--danger);">' + esc(Lang.t('users.delete_confirm')).replace('${name}', esc(u.username)) + '</span>'
  + '<button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'del-confirm-' + u.id + '\').style.display=\'none\'" style="margin-left:8px;font-size:11px;">' + Lang.t('common.cancel') + '</button>'
  + '<button class="btn btn-sm" style="background:var(--danger);color:white;margin-left:4px;font-size:11px;" onclick="App._deleteUserAdmin(' + u.id + ')">' + Lang.t('users.delete_btn') + '</button>'
  + '</div>';
@@ -1326,7 +1330,7 @@ const App = {
  if (r && r.ok) this._loadUsersAdmin();
  },
 
- _confirmDeleteUser(userId, username) {
+ _confirmDeleteUser(userId) {
  document.getElementById(`del-confirm-${userId}`).style.display = 'block';
  },
 
@@ -1404,7 +1408,7 @@ const SharingModal = {
  return;
  }
  el.innerHTML = users.map(u => `
- <div class="sharing-user-item" onclick="SharingModal._selectUser(${u.id}, '${u.username.replace(/'/g, "\\\\'")}', '${u.role}')" style="cursor:pointer;"><div class="sharing-user-info"><div class="sharing-user-avatar">${u.username.charAt(0).toUpperCase()}</div><div><div style="font-weight:600;font-size:13px;">${u.username}</div><span class="role-badge ${u.role}">${Lang.t('users.role_' + u.role) || u.role}</span></div></div></div>
+ <div class="sharing-user-item" data-uid="${esc(u.id)}" data-uname="${esc(u.username)}" data-urole="${esc(u.role)}" onclick="SharingModal._selectUser(this.dataset.uid, this.dataset.uname, this.dataset.urole)" style="cursor:pointer;"><div class="sharing-user-info"><div class="sharing-user-avatar">${esc(String(u.username).charAt(0).toUpperCase())}</div><div><div style="font-weight:600;font-size:13px;">${esc(u.username)}</div><span class="role-badge ${esc(u.role)}">${esc(Lang.t('users.role_' + u.role) || u.role)}</span></div></div></div>
  `).join('');
  },
 
@@ -1458,13 +1462,13 @@ const SharingModal = {
  ? { start: Lang.t('sharing.bot_use'), manage: Lang.t('sharing.bot_edit') }
  : { view_only: Lang.t('sharing.view_only'), start: Lang.t('sharing.start'), manage: Lang.t('sharing.manage') };
  el.innerHTML = accesses.map(a => `
- <div class="sharing-user-item" style="margin-bottom:6px;"><div class="sharing-user-info"><div class="sharing-user-avatar">${(a.username||'?').charAt(0).toUpperCase()}</div><div><div style="font-weight:600;font-size:13px;">${a.username}</div><div style="font-size:10px;color:var(--text-muted);">${Lang.t('sharing.granted_by')} ${a.granted_by}</div></div></div><div style="display:flex;align-items:center;gap:8px;"><select class="sharing-access-select" onchange="SharingModal._updateAccess(${a.id}, this.value)">
+ <div class="sharing-user-item" style="margin-bottom:6px;"><div class="sharing-user-info"><div class="sharing-user-avatar">${esc((a.username||'?').charAt(0).toUpperCase())}</div><div><div style="font-weight:600;font-size:13px;">${esc(a.username)}</div><div style="font-size:10px;color:var(--text-muted);">${Lang.t('sharing.granted_by')} ${esc(a.granted_by)}</div></div></div><div style="display:flex;align-items:center;gap:8px;"><select class="sharing-access-select" onchange="SharingModal._updateAccess(${a.id}, this.value)">
  ${isBot ? `
  <option value="start" ${a.access_level==='start'||a.access_level==='view_only'?'selected':''}>${ll.start}</option><option value="manage" ${a.access_level==='manage'?'selected':''}>${ll.manage}</option>
  ` : `
  <option value="view_only" ${a.access_level==='view_only'?'selected':''}>${ll.view_only}</option><option value="start" ${a.access_level==='start'?'selected':''}>${ll.start}</option><option value="manage" ${a.access_level==='manage'?'selected':''}>${ll.manage}</option>
  `}
- </select><button class="btn btn-sm" style="color:var(--danger);background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.2);padding:4px 8px;font-size:11px;" onclick="SharingModal._revokeAccess(${a.id}, '${(a.username||'').replace(/'/g,"\\\\'")}')">${Lang.t('sharing.revoke')}</button></div></div>
+ </select><button class="btn btn-sm" style="color:var(--danger);background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.2);padding:4px 8px;font-size:11px;" data-access-id="${a.id}" data-username="${esc(a.username)}" onclick="SharingModal._revokeAccessFromEl(this)">${Lang.t('sharing.revoke')}</button></div></div>
  `).join('');
  },
 
@@ -1472,6 +1476,14 @@ const SharingModal = {
  const r = await Auth.apiCall(`/api/sharing/${accessId}`, { method: 'PUT', body: JSON.stringify({ access_level: newLevel }) });
  if (r && r.ok) Toast.success('OK');
  else { Toast.error(Lang.t('common.error')); this._loadAccessList(); }
+ },
+
+ // XSS : on lit accessId + username depuis les data-* du bouton (jamais
+ // interpol\u00e9s dans une string JS) \u2192 un pseudo avec quote/chevron ne peut plus
+ // casser l'attribut ni le contexte JS.
+ _revokeAccessFromEl(el) {
+ if (!el) return;
+ this._revokeAccess(el.dataset.accessId, el.dataset.username || '');
  },
 
  async _revokeAccess(accessId, username) {

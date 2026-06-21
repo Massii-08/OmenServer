@@ -65,7 +65,7 @@ const GameServer = {
  // Générer les options du sélecteur de jeux
  const gameOptions = this._games.map(g => 
  `<option value="${g.id}" data-port="${g.default_port}" data-memory="${g.default_memory_mb}" data-icon="${g.icon}">
- ${g.icon} ${g.name}
+ ${g.icon} ${esc(g.name)}
  </option>`
  ).join('');
 
@@ -211,10 +211,9 @@ const GameServer = {
 
  el.innerHTML = mods.map(m => {
  const dl = m.downloads > 1000000 ? `${(m.downloads/1000000).toFixed(1)}M` : m.downloads > 1000 ? `${Math.round(m.downloads/1000)}k` : m.downloads;
- const safeUrl = (m.url||'').replace(/'/g,"\\'");
- const safeName = (m.name||'').replace(/'/g,"\\'");
+ const safeIcon = /^https?:\/\//i.test(m.icon_url||'') ? esc(m.icon_url) : '';
  return `
- <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-elev-2)'" onmouseout="this.style.background='var(--bg-elev-1)'" onclick="GameServer.selectModpack(${m.id}, '${safeName}', '${m.icon_url||''}', '${safeUrl}')"><img src="${m.icon_url||''}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;" onerror="this.style.display='none'" /><div style="flex:1;min-width:0;"><div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.name}</div><div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.summary||''}</div></div><span style="font-size:10px;color:var(--text-muted);white-space:nowrap;">${dl}</span></div>`;
+ <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-elev-2)'" onmouseout="this.style.background='var(--bg-elev-1)'" data-mpid="${esc(m.id)}" data-mpname="${esc(m.name||'')}" data-mpicon="${safeIcon}" data-mpurl="${esc(m.url||'')}" onclick="GameServer.selectModpack(this.dataset.mpid, this.dataset.mpname, this.dataset.mpicon, this.dataset.mpurl)"><img src="${safeIcon}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;" onerror="this.style.display='none'" /><div style="flex:1;min-width:0;"><div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(m.name)}</div><div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(m.summary||'')}</div></div><span style="font-size:10px;color:var(--text-muted);white-space:nowrap;">${esc(dl)}</span></div>`;
  }).join('');
  },
 
@@ -232,7 +231,7 @@ const GameServer = {
 
  el.style.display = 'block';
  el.innerHTML = `
- <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;"><img src="${iconUrl}" style="width:36px;height:36px;border-radius:8px;" onerror="this.style.display='none'" /><div style="flex:1;"><div style="font-size:14px;font-weight:700;">${name}</div><div style="font-size:10px;color:var(--text-muted);">${Lang.t('common.loading')}</div></div><button class="btn btn-secondary btn-sm" onclick="GameServer._clearModpack()" style="font-size:10px;">${Lang.t('nodes.remove')}</button></div><div id="modpack-versions"><div style="color:var(--text-muted);font-size:12px;">${Lang.t('common.loading')}</div></div>`;
+ <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;"><img src="${/^https?:\/\//i.test(iconUrl||'')?esc(iconUrl):''}" style="width:36px;height:36px;border-radius:8px;" onerror="this.style.display='none'" /><div style="flex:1;"><div style="font-size:14px;font-weight:700;">${esc(name)}</div><div style="font-size:10px;color:var(--text-muted);">${Lang.t('common.loading')}</div></div><button class="btn btn-secondary btn-sm" onclick="GameServer._clearModpack()" style="font-size:10px;">${Lang.t('nodes.remove')}</button></div><div id="modpack-versions"><div style="color:var(--text-muted);font-size:12px;">${Lang.t('common.loading')}</div></div>`;
 
  // Charger les fichiers du modpack
  const r = await Auth.apiCall(`/api/mods/${id}/files`);
@@ -253,9 +252,8 @@ const GameServer = {
  const mcVers = (f.game_versions||[]).filter(v => /^\d/.test(v)).join(', ') || '?';
  const type = f.release_type || '';
  const typeColor = type === 'Release' ? 'var(--accent)' : type === 'Beta' ? 'var(--warning)' : 'var(--text-muted)';
- const safeName2 = (f.name||'').replace(/'/g,"\\'");
  return `
- <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-elev-3);border-radius:6px;margin-bottom:3px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-elev-2)'" onmouseout="this.style.background='var(--bg-elev-3)'" onclick="GameServer._pickModpackFile(${f.id}, '${safeName2}', '${mcVers}')"><div style="flex:1;"><div style="font-size:12px;font-weight:600;">${f.name}</div><div style="font-size:10px;color:var(--text-muted);">MC ${mcVers} · ${f.size_mb} Mo · <span style="color:${typeColor};">${type}</span></div></div></div>`;
+ <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-elev-3);border-radius:6px;margin-bottom:3px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-elev-2)'" onmouseout="this.style.background='var(--bg-elev-3)'" data-fid="${esc(f.id)}" data-fname="${esc(f.name||'')}" data-fmc="${esc(mcVers)}" onclick="GameServer._pickModpackFile(this.dataset.fid, this.dataset.fname, this.dataset.fmc)"><div style="flex:1;"><div style="font-size:12px;font-weight:600;">${esc(f.name)}</div><div style="font-size:10px;color:var(--text-muted);">MC ${esc(mcVers)} · ${esc(f.size_mb)} Mo · <span style="color:${typeColor};">${esc(type)}</span></div></div></div>`;
  }).join('');
  },
 
@@ -344,7 +342,7 @@ const GameServer = {
 
 
  return `
- <div class="server-item fade-in" onclick="App.navigateTo('server_view', ${server.id})" style="cursor:pointer;"><div class="server-info"><span class="server-icon">${icon}</span><div><div class="server-name">${server.name}</div><div class="server-meta">
+ <div class="server-item fade-in" onclick="App.navigateTo('server_view', ${server.id})" style="cursor:pointer;"><div class="server-info"><span class="server-icon">${icon}</span><div><div class="server-name">${esc(server.name)}</div><div class="server-meta">
  ${gameName} · v${server.version === 'LATEST' ? 'latest' : server.version} · ${(server.memory_mb / 1024).toFixed(1).replace(/\.0$/, '')} Go RAM · ${server.cpu_percent || 100}% CPU
  </div></div></div><div class="flex items-center gap-4"><span class="status-badge ${statusClass}"${isPending ? ' style="animation:pulse-badge 1.5s ease-in-out infinite;"' : ''}>
  ${isPending ? '' : ``}
@@ -766,11 +764,11 @@ const GameServer = {
  mod.downloads > 1000 ? `${(mod.downloads/1000).toFixed(0)}K` :
  mod.downloads;
  return `
- <div style="display:flex;align-items:center;gap:12px;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><img src="${mod.icon_url || ''}" alt="" style="width:40px;height:40px;border-radius:6px;background:var(--bg-elev-3);" onerror="this.style.display='none'" /><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:14px;">${mod.name}</div><div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
- ${mod.summary}
+ <div style="display:flex;align-items:center;gap:12px;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><img src="${/^https?:\/\//i.test(mod.icon_url||'')?esc(mod.icon_url):''}" alt="" style="width:40px;height:40px;border-radius:6px;background:var(--bg-elev-3);" onerror="this.style.display='none'" /><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:14px;">${esc(mod.name)}</div><div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+ ${esc(mod.summary)}
  </div><div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
- ${mod.author} · ⬇${downloads}
- </div></div><button class="btn btn-primary btn-sm" onclick="GameServer.showModFiles(${mod.id}, '${mod.name.replace(/'/g, "\\'")}')">Installer</button></div>
+ ${esc(mod.author)} · ⬇${esc(downloads)}
+ </div></div><button class="btn btn-primary btn-sm" data-modid="${esc(mod.id)}" data-modname="${esc(mod.name||'')}" onclick="GameServer.showModFiles(this.dataset.modid, this.dataset.modname)">Installer</button></div>
  `;
  }).join('');
  },
@@ -800,8 +798,8 @@ const GameServer = {
  const badge = f.release_type;
  const hasUrl = f.download_url ? true : false;
  return `
- <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;"><div><div style="font-size:13px;">${badge} ${f.name} <span style="color:var(--text-muted);font-size:11px;">(${f.size_mb} Mo)</span></div><div style="font-size:11px;color:var(--text-muted);">${versions}</div></div>
- ${hasUrl ? `<button class="btn btn-primary btn-sm" onclick="GameServer.installMod('${modName.replace(/'/g, "\\'")}', '${f.download_url}', '${f.name}')">${Lang.t('sv.mod.install')}</button>` : '<span style="font-size:11px;color:var(--text-muted);">Non dispo</span>'}
+ <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;"><div><div style="font-size:13px;">${badge} ${esc(f.name)} <span style="color:var(--text-muted);font-size:11px;">(${esc(f.size_mb)} Mo)</span></div><div style="font-size:11px;color:var(--text-muted);">${esc(versions)}</div></div>
+ ${hasUrl ? `<button class="btn btn-primary btn-sm" data-modname="${esc(modName)}" data-dlurl="${esc(f.download_url)}" data-fname="${esc(f.name)}" onclick="GameServer.installMod(this.dataset.modname, this.dataset.dlurl, this.dataset.fname)">${Lang.t('sv.mod.install')}</button>` : '<span style="font-size:11px;color:var(--text-muted);">Non dispo</span>'}
  </div>
  `;
  }).join('');
@@ -848,7 +846,7 @@ const GameServer = {
 
  listEl.innerHTML = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${mods.length} mod(s) installé(s)</div>` +
  mods.map(m => `
- <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;"><div><div style="font-size:13px;">${m.filename}</div><div style="font-size:11px;color:var(--text-muted);">${m.size_mb} Mo</div></div><button class="btn btn-icon btn-danger" onclick="GameServer.removeMod('${m.filename}')" title="Supprimer">Del</button></div>
+ <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;"><div><div style="font-size:13px;">${esc(m.filename)}</div><div style="font-size:11px;color:var(--text-muted);">${esc(m.size_mb)} Mo</div></div><button class="btn btn-icon btn-danger" data-fname="${esc(m.filename)}" onclick="GameServer.removeMod(this.dataset.fname)" title="Supprimer">Del</button></div>
  `).join('');
  },
 
@@ -1150,7 +1148,7 @@ const GameServer = {
  }
 
  listEl.innerHTML = backups.map(b => `
- <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border);"><div><div style="font-weight: 600; font-size: 14px;">${b.filename}</div><div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+ <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border);"><div><div style="font-weight: 600; font-size: 14px;">${esc(b.filename)}</div><div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
  ${b.created_at} · ${b.size_mb} Mo
  </div></div><div class="flex gap-2"><button class="btn btn-secondary btn-sm" onclick="GameServer.restoreBackup('${b.id}')" title="Restaurer">
  Restaurer

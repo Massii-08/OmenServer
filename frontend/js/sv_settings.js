@@ -76,7 +76,7 @@ const SvSettings = {
         if (type === 'select' && opts.options) {
             const options = opts.options.map(o => {
                 const selected = String(val) === String(o.value) ? 'selected' : '';
-                return `<option value="${o.value}" ${selected}>${o.label}</option>`;
+                return `<option value="${esc(o.value)}" ${selected}>${esc(o.label)}</option>`;
             }).join('');
             return `<div style="margin-bottom:16px;">
                 <label class="form-label">${label}</label>
@@ -264,11 +264,11 @@ const SvSettings = {
             </div>
             <div id="sv-del-confirm" style="display:none;margin-top:12px;padding:14px;background:rgba(248,113,113,0.1);border-radius:8px;border:1px solid var(--danger);">
                 <p style="font-size:13px;color:var(--danger);margin-bottom:10px;">
-                    Tape <strong>${s.name}</strong> pour confirmer la suppression :
+                    Tape <strong>${esc(s.name)}</strong> pour confirmer la suppression :
                 </p>
                 <div style="display:flex;gap:8px;align-items:center;">
-                    <input id="sv-del-input" class="form-input" placeholder="${s.name}" style="flex:1;border-color:var(--danger);" />
-                    <button class="btn" style="background:var(--danger);color:white;" onclick="SvSettings._confirmDelete('${s.name.replace(/'/g, "\\'")}')">
+                    <input id="sv-del-input" class="form-input" placeholder="${esc(s.name)}" style="flex:1;border-color:var(--danger);" />
+                    <button class="btn" style="background:var(--danger);color:white;" data-sname="${esc(s.name)}" onclick="SvSettings._confirmDelete(this.dataset.sname)">
                         ${Lang.t('sv.cfg.delete_btn')}
                     </button>
                     <button class="btn btn-secondary" onclick="document.getElementById('sv-del-confirm').style.display='none'">
@@ -339,8 +339,8 @@ const SvSettings = {
                 <div style="background:var(--bg-elev-1);padding:12px;border-radius:8px;cursor:pointer;border:2px solid var(--border);transition:all .15s;"
                     onclick="document.getElementById('sv-jvm-textarea').value='${pr.flags.replace(/'/g, "\\\'")}';"                    onmouseover="this.style.borderColor='var(--info)'"
                     onmouseout="this.style.borderColor='var(--border)'">
-                    <div style="font-size:13px;font-weight:600;">${pr.name}</div>
-                    <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">${pr.desc}</div>
+                    <div style="font-size:13px;font-weight:600;">${esc(pr.name)}</div>
+                    <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">${esc(pr.desc)}</div>
                 </div>
             `).join('')}
         </div>

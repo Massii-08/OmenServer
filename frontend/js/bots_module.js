@@ -564,7 +564,7 @@ const BotsModule = {
        actionsEl.innerHTML = `<button class="btn btn-primary btn-sm" onclick="BotsModule._showRatingKeyEdit()">${Lang.t('yield.config_set') || 'Configurer la clé'}</button>`;
      }
    } catch (e) {
-     statusEl.innerHTML = `<span style="color:var(--danger);">✗</span> <span style="color:var(--text-muted);">${Lang.t('yield.config_load_error') || 'Erreur de chargement'} (${e.message})</span>`;
+     statusEl.innerHTML = `<span style="color:var(--danger);">✗</span> <span style="color:var(--text-muted);">${Lang.t('yield.config_load_error') || 'Erreur de chargement'} (${esc(e.message)})</span>`;
      actionsEl.innerHTML = '';
    }
  },
@@ -633,7 +633,7 @@ const BotsModule = {
  if (!f) return '';
  const sizeKB = (f.size / 1024).toFixed(1);
  return `
- <div class="yield-file-info"><span class="b-ticker">XLS</span><div class="yield-file-details"><div class="yield-file-name">${f.name}</div><div class="yield-file-meta">${sizeKB} KB</div></div><button class="yield-file-remove" onclick="event.stopPropagation();BotsModule._removeYieldFile()">${Lang.t('nodes.remove')}</button></div>
+ <div class="yield-file-info"><span class="b-ticker">XLS</span><div class="yield-file-details"><div class="yield-file-name">${esc(f.name)}</div><div class="yield-file-meta">${sizeKB} KB</div></div><button class="yield-file-remove" onclick="event.stopPropagation();BotsModule._removeYieldFile()">${Lang.t('nodes.remove')}</button></div>
  `;
  },
 
@@ -868,7 +868,7 @@ const BotsModule = {
  const statusLabel = isSuccess ? Lang.t('yield.completed') : data.status === 'error' ? Lang.t('yield.error') : Lang.t('yield.stopped');
 
  container.innerHTML = `
- <div class="yield-header"><div class="yield-header-left"><span class="b-ticker">YLD</span><div><h1 style="margin:0;font-size:22px;">${Lang.t('yield.title')} — ${statusIcon} ${statusLabel}</h1><p style="color:var(--text-muted);font-size:13px;margin-top:2px;">${data.filename || ''}</p></div></div></div><!-- Stats résumé --><div class="card" style="margin-bottom:16px;"><h3 style="margin:0 0 16px;">${Lang.t('yield.summary')}</h3><div class="yield-stats"><div class="yield-stat-card success"><div class="yield-stat-value">${data.stats?.updated || 0}</div><div class="yield-stat-label">${Lang.t('yield.updated')}</div></div><div class="yield-stat-card warning"><div class="yield-stat-value">${data.stats?.skipped || 0}</div><div class="yield-stat-label">${Lang.t('yield.skipped')}</div></div><div class="yield-stat-card error"><div class="yield-stat-value">${data.stats?.errors || 0}</div><div class="yield-stat-label">${Lang.t('yield.errors')}</div></div></div><!-- Progress bar complète --><div class="yield-progress-container" style="margin-top:16px;"><div class="yield-progress-bar"><div class="yield-progress-fill" style="width:${data.progress_percent || 0}%;${!isSuccess ? 'background:var(--warning);' : ''}"></div></div><div class="yield-progress-text" style="margin-top:4px;"><span>${data.progress || ''}</span><span class="yield-progress-percent">${data.progress_percent || 0}%</span></div></div><!-- Actions --><div style="display:flex;gap:12px;margin-top:20px;">
+ <div class="yield-header"><div class="yield-header-left"><span class="b-ticker">YLD</span><div><h1 style="margin:0;font-size:22px;">${Lang.t('yield.title')} — ${statusIcon} ${statusLabel}</h1><p style="color:var(--text-muted);font-size:13px;margin-top:2px;">${esc(data.filename || '')}</p></div></div></div><!-- Stats résumé --><div class="card" style="margin-bottom:16px;"><h3 style="margin:0 0 16px;">${Lang.t('yield.summary')}</h3><div class="yield-stats"><div class="yield-stat-card success"><div class="yield-stat-value">${data.stats?.updated || 0}</div><div class="yield-stat-label">${Lang.t('yield.updated')}</div></div><div class="yield-stat-card warning"><div class="yield-stat-value">${data.stats?.skipped || 0}</div><div class="yield-stat-label">${Lang.t('yield.skipped')}</div></div><div class="yield-stat-card error"><div class="yield-stat-value">${data.stats?.errors || 0}</div><div class="yield-stat-label">${Lang.t('yield.errors')}</div></div></div><!-- Progress bar complète --><div class="yield-progress-container" style="margin-top:16px;"><div class="yield-progress-bar"><div class="yield-progress-fill" style="width:${data.progress_percent || 0}%;${!isSuccess ? 'background:var(--warning);' : ''}"></div></div><div class="yield-progress-text" style="margin-top:4px;"><span>${esc(data.progress || '')}</span><span class="yield-progress-percent">${data.progress_percent || 0}%</span></div></div><!-- Actions --><div style="display:flex;gap:12px;margin-top:20px;">
  ${isSuccess && data.result_file ? `
  <button class="yield-launch-btn" style="flex:1;margin-top:0;" onclick="BotsModule._downloadYieldResult()">
  ${Lang.t('yield.download')}

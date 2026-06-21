@@ -219,9 +219,9 @@ const HarvesterModule = {
         if (!host) return;
         if (!sample.length) { host.innerHTML = ''; return; }
         const cols = Object.keys(sample[0]);
-        const head = cols.map(function (c) { return '<th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border);">' + c + '</th>'; }).join('');
+        const head = cols.map(function (c) { return '<th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border);">' + esc(c) + '</th>'; }).join('');
         const rows = sample.slice(0, 5).map(function (rec) {
-            return '<tr>' + cols.map(function (c) { return '<td style="padding:4px 8px;border-bottom:1px solid var(--border);">' + (rec[c] || '') + '</td>'; }).join('') + '</tr>';
+            return '<tr>' + cols.map(function (c) { return '<td style="padding:4px 8px;border-bottom:1px solid var(--border);">' + esc(rec[c] || '') + '</td>'; }).join('') + '</tr>';
         }).join('');
         host.innerHTML = '<div class="form-label" style="margin-top:12px;">' + Lang.t('harvester.preview') + '</div>' +
             '<div style="overflow:auto;"><table style="border-collapse:collapse;font-family:var(--font-mono);font-size:12px;width:100%;"><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
@@ -298,8 +298,10 @@ const HarvesterModule = {
             <button class="btn btn-ghost" onclick="HarvesterModule.viewData()">${Lang.t('harvester.view_data')}</button>
             <button class="btn btn-ghost" onclick="HarvesterModule.download('csv')">${Lang.t('harvester.download_csv')}</button>
             <button class="btn btn-ghost" onclick="HarvesterModule.download('json')">${Lang.t('harvester.download_json')}</button>
+            <button class="btn btn-secondary" onclick="HarvesterModule.exportClient()">${Lang.t('harvester.export')}</button>
             <button class="btn btn-ghost" onclick="BotsModule.render(BotsModule._container)">${Lang.t('harvester.back')}</button>
           </div>
+          <div class="form-hint">${Lang.t('harvester.export_hint')}</div>
           <pre id="hrv-data" style="margin-top:12px;max-height:240px;overflow:auto;font-family:var(--font-mono);font-size:12px;"></pre>
         </div>`;
     },
@@ -395,5 +397,26 @@ const HarvesterModule = {
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
+    },
+
+    async exportClient() {
+        // Génère le package client standalone (zip) et le télécharge.
+        if (!this._jobId) return;
+        const r = await Auth.apiCall(`/api/bots/harvester/export/${this._jobId}`, { method: 'POST' });
+        if (!r || !r.ok) {
+            const d = r ? (await r.json().catch(() => ({}))) : {};
+            if (typeof Toast !== 'undefined') Toast.error(d.detail || 'Export error');
+            return;
+        }
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `harvest-${this._jobId.slice(0, 8)}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        if (typeof Toast !== 'undefined' && Toast.success) Toast.success(Lang.t('harvester.export_done'));
     },
 };

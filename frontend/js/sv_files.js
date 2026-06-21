@@ -78,26 +78,29 @@ const SvFiles = {
             const fullPath = (this._currentPath === '/' ? '' : this._currentPath) + '/' + f.name;
             const size = f.is_dir ? '—' : this._formatSize(f.size);
             const icon = f.is_dir ? '' : this._fileIcon(f.name);
-            const safePath = fullPath.replace(/'/g, "\\'");
+            // safePath/safeName : escape JS-string (\, ') PUIS HTML-attr (esc couvre " < > & ')
+            // → ni le contexte JS ni l'attribut double-quote ne peuvent être cassés par un nom hostile.
+            const safePath = esc(fullPath.replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
+            const safeName = esc(f.name.replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
 
             if (f.is_dir) {
                 html += `<tr style="cursor:pointer;border-bottom:1px solid var(--border);" onmouseover="this.style.background='rgba(96,165,250,0.05)'" onmouseout="this.style.background='transparent'" onclick="SvFiles._navigate('${safePath}')">
-                    <td style="padding:8px;">${icon} <strong>${f.name}</strong></td>
+                    <td style="padding:8px;">${icon} <strong>${esc(f.name)}</strong></td>
                     <td style="padding:8px;color:var(--text-muted);">${size}</td>
-                    <td style="padding:8px;color:var(--text-muted);font-size:11px;">${f.modified}</td>
+                    <td style="padding:8px;color:var(--text-muted);font-size:11px;">${esc(f.modified)}</td>
                     <td style="padding:8px;text-align:right;">
-                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title="${Lang.t('sv.files.rename')}">${Lang.t('sv.files.rename')}</button>
+                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${safeName}')" title="${Lang.t('sv.files.rename')}">${Lang.t('sv.files.rename')}</button>
                         <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title="${Lang.t('common.delete')}">${Lang.t('common.delete')}</button>
                     </td>
                 </tr>`;
             } else {
                 const editable = this._isEditable(f.name);
                 html += `<tr style="cursor:pointer;border-bottom:1px solid var(--border);" onmouseover="this.style.background='rgba(96,165,250,0.05)'" onmouseout="this.style.background='transparent'" onclick="${editable ? `SvFiles._openFile('${safePath}')` : ''}">
-                    <td style="padding:8px;">${icon} ${f.name}</td>
+                    <td style="padding:8px;">${icon} ${esc(f.name)}</td>
                     <td style="padding:8px;color:var(--text-muted);">${size}</td>
-                    <td style="padding:8px;color:var(--text-muted);font-size:11px;">${f.modified}</td>
+                    <td style="padding:8px;color:var(--text-muted);font-size:11px;">${esc(f.modified)}</td>
                     <td style="padding:8px;text-align:right;">
-                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${f.name}')" title="${Lang.t('sv.files.rename')}">${Lang.t('sv.files.rename')}</button>
+                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();SvFiles._rename('${safePath}','${safeName}')" title="${Lang.t('sv.files.rename')}">${Lang.t('sv.files.rename')}</button>
                         <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();SvFiles._delete('${safePath}')" title="${Lang.t('common.delete')}">${Lang.t('common.delete')}</button>
                     </td>
                 </tr>`;
@@ -124,7 +127,7 @@ const SvFiles = {
         if (!el) return;
         this._editing = path;
         const fileName = path.split('/').pop();
-        if (bc) bc.innerHTML = this._breadcrumb() + ` <span style="color:var(--text-muted);">/</span> <span style="color:var(--accent);">${fileName}</span>`;
+        if (bc) bc.innerHTML = this._breadcrumb() + ` <span style="color:var(--text-muted);">/</span> <span style="color:var(--accent);">${esc(fileName)}</span>`;
         el.innerHTML = `<div style="color:var(--text-muted)">${Lang.t('sv.files.loading_file')}</div>`;
 
         const r = await Auth.apiCall(`/api/servers/${this._serverId}/files/content?path=${encodeURIComponent(path)}`);
@@ -140,7 +143,7 @@ const SvFiles = {
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
             <div style="display:flex;align-items:center;gap:8px;">
                 <button class="btn btn-secondary btn-sm" onclick="SvFiles._navigate('${this._currentPath}')">${Lang.t('sv.files.back')}</button>
-                <span style="font-weight:600;font-size:14px;">${this._fileIcon(fileName)} ${data.filename}</span>
+                <span style="font-weight:600;font-size:14px;">${this._fileIcon(fileName)} ${esc(data.filename)}</span>
                 <span style="font-size:11px;color:var(--text-muted);">${lineCount} ${Lang.t('sv.files.lines')}</span>
             </div>
             <div style="display:flex;gap:8px;align-items:center;">
@@ -264,7 +267,7 @@ const SvFiles = {
             const f = fileList[i];
             if (prog) {
                 prog.innerHTML = `<div style="padding:8px 12px;background:var(--bg-elev-1);border-radius:6px;font-size:12px;">
-                    ⏳ Upload ${i+1}/${fileList.length} : <strong>${f.name}</strong> (${(f.size/1024/1024).toFixed(2)} Mo)...
+                    ⏳ Upload ${i+1}/${fileList.length} : <strong>${esc(f.name)}</strong> (${(f.size/1024/1024).toFixed(2)} Mo)...
                 </div>`;
             }
 

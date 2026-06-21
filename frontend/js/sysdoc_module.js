@@ -1371,7 +1371,11 @@ chmod 600 .env
             const ol = document.createElement('ol');
             (action.instructions || []).forEach(step => {
                 const li = document.createElement('li');
-                li.innerHTML = step
+                // XSS : `step` vient de l'agent distant → on échappe AVANT d'appliquer le
+                // markdown-lite (sinon un `<img onerror>` injecté s'exécuterait). Les marqueurs
+                // ` et ** ne sont pas touchés par esc() → le formatage reste fonctionnel.
+                const safe = esc(step);
+                li.innerHTML = safe
                     .replace(/`([^`]+)`/g, '<code>$1</code>')
                     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
                 ol.appendChild(li);

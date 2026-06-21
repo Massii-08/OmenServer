@@ -1,10 +1,29 @@
 /**
  * Lang.js — Système de traduction FR/EN.
- * 
+ *
  * Utilisation : Lang.t('sidebar.dashboard') → "Dashboard" ou "Tableau de bord"
  * Changer de langue : Lang.set('en') ou Lang.set('fr')
  * Langue actuelle : Lang.current
  */
+
+/**
+ * esc(s) — Échappement HTML global anti-XSS.
+ *
+ * Le frontend est en vanilla JS (pas de framework → aucun auto-échappement) et
+ * injecte les données via innerHTML. Toute donnée dynamique (pseudo, nom de
+ * ressource, valeur scrapée, message backend) DOIT passer par esc() avant d'être
+ * interpolée dans un template HTML, sinon un `<img src=x onerror=...>` s'exécute
+ * et peut voler le token JWT admin (localStorage). Définie ici car lang.js est le
+ * 1er script chargé → disponible avant tout render() de module.
+ *
+ * @param {*} s - valeur à échapper (null/undefined → chaîne vide)
+ * @returns {string} chaîne sûre pour innerHTML ET pour un attribut entre quotes
+ */
+window.esc = function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+};
 
 const Lang = {
     current: localStorage.getItem('omen-lang') || 'fr',
@@ -421,6 +440,9 @@ const Lang = {
             'harvester.key_copied': 'Clé copiée',
             'harvester.download_csv': 'Télécharger CSV',
             'harvester.download_json': 'Télécharger JSON',
+            'harvester.export': 'Exporter pour le client',
+            'harvester.export_hint': 'Télécharge un package autonome (zip) : le client le lance chez lui (pip install + python serve.py) et obtient son feed privé. Zéro IA, sa propre clé.',
+            'harvester.export_done': 'Package client téléchargé',
             'harvester.tier_stealth': 'furtif',
             'harvester.tier_unblocker': 'débloqueur',
             'harvester.tier_httpx': 'standard',
@@ -1664,6 +1686,9 @@ const Lang = {
             'harvester.key_copied': 'Key copied',
             'harvester.download_csv': 'Download CSV',
             'harvester.download_json': 'Download JSON',
+            'harvester.export': 'Export for client',
+            'harvester.export_hint': 'Downloads a standalone package (zip): the client runs it locally (pip install + python serve.py) and gets their own private feed. Zero AI, their own key.',
+            'harvester.export_done': 'Client package downloaded',
             'harvester.tier_stealth': 'stealth',
             'harvester.tier_unblocker': 'unblocker',
             'harvester.tier_httpx': 'standard',
@@ -2907,6 +2932,9 @@ const Lang = {
             'harvester.key_copied': 'Chiave copiata',
             'harvester.download_csv': 'Scarica CSV',
             'harvester.download_json': 'Scarica JSON',
+            'harvester.export': 'Esporta per il cliente',
+            'harvester.export_hint': 'Scarica un pacchetto autonomo (zip): il cliente lo avvia da sé (pip install + python serve.py) e ottiene il suo feed privato. Zero IA, chiave propria.',
+            'harvester.export_done': 'Pacchetto cliente scaricato',
             'harvester.tier_stealth': 'furtivo',
             'harvester.tier_unblocker': 'sblocco',
             'harvester.tier_httpx': 'standard',

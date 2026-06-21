@@ -73,19 +73,19 @@ const WebModule = {
                             <div style="display:flex;align-items:center;gap:10px;">
                                 <span style="font-size:28px;">${typeIcons[s.site_type] || ''}</span>
                                 <div>
-                                    <div style="font-weight:700;font-size:14px;">${s.name}</div>
-                                    <div style="font-size:11px;color:var(--text-muted);">${s.type_label || s.site_type} · Port ${s.port}</div>
+                                    <div style="font-weight:700;font-size:14px;">${esc(s.name)}</div>
+                                    <div style="font-size:11px;color:var(--text-muted);">${esc(s.type_label || s.site_type)} · Port ${esc(s.port)}</div>
                                 </div>
                             </div>
                             <span style="font-size:11px;padding:2px 8px;border-radius:4px;color:${statusColors[s.status]};background:${statusColors[s.status]}15;font-weight:600;">
-                                ${statusLabels[s.status] || s.status}
+                                ${esc(statusLabels[s.status] || s.status)}
                             </span>
                         </div>
-                        ${s.description ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">${s.description}</div>` : ''}
+                        ${s.description ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">${esc(s.description)}</div>` : ''}
                         ${s.status === 'running' && s.url ? `
                             <div style="padding:8px;background:var(--bg-elev-3);border-radius:6px;border:1px solid var(--border);margin-bottom:12px;">
-                                <a href="${s.url}" target="_blank" style="color:var(--info);font-size:12px;text-decoration:none;font-family:monospace;">
-                                    ${s.url} ↗
+                                <a href="${/^https?:\/\//i.test(s.url)?esc(s.url):'#'}" target="_blank" rel="noopener noreferrer" style="color:var(--info);font-size:12px;text-decoration:none;font-family:monospace;">
+                                    ${esc(s.url)} ↗
                                 </a>
                             </div>
                         ` : ''}

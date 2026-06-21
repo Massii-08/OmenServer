@@ -43,9 +43,9 @@ const SvHistory = {
                 const date = new Date(e.timestamp).toLocaleString(locale);
                 return `<tr style="border-bottom:1px solid var(--border);">
                     <td style="padding:8px;color:var(--text-muted);font-size:11px;white-space:nowrap;">${date}</td>
-                    <td style="padding:8px;font-weight:600;">${e.username}</td>
-                    <td style="padding:8px;">${icon} ${e.action}</td>
-                    <td style="padding:8px;color:var(--text-muted);font-size:12px;">${e.details || '—'}</td>
+                    <td style="padding:8px;font-weight:600;">${esc(e.username)}</td>
+                    <td style="padding:8px;">${icon} ${esc(e.action)}</td>
+                    <td style="padding:8px;color:var(--text-muted);font-size:12px;">${esc(e.details || '—')}</td>
                 </tr>`;
             }).join('')}
             </tbody></table>`;

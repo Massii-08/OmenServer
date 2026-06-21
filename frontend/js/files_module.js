@@ -71,8 +71,8 @@ const FilesModule = {
                 <span style="font-size:32px;">${statusIcons[status.status] || ''}</span>
                 <div style="flex:1;">
                     <div style="font-weight:700;font-size:15px;">Google Drive ${status.connected ? Lang.t('files.gdrive_connected') : ''}</div>
-                    <div style="font-size:13px;color:var(--text-muted);margin-top:2px;">${status.message}</div>
-                    ${status.email ? `<div style="font-size:12px;color:var(--info);margin-top:2px;">${status.email}</div>` : ''}
+                    <div style="font-size:13px;color:var(--text-muted);margin-top:2px;">${esc(status.message)}</div>
+                    ${status.email ? `<div style="font-size:12px;color:var(--info);margin-top:2px;">${esc(status.email)}</div>` : ''}
                 </div>
                 ${!status.connected && status.status === 'not_authenticated' ? `
                     <button class="btn btn-primary" onclick="FilesModule.connectGDrive()">${Lang.t('files.connect')}</button>
@@ -153,24 +153,29 @@ const FilesModule = {
 
         filesEl.innerHTML = `
             <div style="display:flex;flex-direction:column;gap:2px;">
-                ${files.map(f => `
+                ${files.map(f => {
+                    // XSS : f.name/f.id viennent de Google Drive → escape JS-string puis HTML-attr.
+                    const safeId = esc(String(f.id == null ? '' : f.id).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
+                    const safeName = esc(String(f.name == null ? '' : f.name).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
+                    return `
                     <div style="display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:6px;cursor:pointer;transition:all .1s;"
                         onmouseover="this.style.background='var(--bg-elev-3)'"
                         onmouseout="this.style.background='transparent'"
-                        onclick="${f.type === 'folder' ? `FilesModule._currentFolder='${f.id}';FilesModule.loadDriveFiles()` : ''}">
+                        onclick="${f.type === 'folder' ? `FilesModule._currentFolder='${safeId}';FilesModule.loadDriveFiles()` : ''}">
                         <span style="font-size:18px;">${typeIcons[f.type] || ''}</span>
                         <div style="flex:1;min-width:0;">
-                            <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${f.name}</div>
+                            <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(f.name)}</div>
                             <div style="font-size:11px;color:var(--text-muted);">
                                 ${f.size > 0 ? (f.size > 1048576 ? Math.round(f.size/1048576) + ' Mo' : Math.round(f.size/1024) + ' Ko') : ''}
                                 ${f.modified ? ' · ' + new Date(f.modified).toLocaleDateString(locale) : ''}
                             </div>
                         </div>
                         ${f.type === 'file' ? `
-                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();FilesModule.downloadFile('${f.id}','${f.name}')" style="font-size:11px;padding:2px 8px;">⬇</button>
+                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();FilesModule.downloadFile('${safeId}','${safeName}')" style="font-size:11px;padding:2px 8px;">⬇</button>
                         ` : ''}
                     </div>
-                `).join('')}
+                `;
+                }).join('')}
             </div>`;
     },
 

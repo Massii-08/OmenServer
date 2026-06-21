@@ -291,8 +291,8 @@ const NetworkModule = {
                             <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-elev-3);border-radius:8px;border:1px solid var(--border);">
                                 <span style="font-size:24px;"></span>
                                 <div style="flex:1;">
-                                    <div style="font-size:14px;font-weight:600;">${d.name}</div>
-                                    <div style="font-size:11px;color:var(--text-muted);font-family:monospace;">${d.mac_address}${d.ip_hint ? ' · ' + d.ip_hint : ''}</div>
+                                    <div style="font-size:14px;font-weight:600;">${esc(d.name)}</div>
+                                    <div style="font-size:11px;color:var(--text-muted);font-family:monospace;">${esc(d.mac_address)}${d.ip_hint ? ' · ' + esc(d.ip_hint) : ''}</div>
                                     ${d.last_wake ? `<div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${Lang.t('net.wol_last_wake')}: ${new Date(d.last_wake).toLocaleString(locale)}</div>` : ''}
                                 </div>
                                 <div style="display:flex;gap:6px;">

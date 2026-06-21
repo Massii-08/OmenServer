@@ -88,13 +88,13 @@ const SvPlayers = {
         } else {
             list = players.map(p => {
                 const name = p.name || Lang.t('sv.pl.unknown');
-                const extra = this._currentSub === 'banned' ? ` · <span style="color:var(--text-muted);font-size:11px;">${p.reason||Lang.t('sv.pl.no_reason')}</span>` : '';
-                const level = this._currentSub === 'ops' ? ` · <span style="color:var(--info);font-size:11px;">${Lang.t('sv.pl.level')} ${p.level||4}</span>` : '';
+                const extra = this._currentSub === 'banned' ? ` · <span style="color:var(--text-muted);font-size:11px;">${esc(p.reason||Lang.t('sv.pl.no_reason'))}</span>` : '';
+                const level = this._currentSub === 'ops' ? ` · <span style="color:var(--info);font-size:11px;">${Lang.t('sv.pl.level')} ${esc(p.level||4)}</span>` : '';
                 return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;">
                     <div>
-                        <span style="font-weight:600;font-size:14px;">${l.emoji} ${name}</span>${level}${extra}
+                        <span style="font-weight:600;font-size:14px;">${l.emoji} ${esc(name)}</span>${level}${extra}
                     </div>
-                    <button class="btn btn-sm btn-danger" onclick="SvPlayers._remove('${name}')">${Lang.t('nodes.remove')}</button>
+                    <button class="btn btn-sm btn-danger" data-pname="${esc(name)}" onclick="SvPlayers._remove(this.dataset.pname)">${Lang.t('nodes.remove')}</button>
                 </div>`;
             }).join('');
         }

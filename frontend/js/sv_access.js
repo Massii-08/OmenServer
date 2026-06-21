@@ -241,7 +241,7 @@ const SvAccess = {
                     <span style="font-size:11px;color:var(--text-muted);">${p.protocol.toUpperCase()}</span>
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;">
-                    <span style="font-size:12px;color:var(--text-muted);">${p.description || ''}</span>
+                    <span style="font-size:12px;color:var(--text-muted);">${esc(p.description || '')}</span>
                     ${deleteBtn}
                 </div>
             </div>`;

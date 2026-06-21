@@ -132,8 +132,8 @@ const Monitoring = {
                 <div class="machine-card brain">
                     <div class="m-head">
                         <span class="dot"></span>
-                        <span class="name">${serverHostname}</span>
-                        <span class="role">${this._serverOS || 'Linux'}</span>
+                        <span class="name">${esc(serverHostname)}</span>
+                        <span class="role">${esc(this._serverOS || 'Linux')}</span>
                     </div>
                     <div class="m-stats">
                         <div class="m-stat"><div class="l">CPU ${cpu.count}c</div><div class="v ${sev(cpu.percent)}">${Math.round(cpu.percent)}%</div></div>
@@ -159,13 +159,15 @@ const Monitoring = {
             const offlineText = node.online
                 ? ''
                 : `${Lang.t('nodes.since')} ${fmtOfflineSince(node.last_seen_seconds_ago)}`;
+            // hostname/os viennent du heartbeat agent (non fiable) → escape JS-string puis HTML-attr.
+            const safeHost = esc(String(node.hostname == null ? '' : node.hostname).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
 
             return `
                 <div class="machine-card arm ${node.online ? '' : 'offline'}">
                     <div class="m-head">
                         <span class="dot"></span>
-                        <span class="name">${node.hostname}</span>
-                        <span class="role">${node.os}</span>
+                        <span class="name">${esc(node.hostname)}</span>
+                        <span class="role">${esc(node.os)}</span>
                     </div>
                     ${node.online ? `
                     <div class="m-stats">
@@ -179,10 +181,10 @@ const Monitoring = {
                     </div>
                     ${isAdmin ? `
                     <div class="m-actions">
-                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.nodeAction('${node.hostname}', 'reboot')" title="${Lang.t('nodes.reboot_desc')}">${Lang.t('nodes.reboot')}</button>
-                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.nodeAction('${node.hostname}', 'shutdown')" title="${Lang.t('nodes.shutdown_desc')}">${Lang.t('nodes.shutdown')}</button>
+                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.nodeAction('${safeHost}', 'reboot')" title="${Lang.t('nodes.reboot_desc')}">${Lang.t('nodes.reboot')}</button>
+                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.nodeAction('${safeHost}', 'shutdown')" title="${Lang.t('nodes.shutdown_desc')}">${Lang.t('nodes.shutdown')}</button>
                         <div style="flex:1;"></div>
-                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.removeNode('${node.hostname}')" title="${Lang.t('nodes.remove')}">${Lang.t('nodes.remove')}</button>
+                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.removeNode('${safeHost}')" title="${Lang.t('nodes.remove')}">${Lang.t('nodes.remove')}</button>
                     </div>
                     ` : ''}
                     ` : `
@@ -191,7 +193,7 @@ const Monitoring = {
                     </div>
                     ${isAdmin ? `
                     <div class="m-actions">
-                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.removeNode('${node.hostname}')" title="${Lang.t('nodes.remove')}">${Lang.t('nodes.remove')}</button>
+                        <button class="btn btn-sm btn-secondary" onclick="Monitoring.removeNode('${safeHost}')" title="${Lang.t('nodes.remove')}">${Lang.t('nodes.remove')}</button>
                     </div>
                     ` : ''}
                     `}
@@ -404,8 +406,8 @@ const Monitoring = {
 
         container.innerHTML = items.map(item => `
             <div class="stat-machine-item">
-                <span class="stat-machine-name">${item.name}</span>
-                <span class="stat-machine-value">${item.value}${item.cores ? ` <span style="opacity:0.5">(${item.cores}c)</span>` : ''}</span>
+                <span class="stat-machine-name">${esc(item.name)}</span>
+                <span class="stat-machine-value">${esc(item.value)}${item.cores ? ` <span style="opacity:0.5">(${esc(item.cores)}c)</span>` : ''}</span>
             </div>
         `).join('');
     },

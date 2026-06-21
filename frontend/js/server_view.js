@@ -4,6 +4,15 @@ const ServerView = {
  currentTab: 'dashboard',
  _ws: null,
 
+ // XSS : une URL scrapée (icône/lien de mod CurseForge/Modrinth/Steam) peut être
+ // `javascript:alert(...)` → dans un href c'est exécutable. On n'autorise que
+ // http(s) ; toute autre valeur (javascript:, data:, vbscript:, relatif douteux)
+ // est neutralisée en chaîne vide. À combiner avec esc() pour le contexte attribut.
+ _safeHttpUrl(u) {
+ const s = String(u == null ? '' : u).trim();
+ return /^https?:\/\//i.test(s) ? s : '';
+ },
+
  async open(id) {
  this.serverId = id;
  this.currentTab = 'dashboard';
@@ -49,7 +58,7 @@ const ServerView = {
  }
 
  content.innerHTML = `
- <div class="sv-layout"><div id="sv-sidebar" class="sv-sidebar"><div class="sv-server-card"><div class="sv-server-name">${s.name || 'Serveur'}</div><div class="sv-status-text" style="color:${statusColor};">${statusText}</div><div class="sv-action-btns">${actionBtns}</div></div>
+ <div class="sv-layout"><div id="sv-sidebar" class="sv-sidebar"><div class="sv-server-card"><div class="sv-server-name">${esc(s.name || 'Serveur')}</div><div class="sv-status-text" style="color:${statusColor};">${statusText}</div><div class="sv-action-btns">${actionBtns}</div></div>
  ${this._sidebarItems()}
  </div><div id="sv-content" class="sv-main">
  ${this._tabContent()}
@@ -433,10 +442,13 @@ const ServerView = {
  const displayName = parts.length >= 3 ? parts.slice(0, -2).join('_') : (b.id || b.filename);
  const btype = b.backup_type || tab;
  
+ // XSS : displayName/b.id dérivent du nom de fichier de backup → escape JS-string puis HTML-attr.
+ const safeId = esc(String(b.id == null ? '' : b.id).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
+ const safeDisplay = esc(String(displayName == null ? '' : displayName).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
  return `
- <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;" id="sv-bk-${b.id}"><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:14px;">${isAuto ? '' : ''} ${displayName}</div><div style="font-size:11px;color:var(--text-muted);">${b.size_mb||'?'} Mo · ${b.created_at||''}</div></div><div style="display:flex;gap:6px;flex-shrink:0;">
- ${!isAuto ? `<button class="btn btn-sm btn-secondary" onclick="ServerView._renameBackup('${b.id}','${displayName.replace(/'/g,"\\'")}','${btype}')" >${Lang.t('sv.files.rename')}</button>` : ''}
- <button class="btn btn-sm btn-secondary" onclick="ServerView._restoreBackup('${b.id}','${btype}')" >${Lang.t('common.restore')}</button><button class="btn btn-sm btn-danger" onclick="ServerView._confirmDeleteBackup('${b.id}','${btype}')" >${Lang.t('common.delete')}</button></div></div>`;
+ <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;" id="sv-bk-${safeId}"><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:14px;">${isAuto ? '' : ''} ${esc(displayName)}</div><div style="font-size:11px;color:var(--text-muted);">${esc(b.size_mb||'?')} Mo · ${esc(b.created_at||'')}</div></div><div style="display:flex;gap:6px;flex-shrink:0;">
+ ${!isAuto ? `<button class="btn btn-sm btn-secondary" onclick="ServerView._renameBackup('${safeId}','${safeDisplay}','${btype}')" >${Lang.t('sv.files.rename')}</button>` : ''}
+ <button class="btn btn-sm btn-secondary" onclick="ServerView._restoreBackup('${safeId}','${btype}')" >${Lang.t('common.restore')}</button><button class="btn btn-sm btn-danger" onclick="ServerView._confirmDeleteBackup('${safeId}','${btype}')" >${Lang.t('common.delete')}</button></div></div>`;
  }).join('');
  },
 
@@ -648,19 +660,19 @@ const ServerView = {
  : item.subscriptions;
 
  const tags = (item.tags || []).slice(0,5)
- .map(t => `<span style="font-size:10px;padding:1px 6px;background:var(--bg-elev-3);border-radius:4px;margin-right:3px;">${t}</span>`)
+ .map(t => `<span style="font-size:10px;padding:1px 6px;background:var(--bg-elev-3);border-radius:4px;margin-right:3px;">${esc(t)}</span>`)
  .join('');
 
  el.innerHTML = `
  <div style="background:var(--bg-elev-1);border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,0.06);"><div style="display:flex;gap:14px;padding:16px;align-items:flex-start;">
  ${item.preview_url
- ? `<img src="${item.preview_url}" style="width:80px;height:80px;border-radius:8px;object-fit:cover;flex-shrink:0;" onerror="this.style.display='none'" />`
+ ? `<img src="${esc(ServerView._safeHttpUrl(item.preview_url))}" style="width:80px;height:80px;border-radius:8px;object-fit:cover;flex-shrink:0;" onerror="this.style.display='none'" />`
  : `<div style="width:80px;height:80px;border-radius:8px;background:var(--bg-elev-3);display:flex;align-items:center;justify-content:center;font-size:32px;flex-shrink:0;"></div>`
  }
- <div style="flex:1;min-width:0;"><div style="font-size:16px;font-weight:700;margin-bottom:4px;">${item.title || 'Mod Workshop'}</div><div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">${item.description || ''}</div><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;margin-bottom:6px;">
- ${item.file_size_mb ? `<span style="color:var(--text-muted);">${item.file_size_mb} Mo</span>` : ''}
- <span style="color:var(--text-muted);">⭐ ${subs} ${Lang.t('sv.workshop.subscriptions')}</span><a href="${item.url}" target="_blank" style="color:var(--info);font-size:11px;">Voir sur Steam</a></div><div style="margin-bottom:8px;">${tags}</div><div style="font-size:11px;color:var(--text-muted);">ID: <code style="background:var(--bg-elev-3);padding:1px 5px;border-radius:3px;">${item.id}</code></div></div></div><div style="padding:12px 16px;border-top:1px solid rgba(255,255,255,0.05);display:flex;align-items:center;gap:12px;"><button class="btn btn-primary" id="sv-workshop-install-btn"
- onclick="ServerView._installWorkshopMod('${item.id}', '${(item.title||'').replace(/'/g,"\\'")}')"
+ <div style="flex:1;min-width:0;"><div style="font-size:16px;font-weight:700;margin-bottom:4px;">${esc(item.title || 'Mod Workshop')}</div><div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">${esc(item.description || '')}</div><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;margin-bottom:6px;">
+ ${item.file_size_mb ? `<span style="color:var(--text-muted);">${esc(item.file_size_mb)} Mo</span>` : ''}
+ <span style="color:var(--text-muted);">⭐ ${esc(subs)} ${Lang.t('sv.workshop.subscriptions')}</span><a href="${esc(ServerView._safeHttpUrl(item.url))}" target="_blank" rel="noopener noreferrer" style="color:var(--info);font-size:11px;">Voir sur Steam</a></div><div style="margin-bottom:8px;">${tags}</div><div style="font-size:11px;color:var(--text-muted);">ID: <code style="background:var(--bg-elev-3);padding:1px 5px;border-radius:3px;">${esc(item.id)}</code></div></div></div><div style="padding:12px 16px;border-top:1px solid rgba(255,255,255,0.05);display:flex;align-items:center;gap:12px;"><button class="btn btn-primary" id="sv-workshop-install-btn"
+ onclick="ServerView._installWorkshopMod('${esc(String(item.id == null ? '' : item.id).replace(/\\/g, "\\\\").replace(/'/g, "\\'"))}', '${esc(String(item.title || '').replace(/\\/g, "\\\\").replace(/'/g, "\\'"))}')"
  style="min-width:130px;">
  ${Lang.t('sv.workshop.install_btn')}
  </button></div></div>`;
@@ -791,9 +803,9 @@ const ServerView = {
 
  el.innerHTML = plugins.map(p => {
  const dl = p.downloads > 1000 ? `${Math.round(p.downloads/1000)}k` : p.downloads;
- const cats = (p.categories||[]).slice(0,3).map(c => `<span style="font-size:10px;padding:1px 5px;background:var(--bg-elev-3);border-radius:3px;margin-right:3px;">${c}</span>`).join('');
+ const cats = (p.categories||[]).slice(0,3).map(c => `<span style="font-size:10px;padding:1px 5px;background:var(--bg-elev-3);border-radius:3px;margin-right:3px;">${esc(c)}</span>`).join('');
  return `
- <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><img src="${p.icon_url||''}" style="width:40px;height:40px;border-radius:8px;object-fit:cover;" onerror="this.style.display='none'" /><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:14px;">${p.name}</div><div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.description||''}</div><div style="margin-top:4px;">${cats} <span style="font-size:10px;color:var(--text-muted);">${dl} ${Lang.t('sv.mod.downloads')}</span></div></div><button class="btn btn-primary btn-sm" onclick="ServerView._showPluginVersions('${p.id}','${(p.name||'').replace(/'/g,"\\'")}')">${Lang.t('sv.mod.install')}</button></div>`;
+ <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><img src="${esc(ServerView._safeHttpUrl(p.icon_url))}" style="width:40px;height:40px;border-radius:8px;object-fit:cover;" onerror="this.style.display='none'" /><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:14px;">${esc(p.name)}</div><div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(p.description||'')}</div><div style="margin-top:4px;">${cats} <span style="font-size:10px;color:var(--text-muted);">${esc(dl)} ${Lang.t('sv.mod.downloads')}</span></div></div><button class="btn btn-primary btn-sm" onclick="ServerView._showPluginVersions('${esc(String(p.id == null ? '' : p.id).replace(/\\/g, "\\\\").replace(/'/g, "\\'"))}','${esc(String(p.name || '').replace(/\\/g, "\\\\").replace(/'/g, "\\'"))}')">${Lang.t('sv.mod.install')}</button></div>`;
  }).join('');
  },
 
@@ -810,10 +822,10 @@ const ServerView = {
  el.innerHTML = `
  <button class="btn btn-secondary btn-sm" onclick="ServerView._searchPlugins()">${Lang.t('sv.mod.back')}</button><span style="font-weight:600;margin-left:8px;font-size:15px;">${name}</span><div style="margin-top:12px;">
  ${versions.map(v => {
- const loaders = (v.loaders||[]).map(l => `<span style="font-size:10px;padding:1px 5px;background:var(--info);color:#fff;border-radius:3px;margin-right:3px;">${l}</span>`).join('');
+ const loaders = (v.loaders||[]).map(l => `<span style="font-size:10px;padding:1px 5px;background:var(--info);color:#fff;border-radius:3px;margin-right:3px;">${esc(l)}</span>`).join('');
  const gameVers = (v.game_versions||[]).slice(-3).join(', ');
  return `
- <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;"><div><span style="font-weight:600;font-size:13px;">${v.name || v.version_number}</span><span style="font-size:11px;color:var(--text-muted);margin-left:6px;">(${v.size_mb} Mo)</span><div style="margin-top:3px;">${loaders} <span style="font-size:10px;color:var(--text-muted);">MC ${gameVers}</span></div></div><button class="btn btn-primary btn-sm" onclick="ServerView._installPlugin('${name.replace(/'/g,"\\'")}','${v.download_url}','${v.filename}')">${Lang.t('sv.mod.install')}</button></div>`;
+ <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;"><div><span style="font-weight:600;font-size:13px;">${esc(v.name || v.version_number)}</span><span style="font-size:11px;color:var(--text-muted);margin-left:6px;">(${esc(v.size_mb)} Mo)</span><div style="margin-top:3px;">${loaders} <span style="font-size:10px;color:var(--text-muted);">MC ${esc(gameVers)}</span></div></div><button class="btn btn-primary btn-sm" data-pname="${esc(name)}" data-dlurl="${esc(v.download_url)}" data-fname="${esc(v.filename)}" onclick="ServerView._installPlugin(this.dataset.pname,this.dataset.dlurl,this.dataset.fname)">${Lang.t('sv.mod.install')}</button></div>`;
  }).join('')}
  </div>`;
  },
@@ -852,7 +864,7 @@ const ServerView = {
 
  el.innerHTML = `<p style="color:var(--text-muted);font-size:12px;margin-bottom:8px;">${plugins.length} ${Lang.t('sv.mod.plugin_count')}</p>` +
  plugins.map(p => `
- <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:4px;"><div style="display:flex;align-items:center;gap:8px;"><div><div style="font-weight:600;font-size:13px;">${p.filename}</div><div style="font-size:11px;color:var(--text-muted);">${p.size_mb} Mo</div></div></div><button class="btn btn-sm btn-danger" onclick="ServerView._removePlugin('${p.filename.replace(/'/g,"\\'")}')">${Lang.t('sv.mod.remove')}</button></div>`).join('');
+ <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:4px;"><div style="display:flex;align-items:center;gap:8px;"><div><div style="font-weight:600;font-size:13px;">${esc(p.filename)}</div><div style="font-size:11px;color:var(--text-muted);">${esc(p.size_mb)} Mo</div></div></div><button class="btn btn-sm btn-danger" onclick="ServerView._removePlugin('${esc(String(p.filename == null ? '' : p.filename).replace(/\\/g, "\\\\").replace(/'/g, "\\'"))}')">${Lang.t('sv.mod.remove')}</button></div>`).join('');
  },
 
  async _removePlugin(filename) {
@@ -885,7 +897,7 @@ const ServerView = {
  const mods = data.mods||[];
  if (mods.length===0) { el.innerHTML=`<div style="color:var(--text-muted)">${Lang.t('sv.mod.no_results')}</div>`; return; }
  el.innerHTML = mods.map(m => `
- <div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><img src="${m.icon_url||''}" style="width:36px;height:36px;border-radius:6px;" onerror="this.style.display='none'"/><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:13px;">${m.name}</div><div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.summary||''}</div></div><button class="btn btn-primary btn-sm" onclick="ServerView._showModFiles(${m.id},'${(m.name||'').replace(/'/g,"\\'")}')">${Lang.t('sv.mod.install')}</button></div>`).join('');
+ <div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><img src="${esc(ServerView._safeHttpUrl(m.icon_url))}" style="width:36px;height:36px;border-radius:6px;" onerror="this.style.display='none'"/><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:13px;">${esc(m.name)}</div><div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(m.summary||'')}</div></div><button class="btn btn-primary btn-sm" onclick="ServerView._showModFiles(${Number(m.id) || 0},'${esc(String(m.name || '').replace(/\\/g, "\\\\").replace(/'/g, "\\'"))}')">${Lang.t('sv.mod.install')}</button></div>`).join('');
  },
 
  async _showModFiles(modId, name) {
@@ -894,11 +906,16 @@ const ServerView = {
  const r = await Auth.apiCall(`/api/mods/${modId}/files`);
  if (!r||!r.ok) return;
  const files = (await r.json()).files||[];
- el.innerHTML = `<button class="btn btn-secondary btn-sm" onclick="ServerView._searchMods()">${Lang.t('sv.mod.back')}</button><span style="font-weight:600;margin-left:8px;">${name}</span><br><br>` +
- files.slice(0,8).map(f => `
- <div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;"><div><span style="font-size:13px;">${f.name}</span><span style="color:var(--text-muted);font-size:11px;">(${f.size_mb}Mo)</span></div>
- ${f.download_url?`<button class="btn btn-primary btn-sm" onclick="ServerView._installMod('${name.replace(/'/g,"\\'")}','${f.download_url}','${f.name}')">${Lang.t('sv.mod.install')}</button>`:''}
- </div>`).join('');
+ const safeNameJs = esc(String(name == null ? '' : name).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
+ el.innerHTML = `<button class="btn btn-secondary btn-sm" onclick="ServerView._searchMods()">${Lang.t('sv.mod.back')}</button><span style="font-weight:600;margin-left:8px;">${esc(name)}</span><br><br>` +
+ files.slice(0,8).map(f => {
+ const safeFnameJs = esc(String(f.name == null ? '' : f.name).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
+ const safeDlJs = esc(String(ServerView._safeHttpUrl(f.download_url)).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
+ return `
+ <div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;"><div><span style="font-size:13px;">${esc(f.name)}</span><span style="color:var(--text-muted);font-size:11px;">(${esc(f.size_mb)}Mo)</span></div>
+ ${f.download_url?`<button class="btn btn-primary btn-sm" onclick="ServerView._installMod('${safeNameJs}','${safeDlJs}','${safeFnameJs}')">${Lang.t('sv.mod.install')}</button>`:''}
+ </div>`;
+ }).join('');
  },
 
  // ============ DATAPACKS (CurseForge) ============
@@ -939,7 +956,7 @@ const ServerView = {
  el.innerHTML = mods.map(m => {
  const dl = m.downloads > 1000000 ? `${(m.downloads/1000000).toFixed(1)}M` : m.downloads > 1000 ? `${Math.round(m.downloads/1000)}k` : m.downloads;
  return `
- <div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><img src="${m.icon_url||''}" style="width:36px;height:36px;border-radius:6px;" onerror="this.style.display='none'"/><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:13px;">${m.name}</div><div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.summary||''}</div><div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${dl} ${Lang.t('sv.mod.downloads')}</div></div><button class="btn btn-primary btn-sm" onclick="ServerView._showDpFiles(${m.id},'${(m.name||'').replace(/'/g,"\\'")}')">${Lang.t('sv.dp.versions')}</button></div>`;
+ <div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:6px;"><img src="${esc(ServerView._safeHttpUrl(m.icon_url))}" style="width:36px;height:36px;border-radius:6px;" onerror="this.style.display='none'"/><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:13px;">${esc(m.name)}</div><div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(m.summary||'')}</div><div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${esc(dl)} ${Lang.t('sv.mod.downloads')}</div></div><button class="btn btn-primary btn-sm" onclick="ServerView._showDpFiles(${Number(m.id) || 0},'${esc(String(m.name || '').replace(/\\/g, "\\\\").replace(/'/g, "\\'"))}')">${Lang.t('sv.dp.versions')}</button></div>`;
  }).join('');
  },
 
@@ -952,15 +969,18 @@ const ServerView = {
  if (!r||!r.ok) { el.innerHTML = `<div style="color:var(--danger)">${Lang.t('common.error')}</div>`; return; }
  const files = (await r.json()).files || [];
 
+ const safeNameJs = esc(String(name == null ? '' : name).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
  el.innerHTML = `
- <button class="btn btn-secondary btn-sm" onclick="ServerView._searchDatapacks()">${Lang.t('sv.mod.back')}</button><span style="font-weight:600;margin-left:8px;font-size:15px;">${name}</span><div style="margin-top:12px;">
+ <button class="btn btn-secondary btn-sm" onclick="ServerView._searchDatapacks()">${Lang.t('sv.mod.back')}</button><span style="font-weight:600;margin-left:8px;font-size:15px;">${esc(name)}</span><div style="margin-top:12px;">
  ${files.slice(0,10).map(f => {
  const mcVers = (f.game_versions||[]).filter(v => /^\d/.test(v)).join(', ') || '?';
  const type = f.release_type || '';
  const typeColor = type === 'Release' ? 'var(--accent)' : type === 'Beta' ? 'var(--warning)' : 'var(--text-muted)';
+ const safeFnameJs = esc(String(f.name == null ? '' : f.name).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
+ const safeDlJs = esc(String(ServerView._safeHttpUrl(f.download_url)).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
  return `
- <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;"><div><span style="font-size:13px;font-weight:600;">${f.name}</span><span style="color:var(--text-muted);font-size:11px;"> (${f.size_mb} Mo)</span><div style="font-size:10px;color:var(--text-muted);margin-top:2px;">MC ${mcVers} · <span style="color:${typeColor};">${type}</span></div></div>
- ${f.download_url ? `<button class="btn btn-primary btn-sm" onclick="ServerView._installDatapack('${name.replace(/'/g,"\\'") }','${f.download_url}','${f.name}')">${Lang.t('sv.mod.install')}</button>` : ''}
+ <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;"><div><span style="font-size:13px;font-weight:600;">${esc(f.name)}</span><span style="color:var(--text-muted);font-size:11px;"> (${esc(f.size_mb)} Mo)</span><div style="font-size:10px;color:var(--text-muted);margin-top:2px;">MC ${esc(mcVers)} · <span style="color:${typeColor};">${esc(type)}</span></div></div>
+ ${f.download_url ? `<button class="btn btn-primary btn-sm" onclick="ServerView._installDatapack('${safeNameJs}','${safeDlJs}','${safeFnameJs}')">${Lang.t('sv.mod.install')}</button>` : ''}
  </div>`;
  }).join('')}
  </div>`;
@@ -997,7 +1017,7 @@ const ServerView = {
 
  el.innerHTML = `<p style="color:var(--text-muted);font-size:12px;margin-bottom:8px;">${datapacks.length} ${Lang.t('sv.dp.count')}</p>` +
  datapacks.map(p => `
- <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:4px;"><div style="display:flex;align-items:center;gap:8px;"><span>${p.is_dir ? '' : ''}</span><div><div style="font-weight:600;font-size:13px;">${p.filename}</div><div style="font-size:11px;color:var(--text-muted);">${p.is_dir ? Lang.t('sv.dp.folder') : p.size_mb + ' Mo'}</div></div></div><button class="btn btn-sm btn-danger" onclick="ServerView._removeDatapack('${p.filename.replace(/'/g,"\\'")}')">${Lang.t('sv.mod.remove')}</button></div>`).join('');
+ <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg-elev-1);border-radius:8px;margin-bottom:4px;"><div style="display:flex;align-items:center;gap:8px;"><span>${p.is_dir ? '' : ''}</span><div><div style="font-weight:600;font-size:13px;">${esc(p.filename)}</div><div style="font-size:11px;color:var(--text-muted);">${p.is_dir ? Lang.t('sv.dp.folder') : esc(p.size_mb) + ' Mo'}</div></div></div><button class="btn btn-sm btn-danger" onclick="ServerView._removeDatapack('${esc(String(p.filename == null ? '' : p.filename).replace(/\\/g, "\\\\").replace(/'/g, "\\'"))}')">${Lang.t('sv.mod.remove')}</button></div>`).join('');
  },
 
  async _removeDatapack(filename) {
@@ -1083,7 +1103,7 @@ const ServerView = {
  <div style="max-width:500px;margin:40px auto;"><div style="text-align:center;margin-bottom:24px;"><div style="font-size:48px;margin-bottom:12px;"></div><h2 style="color:var(--danger);margin:0;">${Lang.t('sv.delete_title')}</h2><p style="color:var(--text-muted);margin-top:8px;font-size:13px;">
  ${Lang.t('sv.delete_warning')}
  </p></div><div style="background:rgba(248,113,113,0.05);border:1px solid rgba(248,113,113,0.3);border-radius:10px;padding:20px;"><p style="font-size:13px;color:var(--text);margin-bottom:12px;">
- ${Lang.t('sv.delete_confirm_text')} <strong style="color:var(--danger);">${s.name}</strong></p><input id="sv-delete-input" class="form-input" placeholder="Nom du serveur..." style="border-color:rgba(248,113,113,0.3);margin-bottom:12px;" autocomplete="off" /><div style="display:flex;gap:8px;"><button class="btn" style="background:var(--danger);color:white;flex:1;" onclick="ServerView._confirmDeleteServer()">
+ ${Lang.t('sv.delete_confirm_text')} <strong style="color:var(--danger);">${esc(s.name)}</strong></p><input id="sv-delete-input" class="form-input" placeholder="Nom du serveur..." style="border-color:rgba(248,113,113,0.3);margin-bottom:12px;" autocomplete="off" /><div style="display:flex;gap:8px;"><button class="btn" style="background:var(--danger);color:white;flex:1;" onclick="ServerView._confirmDeleteServer()">
  ${Lang.t('sv.delete_btn')}
  </button><button class="btn btn-secondary" onclick="ServerView.switchTab('dashboard')">
  ${Lang.t('gs.cancel')}
@@ -1223,25 +1243,25 @@ const ServerView = {
  <div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;color:var(--text-muted);text-align:center;">
  ${Lang.t('sv.worlds.none')}
  </div>
- ` : worlds.map(w => {
- const label = worldIcons[w.name] || ` ${w.name}`;
+ ` : worlds.map((w, wi) => {
+ const label = worldIcons[w.name] || ` ${esc(w.name)}`;
  return `
- <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;"><div><div style="font-size:14px;font-weight:600;">${label}</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${Lang.t('sv.worlds.folder')}: ${w.name}/ · ${Lang.t('sv.worlds.size')}: ${w.size}</div></div><div style="display:flex;gap:6px;align-items:center;"><button class="btn btn-secondary btn-sm" onclick="ServerView._confirmResetWorld('${w.name}')" style="font-size:12px;">${Lang.t('sv.worlds.reset')}</button></div></div><div id="sv-w-confirm-${w.name}" style="display:none;background:rgba(248,113,113,0.1);border:2px solid var(--danger);border-radius:10px;padding:12px;margin-bottom:8px;"><div style="font-size:13px;color:var(--danger);font-weight:600;margin-bottom:8px;">${Lang.t('sv.worlds.reset_confirm')} "${label}" ?</div><div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('sv.worlds.reset_warn')}</div><div style="display:flex;gap:8px;"><button class="btn btn-secondary btn-sm" onclick="document.getElementById('sv-w-confirm-${w.name}').style.display='none'">${Lang.t('common.cancel')}</button><button class="btn btn-sm" style="background:var(--danger);color:white;" onclick="ServerView._resetWorld('${w.name}')">${Lang.t('sv.worlds.reset_yes')}</button></div></div>`;
+ <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;"><div><div style="font-size:14px;font-weight:600;">${label}</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${Lang.t('sv.worlds.folder')}: ${esc(w.name)}/ · ${Lang.t('sv.worlds.size')}: ${esc(w.size)}</div></div><div style="display:flex;gap:6px;align-items:center;"><button class="btn btn-secondary btn-sm" data-world="${esc(w.name)}" data-wi="${wi}" onclick="ServerView._confirmResetWorld(this.dataset.world, this.dataset.wi)" style="font-size:12px;">${Lang.t('sv.worlds.reset')}</button></div></div><div id="sv-w-confirm-${wi}" style="display:none;background:rgba(248,113,113,0.1);border:2px solid var(--danger);border-radius:10px;padding:12px;margin-bottom:8px;"><div style="font-size:13px;color:var(--danger);font-weight:600;margin-bottom:8px;">${Lang.t('sv.worlds.reset_confirm')} "${label}" ?</div><div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${Lang.t('sv.worlds.reset_warn')}</div><div style="display:flex;gap:8px;"><button class="btn btn-secondary btn-sm" onclick="document.getElementById('sv-w-confirm-${wi}').style.display='none'">${Lang.t('common.cancel')}</button><button class="btn btn-sm" style="background:var(--danger);color:white;" data-world="${esc(w.name)}" data-wi="${wi}" onclick="ServerView._resetWorld(this.dataset.world, this.dataset.wi)">${Lang.t('sv.worlds.reset_yes')}</button></div></div>`;
  }).join('')}
 
  <div style="background:var(--bg-elev-1);padding:16px;border-radius:10px;margin-top:16px;"><div style="font-size:13px;color:var(--text-muted);"><strong>${Lang.t('sv.worlds.tip')}</strong></div></div>`;
  },
 
- _confirmResetWorld(name) {
- document.getElementById(`sv-w-confirm-${name}`).style.display = 'block';
+ _confirmResetWorld(name, wi) {
+ document.getElementById(`sv-w-confirm-${wi}`).style.display = 'block';
  },
 
- async _resetWorld(name) {
- document.getElementById(`sv-w-confirm-${name}`).style.display = 'none';
- const msg = document.getElementById(`sv-w-msg-${name}`);
+ async _resetWorld(name, wi) {
+ document.getElementById(`sv-w-confirm-${wi}`).style.display = 'none';
+ const msg = document.getElementById(`sv-w-msg-${wi}`);
  if (msg) { msg.style.color = 'var(--info)'; msg.textContent = '…'; }
 
- const r = await Auth.apiCall(`/api/servers/${this.serverId}/worlds/${name}`, { method: 'DELETE' });
+ const r = await Auth.apiCall(`/api/servers/${this.serverId}/worlds/${encodeURIComponent(name)}`, { method: 'DELETE' });
  if (r && r.ok) {
  const data = await r.json();
  if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = `${Lang.t('sv.db.deleted')}`; }
@@ -1291,8 +1311,8 @@ const ServerView = {
  const isKnownVersion = versionOptions.includes(currentVer);
 
  return `
- <h2>${Lang.t('sv.ver.title')}</h2><p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.ver.desc')}</p><!-- Version actuelle --><div style="background:rgba(96,165,250,0.15);padding:20px;border-radius:12px;margin-bottom:20px;border:1px solid rgba(96,165,250,0.3);"><div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">${Lang.t('sv.ver.current')}</div><div style="display:flex;align-items:center;gap:14px;"><span class="b-ticker">${(current.id||'?').slice(0,3).toUpperCase()}</span><div><div style="font-size:20px;font-weight:700;">${current.name}</div><div style="font-size:14px;color:var(--text-muted);">Minecraft ${currentVer}</div></div></div></div><!-- Sélection du type --><div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;"><div style="font-weight:600;margin-bottom:10px;">${Lang.t('sv.ver.server_type')}</div><select id="sv-ver-type" class="form-input" style="font-size:14px;">
- ${types.map(t => `<option value="${t.id}" ${t.id === currentType ? 'selected' : ''}>${t.name} — ${t.desc}</option>`).join('')}
+ <h2>${Lang.t('sv.ver.title')}</h2><p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">${Lang.t('sv.ver.desc')}</p><!-- Version actuelle --><div style="background:rgba(96,165,250,0.15);padding:20px;border-radius:12px;margin-bottom:20px;border:1px solid rgba(96,165,250,0.3);"><div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">${Lang.t('sv.ver.current')}</div><div style="display:flex;align-items:center;gap:14px;"><span class="b-ticker">${(current.id||'?').slice(0,3).toUpperCase()}</span><div><div style="font-size:20px;font-weight:700;">${esc(current.name)}</div><div style="font-size:14px;color:var(--text-muted);">Minecraft ${esc(currentVer)}</div></div></div></div><!-- Sélection du type --><div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;"><div style="font-weight:600;margin-bottom:10px;">${Lang.t('sv.ver.server_type')}</div><select id="sv-ver-type" class="form-input" style="font-size:14px;">
+ ${types.map(t => `<option value="${esc(t.id)}" ${t.id === currentType ? 'selected' : ''}>${esc(t.name)} — ${esc(t.desc)}</option>`).join('')}
  </select></div><!-- Version Minecraft --><div id="sv-ver-version-group" style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;"><div style="font-weight:600;margin-bottom:10px;">${Lang.t('sv.ver.mc_version')}</div><select id="sv-ver-version" class="form-input" style="font-size:14px;" onchange="document.getElementById('sv-ver-version-custom').style.display=this.value==='CUSTOM'?'block':'none'"><option value="LATEST" ${currentVer === 'LATEST' ? 'selected' : ''}>${Lang.t('sv.ver.latest')}</option>
  ${versionOptions.filter(v => v !== 'LATEST').map(v => `<option value="${v}" ${v === currentVer ? 'selected' : ''}>${v}</option>`).join('')}
  <option value="CUSTOM" ${!isKnownVersion && currentVer !== 'LATEST' ? 'selected' : ''}>${Lang.t('sv.ver.custom')}</option></select><input id="sv-ver-version-custom" class="form-input" value="${!isKnownVersion && currentVer !== 'LATEST' ? currentVer : ''}" placeholder="Ex: 1.12.2, 23w13a (snapshot)..." style="display:${!isKnownVersion && currentVer !== 'LATEST' ? 'block' : 'none'};margin-top:8px;" /></div><!-- Modpack CurseForge (affiché pour Forge/Fabric/NeoForge/Quilt) --><div id="sv-ver-modpack-group" style="display:${['FORGE','NEOFORGE','FABRIC','QUILT'].includes(currentType) ? 'block' : 'none'};"><div style="background:var(--bg-elev-1);padding:20px;border-radius:10px;margin-bottom:16px;"><div style="font-weight:600;margin-bottom:10px;">${Lang.t('sv.ver.content_mode')}</div><div style="display:flex;gap:8px;margin-bottom:12px;"><button type="button" id="sv-ver-mp-blank" class="btn btn-primary btn-sm" onclick="ServerView._setVerModpackMode('blank')" style="flex:1;padding:10px;">
@@ -1353,10 +1373,12 @@ const ServerView = {
 
  el.innerHTML = mods.map(m => {
  const dl = m.downloads > 1000000 ? `${(m.downloads/1000000).toFixed(1)}M` : m.downloads > 1000 ? `${Math.round(m.downloads/1000)}k` : m.downloads;
- const safeUrl = (m.url||'').replace(/'/g,"\\'");
- const safeName = (m.name||'').replace(/'/g,"\\'");
+ const safeIconUrl = ServerView._safeHttpUrl(m.icon_url);
+ const safeUrl = esc(String(ServerView._safeHttpUrl(m.url)).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
+ const safeName = esc(String(m.name || '').replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
+ const safeIconJs = esc(String(safeIconUrl).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
  return `
- <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-elev-2)'" onmouseout="this.style.background='var(--bg-elev-1)'" onclick="ServerView._selectVerModpack(${m.id}, '${safeName}', '${m.icon_url||''}', '${safeUrl}')"><img src="${m.icon_url||''}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;" onerror="this.style.display='none'" /><div style="flex:1;min-width:0;"><div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.name}</div><div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.summary||''}</div></div><span style="font-size:10px;color:var(--text-muted);white-space:nowrap;">${dl}</span></div>`;
+ <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-elev-1);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-elev-2)'" onmouseout="this.style.background='var(--bg-elev-1)'" onclick="ServerView._selectVerModpack(${Number(m.id) || 0}, '${safeName}', '${safeIconJs}', '${safeUrl}')"><img src="${esc(safeIconUrl)}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;" onerror="this.style.display='none'" /><div style="flex:1;min-width:0;"><div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(m.name)}</div><div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(m.summary||'')}</div></div><span style="font-size:10px;color:var(--text-muted);white-space:nowrap;">${esc(dl)}</span></div>`;
  }).join('');
  },
 
@@ -1374,7 +1396,7 @@ const ServerView = {
 
  el.style.display = 'block';
  el.innerHTML = `
- <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;"><img src="${iconUrl}" style="width:36px;height:36px;border-radius:8px;" onerror="this.style.display='none'" /><div style="flex:1;"><div style="font-size:14px;font-weight:700;">${name}</div><div style="font-size:10px;color:var(--text-muted);">${Lang.t('common.loading')}</div></div><button class="btn btn-secondary btn-sm" onclick="ServerView._clearVerModpack()" style="font-size:10px;">${Lang.t('nodes.remove')}</button></div><div id="sv-ver-mp-versions"><div style="color:var(--text-muted);font-size:12px;">${Lang.t('common.loading')}</div></div>`;
+ <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;"><img src="${esc(ServerView._safeHttpUrl(iconUrl))}" style="width:36px;height:36px;border-radius:8px;" onerror="this.style.display='none'" /><div style="flex:1;"><div style="font-size:14px;font-weight:700;">${esc(name)}</div><div style="font-size:10px;color:var(--text-muted);">${Lang.t('common.loading')}</div></div><button class="btn btn-secondary btn-sm" onclick="ServerView._clearVerModpack()" style="font-size:10px;">${Lang.t('nodes.remove')}</button></div><div id="sv-ver-mp-versions"><div style="color:var(--text-muted);font-size:12px;">${Lang.t('common.loading')}</div></div>`;
 
  // Charger les fichiers du modpack
  const r = await Auth.apiCall(`/api/mods/${id}/files`);
@@ -1395,9 +1417,8 @@ const ServerView = {
  const mcVers = (f.game_versions||[]).filter(v => /^\d/.test(v)).join(', ') || '?';
  const type = f.release_type || '';
  const typeColor = type === 'Release' ? 'var(--accent)' : type === 'Beta' ? 'var(--warning)' : 'var(--text-muted)';
- const safeName2 = (f.name||'').replace(/'/g,"\\'");
  return `
- <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-elev-3);border-radius:6px;margin-bottom:3px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-elev-2)'" onmouseout="this.style.background='var(--bg-elev-3)'" onclick="ServerView._pickVerModpackFile(${f.id}, '${safeName2}', '${mcVers}')"><div style="flex:1;"><div style="font-size:12px;font-weight:600;">${f.name}</div><div style="font-size:10px;color:var(--text-muted);">MC ${mcVers} · ${f.size_mb} Mo · <span style="color:${typeColor};">${type}</span></div></div></div>`;
+ <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-elev-3);border-radius:6px;margin-bottom:3px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='var(--bg-elev-2)'" onmouseout="this.style.background='var(--bg-elev-3)'" data-fid="${esc(f.id)}" data-fname="${esc(f.name||'')}" data-fmc="${esc(mcVers)}" onclick="ServerView._pickVerModpackFile(this.dataset.fid, this.dataset.fname, this.dataset.fmc)"><div style="flex:1;"><div style="font-size:12px;font-weight:600;">${esc(f.name)}</div><div style="font-size:10px;color:var(--text-muted);">MC ${esc(mcVers)} · ${esc(f.size_mb)} Mo · <span style="color:${typeColor};">${esc(type)}</span></div></div></div>`;
  }).join('');
  },
 
