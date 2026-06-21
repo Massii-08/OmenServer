@@ -46,3 +46,27 @@ def test_authorize_ok_when_admin_and_awaiting(monkeypatch):
     monkeypatch.setitem(hr._harvester_jobs, _JOB, {"job_id": _JOB, "process": None})
     ok, reason = hr._vnc_authorize("good", _JOB, admin_fn=_admin_ok)
     assert ok is True and reason == "ok"
+
+
+# --- D2 : bridge WebSocket (rejet au niveau WS) ----------------------------
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+
+def _ws_client(monkeypatch, tmp_path, admin_token=None):
+    monkeypatch.setattr(hr, "HARVESTER_RUNS_DIR", tmp_path)
+    app = FastAPI()
+    app.include_router(hr.router)
+    return TestClient(app)
+
+
+def test_ws_bridge_rejects_unauthorized(monkeypatch, tmp_path):
+    monkeypatch.setattr(hr, "_ws_admin_from_token", lambda t: None)
+    c = _ws_client(monkeypatch, tmp_path)
+    with pytest.raises(WebSocketDisconnect):
+        with c.websocket_connect(
+            "/api/bots/harvester/vnc/{0}?token=bad".format(_JOB)) as ws:
+            ws.receive_bytes()

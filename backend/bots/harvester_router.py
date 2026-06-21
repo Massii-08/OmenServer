@@ -113,6 +113,65 @@ def _vnc_authorize(token, job_id, admin_fn=None):
     return True, "ok"
 
 
+async def _pump_ws_socket(websocket, reader, writer):
+    """Pompe bidirectionnelle d'octets RFB entre le WebSocket noVNC et le socket
+    Unix d'x11vnc. Verbatim (zéro transformation) — c'est ce que fait websockify."""
+    async def ws_to_sock():
+        try:
+            while True:
+                data = await websocket.receive_bytes()
+                writer.write(data)
+                await writer.drain()
+        except Exception:  # noqa: BLE001 — fin de flux / déconnexion
+            pass
+
+    async def sock_to_ws():
+        try:
+            while True:
+                chunk = await reader.read(65536)
+                if not chunk:
+                    break
+                await websocket.send_bytes(chunk)
+        except Exception:  # noqa: BLE001
+            pass
+
+    t1 = asyncio.ensure_future(ws_to_sock())
+    t2 = asyncio.ensure_future(sock_to_ws())
+    try:
+        await asyncio.wait({t1, t2}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for t in (t1, t2):
+            t.cancel()
+        try:
+            writer.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@router.websocket("/vnc/{job_id}")
+async def harvester_vnc(websocket: WebSocket, job_id: str,
+                        token: str = Query(default="")):
+    """Bridge admin-gated : pompe le RFB d'x11vnc (socket Unix) vers noVNC. Refuse
+    (close 1008) si non-admin / job_id invalide / job pas en `awaiting_solve`."""
+    ok, _reason = _vnc_authorize(token, job_id)
+    if not ok:
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    try:
+        reader, writer = await asyncio.open_unix_connection(HARVESTER_VNC_SOCK)
+    except OSError:
+        await websocket.close(code=1011)   # x11vnc indisponible
+        return
+    try:
+        await _pump_ws_socket(websocket, reader, writer)
+    finally:
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 class RunRequest(BaseModel):
     url: str
     recipe: Dict[str, Any]
