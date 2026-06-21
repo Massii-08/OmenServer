@@ -34,6 +34,8 @@ from backend.bots.harvester.recipe import Recipe
 from backend.bots.harvester.setup import build_setup
 from backend.bots.harvester.store import Store
 from backend.bots.harvester import unblocker_config
+from backend.bots.harvester import telegram_config
+from backend.bots.harvester import notify as _notify
 from backend.bots.harvester import exporter
 
 logger = logging.getLogger(__name__)
@@ -83,6 +85,11 @@ class UnblockerConfigRequest(BaseModel):
     key_in: str = "body"
     key_param: str = "apikey"
     result_field: str = ""
+
+
+class TelegramConfigRequest(BaseModel):
+    token: str = ""          # vide -> on garde le token déjà enregistré
+    chat_id: str = ""
 
 
 def _run_dir(job_id: str) -> Path:
@@ -593,6 +600,38 @@ def clear_unblocker_config(current_user: User = Depends(get_current_user)):
     """Oublie la config débloqueur (supprime le fichier). Admin-only."""
     _require_admin(current_user)
     unblocker_config.clear()
+    return {"configured": False}
+
+
+@router.get("/telegram-config")
+def get_telegram_config(current_user: User = Depends(get_current_user)):
+    """Vue publique de la config Telegram (token MASQUÉ). Admin-only."""
+    _require_admin(current_user)
+    return telegram_config.public_view(telegram_config.load())
+
+
+@router.post("/telegram-config")
+def set_telegram_config(data: TelegramConfigRequest,
+                        current_user: User = Depends(get_current_user)):
+    """Enregistre la config Telegram (token en chmod 600). Token vide -> on garde
+    l'existant (permet d'ajuster le chat_id sans recoller le token). Admin-only."""
+    _require_admin(current_user)
+    existing = telegram_config.load()
+    cfg = {"chat_id": data.chat_id.strip()}
+    new_token = data.token.strip()
+    if new_token:
+        cfg["token"] = new_token
+    elif existing.get("token"):
+        cfg["token"] = existing["token"]
+    telegram_config.save(cfg)
+    return telegram_config.public_view(cfg)
+
+
+@router.post("/telegram-config/clear")
+def clear_telegram_config(current_user: User = Depends(get_current_user)):
+    """Oublie la config Telegram (supprime le fichier). Admin-only."""
+    _require_admin(current_user)
+    telegram_config.clear()
     return {"configured": False}
 
 

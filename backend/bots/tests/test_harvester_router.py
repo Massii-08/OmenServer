@@ -546,3 +546,50 @@ def test_status_surfaces_awaiting_solve(tmp_path, monkeypatch):
                     "timeout_s": 1800}) + "\n", encoding="utf-8")
     s = c.get("/api/bots/harvester/status/{0}".format(job_id)).json()
     assert s["awaiting_solve"]["url"] == "https://x"
+
+
+# ---- Task C3 : endpoints /telegram-config* (admin-only) --------------------
+
+def test_telegram_config_admin_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(hr.telegram_config, "DEFAULT_PATH", str(tmp_path / "tg.json"))
+    c, _ = make_client(tmp_path, monkeypatch, is_admin=False)
+    assert c.get("/api/bots/harvester/telegram-config").status_code == 403
+    assert c.post("/api/bots/harvester/telegram-config",
+                  json={"token": "T", "chat_id": "C"}).status_code == 403
+
+
+def test_telegram_config_save_masks_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(hr.telegram_config, "DEFAULT_PATH", str(tmp_path / "tg.json"))
+    c, _ = make_client(tmp_path, monkeypatch)
+    r = c.post("/api/bots/harvester/telegram-config",
+               json={"token": "123456:ABCDEF", "chat_id": "42"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["configured"] is True
+    assert body["token_masked"] == "····CDEF"
+    assert "123456" not in str(body)
+    # GET renvoie la vue masquée
+    g = c.get("/api/bots/harvester/telegram-config").json()
+    assert g["chat_id"] == "42"
+    assert "123456" not in str(g)
+
+
+def test_telegram_config_empty_token_keeps_existing(tmp_path, monkeypatch):
+    monkeypatch.setattr(hr.telegram_config, "DEFAULT_PATH", str(tmp_path / "tg.json"))
+    c, _ = make_client(tmp_path, monkeypatch)
+    c.post("/api/bots/harvester/telegram-config",
+           json={"token": "SECRET:TOKEN", "chat_id": "1"})
+    # token vide -> on garde l'existant, on change juste le chat_id
+    c.post("/api/bots/harvester/telegram-config", json={"token": "", "chat_id": "2"})
+    saved = hr.telegram_config.load(str(tmp_path / "tg.json"))
+    assert saved["token"] == "SECRET:TOKEN"
+    assert saved["chat_id"] == "2"
+
+
+def test_telegram_config_clear(tmp_path, monkeypatch):
+    monkeypatch.setattr(hr.telegram_config, "DEFAULT_PATH", str(tmp_path / "tg.json"))
+    c, _ = make_client(tmp_path, monkeypatch)
+    c.post("/api/bots/harvester/telegram-config",
+           json={"token": "T:K", "chat_id": "1"})
+    assert c.post("/api/bots/harvester/telegram-config/clear").json()["configured"] is False
+    assert hr.telegram_config.load(str(tmp_path / "tg.json")) == {}
