@@ -49,3 +49,42 @@ def test_public_view_masks_token():
 def test_public_view_not_configured_without_chat_id():
     v = tc.public_view({"token": "123456:ABCDEF"})
     assert v["configured"] is False
+
+
+import json as _json
+import httpx
+
+from backend.bots.harvester import notify
+
+
+def test_send_posts_to_telegram_api():
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["json"] = _json.loads(request.content)
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    ok = notify.send("hello", {"token": "TKN", "chat_id": "CID"}, client=client)
+    assert ok is True
+    assert "/botTKN/sendMessage" in seen["url"]
+    assert seen["json"] == {"chat_id": "CID", "text": "hello"}
+
+
+def test_send_returns_false_without_config():
+    assert notify.send("x", {}, client=httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200)))) is False
+
+
+def test_send_swallows_errors_and_returns_false():
+    def boom(request):
+        raise httpx.ConnectError("down")
+    client = httpx.Client(transport=httpx.MockTransport(boom))
+    assert notify.send("x", {"token": "T", "chat_id": "C"}, client=client) is False
+
+
+def test_send_returns_false_on_http_error_status():
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda r: httpx.Response(403, json={"ok": False})))
+    assert notify.send("x", {"token": "T", "chat_id": "C"}, client=client) is False
