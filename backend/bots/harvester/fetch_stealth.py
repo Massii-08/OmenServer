@@ -450,7 +450,12 @@ class PatchrightBrowserSession:
             proxy=self.proxy,             # None = pas de proxy
             locale=self.locale,
             timezone_id=self.timezone_id,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
+            # window-size = taille de l'écran Xvfb (:100 = 1920x1080) pour que la
+            # fenêtre REMPLISSE l'affichage -> la vue live noVNC montre toute la
+            # page (sans bord noir), et une fenêtre = écran est plus naturelle
+            # pour le fingerprint qu'une taille par défaut bizarre (945x1060).
+            args=["--no-sandbox", "--disable-dev-shm-usage",
+                  "--window-position=0,0", "--window-size=1920,1080"],
         )
         self._page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
 
