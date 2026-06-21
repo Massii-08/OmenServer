@@ -1,0 +1,23 @@
+[Unit]
+Description=OmenServer Harvester VNC bridge (x11vnc on :100, Unix socket)
+After=omenserver.service
+Wants=omenserver.service
+
+[Service]
+# IMPORTANT : MÊME user/group que le service omenserver (sinon le bridge uvicorn
+# ne peut pas ouvrir le socket). Adapter <OMEN_USER> au user réel (ex. massii08).
+User=<OMEN_USER>
+Group=<OMEN_USER>
+Environment=DISPLAY=:100
+# crée /run/omen-harvester-vnc/ au bon user (nettoyé au reboot, /run = tmpfs)
+RuntimeDirectory=omen-harvester-vnc
+RuntimeDirectoryMode=0700
+# socket périmé après un crash -> on le retire avant de relancer
+ExecStartPre=/bin/rm -f /run/omen-harvester-vnc/vnc.sock
+ExecStart=/usr/bin/x11vnc -display :100 -forever -shared -nopw \
+  -unixsock /run/omen-harvester-vnc/vnc.sock
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
