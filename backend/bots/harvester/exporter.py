@@ -20,6 +20,7 @@ import zipfile
 EXPORT_HARVESTER_MODULES = [
     "__init__.py", "policy.py", "dom.py", "recipe.py", "crawl.py", "store.py",
     "fetch.py", "fetch_unblocker.py", "fetch_stealth.py", "unblocker_config.py",
+    "telegram_config.py", "notify.py",
     "pacing.py", "robots.py", "engine.py", "config.py", "__main__.py",
 ]
 
