@@ -126,6 +126,17 @@ def test_chat_latency_merges_valid_pairs_across_sessions(tmp_path):
     assert style["chat"]["latencyMeanMs"] == 3000
 
 
+def test_chat_latency_ignores_non_reply_gaps(tmp_path):
+    """Un chat_out 60 s après le chat_in n'est PAS une réponse (joueur AFK/ignore) → pas apparié.
+    Sans borne, latencyMeanMs explosait à 93 642 ms sur de vrais AFK (réel : médiane ~7.5 s)."""
+    import json as _json
+    hdr = _json.dumps({"player": "X", "schema": 1})
+    a = (hdr + "\n" + _json.dumps({"type": "chat_in", "t": 0})
+         + "\n" + _json.dumps({"type": "chat_out", "t": 60000, "text": "hi"})).encode()
+    style = distill.distill_style([a], player="X")
+    assert style["chat"]["latencyMeanMs"] <= 30000
+
+
 def test_distill_caps_clips_per_ctx(tmp_path):
     """max_per_ctx tronque chaque contexte à un échantillon représentatif (clips légers, fleet)."""
     import json as _json

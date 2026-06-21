@@ -44,8 +44,16 @@ def load_records(payload):
     return header, records
 
 
+# Au-delà de ce délai, un chat_out n'est PLUS une réponse au chat_in précédent (le joueur a
+# ignoré le message puis a tapé autre chose plus tard, ou était AFK) → ne pas l'apparier, sinon
+# la latence de réponse explose (vécu : latencyMeanMs 93 642 ms sur de vrais AFK). Réel : médiane
+# ~7.5 s, queue jusqu'à quelques dizaines de s.
+_CHAT_REPLY_MAX_MS = 30000
+
+
 def _chat_latencies(records):
-    """Latences (ms) entre un chat_in et le chat_out suivant — proxy du temps de réponse."""
+    """Latences (ms) entre un chat_in et le chat_out suivant — proxy du temps de réponse.
+    Bornée à _CHAT_REPLY_MAX_MS : au-delà ce n'est plus une réponse mais un message ultérieur."""
     lat = []
     pending_in = None
     for r in records:
@@ -53,9 +61,9 @@ def _chat_latencies(records):
             pending_in = r.get("t")
         elif r.get("type") == "chat_out" and pending_in is not None:
             dt = r.get("t", 0) - pending_in
-            if dt >= 0:
+            if 0 <= dt <= _CHAT_REPLY_MAX_MS:
                 lat.append(dt)
-            pending_in = None
+            pending_in = None        # apparié OU trop tardif : le chat_in est consommé
     return lat
 
 
