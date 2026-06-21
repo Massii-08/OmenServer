@@ -194,6 +194,50 @@ def _recommend_from_log(run_dir, max_bytes=_RECO_TAIL_BYTES):
     return found
 
 
+def _solve_from_log(run_dir, max_bytes=_RECO_TAIL_BYTES):
+    """État courant de résolution manuelle, reconstruit depuis la FIN de run.log
+    (miroir de _recommend_from_log). Renvoie l'event `awaiting_manual_solve`
+    SEULEMENT s'il n'a pas été suivi d'un `manual_solve_resolved`/`_timeout`
+    (état transitoire). None sinon. Survit au restart uvicorn. Jamais de secret."""
+    p = Path(run_dir) / "run.log"
+    if not p.is_file():
+        return None
+    try:
+        size = p.stat().st_size
+        with open(str(p), "rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()
+            data = f.read()
+        text = data.decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    last = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or "manual_solve" not in line:
+            continue
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        t = msg.get("type")
+        if t == "awaiting_manual_solve":
+            last = msg
+        elif t in ("manual_solve_resolved", "manual_solve_timeout"):
+            last = None
+    return last
+
+
+def _job_awaiting(job):
+    """État `awaiting_solve` d'un job : mémoire (posée par _capture) si le process
+    est suivi vivant, sinon relecture du tail (restart-résilient). NON caché
+    (l'état est transitoire : awaiting -> resolved)."""
+    if job.get("process") is not None:
+        return job.get("awaiting_solve")
+    return _solve_from_log(str(_run_dir(job["job_id"])))
+
+
 def _job_from_disk(run_dir, job_id, is_alive=_pid_alive):
     """Reconstruit un job depuis config.json + store.json (None si pas de
     config -> dossier incomplet)."""
@@ -213,6 +257,7 @@ def _job_from_disk(run_dir, job_id, is_alive=_pid_alive):
         "url": cfg.url,
         "tier": (cfg.plan or {}).get("fetch_tier", "httpx"),
         "recommend": _recommend_from_log(str(run_dir)),
+        "awaiting_solve": _solve_from_log(str(run_dir)),
         "user": "?",
     }
 
@@ -381,6 +426,11 @@ def _launch_subprocess(run_dir: str, job: Dict[str, Any]) -> None:
                         j["counts"] = msg["counts"]
                     elif msg.get("type") == "recommend_tier":
                         j["recommend"] = msg     # surfacé par /status et /active
+                    elif msg.get("type") == "awaiting_manual_solve":
+                        j["awaiting_solve"] = msg
+                    elif msg.get("type") in ("manual_solve_resolved",
+                                             "manual_solve_timeout"):
+                        j["awaiting_solve"] = None
                 except ValueError:
                     pass
         except Exception:
@@ -610,6 +660,7 @@ def harvester_status(job_id: str, current_user: User = Depends(get_current_user)
         "url": job["url"],
         "tier": job.get("tier", "httpx"),
         "recommend": _job_recommend(job),
+        "awaiting_solve": _job_awaiting(job),
     }
 
 
@@ -628,7 +679,8 @@ def harvester_active(current_user: User = Depends(get_current_user)):
                     "url": job["url"],
                     "feed_key": job.get("feed_key"),
                     "tier": job.get("tier", "httpx"),
-                    "recommend": _job_recommend(job)}
+                    "recommend": _job_recommend(job),
+                    "awaiting_solve": _job_awaiting(job)}
     return None
 
 

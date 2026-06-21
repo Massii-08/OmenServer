@@ -508,3 +508,41 @@ def test_valid_hex_job_id_still_works(tmp_path, monkeypatch):
     job_id = c.post("/api/bots/harvester/run", json=GOOD_BODY).json()["job_id"]
     assert len(job_id) == 32
     assert c.get("/api/bots/harvester/status/{0}".format(job_id)).status_code == 200
+
+
+# ---- Task B3 : events solve + awaiting_solve dans /status & /active --------
+
+def _seed_run(c, tmp_path):
+    job_id = c.post("/api/bots/harvester/run", json=GOOD_BODY).json()["job_id"]
+    return job_id, tmp_path / job_id
+
+
+def test_solve_from_log_awaiting(tmp_path):
+    rd = tmp_path / "r"
+    rd.mkdir()
+    (rd / "run.log").write_text(
+        json.dumps({"type": "awaiting_manual_solve", "url": "https://x",
+                    "since": 1.0, "timeout_s": 1800}) + "\n", encoding="utf-8")
+    msg = hr._solve_from_log(str(rd))
+    assert msg and msg["url"] == "https://x"
+
+
+def test_solve_from_log_cleared_after_resolved(tmp_path):
+    rd = tmp_path / "r"
+    rd.mkdir()
+    (rd / "run.log").write_text(
+        json.dumps({"type": "awaiting_manual_solve", "url": "https://x", "since": 1.0,
+                    "timeout_s": 1800}) + "\n"
+        + json.dumps({"type": "manual_solve_resolved", "url": "https://x"}) + "\n",
+        encoding="utf-8")
+    assert hr._solve_from_log(str(rd)) is None
+
+
+def test_status_surfaces_awaiting_solve(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    job_id, rd = _seed_run(c, tmp_path)
+    (rd / "run.log").write_text(
+        json.dumps({"type": "awaiting_manual_solve", "url": "https://x", "since": 1.0,
+                    "timeout_s": 1800}) + "\n", encoding="utf-8")
+    s = c.get("/api/bots/harvester/status/{0}".format(job_id)).json()
+    assert s["awaiting_solve"]["url"] == "https://x"
