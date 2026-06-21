@@ -14,12 +14,17 @@ RuntimeDirectory=omen-harvester-vnc
 RuntimeDirectoryMode=0700
 # socket périmé après un crash -> on le retire avant de relancer
 ExecStartPre=/bin/rm -f /run/omen-harvester-vnc/vnc.sock
-# -localhost : x11vnc 0.9.x EXIGE un listener TCP (le désactiver entièrement via
-# -rfbport -1 / -noipv4 le fait planter "could not obtain listening port") ->
-# on le borne à 127.0.0.1/::1 (loopback only), injoignable de l'extérieur. Le
-# bridge passe par le socket Unix (dossier 0700) ; le port loopback n'est
-# atteignable que depuis l'Omen lui-même.
-ExecStart=/usr/bin/x11vnc -display :100 -forever -shared -nopw -localhost -unixsock /run/omen-harvester-vnc/vnc.sock
+# ⚠️ NE PAS utiliser -localhost : il applique un contrôle "client == 127.0.0.1 ?"
+# AU PEER DU SOCKET UNIX (qui n'a pas d'IP) -> x11vnc ferme la connexion juste
+# après le greeting RFB -> la vue noVNC ne se rend JAMAIS (vécu en prod 2026-06-21).
+# -listen 127.0.0.1 borne le listener TCP IPv4 à loopback SANS ce contrôle d'allow,
+# donc le socket Unix (le chemin du bridge) fonctionne. x11vnc 0.9.x EXIGE un
+# listener TCP (le désactiver via -rfbport -1 / -noipv4 le fait planter "could not
+# obtain listening port"). Résidu assumé : un listener IPv6 [::]:5900 que
+# -noipv6/-rfbportv6 -1 ne suppriment pas avec -listen -> joignable seulement via
+# le Tailscale de l'Omen (PAS internet : 5900 n'est pas tunnelé). Le bridge
+# admin-gated reste le seul chemin externe.
+ExecStart=/usr/bin/x11vnc -display :100 -forever -shared -nopw -listen 127.0.0.1 -unixsock /run/omen-harvester-vnc/vnc.sock
 Restart=on-failure
 RestartSec=5
 

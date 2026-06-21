@@ -460,6 +460,10 @@ const HarvesterModule = {
             this._rfb.viewOnly = false;          // tu cliques/résous le CAPTCHA
             this._rfb.scaleViewport = true;
             this._rfbJob = jobId;
+            // si la connexion RFB tombe (échec handshake / x11vnc fermé), on
+            // nullifie _rfb pour que le prochain poll retente (sinon le garde
+            // _rfbJob===jobId bloquerait toute reconnexion pour ce job).
+            this._rfb.addEventListener('disconnect', () => { this._rfb = null; this._rfbJob = null; });
         } catch (e) {
             host.textContent = Lang.t('harvester.solve_connecting');
         }
