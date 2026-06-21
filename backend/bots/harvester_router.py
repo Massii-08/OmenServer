@@ -760,7 +760,12 @@ def export_harvester(job_id: str, current_user: User = Depends(get_current_user)
                 detail="Recette PII, export refusé: '{0}'".format(name))
     # 🔒 ne JAMAIS livrer la clé débloqueur de l'admin au client (si posée dans le
     # plan par-run) — le client met la SIENNE via .env (cf. .env.example du zip).
-    safe_plan = {k: v for k, v in (cfg.plan or {}).items() if k != "unblocker_key"}
+    # secrets/serveur-only retirés du plan livré : la clé débloqueur de l'admin
+    # ET les options de résolution manuelle (manual_solve* n'ont aucun sens côté
+    # client — ni dashboard, ni noVNC, ni Telegram pour résoudre — et stalleraient
+    # une cible challengée jusqu'au timeout).
+    _client_strip = ("unblocker_key", "manual_solve", "manual_solve_timeout")
+    safe_plan = {k: v for k, v in (cfg.plan or {}).items() if k not in _client_strip}
     client_config = {
         "url": cfg.url,
         "recipe": cfg.recipe.to_dict(),

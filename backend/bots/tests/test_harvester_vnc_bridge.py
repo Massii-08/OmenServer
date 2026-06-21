@@ -70,3 +70,25 @@ def test_ws_bridge_rejects_unauthorized(monkeypatch, tmp_path):
         with c.websocket_connect(
             "/api/bots/harvester/vnc/{0}?token=bad".format(_JOB)) as ws:
             ws.receive_bytes()
+
+
+def test_ws_bridge_accepts_authorized_then_closes_on_socket_unavailable(monkeypatch, tmp_path):
+    # DISCRIMINANT : avec un job autorisé (admin + awaiting) mais x11vnc indispo,
+    # le bridge ACCEPTE (passe l'auth) PUIS ferme 1011 — distinct du rejet
+    # pré-accept (1008) du cas non autorisé. Prouve que la route existe ET que la
+    # porte d'autorisation laisse bien passer le cas légitime.
+    monkeypatch.setattr(hr, "_vnc_authorize", lambda token, job_id: (True, "ok"))
+
+    async def _boom(path):
+        raise OSError("no x11vnc socket")
+    monkeypatch.setattr(hr.asyncio, "open_unix_connection", _boom)
+
+    c = _ws_client(monkeypatch, tmp_path)
+    accepted = False
+    with c.websocket_connect(
+            "/api/bots/harvester/vnc/{0}?token=good".format(_JOB)) as ws:
+        accepted = True                 # __enter__ réussi => accept() a eu lieu
+        with pytest.raises(WebSocketDisconnect) as ei:
+            ws.receive_bytes()
+    assert accepted
+    assert ei.value.code == 1011        # fermeture serveur (socket indispo)

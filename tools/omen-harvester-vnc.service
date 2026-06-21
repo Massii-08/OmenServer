@@ -14,8 +14,9 @@ RuntimeDirectory=omen-harvester-vnc
 RuntimeDirectoryMode=0700
 # socket périmé après un crash -> on le retire avant de relancer
 ExecStartPre=/bin/rm -f /run/omen-harvester-vnc/vnc.sock
-ExecStart=/usr/bin/x11vnc -display :100 -forever -shared -nopw \
-  -unixsock /run/omen-harvester-vnc/vnc.sock
+# -rfbport -1 / -rfbportv6 -1 : AUCUN listener TCP (sinon x11vnc ouvrirait 5900
+# sur toutes les interfaces) ; seul le socket Unix écoute.
+ExecStart=/usr/bin/x11vnc -display :100 -forever -shared -nopw -rfbport -1 -rfbportv6 -1 -unixsock /run/omen-harvester-vnc/vnc.sock
 Restart=on-failure
 RestartSec=5
 

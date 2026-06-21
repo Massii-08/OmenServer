@@ -3,7 +3,7 @@
 import pytest
 
 from backend.bots.harvester.fetch import PushbackError, RateLimiter
-from backend.bots.harvester.fetch_stealth import StealthFetcher
+from backend.bots.harvester.fetch_stealth import StealthFetcher, is_challenge_html
 
 
 def _rate():
@@ -224,3 +224,56 @@ def test_build_fetcher_stealth_no_notifier_without_telegram(monkeypatch):
     f = _build_fetcher("stealth", _rate(), "https://t.test/p",
                        {"fetch_tier": "stealth", "manual_solve": True}, None)
     assert f._notify is None
+
+
+# ---- régression revue : ne JAMAIS re-naviguer pendant l'attente -----------
+
+class BeaconSession(object):
+    """Titre propre dès le départ, mais corps porte un beacon Cloudflare
+    PERSISTANT (`/cdn-cgi/challenge-platform`) qui faux-positive is_challenge_html.
+    Le bot ne doit ni re-naviguer (se battrait avec les clics humains via noVNC)
+    ni staller : titre propre = résolu."""
+    def __init__(self):
+        self.gotos = 0
+
+    def goto(self, url):
+        self.gotos += 1
+
+    def title(self):
+        return "Real product page"
+
+    def content(self):
+        return ('<html><body>real content'
+                '<script src="/cdn-cgi/challenge-platform/h/b/x.js"></script>'
+                '</body></html>')
+
+    def interact(self):
+        pass
+
+    def click_turnstile(self):
+        return False
+
+
+def test_await_manual_solve_never_renavigates_on_persistent_beacon():
+    # titre propre + body avec beacon CF persistant -> résolu au 1er poll,
+    # rend le contenu réel tel quel, et NE re-navigue PAS (garantie noVNC).
+    s = BeaconSession()
+    events = []
+    f = _sf(s, on_event=events.append, manual_solve=True, manual_solve_timeout=100,
+            solve_poll_s=0.0, clock=lambda: 0.0, should_stop=lambda: False)
+    out = f._await_manual_solve(s, "https://site.test/x")
+    assert s.gotos == 0                       # aucune re-navigation
+    assert is_challenge_html(out)             # le contenu réel (beacon inclus) est rendu tel quel
+    assert [e["type"] for e in events] == ["awaiting_manual_solve", "manual_solve_resolved"]
+
+
+def test_await_manual_solve_stop_event_carries_reason():
+    # un STOP volontaire est journalisé comme timeout AVEC reason=stopped (distinct
+    # d'un vrai timeout) et termine proprement l'état awaiting.
+    s = FlipSession(flip_after=9999)
+    events = []
+    f = _sf(s, on_event=events.append, manual_solve=True, manual_solve_timeout=100,
+            solve_poll_s=0.0, clock=lambda: 0.0, should_stop=lambda: True)
+    assert f._await_manual_solve(s, "https://site.test/x") is None
+    timeout_ev = [e for e in events if e["type"] == "manual_solve_timeout"][0]
+    assert timeout_ev.get("reason") == "stopped"

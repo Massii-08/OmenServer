@@ -363,9 +363,15 @@ class StealthFetcher:
         """Pause : garde la page ouverte, notifie, poll en LECTURE SEULE jusqu'à
         résolution / timeout / stop. Retourne le HTML résolu, ou None.
 
-        Ne navigue ni n'interagit pendant l'attente (ne se bat pas avec les clics
-        humains via noVNC) ; un seul re-goto si le titre est clean mais le corps
-        porte encore des marqueurs."""
+        Résolution = le ``<title>`` redevient réel (Cloudflare auto-navigue vers le
+        contenu après résolution du challenge). On NE re-navigue JAMAIS et on ne se
+        fie PAS à ``is_challenge_html`` ICI, pour deux raisons :
+          1. recharger la page se battrait avec les clics humains via noVNC
+             (garantie d'archi : lecture seule pendant l'attente) ;
+          2. le beacon ``/cdn-cgi/challenge-platform`` que Cloudflare injecte sur
+             TOUTES les pages d'un site protégé (même résolues) ferait
+             faux-positiver ``is_challenge_html`` -> on n'en sortirait jamais
+             (stall jusqu'au timeout) et on re-naviguerait en boucle."""
         start = self._clock()
         self._emit_event({"type": "awaiting_manual_solve", "url": url,
                           "since": start, "timeout_s": self.manual_solve_timeout})
@@ -374,15 +380,14 @@ class StealthFetcher:
             "omenserver.org".format(url))
         while self._clock() - start < self.manual_solve_timeout:
             if self._should_stop():
-                break
+                # arrêt volontaire (stop.flag) -> terminer proprement l'état
+                # awaiting (distingué du timeout dans le log via `reason`).
+                self._emit_event({"type": "manual_solve_timeout", "url": url,
+                                  "reason": "stopped"})
+                return None
             if not is_challenge(session.title()):
-                html = session.content()
-                if is_challenge_html(html):
-                    session.goto(url)       # un seul refresh post-résolution
-                    html = session.content()
-                if not is_challenge_html(html):
-                    self._emit_event({"type": "manual_solve_resolved", "url": url})
-                    return html
+                self._emit_event({"type": "manual_solve_resolved", "url": url})
+                return session.content()
             self._sleep(self.solve_poll_s)
         self._emit_event({"type": "manual_solve_timeout", "url": url})
         return None

@@ -480,6 +480,27 @@ def test_export_strips_admin_unblocker_key_from_plan(tmp_path, monkeypatch):
     assert cfg["plan"].get("unblocker_endpoint") == "https://api.zenrows.com/v1/"
 
 
+def test_export_strips_manual_solve_from_plan(tmp_path, monkeypatch):
+    # manual_solve n'a aucun sens côté client (ni dashboard, ni noVNC, ni Telegram
+    # pour résoudre) -> retiré du plan livré, sinon une cible challengée stallerait
+    # le run client jusqu'au timeout sans aucun moyen de résoudre.
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = json.loads(json.dumps(GOOD_BODY))
+    body["plan"] = {"fetch_tier": "stealth", "manual_solve": True,
+                    "manual_solve_timeout": 1800}
+    job_id = c.post("/api/bots/harvester/run", json=body).json()["job_id"]
+    r = c.post("/api/bots/harvester/export/{0}".format(job_id))
+    assert r.status_code == 200
+    import io as _io
+    import json as _json
+    import zipfile as _zip
+    cfg = _json.loads(_zip.ZipFile(_io.BytesIO(r.content)).read("config.json"))
+    assert "manual_solve" not in cfg["plan"]
+    assert "manual_solve_timeout" not in cfg["plan"]
+    # le tier furtif (non secret) reste
+    assert cfg["plan"].get("fetch_tier") == "stealth"
+
+
 # ---- faille #5 : job_id assaini (uuid hex 32) sur status/data/stop --------
 
 def test_status_rejects_malformed_job_id(tmp_path, monkeypatch):
