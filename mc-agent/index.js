@@ -58,7 +58,7 @@ const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating
 const { runResource } = require('./skills/resource');
 const { tunnelTo } = require('./skills/tunnelTo');
 const { junkItems, ITEMS_FOR } = require('./quota');
-const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES, isMinimallyArmored, shieldPlan } = require('./gear');
+const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES, bestArmorToEquip, isMinimallyArmored, shieldPlan } = require('./gear');
 // Torche tous les N paliers de branch-mine (mob-aware phase B) — best-effort : sans torche
 // en poche le minage continue sans (zéro coût en peaceful, sécurité en non-pacifique).
 const TORCH_EVERY = 8;
@@ -887,9 +887,11 @@ async function ensureArmor(opts = {}) {
   // craft ci-dessous re-fabriquerait du FER et l'équiperait PAR-DESSUS le diamant (downgrade). Slot-agnostique.
   const _SLOT_SUF = ['_helmet', '_chestplate', '_leggings', '_boots'];
   if (_SLOT_SUF.filter((suf) => [...worn].some((w) => String(w).endsWith(suf))).length >= 4) return;
-  // 1) Équiper les pièces déjà en poche mais pas portées.
-  for (const piece of ARMOR_PIECES) {
-    if (worn.has(piece.name)) continue;
+  // 1) Équiper la MEILLEURE pièce d'armure en poche par slot (TOUTE matière, jamais downgrade).
+  //    ⚠️ L'ancienne boucle ne connaissait QUE ARMOR_PIECES (fer) → un kit DIAMANT fourni restait en
+  //    poche, le bot combattait NON ARMURÉ → morts en boucle (vécu live cette nuit : ResBot2 0 armure).
+  //    bestArmorToEquip (pur, testé) couvre diamant/netherite/fer/… → on équipe le kit donné.
+  for (const piece of bestArmorToEquip(items(), worn)) {
     const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === piece.name);
     if (it) { try { await bot.equip(it, ARMOR_SLOTS[piece.slot]); worn.add(piece.name); } catch (e) {} }
   }

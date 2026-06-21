@@ -110,6 +110,47 @@ const ARMOR_PIECES = [
   { name: 'iron_chestplate', slot: 'torso', ingots: 8 },
 ];
 
+// Rang de matière d'armure (pour équiper la MEILLEURE pièce dispo par slot, jamais downgrade).
+const _ARMOR_MAT_RANK = { leather: 1, golden: 2, chainmail: 2, iron: 3, diamond: 4, netherite: 5 };
+const _ARMOR_SUFFIX_SLOT = { _helmet: 'head', _chestplate: 'torso', _leggings: 'legs', _boots: 'feet' };
+function _armorSlot(name) {
+  for (const [suf, slot] of Object.entries(_ARMOR_SUFFIX_SLOT)) if (name.endsWith(suf)) return slot;
+  return null;
+}
+function _armorRank(name) {
+  const mat = String(name).split('_')[0];
+  return _ARMOR_MAT_RANK[mat] || 0;
+}
+
+/**
+ * bestArmorToEquip(items, worn) → [{name, slot}] : pour chaque slot, la MEILLEURE pièce d'armure
+ * en poche STRICTEMENT supérieure à ce qui est déjà porté (jamais de downgrade). Sert à équiper
+ * un kit donné (ex. armure diamant fournie au lancement) — l'ancien ensureArmor ne connaissait
+ * QUE les pièces de fer (ARMOR_PIECES) → un kit diamant restait en poche, bots NON armurés = morts.
+ * Pur/testable. items=[{name,count}], worn=Set de noms portés.
+ */
+function bestArmorToEquip(items, worn) {
+  const wornSet = worn instanceof Set ? worn : new Set(worn || []);
+  // rang max actuellement porté par slot
+  const wornRank = {};
+  for (const n of wornSet) {
+    const slot = _armorSlot(n); if (slot) wornRank[slot] = Math.max(wornRank[slot] || 0, _armorRank(n));
+  }
+  // meilleure pièce en poche par slot
+  const best = {};
+  for (const it of items || []) {
+    if (!it || !it.name) continue;
+    const slot = _armorSlot(it.name); if (!slot) continue;
+    const rank = _armorRank(it.name); if (!rank) continue;
+    if (!best[slot] || rank > best[slot].rank) best[slot] = { name: it.name, rank };
+  }
+  const out = [];
+  for (const [slot, b] of Object.entries(best)) {
+    if (b.rank > (wornRank[slot] || 0)) out.push({ name: b.name, slot });
+  }
+  return out;
+}
+
 /**
  * Plan d'armure : prochaine pièce à crafter (la moins chère manquante) compte tenu des lingots
  * dispos ET d'un buffer fer à préserver pour le quota. items = [{name,count}], opts:
@@ -159,4 +200,4 @@ function shieldPlan(items, hasShield) {
   return null;
 }
 
-module.exports = { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, armorPlan, ARMOR_PIECES, isMinimallyArmored, shieldPlan };
+module.exports = { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, armorPlan, ARMOR_PIECES, bestArmorToEquip, isMinimallyArmored, shieldPlan };

@@ -21,7 +21,7 @@ const BANK_DELIVERABLES = new Set([
  *  - opts.keepIngot : réserve de iron_ingot gardée en poche pour le craft d'armure (défaut 8)
  */
 function planBank(items, target, opts = {}) {
-  const threshold = opts.threshold != null ? opts.threshold : 24;
+  const threshold = opts.threshold != null ? opts.threshold : 12;
   const keepIngot = opts.keepIngot != null ? opts.keepIngot : 8;
   // Les DIAMANTS sont rares (goulot du quota) et un bot meurt souvent avec ~7-15💎 AVANT
   // d'atteindre le seuil général → seuil BAS dédié pour banker les diamants tôt (anti-perte).
