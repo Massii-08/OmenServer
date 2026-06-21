@@ -103,12 +103,18 @@ def _build_fetcher(tier, rate, url, plan=None, run_dir=None):
         pmin, pmax = sorted((pmin, pmax))   # fenêtre toujours bien formée (min<=max)
         jitter = (functools.partial(jitter_delay, lo=pmin, hi=pmax)
                   if has_pace else jitter_delay)
+        ms = (plan.get("manual_solve") is True)   # strict : seul un vrai bool active
+        ms_timeout = _as_int(plan.get("manual_solve_timeout"), 1800, lo=30, hi=3600)
         return StealthFetcher(
             rate, warm_url=url, jitter=jitter,
             max_wait_s=_as_int(plan.get("max_wait"), 35, lo=1, hi=120),
             retries=_as_int(plan.get("retries"), 2, lo=1, hi=10),
             run_dir=run_dir, browser_opts=browser_opts,
             rewarm_every=_as_int(plan.get("rewarm_every"), 0, lo=0, hi=10000),
+            on_event=_emit,                  # events -> run.log -> router
+            manual_solve=ms,
+            manual_solve_timeout=ms_timeout,
+            notify=None,                     # câblé sur Telegram en C4
         )
     return HttpxFetcher(rate)
 

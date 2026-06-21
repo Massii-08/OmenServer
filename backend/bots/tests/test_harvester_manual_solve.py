@@ -173,3 +173,36 @@ def test_get_falls_back_to_pushback_on_solve_timeout():
         f.get("https://site.test/x")
     assert "awaiting_manual_solve" in [e["type"] for e in events]
     assert "manual_solve_timeout" in [e["type"] for e in events]
+
+
+from backend.bots.harvester.__main__ import _build_fetcher
+from backend.bots.harvester.fetch_stealth import StealthFetcher
+
+
+def test_build_fetcher_stealth_wires_manual_solve():
+    plan = {"fetch_tier": "stealth", "manual_solve": True, "manual_solve_timeout": 1200}
+    f = _build_fetcher("stealth", _rate(), "https://t.test/p", plan, "/tmp/run")
+    assert isinstance(f, StealthFetcher)
+    assert f.manual_solve is True
+    assert f.manual_solve_timeout == 1200
+    assert f._on_event is not None        # câblé sur _emit
+
+
+def test_build_fetcher_stealth_manual_solve_off_by_default():
+    f = _build_fetcher("stealth", _rate(), "https://t.test/p",
+                       {"fetch_tier": "stealth"}, "/tmp/run")
+    assert f.manual_solve is False
+
+
+def test_build_fetcher_stealth_manual_solve_strict_true():
+    # "true" (string, plan édité main) ne doit PAS activer (strict is True)
+    f = _build_fetcher("stealth", _rate(), "https://t.test/p",
+                       {"fetch_tier": "stealth", "manual_solve": "true"}, None)
+    assert f.manual_solve is False
+
+
+def test_build_fetcher_stealth_timeout_clamped():
+    f = _build_fetcher("stealth", _rate(), "https://t.test/p",
+                       {"fetch_tier": "stealth", "manual_solve": True,
+                        "manual_solve_timeout": 99999}, None)
+    assert f.manual_solve_timeout == 3600
