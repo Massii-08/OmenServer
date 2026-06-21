@@ -97,7 +97,10 @@ async function runResource(bot, opts = {}, token = null) {
   const bankOpts = opts.bankOpts || {};
   let bankFailAt = 0;            // backoff : un bank raté (pas de coffre/sol) n'est pas re-tenté en boucle
   const maxRelocations = opts.maxRelocations != null ? opts.maxRelocations : 8;
-  const maxTargetDist = opts.maxTargetDist != null ? opts.maxTargetDist : 2000;
+  // LOCAL (vécu live : voyager 600+ blocs vers des diamants mappés lointains = lent + traverse des
+  // zones humides → noyades/morts, ~0 extraction). On mine LOCAL : ores mappés proches + branchMine
+  // du deepslate sous les pieds (dense en fer/redstone/lapis). Couplé à un spawn SEC ancré (homeBase).
+  const maxTargetDist = opts.maxTargetDist != null ? opts.maxTargetDist : 256;
   // Au-delà de cette distance, une cible EXPOSÉE shallow est un piège côtier → skip (mine local profond).
   const farExposedDist = opts.farExposedDist != null ? opts.farExposedDist : 96;
   // DEEP-FIRST : en mode quota, on ignore les cibles mappées au-dessus de ce Y (couches aquifères
