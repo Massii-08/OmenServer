@@ -78,6 +78,9 @@ function parseArgs(argv) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const args = parseArgs(process.argv.slice(2));
+// Confinement arène (--confine "X Z R") : garde le bot dans R de l'ancre sèche (cf. confine.js).
+const { parseConfine, confineSpreadCommand } = require('./confine');
+const CONFINE = parseConfine(args['confine']);
 // Provider LLM enfichable : MC_AGENT_LLM=gemini (gratuit) sinon Anthropic (défaut). Cf. ./llm.js
 const provider = (process.env.MC_AGENT_LLM || 'anthropic').toLowerCase();
 const DEFAULT_MODELS = { gemini: 'gemini-2.0-flash', groq: 'llama-3.3-70b-versatile', anthropic: 'claude-haiku-4-5-20251001' };
@@ -1234,6 +1237,7 @@ async function mineForType(type, needed, opts = {}) {
 // (robuste à tout reset/déplacement de worldspawn — ex. world_dry1 = savane sèche), avec
 // fallback historique (208,528) tant que bot.spawnPoint n'est pas encore connu.
 function homeBase() {
+  if (CONFINE) return { x: CONFINE.x, z: CONFINE.z };   // ancre arène fixe (≠ spawnPoint mineflayer parfois stale)
   try {
     const sp = bot && bot.spawnPoint;
     if (sp && Number.isFinite(sp.x) && Number.isFinite(sp.z)) return { x: Math.round(sp.x), z: Math.round(sp.z) };
@@ -1266,6 +1270,15 @@ async function relocateToRegion(opts = {}) {
   // near-spawn vérifiée sèche). Au-delà → ignoré, fallback regionCenter (spawn±520, déjà borné).
   const HOME_RANGE = 800;
   const hb = homeBase();                                 // base near-spawn dynamique (= spawnPoint réel, savane sèche)
+  // CONFINEMENT arène : court-circuite TOUTE la logique de dispersion (biome/cluster/spirale/regionCenter
+  // visent 256..520 blocs = hors arène sèche). On re-spread dans R de l'ancre → le bot reste dans l'arène,
+  // re-descend, reprend le minage local. Un seul floating_relocate ne l'éjecte plus à -869 (vécu 22/06).
+  if (CONFINE) {
+    emit({ type: 'resource_warp', x: CONFINE.x, z: CONFINE.z, confined: true });
+    try { bot.chat(confineSpreadCommand(bot.username, CONFINE)); } catch (e) {}
+    await sleep(5000);
+    return;
+  }
   let c = null;
   // bug #4 / BUG PRIO 2.4 : après une NOYADE, relocaliser vers le SEC near-spawn. Le hardcodé (208,528)
   // était SUPPOSÉ sec mais TOMBE DANS L'EAU en world_fresh2 (24-36% wet) → le bot warpe hors de l'eau

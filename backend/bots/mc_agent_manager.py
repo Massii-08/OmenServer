@@ -201,7 +201,7 @@ def _pump(session, stream):
                                         autonomous=rs.get("autonomous", True),
                                         objective=rs.get("objective", "resource"),
                                         world_label=rs.get("world_label"), quota=rs.get("quota"),
-                                        humanize=rs.get("humanize", False))
+                                        humanize=rs.get("humanize", False), confine=rs.get("confine"))
                 ns = _sessions.get(new_sid)
                 if ns is not None:
                     ns["respawn_count"] = session.get("respawn_count", 0) + 1
@@ -291,7 +291,8 @@ def _rebalance_sectors(group_id):
 def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, commands=None,
                policy=None, server_id=None, language="fr", autonomous=False,
                objective="stone_pickaxe", world_label=None, login_command=None,
-               sector_index=None, sector_count=None, quota=None, stealth=False, humanize=False):
+               sector_index=None, sector_count=None, quota=None, stealth=False, humanize=False,
+               confine=None):
     """Spawn le process Node détaché et enregistre la session. Retourne son id.
 
     Point monkeypatchable des lancements par roster (start_for_bot/start_mappers).
@@ -405,6 +406,8 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
         cmd += ["--quota", str(quota_path)]
     if world_label:
         cmd += ["--world-label", str(world_label)]  # monde de minage (overworld-type séparé)
+    if confine:
+        cmd += ["--confine", str(confine)]  # arène : garder le bot dans R de l'ancre sèche (cf. confine.js)
     # Login serveur automatique : la commande résolue (avec le secret) est écrite dans un fichier
     # temp chmod 600 et passée via --login-command <path>. JAMAIS dans l'argv (anti-fuite).
     login_path = None
@@ -461,7 +464,7 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     return sid
 
 
-def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, stealth=False, humanize=True):
+def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, stealth=False, humanize=True, confine=None):
     """Lancement manuel (path historique du router + compat tests). Délègue à `_spawn_bot`.
 
     `humanize` par DÉFAUT True (paquet 1 anti-tell, décision Massii 07/06) : un bot lancé
@@ -471,7 +474,7 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
     return _spawn_bot(host, port, user, model=model, auth=auth, profile=profile,
                       commands=commands, policy=policy, server_id=server_id, language=language,
                       autonomous=autonomous, objective=objective, world_label=world_label,
-                      quota=quota, stealth=stealth, humanize=humanize)
+                      quota=quota, stealth=stealth, humanize=humanize, confine=confine)
 
 
 def _resolve_login_command(group, group_id, bot_id, secret):
@@ -500,7 +503,7 @@ def _online_usernames(group_id):
     return out
 
 
-def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, humanize=False):
+def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, humanize=False, confine=None):
     """Lance un bot du roster d'un groupe (résout connexion + compte + login + intelligence).
 
     Lève LookupError si le groupe ou le bot est introuvable, ValueError si le compte est déjà en
@@ -522,7 +525,7 @@ def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="sto
         policy=servers_store.resolve_policy(group), server_id=group_id,
         language=group.get("language", "fr"), autonomous=autonomous, objective=objective,
         world_label=world_label, model=model, login_command=login_command, quota=quota,
-        stealth=bool(group.get("stealth")), humanize=humanize,
+        stealth=bool(group.get("stealth")), humanize=humanize, confine=confine,
     )
     # Self-healing (phase 2) : mémorise QUOI respawner si le process meurt naturellement
     # (kick/Timed out/watchdog) — l'inventaire du compte persiste, le quota repart d'où il était.
@@ -530,7 +533,8 @@ def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="sto
     if sess is not None:
         sess["respawn"] = {"group_id": group_id, "bot_id": bot_id, "model": model,
                            "autonomous": autonomous, "objective": objective,
-                           "world_label": world_label, "quota": quota, "humanize": humanize}
+                           "world_label": world_label, "quota": quota, "humanize": humanize,
+                           "confine": confine}
         sess.setdefault("respawn_count", 0)
     return sid
 

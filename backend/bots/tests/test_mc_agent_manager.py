@@ -716,6 +716,35 @@ def test_start_session_passe_world_label(monkeypatch, tmp_path):
     assert "--world-label" in cmd and cmd[cmd.index("--world-label") + 1] == "mining"
 
 
+def test_start_session_passe_confine(monkeypatch, tmp_path):
+    """confine → --confine "X Z R" (arène : garder le bot près de l'ancre sèche)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+    def fake_popen(cmd, **kw):
+        cmds.append(cmd)
+        return _MapperProc()
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path / "wm")
+    mgr.start_session("h", 25565, "U", server_id="grp1", confine="-352 272 14")
+    cmd = cmds[-1]
+    assert "--confine" in cmd and cmd[cmd.index("--confine") + 1] == "-352 272 14"
+
+
+def test_start_session_sans_confine_nappend_rien(monkeypatch, tmp_path):
+    """Pas de confine → pas de --confine (rétro-compat : comportement de dispersion inchangé)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+    def fake_popen(cmd, **kw):
+        cmds.append(cmd)
+        return _MapperProc()
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path / "wm")
+    mgr.start_session("h", 25565, "U", server_id="grp1")
+    assert "--confine" not in cmds[-1]
+
+
 # ---------------------------------------------------------------------------
 # Task 6/7 : lancement par bot du roster (start_for_bot / start_mappers) +
 # login automatique (login_command, secret jamais en argv)
