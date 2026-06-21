@@ -6,6 +6,8 @@ const HarvesterModule = {
     _jobId: null,
     _feedKey: null,
     _pollInterval: null,
+    _rfb: null,
+    _rfbJob: null,
 
     _demoRecipe() {
         return JSON.stringify({
@@ -42,6 +44,7 @@ const HarvesterModule = {
 
     unload() {
         if (this._pollInterval) { clearInterval(this._pollInterval); this._pollInterval = null; }
+        this._disconnectVnc();
     },
 
     // Les tiers sont mutuellement exclusifs (un seul fetch_tier) : cocher l'un
@@ -87,6 +90,25 @@ const HarvesterModule = {
           </label>
           <div class="form-hint">${Lang.t('harvester.stealth_hint')}</div>
           <label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;font-size:14px;">
+            <input type="checkbox" id="hrv-manual-solve" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;" />
+            <span>${Lang.t('harvester.manual_solve')}</span>
+          </label>
+          <div class="form-hint">${Lang.t('harvester.manual_solve_hint')}</div>
+          <details id="hrv-tg-settings" style="margin-top:8px;border:1px solid var(--border);border-radius:var(--r-md);padding:0 12px;">
+            <summary style="cursor:pointer;padding:10px 0;font-size:13px;color:var(--text-muted);">${Lang.t('harvester.telegram_settings')} · <span id="hrv-tg-status" style="color:var(--text-dim);">—</span></summary>
+            <div style="padding-bottom:12px;">
+              <label class="form-label">${Lang.t('harvester.telegram_token')}</label>
+              <input id="hrv-tg-token" class="form-input" type="password" autocomplete="off" placeholder="${Lang.t('harvester.telegram_token_ph')}" />
+              <label class="form-label">${Lang.t('harvester.telegram_chatid')}</label>
+              <input id="hrv-tg-chatid" class="form-input" placeholder="123456789" />
+              <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <button class="btn btn-sm btn-primary" onclick="HarvesterModule.saveTelegramConfig()">${Lang.t('harvester.telegram_save')}</button>
+                <button class="btn btn-sm btn-ghost" onclick="HarvesterModule.clearTelegramConfig()">${Lang.t('harvester.telegram_clear')}</button>
+                <span id="hrv-tg-msg" style="font-size:12px;color:var(--text-dim);"></span>
+              </div>
+            </div>
+          </details>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;font-size:14px;">
             <input type="checkbox" id="hrv-unblocker" onchange="HarvesterModule._exclusiveTier('unblocker')" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;" />
             <span>${Lang.t('harvester.unblocker')}</span>
           </label>
@@ -128,6 +150,7 @@ const HarvesterModule = {
           </div>
         </div>`;
         this._loadUnblockerConfig();   // pré-remplit l'état (clé masquée) du débloqueur
+        this._loadTelegramConfig();    // pré-remplit l'état (token masqué) Telegram
     },
 
     async _loadUnblockerConfig() {
@@ -183,6 +206,45 @@ const HarvesterModule = {
         const msg = document.getElementById('hrv-unb-msg');
         if (msg) msg.textContent = '';
         this._loadUnblockerConfig();
+    },
+
+    async _loadTelegramConfig() {
+        try {
+            const r = await Auth.apiCall('/api/bots/harvester/telegram-config');
+            if (!r || !r.ok) return;
+            const d = await r.json();
+            const chat = document.getElementById('hrv-tg-chatid');
+            if (chat) chat.value = d.chat_id || '';
+            const status = document.getElementById('hrv-tg-status');
+            if (status) {
+                status.textContent = d.configured
+                    ? (Lang.t('harvester.telegram_configured') + (d.token_masked ? ' · ' + d.token_masked : ''))
+                    : Lang.t('harvester.telegram_notconfigured');
+            }
+        } catch (e) { /* ignore */ }
+    },
+
+    async saveTelegramConfig() {
+        const v = id => ((document.getElementById(id) || {}).value || '');
+        const body = { token: v('hrv-tg-token'), chat_id: v('hrv-tg-chatid').trim() };
+        const msg = document.getElementById('hrv-tg-msg');
+        const r = await Auth.apiCall('/api/bots/harvester/telegram-config', {
+            method: 'POST', body: JSON.stringify(body),
+        });
+        if (!r || !r.ok) { if (msg) msg.textContent = 'Error'; return; }
+        const tok = document.getElementById('hrv-tg-token');
+        if (tok) tok.value = '';                 // ne jamais garder le token en clair
+        if (msg) msg.textContent = Lang.t('harvester.telegram_saved');
+        this._loadTelegramConfig();
+    },
+
+    async clearTelegramConfig() {
+        await Auth.apiCall('/api/bots/harvester/telegram-config/clear', { method: 'POST' });
+        const tok = document.getElementById('hrv-tg-token');
+        if (tok) tok.value = '';
+        const msg = document.getElementById('hrv-tg-msg');
+        if (msg) msg.textContent = '';
+        this._loadTelegramConfig();
     },
 
     async generate() {
@@ -247,6 +309,10 @@ const HarvesterModule = {
             else delete plan.fetch_tier;
             if (dedupeEl && dedupeEl.checked) plan.dedupe = true;
             else delete plan.dedupe;
+            const manualEl = document.getElementById('hrv-manual-solve');
+            // manual_solve n'a de sens qu'en stealth ; envoyé seulement si coché.
+            if (manualEl && manualEl.checked && plan.fetch_tier === 'stealth') plan.manual_solve = true;
+            else delete plan.manual_solve;
         }
         const url = document.getElementById('hrv-url').value.trim();
         const r = await Auth.apiCall('/api/bots/harvester/run', {
@@ -279,6 +345,14 @@ const HarvesterModule = {
             <span class="badge online" id="hrv-status" style="margin-left:6px;">running</span>
           </div>
           <div id="hrv-reco" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:var(--r-md);background:var(--bg-elev-3);border:1px solid var(--warning);color:var(--text);font-size:13px;"></div>
+          <div id="hrv-solve" style="display:none;margin-bottom:12px;padding:12px;border-radius:var(--r-md);background:var(--bg-elev-3);border:1px solid var(--accent);color:var(--text);font-size:13px;">
+            <div style="font-weight:600;margin-bottom:4px;">${Lang.t('harvester.awaiting_title')}</div>
+            <div id="hrv-solve-hint" style="color:var(--text-muted);">${Lang.t('harvester.awaiting_hint')}</div>
+            <div id="hrv-solve-host" style="margin-top:10px;border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;background:#000;min-height:200px;"></div>
+            <div style="margin-top:8px;">
+              <button class="btn btn-sm btn-ghost" onclick="HarvesterModule.resumeSolve()">${Lang.t('harvester.solve_resume')}</button>
+            </div>
+          </div>
           <div class="bento-overview" style="margin-bottom:12px;">
             <div class="stat-card"><div class="stat-label">${Lang.t('harvester.records')}</div><div class="stat-value" id="hrv-records">${counts.records || 0}</div></div>
             <div class="stat-card"><div class="stat-label">${Lang.t('harvester.pages_done')}</div><div class="stat-value" id="hrv-done">${counts.done || 0}</div></div>
@@ -342,6 +416,17 @@ const HarvesterModule = {
                     recoEl.style.display = 'none';
                 }
             }
+            // Résolution manuelle : un CAPTCHA bloque -> bandeau + vue live noVNC.
+            const solveEl = document.getElementById('hrv-solve');
+            if (solveEl) {
+                if (data.awaiting_solve && data.status === 'running') {
+                    solveEl.style.display = '';
+                    this._connectVnc(this._jobId);     // embarque la vue live noVNC
+                } else {
+                    solveEl.style.display = 'none';
+                    this._disconnectVnc();             // résolu/terminé -> coupe le RFB
+                }
+            }
             const st = document.getElementById('hrv-status');
             if (st) {
                 st.textContent = data.status;
@@ -357,10 +442,47 @@ const HarvesterModule = {
         } catch (e) { /* ignore */ }
     },
 
+    async _connectVnc(jobId) {
+        // déjà connecté à ce job -> rien
+        if (this._rfb && this._rfbJob === jobId) return;
+        this._disconnectVnc();
+        const host = document.getElementById('hrv-solve-host');
+        if (!host) return;
+        host.innerHTML = '';
+        const token = Auth.getToken();
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        const url = proto + '://' + location.host + '/api/bots/harvester/vnc/' +
+            encodeURIComponent(jobId) + '?token=' + encodeURIComponent(token || '');
+        try {
+            const mod = await import('/js/vendor/novnc/core/rfb.js');
+            const RFB = mod.default;
+            this._rfb = new RFB(host, url);
+            this._rfb.viewOnly = false;          // tu cliques/résous le CAPTCHA
+            this._rfb.scaleViewport = true;
+            this._rfbJob = jobId;
+        } catch (e) {
+            host.textContent = Lang.t('harvester.solve_connecting');
+        }
+    },
+
+    _disconnectVnc() {
+        if (this._rfb) {
+            try { this._rfb.disconnect(); } catch (e) { /* ignore */ }
+            this._rfb = null;
+        }
+        this._rfbJob = null;
+    },
+
+    resumeSolve() {
+        // force un re-poll immédiat (UX de secours ; la résolution est auto-détectée)
+        this._poll();
+    },
+
     async stop() {
         if (!this._jobId) return;
         await Auth.apiCall(`/api/bots/harvester/stop/${this._jobId}`, { method: 'POST' });
         if (this._pollInterval) { clearInterval(this._pollInterval); this._pollInterval = null; }
+        this._disconnectVnc();
     },
 
     async viewData() {
