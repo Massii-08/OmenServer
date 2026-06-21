@@ -798,6 +798,41 @@ async function makeRoomInPlace(b) {
   } catch (e) { /* best-effort, jamais throw */ }
 }
 
+// BANK-EN-PLACE (no-keepInventory) : pose un coffre adjacent, dépose la liste de LIVRABLES décidée par
+// resource.js (planBank), renvoie {ok, before, after, pos}. resource.js crédite tracker.noteBanked avec
+// before/after → le compte tient même quand l'inventaire est vidé. Le coffre est LAISSÉ sur place (les
+// items doivent survivre aux morts — c'est tout l'intérêt). Best-effort : un échec ne casse jamais le run.
+async function bankDeposit(depositList) {
+  const snap = () => ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, count: i.count }));
+  const hasChest = () => ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'chest');
+  if (!hasChest()) {
+    // Re-craft un coffre (8 planches) si possible ; sinon abandon propre (le run continue sans banker).
+    const items = (bot.inventory && bot.inventory.items()) || [];
+    const planks = items.filter((i) => i.name.endsWith('_planks')).reduce((a, i) => a + i.count, 0);
+    if (planks < 8) {
+      const log = items.find((i) => i.name.endsWith('_log'));
+      if (log) { try { await craftSmart({ name: log.name.replace('_log', '_planks'), count: 2 }); } catch (e) {} }
+    }
+    try { await craftSmart({ name: 'chest', count: 1 }); } catch (e) {}
+    if (!hasChest()) return { ok: false, reason: 'no_chest_item' };
+  }
+  let place;
+  try { place = await placeBlockNear(bot, 'chest'); } catch (e) { return { ok: false, reason: 'place_exception' }; }
+  if (!place || !place.ok) return { ok: false, reason: 'place_failed:' + ((place && place.reason) || '?') };
+  try { await waitForBlock(place.pos, 'chest', 3000); } catch (e) {}
+  await sleep(300);
+  const before = snap();
+  let chest;
+  try { chest = await bot.openContainer(bot.blockAt(place.pos)); }
+  catch (e) { return { ok: false, reason: 'open_failed', pos: place.pos }; }
+  for (const d of depositList || []) {
+    const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === d.name);
+    if (it) { try { await chest.deposit(it.type, null, Math.min(d.count, it.count)); } catch (e) { /* slot plein/désync */ } }
+  }
+  try { chest.close(); } catch (e) {}
+  return { ok: true, before, after: snap(), pos: place.pos };
+}
+
 // Quota --quota <path> : {type: n} (JSON, validé par quota.normalizeQuota côté runResource).
 function loadQuota() {
   if (!args.quota) return null;
@@ -1463,6 +1498,7 @@ async function startResource() {
     quota,
     claims,
     reloadMemory,
+    bank: quota ? bankDeposit : null,
     cleanup: quota ? makeRoomInPlace : null,
     mineFor: quota ? mineForType : null,
     relocate: quota ? relocateToRegion : null,

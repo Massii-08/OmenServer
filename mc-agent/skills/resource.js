@@ -18,6 +18,7 @@ const { nextOreTarget, oreKey, listOres, isWaterAdjacent } = require('../ores');
 const { bestToolFor } = require('../tools');
 const { isOre } = require('../worldMemory');
 const { createQuotaTracker } = require('../quota');
+const { planBank } = require('../bank');
 const { TIER_FOR, mostLackingType } = require('../gear');
 
 let vec3; try { vec3 = require('vec3'); } catch (e) { vec3 = null; }
@@ -88,6 +89,13 @@ async function runResource(bot, opts = {}, token = null) {
   const mineFor = opts.mineFor || null;
   const relocate = opts.relocate || null;
   const ensureGear = opts.ensureGear || null;
+  // BANK-EN-PLACE (no-keepInventory) : pose un coffre + dépose les LIVRABLES (diamant/redstone/lapis/
+  // lingots) quand on en porte trop → une mort n'efface plus la progression (vécu live ResBot3 :
+  // 5💎+23🔴 perdus à une noyade). opts.bank(depositList) pose+dépose et retourne {ok,before,after} ;
+  // ICI on décide QUAND (planBank, pur+testé) et on crédite le compte (tracker.noteBanked).
+  const bank = opts.bank || null;
+  const bankOpts = opts.bankOpts || {};
+  let bankFailAt = 0;            // backoff : un bank raté (pas de coffre/sol) n'est pas re-tenté en boucle
   const maxRelocations = opts.maxRelocations != null ? opts.maxRelocations : 8;
   const maxTargetDist = opts.maxTargetDist != null ? opts.maxTargetDist : 2000;
   // DEEP-FIRST : en mode quota, on ignore les cibles mappées au-dessus de ce Y (couches aquifères
@@ -135,6 +143,26 @@ async function runResource(bot, opts = {}, token = null) {
       emit({ type: 'quota_done', mined });
       emit({ type: 'resource_done', mined });
       return { ok: true, mined, done: true };
+    }
+
+    // BANK-EN-PLACE : on porte trop de livrables → dépose-les en coffre sur place (anti-perte à la mort).
+    // Décision PURE (planBank) ; backoff 2 min sur échec (pas de coffre item / sol impossible).
+    if (bank && tracker && clock() - bankFailAt > 120000) {
+      const plan = planBank(_items(bot), tracker.target, bankOpts);
+      if (plan.shouldBank) {
+        try {
+          const r = await bank(plan.deposit);
+          if (r && r.ok) {
+            tracker.noteBanked(r.before, r.after);
+            emit({ type: 'resource_bank', ok: true, deposited: plan.deposit, pos: r.pos || null });
+            emitProgress();
+          } else {
+            bankFailAt = clock();
+            emit({ type: 'resource_bank', ok: false, reason: (r && r.reason) || 'unknown' });
+          }
+        } catch (e) { bankFailAt = clock(); emit({ type: 'resource_bank', ok: false, reason: 'exception' }); }
+        if (token && token.cancelled) return { ok: true, mined, cancelled: true };
+      }
     }
 
     const from = bot.entity && bot.entity.position;
