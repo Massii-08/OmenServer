@@ -137,6 +137,19 @@ def _interact(session: "BrowserSession") -> None:
             pass
 
 
+def _click_challenge(session) -> bool:
+    """Best-effort : demande à la session de cliquer la case Turnstile au centre.
+    Tolère une session sans ``click_turnstile`` (comme ``_interact``). NE RÉSOUT
+    RIEN — un vrai navigateur valide le clic. True si un widget a été cliqué."""
+    fn = getattr(session, "click_turnstile", None)
+    if callable(fn):
+        try:
+            return bool(fn())
+        except Exception:  # noqa: BLE001 — best-effort
+            return False
+    return False
+
+
 class BrowserSession(typing.Protocol):
     """Minimal browser surface the StealthFetcher drives."""
 
@@ -149,6 +162,8 @@ class BrowserSession(typing.Protocol):
     def interact(self) -> None: ...  # human behavioural noise (mouse/scroll)
 
     def screenshot(self, path: str) -> None: ...  # diagnostic au blocage
+
+    def click_turnstile(self) -> bool: ...  # auto-click case (best-effort, optionnel)
 
 
 class StealthFetcher:
@@ -199,6 +214,7 @@ class StealthFetcher:
                     os.path.join(run_dir, "blocks", "block-*.html")))
             except Exception:  # noqa: BLE001
                 pass
+        self._attempt_error = None  # cause du dernier essai (A/B)
 
     def _ensure_session(self) -> "BrowserSession":
         """Return the injected session, or lazily build the real patchright one
@@ -260,24 +276,44 @@ class StealthFetcher:
 
         last_error: Optional[str] = None
         for _ in range(self.retries):
-            session.goto(url)
-            _interact(session)  # N1: look human before reading the DOM
-            if self._wait_resolved(session):
-                html = session.content()
-                # B: even if the title cleared, the body may still be an
-                # interstitial / Turnstile -> never accept it as content.
-                if not is_challenge_html(html):
-                    return html
-                last_error = "challenge markers in body"
-            else:
-                last_error = "Cloudflare challenge unresolved"
+            html = self._attempt(session, url)
+            if html is not None:
+                return html
+            last_error = self._attempt_error
             # cookie may have gone cold -> re-warm before the next attempt.
             self._warmed = False
             self._warm(session)
 
         self._dump_block(session, url)  # diagnostic : screenshot + HTML au blocage
-        # PushbackError (sous-classe de FetchError) -> l'engine recule (pacer)
-        # et réessaie l'URL au lieu de la marteler ou de l'abandonner sèchement.
+        return self._raise_block(url, last_error)
+
+    def _attempt(self, session: "BrowserSession", url: str):
+        """Un essai : goto + bruit + attente ; si le challenge persiste, auto-click
+        GÉNÉRIQUE de la case puis ré-attente. Retourne le HTML propre, ou None.
+        Mémorise la cause dans ``self._attempt_error``."""
+        session.goto(url)
+        _interact(session)  # N1: look human before reading the DOM
+        if self._wait_resolved(session):
+            html = session.content()
+            # B: même si le titre est clean, le corps peut rester un
+            # interstitiel / Turnstile -> ne jamais l'accepter comme contenu.
+            if not is_challenge_html(html):
+                self._attempt_error = None
+                return html
+            self._attempt_error = "challenge markers in body"
+        else:
+            self._attempt_error = "Cloudflare challenge unresolved"
+        # A: challenge persiste -> auto-click générique de la case + ré-attente.
+        if _click_challenge(session) and self._wait_resolved(session):
+            html = session.content()
+            if not is_challenge_html(html):
+                self._attempt_error = None
+                return html
+        return None
+
+    def _raise_block(self, url: str, last_error):
+        """Lève PushbackError (sous-classe de FetchError) -> l'engine recule
+        (pacer) et réessaie l'URL au lieu de la marteler. Surchargé en B."""
         raise PushbackError(
             "GET {0} blocked: {1}".format(url, last_error), retry_after=None)
 
@@ -385,6 +421,29 @@ class PatchrightBrowserSession:
             self._page.wait_for_timeout(random.randint(150, 500))
         except Exception:  # noqa: BLE001 — best-effort behavioural noise
             pass
+
+    def click_turnstile(self) -> bool:
+        """Localise le widget Turnstile / l'iframe challenge et clique AU CENTRE
+        (bounding box). Ne touche JAMAIS l'intérieur de l'iframe (sélecteur
+        obfusqué) -> robuste & générique. NE RÉSOUT RIEN. True si trouvé+cliqué.
+        Best-effort : toute erreur -> False (jamais de crash de fetch)."""
+        self._ensure()
+        try:
+            for sel in (".cf-turnstile",
+                        "iframe[src*='challenges.cloudflare.com']",
+                        "iframe[title*='challenge' i]"):
+                loc = self._page.locator(sel).first
+                if loc.count() == 0:
+                    continue
+                box = loc.bounding_box()
+                if not box:
+                    continue
+                self._page.mouse.click(box["x"] + box["width"] / 2.0,
+                                       box["y"] + box["height"] / 2.0)
+                return True
+        except Exception:  # noqa: BLE001 — best-effort, jamais fatal
+            return False
+        return False
 
     def close(self) -> None:
         """Close the context and stop playwright (best-effort)."""
