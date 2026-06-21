@@ -21,11 +21,13 @@ const BANK_DELIVERABLES = new Set([
  *  - opts.keepIngot : réserve de iron_ingot gardée en poche pour le craft d'armure (défaut 8)
  */
 function planBank(items, target, opts = {}) {
-  const threshold = opts.threshold != null ? opts.threshold : 12;
+  // Seuil BAS (vécu live : les bots meurent — noyade aquifère deepslate, lave — AVANT d'accumuler 12,
+  // donc le banking ne se déclenchait jamais et chaque mort remettait tout à 0). Banker tôt = la
+  // progression survit aux morts ; le surcoût (pose de coffre tous les 6 items) est négligeable vs
+  // perdre 8-12 items à chaque mort. Diamants (rares) bankés encore plus tôt (3).
+  const threshold = opts.threshold != null ? opts.threshold : 6;
   const keepIngot = opts.keepIngot != null ? opts.keepIngot : 8;
-  // Les DIAMANTS sont rares (goulot du quota) et un bot meurt souvent avec ~7-15💎 AVANT
-  // d'atteindre le seuil général → seuil BAS dédié pour banker les diamants tôt (anti-perte).
-  const diamondThreshold = opts.diamondThreshold != null ? opts.diamondThreshold : 6;
+  const diamondThreshold = opts.diamondThreshold != null ? opts.diamondThreshold : 3;
 
   // Agrège les livrables portés par nom.
   const carried = {};

@@ -10,7 +10,8 @@ function inv(map) {
 }
 
 test('planBank: rien à banker quand on porte peu de minerai livrable', () => {
-  const r = planBank(inv({ diamond: 3, cobblestone: 40 }), TARGET);
+  // 2 diamants < diamondThreshold(3) ET < threshold(6) → pas de bank
+  const r = planBank(inv({ diamond: 2, cobblestone: 40 }), TARGET);
   assert.strictEqual(r.shouldBank, false);
   assert.deepStrictEqual(r.deposit, []);
 });
