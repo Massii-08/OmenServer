@@ -426,6 +426,60 @@ def test_unblocker_config_clear(tmp_path, monkeypatch):
     assert uc.load(p) == {}
 
 
+# ---- P4 : export client (zip standalone) ----------------------------------
+
+def test_export_refuses_non_admin(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch, is_admin=False)
+    job_id = "whatever"
+    assert c.post("/api/bots/harvester/export/{0}".format(job_id)).status_code == 403
+
+
+def test_export_unknown_job_404(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.post("/api/bots/harvester/export/nope").status_code == 404
+
+
+def test_export_returns_standalone_zip(tmp_path, monkeypatch):
+    import io
+    import zipfile
+    c, _ = make_client(tmp_path, monkeypatch)
+    resp = c.post("/api/bots/harvester/run", json=GOOD_BODY).json()
+    job_id, server_key = resp["job_id"], resp["feed_key"]
+    r = c.post("/api/bots/harvester/export/{0}".format(job_id))
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
+    assert "attachment" in r.headers.get("content-disposition", "")
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    names = set(z.namelist())
+    assert "config.json" in names and "serve.py" in names
+    assert "backend/bots/harvester/engine.py" in names
+    import json as _json
+    cfg = _json.loads(z.read("config.json"))
+    assert cfg["url"] == GOOD_BODY["url"]
+    # le client reçoit sa PROPRE clé de feed, pas celle du serveur
+    assert cfg["feed_key"] and cfg["feed_key"] != server_key
+
+
+def test_export_strips_admin_unblocker_key_from_plan(tmp_path, monkeypatch):
+    # 🔒 si un job a une clé débloqueur DANS le plan (override par-run), elle ne
+    # doit PAS partir dans le zip livré au client.
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = json.loads(json.dumps(GOOD_BODY))
+    body["plan"] = {"fetch_tier": "unblocker", "unblocker_key": "ADMINSECRETKEY",
+                    "unblocker_endpoint": "https://api.zenrows.com/v1/"}
+    job_id = c.post("/api/bots/harvester/run", json=body).json()["job_id"]
+    r = c.post("/api/bots/harvester/export/{0}".format(job_id))
+    assert r.status_code == 200
+    assert b"ADMINSECRETKEY" not in r.content       # la clé admin ne fuit pas
+    import io as _io
+    import json as _json
+    import zipfile as _zip
+    cfg = _json.loads(_zip.ZipFile(_io.BytesIO(r.content)).read("config.json"))
+    assert "unblocker_key" not in cfg["plan"]
+    # l'endpoint (non secret) reste, pour que le client sache quel provider viser
+    assert cfg["plan"].get("unblocker_endpoint") == "https://api.zenrows.com/v1/"
+
+
 # ---- faille #5 : job_id assaini (uuid hex 32) sur status/data/stop --------
 
 def test_status_rejects_malformed_job_id(tmp_path, monkeypatch):

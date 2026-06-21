@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel
 
 from backend.auth.models import User
@@ -34,6 +34,7 @@ from backend.bots.harvester.recipe import Recipe
 from backend.bots.harvester.setup import build_setup
 from backend.bots.harvester.store import Store
 from backend.bots.harvester import unblocker_config
+from backend.bots.harvester import exporter
 
 logger = logging.getLogger(__name__)
 
@@ -543,6 +544,39 @@ def clear_unblocker_config(current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
     unblocker_config.clear()
     return {"configured": False}
+
+
+@router.post("/export/{job_id}")
+def export_harvester(job_id: str, current_user: User = Depends(get_current_user)):
+    """Génère le package client STANDALONE (zip) à partir d'un harvest validé :
+    moteur déterministe + config figée + serveur de feed privé. Le client reçoit
+    sa PROPRE clé de feed (jamais celle du serveur). Admin-only, zéro IA."""
+    _require_admin(current_user)
+    run_dir = _run_dir(job_id)
+    if not (run_dir / "config.json").is_file():
+        raise HTTPException(status_code=404, detail="Harvest introuvable")
+    cfg = HarvestConfig.load(str(run_dir))
+    # garde no-PII (défensive) sur la recette livrée
+    for name in cfg.recipe.field_names():
+        if name.lower() in PII_FIELDS:
+            raise HTTPException(
+                status_code=400,
+                detail="Recette PII, export refusé: '{0}'".format(name))
+    # 🔒 ne JAMAIS livrer la clé débloqueur de l'admin au client (si posée dans le
+    # plan par-run) — le client met la SIENNE via .env (cf. .env.example du zip).
+    safe_plan = {k: v for k, v in (cfg.plan or {}).items() if k != "unblocker_key"}
+    client_config = {
+        "url": cfg.url,
+        "recipe": cfg.recipe.to_dict(),
+        "plan": safe_plan,
+        "pacing": cfg.pacing,
+        "feed_key": secrets.token_urlsafe(24),   # clé dédiée au client
+    }
+    blob = exporter.build_export(client_config)
+    return Response(
+        content=blob, media_type="application/zip",
+        headers={"Content-Disposition":
+                 'attachment; filename="harvest-{0}.zip"'.format(job_id[:8])})
 
 
 def _disk_counts(job_id: str) -> Optional[Dict[str, int]]:
