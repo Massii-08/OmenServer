@@ -4,6 +4,7 @@
 Admin-only (gate backend strict is_admin) sauf /data qui est gated par la clé
 de feed par-harvest (header X-Feed-Key) — c'est l'API privée consommable par un
 client externe."""
+import asyncio
 import csv
 import errno
 import io
@@ -21,12 +22,13 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, WebSocket
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel
 
 from backend.auth.models import User
-from backend.auth.utils import get_current_user
+from backend.auth.utils import get_current_user, decode_token
+from backend.database import SessionLocal
 from backend.bots.harvester.config import HarvestConfig
 from backend.bots.harvester.llm import _claude
 from backend.bots.harvester.policy import PII_FIELDS
@@ -63,6 +65,52 @@ _JOB_ID_RE = re.compile(r"\A[0-9a-f]{32}\Z")
 def _check_job_id(job_id: str) -> None:
     if not _JOB_ID_RE.match(job_id or ""):
         raise HTTPException(status_code=404, detail="Job introuvable")
+
+
+# --- D : bridge VNC (vue live du CAPTCHA) ---------------------------------
+
+# Socket Unix d'x11vnc (-display :100). Aucun port TCP : accès gouverné par les
+# perms du socket (user omenserver) + le JWT admin du bridge. Surchargeable env.
+HARVESTER_VNC_SOCK = os.environ.get(
+    "HARVESTER_VNC_SOCK", "/run/omen-harvester-vnc/vnc.sock")
+
+
+def _ws_admin_from_token(token):
+    """Décode le JWT (?token=) -> User admin, ou None. Réutilise le pattern WS du
+    projet (game_server/websocket.py). Toute erreur -> None (refus sûr)."""
+    try:
+        payload = decode_token(token)
+        if not payload:
+            return None
+        username = payload.get("sub")
+        if not username:
+            return None
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.username == username).first()
+        finally:
+            db.close()
+        if user and getattr(user, "is_admin", False):
+            return user
+        return None
+    except Exception:  # noqa: BLE001 — refus sûr
+        return None
+
+
+def _vnc_authorize(token, job_id, admin_fn=None):
+    """Décision d'autorisation du bridge VNC (PURE -> testable sans WS).
+    Retourne (ok: bool, reason). Exige : admin + job_id valide + job en attente
+    de résolution manuelle (n'ouvre JAMAIS le bureau arbitrairement)."""
+    if admin_fn is None:
+        admin_fn = _ws_admin_from_token
+    if not token or not admin_fn(token):
+        return False, "auth"
+    if not _JOB_ID_RE.match(job_id or ""):
+        return False, "job_id"
+    job = _harvester_jobs.get(job_id) or _job_from_disk(str(_run_dir(job_id)), job_id)
+    if not job or not _job_awaiting(job):
+        return False, "not_awaiting"
+    return True, "ok"
 
 
 class RunRequest(BaseModel):
