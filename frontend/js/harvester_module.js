@@ -348,7 +348,7 @@ const HarvesterModule = {
           <div id="hrv-solve" style="display:none;margin-bottom:12px;padding:12px;border-radius:var(--r-md);background:var(--bg-elev-3);border:1px solid var(--accent);color:var(--text);font-size:13px;">
             <div style="font-weight:600;margin-bottom:4px;">${Lang.t('harvester.awaiting_title')}</div>
             <div id="hrv-solve-hint" style="color:var(--text-muted);">${Lang.t('harvester.awaiting_hint')}</div>
-            <div id="hrv-solve-host" style="margin-top:10px;border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;background:#000;min-height:200px;"></div>
+            <div id="hrv-solve-host" style="margin-top:10px;border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;background:#000;width:100%;aspect-ratio:16 / 9;"></div>
             <div style="margin-top:8px;">
               <button class="btn btn-sm btn-ghost" onclick="HarvesterModule.resumeSolve()">${Lang.t('harvester.solve_resume')}</button>
             </div>
@@ -464,6 +464,13 @@ const HarvesterModule = {
             // nullifie _rfb pour que le prochain poll retente (sinon le garde
             // _rfbJob===jobId bloquerait toute reconnexion pour ce job).
             this._rfb.addEventListener('disconnect', () => { this._rfb = null; this._rfbJob = null; });
+            // au connect, le conteneur a sa taille définie (aspect-ratio) -> on
+            // force noVNC à recalculer l'échelle, sinon il a mesuré le conteneur
+            // AVANT le layout (hauteur 0) et dimensionne le canvas à 0x0 = canvas
+            // invisible = écran noir alors que le buffer a bien l'image.
+            this._rfb.addEventListener('connect', () => {
+                setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
+            });
         } catch (e) {
             host.textContent = Lang.t('harvester.solve_connecting');
         }
