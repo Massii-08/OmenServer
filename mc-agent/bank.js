@@ -23,6 +23,9 @@ const BANK_DELIVERABLES = new Set([
 function planBank(items, target, opts = {}) {
   const threshold = opts.threshold != null ? opts.threshold : 24;
   const keepIngot = opts.keepIngot != null ? opts.keepIngot : 8;
+  // Les DIAMANTS sont rares (goulot du quota) et un bot meurt souvent avec ~7-15💎 AVANT
+  // d'atteindre le seuil général → seuil BAS dédié pour banker les diamants tôt (anti-perte).
+  const diamondThreshold = opts.diamondThreshold != null ? opts.diamondThreshold : 6;
 
   // Agrège les livrables portés par nom.
   const carried = {};
@@ -42,7 +45,9 @@ function planBank(items, target, opts = {}) {
     if (n > 0) deposit.push({ name, count: n });
   }
 
-  const shouldBank = totalDeliverable >= threshold && deposit.length > 0;
+  const carriedDiamonds = carried.diamond || 0;
+  const trigger = totalDeliverable >= threshold || carriedDiamonds >= diamondThreshold;
+  const shouldBank = trigger && deposit.length > 0;
   return { shouldBank, deposit: shouldBank ? deposit : [] };
 }
 

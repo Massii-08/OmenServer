@@ -98,6 +98,8 @@ async function runResource(bot, opts = {}, token = null) {
   let bankFailAt = 0;            // backoff : un bank raté (pas de coffre/sol) n'est pas re-tenté en boucle
   const maxRelocations = opts.maxRelocations != null ? opts.maxRelocations : 8;
   const maxTargetDist = opts.maxTargetDist != null ? opts.maxTargetDist : 2000;
+  // Au-delà de cette distance, une cible EXPOSÉE shallow est un piège côtier → skip (mine local profond).
+  const farExposedDist = opts.farExposedDist != null ? opts.farExposedDist : 96;
   // DEEP-FIRST : en mode quota, on ignore les cibles mappées au-dessus de ce Y (couches aquifères
   // 1.18, y>0 = noyade/floating mortels live) → descente forcée vers le deepslate SEC (diamants inclus).
   const deepQuotaY = opts.deepQuotaY != null ? opts.deepQuotaY : 0;
@@ -203,6 +205,18 @@ async function runResource(bot, opts = {}, token = null) {
     // grotte est visible/minable direct (cible prioritaire), pas une couche d'eau à fuir. Seuls les
     // ores ENTERRÉS shallow sont nulls → mineFor descend vers le deepslate sec.
     if (tracker && target && typeof target.y === 'number' && target.y > deepQuotaY && mineFor && !target.exposed) target = null;
+    // ANTI-PIÈGE CÔTIER (vécu live cette nuit : ResBot1 mort en cavant vers un diamant exposé y=1 à
+    // 564,-464 = falaise océan → noyade/mobs de surface + long voyage non sûr). Une cible EXPOSÉE mais
+    // SHALLOW (y>deepQuotaY) ET LOINTAINE est un piège : on la SKIP → mineFor descend miner du deepslate
+    // SEC localement. Les exposés PROCHES (≤farExposedDist) restent grabbables (peu risqués).
+    if (tracker && target && target.exposed && mineFor && typeof target.y === 'number' && target.y > deepQuotaY && from) {
+      const dx = target.x - from.x, dz = target.z - from.z;
+      if (dx * dx + dz * dz > farExposedDist * farExposedDist) {
+        emit({ type: 'skip_coastal', x: target.x, y: target.y, z: target.z });
+        skip.add(oreKey(target));
+        target = null;
+      }
+    }
 
     if (!target) {
       if (!reload && !mineFor) break;                  // legacy : carte épuisée → done

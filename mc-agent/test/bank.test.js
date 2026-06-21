@@ -72,6 +72,26 @@ test('planBank: keepIngot ne laisse rien à déposer en fer → pas dans la list
   assert.ok(names.includes('diamond'));
 });
 
+test('planBank: les DIAMANTS (rares, goulot) déclenchent à un seuil BAS dédié', () => {
+  // 6 diamants seuls (< threshold général 16) déclenchent quand même : diamondThreshold=6.
+  // Un bot meurt souvent avec ~7-15 diamants AVANT d'atteindre 16 livrables → on banke tôt.
+  const r = planBank(inv({ diamond: 6 }), TARGET, { threshold: 16, diamondThreshold: 6 });
+  assert.strictEqual(r.shouldBank, true);
+  assert.deepStrictEqual(r.deposit, [{ name: 'diamond', count: 6 }]);
+});
+
+test('planBank: 4 diamants seuls (< diamondThreshold) ne déclenchent pas', () => {
+  const r = planBank(inv({ diamond: 4 }), TARGET, { threshold: 16, diamondThreshold: 6 });
+  assert.strictEqual(r.shouldBank, false);
+});
+
+test('planBank: redstone/lapis seuls suivent le seuil GÉNÉRAL (pas le diamant)', () => {
+  // 10 redstone < threshold 16 → pas de bank (pas de diamant pour forcer)
+  assert.strictEqual(planBank(inv({ redstone: 10 }), TARGET, { threshold: 16, diamondThreshold: 6 }).shouldBank, false);
+  // 18 redstone ≥ 16 → bank
+  assert.strictEqual(planBank(inv({ redstone: 18 }), TARGET, { threshold: 16, diamondThreshold: 6 }).shouldBank, true);
+});
+
 test('BANK_DELIVERABLES expose la liste des items livrables (pas de brut)', () => {
   assert.ok(BANK_DELIVERABLES.has('diamond'));
   assert.ok(BANK_DELIVERABLES.has('iron_ingot'));
