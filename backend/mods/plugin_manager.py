@@ -108,16 +108,23 @@ def install_plugin(docker_id: str, download_url: str, filename: str) -> str:
     import tarfile
     import io
 
+    # Sécurité: empêcher le tar member traversal (le filename vient du client).
+    safe_name = os.path.basename(filename)
+    if not safe_name or "/" in filename or ".." in filename:
+        raise ValueError("Nom de fichier invalide")
+
     try:
         # 1. Télécharger le .jar
-        r = httpx.get(download_url, headers={"User-Agent": USER_AGENT}, timeout=60, follow_redirects=True)
+        # follow_redirects=False (anti-SSRF) : un CDN allowlisté ne doit pas
+        # pouvoir rediriger vers localhost/LAN et contourner l'allowlist d'hôtes.
+        r = httpx.get(download_url, headers={"User-Agent": USER_AGENT}, timeout=60, follow_redirects=False)
         r.raise_for_status()
         jar_data = r.content
 
         # 2. Créer un tar avec le fichier pour Docker
         tar_buffer = io.BytesIO()
         with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
-            info = tarfile.TarInfo(name=filename)
+            info = tarfile.TarInfo(name=safe_name)
             info.size = len(jar_data)
             tar.addfile(info, io.BytesIO(jar_data))
         tar_buffer.seek(0)

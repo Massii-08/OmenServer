@@ -424,3 +424,33 @@ def test_unblocker_config_clear(tmp_path, monkeypatch):
     assert r.json()["configured"] is False
     from backend.bots.harvester import unblocker_config as uc
     assert uc.load(p) == {}
+
+
+# ---- faille #5 : job_id assaini (uuid hex 32) sur status/data/stop --------
+
+def test_status_rejects_malformed_job_id(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    # path-traversal tenté via le job_id -> 404 (pas de lecture hors runs dir)
+    assert c.get("/api/bots/harvester/status/..%2f..%2fetc").status_code == 404
+    assert c.get("/api/bots/harvester/status/not-a-uuid").status_code == 404
+
+
+def test_stop_rejects_malformed_job_id(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.post("/api/bots/harvester/stop/not-hex").status_code == 404
+
+
+def test_data_rejects_malformed_job_id(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    # même avant la vérif de clé : un job_id non-hex -> 404 (jamais de _run_dir)
+    r = c.get("/api/bots/harvester/data/..%2f..%2fsecret",
+              headers={"X-Feed-Key": "x"})
+    assert r.status_code == 404
+
+
+def test_valid_hex_job_id_still_works(tmp_path, monkeypatch):
+    # non-régression : un vrai job_id (hex 32) passe le filtre
+    c, _ = make_client(tmp_path, monkeypatch)
+    job_id = c.post("/api/bots/harvester/run", json=GOOD_BODY).json()["job_id"]
+    assert len(job_id) == 32
+    assert c.get("/api/bots/harvester/status/{0}".format(job_id)).status_code == 200

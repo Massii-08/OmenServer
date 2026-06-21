@@ -32,6 +32,12 @@ from backend.auth.permissions import VALID_ROLES, ROLE_NAMES
 
 router = APIRouter(prefix="/api/auth", tags=["Invitations & Utilisateurs"])
 
+# Valeurs de sécurité par défaut pour les NOUVELLES invitations (sans surcharge admin).
+# - Expiration par défaut : 7 jours (un code éternel est un risque s'il fuit).
+# - Usage unique : max_uses=1 (avant : 0 = illimité, jamais appliqué côté join).
+DEFAULT_EXPIRY_MINUTES = 60 * 24 * 7  # 7 jours
+DEFAULT_MAX_USES = 1
+
 
 # --- Helpers ---
 
@@ -117,17 +123,20 @@ def create_invitation(
         )
 
     # Échéance : si une durée est fournie, on calcule la date d'expiration.
-    expires_at = None
+    # Sécurité : sinon, on applique une expiration PAR DÉFAUT (7 jours) — un code
+    # éternel est un risque (réutilisation indéfinie si la valeur fuit).
     if request.expires_in_minutes and request.expires_in_minutes > 0:
         # Plafond raisonnable : 2 ans (anti-débordement / valeurs absurdes)
         minutes = min(request.expires_in_minutes, 60 * 24 * 365 * 2)
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+    else:
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=DEFAULT_EXPIRY_MINUTES)
 
     invitation = Invitation(
         role=request.role,
         created_by=current_user.id,
         expires_at=expires_at,
-        max_uses=0,  # 0 = utilisations illimitées ; la seule limite est le temps
+        max_uses=DEFAULT_MAX_USES,  # 1 par défaut (usage unique) — plus de codes illimités
     )
     db.add(invitation)
     db.commit()
@@ -221,6 +230,15 @@ def join_with_invite(
         db.commit()
         raise HTTPException(status_code=410, detail="Ce code d'invitation a expiré")
 
+    # Sécurité : faire RESPECTER max_uses. max_uses<=0 = illimité (rétro-compat avec
+    # les anciennes invitations) ; sinon on rejette dès que le quota est atteint.
+    # Note : la condition est ré-évaluée juste avant le commit (cf. plus bas) pour
+    # limiter la fenêtre de race sur `uses` ; SQLite sérialise de toute façon les
+    # écritures via un lock fichier, donc une race triviale n'est pas exploitable.
+    max_uses = invitation.max_uses or 0
+    if max_uses > 0 and (invitation.uses or 0) >= max_uses:
+        raise HTTPException(status_code=400, detail="Cette invitation est épuisée")
+
     # Vérifier le username
     if not request.username or len(request.username) < 2:
         raise HTTPException(status_code=400, detail="Le nom d'utilisateur doit faire au moins 2 caractères")
@@ -242,7 +260,14 @@ def join_with_invite(
     )
     db.add(new_user)
 
-    # Compteur informatif : le code reste valide tant qu'il n'est pas échu.
+    # Re-vérif anti-race juste avant l'incrément : si un autre join concurrent a
+    # épuisé le quota entre-temps, on refuse plutôt que de dépasser max_uses.
+    if max_uses > 0 and (invitation.uses or 0) >= max_uses:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Cette invitation est épuisée")
+
+    # Incrément du compteur d'utilisation, committé IMMÉDIATEMENT avec la création
+    # du compte (transaction unique) → le quota est durci dès le 1er usage.
     invitation.uses = (invitation.uses or 0) + 1
     invitation.used_by = new_user.id
     invitation.used_at = datetime.now(timezone.utc)

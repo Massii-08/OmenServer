@@ -20,8 +20,10 @@ from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend.auth.utils import get_current_user
 from backend.auth.models import User
+from backend.auth.access_control import require_resource_access
 from backend.game_server.models import GameServer
 from backend.mods import plugin_manager
+from backend.mods.router import _validate_download_url
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +72,14 @@ def install_plugin(
     db: Session = Depends(get_db),
 ):
     """Télécharge et installe un plugin sur un serveur."""
+    require_resource_access(current_user, "server", request.server_id, db, min_level="manage")
     server = db.query(GameServer).filter(GameServer.id == request.server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
     if not server.docker_id:
         raise HTTPException(status_code=400, detail="Pas de conteneur Docker")
+
+    _validate_download_url(request.download_url)
 
     try:
         filename = plugin_manager.install_plugin(
@@ -115,6 +120,7 @@ def remove_plugin(
     db: Session = Depends(get_db),
 ):
     """Supprime un plugin d'un serveur."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")

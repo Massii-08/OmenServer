@@ -68,7 +68,11 @@ class Invitation(Base):
     __tablename__ = "invitations"
 
     id = Column(Integer, primary_key=True, index=True)
-    code = Column(String(20), unique=True, index=True, nullable=False, default=lambda: secrets.token_urlsafe(6))
+    # Sécurité : token_urlsafe(16) ≈ 128 bits d'entropie (≈22 chars) — non brute-forçable.
+    # (token_urlsafe(6) = 48 bits était trop faible.) On ne change PAS le schéma DB :
+    # SQLite n'applique pas la longueur VARCHAR, donc un code de ~22 chars tient dans
+    # String(20) sans migration ni troncature.
+    code = Column(String(20), unique=True, index=True, nullable=False, default=lambda: secrets.token_urlsafe(16))
     role = Column(String(20), default="player")
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     used_by = Column(Integer, ForeignKey("users.id"), nullable=True)

@@ -67,29 +67,75 @@ class RateLimiter(object):
         self._last = now
 
 
+def _default_url_guard(url):
+    """Garde anti-SSRF par défaut : lève si l'URL vise une cible interne/privée
+    ou un schéma non-http(s). Importé paresseusement pour rester découplé du
+    package backend en test (le guard est injectable)."""
+    from backend import net_guard
+    net_guard.assert_public_url(url)
+
+
 class HttpxFetcher(object):
-    """Fetcher httpx avec retries à back-off linéaire. `client` injectable."""
+    """Fetcher httpx avec retries à back-off linéaire. `client` injectable.
+
+    ⚠️ Anti-SSRF : ``url_guard`` est appelé AVANT chaque GET (URL de départ ET
+    chaque hop de redirect — voir ``follow_redirects=False`` + suivi manuel
+    ci-dessous). Défaut = ``net_guard.assert_public_url`` (rejette loopback /
+    IP privée / link-local / schéma non-http(s)). Injectable -> les tests
+    offline passent un guard permissif (les hôtes ``x.test`` ne résolvent pas).
+    """
 
     def __init__(self, rate: RateLimiter, retries: int = 3, timeout: float = 20.0,
                  user_agent: str = DEFAULT_UA, client: Optional[Any] = None,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
+                 sleep: Callable[[float], None] = time.sleep,
+                 url_guard: Optional[Callable[[str], None]] = None,
+                 max_redirects: int = 5) -> None:
         self.rate = rate
         self.retries = retries
         self.timeout = timeout
         self.user_agent = user_agent
         self._client = client
         self._sleep = sleep
+        # None -> guard par défaut (résolu paresseusement) ; les tests injectent
+        # un no-op pour ne pas toucher au DNS.
+        self._url_guard = url_guard if url_guard is not None else _default_url_guard
+        self.max_redirects = max_redirects
 
     def _get_client(self):
         if self._client is not None:
             return self._client
         import httpx  # lazy
+        # follow_redirects=False : on suit les redirects À LA MAIN (_request) pour
+        # re-valider chaque hop via le guard (un 302 vers 127.0.0.1 doit être
+        # bloqué, pas suivi en aveugle).
         self._client = httpx.Client(
             timeout=self.timeout,
             headers={"User-Agent": self.user_agent},
-            follow_redirects=True,
+            follow_redirects=False,
         )
         return self._client
+
+    def _request(self, client, url):
+        """GET avec suivi MANUEL des redirects, chaque hop re-validé par le guard.
+        Lève FetchError si un hop vise une cible interne (anti-SSRF via redirect)."""
+        import httpx  # lazy
+        from urllib.parse import urljoin
+        current = url
+        for _ in range(self.max_redirects + 1):
+            # garde anti-SSRF AVANT chaque requête (URL de départ + chaque hop)
+            try:
+                self._url_guard(current)
+            except Exception as e:  # UnsafeUrlError ou autre -> erreur de fetch propre
+                raise FetchError("URL bloquée (SSRF guard): {0}".format(type(e).__name__))
+            resp = client.get(current)
+            if resp.status_code in (301, 302, 303, 307, 308):
+                loc = resp.headers.get("Location") or resp.headers.get("location")
+                if not loc:
+                    return resp
+                current = urljoin(current, loc)
+                continue
+            return resp
+        raise FetchError("Trop de redirections pour {0}".format(url))
 
     def get(self, url: str) -> str:
         import httpx  # lazy
@@ -98,7 +144,11 @@ class HttpxFetcher(object):
         for attempt in range(self.retries):
             self.rate.wait()
             try:
-                resp = client.get(url)
+                resp = self._request(client, url)
+            except FetchError as e:
+                # SSRF-block / too-many-redirects : pas de retry réseau utile,
+                # surfacé directement (le guard est déterministe).
+                raise
             except httpx.HTTPError as e:
                 last = repr(e)
             else:

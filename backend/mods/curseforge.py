@@ -177,7 +177,9 @@ def download_mod(download_url: str, dest_dir: str, filename: str) -> str:
     filepath = dest_path / filename
 
     try:
-        r = requests.get(download_url, stream=True, timeout=30)
+        # allow_redirects=False (anti-SSRF) : un CDN allowlisté ne doit pas
+        # pouvoir rediriger vers localhost/LAN et contourner l'allowlist d'hôtes.
+        r = requests.get(download_url, stream=True, timeout=30, allow_redirects=False)
         r.raise_for_status()
 
         with open(filepath, "wb") as f:

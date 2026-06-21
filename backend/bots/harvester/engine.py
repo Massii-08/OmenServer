@@ -8,9 +8,30 @@ Le back-off adaptatif riche (429/cooldown) arrive en P3 ; P1 a un back-off
 linéaire simple sur erreur de fetch."""
 import time
 from typing import Any, Callable, Dict, Optional
+from urllib.parse import urlparse
 
 from backend.bots.harvester.crawl import next_page_url
 from backend.bots.harvester.fetch import FetchError, PushbackError
+
+
+def _same_host_public_filter(url, source_url):
+    """Filtre par défaut des URL DÉCOUVERTES (pagination / sitemap) avant de les
+    ajouter au frontier. N'autorise que :
+      - un schéma http(s) vers une destination publique (anti-SSRF : un
+        <loc>http://127.0.0.1/…</loc> ou next-link interne est jeté), ET
+      - le MÊME host que la page source (un sitemap ne doit pas faire diverger
+        la moisson vers un domaine arbitraire).
+    Importé paresseusement (net_guard) -> reste découplé/testable."""
+    try:
+        from backend import net_guard
+    except Exception:  # pragma: no cover — defensive
+        return False
+    if not net_guard.is_public_url(url):
+        return False
+    try:
+        return urlparse(url).hostname == urlparse(source_url).hostname
+    except (ValueError, AttributeError):
+        return False
 
 
 class Engine(object):
@@ -22,7 +43,8 @@ class Engine(object):
                  error_backoff_s: float = 10.0,
                  pacer=None, max_pushback_retries: int = 5,
                  recommend_after: int = 5,
-                 on_event: Optional[Callable[[Dict[str, Any]], None]] = None) -> None:
+                 on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+                 url_filter: Optional[Callable[[str, str], bool]] = None) -> None:
         self.store = store
         self.recipe = recipe
         self.fetcher = fetcher
@@ -33,6 +55,9 @@ class Engine(object):
         self._on_progress = on_progress
         self._on_event = on_event
         self._should_stop = should_stop or (lambda: False)
+        # filtre anti-SSRF des URL découvertes (None -> public + même host). Les
+        # tests offline injectent un filtre permissif (hôtes .test fictifs).
+        self._url_filter = url_filter if url_filter is not None else _same_host_public_filter
         self.error_backoff_s = error_backoff_s
         self._pacer = pacer
         self.max_pushback_retries = max_pushback_retries
@@ -147,8 +172,13 @@ class Engine(object):
 
         if self.plan.get("mode") == "pagination":
             nxt = next_page_url(html, url, self.plan.get("next_selector") or {})
-            if nxt:
+            # filtre anti-SSRF : un next-link interne / hors-host n'entre pas dans
+            # le frontier (sinon un site malveillant pourrait nous faire viser
+            # 127.0.0.1 ou un domaine arbitraire via la pagination).
+            if nxt and self._url_filter(nxt, url):
                 self.store.add_todo(nxt)
+            elif nxt:
+                self._event({"type": "url_skipped", "url": nxt, "reason": "ssrf_filter"})
 
         self.store.mark_done(url)
         self.store.save()

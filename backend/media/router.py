@@ -40,6 +40,21 @@ JELLYFIN_CONFIG_DIR = os.path.expanduser("~/omenserver/jellyfin/config")
 JELLYFIN_CACHE_DIR = os.path.expanduser("~/omenserver/jellyfin/cache")
 
 
+def _safe_library_path(name: str) -> str:
+    """Résout le dossier d'une bibliothèque média en le CONFINANT sous
+    ``MEDIA_BASE_DIR``. ``name`` est réduit à son basename (rejette ``..`` et
+    les séparateurs) puis on vérifie le confinement (anti path-traversal sur
+    rmdir/makedirs). Lève HTTPException(400) si le nom s'évade."""
+    base = os.path.basename((name or "").strip())
+    if not base or base in (".", ".."):
+        raise HTTPException(status_code=400, detail="Nom de bibliothèque invalide")
+    root = os.path.realpath(MEDIA_BASE_DIR)
+    target = os.path.realpath(os.path.join(root, base))
+    if target != root and os.path.dirname(target) != root:
+        raise HTTPException(status_code=400, detail="Nom de bibliothèque invalide")
+    return target
+
+
 # === Modèles Pydantic ===
 class LibraryRequest(BaseModel):
     """Requête pour ajouter un dossier média."""
@@ -334,7 +349,8 @@ async def add_library(req: LibraryRequest, user=Depends(get_current_user)):
     """Ajouter un nouveau dossier de bibliothèque média."""
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="Seuls les administrateurs peuvent ajouter des bibliothèques.")
-    lib_path = os.path.join(MEDIA_BASE_DIR, req.name.lower().replace(" ", "_"))
+    # normalise puis CONFINE sous MEDIA_BASE_DIR (anti path-traversal via name)
+    lib_path = _safe_library_path(req.name.lower().replace(" ", "_"))
     if os.path.exists(lib_path):
         raise HTTPException(status_code=409, detail=f"Le dossier '{req.name}' existe déjà.")
 
@@ -353,7 +369,8 @@ async def delete_library(name: str, user=Depends(get_current_user)):
     """Supprimer un dossier de bibliothèque (le dossier doit être vide)."""
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="Seuls les administrateurs peuvent supprimer des bibliothèques.")
-    lib_path = os.path.join(MEDIA_BASE_DIR, name)
+    # CONFINE sous MEDIA_BASE_DIR (anti path-traversal via {name} sur rmdir)
+    lib_path = _safe_library_path(name)
     if not os.path.exists(lib_path):
         raise HTTPException(status_code=404, detail=f"Dossier '{name}' non trouvé.")
 

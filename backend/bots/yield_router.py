@@ -74,8 +74,10 @@ async def upload_yield_file(
     current_user: User = Depends(require_role("admin", "money")),
 ):
     """Upload d'un fichier Excel pour le bot yield."""
-    # Vérifier l'extension
-    if not file.filename or not file.filename.endswith('.xlsx'):
+    # Nom de fichier assaini : basename strict (rejette `../../tmp/x.xlsx` qui
+    # sortirait de job_dir) + extension .xlsx obligatoire.
+    safe_name = os.path.basename(file.filename or "")
+    if not safe_name or not safe_name.lower().endswith('.xlsx'):
         raise HTTPException(400, "Seuls les fichiers .xlsx sont acceptés")
 
     # Générer un job_id
@@ -85,12 +87,16 @@ async def upload_yield_file(
     job_dir = UPLOADS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    # Sauvegarder le fichier
-    file_path = job_dir / file.filename
+    # Sauvegarder le fichier — garde-fou de confinement : la cible résolue DOIT
+    # rester sous job_dir (défense en profondeur au cas où basename laisserait
+    # passer un cas tordu sur une autre plateforme).
+    file_path = (job_dir / safe_name)
+    if job_dir.resolve() not in file_path.resolve().parents:
+        raise HTTPException(400, "Nom de fichier invalide")
     content = await file.read()
     file_path.write_bytes(content)
 
-    logger.info(f"[Yield] Fichier uploadé: {file.filename} → {file_path}")
+    logger.info(f"[Yield] Fichier uploadé: {safe_name} → {file_path}")
 
     # Analyser le fichier pour le summary
     bonds_count = 0
@@ -122,7 +128,7 @@ async def upload_yield_file(
     # Stocker le job
     _yield_jobs[job_id] = {
         "status": "pending",
-        "filename": file.filename,
+        "filename": safe_name,
         "input_path": str(file_path),
         "output_path": None,
         "logs": [],
@@ -136,7 +142,7 @@ async def upload_yield_file(
 
     return {
         "job_id": job_id,
-        "filename": file.filename,
+        "filename": safe_name,
         "bonds_count": bonds_count,
         "sheets": list(sheets_info.keys()),
         "summary": summary,

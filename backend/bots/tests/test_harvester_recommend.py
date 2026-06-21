@@ -53,6 +53,12 @@ class FakePacer(object):
         pass
 
 
+def _allow_all(url, source_url):
+    # filtre d'URL permissif : hôtes fictifs (x.test) qui ne résolvent pas en DNS.
+    # Le filtre anti-SSRF réel est testé dans test_harvester_ssrf.py.
+    return True
+
+
 def _engine(tmp_path, fetcher, plan, events, **kw):
     from backend.bots.harvester.policy import FieldPolicy
     store = Store(str(tmp_path / "store.json"))
@@ -60,7 +66,7 @@ def _engine(tmp_path, fetcher, plan, events, **kw):
     eng = Engine(store, Recipe.from_dict(LISTING_RECIPE), fetcher,
                  FieldPolicy(allowed=["title"]), plan, sleep=lambda s: None,
                  pacer=FakePacer(), on_event=events.append,
-                 max_pushback_retries=10, **kw)
+                 max_pushback_retries=10, url_filter=_allow_all, **kw)
     return store, eng
 
 

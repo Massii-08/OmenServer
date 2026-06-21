@@ -54,6 +54,12 @@ class Settings:
                 _env_file.write_text(_env_content)
             else:
                 _env_file.write_text(f"SECRET_KEY={_raw_secret}\n")
+            # Sécurité : le .env contient le secret JWT → restreindre à l'owner (0o600).
+            # Best-effort (certains FS ne supportent pas chmod ; ne doit pas crasher le boot).
+            try:
+                os.chmod(_env_file, 0o600)
+            except OSError:
+                pass
             import logging as _logging
             _logging.getLogger("omenserver").warning(
                 "🔑 SECRET_KEY générée automatiquement et sauvegardée dans .env"

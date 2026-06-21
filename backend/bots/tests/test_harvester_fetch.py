@@ -8,6 +8,13 @@ def _silent_rate():
     return RateLimiter(0.0, clock=lambda: 0.0, sleep=lambda s: None)
 
 
+# Garde anti-SSRF no-op : les tests offline (MockTransport, hôtes .test qui ne
+# résolvent pas) ne doivent pas toucher au DNS. La logique du guard est testée
+# séparément dans test_harvester_ssrf.py.
+def _no_guard(url):
+    return None
+
+
 def test_rate_limiter_sleeps_remaining_interval():
     t = {"now": 0.0}
     slept = []
@@ -22,7 +29,7 @@ def test_httpx_fetcher_success_returns_body():
     def handler(request):
         return httpx.Response(200, text="<html>ok</html>")
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    f = HttpxFetcher(rate=_silent_rate(), retries=3, client=client)
+    f = HttpxFetcher(rate=_silent_rate(), retries=3, client=client, url_guard=_no_guard)
     assert f.get("https://books.toscrape.com/") == "<html>ok</html>"
 
 
@@ -35,7 +42,7 @@ def test_httpx_fetcher_retries_then_raises_on_persistent_error():
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     f = HttpxFetcher(rate=_silent_rate(), retries=3, client=client,
-                     sleep=lambda s: None)
+                     sleep=lambda s: None, url_guard=_no_guard)
     with pytest.raises(FetchError):
         f.get("https://books.toscrape.com/")
     assert calls["n"] == 3  # retried up to `retries` times
@@ -52,7 +59,7 @@ def test_httpx_fetcher_recovers_on_second_try():
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     f = HttpxFetcher(rate=_silent_rate(), retries=3, client=client,
-                     sleep=lambda s: None)
+                     sleep=lambda s: None, url_guard=_no_guard)
     assert f.get("https://x.test/") == "<html>good</html>"
     assert calls["n"] == 2
 
@@ -70,7 +77,7 @@ def test_fetcher_raises_pushback_on_429_with_retry_after():
     def handler(request):
         return httpx.Response(429, text="slow down", headers={"Retry-After": "42"})
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    f = HttpxFetcher(rate=_silent_rate(), retries=3, client=client, sleep=lambda s: None)
+    f = HttpxFetcher(rate=_silent_rate(), retries=3, client=client, sleep=lambda s: None, url_guard=_no_guard)
     try:
         f.get("https://x.test/")
         assert False, "should have raised"
@@ -87,7 +94,7 @@ def test_fetcher_does_not_internally_retry_a_429():
         return httpx.Response(429, text="nope")
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    f = HttpxFetcher(rate=_silent_rate(), retries=3, client=client, sleep=lambda s: None)
+    f = HttpxFetcher(rate=_silent_rate(), retries=3, client=client, sleep=lambda s: None, url_guard=_no_guard)
     try:
         f.get("https://x.test/")
     except PushbackError:
@@ -99,7 +106,7 @@ def test_fetcher_raises_pushback_on_challenge_body_even_with_200():
     def handler(request):
         return httpx.Response(200, text="<title>Just a moment...</title>")
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    f = HttpxFetcher(rate=_silent_rate(), retries=3, client=client, sleep=lambda s: None)
+    f = HttpxFetcher(rate=_silent_rate(), retries=3, client=client, sleep=lambda s: None, url_guard=_no_guard)
     try:
         f.get("https://x.test/")
         assert False, "should have raised"

@@ -29,7 +29,8 @@ from backend.auth.utils import get_current_user
 from backend.auth.models import User
 from backend.auth.permissions import has_permission
 from backend.auth.access_control import (
-    can_access_resource, get_accessible_resource_ids, get_user_access_level
+    can_access_resource, get_accessible_resource_ids, get_user_access_level,
+    require_resource_access,
 )
 from backend.game_server.models import GameServer
 from backend.game_server import docker_manager
@@ -625,6 +626,7 @@ def list_worlds(
     db: Session = Depends(get_db),
 ):
     """Liste les mondes du serveur (fonctionne même si le serveur est éteint)."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
@@ -670,14 +672,20 @@ def reset_world(
     db: Session = Depends(get_db),
 ):
     """Supprime/réinitialise un monde (le serveur doit être arrêté pour sécurité)."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
     if not server.docker_id:
         raise HTTPException(status_code=400, detail="Pas de conteneur Docker")
 
-    # Sécurité : le nom doit commencer par "world"
-    if not world_name.startswith("world"):
+    # Sécurité : validation STRICTE du nom de monde (anti shell-injection dans
+    # le conteneur — `world_name` est passé à `rm -rf /data/{world_name}` via
+    # `sh -c`). Seuls "world" + alphanum/_/- sont autorisés : pas d'espace,
+    # pas de `;` `$()` `&` etc. qui seraient interprétés par le shell.
+    import re as _re
+    # \Z (et non $) pour qu'un "world\n..." (newline = $ match en Python) soit rejeté.
+    if not _re.match(r'^world[A-Za-z0-9_-]*\Z', world_name):
         raise HTTPException(status_code=400, detail="Nom de monde invalide")
 
     from backend.game_server.settings_router import _docker_exec
@@ -707,6 +715,7 @@ def create_database(
     db: Session = Depends(get_db),
 ):
     """Crée un conteneur MySQL/MariaDB associé au serveur."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
@@ -765,6 +774,7 @@ def get_database_status(
     db: Session = Depends(get_db),
 ):
     """Retourne le statut de la base de données du serveur."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
@@ -799,6 +809,7 @@ def delete_database(
     db: Session = Depends(get_db),
 ):
     """Supprime le conteneur MySQL du serveur."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")

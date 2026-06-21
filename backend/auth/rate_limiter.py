@@ -29,6 +29,29 @@ CLEANUP_INTERVAL = 300    # Nettoyage toutes les 5 minutes
 _last_cleanup = time.time()
 
 
+def _client_ip(request: Request) -> str:
+    """
+    IP de confiance pour la clé de rate-limit.
+
+    Sécurité : on n'utilise PLUS `X-Forwarded-For` comme source de vérité — en accès
+    direct à l'origine (hors Cloudflare), n'importe quel client peut le forger à chaque
+    requête, ce qui neutralisait totalement le rate-limit login (brute-force illimité).
+
+    On fait confiance à `CF-Connecting-IP` UNIQUEMENT (Cloudflare le pose toujours en
+    prod et un client direct ne gagne rien à l'usurper — il ne ferait que se créer une
+    clé arbitraire sans dé-corréler des autres clients direct, mais surtout le panel
+    DOIT être firewallé aux IP Cloudflare en prod pour que ce header soit fiable).
+    À défaut, on retombe sur `request.client.host` (l'IP TCP réelle, non falsifiable).
+
+    ⚠️ Déploiement : firewaller l'origine (port 8000) aux ranges IP Cloudflare, sinon
+    un attaquant accédant directement à l'origine peut poser un faux CF-Connecting-IP.
+    """
+    cf_ip = request.headers.get("CF-Connecting-IP")
+    if cf_ip:
+        return cf_ip
+    return request.client.host if request.client else "unknown"
+
+
 def _cleanup_old_entries():
     """Supprime les entrées expirées pour éviter les fuites mémoire."""
     global _last_cleanup
@@ -54,14 +77,9 @@ def check_rate_limit(request: Request, endpoint: str = "login"):
     Usage dans un router:
         check_rate_limit(request)
     """
-    # Récupérer l'IP réelle (support proxy/cloudflare)
-    client_ip = (
-        request.headers.get("CF-Connecting-IP")
-        or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-        or request.client.host
-        if request.client else "unknown"
-    )
-    
+    # Récupérer l'IP de confiance (Cloudflare ou IP TCP réelle — JAMAIS le XFF client)
+    client_ip = _client_ip(request)
+
     key = f"{endpoint}:{client_ip}"
     now = time.time()
     cutoff = now - WINDOW_SECONDS
@@ -86,12 +104,7 @@ def check_rate_limit(request: Request, endpoint: str = "login"):
 
 def reset_rate_limit(request: Request, endpoint: str = "login"):
     """Réinitialise le compteur après un login réussi."""
-    client_ip = (
-        request.headers.get("CF-Connecting-IP")
-        or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-        or request.client.host
-        if request.client else "unknown"
-    )
+    client_ip = _client_ip(request)
     key = f"{endpoint}:{client_ip}"
     with _lock:
         _attempts.pop(key, None)

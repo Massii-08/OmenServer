@@ -10,6 +10,7 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -49,6 +50,16 @@ _harvester_jobs = {}  # type: Dict[str, Dict[str, Any]]
 def _require_admin(user) -> None:
     if not getattr(user, "is_admin", False):
         raise HTTPException(status_code=403, detail="Admin uniquement")
+
+
+# job_id = uuid4().hex (32 hex). Validé en tête des routes qui composent un chemin
+# disque (_run_dir) -> empêche tout path-traversal (`../`, séparateurs, etc.).
+_JOB_ID_RE = re.compile(r"\A[0-9a-f]{32}\Z")
+
+
+def _check_job_id(job_id: str) -> None:
+    if not _JOB_ID_RE.match(job_id or ""):
+        raise HTTPException(status_code=404, detail="Job introuvable")
 
 
 class RunRequest(BaseModel):
@@ -544,6 +555,7 @@ def _disk_counts(job_id: str) -> Optional[Dict[str, int]]:
 @router.get("/status/{job_id}")
 def harvester_status(job_id: str, current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
+    _check_job_id(job_id)
     job = _harvester_jobs.get(job_id)
     if not job:
         # restart uvicorn -> reconstruit depuis le disque (A)
@@ -589,6 +601,7 @@ def harvester_active(current_user: User = Depends(get_current_user)):
 @router.post("/stop/{job_id}")
 def harvester_stop(job_id: str, current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
+    _check_job_id(job_id)
     job = _harvester_jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job introuvable")
@@ -619,6 +632,7 @@ def harvester_data(job_id: str, format: str = "json",
                    x_feed_key: Optional[str] = Header(default=None)):
     """API privée : renvoie les records accumulés. Gated par X-Feed-Key
     (pas par login → consommable par un client externe)."""
+    _check_job_id(job_id)
     run_dir = _run_dir(job_id)
     cfg_path = run_dir / "config.json"
     if not cfg_path.is_file():

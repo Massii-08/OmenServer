@@ -54,22 +54,49 @@ _KEY_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 _KEY_FILE = _KEY_DIR / "nodes_api_key.txt"
 
 
+def _write_key_secure(key: str) -> None:
+    """Écrit la clé en 0o600 (pas world-readable).
+
+    Sécurité : la clé agent est un secret → le fichier NAÎT en 0o600 (création
+    atomique via os.open, pas de fenêtre world-readable) ; os.fchmod couvre le cas
+    d'un fichier pré-existant aux mauvaises permissions. Best-effort sur les FS qui
+    ne supportent pas chmod (le panel ne doit pas crasher au boot pour autant)."""
+    os.makedirs(_KEY_DIR, exist_ok=True)
+    fd = os.open(str(_KEY_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        try:
+            os.fchmod(fd, 0o600)  # fichier pré-existant → force 0o600 sans race
+        except (AttributeError, OSError):
+            pass
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(key)
+    except Exception:
+        # Si fdopen a échoué avant de prendre le fd, on le ferme nous-mêmes.
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+
 def _get_or_create_api_key() -> str:
     """Retourne la clé API. La crée si elle n'existe pas encore."""
     if _KEY_FILE.exists():
         return _KEY_FILE.read_text().strip()
 
-    os.makedirs(_KEY_DIR, exist_ok=True)
     key = secrets.token_urlsafe(32)
-    _KEY_FILE.write_text(key)
+    _write_key_secure(key)
     logger.info(f"🔑 Clé API agents générée : {key[:8]}...")
     return key
 
 
 def _verify_agent_key(x_agent_key: Optional[str] = Header(None)):
-    """Vérifie que la clé API de l'agent est valide."""
+    """Vérifie que la clé API de l'agent est valide.
+
+    Comparaison constant-time (secrets.compare_digest) pour ne pas fuiter la clé via
+    un timing attack, cohérent avec le reste du projet (bcrypt, Fitch, etc.)."""
     expected = _get_or_create_api_key()
-    if not x_agent_key or x_agent_key != expected:
+    if not secrets.compare_digest(x_agent_key or "", expected):
         raise HTTPException(status_code=403, detail="Clé agent invalide")
 
 
@@ -173,8 +200,7 @@ def reset_api_key(current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Admin uniquement")
 
     key = secrets.token_urlsafe(32)
-    os.makedirs(_KEY_DIR, exist_ok=True)
-    _KEY_FILE.write_text(key)
+    _write_key_secure(key)
     logger.info(f"🔑 Clé API agents régénérée : {key[:8]}...")
 
     return {"key": key, "message": "⚠️ Mettez à jour la clé sur tous les agents !"}

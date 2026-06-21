@@ -15,6 +15,7 @@ Structure de stockage :
 """
 
 import os
+import re
 import shutil
 import tarfile
 import logging
@@ -28,6 +29,61 @@ logger = logging.getLogger(__name__)
 
 # Dossier racine des sauvegardes
 BACKUPS_DIR = Path(settings.BASE_DIR) / "data" / "backups"
+
+# backup_id : alphanum + . _ - uniquement (pas de `/`, `..`, NUL → anti path-traversal)
+_BACKUP_ID_RE = re.compile(r'^[A-Za-z0-9._-]+\Z')
+
+
+def _validate_backup_id(backup_id: str) -> str:
+    """Valide qu'un backup_id ne permet PAS de sélectionner une archive arbitraire.
+
+    Rejette `/`, `..`, NUL et tout caractère hors `[A-Za-z0-9._-]`. Lève RuntimeError
+    si invalide (anti arbitrary-archive-selection sur restore/delete/rename)."""
+    if not isinstance(backup_id, str) or not backup_id or backup_id in (".", ".."):
+        raise RuntimeError("Identifiant de sauvegarde invalide")
+    if ".." in backup_id or "/" in backup_id or "\\" in backup_id or "\x00" in backup_id:
+        raise RuntimeError("Identifiant de sauvegarde invalide")
+    if not _BACKUP_ID_RE.match(backup_id):
+        raise RuntimeError("Identifiant de sauvegarde invalide")
+    return backup_id
+
+
+def _resolve_backup_path(backup_dir: Path, backup_id: str) -> Path:
+    """Construit + vérifie le chemin d'une archive : doit rester SOUS backup_dir
+    (double garde-fou en plus de _validate_backup_id)."""
+    _validate_backup_id(backup_id)
+    backup_path = backup_dir / f"{backup_id}.tar.gz"
+    resolved = backup_path.resolve()
+    base = backup_dir.resolve()
+    if base != resolved and base not in resolved.parents:
+        raise RuntimeError("Chemin de sauvegarde hors zone autorisée")
+    return backup_path
+
+
+def _safe_extract(tar: tarfile.TarFile, dest):
+    """Extrait une archive tar en refusant tout membre dangereux (zip-slip).
+
+    Python 3.9 n'a pas `filter="data"` → on filtre manuellement chaque membre :
+      - refus des chemins absolus
+      - refus des membres qui s'échappent de `dest` (`..`)
+      - refus des liens symboliques / durs (peuvent pointer hors zone à l'extraction)
+    À utiliser à la place de tar.extractall(path=dest)."""
+    dest_path = Path(dest).resolve()
+    safe_members = []
+    for member in tar.getmembers():
+        name = member.name
+        # Chemin absolu interdit
+        if name.startswith("/") or name.startswith("\\") or (len(name) > 1 and name[1] == ":"):
+            raise RuntimeError(f"Membre d'archive non sûr (chemin absolu): {name}")
+        # Liens symboliques / durs interdits
+        if member.issym() or member.islnk():
+            raise RuntimeError(f"Membre d'archive non sûr (lien): {name}")
+        # Vérifier que la destination résolue reste sous dest
+        target = (dest_path / name).resolve()
+        if target != dest_path and dest_path not in target.parents:
+            raise RuntimeError(f"Membre d'archive non sûr (traversal): {name}")
+        safe_members.append(member)
+    tar.extractall(path=dest, members=safe_members)
 
 
 def _get_backup_dir(server_id: int, backup_type: str = "manual") -> Path:
@@ -124,9 +180,9 @@ def create_backup(
                     for chunk in bits:
                         f.write(chunk)
 
-                # Extraire l'archive Docker
+                # Extraire l'archive Docker (filtre anti zip-slip sur chaque membre)
                 with tarfile.open(archive_path, 'r') as tar:
-                    tar.extractall(path=temp_dir)
+                    _safe_extract(tar, temp_dir)
 
                 archive_path.unlink()  # Supprimer le tar intermédiaire
                 copied = True
@@ -213,7 +269,8 @@ def list_backups(server_id: int, backup_type: str = None) -> list:
 def rename_backup(server_id: int, backup_id: str, new_name: str, backup_type: str = "manual") -> dict:
     """Renomme une sauvegarde."""
     backup_dir = _get_backup_dir(server_id, backup_type)
-    old_path = backup_dir / f"{backup_id}.tar.gz"
+    # Validation stricte du backup_id source (anti renommage d'un fichier arbitraire).
+    old_path = _resolve_backup_path(backup_dir, backup_id)
 
     if not old_path.exists():
         raise RuntimeError(f"Sauvegarde '{backup_id}' non trouvée")
@@ -225,10 +282,12 @@ def rename_backup(server_id: int, backup_id: str, new_name: str, backup_type: st
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Créer le nouveau nom
+    # Créer le nouveau nom (puis valider/confiner — le nom cible doit rester
+    # sous backup_dir et ne contenir que des caractères sûrs).
     safe_name = new_name.strip().replace(' ', '-').replace('/', '-').replace('\\', '-')
+    safe_name = safe_name.replace('..', '-')
     new_id = f"{safe_name}_{timestamp}"
-    new_path = backup_dir / f"{new_id}.tar.gz"
+    new_path = _resolve_backup_path(backup_dir, new_id)
 
     if new_path.exists():
         raise RuntimeError(f"Une sauvegarde avec ce nom existe déjà")
@@ -255,7 +314,9 @@ def restore_backup(server_id: int, backup_id: str, docker_id: str, backup_type: 
     2. Copie les fichiers dans le conteneur
     """
     backup_dir = _get_backup_dir(server_id, backup_type)
-    backup_path = backup_dir / f"{backup_id}.tar.gz"
+    # Validation stricte du backup_id + confinement sous backup_dir (anti
+    # sélection d'archive arbitraire via `..`/`/`).
+    backup_path = _resolve_backup_path(backup_dir, backup_id)
 
     if not backup_path.exists():
         raise RuntimeError(f"Sauvegarde '{backup_id}' non trouvée")
@@ -277,10 +338,10 @@ def restore_backup(server_id: int, backup_id: str, docker_id: str, backup_type: 
     temp_dir = backup_dir / f"_restore_{backup_id}"
 
     try:
-        # 1. Décompresser
+        # 1. Décompresser (filtre anti zip-slip sur chaque membre)
         temp_dir.mkdir(parents=True, exist_ok=True)
         with tarfile.open(backup_path, "r:gz") as tar:
-            tar.extractall(path=temp_dir)
+            _safe_extract(tar, temp_dir)
 
         # 2. Trouver le dossier de données extrait
         extracted_dirs = list(temp_dir.iterdir())
@@ -313,7 +374,8 @@ def restore_backup(server_id: int, backup_id: str, docker_id: str, backup_type: 
 def delete_backup(server_id: int, backup_id: str, backup_type: str = "manual") -> bool:
     """Supprime une sauvegarde."""
     backup_dir = _get_backup_dir(server_id, backup_type)
-    backup_path = backup_dir / f"{backup_id}.tar.gz"
+    # Validation stricte (anti suppression d'un fichier arbitraire via `..`/`/`).
+    backup_path = _resolve_backup_path(backup_dir, backup_id)
 
     if not backup_path.exists():
         raise RuntimeError(f"Sauvegarde '{backup_id}' non trouvée")

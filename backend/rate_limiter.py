@@ -93,18 +93,23 @@ _store = RateLimitStore()
 
 
 def _get_client_ip(request: Request) -> str:
-    """Récupère l'IP réelle du client (gère les proxies/Cloudflare)."""
+    """
+    IP de confiance pour la clé de rate-limit.
+
+    Sécurité : on ne fait PLUS confiance à `X-Forwarded-For` — en accès direct à
+    l'origine (hors Cloudflare), il est forgeable à chaque requête → un attaquant
+    contournait le rate-limit (chaque requête = une clé différente). On utilise
+    `CF-Connecting-IP` (posé par Cloudflare en prod) sinon l'IP TCP réelle.
+
+    ⚠️ Déploiement : firewaller l'origine (port 8000) aux ranges IP Cloudflare pour
+    que `CF-Connecting-IP` soit fiable ; sinon un client direct peut le falsifier.
+    """
     # Cloudflare envoie l'IP réelle dans CF-Connecting-IP
     cf_ip = request.headers.get("CF-Connecting-IP")
     if cf_ip:
         return cf_ip
 
-    # Proxy standard
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-
-    # IP directe
+    # IP directe (non falsifiable). On n'utilise volontairement pas X-Forwarded-For.
     return request.client.host if request.client else "unknown"
 
 

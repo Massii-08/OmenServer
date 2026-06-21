@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend.auth.utils import get_current_user
 from backend.auth.models import User
+from backend.auth.access_control import require_resource_access
 from backend.game_server.models import GameServer
 from backend.game_server.settings_router import _docker_exec, _docker_write, _get_server_or_404
 
@@ -84,6 +85,7 @@ def get_ops(
     db: Session = Depends(get_db),
 ):
     """Liste des opérateurs du serveur."""
+    require_resource_access(current_user, "server", server_id, db, min_level="view_only")
     server = _get_server_or_404(server_id, db)
     players = _read_player_file(server.docker_id, "ops")
     return {"players": players}
@@ -97,6 +99,7 @@ def add_op(
     db: Session = Depends(get_db),
 ):
     """Ajouter un opérateur."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = _get_server_or_404(server_id, db)
     players = _read_player_file(server.docker_id, "ops")
 
@@ -122,6 +125,7 @@ def remove_op(
     db: Session = Depends(get_db),
 ):
     """Retirer un opérateur."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = _get_server_or_404(server_id, db)
     players = _read_player_file(server.docker_id, "ops")
     players = [p for p in players if p.get("name", "").lower() != name.lower()]
@@ -138,6 +142,7 @@ def get_whitelist(
     db: Session = Depends(get_db),
 ):
     """Liste blanche du serveur."""
+    require_resource_access(current_user, "server", server_id, db, min_level="view_only")
     server = _get_server_or_404(server_id, db)
     players = _read_player_file(server.docker_id, "whitelist")
     return {"players": players}
@@ -151,6 +156,7 @@ def add_whitelist(
     db: Session = Depends(get_db),
 ):
     """Ajouter un joueur à la whitelist."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = _get_server_or_404(server_id, db)
     players = _read_player_file(server.docker_id, "whitelist")
 
@@ -173,6 +179,7 @@ def remove_whitelist(
     db: Session = Depends(get_db),
 ):
     """Retirer un joueur de la whitelist."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = _get_server_or_404(server_id, db)
     players = _read_player_file(server.docker_id, "whitelist")
     players = [p for p in players if p.get("name", "").lower() != name.lower()]
@@ -189,6 +196,7 @@ def get_banned(
     db: Session = Depends(get_db),
 ):
     """Liste des joueurs bannis."""
+    require_resource_access(current_user, "server", server_id, db, min_level="view_only")
     server = _get_server_or_404(server_id, db)
     players = _read_player_file(server.docker_id, "banned")
     return {"players": players}
@@ -202,6 +210,7 @@ def ban_player(
     db: Session = Depends(get_db),
 ):
     """Bannir un joueur."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = _get_server_or_404(server_id, db)
     players = _read_player_file(server.docker_id, "banned")
 
@@ -226,6 +235,7 @@ def unban_player(
     db: Session = Depends(get_db),
 ):
     """Débannir un joueur."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = _get_server_or_404(server_id, db)
     players = _read_player_file(server.docker_id, "banned")
     players = [p for p in players if p.get("name", "").lower() != name.lower()]

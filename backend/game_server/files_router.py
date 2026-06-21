@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend.auth.utils import get_current_user
 from backend.auth.models import User
+from backend.auth.access_control import require_resource_access
 from backend.game_server.models import GameServer
 from backend.game_server.settings_router import _docker_exec, _docker_write, _get_server_or_404
 
@@ -75,6 +76,7 @@ def list_files(
     db: Session = Depends(get_db),
 ):
     """Liste les fichiers et dossiers à un chemin donné."""
+    require_resource_access(current_user, "server", server_id, db, min_level="view_only")
     server = _get_server_or_404(server_id, db)
     full_path = _safe_path(path)
 
@@ -123,6 +125,7 @@ def read_file(
     db: Session = Depends(get_db),
 ):
     """Lit le contenu d'un fichier texte."""
+    require_resource_access(current_user, "server", server_id, db, min_level="view_only")
     server = _get_server_or_404(server_id, db)
     full_path = _safe_path(path)
 
@@ -150,6 +153,7 @@ def write_file(
     db: Session = Depends(get_db),
 ):
     """Écrit du contenu dans un fichier."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = _get_server_or_404(server_id, db)
     full_path = _safe_path(request.path)
 
@@ -168,6 +172,7 @@ def make_directory(
     db: Session = Depends(get_db),
 ):
     """Crée un nouveau dossier."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = _get_server_or_404(server_id, db)
     full_path = _safe_path(request.path)
 
@@ -186,6 +191,7 @@ def delete_file(
     db: Session = Depends(get_db),
 ):
     """Supprime un fichier ou dossier."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = _get_server_or_404(server_id, db)
     full_path = _safe_path(path)
 
@@ -208,6 +214,7 @@ def rename_file(
     db: Session = Depends(get_db),
 ):
     """Renomme un fichier ou dossier."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = _get_server_or_404(server_id, db)
     old = _safe_path(request.old_path)
     new = _safe_path(request.new_path)
@@ -231,7 +238,9 @@ async def upload_file(
     import docker
     import tarfile
     import io
+    import os as _os_up
 
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = _get_server_or_404(server_id, db)
     if not server.docker_id:
         raise HTTPException(status_code=400, detail="Pas de conteneur Docker")
@@ -241,7 +250,15 @@ async def upload_file(
     if len(content) > 100 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 100 Mo)")
 
-    filename = file.filename or "uploaded_file"
+    raw_filename = file.filename or "uploaded_file"
+    # Sécurité (tar member traversal) : on ne garde QUE le nom de base. Un
+    # filename client type "../../etc/passwd" ne doit pas écrire hors de dest_dir
+    # à l'intérieur du conteneur (put_archive respecte le name du TarInfo).
+    if ".." in raw_filename or "/" in raw_filename or "\\" in raw_filename:
+        raise HTTPException(status_code=400, detail="Nom de fichier invalide")
+    filename = _os_up.path.basename(raw_filename)
+    if not filename or filename in (".", ".."):
+        raise HTTPException(status_code=400, detail="Nom de fichier invalide")
 
     # Vérifier l'extension du fichier (whitelist de sécurité)
     import os as _os
@@ -265,7 +282,8 @@ async def upload_file(
         # Créer un tar avec le fichier
         tar_buffer = io.BytesIO()
         with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
-            info = tarfile.TarInfo(name=filename)
+            # name = basename uniquement (anti tar member traversal dans le conteneur)
+            info = tarfile.TarInfo(name=_os_up.path.basename(filename))
             info.size = len(content)
             tar.addfile(info, io.BytesIO(content))
         tar_buffer.seek(0)

@@ -39,6 +39,47 @@ GDRIVE_DIR = Path(os.environ.get("GDRIVE_DIR", str(_home / "omenserver" / "gdriv
 CREDENTIALS_FILE = GDRIVE_DIR / "credentials.json"
 TOKEN_FILE = GDRIVE_DIR / "token.json"
 
+# Racine FIXE de téléchargement : tout download Drive est confiné ici. ni le
+# `dest_path` du body ni le `file_name` (métadonnées Drive, attaquant-contrôlable)
+# ne peuvent faire sortir de cette racine -> pas d'écriture host arbitraire
+# (~/.ssh, repo, cron). Override possible via env pour la prod.
+GDRIVE_DOWNLOADS_DIR = Path(os.environ.get(
+    "GDRIVE_DOWNLOADS_DIR", str(_home / "omenserver" / "downloads")))
+
+
+def _safe_download_target(dest_path: str, file_name: str) -> Path:
+    """Résout la destination d'un download Drive en la CONFINANT sous
+    ``GDRIVE_DOWNLOADS_DIR``. Lève HTTPException(400) si la cible sort de la
+    racine (path-traversal via dest_path ou file_name).
+
+    - ``dest_path`` est traité comme un sous-chemin RELATIF à la racine (un
+      chemin absolu ou avec ``..`` qui s'évade -> rejet).
+    - ``file_name`` est réduit à son basename (rejette ``../``, séparateurs)."""
+    root = GDRIVE_DOWNLOADS_DIR.resolve()
+
+    # 1) nom de fichier : basename strict (jamais de séparateur ni '..')
+    base = os.path.basename(file_name or "")
+    if not base or base in (".", ".."):
+        raise HTTPException(400, "Nom de fichier invalide")
+
+    # 2) sous-dossier : relatif à la racine. On strip un éventuel '/' de tête
+    #    (sinon Path('/x') ignore la racine), puis on resolve et on vérifie le
+    #    confinement.
+    sub = (dest_path or "").strip()
+    if sub:
+        sub = sub.lstrip("/\\")
+        target_dir = (root / sub).resolve()
+    else:
+        target_dir = root
+
+    if target_dir != root and root not in target_dir.parents:
+        raise HTTPException(400, "Destination hors du dossier de téléchargement autorisé")
+
+    final = (target_dir / base).resolve()
+    if root not in final.parents:
+        raise HTTPException(400, "Destination hors du dossier de téléchargement autorisé")
+    return final
+
 # Flag pour vérifier si les librairies Google sont installées
 _google_available = False
 try:
@@ -299,13 +340,21 @@ def gdrive_download(
     data: dict,
     current_user: User = Depends(get_current_user),
 ):
-    """Télécharger un fichier depuis Drive vers le serveur."""
+    """Télécharger un fichier depuis Drive vers le serveur (admin uniquement).
+
+    La destination est CONFINÉE sous ``GDRIVE_DOWNLOADS_DIR`` : ni le
+    ``dest_path`` du body ni le nom du fichier (métadonnées Drive) ne peuvent
+    écrire hors de cette racine (anti-écriture host arbitraire)."""
+    # écriture de fichier sur l'hôte -> admin strict
+    if not getattr(current_user, "is_admin", False):
+        raise HTTPException(403, "Seuls les administrateurs peuvent télécharger vers le serveur")
+
     service = _get_drive_service()
     if not service:
         raise HTTPException(401, "Google Drive non connecté")
 
     file_id = data.get("file_id")
-    dest_path = data.get("dest_path", str(Path.home() / "omenserver" / "downloads"))
+    dest_path = data.get("dest_path", "")
 
     if not file_id:
         raise HTTPException(400, "file_id requis")
@@ -317,18 +366,21 @@ def gdrive_download(
         file_meta = service.files().get(fileId=file_id, fields="name,size").execute()
         file_name = file_meta["name"]
 
-        request = service.files().get_media(fileId=file_id)
-        dest = Path(dest_path)
-        dest.mkdir(parents=True, exist_ok=True)
+        # confine la cible AVANT tout I/O (lève 400 si évasion)
+        final = _safe_download_target(dest_path, file_name)
+        final.parent.mkdir(parents=True, exist_ok=True)
 
-        fh = io.FileIO(str(dest / file_name), 'wb')
+        request = service.files().get_media(fileId=file_id)
+        fh = io.FileIO(str(final), 'wb')
         downloader = MediaIoBaseDownload(fh, request)
 
         done = False
         while not done:
             _, done = downloader.next_chunk()
 
-        return {"message": f"Fichier '{file_name}' téléchargé", "path": str(dest / file_name)}
+        return {"message": f"Fichier '{final.name}' téléchargé", "path": str(final)}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"Erreur: {e}")
 

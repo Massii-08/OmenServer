@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend.auth.utils import get_current_user
 from backend.auth.models import User
+from backend.auth.access_control import require_resource_access
 from backend.game_server.models import GameServer
 from backend.game_server import docker_manager
 
@@ -325,6 +326,7 @@ def get_properties(
     db: Session = Depends(get_db),
 ):
     """Lire toutes les propriétés du server.properties."""
+    require_resource_access(current_user, "server", server_id, db, min_level="view_only")
     server = _get_server_or_404(server_id, db)
     try:
         # Le fichier est dans /data/server.properties pour l'image itzg/minecraft-server
@@ -346,6 +348,7 @@ def update_properties(
     Modifier des propriétés dans server.properties.
     Seules les clés envoyées sont modifiées, les autres restent intactes.
     """
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = _get_server_or_404(server_id, db)
     try:
         # Lire l'original
@@ -376,6 +379,7 @@ def get_config_file(
     Fichiers autorisés : server.properties, spigot.yml, bukkit.yml,
     paper-global.yml, paper-world-defaults.yml
     """
+    require_resource_access(current_user, "server", server_id, db, min_level="view_only")
     allowed = [
         "server.properties", "spigot.yml", "bukkit.yml",
         "paper-global.yml", "paper-world-defaults.yml",
@@ -401,6 +405,7 @@ def update_config_file(
     db: Session = Depends(get_db),
 ):
     """Écrire dans un fichier de configuration autorisé."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     allowed = [
         "server.properties", "spigot.yml", "bukkit.yml",
         "paper-global.yml", "paper-world-defaults.yml",

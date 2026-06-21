@@ -86,6 +86,13 @@ async def console_websocket(
     - Se déconnecte proprement si le conteneur s'arrête
     """
     # 1. Authentification : d'abord essayer via query string (rétro-compatible)
+    # TODO sécurité : le JWT passé en ?token= apparaît dans les logs d'accès
+    #   (proxy/Cloudflare/uvicorn). Le frontend (frontend/js/server_view.js l.325
+    #   et frontend/js/game_server.js l.885) construit encore l'URL avec ?token=,
+    #   donc on NE retire PAS le query param ici pour ne rien casser. L'auth par
+    #   PREMIER MESSAGE (bloc ci-dessous, type:"auth") est déjà supportée et doit
+    #   devenir le chemin principal — migrer le frontend dessus, puis supprimer
+    #   ce paramètre query. (Géré côté frontend par Massii.)
     user = None
     if token:
         user = get_user_from_token(token)
@@ -116,11 +123,16 @@ async def console_websocket(
         await websocket.close(code=4004, reason="Serveur non trouvé")
         return
 
-    # 3. RBAC : vérifier que l'utilisateur a accès à ce serveur
+    # 3. RBAC : vérifier que l'utilisateur a accès à ce serveur.
+    #    - Connexion (lecture des logs) : view_only suffit.
+    #    - Envoi de commandes RCON (op/ban/stop...) : exige `manage` (vérifié
+    #      plus bas, à chaque commande). Une console en lecture seule ne doit PAS
+    #      permettre d'exécuter des commandes admin de jeu.
     from backend.auth.access_control import can_access_resource
     db_check = SessionLocal()
     try:
         has_access = can_access_resource(user, "server", server_id, db_check, min_level="view_only")
+        can_send_commands = can_access_resource(user, "server", server_id, db_check, min_level="manage")
     finally:
         db_check.close()
     if not has_access:
@@ -187,6 +199,15 @@ async def console_websocket(
                 if data.get("type") == "command":
                     cmd = data.get("data", "").strip()
                     if cmd:
+                        # SECURITE : envoyer une commande RCON (op/ban/stop...) exige
+                        # le niveau `manage`. Une console en view_only/start ne peut
+                        # QUE lire les logs, pas exécuter des commandes admin de jeu.
+                        if not can_send_commands:
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": "Accès en lecture seule : envoi de commandes interdit (niveau 'manage' requis)."
+                            })
+                            continue
                         try:
                             # Vérifier que le conteneur est bien running (pas restarting/paused)
                             container.reload()

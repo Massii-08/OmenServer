@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend.auth.utils import get_current_user
 from backend.auth.models import User
+from backend.auth.access_control import require_resource_access
 from backend.game_server.models import GameServer
 from backend.game_server import docker_manager
 
@@ -112,6 +113,7 @@ def get_ports(
     db: Session = Depends(get_db),
 ):
     """Liste tous les ports exposés par le conteneur Docker."""
+    require_resource_access(current_user, "server", server_id, db, min_level="view_only")
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
@@ -162,6 +164,7 @@ def add_port(
     Ajouter un port au conteneur.
     Le conteneur est arrêté, recréé avec le nouveau port, puis redémarré.
     """
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
@@ -223,6 +226,7 @@ def remove_port(
     db: Session = Depends(get_db),
 ):
     """Retirer un port additionnel (pas le port principal)."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
@@ -269,6 +273,8 @@ def get_sftp_info(
     db: Session = Depends(get_db),
 ):
     """Retourne les informations de connexion SFTP avec les vrais credentials."""
+    # SECURITE : cet endpoint expose server.sftp_password en clair → manage requis.
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
@@ -299,13 +305,11 @@ def reset_sftp_password(
     db: Session = Depends(get_db),
 ):
     """Régénère le mot de passe SFTP d'un serveur et recrée le conteneur SFTP."""
+    # SECURITE : reset SFTP = action sensible → manage requis (owner/admin/shared manage).
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
-
-    # Vérifier que l'utilisateur est le propriétaire ou admin
-    if not current_user.is_admin and server.owner_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Accès refusé")
 
     from backend.game_server.sftp_manager import generate_sftp_password, rebuild_sftp_container
     server.sftp_password = generate_sftp_password()

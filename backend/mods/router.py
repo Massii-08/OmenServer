@@ -26,15 +26,44 @@ from typing import Optional
 from backend.database import get_db
 from backend.auth.utils import get_current_user
 from backend.auth.models import User
+from backend.auth.access_control import require_resource_access
 from backend.game_server.models import GameServer
 from backend.mods import curseforge
 from backend.mods import steam_workshop
 from backend.game_server.games_config import get_game_config
 from backend.config import settings
+from backend import net_guard
 
 logger = logging.getLogger("omenserver")
 
 router = APIRouter(prefix="/api/mods", tags=["Mods CurseForge"])
+
+# Hôtes autorisés pour les URLs de téléchargement (anti-SSRF).
+# Le client envoie un download_url ; on n'accepte QUE ces CDN légitimes.
+# Voir la directive CSP img-src de backend/main.py pour la source de vérité.
+ALLOWED_DOWNLOAD_HOSTS = [
+    "forgecdn.net",      # CurseForge CDN (edge/media/*.forgecdn.net)
+    "cdn.modrinth.com",  # Modrinth CDN
+    "modrinth.com",      # Modrinth (api.modrinth.com etc.)
+    "spigotmc.org",      # Spigot plugins CDN
+]
+
+
+def _validate_download_url(download_url: str) -> None:
+    """Garde anti-SSRF sur une URL de téléchargement fournie par le client.
+
+    Lève HTTPException(400) si l'URL ne vise pas un CDN allowlisté OU si elle
+    pointe (par IP littérale) vers une destination interne/privée.
+    """
+    if not download_url:
+        raise HTTPException(status_code=400, detail="URL de téléchargement manquante")
+    if not net_guard.host_allowed(download_url, ALLOWED_DOWNLOAD_HOSTS):
+        raise HTTPException(status_code=400, detail="Hôte de téléchargement non autorisé")
+    # Defense-in-depth : rejette une éventuelle IP privée littérale + schéma non-http(s)
+    try:
+        net_guard.assert_public_url(download_url)
+    except net_guard.UnsafeUrlError:
+        raise HTTPException(status_code=400, detail="URL de téléchargement non autorisée")
 
 
 # --- Schémas ---
@@ -86,12 +115,12 @@ def install_mod(
     db: Session = Depends(get_db),
 ):
     """Télécharge et installe un mod sur un serveur."""
+    require_resource_access(current_user, "server", request.server_id, db, min_level="manage")
     server = db.query(GameServer).filter(GameServer.id == request.server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
 
-    if not request.download_url:
-        raise HTTPException(status_code=400, detail="URL de téléchargement manquante")
+    _validate_download_url(request.download_url)
 
     # Dossier mods du serveur
     server_data_dir = os.path.join(settings.SERVERS_DATA_DIR, str(server.id))
@@ -135,6 +164,7 @@ def remove_mod(
     db: Session = Depends(get_db),
 ):
     """Supprime un mod d'un serveur."""
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
@@ -166,11 +196,14 @@ def install_datapack(
     """Télécharge et installe un datapack sur un serveur."""
     from backend.mods.datapack_manager import install_datapack as _install
 
+    require_resource_access(current_user, "server", request.server_id, db, min_level="manage")
     server = db.query(GameServer).filter(GameServer.id == request.server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")
     if not server.docker_id:
         raise HTTPException(status_code=400, detail="Pas de conteneur Docker")
+
+    _validate_download_url(request.download_url)
 
     try:
         _install(server.docker_id, request.download_url, request.filename)
@@ -211,6 +244,7 @@ def remove_datapack(
     """Supprime un datapack d'un serveur."""
     from backend.mods.datapack_manager import remove_datapack as _remove
 
+    require_resource_access(current_user, "server", server_id, db, min_level="manage")
     server = db.query(GameServer).filter(GameServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Serveur non trouvé")

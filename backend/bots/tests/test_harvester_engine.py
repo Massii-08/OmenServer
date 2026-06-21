@@ -25,6 +25,13 @@ PAGE2 = """<html><body>
 PLAN = {"mode": "pagination", "next_selector": {"tag": "li", "class": "next"}}
 
 
+# Filtre d'URL permissif : les tests offline utilisent des hôtes fictifs (x.test)
+# qui ne résolvent pas en DNS. Le filtre anti-SSRF réel est testé séparément
+# dans test_harvester_ssrf.py.
+def _allow_all(url, source_url):
+    return True
+
+
 class FakeFetcher(object):
     def __init__(self, pages):
         self.pages = pages
@@ -49,7 +56,8 @@ def test_engine_follows_pagination_and_collects_all(tmp_path):
     slept = []
     eng = Engine(store, Recipe.from_dict(LISTING_RECIPE), FakeFetcher(pages),
                  FieldPolicy(allowed=["title", "price"]), PLAN,
-                 sleep=lambda s: slept.append(s), jitter=lambda: 2.5)
+                 sleep=lambda s: slept.append(s), jitter=lambda: 2.5,
+                 url_filter=_allow_all)
     eng.run()
     assert store.records() == [
         {"title": "A", "price": "£1"},
@@ -66,7 +74,8 @@ def test_engine_ordering_fetch_then_extract_then_store(tmp_path):
     store = _store(tmp_path)
     store.add_todo("https://x.test/page-1.html")
     eng = Engine(store, Recipe.from_dict(LISTING_RECIPE), fetcher,
-                 FieldPolicy(allowed=["title", "price"]), PLAN, sleep=lambda s: None)
+                 FieldPolicy(allowed=["title", "price"]), PLAN, sleep=lambda s: None,
+                 url_filter=_allow_all)
     eng.run()
     assert fetcher.calls == ["https://x.test/page-1.html", "https://x.test/page-2.html"]
 

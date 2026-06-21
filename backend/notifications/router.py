@@ -9,6 +9,7 @@ Routes:
 
 import logging
 import json
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +25,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/notifications", tags=["Notifications"])
 
 SETTINGS_FILE = Path("data/notification_settings.json")
+
+# Anti-SSRF : un webhook Discord est TOUJOURS sur discord.com / discordapp.com
+# sous /api/webhooks/. Toute autre URL (http://127.0.0.1, métadonnées cloud, LAN)
+# est refusée -> on ne peut pas détourner le POST /test vers une cible interne.
+_DISCORD_WEBHOOK_RE = re.compile(
+    r"\Ahttps://(?:ptb\.|canary\.)?(?:discord|discordapp)\.com/api/(?:v\d+/)?webhooks/\d+/[\w-]+\Z"
+)
+
+
+def _is_valid_discord_webhook(url: str) -> bool:
+    return bool(_DISCORD_WEBHOOK_RE.match((url or "").strip()))
 
 
 class NotificationSettings(BaseModel):
@@ -97,19 +109,43 @@ def update_settings(
     settings: NotificationSettings,
     current_user: User = Depends(get_current_user),
 ):
-    """Sauvegarde les réglages de notification."""
-    _save_settings(settings.dict())
-    return {"message": "Réglages sauvegardés", **settings.dict()}
+    """Sauvegarde les réglages de notification (admin uniquement).
+
+    Le webhook Discord est validé contre une allowlist d'URL stricte
+    (discord.com / discordapp.com /api/webhooks/…) -> impossible de pointer le
+    POST vers une cible interne (anti-SSRF)."""
+    if not getattr(current_user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Seuls les administrateurs peuvent modifier les notifications")
+
+    data = settings.dict()
+    url = (data.get("discord_webhook_url") or "").strip()
+    if url and not _is_valid_discord_webhook(url):
+        raise HTTPException(
+            status_code=400,
+            detail="URL de webhook Discord invalide. Format attendu : "
+                   "https://discord.com/api/webhooks/…",
+        )
+    data["discord_webhook_url"] = url
+    _save_settings(data)
+    return {"message": "Réglages sauvegardés", **data}
 
 
 @router.post("/test")
 async def test_webhook(current_user: User = Depends(get_current_user)):
-    """Envoie un message test au webhook Discord."""
+    """Envoie un message test au webhook Discord (admin uniquement)."""
+    if not getattr(current_user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Seuls les administrateurs peuvent tester les notifications")
+
     settings = _load_settings()
     webhook_url = settings.get("discord_webhook_url", "")
 
     if not webhook_url:
         raise HTTPException(status_code=400, detail="Aucun webhook Discord configuré")
+
+    # défense en profondeur : ne POST que vers un vrai webhook Discord (un fichier
+    # settings antérieur au fix pourrait contenir une URL arbitraire).
+    if not _is_valid_discord_webhook(webhook_url):
+        raise HTTPException(status_code=400, detail="URL de webhook Discord invalide")
 
     await send_discord_notification(
         title="🧪 Test de notification",
