@@ -148,8 +148,14 @@ async function clearSnares(bot) {
  * PUR : le bot est-il « coincé en l'air » ? (pas au sol, pas dans l'eau, position horizontale
  * quasi inchangée entre 2 échantillons espacés d'au moins minMs). samples = {x,z,t}.
  */
-function isFloatingStuck(prev, cur, { onGround, inWater, vy, minMs = 1500, eps = 0.35, maxVy = 0.12 } = {}) {
+function isFloatingStuck(prev, cur, { onGround, inWater, vy, groundBelow, minMs = 1500, eps = 0.35, maxVy = 0.12 } = {}) {
   if (onGround || inWater || !prev || !cur) return false;
+  // FAUX POSITIF terre (vécu live world_dry_a/plains) : un bot immobile sur terrain solide peut avoir
+  // bot.entity.onGround=FALSE par flakiness physique mineflayer → l'ancienne détection croyait au
+  // flottement → recoverFloating attend onGround (jamais atteint, rien à récupérer) → ok:false en BOUCLE
+  // → 0 minage, 2/3 des ResBots paralysés. Si un BLOC SOLIDE est juste sous les pieds, le bot N'EST PAS
+  // en l'air → on supprime le faux positif (le call-site calcule groundBelow via bot.blockAt).
+  if (groundBelow === true) return false;
   // En train de TOMBER ou de MONTER (saut/chute/pilier en cours) ≠ coincé : un bot réellement
   // coincé-flottant a une vélocité verticale ≈ 0. Garde optionnelle (rétro-compat si vy absent).
   if (vy != null && Math.abs(vy) > maxVy) return false;

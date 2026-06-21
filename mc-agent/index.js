@@ -2222,7 +2222,13 @@ setInterval(async () => {
     const p = bot.entity.position;
     const vy = (bot.entity.velocity && bot.entity.velocity.y) || 0;
     const cur = { x: p.x, z: p.z, t: Date.now() };
-    if (isFloatingStuck(_floatPrev, cur, { onGround: !!bot.entity.onGround, inWater: isInWater(bot), vy })) {
+    // Sol solide juste sous les pieds ? (anti faux-positif onGround flaky sur terrain solide, vécu live)
+    let groundBelow = false;
+    try {
+      const b = bot.blockAt(vec3Lib(Math.floor(p.x), Math.floor(p.y) - 1, Math.floor(p.z)));
+      groundBelow = !!(b && b.boundingBox === 'block');
+    } catch (e) { /* blockAt indispo → on laisse la détection normale */ }
+    if (isFloatingStuck(_floatPrev, cur, { onGround: !!bot.entity.onGround, inWater: isInWater(bot), vy, groundBelow })) {
       // EXIGER 2 détections consécutives (~4 s de flottement continu) : une seule peut être un
       // transitoire (positionnement en début de branche, micro-lag) et recoverFloating COUPE le
       // goal/mining → on interromprait du minage légitime.
