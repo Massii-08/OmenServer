@@ -206,3 +206,21 @@ def test_build_fetcher_stealth_timeout_clamped():
                        {"fetch_tier": "stealth", "manual_solve": True,
                         "manual_solve_timeout": 99999}, None)
     assert f.manual_solve_timeout == 3600
+
+
+# ---- Task C4 : notifier Telegram câblé dans _build_fetcher ----------------
+
+def test_build_fetcher_stealth_wires_telegram_notifier(monkeypatch):
+    from backend.bots.harvester import telegram_config as tc
+    monkeypatch.setattr(tc, "load", lambda path=None: {"token": "T", "chat_id": "C"})
+    f = _build_fetcher("stealth", _rate(), "https://t.test/p",
+                       {"fetch_tier": "stealth", "manual_solve": True}, None)
+    assert callable(f._notify)
+
+
+def test_build_fetcher_stealth_no_notifier_without_telegram(monkeypatch):
+    from backend.bots.harvester import telegram_config as tc
+    monkeypatch.setattr(tc, "load", lambda path=None: {})
+    f = _build_fetcher("stealth", _rate(), "https://t.test/p",
+                       {"fetch_tier": "stealth", "manual_solve": True}, None)
+    assert f._notify is None

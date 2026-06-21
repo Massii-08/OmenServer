@@ -52,6 +52,16 @@ def _as_float(value, default, lo=None, hi=None):
     return n
 
 
+def _make_telegram_notifier():
+    """Construit un callable de notif Telegram si la config persistante est
+    complète, sinon None (manual-solve marche sans, Telegram = juste l'alerte)."""
+    from backend.bots.harvester import telegram_config, notify
+    cfg = telegram_config.load()
+    if cfg.get("token") and cfg.get("chat_id"):
+        return lambda text: notify.send(text, cfg)
+    return None
+
+
 def _build_fetcher(tier, rate, url, plan=None, run_dir=None):
     """Sélection du tier de fetch. Défaut = httpx. 'stealth' = patchright + options
     lues du plan : proxy, pace_min/max, max_wait, retries, wait_after (settle JS),
@@ -114,7 +124,7 @@ def _build_fetcher(tier, rate, url, plan=None, run_dir=None):
             on_event=_emit,                  # events -> run.log -> router
             manual_solve=ms,
             manual_solve_timeout=ms_timeout,
-            notify=None,                     # câblé sur Telegram en C4
+            notify=_make_telegram_notifier(),
         )
     return HttpxFetcher(rate)
 
