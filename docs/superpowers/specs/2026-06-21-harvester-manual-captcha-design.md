@@ -68,8 +68,9 @@ feature 2 n'existe que pour les **vrais puzzles**, là où B s'effondre. A = fid
 subprocess minimal, au prix d'un install x11vnc one-shot (Massii a déjà monté Xvfb lui-même).
 
 Le **bridge** = un **endpoint WebSocket FastAPI admin-gated** qui est lui-même le pont
-**WS ↔ TCP** vers `x11vnc` en loopback → **pas de websockify**. x11vnc en service systemd
-always-on, bound `127.0.0.1`, **joignable uniquement par le bridge authentifié**.
+**WS ↔ socket Unix** vers `x11vnc` → **pas de websockify**. x11vnc en service systemd
+always-on, écoutant sur un **socket Unix** (aucun port TCP, pas même loopback), **joignable
+uniquement par le bridge authentifié** (perms du socket + JWT admin).
 
 ### Flux
 
@@ -77,7 +78,7 @@ always-on, bound `127.0.0.1`, **joignable uniquement par le bridge authentifié*
 [Navigateur Massii] ──omenserver.org (tunnel CF)──► [uvicorn / FastAPI]
    dashboard (harvester_module.js)                        │ bridge WS admin-gated
    • poll /status → awaiting_solve ?                       ▼
-   • si oui: panneau noVNC (canvas) ──wss /vnc/{job}?token──► [WS↔TCP pump] ──► x11vnc :5900 (loopback)
+   • si oui: panneau noVNC (canvas) ──wss /vnc/{job}?token──► [WS↔socket pump] ──► x11vnc (socket Unix)
                                                                                       │ mirroir
                                                                           [Xvfb :100] ◄── Chrome headful
                                                                                       ▲ (subprocess détaché)
@@ -114,10 +115,10 @@ coordonnées côté code).
 - **Opt-in** : `plan.manual_solve: true` (case UI « Attendre ma résolution manuelle si un
   CAPTCHA bloque », visible quand Stealth coché). **Défaut OFF** (sinon un run nocturne non
   surveillé se bloquerait `timeout` sur chaque puzzle). `plan.manual_solve_timeout` (défaut
-  **600 s**, borné `_as_int` `[30, 3600]`). Poll interne ~3 s (borné).
+  **1800 s**, borné `_as_int` `[30, 3600]`). Poll interne ~3 s (borné).
 - `StealthFetcher` gagne (tous injectables, défauts rétro-compatibles) :
   `on_event: Callable|None`, `notify: Callable[[str], None]|None`, `manual_solve: bool=False`,
-  `manual_solve_timeout: int=600`, `solve_poll_s: float=3.0`, `should_stop: Callable[[],bool]`
+  `manual_solve_timeout: int=1800`, `solve_poll_s: float=3.0`, `should_stop: Callable[[],bool]`
   (défaut : lit `run_dir/stop.flag` si `run_dir`, sinon `lambda: False`).
 - Quand **retries + autoclick échouent** ET `manual_solve` ON, au lieu de `PushbackError` :
   1. `_emit_event({"type":"awaiting_manual_solve","url":url,"since":<clock>,"timeout_s":N})` ;
@@ -177,19 +178,25 @@ coordonnées côté code).
 
 - **Infra (Massii, one-shot sur l'Omen, comme Xvfb)** — fournis dans `tools/` + doc :
   - `apt install x11vnc` ;
-  - unit systemd `tools/omen-harvester-vnc.service` :
-    `ExecStart=/usr/bin/x11vnc -display :100 -localhost -forever -shared -rfbport 5900 -nopw`
-    (bound **loopback**, `-forever` survit aux déconnexions, `-shared` multi-viewer). Bound
-    127.0.0.1 + bridge admin-gated → `-nopw` acceptable v1 ; option `-rfbauth <fichier 0o600>`
-    notée en durcissement.
+  - unit systemd `tools/omen-harvester-vnc.service`, tournant sous le **même user que
+    `omenserver`** (`User=`/`Group=`), avec `RuntimeDirectory=omen-harvester-vnc` (crée
+    `/run/omen-harvester-vnc/` au bon user, nettoyé au reboot) :
+    - `ExecStartPre=/bin/rm -f /run/omen-harvester-vnc/vnc.sock` (socket périmé après crash)
+    - `ExecStart=/usr/bin/x11vnc -display :100 -forever -shared -unixsock /run/omen-harvester-vnc/vnc.sock`
+    → **aucun port TCP** (pas même loopback), `-forever` survit aux déconnexions, `-shared`
+    multi-viewer. Accès gouverné par les **perms du socket** (user omenserver) + le JWT admin du
+    bridge → **pas de mot de passe RFB à gérer**.
 - **Bridge** : `@router.websocket("/api/bots/harvester/vnc/{job_id}")` :
   - auth **admin** via `?token=` (réutilise le pattern WS existant du projet : décode le JWT,
     charge l'user, exige `is_admin`) ; `_check_job_id` ;
   - **refuse (close 1008) si le job n'est pas `awaiting_solve`** → n'ouvre jamais le bureau
     arbitrairement ;
-  - `reader, writer = await asyncio.open_connection("127.0.0.1", 5900)` + 2 coroutines de
-    pump (`ws.receive_bytes()` → `writer.write`; `reader.read(n)` → `ws.send_bytes`) ; ferme
+  - `reader, writer = await asyncio.open_unix_connection("/run/omen-harvester-vnc/vnc.sock")`
+    (chemin configurable via env `HARVESTER_VNC_SOCK`) + 2 coroutines de pump
+    (`ws.receive_bytes()` → `writer.write`; `reader.read(n)` → `ws.send_bytes`) ; ferme
     proprement des 2 côtés. C'est ce que fait websockify, en ~40 lignes authentifiées.
+  - **Prérequis** : x11vnc et uvicorn tournent sous le **même user** (sinon socket
+    inaccessible) → si users distincts, socket en groupe partagé `0o660`.
 - **noVNC vendored** : `frontend/vendor/novnc/` (core RFB ESM + deps), chargé en `import()`
   dynamique quand `awaiting_solve` (CSP `script-src 'self'` OK). `new RFB(canvasEl, wsUrl)`
   avec `wsUrl = wss://<host>/api/bots/harvester/vnc/{job_id}?token=<jwt>`.
@@ -237,12 +244,12 @@ coordonnées côté code).
 ## 7. Décisions de défaut (validées)
 
 - `manual_solve` **OFF par défaut** (anti-stall nocturne non surveillé).
-- `manual_solve_timeout` = **600 s**.
+- `manual_solve_timeout` = **1800 s** (borné `[30, 3600]`).
 - **Concurrence** : on assume **≈1 awaiting à la fois** (rare). Xvfb `:100` est partagé → la
   vue montre le bureau `:100` entier (en pratique le seul Chrome harvester). Si 2 runs stealth
   awaitent en même temps, la vue les montre tous les deux ; acceptable v1 (documenté).
-- x11vnc **always-on** loopback (cohérent avec la philosophie systemd OmenServer :
-  cloudflared/omenserver/agent), pas on-demand.
+- x11vnc **always-on** sur **socket Unix** (aucun port réseau ; cohérent avec la philosophie
+  systemd OmenServer : cloudflared/omenserver/agent), pas on-demand.
 
 ## 8. Hors-périmètre (explicite)
 
