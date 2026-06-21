@@ -25,8 +25,11 @@ omenserver hérite déjà de `DISPLAY=:100`.
    ls -l /run/omen-harvester-vnc/vnc.sock     # doit exister, owner = OMEN_USER
    ```
 
-Sécurité : aucun port TCP ouvert (socket Unix only). Accès gouverné par les perms
-du socket (user omenserver) + le JWT admin du bridge `/api/bots/harvester/vnc/`.
-Le bridge refuse toute connexion hors d'un job en `awaiting_solve`.
+Sécurité : x11vnc 0.9.x exige un listener TCP, borné ici à **127.0.0.1/::1**
+(loopback only, injoignable de l'extérieur). Le bridge passe par le **socket
+Unix** (dossier `/run/omen-harvester-vnc/` en `0700`, user omenserver) ; le port
+loopback n'est atteignable que depuis l'Omen lui-même. Accès gouverné par les
+perms du socket + le JWT admin du bridge `/api/bots/harvester/vnc/`, qui refuse
+toute connexion hors d'un job en `awaiting_solve`.
 
 Override possible du chemin via `HARVESTER_VNC_SOCK` (env du service omenserver).
