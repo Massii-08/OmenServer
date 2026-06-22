@@ -70,7 +70,11 @@ async function runResource(bot, opts = {}, token = null) {
   const pickTier = opts.pickTier || null;
   const claims = opts.claims || null;
   const reload = opts.reloadMemory || null;
-  const tracker = opts.quota ? createQuotaTracker(opts.quota) : null;
+  // bankedSeed/saveBanked (opts) : persistance du cumul bankē → la progression survit aux re-créations
+  // du tracker (re-entrée runResource / respawn / deploy). Cause racine du plateau multi-nuits.
+  const tracker = opts.quota
+    ? createQuotaTracker(opts.quota, { banked: opts.bankedSeed || null, onBanked: opts.saveBanked || null })
+    : null;
   const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const clock = opts.now || Date.now;
   const waitMs = opts.waitMs != null ? opts.waitMs : 5000;

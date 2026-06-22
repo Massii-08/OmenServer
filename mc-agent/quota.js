@@ -53,10 +53,24 @@ function normalizeQuota(quota) {
  * `noteBanked(before, after)` : à appeler autour d'un dépôt/perte volontaire — crédite la
  * DIFFÉRENCE positive par type (robuste quel que soit ce que le dépôt a réellement vidé).
  */
-function createQuotaTracker(quota) {
+// `opts.banked` : seed du cumul bankē (durabilité respawn / re-entrée de runResource / deploy — le
+//   tracker est recréé à chaque fois, sans seed la progression bankée des coffres au sol est oubliée).
+// `opts.onBanked(snapshot)` : callback appelé après CHAQUE crédit positif de noteBanked, reçoit une COPIE
+//   du cumul bankē → l'appelant (index.js) le persiste sur disque. Module reste PUR (l'I/O est dans le callback).
+function createQuotaTracker(quota, opts) {
   const target = normalizeQuota(quota);
   const banked = {};
   for (const t of Object.keys(target)) banked[t] = 0;
+  // Seed depuis le cumul bankē persisté (ne garde que les types du quota, entiers > 0).
+  const seed = opts && opts.banked;
+  if (seed && typeof seed === 'object') {
+    for (const t of Object.keys(target)) {
+      const v = Math.floor(Number(seed[t]));
+      if (Number.isFinite(v) && v > 0) banked[t] = v;
+    }
+  }
+  const onBanked = (opts && typeof opts.onBanked === 'function') ? opts.onBanked : null;
+  const bankedSnapshot = () => Object.assign({}, banked);
 
   function progress(items) {
     const inv = countItems(items);
@@ -79,13 +93,15 @@ function createQuotaTracker(quota) {
 
   function noteBanked(before, after) {
     const b = countItems(before), a = countItems(after);
+    let changed = false;
     for (const t of Object.keys(target)) {
       const d = b[t] - a[t];
-      if (d > 0) banked[t] += d;
+      if (d > 0) { banked[t] += d; changed = true; }
     }
+    if (changed && onBanked) onBanked(bankedSnapshot());
   }
 
-  return { target, progress, remainingTypes, met, noteBanked };
+  return { target, progress, remainingTypes, met, noteBanked, bankedSnapshot };
 }
 
 // ─── Tri de l'inventaire (mode quota, sous terre : pas de coffre → on JETTE le junk) ───

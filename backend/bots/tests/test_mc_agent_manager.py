@@ -171,6 +171,53 @@ def test_start_session_passe_le_profil(monkeypatch):
     assert captured["cmd"][i + 1] == "expert"
 
 
+def test_quota_passe_banked_keye_server_user(monkeypatch, tmp_path):
+    """Bot ressource (quota + server_id) : --banked <path> keyé server+user → la progression bankée
+    survit aux re-créations du tracker (respawn / re-entrée / deploy). Cause racine du plateau."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path)
+    captured = {}
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc('{"type":"status","state":"spawned"}\n')
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    sid = mgr.start_session("h", 25565, "ResBot1", None, "offline",
+                            server_id="8d91a7", objective="resource",
+                            quota={"diamond": 64, "iron": 64})
+    mgr._sessions[sid]["thread"].join(timeout=2)
+    cmd = captured["cmd"]
+    assert "--banked" in cmd
+    p = cmd[cmd.index("--banked") + 1]
+    # keyé par server + user → stable across respawn (même start_for_bot) ET deploy (même user)
+    assert "8d91a7" in p and "ResBot1" in p
+
+
+def test_quota_sans_server_id_pas_de_banked(monkeypatch, tmp_path):
+    """Sans server_id (pas de clé stable) : pas de --banked (rétro-compat, jamais de fichier orphelin)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path)
+    captured = {}
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc('{"type":"status","state":"spawned"}\n')
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    sid = mgr.start_session("h", 25565, "B", None, "offline",
+                            objective="resource", quota={"diamond": 64})
+    mgr._sessions[sid]["thread"].join(timeout=2)
+    assert "--banked" not in captured["cmd"]
+
+
+def test_banked_pas_supprime_au_cleanup(monkeypatch, tmp_path):
+    """Le fichier banked NE doit PAS être nettoyé à la mort/stop (sinon respawn → progression perdue).
+    Durable comme la mémoire de monde (purge manuelle de l'opérateur au swap de monde)."""
+    bf = tmp_path / "banked-8d91a7-ResBot1.json"
+    bf.write_text('{"diamond": 19}')
+    sess = {"banked_path": str(bf), "cmds_path": None, "policy_path": None,
+            "world_path": None, "wm_path": None, "quota_path": None, "login_path": None}
+    mgr._cleanup_session_files(sess)
+    assert bf.exists(), "le cumul bankē doit survivre au cleanup (respawn-durable)"
+
+
 def test_list_profiles_parse_la_sortie_node(monkeypatch):
     payload = '[{"id":"evident","level":1,"label":"Évident","summary":"s","tells":["t1"]}]'
     class R:

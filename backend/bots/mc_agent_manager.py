@@ -404,6 +404,18 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
         quota_path = RUNS_DIR / f"quota-{sid}.json"
         quota_path.write_text(json.dumps(quota), encoding="utf-8")
         cmd += ["--quota", str(quota_path)]
+    # Cumul bankē PERSISTÉ banked-<server>-<user>.json : keyé server+user (PAS par sid) → STABLE à travers
+    # un respawn (start_for_bot ré-utilise server_id+user), une re-entrée de runResource (même process) ET
+    # un deploy (relance même user). Sans ça le tracker quota repart à 0 à chaque re-création → la
+    # progression bankée (coffres au sol) est oubliée = cause racine du plateau multi-nuits. Le bot le
+    # seed au démarrage + le réécrit à chaque dépôt. NON nettoyé au stop/mort (durable comme la mémoire de
+    # monde — purge MANUELLE de l'opérateur au swap de monde, sinon stale comme world_memory).
+    banked_path = None
+    if quota and server_id:
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        _safe_user = re.sub(r"[^A-Za-z0-9_.-]", "_", str(user)) or "bot"
+        banked_path = RUNS_DIR / f"banked-{server_id}-{_safe_user}.json"
+        cmd += ["--banked", str(banked_path)]
     if world_label:
         cmd += ["--world-label", str(world_label)]  # monde de minage (overworld-type séparé)
     if confine:
@@ -452,6 +464,9 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
         "world_path": str(world_path) if world_path else None,
         "wm_path": str(wm_path) if wm_path else None,
         "quota_path": str(quota_path) if quota_path else None,
+        # banked_path : tracé pour debug/observabilité mais VOLONTAIREMENT absent de _cleanup_session_files
+        # (durable across stop/mort/respawn — purge manuelle au swap de monde, cf. _spawn_bot).
+        "banked_path": str(banked_path) if banked_path else None,
         "spawned_at": time.time(),
         "login_path": str(login_path) if login_path else None,
     }

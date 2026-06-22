@@ -843,6 +843,29 @@ function loadQuota() {
   catch (e) { return null; }
 }
 
+// Cumul bankē persisté --banked <path> : durabilité de la progression bankée à travers les re-créations
+// du tracker (re-entrée de runResource dans le MÊME process + respawn cross-process + deploy). Sans ça
+// le banked repart à 0 → les diamants déposés dans des coffres au sol sont OUBLIÉS (cause racine du
+// plateau multi-nuits). Fichier keyé server+user côté manager (stable across respawn/deploy). Best-effort :
+// toute erreur d'I/O → repart de 0 (jamais bloquant), comme la mémoire de monde.
+function loadBanked() {
+  if (!args.banked) return null;
+  try {
+    const o = JSON.parse(require('fs').readFileSync(String(args.banked), 'utf8'));
+    return (o && typeof o === 'object') ? o : null;
+  } catch (e) { return null; }
+}
+function saveBanked(snapshot) {
+  if (!args.banked || !snapshot) return;
+  const fs = require('fs');
+  const p = String(args.banked);
+  try {
+    const tmp = p + '.tmp';                       // write+rename = écriture atomique (anti-corruption sur mort process)
+    fs.writeFileSync(tmp, JSON.stringify(snapshot));
+    fs.renameSync(tmp, p);
+  } catch (e) { /* best-effort, comme world memory */ }
+}
+
 // ── Phase 2 : maintenance d'outillage (craft stone/iron pick depuis les matériaux minés).
 // Backoff après échec (phase 3, vécu V3Res3 : gear_craft FAIL ×11 — le craft raté était RETENTÉ
 // à chaque itération de cible, et chaque tentative = goto table + pose ≈ 30 s → ~40 min perdues.
@@ -1511,6 +1534,10 @@ async function startResource() {
     pickTier: bestPickTier,
     deposit: () => deposit(bot),
     quota,
+    // Durabilité de la progression bankée (cf. loadBanked/saveBanked) : seed au démarrage + persiste à
+    // chaque dépôt → respawn/re-entrée/deploy ne remettent plus le compteur à 0 (les coffres tiennent au sol).
+    bankedSeed: quota ? loadBanked() : null,
+    saveBanked: quota ? saveBanked : null,
     claims,
     reloadMemory,
     bank: quota ? bankDeposit : null,
