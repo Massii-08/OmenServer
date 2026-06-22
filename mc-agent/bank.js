@@ -53,4 +53,29 @@ function planBank(items, target, opts = {}) {
   return { shouldBank, deposit: shouldBank ? deposit : [] };
 }
 
-module.exports = { planBank, BANK_DELIVERABLES };
+/**
+ * planSmeltRaw(items, opts) → [{raw, ingot, count}]
+ * Décide quel BRUT (raw_gold/raw_iron) fondre en lingots PENDANT le run (pas seulement à la fin).
+ * En no-keepInventory, le brut n'est PAS bankable (cf. BANK_DELIVERABLES) → il s'accumule en poche
+ * et une MORT l'efface (vécu live ResBot2 : gold2/iron5 = brut en poche, banked=0, jamais survécu).
+ * En le fondant tôt, bank.js banke les LINGOTS (gold_ingot/iron_ingot) → la progression or/fer
+ * survit aux morts ET satisfait l'exigence Massii « livrer des lingots FONDUS ».
+ *  - opts.minBatch : ne fond un type que s'il atteint ce volume (défaut 8 ; sous ce seuil, l'overhead
+ *    de pose du four > le gain). On ne fond JAMAIS le diamant/redstone/lapis (déjà livrables bruts).
+ */
+function planSmeltRaw(items, opts = {}) {
+  const minBatch = opts.minBatch != null ? opts.minBatch : 8;
+  const counts = {};
+  for (const it of items || []) {
+    if (!it || !it.name) continue;
+    counts[it.name] = (counts[it.name] || 0) + (Number(it.count) || 0);
+  }
+  const out = [];
+  for (const [raw, ingot] of [['raw_gold', 'gold_ingot'], ['raw_iron', 'iron_ingot']]) {
+    const n = counts[raw] || 0;
+    if (n >= minBatch) out.push({ raw, ingot, count: n });
+  }
+  return out;
+}
+
+module.exports = { planBank, BANK_DELIVERABLES, planSmeltRaw };

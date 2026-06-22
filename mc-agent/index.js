@@ -56,6 +56,7 @@ const { runMapper } = require('./mapper');
 const { LOCATE_KINDS, parseLocateResponse, structureFoundEvent } = require('./structures');
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating } = require('./unstuck');
 const { runResource } = require('./skills/resource');
+const { planSmeltRaw } = require('./bank');   // fonte périodique du brut or/fer → lingots bankables
 const { tunnelTo } = require('./skills/tunnelTo');
 const { junkItems, ITEMS_FOR } = require('./quota');
 const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES, bestArmorToEquip, isMinimallyArmored, shieldPlan } = require('./gear');
@@ -1541,6 +1542,25 @@ async function startResource() {
     claims,
     reloadMemory,
     bank: quota ? bankDeposit : null,
+    // FONTE PÉRIODIQUE (no-keepInventory + exigence « fondus ») : transforme le brut or/fer porté en
+    // LINGOTS pendant le run → bankDeposit les met en coffre → survivent aux morts. Sans ça le brut
+    // (non bankable) restait en poche et une mort l'effaçait (vécu live ResBot2 : gold/iron jamais ≥qq).
+    // Bornée (200s/lot, comme finalizeSmelt) + best-effort. Renvoie {attempted, smelted} pour la télémétrie.
+    smeltRaw: quota ? (async (b) => {
+      const plan = planSmeltRaw((b.inventory && b.inventory.items()) || [], { minBatch: 8 });
+      if (!plan.length) return { attempted: false, smelted: 0 };
+      const cnt = (n) => ((b.inventory && b.inventory.items()) || [])
+        .filter((i) => i.name === n).reduce((a, i) => a + i.count, 0);
+      let total = 0;
+      for (const { raw, ingot, count } of plan) {
+        const before = cnt(raw);
+        try { await withTimeout(smeltWithFurnace(raw, ingot, Math.min(count, 32)), 200000, stopMotion); }
+        catch (e) { /* best-effort : pas de four/fuel → on réessaiera (backoff côté resource.js) */ }
+        total += Math.max(0, before - cnt(raw));
+        if (taskToken.cancelled) break;
+      }
+      return { attempted: true, smelted: total };
+    }) : null,
     cleanup: quota ? makeRoomInPlace : null,
     mineFor: quota ? mineForType : null,
     relocate: quota ? relocateToRegion : null,

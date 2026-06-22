@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { planBank, BANK_DELIVERABLES } = require('../bank');
+const { planBank, BANK_DELIVERABLES, planSmeltRaw } = require('../bank');
 
 const TARGET = { diamond: 64, gold: 64, redstone: 64, lapis: 64, iron: 64 };
 
@@ -99,4 +99,35 @@ test('BANK_DELIVERABLES expose la liste des items livrables (pas de brut)', () =
   assert.ok(BANK_DELIVERABLES.has('gold_ingot'));
   assert.ok(!BANK_DELIVERABLES.has('raw_iron'));
   assert.ok(!BANK_DELIVERABLES.has('raw_gold'));
+});
+
+// ── planSmeltRaw : fondre le BRUT (raw_gold/raw_iron) en LINGOTS pendant le run, pas seulement à la
+// fin — sinon en no-keepInventory le brut non-bankable reste en poche et une MORT l'efface (vécu live
+// ResBot2 : gold2/iron5 = brut en poche, banked=0). Fondre → bank.js banke les lingots → survie morts.
+test('planSmeltRaw: rien à fondre sans brut', () => {
+  assert.deepStrictEqual(planSmeltRaw(inv({ diamond: 10, cobblestone: 30 })), []);
+});
+
+test('planSmeltRaw: ne fond pas un brut sous le minBatch', () => {
+  // 5 raw_gold < minBatch(8) → pas encore (overhead de pose four > gain)
+  assert.deepStrictEqual(planSmeltRaw(inv({ raw_gold: 5 }), { minBatch: 8 }), []);
+});
+
+test('planSmeltRaw: fond le brut atteignant le minBatch (or+fer)', () => {
+  const r = planSmeltRaw(inv({ raw_gold: 12, raw_iron: 20, diamond: 3 }), { minBatch: 8 });
+  // ordre stable or puis fer
+  assert.deepStrictEqual(r, [
+    { raw: 'raw_gold', ingot: 'gold_ingot', count: 12 },
+    { raw: 'raw_iron', ingot: 'iron_ingot', count: 20 },
+  ]);
+});
+
+test('planSmeltRaw: ne touche QUE or/fer (jamais diamant/redstone/lapis)', () => {
+  const r = planSmeltRaw(inv({ raw_gold: 10, diamond: 30, redstone: 40, lapis_lazuli: 20 }), { minBatch: 8 });
+  assert.deepStrictEqual(r, [{ raw: 'raw_gold', ingot: 'gold_ingot', count: 10 }]);
+});
+
+test('planSmeltRaw: minBatch par défaut = 8', () => {
+  assert.deepStrictEqual(planSmeltRaw(inv({ raw_iron: 7 })), []);
+  assert.deepStrictEqual(planSmeltRaw(inv({ raw_iron: 8 })), [{ raw: 'raw_iron', ingot: 'iron_ingot', count: 8 }]);
 });

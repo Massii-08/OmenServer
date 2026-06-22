@@ -99,6 +99,11 @@ async function runResource(bot, opts = {}, token = null) {
   // ICI on décide QUAND (planBank, pur+testé) et on crédite le compte (tracker.noteBanked).
   const bank = opts.bank || null;
   const bankOpts = opts.bankOpts || {};
+  // FONTE PÉRIODIQUE du brut (or/fer) → lingots, AVANT de banker : le brut n'est pas bankable, donc
+  // sans ça il reste en poche et une mort l'efface (no-keepInventory). opts.smeltRaw(bot) fond le brut
+  // (planSmeltRaw décide quoi) → les lingots produits passent dans planBank → bankés → survivent.
+  const smeltRaw = opts.smeltRaw || null;
+  let smeltFailAt = 0;
   let bankFailAt = 0;            // backoff : un bank raté (pas de coffre/sol) n'est pas re-tenté en boucle
   const maxRelocations = opts.maxRelocations != null ? opts.maxRelocations : 8;
   // LOCAL (vécu live : voyager 600+ blocs vers des diamants mappés lointains = lent + traverse des
@@ -152,6 +157,18 @@ async function runResource(bot, opts = {}, token = null) {
       emit({ type: 'quota_done', mined });
       emit({ type: 'resource_done', mined });
       return { ok: true, mined, done: true };
+    }
+
+    // FONTE PÉRIODIQUE du brut → lingots AVANT de banker (no-keepInventory : le brut non-bankable
+    // mourrait en poche). Best-effort, backoff 2 min sur échec (pas de four/fuel). smeltRaw fait le
+    // planSmeltRaw + la fonte ; les lingots produits seront bankés par planBank juste après.
+    if (smeltRaw && tracker && clock() - smeltFailAt > 120000) {
+      try {
+        const sr = await smeltRaw(bot);
+        if (sr && sr.smelted) emit({ type: 'resource_smelt', smelted: sr.smelted });
+        else if (sr && sr.attempted && !sr.smelted) smeltFailAt = clock();
+      } catch (e) { smeltFailAt = clock(); }
+      if (token && token.cancelled) return { ok: true, mined, cancelled: true };
     }
 
     // BANK-EN-PLACE : on porte trop de livrables → dépose-les en coffre sur place (anti-perte à la mort).
