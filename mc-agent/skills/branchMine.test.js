@@ -229,6 +229,22 @@ test('branchMine : Y dans la tolérance ±2 (Y=-52 OK)', async () => {
   assert.notStrictEqual(r.reason, 'wrong_depth');
 });
 
+test('branchMine : bot PLUS PROFOND que la cible (Y=-61, targetY=-58) ne bail PAS wrong_depth', async () => {
+  // Live 22/06 soir : descendDiagonal overshoot à -61 pour targetY -58 (Δ-3). index.js admet le bot
+  // (fenêtre [targetY-6, targetY+2]) mais l'ancienne garde |Δ|≤2 le bail wrong_depth → relocate →
+  // warp surface → re-descente en boucle, 0 lapis miné. Être plus profond = couche toujours minable.
+  const { bot } = makeBot({ y: -61 });
+  const r = await branchMine(bot, { targetY: -58, mainLength: 6, branchSpacing: 3, branchLength: 4 });
+  assert.notStrictEqual(r.reason, 'wrong_depth');
+});
+
+test('branchMine : trop HAUT (Y=-52, targetY=-58) bail wrong_depth (mauvaise couche)', async () => {
+  // Au-dessus de la cible de >2 = couche trop haute → bail (le bot doit redescendre, pas miner ici).
+  const { bot } = makeBot({ y: -52 });
+  const r = await branchMine(bot, { targetY: -58, mainLength: 6 });
+  assert.strictEqual(r.reason, 'wrong_depth');
+});
+
 test('branchMine : pathfinder.goto appelé entre les digs (bot avance vraiment)', async () => {
   // Garantit que le risque #5 (digs hors range) est mitigé : on doit voir au moins 1 goto par
   // pair (foot+head) du tunnel principal — avant le dig, on s'approche de la cible.

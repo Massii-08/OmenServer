@@ -387,7 +387,12 @@ async function branchMine(bot, opts = {}, token = null) {
   const start = bot.entity && bot.entity.position;
   dbg('start', { phase: 'branchMine:enter', y: start ? start.y : null, x: start ? start.x : null, z: start ? start.z : null, targetY, mainLength, wall: countWallable(bot) });
   if (!start) { dbg('start', { phase: 'branchMine:bail', reason: 'no_pos' }); return { ok: false, reason: 'no_pos' }; }
-  if (Math.abs(start.y - targetY) > 2) { dbg('start', { phase: 'branchMine:bail', reason: 'wrong_depth', startY: start.y, targetY }); return { ok: false, reason: 'wrong_depth' }; }
+  // Trop HAUT (au-dessus de la cible) de >2 = mauvaise couche → bail. Trop PROFOND est SANS RISQUE
+  // (la couche reste minable bien sous targetY) et index.js admet le bot jusqu'à targetY-6 avant
+  // d'appeler branchMine ; exiger |Δ|≤2 faisait baill un bot à targetY-3..-6 → relocate → boucle
+  // surface, 0 minage (live 22/06 soir : lapis bloqué 0, bots à y-61 pour targetY -58). On s'aligne
+  // sur la fenêtre d'index.js : [targetY-6, targetY+2].
+  if (start.y > targetY + 2 || start.y < targetY - 6) { dbg('start', { phase: 'branchMine:bail', reason: 'wrong_depth', startY: start.y, targetY }); return { ok: false, reason: 'wrong_depth' }; }
 
   if (countWallable(bot) < COBBLE_TARGET_INIT / 2) {
     // tolère un peu en dessous de 16 (gather peut en avoir consommé) mais on garde la réserve mini.
