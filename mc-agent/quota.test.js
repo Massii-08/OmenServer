@@ -72,6 +72,26 @@ test('tracker : noteBanked crédite la différence positive (dépôt ne fait pas
   assert.strictEqual(t.met([{ name: 'diamond', count: 2 }]), true);
 });
 
+test('tracker : seed bankē PRÉSERVE les types hors-quota dans le snapshot (réallocation sûre)', () => {
+  // Bug vécu (run soir 22/06) : un bot réalloué de {diamond} vers {gold} repartait avec un
+  // banked file réécrit SANS diamond → 27 diamants bankés perdus. Le snapshot persisté DOIT
+  // conserver les types hors-quota présents dans le seed (le bot ne les mine plus, mais ils
+  // restent acquis sur disque).
+  const t = createQuotaTracker({ gold: 64 }, { banked: { gold: 30, diamond: 27, redstone: 295 } });
+  // gold (du quota) est seedé pour la logique de complétion
+  assert.deepStrictEqual(t.progress([]), { gold: { have: 30, target: 64 } });
+  // mais le snapshot conserve diamond + redstone (hors quota)
+  assert.deepStrictEqual(t.bankedSnapshot(), { gold: 30, diamond: 27, redstone: 295 });
+  // un crédit gold met à jour gold SANS écraser les types hors-quota
+  let saved = null;
+  const t2 = createQuotaTracker({ gold: 64 }, {
+    banked: { gold: 30, diamond: 27 },
+    onBanked: (snap) => { saved = snap; },
+  });
+  t2.noteBanked([{ name: 'gold_ingot', count: 5 }], []);
+  assert.deepStrictEqual(saved, { gold: 35, diamond: 27 });
+});
+
 // ─── junkItems ───
 
 test('junkItems : jette le junk de creusage, garde outils/bouffe/quota/1 stack cobble', () => {

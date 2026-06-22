@@ -61,16 +61,23 @@ function createQuotaTracker(quota, opts) {
   const target = normalizeQuota(quota);
   const banked = {};
   for (const t of Object.keys(target)) banked[t] = 0;
-  // Seed depuis le cumul bankē persisté (ne garde que les types du quota, entiers > 0).
+  // `carryOver` : types bankés présents dans le seed mais HORS du quota courant. Le bot ne les
+  // mine plus, mais ils restent acquis → on les PRÉSERVE dans le snapshot persisté (sinon une
+  // réallocation {diamond}→{gold} réécrit le fichier sans diamond → bankē perdu, bug vécu 22/06).
+  const carryOver = {};
+  // Seed depuis le cumul bankē persisté (entiers > 0). Types du quota → `banked` (suivi),
+  // types hors-quota → `carryOver` (préservé tel quel).
   const seed = opts && opts.banked;
   if (seed && typeof seed === 'object') {
-    for (const t of Object.keys(target)) {
+    for (const t of Object.keys(seed)) {
       const v = Math.floor(Number(seed[t]));
-      if (Number.isFinite(v) && v > 0) banked[t] = v;
+      if (!Number.isFinite(v) || v <= 0) continue;
+      if (Object.prototype.hasOwnProperty.call(target, t)) banked[t] = v;
+      else carryOver[t] = v;
     }
   }
   const onBanked = (opts && typeof opts.onBanked === 'function') ? opts.onBanked : null;
-  const bankedSnapshot = () => Object.assign({}, banked);
+  const bankedSnapshot = () => Object.assign({}, carryOver, banked);
 
   function progress(items) {
     const inv = countItems(items);
