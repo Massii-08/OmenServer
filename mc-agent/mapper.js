@@ -16,7 +16,7 @@
 //  - survie « basique + » (survival.js) re-tickée avant chaque déplacement, cap anti-blocage.
 // Ne retourne JAMAIS sauf annulation du token (c'est un rôle, pas une tâche finie).
 const { sectorRange, inSector, isCellMapped } = require('./sectors');
-const { detectCaveEntrance } = require('./caves');
+const { detectCaveEntrance, detectCaveWater } = require('./caves');
 const { scanAllOres, oresFoundEvent } = require('./ores');
 const { findAllSignatures, findSpawner, structureFoundEvent } = require('./structures');
 const { nextFrontierCell } = require('./frontier');
@@ -198,7 +198,13 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
       const cave = detectCaveEntrance(bot, p);
       if (cave.found) {
         const cck = cellKey(cave.pos.x, cave.pos.z);
-        if (!caveCells.has(cck)) { caveCells.add(cck); emit(caveFoundEvent(worldKey, cave.pos)); }
+        if (!caveCells.has(cck)) {
+          caveCells.add(cck);
+          // Tague la grotte `flooded` (eau dans la colonne) → directedTarget l'évitera (anti-noyade).
+          let flooded = false;
+          try { flooded = detectCaveWater(bot, cave.pos); } catch (e) { /* best-effort */ }
+          emit(caveFoundEvent(worldKey, cave.pos, { flooded }));
+        }
       }
     } catch (e) { /* best-effort */ }
     // minerais dans les chunks chargés (ores.js — pour les bots ressources) : 1 SEUL scan par

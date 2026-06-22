@@ -81,8 +81,12 @@ function biomeSeenEvent(world, block, pos) {
   const { name, id } = readBiome(block);
   return { type: 'biome_seen', world, name, id, x: Math.round(pos.x), z: Math.round(pos.z) };
 }
-function caveFoundEvent(world, pos) {
-  return { type: 'cave_found', world, x: Math.round(pos.x), y: Math.round(pos.y), z: Math.round(pos.z) };
+function caveFoundEvent(world, pos, opts = {}) {
+  return {
+    type: 'cave_found', world,
+    x: Math.round(pos.x), y: Math.round(pos.y), z: Math.round(pos.z),
+    flooded: !!(opts && opts.flooded),   // Massii 2026-06-22 : grotte inondée → directedTarget l'évite
+  };
 }
 function materialFoundEvent(world, material, biomeName, pos) {
   return { type: 'material_found', world, material, biome: biomeName, x: Math.round(pos.x), z: Math.round(pos.z) };
@@ -123,9 +127,13 @@ function directedTarget(memory, world, material, from, opts = {}) {
     if (fromBiomes) return { ...fromBiomes, learned: false };
   }
 
-  // 3) minerai → entrée de grotte connue la + proche (minerais exposés ; spec §4 « caves exploitables »)
+  // 3) minerai → entrée de grotte connue la + proche (minerais exposés ; spec §4 « caves exploitables »).
+  // Massii 2026-06-22 : on EXCLUT les grottes INONDÉES (flooded) — le bot ne sait pas gérer l'eau →
+  // s'y faire envoyer = noyade + perte d'inventaire. Toutes inondées → null → repli minage profond sec.
   if (isOre(material)) {
-    const fromCaves = pickNearest((w.caves || []).map((c) => ({ x: c.x, z: c.z, y: c.y, biome: null })));
+    const fromCaves = pickNearest((w.caves || [])
+      .filter((c) => !c.flooded)
+      .map((c) => ({ x: c.x, z: c.z, y: c.y, biome: null })));
     if (fromCaves) return { ...fromCaves, learned: false, cave: true };
   }
   return null;

@@ -37,4 +37,29 @@ function detectCaveEntrance(bot, p, { minDepth = 4, scanDown = 14 } = {}) {
   return { found: false };
 }
 
-module.exports = { detectCaveEntrance };
+// Eau d'une grotte (Massii 2026-06-22 : « la carto doit savoir où sont les cavernes avec de l'eau
+// et les bots doivent les ÉVITER — ils ne savent pas gérer l'eau »). detectCaveEntrance coupe la
+// colonne d'air sur l'eau → une grotte PARTIELLEMENT inondée (air en haut, eau au fond) est quand
+// même notée comme grotte, et le bot y était envoyé → noyade. Ce scan tague la grotte `flooded`.
+const _WATER = new Set(['water', 'flowing_water', 'seagrass', 'tall_seagrass', 'kelp', 'kelp_plant', 'bubble_column']);
+
+/**
+ * La grotte dont le haut d'ouverture est `pos` contient-elle de l'eau ? Scanne `scanDown` blocs vers
+ * le bas (± `radius` horizontalement) à la recherche d'un bloc d'eau. PUR (sauf bot.blockAt) ;
+ * conservateur (bot/pos manquants → false). → boolean. Émis comme `flooded` dans cave_found.
+ */
+function detectCaveWater(bot, pos, { scanDown = 14, radius = 1 } = {}) {
+  if (!pos || !bot || typeof bot.blockAt !== 'function') return false;
+  const x0 = Math.floor(pos.x), y0 = Math.floor(pos.y), z0 = Math.floor(pos.z);
+  for (let dy = 0; dy <= scanDown; dy++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      for (let dz = -radius; dz <= radius; dz++) {
+        const b = bot.blockAt(_at(x0 + dx, y0 - dy, z0 + dz));
+        if (b && _WATER.has(b.name)) return true;          // 1re eau trouvée → inondée (early-exit)
+      }
+    }
+  }
+  return false;
+}
+
+module.exports = { detectCaveEntrance, detectCaveWater };

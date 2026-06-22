@@ -46,6 +46,25 @@ def test_add_cave_dedup_by_cell_actual_coords():
     assert caves[0]["x"] == 320 and caves[0]["y"] == 50 and caves[0]["z"] == -80  # coords RÉELLES, dernières
 
 
+def test_add_cave_flooded_flag():
+    # Massii 2026-06-22 : une grotte inondée est taguée flooded → le bot l'évite (directedTarget Node).
+    m = wm.empty_memory("g")
+    wm.add_cave(m, "w", 10, 40, 20, at="t1")                  # défaut = sec
+    wm.add_cave(m, "w", 300, 30, 300, at="t2", flooded=True)  # noyée
+    caves = m["worlds"]["w"]["caves"]
+    assert caves[0]["flooded"] is False
+    assert caves[1]["flooded"] is True
+
+
+def test_apply_event_cave_found_flooded():
+    m = wm.empty_memory("g")
+    wm.apply_event(m, {"type": "cave_found", "world": "w", "x": 1, "y": 60, "z": 2, "flooded": True}, at="t1")
+    wm.apply_event(m, {"type": "cave_found", "world": "w", "x": 500, "y": 50, "z": 500}, at="t2")  # pas de champ → sec
+    caves = m["worlds"]["w"]["caves"]
+    assert caves[0]["flooded"] is True
+    assert caves[1]["flooded"] is False
+
+
 def test_multi_world_partition():
     m = wm.empty_memory("g")
     wm.add_biome(m, "minecraft:overworld", "forest", 0, 0, at="t1")

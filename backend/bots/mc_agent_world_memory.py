@@ -79,14 +79,18 @@ def add_biome(memory, world, name, x, z, at=None, cap=BIOME_CAP, id=None):
     return memory
 
 
-def add_cave(memory, world, x, y, z, at=None, cap=CAP):
-    """Ajoute une entrée de grotte (coords RÉELLES, dédup par cellule (x,z), capé). Mute + retourne."""
+def add_cave(memory, world, x, y, z, at=None, cap=CAP, flooded=False):
+    """Ajoute une entrée de grotte (coords RÉELLES, dédup par cellule (x,z), capé). Mute + retourne.
+
+    `flooded` (Massii 2026-06-22) : grotte contenant de l'eau → le bot ressource l'ÉVITE
+    (directedTarget côté Node filtre `flooded`), il ne sait pas gérer l'eau. La dédup par cellule
+    REMPLACE l'entrée → le statut flooded est rafraîchi à chaque re-cartographie."""
     if not world:
         return memory
     w = _world(memory, world)
     qx, qz = _q(x), _q(z)
     w["caves"] = [c for c in w["caves"] if not (_q(c["x"]) == qx and _q(c["z"]) == qz)]
-    w["caves"].append({"x": int(x), "y": int(y), "z": int(z), "at": at})
+    w["caves"].append({"x": int(x), "y": int(y), "z": int(z), "at": at, "flooded": bool(flooded)})
     if len(w["caves"]) > cap:
         w["caves"] = w["caves"][-cap:]
     if at:
@@ -193,7 +197,8 @@ def apply_event(memory, event, at=None):
             return add_biome(memory, world, event.get("name"), event["x"], event["z"],
                              at=at, id=event.get("id"))
         if t == "cave_found":
-            return add_cave(memory, world, event["x"], event["y"], event["z"], at=at)
+            return add_cave(memory, world, event["x"], event["y"], event["z"], at=at,
+                            flooded=event.get("flooded", False))
         if t == "material_found":
             return add_find(memory, world, event["material"], event["biome"], event["x"], event["z"], at=at)
         if t == "exposed_ore_found":

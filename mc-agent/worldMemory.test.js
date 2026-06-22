@@ -36,7 +36,9 @@ test('biomeSeenEvent : construit l\'event taggé monde, coords arrondies', () =>
 
 test('caveFoundEvent / materialFoundEvent', () => {
   assert.deepStrictEqual(wm.caveFoundEvent('w', { x: 1.4, y: 63.9, z: 2.5 }),
-    { type: 'cave_found', world: 'w', x: 1, y: 64, z: 3 });
+    { type: 'cave_found', world: 'w', x: 1, y: 64, z: 3, flooded: false });
+  assert.deepStrictEqual(wm.caveFoundEvent('w', { x: 1, y: 64, z: 3 }, { flooded: true }),
+    { type: 'cave_found', world: 'w', x: 1, y: 64, z: 3, flooded: true });
   assert.deepStrictEqual(wm.materialFoundEvent('w', 'oak_log', 'forest', { x: 5.2, z: 9.8 }),
     { type: 'material_found', world: 'w', material: 'oak_log', biome: 'forest', x: 5, z: 10 });
 });
@@ -81,6 +83,22 @@ test('directedTarget : minerai sans find → cave connue la + proche (cave:true)
   ] } } };
   const t = wm.directedTarget(mem, 'w', 'iron_ore', { x: 0, z: 0 });
   assert.deepStrictEqual(t, { x: 100, z: -50, y: 40, biome: null, learned: false, cave: true });
+});
+
+test('directedTarget : grotte INONDÉE ignorée → cave sèche suivante (Massii 2026-06-22)', () => {
+  const mem = { worlds: { w: { finds: [], biomes: [], caves: [
+    { x: 100, y: 40, z: -50, flooded: true },   // la + proche mais NOYÉE → sautée (anti-noyade)
+    { x: 400, y: 30, z: 0, flooded: false },     // sèche → choisie
+  ] } } };
+  const t = wm.directedTarget(mem, 'w', 'iron_ore', { x: 0, z: 0 });
+  assert.deepStrictEqual(t, { x: 400, z: 0, y: 30, biome: null, learned: false, cave: true });
+});
+
+test('directedTarget : toutes les caves inondées → null (repli minage profond sec)', () => {
+  const mem = { worlds: { w: { finds: [], biomes: [], caves: [
+    { x: 100, y: 40, z: -50, flooded: true },
+  ] } } };
+  assert.strictEqual(wm.directedTarget(mem, 'w', 'iron_ore', { x: 0, z: 0 }), null);
 });
 
 test('directedTarget : find appris du minerai prime sur la cave', () => {

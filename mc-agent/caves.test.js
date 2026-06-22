@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { detectCaveEntrance } = require('./caves');
+const { detectCaveEntrance, detectCaveWater } = require('./caves');
 
 // Fake bot : colonne y→nom de bloc (défaut 'stone'). blockAt lit p.y (Vec3 réel ou POJO).
 function makeBot(column) {
@@ -40,4 +40,27 @@ test('puits de lave/eau → pas une entrée de grotte (la colonne est coupée)',
 test('blocs non chargés (null) ne comptent pas comme ouverture', () => {
   const bot = { blockAt: () => null };
   assert.strictEqual(detectCaveEntrance(bot, FEET, { minDepth: 4 }).found, false);
+});
+
+// detectCaveWater (Massii 2026-06-22) : tague une grotte `flooded` → le bot l'évite.
+const CAVE_TOP = { x: 100, y: 63, z: -21 };
+
+test('detectCaveWater : eau dans la colonne de la grotte → flooded true', () => {
+  const col = { 63: 'air', 62: 'air', 61: 'water', 60: 'air' };
+  assert.strictEqual(detectCaveWater(makeBot(col), CAVE_TOP), true);
+});
+
+test('detectCaveWater : grotte sèche (air/pierre uniquement) → false', () => {
+  const col = { 63: 'air', 62: 'air', 61: 'cave_air', 60: 'air' };
+  assert.strictEqual(detectCaveWater(makeBot(col), CAVE_TOP), false);
+});
+
+test('detectCaveWater : kelp/seagrass comptent aussi comme eau', () => {
+  assert.strictEqual(detectCaveWater(makeBot({ 60: 'kelp' }), CAVE_TOP), true);
+  assert.strictEqual(detectCaveWater(makeBot({ 59: 'seagrass' }), CAVE_TOP), true);
+});
+
+test('detectCaveWater : bot/pos manquants → false (jamais de crash)', () => {
+  assert.strictEqual(detectCaveWater(null, CAVE_TOP), false);
+  assert.strictEqual(detectCaveWater(makeBot({}), null), false);
 });
