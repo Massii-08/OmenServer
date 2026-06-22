@@ -57,6 +57,14 @@ test('combatDecision : PV bas mais 0 hostile -> null (rien à fuir)', () => {
   assert.strictEqual(combatDecision({ health: 4, hostileCount: 0 }), null);
 });
 
+// --- combatDecision creeper-aware (live 22/06 R3 : fight creeper → explosion → mort en deep) ---
+test('combatDecision : CREEPER → flee même PV plein + armure + 1 seul hostile (jamais mêlée)', () => {
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: 1, armored: true, hasCreeper: true }), 'flee');
+});
+test('combatDecision : sans creeper, comportement inchangé (fight si PV ok)', () => {
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: 1, armored: true, hasCreeper: false }), 'fight');
+});
+
 // --- combatDecision armor-aware (paquet 2 : anti « mort par combo » sans armure) ---
 test('combatDecision : SANS armure → fuit dès 2 hostiles (vs 3 avec)', () => {
   assert.strictEqual(combatDecision({ health: 20, hostileCount: 2, armored: false }), 'flee');

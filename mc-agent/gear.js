@@ -9,6 +9,10 @@
 const { TIERS } = require('./ores');
 
 // Y de branch mining par type (centre de la bande de spawn la plus dense, 1.18+).
+// NB gold = -16 (pic de spawn réel 1.18). REVERT du fix #10 (-54) : le gold mappé est concentré à -16
+// (pic dense), pas à -54 (queue rare) → strip-miner à -54 cherchait un gold ~inexistant → relocate en
+// boucle, 0 minage (live 22/06). Le strip à -16 (fix #8) reste le MEILLEUR débit gold observé (0→36)
+// malgré les noyades (couche aquifère). Le gold est world-limité sur ce monde (−16 dense mais noyé).
 const Y_OPT = { diamond: -58, redstone: -58, gold: -16, lapis: 0, iron: 16 };
 
 // Palier de pioche requis pour MINER le type (index TIERS : 2=stone, 3=iron).

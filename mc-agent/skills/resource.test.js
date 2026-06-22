@@ -467,21 +467,28 @@ test('collect gelé → borné par collectTimeoutMs, le bot passe à la cible su
   assert.ok(collect(events, 'resource_failed').length >= 1 || bot._dug.length >= 1);
 }); 
 
-test('quota : DIAMANT prioritaire quand son quota manque (BUG PRIO 3.1 — débit diamant, supersede #42a)', async () => {
-  // Résolution Massii 16/06 : le diamant est le goulot de la DoD (64) ; les autres types se
-  // remplissent vite. Le nearest-first laissait le bot rafler le fer exposé proche et ne JAMAIS
-  // viser le diamant profond (vécu live : 0💎 en 1h40). Tant que le quota diamant n'est pas atteint,
-  // le diamant passe DEVANT (le minage profond serpentin évite le « long tunnel par diamant » de #42a).
+test('quota : NEAREST-FIRST quand PLUSIEURS types manquent (anti-ruée-diamant, live 22/06 supersede BUG PRIO 3.1)', async () => {
+  // LIVE 22/06 (3 ResBots, monde dur) : forcer le diamant DEVANT les autres types tant que son quota
+  // manque envoyait les 3 bots se RUER sur le diamant deepslate exposé en GROTTE (profond + souvent
+  // humide). Le minage du diamant exposé en cave (mineExposed → cave-first → cave_meander) échoue très
+  // souvent (pas de chemin sans creuser, eau, blocages) → le bot skip et re-vise un autre diamant, en
+  // boucle → 0 minage, quota FIGÉ sur TOUS les types (diamant compris : 15/0/0 vécu). Les 1721 gold /
+  // 2803 redstone exposés accessibles étaient ignorés.
+  // Fix : nearest-first en mode quota (priority:[], retour à #42d) → on mine le minerai accessible le
+  // plus proche parmi les types manquants → remplit 4/5 quotas vite ET fait DESCENDRE le bot en deep
+  // (le strip-mine profond ramasse le diamant au passage, cf. commentaire resource.js). Quand SEUL le
+  // diamant reste, allowTypes={diamond} le filtre déjà → focus diamant naturel sans priorité forcée
+  // (préserve la préoccupation « 0💎 » du 16/06 : aucune autre cible ne détourne le bot).
   const blocks = {
-    '5,60,0': { name: 'iron_ore', position: { x: 5, y: 60, z: 0 } },
+    '5,-55,0': { name: 'iron_ore', position: { x: 5, y: -55, z: 0 } },
     '100,-55,0': { name: 'deepslate_diamond_ore', position: { x: 100, y: -55, z: 0 } },
   };
   const bot = makeQuotaBot({ blocks });
   const order = [];
   const r = await runResource(bot, {
     memory: mem([
-      { material: 'deepslate_diamond_ore', x: 100, y: -55, z: 0 },
-      { material: 'iron_ore', x: 5, y: 60, z: 0 },
+      { material: 'deepslate_diamond_ore', x: 100, y: -55, z: 0 },  // deep mais LOIN
+      { material: 'iron_ore', x: 5, y: -55, z: 0 },                 // deep et PROCHE
     ]),
     worldKey: 'overworld',
     emit: (e) => { if (e.type === 'resource_target') order.push(e.material); },
@@ -489,7 +496,7 @@ test('quota : DIAMANT prioritaire quand son quota manque (BUG PRIO 3.1 — débi
     quota: { diamond: 1, iron: 1 },
   });
   assert.equal(r.done, true);
-  assert.deepEqual(order, ['deepslate_diamond_ore', 'iron_ore']);  // le DIAMANT d'abord (quota manquant)
+  assert.equal(order[0], 'iron_ore', `nearest-first : le fer PROCHE d'abord, pas la ruée diamant (got ${order})`);
 });
 
 test('quota : revient au PLUS PROCHE quand le quota diamant est REMPLI (gold/fer/… nearest-first)', async () => {
@@ -605,9 +612,10 @@ test('quota : diamant ENTERRÉ (hors-grotte) → MINAGE PROFOND SERPENTIN (BUG P
   assert.equal(caveCalled, 0, 'pas de cave-first (pas exposé)');
 });
 
-test('quota : diamant EXPOSÉ dont le cave-first ÉCHOUE → REPLI minage profond serpentin (anti-boucle surface)', async () => {
-  // Diamant exposé trop profond/inatteignable à pied : mineExposed throw → au lieu de boucler
-  // (relocate-surface), on bascule sur le minage profond SERPENTIN du même secteur.
+test('quota : diamant EXPOSÉ PROFOND (y≤-30) → strip-mine DESCENDANT direct, PAS de cave-first (fix #5 live 22/06)', async () => {
+  // FIX #5 : en deep, le cave-first sur un diamant exposé en grotte 1.18 galère → le bot oscille en
+  // surface (relocate boucle) sans jamais atteindre -58 (vécu R1/R3 : 21 resource_cave, 0 deep_serpentine,
+  // y5-8). Sous deepCaveCutoff (-30) on route DIRECT vers le deep-serpentine (mineFor force la descente).
   const bot = makeQuotaBot({});
   let caveCalled = 0, branchCalled = 0, lastOpts = null;
   const token = { cancelled: false };
@@ -623,9 +631,87 @@ test('quota : diamant EXPOSÉ dont le cave-first ÉCHOUE → REPLI minage profon
     mineFor: async (mat, n, o) => { branchCalled++; lastOpts = o; token.cancelled = true; return { ok: true }; },
     reloadMemory: () => mem([{ material: 'deepslate_diamond_ore', x: 5, y: -55, z: 5, exposed: true, wet: false }]),
   }, token);
-  assert.ok(caveCalled >= 1, 'cave-first tenté en premier (priorité)');
-  assert.ok(branchCalled >= 1, 'repli minage profond après échec cave-first');
-  assert.ok(lastOpts && lastOpts.serpentine === true, 'repli en mode SERPENTIN');
+  assert.equal(caveCalled, 0, 'PAS de cave-first en deep (fix #5 : strip descendant direct)');
+  assert.ok(branchCalled >= 1, 'deep-serpentine (mineFor) appelé directement');
+  assert.ok(lastOpts && lastOpts.serpentine === true, 'minage profond en mode SERPENTIN');
+});
+
+test('quota : ore NON-diamant EXPOSÉ dont le cave-first ÉCHOUE → REPLI strip-mine dirigé (live 22/06 ResBot1 baie)', async () => {
+  // Asymétrie corrigée (resource.js) : un iron/lapis/redstone/gold exposé dont mineExposed (cave-first)
+  // throw n'avait AUCUN repli (_rr={ok:false}) — seul le DIAMANT avait son deep-serpentine. → le bot
+  // perdait jusqu'à 180 s par cible inatteignable (baie côtière, grotte sans chemin piéton), 0 minage
+  // (vécu live ResBot1 : toutes cibles iron humides/inaccessibles → cave_meander en boucle). Désormais :
+  // même repli que le diamant → strip-mine DIRIGÉ (mineFor heading) vers la cible (pas un beeline X-ray).
+  // Cible SHALLOW (y=-20 > deepCaveCutoff -30) → le cave-first s'applique (le fix #5 ne route en
+  // deep-serpentine que sous -30) ; on teste donc bien le repli cave_failed des ores exposés peu profonds.
+  const bot = makeQuotaBot({});
+  let caveCalled = 0, branchCalled = 0, regionFallback = false;
+  const token = { cancelled: false };
+  await runResource(bot, {
+    memory: mem([{ material: 'iron_ore', x: 5, y: -20, z: 5, exposed: true, wet: false }]),
+    worldKey: 'overworld',
+    emit: (e) => { if (e.type === 'resource_region' && e.fallback === 'cave_failed') regionFallback = true; },
+    goto: async () => {},
+    quota: { iron: 1 },
+    sleep: async () => {},
+    pickTier: () => 2,                                   // pioche pierre (fer accessible)
+    mineExposed: async () => { caveCalled++; throw new Error('cave_unreachable'); },
+    mineFor: async (mat, n, o) => { branchCalled++; token.cancelled = true; return { ok: true }; },
+    reloadMemory: () => mem([{ material: 'iron_ore', x: 5, y: -20, z: 5, exposed: true, wet: false }]),
+  }, token);
+  assert.ok(caveCalled >= 1, 'cave-first tenté en premier (ore SHALLOW exposé)');
+  assert.ok(branchCalled >= 1, 'repli strip-mine dirigé après échec cave-first (plus d_abandon sec)');
+  assert.ok(regionFallback, 'event resource_region fallback:cave_failed émis');
+});
+
+test('quota : redstone EXPOSÉ PROFOND (y≤-30) → deep-serpentine direct, jamais cave-first (fix #5)', async () => {
+  // Non-diamant profond : même règle que le diamant → strip-mine descendant direct (le bot DESCEND à
+  // Y_OPT puis branch-mine), au lieu de cave-first qui le laissait osciller en surface (vécu R1/R3 deep).
+  const bot = makeQuotaBot({});
+  let caveCalled = 0, branchCalled = 0, lastOpts = null, deepStrip = false;
+  const token = { cancelled: false };
+  await runResource(bot, {
+    memory: mem([{ material: 'deepslate_redstone_ore', x: 5, y: -50, z: 5, exposed: true, wet: false }]),
+    worldKey: 'overworld',
+    emit: (e) => { if (e.type === 'resource_deep_serpentine' && e.fallback === 'deep_strip') deepStrip = true; },
+    goto: async () => {},
+    quota: { redstone: 1 },
+    sleep: async () => {},
+    pickTier: () => 3,
+    mineExposed: async () => { caveCalled++; throw new Error('cave_unreachable'); },
+    mineFor: async (mat, n, o) => { branchCalled++; lastOpts = o; token.cancelled = true; return { ok: true }; },
+    reloadMemory: () => mem([{ material: 'deepslate_redstone_ore', x: 5, y: -50, z: 5, exposed: true, wet: false }]),
+  }, token);
+  assert.equal(caveCalled, 0, 'PAS de cave-first en deep (redstone)');
+  assert.ok(branchCalled >= 1, 'deep-serpentine appelé directement');
+  assert.ok(lastOpts && lastOpts.serpentine === true, 'mode SERPENTIN');
+  assert.ok(deepStrip, 'event resource_deep_serpentine fallback:deep_strip émis pour non-diamant');
+});
+
+test('quota : TYPE deep (redstone) ciblé SHALLOW exposé → deep-serpentine quand même (fix #5b par type, live 22/06)', async () => {
+  // R1/R3 ciblaient des redstone_ore SHALLOW (y0-16) exposés en cave-first (nearest-first les préfère car
+  // proches) → restaient en surface, 0 descente. Pour un TYPE intrinsèquement deep (Y_OPT≤-40, passé via
+  // deepStripTypes par index.js), on strip-mine TOUJOURS en profondeur même si la cible mappée est shallow
+  // → le bot DESCEND au deepslate riche et le récolte au volume.
+  const bot = makeQuotaBot({});
+  let caveCalled = 0, branchCalled = 0, lastOpts = null;
+  const token = { cancelled: false };
+  await runResource(bot, {
+    memory: mem([{ material: 'redstone_ore', x: 5, y: 10, z: 5, exposed: true, wet: false }]),  // SHALLOW exposé
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async () => {},
+    quota: { redstone: 1 },
+    deepStripTypes: ['redstone'],                        // type deep (Y_OPT -58) → forcé en strip profond
+    sleep: async () => {},
+    pickTier: () => 3,
+    mineExposed: async () => { caveCalled++; },
+    mineFor: async (mat, n, o) => { branchCalled++; lastOpts = o; token.cancelled = true; return { ok: true }; },
+    reloadMemory: () => mem([{ material: 'redstone_ore', x: 5, y: 10, z: 5, exposed: true, wet: false }]),
+  }, token);
+  assert.equal(caveCalled, 0, 'PAS de cave-first pour un type deep, même cible SHALLOW');
+  assert.ok(branchCalled >= 1, 'deep-serpentine (mineFor) appelé → le bot descend');
+  assert.ok(lastOpts && lastOpts.serpentine === true, 'mode SERPENTIN');
 });
 
 test('quota : carte VIDE + diamant manquant → MINAGE PROFOND SERPENTIN (Path B, BUG PRIO 3.1 live 16/06)', async () => {

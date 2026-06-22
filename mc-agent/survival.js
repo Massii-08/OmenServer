@@ -35,8 +35,12 @@ const PASSIVE_FOOD_MOBS = new Set(['cow', 'pig', 'chicken', 'sheep', 'rabbit', '
  * `armored` (optionnel) : SANS armure (false) → seuils prudents (fuit dès 2 hostiles ou PV ≤ 12),
  * anti « mort par combo ». Avec armure OU inconnu → seuils historiques courageux (rétro-compat).
  */
-function combatDecision({ health, hostileCount, armored }) {
+function combatDecision({ health, hostileCount, armored, hasCreeper }) {
   if (!hostileCount) return null;
+  // CREEPER : JAMAIS de mêlée (il explose au contact → mort instantanée même en armure diamant, vécu
+  // live R3 22/06 : fight creeper ×2 → dead en deep mining). On FUIT pour casser la ligne d'explosion ;
+  // le bot reprend le minage une fois à distance. Prime sur tout (santé/armure/count).
+  if (hasCreeper) return 'flee';
   const swarm = armored === false ? SWARM_UNARMORED : SWARM_COUNT;
   const lowHp = armored === false ? LOW_HEALTH_UNARMORED : LOW_HEALTH;
   if (hostileCount >= swarm) return 'flee';
@@ -104,7 +108,8 @@ async function eatAny(bot) {
 async function survivalTick(bot, deps = {}) {
   const emit = deps.emit || (() => {});
   const hostiles = nearbyHostiles(bot, 10);
-  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot) });
+  const hasCreeper = hostiles.some((h) => h && h.name === 'creeper');   // creeper → fuir, jamais mêlée (anti-explosion)
+  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper });
   if (decision === 'flee') {
     try { deps.fleeFrom && deps.fleeFrom(bot); } catch (e) {}
     emit({ type: 'survival', action: 'flee', hostiles: hostiles.length });

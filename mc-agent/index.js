@@ -51,11 +51,12 @@ const { descendDiagonal } = require('./skills/descendDiagonal');
 const { branchMine, floodFillVein } = require('./skills/branchMine');
 const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
 const { loadMemory, worldKey } = require('./worldMemory');
-const { driestCell } = require('./ores');                  // warp near-spawn DRY-AWARE (anti boucle noyade)
+const { driestCell, oreBase } = require('./ores');         // warp near-spawn DRY-AWARE + normalisation type (fix #8)
 const { recordAnchor, pickDryAnchor } = require('./anchors'); // ancres profondes SÈCHES (anti boucle de noyade)
 const { runMapper } = require('./mapper');
 const { LOCATE_KINDS, parseLocateResponse, structureFoundEvent } = require('./structures');
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating } = require('./unstuck');
+const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTANTE → relocate forcé (live 22/06 ResBot1)
 const { runResource } = require('./skills/resource');
 const { planSmeltRaw } = require('./bank');   // fonte périodique du brut or/fer → lingots bankables
 const { tunnelTo } = require('./skills/tunnelTo');
@@ -1172,6 +1173,13 @@ async function recoverPickaxe() {
 }
 
 async function mineForType(type, needed, opts = {}) {
+  // FIX #8 (live 22/06, révélé par #7) : NORMALISER le type (les appelants — _deepSerpentine/repli/enterré
+  // de resource.js — passent le nom COMPLET 'deepslate_gold_ore', pas la base 'gold'). Sans ça
+  // Y_OPT['deepslate_gold_ore']=undefined → targetY défaut -58 → le gold (Y_OPT -16) et l'iron (16)
+  // descendaient à -58 dans un AQUIFÈRE → noyade en boucle (R2 : water_rescue_warp×16, 35 min figé).
+  // Idem ITEMS_FOR[type] (stopOre) et type==='diamond'. Pour diamond/redstone le défaut -58 == Y_OPT donc
+  // le bug était masqué (R1/R3 OK). Idempotent : oreBase('gold')='gold'.
+  type = oreBase(type) || type;
   const targetY = Y_OPT[type] !== undefined ? Y_OPT[type] : -58;
   // SANS PIOCHE (Massii #5) : récupération AVANT toute tentative — les skills refusent
   // désormais de creuser à la main (no_pickaxe).
@@ -1540,6 +1548,18 @@ async function startResource() {
     // chaque dépôt → respawn/re-entrée/deploy ne remettent plus le compteur à 0 (les coffres tiennent au sol).
     bankedSeed: quota ? loadBanked() : null,
     saveBanked: quota ? saveBanked : null,
+    // STRIP-MINE DESCENDANT pour TOUS les types du quota (fix #7 live 22/06). D'abord limité aux types
+    // deep (Y_OPT≤-40), mais le cave-first galère AUSSI pour iron/gold exposés en grotte 1.18 (vécu R2 :
+    // iron 54 figé 30 min, resource_cave×16/cave_meander×8/relocate×5, combat skeletons). Le deep-serpentine
+    // (mineFor → descendDiagonal vers Y_OPT du type, puis branch-mine au volume) est PROUVÉ fiable (R3
+    // redstone 30→80, R1 diamant). On l'applique à tous les types visés → le bot descend au bon Y et
+    // strip-mine, au lieu de chasser des ores épars en grotte. Y_OPT={diamond/redstone -58, gold -16,
+    // lapis 0, iron 16} → chaque type est miné à sa couche optimale.
+    // STRIP-MINE DESCENDANT pour TOUS les types du quota (fix #7). Le fix #9 (cave-first pour la couche
+    // gold noyée -16) a été REVERT : le cave-first faisait MOURIR les bots dans les grottes gold hostiles
+    // (R2 deaths×3), pire que le strip -16 (qui avait fait 0→36). Le gold reste world-limité (-16 dense
+    // mais aquifère ; -54 sec mais vide) → on garde le strip -16, le meilleur débit observé.
+    deepStripTypes: quota ? new Set(Object.keys(quota)) : null,
     claims,
     reloadMemory,
     bank: quota ? bankDeposit : null,
@@ -2354,6 +2374,7 @@ setInterval(async () => {
 // de double-warp post-spawn). Borné, ne crash jamais.
 let _oceanBusy = false;
 let _oceanSample = null;
+let _oceanStuckTimes = [];   // horodatages ocean_stuck (fenêtre 3 min) : baie PERSISTANTE → relocate forcé
 setInterval(async () => {
   try {
     if (Date.now() < _floatSettleUntil) { _oceanSample = null; return; }   // settle post-spawn/warp
@@ -2370,13 +2391,19 @@ setInterval(async () => {
     _oceanSample = null; _oceanBusy = true;
     try {
       emit({ type: 'ocean_stuck', x: Math.floor(p.x), z: Math.floor(p.z) });
+      // Persistance : escapeWater sort le bot à CHAQUE tour → le warp gaté sur isInWater ne se
+      // déclenchait jamais alors qu'il re-ciblait la même baie humide en boucle (live ResBot1 : 0 minage,
+      // unjam×7). Au 2e ocean_stuck en 3 min, la baie est PERSISTANTE → relocate forcé (oceanEscalate.js).
+      const _esc = recordOceanStuck(_oceanStuckTimes, Date.now());
+      _oceanStuckTimes = _esc.times;
       try { stopMotion(); } catch (e) {}
       try { await escapeWater(bot, { emit, maxDistance: 64 }); } catch (e) {}
-      if (isInWater(bot)) {                                                // toujours noyé → warp terre ferme
+      if (isInWater(bot) || _esc.forceRelocate) {                          // noyé OU baie persistante → terre ferme
         _floatSettleUntil = Date.now() + 15000;
-        emit({ type: 'water_rescue_warp', reason: 'ocean_oscillation' });
+        emit({ type: 'water_rescue_warp', reason: isInWater(bot) ? 'ocean_oscillation' : 'ocean_persistent' });
         try { stopMotion(); } catch (e) {}
         try { await relocateToRegion(); } catch (e) {}
+        _oceanStuckTimes = [];                                            // post-relocate : compteur propre
       }
     } finally { _oceanBusy = false; }
   } catch (e) { _oceanBusy = false; }

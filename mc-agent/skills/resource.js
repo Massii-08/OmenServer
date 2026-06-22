@@ -14,7 +14,7 @@
 //    re-lecture (les cartographes ajoutent encore) ; au-delà de maxIdleMs sans cible → starved ;
 //  - inventaire plein → opts.cleanup (toss du junk de creusage — sous terre il n'y a pas de coffre,
 //    et le deposit legacy jetterait AUSSI la pioche) ; sinon deposit legacy + noteBanked.
-const { nextOreTarget, oreKey, listOres, isWaterAdjacent } = require('../ores');
+const { nextOreTarget, oreKey, listOres, isWaterAdjacent, oreBase } = require('../ores');
 const { bestToolFor } = require('../tools');
 const { isOre } = require('../worldMemory');
 const { createQuotaTracker } = require('../quota');
@@ -115,6 +115,19 @@ async function runResource(bot, opts = {}, token = null) {
   // DEEP-FIRST : en mode quota, on ignore les cibles mappées au-dessus de ce Y (couches aquifères
   // 1.18, y>0 = noyade/floating mortels live) → descente forcée vers le deepslate SEC (diamants inclus).
   const deepQuotaY = opts.deepQuotaY != null ? opts.deepQuotaY : 0;
+  // FIX #5 (live 22/06) : sous ce Y, le cave-first sur un ore exposé en grotte 1.18 échoue/galère
+  // (grottes énormes/humides/mobs) → le bot OSCILLE en surface (relocate en boucle) sans JAMAIS
+  // atteindre -58 ni miner (vécu R1/R3 deep-only : 21 resource_cave, 0 deep_serpentine, y5-8). On route
+  // ces ores PROFONDS DIRECT vers le strip-mine DESCENDANT (deep-serpentine = mineFor force la descente
+  // via descendDiagonal vers Y_OPT, puis branch-mine au volume — ramasse les veines, exposés inclus).
+  const deepCaveCutoff = opts.deepCaveCutoff != null ? opts.deepCaveCutoff : -30;
+  // TYPES intrinsèquement PROFONDS (Y_OPT ≤ -40 : diamond/redstone) — passés par index.js depuis Y_OPT.
+  // Pour CES types, on strip-mine TOUJOURS en profondeur (deep-serpentine), même si une cible exposée
+  // SHALLOW est mappée plus proche : nearest-first ciblait sinon les redstone_ore shallow (y0-16) en
+  // cave-first → le bot restait en surface sans jamais descendre au deepslate riche (vécu R1/R3 22/06 :
+  // cibles redstone y-2..10, 0 deep_serpentine). Le strip-mine -58 récolte le deepslate au volume.
+  const deepStripTypes = opts.deepStripTypes instanceof Set ? opts.deepStripTypes
+    : Array.isArray(opts.deepStripTypes) ? new Set(opts.deepStripTypes) : null;
   const mineExposed = opts.mineExposed || null;   // G-bis : minage en grotte des diamants EXPOSÉS
   const failRelocateAt = opts.failRelocateAt != null ? opts.failRelocateAt : 2;  // un échec ≈ 8-12 min (vécu) — fuir vite les zones d'eau
 
@@ -207,18 +220,20 @@ async function runResource(bot, opts = {}, token = null) {
       if (until > now) skipNow.add(k); else busyUntil.delete(k);
     }
     const allowTypes = tracker ? tracker.remainingTypes(_items(bot)) : undefined;
-    // BUG PRIO 3.1 (résolution Massii 16/06 — débit diamant) : le diamant est le GOULOT de la DoD
-    // (64) ; les autres types se remplissent vite + le minage profond serpentin en récolte AUSSI au
-    // passage (redstone/fer/lapis du deepslate). Tant que le quota diamant manque, le diamant passe
-    // DEVANT (priority:['diamond']) → exposé visé→cave-first, enterré→deep serpentine. Sinon le
-    // nearest-first laissait le bot rafler le fer exposé proche sans JAMAIS viser le diamant profond
-    // (vécu live : 0💎 en 1h40). Quota diamant REMPLI → on revient au PLUS PROCHE (réduit le voyage).
-    // Le deep-serpentine évite le « long tunnel par diamant » que le nearest-first (#42a) craignait.
-    const _wantsDiamond = !!allowTypes && (allowTypes instanceof Set
-      ? allowTypes.has('diamond') : (Array.isArray(allowTypes) && allowTypes.includes('diamond')));
+    // NEAREST-FIRST en mode quota (priority:[], #42d — supersede BUG PRIO 3.1 du 16/06).
+    // LIVE 22/06 (3 ResBots, monde dur) : forcer le diamant DEVANT les autres types tant que son quota
+    // manque (l'ancien priority:['diamond']) faisait se RUER les 3 bots sur le diamant deepslate exposé
+    // en GROTTE (profond/humide) ; mineExposed→cave-first→cave_meander échoue très souvent (pas de
+    // chemin sans creuser, eau, blocages) → skip + re-vise un autre diamant en boucle → 0 minage, quota
+    // FIGÉ sur TOUS les types (diamant compris : 15/0/0 vécu), pendant que des milliers de gold/redstone
+    // exposés accessibles étaient ignorés. Nearest-first mine le minerai ACCESSIBLE le plus proche parmi
+    // les types manquants → remplit 4/5 quotas vite ET descend le bot en deep (le strip-mine profond
+    // ramasse le diamant au passage). Préoccupation « 0💎 en 1h40 » (16/06) toujours couverte : quand
+    // SEUL le diamant reste, allowTypes={diamond} le filtre déjà → aucune autre cible ne détourne le bot
+    // (le focus diamant est donc NATUREL, sans avoir à le forcer devant des types qui se minent mieux).
     let target = nextOreTarget(memory, wkey, from, {
       skip: skipNow, allowTypes,
-      priority: tracker ? (_wantsDiamond ? ['diamond'] : []) : undefined,
+      priority: tracker ? [] : undefined,
       maxDist: tracker ? maxTargetDist : undefined,   // phase 2 : miner LOCAL, pas traverser la carte
       pickTier: (typeof tier === 'number' ? tier : undefined),
     });
@@ -467,16 +482,29 @@ async function runResource(bot, opts = {}, token = null) {
         try { return await mineFor(target.material, _needed, { serpentine: true }); }
         catch (e) { return { ok: false, reason: 'error', detail: String((e && e.message) || e).slice(0, 120) }; }
       };
-      if (_isDiamond && target.exposed && !target.wet && mineExposed) {  // diamant exposé : cave-first PUIS repli profond
+      const _isDeep = (deepStripTypes && deepStripTypes.has(oreBase(target.material)))  // type deep (diamond/redstone) : TOUJOURS
+        || (typeof target.y === 'number' && target.y <= deepCaveCutoff);               // ou cible très profonde (autres types croisés)
+      if (_isDeep && mineFor) {                                         // FIX #5 : ore PROFOND → strip-mine DESCENDANT direct
+        // JAMAIS de cave-first en deep (il galère/oscille en surface, vécu R1/R3). Le deep-serpentine
+        // FORCE la descente vers Y_OPT puis branch-mine au volume (ramasse aussi les exposés croisés).
+        _rr = await _deepSerpentine(_isDiamond ? null : 'deep_strip');
+      } else if (_isDiamond && target.exposed && !target.wet && mineExposed) {  // diamant exposé SHALLOW : cave-first PUIS repli profond
         emit({ type: 'resource_cave', material: target.material, x: target.x, y: target.y, z: target.z });
         try { await mineExposed(target); _rr = { ok: true }; }
         catch (e) { _rr = await _deepSerpentine('cave_failed'); }       // grotte inatteignable → minage profond
       } else if (_isDiamond) {
         _rr = await _deepSerpentine(null);                              // diamant enterré → minage profond serpentin
-      } else if (target.exposed && !target.wet && mineExposed) {        // autres ores exposés → cave-first (inchangé)
+      } else if (target.exposed && !target.wet && mineExposed) {        // autres ores exposés → cave-first PUIS repli strip dirigé
         emit({ type: 'resource_cave', material: target.material, x: target.x, y: target.y, z: target.z });
         try { await mineExposed(target); _rr = { ok: true }; }
-        catch (e) { _rr = { ok: false, reason: 'error', detail: String((e && e.message) || e).slice(0, 120) }; }
+        catch (e) {
+          // REPLI (live 22/06 ResBot1) : grotte inatteignable (pas de chemin piéton, baie côtière) → au
+          // lieu d'abandonner sec (_rr={ok:false} = jusqu'à 180 s perdues/cible, 0 minage), strip-mine
+          // DIRIGÉ vers la cible (même repli que le diamant, mineFor heading = pas un beeline X-ray).
+          emit({ type: 'resource_region', material: target.material, toward: { x: target.x, y: target.y, z: target.z }, heading, fallback: 'cave_failed' });
+          try { _rr = await mineFor(target.material, _needed, { heading }); }
+          catch (e2) { _rr = { ok: false, reason: 'error', detail: String((e2 && e2.message) || e2).slice(0, 120) }; }
+        }
       } else {
         // AUTRES ores enterrés (fer/lapis/…) → strip-mining DIRIGÉ vers la région (heading), pas beeline.
         emit({ type: 'resource_region', material: target.material, toward: { x: target.x, y: target.y, z: target.z }, heading });
