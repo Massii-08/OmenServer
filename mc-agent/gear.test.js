@@ -3,10 +3,10 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType } = require('./gear');
 
-test('Y_OPT : bandes de spawn 1.18+ (diamant/redstone profond, or -16, lapis 0, fer 16)', () => {
+test('Y_OPT : bandes de spawn 1.18+ (diamant/redstone profond, or -16, lapis -58 sec, fer 16)', () => {
   assert.strictEqual(Y_OPT.diamond, -58);
   assert.strictEqual(Y_OPT.redstone, -58);
-  assert.strictEqual(Y_OPT.lapis, 0);
+  assert.strictEqual(Y_OPT.lapis, -58);  // bande y0 noyée près du spawn → couche profonde sèche (batch lapis "buried" uniforme)
   assert.strictEqual(Y_OPT.gold, -16);   // pic de spawn réel (le fix #10 -54 a été REVERT : gold rare en deepslate)
   assert.strictEqual(Y_OPT.iron, 16);
 });

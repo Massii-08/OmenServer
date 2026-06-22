@@ -13,7 +13,12 @@ const { TIERS } = require('./ores');
 // (pic dense), pas à -54 (queue rare) → strip-miner à -54 cherchait un gold ~inexistant → relocate en
 // boucle, 0 minage (live 22/06). Le strip à -16 (fix #8) reste le MEILLEUR débit gold observé (0→36)
 // malgré les noyades (couche aquifère). Le gold est world-limité sur ce monde (−16 dense mais noyé).
-const Y_OPT = { diamond: -58, redstone: -58, gold: -16, lapis: 0, iron: 16 };
+// lapis : la bande dense y0 est NOYÉE par les aquifères près du spawn (water_rescue → warp surface →
+// re-descente en boucle, 0 minage, live 22/06 soir). Le lapis a 2 batches de génération dont un "buried"
+// quasi-uniforme y-64→64 → il reste à -58 (couche PROUVÉE SÈCHE par les bots diamant sur ce monde) une
+// densité largement suffisante pour le quota (lapis = ×4-9/ore → ~8-16 ore pour 64). Sec+productif >>
+// humide+zéro (même nature de verrou que l'or world-limité à -16, résolu en allant au sec).
+const Y_OPT = { diamond: -58, redstone: -58, gold: -16, lapis: -58, iron: 16 };
 
 // Palier de pioche requis pour MINER le type (index TIERS : 2=stone, 3=iron).
 const TIER_FOR = { diamond: 3, gold: 3, redstone: 3, lapis: 2, iron: 2, coal: 0, copper: 2 };
