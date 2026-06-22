@@ -57,6 +57,7 @@ const { runMapper } = require('./mapper');
 const { LOCATE_KINDS, parseLocateResponse, structureFoundEvent } = require('./structures');
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating } = require('./unstuck');
 const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTANTE → relocate forcé (live 22/06 ResBot1)
+const { recordJam } = require('./jamEscalate'); // JAM persistant au MÊME endroit → relocate forcé (live 22/06 SOIR ResBot2)
 const { runResource } = require('./skills/resource');
 const { planSmeltRaw } = require('./bank');   // fonte périodique du brut or/fer → lingots bankables
 const { tunnelTo } = require('./skills/tunnelTo');
@@ -2268,9 +2269,11 @@ bot.on('end', () => { emit({ type: 'status', state: 'disconnected' }); process.e
 // s'ils sont minables) puis stopMotion → la tâche re-path/re-dérive. Couvre aussi les
 // cartographes figés en jambe (même signature). Jamais pendant un dig (immobile = légitime).
 let _jamSample = null;
+let _jamEsc = null;   // état d'escalade : unjams répétés AU MÊME endroit → relocate forcé (live 22/06 SOIR ResBot2)
 setInterval(async () => {
   try {
     if (!bot.entity || !bot.entity.position) return;
+    if (Date.now() < _floatSettleUntil) { _jamSample = null; return; }   // settle post-spawn/warp : pas de jam
     const p = bot.entity.position;
     const digging = !!bot.targetDigBlock;
     const hasGoal = !!(bot.pathfinder && bot.pathfinder.goal);
@@ -2297,6 +2300,17 @@ setInterval(async () => {
       } catch (e) { /* best-effort */ }
     }
     try { stopMotion(); } catch (e) {}                                   // le goto rejette → re-path
+    // ESCALADE : si le dig de l'unjam ne libère pas (jams répétés au MÊME endroit), le bot reboucle
+    // droit dans l'obstacle (live 22/06 SOIR ResBot2 : unjam×12 à 381,65,395, 0 descente). Comme les
+    // watchdogs flottant/océan, au 3e unjam ~même spot → relocate FORCÉ vers une cellule terre fraîche.
+    const _je = recordJam(_jamEsc, p.x, p.z, now);
+    _jamEsc = _je.state;
+    if (_je.escalate) {
+      emit({ type: 'unjam_relocate', x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) });
+      _floatSettleUntil = Date.now() + 15000;
+      try { stopMotion(); } catch (e) {}
+      relocateToRegion().catch(() => {});
+    }
   } catch (e) { /* watchdog : ne crash jamais */ }
 }, 6000);
 
