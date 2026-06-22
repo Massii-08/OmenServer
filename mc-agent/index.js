@@ -28,6 +28,7 @@ const { parseOrder } = require('./orders');
 const { createTaskController } = require('./tasks');
 const { createMemory } = require('./memory');
 const { bestWeapon, bestToolFor } = require('./tools');
+const { shouldSprint } = require('./movement');   // sprint « vrai joueur » ON par défaut (Massii 2026-06-22)
 const vec3Lib = require('vec3'); // watchdog anti-jam (blocs barrants)
 const { gather } = require('./skills/gather');
 const { mineDown } = require('./skills/mineDown');
@@ -1774,6 +1775,29 @@ async function onSpawn() {
       if (ids.length) moves.scafoldingBlocks = ids;
     } catch (e) { /* best-effort : garde le défaut dirt+cobblestone */ }
     bot.pathfinder.setMovements(moves);
+    // SPRINT « vrai joueur » (Massii 2026-06-22) : `allowSprinting` laisse pathfinder sprinter
+    // SEULEMENT sur de longs trajets droits → en minage (déplacements courts) le bot ne sprintait
+    // quasi jamais (lent + tell). Garde tick : on FORCE le sprint dès qu'on avance sur la terre
+    // ferme (faim ok, pas minage/eau/sneak). Décision pure dans movement.js (testée), état lu ici.
+    // Dans le bloc bootDone → 1 seul interval par connexion (pas de fuite au respawn).
+    setInterval(() => {
+      try {
+        const ent = bot.entity;
+        if (!ent) return;
+        const moving = (bot.pathfinder && bot.pathfinder.isMoving && bot.pathfinder.isMoving())
+          || bot.getControlState('forward') || bot.getControlState('back');
+        const want = shouldSprint({
+          moving,
+          onGround: ent.onGround,
+          inWater: ent.isInWater || ent.isInLava,
+          digging: !!bot.targetDigBlock,
+          sneaking: bot.getControlState('sneak'),
+          food: bot.food,
+          sprinting: bot.getControlState('sprint'),
+        });
+        if (bot.getControlState('sprint') !== want) bot.setControlState('sprint', want);
+      } catch (e) { /* best-effort : ne jamais crasher la boucle de contrôle */ }
+    }, 150);
     let waterRescue = null; // évasion d'eau en cours (jamais 2 en parallèle)
     let waterEscapeFails = 0; // escapades LOCALES échouées d'affilée → escalade warp SEULEMENT à 3 (vrai
                               // blocage). PAS d'escalade temporelle agressive : à profondeur diamant les
