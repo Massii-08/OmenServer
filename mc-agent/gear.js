@@ -13,12 +13,14 @@ const { TIERS } = require('./ores');
 // (pic dense), pas à -54 (queue rare) → strip-miner à -54 cherchait un gold ~inexistant → relocate en
 // boucle, 0 minage (live 22/06). Le strip à -16 (fix #8) reste le MEILLEUR débit gold observé (0→36)
 // malgré les noyades (couche aquifère). Le gold est world-limité sur ce monde (−16 dense mais noyé).
-// lapis : la bande dense y0 est NOYÉE par les aquifères près du spawn (water_rescue → warp surface →
-// re-descente en boucle, 0 minage, live 22/06 soir). Le lapis a 2 batches de génération dont un "buried"
-// quasi-uniforme y-64→64 → il reste à -58 (couche PROUVÉE SÈCHE par les bots diamant sur ce monde) une
-// densité largement suffisante pour le quota (lapis = ×4-9/ore → ~8-16 ore pour 64). Sec+productif >>
-// humide+zéro (même nature de verrou que l'or world-limité à -16, résolu en allant au sec).
-const Y_OPT = { diamond: -58, redstone: -58, gold: -16, lapis: -58, iron: 16 };
+// lapis : la bande dense est ~y0 (triangle -32→+32 piqué à 0). À -58 (batch "buried" uniforme) c'est
+// SEC mais trop SPARSE → débit ~0 (live 22/06 soir : lapis gelé à 42 pendant 8 min, bots minant à -59
+// sans rien trouver). Les mappers DÉTECTENT des veines à y-9/-7 (deepslate, couche dense exposée) → il
+// EXISTE un accès dense exploitable. On vise -12 : dans la bande dense (~62% du pic, ≫ buried), assez
+// bas pour passer SOUS l'aquifère de surface y0, et la garde anti-eau de branchMine (water_ahead →
+// tourne vers le sec, scelle les faces d'eau) gère les nappes locales. Compromis dense+accessible >>
+// dense+noyé (y0) et sec+stérile (-58).
+const Y_OPT = { diamond: -58, redstone: -58, gold: -16, lapis: -12, iron: 16 };
 
 // Palier de pioche requis pour MINER le type (index TIERS : 2=stone, 3=iron).
 const TIER_FOR = { diamond: 3, gold: 3, redstone: 3, lapis: 2, iron: 2, coal: 0, copper: 2 };
