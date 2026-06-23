@@ -324,6 +324,31 @@ test('quota : carte vide + reloadMemory → resource_waiting puis reprend quand 
   assert.equal(r.mined, 1);
 });
 
+test('quota : cible mappée dont le bloc n\'est PLUS un minerai (chargé) → ore_gone, jamais de strip-mine vers le vide (Massii 2026-06-22)', async () => {
+  // Un diamant mappé à (5,-55,5) mais le bloc est de la deepslate (déjà miné par un autre bot/joueur).
+  // Le bot doit le RETIRER de la carte (ore_gone) et NE PAS strip-miner (mineFor) vers cet emplacement vide.
+  const blocks = { '5,-55,5': { name: 'deepslate', position: { x: 5, y: -55, z: 5 } } };
+  const bot = makeQuotaBot({ blocks });
+  const events = [];
+  let mineForCalled = 0;
+  const r = await runResource(bot, {
+    memory: mem([{ material: 'deepslate_diamond_ore', x: 5, y: -55, z: 5, exposed: false, wet: false }]),
+    worldKey: 'overworld',
+    emit: (e) => events.push(e),
+    goto: async () => {},
+    quota: { diamond: 1 },
+    mineFor: async () => { mineForCalled++; return { ok: true }; }, // sans le fix : appelé (deep-serpentine vers le vide)
+    sleep: async () => {},
+    maxIdleMs: -1,                                                  // plus de cible après pruning → starved tout de suite
+    reloadMemory: () => mem([]),
+  });
+  const gone = collect(events, 'ore_gone');
+  assert.equal(gone.length, 1, 'la cible périmée est retirée de la carte');
+  assert.deepEqual({ x: gone[0].x, y: gone[0].y, z: gone[0].z }, { x: 5, y: -55, z: 5 });
+  assert.equal(mineForCalled, 0, 'jamais de strip-mine vers un emplacement vide');
+  assert.equal(r.mined, 0);
+});
+
 test('quota : starved après maxIdleMs sans nouvelle cible', async () => {
   const bot = makeQuotaBot({});
   const events = [];

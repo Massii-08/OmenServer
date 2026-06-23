@@ -449,6 +449,18 @@ async function runResource(bot, opts = {}, token = null) {
     // le flood-fill (branchMine) vide les veines découvertes. Le bot ne fonce jamais pile sur le bloc —
     // il le « découvre » en creusant. (Mode legacy SANS mineFor : beeline direct ci-dessous, inchangé.)
     if (mineFor) {
+      // STALE-MEMORY (Massii 2026-06-22) : la cible mappée existe-t-elle ENCORE ? Si son bloc est CHARGÉ
+      // (chunk en vue) mais n'est PLUS un minerai (déjà miné par un autre bot/joueur), on la RETIRE de la
+      // carte (ore_gone → remove_ore côté backend) et on cherche AILLEURS — JAMAIS strip-miner vers un
+      // emplacement vide. ⚠️ blockAt null = chunk NON chargé (cible lointaine, normal) → on ne peut PAS
+      // conclure « disparu » → on garde la cible (le strip-mine dirigé la découvrira, ou la prouvera périmée
+      // à portée plus tard). Le legacy a son propre check (l.~600), inatteignable en mode quota.
+      const _tgtBlock = bot.blockAt ? bot.blockAt(_pos(target)) : null;
+      if (_tgtBlock && !isOre(_tgtBlock.name)) {
+        if (claims) claims.release(key);
+        emit({ type: 'ore_gone', world: wkey, x: target.x, y: target.y, z: target.z });
+        continue;
+      }
       // RÈGLE EAU DURE en MODE QUOTA (point #3 — la version legacy ~l.480 est INATTEIGNABLE ici : elle
       // vit APRÈS le `continue` de ce bloc). Re-vérif LIVE autour de la cible (si chunk chargé) : eau à
       // ≤2 blocs → on ABANDONNE la veine entière (skip + voisins), jamais l'eau même pour un diamant
