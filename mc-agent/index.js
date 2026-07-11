@@ -2261,7 +2261,10 @@ bot.on('death', () => {
   // et l'ancienne pause à 3 morts le laissait IDLE en punching-ball) : 2 morts en <60 s →
   // au prochain spawn, WARP ailleurs + ré-ancrage du spawnpoint (le camping est cassé net).
   const burst = deathTimes.filter((t) => Date.now() - t < 60000).length;
-  if (burst >= 2) _escapeOnSpawn = true;
+  // Fix fable1 ter : le camping LENT (zombie sur le spawnpoint, morts espacées 2-7 min — MapperBot2
+  // 5 morts/22 min) passait sous le radar du burst <60 s. 3 morts en 10 min = même endroit pourri
+  // → warp d'évasion aussi (le shelter post-respawn fait le reste).
+  if (burst >= 2 || deathTimes.length >= 3) _escapeOnSpawn = true;
   // Garde-fou ultime (relevé 3→5 : le warp anti-camping gère les boucles courtes) :
   // 5 morts / 10 min → on SORT du process (miroir du starved l.1172) pour laisser le self-healing
   // backend respawner avec un world.json FRAIS (status=in_progress) en ~15 s — inventaire + quota
