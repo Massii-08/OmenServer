@@ -644,6 +644,8 @@ async function startMapper() {
     teleport: tpWatch, // #10 : TP détecté → ré-ancrage (heading propre depuis la position réelle)
     emit,
     fleeFrom,
+    nightShelter: () => maybeNightShelter(true), // fix fable1 bis : se terrer AVANT chaque départ de nuit
+
     // kit incomplet (stall terrain au départ) → re-tenté discrètement toutes les ~10 arrivées :
     // le terrain a changé (le bot a bougé), la pose de table a souvent une 2e chance ailleurs.
     onPeriodic: async () => {

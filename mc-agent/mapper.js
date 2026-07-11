@@ -284,6 +284,10 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   record(); // la cellule de départ compte
 
   while (!token.cancelled) {
+    // NUIT AVANT DE PARTIR (fix fable1 bis) : l'abri à l'ARRIVÉE (onArrive) laissait le bot
+    // marcher toute une jambe de nuit → snipé en route (MapperBot1/ResBot3 shot by Skeleton au
+    // crépuscule). On se terre AVANT de se mettre en route ; no-op le jour (cooldown 1/nuit côté hook).
+    if (opts.nightShelter) { try { await opts.nightShelter(); } catch (e) { /* le mapping continue */ } }
     // TÉLÉPORTATION (#10) : le bot a sauté (admin /tp, /home, portail…) → RÉ-ANCRAGE au lieu réel.
     // Origine de mapping = position ACTUELLE, heading propre re-tiré (dans le wedge si secteur),
     // baseline anti-stuck remise à zéro (le saut n'est PAS un blocage), compteurs d'échec purgés
