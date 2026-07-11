@@ -1691,7 +1691,16 @@ async function startAutonomous(sender) {
   // keepInventory ON → rien au sol → l'aller-retour de récupération (90 s) est du pur gaspillage.
   // Heuristique : inventaire NON vide au respawn = keepInventory actif → skip (phase 3).
   const invAfterDeath = (bot.inventory && bot.inventory.items()) || [];
-  if (lastDeath && Date.now() - lastDeath.t < 4 * 60 * 1000 && invAfterDeath.length === 0) {
+  // FIX fable1 (boucle de mort nocturne, 10 morts/30 min) : de NUIT, la marche de récupération est
+  // une marche funèbre — respawn nu → 90 s de pathfinding vers l'endroit exact où campe le tueur →
+  // re-mort (intervalle 60-120 s observé = burst<60 s jamais déclenché). Le kit est re-provisionné
+  // par /give de toute façon → on ABANDONNE le stuff au sol, on se TERRE jusqu'à l'aube, kit ensuite.
+  if (lastDeath && isNight(bot)) {
+    lastDeath = null;
+    emit({ type: 'death_recovery_skipped', reason: 'night' });
+    lastShelterT = 0;                       // une mort de nuit = urgence, on saute le cooldown 10 min
+    try { await maybeNightShelter(true); } catch (e) { /* best-effort, le kit reprend derrière */ }
+  } else if (lastDeath && Date.now() - lastDeath.t < 4 * 60 * 1000 && invAfterDeath.length === 0) {
     const d = lastDeath; lastDeath = null;
     emit({ type: 'death_recovery', x: Math.round(d.x), y: Math.round(d.y), z: Math.round(d.z) });
     await withTimeout(
