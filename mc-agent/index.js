@@ -19,7 +19,7 @@ const { follow } = require('./skills/follow');
 const { goto } = require('./skills/goto');
 const { mineBlock, collectWood } = require('./skills/mineBlock');
 const { attackNearest } = require('./skills/attackNearest');
-const { fleeFrom } = require('./skills/fleeFrom');
+const { fleeFrom, isFleeHostile } = require('./skills/fleeFrom');
 const { installReflexes } = require('./reflexes');
 const { decideReaction } = require('./triggers');
 const { loadCommands, isAllowed, buildCommandDocs } = require('./commands');
@@ -567,9 +567,11 @@ let lastShelterT = 0; // anti re-trigger : 1 abri par nuit max
 
 // Abri nocturne PARTAGÉ (kit + roaming mappeur, hole §1.4) : nuit + (mort récente OU PV ≤10) + pas
 // d'abri depuis 10 min → trou couvert jusqu'à l'aube (borné 13 min). Retourne true si on s'est abrité.
-async function maybeNightShelter() {
+// `proactive=true` (mappeurs en roaming, fix fable1) : la nuit SUFFIT — attendre une mort pour
+// s'abriter, c'est déjà avoir perdu (MapperBot1+2 sniped par squelettes la 1re nuit du monde neuf).
+async function maybeNightShelter(proactive = false) {
   const deathsRecent = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000).length;
-  if (isNight(bot) && (deathsRecent >= 1 || (bot.health != null && bot.health <= 10))
+  if (isNight(bot) && (proactive || deathsRecent >= 1 || (bot.health != null && bot.health <= 10))
       && Date.now() - lastShelterT > 10 * 60 * 1000) {
     lastShelterT = Date.now();
     await withTimeout(shelterUntilDawn(bot, taskToken, { emit }), 13 * 60 * 1000,
@@ -648,12 +650,15 @@ async function startMapper() {
       const ctx = Object.assign({ inv: buildCtxInv(bot) }, ctxExtra());
       if (firstUnmet(kitChain, ctx)) { emit({ type: 'mapper_kit_retry' }); await runKit(); }
       try { await armorUp(0); } catch (e) { /* best-effort */ }   // hole A : le mappeur s'arme aussi
-      try { await maybeNightShelter(); } catch (e) {}             // hole §1.4 : abri nocturne en roaming
+      try { await maybeNightShelter(true); } catch (e) {}         // hole §1.4 : abri nocturne en roaming
     },
     // CHASSE OPPORTUNISTE (vécu Surv1 : le retry périodique coïncide rarement avec des proies à
     // portée → stock jamais constitué) : à chaque arrivée, si le stock cuit est bas ET qu'une proie
     // passe à ≤24 blocs → on la tue MAINTENANT (cru en poche ; la cuisson se fait au retry du kit).
     onArrive: async () => {
+      // Fix fable1 : abri nocturne PROACTIF à CHAQUE arrivée (onPeriodic = 1/10 arrivées, trop rare —
+      // les mappeurs se faisaient sniper en surface la nuit avant le prochain check). No-op le jour.
+      if (await maybeNightShelter(true)) return; // aube : on reprend au prochain cycle (pas de chasse de nuit)
       const inv = buildCtxInv(bot);
       const rawHave = Object.keys(RAW2COOKED).reduce((s, n) => s + (inv[n] || 0), 0);
       const missing = 4 - cookedCount(inv) - rawHave;
@@ -2331,6 +2336,16 @@ setInterval(async () => {
   try {
     if (_floatBusy || !bot.entity || !bot.entity.position) return;
     if (bot.targetDigBlock) { _floatPrev = null; _floatHits = 0; return; } // minage sur place = légitime
+    // COMBAT sur place = légitime (fix fable1) : frapper immobile ressemble à « floating-stuck »
+    // (mvt horizontal ≈0, vy≈0) → recoverFloating COUPAIT la défense en plein assaut (vécu ResBot1 :
+    // unstuck cause floating pendant flee ×3 hostiles → slain by Zombie). Hostile ≤4 blocs →
+    // détection OFF ; les vrais blocages sont couverts ensuite (jam-watchdog + escalade).
+    try {
+      const selfP = bot.entity.position;
+      const foe = bot.nearestEntity((e) => e && e.position && isFleeHostile(e)
+        && (e.position.distanceTo ? e.position.distanceTo(selfP) <= 4 : false));
+      if (foe) { _floatPrev = null; _floatHits = 0; return; }
+    } catch (e) { /* nearestEntity indispo → détection normale */ }
     // SETTLE post-spawn/téléport : juste après un warp (spawnpoint, /spreadplayers, water-rescue,
     // respawn) le chunk se charge → bot.entity.onGround reste FAUX qq s alors que le bot est immobile
     // en positionnement → FAUX POSITIF floating → recoverFloating coupe le branchMine + ok:false EN

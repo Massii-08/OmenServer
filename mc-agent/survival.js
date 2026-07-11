@@ -5,6 +5,7 @@
 //  - se défend un minimum : combat 1-2 hostiles à l'épée ; FUIT si submergé (≥3) ou PV bas ;
 //  - ne plonge pas en grotte : c'est le mapper qui note l'entrée (caves.js), pas ce module.
 // Le tick fait UNE action courte et rend son label — la boucle mapper re-tick tant que ce n'est pas calme.
+const { Vec3 } = require('vec3');
 const { FOODS } = require('./reflexes');
 const { bestWeapon } = require('./tools');
 
@@ -35,17 +36,39 @@ const PASSIVE_FOOD_MOBS = new Set(['cow', 'pig', 'chicken', 'sheep', 'rabbit', '
  * `armored` (optionnel) : SANS armure (false) → seuils prudents (fuit dès 2 hostiles ou PV ≤ 12),
  * anti « mort par combo ». Avec armure OU inconnu → seuils historiques courageux (rétro-compat).
  */
-function combatDecision({ health, hostileCount, armored, hasCreeper }) {
+function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear }) {
   if (!hostileCount) return null;
   // CREEPER : JAMAIS de mêlée (il explose au contact → mort instantanée même en armure diamant, vécu
   // live R3 22/06 : fight creeper ×2 → dead en deep mining). On FUIT pour casser la ligne d'explosion ;
   // le bot reprend le minage une fois à distance. Prime sur tout (santé/armure/count).
   if (hasCreeper) return 'flee';
+  // LAVE proche : mêlée au bord de la lave = mort par knockback (vécu fable1 : ResBot3 « tried to
+  // swim in lava » pendant fight zombie en deep-serpentine). On décroche pour se battre au sec.
+  if (lavaNear) return 'flee';
   const swarm = armored === false ? SWARM_UNARMORED : SWARM_COUNT;
   const lowHp = armored === false ? LOW_HEALTH_UNARMORED : LOW_HEALTH;
   if (hostileCount >= swarm) return 'flee';
   if (health != null && health <= lowHp) return 'flee';
   return 'fight';
+}
+
+/** Lave à ≤radius blocs du bot (boîte horizontale, y-1..+2) ? Un combat engagé là = risque de
+ *  knockback dans la lave. Scan borné (≤ (2r+1)²×4 blockAt) — appelé UNIQUEMENT si hostiles. */
+function lavaNearby(bot, radius = 3) {
+  const self = bot.entity && bot.entity.position;
+  if (!self || typeof bot.blockAt !== 'function') return false;
+  const bx = Math.floor(self.x); const by = Math.floor(self.y); const bz = Math.floor(self.z);
+  for (let dx = -radius; dx <= radius; dx++) {
+    for (let dz = -radius; dz <= radius; dz++) {
+      for (let dy = -1; dy <= 2; dy++) {
+        try {
+          const b = bot.blockAt(new Vec3(bx + dx, by + dy, bz + dz));
+          if (b && (b.name === 'lava' || b.name === 'flowing_lava')) return true;
+        } catch (e) { /* bord de chunk → on continue */ }
+      }
+    }
+  }
+  return false;
 }
 
 /** A-t-on au moins une pièce d'armure portée (slots inventaire 5-8) ? Proxy de robustesse combat. */
@@ -109,10 +132,14 @@ async function survivalTick(bot, deps = {}) {
   const emit = deps.emit || (() => {});
   const hostiles = nearbyHostiles(bot, 10);
   const hasCreeper = hostiles.some((h) => h && h.name === 'creeper');   // creeper → fuir, jamais mêlée (anti-explosion)
-  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper });
+  // Lave évaluée seulement s'il y a des hostiles (le scan a un coût) ; injectable pour les tests.
+  const lavaNear = hostiles.length ? (deps.lavaNear ? !!deps.lavaNear(bot) : lavaNearby(bot)) : false;
+  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear });
   if (decision === 'flee') {
     try { deps.fleeFrom && deps.fleeFrom(bot); } catch (e) {}
-    emit({ type: 'survival', action: 'flee', hostiles: hostiles.length });
+    const ev = { type: 'survival', action: 'flee', hostiles: hostiles.length };
+    if (lavaNear) ev.reason = 'lava_near';
+    emit(ev);
     return 'flee';
   }
   if (decision === 'fight') {
@@ -137,7 +164,7 @@ async function survivalTick(bot, deps = {}) {
 }
 
 module.exports = {
-  combatDecision, isArmored, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick,
+  combatDecision, isArmored, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick, lavaNearby,
   SWARM_COUNT, LOW_HEALTH, SWARM_UNARMORED, LOW_HEALTH_UNARMORED, HUNT_HUNGER, EAT_HUNGER,
   RAW_FOODS, PASSIVE_FOOD_MOBS, NEUTRAL_NO_PROVOKE,
 };
