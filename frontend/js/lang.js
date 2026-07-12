@@ -254,9 +254,10 @@ const Lang = {
             // Toast / Alerts
             'toast.accent': 'Accent :',
             'accent.green': 'Vert',
-            'accent.blue': 'Bleu',
-            'accent.red': 'Rouge',
-            'accent.yellow': 'Jaune',
+            'accent.cyan': 'Cyan',
+            'accent.violet': 'Violet',
+            'accent.magenta': 'Magenta',
+            'accent.amber': 'Ambre',
             'toast.logout': 'Déconnecté',
 
             // Common
@@ -1515,9 +1516,10 @@ const Lang = {
             // Toast / Alerts
             'toast.accent': 'Accent:',
             'accent.green': 'Green',
-            'accent.blue': 'Blue',
-            'accent.red': 'Red',
-            'accent.yellow': 'Yellow',
+            'accent.cyan': 'Cyan',
+            'accent.violet': 'Violet',
+            'accent.magenta': 'Magenta',
+            'accent.amber': 'Amber',
             'toast.logout': 'Logged out',
 
             // Common
@@ -2776,9 +2778,10 @@ const Lang = {
             // Toast / Alerts
             'toast.accent': 'Accento:',
             'accent.green': 'Verde',
-            'accent.blue': 'Blu',
-            'accent.red': 'Rosso',
-            'accent.yellow': 'Giallo',
+            'accent.cyan': 'Ciano',
+            'accent.violet': 'Viola',
+            'accent.magenta': 'Magenta',
+            'accent.amber': 'Ambra',
             'toast.logout': 'Disconnesso',
 
             // Common

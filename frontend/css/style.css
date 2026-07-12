@@ -2330,14 +2330,15 @@ canvas {
     transition: var(--t-fast);
     box-sizing: border-box;
 }
-.accent-switcher-mini .accent-dot[data-acc="green"]  { background: #4ADE80; }
-.accent-switcher-mini .accent-dot[data-acc="blue"]   { background: #60A5FA; }
-.accent-switcher-mini .accent-dot[data-acc="red"]    { background: #FB7185; }
-.accent-switcher-mini .accent-dot[data-acc="yellow"] { background: #FACC15; }
+.accent-switcher-mini .accent-dot[data-acc="green"]   { background: #00FFB0; }
+.accent-switcher-mini .accent-dot[data-acc="cyan"]    { background: #00D2FF; }
+.accent-switcher-mini .accent-dot[data-acc="violet"]  { background: #8B5CFF; }
+.accent-switcher-mini .accent-dot[data-acc="magenta"] { background: #FF3DA6; }
+.accent-switcher-mini .accent-dot[data-acc="amber"]   { background: #FFB020; }
 .accent-switcher-mini .accent-dot.active {
     border-color: var(--text);
     /* Slight ring effect when active */
-    box-shadow: 0 0 0 1px var(--bg-elev-2);
+    box-shadow: 0 0 0 1px var(--bg-elev-2), 0 0 10px var(--accent-glow);
 }
 .accent-switcher-mini .accent-dot:hover {
     transform: scale(1.15);
