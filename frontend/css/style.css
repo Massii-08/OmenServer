@@ -4325,10 +4325,10 @@ select:-webkit-autofill {
 .stat-card:hover::after { opacity: 1; animation: omen-sweep .8s ease-out 1; }
 @keyframes omen-sweep { to { transform: translateX(120%); } }
 
-/* --- Orbite conique — carte maîtresse (Diagnostic « indice de souffrance ») --- */
+/* --- Orbite conique — carte maîtresse du Dashboard uniquement (.main, ≠ .big sysdoc) --- */
 @property --omen-ang { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
-.bento-overview .stat-card.big { position: relative; }
-.bento-overview .stat-card.big::before {
+.bento-overview .stat-card.main { position: relative; }
+.bento-overview .stat-card.main::before {
     content: ''; position: absolute; inset: -1px; border-radius: inherit; padding: 1.5px; pointer-events: none;
     background: conic-gradient(from var(--omen-ang), transparent 0 70%, var(--accent) 88%, transparent 100%);
     -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
@@ -4380,7 +4380,7 @@ select:-webkit-autofill {
     .nav-ind { transition: none; }
     .stat-card:hover, .machine-card:hover, .bot-card-bento:hover, .mod-card:hover { transform: none; }
     .stat-card:hover::after,
-    .bento-overview .stat-card.big::before,
+    .bento-overview .stat-card.main::before,
     .topbar .logo::after, .login-logo::after,
     .ev-in { animation: none; }
 }

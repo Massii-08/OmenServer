@@ -21,6 +21,7 @@ const Anim = {
      * (le poll monitoring réécrit `nodes-grid` toutes les ~20-30 s).
      */
     pageEnter() {
+        if (this._navMove) requestAnimationFrame(this._navMove);
         if (this.reduced) return;
         const c = document.getElementById('module-content');
         if (!c) return;
@@ -29,7 +30,6 @@ const Anim = {
         c.classList.add('view-enter');
         clearTimeout(this._enterTimer);
         this._enterTimer = setTimeout(() => c.classList.remove('view-enter'), 1000);
-        if (this._navMove) requestAnimationFrame(this._navMove);
     },
 
     /**
