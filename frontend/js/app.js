@@ -146,8 +146,10 @@ const App = {
  // Legacy themes (midnight/emerald/crimson/default) are mapped to accents
  // on first load. The legacy theme system continues to work in parallel
  // until cleanup PR 6.
- _accents: ['green', 'blue', 'red', 'yellow'],
+ _accents: ['green', 'cyan', 'violet', 'magenta', 'amber'],
  _legacyThemeToAccent: { default: 'green', emerald: 'green', midnight: 'blue', crimson: 'red' },
+ // Migration v5 → v6 : anciens noms d'accent vers les néons Ion
+ _legacyAccentMap: { blue: 'cyan', red: 'magenta', yellow: 'amber' },
 
  _loadAccent() {
  // 1. One-time migration from legacy theme to accent
@@ -157,6 +159,11 @@ const App = {
  if (mapped) {
  localStorage.setItem('omen-accent', mapped);
  }
+ }
+ // 1bis. Migration v5 → v6 des noms d'accent (blue/red/yellow n'existent plus)
+ const stored = localStorage.getItem('omen-accent');
+ if (stored && this._legacyAccentMap[stored]) {
+ localStorage.setItem('omen-accent', this._legacyAccentMap[stored]);
  }
  // 2. Apply accent to <html>
  const accent = localStorage.getItem('omen-accent') || 'green';
