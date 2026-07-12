@@ -6,21 +6,21 @@
  */
 
 /* === GOOGLE FONTS === */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@400;500;600&display=swap');
 
 /* === VARIABLES CSS === */
 :root {
-    /* Couleurs principales */
-    --bg-primary: #0f0f1a;
-    --bg-secondary: #1a1a2e;
-    --bg-card: #1e1e36;
-    --bg-input: #252540;
-    --bg-sidebar: #12121f;
+    /* Couleurs principales — ALIAS des tokens Bento/Ion v6 (le bloc Bento plus bas est la source de vérité) */
+    --bg-primary: var(--bg);
+    --bg-secondary: var(--bg-elev-1);
+    --bg-card: var(--bg-elev-1);
+    --bg-input: var(--bg-elev-3);
+    --bg-sidebar: var(--bg);
 
-    /* Texte */
-    --text-primary: #e8e8f0;
-    --text-secondary: #9ca3af;
-    --text-muted: #6b7280;
+    /* Texte — alias idem */
+    --text-primary: var(--text);
+    --text-secondary: var(--text-muted);
+    --text-muted: #8FA3C4; /* redéfini par le bloc Bento ; gardé ici par sécurité de cascade */
 
     /* Accents */
     --accent-green: #10b981;
@@ -32,9 +32,9 @@
     --accent-purple: #8b5cf6;
     --accent-cyan: #06b6d4;
 
-    /* Bordures */
-    --border-color: rgba(255, 255, 255, 0.06);
-    --border-active: rgba(16, 185, 129, 0.3);
+    /* Bordures — alias */
+    --border-color: var(--border);
+    --border-active: var(--accent-dim);
 
     /* Ombres */
     --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
@@ -68,24 +68,28 @@
    ============================================================================ */
 :root {
     /* Surfaces (3-level depth — replaces --bg-primary/secondary/tertiary etc.) */
-    --bg:        #0E0E10;  /* page background */
-    --bg-elev-1: #161618;  /* base cards, default surface */
-    --bg-elev-2: #18181B;  /* big/featured cards, hover state */
-    --bg-elev-3: #1F1F23;  /* inputs, avatars, code blocks */
+    --bg:        #050810;  /* fond bleu-nuit Ion */
+    --bg-elev-1: #0A101E;  /* base cards, default surface */
+    --bg-elev-2: #0E1526;  /* big/featured cards, hover state */
+    --bg-elev-3: #131C33;  /* inputs, avatars, code blocks */
 
     /* Borders */
-    --border:        #27272A;  /* hairline default */
-    --border-strong: #3F3F46;  /* emphasized */
+    --border:        #1C2947;  /* hairline bleutée */
+    --border-strong: #2C4066;  /* emphasized */
 
     /* Text */
-    --text:       #F4F4F5;  /* primary */
-    --text-muted: #A1A1AA;  /* secondary — OVERRIDES legacy #6b7280 */
-    --text-dim:   #71717A;  /* tertiary, timestamps */
+    --text:       #EDF2FA;  /* primary */
+    --text-muted: #8FA3C4;  /* secondary */
+    --text-dim:   #5A6C90;  /* tertiary, timestamps */
 
     /* Accent (changeable via data-accent attribute on <html>) */
-    --accent:      #4ADE80;              /* lime — default */
-    --accent-dim:  rgba(74, 222, 128, 0.14);
-    --accent-text: #0A0A0A;              /* contrast on accent bg */
+    --accent:      #00FFB0;              /* vert électrique — défaut Ion */
+    --accent-dim:  rgba(0, 255, 176, 0.14);
+    --accent-glow: rgba(0, 255, 176, 0.65);  /* NOUVEAU — halo du vivant */
+    --accent-text: #041007;              /* contrast on accent bg */
+
+    /* Lumière haute des cartes (NOUVEAU) */
+    --top-light: rgba(140, 180, 255, 0.07);
 
     /* Semantic (FIXED — never theme-driven) */
     --danger:  #F87171;
@@ -112,7 +116,7 @@
     --s-12: 48px;
 
     /* Typography */
-    --font-ui:   'Inter', system-ui, sans-serif;
+    --font-ui:   'Geist', system-ui, sans-serif;
     --font-mono: 'Geist Mono', ui-monospace, monospace;
 
     /* Motion */
@@ -120,12 +124,13 @@
     --t-base: 200ms ease;
 }
 
-/* === Bento Tech accent variants ===
-   The default in :root is green. Override --accent via data-accent
-   on <html> for blue / red / yellow signatures. */
-[data-accent="blue"]   { --accent: #60A5FA; --accent-dim: rgba( 96, 165, 250, 0.14); }
-[data-accent="red"]    { --accent: #FB7185; --accent-dim: rgba(251, 113, 133, 0.14); }
-[data-accent="yellow"] { --accent: #FACC15; --accent-dim: rgba(250, 204,  21, 0.14); }
+/* === Ion v6 accent variants ===
+   The default in :root is electric green. Override --accent via data-accent
+   on <html> for cyan / violet / magenta / amber signatures. */
+[data-accent="cyan"]    { --accent: #00D2FF; --accent-dim: rgba(  0, 210, 255, .14); --accent-glow: rgba(  0, 210, 255, .65); }
+[data-accent="violet"]  { --accent: #8B5CFF; --accent-dim: rgba(139,  92, 255, .15); --accent-glow: rgba(139,  92, 255, .70); }
+[data-accent="magenta"] { --accent: #FF3DA6; --accent-dim: rgba(255,  61, 166, .14); --accent-glow: rgba(255,  61, 166, .65); }
+[data-accent="amber"]   { --accent: #FFB020; --accent-dim: rgba(255, 176,  32, .14); --accent-glow: rgba(255, 176,  32, .60); }
 
 /* === RESET === */
 *, *::before, *::after {
@@ -140,8 +145,10 @@ html {
 }
 
 body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    background: var(--bg-primary);
+    font-family: var(--font-ui);
+    background:
+        radial-gradient(rgba(91, 140, 255, 0.08) 1px, transparent 1.5px) 0 0 / 26px 26px,
+        var(--bg);
     color: var(--text-primary);
     line-height: 1.6;
     min-height: 100vh;
