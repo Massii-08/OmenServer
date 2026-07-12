@@ -2182,7 +2182,7 @@ canvas {
     flex-direction: column;
     gap: 6px;
 }
-.bento-overview .stat-card::before { content: none !important; }  /* nullify legacy ::before from line 464 */
+.bento-overview .stat-card:not(.main)::before { content: none !important; }  /* nullify legacy ::before from line 464 — .main garde le sien (orbite Ion) */
 .bento-overview .stat-card.big {
     grid-row: span 2;
     background: var(--bg-elev-2);
@@ -4329,7 +4329,7 @@ select:-webkit-autofill {
 @property --omen-ang { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
 .bento-overview .stat-card.main { position: relative; }
 .bento-overview .stat-card.main::before {
-    content: ''; position: absolute; inset: -1px; border-radius: inherit; padding: 1.5px; pointer-events: none;
+    content: ''; position: absolute; inset: 0; border-radius: inherit; padding: 1.5px; pointer-events: none;
     background: conic-gradient(from var(--omen-ang), transparent 0 70%, var(--accent) 88%, transparent 100%);
     -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
     -webkit-mask-composite: xor; mask-composite: exclude;
