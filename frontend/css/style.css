@@ -23,8 +23,8 @@
     --text-muted: #8FA3C4; /* redéfini par le bloc Bento ; gardé ici par sécurité de cascade */
 
     /* Accents */
-    --accent-green: #10b981;
-    --accent-green-glow: rgba(16, 185, 129, 0.15);
+    --accent-green: #00FFB0;  /* harmonisé Ion (vert sémantique des composants legacy) */
+    --accent-green-glow: rgba(0, 255, 176, 0.15);
     --accent-red: #ef4444;
     --accent-red-glow: rgba(239, 68, 68, 0.15);
     --accent-yellow: #f59e0b;
@@ -505,9 +505,9 @@ body {
 }
 
 .nav-item.active {
-    background: var(--accent-green-glow);
-    color: var(--accent-green);
-    border-left-color: var(--accent-green);
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-left-color: var(--accent);
     font-weight: 500;
 }
 
