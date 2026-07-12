@@ -183,6 +183,47 @@ function armorPlan(items, opts = {}) {
   return null;
 }
 
+// ── Upgrade d'armure vers une matière cible (run nether 2026-07-13 : armure DIAMANT auto-craftée).
+// Coûts par pièce (diamants), moins chère d'abord — même logique que ARMOR_PIECES pour le fer.
+const _UPGRADE_PIECES = {
+  diamond: [
+    { name: 'diamond_boots', slot: 'feet', units: 4 },
+    { name: 'diamond_helmet', slot: 'head', units: 5 },
+    { name: 'diamond_leggings', slot: 'legs', units: 7 },
+    { name: 'diamond_chestplate', slot: 'torso', units: 8 },
+  ],
+};
+
+/**
+ * armorUpgradePlan(items, worn, {material:'diamond'}) → prochaine pièce à crafter pour amener
+ * chaque SLOT au rang de `material` : slot ignoré si une pièce portée OU en poche a déjà un rang
+ * ≥ matière cible (jamais de downgrade ni de doublon). Gated par le stock d'unités (💎). Pur/testable.
+ * → { craft, slot, units } | null.
+ */
+function armorUpgradePlan(items, worn, opts = {}) {
+  const material = opts.material || 'diamond';
+  const pieces = _UPGRADE_PIECES[material];
+  if (!pieces) return null;
+  const targetRank = _ARMOR_MAT_RANK[material] || 0;
+  const wornSet = worn instanceof Set ? worn : new Set(worn || []);
+  const cnt = (n) => (items || []).filter((i) => i && i.name === n).reduce((a, i) => a + (i.count || 0), 0);
+  // rang max par slot, porté OU en poche
+  const slotRank = {};
+  const consider = (n) => {
+    const slot = _armorSlot(n); if (!slot) return;
+    slotRank[slot] = Math.max(slotRank[slot] || 0, _armorRank(n));
+  };
+  for (const n of wornSet) consider(n);
+  for (const it of items || []) { if (it && it.name && (it.count || 0) > 0) consider(it.name); }
+  const units = cnt(material);                        // 'diamond' est aussi le nom de l'item
+  for (const piece of pieces) {
+    if ((slotRank[piece.slot] || 0) >= targetRank) continue;   // slot déjà à niveau (ou mieux)
+    if (units >= piece.units) return { craft: piece.name, slot: piece.slot, units: piece.units };
+    return null;                                      // pas assez pour la moins chère manquante
+  }
+  return null;
+}
+
 /**
  * Gate « ok pour descendre en profondeur » : bottes + casque + un bouclier (n'importe quel
  * palier d'armure suffit). worn = tableau OU Set de noms d'items équipés. (pur/testable)
@@ -211,4 +252,4 @@ function shieldPlan(items, hasShield) {
   return null;
 }
 
-module.exports = { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, armorPlan, ARMOR_PIECES, bestArmorToEquip, isMinimallyArmored, shieldPlan };
+module.exports = { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan };

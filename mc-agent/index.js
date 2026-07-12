@@ -40,7 +40,8 @@ const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
 const fs = require('fs');
 const { runPlanner } = require('./planner');
-const { chainFor, buildCtxInv, firstUnmet, cookedCount } = require('./goals');
+const { chainFor, buildCtxInv, firstUnmet, cookedCount, armorNeed } = require('./goals');
+const { isForbiddenCheat } = require('./nogive');
 const { huntPassive } = require('./skills/hunt');
 const { nearestPassive, survivalTick } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
@@ -62,7 +63,7 @@ const { runResource } = require('./skills/resource');
 const { planSmeltRaw } = require('./bank');   // fonte périodique du brut or/fer → lingots bankables
 const { tunnelTo } = require('./skills/tunnelTo');
 const { junkItems, ITEMS_FOR } = require('./quota');
-const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES, bestArmorToEquip, isMinimallyArmored, shieldPlan } = require('./gear');
+const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan } = require('./gear');
 // Torche tous les N paliers de branch-mine (mob-aware phase B) — best-effort : sans torche
 // en poche le minage continue sans (zéro coût en peaceful, sécurité en non-pacifique).
 const TORCH_EVERY = 8;
@@ -82,6 +83,10 @@ function parseArgs(argv) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const args = parseArgs(process.argv.slice(2));
+// Mode SANS-GIVE (run nether 2026-07-13) : AUCUNE triche serveur — le bot mine/fond/crafte TOUT.
+// --no-give 1 → (1) provisionStartKit/ensureFood ne /give plus RIEN, (2) filtre dur sur bot.chat
+// (isForbiddenCheat) qui bloque tout /give //tp //effect… résiduel (défense en profondeur).
+const NO_GIVE = args['no-give'] === '1' || args['no-give'] === 'true';
 // Confinement arène (--confine "X Z R") : garde le bot dans R de l'ancre sèche (cf. confine.js).
 const { parseConfine, confineSpreadCommand } = require('./confine');
 const CONFINE = parseConfine(args['confine']);
@@ -202,7 +207,9 @@ function readLoginCommand() {
 
 function ctxExtra() {
   const pos = bot && bot.entity && bot.entity.position;
-  return { hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined };
+  // worn : pièces d'armure PORTÉES (slots 5-8, absentes de inventory.items()) — les chaînes armure
+  // (iron_armor/diamond_armor) en ont besoin pour leurs prédicats armorNeed/armorWornOk.
+  return { hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()] };
 }
 
 // Table de craft PORTABLE : le bot garde 1 crafting_table en poche et la pose/reprend à la demande
@@ -512,6 +519,38 @@ async function runGoalSkill(goal) {
   if (goal.skill === 'huntCook') return huntCookGoal(goal.args.target || 4);
   if (goal.skill === 'descendDiagonal') return descendDiagonal(bot, goal.args || {}, taskToken);
   if (goal.skill === 'branchMine') return branchMine(bot, goal.args || {}, taskToken);
+  // Chaîne iron_armor : ensureArmor fond le brut nécessaire + craft la pièce fer la moins chère +
+  // équipe (1 pièce/appel — le planner re-boucle). Progrès = besoin d'armure qui BAISSE ou pièce
+  // équipée en plus ; sinon {ok:false} → failStreak → stall propre (ex. four perdu, fer volatilisé).
+  if (goal.skill === 'ensureArmor') {
+    const need = () => armorNeed({ inv: buildCtxInv(bot), worn: [..._wornArmor()] }, 3);
+    const before = need(); const wornBefore = _wornArmor().size;
+    try { await ensureArmor({ ironKeep: 0 }); } catch (e) { /* best-effort, jugé sur le progrès */ }
+    const after = need();
+    return (after < before || _wornArmor().size > wornBefore || after === 0)
+      ? { ok: true } : { ok: false, reason: 'armor_no_progress' };
+  }
+  // Chaîne diamond_armor : équipe toute pièce diamant en poche (jamais downgrade) puis craft la
+  // pièce diamant la moins chère du slot encore sous-diamant (armorUpgradePlan, pur/testé).
+  if (goal.skill === 'craftDiamondArmor') {
+    const itemsOf = () => ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, count: i.count }));
+    let progressed = false;
+    for (const piece of bestArmorToEquip(itemsOf(), _wornArmor())) {
+      const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === piece.name);
+      if (it) { try { await bot.equip(it, ARMOR_SLOTS[piece.slot]); progressed = true; } catch (e) {} }
+    }
+    const plan = armorUpgradePlan(itemsOf(), _wornArmor(), { material: 'diamond' });
+    if (plan) {
+      const r = await craftSmart({ name: plan.craft, count: 1 });
+      if (r && r.ok) {
+        progressed = true;
+        emit({ type: 'gear_craft', item: plan.craft, ok: true, why: 'diamond_armor' });
+        const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === plan.craft);
+        if (it) { try { await bot.equip(it, ARMOR_SLOTS[plan.slot]); } catch (e) {} }
+      }
+    }
+    return progressed ? { ok: true } : { ok: false, reason: 'no_diamond_progress' };
+  }
   return { ok: false, reason: 'unknown_skill' };
 }
 
@@ -1022,6 +1061,7 @@ async function ensureFood() {
       try { await withTimeout(huntCookGoal(6), 120000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
     }
     if (cookedCount(buildCtxInv(bot)) >= 4) return;
+    if (NO_GIVE) return;   // sans-give : la chasse en surface reste le SEUL ravitaillement
     // Sous terre la chasse est impossible (pas de passifs à Y-58) → filet déterministe anti-mort.
     try { bot.chat('/give ' + bot.username + ' cooked_beef 32'); emit({ type: 'food_resupply', via: 'give' }); } catch (e) {}
   } catch (e) { /* best-effort */ }
@@ -1033,6 +1073,8 @@ async function ensureFood() {
 // atteindre la profondeur (vécu : 0 diamant, ~12 respawns/25 min). No-op silencieux si non-OP (vrai
 // serveur → kit-bois autonome en fallback). L'armure reste CRAFTÉE (ensureArmor + le raw_iron donné).
 async function provisionStartKit() {
+  // SANS-GIVE : pas de kit — le bot part NU et gagne tout par la chaîne planner (règle du run nether).
+  if (NO_GIVE) { emit({ type: 'start_kit_skipped', reason: 'no_give' }); return; }
   try {
     const u = bot.username;
     // Armure FINIE (pas raw_iron à crafter) : le craft prend ~45 s en surface → le bot mourait des mobs
@@ -2044,6 +2086,18 @@ if (authMode === 'microsoft') {
   });
 }
 const bot = mineflayer.createBot(botOpts);
+// SANS-GIVE : filtre dur sur TOUTE commande sortante (défense en profondeur — même un chemin
+// oublié qui tenterait /give //tp //effect est coupé ici, avec un event pour l'observabilité).
+if (NO_GIVE) {
+  const _origChat = bot.chat.bind(bot);
+  bot.chat = (msg) => {
+    if (isForbiddenCheat(msg)) {
+      emit({ type: 'cheat_blocked', command: String(msg).trimStart().split(' ')[0] });
+      return;
+    }
+    _origChat(msg);
+  };
+}
 bot.loadPlugin(pathfinder);
 bot.loadPlugin(pvp);
 bot.loadPlugin(collectBlock);

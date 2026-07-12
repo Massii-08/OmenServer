@@ -1344,3 +1344,96 @@ def test_clone_player_path_traversal_neutralise(monkeypatch, tmp_path):
     # nom assaini → aucune évasion de DISTILLED_DIR, aucun fichier ne matche → pas de flags
     assert "--style" not in captured["cmd"]
     assert "--clips" not in captured["cmd"]
+
+
+# ---------------------------------------------------------------------------
+# Run nether 2026-07-13 : objectifs armure + mode sans-give (zéro /give)
+# ---------------------------------------------------------------------------
+
+def test_armor_objectives_valides():
+    """iron_armor / diamond_armor dans la whitelist anti-injection (chaînes armure Node)."""
+    assert "iron_armor" in mgr.VALID_OBJECTIVES
+    assert "diamond_armor" in mgr.VALID_OBJECTIVES
+
+
+def test_armor_objectives_selfheal():
+    """Les objectifs armure sont auto-respawnés (nuit sans intervention, comme resource/mapper)."""
+    assert "iron_armor" in mgr.RESPAWN_OBJECTIVES
+    assert "diamond_armor" in mgr.RESPAWN_OBJECTIVES
+    assert "resource" in mgr.RESPAWN_OBJECTIVES and "mapper" in mgr.RESPAWN_OBJECTIVES
+
+
+def test_start_session_no_give_passe_le_flag(monkeypatch, tmp_path):
+    """no_give=True → --no-give 1 dans l'argv Node + world seedé avec l'objectif armure."""
+    import io
+    import json as _json
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter(())
+            self.pid = 4331
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: (captured.__setitem__("cmd", cmd) or FakeProc()))
+    mgr.start_session("h", 25565, "U", autonomous=True, objective="iron_armor", no_give=True)
+    cmd = captured["cmd"]
+    assert "--no-give" in cmd and cmd[cmd.index("--no-give") + 1] == "1"
+    wp = cmd[cmd.index("--world") + 1]
+    assert _json.loads(open(wp).read())["objective"]["type"] == "iron_armor"
+
+
+def test_start_session_sans_no_give_retro_compat(monkeypatch, tmp_path):
+    """Sans no_give → PAS de --no-give dans l'argv (comportement historique inchangé)."""
+    import io
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter(())
+            self.pid = 4332
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: (captured.__setitem__("cmd", cmd) or FakeProc()))
+    mgr.start_session("h", 25565, "U", autonomous=True, objective="stone_pickaxe")
+    assert "--no-give" not in captured["cmd"]
+
+
+def test_start_for_bot_no_give_dans_respawn_memo(monkeypatch, tmp_path):
+    """no_give survit au self-healing : mémorisé dans le memo respawn du roster."""
+    import io
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter(())
+            self.pid = 5002
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: cmds.append(cmd) or FakeProc())
+    monkeypatch.setattr(mgr.servers_store, "get_server", lambda gid: {
+        "id": gid, "host": "h", "port": 25565, "intelligence": "intermediaire",
+        "language": "fr", "has_login": False, "stealth": False,
+        "bots": [{"id": "n1", "role": "worker", "username": "NethBot1", "auth": "offline"}],
+    })
+    monkeypatch.setattr(mgr.servers_store, "resolve_commands", lambda g: None)
+    monkeypatch.setattr(mgr.servers_store, "resolve_policy", lambda g: None)
+    monkeypatch.setattr(mgr.mc_agent_secrets, "get_secret", lambda gid, bid: None)
+    sid = mgr.start_for_bot("g9", "n1", autonomous=True, objective="iron_armor", no_give=True)
+    assert "--no-give" in cmds[-1]
+    sess = mgr._sessions.get(sid)
+    assert sess is not None and sess["respawn"].get("no_give") is True
+    assert sess["respawn"].get("objective") == "iron_armor"
+    mgr._sessions.pop(sid, None)

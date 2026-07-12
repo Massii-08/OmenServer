@@ -783,3 +783,23 @@ def test_events_endpoint(monkeypatch):
     assert client.get("/api/mc-agent/events/9999").status_code == 404
     assert make_client(is_admin=False).get("/api/mc-agent/events/991").status_code == 403
     mgr._sessions.pop(991, None)
+
+
+def test_run_roster_passes_no_give(monkeypatch):
+    """POST /run server_id+bot_id : no_give transmis à start_for_bot (run nether sans /give)."""
+    captured = {}
+
+    def fake_start_for_bot(gid, bid, **kw):
+        captured.update(kw)
+        return 8
+
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    monkeypatch.setattr(mgr, "start_for_bot", fake_start_for_bot)
+    client = make_client()
+    resp = client.post("/api/mc-agent/run", json={
+        "server_id": "ab12cd", "bot_id": "b1", "objective": "iron_armor",
+        "autonomous": True, "no_give": True,
+    })
+    assert resp.status_code == 200
+    assert captured["no_give"] is True
+    assert captured["objective"] == "iron_armor"

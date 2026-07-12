@@ -106,6 +106,64 @@ const DIAMOND_CHAIN = [
     skill: 'branchMine',   args: { targetY: -54, mainLength: 48, branchSpacing: 3, branchLength: 8 } },
 ];
 
+// --- Chaînes ARMURE (run nether 2026-07-13) : T1 = armure FER complète auto-craftée (24 lingots),
+// T2 = armure DIAMANT complète (24💎). RÈGLE ABSOLUE du run : ZÉRO /give — tout est miné/fondu/crafté.
+// c.worn = pièces PORTÉES (slots 5-8, hors bot.inventory.items()) injecté par ctxExtra (index.js).
+const ARMOR_SLOT_SUFFIXES = ['helmet', 'chestplate', 'leggings', 'boots'];
+const ARMOR_UNITS = { helmet: 5, chestplate: 8, leggings: 7, boots: 4 }; // lingots OU diamants
+const ARMOR_MAT_RANK = { leather: 1, golden: 2, chainmail: 2, iron: 3, diamond: 4, netherite: 5 };
+const _matRank = (name) => ARMOR_MAT_RANK[String(name).split('_')[0]] || 0;
+
+/** Unités (lingots/diamants) encore à crafter pour couvrir les 4 slots au rang minRank —
+ *  une pièce en POCHE ou PORTÉE de rang ≥ minRank couvre son slot (monotone : jamais négatif). */
+function armorNeed(c, minRank) {
+  const have = Object.keys(c.inv || {}).filter((n) => (c.inv[n] || 0) > 0)
+    .concat(Array.from(c.worn || []));
+  let need = 0;
+  for (const slot of ARMOR_SLOT_SUFFIXES) {
+    const covered = have.some((n) => String(n).endsWith('_' + slot) && _matRank(n) >= minRank);
+    if (!covered) need += ARMOR_UNITS[slot];
+  }
+  return need;
+}
+
+/** Les 4 slots sont-ils PORTÉS au rang ≥ minRank ? (l'équipement final — la poche ne suffit pas) */
+function armorWornOk(c, minRank) {
+  const worn = Array.from(c.worn || []);
+  return ARMOR_SLOT_SUFFIXES.every((slot) =>
+    worn.some((n) => String(n).endsWith('_' + slot) && _matRank(n) >= minRank));
+}
+
+// T1 — armure FER : chaîne fer complète (pioche fer = pouvoir miner vite + survie), puis fer
+// d'armure au besoin RESTANT réel (armorNeed recalcule sur les pièces manquantes), puis craft
+// pièce-par-pièce (skill ensureArmor : fond le brut + craft la moins chère + équipe — 1 pièce/appel,
+// le planner re-boucle), puis ÉQUIPEMENT vérifié (porter ≠ avoir en poche).
+const IA = (c) => armorNeed(c, 3) === 0;          // 4 slots couverts fer-ou-mieux (poche ou porté)
+const IA_WORN = (c) => armorWornOk(c, 3);         // 4 slots PORTÉS fer-ou-mieux (DoD T1)
+const IRON_ARMOR_CHAIN = [
+  ...IRON_CHAIN.map((g) => withFinal(g, IA)),
+  { name: 'iron_for_armor',
+    met: (c) => IA(c) || (invCount(c.inv, 'iron_ingot') + invCount(c.inv, 'raw_iron')) >= armorNeed(c, 3),
+    skill: 'gather', args: { name: ['iron_ore', 'deepslate_iron_ore'], count: 8 } },
+  { name: 'iron_armor', met: IA, skill: 'ensureArmor', args: {} },
+  { name: 'iron_armor_worn', met: IA_WORN, skill: 'ensureArmor', args: {} },
+];
+
+// T2 — armure DIAMANT : T1 d'abord (survie), puis descente/branch-mine jusqu'à avoir les 💎 du
+// besoin RESTANT (les pièces déjà upgradées baissent le besoin), puis craft+équipe (jamais downgrade).
+const diamondsOK = (c) => invCount(c.inv, 'diamond') >= armorNeed(c, 4);
+const DA_WORN = (c) => armorWornOk(c, 4);
+const DIAMOND_ARMOR_CHAIN = [
+  ...IRON_ARMOR_CHAIN.map((g) => withFinal(g, DA_WORN)),
+  { name: 'cobble_buffer',  met: (c) => invCount(c.inv, 'cobblestone') >= 16 || diamondsOK(c) || DA_WORN(c),
+    skill: 'gather',        args: { name: 'stone', count: 16 } },
+  { name: 'descend_y54',    met: (c) => (c.y !== undefined && c.y <= -52) || diamondsOK(c) || DA_WORN(c),
+    skill: 'descendDiagonal', args: { targetY: -54 } },
+  { name: 'diamonds_armor', met: (c) => diamondsOK(c) || DA_WORN(c),
+    skill: 'branchMine',    args: { targetY: -54, mainLength: 48, branchSpacing: 3, branchLength: 8 } },
+  { name: 'diamond_armor',  met: DA_WORN, skill: 'craftDiamondArmor', args: {} },
+];
+
 // --- Chaîne MAPPER_KIT = KIT DE SURVIE du cartographe (phase « bot parfait », 04/06) :
 // outils pierre (pioche + épée + HACHE) + table & four portables + STOCK de nourriture cuite (≥4)
 // + torches (≥8, charbon de bois via le four). L'upgrade fer reste best-effort côté index.js.
@@ -184,6 +242,8 @@ const MAPPER_KIT = [
 function chainFor(objective) {
   if (objective === 'diamond') return DIAMOND_CHAIN;
   if (objective === 'iron_pickaxe') return IRON_CHAIN;
+  if (objective === 'iron_armor') return IRON_ARMOR_CHAIN;
+  if (objective === 'diamond_armor') return DIAMOND_ARMOR_CHAIN;
   if (objective === 'mapper') return MAPPER_KIT;
   return MVP_CHAIN;
 }
@@ -194,4 +254,4 @@ function firstUnmet(chain, ctx) {
   return null;
 }
 
-module.exports = { buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, MAPPER_KIT, chainFor, firstUnmet };
+module.exports = { buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk };

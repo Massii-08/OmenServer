@@ -30,11 +30,12 @@ class StartReq(BaseModel):
     bot_id: Optional[str] = None    # si fourni (avec server_id) : lance ce compte du roster
     language: str = "fr"            # langue du champ reply LLM : fr | en | it
     autonomous: bool = False        # True → lance la boucle planner au spawn (0 LLM)
-    objective: str = "stone_pickaxe"  # objectif autonome : stone_pickaxe | iron_pickaxe | diamond | mapper | resource
+    objective: str = "stone_pickaxe"  # objectif autonome : stone_pickaxe | iron_pickaxe | diamond | iron_armor | diamond_armor | mapper | resource
     world_label: Optional[str] = None  # clé de monde explicite (ex. "mining") — sinon dimension auto
     quota: Optional[dict] = None    # mode quota (objectif resource) : {diamond|gold|redstone|lapis|iron: n>0}
     humanize: Optional[bool] = None # force l'humanisation complète (clone clips/idle) ; None = défaut du mode
     confine: Optional[str] = None   # "X Z R" → garde le bot dans R blocs de l'ancre (test arène ; cf. confine.js)
+    no_give: Optional[bool] = None  # True → ZÉRO /give côté bot (run nether : tout est miné/fondu/crafté)
 
 
 class SayReq(BaseModel):
@@ -119,6 +120,8 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
                 extra["humanize"] = bool(req.humanize)  # clone complet sur bot resource (clips/idle)
             if req.confine:
                 extra["confine"] = req.confine  # arène : garder le bot dans R de l'ancre
+            if req.no_give:
+                extra["no_give"] = True  # run sans /give (rétro-compat : passé seulement si actif)
             sid = mgr.start_for_bot(req.server_id, req.bot_id, model=req.model,
                                     autonomous=req.autonomous, objective=req.objective,
                                     world_label=req.world_label, **extra)
@@ -154,6 +157,8 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
             extra["humanize"] = bool(req.humanize)
         if req.confine:
             extra["confine"] = req.confine  # arène : garder le bot dans R de l'ancre
+        if req.no_give:
+            extra["no_give"] = True  # run sans /give (rétro-compat : passé seulement si actif)
         sid = mgr.start_session(host, port, user, req.model, auth, profile, commands, policy, server_id=req.server_id, language=language, autonomous=req.autonomous, objective=req.objective, world_label=req.world_label, **extra)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Impossible de demarrer Node : {exc}")

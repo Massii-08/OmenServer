@@ -188,7 +188,7 @@ def _pump(session, stream):
     _err = str(session.get("last_error") or "").lower()
     _throttled = "throttled" in _err
     fast_fails = 0 if _throttled else ((session.get("fast_fail_count", 0) + 1) if lifetime < 15 else 0)
-    if (rs and session.get("objective") in ("resource", "mapper")
+    if (rs and session.get("objective") in RESPAWN_OBJECTIVES
             and not session.get("user_stopped")
             and session.get("respawn_count", 0) < 12):
         if fast_fails >= 3:
@@ -201,7 +201,8 @@ def _pump(session, stream):
                                         autonomous=rs.get("autonomous", True),
                                         objective=rs.get("objective", "resource"),
                                         world_label=rs.get("world_label"), quota=rs.get("quota"),
-                                        humanize=rs.get("humanize", False), confine=rs.get("confine"))
+                                        humanize=rs.get("humanize", False), confine=rs.get("confine"),
+                                        no_give=rs.get("no_give", False))
                 ns = _sessions.get(new_sid)
                 if ns is not None:
                     ns["respawn_count"] = session.get("respawn_count", 0) + 1
@@ -241,7 +242,13 @@ def has_api_key():
     return bool(_read_api_key())
 
 
-VALID_OBJECTIVES = ("stone_pickaxe", "iron_pickaxe", "diamond", "mapper", "resource")
+VALID_OBJECTIVES = ("stone_pickaxe", "iron_pickaxe", "diamond", "mapper", "resource",
+                    "iron_armor", "diamond_armor")
+
+# Objectifs auto-respawnés si le process meurt naturellement (self-healing nuit sans intervention).
+# resource/mapper (historique) + chaînes armure (run nether 2026-07-13 : keepInventory → l'inventaire
+# du compte persiste, le planner re-dérive depuis l'état réel au respawn).
+RESPAWN_OBJECTIVES = ("resource", "mapper", "iron_armor", "diamond_armor")
 
 # Délai entre deux spawns d'un batch de cartographes : Paper throttle les connexions rapprochées
 # depuis la même IP (connection-throttle 4000ms par défaut) → sans étalement, ECONNRESET.
@@ -292,7 +299,7 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
                policy=None, server_id=None, language="fr", autonomous=False,
                objective="stone_pickaxe", world_label=None, login_command=None,
                sector_index=None, sector_count=None, quota=None, stealth=False, humanize=False,
-               confine=None):
+               confine=None, no_give=False):
     """Spawn le process Node détaché et enregistre la session. Retourne son id.
 
     Point monkeypatchable des lancements par roster (start_for_bot/start_mappers).
@@ -332,6 +339,10 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
         # Humanisation ciblée (spec cartographes) : déplacements naturels + latence de réponse
         # + stop-pour-répondre, SANS le loiter. STEALTH l'implique déjà côté bot.
         cmd += ["--humanize", "1"]
+    if no_give:
+        # Run nether 2026-07-13 : ZÉRO /give — le bot mine/fond/crafte tout (kit + filet food coupés,
+        # filtre dur bot.chat côté Node). Off par défaut = rétro-compat stricte.
+        cmd += ["--no-give", "1"]
     # Capture-clone : si le profil serveur a `clone_player` ET que ses captures REC sont distillées
     # (DISTILLED_DIR/<joueur>/{style.json,clips/}), passe --style/--clips → le bot rejoue la motricité
     # HUMAINE réelle (swing anti-snap, wobble de visée, latence de réaction). Best-effort + rétro-compat
@@ -479,7 +490,7 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     return sid
 
 
-def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, stealth=False, humanize=True, confine=None):
+def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, stealth=False, humanize=True, confine=None, no_give=False):
     """Lancement manuel (path historique du router + compat tests). Délègue à `_spawn_bot`.
 
     `humanize` par DÉFAUT True (paquet 1 anti-tell, décision Massii 07/06) : un bot lancé
@@ -489,7 +500,8 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
     return _spawn_bot(host, port, user, model=model, auth=auth, profile=profile,
                       commands=commands, policy=policy, server_id=server_id, language=language,
                       autonomous=autonomous, objective=objective, world_label=world_label,
-                      quota=quota, stealth=stealth, humanize=humanize, confine=confine)
+                      quota=quota, stealth=stealth, humanize=humanize, confine=confine,
+                      no_give=no_give)
 
 
 def _resolve_login_command(group, group_id, bot_id, secret):
@@ -518,7 +530,7 @@ def _online_usernames(group_id):
     return out
 
 
-def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, humanize=False, confine=None):
+def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, humanize=False, confine=None, no_give=False):
     """Lance un bot du roster d'un groupe (résout connexion + compte + login + intelligence).
 
     Lève LookupError si le groupe ou le bot est introuvable, ValueError si le compte est déjà en
@@ -540,7 +552,7 @@ def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="sto
         policy=servers_store.resolve_policy(group), server_id=group_id,
         language=group.get("language", "fr"), autonomous=autonomous, objective=objective,
         world_label=world_label, model=model, login_command=login_command, quota=quota,
-        stealth=bool(group.get("stealth")), humanize=humanize, confine=confine,
+        stealth=bool(group.get("stealth")), humanize=humanize, confine=confine, no_give=no_give,
     )
     # Self-healing (phase 2) : mémorise QUOI respawner si le process meurt naturellement
     # (kick/Timed out/watchdog) — l'inventaire du compte persiste, le quota repart d'où il était.
@@ -549,7 +561,7 @@ def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="sto
         sess["respawn"] = {"group_id": group_id, "bot_id": bot_id, "model": model,
                            "autonomous": autonomous, "objective": objective,
                            "world_label": world_label, "quota": quota, "humanize": humanize,
-                           "confine": confine}
+                           "confine": confine, "no_give": no_give}
         sess.setdefault("respawn_count", 0)
     return sid
 
