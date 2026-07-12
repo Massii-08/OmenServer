@@ -4454,3 +4454,27 @@ select:-webkit-autofill {
 }
 /* le fallback inline (index.html) colore TOUS les <span> → re-cibler celui de la valeur */
 .bento-overview .stat-card.main .value span { color: var(--accent); }
+
+/* --- Vue serveur : indicateur morphing de la sidebar (.sv-ind, créé par Anim.svNav).
+       La barre accent gauche VOYAGE avec le pill entre les onglets. --- */
+.sv-sidebar { position: relative; }
+.sv-ind {
+    position: absolute; left: 0; right: 0; top: 0; height: 0; z-index: 0;
+    background: var(--bg-elev-2);
+    border-left: 3px solid var(--accent);
+    box-shadow: 0 0 16px -6px var(--accent-glow);
+    opacity: 0; pointer-events: none;
+    transition: top .35s cubic-bezier(.3, 1.25, .45, 1), height .35s cubic-bezier(.3, 1.25, .45, 1), opacity .2s;
+}
+.sv-ind.on { opacity: 1; }
+.sv-ind.no-anim { transition: none; }
+.sv-sidebar .sv-tab { position: relative; z-index: 1; }
+.sv-sidebar:has(.sv-ind.on) .sv-tab.active { background: transparent; border-left-color: transparent; }
+
+/* --- Historique serveur en events-feed (cascade .ev-in au chargement) --- */
+.events-feed .ev .typ { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.events-feed .ev .msg b { color: var(--text); font-weight: 600; }
+
+@media (prefers-reduced-motion: reduce) {
+    .sv-ind { transition: none; }
+}

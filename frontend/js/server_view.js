@@ -149,6 +149,9 @@ const ServerView = {
  switchTab(tab) {
  if (this._ws) { this._ws.close(); this._ws = null; }
  if (typeof SvMonitoring !== 'undefined') SvMonitoring.stop();
+ // position de l'onglet actif AVANT le re-render (le pill .sv-ind animera depuis là)
+ const _prevTab = document.querySelector('#sv-sidebar .sv-tab.active');
+ const _prevPos = _prevTab ? { top: _prevTab.offsetTop, h: _prevTab.offsetHeight } : null;
  this.currentTab = tab;
 
  const isPending = !!this._pendingAction;
@@ -179,6 +182,9 @@ const ServerView = {
  ${this._sidebarItems()}`;
  document.getElementById('sv-content').innerHTML = this._tabContent();
  this._bindEvents();
+ if (typeof Anim !== 'undefined' && Anim.svNav) {
+ Anim.svNav(document.getElementById('sv-sidebar'), _prevPos && _prevPos.top, _prevPos && _prevPos.h);
+ }
  },
 
  _tabContent() {

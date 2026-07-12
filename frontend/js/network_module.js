@@ -141,6 +141,7 @@ const NetworkModule = {
                     <div class="value" style="font-size:18px;letter-spacing:0;">${s.local_ip || '--'}</div>
                 </div>
             </div>`;
+        if (typeof Anim !== 'undefined' && Anim.countUpIn) Anim.countUpIn(el);
     },
 
     _renderActions() {
@@ -211,6 +212,7 @@ const NetworkModule = {
                             </div>
                         </div>
                     </div>`;
+                if (typeof Anim !== 'undefined' && Anim.countUpIn) Anim.countUpIn(st);
             }
             await this._loadHistory();
         }

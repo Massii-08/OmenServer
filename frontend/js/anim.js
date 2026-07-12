@@ -78,6 +78,71 @@ const Anim = {
     },
 
     /**
+     * Count-up générique : anime le premier nœud texte PUREMENT numérique
+     * de chaque `.stat-card .value` du conteneur (les <span> unité/label sont
+     * préservés, les IP et '--' ignorés). Idempotent (data-cu).
+     * À appeler par les modules APRÈS avoir injecté leurs stats.
+     */
+    countUpIn(root) {
+        if (!root) return;
+        root.querySelectorAll('.stat-card .value').forEach((v) => {
+            if (v.dataset.cu) return;
+            const tn = Array.prototype.find.call(v.childNodes,
+                (n) => n.nodeType === 3 && n.textContent.trim() !== '');
+            if (!tn) return;
+            const txt = tn.textContent.trim();
+            if (!/^\d+(\.\d+)?$/.test(txt)) return;
+            v.dataset.cu = '1';
+            if (this.reduced) return;
+            const target = parseFloat(txt);
+            const dec = (txt.split('.')[1] || '').length;
+            const t0 = performance.now();
+            const ease = (p) => 1 - Math.pow(1 - p, 3);
+            const tick = (now) => {
+                const p = Math.min(1, (now - t0) / 900);
+                tn.textContent = (target * ease(p)).toFixed(dec);
+                if (p < 1) requestAnimationFrame(tick);
+                else tn.textContent = txt;
+            };
+            requestAnimationFrame(tick);
+        });
+    },
+
+    /**
+     * Indicateur morphing de la sidebar vue serveur. La sidebar est RE-RENDUE
+     * à chaque switchTab → on reçoit la position de l'ancien onglet actif
+     * (mesurée avant le re-render) et on anime vers le nouveau (astuce 2 frames).
+     * Sidebar horizontale (mobile) → pas de pill.
+     */
+    svNav(sidebar, fromTop, fromH) {
+        if (!sidebar) return;
+        const active = sidebar.querySelector('.sv-tab.active');
+        let ind = sidebar.querySelector('.sv-ind');
+        // sidebar horizontale (mobile : display:flex row) → pas de pill.
+        // ⚠️ flexDirection calcule 'row' même sur un bloc → tester display AUSSI.
+        const cs = getComputedStyle(sidebar);
+        if (!active || (cs.display === 'flex' && cs.flexDirection === 'row')) {
+            if (ind) ind.remove();
+            return;
+        }
+        if (!ind) {
+            ind = document.createElement('span');
+            ind.className = 'sv-ind';
+            ind.setAttribute('aria-hidden', 'true');
+            sidebar.prepend(ind);
+        }
+        const place = (top, h) => { ind.style.top = top + 'px'; ind.style.height = h + 'px'; };
+        if (fromTop != null) {
+            ind.classList.add('no-anim');
+            place(fromTop, fromH || active.offsetHeight);
+            void ind.offsetHeight;               // reflow → la transition repart d'ici
+            ind.classList.remove('no-anim');
+        }
+        place(active.offsetTop, active.offsetHeight);
+        ind.classList.add('on');
+    },
+
+    /**
      * Rend une sparkline dans un <svg> préparé (polyline + polygon.area + circle.tip).
      * Échelle Y auto (min/max ± marge anti-ligne-plate), X réparti sur le viewBox.
      * Pas d'animation ici — le draw-in d'entrée est géré en CSS (.view-enter).

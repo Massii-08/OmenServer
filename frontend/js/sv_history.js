@@ -28,26 +28,24 @@ const SvHistory = {
             return;
         }
 
-        const icons = {start:'',stop:'⏹',restart:'',backup:'',console:'',settings:'',file:'',mod:''};
         const locale = Lang.t('common.locale') || 'fr-FR';
 
-        el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
-            <thead><tr style="border-bottom:2px solid var(--border);text-align:left;">
-                <th style="padding:8px;">${Lang.t('sv.hist.date')}</th>
-                <th style="padding:8px;">${Lang.t('sv.hist.user')}</th>
-                <th style="padding:8px;">${Lang.t('sv.hist.action')}</th>
-                <th style="padding:8px;">${Lang.t('sv.hist.details')}</th>
-            </tr></thead><tbody>
-            ${entries.map(e => {
-                const icon = Object.entries(icons).find(([k]) => e.action.toLowerCase().includes(k))?.[1] || '';
-                const date = new Date(e.timestamp).toLocaleString(locale);
-                return `<tr style="border-bottom:1px solid var(--border);">
-                    <td style="padding:8px;color:var(--text-muted);font-size:11px;white-space:nowrap;">${date}</td>
-                    <td style="padding:8px;font-weight:600;">${esc(e.username)}</td>
-                    <td style="padding:8px;">${icon} ${esc(e.action)}</td>
-                    <td style="padding:8px;color:var(--text-muted);font-size:12px;">${esc(e.details || '—')}</td>
-                </tr>`;
+        // Ion v6 : feed mono .events-feed (composant Bento) + cascade .ev-in au chargement.
+        // typ ok/warn/err déduit de l'action (sémantique fixe, indépendante de l'accent).
+        el.innerHTML = `<div class="events-feed" style="max-height:420px;">
+            ${entries.map((e, i) => {
+                const a = (e.action || '').toLowerCase();
+                const typ = /(err|fail|crash)/.test(a) ? 'err'
+                    : /(stop|delete|suppr|ban|kick|arr)/.test(a) ? 'warn' : 'ok';
+                const d = new Date(e.timestamp);
+                const date = d.toLocaleDateString(locale, { day: '2-digit', month: '2-digit' })
+                    + ' ' + d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
+                return `<div class="ev ev-in" style="animation-delay:${Math.min(i * 40, 400)}ms">
+                    <span class="ts">${date}</span>
+                    <span class="typ ${typ}">${esc(e.action)}</span>
+                    <span class="msg"><b>${esc(e.username)}</b>${e.details ? ' · ' + esc(e.details) : ''}</span>
+                </div>`;
             }).join('')}
-            </tbody></table>`;
+            </div>`;
     },
 };
