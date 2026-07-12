@@ -4214,15 +4214,15 @@ select:-webkit-autofill {
    Gaté par .view-enter (retiré après 1s par anim.js) → aucune ré-animation
    aux refresh internes (le poll monitoring réécrit nodes-grid en continu). */
 #module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > * {
-    animation: omen-rise .55s cubic-bezier(.2, .7, .2, 1) backwards;
+    animation: omen-rise .65s cubic-bezier(.26, 1.2, .4, 1) backwards;
 }
-@keyframes omen-rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
-#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(2) { animation-delay: .045s; }
-#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(3) { animation-delay: .09s; }
-#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(4) { animation-delay: .135s; }
-#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(5) { animation-delay: .18s; }
-#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(6) { animation-delay: .225s; }
-#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(n+7) { animation-delay: .27s; }
+@keyframes omen-rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(2) { animation-delay: .07s; }
+#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(3) { animation-delay: .14s; }
+#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(4) { animation-delay: .21s; }
+#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(5) { animation-delay: .28s; }
+#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(6) { animation-delay: .35s; }
+#module-content.view-enter :is(.bento-overview, .machines-grid, .row-list, .mod-grid, .diag-grid, .bots-grid) > *:nth-child(n+7) { animation-delay: .42s; }
 
 /* Hover : léger lift sur les cartes qui n'avaient pas de hover défini */
 .stat-card { transition: transform .18s ease, border-color .18s ease; }
@@ -4296,4 +4296,91 @@ select:-webkit-autofill {
         animation: none !important;
     }
     .stat-card:hover, .machine-card.arm:hover { transform: none !important; }
+}
+
+/* ============================================================================
+   ION v6 — Couche motion & néon (2026-07-12)
+   Règles : glow = information vivante uniquement ; transform/opacity only.
+   Easings signature : entrée .26,1.2,.4,1 · morphing .3,1.25,.45,1 · hover .34,1.35,.5,1
+   ============================================================================ */
+
+/* --- Lumière haute + hover ressort sur les surfaces --- */
+.stat-card, .machine-card, .bot-card-bento, .mod-card, .card {
+    box-shadow: inset 0 1px 0 var(--top-light);
+    transition: transform .3s cubic-bezier(.34, 1.35, .5, 1), border-color .25s, box-shadow .3s;
+}
+.stat-card:hover, .machine-card:hover, .bot-card-bento:hover, .mod-card:hover {
+    transform: translateY(-2px);
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--border-strong));
+    box-shadow: inset 0 1px 0 var(--top-light), 0 0 26px -8px var(--accent-glow);
+}
+
+/* --- Sweep radar one-shot au survol des stat-cards --- */
+.stat-card { position: relative; overflow: hidden; }
+.stat-card::after {
+    content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0;
+    background: linear-gradient(105deg, transparent 40%, color-mix(in srgb, var(--accent) 8%, transparent) 50%, transparent 60%);
+    transform: translateX(-120%);
+}
+.stat-card:hover::after { opacity: 1; animation: omen-sweep .8s ease-out 1; }
+@keyframes omen-sweep { to { transform: translateX(120%); } }
+
+/* --- Orbite conique — carte maîtresse (Diagnostic « indice de souffrance ») --- */
+@property --omen-ang { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
+.bento-overview .stat-card.big { position: relative; }
+.bento-overview .stat-card.big::before {
+    content: ''; position: absolute; inset: -1px; border-radius: inherit; padding: 1.5px; pointer-events: none;
+    background: conic-gradient(from var(--omen-ang), transparent 0 70%, var(--accent) 88%, transparent 100%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+    animation: omen-orbit 4s linear infinite;
+    filter: drop-shadow(0 0 4px var(--accent-glow));
+}
+@keyframes omen-orbit { to { --omen-ang: 360deg; } }
+/* Sans @property (vieux Safari) : arc statique — dégradation acceptée (spec §6). */
+
+/* --- Glow du vivant : statuts online/running, dots, badges LIVE
+       (.status-badge.running n'est produit par aucun module JS actuel —
+       seul .status-badge.online/.badge.online sont réellement émis, cf. 4.3) --- */
+.badge.online, .status-badge.online {
+    box-shadow: 0 0 10px -3px var(--accent-glow);
+}
+
+/* --- Logo shine one-shot (topbar + login) --- */
+.topbar .logo, .login-logo { position: relative; overflow: hidden; }
+.topbar .logo::after, .login-logo::after {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, .35) 50%, transparent 70%);
+    transform: translateX(-110%);
+    animation: omen-shine 1.4s .8s ease-out 1;
+}
+@keyframes omen-shine { to { transform: translateX(110%); } }
+
+/* --- Nav morphing (indicateur créé par anim.js navInit) --- */
+.nav-tabs { position: relative; }
+.nav-ind {
+    position: absolute; top: 6px; bottom: 6px; left: 0; width: 0; z-index: 0;
+    border-radius: 8px; opacity: 0; pointer-events: none;
+    background: var(--bg-elev-3);
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-strong));
+    box-shadow: 0 0 16px -5px var(--accent-glow);
+    transition: left .35s cubic-bezier(.3, 1.25, .45, 1), width .35s cubic-bezier(.3, 1.25, .45, 1), opacity .2s;
+}
+.nav-ind.on { opacity: 1; }
+.nav-tab { position: relative; z-index: 1; }
+
+/* --- Utilitaire : arrivée d'une ligne de feed (append incrémental UNIQUEMENT,
+       jamais sur un re-render complet de liste — règle anti-noise du poll) --- */
+.ev-in { animation: omen-ev-in .45s cubic-bezier(.3, 1.2, .4, 1) both; }
+@keyframes omen-ev-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+
+/* --- Reduced motion : neutralise la couche Ion --- */
+@media (prefers-reduced-motion: reduce) {
+    .stat-card, .machine-card, .bot-card-bento, .mod-card, .card,
+    .nav-ind { transition: none; }
+    .stat-card:hover, .machine-card:hover, .bot-card-bento:hover, .mod-card:hover { transform: none; }
+    .stat-card:hover::after,
+    .bento-overview .stat-card.big::before,
+    .topbar .logo::after, .login-logo::after,
+    .ev-in { animation: none; }
 }
