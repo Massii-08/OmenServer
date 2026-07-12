@@ -4384,3 +4384,12 @@ select:-webkit-autofill {
     .topbar .logo::after, .login-logo::after,
     .ev-in { animation: none; }
 }
+
+/* --- Responsive : le grid inline du Dashboard (4 col) déborde sous 768px —
+       l'inline style gagne sur les breakpoints v5, on le bat ici. --- */
+@media (max-width: 768px) {
+    .bento-overview[style] { grid-template-columns: 1fr 1fr !important; grid-template-rows: auto !important; }
+}
+@media (max-width: 420px) {
+    .bento-overview[style] { grid-template-columns: 1fr !important; }
+}
