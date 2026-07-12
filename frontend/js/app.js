@@ -113,6 +113,8 @@ const App = {
  } else if (badge) {
  badge.remove();
  }
+ // la largeur de l'onglet a pu changer → repositionner le pill nav
+ if (typeof Anim !== 'undefined' && Anim._navMove) Anim._navMove();
  },
 
  /**

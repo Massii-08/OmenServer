@@ -2536,10 +2536,10 @@ const BotsModule = {
  ctx.beginPath();
  ctx.arc(x, y, 6, 0, Math.PI * 2);
  ctx.fill();
- ctx.strokeStyle = 'rgba(14,14,16,0.9)';
+ ctx.strokeStyle = 'rgba(5,8,16,0.9)';
  ctx.lineWidth = 1.2;
  ctx.stroke();
- ctx.fillStyle = '#0E0E10';
+ ctx.fillStyle = '#050810';
  ctx.font = 'bold 8px var(--font-mono), monospace';
  ctx.textAlign = 'center';
  ctx.textBaseline = 'middle';

@@ -246,7 +246,7 @@ const SvMonitoring = {
             ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
             ctx.fillStyle = color;
             ctx.fill();
-            ctx.strokeStyle = '#0f0f1a';
+            ctx.strokeStyle = '#0A101E';
             ctx.lineWidth = 2;
             ctx.stroke();
 

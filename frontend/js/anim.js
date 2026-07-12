@@ -29,7 +29,8 @@ const Anim = {
         void c.offsetWidth;              // force reflow → redémarre l'animation
         c.classList.add('view-enter');
         clearTimeout(this._enterTimer);
-        this._enterTimer = setTimeout(() => c.classList.remove('view-enter'), 1000);
+        // 1200 ms : dernier délai .42s + durée .65s = 1070 ms (couper à 1s tranchait le settle)
+        this._enterTimer = setTimeout(() => c.classList.remove('view-enter'), 1200);
     },
 
     /**
@@ -105,5 +106,9 @@ const Anim = {
         this._navMove = () => move(active());
         window.addEventListener('resize', this._navMove);
         this._navMove();
+        // Geist charge en async : les largeurs d'onglets bougent au font-swap
+        if (document.fonts && document.fonts.ready) {
+            document.fonts.ready.then(() => { if (this._navMove) this._navMove(); });
+        }
     },
 };
