@@ -1262,7 +1262,12 @@ async function mineForType(type, needed, opts = {}) {
     torchEvery: 4,                          // hole B : torches plus fréquentes (était TORCH_EVERY=8)
     approachTimeoutMs: 20000,               // hole E : goto d'approche borné → plus de hang en branche
     survivalEvery: 4,
-    onSurvivalTick: branchSurvivalTick,     // hole E : survie + éclairage PENDANT la branche
+    // hole E : survie + éclairage PENDANT la branche ; + bank mid-branche (fix fable1 : les
+    // diamants s'accumulaient en poche pendant les serpentines interrompues → perdus à la mort).
+    onSurvivalTick: async () => {
+      await branchSurvivalTick();
+      if (opts && opts.maybeBank) { try { await opts.maybeBank(); } catch (e) { /* best-effort */ } }
+    },
   }, taskToken), 900000, () => { try { stopMotion(); } catch (e) {} });
   if (taskToken.cancelled) return { ok: true };
   if (r && r.heading) bot._branchHeading = r.heading;

@@ -161,6 +161,27 @@ async function runResource(bot, opts = {}, token = null) {
          quota: tracker ? tracker.target : null });
   emitProgress();
 
+  // Bank-check RÉUTILISABLE : appelé en tête de boucle ET passé à mineFor (fix fable1 : les
+  // serpentines longues n'aboutissaient jamais — mortes avant — donc le bank d'entre-cibles ne
+  // tournait JAMAIS ; ResBot2 est mort avec 11💎 en poche, -11 au quota. Banker PENDANT la branche
+  // via onSurvivalTick rend les morts indolores pour le quota ; planBank (seuil 3💎) le garde rare).
+  const maybeBankNow = async () => {
+    if (!(bank && tracker) || clock() - bankFailAt <= 120000) return;
+    const plan = planBank(_items(bot), tracker.target, bankOpts);
+    if (!plan.shouldBank) return;
+    try {
+      const r = await bank(plan.deposit);
+      if (r && r.ok) {
+        tracker.noteBanked(r.before, r.after);
+        emit({ type: 'resource_bank', ok: true, deposited: plan.deposit, pos: r.pos || null });
+        emitProgress();
+      } else {
+        bankFailAt = clock();
+        emit({ type: 'resource_bank', ok: false, reason: (r && r.reason) || 'unknown' });
+      }
+    } catch (e) { bankFailAt = clock(); emit({ type: 'resource_bank', ok: false, reason: 'exception' }); }
+  };
+
   while (true) {
     if (token && token.cancelled) return { ok: true, mined, cancelled: true };
 
@@ -186,23 +207,8 @@ async function runResource(bot, opts = {}, token = null) {
 
     // BANK-EN-PLACE : on porte trop de livrables → dépose-les en coffre sur place (anti-perte à la mort).
     // Décision PURE (planBank) ; backoff 2 min sur échec (pas de coffre item / sol impossible).
-    if (bank && tracker && clock() - bankFailAt > 120000) {
-      const plan = planBank(_items(bot), tracker.target, bankOpts);
-      if (plan.shouldBank) {
-        try {
-          const r = await bank(plan.deposit);
-          if (r && r.ok) {
-            tracker.noteBanked(r.before, r.after);
-            emit({ type: 'resource_bank', ok: true, deposited: plan.deposit, pos: r.pos || null });
-            emitProgress();
-          } else {
-            bankFailAt = clock();
-            emit({ type: 'resource_bank', ok: false, reason: (r && r.reason) || 'unknown' });
-          }
-        } catch (e) { bankFailAt = clock(); emit({ type: 'resource_bank', ok: false, reason: 'exception' }); }
-        if (token && token.cancelled) return { ok: true, mined, cancelled: true };
-      }
-    }
+    await maybeBankNow();
+    if (token && token.cancelled) return { ok: true, mined, cancelled: true };
 
     const from = bot.entity && bot.entity.position;
     if (!from) return { ok: false, reason: 'no_pos', mined };
@@ -336,7 +342,7 @@ async function runResource(bot, opts = {}, token = null) {
           if (_serp) emit({ type: 'resource_deep_serpentine', material: mtype, fallback: 'no_mapped_cave' });
           emit({ type: 'resource_mine_for', material: mtype, needed });
           let r = null;
-          try { r = await mineFor(mtype, needed, _serp ? { serpentine: true } : undefined); }
+          try { r = await mineFor(mtype, needed, _serp ? { serpentine: true, maybeBank: maybeBankNow } : { maybeBank: maybeBankNow }); }
           catch (e) { r = { ok: false, reason: 'error', detail: String((e && e.message) || e).slice(0, 120) }; }
           emit({ type: 'resource_mine_for_done', material: mtype, ok: !!(r && r.ok),
                  reason: (r && r.reason) || null, detail: (r && r.detail) || undefined });
@@ -491,7 +497,7 @@ async function runResource(bot, opts = {}, token = null) {
       // Les AUTRES ores (fer/lapis/…) gardent le cave-first si exposé, sinon le strip-mining dirigé.
       const _deepSerpentine = async (fallback) => {
         emit({ type: 'resource_deep_serpentine', material: target.material, x: target.x, y: target.y, z: target.z, ...(fallback ? { fallback } : {}) });
-        try { return await mineFor(target.material, _needed, { serpentine: true }); }
+        try { return await mineFor(target.material, _needed, { serpentine: true, maybeBank: maybeBankNow }); }
         catch (e) { return { ok: false, reason: 'error', detail: String((e && e.message) || e).slice(0, 120) }; }
       };
       const _isDeep = (deepStripTypes && deepStripTypes.has(oreBase(target.material)))  // type deep (diamond/redstone) : TOUJOURS
@@ -514,7 +520,7 @@ async function runResource(bot, opts = {}, token = null) {
           // lieu d'abandonner sec (_rr={ok:false} = jusqu'à 180 s perdues/cible, 0 minage), strip-mine
           // DIRIGÉ vers la cible (même repli que le diamant, mineFor heading = pas un beeline X-ray).
           emit({ type: 'resource_region', material: target.material, toward: { x: target.x, y: target.y, z: target.z }, heading, fallback: 'cave_failed' });
-          try { _rr = await mineFor(target.material, _needed, { heading }); }
+          try { _rr = await mineFor(target.material, _needed, { heading, maybeBank: maybeBankNow }); }
           catch (e2) { _rr = { ok: false, reason: 'error', detail: String((e2 && e2.message) || e2).slice(0, 120) }; }
         }
       } else {
