@@ -1,25 +1,28 @@
 {
-    "name": "OmenServer",
-    "short_name": "OmenServer",
-    "description": "Panel de gestion de serveur dédié polyvalent",
-    "start_url": "/",
-    "display": "standalone",
-    "background_color": "#0f0f1a",
-    "theme_color": "#10b981",
-    "orientation": "any",
-    "categories": ["utilities", "developer"],
-    "icons": [
-        {
-            "src": "/favicon.svg",
-            "sizes": "any",
-            "type": "image/svg+xml",
-            "purpose": "any"
-        },
-        {
-            "src": "/icon-512.svg",
-            "sizes": "512x512",
-            "type": "image/svg+xml",
-            "purpose": "any maskable"
-        }
-    ]
+  "name": "OmenServer",
+  "short_name": "OmenServer",
+  "description": "Panel de gestion de serveur dédié polyvalent",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050810",
+  "theme_color": "#050810",
+  "orientation": "any",
+  "categories": [
+    "utilities",
+    "developer"
+  ],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
 }

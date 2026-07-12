@@ -287,6 +287,18 @@ const Monitoring = {
         }
     },
 
+    // Historique CPU combiné → sparkline de la carte maîtresse (Ion v6).
+    // Persiste dans l'objet global : la courbe survit aux navigations.
+    _cpuHistory: [],
+    _pushCpuHistory(v) {
+        if (this._cpuHistory.length === 0) this._cpuHistory.push(v); // seed → une ligne dès le 1er poll
+        this._cpuHistory.push(v);
+        if (this._cpuHistory.length > 40) this._cpuHistory.shift();
+        if (typeof Anim !== 'undefined' && Anim.sparkline) {
+            Anim.sparkline(document.getElementById('hub-cpu-spark'), this._cpuHistory);
+        }
+    },
+
     updateUI(data) {
         // Récupérer les nodes en cache pour le calcul combiné
         const nodes = this._lastNodes || [];
@@ -303,6 +315,7 @@ const Monitoring = {
         }
         const combinedCpu = totalCores > 0 ? Math.round((weightedCpu / totalCores) * 10) / 10 : data.cpu.percent;
         this.updateStat('cpu', combinedCpu, '%');
+        this._pushCpuHistory(combinedCpu);
 
         // --- RAM : somme de toutes les machines ---
         let totalRamGb = data.memory.total_gb;

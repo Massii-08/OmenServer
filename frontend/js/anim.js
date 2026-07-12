@@ -78,6 +78,35 @@ const Anim = {
     },
 
     /**
+     * Rend une sparkline dans un <svg> préparé (polyline + polygon.area + circle.tip).
+     * Échelle Y auto (min/max ± marge anti-ligne-plate), X réparti sur le viewBox.
+     * Pas d'animation ici — le draw-in d'entrée est géré en CSS (.view-enter).
+     */
+    sparkline(svg, values) {
+        if (!svg || !values || values.length < 2) return;
+        const vb = svg.viewBox.baseVal;
+        const W = vb.width || 300, H = vb.height || 48;
+        let min = Math.min(...values), max = Math.max(...values);
+        if (max - min < 4) { const mid = (max + min) / 2; min = mid - 2; max = mid + 2; }
+        const step = W / (values.length - 1);
+        const pts = values.map((v, i) => {
+            const y = H - ((v - min) / (max - min)) * (H - 6) - 3;
+            return [(i * step).toFixed(1), y.toFixed(1)];
+        });
+        const line = pts.map((p) => p.join(',')).join(' ');
+        const poly = svg.querySelector('polyline');
+        const area = svg.querySelector('.area');
+        const tip = svg.querySelector('.tip');
+        if (poly) poly.setAttribute('points', line);
+        if (area) area.setAttribute('points', '0,' + H + ' ' + line + ' ' + W + ',' + H);
+        if (tip) {
+            const last = pts[pts.length - 1];
+            tip.setAttribute('cx', last[0]);
+            tip.setAttribute('cy', last[1]);
+        }
+    },
+
+    /**
      * Indicateur morphing de la topbar : un pill .nav-ind glisse sous l'onglet
      * actif (et suit le survol). Créé une seule fois, idempotent.
      * Reduced-motion : le CSS neutralise la transition (saut instantané, OK).
