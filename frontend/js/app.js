@@ -49,6 +49,7 @@ const App = {
  // Charger l'accent Bento Tech + migration depuis legacy theme
  // (système de thèmes legacy purgé en PR 12 — voir CLAUDE.md §Design System v5)
  this._loadAccent();
+ if (typeof Anim !== 'undefined') Anim.navInit();
 
  // Appliquer la langue sauvegardée sur la sidebar
  if (typeof Lang !== 'undefined') Lang._updateSidebar();

@@ -29,6 +29,7 @@ const Anim = {
         c.classList.add('view-enter');
         clearTimeout(this._enterTimer);
         this._enterTimer = setTimeout(() => c.classList.remove('view-enter'), 1000);
+        if (this._navMove) requestAnimationFrame(this._navMove);
     },
 
     /**
@@ -73,5 +74,36 @@ const Anim = {
         let out = '';
         for (let i = 0; i < count; i++) out += `<div class="${cls}"></div>`;
         return `<div class="skel-wrap">${out}</div>`;
+    },
+
+    /**
+     * Indicateur morphing de la topbar : un pill .nav-ind glisse sous l'onglet
+     * actif (et suit le survol). Créé une seule fois, idempotent.
+     * Reduced-motion : le CSS neutralise la transition (saut instantané, OK).
+     */
+    _navMove: null,
+
+    navInit() {
+        const tabs = document.getElementById('nav-tabs');
+        if (!tabs || tabs.querySelector('.nav-ind')) return;
+        const ind = document.createElement('span');
+        ind.className = 'nav-ind';
+        ind.setAttribute('aria-hidden', 'true');
+        tabs.prepend(ind);
+        const move = (el) => {
+            if (!el) { ind.classList.remove('on'); return; }
+            ind.style.left = el.offsetLeft + 'px';
+            ind.style.width = el.offsetWidth + 'px';
+            ind.classList.add('on');
+        };
+        const active = () => tabs.querySelector('.nav-tab.active');
+        tabs.addEventListener('mouseover', (e) => {
+            const t = e.target.closest('.nav-tab');
+            if (t) move(t);
+        });
+        tabs.addEventListener('mouseleave', () => move(active()));
+        this._navMove = () => move(active());
+        window.addEventListener('resize', this._navMove);
+        this._navMove();
     },
 };
