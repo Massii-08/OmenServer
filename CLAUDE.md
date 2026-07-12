@@ -507,13 +507,45 @@ sudo systemctl status cloudflared
 
 ---
 
-## 🎨 Design System v5 — Bento Tech
+## 🎨 Design System v6 « Ion » (sur base Bento Tech v5)
 
-> **Depuis le 26 mai 2026, le frontend est en Bento Tech v5.** Référence dans la branche
-> `design/bento-tech-mockup` (mockups + MASTER.md). Sur `main`, les tokens et composants
-> sont déjà déployés.
+> **Depuis le 12 juillet 2026, le frontend est en Ion v6** : mêmes NOMS de tokens et mêmes
+> composants que v5 (tout ce qui suit reste valable), mais nouvelles VALEURS (bleu-nuit +
+> néon) + couche motion. Spec : `docs/superpowers/specs/2026-07-12-omenserver-ion-redesign-design.md`.
+> Mockup validé : `docs/superpowers/mockups/2026-07-12-ion-directions.html` (direction B).
+>
+> **2 règles Ion** : (1) le **néon = information vivante** (online/LIVE/données temps réel),
+> jamais décoratif ; (2) le **mouvement = physique** (ressorts, transform/opacity only).
+>
+> **Tokens Ion** (remplacent les valeurs v5 listées plus bas — le reste de la section v5 fait foi
+> pour les composants) : `--bg #050810` · `--bg-elev-1 #0A101E` · `--bg-elev-2 #0E1526` ·
+> `--bg-elev-3 #131C33` · `--border #1C2947` · `--border-strong #2C4066` · `--text #EDF2FA` ·
+> `--text-muted #8FA3C4` · `--text-dim #5A6C90` · `--accent #00FFB0` (vert électrique) +
+> **nouveaux** `--accent-glow` (halo du vivant) et `--top-light` (lumière haute des cartes).
+> Fond body = micro-grille pointillée bleue. **Typo : Geist** (Inter retiré) + Geist Mono.
+> Les vars legacy (`--bg-primary`…) sont des **alias** des tokens Bento → re-thème atomique.
+>
+> **5 accents** via `data-accent` : `green` (défaut) / `cyan #00D2FF` / `violet #8B5CFF` /
+> `magenta #FF3DA6` / `amber #FFB020` — migration auto localStorage (blue→cyan, red→magenta,
+> yellow→amber) dans `App._loadAccent()` (étape « 1bis », APRÈS la migration omen-theme). 5 dots topbar.
+>
+> **Couche motion** (fin de style.css, bloc « ION v6 » + `anim.js` v2) : cascade d'entrée 70 ms
+> (rejouée par navigation, jamais par les polls), count-up, **nav morphing** (pill `.nav-ind`
+> créé par `Anim.navInit()`, le pill EST le fond de l'onglet actif via `:has()`), hover ressort
+> + glow accent (pas sur `.offline`), sweep radar, **orbite conique** sur `.stat-card.main`
+> (Dashboard uniquement, `@property --omen-ang`), glow vivant (`.badge.online`,
+> `.status-badge.online` en `!important`), logo shine one-shot, reduced-motion complet.
+>
+> **⚠️ Pièges Ion appris à la review/vérif** : (a) le nullifieur PR7
+> `.bento-overview .stat-card::before { content:none !important }` (L~2185) doit rester en
+> `:not(.main)` sinon il tue l'orbite ; (b) le `::before` legacy L~635 pose `height:3px` →
+> l'orbite DOIT déclarer `height:auto` (sinon anneau écrasé en lamelle) ; (c) la topbar porte
+> `nav-tab` ET `nav-item` → les règles sidebar legacy (`.nav-item.active`) s'y appliquent ;
+> (d) le grid inline du Dashboard bat les breakpoints → overrides `[style]` + `!important`
+> en media query ; (e) `getComputedStyle` via le pane Claude peut mentir (monde isolé) —
+> trancher au screenshot.
 
-### Tokens canoniques (dans `:root` de `frontend/css/style.css`)
+### Tokens canoniques v5 (HISTORIQUE — valeurs remplacées par Ion, noms inchangés)
 
 ```css
 --bg          #0E0E10    /* page background */
@@ -640,6 +672,7 @@ PR 7 a appliqué des **overrides `!important`** sur les classes legacy (`.sideba
 
 | Date | Changement |
 |------|-----------|
+| 2026-07-12 | 🎨⚡ **Refonte visuelle v6 « Ion » — déployée + vérifiée en prod** (branche `feat/frontend-ion` → `main` `fdd0387`, 14 commits, subagent-driven, brainstorming via mockup Artifact interactif à 3 directions : Massii a choisi **Ion** = premium fluide + néon dosé, vert électrique par défaut, style unique). **Re-thème atomique** : mêmes noms de tokens, nouvelles valeurs (bleu-nuit `#050810`, accent `#00FFB0`, Geist remplace Inter, micro-grille body) + vars legacy aliasées sur les tokens Bento → tout le site suit, y compris les overrides PR7. **5 accents néon** (`green/cyan/violet/magenta/amber` + migration auto localStorage des 4 anciens). **Couche motion** : cascade 70 ms, nav morphing (`Anim.navInit`, pill `:has()`-fond), hover ressort + glow accent, sweep radar, **orbite conique** `@property` sur la carte CPU du Dashboard (`.stat-card.main`, 1.6fr), glow vivant, logo shine, reduced-motion complet ; + responsive réparé (stats 2 col mobile, topbar wrap 2 rangées ≤768px — débordement 375px préexistant éliminé). **Review adversariale finale** = 10 findings dont 1 critique (l'orbite écrasée en lamelle 3px par le `height:3px` du `::before` legacy — fixé `height:auto`) et 3 importants (glow status-badge tué par un reset `!important` ; pill masqué par le bg opaque des onglets ; hover ARM perdu en spécificité) — tous corrigés avant push. **Vérifié en prod** (session Chrome Massii) : v112/sw v125 servis, rethème live des 5 accents (orbite/pill/cartes suivent), console 0 erreur. Spec + plan + mockup committés sous `docs/superpowers/`. Pièges Ion documentés dans la section Design System v6. |
 | 2026-06-21 | 🌾🔒 **AI Harvester — CAPTCHA interactif human-in-the-loop (tier stealth), déployé + vérifié live** (branche `feat/harvester-manual-captcha` → `main` `27251ca`, subagent-driven TDD, **790 tests verts**). Gère les rares CAPTCHA interactifs **sans solveur auto, sans payer** — c'est Massii qui résout, le bot attend. **4 features dans le tier stealth** : (A) **auto-click générique** de la case Turnstile (`click_turnstile` = bbox center click, ne résout rien) ; (B) **résolution manuelle** : si un puzzle persiste, au lieu de `PushbackError` → event `awaiting_manual_solve` + pause + poll (titre-only) jusqu'à résolution/timeout(1800s)/stop, sinon repli unblocker ; opt-in (`plan.manual_solve`, OFF par défaut) ; events miroir de `recommend_tier` → `_solve_from_log` (tail) → `/status` `awaiting_solve` → bandeau `#hrv-solve` ; (C) **config Telegram persistante** (modèle `unblocker_config` : `data/harvester_telegram.json` 0o600 atomique, token masqué, endpoints admin) + notifier httpx best-effort (zéro fuite token, zéro nouvelle dép) ; (D) **vue live noVNC** : bridge WS FastAPI admin-gated `/api/bots/harvester/vnc/{job_id}` = pont **WS↔socket Unix** vers **x11vnc** (`-display :100`), noVNC vendored `frontend/js/vendor/novnc/`, canvas dans le dashboard ; refuse hors (admin + job `awaiting_solve`). Le subprocess détaché possède la page Chrome ; uvicorn est un autre process → d'où le bridge. **Revue adversariale (5 dims)** → 4 findings corrigés avant deploy : re-goto en boucle (→ résolution titre-only, ne se bat plus avec les clics noVNC + plus de stall sur le beacon CF), export client embarquait `manual_solve` (→ strippé), x11vnc gardait un listener TCP (→ `-localhost`), test WS non-discriminant (→ accept-puis-1011). **Infra one-shot** : `x11vnc` + unit systemd `omen-harvester-vnc.service` (socket Unix `/run/omen-harvester-vnc/vnc.sock`, **`-localhost` = TCP loopback only**, user massii08). **Vérifié live** : flux `awaiting → resolved → done` reproduit ×2 sur le site démo `challenge-endpoint.lusostreams.com`, x11vnc sert `RFB 003.008` sur le socket, screenshot Chrome `:100` OK. ⚠️ Le challenge démo s'auto-résout (auto-click + signaux) → la résolution humaine ne se déclenche que sur un vrai puzzle persistant. Piège #46. |
 | 2026-06-21 | 🔒🔒 **Audit de sécurité complet + remédiation déployée (session autonome nocturne)** (commits `e3eef1e`→`376626d`→`d72769e` sur `main`, TDD, **748 tests verts**). Audit 6-dimensions (6 sous-agents : auth/injection/path/SSRF/XSS/config, exploitabilité tracée + recoupée). **Thème racine** : énormément d'endpoints ne vérifiaient que « est connecté » sans **rôle ni ownership** → corrigé par un garde factorisé `auth/access_control.require_resource_access(user, "server", id, db, min_level)` (admin court-circuite). **Corrigé & déployé** : (1) **IDOR critique** — `game_server/{files,settings,players,access,worlds,database}` + `mods/{install,remove}` gatés (la fuite du mot de passe SFTP `get_sftp_info` fermée) ; (2) **zip-slip** restauration backup (`_safe_extract` filtre les membres + `backup_id` validé/confiné, Python 3.9 n'a pas `filter='data'`) ; (3) **injection shell-in-container** `reset_world` (`world_name` regex `^world[\w-]*\Z`) ; (4) **SSRF** — nouveau `backend/net_guard.py` (`is_public_url`/`assert_public_url` bloquent loopback/privé/link-local ; `host_allowed` = allowlist CDN) appliqué aux downloads mods (+ `follow_redirects=False`), au crawl harvester (same-host+public, guards injectables) et au webhook Discord ; (5) **écriture fichier host arbitraire** confinée (gdrive `dest_path` racine fixe+admin, upload xlsx `basename`) ; (6) **secrets** — invitations (token 128 bits + `max_uses` appliqué + expiration 7j par défaut), `.env`+`nodes_api_key.txt` en 0o600, clé agent en `compare_digest`, rate-limit : `X-Forwarded-For` client non fiable retiré (CF-Connecting-IP sinon `client.host`) ; (7) **XSS** — helper global `esc()` (`window.esc` dans lang.js) + échappement systématique de TOUTES les données en innerHTML (18 fichiers JS), `toast.js` en `textContent`, `onclick`-avec-données → pattern `data-*`+`dataset`, `href/src` validés http(s) ; cache-bust 18× + sw v121. **Console RCON** relevée `view_only`→`manage`. **Verts au déploiement** (versions servies + SW confirmés via Chrome MCP ; rendu app profond non vérifié = pas de session admin sous la main). **⚠️ Suivi (NON corrigé, noté)** : (a) token JWT en query string des WebSocket (le frontend en dépend → migrer sur l'auth-par-1er-message avant de retirer `?token=`) ; (b) `/api/sysdoc/me` renvoie le `SECRET_KEY` JWT global (l'agent sysdoc S'EN SERT pour signer son JWT → nécessite un secret d'agent dédié, refonte) ; (c) bots Python = RCE hôte **par design** (rôle developer ≈ shell) — à sandboxer ; (d) `custom_image` Docker arbitraire (moderator/dev) ; (e) RCON password hardcodé (port non mappé, FAIBLE) ; (f) durcir l'infra : branch-protection GitHub + 2FA (auto-deploy `git pull`/min sur repo PUBLIC = RCE si push sur `main`), HSTS, uvicorn sous user non-root. Fix annexe : **flaky préexistant** mc_agent (race pump-thread cleanup) éliminé proprement (conftest, marqueur `real_pump_cleanup`). **Pattern transverse** : *un endpoint qui agit sur une ressource DOIT appeler `require_resource_access` ; une requête sortante vers une URL d'origine utilisateur DOIT passer `net_guard` ; toute donnée en innerHTML DOIT passer `esc()`.* |
 | 2026-06-20 | 🔒 **AI Harvester — durcissement defense-in-depth : `config.json` + `run.log` naissent en 0o600 (création atomique)** (commit `380b749`, TDD). Repéré pendant la revue adversariale du tier débloqueur : le pattern `open()` puis `os.chmod()` laisse une **fenêtre world-readable** (0o644 sous umask 022) et **reste 0o644 si le chmod échoue**. `HarvestConfig.save()` (`harvester/config.py`, porte `feed_key` + d'éventuels creds proxy) et `_open_run_log()` (`harvester_router.py`, traces) alignés sur `unblocker_config.save()` : `os.open(path, O_WRONLY|O_CREAT|O_TRUNC` *(config, overwrite)* `/ O_APPEND` *(run.log)*`, 0o600)` + `os.fchmod` best-effort (`except (AttributeError, OSError)`). Sémantique préservée (config = overwrite, run.log = append vérifié live). **512 tests** (+3 : baseline config + `…is_600_even_if_chmod_unavailable` ×2, modèle = `test_save_is_600_even_if_chmod_unavailable`). Zéro dép, backend-only (pas de cache-bust). **Pattern « secret écrit côté serveur » = TOUJOURS création atomique 0o600 (`os.open` mode + `os.fchmod`), jamais `open()`+`chmod()`.** |
