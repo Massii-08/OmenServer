@@ -202,11 +202,20 @@ const OracleModule = {
     // --- Portefeuille fictif : courbe d'équité + résumé
     _portfolio(s) {
         const b = s.bankroll || {};
+        const open = (Array.isArray(s.transactions) ? s.transactions : []).filter(t => t.status === 'open');
+        const committed = open.reduce((a, t) => a + (t.model_stake_usd || 0), 0);
+        const nextEnd = open.map(t => t.end_date).filter(Boolean).sort()[0];
         const hasCurve = Array.isArray(b.curve) && b.curve.length >= 2;
         const chart = hasCurve
             ? `<svg class="ora-line" id="ora-equity" viewBox="0 0 600 180" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="ora-eq-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--accent)" stop-opacity=".18"/><stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs><line class="ora-base" x1="0" x2="600" y1="0" y2="0" id="ora-eq-base"/><polygon class="area" points="" fill="url(#ora-eq-grad)"/><polyline class="ln" points=""/></svg>`
             : `<div class="ora-chart-empty">${esc(Lang.t('oracle.portfolio_waiting'))}</div>`;
         const refills = b.refills ? `<span class="oracle-chip warn">${b.refills} ${esc(Lang.t('oracle.refills'))}</span>` : '';
+        const committedItem = committed > 0
+            ? `<div><span class="ocm-l">${esc(Lang.t('oracle.committed'))}</span><span class="ocm-v mono">${committed.toFixed(2)}$</span></div>`
+            : '';
+        const pendingNote = open.length
+            ? `<div class="oracle-note-info">${open.length} ${esc(Lang.t('oracle.open_bets')).toLowerCase()} · ${esc(Lang.t('oracle.awaiting_resolution'))}${nextEnd ? ' (' + this._shortDT(nextEnd) + '…)' : ''} — ${esc(Lang.t('oracle.moves_on_resolution'))}</div>`
+            : '';
         return `<div class="oracle-section">
             <div class="oracle-sec-head"><h3>${esc(Lang.t('oracle.portfolio'))}</h3><span class="oracle-sec-note">${esc(Lang.t('oracle.portfolio_desc'))}</span></div>
             <div class="oracle-panel">
@@ -214,9 +223,11 @@ const OracleModule = {
                     <div><span class="ocm-l">${esc(Lang.t('oracle.start'))}</span><span class="ocm-v mono">${this._num(b.start, 0)}$</span></div>
                     <div><span class="ocm-l">${esc(Lang.t('oracle.current'))}</span><span class="ocm-v mono">${this._num(b.final, 2)}$</span></div>
                     <div><span class="ocm-l">Net</span><span class="ocm-v mono ${b.net_pnl > 0 ? 'pos' : b.net_pnl < 0 ? 'neg' : ''}">${b.net_pnl != null ? (b.net_pnl > 0 ? '+' : '') + Number(b.net_pnl).toFixed(2) + '$' : '—'}</span></div>
+                    ${committedItem}
                     ${refills}
                 </div>
                 <div class="ora-chart-box">${chart}</div>
+                ${pendingNote}
                 <div class="oracle-note-warn">${esc(Lang.t('oracle.portfolio_illustrative'))}</div>
             </div>
         </div>`;
