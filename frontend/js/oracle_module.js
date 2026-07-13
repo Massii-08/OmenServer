@@ -118,14 +118,17 @@ const OracleModule = {
             ? `<div class="oracle-table with-head oracle-open-tbl">
                 <div class="t-head"><span>${esc(Lang.t('oracle.market_col'))}</span><span>${esc(Lang.t('oracle.placed'))}</span><span>${esc(Lang.t('oracle.price_col'))}</span><span>${esc(Lang.t('oracle.cost'))}</span><span>${esc(Lang.t('oracle.potential_gain'))}</span><span>${esc(Lang.t('oracle.ends'))}</span></div>
                 ${open.map(t => {
-                    const gain = t.potential_gain_usd != null ? `<span class="mono pos">+${Number(t.potential_gain_usd).toFixed(2)}$</span>` : '<span class="mono">—</span>';
+                    // Coût/gain = dimensionnement RÉEL du portefeuille (Kelly/4 du pot 100$),
+                    // pas la mise fixe 100$ → tout se réconcilie avec le portefeuille.
+                    const stake = t.model_stake_usd != null ? t.model_stake_usd : t.stake_usd;
+                    const g = t.model_gain_usd != null ? t.model_gain_usd : t.potential_gain_usd;
+                    const gain = g != null ? `<span class="mono pos">+${Number(g).toFixed(2)}$</span>` : '<span class="mono">—</span>';
                     const pricePct = t.price != null ? `${(t.price * 100).toFixed(0)}%` : '—';
-                    const fee = t.fee_usd != null ? Number(t.fee_usd).toFixed(2) : '0.00';
                     return `<div class="t-row oracle-openrow">
-                        <div><div class="t-name">${esc(t.question || '')}</div><div class="t-sub mono">${esc(t.side || '')} · ${esc(t.kind || '')} · ${esc(Lang.t('oracle.fees'))} ${fee}$ · edge ${this._pct(t.edge_net)}</div></div>
+                        <div><div class="t-name">${esc(t.question || '')}</div><div class="t-sub mono">${esc(t.side || '')} · ${esc(t.kind || '')} · edge ${this._pct(t.edge_net)}</div></div>
                         <div class="t-meta mono">${this._shortDT(t.ts_iso)}</div>
                         <div class="t-meta mono">${pricePct}</div>
-                        <div class="t-meta mono">${this._num(t.stake_usd, 0)}$</div>
+                        <div class="t-meta mono">${stake != null ? Number(stake).toFixed(2) : '—'}$</div>
                         <div class="t-meta">${gain}</div>
                         <div class="t-meta mono">${this._shortDT(t.end_date)}</div>
                     </div>`;
