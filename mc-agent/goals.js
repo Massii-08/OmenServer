@@ -151,10 +151,10 @@ const ironOK = (c) => ironTotal(c) >= ironNeedTotal(c);
 const _IRON_PREFIX = IRON_CHAIN.slice(0, IRON_CHAIN.findIndex((g) => g.name === 'iron_ore'));
 const IRON_ARMOR_CHAIN = [
   ..._IRON_PREFIX.map((g) => withFinal(g, IA)),
-  // Stock de CUIT avant la descente (chasse impossible sous terre ; en hard la famine TUE).
-  // met inclut « déjà sous terre » (y<45) → ne JAMAIS staller le planner en profondeur.
-  { name: 'food_stock',   met: (c) => cookedCount(c.inv) >= 6 || (c.y !== undefined && c.y < 45) || IA(c),
-    skill: 'huntCook',    args: { target: 6 } },
+  // NB : PAS de but food_stock BLOQUANT (vécu live : zone vidée de ses proies par les runs
+  // précédents → no_prey ×16 → stall à vie en surface). La chasse est un HOOK best-effort borné
+  // avant descendDiagonal (index.js) ; sous terre, une famine coûte une mort keepInventory
+  // (respawn faim pleine, inventaire intact) — un stall coûte TOUT le run.
   // Réserve cobble pour murer la lave en branch-mine (le four a consommé les 8 du kit).
   { name: 'cobble_lava',  met: (c) => invCount(c.inv, 'cobblestone') >= 12 || ironOK(c) || IA(c),
     skill: 'gather',      args: { name: 'stone', count: 12 } },

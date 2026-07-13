@@ -475,6 +475,14 @@ async function runGoalSkill(goal) {
   // avant une descente/branche, tente armure+bouclier (best-effort, borné, idempotent si déjà armé).
   if (goal.skill === 'descendDiagonal' || goal.skill === 'branchMine') {
     try { await withTimeout(armorUp(), 120000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+    // Sans-give : chasse best-effort AVANT la descente (bornée 90 s, jamais bloquante — cf. goals.js,
+    // le but food_stock bloquant stallait à vie sur no_prey). Surface seulement.
+    if (NO_GIVE && goal.skill === 'descendDiagonal') {
+      const _y = bot.entity && bot.entity.position ? bot.entity.position.y : 0;
+      if (_y >= 45 && cookedCount(buildCtxInv(bot)) < 4) {
+        try { await withTimeout(huntCookGoal(4), 90000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+      }
+    }
   }
   if (goal.skill === 'gatherLog') {
     // arbre le plus proche de N'IMPORTE quelle essence (pas oak hardcodé) — robustesse terrain
@@ -2425,6 +2433,25 @@ let _floatFails = 0;   // recoverFloating ok:false consécutifs → escalade (v�
 let _floatHits = 0;    // détections consécutives (exiger 2 = ~4 s) avant d'agir (anti faux-positif transitoire)
 let _floatSettleUntil = 0; // horodatage jusqu'auquel on N'ARME PAS la détection (post-spawn/téléport :
                        // chunk en cours de chargement → onGround faux alors que le bot est juste immobile)
+// WATCHDOG EAU (run nether, vécu NethBot1 : 12+ min à flotter dans un lac, reflex surface ×192,
+// planner muet — le warp de secours est bloqué en sans-give et rien d'autre ne reprenait la main).
+// Dans l'eau en CONTINU ≥60 s (30 échantillons) → stopMotion + escapeWater forcé (nage persistante
+// vers la terre + pillar-up, borné 60 s), compteur remis à zéro → re-tente au besoin.
+let _waterTicks = 0;
+let _waterBusy = false;
+setInterval(async () => {
+  try {
+    if (_waterBusy || !bot.entity || !bot.entity.position) return;
+    if (!isInWater(bot)) { _waterTicks = 0; return; }
+    _waterTicks += 1;
+    if (_waterTicks < 30) return;
+    _waterTicks = 0;
+    _waterBusy = true;
+    emit({ type: 'unstuck', cause: 'water_watchdog' });
+    try { stopMotion(); } catch (e) {}
+    try { await escapeWater(bot, { emit }); } finally { _waterBusy = false; }
+  } catch (e) { _waterBusy = false; }
+}, 2000);
 setInterval(async () => {
   try {
     if (_floatBusy || !bot.entity || !bot.entity.position) return;

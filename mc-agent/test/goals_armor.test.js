@@ -59,13 +59,14 @@ test('IRON_ARMOR_CHAIN: pioche fer + kit bois sûr + four + food + 24 lingots �
   assert.strictEqual(g.name, 'iron_armor');
 });
 
-test('IRON_ARMOR_CHAIN: kit prêt mais SANS nourriture (surface) → but = food_stock AVANT la descente', () => {
+test('IRON_ARMOR_CHAIN: kit prêt SANS nourriture → la descente n est PAS bloquée (chasse = hook best-effort)', () => {
+  // vécu live : un but food_stock bloquant stallait à vie sur no_prey (zone vidée de ses proies)
   const inv = {
     stone_pickaxe: 1, wooden_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1,
     cobblestone: 12, oak_planks: 8,
   };
   const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64));
-  assert.strictEqual(g.name, 'food_stock');
+  assert.strictEqual(g.name, 'descend_y16');
 });
 
 test('IRON_ARMOR_CHAIN: fer insuffisant, en surface → descend_y16 ; déjà à Y16 → iron_deep (branch-mine)', () => {
