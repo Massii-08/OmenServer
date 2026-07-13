@@ -1,0 +1,346 @@
+/**
+ * oracle_module.js — Dashboard du bot Oracle (Polymarket × Deribit).
+ *
+ * Espace dédié dans le module Bots : santé + verdict, portefeuille fictif
+ * (courbe d'équité), analyses de marché (edges, calibration, near-misses),
+ * transactions (paper fantômes + alertes), en-cours (pending par échéance).
+ *
+ * Lecture seule : consomme /api/bots/oracle/snapshot (JSON produit par le
+ * projet Oracle à chaque cycle). Graphiques = SVG inline fait main, thème-aware
+ * (couleurs via var(--…)), zéro dépendance (CSP bloque les libs CDN).
+ * Toute donnée serveur passe par esc() avant innerHTML (anti-XSS).
+ */
+const OracleModule = {
+    _container: null,
+    _pollInterval: null,
+    _snap: null,
+
+    async render(container) {
+        this.unload();               // coupe tout poll précédent (ré-ouverture / re-render) avant d'en armer un neuf
+        this._container = container;
+        container.innerHTML = `
+            <div class="oracle-wrap oracle-enter" id="oracle-wrap">
+                <div class="oracle-topbar">
+                    <button class="btn btn-ghost btn-sm" onclick="OracleModule.unload();BotsModule.render(BotsModule._container)">${esc(Lang.t('oracle.back'))}</button>
+                    <div class="oracle-title">
+                        <span class="b-ticker">ORC</span>
+                        <div>
+                            <div class="oracle-h1">Oracle</div>
+                            <div class="oracle-sub">${esc(Lang.t('oracle.subtitle'))}</div>
+                        </div>
+                    </div>
+                    <div class="oracle-top-right" id="oracle-top-right"></div>
+                </div>
+                <div id="oracle-body">
+                    <div class="oracle-loading">${esc(Lang.t('common.loading'))}</div>
+                </div>
+            </div>`;
+        await this._load();
+        // Retire la classe d'entrée après l'animation (comme anim.js pour
+        // .view-enter) → les refresh du poll ne ré-animent pas.
+        setTimeout(() => { const w = document.getElementById('oracle-wrap'); if (w) w.classList.remove('oracle-enter'); }, 1400);
+        this._pollInterval = setInterval(() => this._load(), 30000);
+    },
+
+    _reducedMotion() {
+        return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    },
+
+    _isEntering() {
+        const w = document.getElementById('oracle-wrap');
+        return !!(w && w.classList.contains('oracle-enter'));
+    },
+
+    unload() {
+        if (this._pollInterval) { clearInterval(this._pollInterval); this._pollInterval = null; }
+    },
+
+    async _load() {
+        const r = await Auth.apiCall('/api/bots/oracle/snapshot');
+        const body = document.getElementById('oracle-body');
+        if (!body) return;                 // module déchargé entre-temps
+        if (!r) return;                    // 401 géré par Auth.apiCall
+        if (r.status === 404) { body.innerHTML = this._notReady(); this._topBadge(null); return; }
+        if (!r.ok) { body.innerHTML = `<div class="oracle-empty">${esc(Lang.t('oracle.load_error'))} (${r.status})</div>`; return; }
+        try {
+            this._snap = await r.json();
+        } catch (e) { body.innerHTML = `<div class="oracle-empty">${esc(Lang.t('oracle.load_error'))}</div>`; return; }
+        body.innerHTML = this._dashboard(this._snap);
+        this._topBadge(this._snap);
+        this._drawCharts(this._snap);
+    },
+
+    _notReady() {
+        return `<div class="oracle-empty">
+            <div class="oracle-empty-h">${esc(Lang.t('oracle.not_ready'))}</div>
+            <div class="oracle-empty-p">${esc(Lang.t('oracle.not_ready_hint'))}</div>
+        </div>`;
+    },
+
+    _topBadge(snap) {
+        const el = document.getElementById('oracle-top-right');
+        if (!el) return;
+        if (!snap) { el.innerHTML = ''; return; }
+        const h = snap.health || {};
+        const cls = { ok: 'online', warn: 'warn', error: 'danger' }[h.status] || '';
+        const lbl = { ok: 'LIVE', warn: Lang.t('oracle.degraded'), error: 'STALE', unknown: '—' }[h.status] || '—';
+        const mode = esc(h.executor_mode || 'paper');
+        el.innerHTML = `<span class="oracle-mode">${esc(Lang.t('oracle.mode'))}: <b>${mode}</b></span><span class="badge ${cls}">${esc(lbl)}</span>`;
+    },
+
+    // ---------------------------------------------------------- dashboard
+
+    _dashboard(s) {
+        return [
+            this._verdictStrip(s),
+            this._overview(s),
+            this._portfolio(s),
+            this._market(s),
+            this._transactions(s),
+            this._inProgress(s),
+            this._footer(s),
+        ].join('');
+    },
+
+    _num(v, dec = 0, suffix = '') {
+        if (v === null || v === undefined || Number.isNaN(v)) return '—';
+        return `<span class="mono">${Number(v).toFixed(dec)}${suffix}</span>`;
+    },
+
+    _pct(v) {
+        if (v === null || v === undefined) return '—';
+        const sign = v > 0 ? '+' : '';
+        return `<span class="mono">${sign}${(v * 100).toFixed(1)}%</span>`;
+    },
+
+    // --- Santé + progrès du verdict phase 2
+    _verdictStrip(s) {
+        const h = s.health || {}, v = s.verdict || {};
+        const items = [
+            { l: Lang.t('oracle.cycles_24h'), v: h.cycles_24h ?? '—' },
+            { l: Lang.t('oracle.last_cycle'), v: h.last_cycle_age_min != null ? h.last_cycle_age_min + ' min' : '—', warn: (h.last_cycle_age_min || 0) > 95 },
+            { l: 'Degraded', v: h.degraded_cycles ?? 0, err: (h.degraded_cycles || 0) >= 3, warn: (h.degraded_cycles || 0) > 0 },
+            { l: Lang.t('oracle.executor'), v: h.executor_mode || 'paper' },
+        ];
+        const cells = items.map(i => `<div class="diag-item ${i.err ? 'err' : i.warn ? 'warn' : ''}"><span class="d-l">${esc(i.l)}</span><span class="d-v">${esc(String(i.v))}</span></div>`).join('');
+        const nPct = v.pct_n ?? 0, cPct = v.pct_clusters ?? 0;
+        const statusTxt = { ok: Lang.t('oracle.healthy'), warn: Lang.t('oracle.degraded'), error: Lang.t('oracle.stale'), unknown: '—' }[h.status] || '—';
+        return `<div class="diag-strip oracle-health">
+            <div class="d-head"><span class="d-title">${esc(Lang.t('oracle.health'))}</span><span class="d-summary">${esc(statusTxt)}</span></div>
+            <div class="diag-grid">${cells}</div>
+            <div class="oracle-verdict">
+                <div class="ov-title">${esc(Lang.t('oracle.verdict_progress'))}</div>
+                <div class="ov-bar-row"><span class="ov-lab mono">n</span>${this._progress(nPct)}<span class="ov-val mono">${v.n_resolved ?? 0}/${v.min_n ?? 40}</span></div>
+                <div class="ov-bar-row"><span class="ov-lab mono">clusters</span>${this._progress(cPct)}<span class="ov-val mono">${v.clusters ?? 0}/${v.min_clusters ?? 15}</span></div>
+                <div class="ov-eta">${esc(Lang.t('oracle.verdict_note'))}</div>
+            </div>
+        </div>`;
+    },
+
+    _progress(pct) {
+        const p = Math.max(0, Math.min(100, pct || 0));
+        return `<div class="ov-track"><div class="ov-fill" style="width:${p}%"></div></div>`;
+    },
+
+    // --- Cartes de synthèse (Bento overview)
+    _overview(s) {
+        const b = s.bankroll || {}, v = s.verdict || {}, u = s.universe || {}, sh = s.shadow || {};
+        const pnl = b.net_pnl;
+        const pnlCls = pnl > 0 ? 'up' : pnl < 0 ? 'down' : '';
+        const best = (s.edges && s.edges.near_misses && s.edges.near_misses[0]) || null;
+        return `<div class="bento-overview oracle-kpi">
+            <div class="stat-card big">
+                <span class="label">${esc(Lang.t('oracle.portfolio_value'))}</span>
+                <div class="value">${this._num(b.final, 2)}<span class="unit">$</span></div>
+                <div class="footer"><span class="delta ${pnlCls}">${pnl != null ? (pnl > 0 ? '+' : '') + Number(pnl).toFixed(2) + '$' : '—'}</span> ${esc(Lang.t('oracle.net_since_start'))}</div>
+            </div>
+            <div class="stat-card"><span class="label">${esc(Lang.t('oracle.bets_resolved'))}</span><div class="value">${this._num(b.n_bets)}</div><div class="footer">${this._num(b.n_open)} ${esc(Lang.t('oracle.open_bets'))}</div></div>
+            <div class="stat-card"><span class="label">${esc(Lang.t('oracle.best_edge_24h'))}</span><div class="value">${best ? this._pct(best.edge_net) : '—'}</div><div class="footer">${best ? esc((best.side || '') + ' · ' + (best.asset || '')) : esc(Lang.t('oracle.none'))}</div></div>
+            <div class="stat-card"><span class="label">${esc(Lang.t('oracle.evaluated'))}</span><div class="value">${this._num(u.evaluated)}</div><div class="footer">${this._num(u.candidates)} ${esc(Lang.t('oracle.candidates'))}</div></div>
+        </div>`;
+    },
+
+    // --- Portefeuille fictif : courbe d'équité + résumé
+    _portfolio(s) {
+        const b = s.bankroll || {};
+        const hasCurve = Array.isArray(b.curve) && b.curve.length >= 2;
+        const chart = hasCurve
+            ? `<svg class="ora-line" id="ora-equity" viewBox="0 0 600 180" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="ora-eq-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--accent)" stop-opacity=".18"/><stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs><line class="ora-base" x1="0" x2="600" y1="0" y2="0" id="ora-eq-base"/><polygon class="area" points="" fill="url(#ora-eq-grad)"/><polyline class="ln" points=""/></svg>`
+            : `<div class="ora-chart-empty">${esc(Lang.t('oracle.portfolio_waiting'))}</div>`;
+        const refills = b.refills ? `<span class="oracle-chip warn">${b.refills} ${esc(Lang.t('oracle.refills'))}</span>` : '';
+        return `<div class="oracle-section">
+            <div class="oracle-sec-head"><h3>${esc(Lang.t('oracle.portfolio'))}</h3><span class="oracle-sec-note">${esc(Lang.t('oracle.portfolio_desc'))}</span></div>
+            <div class="oracle-panel">
+                <div class="oracle-chart-meta">
+                    <div><span class="ocm-l">${esc(Lang.t('oracle.start'))}</span><span class="ocm-v mono">${this._num(b.start, 0)}$</span></div>
+                    <div><span class="ocm-l">${esc(Lang.t('oracle.current'))}</span><span class="ocm-v mono">${this._num(b.final, 2)}$</span></div>
+                    <div><span class="ocm-l">Net</span><span class="ocm-v mono ${b.net_pnl > 0 ? 'pos' : b.net_pnl < 0 ? 'neg' : ''}">${b.net_pnl != null ? (b.net_pnl > 0 ? '+' : '') + Number(b.net_pnl).toFixed(2) + '$' : '—'}</span></div>
+                    ${refills}
+                </div>
+                <div class="ora-chart-box">${chart}</div>
+                <div class="oracle-note-warn">${esc(Lang.t('oracle.portfolio_illustrative'))}</div>
+            </div>
+        </div>`;
+    },
+
+    // --- Analyses de marché : histogramme edges + calibration + near-misses
+    _market(s) {
+        const e = s.edges || {}, sh = s.shadow || {};
+        const hist = Array.isArray(e.histogram) ? e.histogram : [];
+        const cal = (sh.threshold_curve || []).filter(x => x.n_resolved > 0);
+        const nm = (e.near_misses || []).slice(0, 6);
+
+        const nmRows = nm.length
+            ? nm.map(x => `<div class="t-row"><div><div class="t-name">${esc(x.question || '')}</div><div class="t-sub">${esc((x.side || '') + ' · ' + (x.asset || ''))}${(x.other_blockers && x.other_blockers.length) ? ' · ' + esc(x.other_blockers.join(',')) : ''}</div></div><div class="t-meta pos">${this._pct(x.edge_net)}</div></div>`).join('')
+            : `<div class="oracle-empty-sm">${esc(Lang.t('oracle.no_positive_edge'))}</div>`;
+
+        const calBlock = cal.length
+            ? `<svg class="ora-bar" id="ora-calib" viewBox="0 0 320 160" preserveAspectRatio="none" aria-hidden="true"></svg><div class="ora-cal-legend">${cal.map(c => `<span class="mono">≥${(c.min_edge * 100).toFixed(0)}%: ${(c.avg_realized_edge * 100).toFixed(1)}% (n${c.n_resolved})</span>`).join('')}</div>`
+            : `<div class="ora-chart-empty">${esc(Lang.t('oracle.calibration_waiting'))}</div>`;
+
+        return `<div class="oracle-section">
+            <div class="oracle-sec-head"><h3>${esc(Lang.t('oracle.market'))}</h3><span class="oracle-sec-note">${esc(Lang.t('oracle.market_desc'))}</span></div>
+            <div class="oracle-grid-2">
+                <div class="oracle-panel">
+                    <div class="oracle-panel-title">${esc(Lang.t('oracle.edge_distribution'))} <span class="opn">24h</span></div>
+                    <div class="ora-chart-box sm"><svg class="ora-bar" id="ora-hist" viewBox="0 0 320 160" preserveAspectRatio="none" aria-hidden="true"></svg></div>
+                    <div class="ora-hist-labels" id="ora-hist-labels"></div>
+                </div>
+                <div class="oracle-panel">
+                    <div class="oracle-panel-title">${esc(Lang.t('oracle.calibration'))}</div>
+                    <div class="ora-chart-box sm">${calBlock}</div>
+                </div>
+            </div>
+            <div class="oracle-panel">
+                <div class="oracle-panel-title">${esc(Lang.t('oracle.near_misses'))}</div>
+                <div class="oracle-table">${nmRows}</div>
+            </div>
+        </div>`;
+    },
+
+    // --- Transactions : mon portefeuille (paper fantômes + alertes)
+    _transactions(s) {
+        const tx = Array.isArray(s.transactions) ? s.transactions : [];
+        if (!tx.length) {
+            return `<div class="oracle-section"><div class="oracle-sec-head"><h3>${esc(Lang.t('oracle.transactions'))}</h3></div>
+                <div class="oracle-panel"><div class="oracle-empty-sm">${esc(Lang.t('oracle.no_transactions'))}</div></div></div>`;
+        }
+        const rows = tx.slice(0, 40).map(t => {
+            const st = { won: 'online', lost: 'danger', open: '' }[t.status] || '';
+            const stLbl = { won: Lang.t('oracle.won'), lost: Lang.t('oracle.lost'), open: Lang.t('oracle.open_bets') }[t.status] || t.status;
+            const pnl = t.pnl_usd != null ? `<span class="mono ${t.pnl_usd > 0 ? 'pos' : 'neg'}">${t.pnl_usd > 0 ? '+' : ''}${Number(t.pnl_usd).toFixed(2)}$</span>` : '<span class="mono">—</span>';
+            return `<div class="t-row oracle-tx">
+                <div><div class="t-name">${esc(t.question || '')}</div><div class="t-sub mono">${esc(t.ts_iso || '')} · ${esc(t.kind || '')}</div></div>
+                <div class="t-meta">${esc(t.side || '')}</div>
+                <div class="t-meta">${this._pct(t.edge_net)}</div>
+                <div class="t-meta">${pnl}</div>
+                <div><span class="badge ${st}">${esc(stLbl)}</span></div>
+            </div>`;
+        }).join('');
+        return `<div class="oracle-section">
+            <div class="oracle-sec-head"><h3>${esc(Lang.t('oracle.transactions'))}</h3><span class="oracle-sec-note">${esc(Lang.t('oracle.transactions_desc'))}</span></div>
+            <div class="oracle-table with-head">
+                <div class="t-head"><span>${esc(Lang.t('oracle.market_col'))}</span><span>${esc(Lang.t('oracle.side'))}</span><span>Edge</span><span>P&L</span><span>${esc(Lang.t('oracle.status'))}</span></div>
+                ${rows}
+            </div>
+        </div>`;
+    },
+
+    // --- En-cours : pending par échéance + ordres réels (phase 3)
+    _inProgress(s) {
+        const pending = Array.isArray(s.pending) ? s.pending : [];
+        const total = pending.reduce((a, p) => a + (p.count || 0), 0);
+        const chips = pending.length
+            ? pending.map(p => `<div class="oracle-pend"><span class="op-date mono">${esc((p.end_date || '').slice(5))}</span><span class="op-count mono">${p.count}</span></div>`).join('')
+            : `<div class="oracle-empty-sm">${esc(Lang.t('oracle.none'))}</div>`;
+        const orders = Array.isArray(s.orders) ? s.orders : [];
+        const ordersBlock = orders.length
+            ? orders.slice(0, 10).map(o => `<div class="t-row"><div class="t-name">${esc((o.question || '').slice(0, 50))}</div><div class="t-meta">${esc(o.side || '')}</div><div class="t-meta mono">${this._num(o.size_usd, 0)}$</div><div><span class="badge">${esc(o.status || '')}</span></div></div>`).join('')
+            : `<div class="oracle-empty-sm">${esc(Lang.t('oracle.no_real_orders'))}</div>`;
+        return `<div class="oracle-section">
+            <div class="oracle-sec-head"><h3>${esc(Lang.t('oracle.in_progress'))}</h3><span class="oracle-sec-note">${total} ${esc(Lang.t('oracle.markets_tracked'))}</span></div>
+            <div class="oracle-grid-2">
+                <div class="oracle-panel"><div class="oracle-panel-title">${esc(Lang.t('oracle.pending_by_expiry'))}</div><div class="oracle-pend-row">${chips}</div></div>
+                <div class="oracle-panel"><div class="oracle-panel-title">${esc(Lang.t('oracle.real_orders'))} <span class="opn">phase 3</span></div>${ordersBlock}</div>
+            </div>
+        </div>`;
+    },
+
+    _footer(s) {
+        return `<div class="oracle-footer">${esc(Lang.t('oracle.generated'))}: <span class="mono">${esc(s.generated_iso || '')}</span></div>`;
+    },
+
+    // ------------------------------------------------------- SVG charts
+
+    _drawCharts(s) {
+        try { this._drawEquity((s.bankroll || {}).curve); } catch (e) { }
+        try { this._drawHistogram((s.edges || {}).histogram); } catch (e) { }
+        try { this._drawCalibration((s.shadow || {}).threshold_curve); } catch (e) { }
+    },
+
+    _drawEquity(curve) {
+        const svg = document.getElementById('ora-equity');
+        if (!svg || !Array.isArray(curve) || curve.length < 2) return;
+        const W = 600, H = 180, pad = 6;
+        let min = Math.min(...curve), max = Math.max(...curve);
+        if (max - min < 1) { const m = (max + min) / 2; min = m - 1; max = m + 1; }
+        const step = W / (curve.length - 1);
+        const y = v => (H - pad) - ((v - min) / (max - min)) * (H - 2 * pad);
+        const pts = curve.map((v, i) => `${(i * step).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+        const ln = svg.querySelector('.ln'), area = svg.querySelector('.area'), base = svg.querySelector('#ora-eq-base');
+        if (ln) ln.setAttribute('points', pts);
+        if (area) area.setAttribute('points', `0,${H} ${pts} ${W},${H}`);
+        // Tracé Ion (omen-draw) : la courbe se dessine à l'entrée du dashboard.
+        if (ln && this._isEntering() && !this._reducedMotion() && ln.getTotalLength) {
+            try {
+                const len = ln.getTotalLength();
+                if (len > 0 && ln.animate) {
+                    ln.animate([{ strokeDasharray: len, strokeDashoffset: len }, { strokeDasharray: len, strokeDashoffset: 0 }],
+                        { duration: 1400, delay: 300, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'backwards' });
+                    if (area && area.animate) area.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 900, delay: 500, fill: 'backwards' });
+                }
+            } catch (e) { }
+        }
+        // ligne de référence = capital de départ (100$) si dans la plage
+        if (base && curve.length) {
+            const start = curve[0];
+            if (start >= min && start <= max) { base.setAttribute('y1', y(start).toFixed(1)); base.setAttribute('y2', y(start).toFixed(1)); base.style.display = ''; }
+            else base.style.display = 'none';
+        }
+    },
+
+    _drawHistogram(hist) {
+        const svg = document.getElementById('ora-hist');
+        const labelsEl = document.getElementById('ora-hist-labels');
+        if (!svg || !Array.isArray(hist) || !hist.length) return;
+        const vals = hist.map(h => h[1] || 0);
+        const labels = hist.map(h => h[0]);
+        const W = 320, H = 160, gap = 4, n = vals.length;
+        const bw = (W - gap * (n + 1)) / n, max = Math.max(...vals, 1);
+        svg.innerHTML = vals.map((val, i) => {
+            const h = (val / max) * (H - 20), x = gap + i * (bw + gap), yy = H - h;
+            const neg = /<=0/.test(labels[i]);
+            return `<rect class="bar ${neg ? 'neg' : ''}" x="${x.toFixed(1)}" y="${yy.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(h, 0).toFixed(1)}" rx="2"/><text class="ora-barval" x="${(x + bw / 2).toFixed(1)}" y="${(yy - 3).toFixed(1)}" text-anchor="middle">${val || ''}</text>`;
+        }).join('');
+        if (labelsEl) labelsEl.innerHTML = labels.map(l => `<span>${esc(l.replace(' (seuil)', ''))}</span>`).join('');
+    },
+
+    _drawCalibration(curve) {
+        const svg = document.getElementById('ora-calib');
+        if (!svg) return;
+        const cal = (curve || []).filter(x => x.n_resolved > 0);
+        if (!cal.length) return;
+        const W = 320, H = 160, gap = 6, n = cal.length;
+        const bw = (W - gap * (n + 1)) / n;
+        const vals = cal.map(c => c.avg_realized_edge);
+        const maxAbs = Math.max(0.01, ...vals.map(v => Math.abs(v)));
+        const zeroY = H / 2;
+        svg.innerHTML = `<line class="ora-zero" x1="0" x2="${W}" y1="${zeroY}" y2="${zeroY}"/>` + cal.map((c, i) => {
+            const v = c.avg_realized_edge;
+            const h = (Math.abs(v) / maxAbs) * (H / 2 - 8);
+            const x = gap + i * (bw + gap);
+            const yy = v >= 0 ? zeroY - h : zeroY;
+            return `<rect class="bar ${v < 0 ? 'neg' : ''}" x="${x.toFixed(1)}" y="${yy.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(h, 0).toFixed(1)}" rx="2"/>`;
+        }).join('');
+    },
+};

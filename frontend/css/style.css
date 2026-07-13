@@ -4478,3 +4478,154 @@ select:-webkit-autofill {
 @media (prefers-reduced-motion: reduce) {
     .sv-ind { transition: none; }
 }
+
+/* ============================================================================
+   ORACLE — dashboard Polymarket × Deribit (santé, portefeuille, marché,
+   transactions, en-cours). Thème Ion, graphiques SVG thème-aware.
+   ============================================================================ */
+.oracle-wrap { display: flex; flex-direction: column; gap: var(--s-5); }
+.oracle-topbar { display: flex; align-items: center; gap: var(--s-4); flex-wrap: wrap; }
+.oracle-title { display: flex; align-items: center; gap: var(--s-3); flex: 1; min-width: 0; }
+.oracle-title .b-ticker { flex-shrink: 0; }
+.oracle-h1 { font-size: 20px; font-weight: 700; line-height: 1.1; }
+.oracle-sub { font-size: 12px; color: var(--text-dim); }
+.oracle-top-right { display: flex; align-items: center; gap: var(--s-3); margin-left: auto; }
+.oracle-mode { font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
+.oracle-mode b { color: var(--text); }
+
+.oracle-loading, .oracle-empty { padding: 48px 24px; text-align: center; color: var(--text-dim); font-size: 13px; }
+.oracle-empty-h { font-size: 15px; color: var(--text); font-weight: 600; margin-bottom: 6px; }
+.oracle-empty-p { font-size: 13px; color: var(--text-muted); max-width: 460px; margin: 0 auto; }
+.oracle-empty-sm { padding: 20px; text-align: center; color: var(--text-dim); font-size: 12px; }
+
+/* Santé + progrès verdict */
+.oracle-health .oracle-verdict { margin-top: var(--s-4); padding-top: var(--s-4); border-top: 1px solid var(--border); }
+.ov-title { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin-bottom: var(--s-3); }
+.ov-bar-row { display: grid; grid-template-columns: 72px 1fr 64px; align-items: center; gap: var(--s-3); margin-bottom: var(--s-2); }
+.ov-lab { font-size: 12px; color: var(--text-muted); }
+.ov-val { font-size: 12px; text-align: right; color: var(--text); }
+.ov-track { height: 6px; background: var(--bg-elev-3); border-radius: var(--r-pill); overflow: hidden; }
+.ov-fill { height: 100%; background: var(--accent); border-radius: var(--r-pill); transition: width var(--t-base); }
+.ov-eta { font-size: 11px; color: var(--text-dim); margin-top: var(--s-2); }
+
+/* Sections */
+.oracle-section { display: flex; flex-direction: column; gap: var(--s-3); }
+.oracle-sec-head { display: flex; align-items: baseline; gap: var(--s-3); flex-wrap: wrap; }
+.oracle-sec-head h3 { font-size: 15px; font-weight: 700; margin: 0; }
+.oracle-sec-note { font-size: 12px; color: var(--text-dim); }
+.oracle-panel { background: var(--bg-elev-1); border: 1px solid var(--border); border-radius: var(--r-lg); padding: var(--s-4); }
+.oracle-panel-title { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin-bottom: var(--s-3); }
+.oracle-panel-title .opn { color: var(--text-dim); text-transform: none; letter-spacing: 0; margin-left: 6px; }
+.oracle-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-4); }
+
+/* Portefeuille */
+.oracle-chart-meta { display: flex; align-items: center; gap: var(--s-5); flex-wrap: wrap; margin-bottom: var(--s-3); }
+.oracle-chart-meta > div { display: flex; flex-direction: column; gap: 2px; }
+.ocm-l { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .03em; }
+.ocm-v { font-size: 18px; font-weight: 600; font-feature-settings: "tnum"; }
+.ocm-v.pos, .oracle-table .pos, .mono.pos { color: var(--accent); }
+.ocm-v.neg, .oracle-table .neg, .mono.neg { color: var(--danger); }
+.oracle-chip { font-family: var(--font-mono); font-size: 11px; padding: 2px 8px; border-radius: var(--r-pill); background: var(--bg-elev-3); color: var(--text-muted); }
+.oracle-chip.warn { background: rgba(251,191,36,.14); color: var(--warning); }
+.oracle-note-warn { margin-top: var(--s-3); font-size: 11px; color: var(--text-dim); border-left: 2px solid var(--warning); padding-left: var(--s-3); }
+
+/* Graphiques SVG */
+.ora-chart-box { width: 100%; height: 180px; }
+.ora-chart-box.sm { height: 160px; }
+.ora-chart-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-dim); font-size: 12px; text-align: center; padding: 0 12px; }
+.ora-line { width: 100%; height: 100%; overflow: visible; }
+.ora-line .ln { fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+.ora-line .area { fill: url(#ora-eq-grad); }
+.ora-line .ora-base { stroke: var(--text-dim); stroke-width: 1; stroke-dasharray: 4 4; }
+.ora-bar { width: 100%; height: 100%; overflow: visible; }
+.ora-bar .bar { fill: var(--accent); }
+.ora-bar .bar.neg { fill: var(--danger); }
+.ora-bar .ora-barval { fill: var(--text-dim); font-family: var(--font-mono); font-size: 9px; font-feature-settings: "tnum"; }
+.ora-bar .ora-zero { stroke: var(--border-strong); stroke-width: 1; }
+.ora-hist-labels { display: flex; justify-content: space-between; margin-top: 4px; }
+.ora-hist-labels span { font-size: 9px; color: var(--text-dim); font-family: var(--font-mono); flex: 1; text-align: center; }
+.ora-cal-legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.ora-cal-legend span { font-size: 10px; color: var(--text-muted); }
+
+/* Tables (near-misses, transactions, orders) */
+.oracle-table { background: var(--bg-elev-1); border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; }
+.oracle-table .t-row { display: flex; align-items: center; gap: var(--s-3); padding: 10px var(--s-4); border-top: 1px solid var(--border); }
+.oracle-table .t-row:first-child { border-top: none; }
+.oracle-table .t-row:hover { background: var(--bg-elev-2); }
+.oracle-table .t-row > div:first-child { flex: 1; min-width: 0; }
+.oracle-table .t-name { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.oracle-table .t-sub { font-size: 11px; color: var(--text-dim); }
+.oracle-table .t-meta { font-family: var(--font-mono); font-feature-settings: "tnum"; font-size: 12px; color: var(--text-muted); text-align: right; white-space: nowrap; }
+.oracle-table .t-meta.pos { color: var(--accent); }
+/* En-tête + lignes transactions : grille alignée */
+.oracle-table.with-head .t-head,
+.oracle-table.with-head .t-row.oracle-tx { display: grid; grid-template-columns: 1fr 54px 68px 82px 64px; gap: var(--s-3); align-items: center; }
+.oracle-table .t-head { padding: 8px var(--s-4); background: var(--bg-elev-2); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); }
+.oracle-table .t-head span:not(:first-child) { text-align: right; }
+.oracle-table.with-head .t-row.oracle-tx > div:first-child { flex: none; }
+
+/* En-cours : pending par échéance */
+.oracle-pend-row { display: flex; flex-wrap: wrap; gap: var(--s-3); }
+.oracle-pend { display: flex; flex-direction: column; align-items: center; gap: 2px; background: var(--bg-elev-3); border-radius: var(--r-md); padding: 10px 14px; min-width: 64px; }
+.op-date { font-size: 12px; color: var(--text-muted); }
+.op-count { font-size: 18px; font-weight: 700; color: var(--accent); font-feature-settings: "tnum"; }
+
+.oracle-footer { font-size: 11px; color: var(--text-dim); text-align: right; }
+.oracle-kpi .delta.up { color: var(--accent); }
+.oracle-kpi .delta.down { color: var(--danger); }
+
+/* KPI Oracle : aplatir la grille bento 2 rangées en 1 (sinon .stat-card.big
+   span 2 laisse la rangée 2 vide en desktop — le grid-row:auto neutralise le span) */
+.oracle-kpi { grid-template-rows: 1fr; }
+.oracle-kpi .stat-card.big { grid-row: auto; }
+
+@media (max-width: 768px) {
+    .oracle-grid-2 { grid-template-columns: 1fr; }
+    .oracle-kpi { grid-template-columns: 1fr 1fr !important; grid-template-rows: auto !important; }
+    .oracle-kpi .stat-card.big { grid-column: 1 / -1; }
+    .oracle-topbar { flex-wrap: wrap; row-gap: var(--s-3); }
+    .oracle-title { order: 2; flex-basis: 100%; }
+    .oracle-top-right { order: 1; }
+    .oracle-table.with-head .t-head,
+    .oracle-table.with-head .t-row.oracle-tx { grid-template-columns: 1fr 48px 60px 70px; }
+    .oracle-table.with-head .t-head span:nth-child(3),
+    .oracle-table.with-head .t-row.oracle-tx > div:nth-child(3) { display: none; }
+}
+@media (max-width: 480px) {
+    .oracle-kpi { grid-template-columns: 1fr !important; }
+    .oracle-chart-meta { gap: var(--s-4); }
+    .ocm-v { font-size: 16px; }
+}
+
+/* --- Oracle : couche motion Ion v6 (entrée one-shot, gated .oracle-enter) --- */
+.oracle-wrap.oracle-enter { animation: omen-fade .34s ease both; }
+.oracle-wrap.oracle-enter .oracle-health { animation: omen-rise .6s cubic-bezier(.26, 1.2, .4, 1) backwards; animation-delay: .03s; }
+.oracle-wrap.oracle-enter .oracle-kpi > * { animation: omen-rise .6s cubic-bezier(.26, 1.2, .4, 1) backwards; }
+.oracle-wrap.oracle-enter .oracle-kpi > *:nth-child(1) { animation-delay: .10s; }
+.oracle-wrap.oracle-enter .oracle-kpi > *:nth-child(2) { animation-delay: .16s; }
+.oracle-wrap.oracle-enter .oracle-kpi > *:nth-child(3) { animation-delay: .22s; }
+.oracle-wrap.oracle-enter .oracle-kpi > *:nth-child(4) { animation-delay: .28s; }
+.oracle-wrap.oracle-enter .oracle-section { animation: omen-rise .6s cubic-bezier(.26, 1.2, .4, 1) backwards; }
+.oracle-wrap.oracle-enter .oracle-section:nth-of-type(1) { animation-delay: .30s; }
+.oracle-wrap.oracle-enter .oracle-section:nth-of-type(2) { animation-delay: .38s; }
+.oracle-wrap.oracle-enter .oracle-section:nth-of-type(3) { animation-delay: .46s; }
+.oracle-wrap.oracle-enter .oracle-section:nth-of-type(n+4) { animation-delay: .52s; }
+/* barres de progrès verdict : croissance depuis la gauche (one-shot) */
+.oracle-wrap.oracle-enter .ov-fill { transform-origin: left; animation: ora-grow-x .8s .35s cubic-bezier(.26, 1.2, .4, 1) backwards; }
+@keyframes ora-grow-x { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+/* histogramme : barres qui poussent du bas (one-shot) */
+.oracle-wrap.oracle-enter #ora-hist .bar { transform-box: fill-box; transform-origin: bottom; animation: ora-grow-y .55s cubic-bezier(.26, 1.2, .4, 1) backwards; }
+@keyframes ora-grow-y { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+/* néon vivant : la courbe d'équité respire, glow au survol des panneaux */
+.ora-line { filter: drop-shadow(0 0 5px var(--accent-glow)); }
+.ora-line .ln { stroke-linecap: round; }
+.ov-fill { box-shadow: 0 0 8px -2px var(--accent-glow); }
+.oracle-panel, .oracle-table { transition: border-color .25s, box-shadow .3s; }
+.oracle-panel:hover, .oracle-table:hover { border-color: color-mix(in srgb, var(--accent) 20%, var(--border-strong)); box-shadow: 0 0 24px -12px var(--accent-glow); }
+.oracle-pend .op-count { text-shadow: 0 0 14px var(--accent-glow); }
+@media (prefers-reduced-motion: reduce) {
+    .oracle-wrap.oracle-enter, .oracle-wrap.oracle-enter .oracle-health,
+    .oracle-wrap.oracle-enter .oracle-kpi > *, .oracle-wrap.oracle-enter .oracle-section,
+    .oracle-wrap.oracle-enter .ov-fill, .oracle-wrap.oracle-enter #ora-hist .bar { animation: none; }
+    .oracle-panel, .oracle-table { transition: none; }
+}

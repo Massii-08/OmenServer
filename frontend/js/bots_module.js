@@ -47,6 +47,10 @@ const BotsModule = {
  clearInterval(this._yieldState.pollInterval);
  this._yieldState.pollInterval = null;
  }
+ // Coupe le poll du dashboard Oracle si on quitte l'onglet en étant dessus
+ if (typeof OracleModule !== 'undefined' && OracleModule.unload) {
+ OracleModule.unload();
+ }
  },
 
  async loadBots() {
@@ -132,6 +136,21 @@ const BotsModule = {
             sharedWithYou: false,
         }) : '';
 
+        // Oracle virtual card (admin-only — Polymarket × Deribit, monitoring)
+        const canSeeOracle = u && u.is_admin;
+        const oracleCard = canSeeOracle ? buildBotCard({
+            icon: 'ORC',
+            name: 'Oracle',
+            type: 'trading',
+            desc: Lang.t('oracle.desc'),
+            status: 'online',
+            statusLabel: Lang.t('modules.active'),
+            onClick: 'BotsModule.openOracle()',
+            actions: `<button class="btn btn-ghost btn-sm">${Lang.t('oracle.open')}</button>`,
+            selected: false,
+            sharedWithYou: false,
+        }) : '';
+
  if (this._bots.length === 0) {
  grid.innerHTML = `
  ${u && u.role === 'developer' ? `<div class="b-quota-row"><span class="bot-quota-badge">${Lang.t('rbac.bot_quota')}: 0/3</span></div>` : ''}
@@ -140,6 +159,7 @@ const BotsModule = {
  ${scannerBotCard}
  ${mcAgentCard}
  ${harvesterCard}
+ ${oracleCard}
  </div>`;
  return;
  }
@@ -187,6 +207,7 @@ const BotsModule = {
  ${scannerBotCard}
  ${mcAgentCard}
  ${harvesterCard}
+ ${oracleCard}
  ${userBotsHtml}
  </div>`;
  },
@@ -1078,6 +1099,15 @@ const BotsModule = {
         if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
         if (typeof HarvesterModule !== 'undefined') {
             HarvesterModule.render(this._container);
+        }
+    },
+
+    openOracle() {
+        const u = (typeof Auth !== 'undefined' && Auth.getUser) ? Auth.getUser() : null;
+        if (!u || !u.is_admin) return;
+        if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
+        if (typeof OracleModule !== 'undefined') {
+            OracleModule.render(this._container);
         }
     },
 
