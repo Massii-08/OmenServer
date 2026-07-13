@@ -148,7 +148,10 @@ const ironOK = (c) => ironTotal(c) >= ironNeedTotal(c);
 // (24 sessions mortes en death_loop) : le fer de SURFACE est introuvable (anneaux explore 240
 // stériles) → roaming → noyades + mobs → morts en boucle. Le fer vient du BRANCH-MINING à Y16
 // (strate fer classique, sous terre = à l'abri des mobs de nuit), comme le mode resource (#42).
-const _IRON_PREFIX = IRON_CHAIN.slice(0, IRON_CHAIN.findIndex((g) => g.name === 'iron_ore'));
+// Buffer bâtons ×4 lots (16 sticks ≈ 8 pioches pierre de rechange) : le churn bois↔profondeur
+// (vécu live : chaque casse d'outil → remontée → zone déforestée → roaming mortel) est le frein #1.
+const _IRON_PREFIX = IRON_CHAIN.slice(0, IRON_CHAIN.findIndex((g) => g.name === 'iron_ore'))
+  .map((g) => (g.name === 'sticks' ? Object.assign({}, g, { args: { name: 'stick', count: 4 } }) : g));
 const IRON_ARMOR_CHAIN = [
   ..._IRON_PREFIX.map((g) => withFinal(g, IA)),
   // NB : PAS de but food_stock BLOQUANT (vécu live : zone vidée de ses proies par les runs
