@@ -42,8 +42,9 @@ const fs = require('fs');
 const { runPlanner } = require('./planner');
 const { chainFor, buildCtxInv, firstUnmet, cookedCount, armorNeed } = require('./goals');
 const { isForbiddenCheat } = require('./nogive');
+const homewarp = require('./homewarp'); // couche warp LÉGITIME sans-give (/sethome+/home ; goSpawn=/home safe)
 const { huntPassive } = require('./skills/hunt');
-const { nearestPassive, survivalTick } = require('./survival');
+const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
 const { _nearestTable } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { placeBlockNear } = require('./skills/placeBlockNear');
@@ -170,6 +171,9 @@ const world = loadWorld(worldFile);
 let taskToken = { cancelled: true };
 let deathTimes = [];
 let _escapeOnSpawn = false; // anti-camping : 2 morts <60 s → warp + re-spawnpoint au prochain spawn
+let _safeHomeSet = false;   // warp légitime : /sethome safe posé une fois (surface au boot, NO_GIVE)
+let _deathArmed = false;    // watchdog PV : lieu de mort marqué (/sethome death) → post-respawn goHome('death')+ramassage
+let _imminentBusy = false;  // anti-rafale : un seul warp de sauvetage PV à la fois
 let _convoPauseUntil = 0;   // stop-pour-répondre : gèle les gotos pendant réflexion+frappe (HUMANIZE)
 let bootDone = false; // réflexes/mouvements/auth = une seule fois par connexion (pas à chaque respawn)
 
@@ -1238,7 +1242,15 @@ async function recoverPickaxe() {
   const pp = bot.entity && bot.entity.position;
   const p0 = pp ? { x: Math.floor(pp.x), y: Math.floor(pp.y), z: Math.floor(pp.z) } : null;
   emit({ type: 'pick_recovery_trip', from: p0 });
-  await relocateToRegion({ forest: true });
+  // SANS-GIVE : /spreadplayers (relocateToRegion) est BLOQUÉ → on marque le chantier puis on monte au
+  // spawn sûr (surface avec arbres) par /home safe. Retour au chantier par /home wsite (cf. plus bas).
+  if (NO_GIVE) {
+    if (p0) { homewarp.bookmark(bot, 'wsite'); emit({ type: 'wsite_bookmarked', ctx: 'pick_recovery', x: p0.x, y: p0.y, z: p0.z }); }
+    homewarp.goSpawn(bot);
+    await sleep(3500);
+  } else {
+    await relocateToRegion({ forest: true });
+  }
   if (taskToken.cancelled) return { ok: false };
   const logNames = Object.keys((bot.registry && bot.registry.blocksByName) || {}).filter((n) => n.endsWith('_log'));
   try { await withTimeout(gather(bot, { name: logNames, count: 4, explore: true }, taskToken), 240000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
@@ -1250,7 +1262,9 @@ async function recoverPickaxe() {
     if (bestPickTier() < 0) await craftSmart({ name: 'wooden_pickaxe', count: 1 });
   } catch (e) { /* best-effort */ }
   if (p0) {
-    try { bot.chat('/tp @s ' + p0.x + ' ' + p0.y + ' ' + p0.z); } catch (e) {}
+    // SANS-GIVE : /tp @s bloqué → retour au chantier par le signet joueur /home wsite.
+    if (NO_GIVE) { homewarp.goHome(bot, 'wsite'); emit({ type: 'wsite_return', x: p0.x, y: p0.y, z: p0.z }); }
+    else { try { bot.chat('/tp @s ' + p0.x + ' ' + p0.y + ' ' + p0.z); } catch (e) {} }
     await sleep(3000);
   }
   return { ok: bestPickTier() >= 0 };
@@ -2028,7 +2042,15 @@ async function onSpawn() {
             waterStuckTimes = []; waterEscapeFails = 0;
             emit({ type: 'water_rescue_warp', reason: drowning ? 'drowning' : 'persistent_wet' });
             try { stopMotion(); } catch (e) {}
-            // 1er choix : /tp DIRECT vers une ancre profonde SÈCHE déjà minée, LOIN du point de noyade.
+            // SANS-GIVE : les warps admin (/tp ancre, /spreadplayers) sont BLOQUÉS par nogive → le bot
+            // se noyait sans issue (LE tueur du run d'hier). On sort VIVANT via /home safe (goSpawn).
+            if (NO_GIVE) {
+              emit({ type: 'water_rescue_home_safe' });
+              homewarp.goSpawn(bot);
+              await sleep(3000);                          // atterrissage surface
+              return;
+            }
+            // 1er choix (bot OP historique) : /tp DIRECT vers une ancre profonde SÈCHE déjà minée.
             // Casse la boucle (re-warp surface → re-descente 160 blocs → même aquifère → re-noyade,
             // vécu live ResBot2 : warp dry:false en boucle) ET économise la re-descente (= débit).
             const _cur = bot.entity && bot.entity.position;
@@ -2049,7 +2071,8 @@ async function onSpawn() {
               waterEscapeFails = 0; waterStuckTimes = [];
               emit({ type: 'water_rescue_warp', reason: 'escape_failed' });
               try { stopMotion(); } catch (e) {}
-              await relocateToRegion({ nearSpawn: true });   // bug #4 : vers le SEC near-spawn
+              if (NO_GIVE) { emit({ type: 'water_rescue_home_safe' }); homewarp.goSpawn(bot); await sleep(3000); }
+              else await relocateToRegion({ nearSpawn: true });   // bug #4 : vers le SEC near-spawn (admin)
             }
           } else {
             waterEscapeFails = 0;   // sortie réussie → on reste au fond, pas de warp
@@ -2068,6 +2091,42 @@ async function onSpawn() {
       onTeleport: () => { try { stopMotion(); } catch (e) {} _floatSettleUntil = Date.now() + 15000; },
     });
     await tryAuth();
+    // ─── WATCHDOG PV « à une seconde de mourir » (warp légitime, NO_GIVE only) ──────────────────
+    // Massii : les 3 morts « bêtes » (noyade/suffocation eau, lave, essaim de mobs) doivent être
+    // ESQUIVÉES vivant via /home safe (goSpawn) au lieu de laisser mourir. Les autres causes (chute,
+    // générique) : on marque le lieu (/sethome death) pour revenir RAMASSER après respawn (cible
+    // keepInventory OFF). Remplace les warps admin bloqués. 1 seul warp de sauvetage à la fois.
+    if (NO_GIVE) {
+      setInterval(() => {
+        try {
+          if (_imminentBusy || taskToken.cancelled) return;
+          const s = {
+            health: bot.health,
+            inWater: (function () { try { return isInWater(bot); } catch (e) { return false; } })(),
+            oxygen: bot.oxygenLevel,
+            lavaNear: (function () { try { return lavaNearby(bot, 2); } catch (e) { return false; } })(),
+            nearbyHostiles: (function () { try { return nearbyHostiles(bot, 6).length; } catch (e) { return 0; } })(),
+          };
+          const verdict = homewarp.classifyImminent(s);
+          if (!verdict) return;
+          _imminentBusy = true;
+          if (verdict === 'escape') {
+            // Sortir VIVANT du piège (noyade/lave/essaim) → /home safe.
+            emit({ type: 'imminent_escape', hp: s.health, inWater: s.inWater, lava: s.lavaNear, hostiles: s.nearbyHostiles });
+            try { stopMotion(); } catch (e) {}
+            homewarp.goSpawn(bot);
+            setTimeout(() => { _imminentBusy = false; }, 6000); // laisse le TP se faire, anti-spam
+          } else {
+            // 'bookmark' : mort probable inévitable (chute/générique) → marquer le lieu pour ramassage.
+            const p = bot.entity && bot.entity.position;
+            emit({ type: 'imminent_bookmark_death', hp: s.health, x: p && Math.round(p.x), y: p && Math.round(p.y), z: p && Math.round(p.z) });
+            homewarp.bookmark(bot, 'death');
+            _deathArmed = true;
+            setTimeout(() => { _imminentBusy = false; }, 4000);
+          }
+        } catch (e) { _imminentBusy = false; }
+      }, 1000);
+    }
     bootDone = true;
   }
   // ANTI-CAMPING (phase B) : mort en rafale → on FUIT la zone du spawnpoint campé AVANT de
@@ -2078,10 +2137,60 @@ async function onSpawn() {
     try { await relocateToRegion(); } catch (e) { /* best-effort */ }
     try { bot.chat('/spawnpoint'); } catch (e) {}
   }
+  // ─── Warp légitime (NO_GIVE) : home 'safe' surface + récupération post-mort ────────────────────
+  if (NO_GIVE) {
+    // 'safe' = surface sûre, cible de goSpawn. Posé au 1er spawn en surface (spawn du monde = sec).
+    // Re-posé si le bot revient en surface plus tard sans que 'safe' soit encore fixé.
+    if (!_safeHomeSet) {
+      const p = bot.entity && bot.entity.position;
+      if (p && p.y >= 58) {
+        homewarp.bookmark(bot, 'safe');
+        _safeHomeSet = true;
+        emit({ type: 'safe_home_set', x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
+      }
+    }
+    // Après une mort MARQUÉE (watchdog PV 'bookmark') : revenir au lieu exact ramasser les drops.
+    // No-op propre sous keepInventory ON (0 item au sol) ; opérationnel quand keepInv passera OFF.
+    if (_deathArmed) {
+      _deathArmed = false;
+      (async () => {
+        try {
+          await sleep(1500);
+          emit({ type: 'death_recover_home' });
+          homewarp.goHome(bot, 'death');
+          await sleep(4000);            // atterrissage (teleport_detected abandonne le goal pathfinder)
+          await collectDeathDrops();
+        } catch (e) { /* best-effort */ }
+      })();
+    }
+  }
   if (world.objective && world.objective.status === 'in_progress') {
     emit({ type: 'autonomous_resume', objective: world.objective.type });
     startAutonomous(null);
   }
+}
+
+// Ramasse les items tombés autour de la position courante (post-mort, cible keepInventory OFF).
+// keepInv ON → dropsWithin renvoie [] → no-op immédiat. Borné (temps + nb) pour ne pas geler.
+async function collectDeathDrops() {
+  try {
+    const center = bot.entity && bot.entity.position;
+    if (!center) return;
+    const deadline = Date.now() + 45000;
+    for (let i = 0; i < 20 && Date.now() < deadline; i++) {
+      const drops = homewarp.dropsWithin(bot.entities, bot.entity.position, 20);
+      if (!drops.length) break;
+      const e = drops[0].entity;
+      if (!e || !e.position) break;
+      try {
+        await withTimeout(
+          bot.pathfinder.goto(new pfGoals.GoalNear(e.position.x, e.position.y, e.position.z, 1)),
+          15000, () => { try { stopMotion(); } catch (er) {} });
+      } catch (er) { break; }   // inatteignable → on abandonne le ramassage (best-effort)
+      await sleep(600);          // laisse la collecte auto (proximité) opérer
+    }
+    emit({ type: 'death_drops_collected' });
+  } catch (e) { /* best-effort */ }
 }
 
 const DONE = { fr: 'fait', en: 'done', it: 'fatto' };
@@ -2572,7 +2681,8 @@ setInterval(async () => {
         _floatSettleUntil = Date.now() + 15000;
         emit({ type: 'water_rescue_warp', reason: isInWater(bot) ? 'ocean_oscillation' : 'ocean_persistent' });
         try { stopMotion(); } catch (e) {}
-        try { await relocateToRegion(); } catch (e) {}
+        if (NO_GIVE) { emit({ type: 'water_rescue_home_safe', ctx: 'ocean' }); homewarp.goSpawn(bot); await sleep(3000); }
+        else { try { await relocateToRegion(); } catch (e) {} }
         _oceanStuckTimes = [];                                            // post-relocate : compteur propre
       }
     } finally { _oceanBusy = false; }
