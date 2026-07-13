@@ -33,7 +33,10 @@ async function smelt(bot, { input, output, count = 1, fuel = [], pollMs = 1000, 
   const have = _invCount(bot, input);
   if (have < 1) return { ok: false, reason: 'no_input' };
   const want = Math.min(count, have);
-  const pickFuel = () => ((bot.inventory && bot.inventory.items()) || []).find((i) => fuel.includes(i.name));
+  // Combustible choisi par PRIORITÉ de la liste `fuel` (ordonnée coal→charcoal→planks→logs par
+  // l'appelant), pas par ordre d'inventaire → le charbon est brûlé AVANT le bois (§0-bis anti-churn
+  // bois : le bois reste dispo pour les outils/bâtons, le charbon miné en descendant fait la fonte).
+  const pickFuel = () => pickFuelByPriority((bot.inventory && bot.inventory.items()) || [], fuel);
   if (!pickFuel()) return { ok: false, reason: 'no_fuel' };
 
   let furnace;
@@ -72,4 +75,15 @@ async function smelt(bot, { input, output, count = 1, fuel = [], pollMs = 1000, 
   return { ok: got >= want, got };
 }
 
-module.exports = { smelt };
+// PUR : choisit le 1er item d'inventaire présent en suivant l'ORDRE de priorité `fuel`
+// (coal→charcoal→planks→logs) au lieu de l'ordre d'inventaire. §0-bis : brûle le charbon avant le bois.
+function pickFuelByPriority(items, fuel) {
+  const list = items || [];
+  for (const name of (fuel || [])) {
+    const it = list.find((i) => i && i.name === name);
+    if (it) return it;
+  }
+  return null;
+}
+
+module.exports = { smelt, pickFuelByPriority };
