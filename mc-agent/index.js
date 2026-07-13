@@ -2088,15 +2088,20 @@ if (authMode === 'microsoft') {
 const bot = mineflayer.createBot(botOpts);
 // SANS-GIVE : filtre dur sur TOUTE commande sortante (défense en profondeur — même un chemin
 // oublié qui tenterait /give //tp //effect est coupé ici, avec un event pour l'observabilité).
+// ⚠️ bot.chat n'existe PAS synchroniquement après createBot (injecté par les plugins mineflayer,
+// vécu live : TypeError bind of undefined) → on wrappe à `inject_allowed` (tous plugins chargés,
+// AVANT le 1er spawn — aucun chat ne part avant).
 if (NO_GIVE) {
-  const _origChat = bot.chat.bind(bot);
-  bot.chat = (msg) => {
-    if (isForbiddenCheat(msg)) {
-      emit({ type: 'cheat_blocked', command: String(msg).trimStart().split(' ')[0] });
-      return;
-    }
-    _origChat(msg);
-  };
+  bot.once('inject_allowed', () => {
+    const _origChat = bot.chat.bind(bot);
+    bot.chat = (msg) => {
+      if (isForbiddenCheat(msg)) {
+        emit({ type: 'cheat_blocked', command: String(msg).trimStart().split(' ')[0] });
+        return;
+      }
+      _origChat(msg);
+    };
+  });
 }
 bot.loadPlugin(pathfinder);
 bot.loadPlugin(pvp);
