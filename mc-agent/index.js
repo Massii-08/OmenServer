@@ -1397,6 +1397,18 @@ function regionCenter() {
 }
 let _relocSeq = Math.floor(Math.random() * 997);   // graine par process : pas la même 1re cellule à chaque respawn
 async function relocateToRegion(opts = {}) {
+  // SANS-GIVE (catch-all) : relocateToRegion est PUREMENT /spreadplayers → BLOQUÉ par nogive →
+  // no-op silencieux = bot FIGÉ (death_camp, floating_relocate, kit-forest…). On route TOUS les
+  // modes vers /home safe (surface sûre). Perd le ciblage forêt/cluster (inopérant en sans-give de
+  // toute façon) mais un bot à la surface sèche >>> un bot gelé. Les appelants water/pick gèrent
+  // déjà leur propre goSpawn en amont (ce guard couvre le reste).
+  if (NO_GIVE) {
+    emit({ type: 'relocate_home_safe', mode: opts.forest ? 'forest' : (opts.nearSpawn ? 'near_spawn' : 'default') });
+    try { stopMotion(); } catch (e) {}
+    homewarp.goSpawn(bot);
+    await sleep(3000);
+    return;
+  }
   // Cellule TERRE tirée de la mémoire de monde (biomes non-océan/rivière, ≥256 du spawn) :
   // le quadrant hashé de V2Res4 tombait en plein OCÉAN → relocalisations inutiles en boucle
   // (vécu phase 2). Rotation déterministe par bot (_relocSeq) → zones différentes à chaque fois.
