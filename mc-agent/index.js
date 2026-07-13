@@ -174,6 +174,8 @@ let _escapeOnSpawn = false; // anti-camping : 2 morts <60 s → warp + re-spawnp
 let _safeHomeSet = false;     // warp légitime : /sethome safe posé (fallback = position de spawn courante)
 let _safeHomeSurface = false; // safe posé à une VRAIE surface (y≥58) → cible idéale pour goSpawn
 let _deathArmed = false;      // watchdog PV : lieu de mort marqué (/sethome death) → post-respawn goHome('death')+ramassage
+let _wsiteMineSet = false;    // NO_GIVE : chantier profond SEC mémorisé (/sethome wsite) → re-descente = /home wsite (1 tp)
+                              // au lieu de re-creuser ~52 blocs (chaque re-descente cassait une pioche → no_pickaxe → fer jamais accumulé, vécu homedeath)
 let _deathMark = null;        // dernière position marquée death {x,y,z,at} → dédup anti-spam du watchdog
 let _imminentBusy = false;    // anti-rafale : un seul warp de sauvetage PV à la fois
 let _convoPauseUntil = 0;   // stop-pour-répondre : gèle les gotos pendant réflexion+frappe (HUMANIZE)
@@ -544,10 +546,27 @@ async function runGoalSkill(goal) {
   if (goal.skill === 'smeltCharcoal') return smeltCharcoalGoal(goal.args.count || 2);
   if (goal.skill === 'huntCook') return huntCookGoal(goal.args.target || 4);
   if (goal.skill === 'descendDiagonal') {
+    // FIX churn re-descente (NO_GIVE) : un chantier profond SEC est mémorisé → y retourner par
+    // /home wsite (1 tp) plutôt que re-creuser ~52 blocs (chaque re-descente cassait une pioche pierre
+    // → no_pickaxe → le fer ne s'accumulait jamais). water_rescue ramenait en SURFACE, forçant cette
+    // re-descente : c'est LE moteur du churn. Garde : si le tp atterrit dans l'eau, le wsite est noyé
+    // → on l'oublie et on re-creuse (qui relocalise au sec via _descendWaterFails).
+    if (NO_GIVE && _wsiteMineSet && bot.entity && bot.entity.position && bot.entity.position.y > 30) {
+      emit({ type: 'descend_via_home_wsite' });
+      try { homewarp.goHome(bot, 'wsite'); } catch (e) {}
+      await sleep(3500); // settle post-tp (chunk load)
+      const _py = (bot.entity && bot.entity.position) ? bot.entity.position.y : 99;
+      if (isInWater(bot)) { _wsiteMineSet = false; try { await escapeWater(bot, { emit }); } catch (e) {} }
+      else if (_py <= 20) return { ok: true, viaHome: true };  // arrivé profond & sec → pas de re-creusage
+    }
     const r = await descendDiagonal(bot, goal.args || {}, taskToken);
     // suivi des échecs EAU → le pré-hook ci-dessus décale le prochain essai (anti re-perçage d'aquifère)
     if (r && r.ok === false && /water|flood|drown/i.test(String(r.reason || ''))) _descendWaterFails++;
-    else if (r && r.ok) _descendWaterFails = 0;
+    else if (r && r.ok) {
+      _descendWaterFails = 0;
+      // chantier profond atteint & SEC → mémoriser (les re-descentes suivantes = /home wsite, pas de creusage)
+      if (NO_GIVE && !isInWater(bot)) { try { homewarp.bookmark(bot, 'wsite'); } catch (e) {} _wsiteMineSet = true; emit({ type: 'wsite_mine_bookmarked' }); }
+    }
     return r;
   }
   if (goal.skill === 'branchMine') return branchMine(bot, goal.args || {}, taskToken);
