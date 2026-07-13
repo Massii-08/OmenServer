@@ -610,7 +610,12 @@ let lastShelterT = 0; // anti re-trigger : 1 abri par nuit max
 // s'abriter, c'est déjà avoir perdu (MapperBot1+2 sniped par squelettes la 1re nuit du monde neuf).
 async function maybeNightShelter(proactive = false) {
   const deathsRecent = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000).length;
-  if (isNight(bot) && (proactive || deathsRecent >= 1 || (bot.health != null && bot.health <= 10))
+  // Run nether (24 sessions death_loop) : un bot NU en SURFACE se terre à CHAQUE nuit — l'ancien
+  // déclencheur attendait la 1re mort/PV bas, trop tard pour un spawn nu en hard. Sous terre
+  // (y<45) on ne déclenche pas (déjà à l'abri, shelterUntilDawn y gaspillerait ~10 min).
+  const _pp = bot.entity && bot.entity.position;
+  const nakedSurface = _wornArmor().size === 0 && _pp && _pp.y >= 45;
+  if (isNight(bot) && (proactive || deathsRecent >= 1 || (bot.health != null && bot.health <= 10) || nakedSurface)
       && Date.now() - lastShelterT > 10 * 60 * 1000) {
     lastShelterT = Date.now();
     await withTimeout(shelterUntilDawn(bot, taskToken, { emit }), 13 * 60 * 1000,
@@ -1760,12 +1765,22 @@ async function startAutonomous(sender) {
   if (objType === 'mapper') return startMapper(); // rôle continu : jamais « done »
   if (objType === 'resource') return startResource(); // mine les ores EXPOSÉS de la carte du groupe
   const chain = chainFor(objType);               // pioche pierre (MVP) ou pioche fer (IRON_CHAIN)
-  const res = await runPlanner(bot, {
+  const runChain = () => runPlanner(bot, {
     chain,
     runSkill: (g) => runSkillWithTelemetry(g),
     ctxExtra,
     onStep: (g) => emit({ type: 'goal', name: g.name }),
   }, taskToken);
+  let res = await runChain();
+  // Run nether (mode sans-give uniquement, rétro-compat) : un stall (not_found passager, zone
+  // momentanément stérile, proie absente) ne doit PAS figer le bot à vie — pause 90 s puis le
+  // planner re-dérive depuis l'état RÉEL. Les morts/exits restent couverts par le self-healing.
+  while (NO_GIVE && res && res.stalled && !taskToken.cancelled) {
+    emit({ type: 'autonomous_retry', goal: res.goal, in_s: 90 });
+    await sleep(90000);
+    if (taskToken.cancelled) return;
+    res = await runChain();
+  }
   if (taskToken.cancelled) return; // préempté par une commande
   if (res.done) { clearObjective(world); saveWorld(worldFile, world); if (sender) ackPrivate(sender, doneWord()); emit({ type: 'autonomous_done' }); }
   else if (res.stalled) { if (sender) ackPrivate(sender, failMsg('not_found')); emit({ type: 'autonomous_stalled', goal: res.goal }); }

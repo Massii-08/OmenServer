@@ -140,11 +140,32 @@ function armorWornOk(c, minRank) {
 // le planner re-boucle), puis ÉQUIPEMENT vérifié (porter ≠ avoir en poche).
 const IA = (c) => armorNeed(c, 3) === 0;          // 4 slots couverts fer-ou-mieux (poche ou porté)
 const IA_WORN = (c) => armorWornOk(c, 3);         // 4 slots PORTÉS fer-ou-mieux (DoD T1)
+// Fer TOTAL encore requis : 3 lingots pioche (si manquante) + besoin d'armure RESTANT.
+const ironTotal = (c) => invCount(c.inv, 'iron_ingot') + invCount(c.inv, 'raw_iron');
+const ironNeedTotal = (c) => (invCount(c.inv, 'iron_pickaxe') >= 1 ? 0 : 3) + armorNeed(c, 3);
+const ironOK = (c) => ironTotal(c) >= ironNeedTotal(c);
+// Préfixe bois/pierre/four d'IRON_CHAIN — SANS ses buts fer (gather de surface). Vécu run nether
+// (24 sessions mortes en death_loop) : le fer de SURFACE est introuvable (anneaux explore 240
+// stériles) → roaming → noyades + mobs → morts en boucle. Le fer vient du BRANCH-MINING à Y16
+// (strate fer classique, sous terre = à l'abri des mobs de nuit), comme le mode resource (#42).
+const _IRON_PREFIX = IRON_CHAIN.slice(0, IRON_CHAIN.findIndex((g) => g.name === 'iron_ore'));
 const IRON_ARMOR_CHAIN = [
-  ...IRON_CHAIN.map((g) => withFinal(g, IA)),
-  { name: 'iron_for_armor',
-    met: (c) => IA(c) || (invCount(c.inv, 'iron_ingot') + invCount(c.inv, 'raw_iron')) >= armorNeed(c, 3),
-    skill: 'gather', args: { name: ['iron_ore', 'deepslate_iron_ore'], count: 8 } },
+  ..._IRON_PREFIX.map((g) => withFinal(g, IA)),
+  // Stock de CUIT avant la descente (chasse impossible sous terre ; en hard la famine TUE).
+  // met inclut « déjà sous terre » (y<45) → ne JAMAIS staller le planner en profondeur.
+  { name: 'food_stock',   met: (c) => cookedCount(c.inv) >= 6 || (c.y !== undefined && c.y < 45) || IA(c),
+    skill: 'huntCook',    args: { target: 6 } },
+  // Réserve cobble pour murer la lave en branch-mine (le four a consommé les 8 du kit).
+  { name: 'cobble_lava',  met: (c) => invCount(c.inv, 'cobblestone') >= 12 || ironOK(c) || IA(c),
+    skill: 'gather',      args: { name: 'stone', count: 12 } },
+  { name: 'descend_y16',  met: (c) => (c.y !== undefined && c.y <= 18) || ironOK(c) || IA(c),
+    skill: 'descendDiagonal', args: { targetY: 16 } },
+  { name: 'iron_deep',    met: (c) => ironOK(c) || IA(c),
+    skill: 'branchMine',  args: { targetY: 16, mainLength: 48, branchSpacing: 3, branchLength: 8 } },
+  { name: 'iron_ingot',   met: (c) => invCount(c.inv, 'iron_ingot') >= 3 || invCount(c.inv, 'iron_pickaxe') >= 1 || IA(c),
+    skill: 'smeltIron',   args: { count: 3 } },
+  { name: 'iron_pickaxe', met: (c) => invCount(c.inv, 'iron_pickaxe') >= 1 || IA(c),
+    skill: 'craft',       args: { name: 'iron_pickaxe', count: 1 } },
   { name: 'iron_armor', met: IA, skill: 'ensureArmor', args: {} },
   { name: 'iron_armor_worn', met: IA_WORN, skill: 'ensureArmor', args: {} },
 ];

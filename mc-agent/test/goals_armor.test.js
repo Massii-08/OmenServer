@@ -50,22 +50,40 @@ test('IRON_ARMOR_CHAIN: bot nu → premier but = logs (la chaîne fer complète 
   assert.strictEqual(g.name, 'logs');
 });
 
-test('IRON_ARMOR_CHAIN: pioche fer + kit bois sûr + four + 24 lingots → but = iron_armor (craft)', () => {
+test('IRON_ARMOR_CHAIN: pioche fer + kit bois sûr + four + food + 24 lingots → but = iron_armor (craft)', () => {
   const inv = {
-    iron_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1,
+    iron_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1, cooked_beef: 6,
     iron_ingot: 24, cobblestone: 12, oak_planks: 8,
   };
   const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv));
   assert.strictEqual(g.name, 'iron_armor');
 });
 
-test('IRON_ARMOR_CHAIN: fer insuffisant pour le RESTE → but = iron_for_armor (gather)', () => {
+test('IRON_ARMOR_CHAIN: kit prêt mais SANS nourriture (surface) → but = food_stock AVANT la descente', () => {
   const inv = {
-    iron_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1,
+    stone_pickaxe: 1, wooden_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1,
+    cobblestone: 12, oak_planks: 8,
+  };
+  const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64));
+  assert.strictEqual(g.name, 'food_stock');
+});
+
+test('IRON_ARMOR_CHAIN: fer insuffisant, en surface → descend_y16 ; déjà à Y16 → iron_deep (branch-mine)', () => {
+  const inv = {
+    iron_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1, cooked_beef: 6,
     iron_ingot: 2, raw_iron: 1, cobblestone: 12, oak_planks: 8,
   };
-  const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv));
-  assert.strictEqual(g.name, 'iron_for_armor');
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64)).name, 'descend_y16');
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 16)).name, 'iron_deep');
+});
+
+test('IRON_ARMOR_CHAIN: sous terre SANS food → food_stock ne stalle pas (met via y<45)', () => {
+  const inv = {
+    iron_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1,
+    iron_ingot: 2, cobblestone: 12, oak_planks: 8,
+  };
+  const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 16));
+  assert.strictEqual(g.name, 'iron_deep'); // pas food_stock ni descend
 });
 
 test('IRON_ARMOR_CHAIN: 4 pièces fer craftées mais PAS portées → dernier but = équiper', () => {
