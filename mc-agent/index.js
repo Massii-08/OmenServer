@@ -171,9 +171,11 @@ const world = loadWorld(worldFile);
 let taskToken = { cancelled: true };
 let deathTimes = [];
 let _escapeOnSpawn = false; // anti-camping : 2 morts <60 s → warp + re-spawnpoint au prochain spawn
-let _safeHomeSet = false;   // warp légitime : /sethome safe posé une fois (surface au boot, NO_GIVE)
-let _deathArmed = false;    // watchdog PV : lieu de mort marqué (/sethome death) → post-respawn goHome('death')+ramassage
-let _imminentBusy = false;  // anti-rafale : un seul warp de sauvetage PV à la fois
+let _safeHomeSet = false;     // warp légitime : /sethome safe posé (fallback = position de spawn courante)
+let _safeHomeSurface = false; // safe posé à une VRAIE surface (y≥58) → cible idéale pour goSpawn
+let _deathArmed = false;      // watchdog PV : lieu de mort marqué (/sethome death) → post-respawn goHome('death')+ramassage
+let _deathMark = null;        // dernière position marquée death {x,y,z,at} → dédup anti-spam du watchdog
+let _imminentBusy = false;    // anti-rafale : un seul warp de sauvetage PV à la fois
 let _convoPauseUntil = 0;   // stop-pour-répondre : gèle les gotos pendant réflexion+frappe (HUMANIZE)
 let bootDone = false; // réflexes/mouvements/auth = une seule fois par connexion (pas à chaque respawn)
 
@@ -2118,9 +2120,16 @@ async function onSpawn() {
             setTimeout(() => { _imminentBusy = false; }, 6000); // laisse le TP se faire, anti-spam
           } else {
             // 'bookmark' : mort probable inévitable (chute/générique) → marquer le lieu pour ramassage.
+            // DÉDUP anti-spam : ne re-sethome death QUE si on a bougé (>8 blocs) ou après 30 s (le bot
+            // peut rester longtemps à PV bas sans mourir — vécu bot1 : 9× re-sethome au même xyz).
             const p = bot.entity && bot.entity.position;
-            emit({ type: 'imminent_bookmark_death', hp: s.health, x: p && Math.round(p.x), y: p && Math.round(p.y), z: p && Math.round(p.z) });
-            homewarp.bookmark(bot, 'death');
+            const now = Date.now();
+            const moved = !_deathMark || !p || (Math.abs(p.x - _deathMark.x) + Math.abs(p.z - _deathMark.z)) > 8 || (now - _deathMark.at) > 30000;
+            if (moved && p) {
+              emit({ type: 'imminent_bookmark_death', hp: s.health, x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
+              homewarp.bookmark(bot, 'death');
+              _deathMark = { x: p.x, y: p.y, z: p.z, at: now };
+            }
             _deathArmed = true;
             setTimeout(() => { _imminentBusy = false; }, 4000);
           }
@@ -2139,14 +2148,20 @@ async function onSpawn() {
   }
   // ─── Warp légitime (NO_GIVE) : home 'safe' surface + récupération post-mort ────────────────────
   if (NO_GIVE) {
-    // 'safe' = surface sûre, cible de goSpawn. Posé au 1er spawn en surface (spawn du monde = sec).
-    // Re-posé si le bot revient en surface plus tard sans que 'safe' soit encore fixé.
-    if (!_safeHomeSet) {
+    // 'safe' = cible de goSpawn. On le pose TOUJOURS (fallback = position de spawn courante, même
+    // souterraine → goSpawn a toujours une cible valide) puis on l'UPGRADE dès qu'on spawne à une
+    // vraie surface (y≥58, sèche). Sans ça un bot qui respawne toujours sous terre n'avait pas de
+    // 'safe' → /home safe échouait (vécu bot1 : spawn direct y15, jamais de safe_home_set).
+    {
       const p = bot.entity && bot.entity.position;
-      if (p && p.y >= 58) {
-        homewarp.bookmark(bot, 'safe');
-        _safeHomeSet = true;
-        emit({ type: 'safe_home_set', x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
+      if (p) {
+        const atSurface = p.y >= 58;
+        if (!_safeHomeSet || (!_safeHomeSurface && atSurface)) {
+          homewarp.bookmark(bot, 'safe');
+          _safeHomeSet = true;
+          if (atSurface) _safeHomeSurface = true;
+          emit({ type: 'safe_home_set', surface: atSurface, x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
+        }
       }
     }
     // Après une mort MARQUÉE (watchdog PV 'bookmark') : revenir au lieu exact ramasser les drops.
