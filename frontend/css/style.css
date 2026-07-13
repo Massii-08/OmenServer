@@ -4574,6 +4574,26 @@ select:-webkit-autofill {
 .oracle-kpi .delta.up { color: var(--accent); }
 .oracle-kpi .delta.down { color: var(--danger); }
 
+/* Paris ouverts : table analysable Marché | Placé | Prix | Coût | Gain | Fin.
+   Spécificité montée (.with-head.oracle-open-tbl) pour battre la grille 5-col
+   de la table Transactions (sinon la 6e colonne « Fin » déborde). */
+.oracle-table.with-head.oracle-open-tbl .t-head,
+.oracle-open-tbl .t-row.oracle-openrow {
+    display: grid;
+    grid-template-columns: 1fr 78px 46px 54px 82px 54px;
+    gap: var(--s-3);
+    align-items: center;
+}
+.oracle-open-tbl .t-row.oracle-openrow > div:first-child { flex: none; min-width: 0; }
+@media (max-width: 768px) {
+    .oracle-table.with-head.oracle-open-tbl .t-head,
+    .oracle-open-tbl .t-row.oracle-openrow { grid-template-columns: 1fr 46px 82px 54px; }
+    .oracle-open-tbl .t-head span:nth-child(2),
+    .oracle-open-tbl .t-row.oracle-openrow > div:nth-child(2),
+    .oracle-open-tbl .t-head span:nth-child(4),
+    .oracle-open-tbl .t-row.oracle-openrow > div:nth-child(4) { display: none; }
+}
+
 /* KPI Oracle : aplatir la grille bento 2 rangées en 1 (sinon .stat-card.big
    span 2 laisse la rangée 2 vide en desktop — le grid-row:auto neutralise le span) */
 .oracle-kpi { grid-template-rows: 1fr; }

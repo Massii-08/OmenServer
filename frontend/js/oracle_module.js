@@ -95,11 +95,47 @@ const OracleModule = {
             this._verdictStrip(s),
             this._overview(s),
             this._portfolio(s),
+            this._openBets(s),
             this._market(s),
             this._transactions(s),
             this._inProgress(s),
             this._footer(s),
         ].join('');
+    },
+
+    // "2026-07-13 15:09" → "13/07 15:09" ; "2026-07-17" → "17/07"
+    _shortDT(iso) {
+        if (!iso) return '—';
+        const m = String(iso).match(/(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}:\d{2}))?/);
+        return m ? m[3] + '/' + m[2] + (m[4] ? ' ' + m[4] : '') : esc(String(iso));
+    },
+
+    // --- Paris ouverts : positions fictives en cours, à analyser soi-même
+    _openBets(s) {
+        const open = (Array.isArray(s.transactions) ? s.transactions : [])
+            .filter(t => t.status === 'open');
+        const body = open.length
+            ? `<div class="oracle-table with-head oracle-open-tbl">
+                <div class="t-head"><span>${esc(Lang.t('oracle.market_col'))}</span><span>${esc(Lang.t('oracle.placed'))}</span><span>${esc(Lang.t('oracle.price_col'))}</span><span>${esc(Lang.t('oracle.cost'))}</span><span>${esc(Lang.t('oracle.potential_gain'))}</span><span>${esc(Lang.t('oracle.ends'))}</span></div>
+                ${open.map(t => {
+                    const gain = t.potential_gain_usd != null ? `<span class="mono pos">+${Number(t.potential_gain_usd).toFixed(2)}$</span>` : '<span class="mono">—</span>';
+                    const pricePct = t.price != null ? `${(t.price * 100).toFixed(0)}%` : '—';
+                    const fee = t.fee_usd != null ? Number(t.fee_usd).toFixed(2) : '0.00';
+                    return `<div class="t-row oracle-openrow">
+                        <div><div class="t-name">${esc(t.question || '')}</div><div class="t-sub mono">${esc(t.side || '')} · ${esc(t.kind || '')} · ${esc(Lang.t('oracle.fees'))} ${fee}$ · edge ${this._pct(t.edge_net)}</div></div>
+                        <div class="t-meta mono">${this._shortDT(t.ts_iso)}</div>
+                        <div class="t-meta mono">${pricePct}</div>
+                        <div class="t-meta mono">${this._num(t.stake_usd, 0)}$</div>
+                        <div class="t-meta">${gain}</div>
+                        <div class="t-meta mono">${this._shortDT(t.end_date)}</div>
+                    </div>`;
+                }).join('')}
+            </div>`
+            : `<div class="oracle-panel"><div class="oracle-empty-sm">${esc(Lang.t('oracle.no_open_bets'))}</div></div>`;
+        return `<div class="oracle-section">
+            <div class="oracle-sec-head"><h3>${esc(Lang.t('oracle.open_bets'))} ${open.length ? `<span class="oracle-chip">${open.length}</span>` : ''}</h3><span class="oracle-sec-note">${esc(Lang.t('oracle.open_bets_desc'))}</span></div>
+            ${body}
+        </div>`;
     },
 
     _num(v, dec = 0, suffix = '') {
