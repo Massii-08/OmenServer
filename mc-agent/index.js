@@ -482,6 +482,18 @@ async function runGoalSkill(goal) {
       if (_y >= 45 && cookedCount(buildCtxInv(bot)) < 4) {
         try { await withTimeout(huntCookGoal(4), 90000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
       }
+      // Aquifère re-percé en boucle (vécu NethBot2 : ocean_stuck, descend_y16→water_ahead au même
+      // bord de lac) : après un échec EAU, se DÉCALER à pied 30-50 blocs (direction aléatoire)
+      // avant de re-creuser — marcher, pas de warp (sans-give).
+      if (_descendWaterFails > 0 && bot.entity && bot.entity.position) {
+        const _ang = Math.random() * Math.PI * 2;
+        const _d = 30 + Math.random() * 20;
+        const _p = bot.entity.position;
+        const _tx = Math.round(_p.x + Math.cos(_ang) * _d);
+        const _tz = Math.round(_p.z + Math.sin(_ang) * _d);
+        emit({ type: 'descend_relocate', x: _tx, z: _tz, fails: _descendWaterFails });
+        try { await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(_tx, Math.round(_p.y), _tz, 3)), 60000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+      }
     }
   }
   if (goal.skill === 'gatherLog') {
@@ -525,7 +537,13 @@ async function runGoalSkill(goal) {
   if (goal.skill === 'smeltIron') return smeltWithFurnace('raw_iron', 'iron_ingot', goal.args.count || 3);
   if (goal.skill === 'smeltCharcoal') return smeltCharcoalGoal(goal.args.count || 2);
   if (goal.skill === 'huntCook') return huntCookGoal(goal.args.target || 4);
-  if (goal.skill === 'descendDiagonal') return descendDiagonal(bot, goal.args || {}, taskToken);
+  if (goal.skill === 'descendDiagonal') {
+    const r = await descendDiagonal(bot, goal.args || {}, taskToken);
+    // suivi des échecs EAU → le pré-hook ci-dessus décale le prochain essai (anti re-perçage d'aquifère)
+    if (r && r.ok === false && /water|flood|drown/i.test(String(r.reason || ''))) _descendWaterFails++;
+    else if (r && r.ok) _descendWaterFails = 0;
+    return r;
+  }
   if (goal.skill === 'branchMine') return branchMine(bot, goal.args || {}, taskToken);
   // Chaîne iron_armor : ensureArmor fond le brut nécessaire + craft la pièce fer la moins chère +
   // équipe (1 pièce/appel — le planner re-boucle). Progrès = besoin d'armure qui BAISSE ou pièce
@@ -632,6 +650,9 @@ async function maybeNightShelter(proactive = false) {
   }
   return false;
 }
+
+// Échecs EAU consécutifs de descendDiagonal (anti re-perçage d'aquifère — cf. pré-hook descend).
+let _descendWaterFails = 0;
 
 async function runSkillWithTelemetry(g) {
   await settleSurvivalKit();                                  // survie d'abord, le craft ensuite
