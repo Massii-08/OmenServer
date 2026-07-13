@@ -30,6 +30,11 @@ const S = (c) => invCount(c.inv, 'stone_pickaxe') >= 1;  // objectif final
 // toujours le même but car l'amont reste « met ». Le raccourci pioche n'est valable que si le bois
 // aval est SÉCURISÉ : table en poche + sticks prêts.
 const woodSafe = (c) => invCount(c.inv, 'crafting_table') >= 1 && invCount(c.inv, 'stick') >= 2;
+// Pioche PIERRE craftable DIRECT (3 cobble + 2 sticks + table en poche) → PAS besoin de repasser par
+// la pioche bois ni le bois de SURFACE. Casse le churn `no_pickaxe` → remontée surface (vécu run
+// homedeath : pioche casse à Y16 → planner re-dérive wooden_pickaxe → bois → forêt → re-descente).
+// Une pioche pierre ne requiert JAMAIS de bois → si les matériaux sont en poche, on va droit au craft.
+const canStonePick = (c) => invCount(c.inv, 'cobblestone') >= 3 && invCount(c.inv, 'stick') >= 2 && invCount(c.inv, 'crafting_table') >= 1;
 const MVP_CHAIN = [
   // ⚠️ logs/planks NE dépendent PAS de hasTable seul : une table qui traîne (run précédent) ne veut
   // pas dire qu'on a du bois. Seuil planches bas (≥2) + monotone via S final / (W ∧ woodSafe).
@@ -58,15 +63,17 @@ const I = (c) => invCount(c.inv, 'iron_pickaxe') >= 1;  // objectif final fer �
 const IRON_CHAIN = [
   // Raccourci pioche conditionné à woodSafe (table+sticks en poche) — cf. commentaire MVP_CHAIN
   // (boucle no_table:unknown_item quand la table est perdue ET les planks épuisées).
-  { name: 'logs',           met: (c) => anyLog(c.inv) >= 5 || anyPlanks(c.inv) >= 8 || I(c) || (W(c) && woodSafe(c)),
+  { name: 'logs',           met: (c) => anyLog(c.inv) >= 5 || anyPlanks(c.inv) >= 8 || I(c) || (W(c) && woodSafe(c)) || canStonePick(c),
     skill: 'gatherLog',     args: { count: 6 } },
-  { name: 'planks',         met: (c) => anyPlanks(c.inv) >= 8 || I(c) || (W(c) && woodSafe(c)),
+  { name: 'planks',         met: (c) => anyPlanks(c.inv) >= 8 || I(c) || (W(c) && woodSafe(c)) || canStonePick(c),
     skill: 'craftPlanks',   args: { count: 6 } }, // ~24 planks : table 4 + sticks 4 + pioche bois 3 + combustible + marge
   { name: 'crafting_table', met: (c) => invCount(c.inv, 'crafting_table') >= 1 || I(c),
     skill: 'craft',         args: { name: 'crafting_table', count: 1 } },
   { name: 'sticks',         met: (c) => invCount(c.inv, 'stick') >= 2 || I(c),
     skill: 'craft',         args: { name: 'stick', count: 2 } }, // 2×4 = 8 sticks (3 pioches × 2, reste ≥2)
-  { name: 'wooden_pickaxe', met: (c) => W(c) || I(c),
+  // no_pickaxe churn-breaker : si cobble+sticks+table en poche → pioche pierre craftable direct, on
+  // saute la pioche bois (et donc le bois de surface). Sinon comportement inchangé.
+  { name: 'wooden_pickaxe', met: (c) => W(c) || I(c) || canStonePick(c),
     skill: 'craft',         args: { name: 'wooden_pickaxe', count: 1 } },
   { name: 'cobble_pick',    met: (c) => invCount(c.inv, 'cobblestone') >= 3 || S(c) || I(c),
     skill: 'gather',        args: { name: 'stone', count: 3 } },

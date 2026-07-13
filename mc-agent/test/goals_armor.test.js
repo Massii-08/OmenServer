@@ -132,3 +132,23 @@ test('DIAMOND_ARMOR_CHAIN: armure diamant complète portée → chaîne finie (m
   const full = ['diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots'];
   assert.strictEqual(firstUnmet(DIAMOND_ARMOR_CHAIN, ctx({}, full)), null);
 });
+
+// --- Churn-breaker no_pickaxe (run homedeath 2026-07-13) : pioche cassée à Y16 avec cobble+sticks+
+// table en poche → le planner doit crafter une pioche PIERRE direct (jamais repasser par le bois). ---
+test('firstUnmet: cobble+sticks+table, PAS de bois ni pioche → saute à stone_pickaxe (pas logs/wooden)', () => {
+  const c = ctx({ cobblestone: 5, stick: 4, crafting_table: 1 }, [], 16);
+  const g = firstUnmet(IRON_ARMOR_CHAIN, c);
+  assert.strictEqual(g && g.name, 'stone_pickaxe');
+});
+
+test('firstUnmet: sans matériaux stone-pick (0 cobble) → repasse bien par logs (comportement inchangé)', () => {
+  const c = ctx({}, [], 70);
+  const g = firstUnmet(IRON_ARMOR_CHAIN, c);
+  assert.strictEqual(g && g.name, 'logs');
+});
+
+test('firstUnmet: cobble mais PAS de sticks → PAS de raccourci (il faut du bois pour les sticks) → logs', () => {
+  const c = ctx({ cobblestone: 5, crafting_table: 1 }, [], 16);
+  const g = firstUnmet(IRON_ARMOR_CHAIN, c);
+  assert.strictEqual(g && g.name, 'logs');
+});
