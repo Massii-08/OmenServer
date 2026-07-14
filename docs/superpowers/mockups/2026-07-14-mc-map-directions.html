@@ -1,0 +1,749 @@
+<title>Carte du mappeur — 3 directions de style</title>
+<style>
+  @font-face {
+    font-family: 'PSP';
+    src: url(data:font/woff2;base64,d09GMgABAAAAABJgAA0AAAAASFgAABILAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGhYcgzwGYACEbBEICvB00n4Lg0QAATYCJAOGdAQgBYRKB4ReG7k2IxE1HRM1iOA/JWg2xvD6obMqmE5SN4m6JErQGe1cnR7tTm21roiCRXGDph2W57zlE2hWfkyCDRZhurA4QpJZeJ7fH3Xufd9jvYGwAJrkBDcnoU4JS7aJ6zQ4wEsveVcau6YSMNkW5dRZkKLO7kl2gJ99Pu1cgBXilsXzxNXe312wJuAISuQ69LpAmygPOJGMosbv9O8fKPBxUDdsnCIs31VPLCJq8pmJK+q+O4R4UVF6lcpGGsmA+ctVGunAV3/7FmaFSTNZmPJ92eQtKF2y1Rr6/y1N6Yx01bXAVlgCUKk8KMZpgFl/5u/37Gi0sVYrvVtZ7nK74tp2Vme/ldxrAoNKh86llIYaDKq0FUKDyIWF4gAe22ycgtZjjJuJs/Vp39+v74B3YB+yQ62hxBJjrLUTa+Sy99Pd99cEAbEAQLyFMgwBkam6oK3xU+ciNfPcvhE6mZDmqLkWqDD0n1OuQAhC9KYOn4NBoU/niabLNmzGoo/+xw1ug9G9ztasWoJO56Zl61ETp6VJm7R+cvD8ZkwUIyroOEAERD5UKipJnfOhLrSmENhSWc6QqDOfQyh0tj+jiuXZ/8PnSYaaAyFm4rtroNK5XussnBuyoeJ5zoC6dKczmSccloW4oypBxUAoF5sxFQLcirAInR1MZjcgX4k1EysGSJ2M5k6neut6/27mwJd9UgEBelYHgCn+hjJAKlssT6Nb+z7hmPbscWyAorp5AYB5SJwFuA5AnyFHrMaflApHNJ7x+9UCg5cKiFNPUZr/iKRY64ru6S29YxCbarNtvi2yZbbLjsVGDlfh+VP9sQ79ByCOJUFJRyTFKnpWsDWbaXOvr/N7If+vgBkAhrjBYK4NDee34PsV+L4WIZYBuvuPvincl783AAKgATDVFSAXRr6c3JrN/3HGVa0aLTpwRps+/SqsqTWkSYca7bZt2tLsNLxYcRIkYXPIYUecwAHDhRsvUeIkSJIiTYEiJcpU9ajU66pOd6nRo8+QMQuWrFhz5MSZKzceAgQJFiJMuBix4sRL0uWybrvmNJi3bMGKK86547xUI/YMu+CeS3YUKXbTvrOq3FIozagypcq1IHN5Ir5QjHhpmDBjwe6oY45jwEMQH37CBKwTIk+GLDkqxITSok6DDk3adBkwZ8KUGQe27Ngz4s6HJy9+vG3wFS1CpCgJAiUS4W/QgElTJiDk/98A4AcAuQPyAZJ2ACkvAB6oAIABACppDAYfuDIBBwdtvWyhIRj9eiPiRtE2zhO4kUR6xplwhByIGdHEfl2lnhqraTbpW3ibCwPlFbCkAFDqFEs+ouId4rDYFIx3Rgp1JviWVtp0gLoZoOHhudAa3lXMO58l1rNuCTB3bALXXGnb/nuVbib5zIAjGHU0I+vqIX3dp0pfZIhBAJldd9NXY27Td77KTu2odNh1bNd/MmxWU60SgwDYrbYVsG5SAHPc3OnXRDqZZx5AN4/b+QP23IQU1ololz89jHe+3vpcMkt0lwM/573pXzp9PbXfizZscl0ELXO3a1UbZW84hcdS+ygg252g2kqvjynC9Zz5uT51374IQGxoIViy+r1aO2cyM1kuabuu5YAzwR0QDOVNMNfejiJ58vbRAC0ACLPuM673tXdTiQJqCKUJCSkIhFMSVoRCcGriaPVLaSFOCpqoMooEDSlcYkRUz4XwkApimZR+FhfXwZA7MYXyScHaPDaFYc9ss7gM5ZYs1QwfQMYZkEJYRVaGwLrE3ZDOqopH0WKhrKYyn5jgFnBKR8aVHwy1EDwOxPWwMKq6LAwr4eYDjbhnmEePgsSAzHtLsGN2LkSLRIgzniTDyUNzR6G8Ek9CE6wMyORehlJUVkKLRUvDhjbMGHMpCvC6v2xgNRXAwggUCRJ7PYSgTV5RpEvG1kdpwglup8CaTjp0/tZdr1688A6jRiAAYkX2jYaGI2yEUED4agQ4JpDdlCU2KgqlAuYHCKlez0mlj0QvcpGO1NK3dCvyfsXpVCbst9GllNVsQ/m0ecUNbEvtYUVwoaaijNyRgJRbfvMoDLqOhDUhD6bAXNSUZNyJX5IekmQF0UTzLC7AZFlcCQmxLmpK1rQZ1SDkaC+d0IVasLlKGNSTvKgXcxoCTsoYtZLGBXO0cUdZAhJxAg+O4C9r2GC83qogpN6xJx2xIGwwFrEk9VR+tHKBggk6U1LmwfkF1dp8yUJX3ga9eH9YtsMWX5wQqUZ21yGWFNq9ajBoEVsoSz36d5cSzFLbAJZ5HBsmU2S1hKJbU3Wc79U6Nu0xgKAelp0Z4jqLRPumclG2eKPlL+r190iKNpW7y5sA7cqgGMvWIEl+SE0N0tmH8mlGSxpVQE9Urd3YqVrA4oAp+2BKXB2A9K0eTRqj3WAoGXskoL132wA2/MvgLLOL0yqYLSBZEKCPLV8PkjVdB1SZ2IaBQd0U2Dakfm5sFl48kBeNEFPjhuqccG1xKdLMwtZahGBvKKj6sjd4NlQ2UZAigsnBtsxkmBAUrlaQNUGBWoRSctWWPDeHg9iWFt953iW8s41nKaqZgHL5RcUdtBmY0DFS28bLdxTjSGv0Ny4ptkZdtFbyxfXlBPJDC4Ka2InUcWZ417DMcPZAbTE6gjA8DIy0MWAeNVYPa4tlrhwoNDFkIcAYzAytW7JuIRhZsd7KzTSi50qCGnCvLdArficHWmmiCSHD/ERsIt1qdKQoYJHWYU6i20IBgh6JxJBmjvp7VLIwpFuZVnPEYIUCAskhO76ejxt9JGFxxlGRPKmMLhhBMW5gFMreRedqpVDNopuVpA5k2WxxghipqIfCBeIQRbeLoJs/OepnCw3rhRJpLwo3B29Qq6EQM9waX0tDbZe40xbbQ8/Qa5GCtQc+yGI3ByXFWSYyj81HTC3W1zqV4c3rHdDDtnUb32qt2mopLZvM3ZEnvGTljav/AAf3pR20pETliLUD5zAcEqZRuQ9zKv2DmWBzQez4zdVKH+VrRaAdiE1/2ETrXlpfGErt8QoFgzpPFunNUSa4VWFHgoo0idkyGesoICEQZhHswBR91la3rV3gEjWmUsVVpknJ6pmHX/KmF43M4y/mWPbQU4884NT8oSZ5LwGogx9eW6Gg7lmG/eALtL62Cp9ZUfqamgDfQ7nZ8bGexsAjpAPQHi/0A1pEaFHLboEV7d7dlF4Wbk7rt4KwRSduRJ4z0D893esysc4j7AYVAWuIKyXUddVmqQXZGi4jTAKLOSCwevool+taG4JeINVM5C9/6RKRoAwBZkHGFI/KetWPFCwGXCty3kllWldUY5t/MES0hG3Ha/tc6iFbK775b3PmP/6oxozEvPtWJK7CZJoPNvFwsXLq6RSsjK/OMOpSWGfdXTUUFhBOgAJILasEIC5mwLtlTPxoSoULOiJOa+8v6Dv5BrFchoD8fhVln2F87NH/B/mdN+WJ4DnP9UwOEZPJK3/7wNukPDMoq25+jO5DwuuANDPcW1YujJBA9wCSgw/8hen1aZwisQxxavv9nRFeeQ92LxUGPVGqmTPyNfIsbV5bpsOY5Zn7Cg7jmCvvKM055v3uQzHXQLfeJrTPa109NFJ030JNeFlVetcMGlNOVKhvhUzlCtCsKDcCRJFpo5FhHNpN3SVrrjbYoI4HLifJ0rYu4Qb3LM/gr95bjW2mvJxLSMwkrwkCVPbopYjpdwP9xOkFMwa5FkCOe25XVib8XSGvVIU5K1FfIlZ6K1l9nWjBqt8PSMTirPC+1WzipXQWgAeIBGev81ZJnSRzIe9URfVr8idW4VjoLi+ZiXaEr/9mAzAS/Epx1d5AgoU39Q0OqJTKc64NLg31Kbw++PLxlBz11UYvg93MTzlOTfCrms73QWn0HAWZlactcaDAjplYhAX1YEZdo8rBS/IHZ4oHSETVB+rHBwqhStc6AMQk5XmS6yhCfQXDgrAKDHX7EMzXxdeuOGcWDvl+QyTWUV8wt7se4jmo3csmwcjmsUUkxaa+ZH57WZEEC3kbDqgAReeRoFq6CoesJJ6pB6YvQVcBI0VeS3R9p8NLwpdzcbpV3PvfOwhKDol+mGS4O9MwFVeFDXm0AYvD7dgFnYOG3jRV9XiF4FecuOnM8CRU2vpkopbhKx7KfarCpzaTBFlfv/kfJxMN61HC6Xr3REx7WKz1hnFoxwCTW0XLpk0fPXYC1ErjyY/nY9l+Uvt5rkq6dNytY3UsitNePuss4/wnPo8xLKo75akhjLhUPAjjblOpnjfObJI5bvxrdCKY6sI/XycSypfTlSJWcI2PPdg3Xn7OwgjEJh4Y1AejzXCCNtAGaV4nk8eI9z9dXXZARXv7WVklkuvtdphJvRTe0U/xAawWvJyG+RLhGZ0ZFQvz4wgiRfMWkEFuhqeQSccJ5XPBW6YYaQv3qURhivQHhS7J91v2gf+6vPLp79wn47pD1rAckkBiNknOOtbOcYZNonH8SE14tzCdXq2skwcM4mu+UmA+hdubYq/yYFyppJZRX+l5LYV9teDdwZwji+o8AlhWkZsGcQ4YCKMIcGUs6tn8b3Vqj7pi7T67hgd/hShh7hbiYPL0FbuZrb3NaOSleDv2iNecJ0otEvBme7gEwrPYXLSXB37EQEt6DzeEeMkZzjZDR/roZl7PmFX4Hq4fu+9foRncGLo0G1y/iKBLOV/JVrvYj7o1K4r7I4mcsGHwlcXdB0BecrCv2L0r70MMFtGq82yPHwR3CGswxYG/cFaU3rrO4wfB8PP/weaL4HI+jpG83mzQTuLUxB9R14tT8IYJdK/XpC9//2S8K8KHqVj0ESnA+bUYGqY6X3E26L0SM9pa7svsLqooBnhBXsNCjeUndRMo6jx4+7VE0+hjASzwqLDJtGNnUQ4fMWQdebCuCD1XNWMCOuVaNxUhM+4zhH7IfZyPv0hisvibkEXok2mXsfeoI7UvSpznoaMuFDb06f8mAKK2w6lIRDx+F2Gcqyno9hWf5vWbX0x4JiajeI+I/7O6FU68x7ya9w7jfpykm+RvKierpLT/0+5NErUBjlaKu4vcpfux/sh5u+RCfDvt6mtKBeg497nU+xiWEy5rM8Pc99z+Oz7DlPj1MF8j3UgBCcwwsdV3p6jz34Vzb4NQN0uU0xWnpZabXKxZU0dAgauXK2RlmbNGfke9MM7qZ/jC2LKtrTNm6XcnkalivUfIprI24lDRtCxMz0vEURAh4IJlZM7rf4weA+qG0a0cn/xAGWxegACD3pvs54un8q/L9AHwuoH993c8rOp/+yvqRXiCTxEKYPDmtAJAZ43UB2QlyP7rXi+xmH7AtffY69Cf+A8Ul8e/Ac4U/SEfNxVPdx9g09ixNkUj8M3RGN/e1Y5rjgNArt1er3NCr+F9oyeSUJB4dwZSwUCXe63ZRo78IlVqTKX+RRDwgwIaJUi1qQV+rcBKOFKFwMdQQVNErndTVLzvU4zhuqY4asRNcWVzmeKpIKPibRWwWgxNiKBEfN1o3qIEqorR4WKiVUhU4aXy761rTo8Ji1T54pNEsxbDU5QYUiyIsuLLX6yQnbITHUXVV7gwGGliJJzIPom1GuuvB4tG/9Yo0+bIii5lKTbYe/4NtYWLkJiHir+AsHxToANjUzDfXhMhasNwQXx57zs0xUIH5BEi+xbgLZyPRBqSssN9lYID0FcMQSIw8QKjZUZ0dDZVnHb6wOjtgKPTjKdQaQfO1Ruu9aCDodm85ujr8QNIgTJKnLTPyyhvYyrw4uOD30sCfB045TRBQoSJOOOsc84TJUY8uIwpP3/tCy7yd1mlcROkvX0/4bnkKbjiqgDX3rrYUcVrqnQEvk+hgrwzVAfdVDfU94qBiPy9k0iGjBgzcV2MOPFi32komwf/hoZK8C8nUbIUSTqlmmTtHRu27BSy5yBNhkzp73G8PxdvLHG1YVOrNsxYsL4rIt+z+O8NQTzx6fWFr3yD1gjb8rGjdw/ebURJuHQhiORjosWNBzUaqMV6ZgpDyNwxZM26XTNmzZm3EwrHrSIl4oS6UBPvJwswnDhU89QTGoLESTzFKE7LU6xIiWzuXtAMvSQKI6XuuaGMtlvuuln9r0HXdUyWb9ruhCy7+LEb1zRIjFb0m6WapAeP0slL4P+AdTi6pEmqsbXJbM/BtTy3bt20a8fmEN5Rqw//PeH1K/5x23Oq8rId2wcRFUqN1gYA) format('woff2');
+    font-display: swap;
+  }
+  :root {
+    color-scheme: dark;
+    --bg: #07090f;
+    --panel: #0c111c;
+    --border: #1b2740;
+    --text: #e8edf6;
+    --muted: #8fa3c4;
+    --dim: #5a6c90;
+    --accent: #00ffb0;
+  }
+  html, body { background: var(--bg); }
+  body {
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5;
+    padding: 40px 20px 80px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  h1 {
+    font-family: 'PSP', ui-monospace, monospace;
+    font-size: 21px;
+    line-height: 1.7;
+    letter-spacing: 0.5px;
+    margin-bottom: 10px;
+    text-wrap: balance;
+  }
+  .sub { color: var(--muted); font-size: 14px; max-width: 68ch; margin-bottom: 44px; }
+  .sub strong { color: var(--text); font-weight: 600; }
+
+  .dir { margin-bottom: 56px; }
+  .dir-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+  .dir-badge {
+    font-family: 'PSP', ui-monospace, monospace;
+    font-size: 15px;
+    color: #06110c;
+    background: var(--accent);
+    padding: 7px 11px 5px;
+    border-radius: 6px;
+  }
+  .dir:nth-of-type(2) .dir-badge { background: #ffc94d; }
+  .dir:nth-of-type(3) .dir-badge { background: #7dd3fc; }
+  .dir h2 { font-size: 19px; font-weight: 700; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 14px; }
+  .chip {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11.5px;
+    color: var(--muted);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 10px;
+  }
+  .frame { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: #05070c; }
+  canvas.map { display: block; width: 100%; height: auto; }
+  .dir-note { color: var(--dim); font-size: 12.5px; margin-top: 8px; max-width: 78ch; }
+
+  .icons { margin-top: 70px; }
+  .icons h2 { font-size: 19px; margin-bottom: 4px; }
+  .icons .lead { color: var(--muted); font-size: 13.5px; margin-bottom: 20px; max-width: 70ch; }
+  .icon-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 12px;
+  }
+  .icon-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 10px 12px;
+    text-align: center;
+  }
+  .icon-card canvas { display: block; margin: 0 auto 10px; width: 80px; height: 80px; image-rendering: pixelated; }
+  .icon-name { font-size: 13px; font-weight: 650; }
+  .icon-sub { font-size: 11px; color: var(--dim); margin-top: 2px; font-family: ui-monospace, Menlo, monospace; }
+
+  .keep {
+    margin-top: 56px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 22px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+  }
+  .keep h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); margin-bottom: 8px; }
+  .keep ul { list-style: none; }
+  .keep li { font-size: 13.5px; color: var(--muted); padding: 3px 0; }
+  .keep li::before { content: '·'; color: var(--accent); margin-right: 8px; }
+  .keep .out li::before { content: '×'; color: #f87171; }
+  @media (max-width: 640px) { .keep { grid-template-columns: 1fr; } }
+</style>
+
+<div class="wrap">
+  <h1>Carte du mappeur — trois directions</h1>
+  <p class="sub">Même monde, mêmes données (biomes 128×128, structures, grottes, spawn), trois habillages.
+  Les icônes de structures et leurs noms (visibles dès qu'on est assez zoomé, comme choisi) sont identiques dans les trois.
+  <strong>Dis-moi laquelle te parle — ou quel mélange.</strong></p>
+
+  <section class="dir">
+    <div class="dir-head"><span class="dir-badge">A</span><h2>L'item carte — comme la carte tenue en main</h2></div>
+    <div class="chips">
+      <span class="chip">couleurs de map officielles MC</span>
+      <span class="chip">fond parchemin + bord déchiré</span>
+      <span class="chip">curseur de spawn du jeu</span>
+      <span class="chip">grain doux</span>
+    </div>
+    <div class="frame"><canvas id="mapA" class="map"></canvas></div>
+    <p class="dir-note">Le plus « Minecraft » des trois : on retrouve exactement les couleurs de l'item carte (herbe, sable, eau bleu franc). Contraste fort avec le dashboard sombre autour — la carte devient un objet.</p>
+  </section>
+
+  <section class="dir">
+    <div class="dir-head"><span class="dir-badge">B</span><h2>Table de cartographie — sombre, intégrée au dashboard</h2></div>
+    <div class="chips">
+      <span class="chip">fond bleu-nuit Ion</span>
+      <span class="chip">couleurs MC assombries + grain dithéré</span>
+      <span class="chip">double grille 128 / 512</span>
+      <span class="chip">spawn néon</span>
+    </div>
+    <div class="frame"><canvas id="mapB" class="map"></canvas></div>
+    <p class="dir-note">Garde l'ambiance du panel : la carte reste un écran de contrôle. Les biomes restent reconnaissables (mêmes teintes MC, assombries), les icônes ressortent sur plaque sombre.</p>
+  </section>
+
+  <section class="dir">
+    <div class="dir-head"><span class="dir-badge">C</span><h2>Carte au trésor — parchemin vieilli, encre</h2></div>
+    <div class="chips">
+      <span class="chip">sépia nocturne</span>
+      <span class="chip">bords brûlés</span>
+      <span class="chip">rose des vents</span>
+      <span class="chip">X d'encre au spawn</span>
+    </div>
+    <div class="frame"><canvas id="mapC" class="map"></canvas></div>
+    <p class="dir-note">L'ambiance « carte d'aventurier » : teintes terre, annotations à l'encre claire. Le plus stylé, mais les biomes sont moins différenciés qu'en A ou B.</p>
+  </section>
+
+  <section class="icons">
+    <h2>Les 13 icônes — communes aux trois directions</h2>
+    <p class="lead">Pixel-art 16×16 dessiné par code (aucune texture Mojang, net à tous les zooms).
+    Chaque type se reconnaît d'un coup d'œil, et le nom s'affiche à côté sur la carte + en info-bulle au survol.</p>
+    <div class="icon-grid" id="iconGrid"></div>
+  </section>
+
+  <div class="keep">
+    <div>
+      <h3>Conservé tel quel</h3>
+      <ul>
+        <li>Pan à la souris + zoom molette centré curseur</li>
+        <li>Légende cliquable (masquer un biome / un type)</li>
+        <li>Sélecteur de monde (overworld / nether / end)</li>
+        <li>Barre d'échelle + coordonnées au survol</li>
+        <li>Auto-refresh pendant que les mappeurs tournent</li>
+      </ul>
+    </div>
+    <div class="out">
+      <h3>Retiré de la carte</h3>
+      <ul>
+        <li>Les losanges de « trouvailles » (mémoire interne du bot)</li>
+        <li>La pastille-initiale des structures (remplacée par les icônes)</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------- utils couleur ----------
+  function rgb(hex) { return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]; }
+  function css(c) { return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')'; }
+  function shade(hex, f) { var c = rgb(hex); return css([Math.min(255, c[0] * f) | 0, Math.min(255, c[1] * f) | 0, Math.min(255, c[2] * f) | 0]); }
+  function mix(h1, h2, t) {
+    var a = rgb(h1), b = rgb(h2);
+    return '#' + [0, 1, 2].map(function (i) { return Math.round(a[i] + (b[i] - a[i]) * t).toString(16).padStart(2, '0'); }).join('');
+  }
+  // hash déterministe (grain stable)
+  function hsh(x, y, s) { var h = (x * 374761393 + y * 668265263 + s * 1442695041) | 0; h = (h ^ (h >> 13)) * 1274126177 | 0; return ((h ^ (h >> 16)) >>> 0) / 4294967295; }
+
+  // ---------- sprites 16×16 ('.' = transparent) ----------
+  var SPR = {
+    village: { p: { R: '#8a4a24', r: '#5e2f14', W: '#e8dcc4', F: '#7fb4d8', f: '#5a88b0', D: '#6b4423', d: '#3a250f', S: '#b8a878' }, g: [
+      '................',
+      '.......rr.......',
+      '......rRRr......',
+      '.....rRRRRr.....',
+      '....rRRRRRRr....',
+      '...rRRRRRRRRr...',
+      '..rRRRRRRRRRRr..',
+      '.rRRRRRRRRRRRRr.',
+      '.rr..........rr.',
+      '..WWFFWWWWDDWW..',
+      '..WWFFWWWWDdWW..',
+      '..WWffWWWWDDWW..',
+      '..WWWWWWWWDdWW..',
+      '..WWWWWWWWDDWW..',
+      '..SSSSSSSSSSSS..',
+      '................'] },
+    dungeon: { p: { K: '#33333c', k: '#1b1b22', n: '#101016', y: '#ffd23e', o: '#ff8a2e' }, g: [
+      '................',
+      '..KKKKKKKKKKKK..',
+      '..KnnKKnnKKnnK..',
+      '..KnnKKnnKKnnK..',
+      '..KKKKKKKKKKKK..',
+      '..KnnKKyyKKnnK..',
+      '..KnnKyyyyKnnK..',
+      '..KKKKoyyoKKKK..',
+      '..KnnKooooKnnK..',
+      '..KnnKKooKKnnK..',
+      '..KKKKKKKKKKKK..',
+      '..KnnKKnnKKnnK..',
+      '..KnnKKnnKKnnK..',
+      '..KKKKKKKKKKKK..',
+      '................',
+      '................'] },
+    monument: { p: { P: '#4fbfb2', D: '#2e7a73', d: '#16343a', L: '#d8f0e0' }, g: [
+      '................',
+      '......PPPP......',
+      '....PPPPPPPP....',
+      '..PPPPPPPPPPPP..',
+      '..PDPPLLLLPPDP..',
+      '..PDPPLPPLPPDP..',
+      '..PDPPLLLLPPDP..',
+      '..PDPPPPPPPPDP..',
+      '..PDPPddddPPDP..',
+      '..PDPPddddPPDP..',
+      '..PPPPddddPPPP..',
+      '..PPPPPPPPPPPP..',
+      '................',
+      '................',
+      '................',
+      '................'] },
+    mineshaft: { p: { B: '#8a5a2b', b: '#6e4520', n: '#17120c', T: '#5c3a1e', M: '#b8bec6', s: '#3a2c1a' }, g: [
+      '................',
+      '..BBBBBBBBBBBB..',
+      '..BbBBBBBBBBbB..',
+      '..BbnnnnnnnnbB..',
+      '..BbnnnnnnnnbB..',
+      '..BbnnnnnnnnbB..',
+      '..BbnnnnnnnnbB..',
+      '..BbnnnnnnnnbB..',
+      '..BbnnnnnnnnbB..',
+      '..ssssssssssss..',
+      '..sTsMMsMMsTss..',
+      '..ssssssssssss..',
+      '................',
+      '................',
+      '................',
+      '................'] },
+    stronghold: { p: { P: '#2c1f3e', G: '#6fae2e', g: '#b8e07a', n: '#0c0a12' }, g: [
+      '................',
+      '................',
+      '................',
+      '.....PPPPPP.....',
+      '...PPGGGGGGPP...',
+      '..PGGGggggGGGP..',
+      '.PGGgggnnggggGP.',
+      '.PGGggnnnnggGGP.',
+      '.PGGgggnnggggGP.',
+      '..PGGGggggGGGP..',
+      '...PPGGGGGGPP...',
+      '.....PPPPPP.....',
+      '................',
+      '................',
+      '................',
+      '................'] },
+    ancient_city: { p: { W: '#2c3a44', w: '#48606e', C: '#22d3ee', s: '#0e5a5a' }, g: [
+      '................',
+      '..ww........ww..',
+      '..wWw......wWw..',
+      '...WWWWWWWWWW...',
+      '..WWWWWWWWWWWW..',
+      '..WWCCWWWWCCWW..',
+      '..WWCCWWWWCCWW..',
+      '..WWWWWWWWWWWW..',
+      '..WWWssssssWWW..',
+      '..WWssssssssWW..',
+      '..WWWWWWWWWWWW..',
+      '...WWWWWWWWWW...',
+      '................',
+      '................',
+      '................',
+      '................'] },
+    ruined_portal: { p: { O: '#241b33', C: '#6a4fd0', v: '#8a5aff', G: '#f5c542' }, g: [
+      '................',
+      '..OOOOOOOOO.....',
+      '..OO.....OO.....',
+      '..OO.vvv........',
+      '..CC.vvvv...OO..',
+      '..OO.vvvv...OO..',
+      '..OO.vvvv...CC..',
+      '..CC.vvvv...OO..',
+      '..OO.vvvv...OO..',
+      '..OOOOOOOOOOOO..',
+      '..GG........GG..',
+      '................',
+      '................',
+      '................',
+      '................',
+      '................'] },
+    desert_pyramid: { p: { S: '#ead9a0', s: '#c9b87e', O: '#c77b33', d: '#3c2f1a' }, g: [
+      '................',
+      '.......SS.......',
+      '......SsSS......',
+      '.....SSSSSS.....',
+      '....SSsOOsSS....',
+      '...SSSSOOSSSS...',
+      '..SSsSSSSSSsSS..',
+      '.SSSSSooooSSSSS.',
+      '.SSsSSoddoSSsSS.',
+      'SSSSSSoddoSSSSSS',
+      'SsSSsSSSSSSsSSsS',
+      '................',
+      '................',
+      '................',
+      '................',
+      '................'] },
+    jungle_pyramid: { p: { C: '#7a8a78', c: '#5f6e5e', m: '#4e7a3a', d: '#1e2a1a', v: '#3e6a2e' }, g: [
+      '................',
+      '.....CCCCCC.....',
+      '.....CmCCmC.....',
+      '....CCCCCCCC....',
+      '...CCmCccCmCC...',
+      '...CCCCddCCCC...',
+      '..CCmCCddCCmCC..',
+      '..CcCCCddCCCcC..',
+      '.CCCCCCddCCCCCC.',
+      '.vCCmCCCCCCmCCv.',
+      '.v...v.....v..v.',
+      '.v...v........v.',
+      '................',
+      '................',
+      '................',
+      '................'] },
+    pillager_outpost: { p: { D: '#3c2f1e', B: '#8a5a2b', b: '#a06c36', n: '#141008', F: '#5c6670' }, g: [
+      '................',
+      '....DDDDDDDD....',
+      '....DBBBBBBD....',
+      '....BnBBBBnBFF..',
+      '....BBBBBBBBF...',
+      '.....BbbbbB.F...',
+      '.....BbbbbB.....',
+      '.....BbnbbB.....',
+      '.....BbbbbB.....',
+      '.....BbbbbB.....',
+      '.....BbnbbB.....',
+      '....BBBBBBBB....',
+      '................',
+      '................',
+      '................',
+      '................'] },
+    shipwreck: { p: { H: '#6e4a26', h: '#4a2f16', M: '#8a5a2b', S: '#d8cba8' }, g: [
+      '................',
+      '......M.........',
+      '......MM........',
+      '......M.S.......',
+      '......M.SS......',
+      '......MMSSS.....',
+      '......MM.SS.....',
+      '......MM........',
+      '.HH...MM....HH..',
+      '.HHHHHHHHHHHHH..',
+      '..HHHHHHHHHHH...',
+      '...HHHHHHHHH....',
+      '....hhhhhhh.....',
+      '................',
+      '................',
+      '................'] },
+    fortress: { p: { N: '#4a2230', n: '#1c0c12', a: '#ff7a2e' }, g: [
+      '................',
+      '..NN..NN..NN....',
+      '..NNNNNNNNNNNN..',
+      '..NNNNNNNNNNNN..',
+      '..NNaaNNNNaaNN..',
+      '..NNNNNNNNNNNN..',
+      '..NNNNnnnnNNNN..',
+      '..NNNNnnnnNNNN..',
+      '..NNNNnnnnNNNN..',
+      '..NNNNnaannNNNN.',
+      '..NNNNNNNNNNNN..',
+      '................',
+      '................',
+      '................',
+      '................',
+      '................'] },
+    cave: { p: { G: '#8a8f95', g: '#5f646b', n: '#0c0e12' }, g: [
+      '................',
+      '................',
+      '................',
+      '.....GGGGGG.....',
+      '...GGgGGGGgGG...',
+      '..GGnnnnnnnnGG..',
+      '..GgnnnnnnnngG..',
+      '.GGnnnnnnnnnnGG.',
+      '.GgnnnnnnnnnnGG.',
+      '.GGnnnnnnnnnngG.',
+      '................',
+      '................',
+      '................',
+      '................',
+      '................',
+      '................'] }
+  };
+
+  function drawSpr(ctx, name, cx, cy, s, withShadow) {
+    var d = SPR[name];
+    if (!d) return;
+    var g = d.g, p = d.p, ox = cx - 8 * s, oy = cy - 8 * s, y, x, ch;
+    if (withShadow) {
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      for (y = 0; y < 16; y++) for (x = 0; x < 16; x++) {
+        ch = g[y] && g[y][x];
+        if (ch && ch !== '.') ctx.fillRect(ox + x * s + s, oy + y * s + s, s, s);
+      }
+    }
+    for (y = 0; y < 16; y++) for (x = 0; x < 16; x++) {
+      ch = g[y] && g[y][x];
+      if (ch && ch !== '.' && p[ch]) { ctx.fillStyle = p[ch]; ctx.fillRect(ox + x * s, oy + y * s, s, s); }
+    }
+  }
+
+  // ---------- scène partagée (cellules biome 128×128) ----------
+  var GRID = [
+    'OOmmmmmtttttffjj',
+    'OObmmmppttffffjj',
+    'OObppppprffffjjj',
+    'Obpppppprrpffjjj',
+    'Obpvvpprrdddjjss',
+    'OObvvrrdddddssss',
+    'OOObvrdddddsssss'
+  ];
+  var COLS = 16, ROWS = 7;
+  // couleurs "map item" officielles-ish par biome
+  var BIOME = {
+    O: '#4040f0', r: '#5a64f0', b: '#f7e9a3', p: '#8ab84f', f: '#4c8a2e',
+    j: '#2c9e1a', d: '#ecd792', m: '#7a7a7a', t: '#d8e2d8', v: '#b8a94e', s: '#62703a'
+  };
+  var STRUCTS = [
+    { k: 'monument',        x: 170,  z: 700, label: 'Monument' },
+    { k: 'shipwreck',       x: 120,  z: 190 },
+    { k: 'village',         x: 590,  z: 350, label: 'Village' },
+    { k: 'pillager_outpost',x: 850,  z: 150, label: 'Avant-poste' },
+    { k: 'mineshaft',       x: 460,  z: 75,  label: 'Mine' },
+    { k: 'ancient_city',    x: 300,  z: 205 },
+    { k: 'dungeon',         x: 1350, z: 330, label: 'Donjon' },
+    { k: 'ruined_portal',   x: 1330, z: 560 },
+    { k: 'desert_pyramid',  x: 1180, z: 710, label: 'Pyramide' },
+    { k: 'jungle_pyramid',  x: 1760, z: 330 },
+    { k: 'stronghold',      x: 760,  z: 530 }
+  ];
+  var CAVES = [{ x: 660, z: 115 }, { x: 1460, z: 425 }, { x: 980, z: 620 }];
+  var SPAWN = { x: 680, z: 315 };
+
+  var W = 1160, H = 560, DPR = 2;
+
+  // ---------- renderer paramétré ----------
+  function render(canvasId, T) {
+    var cv = document.getElementById(canvasId);
+    cv.width = W * DPR; cv.height = H * DPR;
+    cv.style.aspectRatio = W + ' / ' + H;
+    var ctx = cv.getContext('2d');
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    ctx.fillStyle = T.outerBg;
+    ctx.fillRect(0, 0, W, H);
+
+    var pad = T.pad;
+    var mw = W - pad * 2, mh = H - pad * 2;
+    var scale = Math.min(mw / (COLS * 128), mh / (ROWS * 128));
+    var offX = pad + (mw - COLS * 128 * scale) / 2;
+    var offY = pad + (mh - ROWS * 128 * scale) / 2;
+    function toX(x) { return offX + x * scale; }
+    function toY(z) { return offY + z * scale; }
+    var cell = 128 * scale;
+
+    // fond de la zone carte (l'inexploré)
+    ctx.fillStyle = T.mapBg;
+    ctx.fillRect(pad, pad, mw, mh);
+
+    // biomes + grain dithéré (sous-tuiles, shades façon map MC)
+    var g = Math.max(4, Math.round(T.grain));
+    for (var j = 0; j < ROWS; j++) {
+      for (var i = 0; i < COLS; i++) {
+        var base = T.biome(GRID[j][i]);
+        var x0 = toX(i * 128), y0 = toY(j * 128);
+        ctx.fillStyle = base;
+        ctx.fillRect(x0, y0, cell + 0.5, cell + 0.5);
+        for (var gy = 0; gy < cell; gy += g) {
+          for (var gx = 0; gx < cell; gx += g) {
+            var r = hsh(i * 97 + (gx | 0), j * 131 + (gy | 0), 7);
+            var f = r < 0.22 ? T.shades[0] : (r > 0.82 ? T.shades[2] : 0);
+            if (f) {
+              ctx.fillStyle = shade(base, f);
+              ctx.fillRect(x0 + gx, y0 + gy, Math.min(g, cell - gx), Math.min(g, cell - gy));
+            }
+          }
+        }
+      }
+    }
+
+    // grille chunk (128) + km-line (512) éventuelle
+    if (T.grid128) {
+      ctx.lineWidth = 1;
+      for (var c = 0; c <= COLS; c++) {
+        ctx.strokeStyle = (T.grid512 && c % 4 === 0) ? T.grid512 : T.grid128;
+        ctx.beginPath(); ctx.moveTo(toX(c * 128) + 0.5, toY(0)); ctx.lineTo(toX(c * 128) + 0.5, toY(ROWS * 128)); ctx.stroke();
+      }
+      for (var rr = 0; rr <= ROWS; rr++) {
+        ctx.strokeStyle = (T.grid512 && rr % 4 === 0) ? T.grid512 : T.grid128;
+        ctx.beginPath(); ctx.moveTo(toX(0), toY(rr * 128) + 0.5); ctx.lineTo(toX(COLS * 128), toY(rr * 128) + 0.5); ctx.stroke();
+      }
+    }
+
+    // grottes
+    CAVES.forEach(function (cc) { drawSpr(ctx, 'cave', toX(cc.x), toY(cc.z), 2, true); });
+
+    // spawn
+    T.spawn(ctx, toX(SPAWN.x), toY(SPAWN.z));
+
+    // structures : icône + label optionnel
+    ctx.textBaseline = 'middle';
+    STRUCTS.forEach(function (st) {
+      var x = toX(st.x), y = toY(st.z);
+      if (T.plate) {
+        ctx.fillStyle = T.plate;
+        ctx.beginPath();
+        ctx.roundRect(x - 19, y - 19, 38, 38, 6);
+        ctx.fill();
+      }
+      drawSpr(ctx, st.k, x, y, 2, true);
+      if (st.label) T.label(ctx, x + 22, y, st.label);
+    });
+
+    // barre d'échelle
+    var bl = 256 * scale;
+    var bx = W - pad - bl - 18, by = H - pad - 16;
+    ctx.strokeStyle = T.ink; ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(bx, by); ctx.lineTo(bx + bl, by);
+    ctx.moveTo(bx, by - 4); ctx.lineTo(bx, by + 4);
+    ctx.moveTo(bx + bl, by - 4); ctx.lineTo(bx + bl, by + 4);
+    ctx.stroke();
+    ctx.fillStyle = T.ink;
+    ctx.font = T.pixelFont ? '8px PSP, monospace' : '11px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('256', bx + bl / 2, by - 9);
+    ctx.textAlign = 'left';
+
+    if (T.frame) T.frame(ctx);
+  }
+
+  // ---------- helpers labels ----------
+  function labelBox(ctx, x, y, text, bg, fg, border, pixel) {
+    ctx.font = pixel ? '8px PSP, monospace' : '600 11px ui-monospace, monospace';
+    var w = ctx.measureText(text).width;
+    var h = pixel ? 16 : 17;
+    ctx.fillStyle = bg;
+    ctx.beginPath();
+    ctx.roundRect(x, y - h / 2, w + 12, h, 4);
+    ctx.fill();
+    if (border) { ctx.strokeStyle = border; ctx.lineWidth = 1; ctx.stroke(); }
+    ctx.fillStyle = fg;
+    ctx.fillText(text, x + 6, y + (pixel ? 1 : 0.5));
+  }
+
+  // ---------- direction A : item carte ----------
+  var themeA = {
+    outerBg: '#a8895c',
+    mapBg: '#d4bb8d',
+    pad: 26,
+    biome: function (ch) { return BIOME[ch]; },
+    shades: [0.92, 1, 1.07],
+    grain: 8,
+    grid128: 'rgba(90,60,20,0.07)', grid512: null,
+    plate: null,
+    ink: '#4a3216',
+    pixelFont: true,
+    spawn: function (ctx, x, y) {
+      // curseur de map MC : losange blanc contour noir
+      ctx.save();
+      ctx.translate(x, y); ctx.rotate(Math.PI / 4);
+      ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.rect(-6, -6, 12, 12); ctx.fill(); ctx.stroke();
+      ctx.restore();
+    },
+    label: function (ctx, x, y, text) { labelBox(ctx, x, y, text, 'rgba(240,225,185,0.92)', '#4a3216', 'rgba(90,60,20,0.45)', true); },
+    frame: function (ctx) {
+      // bord parchemin : crans pixel déterministes sur le pourtour + double liseré
+      var p = 26, k = 6;
+      ctx.fillStyle = '#a8895c';
+      for (var x = 0; x < W; x += k) {
+        if (hsh(x, 1, 3) > 0.55) ctx.fillRect(x, p - k / 2, k, k);
+        if (hsh(x, 2, 3) > 0.55) ctx.fillRect(x, H - p - k / 2, k, k);
+      }
+      for (var y = 0; y < H; y += k) {
+        if (hsh(3, y, 3) > 0.55) ctx.fillRect(p - k / 2, y, k, k);
+        if (hsh(4, y, 3) > 0.55) ctx.fillRect(W - p - k / 2, y, k, k);
+      }
+      ctx.strokeStyle = 'rgba(74,50,22,0.55)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(p + 3, p + 3, W - 2 * p - 6, H - 2 * p - 6);
+    }
+  };
+
+  // ---------- direction B : table de cartographie (Ion) ----------
+  var themeB = {
+    outerBg: '#0a101e',
+    mapBg: '#0d1322',
+    pad: 14,
+    biome: function (ch) { return toHex(shade(BIOME[ch], 0.55)); },  // écrasé plus bas (déf. canonique)
+    shades: [0.82, 1, 1.18],
+    grain: 8,
+    grid128: 'rgba(237,242,250,0.045)', grid512: 'rgba(237,242,250,0.10)',
+    plate: 'rgba(5,8,16,0.55)',
+    ink: 'rgba(237,242,250,0.75)',
+    pixelFont: false,
+    spawn: function (ctx, x, y) {
+      ctx.save();
+      ctx.strokeStyle = '#00ffb0'; ctx.lineWidth = 2; ctx.shadowColor = '#00ffb0'; ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.moveTo(x - 8, y); ctx.lineTo(x + 8, y);
+      ctx.moveTo(x, y - 8); ctx.lineTo(x, y + 8);
+      ctx.stroke();
+      ctx.restore();
+    },
+    label: function (ctx, x, y, text) { labelBox(ctx, x, y, text, 'rgba(14,21,38,0.92)', '#edf2fa', 'rgba(44,64,102,0.9)', false); },
+    frame: null
+  };
+  function toHex(rgbStr) {
+    var m = rgbStr.match(/\d+/g);
+    return '#' + m.map(function (v) { return (+v).toString(16).padStart(2, '0'); }).join('');
+  }
+
+  // ---------- direction C : carte au trésor ----------
+  var themeC = {
+    outerBg: '#1c140c',
+    mapBg: '#2a2014',
+    pad: 26,
+    biome: function (ch) { return toHex(shade(mix(BIOME[ch], '#8a6a3a', 0.38), 0.78)); },
+    shades: [0.88, 1, 1.1],
+    grain: 8,
+    grid128: 'rgba(232,213,168,0.05)', grid512: null,
+    plate: 'rgba(20,14,8,0.5)',
+    ink: '#e8d5a8',
+    pixelFont: true,
+    spawn: function (ctx, x, y) {
+      ctx.strokeStyle = '#e8d5a8'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(x - 7, y - 7); ctx.lineTo(x + 7, y + 7);
+      ctx.moveTo(x + 7, y - 7); ctx.lineTo(x - 7, y + 7);
+      ctx.stroke();
+      ctx.lineCap = 'butt';
+    },
+    label: function (ctx, x, y, text) {
+      ctx.font = '8px PSP, monospace';
+      ctx.fillStyle = 'rgba(20,14,8,0.75)';
+      ctx.fillText(text, x + 1, y + 1);
+      ctx.fillStyle = '#e8d5a8';
+      ctx.fillText(text, x, y);
+    },
+    frame: function (ctx) {
+      // vignette bords brûlés
+      var grd = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.42, W / 2, H / 2, Math.max(W, H) * 0.72);
+      grd.addColorStop(0, 'rgba(12,8,4,0)');
+      grd.addColorStop(1, 'rgba(10,6,2,0.88)');
+      ctx.fillStyle = grd;
+      ctx.fillRect(0, 0, W, H);
+      // crans sombres pourtour
+      var k = 7;
+      ctx.fillStyle = '#120c06';
+      for (var x = 0; x < W; x += k) {
+        if (hsh(x, 11, 5) > 0.5) ctx.fillRect(x, 0, k, k * (1 + hsh(x, 12, 5) * 2 | 0));
+        if (hsh(x, 13, 5) > 0.5) ctx.fillRect(x, H - k * (1 + hsh(x, 14, 5) * 2 | 0), k, k * 3);
+      }
+      for (var y = 0; y < H; y += k) {
+        if (hsh(15, y, 5) > 0.5) ctx.fillRect(0, y, k * (1 + hsh(16, y, 5) * 2 | 0), k);
+        if (hsh(17, y, 5) > 0.5) ctx.fillRect(W - k * (1 + hsh(18, y, 5) * 2 | 0), y, k * 3, k);
+      }
+      // rose des vents (encre, haut-droite)
+      var cx = W - 78, cy = 74, R = 26;
+      ctx.strokeStyle = 'rgba(232,213,168,0.85)'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy, R * 0.55, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - R - 7); ctx.lineTo(cx + 5, cy); ctx.lineTo(cx, cy + R * 0.5); ctx.lineTo(cx - 5, cy);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(232,213,168,0.9)'; ctx.fill();
+      ctx.font = '8px PSP, monospace';
+      ctx.fillStyle = '#e8d5a8';
+      ctx.textAlign = 'center';
+      ctx.fillText('N', cx, cy - R - 14);
+      ctx.textAlign = 'left';
+    }
+  };
+  // fix biome fn for B (written clumsily above)
+  themeB.biome = function (ch) { return toHex(shade(BIOME[ch], 0.55)); };
+
+  // ---------- planche d'icônes ----------
+  var ICONS = [
+    ['village', 'Village', 'maison'],
+    ['dungeon', 'Donjon', 'spawner'],
+    ['monument', 'Monument', 'prismarine'],
+    ['ancient_city', 'Cité ancienne', 'warden'],
+    ['stronghold', 'Stronghold', 'œil de l’Ender'],
+    ['mineshaft', 'Mine abandonnée', 'galerie + rail'],
+    ['ruined_portal', 'Portail en ruine', 'obsidienne + or'],
+    ['desert_pyramid', 'Pyramide', 'temple du désert'],
+    ['jungle_pyramid', 'Temple jungle', 'pierre moussue'],
+    ['pillager_outpost', 'Avant-poste', 'tour pillards'],
+    ['shipwreck', 'Épave', 'navire échoué'],
+    ['fortress', 'Forteresse', 'nether'],
+    ['cave', 'Grotte', 'entrée repérée']
+  ];
+  var grid = document.getElementById('iconGrid');
+  ICONS.forEach(function (it) {
+    var card = document.createElement('div');
+    card.className = 'icon-card';
+    var cv = document.createElement('canvas');
+    cv.width = 80; cv.height = 80;
+    card.appendChild(cv);
+    var n = document.createElement('div'); n.className = 'icon-name'; n.textContent = it[1];
+    var s = document.createElement('div'); s.className = 'icon-sub'; s.textContent = it[2];
+    card.appendChild(n); card.appendChild(s);
+    grid.appendChild(card);
+    var ctx = cv.getContext('2d');
+    // damier de fond façon inventaire
+    for (var y = 0; y < 10; y++) for (var x = 0; x < 10; x++) {
+      ctx.fillStyle = (x + y) % 2 ? '#10151f' : '#0d1118';
+      ctx.fillRect(x * 8, y * 8, 8, 8);
+    }
+    drawSpr(ctx, it[0], 40, 40, 5, false);
+  });
+
+  // ---------- rendu (2 passes : la police pixel arrive en async) ----------
+  function renderAll() {
+    render('mapA', themeA);
+    render('mapB', themeB);
+    render('mapC', themeC);
+  }
+  renderAll();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(renderAll);
+})();
+</script>
