@@ -61,8 +61,9 @@ test('IRON_ARMOR_CHAIN: pioche fer + kit bois sûr + four + food + 24 lingots �
 
 test('IRON_ARMOR_CHAIN: kit prêt SANS nourriture → la descente n est PAS bloquée (chasse = hook best-effort)', () => {
   // vécu live : un but food_stock bloquant stallait à vie sur no_prey (zone vidée de ses proies)
+  // (3 pioches : le pré-stock spare_picks est satisfait → on isole bien le comportement food)
   const inv = {
-    stone_pickaxe: 1, wooden_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1,
+    stone_pickaxe: 3, wooden_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1,
     cobblestone: 12, oak_planks: 8,
   };
   const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64));
@@ -151,4 +152,39 @@ test('firstUnmet: cobble mais PAS de sticks → PAS de raccourci (il faut du boi
   const c = ctx({ cobblestone: 5, crafting_table: 1 }, [], 16);
   const g = firstUnmet(IRON_ARMOR_CHAIN, c);
   assert.strictEqual(g && g.name, 'logs');
+});
+
+// --- Pré-stock pioches (fix n°3 mur de l'eau) : descendre avec 3 pioches pierre — une casse ne
+// force plus l'arrêt du minage (vécu homedeath cycle 6 : la pioche cassait pendant la descente PUIS
+// en minant, avant les ~27 fer d'iron_deep). Exigé EN SURFACE seulement (y>30) : sous terre, 1
+// pioche suffit (exiger 3 avec 0 stick = remontée bois avec 2 pioches valides en poche = churn).
+test('IRON_ARMOR_CHAIN: surface + kit + 1 seule pioche pierre → but = spare_picks (pré-stock 3)', () => {
+  const inv = { stone_pickaxe: 1, crafting_table: 1, stick: 8, furnace: 1, cobblestone: 12, oak_planks: 8 };
+  const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64));
+  assert.strictEqual(g.name, 'spare_picks');
+});
+
+test('IRON_ARMOR_CHAIN: surface + 3 pioches pierre → pré-stock satisfait, but = descend_y16', () => {
+  const inv = { stone_pickaxe: 3, crafting_table: 1, stick: 8, furnace: 1, cobblestone: 12, oak_planks: 8 };
+  const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64));
+  assert.strictEqual(g.name, 'descend_y16');
+});
+
+test('IRON_ARMOR_CHAIN: SOUS TERRE (y=16) + 1 pioche → PAS de pré-stock (continue de miner : iron_deep)', () => {
+  const inv = { stone_pickaxe: 1, crafting_table: 1, stick: 6, furnace: 1, cobblestone: 12, oak_planks: 8 };
+  const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 16));
+  assert.strictEqual(g.name, 'iron_deep');
+});
+
+test('IRON_ARMOR_CHAIN: sous terre 0 pioche + matériaux → re-craft en place (stone_pickaxe, a752743)', () => {
+  const inv = { crafting_table: 1, stick: 6, furnace: 1, cobblestone: 8, oak_planks: 8 };
+  const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 16));
+  assert.strictEqual(g.name, 'stone_pickaxe');
+});
+
+test('IRON_ARMOR_CHAIN: pioche FER en poche → jamais de pré-stock pierre', () => {
+  const inv = { iron_pickaxe: 1, crafting_table: 1, stick: 8, furnace: 1, cobblestone: 12, oak_planks: 8 };
+  const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64));
+  assert.notStrictEqual(g && g.name, 'spare_picks');
+  assert.notStrictEqual(g && g.name, 'cobble_spare');
 });

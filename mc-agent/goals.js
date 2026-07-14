@@ -159,8 +159,20 @@ const ironOK = (c) => ironTotal(c) >= ironNeedTotal(c);
 // (vécu live : chaque casse d'outil → remontée → zone déforestée → roaming mortel) est le frein #1.
 const _IRON_PREFIX = IRON_CHAIN.slice(0, IRON_CHAIN.findIndex((g) => g.name === 'iron_ore'))
   .map((g) => (g.name === 'sticks' ? Object.assign({}, g, { args: { name: 'stick', count: 4 } }) : g));
+// Pré-stock pioches (fix n°3 mur de l'eau) : 3 pioches pierre AVANT de descendre — une casse ne
+// force plus l'arrêt du minage (vécu homedeath cycle 6 : la pioche cassait pendant la descente PUIS
+// re-cassait en minant, avant les ~27 fer d'iron_deep → smelt:0). Exigé EN SURFACE seulement
+// (y>30) : sous terre, 1 pioche suffit (exiger 3 avec 0 stick forcerait une remontée bois avec 2
+// pioches valides en poche = le churn qu'on tue). Les remontées bois re-stockent au passage (y>30).
+const stonePicks = (c) => invCount(c.inv, 'stone_pickaxe');
+const picksOK = (c) => stonePicks(c) >= 3 || invCount(c.inv, 'iron_pickaxe') >= 1 ||
+  (c.y !== undefined && c.y <= 30 && stonePicks(c) >= 1);
 const IRON_ARMOR_CHAIN = [
   ..._IRON_PREFIX.map((g) => withFinal(g, IA)),
+  { name: 'cobble_spare', met: (c) => invCount(c.inv, 'cobblestone') >= 6 || picksOK(c) || ironOK(c) || IA(c),
+    skill: 'gather',      args: { name: 'stone', count: 6 } },
+  { name: 'spare_picks',  met: (c) => picksOK(c) || ironOK(c) || IA(c),
+    skill: 'craft',       args: { name: 'stone_pickaxe', count: 1 } },
   // NB : PAS de but food_stock BLOQUANT (vécu live : zone vidée de ses proies par les runs
   // précédents → no_prey ×16 → stall à vie en surface). La chasse est un HOOK best-effort borné
   // avant descendDiagonal (index.js) ; sous terre, une famine coûte une mort keepInventory
