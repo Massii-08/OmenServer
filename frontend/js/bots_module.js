@@ -1310,6 +1310,12 @@ const BotsModule = {
  return i[kind] || '?';
  },
 
+ // Nom i18n d'un type de structure ; kind inconnu → kind lisible (piège #12 : Lang.t rend la clé).
+ _mcaStructName(kind) {
+ const t = Lang.t('mcagent.map.struct.' + kind);
+ return (t || '').startsWith('mcagent.') ? String(kind).replace(/_/g, ' ') : t;
+ },
+
  // Barres de progression quota d'une session (sess.quota = {type:{have,target}}, cf. backend).
  _quotaBars(sess) {
  const q = sess.quota || {};
