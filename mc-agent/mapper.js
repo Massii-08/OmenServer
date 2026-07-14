@@ -347,6 +347,18 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
           emit({ type: 'mapper_warp', to: cell.key, d: Math.round(fd) });
           try { await opts.warp(cell.center.x, cell.center.z); } catch (e) { /* best-effort */ }
           await sleep(opts.warpSettleMs != null ? opts.warpSettleMs : 4000);  // chunks + chute spreadplayers
+          // Garde-fou : /spreadplayers ÉCHOUE silencieusement si la cible n'a aucune position
+          // d'atterrissage valide (océan/vide) → le bot RESTE sur place. Sans ce contrôle,
+          // nextFrontierCell re-choisit la MÊME cellule à l'infini (warp-spam, 0 progrès — vécu
+          // monde-île 2026-07-14). Si le warp n'a pas rapproché le bot de la cible, on la marque
+          // skip (comme un échec goto ci-dessous) et on passe à la cellule frontière suivante.
+          const after = _pos(bot);
+          const arrived = Math.sqrt((after.x - cell.center.x) ** 2 + (after.z - cell.center.z) ** 2);
+          if (arrived > (opts.warpArriveTol || 96)) {
+            frontierSkip.add(cell.key);
+            emit({ type: 'mapper_frontier_skip', cell: cell.key, reason: 'warp_failed' });
+            continue;
+          }
           record();
           continue;
         }

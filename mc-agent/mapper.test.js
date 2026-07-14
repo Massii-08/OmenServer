@@ -529,3 +529,40 @@ test('runMapper frontier : vise la cellule non couverte la plus proche, warp si 
   assert.ok(warps.length >= 1, 'warp attendu quand la frontière est lointaine');
   assert.ok(events.some((e) => e.type === 'mapper_warp'));
 });
+
+test('runMapper frontier : warp ÉCHOUÉ (bot ne bouge pas, ex. /spreadplayers sur océan) → skip la cellule, PAS de re-warp en boucle', async () => {
+  const bot = fakeMapperBot();
+  const gotos = [];
+  const warps = [];
+  const events = [];
+  const token = { cancelled: false };
+  // Tout couvert dans le rayon de recherche (14 anneaux ≈ ±1792) SAUF une seule cellule
+  // lointaine (256,0) — centre (320,64), distance 326 > warpDist → chemin WARP. Le warp NE
+  // DÉPLACE PAS le bot (spreadplayers échoue au-dessus de l'eau) → sans garde-fou, nextFrontierCell
+  // re-choisit (256,0) à l'infini (warp-spam vécu monde-île 2026-07-14).
+  const biomes = [];
+  for (let x = -1792; x <= 1792; x += 128) for (let z = -1792; z <= 1792; z += 128) {
+    if (!(x === 256 && z === 0)) biomes.push({ name: 'plains', x, z });
+  }
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    memory: { worlds: { overworld: { biomes } } },
+    frontier: true,
+    warp: async (x, z) => { warps.push({ x, z }); /* bot NE bouge PAS : warp échoué */ },
+    warpDist: 220,
+    warpSettleMs: 0,
+    emit: (e) => {
+      events.push(e);
+      if (warps.length >= 5 || gotos.length >= 3 || events.length > 800) token.cancelled = true;
+    },
+    goto: async (wp) => { gotos.push({ x: wp.x, z: wp.z }); bot.entity.position = vec3(wp.x, 64, wp.z); },
+    sleep: async () => {},
+  }, token);
+  const keyOf = (w) => Math.floor(w.x / 128) * 128 + ',' + Math.floor(w.z / 128) * 128;
+  const warpsToTarget = warps.filter((w) => keyOf(w) === '256,0').length;
+  assert.strictEqual(warpsToTarget, 1, 'un warp qui échoue ne doit PAS reboucler sur la même cellule');
+  assert.ok(
+    events.some((e) => e.type === 'mapper_frontier_skip' && e.cell === '256,0'),
+    'la cellule warp-échouée doit être marquée skip (comme un échec goto)'
+  );
+});
