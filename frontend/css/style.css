@@ -4662,3 +4662,10 @@ select:-webkit-autofill {
     .oracle-wrap.oracle-enter .ov-fill, .oracle-wrap.oracle-enter #ora-hist .bar { animation: none; }
     .oracle-panel, .oracle-table { transition: none; }
 }
+
+/* ─── MC Agent — carte du mappeur : police pixel (utilisée par le canvas uniquement) ─── */
+@font-face {
+  font-family: 'PSP';
+  src: url('/fonts/press-start-2p-latin.woff2') format('woff2');
+  font-display: swap;
+}
