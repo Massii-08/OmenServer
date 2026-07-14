@@ -2688,23 +2688,6 @@ const BotsModule = {
  return this._mcaShade(this._mcaBiomeBase(name), jitter);
  },
 
- // Couleurs fixes pour les matériaux courants (lisibilité immédiate), hash vif pour le reste.
- _MCA_MAT_COLORS: {
- diamond: '#4DD8E6', diamond_ore: '#4DD8E6', deepslate_diamond_ore: '#4DD8E6',
- iron: '#E8C5A8', iron_ore: '#E8C5A8', deepslate_iron_ore: '#E8C5A8', raw_iron: '#E8C5A8',
- coal: '#9AA0A6', coal_ore: '#9AA0A6', deepslate_coal_ore: '#9AA0A6',
- copper_ore: '#E77C56', gold_ore: '#FACC15', redstone_ore: '#F87171',
- lapis_ore: '#60A5FA', emerald_ore: '#4ADE80',
- },
-
- _mcaMatColor(mat) {
- const key = String(mat).toLowerCase();
- if (this._MCA_MAT_COLORS[key]) return this._MCA_MAT_COLORS[key];
- if (/log|wood|plank/.test(key)) return '#B08968';
- const h = this._mcaHash('m:' + key);
- return `hsl(${h % 360},80%,64%)`;
- },
-
  _mcaMapBindCanvas() {
  const m = this._mcaMapState();
  const cv = document.getElementById('mca-map-canvas');
@@ -2957,7 +2940,7 @@ const BotsModule = {
  ctx.fillText(text, x + 6, y + 1);
  },
 
- // Légende cliquable : chips biomes (carrés) / matériaux (losanges) / grottes (triangle) avec compte.
+ // Légende cliquable : chips biomes (swatch map color) / structures (mini-icône) / grottes.
  _mcaMapLegend() {
  const box = document.getElementById('mca-map-legend');
  if (!box) return;
@@ -2970,31 +2953,27 @@ const BotsModule = {
  return o;
  };
  const biomes = counts(world.biomes, (b) => b.name || ('#' + b.id));
- const mats = counts(world.finds, (f) => f.material);
  const structCounts = counts(world.structures, (st) => st.kind);
- const chip = (k, label, color, count, shape) => {
- const sw = shape === 'diamond'
- ? `<span style="display:inline-block;width:9px;height:9px;background:${color};transform:rotate(45deg);border-radius:2px;"></span>`
- : shape === 'tri'
- ? `<span style="display:inline-block;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid ${color};"></span>`
- : `<span style="display:inline-block;width:10px;height:10px;background:${color};border-radius:3px;"></span>`;
- return `<button type="button" data-k="${this._escapeHtml(k)}" class="mca-map-chip" style="display:inline-flex;align-items:center;gap:6px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:999px;padding:3px 10px;margin:2px 6px 2px 0;font-size:12px;cursor:pointer;color:var(--text);opacity:${m.hidden[k] ? 0.35 : 1};">${sw}<span>${this._escapeHtml(label)}</span><span style="color:var(--text-dim);font-family:var(--font-mono);">${count}</span></button>`;
- };
+ const chip = (k, label, count, swatchHtml) => `<button type="button" data-k="${this._escapeHtml(k)}" class="mca-map-chip" style="display:inline-flex;align-items:center;gap:6px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:999px;padding:3px 10px;margin:2px 6px 2px 0;font-size:12px;cursor:pointer;color:var(--text);opacity:${m.hidden[k] ? 0.35 : 1};">${swatchHtml}<span>${this._escapeHtml(label)}</span><span style="color:var(--text-dim);font-family:var(--font-mono);">${count}</span></button>`;
+ const sq = (color) => `<span style="display:inline-block;width:10px;height:10px;background:${color};border-radius:3px;"></span>`;
+ const ico = (kind) => this._MCA_SPRITES[kind]
+ ? `<canvas class="mca-chip-ico" data-spr="${this._escapeHtml(kind)}" width="16" height="16" style="width:16px;height:16px;image-rendering:pixelated;"></canvas>`
+ : sq(this._structColor(kind));
  const bioChips = Object.keys(biomes).sort((a, b) => biomes[b] - biomes[a] || a.localeCompare(b))
- .map((k) => chip('b:' + k, k, this._mcaBiomeColor(k), biomes[k])).join('');
- const matChips = Object.keys(mats).sort()
- .map((k) => chip('m:' + k, k, this._mcaMatColor(k), mats[k], 'diamond')).join('');
+ .map((k) => chip('b:' + k, k, biomes[k], sq(this._mcaBiomeColor(k)))).join('');
  const structChips = Object.keys(structCounts).sort()
- .map((k) => chip('s:' + k, k.replace(/_/g, ' '), this._structColor(k), structCounts[k])).join('');
+ .map((k) => chip('s:' + k, this._mcaStructName(k), structCounts[k], ico(k))).join('');
  const caveChip = (world.caves || []).length
- ? chip('caves', Lang.t('mcagent.map.caves'), '#F4F4F5', (world.caves || []).length, 'tri') : '';
+ ? chip('caves', Lang.t('mcagent.map.caves'), (world.caves || []).length, ico('cave')) : '';
  const section = (title, chips) => chips
  ? `<div style="margin-bottom:6px;"><div style="font-size:11px;text-transform:uppercase;color:var(--text-dim);margin-bottom:3px;">${title}</div>${chips}</div>` : '';
  box.innerHTML =
  section(Lang.t('mcagent.map.biomes'), bioChips) +
  section(Lang.t('mcagent.map.structures'), structChips) +
- section(Lang.t('mcagent.map.finds'), matChips) +
  section(Lang.t('mcagent.map.caves'), caveChip);
+ box.querySelectorAll('.mca-chip-ico').forEach((c) => {
+ this._mcaDrawSprite(c.getContext('2d'), c.getAttribute('data-spr'), 8, 8, 1, false);
+ });
  box.querySelectorAll('.mca-map-chip').forEach((el) => el.addEventListener('click', () => {
  const k = el.getAttribute('data-k');
  m.hidden[k] = !m.hidden[k];
