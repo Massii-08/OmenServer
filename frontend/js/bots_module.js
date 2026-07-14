@@ -2340,7 +2340,7 @@ const BotsModule = {
  upd.textContent = `${Lang.t('mcagent.map.updated')}: ${at ? new Date(at).toLocaleString(locale) : Lang.t('mcagent.map.never')}`;
  }
  const world = this._mcaMapWorld();
- const has = !!world && ((world.biomes || []).length + (world.caves || []).length + (world.finds || []).length + (world.structures || []).length) > 0;
+ const has = !!world && ((world.biomes || []).length + (world.caves || []).length + (world.structures || []).length) > 0;
  this._mcaMapShowEmpty(has ? null : Lang.t('mcagent.map.empty'));
  if (has && m.world && !m.fitted[m.world]) this._mcaMapFit(false);
  this._mcaMapLegend();
@@ -2368,7 +2368,6 @@ const BotsModule = {
  if (world) {
  (world.biomes || []).forEach((b) => seen(b.x, b.z, 128));
  (world.caves || []).forEach((c) => seen(c.x, c.z, 0));
- (world.finds || []).forEach((f) => seen(f.x, f.z, 0));
  (world.structures || []).forEach((st) => seen(st.x, st.z, 0));
  }
  if (minX === Infinity) { m.view = { cx: 0, cz: 0, scale: 0.6 }; if (redraw) this._mcaMapDraw(); return; }
@@ -2752,7 +2751,7 @@ const BotsModule = {
  }, { passive: false });
  },
 
- // Lecture des coords monde sous le curseur + biome de la cellule survolée.
+ // Coords monde sous le curseur + biome de la cellule + structure/grotte proche (< 14 px écran).
  _mcaMapCoords(p, cv) {
  const el = document.getElementById('mca-map-coords');
  if (!el) return;
@@ -2763,7 +2762,21 @@ const BotsModule = {
  const cx = Math.floor(wx / 128) * 128, cz = Math.floor(wz / 128) * 128;
  const world = this._mcaMapWorld();
  const b = world ? (world.biomes || []).find((bb) => bb.x === cx && bb.z === cz) : null;
- el.textContent = `x ${wx} · z ${wz}` + (b ? ` · ${b.name || ('#' + b.id)}` : '');
+ let near = '';
+ if (world) {
+ const sx = (o) => (o.x - v.cx) * v.scale + w / 2;
+ const sy = (o) => (o.z - v.cz) * v.scale + h / 2;
+ let best = 14;
+ for (const st of world.structures || []) {
+ const d = Math.hypot(sx(st) - p.x, sy(st) - p.y);
+ if (d < best) { best = d; near = this._mcaStructName(st.kind); }
+ }
+ for (const c of world.caves || []) {
+ const d = Math.hypot(sx(c) - p.x, sy(c) - p.y);
+ if (d < best) { best = d; near = this._mcaStructName('cave') + (typeof c.y === 'number' ? ' y ' + c.y : ''); }
+ }
+ }
+ el.textContent = `x ${wx} · z ${wz}` + (b ? ` · ${b.name || ('#' + b.id)}` : '') + (near ? ` · ${near}` : '');
  },
 
  // Rendu « item carte » MC : parchemin, biomes map-colors + grain dithéré, curseur de spawn,
