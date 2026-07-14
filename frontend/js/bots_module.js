@@ -2379,6 +2379,266 @@ const BotsModule = {
  return Math.abs(h);
  },
 
+ // Hash numérique rapide → [0,1) déterministe (grain/crans stables, pas de Math.random).
+ _mcaHash2(a, b) {
+ let h = ((a | 0) * 374761393 + (b | 0) * 668265263) | 0;
+ h = ((h ^ (h >> 13)) * 1274126177) | 0;
+ return ((h ^ (h >> 16)) >>> 0) / 4294967295;
+ },
+
+ // Multiplie la luminosité d'un '#rrggbb' (f ~ 0.8-1.2) → 'rgb(...)'.
+ _mcaShade(hex, f) {
+ const v = parseInt(hex.slice(1), 16);
+ const r = Math.min(255, ((v >> 16) & 255) * f) | 0;
+ const g = Math.min(255, ((v >> 8) & 255) * f) | 0;
+ const b = Math.min(255, (v & 255) * f) | 0;
+ return 'rgb(' + r + ',' + g + ',' + b + ')';
+ },
+
+ // Sprites 16×16 des structures (mockup 2026-07-14 direction A validé) — '.' = transparent.
+ _MCA_SPRITES: {
+ village: { p: { R: '#8a4a24', r: '#5e2f14', W: '#e8dcc4', F: '#7fb4d8', f: '#5a88b0', D: '#6b4423', d: '#3a250f', S: '#b8a878' }, g: [
+ '................',
+ '.......rr.......',
+ '......rRRr......',
+ '.....rRRRRr.....',
+ '....rRRRRRRr....',
+ '...rRRRRRRRRr...',
+ '..rRRRRRRRRRRr..',
+ '.rRRRRRRRRRRRRr.',
+ '.rr..........rr.',
+ '..WWFFWWWWDDWW..',
+ '..WWFFWWWWDdWW..',
+ '..WWffWWWWDDWW..',
+ '..WWWWWWWWDdWW..',
+ '..WWWWWWWWDDWW..',
+ '..SSSSSSSSSSSS..',
+ '................'] },
+ dungeon: { p: { K: '#33333c', k: '#1b1b22', n: '#101016', y: '#ffd23e', o: '#ff8a2e' }, g: [
+ '................',
+ '..KKKKKKKKKKKK..',
+ '..KnnKKnnKKnnK..',
+ '..KnnKKnnKKnnK..',
+ '..KKKKKKKKKKKK..',
+ '..KnnKKyyKKnnK..',
+ '..KnnKyyyyKnnK..',
+ '..KKKKoyyoKKKK..',
+ '..KnnKooooKnnK..',
+ '..KnnKKooKKnnK..',
+ '..KKKKKKKKKKKK..',
+ '..KnnKKnnKKnnK..',
+ '..KnnKKnnKKnnK..',
+ '..KKKKKKKKKKKK..',
+ '................',
+ '................'] },
+ monument: { p: { P: '#4fbfb2', D: '#2e7a73', d: '#16343a', L: '#d8f0e0' }, g: [
+ '................',
+ '......PPPP......',
+ '....PPPPPPPP....',
+ '..PPPPPPPPPPPP..',
+ '..PDPPLLLLPPDP..',
+ '..PDPPLPPLPPDP..',
+ '..PDPPLLLLPPDP..',
+ '..PDPPPPPPPPDP..',
+ '..PDPPddddPPDP..',
+ '..PDPPddddPPDP..',
+ '..PPPPddddPPPP..',
+ '..PPPPPPPPPPPP..',
+ '................',
+ '................',
+ '................',
+ '................'] },
+ mineshaft: { p: { B: '#8a5a2b', b: '#6e4520', n: '#17120c', T: '#5c3a1e', M: '#b8bec6', s: '#3a2c1a' }, g: [
+ '................',
+ '..BBBBBBBBBBBB..',
+ '..BbBBBBBBBBbB..',
+ '..BbnnnnnnnnbB..',
+ '..BbnnnnnnnnbB..',
+ '..BbnnnnnnnnbB..',
+ '..BbnnnnnnnnbB..',
+ '..BbnnnnnnnnbB..',
+ '..BbnnnnnnnnbB..',
+ '..ssssssssssss..',
+ '..sTsMMsMMsTss..',
+ '..ssssssssssss..',
+ '................',
+ '................',
+ '................',
+ '................'] },
+ stronghold: { p: { P: '#2c1f3e', G: '#6fae2e', g: '#b8e07a', n: '#0c0a12' }, g: [
+ '................',
+ '................',
+ '................',
+ '.....PPPPPP.....',
+ '...PPGGGGGGPP...',
+ '..PGGGggggGGGP..',
+ '.PGGgggnnggggGP.',
+ '.PGGggnnnnggGGP.',
+ '.PGGgggnnggggGP.',
+ '..PGGGggggGGGP..',
+ '...PPGGGGGGPP...',
+ '.....PPPPPP.....',
+ '................',
+ '................',
+ '................',
+ '................'] },
+ ancient_city: { p: { W: '#2c3a44', w: '#48606e', C: '#22d3ee', s: '#0e5a5a' }, g: [
+ '................',
+ '..ww........ww..',
+ '..wWw......wWw..',
+ '...WWWWWWWWWW...',
+ '..WWWWWWWWWWWW..',
+ '..WWCCWWWWCCWW..',
+ '..WWCCWWWWCCWW..',
+ '..WWWWWWWWWWWW..',
+ '..WWWssssssWWW..',
+ '..WWssssssssWW..',
+ '..WWWWWWWWWWWW..',
+ '...WWWWWWWWWW...',
+ '................',
+ '................',
+ '................',
+ '................'] },
+ ruined_portal: { p: { O: '#241b33', C: '#6a4fd0', v: '#8a5aff', G: '#f5c542' }, g: [
+ '................',
+ '..OOOOOOOOO.....',
+ '..OO.....OO.....',
+ '..OO.vvv........',
+ '..CC.vvvv...OO..',
+ '..OO.vvvv...OO..',
+ '..OO.vvvv...CC..',
+ '..CC.vvvv...OO..',
+ '..OO.vvvv...OO..',
+ '..OOOOOOOOOOOO..',
+ '..GG........GG..',
+ '................',
+ '................',
+ '................',
+ '................',
+ '................'] },
+ desert_pyramid: { p: { S: '#ead9a0', s: '#c9b87e', O: '#c77b33', d: '#3c2f1a' }, g: [
+ '................',
+ '.......SS.......',
+ '......SsSS......',
+ '.....SSSSSS.....',
+ '....SSsOOsSS....',
+ '...SSSSOOSSSS...',
+ '..SSsSSSSSSsSS..',
+ '.SSSSSooooSSSSS.',
+ '.SSsSSoddoSSsSS.',
+ 'SSSSSSoddoSSSSSS',
+ 'SsSSsSSSSSSsSSsS',
+ '................',
+ '................',
+ '................',
+ '................',
+ '................'] },
+ jungle_pyramid: { p: { C: '#7a8a78', c: '#5f6e5e', m: '#4e7a3a', d: '#1e2a1a', v: '#3e6a2e' }, g: [
+ '................',
+ '.....CCCCCC.....',
+ '.....CmCCmC.....',
+ '....CCCCCCCC....',
+ '...CCmCccCmCC...',
+ '...CCCCddCCCC...',
+ '..CCmCCddCCmCC..',
+ '..CcCCCddCCCcC..',
+ '.CCCCCCddCCCCCC.',
+ '.vCCmCCCCCCmCCv.',
+ '.v...v.....v..v.',
+ '.v...v........v.',
+ '................',
+ '................',
+ '................',
+ '................'] },
+ pillager_outpost: { p: { D: '#3c2f1e', B: '#8a5a2b', b: '#a06c36', n: '#141008', F: '#5c6670' }, g: [
+ '................',
+ '....DDDDDDDD....',
+ '....DBBBBBBD....',
+ '....BnBBBBnBFF..',
+ '....BBBBBBBBF...',
+ '.....BbbbbB.F...',
+ '.....BbbbbB.....',
+ '.....BbnbbB.....',
+ '.....BbbbbB.....',
+ '.....BbbbbB.....',
+ '.....BbnbbB.....',
+ '....BBBBBBBB....',
+ '................',
+ '................',
+ '................',
+ '................'] },
+ shipwreck: { p: { H: '#6e4a26', h: '#4a2f16', M: '#8a5a2b', S: '#d8cba8' }, g: [
+ '................',
+ '......M.........',
+ '......MM........',
+ '......M.S.......',
+ '......M.SS......',
+ '......MMSSS.....',
+ '......MM.SS.....',
+ '......MM........',
+ '.HH...MM....HH..',
+ '.HHHHHHHHHHHHH..',
+ '..HHHHHHHHHHH...',
+ '...HHHHHHHHH....',
+ '....hhhhhhh.....',
+ '................',
+ '................',
+ '................'] },
+ fortress: { p: { N: '#4a2230', n: '#1c0c12', a: '#ff7a2e' }, g: [
+ '................',
+ '..NN..NN..NN....',
+ '..NNNNNNNNNNNN..',
+ '..NNNNNNNNNNNN..',
+ '..NNaaNNNNaaNN..',
+ '..NNNNNNNNNNNN..',
+ '..NNNNnnnnNNNN..',
+ '..NNNNnnnnNNNN..',
+ '..NNNNnnnnNNNN..',
+ '..NNNNnaannNNNN.',
+ '..NNNNNNNNNNNN..',
+ '................',
+ '................',
+ '................',
+ '................',
+ '................'] },
+ cave: { p: { G: '#8a8f95', g: '#5f646b', n: '#0c0e12' }, g: [
+ '................',
+ '................',
+ '................',
+ '.....GGGGGG.....',
+ '...GGgGGGGgGG...',
+ '..GGnnnnnnnnGG..',
+ '..GgnnnnnnnngG..',
+ '.GGnnnnnnnnnnGG.',
+ '.GgnnnnnnnnnnGG.',
+ '.GGnnnnnnnnnngG.',
+ '................',
+ '................',
+ '................',
+ '................',
+ '................',
+ '................'] }
+ },
+
+ // Dessine un sprite 16×16 centré en (cx,cy), s px par pixel, ombre portée dure optionnelle.
+ _mcaDrawSprite(ctx, name, cx, cy, s, withShadow) {
+ const d = this._MCA_SPRITES[name];
+ if (!d) return false;
+ const g = d.g, p = d.p, ox = cx - 8 * s, oy = cy - 8 * s;
+ if (withShadow) {
+ ctx.fillStyle = 'rgba(0,0,0,0.45)';
+ for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+ const ch = g[y] && g[y][x];
+ if (ch && ch !== '.') ctx.fillRect(ox + x * s + s, oy + y * s + s, s, s);
+ }
+ }
+ for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+ const ch = g[y] && g[y][x];
+ if (ch && ch !== '.' && p[ch]) { ctx.fillStyle = p[ch]; ctx.fillRect(ox + x * s, oy + y * s, s, s); }
+ }
+ return true;
+ },
+
  // Couleur stable par biome — teinte thématique (océan bleu, désert sable…) + jitter hashé pour
  // distinguer les variantes ; fallback 100% hashé pour les biomes custom de datapack (cf. spec §13).
  _MCA_BIOME_RULES: [
