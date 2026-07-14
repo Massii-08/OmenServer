@@ -176,7 +176,9 @@ let _safeHomeSurface = false; // safe posé à une VRAIE surface (y≥58) → ci
 let _deathArmed = false;      // watchdog PV : lieu de mort marqué (/sethome death) → post-respawn goHome('death')+ramassage
 let _wsiteMineSet = false;    // NO_GIVE : chantier profond SEC mémorisé (/sethome wsite) → re-descente = /home wsite (1 tp)
                               // au lieu de re-creuser ~52 blocs (chaque re-descente cassait une pioche → no_pickaxe → fer jamais accumulé, vécu homedeath)
-let _drySteerDone = false;    // NO_GIVE : steering STRATÉGIQUE fait (marche vers la cellule 128 sèche mappée AVANT la 1re descente)
+let _drySteerTries = 0;       // NO_GIVE : marches tentées vers la cellule 128 sèche (arrivée VÉRIFIÉE, ≤3 —
+                              // vécu live NethBot2 : goto interrompu par un réflexe → « arrivé » à 180 blocs
+                              // de la cible avec l'ancien one-shot → descente en zone humide quand même)
 let _deathMark = null;        // dernière position marquée death {x,y,z,at} → dédup anti-spam du watchdog
 let _imminentBusy = false;    // anti-rafale : un seul warp de sauvetage PV à la fois
 let _convoPauseUntil = 0;   // stop-pour-répondre : gèle les gotos pendant réflexion+frappe (HUMANIZE)
@@ -498,8 +500,7 @@ async function runGoalSkill(goal) {
       // no_give-légal — /tp bloqué) vers la meilleure AVANT la 1re descente ; ensuite le wsite
       // (53ca041) ancre le chantier sec pour toutes les re-descentes. Une tentative par session :
       // échec → on descend sur place (comportement historique inchangé).
-      if (!_drySteerDone && !_wsiteMineSet && bot.entity && bot.entity.position) {
-        _drySteerDone = true;
+      if (_drySteerTries < 3 && !_wsiteMineSet && bot.entity && bot.entity.position) {
         try {
           const memDS = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
           const wkDS = String(bot._worldKey || '');
@@ -511,13 +512,27 @@ async function runGoalSkill(goal) {
             : null;
           // > 20 % wet = pas mieux qu'ici → pas de marche pour rien (on descend sur place).
           if (cellDS && cellDS.wetFraction <= 0.2) {
-            emit({ type: 'dry_steer', x: cellDS.x, z: cellDS.z, wet: Math.round(cellDS.wetFraction * 1000) / 1000, material: matDS });
+            _drySteerTries++;
+            emit({ type: 'dry_steer', x: cellDS.x, z: cellDS.z, wet: Math.round(cellDS.wetFraction * 1000) / 1000, material: matDS, try: _drySteerTries });
             try {
               await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(cellDS.x, cellDS.z, 12)), 300000,
                 () => { try { stopMotion(); } catch (e) {} });
-              emit({ type: 'dry_steer_arrived', x: Math.round(bot.entity.position.x), z: Math.round(bot.entity.position.z) });
-            } catch (e) { emit({ type: 'dry_steer_failed', reason: String((e && e.message) || e).slice(0, 60) }); }
+            } catch (e) { /* jugé sur la DISTANCE réelle ci-dessous, pas sur la promesse */ }
             if (isInWater(bot)) { try { await escapeWater(bot, { emit }); } catch (e) {} }
+            // Arrivée VÉRIFIÉE (un réflexe/watchdog peut résoudre le goto à mi-chemin) : à >24 blocs
+            // de la cible, on NE descend PAS ici (zone humide probable) → échec doux, le planner
+            // re-tente descend_y16 et la marche REPREND d'où on est (jusqu'à 3 tentatives).
+            const pArr = bot.entity && bot.entity.position;
+            const dArr = pArr ? Math.hypot(pArr.x - cellDS.x, pArr.z - cellDS.z) : Infinity;
+            if (dArr <= 24) {
+              _drySteerTries = 3;                       // arrivé → plus de steering ce run
+              emit({ type: 'dry_steer_arrived', x: Math.round(pArr.x), z: Math.round(pArr.z) });
+            } else {
+              emit({ type: 'dry_steer_failed', reason: 'short', dist: Math.round(dArr), try: _drySteerTries });
+              if (_drySteerTries < 3) return { ok: false, reason: 'dry_steer_short' };
+            }
+          } else {
+            _drySteerTries = 3;                         // pas de cellule sèche mappée → comportement historique
           }
         } catch (e) { /* best-effort : sans carte/cellule, descente sur place comme avant */ }
       }
@@ -536,6 +551,19 @@ async function runGoalSkill(goal) {
     }
   }
   if (goal.skill === 'gatherLog') {
+    // armor_fuel (fix n°4 water-wall) : CHARBON d'abord quand une pioche est en poche — 1 charbon
+    // fond 8 items (vs bûche 1.5) et le charbon ne dépend PAS des forêts (vécu live NethBot3 :
+    // boucle explore_directed sur la MÊME forêt apprise déjà PELÉE par 20 sessions → not_found ×28
+    // à un craft de T1). Borné 120 s → il reste tout le budget du skill pour le repli bois.
+    if (goal.name === 'armor_fuel' && ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name.endsWith('_pickaxe'))) {
+      let rc = null;
+      try {
+        rc = await withTimeout(gather(bot, { name: ['coal_ore', 'deepslate_coal_ore'], count: 3, explore: true }, taskToken),
+          120000, () => { try { stopMotion(); } catch (e) {} });
+      } catch (e) { rc = null; }
+      if (rc && rc.ok) return rc;
+      if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    }
     // arbre le plus proche de N'IMPORTE quelle essence (pas oak hardcodé) — robustesse terrain
     const logNames = Object.keys(bot.registry.blocksByName).filter((n) => n.endsWith('_log'));
     // explore:true → si aucun arbre à portée, le bot VOYAGE pour en trouver (autonomie ressources).
