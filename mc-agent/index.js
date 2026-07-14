@@ -1094,7 +1094,11 @@ async function ensureArmor(opts = {}) {
     if (totalIron - ironKeep >= nextPiece.ingots) {
       const need = nextPiece.ingots - cnt('iron_ingot');
       if (need > 0 && cnt('raw_iron') >= need) {
-        try { await smeltWithFurnace('raw_iron', 'iron_ingot', need); } catch (e) {}
+        // event diagnostic (fix n°4 water-wall) : l'échec de fonte était AVALÉ → armor_no_progress
+        // en boucle sans cause visible (vécu live NethBot3 : 0 combustible, indevinable des events).
+        let sm = null;
+        try { sm = await smeltWithFurnace('raw_iron', 'iron_ingot', need); } catch (e) { sm = { ok: false, reason: 'threw' }; }
+        if (!sm || !sm.ok) emit({ type: 'armor_smelt', ok: false, reason: (sm && sm.reason) || '?' });
       }
     }
   }

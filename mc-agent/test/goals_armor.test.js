@@ -200,3 +200,37 @@ test('chaînes armure : le minage profond est en SERPENTIN (profil anti-eau du p
   const ironChainDeep = IRON_CHAIN.find((g) => g.name === 'iron_deep');
   assert.ok(!ironChainDeep || !ironChainDeep.args.serpentine, 'IRON_CHAIN (objectif pioche) inchangé');
 });
+
+// --- Fix n°4 water-wall : le DERNIER MÈTRE de T1 (vécu live NethBot3, 85× armor_no_progress).
+// Un bot qui reprend avec pioche fer + fer brut banké a TOUS les buts amont « met » via I(c) →
+// jamais de bois ni de four cette session → le smelt d'ensureArmor échoue en silence (0 combustible,
+// 0 four) → boucle armor_no_progress à vie. La chaîne doit exiger combustible + four AVANT iron_armor.
+test('IRON_ARMOR_CHAIN: pioche fer + 24 raw_iron mais 0 combustible → but = armor_fuel', () => {
+  const inv = { iron_pickaxe: 1, raw_iron: 24, cobblestone: 12, crafting_table: 1, furnace: 1 };
+  const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64));
+  assert.strictEqual(g.name, 'armor_fuel');
+});
+
+test('IRON_ARMOR_CHAIN: fer brut + charbon mais PAS de four → armor_cobble puis armor_furnace', () => {
+  const noCobble = { iron_pickaxe: 1, raw_iron: 24, coal: 4, crafting_table: 1 };
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(noCobble, [], 64)).name, 'armor_cobble');
+  const withCobble = { ...noCobble, cobblestone: 8 };
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(withCobble, [], 64)).name, 'armor_furnace');
+});
+
+test('IRON_ARMOR_CHAIN: fer brut + charbon + four → but = iron_armor (ensureArmor peut fondre+crafter)', () => {
+  const inv = { iron_pickaxe: 1, raw_iron: 24, coal: 4, cobblestone: 12, crafting_table: 1, furnace: 1 };
+  const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64));
+  assert.strictEqual(g.name, 'iron_armor');
+});
+
+test('IRON_ARMOR_CHAIN: lingots DÉJÀ fondus (pas de smelt à faire) → pas d exigence combustible', () => {
+  const inv = { iron_pickaxe: 1, iron_ingot: 24, cobblestone: 12, crafting_table: 1, furnace: 1 };
+  const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64));
+  assert.strictEqual(g.name, 'iron_armor');
+});
+
+test('IRON_ARMOR_CHAIN: armure portée → armor_fuel/cobble/furnace restent met (monotone)', () => {
+  const full = ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'];
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx({}, full)), null);
+});

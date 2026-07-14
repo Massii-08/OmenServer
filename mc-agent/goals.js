@@ -167,6 +167,11 @@ const _IRON_PREFIX = IRON_CHAIN.slice(0, IRON_CHAIN.findIndex((g) => g.name === 
 const stonePicks = (c) => invCount(c.inv, 'stone_pickaxe');
 const picksOK = (c) => stonePicks(c) >= 3 || invCount(c.inv, 'iron_pickaxe') >= 1 ||
   (c.y !== undefined && c.y <= 30 && stonePicks(c) >= 1);
+// Combustible de fonte disponible, en « items fondables » (coal/charcoal = 8, planches/bûches = 1.5),
+// vs lingots ENCORE à fondre pour l'armure (besoin restant - lingots déjà prêts). Fix n°4 water-wall.
+const fuelUnits = (c) => (invCount(c.inv, 'coal') + invCount(c.inv, 'charcoal')) * 8 +
+  (anyPlanks(c.inv) + anyLog(c.inv)) * 1.5;
+const smeltNeed = (c) => Math.max(0, armorNeed(c, 3) - invCount(c.inv, 'iron_ingot'));
 const IRON_ARMOR_CHAIN = [
   ..._IRON_PREFIX.map((g) => withFinal(g, IA)),
   { name: 'cobble_spare', met: (c) => invCount(c.inv, 'cobblestone') >= 6 || picksOK(c) || ironOK(c) || IA(c),
@@ -191,6 +196,17 @@ const IRON_ARMOR_CHAIN = [
     skill: 'smeltIron',   args: { count: 3 } },
   { name: 'iron_pickaxe', met: (c) => invCount(c.inv, 'iron_pickaxe') >= 1 || IA(c),
     skill: 'craft',       args: { name: 'iron_pickaxe', count: 1 } },
+  // Fix n°4 water-wall — le DERNIER MÈTRE de T1 (vécu live NethBot3 : 85× armor_no_progress).
+  // Un bot qui REPREND avec pioche fer + fer brut banké a tous les buts amont « met » via I(c) →
+  // jamais de bois/four cette session → le smelt d'ensureArmor échoue en silence (0 combustible,
+  // 0 four) → boucle à vie. On exige de quoi FONDRE le besoin restant avant iron_armor :
+  // combustible (coal 8 items, planches/bûches 1.5) ≥ lingots à fondre, puis four (8 cobble + craft).
+  { name: 'armor_fuel',    met: (c) => fuelUnits(c) >= smeltNeed(c) || IA(c),
+    skill: 'gatherLog',    args: { count: 4 } },
+  { name: 'armor_cobble',  met: (c) => invCount(c.inv, 'cobblestone') >= 8 || F(c) || IA(c),
+    skill: 'gather',       args: { name: 'stone', count: 8 } },
+  { name: 'armor_furnace', met: (c) => F(c) || IA(c),
+    skill: 'craft',        args: { name: 'furnace', count: 1 } },
   { name: 'iron_armor', met: IA, skill: 'ensureArmor', args: {} },
   { name: 'iron_armor_worn', met: IA_WORN, skill: 'ensureArmor', args: {} },
 ];
