@@ -384,14 +384,17 @@ async def shutdown_event():
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
 
 if os.path.exists(frontend_dir):
-    # Monter les fichiers CSS et JS
+    # Monter les fichiers CSS, JS et fonts
     css_dir = os.path.join(frontend_dir, "css")
     js_dir = os.path.join(frontend_dir, "js")
+    fonts_dir = os.path.join(frontend_dir, "fonts")
 
     if os.path.exists(css_dir):
         app.mount("/css", StaticFiles(directory=css_dir), name="css")
     if os.path.exists(js_dir):
         app.mount("/js", StaticFiles(directory=js_dir), name="js")
+    if os.path.exists(fonts_dir):
+        app.mount("/fonts", StaticFiles(directory=fonts_dir), name="fonts")
 
 
 @app.get("/")
