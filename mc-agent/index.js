@@ -176,6 +176,7 @@ let _safeHomeSurface = false; // safe posé à une VRAIE surface (y≥58) → ci
 let _deathArmed = false;      // watchdog PV : lieu de mort marqué (/sethome death) → post-respawn goHome('death')+ramassage
 let _wsiteMineSet = false;    // NO_GIVE : chantier profond SEC mémorisé (/sethome wsite) → re-descente = /home wsite (1 tp)
                               // au lieu de re-creuser ~52 blocs (chaque re-descente cassait une pioche → no_pickaxe → fer jamais accumulé, vécu homedeath)
+let _drySteerDone = false;    // NO_GIVE : steering STRATÉGIQUE fait (marche vers la cellule 128 sèche mappée AVANT la 1re descente)
 let _deathMark = null;        // dernière position marquée death {x,y,z,at} → dédup anti-spam du watchdog
 let _imminentBusy = false;    // anti-rafale : un seul warp de sauvetage PV à la fois
 let _convoPauseUntil = 0;   // stop-pour-répondre : gèle les gotos pendant réflexion+frappe (HUMANIZE)
@@ -489,6 +490,36 @@ async function runGoalSkill(goal) {
       const _y = bot.entity && bot.entity.position ? bot.entity.position.y : 0;
       if (_y >= 45 && cookedCount(buildCtxInv(bot)) < 4) {
         try { await withTimeout(huntCookGoal(4), 90000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+      }
+      // ⭐ Steering STRATÉGIQUE vers le SEC (mur de l'eau, run water-wall) : descendre « où on
+      // est » en zone aquifère = fuite permanente = 0 minage (vécu homedeath : smelt:0 après des
+      // heures à Y16 — l'évitement TACTIQUE de l'eau ne suffit pas). La carte du groupe (mappers)
+      // connaît les cellules 128 SÈCHES riches du minerai cible → on MARCHE (pathfinder,
+      // no_give-légal — /tp bloqué) vers la meilleure AVANT la 1re descente ; ensuite le wsite
+      // (53ca041) ancre le chantier sec pour toutes les re-descentes. Une tentative par session :
+      // échec → on descend sur place (comportement historique inchangé).
+      if (!_drySteerDone && !_wsiteMineSet && bot.entity && bot.entity.position) {
+        _drySteerDone = true;
+        try {
+          const memDS = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
+          const wkDS = String(bot._worldKey || '');
+          const wDS = memDS && memDS.worlds && (memDS.worlds[wkDS] || memDS.worlds[wkDS.replace(/^minecraft:/, '')]);
+          const pDS = bot.entity.position;
+          const matDS = (goal.args && typeof goal.args.targetY === 'number' && goal.args.targetY < 0) ? 'diamond' : 'iron';
+          const cellDS = (wDS && Array.isArray(wDS.ores))
+            ? driestCell(wDS.ores, { base: { x: pDS.x, z: pDS.z }, range: 600, cellSize: 128, minOres: 12, material: matDS })
+            : null;
+          // > 20 % wet = pas mieux qu'ici → pas de marche pour rien (on descend sur place).
+          if (cellDS && cellDS.wetFraction <= 0.2) {
+            emit({ type: 'dry_steer', x: cellDS.x, z: cellDS.z, wet: Math.round(cellDS.wetFraction * 1000) / 1000, material: matDS });
+            try {
+              await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(cellDS.x, cellDS.z, 12)), 300000,
+                () => { try { stopMotion(); } catch (e) {} });
+              emit({ type: 'dry_steer_arrived', x: Math.round(bot.entity.position.x), z: Math.round(bot.entity.position.z) });
+            } catch (e) { emit({ type: 'dry_steer_failed', reason: String((e && e.message) || e).slice(0, 60) }); }
+            if (isInWater(bot)) { try { await escapeWater(bot, { emit }); } catch (e) {} }
+          }
+        } catch (e) { /* best-effort : sans carte/cellule, descente sur place comme avant */ }
       }
       // Aquifère re-percé en boucle (vécu NethBot2 : ocean_stuck, descend_y16→water_ahead au même
       // bord de lac) : après un échec EAU, se DÉCALER à pied 30-50 blocs (direction aléatoire)

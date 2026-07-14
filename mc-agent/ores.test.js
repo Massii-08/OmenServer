@@ -506,3 +506,25 @@ test('driestCell : exige un minimum de minerais mappés (cellule réelle, pas du
   const c = ores.driestCell(o, { base: { x: 0, z: 0 }, range: 800, cellSize: 96, minOres: 8 });
   assert.strictEqual(c, null, 'cellule sous le seuil minOres → null');
 });
+
+test('driestCell : opts.material filtre par matériau de base (fer, deepslate inclus)', () => {
+  // Steering STRATÉGIQUE sans-give (mur de l'eau) : la chaîne iron_armor doit viser une cellule
+  // sèche RICHE EN FER — pas une cellule sèche de charbon plus proche. deepslate_iron_ore compte
+  // comme fer (oreBase).
+  const o = [];
+  for (let i = 0; i < 12; i++) o.push({ material: 'coal_ore', x: 100 + i, y: 30, z: 100, wet: false });        // SEC charbon, plus proche
+  for (let i = 0; i < 12; i++) o.push({ material: 'deepslate_iron_ore', x: 300 + i, y: 12, z: 300, wet: false }); // SEC fer, plus loin
+  const c = ores.driestCell(o, { base: { x: 0, z: 0 }, range: 800, cellSize: 96, minOres: 8, material: 'iron' });
+  assert.ok(c, 'une cellule fer sèche est trouvée');
+  assert.ok(Math.abs(c.x - 300) < 96 && Math.abs(c.z - 300) < 96, `cellule FER attendue ~ (300,300), got (${c.x},${c.z})`);
+  // rétro-compat : sans material, la plus proche des deux (charbon) gagne comme avant
+  const all = ores.driestCell(o, { base: { x: 0, z: 0 }, range: 800, cellSize: 96, minOres: 8 });
+  assert.ok(Math.abs(all.x - 100) < 96, `sans material, comportement historique (cellule proche), got (${all.x},${all.z})`);
+});
+
+test('driestCell : material sans cellule éligible → null', () => {
+  const o = [];
+  for (let i = 0; i < 12; i++) o.push({ material: 'coal_ore', x: 100 + i, y: 30, z: 100, wet: false });
+  const c = ores.driestCell(o, { base: { x: 0, z: 0 }, range: 800, cellSize: 96, minOres: 8, material: 'iron' });
+  assert.strictEqual(c, null, 'aucun fer mappé → null (l\'appelant descend sur place comme avant)');
+});

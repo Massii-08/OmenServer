@@ -304,18 +304,24 @@ function oresFoundEvent(world, ores) {
  * noyait, re-warpait au même point mouillé, re-noyait → 0 minage, vécu live). On regroupe les ores en
  * cellules `cellSize`, et on retient la cellule (dans le rayon `range`, ≥ `minOres` minerais) dont la
  * FRACTION d'ores `wet` est la plus basse (tie → la plus proche de base). → {x,z,wetFraction} ou null
- * (aucune cellule éligible → l'appelant retombe sur son point hardcodé). opts = {base,range,cellSize,minOres}.
+ * (aucune cellule éligible → l'appelant retombe sur son point hardcodé).
+ * opts = {base,range,cellSize,minOres,material} — `material` (optionnel) restreint le comptage au
+ * matériau de base (oreBase : deepslate_iron_ore → iron) → steering STRATÉGIQUE de la chaîne armure
+ * sans-give vers une cellule sèche RICHE DU BON MINERAI (mur de l'eau : descendre au hasard en zone
+ * aquifère = fuite permanente, 0 minage).
  */
 function driestCell(ores, opts = {}) {
   const base = opts.base || { x: 0, z: 0 };
   const range = typeof opts.range === 'number' ? opts.range : 800;
   const cell = typeof opts.cellSize === 'number' ? opts.cellSize : 96;
   const minOres = typeof opts.minOres === 'number' ? opts.minOres : 8;
+  const material = typeof opts.material === 'string' && opts.material ? opts.material : null;
   if (!Array.isArray(ores) || !ores.length) return null;
   const r2 = range * range;
   const cells = new Map();
   for (const o of ores) {
     if (!o || !Number.isFinite(o.x) || !Number.isFinite(o.z)) continue;
+    if (material && oreBase(o.material) !== material) continue;
     const dx = o.x - base.x, dz = o.z - base.z;
     if (dx * dx + dz * dz > r2) continue;                  // hors rayon near-spawn
     const cx = Math.floor(o.x / cell), cz = Math.floor(o.z / cell);
