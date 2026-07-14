@@ -242,6 +242,9 @@ async function runResource(bot, opts = {}, token = null) {
       priority: tracker ? [] : undefined,
       maxDist: tracker ? maxTargetDist : undefined,   // phase 2 : miner LOCAL, pas traverser la carte
       pickTier: (typeof tier === 'number' ? tier : undefined),
+      // Garantie B anti-xray (NO_GIVE, câblé par index.js) : ne cible JAMAIS un ore mappé enterré —
+      // même si l'obfuscation serveur fuit. Le volume vient du strip-mine aveugle (mineFor).
+      exposedOnly: opts.exposedOnly === true,
     });
     // DEEP-FIRST (anti-aquifère §1.5 + DoD diamant) : en mode quota, ignorer une cible mappée SHALLOW
     // (y > deepQuotaY = couches pleines d'eau en 1.18) → tomber dans mineFor qui DESCEND vers le

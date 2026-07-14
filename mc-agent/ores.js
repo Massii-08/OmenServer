@@ -91,6 +91,10 @@ function nextOreTarget(memory, world, from, opts = {}) {
     seen.add(key);
     if (skipSet && skipSet.has(key)) continue;
     if (excludeWet && o.wet) continue;                 // noyé → jamais ciblé (exclusion DURE, anti-noyade)
+    // Garantie B anti-xray (NO_GIVE) : un minerai ENTERRÉ mappé n'est JAMAIS une cible — même si
+    // l'obfuscation serveur fuit, le bot n'exploite que le visible (grottes) ; le volume vient du
+    // strip-mine AVEUGLE (mineFor). Exclusion DURE, opt-in (rétro-compat : option absente = inchangé).
+    if (opts.exposedOnly && !o.exposed) continue;
     if (allowSet && !allowSet.has(oreBase(o.material))) continue;
     if (hasTierFilter && requiredPickTier(o.material) > opts.pickTier) continue;
     if (maxDist2 != null) {

@@ -1765,6 +1765,9 @@ async function startResource() {
     pickTier: bestPickTier,
     deposit: () => deposit(bot),
     quota,
+    // Garantie B anti-xray (§0 water-wall) : en sans-give, ne JAMAIS cibler un ore mappé enterré
+    // (exposed:false) — même si l'obfuscation serveur fuit, le bot n'exploite que le visible.
+    exposedOnly: NO_GIVE,
     // Durabilité de la progression bankée (cf. loadBanked/saveBanked) : seed au démarrage + persiste à
     // chaque dépôt → respawn/re-entrée/deploy ne remettent plus le compteur à 0 (les coffres tiennent au sol).
     bankedSeed: quota ? loadBanked() : null,

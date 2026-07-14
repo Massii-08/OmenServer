@@ -132,6 +132,24 @@ test('nextOreTarget : diamant noyé sacrifié → bascule sur un autre type SEC'
   assert.strictEqual(t && t.material, 'gold_ore', 'diamant noyé exclu → or sec choisi (jamais l\'eau)');
 });
 
+test('nextOreTarget : exposedOnly EXCLUT DUREMENT les enterrés (Garantie B anti-xray, NO_GIVE)', () => {
+  const mem = { worlds: { w: { ores: [
+    { material: 'diamond_ore', x: 0, y: 0, z: 5, exposed: false, wet: false },  // enterré SEC (proche)
+    { material: 'iron_ore', x: 0, y: 0, z: 40, exposed: true, wet: false },     // exposé (loin, prio moindre)
+  ] } } };
+  // exposedOnly : l'enterré n'est JAMAIS une cible, même prioritaire/proche → l'exposé est choisi
+  const t = ores.nextOreTarget(mem, 'w', { x: 0, y: 0, z: 0 }, { exposedOnly: true });
+  assert.strictEqual(t && t.material, 'iron_ore', 'enterré exclu dur → seul l\'exposé est éligible');
+  // Enterré SEULE cible → null (on sacrifie : le strip-mine aveugle prend le relais, jamais le X-ray)
+  const memBuried = { worlds: { w: { ores: [
+    { material: 'diamond_ore', x: 0, y: 0, z: 5, exposed: false, wet: false },
+  ] } } };
+  assert.strictEqual(ores.nextOreTarget(memBuried, 'w', { x: 0, y: 0, z: 0 }, { exposedOnly: true }), null);
+  // Rétro-compat : sans l'option, l'enterré sec reste éligible (score 1)
+  const t3 = ores.nextOreTarget(memBuried, 'w', { x: 0, y: 0, z: 0 });
+  assert.strictEqual(t3 && t3.z, 5);
+});
+
 test('nextOreTarget : dédup par position exacte', () => {
   const mem = { worlds: { w: { ores: [
     { material: 'iron_ore', x: 7, y: 8, z: 9 },

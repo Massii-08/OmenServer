@@ -51,6 +51,28 @@ test('mine un minerai exposé → émet ore_mined {world,x,y,z} et resource_done
   assert.deepEqual(bot._dug, ['10,40,5']);
 });
 
+test('exposedOnly (Garantie B anti-xray) : l\'enterré mappé est IGNORÉ, seul l\'exposé est miné', async () => {
+  const blocks = {
+    '5,40,0': { name: 'diamond_ore', position: { x: 5, y: 40, z: 0 } },   // enterré (exposed:false)
+    '20,40,0': { name: 'iron_ore', position: { x: 20, y: 40, z: 0 } },    // exposé
+  };
+  const bot = makeBot({ blocks });
+  const events = [];
+  const r = await runResource(bot, {
+    memory: mem([
+      { material: 'diamond_ore', x: 5, y: 40, z: 0, exposed: false },
+      { material: 'iron_ore', x: 20, y: 40, z: 0, exposed: true },
+    ]),
+    worldKey: 'overworld',
+    emit: (e) => events.push(e),
+    goto: async () => {},
+    exposedOnly: true,
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.mined, 1, 'seul l\'exposé doit être miné');
+  assert.deepEqual(bot._dug, ['20,40,0'], 'le diamant enterré ne doit JAMAIS être creusé');
+});
+
 test('minerai déjà miné (bloc absent) → émet ore_gone, pas ore_mined, passe à la suite', async () => {
   // 2 cibles : la 1re (plus proche) n'existe plus, la 2e est là.
   const blocks = { '30,40,0': { name: 'iron_ore', position: { x: 30, y: 40, z: 0 } } };
