@@ -2639,38 +2639,46 @@ const BotsModule = {
  return true;
  },
 
- // Couleur stable par biome — teinte thématique (océan bleu, désert sable…) + jitter hashé pour
- // distinguer les variantes ; fallback 100% hashé pour les biomes custom de datapack (cf. spec §13).
+ // Couleur stable par biome — map colors « item carte » MC + jitter de luminosité hashé (±4 %)
+ // pour distinguer les variantes ; fallback palette terre pour les biomes custom de datapack.
  _MCA_BIOME_RULES: [
- // spécifiques d'abord (crimson/warped avant /forest/, lush/deep_dark avant /cave/)
- [/crimson/, 355, 50, 30],
- [/warped/, 175, 45, 28],
- [/nether|basalt|soul|magma|delta/, 8, 55, 26],
- [/lush/, 130, 45, 28],
- [/deep_dark|sculk/, 245, 25, 26],
- [/dripstone/, 28, 42, 30],
- [/ocean|river|water|aquifer/, 215, 55, 30],
- [/frozen|snow|ice|grove/, 200, 30, 56],
- [/desert|beach|badland|sand|dune/, 38, 50, 42],
- [/jungle|bamboo/, 100, 55, 26],
- [/swamp|mangrove|bog/, 75, 32, 22],
- [/savanna/, 62, 45, 32],
- [/taiga/, 165, 38, 26],
- [/forest|wood|birch|cherry/, 120, 42, 27],
- [/plain|meadow|field|pasture/, 90, 48, 34],
- [/mushroom/, 295, 35, 34],
- [/peak|mountain|hill|slope|stony|windswept|gravel/, 220, 8, 40],
- [/\bend\b|void|barren/, 55, 25, 42],
- [/cave|deep/, 28, 38, 24],
+ // ⚠️ l'ORDRE compte : crimson/warped avant /forest/, badland avant /desert/, deep_dark avant /cave/
+ [/crimson/, '#943F3F'],
+ [/warped/, '#2E7A73'],
+ [/nether|basalt|soul|magma|delta/, '#7A3327'],
+ [/lush/, '#4C9E4C'],
+ [/deep_dark|sculk/, '#10344A'],
+ [/dripstone/, '#976D4D'],
+ [/ocean|river|water|aquifer/, '#4040F0'],
+ [/frozen|snow|ice|grove/, '#D8E2D8'],
+ [/badland/, '#D87F33'],
+ [/desert|beach|sand|dune/, '#F7E9A3'],
+ [/jungle|bamboo/, '#2C9E1A'],
+ [/swamp|mangrove|bog/, '#62703A'],
+ [/savanna/, '#B8A94E'],
+ [/taiga/, '#5C8A5A'],
+ [/forest|wood|birch|cherry/, '#4C8A2E'],
+ [/plain|meadow|field|pasture/, '#8AB84F'],
+ [/mushroom/, '#8F7748'],
+ [/peak|mountain|hill|slope|stony|windswept|gravel/, '#7A7A7A'],
+ [/\bend\b|void|barren/, '#D8D0A8'],
+ [/cave|deep/, '#5A4D3A'],
  ],
 
- _mcaBiomeColor(name) {
+ _MCA_BIOME_FALLBACK: ['#8AB84F', '#976D4D', '#B8A94E', '#5C8A5A', '#7A7A7A', '#62703A'],
+
+ // Couleur map-color de BASE ('#rrggbb') d'un biome — sans jitter (le grain shade la base).
+ _mcaBiomeBase(name) {
  const n = String(name).toLowerCase();
- const h = this._mcaHash('b:' + n);
- for (const [re, hue, s, l] of this._MCA_BIOME_RULES) {
- if (re.test(n)) return `hsl(${(hue + (h % 25) - 12 + 360) % 360},${s}%,${l + (h % 7) - 3}%)`;
+ for (const [re, hex] of this._MCA_BIOME_RULES) {
+ if (re.test(n)) return hex;
  }
- return `hsl(${h % 360},38%,30%)`;
+ return this._MCA_BIOME_FALLBACK[this._mcaHash('b:' + n) % this._MCA_BIOME_FALLBACK.length];
+ },
+
+ _mcaBiomeColor(name) {
+ const jitter = 0.96 + (this._mcaHash('b:' + String(name).toLowerCase()) % 9) / 100;
+ return this._mcaShade(this._mcaBiomeBase(name), jitter);
  },
 
  // Couleurs fixes pour les matériaux courants (lisibilité immédiate), hash vif pour le reste.
