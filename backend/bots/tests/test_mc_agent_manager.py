@@ -1179,7 +1179,9 @@ def test_pump_respawns_dead_resource_session(monkeypatch):
     assert calls.get("gid") == "ab12cd" and calls.get("bid") == "b1"
     assert calls.get("quota") == {"iron": 64}
     assert 15.0 <= fired["delay"] < 23.0  # 15 s + jitter anti-synchronisation (phase 3)
-    assert mgr._sessions[99]["respawn_count"] == 2
+    # sans spawned_at → vie LONGUE → le compteur de cap est REMIS À ZÉRO (RC2 water-wall :
+    # seules les vies courtes consécutives usent le cap, une vie longue pardonne tout)
+    assert mgr._sessions[99]["respawn_count"] == 0
     mgr._sessions.pop(99, None)
 
 
@@ -1212,13 +1214,18 @@ def test_pump_respawn_capped(monkeypatch):
         def start(self): self.fn()
 
     monkeypatch.setattr(mgr.threading, "Timer", FakeTimer)
+    # Cap NOUVEAU CONTRAT (RC2 water-wall) : 12 respawns à vies COURTES consécutives → abandon.
+    # (L'ancien cap absolu tuait la flotte pendant un simple freeze serveur transitoire.)
     session = {"status": "running", "transcript": [], "events": [], "last_error": None,
                "objective": "resource", "respawn_count": 12,
+               "spawned_at": mgr.time.time() - 21,        # vie courte (reconnect storm)
                "respawn": {"group_id": "g", "bot_id": "b"},
                "cmds_path": None, "policy_path": None, "world_path": None,
                "wm_path": None, "quota_path": None, "login_path": None}
     mgr._pump(session, io.StringIO(""))
     assert calls == []
+    assert any(e.get("type") == "respawn_given_up" and e.get("why") == "cap"
+               for e in session["events"])
 
 
 def test_pump_gives_up_on_crash_on_spawn(monkeypatch):
@@ -1437,3 +1444,70 @@ def test_start_for_bot_no_give_dans_respawn_memo(monkeypatch, tmp_path):
     assert sess is not None and sess["respawn"].get("no_give") is True
     assert sess["respawn"].get("objective") == "iron_armor"
     mgr._sessions.pop(sid, None)
+
+
+# ── Back-off self-healing (RC2 water-wall) : reconnect storm + freeze serveur transitoire ──
+# Vécu 2026-07-14 world_ax1 : vies de ~21 s (join → « moved too quickly » → deco) échappaient à
+# la garde crash-on-spawn (<15 s) → respawn toutes les 15 s jusqu'au cap 12 DÉFINITIF, consommé
+# pendant un freeze serveur → flotte morte pour la nuit. _respawn_plan = décision PURE :
+# back-off progressif sur vies courtes (<60 s), reset complet (cap inclus) sur vie longue.
+
+def test_respawn_plan_vie_longue_reset_complet():
+    p = mgr._respawn_plan(lifetime_s=300, throttled=False, fast_fails_prev=2,
+                          short_count_prev=5, respawn_count_prev=11)
+    assert p["action"] == "respawn"
+    assert p["delay_s"] == 15.0
+    assert p["fast_fails"] == 0
+    assert p["short_count"] == 0
+    assert p["respawn_count"] == 0   # vie longue → le cap repart de zéro (freeze transitoire pardonné)
+
+
+def test_respawn_plan_backoff_progressif_vies_courtes():
+    # vie ~21 s (reconnect storm) : délais croissants 15 → 60 → 120 → 300 (cap)
+    p1 = mgr._respawn_plan(lifetime_s=21, throttled=False, fast_fails_prev=0,
+                           short_count_prev=0, respawn_count_prev=0)
+    assert (p1["action"], p1["delay_s"], p1["short_count"]) == ("respawn", 15.0, 1)
+    p2 = mgr._respawn_plan(lifetime_s=21, throttled=False, fast_fails_prev=0,
+                           short_count_prev=1, respawn_count_prev=1)
+    assert (p2["action"], p2["delay_s"], p2["short_count"]) == ("respawn", 60.0, 2)
+    p3 = mgr._respawn_plan(lifetime_s=21, throttled=False, fast_fails_prev=0,
+                           short_count_prev=2, respawn_count_prev=2)
+    assert p3["delay_s"] == 120.0
+    p4 = mgr._respawn_plan(lifetime_s=21, throttled=False, fast_fails_prev=0,
+                           short_count_prev=3, respawn_count_prev=3)
+    assert p4["delay_s"] == 300.0
+    p9 = mgr._respawn_plan(lifetime_s=21, throttled=False, fast_fails_prev=0,
+                           short_count_prev=9, respawn_count_prev=9)
+    assert p9["delay_s"] == 300.0   # plafonné
+
+
+def test_respawn_plan_crash_on_spawn_inchange():
+    # 3 vies < 15 s d'affilée → abandon (poison pill : kit cassé, crash-loop au join)
+    p = mgr._respawn_plan(lifetime_s=4, throttled=False, fast_fails_prev=2,
+                          short_count_prev=2, respawn_count_prev=2)
+    assert p["action"] == "give_up"
+    assert p["why"] == "crash_on_spawn"
+    # 2 vies courtes seulement → on respawne encore (fast_fails propagé)
+    p2 = mgr._respawn_plan(lifetime_s=4, throttled=False, fast_fails_prev=1,
+                           short_count_prev=1, respawn_count_prev=1)
+    assert p2["action"] == "respawn"
+    assert p2["fast_fails"] == 2
+
+
+def test_respawn_plan_cap_vies_courtes_consecutives():
+    # 12 respawns à vies courtes CONSÉCUTIVES → abandon (≈45 min de tentatives espacées)
+    p = mgr._respawn_plan(lifetime_s=21, throttled=False, fast_fails_prev=0,
+                          short_count_prev=11, respawn_count_prev=12)
+    assert p["action"] == "give_up"
+    assert p["why"] == "cap"
+
+
+def test_respawn_plan_throttled_neutre():
+    # collision de join (« Connection throttled ») : ni crash ni vie courte — compteurs gelés
+    p = mgr._respawn_plan(lifetime_s=3, throttled=True, fast_fails_prev=2,
+                          short_count_prev=4, respawn_count_prev=5)
+    assert p["action"] == "respawn"
+    assert p["fast_fails"] == 0          # comme avant : throttled ne compte pas pour crash_on_spawn
+    assert p["short_count"] == 4         # back-off ni monté ni reset
+    assert p["respawn_count"] == 5       # n'use pas le cap
+    assert p["delay_s"] == 300.0         # délai courant du back-off (short_count 4 → cap)

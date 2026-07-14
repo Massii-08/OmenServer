@@ -42,10 +42,15 @@ function bookmark(bot, name) {
   return _send(bot, '/sethome ' + n) ? n : false;
 }
 
-/** Téléporte le bot vers le signet <name>. Retourne le nom nettoyé, ou false. */
+/** Téléporte le bot vers le signet <name>. Retourne le nom nettoyé, ou false.
+ * Trace le dernier /home envoyé sur le bot (bot._mcaLastHome) : Essentials répond de façon
+ * asynchrone dans le chat, et un refus (« destination unsafe ») ne cite PAS le nom du home —
+ * seul ce tracking permet d'attribuer le refus (cf. refusedHome). */
 function goHome(bot, name) {
   const n = sanitizeName(name);
-  return _send(bot, '/home ' + n) ? n : false;
+  if (!_send(bot, '/home ' + n)) return false;
+  try { bot._mcaLastHome = { name: n, at: Date.now() }; } catch (e) {}
+  return n;
 }
 
 /** Sort d'un piège mortel vers la surface sûre (repli sur le home 'safe' — /spawn absent). */
@@ -61,6 +66,40 @@ function goSpawn(bot) {
 //   'bookmark' → autre cause imminente (chute, dégât générique, faim) : on ne peut pas l'esquiver
 //                utilement par /home → on marque 'death' AVANT de mourir pour revenir ramasser.
 //   null       → pas imminent (PV au-dessus du seuil).
+// ─── Refus TP Essentials (RC3 water-wall) ───────────────────────────────────────────────────────
+// teleport-safety:true + destination innatérissable (monde noyé : safe/wsite en pleine eau) →
+// Essentials REFUSE le /home avec « The teleport destination is unsafe and teleport-safety is
+// disabled. » et le bot RESTE SUR PLACE. Sans détection, le filet de secours est un no-op
+// silencieux (vécu NethBot2 : zombie 1.8 PV qui « croyait » avoir warpé).
+
+const _TP_REFUSAL_RE = /teleport destination is unsafe/i;
+const REFUSAL_WINDOW_MS = 8000;      // réponse Essentials = quasi immédiate ; 8 s de marge réseau
+const REFUSAL_DEGRADE_MS = 120000;   // un safe refusé reste suspect 2 min (le temps de le re-poser)
+
+/** Le message chat est-il un refus de téléportation Essentials ? (pur) */
+function isTpRefusal(msg) {
+  return typeof msg === 'string' && _TP_REFUSAL_RE.test(msg);
+}
+
+/** Attribue un refus TP au dernier /home envoyé (fenêtre courte). Retourne le nom du home
+ * refusé (et CONSOMME le tracking — anti double-comptage), sinon null. */
+function refusedHome(bot, msg, windowMs = REFUSAL_WINDOW_MS) {
+  if (!isTpRefusal(msg)) return null;
+  const last = bot && bot._mcaLastHome;
+  if (!last || (Date.now() - last.at) > windowMs) return null;
+  bot._mcaLastHome = null;
+  return last.name;
+}
+
+/** Dégrade un verdict 'escape' en 'escape_no_warp' si le /home safe vient d'être refusé :
+ * inutile de re-spammer un TP qui ne part pas — le caller doit se sauver À PIED (escapeWater)
+ * ou accepter la mort (bookmark). Pur, horloge injectée. */
+function effectiveVerdict(verdict, refusedSafeAt, now, windowMs = REFUSAL_DEGRADE_MS) {
+  if (verdict !== 'escape') return verdict;
+  if (typeof refusedSafeAt === 'number' && (now - refusedSafeAt) <= windowMs) return 'escape_no_warp';
+  return 'escape';
+}
+
 const IMMINENT_HP = 6;
 function classifyImminent(s) {
   const h = s && s.health;
@@ -94,4 +133,7 @@ function dropsWithin(entities, center, radius) {
   return out;
 }
 
-module.exports = { bookmark, goHome, goSpawn, goSafe: goSpawn, sanitizeName, RESERVED, classifyImminent, dropsWithin, IMMINENT_HP };
+module.exports = {
+  bookmark, goHome, goSpawn, goSafe: goSpawn, sanitizeName, RESERVED, classifyImminent, dropsWithin,
+  IMMINENT_HP, isTpRefusal, refusedHome, effectiveVerdict, REFUSAL_DEGRADE_MS,
+};

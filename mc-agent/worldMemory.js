@@ -94,6 +94,9 @@ function materialFoundEvent(world, material, biomeName, pos) {
 
 function _horiz(ax, az, bx, bz) { return Math.sqrt((ax - bx) ** 2 + (az - bz) ** 2); }
 
+/** Clé stable d'une cible dirigée (find/biome/cave) pour l'exclusion des cibles épuisées. */
+function targetKey(x, z) { return Math.round(x) + ',' + Math.round(z); }
+
 /**
  * Cible dirigée pour aller chercher `material` d'après la mémoire du monde `world`.
  * 1) associations APPRISES (finds) du matériau → biome le + proche connu pour le contenir ;
@@ -102,12 +105,17 @@ function _horiz(ax, az, bx, bz) { return Math.sqrt((ax - bx) ** 2 + (az - bz) **
  */
 function directedTarget(memory, world, material, from, opts = {}) {
   const maxDist = opts.maxDist || 1500;
+  // Cibles ÉPUISÉES (RC4) : un find appris prime même quand le gisement est pelé → boucle stérile
+  // (vécu NethBot1 : explore_directed ×48 sur la même prairie). explore.js marque les cibles
+  // « arrivé dessus, rien trouvé » → on les saute ici, tous tiers confondus (finds/biomes/caves).
+  const exclude = opts.exclude || null;
   const w = (memory && memory.worlds && memory.worlds[world]) || {};
   const fx = from ? from.x : 0, fz = from ? from.z : 0;
 
   const pickNearest = (cands) => {
     let best = null, bestD = Infinity;
     for (const c of cands) {
+      if (exclude && exclude.has(targetKey(c.x, c.z))) continue;
       const d = _horiz(fx, fz, c.x, c.z);
       if (d < bestD) { bestD = d; best = c; }
     }
@@ -141,5 +149,5 @@ function directedTarget(memory, world, material, from, opts = {}) {
 
 module.exports = {
   vanillaHint, isOre, parseMemory, loadMemory, worldKey, readBiome, resolveBiome,
-  biomeSeenEvent, caveFoundEvent, materialFoundEvent, directedTarget,
+  biomeSeenEvent, caveFoundEvent, materialFoundEvent, directedTarget, targetKey,
 };

@@ -160,6 +160,47 @@ def _cleanup_session_files(session):
                 pass
 
 
+# Back-off self-healing (RC2 water-wall 2026-07-14) : les vies de ~21 s (join → « moved too
+# quickly » → deco, freeze serveur) échappaient à la garde crash-on-spawn (<15 s) → respawn
+# toutes les 15 s jusqu'au cap 12 DÉFINITIF, consommé pendant un freeze transitoire → flotte
+# morte pour la nuit. Décision extraite en fonction PURE, testable.
+_SHORT_LIFE_S = 60          # vie « courte » : le bot n'a rien pu accomplir
+_BACKOFF_DELAYS = [15.0, 60.0, 120.0, 300.0]   # délais par vies courtes consécutives (puis cap)
+
+
+def _respawn_plan(lifetime_s, throttled, fast_fails_prev, short_count_prev, respawn_count_prev):
+    """Plan de respawn après une mort naturelle de session (décision pure).
+
+    → {"action": "respawn"|"give_up", "why": None|"crash_on_spawn"|"cap",
+       "delay_s": float, "fast_fails": int, "short_count": int, "respawn_count": int}
+
+    - vie < 15 s (hors throttled) : compteur crash-on-spawn ; 3 d'affilée → give_up (poison pill).
+    - vie < 60 s : back-off progressif 15→60→120→300 s ; 12 respawns courts consécutifs → give_up.
+    - vie ≥ 60 s : TOUT est remis à zéro (cap inclus) — une vie longue prouve que le monde va bien,
+      le self-healing overnight ne doit pas s'épuiser sur des morts légitimes espacées.
+    - throttled (« Connection throttled » = collision de join, pas un crash) : compteurs gelés.
+    """
+    if throttled:
+        delay = _BACKOFF_DELAYS[min(max(short_count_prev - 1, 0), len(_BACKOFF_DELAYS) - 1)]
+        return {"action": "respawn", "why": None, "delay_s": delay, "fast_fails": 0,
+                "short_count": short_count_prev, "respawn_count": respawn_count_prev}
+    if lifetime_s >= _SHORT_LIFE_S:
+        return {"action": "respawn", "why": None, "delay_s": _BACKOFF_DELAYS[0],
+                "fast_fails": 0, "short_count": 0, "respawn_count": 0}
+    fast_fails = (fast_fails_prev + 1) if lifetime_s < 15 else 0
+    if fast_fails >= 3:
+        return {"action": "give_up", "why": "crash_on_spawn", "delay_s": 0.0,
+                "fast_fails": fast_fails, "short_count": short_count_prev + 1,
+                "respawn_count": respawn_count_prev}
+    if respawn_count_prev >= 12:
+        return {"action": "give_up", "why": "cap", "delay_s": 0.0, "fast_fails": fast_fails,
+                "short_count": short_count_prev + 1, "respawn_count": respawn_count_prev}
+    short_count = short_count_prev + 1
+    delay = _BACKOFF_DELAYS[min(short_count - 1, len(_BACKOFF_DELAYS) - 1)]
+    return {"action": "respawn", "why": None, "delay_s": delay, "fast_fails": fast_fails,
+            "short_count": short_count, "respawn_count": respawn_count_prev + 1}
+
+
 def _pump(session, stream):
     """Boucle de lecture du stdout du process : applique chaque event jusqu'à la fin du flux."""
     for line in stream:
@@ -176,24 +217,23 @@ def _pump(session, stream):
         except Exception:  # noqa: BLE001 — thread de pompe : ne jamais le laisser crasher
             pass
     # Self-healing (phase 2) : session RESOURCE morte naturellement (kick « Timed out »,
-    # watchdog, crash) → respawn auto après 15 s (l'inventaire persiste → quota préservé).
-    # Jamais si l'utilisateur a stoppé (user_stopped) ; cap 12 respawns (anti-boucle folle).
+    # watchdog, crash) → respawn auto planifié par _respawn_plan (décision pure) : back-off
+    # progressif sur vies courtes (reconnect storm/freeze serveur), reset complet sur vie longue,
+    # give_up sur poison pill (3× <15 s) ou 12 vies courtes consécutives. Jamais si user_stopped.
     rs = session.get("respawn")
-    # Garde CRASH-ON-SPAWN : une session qui meurt < 15 s après son spawn, 3 fois d'affilée,
-    # est ABANDONNÉE — le cap global (12) ne couvrait pas ce mode : join→crash 4 s→respawn 15 s
-    # à l'infini (vécu phase 2, V2Res1 : kit cassé → starved-exit immédiat en boucle).
     lifetime = time.time() - session.get("spawned_at", 0)
     # Un kick « Connection throttled » est un refus AVANT spawn (collision de joins), pas un
-    # crash du bot : il ne compte pas pour la garde crash-on-spawn (sinon 3 collisions = abandon).
+    # crash du bot : il ne compte ni pour crash-on-spawn ni pour le back-off.
     _err = str(session.get("last_error") or "").lower()
-    _throttled = "throttled" in _err
-    fast_fails = 0 if _throttled else ((session.get("fast_fail_count", 0) + 1) if lifetime < 15 else 0)
+    plan = _respawn_plan(lifetime, "throttled" in _err,
+                         session.get("fast_fail_count", 0),
+                         session.get("short_count", 0),
+                         session.get("respawn_count", 0))
     if (rs and session.get("objective") in RESPAWN_OBJECTIVES
-            and not session.get("user_stopped")
-            and session.get("respawn_count", 0) < 12):
-        if fast_fails >= 3:
-            session["events"].append({"type": "respawn_given_up", "why": "crash_on_spawn",
-                                      "fast_fails": fast_fails})
+            and not session.get("user_stopped")):
+        if plan["action"] == "give_up":
+            session["events"].append({"type": "respawn_given_up", "why": plan["why"],
+                                      "fast_fails": plan["fast_fails"]})
             return
         def _do_respawn():
             try:
@@ -205,14 +245,15 @@ def _pump(session, stream):
                                         no_give=rs.get("no_give", False))
                 ns = _sessions.get(new_sid)
                 if ns is not None:
-                    ns["respawn_count"] = session.get("respawn_count", 0) + 1
-                    ns["fast_fail_count"] = fast_fails
+                    ns["respawn_count"] = plan["respawn_count"]
+                    ns["fast_fail_count"] = plan["fast_fails"]
+                    ns["short_count"] = plan["short_count"]
                 if rs.get("objective") == "mapper":
                     _rebalance_sectors(rs["group_id"])  # le revenant reprend un secteur cohérent
             except Exception:  # noqa: BLE001 — best-effort (compte déjà en ligne, groupe parti…)
                 pass
         # Jitter anti-synchronisation : des morts simultanées ne re-spawnent plus en phase.
-        timer = threading.Timer(15.0 + (hash(str(session.get("user"))) % 80) / 10.0, _do_respawn)
+        timer = threading.Timer(plan["delay_s"] + (hash(str(session.get("user"))) % 80) / 10.0, _do_respawn)
         timer.daemon = True
         timer.start()
 

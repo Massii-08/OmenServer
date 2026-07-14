@@ -324,3 +324,42 @@ test('explore : mémoire muette pour ce matériau → fallback aveugle (anneaux)
   assert.notStrictEqual(res.directed, true, 'pas de ciblage dirigé (rien de connu pour oak_log)');
   assert.ok(calls.goto.length >= 1, 'recherche en anneaux effectuée');
 });
+
+// ─── Cible dirigée ÉPUISÉE (RC4 water-wall) : arrivée sans ressource → marquage + exclusion ─────
+
+test('explore : arrivé sur la cible dirigée sans rien trouver → marquée épuisée + event', async () => {
+  const { bot } = makeBot({ target: null });   // aucune ressource nulle part
+  bot._mcaExhausted = new Set();
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'meadow', x: 100, z: 0 }], biomes: [] } } };
+  const emits = [];
+  const r = await explore(bot, {
+    name: 'oak_log', matching: [17], memory, worldKey: 'w',
+    emit: (e) => emits.push(e), step: 80, maxRadius: 80, scanRadius: 64,
+  });
+  assert.strictEqual(r.ok, false);
+  assert.ok(bot._mcaExhausted.has('100,0'), 'cible dirigée épuisée marquée dans bot._mcaExhausted');
+  assert.ok(emits.some((e) => e.type === 'directed_exhausted' && e.x === 100 && e.z === 0),
+    'event directed_exhausted émis');
+});
+
+test('explore : au 2e appel, le find épuisé n\'est PLUS ciblé (fin de la boucle stérile)', async () => {
+  const { bot } = makeBot({ target: null });
+  bot._mcaExhausted = new Set();
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'meadow', x: 100, z: 0 }], biomes: [] } } };
+  await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', step: 80, maxRadius: 80 });
+  const emits2 = [];
+  await explore(bot, {
+    name: 'oak_log', matching: [17], memory, worldKey: 'w',
+    emit: (e) => emits2.push(e), step: 80, maxRadius: 80,
+  });
+  assert.ok(!emits2.some((e) => e.type === 'explore_directed' && e.x === 100 && e.z === 0),
+    'find épuisé exclu de la résolution dirigée au 2e appel');
+});
+
+test('explore : sans bot._mcaExhausted (rétro-compat) → aucun crash, comportement historique', async () => {
+  const { bot } = makeBot({ target: null });
+  delete bot._mcaExhausted;
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'meadow', x: 100, z: 0 }], biomes: [] } } };
+  const r = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', step: 80, maxRadius: 80 });
+  assert.strictEqual(r.ok, false);   // pas trouvé, pas de crash
+});

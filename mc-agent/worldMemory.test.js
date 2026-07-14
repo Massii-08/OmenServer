@@ -130,3 +130,55 @@ test('resolveBiome : nom déjà présent -> inchangé ; id inconnu du registry -
   assert.deepStrictEqual(resolveBiome(bot, { biome: { name: '', id: 999 } }), { name: null, id: 999 });
   assert.deepStrictEqual(resolveBiome(bot, null), { name: null, id: null });
 });
+
+// ─── Exclusion des cibles ÉPUISÉES (RC4 water-wall) ────────────────────────────────────────────
+// Un find appris prime TOUJOURS, même quand le gisement est pelé (vécu NethBot1 world_ax1 :
+// boucle explore_directed ×48 sur la même prairie sans arbres). explore.js marque la cible
+// « épuisée » quand il ARRIVE dessus et ne trouve rien → directedTarget doit la sauter.
+
+test('targetKey : clé arrondie "x,z"', () => {
+  assert.strictEqual(wm.targetKey(10.6, -3.2), '11,-3');
+  assert.strictEqual(wm.targetKey(0, 0), '0,0');
+});
+
+test('directedTarget : find épuisé exclu → find suivant le + proche', () => {
+  const mem = { worlds: { w: { finds: [
+    { material: 'oak_log', biome: 'meadow', x: 100, z: 0 },
+    { material: 'oak_log', biome: 'forest', x: 300, z: 0 },
+  ], biomes: [] } } };
+  const exclude = new Set([wm.targetKey(100, 0)]);
+  const t = wm.directedTarget(mem, 'w', 'oak_log', { x: 0, z: 0 }, { exclude });
+  assert.deepStrictEqual(t, { x: 300, z: 0, biome: 'forest', learned: true });
+});
+
+test('directedTarget : tous les finds exclus → fallback biome vanilla', () => {
+  const mem = { worlds: { w: { finds: [
+    { material: 'oak_log', biome: 'meadow', x: 100, z: 0 },
+  ], biomes: [{ name: 'forest', x: 500, z: 0 }] } } };
+  const exclude = new Set([wm.targetKey(100, 0)]);
+  const t = wm.directedTarget(mem, 'w', 'oak_log', { x: 0, z: 0 }, { exclude });
+  assert.deepStrictEqual(t, { x: 500, z: 0, biome: 'forest', learned: false });
+});
+
+test('directedTarget : biomes et caves exclus aussi (même clé x,z)', () => {
+  const memB = { worlds: { w: { finds: [], biomes: [
+    { name: 'forest', x: 200, z: 0 }, { name: 'forest', x: 800, z: 0 },
+  ] } } };
+  const tB = wm.directedTarget(memB, 'w', 'oak_log', { x: 0, z: 0 }, { exclude: new Set([wm.targetKey(200, 0)]) });
+  assert.deepStrictEqual(tB, { x: 800, z: 0, biome: 'forest', learned: false });
+  const memC = { worlds: { w: { finds: [], biomes: [], caves: [
+    { x: 100, y: 40, z: -50 }, { x: 400, y: 30, z: 0 },
+  ] } } };
+  const tC = wm.directedTarget(memC, 'w', 'iron_ore', { x: 0, z: 0 }, { exclude: new Set([wm.targetKey(100, -50)]) });
+  assert.deepStrictEqual(tC, { x: 400, z: 0, y: 30, biome: null, learned: false, cave: true });
+});
+
+test('directedTarget : exclude absent/vide → comportement historique inchangé', () => {
+  const mem = { worlds: { w: { finds: [
+    { material: 'oak_log', biome: 'meadow', x: 100, z: 0 },
+  ], biomes: [] } } };
+  assert.deepStrictEqual(wm.directedTarget(mem, 'w', 'oak_log', { x: 0, z: 0 }, { exclude: new Set() }),
+    { x: 100, z: 0, biome: 'meadow', learned: true });
+  assert.deepStrictEqual(wm.directedTarget(mem, 'w', 'oak_log', { x: 0, z: 0 }),
+    { x: 100, z: 0, biome: 'meadow', learned: true });
+});

@@ -1,7 +1,10 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { bookmark, goHome, goSpawn, sanitizeName, RESERVED, classifyImminent, dropsWithin } = require('./homewarp');
+const {
+  bookmark, goHome, goSpawn, sanitizeName, RESERVED, classifyImminent, dropsWithin,
+  isTpRefusal, refusedHome, effectiveVerdict,
+} = require('./homewarp');
 const { isForbiddenCheat } = require('./nogive');
 
 function fakeBot() {
@@ -85,6 +88,63 @@ test('classifyImminent : noyade/lave/essaim → escape (goSpawn, les 3 morts bê
 test('classifyImminent : chute/générique (1 seul mob, à sec) → bookmark death', () => {
   assert.strictEqual(classifyImminent({ health: 3 }), 'bookmark');
   assert.strictEqual(classifyImminent({ health: 3, nearbyHostiles: 1 }), 'bookmark');
+});
+
+// ─── Refus TP Essentials (RC3 water-wall) : « The teleport destination is unsafe… » ─────────────
+// Un /home refusé par la teleport-safety NE téléporte PAS → le filet de secours croyait avoir
+// sauvé le bot (fire-and-forget) → zombie à 1.8 PV (vécu NethBot2 world_ax1, monde noyé).
+
+test('isTpRefusal : message Essentials « destination unsafe » détecté, chat joueur ignoré', () => {
+  assert.strictEqual(isTpRefusal('Error: The teleport destination is unsafe and teleport-safety is disabled.'), true);
+  assert.strictEqual(isTpRefusal('The teleport destination is unsafe and teleport-safety is disabled.'), true);
+  assert.strictEqual(isTpRefusal('<Bob> my teleport is weird today'), false);
+  assert.strictEqual(isTpRefusal('You have been teleported'), false);
+  assert.strictEqual(isTpRefusal(''), false);
+  assert.strictEqual(isTpRefusal(null), false);
+});
+
+test('refusedHome : refus dans la fenêtre après goHome → nom du home, et consommé', () => {
+  const bot = fakeBot();
+  goHome(bot, 'safe');
+  const refusal = 'Error: The teleport destination is unsafe and teleport-safety is disabled.';
+  assert.strictEqual(refusedHome(bot, refusal), 'safe');
+  // consommé : le même message re-reçu ne re-matche pas (anti double-comptage)
+  assert.strictEqual(refusedHome(bot, refusal), null);
+});
+
+test('refusedHome : goSpawn est tracké comme home safe', () => {
+  const bot = fakeBot();
+  goSpawn(bot);
+  assert.strictEqual(refusedHome(bot, 'The teleport destination is unsafe and teleport-safety is disabled.'), 'safe');
+});
+
+test('refusedHome : hors fenêtre → null (message tardif non attribuable)', () => {
+  const bot = fakeBot();
+  goHome(bot, 'wsite');
+  bot._mcaLastHome.at = Date.now() - 9000;   // > fenêtre 8 s
+  assert.strictEqual(refusedHome(bot, 'The teleport destination is unsafe and teleport-safety is disabled.'), null);
+});
+
+test('refusedHome : message non-refus ou aucun /home récent → null', () => {
+  const bot = fakeBot();
+  assert.strictEqual(refusedHome(bot, 'The teleport destination is unsafe and teleport-safety is disabled.'), null);
+  goHome(bot, 'wsite');
+  assert.strictEqual(refusedHome(bot, '<Bob> hello'), null);
+});
+
+test('refusedHome : bookmark (/sethome) ne pose PAS de tracking (ne téléporte pas)', () => {
+  const bot = fakeBot();
+  bookmark(bot, 'death');
+  assert.strictEqual(refusedHome(bot, 'The teleport destination is unsafe and teleport-safety is disabled.'), null);
+});
+
+test('effectiveVerdict : escape dégradé en escape_no_warp si le safe a été refusé récemment', () => {
+  const now = 1000000;
+  assert.strictEqual(effectiveVerdict('escape', now - 30000, now), 'escape_no_warp');   // refus 30 s avant
+  assert.strictEqual(effectiveVerdict('escape', now - 300000, now), 'escape');          // refus vieux (>120 s)
+  assert.strictEqual(effectiveVerdict('escape', null, now), 'escape');                  // jamais refusé
+  assert.strictEqual(effectiveVerdict('bookmark', now - 30000, now), 'bookmark');       // non-escape inchangé
+  assert.strictEqual(effectiveVerdict(null, now - 30000, now), null);
 });
 
 test('dropsWithin : filtre les items dans le rayon, triés par distance ; keepInv (0 item) → []', () => {

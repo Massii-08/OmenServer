@@ -181,6 +181,13 @@ let _drySteerTries = 0;       // NO_GIVE : marches tentées vers la cellule 128 
                               // de la cible avec l'ancien one-shot → descente en zone humide quand même)
 let _deathMark = null;        // dernière position marquée death {x,y,z,at} → dédup anti-spam du watchdog
 let _imminentBusy = false;    // anti-rafale : un seul warp de sauvetage PV à la fois
+let _homeRefusedAt = {};      // RC3 : refus TP Essentials par home {safe|wsite|death → ts} — un /home
+                              // refusé (« destination unsafe », monde noyé) ne téléporte PAS : sans ça
+                              // le filet de secours était un no-op silencieux (zombie 1.8 PV, vécu NethBot2)
+// Le /home safe est-il inutilisable en ce moment (refus récent, pas encore re-posé) ?
+function safeWarpDown() {
+  return !!(_homeRefusedAt.safe && (Date.now() - _homeRefusedAt.safe) <= homewarp.REFUSAL_DEGRADE_MS);
+}
 let _convoPauseUntil = 0;   // stop-pour-répondre : gèle les gotos pendant réflexion+frappe (HUMANIZE)
 let bootDone = false; // réflexes/mouvements/auth = une seule fois par connexion (pas à chaque respawn)
 
@@ -1991,6 +1998,9 @@ async function onSpawn() {
   bot._emit = emit;
   bot._worldMemory = worldMemoryBootstrap;
   bot._worldKey = worldKey(bot, args['world-label']);
+  // RC4 : cibles dirigées ÉPUISÉES (arrivé dessus, rien trouvé) — Set session lu par explore.js.
+  // Survit aux respawns MC (même process) : une prairie pelée le reste après une mort.
+  if (!bot._mcaExhausted) bot._mcaExhausted = new Set();
   emit({ type: 'status', state: 'spawned', username: bot.username, profile: profile ? profile.id : null });
   // Capture-clone (E, frontière) : wobble de visée humain GLOBAL. On wrappe bot.look UNE fois → TOUTE
   // visée en hérite (pathfinder à chaque tick, pvp tracking, collectBlock dig, nos tours) → micro-
@@ -2169,6 +2179,12 @@ async function onSpawn() {
             // SANS-GIVE : les warps admin (/tp ancre, /spreadplayers) sont BLOQUÉS par nogive → le bot
             // se noyait sans issue (LE tueur du run d'hier). On sort VIVANT via /home safe (goSpawn).
             if (NO_GIVE) {
+              // RC3 : safe refusé récemment → le TP ne partira pas, escapeWater est le seul recours.
+              if (safeWarpDown()) {
+                emit({ type: 'water_rescue_no_warp' });
+                try { await escapeWater(bot, { emit }); } catch (e) {}
+                return;
+              }
               emit({ type: 'water_rescue_home_safe' });
               homewarp.goSpawn(bot);
               await sleep(3000);                          // atterrissage surface
@@ -2195,8 +2211,10 @@ async function onSpawn() {
               waterEscapeFails = 0; waterStuckTimes = [];
               emit({ type: 'water_rescue_warp', reason: 'escape_failed' });
               try { stopMotion(); } catch (e) {}
-              if (NO_GIVE) { emit({ type: 'water_rescue_home_safe' }); homewarp.goSpawn(bot); await sleep(3000); }
-              else await relocateToRegion({ nearSpawn: true });   // bug #4 : vers le SEC near-spawn (admin)
+              if (NO_GIVE) {
+                if (safeWarpDown()) { emit({ type: 'water_rescue_no_warp' }); try { await escapeWater(bot, { emit }); } catch (e) {} }
+                else { emit({ type: 'water_rescue_home_safe' }); homewarp.goSpawn(bot); await sleep(3000); }
+              } else await relocateToRegion({ nearSpawn: true });   // bug #4 : vers le SEC near-spawn (admin)
             }
           } else {
             waterEscapeFails = 0;   // sortie réussie → on reste au fond, pas de warp
@@ -2224,6 +2242,16 @@ async function onSpawn() {
       setInterval(() => {
         try {
           if (_imminentBusy || taskToken.cancelled) return;
+          // Re-pose d'un safe REFUSÉ dès qu'on repasse par une vraie surface sèche : l'ancien
+          // signet est noyé/obstrué (monde eau), le garder = re-refus garanti au prochain secours.
+          if (_homeRefusedAt.safe && bot.entity && bot.entity.position && bot.entity.onGround
+              && bot.entity.position.y >= 58 && !isInWater(bot)) {
+            homewarp.bookmark(bot, 'safe');
+            delete _homeRefusedAt.safe;
+            _safeHomeSet = true; _safeHomeSurface = true;
+            const pR = bot.entity.position;
+            emit({ type: 'safe_home_reset', x: Math.round(pR.x), y: Math.round(pR.y), z: Math.round(pR.z) });
+          }
           const s = {
             health: bot.health,
             inWater: (function () { try { return isInWater(bot); } catch (e) { return false; } })(),
@@ -2231,7 +2259,10 @@ async function onSpawn() {
             lavaNear: (function () { try { return lavaNearby(bot, 2); } catch (e) { return false; } })(),
             nearbyHostiles: (function () { try { return nearbyHostiles(bot, 6).length; } catch (e) { return 0; } })(),
           };
-          const verdict = homewarp.classifyImminent(s);
+          // Verdict DÉGRADÉ si le /home safe vient d'être refusé : re-spammer un TP qui ne part
+          // pas est le no-op qui a zombifié NethBot2 — on se sauve à pied ou on accepte la mort
+          // (keepInventory ON : mourir/respawner est PLUS SAIN qu'un stall à 1.8 PV).
+          const verdict = homewarp.effectiveVerdict(homewarp.classifyImminent(s), _homeRefusedAt.safe, Date.now());
           if (!verdict) return;
           _imminentBusy = true;
           if (verdict === 'escape') {
@@ -2240,6 +2271,13 @@ async function onSpawn() {
             try { stopMotion(); } catch (e) {}
             homewarp.goSpawn(bot);
             setTimeout(() => { _imminentBusy = false; }, 6000); // laisse le TP se faire, anti-spam
+          } else if (verdict === 'escape_no_warp') {
+            emit({ type: 'imminent_escape_no_warp', hp: s.health, inWater: s.inWater });
+            try { stopMotion(); } catch (e) {}
+            if (s.inWater) { try { escapeWater(bot, { emit }).catch(() => {}); } catch (e) {} }
+            const pN = bot.entity && bot.entity.position;
+            if (pN) { homewarp.bookmark(bot, 'death'); _deathMark = { x: pN.x, y: pN.y, z: pN.z, at: Date.now() }; _deathArmed = true; }
+            setTimeout(() => { _imminentBusy = false; }, 6000);
           } else {
             // 'bookmark' : mort probable inévitable (chute/générique) → marquer le lieu pour ramassage.
             // DÉDUP anti-spam : ne re-sethome death QUE si on a bougé (>8 blocs) ou après 30 s (le bot
@@ -2590,6 +2628,16 @@ bot.on('whisper', (username, message) => handleIncoming(username, message, true)
 // Auto-accept des demandes TP (et trade) UNIQUEMENT des gens de confiance, et seulement si
 // la commande d'acceptation est cochée dans la whitelist (synergie avec la config commandes).
 bot.on('messagestr', (msg) => {
+  // RC3 : un /home vient d'être REFUSÉ par la teleport-safety Essentials → le bot n'a PAS bougé.
+  // On invalide le home concerné pour que les filets de secours arrêtent de compter dessus :
+  // wsite → re-creuser (pas re-TP) ; safe → sauvetage à pied + re-pose à la prochaine surface sèche.
+  const refusedH = homewarp.refusedHome(bot, msg);
+  if (refusedH) {
+    _homeRefusedAt[refusedH] = Date.now();
+    emit({ type: 'home_tp_refused', name: refusedH });
+    if (refusedH === 'wsite') _wsiteMineSet = false;
+    if (refusedH === 'safe') _safeHomeSurface = false;   // le prochain spawn surface re-posera un safe sain
+  }
   const tpWho = parseTpRequest(msg);
   if (tpWho && isTrusted(tpWho, policy.trusted) && isAllowed('/tpaccept', whitelist)) {
     bot.chat('/tpaccept'); emit({ type: 'command', command: '/tpaccept', reason: 'tp:' + tpWho });
@@ -2818,7 +2866,10 @@ setInterval(async () => {
         _floatSettleUntil = Date.now() + 15000;
         emit({ type: 'water_rescue_warp', reason: isInWater(bot) ? 'ocean_oscillation' : 'ocean_persistent' });
         try { stopMotion(); } catch (e) {}
-        if (NO_GIVE) { emit({ type: 'water_rescue_home_safe', ctx: 'ocean' }); homewarp.goSpawn(bot); await sleep(3000); }
+        if (NO_GIVE) {
+          if (safeWarpDown()) { emit({ type: 'water_rescue_no_warp', ctx: 'ocean' }); try { await escapeWater(bot, { emit }); } catch (e) {} }
+          else { emit({ type: 'water_rescue_home_safe', ctx: 'ocean' }); homewarp.goSpawn(bot); await sleep(3000); }
+        }
         else { try { await relocateToRegion(); } catch (e) {} }
         _oceanStuckTimes = [];                                            // post-relocate : compteur propre
       }

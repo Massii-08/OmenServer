@@ -8,7 +8,7 @@
 // goals.GoalNear : déplacement vers un point à `range` près. Chargé optionnellement (tests legacy).
 let goals;
 try { goals = require('mineflayer-pathfinder').goals; } catch (e) { goals = null; }
-const { directedTarget } = require('../worldMemory');
+const { directedTarget, targetKey } = require('../worldMemory');
 
 // Nb de points sur un anneau de rayon r pour garder un espacement d'arc ≤ arcSpacing (recouvrement
 // des disques de scan → pas de trou de couverture). Min 4.
@@ -101,13 +101,22 @@ async function explore(bot, opts = {}) {
   // à l'aveugle. Lu via bot._worldMemory/_worldKey (posés par index.js au spawn) ou via opts (tests).
   const memory = opts.memory || bot._worldMemory || null;
   const wkey = opts.worldKey || bot._worldKey || null;
+  // Cibles épuisées (RC4) : Set session posé par index.js au spawn (bot._mcaExhausted). Une cible
+  // dirigée sur laquelle on est ARRIVÉ sans rien trouver y entre → plus jamais re-proposée par
+  // directedTarget (fin de la boucle explore_directed ×48 sur la même prairie pelée, vécu NethBot1).
+  const exhausted = opts.exhausted || bot._mcaExhausted || null;
+  const markExhausted = (t) => {
+    if (!exhausted || !t) return;
+    exhausted.add(targetKey(t.x, t.z));
+    if (emit) { try { emit({ type: 'directed_exhausted', x: Math.round(t.x), z: Math.round(t.z) }); } catch (e) {} }
+  };
   let dTarget = null, dTy = origin.y; // hoistés : réutilisés par le RAPPEL dirigé pendant les anneaux
   if (memory && wkey) {
     const mats = Array.isArray(opts.name) ? opts.name : (opts.name ? [opts.name] : []);
     // Cible la + PROCHE tous matériaux confondus (un birch_log à 100 blocs bat un oak_log à 1400).
     let target = null, targetD = Infinity;
     for (const mat of mats) {
-      const t = directedTarget(memory, wkey, mat, origin, { maxDist: opts.directedMaxDist || 1500 });
+      const t = directedTarget(memory, wkey, mat, origin, { maxDist: opts.directedMaxDist || 1500, exclude: exhausted });
       if (!t) continue;
       const d = Math.sqrt((t.x - origin.x) ** 2 + (t.z - origin.z) ** 2);
       if (d < targetD) { target = t; targetD = d; }
@@ -133,7 +142,8 @@ async function explore(bot, opts = {}) {
           if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
           const hit = bot.findBlock({ matching, maxDistance: scanRadius });
           if (hit) return { ok: true, found: hit.position, traveled: 0, directed: true };
-          break; // arrivé mais rien sur place (cible épuisée) → anneaux depuis ici
+          markExhausted(target); // arrivé mais rien sur place → cible épuisée, ne plus la proposer
+          break; // → anneaux depuis ici
         } catch (e) {
           if (e && e.message === 'goto_timeout') break; // gelé → anneaux
           if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
@@ -169,7 +179,8 @@ async function explore(bot, opts = {}) {
           if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
           const hit = bot.findBlock({ matching, maxDistance: scanRadius });
           if (hit) return { ok: true, found: hit.position, traveled: 0, directed: true };
-          ringRecalls = 0; // arrivé mais rien sur place (cible épuisée) → plus de rappel
+          markExhausted(dTarget); // arrivé mais rien sur place → cible épuisée, ne plus la proposer
+          ringRecalls = 0; // plus de rappel
         } catch (e) {
           if (e && e.message === 'goto_timeout') ringRecalls = 0; // gelé → on n'insiste plus
         }
