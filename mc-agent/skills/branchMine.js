@@ -297,8 +297,15 @@ async function safeDigAndOpportunism(bot, target, token, debug, loopOpts) {
   // y AVANÇAIT (vécu : nappe à profondeur diamant → noyade → water_rescue → re-descente en boucle,
   // 0 minage). On la traite comme un obstacle DUR → l'appelant TOURNE vers le sec (heading
   // perpendiculaire, comme l'anti-chute) : on N'ENTRE PAS, on sacrifie ce tunnel. Le scellement
-  // best-effort ci-dessus gère l'eau ADJACENTE (face) ; ici c'est la case CIBLE qui est mouillée.
-  if (block && isWater(block.name)) return { ok: false, reason: 'water_ahead' };
+  // best-effort ci-dessus gère l'eau ADJACENTE (face) ; ici c'est la case CIBLE qui est mouillée
+  // → on la SCELLE aussi (fix n°2 water-wall : wallLava pose DANS le fluide — sans mur, la source
+  // coule dans la galerie dès qu'elle est ouverte → inondation → water_rescue surface → churn).
+  // Nécessaire en serpentin : le `break` sur water_ahead saute le head → le scellement mutuel
+  // foot↔head (neighborsHaveWater) n'a pas lieu. Best-effort : échec → le demi-tour reste le filet.
+  if (block && isWater(block.name)) {
+    try { await wallLava(bot, target); } catch (e) { /* best-effort */ }
+    return { ok: false, reason: 'water_ahead' };
+  }
   if (!block || block.boundingBox !== 'block') return { ok: true };       // déjà air → rien à faire
   if (isLava(block.name)) return { ok: false, reason: 'lava_at_target' };
 
@@ -457,6 +464,7 @@ async function branchMine(bot, opts = {}, token = null) {
     let heading = { dx: dir.dx, dz: dir.dz };
     let stepsLeft = 4 + Math.floor(rng() * 5);              // longueur du 1er segment (4..8, irrégulier)
     let stopReasonS = null;
+    let wetTurns = 0;                                       // demi-tours eau CONSÉCUTIFS (sans avancer) → waterlocked
     let nextTorchAtS = torchEvery > 0 ? torchEvery : Infinity;
     for (let n = 1; n <= mainLength; n++) {
       if (token && token.cancelled) return { ok: true, cancelled: true, ores: deltaOres(oresBefore, snapshotOres(bot)), gotDiamond: countItem(bot, 'diamond') > 0, heading };
@@ -487,10 +495,15 @@ async function branchMine(bot, opts = {}, token = null) {
       if (hardStop) break;
       if (wetTurn) {                                          // demi-tour anti-noyade, on reste SEC
         if (debug) { try { dbg('branch', { phase: 'branch:water_turn', x: cx, y: oy, z: cz }); } catch (e) {} }
+        // Aquifère VERROUILLANT (fix n°2 water-wall) : ≥6 demi-tours eau sans avancer d'un bloc =
+        // toutes les directions mouillées et scellement inopérant → échec RAPIDE et NOMMÉ (l'ancien
+        // comportement tournait en boucle jusqu'au stall 30s ; l'appelant se décale sur waterlocked).
+        if (++wetTurns >= 6) { stopReasonS = 'waterlocked'; break; }
         heading = (rng() < 0.5) ? leftOf(heading) : { dx: heading.dz, dz: -heading.dx };
         stepsLeft = 4 + Math.floor(rng() * 5);
         continue;
       }
+      wetTurns = 0;                                        // le front a avancé → l'eau n'enferme pas
       cx += heading.dx; cz += heading.dz;                  // le front a avancé (case minée)
       if (n >= nextTorchAtS) {
         nextTorchAtS = n + torchEvery + Math.floor(rng() * torchEvery);
@@ -514,6 +527,7 @@ async function branchMine(bot, opts = {}, token = null) {
     };
   }
 
+  let wetSteps = 0;             // pas de couloir CONSÉCUTIFS face à l'eau (scellés, non creusés) → waterlocked
   outer:
   while (i <= mainLength) {
     if (token && token.cancelled) return { ok: true, cancelled: true, ores: deltaOres(oresBefore, snapshotOres(bot)), gotDiamond: countItem(bot, 'diamond') > 0, heading: dir };
@@ -536,13 +550,20 @@ async function branchMine(bot, opts = {}, token = null) {
     try { await approach(bot, footTarget, 3, opts); } catch (e) { if (debug) dbg('iter', { phase: 'branchMine:approachThrew', err: String(e).slice(0,150) }); }
     // Sol manquant sous la prochaine case (grotte) → ponté, sinon on arrête le tunnel ici (anti-chute).
     try { if (!(await ensureFloor(bot, footTarget))) { stopReason = 'drop'; break; } } catch (e) { /* best-effort */ }
+    let stepWet = false;
     for (const t of [footTarget, headTarget]) {
       let r;
       try { r = await safeDigAndOpportunism(bot, t, token, debug, opts); }
       catch (e) { if (debug) dbg('iter', { phase: 'branchMine:safeDigThrew', err: String(e).slice(0,150) }); r = { ok: false, reason: 'threw' }; }
+      if (!r.ok && r.reason === 'water_ahead') stepWet = true;   // scellé best-effort ; on n'entre pas
       if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
       if (!r.ok && r.reason === 'no_pickaxe') { stopReason = 'no_pickaxe'; break outer; } // jamais à la main (Massii #5)
     }
+    // Fix n°2 water-wall : ≥8 pas consécutifs face à l'eau = le couloir traverse une nappe que le
+    // scellement n'assèche pas → échec RAPIDE et NOMMÉ (l'ancien couloir « avançait » à l'aveugle
+    // le long de la nappe sans jamais creuser → water_rescue → churn). L'appelant se décale.
+    if (stepWet) { if (++wetSteps >= 8) { stopReason = 'waterlocked'; break; } }
+    else wetSteps = 0;
     // Torches « joueur réel » (affinage Massii 07/06) : basées sur la LUMIÈRE + jitter — pose
     // SEULEMENT si l'endroit est sombre (< seuil spawn mob, lumière inconnue = sombre) et pas
     // de cadence métronomique (prochaine pose à torchEvery + 0..torchEvery-1 paliers aléatoires).
@@ -579,11 +600,16 @@ async function branchMine(bot, opts = {}, token = null) {
           let floorOk = true;
           try { floorOk = await ensureFloor(bot, ft); } catch (e) { /* best-effort */ }
           if (!floorOk) break;                                         // branche suivante
+          let branchWet = false;
           for (const t of [ft, ht]) {
             const r = await safeDigAndOpportunism(bot, t, token, debug, opts);
+            if (!r.ok && r.reason === 'water_ahead') branchWet = true;  // scellé best-effort
             if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
             if (!r.ok && r.reason === 'no_pickaxe') { stopReason = 'no_pickaxe'; break outer; }
           }
+          // Fix n°2 water-wall : la branche a rencontré l'eau → on l'arrête LÀ (l'ancienne boucle
+          // continuait à creuser j+1..branchLength DANS la nappe → inondation de la galerie).
+          if (branchWet) break;
         }
       }
     }

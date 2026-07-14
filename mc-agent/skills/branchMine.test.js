@@ -499,3 +499,67 @@ test('floodFillVein : bloc de départ non-ore → 0 (no-op)', async () => {
   const n = await floodFillVein(bot, { x: 0, y: -58, z: 0 }, null);
   assert.strictEqual(n, 0);
 });
+
+// ── FIX n°2 WATER-WALL (run 2026-07-14) : scellement FRONTAL + sortie waterlocked ──────────
+// L'évitement tactique seul (tourner) laissait la source couler dans la galerie dès qu'adjacente
+// → inondation → water_rescue surface → churn de re-descente (vécu homedeath : smelt:0).
+
+test('branchMine : EAU DEVANT (case cible) -> la SCELLE (cobble posé DANS la case) avant de continuer', async () => {
+  const world = { '1,-54,0': 'water', '1,-53,0': 'water' };   // foot+tête du 1er pas (heading +x)
+  const { bot, calls } = makeBot({ y: -54, world });
+  await branchMine(bot, { targetY: -54, mainLength: 6, branchLength: 4, heading: { dx: 1, dz: 0 } });
+  assert.strictEqual(world['1,-54,0'], 'cobblestone', 'case cible mouillée SCELLÉE (plus de source ouverte sur la galerie)');
+  assert.ok(calls.dig.every((b) => !String(b.name || '').includes('water')), 'ne creuse jamais l eau');
+});
+
+test('branchMine serpentin : scellement IMPOSSIBLE + eau partout -> waterlocked (sortie rapide, pas de stall 30s)', async () => {
+  // Aquifère verrouillant : toutes les directions mouillées ET pose de bloc impossible → l'ancien
+  // comportement tournait en boucle jusqu'au stall (30s). On veut un échec RAPIDE et NOMMÉ pour
+  // que l'appelant se décale (waterlocked_relocate).
+  const { bot, calls } = makeBot({ y: -54 });
+  const origBlockAt = bot.blockAt.bind(bot);
+  bot.blockAt = (q) => {
+    if ((q.y === -54 || q.y === -53) && !(q.x === 0 && q.z === 0)) {
+      return { name: 'water', position: q, boundingBox: 'empty' };
+    }
+    return origBlockAt(q);
+  };
+  bot.placeBlock = async () => { throw new Error('no face'); };  // scellement impossible
+  const r = await branchMine(bot, { targetY: -54, mainLength: 40, serpentine: true, rng: seededRng(5) });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'waterlocked');
+  assert.ok(calls.dig.every((b) => !String(b.name || '').includes('water')), 'ne creuse jamais l eau');
+});
+
+test('branchMine classique : eau partout + scellement impossible -> waterlocked (le couloir n avance plus à l aveugle)', async () => {
+  const { bot, calls } = makeBot({ y: -54 });
+  const origBlockAt = bot.blockAt.bind(bot);
+  bot.blockAt = (q) => {
+    if ((q.y === -54 || q.y === -53) && !(q.x === 0 && q.z === 0)) {
+      return { name: 'water', position: q, boundingBox: 'empty' };
+    }
+    return origBlockAt(q);
+  };
+  bot.placeBlock = async () => { throw new Error('no face'); };
+  const r = await branchMine(bot, { targetY: -54, mainLength: 40, branchSpacing: 3, branchLength: 4, heading: { dx: 1, dz: 0 } });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'waterlocked');
+  assert.ok(calls.dig.every((b) => !String(b.name || '').includes('water')), 'ne creuse jamais l eau');
+});
+
+test('branchMine classique : une BRANCHE qui rencontre l eau NON scellable s arrête là (pas d extension dans le lac)', async () => {
+  // Branche latérale (+z à i=3) : à partir du 2e bloc de branche c'est un LAC et la pose de bloc
+  // est impossible (pas de face) → la branche doit s'arrêter là, PAS continuer à creuser j=3,4
+  // dans la nappe. (Si le scellement réussit, traverser la flaque scellée est OK — cas séparé.)
+  const world = {
+    '3,-54,2': 'water', '3,-53,2': 'water',
+    '3,-54,3': 'water', '3,-53,3': 'water',
+    '3,-54,4': 'water', '3,-53,4': 'water',
+  };
+  const { bot, calls } = makeBot({ y: -54, world });
+  bot.placeBlock = async () => { throw new Error('no face'); };  // scellement impossible
+  await branchMine(bot, { targetY: -54, mainLength: 6, branchSpacing: 3, branchLength: 4, heading: { dx: 1, dz: 0 } });
+  const beyond = calls.dig.filter((b) => b.position.x === 3 && b.position.z >= 3);
+  assert.strictEqual(beyond.length, 0, `la branche ne creuse PAS au-delà de l eau (dug: ${JSON.stringify(beyond.map((b)=>({x:b.position.x,z:b.position.z})))})`);
+  assert.ok(calls.dig.every((b) => !String(b.name || '').includes('water')), 'ne creuse jamais l eau');
+});

@@ -188,3 +188,15 @@ test('IRON_ARMOR_CHAIN: pioche FER en poche → jamais de pré-stock pierre', ()
   assert.notStrictEqual(g && g.name, 'spare_picks');
   assert.notStrictEqual(g && g.name, 'cobble_spare');
 });
+
+test('chaînes armure : le minage profond est en SERPENTIN (profil anti-eau du pipeline diamant)', () => {
+  // fix n°2 water-wall : le couloir droit longeait les nappes sans avancer ; le serpentin tourne
+  // au contact de l'eau (+ scellement frontal branchMine). IRON_CHAIN (pioche) reste en couloir.
+  const { IRON_CHAIN } = require('../goals');
+  const ironDeep = IRON_ARMOR_CHAIN.find((g) => g.name === 'iron_deep');
+  const diaDeep = DIAMOND_ARMOR_CHAIN.find((g) => g.name === 'diamonds_armor');
+  assert.strictEqual(ironDeep.args.serpentine, true);
+  assert.strictEqual(diaDeep.args.serpentine, true);
+  const ironChainDeep = IRON_CHAIN.find((g) => g.name === 'iron_deep');
+  assert.ok(!ironChainDeep || !ironChainDeep.args.serpentine, 'IRON_CHAIN (objectif pioche) inchangé');
+});

@@ -182,8 +182,11 @@ const IRON_ARMOR_CHAIN = [
     skill: 'gather',      args: { name: 'stone', count: 12 } },
   { name: 'descend_y16',  met: (c) => (c.y !== undefined && c.y <= 18) || ironOK(c) || IA(c),
     skill: 'descendDiagonal', args: { targetY: 16 } },
+  // serpentine:true (fix n°2 water-wall) : le mode serpentin TOURNE au contact de l'eau (+ scelle
+  // le front) au lieu du couloir droit qui longeait la nappe → c'est le profil anti-eau prouvé du
+  // pipeline diamant (resource). Rétro-compat : IRON_CHAIN (objectif pioche) reste en couloir.
   { name: 'iron_deep',    met: (c) => ironOK(c) || IA(c),
-    skill: 'branchMine',  args: { targetY: 16, mainLength: 48, branchSpacing: 3, branchLength: 8 } },
+    skill: 'branchMine',  args: { targetY: 16, mainLength: 48, branchSpacing: 3, branchLength: 8, serpentine: true } },
   { name: 'iron_ingot',   met: (c) => invCount(c.inv, 'iron_ingot') >= 3 || invCount(c.inv, 'iron_pickaxe') >= 1 || IA(c),
     skill: 'smeltIron',   args: { count: 3 } },
   { name: 'iron_pickaxe', met: (c) => invCount(c.inv, 'iron_pickaxe') >= 1 || IA(c),
@@ -203,7 +206,7 @@ const DIAMOND_ARMOR_CHAIN = [
   { name: 'descend_y54',    met: (c) => (c.y !== undefined && c.y <= -52) || diamondsOK(c) || DA_WORN(c),
     skill: 'descendDiagonal', args: { targetY: -54 } },
   { name: 'diamonds_armor', met: (c) => diamondsOK(c) || DA_WORN(c),
-    skill: 'branchMine',    args: { targetY: -54, mainLength: 48, branchSpacing: 3, branchLength: 8 } },
+    skill: 'branchMine',    args: { targetY: -54, mainLength: 48, branchSpacing: 3, branchLength: 8, serpentine: true } },
   { name: 'diamond_armor',  met: DA_WORN, skill: 'craftDiamondArmor', args: {} },
 ];
 
