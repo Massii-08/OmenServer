@@ -2078,10 +2078,10 @@ const BotsModule = {
  <button class="btn btn-ghost btn-sm" onclick="BotsModule._mcaMapFit(true)">${Lang.t('mcagent.map.recenter')}</button>
  <span id="mca-map-updated" style="font-size:11px;color:var(--text-dim);font-family:var(--font-mono);margin-left:auto;"></span>
  </div>
- <div style="position:relative;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#0B0B0D;">
+ <div style="position:relative;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#a8895c;">
  <canvas id="mca-map-canvas" style="display:block;width:100%;height:440px;cursor:grab;touch-action:none;"></canvas>
- <div id="mca-map-empty" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:20px;color:var(--text-muted);font-size:13px;pointer-events:none;"></div>
- <div id="mca-map-coords" style="position:absolute;left:10px;bottom:8px;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);background:rgba(14,14,16,.78);padding:2px 8px;border-radius:6px;pointer-events:none;"></div>
+ <div id="mca-map-empty" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:20px;color:#4a3216;font-weight:600;font-size:13px;pointer-events:none;"></div>
+ <div id="mca-map-coords" style="position:absolute;left:16px;bottom:14px;font-family:var(--font-mono);font-size:11px;color:#f0e1b9;background:rgba(58,44,24,0.85);padding:2px 8px;border-radius:6px;pointer-events:none;"></div>
  </div>
  <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">${Lang.t('mcagent.map.hint')}</div>
  <div id="mca-map-legend" style="margin-top:10px;"></div>
@@ -2092,6 +2092,8 @@ const BotsModule = {
   // (Re)montage de la carte : bind canvas + 1ère charge + arme l'auto-refresh des cartographes.
   this._mcaMapBindCanvas();
   await this._mcaMapRefresh();
+  // Police pixel des étiquettes : redraw quand elle arrive (fallback monospace en attendant).
+  if (document.fonts && document.fonts.load) document.fonts.load('8px PSP').then(() => this._mcaMapDraw()).catch(() => {});
  }
  // Auto-refresh statut des cartographes (5s) tant que l'onglet map est visible — indépendant de la carte.
  this._mcaWorkersStop();
@@ -2764,6 +2766,9 @@ const BotsModule = {
  el.textContent = `x ${wx} · z ${wz}` + (b ? ` · ${b.name || ('#' + b.id)}` : '');
  },
 
+ // Rendu « item carte » MC : parchemin, biomes map-colors + grain dithéré, curseur de spawn,
+ // sprites de structures/grottes avec labels au zoom. Les « trouvailles » (mémoire interne
+ // du bot) ne sont PAS dessinées.
  _mcaMapDraw() {
  const m = this._mcaMapState();
  const cv = document.getElementById('mca-map-canvas');
@@ -2776,28 +2781,44 @@ const BotsModule = {
  }
  const ctx = cv.getContext('2d');
  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
- ctx.fillStyle = '#0B0B0D';
+ // parchemin nu = zone pas encore cartographiée
+ ctx.fillStyle = '#d4bb8d';
  ctx.fillRect(0, 0, w, h);
  const v = m.view;
  const toX = (x) => (x - v.cx) * v.scale + w / 2;
  const toY = (z) => (z - v.cz) * v.scale + h / 2;
  const world = this._mcaMapWorld();
- if (!world) { this._mcaMapScaleBar(ctx, w, h); return; }
+ if (!world) { this._mcaMapScaleBar(ctx, w, h); this._mcaFrame(ctx, w, h); return; }
  const hid = m.hidden;
- // 1. biomes — cases 128×128 (joint hairline 1px quand assez zoomé)
+ // 1. biomes — cases 128×128 en map colors + grain dithéré déterministe (stable au redraw)
  const cell = 128 * v.scale;
- const gap = cell > 6 ? 1 : 0;
  for (const b of world.biomes || []) {
  const key = b.name || ('#' + b.id);
  if (hid['b:' + key]) continue;
  const x0 = toX(b.x), y0 = toY(b.z);
  if (x0 > w || y0 > h || x0 + cell < 0 || y0 + cell < 0) continue;
- ctx.fillStyle = this._mcaBiomeColor(key);
- ctx.fillRect(x0, y0, Math.max(cell - gap, 1), Math.max(cell - gap, 1));
+ const baseHex = this._mcaBiomeBase(key);
+ const jitter = 0.96 + (this._mcaHash('b:' + String(key).toLowerCase()) % 9) / 100;
+ ctx.fillStyle = this._mcaShade(baseHex, jitter);
+ ctx.fillRect(x0, y0, cell + 0.5, cell + 0.5);
+ if (cell >= 12) {
+ const g = Math.max(6, cell / 16); // ≤ ~256 sous-tuiles par cellule (garde-fou perf)
+ const cellX = Math.round(b.x / 128), cellZ = Math.round(b.z / 128);
+ for (let gy = 0, iy = 0; gy < cell; gy += g, iy++) {
+ for (let gx = 0, ix = 0; gx < cell; gx += g, ix++) {
+ const r = this._mcaHash2(cellX * 97 + ix, cellZ * 131 + iy);
+ const f = r < 0.22 ? 0.92 : (r > 0.82 ? 1.07 : 0);
+ if (f) {
+ ctx.fillStyle = this._mcaShade(baseHex, jitter * f);
+ ctx.fillRect(x0 + gx, y0 + gy, Math.min(g, cell - gx), Math.min(g, cell - gy));
  }
- // 2. grille 128 discrète (si assez zoomé pour qu'elle ait un sens)
+ }
+ }
+ }
+ }
+ // 2. grille 128 discrète, encre brune (si assez zoomé pour qu'elle ait un sens)
  if (v.scale >= 0.12) {
- ctx.strokeStyle = 'rgba(244,244,245,0.05)';
+ ctx.strokeStyle = 'rgba(90,60,20,0.07)';
  ctx.lineWidth = 1;
  const step = cell;
  let gx = toX(Math.floor((v.cx - w / 2 / v.scale) / 128) * 128);
@@ -2805,64 +2826,57 @@ const BotsModule = {
  let gy = toY(Math.floor((v.cz - h / 2 / v.scale) / 128) * 128);
  for (; gy <= h; gy += step) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke(); }
  }
- // 3. croix d'origine (0,0) — repère spawn
+ // 3. spawn (0,0) — curseur de map MC (losange blanc contour noir)
  const ox = toX(0), oy = toY(0);
- if (ox >= -8 && ox <= w + 8 && oy >= -8 && oy <= h + 8) {
- ctx.strokeStyle = 'rgba(244,244,245,0.4)';
- ctx.lineWidth = 1;
+ if (ox >= -10 && ox <= w + 10 && oy >= -10 && oy <= h + 10) {
+ ctx.save();
+ ctx.translate(ox, oy);
+ ctx.rotate(Math.PI / 4);
+ ctx.fillStyle = '#ffffff';
+ ctx.strokeStyle = '#1a1a1a';
+ ctx.lineWidth = 2;
  ctx.beginPath();
- ctx.moveTo(ox - 6, oy); ctx.lineTo(ox + 6, oy);
- ctx.moveTo(ox, oy - 6); ctx.lineTo(ox, oy + 6);
+ ctx.rect(-5, -5, 10, 10);
+ ctx.fill();
  ctx.stroke();
+ ctx.restore();
  }
- // 4. grottes — triangles (entrées, y réel dispo au survol via légende)
+ // 4. grottes — sprite « cave » (tooltip au survol, pas de label)
  if (!hid.caves) {
  for (const c of world.caves || []) {
  const x = toX(c.x), y = toY(c.z);
- if (x < -8 || y < -8 || x > w + 8 || y > h + 8) continue;
- ctx.fillStyle = 'rgba(14,14,16,0.85)';
- ctx.strokeStyle = '#F4F4F5';
- ctx.lineWidth = 1.4;
- ctx.beginPath();
- ctx.moveTo(x, y - 5); ctx.lineTo(x + 4.5, y + 3.5); ctx.lineTo(x - 4.5, y + 3.5);
- ctx.closePath();
- ctx.fill(); ctx.stroke();
+ if (x < -20 || y < -20 || x > w + 20 || y > h + 20) continue;
+ this._mcaDrawSprite(ctx, 'cave', x, y, 2, true);
  }
  }
- // 4bis. STRUCTURES (phase 2) — pastille colorée + initiale par type (les minerais sont une
- // donnée INTERNE bot, retirée de la carte joueurs).
+ // 5. structures — sprite dédié + label parchemin au zoom ; kind inconnu → pastille+initiale
+ const showLabels = cell >= 45;
  for (const st of world.structures || []) {
  if (hid['s:' + st.kind]) continue;
  const x = toX(st.x), y = toY(st.z);
- if (x < -8 || y < -8 || x > w + 8 || y > h + 8) continue;
+ if (x < -24 || y < -24 || x > w + 24 || y > h + 24) continue;
+ if (this._mcaDrawSprite(ctx, st.kind, x, y, 2, true)) {
+ if (showLabels) this._mcaLabel(ctx, x + 22, y, this._mcaStructName(st.kind));
+ } else {
  const col = this._structColor(st.kind);
  ctx.fillStyle = col;
  ctx.beginPath();
  ctx.arc(x, y, 6, 0, Math.PI * 2);
  ctx.fill();
- ctx.strokeStyle = 'rgba(5,8,16,0.9)';
+ ctx.strokeStyle = 'rgba(26,20,10,0.9)';
  ctx.lineWidth = 1.2;
  ctx.stroke();
- ctx.fillStyle = '#050810';
- ctx.font = 'bold 8px var(--font-mono), monospace';
+ ctx.fillStyle = '#1a140a';
+ ctx.font = 'bold 8px monospace';
  ctx.textAlign = 'center';
  ctx.textBaseline = 'middle';
  ctx.fillText(this._structInitial(st.kind), x, y + 0.5);
+ ctx.textAlign = 'left';
+ if (showLabels) this._mcaLabel(ctx, x + 12, y, this._mcaStructName(st.kind));
  }
- // 5. trouvailles — losanges colorés par matériau
- for (const f of world.finds || []) {
- if (hid['m:' + f.material]) continue;
- const x = toX(f.x), y = toY(f.z);
- if (x < -8 || y < -8 || x > w + 8 || y > h + 8) continue;
- ctx.fillStyle = this._mcaMatColor(f.material);
- ctx.strokeStyle = 'rgba(14,14,16,0.9)';
- ctx.lineWidth = 1;
- ctx.beginPath();
- ctx.moveTo(x, y - 5); ctx.lineTo(x + 5, y); ctx.lineTo(x, y + 5); ctx.lineTo(x - 5, y);
- ctx.closePath();
- ctx.fill(); ctx.stroke();
  }
  this._mcaMapScaleBar(ctx, w, h);
+ this._mcaFrame(ctx, w, h);
  },
 
  // Barre d'échelle (bas-droite) : longueur en blocs, puissance de 2 calée sur 40-180px.
@@ -2872,18 +2886,62 @@ const BotsModule = {
  let px = blocks * v.scale;
  while (px < 40 && blocks < 65536) { blocks *= 2; px = blocks * v.scale; }
  while (px > 180 && blocks > 16) { blocks /= 2; px = blocks * v.scale; }
- const x = w - px - 14, y = h - 14;
- ctx.strokeStyle = 'rgba(244,244,245,0.7)';
+ const x = w - px - 26, y = h - 26;
+ ctx.strokeStyle = 'rgba(74,50,22,0.85)';
  ctx.lineWidth = 1.5;
  ctx.beginPath();
  ctx.moveTo(x, y); ctx.lineTo(x + px, y);
  ctx.moveTo(x, y - 4); ctx.lineTo(x, y + 4);
  ctx.moveTo(x + px, y - 4); ctx.lineTo(x + px, y + 4);
  ctx.stroke();
- ctx.fillStyle = 'rgba(244,244,245,0.7)';
- ctx.font = '10px "Geist Mono", monospace'; // ctx.font ne résout pas les vars CSS
+ ctx.fillStyle = 'rgba(74,50,22,0.9)';
+ ctx.font = '8px PSP, monospace'; // ctx.font ne résout pas les vars CSS
  ctx.textAlign = 'center';
- ctx.fillText(String(blocks), x + px / 2, y - 6);
+ ctx.fillText(String(blocks), x + px / 2, y - 8);
+ ctx.textAlign = 'left';
+ },
+
+ // Cadre « item carte » : pourtour parchemin sombre + crans pixel déterministes + liseré.
+ _mcaFrame(ctx, w, h) {
+ const k = 6, p = 12;
+ ctx.fillStyle = '#a8895c';
+ ctx.fillRect(0, 0, w, p);
+ ctx.fillRect(0, h - p, w, p);
+ ctx.fillRect(0, 0, p, h);
+ ctx.fillRect(w - p, 0, p, h);
+ for (let x = 0; x < w; x += k) {
+ if (this._mcaHash2(x, 11) > 0.55) ctx.fillRect(x, p, k, k);
+ if (this._mcaHash2(x, 13) > 0.55) ctx.fillRect(x, h - p - k, k, k);
+ }
+ for (let y = 0; y < h; y += k) {
+ if (this._mcaHash2(15, y) > 0.55) ctx.fillRect(p, y, k, k);
+ if (this._mcaHash2(17, y) > 0.55) ctx.fillRect(w - p - k, y, k, k);
+ }
+ ctx.strokeStyle = 'rgba(74,50,22,0.55)';
+ ctx.lineWidth = 2;
+ ctx.strokeRect(p + 2.5, p + 2.5, w - 2 * p - 5, h - 2 * p - 5);
+ },
+
+ // Étiquette parchemin : nom de structure à droite de l'icône (police pixel 8px).
+ _mcaLabel(ctx, x, y, text) {
+ ctx.font = '8px PSP, monospace';
+ ctx.textAlign = 'left';
+ ctx.textBaseline = 'middle';
+ const tw = ctx.measureText(text).width;
+ ctx.fillStyle = 'rgba(240,225,185,0.92)';
+ ctx.strokeStyle = 'rgba(90,60,20,0.45)';
+ ctx.lineWidth = 1;
+ if (ctx.roundRect) {
+ ctx.beginPath();
+ ctx.roundRect(x, y - 8, tw + 12, 16, 4);
+ ctx.fill();
+ ctx.stroke();
+ } else {
+ ctx.fillRect(x, y - 8, tw + 12, 16);
+ ctx.strokeRect(x + 0.5, y - 7.5, tw + 11, 15);
+ }
+ ctx.fillStyle = '#4a3216';
+ ctx.fillText(text, x + 6, y + 1);
  },
 
  // Légende cliquable : chips biomes (carrés) / matériaux (losanges) / grottes (triangle) avec compte.
