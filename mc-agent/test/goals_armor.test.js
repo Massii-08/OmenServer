@@ -234,3 +234,49 @@ test('IRON_ARMOR_CHAIN: armure portée → armor_fuel/cobble/furnace restent met
   const full = ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'];
   assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx({}, full)), null);
 });
+
+// --- Cycle 2 water-wall : BUFFER PLANCHES pré-descente (churn bois↔profondeur, frein #1).
+// Vécu live NethBot1 : table perdue SOUS TERRE avec 0 planche/0 bûche → no_table:unknown_item ×4 →
+// but logs sous terre → not_found → roaming mortel. Le but `planks` du préfixe est court-circuité
+// par I(c)/canStonePick dès qu'une pioche existe → on exige ≥8 équivalents-planche (planche=1,
+// bûche=4) EN SURFACE (y>30) avant descend_y16. Échappatoires : sous terre (pas de remontée forcée),
+// ironOK (le fer est déjà là → on ne bloque pas la fonte/craft), IA (armure faite).
+test('IRON_ARMOR_CHAIN: plank_buffer existe et précède descend_y16', () => {
+  const names = IRON_ARMOR_CHAIN.map((g) => g.name);
+  const iBuf = names.indexOf('plank_buffer');
+  const iDesc = names.indexOf('descend_y16');
+  assert.ok(iBuf !== -1, 'plank_buffer absent');
+  assert.ok(iBuf < iDesc, 'plank_buffer doit précéder descend_y16');
+});
+
+test('plank_buffer: kit descente prêt mais 0 bois en surface → firstUnmet = plank_buffer', () => {
+  const inv = { stone_pickaxe: 3, cobblestone: 12, crafting_table: 1, stick: 4, furnace: 1 };
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64)).name, 'plank_buffer');
+});
+
+test('plank_buffer: 8 planches OU 2 bûches suffisent → on passe à descend_y16', () => {
+  const base = { stone_pickaxe: 3, cobblestone: 12, crafting_table: 1, stick: 4, furnace: 1 };
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx({ ...base, oak_planks: 8 }, [], 64)).name, 'descend_y16');
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx({ ...base, oak_log: 2 }, [], 64)).name, 'descend_y16');
+});
+
+test('plank_buffer: SOUS TERRE (y≤30) jamais bloquant (pas de remontée bois forcée)', () => {
+  const inv = { stone_pickaxe: 1, cobblestone: 12, crafting_table: 1, stick: 4, furnace: 1 };
+  const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 10));
+  assert.notStrictEqual(g && g.name, 'plank_buffer');
+});
+
+test('plank_buffer: ironOK (fer banké) court-circuite (rétro-compat armor_fuel du dernier mètre)', () => {
+  // même scénario que le test « 0 combustible → armor_fuel » : 24 raw_iron, 0 bois, surface.
+  const inv = { iron_pickaxe: 1, raw_iron: 24, cobblestone: 12, crafting_table: 1, furnace: 1 };
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64)).name, 'armor_fuel');
+});
+
+// --- Cycle 2 water-wall : allowDeeper câblé sur le branch-mine ARMURE uniquement (deadlock y<10).
+test('IRON_ARMOR_CHAIN: iron_deep passe allowDeeper (deadlock wrong_depth) ; IRON_CHAIN inchangé', () => {
+  const { IRON_CHAIN } = require('../goals');
+  const ironDeep = IRON_ARMOR_CHAIN.find((g) => g.name === 'iron_deep');
+  assert.strictEqual(ironDeep.args.allowDeeper, true);
+  const ironChainDeep = IRON_CHAIN.find((g) => g.name === 'iron_deep');
+  assert.ok(!ironChainDeep || !ironChainDeep.args.allowDeeper, 'IRON_CHAIN (objectif pioche) inchangé');
+});

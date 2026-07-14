@@ -185,13 +185,23 @@ const IRON_ARMOR_CHAIN = [
   // Réserve cobble pour murer la lave en branch-mine (le four a consommé les 8 du kit).
   { name: 'cobble_lava',  met: (c) => invCount(c.inv, 'cobblestone') >= 12 || ironOK(c) || IA(c),
     skill: 'gather',      args: { name: 'stone', count: 12 } },
+  // Cycle 2 water-wall — BUFFER PLANCHES pré-descente (churn bois↔profondeur, frein #1) : table
+  // perdue SOUS TERRE avec 0 planche/0 bûche → no_table:unknown_item ×∞ → but logs sous terre →
+  // not_found → roaming mortel (vécu live NethBot1). Le but `planks` du préfixe est court-circuité
+  // par I(c)/canStonePick dès qu'une pioche existe → on exige ≥8 équivalents-planche (planche=1,
+  // bûche=4) EN SURFACE (y>30) seulement. ironOK : le fer est déjà là → on ne bloque pas la fonte.
+  { name: 'plank_buffer', met: (c) => (c.y !== undefined && c.y <= 30) ||
+      (anyPlanks(c.inv) + anyLog(c.inv) * 4 >= 8) || ironOK(c) || IA(c),
+    skill: 'gatherLog',   args: { count: 2 } },
   { name: 'descend_y16',  met: (c) => (c.y !== undefined && c.y <= 18) || ironOK(c) || IA(c),
     skill: 'descendDiagonal', args: { targetY: 16 } },
   // serpentine:true (fix n°2 water-wall) : le mode serpentin TOURNE au contact de l'eau (+ scelle
   // le front) au lieu du couloir droit qui longeait la nappe → c'est le profil anti-eau prouvé du
   // pipeline diamant (resource). Rétro-compat : IRON_CHAIN (objectif pioche) reste en couloir.
+  // allowDeeper (cycle 2) : un bot ramené SOUS la fenêtre [10,18] (water_rescue → /home safe à y=4)
+  // bouclait wrong_depth à vie — le serpentin mine au niveau courant, on l'admet jusqu'à y=-59.
   { name: 'iron_deep',    met: (c) => ironOK(c) || IA(c),
-    skill: 'branchMine',  args: { targetY: 16, mainLength: 48, branchSpacing: 3, branchLength: 8, serpentine: true } },
+    skill: 'branchMine',  args: { targetY: 16, mainLength: 48, branchSpacing: 3, branchLength: 8, serpentine: true, allowDeeper: true } },
   { name: 'iron_ingot',   met: (c) => invCount(c.inv, 'iron_ingot') >= 3 || invCount(c.inv, 'iron_pickaxe') >= 1 || IA(c),
     skill: 'smeltIron',   args: { count: 3 } },
   { name: 'iron_pickaxe', met: (c) => invCount(c.inv, 'iron_pickaxe') >= 1 || IA(c),

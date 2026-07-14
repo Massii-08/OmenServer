@@ -399,7 +399,12 @@ async function branchMine(bot, opts = {}, token = null) {
   // d'appeler branchMine ; exiger |Δ|≤2 faisait baill un bot à targetY-3..-6 → relocate → boucle
   // surface, 0 minage (live 22/06 soir : lapis bloqué 0, bots à y-61 pour targetY -58). On s'aligne
   // sur la fenêtre d'index.js : [targetY-6, targetY+2].
-  if (start.y > targetY + 2 || start.y < targetY - 6) { dbg('start', { phase: 'branchMine:bail', reason: 'wrong_depth', startY: start.y, targetY }); return { ok: false, reason: 'wrong_depth' }; }
+  // opts.allowDeeper (cycle 2 water-wall, opt-in chaînes armure) : un bot SOUS la fenêtre (ex. y=4
+  // pour targetY=16, ramené là par water_rescue → /home safe) bouclait à vie wrong_depth (descend
+  // met à y≤18, rien ne remonte). Le minage se fait AU NIVEAU COURANT (targetY ne sert qu'à cette
+  // porte) → on l'admet tant qu'il reste au-dessus du plancher bedrock (y ≥ -59).
+  const tooDeep = start.y < targetY - 6 && !(opts.allowDeeper && start.y >= -59);
+  if (start.y > targetY + 2 || tooDeep) { dbg('start', { phase: 'branchMine:bail', reason: 'wrong_depth', startY: start.y, targetY }); return { ok: false, reason: 'wrong_depth' }; }
 
   if (countWallable(bot) < COBBLE_TARGET_INIT / 2) {
     // tolère un peu en dessous de 16 (gather peut en avoir consommé) mais on garde la réserve mini.

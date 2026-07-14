@@ -507,8 +507,11 @@ async function runGoalSkill(goal) {
           const wDS = memDS && memDS.worlds && (memDS.worlds[wkDS] || memDS.worlds[wkDS.replace(/^minecraft:/, '')]);
           const pDS = bot.entity.position;
           const matDS = (goal.args && typeof goal.args.targetY === 'number' && goal.args.targetY < 0) ? 'diamond' : 'iron';
+          // range 224 (cycle 2 water-wall) : à 600, la cellule élue pouvait être à 350+ blocs →
+          // marche infaisable à pied (3× dry_steer_failed short, morts en route, death_loop — vécu
+          // live NethBot2). 224 ≈ 2 cellules : atteignable en ~1 goto ; au-delà on descend sur place.
           const cellDS = (wDS && Array.isArray(wDS.ores))
-            ? driestCell(wDS.ores, { base: { x: pDS.x, z: pDS.z }, range: 600, cellSize: 128, minOres: 12, material: matDS })
+            ? driestCell(wDS.ores, { base: { x: pDS.x, z: pDS.z }, range: 224, cellSize: 128, minOres: 12, material: matDS })
             : null;
           // > 20 % wet = pas mieux qu'ici → pas de marche pour rien (on descend sur place).
           if (cellDS && cellDS.wetFraction <= 0.2) {
