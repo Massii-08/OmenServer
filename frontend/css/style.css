@@ -4586,6 +4586,18 @@ select:-webkit-autofill {
     align-items: center;
 }
 .oracle-open-tbl .t-row.oracle-openrow > div:first-child { flex: none; min-width: 0; }
+
+/* Performance en simulation : Seuil | Paris | % gagnés | P&L */
+.oracle-perf-tbl .t-head,
+.oracle-perf-tbl .t-row.oracle-perfrow {
+    display: grid;
+    grid-template-columns: 1fr 64px 76px 92px;
+    gap: var(--s-3);
+    align-items: center;
+}
+.oracle-perf-tbl .t-row.oracle-perfrow > div:first-child { flex: none; min-width: 0; text-align: left; }
+.oracle-perf-tbl .t-row.oracle-perfrow.bot { background: var(--accent-dim); }
+.oracle-perf-tbl .t-row.oracle-perfrow.bot .t-name { color: var(--text); }
 @media (max-width: 768px) {
     .oracle-table.with-head.oracle-open-tbl .t-head,
     .oracle-open-tbl .t-row.oracle-openrow { grid-template-columns: 1fr 46px 82px 54px; }

@@ -95,12 +95,39 @@ const OracleModule = {
             this._verdictStrip(s),
             this._overview(s),
             this._portfolio(s),
+            this._simPerformance(s),
             this._openBets(s),
             this._market(s),
             this._transactions(s),
             this._inProgress(s),
             this._footer(s),
         ].join('');
+    },
+
+    // --- Performance en simulation : bilan par seuil d'edge (est-ce que ça marche ?)
+    _simPerformance(s) {
+        const perf = Array.isArray(s.sim_performance) ? s.sim_performance : [];
+        const anyResolved = perf.some(p => p.n > 0);
+        const body = anyResolved
+            ? `<div class="oracle-table with-head oracle-perf-tbl">
+                <div class="t-head"><span>${esc(Lang.t('oracle.threshold'))}</span><span>${esc(Lang.t('oracle.bets_col'))}</span><span>${esc(Lang.t('oracle.win_rate'))}</span><span>P&L</span></div>
+                ${perf.map(p => {
+                    const wr = p.win_rate != null ? `${(p.win_rate * 100).toFixed(0)}%` : '—';
+                    const pnlCls = p.total_pnl_usd > 0 ? 'pos' : p.total_pnl_usd < 0 ? 'neg' : '';
+                    const pnl = p.n ? `<span class="mono ${pnlCls}">${p.total_pnl_usd > 0 ? '+' : ''}${Number(p.total_pnl_usd).toFixed(2)}$</span>` : '<span class="mono">—</span>';
+                    return `<div class="t-row oracle-perfrow ${p.is_bot_threshold ? 'bot' : ''}">
+                        <div class="t-name mono">≥ ${(p.threshold * 100).toFixed(0)}%${p.is_bot_threshold ? ` <span class="oracle-chip">${esc(Lang.t('oracle.real_bot'))}</span>` : ''}</div>
+                        <div class="t-meta mono">${p.n}</div>
+                        <div class="t-meta mono">${wr}</div>
+                        <div class="t-meta">${pnl}</div>
+                    </div>`;
+                }).join('')}
+            </div>`
+            : `<div class="oracle-panel"><div class="oracle-empty-sm">${esc(Lang.t('oracle.sim_waiting'))}</div></div>`;
+        return `<div class="oracle-section">
+            <div class="oracle-sec-head"><h3>${esc(Lang.t('oracle.sim_performance'))}</h3><span class="oracle-sec-note">${esc(Lang.t('oracle.sim_performance_desc'))}</span></div>
+            ${body}
+        </div>`;
     },
 
     // "2026-07-13 15:09" → "13/07 15:09" ; "2026-07-17" → "17/07"
