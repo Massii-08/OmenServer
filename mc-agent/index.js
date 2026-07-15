@@ -2289,7 +2289,12 @@ async function onSpawn() {
     // Anti-noyade (vu live HarvT7 : drowned ×3 en trajet dirigé) : l'eau coûte CHER au pathfinder →
     // il contourne les lacs/rivières quand un chemin terrestre existe (coût fini : traverse encore
     // si c'est la SEULE option ; le réflexe oxygène de reflexes.js est le filet de sécurité).
-    if (typeof moves.liquidCost === 'number') moves.liquidCost = 20;
+    // Aquaphobie de MARCHE (vécu world_ax2 : 7-8 water_rescue/bot EN SURFACE — 20 laissait le
+    // pathfinder traverser les rivières dès que le détour dépassait ~20 blocs/case d'eau).
+    // 45/nœud liquide ≈ détour sec accepté jusqu'à ~45 blocs par case d'eau à traverser.
+    if (typeof moves.liquidCost === 'number') moves.liquidCost = 45;
+    // Hook eau des skills (explore skippe les waypoints aquatiques) — injectable, pas de require dur.
+    bot._mcaInWater = (b) => { try { return isInWater(b || bot); } catch (e) { return false; } };
     // PILIER (Massii « monte mal en pilier ») : le pathfinder ne toure (`allow1by1towers`) qu'avec
     // ses `scafoldingBlocks` — défaut = **dirt + cobblestone UNIQUEMENT** (mineflayer-pathfinder
     // movements.js:75-77). Un bot qui mine de la deepslate n'a que du cobbled_deepslate/tuff →

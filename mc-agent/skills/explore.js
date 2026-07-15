@@ -205,6 +205,11 @@ async function explore(bot, opts = {}) {
       await gotoWithTimeout(bot, buildNearGoal(gx, wp.y, gz, 8), gotoTimeoutMs);
     } catch (e) { continue; } // waypoint inatteignable ou goto gelé (timeout) → on tente le suivant
     if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
+    // Waypoint AQUATIQUE (vécu world_ax2 : points d'anneaux en plein lac → le bot nageait, scannait
+    // sur place, se noyait — 7-8 water_rescue/bot). Arrivé MOUILLÉ → skip immédiat au suivant,
+    // pas de scan (le réflexe anti-noyade gère la sortie). Hook injectable pour les tests.
+    const inWater = opts.inWater || bot._mcaInWater || null;
+    if (inWater) { try { if (inWater(bot)) continue; } catch (e) { /* best-effort */ } }
     const block = bot.findBlock({ matching, maxDistance: scanRadius });
     if (block) return { ok: true, found: block.position, traveled: wp.r };
   }

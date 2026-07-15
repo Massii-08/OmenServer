@@ -413,3 +413,19 @@ test('explore : cible dirigée jamais atteinte (goto reject) + not_found → mar
   assert.ok(bot._mcaExhausted.has('800,0'), 'cible dirigée inatteignable marquée épuisée');
   assert.ok(emits.some((e) => e.type === 'directed_exhausted' && e.x === 800), 'event directed_exhausted émis');
 });
+
+// Waypoint AQUATIQUE (vécu world_ax2 : 7-8 water_rescue/bot en surface — les waypoints d'anneaux
+// sont des points géométriques qui tombent parfois en plein lac ; le bot y nageait, s'y attardait
+// à scanner, se noyait). À l'arrivée mouillée : SKIP immédiat au waypoint suivant, pas de scan.
+test('explore : waypoint qui mouille le bot → skip immédiat (pas de scan sur place)', async () => {
+  const { bot, calls } = makeBot({ target: null });
+  let wet = false;
+  bot._mcaInWater = () => wet;                      // hook d'eau injectable (évite le require dur en test)
+  const origGoto = bot.pathfinder.goto.bind(bot.pathfinder);
+  let n = 0;
+  bot.pathfinder.goto = async (goal) => { n++; wet = (n === 1); return origGoto(goal); }; // 1er waypoint = lac
+  await explore(bot, { name: 'oak_log', matching: [17], step: 80, maxRadius: 80 });
+  // le 1er waypoint (mouillé) est SKIPPÉ sans findBlock ; les suivants (secs) scannent → find = n-1
+  assert.ok(n >= 2, 'a continué vers les waypoints suivants');
+  assert.strictEqual(calls.find, n - 1, 'le waypoint mouillé n\'a pas scanné, les secs oui');
+});
