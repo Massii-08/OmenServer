@@ -56,4 +56,39 @@ function nextFrontierCell(memory, worldKey, localSeen, from, opts = {}) {
   return null;
 }
 
-module.exports = { GRID, cellKey, coveredCells, nextFrontierCell };
+/**
+ * Prochaine cellule NON couverte la plus proche de `from` qui est de la TERRE, dans un rayon
+ * BORNÉ (pas de ciblage à l'aveugle des cases lointaines). opts = { grid, maxRing (défaut 4 ≈
+ * 512 blocs), skip: Set, isOcean: (gx,gz)=>bool }. → { key, center, ring } | null si aucune terre
+ * locale (→ le mapper passe en traversée bateau).
+ */
+function nextLandLeg(memory, worldKey, localSeen, from, opts = {}) {
+  const grid = opts.grid || GRID;
+  const maxRing = opts.maxRing != null ? opts.maxRing : 4;
+  const skip = opts.skip || null;
+  const isOcean = opts.isOcean || (() => false);
+  if (!from) return null;
+  const covered = coveredCells(memory, worldKey, localSeen, grid);
+  const cx = Math.floor(from.x / grid);
+  const cz = Math.floor(from.z / grid);
+  for (let ring = 0; ring <= maxRing; ring++) {
+    let best = null, bestD = Infinity;
+    for (let dx = -ring; dx <= ring; dx++) {
+      for (let dz = -ring; dz <= ring; dz++) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;
+        const gx = (cx + dx) * grid, gz = (cz + dz) * grid;
+        const key = gx + ',' + gz;
+        if (covered.has(key)) continue;
+        if (skip && skip.has(key)) continue;
+        if (isOcean(gx, gz)) continue;                 // terre-only
+        const center = { x: gx + grid / 2, z: gz + grid / 2 };
+        const d = (center.x - from.x) ** 2 + (center.z - from.z) ** 2;
+        if (d < bestD) { bestD = d; best = { key, center, ring }; }
+      }
+    }
+    if (best) return best;
+  }
+  return null;
+}
+
+module.exports = { GRID, cellKey, coveredCells, nextFrontierCell, nextLandLeg };
