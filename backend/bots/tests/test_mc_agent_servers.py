@@ -117,7 +117,14 @@ def test_resolve_policy(tmp_store):
 def test_resolve_policy_empty(tmp_store):
     s = ss.create_server({"name": "X"})
     pol = ss.resolve_policy(s)
-    assert pol == {"trusted": [], "trade": None}
+    assert pol == {"trusted": [], "trade": None, "kit_command": ""}
+
+
+def test_resolve_policy_includes_kit_command():
+    from backend.bots.mc_agent_servers import resolve_policy
+    assert resolve_policy({"kit_command": "/kit starter"})["kit_command"] == "/kit starter"
+    # défaut : chaîne vide quand absent
+    assert resolve_policy({})["kit_command"] == ""
 
 
 def test_clean_server_language_default_and_valid(tmp_path, monkeypatch):

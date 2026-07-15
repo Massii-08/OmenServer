@@ -285,5 +285,9 @@ def resolve_commands(server):
 
 
 def resolve_policy(server):
-    """Profil → policy {trusted, trade} pour le bot (gating ordres + auto-accept TP/trade)."""
-    return {"trusted": server.get("trusted", []), "trade": server.get("trade")}
+    """Profil → policy {trusted, trade, kit_command} pour le bot (gating + auto-accept + survie)."""
+    return {
+        "trusted": server.get("trusted", []),
+        "trade": server.get("trade"),
+        "kit_command": server.get("kit_command", "") or "",
+    }
