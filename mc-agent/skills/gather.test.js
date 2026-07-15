@@ -173,3 +173,21 @@ test('gather : pas de material_found sans worldKey (manuel) ni sans biome connu 
   await gather(b.bot, { name: 'oak_log', count: 1 });
   assert.strictEqual(b.calls.emits.filter((e) => e.type === 'material_found').length, 0);
 });
+
+// Expédition bois (Massii 15/07) : « si il n'y a plus de bois au spawn ils vont plus loin, s'ils
+// grappillent les miettes des arbres restants ils perdent trop de temps » → quand il faut VOYAGER
+// (aucun bois local), faire le PLEIN en un trajet (gros lot) au lieu de revenir pour 3 bûches.
+const { woodExpeditionCount } = require('./gather');
+
+test('woodExpeditionCount : bois local présent → lot de base (pas de sur-collecte inutile)', () => {
+  assert.strictEqual(woodExpeditionCount(3, true), 3);
+  assert.strictEqual(woodExpeditionCount(6, true), 6);
+});
+test('woodExpeditionCount : pas de bois local (voyage requis) → gros lot ≥12 (le plein en 1 trajet)', () => {
+  assert.strictEqual(woodExpeditionCount(3, false), 12);
+  assert.strictEqual(woodExpeditionCount(6, false), 12);
+});
+test('woodExpeditionCount : ne réduit jamais un lot déjà gros', () => {
+  assert.strictEqual(woodExpeditionCount(16, false), 16);
+  assert.strictEqual(woodExpeditionCount(16, true), 16);
+});

@@ -30,7 +30,7 @@ const { createMemory } = require('./memory');
 const { bestWeapon, bestToolFor } = require('./tools');
 const { shouldSprint } = require('./movement');   // sprint « vrai joueur » ON par défaut (Massii 2026-06-22)
 const vec3Lib = require('vec3'); // watchdog anti-jam (blocs barrants)
-const { gather } = require('./skills/gather');
+const { gather, woodExpeditionCount } = require('./skills/gather');
 const { mineDown } = require('./skills/mineDown');
 const { guard } = require('./skills/guard');
 const { giveItem, giveAll } = require('./skills/give');
@@ -701,8 +701,14 @@ async function runGoalSkill(goal) {
     }
     // arbre le plus proche de N'IMPORTE quelle essence (pas oak hardcodé) — robustesse terrain
     const logNames = Object.keys(bot.registry.blocksByName).filter((n) => n.endsWith('_log'));
-    // explore:true → si aucun arbre à portée, le bot VOYAGE pour en trouver (autonomie ressources).
-    return gather(bot, { name: logNames.length ? logNames : 'oak_log', count: goal.args.count, explore: true }, taskToken);
+    // EXPÉDITION BOIS (Massii 15/07) : si aucun arbre LOCAL (≤48), le bot doit VOYAGER (spawn
+    // déboisé) → autant faire le plein en un trajet (≥12 = tout le bootstrap) plutôt que revenir
+    // grappiller 3 bûches. Un lot partiel est rendu ok par gather (got>0) → jamais de sur-boucle.
+    const _logIds = logNames.map((n) => bot.registry.blocksByName[n]).filter(Boolean).map((d) => d.id);
+    const _localWood = !!(_logIds.length && bot.findBlock({ matching: _logIds, maxDistance: 48 }));
+    const _count = woodExpeditionCount(goal.args.count, _localWood);
+    if (_count !== goal.args.count) emit({ type: 'wood_expedition', batch: _count });
+    return gather(bot, { name: logNames.length ? logNames : 'oak_log', count: _count, explore: true }, taskToken);
   }
   // explore:true sur les gather de la chaîne autonome (bois/pierre/minerai) → le bot va chercher
   // la ressource si elle n'est pas dans le voisinage. (Les gather opportunistes internes — branchMine

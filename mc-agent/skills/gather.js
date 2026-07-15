@@ -5,6 +5,15 @@ const { NEUTRAL_NO_PROVOKE } = require('../survival');   // bug #3 (Massii) : ja
 const { explore } = require('./explore');
 const { materialFoundEvent, resolveBiome } = require('../worldMemory');
 
+// Expédition bois (Massii 15/07) : quand le spawn est déboisé, revenir chercher 3 bûches à la fois
+// = perdre un temps fou (chaque trajet = mort/noyade possible). Si aucun bois LOCAL (voyage requis),
+// on fait le PLEIN (≥12 ≈ tout le bootstrap bois : table+pioche+sticks+four) en un seul trajet. Pur.
+const WOOD_EXPEDITION = 12;
+function woodExpeditionCount(baseCount, localWood) {
+  if (localWood) return baseCount;
+  return Math.max(baseCount, WOOD_EXPEDITION);
+}
+
 function _ids(bot, name) {
   if (!bot.registry || !bot.registry.blocksByName) return null;
   if (Array.isArray(name)) {
@@ -125,4 +134,4 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
   return { ok: true, got };
 }
 
-module.exports = { gather, nearbyHostile, defendIfNeeded };
+module.exports = { gather, nearbyHostile, defendIfNeeded, woodExpeditionCount, WOOD_EXPEDITION };
