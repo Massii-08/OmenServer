@@ -3251,11 +3251,13 @@ setInterval(async () => {
 }, 60000);
 
 // WATCHDOG DESYNC (piste n°5) : position identique AU DIXIÈME pendant 5 min avec un planner qui
-// tourne = client désynchronisé (vécu NethBot1 : figé 15 min, events vivants, RCON = air autour ;
-// invisible du jam-watchdog qui exige un goal pathfinder ET du connection-watchdog qui voit les
-// ticks). Remède = re-login : exit(3) → self-healing respawne (back-off RC2 en garde-fou).
-// Immobilités LÉGITIMES exclues : dig en cours, fonte/abri (_stillBusy), bot non-autonome.
-setInterval(() => {
+// tourne = client désynchronisé OU PIÉGEAGE PHYSIQUE (îlot/encoignure — vidéo Massii 16/07 :
+// MapBot1 coincé sur un îlot d'un bloc, bateau raté à côté). exit(3) seul ne règle PAS le
+// piégeage : le bot se reconnecte AU MÊME ENDROIT → boucle. D'abord une ÉVASION (warp légitime :
+// /home safe en no-give, /spreadplayers relocate en admin — le TP force aussi un position-sync
+// qui répare souvent le desync client) ; l'exit(3) reste le dernier recours si l'évasion échoue.
+let _desyncEscapeAt = 0;
+setInterval(async () => {
   try {
     if (!(world.objective && world.objective.status === 'in_progress')) { _posSamples = []; return; }
     // Immobilités légitimes LONGUES (fonte ≤3 min, abri ≤13 min, armure) → reset. Le DIG n'en est
@@ -3267,6 +3269,24 @@ setInterval(() => {
     _posSamples.push({ x: p.x, y: p.y, z: p.z });
     if (_posSamples.length > 20) _posSamples.shift();
     if (isFrozenDesync(_posSamples, { digging: !!bot.targetDigBlock })) {
+      const nowD = Date.now();
+      if (nowD - _desyncEscapeAt > 600000) {
+        _desyncEscapeAt = nowD;
+        emit({ type: 'desync_escape', x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
+        try { stopMotion(); } catch (e) {}
+        try { bot.clearControlStates(); } catch (e) {}
+        try {
+          if (NO_GIVE) await safeWarpHome('safe');
+          else await relocateToRegion();
+        } catch (e) { /* best-effort */ }
+        const q = bot.entity && bot.entity.position;
+        const last = _posSamples.length ? _posSamples[_posSamples.length - 1] : null;
+        _posSamples = [];
+        if (q && last && Math.hypot(q.x - last.x, q.y - last.y, q.z - last.z) > 8) {
+          emit({ type: 'desync_escaped' });   // sorti du piège SANS respawn (position a bougé)
+          return;
+        }
+      }
       emit({ type: 'desync_frozen', x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z), digging: !!bot.targetDigBlock });
       process.exit(3);
     }
