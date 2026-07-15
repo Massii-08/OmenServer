@@ -47,6 +47,28 @@ function landAhead(sampleBlock, fromPos, headingYaw, opts = {}) {
   return { found: false };
 }
 
+/**
+ * Première EAU de surface le long du cap (colonne d'eau au niveau de la mer) — pour marcher
+ * jusqu'à la côte et y poser le bateau. sampleBlock injecté. → { found, pos } | { found:false }. PUR.
+ */
+function waterEdgeAlong(sampleBlock, fromPos, headingYaw, opts = {}) {
+  const reach = opts.reach || 48;
+  const step = opts.step || 2;
+  const seaY = Math.floor(fromPos.y);
+  for (let d = step; d <= reach; d += step) {
+    const x = Math.floor(fromPos.x + Math.cos(headingYaw) * d);
+    const z = Math.floor(fromPos.z + Math.sin(headingYaw) * d);
+    for (let y = seaY + 4; y >= seaY - 6; y--) {
+      const b = sampleBlock(x, y, z);
+      if (!b) break;                                   // non chargé → colonne suivante
+      if (WATER_NAMES.has(b.name)) return { found: true, pos: { x, y, z } };  // AVANT le check empty (l'eau est « empty »)
+      if (b.name === 'air' || b.boundingBox === 'empty') continue;
+      break;                                           // solide → pas encore l'eau, colonne suivante
+    }
+  }
+  return { found: false };
+}
+
 /** Bateau coincé : ~0 déplacement horizontal pendant ≥ stuckMs. PUR. */
 function boatStuck(prevPos, curPos, dtMs, opts = {}) {
   const minMove = opts.minMove != null ? opts.minMove : 2;
@@ -90,13 +112,21 @@ async function sailToLand(bot, headingYaw, opts = {}) {
   const t0 = now();
   let prev = _bpos(bot), prevT = t0;
   let landed = false, reason = 'timeout';
+  // Anti « atterrissage sur sa propre côte » (vécu live 2026-07-15, boat-spam ×66) : on n'accepte
+  // un débarquement qu'APRÈS être passé au-dessus de l'eau (embarqué OU en nage).
+  let overWater = false;
   try {
     while (now() - t0 < timeoutMs) {
       try { await bot.look(headingYaw, 0, true); } catch (e) {}
       bot.setControlState('forward', true);
       const here = _bpos(bot);
+      if (!overWater) {
+        const under = sampleBlock(Math.floor(here.x), Math.floor(here.y) - 1, Math.floor(here.z));
+        if (bot.vehicle || (under && WATER_NAMES.has(under.name))) overWater = true;
+      }
+      if (!bot.vehicle && overWater) bot.setControlState('jump', true);   // nage : rester en surface
       const ahead = landAhead(sampleBlock, here, headingYaw, opts);
-      if (ahead.found) { landed = true; reason = 'land'; break; }
+      if (overWater && ahead.found) { landed = true; reason = 'land'; break; }
       const t = now();
       if (boatStuck(prev, here, t - prevT, opts)) { reason = 'stuck'; break; }
       if (t - prevT >= (opts.sampleEvery || 3000)) { prev = here; prevT = t; }
@@ -111,4 +141,4 @@ async function sailToLand(bot, headingYaw, opts = {}) {
   return { landed, reason };
 }
 
-module.exports = { outwardHeading, landAhead, boatStuck, ensureBoat, sailToLand, WATER_NAMES };
+module.exports = { outwardHeading, landAhead, waterEdgeAlong, boatStuck, ensureBoat, sailToLand, WATER_NAMES };

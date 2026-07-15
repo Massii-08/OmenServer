@@ -843,23 +843,45 @@ async function startMapper() {
     frontier: !!args.frontier,
     boat: {
       cross: async (fromPos) => {
-        const heading = boatMod.outwardHeading(fromPos, mappedCentroid(), mapperSector, Math.random);
+        // 1) cap vers le large + REPÉRER l'eau (scanne le cap outward ± offsets : la côte n'est pas
+        //    forcément pile au cap). Aucune eau à portée → no_water (le mapper marchera).
+        let heading = boatMod.outwardHeading(fromPos, mappedCentroid(), mapperSector, Math.random);
+        let edge = null;
+        for (const off of [0, 0.5, -0.5, 1.0, -1.0, 1.5, -1.5, Math.PI]) {
+          const h = heading + off;
+          const e = boatMod.waterEdgeAlong(sampleBlock, bot.entity.position, h, { reach: 56, step: 2 });
+          if (e.found) { heading = h; edge = e; break; }
+        }
+        if (!edge) return { ok: false, landed: false, reason: 'no_water' };
+        // 2) bateau en poche si possible (kit ou craft) — sinon on traversera à la NAGE (sailToLand
+        //    nage aussi : forward+jump au cap une fois sur l'eau).
         const eb = await boatMod.ensureBoat(bot, { craft: (a) => craftSmart(a) });
-        if (!eb.ok) return { ok: false, landed: false, reason: 'no_boat' };
-        // pose + embarque au bord de l'eau au cap (best-effort ; échec → nage de secours plus bas)
+        // 3) marcher jusqu'au bord de l'eau repéré
         try {
-          const here = bot.entity.position;
-          const wx = Math.floor(here.x + Math.cos(heading) * 2), wz = Math.floor(here.z + Math.sin(heading) * 2);
-          const water = bot.blockAt(vec3Lib(wx, Math.floor(here.y) - 1, wz));
-          if (water && boatMod.WATER_NAMES.has(water.name)) {
+          await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(edge.pos.x, edge.pos.y, edge.pos.z, 2)),
+            60000, () => { try { stopMotion(); } catch (e) {} });
+        } catch (e) { /* best-effort : on tente depuis ici */ }
+        // 4) poser le bateau sur l'eau + embarquer (si on en a un)
+        if (eb.ok) {
+          try {
             const boatItem = bot.inventory.items().find((i) => /_boat$/.test(i.name));
-            if (boatItem) { await bot.equip(boatItem, 'hand'); await bot.lookAt(water.position.offset(0, 1, 0), true); await bot.activateItem(); }
-            const ent = bot.nearestEntity((e) => /boat/i.test(e.name || '') || /boat/i.test(e.objectType || ''));
-            if (ent) { try { await bot.mount(ent); } catch (e) {} }
-          }
-        } catch (e) { /* best-effort */ }
+            const water = bot.blockAt(vec3Lib(edge.pos.x, edge.pos.y, edge.pos.z));
+            if (boatItem && water && boatMod.WATER_NAMES.has(water.name)) {
+              await bot.equip(boatItem, 'hand');
+              await bot.lookAt(water.position.offset(0.5, 1, 0.5), true);
+              await bot.activateItem();
+              await new Promise((r) => setTimeout(r, 800));
+              const ent = bot.nearestEntity((e) => /boat/i.test(e.name || '') || /boat/i.test(e.objectType || ''));
+              if (ent && bot.entity.position.distanceTo(ent.position) < 6) {
+                try { await bot.mount(ent); await new Promise((r) => setTimeout(r, 600)); } catch (e) {}
+              }
+            }
+          } catch (e) { /* best-effort */ }
+        }
+        // 5) traverser (bateau ou nage) — sailToLand n'accepte un débarquement qu'APRÈS être passé
+        //    au-dessus de l'eau (anti « atterrissage sur sa propre côte »).
         const r = await boatMod.sailToLand(bot, heading, { sampleBlock, reach: 40, step: 4, timeoutMs: 90000 });
-        if (!r.landed) { await escapeWaterHook(); }   // nage de secours (jamais figé)
+        if (!r.landed) { await escapeWaterHook(); }   // secours : sortir de l'eau (jamais figé)
         return { ok: true, landed: r.landed, reason: r.reason };
       },
     },

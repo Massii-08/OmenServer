@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { outwardHeading, landAhead, boatStuck, ensureBoat, sailToLand } = require('./boat');
+const { outwardHeading, landAhead, boatStuck, ensureBoat, sailToLand, waterEdgeAlong } = require('./boat');
 
 test('outwardHeading : pointe à l’opposé du centroïde mappé', () => {
   const h = outwardHeading({ x: 100, z: 100 }, { x: 0, z: 0 }, null, () => 0.5);
@@ -84,6 +84,38 @@ test('sailToLand : jamais de terre + timeout → landed:false, contrôles relâc
     sampleBlock: () => ({ name: 'water', boundingBox: 'empty' }),
     reach: 8, step: 8, tickMs: 0, timeoutMs: 300,
     now: (() => { let t = 0; return () => (t += 200); })(), sleep: async () => {},
+  });
+  assert.strictEqual(r.landed, false);
+  assert.strictEqual(ctl.cleared, true);
+});
+
+test('waterEdgeAlong : trouve la première eau de surface au cap', () => {
+  const sampler = (x, y, z) => {
+    if (y > 64) return { name: 'air', boundingBox: 'empty' };
+    return x >= 20 ? { name: 'water', boundingBox: 'empty' } : { name: 'grass_block', boundingBox: 'block' };
+  };
+  const r = waterEdgeAlong(sampler, { x: 0, y: 64, z: 0 }, 0, { reach: 48, step: 2 });
+  assert.strictEqual(r.found, true);
+  assert.ok(r.pos.x >= 20 && r.pos.x <= 22);
+});
+
+test('waterEdgeAlong : pas d\'eau au cap → found:false', () => {
+  const sampler = (x, y, z) => (y > 64 ? { name: 'air', boundingBox: 'empty' } : { name: 'stone', boundingBox: 'block' });
+  assert.strictEqual(waterEdgeAlong(sampler, { x: 0, y: 64, z: 0 }, 0, { reach: 48 }).found, false);
+});
+
+test('sailToLand : ne débarque JAMAIS sans être passé au-dessus de l\'eau (anti « atterrissage sur sa propre côte »)', async () => {
+  const ctl = {};
+  const bot = {
+    entity: { position: { x: 0, y: 64, z: 0 } },
+    look: async () => {}, setControlState: () => {},
+    clearControlStates: () => { ctl.cleared = true; }, dismount: async () => {}, blockAt: () => null,
+  };
+  // terre partout (le bot est SUR son continent) → sans passage au-dessus de l'eau, pas de « landed »
+  const r = await sailToLand(bot, 0, {
+    sampleBlock: () => ({ name: 'stone', boundingBox: 'block' }),
+    reach: 8, step: 8, tickMs: 0, timeoutMs: 400,
+    now: (() => { let t = 0; return () => (t += 100); })(), sleep: async () => {},
   });
   assert.strictEqual(r.landed, false);
   assert.strictEqual(ctl.cleared, true);
