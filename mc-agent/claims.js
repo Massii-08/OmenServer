@@ -115,4 +115,57 @@ function createClaims(file, opts) {
   };
 }
 
-module.exports = { createClaims, pruneExpired };
+// ─── Présence partagée (TP-au-mappeur, Massii 15/07) ───────────────────────────────────────────
+// Chaque bot du groupe bat sa position + son RÔLE dans `positions-<group>.json` (même pattern
+// lockfile/write-atomic que les claims, fichier SÉPARÉ — on ne mélange pas les structures).
+// Un bot ressource lit la liste → choisit un mappeur LOIN comme cible de /tpa (mapperTp.js).
+const PRESENCE_TTL_MS = 180000; // 3 min sans battement = bot mort/déco → purgé
+
+function _readPresence(file) {
+  try {
+    const m = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (m && typeof m === 'object' && m.pos && typeof m.pos === 'object') return m;
+  } catch (e) { /* absent/corrompu → vide (best-effort) */ }
+  return { pos: {} };
+}
+
+/** Client présence d'un bot — best-effort intégral (un échec d'I/O ne tue jamais la boucle). */
+function createPresence(file, opts) {
+  const { username, now, ttl } = opts || {};
+  const clock = now || Date.now;
+  const ttlMs = ttl || PRESENCE_TTL_MS;
+
+  function withLock(fn) {
+    const lock = _acquireLock(file);
+    try {
+      const map = _readPresence(file);
+      const t = clock();
+      for (const k of Object.keys(map.pos)) {
+        if (t - map.pos[k].at >= ttlMs) delete map.pos[k];
+      }
+      const result = fn(map, t);
+      _writeAtomic(file, map);
+      return result;
+    } finally {
+      try { fs.rmdirSync(lock); } catch (e) { /* déjà volé/supprimé */ }
+    }
+  }
+
+  return {
+    file,
+    /** Bat la position courante (écrase la précédente du même bot). */
+    beat(x, z, role) {
+      try {
+        return withLock((m, t) => { m.pos[username] = { x, z, role: role || 'worker', at: t }; return true; });
+      } catch (e) { return false; }
+    },
+    /** Positions FRAÎCHES de tous les bots du groupe → [{name, x, z, role, at}]. */
+    list() {
+      try {
+        return withLock((m) => Object.entries(m.pos).map(([name, p]) => ({ name, ...p })));
+      } catch (e) { return []; }
+    },
+  };
+}
+
+module.exports = { createClaims, pruneExpired, createPresence, PRESENCE_TTL_MS };

@@ -124,6 +124,16 @@ async function explore(bot, opts = {}) {
     if (target) {
       dTarget = target;
       if (emit) { try { emit({ type: 'explore_directed', x: Math.round(target.x), z: Math.round(target.z), biome: target.biome, learned: !!target.learned, cave: !!target.cave }); } catch (e) {} }
+      // Cible LOINTAINE (>300) : le caller a une chance de raccourcir le trajet AVANT la marche
+      // (/tpa vers un mappeur proche de la cible — TP-au-mappeur). Best-effort : le hook peut
+      // téléporter le bot (le goto dirigé et la persistance repartent de la nouvelle position).
+      const beforeLongTrip = opts.beforeLongTrip || bot._mcaBeforeLongTrip || null;
+      if (beforeLongTrip) {
+        const dSelf = Math.sqrt((target.x - origin.x) ** 2 + (target.z - origin.z) ** 2);
+        if (dSelf > (opts.longTripDist || 300)) {
+          try { await beforeLongTrip({ x: target.x, z: target.z }); } catch (e) { /* best-effort */ }
+        }
+      }
       // y de la cible : une CAVE porte le y de son entrée (GoalNear 3D précis, le pathfinder peut
       // creuser) ; un find/biome n'a que x,z → on garde l'altitude courante.
       const ty = (typeof target.y === 'number') ? target.y : origin.y;

@@ -71,7 +71,8 @@ const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgr
 // Torche tous les N paliers de branch-mine (mob-aware phase B) — best-effort : sans torche
 // en poche le minage continue sans (zéro coût en peaceful, sécurité en non-pacifique).
 const TORCH_EVERY = 8;
-const { createClaims } = require('./claims');
+const { createClaims, createPresence } = require('./claims');
+const { pickMapperTp } = require('./mapperTp'); // TP-au-mappeur : à qui demander le /tpa (décision pure)
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
 const { isNight, shelterUntilDawn, shouldShelter } = require('./skills/shelter');
@@ -196,6 +197,8 @@ function safeWarpDown() {
   return !!(_homeRefusedAt.safe && (Date.now() - _homeRefusedAt.safe) <= homewarp.REFUSAL_DEGRADE_MS);
 }
 let _tpCancelledAt = 0;       // secure-then-warp : dernière annulation Essentials vue (teleport-delay)
+let presence = null;          // heartbeat de présence du groupe (positions-<group>.json, --positions)
+let _lastMapperTpAt = 0;      // TP-au-mappeur : cooldown (1 tentative / 4 min)
 let _dzones = [];             // camps de mort : zones où ≥2 alertes « mort imminente » (deathzones.js)
 let _safeHomePos = null;      // coords du dernier /sethome safe (pour fuir VERS lui si hors zone bannie)
 let _posSamples = [];         // desync-watchdog : échantillons de position (30 s × 10 = 5 min)
@@ -239,6 +242,33 @@ async function fleeDeathCamp(fromPos) {
     await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(tx, Math.round(fromPos.y), tz, 4)),
       90000, () => { try { stopMotion(); } catch (e) {} });
   } catch (e) { /* best-effort */ }
+}
+
+// TP-AU-MAPPEUR : demande /tpa vers le mappeur choisi par pickMapperTp (frais, qui rapproche de
+// la cible d'au moins 150 blocs — ou le plus loin de moi sans cible). L'acceptation est automatique
+// côté mappeur (policy.group_bots) ; l'atterrissage est détecté par awaitWarp (warmup couvert).
+// Échec (pas de candidat, /tpa non coché, refus, timeout) = on continue À PIED, jamais bloquant.
+async function tryTpToMapper(goal) {
+  if (!presence) return { ok: false, reason: 'no_presence' };
+  if (Date.now() - _lastMapperTpAt < 240000) return { ok: false, reason: 'cooldown' };
+  const p = bot.entity && bot.entity.position;
+  if (!p) return { ok: false, reason: 'no_pos' };
+  const pick = pickMapperTp({
+    self: { x: p.x, z: p.z }, selfName: bot.username,
+    goal: goal || null, mappers: presence.list(), now: Date.now(),
+  });
+  if (!pick) return { ok: false, reason: 'no_candidate' };
+  if (!isAllowed('/tpa ' + pick.name, whitelist)) {
+    emit({ type: 'mapper_tpa_blocked', to: pick.name });   // /tpa pas coché dans le profil serveur
+    return { ok: false, reason: 'not_whitelisted' };
+  }
+  _lastMapperTpAt = Date.now();
+  emit({ type: 'mapper_tpa', to: pick.name, gain: pick.gain });
+  try { stopMotion(); } catch (e) {}
+  try { bot.chat('/tpa ' + pick.name); } catch (e) { return { ok: false, reason: 'chat_failed' }; }
+  const r = await awaitWarp({ maxMs: 15000 });   // acceptation (~2 s) + éventuel warmup teleport-delay
+  emit({ type: 'mapper_tpa_result', to: pick.name, warped: !!r.warped });
+  return { ok: !!r.warped };
 }
 
 // Warp de secours COMPLET (secure-then-warp, Massii 15/07) : se mettre en sécurité (pilier / se
@@ -2197,6 +2227,27 @@ async function onSpawn() {
   // RC4 : cibles dirigées ÉPUISÉES (arrivé dessus, rien trouvé) — Set session lu par explore.js.
   // Survit aux respawns MC (même process) : une prairie pelée le reste après une mort.
   if (!bot._mcaExhausted) bot._mcaExhausted = new Set();
+  // TP-AU-MAPPEUR (Massii 15/07) : heartbeat de présence partagé — TOUS les bots du groupe battent
+  // position+rôle (1×/min) ; un bot ressource lit où sont les mappeurs et se /tpa vers eux
+  // (raccourci « vrai joueur » vers les zones lointaines, auto-accepté intra-groupe).
+  if (args.positions && !presence) {
+    presence = createPresence(String(args.positions), { username: bot.username });
+    const _beat = () => {
+      try {
+        const pB = bot.entity && bot.entity.position;
+        if (!pB || !presence) return;
+        const role = ((world.objective && world.objective.type) === 'mapper') ? 'mapper' : 'worker';
+        presence.beat(Math.round(pB.x), Math.round(pB.z), role);
+      } catch (e) { /* best-effort */ }
+    };
+    _beat();
+    setInterval(_beat, 60000);
+    // Cible dirigée LOINTAINE (>300) → tenter le raccourci /tpa AVANT la marche (hook explore).
+    // Mappers exclus (ils ont /spreadplayers) ; bots non-autonomes : pas de longues marches dirigées.
+    if (!bot._mcaBeforeLongTrip && world.objective && world.objective.type !== 'mapper') {
+      bot._mcaBeforeLongTrip = async (target) => { try { await tryTpToMapper(target); } catch (e) {} };
+    }
+  }
   emit({ type: 'status', state: 'spawned', username: bot.username, profile: profile ? profile.id : null });
   // Capture-clone (E, frontière) : wobble de visée humain GLOBAL. On wrappe bot.look UNE fois → TOUTE
   // visée en hérite (pathfinder à chaque tick, pvp tracking, collectBlock dig, nos tours) → micro-
@@ -2860,7 +2911,10 @@ bot.on('messagestr', (msg) => {
   if (homewarp.isTpCancelled(msg)) { _tpCancelledAt = Date.now(); emit({ type: 'home_tp_cancelled' }); }
   else if (homewarp.isTpWarmup(msg)) emit({ type: 'home_tp_warmup' });
   const tpWho = parseTpRequest(msg);
-  if (tpWho && isTrusted(tpWho, policy.trusted) && isAllowed('/tpaccept', whitelist)) {
+  // Bots du MÊME groupe : confiance mutuelle pour le TP (TP-au-mappeur) — n'élargit PAS le
+  // gating des ordres (trusted seul) ni le comportement humain (trusted vide = tous, inchangé).
+  const tpTrusted = tpWho && (isTrusted(tpWho, policy.trusted) || (policy.group_bots || []).includes(tpWho));
+  if (tpTrusted && isAllowed('/tpaccept', whitelist)) {
     bot.chat('/tpaccept'); emit({ type: 'command', command: '/tpaccept', reason: 'tp:' + tpWho });
     return;
   }

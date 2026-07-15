@@ -1511,3 +1511,29 @@ def test_respawn_plan_throttled_neutre():
     assert p["short_count"] == 4         # back-off ni monté ni reset
     assert p["respawn_count"] == 5       # n'use pas le cap
     assert p["delay_s"] == 300.0         # délai courant du back-off (short_count 4 → cap)
+
+
+def test_spawn_bot_passes_positions_file(monkeypatch, tmp_path):
+    """TP-au-mappeur : tout bot d'un groupe reçoit --positions positions-<group>.json
+    (heartbeat partagé, même dossier que les claims) — workers ET mappers."""
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.world_memory, "load", lambda gid: {})
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path / "wm")
+    captured = _capture_cmd(monkeypatch)
+    monkeypatch.setattr(mgr.servers_store, "get_server", lambda sid: {
+        "id": "g1", "host": "h", "port": 25565, "user": "T", "auth": "offline",
+        "intelligence": "intermediaire", "language": "fr", "stealth": False,
+        "bots": [{"id": "b1", "role": "worker", "username": "ResBot1", "auth": "offline"},
+                 {"id": "b2", "role": "mapper", "username": "MapBot1", "auth": "offline"}],
+    })
+    monkeypatch.setattr(mgr.servers_store, "resolve_commands", lambda s: [])
+    monkeypatch.setattr(mgr.servers_store, "resolve_policy",
+                        lambda s: {"trusted": [], "trade": None, "group_bots": ["ResBot1", "MapBot1"]})
+    mgr.start_for_bot("g1", "b1", objective="resource")
+    cmd = [str(c) for c in captured["cmd"]]
+    assert "--positions" in cmd
+    assert cmd[cmd.index("--positions") + 1].endswith("positions-g1.json")
+    mgr.start_for_bot("g1", "b2", objective="mapper")
+    cmd2 = [str(c) for c in captured["cmd"]]
+    assert "--positions" in cmd2
+    assert cmd2[cmd2.index("--positions") + 1].endswith("positions-g1.json")

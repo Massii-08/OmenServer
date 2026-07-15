@@ -287,9 +287,16 @@ def resolve_commands(server):
 
 
 def resolve_policy(server):
-    """Profil → policy {trusted, trade, kit_command} pour le bot (gating + auto-accept + survie)."""
+    """Profil → policy {trusted, trade, kit_command, group_bots} pour le bot.
+
+    trusted/trade : gating des ordres + auto-accept TP/trade (inchangés).
+    kit_command : commande de kit optionnelle (couche survie).
+    group_bots : usernames du roster — les bots d'un MÊME groupe se font confiance pour
+    l'auto-accept /tpa (TP-au-mappeur) SANS toucher au gating des ordres ni activer le
+    gating pour les humains (trusted vide reste « tout le monde commande »)."""
     return {
         "trusted": server.get("trusted", []),
         "trade": server.get("trade"),
         "kit_command": server.get("kit_command", "") or "",
+        "group_bots": [b.get("username") for b in server.get("bots", []) if b.get("username")],
     }

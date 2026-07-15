@@ -433,6 +433,11 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     #    (anti-collision entre bots ressources ; PAS nettoyé par session, TTL interne).
     #  - autres objectifs : SNAPSHOT worldmem-<sid>.json (comportement historique).
     wm_path = None
+    # TP-au-mappeur : heartbeat de présence PARTAGÉ (positions-<group>.json, pattern claims) pour
+    # TOUT bot d'un groupe — un bot ressource lit où sont les mappeurs et se /tpa vers eux.
+    if server_id:
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        cmd += ["--positions", str(RUNS_DIR / f"positions-{server_id}.json")]
     if server_id and objective in ("resource", "mapper"):
         # resource ET mapper (phase 2 frontière) lisent la mémoire LIVE du groupe : les mappers
         # voient la couverture des autres en quasi-temps réel (frontières disjointes).
@@ -440,7 +445,6 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
         live = world_memory.WORLD_MEMORY_DIR / f"{server_id}.json"
         cmd += ["--world-memory", str(live), "--wm-live", "1"]
         if objective == "resource":
-            RUNS_DIR.mkdir(parents=True, exist_ok=True)
             cmd += ["--claims", str(RUNS_DIR / f"claims-{server_id}.json")]
         else:
             cmd += ["--frontier", "1"]          # exploration par frontière + warp + /locate

@@ -117,7 +117,7 @@ def test_resolve_policy(tmp_store):
 def test_resolve_policy_empty(tmp_store):
     s = ss.create_server({"name": "X"})
     pol = ss.resolve_policy(s)
-    assert pol == {"trusted": [], "trade": None, "kit_command": ""}
+    assert pol == {"trusted": [], "trade": None, "kit_command": "", "group_bots": []}
 
 
 def test_resolve_policy_includes_kit_command():
@@ -146,6 +146,7 @@ def test_update_persists_kit_command(tmp_store):
     out = ss.update_server(s["id"], {"name": "A", "host": "h", "kit_command": "/kit vip"})
     assert out["kit_command"] == "/kit vip"
     assert ss.load_servers()[0]["kit_command"] == "/kit vip"
+
 
 
 def test_clean_server_language_default_and_valid(tmp_path, monkeypatch):
@@ -198,3 +199,14 @@ def test_update_server_preserves_roster_when_payload_has_no_bots(tmp_path, monke
     S.add_bot(g["id"], role="worker", username="W1", auth="offline")
     out = S.update_server(g["id"], {"name": "G2", "host": "h"})
     assert [b["username"] for b in out["bots"]] == ["W1"]
+
+
+def test_resolve_policy_group_bots(tmp_store):
+    """TP-au-mappeur : les bots d'un même groupe se font confiance pour l'auto-accept /tpa
+    (group_bots = usernames du roster) — SANS toucher au gating des ordres (trusted inchangé)."""
+    s = ss.create_server({"name": "X", "trusted": ["Bob"]})
+    ss.add_bot(s["id"], role="worker", username="ResBot1")
+    ss.add_bot(s["id"], role="mapper", username="MapBot1")
+    pol = ss.resolve_policy(ss.get_server(s["id"]))
+    assert pol["trusted"] == ["Bob"]                      # gating des ordres INCHANGÉ
+    assert sorted(pol["group_bots"]) == ["MapBot1", "ResBot1"]

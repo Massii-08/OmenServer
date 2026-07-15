@@ -83,3 +83,46 @@ test('persistance inter-clients : le fichier est la source partagée', () => {
   const c = createClaims(file, { username: 'BotC' });
   assert.strictEqual(c.tryClaim('9,9,9'), false);
 });
+
+// ─── Présence partagée (TP-au-mappeur, Massii 15/07) : chaque bot bat sa position (+ rôle) dans
+// un fichier partagé du groupe → un bot ressource peut choisir un mappeur LOIN comme cible de /tpa.
+
+const { createPresence } = require('./claims');
+
+test('presence : beat + list — chaque bot voit les positions fraîches des autres', () => {
+  const file = path.join(os.tmpdir(), `pres-${Date.now()}-1.json`);
+  let t = 1000000;
+  const clock = () => t;
+  const a = createPresence(file, { username: 'ResBot1', now: clock });
+  const b = createPresence(file, { username: 'MapBot1', now: clock });
+  a.beat(10, 20, 'worker');
+  b.beat(500, -300, 'mapper');
+  const seen = a.list();
+  assert.strictEqual(seen.length, 2);
+  const map = seen.find((p) => p.name === 'MapBot1');
+  assert.deepStrictEqual({ x: map.x, z: map.z, role: map.role }, { x: 500, z: -300, role: 'mapper' });
+});
+
+test('presence : entrée périmée (TTL 3 min) purgée de list ; re-beat la ravive', () => {
+  const file = path.join(os.tmpdir(), `pres-${Date.now()}-2.json`);
+  let t = 1000000;
+  const clock = () => t;
+  const a = createPresence(file, { username: 'ResBot1', now: clock });
+  const b = createPresence(file, { username: 'MapBot1', now: clock });
+  b.beat(500, -300, 'mapper');
+  t += 181000;                                   // 3 min + 1 s
+  a.beat(0, 0, 'worker');
+  assert.deepStrictEqual(a.list().map((p) => p.name), ['ResBot1']);
+  b.beat(600, -300, 'mapper');
+  assert.strictEqual(a.list().length, 2);
+});
+
+test('presence : beat écrase la position précédente du même bot (pas d\'accumulation)', () => {
+  const file = path.join(os.tmpdir(), `pres-${Date.now()}-3.json`);
+  const a = createPresence(file, { username: 'ResBot1', now: () => 5000 });
+  a.beat(1, 1, 'worker');
+  a.beat(2, 2, 'worker');
+  const seen = a.list();
+  assert.strictEqual(seen.length, 1);
+  assert.strictEqual(seen[0].x, 2);
+});

@@ -363,3 +363,33 @@ test('explore : sans bot._mcaExhausted (rétro-compat) → aucun crash, comporte
   const r = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', step: 80, maxRadius: 80 });
   assert.strictEqual(r.ok, false);   // pas trouvé, pas de crash
 });
+
+// ─── Hook beforeLongTrip (TP-au-mappeur) : une cible dirigée LOINTAINE (>300) donne au caller une
+// chance de raccourcir le trajet (/tpa vers un mappeur proche de la cible) AVANT la marche.
+
+test('explore : cible dirigée à >300 blocs → bot._mcaBeforeLongTrip appelé avec la cible', async () => {
+  const { bot } = makeBot({ target: null });
+  const calls = [];
+  bot._mcaBeforeLongTrip = async (t) => { calls.push({ x: t.x, z: t.z }); };
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 400, z: 0 }], biomes: [] } } };
+  await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', step: 80, maxRadius: 80 });
+  assert.strictEqual(calls.length, 1);
+  assert.deepStrictEqual(calls[0], { x: 400, z: 0 });
+});
+
+test('explore : cible dirigée proche (≤300) → hook NON appelé', async () => {
+  const { bot } = makeBot({ target: null });
+  const calls = [];
+  bot._mcaBeforeLongTrip = async (t) => calls.push(t);
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 150, z: 0 }], biomes: [] } } };
+  await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', step: 80, maxRadius: 80 });
+  assert.strictEqual(calls.length, 0);
+});
+
+test('explore : hook qui throw n\'empêche pas l\'exploration (best-effort)', async () => {
+  const { bot } = makeBot({ target: null });
+  bot._mcaBeforeLongTrip = async () => { throw new Error('boom'); };
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 400, z: 0 }], biomes: [] } } };
+  const r = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', step: 80, maxRadius: 80 });
+  assert.strictEqual(r.ok, false);   // pas trouvé, mais pas de crash
+});
