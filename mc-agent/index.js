@@ -71,7 +71,9 @@ const TORCH_EVERY = 8;
 const { createClaims } = require('./claims');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
-const { isNight, shelterUntilDawn } = require('./skills/shelter');
+const { isNight, shelterUntilDawn, shouldShelter } = require('./skills/shelter');
+const { maybeRunKit } = require('./kit');   // survie mappeur : /kit serveur au démarrage/respawn (décision pure)
+const { needDirtBuffer } = require('./dirt');   // survie mappeur : buffer de blocs posables pour sceller l'abri
 const { panicWall } = require('./skills/panicWall');
 
 function parseArgs(argv) {
@@ -752,16 +754,18 @@ let lastShelterT = 0; // anti re-trigger : 1 abri par nuit max
 // s'abriter, c'est déjà avoir perdu (MapperBot1+2 sniped par squelettes la 1re nuit du monde neuf).
 async function maybeNightShelter(proactive = false) {
   const deathsRecent = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000).length;
-  // Run nether (24 sessions death_loop) : un bot NU en SURFACE se terre à CHAQUE nuit — l'ancien
-  // déclencheur attendait la 1re mort/PV bas, trop tard pour un spawn nu en hard. Sous terre
-  // (y<45) on ne déclenche pas (déjà à l'abri, shelterUntilDawn y gaspillerait ~10 min).
+  // Décision d'abri déléguée à shouldShelter (skills/shelter) : sensible à l'OBSCURITÉ (lightLevel
+  // ≤7) en plus de la nuit — un bot dans une grotte sombre / à l'ombre profonde de jour se terre
+  // aussi. Robuste au lightLevel inconnu (mineflayer ne le livre pas toujours → retombe sur hostiles).
   const _pp = bot.entity && bot.entity.position;
-  const nakedSurface = _wornArmor().size === 0 && _pp && _pp.y >= 45;
-  if (isNight(bot) && (proactive || deathsRecent >= 1 || (bot.health != null && bot.health <= 10) || nakedSurface)
-      && Date.now() - lastShelterT > 10 * 60 * 1000) {
+  const naked = _wornArmor().size === 0;
+  let lightLevel = null;
+  try { const b = _pp && bot.blockAt(_pp.floored()); if (b && typeof b.light === 'number') lightLevel = b.light; } catch (e) {}
+  const hostilesNear = (() => { try { const e = bot.nearestEntity((x) => x && x.kind === 'Hostile mobs'); return !!(e && bot.entity && e.position.distanceTo(bot.entity.position) <= 8); } catch (e) { return false; } })();
+  const sig = { night: isNight(bot), lightLevel, naked, lowHp: (bot.health != null && bot.health <= 10), hostilesNear, proactive };
+  if (shouldShelter(sig).shelter && Date.now() - lastShelterT > 10 * 60 * 1000) {
     lastShelterT = Date.now();
-    await withTimeout(shelterUntilDawn(bot, taskToken, { emit }), 13 * 60 * 1000,
-      () => { try { stopMotion(); } catch (e) {} });
+    await withTimeout(shelterUntilDawn(bot, taskToken, { emit }), 13 * 60 * 1000, () => { try { stopMotion(); } catch (e) {} });
     return true;
   }
   return false;
@@ -784,6 +788,7 @@ async function runSkillWithTelemetry(g) {
 // Boucle cartographe (objectif `mapper`) : mini-kit pierre via planner → upgrade best-effort →
 // cartographie CONTINUE (ne « finit » jamais — seule l'annulation/stop l'arrête).
 async function startMapper() {
+  await survivalKitUp();   // /kit + équipement (si configuré) — AVANT le mini-kit pierre
   const kitChain = chainFor('mapper');
   const runKit = () => runPlanner(bot, {
     chain: kitChain,
@@ -796,6 +801,9 @@ async function startMapper() {
   if (res.stalled) emit({ type: 'mapper_kit_stalled', goal: res.goal }); // on cartographie quand même (dégradé)
   else await tryKitUpgrade();
   if (taskToken.cancelled) return;
+  // filet survie : buffer de terre pour sceller l'abri + bouffe pour régén PV (best-effort, bornés)
+  try { if (needDirtBuffer(bot.inventory.items(), 8)) await gather(bot, { name: ['dirt', 'grass_block', 'gravel'], count: 8, maxDistance: 48 }, taskToken); } catch (e) {}
+  try { await huntCookGoal(6); } catch (e) {}
   emit({ type: 'mapper_started', world: bot._worldKey, sector: mapperSector });
   // ── Phase 2 : rotation /locate (bot OP) — 1 structure/60 s, réponse op parsée en messagestr.
   // Échec silencieux si pas op / serveur sans la structure (réponse d'erreur non matchée).
@@ -869,6 +877,7 @@ async function startMapper() {
       const ctx = Object.assign({ inv: buildCtxInv(bot) }, ctxExtra());
       if (firstUnmet(kitChain, ctx)) { emit({ type: 'mapper_kit_retry' }); await runKit(); }
       try { await armorUp(0); } catch (e) { /* best-effort */ }   // hole A : le mappeur s'arme aussi
+      try { if (needDirtBuffer(bot.inventory.items(), 4)) await gather(bot, { name: ['dirt', 'grass_block', 'gravel'], count: 8, maxDistance: 48 }, taskToken); } catch (e) {}
       try { await maybeNightShelter(true); } catch (e) {}         // hole §1.4 : abri nocturne en roaming
     },
     // CHASSE OPPORTUNISTE (vécu Surv1 : le retry périodique coïncide rarement avec des proies à
@@ -1228,6 +1237,21 @@ async function ensureTorches() {
 async function armorUp(ironKeep = 8) {
   try { await ensureTorches(); } catch (e) { /* best-effort */ }
   try { await ensureArmor({ ironKeep }); } catch (e) { /* best-effort */ }
+}
+
+// /kit serveur (configuré au profil, policy.kit_command) : lancé au démarrage du mappeur + à chaque
+// respawn, cooldown LOCAL anti-spam via maybeRunKit (décision pure). Best-effort : on tape la
+// commande, on laisse le serveur livrer, puis on équipe l'armure reçue (ironKeep=0 = tout utiliser)
+// et on mange. Toute erreur est avalée (le mini-kit pierre du planner reste le vrai filet).
+let _lastKitAt = null;
+async function survivalKitUp() {
+  const d = maybeRunKit({ kitCommand: policy.kit_command, lastRunAt: _lastKitAt, now: Date.now() });
+  if (!d.run) return;
+  _lastKitAt = Date.now();
+  try { bot.chat(String(policy.kit_command)); emit({ type: 'kit_used', cmd: policy.kit_command }); } catch (e) {}
+  await new Promise((r) => setTimeout(r, 1500));
+  try { await armorUp(0); } catch (e) {}
+  try { await eat(bot); } catch (e) {}
 }
 
 // Ravitaillement NOURRITURE (bug review #1 — cause directe de famine mortelle) : le bot resource
@@ -2463,7 +2487,7 @@ bot.loadPlugin(pathfinder);
 bot.loadPlugin(pvp);
 bot.loadPlugin(collectBlock);
 
-bot.on('spawn', () => { _floatSettleUntil = Date.now() + 15000; onSpawn().catch((e) => emit({ type: 'error', message: String((e && e.message) || e) })); });
+bot.on('spawn', () => { _floatSettleUntil = Date.now() + 15000; survivalKitUp().catch(() => {}); onSpawn().catch((e) => emit({ type: 'error', message: String((e && e.message) || e) })); });
 
 async function runAction(decision) {
   const a = decision.action;
