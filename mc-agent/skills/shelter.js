@@ -96,10 +96,15 @@ function roofPlan(inv, ctx = {}) {
 /**
  * Décision PURE : faut-il se mettre à l'abri MAINTENANT ? Robuste au niveau de lumière inconnu
  * (mineflayer ne le livre pas toujours) : retombe sur la présence d'hostiles.
- * sig = { night, lightLevel (0-15|null), naked, lowHp, hostilesNear, proactive }.
+ * sig = { night, lightLevel (0-15|null), naked, lowHp, hostilesNear, proactive, underground }.
  * → { shelter: bool, reason }.
  */
 function shouldShelter(sig = {}) {
+  // SOUS TERRE : jamais d'abri (Massii 16/07) — il y fait TOUJOURS sombre et le mineur en chaîne
+  // armure est nu par définition → le trigger 'dark' l'enterrait 10-13 min en boucle DANS sa mine,
+  // où « attendre l'aube » ne protège de rien (les mobs de grotte spawnent jour et nuit). Les
+  // réflexes combat/fuite + ban-zone couvrent les hostiles souterrains.
+  if (sig.underground) return { shelter: false, reason: 'underground' };
   const dark = (sig.lightLevel != null && sig.lightLevel <= 7);
   if (sig.night && (sig.proactive || sig.naked || sig.lowHp)) return { shelter: true, reason: 'night' };
   if (dark && (sig.naked || sig.lowHp || sig.hostilesNear)) return { shelter: true, reason: 'dark' };

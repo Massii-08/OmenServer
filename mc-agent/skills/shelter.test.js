@@ -30,3 +30,25 @@ test('shouldShelter : jour + clair + équipé → non', () => {
 test('shouldShelter : hostiles proches + nu (grotte) → déclenche même si light inconnu', () => {
   assert.strictEqual(shouldShelter({ night: false, lightLevel: null, naked: true, hostilesNear: true }).shelter, true);
 });
+
+// SOUS TERRE = jamais d'abri (Massii 16/07 : « du moment que les bots ressource sont sous terre
+// pour miner, pas besoin de se cacher pour la nuit »). Piège vécu : sous terre il fait TOUJOURS
+// sombre (lightLevel ≤7) et le mineur en chaîne armure est NU par définition → shouldShelter
+// 'dark' le faisait s'enterrer 10-13 min en boucle DANS sa mine, où l'aube ne change rien.
+test('shouldShelter : underground → jamais d\'abri, quel que soit le danger', () => {
+  assert.deepStrictEqual(shouldShelter({ underground: true, night: true, naked: true }),
+    { shelter: false, reason: 'underground' });
+  assert.deepStrictEqual(shouldShelter({ underground: true, lightLevel: 0, lowHp: true }),
+    { shelter: false, reason: 'underground' });
+  assert.deepStrictEqual(shouldShelter({ underground: true, hostilesNear: true, naked: true }),
+    { shelter: false, reason: 'underground' });
+  assert.deepStrictEqual(shouldShelter({ underground: true, night: true, proactive: true }),
+    { shelter: false, reason: 'underground' });
+});
+
+test('shouldShelter : en surface (underground false/absent) → comportements historiques inchangés', () => {
+  assert.strictEqual(shouldShelter({ night: true, naked: true }).shelter, true);
+  assert.strictEqual(shouldShelter({ underground: false, night: true, naked: true }).shelter, true);
+  assert.strictEqual(shouldShelter({ lightLevel: 3, lowHp: true }).shelter, true);
+  assert.strictEqual(shouldShelter({ night: false, naked: true }).shelter, false);
+});

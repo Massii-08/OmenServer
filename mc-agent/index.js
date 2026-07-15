@@ -892,7 +892,9 @@ async function maybeNightShelter(proactive = false) {
   let lightLevel = null;
   try { const b = _pp && bot.blockAt(_pp.floored()); if (b && typeof b.light === 'number') lightLevel = b.light; } catch (e) {}
   const hostilesNear = (() => { try { const e = bot.nearestEntity((x) => x && x.kind === 'Hostile mobs'); return !!(e && bot.entity && e.position.distanceTo(bot.entity.position) <= 8); } catch (e) { return false; } })();
-  const sig = { night: isNight(bot), lightLevel, naked, lowHp: (bot.health != null && bot.health <= 10), hostilesNear, proactive };
+  // Sous terre (y<45, seuil historique) : pas d'abri du tout — un mineur s'enterrait en boucle
+  // dans sa propre mine (dark permanent + nu en chaîne armure), 10-13 min perdues par cycle.
+  const sig = { night: isNight(bot), lightLevel, naked, lowHp: (bot.health != null && bot.health <= 10), hostilesNear, proactive, underground: !!(_pp && _pp.y < 45) };
   if (shouldShelter(sig).shelter && Date.now() - lastShelterT > 10 * 60 * 1000) {
     lastShelterT = Date.now();
     // MAPPEUR (Massii 2026-07-15) : d'abord REVENIR au home 'safe' de surface (/home safe, visible),
