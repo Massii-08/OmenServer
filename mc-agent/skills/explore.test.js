@@ -393,3 +393,23 @@ test('explore : hook qui throw n\'empêche pas l\'exploration (best-effort)', as
   const r = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', step: 80, maxRadius: 80 });
   assert.strictEqual(r.ok, false);   // pas trouvé, mais pas de crash
 });
+
+// Cible dirigée INATTEIGNABLE (timeout-to-reach, vécu live 15/07 : s27/s28 bouclaient
+// goal_failed logs not_found sur la MÊME cible apprise sans jamais l'atteindre → jamais marquée
+// épuisée → churn bois éternel). Un explore qui rend not_found DOIT marquer sa cible dirigée.
+test('explore : cible dirigée jamais atteinte (goto reject) + not_found → marquée épuisée', async () => {
+  const { bot } = makeBot({ target: null });
+  bot._mcaExhausted = new Set();
+  // goto rejette toujours (cible inatteignable — noyée/murée) → le bot n'arrive jamais
+  bot.pathfinder.goto = async () => { throw new Error('NoPath'); };
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 800, z: 0 }], biomes: [] } } };
+  const emits = [];
+  const r = await explore(bot, {
+    name: 'oak_log', matching: [17], memory, worldKey: 'w',
+    emit: (e) => emits.push(e), step: 80, maxRadius: 80, scanRadius: 64,
+    directedRetryDelayMs: 0,
+  });
+  assert.strictEqual(r.ok, false);
+  assert.ok(bot._mcaExhausted.has('800,0'), 'cible dirigée inatteignable marquée épuisée');
+  assert.ok(emits.some((e) => e.type === 'directed_exhausted' && e.x === 800), 'event directed_exhausted émis');
+});

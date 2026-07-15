@@ -107,7 +107,9 @@ async function explore(bot, opts = {}) {
   const exhausted = opts.exhausted || bot._mcaExhausted || null;
   const markExhausted = (t) => {
     if (!exhausted || !t) return;
-    exhausted.add(targetKey(t.x, t.z));
+    const k = targetKey(t.x, t.z);
+    if (exhausted.has(k)) return;                    // idempotent : pas de double event
+    exhausted.add(k);
     if (emit) { try { emit({ type: 'directed_exhausted', x: Math.round(t.x), z: Math.round(t.z) }); } catch (e) {} }
   };
   let dTarget = null, dTy = origin.y; // hoistés : réutilisés par le RAPPEL dirigé pendant les anneaux
@@ -206,6 +208,11 @@ async function explore(bot, opts = {}) {
     const block = bot.findBlock({ matching, maxDistance: scanRadius });
     if (block) return { ok: true, found: block.position, traveled: wp.r };
   }
+  // Explore ÉPUISÉ (rien trouvé, ni via la cible dirigée ni dans toute la spirale d'anneaux) : la
+  // cible apprise est stérile OU inatteignable (noyée/murée). On la marque même si on n'a jamais
+  // « arrivé » dessus (timeout-to-reach, vécu live 15/07 : boucle logs not_found sur la même cible)
+  // → directedTarget en proposera une AUTRE au prochain appel (fin du churn).
+  markExhausted(dTarget);
   return { ok: false, reason: 'not_found' };
 }
 
