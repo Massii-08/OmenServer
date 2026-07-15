@@ -64,8 +64,8 @@ test('buildTrustDocs: liste → mentionne les noms ; vide → ""', () => {
 });
 
 test('loadPolicy: absent → {trusted:[],trade:null} ; fichier valide → parsé', () => {
-  assert.deepStrictEqual(loadPolicy(''), { trusted: [], trade: null });
-  assert.deepStrictEqual(loadPolicy('/no/such.json'), { trusted: [], trade: null });
+  assert.deepStrictEqual(loadPolicy(''), { trusted: [], trade: null, kit_command: '' });
+  assert.deepStrictEqual(loadPolicy('/no/such.json'), { trusted: [], trade: null, kit_command: '' });
   const f = path.join(os.tmpdir(), 'mca-policy-' + process.pid + '.json');
   fs.writeFileSync(f, JSON.stringify({ trusted: ['A'], trade: { acceptCmd: '/t accept', requestPattern: 'x' } }));
   try {
