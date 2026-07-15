@@ -818,15 +818,43 @@ async function startMapper() {
       pendingLocate = null;
     });
   }
-  // Warp self-service (bot OP) : /spreadplayers ≈ tp SÛR en surface près de (x,z).
-  const warp = args.frontier ? (async (x, z) => {
-    bot.chat('/spreadplayers ' + Math.round(x) + ' ' + Math.round(z) + ' 0 48 false ' + bot.username);
-  }) : null;
+  const boatMod = require('./boat');
+  // Centroïde des cellules déjà mappées (référence "vers le large").
+  const mappedCentroid = () => {
+    const w = bot._worldMemory && bot._worldMemory.worlds && bot._worldMemory.worlds[bot._worldKey];
+    const bs = (w && w.biomes) || [];
+    if (!bs.length) { const p = bot.entity.position; return { x: p.x, z: p.z }; }
+    let sx = 0, sz = 0; for (const b of bs) { sx += b.x; sz += b.z; }
+    return { x: sx / bs.length, z: sz / bs.length };
+  };
+  const sampleBlock = (x, y, z) => { try { return bot.blockAt(vec3Lib(x, y, z)); } catch (e) { return null; } };
+  const escapeWaterHook = async () => { try { await escapeWater(bot, { emit }); } catch (e) {} };
   await runMapper(bot, {
     worldKey: bot._worldKey,
     memory: bot._worldMemory,
     frontier: !!args.frontier,
-    warp,
+    boat: {
+      cross: async (fromPos) => {
+        const heading = boatMod.outwardHeading(fromPos, mappedCentroid(), mapperSector, Math.random);
+        const eb = await boatMod.ensureBoat(bot, { craft: (a) => craftSmart(a) });
+        if (!eb.ok) return { ok: false, landed: false, reason: 'no_boat' };
+        // pose + embarque au bord de l'eau au cap (best-effort ; échec → nage de secours plus bas)
+        try {
+          const here = bot.entity.position;
+          const wx = Math.floor(here.x + Math.cos(heading) * 2), wz = Math.floor(here.z + Math.sin(heading) * 2);
+          const water = bot.blockAt(vec3Lib(wx, Math.floor(here.y) - 1, wz));
+          if (water && boatMod.WATER_NAMES.has(water.name)) {
+            const boatItem = bot.inventory.items().find((i) => /_boat$/.test(i.name));
+            if (boatItem) { await bot.equip(boatItem, 'hand'); await bot.lookAt(water.position.offset(0, 1, 0), true); await bot.activateItem(); }
+            const ent = bot.nearestEntity((e) => /boat/i.test(e.name || '') || /boat/i.test(e.objectType || ''));
+            if (ent) { try { await bot.mount(ent); } catch (e) {} }
+          }
+        } catch (e) { /* best-effort */ }
+        const r = await boatMod.sailToLand(bot, heading, { sampleBlock, reach: 40, step: 4, timeoutMs: 90000 });
+        if (!r.landed) { await escapeWaterHook(); }   // nage de secours (jamais figé)
+        return { ok: true, landed: r.landed, reason: r.reason };
+      },
+    },
     reloadMemory: (args['wm-live'] && args['world-memory'])
       ? () => loadMemory(args['world-memory']) : null,
     getSector: () => mapperSector,
