@@ -373,9 +373,20 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
         emit({ type: 'mapper_boat_cross' });
         let res = null;
         try { res = await opts.boat.cross(here0); } catch (e) { res = { ok: false, reason: 'error' }; }
-        emit({ type: res && res.landed ? 'mapper_boat_landed' : 'mapper_boat_failed', reason: res && res.reason });
-        record();
-        continue;
+        // Garde-fou anti-boucle (miroir du fix warp) : la traversée ne « compte » que si le bot a
+        // RÉELLEMENT bougé (sinon `sailToLand` « atterrit » sur la terre sous ses pieds → boat-spam
+        // sans progrès, vécu live 2026-07-15). Vrai déplacement → on mappe et on reprend. Sinon →
+        // NE PAS reboucler sur le bateau : on tombe dans la marche aléatoire ci-dessous (exploration
+        // à pied vers une terre neuve).
+        const afterCross = _pos(bot);
+        const movedCross = Math.sqrt((afterCross.x - here0.x) ** 2 + (afterCross.z - here0.z) ** 2);
+        if (movedCross > 24) {
+          emit({ type: 'mapper_boat_landed', reason: res && res.reason, moved: Math.round(movedCross) });
+          record();
+          continue;
+        }
+        emit({ type: 'mapper_boat_failed', reason: (res && res.reason) || 'no_progress' });
+        // fallthrough → marche aléatoire
       }
       // pas de bateau dispo (ou échec) → marche aléatoire ci-dessous (le crossing nage existant
       // reste le filet anti-blocage)

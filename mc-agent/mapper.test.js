@@ -538,3 +538,22 @@ test('runMapper : ne mappe PAS l’océan (biome eau → pas de biome_seen)', as
   }, token);
   assert.ok(!events.some((e) => e.type === 'biome_seen'), 'aucun biome_seen pour l’océan');
 });
+
+test('runMapper frontier : boat cross SANS progrès (bot ne bouge pas) → ne reboucle pas sur le bateau, marche aléatoire', async () => {
+  const bot = fakeMapperBot();
+  const events = [];
+  const gotos = [];
+  const token = { cancelled: false };
+  // tout couvert autour du spawn → nextLandLeg renvoie null → boat ; mais le boat NE BOUGE PAS le bot
+  const biomes = [];
+  for (let x = -512; x <= 512; x += 128) for (let z = -512; z <= 512; z += 128) biomes.push({ name: 'plains', x, z });
+  let crosses = 0;
+  await runMapper(bot, {
+    worldKey: 'overworld', memory: { worlds: { overworld: { biomes } } }, frontier: true,
+    boat: { cross: async () => { crosses++; return { ok: true, landed: true }; } }, // ne déplace pas le bot
+    emit: (e) => { events.push(e); if (gotos.length >= 2 || crosses >= 8 || events.length > 500) token.cancelled = true; },
+    goto: async (wp) => { gotos.push(wp); bot.entity.position = vec3(wp.x, 64, wp.z); },
+    sleep: async () => {},
+  }, token);
+  assert.ok(gotos.length >= 1, 'après un boat cross sans progrès, le bot doit MARCHER (random walk), pas reboucler sur le bateau');
+});

@@ -56,6 +56,7 @@ test('sailToLand : s’arrête et débarque dès que la terre est détectée dev
   const ctl = {};
   const bot = {
     entity: { position: { x: 0, y: 64, z: 0 } },
+    vehicle: {},   // embarqué (sailToLand est appelé après avoir mis le bot dans un bateau)
     look: async () => {},
     setControlState: (k, v) => { ctl[k] = v; },
     clearControlStates: () => { ctl.cleared = true; },

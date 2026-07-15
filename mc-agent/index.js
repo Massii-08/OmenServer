@@ -1249,9 +1249,17 @@ async function survivalKitUp() {
   if (!d.run) return;
   _lastKitAt = Date.now();
   try { bot.chat(String(policy.kit_command)); emit({ type: 'kit_used', cmd: policy.kit_command }); } catch (e) {}
-  await new Promise((r) => setTimeout(r, 1500));
-  try { await armorUp(0); } catch (e) {}
+  await new Promise((r) => setTimeout(r, 2500));         // réception des items du kit (peut être lent)
+  try { await armorUp(0); } catch (e) {}                 // équipe l'armure reçue
   try { await eat(bot); } catch (e) {}
+  // 2e passe : des items de kit arrivent parfois après coup → ré-équipe si l'armure n'est pas portée
+  try {
+    if (typeof _wornArmor === 'function' && _wornArmor().size < 4) {
+      await new Promise((r) => setTimeout(r, 2000));
+      await armorUp(0);
+      emit({ type: 'kit_equipped', worn: _wornArmor().size });
+    }
+  } catch (e) {}
 }
 
 // Ravitaillement NOURRITURE (bug review #1 — cause directe de famine mortelle) : le bot resource

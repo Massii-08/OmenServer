@@ -104,7 +104,9 @@ async function sailToLand(bot, headingYaw, opts = {}) {
     }
   } finally {
     try { bot.clearControlStates(); } catch (e) {}
-    try { await bot.dismount(); } catch (e) {}
+    // dismount UNIQUEMENT si réellement embarqué (sinon mineflayer émet un 'error' « not mounted »
+    // à chaque tour → bruit d'events, vécu live 2026-07-15).
+    try { if (bot.vehicle) await bot.dismount(); } catch (e) {}
   }
   return { landed, reason };
 }
