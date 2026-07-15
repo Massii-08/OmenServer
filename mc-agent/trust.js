@@ -5,16 +5,18 @@ const fs = require('fs');
 
 /** Charge la policy depuis un fichier JSON. Absent/illisible → {trusted:[], trade:null}. */
 function loadPolicy(filePath) {
-  if (!filePath) return { trusted: [], trade: null };
+  if (!filePath) return { trusted: [], trade: null, kit_command: '' };
   try {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     const trusted = Array.isArray(data.trusted) ? data.trusted.filter((u) => typeof u === 'string') : [];
     const trade = (data.trade && typeof data.trade === 'object' && typeof data.trade.acceptCmd === 'string')
       ? { acceptCmd: data.trade.acceptCmd, requestPattern: String(data.trade.requestPattern || '') }
       : null;
-    return { trusted, trade };
+    // kit_command (survie mappeur) : DOIT être propagé — sinon le bot ne lance jamais /kit.
+    const kit_command = typeof data.kit_command === 'string' ? data.kit_command : '';
+    return { trusted, trade, kit_command };
   } catch (e) {
-    return { trusted: [], trade: null };
+    return { trusted: [], trade: null, kit_command: '' };
   }
 }
 
