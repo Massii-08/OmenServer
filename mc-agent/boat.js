@@ -55,4 +55,58 @@ function boatStuck(prevPos, curPos, dtMs, opts = {}) {
   return Math.hypot(curPos.x - prevPos.x, curPos.z - prevPos.z) < minMove;
 }
 
-module.exports = { outwardHeading, landAhead, boatStuck, WATER_NAMES };
+/** Garantit un bateau en poche : sinon crafte celui de l'essence de bois dispo. best-effort. */
+async function ensureBoat(bot, opts = {}) {
+  const craft = opts.craft;
+  const items = (bot.inventory && bot.inventory.items()) || [];
+  const has = items.find((i) => /_boat$/.test(i.name));
+  if (has) return { ok: true, name: has.name };
+  if (!craft) return { ok: false, reason: 'no_craft' };
+  const wood = items.find((i) => /_(log|planks)$/.test(i.name));
+  const kind = wood ? wood.name.replace(/_(log|planks)$/, '') : 'oak';
+  const name = kind + '_boat';
+  try {
+    const r = await craft({ name, count: 1 });
+    return { ok: !!(r && r.ok), name };
+  } catch (e) { return { ok: false, reason: 'craft_error' }; }
+}
+
+const _bpos = (bot) => {
+  const p = bot.entity && bot.entity.position;
+  return p ? { x: p.x, y: p.y, z: p.z } : { x: 0, y: 64, z: 0 };
+};
+
+/**
+ * Navigue au cap `headingYaw` (bot supposé déjà embarqué) jusqu'à détecter la terre devant
+ * (`landAhead`) OU coincement OU timeout, puis débarque. `sampleBlock`/`now`/`sleep` injectables.
+ * → { landed:boolean, reason }. Relâche TOUJOURS les contrôles + dismount en sortie.
+ */
+async function sailToLand(bot, headingYaw, opts = {}) {
+  const now = opts.now || Date.now;
+  const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const sampleBlock = opts.sampleBlock || ((x, y, z) => bot.blockAt({ x, y, z }));
+  const tickMs = opts.tickMs != null ? opts.tickMs : 500;
+  const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : 90000;
+  const t0 = now();
+  let prev = _bpos(bot), prevT = t0;
+  let landed = false, reason = 'timeout';
+  try {
+    while (now() - t0 < timeoutMs) {
+      try { await bot.look(headingYaw, 0, true); } catch (e) {}
+      bot.setControlState('forward', true);
+      const here = _bpos(bot);
+      const ahead = landAhead(sampleBlock, here, headingYaw, opts);
+      if (ahead.found) { landed = true; reason = 'land'; break; }
+      const t = now();
+      if (boatStuck(prev, here, t - prevT, opts)) { reason = 'stuck'; break; }
+      if (t - prevT >= (opts.sampleEvery || 3000)) { prev = here; prevT = t; }
+      await sleep(tickMs);
+    }
+  } finally {
+    try { bot.clearControlStates(); } catch (e) {}
+    try { await bot.dismount(); } catch (e) {}
+  }
+  return { landed, reason };
+}
+
+module.exports = { outwardHeading, landAhead, boatStuck, ensureBoat, sailToLand, WATER_NAMES };
