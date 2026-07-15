@@ -767,6 +767,11 @@ async function maybeNightShelter(proactive = false) {
   const sig = { night: isNight(bot), lightLevel, naked, lowHp: (bot.health != null && bot.health <= 10), hostilesNear, proactive };
   if (shouldShelter(sig).shelter && Date.now() - lastShelterT > 10 * 60 * 1000) {
     lastShelterT = Date.now();
+    // MAPPEUR (Massii 2026-07-15) : d'abord REVENIR au home 'safe' de surface (/home safe, visible),
+    // puis se terrer là — plutôt que de creuser un trou au hasard là où la nuit l'a surpris.
+    if (IS_MAPPER && _safeHomeSet) {
+      try { emit({ type: 'mapper_home_return', home: 'safe' }); homewarp.goHome(bot, 'safe'); await sleep(4000); } catch (e) {}
+    }
     await withTimeout(shelterUntilDawn(bot, taskToken, { emit }), 13 * 60 * 1000, () => { try { stopMotion(); } catch (e) {} });
     return true;
   }
@@ -2404,8 +2409,10 @@ async function onSpawn() {
     try { await relocateToRegion(); } catch (e) { /* best-effort */ }
     try { bot.chat('/spawnpoint'); } catch (e) {}
   }
-  // ─── Warp légitime (NO_GIVE) : home 'safe' surface + récupération post-mort ────────────────────
-  if (NO_GIVE) {
+  // ─── Warp légitime (NO_GIVE + MAPPEUR) : home 'safe' surface + récupération post-mort ───────────
+  // Le MAPPEUR (Massii live 2026-07-15 : « je ne le vois pas poser l'home et revenir ») pose aussi
+  // un home 'safe' de surface au spawn → la nuit il fait /home safe puis s'abrite (cf. maybeNightShelter).
+  if (NO_GIVE || IS_MAPPER) {
     // 'safe' = cible de goSpawn. On le pose TOUJOURS (fallback = position de spawn courante, même
     // souterraine → goSpawn a toujours une cible valide) puis on l'UPGRADE dès qu'on spawne à une
     // vraie surface (y≥58, sèche). Sans ça un bot qui respawne toujours sous terre n'avait pas de

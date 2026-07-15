@@ -1300,7 +1300,8 @@ const BotsModule = {
  _structColor(kind) {
  const c = { village: '#4ADE80', mineshaft: '#D9C9A3', stronghold: '#C084FC', dungeon: '#F87171',
   ancient_city: '#60A5FA', ruined_portal: '#FB923C', desert_pyramid: '#FACC15', jungle_pyramid: '#34D399',
-  pillager_outpost: '#F472B6', shipwreck: '#94A3B8', monument: '#22D3EE', fortress: '#EF4444' };
+  pillager_outpost: '#F472B6', shipwreck: '#94A3B8', monument: '#22D3EE', fortress: '#EF4444',
+  trial_chamber: '#F0A840' };
  return c[kind] || '#A1A1AA';
  },
  _structInitial(kind) {
@@ -2507,6 +2508,23 @@ const BotsModule = {
  '..WWWWWWWWWWWW..',
  '...WWWWWWWWWW...',
  '................',
+ '................',
+ '................',
+ '................'] },
+ trial_chamber: { p: { T: '#7a6a48', t: '#5a4d32', O: '#e8a838', o: '#a86a1e', c: '#2a2418' }, g: [
+ '................',
+ '..TTTTTTTTTTTT..',
+ '..TtTTTTTTTTtT..',
+ '..TTccccccccTT..',
+ '..TTcOOccOOcTT..',
+ '..TTcOoccoOcTT..',
+ '..TtccccccccT t.',
+ '..TTccccccccTT..',
+ '..TTcOoccoOcTT..',
+ '..TTcOOccOOcTT..',
+ '..TTccccccccTT..',
+ '..TtTTTTTTTTtT..',
+ '..TTTTTTTTTTTT..',
  '................',
  '................',
  '................'] },

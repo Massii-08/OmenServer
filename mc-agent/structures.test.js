@@ -103,3 +103,21 @@ test('LOCATE_KINDS : rotation couvre les structures demandées (tags générique
   }
   assert.ok(LOCATE_KINDS.every((k) => k.arg.includes('minecraft')));
 });
+
+test('SIGNATURE : PLUS de donjon par mossy_cobblestone (faux positifs — le spawner seul fait foi)', () => {
+  const bot = {
+    registry: { blocksByName: { mossy_cobblestone: { id: 5 }, infested_cobblestone: { id: 9 } } },
+    findBlock: ({ matching }) => (matching && (matching.includes(5) || matching.includes(9)) ? { name: 'mossy_cobblestone', position: pos(0, 40, 0) } : null),
+  };
+  const out = require('./structures').findAllSignatures(bot);
+  assert.ok(!out.some((o) => o.type === 'dungeon'), 'mossy_cobblestone ne doit plus produire de donjon');
+});
+
+test('findAllSignatures : trial_chamber via trial_spawner ou vault', () => {
+  const bot = {
+    registry: { blocksByName: { trial_spawner: { id: 20 }, vault: { id: 21 } } },
+    findBlock: ({ matching }) => (matching && matching.includes(20) ? { name: 'trial_spawner', position: pos(3, 20, 3) } : null),
+  };
+  const out = require('./structures').findAllSignatures(bot);
+  assert.ok(out.some((o) => o.type === 'trial_chamber'), 'trial_spawner → trial_chamber');
+});
