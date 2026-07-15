@@ -5,6 +5,7 @@
 const { Vec3 } = require('vec3');
 const { mineDown } = require('./mineDown');
 const { pillarUp, SCAFFOLD } = require('./pillarUp');
+const { POSABLE } = require('../dirt');
 
 /** PUR : est-ce la nuit (hostiles spawnent) ? timeOfDay ∈ [0,24000), nuit ≈ 12800-23200. */
 function isNightTime(timeOfDay) {
@@ -32,23 +33,36 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
   const down = await mineDown(bot, { depth: 2 }, token);
   if (!down.ok) { emit({ type: 'shelter', action: 'abort', reason: down.reason }); return { ok: false, reason: down.reason }; }
 
-  // 2) toit best-effort : un bloc posé contre la paroi au niveau de la tête+1 (référence PLEINE, #6)
+  // 2) toit : bloc de l'inventaire, sinon on en MINE un (terre/gravier drop sans outil) — auto-suffisant.
   try {
-    const head2 = bot.entity.position.floored().offset(0, 2, 0);     // case au-dessus de la tête
-    const scaffold = bot.inventory.items().find((i) => SCAFFOLD.includes(i.name));
-    if (scaffold) {
+    const head2 = bot.entity.position.floored().offset(0, 2, 0);
+    let block = bot.inventory.items().find((i) => SCAFFOLD.includes(i.name));
+    if (!block) {
+      const feet = bot.entity.position.floored();
       for (const d of [new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1)]) {
-        const wall = bot.blockAt(head2.plus(d));                      // paroi du trou à cette hauteur
+        const wall = bot.blockAt(feet.plus(d));
+        if (wall && wall.boundingBox === 'block' && wall.name !== 'bedrock') {
+          try { await bot.dig(wall); await sleep(300); } catch (e) {}
+          block = bot.inventory.items().find((i) => SCAFFOLD.includes(i.name));
+          if (block) break;
+        }
+      }
+    }
+    if (block) {
+      for (const d of [new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1)]) {
+        const wall = bot.blockAt(head2.plus(d));
         if (!wall || wall.boundingBox !== 'block') continue;
         try {
-          await bot.equip(scaffold, 'hand');
-          await bot.placeBlock(wall, d.scaled(-1));                   // pose vers le centre du trou
+          await bot.equip(block, 'hand');
+          await bot.placeBlock(wall, d.scaled(-1));
           const roof = bot.blockAt(head2);
           if (roof && roof.boundingBox === 'block') { emit({ type: 'shelter', action: 'roofed' }); break; }
         } catch (e) { /* paroi suivante */ }
       }
+    } else {
+      emit({ type: 'shelter', action: 'no_roof' });
     }
-  } catch (e) { /* sans toit : le trou protège déjà des tirs/projections */ }
+  } catch (e) { /* best-effort */ }
 
   // 3) attendre l'aube (borné, annulable) — les réflexes survie tournent en parallèle
   const t0 = Date.now();
@@ -68,4 +82,29 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
   return { ok: true };
 }
 
-module.exports = { isNightTime, isNight, shelterUntilDawn };
+/**
+ * Décision PURE : comment obtenir le bloc-toit pour sceller l'abri ?
+ * inv = [{name,count}] ; ctx = { hasPickaxe, groundMineable }.
+ * → { source: 'inventory' | 'mine' | 'none' }.
+ */
+function roofPlan(inv, ctx = {}) {
+  for (const it of inv || []) if (POSABLE.has(it.name) && (it.count || 0) > 0) return { source: 'inventory' };
+  if (ctx.groundMineable || ctx.hasPickaxe) return { source: 'mine' };
+  return { source: 'none' };
+}
+
+/**
+ * Décision PURE : faut-il se mettre à l'abri MAINTENANT ? Robuste au niveau de lumière inconnu
+ * (mineflayer ne le livre pas toujours) : retombe sur la présence d'hostiles.
+ * sig = { night, lightLevel (0-15|null), naked, lowHp, hostilesNear, proactive }.
+ * → { shelter: bool, reason }.
+ */
+function shouldShelter(sig = {}) {
+  const dark = (sig.lightLevel != null && sig.lightLevel <= 7);
+  if (sig.night && (sig.proactive || sig.naked || sig.lowHp)) return { shelter: true, reason: 'night' };
+  if (dark && (sig.naked || sig.lowHp || sig.hostilesNear)) return { shelter: true, reason: 'dark' };
+  if (sig.hostilesNear && (sig.naked || sig.lowHp)) return { shelter: true, reason: 'hostiles' };
+  return { shelter: false, reason: 'safe' };
+}
+
+module.exports = { isNightTime, isNight, shelterUntilDawn, roofPlan, shouldShelter };
