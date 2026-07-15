@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, smeltPlan } = require('./gear');
+const { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, smeltPlan, smeltReady } = require('./gear');
 
 test('Y_OPT : bandes de spawn 1.18+ (diamant/redstone profond, or -16, lapis -12 dense, fer 16)', () => {
   assert.strictEqual(Y_OPT.diamond, -58);
@@ -165,4 +165,16 @@ test('smeltPlan : déjà assez de lingots (≥24 = armure complète) → no-go (
 test('smeltPlan : count ne dépasse jamais le raw disponible', () => {
   const p = smeltPlan([{ name: 'raw_iron', count: 4 }, { name: 'furnace', count: 1 }, { name: 'coal', count: 2 }]);
   assert.strictEqual(p.count, 4);
+});
+
+// smeltReady : la fonte opportuniste ratait la POSE du four en surface mouillée/mouvante (vécu live
+// NethBot3 : opportunistic_smelt ok:false + armor_smelt no_furnace) → ne fondre que sur sol stable.
+test('smeltReady : au sol + sec + immobile → true', () => {
+  assert.strictEqual(smeltReady({ onGround: true, inWater: false, moving: false }), true);
+});
+test('smeltReady : en eau / en l\'air / en plein pathfinding → false', () => {
+  assert.strictEqual(smeltReady({ onGround: true, inWater: true, moving: false }), false);
+  assert.strictEqual(smeltReady({ onGround: false, inWater: false, moving: false }), false);
+  assert.strictEqual(smeltReady({ onGround: true, inWater: false, moving: true }), false);
+  assert.strictEqual(smeltReady({}), false);
 });

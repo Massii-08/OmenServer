@@ -121,6 +121,13 @@ function smeltPlan(items, opts = {}) {
   return { go: true, count: Math.min(raw, 8) };
 }
 
+/** La position courante permet-elle une fonte fiable ? (pur) La pose du four portable échoue en
+ * eau / en l'air / en plein déplacement (vécu live NethBot3 : opportunistic_smelt + armor_smelt
+ * no_furnace pendant l'exploration de surface) → on n'ouvre le four que sur sol stable et immobile. */
+function smeltReady({ onGround, inWater, moving } = {}) {
+  return !!onGround && !inWater && !moving;
+}
+
 /** Type au DÉFICIT RELATIF max parmi progress {type:{have,target}}. null si tout est servi. */
 function mostLackingType(progress) {
   let best = null, bestRatio = 0;
@@ -274,4 +281,4 @@ function shieldPlan(items, hasShield) {
   return null;
 }
 
-module.exports = { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan, smeltPlan };
+module.exports = { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan, smeltPlan, smeltReady };

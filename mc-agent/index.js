@@ -67,7 +67,7 @@ const { runResource } = require('./skills/resource');
 const { planSmeltRaw } = require('./bank');   // fonte périodique du brut or/fer → lingots bankables
 const { tunnelTo } = require('./skills/tunnelTo');
 const { junkItems, ITEMS_FOR } = require('./quota');
-const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan, smeltPlan } = require('./gear');
+const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan, smeltPlan, smeltReady } = require('./gear');
 // Torche tous les N paliers de branch-mine (mob-aware phase B) — best-effort : sans torche
 // en poche le minage continue sans (zéro coût en peaceful, sécurité en non-pacifique).
 const TORCH_EVERY = 8;
@@ -3220,10 +3220,19 @@ setInterval(async () => {
     const items = ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, count: i.count }));
     const plan = smeltPlan(items);
     if (!plan.go) return;
+    // POSE FIABLE (fix live 15/07) : le four portable ne se pose pas en eau / en l'air / en plein
+    // pathfinding (vécu NethBot3 : opportunistic_smelt ok:false + armor_smelt no_furnace en surface
+    // mouillée). On attend un sol stable et immobile — la prochaine passe (60 s) réessaiera.
+    const _stable = {
+      onGround: !!(bot.entity && bot.entity.onGround),
+      inWater: (function () { try { return isInWater(bot); } catch (e) { return false; } })(),
+      moving: !!(bot.pathfinder && bot.pathfinder.isMoving && bot.pathfinder.isMoving()),
+    };
+    if (!smeltReady(_stable)) return;
     _smeltOppBusy = true;
     const r = await withTimeout(smeltWithFurnace('raw_iron', 'iron_ingot', plan.count), 200000,
       () => { try { stopMotion(); } catch (e) {} });
-    emit({ type: 'opportunistic_smelt', count: plan.count, ok: !!(r && r.ok) });
+    emit({ type: 'opportunistic_smelt', count: plan.count, ok: !!(r && r.ok), reason: (r && r.reason) || null });
   } catch (e) { /* best-effort : jamais throw depuis un timer */ }
   finally { _smeltOppBusy = false; }
 }, 60000);
