@@ -2190,7 +2190,15 @@ async function startAutonomous(sender) {
     res = await runChain();
   }
   if (taskToken.cancelled) return; // préempté par une commande
-  if (res.done) { clearObjective(world); saveWorld(worldFile, world); if (sender) ackPrivate(sender, doneWord()); emit({ type: 'autonomous_done' }); }
+  if (res.done) {
+    // DIAG done-immédiat (nuit 16/07 : done <1 s post-start, reproductible, cause introuvable à
+    // l'œil) : dumper le CTX exact qui a rendu firstUnmet nul — inventaire, armure portée, y.
+    try {
+      const _dbg = Object.assign({ inv: buildCtxInv(bot) }, ctxExtra());
+      emit({ type: 'autonomous_done_ctx', objective: objType, y: _dbg.y, worn: _dbg.worn, hasTable: _dbg.hasTable, inv: _dbg.inv });
+    } catch (e) { /* diag best-effort */ }
+    clearObjective(world); saveWorld(worldFile, world); if (sender) ackPrivate(sender, doneWord()); emit({ type: 'autonomous_done' });
+  }
   else if (res.stalled) { if (sender) ackPrivate(sender, failMsg('not_found')); emit({ type: 'autonomous_stalled', goal: res.goal }); }
 }
 
