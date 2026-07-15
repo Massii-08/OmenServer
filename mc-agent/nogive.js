@@ -25,6 +25,10 @@ const FORBIDDEN = [
   /^\/kill\b/i,
   /^\/setblock\b/i,
   /^\/fill\b/i,
+  // /kit = give DÉGUISÉ (vécu world_ax2 16/07 : le kit 'mapper' contient le set d'armure FER
+  // complet → les bots ressource en objectif iron_armor le tapaient au spawn → autonomous_done
+  // immédiat, grind court-circuité). Le mappeur, NON no-give, garde son kit (filtre absent chez lui).
+  /^\/kit\b/i,
 ];
 
 /** true si le message chat est une commande de triche interdite en mode sans-give. */
