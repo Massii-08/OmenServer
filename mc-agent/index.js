@@ -43,6 +43,8 @@ const { runPlanner } = require('./planner');
 const { chainFor, buildCtxInv, firstUnmet, cookedCount, armorNeed } = require('./goals');
 const { isForbiddenCheat } = require('./nogive');
 const homewarp = require('./homewarp'); // couche warp LÉGITIME sans-give (/sethome+/home ; goSpawn=/home safe)
+const { secureSpot } = require('./skills/secureSpot'); // secure-then-warp : pilier/se murer/flotter AVANT le /home
+const { SCAFFOLD } = require('./skills/pillarUp');     // blocs sacrifiables (comptés pour la tactique)
 const { huntPassive } = require('./skills/hunt');
 const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
@@ -191,6 +193,63 @@ let _homeRefusedAt = {};      // RC3 : refus TP Essentials par home {safe|wsite|
 // Le /home safe est-il inutilisable en ce moment (refus récent, pas encore re-posé) ?
 function safeWarpDown() {
   return !!(_homeRefusedAt.safe && (Date.now() - _homeRefusedAt.safe) <= homewarp.REFUSAL_DEGRADE_MS);
+}
+let _tpCancelledAt = 0;       // secure-then-warp : dernière annulation Essentials vue (teleport-delay)
+
+// Attend l'atterrissage d'un /home : saut de position >16 blocs = warpé ; message « cancelled »
+// (teleport-delay : le bot a bougé/pris un coup pendant le warmup) = échec explicite ; sinon
+// timeout. Remplace les sleep(3000) aveugles — plus RAPIDE sur serveur direct (delay 0 : sort dès
+// le saut détecté) et plus COUVRANT sur serveur à warmup 5 s (attend jusqu'à 9 s).
+async function awaitWarp(opts = {}) {
+  const maxMs = opts.maxMs || 9000;
+  const from = bot.entity && bot.entity.position && bot.entity.position.clone
+    ? bot.entity.position.clone() : null;
+  const t0 = Date.now();
+  while (Date.now() - t0 < maxMs) {
+    await sleep(300);
+    if (_tpCancelledAt > t0) return { warped: false, cancelled: true };
+    const p = bot.entity && bot.entity.position;
+    if (from && p && Math.hypot(p.x - from.x, p.y - from.y, p.z - from.z) > 16) return { warped: true };
+  }
+  return { warped: false };
+}
+
+// Warp de secours COMPLET (secure-then-warp, Massii 15/07) : se mettre en sécurité (pilier / se
+// murer / flotter) AVANT le /home — sur les serveurs à teleport-delay, le TP est annulé si on
+// bouge/prend un coup pendant le warmup ~5 s, et nos secours partent précisément sous les coups.
+// Best-effort intégral : un échec de mise en sécurité n'empêche jamais le warp ; 1 retry si annulé.
+async function safeWarpHome(name, opts = {}) {
+  const state = {
+    inWater: (function () { try { return isInWater(bot); } catch (e) { return false; } })(),
+    hostiles: (function () { try { return nearbyHostiles(bot, 8).length; } catch (e) { return 0; } })(),
+    blocks: (function () {
+      try { return bot.inventory.items().filter((i) => SCAFFOLD.includes(i.name)).reduce((s, i) => s + i.count, 0); } catch (e) { return 0; }
+    })(),
+    headroom: (function () {
+      try {
+        const f = bot.entity.position.floored();
+        return [2, 3, 4].every((dy) => { const b = bot.blockAt(f.offset(0, dy, 0)); return !b || b.boundingBox !== 'block'; });
+      } catch (e) { return false; }
+    })(),
+  };
+  const tactic = opts.tactic || homewarp.secureTactic(state);
+  if (tactic !== 'none') {
+    try { stopMotion(); } catch (e) {}
+    try { await withTimeout(secureSpot(bot, tactic, { token: taskToken, emit }), 6000, () => {}); } catch (e) {}
+  }
+  try { stopMotion(); } catch (e) {}    // IMMOBILE pendant l'éventuel warmup (sinon annulation)
+  homewarp.goHome(bot, name);
+  let r = await awaitWarp(opts);
+  if (!r.warped && r.cancelled) {       // annulé (coup reçu/mouvement) → re-sécuriser + 1 retry
+    emit({ type: 'safe_warp_retry', name, tactic });
+    try { await withTimeout(secureSpot(bot, tactic === 'none' ? 'seal' : tactic, { token: taskToken, emit }), 6000, () => {}); } catch (e) {}
+    try { stopMotion(); } catch (e) {}
+    homewarp.goHome(bot, name);
+    r = await awaitWarp(opts);
+  }
+  if (tactic === 'float') { try { bot.setControlState('jump', false); } catch (e) {} }
+  emit({ type: 'safe_warp', name, tactic, warped: !!r.warped });
+  return r;
 }
 let _convoPauseUntil = 0;   // stop-pour-répondre : gèle les gotos pendant réflexion+frappe (HUMANIZE)
 let bootDone = false; // réflexes/mouvements/auth = une seule fois par connexion (pas à chaque respawn)
@@ -627,7 +686,8 @@ async function runGoalSkill(goal) {
     if (NO_GIVE && _wsiteMineSet && bot.entity && bot.entity.position && bot.entity.position.y > 30) {
       emit({ type: 'descend_via_home_wsite' });
       try { homewarp.goHome(bot, 'wsite'); } catch (e) {}
-      await sleep(3500); // settle post-tp (chunk load)
+      await awaitWarp({ maxMs: 8000 }); // atterrissage OU warmup teleport-delay couvert (remplace le sleep aveugle)
+      await sleep(1200);                // settle chunks post-tp
       const _py = (bot.entity && bot.entity.position) ? bot.entity.position.y : 99;
       if (isInWater(bot)) { _wsiteMineSet = false; try { await escapeWater(bot, { emit }); } catch (e) {} }
       else if (_py <= 20) return { ok: true, viaHome: true };  // arrivé profond & sec → pas de re-creusage
@@ -2289,8 +2349,7 @@ async function onSpawn() {
                 return;
               }
               emit({ type: 'water_rescue_home_safe' });
-              homewarp.goSpawn(bot);
-              await sleep(3000);                          // atterrissage surface
+              await safeWarpHome('safe');                 // float+immobile pendant l'éventuel warmup
               return;
             }
             // 1er choix (bot OP historique) : /tp DIRECT vers une ancre profonde SÈCHE déjà minée.
@@ -2316,7 +2375,7 @@ async function onSpawn() {
               try { stopMotion(); } catch (e) {}
               if (NO_GIVE) {
                 if (safeWarpDown()) { emit({ type: 'water_rescue_no_warp' }); try { await escapeWater(bot, { emit }); } catch (e) {} }
-                else { emit({ type: 'water_rescue_home_safe' }); homewarp.goSpawn(bot); await sleep(3000); }
+                else { emit({ type: 'water_rescue_home_safe' }); await safeWarpHome('safe'); }
               } else await relocateToRegion({ nearSpawn: true });   // bug #4 : vers le SEC near-spawn (admin)
             }
           } else {
@@ -2369,11 +2428,12 @@ async function onSpawn() {
           if (!verdict) return;
           _imminentBusy = true;
           if (verdict === 'escape') {
-            // Sortir VIVANT du piège (noyade/lave/essaim) → /home safe.
+            // Sortir VIVANT du piège (noyade/lave/essaim) → sécurisation (pilier/mur/flottaison)
+            // PUIS /home safe (secure-then-warp : sur serveur à warmup, un TP sous les coups est annulé).
             emit({ type: 'imminent_escape', hp: s.health, inWater: s.inWater, lava: s.lavaNear, hostiles: s.nearbyHostiles });
             try { stopMotion(); } catch (e) {}
-            homewarp.goSpawn(bot);
-            setTimeout(() => { _imminentBusy = false; }, 6000); // laisse le TP se faire, anti-spam
+            safeWarpHome('safe').catch(() => {});
+            setTimeout(() => { _imminentBusy = false; }, 12000); // secure (≤6 s) + warmup (≤9 s), anti-spam
           } else if (verdict === 'escape_no_warp') {
             emit({ type: 'imminent_escape_no_warp', hp: s.health, inWater: s.inWater });
             try { stopMotion(); } catch (e) {}
@@ -2438,7 +2498,8 @@ async function onSpawn() {
           await sleep(1500);
           emit({ type: 'death_recover_home' });
           homewarp.goHome(bot, 'death');
-          await sleep(4000);            // atterrissage (teleport_detected abandonne le goal pathfinder)
+          await awaitWarp({ maxMs: 8000 }); // atterrissage OU warmup teleport-delay (post-respawn : calme, pas de secure)
+          await sleep(1000);                // settle chunks
           await collectDeathDrops();
         } catch (e) { /* best-effort */ }
       })();
@@ -2743,6 +2804,10 @@ bot.on('messagestr', (msg) => {
     if (refusedH === 'wsite') _wsiteMineSet = false;
     if (refusedH === 'safe') _safeHomeSurface = false;   // le prochain spawn surface re-posera un safe sain
   }
+  // Secure-then-warp : serveurs à teleport-delay — warmup annoncé (info) et surtout ANNULATION
+  // (le bot a bougé/pris un coup pendant l'attente) → awaitWarp la voit et safeWarpHome re-tente.
+  if (homewarp.isTpCancelled(msg)) { _tpCancelledAt = Date.now(); emit({ type: 'home_tp_cancelled' }); }
+  else if (homewarp.isTpWarmup(msg)) emit({ type: 'home_tp_warmup' });
   const tpWho = parseTpRequest(msg);
   if (tpWho && isTrusted(tpWho, policy.trusted) && isAllowed('/tpaccept', whitelist)) {
     bot.chat('/tpaccept'); emit({ type: 'command', command: '/tpaccept', reason: 'tp:' + tpWho });
@@ -2973,7 +3038,7 @@ setInterval(async () => {
         try { stopMotion(); } catch (e) {}
         if (NO_GIVE) {
           if (safeWarpDown()) { emit({ type: 'water_rescue_no_warp', ctx: 'ocean' }); try { await escapeWater(bot, { emit }); } catch (e) {} }
-          else { emit({ type: 'water_rescue_home_safe', ctx: 'ocean' }); homewarp.goSpawn(bot); await sleep(3000); }
+          else { emit({ type: 'water_rescue_home_safe', ctx: 'ocean' }); await safeWarpHome('safe'); }
         }
         else { try { await relocateToRegion(); } catch (e) {} }
         _oceanStuckTimes = [];                                            // post-relocate : compteur propre

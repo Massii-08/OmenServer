@@ -100,6 +100,43 @@ function effectiveVerdict(verdict, refusedSafeAt, now, windowMs = REFUSAL_DEGRAD
   return 'escape';
 }
 
+// ─── Secure-then-warp (Massii 15/07) ────────────────────────────────────────────────────────────
+// Certains serveurs ont un teleport-delay Essentials (warmup ~5 s) : le /home est ANNULÉ si le
+// joueur bouge ou prend un coup pendant l'attente. Or nos /home de secours partent PRÉCISÉMENT
+// quand le bot est frappé/se noie → sans mise en sécurité préalable, le sauvetage serait toujours
+// annulé sur ces serveurs. Décision PURE de la tactique ; l'exécution vit dans skills/secureSpot.
+
+// « Don't move » seul est trop générique (chat joueur) — le message Essentials porte toujours
+// « Teleportation will commence… » / « Teleportation commencing… », on ancre là-dessus.
+const _TP_WARMUP_RE = /teleportation (will commence|commencing)/i;
+const _TP_CANCEL_RE = /teleportation (request )?cancelled|pending teleportation/i;
+
+/** Le message chat annonce-t-il un warmup de téléportation Essentials ? (pur) */
+function isTpWarmup(msg) {
+  return typeof msg === 'string' && _TP_WARMUP_RE.test(msg);
+}
+
+/** Le message chat annonce-t-il l'ANNULATION d'une téléportation en attente ? (pur) */
+function isTpCancelled(msg) {
+  return typeof msg === 'string' && _TP_CANCEL_RE.test(msg);
+}
+
+/**
+ * Tactique de mise en sécurité AVANT un /home de secours (pure).
+ *   'float'  → dans l'eau : remonter/flotter immobile (aucune pose fiable sous l'eau) ;
+ *   'pillar' → hostiles au sol + ≥3 blocs + du ciel au-dessus : pilier hors de portée mêlée ;
+ *   'seal'   → hostiles mais plafond bas (tunnel) : se murer (≥4 blocs) ;
+ *   'none'   → pas de menace ou pas de matériaux : simple stopMotion+immobilité.
+ */
+function secureTactic(s = {}) {
+  if (s.inWater) return 'float';
+  const hostiles = s.hostiles || 0;
+  const blocks = s.blocks || 0;
+  if (hostiles >= 1 && blocks >= 3 && s.headroom !== false) return 'pillar';
+  if (hostiles >= 1 && blocks >= 4) return 'seal';
+  return 'none';
+}
+
 const IMMINENT_HP = 6;
 function classifyImminent(s) {
   const h = s && s.health;
@@ -136,4 +173,5 @@ function dropsWithin(entities, center, radius) {
 module.exports = {
   bookmark, goHome, goSpawn, goSafe: goSpawn, sanitizeName, RESERVED, classifyImminent, dropsWithin,
   IMMINENT_HP, isTpRefusal, refusedHome, effectiveVerdict, REFUSAL_DEGRADE_MS,
+  isTpWarmup, isTpCancelled, secureTactic,
 };

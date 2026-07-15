@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const {
   bookmark, goHome, goSpawn, sanitizeName, RESERVED, classifyImminent, dropsWithin,
-  isTpRefusal, refusedHome, effectiveVerdict,
+  isTpRefusal, refusedHome, effectiveVerdict, isTpWarmup, isTpCancelled, secureTactic,
 } = require('./homewarp');
 const { isForbiddenCheat } = require('./nogive');
 
@@ -160,4 +160,42 @@ test('dropsWithin : filtre les items dans le rayon, triés par distance ; keepIn
   assert.strictEqual(got[0].dist, 3);      // plus proche d'abord
   assert.strictEqual(got[1].dist, 10);
   assert.deepStrictEqual(dropsWithin([], center, 16), []);   // keepInv ON → no-op
+});
+
+// ─── Secure-then-warp (demande Massii 15/07) : sur les serveurs à teleport-delay (warmup ~5 s),
+// le /home est ANNULÉ si le bot bouge ou prend un coup pendant l'attente → se mettre en sécurité
+// AVANT de warper (pilier / se murer / flotter immobile), puis détecter warmup et annulation.
+
+test('isTpWarmup : messages Essentials de warmup détectés, chat joueur ignoré', () => {
+  assert.strictEqual(isTpWarmup('Teleportation will commence in 5 seconds. Don\'t move.'), true);
+  assert.strictEqual(isTpWarmup('Teleportation commencing...'), true);
+  assert.strictEqual(isTpWarmup('<Bob> dont move lol'), false);
+  assert.strictEqual(isTpWarmup('You have been teleported'), false);
+  assert.strictEqual(isTpWarmup(null), false);
+});
+
+test('isTpCancelled : annulation Essentials détectée', () => {
+  assert.strictEqual(isTpCancelled('Pending teleportation request cancelled.'), true);
+  assert.strictEqual(isTpCancelled('Teleportation cancelled.'), true);
+  assert.strictEqual(isTpCancelled('<Bob> cancelled my order'), false);
+  assert.strictEqual(isTpCancelled(''), false);
+});
+
+test('secureTactic : dans l\'eau → float (pas de pose fiable sous l\'eau)', () => {
+  assert.strictEqual(secureTactic({ inWater: true, hostiles: 3, blocks: 10, headroom: true }), 'float');
+});
+
+test('secureTactic : hostiles + blocs + headroom → pillar (hors de portée mêlée)', () => {
+  assert.strictEqual(secureTactic({ inWater: false, hostiles: 1, blocks: 3, headroom: true }), 'pillar');
+  assert.strictEqual(secureTactic({ inWater: false, hostiles: 4, blocks: 12, headroom: true }), 'pillar');
+});
+
+test('secureTactic : hostiles sans headroom (plafond bas) → seal si assez de blocs', () => {
+  assert.strictEqual(secureTactic({ inWater: false, hostiles: 2, blocks: 6, headroom: false }), 'seal');
+});
+
+test('secureTactic : pas de menace, ou pas de blocs → none (freeze simple)', () => {
+  assert.strictEqual(secureTactic({ inWater: false, hostiles: 0, blocks: 20, headroom: true }), 'none');
+  assert.strictEqual(secureTactic({ inWater: false, hostiles: 2, blocks: 2, headroom: true }), 'none');
+  assert.strictEqual(secureTactic({}), 'none');
 });
