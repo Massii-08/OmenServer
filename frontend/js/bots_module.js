@@ -1741,7 +1741,7 @@ const BotsModule = {
  _renderGroupCreate() {
  const body = document.getElementById('mca-tabbody');
  if (!body) return;
- this._mcaEditing = { id: null, name: '', host: '', port: 25565, user: 'TrainBot', auth: 'offline', intelligence: 'intermediaire', language: 'fr', commands: [], custom: [], trusted: [], trade: { acceptCmd: '', requestPattern: '' }, has_login: false, login_command: '/login {pwd}' };
+ this._mcaEditing = { id: null, name: '', host: '', port: 25565, user: 'TrainBot', auth: 'offline', intelligence: 'intermediaire', language: 'fr', commands: [], custom: [], trusted: [], trade: { acceptCmd: '', requestPattern: '' }, kit_command: '', has_login: false, login_command: '/login {pwd}' };
  body.innerHTML = `<div id="mca-srv-editor"></div>`;
  this._ensureCatalog().then(() => this._renderServerEditor());
  },
@@ -1896,6 +1896,8 @@ const BotsModule = {
  <input id="mca-e-trade-cmd" class="form-input" value="${this._escapeHtml(trade.acceptCmd || '')}" placeholder="${Lang.t('mcagent.cfg.trade_cmd_ph')}" style="max-width:200px;" />
  <input id="mca-e-trade-pat" class="form-input" value="${this._escapeHtml(trade.requestPattern || '')}" placeholder="${Lang.t('mcagent.cfg.trade_pattern_ph')}" style="flex:1;min-width:160px;" />
  </div>
+ <div style="font-weight:600;font-size:13px;margin:14px 0 4px;">${Lang.t('mcagent.cfg.kit_command')}</div>
+ <input id="mca-e-kit" class="form-input" value="${this._escapeHtml(e.kit_command || '')}" placeholder="/kit" style="max-width:200px;" />
  <div style="font-weight:600;font-size:13px;margin:14px 0 4px;">${Lang.t('mcagent.group.login_title')}</div>
  <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--text-muted);cursor:pointer;margin-bottom:6px;">
  <input type="checkbox" id="mca-e-haslogin" ${e.has_login ? 'checked' : ''} onchange="BotsModule._toggleLoginCmd(this.checked)" /> ${Lang.t('mcagent.group.has_login')}
@@ -1929,6 +1931,8 @@ const BotsModule = {
  const tc = document.getElementById('mca-e-trade-cmd');
  const tp = document.getElementById('mca-e-trade-pat');
  if (tc || tp) e.trade = { acceptCmd: tc ? tc.value.trim() : '', requestPattern: tp ? tp.value.trim() : '' };
+ const kc = document.getElementById('mca-e-kit');
+ if (kc) e.kit_command = kc.value.trim();
  const hl = document.getElementById('mca-e-haslogin');
  if (hl) e.has_login = !!hl.checked;
  const lc = document.getElementById('mca-e-logincmd');
@@ -1981,7 +1985,7 @@ const BotsModule = {
  const fromGroup = !!this._mcaGroupId;
  // ⚠️ Ne JAMAIS envoyer `bots` : le backend préserve le roster (les comptes sont gérés dans l'onglet Bots ouvriers).
  const trade = (e.trade && (e.trade.acceptCmd || '').trim()) ? { acceptCmd: e.trade.acceptCmd.trim(), requestPattern: (e.trade.requestPattern || '').trim() } : null;
- const payload = { name: e.name || 'Sans nom', host: e.host || '', port: e.port || 25565, user: e.user || 'TrainBot', auth: e.auth || 'offline', intelligence: e.intelligence || 'intermediaire', language: e.language || 'fr', stealth: !!e.stealth, commands: e.commands || [], custom: e.custom || [], trusted: e.trusted || [], trade, has_login: !!e.has_login, login_command: e.login_command || '/login {pwd}' };
+ const payload = { name: e.name || 'Sans nom', host: e.host || '', port: e.port || 25565, user: e.user || 'TrainBot', auth: e.auth || 'offline', intelligence: e.intelligence || 'intermediaire', language: e.language || 'fr', stealth: !!e.stealth, commands: e.commands || [], custom: e.custom || [], trusted: e.trusted || [], trade, kit_command: e.kit_command || '', has_login: !!e.has_login, login_command: e.login_command || '/login {pwd}' };
  const url = e.id ? `/api/mc-agent/servers/${encodeURIComponent(e.id)}` : '/api/mc-agent/servers';
  const r = await Auth.apiCall(url, { method: e.id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
  if (!r || !r.ok) { Toast.error(Lang.t('mcagent.cfg.srv_save_err')); return; }

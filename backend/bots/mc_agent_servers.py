@@ -177,6 +177,8 @@ def _clean_server(payload, sid):
         "custom": _clean_custom(payload.get("custom")),
         "trusted": _clean_trusted(payload.get("trusted")),
         "trade": _clean_trade(payload.get("trade")),
+        # Commande de kit optionnelle (ex. /kit) — utilisée par la couche survie du bot.
+        "kit_command": str(payload.get("kit_command") or "")[:60],
         "has_login": bool(payload.get("has_login")),
         "login_command": str(payload.get("login_command") or "/login {pwd}")[:60],
         "bots": _clean_bots(payload.get("bots")),

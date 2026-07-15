@@ -62,6 +62,7 @@ class ServerPayload(BaseModel):
     custom: list = []
     trusted: list = []
     trade: Optional[dict] = None
+    kit_command: str = ""
     has_login: bool = False
     login_command: str = "/login {pwd}"
 

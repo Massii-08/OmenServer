@@ -127,6 +127,27 @@ def test_resolve_policy_includes_kit_command():
     assert resolve_policy({})["kit_command"] == ""
 
 
+def test_create_persists_kit_command_roundtrip(tmp_store):
+    """Le profil sauvegardé doit CONSERVER kit_command (whitelist _clean_server + relecture disque)."""
+    s = ss.create_server({"name": "X", "host": "h", "kit_command": "/kit starter"})
+    assert s["kit_command"] == "/kit starter"
+    # round-trip disque : relu depuis servers.json
+    reloaded = ss.load_servers()[0]
+    assert reloaded["kit_command"] == "/kit starter"
+    assert ss.resolve_policy(reloaded)["kit_command"] == "/kit starter"
+    # défaut sûr quand absent
+    s2 = ss.create_server({"name": "Y", "host": "h"})
+    assert s2["kit_command"] == ""
+
+
+def test_update_persists_kit_command(tmp_store):
+    """update_server passe aussi par _clean_server → kit_command persiste."""
+    s = ss.create_server({"name": "A", "host": "h"})
+    out = ss.update_server(s["id"], {"name": "A", "host": "h", "kit_command": "/kit vip"})
+    assert out["kit_command"] == "/kit vip"
+    assert ss.load_servers()[0]["kit_command"] == "/kit vip"
+
+
 def test_clean_server_language_default_and_valid(tmp_path, monkeypatch):
     import backend.bots.mc_agent_servers as s
     monkeypatch.setattr(s, "SERVERS_PATH", tmp_path / "srv.json")

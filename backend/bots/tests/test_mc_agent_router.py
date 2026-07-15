@@ -214,6 +214,16 @@ def test_create_server_accepts_login_fields(monkeypatch):
     assert captured["login_command"] == "/login {pwd}"
 
 
+def test_create_server_accepts_kit_command(monkeypatch):
+    """ServerPayload doit transporter kit_command jusqu'au store (sinon model_dump le drop)."""
+    captured = {}
+    monkeypatch.setattr(r.servers_store, "create_server", lambda payload: (captured.update(payload) or {"id": "ab12cd", **payload}))
+    c = make_client()
+    resp = c.post("/api/mc-agent/servers", json={"name": "X", "kit_command": "/kit vip"})
+    assert resp.status_code == 200
+    assert captured["kit_command"] == "/kit vip"
+
+
 def test_run_with_server_id_passes_policy(monkeypatch):
     monkeypatch.setattr(mgr, "has_api_key", lambda: True)
     monkeypatch.setattr(r.servers_store, "get_server", lambda sid: {
