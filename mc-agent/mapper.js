@@ -246,7 +246,7 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   async function settleSurvival() {
     for (let i = 0; i < SURVIVAL_CAP; i++) {
       if (token.cancelled) return;
-      const action = await survivalTick(bot, { fleeFrom: opts.fleeFrom, emit });
+      const action = await survivalTick(bot, { fleeFrom: opts.fleeFrom, emit, preferFlee: !!opts.preferFlee });
       if (!action) return;
       await sleep(1500); // laisser l'action (fuite/combat/chasse) produire son effet
     }

@@ -20,10 +20,15 @@ async function waitForApex(bot, opts = {}) {
   const timeoutMs = opts.timeoutMs || 1500;
   const pollMs = opts.pollMs || 20;
   const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const startY = opts.startY;
   const t0 = Date.now();
   let rising = false;
   while (Date.now() - t0 < timeoutMs) {
     const vy = (bot.entity && bot.entity.velocity && bot.entity.velocity.y) || 0;
+    // Critère HAUTEUR (retour live Massii 2026-07-15) : poser au POINT LE PLUS HAUT — dès que le
+    // bot a gagné ~1 bloc (dy ≥ 0.9), on est à l'apex utile même si la vélocité est bruitée.
+    const y = (bot.entity && bot.entity.position && bot.entity.position.y);
+    if (startY != null && y != null && y - startY >= 0.9) return true;
     if (vy > 0.1) rising = true;
     else if (rising && vy <= 0.05) return true;   // sommet du saut : c'est MAINTENANT qu'on pose
     await sleep(pollMs);
@@ -53,15 +58,18 @@ async function pillarUp(bot, { height = 1 } = {}, token = null, opts = {}) {
 
     let success = false;
     for (let attempt = 0; attempt < 2 && !success; attempt++) {
+      const startY = bot.entity && bot.entity.position ? bot.entity.position.y : null;
       try { bot.setControlState('jump', true); } catch (e) {}
-      const apex = await waitForApex(bot, { sleep, timeoutMs: opts.apexTimeoutMs || 1500, pollMs: opts.pollMs });
-      try { bot.setControlState('jump', false); } catch (e) {}
-      if (!apex) continue;                                   // saut raté → retente
+      const apex = await waitForApex(bot, { sleep, timeoutMs: opts.apexTimeoutMs || 1500, pollMs: opts.pollMs, startY });
+      if (!apex) { try { bot.setControlState('jump', false); } catch (e) {} continue; } // saut raté → retente
       try {
+        // ⚠️ Le JUMP reste TENU pendant la pose (retour live Massii 2026-07-15) : le couper avant
+        // fait retomber le bot pendant le roundtrip placeBlock → pose sous le niveau max → échec.
         await bot.placeBlock(below, new Vec3(0, 1, 0));      // face SUPÉRIEURE du bloc sous les pieds
         const b = bot.blockAt(feet);                         // le bloc posé occupe l'ancienne case des pieds
         success = !!(b && b.boundingBox === 'block');        // #6 : pose confirmée, pas de ghost
       } catch (e) { /* pose ratée (timing) → retry */ }
+      try { bot.setControlState('jump', false); } catch (e) {}
       if (!success) await sleep(250);                        // retomber avant de retenter
     }
     if (!success) return { ok: placed > 0, placed, reason: 'place_failed' };

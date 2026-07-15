@@ -36,7 +36,7 @@ const PASSIVE_FOOD_MOBS = new Set(['cow', 'pig', 'chicken', 'sheep', 'rabbit', '
  * `armored` (optionnel) : SANS armure (false) → seuils prudents (fuit dès 2 hostiles ou PV ≤ 12),
  * anti « mort par combo ». Avec armure OU inconnu → seuils historiques courageux (rétro-compat).
  */
-function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear }) {
+function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, preferFlee, nearestDist }) {
   if (!hostileCount) return null;
   // CREEPER : JAMAIS de mêlée (il explose au contact → mort instantanée même en armure diamant, vécu
   // live R3 22/06 : fight creeper ×2 → dead en deep mining). On FUIT pour casser la ligne d'explosion ;
@@ -45,6 +45,9 @@ function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear })
   // LAVE proche : mêlée au bord de la lave = mort par knockback (vécu fable1 : ResBot3 « tried to
   // swim in lava » pendant fight zombie en deep-serpentine). On décroche pour se battre au sec.
   if (lavaNear) return 'flee';
+  // Mode MAPPEUR (preferFlee, demande Massii live 2026-07-15) : FUIR par défaut — se défendre
+  // UNIQUEMENT si l'assaillant est à portée de coup (risque de hit imminent, ≤3 blocs).
+  if (preferFlee) return (nearestDist != null && nearestDist <= 3) ? 'fight' : 'flee';
   const swarm = armored === false ? SWARM_UNARMORED : SWARM_COUNT;
   const lowHp = armored === false ? LOW_HEALTH_UNARMORED : LOW_HEALTH;
   if (hostileCount >= swarm) return 'flee';
@@ -134,7 +137,15 @@ async function survivalTick(bot, deps = {}) {
   const hasCreeper = hostiles.some((h) => h && h.name === 'creeper');   // creeper → fuir, jamais mêlée (anti-explosion)
   // Lave évaluée seulement s'il y a des hostiles (le scan a un coût) ; injectable pour les tests.
   const lavaNear = hostiles.length ? (deps.lavaNear ? !!deps.lavaNear(bot) : lavaNearby(bot)) : false;
-  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear });
+  // distance du plus proche hostile (mode mappeur preferFlee : fight seulement à portée de coup)
+  const self = bot.entity && bot.entity.position;
+  const nearestDist = (hostiles.length && self) ? Math.min(...hostiles.map((h) => {
+    try {
+      if (h.position && typeof h.position.distanceTo === 'function') return h.position.distanceTo(self);
+      return Math.sqrt((h.position.x - self.x) ** 2 + (h.position.y - self.y) ** 2 + (h.position.z - self.z) ** 2);
+    } catch (e) { return Infinity; }
+  })) : null;
+  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear, preferFlee: !!deps.preferFlee, nearestDist });
   if (decision === 'flee') {
     try { deps.fleeFrom && deps.fleeFrom(bot); } catch (e) {}
     const ev = { type: 'survival', action: 'flee', hostiles: hostiles.length };

@@ -61,15 +61,16 @@ function shouldFlee(bot) {
   return !!creeper;
 }
 
-/** Hostile mêlée au contact (≤ MELEE_RADIUS) — la cible de riposte. null sinon. */
-function meleeAssailant(bot) {
+/** Hostile mêlée au contact (≤ radius, défaut MELEE_RADIUS) — la cible de riposte. null sinon.
+ *  radius configurable : le MAPPEUR ne riposte qu'à portée de coup (3) — sinon il fuit. */
+function meleeAssailant(bot, radius = MELEE_RADIUS) {
   const self = (bot.entity && bot.entity.position) || null;
   if (!self || typeof bot.nearestEntity !== 'function') return null;
   return bot.nearestEntity((e) => {
     if (!e || (e.type !== 'mob' && e.type !== 'hostile') || !MELEE_HOSTILES.has(e.name) || !e.position) return false;
-    if (typeof e.position.distanceTo === 'function') return e.position.distanceTo(self) <= MELEE_RADIUS;
+    if (typeof e.position.distanceTo === 'function') return e.position.distanceTo(self) <= radius;
     const d = Math.sqrt((e.position.x - self.x) ** 2 + (e.position.y - self.y) ** 2 + (e.position.z - self.z) ** 2);
-    return d <= MELEE_RADIUS;
+    return d <= radius;
   });
 }
 
@@ -117,6 +118,10 @@ function installReflexes(bot, opts = {}) {
   const onPanic = opts.onPanic || null;
   const onDefensive = opts.onDefensive || null;
   const onRanged = opts.onRanged || null;
+  // Mode MAPPEUR (Massii live 2026-07-15) : riposte mêlée seulement À PORTÉE DE COUP (meleeRadius 3)
+  // et, canardé à distance, FUIT au lieu de riposter (preferFlee).
+  const meleeRadius = opts.meleeRadius != null ? opts.meleeRadius : MELEE_RADIUS;
+  const preferFlee = !!opts.preferFlee;
   const panicCooldownMs = opts.panicCooldownMs != null ? opts.panicCooldownMs : 8000;
   const defensiveCooldownMs = opts.defensiveCooldownMs != null ? opts.defensiveCooldownMs : 6000;
   let lastPanic = -Infinity;    // -∞ : le 1er panic n'est jamais bloqué par le cooldown
@@ -165,13 +170,16 @@ function installReflexes(bot, opts = {}) {
     // (shouldFlee le gère). Un seul déclenchement par assaut (anti-spam : fighting).
     const hurting = bot.health != null && lastHealth != null && bot.health < lastHealth;
     if (attack && hurting) {
-      const foe = meleeAssailant(bot);
+      const foe = meleeAssailant(bot, meleeRadius);
       if (foe && !fighting) {
         fighting = true;
         emit({ type: 'reflex', action: 'fight', mob: foe.name });
         act(() => { try { attack(foe); } catch (e) {} });   // riposte après le temps de réaction
         // re-autorise une riposte après 5 s (le pvp plugin poursuit la cible entre-temps)
         setTimeout(() => { fighting = false; }, 5000);
+      } else if (!foe && !fighting && preferFlee) {
+        // MAPPEUR canardé sans assaillant au contact → il S'ÉCHAPPE (pas de riposte ranged).
+        if (!fleeing) { fleeing = true; emit({ type: 'reflex', action: 'flee' }); act(() => { try { flee(bot); } catch (e) {} }); }
       } else if (onRanged && !foe && !fighting) {
         // RIPOSTE À DISTANCE (hole D) : on encaisse mais AUCUN assaillant mêlée au contact → un
         // tireur nous canarde. La riposte mêlée est PRIORITAIRE ; le ranged n'est traité que sans
@@ -183,7 +191,7 @@ function installReflexes(bot, opts = {}) {
           setTimeout(() => { fighting = false; }, 5000);
         }
       }
-    } else if (onRanged && hurting) {
+    } else if (onRanged && hurting && !preferFlee) {
       // Pas de skill mêlée fourni mais une riposte ranged l'est : on encaisse → on riposte au tireur.
       const shooter = rangedThreat(bot);
       if (shooter && !fighting) {

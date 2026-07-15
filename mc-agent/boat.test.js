@@ -120,3 +120,13 @@ test('sailToLand : ne débarque JAMAIS sans être passé au-dessus de l\'eau (an
   assert.strictEqual(r.landed, false);
   assert.strictEqual(ctl.cleared, true);
 });
+
+test('waterCrossMode : océan → bateau, rivière → nage, autre eau (flaque/caverne/lac) → null', () => {
+  const { waterCrossMode } = require('./boat');
+  assert.strictEqual(waterCrossMode('deep_ocean'), 'boat');
+  assert.strictEqual(waterCrossMode('river'), 'swim');
+  assert.strictEqual(waterCrossMode('frozen_river'), 'swim');
+  assert.strictEqual(waterCrossMode('dripstone_caves'), null);
+  assert.strictEqual(waterCrossMode('plains'), null);
+  assert.strictEqual(waterCrossMode(null), null);
+});

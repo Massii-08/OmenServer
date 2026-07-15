@@ -52,7 +52,7 @@ const { smelt } = require('./skills/smelt');
 const { descendDiagonal } = require('./skills/descendDiagonal');
 const { branchMine, floodFillVein } = require('./skills/branchMine');
 const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
-const { loadMemory, worldKey } = require('./worldMemory');
+const { loadMemory, worldKey, resolveBiome } = require('./worldMemory');
 const { driestCell, oreBase } = require('./ores');         // warp near-spawn DRY-AWARE + normalisation type (fix #8)
 const { recordAnchor, pickDryAnchor } = require('./anchors'); // ancres profondes SÈCHES (anti boucle de noyade)
 const { runMapper } = require('./mapper');
@@ -170,6 +170,8 @@ const tpWatch = createTeleportWatcher(); // #10 : suivi de position → détecti
 // --- Planner autonome (Phase 3) : le but autonome = tâche par défaut de taskCtl ---
 const worldFile = args.world || path.join(__dirname, '..', 'data', `mc_agent_world_${args.user || 'TrainBot'}.json`);
 const world = loadWorld(worldFile);
+// Rôle MAPPEUR (seedé par le backend dans le world file) : combat fuite-d'abord + riposte au contact only.
+const IS_MAPPER = !!(world && world.objective && world.objective.type === 'mapper');
 let taskToken = { cancelled: true };
 let deathTimes = [];
 let _escapeOnSpawn = false; // anti-camping : 2 morts <60 s → warp + re-spawnpoint au prochain spawn
@@ -847,22 +849,32 @@ async function startMapper() {
         //    forcément pile au cap). Aucune eau à portée → no_water (le mapper marchera).
         let heading = boatMod.outwardHeading(fromPos, mappedCentroid(), mapperSector, Math.random);
         let edge = null;
+        // Bateau UNIQUEMENT sur l'OCÉAN, rivière à la NAGE, flaque/caverne/lac → pas de traversée
+        // (Massii live 2026-07-15 : bateau posé en mini-caverne = bot bloqué contre un mur).
+        let mode = null;
         for (const off of [0, 0.5, -0.5, 1.0, -1.0, 1.5, -1.5, Math.PI]) {
           const h = heading + off;
           const e = boatMod.waterEdgeAlong(sampleBlock, bot.entity.position, h, { reach: 56, step: 2 });
-          if (e.found) { heading = h; edge = e; break; }
+          if (!e.found) continue;
+          let bio = null;
+          try {
+            const wb = bot.blockAt(vec3Lib(e.pos.x, e.pos.y, e.pos.z));
+            bio = (wb && wb.biome) ? resolveBiome(bot, wb) : null;
+          } catch (err) { /* chunk non chargé → cap suivant */ }
+          const m = boatMod.waterCrossMode(bio && bio.name);
+          if (!m) continue;                       // eau non-traversable → cap suivant
+          heading = h; edge = e; mode = m; break;
         }
-        if (!edge) return { ok: false, landed: false, reason: 'no_water' };
-        // 2) bateau en poche si possible (kit ou craft) — sinon on traversera à la NAGE (sailToLand
-        //    nage aussi : forward+jump au cap une fois sur l'eau).
-        const eb = await boatMod.ensureBoat(bot, { craft: (a) => craftSmart(a) });
+        if (!edge) return { ok: false, landed: false, reason: 'no_crossable_water' };
+        // 2) bateau en poche UNIQUEMENT en mode océan (kit ou craft) ; rivière = nage pure.
+        const eb = mode === 'boat' ? await boatMod.ensureBoat(bot, { craft: (a) => craftSmart(a) }) : { ok: false };
         // 3) marcher jusqu'au bord de l'eau repéré
         try {
           await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(edge.pos.x, edge.pos.y, edge.pos.z, 2)),
             60000, () => { try { stopMotion(); } catch (e) {} });
         } catch (e) { /* best-effort : on tente depuis ici */ }
-        // 4) poser le bateau sur l'eau + embarquer (si on en a un)
-        if (eb.ok) {
+        // 4) poser le bateau sur l'eau + embarquer (océan avec bateau en poche uniquement)
+        if (mode === 'boat' && eb.ok) {
           try {
             const boatItem = bot.inventory.items().find((i) => /_boat$/.test(i.name));
             const water = bot.blockAt(vec3Lib(edge.pos.x, edge.pos.y, edge.pos.z));
@@ -891,6 +903,7 @@ async function startMapper() {
     teleport: tpWatch, // #10 : TP détecté → ré-ancrage (heading propre depuis la position réelle)
     emit,
     fleeFrom,
+    preferFlee: true,  // mappeur : fuit par défaut, ne se défend qu'à portée de coup (Massii 2026-07-15)
     nightShelter: () => maybeNightShelter(true), // fix fable1 bis : se terrer AVANT chaque départ de nuit
 
     // kit incomplet (stall terrain au départ) → re-tenté discrètement toutes les ~10 arrivées :
@@ -2165,6 +2178,9 @@ async function onSpawn() {
     let panicInFlight = false; // garde de ré-entrée onPanic (bug review #3 : fire-and-forget non-awaité)
     installReflexes(bot, {
       emit, fleeFrom,
+      // MAPPEUR (Massii live 2026-07-15) : riposte mêlée à portée de coup only (3) ; canardé → fuit.
+      meleeRadius: IS_MAPPER ? 3 : undefined,
+      preferFlee: IS_MAPPER,
       // DÉLAI DE RÉACTION humain sur les réflexes (anti aimbot 0 ms / anti-ban) — TOUJOURS actif
       // (sécurité, pas seulement en humanize) : ~300 ms par défaut (les captures ne mesurent pas
       // encore reaction.*). Coût nul sur le minage (ce n'est pas un réflexe). Cf. paquet 1.
@@ -2970,6 +2986,10 @@ bot.on('physicsTick', () => {
   // Le dig se fait à l'arrêt à sa position → couper le saut est sûr. setControlState n'émet qu'au changement.
   if (bot.targetDigBlock) { try { bot.setControlState('jump', false); } catch (e) {} }
 });
+// Monté dans un BATEAU, mineflayer n'émet plus physicsTick (la physique vient du véhicule) —
+// le watchdog tuait le bot en pleine traversée (vécu live 2026-07-15, cycles 90 s). L'event 'move'
+// (position poussée par le serveur) prouve aussi que la connexion vit.
+bot.on('move', () => { _lastTick = Date.now(); });
 setInterval(() => {
   if (Date.now() - _lastTick > 90000) {
     emit({ type: 'error', message: 'connection_watchdog: 90s sans tick' });

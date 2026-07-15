@@ -191,3 +191,10 @@ test('survivalTick : faim + rien à manger + AUCUN passif -> null (n\'engage pas
   assert.strictEqual(await survivalTick(bot, { fleeFrom: () => true }), null);
   assert.deepStrictEqual(calls.attack, []);
 });
+
+test('combatDecision preferFlee (mappeur) : fuit par défaut, se défend UNIQUEMENT à portée de coup (≤3)', () => {
+  const base = { health: 20, hostileCount: 1, armored: true, hasCreeper: false, lavaNear: false, preferFlee: true };
+  assert.strictEqual(combatDecision({ ...base, nearestDist: 10 }), 'flee');
+  assert.strictEqual(combatDecision({ ...base, nearestDist: 2.5 }), 'fight');
+  assert.strictEqual(combatDecision({ ...base, hasCreeper: true, nearestDist: 2 }), 'flee'); // creeper : jamais mêlée
+});

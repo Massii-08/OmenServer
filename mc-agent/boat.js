@@ -69,6 +69,19 @@ function waterEdgeAlong(sampleBlock, fromPos, headingYaw, opts = {}) {
   return { found: false };
 }
 
+/**
+ * Mode de traversée selon le BIOME de l'eau (retour live Massii 2026-07-15) : bateau UNIQUEMENT
+ * sur l'océan ; rivière = à la NAGE ; toute autre eau (flaque de caverne, lac, marais) = on ne
+ * traverse PAS (le bateau posé dans une mini-caverne bloquait le bot contre un mur). PUR.
+ */
+function waterCrossMode(biomeName) {
+  const n = String(biomeName || '').toLowerCase();
+  if (!n) return null;
+  if (n.includes('ocean')) return 'boat';
+  if (n.includes('river')) return 'swim';
+  return null;
+}
+
 /** Bateau coincé : ~0 déplacement horizontal pendant ≥ stuckMs. PUR. */
 function boatStuck(prevPos, curPos, dtMs, opts = {}) {
   const minMove = opts.minMove != null ? opts.minMove : 2;
@@ -141,4 +154,4 @@ async function sailToLand(bot, headingYaw, opts = {}) {
   return { landed, reason };
 }
 
-module.exports = { outwardHeading, landAhead, waterEdgeAlong, boatStuck, ensureBoat, sailToLand, WATER_NAMES };
+module.exports = { outwardHeading, landAhead, waterEdgeAlong, waterCrossMode, boatStuck, ensureBoat, sailToLand, WATER_NAMES };

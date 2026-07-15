@@ -37,3 +37,18 @@ test('breathe : oxygène plein → aucun réflexe', () => {
   breathe();
   assert.equal(stuckCalls, 0);
 });
+
+const { meleeAssailant } = require('./reflexes');
+
+test('meleeAssailant : rayon configurable (mappeur 3) — zombie à 4 blocs hors riposte, à 2 riposté', () => {
+  const mk = (d) => ({
+    entity: { position: { x: 0, y: 64, z: 0 } },
+    nearestEntity: (fn) => {
+      const e = { type: 'mob', name: 'zombie', position: { x: d, y: 64, z: 0, distanceTo: (p) => Math.abs(d - p.x) } };
+      return fn(e) ? e : null;
+    },
+  });
+  assert.strictEqual(meleeAssailant(mk(4), 3), null);
+  assert.ok(meleeAssailant(mk(2), 3));
+  assert.ok(meleeAssailant(mk(4)));           // défaut 5 : comportement historique intact
+});
