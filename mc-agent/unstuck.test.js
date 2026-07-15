@@ -129,3 +129,37 @@ test('recoverFloating : relâche TOUT + coupe le pathfinder + retombe au sol', a
 test('SNARES couvre lianes jungle + cave vines + cobweb', () => {
   for (const n of ['vine', 'cave_vines', 'twisting_vines', 'weeping_vines', 'cobweb']) assert.ok(SNARES.has(n), n);
 });
+
+// ─── Watchdog DESYNC (piste n°5 rapport water-wall) : NethBot1 figé 15 min, position au dixième
+// près identique pendant que les events tournent (client désynchronisé, invisible du self-healing
+// et du jam-watchdog qui exige un goal pathfinder). Signature = N échantillons STRICTEMENT égaux.
+
+const { isFrozenDesync } = require('./unstuck');
+
+test('isFrozenDesync : 10 échantillons strictement identiques → true', () => {
+  const s = Array.from({ length: 10 }, () => ({ x: -337.5, y: 104.0, z: -437.3 }));
+  assert.strictEqual(isFrozenDesync(s), true);
+});
+
+test('isFrozenDesync : le moindre mouvement (>0.1) casse la détection', () => {
+  const s = Array.from({ length: 10 }, () => ({ x: -337.5, y: 104.0, z: -437.3 }));
+  s[7] = { x: -337.9, y: 104.0, z: -437.3 };    // 0.4 de dérive = vivant
+  assert.strictEqual(isFrozenDesync(s), false);
+});
+
+test('isFrozenDesync : micro-jitter sous le dixième compte comme identique (arrondi)', () => {
+  const s = Array.from({ length: 10 }, (_, i) => ({ x: -337.5 + i * 0.001, y: 104.0, z: -437.3 }));
+  assert.strictEqual(isFrozenDesync(s), true);
+});
+
+test('isFrozenDesync : pas assez d\'échantillons → false (fenêtre incomplète)', () => {
+  const s = Array.from({ length: 6 }, () => ({ x: 0, y: 64, z: 0 }));
+  assert.strictEqual(isFrozenDesync(s), false);
+  assert.strictEqual(isFrozenDesync([], {}), false);
+  assert.strictEqual(isFrozenDesync(null), false);
+});
+
+test('isFrozenDesync : need injectable (fenêtre plus courte pour les tests live)', () => {
+  const s = Array.from({ length: 4 }, () => ({ x: 1, y: 2, z: 3 }));
+  assert.strictEqual(isFrozenDesync(s, { need: 4 }), true);
+});

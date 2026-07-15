@@ -59,14 +59,15 @@ const { driestCell, oreBase } = require('./ores');         // warp near-spawn DR
 const { recordAnchor, pickDryAnchor } = require('./anchors'); // ancres profondes SÈCHES (anti boucle de noyade)
 const { runMapper } = require('./mapper');
 const { LOCATE_KINDS, parseLocateResponse, structureFoundEvent } = require('./structures');
-const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating } = require('./unstuck');
+const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync } = require('./unstuck');
+const deathzones = require('./deathzones'); // ban-zone des camps de mort (≥2 alertes → fuite active)
 const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTANTE → relocate forcé (live 22/06 ResBot1)
 const { recordJam } = require('./jamEscalate'); // JAM persistant au MÊME endroit → relocate forcé (live 22/06 SOIR ResBot2)
 const { runResource } = require('./skills/resource');
 const { planSmeltRaw } = require('./bank');   // fonte périodique du brut or/fer → lingots bankables
 const { tunnelTo } = require('./skills/tunnelTo');
 const { junkItems, ITEMS_FOR } = require('./quota');
-const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan } = require('./gear');
+const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan, smeltPlan } = require('./gear');
 // Torche tous les N paliers de branch-mine (mob-aware phase B) — best-effort : sans torche
 // en poche le minage continue sans (zéro coût en peaceful, sécurité en non-pacifique).
 const TORCH_EVERY = 8;
@@ -195,6 +196,11 @@ function safeWarpDown() {
   return !!(_homeRefusedAt.safe && (Date.now() - _homeRefusedAt.safe) <= homewarp.REFUSAL_DEGRADE_MS);
 }
 let _tpCancelledAt = 0;       // secure-then-warp : dernière annulation Essentials vue (teleport-delay)
+let _dzones = [];             // camps de mort : zones où ≥2 alertes « mort imminente » (deathzones.js)
+let _safeHomePos = null;      // coords du dernier /sethome safe (pour fuir VERS lui si hors zone bannie)
+let _posSamples = [];         // desync-watchdog : échantillons de position (30 s × 10 = 5 min)
+let _stillBusy = false;       // immobilité LÉGITIME en cours (fonte au four, abri nocturne) — gate desync
+let _smeltOppBusy = false;    // fonte opportuniste : une seule passe à la fois
 
 // Attend l'atterrissage d'un /home : saut de position >16 blocs = warpé ; message « cancelled »
 // (teleport-delay : le bot a bougé/pris un coup pendant le warmup) = échec explicite ; sinon
@@ -212,6 +218,27 @@ async function awaitWarp(opts = {}) {
     if (from && p && Math.hypot(p.x - from.x, p.y - from.y, p.z - from.z) > 16) return { warped: true };
   }
   return { warped: false };
+}
+
+// FUITE d'un camp de mort fraîchement banni : vers le home safe s'il est HORS de la zone (warp
+// sécurisé), sinon à PIED 90 blocs dans une direction aléatoire (mieux que rester sous les coups).
+// Fire-and-forget depuis le watchdog imminent — best-effort, les réflexes couvrent la course.
+async function fleeDeathCamp(fromPos) {
+  const now = Date.now();
+  if (_safeHomePos && !deathzones.isBanned(_dzones, _safeHomePos.x, _safeHomePos.z, now)) {
+    emit({ type: 'death_camp_flee', via: 'home_safe' });
+    await safeWarpHome('safe');
+    return;
+  }
+  const ang = Math.random() * Math.PI * 2;
+  const tx = Math.round(fromPos.x + Math.cos(ang) * 90);
+  const tz = Math.round(fromPos.z + Math.sin(ang) * 90);
+  emit({ type: 'death_camp_flee', via: 'foot', x: tx, z: tz });
+  try { stopMotion(); } catch (e) {}
+  try {
+    await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(tx, Math.round(fromPos.y), tz, 4)),
+      90000, () => { try { stopMotion(); } catch (e) {} });
+  } catch (e) { /* best-effort */ }
 }
 
 // Warp de secours COMPLET (secure-then-warp, Massii 15/07) : se mettre en sécurité (pilier / se
@@ -407,6 +434,11 @@ function fuelNames() {
 // `fuelOverride` : liste de combustibles imposée (ex. charbon de bois : EXCLURE les bûches, sinon
 // le four brûle l'input qu'on veut fondre).
 async function smeltWithFurnace(input, output, count, fuelOverride) {
+  _stillBusy = true;    // immobilité LÉGITIME (poll du four ≤3 min) — le desync-watchdog ne doit pas tirer
+  try { return await _smeltWithFurnaceInner(input, output, count, fuelOverride); }
+  finally { _stillBusy = false; }
+}
+async function _smeltWithFurnaceInner(input, output, count, fuelOverride) {
   const fdef = bot.registry.blocksByName.furnace;
   let near = fdef ? bot.findBlock({ matching: [fdef.id], maxDistance: 4 }) : null;
   // Four PERDU (reclaim raté lors d'une fonte précédente — vécu live Surv1) : avant d'échouer ou
@@ -832,7 +864,11 @@ async function maybeNightShelter(proactive = false) {
     if (IS_MAPPER && _safeHomeSet) {
       try { emit({ type: 'mapper_home_return', home: 'safe' }); homewarp.goHome(bot, 'safe'); await sleep(4000); } catch (e) {}
     }
-    await withTimeout(shelterUntilDawn(bot, taskToken, { emit }), 13 * 60 * 1000, () => { try { stopMotion(); } catch (e) {} });
+    _stillBusy = true;    // terré jusqu'à l'aube (≤13 min immobile) : immobilité légitime, pas un desync
+    try {
+      await withTimeout(shelterUntilDawn(bot, taskToken, { emit }), 13 * 60 * 1000,
+        () => { try { stopMotion(); } catch (e) {} });
+    } finally { _stillBusy = false; }
     return true;
   }
   return false;
@@ -2412,6 +2448,7 @@ async function onSpawn() {
             delete _homeRefusedAt.safe;
             _safeHomeSet = true; _safeHomeSurface = true;
             const pR = bot.entity.position;
+            _safeHomePos = { x: pR.x, y: pR.y, z: pR.z };
             emit({ type: 'safe_home_reset', x: Math.round(pR.x), y: Math.round(pR.y), z: Math.round(pR.z) });
           }
           const s = {
@@ -2427,6 +2464,19 @@ async function onSpawn() {
           const verdict = homewarp.effectiveVerdict(homewarp.classifyImminent(s), _homeRefusedAt.safe, Date.now());
           if (!verdict) return;
           _imminentBusy = true;
+          // CAMP DE MORT (piste n°2) : ≥2 alertes espacées dans la même zone 64 → bannie + FUITE
+          // active (vécu Bot2 : 25× imminent au même spot, il RESTAIT sous les coups des mobs armés).
+          {
+            const pZ = bot.entity && bot.entity.position;
+            if (pZ) {
+              const dz = deathzones.note(_dzones, pZ.x, pZ.z, Date.now());
+              _dzones = dz.zones;
+              if (dz.newlyBanned) {
+                emit({ type: 'death_camp_ban', x: Math.round(dz.zone.x), z: Math.round(dz.zone.z) });
+                if (verdict !== 'escape') fleeDeathCamp(pZ).catch(() => {});   // escape warpe déjà
+              }
+            }
+          }
           if (verdict === 'escape') {
             // Sortir VIVANT du piège (noyade/lave/essaim) → sécurisation (pilier/mur/flottaison)
             // PUIS /home safe (secure-then-warp : sur serveur à warmup, un TP sous les coups est annulé).
@@ -2485,6 +2535,7 @@ async function onSpawn() {
           homewarp.bookmark(bot, 'safe');
           _safeHomeSet = true;
           if (atSurface) _safeHomeSurface = true;
+          _safeHomePos = { x: p.x, y: p.y, z: p.z };
           emit({ type: 'safe_home_set', surface: atSurface, x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
         }
       }
@@ -3097,6 +3148,51 @@ setInterval(async () => {
   } catch (e) { /* timer : ne crash jamais */ }
   finally { _armorBusy = false; }
 }, 90000);
+
+// FONTE OPPORTUNISTE (piste n°1 rapport water-wall) : le but smeltIron de la chaîne n'arrivait
+// jamais (mort/reboucle avant) alors que fer+fuel+four convergeaient en poche (Bot2 : 9 raw_iron
+// + four + bois, 0 lingot au bilan NBT). Timer INDÉPENDANT du planner, même esprit que le timer
+// armure : dès (raw_iron≥3 ET furnace en poche ET fuel — planches/bûches acceptées), fondre UNE
+// passe bornée (≤8) N'IMPORTE OÙ (le four portable se pose au fond du branch-mine).
+const _SMELT_TIMER_OBJ = new Set(['resource', 'diamond', 'iron_armor', 'diamond_armor']);
+setInterval(async () => {
+  try {
+    if (_smeltOppBusy || _armorBusy || _stillBusy || _imminentBusy) return;   // jamais pendant un sauvetage PV
+    const objType = (world.objective && world.objective.type) || '';
+    if (!_SMELT_TIMER_OBJ.has(objType)) return;
+    if (!(world.objective && world.objective.status === 'in_progress')) return;
+    if (bot.targetDigBlock) return;                        // pas en plein minage
+    if (taskToken && taskToken.cancelled) return;
+    const items = ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, count: i.count }));
+    const plan = smeltPlan(items);
+    if (!plan.go) return;
+    _smeltOppBusy = true;
+    const r = await withTimeout(smeltWithFurnace('raw_iron', 'iron_ingot', plan.count), 200000,
+      () => { try { stopMotion(); } catch (e) {} });
+    emit({ type: 'opportunistic_smelt', count: plan.count, ok: !!(r && r.ok) });
+  } catch (e) { /* best-effort : jamais throw depuis un timer */ }
+  finally { _smeltOppBusy = false; }
+}, 60000);
+
+// WATCHDOG DESYNC (piste n°5) : position identique AU DIXIÈME pendant 5 min avec un planner qui
+// tourne = client désynchronisé (vécu NethBot1 : figé 15 min, events vivants, RCON = air autour ;
+// invisible du jam-watchdog qui exige un goal pathfinder ET du connection-watchdog qui voit les
+// ticks). Remède = re-login : exit(3) → self-healing respawne (back-off RC2 en garde-fou).
+// Immobilités LÉGITIMES exclues : dig en cours, fonte/abri (_stillBusy), bot non-autonome.
+setInterval(() => {
+  try {
+    if (!(world.objective && world.objective.status === 'in_progress')) { _posSamples = []; return; }
+    if (bot.targetDigBlock || _stillBusy || _smeltOppBusy || _armorBusy) { _posSamples = []; return; }
+    const p = bot.entity && bot.entity.position;
+    if (!p) return;
+    _posSamples.push({ x: p.x, y: p.y, z: p.z });
+    if (_posSamples.length > 10) _posSamples.shift();
+    if (isFrozenDesync(_posSamples)) {
+      emit({ type: 'desync_frozen', x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
+      process.exit(3);
+    }
+  } catch (e) { /* watchdog : ne crash jamais */ }
+}, 30000);
 
 // ── Anti-tell motricité (paquet 1) : BRUIT DE VISÉE au repos — un humain ne fige jamais sa tête
 // (vraies captures : la vue « respire » même à l'arrêt, figé strict ~0 %). Dérive DOUCE (nextLook

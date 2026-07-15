@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType } = require('./gear');
+const { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, smeltPlan } = require('./gear');
 
 test('Y_OPT : bandes de spawn 1.18+ (diamant/redstone profond, or -16, lapis -12 dense, fer 16)', () => {
   assert.strictEqual(Y_OPT.diamond, -58);
@@ -121,4 +121,48 @@ test('shieldPlan : 6 planks + 1 fer + pas de bouclier → craft', () => {
   assert.strictEqual(shieldPlan([{ name: 'oak_planks', count: 5 }, { name: 'iron_ingot', count: 1 }], false), null);
   // 0 fer → null
   assert.strictEqual(shieldPlan([{ name: 'oak_planks', count: 6 }], false), null);
+});
+
+// ─── Fonte OPPORTUNISTE (piste n°1 rapport water-wall) : la convergence fer+fuel+four n'arrivait
+// jamais au but smeltIron de la chaîne (mort/reboucle avant) → décision PURE appelée par un timer.
+
+test('smeltPlan : fer+fuel+four réunis → go avec count borné', () => {
+  const items = [
+    { name: 'raw_iron', count: 9 }, { name: 'furnace', count: 1 }, { name: 'coal', count: 4 },
+  ];
+  const p = smeltPlan(items);
+  assert.strictEqual(p.go, true);
+  assert.strictEqual(p.count, 8);          // passe bornée à 8 (≈80 s de four)
+});
+
+test('smeltPlan : planches et bûches comptent comme fuel (leçon Bot2 : bois+four+fer sans décision)', () => {
+  const withPlanks = [
+    { name: 'raw_iron', count: 3 }, { name: 'furnace', count: 1 }, { name: 'oak_planks', count: 2 },
+  ];
+  assert.strictEqual(smeltPlan(withPlanks).go, true);
+  const withLogs = [
+    { name: 'raw_iron', count: 3 }, { name: 'furnace', count: 1 }, { name: 'birch_log', count: 1 },
+  ];
+  assert.strictEqual(smeltPlan(withLogs).go, true);
+});
+
+test('smeltPlan : pas assez de fer / pas de four / pas de fuel → no-go', () => {
+  assert.strictEqual(smeltPlan([{ name: 'raw_iron', count: 2 }, { name: 'furnace', count: 1 }, { name: 'coal', count: 1 }]).go, false);
+  assert.strictEqual(smeltPlan([{ name: 'raw_iron', count: 5 }, { name: 'coal', count: 1 }]).go, false);
+  assert.strictEqual(smeltPlan([{ name: 'raw_iron', count: 5 }, { name: 'furnace', count: 1 }]).go, false);
+  assert.strictEqual(smeltPlan([]).go, false);
+});
+
+test('smeltPlan : déjà assez de lingots (≥24 = armure complète) → no-go (rien à gagner)', () => {
+  const items = [
+    { name: 'raw_iron', count: 9 }, { name: 'furnace', count: 1 }, { name: 'coal', count: 4 },
+    { name: 'iron_ingot', count: 24 },
+  ];
+  assert.strictEqual(smeltPlan(items).go, false);
+  assert.strictEqual(smeltPlan(items, { maxIngots: 30 }).go, true);   // seuil injectable
+});
+
+test('smeltPlan : count ne dépasse jamais le raw disponible', () => {
+  const p = smeltPlan([{ name: 'raw_iron', count: 4 }, { name: 'furnace', count: 1 }, { name: 'coal', count: 2 }]);
+  assert.strictEqual(p.count, 4);
 });

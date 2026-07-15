@@ -99,6 +99,28 @@ function pickaxePlan(items, neededTypes) {
   return { ok: true };
 }
 
+/**
+ * Fonte OPPORTUNISTE (piste n°1 rapport water-wall) : faut-il fondre MAINTENANT ?
+ * Le but smeltIron de la chaîne n'arrivait jamais (mort/reboucle avant) alors que fer+fuel+four
+ * étaient réunis en poche (vécu Bot2 : 9 raw_iron + four + bois, 0 lingot). Décision PURE appelée
+ * par un timer : go dès (raw_iron ≥ minRaw ET furnace en poche ET ≥1 fuel), passe bornée à 8.
+ * Fuel accepté = celui de fuelNames() : coal/charcoal/planches/bûches.
+ */
+function smeltPlan(items, opts = {}) {
+  const minRaw = opts.minRaw || 3;
+  const maxIngots = opts.maxIngots || 24;      // armure complète = 24 lingots : au-delà, rien à gagner
+  const counts = {};
+  for (const it of items || []) counts[it.name] = (counts[it.name] || 0) + (it.count || 1);
+  const raw = counts.raw_iron || 0;
+  const fuel = Object.keys(counts).some((n) =>
+    n === 'coal' || n === 'charcoal' || n.endsWith('_planks') || n.endsWith('_log'));
+  if (raw < minRaw) return { go: false, why: 'raw' };
+  if (!counts.furnace) return { go: false, why: 'furnace' };
+  if (!fuel) return { go: false, why: 'fuel' };
+  if ((counts.iron_ingot || 0) >= maxIngots) return { go: false, why: 'enough' };
+  return { go: true, count: Math.min(raw, 8) };
+}
+
 /** Type au DÉFICIT RELATIF max parmi progress {type:{have,target}}. null si tout est servi. */
 function mostLackingType(progress) {
   let best = null, bestRatio = 0;
@@ -252,4 +274,4 @@ function shieldPlan(items, hasShield) {
   return null;
 }
 
-module.exports = { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan };
+module.exports = { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan, smeltPlan };

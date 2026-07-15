@@ -188,4 +188,20 @@ async function recoverFloating(bot, opts = {}) {
   return { ok };
 }
 
-module.exports = { isInWater, findLandTarget, escapeWater, WATER, SNARES, clearSnares, isFloatingStuck, recoverFloating };
+/**
+ * DESYNC client/serveur (piste n°5 rapport water-wall, vécu NethBot1) : le process vit, les events
+ * tournent, mais la position reste identique AU DIXIÈME pendant des minutes (le client croit être
+ * quelque part où le serveur ne le voit plus bouger). Ni le jam-watchdog (exige un goal pathfinder
+ * gelé) ni le connection-watchdog (les ticks arrivent) ne le voient. Signature PURE : `need`
+ * échantillons consécutifs strictement égaux (arrondis au dixième). Le remède = re-login
+ * (process.exit → self-healing respawne, back-off RC2 en garde-fou).
+ */
+function isFrozenDesync(samples, { need = 10 } = {}) {
+  if (!Array.isArray(samples) || samples.length < need) return false;
+  const last = samples.slice(-need);
+  const k = (p) => `${Math.round(p.x * 10)},${Math.round(p.y * 10)},${Math.round(p.z * 10)}`;
+  const first = k(last[0]);
+  return last.every((p) => p && k(p) === first);
+}
+
+module.exports = { isInWater, findLandTarget, escapeWater, WATER, SNARES, clearSnares, isFloatingStuck, recoverFloating, isFrozenDesync };
