@@ -3251,13 +3251,16 @@ setInterval(async () => {
 setInterval(() => {
   try {
     if (!(world.objective && world.objective.status === 'in_progress')) { _posSamples = []; return; }
-    if (bot.targetDigBlock || _stillBusy || _smeltOppBusy || _armorBusy) { _posSamples = []; return; }
+    // Immobilités légitimes LONGUES (fonte ≤3 min, abri ≤13 min, armure) → reset. Le DIG n'en est
+    // PLUS une (vécu world_ax2 : 3 bots gelés EN PLEIN minage, targetDigBlock figé → l'ancien
+    // reset rendait le desync invisible) → on échantillonne quand même, fenêtre doublée (10 min).
+    if (_stillBusy || _smeltOppBusy || _armorBusy) { _posSamples = []; return; }
     const p = bot.entity && bot.entity.position;
     if (!p) return;
     _posSamples.push({ x: p.x, y: p.y, z: p.z });
-    if (_posSamples.length > 10) _posSamples.shift();
-    if (isFrozenDesync(_posSamples)) {
-      emit({ type: 'desync_frozen', x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
+    if (_posSamples.length > 20) _posSamples.shift();
+    if (isFrozenDesync(_posSamples, { digging: !!bot.targetDigBlock })) {
+      emit({ type: 'desync_frozen', x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z), digging: !!bot.targetDigBlock });
       process.exit(3);
     }
   } catch (e) { /* watchdog : ne crash jamais */ }

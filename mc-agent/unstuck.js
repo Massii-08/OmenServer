@@ -196,9 +196,13 @@ async function recoverFloating(bot, opts = {}) {
  * échantillons consécutifs strictement égaux (arrondis au dixième). Le remède = re-login
  * (process.exit → self-healing respawne, back-off RC2 en garde-fou).
  */
-function isFrozenDesync(samples, { need = 10 } = {}) {
-  if (!Array.isArray(samples) || samples.length < need) return false;
-  const last = samples.slice(-need);
+function isFrozenDesync(samples, { need = 10, digging = false } = {}) {
+  // En plein dig, l'immobilité est LÉGITIME → on n'ignore plus (vécu world_ax2 : 3 bots gelés EN
+  // PLEIN minage, targetDigBlock figé → l'ancien reset rendait le desync invisible), on double
+  // la fenêtre : un dig honnête ne dure jamais 10 min, un dig gelé si.
+  const effNeed = digging ? need * 2 : need;
+  if (!Array.isArray(samples) || samples.length < effNeed) return false;
+  const last = samples.slice(-effNeed);
   const k = (p) => `${Math.round(p.x * 10)},${Math.round(p.y * 10)},${Math.round(p.z * 10)}`;
   const first = k(last[0]);
   return last.every((p) => p && k(p) === first);

@@ -163,3 +163,13 @@ test('isFrozenDesync : need injectable (fenêtre plus courte pour les tests live
   const s = Array.from({ length: 4 }, () => ({ x: 1, y: 2, z: 3 }));
   assert.strictEqual(isFrozenDesync(s, { need: 4 }), true);
 });
+
+test('isFrozenDesync : digging → fenêtre ÉTENDUE (20) au lieu de reset — un dig gelé reste détectable', () => {
+  // Vécu live world_ax2 : 3 bots gelés EN PLEIN DIG (targetDigBlock figé non-null) → l'ancien gate
+  // resetait les échantillons → desync invisible. Un dig légitime ne dure jamais 10 min.
+  const frozen10 = Array.from({ length: 10 }, () => ({ x: -433.5, y: 67.0, z: -296.5 }));
+  const frozen20 = Array.from({ length: 20 }, () => ({ x: -433.5, y: 67.0, z: -296.5 }));
+  assert.strictEqual(isFrozenDesync(frozen10, { digging: true }), false);   // 5 min en dig = encore légitime
+  assert.strictEqual(isFrozenDesync(frozen20, { digging: true }), true);    // 10 min figé en dig = desync
+  assert.strictEqual(isFrozenDesync(frozen10, { digging: false }), true);   // hors dig : 5 min suffisent (inchangé)
+});
