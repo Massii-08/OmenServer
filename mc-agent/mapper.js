@@ -19,7 +19,7 @@ const { sectorRange, inSector, isCellMapped } = require('./sectors');
 const { detectCaveEntrance, detectCaveWater } = require('./caves');
 const { scanAllOres, oresFoundEvent } = require('./ores');
 const { findAllSignatures, findSpawner, structureFoundEvent } = require('./structures');
-const { nextFrontierCell } = require('./frontier');
+const { nextFrontierCell, nextLandLeg } = require('./frontier');
 const { biomeSeenEvent, caveFoundEvent, resolveBiome } = require('./worldMemory');
 const { survivalTick } = require('./survival');
 const { isInWater, escapeWater, clearSnares, isFloatingStuck, recoverFloating, WATER } = require('./unstuck');
@@ -168,9 +168,13 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
       try {
         const block = bot.blockAt(bot.entity.position.floored ? bot.entity.position.floored() : bot.entity.position);
         if (block && block.biome) {
-          // resolveBiome (worldMemory) : nom résolu via registry quand mineflayer ne livre que l'id
-          // (live 1.21.4 : biome.name = '' — les noms alimentent l'amorce vanilla des récolteurs).
-          emit(biomeSeenEvent(worldKey, { biome: resolveBiome(bot, block) }, p));
+          const bname = resolveBiome(bot, block);
+          // TERRE-ONLY : on ne cartographie jamais l'océan (juste on le traverse). La case reste
+          // dans localSeen (anti-re-ciblage) mais aucun biome_seen n'est émis pour l'eau.
+          // (resolveBiome renvoie {name,id} → on filtre sur le NOM résolu, pas l'objet.)
+          if (!/ocean|river|water/i.test(String(bname && bname.name))) {
+            emit(biomeSeenEvent(worldKey, { biome: bname }, p));
+          }
         }
       } catch (e) { /* chunk non chargé → on émettra à la prochaine cellule */ }
     }
@@ -189,7 +193,10 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
           const nb = bot.blockAt(_v(nx, Math.floor(p.y), nz));
           if (nb && nb.biome) {
             biomeCells.add(nk);
-            emit(biomeSeenEvent(worldKey, { biome: resolveBiome(bot, nb) }, { x: nx, y: p.y, z: nz }));
+            const nbn = resolveBiome(bot, nb);
+            if (!/ocean|river|water/i.test(String(nbn && nbn.name))) {
+              emit(biomeSeenEvent(worldKey, { biome: nbn }, { x: nx, y: p.y, z: nz }));
+            }
           }
         } catch (e) { /* chunk voisin non chargé → plus tard */ }
       }
@@ -330,54 +337,48 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
     const sk = JSON.stringify(sec || null);
     if (sk !== sectorKey) { sectorKey = sk; heading = drawHeading(rng, sec, opts.overlapDeg); }
 
-    // ── Mode FRONTIÈRE (phase 2, opts.frontier) : remplir la cellule NON couverte la plus
-    // proche au lieu de marcher au cap. Mémoire LIVE re-lue toutes les 3 jambes (les autres
-    // mappers couvrent en parallèle). Frontière lointaine (> warpDist) + warp dispo → self-warp
-    // (bot op, /spreadplayers) : on repart d'un point frais SANS retraverser le déjà-fait.
+    // ── Mode FRONTIÈRE (phase 2, opts.frontier) : remplir la cellule de TERRE non couverte la
+    // plus proche (nextLandLeg — jamais l'océan) au lieu de marcher au cap. Mémoire LIVE re-lue
+    // toutes les 3 jambes (les autres mappers couvrent en parallèle). Terre locale épuisée +
+    // bateau dispo → traversée océan (opts.boat.cross) vers la masse terrestre suivante — plus
+    // de warp aveugle (/spreadplayers retiré du mapping).
     if (opts.frontier) {
       legs++;
       if (opts.reloadMemory && legs % 3 === 0) {
         try { memory = opts.reloadMemory() || memory; } catch (e) { /* best-effort */ }
       }
       const here0 = _pos(bot);
-      const cell = nextFrontierCell(memory, worldKey, localSeen, here0, { skip: frontierSkip });
+      const cell = nextLandLeg(memory, worldKey, localSeen, here0, {
+        skip: frontierSkip,
+        isOcean: (gx, gz) => isOceanCell(memory, worldKey, gx, gz),
+      });
       if (cell) {
-        const fd = Math.sqrt((cell.center.x - here0.x) ** 2 + (cell.center.z - here0.z) ** 2);
-        if (fd > (opts.warpDist || 220) && opts.warp) {
-          emit({ type: 'mapper_warp', to: cell.key, d: Math.round(fd) });
-          try { await opts.warp(cell.center.x, cell.center.z); } catch (e) { /* best-effort */ }
-          await sleep(opts.warpSettleMs != null ? opts.warpSettleMs : 4000);  // chunks + chute spreadplayers
-          // Garde-fou : /spreadplayers ÉCHOUE silencieusement si la cible n'a aucune position
-          // d'atterrissage valide (océan/vide) → le bot RESTE sur place. Sans ce contrôle,
-          // nextFrontierCell re-choisit la MÊME cellule à l'infini (warp-spam, 0 progrès — vécu
-          // monde-île 2026-07-14). Si le warp n'a pas rapproché le bot de la cible, on la marque
-          // skip (comme un échec goto ci-dessous) et on passe à la cellule frontière suivante.
-          const after = _pos(bot);
-          const arrived = Math.sqrt((after.x - cell.center.x) ** 2 + (after.z - cell.center.z) ** 2);
-          if (arrived > (opts.warpArriveTol || 96)) {
-            frontierSkip.add(cell.key);
-            emit({ type: 'mapper_frontier_skip', cell: cell.key, reason: 'warp_failed' });
-            continue;
-          }
-          record();
-          continue;
-        }
-        if (!isOceanCell(memory, worldKey, cell.center.x, cell.center.z)
-            && !waterAhead(bot, here0, cell.center)) {
+        // terre locale : on y VA À PIED (jamais de warp aveugle). Eau sur le chemin → skip.
+        if (!isOceanCell(memory, worldKey, cell.center.x, cell.center.z) && !waterAhead(bot, here0, cell.center)) {
           try {
             await doGoto({ x: cell.center.x, y: here0.y, z: cell.center.z });
             record();
             continue;
           } catch (e) {
-            frontierSkip.add(cell.key);          // inatteignable → on n'y reboucle pas
+            frontierSkip.add(cell.key);
             emit({ type: 'mapper_frontier_skip', cell: cell.key });
             // fallthrough : jambe aléatoire pour se dégager
           }
         } else {
-          frontierSkip.add(cell.key);            // eau → couverte « par constat »
+          frontierSkip.add(cell.key);
+          // fallthrough
         }
+      } else if (opts.boat && opts.boat.cross) {
+        // TERRE LOCALE ÉPUISÉE → traversée bateau vers le large (juste traverser).
+        emit({ type: 'mapper_boat_cross' });
+        let res = null;
+        try { res = await opts.boat.cross(here0); } catch (e) { res = { ok: false, reason: 'error' }; }
+        emit({ type: res && res.landed ? 'mapper_boat_landed' : 'mapper_boat_failed', reason: res && res.reason });
+        record();
+        continue;
       }
-      // cell null (tout couvert dans le rayon) ou échec → marche aléatoire ci-dessous
+      // pas de bateau dispo (ou échec) → marche aléatoire ci-dessous (le crossing nage existant
+      // reste le filet anti-blocage)
     }
 
     // le cap DÉRIVE doucement (random walk persistant), confiné au wedge si secteur

@@ -499,70 +499,42 @@ test('runMapper : émet structure_found (bell→village) avec dédup type+cellul
   assert.deepStrictEqual(st[0], { type: 'structure_found', world: 'overworld', kind: 'village', x: 40, y: 70, z: 12 });
 });
 
-test('runMapper frontier : vise la cellule non couverte la plus proche, warp si lointaine', async () => {
+test('runMapper frontier terre-only : frontière terre épuisée → traversée bateau (hook), débarque et mappe', async () => {
   const bot = fakeMapperBot();
-  const gotos = [];
-  const warps = [];
   const events = [];
   const token = { cancelled: false };
-  // mémoire : tout couvert autour du spawn SAUF une cellule adjacente — puis tout couvert → warp
+  // tout couvert autour du spawn → nextLandLeg renvoie null → boat cross
   const biomes = [];
-  for (let x = -512; x <= 512; x += 128) for (let z = -512; z <= 512; z += 128) {
-    if (!(x === 128 && z === 0)) biomes.push({ name: 'plains', x, z });
-  }
+  for (let x = -512; x <= 512; x += 128) for (let z = -512; z <= 512; z += 128) biomes.push({ name: 'plains', x, z });
+  let crossed = 0;
   await runMapper(bot, {
     worldKey: 'overworld',
     memory: { worlds: { overworld: { biomes } } },
     frontier: true,
-    warp: async (x, z) => { warps.push({ x, z }); bot.entity.position = vec3(x, 64, z); },
-    warpDist: 220,
-    warpSettleMs: 0,
-    emit: (e) => { events.push(e); if (warps.length >= 1 || events.length > 600) token.cancelled = true; },
-    goto: async (wp) => { gotos.push({ x: wp.x, z: wp.z }); bot.entity.position = vec3(wp.x, 64, wp.z); },
+    boat: {
+      cross: async () => { crossed++; bot.entity.position = vec3(900, 64, 0); return { ok: true, landed: true }; },
+    },
+    emit: (e) => { events.push(e); if (crossed >= 1 || events.length > 400) token.cancelled = true; },
+    goto: async (wp) => { bot.entity.position = vec3(wp.x, 64, wp.z); },
     sleep: async () => {},
   }, token);
-  // 1re cible frontière = centre de la cellule (128,0) → (192, 64)
-  assert.ok(gotos.length >= 1);
-  assert.strictEqual(Math.round(gotos[0].x), 192);
-  assert.strictEqual(Math.round(gotos[0].z), 64);
-  // ensuite tout est couvert près du bot → warp vers une cellule lointaine
-  assert.ok(warps.length >= 1, 'warp attendu quand la frontière est lointaine');
-  assert.ok(events.some((e) => e.type === 'mapper_warp'));
+  assert.ok(crossed >= 1, 'doit lancer une traversée bateau quand la terre locale est épuisée');
+  assert.ok(events.some((e) => e.type === 'mapper_boat_cross'));
 });
 
-test('runMapper frontier : warp ÉCHOUÉ (bot ne bouge pas, ex. /spreadplayers sur océan) → skip la cellule, PAS de re-warp en boucle', async () => {
+test('runMapper : ne mappe PAS l’océan (biome eau → pas de biome_seen)', async () => {
   const bot = fakeMapperBot();
-  const gotos = [];
-  const warps = [];
+  bot.blockAt = (p) => (p.y > 63
+    ? { name: 'air', boundingBox: 'empty', biome: { name: 'ocean', id: 0 } }
+    : { name: 'water', boundingBox: 'empty', biome: { name: 'ocean', id: 0 } });
   const events = [];
   const token = { cancelled: false };
-  // Tout couvert dans le rayon de recherche (14 anneaux ≈ ±1792) SAUF une seule cellule
-  // lointaine (256,0) — centre (320,64), distance 326 > warpDist → chemin WARP. Le warp NE
-  // DÉPLACE PAS le bot (spreadplayers échoue au-dessus de l'eau) → sans garde-fou, nextFrontierCell
-  // re-choisit (256,0) à l'infini (warp-spam vécu monde-île 2026-07-14).
-  const biomes = [];
-  for (let x = -1792; x <= 1792; x += 128) for (let z = -1792; z <= 1792; z += 128) {
-    if (!(x === 256 && z === 0)) biomes.push({ name: 'plains', x, z });
-  }
+  let n = 0;
   await runMapper(bot, {
-    worldKey: 'overworld',
-    memory: { worlds: { overworld: { biomes } } },
-    frontier: true,
-    warp: async (x, z) => { warps.push({ x, z }); /* bot NE bouge PAS : warp échoué */ },
-    warpDist: 220,
-    warpSettleMs: 0,
-    emit: (e) => {
-      events.push(e);
-      if (warps.length >= 5 || gotos.length >= 3 || events.length > 800) token.cancelled = true;
-    },
-    goto: async (wp) => { gotos.push({ x: wp.x, z: wp.z }); bot.entity.position = vec3(wp.x, 64, wp.z); },
-    sleep: async () => {},
+    worldKey: 'overworld', memory: { worlds: { overworld: { biomes: [] } } }, frontier: true,
+    boat: { cross: async () => { token.cancelled = true; return { ok: false }; } },
+    emit: (e) => { events.push(e); if (++n > 60) token.cancelled = true; },
+    goto: async (wp) => { bot.entity.position = vec3(wp.x, 64, wp.z); }, sleep: async () => {},
   }, token);
-  const keyOf = (w) => Math.floor(w.x / 128) * 128 + ',' + Math.floor(w.z / 128) * 128;
-  const warpsToTarget = warps.filter((w) => keyOf(w) === '256,0').length;
-  assert.strictEqual(warpsToTarget, 1, 'un warp qui échoue ne doit PAS reboucler sur la même cellule');
-  assert.ok(
-    events.some((e) => e.type === 'mapper_frontier_skip' && e.cell === '256,0'),
-    'la cellule warp-échouée doit être marquée skip (comme un échec goto)'
-  );
+  assert.ok(!events.some((e) => e.type === 'biome_seen'), 'aucun biome_seen pour l’océan');
 });
