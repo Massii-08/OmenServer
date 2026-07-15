@@ -2504,9 +2504,10 @@ async function onSpawn() {
       setInterval(() => {
         try {
           if (_imminentBusy || taskToken.cancelled) return;
-          // Re-pose d'un safe REFUSÉ dès qu'on repasse par une vraie surface sèche : l'ancien
-          // signet est noyé/obstrué (monde eau), le garder = re-refus garanti au prochain secours.
-          if (_homeRefusedAt.safe && bot.entity && bot.entity.position && bot.entity.onGround
+          // Re-pose d'un safe REFUSÉ — ou JAMAIS POSÉ (spawn les pieds dans l'eau, vécu world_ax2 :
+          // la pose au boot est désormais skippée si mouillé) — dès qu'on repasse par une vraie
+          // surface sèche : un signet noyé/absent = filet de secours mort pour toute la session.
+          if ((_homeRefusedAt.safe || !_safeHomeSet) && bot.entity && bot.entity.position && bot.entity.onGround
               && bot.entity.position.y >= 58 && !isInWater(bot)) {
             homewarp.bookmark(bot, 'safe');
             delete _homeRefusedAt.safe;
@@ -2591,9 +2592,14 @@ async function onSpawn() {
     // souterraine → goSpawn a toujours une cible valide) puis on l'UPGRADE dès qu'on spawne à une
     // vraie surface (y≥58, sèche). Sans ça un bot qui respawne toujours sous terre n'avait pas de
     // 'safe' → /home safe échouait (vécu bot1 : spawn direct y15, jamais de safe_home_set).
+    // ⚠️ JAMAIS les pieds dans l'eau (vécu world_ax2 03:00 : reconnexion dans une rivière → safe
+    // posé DANS l'eau → tous les /home safe morts (teleport-safety) → reflex surface ×190, bots
+    // qui sautillent sur place à l'infini). Pas de pose mouillée ; le watchdog 1 s re-pose dès
+    // la première surface sèche (condition élargie à !_safeHomeSet).
     {
       const p = bot.entity && bot.entity.position;
-      if (p) {
+      const wet = (function () { try { return isInWater(bot); } catch (e) { return false; } })();
+      if (p && !wet) {
         const atSurface = p.y >= 58;
         if (!_safeHomeSet || (!_safeHomeSurface && atSurface)) {
           homewarp.bookmark(bot, 'safe');
