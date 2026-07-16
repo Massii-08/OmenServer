@@ -95,7 +95,7 @@ const args = parseArgs(process.argv.slice(2));
 // (isForbiddenCheat) qui bloque tout /give //tp //effect… résiduel (défense en profondeur).
 const NO_GIVE = args['no-give'] === '1' || args['no-give'] === 'true';
 // Confinement arène (--confine "X Z R") : garde le bot dans R de l'ancre sèche (cf. confine.js).
-const { parseConfine, confineSpreadCommand } = require('./confine');
+const { parseConfine, confineSpreadCommand, CONFINE_HOME, DEFAULT_CONFINE_RADIUS, shouldEnforceConfine, pickAnchorNow } = require('./confine');
 const CONFINE = parseConfine(args['confine']);
 // Provider LLM enfichable : MC_AGENT_LLM=gemini (gratuit) sinon Anthropic (défaut). Cf. ./llm.js
 const provider = (process.env.MC_AGENT_LLM || 'anthropic').toLowerCase();
@@ -197,6 +197,10 @@ function safeWarpDown() {
   return !!(_homeRefusedAt.safe && (Date.now() - _homeRefusedAt.safe) <= homewarp.REFUSAL_DEGRADE_MS);
 }
 let _tpCancelledAt = 0;       // secure-then-warp : dernière annulation Essentials vue (teleport-delay)
+let _confineDyn = null;       // confine AUTO-ancré (brique 2) : posé à la 1re terre sèche stable
+let _canchorSet = false;      // home 'canchor' posé à l'ancre → l'enforcement /home peut tirer
+let _lastConfineEnforceAt = 0;// cooldown enforcement (2 min, cf. shouldEnforceConfine)
+let _campEstablished = false; // brique 3 : four (+coffre) posés à l'ancre = camp de base
 let presence = null;          // heartbeat de présence du groupe (positions-<group>.json, --positions)
 let _lastMapperTpAt = 0;      // TP-au-mappeur : cooldown (1 tentative / 4 min)
 let _dzones = [];             // camps de mort : zones où ≥2 alertes « mort imminente » (deathzones.js)
@@ -243,6 +247,57 @@ async function fleeDeathCamp(fromPos) {
       90000, () => { try { stopMotion(); } catch (e) {} });
   } catch (e) { /* best-effort */ }
 }
+
+// CAMP DE BASE (brique 3 v1, Massii 16/07) : à l'ancre, poser un FOUR (fixe, jamais reclaim —
+// smeltWithFurnace l'utilise sans le poser quand il le trouve à ≤4) + un COFFRE si en poche.
+// Le camp rend la poche auto-suffisante : fonte fiable au même endroit, stock au retour. Best-effort
+// intégral, ré-essayé par le timer d'enforcement tant que pas établi.
+async function tryEstablishCamp() {
+  try {
+    if (_campEstablished || !_canchorSet) return;
+    const conf = CONFINE || _confineDyn;
+    if (!conf) return;
+    const p = bot.entity && bot.entity.position;
+    if (!p || Math.hypot(p.x - conf.x, p.z - conf.z) > 24) return;   // seulement près de l'ancre
+    for (const it of ['furnace', 'chest']) {
+      const def = bot.registry.blocksByName[it];
+      if (!def) continue;
+      if (bot.findBlock({ matching: [def.id], maxDistance: 8 })) continue;   // déjà posé au camp
+      const has = ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === it);
+      if (!has) continue;
+      try {
+        const r = await placeBlockNear(bot, it);
+        if (r && r.ok) emit({ type: 'camp_block_placed', block: it });
+      } catch (e) { /* best-effort */ }
+    }
+    const fdef = bot.registry.blocksByName.furnace;
+    if (fdef && bot.findBlock({ matching: [fdef.id], maxDistance: 8 })) {
+      _campEstablished = true;
+      emit({ type: 'camp_established', x: conf.x, z: conf.z });
+    }
+  } catch (e) { /* best-effort */ }
+}
+
+// ENFORCEMENT confine no-give (brique 1) : le bot a dérivé hors de sa poche (> rayon ×1.25) →
+// /home canchor (commande joueur, secure-then-warp inclus). C'est CE retour qui casse le pattern
+// mortel « atteint iron_deep → explore loin → eau → churn » (vécu world_ax2 toute la nuit).
+setInterval(() => {
+  try {
+    const conf = CONFINE || _confineDyn;
+    if (!conf || !_canchorSet || !NO_GIVE) return;
+    if (!(world.objective && world.objective.status === 'in_progress')) return;
+    const p = bot.entity && bot.entity.position;
+    if (!p) return;
+    if (!_campEstablished) tryEstablishCamp().catch(() => {});    // retry léger du camp
+    const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy;
+    const dist = Math.hypot(p.x - conf.x, p.z - conf.z);
+    if (shouldEnforceConfine({ dist, radius: conf.radius, busy, now: Date.now(), lastAt: _lastConfineEnforceAt })) {
+      _lastConfineEnforceAt = Date.now();
+      emit({ type: 'confine_enforce', dist: Math.round(dist), x: conf.x, z: conf.z });
+      safeWarpHome(CONFINE_HOME).catch(() => {});
+    }
+  } catch (e) { /* watchdog : ne crash jamais */ }
+}, 45000);
 
 // TP-AU-MAPPEUR : demande /tpa vers le mappeur choisi par pickMapperTp (frais, qui rapproche de
 // la cible d'au moins 150 blocs — ou le plus loin de moi sans cible). L'acceptation est automatique
@@ -1771,9 +1826,12 @@ async function relocateToRegion(opts = {}) {
   // CONFINEMENT arène : court-circuite TOUTE la logique de dispersion (biome/cluster/spirale/regionCenter
   // visent 256..520 blocs = hors arène sèche). On re-spread dans R de l'ancre → le bot reste dans l'arène,
   // re-descend, reprend le minage local. Un seul floating_relocate ne l'éjecte plus à -869 (vécu 22/06).
-  if (CONFINE) {
-    emit({ type: 'resource_warp', x: CONFINE.x, z: CONFINE.z, confined: true });
-    try { bot.chat(confineSpreadCommand(bot.username, CONFINE)); } catch (e) {}
+  if (CONFINE || _confineDyn) {
+    const confR = CONFINE || _confineDyn;
+    emit({ type: 'resource_warp', x: confR.x, z: confR.z, confined: true });
+    // no-give : /spreadplayers est BLOQUÉ par nogive → retour légitime /home canchor (brique 1)
+    if (NO_GIVE && _canchorSet) { await safeWarpHome(CONFINE_HOME); return; }
+    try { bot.chat(confineSpreadCommand(bot.username, confR)); } catch (e) {}
     await sleep(5000);
     return;
   }
@@ -2261,7 +2319,10 @@ async function onSpawn() {
     // Cible dirigée LOINTAINE (>300) → tenter le raccourci /tpa AVANT la marche (hook explore).
     // Mappers exclus (ils ont /spreadplayers) ; bots non-autonomes : pas de longues marches dirigées.
     if (!bot._mcaBeforeLongTrip && world.objective && world.objective.type !== 'mapper') {
-      bot._mcaBeforeLongTrip = async (target) => { try { await tryTpToMapper(target); } catch (e) {} };
+      bot._mcaBeforeLongTrip = async (target) => {
+        if ((CONFINE || _confineDyn) && _canchorSet) return;   // sous confine : pas de long trip
+        try { await tryTpToMapper(target); } catch (e) {}
+      };
     }
   }
   emit({ type: 'status', state: 'spawned', username: bot.username, profile: profile ? profile.id : null });
@@ -2512,6 +2573,23 @@ async function onSpawn() {
       setInterval(() => {
         try {
           if (_imminentBusy || taskToken.cancelled) return;
+          // AUTO-ANCRAGE confine (brique 2, Massii 16/07) : chaque semaine = un monde NEUF (seed
+          // non choisi) → le bot s'établit SEUL une poche sèche. Première position stable (au sol,
+          // hors eau, surface) → home 'canchor' + confine dynamique (rayon 140). L'enforcement
+          // (/home canchor) et le camp de base s'y rattachent. L'ancre ne bouge plus de la session.
+          if (!_canchorSet && bot.entity && bot.entity.position
+              && (world.objective && world.objective.status === 'in_progress')
+              && pickAnchorNow({ onGround: bot.entity.onGround, inWater: isInWater(bot), y: bot.entity.position.y })) {
+            const pA = bot.entity.position;
+            const nearStatic = CONFINE ? (Math.hypot(pA.x - CONFINE.x, pA.z - CONFINE.z) <= 24) : true;
+            if (nearStatic && homewarp.bookmark(bot, CONFINE_HOME)) {
+              _canchorSet = true;
+              if (!CONFINE) _confineDyn = { x: Math.round(pA.x), z: Math.round(pA.z), radius: DEFAULT_CONFINE_RADIUS };
+              const eff = CONFINE || _confineDyn;
+              emit({ type: 'confine_anchored', x: eff.x, z: eff.z, radius: eff.radius, static: !!CONFINE });
+              tryEstablishCamp().catch(() => {});
+            }
+          }
           // Re-pose d'un safe REFUSÉ — ou JAMAIS POSÉ (spawn les pieds dans l'eau, vécu world_ax2 :
           // la pose au boot est désormais skippée si mouillé) — dès qu'on repasse par une vraie
           // surface sèche : un signet noyé/absent = filet de secours mort pour toute la session.

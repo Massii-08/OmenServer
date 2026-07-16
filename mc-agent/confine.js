@@ -20,4 +20,34 @@ function confineSpreadCommand(username, conf) {
   return '/spreadplayers ' + conf.x + ' ' + conf.z + ' 0 ' + conf.radius + ' false ' + username;
 }
 
-module.exports = { parseConfine, confineSpreadCommand };
+// ─── Confine NO-GIVE (briques 1-2, Massii 16/07) ────────────────────────────────────────────────
+// /spreadplayers est BLOQUÉ par nogive → en sans-give l'enforcement passe par un HOME dédié
+// 'canchor' posé à l'ancre (commande joueur légitime /home). Et comme chaque semaine = un NOUVEAU
+// monde (seed non choisi), le bot s'AUTO-ancre : la première position stable (au sol, hors eau,
+// en surface) devient l'ancre de sa poche sèche — bois local + fer/diamant en creusant sur place.
+
+const CONFINE_HOME = 'canchor';        // home d'ancre (réservé dans homewarp.RESERVED)
+const DEFAULT_CONFINE_RADIUS = 140;    // poche assez grande pour bois + mine, assez petite pour
+                                       // que l'enforcement coupe les longs trajets mortels
+
+/**
+ * Faut-il RAMENER le bot à l'ancre maintenant ? (pur)
+ * - marge ×1.25 : on ne yo-yote pas à la frontière du rayon ;
+ * - jamais pendant une activité légitime (dig/fonte/abri/sauvetage) ;
+ * - cooldown 2 min entre deux enforcement (le /home + re-dérive prend du temps).
+ */
+function shouldEnforceConfine({ dist, radius, busy, now, lastAt, cooldownMs = 120000, factor = 1.25 } = {}) {
+  if (busy) return false;
+  if (!(dist > radius * factor)) return false;
+  return (now - (lastAt || 0)) >= cooldownMs;
+}
+
+/** La position courante est-elle ancre-able ? (au sol, hors eau, en surface — pur) */
+function pickAnchorNow({ onGround, inWater, y } = {}) {
+  return !!onGround && !inWater && typeof y === 'number' && y >= 58;
+}
+
+module.exports = {
+  parseConfine, confineSpreadCommand,
+  CONFINE_HOME, DEFAULT_CONFINE_RADIUS, shouldEnforceConfine, pickAnchorNow,
+};

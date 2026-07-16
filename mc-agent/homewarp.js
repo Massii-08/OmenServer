@@ -21,7 +21,7 @@
 
 const { isForbiddenCheat } = require('./nogive');
 
-const RESERVED = ['wsite', 'death', 'safe'];
+const RESERVED = ['wsite', 'death', 'safe', 'canchor'];
 
 /** Nettoie un nom de home : minuscules, [a-z0-9_] uniquement (anti-injection de commande). */
 function sanitizeName(name) {

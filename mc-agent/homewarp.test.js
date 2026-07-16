@@ -199,3 +199,7 @@ test('secureTactic : pas de menace, ou pas de blocs → none (freeze simple)', (
   assert.strictEqual(secureTactic({ inWater: false, hostiles: 2, blocks: 2, headroom: true }), 'none');
   assert.strictEqual(secureTactic({}), 'none');
 });
+
+test('RESERVED contient canchor (ancre de confinement no-give)', () => {
+  assert.ok(RESERVED.includes('canchor'));
+});
