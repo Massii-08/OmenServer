@@ -188,11 +188,13 @@ const IRON_ARMOR_CHAIN = [
   // Cycle 2 water-wall — BUFFER PLANCHES pré-descente (churn bois↔profondeur, frein #1) : table
   // perdue SOUS TERRE avec 0 planche/0 bûche → no_table:unknown_item ×∞ → but logs sous terre →
   // not_found → roaming mortel (vécu live NethBot1). Le but `planks` du préfixe est court-circuité
-  // par I(c)/canStonePick dès qu'une pioche existe → on exige ≥8 équivalents-planche (planche=1,
-  // bûche=4) EN SURFACE (y>30) seulement. ironOK : le fer est déjà là → on ne bloque pas la fonte.
+  // par I(c)/canStonePick dès qu'une pioche existe → on exige un buffer EN SURFACE (y>30) seulement.
+  // STOCK GÉNÉREUX (pattern AltoClef, 16/07) : 8 équiv = un aller-retour bois PAR descente = LE
+  // churn n°1 (2 jours de stagnation). 24 équiv (6 bûches, 1 expédition woodExpeditionCount) ≈ 3
+  // descentes sans remontée. ironOK : le fer est déjà là → on ne bloque pas la fonte.
   { name: 'plank_buffer', met: (c) => (c.y !== undefined && c.y <= 30) ||
-      (anyPlanks(c.inv) + anyLog(c.inv) * 4 >= 8) || ironOK(c) || IA(c),
-    skill: 'gatherLog',   args: { count: 2 } },
+      (anyPlanks(c.inv) + anyLog(c.inv) * 4 >= 24) || ironOK(c) || IA(c),
+    skill: 'gatherLog',   args: { count: 6 } },
   { name: 'descend_y16',  met: (c) => (c.y !== undefined && c.y <= 18) || ironOK(c) || IA(c),
     skill: 'descendDiagonal', args: { targetY: 16 } },
   // serpentine:true (fix n°2 water-wall) : le mode serpentin TOURNE au contact de l'eau (+ scelle

@@ -53,7 +53,7 @@ test('IRON_ARMOR_CHAIN: bot nu → premier but = logs (la chaîne fer complète 
 test('IRON_ARMOR_CHAIN: pioche fer + kit bois sûr + four + food + 24 lingots → but = iron_armor (craft)', () => {
   const inv = {
     iron_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1, cooked_beef: 6,
-    iron_ingot: 24, cobblestone: 12, oak_planks: 8,
+    iron_ingot: 24, cobblestone: 12, oak_planks: 24,
   };
   const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv));
   assert.strictEqual(g.name, 'iron_armor');
@@ -64,7 +64,7 @@ test('IRON_ARMOR_CHAIN: kit prêt SANS nourriture → la descente n est PAS bloq
   // (3 pioches : le pré-stock spare_picks est satisfait → on isole bien le comportement food)
   const inv = {
     stone_pickaxe: 3, wooden_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1,
-    cobblestone: 12, oak_planks: 8,
+    cobblestone: 12, oak_planks: 24,
   };
   const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64));
   assert.strictEqual(g.name, 'descend_y16');
@@ -73,7 +73,7 @@ test('IRON_ARMOR_CHAIN: kit prêt SANS nourriture → la descente n est PAS bloq
 test('IRON_ARMOR_CHAIN: fer insuffisant, en surface → descend_y16 ; déjà à Y16 → iron_deep (branch-mine)', () => {
   const inv = {
     iron_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1, cooked_beef: 6,
-    iron_ingot: 2, raw_iron: 1, cobblestone: 12, oak_planks: 8,
+    iron_ingot: 2, raw_iron: 1, cobblestone: 12, oak_planks: 24,
   };
   assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64)).name, 'descend_y16');
   assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 16)).name, 'iron_deep');
@@ -82,7 +82,7 @@ test('IRON_ARMOR_CHAIN: fer insuffisant, en surface → descend_y16 ; déjà à 
 test('IRON_ARMOR_CHAIN: sous terre SANS food → food_stock ne stalle pas (met via y<45)', () => {
   const inv = {
     iron_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1,
-    iron_ingot: 2, cobblestone: 12, oak_planks: 8,
+    iron_ingot: 2, cobblestone: 12, oak_planks: 24,
   };
   const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 16));
   assert.strictEqual(g.name, 'iron_deep'); // pas food_stock ni descend
@@ -159,31 +159,31 @@ test('firstUnmet: cobble mais PAS de sticks → PAS de raccourci (il faut du boi
 // en minant, avant les ~27 fer d'iron_deep). Exigé EN SURFACE seulement (y>30) : sous terre, 1
 // pioche suffit (exiger 3 avec 0 stick = remontée bois avec 2 pioches valides en poche = churn).
 test('IRON_ARMOR_CHAIN: surface + kit + 1 seule pioche pierre → but = spare_picks (pré-stock 3)', () => {
-  const inv = { stone_pickaxe: 1, crafting_table: 1, stick: 8, furnace: 1, cobblestone: 12, oak_planks: 8 };
+  const inv = { stone_pickaxe: 1, crafting_table: 1, stick: 8, furnace: 1, cobblestone: 12, oak_planks: 24 };
   const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64));
   assert.strictEqual(g.name, 'spare_picks');
 });
 
 test('IRON_ARMOR_CHAIN: surface + 3 pioches pierre → pré-stock satisfait, but = descend_y16', () => {
-  const inv = { stone_pickaxe: 3, crafting_table: 1, stick: 8, furnace: 1, cobblestone: 12, oak_planks: 8 };
+  const inv = { stone_pickaxe: 3, crafting_table: 1, stick: 8, furnace: 1, cobblestone: 12, oak_planks: 24 };
   const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64));
   assert.strictEqual(g.name, 'descend_y16');
 });
 
 test('IRON_ARMOR_CHAIN: SOUS TERRE (y=16) + 1 pioche → PAS de pré-stock (continue de miner : iron_deep)', () => {
-  const inv = { stone_pickaxe: 1, crafting_table: 1, stick: 6, furnace: 1, cobblestone: 12, oak_planks: 8 };
+  const inv = { stone_pickaxe: 1, crafting_table: 1, stick: 6, furnace: 1, cobblestone: 12, oak_planks: 24 };
   const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 16));
   assert.strictEqual(g.name, 'iron_deep');
 });
 
 test('IRON_ARMOR_CHAIN: sous terre 0 pioche + matériaux → re-craft en place (stone_pickaxe, a752743)', () => {
-  const inv = { crafting_table: 1, stick: 6, furnace: 1, cobblestone: 8, oak_planks: 8 };
+  const inv = { crafting_table: 1, stick: 6, furnace: 1, cobblestone: 8, oak_planks: 24 };
   const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 16));
   assert.strictEqual(g.name, 'stone_pickaxe');
 });
 
 test('IRON_ARMOR_CHAIN: pioche FER en poche → jamais de pré-stock pierre', () => {
-  const inv = { iron_pickaxe: 1, crafting_table: 1, stick: 8, furnace: 1, cobblestone: 12, oak_planks: 8 };
+  const inv = { iron_pickaxe: 1, crafting_table: 1, stick: 8, furnace: 1, cobblestone: 12, oak_planks: 24 };
   const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64));
   assert.notStrictEqual(g && g.name, 'spare_picks');
   assert.notStrictEqual(g && g.name, 'cobble_spare');
@@ -254,10 +254,13 @@ test('plank_buffer: kit descente prêt mais 0 bois en surface → firstUnmet = p
   assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64)).name, 'plank_buffer');
 });
 
-test('plank_buffer: 8 planches OU 2 bûches suffisent → on passe à descend_y16', () => {
+test('plank_buffer: STOCK GÉNÉREUX (pattern AltoClef 16/07) — 24 équiv-planches (6 bûches) requis ; 8 ne suffisent plus', () => {
   const base = { stone_pickaxe: 3, cobblestone: 12, crafting_table: 1, stick: 4, furnace: 1 };
-  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx({ ...base, oak_planks: 8 }, [], 64)).name, 'descend_y16');
-  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx({ ...base, oak_log: 2 }, [], 64)).name, 'descend_y16');
+  // ancien seuil (8) → il RESTE au buffer (un aller-retour bois par descente = LE churn n°1)
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx({ ...base, oak_planks: 8 }, [], 64)).name, 'plank_buffer');
+  // nouveau seuil : 24 planches OU 6 bûches = ~3 descentes sans remontée bois
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx({ ...base, oak_planks: 24 }, [], 64)).name, 'descend_y16');
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx({ ...base, oak_log: 6 }, [], 64)).name, 'descend_y16');
 });
 
 test('plank_buffer: SOUS TERRE (y≤30) jamais bloquant (pas de remontée bois forcée)', () => {
