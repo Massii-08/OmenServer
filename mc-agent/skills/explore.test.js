@@ -338,8 +338,8 @@ test('explore : arrivé sur la cible dirigée sans rien trouver → marquée ép
   });
   assert.strictEqual(r.ok, false);
   assert.ok(bot._mcaExhausted.has('100,0'), 'cible dirigée épuisée marquée dans bot._mcaExhausted');
-  assert.ok(emits.some((e) => e.type === 'directed_exhausted' && e.x === 100 && e.z === 0),
-    'event directed_exhausted émis');
+  assert.ok(emits.some((e) => e.type === 'directed_exhausted' && e.x === 100 && e.z === 0 && e.world === 'w'),
+    'event directed_exhausted émis AVEC world (routage backend → carte partagée)');
 });
 
 test('explore : au 2e appel, le find épuisé n\'est PLUS ciblé (fin de la boucle stérile)', async () => {

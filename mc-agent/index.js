@@ -2579,7 +2579,17 @@ async function onSpawn() {
           // (/home canchor) et le camp de base s'y rattachent. L'ancre ne bouge plus de la session.
           if (!_canchorSet && bot.entity && bot.entity.position
               && (world.objective && world.objective.status === 'in_progress')
-              && pickAnchorNow({ onGround: bot.entity.onGround, inWater: isInWater(bot), y: bot.entity.position.y })) {
+              && pickAnchorNow({
+                onGround: bot.entity.onGround, inWater: isInWater(bot), y: bot.entity.position.y,
+                // zone BOISÉE exigée pour l'ancre dynamique (plank_buffer = retour bois constant) —
+                // vécu 16/07 : ancre posée au spawn DÉBOISÉ → poche stérile → churn logs éternel
+                woodNear: (function () {
+                  try {
+                    const ids = Object.keys(bot.registry.blocksByName).filter((n) => n.endsWith('_log')).map((n) => bot.registry.blocksByName[n].id);
+                    return !!bot.findBlock({ matching: ids, maxDistance: 32 });
+                  } catch (e) { return undefined; }   // registry pas prêt → ne pas bloquer l'ancrage
+                })(),
+              })) {
             const pA = bot.entity.position;
             const nearStatic = CONFINE ? (Math.hypot(pA.x - CONFINE.x, pA.z - CONFINE.z) <= 24) : true;
             if (nearStatic && homewarp.bookmark(bot, CONFINE_HOME)) {

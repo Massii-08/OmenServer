@@ -413,3 +413,31 @@ def test_structure_default_cap_is_generous():
     for i in range(600):  # 600 cellules distinctes (>500 héritage)
         wm.add_structure(m, "w", "mineshaft", i * 200, 30, 0, at=f"t{i}")
     assert len(m["worlds"]["w"]["structures"]) == 600
+
+
+def test_apply_event_directed_exhausted_retire_le_find():
+    """Persistance de l'exclusion (16/07) : un find PELÉ re-ciblé en boucle par chaque session
+    fraîche (le Set process-local meurt au churn) → l'event directed_exhausted du bot retire le
+    find de la carte PARTAGÉE → plus aucune session ne le re-propose."""
+    mem = {"worlds": {}}
+    wm.apply_event(mem, {"type": "material_found", "world": "w", "material": "oak_log",
+                         "biome": "plains", "x": -459, "z": -292})
+    wm.apply_event(mem, {"type": "material_found", "world": "w", "material": "oak_log",
+                         "biome": "forest", "x": -600, "z": -400})
+    assert len(mem["worlds"]["w"]["finds"]) == 2
+    wm.apply_event(mem, {"type": "directed_exhausted", "world": "w", "x": -459, "z": -292})
+    finds = mem["worlds"]["w"]["finds"]
+    assert len(finds) == 1
+    assert finds[0]["x"] == -600            # le find sain reste
+
+
+def test_apply_event_directed_exhausted_robuste():
+    mem = {"worlds": {}}
+    # monde/point inconnus → no-crash, no-op
+    wm.apply_event(mem, {"type": "directed_exhausted", "world": "nope", "x": 1, "z": 2})
+    assert mem == {"worlds": {}} or "nope" not in mem.get("worlds", {}) or not mem["worlds"]["nope"].get("finds")
+
+
+def test_wm_events_route_directed_exhausted():
+    from backend.bots import mc_agent_manager as mgr
+    assert "directed_exhausted" in mgr._WM_EVENTS

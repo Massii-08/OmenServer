@@ -110,7 +110,7 @@ async function explore(bot, opts = {}) {
     const k = targetKey(t.x, t.z);
     if (exhausted.has(k)) return;                    // idempotent : pas de double event
     exhausted.add(k);
-    if (emit) { try { emit({ type: 'directed_exhausted', x: Math.round(t.x), z: Math.round(t.z) }); } catch (e) {} }
+    if (emit) { try { emit({ type: 'directed_exhausted', world: wkey || null, x: Math.round(t.x), z: Math.round(t.z) }); } catch (e) {} }
   };
   let dTarget = null, dTy = origin.y; // hoistés : réutilisés par le RAPPEL dirigé pendant les anneaux
   if (memory && wkey) {

@@ -68,3 +68,10 @@ test('pickAnchorNow : dans l\'eau / en l\'air / sous terre → false', () => {
 test('DEFAULT_CONFINE_RADIUS : poche assez grande pour bois+mine (≥120)', () => {
   assert.ok(DEFAULT_CONFINE_RADIUS >= 120 && DEFAULT_CONFINE_RADIUS <= 200);
 });
+
+test('pickAnchorNow : woodNear=false → refus (le camp doit être en zone BOISÉE — plank_buffer)', () => {
+  assert.strictEqual(pickAnchorNow({ onGround: true, inWater: false, y: 72, woodNear: false }), false);
+  assert.strictEqual(pickAnchorNow({ onGround: true, inWater: false, y: 72, woodNear: true }), true);
+  // rétro-compat : woodNear absent → pas exigé
+  assert.strictEqual(pickAnchorNow({ onGround: true, inWater: false, y: 72 }), true);
+});

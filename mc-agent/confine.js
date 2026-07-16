@@ -43,7 +43,8 @@ function shouldEnforceConfine({ dist, radius, busy, now, lastAt, cooldownMs = 12
 }
 
 /** La position courante est-elle ancre-able ? (au sol, hors eau, en surface — pur) */
-function pickAnchorNow({ onGround, inWater, y } = {}) {
+function pickAnchorNow({ onGround, inWater, y, woodNear } = {}) {
+  if (woodNear === false) return false;   // le camp doit être en zone BOISÉE (plank_buffer) ; absent = pas exigé
   return !!onGround && !inWater && typeof y === 'number' && y >= 58;
 }
 

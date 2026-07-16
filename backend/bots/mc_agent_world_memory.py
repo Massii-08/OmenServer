@@ -186,6 +186,17 @@ def add_structure(memory, world, kind, x, y, z, at=None, cap=STRUCT_CAP):
     return memory
 
 
+def remove_find(memory, world, x, z):
+    """Retire TOUT find à (x,z) exact : la cible est PELÉE (directed_exhausted du bot). Persistant
+    et PARTAGÉ — sans ça chaque session fraîche re-cible le même point mort (Set process-local
+    perdu au churn, vécu 16/07 : logs not_found en boucle sur -459,-292)."""
+    w = (memory or {}).get("worlds", {}).get(world)
+    if not w or not w.get("finds"):
+        return memory
+    w["finds"] = [f for f in w["finds"] if not (f.get("x") == int(x) and f.get("z") == int(z))]
+    return memory
+
+
 def apply_event(memory, event, at=None):
     """Applique un event bot à la mémoire. Ignore les types inconnus / champs manquants (pas de crash)."""
     if not isinstance(event, dict):
@@ -199,6 +210,8 @@ def apply_event(memory, event, at=None):
         if t == "cave_found":
             return add_cave(memory, world, event["x"], event["y"], event["z"], at=at,
                             flooded=event.get("flooded", False))
+        if t == "directed_exhausted":
+            return remove_find(memory, world, event["x"], event["z"])
         if t == "material_found":
             return add_find(memory, world, event["material"], event["biome"], event["x"], event["z"], at=at)
         if t == "exposed_ore_found":
