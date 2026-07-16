@@ -182,3 +182,44 @@ test('directedTarget : exclude absent/vide → comportement historique inchangé
   assert.deepStrictEqual(wm.directedTarget(mem, 'w', 'oak_log', { x: 0, z: 0 }),
     { x: 100, z: 0, biome: 'meadow', learned: true });
 });
+
+// loadMemory CACHE mtime-gated (fix churn 16/07) : la mémoire de groupe grossit (5,5 Mo / 25k ores),
+// et les bots ressource la re-parsent (JSON.parse SYNC) à chaque tick via --wm-live → event-loop
+// bloquée → keepalive raté → « Timed out » → churn de sessions. On ne re-parse QUE si le fichier a
+// changé (stat mtime, µs) OU après un min-interval — le parse coûteux devient rare.
+const os = require('node:os');
+const path = require('node:path');
+const fs = require('node:fs');
+
+test('loadMemory : 2e appel sans changement de fichier → NE re-parse PAS (cache)', () => {
+  const f = path.join(os.tmpdir(), `wm-cache-${process.pid}-${Date.now()}.json`);
+  fs.writeFileSync(f, JSON.stringify({ worlds: { w: { ores: [{ x: 1 }] } } }));
+  let parses = 0;
+  const spy = (t) => { parses++; return wm.parseMemory(t); };
+  const a = wm.loadMemory(f, { now: () => 1000, _parse: spy });
+  const b = wm.loadMemory(f, { now: () => 1200, _parse: spy });   // même mtime, <interval → cache
+  assert.strictEqual(parses, 1, 'un seul parse pour deux lectures inchangées');
+  assert.strictEqual(a, b, 'même objet caché retourné');
+  fs.unlinkSync(f);
+});
+
+test('loadMemory : fichier MODIFIÉ (mtime change) → re-parse', () => {
+  const f = path.join(os.tmpdir(), `wm-cache2-${process.pid}-${Date.now()}.json`);
+  fs.writeFileSync(f, JSON.stringify({ worlds: { w: { ores: [] } } }));
+  let parses = 0;
+  const spy = (t) => { parses++; return wm.parseMemory(t); };
+  wm.loadMemory(f, { now: () => 1000, _parse: spy, minMs: 0 });
+  const before = fs.statSync(f).mtimeMs;
+  // réécrit avec un mtime forcé différent
+  fs.writeFileSync(f, JSON.stringify({ worlds: { w: { ores: [{ x: 9 }] } } }));
+  const t = new Date((before + 5000)); fs.utimesSync(f, t, t);
+  const r = wm.loadMemory(f, { now: () => 1050, _parse: spy, minMs: 0 });
+  assert.strictEqual(parses, 2, 're-parse car le fichier a changé');
+  assert.strictEqual(r.worlds.w.ores.length, 1);
+  fs.unlinkSync(f);
+});
+
+test('loadMemory : path absent → {worlds:{}} (inchangé)', () => {
+  assert.deepStrictEqual(wm.loadMemory(''), { worlds: {} });
+  assert.deepStrictEqual(wm.loadMemory('/no/such/file.json'), { worlds: {} });
+});

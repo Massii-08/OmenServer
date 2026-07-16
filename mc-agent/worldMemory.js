@@ -44,10 +44,33 @@ function parseMemory(text) {
 }
 
 /** Charge le fichier --world-memory. {worlds:{}} si absent/illisible. */
-function loadMemory(path) {
+// CACHE mtime-gated (fix churn 16/07) : la mémoire de groupe grossit (5,5 Mo / 25k ores) et les
+// bots ressource la re-parsent (JSON.parse SYNC) à chaque tick via --wm-live → event-loop bloquée
+// → keepalive raté → « Timed out ». On ne re-lit/parse QUE si le fichier a CHANGÉ (stat mtime = µs
+// vs ~40 ms de parse) et au plus 1×/interval. Le parse coûteux devient rare, l'event-loop respire.
+const _memCache = new Map();     // path → { mtimeMs, at, mem }
+const MEM_CACHE_MIN_MS = 8000;   // ne re-stat/parse jamais plus d'1×/8 s par path
+
+function loadMemory(path, opts = {}) {
   if (!path) return { worlds: {} };
-  try { return parseMemory(fs.readFileSync(path, 'utf8')); }
-  catch (e) { return { worlds: {} }; }
+  const now = opts.now || Date.now;
+  const parse = opts._parse || parseMemory;
+  const minMs = opts.minMs != null ? opts.minMs : MEM_CACHE_MIN_MS;
+  const cached = _memCache.get(path);
+  const t = now();
+  if (cached && (t - cached.at) < minMs) return cached.mem;   // trop récent → cache direct (pas même de stat)
+  try {
+    const mtimeMs = fs.statSync(path).mtimeMs;
+    if (cached && cached.mtimeMs === mtimeMs) {                // inchangé → cache (pas de parse)
+      cached.at = t;
+      return cached.mem;
+    }
+    const mem = parse(fs.readFileSync(path, 'utf8'));
+    _memCache.set(path, { mtimeMs, at: t, mem });
+    return mem;
+  } catch (e) {
+    return cached ? cached.mem : { worlds: {} };
+  }
 }
 
 /** Clé du monde courant : label explicite (monde de minage) sinon dimension du bot. */
