@@ -6,7 +6,7 @@
 //  - ne plonge pas en grotte : c'est le mapper qui note l'entrée (caves.js), pas ce module.
 // Le tick fait UNE action courte et rend son label — la boucle mapper re-tick tant que ce n'est pas calme.
 const { Vec3 } = require('vec3');
-const { FOODS } = require('./reflexes');
+const { FOODS, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, isFleeOnlyMob } = require('./reflexes');
 const { bestWeapon } = require('./tools');
 
 const SWARM_COUNT = 3;   // ≥3 hostiles = submergé → fuite (AVEC armure)
@@ -26,21 +26,13 @@ const EAT_HUNGER = 14;   // faim ≤ 14 et nourriture en poche → mange (plus t
 // → mort (téléporte + tape fort). Exclu de nearbyHostiles → jamais riposté/ciblé.
 const NEUTRAL_NO_PROVOKE = new Set(['enderman']);
 
-// FLEE-ONLY (AltoClef getUniversallyDangerousMob) : hostiles qu'on ne doit JAMAIS engager en mêlée.
-//  - wither_skeleton : le contact applique l'effet Wither (dégâts continus inannulables au forcefield)
-//    → mort à petit feu. TOUJOURS fuir.
-//  - hoglin / zoglin : repousse impossible, te « mangent » ; on ne fuit que si déjà bas en PV (<10),
-//    sinon on tolère (ils peuvent être une source de nourriture / pas mortels à pleine vie).
-// Riposter ces mobs pendant le branch-mine est une cause DOCUMENTÉE des morts Nether (T1 jamais bouclé).
-const FLEE_ONLY_ALWAYS = new Set(['wither_skeleton']);
-const FLEE_ONLY_LOWHP = new Set(['hoglin', 'zoglin']);
-const FLEE_ONLY_LOWHP_THRESHOLD = 10;   // PV en dessous desquels hoglin/zoglin deviennent flee-only
+// FLEE-ONLY (AltoClef getUniversallyDangerousMob) : hostiles qu'on ne doit JAMAIS engager en mêlée
+// (wither_skeleton toujours ; hoglin/zoglin si PV<10). Set canonique + prédicat isFleeOnlyMob définis
+// dans reflexes.js (partagés avec la riposte réactive, pas de duplication / import circulaire).
 
-/** Un hostile « trop dangereux pour le contact » est-il présent ? (pur, testable) */
+/** Un hostile « trop dangereux pour le contact » est-il présent parmi la liste ? (pur, testable) */
 function hasFleeOnly(hostiles, health) {
-  const lowHp = health != null && health < FLEE_ONLY_LOWHP_THRESHOLD;
-  return (hostiles || []).some((h) => h && h.name && (
-    FLEE_ONLY_ALWAYS.has(h.name) || (lowHp && FLEE_ONLY_LOWHP.has(h.name))));
+  return (hostiles || []).some((h) => h && h.name && isFleeOnlyMob(h.name, health));
 }
 
 // Viandes crues OK à manger (la chasse en rapporte ; pas d'effet négatif sauf chicken 30% hunger, acceptable).

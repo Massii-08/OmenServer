@@ -25,6 +25,20 @@ const MELEE_HOSTILES = new Set([
 ]);
 const MELEE_RADIUS = 5;       // blocs — un assaillant au contact
 
+// FLEE-ONLY (AltoClef getUniversallyDangerousMob) : hostiles trop dangereux pour le contact — on
+// FUIT même en riposte (jamais de mêlée). wither_skeleton (effet Wither continu inannulable) TOUJOURS ;
+// hoglin/zoglin (repousse impossible, te « mangent ») seulement si déjà bas en PV (<10). Riposter ces
+// mobs pendant le branch-mine = cause documentée des morts Nether (T1 jamais bouclé). Source canonique
+// (survival.js l'importe pour combatDecision) pour éviter la duplication / l'import circulaire.
+const FLEE_ONLY_ALWAYS = new Set(['wither_skeleton']);
+const FLEE_ONLY_LOWHP = new Set(['hoglin', 'zoglin']);
+const FLEE_ONLY_LOWHP_THRESHOLD = 10;   // PV en dessous desquels hoglin/zoglin deviennent flee-only
+/** Ce mob doit-il être fui plutôt que combattu au contact ? (pur, testable) */
+function isFleeOnlyMob(name, health) {
+  if (FLEE_ONLY_ALWAYS.has(name)) return true;
+  return FLEE_ONLY_LOWHP.has(name) && health != null && health < FLEE_ONLY_LOWHP_THRESHOLD;
+}
+
 // Palier DÉFENSIF (hole C) : entre le seuil de fuite (6) et 10 PV — « avant le critique », on lève
 // le bouclier / se repositionne au lieu de continuer à miner. La fuite possède la bande ≤ 6.
 const DEFENSIVE_HEALTH = 10;  // sur 20 — plafond de la bande défensive (6,10]
@@ -171,7 +185,11 @@ function installReflexes(bot, opts = {}) {
     const hurting = bot.health != null && lastHealth != null && bot.health < lastHealth;
     if (attack && hurting) {
       const foe = meleeAssailant(bot, meleeRadius);
-      if (foe && !fighting) {
+      if (foe && isFleeOnlyMob(foe.name, bot.health)) {
+        // FLEE-ONLY : assaillant trop dangereux au contact (wither_skeleton / hoglin bas-PV) → FUIR
+        // au lieu de riposter (riposter = mort à petit feu / se faire manger, cause morts Nether).
+        if (!fleeing) { fleeing = true; emit({ type: 'reflex', action: 'flee', reason: 'flee_only', mob: foe.name }); act(() => { try { flee(bot); } catch (e) {} }); }
+      } else if (foe && !fighting) {
         fighting = true;
         emit({ type: 'reflex', action: 'fight', mob: foe.name });
         act(() => { try { attack(foe); } catch (e) {} });   // riposte après le temps de réaction
@@ -247,4 +265,4 @@ function installReflexes(bot, opts = {}) {
   return { react, breathe };
 }
 
-module.exports = { tryEat, shouldFlee, meleeAssailant, rangedThreat, installReflexes, HUNGER_THRESHOLD, HEALTH_THRESHOLD, DEFENSIVE_HEALTH, OXYGEN_THRESHOLD, DROWN_CRITICAL, FOODS, MELEE_HOSTILES, RANGED };
+module.exports = { tryEat, shouldFlee, meleeAssailant, rangedThreat, installReflexes, isFleeOnlyMob, HUNGER_THRESHOLD, HEALTH_THRESHOLD, DEFENSIVE_HEALTH, OXYGEN_THRESHOLD, DROWN_CRITICAL, FOODS, MELEE_HOSTILES, RANGED, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD };

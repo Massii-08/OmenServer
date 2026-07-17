@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { tryEat, shouldFlee, installReflexes, rangedThreat, DEFENSIVE_HEALTH } = require('../reflexes');
+const { tryEat, shouldFlee, installReflexes, rangedThreat, DEFENSIVE_HEALTH, isFleeOnlyMob } = require('../reflexes');
 
 function fakeBot({ food = 20, health = 20, hasFood = true, threat = null } = {}) {
   const calls = { equipped: [], consumed: 0, handlers: {} };
@@ -159,6 +159,53 @@ test('riposte : creeper proche → FUITE (shouldFlee), jamais d attaque', () => 
   bot.calls.handlers.health();
   assert.strictEqual(attacked.length, 0, 'pas de riposte sur un creeper');
   assert.ok(fled >= 1, 'fuite déclenchée');
+});
+
+// --- FLEE-ONLY réactif : ne JAMAIS riposter les mobs trop dangereux au contact ------------------
+
+test('isFleeOnlyMob : wither_skeleton toujours ; hoglin selon PV ; zombie jamais', () => {
+  assert.strictEqual(isFleeOnlyMob('wither_skeleton', 20), true);
+  assert.strictEqual(isFleeOnlyMob('hoglin', 20), false);   // PV plein → toléré
+  assert.strictEqual(isFleeOnlyMob('hoglin', 8), true);     // bas → fuir
+  assert.strictEqual(isFleeOnlyMob('zoglin', 5), true);
+  assert.strictEqual(isFleeOnlyMob('zombie', 3), false);
+});
+
+test('riposte FLEE-ONLY : wither_skeleton au contact + frappé → FUITE (jamais de mêlée)', () => {
+  const ws = { type: 'hostile', name: 'wither_skeleton', position: { x: 2, y: 64, z: 0, distanceTo: () => 2 } };
+  const attacked = []; let fled = 0; const events = [];
+  const bot = fakeBot({ health: 20, threat: ws });
+  installReflexes(bot, { emit: (e) => events.push(e), fleeFrom: () => fled++, attack: (t) => attacked.push(t) });
+  bot.calls.handlers.health();                 // baseline (lastHealth = 20)
+  bot.health = 16;                             // frappé (effet Wither)
+  bot.calls.handlers.health();
+  assert.strictEqual(attacked.length, 0, 'jamais de riposte mêlée sur un wither_skeleton');
+  assert.ok(fled >= 1, 'fuite déclenchée à la place');
+  assert.ok(events.some((e) => e.action === 'flee' && e.reason === 'flee_only'));
+});
+
+test('riposte FLEE-ONLY : hoglin à PV bas (<10) au contact → FUITE, pas riposte', () => {
+  const h = { type: 'hostile', name: 'hoglin', position: { x: 2, y: 64, z: 0, distanceTo: () => 2 } };
+  const attacked = []; let fled = 0;
+  const bot = fakeBot({ health: 10, threat: h });
+  installReflexes(bot, { emit() {}, fleeFrom: () => fled++, attack: (t) => attacked.push(t) });
+  bot.calls.handlers.health();                 // baseline health 10
+  bot.health = 8;                              // frappé → 8 (<10, >6 seuil de fuite)
+  bot.calls.handlers.health();
+  assert.strictEqual(attacked.length, 0);
+  assert.ok(fled >= 1);
+});
+
+test('riposte : hoglin à PV plein → riposte NORMALE (pas flee-only à pleine vie)', () => {
+  const h = { type: 'hostile', name: 'hoglin', position: { x: 2, y: 64, z: 0, distanceTo: () => 2 } };
+  const attacked = [];
+  const bot = fakeBot({ health: 20, threat: h });
+  installReflexes(bot, { emit() {}, fleeFrom() {}, attack: (t) => attacked.push(t) });
+  bot.calls.handlers.health();
+  bot.health = 18;                             // frappé mais PV haut → toléré
+  bot.calls.handlers.health();
+  assert.strictEqual(attacked.length, 1);
+  assert.strictEqual(attacked[0].name, 'hoglin');
 });
 
 test('riposte : PV bas (≤ seuil) → fuite prioritaire, pas de combat', () => {
