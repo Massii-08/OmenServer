@@ -6,7 +6,7 @@ const assert = require('node:assert');
 const vec3 = require('vec3');
 const {
   combatDecision, isArmored, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick,
-  hasFleeOnly, FLEE_ONLY_LOWHP_THRESHOLD,
+  hasFleeOnly, FLEE_ONLY_LOWHP_THRESHOLD, combatCapability, armorPoints, weaponDamage,
   SWARM_COUNT, LOW_HEALTH, SWARM_UNARMORED, LOW_HEALTH_UNARMORED, HUNT_HUNGER, EAT_HUNGER, RAW_FOODS,
 } = require('./survival');
 
@@ -234,4 +234,35 @@ test('survivalTick : hoglin à PV plein → toujours fight (pas flee-only à ple
   const act = await survivalTick(bot, { fleeFrom: () => true });
   assert.strictEqual(act, 'fight');
   assert.deepStrictEqual(calls.attack, ['hoglin']);
+});
+
+// --- canDealWith (AltoClef) : capacité de combat graduée, CAUTIOUS-ONLY + multi-mob-only ---
+test('combatCapability : formule AltoClef (nu+sans épée=1 ; fer complet+épée fer=7)', () => {
+  assert.strictEqual(combatCapability(0, 0), 1);        // nu, mains nues : gère 0 mob
+  assert.strictEqual(combatCapability(15, 3), 7);       // armure fer (15) + épée fer (3)
+  assert.strictEqual(combatCapability(1, 0), 2);        // 1 botte cuir, sans épée
+});
+test('combatDecision : capability ≤ count ET ≥2 mobs → flee (gère pas le nombre)', () => {
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: 2, armored: true, capability: 2 }), 'flee');
+});
+test('combatDecision : capability CAUTIOUS-ONLY — ne s\'applique JAMAIS à 1 seul mob', () => {
+  // 1 mob : le gate hostileCount>=2 ne s'applique pas → comportement inchangé (fight)
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: 1, armored: true, capability: 1 }), 'fight');
+});
+test('combatDecision : capability suffisante (>count) → fight (bot bien équipé, 0 régression)', () => {
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: 2, armored: true, capability: 5 }), 'fight');
+});
+test('combatDecision : sans capability → comportement historique inchangé', () => {
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: 2, armored: true }), 'fight');
+});
+test('armorPoints / weaponDamage : lecture des slots portés + meilleure épée', () => {
+  const bot = {
+    inventory: {
+      slots: [null, null, null, null, null, { name: 'iron_chestplate' }, null, null, { name: 'leather_boots' }],
+      items: () => [{ name: 'stone_sword' }, { name: 'iron_sword' }, { name: 'cobblestone' }],
+    },
+  };
+  assert.strictEqual(armorPoints(bot), 7);              // iron_chestplate(6) + leather_boots(1)
+  assert.strictEqual(weaponDamage(bot), 3);             // meilleure épée = iron_sword
+  assert.strictEqual(weaponDamage({ inventory: { items: () => [] } }), 0);
 });

@@ -45,7 +45,7 @@ const PASSIVE_FOOD_MOBS = new Set(['cow', 'pig', 'chicken', 'sheep', 'rabbit', '
  * `armored` (optionnel) : SANS armure (false) → seuils prudents (fuit dès 2 hostiles ou PV ≤ 12),
  * anti « mort par combo ». Avec armure OU inconnu → seuils historiques courageux (rétro-compat).
  */
-function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, preferFlee, nearestDist, fleeOnly }) {
+function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, preferFlee, nearestDist, fleeOnly, capability }) {
   if (!hostileCount) return null;
   // CREEPER : JAMAIS de mêlée (il explose au contact → mort instantanée même en armure diamant, vécu
   // live R3 22/06 : fight creeper ×2 → dead en deep mining). On FUIT pour casser la ligne d'explosion ;
@@ -65,6 +65,11 @@ function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, p
   const lowHp = armored === false ? LOW_HEALTH_UNARMORED : LOW_HEALTH;
   if (hostileCount >= swarm) return 'flee';
   if (health != null && health <= lowHp) return 'flee';
+  // canDealWith (AltoClef) : CAUTIOUS-ONLY + multi-mob-only — si on ne peut pas « gérer » le nombre
+  // d'hostiles (capacité ≤ count), on fuit. Le gate hostileCount>=2 laisse le cas 1-mob aux seuils
+  // ci-dessus (pas de sur-prudence qui ferait fuir un unique mob faible). N'AJOUTE que de la prudence
+  // (jamais de témérité) → 0 régression sur les bots bien équipés, fixe « une botte en cuir = courageux ».
+  if (capability != null && hostileCount >= 2 && capability <= hostileCount) return 'flee';
   return 'fight';
 }
 
@@ -94,6 +99,40 @@ function isArmored(bot) {
     if (!slots) return false;
     return slots.slice(5, 9).some((it) => it && it.name);
   } catch (e) { return false; }
+}
+
+// Points d'armure (défense) par pièce (valeurs MC Java). Sert à graduer la capacité de combat
+// (une seule botte en cuir ≠ pleine armure fer — le booléen isArmored ne le distinguait pas).
+const ARMOR_POINTS = {
+  leather_helmet: 1, leather_chestplate: 3, leather_leggings: 2, leather_boots: 1,
+  golden_helmet: 2, golden_chestplate: 5, golden_leggings: 3, golden_boots: 1,
+  chainmail_helmet: 2, chainmail_chestplate: 5, chainmail_leggings: 4, chainmail_boots: 1,
+  iron_helmet: 2, iron_chestplate: 6, iron_leggings: 5, iron_boots: 2,
+  diamond_helmet: 3, diamond_chestplate: 8, diamond_leggings: 6, diamond_boots: 3,
+  netherite_helmet: 3, netherite_chestplate: 8, netherite_leggings: 6, netherite_boots: 3,
+  turtle_helmet: 2,
+};
+// Dégât d'arme au sens AltoClef (1 + bonus matériau ; 0 sans épée).
+const SWORD_DAMAGE = { wooden_sword: 1, golden_sword: 1, stone_sword: 2, iron_sword: 3, diamond_sword: 4, netherite_sword: 5 };
+
+/** Somme des points d'armure PORTÉE (slots 5-8), 0-20. (pur, testable) */
+function armorPoints(bot) {
+  try {
+    const slots = bot.inventory && bot.inventory.slots;
+    if (!slots) return 0;
+    return slots.slice(5, 9).reduce((s, it) => s + (it && ARMOR_POINTS[it.name] ? ARMOR_POINTS[it.name] : 0), 0);
+  } catch (e) { return 0; }
+}
+/** Meilleur dégât d'épée en inventaire (0 sans épée). (pur, testable) */
+function weaponDamage(bot) {
+  const items = (bot.inventory && bot.inventory.items()) || [];
+  let best = 0;
+  for (const it of items) { const d = SWORD_DAMAGE[it && it.name]; if (d && d > best) best = d; }
+  return best;
+}
+/** Capacité de combat continue (AltoClef canDealWith) = nb de mobs « gérables ». (pur, testable) */
+function combatCapability(armorPts, weaponDmg) {
+  return Math.ceil((armorPts || 0) * 3.6 / 20 + (weaponDmg || 0) * 0.8) + 1;
 }
 
 /** Hostiles (kind mineflayer 'Hostile mobs') dans le rayon. */
@@ -159,7 +198,8 @@ async function survivalTick(bot, deps = {}) {
     } catch (e) { return Infinity; }
   })) : null;
   const fleeOnly = hasFleeOnly(hostiles, bot.health);   // wither_skeleton / hoglin bas-PV → jamais de mêlée
-  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear, preferFlee: !!deps.preferFlee, nearestDist, fleeOnly });
+  const capability = combatCapability(armorPoints(bot), weaponDamage(bot));   // canDealWith (cautious-only)
+  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear, preferFlee: !!deps.preferFlee, nearestDist, fleeOnly, capability });
   if (decision === 'flee') {
     try { deps.fleeFrom && deps.fleeFrom(bot); } catch (e) {}
     const ev = { type: 'survival', action: 'flee', hostiles: hostiles.length };
@@ -191,7 +231,7 @@ async function survivalTick(bot, deps = {}) {
 
 module.exports = {
   combatDecision, isArmored, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick, lavaNearby,
-  hasFleeOnly,
+  hasFleeOnly, armorPoints, weaponDamage, combatCapability,
   SWARM_COUNT, LOW_HEALTH, SWARM_UNARMORED, LOW_HEALTH_UNARMORED, HUNT_HUNGER, EAT_HUNGER,
   RAW_FOODS, PASSIVE_FOOD_MOBS, NEUTRAL_NO_PROVOKE,
   FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD,
