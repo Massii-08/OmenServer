@@ -26,6 +26,23 @@ const EAT_HUNGER = 14;   // faim ≤ 14 et nourriture en poche → mange (plus t
 // → mort (téléporte + tape fort). Exclu de nearbyHostiles → jamais riposté/ciblé.
 const NEUTRAL_NO_PROVOKE = new Set(['enderman']);
 
+// FLEE-ONLY (AltoClef getUniversallyDangerousMob) : hostiles qu'on ne doit JAMAIS engager en mêlée.
+//  - wither_skeleton : le contact applique l'effet Wither (dégâts continus inannulables au forcefield)
+//    → mort à petit feu. TOUJOURS fuir.
+//  - hoglin / zoglin : repousse impossible, te « mangent » ; on ne fuit que si déjà bas en PV (<10),
+//    sinon on tolère (ils peuvent être une source de nourriture / pas mortels à pleine vie).
+// Riposter ces mobs pendant le branch-mine est une cause DOCUMENTÉE des morts Nether (T1 jamais bouclé).
+const FLEE_ONLY_ALWAYS = new Set(['wither_skeleton']);
+const FLEE_ONLY_LOWHP = new Set(['hoglin', 'zoglin']);
+const FLEE_ONLY_LOWHP_THRESHOLD = 10;   // PV en dessous desquels hoglin/zoglin deviennent flee-only
+
+/** Un hostile « trop dangereux pour le contact » est-il présent ? (pur, testable) */
+function hasFleeOnly(hostiles, health) {
+  const lowHp = health != null && health < FLEE_ONLY_LOWHP_THRESHOLD;
+  return (hostiles || []).some((h) => h && h.name && (
+    FLEE_ONLY_ALWAYS.has(h.name) || (lowHp && FLEE_ONLY_LOWHP.has(h.name))));
+}
+
 // Viandes crues OK à manger (la chasse en rapporte ; pas d'effet négatif sauf chicken 30% hunger, acceptable).
 const RAW_FOODS = new Set(['beef', 'porkchop', 'chicken', 'mutton', 'rabbit', 'cod', 'salmon']);
 // Mobs passifs chassables pour se nourrir (drop de la viande).
@@ -36,7 +53,7 @@ const PASSIVE_FOOD_MOBS = new Set(['cow', 'pig', 'chicken', 'sheep', 'rabbit', '
  * `armored` (optionnel) : SANS armure (false) → seuils prudents (fuit dès 2 hostiles ou PV ≤ 12),
  * anti « mort par combo ». Avec armure OU inconnu → seuils historiques courageux (rétro-compat).
  */
-function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, preferFlee, nearestDist }) {
+function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, preferFlee, nearestDist, fleeOnly }) {
   if (!hostileCount) return null;
   // CREEPER : JAMAIS de mêlée (il explose au contact → mort instantanée même en armure diamant, vécu
   // live R3 22/06 : fight creeper ×2 → dead en deep mining). On FUIT pour casser la ligne d'explosion ;
@@ -45,6 +62,10 @@ function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, p
   // LAVE proche : mêlée au bord de la lave = mort par knockback (vécu fable1 : ResBot3 « tried to
   // swim in lava » pendant fight zombie en deep-serpentine). On décroche pour se battre au sec.
   if (lavaNear) return 'flee';
+  // FLEE-ONLY : mob trop dangereux pour le contact (wither_skeleton / hoglin bas-PV) → fuite forcée
+  // AVANT toute logique de combat (proactif : le mode minage tourne SANS preferFlee et engageait
+  // tout hostile ≤10 blocs, d'où les morts Nether documentées).
+  if (fleeOnly) return 'flee';
   // Mode MAPPEUR (preferFlee, demande Massii live 2026-07-15) : FUIR par défaut — se défendre
   // UNIQUEMENT si l'assaillant est à portée de coup (risque de hit imminent, ≤3 blocs).
   if (preferFlee) return (nearestDist != null && nearestDist <= 3) ? 'fight' : 'flee';
@@ -145,11 +166,13 @@ async function survivalTick(bot, deps = {}) {
       return Math.sqrt((h.position.x - self.x) ** 2 + (h.position.y - self.y) ** 2 + (h.position.z - self.z) ** 2);
     } catch (e) { return Infinity; }
   })) : null;
-  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear, preferFlee: !!deps.preferFlee, nearestDist });
+  const fleeOnly = hasFleeOnly(hostiles, bot.health);   // wither_skeleton / hoglin bas-PV → jamais de mêlée
+  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear, preferFlee: !!deps.preferFlee, nearestDist, fleeOnly });
   if (decision === 'flee') {
     try { deps.fleeFrom && deps.fleeFrom(bot); } catch (e) {}
     const ev = { type: 'survival', action: 'flee', hostiles: hostiles.length };
     if (lavaNear) ev.reason = 'lava_near';
+    else if (fleeOnly) ev.reason = 'flee_only';
     emit(ev);
     return 'flee';
   }
@@ -176,6 +199,8 @@ async function survivalTick(bot, deps = {}) {
 
 module.exports = {
   combatDecision, isArmored, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick, lavaNearby,
+  hasFleeOnly,
   SWARM_COUNT, LOW_HEALTH, SWARM_UNARMORED, LOW_HEALTH_UNARMORED, HUNT_HUNGER, EAT_HUNGER,
   RAW_FOODS, PASSIVE_FOOD_MOBS, NEUTRAL_NO_PROVOKE,
+  FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD,
 };

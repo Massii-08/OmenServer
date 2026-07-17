@@ -32,12 +32,19 @@ async function smelt(bot, { input, output, count = 1, fuel = [], pollMs = 1000, 
   if (!fblock) return { ok: false, reason: 'no_furnace' };
   const have = _invCount(bot, input);
   if (have < 1) return { ok: false, reason: 'no_input' };
-  const want = Math.min(count, have);
+  // PRÉ-CHECK DÉFICIT DE COMBUSTIBLE (lever vérifié, AltoClef SmeltInFurnaceTask.fuelNeeded) :
+  // `fuelUnits` = SOURCE UNIQUE du combustible-équivalent dispo (coal=8, planches/bûches=1.5, …).
+  // On ne charge JAMAIS plus d'input qu'on ne peut fondre → sinon du raw_iron reste dans le slot
+  // input du four et peut être perdu au reclaim (four repris après une fonte partielle). Fonte
+  // PARTIELLE assumée (want borné) plutôt qu'abort dur : ce qui est fondu est banké.
+  const items0 = (bot.inventory && bot.inventory.items()) || [];
+  const affordable = Math.floor(fuelUnits(items0, fuel));
+  if (affordable < 1) return { ok: false, reason: 'no_fuel' };   // 0 combustible utile
+  const want = Math.min(count, have, affordable);                 // borné par ce qu'on peut fondre
   // Combustible choisi par PRIORITÉ de la liste `fuel` (ordonnée coal→charcoal→planks→logs par
   // l'appelant), pas par ordre d'inventaire → le charbon est brûlé AVANT le bois (§0-bis anti-churn
   // bois : le bois reste dispo pour les outils/bâtons, le charbon miné en descendant fait la fonte).
   const pickFuel = () => pickFuelByPriority((bot.inventory && bot.inventory.items()) || [], fuel);
-  if (!pickFuel()) return { ok: false, reason: 'no_fuel' };
 
   let furnace;
   try { furnace = await bot.openFurnace(fblock); }
@@ -86,4 +93,24 @@ function pickFuelByPriority(items, fuel) {
   return null;
 }
 
-module.exports = { smelt, pickFuelByPriority };
+// Combustible-équivalent (nb d'items qu'UN exemplaire fond) — mécaniques MC standard (wiki Smelting).
+// Le bois (toutes essences : planks/log/wood/stem/hyphae) = 1.5 ; charbon/charcoal = 8 ; etc.
+const FUEL_BURN = {
+  coal: 8, charcoal: 8, coal_block: 80, dried_kelp_block: 20, blaze_rod: 12,
+  lava_bucket: 100, stick: 0.5, bamboo: 0.25,
+};
+function burnValue(name) {
+  if (name == null) return 0;
+  if (Object.prototype.hasOwnProperty.call(FUEL_BURN, name)) return FUEL_BURN[name];
+  if (/_(planks|log|wood|stem|hyphae)$/.test(name)) return 1.5;   // toutes essences de bois
+  return 0;                                                       // pas un combustible connu
+}
+// PUR : total du combustible-équivalent DISPO parmi les items acceptés (`fuel` = liste de noms
+// autorisés). Sert de plafond au nombre d'items fondables (SOURCE UNIQUE, réutilisable par goals/gear).
+function fuelUnits(items, fuel) {
+  const allowed = new Set(fuel || []);
+  return ((items || []).reduce(
+    (s, it) => s + (it && allowed.has(it.name) ? burnValue(it.name) * (it.count || 0) : 0), 0));
+}
+
+module.exports = { smelt, pickFuelByPriority, fuelUnits, burnValue };

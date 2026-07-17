@@ -6,6 +6,7 @@ const assert = require('node:assert');
 const vec3 = require('vec3');
 const {
   combatDecision, isArmored, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick,
+  hasFleeOnly, FLEE_ONLY_LOWHP_THRESHOLD,
   SWARM_COUNT, LOW_HEALTH, SWARM_UNARMORED, LOW_HEALTH_UNARMORED, HUNT_HUNGER, EAT_HUNGER, RAW_FOODS,
 } = require('./survival');
 
@@ -197,4 +198,40 @@ test('combatDecision preferFlee (mappeur) : fuit par défaut, se défend UNIQUEM
   assert.strictEqual(combatDecision({ ...base, nearestDist: 10 }), 'flee');
   assert.strictEqual(combatDecision({ ...base, nearestDist: 2.5 }), 'fight');
   assert.strictEqual(combatDecision({ ...base, hasCreeper: true, nearestDist: 2 }), 'flee'); // creeper : jamais mêlée
+});
+
+// --- FLEE-ONLY (AltoClef getUniversallyDangerousMob) : mobs trop dangereux pour le contact ---
+test('hasFleeOnly : wither_skeleton TOUJOURS (même PV plein)', () => {
+  assert.strictEqual(hasFleeOnly([{ name: 'wither_skeleton' }], 20), true);
+  assert.strictEqual(hasFleeOnly([{ name: 'zombie' }], 20), false);
+});
+test('hasFleeOnly : hoglin/zoglin seulement si PV bas (< seuil)', () => {
+  assert.strictEqual(hasFleeOnly([{ name: 'hoglin' }], 20), false);                       // PV plein → toléré
+  assert.strictEqual(hasFleeOnly([{ name: 'hoglin' }], FLEE_ONLY_LOWHP_THRESHOLD - 1), true); // bas → fuir
+  assert.strictEqual(hasFleeOnly([{ name: 'zoglin' }], 5), true);
+});
+test('combatDecision : fleeOnly → flee AVANT la branche fight (même PV plein + armure)', () => {
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: 1, armored: true, fleeOnly: true }), 'flee');
+  // sans le flag, comportement inchangé (rétro-compat)
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: 1, armored: true }), 'fight');
+});
+test('survivalTick : wither_skeleton proche → flee (jamais riposté), reason=flee_only', async () => {
+  const evs = [];
+  const { bot, calls } = fakeBot({
+    items: [['iron_sword', 1]],
+    entities: [fakeEntity('wither_skeleton', 'Hostile mobs', { x: 4, y: 64, z: 0 })],
+  });
+  const act = await survivalTick(bot, { fleeFrom: () => true, emit: (e) => evs.push(e) });
+  assert.strictEqual(act, 'flee');
+  assert.deepStrictEqual(calls.attack, []);                          // n'a PAS engagé
+  assert.strictEqual(evs.find((e) => e.action === 'flee').reason, 'flee_only');
+});
+test('survivalTick : hoglin à PV plein → toujours fight (pas flee-only à pleine vie)', async () => {
+  const { bot, calls } = fakeBot({
+    health: 20, items: [['iron_sword', 1]],
+    entities: [fakeEntity('hoglin', 'Hostile mobs', { x: 4, y: 64, z: 0 })],
+  });
+  const act = await survivalTick(bot, { fleeFrom: () => true });
+  assert.strictEqual(act, 'fight');
+  assert.deepStrictEqual(calls.attack, ['hoglin']);
 });
