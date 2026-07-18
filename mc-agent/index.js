@@ -2364,6 +2364,14 @@ async function onSpawn() {
     // pathfinder traverser les rivières dès que le détour dépassait ~20 blocs/case d'eau).
     // 45/nœud liquide ≈ détour sec accepté jusqu'à ~45 blocs par case d'eau à traverser.
     if (typeof moves.liquidCost === 'number') moves.liquidCost = 45;
+    // ANTI-PONT (Massii 2026-07-19 : « arrêtez de construire des ponts au-dessus de l'eau ») :
+    // avec liquidCost 45 et placeCost 1 (défaut lib), un pont de cobble coûtait ~20× moins cher
+    // que nager → le pathfinder bétonnait chaque étang (tell énorme, personne ne fait ça).
+    // placeCost 50 > liquidCost 45 ⇒ ordre de préférence : détour sec > nage > pose de bloc.
+    // Les poses VOULUES ne passent pas par ces coûts : pillarUp/abri/table/scellage d'eau sont des
+    // placeBlock directs de skills, et la remontée en pilier d'un trou reste choisie quand c'est
+    // la seule issue (le coût ne compte que face à une alternative).
+    moves.placeCost = 50;
     // Hook eau des skills (explore skippe les waypoints aquatiques) — injectable, pas de require dur.
     bot._mcaInWater = (b) => { try { return isInWater(b || bot); } catch (e) { return false; } };
     // PILIER (Massii « monte mal en pilier ») : le pathfinder ne toure (`allow1by1towers`) qu'avec
