@@ -24,6 +24,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MC_AGENT_DIR = _PROJECT_ROOT / "mc-agent"
 # Fichiers temp de whitelist de commandes par session (dossier propre au bot, PAS data/servers/).
 RUNS_DIR = _PROJECT_ROOT / "data" / "mc_agent_runs"
+# Logs stdout des bots (1 fichier JSONL par session). Double rôle : (1) DÉCOUPLE le bot d'uvicorn —
+# un stdout=PIPE mourait en EPIPE au restart du backend (deploy) malgré start_new_session ; le bot
+# écrit dans un fichier, le backend le TAILE → un deploy ne tue plus les sessions ; (2) forensic
+# persistant (les rings events/transcript sont en mémoire, perdus à chaque restart).
+LOGS_DIR = _PROJECT_ROOT / "data" / "mc_agent_logs"
 # Captures REC distillées (mc_capture_distill.py) : data/mc-captures-distilled/<joueur>/{style.json, clips/}.
 # Si un groupe a `clone_player`, _spawn_bot passe --style/--clips → le bot rejoue la motricité humaine réelle.
 DISTILLED_DIR = _PROJECT_ROOT / "data" / "mc-captures-distilled"
@@ -150,7 +155,8 @@ def _cleanup_session_files(session):
     """Supprime les fichiers temp de la session (dont login-<sid>.txt = secret en clair).
 
     Appelé par stop_session ET en fin de pompe (mort naturelle : crash/kick/déco) —
-    sinon les fichiers login chmod 600 s'accumulent dans RUNS_DIR (finding revue)."""
+    sinon les fichiers login chmod 600 s'accumulent dans RUNS_DIR (finding revue).
+    Le log stdout (LOGS_DIR) n'est PAS supprimé : c'est le forensic persistant."""
     for key in ("cmds_path", "policy_path", "world_path", "wm_path", "quota_path", "login_path"):
         p = session.get(key)
         if p:
@@ -158,6 +164,117 @@ def _cleanup_session_files(session):
                 os.unlink(p)
             except OSError:
                 pass
+
+
+def _alive(session):
+    """Le process de la session est-il vivant ? proc (enfant direct) sinon pid (session adoptée)."""
+    proc = session.get("proc")
+    if proc is not None:
+        return proc.poll() is None
+    pid = session.get("pid")
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+# ─── Registre persisté : les sessions détachées survivent au restart uvicorn (deploy) ─────────────
+# Un deploy tuait TOUTE la flotte (dict _sessions en mémoire + stdout PIPE). Désormais : process
+# détaché + stdout fichier + ce registre → au boot, adopt_orphan_sessions() ré-adopte les bots
+# encore vivants. On ne recycle plus que les bots que le fix CONCERNE (demande Massii 2026-07-19).
+_REG_FIELDS = ("id", "host", "user", "server_id", "objective", "status", "spawned_at",
+               "log_path", "log_pos", "respawn", "respawn_count", "fast_fail_count",
+               "short_count", "user_stopped", "cmds_path", "policy_path", "world_path",
+               "wm_path", "quota_path", "login_path", "banked_path")
+
+
+def _registry_path():
+    # dérivé à l'appel (pas une constante figée à l'import) → suit les monkeypatch de RUNS_DIR
+    return RUNS_DIR / "sessions-registry.json"
+
+
+def _registry_sync():
+    """Snapshot atomique des sessions à process connu → sessions-registry.json. Best-effort."""
+    try:
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        entries = []
+        for s in list(_sessions.values()):
+            proc = s.get("proc")
+            pid = s.get("pid") or (getattr(proc, "pid", None) if proc is not None else None)
+            if not pid:
+                continue
+            e = {k: s.get(k) for k in _REG_FIELDS if s.get(k) is not None}
+            e["pid"] = int(pid)
+            entries.append(e)
+        tmp = _registry_path().with_suffix(".tmp")
+        tmp.write_text(json.dumps({"sessions": entries}), encoding="utf-8")
+        os.replace(tmp, _registry_path())
+    except Exception:  # noqa: BLE001 — la persistance ne doit jamais casser le runtime
+        pass
+
+
+def _pid_is_mc_agent(pid):
+    """pid vivant ET dont la ligne de commande mentionne mc-agent (garde anti-réuse de pid)."""
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, TypeError, ValueError):
+        return False
+    try:  # Linux (prod Omen)
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
+        return b"mc-agent" in cmdline
+    except OSError:
+        pass
+    try:  # fallback macOS/dev
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                             capture_output=True, text=True, timeout=5)
+        return "mc-agent" in (out.stdout or "")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def adopt_orphan_sessions():
+    """Au boot backend : ré-adopte les sessions détachées encore vivantes du registre.
+
+    - pid vivant + cmdline mc-agent → session recréée (proc=None, contrôle par pid), tail du log
+      repris à log_pos → events/carte continuent, self-healing continue, stop/list marchent.
+    - pid mort ou user_stopped → fichiers temp nettoyés, entrée oubliée (PAS de respawn au boot :
+      le boot quotidien de l'Omen ne doit pas ressusciter la flotte d'hier à l'insu de l'opérateur).
+    Limite assumée : une session adoptée n'a plus de stdin (say/rebalance → False) jusqu'à recyclage.
+    Retourne la liste des sids adoptés."""
+    global _counter
+    try:
+        raw = json.loads(_registry_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    adopted = []
+    with _lock:
+        for e in raw.get("sessions", []):
+            sid, pid = e.get("id"), e.get("pid")
+            if not isinstance(sid, int) or sid in _sessions:
+                continue
+            dead_or_stopped = (e.get("user_stopped") or e.get("status") == "stopped"
+                               or not _pid_is_mc_agent(pid))
+            if dead_or_stopped:
+                _cleanup_session_files(e)
+                continue
+            session = {k: e.get(k) for k in _REG_FIELDS}
+            session.update({
+                "id": sid, "pid": int(pid), "proc": None, "adopted": True,
+                "status": e.get("status") or "running",
+                "transcript": [], "events": [], "last_error": None,
+                "spawned_at": e.get("spawned_at") or time.time(),
+            })
+            _sessions[sid] = session
+            _counter = max(_counter, sid)
+            t = threading.Thread(target=_pump_tail, args=(session,), daemon=True)
+            t.start()
+            session["thread"] = t
+            adopted.append(sid)
+    _registry_sync()
+    return adopted
 
 
 # Back-off self-healing (RC2 water-wall 2026-07-14) : les vies de ~21 s (join → « moved too
@@ -202,14 +319,70 @@ def _respawn_plan(lifetime_s, throttled, fast_fails_prev, short_count_prev, resp
 
 
 def _pump(session, stream):
-    """Boucle de lecture du stdout du process : applique chaque event jusqu'à la fin du flux."""
+    """Boucle de lecture du stdout du process (mode PIPE : tests/fallback) jusqu'à la fin du flux."""
     for line in stream:
         event = parse_event_line(line)
         if event:
             _apply_event(session, event)
+    _on_pump_end(session)
+
+
+def _pump_tail(session):
+    """Pompe fichier : taile le log stdout de la session (mode production, process découplé).
+
+    Lignes partielles (write en cours) → recule et attend. Fin = process mort ET fichier drainé
+    (3 lectures vides post-mortem). log_pos checkpointé dans le registre (~50 events) pour que
+    l'adoption post-restart reprenne où on en était (au pire, quelques events re-appliqués —
+    la mémoire de monde est idempotente/dédupliquée)."""
+    path = session.get("log_path")
+    if not path:
+        _on_pump_end(session)
+        return
+    try:
+        f = open(path, "rb")
+    except OSError:
+        _on_pump_end(session)
+        return
+    with f:
+        try:
+            pos = int(session.get("log_pos") or 0)
+            if 0 < pos <= os.path.getsize(path):
+                f.seek(pos)
+        except (OSError, TypeError, ValueError):
+            pass
+        idle_dead = 0
+        since_ckpt = 0
+        while True:
+            line = f.readline()
+            if line:
+                if not line.endswith(b"\n"):
+                    # ligne en cours d'écriture par le bot → attendre qu'elle soit complète
+                    f.seek(-len(line), os.SEEK_CUR)
+                    time.sleep(0.2)
+                    continue
+                event = parse_event_line(line.decode("utf-8", "replace"))
+                if event:
+                    _apply_event(session, event)
+                session["log_pos"] = f.tell()
+                since_ckpt += 1
+                if since_ckpt >= 50:
+                    since_ckpt = 0
+                    _registry_sync()
+                continue
+            if not _alive(session):
+                idle_dead += 1
+                if idle_dead >= 3:
+                    break
+            time.sleep(0.4)
+    _on_pump_end(session)
+
+
+def _on_pump_end(session):
+    """Fin de flux (mort naturelle du process) : état, cleanup, rebalance, self-healing."""
     session["status"] = "stopped"
     # mort naturelle (crash/kick, pas via stop_session) : nettoyer les fichiers temp ici aussi
     _cleanup_session_files(session)
+    _registry_sync()  # l'entrée passe stopped → jamais ré-adoptée après un restart
     # un cartographe mort → les survivants se re-partagent le cercle
     if session.get("objective") == "mapper":
         try:
@@ -499,9 +672,20 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     if api_key:
         env["ANTHROPIC_API_KEY"] = api_key
     _spawn_gate_wait()  # anti « Connection throttled » (joins espacés, cf. SPAWN_MIN_INTERVAL_S)
+    # stdout → FICHIER (pas PIPE) : un PIPE meurt en EPIPE quand uvicorn restart (deploy) malgré
+    # start_new_session → tuait toute la flotte. Le bot écrit dans son log, le backend le taile
+    # (_pump_tail) → sessions découplées du backend. Fallback PIPE si le fichier est inouvrable.
+    log_path = None
+    log_f = None
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        log_path = LOGS_DIR / f"session-{sid}.jsonl"
+        log_f = open(log_path, "ab")
+    except OSError:
+        log_path, log_f = None, None
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
+        stdout=(log_f if log_f is not None else subprocess.PIPE),
         stderr=subprocess.STDOUT,
         stdin=subprocess.PIPE,
         text=True,
@@ -510,8 +694,15 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
         env=env,
         start_new_session=True,  # détaché : survit à un reload uvicorn (cf. piège #30f)
     )
+    if log_f is not None:
+        try:
+            log_f.close()  # le fd est dupliqué chez l'enfant ; notre copie ne sert plus
+        except OSError:
+            pass
     session = {
         "id": sid, "proc": proc, "status": "starting",
+        "pid": getattr(proc, "pid", None),
+        "log_path": str(log_path) if log_path else None, "log_pos": 0,
         "transcript": [], "events": [], "last_error": None,
         "host": host, "user": user, "server_id": server_id,
         "objective": objective if autonomous else None,
@@ -527,7 +718,15 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
         "login_path": str(login_path) if login_path else None,
     }
     _sessions[sid] = session
-    t = threading.Thread(target=_pump, args=(session, proc.stdout), daemon=True)
+    # Registre AVANT de démarrer la pompe : une session qui meurt instantanément passe par
+    # _on_pump_end (cleanup + sync stopped) — l'ordre inverse laisserait une entrée fantôme.
+    _registry_sync()
+    # proc.stdout existe (PIPE : FakeProc des tests / fallback) → pompe stream historique ;
+    # sinon (stdout fichier, mode production) → pompe tail sur le log.
+    if getattr(proc, "stdout", None) is not None:
+        t = threading.Thread(target=_pump, args=(session, proc.stdout), daemon=True)
+    else:
+        t = threading.Thread(target=_pump_tail, args=(session,), daemon=True)
     t.start()
     session["thread"] = t
     if objective == "mapper" and autonomous:
@@ -569,8 +768,7 @@ def _online_usernames(group_id):
     for s in list(_sessions.values()):
         if s.get("server_id") != group_id:
             continue
-        proc = s.get("proc")
-        if proc is None or proc.poll() is None:
+        if _alive(s):
             out.add(str(s.get("user") or "").lower())
     return out
 
@@ -608,6 +806,7 @@ def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="sto
                            "world_label": world_label, "quota": quota, "humanize": humanize,
                            "confine": confine, "no_give": no_give}
         sess.setdefault("respawn_count", 0)
+        _registry_sync()  # le plan de respawn doit survivre au restart (self-healing adopté)
     return sid
 
 
@@ -667,6 +866,7 @@ def start_mappers(group_id, count):
                                "autonomous": True, "objective": "mapper",
                                "world_label": None, "quota": None, "humanize": True}
             sess.setdefault("respawn_count", 0)
+            _registry_sync()  # idem start_for_bot : plan de respawn persisté
         sessions.append(sid)
     return {"sessions": sessions, "launched": n, "available": available, "skipped": skipped}
 
@@ -694,8 +894,9 @@ def get_transcript(sid):
 def list_active():
     # list(...) : snapshot des valeurs avant itération → évite RuntimeError si start_session
     # insère une session sur un autre thread pendant un poll /active concurrent.
+    # Sans proc NI pid (FakeProc minimal des tests) → considérée active (comportement historique).
     return [_public(s) for s in list(_sessions.values())
-            if s.get("proc") is None or s["proc"].poll() is None]
+            if (s.get("proc") is None and not s.get("pid")) or _alive(s)]
 
 
 def send_command(sid, command):
@@ -723,8 +924,18 @@ def stop_session(sid):
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         except (ProcessLookupError, PermissionError, OSError):
             proc.terminate()
+    elif proc is None and s.get("pid") and _alive(s):
+        # session ADOPTÉE (process d'un uvicorn précédent, pas notre enfant) : contrôle par pid
+        try:
+            os.killpg(os.getpgid(int(s["pid"])), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError, TypeError, ValueError):
+            try:
+                os.kill(int(s["pid"]), signal.SIGTERM)
+            except (OSError, TypeError, ValueError):
+                pass
     s["status"] = "stopped"
     _cleanup_session_files(s)
+    _registry_sync()
     if s.get("objective") == "mapper":
         _rebalance_sectors(s.get("server_id"))  # les survivants élargissent leur wedge
     return True

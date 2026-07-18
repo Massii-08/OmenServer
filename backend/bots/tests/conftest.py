@@ -15,6 +15,20 @@ def _no_spawn_gate(monkeypatch):
         pass
 
 
+@pytest.fixture(autouse=True)
+def _isolated_session_dirs(monkeypatch, tmp_path):
+    """Depuis le détachement des sessions (registre + logs stdout), tout spawn écrit
+    sessions-registry.json (RUNS_DIR) et session-<sid>.jsonl (LOGS_DIR) → isolés en tmp
+    pour ne JAMAIS polluer data/ réel pendant les tests. Un test qui re-patch RUNS_DIR
+    lui-même (pattern historique) écrase simplement cette valeur."""
+    try:
+        from backend.bots import mc_agent_manager as mgr
+        monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "mc_agent_runs")
+        monkeypatch.setattr(mgr, "LOGS_DIR", tmp_path / "mc_agent_logs")
+    except Exception:
+        pass
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",

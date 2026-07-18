@@ -292,6 +292,16 @@ async def startup_event():
     from backend.scheduler.engine import start_scheduler
     start_scheduler()
 
+    # MC Agent : ré-adopter les sessions bots détachées encore vivantes (un deploy/restart
+    # uvicorn ne tue plus la flotte — stdout fichier + registre, cf. mc_agent_manager).
+    try:
+        from backend.bots import mc_agent_manager
+        adopted = mc_agent_manager.adopt_orphan_sessions()
+        if adopted:
+            logger.info(f"🤖 MC Agent: {len(adopted)} session(s) ré-adoptée(s): {adopted}")
+    except Exception as e:  # noqa: BLE001 — l'adoption ne doit jamais bloquer le boot
+        logger.warning(f"🤖 MC Agent: adoption des sessions orphelines échouée: {e}")
+
     # Auto-redémarrage des serveurs de jeux
     # Quand l'Omen reboot ou OmenServer redémarre (auto-deploy),
     # on vérifie que tous les conteneurs Docker sont bien running.
