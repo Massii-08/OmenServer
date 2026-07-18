@@ -2511,21 +2511,22 @@ const BotsModule = {
  '................',
  '................',
  '................'] },
- trial_chamber: { p: { T: '#7a6a48', t: '#5a4d32', O: '#e8a838', o: '#a86a1e', c: '#2a2418' }, g: [
+ // Chambre des épreuves (1.21) : salle de tuf, angles cuivre oxydé, trial spawner flamboyant au centre.
+ trial_chamber: { p: { X: '#3fa389', B: '#c26d3f', b: '#7e421f', T: '#7c8078', n: '#20242a', F: '#ff9a28', f: '#ffd94e' }, g: [
  '................',
- '..TTTTTTTTTTTT..',
- '..TtTTTTTTTTtT..',
- '..TTccccccccTT..',
- '..TTcOOccOOcTT..',
- '..TTcOoccoOcTT..',
- '..TtccccccccT t.',
- '..TTccccccccTT..',
- '..TTcOoccoOcTT..',
- '..TTcOOccOOcTT..',
- '..TTccccccccTT..',
- '..TtTTTTTTTTtT..',
- '..TTTTTTTTTTTT..',
- '................',
+ '.XBTTTTTTTTTTBX.',
+ '.BbTTTTTTTTTTbB.',
+ '.TTnnnnnnnnnnTT.',
+ '.TTnnnnnnnnnnTT.',
+ '.TTnnnBBBBnnnTT.',
+ '.TTnnBnFFnBnnTT.',
+ '.XTnnBFffFBnnTX.',
+ '.XTnnBFffFBnnTX.',
+ '.TTnnBnFFnBnnTT.',
+ '.TTnnnBBBBnnnTT.',
+ '.TTnnnnnnnnnnTT.',
+ '.BbTTTTTTTTTTbB.',
+ '.XBTTTTTTTTTTBX.',
  '................',
  '................'] },
  ruined_portal: { p: { O: '#241b33', C: '#6a4fd0', v: '#8a5aff', G: '#f5c542' }, g: [
@@ -2859,27 +2860,53 @@ const BotsModule = {
  ctx.stroke();
  ctx.restore();
  }
+ // Taille des icônes : pleine (2 px/pixel) au zoom, réduite (1) en vue très dézoomée —
+ // sinon un sprite couvre ~100 blocs de monde et tout s'empile.
+ const sSpr = cell >= 20 ? 2 : 1;
  // 4. grottes — sprite « cave » (tooltip au survol, pas de label)
  if (!hid.caves) {
  for (const c of world.caves || []) {
  const x = toX(c.x), y = toY(c.z);
  if (x < -20 || y < -20 || x > w + 20 || y > h + 20) continue;
- this._mcaDrawSprite(ctx, 'cave', x, y, 2, true);
+ this._mcaDrawSprite(ctx, 'cave', x, y, sSpr, true);
  }
  }
- // 5. structures — sprite dédié + label parchemin au zoom ; kind inconnu → pastille+initiale
+ // 5. structures — anti-chevauchement en 2 passes (icônes PUIS étiquettes).
+ //    Les structures rares gagnent la place ; une icône qui recouvrirait une icône déjà posée
+ //    devient une pastille discrète (le tooltip du survol, basé coordonnées, marche toujours).
+ //    Avant : chaque sprite + son étiquette étaient peints dans l'ordre des données → piles
+ //    illisibles de donjons/mines et étiquettes recouvertes par le sprite suivant.
  const showLabels = cell >= 45;
- for (const st of world.structures || []) {
- if (hid['s:' + st.kind]) continue;
- const x = toX(st.x), y = toY(st.z);
- if (x < -24 || y < -24 || x > w + 24 || y > h + 24) continue;
- if (this._mcaDrawSprite(ctx, st.kind, x, y, 2, true)) {
- if (showLabels) this._mcaLabel(ctx, x + 22, y, this._mcaStructName(st.kind));
- } else {
- const col = this._structColor(st.kind);
- ctx.fillStyle = col;
+ const rank = (k) => (this._MCA_STRUCT_RANK[k] !== undefined ? this._MCA_STRUCT_RANK[k] : 2);
+ const hit = (arr, r) => arr.some((q) => r.x < q.x + q.w && r.x + r.w > q.x && r.y < q.y + q.h && r.y + r.h > q.y);
+ const structs = (world.structures || [])
+ .map((st) => ({ st, x: toX(st.x), y: toY(st.z) }))
+ .filter((e) => !hid['s:' + e.st.kind] && e.x >= -24 && e.y >= -24 && e.x <= w + 24 && e.y <= h + 24)
+ .sort((a, b) => rank(a.st.kind) - rank(b.st.kind));
+ const placed = []; // rects d'icônes posées (le tri est stable → même gagnant à chaque redraw)
+ const drawn = []; // candidates de la passe étiquettes
+ for (const e of structs) {
+ const known = !!this._MCA_SPRITES[e.st.kind];
+ const half = known ? 8 * sSpr : 7;
+ const r = { x: e.x - half, y: e.y - half, w: half * 2, h: half * 2 };
+ if (hit(placed, r)) {
+ // recouverte → pastille 3 px couleur du type
+ ctx.fillStyle = this._structColor(e.st.kind);
  ctx.beginPath();
- ctx.arc(x, y, 6, 0, Math.PI * 2);
+ ctx.arc(e.x, e.y, 3, 0, Math.PI * 2);
+ ctx.fill();
+ ctx.strokeStyle = 'rgba(26,20,10,0.9)';
+ ctx.lineWidth = 1;
+ ctx.stroke();
+ continue;
+ }
+ if (known) {
+ this._mcaDrawSprite(ctx, e.st.kind, e.x, e.y, sSpr, true);
+ } else {
+ // kind inconnu → pastille+initiale (comportement historique)
+ ctx.fillStyle = this._structColor(e.st.kind);
+ ctx.beginPath();
+ ctx.arc(e.x, e.y, 6, 0, Math.PI * 2);
  ctx.fill();
  ctx.strokeStyle = 'rgba(26,20,10,0.9)';
  ctx.lineWidth = 1.2;
@@ -2888,13 +2915,33 @@ const BotsModule = {
  ctx.font = 'bold 8px monospace';
  ctx.textAlign = 'center';
  ctx.textBaseline = 'middle';
- ctx.fillText(this._structInitial(st.kind), x, y + 0.5);
+ ctx.fillText(this._structInitial(e.st.kind), e.x, e.y + 0.5);
  ctx.textAlign = 'left';
- if (showLabels) this._mcaLabel(ctx, x + 12, y, this._mcaStructName(st.kind));
+ }
+ placed.push(r);
+ drawn.push({ e, half });
+ }
+ if (showLabels) {
+ // passe étiquettes : jamais sur une icône ni sur une autre étiquette (greedy, rares d'abord)
+ const lrects = placed.slice();
+ ctx.font = '8px PSP, monospace';
+ for (const { e, half } of drawn) {
+ const name = this._mcaStructName(e.st.kind);
+ const lr = { x: e.x + half + 4, y: e.y - 8, w: ctx.measureText(name).width + 12, h: 16 };
+ if (hit(lrects, lr)) continue;
+ this._mcaLabel(ctx, lr.x, e.y, name);
+ lrects.push(lr);
  }
  }
  this._mcaMapScaleBar(ctx, w, h);
  this._mcaFrame(ctx, w, h);
+ },
+
+ // Priorité d'affichage quand deux icônes se disputent la place (0 = la plus rare gagne).
+ _MCA_STRUCT_RANK: {
+ trial_chamber: 0, ancient_city: 0, stronghold: 0, monument: 0,
+ village: 1, fortress: 1, desert_pyramid: 1, jungle_pyramid: 1, pillager_outpost: 1, shipwreck: 1,
+ ruined_portal: 2, dungeon: 3, mineshaft: 4,
  },
 
  // Barre d'échelle (bas-droite) : longueur en blocs, puissance de 2 calée sur 40-180px.
