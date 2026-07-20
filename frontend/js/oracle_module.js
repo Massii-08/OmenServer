@@ -93,6 +93,7 @@ const OracleModule = {
     _dashboard(s) {
         return [
             this._verdictStrip(s),
+            this._horizons(s),
             this._overview(s),
             this._portfolio(s),
             this._simPerformance(s),
@@ -102,6 +103,50 @@ const OracleModule = {
             this._inProgress(s),
             this._footer(s),
         ].join('');
+    },
+
+    // --- Où vit l'edge ? : Brier par horizon + compteur du test pré-enregistré
+    // (sections snapshot `brier_horizons` + `prereg`, absentes des vieux
+    // snapshots → la section disparaît proprement).
+    _horizons(s) {
+        const hs = Array.isArray(s.brier_horizons) ? s.brier_horizons.filter(h => h && h.n > 0) : [];
+        const pre = (s.prereg && s.prereg.brier) ? s.prereg : null;
+        if (!hs.length && !pre) return '';
+        const v = s.verdict || {};
+        const minN = v.min_n || 40, minC = v.min_clusters || 15;
+        const fmt5 = x => (x > 0 ? '+' : '') + Number(x).toFixed(5);
+        const rows = hs.length ? hs.map(h => {
+            const cls = h.diff < 0 ? 'pos' : h.diff > 0 ? 'neg' : '';
+            const ci = (h.ci_low != null && h.ci_high != null) ? ` · IC [${Number(h.ci_low).toFixed(4)}, ${Number(h.ci_high).toFixed(4)}]` : '';
+            return `<div class="t-row">
+                <div><div class="t-name mono">τ≈${Number(h.h_hours).toFixed(0)} h <span class="opn">${esc(Lang.t('oracle.horizon_before_close'))}</span></div>
+                <div class="t-sub mono">n=${h.n} · ${Number(h.brier_model).toFixed(5)} vs ${Number(h.brier_market).toFixed(5)}${ci}</div></div>
+                <div class="t-meta ${cls} mono">${fmt5(h.diff)}</div>
+            </div>`;
+        }).join('') : `<div class="oracle-empty-sm">${esc(Lang.t('oracle.none'))}</div>`;
+        let preBlock = '';
+        if (pre) {
+            const b = pre.brier || {};
+            const n = b.n || 0, cl = b.n_clusters || 0;
+            const met = !!pre.certified;
+            const diffLine = (n > 0 && b.diff != null)
+                ? `<div class="t-sub mono">diff ${fmt5(b.diff)} · IC [${Number(b.ci_low).toFixed(4)}, ${Number(b.ci_high).toFixed(4)}]</div>`
+                : `<div class="t-sub">${esc(Lang.t('oracle.prereg_waiting'))}</div>`;
+            preBlock = `<div class="oracle-panel">
+                <div class="oracle-panel-title">${esc(Lang.t('oracle.prereg'))} <span class="badge ${met ? 'online' : ''}">${esc(met ? Lang.t('oracle.prereg_met') : Lang.t('oracle.prereg_running'))}</span></div>
+                <div class="t-sub">${esc(Lang.t('oracle.prereg_desc'))} <span class="mono">(${esc(Lang.t('oracle.prereg_since'))} ${this._shortDT(pre.since_iso)})</span></div>
+                <div class="ov-bar-row"><span class="ov-lab mono">n</span>${this._progress(100 * Math.min(n / minN, 1))}<span class="ov-val mono">${n}/${minN}</span></div>
+                <div class="ov-bar-row"><span class="ov-lab mono">clusters</span>${this._progress(100 * Math.min(cl / minC, 1))}<span class="ov-val mono">${cl}/${minC}</span></div>
+                ${diffLine}
+            </div>`;
+        }
+        return `<div class="oracle-section">
+            <div class="oracle-sec-head"><h3>${esc(Lang.t('oracle.horizons'))}</h3><span class="oracle-sec-note">${esc(Lang.t('oracle.horizons_desc'))}</span></div>
+            <div class="oracle-grid-2">
+                <div class="oracle-panel"><div class="oracle-table">${rows}</div></div>
+                ${preBlock}
+            </div>
+        </div>`;
     },
 
     // --- Performance en simulation : bilan par seuil d'edge (est-ce que ça marche ?)
