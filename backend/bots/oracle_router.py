@@ -25,9 +25,16 @@ logger = logging.getLogger("omenserver")
 
 router = APIRouter(prefix="/api/bots/oracle", tags=["Oracle"])
 
-ORACLE_SNAPSHOT = Path(os.environ.get(
-    "ORACLE_SNAPSHOT",
-    str(Path.home() / "oracle" / "data" / "snapshot.json")))
+# Une venue = un snapshot (instances Oracle séparées ; 2026-07-20 Kalshi).
+# Whitelist stricte -> aucun chemin dérivé d'une entrée utilisateur.
+SNAPSHOTS = {
+    "polymarket": Path(os.environ.get(
+        "ORACLE_SNAPSHOT",
+        str(Path.home() / "oracle" / "data" / "snapshot.json"))),
+    "kalshi": Path(os.environ.get(
+        "ORACLE_SNAPSHOT_KALSHI",
+        str(Path.home() / "oracle" / "data" / "snapshot-kalshi.json"))),
+}
 
 
 def _require_admin(user) -> None:
@@ -35,33 +42,38 @@ def _require_admin(user) -> None:
         raise HTTPException(status_code=403, detail="Admin uniquement")
 
 
-def _read_snapshot() -> dict:
-    if not ORACLE_SNAPSHOT.is_file():
+def _read_snapshot(venue: str = "polymarket") -> dict:
+    path = SNAPSHOTS.get(venue)
+    if path is None:
+        raise HTTPException(status_code=400, detail="Venue inconnue")
+    if not path.is_file():
         raise HTTPException(
             status_code=404,
             detail="Snapshot Oracle introuvable — le bot n'a pas encore "
                    "écrit de cycle (ou Oracle n'est pas installé sur cette "
                    "machine).")
     try:
-        return json.loads(ORACLE_SNAPSHOT.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         logger.error("oracle snapshot illisible: %s", e)
         raise HTTPException(status_code=500, detail="Snapshot Oracle illisible")
 
 
 @router.get("/snapshot")
-def oracle_snapshot(current_user: User = Depends(get_current_user)):
+def oracle_snapshot(venue: str = "polymarket",
+                    current_user: User = Depends(get_current_user)):
     """Dump complet : santé, verdict, portefeuille, marché, transactions,
-    en-cours. Admin-only."""
+    en-cours. Admin-only. ?venue=polymarket|kalshi (whitelist)."""
     _require_admin(current_user)
-    return _read_snapshot()
+    return _read_snapshot(venue)
 
 
 @router.get("/status")
-def oracle_status(current_user: User = Depends(get_current_user)):
+def oracle_status(venue: str = "polymarket",
+                  current_user: User = Depends(get_current_user)):
     """Résumé léger pour un badge/poll rapide (sans les gros tableaux)."""
     _require_admin(current_user)
-    snap = _read_snapshot()
+    snap = _read_snapshot(venue)
     health = snap.get("health", {})
     verdict = snap.get("verdict", {})
     bankroll = snap.get("bankroll", {})

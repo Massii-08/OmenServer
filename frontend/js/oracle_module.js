@@ -14,6 +14,9 @@ const OracleModule = {
     _container: null,
     _pollInterval: null,
     _snap: null,
+    // Venue affichée (2026-07-20) : chaque venue = une instance Oracle et
+    // son snapshot ; le switch recharge simplement l'autre JSON.
+    _venue: 'polymarket',
 
     async render(container) {
         this.unload();               // coupe tout poll précédent (ré-ouverture / re-render) avant d'en armer un neuf
@@ -29,12 +32,17 @@ const OracleModule = {
                             <div class="oracle-sub">${esc(Lang.t('oracle.subtitle'))}</div>
                         </div>
                     </div>
+                    <div class="lang-switcher oracle-venues" id="oracle-venues">
+                        <button class="lang" data-venue="polymarket" onclick="OracleModule._setVenue('polymarket')">Polymarket</button>
+                        <button class="lang" data-venue="kalshi" onclick="OracleModule._setVenue('kalshi')">Kalshi</button>
+                    </div>
                     <div class="oracle-top-right" id="oracle-top-right"></div>
                 </div>
                 <div id="oracle-body">
                     <div class="oracle-loading">${esc(Lang.t('common.loading'))}</div>
                 </div>
             </div>`;
+        this._syncVenuePills();
         await this._load();
         // Retire la classe d'entrée après l'animation (comme anim.js pour
         // .view-enter) → les refresh du poll ne ré-animent pas.
@@ -55,8 +63,26 @@ const OracleModule = {
         if (this._pollInterval) { clearInterval(this._pollInterval); this._pollInterval = null; }
     },
 
+    _setVenue(v) {
+        if (v === this._venue || (v !== 'polymarket' && v !== 'kalshi')) return;
+        this._venue = v;
+        this._syncVenuePills();
+        const body = document.getElementById('oracle-body');
+        if (body) body.innerHTML = `<div class="oracle-loading">${esc(Lang.t('common.loading'))}</div>`;
+        this._load();
+    },
+
+    _syncVenuePills() {
+        const wrap = document.getElementById('oracle-venues');
+        if (!wrap) return;
+        wrap.querySelectorAll('.lang').forEach(b =>
+            b.classList.toggle('active', b.dataset.venue === this._venue));
+    },
+
     async _load() {
-        const r = await Auth.apiCall('/api/bots/oracle/snapshot');
+        const venue = this._venue;
+        const r = await Auth.apiCall(`/api/bots/oracle/snapshot?venue=${encodeURIComponent(venue)}`);
+        if (venue !== this._venue) return; // switch pendant le fetch : réponse périmée
         const body = document.getElementById('oracle-body');
         if (!body) return;                 // module déchargé entre-temps
         if (!r) return;                    // 401 géré par Auth.apiCall
