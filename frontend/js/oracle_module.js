@@ -280,18 +280,25 @@ const OracleModule = {
     },
 
     // --- Cartes de synthèse (Bento overview)
+    // KPI principal = les VRAIES alertes (les paris du bot) — le pot de
+    // calibration (paris fantômes sous le seuil) est rétrogradé en carte
+    // secondaire : 2 confusions vécues où sa variance passait pour une
+    // « perte du bot » (2026-07-21).
     _overview(s) {
-        const b = s.bankroll || {}, v = s.verdict || {}, u = s.universe || {}, sh = s.shadow || {};
+        const b = s.bankroll || {}, u = s.universe || {}, p = s.paper || {};
+        const rpnl = p.total_pnl_usd;
+        const rCls = rpnl > 0 ? 'up' : rpnl < 0 ? 'down' : '';
+        const rEdge = p.avg_realized_edge != null
+            ? ` · ${esc(Lang.t('oracle.realized_edge'))} ${(p.avg_realized_edge * 100).toFixed(1)}%` : '';
         const pnl = b.net_pnl;
-        const pnlCls = pnl > 0 ? 'up' : pnl < 0 ? 'down' : '';
         const best = (s.edges && s.edges.near_misses && s.edges.near_misses[0]) || null;
         return `<div class="bento-overview oracle-kpi">
             <div class="stat-card big">
-                <span class="label">${esc(Lang.t('oracle.portfolio_value'))}</span>
-                <div class="value">${this._num(b.final, 2)}<span class="unit">$</span></div>
-                <div class="footer"><span class="delta ${pnlCls}">${pnl != null ? (pnl > 0 ? '+' : '') + Number(pnl).toFixed(2) + '$' : '—'}</span> ${esc(Lang.t('oracle.net_since_start'))}</div>
+                <span class="label">${esc(Lang.t('oracle.real_alerts_pnl'))}</span>
+                <div class="value"><span class="delta ${rCls}">${rpnl != null ? (rpnl > 0 ? '+' : '') + Number(rpnl).toFixed(2) : '—'}</span><span class="unit">$</span></div>
+                <div class="footer">${this._num(p.n_resolved)} ${esc(Lang.t('oracle.settled_short'))} · ${this._num(p.n_open)} ${esc(Lang.t('oracle.open_short'))}${rEdge}</div>
             </div>
-            <div class="stat-card"><span class="label">${esc(Lang.t('oracle.bets_resolved'))}</span><div class="value">${this._num(b.n_bets)}</div><div class="footer">${this._num(b.n_open)} ${esc(Lang.t('oracle.open_bets'))}</div></div>
+            <div class="stat-card"><span class="label">${esc(Lang.t('oracle.calibration_pot'))}</span><div class="value">${this._num(b.final, 2)}<span class="unit">$</span></div><div class="footer">${pnl != null ? (pnl > 0 ? '+' : '') + Number(pnl).toFixed(2) + '$' : '—'} · ${this._num(b.n_bets)} ${esc(Lang.t('oracle.settled_short'))}</div></div>
             <div class="stat-card"><span class="label">${esc(Lang.t('oracle.best_edge_24h'))}</span><div class="value">${best ? this._pct(best.edge_net) : '—'}</div><div class="footer">${best ? esc((best.side || '') + ' · ' + (best.asset || '')) : esc(Lang.t('oracle.none'))}</div></div>
             <div class="stat-card"><span class="label">${esc(Lang.t('oracle.evaluated'))}</span><div class="value">${this._num(u.evaluated)}</div><div class="footer">${this._num(u.candidates)} ${esc(Lang.t('oracle.candidates'))}</div></div>
         </div>`;
