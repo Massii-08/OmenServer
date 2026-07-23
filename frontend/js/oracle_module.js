@@ -166,12 +166,27 @@ const OracleModule = {
                 ${diffLine}
             </div>`;
         }
+        // Calibration du modèle (snapshot.reliability) : prédit vs réalisé
+        // par tranche — un gap fort = zone aveugle du modèle.
+        const rel = Array.isArray(s.reliability) ? s.reliability.filter(b => b && b.n > 0) : [];
+        const relRows = rel.map(b => {
+            const bad = Math.abs(b.gap || 0) >= 0.05;
+            return `<div class="t-row">
+                <div><div class="t-name mono">${esc(String(b.bucket || ''))}</div>
+                <div class="t-sub mono">n=${b.n} · ${esc(Lang.t('oracle.predicted'))} ${(b.predicted * 100).toFixed(1)}% · ${esc(Lang.t('oracle.realized'))} ${(b.realized * 100).toFixed(1)}%</div></div>
+                <div class="t-meta ${bad ? 'neg' : ''} mono">${b.gap > 0 ? '+' : ''}${(b.gap * 100).toFixed(1)}%</div>
+            </div>`;
+        }).join('');
+        const relBlock = rel.length
+            ? `<div class="oracle-panel"><div class="oracle-panel-title">${esc(Lang.t('oracle.reliability'))} <span class="opn">${esc(Lang.t('oracle.reliability_desc'))}</span></div><div class="oracle-table">${relRows}</div></div>`
+            : '';
         return `<div class="oracle-section">
             <div class="oracle-sec-head"><h3>${esc(Lang.t('oracle.horizons'))}</h3><span class="oracle-sec-note">${esc(Lang.t('oracle.horizons_desc'))}</span></div>
             <div class="oracle-grid-2">
                 <div class="oracle-panel"><div class="oracle-table">${rows}</div></div>
                 ${preBlock}
             </div>
+            ${relBlock}
         </div>`;
     },
 
