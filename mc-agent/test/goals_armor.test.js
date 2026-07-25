@@ -50,13 +50,25 @@ test('IRON_ARMOR_CHAIN: bot nu → premier but = logs (la chaîne fer complète 
   assert.strictEqual(g.name, 'logs');
 });
 
-test('IRON_ARMOR_CHAIN: pioche fer + kit bois sûr + four + food + 24 lingots → but = iron_armor (craft)', () => {
+test('IRON_ARMOR_CHAIN: pioche fer + kit bois sûr + four + food + 24 lingots → but = shield (1 lingot, avant l\'armure)', () => {
+  // Depuis le 25/07 le BOUCLIER passe avant l'armure : 1 lingot + 6 planches contre 24 lingots,
+  // et il NÉGLIGE le coup au lieu de le réduire (les squelettes étaient le tueur n°1 des bots nus).
   const inv = {
     iron_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1, cooked_beef: 6,
     iron_ingot: 24, cobblestone: 12, oak_planks: 24,
   };
   const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv));
-  assert.strictEqual(g.name, 'iron_armor');
+  assert.strictEqual(g.name, 'shield');
+});
+
+test('IRON_ARMOR_CHAIN: bouclier DÉJÀ équipé (main secondaire) → on passe à l\'armure', () => {
+  const inv = {
+    iron_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1, cooked_beef: 6,
+    iron_ingot: 24, cobblestone: 12, oak_planks: 24,
+  };
+  const c = ctx(inv);
+  c.offhand = 'shield';                      // slot 45 : invisible de inventory.items()
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, c).name, 'iron_armor');
 });
 
 test('IRON_ARMOR_CHAIN: kit prêt SANS nourriture → la descente n est PAS bloquée (chasse = hook best-effort)', () => {

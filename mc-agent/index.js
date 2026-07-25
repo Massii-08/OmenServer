@@ -406,7 +406,14 @@ function ctxExtra() {
   const pos = bot && bot.entity && bot.entity.position;
   // worn : pièces d'armure PORTÉES (slots 5-8, absentes de inventory.items()) — les chaînes armure
   // (iron_armor/diamond_armor) en ont besoin pour leurs prédicats armorNeed/armorWornOk.
-  return { hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()] };
+  // offhand : item de la MAIN SECONDAIRE (slot 45), lui aussi absent de inventory.items(). Sans
+  // lui, le but `shield` ne verrait jamais le bouclier une fois ÉQUIPÉ → re-craft à l'infini.
+  let offhand = null;
+  try {
+    const s = bot && bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
+    offhand = s && s.name ? s.name : null;
+  } catch (e) { /* best-effort */ }
+  return { hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand };
 }
 
 // Table de craft PORTABLE : le bot garde 1 crafting_table en poche et la pose/reprend à la demande

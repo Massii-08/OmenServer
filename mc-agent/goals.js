@@ -14,6 +14,15 @@ function invCount(inv, name) { return inv[name] || 0; }
 function anyLog(inv) {
   return Object.keys(inv).filter((n) => n.endsWith('_log')).reduce((s, n) => s + inv[n], 0);
 }
+// BOUCLIER — il NÉGLIGE le coup (≠ armure qui le réduit) pour 1 lingot + 6 planches. ⚠️ un
+// bouclier ÉQUIPÉ vit en main secondaire (slot 45), absente de `inventory.items()` tout comme
+// l'armure (slots 5-8) : sans `ctx.offhand` le bot en re-crafterait un à l'infini après l'avoir
+// équipé (même piège que `worn` pour armorNeed).
+function hasShield(c) {
+  const o = c || {};
+  return invCount(o.inv || {}, 'shield') >= 1 || o.offhand === 'shield';
+}
+
 function anyPlanks(inv) {
   return Object.keys(inv).filter((n) => n.endsWith('_planks')).reduce((s, n) => s + inv[n], 0);
 }
@@ -204,10 +213,19 @@ const IRON_ARMOR_CHAIN = [
   // bouclait wrong_depth à vie — le serpentin mine au niveau courant, on l'admet jusqu'à y=-59.
   { name: 'iron_deep',    met: (c) => ironOK(c) || IA(c),
     skill: 'branchMine',  args: { targetY: 16, mainLength: 48, branchSpacing: 3, branchLength: 8, serpentine: true, allowDeeper: true } },
-  { name: 'iron_ingot',   met: (c) => invCount(c.inv, 'iron_ingot') >= 3 || invCount(c.inv, 'iron_pickaxe') >= 1 || IA(c),
-    skill: 'smeltIron',   args: { count: 3 } },
+  // 4 lingots, pas 3 : la pioche en consomme exactement 3 → il ne restait JAMAIS de quoi forger
+  // un bouclier. Le 4e lingot est l'investissement de survie le moins cher du jeu (preuve live
+  // 25/07 : les squelettes sont le tueur n°1 des bots nus).
+  { name: 'iron_ingot',   met: (c) => invCount(c.inv, 'iron_ingot') >= 4 || invCount(c.inv, 'iron_pickaxe') >= 1 || IA(c),
+    skill: 'smeltIron',   args: { count: 4 } },
   { name: 'iron_pickaxe', met: (c) => invCount(c.inv, 'iron_pickaxe') >= 1 || IA(c),
     skill: 'craft',       args: { name: 'iron_pickaxe', count: 1 } },
+  // BOUCLIER — juste après la pioche, très loin AVANT l'armure (1 lingot contre 24). `met` est
+  // volontairement SATISFIABLE-OU-SAUTABLE : sans lingot libre ou sans 6 planches le but est
+  // considéré atteint → il ne peut jamais bloquer la chaîne, et il se déclenchera tout seul dès
+  // que la matière sera là (le planner ré-évalue firstUnmet à chaque tour).
+  { name: 'shield',       met: (c) => hasShield(c) || invCount(c.inv, 'iron_ingot') < 1 || anyPlanks(c.inv) < 6,
+    skill: 'craft',       args: { name: 'shield', count: 1 } },
   // Fix n°4 water-wall — le DERNIER MÈTRE de T1 (vécu live NethBot3 : 85× armor_no_progress).
   // Un bot qui REPREND avec pioche fer + fer brut banké a tous les buts amont « met » via I(c) →
   // jamais de bois/four cette session → le smelt d'ensureArmor échoue en silence (0 combustible,
@@ -328,4 +346,5 @@ function firstUnmet(chain, ctx) {
   return null;
 }
 
-module.exports = { buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk };
+module.exports = {
+  hasShield, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk };

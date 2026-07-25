@@ -276,3 +276,57 @@ test('MAPPER_KIT planksNeed : couvre table(4) + pioche bois(3) + sticks manquant
   assert.ok(!g.met({ inv: { wooden_pickaxe: 1, crafting_table: 1, oak_planks: 3 } }));
   assert.ok(g.met({ inv: { wooden_pickaxe: 1, crafting_table: 1, oak_planks: 4 } }));
 });
+
+// ─── BOUCLIER (preuve live world_ax4 25/07) ───────────────────────────────────
+// « NethBot2 was shot by Skeleton » ×8 en 4 min. Le bouclier NÉGLIGE le coup (≠ armure qui le
+// réduit) pour 1 lingot + 6 planches — contre 24 lingots pour un set complet. Le code savait
+// déjà l'équiper/le lever (onDefensive/onRanged) ; RIEN ne le craftait.
+
+const { hasShield } = require('./goals');
+
+function armorChain() { return chainFor('iron_armor'); }
+function goalNamed(name) { return armorChain().find((g) => g.name === name); }
+
+test('bouclier : la chaîne armure contient un but shield AVANT l\'armure', () => {
+  const names = armorChain().map((g) => g.name);
+  assert.ok(names.includes('shield'), 'but shield absent de la chaîne');
+  assert.ok(names.indexOf('shield') < names.indexOf('iron_armor'),
+    'le bouclier doit précéder l\'armure (1 lingot vs 24)');
+});
+
+test('bouclier : la fonte vise 4 lingots (3 pour la pioche + 1 pour le bouclier)', () => {
+  const g = goalNamed('iron_ingot');
+  assert.equal(g.args.count, 4, 'avec 3 la pioche consommait tout, jamais de lingot libre');
+});
+
+test('hasShield voit le bouclier EN POCHE', () => {
+  assert.equal(hasShield({ inv: { shield: 1 } }), true);
+});
+
+test('hasShield voit le bouclier ÉQUIPÉ en main secondaire (piège slot 45)', () => {
+  // inventory.items() n'expose NI l'armure (5-8) NI la main secondaire (45) → sans ce champ le
+  // bot re-crafterait un bouclier à l'infini juste après l'avoir équipé.
+  assert.equal(hasShield({ inv: {}, offhand: 'shield' }), true);
+});
+
+test('hasShield : rien en poche ni en main → false', () => {
+  assert.equal(hasShield({ inv: { iron_ingot: 4 } }), false);
+  assert.equal(hasShield({ inv: {}, offhand: 'torch' }), false);
+  assert.equal(hasShield({}), false);
+});
+
+test('but shield : SATISFAIT quand on l\'a déjà (pas de re-craft)', () => {
+  assert.equal(goalNamed('shield').met({ inv: { iron_ingot: 4, oak_planks: 20 }, offhand: 'shield' }), true);
+});
+
+test('but shield : SATISFAIT (= sauté) si aucun lingot libre — jamais de blocage', () => {
+  assert.equal(goalNamed('shield').met({ inv: { oak_planks: 20 } }), true);
+});
+
+test('but shield : SATISFAIT (= sauté) si moins de 6 planches — jamais de blocage', () => {
+  assert.equal(goalNamed('shield').met({ inv: { iron_ingot: 4, oak_planks: 5 } }), true);
+});
+
+test('but shield : NON satisfait quand lingot + planches sont là → on le craft', () => {
+  assert.equal(goalNamed('shield').met({ inv: { iron_ingot: 1, oak_planks: 6 } }), false);
+});
