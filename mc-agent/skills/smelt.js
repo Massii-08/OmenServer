@@ -70,7 +70,15 @@ async function smelt(bot, { input, output, count = 1, fuel = [], pollMs = 1000, 
       }
       const out = furnace.outputItem && furnace.outputItem();
       if (out && out.count >= 1) {
-        try { await furnace.takeOutput(); got += 1; } catch (e) {}
+        // takeOutput() retire la PILE ENTIÈRE. L'ancien `got += 1` sous-comptait donc massivement
+        // (7 lingots pris en 2 prises = got 2) → `got >= want` faux → une fonte RÉUSSIE était
+        // rapportée en échec, et le planner rebouclait sur un but déjà atteint. Vécu live
+        // world_ax4 25/07 : 3× `opportunistic_smelt ok:false` alors que les bots avaient 1 et
+        // 6 lingots en poche. On compte ce qui est réellement pris.
+        try {
+          const taken = await furnace.takeOutput();
+          got += (taken && taken.count) ? taken.count : out.count;
+        } catch (e) {}
         continue;                                        // re-check tout de suite (peut-être plusieurs prêts)
       }
       if (!hasInput && !(out && out.count >= 1)) break;  // plus rien à fondre ni à récupérer
