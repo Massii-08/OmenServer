@@ -52,3 +52,70 @@ test('meleeAssailant : rayon configurable (mappeur 3) — zombie à 4 blocs hors
   assert.ok(meleeAssailant(mk(2), 3));
   assert.ok(meleeAssailant(mk(4)));           // défaut 5 : comportement historique intact
 });
+
+// ─── COUVERT plutôt que FUITE face à un tireur (analyse live world_ax4, 25/07) ──
+// Autopsie des morts : CHAQUE mort est précédée d'un `reflex: flee`. Ils fuient... et meurent
+// quand même. Normal : fuir un squelette à découvert, c'est courir 20 blocs dans sa ligne de tir
+// (portée d'arc 16). Le squelette pèse 52 des 103 morts du run. À PV bas, sans assaillant au
+// contact, se mettre à couvert domine strictement la fuite — un tireur qui ne voit plus sa cible
+// cesse de tirer.
+function botUnderFire({ health = 5, shooter = true, melee = false } = {}) {
+  const entities = [];
+  if (shooter) entities.push({ type: 'mob', name: 'skeleton', position: { x: 12, y: 64, z: 0 } });
+  if (melee) entities.push({ type: 'mob', name: 'zombie', position: { x: 1, y: 64, z: 0 } });
+  return {
+    health,
+    food: 20,
+    entity: { position: { x: 0, y: 64, z: 0 } },
+    entities: Object.fromEntries(entities.map((e, i) => [i, e])),
+    on: () => {},
+    pathfinder: { setGoal: () => {} },
+    setControlState: () => {},
+    inventory: { items: () => [{ name: 'cobblestone', count: 20 }] },
+    nearestEntity: (pred) => entities.find(pred) || null,
+  };
+}
+
+function runReact(bot, extra = {}) {
+  const calls = { flee: 0, cover: [] };
+  const { react } = installReflexes(bot, Object.assign({
+    emit: () => {},
+    fleeFrom: () => { calls.flee += 1; },
+    onCover: (foe) => { calls.cover.push(foe && foe.name); },
+    now: () => 100000,
+  }, extra));
+  react();
+  return calls;
+}
+
+test('PV bas + tireur SANS assaillant au contact → COUVERT, pas de fuite', () => {
+  const c = runReact(botUnderFire({ health: 5 }));
+  assert.deepEqual(c.cover, ['skeleton'], 'doit se mettre à couvert du squelette');
+  assert.equal(c.flee, 0, 'courir à découvert est précisément ce qui les tuait');
+});
+
+test('PV bas + assaillant au CONTACT → fuite (le couvert ne protège pas d\'un zombie collé)', () => {
+  const c = runReact(botUnderFire({ health: 5, melee: true }));
+  assert.equal(c.flee, 1);
+  assert.equal(c.cover.length, 0);
+});
+
+test('PV bas SANS tireur → fuite classique (comportement inchangé)', () => {
+  const c = runReact(botUnderFire({ health: 5, shooter: false }));
+  assert.equal(c.flee, 1);
+  assert.equal(c.cover.length, 0);
+});
+
+test('sans onCover injecté → fuite (rétro-compat totale des appelants existants)', () => {
+  const bot = botUnderFire({ health: 5 });
+  const calls = { flee: 0 };
+  const { react } = installReflexes(bot, { emit: () => {}, fleeFrom: () => { calls.flee += 1; }, now: () => 100000 });
+  react();
+  assert.equal(calls.flee, 1);
+});
+
+test('PV corrects → ni fuite ni couvert (on ne se terre pas pour rien)', () => {
+  const c = runReact(botUnderFire({ health: 20 }));
+  assert.equal(c.flee, 0);
+  assert.equal(c.cover.length, 0);
+});

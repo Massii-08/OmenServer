@@ -2474,6 +2474,20 @@ async function onSpawn() {
     let panicInFlight = false; // garde de ré-entrée onPanic (bug review #3 : fire-and-forget non-awaité)
     installReflexes(bot, {
       emit, fleeFrom,
+      // COUVERT au lieu de la FUITE quand c'est un TIREUR qui nous met à PV bas (autopsie live
+      // world_ax4 25/07 : chaque mort précédée d'un `flee`, squelette = 52 morts sur 103). Repli
+      // sur la fuite si rien à poser — mieux vaut courir que rester planté sous les flèches.
+      onCover: (shooter) => {
+        (async () => {
+          try {
+            const r = await withTimeout(takeCover(bot, shooter), 3000,
+              () => { try { stopMotion(); } catch (e) {} });
+            emit({ type: 'take_cover', mob: shooter && shooter.name, from: 'flee',
+                   placed: (r && r.placed) || 0, ok: !!(r && r.ok) });
+            if (!r || !r.ok) { try { fleeFrom(bot); } catch (e) {} }
+          } catch (e) { try { fleeFrom(bot); } catch (e2) {} }
+        })();
+      },
       // MAPPEUR (Massii live 2026-07-15) : riposte mêlée à portée de coup only (3) ; canardé → fuit.
       meleeRadius: IS_MAPPER ? 3 : undefined,
       preferFlee: IS_MAPPER,

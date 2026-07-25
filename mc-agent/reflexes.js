@@ -115,6 +115,9 @@ function installReflexes(bot, opts = {}) {
   const flee = opts.fleeFrom || (() => {});
   const attack = opts.attack || null;
   const onWaterStuck = opts.onWaterStuck || null;
+  // onCover(shooter) : se masquer d'un TIREUR au lieu de fuir à découvert (cf. le bloc shouldFlee).
+  // Optionnel — non fourni ⇒ ancien comportement (fuite) intact.
+  const onCover = opts.onCover || null;
   const now = opts.now || Date.now;
   // DÉLAI DE RÉACTION humain (anti-tell #3 : 0 ms = aimbot/ban). reactionMs() → ms avant
   // l'ACTION physique (manger/fuir/riposter/murer) ; schedule(fn,ms) = minuterie (injectables).
@@ -173,8 +176,23 @@ function installReflexes(bot, opts = {}) {
       }
     }
     if (shouldFlee(bot)) {
-      // décision + télémétrie synchrones ; la FUITE part après le temps de réaction.
-      if (!fleeing) { fleeing = true; emit({ type: 'reflex', action: 'flee' }); act(() => { try { flee(bot); } catch (e) {} }); }
+      // COUVERT PLUTÔT QUE FUITE face à un TIREUR (autopsie live world_ax4 25/07 : CHAQUE mort
+      // était précédée d'un `reflex: flee` — ils fuyaient et mouraient quand même, le squelette
+      // pesant 52 des 103 morts). Fuir un archer à découvert, c'est courir dans sa ligne de tir
+      // (portée d'arc 16 blocs) : on encaisse tout le trajet. Un tireur qui ne voit plus sa cible
+      // CESSE de tirer → se masquer domine strictement la fuite. Condition : aucun assaillant au
+      // CONTACT (contre un zombie collé, un muret ne protège de rien — là il faut décrocher).
+      const shooterOnly = onCover && !meleeAssailant(bot, meleeRadius) ? rangedThreat(bot) : null;
+      if (!fleeing) {
+        fleeing = true;
+        if (shooterOnly) {
+          emit({ type: 'reflex', action: 'cover', mob: shooterOnly.name });
+          act(() => { try { onCover(shooterOnly); } catch (e) {} });
+        } else {
+          emit({ type: 'reflex', action: 'flee' });
+          act(() => { try { flee(bot); } catch (e) {} });
+        }
+      }
       lastHealth = bot.health;
       return;
     }
