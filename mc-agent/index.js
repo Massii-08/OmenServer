@@ -75,6 +75,9 @@ const { createClaims, createPresence } = require('./claims');
 const { pickMapperTp } = require('./mapperTp'); // TP-au-mappeur : à qui demander le /tpa (décision pure)
 // REGROUPEMENT APRÈS MORT (idée Massii 25/07, flag --regroup, OFF par défaut) : décision pure.
 const { pickRegroupTarget } = require('./regroup');
+// ENTRAIDE D'ÉQUIPE (Massii 25/07 : « qu'ils s'aident entre eux, et quand ils ont l'armure
+// fer ils se séparent »). Décisions PURES ; l'exécution (marche + toss) est ci-dessous.
+const { teamStatus, pickDonation, allArmored } = require('./teamwork');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
 const { isNight, shelterUntilDawn, shouldShelter } = require('./skills/shelter');
@@ -2358,11 +2361,67 @@ async function onSpawn() {
         const pB = bot.entity && bot.entity.position;
         if (!pB || !presence) return;
         const role = ((world.objective && world.objective.type) === 'mapper') ? 'mapper' : 'worker';
-        presence.beat(Math.round(pB.x), Math.round(pB.z), role);
+        // On publie AUSSI son état d'équipement : c'est ce qui permet aux coéquipiers de voir qui
+        // a besoin d'aide (et de savoir quand tout le monde est équipé → séparation).
+        let st = null;
+        try { st = (role === 'worker') ? teamStatus(buildCtxInv(bot), [..._wornArmor()]) : null; } catch (e) {}
+        presence.beat(Math.round(pB.x), Math.round(pB.z), role, st);
       } catch (e) { /* best-effort */ }
     };
     _beat();
     setInterval(_beat, 60000);
+
+    // ── ÉQUIPE (gated REGROUP) : entraide matérielle, cohésion, puis séparation ──────────────
+    // Cas qui l'a motivé (mesuré world_ax4) : un bot à 3 pièces d'armure gardait 6 lingots
+    // d'avance pendant qu'un autre, à 50 blocs, n'avait RIEN. Le fer dormait dans la mauvaise
+    // poche. Tant que l'équipe n'est pas équipée : on partage son SURPLUS et on reste ensemble.
+    // Une fois tout le monde en armure fer : chacun repart de son côté (demande Massii).
+    if (REGROUP && !IS_MAPPER) {
+      let _teamBusy = false;
+      let _split = false;
+      setInterval(async () => {
+        if (_teamBusy || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy) return;
+        if (!presence || !bot.entity) return;
+        _teamBusy = true;
+        try {
+          const p = bot.entity.position;
+          const me = teamStatus(buildCtxInv(bot), [..._wornArmor()]);
+          const mates = presence.list();
+
+          // SÉPARATION : tout le monde équipé → la phase groupée s'arrête (une seule annonce).
+          if (allArmored(me, mates)) {
+            if (!_split) { _split = true; emit({ type: 'team_split', armor: me.armor }); }
+            return;
+          }
+          _split = false;
+
+          // 1) ENTRAIDE : donner son surplus de lingots au coéquipier le moins équipé.
+          const gift = pickDonation({
+            self: { x: p.x, z: p.z }, selfName: bot.username, selfStatus: me,
+            mates, now: Date.now(),
+          });
+          if (gift) {
+            const ent = bot.players[gift.to] && bot.players[gift.to].entity;
+            const far = !ent || !ent.position || bot.entity.position.distanceTo(ent.position) > 4;
+            if (far && ent && ent.position) {
+              try {
+                await withTimeout(bot.pathfinder.goto(
+                  new pfGoals.GoalNear(ent.position.x, ent.position.y, ent.position.z, 2)),
+                  45000, () => { try { stopMotion(); } catch (e) {} });
+              } catch (e) { /* on tente le toss quand même s'il est à portée */ }
+            }
+            const r = await giveItem(bot, { name: 'iron_ingot' }, gift.to);
+            emit({ type: 'team_gift', to: gift.to, amount: gift.amount, ok: !!(r && r.ok) });
+            return;
+          }
+
+          // 2) COHÉSION : rester à portée du groupe tant que l'armure n'est pas faite. Le /tpa
+          //    intra-groupe est auto-accepté (policy) — même raccourci que le TP-au-mappeur.
+          await tryRegroup();
+        } catch (e) { /* best-effort : jamais throw depuis un timer */ }
+        finally { _teamBusy = false; }
+      }, 90000);
+    }
     // Cible dirigée LOINTAINE (>300) → tenter le raccourci /tpa AVANT la marche (hook explore).
     // Mappers exclus (ils ont /spreadplayers) ; bots non-autonomes : pas de longues marches dirigées.
     if (!bot._mcaBeforeLongTrip && world.objective && world.objective.type !== 'mapper') {

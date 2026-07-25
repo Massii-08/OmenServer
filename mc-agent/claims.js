@@ -153,10 +153,19 @@ function createPresence(file, opts) {
 
   return {
     file,
-    /** Bat la position courante (écrase la précédente du même bot). */
-    beat(x, z, role) {
+    /** Bat la position courante (écrase la précédente du même bot).
+     *  `status` (optionnel) = état d'équipe publié aux coéquipiers — {armor, ingots, need} de
+     *  teamwork.teamStatus. C'est ce qui permet à un bot de voir QUI a besoin d'aide (demande
+     *  Massii 25/07 : « il faut qu'ils s'aident entre eux »). Rétro-compat : sans status, l'entrée
+     *  garde exactement l'ancienne forme. */
+    beat(x, z, role, status) {
       try {
-        return withLock((m, t) => { m.pos[username] = { x, z, role: role || 'worker', at: t }; return true; });
+        return withLock((m, t) => {
+          const e = { x, z, role: role || 'worker', at: t };
+          if (status && typeof status === 'object') Object.assign(e, status);
+          m.pos[username] = e;
+          return true;
+        });
       } catch (e) { return false; }
     },
     /** Positions FRAÎCHES de tous les bots du groupe → [{name, x, z, role, at}]. */

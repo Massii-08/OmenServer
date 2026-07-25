@@ -126,3 +126,30 @@ test('presence : beat écrase la position précédente du même bot (pas d\'accu
   assert.strictEqual(seen.length, 1);
   assert.strictEqual(seen[0].x, 2);
 });
+
+// ─── Statut d'équipe dans le heartbeat (entraide, demande Massii 25/07) ───────
+test('presence : beat publie le statut d\'équipe, list() le restitue', () => {
+  const file = path.join(os.tmpdir(), `mca-presence-status-${process.pid}.json`);
+  try { fs.unlinkSync(file); } catch (e) {}
+  let t = 1000;
+  const clock = () => t;
+  const a = createPresence(file, { username: 'NethBot2', now: clock });
+  a.beat(10, 20, 'worker', { armor: 3, ingots: 6, need: 8 });
+  const seen = a.list().find((p) => p.name === 'NethBot2');
+  assert.strictEqual(seen.armor, 3);
+  assert.strictEqual(seen.ingots, 6);
+  assert.strictEqual(seen.need, 8);
+  assert.strictEqual(seen.role, 'worker');
+  try { fs.unlinkSync(file); } catch (e) {}
+});
+
+test('presence : beat SANS statut garde l\'ancienne forme (rétro-compat)', () => {
+  const file = path.join(os.tmpdir(), `mca-presence-nostatus-${process.pid}.json`);
+  try { fs.unlinkSync(file); } catch (e) {}
+  const a = createPresence(file, { username: 'MapBot1', now: () => 1000 });
+  a.beat(1, 2, 'mapper');
+  const seen = a.list().find((p) => p.name === 'MapBot1');
+  assert.strictEqual(seen.armor, undefined);
+  assert.strictEqual(seen.x, 1);
+  try { fs.unlinkSync(file); } catch (e) {}
+});
