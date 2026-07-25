@@ -46,7 +46,7 @@ const homewarp = require('./homewarp'); // couche warp LÉGITIME sans-give (/set
 const { secureSpot } = require('./skills/secureSpot'); // secure-then-warp : pilier/se murer/flotter AVANT le /home
 const { SCAFFOLD } = require('./skills/pillarUp');     // blocs sacrifiables (comptés pour la tactique)
 const { huntPassive } = require('./skills/hunt');
-const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby } = require('./survival');
+const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, weaponDamage } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
 const { _nearestTable } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { placeBlockNear } = require('./skills/placeBlockNear');
@@ -79,6 +79,10 @@ const { isNight, shelterUntilDawn, shouldShelter } = require('./skills/shelter')
 const { maybeRunKit } = require('./kit');   // survie mappeur : /kit serveur au démarrage/respawn (décision pure)
 const { needDirtBuffer } = require('./dirt');   // survie mappeur : buffer de blocs posables pour sceller l'abri
 const { panicWall } = require('./skills/panicWall');
+// COUVERT anti-squelette (tueur n°1 des bots nus, preuve live world_ax4 25/07) : couper la
+// ligne de vue d'un tireur au lieu de charger/fuir à découvert. Décision pure dans cover.js.
+const { shouldTakeCover } = require('./cover');
+const { takeCover, pickCoverBlock } = require('./skills/takeCover');
 
 function parseArgs(argv) {
   const o = {};
@@ -2486,6 +2490,28 @@ async function onSpawn() {
         (async () => {
           try {
             const sh = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === 'shield');
+            // COUVERT AVANT CHARGE (preuve live world_ax4 25/07 : « was shot by Skeleton » ×8 en
+            // 4 min sur un seul bot — les squelettes sont le tueur n°1 des bots NUS). Charger à
+            // découvert sur 10-16 blocs sans bouclier ni armure = encaisser 3-4 flèches pour rien.
+            // Un squelette qui ne voit plus sa cible CESSE de tirer → on lui coupe la ligne de vue.
+            const dist = (foe && foe.position && bot.entity && bot.entity.position)
+              ? bot.entity.position.distanceTo(foe.position) : 99;
+            const cover = shouldTakeCover({
+              distance: dist,
+              health: bot.health,
+              armorPoints: armorPoints(bot),
+              weaponDamage: weaponDamage(bot),
+              hasShield: !!sh,
+              hasBlock: !!pickCoverBlock(bot),
+            });
+            if (cover) {
+              const r = await withTimeout(takeCover(bot, foe), 3000,
+                () => { try { stopMotion(); } catch (e) {} });
+              emit({ type: 'take_cover', mob: foe && foe.name, dist: Math.round(dist),
+                     placed: (r && r.placed) || 0, ok: !!(r && r.ok) });
+              if (r && r.ok) return;                 // masqué : on reprend le cours normal
+              // pas de couvert possible (rien où poser) → on retombe sur la charge ci-dessous
+            }
             if (sh) {
               const off = bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
               if (!off || off.name !== 'shield') { try { await bot.equip(sh, 'off-hand'); } catch (e) {} }
