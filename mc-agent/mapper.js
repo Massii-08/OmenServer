@@ -203,19 +203,25 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
       } catch (e) { /* chunk non chargé → on ré-essaiera à la prochaine passe */ }
     }
     // COUVERTURE PAR ÉCHANTILLONNAGE : le bot ne peint pas que la cellule où il pose les pieds —
-    // il lit aussi les cellules alentour dans le cache client (gratuit, lecture mémoire). Mesuré
-    // le 25/07 sur world_ax4 : 73-78 % des cellules émises venaient déjà de cet échantillonnage,
-    // preuve que le cache mineflayer porte BIEN au-delà de la view-distance (cf. piège #42g) →
-    // on élargit de 1 à SAMPLE_RINGS anneaux (8 → 48 cellules) au lieu d'attendre la marche.
-    // Arrêt dès qu'un anneau ne rend RIEN (ni lu, ni déjà connu) = bord de la zone chargée.
+    // il lit aussi les cellules alentour dans le cache client (gratuit, lecture mémoire). On vise
+    // le POINT LE PLUS PROCHE de chaque cellule voisine, pas son centre : mesuré live le 25/07
+    // (bot sonde sur world_ax4) le cache s'arrête NET à 96 blocs (6/6 lisible à 96 b, 0/6 à 128 b,
+    // = view-distance 6) → un centre de voisine est à 64-192 b et ne répond qu'en bord de cellule,
+    // alors que son bord le plus proche est à 0-128 b. Une cellule ne porte qu'UN biome quantifié :
+    // n'importe quel point dedans fait l'affaire. Anneaux 1..SAMPLE_RINGS, arrêt dès qu'un anneau
+    // ne rend RIEN (ni lu, ni déjà connu) = bord de la zone chargée (les anneaux ≥2 ne répondront
+    // que si la view-distance du serveur monte — l'élargissement est gratuit et prêt pour ça).
     const baseX = Math.floor(p.x / GRID) * GRID, baseZ = Math.floor(p.z / GRID) * GRID;
+    const near = (base, d, cur) => (d < 0 ? base + d * GRID + GRID - 1     // bord droit de la voisine
+                                  : d > 0 ? base + d * GRID                // bord gauche
+                                  : Math.floor(cur));                      // même colonne que le bot
     for (let ring = 1; ring <= sampleRings; ring++) {
       let touched = 0;
       for (let dx = -ring; dx <= ring; dx++) {
         for (let dz = -ring; dz <= ring; dz++) {
           if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;   // périmètre de l'anneau
-          const nx = baseX + dx * GRID + GRID / 2;
-          const nz = baseZ + dz * GRID + GRID / 2;
+          const nx = near(baseX, dx, p.x);
+          const nz = near(baseZ, dz, p.z);
           const nk = cellKey(nx, nz);
           if (biomeCells.has(nk)) { touched++; continue; }               // déjà peinte = zone chargée
           try {

@@ -559,12 +559,33 @@ test('record : échantillonne PLUSIEURS anneaux autour du bot (pas seulement les
   assert.strictEqual(cells.size, 49, `attendu 7×7 cellules (anneaux 1-3 + la sienne), reçu ${cells.size}`);
 });
 
+test('record : vise le POINT LE PLUS PROCHE de la cellule voisine, pas son centre', async () => {
+  // Mesuré live 25/07 (bot sonde sur world_ax4) : le cache client s'arrête NET à 96 blocs
+  // (6/6 lisible à 96 b, 0/6 à 128 b) — donc viser le CENTRE d'une cellule voisine (jusqu'à 192 b)
+  // échoue presque toujours. Une cellule ne porte qu'UN biome quantifié : n'importe quel point
+  // dedans fait l'affaire → on lit le bord le plus proche.
+  const bot = fakeMapperBot();
+  bot.entity.position = vec3(40, 64, 40);                            // cellule 0,0, loin des bords
+  bot.blockAt = (p) => {
+    const d = Math.sqrt((p.x - 40) ** 2 + (p.z - 40) ** 2);
+    if (d > 96) return null;                                         // portée réelle du cache client
+    return { name: 'stone', boundingBox: 'block', biome: { name: 'plains', id: 1 } };
+  };
+  const events = [];
+  await runMapper(bot, { worldKey: 'overworld', emit: (e) => events.push(e), sleep: async () => {} },
+    { cancelled: true });
+  const cells = new Set(events.filter((e) => e.type === 'biome_seen').map((e) => cellKey(e.x, e.z)));
+  assert.ok(cells.has('128,0'), 'voisine +x non peinte (bord à 88 b, lisible) — on visait le centre');
+  assert.ok(cells.has('0,128'), 'voisine +z non peinte');
+});
+
 test('record : arrête d’élargir dès qu’un anneau entier est hors des chunks chargés', async () => {
   const bot = fakeMapperBot();
   const probes = [];
   bot.blockAt = (p) => {
     probes.push({ x: p.x, z: p.z });
-    if (Math.max(Math.abs(p.x), Math.abs(p.z)) > 150) return null;   // au-delà : chunk non chargé
+    // portée réelle mesurée sur le serveur (view-distance 6) : 96 blocs, puis plus rien
+    if (Math.sqrt(p.x * p.x + p.z * p.z) > 96) return null;
     return { name: 'stone', boundingBox: 'block', biome: { name: 'plains', id: 1 } };
   };
   await runMapper(bot, { worldKey: 'overworld', emit: () => {}, sleep: async () => {} }, { cancelled: true });
