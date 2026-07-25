@@ -35,6 +35,8 @@ BIOME_CAP = 20000  # la carte EST le produit : une cellule biome (~60 o, dédup 
 STRUCT_CAP = 5000  # structures = contenu carte aussi → plafond large (mêmes raisons que BIOME_CAP)
 ORE_CAP = 50000  # phase 2 anti-xray : liste SPARSE (exposés only) — on ne tronque JAMAIS un ore
                  # nécessaire. Le cap reste par type (héritage phase 1) mais ne mord plus en pratique.
+DEPLETED_CAP = 400  # cellules ÉPUISÉES : plafond généreux (une entrée ~40 o) — au-delà on jette
+                    # les plus VIEILLES, car une zone pelée il y a longtemps a pu repousser.
 STRUCT_GRID = 64  # dédup structures : 1 entrée par (kind, cellule 64²) — un village couvre ~3 cellules
 
 
@@ -186,6 +188,34 @@ def add_structure(memory, world, kind, x, y, z, at=None, cap=STRUCT_CAP):
     return memory
 
 
+def add_depleted(memory, world, x, z, at=None, cap=DEPLETED_CAP):
+    """Marque une cellule comme ÉPUISÉE (le bot y est arrivé et n'a rien trouvé) — PERSISTANT et
+    PARTAGÉ entre bots et sessions.
+
+    Pourquoi : l'exclusion vivait dans un Set PAR PROCESS ; avec 134 sessions sur le run world_ax4
+    elle était vidée toutes les ~3 min, si bien que `explore_directed` a re-visé la même cellule
+    pelée **2036 fois sur 2585**. `remove_find` ne suffisait pas : il n'efface qu'un *find*
+    ponctuel, alors que le tier BIOME de directedTarget continuait à proposer la cellule.
+
+    Dédup par coordonnée exacte (idempotent : 50 sessions marquant le même point = 1 entrée)."""
+    if not world:
+        return memory
+    try:
+        xi, zi = int(round(float(x))), int(round(float(z)))
+    except (TypeError, ValueError):
+        return memory
+    w = _world(memory, world)
+    dep = w.setdefault("depleted", [])
+    for e in dep:
+        if e.get("x") == xi and e.get("z") == zi:
+            e["at"] = at            # rafraîchit la date, ne duplique pas
+            return memory
+    dep.append({"x": xi, "z": zi, "at": at})
+    if len(dep) > cap:
+        del dep[0:len(dep) - cap]   # on garde les plus récentes
+    return memory
+
+
 def remove_find(memory, world, x, z):
     """Retire TOUT find à (x,z) exact : la cible est PELÉE (directed_exhausted du bot). Persistant
     et PARTAGÉ — sans ça chaque session fraîche re-cible le même point mort (Set process-local
@@ -211,7 +241,10 @@ def apply_event(memory, event, at=None):
             return add_cave(memory, world, event["x"], event["y"], event["z"], at=at,
                             flooded=event.get("flooded", False))
         if t == "directed_exhausted":
-            return remove_find(memory, world, event["x"], event["z"])
+            # Deux effets : on retire le find pelé (sémantique historique) ET on mémorise la
+            # cellule comme épuisée pour TOUS les tiers de directedTarget (finds, biomes, grottes).
+            remove_find(memory, world, event["x"], event["z"])
+            return add_depleted(memory, world, event["x"], event["z"], at=at)
         if t == "material_found":
             return add_find(memory, world, event["material"], event["biome"], event["x"], event["z"], at=at)
         if t == "exposed_ore_found":

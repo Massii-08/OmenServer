@@ -223,3 +223,53 @@ test('loadMemory : path absent → {worlds:{}} (inchangé)', () => {
   assert.deepStrictEqual(wm.loadMemory(''), { worlds: {} });
   assert.deepStrictEqual(wm.loadMemory('/no/such/file.json'), { worlds: {} });
 });
+
+const { directedTarget } = require('./worldMemory');
+
+// ─── Cellules ÉPUISÉES persistantes (analyse run world_ax4, 26/07) ────────────
+// `explore_directed` a visé la même cellule pelée 2036 fois sur 2585 : l'exclusion vivait dans un
+// Set PAR PROCESS, vidé à chaque nouvelle session (134 sur le run). Elle vit maintenant dans la
+// carte PARTAGÉE (`worlds[w].depleted`, écrite par le backend) et doit court-circuiter TOUS les
+// tiers de directedTarget — y compris le tier biome, que `remove_find` ne touchait pas.
+
+function memWithDepleted(depleted) {
+  return {
+    worlds: {
+      overworld: {
+        biomes: [{ name: 'forest', x: 256, z: 128 }, { name: 'forest', x: 900, z: 0 }],
+        finds: [], caves: [], ores: [], structures: [],
+        depleted,
+      },
+    },
+  };
+}
+
+test('directedTarget IGNORE une cellule marquée épuisée dans la carte partagée', () => {
+  const m = memWithDepleted([{ x: 256, z: 128 }]);
+  const t = directedTarget(m, 'overworld', 'oak_log', { x: 0, z: 0 });
+  assert.ok(t, 'il reste une autre forêt');
+  assert.ok(!(t.x === 256 && t.z === 128), 'la cellule pelée ne doit plus être proposée');
+  assert.strictEqual(t.x, 900);
+});
+
+test('sans épuisement, la cellule la plus proche gagne (comportement inchangé)', () => {
+  const t = directedTarget(memWithDepleted([]), 'overworld', 'oak_log', { x: 0, z: 0 });
+  assert.strictEqual(t.x, 256);
+});
+
+test('l\'épuisement tolère la dérive de coordonnées (rayon, pas égalité stricte)', () => {
+  // Le bot marque là où il s'est arrêté, jamais au pixel près du centre de cellule.
+  const m = memWithDepleted([{ x: 250, z: 133 }]);
+  const t = directedTarget(m, 'overworld', 'oak_log', { x: 0, z: 0 });
+  assert.strictEqual(t.x, 900, 'un marquage à quelques blocs près doit compter');
+});
+
+test('toutes les cibles épuisées → null (le caller passe en exploration libre)', () => {
+  const m = memWithDepleted([{ x: 256, z: 128 }, { x: 900, z: 0 }]);
+  assert.strictEqual(directedTarget(m, 'overworld', 'oak_log', { x: 0, z: 0 }), null);
+});
+
+test('carte sans champ `depleted` → aucun crash (rétro-compat des cartes existantes)', () => {
+  const m = { worlds: { overworld: { biomes: [{ name: 'forest', x: 256, z: 128 }] } } };
+  assert.strictEqual(directedTarget(m, 'overworld', 'oak_log', { x: 0, z: 0 }).x, 256);
+});

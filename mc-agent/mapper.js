@@ -160,7 +160,10 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   const emit = opts.emit || (() => {});
   const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const rng = opts.rng || Math.random;
+  const { shouldRetryBoat } = require('./boat');
   const now = opts.now || (() => Date.now());
+  // Dernier échec de traversée {at:{x,z}, t} — gate anti-boucle (cf. boat.shouldRetryBoat).
+  let lastBoatFail = null;
   const getSector = opts.getSector || (() => opts.sector || null);
   const memory = opts.memory || null;
   const periodicEvery = opts.periodicEvery || 10;
@@ -403,7 +406,7 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
           frontierSkip.add(cell.key);
           // fallthrough
         }
-      } else if (opts.boat && opts.boat.cross) {
+      } else if (opts.boat && opts.boat.cross && shouldRetryBoat(lastBoatFail, here0, now())) {
         // TERRE LOCALE ÉPUISÉE → traversée bateau vers le large (juste traverser).
         emit({ type: 'mapper_boat_cross' });
         let res = null;
@@ -416,10 +419,14 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
         const afterCross = _pos(bot);
         const movedCross = Math.sqrt((afterCross.x - here0.x) ** 2 + (afterCross.z - here0.z) ** 2);
         if (movedCross > 24) {
+          lastBoatFail = null;                       // traversée réussie : le gate se relâche
           emit({ type: 'mapper_boat_landed', reason: res && res.reason, moved: Math.round(movedCross) });
           record();
           continue;
         }
+        // On MÉMORISE l'échec : tant que le bot n'a pas franchement bougé (ou attendu), inutile de
+        // reposer la même question au même endroit — c'est ce qui produisait 115 138 échecs.
+        lastBoatFail = { at: { x: here0.x, z: here0.z }, t: now() };
         emit({ type: 'mapper_boat_failed', reason: (res && res.reason) || 'no_progress' });
         // fallthrough → marche aléatoire
       }

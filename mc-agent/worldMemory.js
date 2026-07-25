@@ -118,6 +118,10 @@ function materialFoundEvent(world, material, biomeName, pos) {
 function _horiz(ax, az, bx, bz) { return Math.sqrt((ax - bx) ** 2 + (az - bz) ** 2); }
 
 /** Clé stable d'une cible dirigée (find/biome/cave) pour l'exclusion des cibles épuisées. */
+// Rayon d'effet d'une cellule épuisée : le bot marque là où il s'est arrêté (jamais au centre
+// exact d'une cellule de biome, qui fait 128 blocs de côté). 64 = demi-cellule.
+const DEPLETED_RADIUS = 64;
+
 function targetKey(x, z) { return Math.round(x) + ',' + Math.round(z); }
 
 /**
@@ -134,11 +138,20 @@ function directedTarget(memory, world, material, from, opts = {}) {
   const exclude = opts.exclude || null;
   const w = (memory && memory.worlds && memory.worlds[world]) || {};
   const fx = from ? from.x : 0, fz = from ? from.z : 0;
+  // Cellules ÉPUISÉES PERSISTANTES (carte partagée, écrites par le backend sur `directed_exhausted`).
+  // Le Set `exclude` est process-local et repart vide à chaque session : avec 134 sessions sur le
+  // run world_ax4, la même cellule pelée a été re-visée 2036 fois sur 2585. Ici la mémoire SURVIT
+  // aux morts et se partage entre bots. Rayon (pas égalité stricte) : le bot marque là où il s'est
+  // arrêté, jamais au centre exact de la cellule.
+  const depleted = Array.isArray(w.depleted) ? w.depleted : [];
+  const isDepleted = (x, z) => depleted.some((d) => d
+    && _horiz(d.x, d.z, x, z) <= (opts.depletedRadius || DEPLETED_RADIUS));
 
   const pickNearest = (cands) => {
     let best = null, bestD = Infinity;
     for (const c of cands) {
       if (exclude && exclude.has(targetKey(c.x, c.z))) continue;
+      if (isDepleted(c.x, c.z)) continue;
       const d = _horiz(fx, fz, c.x, c.z);
       if (d < bestD) { bestD = d; best = c; }
     }
@@ -172,5 +185,5 @@ function directedTarget(memory, world, material, from, opts = {}) {
 
 module.exports = {
   vanillaHint, isOre, parseMemory, loadMemory, worldKey, readBiome, resolveBiome,
-  biomeSeenEvent, caveFoundEvent, materialFoundEvent, directedTarget, targetKey,
+  biomeSeenEvent, caveFoundEvent, materialFoundEvent, directedTarget, targetKey, DEPLETED_RADIUS,
 };

@@ -306,3 +306,39 @@ describe('placeBlockNear — garde-fou anti-pose-illégale (#6)', () => {
     }
   });
 });
+
+// ─── Pass 4 : poser CONTRE UNE PAROI (analyse run world_ax4, 26/07) ──────────
+// `no_table:no_space` ×71 sur le run, en tunnel de minage. Les passes 1-3 ne savent poser que
+// SUR UN SOL. En jeu, un bloc s'accroche à n'importe quelle face pleine : dans un tunnel dont le
+// sol de la case voisine manque mais dont le mur est plein, un joueur pose contre le mur.
+describe('placeBlockNear — pass 4 (paroi)', () => {
+  it('sol voisin ABSENT mais paroi pleine → pose quand même contre la paroi', async () => {
+    const bot = makeBot({
+      position: [0.5, 64, 0.5],
+      blocks: {
+        '0,63,0': { name: 'stone', boundingBox: 'block' },      // sol sous le bot
+        '1,64,0': { name: 'air', boundingBox: 'empty' },        // case cible : libre
+        // PAS de sol en 1,63,0 → passes 1 et 2 abandonnent
+        '1,64,1': { name: 'stone', boundingBox: 'block' },      // paroi latérale de la case cible
+      },
+      inventory: ['crafting_table'],
+    });
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, true, 'la paroi doit suffire');
+    assert.equal(r.pos.x, 1);
+  });
+
+  it('aucune face pleine nulle part → no_space (on n\'invente pas)', async () => {
+    const bot = makeBot({
+      position: [0.5, 64, 0.5],
+      blocks: {
+        '0,63,0': { name: 'stone', boundingBox: 'block' },
+        '1,64,0': { name: 'air', boundingBox: 'empty' },
+      },
+      inventory: ['crafting_table'],
+    });
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'no_space');
+  });
+});

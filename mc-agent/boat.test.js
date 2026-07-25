@@ -130,3 +130,36 @@ test('waterCrossMode : océan → bateau, rivière → nage, autre eau (flaque/c
   assert.strictEqual(waterCrossMode('plains'), null);
   assert.strictEqual(waterCrossMode(null), null);
 });
+
+// ─── ANTI-BOUCLE DE TRAVERSÉE (analyse run world_ax4, 26/07) ──────────────────
+// 115 384 tentatives / 115 342 échecs (87 % de TOUS les events du run), dont 115 138
+// `no_crossable_water`, jusqu'à 40 490 dans une seule session. Chaque échec relançait la même
+// décision au même endroit. « Pas d'eau traversable ICI » ne change pas tant qu'on n'a pas bougé.
+const { shouldRetryBoat, BOAT_RETRY_MIN_MOVE, BOAT_RETRY_COOLDOWN_MS } = require('./boat');
+
+test('1re tentative : toujours autorisée', () => {
+  assert.equal(shouldRetryBoat(null, { x: 0, z: 0 }, 1000), true);
+});
+
+test('juste après un échec, sans avoir bougé → REFUSÉ (c\'était la boucle)', () => {
+  const fail = { at: { x: 0, z: 0 }, t: 1000 };
+  assert.equal(shouldRetryBoat(fail, { x: 0, z: 0 }, 1100), false);
+  assert.equal(shouldRetryBoat(fail, { x: 5, z: 5 }, 1100), false, 'quelques pas ne suffisent pas');
+});
+
+test('après un vrai déplacement → autorisé (la réponse peut changer)', () => {
+  const fail = { at: { x: 0, z: 0 }, t: 1000 };
+  assert.equal(shouldRetryBoat(fail, { x: BOAT_RETRY_MIN_MOVE, z: 0 }, 1100), true);
+});
+
+test('après le temps d\'attente → autorisé même sur place', () => {
+  const fail = { at: { x: 0, z: 0 }, t: 1000 };
+  assert.equal(shouldRetryBoat(fail, { x: 0, z: 0 }, 1000 + BOAT_RETRY_COOLDOWN_MS), true);
+});
+
+test('seuils surchargeables + entrées bancales → jamais de crash', () => {
+  const fail = { at: { x: 0, z: 0 }, t: 1000 };
+  assert.equal(shouldRetryBoat(fail, { x: 10, z: 0 }, 1100, { minMove: 5 }), true);
+  assert.equal(shouldRetryBoat({}, { x: 0, z: 0 }, 1100), true);
+  assert.equal(shouldRetryBoat(fail, null, 1100), true);
+});

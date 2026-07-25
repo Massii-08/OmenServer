@@ -154,6 +154,33 @@ async function placeBlockNear(bot, itemName) {
     }
   }
 
+  // ── Pass 4 : poser CONTRE UNE PAROI (analyse run world_ax4, 26/07 : `no_table:no_space` ×71,
+  // en tunnel de minage). Les passes 1-3 ne savent poser QUE sur un sol (`placeBlock(sol, +Y)`).
+  // Or en jeu un bloc s'accroche à N'IMPORTE QUELLE face d'un voisin plein : dans un tunnel dont
+  // le sol de la case voisine manque mais dont les murs sont pleins, un joueur pose contre le mur.
+  // Pour remplir la case C, il suffit d'un voisin plein N et de la face (C − N).
+  const SIDES = [
+    new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1),
+    new Vec3(0, 1, 0), new Vec3(0, -1, 0),
+  ];
+  for (const d of dirs) {
+    const cellPos = base.plus(d);
+    const cell = bot.blockAt(cellPos);
+    if (!cell || !REPLACEABLE.has(cell.name)) continue;      // la case doit être libre
+    for (const s of SIDES) {
+      const refPos = cellPos.plus(s);
+      const ref = bot.blockAt(refPos);
+      if (!ref || ref.boundingBox !== 'block') continue;     // il faut une face pleine où s'accrocher
+      if (!_refOk(bot, ref)) continue;
+      try {
+        await bot.equip(item, 'hand');
+        await bot.placeBlock(ref, s.scaled(-1));             // ref + (−s) == cellPos
+        if (!(await _confirmPlaced(bot, cellPos))) continue;
+        return { ok: true, pos: cellPos };
+      } catch (e) { /* face suivante */ }
+    }
+  }
+
   return { ok: false, reason: 'no_space' };
 }
 

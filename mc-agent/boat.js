@@ -154,4 +154,31 @@ async function sailToLand(bot, headingYaw, opts = {}) {
   return { landed, reason };
 }
 
-module.exports = { outwardHeading, landAhead, waterEdgeAlong, waterCrossMode, boatStuck, ensureBoat, sailToLand, WATER_NAMES };
+// ANTI-BOUCLE DE TRAVERSÉE (analyse du run world_ax4, 26/07) : 115 384 tentatives de traversée
+// pour 115 342 échecs — dont 115 138 `no_crossable_water` — soit 87 % de TOUS les events du run,
+// et jusqu'à 40 490 échecs dans une seule session. Chaque échec relançait immédiatement la même
+// décision, au même endroit, sans rien changer. `no_crossable_water` signifie « il n'y a pas d'eau
+// traversable ICI » : re-tester sans avoir bougé ne peut donner que le même résultat.
+const BOAT_RETRY_COOLDOWN_MS = 60000;   // ou attendre : la mer ne vient pas à nous
+const BOAT_RETRY_MIN_MOVE = 32;         // ou aller voir ailleurs : c'est ça qui change la réponse
+
+/**
+ * PUR — a-t-on le droit de retenter une traversée ? Après un échec, il faut soit avoir BOUGÉ
+ * franchement, soit avoir laissé passer du temps. Sans ça, c'est une boucle serrée.
+ * @param {{at:{x:number,z:number}, t:number}|null} lastFail dernier échec (null = jamais)
+ * @param {{x:number,z:number}} pos position courante
+ * @param {number} now horloge (injectable)
+ * @returns {boolean}
+ */
+function shouldRetryBoat(lastFail, pos, now, opts = {}) {
+  if (!lastFail || !lastFail.at || !pos) return true;
+  const cooldown = opts.cooldownMs === undefined ? BOAT_RETRY_COOLDOWN_MS : opts.cooldownMs;
+  const minMove = opts.minMove === undefined ? BOAT_RETRY_MIN_MOVE : opts.minMove;
+  if ((now - (lastFail.t || 0)) >= cooldown) return true;
+  return Math.hypot(pos.x - lastFail.at.x, pos.z - lastFail.at.z) >= minMove;
+}
+
+module.exports = {
+  outwardHeading, landAhead, waterEdgeAlong, waterCrossMode, boatStuck, ensureBoat, sailToLand,
+  shouldRetryBoat, WATER_NAMES, BOAT_RETRY_COOLDOWN_MS, BOAT_RETRY_MIN_MOVE,
+};
