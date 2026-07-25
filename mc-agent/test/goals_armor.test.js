@@ -223,9 +223,12 @@ test('IRON_ARMOR_CHAIN: pioche fer + 24 raw_iron mais 0 combustible → but = ar
   assert.strictEqual(g.name, 'armor_fuel');
 });
 
-test('IRON_ARMOR_CHAIN: fer brut + charbon mais PAS de four → armor_cobble puis armor_furnace', () => {
+test('IRON_ARMOR_CHAIN: fer brut + charbon mais PAS de four → block_buffer puis armor_furnace', () => {
+  // Depuis le 25/07, poche VIDE de blocs posables ⇒ `block_buffer` passe avant (il faut de quoi
+  // se murer/se couvrir sous terre). Ce n'est pas un détour : il ramasse justement du cobble,
+  // donc il sert AUSSI armor_cobble. Avec 8 cobble en poche, les deux sont satisfaits d'un coup.
   const noCobble = { iron_pickaxe: 1, raw_iron: 24, coal: 4, crafting_table: 1 };
-  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(noCobble, [], 64)).name, 'armor_cobble');
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(noCobble, [], 64)).name, 'block_buffer');
   const withCobble = { ...noCobble, cobblestone: 8 };
   assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(withCobble, [], 64)).name, 'armor_furnace');
 });

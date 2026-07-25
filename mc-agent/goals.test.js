@@ -330,3 +330,33 @@ test('but shield : SATISFAIT (= sauté) si moins de 6 planches — jamais de blo
 test('but shield : NON satisfait quand lingot + planches sont là → on le craft', () => {
   assert.equal(goalNamed('shield').met({ inv: { iron_ingot: 1, oak_planks: 6 } }), false);
 });
+
+// ─── BUFFER DE BLOCS POSABLES (mesure live world_ax4, 25/07) ──────────────────
+// Les deux protections livrées ce soir — se mettre à COUVERT d'un tireur et se MURER quand
+// creuser échoue — posent des blocs. Sans blocs, elles sont inopérantes : 12 abris avortés et
+// 12 couverts en `placed:0`. Et la fonte d'amorçage BRÛLE les planches (combustible), donc la
+// poche se vide précisément quand la survie en a besoin. Le buffer existait (dirt.js) mais
+// n'était câblé que pour les cartographes.
+const { posableCount } = require('./goals');
+
+test('posableCount compte les blocs POSABLES (terre, cobble, gravier…)', () => {
+  assert.strictEqual(posableCount({ cobblestone: 5, dirt: 3, diamond: 9 }), 8);
+  assert.strictEqual(posableCount({ oak_planks: 20 }), 20, 'les planches se posent aussi');
+  assert.strictEqual(posableCount({ iron_ingot: 4 }), 0, 'un lingot ne se pose pas');
+  assert.strictEqual(posableCount({}), 0);
+  assert.strictEqual(posableCount(null), 0);
+});
+
+test('chaîne armure : un but block_buffer existe AVANT la descente', () => {
+  const names = chainFor('iron_armor').map((g) => g.name);
+  assert.ok(names.includes('block_buffer'), 'but block_buffer absent');
+  assert.ok(names.indexOf('block_buffer') < names.indexOf('descend_y16'),
+    'il faut descendre AVEC de quoi se murer');
+});
+
+test('block_buffer : satisfait dès 8 blocs posables', () => {
+  const g = chainFor('iron_armor').find((x) => x.name === 'block_buffer');
+  assert.strictEqual(g.met({ inv: { cobblestone: 8 } }), true);
+  assert.strictEqual(g.met({ inv: { cobblestone: 7 } }), false);
+  assert.strictEqual(g.met({ inv: { dirt: 4, oak_planks: 4 } }), true, 'toutes sources confondues');
+});

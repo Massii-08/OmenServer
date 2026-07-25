@@ -18,6 +18,17 @@ function anyLog(inv) {
 // bouclier ÉQUIPÉ vit en main secondaire (slot 45), absente de `inventory.items()` tout comme
 // l'armure (slots 5-8) : sans `ctx.offhand` le bot en re-crafterait un à l'infini après l'avoir
 // équipé (même piège que `worn` pour armorNeed).
+// Blocs POSABLES en poche (source unique : dirt.POSABLE + toutes les planches). C'est la MATIÈRE
+// des deux protections livrées le 25/07 : se mettre à couvert d'un tireur, et se murer quand
+// creuser échoue. Mesure live : sans elle, 12 abris avortés + 12 couverts en `placed:0`. La fonte
+// d'amorçage brûlant les planches, la poche se vide pile quand la survie en a besoin.
+const { POSABLE } = require('./dirt');
+function posableCount(inv) {
+  const o = inv || {};
+  return Object.keys(o).reduce(
+    (s, n) => s + ((POSABLE.has(n) || n.endsWith('_planks')) ? (o[n] || 0) : 0), 0);
+}
+
 function hasShield(c) {
   const o = c || {};
   return invCount(o.inv || {}, 'shield') >= 1 || o.offhand === 'shield';
@@ -204,6 +215,12 @@ const IRON_ARMOR_CHAIN = [
   { name: 'plank_buffer', met: (c) => (c.y !== undefined && c.y <= 30) ||
       (anyPlanks(c.inv) + anyLog(c.inv) * 4 >= 24) || ironOK(c) || IA(c),
     skill: 'gatherLog',   args: { count: 6 } },
+  // On ne descend pas les mains vides : sous terre, 8 blocs posables = un abri ou un couvert.
+  // Cobble/stone d'abord (omniprésents en profondeur ET en surface rocheuse), terre ensuite
+  // (drop sans outil). Re-vérifié à chaque tour du planner → le stock se recomplète tout seul
+  // quand la fonte a brûlé les planches.
+  { name: 'block_buffer', met: (c) => posableCount(c.inv) >= 8 || IA(c),
+    skill: 'gather',      args: { name: ['cobblestone', 'stone', 'dirt', 'grass_block', 'gravel'], count: 8 } },
   { name: 'descend_y16',  met: (c) => (c.y !== undefined && c.y <= 18) || ironOK(c) || IA(c),
     skill: 'descendDiagonal', args: { targetY: 16 } },
   // serpentine:true (fix n°2 water-wall) : le mode serpentin TOURNE au contact de l'eau (+ scelle
@@ -347,4 +364,4 @@ function firstUnmet(chain, ctx) {
 }
 
 module.exports = {
-  hasShield, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk };
+  hasShield, posableCount, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk };
