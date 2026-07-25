@@ -98,4 +98,53 @@ function allArmored(selfStatus, mates, opts = {}) {
   return workers.every((m) => (m.armor || 0) >= 4);
 }
 
-module.exports = { teamStatus, pickDonation, allArmored, PIECES, INGOTS_PER_PIECE, MIN_GIFT, AID_RANGE };
+// ── DÉFENSE MUTUELLE (Massii 25/07 : « il faut aussi qu'ils s'aident contre les mobs ») ──────
+// Ici la présence partagée (heartbeat 60 s) est INUTILISABLE : un combat dure quelques secondes.
+// On raisonne donc sur la PERCEPTION LOCALE — le bot voit les joueurs et les mobs autour de lui.
+
+const ASSIST_RANGE = 20;      // blocs — au-delà, j'arrive après la bataille
+const THREAT_RADIUS = 5;      // un mob à ≤5 blocs d'un coéquipier l'agresse vraiment
+const ASSIST_MIN_HEALTH = 12; // en dessous, je me sauve MOI (on ne meurt pas à deux)
+
+/**
+ * PUR — quel mob attaquer pour secourir un coéquipier ? null si rien à faire.
+ *
+ * Priorités : (1) je ne pars pas au secours si je suis moi-même en danger — deux morts valent
+ * moins qu'une ; (2) le mob doit MENACER quelqu'un (≤THREAT_RADIUS d'un coéquipier), pas juste
+ * traîner ; (3) à égalité, le plus proche de MOI (j'arrive plus vite, j'encaisse moins).
+ *
+ * @param {{self:{x,z,health}, mates:Array<{name,x,z}>, hostiles:Array<{name,x,z,id}>,
+ *          isFleeOnly?:function, opts?:object}} p
+ * @returns {{mob:Object, mate:string, dist:number}|null}
+ */
+function pickMobAssist({ self, mates, hostiles, isFleeOnly, opts = {} } = {}) {
+  if (!self || typeof self.x !== 'number') return null;
+  const minHp = opts.minHealth === undefined ? ASSIST_MIN_HEALTH : opts.minHealth;
+  if (typeof self.health === 'number' && self.health < minHp) return null;   // je me soigne d'abord
+  const range = opts.range || ASSIST_RANGE;
+  const threatR = opts.threatRadius || THREAT_RADIUS;
+  const fleeOnly = isFleeOnly || (() => false);
+
+  let best = null;
+  for (const m of (hostiles || [])) {
+    if (!m || typeof m.x !== 'number') continue;
+    if (fleeOnly(m.name)) continue;                       // mob qu'on FUIT : on n'y envoie personne
+    const dMe = Math.hypot(m.x - self.x, m.z - self.z);
+    if (dMe > range) continue;                            // trop loin pour arriver à temps
+    // Menace-t-il un coéquipier ? (et pas moi : mes propres réflexes s'en chargent déjà)
+    let victim = null, dVictim = Infinity;
+    for (const mate of (mates || [])) {
+      if (!mate || typeof mate.x !== 'number') continue;
+      const d = Math.hypot(m.x - mate.x, m.z - mate.z);
+      if (d <= threatR && d < dVictim) { victim = mate.name; dVictim = d; }
+    }
+    if (!victim) continue;
+    if (!best || dMe < best.dist) best = { mob: m, mate: victim, dist: Math.round(dMe) };
+  }
+  return best;
+}
+
+module.exports = {
+  teamStatus, pickDonation, allArmored, pickMobAssist,
+  PIECES, INGOTS_PER_PIECE, MIN_GIFT, AID_RANGE, ASSIST_RANGE, THREAT_RADIUS, ASSIST_MIN_HEALTH,
+};

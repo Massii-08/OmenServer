@@ -20,7 +20,7 @@ const { goto } = require('./skills/goto');
 const { mineBlock, collectWood } = require('./skills/mineBlock');
 const { attackNearest } = require('./skills/attackNearest');
 const { fleeFrom, isFleeHostile } = require('./skills/fleeFrom');
-const { installReflexes, RANGED } = require('./reflexes');
+const { installReflexes, RANGED, DEFENSIVE_HEALTH, isFleeOnlyMob } = require('./reflexes');
 const { decideReaction } = require('./triggers');
 const { loadCommands, isAllowed, buildCommandDocs } = require('./commands');
 const { loadPolicy, isTrusted, parseTpRequest, parseTradeRequest, gateDecision, buildTrustDocs } = require('./trust');
@@ -77,7 +77,7 @@ const { pickMapperTp } = require('./mapperTp'); // TP-au-mappeur : à qui demand
 const { pickRegroupTarget } = require('./regroup');
 // ENTRAIDE D'ÉQUIPE (Massii 25/07 : « qu'ils s'aident entre eux, et quand ils ont l'armure
 // fer ils se séparent »). Décisions PURES ; l'exécution (marche + toss) est ci-dessous.
-const { teamStatus, pickDonation, allArmored } = require('./teamwork');
+const { teamStatus, pickDonation, allArmored, pickMobAssist } = require('./teamwork');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
 const { isNight, shelterUntilDawn, shouldShelter } = require('./skills/shelter');
@@ -2370,6 +2370,53 @@ async function onSpawn() {
     };
     _beat();
     setInterval(_beat, 60000);
+
+    // ── DÉFENSE MUTUELLE : voler au secours d'un coéquipier attaqué ─────────────────────────
+    // Massii 25/07 : « il faut aussi qu'ils s'aident contre les mobs ». La présence partagée
+    // (heartbeat 60 s) est inutilisable ici — un combat dure quelques secondes. On lit donc la
+    // perception LOCALE : les coéquipiers visibles (bot.players) et les hostiles autour.
+    // Tick court (4 s) mais 100 % local : aucun findBlocks, coût négligeable.
+    if (REGROUP && !IS_MAPPER) {
+      let _assistBusy = false;
+      let _lastAssistAt = 0;
+      setInterval(() => {
+        if (_assistBusy || _stillBusy || _imminentBusy) return;
+        if (!bot.entity || !presence) return;
+        // Mes propres réflexes gèrent MES agresseurs : ici on ne parle que de secourir l'autre.
+        if (bot.health != null && bot.health <= DEFENSIVE_HEALTH) return;
+        if (Date.now() - _lastAssistAt < 8000) return;              // anti-spam de ciblage
+        try {
+          const p = bot.entity.position;
+          // Coéquipiers VISIBLES (le roster du groupe, croisé avec ce que je vois réellement).
+          const roster = presence.list().filter((m) => m.role !== 'mapper' && m.name !== bot.username);
+          const mates = [];
+          for (const m of roster) {
+            const e = bot.players[m.name] && bot.players[m.name].entity;
+            if (e && e.position) mates.push({ name: m.name, x: e.position.x, z: e.position.z });
+          }
+          if (!mates.length) return;
+          const hostiles = nearbyHostiles(bot, 32).map((h) => ({
+            name: h.name, x: h.position.x, z: h.position.z, _e: h,
+          }));
+          const pick = pickMobAssist({
+            self: { x: p.x, z: p.z, health: bot.health },
+            mates, hostiles, isFleeOnly: (n) => isFleeOnlyMob(n, bot.health),
+          });
+          if (!pick) return;
+          _lastAssistAt = Date.now();
+          _assistBusy = true;
+          emit({ type: 'team_assist', mob: pick.mob.name, mate: pick.mate, dist: pick.dist });
+          (async () => {
+            try {
+              const w = bestWeapon(bot);
+              if (w) { try { await bot.equip(w, 'hand'); } catch (e) {} }
+              bot.pvp.attack(pick.mob._e);
+            } catch (e) { /* best-effort */ }
+            finally { setTimeout(() => { _assistBusy = false; }, 5000); }
+          })();
+        } catch (e) { _assistBusy = false; }
+      }, 4000);
+    }
 
     // ── ÉQUIPE (gated REGROUP) : entraide matérielle, cohésion, puis séparation ──────────────
     // Cas qui l'a motivé (mesuré world_ax4) : un bot à 3 pièces d'armure gardait 6 lingots

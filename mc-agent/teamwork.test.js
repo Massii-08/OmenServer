@@ -138,3 +138,60 @@ test('les cartographes ne comptent pas dans la décision de séparation', () => 
   assert.strictEqual(allArmored({ armor: 4 },
     [mate('MapBot1', 1, 1, { role: 'mapper' })], { now: NOW }), true);
 });
+
+// ─── DÉFENSE MUTUELLE (Massii 25/07 : « qu'ils s'aident aussi contre les mobs ») ──
+const { pickMobAssist, ASSIST_MIN_HEALTH } = require('./teamwork');
+
+const SELF = { x: 0, z: 0, health: 20 };
+const COPAIN = [{ name: 'NethBot3', x: 10, z: 0 }];
+
+test('un mob colle un coéquipier à portée → on va le taper', () => {
+  const r = pickMobAssist({ self: SELF, mates: COPAIN, hostiles: [{ name: 'zombie', x: 12, z: 0 }] });
+  assert.strictEqual(r.mob.name, 'zombie');
+  assert.strictEqual(r.mate, 'NethBot3');
+  assert.strictEqual(r.dist, 12);
+});
+
+test('mob qui traîne LOIN du coéquipier → on ne bouge pas (il n\'agresse personne)', () => {
+  const r = pickMobAssist({ self: SELF, mates: COPAIN, hostiles: [{ name: 'zombie', x: 3, z: 0 }] });
+  assert.strictEqual(r, null, 'à 7 blocs du copain, il ne le menace pas');
+});
+
+test('je suis moi-même en danger → je me sauve, on ne meurt pas à deux', () => {
+  const r = pickMobAssist({
+    self: { ...SELF, health: ASSIST_MIN_HEALTH - 1 }, mates: COPAIN,
+    hostiles: [{ name: 'zombie', x: 12, z: 0 }],
+  });
+  assert.strictEqual(r, null);
+});
+
+test('mob trop loin de MOI (>20) → j\'arriverais après la bataille', () => {
+  const r = pickMobAssist({
+    self: SELF, mates: [{ name: 'B', x: 60, z: 0 }],
+    hostiles: [{ name: 'zombie', x: 62, z: 0 }],
+  });
+  assert.strictEqual(r, null);
+});
+
+test('mob FLEE-ONLY (wither_skeleton) → on n\'y envoie personne', () => {
+  const r = pickMobAssist({
+    self: SELF, mates: COPAIN, hostiles: [{ name: 'wither_skeleton', x: 12, z: 0 }],
+    isFleeOnly: (n) => n === 'wither_skeleton',
+  });
+  assert.strictEqual(r, null);
+});
+
+test('plusieurs menaces → on prend la plus proche de MOI', () => {
+  const r = pickMobAssist({
+    self: SELF, mates: [{ name: 'B', x: 10, z: 0 }, { name: 'C', x: 18, z: 0 }],
+    hostiles: [{ name: 'zombie', x: 19, z: 0 }, { name: 'spider', x: 11, z: 0 }],
+  });
+  assert.strictEqual(r.mob.name, 'spider');
+});
+
+test('aucun coéquipier / entrées vides → null, jamais de crash', () => {
+  assert.strictEqual(pickMobAssist({ self: SELF, mates: [], hostiles: [{ name: 'zombie', x: 1, z: 0 }] }), null);
+  assert.strictEqual(pickMobAssist({ self: SELF, mates: COPAIN, hostiles: [] }), null);
+  assert.strictEqual(pickMobAssist({}), null);
+  assert.strictEqual(pickMobAssist(), null);
+});
