@@ -34,6 +34,10 @@ LOGS_DIR = _PROJECT_ROOT / "data" / "mc_agent_logs"
 DISTILLED_DIR = _PROJECT_ROOT / "data" / "mc-captures-distilled"
 # Clé Claude posée depuis le dashboard (gitignored, chmod 600). La var d'env prime.
 API_KEY_PATH = _PROJECT_ROOT / "data" / "secrets" / "anthropic.key"
+# Heap max d'un bot Node, en Mo (cf. commentaire au montage de `cmd` dans _spawn/start_session).
+# 640 = ~2,3× le régime observé (200-290 Mo), et 5 bots plafonnent à 3,2 Go — compatible avec les
+# 10 Go du serveur MC sur une machine de 15 Go.
+NODE_HEAP_MB = 640
 
 _sessions = {}        # session_id (int) -> dict
 _lock = threading.Lock()
@@ -537,7 +541,12 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     with _lock:
         _counter += 1
         sid = _counter
-    cmd = [_node_bin(), str(MC_AGENT_DIR / "index.js"),
+    # Plafond de heap V8 (anti-OOM machine, crash live 25/07 : un A* de fuite non borné a mangé
+    # ~2 Go en 38 s). Le défaut V8 (~2 Go/process) × une flotte de 5 bots = 10 Go réclamables sur
+    # une machine qui en donne déjà 10 au serveur MC. Plafonné, le fautif meurt VITE (et le
+    # self-healing le relance) au lieu d'emporter le serveur avec lui. Le vrai fix est côté bot
+    # (movement.applyPathfinderBounds) ; ceci est la ceinture. Régime observé : 200-290 Mo.
+    cmd = [_node_bin(), f"--max-old-space-size={NODE_HEAP_MB}", str(MC_AGENT_DIR / "index.js"),
            "--host", str(host), "--port", str(port), "--user", str(user),
            "--auth", str(auth or "offline")]
     if model:

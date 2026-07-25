@@ -28,7 +28,7 @@ const { parseOrder } = require('./orders');
 const { createTaskController } = require('./tasks');
 const { createMemory } = require('./memory');
 const { bestWeapon, bestToolFor } = require('./tools');
-const { shouldSprint } = require('./movement');   // sprint « vrai joueur » ON par défaut (Massii 2026-06-22)
+const { shouldSprint, applyPathfinderBounds } = require('./movement');   // sprint « vrai joueur » ON par défaut (Massii 2026-06-22) + bornage A* (anti-OOM 2026-07-25)
 const vec3Lib = require('vec3'); // watchdog anti-jam (blocs barrants)
 const { gather, woodExpeditionCount } = require('./skills/gather');
 const { mineDown } = require('./skills/mineDown');
@@ -2388,6 +2388,13 @@ async function onSpawn() {
       if (ids.length) moves.scafoldingBlocks = ids;
     } catch (e) { /* best-effort : garde le défaut dirt+cobblestone */ }
     bot.pathfinder.setMovements(moves);
+    // ANTI-OOM (crash live 25/07 : NethBot2 → 2 Go de heap en 38 s → FATAL heap out of memory,
+    // juste après `survival:flee`). mineflayer-pathfinder livre `searchRadius = -1` = espace de
+    // recherche ILLIMITÉ ; couplé au GoalInvert de fleeFrom (heuristique négative → s'éloigner
+    // fait TOUJOURS baisser f), un but insatisfiable (bot acculé) fait exploser l'A* jusqu'à
+    // l'OOM. Le think-timeout de 5 s ne protège pas : 5 s suffisent à allouer des Go.
+    // Budget de détour, pas rayon absolu (cf. movement.js) → les longs trajets restent intacts.
+    applyPathfinderBounds(bot.pathfinder);
     // SPRINT « vrai joueur » (Massii 2026-06-22) : `allowSprinting` laisse pathfinder sprinter
     // SEULEMENT sur de longs trajets droits → en minage (déplacements courts) le bot ne sprintait
     // quasi jamais (lent + tell). Garde tick : on FORCE le sprint dès qu'on avance sur la terre

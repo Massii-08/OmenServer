@@ -38,4 +38,31 @@ function shouldSprint(state) {
   return food >= SPRINT_RESUME_FOOD;                  // (re)démarre seulement à faim ≥ 7
 }
 
-module.exports = { shouldSprint, SPRINT_MIN_FOOD, SPRINT_RESUME_FOOD };
+// Budget de DÉTOUR du pathfinder, en coût de déplacement (astar.js : maxCost = h_initial +
+// searchRadius). Ce n'est PAS un rayon absolu : un but à 1500 blocs reste atteignable (les
+// mappeurs voyagent loin), on interdit juste à l'A* de s'éloigner indéfiniment de la ligne
+// directe. La lib livre -1 (ILLIMITÉ) — d'où l'OOM live du 25/07 (2 Go en 38 s sur un
+// GoalInvert de fuite insatisfiable, bot acculé : aucun nœud ne termine la recherche).
+// 256 = large pour contourner un lac/une montagne, fini pour tuer l'errance.
+const PATHFINDER_SEARCH_RADIUS = 256;
+
+/**
+ * Borne l'espace de recherche du pathfinder (anti-OOM). Best-effort : jamais de crash si le
+ * plugin n'est pas encore injecté. Retourne true si la borne a été posée.
+ * @param {{searchRadius?: number}} pathfinder — bot.pathfinder
+ * @returns {boolean}
+ */
+function applyPathfinderBounds(pathfinder) {
+  if (!pathfinder) return false;
+  try {
+    pathfinder.searchRadius = PATHFINDER_SEARCH_RADIUS;
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+module.exports = {
+  shouldSprint, SPRINT_MIN_FOOD, SPRINT_RESUME_FOOD,
+  applyPathfinderBounds, PATHFINDER_SEARCH_RADIUS,
+};
