@@ -2480,6 +2480,7 @@ async function onSpawn() {
       onCover: (shooter) => {
         (async () => {
           try {
+            try { stopMotion(); } catch (e) {}   // idem : poser exige d'être immobile
             const r = await withTimeout(takeCover(bot, shooter), 3000,
               () => { try { stopMotion(); } catch (e) {} });
             emit({ type: 'take_cover', mob: shooter && shooter.name, from: 'flee',
@@ -2545,6 +2546,10 @@ async function onSpawn() {
                 hasShield: false, hasBlock: !!pickCoverBlock(bot),
               });
               if (doCover) {
+                // S'IMMOBILISER D'ABORD : mesure live 25/07, 1 couvert sur 2 rendait placed:0 —
+                // `placeBlock` échoue quand le bot est en plein déplacement (il ne peut pas viser
+                // la face de référence). Un muret posé vaut infiniment mieux qu'un pas de course.
+                try { stopMotion(); } catch (e) {}
                 const rc = await withTimeout(takeCover(bot, threat), 3000,
                   () => { try { stopMotion(); } catch (e) {} });
                 emit({ type: 'take_cover', mob: threat.name, from: 'defensive',
