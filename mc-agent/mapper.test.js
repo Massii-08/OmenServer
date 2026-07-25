@@ -5,7 +5,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const vec3 = require('vec3');
-const { drawHeading, driftHeading, legTarget, isOceanCell, waterAhead, cellKey, runMapper } = require('./mapper');
+const { drawHeading, driftHeading, legTarget, isOceanCell, waterAhead, cellKey, runMapper,
+        createExpiringSet } = require('./mapper');
 const { headingOf, sectorRange, inSector } = require('./sectors');
 
 // rng déterministe cyclant sur une séquence
@@ -522,7 +523,9 @@ test('runMapper frontier terre-only : frontière terre épuisée → traversée 
   assert.ok(events.some((e) => e.type === 'mapper_boat_cross'));
 });
 
-test('runMapper : ne mappe PAS l’océan (biome eau → pas de biome_seen)', async () => {
+test('runMapper : l’EAU est CARTOGRAPHIÉE (biome_seen océan) — « terre-only » borne le déplacement, pas la carte', async () => {
+  // 25/07/2026 : le filtre /ocean|river|water/ laissait un TROU permanent sur la carte à chaque
+  // rivière/lac traversé, ET n'était jamais persisté → au respawn le mapper re-ciblait ces cases.
   const bot = fakeMapperBot();
   bot.blockAt = (p) => (p.y > 63
     ? { name: 'air', boundingBox: 'empty', biome: { name: 'ocean', id: 0 } }
@@ -536,7 +539,99 @@ test('runMapper : ne mappe PAS l’océan (biome eau → pas de biome_seen)', as
     emit: (e) => { events.push(e); if (++n > 60) token.cancelled = true; },
     goto: async (wp) => { bot.entity.position = vec3(wp.x, 64, wp.z); }, sleep: async () => {},
   }, token);
-  assert.ok(!events.some((e) => e.type === 'biome_seen'), 'aucun biome_seen pour l’océan');
+  const water = events.filter((e) => e.type === 'biome_seen' && e.name === 'ocean');
+  assert.ok(water.length > 0, 'l’eau doit être peinte sur la carte (sinon : trou permanent)');
+});
+
+// ─── Couverture par échantillonnage (25/07/2026) ─────────────────────────────────────────────
+// Constat live world_ax4 : 68 cellules peintes pour une emprise de 378 (18 %). 73-78 % des
+// cellules émises venaient déjà de l'échantillonnage des VOISINS (le cache client mineflayer
+// retient bien au-delà de la view-distance) → on élargit l'anneau au lieu d'attendre la marche.
+
+test('record : échantillonne PLUSIEURS anneaux autour du bot (pas seulement les 8 voisins)', async () => {
+  const bot = fakeMapperBot();
+  const events = [];
+  // token déjà annulé → runMapper fait exactement UN record() puis sort (record est avant la boucle)
+  await runMapper(bot, { worldKey: 'overworld', emit: (e) => events.push(e), sleep: async () => {} },
+    { cancelled: true });
+  const cells = new Set(events.filter((e) => e.type === 'biome_seen').map((e) => cellKey(e.x, e.z)));
+  assert.ok(cells.has('384,0'), 'anneau 3 non échantillonné (cellule 384,0 absente)');
+  assert.strictEqual(cells.size, 49, `attendu 7×7 cellules (anneaux 1-3 + la sienne), reçu ${cells.size}`);
+});
+
+test('record : arrête d’élargir dès qu’un anneau entier est hors des chunks chargés', async () => {
+  const bot = fakeMapperBot();
+  const probes = [];
+  bot.blockAt = (p) => {
+    probes.push({ x: p.x, z: p.z });
+    if (Math.max(Math.abs(p.x), Math.abs(p.z)) > 150) return null;   // au-delà : chunk non chargé
+    return { name: 'stone', boundingBox: 'block', biome: { name: 'plains', id: 1 } };
+  };
+  await runMapper(bot, { worldKey: 'overworld', emit: () => {}, sleep: async () => {} }, { cancelled: true });
+  const ring = (p) => Math.max(Math.abs(Math.floor(p.x / 128)), Math.abs(Math.floor(p.z / 128)));
+  assert.ok(probes.some((p) => ring(p) === 2), 'l’anneau 2 n’a même pas été sondé');
+  // anneau 2 = 100 % null → on s'arrête là : aucune sonde sur l'anneau 3
+  const far = probes.filter((p) => ring(p) >= 3);
+  assert.strictEqual(far.length, 0, `${far.length} sondes inutiles au-delà de l’anneau 2`);
+});
+
+test('record : cellule non lue (chunk absent) → RETENTÉE plus tard, pas blackboulée à vie', async () => {
+  // bug : biomeCells.add(ck) AVANT la lecture → un blockAt null (spawn/TP/reconnexion) condamnait
+  // la cellule pour toute la vie du process.
+  const bot = fakeMapperBot();
+  let calls = 0;
+  bot.blockAt = (p) => {
+    calls++;
+    if (calls <= 60) return null;                                    // 1er record() : rien de chargé
+    return { name: 'stone', boundingBox: 'block', biome: { name: 'plains', id: 1 } };
+  };
+  const events = [];
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: (e) => { events.push(e); if (e.type === 'biome_seen') token.cancelled = true; },
+    goto: async () => { bot.entity.position = vec3(10, 64, 10); },   // reste dans la cellule 0,0
+    sleep: async () => {},
+  }, token);
+  const own = events.filter((e) => e.type === 'biome_seen' && cellKey(e.x, e.z) === '0,0');
+  assert.ok(own.length > 0, 'la cellule du bot n’a jamais été re-lue après l’échec initial');
+});
+
+// ─── frontierSkip : oubli après TTL (une cellule ratée n'est plus perdue pour la session) ─────
+
+test('createExpiringSet : oublie une clé après le TTL', () => {
+  let t = 1000;
+  const s = createExpiringSet({ now: () => t, ttlMs: 5000 });
+  s.add('a');
+  assert.ok(s.has('a'));
+  t += 4999;
+  assert.ok(s.has('a'), 'ne doit pas expirer avant le TTL');
+  t += 2;
+  assert.ok(!s.has('a'), 'doit expirer après le TTL');
+});
+
+test('runMapper frontier : une cellule skippée redevient ciblable après le TTL', async () => {
+  const bot = fakeMapperBot();
+  const events = [];
+  const token = { cancelled: false };
+  let t = 0;
+  await runMapper(bot, {
+    worldKey: 'overworld', memory: { worlds: { overworld: { biomes: [] } } }, frontier: true,
+    skipTtlMs: 1000,
+    now: () => (t += 5000),                                          // chaque tick dépasse le TTL
+    goto: async () => { throw new Error('unreachable'); },           // toute cible échoue → skip
+    emit: (e) => {
+      events.push(e);
+      if (events.filter((x) => x.type === 'mapper_frontier_skip').length >= 6 || events.length > 300) {
+        token.cancelled = true;
+      }
+    },
+    sleep: async () => {},
+  }, token);
+  const skipped = events.filter((e) => e.type === 'mapper_frontier_skip').map((e) => e.cell);
+  assert.ok(skipped.length >= 2, 'pas assez de skips pour conclure');
+  assert.ok(skipped.length > new Set(skipped).size,
+    'aucune cellule re-tentée : le skip est encore définitif');
 });
 
 test('runMapper frontier : boat cross SANS progrès (bot ne bouge pas) → ne reboucle pas sur le bateau, marche aléatoire', async () => {

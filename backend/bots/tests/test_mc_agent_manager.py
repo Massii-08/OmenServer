@@ -1537,3 +1537,105 @@ def test_spawn_bot_passes_positions_file(monkeypatch, tmp_path):
     cmd2 = [str(c) for c in captured["cmd"]]
     assert "--positions" in cmd2
     assert cmd2[cmd2.index("--positions") + 1].endswith("positions-g1.json")
+
+
+# ─── Debounce des écritures de mémoire de monde (25/07/2026) ────────────────────────────────
+# Mesuré sur l'Omen : le fichier du groupe fait ~8 Mo (35 k minerais) et `world_memory.save`
+# coûte ~300 ms — or il était appelé À CHAQUE event, sous verrou global (donc aussi à chaque
+# `ore_mined` des mineurs). Avec l'échantillonnage multi-anneaux du cartographe (jusqu'à 48
+# cellules par arrivée) ça devenait 14 s de blocage par arrivée.
+
+def _wm_reset(gid="ab12cd"):
+    mgr._wm_cache.pop(gid, None)
+    mgr._wm_dirty.pop(gid, None)
+    mgr._wm_last_save.pop(gid, None)
+
+
+def _count_saves(monkeypatch):
+    saves = []
+    real = mgr.world_memory.save
+
+    def spy(gid, mem, *a, **kw):
+        saves.append(gid)
+        return real(gid, mem, *a, **kw)
+
+    monkeypatch.setattr(mgr.world_memory, "save", spy)
+    return saves
+
+
+def test_record_world_memory_debounces_saves(monkeypatch, tmp_path):
+    """Rafale d'events rapprochés → UNE seule écriture disque (pas une par event)."""
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path)
+    _wm_reset()
+    saves = _count_saves(monkeypatch)
+    monkeypatch.setattr(mgr, "_wm_clock", lambda: 1000.0)      # horloge figée = rafale instantanée
+    for i in range(20):
+        mgr._record_world_memory("ab12cd", {"type": "biome_seen", "world": "w",
+                                            "name": "forest", "x": i * 128, "z": 0})
+    assert len(saves) == 1, f"{len(saves)} écritures disque pour une rafale de 20 events"
+    _wm_reset()
+
+
+def test_record_world_memory_saves_again_after_the_interval(monkeypatch, tmp_path):
+    """Passé l'intervalle, l'event suivant repersiste (la carte ne reste pas en RAM)."""
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path)
+    _wm_reset()
+    saves = _count_saves(monkeypatch)
+    t = [1000.0]
+    monkeypatch.setattr(mgr, "_wm_clock", lambda: t[0])
+    mgr._record_world_memory("ab12cd", {"type": "biome_seen", "world": "w", "name": "a", "x": 0, "z": 0})
+    t[0] += mgr.WM_SAVE_MIN_INTERVAL_S + 0.01
+    mgr._record_world_memory("ab12cd", {"type": "biome_seen", "world": "w", "name": "b", "x": 128, "z": 0})
+    assert len(saves) == 2
+    _wm_reset()
+
+
+def test_flush_world_memory_persists_pending_events(monkeypatch, tmp_path):
+    """Les events retenus par le debounce sont écrits par flush (fin de session, lecture API)."""
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path)
+    _wm_reset()
+    monkeypatch.setattr(mgr, "_wm_clock", lambda: 1000.0)
+    mgr._record_world_memory("ab12cd", {"type": "biome_seen", "world": "w", "name": "a", "x": 0, "z": 0})
+    mgr._record_world_memory("ab12cd", {"type": "biome_seen", "world": "w", "name": "b", "x": 128, "z": 0})
+    assert len(mgr.world_memory.load("ab12cd")["worlds"]["w"]["biomes"]) == 1  # le 2e est en attente
+    mgr.flush_world_memory("ab12cd")
+    assert len(mgr.world_memory.load("ab12cd")["worlds"]["w"]["biomes"]) == 2
+    _wm_reset()
+
+
+def test_on_pump_end_flushes_world_memory(monkeypatch, tmp_path):
+    """Mort du bot (crash/kick) → la carte en attente est persistée, jamais perdue."""
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path)
+    _wm_reset()
+    monkeypatch.setattr(mgr, "_wm_clock", lambda: 1000.0)
+    s = {"status": "x", "transcript": [], "events": [], "last_error": None, "server_id": "ab12cd",
+         "objective": "mapper", "id": 1}
+    mgr._apply_event(s, {"type": "biome_seen", "world": "w", "name": "a", "x": 0, "z": 0})
+    mgr._apply_event(s, {"type": "biome_seen", "world": "w", "name": "b", "x": 128, "z": 0})
+    mgr._on_pump_end(s)
+    assert len(mgr.world_memory.load("ab12cd")["worlds"]["w"]["biomes"]) == 2
+    _wm_reset()
+
+
+def test_start_session_flushes_world_memory_before_bootstrap(monkeypatch, tmp_path):
+    """Un bot qui démarre lit le fichier du groupe : il doit voir la carte COMPLÈTE, pas le disque
+    en retard d'un debounce (les cartographes/récolteurs se coordonnent par ce fichier)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path / "wm")
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    captured = {}
+
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc("")
+
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    _wm_reset()
+    monkeypatch.setattr(mgr, "_wm_clock", lambda: 1000.0)
+    mgr._record_world_memory("ab12cd", {"type": "biome_seen", "world": "w", "name": "a", "x": 0, "z": 0})
+    mgr._record_world_memory("ab12cd", {"type": "biome_seen", "world": "w", "name": "b", "x": 128, "z": 0})
+    mgr.start_session("h", 25565, "U", server_id="ab12cd")
+    path = captured["cmd"][captured["cmd"].index("--world-memory") + 1]
+    cells = _json.loads(open(path).read())["worlds"]["w"]["biomes"]
+    assert len(cells) == 2, "le bot démarre avec une carte tronquée (debounce non vidé)"
+    _wm_reset()

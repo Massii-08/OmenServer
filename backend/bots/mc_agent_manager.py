@@ -49,6 +49,15 @@ _counter = 0
 _WM_EVENTS = ("biome_seen", "cave_found", "material_found", "exposed_ore_found", "ores_found", "ore_mined", "ore_gone", "structure_found", "directed_exhausted")
 _wm_lock = threading.Lock()
 _wm_cache = {}        # group_id -> memory dict
+# Debounce d'écriture (25/07/2026) : le fichier d'un groupe actif pèse ~8 Mo (35 k minerais) et
+# `world_memory.save` coûte ~300 ms mesurées sur l'Omen — un save PAR EVENT bloquait le verrou
+# global à chaque minerai miné et à chaque cellule cartographiée. On écrit au plus une fois par
+# WM_SAVE_MIN_INTERVAL_S ; le reste est marqué « sale » et persisté par flush_world_memory()
+# (fin de session + toute lecture disque) → aucun événement perdu, disque calmé.
+WM_SAVE_MIN_INTERVAL_S = 2.0
+_wm_dirty = {}        # group_id -> True si des events ne sont pas encore sur disque
+_wm_last_save = {}    # group_id -> instant (monotonic) de la dernière écriture
+_wm_clock = time.monotonic   # injectable en test
 
 
 def _mask_key(key):
@@ -120,8 +129,9 @@ def _now_iso():
 def _record_world_memory(group_id, event):
     """Route un event de trouvaille (biome/cave/material) vers le store du groupe, sous verrou.
 
-    Cache en mémoire par groupe → évite de relire le fichier à chaque event ; persistance au fil de
-    l'eau (save par event, débit faible) pour que la carte survive à la mort d'un bot."""
+    Cache en mémoire par groupe → évite de relire le fichier à chaque event ; persistance DEBOUNCÉE
+    (au plus une écriture / WM_SAVE_MIN_INTERVAL_S) pour que la carte survive à la mort d'un bot
+    sans réécrire 8 Mo à chaque minerai miné. Le reliquat est vidé par flush_world_memory()."""
     if not group_id:
         return
     with _wm_lock:
@@ -130,7 +140,32 @@ def _record_world_memory(group_id, event):
             mem = world_memory.load(group_id)
             _wm_cache[group_id] = mem
         world_memory.apply_event(mem, event, at=_now_iso())
-        world_memory.save(group_id, mem)
+        now = _wm_clock()
+        last = _wm_last_save.get(group_id)
+        if last is None or now - last >= WM_SAVE_MIN_INTERVAL_S:
+            world_memory.save(group_id, mem)
+            _wm_last_save[group_id] = now
+            _wm_dirty.pop(group_id, None)
+        else:
+            _wm_dirty[group_id] = True
+
+
+def flush_world_memory(group_id=None):
+    """Persiste les mémoires retenues par le debounce (fin de session, avant toute lecture disque).
+
+    `group_id=None` → tous les groupes en attente. Idempotent, silencieux si rien n'est sale."""
+    with _wm_lock:
+        targets = [group_id] if group_id else list(_wm_dirty)
+        for gid in targets:
+            if not _wm_dirty.get(gid):
+                continue
+            mem = _wm_cache.get(gid)
+            if mem is None:
+                _wm_dirty.pop(gid, None)
+                continue
+            world_memory.save(gid, mem)
+            _wm_last_save[gid] = _wm_clock()
+            _wm_dirty.pop(gid, None)
 
 
 def _apply_event(session, event):
@@ -384,6 +419,9 @@ def _pump_tail(session):
 def _on_pump_end(session):
     """Fin de flux (mort naturelle du process) : état, cleanup, rebalance, self-healing."""
     session["status"] = "stopped"
+    # la carte retenue par le debounce doit atterrir sur disque MÊME si le bot crashe/est kické
+    if session.get("server_id"):
+        flush_world_memory(session["server_id"])
     # mort naturelle (crash/kick, pas via stop_session) : nettoyer les fichiers temp ici aussi
     _cleanup_session_files(session)
     _registry_sync()  # l'entrée passe stopped → jamais ré-adoptée après un restart
@@ -620,6 +658,10 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     #    (anti-collision entre bots ressources ; PAS nettoyé par session, TTL interne).
     #  - autres objectifs : SNAPSHOT worldmem-<sid>.json (comportement historique).
     wm_path = None
+    # le bot lit ce fichier (snapshot OU live) → il doit refléter TOUT ce qui a été appris,
+    # y compris ce que le debounce d'écriture retient encore en RAM.
+    if server_id:
+        flush_world_memory(server_id)
     # TP-au-mappeur : heartbeat de présence PARTAGÉ (positions-<group>.json, pattern claims) pour
     # TOUT bot d'un groupe — un bot ressource lit où sont les mappeurs et se /tpa vers eux.
     if server_id:
@@ -950,6 +992,8 @@ def stop_session(sid):
                 pass
     s["status"] = "stopped"
     _cleanup_session_files(s)
+    if s.get("server_id"):
+        flush_world_memory(s["server_id"])      # carte en attente (debounce) → disque
     _registry_sync()
     if s.get("objective") == "mapper":
         _rebalance_sectors(s.get("server_id"))  # les survivants élargissent leur wedge
@@ -972,6 +1016,8 @@ def forget_group(group_id):
     """Cascade : oublie le cache mémoire + supprime le fichier mémoire du groupe. True si supprimé."""
     with _wm_lock:
         _wm_cache.pop(group_id, None)
+        _wm_dirty.pop(group_id, None)       # sinon un flush ressusciterait le fichier supprimé
+        _wm_last_save.pop(group_id, None)
     return world_memory.delete_memory(group_id)
 
 

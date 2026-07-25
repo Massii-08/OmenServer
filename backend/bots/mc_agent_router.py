@@ -350,4 +350,5 @@ def start_mappers(sid: str, req: MappersStartReq, current_user: User = Depends(g
 def server_memory(sid: str, current_user: User = Depends(get_current_user)):
     """Mémoire de monde d'un groupe (biomes/caves/finds par monde) pour la vue admin."""
     _require_admin(current_user)
+    mgr.flush_world_memory(sid)   # le debounce d'écriture ne doit pas faire mentir la carte
     return world_memory.load(sid)

@@ -813,3 +813,13 @@ def test_run_roster_passes_no_give(monkeypatch):
     assert resp.status_code == 200
     assert captured["no_give"] is True
     assert captured["objective"] == "iron_armor"
+
+
+def test_server_memory_endpoint_flushes_pending_writes(monkeypatch):
+    """La carte du dashboard ne doit JAMAIS être en retard sur le debounce d'écriture (25/07)."""
+    flushed = []
+    monkeypatch.setattr(mgr, "flush_world_memory", lambda gid=None: flushed.append(gid))
+    monkeypatch.setattr(r.world_memory, "load", lambda sid: {"group_id": sid, "worlds": {}})
+    c = make_client()
+    assert c.get("/api/mc-agent/servers/ab12cd/memory").status_code == 200
+    assert flushed == ["ab12cd"], "l'endpoint carte lit le disque sans vider le debounce"

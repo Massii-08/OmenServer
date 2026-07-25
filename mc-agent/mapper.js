@@ -28,6 +28,27 @@ let vec3; try { vec3 = require('vec3'); } catch (e) { vec3 = null; }
 const GRID = 128;          // même grille que le store backend (quantif/dédup)
 const SURVIVAL_CAP = 10;   // re-ticks survie max avant de reprendre la route (anti-blocage)
 const TAU = 2 * Math.PI;
+const SAMPLE_RINGS = 3;    // anneaux de cellules échantillonnés autour du bot (cf. record())
+const SKIP_TTL_MS = 10 * 60 * 1000;  // oubli d'une cellule frontière ratée (eau/inatteignable)
+
+/**
+ * Set à oubli : une clé ajoutée expire après `ttlMs`. PUR (horloge injectée).
+ * Motif : `frontierSkip` était un Set DÉFINITIF — une cellule ratée une fois (aquifère traversé,
+ * falaise) était perdue pour toute la session, alors que le terrain change (le bot revient par un
+ * autre côté, un coéquipier assèche, la marée d'un lac de lave…). Vécu 25/07 sur world_ax4.
+ */
+function createExpiringSet({ now = () => Date.now(), ttlMs = SKIP_TTL_MS } = {}) {
+  const seen = new Map();   // key → instant d'ajout
+  return {
+    add(key) { seen.set(key, now()); },
+    has(key) {
+      const at = seen.get(key);
+      if (at == null) return false;
+      if (now() - at > ttlMs) { seen.delete(key); return false; }
+      return true;
+    },
+  };
+}
 
 function _norm(a) { return ((a % TAU) + TAU) % TAU; }
 
@@ -143,6 +164,7 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   const getSector = opts.getSector || (() => opts.sector || null);
   const memory = opts.memory || null;
   const periodicEvery = opts.periodicEvery || 10;
+  const sampleRings = opts.sampleRings != null ? opts.sampleRings : SAMPLE_RINGS;
 
   const doGoto = opts.goto || (async (wp) => {
     const { goals } = require('mineflayer-pathfinder');
@@ -155,7 +177,9 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   const oreSeen = new Set();     // minerais déjà émis (dédup par position de BLOC 3D)
   const structSeen = new Set();  // structures émises (dédup type+cellule 64 — le backend dédup aussi)
   let lastScanCell = null;       // cellule du dernier scan d'ores (1 scan/cellule : findBlocks coûte cher)
-  const frontierSkip = new Set(); // cellules frontière en échec (eau/inatteignable) — on n'y reboucle pas
+  // cellules frontière en échec (eau/inatteignable) — on n'y reboucle pas TOUT DE SUITE, mais on
+  // les OUBLIE après skipTtlMs (un abandon définitif faisait des trous permanents, vécu 25/07).
+  const frontierSkip = createExpiringSet({ now, ttlMs: opts.skipTtlMs != null ? opts.skipTtlMs : SKIP_TTL_MS });
   let legs = 0;                  // compteur de jambes (re-lecture mémoire live périodique)
 
   // Note la position courante : biome (1×/cellule) + entrée de grotte éventuelle.
@@ -164,42 +188,47 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
     const ck = cellKey(p.x, p.z);
     localSeen.add(ck);
     if (!biomeCells.has(ck)) {
-      biomeCells.add(ck);
       try {
         const block = bot.blockAt(bot.entity.position.floored ? bot.entity.position.floored() : bot.entity.position);
         if (block && block.biome) {
-          const bname = resolveBiome(bot, block);
-          // TERRE-ONLY : on ne cartographie jamais l'océan (juste on le traverse). La case reste
-          // dans localSeen (anti-re-ciblage) mais aucun biome_seen n'est émis pour l'eau.
-          // (resolveBiome renvoie {name,id} → on filtre sur le NOM résolu, pas l'objet.)
-          if (!/ocean|river|water/i.test(String(bname && bname.name))) {
-            emit(biomeSeenEvent(worldKey, { biome: bname }, p));
-          }
+          // Marqué « fait » SEULEMENT après une lecture réussie : marquer avant condamnait la
+          // cellule pour toute la vie du process quand le chunk n'était pas encore là (spawn, TP,
+          // reconnexion) — trou définitif sous les pieds du bot (vécu world_ax4, 25/07).
+          biomeCells.add(ck);
+          // L'EAU EST CARTOGRAPHIÉE. « Terre-only » borne le DÉPLACEMENT (on ne va pas au large),
+          // pas la carte : filtrer l'eau laissait un trou permanent à chaque rivière/lac traversé,
+          // et ces cellules n'étant jamais persistées, la frontière les re-ciblait à chaque respawn.
+          emit(biomeSeenEvent(worldKey, { biome: resolveBiome(bot, block) }, p));
         }
-      } catch (e) { /* chunk non chargé → on émettra à la prochaine cellule */ }
+      } catch (e) { /* chunk non chargé → on ré-essaiera à la prochaine passe */ }
     }
-    // COUVERTURE PLEINE (phase 3, demande Massii) : le biome n'était noté que SOUS le bot —
-    // les cellules VOISINES où on détecte structures (≤48) / ores (≤128) restaient « blanches »
-    // sur la carte (structure sans biome). On échantillonne aussi les 8 cellules adjacentes
-    // (centres à ±GRID) si leurs chunks sont chargés — gratuit (lecture mémoire client).
-    for (const dx of [-GRID, 0, GRID]) {
-      for (const dz of [-GRID, 0, GRID]) {
-        if (dx === 0 && dz === 0) continue;
-        const nx = Math.floor((p.x + dx) / GRID) * GRID + GRID / 2;
-        const nz = Math.floor((p.z + dz) / GRID) * GRID + GRID / 2;
-        const nk = cellKey(nx, nz);
-        if (biomeCells.has(nk)) continue;
-        try {
-          const nb = bot.blockAt(_v(nx, Math.floor(p.y), nz));
-          if (nb && nb.biome) {
-            biomeCells.add(nk);
-            const nbn = resolveBiome(bot, nb);
-            if (!/ocean|river|water/i.test(String(nbn && nbn.name))) {
-              emit(biomeSeenEvent(worldKey, { biome: nbn }, { x: nx, y: p.y, z: nz }));
+    // COUVERTURE PAR ÉCHANTILLONNAGE : le bot ne peint pas que la cellule où il pose les pieds —
+    // il lit aussi les cellules alentour dans le cache client (gratuit, lecture mémoire). Mesuré
+    // le 25/07 sur world_ax4 : 73-78 % des cellules émises venaient déjà de cet échantillonnage,
+    // preuve que le cache mineflayer porte BIEN au-delà de la view-distance (cf. piège #42g) →
+    // on élargit de 1 à SAMPLE_RINGS anneaux (8 → 48 cellules) au lieu d'attendre la marche.
+    // Arrêt dès qu'un anneau ne rend RIEN (ni lu, ni déjà connu) = bord de la zone chargée.
+    const baseX = Math.floor(p.x / GRID) * GRID, baseZ = Math.floor(p.z / GRID) * GRID;
+    for (let ring = 1; ring <= sampleRings; ring++) {
+      let touched = 0;
+      for (let dx = -ring; dx <= ring; dx++) {
+        for (let dz = -ring; dz <= ring; dz++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;   // périmètre de l'anneau
+          const nx = baseX + dx * GRID + GRID / 2;
+          const nz = baseZ + dz * GRID + GRID / 2;
+          const nk = cellKey(nx, nz);
+          if (biomeCells.has(nk)) { touched++; continue; }               // déjà peinte = zone chargée
+          try {
+            const nb = bot.blockAt(_v(nx, Math.floor(p.y), nz));
+            if (nb && nb.biome) {
+              touched++;
+              biomeCells.add(nk);
+              emit(biomeSeenEvent(worldKey, { biome: resolveBiome(bot, nb) }, { x: nx, y: p.y, z: nz }));
             }
-          }
-        } catch (e) { /* chunk voisin non chargé → plus tard */ }
+          } catch (e) { /* chunk voisin non chargé → plus tard */ }
+        }
       }
+      if (!touched) break;   // anneau entièrement hors des chunks chargés → inutile d'aller plus loin
     }
     try {
       const cave = detectCaveEntrance(bot, p);
@@ -463,4 +492,7 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   return { ok: true, cancelled: true };
 }
 
-module.exports = { drawHeading, driftHeading, legTarget, isOceanCell, waterAhead, surfaceYAt, cellKey, runMapper, GRID };
+module.exports = {
+  drawHeading, driftHeading, legTarget, isOceanCell, waterAhead, surfaceYAt, cellKey, runMapper,
+  createExpiringSet, GRID, SAMPLE_RINGS, SKIP_TTL_MS,
+};
