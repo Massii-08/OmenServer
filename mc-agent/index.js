@@ -73,6 +73,8 @@ const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgr
 const TORCH_EVERY = 8;
 const { createClaims, createPresence } = require('./claims');
 const { pickMapperTp } = require('./mapperTp'); // TP-au-mappeur : à qui demander le /tpa (décision pure)
+// REGROUPEMENT APRÈS MORT (idée Massii 25/07, flag --regroup, OFF par défaut) : décision pure.
+const { pickRegroupTarget } = require('./regroup');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
 const { isNight, shelterUntilDawn, shouldShelter } = require('./skills/shelter');
@@ -98,6 +100,9 @@ const args = parseArgs(process.argv.slice(2));
 // --no-give 1 → (1) provisionStartKit/ensureFood ne /give plus RIEN, (2) filtre dur sur bot.chat
 // (isForbiddenCheat) qui bloque tout /give //tp //effect… résiduel (défense en profondeur).
 const NO_GIVE = args['no-give'] === '1' || args['no-give'] === 'true';
+// --regroup : après une mort, rejoindre le groupe en /tpa tant que l'armure fer n'est pas là
+// (idée Massii 25/07). ÉTEINT par défaut — à activer explicitement, run par run.
+const REGROUP = args.regroup === '1' || args.regroup === 'true';
 // Confinement arène (--confine "X Z R") : garde le bot dans R de l'ancre sèche (cf. confine.js).
 const { parseConfine, confineSpreadCommand, CONFINE_HOME, DEFAULT_CONFINE_RADIUS, shouldEnforceConfine, pickAnchorNow } = require('./confine');
 const CONFINE = parseConfine(args['confine']);
@@ -327,6 +332,37 @@ async function tryTpToMapper(goal) {
   try { bot.chat('/tpa ' + pick.name); } catch (e) { return { ok: false, reason: 'chat_failed' }; }
   const r = await awaitWarp({ maxMs: 15000 });   // acceptation (~2 s) + éventuel warmup teleport-delay
   emit({ type: 'mapper_tpa_result', to: pick.name, warped: !!r.warped });
+  return { ok: !!r.warped };
+}
+
+// REGROUPEMENT APRÈS MORT (--regroup, OFF par défaut). Avec keepInventory, mourir ne coûte
+// presque rien : ce qui tue une 2e fois, c'est le RETOUR à pied (200-400 blocs sous les mobs).
+// Un /tpa vers le coéquipier le plus proche supprime ce trajet — 100 % « vrai joueur », et /tpa
+// passe le filtre sans-give (≠ /tp<espace>). S'éteint tout seul dès que l'armure fer est portée
+// (règle Massii : le groupe ne sert que jusque-là). Décision pure : regroup.pickRegroupTarget.
+let _lastRegroupAt = 0;
+async function tryRegroup() {
+  if (!REGROUP) return { ok: false, reason: 'disabled' };
+  if (!presence) return { ok: false, reason: 'no_presence' };
+  const p = bot.entity && bot.entity.position;
+  if (!p) return { ok: false, reason: 'no_pos' };
+  let armorComplete = false;
+  try { armorComplete = armorNeed({ inv: buildCtxInv(bot), worn: [..._wornArmor()] }, 3) === 0; } catch (e) {}
+  const pick = pickRegroupTarget({
+    self: { x: p.x, z: p.z }, selfName: bot.username, mates: presence.list(),
+    armorComplete, now: Date.now(), lastAt: _lastRegroupAt,
+  });
+  if (!pick) return { ok: false, reason: 'no_candidate' };
+  if (!isAllowed('/tpa ' + pick.name, whitelist)) {
+    emit({ type: 'regroup_blocked', to: pick.name });      // /tpa pas coché dans le profil serveur
+    return { ok: false, reason: 'not_whitelisted' };
+  }
+  _lastRegroupAt = Date.now();
+  emit({ type: 'regroup_tpa', to: pick.name, dist: pick.dist });
+  try { stopMotion(); } catch (e) {}
+  try { bot.chat('/tpa ' + pick.name); } catch (e) { return { ok: false, reason: 'chat_failed' }; }
+  const r = await awaitWarp({ maxMs: 15000 });
+  emit({ type: 'regroup_result', to: pick.name, warped: !!r.warped });
   return { ok: !!r.warped };
 }
 
@@ -2769,6 +2805,8 @@ async function onSpawn() {
         } catch (e) { /* best-effort */ }
       })();
     }
+    // Puis, si --regroup : rejoindre le groupe (no-op silencieux quand le flag est éteint).
+    if (REGROUP) { (async () => { try { await sleep(2500); await tryRegroup(); } catch (e) {} })(); }
   }
   if (world.objective && world.objective.status === 'in_progress') {
     emit({ type: 'autonomous_resume', objective: world.objective.type });

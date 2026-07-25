@@ -419,7 +419,8 @@ def _on_pump_end(session):
                                         objective=rs.get("objective", "resource"),
                                         world_label=rs.get("world_label"), quota=rs.get("quota"),
                                         humanize=rs.get("humanize", False), confine=rs.get("confine"),
-                                        no_give=rs.get("no_give", False))
+                                        no_give=rs.get("no_give", False),
+                                        regroup=rs.get("regroup", False))
                 ns = _sessions.get(new_sid)
                 if ns is not None:
                     ns["respawn_count"] = plan["respawn_count"]
@@ -517,7 +518,7 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
                policy=None, server_id=None, language="fr", autonomous=False,
                objective="stone_pickaxe", world_label=None, login_command=None,
                sector_index=None, sector_count=None, quota=None, stealth=False, humanize=False,
-               confine=None, no_give=False):
+               confine=None, no_give=False, regroup=False):
     """Spawn le process Node détaché et enregistre la session. Retourne son id.
 
     Point monkeypatchable des lancements par roster (start_for_bot/start_mappers).
@@ -562,6 +563,10 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
         # Humanisation ciblée (spec cartographes) : déplacements naturels + latence de réponse
         # + stop-pour-répondre, SANS le loiter. STEALTH l'implique déjà côté bot.
         cmd += ["--humanize", "1"]
+    if regroup:
+        # Regroupement après mort (idée Massii 25/07) : /tpa vers le coéquipier le plus proche tant
+        # que l'armure fer n'est pas là. ÉTEINT par défaut — passé seulement si demandé.
+        cmd += ["--regroup", "1"]
     if no_give:
         # Run nether 2026-07-13 : ZÉRO /give — le bot mine/fond/crafte tout (kit + filet food coupés,
         # filtre dur bot.chat côté Node). Off par défaut = rétro-compat stricte.
@@ -743,7 +748,7 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     return sid
 
 
-def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, stealth=False, humanize=True, confine=None, no_give=False):
+def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, stealth=False, humanize=True, confine=None, no_give=False, regroup=False):
     """Lancement manuel (path historique du router + compat tests). Délègue à `_spawn_bot`.
 
     `humanize` par DÉFAUT True (paquet 1 anti-tell, décision Massii 07/06) : un bot lancé
@@ -754,7 +759,7 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
                       commands=commands, policy=policy, server_id=server_id, language=language,
                       autonomous=autonomous, objective=objective, world_label=world_label,
                       quota=quota, stealth=stealth, humanize=humanize, confine=confine,
-                      no_give=no_give)
+                      no_give=no_give, regroup=regroup)
 
 
 def _resolve_login_command(group, group_id, bot_id, secret):
@@ -782,7 +787,7 @@ def _online_usernames(group_id):
     return out
 
 
-def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, humanize=False, confine=None, no_give=False):
+def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, humanize=False, confine=None, no_give=False, regroup=False):
     """Lance un bot du roster d'un groupe (résout connexion + compte + login + intelligence).
 
     Lève LookupError si le groupe ou le bot est introuvable, ValueError si le compte est déjà en
@@ -805,6 +810,7 @@ def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="sto
         language=group.get("language", "fr"), autonomous=autonomous, objective=objective,
         world_label=world_label, model=model, login_command=login_command, quota=quota,
         stealth=bool(group.get("stealth")), humanize=humanize, confine=confine, no_give=no_give,
+        regroup=regroup,
     )
     # Self-healing (phase 2) : mémorise QUOI respawner si le process meurt naturellement
     # (kick/Timed out/watchdog) — l'inventaire du compte persiste, le quota repart d'où il était.
@@ -813,7 +819,7 @@ def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="sto
         sess["respawn"] = {"group_id": group_id, "bot_id": bot_id, "model": model,
                            "autonomous": autonomous, "objective": objective,
                            "world_label": world_label, "quota": quota, "humanize": humanize,
-                           "confine": confine, "no_give": no_give}
+                           "confine": confine, "no_give": no_give, "regroup": regroup}
         sess.setdefault("respawn_count", 0)
         _registry_sync()  # le plan de respawn doit survivre au restart (self-healing adopté)
     return sid
