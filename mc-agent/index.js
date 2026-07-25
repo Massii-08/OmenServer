@@ -20,7 +20,7 @@ const { goto } = require('./skills/goto');
 const { mineBlock, collectWood } = require('./skills/mineBlock');
 const { attackNearest } = require('./skills/attackNearest');
 const { fleeFrom, isFleeHostile } = require('./skills/fleeFrom');
-const { installReflexes } = require('./reflexes');
+const { installReflexes, RANGED } = require('./reflexes');
 const { decideReaction } = require('./triggers');
 const { loadCommands, isAllowed, buildCommandDocs } = require('./commands');
 const { loadPolicy, isTrusted, parseTpRequest, parseTradeRequest, gateDecision, buildTrustDocs } = require('./trust');
@@ -2528,10 +2528,30 @@ async function onSpawn() {
       },
       // POSTURE DÉFENSIVE à ~10 PV (hole C — AVANT le seuil critique) : équipe + lève le bouclier
       // brièvement (réduit les dégâts entrants). La riposte mêlée et onRanged gèrent l'agresseur.
-      onDefensive: () => {
+      onDefensive: (threat) => {
         (async () => {
           try {
             const sh = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === 'shield');
+            // BANDE DÉFENSIVE (6-10 PV) : SANS bouclier, « lever le bouclier » est un no-op et le
+            // bot continue d'encaisser les flèches jusqu'au seuil de fuite — souvent trop tard
+            // (mesure live : le couvert au seuil de fuite ne se déclenchait presque jamais, les
+            // bots mouraient avant d'y arriver). Face à un TIREUR et sans bouclier, on se masque
+            // ICI, une bande de PV plus tôt.
+            if (!sh && threat && RANGED.has(threat.name) && threat.position && bot.entity) {
+              const dist = bot.entity.position.distanceTo(threat.position);
+              const doCover = shouldTakeCover({
+                distance: dist, health: bot.health,
+                armorPoints: armorPoints(bot), weaponDamage: weaponDamage(bot),
+                hasShield: false, hasBlock: !!pickCoverBlock(bot),
+              });
+              if (doCover) {
+                const rc = await withTimeout(takeCover(bot, threat), 3000,
+                  () => { try { stopMotion(); } catch (e) {} });
+                emit({ type: 'take_cover', mob: threat.name, from: 'defensive',
+                       dist: Math.round(dist), placed: (rc && rc.placed) || 0, ok: !!(rc && rc.ok) });
+                if (rc && rc.ok) return;                 // masqué : inutile de lever un bouclier absent
+              }
+            }
             if (sh) {
               const off = bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
               if (!off || off.name !== 'shield') { try { await bot.equip(sh, 'off-hand'); } catch (e) {} }
