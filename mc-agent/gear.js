@@ -107,11 +107,16 @@ function pickaxePlan(items, neededTypes) {
  * Fuel accepté = celui de fuelNames() : coal/charcoal/planches/bûches.
  */
 function smeltPlan(items, opts = {}) {
-  const minRaw = opts.minRaw || 3;
   const maxIngots = opts.maxIngots || 24;      // armure complète = 24 lingots : au-delà, rien à gagner
   const counts = {};
   for (const it of items || []) counts[it.name] = (counts[it.name] || 0) + (it.count || 1);
   const raw = counts.raw_iron || 0;
+  // SEUIL ADAPTATIF (décision Massii 25/07, 4e run sans le moindre lingot) : tant qu'AUCUN lingot
+  // n'est banké, on fond dès le 1er minerai. Les bots atteignent le branch-mine Y16 de façon
+  // fiable mais meurent avant d'avoir 3 bruts → attendre le lot signifiait ne jamais fondre. Le
+  // 1er lingot débloque le bouclier et devient un acquis que la mort n'annule plus. Une fois
+  // amorcé on repasse au lot de 3 : fondre immobilise ~10 s, cher payé sous terre.
+  const minRaw = opts.minRaw || ((counts.iron_ingot || 0) === 0 ? 1 : 3);
   const fuel = Object.keys(counts).some((n) =>
     n === 'coal' || n === 'charcoal' || n.endsWith('_planks') || n.endsWith('_log'));
   if (raw < minRaw) return { go: false, why: 'raw' };

@@ -147,7 +147,10 @@ test('smeltPlan : planches et bûches comptent comme fuel (leçon Bot2 : bois+fo
 });
 
 test('smeltPlan : pas assez de fer / pas de four / pas de fuel → no-go', () => {
-  assert.strictEqual(smeltPlan([{ name: 'raw_iron', count: 2 }, { name: 'furnace', count: 1 }, { name: 'coal', count: 1 }]).go, false);
+  // 2 bruts = sous le seuil SEULEMENT une fois amorcé (≥1 lingot en poche) — cf. le seuil
+  // adaptatif du 25/07 : sans aucun lingot, 1 brut suffit et c'est voulu.
+  assert.strictEqual(smeltPlan([{ name: 'raw_iron', count: 2 }, { name: 'furnace', count: 1 },
+    { name: 'coal', count: 1 }, { name: 'iron_ingot', count: 1 }]).go, false);
   assert.strictEqual(smeltPlan([{ name: 'raw_iron', count: 5 }, { name: 'coal', count: 1 }]).go, false);
   assert.strictEqual(smeltPlan([{ name: 'raw_iron', count: 5 }, { name: 'furnace', count: 1 }]).go, false);
   assert.strictEqual(smeltPlan([]).go, false);
@@ -177,4 +180,37 @@ test('smeltReady : en eau / en l\'air / en plein pathfinding → false', () => {
   assert.strictEqual(smeltReady({ onGround: false, inWater: false, moving: false }), false);
   assert.strictEqual(smeltReady({ onGround: true, inWater: false, moving: true }), false);
   assert.strictEqual(smeltReady({}), false);
+});
+
+// ─── Fonte d'AMORÇAGE (décision Massii 25/07, run world_ax4) ──────────────────
+// Constat live : les 3 ouvriers atteignent le branch-mine Y16 de façon fiable mais meurent avant
+// d'avoir accumulé 3 minerais bruts → 0 fonte, 0 lingot sur TOUT le run (4e run d'affilée).
+// Tant qu'aucun lingot n'est banké, on fond dès le PREMIER minerai : ce lingot débloque le
+// bouclier et représente un progrès que la mort ne peut plus annuler. Une fois amorcé, on
+// revient au lot de 3 (fondre immobilise ~10 s, précieux sous terre).
+test('fonte d\'amorçage : 1 seul minerai suffit quand on n\'a AUCUN lingot', () => {
+  const p = smeltPlan([{ name: 'raw_iron', count: 1 }, { name: 'furnace', count: 1 }, { name: 'oak_planks', count: 8 }]);
+  assert.strictEqual(p.go, true);
+  assert.strictEqual(p.count, 1);
+});
+
+test('fonte d\'amorçage : 2 minerais passent aussi', () => {
+  const p = smeltPlan([{ name: 'raw_iron', count: 2 }, { name: 'furnace', count: 1 }, { name: 'coal', count: 1 }]);
+  assert.strictEqual(p.go, true);
+});
+
+test('une fois AMORCÉ (≥1 lingot), on repasse au lot de 3', () => {
+  const base = [{ name: 'furnace', count: 1 }, { name: 'oak_planks', count: 8 }, { name: 'iron_ingot', count: 1 }];
+  assert.strictEqual(smeltPlan([{ name: 'raw_iron', count: 2 }, ...base]).go, false);
+  assert.strictEqual(smeltPlan([{ name: 'raw_iron', count: 3 }, ...base]).go, true);
+});
+
+test('amorçage : sans four ou sans combustible, toujours non (rien ne change)', () => {
+  assert.strictEqual(smeltPlan([{ name: 'raw_iron', count: 1 }, { name: 'oak_planks', count: 8 }]).why, 'furnace');
+  assert.strictEqual(smeltPlan([{ name: 'raw_iron', count: 1 }, { name: 'furnace', count: 1 }]).why, 'fuel');
+});
+
+test('minRaw explicite reste prioritaire (appelants existants intacts)', () => {
+  const items = [{ name: 'raw_iron', count: 1 }, { name: 'furnace', count: 1 }, { name: 'coal', count: 1 }];
+  assert.strictEqual(smeltPlan(items, { minRaw: 3 }).go, false);
 });
