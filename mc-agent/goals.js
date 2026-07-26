@@ -129,18 +129,24 @@ const IRON_CHAIN = [
 // puis ajoute 3 buts diamant : buffer cobble (anti-lave murage) → descente Y≤-52 (escalier 1×2
 // diagonal) → branch mining à Y=-54. MONOTONIE via D : tous les buts amont héritent d'un `|| D(c)`
 // pour ne pas redevenir "non satisfaits" quand le cobble/iron est consommé après obtention du diamant.
-const D = (c) => invCount(c.inv, 'diamond') >= 1;          // objectif final
+// CIBLE CONTINUE (Massii, live 26/07 : « il ne doivent pas s'arreter a seulement quelque diamant,
+// ils doivent continuer a en prendre en continu »). Le predicat final valait `diamond >= 1` : le
+// bot s'arretait au PREMIER diamant, objectif accompli.
+const DIAMOND_TARGET = 64;                                  // une pile : « en continu » en pratique
+const D = (c) => invCount(c.inv, 'diamond') >= 1;           // gating AMONT : un diamant prouve que
+                                                            // bois/outils/four sont derriere nous
+const DT = (c) => invCount(c.inv, 'diamond') >= DIAMOND_TARGET;   // vraie fin de l'objectif
 function withFinal(goal, final) {
   return Object.assign({}, goal, { met: (c) => goal.met(c) || final(c) });
 }
 const DIAMOND_CHAIN = [
   ...IRON_CHAIN.map((g) => withFinal(g, D)),
   // 16 cobble = ~stack/2 : assez pour murer 2-3 nappes de lave + bridging. Monotone via D.
-  { name: 'cobble_buffer', met: (c) => invCount(c.inv, 'cobblestone') >= 16 || D(c),
+  { name: 'cobble_buffer', met: (c) => invCount(c.inv, 'cobblestone') >= 16 || DT(c),
     skill: 'gather',       args: { name: 'stone', count: 16 } },
   // Y cible -54 : juste au-dessus de la nappe de lave (Y=-55→-63, cf. spec). On accepte y<=-52
   // (marge de tolérance — l'escalier descend par paliers, on s'arrête dès qu'on franchit le seuil).
-  { name: 'descend_y54',   met: (c) => (c.y !== undefined && c.y <= -52) || D(c),
+  { name: 'descend_y54',   met: (c) => (c.y !== undefined && c.y <= -52) || DT(c),
     skill: 'descendDiagonal', args: { targetY: -54 } },
   // CAVE-FIRST (Massii, live 26/07 : « les diamants il les allait chercher dans les cave = pas de
   // tunnel où ils creusent en continu, l'unique moment où ils creusent c'est quand ils passent
@@ -148,8 +154,8 @@ const DIAMOND_CHAIN = [
   // Remplace un branch-mine de 48 blocs × 16 galeries — un tunnel continu, la stratégie inverse.
   // `caveHunt` ne cible que des minerais MAPPÉS, EXPOSÉS et SECS ; quand il n'en reste plus, le
   // dispatch enchaîne un tunnel COURT (le trajet vers la grotte suivante), jamais un strip.
-  { name: 'diamond_caves', met: (c) => D(c),
-    skill: 'caveHunt',     args: { material: 'diamond', count: 3, targetY: -54 } },
+  { name: 'diamond_caves', met: (c) => DT(c),
+    skill: 'caveHunt',     args: { material: 'diamond', count: 8, targetY: -54 } },
 ];
 
 // --- Chaînes ARMURE (run nether 2026-07-13) : T1 = armure FER complète auto-craftée (24 lingots),
@@ -418,7 +424,10 @@ function nextObjectiveAfter(objective, mates) {
   if (objective === 'iron_armor' || objective === 'iron_help') {
     return needy ? 'iron_help' : 'diamond';
   }
-  return null;   // fin de chaîne (diamant) : pas de boucle infinie
+  // Le diamant ne se « termine » plus : atteindre la cible relance la chasse (demande explicite
+  // « en continu »). Un bot qui a fini son armure n'a de toute facon rien de mieux a faire.
+  if (objective === 'diamond') return 'diamond';
+  return null;
 }
 
 function chainFor(objective) {
@@ -438,4 +447,4 @@ function firstUnmet(chain, ctx) {
 }
 
 module.exports = {
-  nextObjectiveAfter, IRON_HELP_CHAIN, HELP_STOCK, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk };
+  nextObjectiveAfter, IRON_HELP_CHAIN, HELP_STOCK, DIAMOND_TARGET, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk };

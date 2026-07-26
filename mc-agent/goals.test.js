@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { invCount, buildCtxInv, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, chainFor, firstUnmet, nextObjectiveAfter } = require('./goals');
+const { invCount, buildCtxInv, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, chainFor, firstUnmet, nextObjectiveAfter, DIAMOND_TARGET } = require('./goals');
 
 // Faux bot : inventaire = liste d'items {name, count}
 function fakeBot(items) {
@@ -141,34 +141,39 @@ test('DIAMOND firstUnmet : Y atteint -54, pioche fer, cobble -> diamond_caves', 
   assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx).name, 'diamond_caves');
 });
 
-test('DIAMOND firstUnmet : diamant obtenu -> null (objectif atteint)', () => {
-  // ⚠️ monotonie : tout l'amont doit redevenir "satisfait" via le gating |D
-  const ctx = { inv: { diamond: 1 }, y: -54 };
+test('DIAMOND firstUnmet : cible CONTINUE atteinte -> null (objectif fini)', () => {
+  // Depuis le 26/07 la fin n'est plus « 1 diamant » mais DIAMOND_TARGET (demande « en continu »).
+  const ctx = { inv: { diamond: DIAMOND_TARGET }, y: -54 };
   assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx), null);
 });
 
-test('DIAMOND monotonie : diamond:1 satisfait TOUS les buts amont (même si ressources consommées)', () => {
-  // Cas réaliste : on a miné un diamant, les cobble/iron/sticks/planks/logs ont été consommés.
-  // Aucun but ne doit redevenir "non satisfait" → firstUnmet = null.
+test('DIAMOND monotonie : diamond:1 satisfait tout l AMONT (outils/bois consommes)', () => {
+  // Un diamant en poche PROUVE que bois, outils et four sont derriere nous : aucun but amont ne
+  // doit se rouvrir. Seuls les 3 buts de queue (cobble/descente/chasse) restent ouverts, car la
+  // cible est desormais CONTINUE — c'est precisement ce qui empeche le bot de s'arreter au 1er.
   const ctx = { inv: { diamond: 1 }, y: -54 };
+  const queue = ['cobble_buffer', 'descend_y54', 'diamond_caves'];
   for (const goal of DIAMOND_CHAIN) {
+    if (queue.includes(goal.name)) continue;
     assert.ok(goal.met(ctx), `but "${goal.name}" devrait etre satisfait quand diamond:1`);
   }
 });
 
-test('DIAMOND descend_y54 : met=false si y=64, true si y<=-52, true si diamond:1', () => {
+test('DIAMOND descend_y54 : met=false en surface, true en profondeur, true si cible atteinte', () => {
   const goal = DIAMOND_CHAIN.find((g) => g.name === 'descend_y54');
   assert.strictEqual(goal.met({ inv: {}, y: 64 }), false);
   assert.strictEqual(goal.met({ inv: {}, y: -52 }), true);
-  assert.strictEqual(goal.met({ inv: {}, y: -54 }), true);
-  assert.strictEqual(goal.met({ inv: { diamond: 1 }, y: 64 }), true);
+  // ⚠️ un bot REMONTE (fuite, faim) avec quelques diamants doit REDESCENDRE : l'ancien gating
+  // `|| diamond>=1` le laissait en surface pour toujours.
+  assert.strictEqual(goal.met({ inv: { diamond: 3 }, y: 70 }), false);
+  assert.strictEqual(goal.met({ inv: { diamond: DIAMOND_TARGET }, y: 70 }), true);
 });
 
-test('DIAMOND cobble_buffer : met=true si cobble>=16 OU diamond:1', () => {
+test('DIAMOND cobble_buffer : met=true si cobble>=16 OU cible continue atteinte', () => {
   const goal = DIAMOND_CHAIN.find((g) => g.name === 'cobble_buffer');
-  assert.strictEqual(goal.met({ inv: { cobblestone: 15 } }), false);
   assert.strictEqual(goal.met({ inv: { cobblestone: 16 } }), true);
-  assert.strictEqual(goal.met({ inv: { diamond: 1 } }), true);
+  assert.strictEqual(goal.met({ inv: { diamond: 3 } }), false);
+  assert.strictEqual(goal.met({ inv: { diamond: DIAMOND_TARGET } }), true);
 });
 
 test('DIAMOND : le but iron_pickaxe N\'est PLUS le dernier (le diamant l\'est)', () => {
@@ -462,11 +467,35 @@ test('nextObjectiveAfter : aucun coéquipier connu → diamant (jamais inerte)',
   assert.strictEqual(nextObjectiveAfter('iron_armor', null), 'diamond');
 });
 
-test('nextObjectiveAfter : diamant fini → rien (fin de chaîne, pas de boucle infinie)', () => {
-  assert.strictEqual(nextObjectiveAfter('diamond', [{ name: 'B', status: { need: 9 } }]), null);
+test('nextObjectiveAfter : diamant "fini" → on repart en chasser (demande « en continu »)', () => {
+  assert.strictEqual(nextObjectiveAfter('diamond', [{ name: 'B', status: { need: 9 } }]), 'diamond');
 });
 
 test('nextObjectiveAfter : iron_help fini mais il reste des besoins → on continue d aider', () => {
   assert.strictEqual(nextObjectiveAfter('iron_help', [{ name: 'B', status: { need: 4 } }]), 'iron_help');
   assert.strictEqual(nextObjectiveAfter('iron_help', [{ name: 'B', status: { need: 0 } }]), 'diamond');
+});
+
+// ─── Diamant CONTINU (Massii, live 26/07) ──────────────────────────────────────────────────────
+// « il ne doivent pas s'arreter a seulement quelque diamant, ils doivent continuer a en prendre
+// en continu ». Le predicat final valait `diamond >= 1` : le bot s'arretait au PREMIER.
+test('DIAMOND : un seul diamant NE termine PLUS l objectif', () => {
+  const ctx = { inv: { diamond: 1, iron_pickaxe: 1, cobblestone: 16, stick: 4 }, y: -54 };
+  assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx).name, 'diamond_caves');
+});
+
+test('DIAMOND : la cible continue est atteinte -> objectif fini', () => {
+  const ctx = { inv: { diamond: DIAMOND_TARGET, iron_pickaxe: 1, cobblestone: 16, stick: 4 }, y: -54 };
+  assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx), null);
+});
+
+// Effet de bord a ne pas rater : avec l ancien gating `|| D(c)`, un bot REMONTE (fuite, faim)
+// voyait `descend_y54` deja satisfait des le 1er diamant et ne redescendait jamais.
+test('DIAMOND : remonte en surface avec des diamants -> il REDESCEND', () => {
+  const ctx = { inv: { diamond: 3, iron_pickaxe: 1, cobblestone: 16, stick: 4 }, y: 70 };
+  assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx).name, 'descend_y54');
+});
+
+test('nextObjectiveAfter : diamant "fini" -> on repart au diamant (jamais inerte)', () => {
+  assert.strictEqual(nextObjectiveAfter('diamond', []), 'diamond');
 });
