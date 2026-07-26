@@ -2856,7 +2856,13 @@ async function onSpawn() {
     // particulier — son travail est de couvrir du terrain, donc contourner lui coûte zéro, alors
     // qu'un pont lui coûte du temps, des blocs et un risque de chute. L'ouvrier, lui, a une cible
     // précise (sa base, son gisement) où le détour peut être plus cher que trois blocs posés.
-    moves.placeCost = IS_MAPPER ? 60 : 30;
+    // 45 pour un OUVRIER (etait 30). Massii, live 26/07 : « il place un bloc en dessous des pieds
+    // seulement pour placer un bloc alors qu'il pouvait tout simplement sauter en avant ». On ne
+    // PEUT PAS retirer la colonne du pathfinder — deja tente (7f69de6) et REVERTE (7d0501d) : les
+    // 3 bots avancaient de 1 a 22 blocs en 240 s, puis restaient figes en oscillant pose/casse.
+    // Le seul levier sain est donc le PRIX : a 45, marcher/sauter/nager (20) gagne largement, et
+    // poser redevient un dernier recours. Le budget vient de se liberer en baissant liquidCost.
+    moves.placeCost = IS_MAPPER ? 60 : 45;
     // STALACTITES à ÉVITER (Massii 2026-07-26 : « surtout les stalactites »). Le pointed_dripstone
     // a une boîte de collision partielle que le pathfinder croit franchissable : le bot s'y coince,
     // et il empale (1 mort mesurée sur ce run). `blocksToAvoid` le fait contourner ; `clearSnares`
