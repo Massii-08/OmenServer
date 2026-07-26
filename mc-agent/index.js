@@ -20,7 +20,7 @@ const { goto } = require('./skills/goto');
 const { mineBlock, collectWood } = require('./skills/mineBlock');
 const { attackNearest } = require('./skills/attackNearest');
 const { fleeFrom, isFleeHostile } = require('./skills/fleeFrom');
-const { installReflexes, RANGED, DEFENSIVE_HEALTH, isFleeOnlyMob } = require('./reflexes');
+const { installReflexes, RANGED, DEFENSIVE_HEALTH, isFleeOnlyMob, FOODS, EMERGENCY_FOODS } = require('./reflexes');
 const { decideReaction } = require('./triggers');
 const { loadCommands, isAllowed, buildCommandDocs } = require('./commands');
 const { loadPolicy, isTrusted, parseTpRequest, parseTradeRequest, gateDecision, buildTrustDocs } = require('./trust');
@@ -3730,6 +3730,36 @@ setInterval(async () => {
   } catch (e) { /* watchdog : ne crash jamais */ }
   finally { _oreGrabBusy = false; }
 }, 4000);
+
+// ── FAIM : FILET INDÉPENDANT DU RÉFLEXE (mesure 2026-07-26 : 3 morts de faim ALORS QUE les bots
+// avaient 64 steaks en poche — contradiction qui dit que manger échouait, pas que la nourriture
+// manquait). Cause : `installReflexes` ne branche `tryEat` que sur l'event `health`, et l'eat
+// lui-même est un `equip`+`consume` dont l'échec est avalé en silence (`.catch(() => {})`) — or
+// `equip` échoue quand le bot est en train de miner, ce qu'un ouvrier fait en permanence.
+// Ici : on ARRÊTE de creuser, on mange, et on DIT ce qui s'est passé (le silence est ce qui a
+// laissé ce bug vivre plusieurs runs).
+let _hungerBusy = false;
+setInterval(async () => {
+  if (_hungerBusy) return;
+  try {
+    if (!bot.inventory || bot.food == null || bot.food > 8) return;
+    const items = bot.inventory.items() || [];
+    const food = items.find((i) => FOODS.has(i.name)) || items.find((i) => EMERGENCY_FOODS.has(i.name));
+    if (!food) return;                                   // vraiment rien à manger : ensureFood s'en occupe
+    _hungerBusy = true;
+    try { bot.stopDigging(); } catch (e) {}               // libère la main (la cause du silence)
+    try {
+      await withTimeout((async () => {
+        await bot.equip(food, 'hand');
+        await bot.consume();
+      })(), 8000, () => {});
+      emit({ type: 'ate', item: food.name, food: bot.food });
+    } catch (e) {
+      emit({ type: 'eat_failed', item: food.name, food: bot.food, reason: String((e && e.message) || e).slice(0, 60) });
+    }
+  } catch (e) { /* watchdog : ne crash jamais */ }
+  finally { _hungerBusy = false; }
+}, 5000);
 
 // ── PLUS DE PIOCHE → EN REFAIRE UNE (Massii 2026-07-26 : « si ils n'ont plus de pioche ils doivent
 // en faire une »). La capacité existait (`recoverPickaxe`, buts wooden_pickaxe/stone_pickaxe) mais
