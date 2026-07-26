@@ -234,6 +234,11 @@ async function floodFillVein(bot, start, token, maxVein = 64) {
     seen.add(k);
     const b = bot.blockAt(p(x, y, z));
     if (!b || !ORE_NAMES.has(b.name) || oreFamily(b.name) !== fam) continue;
+    // ⚠️ ÉQUIPER LA PIOCHE — `collectBlock.collect` n'équipe RIEN (limite connue, déjà corrigée
+    // pour la reprise de blocs mais jamais ici). Sans ça le bot minait le filon avec ce qu'il avait
+    // en main : Massii a filmé le 26/07 un bot frappant un diamant de deepslate AVEC UN BOUCLIER —
+    // vitesse mains nues (le bloc semble increvable), et aucun drop même s'il finit par céder.
+    try { await equipCached(bot, bestToolFor(bot, b)); } catch (e) { /* best-effort */ }
     // collectBlock.collect(b) = mine CE bloc précis (positionnel, ≠ gather qui prend le plus proche)
     // + ramasse le drop. Borné (un collect peut geler, piège #42). Échec → on saute ce bloc.
     try { await withTimeout(bot.collectBlock.collect(b), 30000); mined++; }

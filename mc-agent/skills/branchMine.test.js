@@ -563,3 +563,24 @@ test('branchMine classique : une BRANCHE qui rencontre l eau NON scellable s arr
   assert.strictEqual(beyond.length, 0, `la branche ne creuse PAS au-delà de l eau (dug: ${JSON.stringify(beyond.map((b)=>({x:b.position.x,z:b.position.z})))})`);
   assert.ok(calls.dig.every((b) => !String(b.name || '').includes('water')), 'ne creuse jamais l eau');
 });
+
+// ─── floodFillVein DOIT equiper la pioche (Massii, video live 26/07) ───────────────────────────
+// « dans la video il essaye de le casser mais il n'arrive pas » : le bot frappait un diamant de
+// deepslate avec un BOUCLIER en main. `collectBlock.collect` n'equipe RIEN (limite connue, deja
+// corrigee pour la reprise de blocs mais jamais pour le minage de filons) → vitesse mains nues,
+// et aucun drop meme si le bloc cede.
+test('floodFillVein : equipe le meilleur outil AVANT de miner chaque bloc du filon', async () => {
+  const equipped = [];
+  const ore = { name: 'deepslate_diamond_ore', position: { x: 0, y: -54, z: 0 } };
+  const bot = {
+    registry: { blocksByName: { deepslate_diamond_ore: { id: 1 }, diamond_pickaxe: { id: 9 } } },
+    inventory: { items: () => [{ name: 'iron_pickaxe', type: 7, count: 1 }] },
+    heldItem: null,
+    blockAt: (p) => ((p.x === 0 && p.y === -54 && p.z === 0) ? ore : null),
+    equip: async (item) => { equipped.push(item && item.name); },
+    collectBlock: { collect: async () => {} },
+  };
+  await floodFillVein(bot, { x: 0, y: -54, z: 0 });
+  assert.ok(equipped.includes('iron_pickaxe'),
+    `une pioche doit etre equipee avant le collect (equipes: ${JSON.stringify(equipped)})`);
+});
