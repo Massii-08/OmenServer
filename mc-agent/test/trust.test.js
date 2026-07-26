@@ -63,9 +63,12 @@ test('buildTrustDocs: liste → mentionne les noms ; vide → ""', () => {
   assert.strictEqual(buildTrustDocs([]), '');
 });
 
-test('loadPolicy: absent → {trusted:[],trade:null} ; fichier valide → parsé', () => {
-  assert.deepStrictEqual(loadPolicy(''), { trusted: [], trade: null, kit_command: '' });
-  assert.deepStrictEqual(loadPolicy('/no/such.json'), { trusted: [], trade: null, kit_command: '' });
+test('loadPolicy: absent → defauts complets ; fichier valide → parsé', () => {
+  // group_bots fait partie du contrat depuis le 26/07 : son absence rendait l'auto-accept du
+  // /tpa entre coequipiers TOUJOURS faux (0 /tpaccept en jeu, 38 regroupements rates sur 47).
+  const DEF = { trusted: [], trade: null, kit_command: '', group_bots: [] };
+  assert.deepStrictEqual(loadPolicy(''), DEF);
+  assert.deepStrictEqual(loadPolicy('/no/such.json'), DEF);
   const f = path.join(os.tmpdir(), 'mca-policy-' + process.pid + '.json');
   fs.writeFileSync(f, JSON.stringify({ trusted: ['A'], trade: { acceptCmd: '/t accept', requestPattern: 'x' } }));
   try {

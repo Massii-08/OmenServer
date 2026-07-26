@@ -195,3 +195,94 @@ test('aucun coéquipier / entrées vides → null, jamais de crash', () => {
   assert.strictEqual(pickMobAssist({}), null);
   assert.strictEqual(pickMobAssist(), null);
 });
+
+// ── ARMURER LES CARTOGRAPHES (Massii 26/07) ─────────────────────────────────────────────────────
+const { pickMapperToEquip, giftSetPlan, allMappersArmored } = require('./teamwork');
+
+const MNOW = 1_000_000;
+const mapper = (name, armor, at = MNOW) => ({ name, role: 'mapper', x: 0, z: 0, armor, at });
+const worker = (name, armor, at = MNOW) => ({ name, role: 'worker', x: 0, z: 0, armor, at });
+const ARMORED = { armor: 4, ingots: 0, need: 0 };
+
+test('pickMapperToEquip: je ne pars equiper personne tant que MON armure est incomplete', () => {
+  const mates = [mapper('MapBot1', 0)];
+  for (const a of [0, 1, 2, 3]) {
+    assert.strictEqual(
+      pickMapperToEquip({ selfName: 'W1', selfStatus: { armor: a }, mates, now: MNOW }), null);
+  }
+});
+
+test('pickMapperToEquip: choisit le mappeur le MOINS equipe', () => {
+  const mates = [mapper('MapBot1', 3), mapper('MapBot2', 0), mapper('MapBot3', 2)];
+  const r = pickMapperToEquip({ selfName: 'W1', selfStatus: ARMORED, mates, now: MNOW });
+  assert.deepStrictEqual(r, { to: 'MapBot2', armor: 0 });
+});
+
+test('pickMapperToEquip: a egalite, choix DETERMINISTE par nom (2 workers ne convergent pas)', () => {
+  const mates = [mapper('MapBot3', 0), mapper('MapBot1', 0), mapper('MapBot2', 0)];
+  const a = pickMapperToEquip({ selfName: 'W1', selfStatus: ARMORED, mates, now: MNOW });
+  const b = pickMapperToEquip({ selfName: 'W2', selfStatus: ARMORED, mates, now: MNOW });
+  assert.strictEqual(a.to, 'MapBot1');
+  assert.deepStrictEqual(a, b);
+});
+
+test('pickMapperToEquip: une cible RESERVEE par un autre worker est ignoree', () => {
+  const mates = [mapper('MapBot1', 0), mapper('MapBot2', 1)];
+  const r = pickMapperToEquip({
+    selfName: 'W1', selfStatus: ARMORED, mates, claimed: new Set(['MapBot1']), now: MNOW });
+  assert.deepStrictEqual(r, { to: 'MapBot2', armor: 1 });
+});
+
+test('pickMapperToEquip: ignore les workers, les mappeurs equipes et les presences perimees', () => {
+  assert.strictEqual(pickMapperToEquip({
+    selfName: 'W1', selfStatus: ARMORED, mates: [worker('W2', 0)], now: MNOW }), null);
+  assert.strictEqual(pickMapperToEquip({
+    selfName: 'W1', selfStatus: ARMORED, mates: [mapper('MapBot1', 4)], now: MNOW }), null);
+  assert.strictEqual(pickMapperToEquip({
+    selfName: 'W1', selfStatus: ARMORED, mates: [mapper('MapBot1', 0, MNOW - 999_999)], now: MNOW }), null);
+});
+
+test('pickMapperToEquip: statut inconnu = considere NU (on n_abandonne pas sur une supposition)', () => {
+  const mates = [{ name: 'MapBot1', role: 'mapper', x: 0, z: 0, at: MNOW }];  // pas de champ armor
+  const r = pickMapperToEquip({ selfName: 'W1', selfStatus: ARMORED, mates, now: MNOW });
+  assert.deepStrictEqual(r, { to: 'MapBot1', armor: 0 });
+});
+
+test('giftSetPlan: poche vide → 4 pieces manquantes, 24 lingots a miner', () => {
+  const r = giftSetPlan([]);
+  assert.strictEqual(r.ready, false);
+  assert.deepStrictEqual(r.missing,
+    ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots']);
+  assert.strictEqual(r.ingotsShort, 24);
+});
+
+test('giftSetPlan: les lingots en poche reduisent ce qu_il reste a miner', () => {
+  assert.strictEqual(giftSetPlan([{ name: 'iron_ingot', count: 10 }]).ingotsShort, 14);
+  assert.strictEqual(giftSetPlan([{ name: 'iron_ingot', count: 30 }]).ingotsShort, 0);
+});
+
+test('giftSetPlan: set complet en poche → ready, plus rien a miner', () => {
+  const items = ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots']
+    .map((name) => ({ name, count: 1 }));
+  const r = giftSetPlan(items);
+  assert.strictEqual(r.ready, true);
+  assert.deepStrictEqual(r.missing, []);
+  assert.strictEqual(r.ingotsShort, 0);
+});
+
+test('giftSetPlan: une piece deja forgee retire SON cout, pas un cout moyen', () => {
+  const r = giftSetPlan([{ name: 'iron_chestplate', count: 1 }]);   // 8 lingots economises
+  assert.deepStrictEqual(r.have, ['iron_chestplate']);
+  assert.strictEqual(r.ingotsShort, 24 - 8);
+});
+
+test('allMappersArmored: gate de la phase diamant', () => {
+  assert.strictEqual(allMappersArmored([mapper('M1', 4), mapper('M2', 4)], { now: MNOW }), true);
+  assert.strictEqual(allMappersArmored([mapper('M1', 4), mapper('M2', 3)], { now: MNOW }), false);
+  assert.strictEqual(allMappersArmored([], { now: MNOW }), true);          // aucun mappeur = rien a attendre
+  // un mappeur au statut inconnu bloque le passage au diamant
+  assert.strictEqual(allMappersArmored(
+    [{ name: 'M1', role: 'mapper', at: MNOW }], { now: MNOW }), false);
+  // un mappeur PERIME (mort/deco) ne bloque pas
+  assert.strictEqual(allMappersArmored([mapper('M1', 0, MNOW - 999_999)], { now: MNOW }), true);
+});

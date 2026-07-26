@@ -5,7 +5,7 @@ const fs = require('fs');
 
 /** Charge la policy depuis un fichier JSON. Absent/illisible → {trusted:[], trade:null}. */
 function loadPolicy(filePath) {
-  if (!filePath) return { trusted: [], trade: null, kit_command: '' };
+  if (!filePath) return { trusted: [], trade: null, kit_command: '', group_bots: [] };
   try {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     const trusted = Array.isArray(data.trusted) ? data.trusted.filter((u) => typeof u === 'string') : [];
@@ -14,9 +14,19 @@ function loadPolicy(filePath) {
       : null;
     // kit_command (survie mappeur) : DOIT être propagé — sinon le bot ne lance jamais /kit.
     const kit_command = typeof data.kit_command === 'string' ? data.kit_command : '';
-    return { trusted, trade, kit_command };
+    // group_bots : le roster du groupe. DOIT être propagé — c'est LUI qui autorise l'auto-accept
+    // du /tpa entre bots du même groupe (index.js : `policy.group_bots.includes(demandeur)`).
+    // Il était STRIPPÉ ici alors que le backend l'écrivait bien dans policy-<sid>.json : avec une
+    // liste `trusted` vide, isTrusted() renvoie false, donc `tpTrusted` était TOUJOURS faux et
+    // aucun bot n'a jamais accepté le /tpa d'un coéquipier. Mesuré sur world_mn5 : 0 `/tpaccept`
+    // dans tout le log serveur, 38 `squad_result:False` sur 47 tentatives, et NethBot3 abandonné
+    // à 236 blocs du groupe (Massii : « les 5 bots ressources ne sont pas ensemble »).
+    // Exactement le piège des 4 couches de config (#15a) : chaque couche strippe en silence.
+    const group_bots = Array.isArray(data.group_bots)
+      ? data.group_bots.filter((u) => typeof u === 'string') : [];
+    return { trusted, trade, kit_command, group_bots };
   } catch (e) {
-    return { trusted: [], trade: null, kit_command: '' };
+    return { trusted: [], trade: null, kit_command: '', group_bots: [] };
   }
 }
 

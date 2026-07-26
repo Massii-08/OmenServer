@@ -144,7 +144,99 @@ function pickMobAssist({ self, mates, hostiles, isFleeOnly, opts = {} } = {}) {
   return best;
 }
 
+// ── ARMURER LES CARTOGRAPHES (Massii 26/07) ─────────────────────────────────────────────────────
+// « il faut que les bots ressources se coordonnent pour préparer une armure pour chacun et après
+// il se tp au mappeur pour lui donner, comme ça les mappeurs continuent sans jamais s'arrêter ».
+//
+// C'est l'INVERSE de la règle de pickDonation, qui écarte les mappeurs (« les cartographes ne
+// montent pas d'armure ») : eux ne minent pas, donc ils meurent nus et n'osent pas s'éloigner.
+// Un mappeur qui survit est un mappeur qui cartographie plus loin — d'où la priorité de Massii :
+// habiller les mappeurs AVANT de passer au diamant.
+//
+// Trois différences de fond avec le don de lingots entre workers :
+//  - AUCUNE limite de distance : le worker rejoint le mappeur en /tpa (c'est tout l'intérêt —
+//    le mappeur ne se déplace pas et ne s'arrête donc jamais) ;
+//  - on livre des PIÈCES déjà forgées, pas des lingots : un mappeur n'a ni four ni table ;
+//  - la cible est RÉSERVÉE (claims) pour que 5 workers n'habillent pas le même mappeur.
+
+const SET_INGOTS = 24;   // 5 + 8 + 7 + 4 — coût d'un set fer complet
+
+/**
+ * PUR — à quel cartographe dois-je porter une armure ? null si rien à faire.
+ *
+ * Garde-fou : je ne pars équiper personne tant que MA propre armure est incomplète (même règle
+ * que pickDonation — on ne se sabote pas pour aider). Choix : le moins équipé d'abord, puis, à
+ * égalité, le nom le plus petit — critère DÉTERMINISTE (comme squadLeader) pour que deux workers
+ * qui décident au même instant ne convergent pas sur la même cible avant même de la réserver.
+ *
+ * @param {{selfName:string, selfStatus:{armor:number}, mates:Array, claimed?:Set<string>|Array,
+ *          now?:number, opts?:object}} p
+ * @returns {{to:string, armor:number}|null}
+ */
+function pickMapperToEquip({ selfName, selfStatus, mates, claimed, now, opts = {} } = {}) {
+  if (!selfStatus || (selfStatus.armor || 0) < 4) return null;   // je m'équipe MOI d'abord
+  const t = now || Date.now();
+  const freshMs = opts.freshMs || FRESH_MS;
+  const taken = claimed instanceof Set ? claimed : new Set(claimed || []);
+  const cands = (mates || []).filter((m) => m
+    && m.name && m.name !== selfName
+    && m.role === 'mapper'
+    && (t - (m.at || 0)) <= freshMs                    // présence périmée = mort/déconnecté
+    && (m.armor === undefined ? 0 : m.armor) < 4       // statut inconnu = considéré NU (on n'abandonne pas sur une supposition)
+    && !taken.has(m.name));
+  if (!cands.length) return null;
+  let best = null;
+  for (const m of cands) {
+    const armor = m.armor === undefined ? 0 : m.armor;
+    if (!best || armor < best.armor || (armor === best.armor && m.name < best.to)) {
+      best = { to: m.name, armor };
+    }
+  }
+  return best;
+}
+
+/**
+ * PUR — que me manque-t-il pour offrir un set fer COMPLET ?
+ *
+ * `items` = la POCHE uniquement (bot.inventory.items() n'inclut pas les slots d'armure portés,
+ * cf. #47) : une pièce en poche est donc bien du surplus livrable, jamais celle que je porte.
+ *
+ * @param {Array<{name:string,count:number}>} items
+ * @returns {{ready:boolean, have:string[], missing:string[], ingots:number, ingotsShort:number}}
+ */
+function giftSetPlan(items) {
+  const cnt = (n) => (items || []).filter((i) => i && i.name === n)
+    .reduce((a, i) => a + (i.count || 0), 0);
+  const have = [], missing = [];
+  let ingotsShort = 0;
+  for (const p of PIECES) {
+    const name = `iron_${p}`;
+    if (cnt(name) > 0) have.push(name);
+    else { missing.push(name); ingotsShort += INGOTS_PER_PIECE[p]; }
+  }
+  const ingots = cnt('iron_ingot');
+  return {
+    ready: missing.length === 0,
+    have, missing, ingots,
+    ingotsShort: Math.max(0, ingotsShort - ingots),   // lingots encore À MINER
+  };
+}
+
+/**
+ * PUR — tous les cartographes FRAIS sont-ils équipés ? (⇒ feu vert pour la phase diamant)
+ * Un mappeur au statut inconnu compte comme NON équipé : on ne passe pas au diamant sur une
+ * supposition. Aucun mappeur connu ⇒ true (rien à attendre).
+ */
+function allMappersArmored(mates, opts = {}) {
+  const t = opts.now || Date.now();
+  const mappers = (mates || []).filter((m) => m && m.name && m.role === 'mapper'
+    && (t - (m.at || 0)) <= (opts.freshMs || FRESH_MS));
+  return mappers.every((m) => (m.armor || 0) >= 4);
+}
+
 module.exports = {
   teamStatus, pickDonation, allArmored, pickMobAssist,
+  pickMapperToEquip, giftSetPlan, allMappersArmored,
   PIECES, INGOTS_PER_PIECE, MIN_GIFT, AID_RANGE, ASSIST_RANGE, THREAT_RADIUS, ASSIST_MIN_HEALTH,
+  SET_INGOTS,
 };
