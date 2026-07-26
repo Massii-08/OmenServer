@@ -184,6 +184,28 @@ async function placeTorch(bot, floorTarget) {
   } catch (e) { return false; }
 }
 
+// INSTRUMENTATION (Massii 26/07 : « ils placent des torches dans des zones déjà illuminées »).
+// Ce chemin-ci posait les torches de tunnel SANS émettre le moindre event — le seul `torch_placed`
+// du projet vit dans index.js, un autre chemin. Le comportement observé était donc littéralement
+// invisible dans la télémétrie (même classe de silence que les tables de craft abandonnées).
+// On mesure AVANT de corriger : deux causes restent possibles et aucune n'est établie — lumière
+// client encore périmée juste après le creusage, ou lecture sur un bloc qui ne porte pas la
+// lumière. `skyLight` est loggué aussi, mais il vaut 0 en profondeur : il ne peut pas expliquer
+// le symptôme sous terre, seulement en surface.
+async function placeTorchLogged(bot, floorTarget, light) {
+  let skyLight = null;
+  try { const c = bot.blockAt(floorTarget); if (c && c.skyLight != null) skyLight = c.skyLight; } catch (e) {}
+  const placed = await placeTorch(bot, floorTarget);
+  try {
+    _emit({
+      type: 'torch_placed', from: 'branchMine', placed: !!placed,
+      light, skyLight,
+      x: Math.round(floorTarget.x), y: Math.round(floorTarget.y), z: Math.round(floorTarget.z),
+    });
+  } catch (e) { /* best-effort */ }
+  return placed;
+}
+
 // Détecte un ore dans les voisins 6-connectés d'un bloc. Tous les ores UTILES (quota + torches).
 const ORE_NAMES = new Set([
   'diamond_ore', 'deepslate_diamond_ore',
@@ -519,7 +541,7 @@ async function branchMine(bot, opts = {}, token = null) {
         nextTorchAtS = n + torchEvery + Math.floor(rng() * torchEvery);
         let light = 0;
         try { const cell = bot.blockAt(footTarget); if (cell && cell.light != null) light = cell.light; } catch (e) { /* inconnue = sombre */ }
-        if (light < 8) { try { await placeTorch(bot, footTarget); } catch (e) { /* best-effort */ } }
+        if (light < 8) { try { await placeTorchLogged(bot, footTarget, light); } catch (e) { /* best-effort */ } }
       }
       // VIRAGE à intervalle IRRÉGULIER (jamais métronomique = pas une grille).
       if (--stepsLeft <= 0) {
@@ -585,7 +607,7 @@ async function branchMine(bot, opts = {}, token = null) {
         if (cell && cell.light !== undefined && cell.light !== null) light = cell.light;
       } catch (e) { /* inconnue = sombre */ }
       if (light < 8) {
-        try { await placeTorch(bot, footTarget); } catch (e) { /* best-effort */ }
+        try { await placeTorchLogged(bot, footTarget, light); } catch (e) { /* best-effort */ }
       }
     }
 

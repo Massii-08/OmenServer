@@ -678,10 +678,19 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
         else:
             cmd += ["--frontier", "1"]          # exploration par frontière + warp + /locate
     elif server_id:
-        RUNS_DIR.mkdir(parents=True, exist_ok=True)
-        wm_path = RUNS_DIR / f"worldmem-{sid}.json"
-        wm_path.write_text(json.dumps(world_memory.load(server_id)), encoding="utf-8")
-        cmd += ["--world-memory", str(wm_path)]
+        # Les AUTRES objectifs (chaînes autonomes : iron_armor, stone_pickaxe…) lisaient un
+        # SNAPSHOT figé au démarrage du process — « comportement historique », pas un choix.
+        # C'était à l'envers : les mappeurs, qui ÉCRIVENT la carte, la relisaient en direct, et
+        # les workers qui la CONSOMMENT travaillaient sur une photo qui vieillit. Plus un worker
+        # survivait, plus sa carte était périmée. Mesuré sur world_mn3 : les 2 workers jamais
+        # plantés tournaient sur un instantané pris 1 à 3 min après une purge de mémoire — donc
+        # avec ZÉRO cellule épuisée — et ont bouclé 50 min sur la même cellule (0,0) que les
+        # autres bots savaient pelée ; les 2 workers relancés après un crash OOM, eux, avaient
+        # une carte fraîche et sont les seuls à avoir progressé (2/4 d'armure).
+        # Le coût de la relecture est déjà payé par les mappeurs sur le même fichier sans incident.
+        world_memory.WORLD_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        live = world_memory.WORLD_MEMORY_DIR / f"{server_id}.json"
+        cmd += ["--world-memory", str(live), "--wm-live", "1"]
     # Quota multi-matériaux (bots ressources) : sidecar quota-<sid>.json + --quota (nettoyé au stop).
     quota_path = None
     if quota:

@@ -510,11 +510,15 @@ def test_start_session_passe_world_memory(monkeypatch, tmp_path):
     monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
     monkeypatch.setattr(mgr.world_memory, "WORLD_MEMORY_DIR", tmp_path / "wm")
     monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
-    sid = mgr.start_session("h", 25565, "U", server_id="ab12cd")
+    mgr.start_session("h", 25565, "U", server_id="ab12cd")
     assert "--world-memory" in captured["cmd"]
     path = captured["cmd"][captured["cmd"].index("--world-memory") + 1]
-    assert "worlds" in _json.loads(open(path).read())  # mémoire (vide ici) passée au bot
-    assert mgr._sessions[sid].get("wm_path") == str(path)
+    # Depuis le 26/07 le bot lit le fichier LIVE du groupe (voir
+    # test_spawn_autres_objectifs_lisent_la_memoire_LIVE) : plus de snapshot par session, donc
+    # plus de wm_path a nettoyer au stop.
+    assert "--wm-live" in captured["cmd"]
+    assert path.endswith("ab12cd.json")
+    assert _json is not None
 
 
 def test_apply_event_route_biome_vers_store(monkeypatch, tmp_path):
@@ -1107,15 +1111,27 @@ def test_spawn_mapper_wm_live_et_frontier(monkeypatch, tmp_path):
     assert wm.endswith("ab12cd.json")
 
 
-def test_spawn_autres_objectifs_gardent_snapshot(monkeypatch, tmp_path):
-    """Les objectifs hors resource/mapper gardent le SNAPSHOT (worldmem-<sid>.json)."""
+def test_spawn_autres_objectifs_lisent_la_memoire_LIVE(monkeypatch, tmp_path):
+    """Les objectifs hors resource/mapper lisent la memoire LIVE du groupe, PAS un snapshot.
+
+    Contrat INVERSE le 26/07 (run world_mn3). Avant : snapshot fige au demarrage du process.
+    C'etait a l'envers — les mappeurs, qui ECRIVENT la carte, la relisaient en direct, et les
+    workers qui la CONSOMMENT travaillaient sur une photo qui vieillit. Mesure : les 2 workers
+    jamais plantes tournaient sur un instantane pris juste apres une purge de memoire (donc
+    ZERO cellule epuisee) et ont boucle 50 min sur la meme cellule (0,0) que les autres bots
+    savaient pelee ; les 2 workers relances apres un crash avaient une carte fraiche et sont
+    les seuls a avoir progresse. Le snapshot condamnait le bot le plus ANCIEN a la carte la
+    plus perimee.
+    """
     captured = _fake_spawn_env(monkeypatch, tmp_path)
     mgr.start_session("h", 25565, "U", server_id="ab12cd", objective="stone_pickaxe")
     cmd = captured["cmd"]
-    assert "--wm-live" not in cmd
-    assert "--frontier" not in cmd
+    assert "--wm-live" in cmd
+    assert "--frontier" not in cmd          # la frontiere reste propre aux mappeurs
+    assert "--claims" not in cmd            # les claims restent propres aux bots ressources
     wm = cmd[cmd.index("--world-memory") + 1]
-    assert "worldmem-" in wm
+    assert "worldmem-" not in wm            # plus de snapshot fige
+    assert wm.endswith("ab12cd.json")       # fichier LIVE du groupe
 
 
 def test_apply_event_quota_progress_session(monkeypatch, tmp_path):
