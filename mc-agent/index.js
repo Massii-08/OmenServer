@@ -3821,7 +3821,30 @@ setInterval(async () => {
     }
     if (!_oreGrabIds.length) return;
     const hits = bot.findBlocks({ matching: _oreGrabIds, maxDistance: 5, count: 4 });
-    if (!hits || !hits.length) return;
+    // RAMASSAGE AU SOL (Massii, live 26/07 : « si il y a des item qui leur servent (genre diamant)
+    // ils doivent les prendre »). Un minerai miné hors du rayon de ramassage automatique tombe et
+    // reste là. On ne se détourne QUE pour ce qui fait avancer la chaîne (cf. oregrab.isValuableDrop)
+    // et seulement quand il n'y a pas de minerai à portée — le minage garde la priorité.
+    if (!hits || !hits.length) {
+      try {
+        const drops = homewarp.dropsWithin(bot.entities, bot.entity.position, 10)
+          .filter((d) => {
+            const n = (d.entity && d.entity.metadata && d.entity.metadata.find
+              && (d.entity.name || '')) || (d.entity && d.entity.name) || '';
+            const stack = d.entity && (d.entity.displayName || d.entity.itemName || n);
+            return oregrab.isValuableDrop(String(stack || '').toLowerCase().replace(/\s+/g, '_'));
+          });
+        if (drops.length) {
+          _oreGrabBusy = true;
+          const e = drops[0].entity;
+          emit({ type: 'drop_pickup', d: Math.round(drops[0].dist) });
+          await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(e.position.x, e.position.y, e.position.z, 1)),
+            10000, () => { try { stopMotion(); } catch (er) {} });
+          await sleep(400);   // laisse la collecte automatique par proximité opérer
+        }
+      } catch (e) { /* best-effort : jamais bloquant */ }
+      return;
+    }
     _oreGrabBusy = true;
     for (const pos of hits) {
       const blk = bot.blockAt(pos);

@@ -55,4 +55,24 @@ function shouldGrab(s = {}) {
   return true;
 }
 
-module.exports = { WANTED_ORES, isWantedOre, canHarvest, shouldGrab };
+// ─── ITEMS AU SOL QUI VALENT UN DÉTOUR ─────────────────────────────────────────────────────────
+// Massii, live 26/07 : « si il y a des item qui leur servent (genre diamant) il doivent les
+// prendre ». Un minerai miné hors du rayon de ramassage automatique tombe au sol et y restait.
+// Liste VOLONTAIREMENT étroite : on se détourne pour ce qui fait avancer la chaîne (minerais,
+// lingots, combustible, outils, armure), jamais pour du remblai ou du décor — sinon le bot
+// passerait sa vie à ramasser du gravier au lieu de miner.
+const VALUABLE_DROPS = new Set([
+  'diamond', 'emerald', 'ancient_debris', 'netherite_scrap', 'netherite_ingot',
+  'raw_iron', 'iron_ingot', 'raw_gold', 'gold_ingot', 'raw_copper', 'copper_ingot',
+  'coal', 'charcoal', 'redstone', 'lapis_lazuli', 'quartz', 'amethyst_shard',
+]);
+const _VALUABLE_SUFFIX = ['_pickaxe', '_axe', '_sword', '_shovel', '_helmet', '_chestplate', '_leggings', '_boots'];
+
+/** Cet item au sol vaut-il qu'on se détourne pour le ramasser ? (pur) */
+function isValuableDrop(name) {
+  if (!name || typeof name !== 'string') return false;
+  if (VALUABLE_DROPS.has(name)) return true;
+  return _VALUABLE_SUFFIX.some((sfx) => name.endsWith(sfx));   // outils/armure tombés (mort, toss)
+}
+
+module.exports = { WANTED_ORES, isWantedOre, canHarvest, shouldGrab, VALUABLE_DROPS, isValuableDrop };

@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { isWantedOre, canHarvest, shouldGrab } = require('./oregrab');
+const { isWantedOre, canHarvest, shouldGrab, isValuableDrop } = require('./oregrab');
 
 test('isWantedOre : fer et deepslate fer, pas le remblai', () => {
   assert.strictEqual(isWantedOre('iron_ore'), true);
@@ -48,4 +48,25 @@ test('shouldGrab : jamais au détriment de la survie ni d une tâche critique', 
   assert.strictEqual(shouldGrab({ health: 6 }), false);
   assert.strictEqual(shouldGrab({ health: 8 }), false);
   assert.strictEqual(shouldGrab({ health: 9 }), true);
+});
+
+// ─── VALUABLE_DROPS : ramasser ce qui SERT quand ça traîne au sol ───────────────────────────────
+// Massii, live 26/07 : « si il y a des item qui leur servent (genre diamant) il doivent les
+// prendre ». Un minerai miné hors de portée de ramassage auto tombe au sol et y reste.
+test('isValuableDrop : les ressources qui font avancer la chaîne', () => {
+  for (const n of ['diamond', 'raw_iron', 'iron_ingot', 'coal', 'emerald', 'gold_ingot', 'raw_gold', 'redstone', 'lapis_lazuli']) {
+    assert.strictEqual(isValuableDrop(n), true, n + ' devrait être ramassé');
+  }
+});
+
+test('isValuableDrop : on ne se détourne PAS pour du remblai ou du décor', () => {
+  for (const n of ['cobblestone', 'dirt', 'gravel', 'andesite', 'oak_leaves', 'poppy', 'seeds']) {
+    assert.strictEqual(isValuableDrop(n), false, n + ' ne vaut pas un détour');
+  }
+});
+
+test('isValuableDrop : entrée vide/inconnue → false (jamais de détour à l aveugle)', () => {
+  assert.strictEqual(isValuableDrop(''), false);
+  assert.strictEqual(isValuableDrop(null), false);
+  assert.strictEqual(isValuableDrop('bloc_inexistant'), false);
 });
