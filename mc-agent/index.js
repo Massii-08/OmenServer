@@ -1508,19 +1508,31 @@ async function establishBase(opts = {}) {
     // jamais tel quel). L'exigence réelle n'est pas « atteindre ce point » mais « ne plus camper le
     // point de départ » : on tente des cibles de plus en plus proches, bornées court, et on s'arrête
     // dès que la distance suffit. Chaque tentative laisse le bot plus loin que la précédente.
+    // Chaque tentative doit viser AILLEURS, sinon la progression n'en est pas une : mesuré live,
+    // les 3 essais tombaient sur la MÊME cellule boisée (128,-128) inatteignable, parce que la
+    // cellule connue l'emporte sur la distance demandée. La carte sert au 1ᵉʳ essai ; les suivants
+    // prennent un point brut sur le cap, de plus en plus proche.
     let rGoto = null;
-    for (const dist of [basecamp.BASE_DIST, 90, 70]) {
+    let spot = null;
+    const plans = [
+      { dist: basecamp.BASE_DIST, biomes },
+      { dist: 90, biomes: null },
+      { dist: 70, biomes: null },
+    ];
+    for (const plan of plans) {
       if (distFrom(bot.entity && bot.entity.position) >= basecamp.MIN_BASE_DIST) break;
-      const spot = basecamp.pickBaseSpot({ spawn: origin, biomes, depleted, heading, dist });
+      spot = basecamp.pickBaseSpot({
+        spawn: origin, biomes: plan.biomes, depleted, heading, dist: plan.dist,
+      });
       emit({
         type: 'base_establish_start', x: spot.x, z: spot.z,
-        source: spot.source, biome: spot.biome || null, personal, dist,
+        source: spot.source, biome: spot.biome || null, personal, dist: plan.dist,
       });
       try {
         rGoto = await withTimeout(
           bot.pathfinder.goto(new pfGoals.GoalNearXZ(spot.x, spot.z, 12)),
           90000, () => { try { stopMotion(); } catch (e) {} });
-      } catch (e) { rGoto = { ok: false }; }   // NoPath → on retente plus près, pas d'abandon
+      } catch (e) { rGoto = { ok: false }; }   // NoPath → on retente ailleurs, pas d'abandon
       if (_baseAbort) return;
     }
     const p = bot.entity && bot.entity.position;
@@ -1548,7 +1560,10 @@ async function establishBase(opts = {}) {
     try { bot.chat('/spawnpoint'); } catch (e) {}
     const base = { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) };
     saveBaseState({ base, worldSpawn: wspawn, personal: personal || !!st.personal });
-    emit({ type: 'base_established', ...base, d: Math.round(d), source: spot.source, personal });
+    emit({
+      type: 'base_established', ...base, d: Math.round(d), personal,
+      source: (spot && spot.source) || 'in_place',   // aucune tentative lancée = déjà assez loin
+    });
   } catch (e) {
     emit({ type: 'base_establish_failed', reason: String((e && e.message) || e).slice(0, 80) });
   } finally { _baseBusy = false; }
@@ -2665,11 +2680,13 @@ async function onSpawn() {
             if (!_split) {
               _split = true;
               emit({ type: 'team_split', armor: me.armor });
-              // « On avait mis un système que les bots ressources restaient ensemble pour faire leur
-              // kit et après ils se séparaient » (Massii 2026-07-26) : la séparation n'était qu'une
-              // ANNONCE, les bots restaient physiquement sur la base commune. Chacun va maintenant
-              // poser SA base, en éventail depuis la base commune → 3 zones de récolte distinctes.
-              establishBase({ personal: true }).catch(() => {});
+              // Pas de dispersion physique ici. Massii a d'abord rappelé le fonctionnement
+              // historique (« ils restaient ensemble pour faire leur kit et après ils se
+              // séparaient »), puis tranché : « il faut surtout qu'ils restent en GROUPE, c'est
+              // important ». La séparation reste donc ce qu'elle était — la fin de la phase de
+              // partage obligatoire — et tout le monde garde la base commune.
+              // (`establishBase({personal:true})` existe et fonctionne : c'est le jour où il voudra
+              // 3 zones de récolte distinctes qu'il faudra le rebrancher ici.)
             }
             return;
           }
