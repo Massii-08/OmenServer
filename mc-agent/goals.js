@@ -31,6 +31,12 @@ function posableCount(inv) {
 
 // Une arme de mêlée correcte en poche (pierre ou mieux). Le bois est ignoré : 4 dégâts pour une
 // durabilité de 59, ça ne vaut pas un détour — mais s'il en a une, on ne le force pas à re-crafter.
+const AXES = ['stone_axe', 'iron_axe', 'golden_axe', 'diamond_axe', 'netherite_axe'];
+function hasAxe(inv) {
+  const i = inv || {};
+  return AXES.some((n) => (i[n] || 0) > 0);
+}
+
 const SWORDS = ['stone_sword', 'iron_sword', 'golden_sword', 'diamond_sword', 'netherite_sword'];
 function hasSword(inv) {
   const i = inv || {};
@@ -231,6 +237,12 @@ const IRON_ARMOR_CHAIN = [
   { name: 't1_sword',     met: (c) => hasSword(c.inv) || invCount(c.inv, 'cobblestone') < 2
                                        || invCount(c.inv, 'stick') < 1 || IA(c),
     skill: 'craft',       args: { name: 'stone_sword', count: 1 } },
+  // HACHE (analyse jeu humain 26/07) : `logs` est le but le plus sollicité du run (2001 tentatives).
+  // À la main une bûche prend ~3 s, à la hache pierre ~0,75 s — ×4 sur le poste n°1 du bot, pour
+  // 3 cobble + 2 bâtons. Même patron non bloquant que l'épée.
+  { name: 't1_axe',       met: (c) => hasAxe(c.inv) || invCount(c.inv, 'cobblestone') < 3
+                                       || invCount(c.inv, 'stick') < 2 || IA(c),
+    skill: 'craft',       args: { name: 'stone_axe', count: 1 } },
   // On ne descend pas les mains vides : sous terre, 8 blocs posables = un abri ou un couvert.
   // Cobble/stone d'abord (omniprésents en profondeur ET en surface rocheuse), terre ensuite
   // (drop sans outil). Re-vérifié à chaque tour du planner → le stock se recomplète tout seul
@@ -380,4 +392,4 @@ function firstUnmet(chain, ctx) {
 }
 
 module.exports = {
-  hasShield, posableCount, hasSword, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk };
+  hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk };

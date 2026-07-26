@@ -898,9 +898,22 @@ async function runGoalSkill(goal) {
     // aucune décision de survie proactive — le bot ne réagissait qu'APRÈS avoir encaissé.
     // Les args du but restent prioritaires (Object.assign) : rien n'est imposé à un appelant qui
     // aurait ses propres valeurs.
+    // ARRÊT SUR COMPTE (analyse 26/07) : `branchMine` sait s'arrêter dès qu'un DELTA d'items est
+    // récolté (`stopOre`) — la chaîne ne le lui demandait pas, donc le bot restait sous terre
+    // jusqu'au timeout (15 min) même une fois son fer obtenu. Chaque minute de plus au fond est
+    // une exposition gratuite. On vise le besoin RESTANT (armure + pioche + bouclier), borné à 16
+    // pour que le bot remonte fondre/forger par paliers au lieu de tout jouer sur une descente.
+    let stopOre = goal.args && goal.args.stopOre;
+    const _obj = (world.objective && world.objective.type) || '';
+    if (!stopOre && (_obj === 'iron_armor' || _obj === 'diamond_armor')) {
+      try {
+        const besoin = armorNeed({ inv: buildCtxInv(bot), worn: [..._wornArmor()] }, 3);
+        if (besoin > 0) stopOre = { items: ['raw_iron', 'iron_ingot'], count: Math.min(besoin, 16) };
+      } catch (e) { /* best-effort : sans stop, comportement d'avant */ }
+    }
     const rBM = await branchMine(bot, Object.assign(
       { torchEvery: 4, onSurvivalTick: branchSurvivalTick, survivalEvery: 4 },
-      goal.args || {}), taskToken);
+      goal.args || {}, stopOre ? { stopOre } : {}), taskToken);
     // Fix n°2 water-wall (NO_GIVE) : aquifère VERROUILLANT (waterlocked = toutes directions
     // mouillées + scellement inopérant) ou stall → se DÉCALER à pied 30-50 blocs À PROFONDEUR
     // (pathfinder creuse son chemin) avant que le planner ne retente iron_deep au même endroit.

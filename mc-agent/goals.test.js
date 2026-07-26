@@ -388,3 +388,21 @@ test('but épée : SAUTÉ si la matière manque — jamais bloquant', () => {
   assert.strictEqual(g.met({ inv: { cobblestone: 2 } }), true, 'pas de bâton → on passe');
   assert.strictEqual(g.met({ inv: { cobblestone: 2, stick: 1 } }), false, 'matière là → on forge');
 });
+
+// ─── HACHE (analyse jeu humain 26/07) ────────────────────────────────────────
+// `logs` = 2001 tentatives sur le run, de loin le but le plus sollicité. À la main une bûche
+// prend ~3 s, à la hache pierre ~0,75 s : ×4 sur le poste de travail n°1 du bot. 3 cobble +
+// 2 bâtons, la même matière que l'épée.
+test('chaîne armure : une hache est prévue (bois = le poste n°1 du run)', () => {
+  const names = chainFor('iron_armor').map((g) => g.name);
+  assert.ok(names.includes('t1_axe'), 'aucune hache dans la chaîne T1');
+});
+
+test('but hache : satisfait si on en a une, sauté si la matière manque', () => {
+  const g = chainFor('iron_armor').find((x) => x.name === 't1_axe');
+  assert.strictEqual(g.met({ inv: { stone_axe: 1 } }), true);
+  assert.strictEqual(g.met({ inv: { iron_axe: 1 } }), true, 'mieux que pierre → satisfait');
+  assert.strictEqual(g.met({ inv: { cobblestone: 2, stick: 2 } }), true, 'pas assez de cobble → sauté');
+  assert.strictEqual(g.met({ inv: { cobblestone: 3, stick: 1 } }), true, 'pas assez de bâtons → sauté');
+  assert.strictEqual(g.met({ inv: { cobblestone: 3, stick: 2 } }), false, 'matière là → on forge');
+});
