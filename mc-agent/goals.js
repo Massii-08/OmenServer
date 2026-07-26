@@ -29,6 +29,14 @@ function posableCount(inv) {
     (s, n) => s + ((POSABLE.has(n) || n.endsWith('_planks')) ? (o[n] || 0) : 0), 0);
 }
 
+// Une arme de mêlée correcte en poche (pierre ou mieux). Le bois est ignoré : 4 dégâts pour une
+// durabilité de 59, ça ne vaut pas un détour — mais s'il en a une, on ne le force pas à re-crafter.
+const SWORDS = ['stone_sword', 'iron_sword', 'golden_sword', 'diamond_sword', 'netherite_sword'];
+function hasSword(inv) {
+  const i = inv || {};
+  return SWORDS.some((n) => (i[n] || 0) > 0);
+}
+
 function hasShield(c) {
   const o = c || {};
   return invCount(o.inv || {}, 'shield') >= 1 || o.offhand === 'shield';
@@ -215,6 +223,14 @@ const IRON_ARMOR_CHAIN = [
   { name: 'plank_buffer', met: (c) => (c.y !== undefined && c.y <= 30) ||
       (anyPlanks(c.inv) + anyLog(c.inv) * 4 >= 24) || ironOK(c) || IA(c),
     skill: 'gatherLog',   args: { count: 6 } },
+  // ARME (analyse jeu humain 26/07) : la chaîne T1 n'en contenait AUCUNE — le bot menait ses
+  // combats au POING (1 dégât, contre 5 pour une épée pierre) en difficulté hard. 2 cobble +
+  // 1 bâton, c'est le meilleur rapport survie/coût du début de partie. `met` est
+  // SATISFIABLE-OU-SAUTABLE (matière absente ⇒ considéré atteint) : jamais bloquant, et il se
+  // déclenche seul dès que le cobble et les bâtons sont là.
+  { name: 't1_sword',     met: (c) => hasSword(c.inv) || invCount(c.inv, 'cobblestone') < 2
+                                       || invCount(c.inv, 'stick') < 1 || IA(c),
+    skill: 'craft',       args: { name: 'stone_sword', count: 1 } },
   // On ne descend pas les mains vides : sous terre, 8 blocs posables = un abri ou un couvert.
   // Cobble/stone d'abord (omniprésents en profondeur ET en surface rocheuse), terre ensuite
   // (drop sans outil). Re-vérifié à chaque tour du planner → le stock se recomplète tout seul
@@ -364,4 +380,4 @@ function firstUnmet(chain, ctx) {
 }
 
 module.exports = {
-  hasShield, posableCount, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk };
+  hasShield, posableCount, hasSword, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk };

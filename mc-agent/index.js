@@ -876,7 +876,16 @@ async function runGoalSkill(goal) {
     return r;
   }
   if (goal.skill === 'branchMine') {
-    const rBM = await branchMine(bot, goal.args || {}, taskToken);
+    // TUNNEL ÉCLAIRÉ + SURVIE PROACTIVE (analyse jeu humain, 26/07). `branchMine` SAIT poser des
+    // torches (`torchEvery`) et faire tourner un tick de survie (`onSurvivalTick`) — la chaîne ne
+    // les lui demandait simplement jamais. Or c'est la phase la plus LONGUE de T1 (jusqu'à 15 min) :
+    // elle se creusait dans le noir (block-light 0 ⇒ les mobs apparaissent DANS le tunnel) et sans
+    // aucune décision de survie proactive — le bot ne réagissait qu'APRÈS avoir encaissé.
+    // Les args du but restent prioritaires (Object.assign) : rien n'est imposé à un appelant qui
+    // aurait ses propres valeurs.
+    const rBM = await branchMine(bot, Object.assign(
+      { torchEvery: 4, onSurvivalTick: branchSurvivalTick, survivalEvery: 4 },
+      goal.args || {}), taskToken);
     // Fix n°2 water-wall (NO_GIVE) : aquifère VERROUILLANT (waterlocked = toutes directions
     // mouillées + scellement inopérant) ou stall → se DÉCALER à pied 30-50 blocs À PROFONDEUR
     // (pathfinder creuse son chemin) avant que le planner ne retente iron_deep au même endroit.
@@ -993,7 +1002,10 @@ async function maybeNightShelter(proactive = false) {
   // ≤7) en plus de la nuit — un bot dans une grotte sombre / à l'ombre profonde de jour se terre
   // aussi. Robuste au lightLevel inconnu (mineflayer ne le livre pas toujours → retombe sur hostiles).
   const _pp = bot.entity && bot.entity.position;
-  const naked = _wornArmor().size === 0;
+  // « nu » au sens de l'abri = armure INCOMPLÈTE, pas « zéro pièce ». Une seule botte suffisait à
+  // désactiver l'abri nocturne, alors qu'en hard un zombie tue un bot à 3 pièces presque aussi vite
+  // qu'un bot nu. Les porteurs de set complet (mappeurs via /kit) restent libres de travailler.
+  const naked = _wornArmor().size < 4;
   let lightLevel = null;
   try { const b = _pp && bot.blockAt(_pp.floored()); if (b && typeof b.light === 'number') lightLevel = b.light; } catch (e) {}
   const hostilesNear = (() => { try { const e = bot.nearestEntity((x) => x && x.kind === 'Hostile mobs'); return !!(e && bot.entity && e.position.distanceTo(bot.entity.position) <= 8); } catch (e) { return false; } })();

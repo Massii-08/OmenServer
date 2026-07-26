@@ -360,3 +360,31 @@ test('block_buffer : satisfait dès 8 blocs posables', () => {
   assert.strictEqual(g.met({ inv: { cobblestone: 7 } }), false);
   assert.strictEqual(g.met({ inv: { dirt: 4, oak_planks: 4 } }), true, 'toutes sources confondues');
 });
+
+// ─── ARME dans la chaîne T1 (analyse jeu humain, 26/07) ───────────────────────
+// La chaîne armure ne contenait AUCUNE arme : le bot menait ses 235 combats au POING (1 dégât,
+// contre 5 pour une épée pierre). L'épée existait… mais dans la chaîne du kit cartographe.
+// 2 cobble + 1 bâton : c'est le meilleur rapport survie/coût de tout le début de partie.
+test('chaîne armure : une épée pierre est prévue AVANT la descente', () => {
+  const names = chainFor('iron_armor').map((g) => g.name);
+  assert.ok(names.includes('t1_sword'), 'aucune arme dans la chaîne T1');
+  assert.ok(names.indexOf('t1_sword') < names.indexOf('descend_y16'),
+    'on ne descend pas se battre au poing');
+});
+
+test('but épée : satisfait si on en a déjà une (pierre ou mieux)', () => {
+  const g = chainFor('iron_armor').find((x) => x.name === 't1_sword');
+  assert.strictEqual(g.met({ inv: { stone_sword: 1 } }), true);
+  assert.strictEqual(g.met({ inv: { iron_sword: 1 } }), true, 'mieux vaut que pierre → satisfait');
+  // Inventaire vide = aucune matière = but SAUTÉ (design non-bloquant), pas "à faire".
+  assert.strictEqual(g.met({ inv: {} }), true);
+  assert.strictEqual(g.met({ inv: { wooden_sword: 1, cobblestone: 2, stick: 1 } }), false,
+    'une épée en BOIS ne compte pas : 4 dégâts / 59 de durabilité, on forge la pierre');
+});
+
+test('but épée : SAUTÉ si la matière manque — jamais bloquant', () => {
+  const g = chainFor('iron_armor').find((x) => x.name === 't1_sword');
+  assert.strictEqual(g.met({ inv: { cobblestone: 1, stick: 1 } }), true, 'pas assez de cobble → on passe');
+  assert.strictEqual(g.met({ inv: { cobblestone: 2 } }), true, 'pas de bâton → on passe');
+  assert.strictEqual(g.met({ inv: { cobblestone: 2, stick: 1 } }), false, 'matière là → on forge');
+});

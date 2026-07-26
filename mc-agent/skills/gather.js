@@ -49,10 +49,17 @@ function stopResidual(bot) {
   } catch (e) {}
 }
 
+// Mobs qu'on n'attaque JAMAIS au corps-à-corps pendant la récolte (analyse jeu humain, 26/07) :
+// s'approcher d'un creeper l'amorce, et son explosion inflige jusqu'à ~64 dégâts à bout portant —
+// soit trois fois les PV max d'un bot nu. Le réflexe de survie (`combatDecision`) sait déjà les
+// FUIR ; ici il suffit de ne pas foncer dessus. Idem pour ce qu'on a décidé de fuir par ailleurs.
+const NO_MELEE = new Set(['creeper', 'wither_skeleton', 'warden', 'ravager', 'evoker', 'ghast']);
+
 /** Si un hostile est proche : équipe la meilleure arme et l'attaque. true si défense engagée. */
 async function defendIfNeeded(bot) {
   const foe = nearbyHostile(bot);
   if (!foe) return false;
+  if (foe.name && NO_MELEE.has(foe.name)) return false;   // on le laisse aux réflexes (fuite)
   const w = bestWeapon(bot);
   if (w) { try { await bot.equip(w, 'hand'); } catch (e) {} }
   try { bot.pvp.attack(foe); } catch (e) {}
@@ -134,4 +141,4 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
   return { ok: true, got };
 }
 
-module.exports = { gather, nearbyHostile, defendIfNeeded, woodExpeditionCount, WOOD_EXPEDITION };
+module.exports = { gather, nearbyHostile, defendIfNeeded, woodExpeditionCount, WOOD_EXPEDITION, NO_MELEE };

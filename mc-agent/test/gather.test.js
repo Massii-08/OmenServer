@@ -111,3 +111,27 @@ test('gather: array with all unknown names → {ok:false, reason:not_found}', as
   const r = await gather(bot, { name: ['zzz', 'aaa'], count: 1 });
   assert.deepStrictEqual(r, { ok: false, reason: 'not_found' });
 });
+
+// ─── Pas de corps-à-corps sur un creeper pendant la récolte (analyse 26/07) ──
+const { defendIfNeeded: _def, NO_MELEE } = require('../skills/gather');
+
+test('defendIfNeeded : creeper → on N\'ENGAGE PAS (son explosion fait ~64 dégâts)', async () => {
+  let attacked = null;
+  const creeper = { name: 'creeper', type: 'mob', kind: 'Hostile mobs',
+                    position: { x: 2, y: 64, z: 0, distanceTo: () => 2 } };
+  const bot = {
+    entity: { position: { x: 0, y: 64, z: 0 } },
+    nearestEntity: (pred) => (pred(creeper) ? creeper : null),
+    inventory: { items: () => [] },
+    pvp: { attack: (e) => { attacked = e && e.name; } },
+    equip: async () => {},
+  };
+  const r = await _def(bot);
+  assert.strictEqual(r, false);
+  assert.strictEqual(attacked, null, 'aucune attaque ne doit partir vers un creeper');
+});
+
+test('NO_MELEE couvre les mobs qu\'on fuit déjà ailleurs', () => {
+  for (const n of ['creeper', 'wither_skeleton', 'warden']) assert.ok(NO_MELEE.has(n), n);
+  assert.ok(!NO_MELEE.has('zombie'), 'un zombie se combat normalement');
+});
