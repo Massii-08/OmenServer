@@ -2700,6 +2700,15 @@ async function onSpawn() {
           }
           _split = false;
 
+          // 0) COHÉSION CONTINUE (Massii 2026-07-26 : « les 3 bots ressources se sont éloignés alors
+          // que les 3 n'ont pas fini de faire leur kit en fer » + « il faut surtout qu'ils restent
+          // en groupe, c'est important »). `tryRegroup` n'était appelé QU'AU SPAWN, après une mort :
+          // en jeu normal rien ne rappelait les bots, ils dérivaient chacun vers son bois et son
+          // gisement. On ne touche pas à la politique pure — elle garde ses garde-fous (≥120 blocs
+          // d'écart, au plus un /tpa toutes les 2 min, jamais une fois l'armure complète) — on la
+          // consulte simplement en continu au lieu d'une fois par vie.
+          try { await tryRegroup(); } catch (e) { /* best-effort */ }
+
           // 1) ENTRAIDE : donner son surplus de lingots au coéquipier le moins équipé.
           const gift = pickDonation({
             self: { x: p.x, z: p.z }, selfName: bot.username, selfStatus: me,
@@ -3721,6 +3730,31 @@ setInterval(async () => {
   } catch (e) { /* watchdog : ne crash jamais */ }
   finally { _oreGrabBusy = false; }
 }, 4000);
+
+// ── PLUS DE PIOCHE → EN REFAIRE UNE (Massii 2026-07-26 : « si ils n'ont plus de pioche ils doivent
+// en faire une »). La capacité existait (`recoverPickaxe`, buts wooden_pickaxe/stone_pickaxe) mais
+// n'était déclenchée QUE depuis le branch-mine, et dans la chaîne armure les buts pioche sont
+// court-circuités dès que l'armure est complète (`withFinal(g, IA)`) : un bot équipé mais désarmé
+// de sa pioche ne la refaisait jamais. Filet indépendant de la tâche, borné, silencieux s'il manque
+// la matière (le planner, lui, ira chercher le bois/cobble).
+let _pickFixBusy = false;
+setInterval(async () => {
+  if (_pickFixBusy) return;
+  const hasPick = () => ((bot.inventory && bot.inventory.items()) || [])
+    .some((i) => i.name && i.name.endsWith('_pickaxe'));
+  try {
+    if (!bot.inventory || !bot.entity) return;
+    if (hasPick()) return;
+    if (_imminentBusy || panicInFlight || _armorBusy || _baseBusy) return;
+    _pickFixBusy = true;
+    emit({ type: 'pickaxe_missing' });
+    for (const name of ['stone_pickaxe', 'wooden_pickaxe']) {
+      try { await withTimeout(craftSmart({ name, count: 1 }), 60000, () => {}); } catch (e) {}
+      if (hasPick()) { emit({ type: 'pickaxe_recrafted', name }); break; }
+    }
+  } catch (e) { /* watchdog : ne crash jamais */ }
+  finally { _pickFixBusy = false; }
+}, 20000);
 
 let _jamEsc = null;   // état d'escalade : unjams répétés AU MÊME endroit → relocate forcé (live 22/06 SOIR ResBot2)
 setInterval(async () => {
