@@ -6,10 +6,18 @@ function _itemId(bot, name) {
   return def ? def.id : null;
 }
 
-function _nearestTable(bot) {
+// Deux rayons DISTINCTS : `bot.craft` exige la table à portée de main (TABLE_REACH), mais pour
+// SAVOIR qu'une table existe et aller jusqu'à elle il faut regarder bien plus loin (TABLE_SEEK).
+// Massii, 26/07 : « il fait plein de crafting alors qu'il y en a à côté, au spawn il y en a une
+// vingtaine » — avec un rayon unique de 6, une table posée 10 blocs plus loin était invisible et
+// le bot en reposait une par-dessus.
+const TABLE_REACH = 6;    // portée de craft (bot.craft)
+const TABLE_SEEK = 48;    // portée de RECHERCHE (on marche jusqu'à la table trouvée)
+
+function _nearestTable(bot, maxDistance = TABLE_REACH) {
   const def = bot.registry && bot.registry.blocksByName && bot.registry.blocksByName.crafting_table;
   if (!def) return null;
-  return bot.findBlock({ matching: [def.id], maxDistance: 6 }) || null;
+  return bot.findBlock({ matching: [def.id], maxDistance }) || null;
 }
 
 async function craftItem(bot, { name, count = 1 } = {}) {
@@ -24,4 +32,4 @@ async function craftItem(bot, { name, count = 1 } = {}) {
   return { ok: true };
 }
 
-module.exports = { craftItem, _nearestTable };
+module.exports = { craftItem, _nearestTable, TABLE_REACH, TABLE_SEEK };

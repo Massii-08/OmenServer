@@ -50,7 +50,7 @@ const oregrab = require('./oregrab');                  // « ils passent à côt
 const { huntPassive } = require('./skills/hunt');
 const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, weaponDamage } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
-const { _nearestTable } = require('./skills/craft'); // craftItem déjà importé plus haut
+const { _nearestTable, TABLE_SEEK } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { placeBlockNear } = require('./skills/placeBlockNear');
 const { smelt, logsToConvert } = require('./skills/smelt');
 const { descendDiagonal } = require('./skills/descendDiagonal');
@@ -530,6 +530,10 @@ async function reclaimBlock(pos, blockName = 'crafting_table') {
       return;                                      // repris
     } catch (e) { /* retry une fois */ }
   }
+  // Échec de reprise = un bloc ABANDONNÉ sur le terrain. C'était silencieux, donc invisible dans
+  // les journaux : c'est ainsi qu'une vingtaine de tables se sont accumulées au spawn sans qu'aucun
+  // event ne le signale. On l'émet désormais (le bot n'a rien de mieux à faire, mais on le SAIT).
+  try { emit({ type: 'reclaim_failed', block: blockName, x: pos && pos.x, y: pos && pos.y, z: pos && pos.z }); } catch (e) {}
 }
 
 // Garantit une table à portée le temps d'exécuter fn (un craft), puis reprend la table si on l'a posée.
@@ -537,7 +541,10 @@ async function reclaimBlock(pos, blockName = 'crafting_table') {
 // posée sous la canopée pendant que le bot est dans l'arbre) → on s'en APPROCHE d'abord ; si le craft
 // échoue quand même, on pose une table portable en fallback (vu live MapT1 : stall wooden_pickaxe ×4).
 async function withCraftingTable(fn) {
-  const t = _nearestTable(bot);
+  // On CHERCHE loin (TABLE_SEEK) puis on marche jusqu'à la table : réutiliser une table déjà
+  // posée évite d'en semer une nouvelle à chaque craft. Avec l'ancien rayon de 6, une table à
+  // 10 blocs était invisible → une vingtaine de tables accumulées au spawn (signalé par Massii).
+  const t = _nearestTable(bot, TABLE_SEEK);
   if (t) {
     try {
       if (bot.entity.position.distanceTo(t.position) > 3) {
