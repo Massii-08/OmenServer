@@ -113,7 +113,7 @@ const NO_GIVE = args['no-give'] === '1' || args['no-give'] === 'true';
 // (idée Massii 25/07). ÉTEINT par défaut — à activer explicitement, run par run.
 const REGROUP = args.regroup === '1' || args.regroup === 'true';
 // Confinement arène (--confine "X Z R") : garde le bot dans R de l'ancre sèche (cf. confine.js).
-const { parseConfine, confineSpreadCommand, CONFINE_HOME, DEFAULT_CONFINE_RADIUS, shouldEnforceConfine, pickAnchorNow } = require('./confine');
+const { parseConfine, confineSpreadCommand, CONFINE_HOME, DEFAULT_CONFINE_RADIUS, shouldEnforceConfine, pickAnchorNow, shouldTravelToAnchor } = require('./confine');
 const CONFINE = parseConfine(args['confine']);
 // Provider LLM enfichable : MC_AGENT_LLM=gemini (gratuit) sinon Anthropic (défaut). Cf. ./llm.js
 const provider = (process.env.MC_AGENT_LLM || 'anthropic').toLowerCase();
@@ -218,6 +218,7 @@ let _tpCancelledAt = 0;       // secure-then-warp : dernière annulation Essenti
 let _confineDyn = null;       // confine AUTO-ancré (brique 2) : posé à la 1re terre sèche stable
 let _canchorSet = false;      // home 'canchor' posé à l'ancre → l'enforcement /home peut tirer
 let _lastConfineEnforceAt = 0;// cooldown enforcement (2 min, cf. shouldEnforceConfine)
+let _lastAnchorTripAt = 0;    // cooldown du trajet VERS l'ancre statique (cf. shouldTravelToAnchor)
 let _campEstablished = false; // brique 3 : four (+coffre) posés à l'ancre = camp de base
 let presence = null;          // heartbeat de présence du groupe (positions-<group>.json, --positions)
 let _lastMapperTpAt = 0;      // TP-au-mappeur : cooldown (1 tentative / 4 min)
@@ -3160,6 +3161,24 @@ async function onSpawn() {
               const eff = CONFINE || _confineDyn;
               emit({ type: 'confine_anchored', x: eff.x, z: eff.z, radius: eff.radius, static: !!CONFINE });
               tryEstablishCamp().catch(() => {});
+            }
+          }
+          // Confine STATIQUE non ancré, bot HORS du rayon de pose : le bloc ci-dessus exige
+          // d'être à ≤24 blocs, et l'enforcement qui ramènerait le bot exige l'ancre → personne
+          // ne l'y emmène (deadlock vécu 26/07 : 2 workers partis à 200+ blocs pour toujours).
+          // On MARCHE vers l'ancre ; le bloc ci-dessus la posera à l'arrivée.
+          if (CONFINE && !_canchorSet && bot.entity && bot.entity.position) {
+            const pT = bot.entity.position;
+            const dT = Math.hypot(pT.x - CONFINE.x, pT.z - CONFINE.z);
+            if (shouldTravelToAnchor({
+              confine: CONFINE, anchored: _canchorSet, dist: dT,
+              busy: _imminentBusy || panicInFlight || _baseBusy || _stillBusy,
+              now: Date.now(), lastAt: _lastAnchorTripAt,
+            })) {
+              _lastAnchorTripAt = Date.now();
+              emit({ type: 'confine_travel', x: CONFINE.x, z: CONFINE.z, dist: Math.round(dT) });
+              withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(CONFINE.x, CONFINE.z, 12)),
+                120000, () => { try { stopMotion(); } catch (e) {} }).catch(() => {});
             }
           }
           // Re-pose d'un safe REFUSÉ — ou JAMAIS POSÉ (spawn les pieds dans l'eau, vécu world_ax2 :

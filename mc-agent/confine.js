@@ -48,7 +48,29 @@ function pickAnchorNow({ onGround, inWater, y, woodNear } = {}) {
   return !!onGround && !inWater && typeof y === 'number' && y >= 58;
 }
 
+/**
+ * Confine STATIQUE pas encore ancré : faut-il MARCHER vers l'ancre ? (pur)
+ *
+ * DEADLOCK vécu live (26/07, run Minestrator) : poser l'ancre exige d'être à ≤`nearRadius`
+ * de (x,z) — sinon le `/sethome canchor` marquerait le camp au mauvais endroit — mais
+ * l'enforcement qui ramènerait le bot exige justement que l'ancre soit posée. Hors de ce
+ * rayon, RIEN ne ramène le bot : 2 workers sur 5 sont partis à 200+ blocs sans jamais
+ * revenir (l'un avec 12 `squad_join` restés sans effet). La seule sortie est de MARCHER
+ * vers l'ancre — le confinement ne s'auto-amorce pas.
+ *
+ * Cooldown : un goto long ne doit pas être relancé en rafale.
+ */
+function shouldTravelToAnchor({
+  confine, anchored, dist, busy, now, lastAt, cooldownMs = 60000, nearRadius = 24,
+} = {}) {
+  if (!confine || anchored || busy) return false;
+  if (typeof dist !== 'number' || !Number.isFinite(dist)) return false;
+  if (dist <= nearRadius) return false;                 // pickAnchorNow va poser l'ancre
+  return (now - (lastAt || 0)) >= cooldownMs;
+}
+
 module.exports = {
   parseConfine, confineSpreadCommand,
   CONFINE_HOME, DEFAULT_CONFINE_RADIUS, shouldEnforceConfine, pickAnchorNow,
+  shouldTravelToAnchor,
 };

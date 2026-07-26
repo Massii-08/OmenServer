@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const {
   parseConfine, confineSpreadCommand,
   CONFINE_HOME, shouldEnforceConfine, pickAnchorNow, DEFAULT_CONFINE_RADIUS,
+  shouldTravelToAnchor,
 } = require('./confine');
 
 // ─── Existant (pin) ─────────────────────────────────────────────────────────────────────────────
@@ -74,4 +75,50 @@ test('pickAnchorNow : woodNear=false → refus (le camp doit être en zone BOIS�
   assert.strictEqual(pickAnchorNow({ onGround: true, inWater: false, y: 72, woodNear: true }), true);
   // rétro-compat : woodNear absent → pas exigé
   assert.strictEqual(pickAnchorNow({ onGround: true, inWater: false, y: 72 }), true);
+});
+
+// ─── shouldTravelToAnchor : sortie du DEADLOCK d'ancrage (vécu live 26/07) ──────────────────────
+// L'ancre statique exige d'être à ≤24 blocs de (x,z) ; l'enforcement qui ramènerait le bot exige
+// l'ancre. Hors de ces 24 blocs, RIEN ne le ramène → 2 workers sur 5 partis à 200+ blocs, dont un
+// avec 12 squad_join sans effet. Le bot doit donc MARCHER vers son ancre.
+test('shouldTravelToAnchor : hors du rayon de pose et pas encore ancré → on marche', () => {
+  assert.strictEqual(shouldTravelToAnchor({
+    confine: { x: 150, z: 88, radius: 64 }, anchored: false, dist: 200, busy: false, now: 1e6, lastAt: 0,
+  }), true);
+});
+
+test('shouldTravelToAnchor : déjà ancré → jamais (l enforcement normal prend le relais)', () => {
+  assert.strictEqual(shouldTravelToAnchor({
+    confine: { x: 150, z: 88, radius: 64 }, anchored: true, dist: 200, busy: false, now: 1e6, lastAt: 0,
+  }), false);
+});
+
+test('shouldTravelToAnchor : déjà à portée de pose (≤24) → non, pickAnchorNow va poser', () => {
+  assert.strictEqual(shouldTravelToAnchor({
+    confine: { x: 150, z: 88, radius: 64 }, anchored: false, dist: 20, busy: false, now: 1e6, lastAt: 0,
+  }), false);
+});
+
+test('shouldTravelToAnchor : sans confine statique → jamais (l auto-ancrage gère)', () => {
+  assert.strictEqual(shouldTravelToAnchor({
+    confine: null, anchored: false, dist: 500, busy: false, now: 1e6, lastAt: 0,
+  }), false);
+});
+
+test('shouldTravelToAnchor : occupé (dig/fonte/abri/sauvetage) → on n interrompt pas', () => {
+  assert.strictEqual(shouldTravelToAnchor({
+    confine: { x: 150, z: 88, radius: 64 }, anchored: false, dist: 200, busy: true, now: 1e6, lastAt: 0,
+  }), false);
+});
+
+test('shouldTravelToAnchor : cooldown respecté (pas de goto en rafale)', () => {
+  const base = { confine: { x: 150, z: 88, radius: 64 }, anchored: false, dist: 200, busy: false };
+  assert.strictEqual(shouldTravelToAnchor({ ...base, now: 100000, lastAt: 90000 }), false); // 10 s
+  assert.strictEqual(shouldTravelToAnchor({ ...base, now: 160000, lastAt: 90000 }), true);  // 70 s
+});
+
+test('shouldTravelToAnchor : dist non numérique → refus (jamais de goto à l aveugle)', () => {
+  assert.strictEqual(shouldTravelToAnchor({
+    confine: { x: 150, z: 88, radius: 64 }, anchored: false, dist: undefined, busy: false, now: 1e6, lastAt: 0,
+  }), false);
 });
