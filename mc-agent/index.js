@@ -46,6 +46,7 @@ const homewarp = require('./homewarp'); // couche warp LÉGITIME sans-give (/set
 const { secureSpot } = require('./skills/secureSpot'); // secure-then-warp : pilier/se murer/flotter AVANT le /home
 const { SCAFFOLD } = require('./skills/pillarUp');     // blocs sacrifiables (comptés pour la tactique)
 const basecamp = require('./basecamp');                // base personnelle : s'éloigner du spawn du monde puis /sethome
+const oregrab = require('./oregrab');                  // « ils passent à côté du fer sans le prendre »
 const { huntPassive } = require('./skills/hunt');
 const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, weaponDamage } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
@@ -1483,9 +1484,16 @@ async function establishBase(opts = {}) {
     const p0 = bot.entity && bot.entity.position;
     // Spawn du monde : mémorisé au TOUT premier boot (le bot y apparaît forcément) puis relu du
     // fichier — car après /spawnpoint, bot.spawnPoint désigne la base et non plus le spawn du monde.
+    // ⚠️ `bot.spawnPoint` AVANT la position courante : mesuré live, les 3 ouvriers avaient chacun
+    // enregistré un worldSpawn DIFFÉRENT (leur position de boot, dispersée par le spawn radius du
+    // serveur) — donc trois origines, donc trois cibles, donc une base « commune » où NethBot3
+    // s'installait à 280 blocs des deux autres. Le spawn du monde est le MÊME pour tous, et
+    // mineflayer le fournit (paquet spawn_position).
+    const sp = bot.spawnPoint;
     const wspawn = (st.worldSpawn && Number.isFinite(st.worldSpawn.x))
       ? st.worldSpawn
-      : (p0 ? { x: Math.round(p0.x), z: Math.round(p0.z) } : null);
+      : (sp && Number.isFinite(sp.x) ? { x: Math.round(sp.x), z: Math.round(sp.z) }
+        : (p0 ? { x: Math.round(p0.x), z: Math.round(p0.z) } : null));
     // Viser une forêt CONNUE de la carte du groupe plutôt qu'un cap à l'aveugle (le bois est le
     // goulot n°1) ; carte encore vide au démarrage du run → repli sur le cap en éventail.
     let biomes = null;
@@ -3660,6 +3668,60 @@ bot.on('end', () => { emit({ type: 'status', state: 'disconnected' }); process.e
 // s'ils sont minables) puis stopMotion → la tâche re-path/re-dérive. Couvre aussi les
 // cartographes figés en jambe (même signature). Jamais pendant un dig (immobile = légitime).
 let _jamSample = null;
+// ── PRISE OPPORTUNISTE DE MINERAI (Massii 2026-07-26 : « il y a plein de fois où les bots passent
+// à côté du fer mais ne le prennent pas »). On ne mine QUE ce qui est déjà à portée de bras (≤4,2
+// blocs, aucun déplacement, aucun pathfinding) → la tâche en cours n'est jamais interrompue, elle
+// est juste ponctuée. Et on vérifie l'OUTIL : miner du fer à la pioche de bois casse le bloc et ne
+// donne rien du tout (`oregrab.canHarvest`).
+let _oreGrabBusy = false;
+let _oreGrabIds = null;
+setInterval(async () => {
+  if (_oreGrabBusy) return;
+  try {
+    if (!bot.entity || !bot.entity.position || !bot.registry) return;
+    const hostile = (() => {
+      try {
+        const e = bot.nearestEntity((x) => x && x.position && isFleeHostile(x)
+          && x.position.distanceTo(bot.entity.position) <= 10);
+        return !!e;
+      } catch (e) { return false; }
+    })();
+    const ok = oregrab.shouldGrab({
+      busy: _imminentBusy || panicInFlight || _armorBusy || _smeltOppBusy || _baseBusy,
+      digging: !!bot.targetDigBlock,
+      inWater: (function () { try { return isInWater(bot); } catch (e) { return false; } })(),
+      hostilesNear: hostile,
+      health: bot.health,
+    });
+    if (!ok) return;
+    if (!_oreGrabIds) {
+      _oreGrabIds = [...oregrab.WANTED_ORES]
+        .map((n) => bot.registry.blocksByName[n] && bot.registry.blocksByName[n].id)
+        .filter((x) => x != null);
+    }
+    if (!_oreGrabIds.length) return;
+    const hits = bot.findBlocks({ matching: _oreGrabIds, maxDistance: 5, count: 4 });
+    if (!hits || !hits.length) return;
+    _oreGrabBusy = true;
+    for (const pos of hits) {
+      const blk = bot.blockAt(pos);
+      if (!blk || !oregrab.isWantedOre(blk.name)) continue;
+      // Portée de bras stricte : au-delà il faudrait se déplacer, donc dérailler la tâche.
+      if (blk.position.distanceTo(bot.entity.position) > 4.2) continue;
+      const tool = bestToolFor(bot, blk);
+      if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
+      const held = bot.heldItem && bot.heldItem.type;
+      if (!oregrab.canHarvest(blk, held)) continue;      // pioche insuffisante → on laisse le bloc
+      try {
+        await withTimeout(bot.dig(blk), 12000, () => { try { bot.stopDigging(); } catch (e) {} });
+        emit({ type: 'ore_grabbed', ore: blk.name, y: Math.round(blk.position.y) });
+      } catch (e) { /* best-effort : le bloc peut disparaître ou être hors ligne de vue */ }
+      break;                                             // un seul par passe : on reste ponctuel
+    }
+  } catch (e) { /* watchdog : ne crash jamais */ }
+  finally { _oreGrabBusy = false; }
+}, 4000);
+
 let _jamEsc = null;   // état d'escalade : unjams répétés AU MÊME endroit → relocate forcé (live 22/06 SOIR ResBot2)
 setInterval(async () => {
   try {
