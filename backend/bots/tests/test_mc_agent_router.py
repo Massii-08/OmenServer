@@ -823,3 +823,35 @@ def test_server_memory_endpoint_flushes_pending_writes(monkeypatch):
     c = make_client()
     assert c.get("/api/mc-agent/servers/ab12cd/memory").status_code == 200
     assert flushed == ["ab12cd"], "l'endpoint carte lit le disque sans vider le debounce"
+
+
+# --- purge de la mémoire de monde (changement de monde de test, 26/07) ------------------------
+def test_reset_memory_calls_forget_group(monkeypatch):
+    """POST /servers/{sid}/memory/reset → forget_group (cache RAM + fichier).
+
+    Supprimer le seul fichier ne suffit pas : le cache RAM du manager le ressusciterait au flush
+    suivant. La purge DOIT passer par forget_group.
+    """
+    monkeypatch.setattr(r.servers_store, "get_server", lambda sid: {"id": sid, "name": "x"})
+    seen = []
+    monkeypatch.setattr(mgr, "forget_group", lambda gid: seen.append(gid) or True)
+    c = make_client()
+    resp = c.post("/api/mc-agent/servers/ab12cd/memory/reset")
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "deleted": True}
+    assert seen == ["ab12cd"]
+
+
+def test_reset_memory_admin_only(monkeypatch):
+    monkeypatch.setattr(r.servers_store, "get_server", lambda sid: {"id": sid})
+    c = make_client(is_admin=False)
+    assert c.post("/api/mc-agent/servers/ab12cd/memory/reset").status_code == 403
+
+
+def test_reset_memory_unknown_profile_is_404(monkeypatch):
+    monkeypatch.setattr(r.servers_store, "get_server", lambda sid: None)
+    called = []
+    monkeypatch.setattr(mgr, "forget_group", lambda gid: called.append(gid))
+    c = make_client()
+    assert c.post("/api/mc-agent/servers/zzz999/memory/reset").status_code == 404
+    assert called == []          # on ne purge pas la mémoire d'un profil inconnu

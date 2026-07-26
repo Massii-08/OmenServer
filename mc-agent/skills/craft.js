@@ -32,4 +32,24 @@ async function craftItem(bot, { name, count = 1 } = {}) {
   return { ok: true };
 }
 
-module.exports = { craftItem, _nearestTable, TABLE_REACH, TABLE_SEEK };
+// Décision PURE : que faire quand un craft 3×3 a échoué ?
+// Massii, 26/07 (2e retour, photo à l'appui) : « il continue à spam les craft » — des traînées de
+// tables sur tout le parcours des bots. Mécanisme mesuré : le bot marchait jusqu'à une table
+// existante, le craft échouait quand même (matériaux manquants, PAS la table), et il retombait
+// dans la branche « fabrique + pose une table neuve » — juste à côté de celle sur laquelle il se
+// tenait. Une table semée par craft raté. S'ajoutaient les tables ABANDONNÉES quand une mort
+// (difficulté hard) ou un timeout coupait le cycle avant la reprise.
+//   - 'use_existing'     : une table est DÉJÀ à portée de craft → en poser une 2e ne peut rien
+//                          changer, l'échec vient d'ailleurs. On ne jonche pas.
+//   - 'recycle'          : une table posée est en vue → aller la REPRENDRE plutôt que d'en
+//                          fabriquer une neuve (le terrain se nettoie au lieu de se joncher).
+//   - 'place'            : table en poche → la poser.
+//   - 'craft_then_place' : dernier recours, fabriquer puis poser.
+function tablePlan({ tableInReach = false, tableSeen = false, hasTableItem = false } = {}) {
+  if (tableInReach) return 'use_existing';
+  if (hasTableItem) return 'place';
+  if (tableSeen) return 'recycle';
+  return 'craft_then_place';
+}
+
+module.exports = { craftItem, _nearestTable, tablePlan, TABLE_REACH, TABLE_SEEK };

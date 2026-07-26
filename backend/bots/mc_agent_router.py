@@ -352,3 +352,24 @@ def server_memory(sid: str, current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
     mgr.flush_world_memory(sid)   # le debounce d'écriture ne doit pas faire mentir la carte
     return world_memory.load(sid)
+
+
+@router.post("/servers/{sid}/memory/reset")
+def reset_server_memory(sid: str, current_user: User = Depends(get_current_user)):
+    """Purge la mémoire de monde d'un groupe (minerais, biomes, structures, cellules épuisées).
+
+    La mémoire est rangée sous une clé de DIMENSION (`worlds.overworld`), PAS sous le nom du
+    monde : quand on regénère un monde de test (nouveau `level-name`), les 78 000 minerais et
+    les cellules de biome du monde précédent survivent et deviennent autant de coordonnées
+    fantômes — les workers marchent vers des filons qui n'existent plus, les mappeurs croient
+    avoir déjà cartographié. Même classe de piège que le cache de notations à la migration de
+    source : le cache survit au déploiement, lui.
+
+    Supprimer le fichier ne suffit pas (le cache RAM du manager le ressusciterait au flush
+    suivant) : on passe par `forget_group`, qui vide le cache ET le fichier.
+    """
+    _require_admin(current_user)
+    if not servers_store.get_server(sid):
+        raise HTTPException(status_code=404, detail="Profil introuvable")
+    deleted = mgr.forget_group(sid)
+    return {"ok": True, "deleted": deleted}

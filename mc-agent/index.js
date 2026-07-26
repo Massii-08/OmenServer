@@ -50,7 +50,7 @@ const oregrab = require('./oregrab');                  // « ils passent à côt
 const { huntPassive } = require('./skills/hunt');
 const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, weaponDamage } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
-const { _nearestTable, TABLE_SEEK } = require('./skills/craft'); // craftItem déjà importé plus haut
+const { _nearestTable, tablePlan, TABLE_REACH, TABLE_SEEK } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { placeBlockNear } = require('./skills/placeBlockNear');
 const { smelt, logsToConvert } = require('./skills/smelt');
 const { descendDiagonal } = require('./skills/descendDiagonal');
@@ -564,7 +564,34 @@ async function withCraftingTable(fn) {
   // Barreau manquant de l'échelle (vécu V2Res1 en crash-loop) : table PERDUE (kick avant
   // reclaim) → placeBlockNear échouait 'unknown_item' pour toujours. Une table se re-craft
   // en 2×2 SANS table (4 planks) → on la re-fabrique avant de la poser.
-  const hasTableItem = ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'crafting_table');
+  let hasTableItem = ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'crafting_table');
+  const plan = tablePlan({
+    tableInReach: !!_nearestTable(bot, TABLE_REACH),
+    tableSeen: !!_nearestTable(bot, TABLE_SEEK),
+    hasTableItem,
+  });
+  // Une table est DÉJÀ à portée de craft : en poser une seconde ne peut RIEN changer (l'échec
+  // vient des matériaux). C'était la branche qui semait une table par craft raté — des traînées
+  // de tables sur tout le parcours des bots (photo Massii 26/07).
+  if (plan === 'use_existing') return { ok: false, reason: 'craft_failed:table_present' };
+  // Table ABANDONNÉE en vue (une mort ou un timeout a coupé le cycle avant la reprise) : aller
+  // la REPRENDRE plutôt que d'en fabriquer une neuve → le terrain se nettoie au lieu de se joncher.
+  if (plan === 'recycle') {
+    const litter = _nearestTable(bot, TABLE_SEEK);
+    if (litter) {
+      try {
+        if (bot.entity.position.distanceTo(litter.position) > 3) {
+          await withTimeout(
+            bot.pathfinder.goto(new pfGoals.GoalNear(litter.position.x, litter.position.y, litter.position.z, 2)),
+            30000, () => { try { stopMotion(); } catch (e) {} }
+          );
+        }
+        await reclaimBlock(litter.position);
+      } catch (e) { /* pas de chemin → on retombe sur la fabrication */ }
+      hasTableItem = ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'crafting_table');
+      emit({ type: 'table_recycled', ok: hasTableItem });
+    }
+  }
   if (!hasTableItem) {
     // Re-craft 2×2 (4 planks). Planks manquantes mais BÛCHES en poche → planches d'abord
     // (essence du log en main — phase 3, complète le fix V2Res1).
@@ -595,6 +622,14 @@ async function withCraftingTable(fn) {
   const r = await fn();
   await sleep(250);                                // craft 100% terminé AVANT de casser la table
   await reclaimBlock(place.pos);                   // garder la table PORTABLE (1 seule)
+  // reclaimBlock retourne en SILENCE quand il ne retrouve pas le bloc (il suppose « déjà repris »).
+  // C'est ainsi que les tables s'accumulaient sans qu'aucun event ne le signale : on vérifie.
+  try {
+    const left = place.pos ? bot.blockAt(place.pos) : null;
+    if (left && left.name === 'crafting_table') {
+      emit({ type: 'table_abandoned', x: place.pos.x, y: place.pos.y, z: place.pos.z });
+    }
+  } catch (e) { /* best-effort */ }
   return r;
 }
 
