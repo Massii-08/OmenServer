@@ -915,8 +915,13 @@ async function runGoalSkill(goal) {
         if (besoin > 0) stopOre = { items: ['raw_iron', 'iron_ingot'], count: Math.min(besoin, 16) };
       } catch (e) { /* best-effort : sans stop, comportement d'avant */ }
     }
+    // TORCHES : TORCH_EVERY (8) et pas 4 — Massii 2026-07-26 « ils placent aussi beaucoup trop de
+    // torches quand ils creusent leur tunnel = beaucoup trop d'utilisation de charbon ». Le charbon
+    // est aussi le COMBUSTIBLE de la fonte (piège #54f) : chaque torche de trop retarde l'armure.
+    // branchMine randomise déjà l'intervalle sur [N, 2N[ → une torche tous les 8 à 15 paliers,
+    // largement de quoi tenir la lumière d'un tunnel (un humain les espace comme ça).
     const rBM = await branchMine(bot, Object.assign(
-      { torchEvery: 4, onSurvivalTick: branchSurvivalTick, survivalEvery: 4 },
+      { torchEvery: TORCH_EVERY, onSurvivalTick: branchSurvivalTick, survivalEvery: 4 },
       goal.args || {}, stopOre ? { stopOre } : {}), taskToken);
     // Fix n°2 water-wall (NO_GIVE) : aquifère VERROUILLANT (waterlocked = toutes directions
     // mouillées + scellement inopérant) ou stall → se DÉCALER à pied 30-50 blocs À PROFONDEUR
@@ -1457,12 +1462,22 @@ function saveBaseState(st) {
   } catch (e) { /* best-effort : sans le fichier, le bot re-marchera, il ne casse rien */ }
 }
 
-/** Marche jusqu'à SA zone, y pose le home 'safe' + ancre le respawn. Best-effort, jamais bloquant. */
-async function establishBase() {
+/**
+ * Marche jusqu'à la zone de base, y pose le home 'safe' + ancre le respawn (/spawnpoint).
+ * Deux temps, calés sur le fonctionnement d'équipe déjà en place (`team_split`) :
+ *   - défaut        : base COMMUNE (cap 0, cible déterministe) — la phase où les bots restent
+ *                     ensemble pour se faire leur kit, et où le /tpa de regroupement a raison ;
+ *   - {personal:true}: à la SÉPARATION (tout le monde en armure), chacun repart poser SA base,
+ *                     en éventail depuis la base commune (cap déduit de son nom).
+ * Best-effort, jamais bloquant.
+ */
+async function establishBase(opts = {}) {
   if (_baseBusy) return;
   _baseBusy = true;
   try {
+    const personal = !!opts.personal;
     const st = loadBaseState() || {};
+    if (personal && st.personal) return;            // base personnelle déjà posée
     const p0 = bot.entity && bot.entity.position;
     // Spawn du monde : mémorisé au TOUT premier boot (le bot y apparaît forcément) puis relu du
     // fichier — car après /spawnpoint, bot.spawnPoint désigne la base et non plus le spawn du monde.
@@ -1479,23 +1494,31 @@ async function establishBase() {
       biomes = w.biomes;
       depleted = w.depleted;
     } catch (e) { /* carte illisible → cap seul */ }
-    const spot = basecamp.pickBaseSpot({
-      spawn: wspawn, biomes, depleted,
-      heading: basecamp.headingForName(bot.username, 3),
-    });
+    // Phase kit : cible DÉTERMINISTE et identique pour les 3 ouvriers (cap 0, même spawn du monde,
+    // même carte partagée) → ils convergent sans coordination, et le /tpa de regroupement ne se bat
+    // pas contre le trajet. Après la séparation : éventail par nom, mesuré depuis la base commune.
+    const origin = (personal && st.base && Number.isFinite(st.base.x)) ? st.base : wspawn;
+    const heading = personal ? basecamp.headingForName(bot.username, 3) : 0;
+    const spot = basecamp.pickBaseSpot({ spawn: origin, biomes, depleted, heading });
     emit({
       type: 'base_establish_start', x: spot.x, z: spot.z,
-      source: spot.source, biome: spot.biome || null,
+      source: spot.source, biome: spot.biome || null, personal,
     });
-    await withTimeout(
+    const rGoto = await withTimeout(
       bot.pathfinder.goto(new pfGoals.GoalNearXZ(spot.x, spot.z, 8)),
       240000, () => { try { stopMotion(); } catch (e) {} });
     const p = bot.entity && bot.entity.position;
     if (!p) return;
-    // Le trajet n'a pas besoin d'ABOUTIR : ce qui compte est de ne plus camper le spawn du monde.
-    const d = wspawn ? Math.hypot(p.x - wspawn.x, p.z - wspawn.z) : Infinity;
+    // Le trajet n'a pas besoin d'ABOUTIR : ce qui compte est de ne plus camper le point de départ.
+    const d = origin ? Math.hypot(p.x - origin.x, p.z - origin.z) : Infinity;
     if (d < basecamp.MIN_BASE_DIST) {
-      emit({ type: 'base_establish_failed', reason: 'too_close', d: Math.round(d) });
+      // `goto` a rendu la main sans que le bot bouge : c'est le symptôme d'un trajet ANNULÉ par un
+      // autre consommateur du pathfinder (le planner autonome ou le /tpa de regroupement, qui
+      // démarrent au même spawn). On remonte le verdict du goto pour pouvoir trancher sur les logs.
+      emit({
+        type: 'base_establish_failed', reason: 'too_close', d: Math.round(d), personal,
+        goto: rGoto && rGoto.ok === false ? 'timeout' : 'resolved',
+      });
       return;
     }
     // Jamais les pieds dans l'eau : un home mouillé rend tous les /home safe morts (teleport-safety).
@@ -1509,8 +1532,8 @@ async function establishBase() {
     // ressource, cf. 'kit_done').
     try { bot.chat('/spawnpoint'); } catch (e) {}
     const base = { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) };
-    saveBaseState({ base, worldSpawn: wspawn });
-    emit({ type: 'base_established', ...base, d: Math.round(d), source: spot.source });
+    saveBaseState({ base, worldSpawn: wspawn, personal: personal || !!st.personal });
+    emit({ type: 'base_established', ...base, d: Math.round(d), source: spot.source, personal });
   } catch (e) {
     emit({ type: 'base_establish_failed', reason: String((e && e.message) || e).slice(0, 80) });
   } finally { _baseBusy = false; }
@@ -2624,7 +2647,15 @@ async function onSpawn() {
 
           // SÉPARATION : tout le monde équipé → la phase groupée s'arrête (une seule annonce).
           if (allArmored(me, mates)) {
-            if (!_split) { _split = true; emit({ type: 'team_split', armor: me.armor }); }
+            if (!_split) {
+              _split = true;
+              emit({ type: 'team_split', armor: me.armor });
+              // « On avait mis un système que les bots ressources restaient ensemble pour faire leur
+              // kit et après ils se séparaient » (Massii 2026-07-26) : la séparation n'était qu'une
+              // ANNONCE, les bots restaient physiquement sur la base commune. Chacun va maintenant
+              // poser SA base, en éventail depuis la base commune → 3 zones de récolte distinctes.
+              establishBase({ personal: true }).catch(() => {});
+            }
             return;
           }
           _split = false;
@@ -3161,6 +3192,7 @@ async function onSpawn() {
     // BASE PERSONNELLE (ouvriers seulement — un cartographe roame, une base n'a pas de sens pour
     // lui). 'establish' = aller la poser ; 'return' = relâché loin de chez lui (mort dont le
     // /spawnpoint n'a pas tenu) → rentrer ; 'stay' = déjà chez lui.
+    let _baseEstablishing = false;
     if (!IS_MAPPER) {
       const stB = loadBaseState();
       const act = basecamp.spawnAction({
@@ -3172,7 +3204,11 @@ async function onSpawn() {
         emit({ type: 'base_return' });
         homewarp.goHome(bot, 'safe');
       } else if (act === 'establish') {
-        establishBase().catch(() => {});
+        // AWAIT, pas fire-and-forget (échec live : `too_close` d=1..23 sur les 3 bots). Le planner
+        // autonome et le /tpa de regroupement démarrent au même spawn et prennent le pathfinder :
+        // le trajet d'installation était annulé dans la seconde, le bot ne bougeait pas d'un bloc.
+        _baseEstablishing = true;
+        await establishBase();
       }
     }
     // Après une mort MARQUÉE (watchdog PV 'bookmark') : revenir au lieu exact ramasser les drops.
@@ -3191,7 +3227,12 @@ async function onSpawn() {
       })();
     }
     // Puis, si --regroup : rejoindre le groupe (no-op silencieux quand le flag est éteint).
-    if (REGROUP) { (async () => { try { await sleep(2500); await tryRegroup(); } catch (e) {} })(); }
+    // Pas de regroupement sur le spawn où l'on vient d'installer la base : les 3 ouvriers visent la
+    // MÊME base commune, ils se retrouvent donc sans /tpa — et un /tpa ici ramènerait le premier
+    // arrivé auprès d'un coéquipier encore au spawn du monde.
+    if (REGROUP && !_baseEstablishing) {
+      (async () => { try { await sleep(2500); await tryRegroup(); } catch (e) {} })();
+    }
   }
   if (world.objective && world.objective.status === 'in_progress') {
     emit({ type: 'autonomous_resume', objective: world.objective.type });
@@ -3573,7 +3614,10 @@ setInterval(async () => {
     if (!_jamSample) { _jamSample = { x: p.x, z: p.z, t: now }; return; }
     const d = Math.sqrt((p.x - _jamSample.x) ** 2 + (p.z - _jamSample.z) ** 2);
     if (d >= 0.8) { _jamSample = { x: p.x, z: p.z, t: now }; return; }   // ça avance → resample
-    if (now - _jamSample.t < 18000) return;                              // pas encore un jam
+    // 7 s (Massii 2026-07-26 : « quand ils n'arrivent pas à avancer, ils cassent les blocs devant
+    // eux »). Le dig-devant existait déjà, mais il attendait 18 s : à l'écran le bot semblait
+    // simplement planté. Un joueur réel insiste 2-3 s puis casse.
+    if (now - _jamSample.t < 7000) return;                               // pas encore un jam
     _jamSample = null;
     emit({ type: 'unjam', x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) });
     try { bot.setControlState('jump', false); } catch (e) {}
