@@ -12,7 +12,30 @@
 // fournit en repli quand plus aucune cible cave n'est connue (cf. dispatch `caveHunt` d'index.js) —
 // borné et court, jamais un strip-mine.
 
-const { nextOreTarget, oreBase, requiredPickTier } = require('../ores');
+const { nextOreTarget, oreBase, requiredPickTier, scanExposedOres, isWaterAdjacent } = require('../ores');
+
+/**
+ * Cible EXPOSÉE vue par le bot lui-même, ici et maintenant. (défaut de `opts.scanLocal`)
+ *
+ * Massii, live 26/07 : « ils ont plein de cave autour mais je ne vois aucun qui va vers ». La
+ * première version ne consultait que la MÉMOIRE DE MONDE : sans minerai cartographié à proximité,
+ * elle rendait `no_cave_target` et le bot se mettait à creuser — alors qu'une grotte pleine de
+ * minerai était visible à dix blocs. Un bot a des yeux, pas seulement une carte.
+ */
+function _defaultScanLocal(bot, material, skip, maxDistance) {
+  let best = null, bestD = Infinity;
+  const p = bot.entity && bot.entity.position;
+  if (!p) return null;
+  for (const o of (scanExposedOres(bot, { maxDistance, count: 40 }) || [])) {
+    if (oreBase(o.material) !== oreBase(material)) continue;
+    const key = `${o.x},${o.y},${o.z}`;
+    if (skip.has(key)) continue;
+    try { if (isWaterAdjacent(bot, o)) continue; } catch (e) { /* pas d'info → on garde */ }
+    const d = Math.hypot(o.x - p.x, o.y - p.y, o.z - p.z);
+    if (d < bestD) { bestD = d; best = o; }
+  }
+  return best;
+}
 
 /** Meilleur palier de pioche en poche (0 = aucune). Sert à ne cibler que le minable. */
 function pickTierOf(inv) {
@@ -59,7 +82,7 @@ async function caveHunt(bot, opts = {}, token = null) {
   while (got < need) {
     if (token && token.cancelled) return { ok: false, reason: 'cancelled', got };
     const from = bot.entity && bot.entity.position ? bot.entity.position : null;
-    const target = pickNext(memory, world, from, {
+    let target = pickNext(memory, world, from, {
       allowTypes: [oreBase(material)],
       exposedOnly: true,        // JAMAIS un minerai enterré : on n'exploite que le visible
       excludeWet: true,         // JAMAIS une grotte inondée (exigence explicite, non négociable)
@@ -67,6 +90,13 @@ async function caveHunt(bot, opts = {}, token = null) {
       maxDist,
       skip,
     });
+    // Rien de CARTOGRAPHIÉ à proximité → on regarde autour de soi avant de conclure. C'est ce qui
+    // manquait : le bot creusait alors qu'une grotte pleine de minerai était visible à dix blocs.
+    if (!target) {
+      const scanLocal = opts.scanLocal || _defaultScanLocal;
+      target = scanLocal(bot, material, skip, opts.localRange || 48);
+      if (target) emit({ type: 'cave_local', material, x: target.x, y: target.y, z: target.z });
+    }
     if (!target) return { ok: got > 0, reason: got > 0 ? undefined : 'no_cave_target', got };
 
     emit({ type: 'cave_target', material, x: target.x, y: target.y, z: target.z, d: got });

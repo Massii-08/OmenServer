@@ -78,3 +78,28 @@ test('caveHunt : annulation respectee', async () => {
   }, token);
   assert.strictEqual(r.reason, 'cancelled');
 });
+
+// ─── Yeux locaux : voir les grottes AUTOUR, pas seulement celles de la carte ────────────────────
+// Massii, live 26/07 : « ils ont plein de cave autour mais je ne vois aucun qui va vers ». La 1re
+// version ne consultait que la memoire de monde : sans minerai cartographie a proximite elle
+// rendait no_cave_target et le bot creusait, alors qu'une grotte pleine de minerai etait visible.
+test('caveHunt : aucune cible mappee mais une VISIBLE → on y va au lieu de creuser', async () => {
+  let mined = 0;
+  const r = await caveHunt(botWith([['iron_pickaxe', 1]]), {
+    material: 'diamond', count: 1,
+    nextOreTarget: () => null,                                   // la carte ne sait rien
+    scanLocal: () => (mined ? null : { x: 5, y: -50, z: 5, material: 'diamond_ore' }),
+    goTo: async () => true,
+    mineAt: async () => { mined = 1; return 1; },
+  });
+  assert.deepStrictEqual({ ok: r.ok, got: r.got }, { ok: true, got: 1 });
+});
+
+test('caveHunt : ni carte ni vue → no_cave_target (le trajet reste le dernier recours)', async () => {
+  const r = await caveHunt(botWith([['iron_pickaxe', 1]]), {
+    material: 'diamond', count: 1,
+    nextOreTarget: () => null,
+    scanLocal: () => null,
+  });
+  assert.strictEqual(r.reason, 'no_cave_target');
+});
