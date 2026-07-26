@@ -2719,11 +2719,6 @@ async function onSpawn() {
           }
           _split = false;
 
-          // 0) SQUAD : rester ensemble en continu. `tryRegroup` (≥120 blocs, 1× / 2 min, cible = le
-          // coéquipier le plus PROCHE) ne produisait qu'une oscillation entre 0 et 120 blocs — les
-          // bots se couraient après. `trySquad` vise un chef DÉTERMINISTE à 64 blocs près.
-          try { await trySquad(); } catch (e) { /* best-effort */ }
-
           // 1) ENTRAIDE : donner son surplus de lingots au coéquipier le moins équipé.
           const gift = pickDonation({
             self: { x: p.x, z: p.z }, selfName: bot.username, selfStatus: me,
@@ -3805,6 +3800,21 @@ setInterval(async () => {
   finally { _pickFixBusy = false; }
 }, 20000);
 
+// ── SQUAD : contrôle À SON PROPRE RYTHME (20 s). Mesuré : branché sur la boucle d'équipe (90 s),
+// les bots dérivaient de 300 à 485 blocs entre deux contrôles — le /tpa partait bien (`squad_join`
+// → `warped: True`) mais toujours trop tard. C'est la FRÉQUENCE DU CONTRÔLE qui fait la squad, pas
+// le seuil. Le cooldown de `squadTarget` (30 s) garde le débit de /tpa raisonnable.
+if (REGROUP) {
+  let _squadBusy = false;
+  setInterval(async () => {
+    if (_squadBusy) return;
+    if (_imminentBusy || panicInFlight || _baseBusy) return;   // survie et installation d'abord
+    _squadBusy = true;
+    try { await trySquad(); } catch (e) { /* best-effort */ }
+    finally { _squadBusy = false; }
+  }, 20000);
+}
+
 let _jamEsc = null;   // état d'escalade : unjams répétés AU MÊME endroit → relocate forcé (live 22/06 SOIR ResBot2)
 setInterval(async () => {
   try {
@@ -3824,9 +3834,34 @@ setInterval(async () => {
     if (now - _jamSample.t < 7000) return;                               // pas encore un jam
     _jamSample = null;
     emit({ type: 'unjam', x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) });
-    try { bot.setControlState('jump', false); } catch (e) {}
     const yaw = (bot.entity && bot.entity.yaw) || 0;
     const jdx = Math.round(-Math.sin(yaw)), jdz = Math.round(Math.cos(yaw));
+    // SAUTER D'ABORD (Massii 2026-07-26 : « ils doivent aussi tester de sauter et aller en avant si
+    // c'est juste un bloc en dessous qui bloque le passage »). Une marche d'UN bloc se franchit en
+    // sautant : c'est gratuit, instantané, et ça ne défigure pas le terrain. On ne creuse que si le
+    // saut n'a rien donné. Condition : la case AU-DESSUS de l'obstacle doit être libre, sinon sauter
+    // ne mène nulle part (mur de 2 blocs ou plus → il faut bien creuser).
+    {
+      const ahead1 = bot.blockAt(vec3Lib(Math.floor(p.x) + jdx, Math.floor(p.y) + 1, Math.floor(p.z) + jdz));
+      const ahead2 = bot.blockAt(vec3Lib(Math.floor(p.x) + jdx, Math.floor(p.y) + 2, Math.floor(p.z) + jdz));
+      const stepOnly = ahead1 && ahead1.boundingBox === 'block'
+        && (!ahead2 || ahead2.boundingBox !== 'block');
+      if (stepOnly) {
+        try {
+          bot.setControlState('forward', true);
+          bot.setControlState('jump', true);
+          await sleep(700);
+        } catch (e) { /* best-effort */ }
+        try { bot.setControlState('jump', false); bot.setControlState('forward', false); } catch (e) {}
+        const p2 = bot.entity && bot.entity.position;
+        if (p2 && Math.hypot(p2.x - p.x, p2.z - p.z) >= 0.8) {
+          emit({ type: 'unjam_jumped', x: Math.floor(p2.x), y: Math.floor(p2.y), z: Math.floor(p2.z) });
+          _jamSample = null;
+          return;                                      // franchi en sautant : aucun bloc cassé
+        }
+      }
+    }
+    try { bot.setControlState('jump', false); } catch (e) {}
     for (const dy of [1, 0, 2]) {                                        // tête, pieds, au-dessus
       try {
         const b = bot.blockAt(vec3Lib(Math.floor(p.x) + jdx, Math.floor(p.y) + dy, Math.floor(p.z) + jdz));

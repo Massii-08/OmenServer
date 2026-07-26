@@ -73,7 +73,7 @@ function pickRegroupTarget({ self, selfName, mates, armorComplete, now, lastAt, 
 //   2. UN SEUIL SERRÉ (64 blocs au lieu de 120) et un cooldown court (60 s au lieu de 120 s) :
 //      c'est ce qui fait la différence entre « on finit par se revoir » et « on reste ensemble ».
 const SQUAD_NEAR = 64;         // au-delà de cette distance du chef, on le rejoint
-const SQUAD_COOLDOWN_MS = 60000;
+const SQUAD_COOLDOWN_MS = 30000;   // 30 s : mesuré, à 60 s couplé à une boucle de 90 s ils dérivaient de 300-480 blocs entre deux contrôles
 
 /**
  * PUR — le chef de la squad : le nom le plus petit (ordre lexicographique) parmi les ouvriers
