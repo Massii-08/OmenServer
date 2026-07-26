@@ -142,7 +142,12 @@ async function sailToLand(bot, headingYaw, opts = {}) {
       if (overWater && ahead.found) { landed = true; reason = 'land'; break; }
       const t = now();
       if (boatStuck(prev, here, t - prevT, opts)) { reason = 'stuck'; break; }
-      if (t - prevT >= (opts.sampleEvery || 3000)) { prev = here; prevT = t; }
+      // ⚠️ La référence ne se rafraîchit QUE si le bot a réellement avancé. L'ancienne version la
+      // remettait à jour toutes les `sampleEvery` (3 s) alors que `boatStuck` exige 12 s : l'écart
+      // de temps ne dépassait jamais 3 s, donc la détection retournait TOUJOURS false. Un bateau
+      // coincé le restait indéfiniment (vécu live 26/07, MapBot2 immobile au milieu de l'eau).
+      const _minMove = opts.minMove != null ? opts.minMove : 2;
+      if (Math.hypot(here.x - prev.x, here.z - prev.z) >= _minMove) { prev = here; prevT = t; }
       await sleep(tickMs);
     }
   } finally {

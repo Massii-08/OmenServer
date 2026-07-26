@@ -163,3 +163,27 @@ test('seuils surchargeables + entrées bancales → jamais de crash', () => {
   assert.equal(shouldRetryBoat({}, { x: 0, z: 0 }, 1100), true);
   assert.equal(shouldRetryBoat(fail, null, 1100), true);
 });
+
+// ─── sailToLand : la détection d'immobilité doit POUVOIR se déclencher ──────────────────────────
+// Bug live 26/07 (Massii : « map 2 est bloqué depuis longtemps sur un bateau au milieu de l'eau,
+// il bouge pas ») : la boucle remettait `prev`/`prevT` à jour toutes les `sampleEvery` (3 s) alors
+// que `boatStuck` exige `dtMs >= stuckMs` (12 s) → l'écart de temps ne dépassait jamais 3 s et la
+// détection retournait TOUJOURS false. On ne rafraîchit désormais la référence que si le bot a
+// vraiment parcouru `minMove`.
+test('sailToLand : bot immobile sur l\'eau → sort en reason:stuck (et ne tourne pas jusqu\'au timeout)', async () => {
+  let t = 0;
+  const bot = {
+    entity: { position: { x: 0, y: 62, z: 0 } },
+    vehicle: {},                                    // embarqué
+    look: async () => {}, dismount: async () => {},
+    setControlState() {}, clearControlStates() {},
+  };
+  const res = await sailToLand(bot, 0, {
+    now: () => t,
+    sleep: async () => { t += 500; },               // le temps avance, le bot NE BOUGE PAS
+    sampleBlock: () => ({ name: 'water' }),         // partout de l'eau : aucune terre en vue
+    timeoutMs: 90000,
+  });
+  assert.strictEqual(res.reason, 'stuck');
+  assert.ok(t < 30000, `doit sortir bien avant le timeout (sorti à ${t} ms)`);
+});

@@ -120,6 +120,25 @@ function rangedThreat(bot) {
 }
 
 const OXYGEN_THRESHOLD = 5;   // sur 20 — en dessous : urgence remonter
+const SURFACE_RELEASE_O2 = 15;   // hystérésis : air franchement revenu
+const SURFACE_MAX_MS = 8000;     // au-delà, on relâche QUOI QU'IL ARRIVE (cf. shouldReleaseSurfacing)
+
+/**
+ * Faut-il désarmer le verrou de remontée (saut maintenu + pathfinder annulé) ? (pur)
+ *
+ * Le relâchement ne pouvait venir QUE de l'event `breath`, et seulement au-dessus de 15 d'oxygène.
+ * Entre le seuil d'alerte (5) et 15 aucune branche ne s'exécutait : `surfacing` restait vrai, le
+ * saut restait armé et le pathfinder restait à `setGoal(null)` — le bot sautait sur place à vie
+ * (vécu live 26/07, NethBot3 : « il saute en continu sans rien faire d'autre »).
+ *
+ * Deux sorties : l'air est franchement revenu, OU le verrou est trop vieux. Ce second filet rend
+ * le blocage IMPOSSIBLE : s'il se noie encore, le prochain `breath` le ré-arme aussitôt.
+ */
+function shouldReleaseSurfacing({ o2, sinceMs, releaseO2 = SURFACE_RELEASE_O2, maxMs = SURFACE_MAX_MS } = {}) {
+  if (o2 == null) return true;                       // état inconnu → jamais de verrou aveugle
+  if (o2 >= releaseO2) return true;
+  return (sinceMs || 0) >= maxMs;
+}
 const DROWN_CRITICAL = 2;     // sur 20 — quasi-noyade : rescue IMMÉDIAT (bypass le gate 2-épisodes), bug #4
 
 /** Branche les réflexes sur le bot. opts: { emit, fleeFrom, attack, onWaterStuck, now } injectables.
@@ -144,6 +163,7 @@ function installReflexes(bot, opts = {}) {
   const act = (fn) => { const ms = reactionMs() || 0; if (ms > 0) schedule(fn, ms); else fn(); };
   let fleeing = false;
   let surfacing = false;
+  let surfacingAt = 0;      // quand le verrou de remontée a été armé (cf. shouldReleaseSurfacing)
   let lastHealth = null;
   let fighting = false;
   let surfaceEpisodes = [];     // timestamps des débuts d'épisode de surfacing
@@ -265,6 +285,7 @@ function installReflexes(bot, opts = {}) {
     if (o2 <= OXYGEN_THRESHOLD) {
       if (!surfacing) {
         surfacing = true;
+        surfacingAt = now();
         try { bot.pathfinder && bot.pathfinder.setGoal && bot.pathfinder.setGoal(null); } catch (e) {}
         try { bot.setControlState && bot.setControlState('jump', true); } catch (e) {}
         emit({ type: 'reflex', action: 'surface' });
@@ -289,7 +310,7 @@ function installReflexes(bot, opts = {}) {
         emit({ type: 'reflex', action: 'water_rescue', emergency: true });
         try { onWaterStuck(); } catch (e) {}
       }
-    } else if (surfacing && o2 >= 15) { // hystérésis : on relâche une fois l'air franchement revenu
+    } else if (surfacing && shouldReleaseSurfacing({ o2, sinceMs: now() - surfacingAt })) {
       surfacing = false;
       try { bot.setControlState && bot.setControlState('jump', false); } catch (e) {}
     }
@@ -297,7 +318,22 @@ function installReflexes(bot, opts = {}) {
 
   bot.on('health', react);
   bot.on('breath', breathe);
+  // FILET INDÉPENDANT DE L'EVENT : une fois l'oxygène stable, plus aucun `breath` n'arrive — le
+  // verrou ne pouvait donc pas se défaire tout seul (bot sautant sur place à vie, vécu 26/07).
+  const _surfaceGuard = setInterval(() => {
+    try {
+      if (!surfacing) return;
+      if (!shouldReleaseSurfacing({ o2: bot.oxygenLevel, sinceMs: now() - surfacingAt })) return;
+      surfacing = false;
+      if (bot.setControlState) bot.setControlState('jump', false);
+      emit({ type: 'reflex', action: 'surface_released' });
+    } catch (e) { /* filet : ne crash jamais */ }
+  }, 1000);
+  // unref : ce filet ne doit JAMAIS maintenir le processus en vie (sinon `node --test` ne
+  // rend jamais la main — le faux bot des tests n'emet pas 'end').
+  try { if (_surfaceGuard.unref) _surfaceGuard.unref(); } catch (e) {}
+  try { bot.once('end', () => clearInterval(_surfaceGuard)); } catch (e) {}
   return { react, breathe };
 }
 
-module.exports = { tryEat, shouldFlee, meleeAssailant, rangedThreat, installReflexes, isFleeOnlyMob, HUNGER_THRESHOLD, HEALTH_THRESHOLD, DEFENSIVE_HEALTH, OXYGEN_THRESHOLD, DROWN_CRITICAL, FOODS, EMERGENCY_FOODS, MELEE_HOSTILES, RANGED, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD };
+module.exports = { shouldReleaseSurfacing, SURFACE_RELEASE_O2, SURFACE_MAX_MS, tryEat, shouldFlee, meleeAssailant, rangedThreat, installReflexes, isFleeOnlyMob, HUNGER_THRESHOLD, HEALTH_THRESHOLD, DEFENSIVE_HEALTH, OXYGEN_THRESHOLD, DROWN_CRITICAL, FOODS, EMERGENCY_FOODS, MELEE_HOSTILES, RANGED, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD };

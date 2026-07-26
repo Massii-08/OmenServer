@@ -3802,7 +3802,13 @@ setInterval(async () => {
     }
   } catch (e) { /* watchdog : ne crash jamais */ }
   finally { _oreGrabBusy = false; }
-}, 4000);
+// 800 ms, pas 4000 (Massii, live 26/07 : « des fois il passe a cote du fer sans le prendre »).
+// Arithmetique du rate : un bot qui sprinte fait ~5,6 blocs/s pour une portee de bras de 4,2.
+// A 4 s d'intervalle il parcourait ~22 blocs entre deux controles — il traversait des filons
+// ENTIERS sans jamais etre a portee au moment du test. A 800 ms il avance ~4,5 blocs par passe,
+// soit la portee : plus de trou de couverture. Le scan lui-meme est minuscule (rayon 5, ~500
+// blocs) — sans rapport avec les scans rayon 256 qui gelent la boucle d'evenements (piege #43a).
+}, 800);
 
 // ── FAIM : FILET INDÉPENDANT DU RÉFLEXE (mesure 2026-07-26 : 3 morts de faim ALORS QUE les bots
 // avaient 64 steaks en poche — contradiction qui dit que manger échouait, pas que la nourriture

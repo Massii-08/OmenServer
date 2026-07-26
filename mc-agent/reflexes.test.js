@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { installReflexes, DROWN_CRITICAL, tryEat, FOODS, EMERGENCY_FOODS } = require('./reflexes');
+const { installReflexes, DROWN_CRITICAL, tryEat, FOODS, EMERGENCY_FOODS, shouldReleaseSurfacing } = require('./reflexes');
 
 // Bot mock minimal pour piloter le réflexe `breathe` (anti-noyade). On appelle breathe() directement
 // (installReflexes le retourne) avec un oxygenLevel scripté.
@@ -172,4 +172,28 @@ test('tryEat : jamais de nourriture TOXIQUE, même affamé', async () => {
 
 test('EMERGENCY_FOODS et FOODS sont disjoints (pas de doublon de priorité)', () => {
   for (const f of EMERGENCY_FOODS) assert.ok(!FOODS.has(f), `${f} est dans les deux listes`);
+});
+
+// ─── shouldReleaseSurfacing : le verrou de remontée ne doit JAMAIS être permanent ───────────────
+// Bug live 26/07 (Massii : « neth 3 ne bouge pas, il saute en continu sans rien faire d'autre ») :
+// le relâchement n'arrivait que via l'event `breath` ET seulement au-dessus de 15 d'oxygène. Entre
+// le seuil d'alerte (5) et 15, aucune branche ne s'exécutait → `surfacing` restait vrai, le saut
+// restait armé et le pathfinder restait annulé (setGoal(null)) : le bot sautait sur place à vie.
+test('shouldReleaseSurfacing : oxygène franchement revenu → on relâche', () => {
+  assert.strictEqual(shouldReleaseSurfacing({ o2: 20, sinceMs: 100 }), true);
+  assert.strictEqual(shouldReleaseSurfacing({ o2: 15, sinceMs: 100 }), true);
+});
+
+test('shouldReleaseSurfacing : bande morte (6-14) mais verrou RÉCENT → on garde (hystérésis)', () => {
+  assert.strictEqual(shouldReleaseSurfacing({ o2: 9, sinceMs: 1000 }), false);
+});
+
+test('shouldReleaseSurfacing : verrou trop VIEUX → on relâche quoi qu il arrive', () => {
+  // Le filet : si le bot se noie encore, le prochain event `breath` re-arme aussitôt.
+  assert.strictEqual(shouldReleaseSurfacing({ o2: 9, sinceMs: 9000 }), true);
+  assert.strictEqual(shouldReleaseSurfacing({ o2: 2, sinceMs: 9000 }), true);
+});
+
+test('shouldReleaseSurfacing : oxygène inconnu → on relâche (jamais de verrou aveugle)', () => {
+  assert.strictEqual(shouldReleaseSurfacing({ o2: null, sinceMs: 100 }), true);
 });
