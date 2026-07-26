@@ -1691,6 +1691,16 @@ async function ensureFood() {
   try {
     if (cookedCount(buildCtxInv(bot)) >= 4) return;            // assez de cuit en poche
     const y = bot.entity && bot.entity.position ? bot.entity.position.y : 64;
+    // BUTIN D'ABORD (Massii 2026-07-26 : « ils meurent beaucoup de faim aussi » — 7 morts de faim
+    // sur les 20 premières minutes du run). Le bot tue des dizaines de mobs et LAISSE tout au sol :
+    // `attackNearest` ne ramasse rien. Or la chair putréfiée et la viande crue nourrissent
+    // (cf. EMERGENCY_FOODS) — c'est de la nourriture gratuite, déjà tuée, à quelques blocs.
+    // Court et borné : on ne transforme pas la faim en expédition.
+    try {
+      const got = await lootNearby({ radius: 12, maxItems: 6, budgetMs: 20000 });
+      if (got) emit({ type: 'food_loot_swept', items: got });
+    } catch (e) { /* best-effort */ }
+    if (cookedCount(buildCtxInv(bot)) >= 4) return;
     if (y >= 45) {                                             // surface → chasse réaliste bornée
       try { await withTimeout(huntCookGoal(6), 120000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
     }
@@ -2715,6 +2725,16 @@ async function onSpawn() {
     // 12 : un pont se fait dès que le détour sec dépasse ~12 blocs par bloc posé — franchir un
     // ravin devient normal, sans pour autant bétonner à la moindre occasion.
     moves.placeCost = 12;
+    // STALACTITES à ÉVITER (Massii 2026-07-26 : « surtout les stalactites »). Le pointed_dripstone
+    // a une boîte de collision partielle que le pathfinder croit franchissable : le bot s'y coince,
+    // et il empale (1 mort mesurée sur ce run). `blocksToAvoid` le fait contourner ; `clearSnares`
+    // le casse quand il est déjà collé dedans.
+    try {
+      for (const n of ['pointed_dripstone', 'powder_snow', 'cactus', 'magma_block', 'sweet_berry_bush']) {
+        const b = bot.registry.blocksByName[n];
+        if (b) moves.blocksToAvoid.add(b.id);
+      }
+    } catch (e) { /* best-effort */ }
     // Hook eau des skills (explore skippe les waypoints aquatiques) — injectable, pas de require dur.
     bot._mcaInWater = (b) => { try { return isInWater(b || bot); } catch (e) { return false; } };
     // PILIER (Massii « monte mal en pilier ») : le pathfinder ne toure (`allow1by1towers`) qu'avec
@@ -3179,15 +3199,17 @@ async function onSpawn() {
   }
 }
 
-// Ramasse les items tombés autour de la position courante (post-mort, cible keepInventory OFF).
-// keepInv ON → dropsWithin renvoie [] → no-op immédiat. Borné (temps + nb) pour ne pas geler.
-async function collectDeathDrops() {
+// Ramasse les items tombés autour de la position courante. Borné (temps + nb) pour ne pas geler.
+async function lootNearby(opts = {}) {
+  const radius = opts.radius || 20;
+  const maxItems = opts.maxItems || 20;
+  const budgetMs = opts.budgetMs || 45000;
+  let got = 0;
   try {
-    const center = bot.entity && bot.entity.position;
-    if (!center) return;
-    const deadline = Date.now() + 45000;
-    for (let i = 0; i < 20 && Date.now() < deadline; i++) {
-      const drops = homewarp.dropsWithin(bot.entities, bot.entity.position, 20);
+    if (!(bot.entity && bot.entity.position)) return 0;
+    const deadline = Date.now() + budgetMs;
+    for (let i = 0; i < maxItems && Date.now() < deadline; i++) {
+      const drops = homewarp.dropsWithin(bot.entities, bot.entity.position, radius);
       if (!drops.length) break;
       const e = drops[0].entity;
       if (!e || !e.position) break;
@@ -3197,9 +3219,16 @@ async function collectDeathDrops() {
           15000, () => { try { stopMotion(); } catch (er) {} });
       } catch (er) { break; }   // inatteignable → on abandonne le ramassage (best-effort)
       await sleep(600);          // laisse la collecte auto (proximité) opérer
+      got++;
     }
-    emit({ type: 'death_drops_collected' });
   } catch (e) { /* best-effort */ }
+  return got;
+}
+
+// Post-mort (cible keepInventory OFF) : keepInv ON → dropsWithin renvoie [] → no-op immédiat.
+async function collectDeathDrops() {
+  await lootNearby({ radius: 20, maxItems: 20, budgetMs: 45000 });
+  emit({ type: 'death_drops_collected' });
 }
 
 const DONE = { fr: 'fait', en: 'done', it: 'fatto' };

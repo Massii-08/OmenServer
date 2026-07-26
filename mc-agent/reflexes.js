@@ -50,6 +50,20 @@ const RANGED = new Set(['skeleton', 'stray', 'bogged']);
 const RANGED_MIN = 6;         // blocs — au-delà du contact mêlée
 const RANGED_MAX = 16;        // blocs — portée d'arc utile
 
+// NOURRITURE DE DÉTRESSE (Massii 2026-07-26 : « j'ai l'impression qu'ils vont dans les cavernes
+// sans bouffe » — 7 morts de faim mesurées sur les 20 premières minutes du run world_ax5, 2ᵉ cause
+// de mort devant les chutes). Le bot tuait 13 zombies en 20 min et mourait de faim à côté du butin :
+// `FOODS` ne contenait QUE du cuit, donc ni la chair putréfiée ni la viande crue.
+// Un vrai joueur qui a faim mange sa viande crue et, à défaut, la chair putréfiée — quitte à
+// encaisser la fringale. Mangée seulement en DERNIER RECOURS (le cuit passe toujours d'abord),
+// et jamais rien de toxique (spider_eye/poisonous_potato/pufferfish exclus volontairement).
+const EMERGENCY_FOODS = new Set([
+  'rotten_flesh',
+  'beef', 'porkchop', 'chicken', 'mutton', 'rabbit', 'cod', 'salmon', 'tropical_fish',
+  'potato', 'dried_kelp', 'glow_berries', 'cookie', 'pumpkin_pie', 'honey_bottle',
+  'suspicious_stew', 'beetroot_soup', 'rabbit_stew',
+]);
+
 /** Mange si faim basse — OU si blessé et que la faim ne permet plus la régen (phase B). */
 async function tryEat(bot) {
   if (bot.food == null) return false;
@@ -57,7 +71,10 @@ async function tryEat(bot) {
   const needRegen = bot.health != null && bot.health <= HURT_HEALTH && bot.food <= REGEN_FOOD;
   if (!hungry && !needRegen) return false;
   const items = (bot.inventory && bot.inventory.items()) || [];
-  const food = items.find((it) => FOODS.has(it.name));
+  // Le CUIT d'abord, la détresse ensuite : on ne gâche pas un steak cuit pour de la chair putréfiée,
+  // mais on ne meurt pas de faim avec de la viande crue en poche.
+  const food = items.find((it) => FOODS.has(it.name))
+    || items.find((it) => EMERGENCY_FOODS.has(it.name));
   if (!food) return false;
   await bot.equip(food, 'hand');
   await bot.consume();
@@ -283,4 +300,4 @@ function installReflexes(bot, opts = {}) {
   return { react, breathe };
 }
 
-module.exports = { tryEat, shouldFlee, meleeAssailant, rangedThreat, installReflexes, isFleeOnlyMob, HUNGER_THRESHOLD, HEALTH_THRESHOLD, DEFENSIVE_HEALTH, OXYGEN_THRESHOLD, DROWN_CRITICAL, FOODS, MELEE_HOSTILES, RANGED, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD };
+module.exports = { tryEat, shouldFlee, meleeAssailant, rangedThreat, installReflexes, isFleeOnlyMob, HUNGER_THRESHOLD, HEALTH_THRESHOLD, DEFENSIVE_HEALTH, OXYGEN_THRESHOLD, DROWN_CRITICAL, FOODS, EMERGENCY_FOODS, MELEE_HOSTILES, RANGED, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD };

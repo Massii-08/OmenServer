@@ -116,6 +116,11 @@ async function escapeWater(bot, opts = {}) {
 const SNARES = new Set([
   'vine', 'cave_vines', 'cave_vines_plant', 'twisting_vines', 'twisting_vines_plant',
   'weeping_vines', 'weeping_vines_plant', 'glow_lichen', 'cobweb', 'sweet_berry_bush',
+  // STALACTITES (Massii 2026-07-26 : « ils ont toujours des difficultés à passer / à ne pas se
+  // bloquer dans d'autres blocs, surtout les stalactites »). Le pointed_dripstone a une boîte de
+  // collision partielle que le pathfinder juge franchissable, alors qu'elle bloque le pas — et il
+  // BLESSE (1 mort « skewered by a falling stalactite » mesurée sur ce run). Cassable à la main.
+  'pointed_dripstone',
 ]);
 
 /**

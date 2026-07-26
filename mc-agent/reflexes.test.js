@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { installReflexes, DROWN_CRITICAL } = require('./reflexes');
+const { installReflexes, DROWN_CRITICAL, tryEat, FOODS, EMERGENCY_FOODS } = require('./reflexes');
 
 // Bot mock minimal pour piloter le réflexe `breathe` (anti-noyade). On appelle breathe() directement
 // (installReflexes le retourne) avec un oxygenLevel scripté.
@@ -118,4 +118,58 @@ test('PV corrects → ni fuite ni couvert (on ne se terre pas pour rien)', () =>
   const c = runReact(botUnderFire({ health: 20 }));
   assert.equal(c.flee, 0);
   assert.equal(c.cover.length, 0);
+});
+
+// ─── Nourriture de détresse (Massii 2026-07-26 : 7 morts de faim en 20 min) ─────────────────────
+
+test('tryEat : mange la viande CRUE plutôt que de mourir de faim', async () => {
+  const eaten = [];
+  const bot = {
+    food: 4, health: 20,
+    inventory: { items: () => [{ name: 'beef' }] },
+    equip: async (it) => eaten.push(it.name),
+    consume: async () => {},
+  };
+  assert.strictEqual(await tryEat(bot), true);
+  assert.deepStrictEqual(eaten, ['beef']);
+});
+
+test('tryEat : mange la CHAIR PUTRÉFIÉE en dernier recours (butin des zombies)', async () => {
+  const eaten = [];
+  const bot = {
+    food: 4, health: 20,
+    inventory: { items: () => [{ name: 'rotten_flesh' }] },
+    equip: async (it) => eaten.push(it.name),
+    consume: async () => {},
+  };
+  assert.strictEqual(await tryEat(bot), true);
+  assert.deepStrictEqual(eaten, ['rotten_flesh']);
+});
+
+test('tryEat : le CUIT passe toujours avant la détresse', async () => {
+  const eaten = [];
+  const bot = {
+    food: 4, health: 20,
+    inventory: { items: () => [{ name: 'rotten_flesh' }, { name: 'cooked_beef' }] },
+    equip: async (it) => eaten.push(it.name),
+    consume: async () => {},
+  };
+  await tryEat(bot);
+  assert.deepStrictEqual(eaten, ['cooked_beef']);
+});
+
+test('tryEat : jamais de nourriture TOXIQUE, même affamé', async () => {
+  const eaten = [];
+  const bot = {
+    food: 1, health: 20,
+    inventory: { items: () => [{ name: 'spider_eye' }, { name: 'poisonous_potato' }, { name: 'pufferfish' }] },
+    equip: async (it) => eaten.push(it.name),
+    consume: async () => {},
+  };
+  assert.strictEqual(await tryEat(bot), false);
+  assert.deepStrictEqual(eaten, []);
+});
+
+test('EMERGENCY_FOODS et FOODS sont disjoints (pas de doublon de priorité)', () => {
+  for (const f of EMERGENCY_FOODS) assert.ok(!FOODS.has(f), `${f} est dans les deux listes`);
 });
