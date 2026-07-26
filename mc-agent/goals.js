@@ -276,6 +276,16 @@ const IRON_ARMOR_CHAIN = [
   // jamais de bois/four cette session → le smelt d'ensureArmor échoue en silence (0 combustible,
   // 0 four) → boucle à vie. On exige de quoi FONDRE le besoin restant avant iron_armor :
   // combustible (coal 8 items, planches/bûches 1.5) ≥ lingots à fondre, puis four (8 cobble + craft).
+  // CHARBON SOUS TERRE (capture réelle Massitom2008 × alexdon1837, 26/07) : dans la vraie partie,
+  // 65 charbons minés dans les 10 premières minutes — AVANT le fer — et 131/97 torches posées en
+  // 33 min. Le charbon est à la fois le combustible (8 fontes contre 1,5 pour une bûche) et la
+  // lumière. Or `armor_fuel` envoyait le bot couper du BOIS même à Y16 : il remontait à la surface
+  // pour fondre, alors qu'il avait du charbon tout autour. C'était le churn bois↔profondeur à
+  // l'état pur. En surface le but est sauté : là-haut, le bois EST le combustible naturel.
+  { name: 't1_coal',       met: (c) => invCount(c.inv, 'coal') + invCount(c.inv, 'charcoal') >= 3
+                                        || (c.y === undefined || c.y > 40)
+                                        || fuelUnits(c) >= smeltNeed(c) || IA(c),
+    skill: 'gather',       args: { name: ['coal_ore', 'deepslate_coal_ore'], count: 5 } },
   { name: 'armor_fuel',    met: (c) => fuelUnits(c) >= smeltNeed(c) || IA(c),
     skill: 'gatherLog',    args: { count: 4 } },
   { name: 'armor_cobble',  met: (c) => invCount(c.inv, 'cobblestone') >= 8 || F(c) || IA(c),

@@ -406,3 +406,37 @@ test('but hache : satisfait si on en a une, sauté si la matière manque', () =>
   assert.strictEqual(g.met({ inv: { cobblestone: 3, stick: 1 } }), true, 'pas assez de bâtons → sauté');
   assert.strictEqual(g.met({ inv: { cobblestone: 3, stick: 2 } }), false, 'matière là → on forge');
 });
+
+// ─── CHARBON sous terre (capture réelle Massitom2008 × alexdon1837, 26/07) ───
+// Dans la vraie partie : alexdon a miné 65 charbons dans les 10 PREMIÈRES minutes, avant le fer,
+// et les deux joueurs ont posé 131 et 97 torches en 33 min. Le charbon est à la fois le
+// combustible (8 fontes, contre 1,5 pour une bûche) ET la lumière.
+// Le bot, lui, exécutait `armor_fuel → gatherLog` MÊME à Y16 : il remontait couper du bois pour
+// fondre, alors qu'il avait du charbon tout autour. C'est le churn bois↔profondeur à l'état pur.
+test('chaîne armure : un but charbon existe AVANT le combustible-bois', () => {
+  const names = chainFor('iron_armor').map((g) => g.name);
+  assert.ok(names.includes('t1_coal'), 'aucun but charbon');
+  assert.ok(names.indexOf('t1_coal') < names.indexOf('armor_fuel'),
+    'le charbon doit être tenté avant de remonter couper du bois');
+});
+
+test('but charbon : SOUS TERRE et sans combustible → on mine du charbon', () => {
+  const g = chainFor('iron_armor').find((x) => x.name === 't1_coal');
+  assert.strictEqual(g.met({ inv: { raw_iron: 8 }, y: 16 }), false);
+});
+
+test('but charbon : EN SURFACE → sauté (le bois y est le combustible naturel)', () => {
+  const g = chainFor('iron_armor').find((x) => x.name === 't1_coal');
+  assert.strictEqual(g.met({ inv: { raw_iron: 8 }, y: 64 }), true);
+});
+
+test('but charbon : déjà du charbon en poche → satisfait', () => {
+  const g = chainFor('iron_armor').find((x) => x.name === 't1_coal');
+  assert.strictEqual(g.met({ inv: { coal: 5 }, y: 16 }), true);
+  assert.strictEqual(g.met({ inv: { charcoal: 5 }, y: 16 }), true, 'le charbon de bois compte');
+});
+
+test('but charbon : le bois en poche suffit aussi (on ne détourne pas pour rien)', () => {
+  const g = chainFor('iron_armor').find((x) => x.name === 't1_coal');
+  assert.strictEqual(g.met({ inv: { oak_planks: 40 }, y: 16 }), true);
+});
