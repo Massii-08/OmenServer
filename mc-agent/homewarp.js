@@ -121,6 +121,19 @@ function isTpCancelled(msg) {
   return typeof msg === 'string' && _TP_CANCEL_RE.test(msg);
 }
 
+// « You have already sent <joueur> a teleport request. » — Essentials REFUSE le /tpa tant que le
+// précédent est en attente (sa fenêtre est plus longue que notre cooldown de squad). Mesuré sur le
+// run world_mn3 : 384 refus en 20 min. Sans détection, chacun coûtait les 15 s pleines d'awaitWarp
+// PENDANT lesquelles le bot est immobile (trySquad fait stopMotion avant d'envoyer le /tpa) — soit
+// ~1 h 30 de temps-bot planté, et une dispersion aggravée (le suiveur attend, le chef s'éloigne).
+// Détecté, le refus vaut annulation immédiate : awaitWarp rend la main en ~300 ms.
+const _TP_PENDING_RE = /already sent .* a teleport request/i;
+
+/** Le /tpa vient-il d'être refusé parce qu'une demande est DÉJÀ en attente ? (pur) */
+function isTpAlreadyPending(msg) {
+  return typeof msg === 'string' && _TP_PENDING_RE.test(msg);
+}
+
 /**
  * Tactique de mise en sécurité AVANT un /home de secours (pure).
  *   'float'  → dans l'eau : remonter/flotter immobile (aucune pose fiable sous l'eau) ;
@@ -176,5 +189,5 @@ function dropsWithin(entities, center, radius) {
 module.exports = {
   bookmark, goHome, goSpawn, goSafe: goSpawn, sanitizeName, RESERVED, classifyImminent, dropsWithin,
   IMMINENT_HP, isTpRefusal, refusedHome, effectiveVerdict, REFUSAL_DEGRADE_MS,
-  isTpWarmup, isTpCancelled, secureTactic,
+  isTpWarmup, isTpCancelled, isTpAlreadyPending, secureTactic,
 };

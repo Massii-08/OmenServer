@@ -3797,6 +3797,9 @@ bot.on('messagestr', (msg) => {
   // Secure-then-warp : serveurs à teleport-delay — warmup annoncé (info) et surtout ANNULATION
   // (le bot a bougé/pris un coup pendant l'attente) → awaitWarp la voit et safeWarpHome re-tente.
   if (homewarp.isTpCancelled(msg)) { _tpCancelledAt = Date.now(); emit({ type: 'home_tp_cancelled' }); }
+  // Refus « demande déjà en attente » : rien n'arrivera, inutile d'attendre les 15 s d'awaitWarp
+  // immobile (mesuré : 384 refus en 20 min sur world_mn3). On le traite comme une annulation.
+  else if (homewarp.isTpAlreadyPending(msg)) { _tpCancelledAt = Date.now(); emit({ type: 'tpa_already_pending' }); }
   else if (homewarp.isTpWarmup(msg)) emit({ type: 'home_tp_warmup' });
   const tpWho = parseTpRequest(msg);
   // Bots du MÊME groupe : confiance mutuelle pour le TP (TP-au-mappeur) — n'élargit PAS le

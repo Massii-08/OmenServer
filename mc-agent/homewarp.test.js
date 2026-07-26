@@ -210,3 +210,25 @@ test('secureTactic : pas de menace, ou pas de blocs → none (freeze simple)', (
 test('RESERVED contient canchor (ancre de confinement no-give)', () => {
   assert.ok(RESERVED.includes('canchor'));
 });
+
+const homewarp = require('./homewarp');   // acces nomme (le haut du fichier destructure)
+
+// --- refus « demande de TP deja en attente » (mesure world_mn3 : 384 refus en 20 min) ----------
+test('isTpAlreadyPending: le refus Essentials est reconnu', () => {
+  assert.strictEqual(homewarp.isTpAlreadyPending('You have already sent NethBot1 a teleport request.'), true);
+  assert.strictEqual(homewarp.isTpAlreadyPending('You have already sent Massitom2008 a teleport request'), true);
+});
+
+test('isTpAlreadyPending: ne confond pas avec les autres messages TP', () => {
+  assert.strictEqual(homewarp.isTpAlreadyPending('Teleportation will commence in 3 seconds.'), false);
+  assert.strictEqual(homewarp.isTpAlreadyPending('The teleport destination is unsafe and teleport-safety is disabled.'), false);
+  assert.strictEqual(homewarp.isTpAlreadyPending('Teleportation request cancelled.'), false);
+  assert.strictEqual(homewarp.isTpAlreadyPending(''), false);
+  assert.strictEqual(homewarp.isTpAlreadyPending(null), false);
+});
+
+test('isTpAlreadyPending: chemin DISTINCT du refus de destination et de l_annulation', () => {
+  const m = 'You have already sent NethBot1 a teleport request.';
+  assert.strictEqual(homewarp.isTpRefusal(m), false);
+  assert.strictEqual(homewarp.isTpCancelled(m), false);
+});
