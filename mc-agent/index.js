@@ -226,6 +226,10 @@ let _safeHomePos = null;      // coords du dernier /sethome safe (pour fuir VERS
 let _posSamples = [];         // desync-watchdog : échantillons de position (30 s × 10 = 5 min)
 let _stillBusy = false;       // immobilité LÉGITIME en cours (fonte au four, abri nocturne) — gate desync
 let _smeltOppBusy = false;    // fonte opportuniste : une seule passe à la fois
+let panicInFlight = false;    // garde de ré-entrée onPanic. DOIT rester au niveau module : les gates
+                              // survie (l. ~3713/3792/3811) la lisent HORS de onSpawn — déclarée en
+                              // `let` dans onSpawn elle levait un ReferenceError qui TUAIT le process
+                              // au 1er tick du timer (vécu : les 3 workers morts en boucle, run Minestrator)
 
 // Attend l'atterrissage d'un /home : saut de position >16 blocs = warpé ; message « cancelled »
 // (teleport-delay : le bot a bougé/pris un coup pendant le warmup) = échec explicite ; sinon
@@ -2890,7 +2894,8 @@ async function onSpawn() {
                               // aquifères sont fréquents, des rencontres rapprochées sont NORMALES.
     let waterStuckTimes = []; // horodatages onWaterStuck (fenêtre 4 min) : zone PERSISTAMMENT humide
                               // (≥4 en 4 min) = escapeWater sort mais le bot y retombe → warp (vécu ResBot3).
-    let panicInFlight = false; // garde de ré-entrée onPanic (bug review #3 : fire-and-forget non-awaité)
+    panicInFlight = false; // garde de ré-entrée onPanic (bug review #3 : fire-and-forget non-awaité).
+                           // Réinitialisée à CHAQUE spawn (déclarée au niveau module, cf. l. ~229).
     installReflexes(bot, {
       emit, fleeFrom,
       // COUVERT au lieu de la FUITE quand c'est un TIREUR qui nous met à PV bas (autopsie live
