@@ -520,3 +520,65 @@ test('DIAMOND : pioche en poche -> on passe bien a la suite', () => {
   const ctx = { inv: { diamond: 1, iron_pickaxe: 1, cobblestone: 16, stick: 4 }, y: -54 };
   assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx).name, 'diamond_caves');
 });
+
+// ── ENCHAINEMENT vers l'armure des cartographes (Massii 26/07) ──────────────────────────────────
+const { MAPPER_ARMOR_CHAIN, GIFT_SET_INGOTS } = require('./goals');
+
+const _mapper = (name, armor) => ({ name, role: 'mapper', armor, at: Date.now() });
+const _worker = (name, need) => ({ name, role: 'worker', armor: 4, need, at: Date.now() });
+
+test('nextObjectiveAfter: les workers en manque passent AVANT les cartographes', () => {
+  const mates = [_worker('W2', 12), _mapper('M1', 0)];
+  assert.strictEqual(nextObjectiveAfter('iron_armor', mates), 'iron_help');
+});
+
+test('nextObjectiveAfter: plus personne en manque + un mappeur nu → mapper_armor', () => {
+  const mates = [_worker('W2', 0), _mapper('M1', 0)];
+  assert.strictEqual(nextObjectiveAfter('iron_armor', mates), 'mapper_armor');
+  assert.strictEqual(nextObjectiveAfter('iron_help', mates), 'mapper_armor');
+});
+
+test('nextObjectiveAfter: tous les mappeurs equipes → diamant', () => {
+  const mates = [_worker('W2', 0), _mapper('M1', 4), _mapper('M2', 4)];
+  assert.strictEqual(nextObjectiveAfter('iron_armor', mates), 'diamond');
+  assert.strictEqual(nextObjectiveAfter('mapper_armor', mates), 'diamond');
+});
+
+test('nextObjectiveAfter: un set ne couvre qu_UN mappeur → on reboucle tant qu_il en reste', () => {
+  const mates = [_mapper('M1', 4), _mapper('M2', 0)];
+  assert.strictEqual(nextObjectiveAfter('mapper_armor', mates), 'mapper_armor');
+});
+
+test('nextObjectiveAfter: `need` est lu a PLAT (presence.beat aplatit le statut)', () => {
+  // Le champ etait lu en `m.status.need` : toujours undefined, donc iron_help ne se declenchait
+  // jamais. On accepte encore l'ancienne forme par tolerance.
+  assert.strictEqual(nextObjectiveAfter('iron_armor', [_worker('W2', 8)]), 'iron_help');
+  assert.strictEqual(
+    nextObjectiveAfter('iron_armor', [{ name: 'W2', role: 'worker', armor: 4, status: { need: 8 }, at: Date.now() }]),
+    'iron_help');
+});
+
+test('MAPPER_ARMOR_CHAIN: sans cible, TOUS les buts sont satisfaits (chaine inerte)', () => {
+  const ctx = { inv: {}, y: 70, mapperTarget: null, giftReady: false };
+  assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx), null);
+});
+
+test('MAPPER_ARMOR_CHAIN: avec une cible et rien en poche → descendre d_abord', () => {
+  const ctx = { inv: {}, y: 70, mapperTarget: 'MapBot1', giftReady: false };
+  assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx).name, 'gift_descend');
+});
+
+test('MAPPER_ARMOR_CHAIN: en profondeur avec le fer brut → il faut fondre', () => {
+  const ctx = { inv: { raw_iron: GIFT_SET_INGOTS }, y: 16, mapperTarget: 'MapBot1', giftReady: false };
+  assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx).name, 'gift_smelt');
+});
+
+test('MAPPER_ARMOR_CHAIN: lingots fondus → forger le set', () => {
+  const ctx = { inv: { iron_ingot: GIFT_SET_INGOTS }, y: 16, mapperTarget: 'MapBot1', giftReady: false };
+  assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx).name, 'gift_craft');
+});
+
+test('MAPPER_ARMOR_CHAIN: set pret → livrer', () => {
+  const ctx = { inv: { iron_ingot: GIFT_SET_INGOTS }, y: 16, mapperTarget: 'MapBot1', giftReady: true };
+  assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx).name, 'gift_deliver');
+});

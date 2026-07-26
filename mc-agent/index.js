@@ -81,7 +81,7 @@ const { pickMapperTp } = require('./mapperTp'); // TP-au-mappeur : à qui demand
 const { pickRegroupTarget, squadTarget } = require('./regroup');
 // ENTRAIDE D'ÉQUIPE (Massii 25/07 : « qu'ils s'aident entre eux, et quand ils ont l'armure
 // fer ils se séparent »). Décisions PURES ; l'exécution (marche + toss) est ci-dessous.
-const { teamStatus, pickDonation, allArmored, pickMobAssist } = require('./teamwork');
+const { teamStatus, pickDonation, allArmored, pickMobAssist, pickMapperToEquip, giftSetPlan } = require('./teamwork');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
 const { isNight, shelterUntilDawn, shouldShelter } = require('./skills/shelter');
@@ -498,7 +498,64 @@ function ctxExtra() {
     if (s && s.name && isNearlyBroken(s)) { emit({ type: 'gear_worn_out', item: s.name, slot: 'offhand' }); }
     offhand = (s && s.name && !isNearlyBroken(s)) ? s.name : null;
   } catch (e) { /* best-effort */ }
-  return { hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand };
+  const gift = _giftContext();
+  return {
+    hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand,
+    mapperTarget: gift.target, giftReady: gift.ready,
+  };
+}
+
+// ── ARMURE DES CARTOGRAPHES : choix + réservation de la cible ────────────────────────────────────
+// La chaîne MAPPER_ARMOR_CHAIN est entièrement gouvernée par `ctx.mapperTarget` : tant qu'il est
+// null, tous ses buts sont satisfaits et le bot enchaîne sur le diamant.
+//
+// La cible est choisie de façon DÉTERMINISTE (teamwork.pickMapperToEquip) — donc identique pour
+// tous les workers au même instant : sans réservation, les 5 forgeraient un set pour le MÊME
+// cartographe. On RÉSERVE donc via le lockfile de claims partagé du groupe, et on descend la liste
+// tant qu'une cible est déjà prise.
+//
+// Deux garde-fous temporels :
+//  - le heartbeat de présence est à 60 s : un mappeur qu'on vient d'équiper se publie « nu »
+//    encore une minute → `_giftDone` empêche de le resservir (TTL 5 min) ;
+//  - `ctxExtra` est appelé à chaque pas du planner : on met le résultat en cache 15 s pour ne pas
+//    marteler le lockfile.
+const GIFT_PIECES = ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'];
+const GIFT_CACHE_MS = 15000;
+const GIFT_DONE_TTL_MS = 300000;
+let _teamClaims = null;          // instancié au spawn si --claims est fourni
+let _giftTarget = null;          // cartographe réservé (nom) ou null
+let _giftAt = 0;                 // instant du dernier calcul (cache)
+const _giftDone = new Map();     // nom -> instant de livraison (anti double-service)
+
+function _giftContext() {
+  const empty = { target: null, ready: false };
+  try {
+    const items = (bot && bot.inventory && bot.inventory.items()) || [];
+    const ready = giftSetPlan(items).ready;
+    const now = Date.now();
+    if (now - _giftAt < GIFT_CACHE_MS) return { target: _giftTarget, ready };
+    _giftAt = now;
+    for (const [name, at] of _giftDone) { if (now - at > GIFT_DONE_TTL_MS) _giftDone.delete(name); }
+    if (!presence) { _giftTarget = null; return { target: null, ready }; }
+    const selfStatus = teamStatus(buildCtxInv(bot), [..._wornArmor()]);
+    const mates = presence.list();
+    const skip = new Set(_giftDone.keys());
+    for (let i = 0; i < 6; i++) {                      // descend la liste des cibles déjà prises
+      const pick = pickMapperToEquip({
+        selfName: bot.username, selfStatus, mates, claimed: skip, now,
+      });
+      if (!pick) { _giftTarget = null; return { target: null, ready }; }
+      // Sans lockfile (groupe sans --claims) on accepte la cible telle quelle : mieux vaut deux
+      // sets livrés qu'aucun — un mappeur sur-équipé garde simplement des pièces en poche.
+      if (!_teamClaims || _teamClaims.tryClaim('marmor:' + pick.to)) {
+        _giftTarget = pick.to;
+        return { target: pick.to, ready };
+      }
+      skip.add(pick.to);
+    }
+    _giftTarget = null;
+    return { target: null, ready };
+  } catch (e) { return empty; }
 }
 
 // Table de craft PORTABLE : le bot garde 1 crafting_table en poche et la pose/reprend à la demande
@@ -1085,6 +1142,51 @@ async function runGoalSkill(goal) {
   // Chaîne iron_armor : ensureArmor fond le brut nécessaire + craft la pièce fer la moins chère +
   // équipe (1 pièce/appel — le planner re-boucle). Progrès = besoin d'armure qui BAISSE ou pièce
   // équipée en plus ; sinon {ok:false} → failStreak → stall propre (ex. four perdu, fer volatilisé).
+  // Forge les pièces MANQUANTES du set à offrir (celles qui ne sont pas déjà en poche). Le worker
+  // porte les siennes dans les slots 5-8, absents de inventory.items() : une pièce en poche est
+  // donc bien du surplus livrable, jamais celle qu'il a sur le dos.
+  if (goal.skill === 'craftGiftSet') {
+    const itemsOf = () => (bot.inventory && bot.inventory.items()) || [];
+    const plan = giftSetPlan(itemsOf());
+    if (plan.ready) return { ok: true };
+    let progressed = false;
+    for (const piece of plan.missing) {
+      const r = await craftSmart({ name: piece, count: 1 });
+      if (r && r.ok) { progressed = true; emit({ type: 'gift_craft', item: piece }); }
+    }
+    return progressed ? { ok: true } : { ok: false, reason: 'gift_craft:' + plan.ingotsShort };
+  }
+  // Livraison : /tpa VERS le cartographe (jamais l'inverse — il ne doit pas s'arrêter), puis
+  // remise en main propre. Il s'équipe seul : `armorUp(0)` tourne dans son onPeriodic.
+  if (goal.skill === 'deliverMapperArmor') {
+    const to = _giftTarget;
+    if (!to) return { ok: true };                       // plus personne à servir
+    if (!isAllowed('/tpa ' + to, whitelist)) {
+      emit({ type: 'gift_blocked', to });               // /tpa pas coché dans le profil serveur
+      return { ok: false, reason: 'tpa_not_whitelisted' };
+    }
+    emit({ type: 'gift_tpa', to });
+    try { stopMotion(); } catch (e) {}
+    try { bot.chat('/tpa ' + to); } catch (e) { return { ok: false, reason: 'chat_failed' }; }
+    const w = await awaitWarp({ maxMs: 20000 });
+    if (!w.warped) {
+      // Échec de TP : on RELÂCHE la réservation pour qu'un autre worker (peut-être plus proche
+      // ou moins malchanceux) puisse servir ce cartographe. Le set reste en poche, rien n'est perdu.
+      try { if (_teamClaims) _teamClaims.release('marmor:' + to); } catch (e) {}
+      _giftTarget = null; _giftAt = 0;
+      emit({ type: 'gift_tpa_failed', to });
+      return { ok: false, reason: 'tpa_failed' };
+    }
+    let given = 0;
+    for (const piece of GIFT_PIECES) {
+      try { const r = await giveItem(bot, { name: piece }, to); if (r && r.ok) given += 1; } catch (e) {}
+    }
+    emit({ type: 'gift_delivered', to, pieces: given });
+    _giftDone.set(to, Date.now());                      // le heartbeat le publiera « nu » encore 60 s
+    try { if (_teamClaims) _teamClaims.release('marmor:' + to); } catch (e) {}
+    _giftTarget = null; _giftAt = 0;
+    return given > 0 ? { ok: true } : { ok: false, reason: 'gift_toss_failed' };
+  }
   if (goal.skill === 'ensureArmor') {
     const need = () => armorNeed({ inv: buildCtxInv(bot), worn: [..._wornArmor()] }, 3);
     const before = need(); const wornBefore = _wornArmor().size;
@@ -2712,6 +2814,11 @@ async function onSpawn() {
   // (raccourci « vrai joueur » vers les zones lointaines, auto-accepté intra-groupe).
   if (args.positions && !presence) {
     presence = createPresence(String(args.positions), { username: bot.username });
+    // Claims d'ÉQUIPE (fichier partagé du groupe) : sert à réserver le cartographe qu'on habille.
+    // Même fichier que l'anti-collision minerai du mode resource — les clés sont préfixées.
+    if (args.claims && !_teamClaims) {
+      try { _teamClaims = createClaims(String(args.claims), { username: bot.username }); } catch (e) { _teamClaims = null; }
+    }
     const _beat = () => {
       try {
         const pB = bot.entity && bot.entity.position;
@@ -2719,8 +2826,13 @@ async function onSpawn() {
         const role = ((world.objective && world.objective.type) === 'mapper') ? 'mapper' : 'worker';
         // On publie AUSSI son état d'équipement : c'est ce qui permet aux coéquipiers de voir qui
         // a besoin d'aide (et de savoir quand tout le monde est équipé → séparation).
+        // Les CARTOGRAPHES publient leur état eux aussi (26/07) : c'est la seule façon pour un
+        // worker de savoir lesquels sont encore nus — et donc à qui porter une armure, puis quand
+        // tout le monde est couvert et qu'on peut passer au diamant. Sans ça, `armor` était
+        // absent des entrées mappeur et un mappeur équipé restait indistinguable d'un mappeur nu.
+        // Aucun risque de régression : pickDonation et allArmored écartent déjà `role === 'mapper'`.
         let st = null;
-        try { st = (role === 'worker') ? teamStatus(buildCtxInv(bot), [..._wornArmor()]) : null; } catch (e) {}
+        try { st = teamStatus(buildCtxInv(bot), [..._wornArmor()]); } catch (e) {}
         presence.beat(Math.round(pB.x), Math.round(pB.z), role, st);
       } catch (e) { /* best-effort */ }
     };

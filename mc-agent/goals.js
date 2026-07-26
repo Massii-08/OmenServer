@@ -419,16 +419,61 @@ const IRON_HELP_CHAIN = [
     skill: 'smeltIron',    args: { count: HELP_STOCK } },
 ];
 
+// ─── ARMURER LES CARTOGRAPHES (Massii, 26/07) ───────────────────────────────────────────────────
+// « il faut que les bots ressources se coordonnent pour préparer une armure pour chacun et après
+// il se tp au mappeur pour lui donner, comme ça les mappeurs continuent sans jamais s'arrêter ».
+//
+// Un mappeur ne mine pas : il meurt nu, donc il n'ose pas s'éloigner, donc il cartographie peu.
+// L'habiller est le levier le plus rentable sur la portée de la carte — d'où sa place AVANT le
+// diamant dans l'enchaînement.
+//
+// La chaîne est entièrement gouvernée par `c.mapperTarget` (le cartographe qu'on a RÉSERVÉ) :
+// s'il n'y en a aucun à équiper, TOUS les buts sont satisfaits d'office et la chaîne se termine
+// immédiatement — nextObjectiveAfter enchaîne alors sur le diamant. Pas d'état à maintenir.
+// On livre des PIÈCES FORGÉES, pas des lingots : un mappeur n'a ni four ni table de craft.
+const GIFT_SET_INGOTS = 24;   // 5 (casque) + 8 (plastron) + 7 (jambières) + 4 (bottes)
+
+const MAPPER_ARMOR_CHAIN = [
+  { name: 'gift_descend', met: (c) => !c.mapperTarget
+      || (c.y !== undefined && c.y <= 18) || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
+    skill: 'descendDiagonal', args: { targetY: 16 } },
+  { name: 'gift_iron',    met: (c) => !c.mapperTarget
+      || invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
+    skill: 'branchMine',   args: { targetY: 16, mainLength: 48, branchSpacing: 3, branchLength: 8, serpentine: true, allowDeeper: true } },
+  { name: 'gift_smelt',   met: (c) => !c.mapperTarget || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
+    skill: 'smeltIron',    args: { count: GIFT_SET_INGOTS } },
+  // Forge les 4 pièces EN POCHE (le worker porte déjà les siennes : les slots d'armure ne sont
+  // pas dans inventory.items(), une pièce en poche est donc bien du surplus livrable).
+  { name: 'gift_craft',   met: (c) => !c.mapperTarget || !!c.giftReady,
+    skill: 'craftGiftSet' },
+  // /tpa VERS le mappeur (jamais l'inverse : il ne doit pas s'arrêter), puis remise en main propre.
+  // Satisfait quand plus aucun mappeur n'attend — c'est la livraison elle-même qui l'obtient.
+  { name: 'gift_deliver', met: (c) => !c.mapperTarget,
+    skill: 'deliverMapperArmor' },
+];
+
 /**
  * Objectif à enchaîner quand `objective` vient d'être atteint. (pur)
  * Ne renvoie JAMAIS l'inertie tant qu'il reste quelque chose d'utile à faire.
  * `mates` = presence.list() — on lit `status.need` (lingots manquants) de chaque coéquipier.
  */
 function nextObjectiveAfter(objective, mates) {
-  const needy = (mates || []).some((m) => m && m.status && Number(m.status.need) > 0);
+  // ⚠️ presence.beat() APLATIT le statut dans l'entrée ({x,z,role,at,armor,ingots,need}) : il n'y
+  // a pas de sous-objet `status`. On lisait `m.status.need`, donc TOUJOURS undefined — la branche
+  // `iron_help` ne s'est jamais déclenchée depuis son ajout. On lit le champ plat, en tolérant
+  // l'ancienne forme au cas où un bot d'une version antérieure alimente encore le fichier.
+  const needOf = (m) => Number((m && (m.need !== undefined ? m.need : (m.status && m.status.need))) || 0);
+  const needy = (mates || []).some((m) => m && m.role !== 'mapper' && needOf(m) > 0);
+  // Cartographes encore nus : ils ne minent pas, donc ils ne s'équipent jamais seuls. Un mappeur
+  // qui survit cartographie plus loin — d'où la priorité de Massii (26/07) : les habiller AVANT
+  // de partir au diamant. Statut inconnu = considéré nu (on n'abandonne pas sur une supposition).
+  const mappersNaked = (mates || []).some((m) => m && m.role === 'mapper' && (m.armor || 0) < 4);
   if (objective === 'iron_armor' || objective === 'iron_help') {
-    return needy ? 'iron_help' : 'diamond';
+    if (needy) return 'iron_help';
+    return mappersNaked ? 'mapper_armor' : 'diamond';
   }
+  // Un set livré ne couvre qu'UN mappeur : tant qu'il en reste un nu, on en reforge un autre.
+  if (objective === 'mapper_armor') return mappersNaked ? 'mapper_armor' : 'diamond';
   // Le diamant ne se « termine » plus : atteindre la cible relance la chasse (demande explicite
   // « en continu »). Un bot qui a fini son armure n'a de toute facon rien de mieux a faire.
   if (objective === 'diamond') return 'diamond';
@@ -438,6 +483,7 @@ function nextObjectiveAfter(objective, mates) {
 function chainFor(objective) {
   if (objective === 'diamond') return DIAMOND_CHAIN;
   if (objective === 'iron_help') return IRON_HELP_CHAIN;
+  if (objective === 'mapper_armor') return MAPPER_ARMOR_CHAIN;
   if (objective === 'iron_pickaxe') return IRON_CHAIN;
   if (objective === 'iron_armor') return IRON_ARMOR_CHAIN;
   if (objective === 'diamond_armor') return DIAMOND_ARMOR_CHAIN;
@@ -452,4 +498,4 @@ function firstUnmet(chain, ctx) {
 }
 
 module.exports = {
-  nextObjectiveAfter, IRON_HELP_CHAIN, HELP_STOCK, DIAMOND_TARGET, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk };
+  nextObjectiveAfter, IRON_HELP_CHAIN, HELP_STOCK, MAPPER_ARMOR_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk };

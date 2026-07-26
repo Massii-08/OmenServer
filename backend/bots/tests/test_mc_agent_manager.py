@@ -1128,7 +1128,11 @@ def test_spawn_autres_objectifs_lisent_la_memoire_LIVE(monkeypatch, tmp_path):
     cmd = captured["cmd"]
     assert "--wm-live" in cmd
     assert "--frontier" not in cmd          # la frontiere reste propre aux mappeurs
-    assert "--claims" not in cmd            # les claims restent propres aux bots ressources
+    # Les claims sont partages par TOUS les bots du groupe depuis l'armure des cartographes
+    # (26/07) : la cible d'un don est deterministe, sans reservation les 5 workers forgeraient
+    # un set pour le meme mappeur.
+    assert "--claims" in cmd
+    assert cmd[cmd.index("--claims") + 1].endswith("claims-ab12cd.json")
     wm = cmd[cmd.index("--world-memory") + 1]
     assert "worldmem-" not in wm            # plus de snapshot fige
     assert wm.endswith("ab12cd.json")       # fichier LIVE du groupe

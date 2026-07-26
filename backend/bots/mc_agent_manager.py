@@ -505,7 +505,8 @@ VALID_OBJECTIVES = ("stone_pickaxe", "iron_pickaxe", "diamond", "mapper", "resou
 # Objectifs auto-respawnés si le process meurt naturellement (self-healing nuit sans intervention).
 # resource/mapper (historique) + chaînes armure (run nether 2026-07-13 : keepInventory → l'inventaire
 # du compte persiste, le planner re-dérive depuis l'état réel au respawn).
-RESPAWN_OBJECTIVES = ("resource", "mapper", "iron_armor", "diamond_armor")
+RESPAWN_OBJECTIVES = ("resource", "mapper", "iron_armor", "diamond_armor",
+                      "iron_help", "mapper_armor", "diamond")
 
 # Délai entre deux spawns d'un batch de cartographes : Paper throttle les connexions rapprochées
 # depuis la même IP (connection-throttle 4000ms par défaut) → sans étalement, ECONNRESET.
@@ -691,6 +692,12 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
         world_memory.WORLD_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
         live = world_memory.WORLD_MEMORY_DIR / f"{server_id}.json"
         cmd += ["--world-memory", str(live), "--wm-live", "1"]
+        # Claims partagés : ils ne servaient qu'à l'anti-collision sur les minerais (objectif
+        # `resource`). Les chaînes autonomes en ont besoin depuis l'armure des cartographes
+        # (26/07) : la cible est choisie de façon DÉTERMINISTE, donc sans réservation les 5
+        # workers forgeraient un set pour le MÊME mappeur.
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        cmd += ["--claims", str(RUNS_DIR / f"claims-{server_id}.json")]
     # Quota multi-matériaux (bots ressources) : sidecar quota-<sid>.json + --quota (nettoyé au stop).
     quota_path = None
     if quota:
