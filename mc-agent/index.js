@@ -3844,7 +3844,12 @@ setInterval(async () => {
         if (rp) {
           const rb = bot.blockAt(rp);
           const d = rb && rb.position.distanceTo(bot.entity.position);
-          if (rb && d > 4.2 && oregrab.canHarvest(rb, bot.heldItem && bot.heldItem.type)) {
+          // ⚠️ Tester le MEILLEUR outil DISPONIBLE, pas celui qui traîne en main. Massii a filmé
+          // un bot passant a cote d'un diamant avec un BOUCLIER en main : la pioche etait dans
+          // l'inventaire, mais le test portait sur `bot.heldItem` — donc faux, donc aucun detour.
+          const _best = bestToolFor(bot, rb);
+          if (rb && d > 4.2 && oregrab.canHarvest(rb, _best ? _best.type : (bot.heldItem && bot.heldItem.type))) {
+            if (_best) { try { await bot.equip(_best, 'hand'); } catch (e) { /* best-effort */ } }
             _oreGrabBusy = true;
             emit({ type: 'ore_detour', ore: rb.name, d: Math.round(d) });
             await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(rp.x, rp.y, rp.z, 2)),
