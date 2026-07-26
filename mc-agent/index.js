@@ -2763,14 +2763,17 @@ async function onSpawn() {
     // Movements : défense en profondeur contre le stranding au minage (la table portable est le vrai fix).
     const moves = new Movements(bot);
     moves.canDig = true;            // doit pouvoir miner pour atteindre le cobble
-    // PILIER : INTERDIT EN SURFACE, autorisé SOUS TERRE (Massii 2026-07-26 : « en surface ils ne
-    // construisent pas de pilier […] et quand ils sont sous terre il creuse un escalier »).
-    // Mesure qui a tranché : coupé PARTOUT, les 3 ouvriers n'avançaient plus que de 1 à 22 blocs en
-    // 240 s — le spawn de world_ax5 est montagneux (bots relevés à y=15, y=34 et y=97), et sans
-    // colonne le pathfinder n'a plus aucun moyen de franchir un ressaut. En surface on peut
-    // contourner un relief ; au fond d'un tunnel, non. D'où la bascule par profondeur, réévaluée
-    // par le watchdog (bot._mcaMoves).
-    moves.allow1by1towers = false;
+    // PILIER DU PATHFINDER : LAISSÉ ACTIF. Deux mesures successives ont tranché contre mon propre
+    // correctif « pas de pilier » (demande Massii « ils ont trop de difficulté à placer des blocs
+    // sous leurs pieds ») :
+    //   1. coupé PARTOUT → les 3 ouvriers avançaient de 1 à 22 blocs en 240 s (world_ax5 est
+    //      montagneux : bots relevés à y=15, 34, 88, 97) ;
+    //   2. coupé seulement EN SURFACE (bascule à y<50) → les 3 bots FIGÉS, `unjam` en boucle à
+    //      y=86-88, « il place des blocs et les casse sans avancer » — sans colonne le pathfinder
+    //      n'a plus de chemin, il tente une pose, le watchdog anti-jam la recasse, ça oscille.
+    // La colonne du pathfinder est de la TRAVERSÉE (franchir un ressaut), pas le pilier que Massii
+    // voit : celui-là était le pilier DÉLIBÉRÉ de `secureTactic`/`pillarUp`, et lui reste retiré.
+    moves.allow1by1towers = true;
     bot._mcaMoves = moves;
     moves.allowParkour = true;
     moves.allowSprinting = true;    // anti-tell (paquet 1) : un humain sprinte en voyage (pathfinder gère)
@@ -2796,14 +2799,15 @@ async function onSpawn() {
       if (wId != null) moves.replaceables.delete(wId);
       if (lId != null) moves.replaceables.delete(lId);
     } catch (e) { /* best-effort : à défaut, placeCost reste le seul frein */ }
-    // 12 pour un OUVRIER : un pont se fait dès que le détour sec dépasse ~12 blocs par bloc posé —
-    // franchir un ravin devient normal, sans bétonner à la moindre occasion.
+    // 30 pour un OUVRIER : un pont se fait quand le détour sec dépasse ~30 blocs par bloc posé —
+    // un vrai ravin se franchit, mais on ne pose plus un bloc à la moindre marche (à 12, mesuré
+    // live : « il place des blocs et les casse sans avancer », de concert avec le watchdog anti-jam).
     // 60 pour un CARTOGRAPHE (Massii 2026-07-26 : « les mappeurs continuent à construire des ponts
     // sur le vide inutilement ») : un mappeur n'a AUCUNE raison de ponter. Il ne va nulle part en
     // particulier — son travail est de couvrir du terrain, donc contourner lui coûte zéro, alors
     // qu'un pont lui coûte du temps, des blocs et un risque de chute. L'ouvrier, lui, a une cible
     // précise (sa base, son gisement) où le détour peut être plus cher que trois blocs posés.
-    moves.placeCost = IS_MAPPER ? 60 : 12;
+    moves.placeCost = IS_MAPPER ? 60 : 30;
     // STALACTITES à ÉVITER (Massii 2026-07-26 : « surtout les stalactites »). Le pointed_dripstone
     // a une boîte de collision partielle que le pathfinder croit franchissable : le bot s'y coince,
     // et il empale (1 mort mesurée sur ce run). `blocksToAvoid` le fait contourner ; `clearSnares`
@@ -3780,10 +3784,6 @@ let _jamEsc = null;   // état d'escalade : unjams répétés AU MÊME endroit �
 setInterval(async () => {
   try {
     if (!bot.entity || !bot.entity.position) return;
-    // Bascule du pilier par profondeur (cf. setup Movements) : jamais en surface, autorisé sous
-    // terre où c'est la seule façon de sortir d'un puits. SURFACE_Y=50 comme partout ailleurs
-    // (ensureFood, safe home). Réévalué ici parce que le bot traverse les deux mondes en continu.
-    if (bot._mcaMoves) bot._mcaMoves.allow1by1towers = bot.entity.position.y < 50;
     if (Date.now() < _floatSettleUntil) { _jamSample = null; return; }   // settle post-spawn/warp : pas de jam
     const p = bot.entity.position;
     const digging = !!bot.targetDigBlock;
