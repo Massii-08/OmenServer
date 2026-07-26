@@ -77,7 +77,7 @@ const TORCH_EVERY = 8;
 const { createClaims, createPresence } = require('./claims');
 const { pickMapperTp } = require('./mapperTp'); // TP-au-mappeur : à qui demander le /tpa (décision pure)
 // REGROUPEMENT APRÈS MORT (idée Massii 25/07, flag --regroup, OFF par défaut) : décision pure.
-const { pickRegroupTarget } = require('./regroup');
+const { pickRegroupTarget, squadTarget } = require('./regroup');
 // ENTRAIDE D'ÉQUIPE (Massii 25/07 : « qu'ils s'aident entre eux, et quand ils ont l'armure
 // fer ils se séparent »). Décisions PURES ; l'exécution (marche + toss) est ci-dessous.
 const { teamStatus, pickDonation, allArmored, pickMobAssist } = require('./teamwork');
@@ -372,6 +372,35 @@ async function tryRegroup() {
   try { bot.chat('/tpa ' + pick.name); } catch (e) { return { ok: false, reason: 'chat_failed' }; }
   const r = await awaitWarp({ maxMs: 15000 });
   emit({ type: 'regroup_result', to: pick.name, warped: !!r.warped });
+  return { ok: !!r.warped };
+}
+
+// SQUAD — rester ENSEMBLE en continu (Massii 2026-07-26 : « ils ne sont toujours pas ensemble,
+// j'ai vraiment envie qu'ils soient une petite squad qui reste ensemble »). Différence avec
+// tryRegroup, qui ne servait qu'après une mort : chef DÉTERMINISTE (tout le monde converge au même
+// point au lieu de se courir après) et seuil serré (64 blocs, 60 s) au lieu de 120 blocs / 2 min.
+let _lastSquadAt = 0;
+async function trySquad() {
+  if (!REGROUP || !presence) return { ok: false, reason: 'disabled' };
+  const p = bot.entity && bot.entity.position;
+  if (!p) return { ok: false, reason: 'no_pos' };
+  let armorComplete = false;
+  try { armorComplete = armorNeed({ inv: buildCtxInv(bot), worn: [..._wornArmor()] }, 3) === 0; } catch (e) {}
+  const pick = squadTarget({
+    self: { x: p.x, z: p.z }, selfName: bot.username, mates: presence.list(),
+    armorComplete, now: Date.now(), lastAt: _lastSquadAt,
+  });
+  if (!pick) return { ok: false, reason: 'no_need' };
+  if (!isAllowed('/tpa ' + pick.name, whitelist)) {
+    emit({ type: 'squad_blocked', to: pick.name });          // /tpa pas coché dans le profil serveur
+    return { ok: false, reason: 'not_whitelisted' };
+  }
+  _lastSquadAt = Date.now();
+  emit({ type: 'squad_join', to: pick.name, dist: pick.dist });
+  try { stopMotion(); } catch (e) {}
+  try { bot.chat('/tpa ' + pick.name); } catch (e) { return { ok: false, reason: 'chat_failed' }; }
+  const r = await awaitWarp({ maxMs: 15000 });
+  emit({ type: 'squad_result', to: pick.name, warped: !!r.warped });
   return { ok: !!r.warped };
 }
 
@@ -2690,14 +2719,10 @@ async function onSpawn() {
           }
           _split = false;
 
-          // 0) COHÉSION CONTINUE (Massii 2026-07-26 : « les 3 bots ressources se sont éloignés alors
-          // que les 3 n'ont pas fini de faire leur kit en fer » + « il faut surtout qu'ils restent
-          // en groupe, c'est important »). `tryRegroup` n'était appelé QU'AU SPAWN, après une mort :
-          // en jeu normal rien ne rappelait les bots, ils dérivaient chacun vers son bois et son
-          // gisement. On ne touche pas à la politique pure — elle garde ses garde-fous (≥120 blocs
-          // d'écart, au plus un /tpa toutes les 2 min, jamais une fois l'armure complète) — on la
-          // consulte simplement en continu au lieu d'une fois par vie.
-          try { await tryRegroup(); } catch (e) { /* best-effort */ }
+          // 0) SQUAD : rester ensemble en continu. `tryRegroup` (≥120 blocs, 1× / 2 min, cible = le
+          // coéquipier le plus PROCHE) ne produisait qu'une oscillation entre 0 et 120 blocs — les
+          // bots se couraient après. `trySquad` vise un chef DÉTERMINISTE à 64 blocs près.
+          try { await trySquad(); } catch (e) { /* best-effort */ }
 
           // 1) ENTRAIDE : donner son surplus de lingots au coéquipier le moins équipé.
           const gift = pickDonation({

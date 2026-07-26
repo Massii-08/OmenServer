@@ -56,4 +56,67 @@ function pickRegroupTarget({ self, selfName, mates, armorComplete, now, lastAt, 
   return { name: best.name, dist: Math.round(bestD) };
 }
 
-module.exports = { pickRegroupTarget, FRESH_MS, MIN_FAR, COOLDOWN_MS };
+// ─── SQUAD : rester ENSEMBLE, pas seulement se retrouver après une mort ─────────────────────────
+// Massii 2026-07-26 : « ils ne sont toujours pas ensemble, j'ai vraiment envie qu'ils soient une
+// petite squad qui reste ensemble ».
+//
+// Pourquoi `pickRegroupTarget` ne suffisait pas, mesuré : il ne déclenche qu'à ≥120 blocs d'écart,
+// au plus une fois toutes les 2 min, et chaque bot vise « le coéquipier le PLUS PROCHE » — donc les
+// bots se courent après (A rejoint B pendant que B rejoint C) au lieu de converger, et entre deux
+// déclenchements ils repartent chacun vers son bois. Résultat : une oscillation permanente entre
+// 0 et 120 blocs, jamais une squad.
+//
+// Deux changements de fond :
+//   1. UN CHEF DÉTERMINISTE (le nom le plus petit parmi les présences fraîches, self inclus) : tout
+//      le monde calcule le MÊME chef sans se coordonner, donc tout le monde converge au même point.
+//      Le chef, lui, ne suit personne — sinon la squad se déplace en fuyant sa propre queue.
+//   2. UN SEUIL SERRÉ (64 blocs au lieu de 120) et un cooldown court (60 s au lieu de 120 s) :
+//      c'est ce qui fait la différence entre « on finit par se revoir » et « on reste ensemble ».
+const SQUAD_NEAR = 64;         // au-delà de cette distance du chef, on le rejoint
+const SQUAD_COOLDOWN_MS = 60000;
+
+/**
+ * PUR — le chef de la squad : le nom le plus petit (ordre lexicographique) parmi les ouvriers
+ * présents et frais, self inclus. Déterministe ⇒ les 3 bots désignent le même sans se parler.
+ * Retourne null s'il n'y a personne (ni self valide, ni coéquipier).
+ */
+function squadLeader({ selfName, mates, now, freshMs = FRESH_MS } = {}) {
+  const t = now || Date.now();
+  const names = [];
+  if (selfName) names.push(String(selfName));
+  for (const m of mates || []) {
+    if (!m || !m.name || m.role === 'mapper') continue;      // les mappeurs sont ailleurs par métier
+    if ((t - (m.at || 0)) > freshMs) continue;                // mort ou déconnecté
+    names.push(String(m.name));
+  }
+  if (!names.length) return null;
+  names.sort();
+  return names[0];
+}
+
+/**
+ * PUR — faut-il rejoindre la squad maintenant ? {name, dist} ou null.
+ * null quand : je SUIS le chef · pas de chef · déjà assez près · cooldown · armure complète
+ * (une fois équipé, la règle historique de Massii reste « chacun reprend sa route »).
+ */
+function squadTarget({
+  self, selfName, mates, armorComplete, now, lastAt,
+  near = SQUAD_NEAR, cooldownMs = SQUAD_COOLDOWN_MS, freshMs = FRESH_MS,
+} = {}) {
+  if (!self || armorComplete) return null;
+  const t = now || Date.now();
+  if (lastAt && (t - lastAt) < cooldownMs) return null;
+  const leader = squadLeader({ selfName, mates, now: t, freshMs });
+  if (!leader || leader === String(selfName)) return null;   // le chef ne suit personne
+  const m = (mates || []).find((x) => x && x.name === leader
+    && typeof x.x === 'number' && typeof x.z === 'number');
+  if (!m) return null;
+  const d = _d(m.x, m.z, self.x, self.z);
+  if (d <= near) return null;
+  return { name: leader, dist: Math.round(d) };
+}
+
+module.exports = {
+  pickRegroupTarget, FRESH_MS, MIN_FAR, COOLDOWN_MS,
+  squadLeader, squadTarget, SQUAD_NEAR, SQUAD_COOLDOWN_MS,
+};

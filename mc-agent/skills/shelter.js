@@ -7,6 +7,20 @@ const { mineDown } = require('./mineDown');
 const { panicWall } = require('./panicWall');
 const { pillarUp, SCAFFOLD } = require('./pillarUp');
 const { POSABLE } = require('../dirt');
+const { bestToolFor } = require('../tools');
+
+// Creuse en ÉQUIPANT le bon outil (Massii 2026-07-26 : « neth1 casse la pierre avec ses mains »).
+// Ce module appelait `bot.dig` NU trois fois : la pierre à la main c'est ~7,5 s par bloc contre
+// ~1,15 s à la pioche pierre. L'abri nocturne prenait donc des MINUTES, passées à découvert — soit
+// exactement la situation qu'il est censé éviter.
+async function _digWithTool(bot, block) {
+  if (!block) return false;
+  try {
+    const tool = bestToolFor(bot, block);
+    if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) { /* on creuse quand même */ } }
+  } catch (e) { /* best-effort */ }
+  try { await bot.dig(block); return true; } catch (e) { return false; }
+}
 
 /** PUR : est-ce la nuit (hostiles spawnent) ? timeOfDay ∈ [0,24000), nuit ≈ 12800-23200. */
 function isNightTime(timeOfDay) {
@@ -57,7 +71,7 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
       for (const d of [new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1)]) {
         const wall = bot.blockAt(feet.plus(d));
         if (wall && wall.boundingBox === 'block' && wall.name !== 'bedrock') {
-          try { await bot.dig(wall); await sleep(300); } catch (e) {}
+          await _digWithTool(bot, wall); await sleep(300);
           block = bot.inventory.items().find((i) => SCAFFOLD.includes(i.name));
           if (block) break;
         }
@@ -90,7 +104,7 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
   // 4) ressortir : casser le toit éventuel puis remonter en pilier (#7)
   try {
     const roof = bot.blockAt(bot.entity.position.floored().offset(0, 2, 0));
-    if (roof && roof.boundingBox === 'block') await bot.dig(roof);
+    if (roof && roof.boundingBox === 'block') await _digWithTool(bot, roof);
   } catch (e) {}
   if (!dugIn) {
     // Muré au niveau du sol : on n'est pas dans un trou, donc pas de pilier — on perce une paroi.
@@ -98,7 +112,7 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
       const feet = bot.entity.position.floored();
       for (const d of [new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1)]) {
         const w = bot.blockAt(feet.plus(d));
-        if (w && w.boundingBox === 'block' && w.name !== 'bedrock') { await bot.dig(w); break; }
+        if (w && w.boundingBox === 'block' && w.name !== 'bedrock') { await _digWithTool(bot, w); break; }
       }
     } catch (e) { /* best-effort */ }
     emit({ type: 'shelter', action: 'out', ok: true, mode: 'walled' });
