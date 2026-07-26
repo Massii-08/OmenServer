@@ -946,7 +946,18 @@ async function runGoalSkill(goal) {
               emit({ type: 'dry_steer_arrived', x: Math.round(pArr.x), z: Math.round(pArr.z) });
             } else {
               emit({ type: 'dry_steer_failed', reason: 'short', dist: Math.round(dArr), try: _drySteerTries });
-              if (_drySteerTries < 3) return { ok: false, reason: 'dry_steer_short' };
+              // NE PLUS renvoyer d'échec (Massii 27/07 : « il faut qu'il arrête de se bloquer
+              // sur ça »). Le steering n'est qu'une OPTIMISATION — aller creuser dans une cellule
+              // plus sèche. En cas d'échec on renvoyait {ok:false} : le planner re-dérivait sur
+              // descend_y16 et relançait la MÊME marche, et comme `_drySteerTries` vit dans le
+              // PROCESS, chaque respawn le remettait à zéro → boucle sans fin à travers les
+              // sessions. Mesuré sur world_mn5 : 11 `dry_steer_short`, cause d'échec n°1, et
+              // ZÉRO fer en 1 h 45 — les workers ne descendaient jamais.
+              // Aggravant : `driestCell` exige ≥12 minerais cartographiés ; après une purge de
+              // mémoire la carte est vide, la cible est donc mauvaise par construction.
+              // On arrête de steerer et on CREUSE ICI : descendre quelque part vaut mieux que
+              // tourner en rond en surface.
+              _drySteerTries = 3;
             }
           } else {
             _drySteerTries = 3;                         // pas de cellule sèche mappée → comportement historique
