@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { invCount, buildCtxInv, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, chainFor, firstUnmet } = require('./goals');
+const { invCount, buildCtxInv, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, chainFor, firstUnmet, nextObjectiveAfter } = require('./goals');
 
 // Faux bot : inventaire = liste d'items {name, count}
 function fakeBot(items) {
@@ -439,4 +439,32 @@ test('but charbon : déjà du charbon en poche → satisfait', () => {
 test('but charbon : le bois en poche suffit aussi (on ne détourne pas pour rien)', () => {
   const g = chainFor('iron_armor').find((x) => x.name === 't1_coal');
   assert.strictEqual(g.met({ inv: { oak_planks: 40 }, y: 16 }), true);
+});
+
+// ─── nextObjectiveAfter : ne JAMAIS rester inerte une fois l'objectif atteint ───────────────────
+// Massii, live 26/07 : « Neth1, neth4 et neth5 ne bougent plus, si ils ont finis il aident en
+// priorité les autres bot et après il vont chercher les diamant. » Le code faisait
+// `clearObjective()` sans rien mettre derrière → 3 bots sur 5 à l'arrêt.
+test('nextObjectiveAfter : iron_armor fini + un coéquipier en manque → on AIDE', () => {
+  const mates = [{ name: 'B', status: { need: 15 } }, { name: 'C', status: { need: 0 } }];
+  assert.strictEqual(nextObjectiveAfter('iron_armor', mates), 'iron_help');
+});
+
+test('nextObjectiveAfter : iron_armor fini + personne en manque → diamant', () => {
+  const mates = [{ name: 'B', status: { need: 0 } }, { name: 'C', status: {} }];
+  assert.strictEqual(nextObjectiveAfter('iron_armor', mates), 'diamond');
+});
+
+test('nextObjectiveAfter : aucun coéquipier connu → diamant (jamais inerte)', () => {
+  assert.strictEqual(nextObjectiveAfter('iron_armor', []), 'diamond');
+  assert.strictEqual(nextObjectiveAfter('iron_armor', null), 'diamond');
+});
+
+test('nextObjectiveAfter : diamant fini → rien (fin de chaîne, pas de boucle infinie)', () => {
+  assert.strictEqual(nextObjectiveAfter('diamond', [{ name: 'B', status: { need: 9 } }]), null);
+});
+
+test('nextObjectiveAfter : iron_help fini mais il reste des besoins → on continue d aider', () => {
+  assert.strictEqual(nextObjectiveAfter('iron_help', [{ name: 'B', status: { need: 4 } }]), 'iron_help');
+  assert.strictEqual(nextObjectiveAfter('iron_help', [{ name: 'B', status: { need: 0 } }]), 'diamond');
 });

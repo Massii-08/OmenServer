@@ -386,8 +386,39 @@ const MAPPER_KIT = [
 ];
 
 /** Sélectionne la chaîne de buts selon le type d'objectif (défaut : pioche pierre). */
+// ─── ENTRAIDE (Massii, live 26/07) ──────────────────────────────────────────────────────────────
+// « si ils ont finis il aident en priorité les autres bot et après il vont chercher les diamant ».
+// Un bot qui a bouclé son armure faisait `clearObjective()` et restait INERTE (3 sur 5 à l'arrêt).
+// Chaîne courte : descendre, miner, fondre jusqu'à un stock cédable. Quand il DONNE ses lingots,
+// `iron_surplus` redevient non satisfait → il repart miner : la boucle produire-donner s'entretient
+// toute seule, sans état supplémentaire à maintenir.
+const HELP_STOCK = 8;   // 8 lingots ≈ une pièce d'armure entière pour le coéquipier
+
+const IRON_HELP_CHAIN = [
+  { name: 'descend_y16',   met: (c) => (c.y !== undefined && c.y <= 18) || invCount(c.inv, 'iron_ingot') >= HELP_STOCK,
+    skill: 'descendDiagonal', args: { targetY: 16 } },
+  { name: 'iron_deep',     met: (c) => invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot') >= HELP_STOCK,
+    skill: 'branchMine',   args: { targetY: 16, mainLength: 48, branchSpacing: 3, branchLength: 8, serpentine: true, allowDeeper: true } },
+  { name: 'iron_surplus',  met: (c) => invCount(c.inv, 'iron_ingot') >= HELP_STOCK,
+    skill: 'smeltIron',    args: { count: HELP_STOCK } },
+];
+
+/**
+ * Objectif à enchaîner quand `objective` vient d'être atteint. (pur)
+ * Ne renvoie JAMAIS l'inertie tant qu'il reste quelque chose d'utile à faire.
+ * `mates` = presence.list() — on lit `status.need` (lingots manquants) de chaque coéquipier.
+ */
+function nextObjectiveAfter(objective, mates) {
+  const needy = (mates || []).some((m) => m && m.status && Number(m.status.need) > 0);
+  if (objective === 'iron_armor' || objective === 'iron_help') {
+    return needy ? 'iron_help' : 'diamond';
+  }
+  return null;   // fin de chaîne (diamant) : pas de boucle infinie
+}
+
 function chainFor(objective) {
   if (objective === 'diamond') return DIAMOND_CHAIN;
+  if (objective === 'iron_help') return IRON_HELP_CHAIN;
   if (objective === 'iron_pickaxe') return IRON_CHAIN;
   if (objective === 'iron_armor') return IRON_ARMOR_CHAIN;
   if (objective === 'diamond_armor') return DIAMOND_ARMOR_CHAIN;
@@ -402,4 +433,4 @@ function firstUnmet(chain, ctx) {
 }
 
 module.exports = {
-  hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk };
+  nextObjectiveAfter, IRON_HELP_CHAIN, HELP_STOCK, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk };

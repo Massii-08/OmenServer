@@ -40,7 +40,7 @@ const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
 const fs = require('fs');
 const { runPlanner } = require('./planner');
-const { chainFor, buildCtxInv, firstUnmet, cookedCount, armorNeed } = require('./goals');
+const { chainFor, buildCtxInv, firstUnmet, cookedCount, armorNeed, nextObjectiveAfter } = require('./goals');
 const { isForbiddenCheat } = require('./nogive');
 const homewarp = require('./homewarp'); // couche warp LÉGITIME sans-give (/sethome+/home ; goSpawn=/home safe)
 const { secureSpot } = require('./skills/secureSpot'); // secure-then-warp : pilier/se murer/flotter AVANT le /home
@@ -2547,7 +2547,19 @@ async function startAutonomous(sender) {
       const _dbg = Object.assign({ inv: buildCtxInv(bot) }, ctxExtra());
       emit({ type: 'autonomous_done_ctx', objective: objType, y: _dbg.y, worn: _dbg.worn, hasTable: _dbg.hasTable, inv: _dbg.inv });
     } catch (e) { /* diag best-effort */ }
-    clearObjective(world); saveWorld(worldFile, world); if (sender) ackPrivate(sender, doneWord()); emit({ type: 'autonomous_done' });
+    if (sender) ackPrivate(sender, doneWord());
+    emit({ type: 'autonomous_done' });
+    // ENCHAÎNEMENT (Massii, live 26/07 : « si ils ont finis il aident en priorité les autres bot et
+    // après il vont chercher les diamant »). Sans ça, `clearObjective` laissait le bot INERTE —
+    // 3 workers sur 5 à l'arrêt une fois leur armure bouclée.
+    const nextObj = nextObjectiveAfter(objType, presence ? presence.list() : []);
+    if (nextObj) {
+      setObjective(world, { type: nextObj, status: 'in_progress' });
+      saveWorld(worldFile, world);
+      emit({ type: 'autonomous_chain', from: objType, to: nextObj });
+    } else {
+      clearObjective(world); saveWorld(worldFile, world);
+    }
   }
   else if (res.stalled) { if (sender) ackPrivate(sender, failMsg('not_found')); emit({ type: 'autonomous_stalled', goal: res.goal }); }
 }
