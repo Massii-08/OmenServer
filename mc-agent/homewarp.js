@@ -124,15 +124,18 @@ function isTpCancelled(msg) {
 /**
  * Tactique de mise en sécurité AVANT un /home de secours (pure).
  *   'float'  → dans l'eau : remonter/flotter immobile (aucune pose fiable sous l'eau) ;
- *   'pillar' → hostiles au sol + ≥3 blocs + du ciel au-dessus : pilier hors de portée mêlée ;
- *   'seal'   → hostiles mais plafond bas (tunnel) : se murer (≥4 blocs) ;
+ *   'seal'   → hostiles + ≥4 blocs : se murer sur place ;
  *   'none'   → pas de menace ou pas de matériaux : simple stopMotion+immobilité.
+ *
+ * ⚠️ 'pillar' RETIRÉ (Massii 2026-07-26 : « ils ont toujours trop de difficulté à placer des blocs
+ * sous leurs pieds → en surface ils ne construisent pas de pilier »). La colonne 1×1 sous les
+ * pieds est précisément la manœuvre qu'ils rataient ; se murer protège autant sans aucune pose
+ * sous les pieds. `secureSpot` sait encore exécuter 'pillar' — plus personne ne le demande.
  */
 function secureTactic(s = {}) {
   if (s.inWater) return 'float';
   const hostiles = s.hostiles || 0;
   const blocks = s.blocks || 0;
-  if (hostiles >= 1 && blocks >= 3 && s.headroom !== false) return 'pillar';
   if (hostiles >= 1 && blocks >= 4) return 'seal';
   return 'none';
 }

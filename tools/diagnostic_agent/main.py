@@ -110,10 +110,21 @@ _raw_machine = os.environ.get("OMEN_AGENT_MACHINE") or socket.gethostname()
 MACHINE = re.sub(r"[^a-zA-Z0-9_-]", "-", _raw_machine).strip("-") or "unknown"
 
 
+# Dernier code de fermeture WS vu par `listen_commands_loop` (lu par `main` pour temporiser).
+# 1008 = JWT refusé par le hub → inutile de marteler à 1 tentative/seconde.
+_last_close = {"code": None}
+
+
 def generate_agent_token():
     """
     Génère un JWT compatible avec OmenServer (sub=username, exp=+24h, HS256).
     Le hub décode via `python-jose` mais PyJWT et python-jose sont interoperables.
+
+    ⚠️ À RE-FRAPPER À CHAQUE RECONNEXION (cf. `main`). Frappé une seule fois au
+    démarrage, le jeton expirait au bout de 24h et l'agent rejouait indéfiniment le
+    même jeton mort : le hub fermait en 1008 et l'agent retentait toutes les secondes
+    (60 connexions/minute mesurées sur l'Omen le 2026-07-26, boucle infinie visible
+    comme une pastille machine qui clignote dans le module Diagnostic).
     """
     payload = {
         "sub": USERNAME,
@@ -282,22 +293,24 @@ async def listen_commands_loop(websocket):
         # Log le code + reason pour diagnostic (1008=auth, 1000=replaced, 1001=going away, etc.)
         code = getattr(exc, "code", "?")
         reason = getattr(exc, "reason", "")
+        _last_close["code"] = code
         print(f"[Agent] Connexion WebSocket fermée par le serveur — code={code} reason='{reason}'")
 
 async def main():
-    token = generate_agent_token()
-    # Path: /ws/sysdoc/agent/{username}/{machine}
-    # Multi-machine par user → chaque PC s'identifie via son hostname (ou OMEN_AGENT_MACHINE).
-    url = f"{SERVER_URL}/agent/{USERNAME}/{MACHINE}?token={token}"
-
     print(f"[Agent] Connexion à {SERVER_URL}/agent/{USERNAME}/{MACHINE} (machine: {MACHINE})...")
 
     # Floor de 1s entre 2 tentatives de connexion — empêche les reconnect storms quand
     # `listen_commands_loop` exit normalement (le `async with` referme la WS proprement
     # SANS lever d'exception → on tomberait dans une reconnexion immédiate sans ça).
     MIN_BACKOFF = 1.0
+    # Un refus d'authentification n'est jamais résolu par un retry immédiat : on espace.
+    AUTH_BACKOFF = 30.0
     while True:
         cycle_start = asyncio.get_event_loop().time()
+        _last_close["code"] = None
+        # Jeton frappé À CHAQUE tentative : il ne peut donc pas périmer en cours de vie
+        # du process (cf. docstring de generate_agent_token).
+        url = f"{SERVER_URL}/agent/{USERNAME}/{MACHINE}?token={generate_agent_token()}"
         try:
             async with websockets.connect(url) as websocket:
                 print("[Agent] Connecté au Hub avec succès (mode IDLE — attente START_MONITORING).")
@@ -332,6 +345,14 @@ async def main():
             print(f"[Agent] Connexion perdue (erreur: {e}).")
         except Exception as e:
             print(f"[Agent] Erreur inattendue: {e.__class__.__name__}: {e}")
+
+        # Jeton refusé (secret qui ne matche pas le hub) : le retry serré ne sert à rien
+        # et sature le journal de l'Omen → on espace franchement.
+        if _last_close["code"] == 1008:
+            print(f"[Agent] JWT refusé par le hub (1008) — nouvelle tentative dans {AUTH_BACKOFF:.0f}s. "
+                  "Vérifier que OMEN_JWT_SECRET correspond au SECRET_KEY du hub.")
+            await asyncio.sleep(AUTH_BACKOFF)
+            continue
 
         # Backoff garanti : si le cycle a duré moins que MIN_BACKOFF, on attend la
         # différence. Sinon (cycle long), on reconnecte tout de suite.

@@ -185,9 +185,16 @@ test('secureTactic : dans l\'eau → float (pas de pose fiable sous l\'eau)', ()
   assert.strictEqual(secureTactic({ inWater: true, hostiles: 3, blocks: 10, headroom: true }), 'float');
 });
 
-test('secureTactic : hostiles + blocs + headroom → pillar (hors de portée mêlée)', () => {
-  assert.strictEqual(secureTactic({ inWater: false, hostiles: 1, blocks: 3, headroom: true }), 'pillar');
-  assert.strictEqual(secureTactic({ inWater: false, hostiles: 4, blocks: 12, headroom: true }), 'pillar');
+test('secureTactic : PLUS JAMAIS de pilier, même avec du ciel au-dessus (Massii 2026-07-26)', () => {
+  // « Ils ont toujours trop de difficulté à placer des blocs sous leurs pieds → en surface ils ne
+  // construisent pas de pilier. » Se murer est la manœuvre humaine équivalente et elle ne
+  // demande aucune pose sous les pieds.
+  assert.strictEqual(secureTactic({ inWater: false, hostiles: 4, blocks: 12, headroom: true }), 'seal');
+  assert.strictEqual(secureTactic({ inWater: false, hostiles: 1, blocks: 6, headroom: true }), 'seal');
+});
+
+test('secureTactic : pas assez de blocs pour se murer → none (jamais de repli en pilier)', () => {
+  assert.strictEqual(secureTactic({ inWater: false, hostiles: 1, blocks: 3, headroom: true }), 'none');
 });
 
 test('secureTactic : hostiles sans headroom (plafond bas) → seal si assez de blocs', () => {

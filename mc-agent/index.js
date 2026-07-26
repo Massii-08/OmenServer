@@ -45,6 +45,7 @@ const { isForbiddenCheat } = require('./nogive');
 const homewarp = require('./homewarp'); // couche warp LÉGITIME sans-give (/sethome+/home ; goSpawn=/home safe)
 const { secureSpot } = require('./skills/secureSpot'); // secure-then-warp : pilier/se murer/flotter AVANT le /home
 const { SCAFFOLD } = require('./skills/pillarUp');     // blocs sacrifiables (comptés pour la tactique)
+const basecamp = require('./basecamp');                // base personnelle : s'éloigner du spawn du monde puis /sethome
 const { huntPassive } = require('./skills/hunt');
 const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, weaponDamage } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
@@ -1425,6 +1426,96 @@ function saveBanked(snapshot) {
   } catch (e) { /* best-effort, comme world memory */ }
 }
 
+// ─── BASE PERSONNELLE (Massii 2026-07-26) ───────────────────────────────────────────────────────
+// « Les bots doivent apprendre à survivre dès qu'ils spawnent (tu pourras pas changer le spawn
+// juste pour éviter les morts) ; le mieux ce serait qu'ils se déplacent et mettent un home pour
+// l'utiliser comme spawn. » → le bot marche par ses propres moyens jusqu'à SA zone (cap en
+// éventail, forêt connue si la carte en a une), y pose /sethome safe ET /spawnpoint : ses morts
+// suivantes le relâchent CHEZ LUI, plus au spawn du monde partagé.
+// Pourquoi ça compte (mesuré sur world_ax4) : 3 ouvriers + 235 respawns sur le même carré →
+// forêt rasée en 1 h (récolte de bois : 93 % d'échec, 46 % de tous les buts du run) + boucle de mort.
+// Fichier keyé par bot → survit aux morts, aux relances du self-healing et aux déploiements.
+const baseFile = args.base || path.join(__dirname, '..', 'data', `mc_agent_base_${args.user || 'TrainBot'}.json`);
+let _baseState = null;    // { base:{x,y,z}, worldSpawn:{x,z} }
+let _baseBusy = false;    // une seule installation à la fois (le spawn peut se répéter en rafale)
+
+function loadBaseState() {
+  if (_baseState) return _baseState;
+  try {
+    const o = JSON.parse(fs.readFileSync(baseFile, 'utf8'));
+    if (o && typeof o === 'object') _baseState = o;
+  } catch (e) { _baseState = null; }
+  return _baseState;
+}
+
+function saveBaseState(st) {
+  _baseState = st;
+  try {
+    const tmp = baseFile + '.tmp';                // write+rename = atomique (cf. saveBanked)
+    fs.writeFileSync(tmp, JSON.stringify(st));
+    fs.renameSync(tmp, baseFile);
+  } catch (e) { /* best-effort : sans le fichier, le bot re-marchera, il ne casse rien */ }
+}
+
+/** Marche jusqu'à SA zone, y pose le home 'safe' + ancre le respawn. Best-effort, jamais bloquant. */
+async function establishBase() {
+  if (_baseBusy) return;
+  _baseBusy = true;
+  try {
+    const st = loadBaseState() || {};
+    const p0 = bot.entity && bot.entity.position;
+    // Spawn du monde : mémorisé au TOUT premier boot (le bot y apparaît forcément) puis relu du
+    // fichier — car après /spawnpoint, bot.spawnPoint désigne la base et non plus le spawn du monde.
+    const wspawn = (st.worldSpawn && Number.isFinite(st.worldSpawn.x))
+      ? st.worldSpawn
+      : (p0 ? { x: Math.round(p0.x), z: Math.round(p0.z) } : null);
+    // Viser une forêt CONNUE de la carte du groupe plutôt qu'un cap à l'aveugle (le bois est le
+    // goulot n°1) ; carte encore vide au démarrage du run → repli sur le cap en éventail.
+    let biomes = null;
+    let depleted = null;
+    try {
+      const mem = args['world-memory'] ? loadMemory(String(args['world-memory'])) : null;
+      const w = (mem && mem.worlds && mem.worlds[bot._worldKey || worldKey(bot, args['world-label'])]) || {};
+      biomes = w.biomes;
+      depleted = w.depleted;
+    } catch (e) { /* carte illisible → cap seul */ }
+    const spot = basecamp.pickBaseSpot({
+      spawn: wspawn, biomes, depleted,
+      heading: basecamp.headingForName(bot.username, 3),
+    });
+    emit({
+      type: 'base_establish_start', x: spot.x, z: spot.z,
+      source: spot.source, biome: spot.biome || null,
+    });
+    await withTimeout(
+      bot.pathfinder.goto(new pfGoals.GoalNearXZ(spot.x, spot.z, 8)),
+      240000, () => { try { stopMotion(); } catch (e) {} });
+    const p = bot.entity && bot.entity.position;
+    if (!p) return;
+    // Le trajet n'a pas besoin d'ABOUTIR : ce qui compte est de ne plus camper le spawn du monde.
+    const d = wspawn ? Math.hypot(p.x - wspawn.x, p.z - wspawn.z) : Infinity;
+    if (d < basecamp.MIN_BASE_DIST) {
+      emit({ type: 'base_establish_failed', reason: 'too_close', d: Math.round(d) });
+      return;
+    }
+    // Jamais les pieds dans l'eau : un home mouillé rend tous les /home safe morts (teleport-safety).
+    if (isInWater(bot)) { emit({ type: 'base_establish_failed', reason: 'wet' }); return; }
+    homewarp.bookmark(bot, 'safe');
+    _safeHomeSet = true;
+    _safeHomeSurface = p.y >= 58;
+    _safeHomePos = { x: p.x, y: p.y, z: p.z };
+    // « mettre un home pour l'utiliser comme spawn » : /spawnpoint ancre le respawn ICI, donc une
+    // mort ne renvoie plus au spawn du monde partagé (précédent : /spawnpoint post-kit des bots
+    // ressource, cf. 'kit_done').
+    try { bot.chat('/spawnpoint'); } catch (e) {}
+    const base = { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) };
+    saveBaseState({ base, worldSpawn: wspawn });
+    emit({ type: 'base_established', ...base, d: Math.round(d), source: spot.source });
+  } catch (e) {
+    emit({ type: 'base_establish_failed', reason: String((e && e.message) || e).slice(0, 80) });
+  } finally { _baseBusy = false; }
+}
+
 // ── Phase 2 : maintenance d'outillage (craft stone/iron pick depuis les matériaux minés).
 // Backoff après échec (phase 3, vécu V3Res3 : gear_craft FAIL ×11 — le craft raté était RETENTÉ
 // à chaque itération de cible, et chaque tentative = goto table + pose ≈ 30 s → ~40 min perdues.
@@ -2592,7 +2683,11 @@ async function onSpawn() {
     // Movements : défense en profondeur contre le stranding au minage (la table portable est le vrai fix).
     const moves = new Movements(bot);
     moves.canDig = true;            // doit pouvoir miner pour atteindre le cobble
-    moves.allow1by1towers = true;   // peut remonter en colonne (cobble en poche) → pas coincé au fond
+    // PAS DE PILIER (Massii 2026-07-26 : « ils ont toujours trop de difficulté à placer des blocs
+    // sous leurs pieds → en surface ils ne construisent pas de pilier »). La colonne 1×1 est la
+    // manœuvre qu'ils rataient le plus ; la remontée depuis le fond passe désormais par le /home
+    // 'safe' de leur base (warp) ou par un escalier miné, jamais par un pilier.
+    moves.allow1by1towers = false;
     moves.allowParkour = true;
     moves.allowSprinting = true;    // anti-tell (paquet 1) : un humain sprinte en voyage (pathfinder gère)
     if (typeof moves.maxDropDown === 'number') moves.maxDropDown = 4; // limite les chutes profondes
@@ -2603,14 +2698,23 @@ async function onSpawn() {
     // pathfinder traverser les rivières dès que le détour dépassait ~20 blocs/case d'eau).
     // 45/nœud liquide ≈ détour sec accepté jusqu'à ~45 blocs par case d'eau à traverser.
     if (typeof moves.liquidCost === 'number') moves.liquidCost = 45;
-    // ANTI-PONT (Massii 2026-07-19 : « arrêtez de construire des ponts au-dessus de l'eau ») :
-    // avec liquidCost 45 et placeCost 1 (défaut lib), un pont de cobble coûtait ~20× moins cher
-    // que nager → le pathfinder bétonnait chaque étang (tell énorme, personne ne fait ça).
-    // placeCost 50 > liquidCost 45 ⇒ ordre de préférence : détour sec > nage > pose de bloc.
-    // Les poses VOULUES ne passent pas par ces coûts : pillarUp/abri/table/scellage d'eau sont des
-    // placeBlock directs de skills, et la remontée en pilier d'un trou reste choisie quand c'est
-    // la seule issue (le coût ne compte que face à une alternative).
-    moves.placeCost = 50;
+    // PONTS : OUI dans le vide, JAMAIS au-dessus de l'eau (Massii 2026-07-19 « arrêtez de
+    // construire des ponts au-dessus de l'eau » PUIS 2026-07-26 « ils doivent aussi faire des
+    // ponts dans le vide en surface »). Un simple `placeCost` ne sait pas distinguer les deux :
+    // à 50 (> liquidCost 45) plus aucun pont ne se faisait, à 8 il rebétonnait les étangs.
+    // Le vrai levier est `replaceables` (mineflayer-pathfinder movements.js:68-73), qui contient
+    // l'EAU et la LAVE par défaut : c'est ce qui autorisait la pose d'un bloc DANS un plan d'eau.
+    // On les retire ⇒ poser dans l'eau/la lave devient impossible par construction, quel que soit
+    // le coût, et `placeCost` peut redevenir abordable pour franchir un ravin / un trou.
+    try {
+      const wId = bot.registry.blocksByName.water && bot.registry.blocksByName.water.id;
+      const lId = bot.registry.blocksByName.lava && bot.registry.blocksByName.lava.id;
+      if (wId != null) moves.replaceables.delete(wId);
+      if (lId != null) moves.replaceables.delete(lId);
+    } catch (e) { /* best-effort : à défaut, placeCost reste le seul frein */ }
+    // 12 : un pont se fait dès que le détour sec dépasse ~12 blocs par bloc posé — franchir un
+    // ravin devient normal, sans pour autant bétonner à la moindre occasion.
+    moves.placeCost = 12;
     // Hook eau des skills (explore skippe les waypoints aquatiques) — injectable, pas de require dur.
     bot._mcaInWater = (b) => { try { return isInWater(b || bot); } catch (e) { return false; } };
     // PILIER (Massii « monte mal en pilier ») : le pathfinder ne toure (`allow1by1towers`) qu'avec
@@ -2999,6 +3103,19 @@ async function onSpawn() {
   // Le MAPPEUR (Massii live 2026-07-15 : « je ne le vois pas poser l'home et revenir ») pose aussi
   // un home 'safe' de surface au spawn → la nuit il fait /home safe puis s'abrite (cf. maybeNightShelter).
   if (NO_GIVE || IS_MAPPER) {
+    // Base personnelle DÉJÀ installée → on ADOPTE son home 'safe' (Essentials le persiste côté
+    // serveur, il survit au process) pour que le bloc générique ci-dessous ne le re-pose PAS à
+    // l'endroit du respawn — sinon la 1ʳᵉ mort ramènerait 'safe' au spawn du monde et annulerait
+    // tout le bénéfice de la base.
+    if (!IS_MAPPER) {
+      const st0 = loadBaseState();
+      if (st0 && st0.base && Number.isFinite(st0.base.x) && !_safeHomeSet) {
+        _safeHomeSet = true;
+        _safeHomeSurface = (st0.base.y || 0) >= 58;
+        _safeHomePos = { x: st0.base.x, y: st0.base.y, z: st0.base.z };
+        emit({ type: 'base_adopted', x: st0.base.x, y: st0.base.y, z: st0.base.z });
+      }
+    }
     // 'safe' = cible de goSpawn. On le pose TOUJOURS (fallback = position de spawn courante, même
     // souterraine → goSpawn a toujours une cible valide) puis on l'UPGRADE dès qu'on spawne à une
     // vraie surface (y≥58, sèche). Sans ça un bot qui respawne toujours sous terre n'avait pas de
@@ -3019,6 +3136,23 @@ async function onSpawn() {
           _safeHomePos = { x: p.x, y: p.y, z: p.z };
           emit({ type: 'safe_home_set', surface: atSurface, x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
         }
+      }
+    }
+    // BASE PERSONNELLE (ouvriers seulement — un cartographe roame, une base n'a pas de sens pour
+    // lui). 'establish' = aller la poser ; 'return' = relâché loin de chez lui (mort dont le
+    // /spawnpoint n'a pas tenu) → rentrer ; 'stay' = déjà chez lui.
+    if (!IS_MAPPER) {
+      const stB = loadBaseState();
+      const act = basecamp.spawnAction({
+        base: stB && stB.base,
+        pos: bot.entity && bot.entity.position,
+        spawn: stB && stB.worldSpawn,
+      });
+      if (act === 'return') {
+        emit({ type: 'base_return' });
+        homewarp.goHome(bot, 'safe');
+      } else if (act === 'establish') {
+        establishBase().catch(() => {});
       }
     }
     // Après une mort MARQUÉE (watchdog PV 'bookmark') : revenir au lieu exact ramasser les drops.
