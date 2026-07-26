@@ -537,7 +537,14 @@ function _giftContext() {
     _giftAt = now;
     for (const [name, at] of _giftDone) { if (now - at > GIFT_DONE_TTL_MS) _giftDone.delete(name); }
     if (!presence) { _giftTarget = null; return { target: null, ready }; }
+    // SORTIE ANTICIPÉE avant tout accès au fichier partagé. `presence.list()` prend un VERROU et
+    // RÉÉCRIT positions-<groupe>.json ; `ctxExtra()` est appelé à chaque pas du planner, et 8 bots
+    // se partagent ce fichier. On payait donc ce verrou en permanence pour, juste après, constater
+    // que le bot n'a pas fini SA propre armure et qu'il n'y a rien à faire — la garde de
+    // pickMapperToEquip arrivait trop tard. Tant qu'un worker n'est pas 4/4, il ne peut équiper
+    // personne : on le sait sans consulter personne.
     const selfStatus = teamStatus(buildCtxInv(bot), [..._wornArmor()]);
+    if ((selfStatus.armor || 0) < 4) { _giftTarget = null; return { target: null, ready }; }
     const mates = presence.list();
     const skip = new Set(_giftDone.keys());
     for (let i = 0; i < 6; i++) {                      // descend la liste des cibles déjà prises
