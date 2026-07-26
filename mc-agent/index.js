@@ -201,6 +201,9 @@ let _escapeOnSpawn = false; // anti-camping : 2 morts <60 s → warp + re-spawnp
 let _safeHomeSet = false;     // warp légitime : /sethome safe posé (fallback = position de spawn courante)
 let _safeHomeSurface = false; // safe posé à une VRAIE surface (y≥58) → cible idéale pour goSpawn
 let _deathArmed = false;      // watchdog PV : lieu de mort marqué (/sethome death) → post-respawn goHome('death')+ramassage
+// Buts qui exigent du BOIS ou une TABLE : introuvables sous terre (cf. wood_trip ci-dessous).
+const WOOD_GOALS = new Set(['logs', 'planks', 'plank_buffer', 'crafting_table', 'sticks', 'wooden_pickaxe']);
+let _lastWoodTripAt = 0;      // cooldown 2 min : un aller-retour surface ne doit pas boucler
 let _wsiteMineSet = false;    // NO_GIVE : chantier profond SEC mémorisé (/sethome wsite) → re-descente = /home wsite (1 tp)
                               // au lieu de re-creuser ~52 blocs (chaque re-descente cassait une pioche → no_pickaxe → fer jamais accumulé, vécu homedeath)
 let _drySteerTries = 0;       // NO_GIVE : marches tentées vers la cellule 128 sèche (arrivée VÉRIFIÉE, ≤3 —
@@ -781,6 +784,26 @@ async function runGoalSkill(goal) {
   // #1 retours live : coincé dans l'eau → s'en sortir AVANT de tenter le skill (sinon le pathfinder
   // rame dans l'angle jusqu'au timeout, le planner re-dérive, et ça recommence).
   if (isInWater(bot)) await escapeWater(bot, { emit });
+  // ─── REMONTER CHERCHER LE BOIS (idée Massii, live 26/07) ──────────────────────────────────────
+  // « si ils ont plus de bois ils peuvent placer un home, se tp au /spawn ou un home en surface,
+  // prendre ce qu'il faut et après retourner ou ils sont. » C'est LE frein n°1 du projet : les
+  // outils cassent en profondeur, et sous terre il n'y a NI bois NI table pour en refaire — le bot
+  // tournait alors en boucle sur `no_recipe` / `no_table` (mesuré live sur NethBot1).
+  // Le RETOUR existait déjà (`/home wsite`, « c'est LE moteur du churn ») ; l'ALLER manquait.
+  // On pose donc le chantier avant de partir, puis on remonte au home de surface : la descente
+  // suivante repartira en un seul tp au lieu de recreuser ~52 blocs.
+  if (NO_GIVE && WOOD_GOALS.has(goal.name) && bot.entity && bot.entity.position
+      && bot.entity.position.y < 30 && (Date.now() - _lastWoodTripAt) > 120000) {
+    _lastWoodTripAt = Date.now();
+    try {
+      if (!_wsiteMineSet && !isInWater(bot)) {
+        homewarp.bookmark(bot, 'wsite'); _wsiteMineSet = true;
+        emit({ type: 'wsite_mine_bookmarked', why: 'wood_trip' });
+      }
+      emit({ type: 'wood_trip', goal: goal.name, y: Math.round(bot.entity.position.y) });
+      await safeWarpHome('safe');   // surface : c'est là qu'il y a des arbres et de quoi crafter
+    } catch (e) { /* best-effort : à défaut on tente le skill sur place, comportement d'avant */ }
+  }
   // ARMURE-AVANT-PROFONDEUR pour le chemin planner (chaîne diamant + kit mappeur, hole A §1.3) :
   // avant une descente/branche, tente armure+bouclier (best-effort, borné, idempotent si déjà armé).
   if (goal.skill === 'descendDiagonal' || goal.skill === 'branchMine') {
