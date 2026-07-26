@@ -87,6 +87,9 @@ const { panicWall } = require('./skills/panicWall');
 // COUVERT anti-squelette (tueur n°1 des bots nus, preuve live world_ax4 25/07) : couper la
 // ligne de vue d'un tireur au lieu de charger/fuir à découvert. Décision pure dans cover.js.
 const { shouldTakeCover } = require('./cover');
+// DISCIPLINE DE TORCHE calée sur la capture réelle (131/97 torches en 33 min chez les humains,
+// torche en main ~10 % du temps) — le bot n'éclairait QUE le tunnel de branch-mine.
+const { shouldPlaceTorch } = require('./torches');
 const { takeCover, pickCoverBlock } = require('./skills/takeCover');
 
 function parseArgs(argv) {
@@ -2417,6 +2420,42 @@ async function onSpawn() {
     };
     _beat();
     setInterval(_beat, 60000);
+
+    // ── ÉCLAIRAGE (capture réelle 26/07) : les humains posent 3-5 torches/min sous terre, le bot
+    // n'éclairait que son tunnel de branch-mine. Or block-light 0 est la condition EXACTE
+    // d'apparition des mobs : chaque couloir sombre qu'il laisse derrière lui devient un spawner.
+    // Tick léger (8 s), 100 % local, best-effort — jamais bloquant.
+    {
+      let _torchLastAt = 0;
+      let _torchLastPos = null;
+      let _torchBusy = false;
+      setInterval(async () => {
+        if (_torchBusy || _stillBusy || _imminentBusy || bot.targetDigBlock) return;
+        const pT = bot.entity && bot.entity.position;
+        if (!pT) return;
+        try {
+          const items = (bot.inventory && bot.inventory.items()) || [];
+          const torches = items.filter((i) => i.name === 'torch').reduce((a, i) => a + i.count, 0);
+          let light = null;
+          try { const b = bot.blockAt(pT.floored()); if (b && typeof b.light === 'number') light = b.light; } catch (e) {}
+          if (!shouldPlaceTorch({
+            y: pT.y, lightLevel: light, torches, now: Date.now(),
+            lastAt: _torchLastAt, pos: { x: pT.x, z: pT.z }, lastPos: _torchLastPos,
+          })) return;
+          _torchBusy = true;
+          const torch = items.find((i) => i.name === 'torch');
+          const ref = bot.blockAt(pT.floored().offset(0, -1, 0));
+          if (torch && ref && ref.boundingBox === 'block') {
+            await bot.equip(torch, 'hand');
+            await bot.placeBlock(ref, vec3Lib(0, 1, 0));
+            _torchLastAt = Date.now();
+            _torchLastPos = { x: pT.x, z: pT.z };
+            emit({ type: 'torch_placed', y: Math.round(pT.y), light });
+          }
+        } catch (e) { /* best-effort : sol impossible, pas grave */ }
+        finally { _torchBusy = false; }
+      }, 8000);
+    }
 
     // ── DÉFENSE MUTUELLE : voler au secours d'un coéquipier attaqué ─────────────────────────
     // Massii 25/07 : « il faut aussi qu'ils s'aident contre les mobs ». La présence partagée
