@@ -1443,6 +1443,7 @@ function saveBanked(snapshot) {
 const baseFile = args.base || path.join(__dirname, '..', 'data', `mc_agent_base_${args.user || 'TrainBot'}.json`);
 let _baseState = null;    // { base:{x,y,z}, worldSpawn:{x,z} }
 let _baseBusy = false;    // une seule installation à la fois (le spawn peut se répéter en rafale)
+let _baseAbort = false;   // le bot est mort en route → l'installation en vol s'arrête (levé par onSpawn)
 
 function loadBaseState() {
   if (_baseState) return _baseState;
@@ -1474,6 +1475,7 @@ function saveBaseState(st) {
 async function establishBase(opts = {}) {
   if (_baseBusy) return;
   _baseBusy = true;
+  _baseAbort = false;
   try {
     const personal = !!opts.personal;
     const st = loadBaseState() || {};
@@ -1499,18 +1501,31 @@ async function establishBase(opts = {}) {
     // pas contre le trajet. Après la séparation : éventail par nom, mesuré depuis la base commune.
     const origin = (personal && st.base && Number.isFinite(st.base.x)) ? st.base : wspawn;
     const heading = personal ? basecamp.headingForName(bot.username, 3) : 0;
-    const spot = basecamp.pickBaseSpot({ spawn: origin, biomes, depleted, heading });
-    emit({
-      type: 'base_establish_start', x: spot.x, z: spot.z,
-      source: spot.source, biome: spot.biome || null, personal,
-    });
-    const rGoto = await withTimeout(
-      bot.pathfinder.goto(new pfGoals.GoalNearXZ(spot.x, spot.z, 8)),
-      240000, () => { try { stopMotion(); } catch (e) {} });
+    const distFrom = (q) => (origin && q ? Math.hypot(q.x - origin.x, q.z - origin.z) : Infinity);
+
+    // PROGRESSIF, pas tout-ou-rien (échec live : un unique goto de 240 s vers une cible à 180 blocs
+    // rendait `too_close` avec 1 à 22 blocs parcourus — terrain montagneux, le trajet n'aboutit
+    // jamais tel quel). L'exigence réelle n'est pas « atteindre ce point » mais « ne plus camper le
+    // point de départ » : on tente des cibles de plus en plus proches, bornées court, et on s'arrête
+    // dès que la distance suffit. Chaque tentative laisse le bot plus loin que la précédente.
+    let rGoto = null;
+    for (const dist of [basecamp.BASE_DIST, 90, 70]) {
+      if (distFrom(bot.entity && bot.entity.position) >= basecamp.MIN_BASE_DIST) break;
+      const spot = basecamp.pickBaseSpot({ spawn: origin, biomes, depleted, heading, dist });
+      emit({
+        type: 'base_establish_start', x: spot.x, z: spot.z,
+        source: spot.source, biome: spot.biome || null, personal, dist,
+      });
+      try {
+        rGoto = await withTimeout(
+          bot.pathfinder.goto(new pfGoals.GoalNearXZ(spot.x, spot.z, 12)),
+          90000, () => { try { stopMotion(); } catch (e) {} });
+      } catch (e) { rGoto = { ok: false }; }   // NoPath → on retente plus près, pas d'abandon
+      if (_baseAbort) return;
+    }
     const p = bot.entity && bot.entity.position;
     if (!p) return;
-    // Le trajet n'a pas besoin d'ABOUTIR : ce qui compte est de ne plus camper le point de départ.
-    const d = origin ? Math.hypot(p.x - origin.x, p.z - origin.z) : Infinity;
+    const d = distFrom(p);
     if (d < basecamp.MIN_BASE_DIST) {
       // `goto` a rendu la main sans que le bot bouge : c'est le symptôme d'un trajet ANNULÉ par un
       // autre consommateur du pathfinder (le planner autonome ou le /tpa de regroupement, qui
@@ -2724,11 +2739,15 @@ async function onSpawn() {
     // Movements : défense en profondeur contre le stranding au minage (la table portable est le vrai fix).
     const moves = new Movements(bot);
     moves.canDig = true;            // doit pouvoir miner pour atteindre le cobble
-    // PAS DE PILIER (Massii 2026-07-26 : « ils ont toujours trop de difficulté à placer des blocs
-    // sous leurs pieds → en surface ils ne construisent pas de pilier »). La colonne 1×1 est la
-    // manœuvre qu'ils rataient le plus ; la remontée depuis le fond passe désormais par le /home
-    // 'safe' de leur base (warp) ou par un escalier miné, jamais par un pilier.
+    // PILIER : INTERDIT EN SURFACE, autorisé SOUS TERRE (Massii 2026-07-26 : « en surface ils ne
+    // construisent pas de pilier […] et quand ils sont sous terre il creuse un escalier »).
+    // Mesure qui a tranché : coupé PARTOUT, les 3 ouvriers n'avançaient plus que de 1 à 22 blocs en
+    // 240 s — le spawn de world_ax5 est montagneux (bots relevés à y=15, y=34 et y=97), et sans
+    // colonne le pathfinder n'a plus aucun moyen de franchir un ressaut. En surface on peut
+    // contourner un relief ; au fond d'un tunnel, non. D'où la bascule par profondeur, réévaluée
+    // par le watchdog (bot._mcaMoves).
     moves.allow1by1towers = false;
+    bot._mcaMoves = moves;
     moves.allowParkour = true;
     moves.allowSprinting = true;    // anti-tell (paquet 1) : un humain sprinte en voyage (pathfinder gère)
     if (typeof moves.maxDropDown === 'number') moves.maxDropDown = 4; // limite les chutes profondes
@@ -2753,9 +2772,14 @@ async function onSpawn() {
       if (wId != null) moves.replaceables.delete(wId);
       if (lId != null) moves.replaceables.delete(lId);
     } catch (e) { /* best-effort : à défaut, placeCost reste le seul frein */ }
-    // 12 : un pont se fait dès que le détour sec dépasse ~12 blocs par bloc posé — franchir un
-    // ravin devient normal, sans pour autant bétonner à la moindre occasion.
-    moves.placeCost = 12;
+    // 12 pour un OUVRIER : un pont se fait dès que le détour sec dépasse ~12 blocs par bloc posé —
+    // franchir un ravin devient normal, sans bétonner à la moindre occasion.
+    // 60 pour un CARTOGRAPHE (Massii 2026-07-26 : « les mappeurs continuent à construire des ponts
+    // sur le vide inutilement ») : un mappeur n'a AUCUNE raison de ponter. Il ne va nulle part en
+    // particulier — son travail est de couvrir du terrain, donc contourner lui coûte zéro, alors
+    // qu'un pont lui coûte du temps, des blocs et un risque de chute. L'ouvrier, lui, a une cible
+    // précise (sa base, son gisement) où le détour peut être plus cher que trois blocs posés.
+    moves.placeCost = IS_MAPPER ? 60 : 12;
     // STALACTITES à ÉVITER (Massii 2026-07-26 : « surtout les stalactites »). Le pointed_dripstone
     // a une boîte de collision partielle que le pathfinder croit franchissable : le bot s'y coince,
     // et il empale (1 mort mesurée sur ce run). `blocksToAvoid` le fait contourner ; `clearSnares`
@@ -3209,6 +3233,9 @@ async function onSpawn() {
     // /spawnpoint n'a pas tenu) → rentrer ; 'stay' = déjà chez lui.
     let _baseEstablishing = false;
     if (!IS_MAPPER) {
+      // Ce spawn = une nouvelle vie : toute installation encore en vol appartient à la précédente
+      // (le bot est mort en chemin) et doit s'arrêter au lieu de marcher vers un point périmé.
+      _baseAbort = true;
       const stB = loadBaseState();
       const act = basecamp.spawnAction({
         base: stB && stB.base,
@@ -3620,6 +3647,10 @@ let _jamEsc = null;   // état d'escalade : unjams répétés AU MÊME endroit �
 setInterval(async () => {
   try {
     if (!bot.entity || !bot.entity.position) return;
+    // Bascule du pilier par profondeur (cf. setup Movements) : jamais en surface, autorisé sous
+    // terre où c'est la seule façon de sortir d'un puits. SURFACE_Y=50 comme partout ailleurs
+    // (ensureFood, safe home). Réévalué ici parce que le bot traverse les deux mondes en continu.
+    if (bot._mcaMoves) bot._mcaMoves.allow1by1towers = bot.entity.position.y < 50;
     if (Date.now() < _floatSettleUntil) { _jamSample = null; return; }   // settle post-spawn/warp : pas de jam
     const p = bot.entity.position;
     const digging = !!bot.targetDigBlock;
