@@ -116,7 +116,7 @@ test('DIAMOND_CHAIN contient les 12 buts IRON + 3 buts diamant en queue', () => 
     ['logs', 'planks', 'crafting_table', 'sticks', 'wooden_pickaxe',
      'cobble_pick', 'stone_pickaxe', 'cobble_furnace', 'furnace',
      'iron_ore', 'iron_ingot', 'iron_pickaxe',
-     'cobble_buffer', 'descend_y54', 'branch_mine'],
+     'cobble_buffer', 'descend_y54', 'diamond_caves'],
   );
 });
 
@@ -134,9 +134,11 @@ test('DIAMOND firstUnmet : pioche fer + 16 cobble + Y=64 -> descend_y54', () => 
   assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx).name, 'descend_y54');
 });
 
-test('DIAMOND firstUnmet : Y atteint -54, pioche fer, cobble -> branch_mine', () => {
+// Cave-first (Massii 26/07) : le dernier but du diamant n'est plus un strip-mine mais la
+// chasse aux minerais MAPPES, EXPOSES et SECS ; le tunnel n'est plus qu'un trajet.
+test('DIAMOND firstUnmet : Y atteint -54, pioche fer, cobble -> diamond_caves', () => {
   const ctx = { inv: { iron_pickaxe: 1, cobblestone: 16, stick: 4 }, y: -54 };
-  assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx).name, 'branch_mine');
+  assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx).name, 'diamond_caves');
 });
 
 test('DIAMOND firstUnmet : diamant obtenu -> null (objectif atteint)', () => {
@@ -172,7 +174,7 @@ test('DIAMOND cobble_buffer : met=true si cobble>=16 OU diamond:1', () => {
 test('DIAMOND : le but iron_pickaxe N\'est PLUS le dernier (le diamant l\'est)', () => {
   const names = DIAMOND_CHAIN.map((g) => g.name);
   assert.notStrictEqual(names[names.length - 1], 'iron_pickaxe');
-  assert.strictEqual(names[names.length - 1], 'branch_mine');
+  assert.strictEqual(names[names.length - 1], 'diamond_caves');
 });
 
 // --- Chaîne MAPPER_KIT (kit de survie du cartographe : outils pierre + four + torches + nourriture) ---

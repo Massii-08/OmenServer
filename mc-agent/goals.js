@@ -142,9 +142,14 @@ const DIAMOND_CHAIN = [
   // (marge de tolérance — l'escalier descend par paliers, on s'arrête dès qu'on franchit le seuil).
   { name: 'descend_y54',   met: (c) => (c.y !== undefined && c.y <= -52) || D(c),
     skill: 'descendDiagonal', args: { targetY: -54 } },
-  // mainLength 48 = 16 branches latérales × espacement 3 (cf. spec §3 branch mining).
-  { name: 'branch_mine',   met: (c) => D(c),
-    skill: 'branchMine',   args: { targetY: -54, mainLength: 48, branchSpacing: 3, branchLength: 8 } },
+  // CAVE-FIRST (Massii, live 26/07 : « les diamants il les allait chercher dans les cave = pas de
+  // tunnel où ils creusent en continu, l'unique moment où ils creusent c'est quand ils passent
+  // d'une cave a l'autre » + « cave first mais jamais celle inondée c'est important »).
+  // Remplace un branch-mine de 48 blocs × 16 galeries — un tunnel continu, la stratégie inverse.
+  // `caveHunt` ne cible que des minerais MAPPÉS, EXPOSÉS et SECS ; quand il n'en reste plus, le
+  // dispatch enchaîne un tunnel COURT (le trajet vers la grotte suivante), jamais un strip.
+  { name: 'diamond_caves', met: (c) => D(c),
+    skill: 'caveHunt',     args: { material: 'diamond', count: 3, targetY: -54 } },
 ];
 
 // --- Chaînes ARMURE (run nether 2026-07-13) : T1 = armure FER complète auto-craftée (24 lingots),

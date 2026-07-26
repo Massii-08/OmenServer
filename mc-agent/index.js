@@ -55,6 +55,7 @@ const { placeBlockNear } = require('./skills/placeBlockNear');
 const { smelt, logsToConvert } = require('./skills/smelt');
 const { descendDiagonal } = require('./skills/descendDiagonal');
 const { branchMine, floodFillVein } = require('./skills/branchMine');
+const { caveHunt } = require('./skills/caveHunt');   // cave-first diamant (Massii 26/07)
 const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
 const { loadMemory, worldKey, resolveBiome } = require('./worldMemory');
 const { driestCell, oreBase } = require('./ores');         // warp near-spawn DRY-AWARE + normalisation type (fix #8)
@@ -681,7 +682,7 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // gatherLog 180s (phase 3) : une chasse au bois honnête (biais dirigé + anneaux ≤128) tient en
 // <3 min — au-delà la zone est déforestée et le kit-relocate forêt est plus rentable que d'insister
 // (vécu V3Res1/4 : 480s × 4 tentatives = 32 min d'anneaux stériles avant le stall).
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, huntCook: 480000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000 };
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, huntCook: 480000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
@@ -935,6 +936,43 @@ async function runGoalSkill(goal) {
       if (NO_GIVE && !isInWater(bot)) { try { homewarp.bookmark(bot, 'wsite'); } catch (e) {} _wsiteMineSet = true; emit({ type: 'wsite_mine_bookmarked' }); }
     }
     return r;
+  }
+  // CAVE-FIRST (Massii, live 26/07). On chasse le diamant DANS LES GROTTES : uniquement des
+  // minerais mappés, EXPOSÉS et SECS (`caveHunt` impose exposedOnly + excludeWet). Le creusement
+  // n'est plus la stratégie mais le TRAJET : quand plus aucune cible n'est visible, on enchaîne un
+  // tunnel COURT (16 blocs, 4 galeries) vers la zone suivante — pas le strip de 48 × 16 d'avant.
+  if (goal.skill === 'caveHunt') {
+    const memCH = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
+    const _count = (name) => ((bot.inventory && bot.inventory.items()) || [])
+      .reduce((s, i) => s + (i.name === name ? i.count : 0), 0);
+    const rCH = await caveHunt(bot, Object.assign({
+      emit,
+      memory: memCH,
+      world: String(bot._worldKey || 'overworld'),
+      // Déplacement borné : on ne s'acharne pas sur une cible inatteignable (le skill la met de côté).
+      goTo: async (t) => {
+        try {
+          await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(t.x, t.y, t.z, 2)),
+            120000, () => { try { stopMotion(); } catch (e) {} });
+        } catch (e) { /* inatteignable → false */ }
+        const p = bot.entity && bot.entity.position;
+        return !!(p && Math.hypot(p.x - t.x, p.y - t.y, p.z - t.z) <= 6);
+      },
+      // Le filon entier, pas juste le bloc visé : un diamant vient rarement seul.
+      mineAt: async (t) => {
+        const before = _count('diamond') + _count('raw_iron') * 0;
+        try { await floodFillVein(bot, t, taskToken); } catch (e) { /* best-effort */ }
+        return Math.max(0, _count('diamond') - before);
+      },
+    }, goal.args || {}), taskToken);
+    if (rCH && rCH.reason === 'no_cave_target') {
+      emit({ type: 'cave_travel', reason: 'no_cave_target' });
+      return await branchMine(bot, Object.assign(
+        { torchEvery: TORCH_EVERY, onSurvivalTick: branchSurvivalTick, survivalEvery: 4 },
+        { targetY: (goal.args && goal.args.targetY) || -54, mainLength: 16, branchSpacing: 4, branchLength: 4 }),
+      taskToken);
+    }
+    return rCH;
   }
   if (goal.skill === 'branchMine') {
     // TUNNEL ÉCLAIRÉ + SURVIE PROACTIVE (analyse jeu humain, 26/07). `branchMine` SAIT poser des
