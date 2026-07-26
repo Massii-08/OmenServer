@@ -2867,6 +2867,19 @@ async function onSpawn() {
         if (panicInFlight) return;
         panicInFlight = true;
         (async () => {
+          // DANS L'EAU : « si ils sont en train de suffoquer ça sert à rien de se faire un box en
+          // pierre, ils doivent nager vers le haut » (Massii 2026-07-26). onPanic ne regardait pas
+          // l'eau : à PV critiques en train de se noyer, le bot se murait — d'où les « box en pierre
+          // à des moments aléatoires » vus à l'écran. Un mur ne rend pas d'oxygène.
+          let wet = false;
+          try { wet = isInWater(bot); } catch (e) {}
+          if (wet) {
+            emit({ type: 'panic_swim_up' });
+            try { bot.setControlState('jump', true); } catch (e) {}   // remonter TOUT DE SUITE
+            try { await withTimeout(escapeWater(bot, { emit }), 8000, () => {}); } catch (e) {}
+            try { await withTimeout(eat(bot), 2500, () => {}); } catch (e) {}
+            return;
+          }
           try { stopMotion(); } catch (e) {}
           // panicWall (module dédié, hole C) : mur ROBUSTE même en grotte ouverte (pontage sur le
           // bloc-sol du bot) — l'ancien inline échouait en silence là où les mobs essaiment.
@@ -2891,7 +2904,9 @@ async function onSpawn() {
                 distance: dist, health: bot.health,
                 armorPoints: armorPoints(bot), weaponDamage: weaponDamage(bot),
                 hasShield: false, hasBlock: !!pickCoverBlock(bot),
-              });
+              }) && !(function () { try { return isInWater(bot); } catch (e) { return false; } })();
+              // …et JAMAIS dans l'eau : poser un muret en nageant ne coupe aucune ligne de vue et
+              // fait perdre les secondes d'oxygène qui restent (même règle que onPanic).
               if (doCover) {
                 // S'IMMOBILISER D'ABORD : mesure live 25/07, 1 couvert sur 2 rendait placed:0 —
                 // `placeBlock` échoue quand le bot est en plein déplacement (il ne peut pas viser
