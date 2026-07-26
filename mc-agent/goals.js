@@ -139,8 +139,13 @@ const DT = (c) => invCount(c.inv, 'diamond') >= DIAMOND_TARGET;   // vraie fin d
 function withFinal(goal, final) {
   return Object.assign({}, goal, { met: (c) => goal.met(c) || final(c) });
 }
+// ⚠️ `withFinal(g, D)` NE S'APPLIQUE PAS aux buts d'OUTIL. Un diamant en poche prouve qu'on a su
+// fabriquer une pioche — pas qu'on en a encore une : ça CASSE. Vécu live 26/07 (Massii : « 4 et 5
+// il creuse sans pioche ») : le bot croyait son outillage complet, descendait, ne pouvait plus
+// rien miner, et `caveHunt` sortait sur `no_pick` sans rien émettre — panne invisible.
+const _TOOL_GOALS = new Set(['wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe']);
 const DIAMOND_CHAIN = [
-  ...IRON_CHAIN.map((g) => withFinal(g, D)),
+  ...IRON_CHAIN.map((g) => (_TOOL_GOALS.has(g.name) ? g : withFinal(g, D))),
   // 16 cobble = ~stack/2 : assez pour murer 2-3 nappes de lave + bridging. Monotone via D.
   { name: 'cobble_buffer', met: (c) => invCount(c.inv, 'cobblestone') >= 16 || DT(c),
     skill: 'gather',       args: { name: 'stone', count: 16 } },

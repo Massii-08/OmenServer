@@ -143,7 +143,8 @@ test('DIAMOND firstUnmet : Y atteint -54, pioche fer, cobble -> diamond_caves', 
 
 test('DIAMOND firstUnmet : cible CONTINUE atteinte -> null (objectif fini)', () => {
   // Depuis le 26/07 la fin n'est plus « 1 diamant » mais DIAMOND_TARGET (demande « en continu »).
-  const ctx = { inv: { diamond: DIAMOND_TARGET }, y: -54 };
+  // NB : la pioche fait partie de l'etat — un diamant en poche ne la remplace pas (elle casse).
+  const ctx = { inv: { diamond: DIAMOND_TARGET, iron_pickaxe: 1 }, y: -54 };
   assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx), null);
 });
 
@@ -151,8 +152,10 @@ test('DIAMOND monotonie : diamond:1 satisfait tout l AMONT (outils/bois consomme
   // Un diamant en poche PROUVE que bois, outils et four sont derriere nous : aucun but amont ne
   // doit se rouvrir. Seuls les 3 buts de queue (cobble/descente/chasse) restent ouverts, car la
   // cible est desormais CONTINUE — c'est precisement ce qui empeche le bot de s'arreter au 1er.
+  // Les buts d'OUTIL sont exclus eux aussi : une pioche casse, un diamant ne la remplace pas.
   const ctx = { inv: { diamond: 1 }, y: -54 };
-  const queue = ['cobble_buffer', 'descend_y54', 'diamond_caves'];
+  const queue = ['cobble_buffer', 'descend_y54', 'diamond_caves',
+                 'wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe'];
   for (const goal of DIAMOND_CHAIN) {
     if (queue.includes(goal.name)) continue;
     assert.ok(goal.met(ctx), `but "${goal.name}" devrait etre satisfait quand diamond:1`);
@@ -498,4 +501,22 @@ test('DIAMOND : remonte en surface avec des diamants -> il REDESCEND', () => {
 
 test('nextObjectiveAfter : diamant "fini" -> on repart au diamant (jamais inerte)', () => {
   assert.strictEqual(nextObjectiveAfter('diamond', []), 'diamond');
+});
+
+// ─── OUTILS : un diamant en poche ne remplace pas une pioche ───────────────────────────────────
+// Massii, live 26/07 : « 4 et 5 il creuse sans pioche ». `withFinal(g, D)` gatait TOUS les buts de
+// la chaine fer sur « j'ai >= 1 diamant » — y compris « avoir une pioche en fer ». Or une pioche
+// CASSE : le bot croyait son outillage complet, descendait, et ne pouvait plus rien miner.
+// `caveHunt` sortait alors sur `no_pick` sans rien emettre, ce qui rendait la panne invisible.
+test('DIAMOND : pioche CASSEE avec un diamant en poche -> la chaine REFORGE (pierre d abord)', () => {
+  // Elle repart au prerequis le MOINS CHER (pioche pierre), puis remonte vers la pioche fer :
+  // c'est le comportement voulu. Le point du test est qu'elle ne considere PLUS l'outillage
+  // comme acquis sous pretexte qu'un diamant traine en poche.
+  const ctx = { inv: { diamond: 1, cobblestone: 16, stick: 4, crafting_table: 1, iron_ingot: 3 }, y: -54 };
+  assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx).name, 'stone_pickaxe');
+});
+
+test('DIAMOND : pioche en poche -> on passe bien a la suite', () => {
+  const ctx = { inv: { diamond: 1, iron_pickaxe: 1, cobblestone: 16, stick: 4 }, y: -54 };
+  assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx).name, 'diamond_caves');
 });
