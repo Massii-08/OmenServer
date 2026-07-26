@@ -2815,7 +2815,13 @@ async function onSpawn() {
     // Aquaphobie de MARCHE (vécu world_ax2 : 7-8 water_rescue/bot EN SURFACE — 20 laissait le
     // pathfinder traverser les rivières dès que le détour dépassait ~20 blocs/case d'eau).
     // 45/nœud liquide ≈ détour sec accepté jusqu'à ~45 blocs par case d'eau à traverser.
-    if (typeof moves.liquidCost === 'number') moves.liquidCost = 45;
+    // ⚠️ DOIT RESTER < placeCost (30 ouvrier / 60 mappeur). À 45 il coûtait PLUS CHER de nager que
+    // de poser un bloc → l'A* préférait bâtir un pont dans l'AIR au-dessus de l'eau (retirer l'eau
+    // des `replaceables` empêche de poser DANS l'eau, pas au-dessus). D'où les « ponts immenses sur
+    // l'eau » signalés par Massii le 26/07, qui a tranché l'arbitrage : « ils peuvent traverser à la
+    // nage ». À 20, un détour SEC de ≤20 blocs par case d'eau reste préféré (aquaphobie conservée),
+    // mais dès qu'il faut choisir entre nager et construire, nager gagne.
+    if (typeof moves.liquidCost === 'number') moves.liquidCost = 20;
     // PONTS : OUI dans le vide, JAMAIS au-dessus de l'eau (Massii 2026-07-19 « arrêtez de
     // construire des ponts au-dessus de l'eau » PUIS 2026-07-26 « ils doivent aussi faire des
     // ponts dans le vide en surface »). Un simple `placeCost` ne sait pas distinguer les deux :
