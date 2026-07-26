@@ -60,7 +60,8 @@ const { loadMemory, worldKey, resolveBiome } = require('./worldMemory');
 const { driestCell, oreBase } = require('./ores');         // warp near-spawn DRY-AWARE + normalisation type (fix #8)
 const { recordAnchor, pickDryAnchor } = require('./anchors'); // ancres profondes SÈCHES (anti boucle de noyade)
 const { runMapper } = require('./mapper');
-const { LOCATE_KINDS, parseLocateResponse, structureFoundEvent } = require('./structures');
+// (LOCATE_KINDS / parseLocateResponse ne sont plus importés : /locate est retiré des bots, cf. plus bas.
+//  structureFoundEvent est émis par mapper.js depuis les signatures VUES.)
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync } = require('./unstuck');
 const deathzones = require('./deathzones'); // ban-zone des camps de mort (≥2 alertes → fuite active)
 const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTANTE → relocate forcé (live 22/06 ResBot1)
@@ -1101,27 +1102,16 @@ async function startMapper() {
   try { if (needDirtBuffer(bot.inventory.items(), 8)) await gather(bot, { name: ['dirt', 'grass_block', 'gravel'], count: 8, maxDistance: 48 }, taskToken); } catch (e) {}
   try { await huntCookGoal(6); } catch (e) {}
   emit({ type: 'mapper_started', world: bot._worldKey, sector: mapperSector });
-  // ── Phase 2 : rotation /locate (bot OP) — 1 structure/60 s, réponse op parsée en messagestr.
-  // Échec silencieux si pas op / serveur sans la structure (réponse d'erreur non matchée).
-  let locateIdx = 0;
-  let pendingLocate = null;
-  // 180 s + jitter par bot : un /locate sur structure non générée fouille les region files —
-  // ×5 mappers à 60 s ça a contribué au freeze serveur 49 s (vécu phase 2).
-  const locateTimer = args.frontier ? setInterval(() => {
-    if (taskToken.cancelled) { clearInterval(locateTimer); return; }
-    const item = LOCATE_KINDS[locateIdx++ % LOCATE_KINDS.length];
-    pendingLocate = { kind: item.kind, at: Date.now() };
-    try { bot.chat('/locate structure ' + item.arg); } catch (e) { /* best-effort */ }
-  }, 180000 + Math.floor(Math.random() * 60000)) : null;
-  if (args.frontier) {
-    bot.on('messagestr', (msg) => {
-      if (!pendingLocate || Date.now() - pendingLocate.at > 10000) return;
-      const r = parseLocateResponse(msg);
-      if (!r) return;
-      emit(structureFoundEvent(bot._worldKey, pendingLocate.kind, { x: r.x, y: 64, z: r.z }));
-      pendingLocate = null;
-    });
-  }
+  // ── /locate RETIRÉ (Massii 2026-07-26 : « les bots ne doivent pas utiliser de commandes comme
+  // /locate »). C'est une commande d'opérateur qui RÉVÈLE la position de structures qu'un joueur ne
+  // peut pas connaître — même nature que le x-ray qu'on passe justement le run à neutraliser, et
+  // c'était la seule source de structures « devinées » plutôt que VUES.
+  // Il en partait 107 en 20 minutes, et chaque appel sur une structure non générée fouille les
+  // region files (contributeur du freeze serveur de 49 s, piège #43c) : on y gagne aussi du CPU.
+  // La découverte de structures repose désormais UNIQUEMENT sur `findAllSignatures` — des blocs
+  // réellement dans le champ du bot (cloche, rail, spawner, reinforced_deepslate…), donc légitimes.
+  // Les parseurs purs de structures.js (`parseLocateResponse`, LOCATE_KINDS) restent en place et
+  // testés : ils ne sont plus appelés.
   const boatMod = require('./boat');
   // Centroïde des cellules déjà mappées (référence "vers le large").
   const mappedCentroid = () => {
