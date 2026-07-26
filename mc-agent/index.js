@@ -2557,6 +2557,12 @@ async function startAutonomous(sender) {
       setObjective(world, { type: nextObj, status: 'in_progress' });
       saveWorld(worldFile, world);
       emit({ type: 'autonomous_chain', from: objType, to: nextObj });
+      // RELANCER LE MOTEUR : poser l'objectif ne suffit pas, la boucle du planner vient de se
+      // terminer sur ce `done` et rien ne la rallume avant le prochain spawn. Mesuré live
+      // (Massii : « neth 1 4 5 sont toujours immobiles ») : `autonomous_chain` émis, objectif
+      // en poche, et 0 bloc parcouru en 45 s. setTimeout plutôt qu'un appel direct = pile
+      // d'appels neuve ; la chaîne s'arrête d'elle-même (nextObjectiveAfter('diamond') → null).
+      setTimeout(() => { try { startAutonomous(null); } catch (e) { /* best-effort */ } }, 1500);
     } else {
       clearObjective(world); saveWorld(worldFile, world);
     }
