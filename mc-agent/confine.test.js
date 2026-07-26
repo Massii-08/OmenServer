@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const {
   parseConfine, confineSpreadCommand,
   CONFINE_HOME, shouldEnforceConfine, pickAnchorNow, DEFAULT_CONFINE_RADIUS,
-  shouldTravelToAnchor,
+  shouldTravelToAnchor, canAnchorHere,
 } = require('./confine');
 
 // ─── Existant (pin) ─────────────────────────────────────────────────────────────────────────────
@@ -121,4 +121,29 @@ test('shouldTravelToAnchor : dist non numérique → refus (jamais de goto à l 
   assert.strictEqual(shouldTravelToAnchor({
     confine: { x: 150, z: 88, radius: 64 }, anchored: false, dist: undefined, busy: false, now: 1e6, lastAt: 0,
   }), false);
+});
+
+// ─── canAnchorHere : la fenêtre de pose doit couvrir TOUT le disque de confinement ──────────────
+// Vécu live 26/07 : la garde exigeait ≤24 blocs de l'ancre. Un bot qui dérive à 30 blocs ne pouvait
+// plus s'ancrer, donc l'enforcement (qui exige l'ancre) ne s'armait jamais, donc rien ne le
+// retenait — il partait à 300 blocs. Or `/sethome canchor` posé n'importe où DANS le disque donne
+// un point de retour dans la zone voulue : c'est exactement ce que l'enforcement demande.
+test('canAnchorHere : dans le disque de confinement → on peut ancrer', () => {
+  const c = { x: 124, z: 88, radius: 64 };
+  assert.strictEqual(canAnchorHere({ confine: c, dist: 0 }), true);
+  assert.strictEqual(canAnchorHere({ confine: c, dist: 30 }), true);   // échouait avant (>24)
+  assert.strictEqual(canAnchorHere({ confine: c, dist: 64 }), true);   // bord inclus
+});
+
+test('canAnchorHere : hors du disque → refus (le camp doit rester dans la zone)', () => {
+  assert.strictEqual(canAnchorHere({ confine: { x: 124, z: 88, radius: 64 }, dist: 65 }), false);
+  assert.strictEqual(canAnchorHere({ confine: { x: 124, z: 88, radius: 64 }, dist: 300 }), false);
+});
+
+test('canAnchorHere : sans confine statique → toujours vrai (auto-ancrage sur place)', () => {
+  assert.strictEqual(canAnchorHere({ confine: null, dist: 9999 }), true);
+});
+
+test('canAnchorHere : distance non numérique → refus (jamais d ancrage à l aveugle)', () => {
+  assert.strictEqual(canAnchorHere({ confine: { x: 0, z: 0, radius: 64 }, dist: undefined }), false);
 });

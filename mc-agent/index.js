@@ -113,7 +113,7 @@ const NO_GIVE = args['no-give'] === '1' || args['no-give'] === 'true';
 // (idée Massii 25/07). ÉTEINT par défaut — à activer explicitement, run par run.
 const REGROUP = args.regroup === '1' || args.regroup === 'true';
 // Confinement arène (--confine "X Z R") : garde le bot dans R de l'ancre sèche (cf. confine.js).
-const { parseConfine, confineSpreadCommand, CONFINE_HOME, DEFAULT_CONFINE_RADIUS, shouldEnforceConfine, pickAnchorNow } = require('./confine');
+const { parseConfine, confineSpreadCommand, CONFINE_HOME, DEFAULT_CONFINE_RADIUS, shouldEnforceConfine, pickAnchorNow, canAnchorHere } = require('./confine');
 const CONFINE = parseConfine(args['confine']);
 // Provider LLM enfichable : MC_AGENT_LLM=gemini (gratuit) sinon Anthropic (défaut). Cf. ./llm.js
 const provider = (process.env.MC_AGENT_LLM || 'anthropic').toLowerCase();
@@ -3153,7 +3153,14 @@ async function onSpawn() {
                 })(),
               })) {
             const pA = bot.entity.position;
-            const nearStatic = CONFINE ? (Math.hypot(pA.x - CONFINE.x, pA.z - CONFINE.z) <= 24) : true;
+            // Fenêtre de pose = TOUT le disque de confinement (cf. confine.canAnchorHere). La borner
+            // plus serré (c'était ≤24 blocs) empêchait un bot ayant dérivé de s'ancrer — donc
+            // l'enforcement, qui exige l'ancre, ne s'armait jamais et plus rien ne le retenait :
+            // mesuré live le 26/07, écart de 300 blocs pour un rayon de 64.
+            const nearStatic = canAnchorHere({
+              confine: CONFINE,
+              dist: CONFINE ? Math.hypot(pA.x - CONFINE.x, pA.z - CONFINE.z) : 0,
+            });
             if (nearStatic && homewarp.bookmark(bot, CONFINE_HOME)) {
               _canchorSet = true;
               if (!CONFINE) _confineDyn = { x: Math.round(pA.x), z: Math.round(pA.z), radius: DEFAULT_CONFINE_RADIUS };

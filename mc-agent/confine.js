@@ -69,8 +69,24 @@ function shouldTravelToAnchor({
   return (now - (lastAt || 0)) >= cooldownMs;
 }
 
+/**
+ * La position courante permet-elle de POSER l'ancre d'un confine statique ? (pur)
+ *
+ * La fenêtre de pose doit couvrir TOUT le disque de confinement, pas un rayon plus petit.
+ * Vécu live 26/07 : la garde exigeait ≤24 blocs de (x,z). Un bot qui dérivait à 30 blocs ne
+ * pouvait plus s'ancrer ; or l'enforcement qui l'aurait retenu exige justement l'ancre → il
+ * n'était plus retenu par rien et partait à 300 blocs. Poser `/home canchor` n'importe où
+ * DANS le disque donne un point de retour à l'intérieur de la zone voulue — exactement ce que
+ * l'enforcement demande. Hors du disque on refuse : le camp ne doit pas sortir de la zone.
+ */
+function canAnchorHere({ confine, dist } = {}) {
+  if (!confine) return true;                            // auto-ancrage dynamique : sur place
+  if (typeof dist !== 'number' || !Number.isFinite(dist)) return false;
+  return dist <= confine.radius;
+}
+
 module.exports = {
   parseConfine, confineSpreadCommand,
   CONFINE_HOME, DEFAULT_CONFINE_RADIUS, shouldEnforceConfine, pickAnchorNow,
-  shouldTravelToAnchor,
+  shouldTravelToAnchor, canAnchorHere,
 };
