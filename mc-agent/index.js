@@ -50,7 +50,7 @@ const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, w
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
 const { _nearestTable } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { placeBlockNear } = require('./skills/placeBlockNear');
-const { smelt } = require('./skills/smelt');
+const { smelt, logsToConvert } = require('./skills/smelt');
 const { descendDiagonal } = require('./skills/descendDiagonal');
 const { branchMine, floodFillVein } = require('./skills/branchMine');
 const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
@@ -67,7 +67,7 @@ const { runResource } = require('./skills/resource');
 const { planSmeltRaw } = require('./bank');   // fonte périodique du brut or/fer → lingots bankables
 const { tunnelTo } = require('./skills/tunnelTo');
 const { junkItems, ITEMS_FOR } = require('./quota');
-const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan, smeltPlan, smeltReady } = require('./gear');
+const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan, smeltPlan, smeltReady, isNearlyBroken } = require('./gear');
 // Torche tous les N paliers de branch-mine (mob-aware phase B) — best-effort : sans torche
 // en poche le minage continue sans (zéro coût en peaceful, sécurité en non-pacifique).
 const TORCH_EVERY = 8;
@@ -450,7 +450,10 @@ function ctxExtra() {
   let offhand = null;
   try {
     const s = bot && bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
-    offhand = s && s.name ? s.name : null;
+    // Un bouclier à bout de course = pas de bouclier : il vaut 1 lingot, on le remplace avant
+    // qu'il ne casse au pire moment (il ANNULE le coup, c'est la pièce la plus rentable du run).
+    if (s && s.name && isNearlyBroken(s)) { emit({ type: 'gear_worn_out', item: s.name, slot: 'offhand' }); }
+    offhand = (s && s.name && !isNearlyBroken(s)) ? s.name : null;
   } catch (e) { /* best-effort */ }
   return { hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand };
 }
@@ -596,6 +599,18 @@ async function _smeltWithFurnaceInner(input, output, count, fuelOverride) {
     await waitForBlock(pos, 'furnace');            // #3 : même règle que la table (pose async serveur)
     await sleep(300);
   }
+  // BÛCHES → PLANCHES avant d'allumer (analyse 26/07) : une bûche brute fond 1,5 objet, ses
+  // 4 planches en fondent 6 — brûler la bûche telle quelle gaspille 75 % du bois, alors que le
+  // manque de combustible bloquait la fonte. Best-effort : si le craft échoue, on brûle comme avant.
+  try {
+    const lp = logsToConvert(((bot.inventory && bot.inventory.items()) || [])
+      .map((i) => ({ name: i.name, count: i.count })), count);
+    if (lp.convert && lp.name) {
+      const plankName = lp.name.replace(/_log$/, '_planks');
+      await craftSmart({ name: plankName, count: (lp.logs || 1) * 4 });   // 4 planches par bûche
+      emit({ type: 'logs_to_planks', from: lp.name, logs: lp.logs || 1 });
+    }
+  } catch (e) { /* best-effort : on fond quand même */ }
   const r = await smelt(bot, { input, output, count, fuel: fuelOverride || fuelNames() }, taskToken);
   if (pos) {
     await sleep(250);
@@ -1425,10 +1440,17 @@ async function ensureGearFor(neededTypes) {
 const ARMOR_SLOTS = { feet: 'feet', head: 'head', legs: 'legs', torso: 'torso' };
 function _wornArmor() {
   // pièces d'armure ACTUELLEMENT portées (slots 5-8) — pour ne pas re-équiper/re-crafter.
+  // USURE (analyse 26/07) : une pièce à bout de course NE COMPTE PLUS comme portée. Le bot
+  // n'avait aucune notion de durabilité — il gardait son armure jusqu'à la rupture, et c'est
+  // très probablement ce qui lui a fait PERDRE T1 (3 pièces + bouclier évaporés en une nuit).
+  // En la déclarant absente au-delà de 85 % d'usure, `armorNeed` la recompte comme manquante et
+  // la chaîne la reforge pendant qu'elle protège encore.
   const worn = new Set();
   try {
     for (const it of (bot.inventory && bot.inventory.slots ? bot.inventory.slots.slice(5, 9) : [])) {
-      if (it && it.name) worn.add(it.name);
+      if (!it || !it.name) continue;
+      if (isNearlyBroken(it)) { emit({ type: 'gear_worn_out', item: it.name, slot: 'armor' }); continue; }
+      worn.add(it.name);
     }
   } catch (e) {}
   return worn;

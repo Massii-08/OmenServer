@@ -70,3 +70,36 @@ test('smelt : fonte partielle réelle → ok:false, mais got reflète le vrai ga
   assert.strictEqual(r.got, 2);
   assert.strictEqual(r.ok, false);
 });
+
+// ─── Bûches → planches AVANT de brûler (analyse jeu humain, 26/07) ───────────
+// Une bûche brûlée telle quelle fond 1,5 objet. Convertie en 4 planches, elle en fond 6.
+// Brûler la bûche brute gaspille donc 75 % du bois — alors que le manque de combustible est
+// précisément ce qui bloquait la fonte (4 fontes réussies en 6 h 36 de run).
+const { logsToConvert } = require('./smelt');
+
+test('pas de charbon + des bûches → on convertit avant de brûler', () => {
+  const plan = logsToConvert([{ name: 'oak_log', count: 3 }, { name: 'raw_iron', count: 4 }], 4);
+  assert.strictEqual(plan.convert, true);
+  assert.strictEqual(plan.name, 'oak_log');
+});
+
+test('du charbon en poche → on n\'entame pas le bois (il sert à crafter)', () => {
+  const plan = logsToConvert([{ name: 'oak_log', count: 3 }, { name: 'coal', count: 2 }], 4);
+  assert.strictEqual(plan.convert, false);
+});
+
+test('déjà assez de planches → inutile de convertir', () => {
+  const plan = logsToConvert([{ name: 'oak_log', count: 3 }, { name: 'oak_planks', count: 20 }], 4);
+  assert.strictEqual(plan.convert, false);
+});
+
+test('aucune bûche → rien à faire', () => {
+  assert.strictEqual(logsToConvert([{ name: 'oak_planks', count: 2 }], 4).convert, false);
+  assert.strictEqual(logsToConvert([], 4).convert, false);
+  assert.strictEqual(logsToConvert(null, 4).convert, false);
+});
+
+test('la 1re essence trouvée est choisie (les recettes sont par essence)', () => {
+  const plan = logsToConvert([{ name: 'spruce_log', count: 2 }], 6);
+  assert.strictEqual(plan.name, 'spruce_log');
+});

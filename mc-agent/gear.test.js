@@ -214,3 +214,35 @@ test('minRaw explicite reste prioritaire (appelants existants intacts)', () => {
   const items = [{ name: 'raw_iron', count: 1 }, { name: 'furnace', count: 1 }, { name: 'coal', count: 1 }];
   assert.strictEqual(smeltPlan(items, { minRaw: 3 }).go, false);
 });
+
+// ─── USURE (analyse jeu humain 26/07 ; cause probable de la perte de T1) ─────
+// Vécu : un bot portait 3 pièces d'armure + bouclier, puis tout a disparu. Une armure de fer
+// s'USE et casse — et le bot n'avait AUCUNE notion de durabilité : il la portait jusqu'à la
+// rupture, sans jamais anticiper. Un joueur remplace sa pièce AVANT qu'elle ne casse.
+const { wearRatio, isNearlyBroken, WEAR_REPLACE } = require('./gear');
+
+test('wearRatio : neuf = 0, à moitié usé = 0.5, mort = 1', () => {
+  assert.strictEqual(wearRatio({ maxDurability: 100, durabilityUsed: 0 }), 0);
+  assert.strictEqual(wearRatio({ maxDurability: 100, durabilityUsed: 50 }), 0.5);
+  assert.strictEqual(wearRatio({ maxDurability: 100, durabilityUsed: 100 }), 1);
+});
+
+test('wearRatio : objet sans durabilité (lingot, bloc) → 0, jamais NaN', () => {
+  assert.strictEqual(wearRatio({ name: 'iron_ingot' }), 0);
+  assert.strictEqual(wearRatio(null), 0);
+  assert.strictEqual(wearRatio({ maxDurability: 0, durabilityUsed: 0 }), 0);
+});
+
+test('isNearlyBroken : au-delà du seuil → à remplacer', () => {
+  const casque = (used) => ({ name: 'iron_helmet', maxDurability: 165, durabilityUsed: used });
+  assert.strictEqual(isNearlyBroken(casque(0)), false);
+  assert.strictEqual(isNearlyBroken(casque(100)), false);
+  assert.strictEqual(isNearlyBroken(casque(Math.ceil(165 * WEAR_REPLACE) + 1)), true);
+  assert.strictEqual(isNearlyBroken(casque(164)), true, 'à un coup de la casse');
+});
+
+test('isNearlyBroken : seuil surchargeable + entrées bancales', () => {
+  assert.strictEqual(isNearlyBroken({ maxDurability: 100, durabilityUsed: 50 }, 0.4), true);
+  assert.strictEqual(isNearlyBroken(null), false);
+  assert.strictEqual(isNearlyBroken({ name: 'diamond' }), false, 'sans durabilité → jamais cassé');
+});

@@ -121,4 +121,33 @@ function fuelUnits(items, fuel) {
     (s, it) => s + (it && allowed.has(it.name) ? burnValue(it.name) * (it.count || 0) : 0), 0));
 }
 
-module.exports = { smelt, pickFuelByPriority, fuelUnits, burnValue };
+// BÛCHES → PLANCHES AVANT DE BRÛLER (analyse jeu humain, 26/07).
+// Une bûche brûlée telle quelle fond 1,5 objet ; convertie en 4 planches, elle en fond 6.
+// Brûler la bûche brute gaspille donc 75 % du bois — et le manque de combustible est exactement
+// ce qui bloquait la fonte (4 fontes réussies sur tout un run de 6 h 36). On ne convertit QUE
+// si l'on n'a ni charbon ni assez de planches : le charbon reste prioritaire (il ne sert qu'à ça,
+// alors que le bois sert aussi à crafter).
+const PLANKS_PER_LOG = 4;
+
+/**
+ * PUR — faut-il convertir des bûches en planches avant d'allumer le four ?
+ * @param {Array<{name,count}>} items inventaire
+ * @param {number} wantSmelts nombre d'objets qu'on veut fondre
+ * @returns {{convert:boolean, name?:string, logs?:number}}
+ */
+function logsToConvert(items, wantSmelts = 1) {
+  const list = items || [];
+  const counts = {};
+  for (const it of list) if (it && it.name) counts[it.name] = (counts[it.name] || 0) + (it.count || 0);
+  if ((counts.coal || 0) > 0 || (counts.charcoal || 0) > 0) return { convert: false };
+  const planks = Object.keys(counts).filter((n) => n.endsWith('_planks'))
+    .reduce((s, n) => s + counts[n], 0);
+  if (planks * 1.5 >= wantSmelts) return { convert: false };     // les planches suffisent déjà
+  const logName = Object.keys(counts).find((n) => n.endsWith('_log') && counts[n] > 0);
+  if (!logName) return { convert: false };
+  const manquant = wantSmelts - planks * 1.5;
+  const logs = Math.min(counts[logName], Math.max(1, Math.ceil(manquant / (PLANKS_PER_LOG * 1.5))));
+  return { convert: true, name: logName, logs };
+}
+
+module.exports = { smelt, pickFuelByPriority, fuelUnits, burnValue, logsToConvert, PLANKS_PER_LOG };

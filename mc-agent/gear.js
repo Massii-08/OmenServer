@@ -106,6 +106,26 @@ function pickaxePlan(items, neededTypes) {
  * par un timer : go dès (raw_iron ≥ minRaw ET furnace en poche ET ≥1 fuel), passe bornée à 8.
  * Fuel accepté = celui de fuelNames() : coal/charcoal/planches/bûches.
  */
+// USURE (analyse 26/07) — le bot n'avait AUCUNE notion de durabilité : il portait son armure
+// jusqu'à la rupture. Vécu : 3 pièces + bouclier disparus en une nuit, T1 perdu. Un joueur
+// remplace AVANT la casse. Seuil 85 % : il reste ~15 % de marge pour forger le remplacement.
+const WEAR_REPLACE = 0.85;
+
+/** PUR — fraction d'usure d'un objet (0 = neuf, 1 = mort). 0 pour ce qui ne s'use pas. */
+function wearRatio(item) {
+  if (!item) return 0;
+  const max = item.maxDurability;
+  if (!max || max <= 0) return 0;
+  const used = item.durabilityUsed || 0;
+  return Math.max(0, Math.min(1, used / max));
+}
+
+/** PUR — cet objet est-il assez usé pour qu'on le considère comme À REMPLACER ? */
+function isNearlyBroken(item, threshold = WEAR_REPLACE) {
+  if (!item || !item.maxDurability) return false;
+  return wearRatio(item) > threshold;
+}
+
 function smeltPlan(items, opts = {}) {
   const maxIngots = opts.maxIngots || 24;      // armure complète = 24 lingots : au-delà, rien à gagner
   const counts = {};
@@ -286,4 +306,5 @@ function shieldPlan(items, hasShield) {
   return null;
 }
 
-module.exports = { Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan, smeltPlan, smeltReady };
+module.exports = {
+  wearRatio, isNearlyBroken, WEAR_REPLACE, Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan, smeltPlan, smeltReady };
