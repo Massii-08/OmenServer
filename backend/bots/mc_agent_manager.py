@@ -456,7 +456,7 @@ def _on_pump_end(session):
                                         autonomous=rs.get("autonomous", True),
                                         objective=rs.get("objective", "resource"),
                                         world_label=rs.get("world_label"), quota=rs.get("quota"),
-                                        humanize=rs.get("humanize", False), confine=rs.get("confine"),
+                                        humanize=rs.get("humanize", True), confine=rs.get("confine"),
                                         no_give=rs.get("no_give", False),
                                         regroup=rs.get("regroup", False))
                 ns = _sessions.get(new_sid)
@@ -829,8 +829,13 @@ def _online_usernames(group_id):
     return out
 
 
-def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, humanize=False, confine=None, no_give=False, regroup=False):
+def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, humanize=True, confine=None, no_give=False, regroup=False):
     """Lance un bot du roster d'un groupe (résout connexion + compte + login + intelligence).
+
+    `humanize` par DÉFAUT True, comme `start_session`. L'incohérence précédente (False ici, True
+    là) faisait taper les bots du roster à VITESSE MACHINE — Massii, live 26/07 : « ils écrivent
+    trop rapidement pour etre humain ». Or ce sont précisément ceux qui jouent en présence de
+    vrais joueurs.
 
     Lève LookupError si le groupe ou le bot est introuvable, ValueError si le compte est déjà en
     ligne ou s'il manque un secret alors que le serveur exige un login.

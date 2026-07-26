@@ -52,9 +52,15 @@ const SYSTEM_PROMPT = [
 const LANG_NAMES = { fr: 'francais', en: 'anglais', it: 'italien' };
 
 /** Bloc langue pour le system prompt. '' si langue inconnue/absente. */
+// LANGUE — MIROIR de l'interlocuteur (Massii, live 26/07 : « corrige aussi qu'il parle pas que en
+// francais, parce qu'on leur fait les question en ita et il rep [en fr] »). L'ancienne consigne
+// « Ecris TOUJOURS le champ reply en <langue> » ECRASAIT la langue de la question : un joueur
+// italien recevait une reponse en francais, ce qui est un tell de bot autant qu'une impolitesse.
+// Un vrai joueur repond dans la langue ou on lui parle ; la langue du profil n'est qu'un REPLI.
 function buildLangDocs(lang) {
   const name = LANG_NAMES[String(lang || '').toLowerCase()];
-  return name ? `Ecris TOUJOURS le champ "reply" en ${name}.` : '';
+  if (!name) return '';
+  return `Ecris le champ "reply" dans la MEME langue que le message recu. Si la langue du message est indeterminable, ecris en ${name}.`;
 }
 
 /** Construit le system prompt : persona + commandes serveur + gens de confiance + langue. */
