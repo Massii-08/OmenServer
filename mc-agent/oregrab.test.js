@@ -87,3 +87,25 @@ test('isDetourWorthy : le tout-venant ne justifie PAS de quitter sa tache', () =
     assert.strictEqual(isDetourWorthy(n), false, n);
   }
 });
+
+// ── CUIVRE : ne plus se detourner pour un minerai que junkItems fera jeter (mesure 27/07) ───────
+// 106 `ore_grabbed` de cuivre pour 27 de fer sur world_mn5 : 78 % des detours servaient un minerai
+// inutile aux chaines fer et diamant. Le bot minait pour jeter, et saturait son inventaire.
+test('le cuivre n_est plus un minerai a ramasser', () => {
+  assert.strictEqual(isWantedOre('copper_ore'), false);
+  assert.strictEqual(isWantedOre('deepslate_copper_ore'), false);
+});
+
+test('le cuivre au sol ne vaut plus un detour', () => {
+  assert.strictEqual(isValuableDrop('raw_copper'), false);
+  assert.strictEqual(isValuableDrop('copper_ingot'), false);
+});
+
+test('ce qui SERT aux chaines reste ramasse (garde-fou anti-sur-filtrage)', () => {
+  for (const n of ['iron_ore', 'deepslate_iron_ore', 'coal_ore', 'diamond_ore', 'gold_ore']) {
+    assert.strictEqual(isWantedOre(n), true, n);
+  }
+  for (const n of ['raw_iron', 'iron_ingot', 'coal', 'diamond']) {
+    assert.strictEqual(isValuableDrop(n), true, n);
+  }
+});

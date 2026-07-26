@@ -214,7 +214,7 @@ const ORE_NAMES = new Set([
   'gold_ore', 'deepslate_gold_ore',
   'redstone_ore', 'deepslate_redstone_ore',
   'lapis_ore', 'deepslate_lapis_ore',
-  'copper_ore', 'deepslate_copper_ore',
+  // cuivre retire : inutile aux chaines fer/diamant et jete par junkItems (cf. oregrab.js)
   'emerald_ore', 'deepslate_emerald_ore',
 ]);
 function oresInNeighborhood(bot, target) {

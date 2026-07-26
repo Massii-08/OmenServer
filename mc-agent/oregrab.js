@@ -20,7 +20,10 @@ const WANTED_ORES = new Set([
   'redstone_ore', 'deepslate_redstone_ore',
   'lapis_ore', 'deepslate_lapis_ore',
   'emerald_ore', 'deepslate_emerald_ore',
-  'copper_ore', 'deepslate_copper_ore',
+  // CUIVRE RETIRE (mesure 27/07) : 106 `ore_grabbed` de cuivre pour 27 de fer — 78 % des
+  // detours servaient un minerai INUTILE aux chaines fer et diamant, que `junkItems` fait
+  // jeter juste apres (il n'est dans aucun quota). Miner pour jeter, et saturer l'inventaire
+  // au passage (d'ou les makeRoomInPlace a repetition).
   'raw_iron_block', 'ancient_debris',
 ]);
 
@@ -63,7 +66,7 @@ function shouldGrab(s = {}) {
 // passerait sa vie à ramasser du gravier au lieu de miner.
 const VALUABLE_DROPS = new Set([
   'diamond', 'emerald', 'ancient_debris', 'netherite_scrap', 'netherite_ingot',
-  'raw_iron', 'iron_ingot', 'raw_gold', 'gold_ingot', 'raw_copper', 'copper_ingot',
+  'raw_iron', 'iron_ingot', 'raw_gold', 'gold_ingot',   // cuivre exclu : rien ne le consomme
   'coal', 'charcoal', 'redstone', 'lapis_lazuli', 'quartz', 'amethyst_shard',
 ]);
 const _VALUABLE_SUFFIX = ['_pickaxe', '_axe', '_sword', '_shovel', '_helmet', '_chestplate', '_leggings', '_boots'];
