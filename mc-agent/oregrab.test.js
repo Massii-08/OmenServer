@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { isWantedOre, canHarvest, shouldGrab, isValuableDrop } = require('./oregrab');
+const { isWantedOre, canHarvest, shouldGrab, isValuableDrop, isDetourWorthy } = require('./oregrab');
 
 test('isWantedOre : fer et deepslate fer, pas le remblai', () => {
   assert.strictEqual(isWantedOre('iron_ore'), true);
@@ -69,4 +69,21 @@ test('isValuableDrop : entrée vide/inconnue → false (jamais de détour à l a
   assert.strictEqual(isValuableDrop(''), false);
   assert.strictEqual(isValuableDrop(null), false);
   assert.strictEqual(isValuableDrop('bloc_inexistant'), false);
+});
+
+// ─── DETOUR pour un minerai de VALEUR visible (Massii, live 26/07) ─────────────────────────────
+// « neth 4 a reussi a esquiver une cave, alors que dans la cave il y avait un diamant ». Le
+// ramassage opportuniste ne mordait qu'a portee de BRAS (4,2 blocs) : un diamant visible a dix
+// blocs, dans une grotte qu'on longe, etait ignore — et pendant la DESCENTE `caveHunt` ne tourne
+// pas encore. Certains minerais valent qu'on se detourne de quelques blocs, meme en pleine tache.
+test('isDetourWorthy : diamant/emeraude/debris valent un detour', () => {
+  for (const n of ['diamond_ore', 'deepslate_diamond_ore', 'emerald_ore', 'deepslate_emerald_ore', 'ancient_debris']) {
+    assert.strictEqual(isDetourWorthy(n), true, n);
+  }
+});
+
+test('isDetourWorthy : le tout-venant ne justifie PAS de quitter sa tache', () => {
+  for (const n of ['iron_ore', 'coal_ore', 'copper_ore', 'stone', 'redstone_ore']) {
+    assert.strictEqual(isDetourWorthy(n), false, n);
+  }
 });

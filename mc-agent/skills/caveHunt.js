@@ -64,7 +64,7 @@ function pickTierOf(inv) {
 async function caveHunt(bot, opts = {}, token = null) {
   const material = opts.material || 'diamond';
   const need = opts.count || 1;
-  const maxDist = opts.maxDist || 256;
+  const maxDist = opts.maxDist || 96;   // 256 visait des cibles hors de portee du pathfinder
   const emit = opts.emit || (() => {});
   const memory = opts.memory || bot._worldMemory || null;
   const world = opts.world || bot._worldKey || 'overworld';
@@ -82,20 +82,23 @@ async function caveHunt(bot, opts = {}, token = null) {
   while (got < need) {
     if (token && token.cancelled) return { ok: false, reason: 'cancelled', got };
     const from = bot.entity && bot.entity.position ? bot.entity.position : null;
-    let target = pickNext(memory, world, from, {
-      allowTypes: [oreBase(material)],
-      exposedOnly: true,        // JAMAIS un minerai enterré : on n'exploite que le visible
-      excludeWet: true,         // JAMAIS une grotte inondée (exigence explicite, non négociable)
-      pickTier: tier,
-      maxDist,
-      skip,
-    });
-    // Rien de CARTOGRAPHIÉ à proximité → on regarde autour de soi avant de conclure. C'est ce qui
-    // manquait : le bot creusait alors qu'une grotte pleine de minerai était visible à dix blocs.
+    // ORDRE : ce que le bot VOIT d'abord, la carte ensuite. Mesure live 26/07 : avec la carte en
+    // premier, 95 cibles sur 98 étaient `cave_unreachable` et pas un seul diamant miné — on visait
+    // des minerais cartographiés à des centaines de blocs, derrière de la roche pleine que le
+    // pathfinder ne sait pas traverser. Un minerai VISIBLE est dans les chunks chargés, donc
+    // atteignable ; un minerai cartographié n'est qu'une rumeur.
+    const scanLocal = opts.scanLocal || _defaultScanLocal;
+    let target = scanLocal(bot, material, skip, opts.localRange || 48);
+    if (target) emit({ type: 'cave_local', material, x: target.x, y: target.y, z: target.z });
     if (!target) {
-      const scanLocal = opts.scanLocal || _defaultScanLocal;
-      target = scanLocal(bot, material, skip, opts.localRange || 48);
-      if (target) emit({ type: 'cave_local', material, x: target.x, y: target.y, z: target.z });
+      target = pickNext(memory, world, from, {
+        allowTypes: [oreBase(material)],
+        exposedOnly: true,      // JAMAIS un minerai enterré : on n'exploite que le visible
+        excludeWet: true,       // JAMAIS une grotte inondée (exigence explicite, non négociable)
+        pickTier: tier,
+        maxDist,
+        skip,
+      });
     }
     if (!target) return { ok: got > 0, reason: got > 0 ? undefined : 'no_cave_target', got };
 

@@ -75,4 +75,24 @@ function isValuableDrop(name) {
   return _VALUABLE_SUFFIX.some((sfx) => name.endsWith(sfx));   // outils/armure tombés (mort, toss)
 }
 
-module.exports = { WANTED_ORES, isWantedOre, canHarvest, shouldGrab, VALUABLE_DROPS, isValuableDrop };
+// ─── MINERAIS QUI VALENT DE QUITTER SA TÂCHE ───────────────────────────────────────────────────
+// Massii, live 26/07 : « neth 4 a reussi a esquiver une cave, alors que dans la cave il y avait un
+// diamant ». Le ramassage opportuniste ne mordait qu'à portée de BRAS (4,2 blocs) et `caveHunt`
+// n'entre en scène qu'en fin de chaîne : pendant la DESCENTE, un diamant visible à dix blocs était
+// simplement ignoré. Liste très courte — seul ce qui est rare justifie d'interrompre le travail ;
+// le fer et le charbon restent opportunistes, à portée de bras.
+const DETOUR_ORES = new Set([
+  'diamond_ore', 'deepslate_diamond_ore',
+  'emerald_ore', 'deepslate_emerald_ore',
+  'ancient_debris',
+]);
+
+/** Ce minerai visible justifie-t-il un détour de quelques blocs ? (pur) */
+function isDetourWorthy(name) {
+  return !!name && DETOUR_ORES.has(String(name));
+}
+
+module.exports = {
+  WANTED_ORES, isWantedOre, canHarvest, shouldGrab,
+  VALUABLE_DROPS, isValuableDrop, DETOUR_ORES, isDetourWorthy,
+};

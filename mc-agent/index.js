@@ -3478,11 +3478,18 @@ function doneWord() { return DONE[lang] || DONE.en; }
 function failMsg(reason) { const m = FAILS[reason]; return m ? (m[lang] || m.en) : (reason || 'erreur'); }
 function ackPrivate(sender, text) { if (sender && text) { try { bot.whisper(sender, text); } catch (e) {} } }
 
-function stopMotion() {
+// ⚠️ NE COUPE PLUS LE BRAS PAR DÉFAUT (Massii, live 26/07, signalé 3 fois : « ils ont toujours un
+// souci pour casser les blocs, il faut qu'ils tiennent le bouton pour les casser, pas spam le
+// bouton »). `bot.dig` TIENT le clic jusqu'à la casse — sauf si on l'interrompt, auquel cas le
+// minage repart de ZÉRO. Or `stopMotion` était le nettoyage de TOUS les `withTimeout` du code
+// (74 appels) et de plusieurs watchdogs : chaque déclenchement annulait le dig en cours et le
+// relançait. D'où un minage visuellement saccadé et interminable.
+// Le lâcher de bras reste disponible pour le seul cas où il a du sens — répondre en chat, où un
+// humain lâche le clic pour taper — via stopMotion({ arm: true }).
+function stopMotion(opts = {}) {
   try { bot.pathfinder && bot.pathfinder.setGoal(null); } catch (e) {}
   try { bot.pvp && bot.pvp.stop(); } catch (e) {}
-  // stop-pour-répondre (paquet 1) : on fige aussi le BRAS (un humain lâche le clic pour taper).
-  try { if (bot.targetDigBlock && bot.stopDigging) bot.stopDigging(); } catch (e) {}
+  if (opts.arm) { try { if (bot.targetDigBlock && bot.stopDigging) bot.stopDigging(); } catch (e) {} }
   ['forward', 'back', 'left', 'right', 'sneak', 'jump', 'sprint'].forEach((c) => { try { bot.setControlState(c, false); } catch (e) {} });
 }
 
@@ -3795,6 +3802,7 @@ let _jamSample = null;
 // donne rien du tout (`oregrab.canHarvest`).
 let _oreGrabBusy = false;
 let _oreGrabIds = null;
+let _oreDetourIds = null;   // ids des minerais RARES qui valent un detour (cf. oregrab)
 setInterval(async () => {
   if (_oreGrabBusy) return;
   try {
@@ -3820,6 +3828,32 @@ setInterval(async () => {
         .filter((x) => x != null);
     }
     if (!_oreGrabIds.length) return;
+    // DÉTOUR pour un minerai RARE visible (Massii 26/07 : « neth 4 a reussi a esquiver une cave,
+    // alors que dans la cave il y avait un diamant »). La portée de bras (4,2) ne suffit pas, et
+    // pendant la DESCENTE `caveHunt` ne tourne pas encore : un diamant longé à dix blocs passait.
+    // Seuls les minerais rares justifient de quitter sa tâche (cf. oregrab.isDetourWorthy).
+    try {
+      if (!_oreDetourIds) {
+        _oreDetourIds = [...oregrab.DETOUR_ORES]
+          .map((n) => bot.registry.blocksByName[n] && bot.registry.blocksByName[n].id)
+          .filter((x) => x != null);
+      }
+      if (_oreDetourIds.length) {
+        const rare = bot.findBlocks({ matching: _oreDetourIds, maxDistance: 20, count: 1 });
+        const rp = rare && rare[0];
+        if (rp) {
+          const rb = bot.blockAt(rp);
+          const d = rb && rb.position.distanceTo(bot.entity.position);
+          if (rb && d > 4.2 && oregrab.canHarvest(rb, bot.heldItem && bot.heldItem.type)) {
+            _oreGrabBusy = true;
+            emit({ type: 'ore_detour', ore: rb.name, d: Math.round(d) });
+            await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(rp.x, rp.y, rp.z, 2)),
+              25000, () => { try { stopMotion(); } catch (er) {} });
+            return;   // la passe suivante (800 ms) le minera à portée de bras
+          }
+        }
+      }
+    } catch (e) { /* best-effort : jamais bloquant */ }
     const hits = bot.findBlocks({ matching: _oreGrabIds, maxDistance: 5, count: 4 });
     // RAMASSAGE AU SOL (Massii, live 26/07 : « si il y a des item qui leur servent (genre diamant)
     // ils doivent les prendre »). Un minerai miné hors du rayon de ramassage automatique tombe et
