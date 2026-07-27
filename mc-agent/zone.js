@@ -104,6 +104,27 @@ function zoneVerdict(s, opts = {}) {
 }
 
 /**
+ * Faut-il TRACER ce verdict ? (PUR, dedup anti-emballement)
+ *
+ * `checkZoneVerdict` tourne toutes les 60 s mais n'émettait RIEN sur 'stay' : impossible de savoir
+ * POURQUOI une flotte visiblement noyée ne migre jamais (trop tôt ? cooldown ? cellule sèche déjà
+ * connue qui supprime la migration eau ?). Le verdict de migration n'a jamais tiré de toute une
+ * journée (0 event) et sans cette trace on ne peut ni prouver ni infirmer que c'est un bug.
+ * On trace au CHANGEMENT de raison (un bot passe la plupart de sa vie sur 'too_soon' → 1 seul
+ * event) et TOUJOURS sur 'migrate'.
+ *
+ * @param {{verdict:string,reason:string}} v  verdict courant
+ * @param {string|null} prevReason  dernière raison tracée (état du caller)
+ * @returns {{log:boolean, reason:string|null}} reason = la nouvelle raison à mémoriser
+ */
+function verdictTelemetry(v, prevReason) {
+  const prev = prevReason == null ? null : prevReason;
+  if (!v || typeof v !== 'object') return { log: false, reason: prev };
+  const reason = v.reason == null ? null : v.reason;
+  return { log: v.verdict === 'migrate' || prev !== reason, reason };
+}
+
+/**
  * Où migrer ? (PUR, DÉTERMINISTE)
  *
  * Déterministe = tous les ouvriers du groupe calculent la MÊME cible depuis la même carte
@@ -177,7 +198,7 @@ function legIsGood({ treesNear = 0, inWater = false, biome = null } = {}) {
 }
 
 module.exports = {
-  zoneVerdict, pickMigrationTarget, migrationLeg, legIsGood, isWetBiome, minDistFor,
+  zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, isWetBiome, minDistFor,
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX,
   MIGRATE_MIN_DIST, MIGRATE_MAX_DIST, MIGRATE_FAR_MIN_DIST, LEG_DIST, MAX_LEGS,

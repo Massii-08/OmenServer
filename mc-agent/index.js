@@ -67,7 +67,7 @@ const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync } = require('./unstuck');
 const deathzones = require('./deathzones'); // ban-zone des camps de mort (≥2 alertes → fuite active)
 const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTANTE → relocate forcé (live 22/06 ResBot1)
-const { zoneVerdict, pickMigrationTarget, migrationLeg, legIsGood, minDistFor, MAX_LEGS } = require('./zone'); // verdict de zone + migration autonome (Massii 27/07)
+const { zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, minDistFor, MAX_LEGS } = require('./zone'); // verdict de zone + migration autonome (Massii 27/07)
 const { recordWorkDrown, noteDrownedSite, isDrownedNear, offsetFromDrowned } = require('./workDrown'); // chantier adjacent à un aquifère → abandon + BANNISSEMENT du lieu (3a)
 const { recordWorkStuck } = require('./workStuck'); // chantier menant à une impasse SÈCHE (drop_ahead/max_depth) → abandon+relocate (live 27/07 world_mn9)
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
@@ -1439,6 +1439,7 @@ let _zoneLogsNotFound = 0;    // `logs`/bois introuvable → la zone est rasée
 let _zoneIronMined = 0;       // fers récoltés dans la zone (rendement)
 let _zoneMiningMs = 0;        // temps de minage effectif dans la zone
 let _lastMigrationAt = 0;     // cooldown anti-nomadisme
+let _lastZoneVerdictReason = null; // dedup télémétrie : dernière raison de verdict tracée
 let _migrating = false;       // marche de migration en cours → l'enforcement confine est SUSPENDU
 let _migrationLegs = 0;       // jambes déjà parcourues (marche à l'aveugle)
 
@@ -1652,6 +1653,17 @@ function checkZoneVerdict() {
     dryCellKnown,
     lastMigrationAt: _lastMigrationAt,
     now,
+  });
+  // TRACE : sans elle, un 'stay' est muet → on ne peut pas voir QUELLE porte bloque la migration
+  // (trop tôt / cooldown / cellule sèche connue). Dédup au changement de raison (anti-emballement).
+  const tel = verdictTelemetry(v, _lastZoneVerdictReason);
+  _lastZoneVerdictReason = tel.reason;
+  if (tel.log) emit({
+    type: 'zone_verdict', verdict: v.verdict, reason: v.reason,
+    minutesInZone: Math.round((now - _zoneAnchoredAt) / 60000),
+    waterFails: _zoneWaterFails, logsNotFound: _zoneLogsNotFound,
+    ironMined: _zoneIronMined, miningMinutes: Math.round(_zoneMiningMs / 60000),
+    depletedNear, dryCellKnown,
   });
   if (v.verdict === 'migrate') migrateZone(v.reason).catch(() => {});
 }

@@ -2,11 +2,40 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  zoneVerdict, pickMigrationTarget, migrationLeg, legIsGood, minDistFor,
+  zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, minDistFor,
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX, MIGRATE_MIN_DIST, MIGRATE_MAX_DIST,
   MIGRATE_FAR_MIN_DIST,
 } = require('./zone');
+
+// ─── Télémétrie du verdict de zone : dedup au changement de raison, toujours sur 'migrate' ───────
+// Sans cette trace, un verdict 'stay' n'émet rien → impossible de diagnostiquer pourquoi une flotte
+// noyée ne migre jamais (le verdict de migration n'a pas tiré une seule fois de toute une journée).
+
+test('telemetrie : trace au premier verdict (raison nouvelle vs null)', () => {
+  const t = verdictTelemetry({ verdict: 'stay', reason: 'too_soon' }, null);
+  assert.deepStrictEqual(t, { log: true, reason: 'too_soon' });
+});
+
+test('telemetrie : dedup — meme raison consecutive ne se re-trace pas', () => {
+  const t = verdictTelemetry({ verdict: 'stay', reason: 'too_soon' }, 'too_soon');
+  assert.deepStrictEqual(t, { log: false, reason: 'too_soon' });
+});
+
+test('telemetrie : changement de raison => on trace', () => {
+  const t = verdictTelemetry({ verdict: 'stay', reason: 'ok' }, 'too_soon');
+  assert.deepStrictEqual(t, { log: true, reason: 'ok' });
+});
+
+test('telemetrie : un verdict migrate se trace TOUJOURS, meme raison inchangee', () => {
+  const t = verdictTelemetry({ verdict: 'migrate', reason: 'water' }, 'water');
+  assert.deepStrictEqual(t, { log: true, reason: 'water' });
+});
+
+test('telemetrie : verdict absent/invalide => ne trace pas, garde la raison precedente', () => {
+  assert.deepStrictEqual(verdictTelemetry(null, 'ok'), { log: false, reason: 'ok' });
+  assert.deepStrictEqual(verdictTelemetry(undefined, null), { log: false, reason: null });
+});
 
 // ─── « Si une zone a été vidée de ses minerais, il s'éloigne de BEAUCOUP » (Massii, 27/07) ───────
 // Une zone épuisée ne se répare pas en marchant 200 blocs : les cellules voisines sont le MÊME
