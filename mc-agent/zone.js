@@ -187,6 +187,51 @@ function migrationLeg({ from, heading = 0, legs = 0, legDist = LEG_DIST, maxLegs
   };
 }
 
+// ─── L'ÉTAT DE ZONE DOIT SURVIVRE AU PROCESS (cause racine trouvée le 27/07 au soir) ────────────
+//
+// La migration n'a JAMAIS tiré de la journée, alors que la flotte était visiblement noyée
+// (`descend_y16` échouait à 77-82 % sur `water_ahead`, ~20 sauvetages d'eau par session).
+// Raison : l'horloge de zone et les compteurs vivaient dans le PROCESS. Or le self-healing
+// relance un bot toutes les quelques minutes → chaque respawn les remettait à zéro → l'hystérésis
+// de 15 min n'était JAMAIS atteinte, et la porte `too_soon` bloquait en permanence.
+//
+// C'est exactement la classe de bug documentée le matin même (pièges #52 et #63) : **une mémoire
+// d'échec par process ne sert à rien quand les sessions redémarrent sans cesse.** L'état de zone
+// rejoint donc le mémo de base, là où vit déjà la dette de mort.
+
+/** Compteurs de zone vierges, horloge démarrée maintenant. (pur) */
+function zoneStateInit(now) {
+  return {
+    anchoredAt: now, waterFails: 0, logsNotFound: 0,
+    ironMined: 0, miningMs: 0, lastMigrationAt: 0,
+  };
+}
+
+/**
+ * Reprend un état persisté — l'horloge CONTINUE au lieu de repartir de zéro. (pur)
+ * Retombe sur un état frais si le mémo est absent, corrompu, ou daté du futur (changement
+ * d'heure, mémo hérité d'un autre monde) : une horloge future gèlerait la zone à vie.
+ */
+function zoneStateLoad(saved, now) {
+  const fresh = zoneStateInit(now);
+  if (!saved || typeof saved !== 'object') return fresh;
+  const at = saved.anchoredAt;
+  if (!Number.isFinite(at) || at > now) return fresh;
+  return {
+    anchoredAt: at,
+    waterFails: _num(saved.waterFails),
+    logsNotFound: _num(saved.logsNotFound),
+    ironMined: _num(saved.ironMined),
+    miningMs: _num(saved.miningMs),
+    lastMigrationAt: _num(saved.lastMigrationAt),
+  };
+}
+
+/** Après une migration : compteurs à zéro, et le cooldown court à partir de maintenant. (pur) */
+function zoneStateAfterMigration(now) {
+  return Object.assign(zoneStateInit(now), { lastMigrationAt: now });
+}
+
 // ─── Quel échec accuse la ZONE, et pas le bot ? (PUR) ───────────────────────────────────────────
 // Mesuré live le 27/07 sur `world_mn9`, et c'est toute la cascade que voyait Massii :
 //   zone rasée → plus de bois → plus de bâtons → PLUS DE PIOCHE → le bot passe devant des veines
@@ -226,6 +271,7 @@ function legIsGood({ treesNear = 0, inWater = false, biome = null } = {}) {
 
 module.exports = {
   zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, isWetBiome, minDistFor, zoneFailureKind,
+  zoneStateInit, zoneStateLoad, zoneStateAfterMigration,
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX,
   MIGRATE_MIN_DIST, MIGRATE_MAX_DIST, MIGRATE_FAR_MIN_DIST, LEG_DIST, MAX_LEGS,

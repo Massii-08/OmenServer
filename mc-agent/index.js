@@ -67,7 +67,13 @@ const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync } = require('./unstuck');
 const deathzones = require('./deathzones'); // ban-zone des camps de mort (≥2 alertes → fuite active)
 const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTANTE → relocate forcé (live 22/06 ResBot1)
-const { zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, minDistFor, zoneFailureKind, MAX_LEGS } = require('./zone'); // verdict de zone + migration autonome (Massii 27/07)
+// Verdict de zone + migration autonome (Massii 27/07). L'état de zone est PERSISTÉ (zoneState*) :
+// en mémoire de process, son horloge repartait à zéro à chaque respawn et l'hystérésis de 15 min
+// n'était jamais atteinte — c'est pourquoi la migration n'a jamais tiré de la journée.
+const {
+  zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, minDistFor,
+  zoneFailureKind, zoneStateInit, zoneStateLoad, zoneStateAfterMigration, MAX_LEGS,
+} = require('./zone');
 const { recordWorkDrown, noteDrownedSite, isDrownedNear, offsetFromDrowned } = require('./workDrown'); // chantier adjacent à un aquifère → abandon + BANNISSEMENT du lieu (3a)
 const { recordWorkStuck } = require('./workStuck'); // chantier menant à une impasse SÈCHE (drop_ahead/max_depth) → abandon+relocate (live 27/07 world_mn9)
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
@@ -1453,14 +1459,47 @@ let _lastZoneVerdictReason = null; // dedup télémétrie : dernière raison de 
 let _migrating = false;       // marche de migration en cours → l'enforcement confine est SUSPENDU
 let _migrationLegs = 0;       // jambes déjà parcourues (marche à l'aveugle)
 
+/** Applique un état de zone (pur → variables de module). */
+function _applyZoneState(s) {
+  _zoneAnchoredAt = s.anchoredAt;
+  _zoneWaterFails = s.waterFails;
+  _zoneLogsNotFound = s.logsNotFound;
+  _zoneIronMined = s.ironMined;
+  _zoneMiningMs = s.miningMs;
+  _lastMigrationAt = s.lastMigrationAt;
+}
+
+/** Sérialise l'état de zone courant pour le mémo de base. */
+function _zoneStateNow() {
+  return {
+    anchoredAt: _zoneAnchoredAt, waterFails: _zoneWaterFails, logsNotFound: _zoneLogsNotFound,
+    ironMined: _zoneIronMined, miningMs: _zoneMiningMs, lastMigrationAt: _lastMigrationAt,
+  };
+}
+
+// ⚠️ L'ÉTAT DE ZONE DOIT SURVIVRE AU PROCESS — c'est LA raison pour laquelle la migration n'a
+// jamais tiré de la journée du 27/07. L'horloge et les compteurs vivaient ici, en mémoire de
+// process, alors que le self-healing relance un bot toutes les quelques minutes : chaque respawn
+// les remettait à zéro et l'hystérésis de 15 min n'était JAMAIS atteinte (verdict bloqué sur
+// `too_soon` en permanence). Même classe que les pièges #52 et #63, documentés le matin même.
+
+/** Charge l'état de zone depuis le mémo de base (horloge CONTINUE), ou en démarre un frais. */
+function loadZoneState() {
+  const st = loadBaseState();
+  _applyZoneState(zoneStateLoad(st && st.zone, Date.now()));
+}
+
+/** Persiste l'état de zone dans le mémo de base (à côté de la dette de mort). */
+function persistZoneState() {
+  const st = loadBaseState() || {};
+  saveBaseState(Object.assign({}, st, { zone: _zoneStateNow() }));
+}
+
 /** Remet les compteurs à zéro : la zone jugée est celle où l'on vient de s'ancrer. */
 function resetZoneCounters(now) {
-  _zoneAnchoredAt = now || Date.now();
-  _zoneWaterFails = 0;
-  _zoneLogsNotFound = 0;
-  _zoneIronMined = 0;
-  _zoneMiningMs = 0;
+  _applyZoneState(zoneStateInit(now || Date.now()));
   _descendWaterFails = 0;
+  persistZoneState();
 }
 
 /** Buts qui MINENT : leur durée est le dénominateur du rendement de la zone (verdict 'exhausted'). */
@@ -1600,8 +1639,9 @@ async function migrateZone(reason) {
       _anchorSet = true;
       bot._mcaExploreBounds = { x: base.x, z: base.z, radius: Math.max(_confineDyn.radius * 2, 128) };
       _workSet = false;                            // l'ancien chantier est à l'autre bout du monde
-      _lastMigrationAt = Date.now();
-      resetZoneCounters(_lastMigrationAt);
+      _applyZoneState(zoneStateAfterMigration(Date.now()));
+      _descendWaterFails = 0;
+      persistZoneState();
       emit({
         type: 'zone_migrated', reason,
         fromX: Math.round(from.x), fromZ: Math.round(from.z),
@@ -1682,6 +1722,7 @@ function checkZoneVerdict() {
     ironMined: _zoneIronMined, miningMinutes: Math.round(_zoneMiningMs / 60000),
     depletedNear, dryCellKnown,
   });
+  persistZoneState();          // les compteurs accumulés doivent survivre au prochain respawn
   if (v.verdict === 'migrate') migrateZone(v.reason).catch(() => {});
 }
 
@@ -3897,6 +3938,21 @@ async function onSpawn() {
       panicCooldownMs: 8000,
       onWaterStuck: () => {
         if (waterRescue) return;
+        // EN SURFACE, TOMBER DANS L'EAU N'EST PAS UNE URGENCE (Massii, 27/07 : « s'ils tombent
+        // dans l'eau à la surface c'est bon, ils doivent juste remonter et sortir de l'eau »).
+        // Toute la machinerie de sauvetage (comptage, warp `/home safe`, abandon du chantier)
+        // existe pour les AQUIFÈRES SOUTERRAINS, où le bot est piégé sans issue. À ciel ouvert
+        // il lui suffit de nager : warper serait perdre son travail pour un non-problème.
+        const _pw = bot.entity && bot.entity.position;
+        const _o2s = bot.oxygenLevel;
+        const surfaceWater = _pw && _pw.y >= 58 && !(typeof _o2s === 'number' && _o2s <= 6);
+        if (surfaceWater) {
+          waterRescue = (async () => {
+            try { await escapeWater(bot, { emit }); } catch (e) { /* best-effort */ }
+            emit({ type: 'water_surface_swim_out' });
+          })().finally(() => { waterRescue = null; });
+          return;
+        }
         // Escapade LOCALE par défaut (RESTER au fond). Le warp-vers-surface détruisait la productivité :
         // un bot productif à y-58 touche un aquifère → warp en surface LOINTAINE → re-descente complète →
         // re-eau → boucle, diamants stagnants (vécu live : 0 progrès diamant en 20 min, tous en boucle).
@@ -4023,7 +4079,7 @@ async function onSpawn() {
               bot._mcaExploreBounds = { x: eff.x, z: eff.z, radius: Math.max(eff.radius * 2, 128) };  // borne explore = poche confine (#54)
               emit({ type: 'confine_anchored', x: eff.x, z: eff.z, radius: eff.radius, static: !!CONFINE });
               // Les compteurs de zone jugent la zone où l'on vient de s'ancrer : on repart de zéro.
-              if (!_zoneAnchoredAt) resetZoneCounters(Date.now());
+              if (!_zoneAnchoredAt) loadZoneState();   // reprend l'horloge persistée, ne la remet pas à zéro
               tryEstablishCamp().catch(() => {});
             }
           }
@@ -4322,9 +4378,9 @@ bot.loadPlugin(collectBlock);
 
 bot.on('spawn', () => {
   _floatSettleUntil = Date.now() + 15000;
-  // L'horloge de zone démarre au PREMIER spawn, pas à l'ancrage : un bot qui n'arrive jamais à
-  // s'ancrer (zone rasée) doit quand même pouvoir juger sa zone et la quitter.
-  if (!_zoneAnchoredAt) resetZoneCounters(Date.now());
+  // L'état de zone est REPRIS du mémo, jamais réinitialisé : son horloge doit traverser les
+  // respawns, sinon l'hystérésis de 15 min n'est jamais atteinte (le bot respawn plus souvent).
+  if (!_zoneAnchoredAt) loadZoneState();
   survivalKitUp().catch(() => {});
   onSpawn().catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
 });

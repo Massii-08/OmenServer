@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const {
   zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, minDistFor, zoneFailureKind,
+  zoneStateInit, zoneStateLoad, zoneStateAfterMigration,
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX, MIGRATE_MIN_DIST, MIGRATE_MAX_DIST,
   MIGRATE_FAR_MIN_DIST,
@@ -299,4 +300,46 @@ test('un echec sans rapport avec la zone ne compte pas', () => {
 test('not_found n accuse la zone que sur un but de bois', () => {
   assert.strictEqual(zoneFailureKind('planks', 'not_found'), 'wood');
   assert.strictEqual(zoneFailureKind('cobble_furnace', 'not_found'), null);
+});
+
+// ─── L ETAT DE ZONE DOIT SURVIVRE AU PROCESS (cause racine, 27/07 soir) ─────────────────────────
+// La migration n a JAMAIS tire de la journee alors que la flotte etait visiblement noyee
+// (descend_y16 water_ahead 77-82 %, ~20 sauvetages eau par session). Raison : l horloge de zone
+// et les compteurs vivaient dans le PROCESS, or le self-healing relance un bot toutes les quelques
+// minutes -> chaque respawn les remettait a zero -> l hysteresis de 15 min n etait JAMAIS atteinte.
+// Meme classe que les pieges #52 et #63 : une memoire d echec par process ne sert a rien quand les
+// sessions redemarrent sans cesse. L etat doit vivre dans le memo de base, comme la dette de mort.
+
+test('etat de zone : un etat frais demarre l horloge maintenant', () => {
+  const s = zoneStateInit(1000);
+  assert.strictEqual(s.anchoredAt, 1000);
+  assert.strictEqual(s.waterFails, 0);
+  assert.strictEqual(s.logsNotFound, 0);
+  assert.strictEqual(s.lastMigrationAt, 0);
+});
+
+test('etat de zone : un etat persiste est REPRIS tel quel (l horloge continue)', () => {
+  const saved = { anchoredAt: 500, waterFails: 4, logsNotFound: 2, ironMined: 7, miningMs: 60000, lastMigrationAt: 300 };
+  const s = zoneStateLoad(saved, 999999);
+  assert.strictEqual(s.anchoredAt, 500, 'l horloge ne doit PAS repartir de zero au respawn');
+  assert.strictEqual(s.waterFails, 4);
+  assert.strictEqual(s.logsNotFound, 2);
+});
+
+test('etat de zone : un etat corrompu ou absent retombe sur un etat frais', () => {
+  assert.strictEqual(zoneStateLoad(null, 1000).anchoredAt, 1000);
+  assert.strictEqual(zoneStateLoad({}, 1000).anchoredAt, 1000);
+  assert.strictEqual(zoneStateLoad({ anchoredAt: 'x' }, 1000).anchoredAt, 1000);
+});
+
+// Une horloge venue du futur (changement d heure, memo d un autre monde) ne doit pas geler la zone.
+test('etat de zone : une horloge dans le futur est reinitialisee', () => {
+  assert.strictEqual(zoneStateLoad({ anchoredAt: 5000 }, 1000).anchoredAt, 1000);
+});
+
+test('etat de zone : apres migration, tout repart de zero SAUF le cooldown', () => {
+  const s = zoneStateAfterMigration(7000);
+  assert.strictEqual(s.anchoredAt, 7000);
+  assert.strictEqual(s.waterFails, 0);
+  assert.strictEqual(s.lastMigrationAt, 7000, 'le cooldown doit courir depuis la migration');
 });
