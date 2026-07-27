@@ -1657,7 +1657,7 @@ async function migrateZone(reason) {
       const pAfter = bot.entity && bot.entity.position;
       const moved = pAfter ? Math.hypot(pAfter.x - travelFrom.x, pAfter.z - travelFrom.z) : 0;
       if (moved < MIGRATE_MIN_PROGRESS) {
-        emit({ type: 'zone_migration_hop_failed', moved: Math.round(moved), toX: target.x, toZ: target.z });
+        if (hops) emit({ type: 'zone_migration_hop_failed', moved: Math.round(moved), toX: target.x, toZ: target.z });
         const heading = Math.atan2(target.z - travelFrom.z, target.x - travelFrom.x);
         for (let i = 0; i < MAX_LEGS && !taskToken.cancelled; i++) {
           const pl = bot.entity && bot.entity.position;
@@ -1669,7 +1669,13 @@ async function migrateZone(reason) {
           _migrationLegs = i + 1;
           const pn = bot.entity && bot.entity.position;
           if (pn && Math.hypot(pn.x - target.x, pn.z - target.z) <= 48) break;   // arrivé
-          if (pn && legIsGood(probeTerrain())) break;                            // déjà bon ici
+          // ⚠️ « le terrain est bon ici » ne peut sortir de la boucle QU APRES avoir vraiment
+          // bouge (mesure live : `zone_migration_legs dist:297` puis `moved: 0`). Au point de
+          // depart le bot est a sa base, souvent avec des arbres en vue → `legIsGood` etait vrai
+          // des la premiere iteration et cassait la marche AVANT le moindre pas. Or la zone vient
+          // precisement d etre jugee sans bois : ce qu il voit ne suffit pas, il doit partir.
+          const gone = pn ? Math.hypot(pn.x - travelFrom.x, pn.z - travelFrom.z) : 0;
+          if (pn && gone >= MIGRATE_MIN_PROGRESS && legIsGood(probeTerrain())) break;
         }
       }
     } else {
