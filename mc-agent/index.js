@@ -72,7 +72,7 @@ const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTA
 // n'était jamais atteinte — c'est pourquoi la migration n'a jamais tiré de la journée.
 const {
   zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, minDistFor,
-  zoneFailureKind, zoneStateInit, zoneStateLoad, zoneStateAfterMigration, MAX_LEGS,
+  zoneFailureKind, zoneStateInit, zoneStateLoad, zoneStateAfterMigration, MAX_LEGS, MIGRATE_MIN_PROGRESS,
 } = require('./zone');
 const { recordWorkDrown, noteDrownedSite, isDrownedNear, offsetFromDrowned } = require('./workDrown'); // chantier adjacent à un aquifère → abandon + BANNISSEMENT du lieu (3a)
 const { recordWorkStuck } = require('./workStuck'); // chantier menant à une impasse SÈCHE (drop_ahead/max_depth) → abandon+relocate (live 27/07 world_mn9)
@@ -1601,6 +1601,31 @@ async function migrateZone(reason) {
           bot.pathfinder.goto(new pfGoals.GoalNearXZ(target.x, target.z, 24)),
           120000, () => { try { stopMotion(); } catch (e) {} });
       }
+      // ⚠️ UN GOTO QUI ÉCHOUE NE DOIT PAS PASSER POUR UNE MIGRATION (mesuré live sur world_mn11 :
+      // `zone_migration_start` vers une forêt à 236 blocs, puis `zone_migrated dist:2 took_s:3`).
+      // Le pathfinder rend `NoPath` en quelques secondes sur une cible lointaine (chunks non
+      // chargés) ; on tombait alors dans la branche « arrivée » et on re-ancrait la base 2 blocs
+      // plus loin — le bot restait dans la zone morte EN CROYANT avoir déménagé, cooldown brûlé.
+      // Si on n'a pas vraiment avancé, on bascule sur la marche par JAMBES : des sauts de 128
+      // blocs que le pathfinder sait faire, dans la direction de la cible.
+      const pAfter = bot.entity && bot.entity.position;
+      const moved = pAfter ? Math.hypot(pAfter.x - from.x, pAfter.z - from.z) : 0;
+      if (moved < MIGRATE_MIN_PROGRESS) {
+        emit({ type: 'zone_migration_hop_failed', moved: Math.round(moved), toX: target.x, toZ: target.z });
+        const heading = Math.atan2(target.z - from.z, target.x - from.x);
+        for (let i = 0; i < MAX_LEGS && !taskToken.cancelled; i++) {
+          const pl = bot.entity && bot.entity.position;
+          const leg = migrationLeg({ from: pl ? { x: pl.x, z: pl.z } : from, heading, legs: i });
+          if (!leg) break;
+          await withTimeout(
+            bot.pathfinder.goto(new pfGoals.GoalNearXZ(leg.x, leg.z, 16)),
+            90000, () => { try { stopMotion(); } catch (e) {} });
+          _migrationLegs = i + 1;
+          const pn = bot.entity && bot.entity.position;
+          if (pn && Math.hypot(pn.x - target.x, pn.z - target.z) <= 48) break;   // arrivé
+          if (pn && legIsGood(probeTerrain())) break;                            // déjà bon ici
+        }
+      }
     } else {
       // MARCHE À L'AVEUGLE : on continue tant que le terrain n'est pas bon, cap total borné.
       const heading = basecamp.headingForName(bot.username, 3);
@@ -1637,13 +1662,16 @@ async function migrateZone(reason) {
     }
     const p2 = bot.entity && bot.entity.position;
     const p2wet = !!(p2 && isInWater(bot));
+    // On n'ancre une NOUVELLE base que si on a réellement déménagé : sans ça un goto raté
+    // re-posait la base à 2 blocs et consommait le cooldown (bug mesuré sur world_mn11).
+    const reallyMoved = p2 ? Math.hypot(p2.x - from.x, p2.z - from.z) >= MIGRATE_MIN_PROGRESS : false;
     // ⚠️ SURFACE OBLIGATOIRE (bugfix world_mn10, 27/07) : `safe`/base/spawnpoint ne s'ancrent QUE
     // sur une vraie surface sèche. Une « migration » à l'aveugle (cible null → aucun déplacement,
     // dist ~11 blocs) laissait le mineur À SA POSITION SOUTERRAINE (y=-7) ; l'ancienne garde ne
     // testait que `!isInWater` → base sous terre → /home safe noyé → jamais de bois → `logs
     // not_found` 98.9 %, done figé à 0. Sous terre on traite la migration comme NON aboutie (le
     // bot garde son safe de surface précédent) — cf. isSurfaceSpot dans homes.js.
-    if (p2 && isSurfaceSpot({ y: p2.y, inWater: p2wet })) {
+    if (p2 && reallyMoved && isSurfaceSpot({ y: p2.y, inWater: p2wet })) {
       // « Il enlève leur vieux home et il le remet au nouveau safe place » (Massii, 27/07).
       // Le `work` DOIT partir : il pointe sur le chantier de la zone qu'on vient d'abandonner —
       // le laisser en place, c'est garder un `/home work` qui re-téléporte à des centaines de

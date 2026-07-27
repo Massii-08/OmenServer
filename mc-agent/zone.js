@@ -60,6 +60,12 @@ function minDistFor(reason) {
   return _FAR_REASONS.has(reason) ? MIGRATE_FAR_MIN_DIST : MIGRATE_MIN_DIST;
 }
 
+// Distance minimale pour qu'un déplacement COMPTE comme une migration (mesuré live world_mn11 :
+// un `zone_migrated dist:2 took_s:3` — le pathfinder avait rendu NoPath en 3 s sur une cible à
+// 236 blocs, et le bot re-ancrait sa base 2 blocs plus loin en croyant avoir déménagé, cooldown
+// brûlé, toujours dans la zone morte). En deçà, ce n'est pas un déménagement.
+const MIGRATE_MIN_PROGRESS = 64;
+
 // Marche à l'aveugle (carte encore vide) : jambes courtes, vérifiées, et un cap TOTAL.
 const LEG_DIST = 128;
 const MAX_LEGS = 12;               // 12 × 128 ≈ 1536 blocs, cohérent avec MIGRATE_MAX_DIST
@@ -303,6 +309,6 @@ module.exports = {
   zoneStateInit, zoneStateLoad, zoneStateAfterMigration,
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX,
-  MIGRATE_MIN_DIST, MIGRATE_MAX_DIST, MIGRATE_FAR_MIN_DIST, LEG_DIST, MAX_LEGS,
+  MIGRATE_MIN_DIST, MIGRATE_MAX_DIST, MIGRATE_FAR_MIN_DIST, MIGRATE_MIN_PROGRESS, LEG_DIST, MAX_LEGS,
   OVERWHELMING_FACTOR, MIN_MINUTES_URGENT, COOLDOWN_URGENT_MS,
 };
