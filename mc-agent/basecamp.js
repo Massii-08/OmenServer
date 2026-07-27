@@ -31,6 +31,9 @@ const BASE_DIST = 120;
 const BASE_MAX_DIST = 260;
 // En-dessous de ce rayon autour de sa base, le bot est « chez lui » (pas de /home inutile).
 const HOME_RADIUS = 40;
+// Seuil « surface » (même valeur que homes.SAFE_HOME_MIN_Y / confine.js) : une base persistée sous
+// ce Y est souterraine → `/home safe` mortel → re-établissement forcé au respawn.
+const SURFACE_MIN_Y = 58;
 
 function _horiz(ax, az, bx, bz) { return Math.hypot(ax - bx, az - bz); }
 
@@ -141,8 +144,14 @@ function pickBaseSpot({
  *                 après une mort) → /home safe pour rentrer chez lui ;
  *   'stay'      → il est déjà chez lui (ou position inconnue : on ne décide rien de risqué).
  */
-function spawnAction({ base, pos, spawn, minDist = MIN_BASE_DIST, homeRadius = HOME_RADIUS } = {}) {
+function spawnAction({
+  base, pos, spawn, minDist = MIN_BASE_DIST, homeRadius = HOME_RADIUS, minSurfaceY = SURFACE_MIN_Y,
+} = {}) {
   if (needsBase({ base, spawn, minDist })) return 'establish';
+  // Base persistée SOUS TERRE (bugfix world_mn10, 27/07) : une migration ratée avait ancré `safe`/
+  // base à y=-7 → `/home safe` noyé, jamais de bois. On RE-ÉTABLIT en surface (establishBase repose
+  // /spawnpoint + safe au sec). `y` absent (memo historique) → on ne force rien (rétro-compat).
+  if (Number.isFinite(base.y) && base.y < minSurfaceY) return 'establish';
   if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.z)) return 'stay';
   return _horiz(pos.x, pos.z, base.x, base.z) <= homeRadius ? 'stay' : 'return';
 }

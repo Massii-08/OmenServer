@@ -194,6 +194,24 @@ test('spawnAction : base collée au spawn du monde → establish (on la re-pose 
   );
 });
 
+// Bugfix world_mn10 (27/07) : une migration ratée avait ancré des bases SOUS TERRE (y=-7). Un tel
+// `safe` rend `/home safe` mortel (eau souterraine) → jamais de bois. Une base souterraine persistée
+// doit être RE-ÉTABLIE en surface au respawn (establishBase repose /spawnpoint + safe au sec).
+test('spawnAction : base persistee SOUS TERRE (y<58) → establish (on la re-pose en surface)', () => {
+  const base = { x: 150, y: -7, z: 0 };
+  assert.strictEqual(spawnAction({ base, pos: { x: 152, z: 3 }, spawn: SPAWN }), 'establish');
+});
+
+test('spawnAction : base EN SURFACE (y>=58) et bot chez lui → stay (inchange)', () => {
+  const base = { x: 150, y: 68, z: 0 };
+  assert.strictEqual(spawnAction({ base, pos: { x: 152, z: 3 }, spawn: SPAWN }), 'stay');
+});
+
+test('spawnAction : base sans y (memo historique) → comportement inchange (pas de re-establish force)', () => {
+  const base = { x: 150, z: 0 };
+  assert.strictEqual(spawnAction({ base, pos: { x: 152, z: 3 }, spawn: SPAWN }), 'stay');
+});
+
 test('spawnAction : homeRadius surchargeable', () => {
   const base = { x: 150, z: 0 };
   assert.strictEqual(spawnAction({ base, pos: { x: 190, z: 0 }, spawn: SPAWN, homeRadius: 64 }), 'stay');

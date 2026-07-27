@@ -79,7 +79,7 @@ const { recordWorkStuck } = require('./workStuck'); // chantier menant à une im
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
 // de mort. Le serveur n'autorise que 3 homes et le code en posait 4 → un /sethome échouait EN
 // SILENCE sur chaque bot (bug prouvé world_mn5). Voir homes.js.
-const { HOME_SAFE, HOME_WORK, HOME_DEATH, LEGACY_HOMES, canBookmarkDeath, openDebt, debtAction } = require('./homes');
+const { HOME_SAFE, HOME_WORK, HOME_DEATH, LEGACY_HOMES, canBookmarkDeath, openDebt, debtAction, isSurfaceSpot, SAFE_HOME_MIN_Y } = require('./homes');
 const { recordJam } = require('./jamEscalate'); // JAM persistant au MÊME endroit → relocate forcé (live 22/06 SOIR ResBot2)
 const { runResource } = require('./skills/resource');
 const { planSmeltRaw } = require('./bank');   // fonte périodique du brut or/fer → lingots bankables
@@ -1617,7 +1617,14 @@ async function migrateZone(reason) {
     // persisté fait que tout respawn (self-healing compris) repartira d'ICI — c'est la pièce qui
     // manquait aux deux tentatives précédentes (split-brain confine).
     const p2 = bot.entity && bot.entity.position;
-    if (p2 && !isInWater(bot)) {
+    const p2wet = !!(p2 && isInWater(bot));
+    // ⚠️ SURFACE OBLIGATOIRE (bugfix world_mn10, 27/07) : `safe`/base/spawnpoint ne s'ancrent QUE
+    // sur une vraie surface sèche. Une « migration » à l'aveugle (cible null → aucun déplacement,
+    // dist ~11 blocs) laissait le mineur À SA POSITION SOUTERRAINE (y=-7) ; l'ancienne garde ne
+    // testait que `!isInWater` → base sous terre → /home safe noyé → jamais de bois → `logs
+    // not_found` 98.9 %, done figé à 0. Sous terre on traite la migration comme NON aboutie (le
+    // bot garde son safe de surface précédent) — cf. isSurfaceSpot dans homes.js.
+    if (p2 && isSurfaceSpot({ y: p2.y, inWater: p2wet })) {
       // « Il enlève leur vieux home et il le remet au nouveau safe place » (Massii, 27/07).
       // Le `work` DOIT partir : il pointe sur le chantier de la zone qu'on vient d'abandonner —
       // le laisser en place, c'est garder un `/home work` qui re-téléporte à des centaines de
@@ -1650,10 +1657,14 @@ async function migrateZone(reason) {
         took_s: Math.round((Date.now() - t0) / 1000),
       });
     } else {
-      // Arrivée dans l'eau ou position illisible : on NE pose PAS la base (un home mouillé rend
-      // tous les /home morts). Le cooldown court quand même — on ne relance pas un trek dans la foulée.
+      // Arrivée dans l'eau, SOUS TERRE, ou position illisible : on NE pose PAS la base (un home
+      // mouillé/souterrain rend `/home safe` mortel). Le cooldown court quand même — on ne relance
+      // pas un trek dans la foulée, et le bot garde son safe de surface précédent.
       _lastMigrationAt = Date.now();
-      emit({ type: 'zone_migration_failed', reason, wet: !!(p2 && isInWater(bot)) });
+      emit({
+        type: 'zone_migration_failed', reason, wet: p2wet,
+        underground: !!(p2 && !p2wet && p2.y < SAFE_HOME_MIN_Y),
+      });
     }
   } catch (e) {
     _lastMigrationAt = Date.now();
@@ -2329,8 +2340,18 @@ async function establishBase(opts = {}) {
       { dist: 90, biomes: null },
       { dist: 70, biomes: null },
     ];
+    // « Assez loin » NE SUFFIT PAS : le spot doit aussi être EN SURFACE (bugfix world_mn10). Un bot
+    // recyclé sur sa base souterraine est déjà loin du spawn du monde → l'ancienne condition cassait
+    // la boucle sans marcher → il re-ancrait `safe` sous terre. On continue tant qu'on n'est pas à
+    // la fois assez loin ET au sec en surface.
+    const _atGoodSpot = () => {
+      const pp = bot.entity && bot.entity.position;
+      if (!pp) return false;
+      const wet = (function () { try { return isInWater(bot); } catch (e) { return false; } })();
+      return distFrom(pp) >= basecamp.MIN_BASE_DIST && isSurfaceSpot({ y: pp.y, inWater: wet });
+    };
     for (const plan of plans) {
-      if (distFrom(bot.entity && bot.entity.position) >= basecamp.MIN_BASE_DIST) break;
+      if (_atGoodSpot()) break;
       spot = basecamp.pickBaseSpot({
         spawn: origin, biomes: plan.biomes, depleted, heading, dist: plan.dist,
       });
@@ -2358,8 +2379,16 @@ async function establishBase(opts = {}) {
       });
       return;
     }
-    // Jamais les pieds dans l'eau : un home mouillé rend tous les /home safe morts (teleport-safety).
-    if (isInWater(bot)) { emit({ type: 'base_establish_failed', reason: 'wet' }); return; }
+    // Jamais sous terre ni les pieds dans l'eau : un home mouillé/souterrain rend tous les /home safe
+    // morts (teleport-safety) ET prive le bot de bois/table — c'est LE piège world_mn10. On refuse
+    // d'ancrer ici plutôt que d'empoisonner le safe ; le bot retentera au prochain spawn.
+    {
+      const _wet = (function () { try { return isInWater(bot); } catch (e) { return false; } })();
+      if (!isSurfaceSpot({ y: p.y, inWater: _wet })) {
+        emit({ type: 'base_establish_failed', reason: _wet ? 'wet' : 'underground', y: Math.round(p.y) });
+        return;
+      }
+    }
     homewarp.bookmark(bot, 'safe');
     _safeHomeSet = true;
     _safeHomeSurface = p.y >= 58;

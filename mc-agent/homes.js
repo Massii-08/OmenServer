@@ -28,6 +28,30 @@ const HOMES = [HOME_SAFE, HOME_WORK, HOME_DEATH];
  *  consommé leurs 3 slots avec les vieux noms et les `sethome safe/work` échouent en silence. */
 const LEGACY_HOMES = ['canchor', 'wsite'];
 
+// ─── Le home `safe` doit être EN SURFACE (bugfix world_mn10, 27/07) ──────────────────────────────
+// `safe` = LA BASE : on y remonte chercher le bois (arbres + table de craft) et c'est le point de
+// respawn (/spawnpoint). La migration de zone le re-posait à la position COURANTE du bot en ne
+// gardant QUE la garde `!isInWater` — un mineur à y=-7 qui « migrait » de 11 blocs (marche à
+// l'aveugle sans cible → aucun déplacement réel) re-ancrait sa base SOUS TERRE. Résultat mesuré
+// live sur world_mn10 : `/home safe` téléportait dans l'eau souterraine → water_rescue_home_safe en
+// boucle → jamais de bois → `logs not_found` 98.9 %, done figé à 0, armure qui s'érode. Le lieu où
+// l'on pose `safe`/base/spawnpoint DOIT passer ce prédicat.
+
+const SAFE_HOME_MIN_Y = 58;   // même seuil « surface » que partout ailleurs (confine.js, index.js)
+
+/**
+ * Ce spot convient-il pour ancrer le home `safe` / la base / le /spawnpoint ? (pur)
+ * Surface sèche uniquement : sous terre il n'y a NI bois NI table, et un home mouillé rend tous les
+ * /home morts (teleport-safety). `y` absent/non fini → refus (on ne pose pas un safe sur une
+ * lecture de position ratée).
+ * @param {{y?: number, inWater?: boolean}} s
+ */
+function isSurfaceSpot(s = {}) {
+  if (s && s.inWater) return false;
+  const y = s && s.y;
+  return typeof y === 'number' && Number.isFinite(y) && y >= SAFE_HOME_MIN_Y;
+}
+
 // ─── Garde lave sur la pose du home `death` ─────────────────────────────────────────────────────
 // Massii : « posé quand il va mourir (sauf si l'endroit est dans la lave) ». Revenir dans la lave
 // n'est pas une récupération, c'est une deuxième mort — et le loot y a de toute façon brûlé.
@@ -89,4 +113,5 @@ function debtAction(o = {}) {
 module.exports = {
   HOME_SAFE, HOME_WORK, HOME_DEATH, HOMES, LEGACY_HOMES,
   canBookmarkDeath, openDebt, debtAction, DEBT_TTL_MS,
+  isSurfaceSpot, SAFE_HOME_MIN_Y,
 };

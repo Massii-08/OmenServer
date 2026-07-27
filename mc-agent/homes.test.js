@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const {
   HOME_SAFE, HOME_WORK, HOME_DEATH, HOMES, LEGACY_HOMES,
   canBookmarkDeath, openDebt, debtAction, DEBT_TTL_MS,
+  isSurfaceSpot, SAFE_HOME_MIN_Y,
 } = require('./homes');
 
 // ─── Le contrat des 3 noms ──────────────────────────────────────────────────────────────────────
@@ -25,6 +26,34 @@ test('les anciens noms sont listes pour le menage au boot', () => {
 
 test('aucun nom legacy ne survit dans les noms actifs', () => {
   for (const l of LEGACY_HOMES) assert.ok(!HOMES.includes(l), l + ' ne doit plus etre actif');
+});
+
+// ─── Le home `safe` doit etre EN SURFACE (bugfix world_mn10, 27/07) ─────────────────────────────
+// `safe` = LA BASE : c'est la qu'on remonte chercher le bois (arbres + table de craft) et le point
+// de respawn (/spawnpoint). La migration de zone le re-posait a la position COURANTE du bot en ne
+// gardant QUE la garde `!isInWater` : un mineur a y=-7 qui « migrait » de 11 blocs re-ancrait sa
+// base SOUS TERRE -> /home safe teleportait dans l'eau souterraine -> noyade en boucle -> jamais de
+// bois -> `logs not_found` 98.9%, done fige a 0. Le lieu du `safe` doit passer ce predicat.
+
+test('surface : un spot a y>=58 au sec est valide pour le home safe', () => {
+  assert.strictEqual(isSurfaceSpot({ y: 64, inWater: false }), true);
+  assert.strictEqual(isSurfaceSpot({ y: SAFE_HOME_MIN_Y, inWater: false }), true);
+});
+
+test('surface : un spot SOUS TERRE (y<58) est refuse meme au sec', () => {
+  assert.strictEqual(isSurfaceSpot({ y: -7, inWater: false }), false);
+  assert.strictEqual(isSurfaceSpot({ y: 57, inWater: false }), false);
+  assert.strictEqual(isSurfaceSpot({ y: 15, inWater: false }), false);
+});
+
+test('surface : un spot dans l eau est refuse meme en surface (home mouille = /home mort)', () => {
+  assert.strictEqual(isSurfaceSpot({ y: 64, inWater: true }), false);
+});
+
+test('surface : y absent ou non fini => refuse (on ne pose pas un safe sur une lecture ratee)', () => {
+  assert.strictEqual(isSurfaceSpot({ inWater: false }), false);
+  assert.strictEqual(isSurfaceSpot({ y: NaN, inWater: false }), false);
+  assert.strictEqual(isSurfaceSpot({}), false);
 });
 
 // ─── Garde lave sur la pose du home death ───────────────────────────────────────────────────────
