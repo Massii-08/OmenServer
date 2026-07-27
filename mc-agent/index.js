@@ -1591,6 +1591,7 @@ async function migrateZone(reason) {
       source: target ? target.source : 'blind', biome: target ? target.biome : null,
     });
 
+    let travelFrom = { x: from.x, z: from.z };   // origine RÉELLE du voyage (mise à jour après la remontée)
     // L'ORDRE COMPTE : on remonte AVANT de voyager. Auparavant la remontée venait après les
     // tentatives de trajet — le bot tentait donc la traversée SOUS TERRE (NoPath quasi garanti sur
     // plusieurs centaines de blocs), remontait ensuite, et jugeait son arrivée là où il n'avait pas
@@ -1620,6 +1621,15 @@ async function migrateZone(reason) {
         }
       }
     }
+    // ⚠️ LE VOYAGE PART D'APRÈS LA REMONTÉE, PAS DE L'ANCRE (bug créé par le correctif précédent,
+    // vu live : `zone_migrated dist:123 took_s:0` alors que la cible était à l'OPPOSÉ). Le
+    // `/home safe` de remontée déplace le bot de plusieurs dizaines de blocs ; mesuré depuis
+    // l'ancre, ce simple retour à la maison passait pour un déménagement réussi — le bot se
+    // ré-ancrait sur son ANCIENNE base et brûlait le cooldown sans avoir bougé d'un pouce.
+    {
+      const pT = bot.entity && bot.entity.position;
+      if (pT) travelFrom = { x: pT.x, z: pT.z };
+    }
     if (target) {
       // Trajet borné et découpé : un goto unique de 1500 blocs ne rend jamais la main proprement.
       for (let hop = 0; hop < 6 && !taskToken.cancelled; hop++) {
@@ -1638,10 +1648,10 @@ async function migrateZone(reason) {
       // Si on n'a pas vraiment avancé, on bascule sur la marche par JAMBES : des sauts de 128
       // blocs que le pathfinder sait faire, dans la direction de la cible.
       const pAfter = bot.entity && bot.entity.position;
-      const moved = pAfter ? Math.hypot(pAfter.x - from.x, pAfter.z - from.z) : 0;
+      const moved = pAfter ? Math.hypot(pAfter.x - travelFrom.x, pAfter.z - travelFrom.z) : 0;
       if (moved < MIGRATE_MIN_PROGRESS) {
         emit({ type: 'zone_migration_hop_failed', moved: Math.round(moved), toX: target.x, toZ: target.z });
-        const heading = Math.atan2(target.z - from.z, target.x - from.x);
+        const heading = Math.atan2(target.z - travelFrom.z, target.x - travelFrom.x);
         for (let i = 0; i < MAX_LEGS && !taskToken.cancelled; i++) {
           const pl = bot.entity && bot.entity.position;
           const leg = migrationLeg({ from: pl ? { x: pl.x, z: pl.z } : from, heading, legs: i });
@@ -1677,7 +1687,7 @@ async function migrateZone(reason) {
     const p2wet = !!(p2 && isInWater(bot));
     // On n'ancre une NOUVELLE base que si on a réellement déménagé : sans ça un goto raté
     // re-posait la base à 2 blocs et consommait le cooldown (bug mesuré sur world_mn11).
-    const reallyMoved = p2 ? Math.hypot(p2.x - from.x, p2.z - from.z) >= MIGRATE_MIN_PROGRESS : false;
+    const reallyMoved = p2 ? Math.hypot(p2.x - travelFrom.x, p2.z - travelFrom.z) >= MIGRATE_MIN_PROGRESS : false;
     // ⚠️ SURFACE OBLIGATOIRE (bugfix world_mn10, 27/07) : `safe`/base/spawnpoint ne s'ancrent QUE
     // sur une vraie surface sèche. Une « migration » à l'aveugle (cible null → aucun déplacement,
     // dist ~11 blocs) laissait le mineur À SA POSITION SOUTERRAINE (y=-7) ; l'ancienne garde ne
