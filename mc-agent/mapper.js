@@ -489,6 +489,23 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
       try { await clearSnares(bot); } catch (e2) {}
       heading = clampToSector(_norm(heading + Math.PI / 2 + rng() * Math.PI), sec);
       emit({ type: 'mapper_turn', reason: 'unreachable', streak: failStreak });
+      // ÉCHAPPEMENT (miroir du blockedStreak océan) : un mappeur PIÉGÉ (trou/mur/grotte, terrain
+      // montagneux) voit CHAQUE jambe rejetée par le pathfinder. SANS issue ni throttle, failStreak
+      // grimpait à >12 000 en martelant doGoto ~39×/s (vécu world_mn9 : 109 851 rejets pour 16
+      // arrivées → event-loop saturée, cf. #43a — risque de freeze serveur pour TOUS les bots).
+      // Au seuil : saut de RELOCALISATION long (cap frais, sans veto eau, comme la traversée d'île)
+      // + reset du streak. Sinon : throttle pour ne jamais hot-looper.
+      if (failStreak >= (opts.unreachableEscape || 6)) {
+        const escHeading = clampToSector(drawHeading(rng, sec, opts.overlapDeg), sec);
+        const esc = legTarget(here, escHeading, rng, { minDist: 100, maxDist: 160 });
+        emit({ type: 'mapper_relocate', reason: 'trapped', streak: failStreak });
+        try { await doGoto({ x: esc.x, y: here.y, z: esc.z }); } catch (e2) { /* escapeWater relaie */ }
+        heading = escHeading;
+        failStreak = 0;
+        record();
+        continue;
+      }
+      await sleep(opts.unreachableSleepMs != null ? opts.unreachableSleepMs : 300);
       continue;
     }
     failStreak = 0;

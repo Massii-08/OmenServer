@@ -576,9 +576,9 @@ test('MAPPER_ARMOR_CHAIN: cible + pioche pierre en poche → on descend (le gard
   assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx).name, 'gift_descend');
 });
 
-test('MAPPER_ARMOR_CHAIN: en profondeur avec fer brut ET combustible → il faut fondre', () => {
-  // Avec du charbon en poche (assez pour fondre le set), la fonte est le prochain but.
-  const ctx = { inv: { raw_iron: GIFT_SET_INGOTS, coal: 4 }, y: 16, mapperTarget: 'MapBot1', giftReady: false };
+test('MAPPER_ARMOR_CHAIN: en profondeur avec fer brut, combustible ET four → il faut fondre', () => {
+  // Avec du charbon en poche (assez pour fondre le set) ET un four en poche, la fonte est le but.
+  const ctx = { inv: { raw_iron: GIFT_SET_INGOTS, coal: 4, furnace: 1 }, y: 16, mapperTarget: 'MapBot1', giftReady: false };
   assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx).name, 'gift_smelt');
 });
 
@@ -587,6 +587,16 @@ test('MAPPER_ARMOR_CHAIN: fer brut mais AUCUN combustible en profondeur → but 
   const g = firstUnmet(MAPPER_ARMOR_CHAIN, ctx);
   assert.notStrictEqual(g, null);
   assert.notStrictEqual(g.skill, 'smeltIron'); // ne DOIT PAS boucler sur la fonte sans combustible
+});
+
+test('MAPPER_ARMOR_CHAIN: fer + combustible mais AUCUN four → but four, PAS gift_smelt (fix boucle no_furnace)', () => {
+  // Un worker qui a laissé son four derrière (reclaim_failed) bouclait gift_smelt → no_furnace à
+  // l'infini (mesuré world_mn9 27/07 : NethBot2 respawn-loop, 64 iron_surplus/no_furnace). La
+  // chaîne d'entraide n'avait AUCUN but four avant la fonte (contrairement à IRON_ARMOR_CHAIN).
+  const ctx = { inv: { raw_iron: GIFT_SET_INGOTS, coal: 4 }, y: 16, mapperTarget: 'MapBot1', giftReady: false };
+  const g = firstUnmet(MAPPER_ARMOR_CHAIN, ctx);
+  assert.notStrictEqual(g, null);
+  assert.notStrictEqual(g.skill, 'smeltIron'); // ne DOIT PAS boucler sur la fonte sans four
 });
 
 test('MAPPER_ARMOR_CHAIN: lingots fondus → forger le set', () => {
@@ -611,14 +621,28 @@ test('IRON_HELP_CHAIN: fer minoré mais AUCUN combustible → but combustible, P
   assert.notStrictEqual(g.skill, 'smeltIron');
 });
 
-test('IRON_HELP_CHAIN: fer + charbon suffisant → iron_surplus (la fonte peut avoir lieu)', () => {
-  const ctx = { y: 16, inv: { raw_iron: HELP_STOCK, coal: 2 } };
+test('IRON_HELP_CHAIN: fer + charbon + four suffisant → iron_surplus (la fonte peut avoir lieu)', () => {
+  const ctx = { y: 16, inv: { raw_iron: HELP_STOCK, coal: 2, furnace: 1 } };
   assert.strictEqual(firstUnmet(IRON_HELP_CHAIN, ctx).name, 'iron_surplus');
 });
 
-test('IRON_HELP_CHAIN: fer + planches suffisantes → iron_surplus (le bois est un combustible)', () => {
+test('IRON_HELP_CHAIN: fer + planches + four suffisants → iron_surplus (le bois est un combustible)', () => {
   // Le combustible n'est pas que le charbon : des planches en rab suffisent a debloquer la fonte.
-  const ctx = { y: 16, inv: { raw_iron: HELP_STOCK, oak_planks: 24 } };
+  const ctx = { y: 16, inv: { raw_iron: HELP_STOCK, oak_planks: 24, furnace: 1 } };
+  assert.strictEqual(firstUnmet(IRON_HELP_CHAIN, ctx).name, 'iron_surplus');
+});
+
+test('IRON_HELP_CHAIN: fer + combustible mais AUCUN four → but four, PAS iron_surplus (fix boucle no_furnace)', () => {
+  // Bot 4/4 qui a laissé son four derrière : smeltIron → no_furnace à l'infini (mesuré world_mn9
+  // 27/07, NethBot2 : 64 iron_surplus/no_furnace + respawn-loop desync). On exige un four d'abord.
+  const ctx = { y: 16, inv: { raw_iron: HELP_STOCK, coal: 2 } };
+  const g = firstUnmet(IRON_HELP_CHAIN, ctx);
+  assert.notStrictEqual(g, null);
+  assert.notStrictEqual(g.skill, 'smeltIron');
+});
+
+test('IRON_HELP_CHAIN: fer + combustible + four en poche → iron_surplus (le four débloque la fonte)', () => {
+  const ctx = { y: 16, inv: { raw_iron: HELP_STOCK, coal: 2, furnace: 1 } };
   assert.strictEqual(firstUnmet(IRON_HELP_CHAIN, ctx).name, 'iron_surplus');
 });
 
@@ -636,10 +660,10 @@ test('IRON_HELP_CHAIN: pioche pierre en poche → le garde pioche est franchi (o
   assert.strictEqual(firstUnmet(IRON_HELP_CHAIN, ctx).name, 'descend_y16');
 });
 
-test('IRON_HELP_CHAIN: pas de pioche MAIS fer brut déjà suffisant → garde pioche sauté (on fond, pas de re-mine)', () => {
+test('IRON_HELP_CHAIN: pas de pioche MAIS fer brut déjà suffisant (+ four + combustible) → garde pioche sauté (on fond, pas de re-mine)', () => {
   // Le bot a déjà de quoi livrer : inutile de refaire une pioche → help_pick est franchi et le
-  // planner passe directement à la fonte du surplus.
-  const ctx = { y: 16, inv: { raw_iron: HELP_STOCK, coal: 2 } };
+  // planner passe directement à la fonte du surplus (four + combustible en poche).
+  const ctx = { y: 16, inv: { raw_iron: HELP_STOCK, coal: 2, furnace: 1 } };
   assert.strictEqual(firstUnmet(IRON_HELP_CHAIN, ctx).name, 'iron_surplus');
 });
 

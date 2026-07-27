@@ -255,6 +255,39 @@ test('runMapper #5 : océan partout devant → tourne (mapper_turn/mapper_blocke
   assert.ok(events.some((e) => e.type === 'mapper_blocked'));
 });
 
+test('runMapper : mappeur PIÉGÉ (goto rejette toujours) → ÉCHAPPEMENT relocate + streak borné + throttle (anti hot-loop #43a)', async () => {
+  // terre partout, pas d'eau → on prend le chemin « inatteignable » (pas le blocage océan).
+  // Vécu world_mn9 : un mappeur muré en terrain montagneux martelait doGoto ~39×/s
+  // (109 851 rejets, 16 arrivées, streak >12 000) → event-loop saturée. Sans issue ni throttle.
+  const bot = fakeMapperBot();
+  const events = [];
+  let sleeps = 0;
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: (e) => {
+      events.push(e);
+      if (events.some((x) => x.type === 'mapper_relocate') ||
+          events.filter((x) => x.type === 'mapper_turn' && x.reason === 'unreachable').length >= 40) {
+        token.cancelled = true;
+      }
+    },
+    goto: async () => { throw new Error('no path'); },  // bot muré : chaque jambe rejetée
+    sleep: async () => { sleeps++; },                   // le throttle DOIT être appelé
+  }, token);
+
+  // 1) un échappement de relocalisation a été déclenché (sinon spin infini)
+  assert.ok(events.some((e) => e.type === 'mapper_relocate'),
+    'aucun mapper_relocate : le mappeur piégé spinne sans issue');
+  // 2) le streak inatteignable reste BORNÉ (réinitialisé à l'échappement)
+  const maxStreak = Math.max(0, ...events
+    .filter((e) => e.type === 'mapper_turn' && e.reason === 'unreachable')
+    .map((e) => e.streak));
+  assert.ok(maxStreak <= 6, `streak non borné (${maxStreak}) : pas de réinitialisation`);
+  // 3) le hot-loop est throttlé (sleep appelé entre les échecs)
+  assert.ok(sleeps >= 1, 'aucun throttle sleep dans la boucle d\'échec → CPU hot-loop');
+});
+
 test('runMapper : survie prioritaire — hostile×3 → fuit avant de bouger (survivalTick branché)', async () => {
   const bot = fakeMapperBot();
   for (let i = 0; i < 3; i++) {

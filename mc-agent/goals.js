@@ -442,6 +442,17 @@ const IRON_HELP_CHAIN = [
     skill: 'gather',       args: { name: ['coal_ore', 'deepslate_coal_ore'], count: 4 } },
   { name: 'help_fuel',     met: (c) => fuelUnits(c) >= HELP_STOCK || invCount(c.inv, 'iron_ingot') >= HELP_STOCK,
     skill: 'gatherLog',    args: { count: 3 } },
+  // FOUR avant la fonte (fix world_mn9 27/07, meme cause que help_pick/help_coal) : la chaine
+  // d'entraide n'avait AUCUN but four avant smeltIron. Un bot 4/4 qui a laisse son four derriere
+  // (reclaim_failed, ou branch-mine >24 blocs plus loin que le four pose) bouclait
+  // `smeltIron → no_furnace` A L'INFINI (mesure world_mn9 : NethBot2 respawn-loop desync, 64
+  // iron_surplus/no_furnace en 30min, 0 livraison d'entraide). Mirror exact de IRON_ARMOR_CHAIN
+  // (armor_cobble/armor_furnace). Satisfiable-ou-sautable : four deja en poche OU fer deja fondu
+  // suffisant (plus rien a fondre) → chemin nominal inchange.
+  { name: 'help_cobble',   met: (c) => invCount(c.inv, 'cobblestone') >= 8 || F(c) || invCount(c.inv, 'iron_ingot') >= HELP_STOCK,
+    skill: 'gather',       args: { name: 'stone', count: 8 } },
+  { name: 'help_furnace',  met: (c) => F(c) || invCount(c.inv, 'iron_ingot') >= HELP_STOCK,
+    skill: 'craft',        args: { name: 'furnace', count: 1 } },
   { name: 'iron_surplus',  met: (c) => invCount(c.inv, 'iron_ingot') >= HELP_STOCK,
     skill: 'smeltIron',    args: { count: HELP_STOCK } },
 ];
@@ -482,6 +493,14 @@ const MAPPER_ARMOR_CHAIN = [
   { name: 'gift_fuel',    met: (c) => !c.mapperTarget || fuelUnits(c) >= GIFT_SET_INGOTS
                                        || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
     skill: 'gatherLog',    args: { count: 4 } },
+  // FOUR avant la fonte (fix world_mn9 27/07, meme cause que gift_pick/gift_coal) : sans but four,
+  // gift_smelt bouclait no_furnace des qu'un worker avait laisse son four derriere. Mirror exact de
+  // IRON_ARMOR_CHAIN. Sautable si pas de cible, four deja en poche, ou fer deja fondu suffisant.
+  { name: 'gift_cobble',  met: (c) => !c.mapperTarget || invCount(c.inv, 'cobblestone') >= 8 || F(c)
+                                       || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
+    skill: 'gather',       args: { name: 'stone', count: 8 } },
+  { name: 'gift_furnace', met: (c) => !c.mapperTarget || F(c) || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
+    skill: 'craft',        args: { name: 'furnace', count: 1 } },
   { name: 'gift_smelt',   met: (c) => !c.mapperTarget || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
     skill: 'smeltIron',    args: { count: GIFT_SET_INGOTS } },
   // Forge les 4 pièces EN POCHE (le worker porte déjà les siennes : les slots d'armure ne sont

@@ -54,6 +54,7 @@ const { _nearestTable, tablePlan, TABLE_REACH, TABLE_SEEK } = require('./skills/
 const { placeBlockNear } = require('./skills/placeBlockNear');
 const { smelt, logsToConvert } = require('./skills/smelt');
 const { descendDiagonal } = require('./skills/descendDiagonal');
+const { pickWornOutToReport } = require('./wornOut');
 const { branchMine, floodFillVein } = require('./skills/branchMine');
 const { caveHunt } = require('./skills/caveHunt');   // cave-first diamant (Massii 26/07)
 const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
@@ -66,6 +67,8 @@ const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync } = require('./unstuck');
 const deathzones = require('./deathzones'); // ban-zone des camps de mort (≥2 alertes → fuite active)
 const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTANTE → relocate forcé (live 22/06 ResBot1)
+const { recordWsiteDrown } = require('./wsiteDrown'); // wsite adjacent à un aquifère → abandon après N sauvetages-noyade (live 27/07 world_mn9)
+const { recordWsiteStuck } = require('./wsiteStuck'); // wsite menant à une impasse SÈCHE (drop_ahead/max_depth) → abandon+relocate (live 27/07 world_mn9)
 const { recordJam } = require('./jamEscalate'); // JAM persistant au MÊME endroit → relocate forcé (live 22/06 SOIR ResBot2)
 const { runResource } = require('./skills/resource');
 const { planSmeltRaw } = require('./bank');   // fonte périodique du brut or/fer → lingots bankables
@@ -206,9 +209,25 @@ const WOOD_GOALS = new Set(['logs', 'planks', 'plank_buffer', 'crafting_table', 
 let _lastWoodTripAt = 0;      // cooldown 2 min : un aller-retour surface ne doit pas boucler
 let _wsiteMineSet = false;    // NO_GIVE : chantier profond SEC mémorisé (/sethome wsite) → re-descente = /home wsite (1 tp)
                               // au lieu de re-creuser ~52 blocs (chaque re-descente cassait une pioche → no_pickaxe → fer jamais accumulé, vécu homedeath)
+let _wsiteDrownTimes = [];    // horodatages des sauvetages-noyade RAMENANT au wsite (live 27/07 world_mn9) : au seuil,
+                              // le wsite est adjacent à un aquifère → on l'abandonne (cf. wsiteDrown.js). Reset par spawn + bookmark frais.
+let _wsiteStuckTimes = [];    // horodatages des échecs de descente SECS (drop_ahead/max_depth/…) via le wsite (live 27/07
+                              // world_mn9 : NethBot4 en boucle 15× descend_via_home_wsite→drop_ahead) : au seuil, le wsite mène
+                              // à une impasse sèche → on l'abandonne + relocate (cf. wsiteStuck.js). Reset par spawn + bookmark frais.
+// Un sauvetage-noyade (/home safe) ramenant à un wsite mémorisé : si ça se répète (aquifère adjacent),
+// on OUBLIE le wsite (même effet que waterlocked_relocate) → la re-descente creuse un puits frais ailleurs,
+// au lieu de /home wsite → re-noyade en boucle (mesuré : 3/5 workers, 118 sauvetages, 0 minerai).
+function abandonWsiteIfDrowned() {
+  if (!_wsiteMineSet) { _wsiteDrownTimes = []; return; }
+  const r = recordWsiteDrown(_wsiteDrownTimes, Date.now());
+  _wsiteDrownTimes = r.times;
+  if (r.abandon) { _wsiteMineSet = false; emit({ type: 'wsite_abandoned_drowning' }); }
+}
 let _drySteerTries = 0;       // NO_GIVE : marches tentées vers la cellule 128 sèche (arrivée VÉRIFIÉE, ≤3 —
                               // vécu live NethBot2 : goto interrompu par un réflexe → « arrivé » à 180 blocs
                               // de la cible avec l'ancien one-shot → descente en zone humide quand même)
+let _wornOutReported = new Set();     // pièces d'ARMURE déjà signalées gear_worn_out (dédup, cf. wornOut.js)
+let _offhandWornReported = new Set();  // idem pour la MAIN SECONDAIRE (bouclier usé)
 let _deathMark = null;        // dernière position marquée death {x,y,z,at} → dédup anti-spam du watchdog
 let _imminentBusy = false;    // anti-rafale : un seul warp de sauvetage PV à la fois
 let _homeRefusedAt = {};      // RC3 : refus TP Essentials par home {safe|wsite|death → ts} — un /home
@@ -499,7 +518,10 @@ function ctxExtra() {
     const s = bot && bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
     // Un bouclier à bout de course = pas de bouclier : il vaut 1 lingot, on le remplace avant
     // qu'il ne casse au pire moment (il ANNULE le coup, c'est la pièce la plus rentable du run).
-    if (s && s.name && isNearlyBroken(s)) { emit({ type: 'gear_worn_out', item: s.name, slot: 'offhand' }); }
+    const obWorn = (s && s.name && isNearlyBroken(s)) ? [s.name] : [];
+    const or = pickWornOutToReport(obWorn, _offhandWornReported);   // dédup (cf. wornOut.js)
+    _offhandWornReported = or.reported;
+    for (const name of or.toEmit) emit({ type: 'gear_worn_out', item: name, slot: 'offhand' });
     offhand = (s && s.name && !isNearlyBroken(s)) ? s.name : null;
   } catch (e) { /* best-effort */ }
   const gift = _giftContext();
@@ -1073,8 +1095,17 @@ async function runGoalSkill(goal) {
     if (r && r.ok === false && /water|flood|drown/i.test(String(r.reason || ''))) _descendWaterFails++;
     else if (r && r.ok) {
       _descendWaterFails = 0;
+      _wsiteStuckTimes = [];
       // chantier profond atteint & SEC → mémoriser (les re-descentes suivantes = /home wsite, pas de creusage)
-      if (NO_GIVE && !isInWater(bot)) { try { homewarp.bookmark(bot, 'wsite'); } catch (e) {} _wsiteMineSet = true; emit({ type: 'wsite_mine_bookmarked' }); }
+      if (NO_GIVE && !isInWater(bot)) { try { homewarp.bookmark(bot, 'wsite'); } catch (e) {} _wsiteMineSet = true; _wsiteDrownTimes = []; emit({ type: 'wsite_mine_bookmarked' }); }
+    } else if (NO_GIVE && _wsiteMineSet && r && r.ok === false && /drop_ahead|max_depth|air_at_y|lava_ahead/i.test(String(r.reason || ''))) {
+      // Le wsite mène en boucle à une impasse SÈCHE (grotte/vide/lave minée autour du puits) : miroir
+      // SEC de wsiteDrown (live NethBot4 world_mn9 : 15× descend_via_home_wsite→drop_ahead, 0 minerai).
+      // Au seuil, on OUBLIE le wsite + on ARME le relocate (_descendWaterFails) → la re-descente creuse
+      // un puits FRAIS 30-50 blocs plus loin au lieu de /home wsite → même drop_ahead.
+      const s = recordWsiteStuck(_wsiteStuckTimes, Date.now());
+      _wsiteStuckTimes = s.times;
+      if (s.abandon) { _wsiteMineSet = false; _descendWaterFails++; emit({ type: 'wsite_abandoned_stuck', reason: r.reason }); }
     }
     return r;
   }
@@ -1869,11 +1900,18 @@ function _wornArmor() {
   // la chaîne la reforge pendant qu'elle protège encore.
   const worn = new Set();
   try {
+    // _wornArmor() est appelé ~18×/tick du planner → on DÉDUP gear_worn_out (émis à la seule
+    // transition « pièce devient usée », pas à chaque appel). Vécu NethBot1 : 32 % des events
+    // d'une session = la MÊME pièce répétée (event sans consommateur, cf. wornOut.js).
+    const nearlyBroken = [];
     for (const it of (bot.inventory && bot.inventory.slots ? bot.inventory.slots.slice(5, 9) : [])) {
       if (!it || !it.name) continue;
-      if (isNearlyBroken(it)) { emit({ type: 'gear_worn_out', item: it.name, slot: 'armor' }); continue; }
+      if (isNearlyBroken(it)) { nearlyBroken.push(it.name); continue; }
       worn.add(it.name);
     }
+    const wr = pickWornOutToReport(nearlyBroken, _wornOutReported);
+    _wornOutReported = wr.reported;
+    for (const name of wr.toEmit) emit({ type: 'gear_worn_out', item: name, slot: 'armor' });
   } catch (e) {}
   return worn;
 }
@@ -2844,6 +2882,11 @@ async function onSpawn() {
   // RC4 : cibles dirigées ÉPUISÉES (arrivé dessus, rien trouvé) — Set session lu par explore.js.
   // Survit aux respawns MC (même process) : une prairie pelée le reste après une mort.
   if (!bot._mcaExhausted) bot._mcaExhausted = new Set();
+  // BORNE D'EXPLORATION sous confine (anti-drift NE, piège #54) : la poche autour de l'ancre lue par
+  // skills/explore.js. Généreuse (2× le rayon confine, plancher 128) pour que le bois reste trouvable,
+  // mais FINIE — sans elle un worker re-dérive à 600+ blocs entre deux enforcements (vécu NethBot5).
+  // Pour un confine DYNAMIQUE, elle est (re)posée à l'ancrage (confine_anchored). Mappeurs : pas de confine.
+  { const _cn = CONFINE || _confineDyn; if (_cn) bot._mcaExploreBounds = { x: _cn.x, z: _cn.z, radius: Math.max(_cn.radius * 2, 128) }; }
   // TP-AU-MAPPEUR (Massii 15/07) : heartbeat de présence partagé — TOUS les bots du groupe battent
   // position+rôle (1×/min) ; un bot ressource lit où sont les mappeurs et se /tpa vers eux
   // (raccourci « vrai joueur » vers les zones lointaines, auto-accepté intra-groupe).
@@ -3176,6 +3219,8 @@ async function onSpawn() {
                               // (≥4 en 4 min) = escapeWater sort mais le bot y retombe → warp (vécu ResBot3).
     panicInFlight = false; // garde de ré-entrée onPanic (bug review #3 : fire-and-forget non-awaité).
                            // Réinitialisée à CHAQUE spawn (déclarée au niveau module, cf. l. ~229).
+    _wsiteDrownTimes = []; // fresh par session (les strikes de noyade ne traversent pas un respawn)
+    _wsiteStuckTimes = []; // idem : les strikes d'impasse sèche ne traversent pas un respawn
     installReflexes(bot, {
       emit, fleeFrom,
       // COUVERT au lieu de la FUITE quand c'est un TIREUR qui nous met à PV bas (autopsie live
@@ -3360,6 +3405,7 @@ async function onSpawn() {
                 return;
               }
               emit({ type: 'water_rescue_home_safe' });
+              abandonWsiteIfDrowned();                     // wsite noyé ? → l'oublier (sinon /home wsite y ramène)
               await safeWarpHome('safe');                 // float+immobile pendant l'éventuel warmup
               return;
             }
@@ -3386,7 +3432,7 @@ async function onSpawn() {
               try { stopMotion(); } catch (e) {}
               if (NO_GIVE) {
                 if (safeWarpDown()) { emit({ type: 'water_rescue_no_warp' }); try { await escapeWater(bot, { emit }); } catch (e) {} }
-                else { emit({ type: 'water_rescue_home_safe' }); await safeWarpHome('safe'); }
+                else { emit({ type: 'water_rescue_home_safe' }); abandonWsiteIfDrowned(); await safeWarpHome('safe'); }
               } else await relocateToRegion({ nearSpawn: true });   // bug #4 : vers le SEC near-spawn (admin)
             }
           } else {
@@ -3445,6 +3491,7 @@ async function onSpawn() {
               _canchorSet = true;
               if (!CONFINE) _confineDyn = { x: Math.round(pA.x), z: Math.round(pA.z), radius: DEFAULT_CONFINE_RADIUS };
               const eff = CONFINE || _confineDyn;
+              bot._mcaExploreBounds = { x: eff.x, z: eff.z, radius: Math.max(eff.radius * 2, 128) };  // borne explore = poche confine (#54)
               emit({ type: 'confine_anchored', x: eff.x, z: eff.z, radius: eff.radius, static: !!CONFINE });
               tryEstablishCamp().catch(() => {});
             }
@@ -4257,6 +4304,18 @@ setInterval(async () => {
       _floatSettleUntil = Date.now() + 15000;
       try { stopMotion(); } catch (e) {}
       relocateToRegion().catch(() => {});
+    }
+    // 2e TIER — relocate PROUVÉ futile (escalades répétées au MÊME endroit) : sous NO_GIVE+confine, le
+    // relocate warpe vers l'ANCRE confine = le spot de jam lui-même (live NethBot4 27/07 world_mn9 : figé
+    // à la surface de (0,0,~119), 27 unjam, 0 descente, session gelée). Boucler indéfiniment = bot
+    // vivant-en-panne invisible du self-heal (il émet des events → pas « starved »). On SORT du process
+    // (miroir death_loop l.4023) → respawn FRAIS (pathfinder/jam vidés, planner repart, keepInventory
+    // garde le fer) → le piège est cassé. Bot productif : bouge après relocate → escalades à des spots
+    // différents → jamais giveUp.
+    if (_je.giveUp) {
+      try { taskCtl.cancel(); } catch (e) {}
+      emit({ type: 'autonomous_stalled', reason: 'jam_loop', x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) });
+      process.exit(2);
     }
   } catch (e) { /* watchdog : ne crash jamais */ }
 }, 6000);

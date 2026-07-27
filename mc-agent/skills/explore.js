@@ -27,6 +27,10 @@ function nextWaypoints(origin, opts = {}) {
   const step = opts.step || 80;
   const maxRadius = opts.maxRadius || 256;
   const arcSpacing = opts.arcSpacing || 100;
+  // BORNE CONFINE (anti-drift NE, piège #54) : {x,z,radius} = poche sèche autour de l'ancre. La
+  // spirale reste centrée sur la position COURANTE (origin), mais tout point qui sort de la poche
+  // est jeté — sinon un worker sous --confine re-dérive à 600+ blocs entre deux enforcements.
+  const bounds = opts.bounds || null;
   const ox = origin.x, oy = origin.y, oz = origin.z;
   const wps = [];
   let ring = 0;
@@ -36,7 +40,9 @@ function nextWaypoints(origin, opts = {}) {
     const phase = (ring % 2) * (Math.PI / n);
     for (let k = 0; k < n; k++) {
       const theta = phase + (2 * Math.PI * k) / n;
-      wps.push({ x: ox + r * Math.cos(theta), y: oy, z: oz + r * Math.sin(theta), r });
+      const x = ox + r * Math.cos(theta), z = oz + r * Math.sin(theta);
+      if (bounds && Math.hypot(x - bounds.x, z - bounds.z) > bounds.radius) continue;  // hors poche → jeté
+      wps.push({ x, y: oy, z, r });
     }
   }
   return wps;
@@ -105,6 +111,13 @@ async function explore(bot, opts = {}) {
   // dirigée sur laquelle on est ARRIVÉ sans rien trouver y entre → plus jamais re-proposée par
   // directedTarget (fin de la boucle explore_directed ×48 sur la même prairie pelée, vécu NethBot1).
   const exhausted = opts.exhausted || bot._mcaExhausted || null;
+  // BORNE CONFINE (piège #54, drift NE) : un worker sous --confine ne doit explorer QUE sa poche
+  // sèche (centre = ancre). Sans elle, la spirale part de la position courante jusqu'à maxRadius et,
+  // re-dérivée à chaque échec `logs`, pousse le centre toujours plus loin — vécu NethBot5 world_mn9 :
+  // warpé à l'ancre par l'enforcement (dist 136) puis re-dérivé à 607 blocs en < 2 min. On jette les
+  // waypoints ET la cible dirigée hors poche. Mappeurs = pas de confine → bounds null → inchangé.
+  const bounds = opts.bounds || bot._mcaExploreBounds || null;
+  const inBounds = (x, z) => !bounds || Math.hypot(x - bounds.x, z - bounds.z) <= bounds.radius;
   const markExhausted = (t) => {
     if (!exhausted || !t) return;
     const k = targetKey(t.x, t.z);
@@ -123,6 +136,7 @@ async function explore(bot, opts = {}) {
       const d = Math.sqrt((t.x - origin.x) ** 2 + (t.z - origin.z) ** 2);
       if (d < targetD) { target = t; targetD = d; }
     }
+    if (target && !inBounds(target.x, target.z)) target = null;  // cible dirigée hors poche confine → on ne marche pas jusqu'à elle
     if (target) {
       dTarget = target;
       if (emit) { try { emit({ type: 'explore_directed', x: Math.round(target.x), z: Math.round(target.z), biome: target.biome, learned: !!target.learned, cave: !!target.cave }); } catch (e) {} }
@@ -175,7 +189,7 @@ async function explore(bot, opts = {}) {
   // Anneaux centrés sur la position COURANTE (≠ origin) : après un trajet dirigé vers une cible
   // épuisée, on ratisse AUTOUR du gisement appris (bon prior local) au lieu de retraverser la carte.
   const ringOrigin = (bot.entity && bot.entity.position) || origin;
-  const wps = nextWaypoints({ x: ringOrigin.x, y: ringOrigin.y, z: ringOrigin.z }, { step, maxRadius });
+  const wps = nextWaypoints({ x: ringOrigin.x, y: ringOrigin.y, z: ringOrigin.z }, { step, maxRadius, bounds });
   // RAPPEL dirigé : si le préambule dirigé est mort-né (NoPath transitoire — chunks pas chargés au
   // spawn/tp frais, vu live HarvT9), on RE-TENTE la route dirigée au début de chaque NOUVEL anneau
   // (le bot a bougé → monde chargé) au lieu de ratisser toute la spirale. Borné à 3 rappels.

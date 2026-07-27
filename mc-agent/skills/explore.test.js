@@ -64,6 +64,23 @@ test('nextWaypoints : borné, fini, dans maxRadius, y constant, déterministe', 
   assert.deepStrictEqual(wps, wps2, 'déterministe');
 });
 
+test('nextWaypoints : bounds jette les waypoints hors de la poche confine', () => {
+  // Le bot a dérivé à (200,0) mais son ancre confine est (0,0) rayon 128 : la spirale reste
+  // centrée sur la position courante, mais aucun waypoint ne doit sortir de la poche (sinon
+  // le worker re-dérive à 600+ blocs entre deux enforcements — vécu NethBot5 world_mn9).
+  const origin = pos(200, 70, 0);
+  const bounds = { x: 0, z: 0, radius: 128 };
+  const wps = nextWaypoints(origin, { step: 80, maxRadius: 256, bounds });
+  assert.ok(wps.length > 0, 'au moins un waypoint côté ancre (ceux qui ramènent dans la poche)');
+  for (const w of wps) {
+    const d = Math.hypot(w.x - bounds.x, w.z - bounds.z);
+    assert.ok(d <= bounds.radius + 1e-6, `waypoint dans la poche confine (d=${d})`);
+  }
+  // sans bounds, la même origine produit des points bien au-delà de 128 de l'ancre
+  const unbounded = nextWaypoints(origin, { step: 80, maxRadius: 256 });
+  assert.ok(unbounded.some((w) => Math.hypot(w.x, w.z) > 128), 'sans bounds : dérive possible');
+});
+
 test('nextWaypoints : la couverture grandit avec le rayon (anneaux expansifs)', () => {
   const wps = nextWaypoints(pos(0, 64, 0), { step: 80, maxRadius: 256 });
   const rings = [...new Set(wps.map((w) => w.r))].sort((a, b) => a - b);
@@ -90,6 +107,34 @@ test('explore : abandonne proprement après épuisement du budget (pas de hang)'
   assert.strictEqual(res.ok, false);
   assert.strictEqual(res.reason, 'not_found');
   assert.strictEqual(calls.goto.length, total, 'a tenté tous les waypoints puis s\'est arrêté (borné)');
+});
+
+test('explore : sous bounds (confine), aucun goto ne sort de la poche', async () => {
+  const { bot, calls } = makeBot({ target: null }); // rien à trouver → spirale complète
+  bot._mcaExploreBounds = { x: 0, z: 0, radius: 128 };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], scanRadius: 64, step: 80, maxRadius: 256 });
+  assert.strictEqual(res.ok, false);
+  assert.ok(calls.goto.length > 0, 'a quand même exploré la poche');
+  for (const g of calls.goto) {
+    const d = Math.hypot(g.x - 0, g.z - 0);
+    assert.ok(d <= 128 + 1e-6, `goto reste dans la poche confine (d=${d})`);
+  }
+});
+
+test('explore : bounds ne marche PAS vers une cible dirigée hors de la poche', async () => {
+  // Mémoire du groupe : bois « appris » à 800 blocs → sans bounds, le bot marcherait 800 blocs.
+  const { bot, calls } = makeBot({ target: null });
+  bot._mcaExploreBounds = { x: 0, z: 0, radius: 128 };
+  const memory = { worlds: { overworld: { finds: [{ material: 'oak_log', x: 800, z: 0, biome: 'forest' }] } } };
+  const res = await explore(bot, {
+    name: 'oak_log', matching: [17], scanRadius: 64, step: 80, maxRadius: 256,
+    memory, worldKey: 'overworld',
+  });
+  assert.strictEqual(res.ok, false);
+  for (const g of calls.goto) {
+    const d = Math.hypot(g.x - 0, g.z - 0);
+    assert.ok(d <= 128 + 1e-6, `aucun goto vers la cible dirigée lointaine (d=${d})`);
+  }
 });
 
 test('explore : token.cancelled arrête tout de suite', async () => {
