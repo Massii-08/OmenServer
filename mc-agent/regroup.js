@@ -100,10 +100,14 @@ function squadLeader({ selfName, mates, now, freshMs = FRESH_MS } = {}) {
  * (une fois équipé, la règle historique de Massii reste « chacun reprend sa route »).
  */
 function squadTarget({
-  self, selfName, mates, armorComplete, now, lastAt,
+  self, selfName, mates, armorComplete, now, lastAt, busy,
   near = SQUAD_NEAR, cooldownMs = SQUAD_COOLDOWN_MS, freshMs = FRESH_MS,
 } = {}) {
-  if (!self || armorComplete) return null;
+  // busy = minage/tâche longue en cours. Piège #42c : tp'er un bot en plein goto rejette la
+  // promesse pathfinder → unreachable → il RELÂCHE sa claim et repart explorer. L'enforcement
+  // confine respectait déjà ce garde-fou (shouldEnforceConfine) ; le squad, non → il yankait les
+  // mineurs. On diffère : le confine tient la poche, le prochain tick libre resserrera la squad.
+  if (!self || armorComplete || busy) return null;
   const t = now || Date.now();
   if (lastAt && (t - lastAt) < cooldownMs) return null;
   const leader = squadLeader({ selfName, mates, now: t, freshMs });

@@ -410,11 +410,38 @@ const MAPPER_KIT = [
 // toute seule, sans état supplémentaire à maintenir.
 const HELP_STOCK = 8;   // 8 lingots ≈ une pièce d'armure entière pour le coéquipier
 
+// Une pioche capable de MINER LE FER (stone+). Les chaînes d'entraide minent du fer : une pioche
+// BOIS (tier 1) ne casse pas le minerai de fer → elle ne compte pas ici.
+const canMineIron = (c) => invCount(c.inv, 'stone_pickaxe') >= 1 || invCount(c.inv, 'iron_pickaxe') >= 1
+  || invCount(c.inv, 'diamond_pickaxe') >= 1 || invCount(c.inv, 'netherite_pickaxe') >= 1;
+
+// ⚠️ PIÈGE (world_mn8, 27/07) — IRON_HELP_CHAIN et MAPPER_ARMOR_CHAIN démarraient sur
+// descend_y16 → iron_deep (branchMine) SANS AUCUN but pioche (contrairement à IRON_ARMOR_CHAIN qui
+// a spare_picks). Un bot 4/4 dont la pioche casse (ou qui respawn sans) n'avait donc AUCUN moyen,
+// côté planner, de la reconstruire : il bouclait iron_deep → no_pickaxe à l'infini (mesuré : une
+// session NethBot3 en iron_help = 96 no_pickaxe / 106 pickaxe_missing / 0 recraft) → 0 livraison
+// d'entraide → armure de la flotte figée des heures. On préfixe donc une reconstitution ROBUSTE
+// (skill `ensurePick` → recoverPickaxe : expédition bois + bootstrap bois→pierre, déjà éprouvée par
+// mineForType). Le but est SATISFIABLE-OU-SAUTABLE : franchi dès qu'une pioche fer-capable est là
+// OU que le fer déjà en poche suffit (plus rien à miner) → le chemin nominal reste inchangé.
 const IRON_HELP_CHAIN = [
+  { name: 'help_pick',     met: (c) => canMineIron(c)
+      || (invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot')) >= HELP_STOCK,
+    skill: 'ensurePick' },
   { name: 'descend_y16',   met: (c) => (c.y !== undefined && c.y <= 18) || invCount(c.inv, 'iron_ingot') >= HELP_STOCK,
     skill: 'descendDiagonal', args: { targetY: 16 } },
   { name: 'iron_deep',     met: (c) => invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot') >= HELP_STOCK,
     skill: 'branchMine',   args: { targetY: 16, mainLength: 48, branchSpacing: 3, branchLength: 8, serpentine: true, allowDeeper: true } },
+  // COMBUSTIBLE avant la fonte (fix veille 27/07) : la chaine d'entraide n'avait AUCUN but
+  // combustible avant smeltIron → un bot 4/4 qui descend miner du surplus bouclait
+  // `smeltIron → no_fuel` A L'INFINI (32 no_fuel/session mesures, 88 sur la flotte). Mirror
+  // exact du main chain t1_coal/armor_fuel : charbon sous terre (le fer est a Y16, le charbon
+  // aussi), repli buches. Satisfiable-ou-sautable : jamais bloquant, se declenche seul.
+  { name: 'help_coal',     met: (c) => fuelUnits(c) >= HELP_STOCK || invCount(c.inv, 'iron_ingot') >= HELP_STOCK
+                                       || (c.y === undefined || c.y > 40),
+    skill: 'gather',       args: { name: ['coal_ore', 'deepslate_coal_ore'], count: 4 } },
+  { name: 'help_fuel',     met: (c) => fuelUnits(c) >= HELP_STOCK || invCount(c.inv, 'iron_ingot') >= HELP_STOCK,
+    skill: 'gatherLog',    args: { count: 3 } },
   { name: 'iron_surplus',  met: (c) => invCount(c.inv, 'iron_ingot') >= HELP_STOCK,
     skill: 'smeltIron',    args: { count: HELP_STOCK } },
 ];
@@ -434,12 +461,27 @@ const IRON_HELP_CHAIN = [
 const GIFT_SET_INGOTS = 24;   // 5 (casque) + 8 (plastron) + 7 (jambières) + 4 (bottes)
 
 const MAPPER_ARMOR_CHAIN = [
+  // Même garde pioche que IRON_HELP_CHAIN (piège world_mn8 27/07) : sans lui, un worker chargé
+  // d'armer un cartographe bouclait iron_deep → no_pickaxe. Sautable si pas de cible, si une pioche
+  // fer-capable est là, ou si le fer en poche suffit déjà pour le set (plus rien à miner).
+  { name: 'gift_pick',    met: (c) => !c.mapperTarget || canMineIron(c)
+      || (invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot')) >= GIFT_SET_INGOTS,
+    skill: 'ensurePick' },
   { name: 'gift_descend', met: (c) => !c.mapperTarget
       || (c.y !== undefined && c.y <= 18) || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
     skill: 'descendDiagonal', args: { targetY: 16 } },
   { name: 'gift_iron',    met: (c) => !c.mapperTarget
       || invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
     skill: 'branchMine',   args: { targetY: 16, mainLength: 48, branchSpacing: 3, branchLength: 8, serpentine: true, allowDeeper: true } },
+  // COMBUSTIBLE avant la fonte (fix veille 27/07, meme cause que iron_surplus) : sans but
+  // combustible, gift_smelt bouclait no_fuel sous terre. On mine le charbon de la strate fer.
+  { name: 'gift_coal',    met: (c) => !c.mapperTarget || fuelUnits(c) >= GIFT_SET_INGOTS
+                                       || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS
+                                       || (c.y === undefined || c.y > 40),
+    skill: 'gather',       args: { name: ['coal_ore', 'deepslate_coal_ore'], count: 4 } },
+  { name: 'gift_fuel',    met: (c) => !c.mapperTarget || fuelUnits(c) >= GIFT_SET_INGOTS
+                                       || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
+    skill: 'gatherLog',    args: { count: 4 } },
   { name: 'gift_smelt',   met: (c) => !c.mapperTarget || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
     skill: 'smeltIron',    args: { count: GIFT_SET_INGOTS } },
   // Forge les 4 pièces EN POCHE (le worker porte déjà les siennes : les slots d'armure ne sont
@@ -480,6 +522,20 @@ function nextObjectiveAfter(objective, mates) {
   return null;
 }
 
+// PIÈGE #61 — un Set d'objectifs incomplet tue une fonctionnalité en silence. Le TIMER ARMURE
+// opportuniste (index.js, `_ARMOR_TIMER_OBJ`) forge/équipe une pièce manquante toutes les 90 s dès
+// que le fer dépasse le buffer, INDÉPENDAMMENT du planner (le but `iron_armor` de la chaîne est
+// gaté derrière ~27 fer via `ironOK` → un worker qui n'y arrive jamais ne forgeait sinon RIEN).
+// Or ce Set ne listait que resource/diamond/mapper : l'objectif `iron_armor` (mode par défaut de la
+// flotte) et `diamond_armor` en étaient ABSENTS → un worker accumulant 6-10 lingots sans jamais
+// atteindre le but de chaîne ne forgeait JAMAIS la pièce qu'il pouvait pourtant s'offrir → armure
+// figée des heures. Le timer de FONTE juste en dessous, lui, incluait bien iron_armor/diamond_armor
+// (d'où des lingots qui s'accumulaient… et dormaient). Source unique, testée, importée par index.js.
+const ARMOR_FORGE_OBJECTIVES = new Set(['resource', 'diamond', 'mapper', 'iron_armor', 'diamond_armor']);
+function wantsOpportunisticArmor(objType) {
+  return ARMOR_FORGE_OBJECTIVES.has(objType);
+}
+
 function chainFor(objective) {
   if (objective === 'diamond') return DIAMOND_CHAIN;
   if (objective === 'iron_help') return IRON_HELP_CHAIN;
@@ -498,4 +554,4 @@ function firstUnmet(chain, ctx) {
 }
 
 module.exports = {
-  nextObjectiveAfter, IRON_HELP_CHAIN, HELP_STOCK, MAPPER_ARMOR_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk };
+  nextObjectiveAfter, IRON_HELP_CHAIN, HELP_STOCK, MAPPER_ARMOR_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };

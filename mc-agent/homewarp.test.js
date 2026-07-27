@@ -162,6 +162,27 @@ test('dropsWithin : filtre les items dans le rayon, triés par distance ; keepIn
   assert.deepStrictEqual(dropsWithin([], center, 16), []);   // keepInv ON → no-op
 });
 
+// Anti-flood console.trace : `entity.objectType` est un GETTER DÉPRÉCIÉ de prismarine-entity
+// qui appelle `console.trace(...)` À CHAQUE LECTURE (67 k lignes/session mesurées, event-loop
+// noyée → watchdog physicsTick → churn de reconnexions). dropsWithin est appelé toutes les ~800 ms
+// sur TOUTES les entités → il ne DOIT JAMAIS lire `.objectType`. On classe via `displayName` (ce
+// que renvoie le getter déprécié) ou `name`/`type` — jamais le getter.
+test('dropsWithin : ne lit JAMAIS le getter déprécié entity.objectType (anti-flood trace)', () => {
+  const center = { x: 0, y: 0, z: 0 };
+  let touched = 0;
+  const legacyItem = {
+    name: 'item', displayName: 'Item', position: { x: 2, y: 0, z: 0 },
+    get objectType () { touched++; throw new Error('getter déprécié touché'); },
+  };
+  const displayNameItem = {
+    name: 'thing', type: null, displayName: 'Item', position: { x: 4, y: 0, z: 0 },
+    get objectType () { touched++; throw new Error('getter déprécié touché'); },
+  };
+  const got = dropsWithin([legacyItem, displayNameItem], center, 16);
+  assert.strictEqual(touched, 0, 'le getter objectType ne doit jamais être lu');
+  assert.strictEqual(got.length, 2, 'les deux items sont détectés (name=item ET displayName=Item)');
+});
+
 // ─── Secure-then-warp (demande Massii 15/07) : sur les serveurs à teleport-delay (warmup ~5 s),
 // le /home est ANNULÉ si le bot bouge ou prend un coup pendant l'attente → se mettre en sécurité
 // AVANT de warper (pilier / se murer / flotter immobile), puis détecter warmup et annulation.

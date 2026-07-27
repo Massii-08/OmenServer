@@ -130,6 +130,19 @@ test('squadTarget : armure complète → chacun reprend sa route (règle histori
   }), null);
 });
 
+// PIÈGE #42c : ne JAMAIS tp un bot en plein goto/minage — l'interruption rejette la promesse
+// pathfinder → unreachable → le bot RELÂCHE sa claim et repart explorer (churn mesuré 27/07 :
+// worker qui rebondit y15↔y69 pendant qu'il mine son fer). L'enforcement confine respectait déjà
+// ce garde-fou (shouldEnforceConfine busy) ; le squad, plus agressif (20 s, seuil 64), ne le
+// faisait PAS → il yankait les mineurs toutes les ~30 s. Le confine tient déjà la poche : différer
+// le /tpa pendant un minage actif ne coûte pas la cohésion.
+test('squadTarget : occupé (minage/tâche en cours) → pas de /tpa, même trop loin (piège #42c)', () => {
+  const mates = [fresh('NethBot1', 300, 0)];
+  const args = { self: { x: 0, z: 0 }, selfName: 'NethBot2', mates, now: T };
+  assert.ok(squadTarget({ ...args }), 'témoin : loin + libre → cible');   // sanity
+  assert.strictEqual(squadTarget({ ...args, busy: true }), null);
+});
+
 test('squadTarget : chef sans position connue → null (pas de cible inventée)', () => {
   const mates = [{ name: 'NethBot1', at: T }];
   assert.strictEqual(

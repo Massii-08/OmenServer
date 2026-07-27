@@ -40,7 +40,7 @@ const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
 const fs = require('fs');
 const { runPlanner } = require('./planner');
-const { chainFor, buildCtxInv, firstUnmet, cookedCount, armorNeed, nextObjectiveAfter } = require('./goals');
+const { chainFor, buildCtxInv, firstUnmet, cookedCount, armorNeed, nextObjectiveAfter, wantsOpportunisticArmor } = require('./goals');
 const { isForbiddenCheat } = require('./nogive');
 const homewarp = require('./homewarp'); // couche warp LÉGITIME sans-give (/sethome+/home ; goSpawn=/home safe)
 const { secureSpot } = require('./skills/secureSpot'); // secure-then-warp : pilier/se murer/flotter AVANT le /home
@@ -394,9 +394,13 @@ async function trySquad() {
   if (!p) return { ok: false, reason: 'no_pos' };
   let armorComplete = false;
   try { armorComplete = armorNeed({ inv: buildCtxInv(bot), worn: [..._wornArmor()] }, 3) === 0; } catch (e) {}
+  // Minage/tâche longue en cours → on ne yanke pas (piège #42c). Même jeu de gardes que
+  // l'enforcement confine (bot.targetDigBlock + immobilités légitimes) : le squad était le SEUL
+  // mécanisme de tp sans ce garde-fou → il rejetait les branchMine des workers toutes les ~30 s.
+  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy;
   const pick = squadTarget({
     self: { x: p.x, z: p.z }, selfName: bot.username, mates: presence.list(),
-    armorComplete, now: Date.now(), lastAt: _lastSquadAt,
+    armorComplete, busy, now: Date.now(), lastAt: _lastSquadAt,
   });
   if (!pick) return { ok: false, reason: 'no_need' };
   if (!isAllowed('/tpa ' + pick.name, whitelist)) {
@@ -784,7 +788,7 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // gatherLog 180s (phase 3) : une chasse au bois honnête (biais dirigé + anneaux ≤128) tient en
 // <3 min — au-delà la zone est déforestée et le kit-relocate forêt est plus rentable que d'insister
 // (vécu V3Res1/4 : 480s × 4 tentatives = 32 min d'anneaux stériles avant le stall).
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, huntCook: 480000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000 };
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, huntCook: 480000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
@@ -1042,6 +1046,10 @@ async function runGoalSkill(goal) {
     }
     return craftSmart(goal.args);    // pose une table portable si craft 3×3
   }
+  // ENTRAIDE/CARTOGRAPHES (piège world_mn8 27/07) : un bot dont la pioche a cassé refait une pioche
+  // fer-capable AVANT de miner (expédition bois + bootstrap bois→pierre), au lieu de boucler
+  // iron_deep → no_pickaxe. recoverPickaxe rend {ok:true} immédiatement s'il a déjà une pioche.
+  if (goal.skill === 'ensurePick') return recoverPickaxe();
   if (goal.skill === 'smeltIron') return smeltWithFurnace('raw_iron', 'iron_ingot', goal.args.count || 3);
   if (goal.skill === 'smeltCharcoal') return smeltCharcoalGoal(goal.args.count || 2);
   if (goal.skill === 'huntCook') return huntCookGoal(goal.args.target || 4);
@@ -1423,7 +1431,7 @@ async function startMapper() {
               await bot.lookAt(water.position.offset(0.5, 1, 0.5), true);
               await bot.activateItem();
               await new Promise((r) => setTimeout(r, 800));
-              const ent = bot.nearestEntity((e) => /boat/i.test(e.name || '') || /boat/i.test(e.objectType || ''));
+              const ent = bot.nearestEntity((e) => /boat/i.test(e.name || '') || /boat/i.test(e.displayName || ''));
               if (ent && bot.entity.position.distanceTo(ent.position) < 6) {
                 try { await bot.mount(ent); await new Promise((r) => setTimeout(r, 600)); } catch (e) {}
               }
@@ -2146,7 +2154,16 @@ async function descentSurvivalTick() {
 // (buffers sticks/planks/table du rab post-kit — un stone pick = 3 cobble + 2 sticks) ;
 // 2) sinon EXPÉDITION BOIS : position SAUVÉE, warp forêt (bot OP), gather logs, craft
 // planks→sticks→pioche, puis /tp RETOUR EXACT au spot — pas de respawn, on ne perd pas la mine.
+let _pickRecovering = false;   // garde de ré-entrée : le planner (ensurePick) et mineForType peuvent
+                               // tous deux l'appeler — une seule expédition de récupération à la fois.
 async function recoverPickaxe() {
+  if (_pickRecovering) return { ok: bestPickTier() >= 0 };
+  _pickRecovering = true;
+  try {
+    return await _recoverPickaxeInner();
+  } finally { _pickRecovering = false; }
+}
+async function _recoverPickaxeInner() {
   emit({ type: 'pick_recovery' });
   try { await ensureGearFor(['iron']); } catch (e) { /* best-effort */ }
   if (bestPickTier() >= 0) return { ok: true };
@@ -4415,13 +4432,14 @@ setInterval(() => {
 // dépasse le buffer → en craft/équipe UNE. ironKeep=8 pour resource (a un quota fer à préserver),
 // 0 sinon (mappeur/diamant : l'armure PRIME, aucun fer à garder). Borné, best-effort, jamais throw ;
 // n'interrompt pas un dig en cours (immobile = légitime).
-const _ARMOR_TIMER_OBJ = new Set(['resource', 'diamond', 'mapper']);
+// Source unique = goals.wantsOpportunisticArmor (piège #61 : ce Set omettait iron_armor/diamond_armor
+// → armure figée pour la flotte de nuit ; désormais testé côté goals + mirroir du timer de fonte).
 let _armorBusy = false;
 setInterval(async () => {
   try {
     if (_armorBusy) return;
     const objType = (world.objective && world.objective.type) || '';
-    if (!_ARMOR_TIMER_OBJ.has(objType)) return;
+    if (!wantsOpportunisticArmor(objType)) return;
     if (bot.targetDigBlock) return;                       // pas en plein minage
     if (taskToken && taskToken.cancelled) return;
     const worn = _wornArmor();

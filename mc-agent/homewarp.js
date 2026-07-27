@@ -176,7 +176,10 @@ function dropsWithin(entities, center, radius) {
   for (const e of list) {
     if (!e || !e.position) continue;
     const t = e.type || (e.name === 'item' ? 'item' : null);
-    const isItem = t === 'item' || t === 'object' || e.objectType === 'Item' || e.name === 'item';
+    // NB : `e.displayName` (pas `e.objectType`) — objectType est un getter déprécié de
+    // prismarine-entity qui appelle console.trace() à chaque lecture (flood event-loop). Le
+    // getter renvoyait justement displayName → substitution fidèle, zéro trace.
+    const isItem = t === 'item' || t === 'object' || e.displayName === 'Item' || e.name === 'item';
     if (!isItem) continue;
     const dx = e.position.x - center.x, dy = e.position.y - center.y, dz = e.position.z - center.z;
     const d2 = dx * dx + dy * dy + dz * dz;

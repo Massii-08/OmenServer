@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { invCount, buildCtxInv, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, chainFor, firstUnmet, nextObjectiveAfter, DIAMOND_TARGET } = require('./goals');
+const { invCount, buildCtxInv, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, chainFor, firstUnmet, nextObjectiveAfter, DIAMOND_TARGET, wantsOpportunisticArmor } = require('./goals');
 
 // Faux bot : inventaire = liste d'items {name, count}
 function fakeBot(items) {
@@ -563,14 +563,30 @@ test('MAPPER_ARMOR_CHAIN: sans cible, TOUS les buts sont satisfaits (chaine iner
   assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx), null);
 });
 
-test('MAPPER_ARMOR_CHAIN: avec une cible et rien en poche → descendre d_abord', () => {
+test('MAPPER_ARMOR_CHAIN: cible + rien en poche (PAS de pioche) → refaire une pioche d_abord', () => {
+  // Miner les 24 fer du set exige une pioche fer-capable ; descendDiagonal aussi (no_pickaxe).
+  // Sans ce garde, un bot 4/4 dont la pioche a cassé bouclait iron_deep → no_pickaxe (mesure
+  // world_mn8 : 96 no_pickaxe / 0 recraft par session, entraide jamais livrée).
   const ctx = { inv: {}, y: 70, mapperTarget: 'MapBot1', giftReady: false };
+  assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx).name, 'gift_pick');
+});
+
+test('MAPPER_ARMOR_CHAIN: cible + pioche pierre en poche → on descend (le garde pioche est franchi)', () => {
+  const ctx = { inv: { stone_pickaxe: 1 }, y: 70, mapperTarget: 'MapBot1', giftReady: false };
   assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx).name, 'gift_descend');
 });
 
-test('MAPPER_ARMOR_CHAIN: en profondeur avec le fer brut → il faut fondre', () => {
-  const ctx = { inv: { raw_iron: GIFT_SET_INGOTS }, y: 16, mapperTarget: 'MapBot1', giftReady: false };
+test('MAPPER_ARMOR_CHAIN: en profondeur avec fer brut ET combustible → il faut fondre', () => {
+  // Avec du charbon en poche (assez pour fondre le set), la fonte est le prochain but.
+  const ctx = { inv: { raw_iron: GIFT_SET_INGOTS, coal: 4 }, y: 16, mapperTarget: 'MapBot1', giftReady: false };
   assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx).name, 'gift_smelt');
+});
+
+test('MAPPER_ARMOR_CHAIN: fer brut mais AUCUN combustible en profondeur → but combustible, PAS gift_smelt (fix boucle no_fuel)', () => {
+  const ctx = { inv: { raw_iron: GIFT_SET_INGOTS }, y: 16, mapperTarget: 'MapBot1', giftReady: false };
+  const g = firstUnmet(MAPPER_ARMOR_CHAIN, ctx);
+  assert.notStrictEqual(g, null);
+  assert.notStrictEqual(g.skill, 'smeltIron'); // ne DOIT PAS boucler sur la fonte sans combustible
 });
 
 test('MAPPER_ARMOR_CHAIN: lingots fondus → forger le set', () => {
@@ -581,4 +597,62 @@ test('MAPPER_ARMOR_CHAIN: lingots fondus → forger le set', () => {
 test('MAPPER_ARMOR_CHAIN: set pret → livrer', () => {
   const ctx = { inv: { iron_ingot: GIFT_SET_INGOTS }, y: 16, mapperTarget: 'MapBot1', giftReady: true };
   assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx).name, 'gift_deliver');
+});
+
+// ── ENTRAIDE : la chaine iron_help ne doit pas boucler sur la fonte sans combustible ────────────
+const { IRON_HELP_CHAIN, HELP_STOCK } = require('./goals');
+
+test('IRON_HELP_CHAIN: fer minoré mais AUCUN combustible → but combustible, PAS iron_surplus (fix boucle no_fuel)', () => {
+  // Bot 4/4 descendu miner du surplus, 8 fer brut, 0 charbon/bois : le smelt echouerait no_fuel
+  // a l'infini (32 no_fuel/session mesurés le 27/07). On exige du combustible d'abord.
+  const ctx = { y: 16, inv: { raw_iron: HELP_STOCK } };
+  const g = firstUnmet(IRON_HELP_CHAIN, ctx);
+  assert.notStrictEqual(g, null);
+  assert.notStrictEqual(g.skill, 'smeltIron');
+});
+
+test('IRON_HELP_CHAIN: fer + charbon suffisant → iron_surplus (la fonte peut avoir lieu)', () => {
+  const ctx = { y: 16, inv: { raw_iron: HELP_STOCK, coal: 2 } };
+  assert.strictEqual(firstUnmet(IRON_HELP_CHAIN, ctx).name, 'iron_surplus');
+});
+
+test('IRON_HELP_CHAIN: fer + planches suffisantes → iron_surplus (le bois est un combustible)', () => {
+  // Le combustible n'est pas que le charbon : des planches en rab suffisent a debloquer la fonte.
+  const ctx = { y: 16, inv: { raw_iron: HELP_STOCK, oak_planks: 24 } };
+  assert.strictEqual(firstUnmet(IRON_HELP_CHAIN, ctx).name, 'iron_surplus');
+});
+
+// PIÈGE (world_mn8, 27/07) — les chaînes d'entraide partaient sur descend→branchMine SANS aucun
+// but pioche (contrairement à IRON_ARMOR_CHAIN qui a spare_picks). Un bot 4/4 dont la pioche casse
+// bouclait iron_deep → no_pickaxe à l'infini → 0 livraison d'entraide, armure figée. On préfixe la
+// reconstitution robuste (recoverPickaxe : expédition bois + bootstrap bois→pierre).
+test('IRON_HELP_CHAIN: pas de pioche + fer insuffisant → refaire une pioche AVANT de miner', () => {
+  const ctx = { y: 16, inv: {} };
+  assert.strictEqual(firstUnmet(IRON_HELP_CHAIN, ctx).name, 'help_pick');
+});
+
+test('IRON_HELP_CHAIN: pioche pierre en poche → le garde pioche est franchi (on descend)', () => {
+  const ctx = { y: 70, inv: { stone_pickaxe: 1 } };
+  assert.strictEqual(firstUnmet(IRON_HELP_CHAIN, ctx).name, 'descend_y16');
+});
+
+test('IRON_HELP_CHAIN: pas de pioche MAIS fer brut déjà suffisant → garde pioche sauté (on fond, pas de re-mine)', () => {
+  // Le bot a déjà de quoi livrer : inutile de refaire une pioche → help_pick est franchi et le
+  // planner passe directement à la fonte du surplus.
+  const ctx = { y: 16, inv: { raw_iron: HELP_STOCK, coal: 2 } };
+  assert.strictEqual(firstUnmet(IRON_HELP_CHAIN, ctx).name, 'iron_surplus');
+});
+
+// PIÈGE #61 — le timer armure opportuniste (index.js) doit couvrir l'objectif `iron_armor` (et
+// `diamond_armor`), sinon un worker qui accumule des lingots sans jamais atteindre le but de chaîne
+// (gaté ~27 fer) ne forge JAMAIS une pièce abordable → armure figée (mesuré : 2 h 20 le 27/07).
+// Les objectifs de minage historiques doivent rester couverts (non-régression).
+test('wantsOpportunisticArmor : couvre iron_armor ET diamond_armor (piège #61)', () => {
+  assert.strictEqual(wantsOpportunisticArmor('iron_armor'), true);
+  assert.strictEqual(wantsOpportunisticArmor('diamond_armor'), true);
+});
+
+test('wantsOpportunisticArmor : couvre toujours resource/diamond/mapper (non-régression)', () => {
+  for (const o of ['resource', 'diamond', 'mapper']) assert.strictEqual(wantsOpportunisticArmor(o), true);
+  assert.strictEqual(wantsOpportunisticArmor('mvp'), false);
 });
