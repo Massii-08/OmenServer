@@ -37,8 +37,13 @@ function safeToDrop(assessment, health) {
   if (assessment.surface === 'water') return true;
   if (assessment.surface !== 'solid') return false;
   const hp = (health == null ? 20 : health);
-  if (hp < 15) return false;                                  // < ~75% : pas de chute volontaire
   const dmg = Math.max(0, (assessment.depth + 1) - 3);
+  // Une chute SANS dégât est gratuite — la refuser bloque le bot pour rien (Massii, live 27/07 :
+  // « des fois ils n'avancent pas parce que c'est 2 blocs de hauteur »). En Minecraft les dégâts
+  // de chute commencent au-delà de 3 blocs : descendre 2 blocs ne coûte rien, même à 1 PV.
+  // Le garde PV ne concerne donc que les chutes qui font VRAIMENT mal.
+  if (dmg === 0) return true;
+  if (hp < 15) return false;                                  // < ~75% : pas de chute coûteuse
   return dmg <= Math.max(1, hp / 2);
 }
 

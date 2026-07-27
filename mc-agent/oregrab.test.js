@@ -109,3 +109,35 @@ test('ce qui SERT aux chaines reste ramasse (garde-fou anti-sur-filtrage)', () =
     assert.strictEqual(isValuableDrop(n), true, n);
   }
 });
+
+// ─── Quelques pas pour du minerai visible (Massii 27/07, photo de 3 veines de fer intactes) ─────
+// « Certains ont encore des pioches mais ils ne creusent pas le fer » : ce n'était pas l'outil,
+// c'était le contrat « portée de bras, aucun déplacement ». Dans une salle creusée le fer est
+// dans les PAROIS, à 5-10 blocs. Un joueur fait trois pas.
+const { oreStepPlan, ORE_STEP_MAX, ORE_REACH } = require('./oregrab');
+
+test('minerai deja a portee de bras : on mine sans bouger', () => {
+  assert.strictEqual(oreStepPlan({ name: 'iron_ore', dist: 2 }), 'reach');
+  assert.strictEqual(oreStepPlan({ name: 'deepslate_iron_ore', dist: ORE_REACH }), 'reach');
+});
+
+test('minerai a quelques pas : on y va (c est le cas de la photo)', () => {
+  assert.strictEqual(oreStepPlan({ name: 'iron_ore', dist: 8 }), 'walk');
+  assert.strictEqual(oreStepPlan({ name: 'iron_ore', dist: ORE_STEP_MAX }), 'walk');
+});
+
+test('minerai trop loin : on laisse (ce serait un detour, plus une ponctuation)', () => {
+  assert.strictEqual(oreStepPlan({ name: 'iron_ore', dist: ORE_STEP_MAX + 1 }), null);
+});
+
+test('bloc sans interet : on ne bouge pas, meme colle au nez', () => {
+  assert.strictEqual(oreStepPlan({ name: 'stone', dist: 1 }), null);
+  assert.strictEqual(oreStepPlan({ name: 'copper_ore', dist: 1 }), null);
+});
+
+test('entrees absurdes : on laisse', () => {
+  assert.strictEqual(oreStepPlan({ name: 'iron_ore', dist: NaN }), null);
+  assert.strictEqual(oreStepPlan({ name: 'iron_ore' }), null);
+  assert.strictEqual(oreStepPlan({}), null);
+  assert.strictEqual(oreStepPlan(), null);
+});

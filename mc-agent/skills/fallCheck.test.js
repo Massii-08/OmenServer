@@ -46,3 +46,24 @@ test('safeToDrop (Massii) : PV < 75% → refus même pour une petite chute (sauf
   assert.strictEqual(safeToDrop({ depth: 4, surface: 'solid' }, 15), true);
   assert.strictEqual(safeToDrop({ depth: 10, surface: 'water' }, 6), true);  // eau = toujours ok
 });
+
+// ─── Une chute de 2 blocs ne fait AUCUN degat (Massii, live 27/07) ──────────────────────────────
+// « Les bots doivent apprendre que s ils tombent de 2 blocs de hauteur c est pas grave, parce que
+// des fois ils n avancent pas parce que c est 2 blocs de hauteur. » Le refus venait du garde
+// `hp < 15` qui bloquait TOUTE chute volontaire — y compris celles a zero degat. En Minecraft les
+// degats de chute commencent au-dela de 3 blocs : sauter 2 blocs est gratuit, meme a 1 PV.
+test('safeToDrop : une chute SANS degat est toujours acceptee, meme blesse', () => {
+  assert.strictEqual(safeToDrop({ depth: 1, surface: 'solid' }, 3), true);
+  assert.strictEqual(safeToDrop({ depth: 2, surface: 'solid' }, 3), true);
+  assert.strictEqual(safeToDrop({ depth: 2, surface: 'solid' }, 20), true);
+});
+
+test('safeToDrop : des qu il y a du degat, le garde PV reprend', () => {
+  assert.strictEqual(safeToDrop({ depth: 3, surface: 'solid' }, 14), false);  // 1 degat, blesse
+  assert.strictEqual(safeToDrop({ depth: 3, surface: 'solid' }, 20), true);
+});
+
+test('safeToDrop : lave/vide restent refuses meme a faible profondeur', () => {
+  assert.strictEqual(safeToDrop({ depth: 1, surface: 'lava' }, 20), false);
+  assert.strictEqual(safeToDrop({ depth: 2, surface: 'void' }, 20), false);
+});

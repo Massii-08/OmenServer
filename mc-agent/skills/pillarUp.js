@@ -53,6 +53,19 @@ async function pillarUp(bot, { height = 1 } = {}, token = null, opts = {}) {
     const below = bot.blockAt(feet.offset ? feet.offset(0, -1, 0) : { x: feet.x, y: feet.y - 1, z: feet.z });
     if (!below || below.boundingBox !== 'block') return { ok: placed > 0, placed, reason: 'no_support' }; // #6
 
+    // ⚠️ DÉGAGER LE PLAFOND D'ABORD (Massii, live 27/07 : « NethBot5 essaie de placer un bloc sous
+    // lui sans avoir cassé le bloc au-dessus de sa tête »). Sous un plafond, le saut est bloqué :
+    // le bot ne quitte jamais le sol, l'apex n'arrive pas, et il boucle sur `place_failed` en
+    // pilonnant le sol. Un joueur casse le bloc au-dessus de sa tête AVANT de monter.
+    try {
+      const head2 = bot.blockAt(feet.offset ? feet.offset(0, 2, 0) : { x: feet.x, y: feet.y + 2, z: feet.z });
+      if (head2 && head2.boundingBox === 'block') {
+        const tool = opts.bestToolFor ? opts.bestToolFor(bot, head2) : null;
+        if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
+        await bot.dig(head2);
+      }
+    } catch (e) { /* best-effort : si on ne peut pas dégager, le retry existant couvre */ }
+
     try { if (bot.lookAt && below.position) await bot.lookAt(below.position, true); } catch (e) {} // regarder en bas
     try { await bot.equip(item, 'hand'); } catch (e) { return { ok: placed > 0, placed, reason: 'equip_failed' }; }
 

@@ -187,6 +187,33 @@ function migrationLeg({ from, heading = 0, legs = 0, legDist = LEG_DIST, maxLegs
   };
 }
 
+// ─── Quel échec accuse la ZONE, et pas le bot ? (PUR) ───────────────────────────────────────────
+// Mesuré live le 27/07 sur `world_mn9`, et c'est toute la cascade que voyait Massii :
+//   zone rasée → plus de bois → plus de bâtons → PLUS DE PIOCHE → le bot passe devant des veines
+//   de fer sans pouvoir les miner, et « casse la pierre avec les mains ».
+// Le signal décisif n'était PAS `logs not_found` (à ce stade le bot n'essaie même plus de couper
+// du bois : il boucle sur la réparation de sa pioche) mais `pick_recovery_failed: no_sticks`.
+// D'où la règle : on compte le manque de MATIÈRE BOIS quel que soit le but qui l'a rencontré,
+// sinon une zone rasée ne se déclare jamais rasée et le bot y reste piégé.
+
+const _WOOD_LACK_RE = /no_wood|no_sticks|no_planks|no_log/i;
+const _WATER_LACK_RE = /water|flood|drown/i;
+const _WOOD_GOALS = new Set(['logs', 'planks', 'plank_buffer', 'crafting_table', 'sticks', 'wooden_pickaxe']);
+
+/**
+ * @returns {'wood'|'water'|null} — ce que cet échec dit de la ZONE (null = il accuse le bot).
+ */
+function zoneFailureKind(goalName, reason) {
+  const r = String(reason == null ? '' : reason);
+  if (!r) return null;
+  if (_WATER_LACK_RE.test(r)) return 'water';
+  if (_WOOD_LACK_RE.test(r)) return 'wood';
+  // `not_found` est ambigu : il n'accuse la zone que sur un but de bois (un four introuvable,
+  // c'est le bot qui n'en a pas posé, pas la zone qui est stérile).
+  if (/not_found/i.test(r) && _WOOD_GOALS.has(goalName)) return 'wood';
+  return null;
+}
+
 /**
  * Le terrain atteint au bout d'une jambe est-il le « bon endroit » ? (PUR)
  * Exigences minimales de Massii : des arbres (le bois est le goulot), les pieds au sec, pas d'océan.
@@ -198,7 +225,7 @@ function legIsGood({ treesNear = 0, inWater = false, biome = null } = {}) {
 }
 
 module.exports = {
-  zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, isWetBiome, minDistFor,
+  zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, isWetBiome, minDistFor, zoneFailureKind,
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX,
   MIGRATE_MIN_DIST, MIGRATE_MAX_DIST, MIGRATE_FAR_MIN_DIST, LEG_DIST, MAX_LEGS,

@@ -95,7 +95,35 @@ function isDetourWorthy(name) {
   return !!name && DETOUR_ORES.has(String(name));
 }
 
+// ─── QUELQUES PAS POUR DU MINERAI VISIBLE (Massii, photo à l'appui, 27/07) ─────────────────────
+// « Il y a clairement 3 veines de fer et on voit le passage des bots, mais ils n'ont rien pris. »
+// Et, correction de Massii : « certains ont encore des pioches mais ils ne creusent pas le fer »
+// — donc ce n'était PAS un problème d'outil.
+//
+// La cause est dans le contrat d'origine de ce module : « on ne mine QUE ce qui est déjà à portée
+// de bras (4,2 blocs), aucun déplacement ». Dans une salle creusée, le fer est dans les PAROIS, à
+// 5-10 blocs — visible, atteignable en trois pas, et systématiquement ignoré. Un joueur fait les
+// trois pas. Le détour existait déjà, mais réservé au diamant (`DETOUR_ORES`) : le fer, qui est
+// LE goulot de la chaîne d'armure, en était exclu.
+//
+// On garde le principe (une ponctuation, pas une priorité) : rayon court, un seul minerai par
+// passe, et toutes les gardes de `shouldGrab` inchangées.
+const ORE_STEP_MAX = 16;      // au-delà, ce n'est plus « quelques pas », c'est un détour
+const ORE_REACH = 4.2;        // portée de bras : en deçà, aucun déplacement nécessaire
+
+/**
+ * Faut-il faire quelques pas pour ce minerai ? (pur)
+ * @returns {'reach'|'walk'|null} — 'reach' = déjà à portée, 'walk' = s'en approcher, null = laisser.
+ */
+function oreStepPlan({ name, dist, maxDist = ORE_STEP_MAX, reach = ORE_REACH } = {}) {
+  if (!isWantedOre(name)) return null;
+  if (typeof dist !== 'number' || !Number.isFinite(dist) || dist < 0) return null;
+  if (dist <= reach) return 'reach';
+  return dist <= maxDist ? 'walk' : null;
+}
+
 module.exports = {
   WANTED_ORES, isWantedOre, canHarvest, shouldGrab,
   VALUABLE_DROPS, isValuableDrop, DETOUR_ORES, isDetourWorthy,
+  oreStepPlan, ORE_STEP_MAX, ORE_REACH,
 };

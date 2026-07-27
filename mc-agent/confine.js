@@ -49,10 +49,24 @@ function shouldEnforceConfine({ dist, radius, busy, now, lastAt, cooldownMs = 12
   return (now - (lastAt || 0)) >= cooldownMs;
 }
 
+// ⚠️ LE CERCLE VICIEUX DE LA ZONE RASÉE (mesuré live 27/07, `world_mn9`, 0 `confine_anchored`
+// sur 8 sessions). Exiger du bois pour s'ancrer date d'AVANT la migration de zone : c'était le
+// seul garde-fou contre une poche stérile. Mais une zone rasée n'a plus d'arbre → le bot ne
+// s'ancre jamais → les compteurs de zone ne démarrent pas → le verdict n'est jamais évalué →
+// il ne peut PAS migrer. Autrement dit : **avoir tout épuisé était précisément ce qui
+// l'empêchait de partir** (symptôme Massii : « ils sont encore au spawn alors qu'il n'y a plus
+// rien »). On préfère toujours une zone boisée, mais on n'attend pas indéfiniment : passé le
+// délai de grâce on ancre quand même, et c'est le verdict de zone qui déménagera le bot.
+const ANCHOR_WOOD_GRACE_MS = 3 * 60 * 1000;
+
 /** La position courante est-elle ancre-able ? (au sol, hors eau, en surface — pur) */
-function pickAnchorNow({ onGround, inWater, y, woodNear } = {}) {
-  if (woodNear === false) return false;   // le camp doit être en zone BOISÉE (plank_buffer) ; absent = pas exigé
-  return !!onGround && !inWater && typeof y === 'number' && y >= 58;
+function pickAnchorNow({ onGround, inWater, y, woodNear, waitedMs = 0 } = {}) {
+  const physOk = !!onGround && !inWater && typeof y === 'number' && y >= 58;
+  if (!physOk) return false;                    // l'attente ne dispense JAMAIS du physique
+  if (woodNear === false && (!Number.isFinite(waitedMs) || waitedMs < ANCHOR_WOOD_GRACE_MS)) {
+    return false;                               // on laisse sa chance à une zone boisée
+  }
+  return true;
 }
 
 /**
@@ -111,6 +125,6 @@ function effectiveConfine({ confine, base } = {}) {
 
 module.exports = {
   parseConfine, confineSpreadCommand,
-  CONFINE_HOME, DEFAULT_CONFINE_RADIUS, shouldEnforceConfine, pickAnchorNow,
+  CONFINE_HOME, DEFAULT_CONFINE_RADIUS, ANCHOR_WOOD_GRACE_MS, shouldEnforceConfine, pickAnchorNow,
   shouldTravelToAnchor, canAnchorHere, effectiveConfine,
 };

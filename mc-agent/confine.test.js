@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const {
   parseConfine, confineSpreadCommand,
-  CONFINE_HOME, shouldEnforceConfine, pickAnchorNow, DEFAULT_CONFINE_RADIUS,
+  CONFINE_HOME, shouldEnforceConfine, pickAnchorNow, DEFAULT_CONFINE_RADIUS, ANCHOR_WOOD_GRACE_MS,
   shouldTravelToAnchor, canAnchorHere, effectiveConfine,
 } = require('./confine');
 const { RESERVED } = require('./homewarp');
@@ -39,6 +39,42 @@ test('effectiveConfine : base corrompue ignorée (on ne perd pas le confine de b
   const c = { x: 0, z: 0, radius: 64 };
   assert.deepStrictEqual(effectiveConfine({ confine: c, base: { x: NaN, z: 5 } }), c);
   assert.deepStrictEqual(effectiveConfine({ confine: c, base: {} }), c);
+});
+
+// ─── LE CERCLE VICIEUX DE LA ZONE RASÉE (mesuré live le 27/07 sur `world_mn9`) ──────────────────
+// Symptôme Massii : « ils sont encore au spawn alors qu'il n'y a plus rien ».
+// Mécanisme : la zone est rasée → aucun arbre à portée → `pickAnchorNow` REFUSE d'ancrer →
+// `_anchorSet` reste faux → les compteurs de zone ne démarrent jamais → le verdict de zone n'est
+// JAMAIS évalué → le bot ne peut pas migrer. **Avoir tout épuisé est ce qui empêche de partir.**
+// Mesure : 0 `confine_anchored` sur les 8 sessions vivantes.
+// L'exigence de bois datait d'avant la migration : c'était le seul garde-fou contre une poche
+// stérile. Maintenant qu'un bot sait DÉMÉNAGER, elle doit céder — on préfère toujours le bois,
+// mais on ne reste pas sans ancre indéfiniment.
+
+test('pickAnchorNow : le bois reste préféré tant qu on vient d arriver', () => {
+  assert.strictEqual(pickAnchorNow({ onGround: true, inWater: false, y: 70, woodNear: false, waitedMs: 0 }), false);
+});
+
+test('pickAnchorNow : bois absent depuis trop longtemps => on ancre QUAND MEME (sinon on ne peut plus jamais migrer)', () => {
+  assert.strictEqual(
+    pickAnchorNow({ onGround: true, inWater: false, y: 70, woodNear: false, waitedMs: ANCHOR_WOOD_GRACE_MS }),
+    true,
+  );
+});
+
+test('pickAnchorNow : le bois lève l attente immédiatement', () => {
+  assert.strictEqual(pickAnchorNow({ onGround: true, inWater: false, y: 70, woodNear: true, waitedMs: 0 }), true);
+});
+
+test('pickAnchorNow : bois inconnu (registry pas prêt) => non bloquant, comportement inchangé', () => {
+  assert.strictEqual(pickAnchorNow({ onGround: true, inWater: false, y: 70, waitedMs: 0 }), true);
+});
+
+test('pickAnchorNow : l attente ne dispense JAMAIS des conditions physiques', () => {
+  const long = { waitedMs: ANCHOR_WOOD_GRACE_MS * 10, woodNear: false };
+  assert.strictEqual(pickAnchorNow({ ...long, onGround: false, inWater: false, y: 70 }), false);
+  assert.strictEqual(pickAnchorNow({ ...long, onGround: true, inWater: true, y: 70 }), false);
+  assert.strictEqual(pickAnchorNow({ ...long, onGround: true, inWater: false, y: 20 }), false);
 });
 
 // ─── Existant (pin) ─────────────────────────────────────────────────────────────────────────────

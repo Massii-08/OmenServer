@@ -67,7 +67,7 @@ const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync } = require('./unstuck');
 const deathzones = require('./deathzones'); // ban-zone des camps de mort (≥2 alertes → fuite active)
 const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTANTE → relocate forcé (live 22/06 ResBot1)
-const { zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, minDistFor, MAX_LEGS } = require('./zone'); // verdict de zone + migration autonome (Massii 27/07)
+const { zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, minDistFor, zoneFailureKind, MAX_LEGS } = require('./zone'); // verdict de zone + migration autonome (Massii 27/07)
 const { recordWorkDrown, noteDrownedSite, isDrownedNear, offsetFromDrowned } = require('./workDrown'); // chantier adjacent à un aquifère → abandon + BANNISSEMENT du lieu (3a)
 const { recordWorkStuck } = require('./workStuck'); // chantier menant à une impasse SÈCHE (drop_ahead/max_depth) → abandon+relocate (live 27/07 world_mn9)
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
@@ -962,15 +962,25 @@ async function runGoalSkill(goal) {
   // Le RETOUR existait déjà (`/home work`, « c'est LE moteur du churn ») ; l'ALLER manquait.
   // On pose donc le chantier avant de partir, puis on remonte au home de surface : la descente
   // suivante repartira en un seul tp au lieu de recreuser ~52 blocs.
-  if (NO_GIVE && WOOD_GOALS.has(goal.name) && bot.entity && bot.entity.position
-      && bot.entity.position.y < 30 && (Date.now() - _lastWoodTripAt) > 120000) {
+  // ⚠️ DEUX ÉLARGISSEMENTS (Massii 27/07 : « s'ils n'ont plus de bois ils retournent au home en
+  // surface, on en a parlé »). Le déclencheur d'origine ratait précisément le cas vécu :
+  //   (a) il exigeait `y < 30`, or les bots tournaient en boucle dans une salle à y 40-60 ;
+  //   (b) il ne regardait que le NOM du but, et `help_pick` — celui qui échouait en boucle sur
+  //       `no_sticks`, 31 fois mesurées — n'est pas dans WOOD_GOALS.
+  // Résultat : le bot manquait de bois, le savait, et ne remontait jamais en chercher.
+  if (NO_GIVE && (WOOD_GOALS.has(goal.name) || _needsWoodTrip) && bot.entity && bot.entity.position
+      && bot.entity.position.y < 62 && (Date.now() - _lastWoodTripAt) > 120000) {
     _lastWoodTripAt = Date.now();
     try {
       if (!_workSet && !isInWater(bot)) {
         homewarp.bookmark(bot, HOME_WORK); _workSet = true; _workPos = _botXZ();
         emit({ type: 'work_bookmarked', why: 'wood_trip' });
       }
-      emit({ type: 'wood_trip', goal: goal.name, y: Math.round(bot.entity.position.y) });
+      emit({
+        type: 'wood_trip', goal: goal.name, y: Math.round(bot.entity.position.y),
+        why: _needsWoodTrip ? 'no_wood_proven' : 'wood_goal',
+      });
+      _needsWoodTrip = false;
       await safeWarpHome('safe');   // surface : c'est là qu'il y a des arbres et de quoi crafter
     } catch (e) { /* best-effort : à défaut on tente le skill sur place, comportement d'avant */ }
   }
@@ -1459,11 +1469,15 @@ const MINING_GOALS = new Set(['descend_y16', 'iron_deep', 'iron_help', 'cobble_l
 /** Buts dont l'échec accuse la ZONE (pas le bot) : bois absent ou nappe d'eau. */
 const _WATER_FAIL_RE = /water|flood|drown|noy/i;
 
-/** Alimente les compteurs depuis l'échec d'un but (appelé au point de passage unique). */
+let _needsWoodTrip = false;   // un échec a prouvé le manque de bois → la prochaine passe remonte
+
+/** Alimente les compteurs depuis l'échec d'un but (appelé au point de passage unique).
+ *  Le classement vit dans zone.zoneFailureKind (pur, testé) : c'est lui qui sait que
+ *  `pick_recovery:no_sticks` accuse la ZONE (pas de bois) et non le bot. */
 function noteZoneFailure(goalName, reason) {
-  const r = String(reason || '');
-  if (_WATER_FAIL_RE.test(r)) _zoneWaterFails += 1;
-  if (WOOD_GOALS.has(goalName) && /not_found|no_wood/i.test(r)) _zoneLogsNotFound += 1;
+  const kind = zoneFailureKind(goalName, reason);
+  if (kind === 'water') _zoneWaterFails += 1;
+  else if (kind === 'wood') { _zoneLogsNotFound += 1; _needsWoodTrip = true; }
 }
 
 // Rendement fer : mesuré par ÉCHANTILLONNAGE de l'inventaire (branchMine n'émet pas par minerai,
@@ -1629,7 +1643,10 @@ function probeTerrain() {
 /** Le verdict de zone, évalué périodiquement. Migre si la zone ne vaut plus le temps qu'on y passe. */
 function checkZoneVerdict() {
   if (_migrating || taskToken.cancelled || IS_MAPPER) return;   // les cartographes DOIVENT bouger, ils ne migrent pas
-  if (!_anchorSet || !_zoneAnchoredAt) return;
+  // ⚠️ NE PAS exiger `_anchorSet` : sur une zone rasée le bot ne s'ancre jamais (pickAnchorNow
+  // refusait sans arbre) — exiger l'ancre rendait donc la migration IMPOSSIBLE précisément dans
+  // le cas qu'elle doit résoudre. L'horloge de zone démarre au spawn, pas à l'ancrage.
+  if (!_zoneAnchoredAt) return;
   sampleZoneIron();
   const now = Date.now();
   const cells = loadWorldCells();
@@ -3610,6 +3627,14 @@ async function onSpawn() {
     // La colonne du pathfinder est de la TRAVERSÉE (franchir un ressaut), pas le pilier que Massii
     // voit : celui-là était le pilier DÉLIBÉRÉ de `secureTactic`/`pillarUp`, et lui reste retiré.
     moves.allow1by1towers = true;
+    // ⚠️ POSER UN BLOC DOIT COÛTER CHER (Massii, photo du 27/07 : le terrain autour du spawn est
+    // QUADRILLÉ de longues passerelles de pierre). `placeCost` vaut 1 par défaut — poser un bloc
+    // coûte donc autant que faire un pas, et le pathfinder préfère systématiquement construire un
+    // pont tout droit plutôt que contourner. Sur 8 bots × 12 h, ça donne le treillis de la photo,
+    // et rien ne le nettoie jamais. À 6, un pont de 2-3 blocs reste choisi quand il fait vraiment
+    // gagner du chemin, mais le détour redevient préférable dès qu'il existe — ce que fait un
+    // joueur. On ne DÉSACTIVE rien (le pilier reste possible, cf. la régression de world_ax5).
+    moves.placeCost = 6;
     bot._mcaMoves = moves;
     moves.allowParkour = true;
     moves.allowSprinting = true;    // anti-tell (paquet 1) : un humain sprinte en voyage (pathfinder gère)
@@ -3978,6 +4003,9 @@ async function onSpawn() {
                     return !!bot.findBlock({ matching: ids, maxDistance: 32 });
                   } catch (e) { return undefined; }   // registry pas prêt → ne pas bloquer l'ancrage
                 })(),
+                // Temps passé à chercher une zone boisée : au-delà du délai de grâce, on ancre
+                // quand même (sinon une zone rasée interdit à jamais l'ancrage — donc la migration).
+                waitedMs: Date.now() - (_zoneAnchoredAt || Date.now()),
               })) {
             const pA = bot.entity.position;
             // Fenêtre de pose = TOUT le disque de confinement (cf. confine.canAnchorHere). La borner
@@ -4292,7 +4320,14 @@ bot.loadPlugin(pathfinder);
 bot.loadPlugin(pvp);
 bot.loadPlugin(collectBlock);
 
-bot.on('spawn', () => { _floatSettleUntil = Date.now() + 15000; survivalKitUp().catch(() => {}); onSpawn().catch((e) => emit({ type: 'error', message: String((e && e.message) || e) })); });
+bot.on('spawn', () => {
+  _floatSettleUntil = Date.now() + 15000;
+  // L'horloge de zone démarre au PREMIER spawn, pas à l'ancrage : un bot qui n'arrive jamais à
+  // s'ancrer (zone rasée) doit quand même pouvoir juger sa zone et la quitter.
+  if (!_zoneAnchoredAt) resetZoneCounters(Date.now());
+  survivalKitUp().catch(() => {});
+  onSpawn().catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
+});
 
 async function runAction(decision) {
   const a = decision.action;
@@ -4650,8 +4685,22 @@ setInterval(async () => {
     for (const pos of hits) {
       const blk = bot.blockAt(pos);
       if (!blk || !oregrab.isWantedOre(blk.name)) continue;
-      // Portée de bras stricte : au-delà il faudrait se déplacer, donc dérailler la tâche.
-      if (blk.position.distanceTo(bot.entity.position) > 4.2) continue;
+      // QUELQUES PAS pour du minerai visible (Massii 27/07, photo de 3 veines de fer intactes
+      // dans les parois d'une salle creusée par les bots). L'ancien contrat — « portée de bras
+      // stricte, aucun déplacement » — expliquait exactement ce qu'il voyait : dans une salle,
+      // le fer est dans les PAROIS à 5-10 blocs, jamais à 4,2. Un joueur fait les trois pas.
+      const plan = oregrab.oreStepPlan({
+        name: blk.name, dist: blk.position.distanceTo(bot.entity.position),
+      });
+      if (!plan) continue;
+      if (plan === 'walk') {
+        try {
+          await withTimeout(
+            bot.pathfinder.goto(new pfGoals.GoalNear(blk.position.x, blk.position.y, blk.position.z, 2)),
+            12000, () => { try { stopMotion(); } catch (er) {} });
+        } catch (e) { continue; }               // inatteignable → on laisse, sans insister
+        if (blk.position.distanceTo(bot.entity.position) > oregrab.ORE_REACH) continue;
+      }
       const tool = bestToolFor(bot, blk);
       if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
       const held = bot.heldItem && bot.heldItem.type;

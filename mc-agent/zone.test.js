@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, minDistFor,
+  zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, minDistFor, zoneFailureKind,
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX, MIGRATE_MIN_DIST, MIGRATE_MAX_DIST,
   MIGRATE_FAR_MIN_DIST,
@@ -266,4 +266,37 @@ test('terrain : refuse ocean et riviere', () => {
 
 test('terrain : refuse une zone sans un seul arbre (c est le goulot n 1)', () => {
   assert.strictEqual(legIsGood({ treesNear: 0, inWater: false, biome: 'desert' }), false);
+});
+
+// ─── Quel echec accuse la ZONE ? (mesure live 27/07, `world_mn9`) ───────────────────────────────
+// La cascade observee : zone rasee -> plus de bois -> plus de batons -> PLUS DE PIOCHE -> le bot
+// passe devant les veines de fer sans pouvoir les miner et casse la pierre a mains nues.
+// Le signal decisif n'etait PAS `logs not_found` (le bot n'essaie meme plus de couper du bois) :
+// c'etait `pick_recovery_failed: no_sticks`. Compter le manque de MATIERE BOIS, quel que soit le
+// but qui l'a rencontre, sinon la zone rasee ne se declare jamais rasee.
+
+test('manque de bois : compte, quel que soit le but qui le rencontre', () => {
+  assert.strictEqual(zoneFailureKind('logs', 'not_found'), 'wood');
+  assert.strictEqual(zoneFailureKind('help_pick', 'pick_recovery:no_sticks'), 'wood');
+  assert.strictEqual(zoneFailureKind('t1_sword', 'no_wood'), 'wood');
+  assert.strictEqual(zoneFailureKind('crafting_table', 'no_planks'), 'wood');
+});
+
+test('nappe d eau : compte comme eau', () => {
+  assert.strictEqual(zoneFailureKind('descend_y16', 'water_ahead'), 'water');
+  assert.strictEqual(zoneFailureKind('iron_deep', 'drowning'), 'water');
+});
+
+test('un echec sans rapport avec la zone ne compte pas', () => {
+  assert.strictEqual(zoneFailureKind('iron_deep', 'no_pickaxe'), null);
+  assert.strictEqual(zoneFailureKind('food_stock', 'no_prey'), null);
+  assert.strictEqual(zoneFailureKind('descend_y16', 'dig_failed'), null);
+  assert.strictEqual(zoneFailureKind('x', undefined), null);
+  assert.strictEqual(zoneFailureKind(), null);
+});
+
+// `not_found` seul est ambigu : il n accuse la zone que sur un but de BOIS.
+test('not_found n accuse la zone que sur un but de bois', () => {
+  assert.strictEqual(zoneFailureKind('planks', 'not_found'), 'wood');
+  assert.strictEqual(zoneFailureKind('cobble_furnace', 'not_found'), null);
 });
