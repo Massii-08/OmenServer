@@ -22,7 +22,7 @@
 // s'APPROCHER de la cible (GoalNear range 3). Sans ça, le bot reste à la position de départ et
 // dès que i≥6-7 le bloc cible est hors range mineflayer (~6 blocs) → bot.dig échoue silencieusement
 // → stall (risque #5 du rapport build précédent).
-const { bestToolFor } = require('../tools');
+const { bestToolFor, canHarvestWith } = require('../tools');
 const { cheapestPickFor } = require('../gear');
 const { assessDrop, safeToDrop } = require('./fallCheck');
 const { gather } = require('./gather');
@@ -97,7 +97,17 @@ function countWallable(bot) { return countItems(bot, WALL_BLOCKS); }
 
 // Équipe `tool` seulement s'il n'est pas déjà en main (cache : equip a un coût par appel).
 async function equipCached(bot, tool) {
-  if (!tool) return;
+  if (!tool) {
+    // ⚠️ AUCUN OUTIL ADAPTÉ : on RETIRE celui qu'on tient au lieu de miner avec (Massii, 27/07 :
+    // « quasi tous les bots tapent à mains nues ou avec des outils qui ne sont pas des pioches »).
+    // Le `return` sec d'avant laissait en main l'épée du dernier combat — et miner de la pierre à
+    // l'épée est PLUS LENT qu'à mains nues, en plus d'user l'arme pour rien.
+    try {
+      const h = bot.heldItem;
+      if (h && /_(sword|axe|shovel|hoe)$/.test(h.name)) await bot.unequip('hand');
+    } catch (e) { /* best-effort */ }
+    return;
+  }
   if (bot.heldItem && bot.heldItem.name === tool.name) return;
   try { await bot.equip(tool, 'hand'); } catch (e) {}
 }
@@ -351,13 +361,6 @@ async function safeDigAndOpportunism(bot, target, token, debug, loopOpts) {
   // le filon, et recommence ailleurs. Un joueur ne fait jamais ça. `equipCached` plus haut a déjà
   // tenté d'équiper le meilleur outil ; s'il n'y en a AUCUN qui récolte, on laisse le bloc en
   // place — il sera toujours là quand le bot aura refait une pioche.
-  if (ORE_NAMES.has(block.name)) {
-    const held = bot.heldItem && bot.heldItem.type;
-    const need = block.harvestTools;
-    if (need && !(need[held] || need[String(held)])) {
-      return { ok: false, reason: 'no_pickaxe' };
-    }
-  }
   // Si le bloc cible EST un ore utile : §3.G → on vide la VEINE ENTIÈRE (flood-fill), pas juste ce
   // bloc — allure mineur humain (suit la veine), jamais X-ray (1 bloc puis repart).
   if (ORE_NAMES.has(block.name)) {
@@ -377,6 +380,16 @@ async function safeDigAndOpportunism(bot, target, token, debug, loopOpts) {
   let tool = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === pickName) || null;
   if (!tool) tool = bestToolFor(bot, block);
   await equipCached(bot, tool);
+  // ⚠️ APRÈS l'équipement : l'outil en main récolte-t-il vraiment ce bloc ? Vaut pour TOUT bloc
+  // qui exige un outil, pas seulement les minerais — la pierre elle-même ne donne du cobble
+  // qu'avec une pioche. Sans outil récoltant, creuser c'est détruire pour rien (Massii, 27/07 :
+  // « quasi tous les bots tapent à mains nues ou avec des outils qui ne sont pas des pioches »).
+  // On juge sur l'outil qu'on vient de SÉLECTIONNER (pas sur `bot.heldItem` : l'equip est async,
+  // et `tool` est justement le meilleur outil disponible en inventaire).
+  const _held = (tool && tool.name) || (bot.heldItem && bot.heldItem.name);
+  if (!canHarvestWith(block.name, _held)) {
+    return { ok: false, reason: 'no_pickaxe' };
+  }
   // Reachability « vrai joueur » (vécu V3Res3 : dig en diagonale à travers un coin) : si le bloc
   // n'est ni visible ni à portée, on se RAPPROCHE une fois ; toujours pas → dig_failed (skip).
   if ((typeof bot.canSeeBlock === 'function' && !bot.canSeeBlock(block))

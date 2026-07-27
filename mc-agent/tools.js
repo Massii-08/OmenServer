@@ -54,3 +54,43 @@ function bestWeapon(bot) {
 }
 
 module.exports = { TIERS, tierRank, toolCategoryFor, bestToolFor, bestWeapon };
+
+// ─── RÉCOLTE : quel palier de pioche faut-il pour que le bloc DONNE quelque chose ? ─────────────
+// Massii, live 27/07 : « quasi tous les bots tapent à mains nues ou avec des outils qui ne sont
+// pas des pioches ». Deux causes distinctes :
+//   1. `equipCached` ne fait RIEN quand aucune pioche n'existe → le bot garde l'épée du combat ;
+//   2. rien ne vérifiait que l'outil TENU récolte réellement le bloc.
+// Or en Minecraft, sans l'outil requis le bloc casse et ne donne RIEN (pierre, minerais) — et
+// l'épée est en plus PÉNALISÉE sur la pierre. Miner ainsi, c'est du temps pur perdu et un filon
+// détruit. On refuse donc de miner ce qu'on ne peut pas récolter, plutôt que de le gaspiller.
+
+const _PICK_TIER = { wooden: 1, golden: 1, stone: 2, iron: 3, diamond: 4, netherite: 5 };
+
+/** Palier de pioche minimal exigé par ce bloc (0 = aucun outil requis). */
+function _requiredTier(blockName) {
+  const n = String(blockName || '');
+  if (/obsidian|ancient_debris|crying_obsidian/.test(n)) return 4;       // pioche diamant
+  if (/diamond_ore|emerald_ore|_gold_ore$|^gold_ore$|redstone_ore/.test(n)) return 3;  // pioche fer
+  if (/iron_ore|lapis_ore|copper_ore/.test(n)) return 2;                 // pioche pierre
+  if (toolCategoryFor(n) === 'pickaxe') return 1;                        // pierre & co : pioche bois
+  return 0;                                                              // bois, terre… : mains nues OK
+}
+
+/** Bloc inconnu → on n'empêche rien (un bloc moddé ne doit pas figer le minage). */
+const HARVEST_UNKNOWN = true;
+
+/**
+ * L'outil tenu permet-il de RÉCOLTER ce bloc ? (pur — nom de bloc + nom d'item)
+ * `heldName` null/absent = mains nues.
+ */
+function canHarvestWith(blockName, heldName) {
+  const need = _requiredTier(blockName);
+  if (need === 0) return true;                    // aucun outil requis
+  const h = String(heldName || '');
+  const m = h.match(/^(\w+)_pickaxe$/);
+  if (!m) return false;                           // pas une pioche (épée, hache, mains nues)
+  return (_PICK_TIER[m[1]] || 0) >= need;
+}
+
+module.exports.canHarvestWith = canHarvestWith;
+module.exports.HARVEST_UNKNOWN = HARVEST_UNKNOWN;
