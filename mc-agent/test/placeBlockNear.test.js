@@ -342,3 +342,75 @@ describe('placeBlockNear — pass 4 (paroi)', () => {
     assert.equal(r.reason, 'no_space');
   });
 });
+
+// ─── TUNNEL DE MINAGE : les 4 cases au niveau des PIEDS ne suffisent pas ────────────────────────
+// Mesure live world_mn11 (28/07) : `no_table:no_space` x8 — sur `furnace` ET `spare_picks` — une
+// fois que le correctif combustible a enfin amene le planner jusqu a l etape de craft. Les
+// candidats ne couvraient que les 4 voisins horizontaux au niveau des pieds ; dans un tunnel 1x2
+// fraichement creuse ces cases sont murees (parois) ou occupees, et le bot abandonnait son craft
+// alors qu il avait de la place a HAUTEUR DE TETE et en diagonale. Un joueur pose sa table la.
+describe('placeBlockNear : tunnel etroit', () => {
+  it('pose a HAUTEUR DE TETE quand les 4 cases au sol sont murees', async () => {
+    const blocks = {};
+    const solid = { name: 'deepslate', boundingBox: 'block' };
+    const air = { name: 'air', boundingBox: 'empty' };
+    // Bot en (0,10,0). Tunnel 1x2 : ses 2 cases (pieds+tete) sont libres, tout le reste est plein…
+    for (let x = -2; x <= 2; x++) {
+      for (let y = 8; y <= 13; y++) {
+        for (let z = -2; z <= 2; z++) blocks[`${x},${y},${z}`] = { ...solid };
+      }
+    }
+    blocks['0,10,0'] = { ...air };
+    blocks['0,11,0'] = { ...air };
+    // … SAUF une poche libre a hauteur de tete, juste a cote : c est la que ca doit se poser.
+    blocks['1,11,0'] = { ...air };
+
+    const bot = makeBot({ position: [0.5, 10, 0.5], inventory: ['crafting_table'] });
+    Object.assign(bot._blockMap, blocks);
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, true, 'une poche a hauteur de tete doit etre utilisee');
+  });
+
+  it('pose en DIAGONALE quand les 4 cardinaux sont pris', async () => {
+    const blocks = {};
+    const solid = { name: 'deepslate', boundingBox: 'block' };
+    const air = { name: 'air', boundingBox: 'empty' };
+    for (let x = -2; x <= 2; x++) {
+      for (let y = 8; y <= 13; y++) {
+        for (let z = -2; z <= 2; z++) blocks[`${x},${y},${z}`] = { ...solid };
+      }
+    }
+    blocks['0,10,0'] = { ...air };
+    blocks['0,11,0'] = { ...air };
+    blocks['1,10,1'] = { ...air };            // seule ouverture : une diagonale au sol
+
+    const bot = makeBot({ position: [0.5, 10, 0.5], inventory: ['crafting_table'] });
+    Object.assign(bot._blockMap, blocks);
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, true, 'une diagonale libre doit etre utilisee');
+  });
+});
+
+// Hypothese a EPROUVER : en tunnel INONDE, les 4 voisins sont de l EAU — ni « replaceable »
+// (elle n est pas dans REPLACEABLE) ni creusable (elle est dans NON_DIGGABLE) → toutes les passes
+// echouent → `no_space`. Or en Minecraft on POSE dans l eau : le bloc chasse le fluide.
+describe('placeBlockNear : tunnel INONDE', () => {
+  it('reproduit no_space quand tous les voisins sont de l eau', async () => {
+    const blocks = {};
+    const water = { name: 'water', boundingBox: 'empty' };
+    const solid = { name: 'deepslate', boundingBox: 'block' };
+    for (let x = -2; x <= 2; x++) {
+      for (let y = 8; y <= 13; y++) {
+        for (let z = -2; z <= 2; z++) blocks[`${x},${y},${z}`] = { ...solid };
+      }
+    }
+    blocks['0,10,0'] = { name: 'air', boundingBox: 'empty' };
+    blocks['0,11,0'] = { name: 'air', boundingBox: 'empty' };
+    for (const k of ['1,10,0', '-1,10,0', '0,10,1', '0,10,-1']) blocks[k] = { ...water };
+
+    const bot = makeBot({ position: [0.5, 10, 0.5], inventory: ['crafting_table'] });
+    Object.assign(bot._blockMap, blocks);
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, true, 'on doit pouvoir poser DANS l eau (le bloc chasse le fluide)');
+  });
+});

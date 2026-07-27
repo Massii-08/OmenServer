@@ -6,11 +6,18 @@ const { Vec3 } = require('vec3');
 const { bestToolFor } = require('../tools');
 
 // Noms de blocs qu'on peut REMPLACER sans creuser (case traitée comme "libre")
+// ⚠️ L'EAU EN FAIT PARTIE (mesure live world_mn11, 28/07 : `no_table:no_space` ×8 sur `furnace`
+// et `spare_picks`, dès que le correctif combustible a enfin amené le planner jusqu'au craft).
+// Dans un tunnel INONDÉ, les 4 voisins sont de l'eau : elle n'était ni « replaceable » (donc
+// pass 1 et 4 la sautaient) ni creusable (NON_DIGGABLE, donc pass 2 aussi) → toutes les passes
+// échouaient et le bot abandonnait son four. Or en Minecraft poser un bloc dans une source d'eau
+// CHASSE le fluide : c'est légal, et c'est exactement ce que fait un joueur dans un tunnel noyé.
 const REPLACEABLE = new Set([
   'air', 'cave_air', 'void_air',
+  'water', 'flowing_water', 'bubble_column',
   'short_grass', 'grass', 'tall_grass',
   'fern', 'large_fern',
-  'snow', 'seagrass',
+  'snow', 'seagrass', 'kelp', 'kelp_plant',
 ]);
 
 // Blocs qu'on ne peut PAS creuser même si boundingBox === 'block'
