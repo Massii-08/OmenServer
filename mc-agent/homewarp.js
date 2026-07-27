@@ -13,20 +13,26 @@
 //   plugin) — nogive.js reste la vraie frontière de sécurité (il bloque /give //tp //effect même
 //   si le bot est op).
 //
-// Primitive « signet de chantier » :
+// Primitives « signet » :
 //   bookmark(bot, name) → /sethome <name>   (Essentials écrase l'home du même nom → re-sethome = replacer)
 //   goHome(bot, name)   → /home <name>
-//   goSpawn(bot)        → /home safe         (repli surface, cf. /spawn absent)
-// Noms réservés : wsite (chantier courant), death (dernier lieu de mort), safe (surface sûre au boot).
+//   goSpawn(bot)        → /home safe         (repli sur LA base, cf. /spawn absent)
+//   goWork(bot)         → /home work         (retour au chantier après une excursion)
+//   delhome(bot, name)  → /delhome <name>    (libère un slot — la limite serveur est de 3)
+//
+// ⚠️ SEULEMENT 3 NOMS (safe/work/death, cf. homes.js) : le serveur limite à 3 homes et le 4ᵉ
+// `/sethome` échoue EN SILENCE. C'est le bug prouvé sur world_mn5 (un bot sans home `safe` = filet
+// anti-noyade mort). `canchor`/`wsite` sont retirés : `safe` EST l'ancre, `work` EST le chantier.
 
 const { isForbiddenCheat } = require('./nogive');
+const { HOMES, HOME_WORK } = require('./homes');
 
-const RESERVED = ['wsite', 'death', 'safe', 'canchor'];
+const RESERVED = HOMES.slice();
 
 /** Nettoie un nom de home : minuscules, [a-z0-9_] uniquement (anti-injection de commande). */
 function sanitizeName(name) {
   const n = String(name == null ? '' : name).trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
-  return n || 'wsite';
+  return n || HOME_WORK;
 }
 
 /** Émet une commande de warp après double-garde nogive (ne devrait jamais bloquer /sethome//home). */
@@ -53,9 +59,21 @@ function goHome(bot, name) {
   return n;
 }
 
-/** Sort d'un piège mortel vers la surface sûre (repli sur le home 'safe' — /spawn absent). */
+/** Sort d'un piège mortel vers LA BASE (repli sur le home 'safe' — /spawn absent). */
 function goSpawn(bot) {
   return goHome(bot, 'safe');
+}
+
+/** Retour au chantier courant après une excursion volontaire (bois, dépôt, livraison, entraide). */
+function goWork(bot) {
+  return goHome(bot, HOME_WORK);
+}
+
+/** Supprime le signet <name> (libère un slot : la limite serveur est de 3 homes).
+ *  Best-effort — Essentials répond « home not found » si le nom n'existe pas, sans erreur bloquante. */
+function delhome(bot, name) {
+  const n = sanitizeName(name);
+  return _send(bot, '/delhome ' + n) ? n : false;
 }
 
 // ─── Politique du watchdog PV « à une seconde de mourir » ──────────────────────────────────────
@@ -190,7 +208,8 @@ function dropsWithin(entities, center, radius) {
 }
 
 module.exports = {
-  bookmark, goHome, goSpawn, goSafe: goSpawn, sanitizeName, RESERVED, classifyImminent, dropsWithin,
+  bookmark, goHome, goSpawn, goSafe: goSpawn, goWork, delhome,
+  sanitizeName, RESERVED, classifyImminent, dropsWithin,
   IMMINENT_HP, isTpRefusal, refusedHome, effectiveVerdict, REFUSAL_DEGRADE_MS,
   isTpWarmup, isTpCancelled, isTpAlreadyPending, secureTactic,
 };

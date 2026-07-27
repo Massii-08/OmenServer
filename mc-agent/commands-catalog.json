@@ -9,6 +9,7 @@
   { "id": "tpdeny", "cmd": "/tpdeny", "syntax": "/tpdeny", "desc": "Refuse une demande de téléportation", "category": "teleport" },
   { "id": "home", "cmd": "/home", "syntax": "/home [nom]", "desc": "Téléporte à un point d'attache", "category": "teleport" },
   { "id": "sethome", "cmd": "/sethome", "syntax": "/sethome [nom]", "desc": "Définit un point d'attache", "category": "teleport" },
+  { "id": "delhome", "cmd": "/delhome", "syntax": "/delhome <nom>", "desc": "Supprime un point d'attache (libère un slot : la limite serveur est de 3)", "category": "teleport" },
   { "id": "spawn", "cmd": "/spawn", "syntax": "/spawn", "desc": "Téléporte au spawn", "category": "teleport" },
   { "id": "warp", "cmd": "/warp", "syntax": "/warp <nom>", "desc": "Téléporte à un warp public", "category": "teleport" },
   { "id": "back", "cmd": "/back", "syntax": "/back", "desc": "Retourne à la position précédente", "category": "teleport" },

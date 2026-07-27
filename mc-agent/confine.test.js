@@ -6,6 +6,7 @@ const {
   CONFINE_HOME, shouldEnforceConfine, pickAnchorNow, DEFAULT_CONFINE_RADIUS,
   shouldTravelToAnchor, canAnchorHere,
 } = require('./confine');
+const { RESERVED } = require('./homewarp');
 
 // ─── Existant (pin) ─────────────────────────────────────────────────────────────────────────────
 test('parseConfine : "X Z R" → {x,z,radius} ; invalide → null', () => {
@@ -22,10 +23,14 @@ test('confineSpreadCommand : /spreadplayers autour de l\'ancre (mode admin, inch
 // ─── Brique 1 : confine-via-/home (no-give) ─────────────────────────────────────────────────────
 // Le confine warpe via /spreadplayers = BLOQUÉ par nogive → mort en sans-give (vécu world_ax2 :
 // les bots atteignent iron_deep puis sortent de la poche sèche et se noient). Enforcement légitime :
-// un home dédié 'canchor' posé à l'ancre + /home canchor quand le bot dérive trop loin.
+// un home posé à l'ancre + /home <ancre> quand le bot dérive trop loin.
 
-test('CONFINE_HOME : nom du home d\'ancre (sanitize-safe, ≠ homes réservés existants)', () => {
-  assert.strictEqual(CONFINE_HOME, 'canchor');
+// 27/07 : l'ancre EST la base (`safe`). Le nom dédié `canchor` était le 4e home d'un serveur qui
+// n'en autorise que 3 → un /sethome échouait en silence par bot (bug prouvé sur world_mn5).
+test('CONFINE_HOME : l\'ancre de confine est le home safe (LA base), plus de 4e nom', () => {
+  assert.strictEqual(CONFINE_HOME, 'safe');
+  assert.ok(RESERVED.includes(CONFINE_HOME), 'l\'ancre doit être un des 3 homes réservés');
+  assert.ok(RESERVED.length <= 3, 'la limite serveur sethome-multiple est de 3');
 });
 
 test('shouldEnforceConfine : loin de l\'ancre + pas occupé + cooldown passé → true', () => {

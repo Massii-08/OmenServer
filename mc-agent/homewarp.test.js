@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const {
-  bookmark, goHome, goSpawn, sanitizeName, RESERVED, classifyImminent, dropsWithin,
+  bookmark, goHome, goSpawn, goWork, delhome, sanitizeName, RESERVED, classifyImminent, dropsWithin,
   isTpRefusal, refusedHome, effectiveVerdict, isTpWarmup, isTpCancelled, secureTactic,
 } = require('./homewarp');
 const { isForbiddenCheat } = require('./nogive');
@@ -12,19 +12,19 @@ function fakeBot() {
   return { sent, chat: (m) => sent.push(m) };
 }
 
-test('sanitizeName : minuscule + [a-z0-9_] uniquement, défaut wsite', () => {
-  assert.strictEqual(sanitizeName('WSite'), 'wsite');
+test('sanitizeName : minuscule + [a-z0-9_] uniquement, défaut work', () => {
+  assert.strictEqual(sanitizeName('Work'), 'work');
   assert.strictEqual(sanitizeName('  death  '), 'death');
   assert.strictEqual(sanitizeName('bad name!;/'), 'badname');   // strip espaces + ponctuation
-  assert.strictEqual(sanitizeName(''), 'wsite');
-  assert.strictEqual(sanitizeName(null), 'wsite');
+  assert.strictEqual(sanitizeName(''), 'work');
+  assert.strictEqual(sanitizeName(null), 'work');
   assert.strictEqual(sanitizeName('a b'), 'ab');
 });
 
 test('bookmark : /sethome <name>, retourne le nom nettoyé', () => {
   const bot = fakeBot();
-  assert.strictEqual(bookmark(bot, 'wsite'), 'wsite');
-  assert.deepStrictEqual(bot.sent, ['/sethome wsite']);
+  assert.strictEqual(bookmark(bot, 'work'), 'work');
+  assert.deepStrictEqual(bot.sent, ['/sethome work']);
 });
 
 test('bookmark : re-sethome du MÊME nom (Essentials écrase → replace)', () => {
@@ -36,8 +36,8 @@ test('bookmark : re-sethome du MÊME nom (Essentials écrase → replace)', () =
 
 test('goHome : /home <name>', () => {
   const bot = fakeBot();
-  assert.strictEqual(goHome(bot, 'wsite'), 'wsite');
-  assert.deepStrictEqual(bot.sent, ['/home wsite']);
+  assert.strictEqual(goHome(bot, 'work'), 'work');
+  assert.deepStrictEqual(bot.sent, ['/home work']);
 });
 
 test('goSpawn : repli sur le home safe (/spawn absent de ce serveur)', () => {
@@ -46,14 +46,37 @@ test('goSpawn : repli sur le home safe (/spawn absent de ce serveur)', () => {
   assert.deepStrictEqual(bot.sent, ['/home safe']);
 });
 
+// Massii : le home `work` sert à REVENIR bosser après une excursion volontaire.
+test('goWork : retour au chantier courant', () => {
+  const bot = fakeBot();
+  assert.strictEqual(goWork(bot), 'work');
+  assert.deepStrictEqual(bot.sent, ['/home work']);
+});
+
+test('delhome : /delhome <name>, nom nettoyé (anti-injection)', () => {
+  const bot = fakeBot();
+  assert.strictEqual(delhome(bot, 'death'), 'death');
+  assert.deepStrictEqual(bot.sent, ['/delhome death']);
+});
+
+test('delhome : un nom malveillant ne fabrique pas une autre commande', () => {
+  const bot = fakeBot();
+  delhome(bot, 'x /give @s diamond');
+  assert.deepStrictEqual(bot.sent, ['/delhome xgivesdiamond']);
+  assert.strictEqual(isForbiddenCheat(bot.sent[0]), false);
+});
+
 test('toutes les commandes émises passent isForbiddenCheat (jamais bloquées par nogive)', () => {
   const bot = fakeBot();
-  bookmark(bot, 'wsite');
+  bookmark(bot, 'work');
   bookmark(bot, 'death');
   bookmark(bot, 'safe');
-  goHome(bot, 'wsite');
+  goHome(bot, 'work');
   goHome(bot, 'death');
   goSpawn(bot);
+  delhome(bot, 'death');
+  delhome(bot, 'canchor');
+  delhome(bot, 'wsite');
   for (const cmd of bot.sent) {
     assert.strictEqual(isForbiddenCheat(cmd), false, `nogive ne doit PAS bloquer: ${cmd}`);
   }
@@ -66,10 +89,9 @@ test('injection : un nom malveillant ne peut pas fabriquer une autre commande', 
   assert.strictEqual(isForbiddenCheat(bot.sent[0]), false);
 });
 
-test('RESERVED contient wsite, death, safe', () => {
-  assert.ok(RESERVED.includes('wsite'));
-  assert.ok(RESERVED.includes('death'));
-  assert.ok(RESERVED.includes('safe'));
+test('RESERVED = exactement les 3 homes safe/work/death (limite serveur = 3)', () => {
+  assert.deepStrictEqual(RESERVED, ['safe', 'work', 'death']);
+  assert.ok(RESERVED.length <= 3, 'sethome-multiple.default = 3 : un 4e nom échouerait en silence');
 });
 
 test('classifyImminent : PV > seuil → null (pas imminent)', () => {
@@ -120,7 +142,7 @@ test('refusedHome : goSpawn est tracké comme home safe', () => {
 
 test('refusedHome : hors fenêtre → null (message tardif non attribuable)', () => {
   const bot = fakeBot();
-  goHome(bot, 'wsite');
+  goHome(bot, 'work');
   bot._mcaLastHome.at = Date.now() - 9000;   // > fenêtre 8 s
   assert.strictEqual(refusedHome(bot, 'The teleport destination is unsafe and teleport-safety is disabled.'), null);
 });
@@ -128,7 +150,7 @@ test('refusedHome : hors fenêtre → null (message tardif non attribuable)', ()
 test('refusedHome : message non-refus ou aucun /home récent → null', () => {
   const bot = fakeBot();
   assert.strictEqual(refusedHome(bot, 'The teleport destination is unsafe and teleport-safety is disabled.'), null);
-  goHome(bot, 'wsite');
+  goHome(bot, 'work');
   assert.strictEqual(refusedHome(bot, '<Bob> hello'), null);
 });
 
@@ -228,8 +250,11 @@ test('secureTactic : pas de menace, ou pas de blocs → none (freeze simple)', (
   assert.strictEqual(secureTactic({}), 'none');
 });
 
-test('RESERVED contient canchor (ancre de confinement no-give)', () => {
-  assert.ok(RESERVED.includes('canchor'));
+// L'ancre de confinement est désormais le home `safe` (LA base) : `canchor` était le 4e nom qui
+// faisait échouer un `/sethome` en silence (limite serveur = 3). Il ne doit plus jamais revenir.
+test('RESERVED ne contient PLUS aucun nom legacy (canchor/wsite)', () => {
+  assert.ok(!RESERVED.includes('canchor'));
+  assert.ok(!RESERVED.includes('wsite'));
 });
 
 const homewarp = require('./homewarp');   // acces nomme (le haut du fichier destructure)

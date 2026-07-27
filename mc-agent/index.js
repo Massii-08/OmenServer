@@ -67,8 +67,12 @@ const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync } = require('./unstuck');
 const deathzones = require('./deathzones'); // ban-zone des camps de mort (≥2 alertes → fuite active)
 const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTANTE → relocate forcé (live 22/06 ResBot1)
-const { recordWsiteDrown } = require('./wsiteDrown'); // wsite adjacent à un aquifère → abandon après N sauvetages-noyade (live 27/07 world_mn9)
-const { recordWsiteStuck } = require('./wsiteStuck'); // wsite menant à une impasse SÈCHE (drop_ahead/max_depth) → abandon+relocate (live 27/07 world_mn9)
+const { recordWorkDrown } = require('./workDrown'); // chantier adjacent à un aquifère → abandon après N sauvetages-noyade (live 27/07 world_mn9)
+const { recordWorkStuck } = require('./workStuck'); // chantier menant à une impasse SÈCHE (drop_ahead/max_depth) → abandon+relocate (live 27/07 world_mn9)
+// SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
+// de mort. Le serveur n'autorise que 3 homes et le code en posait 4 → un /sethome échouait EN
+// SILENCE sur chaque bot (bug prouvé world_mn5). Voir homes.js.
+const { HOME_SAFE, HOME_WORK, HOME_DEATH, LEGACY_HOMES, canBookmarkDeath, openDebt, debtAction } = require('./homes');
 const { recordJam } = require('./jamEscalate'); // JAM persistant au MÊME endroit → relocate forcé (live 22/06 SOIR ResBot2)
 const { runResource } = require('./skills/resource');
 const { planSmeltRaw } = require('./bank');   // fonte périodique du brut or/fer → lingots bankables
@@ -203,25 +207,25 @@ let deathTimes = [];
 let _escapeOnSpawn = false; // anti-camping : 2 morts <60 s → warp + re-spawnpoint au prochain spawn
 let _safeHomeSet = false;     // warp légitime : /sethome safe posé (fallback = position de spawn courante)
 let _safeHomeSurface = false; // safe posé à une VRAIE surface (y≥58) → cible idéale pour goSpawn
-let _deathArmed = false;      // watchdog PV : lieu de mort marqué (/sethome death) → post-respawn goHome('death')+ramassage
+let _deathDebtBusy = false;   // une seule récupération de dette en vol (le respawn peut se répéter en rafale)
 // Buts qui exigent du BOIS ou une TABLE : introuvables sous terre (cf. wood_trip ci-dessous).
 const WOOD_GOALS = new Set(['logs', 'planks', 'plank_buffer', 'crafting_table', 'sticks', 'wooden_pickaxe']);
 let _lastWoodTripAt = 0;      // cooldown 2 min : un aller-retour surface ne doit pas boucler
-let _wsiteMineSet = false;    // NO_GIVE : chantier profond SEC mémorisé (/sethome wsite) → re-descente = /home wsite (1 tp)
+let _workSet = false;    // NO_GIVE : chantier profond SEC mémorisé (/sethome work) → re-descente = /home work (1 tp)
                               // au lieu de re-creuser ~52 blocs (chaque re-descente cassait une pioche → no_pickaxe → fer jamais accumulé, vécu homedeath)
-let _wsiteDrownTimes = [];    // horodatages des sauvetages-noyade RAMENANT au wsite (live 27/07 world_mn9) : au seuil,
-                              // le wsite est adjacent à un aquifère → on l'abandonne (cf. wsiteDrown.js). Reset par spawn + bookmark frais.
-let _wsiteStuckTimes = [];    // horodatages des échecs de descente SECS (drop_ahead/max_depth/…) via le wsite (live 27/07
-                              // world_mn9 : NethBot4 en boucle 15× descend_via_home_wsite→drop_ahead) : au seuil, le wsite mène
-                              // à une impasse sèche → on l'abandonne + relocate (cf. wsiteStuck.js). Reset par spawn + bookmark frais.
-// Un sauvetage-noyade (/home safe) ramenant à un wsite mémorisé : si ça se répète (aquifère adjacent),
-// on OUBLIE le wsite (même effet que waterlocked_relocate) → la re-descente creuse un puits frais ailleurs,
-// au lieu de /home wsite → re-noyade en boucle (mesuré : 3/5 workers, 118 sauvetages, 0 minerai).
-function abandonWsiteIfDrowned() {
-  if (!_wsiteMineSet) { _wsiteDrownTimes = []; return; }
-  const r = recordWsiteDrown(_wsiteDrownTimes, Date.now());
-  _wsiteDrownTimes = r.times;
-  if (r.abandon) { _wsiteMineSet = false; emit({ type: 'wsite_abandoned_drowning' }); }
+let _workDrownTimes = [];    // horodatages des sauvetages-noyade RAMENANT au chantier (live 27/07 world_mn9) : au seuil,
+                              // le chantier est adjacent à un aquifère → on l'abandonne (cf. workDrown.js). Reset par spawn + bookmark frais.
+let _workStuckTimes = [];    // horodatages des échecs de descente SECS (drop_ahead/max_depth/…) via le chantier (live 27/07
+                              // world_mn9 : NethBot4 en boucle 15× descend_via_home_work→drop_ahead) : au seuil, le chantier mène
+                              // à une impasse sèche → on l'abandonne + relocate (cf. workStuck.js). Reset par spawn + bookmark frais.
+// Un sauvetage-noyade (/home safe) ramenant à un chantier mémorisé : si ça se répète (aquifère adjacent),
+// on OUBLIE le chantier (même effet que waterlocked_relocate) → la re-descente creuse un puits frais ailleurs,
+// au lieu de /home work → re-noyade en boucle (mesuré : 3/5 workers, 118 sauvetages, 0 minerai).
+function abandonWorkIfDrowned() {
+  if (!_workSet) { _workDrownTimes = []; return; }
+  const r = recordWorkDrown(_workDrownTimes, Date.now());
+  _workDrownTimes = r.times;
+  if (r.abandon) { _workSet = false; emit({ type: 'work_abandoned_drowning' }); }
 }
 let _drySteerTries = 0;       // NO_GIVE : marches tentées vers la cellule 128 sèche (arrivée VÉRIFIÉE, ≤3 —
                               // vécu live NethBot2 : goto interrompu par un réflexe → « arrivé » à 180 blocs
@@ -230,7 +234,7 @@ let _wornOutReported = new Set();     // pièces d'ARMURE déjà signalées gear
 let _offhandWornReported = new Set();  // idem pour la MAIN SECONDAIRE (bouclier usé)
 let _deathMark = null;        // dernière position marquée death {x,y,z,at} → dédup anti-spam du watchdog
 let _imminentBusy = false;    // anti-rafale : un seul warp de sauvetage PV à la fois
-let _homeRefusedAt = {};      // RC3 : refus TP Essentials par home {safe|wsite|death → ts} — un /home
+let _homeRefusedAt = {};      // RC3 : refus TP Essentials par home {safe|chantier|death → ts} — un /home
                               // refusé (« destination unsafe », monde noyé) ne téléporte PAS : sans ça
                               // le filet de secours était un no-op silencieux (zombie 1.8 PV, vécu NethBot2)
 // Le /home safe est-il inutilisable en ce moment (refus récent, pas encore re-posé) ?
@@ -239,7 +243,7 @@ function safeWarpDown() {
 }
 let _tpCancelledAt = 0;       // secure-then-warp : dernière annulation Essentials vue (teleport-delay)
 let _confineDyn = null;       // confine AUTO-ancré (brique 2) : posé à la 1re terre sèche stable
-let _canchorSet = false;      // home 'canchor' posé à l'ancre → l'enforcement /home peut tirer
+let _anchorSet = false;      // home 'ancre' posé à l'ancre → l'enforcement /home peut tirer
 let _lastConfineEnforceAt = 0;// cooldown enforcement (2 min, cf. shouldEnforceConfine)
 let _campEstablished = false; // brique 3 : four (+coffre) posés à l'ancre = camp de base
 let presence = null;          // heartbeat de présence du groupe (positions-<group>.json, --positions)
@@ -299,7 +303,7 @@ async function fleeDeathCamp(fromPos) {
 // intégral, ré-essayé par le timer d'enforcement tant que pas établi.
 async function tryEstablishCamp() {
   try {
-    if (_campEstablished || !_canchorSet) return;
+    if (_campEstablished || !_anchorSet) return;
     const conf = CONFINE || _confineDyn;
     if (!conf) return;
     const p = bot.entity && bot.entity.position;
@@ -324,12 +328,12 @@ async function tryEstablishCamp() {
 }
 
 // ENFORCEMENT confine no-give (brique 1) : le bot a dérivé hors de sa poche (> rayon ×1.25) →
-// /home canchor (commande joueur, secure-then-warp inclus). C'est CE retour qui casse le pattern
+// /home ancre (commande joueur, secure-then-warp inclus). C'est CE retour qui casse le pattern
 // mortel « atteint iron_deep → explore loin → eau → churn » (vécu world_ax2 toute la nuit).
 setInterval(() => {
   try {
     const conf = CONFINE || _confineDyn;
-    if (!conf || !_canchorSet || !NO_GIVE) return;
+    if (!conf || !_anchorSet || !NO_GIVE) return;
     if (!(world.objective && world.objective.status === 'in_progress')) return;
     const p = bot.entity && bot.entity.position;
     if (!p) return;
@@ -914,16 +918,16 @@ async function runGoalSkill(goal) {
   // prendre ce qu'il faut et après retourner ou ils sont. » C'est LE frein n°1 du projet : les
   // outils cassent en profondeur, et sous terre il n'y a NI bois NI table pour en refaire — le bot
   // tournait alors en boucle sur `no_recipe` / `no_table` (mesuré live sur NethBot1).
-  // Le RETOUR existait déjà (`/home wsite`, « c'est LE moteur du churn ») ; l'ALLER manquait.
+  // Le RETOUR existait déjà (`/home work`, « c'est LE moteur du churn ») ; l'ALLER manquait.
   // On pose donc le chantier avant de partir, puis on remonte au home de surface : la descente
   // suivante repartira en un seul tp au lieu de recreuser ~52 blocs.
   if (NO_GIVE && WOOD_GOALS.has(goal.name) && bot.entity && bot.entity.position
       && bot.entity.position.y < 30 && (Date.now() - _lastWoodTripAt) > 120000) {
     _lastWoodTripAt = Date.now();
     try {
-      if (!_wsiteMineSet && !isInWater(bot)) {
-        homewarp.bookmark(bot, 'wsite'); _wsiteMineSet = true;
-        emit({ type: 'wsite_mine_bookmarked', why: 'wood_trip' });
+      if (!_workSet && !isInWater(bot)) {
+        homewarp.bookmark(bot, HOME_WORK); _workSet = true;
+        emit({ type: 'work_bookmarked', why: 'wood_trip' });
       }
       emit({ type: 'wood_trip', goal: goal.name, y: Math.round(bot.entity.position.y) });
       await safeWarpHome('safe');   // surface : c'est là qu'il y a des arbres et de quoi crafter
@@ -944,10 +948,10 @@ async function runGoalSkill(goal) {
       // est » en zone aquifère = fuite permanente = 0 minage (vécu homedeath : smelt:0 après des
       // heures à Y16 — l'évitement TACTIQUE de l'eau ne suffit pas). La carte du groupe (mappers)
       // connaît les cellules 128 SÈCHES riches du minerai cible → on MARCHE (pathfinder,
-      // no_give-légal — /tp bloqué) vers la meilleure AVANT la 1re descente ; ensuite le wsite
+      // no_give-légal — /tp bloqué) vers la meilleure AVANT la 1re descente ; ensuite le chantier
       // (53ca041) ancre le chantier sec pour toutes les re-descentes. Une tentative par session :
       // échec → on descend sur place (comportement historique inchangé).
-      if (_drySteerTries < 3 && !_wsiteMineSet && bot.entity && bot.entity.position) {
+      if (_drySteerTries < 3 && !_workSet && bot.entity && bot.entity.position) {
         try {
           const memDS = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
           const wkDS = String(bot._worldKey || '');
@@ -1077,17 +1081,17 @@ async function runGoalSkill(goal) {
   if (goal.skill === 'huntCook') return huntCookGoal(goal.args.target || 4);
   if (goal.skill === 'descendDiagonal') {
     // FIX churn re-descente (NO_GIVE) : un chantier profond SEC est mémorisé → y retourner par
-    // /home wsite (1 tp) plutôt que re-creuser ~52 blocs (chaque re-descente cassait une pioche pierre
+    // /home work (1 tp) plutôt que re-creuser ~52 blocs (chaque re-descente cassait une pioche pierre
     // → no_pickaxe → le fer ne s'accumulait jamais). water_rescue ramenait en SURFACE, forçant cette
-    // re-descente : c'est LE moteur du churn. Garde : si le tp atterrit dans l'eau, le wsite est noyé
+    // re-descente : c'est LE moteur du churn. Garde : si le tp atterrit dans l'eau, le chantier est noyé
     // → on l'oublie et on re-creuse (qui relocalise au sec via _descendWaterFails).
-    if (NO_GIVE && _wsiteMineSet && bot.entity && bot.entity.position && bot.entity.position.y > 30) {
-      emit({ type: 'descend_via_home_wsite' });
-      try { homewarp.goHome(bot, 'wsite'); } catch (e) {}
+    if (NO_GIVE && _workSet && bot.entity && bot.entity.position && bot.entity.position.y > 30) {
+      emit({ type: 'descend_via_home_work' });
+      try { homewarp.goHome(bot, HOME_WORK); } catch (e) {}
       await awaitWarp({ maxMs: 8000 }); // atterrissage OU warmup teleport-delay couvert (remplace le sleep aveugle)
       await sleep(1200);                // settle chunks post-tp
       const _py = (bot.entity && bot.entity.position) ? bot.entity.position.y : 99;
-      if (isInWater(bot)) { _wsiteMineSet = false; try { await escapeWater(bot, { emit }); } catch (e) {} }
+      if (isInWater(bot)) { _workSet = false; try { await escapeWater(bot, { emit }); } catch (e) {} }
       else if (_py <= 20) return { ok: true, viaHome: true };  // arrivé profond & sec → pas de re-creusage
     }
     const r = await descendDiagonal(bot, goal.args || {}, taskToken);
@@ -1095,17 +1099,17 @@ async function runGoalSkill(goal) {
     if (r && r.ok === false && /water|flood|drown/i.test(String(r.reason || ''))) _descendWaterFails++;
     else if (r && r.ok) {
       _descendWaterFails = 0;
-      _wsiteStuckTimes = [];
-      // chantier profond atteint & SEC → mémoriser (les re-descentes suivantes = /home wsite, pas de creusage)
-      if (NO_GIVE && !isInWater(bot)) { try { homewarp.bookmark(bot, 'wsite'); } catch (e) {} _wsiteMineSet = true; _wsiteDrownTimes = []; emit({ type: 'wsite_mine_bookmarked' }); }
-    } else if (NO_GIVE && _wsiteMineSet && r && r.ok === false && /drop_ahead|max_depth|air_at_y|lava_ahead/i.test(String(r.reason || ''))) {
-      // Le wsite mène en boucle à une impasse SÈCHE (grotte/vide/lave minée autour du puits) : miroir
-      // SEC de wsiteDrown (live NethBot4 world_mn9 : 15× descend_via_home_wsite→drop_ahead, 0 minerai).
-      // Au seuil, on OUBLIE le wsite + on ARME le relocate (_descendWaterFails) → la re-descente creuse
-      // un puits FRAIS 30-50 blocs plus loin au lieu de /home wsite → même drop_ahead.
-      const s = recordWsiteStuck(_wsiteStuckTimes, Date.now());
-      _wsiteStuckTimes = s.times;
-      if (s.abandon) { _wsiteMineSet = false; _descendWaterFails++; emit({ type: 'wsite_abandoned_stuck', reason: r.reason }); }
+      _workStuckTimes = [];
+      // chantier profond atteint & SEC → mémoriser (les re-descentes suivantes = /home work, pas de creusage)
+      if (NO_GIVE && !isInWater(bot)) { try { homewarp.bookmark(bot, HOME_WORK); } catch (e) {} _workSet = true; _workDrownTimes = []; emit({ type: 'work_bookmarked' }); }
+    } else if (NO_GIVE && _workSet && r && r.ok === false && /drop_ahead|max_depth|air_at_y|lava_ahead/i.test(String(r.reason || ''))) {
+      // Le chantier mène en boucle à une impasse SÈCHE (grotte/vide/lave minée autour du puits) : miroir
+      // SEC de workDrown (live NethBot4 world_mn9 : 15× descend_via_home_work→drop_ahead, 0 minerai).
+      // Au seuil, on OUBLIE le chantier + on ARME le relocate (_descendWaterFails) → la re-descente creuse
+      // un puits FRAIS 30-50 blocs plus loin au lieu de /home work → même drop_ahead.
+      const s = recordWorkStuck(_workStuckTimes, Date.now());
+      _workStuckTimes = s.times;
+      if (s.abandon) { _workSet = false; _descendWaterFails++; emit({ type: 'work_abandoned_stuck', reason: r.reason }); }
     }
     return r;
   }
@@ -1178,7 +1182,7 @@ async function runGoalSkill(goal) {
     // Fix n°2 water-wall (NO_GIVE) : aquifère VERROUILLANT (waterlocked = toutes directions
     // mouillées + scellement inopérant) ou stall → se DÉCALER à pied 30-50 blocs À PROFONDEUR
     // (pathfinder creuse son chemin) avant que le planner ne retente iron_deep au même endroit.
-    // Le wsite noyé est oublié / re-marqué au sec (sinon /home wsite ramènerait dans la nappe).
+    // Le chantier noyé est oublié / re-marqué au sec (sinon /home work ramènerait dans la nappe).
     if (NO_GIVE && rBM && rBM.ok === false && (rBM.reason === 'waterlocked' || rBM.reason === 'stalled')
         && bot.entity && bot.entity.position) {
       const _ang = Math.random() * Math.PI * 2;
@@ -1191,8 +1195,8 @@ async function runGoalSkill(goal) {
         await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(_tx, Math.round(_p.y), _tz, 3)), 90000,
           () => { try { stopMotion(); } catch (e) {} });
       } catch (e) {}
-      if (isInWater(bot)) { _wsiteMineSet = false; try { await escapeWater(bot, { emit }); } catch (e) {} }
-      else { try { homewarp.bookmark(bot, 'wsite'); _wsiteMineSet = true; emit({ type: 'wsite_mine_bookmarked', ctx: 'waterlocked_relocate' }); } catch (e) {} }
+      if (isInWater(bot)) { _workSet = false; try { await escapeWater(bot, { emit }); } catch (e) {} }
+      else { try { homewarp.bookmark(bot, HOME_WORK); _workSet = true; emit({ type: 'work_bookmarked', ctx: 'waterlocked_relocate' }); } catch (e) {} }
     }
     return rBM;
   }
@@ -1224,6 +1228,9 @@ async function runGoalSkill(goal) {
     }
     emit({ type: 'gift_tpa', to });
     try { stopMotion(); } catch (e) {}
+    // Poser le chantier AVANT de partir : sans ça le worker livrait son armure et reprenait sa
+    // chaîne à l'endroit du cartographe, à l'autre bout de la carte (son puits de mine abandonné).
+    markWorkBeforeTrip('gift_tpa');
     try { bot.chat('/tpa ' + to); } catch (e) { return { ok: false, reason: 'chat_failed' }; }
     const w = await awaitWarp({ maxMs: 20000 });
     if (!w.warped) {
@@ -1242,6 +1249,7 @@ async function runGoalSkill(goal) {
     _giftDone.set(to, Date.now());                      // le heartbeat le publiera « nu » encore 60 s
     try { if (_teamClaims) _teamClaims.release('marmor:' + to); } catch (e) {}
     _giftTarget = null; _giftAt = 0;
+    await returnToWork('gift_done');                    // ← LE retour qui manquait
     return given > 0 ? { ok: true } : { ok: false, reason: 'gift_toss_failed' };
   }
   if (goal.skill === 'ensureArmor') {
@@ -1749,6 +1757,157 @@ function saveBaseState(st) {
   } catch (e) { /* best-effort : sans le fichier, le bot re-marchera, il ne casse rien */ }
 }
 
+// ─── DETTE DE MORT (Massii 27/07) ───────────────────────────────────────────────────────────────
+// « death = posé quand il va mourir (sauf lave) ; après respawn il se re-TP IMMÉDIATEMENT pour
+// tuer tout et récupérer son loot ; il ne supprime ce home qu'une fois TOUT le loot récupéré —
+// sinon il revient encore et encore, même s'il meurt en continu. »
+//
+// La dette est PERSISTÉE dans le memo base : le self-healing relance le process à chaque mort, or
+// c'est PRÉCISÉMENT là qu'elle sert. Une dette gardée en mémoire de process serait perdue au seul
+// moment qui compte. Borne naturelle : le despawn vanilla à 5 min (cf. homes.DEBT_TTL_MS) — au-delà
+// il n'y a plus rien au sol, la dette se lève seule. Pas de boucle infinie possible.
+
+// ─── EXCURSION VOLONTAIRE : poser `work` AVANT de partir, revenir par `/home work` ──────────────
+// Massii : « work = la zone de travail : posé quand il doit se TP quelque part (vers la base, chez
+// un joueur, n'importe où) pour pouvoir REVENIR au travail ensuite. »
+// Le trajet bois posait déjà son signet ; la livraison d'armure au cartographe, elle, faisait un
+// /tpa et NE REVENAIT JAMAIS — le worker reprenait sa chaîne depuis l'autre bout de la carte.
+// Garde : jamais dans l'eau (un home mouillé rend tous les /home morts, teleport-safety), et on
+// n'ÉCRASE PAS un chantier déjà mémorisé (le puits de mine profond vaut mieux que la position
+// de surface d'où l'on part).
+
+/** Pose le signet de chantier avant une excursion. Retourne true si un retour sera possible. */
+function markWorkBeforeTrip(why) {
+  if (_workSet) return true;                       // chantier déjà mémorisé : c'est là qu'on rentre
+  try {
+    if (isInWater(bot)) return false;
+    if (!homewarp.bookmark(bot, HOME_WORK)) return false;
+    _workSet = true;
+    emit({ type: 'work_bookmarked', why });
+    return true;
+  } catch (e) { return false; }
+}
+
+/** Retour au chantier après l'excursion (no-op si aucun chantier n'a pu être posé). */
+async function returnToWork(why) {
+  if (!_workSet) return false;
+  try {
+    homewarp.goWork(bot);
+    const r = await awaitWarp({ maxMs: 12000 });
+    emit({ type: 'work_return', why, warped: !!(r && r.warped) });
+    return !!(r && r.warped);
+  } catch (e) { return false; }
+}
+
+/** Lit la dette persistée (ou null). */
+function loadDeathDebt() {
+  const st = loadBaseState();
+  return (st && st.deathDebt) || null;
+}
+
+/** Écrit (ou efface avec null) la dette dans le memo base, en préservant le reste. */
+function persistDeathDebt(debt) {
+  const st = loadBaseState() || {};
+  const next = Object.assign({}, st);
+  if (debt) next.deathDebt = debt; else delete next.deathDebt;
+  saveBaseState(next);
+}
+
+/** Nom du bloc à une position relative au bot (null si illisible — registry/chunk pas prêt). */
+function _blockNameAt(dx, dy, dz) {
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p) return null;
+    const b = bot.blockAt(p.offset(dx, dy, dz));
+    return (b && b.name) || null;
+  } catch (e) { return null; }
+}
+
+/**
+ * Marque le lieu de mort courant (/sethome death) et ouvre la dette.
+ * Refusé dans la lave : y revenir n'est pas une récupération mais une 2e mort, et le loot y a brûlé.
+ * Le home suit toujours la DERNIÈRE mort (Essentials écrase le home du même nom).
+ * @returns true si la dette a été posée.
+ */
+function bookmarkDeathHere() {
+  const p = bot.entity && bot.entity.position;
+  if (!p) return false;
+  const feet = _blockNameAt(0, 0, 0);
+  const below = _blockNameAt(0, -1, 0);
+  if (!canBookmarkDeath({ feet, below })) {
+    emit({ type: 'death_bookmark_skipped', reason: 'lava' });
+    return false;
+  }
+  if (!homewarp.bookmark(bot, HOME_DEATH)) return false;
+  const debt = openDebt(p, Date.now());
+  persistDeathDebt(debt);
+  return true;
+}
+
+/** Lève la dette : /delhome death (le slot est rendu) + effacement du memo. */
+function settleDeathDebt(reason) {
+  try { homewarp.delhome(bot, HOME_DEATH); } catch (e) { /* best-effort */ }
+  persistDeathDebt(null);
+  emit({ type: 'death_debt_settled', reason });
+}
+
+/**
+ * Récupération post-respawn : /home death → tuer tout ce qui traîne → ramasser → ne lever la dette
+ * QUE s'il ne reste plus rien au sol. Sinon la dette reste et le prochain respawn y revient.
+ * Prioritaire sur la reprise de chaîne ; les réflexes de survie restent armés pendant toute la manœuvre.
+ */
+async function recoverDeathDebt() {
+  if (_deathDebtBusy) return;
+  const debt0 = loadDeathDebt();
+  const first = debtAction({ debt: debt0, now: Date.now() });
+  if (first.act === 'none') return;
+  if (first.act === 'settle') { settleDeathDebt(first.reason); return; }
+  _deathDebtBusy = true;
+  try {
+    await sleep(1500);
+    emit({ type: 'death_recover_home', x: debt0.x, y: debt0.y, z: debt0.z });
+    homewarp.goHome(bot, HOME_DEATH);
+    await awaitWarp({ maxMs: 8000 }); // atterrissage OU warmup teleport-delay
+    await sleep(1000);                // settle chunks
+    // « tuer tout » : ce qui nous a tué campe souvent sur le loot. On ENGAGE (bestWeapon), on ne fuit pas.
+    try { await clearHostilesAround(); } catch (e) { /* best-effort */ }
+    await collectDeathDrops();
+    // Récupéré = MESURÉ, pas supposé : plus aucune item entity autour après nettoyage.
+    const left = homewarp.dropsWithin(bot.entities, bot.entity && bot.entity.position, DEATH_DROP_RADIUS).length;
+    const after = debtAction({ debt: loadDeathDebt(), now: Date.now(), arrived: true, dropsLeft: left });
+    if (after.act === 'settle') settleDeathDebt(after.reason);
+    else emit({ type: 'death_debt_kept', drops_left: left });   // on repassera au prochain respawn
+  } catch (e) {
+    /* best-effort : la dette reste, le prochain respawn re-tentera (ou le TTL la lèvera) */
+  } finally {
+    _deathDebtBusy = false;
+  }
+}
+
+const DEATH_DROP_RADIUS = 16;   // rayon de mesure des drops restants (cf. homewarp.dropsWithin)
+const DEATH_CLEAR_RADIUS = 12;  // hostiles à écarter avant de ramasser
+
+/** Engage les hostiles proches du lieu de mort (borné) : « le but est de tuer tout, pas de fuir ». */
+async function clearHostilesAround() {
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    let target = null;
+    try {
+      const list = nearbyHostiles(bot, DEATH_CLEAR_RADIUS);
+      target = list && list.length ? list[0] : null;
+    } catch (e) { target = null; }
+    if (!target) return;
+    // Même séquence que le réflexe de défense : arme en main PUIS attaque (au poing = 1 dégât).
+    try {
+      const w = bestWeapon(bot);
+      if (w) await bot.equip(w, 'hand').catch(() => {});
+    } catch (e) { /* best-effort */ }
+    try { bot.pvp.attack(target); } catch (e) { return; }
+    await sleep(1200);
+  }
+  try { bot.pvp && bot.pvp.stop(); } catch (e) {}
+}
+
 /**
  * Marche jusqu'à la zone de base, y pose le home 'safe' + ancre le respawn (/spawnpoint).
  * Deux temps, calés sur le fonctionnement d'équipe déjà en place (`team_split`) :
@@ -2218,9 +2377,9 @@ async function _recoverPickaxeInner() {
   const p0 = pp ? { x: Math.floor(pp.x), y: Math.floor(pp.y), z: Math.floor(pp.z) } : null;
   emit({ type: 'pick_recovery_trip', from: p0 });
   // SANS-GIVE : /spreadplayers (relocateToRegion) est BLOQUÉ → on marque le chantier puis on monte au
-  // spawn sûr (surface avec arbres) par /home safe. Retour au chantier par /home wsite (cf. plus bas).
+  // spawn sûr (surface avec arbres) par /home safe. Retour au chantier par /home work (cf. plus bas).
   if (NO_GIVE) {
-    if (p0) { homewarp.bookmark(bot, 'wsite'); emit({ type: 'wsite_bookmarked', ctx: 'pick_recovery', x: p0.x, y: p0.y, z: p0.z }); }
+    if (p0) { homewarp.bookmark(bot, HOME_WORK); emit({ type: 'work_bookmarked', ctx: 'pick_recovery', x: p0.x, y: p0.y, z: p0.z }); }
     homewarp.goSpawn(bot);
     await sleep(3500);
   } else {
@@ -2237,8 +2396,8 @@ async function _recoverPickaxeInner() {
     if (bestPickTier() < 0) await craftSmart({ name: 'wooden_pickaxe', count: 1 });
   } catch (e) { /* best-effort */ }
   if (p0) {
-    // SANS-GIVE : /tp @s bloqué → retour au chantier par le signet joueur /home wsite.
-    if (NO_GIVE) { homewarp.goHome(bot, 'wsite'); emit({ type: 'wsite_return', x: p0.x, y: p0.y, z: p0.z }); }
+    // SANS-GIVE : /tp @s bloqué → retour au chantier par le signet joueur /home work.
+    if (NO_GIVE) { homewarp.goHome(bot, HOME_WORK); emit({ type: 'work_return', x: p0.x, y: p0.y, z: p0.z }); }
     else { try { bot.chat('/tp @s ' + p0.x + ' ' + p0.y + ' ' + p0.z); } catch (e) {} }
     await sleep(3000);
   }
@@ -2411,8 +2570,8 @@ async function relocateToRegion(opts = {}) {
   if (CONFINE || _confineDyn) {
     const confR = CONFINE || _confineDyn;
     emit({ type: 'resource_warp', x: confR.x, z: confR.z, confined: true });
-    // no-give : /spreadplayers est BLOQUÉ par nogive → retour légitime /home canchor (brique 1)
-    if (NO_GIVE && _canchorSet) { await safeWarpHome(CONFINE_HOME); return; }
+    // no-give : /spreadplayers est BLOQUÉ par nogive → retour légitime /home ancre (brique 1)
+    if (NO_GIVE && _anchorSet) { await safeWarpHome(CONFINE_HOME); return; }
     try { bot.chat(confineSpreadCommand(bot.username, confR)); } catch (e) {}
     await sleep(5000);
     return;
@@ -2803,9 +2962,22 @@ async function startAutonomous(sender) {
   } else if (lastDeath && Date.now() - lastDeath.t < 4 * 60 * 1000 && invAfterDeath.length === 0) {
     const d = lastDeath; lastDeath = null;
     emit({ type: 'death_recovery', x: Math.round(d.x), y: Math.round(d.y), z: Math.round(d.z) });
-    await withTimeout(
-      bot.pathfinder.goto(new pfGoals.GoalNear(d.x, d.y, d.z, 1)),
-      90000, () => { try { stopMotion(); } catch (e) {} });
+    // MORT ONE-SHOT (pas d'imminence détectée → aucun home `death` posé, donc aucune dette).
+    // `/back` ramène au dernier lieu de mort en UN saut : 90 s de pathfinding vers l'endroit exact
+    // où campe le tueur, c'est la « marche funèbre » déjà mesurée. Whitelisté et permissionné
+    // (essentials.back). S'il échoue, la marche reste le filet.
+    let warped = false;
+    try {
+      bot.chat('/back');
+      const r = await awaitWarp({ maxMs: 8000 });
+      warped = !!(r && r.warped);
+      if (warped) emit({ type: 'death_recovery_back' });
+    } catch (e) { warped = false; }
+    if (!warped) {
+      await withTimeout(
+        bot.pathfinder.goto(new pfGoals.GoalNear(d.x, d.y, d.z, 1)),
+        90000, () => { try { stopMotion(); } catch (e) {} });
+    }
     await sleep(1500); // laisser le pickup aspirer les items au sol
   } else if (lastDeath) {
     lastDeath = null; // inventaire conservé (keepInventory) → reprise directe
@@ -3084,7 +3256,7 @@ async function onSpawn() {
     // Mappers exclus (ils ont /spreadplayers) ; bots non-autonomes : pas de longues marches dirigées.
     if (!bot._mcaBeforeLongTrip && world.objective && world.objective.type !== 'mapper') {
       bot._mcaBeforeLongTrip = async (target) => {
-        if ((CONFINE || _confineDyn) && _canchorSet) return;   // sous confine : pas de long trip
+        if ((CONFINE || _confineDyn) && _anchorSet) return;   // sous confine : pas de long trip
         try { await tryTpToMapper(target); } catch (e) {}
       };
     }
@@ -3113,6 +3285,16 @@ async function onSpawn() {
     }
   }
   if (!bootDone) {
+    // MÉNAGE DES HOMES LEGACY (Massii 27/07) — À FAIRE AVANT TOUT `/sethome`.
+    // Les comptes existants ont déjà 3 homes posés aux ANCIENS noms (`canchor`, `wsite`). Comme
+    // le serveur plafonne à 3 (`sethome-multiple: default: 3`), les `/sethome safe|work` suivants
+    // échoueraient EN SILENCE tant que ces slots sont occupés — exactement le bug prouvé sur
+    // world_mn5 (NethBot2 sans home `safe` → sa roue de secours anti-noyade était un no-op).
+    // Essentials répond « home not found » quand le nom n'existe pas : c'est inoffensif.
+    for (const legacy of LEGACY_HOMES) {
+      try { homewarp.delhome(bot, legacy); } catch (e) { /* best-effort */ }
+    }
+    emit({ type: 'legacy_homes_purged', names: LEGACY_HOMES });
     // une seule fois par connexion : sinon 'spawn' (respawn) ré-ajoute des listeners (fuite, MaxListeners)
     // Movements : défense en profondeur contre le stranding au minage (la table portable est le vrai fix).
     const moves = new Movements(bot);
@@ -3238,8 +3420,8 @@ async function onSpawn() {
                               // (≥4 en 4 min) = escapeWater sort mais le bot y retombe → warp (vécu ResBot3).
     panicInFlight = false; // garde de ré-entrée onPanic (bug review #3 : fire-and-forget non-awaité).
                            // Réinitialisée à CHAQUE spawn (déclarée au niveau module, cf. l. ~229).
-    _wsiteDrownTimes = []; // fresh par session (les strikes de noyade ne traversent pas un respawn)
-    _wsiteStuckTimes = []; // idem : les strikes d'impasse sèche ne traversent pas un respawn
+    _workDrownTimes = []; // fresh par session (les strikes de noyade ne traversent pas un respawn)
+    _workStuckTimes = []; // idem : les strikes d'impasse sèche ne traversent pas un respawn
     installReflexes(bot, {
       emit, fleeFrom,
       // COUVERT au lieu de la FUITE quand c'est un TIREUR qui nous met à PV bas (autopsie live
@@ -3424,7 +3606,7 @@ async function onSpawn() {
                 return;
               }
               emit({ type: 'water_rescue_home_safe' });
-              abandonWsiteIfDrowned();                     // wsite noyé ? → l'oublier (sinon /home wsite y ramène)
+              abandonWorkIfDrowned();                     // chantier noyé ? → l'oublier (sinon /home work y ramène)
               await safeWarpHome('safe');                 // float+immobile pendant l'éventuel warmup
               return;
             }
@@ -3451,7 +3633,7 @@ async function onSpawn() {
               try { stopMotion(); } catch (e) {}
               if (NO_GIVE) {
                 if (safeWarpDown()) { emit({ type: 'water_rescue_no_warp' }); try { await escapeWater(bot, { emit }); } catch (e) {} }
-                else { emit({ type: 'water_rescue_home_safe' }); abandonWsiteIfDrowned(); await safeWarpHome('safe'); }
+                else { emit({ type: 'water_rescue_home_safe' }); abandonWorkIfDrowned(); await safeWarpHome('safe'); }
               } else await relocateToRegion({ nearSpawn: true });   // bug #4 : vers le SEC near-spawn (admin)
             }
           } else {
@@ -3482,9 +3664,9 @@ async function onSpawn() {
           if (_imminentBusy || taskToken.cancelled) return;
           // AUTO-ANCRAGE confine (brique 2, Massii 16/07) : chaque semaine = un monde NEUF (seed
           // non choisi) → le bot s'établit SEUL une poche sèche. Première position stable (au sol,
-          // hors eau, surface) → home 'canchor' + confine dynamique (rayon 140). L'enforcement
-          // (/home canchor) et le camp de base s'y rattachent. L'ancre ne bouge plus de la session.
-          if (!_canchorSet && bot.entity && bot.entity.position
+          // hors eau, surface) → home 'ancre' + confine dynamique (rayon 140). L'enforcement
+          // (/home ancre) et le camp de base s'y rattachent. L'ancre ne bouge plus de la session.
+          if (!_anchorSet && bot.entity && bot.entity.position
               && (world.objective && world.objective.status === 'in_progress')
               && pickAnchorNow({
                 onGround: bot.entity.onGround, inWater: isInWater(bot), y: bot.entity.position.y,
@@ -3507,7 +3689,7 @@ async function onSpawn() {
               dist: CONFINE ? Math.hypot(pA.x - CONFINE.x, pA.z - CONFINE.z) : 0,
             });
             if (nearStatic && homewarp.bookmark(bot, CONFINE_HOME)) {
-              _canchorSet = true;
+              _anchorSet = true;
               if (!CONFINE) _confineDyn = { x: Math.round(pA.x), z: Math.round(pA.z), radius: DEFAULT_CONFINE_RADIUS };
               const eff = CONFINE || _confineDyn;
               bot._mcaExploreBounds = { x: eff.x, z: eff.z, radius: Math.max(eff.radius * 2, 128) };  // borne explore = poche confine (#54)
@@ -3575,7 +3757,7 @@ async function onSpawn() {
             try { stopMotion(); } catch (e) {}
             if (s.inWater) { try { escapeWater(bot, { emit }).catch(() => {}); } catch (e) {} }
             const pN = bot.entity && bot.entity.position;
-            if (pN) { homewarp.bookmark(bot, 'death'); _deathMark = { x: pN.x, y: pN.y, z: pN.z, at: Date.now() }; _deathArmed = true; }
+            if (pN && bookmarkDeathHere()) _deathMark = { x: pN.x, y: pN.y, z: pN.z, at: Date.now() };
             setTimeout(() => { _imminentBusy = false; }, 6000);
           } else {
             // 'bookmark' : mort probable inévitable (chute/générique) → marquer le lieu pour ramassage.
@@ -3586,10 +3768,9 @@ async function onSpawn() {
             const moved = !_deathMark || !p || (Math.abs(p.x - _deathMark.x) + Math.abs(p.z - _deathMark.z)) > 8 || (now - _deathMark.at) > 30000;
             if (moved && p) {
               emit({ type: 'imminent_bookmark_death', hp: s.health, x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
-              homewarp.bookmark(bot, 'death');
-              _deathMark = { x: p.x, y: p.y, z: p.z, at: now };
+              // Garde lave + ouverture de la dette PERSISTÉE (le home suit la dernière mort).
+              if (bookmarkDeathHere()) _deathMark = { x: p.x, y: p.y, z: p.z, at: now };
             }
-            _deathArmed = true;
             setTimeout(() => { _imminentBusy = false; }, 4000);
           }
         } catch (e) { _imminentBusy = false; }
@@ -3669,20 +3850,13 @@ async function onSpawn() {
         await establishBase();
       }
     }
-    // Après une mort MARQUÉE (watchdog PV 'bookmark') : revenir au lieu exact ramasser les drops.
-    // No-op propre sous keepInventory ON (0 item au sol) ; opérationnel quand keepInv passera OFF.
-    if (_deathArmed) {
-      _deathArmed = false;
-      (async () => {
-        try {
-          await sleep(1500);
-          emit({ type: 'death_recover_home' });
-          homewarp.goHome(bot, 'death');
-          await awaitWarp({ maxMs: 8000 }); // atterrissage OU warmup teleport-delay (post-respawn : calme, pas de secure)
-          await sleep(1000);                // settle chunks
-          await collectDeathDrops();
-        } catch (e) { /* best-effort */ }
-      })();
+    // DETTE DE MORT : revenir au lieu exact, tuer ce qui campe le loot, ramasser — et ne lever la
+    // dette QUE quand il ne reste plus rien (Massii : « il revient encore et encore »). La dette est
+    // lue depuis le MEMO PERSISTÉ, pas d'un drapeau de process : le self-healing relance le bot à
+    // chaque mort, un drapeau mémoire serait perdu au moment précis où il sert.
+    // No-op propre sous keepInventory ON (0 item au sol → dette levée à la 1re arrivée).
+    if (loadDeathDebt()) {
+      (async () => { try { await recoverDeathDebt(); } catch (e) { /* best-effort */ } })();
     }
     // Puis, si --regroup : rejoindre le groupe (no-op silencieux quand le flag est éteint).
     // Pas de regroupement sur le spawn où l'on vient d'installer la base : les 3 ouvriers visent la
@@ -3999,12 +4173,12 @@ bot.on('whisper', (username, message) => handleIncoming(username, message, true)
 bot.on('messagestr', (msg) => {
   // RC3 : un /home vient d'être REFUSÉ par la teleport-safety Essentials → le bot n'a PAS bougé.
   // On invalide le home concerné pour que les filets de secours arrêtent de compter dessus :
-  // wsite → re-creuser (pas re-TP) ; safe → sauvetage à pied + re-pose à la prochaine surface sèche.
+  // chantier → re-creuser (pas re-TP) ; safe → sauvetage à pied + re-pose à la prochaine surface sèche.
   const refusedH = homewarp.refusedHome(bot, msg);
   if (refusedH) {
     _homeRefusedAt[refusedH] = Date.now();
     emit({ type: 'home_tp_refused', name: refusedH });
-    if (refusedH === 'wsite') _wsiteMineSet = false;
+    if (refusedH === HOME_WORK) _workSet = false;
     if (refusedH === 'safe') _safeHomeSurface = false;   // le prochain spawn surface re-posera un safe sain
   }
   // Secure-then-warp : serveurs à teleport-delay — warmup annoncé (info) et surtout ANNULATION

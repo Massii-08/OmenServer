@@ -21,12 +21,19 @@ function confineSpreadCommand(username, conf) {
 }
 
 // ─── Confine NO-GIVE (briques 1-2, Massii 16/07) ────────────────────────────────────────────────
-// /spreadplayers est BLOQUÉ par nogive → en sans-give l'enforcement passe par un HOME dédié
-// 'canchor' posé à l'ancre (commande joueur légitime /home). Et comme chaque semaine = un NOUVEAU
-// monde (seed non choisi), le bot s'AUTO-ancre : la première position stable (au sol, hors eau,
-// en surface) devient l'ancre de sa poche sèche — bois local + fer/diamant en creusant sur place.
+// /spreadplayers est BLOQUÉ par nogive → en sans-give l'enforcement passe par un HOME posé à
+// l'ancre (commande joueur légitime /home). Et comme chaque semaine = un NOUVEAU monde (seed non
+// choisi), le bot s'AUTO-ancre : la première position stable (au sol, hors eau, en surface)
+// devient l'ancre de sa poche sèche — bois local + fer/diamant en creusant sur place.
+//
+// ⚠️ 27/07 : ce home était `canchor`, un QUATRIÈME nom alors que le serveur n'en autorise que 3
+// (`sethome-multiple: default: 3`) → un `/sethome` échouait en silence sur chaque bot, et lequel
+// dépendait de l'ordre de pose. L'ancre est maintenant le home `safe` — c'est de toute façon le
+// même endroit : LA BASE (cf. homes.js). Un nom de moins, un filet de sécurité de plus.
 
-const CONFINE_HOME = 'canchor';        // home d'ancre (réservé dans homewarp.RESERVED)
+const { HOME_SAFE } = require('./homes');
+
+const CONFINE_HOME = HOME_SAFE;        // l'ancre de confine EST la base (cf. homes.js)
 const DEFAULT_CONFINE_RADIUS = 140;    // poche assez grande pour bois + mine, assez petite pour
                                        // que l'enforcement coupe les longs trajets mortels
 
