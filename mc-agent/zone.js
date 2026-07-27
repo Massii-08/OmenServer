@@ -55,9 +55,22 @@ const MIGRATE_MAX_DIST = 1500;
 const MIGRATE_FAR_MIN_DIST = 600;
 const _FAR_REASONS = new Set(['exhausted', 'depleted']);
 
-/** Distance minimale de migration selon le motif : loin pour l'épuisement, normal sinon. (pur) */
+// ⚠️ BOIS : le plancher s'INVERSE (mesuré live world_mn11, 28/07 : 13 migrations 'wood' sur 16
+// échouaient `underground:true`). Le plancher normal de 200 faisait sauter le bot par-dessus la
+// forêt LA PLUS PROCHE (une flower_forest à 18-110 blocs) pour viser une forêt à 238-374 blocs —
+// injoignable depuis le fond de la mine (le trek horizontal souterrain rend NoPath, le bot ne
+// surface qu'après l'échec) → le bois n'était JAMAIS restocké, `done` figé à 0. Pour restocker du
+// bois on veut la forêt la plus proche ; le plancher ne sert plus qu'à garantir un déplacement
+// RÉEL (≥ MIGRATE_MIN_PROGRESS, sinon `zone_migrated dist<64` ne compterait pas). C'est l'exact
+// contraire de l'épuisement (où la cellule d'à côté est le même sous-sol déjà fouillé).
+const MIGRATE_WOOD_MIN_DIST = 64;   // == MIGRATE_MIN_PROGRESS (littéral : ce const est défini AVANT, pas de hoisting sur `const`)
+
+/** Distance minimale de migration selon le motif : loin pour l'épuisement, court pour le bois
+ *  (la forêt la plus proche), normal sinon. (pur) */
 function minDistFor(reason) {
-  return _FAR_REASONS.has(reason) ? MIGRATE_FAR_MIN_DIST : MIGRATE_MIN_DIST;
+  if (_FAR_REASONS.has(reason)) return MIGRATE_FAR_MIN_DIST;
+  if (reason === 'wood') return MIGRATE_WOOD_MIN_DIST;
+  return MIGRATE_MIN_DIST;
 }
 
 // Distance minimale pour qu'un déplacement COMPTE comme une migration (mesuré live world_mn11 :
@@ -309,6 +322,6 @@ module.exports = {
   zoneStateInit, zoneStateLoad, zoneStateAfterMigration,
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX,
-  MIGRATE_MIN_DIST, MIGRATE_MAX_DIST, MIGRATE_FAR_MIN_DIST, MIGRATE_MIN_PROGRESS, LEG_DIST, MAX_LEGS,
+  MIGRATE_MIN_DIST, MIGRATE_MAX_DIST, MIGRATE_FAR_MIN_DIST, MIGRATE_WOOD_MIN_DIST, MIGRATE_MIN_PROGRESS, LEG_DIST, MAX_LEGS,
   OVERWHELMING_FACTOR, MIN_MINUTES_URGENT, COOLDOWN_URGENT_MS,
 };

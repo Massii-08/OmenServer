@@ -6,7 +6,7 @@ const {
   zoneStateInit, zoneStateLoad, zoneStateAfterMigration,
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX, MIGRATE_MIN_DIST, MIGRATE_MAX_DIST,
-  MIGRATE_FAR_MIN_DIST, MIN_MINUTES_URGENT, COOLDOWN_URGENT_MS,
+  MIGRATE_FAR_MIN_DIST, MIGRATE_WOOD_MIN_DIST, MIGRATE_MIN_PROGRESS, MIN_MINUTES_URGENT, COOLDOWN_URGENT_MS,
 } = require('./zone');
 
 // ─── Télémétrie du verdict de zone : dedup au changement de raison, toujours sur 'migrate' ───────
@@ -49,10 +49,36 @@ test('zone vidée => la distance minimale de migration est BIEN plus grande', ()
   assert.strictEqual(minDistFor('depleted'), MIGRATE_FAR_MIN_DIST);
 });
 
-test('eau ou bois : la distance normale suffit (le problème est local)', () => {
+test('eau : la distance normale suffit (le problème est local)', () => {
   assert.strictEqual(minDistFor('water'), MIGRATE_MIN_DIST);
-  assert.strictEqual(minDistFor('wood'), MIGRATE_MIN_DIST);
   assert.strictEqual(minDistFor(undefined), MIGRATE_MIN_DIST);
+});
+
+// ⚠️ BOIS = plancher INVERSÉ (mesuré live world_mn11 : 13 migrations 'wood' sur 16 échouaient
+// underground:true). Avec le plancher normal de 200, le bot sautait par-dessus une flower_forest à
+// 18 blocs pour viser une forêt à 238-374 blocs — injoignable depuis le fond de la mine. Pour
+// restocker du bois on veut la forêt LA PLUS PROCHE ; le plancher ne sert plus qu'à garantir un
+// déplacement RÉEL (≥ MIGRATE_MIN_PROGRESS).
+test('bois : plancher COURT (= MIGRATE_MIN_PROGRESS) => la forêt la plus proche', () => {
+  assert.strictEqual(minDistFor('wood'), MIGRATE_WOOD_MIN_DIST);
+  assert.strictEqual(MIGRATE_WOOD_MIN_DIST, MIGRATE_MIN_PROGRESS);
+  assert.ok(MIGRATE_WOOD_MIN_DIST < MIGRATE_MIN_DIST, 'le plancher bois doit être BIEN plus court que 200');
+});
+
+test('bois : une forêt proche (110b) est acceptée là où le plancher 200 la refusait', () => {
+  // Reproduction du cas world_mn11 : le bot en (110,1), une flower_forest à 18b (rejetée, elle
+  // n'est pas un vrai déplacement) et une à 110b — retenue avec le plancher bois, refusée à 200.
+  const from = { x: 110, z: 1 };
+  const tooClose = { name: 'flower_forest', x: 128, z: 0 };   // ~18 blocs → sous MIGRATE_MIN_PROGRESS
+  const nearForest = { name: 'flower_forest', x: 0, z: 0 };   // ~110 blocs
+  const farForest = { name: 'forest', x: 384, z: 256 };       // ~374 blocs
+  const biomes = [tooClose, nearForest, farForest];
+  const wood = pickMigrationTarget({ from, biomes, minDist: minDistFor('wood') });
+  assert.ok(wood, 'une cible bois doit être trouvée');
+  assert.deepStrictEqual({ x: wood.x, z: wood.z }, { x: 0, z: 0 }, 'doit viser la forêt PROCHE, pas la lointaine');
+  // Avec l'ancien plancher (200), la proche était refusée → on retombait sur la lointaine.
+  const old = pickMigrationTarget({ from, biomes, minDist: MIGRATE_MIN_DIST });
+  assert.deepStrictEqual({ x: old.x, z: old.z }, { x: 384, z: 256 }, 'plancher 200 = forêt lointaine (le bug)');
 });
 
 test('zone vidée : une cellule proche est REFUSÉE, une lointaine acceptée', () => {
