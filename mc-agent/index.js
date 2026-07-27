@@ -72,7 +72,7 @@ const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTA
 // n'était jamais atteinte — c'est pourquoi la migration n'a jamais tiré de la journée.
 const {
   zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, minDistFor,
-  zoneFailureKind, zoneStateInit, zoneStateLoad, zoneStateAfterMigration, MAX_LEGS, MIGRATE_MIN_PROGRESS,
+  zoneFailureKind, zoneStateInit, zoneStateLoad, zoneStateAfterMigration, MAX_LEGS, MIGRATE_MIN_PROGRESS, LOADED_RADIUS,
 } = require('./zone');
 const { recordWorkDrown, noteDrownedSite, isDrownedNear, offsetFromDrowned } = require('./workDrown'); // chantier adjacent à un aquifère → abandon + BANNISSEMENT du lieu (3a)
 const { recordWorkStuck } = require('./workStuck'); // chantier menant à une impasse SÈCHE (drop_ahead/max_depth) → abandon+relocate (live 27/07 world_mn9)
@@ -1631,8 +1631,15 @@ async function migrateZone(reason) {
       if (pT) travelFrom = { x: pT.x, z: pT.z };
     }
     if (target) {
+      // ⚠️ UNE CIBLE HORS DES CHUNKS CHARGES EST INVISIBLE DU PATHFINDER (view-distance 6 = 96
+      // blocs, verifie sur le serveur). Un goto direct vers 250+ blocs rend NoPath en quelques
+      // secondes — c'est ce qui donnait `hop_failed moved:8` a chaque migration bois. Au-dela du
+      // rayon charge on part DIRECTEMENT par jambes de 64 blocs, chacune dans le champ de vision.
+      const dFar = Math.hypot(target.x - travelFrom.x, target.z - travelFrom.z);
+      const hops = dFar > LOADED_RADIUS ? 0 : 6;
+      if (!hops) emit({ type: 'zone_migration_legs', dist: Math.round(dFar), reason: 'beyond_loaded' });
       // Trajet borné et découpé : un goto unique de 1500 blocs ne rend jamais la main proprement.
-      for (let hop = 0; hop < 6 && !taskToken.cancelled; hop++) {
+      for (let hop = 0; hop < hops && !taskToken.cancelled; hop++) {
         const p = bot.entity && bot.entity.position;
         if (!p) break;
         if (Math.hypot(p.x - target.x, p.z - target.z) <= 32) break;

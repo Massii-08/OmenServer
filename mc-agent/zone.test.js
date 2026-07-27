@@ -7,6 +7,7 @@ const {
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX, MIGRATE_MIN_DIST, MIGRATE_MAX_DIST,
   MIGRATE_FAR_MIN_DIST, MIGRATE_WOOD_MIN_DIST, MIGRATE_MIN_PROGRESS, MIN_MINUTES_URGENT, COOLDOWN_URGENT_MS,
+  LEG_DIST, LOADED_RADIUS,
 } = require('./zone');
 
 // ─── Télémétrie du verdict de zone : dedup au changement de raison, toujours sur 'migrate' ───────
@@ -275,9 +276,13 @@ test('cible : carte vide => null (le caller bascule sur la marche a l aveugle)',
 
 // ─── Marche a l aveugle (memoire fraiche, aucune carte) ─────────────────────────────────────────
 
-test('jambe : un point a ~128 blocs sur le cap, deterministe par bot', () => {
+// La longueur d'une jambe doit tenir DANS LES CHUNKS CHARGES (view-distance 6 = 96 blocs),
+// sinon le pathfinder est aveugle et rend NoPath : c'est ce qui faisait echouer toutes les
+// migrations bois (`hop_failed moved:8`) tant que la jambe valait 128.
+test('jambe : un point sur le cap, DANS le rayon de chunks charges', () => {
   const a = migrationLeg({ from: FROM, heading: 0, legs: 0 });
-  assert.strictEqual(Math.round(Math.hypot(a.x - FROM.x, a.z - FROM.z)), 128);
+  assert.strictEqual(Math.round(Math.hypot(a.x - FROM.x, a.z - FROM.z)), LEG_DIST);
+  assert.ok(LEG_DIST < LOADED_RADIUS, 'une jambe doit rester dans les chunks charges');
 });
 
 test('jambe : les jambes s enchainent depuis la position courante', () => {

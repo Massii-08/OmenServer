@@ -79,9 +79,16 @@ function minDistFor(reason) {
 // brûlé, toujours dans la zone morte). En deçà, ce n'est pas un déménagement.
 const MIGRATE_MIN_PROGRESS = 64;
 
-// Marche à l'aveugle (carte encore vide) : jambes courtes, vérifiées, et un cap TOTAL.
-const LEG_DIST = 128;
-const MAX_LEGS = 12;               // 12 × 128 ≈ 1536 blocs, cohérent avec MIGRATE_MAX_DIST
+// Marche par JAMBES : la seule facon d'aller loin. ⚠️ Une jambe doit tenir DANS LES CHUNKS
+// CHARGES, sinon le pathfinder ne voit pas le terrain et rend NoPath immediatement.
+// Mesure decisive (world_mn11, 28/07) : `view-distance=6` = 96 blocs cote serveur — or les
+// jambes valaient 128 et la cible directe 250+. Resultat : `hop_failed moved:8` puis
+// `zone_migration_failed`, a chaque migration bois. C'est le meme plafond que celui deja
+// mesure pour les cartographes (piege #52b : portee reelle du cache client = 96 blocs).
+// 64 laisse une vraie marge : le bot avance pendant que les chunks suivants se chargent.
+const LEG_DIST = 64;
+const MAX_LEGS = 24;               // 24 × 64 ≈ 1536 blocs : meme portee totale qu'avant
+const LOADED_RADIUS = 96;          // au-dela, le pathfinder est aveugle → passer par les jambes
 
 const _WET_BIOME_RE = /ocean|river/i;
 
@@ -322,6 +329,6 @@ module.exports = {
   zoneStateInit, zoneStateLoad, zoneStateAfterMigration,
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX,
-  MIGRATE_MIN_DIST, MIGRATE_MAX_DIST, MIGRATE_FAR_MIN_DIST, MIGRATE_WOOD_MIN_DIST, MIGRATE_MIN_PROGRESS, LEG_DIST, MAX_LEGS,
+  MIGRATE_MIN_DIST, MIGRATE_MAX_DIST, MIGRATE_FAR_MIN_DIST, MIGRATE_WOOD_MIN_DIST, MIGRATE_MIN_PROGRESS, LEG_DIST, MAX_LEGS, LOADED_RADIUS,
   OVERWHELMING_FACTOR, MIN_MINUTES_URGENT, COOLDOWN_URGENT_MS,
 };
