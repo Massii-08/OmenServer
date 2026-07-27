@@ -1591,6 +1591,35 @@ async function migrateZone(reason) {
       source: target ? target.source : 'blind', biome: target ? target.biome : null,
     });
 
+    // L'ORDRE COMPTE : on remonte AVANT de voyager. Auparavant la remontée venait après les
+    // tentatives de trajet — le bot tentait donc la traversée SOUS TERRE (NoPath quasi garanti sur
+    // plusieurs centaines de blocs), remontait ensuite, et jugeait son arrivée là où il n'avait pas
+    // bougé : `zone_migration_failed underground:true` à chaque fois (mesuré world_mn11).
+    // ⚠️ ON REMONTE PAR `/home safe`, PAS A LA PIOCHE (mesure live world_mn11, 28/07 : toutes les
+    // migrations `wood` echouaient encore `underground:true` MALGRE cette remontee — depuis y=17-21
+    // il y a ~45 blocs de roche a percer, le pathfinder rend NoPath ou depasse le budget, a plus
+    // forte raison sans pioche adaptee). Or le bot POSSEDE deja un home de surface : le faire
+    // remonter a pied etait absurde. Un joueur qui demenage rentre chez lui d abord.
+    // Bonus : partir de la surface rend le trajet vers la nouvelle foret PLAT — c est exactement
+    // ce qui manquait au trek souterrain que la veille avait diagnostique (5db0192).
+    {
+      const pUp = bot.entity && bot.entity.position;
+      if (pUp && pUp.y < SAFE_HOME_MIN_Y) {
+        emit({ type: 'zone_migration_surfacing', from_y: Math.round(pUp.y), via: 'home_safe' });
+        try {
+          await safeWarpHome(HOME_SAFE);
+        } catch (e) { /* best-effort */ }
+        // Repli : si le home a ete refuse (teleport-safety) on tente quand meme la remontee a pied.
+        const pAfterWarp = bot.entity && bot.entity.position;
+        if (pAfterWarp && pAfterWarp.y < SAFE_HOME_MIN_Y) {
+          emit({ type: 'zone_migration_surfacing', from_y: Math.round(pAfterWarp.y), via: 'walk' });
+          try {
+            await withTimeout(bot.pathfinder.goto(new pfGoals.GoalY(SAFE_HOME_MIN_Y + 4)),
+              90000, () => { try { stopMotion(); } catch (e) {} });
+          } catch (e) { /* best-effort : on juge l'arrivée telle qu'elle est */ }
+        }
+      }
+    }
     if (target) {
       // Trajet borné et découpé : un goto unique de 1500 blocs ne rend jamais la main proprement.
       for (let hop = 0; hop < 6 && !taskToken.cancelled; hop++) {
@@ -1644,22 +1673,6 @@ async function migrateZone(reason) {
     // ARRIVÉE : la nouvelle zone devient LA base. `safe` bouge, le confine se ré-ancre, et le memo
     // persisté fait que tout respawn (self-healing compris) repartira d'ICI — c'est la pièce qui
     // manquait aux deux tentatives précédentes (split-brain confine).
-    // REMONTER AVANT DE JUGER L'ARRIVÉE (Massii, 27/07 : « depuis leur nouveau home safe ils
-    // retournent toujours à pied au spawn = boucle dans le vide »). Refuser d'ancrer sous terre
-    // était juste, mais s'arrêter là laissait le bot SANS base ET SANS spawnpoint neufs : ses
-    // morts suivantes le relâchaient au spawn du MONDE, d'où le retour à pied sans fin. Un joueur
-    // qui déménage remonte planter sa base au jour. Borné : si on n'y arrive pas, on retombe sur
-    // l'ancien comportement (migration non aboutie, l'ancien `safe` reste valide).
-    {
-      const pUp = bot.entity && bot.entity.position;
-      if (pUp && pUp.y < SAFE_HOME_MIN_Y) {
-        emit({ type: 'zone_migration_surfacing', from_y: Math.round(pUp.y) });
-        try {
-          await withTimeout(bot.pathfinder.goto(new pfGoals.GoalY(SAFE_HOME_MIN_Y + 4)),
-            90000, () => { try { stopMotion(); } catch (e) {} });
-        } catch (e) { /* best-effort : on juge l'arrivée telle qu'elle est */ }
-      }
-    }
     const p2 = bot.entity && bot.entity.position;
     const p2wet = !!(p2 && isInWater(bot));
     // On n'ancre une NOUVELLE base que si on a réellement déménagé : sans ça un goto raté
