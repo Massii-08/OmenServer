@@ -4822,6 +4822,27 @@ setInterval(async () => {
       if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
       const held = bot.heldItem && bot.heldItem.type;
       if (!oregrab.canHarvest(blk, held)) continue;      // pioche insuffisante → on laisse le bloc
+      // ⚠️ NE PAS CASSER À TRAVERS LA PAROI (Massii, 27/07 : « neth 2 réussit à casser du fer à
+      // travers les blocs mais il ne va pas le chercher »). Sans cette garde, on minait un bloc
+      // hors ligne de vue : le minerai tombait de l'AUTRE côté du mur et n'était jamais ramassé —
+      // le bot voyait le filon disparaître sans rien gagner. `branchMine` avait déjà cette garde
+      // (canSeeBlock/canDigBlock + approche), le ramassage opportuniste non. On s'approche une
+      // fois ; toujours pas visible → on laisse le bloc plutôt que de le gaspiller.
+      const _reachable = () => {
+        try {
+          if (typeof bot.canDigBlock === 'function' && !bot.canDigBlock(blk)) return false;
+          if (typeof bot.canSeeBlock === 'function' && !bot.canSeeBlock(blk)) return false;
+        } catch (e) { /* API absente → on ne bloque pas */ }
+        return true;
+      };
+      if (!_reachable()) {
+        try {
+          await withTimeout(
+            bot.pathfinder.goto(new pfGoals.GoalGetToBlock(blk.position.x, blk.position.y, blk.position.z)),
+            12000, () => { try { stopMotion(); } catch (er) {} });
+        } catch (e) { continue; }
+        if (!_reachable()) continue;                     // inatteignable : on ne le gaspille pas
+      }
       try {
         await withTimeout(bot.dig(blk), 12000, () => { try { bot.stopDigging(); } catch (e) {} });
         emit({ type: 'ore_grabbed', ore: blk.name, y: Math.round(blk.position.y) });

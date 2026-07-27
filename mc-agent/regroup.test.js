@@ -232,3 +232,37 @@ test('squadTarget : un bot de surface rejoint le mineur souterrain', () => {
   assert.ok(r, 'un TP doit etre decide');
   assert.strictEqual(r.name, 'Miner');
 });
+
+// ─── LA DISTANCE DE SQUAD IGNORAIT LA VERTICALE (mesure live 27/07) ────────────────────────────
+// Massii : « il y a neth 4-5 qui sont toujours en surface ». Le chef etait pourtant bien le
+// mineur (NethBot3, y=12, ironZone=48) — mais `_d` ne mesure que X/Z :
+//     NethBot4 (218, 14, y=56)  vs  NethBot3 (232, 3, y=12)  =>  17 blocs => « deja assez pres »
+// 17 blocs a plat, 44 blocs de ROCHE entre eux. Le bot de surface ne descendait donc JAMAIS.
+// Un coequipier separe par 44 blocs de pierre n'est pas « a cote » : il est inaccessible.
+
+test('squad : meme X/Z mais 44 blocs plus bas => on descend le rejoindre', () => {
+  const mates = [worker({ name: 'Miner', x: 232, z: 3, y: 12, ironZone: 48 })];
+  const r = squadTarget({
+    self: { x: 218, z: 14, y: 56, ironZone: 0 }, selfName: 'Surface',
+    mates, armorComplete: false, now: T, lastAt: 0,
+  });
+  assert.ok(r, 'le TP doit partir malgre les 17 blocs a plat');
+  assert.strictEqual(r.name, 'Miner');
+});
+
+test('squad : vraiment a cote (meme profondeur, quelques blocs) => on ne TP pas', () => {
+  const mates = [worker({ name: 'Miner', x: 232, z: 3, y: 12, ironZone: 48 })];
+  const r = squadTarget({
+    self: { x: 235, z: 5, y: 13, ironZone: 20 }, selfName: 'Autre',
+    mates, armorComplete: false, now: T, lastAt: 0,
+  });
+  assert.strictEqual(r, null);
+});
+
+test('squad : y inconnu des deux cotes => comportement horizontal d origine (retro-compat)', () => {
+  const mates = [worker({ name: 'Aaa', x: 300, z: 0 })];
+  const r = squadTarget({
+    self: { x: 0, z: 0 }, selfName: 'Zzz', mates, armorComplete: false, now: T, lastAt: 0,
+  });
+  assert.ok(r, 'a 300 blocs a plat, le TP part comme avant');
+});

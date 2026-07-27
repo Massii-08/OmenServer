@@ -142,7 +142,22 @@ function squadTarget({
   const m = (mates || []).find((x) => x && x.name === leader
     && typeof x.x === 'number' && typeof x.z === 'number');
   if (!m) return null;
-  const d = _d(m.x, m.z, self.x, self.z);
+  // ⚠️ LA VERTICALE COMPTE (mesuré live 27/07). `_d` est horizontale : un bot de SURFACE à 17
+  // blocs à plat d'un mineur à y=12 était jugé « déjà assez près » — alors qu'il y a 44 blocs de
+  // ROCHE entre eux et qu'il ne descendra jamais tout seul. C'est exactement ce que Massii
+  // voyait : « il y a neth 4-5 qui sont toujours en surface » alors que le chef était bien le
+  // mineur. On mesure donc en 3D quand les deux altitudes sont connues ; sinon on garde le
+  // comportement horizontal d'origine (rétro-compat des présences sans `y`).
+  const dxz = _d(m.x, m.z, self.x, self.z);
+  const dy = (Number.isFinite(m.y) && Number.isFinite(self.y)) ? Math.abs(m.y - self.y) : 0;
+  const d = Math.hypot(dxz, dy);
+  // Le chef est au FOND, moi en surface → je descends, quelle que soit la distance à plat.
+  // C'est tout l'objet de la demande : « les bots qui ne font rien doivent se tp vers ceux qui
+  // sont sous terre ». Un seuil de distance ne peut pas exprimer ça — mesuré live, NethBot4 était
+  // à 17 blocs à plat (donc « assez près ») et 44 blocs de roche au-dessus du seul mineur du run.
+  const leaderIsUnderground = _isWorkingMiner(m);
+  const iAmUnderground = Number.isFinite(self.y) && self.y <= UNDERGROUND_Y;
+  if (leaderIsUnderground && !iAmUnderground) return { name: leader, dist: Math.round(d) };
   if (d <= near) return null;
   return { name: leader, dist: Math.round(d) };
 }

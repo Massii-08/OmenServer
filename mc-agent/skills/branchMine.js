@@ -346,6 +346,18 @@ async function safeDigAndOpportunism(bot, target, token, debug, loopOpts) {
   if (!block || block.boundingBox !== 'block') return { ok: true };       // déjà air → rien à faire
   if (isLava(block.name)) return { ok: false, reason: 'lava_at_target' };
 
+  // ⚠️ JAMAIS UN MINERAI À MAINS NUES (Massii, 27/07 : « il tape avec les mains là »). Casser du
+  // fer sans pioche DÉTRUIT le bloc et ne donne RIEN : le bot dépense de longues secondes, perd
+  // le filon, et recommence ailleurs. Un joueur ne fait jamais ça. `equipCached` plus haut a déjà
+  // tenté d'équiper le meilleur outil ; s'il n'y en a AUCUN qui récolte, on laisse le bloc en
+  // place — il sera toujours là quand le bot aura refait une pioche.
+  if (ORE_NAMES.has(block.name)) {
+    const held = bot.heldItem && bot.heldItem.type;
+    const need = block.harvestTools;
+    if (need && !(need[held] || need[String(held)])) {
+      return { ok: false, reason: 'no_pickaxe' };
+    }
+  }
   // Si le bloc cible EST un ore utile : §3.G → on vide la VEINE ENTIÈRE (flood-fill), pas juste ce
   // bloc — allure mineur humain (suit la veine), jamais X-ray (1 bloc puis repart).
   if (ORE_NAMES.has(block.name)) {
