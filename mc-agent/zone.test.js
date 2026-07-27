@@ -147,10 +147,20 @@ test('mauvais rendement mais pas encore assez mine => on reste (echantillon trop
   assert.strictEqual(r.verdict, 'stay');
 });
 
-test('assez de cellules epuisees autour => migrate:depleted', () => {
-  const r = zoneVerdict(healthy({ depletedNear: DEPLETED_NEAR_MAX }));
+test('cellules epuisees autour ET filon qui ne paie plus => migrate:depleted', () => {
+  // Dépletion spatiale + rendement sous le plancher `exhausted` : on tourne vraiment en rond.
+  const r = zoneVerdict(healthy({ depletedNear: DEPLETED_NEAR_MAX, ironMined: EXHAUSTED_IRON_MIN - 1 }));
   assert.strictEqual(r.verdict, 'migrate');
   assert.strictEqual(r.reason, 'depleted');
+});
+
+test('cellules epuisees autour MAIS le filon COURANT paie encore => on reste', () => {
+  // RÉGRESSION world_mn10 (27/07) : des bots à 36-103 fers/~20 min migraient sur le SEUL signal
+  // depletedNear≥3, perdant base+mine+bois pour une zone fraîche souvent SANS ARBRES (churn
+  // bois↔profondeur, frein n°1, done 1→0). Un bot qui sort du fer n'est PAS « en rond ».
+  const r = zoneVerdict(healthy({ depletedNear: DEPLETED_NEAR_MAX, ironMined: 40 }));
+  assert.strictEqual(r.verdict, 'stay');
+  assert.strictEqual(r.reason, 'ok');
 });
 
 // ─── Bois ───────────────────────────────────────────────────────────────────────────────────────

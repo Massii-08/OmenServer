@@ -88,11 +88,19 @@ function zoneVerdict(s, opts = {}) {
   }
 
   // 2) ZONE ÉPUISÉE — « ce n'est pas parce qu'il reste 5-6 veines de fer qu'il faut rester ».
+  // DÉPLÉTION SPATIALE — la carte montre ≥N cellules déjà épuisées autour ⇒ on « tourne en rond ».
+  // MAIS un filon qui PAIE encore prime sur ce signal de carte. Mesuré world_mn10 (27/07) : des
+  // bots à 36-103 fers/~20 min migraient QUAND MÊME sur le seul depletedNear≥3, perdant base + mine
+  // + bois pour une zone fraîche souvent SANS ARBRES → churn bois↔profondeur (frein n°1, done 1→0).
+  // On ne quitte pour dépletion QUE si le rendement courant est sous le plancher `exhausted` : un
+  // bot qui sort du fer n'est pas « en rond ». Un vrai secteur ratissé (fer<seuil) part vite, sans
+  // devoir attendre les 20 min de `exhausted` (le signal spatial suffit à trancher). Placé AVANT
+  // `exhausted` pour garder une raison distincte (spatial + rendement, ≠ rendement seul).
+  if (_num(s.depletedNear) >= DEPLETED_NEAR_MAX && _num(s.ironMined) < EXHAUSTED_IRON_MIN) {
+    return { verdict: 'migrate', reason: 'depleted' };
+  }
   if (_num(s.miningMinutes) >= EXHAUSTED_MINING_MIN && _num(s.ironMined) < EXHAUSTED_IRON_MIN) {
     return { verdict: 'migrate', reason: 'exhausted' };
-  }
-  if (_num(s.depletedNear) >= DEPLETED_NEAR_MAX) {
-    return { verdict: 'migrate', reason: 'depleted' };
   }
 
   // 3) BOIS — la zone est rasée autour de l'ancre (46 % de tous les buts échoués sur ax4).
