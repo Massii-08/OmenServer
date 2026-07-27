@@ -23,6 +23,20 @@ const { vanillaHint, DEPLETED_RADIUS } = require('./worldMemory');
 const MIN_MINUTES_IN_ZONE = 15;                 // temps minimum sur place avant TOUT verdict
 const MIGRATION_COOLDOWN_MS = 20 * 60 * 1000;   // délai minimum entre deux migrations
 
+// ⚠️ PREUVE ÉCRASANTE — mesuré le 27/07 sur `world_mn10`, régression signalée par Massii
+// (« avant on réussissait en 45 min à avoir quasi fini toute l'armure », et là l'armure stagnait
+// à 3 depuis des heures) :
+//     logsNotFound: 24 (seuil 8) · depletedNear: 10 (seuil 3) · ironMined: 0  →  verdict STAY
+// L'hystérésis et le cooldown existent pour empêcher le NOMADISME sur une preuve FAIBLE. Face à
+// une preuve massive ils deviennent absurdes : le bot reste vingt minutes dans une zone où il ne
+// peut RIEN faire. Un joueur part tout de suite. On ne les supprime pas — on les raccourcit quand
+// la zone est prouvée morte au-delà de tout doute (3× les seuils).
+// C'est invisible sur un monde SONDÉ (mn9 : les bots n'avaient jamais besoin de migrer) et
+// mortel sur un monde brut — exactement le cas que Massii veut faire tenir aux bots.
+const OVERWHELMING_FACTOR = 3;
+const MIN_MINUTES_URGENT = 4;                   // on laisse quand même le temps de constater
+const COOLDOWN_URGENT_MS = 5 * 60 * 1000;       // et on garde un anti-yo-yo
+
 const WATER_FAILS_MAX = 6;         // échecs eau (water_ahead/drowning/sauvetages) → nappe, pas malchance
 const LOGS_NOT_FOUND_MAX = 8;      // `logs not_found` → la zone est rasée (le goulot d'ax4)
 const EXHAUSTED_MINING_MIN = 20;   // minutes de minage effectif avant de juger le rendement
@@ -70,8 +84,15 @@ function _horiz(ax, az, bx, bz) { return Math.hypot(ax - bx, az - bz); }
  */
 function zoneVerdict(s, opts = {}) {
   if (!s || typeof s !== 'object') return { verdict: 'stay', reason: 'no_data' };
-  const minMinutes = opts.minMinutes != null ? opts.minMinutes : MIN_MINUTES_IN_ZONE;
-  const cooldownMs = opts.cooldownMs != null ? opts.cooldownMs : MIGRATION_COOLDOWN_MS;
+  // Zone prouvée morte AU-DELÀ DE TOUT DOUTE → seuils d'urgence (cf. OVERWHELMING_FACTOR).
+  const damning = _num(s.logsNotFound) >= LOGS_NOT_FOUND_MAX * OVERWHELMING_FACTOR
+    || _num(s.depletedNear) >= DEPLETED_NEAR_MAX * OVERWHELMING_FACTOR
+    || (_num(s.waterFails) >= WATER_FAILS_MAX * OVERWHELMING_FACTOR && !s.dryCellKnown);
+
+  const minMinutes = opts.minMinutes != null ? opts.minMinutes
+    : (damning ? MIN_MINUTES_URGENT : MIN_MINUTES_IN_ZONE);
+  const cooldownMs = opts.cooldownMs != null ? opts.cooldownMs
+    : (damning ? COOLDOWN_URGENT_MS : MIGRATION_COOLDOWN_MS);
 
   const inZone = s.minutesInZone;
   if (!Number.isFinite(inZone) || inZone < minMinutes) return { verdict: 'stay', reason: 'too_soon' };
@@ -283,4 +304,5 @@ module.exports = {
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX,
   MIGRATE_MIN_DIST, MIGRATE_MAX_DIST, MIGRATE_FAR_MIN_DIST, LEG_DIST, MAX_LEGS,
+  OVERWHELMING_FACTOR, MIN_MINUTES_URGENT, COOLDOWN_URGENT_MS,
 };

@@ -6,7 +6,7 @@ const {
   zoneStateInit, zoneStateLoad, zoneStateAfterMigration,
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX, MIGRATE_MIN_DIST, MIGRATE_MAX_DIST,
-  MIGRATE_FAR_MIN_DIST,
+  MIGRATE_FAR_MIN_DIST, MIN_MINUTES_URGENT, COOLDOWN_URGENT_MS,
 } = require('./zone');
 
 // ─── Télémétrie du verdict de zone : dedup au changement de raison, toujours sur 'migrate' ───────
@@ -87,7 +87,8 @@ test('zone saine => on reste', () => {
 });
 
 test('zone noyee mais on vient d arriver => on reste (hysteresis)', () => {
-  const r = zoneVerdict(healthy({ minutesInZone: MIN_MINUTES_IN_ZONE - 1, waterFails: 99 }));
+  // preuve MODEREE (au seuil, pas 3x) : c'est bien l'hysteresis normale qu'on teste ici
+  const r = zoneVerdict(healthy({ minutesInZone: MIN_MINUTES_IN_ZONE - 1, waterFails: WATER_FAILS_MAX }));
   assert.strictEqual(r.verdict, 'stay');
   assert.strictEqual(r.reason, 'too_soon');
 });
@@ -98,13 +99,14 @@ test('zone noyee et on a passe le seuil de temps => on migre', () => {
 });
 
 test('deux migrations rapprochees interdites (cooldown)', () => {
-  const r = zoneVerdict(healthy({ waterFails: 99, lastMigrationAt: NOW - (MIGRATION_COOLDOWN_MS - 1) }));
+  // preuve MODEREE : le cooldown LONG ne s'applique qu'hors regime d'urgence
+  const r = zoneVerdict(healthy({ waterFails: WATER_FAILS_MAX, lastMigrationAt: NOW - (MIGRATION_COOLDOWN_MS - 1) }));
   assert.strictEqual(r.verdict, 'stay');
   assert.strictEqual(r.reason, 'cooldown');
 });
 
 test('cooldown ecoule => la migration redevient possible', () => {
-  const r = zoneVerdict(healthy({ waterFails: 99, lastMigrationAt: NOW - MIGRATION_COOLDOWN_MS }));
+  const r = zoneVerdict(healthy({ waterFails: WATER_FAILS_MAX, lastMigrationAt: NOW - MIGRATION_COOLDOWN_MS }));
   assert.strictEqual(r.verdict, 'migrate');
 });
 
@@ -352,4 +354,59 @@ test('etat de zone : apres migration, tout repart de zero SAUF le cooldown', () 
   assert.strictEqual(s.anchoredAt, 7000);
   assert.strictEqual(s.waterFails, 0);
   assert.strictEqual(s.lastMigrationAt, 7000, 'le cooldown doit courir depuis la migration');
+});
+
+// ─── PREUVE ECRASANTE : ne pas faire mariner un bot dans une zone PROUVEE morte ─────────────────
+// Regression signalee par Massii : « avant on reussissait en 45 min a avoir quasi fini toute
+// l armure », et la l armure stagne a 3 depuis des heures. Mesure a l appui :
+//     logsNotFound: 24 (seuil 8) - depletedNear: 10 (seuil 3) - ironMined: 0  =>  verdict STAY
+// L hysteresis (15 min) et le cooldown (20 min) sont la pour empecher le NOMADISME sur une
+// preuve FAIBLE. Face a une preuve ecrasante ils deviennent absurdes : le bot reste 20 min dans
+// une zone ou il ne peut RIEN faire. Un joueur part tout de suite. Les garde-fous restent, mais
+// avec des seuils d urgence.
+
+test('preuve ecrasante : on part sans attendre les 15 min', () => {
+  const r = zoneVerdict(healthy({
+    minutesInZone: MIN_MINUTES_URGENT,
+    logsNotFound: LOGS_NOT_FOUND_MAX * 3,
+  }));
+  assert.strictEqual(r.verdict, 'migrate');
+  assert.strictEqual(r.reason, 'wood');
+});
+
+test('preuve ecrasante : le cooldown long ne cloue plus le bot 20 min', () => {
+  const r = zoneVerdict(healthy({
+    minutesInZone: MIN_MINUTES_URGENT,
+    depletedNear: DEPLETED_NEAR_MAX * 3,
+    ironMined: 0,                                  // `depleted` exige aussi un rendement au plancher
+    lastMigrationAt: NOW - COOLDOWN_URGENT_MS,
+  }));
+  assert.strictEqual(r.verdict, 'migrate');
+});
+
+// Les garde-fous ne DISPARAISSENT pas : sinon la flotte devient nomade et ne produit plus rien.
+test('preuve ecrasante mais on vient TOUT JUSTE d arriver => on reste quand meme', () => {
+  const r = zoneVerdict(healthy({
+    minutesInZone: MIN_MINUTES_URGENT - 1,
+    logsNotFound: LOGS_NOT_FOUND_MAX * 5,
+  }));
+  assert.strictEqual(r.verdict, 'stay');
+  assert.strictEqual(r.reason, 'too_soon');
+});
+
+test('preuve ecrasante mais migration il y a 30 s => on reste (anti yo-yo)', () => {
+  const r = zoneVerdict(healthy({
+    minutesInZone: MIN_MINUTES_URGENT,
+    logsNotFound: LOGS_NOT_FOUND_MAX * 5,
+    lastMigrationAt: NOW - 30000,
+  }));
+  assert.strictEqual(r.verdict, 'stay');
+  assert.strictEqual(r.reason, 'cooldown');
+});
+
+// Une preuve seulement MODEREE garde les seuils prudents d origine.
+test('preuve moderee : les seuils prudents restent en vigueur', () => {
+  const r = zoneVerdict(healthy({ minutesInZone: MIN_MINUTES_URGENT, logsNotFound: LOGS_NOT_FOUND_MAX }));
+  assert.strictEqual(r.verdict, 'stay');
+  assert.strictEqual(r.reason, 'too_soon');
 });
