@@ -227,14 +227,15 @@ test('IRON_ARMOR_CHAIN: fer brut + charbon mais PAS de four → block_buffer pui
   // Depuis le 25/07, poche VIDE de blocs posables ⇒ `block_buffer` passe avant (il faut de quoi
   // se murer/se couvrir sous terre). Ce n'est pas un détour : il ramasse justement du cobble,
   // donc il sert AUSSI armor_cobble. Avec 8 cobble en poche, les deux sont satisfaits d'un coup.
-  const noCobble = { iron_pickaxe: 1, raw_iron: 24, coal: 4, crafting_table: 1 };
+  // 28/07 : 4 charbons ne passent plus la porte combustible (réserve exigée) → 16.
+  const noCobble = { iron_pickaxe: 1, raw_iron: 24, coal: 16, crafting_table: 1 };
   assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(noCobble, [], 64)).name, 'block_buffer');
   const withCobble = { ...noCobble, cobblestone: 8 };
   assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(withCobble, [], 64)).name, 'armor_furnace');
 });
 
 test('IRON_ARMOR_CHAIN: fer brut + charbon + four → but = iron_armor (ensureArmor peut fondre+crafter)', () => {
-  const inv = { iron_pickaxe: 1, raw_iron: 24, coal: 4, stone_sword: 1, stone_axe: 1, cobblestone: 12, crafting_table: 1, furnace: 1 };
+  const inv = { iron_pickaxe: 1, raw_iron: 24, coal: 16, stone_sword: 1, stone_axe: 1, cobblestone: 12, crafting_table: 1, furnace: 1 };
   const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64));
   assert.strictEqual(g.name, 'iron_armor');
 });
@@ -297,4 +298,44 @@ test('IRON_ARMOR_CHAIN: iron_deep passe allowDeeper (deadlock wrong_depth) ; IRO
   assert.strictEqual(ironDeep.args.allowDeeper, true);
   const ironChainDeep = IRON_CHAIN.find((g) => g.name === 'iron_deep');
   assert.ok(!ironChainDeep || !ironChainDeep.args.allowDeeper, 'IRON_CHAIN (objectif pioche) inchangé');
+});
+
+// ─── UNE VRAIE RESERVE DE COMBUSTIBLE (Massii, 28/07) ──────────────────────────────────────────
+// « S ils ont besoin de combustible ils doivent aller chercher BEAUCOUP de bois en surface, ou
+// sinon recuperer BEAUCOUP de charbon, mais jamais se limiter a quelques morceaux — je veux une
+// vraie reserve pour quand ils en ont besoin. »
+// Mesure qui lui donne raison (world_mn11) : 286 minerais bruts pour 4 lingots, soit 1,4 % de
+// conversion. `armor_fuel` etait satisfait des que `fuelUnits >= smeltNeed` — le besoin EXACT de
+// l instant — et n allait chercher que 4 buches. Des la fonte suivante il repartait en surface :
+// le churn bois<->profondeur a l etat pur, et c est ce churn qui tue les runs depuis des jours.
+
+test('combustible : le strict necessaire ne suffit PLUS, il faut la reserve', () => {
+  // Exactement de quoi fondre ce qu il doit fondre, et rien de plus : insuffisant desormais.
+  const inv = { iron_pickaxe: 1, raw_iron: 24, coal: 3, stone_sword: 1, stone_axe: 1,
+    cobblestone: 12, crafting_table: 1, furnace: 1 };
+  const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64));
+  assert.strictEqual(g.name, 'armor_fuel', 'avec 3 charbons on doit encore aller en chercher');
+});
+
+test('combustible : avec une VRAIE reserve, on passe a la suite', () => {
+  const inv = { iron_pickaxe: 1, raw_iron: 24, coal: 16, stone_sword: 1, stone_axe: 1,
+    cobblestone: 12, crafting_table: 1, furnace: 1 };
+  const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64));
+  assert.notStrictEqual(g && g.name, 'armor_fuel', '16 charbons = reserve suffisante');
+});
+
+test('combustible : on en ramasse BEAUCOUP d un coup, pas 4 buches', () => {
+  const fuel = IRON_ARMOR_CHAIN.find((g) => g.name === 'armor_fuel');
+  assert.ok(fuel.args.count >= 16, 'une expedition bois doit rapporter une vraie reserve');
+  const coal = IRON_ARMOR_CHAIN.find((g) => g.name === 't1_coal');
+  assert.ok(coal.args.count >= 16, 'idem pour le charbon sous terre');
+});
+
+// Le garde-fou qui doit SURVIVRE : armure complete => on ne va plus chercher de combustible.
+test('combustible : armure complete => plus de collecte (pas de boucle infinie)', () => {
+  const worn = ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'];
+  const inv = { iron_pickaxe: 1 };
+  const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, worn, 64));
+  assert.notStrictEqual(g && g.name, 'armor_fuel');
+  assert.notStrictEqual(g && g.name, 't1_coal');
 });

@@ -222,6 +222,18 @@ const picksOK = (c) => stonePicks(c) >= 3 || invCount(c.inv, 'iron_pickaxe') >= 
 const fuelUnits = (c) => (invCount(c.inv, 'coal') + invCount(c.inv, 'charcoal')) * 8 +
   (anyPlanks(c.inv) + anyLog(c.inv)) * 1.5;
 const smeltNeed = (c) => Math.max(0, armorNeed(c, 3) - invCount(c.inv, 'iron_ingot'));
+// ⚠️ UNE VRAIE RÉSERVE, PAS LE STRICT NÉCESSAIRE (Massii, 28/07) : « ils doivent aller chercher
+// BEAUCOUP de bois en surface, ou sinon récupérer BEAUCOUP de charbon, mais jamais se limiter à
+// quelques morceaux — je veux une vraie réserve pour quand ils en ont besoin. »
+// Mesure qui lui donne raison sur world_mn11 : 286 minerais bruts pour 4 lingots (1,4 % de
+// conversion). `armor_fuel` était satisfait dès que `fuelUnits >= smeltNeed`, c'est-à-dire le
+// besoin EXACT de l'instant, et n'allait chercher que 4 bûches. À la fonte suivante il repartait
+// en surface : le churn bois↔profondeur à l'état pur — le frein n°1 du projet depuis des jours.
+// 48 unités ≈ 6 charbons ≈ 32 bûches : de quoi enchaîner sans remonter.
+const FUEL_RESERVE = 48;
+// Charbon : 3 était dérisoire (1 charbon = 8 fontes, mais il faut aussi les torches). 16 charbons
+// couvrent une armure complète, les outils et l'éclairage d'un tunnel entier.
+const COAL_RESERVE = 16;
 const IRON_ARMOR_CHAIN = [
   ..._IRON_PREFIX.map((g) => withFinal(g, IA)),
   { name: 'cobble_spare', met: (c) => invCount(c.inv, 'cobblestone') >= 6 || picksOK(c) || ironOK(c) || IA(c),
@@ -298,12 +310,14 @@ const IRON_ARMOR_CHAIN = [
   // lumière. Or `armor_fuel` envoyait le bot couper du BOIS même à Y16 : il remontait à la surface
   // pour fondre, alors qu'il avait du charbon tout autour. C'était le churn bois↔profondeur à
   // l'état pur. En surface le but est sauté : là-haut, le bois EST le combustible naturel.
-  { name: 't1_coal',       met: (c) => invCount(c.inv, 'coal') + invCount(c.inv, 'charcoal') >= 3
+  { name: 't1_coal',       met: (c) => invCount(c.inv, 'coal') + invCount(c.inv, 'charcoal') >= COAL_RESERVE
                                         || (c.y === undefined || c.y > 40)
-                                        || fuelUnits(c) >= smeltNeed(c) || IA(c),
-    skill: 'gather',       args: { name: ['coal_ore', 'deepslate_coal_ore'], count: 5 } },
-  { name: 'armor_fuel',    met: (c) => fuelUnits(c) >= smeltNeed(c) || IA(c),
-    skill: 'gatherLog',    args: { count: 4 } },
+                                        || smeltNeed(c) === 0
+                                        || fuelUnits(c) >= smeltNeed(c) + FUEL_RESERVE || IA(c),
+    skill: 'gather',       args: { name: ['coal_ore', 'deepslate_coal_ore'], count: 24 } },
+  { name: 'armor_fuel',    met: (c) => smeltNeed(c) === 0
+                                        || fuelUnits(c) >= smeltNeed(c) + FUEL_RESERVE || IA(c),
+    skill: 'gatherLog',    args: { count: 24 } },
   { name: 'armor_cobble',  met: (c) => invCount(c.inv, 'cobblestone') >= 8 || F(c) || IA(c),
     skill: 'gather',       args: { name: 'stone', count: 8 } },
   { name: 'armor_furnace', met: (c) => F(c) || IA(c),

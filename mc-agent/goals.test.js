@@ -440,15 +440,21 @@ test('but charbon : EN SURFACE → sauté (le bois y est le combustible naturel)
   assert.strictEqual(g.met({ inv: { raw_iron: 8 }, y: 64 }), true);
 });
 
-test('but charbon : déjà du charbon en poche → satisfait', () => {
+// 28/07 : le seuil est passé de 3 à une VRAIE RÉSERVE (demande Massii — « jamais se limiter à
+// quelques morceaux »). 5 charbons ne suffisent plus ; 16 oui. Le charbon de bois compte toujours.
+test('but charbon : une VRAIE réserve en poche → satisfait', () => {
   const g = chainFor('iron_armor').find((x) => x.name === 't1_coal');
-  assert.strictEqual(g.met({ inv: { coal: 5 }, y: 16 }), true);
-  assert.strictEqual(g.met({ inv: { charcoal: 5 }, y: 16 }), true, 'le charbon de bois compte');
+  assert.strictEqual(g.met({ inv: { coal: 5 }, y: 16 }), false, '5 charbons = « quelques morceaux »');
+  assert.strictEqual(g.met({ inv: { coal: 16 }, y: 16 }), true);
+  assert.strictEqual(g.met({ inv: { charcoal: 16 }, y: 16 }), true, 'le charbon de bois compte');
 });
 
 test('but charbon : le bois en poche suffit aussi (on ne détourne pas pour rien)', () => {
   const g = chainFor('iron_armor').find((x) => x.name === 't1_coal');
-  assert.strictEqual(g.met({ inv: { oak_planks: 40 }, y: 16 }), true);
+  // Le bois compte comme combustible (1,5 unité la planche) — mais il en faut une VRAIE réserve :
+  // couvrir la fonte de l'armure (24) PLUS le tampon (48) = 72 unités, soit ~48 planches.
+  assert.strictEqual(g.met({ inv: { oak_planks: 80 }, y: 16 }), true);
+  assert.strictEqual(g.met({ inv: { oak_planks: 4 }, y: 16 }), false, '4 planches = pas une réserve');
 });
 
 // ─── nextObjectiveAfter : ne JAMAIS rester inerte une fois l'objectif atteint ───────────────────
