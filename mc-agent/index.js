@@ -469,7 +469,10 @@ async function trySquad() {
   // mécanisme de tp sans ce garde-fou → il rejetait les branchMine des workers toutes les ~30 s.
   const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy;
   const pick = squadTarget({
-    self: { x: p.x, z: p.z }, selfName: bot.username, mates: presence.list(),
+    // `y`/`ironZone` de SOI : sans eux un mineur productif se croirait « rien du tout » et
+    // remonterait rejoindre un flâneur resté en surface — l'inverse exact du but.
+    self: { x: p.x, z: p.z, y: Math.round(p.y), ironZone: _zoneIronMined },
+    selfName: bot.username, mates: presence.list(),
     armorComplete, busy, now: Date.now(), lastAt: _lastSquadAt,
   });
   if (!pick) return { ok: false, reason: 'no_need' };
@@ -1616,6 +1619,22 @@ async function migrateZone(reason) {
     // ARRIVÉE : la nouvelle zone devient LA base. `safe` bouge, le confine se ré-ancre, et le memo
     // persisté fait que tout respawn (self-healing compris) repartira d'ICI — c'est la pièce qui
     // manquait aux deux tentatives précédentes (split-brain confine).
+    // REMONTER AVANT DE JUGER L'ARRIVÉE (Massii, 27/07 : « depuis leur nouveau home safe ils
+    // retournent toujours à pied au spawn = boucle dans le vide »). Refuser d'ancrer sous terre
+    // était juste, mais s'arrêter là laissait le bot SANS base ET SANS spawnpoint neufs : ses
+    // morts suivantes le relâchaient au spawn du MONDE, d'où le retour à pied sans fin. Un joueur
+    // qui déménage remonte planter sa base au jour. Borné : si on n'y arrive pas, on retombe sur
+    // l'ancien comportement (migration non aboutie, l'ancien `safe` reste valide).
+    {
+      const pUp = bot.entity && bot.entity.position;
+      if (pUp && pUp.y < SAFE_HOME_MIN_Y) {
+        emit({ type: 'zone_migration_surfacing', from_y: Math.round(pUp.y) });
+        try {
+          await withTimeout(bot.pathfinder.goto(new pfGoals.GoalY(SAFE_HOME_MIN_Y + 4)),
+            90000, () => { try { stopMotion(); } catch (e) {} });
+        } catch (e) { /* best-effort : on juge l'arrivée telle qu'elle est */ }
+      }
+    }
     const p2 = bot.entity && bot.entity.position;
     const p2wet = !!(p2 && isInWater(bot));
     // ⚠️ SURFACE OBLIGATOIRE (bugfix world_mn10, 27/07) : `safe`/base/spawnpoint ne s'ancrent QUE
@@ -3489,7 +3508,13 @@ async function onSpawn() {
         // Aucun risque de régression : pickDonation et allArmored écartent déjà `role === 'mapper'`.
         let st = null;
         try { st = teamStatus(buildCtxInv(bot), [..._wornArmor()]); } catch (e) {}
-        presence.beat(Math.round(pB.x), Math.round(pB.z), role, st);
+        // `y` + `ironZone` : c'est ce qui permet de distinguer un MINEUR AU TRAVAIL d'un bot qui
+        // traîne en surface. Sans eux, `squadLeader` ne pouvait trancher qu'à l'alphabet — et si
+        // le premier dans l'alphabet flânait, toute la squad remontait le rejoindre au lieu de
+        // descendre miner (Massii, 27/07 : « ils se tp aux bots en surface donc ils ne descendent
+        // jamais »). Ajoutés APRÈS le spread de `st` pour qu'ils ne puissent pas être écrasés.
+        presence.beat(Math.round(pB.x), Math.round(pB.z), role,
+          Object.assign({}, st || {}, { y: Math.round(pB.y), ironZone: _zoneIronMined }));
       } catch (e) { /* best-effort */ }
     };
     _beat();

@@ -333,6 +333,16 @@ async function safeDigAndOpportunism(bot, target, token, debug, loopOpts) {
     try { await wallLava(bot, target); } catch (e) { /* best-effort */ }
     return { ok: false, reason: 'water_ahead' };
   }
+  // ⚠️ NE PAS CREUSER EN ÉTANT SOI-MÊME DANS L'EAU (Massii, 27/07 : « les bots continuent à
+  // creuser dans l'eau »). La garde ci-dessus protège la case CIBLE, mais si la galerie s'est
+  // inondée APRÈS l'ouverture, le bot poursuit son tunnel en apnée : minage 5× plus lent, noyade
+  // au bout, et chaque bloc ouvert agrandit la nappe. On rend la main avec la même raison que
+  // l'eau devant — l'appelant sait déjà tourner vers le sec et compter l'échec pour la zone.
+  try {
+    const self = bot.entity && bot.entity.position;
+    const head = self && bot.blockAt(p(Math.floor(self.x), Math.floor(self.y) + 1, Math.floor(self.z)));
+    if (head && isWater(head.name)) return { ok: false, reason: 'water_ahead' };
+  } catch (e) { /* lecture ratée → on ne bloque pas le minage */ }
   if (!block || block.boundingBox !== 'block') return { ok: true };       // déjà air → rien à faire
   if (isLava(block.name)) return { ok: false, reason: 'lava_at_target' };
 

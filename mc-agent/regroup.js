@@ -75,23 +75,50 @@ function pickRegroupTarget({ self, selfName, mates, armorComplete, now, lastAt, 
 const SQUAD_NEAR = 64;         // au-delà de cette distance du chef, on le rejoint
 const SQUAD_COOLDOWN_MS = 30000;   // 30 s : mesuré, à 60 s couplé à une boucle de 90 s ils dérivaient de 300-480 blocs entre deux contrôles
 
+// ⚠️ LE CHEF DOIT ÊTRE CELUI QUI TRAVAILLE (Massii, live 27/07) : « les bots qui sont en
+// difficulté ou qui ne font rien doivent se tp vers ceux qui sont SOUS TERRE et qui farment le
+// fer pour les aider — le team fonctionne mais ils se tp aux bots en SURFACE donc ils ne
+// descendent jamais ». Le critère alphabétique était déterministe mais AVEUGLE : si le bot au nom
+// le plus petit traînait en surface, toute la squad remontait le rejoindre et plus personne ne
+// minait. On garde le déterminisme (indispensable : chacun calcule le même chef sans se
+// coordonner) en changeant simplement la clé de tri — le TRAVAIL d'abord, le nom en départage.
+const UNDERGROUND_Y = 40;   // sous ce niveau on est dans la mine, pas en balade
+
+/** Ce coéquipier est-il un mineur AU TRAVAIL ? (sous terre ET produisant du fer dans sa zone) */
+function _isWorkingMiner(m) {
+  return !!m && Number.isFinite(m.y) && m.y <= UNDERGROUND_Y && (m.ironZone || 0) > 0;
+}
+
 /**
- * PUR — le chef de la squad : le nom le plus petit (ordre lexicographique) parmi les ouvriers
- * présents et frais, self inclus. Déterministe ⇒ les 3 bots désignent le même sans se parler.
- * Retourne null s'il n'y a personne (ni self valide, ni coéquipier).
+ * PUR — le chef de la squad, déterministe (les N bots désignent le même sans se parler) :
+ *   1. le MINEUR SOUTERRAIN le plus productif (le travail prime) ;
+ *   2. à productivité égale, le nom le plus petit ;
+ *   3. si personne ne mine, l'ancien critère alphabétique seul.
+ * `self` (optionnel) permet au bot de se compter comme mineur — sinon un mineur productif
+ * remonterait rejoindre un flâneur.
  */
-function squadLeader({ selfName, mates, now, freshMs = FRESH_MS } = {}) {
+function squadLeader({ selfName, mates, now, self, freshMs = FRESH_MS } = {}) {
   const t = now || Date.now();
-  const names = [];
-  if (selfName) names.push(String(selfName));
+  const all = [];
+  if (selfName) all.push(Object.assign({}, self || {}, { name: String(selfName) }));
   for (const m of mates || []) {
     if (!m || !m.name || m.role === 'mapper') continue;      // les mappeurs sont ailleurs par métier
     if ((t - (m.at || 0)) > freshMs) continue;                // mort ou déconnecté
-    names.push(String(m.name));
+    all.push(m);
   }
-  if (!names.length) return null;
-  names.sort();
-  return names[0];
+  if (!all.length) return null;
+
+  const miners = all.filter(_isWorkingMiner);
+  const pool = miners.length ? miners : all;
+  let best = null;
+  for (const m of pool) {
+    if (!best) { best = m; continue; }
+    // Tri déterministe : productivité DESC, puis nom ASC. Jamais l'ordre du tableau.
+    const dIron = (m.ironZone || 0) - (best.ironZone || 0);
+    if (miners.length ? (dIron > 0 || (dIron === 0 && String(m.name) < String(best.name)))
+      : String(m.name) < String(best.name)) best = m;
+  }
+  return best ? String(best.name) : null;
 }
 
 /**
@@ -110,7 +137,7 @@ function squadTarget({
   if (!self || armorComplete || busy) return null;
   const t = now || Date.now();
   if (lastAt && (t - lastAt) < cooldownMs) return null;
-  const leader = squadLeader({ selfName, mates, now: t, freshMs });
+  const leader = squadLeader({ selfName, mates, now: t, self, freshMs });
   if (!leader || leader === String(selfName)) return null;   // le chef ne suit personne
   const m = (mates || []).find((x) => x && x.name === leader
     && typeof x.x === 'number' && typeof x.z === 'number');
@@ -122,5 +149,5 @@ function squadTarget({
 
 module.exports = {
   pickRegroupTarget, FRESH_MS, MIN_FAR, COOLDOWN_MS,
-  squadLeader, squadTarget, SQUAD_NEAR, SQUAD_COOLDOWN_MS,
+  squadLeader, squadTarget, SQUAD_NEAR, SQUAD_COOLDOWN_MS, UNDERGROUND_Y,
 };

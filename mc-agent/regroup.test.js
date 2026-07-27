@@ -72,7 +72,7 @@ test('distance calculée en 2D (x,z) et arrondie', () => {
 
 // ─── SQUAD (Massii 2026-07-26 : « une petite squad qui reste ensemble ») ─────────────────────────
 
-const { squadLeader, squadTarget, SQUAD_NEAR } = require('./regroup');
+const { squadLeader, squadTarget, SQUAD_NEAR, UNDERGROUND_Y } = require('./regroup');
 
 const T = 1000000;
 const fresh = (name, x, z, extra = {}) => ({ name, x, z, at: T, ...extra });
@@ -147,4 +147,88 @@ test('squadTarget : chef sans position connue → null (pas de cible inventée)'
   const mates = [{ name: 'NethBot1', at: T }];
   assert.strictEqual(
     squadTarget({ self: { x: 0, z: 0 }, selfName: 'NethBot2', mates, now: T }), null);
+});
+
+// ─── LE CHEF DE SQUAD DOIT ETRE LE MINEUR, PAS LE PREMIER DANS L ALPHABET ───────────────────────
+// Massii, live 27/07 : « les bots qui sont en difficulte ou qui ne font rien doivent se tp vers
+// ceux qui sont SOUS TERRE et qui farment le fer pour les aider — le team fonctionne mais ils se
+// tp aux bots en SURFACE donc ils ne descendent jamais ».
+// `squadLeader` prenait le nom le plus petit (deterministe, mais AVEUGLE) : si ce bot traînait en
+// surface, toute la squad remontait le rejoindre et personne ne minait. On garde le determinisme
+// — indispensable pour que tous convergent au meme endroit sans se coordonner — mais le critere
+// devient le TRAVAIL : le mineur souterrain le plus productif.
+
+// (T et le helper `fresh` du bloc squad sont reutilises ; ici un helper a champs nommes)
+const worker = (o) => Object.assign({ at: T, role: 'worker' }, o);
+
+test('chef : un mineur souterrain productif bat le premier dans l alphabet', () => {
+  const mates = [
+    worker({ name: 'Aaa', x: 0, z: 0, y: 70, ironZone: 0 }),   // en surface, ne produit rien
+    worker({ name: 'Zzz', x: 50, z: 0, y: 12, ironZone: 9 }),  // sous terre, produit
+  ];
+  assert.strictEqual(squadLeader({ selfName: 'Mmm', mates, now: T }), 'Zzz');
+});
+
+test('chef : entre deux mineurs, le PLUS productif', () => {
+  const mates = [
+    worker({ name: 'Aaa', x: 0, z: 0, y: 12, ironZone: 3 }),
+    worker({ name: 'Zzz', x: 5, z: 0, y: 14, ironZone: 20 }),
+  ];
+  assert.strictEqual(squadLeader({ selfName: 'Mmm', mates, now: T }), 'Zzz');
+});
+
+test('chef : a productivite egale, depart deterministe par le nom (la squad converge)', () => {
+  const mates = [
+    worker({ name: 'Zzz', x: 0, z: 0, y: 12, ironZone: 5 }),
+    worker({ name: 'Aaa', x: 5, z: 0, y: 12, ironZone: 5 }),
+  ];
+  const a = squadLeader({ selfName: 'Mmm', mates, now: T });
+  const b = squadLeader({ selfName: 'Mmm', mates: mates.slice().reverse(), now: T });
+  assert.strictEqual(a, 'Aaa');
+  assert.strictEqual(a, b, 'l ordre du tableau ne doit jamais changer le chef');
+});
+
+test('chef : un bot en SURFACE qui a du fer en poche ne compte pas comme mineur', () => {
+  const mates = [
+    worker({ name: 'Aaa', x: 0, z: 0, y: 80, ironZone: 50 }),  // riche mais en surface
+    worker({ name: 'Zzz', x: 5, z: 0, y: 10, ironZone: 2 }),   // sous terre, au travail
+  ];
+  assert.strictEqual(squadLeader({ selfName: 'Mmm', mates, now: T }), 'Zzz');
+});
+
+test('chef : personne ne mine => on retombe sur l ancien critere alphabetique', () => {
+  const mates = [
+    worker({ name: 'Zzz', x: 0, z: 0, y: 70, ironZone: 0 }),
+    worker({ name: 'Aaa', x: 5, z: 0, y: 72, ironZone: 0 }),
+  ];
+  assert.strictEqual(squadLeader({ selfName: 'Mmm', mates, now: T }), 'Aaa');
+});
+
+test('chef : moi-meme mineur productif => c est MOI le chef, je ne remonte pas', () => {
+  const mates = [worker({ name: 'Aaa', x: 0, z: 0, y: 70, ironZone: 0 })];
+  const me = { name: 'Zzz', y: 10, ironZone: 12 };
+  assert.strictEqual(squadLeader({ selfName: 'Zzz', mates, now: T, self: me }), 'Zzz');
+});
+
+test('chef : les mappeurs restent exclus (ils sont ailleurs par metier)', () => {
+  const mates = [
+    worker({ name: 'Aaa', role: 'mapper', x: 0, z: 0, y: 10, ironZone: 99 }),
+    worker({ name: 'Zzz', x: 5, z: 0, y: 70, ironZone: 0 }),
+  ];
+  // le mappeur 'Aaa' minerait le plus, mais il ne doit JAMAIS etre chef
+  assert.notStrictEqual(squadLeader({ selfName: 'Mmm', mates, now: T }), 'Aaa');
+});
+
+test('seuil souterrain : coherent avec le reste du code', () => {
+  assert.ok(UNDERGROUND_Y < 58, 'sous terre = sous le niveau de surface utilise partout ailleurs');
+});
+
+// Le TP vers le mineur doit vraiment partir : c'est tout l'objet de la demande.
+test('squadTarget : un bot de surface rejoint le mineur souterrain', () => {
+  const mates = [worker({ name: 'Miner', x: 300, z: 0, y: 11, ironZone: 15 })];
+  const r = squadTarget({
+    self: { x: 0, z: 0 }, selfName: 'Idle', mates, armorComplete: false, now: T, lastAt: 0,
+  });
+  assert.ok(r, 'un TP doit etre decide');
+  assert.strictEqual(r.name, 'Miner');
 });
