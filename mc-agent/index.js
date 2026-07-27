@@ -4712,7 +4712,14 @@ setInterval(async () => {
         }
       }
     } catch (e) { /* best-effort : jamais bloquant */ }
-    const hits = bot.findBlocks({ matching: _oreGrabIds, maxDistance: 5, count: 4 });
+    // ⚠️ LE SCAN DOIT PORTER AUSSI LOIN QUE LA MARCHE AUTORISÉE (Massii, 27/07 : « il est devant
+    // du fer et il ne le mine pas »). `oreStepPlan` accepte de faire quelques pas jusqu'à
+    // ORE_STEP_MAX, mais ce scan avait un rayon de 5 : un filon à 8 blocs dans une paroi n'était
+    // jamais dans la liste des candidats — la marche était donc morte-née. Les deux valeurs
+    // viennent maintenant de la MÊME constante. Coût maîtrisé : `count: 4` arrête le scan dès 4
+    // trouvailles, et le rayon reste sans commune mesure avec les scans 256 qui gelaient l'event
+    // loop (piège #43a).
+    const hits = bot.findBlocks({ matching: _oreGrabIds, maxDistance: oregrab.ORE_STEP_MAX, count: 4 });
     // RAMASSAGE AU SOL (Massii, live 26/07 : « si il y a des item qui leur servent (genre diamant)
     // ils doivent les prendre »). Un minerai miné hors du rayon de ramassage automatique tombe et
     // reste là. On ne se détourne QUE pour ce qui fait avancer la chaîne (cf. oregrab.isValuableDrop)

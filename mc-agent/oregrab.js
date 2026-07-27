@@ -108,7 +108,7 @@ function isDetourWorthy(name) {
 //
 // On garde le principe (une ponctuation, pas une priorité) : rayon court, un seul minerai par
 // passe, et toutes les gardes de `shouldGrab` inchangées.
-const ORE_STEP_MAX = 16;      // au-delà, ce n'est plus « quelques pas », c'est un détour
+const ORE_STEP_MAX = 12;      // portee de marche ET rayon de scan (index.js) : une seule source de verite
 const ORE_REACH = 4.2;        // portée de bras : en deçà, aucun déplacement nécessaire
 
 /**
