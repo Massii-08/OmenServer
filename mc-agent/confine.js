@@ -92,8 +92,25 @@ function canAnchorHere({ confine, dist } = {}) {
   return dist <= confine.radius;
 }
 
+/**
+ * Confine RÉELLEMENT applicable : la base PERSISTÉE prime sur l'argument `--confine`. (pur)
+ *
+ * Après une migration de zone (Massii 27/07), l'ancre du bot n'est plus celle de son lancement.
+ * Or le self-healing backend relance la session avec le memo `--confine` d'origine, et le keeper
+ * `mc-keep8.sh` garde le sien : sans cette précédence, chaque mort ramenait le bot à l'ANCIENNE
+ * zone et l'enforcement l'y clouait — le split-brain confine qui a déjà mordu deux fois.
+ * `--confine` devient donc un simple AMORÇAGE (il fixe encore le rayon) ; la base fait foi.
+ */
+function effectiveConfine({ confine, base } = {}) {
+  const radius = (confine && Number.isFinite(confine.radius)) ? confine.radius : DEFAULT_CONFINE_RADIUS;
+  if (base && Number.isFinite(base.x) && Number.isFinite(base.z)) {
+    return { x: Math.round(base.x), z: Math.round(base.z), radius };
+  }
+  return confine || null;
+}
+
 module.exports = {
   parseConfine, confineSpreadCommand,
   CONFINE_HOME, DEFAULT_CONFINE_RADIUS, shouldEnforceConfine, pickAnchorNow,
-  shouldTravelToAnchor, canAnchorHere,
+  shouldTravelToAnchor, canAnchorHere, effectiveConfine,
 };

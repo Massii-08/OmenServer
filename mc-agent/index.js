@@ -67,7 +67,8 @@ const { runMapper } = require('./mapper');
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync } = require('./unstuck');
 const deathzones = require('./deathzones'); // ban-zone des camps de mort (≥2 alertes → fuite active)
 const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTANTE → relocate forcé (live 22/06 ResBot1)
-const { recordWorkDrown } = require('./workDrown'); // chantier adjacent à un aquifère → abandon après N sauvetages-noyade (live 27/07 world_mn9)
+const { zoneVerdict, pickMigrationTarget, migrationLeg, legIsGood, minDistFor, MAX_LEGS } = require('./zone'); // verdict de zone + migration autonome (Massii 27/07)
+const { recordWorkDrown, noteDrownedSite, isDrownedNear, offsetFromDrowned } = require('./workDrown'); // chantier adjacent à un aquifère → abandon + BANNISSEMENT du lieu (3a)
 const { recordWorkStuck } = require('./workStuck'); // chantier menant à une impasse SÈCHE (drop_ahead/max_depth) → abandon+relocate (live 27/07 world_mn9)
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
 // de mort. Le serveur n'autorise que 3 homes et le code en posait 4 → un /sethome échouait EN
@@ -121,8 +122,8 @@ const NO_GIVE = args['no-give'] === '1' || args['no-give'] === 'true';
 // (idée Massii 25/07). ÉTEINT par défaut — à activer explicitement, run par run.
 const REGROUP = args.regroup === '1' || args.regroup === 'true';
 // Confinement arène (--confine "X Z R") : garde le bot dans R de l'ancre sèche (cf. confine.js).
-const { parseConfine, confineSpreadCommand, CONFINE_HOME, DEFAULT_CONFINE_RADIUS, shouldEnforceConfine, pickAnchorNow, canAnchorHere } = require('./confine');
-const CONFINE = parseConfine(args['confine']);
+const { parseConfine, confineSpreadCommand, CONFINE_HOME, DEFAULT_CONFINE_RADIUS, shouldEnforceConfine, pickAnchorNow, canAnchorHere, effectiveConfine } = require('./confine');
+let CONFINE = parseConfine(args['confine']);   // ← 'let' : la base PERSISTEE le remplace au boot (effectiveConfine)
 // Provider LLM enfichable : MC_AGENT_LLM=gemini (gratuit) sinon Anthropic (défaut). Cf. ./llm.js
 const provider = (process.env.MC_AGENT_LLM || 'anthropic').toLowerCase();
 const DEFAULT_MODELS = { gemini: 'gemini-2.0-flash', groq: 'llama-3.3-70b-versatile', anthropic: 'claude-haiku-4-5-20251001' };
@@ -221,11 +222,41 @@ let _workStuckTimes = [];    // horodatages des échecs de descente SECS (drop_a
 // Un sauvetage-noyade (/home safe) ramenant à un chantier mémorisé : si ça se répète (aquifère adjacent),
 // on OUBLIE le chantier (même effet que waterlocked_relocate) → la re-descente creuse un puits frais ailleurs,
 // au lieu de /home work → re-noyade en boucle (mesuré : 3/5 workers, 118 sauvetages, 0 minerai).
+let _drownedSites = [];       // chantiers PROUVÉS noyés : on refuse d'y re-creuser (3a, cf. workDrown.js)
+let _drownedOffsetSeed = 0;   // fait TOURNER le cap du décalage : re-tenter le même cap = même nappe
+let _drownedRelocate = null;  // point de re-pose imposé après une noyade (décalage 30-50 blocs)
+let _workPos = null;          // position du chantier courant (pour bannir le BON endroit)
+
+/** Position horizontale courante du bot, ou null. */
+function _botXZ() {
+  const p = bot.entity && bot.entity.position;
+  return p ? { x: p.x, z: p.z } : null;
+}
+
 function abandonWorkIfDrowned() {
   if (!_workSet) { _workDrownTimes = []; return; }
   const r = recordWorkDrown(_workDrownTimes, Date.now());
   _workDrownTimes = r.times;
-  if (r.abandon) { _workSet = false; emit({ type: 'work_abandoned_drowning' }); }
+  if (!r.abandon) return;
+  _workSet = false;
+  // 3a : BANNIR le lieu, pas seulement l'oublier. L'oubli seul laissait la re-descente re-percer
+  // le MÊME aquifère quelques blocs plus loin — mesuré : 118 sauvetages, 0 minerai.
+  const now = Date.now();
+  const site = _workPos || (bot.entity && bot.entity.position);
+  if (site) {
+    _drownedSites = noteDrownedSite(_drownedSites, site, now);
+    _drownedOffsetSeed += 1;
+    const off = offsetFromDrowned(site, _drownedOffsetSeed);
+    _drownedRelocate = off;                 // la prochaine descente partira de LÀ, pas d'ici
+    emit({
+      type: 'work_abandoned_drowning',
+      x: Math.round(site.x), z: Math.round(site.z), toX: off.x, toZ: off.z,
+    });
+  } else {
+    emit({ type: 'work_abandoned_drowning' });
+  }
+  _descendWaterFails += 1;   // arme le relogement (même effet que waterlocked_relocate)
+  _zoneWaterFails += 1;      // ET alimente le verdict de ZONE : chantier noyé → zone peut-être noyée
 }
 let _drySteerTries = 0;       // NO_GIVE : marches tentées vers la cellule 128 sèche (arrivée VÉRIFIÉE, ≤3 —
                               // vécu live NethBot2 : goto interrompu par un réflexe → « arrivé » à 180 blocs
@@ -338,7 +369,9 @@ setInterval(() => {
     const p = bot.entity && bot.entity.position;
     if (!p) return;
     if (!_campEstablished) tryEstablishCamp().catch(() => {});    // retry léger du camp
-    const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy;
+    // `_migrating` DOIT compter comme occupé : sinon l'enforcement yank le marcheur vers l'ancre
+    // qu'on est précisément en train de quitter (même classe que les autres gardes busy).
+    const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating;
     const dist = Math.hypot(p.x - conf.x, p.z - conf.z);
     if (shouldEnforceConfine({ dist, radius: conf.radius, busy, now: Date.now(), lastAt: _lastConfineEnforceAt })) {
       _lastConfineEnforceAt = Date.now();
@@ -347,6 +380,14 @@ setInterval(() => {
     }
   } catch (e) { /* watchdog : ne crash jamais */ }
 }, 45000);
+
+// VERDICT DE ZONE (Massii 27/07) : « le fer et les autres matériaux ne sont pas qu'au spawn ».
+// Toutes les 60 s on juge la zone COURANTE sur ses compteurs ; l'hystérésis (15 min sur place) et
+// le cooldown (20 min entre deux migrations) vivent dans zone.zoneVerdict — sans eux la flotte
+// deviendrait nomade et ne produirait plus rien.
+setInterval(() => {
+  try { checkZoneVerdict(); } catch (e) { /* watchdog : ne crash jamais */ }
+}, 60000);
 
 // TP-AU-MAPPEUR : demande /tpa vers le mappeur choisi par pickMapperTp (frais, qui rapproche de
 // la cible d'au moins 150 blocs — ou le plus loin de moi sans cible). L'acceptation est automatique
@@ -926,7 +967,7 @@ async function runGoalSkill(goal) {
     _lastWoodTripAt = Date.now();
     try {
       if (!_workSet && !isInWater(bot)) {
-        homewarp.bookmark(bot, HOME_WORK); _workSet = true;
+        homewarp.bookmark(bot, HOME_WORK); _workSet = true; _workPos = _botXZ();
         emit({ type: 'work_bookmarked', why: 'wood_trip' });
       }
       emit({ type: 'wood_trip', goal: goal.name, y: Math.round(bot.entity.position.y) });
@@ -1005,11 +1046,26 @@ async function runGoalSkill(goal) {
       // bord de lac) : après un échec EAU, se DÉCALER à pied 30-50 blocs (direction aléatoire)
       // avant de re-creuser — marcher, pas de warp (sans-give).
       if (_descendWaterFails > 0 && bot.entity && bot.entity.position) {
-        const _ang = Math.random() * Math.PI * 2;
-        const _d = 30 + Math.random() * 20;
         const _p = bot.entity.position;
-        const _tx = Math.round(_p.x + Math.cos(_ang) * _d);
-        const _tz = Math.round(_p.z + Math.sin(_ang) * _d);
+        // 3a : quand un chantier a été PROUVÉ noyé, le décalage n'est plus aléatoire — il part du
+        // site banni sur un cap qui TOURNE à chaque essai (une nappe s'étend rarement dans toutes
+        // les directions ; re-tirer un angle au hasard retombait dedans une fois sur deux).
+        let _tx; let _tz;
+        if (_drownedRelocate) {
+          _tx = _drownedRelocate.x; _tz = _drownedRelocate.z;
+          _drownedRelocate = null;
+        } else {
+          const _ang = Math.random() * Math.PI * 2;
+          const _d = 30 + Math.random() * 20;
+          _tx = Math.round(_p.x + Math.cos(_ang) * _d);
+          _tz = Math.round(_p.z + Math.sin(_ang) * _d);
+        }
+        // Et on ne se relogue JAMAIS sur un chantier déjà banni : on repousse jusqu'à sortir.
+        for (let k = 0; k < 6 && isDrownedNear(_drownedSites, { x: _tx, z: _tz }, Date.now()); k++) {
+          _drownedOffsetSeed += 1;
+          const alt = offsetFromDrowned({ x: _tx, z: _tz }, _drownedOffsetSeed);
+          _tx = alt.x; _tz = alt.z;
+        }
         emit({ type: 'descend_relocate', x: _tx, z: _tz, fails: _descendWaterFails });
         try { await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(_tx, Math.round(_p.y), _tz, 3)), 60000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
       }
@@ -1101,7 +1157,7 @@ async function runGoalSkill(goal) {
       _descendWaterFails = 0;
       _workStuckTimes = [];
       // chantier profond atteint & SEC → mémoriser (les re-descentes suivantes = /home work, pas de creusage)
-      if (NO_GIVE && !isInWater(bot)) { try { homewarp.bookmark(bot, HOME_WORK); } catch (e) {} _workSet = true; _workDrownTimes = []; emit({ type: 'work_bookmarked' }); }
+      if (NO_GIVE && !isInWater(bot)) { try { homewarp.bookmark(bot, HOME_WORK); } catch (e) {} _workSet = true; _workPos = _botXZ(); _workDrownTimes = []; emit({ type: 'work_bookmarked' }); }
     } else if (NO_GIVE && _workSet && r && r.ok === false && /drop_ahead|max_depth|air_at_y|lava_ahead/i.test(String(r.reason || ''))) {
       // Le chantier mène en boucle à une impasse SÈCHE (grotte/vide/lave minée autour du puits) : miroir
       // SEC de workDrown (live NethBot4 world_mn9 : 15× descend_via_home_work→drop_ahead, 0 minerai).
@@ -1196,7 +1252,7 @@ async function runGoalSkill(goal) {
           () => { try { stopMotion(); } catch (e) {} });
       } catch (e) {}
       if (isInWater(bot)) { _workSet = false; try { await escapeWater(bot, { emit }); } catch (e) {} }
-      else { try { homewarp.bookmark(bot, HOME_WORK); _workSet = true; emit({ type: 'work_bookmarked', ctx: 'waterlocked_relocate' }); } catch (e) {} }
+      else { try { homewarp.bookmark(bot, HOME_WORK); _workSet = true; _workPos = _botXZ(); emit({ type: 'work_bookmarked', ctx: 'waterlocked_relocate' }); } catch (e) {} }
     }
     return rBM;
   }
@@ -1374,14 +1430,246 @@ async function maybeNightShelter(proactive = false) {
 // Échecs EAU consécutifs de descendDiagonal (anti re-perçage d'aquifère — cf. pré-hook descend).
 let _descendWaterFails = 0;
 
+// ─── COMPTEURS DE ZONE (feature « migration autonome », Massii 27/07) ───────────────────────────
+// Remis à ZÉRO à chaque ré-ancrage : ils jugent la zone COURANTE, pas la carrière du bot.
+// Ce sont les entrées de zone.zoneVerdict — cf. zone.js pour les seuils et leur justification.
+let _zoneAnchoredAt = 0;      // instant du dernier ancrage/migration (0 = pas encore ancré)
+let _zoneWaterFails = 0;      // échecs eau (descente noyée, sauvetages) dans la zone
+let _zoneLogsNotFound = 0;    // `logs`/bois introuvable → la zone est rasée
+let _zoneIronMined = 0;       // fers récoltés dans la zone (rendement)
+let _zoneMiningMs = 0;        // temps de minage effectif dans la zone
+let _lastMigrationAt = 0;     // cooldown anti-nomadisme
+let _migrating = false;       // marche de migration en cours → l'enforcement confine est SUSPENDU
+let _migrationLegs = 0;       // jambes déjà parcourues (marche à l'aveugle)
+
+/** Remet les compteurs à zéro : la zone jugée est celle où l'on vient de s'ancrer. */
+function resetZoneCounters(now) {
+  _zoneAnchoredAt = now || Date.now();
+  _zoneWaterFails = 0;
+  _zoneLogsNotFound = 0;
+  _zoneIronMined = 0;
+  _zoneMiningMs = 0;
+  _descendWaterFails = 0;
+}
+
+/** Buts qui MINENT : leur durée est le dénominateur du rendement de la zone (verdict 'exhausted'). */
+const MINING_GOALS = new Set(['descend_y16', 'iron_deep', 'iron_help', 'cobble_lava', 'diamond']);
+
+/** Buts dont l'échec accuse la ZONE (pas le bot) : bois absent ou nappe d'eau. */
+const _WATER_FAIL_RE = /water|flood|drown|noy/i;
+
+/** Alimente les compteurs depuis l'échec d'un but (appelé au point de passage unique). */
+function noteZoneFailure(goalName, reason) {
+  const r = String(reason || '');
+  if (_WATER_FAIL_RE.test(r)) _zoneWaterFails += 1;
+  if (WOOD_GOALS.has(goalName) && /not_found|no_wood/i.test(r)) _zoneLogsNotFound += 1;
+}
+
+// Rendement fer : mesuré par ÉCHANTILLONNAGE de l'inventaire (branchMine n'émet pas par minerai,
+// et un event par bloc serait un emballement). On ne compte que les HAUSSES : un dépôt à la base
+// fait baisser le stock sans que la zone y soit pour rien.
+let _lastIronSample = null;
+function sampleZoneIron() {
+  try {
+    const inv = buildCtxInv(bot);
+    const n = (inv.raw_iron || 0) + (inv.iron_ingot || 0);
+    if (_lastIronSample != null && n > _lastIronSample) _zoneIronMined += (n - _lastIronSample);
+    _lastIronSample = n;
+  } catch (e) { /* best-effort */ }
+}
+
+/** Cellules de biome + cellules épuisées de la carte partagée du groupe (ou {} si illisible). */
+function loadWorldCells() {
+  try {
+    const mem = args['world-memory'] ? loadMemory(String(args['world-memory'])) : null;
+    const w = (mem && mem.worlds && mem.worlds[bot._worldKey || worldKey(bot, args['world-label'])]) || {};
+    return { biomes: w.biomes || [], depleted: w.depleted || [], ores: w.ores || [] };
+  } catch (e) { return { biomes: [], depleted: [], ores: [] }; }
+}
+
+/** Ancre courante du bot (base persistée, sinon confine, sinon position). */
+function currentAnchor() {
+  if (_safeHomePos && Number.isFinite(_safeHomePos.x)) return { x: _safeHomePos.x, z: _safeHomePos.z };
+  const eff = CONFINE || _confineDyn;
+  if (eff) return { x: eff.x, z: eff.z };
+  const p = bot.entity && bot.entity.position;
+  return p ? { x: p.x, z: p.z } : null;
+}
+
+/**
+ * MIGRATION DE ZONE (Massii 27/07) — « s'éloigner assez pour trouver une nouvelle zone tout seuls,
+ * continuer à marcher jusqu'à trouver le bon endroit, y poser leur home safe, et miner LÀ ».
+ *
+ * Deux modes :
+ *   - avec carte : une cellule de biome TERRE non-épuisée à 200-1500 blocs, choisie de façon
+ *     DÉTERMINISTE (tous les ouvriers calculent la même) + claim partagé → l'escouade migre ENSEMBLE ;
+ *   - sans carte : marche directionnelle par jambes de 128 blocs, terrain vérifié à chaque jambe.
+ *
+ * Pendant la marche, l'enforcement confine est SUSPENDU (`_migrating`) — sinon il ramènerait le
+ * marcheur à l'ancre qu'on essaie justement de quitter.
+ */
+async function migrateZone(reason) {
+  if (_migrating) return;
+  const from = currentAnchor();
+  if (!from) return;
+  _migrating = true;
+  _migrationLegs = 0;
+  const t0 = Date.now();
+  try {
+    const cells = loadWorldCells();
+    // « Si une zone a été vidée de ses minerais, il s'éloigne de BEAUCOUP » (Massii) : pour un
+    // épuisement, la cellule d'à côté est le même sous-sol déjà fouillé → plancher bien plus haut.
+    const minDist = minDistFor(reason);
+    let target = pickMigrationTarget({ from, biomes: cells.biomes, depleted: cells.depleted, minDist });
+    // Claim PARTAGÉ : si un coéquipier a déjà fixé la cible, on adopte la sienne — l'escouade doit
+    // atterrir au MÊME endroit même si les cartes divergent d'un bot à l'autre.
+    if (target && _teamClaims) {
+      const key = 'migration:' + Math.round(target.x / 128) + ',' + Math.round(target.z / 128);
+      try { _teamClaims.tryClaim(key); } catch (e) { /* best-effort */ }
+    }
+    emit({
+      type: 'zone_migration_start', reason,
+      fromX: Math.round(from.x), fromZ: Math.round(from.z),
+      toX: target ? target.x : null, toZ: target ? target.z : null,
+      source: target ? target.source : 'blind', biome: target ? target.biome : null,
+    });
+
+    if (target) {
+      // Trajet borné et découpé : un goto unique de 1500 blocs ne rend jamais la main proprement.
+      for (let hop = 0; hop < 6 && !taskToken.cancelled; hop++) {
+        const p = bot.entity && bot.entity.position;
+        if (!p) break;
+        if (Math.hypot(p.x - target.x, p.z - target.z) <= 32) break;
+        await withTimeout(
+          bot.pathfinder.goto(new pfGoals.GoalNearXZ(target.x, target.z, 24)),
+          120000, () => { try { stopMotion(); } catch (e) {} });
+      }
+    } else {
+      // MARCHE À L'AVEUGLE : on continue tant que le terrain n'est pas bon, cap total borné.
+      const heading = basecamp.headingForName(bot.username, 3);
+      for (let i = 0; i < MAX_LEGS && !taskToken.cancelled; i++) {
+        const p = bot.entity && bot.entity.position;
+        const leg = migrationLeg({ from: p ? { x: p.x, z: p.z } : from, heading, legs: i });
+        if (!leg) break;
+        await withTimeout(
+          bot.pathfinder.goto(new pfGoals.GoalNearXZ(leg.x, leg.z, 16)),
+          90000, () => { try { stopMotion(); } catch (e) {} });
+        _migrationLegs = i + 1;
+        if (legIsGood(probeTerrain())) break;      // « le bon endroit » : arbres, au sec, pas d'océan
+      }
+    }
+
+    // ARRIVÉE : la nouvelle zone devient LA base. `safe` bouge, le confine se ré-ancre, et le memo
+    // persisté fait que tout respawn (self-healing compris) repartira d'ICI — c'est la pièce qui
+    // manquait aux deux tentatives précédentes (split-brain confine).
+    const p2 = bot.entity && bot.entity.position;
+    if (p2 && !isInWater(bot)) {
+      // « Il enlève leur vieux home et il le remet au nouveau safe place » (Massii, 27/07).
+      // Le `work` DOIT partir : il pointe sur le chantier de la zone qu'on vient d'abandonner —
+      // le laisser en place, c'est garder un `/home work` qui re-téléporte à des centaines de
+      // blocs en arrière, dans la zone qu'on a jugée morte. Puis on retire explicitement l'ancien
+      // `safe` et on le repose ICI (l'ordre compte : on a déjà vérifié qu'on est au sec, donc le
+      // re-sethome qui suit ne peut pas échouer sur une destination noyée).
+      try { homewarp.delhome(bot, HOME_WORK); } catch (e) { /* best-effort */ }
+      try { homewarp.delhome(bot, HOME_SAFE); } catch (e) { /* best-effort */ }
+      homewarp.bookmark(bot, HOME_SAFE);
+      _safeHomeSet = true;
+      _safeHomeSurface = p2.y >= 58;
+      _safeHomePos = { x: p2.x, y: p2.y, z: p2.z };
+      try { bot.chat('/spawnpoint'); } catch (e) {}
+      const base = { x: Math.round(p2.x), y: Math.round(p2.y), z: Math.round(p2.z) };
+      const st = loadBaseState() || {};
+      saveBaseState(Object.assign({}, st, { base, personal: true }));
+      _confineDyn = { x: base.x, z: base.z, radius: (CONFINE && CONFINE.radius) || DEFAULT_CONFINE_RADIUS };
+      if (CONFINE) CONFINE = { x: base.x, z: base.z, radius: CONFINE.radius };
+      _anchorSet = true;
+      bot._mcaExploreBounds = { x: base.x, z: base.z, radius: Math.max(_confineDyn.radius * 2, 128) };
+      _workSet = false;                            // l'ancien chantier est à l'autre bout du monde
+      _lastMigrationAt = Date.now();
+      resetZoneCounters(_lastMigrationAt);
+      emit({
+        type: 'zone_migrated', reason,
+        fromX: Math.round(from.x), fromZ: Math.round(from.z),
+        toX: base.x, toZ: base.z, legs: _migrationLegs,
+        dist: Math.round(Math.hypot(base.x - from.x, base.z - from.z)),
+        took_s: Math.round((Date.now() - t0) / 1000),
+      });
+    } else {
+      // Arrivée dans l'eau ou position illisible : on NE pose PAS la base (un home mouillé rend
+      // tous les /home morts). Le cooldown court quand même — on ne relance pas un trek dans la foulée.
+      _lastMigrationAt = Date.now();
+      emit({ type: 'zone_migration_failed', reason, wet: !!(p2 && isInWater(bot)) });
+    }
+  } catch (e) {
+    _lastMigrationAt = Date.now();
+    emit({ type: 'zone_migration_failed', reason, error: String((e && e.message) || e) });
+  } finally {
+    _migrating = false;
+  }
+}
+
+/** Lecture du terrain sous le bot pour `legIsGood` (arbres visibles, pieds au sec, biome). */
+function probeTerrain() {
+  let treesNear = 0;
+  let biome = null;
+  try {
+    const ids = Object.keys(bot.registry.blocksByName)
+      .filter((n) => n.endsWith('_log')).map((n) => bot.registry.blocksByName[n].id);
+    treesNear = bot.findBlocks({ matching: ids, maxDistance: 48, count: 4 }).length;
+  } catch (e) { treesNear = 0; }
+  try {
+    const p = bot.entity && bot.entity.position;
+    const b = p && bot.blockAt(p);
+    if (b && b.biome && b.biome.name) biome = String(b.biome.name).replace(/^minecraft:/, '');
+  } catch (e) { biome = null; }
+  return { treesNear, inWater: (function () { try { return isInWater(bot); } catch (e) { return false; } })(), biome };
+}
+
+/** Le verdict de zone, évalué périodiquement. Migre si la zone ne vaut plus le temps qu'on y passe. */
+function checkZoneVerdict() {
+  if (_migrating || taskToken.cancelled || IS_MAPPER) return;   // les cartographes DOIVENT bouger, ils ne migrent pas
+  if (!_anchorSet || !_zoneAnchoredAt) return;
+  sampleZoneIron();
+  const now = Date.now();
+  const cells = loadWorldCells();
+  const from = currentAnchor();
+  // Une cellule sèche mappée à portée est une meilleure réponse qu'un trek : le code sait déjà y aller.
+  let dryCellKnown = false;
+  try {
+    dryCellKnown = !!(from && driestCell(cells.ores, {
+      base: from, range: 224, cellSize: 128, minOres: 12,
+    }));
+  } catch (e) { dryCellKnown = false; }
+  const depletedNear = (cells.depleted || []).filter((d) => d && Number.isFinite(d.x) && from
+    && Math.hypot(d.x - from.x, d.z - from.z) <= 160).length;
+  const v = zoneVerdict({
+    minutesInZone: (now - _zoneAnchoredAt) / 60000,
+    waterFails: _zoneWaterFails,
+    logsNotFound: _zoneLogsNotFound,
+    ironMined: _zoneIronMined,
+    miningMinutes: _zoneMiningMs / 60000,
+    depletedNear,
+    dryCellKnown,
+    lastMigrationAt: _lastMigrationAt,
+    now,
+  });
+  if (v.verdict === 'migrate') migrateZone(v.reason).catch(() => {});
+}
+
 async function runSkillWithTelemetry(g) {
   await settleSurvivalKit();                                  // survie d'abord, le craft ensuite
   if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
   // NUIT + (mort récente OU PV bas) pendant le kit → ABRI jusqu'à l'aube (vécu Surv4 : 7 morts
   // nocturnes en boucle ; un trou couvert coûte 2 blocs et sauve le kit).
   if (await maybeNightShelter() && taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  const _t0 = Date.now();
   const r = await withTimeout(runGoalSkill(g), timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} });
-  if (!r || r.ok === false) emit({ type: 'goal_failed', name: g.name, reason: (r && r.reason) || 'unknown' });
+  // Temps de MINAGE effectif : c'est le dénominateur du rendement de la zone (verdict 'exhausted').
+  if (MINING_GOALS.has(g.name)) _zoneMiningMs += (Date.now() - _t0);
+  if (!r || r.ok === false) {
+    emit({ type: 'goal_failed', name: g.name, reason: (r && r.reason) || 'unknown' });
+    noteZoneFailure(g.name, r && r.reason);
+  }
   return r;
 }
 
@@ -1782,7 +2070,7 @@ function markWorkBeforeTrip(why) {
   try {
     if (isInWater(bot)) return false;
     if (!homewarp.bookmark(bot, HOME_WORK)) return false;
-    _workSet = true;
+    _workSet = true; _workPos = _botXZ();
     emit({ type: 'work_bookmarked', why });
     return true;
   } catch (e) { return false; }
@@ -3694,6 +3982,8 @@ async function onSpawn() {
               const eff = CONFINE || _confineDyn;
               bot._mcaExploreBounds = { x: eff.x, z: eff.z, radius: Math.max(eff.radius * 2, 128) };  // borne explore = poche confine (#54)
               emit({ type: 'confine_anchored', x: eff.x, z: eff.z, radius: eff.radius, static: !!CONFINE });
+              // Les compteurs de zone jugent la zone où l'on vient de s'ancrer : on repart de zéro.
+              if (!_zoneAnchoredAt) resetZoneCounters(Date.now());
               tryEstablishCamp().catch(() => {});
             }
           }
@@ -3801,6 +4091,18 @@ async function onSpawn() {
         _safeHomeSurface = (st0.base.y || 0) >= 58;
         _safeHomePos = { x: st0.base.x, y: st0.base.y, z: st0.base.z };
         emit({ type: 'base_adopted', x: st0.base.x, y: st0.base.y, z: st0.base.z });
+      }
+      // PRÉCÉDENCE DE L'ANCRE PERSISTÉE (migration de zone, Massii 27/07) : après une migration,
+      // tout respawn doit repartir de la NOUVELLE ancre. Le self-healing backend relance la session
+      // avec le `--confine` de BOOTSTRAP, et le keeper garde le sien → sans cette précédence, chaque
+      // mort ramenait le bot à l'ANCIENNE zone et l'enforcement l'y clouait : c'est le split-brain
+      // confine qui a déjà mordu DEUX fois. `--confine` ne fixe plus que le rayon.
+      if (st0 && st0.base) {
+        const effC = effectiveConfine({ confine: CONFINE, base: st0.base });
+        if (effC && (!CONFINE || effC.x !== CONFINE.x || effC.z !== CONFINE.z)) {
+          CONFINE = effC;
+          emit({ type: 'confine_from_base', x: effC.x, z: effC.z, radius: effC.radius });
+        }
       }
     }
     // 'safe' = cible de goSpawn. On le pose TOUJOURS (fallback = position de spawn courante, même
@@ -4345,6 +4647,7 @@ setInterval(async () => {
       try {
         await withTimeout(bot.dig(blk), 12000, () => { try { bot.stopDigging(); } catch (e) {} });
         emit({ type: 'ore_grabbed', ore: blk.name, y: Math.round(blk.position.y) });
+        if (/iron/i.test(String(blk.name))) _zoneIronMined += 1;   // rendement de la zone courante
       } catch (e) { /* best-effort : le bloc peut disparaître ou être hors ligne de vue */ }
       break;                                             // un seul par passe : on reste ponctuel
     }

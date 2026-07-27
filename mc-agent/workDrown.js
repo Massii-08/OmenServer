@@ -26,4 +26,54 @@ function recordWorkDrown(times, now, opts = {}) {
   return { times: arr, abandon: arr.length >= threshold };
 }
 
-module.exports = { recordWorkDrown, DEFAULT_WINDOW_MS, DEFAULT_THRESHOLD };
+// ─── 3a : BANNIR le chantier noyé, pas seulement l'oublier (Massii 27/07) ───────────────────────
+// L'oubli seul ne suffisait pas : la re-descente re-perçait le MÊME aquifère quelques blocs plus
+// loin. Le mécanisme est connu — le réflexe anti-noyade (`/home safe`, rapide) PRÉEMPTE le
+// relogement (`waterlocked_relocate`, lent), donc le bot revient au chantier adjacent à la nappe
+// et se re-noie. On mémorise le lieu, on refuse d'y re-creuser, et on impose un décalage.
+// ⚠️ Périmètre STRICT : rien ici ne touche à `descendDiagonal` (code le plus itéré du projet).
+
+const DROWNED_SITE_RADIUS = 16;             // « le même chantier » : la nappe s'étend au-delà du trou
+const DROWNED_SITE_TTL_MS = 30 * 60 * 1000; // un bannissement expire : la carte évolue, la nappe peut être drainée
+const OFFSET_MIN = 30;                      // décalage imposé : assez pour percer du terrain NEUF
+const OFFSET_MAX = 50;                      // mais pas au point de quitter la poche de confine
+
+function _finite(p) { return !!p && Number.isFinite(p.x) && Number.isFinite(p.z); }
+
+/** Mémorise un chantier noyé (et purge les bannissements expirés). NON mutant. */
+function noteDrownedSite(sites, pos, now) {
+  const kept = (Array.isArray(sites) ? sites : [])
+    .filter((s) => _finite(s) && Number.isFinite(s.at) && (now - s.at) <= DROWNED_SITE_TTL_MS);
+  if (!_finite(pos)) return kept;
+  return kept.concat([{ x: Math.round(pos.x), z: Math.round(pos.z), at: now }]);
+}
+
+/** Ce point retombe-t-il sur un chantier déjà prouvé noyé ? (pur) */
+function isDrownedNear(sites, pos, now, radius = DROWNED_SITE_RADIUS) {
+  if (!Array.isArray(sites) || !_finite(pos)) return false;
+  return sites.some((s) => _finite(s) && Number.isFinite(s.at)
+    && (now - s.at) <= DROWNED_SITE_TTL_MS
+    && Math.hypot(s.x - pos.x, s.z - pos.z) <= radius);
+}
+
+/**
+ * Où re-poser le chantier après une noyade ? (pur, DÉTERMINISTE par essai)
+ * Un décalage de 30-50 blocs sur un cap qui TOURNE à chaque essai : re-tenter le même cap
+ * retomberait dans la même nappe, qui s'étend rarement dans toutes les directions.
+ */
+function offsetFromDrowned(pos, seed = 0) {
+  const base = _finite(pos) ? pos : { x: 0, z: 0 };
+  const n = Number.isFinite(seed) ? seed : 0;
+  const angle = (n * 2.39996323) % (Math.PI * 2);     // angle d'or : dispersion maximale entre essais
+  const dist = OFFSET_MIN + ((n * 7) % (OFFSET_MAX - OFFSET_MIN + 1));
+  return {
+    x: Math.round(base.x + dist * Math.cos(angle)),
+    z: Math.round(base.z + dist * Math.sin(angle)),
+  };
+}
+
+module.exports = {
+  recordWorkDrown, DEFAULT_WINDOW_MS, DEFAULT_THRESHOLD,
+  noteDrownedSite, isDrownedNear, offsetFromDrowned,
+  DROWNED_SITE_RADIUS, DROWNED_SITE_TTL_MS, OFFSET_MIN, OFFSET_MAX,
+};

@@ -4,9 +4,42 @@ const assert = require('node:assert');
 const {
   parseConfine, confineSpreadCommand,
   CONFINE_HOME, shouldEnforceConfine, pickAnchorNow, DEFAULT_CONFINE_RADIUS,
-  shouldTravelToAnchor, canAnchorHere,
+  shouldTravelToAnchor, canAnchorHere, effectiveConfine,
 } = require('./confine');
 const { RESERVED } = require('./homewarp');
+
+// ─── Précédence de l'ancre PERSISTÉE sur l'argument --confine ───────────────────────────────────
+// Après une migration de zone, tout respawn doit repartir de la NOUVELLE ancre. Le self-healing
+// backend relance le bot avec le memo `--confine` de bootstrap, et le keeper garde le sien : sans
+// cette précédence on obtient le split-brain confine qui a déjà mordu DEUX fois (les morts
+// ramenaient les bots à l'ancienne zone, l'enforcement les y clouait). L'argument --confine
+// devient un simple amorçage ; la base persistée fait foi.
+
+test('effectiveConfine : sans base persistée, --confine est utilisé tel quel', () => {
+  const c = { x: 0, z: 0, radius: 64 };
+  assert.deepStrictEqual(effectiveConfine({ confine: c, base: null }), c);
+});
+
+test('effectiveConfine : la base persistée DÉPLACE l\'ancre, le rayon de --confine est gardé', () => {
+  const r = effectiveConfine({ confine: { x: 0, z: 0, radius: 64 }, base: { x: 900, y: 70, z: -400 } });
+  assert.deepStrictEqual(r, { x: 900, z: -400, radius: 64 });
+});
+
+test('effectiveConfine : base persistée sans --confine → confine dynamique au rayon par défaut', () => {
+  const r = effectiveConfine({ confine: null, base: { x: 900, y: 70, z: -400 } });
+  assert.deepStrictEqual(r, { x: 900, z: -400, radius: DEFAULT_CONFINE_RADIUS });
+});
+
+test('effectiveConfine : ni base ni confine → null (rien à imposer)', () => {
+  assert.strictEqual(effectiveConfine({}), null);
+  assert.strictEqual(effectiveConfine(), null);
+});
+
+test('effectiveConfine : base corrompue ignorée (on ne perd pas le confine de bootstrap)', () => {
+  const c = { x: 0, z: 0, radius: 64 };
+  assert.deepStrictEqual(effectiveConfine({ confine: c, base: { x: NaN, z: 5 } }), c);
+  assert.deepStrictEqual(effectiveConfine({ confine: c, base: {} }), c);
+});
 
 // ─── Existant (pin) ─────────────────────────────────────────────────────────────────────────────
 test('parseConfine : "X Z R" → {x,z,radius} ; invalide → null', () => {
