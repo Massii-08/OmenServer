@@ -2207,6 +2207,13 @@ async function _recoverPickaxeInner() {
   if (bestPickTier() >= 0) return { ok: true };
   try { await craftSmart({ name: 'stone_pickaxe', count: 1 }); } catch (e) {}
   if (bestPickTier() >= 0) return { ok: true };
+  const _invAt = () => {
+    const it = (bot.inventory && bot.inventory.items()) || [];
+    const n = (name) => it.filter((i) => i.name === name).reduce((a, i) => a + i.count, 0);
+    const any = (sfx) => it.filter((i) => i.name.endsWith(sfx)).reduce((a, i) => a + i.count, 0);
+    return { logs: any('_log'), planks: any('_planks'), sticks: n('stick'),
+             cobble: n('cobblestone') + n('cobbled_deepslate'), table: n('crafting_table') };
+  };
   const pp = bot.entity && bot.entity.position;
   const p0 = pp ? { x: Math.floor(pp.x), y: Math.floor(pp.y), z: Math.floor(pp.z) } : null;
   emit({ type: 'pick_recovery_trip', from: p0 });
@@ -2235,7 +2242,19 @@ async function _recoverPickaxeInner() {
     else { try { bot.chat('/tp @s ' + p0.x + ' ' + p0.y + ' ' + p0.z); } catch (e) {} }
     await sleep(3000);
   }
-  return { ok: bestPickTier() >= 0 };
+  // POURQUOI l'expedition a echoue (Massii/Repartition 27/07 : `help_pick` echouait 7 fois sur 9
+  // avec la raison « unknown »). recoverPickaxe ne renvoyait que {ok}, donc le planner ecrivait
+  // 'unknown' et le diagnostic etait impossible — exactement le « silence est un bug » (#55a).
+  // On rend desormais la MATIERE manquante : c'est elle qui dit si le frein est le bois, la
+  // pierre ou le craft.
+  if (bestPickTier() >= 0) return { ok: true };
+  const inv = _invAt();
+  const reason = (inv.logs === 0 && inv.planks === 0) ? 'no_wood'
+    : (inv.sticks === 0) ? 'no_sticks'
+      : (inv.cobble < 3) ? 'no_cobble'
+        : (inv.table === 0) ? 'no_table' : 'craft_failed';
+  emit({ type: 'pick_recovery_failed', reason, ...inv });
+  return { ok: false, reason: 'pick_recovery:' + reason };
 }
 
 async function mineForType(type, needed, opts = {}) {
