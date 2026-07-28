@@ -1,0 +1,566 @@
+{
+ "generated_at": 1785257927,
+ "markets": [
+  {
+   "symbol": "^GSPC",
+   "label": "S&P 500",
+   "region": "usa",
+   "kind": "index",
+   "name": "S&P 500",
+   "currency": "USD",
+   "price": 7450.02,
+   "prev_close": 7413.18017578125,
+   "change_pct": 0.5,
+   "clock": {
+    "status": "open",
+    "opens_at": null,
+    "closes_at": 1785268800,
+    "local_time": "12:58",
+    "tz_name": "America/New_York",
+    "session_open": "09:30",
+    "session_close": "16:00"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": -0.24,
+    "open": 7395.5498046875,
+    "prev_close": 7413.18017578125,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  },
+  {
+   "symbol": "^IXIC",
+   "label": "Nasdaq Composite",
+   "region": "usa",
+   "kind": "index",
+   "name": "NASDAQ Composite",
+   "currency": "USD",
+   "price": 24972.37,
+   "prev_close": 24932.080078125,
+   "change_pct": 0.16,
+   "clock": {
+    "status": "open",
+    "opens_at": null,
+    "closes_at": 1785268800,
+    "local_time": "12:58",
+    "tz_name": "America/New_York",
+    "session_open": "09:30",
+    "session_close": "16:00"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": -0.43,
+    "open": 24825.072265625,
+    "prev_close": 24932.080078125,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  },
+  {
+   "symbol": "^DJI",
+   "label": "Dow Jones",
+   "region": "usa",
+   "kind": "index",
+   "name": "Dow Jones Industrial Average",
+   "currency": "USD",
+   "price": 52883.54,
+   "prev_close": 52210.078125,
+   "change_pct": 1.29,
+   "clock": {
+    "status": "open",
+    "opens_at": null,
+    "closes_at": 1785268800,
+    "local_time": "12:58",
+    "tz_name": "America/New_York",
+    "session_open": "09:30",
+    "session_close": "16:00"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": 0.54,
+    "open": 52492.87890625,
+    "prev_close": 52210.078125,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  },
+  {
+   "symbol": "FTSEMIB.MI",
+   "label": "FTSE MIB (Milano)",
+   "region": "europe",
+   "kind": "index",
+   "name": "FTSE MIB Index",
+   "currency": "EUR",
+   "price": 51698.19,
+   "prev_close": 52055.0,
+   "change_pct": -0.69,
+   "clock": {
+    "status": "closed",
+    "opens_at": null,
+    "closes_at": 1785252600,
+    "local_time": "18:58",
+    "tz_name": "Europe/Rome",
+    "session_open": "09:00",
+    "session_close": "17:30"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": 0.3,
+    "open": 52212.9296875,
+    "prev_close": 52055.0,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  },
+  {
+   "symbol": "^GDAXI",
+   "label": "DAX (Francoforte)",
+   "region": "europe",
+   "kind": "index",
+   "name": "DAX                           P",
+   "currency": "EUR",
+   "price": 25464.01,
+   "prev_close": 25361.029296875,
+   "change_pct": 0.41,
+   "clock": {
+    "status": "closed",
+    "opens_at": null,
+    "closes_at": 1785252600,
+    "local_time": "18:58",
+    "tz_name": "Europe/Berlin",
+    "session_open": "09:00",
+    "session_close": "17:30"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": 0.53,
+    "open": 25496.130859375,
+    "prev_close": 25361.029296875,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  },
+  {
+   "symbol": "^FCHI",
+   "label": "CAC 40 (Parigi)",
+   "region": "europe",
+   "kind": "index",
+   "name": "CAC 40",
+   "currency": "EUR",
+   "price": 8458.78,
+   "prev_close": 8406.0595703125,
+   "change_pct": 0.63,
+   "clock": {
+    "status": "closed",
+    "opens_at": null,
+    "closes_at": 1785252600,
+    "local_time": "18:58",
+    "tz_name": "Europe/Paris",
+    "session_open": "09:00",
+    "session_close": "17:30"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": 0.49,
+    "open": 8447.08984375,
+    "prev_close": 8406.0595703125,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  },
+  {
+   "symbol": "^FTSE",
+   "label": "FTSE 100 (Londra)",
+   "region": "europe",
+   "kind": "index",
+   "name": "FTSE 100",
+   "currency": "GBP",
+   "price": 10871.02,
+   "prev_close": 10781.7998046875,
+   "change_pct": 0.83,
+   "clock": {
+    "status": "closed",
+    "opens_at": null,
+    "closes_at": 1785252600,
+    "local_time": "17:58",
+    "tz_name": "Europe/London",
+    "session_open": "08:00",
+    "session_close": "16:30"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": 0.0,
+    "open": 10781.8701171875,
+    "prev_close": 10781.7998046875,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  },
+  {
+   "symbol": "^IBEX",
+   "label": "IBEX 35 (Madrid)",
+   "region": "europe",
+   "kind": "index",
+   "name": "IBEX 35",
+   "currency": "EUR",
+   "price": 19727.0,
+   "prev_close": 19741.30078125,
+   "change_pct": -0.07,
+   "clock": {
+    "status": "closed",
+    "opens_at": null,
+    "closes_at": 1785252600,
+    "local_time": "18:58",
+    "tz_name": "Europe/Madrid",
+    "session_open": "09:00",
+    "session_close": "17:30"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": 0.74,
+    "open": 19888.19921875,
+    "prev_close": 19741.30078125,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  },
+  {
+   "symbol": "^SSMI",
+   "label": "SMI (Zurigo)",
+   "region": "europe",
+   "kind": "index",
+   "name": "SMI PR",
+   "currency": "CHF",
+   "price": 14571.33,
+   "prev_close": 14421.9697265625,
+   "change_pct": 1.04,
+   "clock": {
+    "status": "closed",
+    "opens_at": null,
+    "closes_at": 1785252600,
+    "local_time": "18:58",
+    "tz_name": "Europe/Zurich",
+    "session_open": "09:00",
+    "session_close": "17:30"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": 0.16,
+    "open": 14445.0302734375,
+    "prev_close": 14421.9697265625,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  },
+  {
+   "symbol": "^STOXX50E",
+   "label": "Euro Stoxx 50",
+   "region": "europe",
+   "kind": "index",
+   "name": "EURO STOXX 50                 I",
+   "currency": "EUR",
+   "price": 6289.51,
+   "prev_close": 6282.2099609375,
+   "change_pct": 0.12,
+   "clock": {
+    "status": "closed",
+    "opens_at": null,
+    "closes_at": 1785252600,
+    "local_time": "18:58",
+    "tz_name": "Europe/Zurich",
+    "session_open": "09:00",
+    "session_close": "17:30"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": 0.24,
+    "open": 6297.2001953125,
+    "prev_close": 6282.2099609375,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  },
+  {
+   "symbol": "^N225",
+   "label": "Nikkei 225 (Tokyo)",
+   "region": "asia",
+   "kind": "index",
+   "name": "Nikkei 225",
+   "currency": "JPY",
+   "price": 62364.92,
+   "prev_close": 64931.19140625,
+   "change_pct": -3.95,
+   "clock": {
+    "status": "closed",
+    "opens_at": 1785283200,
+    "closes_at": 1785306600,
+    "local_time": "01:58",
+    "tz_name": "Asia/Tokyo",
+    "session_open": "09:00",
+    "session_close": "15:30"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": -0.6,
+    "open": 64539.921875,
+    "prev_close": 64931.19140625,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": false
+  },
+  {
+   "symbol": "^HSI",
+   "label": "Hang Seng (Hong Kong)",
+   "region": "asia",
+   "kind": "index",
+   "name": "HANG SENG INDEX",
+   "currency": "HKD",
+   "price": 25310.85,
+   "prev_close": 25207.1796875,
+   "change_pct": 0.41,
+   "clock": {
+    "status": "closed",
+    "opens_at": 1785288600,
+    "closes_at": 1785312600,
+    "local_time": "00:58",
+    "tz_name": "Asia/Hong_Kong",
+    "session_open": "09:30",
+    "session_close": "16:10"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": 0.26,
+    "open": 25271.94921875,
+    "prev_close": 25207.1796875,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": false
+  },
+  {
+   "symbol": "000001.SS",
+   "label": "Shanghai Composite",
+   "region": "asia",
+   "kind": "index",
+   "name": "SSE Composite Index",
+   "currency": "CNY",
+   "price": 3813.315,
+   "prev_close": 3858.2451171875,
+   "change_pct": -1.16,
+   "clock": {
+    "status": "closed",
+    "opens_at": 1785288600,
+    "closes_at": 1785308400,
+    "local_time": "00:58",
+    "tz_name": "Asia/Shanghai",
+    "session_open": "09:30",
+    "session_close": "15:00"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": -0.91,
+    "open": 3823.133056640625,
+    "prev_close": 3858.2451171875,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": false
+  },
+  {
+   "symbol": "ES=F",
+   "label": "Futures S&P 500",
+   "region": "global",
+   "kind": "future",
+   "name": "E-Mini S&P 500 Sep 26",
+   "currency": "USD",
+   "price": 7473.5,
+   "prev_close": 7448.25,
+   "change_pct": 0.34,
+   "clock": {
+    "status": "open",
+    "opens_at": null,
+    "closes_at": 1785297540,
+    "local_time": "12:58",
+    "tz_name": "America/New_York",
+    "session_open": "00:00",
+    "session_close": "23:59"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": 0.06,
+    "open": 7453.0,
+    "prev_close": 7448.25,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  },
+  {
+   "symbol": "NQ=F",
+   "label": "Futures Nasdaq",
+   "region": "global",
+   "kind": "future",
+   "name": "Nasdaq 100 Sep 26",
+   "currency": "USD",
+   "price": 28006.75,
+   "prev_close": 28190.0,
+   "change_pct": -0.65,
+   "clock": {
+    "status": "open",
+    "opens_at": null,
+    "closes_at": 1785297540,
+    "local_time": "12:58",
+    "tz_name": "America/New_York",
+    "session_open": "00:00",
+    "session_close": "23:59"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": 0.07,
+    "open": 28210.5,
+    "prev_close": 28190.0,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  },
+  {
+   "symbol": "EURUSD=X",
+   "label": "EUR/USD",
+   "region": "global",
+   "kind": "fx",
+   "name": "EUR/USD",
+   "currency": "USD",
+   "price": 1.14,
+   "prev_close": 1.1394972801208496,
+   "change_pct": 0.04,
+   "clock": {
+    "status": "open",
+    "opens_at": null,
+    "closes_at": 1785279540,
+    "local_time": "17:58",
+    "tz_name": "Europe/London",
+    "session_open": "00:00",
+    "session_close": "23:59"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": -0.18,
+    "open": 1.1373976469039917,
+    "prev_close": 1.1394972801208496,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  },
+  {
+   "symbol": "BZ=F",
+   "label": "Petrolio Brent",
+   "region": "global",
+   "kind": "commodity",
+   "name": "Brent Crude Oil Last Day Financ",
+   "currency": "USD",
+   "price": 83.73,
+   "prev_close": 88.36000061035156,
+   "change_pct": -5.24,
+   "clock": {
+    "status": "open",
+    "opens_at": null,
+    "closes_at": 1785297540,
+    "local_time": "12:58",
+    "tz_name": "America/New_York",
+    "session_open": "00:00",
+    "session_close": "23:59"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": -0.42,
+    "open": 87.98999786376953,
+    "prev_close": 88.36000061035156,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  },
+  {
+   "symbol": "GC=F",
+   "label": "Oro",
+   "region": "global",
+   "kind": "commodity",
+   "name": "Gold Aug 26",
+   "currency": "USD",
+   "price": 4038.5,
+   "prev_close": 4074.5,
+   "change_pct": -0.88,
+   "clock": {
+    "status": "open",
+    "opens_at": null,
+    "closes_at": 1785297540,
+    "local_time": "12:58",
+    "tz_name": "America/New_York",
+    "session_open": "00:00",
+    "session_close": "23:59"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": 0.21,
+    "open": 4083.0,
+    "prev_close": 4074.5,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  },
+  {
+   "symbol": "^TNX",
+   "label": "Treasury USA 10 anni",
+   "region": "global",
+   "kind": "rate",
+   "name": "CBOE Interest Rate 10 Year T No",
+   "currency": "USD",
+   "price": 4.592,
+   "prev_close": 4.640999794006348,
+   "change_pct": -1.06,
+   "clock": {
+    "status": "open",
+    "opens_at": null,
+    "closes_at": 1785265200,
+    "local_time": "11:58",
+    "tz_name": "America/Chicago",
+    "session_open": "07:20",
+    "session_close": "14:00"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": -0.24,
+    "open": 4.630000114440918,
+    "prev_close": 4.640999794006348,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  },
+  {
+   "symbol": "^VIX",
+   "label": "VIX (volatilità)",
+   "region": "global",
+   "kind": "volatility",
+   "name": "CBOE Volatility Index",
+   "currency": "USD",
+   "price": 17.99,
+   "prev_close": 18.670000076293945,
+   "change_pct": -3.64,
+   "clock": {
+    "status": "open",
+    "opens_at": null,
+    "closes_at": 1785269700,
+    "local_time": "11:58",
+    "tz_name": "America/Chicago",
+    "session_open": "02:00",
+    "session_close": "15:15"
+   },
+   "gap": {
+    "date": "2026-07-28",
+    "gap_pct": 2.04,
+    "open": 19.049999237060547,
+    "prev_close": 18.670000076293945,
+    "prev_date": "2026-07-27"
+   },
+   "gap_is_today": true
+  }
+ ],
+ "errors": []
+}

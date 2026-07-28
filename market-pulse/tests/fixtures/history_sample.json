@@ -1,0 +1,1465 @@
+{
+ "stats": {
+  "^GSPC": {
+   "label": "S&P 500",
+   "n_sessions": 251,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 48,
+     "avg_gap_pct": 0.184,
+     "avg_abs_gap_pct": 0.391,
+     "pct_up": 58.3
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": -0.081,
+     "avg_abs_gap_pct": 0.318,
+     "pct_up": 45.3
+    },
+    "mercoledì": {
+     "n": 52,
+     "avg_gap_pct": 0.16,
+     "avg_abs_gap_pct": 0.276,
+     "pct_up": 67.3
+    },
+    "giovedì": {
+     "n": 49,
+     "avg_gap_pct": 0.031,
+     "avg_abs_gap_pct": 0.378,
+     "pct_up": 53.1
+    },
+    "venerdì": {
+     "n": 48,
+     "avg_gap_pct": -0.026,
+     "avg_abs_gap_pct": 0.339,
+     "pct_up": 64.6
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2026-04-08",
+     "gap_pct": 2.08,
+     "open": 6754.35986328125,
+     "prev_close": 6616.85009765625,
+     "prev_date": "2026-04-07"
+    },
+    {
+     "date": "2025-11-20",
+     "gap_pct": 1.44,
+     "open": 6737.93017578125,
+     "prev_close": 6642.16015625,
+     "prev_date": "2025-11-19"
+    },
+    {
+     "date": "2026-06-23",
+     "gap_pct": -1.42,
+     "open": 7366.509765625,
+     "prev_close": 7472.7900390625,
+     "prev_date": "2026-06-22"
+    },
+    {
+     "date": "2026-03-03",
+     "gap_pct": -1.18,
+     "open": 6800.259765625,
+     "prev_close": 6881.6201171875,
+     "prev_date": "2026-03-02"
+    },
+    {
+     "date": "2026-06-15",
+     "gap_pct": 1.15,
+     "open": 7516.75,
+     "prev_close": 7431.4599609375,
+     "prev_date": "2026-06-12"
+    }
+   ]
+  },
+  "^IXIC": {
+   "label": "Nasdaq Composite",
+   "n_sessions": 251,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 48,
+     "avg_gap_pct": 0.308,
+     "avg_abs_gap_pct": 0.645,
+     "pct_up": 58.3
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": -0.142,
+     "avg_abs_gap_pct": 0.552,
+     "pct_up": 47.2
+    },
+    "mercoledì": {
+     "n": 52,
+     "avg_gap_pct": 0.247,
+     "avg_abs_gap_pct": 0.446,
+     "pct_up": 63.5
+    },
+    "giovedì": {
+     "n": 49,
+     "avg_gap_pct": 0.008,
+     "avg_abs_gap_pct": 0.625,
+     "pct_up": 55.1
+    },
+    "venerdì": {
+     "n": 48,
+     "avg_gap_pct": -0.057,
+     "avg_abs_gap_pct": 0.563,
+     "pct_up": 58.3
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2026-04-08",
+     "gap_pct": 3.65,
+     "open": 22821.2109375,
+     "prev_close": 22017.849609375,
+     "prev_date": "2026-04-07"
+    },
+    {
+     "date": "2026-06-23",
+     "gap_pct": -2.36,
+     "open": 25549.759765625,
+     "prev_close": 26166.599609375,
+     "prev_date": "2026-06-22"
+    },
+    {
+     "date": "2025-11-20",
+     "gap_pct": 2.18,
+     "open": 23057.0,
+     "prev_close": 22564.23046875,
+     "prev_date": "2025-11-19"
+    },
+    {
+     "date": "2026-06-15",
+     "gap_pct": 2.16,
+     "open": 26447.23046875,
+     "prev_close": 25888.83984375,
+     "prev_date": "2026-06-12"
+    },
+    {
+     "date": "2026-03-03",
+     "gap_pct": -2.01,
+     "open": 22292.369140625,
+     "prev_close": 22748.859375,
+     "prev_date": "2026-03-02"
+    }
+   ]
+  },
+  "^DJI": {
+   "label": "Dow Jones",
+   "n_sessions": 251,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 48,
+     "avg_gap_pct": 0.063,
+     "avg_abs_gap_pct": 0.205,
+     "pct_up": 58.3
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": -0.018,
+     "avg_abs_gap_pct": 0.21,
+     "pct_up": 60.4
+    },
+    "mercoledì": {
+     "n": 52,
+     "avg_gap_pct": 0.065,
+     "avg_abs_gap_pct": 0.14,
+     "pct_up": 69.2
+    },
+    "giovedì": {
+     "n": 49,
+     "avg_gap_pct": 0.007,
+     "avg_abs_gap_pct": 0.239,
+     "pct_up": 53.1
+    },
+    "venerdì": {
+     "n": 48,
+     "avg_gap_pct": 0.014,
+     "avg_abs_gap_pct": 0.211,
+     "pct_up": 58.3
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2025-11-20",
+     "gap_pct": 0.93,
+     "open": 46567.51171875,
+     "prev_close": 46138.76953125,
+     "prev_date": "2025-11-19"
+    },
+    {
+     "date": "2026-07-23",
+     "gap_pct": -0.89,
+     "open": 51755.5390625,
+     "prev_close": 52218.578125,
+     "prev_date": "2026-07-22"
+    },
+    {
+     "date": "2026-07-27",
+     "gap_pct": 0.89,
+     "open": 52173.421875,
+     "prev_close": 51711.6484375,
+     "prev_date": "2026-07-23"
+    },
+    {
+     "date": "2026-07-14",
+     "gap_pct": -0.86,
+     "open": 52046.359375,
+     "prev_close": 52498.640625,
+     "prev_date": "2026-07-13"
+    },
+    {
+     "date": "2026-04-08",
+     "gap_pct": 0.85,
+     "open": 46978.171875,
+     "prev_close": 46584.4609375,
+     "prev_date": "2026-04-07"
+    }
+   ]
+  },
+  "FTSEMIB.MI": {
+   "label": "FTSE MIB (Milano)",
+   "n_sessions": 252,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 51,
+     "avg_gap_pct": -0.079,
+     "avg_abs_gap_pct": 0.591,
+     "pct_up": 56.9
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": 0.018,
+     "avg_abs_gap_pct": 0.422,
+     "pct_up": 60.4
+    },
+    "mercoledì": {
+     "n": 50,
+     "avg_gap_pct": 0.176,
+     "avg_abs_gap_pct": 0.363,
+     "pct_up": 60.0
+    },
+    "giovedì": {
+     "n": 50,
+     "avg_gap_pct": 0.056,
+     "avg_abs_gap_pct": 0.342,
+     "pct_up": 62.0
+    },
+    "venerdì": {
+     "n": 47,
+     "avg_gap_pct": -0.035,
+     "avg_abs_gap_pct": 0.405,
+     "pct_up": 61.7
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2026-03-09",
+     "gap_pct": -2.87,
+     "open": 42884.0,
+     "prev_close": 44152.0,
+     "prev_date": "2026-03-06"
+    },
+    {
+     "date": "2026-03-10",
+     "gap_pct": 2.3,
+     "open": 45039.0,
+     "prev_close": 44025.0,
+     "prev_date": "2026-03-09"
+    },
+    {
+     "date": "2026-03-23",
+     "gap_pct": -2.13,
+     "open": 41929.0,
+     "prev_close": 42841.0,
+     "prev_date": "2026-03-20"
+    },
+    {
+     "date": "2026-04-01",
+     "gap_pct": 2.08,
+     "open": 45230.0,
+     "prev_close": 44310.0,
+     "prev_date": "2026-03-31"
+    },
+    {
+     "date": "2026-05-18",
+     "gap_pct": -2.08,
+     "open": 48093.0,
+     "prev_close": 49116.0,
+     "prev_date": "2026-05-15"
+    }
+   ]
+  },
+  "^GDAXI": {
+   "label": "DAX (Francoforte)",
+   "n_sessions": 253,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 51,
+     "avg_gap_pct": -0.014,
+     "avg_abs_gap_pct": 0.627,
+     "pct_up": 52.9
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": -0.045,
+     "avg_abs_gap_pct": 0.433,
+     "pct_up": 54.7
+    },
+    "mercoledì": {
+     "n": 50,
+     "avg_gap_pct": 0.239,
+     "avg_abs_gap_pct": 0.535,
+     "pct_up": 58.0
+    },
+    "giovedì": {
+     "n": 50,
+     "avg_gap_pct": 0.018,
+     "avg_abs_gap_pct": 0.406,
+     "pct_up": 54.0
+    },
+    "venerdì": {
+     "n": 48,
+     "avg_gap_pct": -0.023,
+     "avg_abs_gap_pct": 0.398,
+     "pct_up": 52.1
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2026-04-08",
+     "gap_pct": 4.8,
+     "open": 24021.810546875,
+     "prev_close": 22921.58984375,
+     "prev_date": "2026-04-07"
+    },
+    {
+     "date": "2026-04-01",
+     "gap_pct": 2.85,
+     "open": 23326.890625,
+     "prev_close": 22680.0390625,
+     "prev_date": "2026-03-31"
+    },
+    {
+     "date": "2026-07-27",
+     "gap_pct": 2.81,
+     "open": 25459.3203125,
+     "prev_close": 24763.119140625,
+     "prev_date": "2026-07-23"
+    },
+    {
+     "date": "2026-03-09",
+     "gap_pct": -2.51,
+     "open": 22998.939453125,
+     "prev_close": 23591.029296875,
+     "prev_date": "2026-03-06"
+    },
+    {
+     "date": "2026-03-02",
+     "gap_pct": -2.33,
+     "open": 24695.439453125,
+     "prev_close": 25284.259765625,
+     "prev_date": "2026-02-27"
+    }
+   ]
+  },
+  "^FCHI": {
+   "label": "CAC 40 (Parigi)",
+   "n_sessions": 255,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 51,
+     "avg_gap_pct": -0.113,
+     "avg_abs_gap_pct": 0.548,
+     "pct_up": 49.0
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": -0.064,
+     "avg_abs_gap_pct": 0.398,
+     "pct_up": 49.1
+    },
+    "mercoledì": {
+     "n": 52,
+     "avg_gap_pct": 0.178,
+     "avg_abs_gap_pct": 0.424,
+     "pct_up": 55.8
+    },
+    "giovedì": {
+     "n": 50,
+     "avg_gap_pct": 0.053,
+     "avg_abs_gap_pct": 0.415,
+     "pct_up": 62.0
+    },
+    "venerdì": {
+     "n": 48,
+     "avg_gap_pct": -0.036,
+     "avg_abs_gap_pct": 0.411,
+     "pct_up": 54.2
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2026-04-08",
+     "gap_pct": 2.56,
+     "open": 8111.169921875,
+     "prev_close": 7908.740234375,
+     "prev_date": "2026-04-07"
+    },
+    {
+     "date": "2026-04-01",
+     "gap_pct": 2.4,
+     "open": 8004.81005859375,
+     "prev_close": 7816.93994140625,
+     "prev_date": "2026-03-31"
+    },
+    {
+     "date": "2026-03-09",
+     "gap_pct": -2.3,
+     "open": 7809.740234375,
+     "prev_close": 7993.490234375,
+     "prev_date": "2026-03-06"
+    },
+    {
+     "date": "2026-03-02",
+     "gap_pct": -2.05,
+     "open": 8404.9501953125,
+     "prev_close": 8580.75,
+     "prev_date": "2026-02-27"
+    },
+    {
+     "date": "2026-03-10",
+     "gap_pct": 1.89,
+     "open": 8064.81982421875,
+     "prev_close": 7915.35986328125,
+     "prev_date": "2026-03-09"
+    }
+   ]
+  },
+  "^FTSE": {
+   "label": "FTSE 100 (Londra)",
+   "n_sessions": 253,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 48,
+     "avg_gap_pct": 0.019,
+     "avg_abs_gap_pct": 0.02,
+     "pct_up": 10.4
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": 0.0,
+     "avg_abs_gap_pct": 0.002,
+     "pct_up": 7.5
+    },
+    "mercoledì": {
+     "n": 52,
+     "avg_gap_pct": -0.001,
+     "avg_abs_gap_pct": 0.001,
+     "pct_up": 0.0
+    },
+    "giovedì": {
+     "n": 50,
+     "avg_gap_pct": 0.0,
+     "avg_abs_gap_pct": 0.001,
+     "pct_up": 6.0
+    },
+    "venerdì": {
+     "n": 49,
+     "avg_gap_pct": 0.0,
+     "avg_abs_gap_pct": 0.001,
+     "pct_up": 6.1
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2026-07-27",
+     "gap_pct": 0.91,
+     "open": 10736.099609375,
+     "prev_close": 10639.2001953125,
+     "prev_date": "2026-07-23"
+    },
+    {
+     "date": "2026-04-08",
+     "gap_pct": -0.03,
+     "open": 10345.900390625,
+     "prev_close": 10348.7998046875,
+     "prev_date": "2026-04-07"
+    },
+    {
+     "date": "2026-04-01",
+     "gap_pct": -0.02,
+     "open": 10174.900390625,
+     "prev_close": 10176.5,
+     "prev_date": "2026-03-31"
+    },
+    {
+     "date": "2026-05-12",
+     "gap_pct": 0.02,
+     "open": 10271.2001953125,
+     "prev_close": 10269.400390625,
+     "prev_date": "2026-05-11"
+    },
+    {
+     "date": "2026-05-15",
+     "gap_pct": 0.02,
+     "open": 10375.400390625,
+     "prev_close": 10372.900390625,
+     "prev_date": "2026-05-14"
+    }
+   ]
+  },
+  "^IBEX": {
+   "label": "IBEX 35 (Madrid)",
+   "n_sessions": 255,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 51,
+     "avg_gap_pct": -0.067,
+     "avg_abs_gap_pct": 0.607,
+     "pct_up": 51.0
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": 0.023,
+     "avg_abs_gap_pct": 0.363,
+     "pct_up": 58.5
+    },
+    "mercoledì": {
+     "n": 52,
+     "avg_gap_pct": 0.181,
+     "avg_abs_gap_pct": 0.392,
+     "pct_up": 51.9
+    },
+    "giovedì": {
+     "n": 50,
+     "avg_gap_pct": -0.092,
+     "avg_abs_gap_pct": 0.436,
+     "pct_up": 54.0
+    },
+    "venerdì": {
+     "n": 48,
+     "avg_gap_pct": 0.01,
+     "avg_abs_gap_pct": 0.412,
+     "pct_up": 58.3
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2026-04-30",
+     "gap_pct": -5.72,
+     "open": 16632.900390625,
+     "prev_close": 17642.80078125,
+     "prev_date": "2026-04-29"
+    },
+    {
+     "date": "2026-03-09",
+     "gap_pct": -3.17,
+     "open": 16533.400390625,
+     "prev_close": 17074.400390625,
+     "prev_date": "2026-03-06"
+    },
+    {
+     "date": "2026-03-02",
+     "gap_pct": -2.89,
+     "open": 17830.5,
+     "prev_close": 18360.80078125,
+     "prev_date": "2026-02-27"
+    },
+    {
+     "date": "2026-04-01",
+     "gap_pct": 2.83,
+     "open": 17532.400390625,
+     "prev_close": 17049.599609375,
+     "prev_date": "2026-03-31"
+    },
+    {
+     "date": "2026-07-27",
+     "gap_pct": 2.64,
+     "open": 19775.900390625,
+     "prev_close": 19267.0,
+     "prev_date": "2026-07-23"
+    }
+   ]
+  },
+  "^SSMI": {
+   "label": "SMI (Zurigo)",
+   "n_sessions": 249,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 50,
+     "avg_gap_pct": -0.177,
+     "avg_abs_gap_pct": 0.445,
+     "pct_up": 40.0
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": -0.081,
+     "avg_abs_gap_pct": 0.334,
+     "pct_up": 43.4
+    },
+    "mercoledì": {
+     "n": 50,
+     "avg_gap_pct": 0.097,
+     "avg_abs_gap_pct": 0.339,
+     "pct_up": 56.0
+    },
+    "giovedì": {
+     "n": 49,
+     "avg_gap_pct": -0.091,
+     "avg_abs_gap_pct": 0.324,
+     "pct_up": 40.8
+    },
+    "venerdì": {
+     "n": 46,
+     "avg_gap_pct": -0.015,
+     "avg_abs_gap_pct": 0.268,
+     "pct_up": 50.0
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2026-04-01",
+     "gap_pct": 1.86,
+     "open": 13013.9296875,
+     "prev_close": 12776.7900390625,
+     "prev_date": "2026-03-31"
+    },
+    {
+     "date": "2025-08-04",
+     "gap_pct": -1.83,
+     "open": 11619.2001953125,
+     "prev_close": 11836.0,
+     "prev_date": "2025-07-31"
+    },
+    {
+     "date": "2026-03-23",
+     "gap_pct": -1.81,
+     "open": 12097.51953125,
+     "prev_close": 12320.990234375,
+     "prev_date": "2026-03-20"
+    },
+    {
+     "date": "2026-07-27",
+     "gap_pct": 1.59,
+     "open": 14441.2900390625,
+     "prev_close": 14214.9501953125,
+     "prev_date": "2026-07-23"
+    },
+    {
+     "date": "2026-03-02",
+     "gap_pct": -1.52,
+     "open": 13800.7197265625,
+     "prev_close": 14014.2998046875,
+     "prev_date": "2026-02-27"
+    }
+   ]
+  },
+  "^STOXX50E": {
+   "label": "Euro Stoxx 50",
+   "n_sessions": 249,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 50,
+     "avg_gap_pct": -0.099,
+     "avg_abs_gap_pct": 0.356,
+     "pct_up": 46.0
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": 0.006,
+     "avg_abs_gap_pct": 0.22,
+     "pct_up": 56.6
+    },
+    "mercoledì": {
+     "n": 50,
+     "avg_gap_pct": 0.051,
+     "avg_abs_gap_pct": 0.19,
+     "pct_up": 56.0
+    },
+    "giovedì": {
+     "n": 49,
+     "avg_gap_pct": 0.011,
+     "avg_abs_gap_pct": 0.204,
+     "pct_up": 51.0
+    },
+    "venerdì": {
+     "n": 46,
+     "avg_gap_pct": 0.026,
+     "avg_abs_gap_pct": 0.196,
+     "pct_up": 58.7
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2025-08-04",
+     "gap_pct": -2.81,
+     "open": 5170.47998046875,
+     "prev_close": 5319.919921875,
+     "prev_date": "2025-07-31"
+    },
+    {
+     "date": "2026-05-26",
+     "gap_pct": 1.84,
+     "open": 6130.16015625,
+     "prev_close": 6019.4501953125,
+     "prev_date": "2026-05-22"
+    },
+    {
+     "date": "2026-07-27",
+     "gap_pct": 1.25,
+     "open": 6287.7998046875,
+     "prev_close": 6210.169921875,
+     "prev_date": "2026-07-23"
+    },
+    {
+     "date": "2026-03-09",
+     "gap_pct": -1.17,
+     "open": 5652.77978515625,
+     "prev_close": 5719.89990234375,
+     "prev_date": "2026-03-06"
+    },
+    {
+     "date": "2026-01-05",
+     "gap_pct": 1.15,
+     "open": 5863.16015625,
+     "prev_close": 5796.22021484375,
+     "prev_date": "2025-12-30"
+    }
+   ]
+  },
+  "^N225": {
+   "label": "Nikkei 225 (Tokyo)",
+   "n_sessions": 243,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 43,
+     "avg_gap_pct": -0.037,
+     "avg_abs_gap_pct": 0.849,
+     "pct_up": 55.8
+    },
+    "martedì": {
+     "n": 51,
+     "avg_gap_pct": 0.238,
+     "avg_abs_gap_pct": 0.576,
+     "pct_up": 60.8
+    },
+    "mercoledì": {
+     "n": 48,
+     "avg_gap_pct": 0.141,
+     "avg_abs_gap_pct": 0.585,
+     "pct_up": 58.3
+    },
+    "giovedì": {
+     "n": 51,
+     "avg_gap_pct": 0.09,
+     "avg_abs_gap_pct": 0.594,
+     "pct_up": 54.9
+    },
+    "venerdì": {
+     "n": 49,
+     "avg_gap_pct": 0.017,
+     "avg_abs_gap_pct": 0.613,
+     "pct_up": 53.1
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2026-03-30",
+     "gap_pct": -2.47,
+     "open": 52054.6796875,
+     "prev_close": 53373.0703125,
+     "prev_date": "2026-03-27"
+    },
+    {
+     "date": "2025-10-06",
+     "gap_pct": 1.89,
+     "open": 46636.0703125,
+     "prev_close": 45769.5,
+     "prev_date": "2025-10-03"
+    },
+    {
+     "date": "2026-07-27",
+     "gap_pct": -1.89,
+     "open": 65164.98046875,
+     "prev_close": 66422.6015625,
+     "prev_date": "2026-07-23"
+    },
+    {
+     "date": "2026-03-09",
+     "gap_pct": -1.82,
+     "open": 54608.62890625,
+     "prev_close": 55620.83984375,
+     "prev_date": "2026-03-06"
+    },
+    {
+     "date": "2026-04-08",
+     "gap_pct": 1.79,
+     "open": 54386.6484375,
+     "prev_close": 53429.55859375,
+     "prev_date": "2026-04-07"
+    }
+   ]
+  },
+  "^HSI": {
+   "label": "Hang Seng (Hong Kong)",
+   "n_sessions": 245,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 50,
+     "avg_gap_pct": -0.004,
+     "avg_abs_gap_pct": 0.78,
+     "pct_up": 50.0
+    },
+    "martedì": {
+     "n": 50,
+     "avg_gap_pct": 0.208,
+     "avg_abs_gap_pct": 0.412,
+     "pct_up": 64.0
+    },
+    "mercoledì": {
+     "n": 48,
+     "avg_gap_pct": 0.176,
+     "avg_abs_gap_pct": 0.538,
+     "pct_up": 60.4
+    },
+    "giovedì": {
+     "n": 49,
+     "avg_gap_pct": 0.028,
+     "avg_abs_gap_pct": 0.534,
+     "pct_up": 46.9
+    },
+    "venerdì": {
+     "n": 47,
+     "avg_gap_pct": -0.069,
+     "avg_abs_gap_pct": 0.624,
+     "pct_up": 48.9
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2026-03-09",
+     "gap_pct": -2.65,
+     "open": 25075.740234375,
+     "prev_close": 25757.2890625,
+     "prev_date": "2026-03-06"
+    },
+    {
+     "date": "2026-04-08",
+     "gap_pct": 2.61,
+     "open": 25772.560546875,
+     "prev_close": 25116.529296875,
+     "prev_date": "2026-04-02"
+    },
+    {
+     "date": "2025-10-20",
+     "gap_pct": 2.52,
+     "open": 25884.4609375,
+     "prev_close": 25247.099609375,
+     "prev_date": "2025-10-17"
+    },
+    {
+     "date": "2025-10-13",
+     "gap_pct": -2.5,
+     "open": 25634.0,
+     "prev_close": 26290.3203125,
+     "prev_date": "2025-10-10"
+    },
+    {
+     "date": "2026-04-01",
+     "gap_pct": 2.3,
+     "open": 25357.23046875,
+     "prev_close": 24788.140625,
+     "prev_date": "2026-03-31"
+    }
+   ]
+  },
+  "000001.SS": {
+   "label": "Shanghai Composite",
+   "n_sessions": 242,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 47,
+     "avg_gap_pct": -0.108,
+     "avg_abs_gap_pct": 0.463,
+     "pct_up": 53.2
+    },
+    "martedì": {
+     "n": 50,
+     "avg_gap_pct": 0.026,
+     "avg_abs_gap_pct": 0.249,
+     "pct_up": 58.0
+    },
+    "mercoledì": {
+     "n": 49,
+     "avg_gap_pct": -0.082,
+     "avg_abs_gap_pct": 0.269,
+     "pct_up": 34.7
+    },
+    "giovedì": {
+     "n": 49,
+     "avg_gap_pct": -0.122,
+     "avg_abs_gap_pct": 0.275,
+     "pct_up": 42.9
+    },
+    "venerdì": {
+     "n": 46,
+     "avg_gap_pct": -0.157,
+     "avg_abs_gap_pct": 0.294,
+     "pct_up": 28.3
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2025-10-13",
+     "gap_pct": -2.49,
+     "open": 3800.10498046875,
+     "prev_close": 3897.028076171875,
+     "prev_date": "2025-10-10"
+    },
+    {
+     "date": "2026-06-08",
+     "gap_pct": -2.21,
+     "open": 3938.708984375,
+     "prev_close": 4027.736083984375,
+     "prev_date": "2026-06-05"
+    },
+    {
+     "date": "2026-07-27",
+     "gap_pct": -1.75,
+     "open": 3808.903076171875,
+     "prev_close": 3876.777099609375,
+     "prev_date": "2026-07-23"
+    },
+    {
+     "date": "2026-07-02",
+     "gap_pct": -1.42,
+     "open": 4054.0859375,
+     "prev_close": 4112.44482421875,
+     "prev_date": "2026-07-01"
+    },
+    {
+     "date": "2026-03-23",
+     "gap_pct": -1.32,
+     "open": 3904.950927734375,
+     "prev_close": 3957.052978515625,
+     "prev_date": "2026-03-20"
+    }
+   ]
+  },
+  "ES=F": {
+   "label": "Futures S&P 500",
+   "n_sessions": 252,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 48,
+     "avg_gap_pct": -0.02,
+     "avg_abs_gap_pct": 0.371,
+     "pct_up": 47.9
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": 0.0,
+     "avg_abs_gap_pct": 0.067,
+     "pct_up": 50.9
+    },
+    "mercoledì": {
+     "n": 52,
+     "avg_gap_pct": 0.031,
+     "avg_abs_gap_pct": 0.095,
+     "pct_up": 50.0
+    },
+    "giovedì": {
+     "n": 49,
+     "avg_gap_pct": 0.009,
+     "avg_abs_gap_pct": 0.139,
+     "pct_up": 46.9
+    },
+    "venerdì": {
+     "n": 49,
+     "avg_gap_pct": 0.013,
+     "avg_abs_gap_pct": 0.11,
+     "pct_up": 53.1
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2025-12-22",
+     "gap_pct": 1.61,
+     "open": 6906.25,
+     "prev_close": 6796.5400390625,
+     "prev_date": "2025-12-19"
+    },
+    {
+     "date": "2026-03-23",
+     "gap_pct": -1.28,
+     "open": 6510.0,
+     "prev_close": 6594.6298828125,
+     "prev_date": "2026-03-20"
+    },
+    {
+     "date": "2026-04-13",
+     "gap_pct": -1.1,
+     "open": 6780.0,
+     "prev_close": 6855.25,
+     "prev_date": "2026-04-10"
+    },
+    {
+     "date": "2026-03-02",
+     "gap_pct": -1.0,
+     "open": 6820.0,
+     "prev_close": 6889.0,
+     "prev_date": "2026-02-27"
+    },
+    {
+     "date": "2025-09-22",
+     "gap_pct": 0.86,
+     "open": 6716.0,
+     "prev_close": 6658.77001953125,
+     "prev_date": "2025-09-19"
+    }
+   ]
+  },
+  "NQ=F": {
+   "label": "Futures Nasdaq",
+   "n_sessions": 252,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 48,
+     "avg_gap_pct": 0.009,
+     "avg_abs_gap_pct": 0.46,
+     "pct_up": 47.9
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": 0.005,
+     "avg_abs_gap_pct": 0.083,
+     "pct_up": 50.9
+    },
+    "mercoledì": {
+     "n": 52,
+     "avg_gap_pct": 0.043,
+     "avg_abs_gap_pct": 0.127,
+     "pct_up": 53.8
+    },
+    "giovedì": {
+     "n": 49,
+     "avg_gap_pct": 0.035,
+     "avg_abs_gap_pct": 0.224,
+     "pct_up": 38.8
+    },
+    "venerdì": {
+     "n": 49,
+     "avg_gap_pct": 0.004,
+     "avg_abs_gap_pct": 0.144,
+     "pct_up": 49.0
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2025-12-22",
+     "gap_pct": 2.0,
+     "open": 25635.25,
+     "prev_close": 25132.7890625,
+     "prev_date": "2025-12-19"
+    },
+    {
+     "date": "2026-06-25",
+     "gap_pct": 1.95,
+     "open": 30089.75,
+     "prev_close": 29514.25,
+     "prev_date": "2026-06-24"
+    },
+    {
+     "date": "2026-03-23",
+     "gap_pct": -1.6,
+     "open": 23902.0,
+     "prev_close": 24291.779296875,
+     "prev_date": "2026-03-20"
+    },
+    {
+     "date": "2026-03-02",
+     "gap_pct": -1.29,
+     "open": 24682.5,
+     "prev_close": 25004.75,
+     "prev_date": "2026-02-27"
+    },
+    {
+     "date": "2026-07-06",
+     "gap_pct": 1.27,
+     "open": 29930.25,
+     "prev_close": 29556.0,
+     "prev_date": "2026-07-02"
+    }
+   ]
+  },
+  "EURUSD=X": {
+   "label": "EUR/USD",
+   "n_sessions": 261,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 52,
+     "avg_gap_pct": -0.019,
+     "avg_abs_gap_pct": 0.311,
+     "pct_up": 42.3
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": 0.033,
+     "avg_abs_gap_pct": 0.282,
+     "pct_up": 54.7
+    },
+    "mercoledì": {
+     "n": 52,
+     "avg_gap_pct": 0.033,
+     "avg_abs_gap_pct": 0.314,
+     "pct_up": 48.1
+    },
+    "giovedì": {
+     "n": 50,
+     "avg_gap_pct": -0.078,
+     "avg_abs_gap_pct": 0.285,
+     "pct_up": 48.0
+    },
+    "venerdì": {
+     "n": 52,
+     "avg_gap_pct": -0.029,
+     "avg_abs_gap_pct": 0.259,
+     "pct_up": 36.5
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2025-08-04",
+     "gap_pct": 1.43,
+     "open": 1.158668041229248,
+     "prev_close": 1.142374038696289,
+     "prev_date": "2025-08-01"
+    },
+    {
+     "date": "2025-07-29",
+     "gap_pct": -1.36,
+     "open": 1.1596757173538208,
+     "prev_close": 1.1756821870803833,
+     "prev_date": "2025-07-28"
+    },
+    {
+     "date": "2026-04-08",
+     "gap_pct": 1.29,
+     "open": 1.1690436601638794,
+     "prev_close": 1.1541212797164917,
+     "prev_date": "2026-04-07"
+    },
+    {
+     "date": "2026-01-28",
+     "gap_pct": 1.23,
+     "open": 1.2022699117660522,
+     "prev_close": 1.1876484155654907,
+     "prev_date": "2026-01-27"
+    },
+    {
+     "date": "2025-07-31",
+     "gap_pct": -1.05,
+     "open": 1.1429355144500732,
+     "prev_close": 1.1550945043563843,
+     "prev_date": "2025-07-30"
+    }
+   ]
+  },
+  "BZ=F": {
+   "label": "Petrolio Brent",
+   "n_sessions": 252,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 48,
+     "avg_gap_pct": 0.759,
+     "avg_abs_gap_pct": 1.377,
+     "pct_up": 68.8
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": -0.225,
+     "avg_abs_gap_pct": 0.555,
+     "pct_up": 50.9
+    },
+    "mercoledì": {
+     "n": 52,
+     "avg_gap_pct": -0.199,
+     "avg_abs_gap_pct": 0.862,
+     "pct_up": 61.5
+    },
+    "giovedì": {
+     "n": 49,
+     "avg_gap_pct": 0.323,
+     "avg_abs_gap_pct": 0.688,
+     "pct_up": 61.2
+    },
+    "venerdì": {
+     "n": 49,
+     "avg_gap_pct": -0.006,
+     "avg_abs_gap_pct": 0.574,
+     "pct_up": 49.0
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2026-04-01",
+     "gap_pct": -12.21,
+     "open": 103.9000015258789,
+     "prev_close": 118.3499984741211,
+     "prev_date": "2026-03-31"
+    },
+    {
+     "date": "2026-03-10",
+     "gap_pct": -6.58,
+     "open": 92.44999694824219,
+     "prev_close": 98.95999908447266,
+     "prev_date": "2026-03-09"
+    },
+    {
+     "date": "2026-04-20",
+     "gap_pct": 6.45,
+     "open": 96.20999908447266,
+     "prev_close": 90.37999725341797,
+     "prev_date": "2026-04-17"
+    },
+    {
+     "date": "2026-03-02",
+     "gap_pct": 6.24,
+     "open": 77.0,
+     "prev_close": 72.4800033569336,
+     "prev_date": "2026-02-27"
+    },
+    {
+     "date": "2026-03-09",
+     "gap_pct": 6.12,
+     "open": 98.36000061035156,
+     "prev_close": 92.69000244140625,
+     "prev_date": "2026-03-06"
+    }
+   ]
+  },
+  "GC=F": {
+   "label": "Oro",
+   "n_sessions": 252,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 48,
+     "avg_gap_pct": -0.01,
+     "avg_abs_gap_pct": 0.974,
+     "pct_up": 45.8
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": 0.012,
+     "avg_abs_gap_pct": 0.546,
+     "pct_up": 52.8
+    },
+    "mercoledì": {
+     "n": 52,
+     "avg_gap_pct": 0.287,
+     "avg_abs_gap_pct": 0.703,
+     "pct_up": 61.5
+    },
+    "giovedì": {
+     "n": 49,
+     "avg_gap_pct": -0.157,
+     "avg_abs_gap_pct": 0.623,
+     "pct_up": 40.8
+    },
+    "venerdì": {
+     "n": 49,
+     "avg_gap_pct": 0.334,
+     "avg_abs_gap_pct": 0.664,
+     "pct_up": 63.3
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2026-03-23",
+     "gap_pct": -4.76,
+     "open": 4353.0,
+     "prev_close": 4570.39990234375,
+     "prev_date": "2026-03-20"
+    },
+    {
+     "date": "2026-01-28",
+     "gap_pct": 4.36,
+     "open": 5301.60009765625,
+     "prev_close": 5079.89990234375,
+     "prev_date": "2026-01-27"
+    },
+    {
+     "date": "2025-12-29",
+     "gap_pct": -3.48,
+     "open": 4371.5,
+     "prev_close": 4529.10009765625,
+     "prev_date": "2025-12-26"
+    },
+    {
+     "date": "2026-03-25",
+     "gap_pct": 3.4,
+     "open": 4549.0,
+     "prev_close": 4399.2998046875,
+     "prev_date": "2026-03-24"
+    },
+    {
+     "date": "2026-06-12",
+     "gap_pct": 2.88,
+     "open": 4208.2998046875,
+     "prev_close": 4090.300048828125,
+     "prev_date": "2026-06-11"
+    }
+   ]
+  },
+  "^TNX": {
+   "label": "Treasury USA 10 anni",
+   "n_sessions": 251,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 48,
+     "avg_gap_pct": 0.063,
+     "avg_abs_gap_pct": 0.505,
+     "pct_up": 54.2
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": 0.002,
+     "avg_abs_gap_pct": 0.461,
+     "pct_up": 49.1
+    },
+    "mercoledì": {
+     "n": 52,
+     "avg_gap_pct": -0.087,
+     "avg_abs_gap_pct": 0.497,
+     "pct_up": 48.1
+    },
+    "giovedì": {
+     "n": 49,
+     "avg_gap_pct": 0.139,
+     "avg_abs_gap_pct": 0.539,
+     "pct_up": 55.1
+    },
+    "venerdì": {
+     "n": 48,
+     "avg_gap_pct": 0.011,
+     "avg_abs_gap_pct": 0.503,
+     "pct_up": 41.7
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2026-04-08",
+     "gap_pct": -2.19,
+     "open": 4.248000144958496,
+     "prev_close": 4.3429999351501465,
+     "prev_date": "2026-04-07"
+    },
+    {
+     "date": "2026-05-15",
+     "gap_pct": 1.95,
+     "open": 4.547999858856201,
+     "prev_close": 4.460999965667725,
+     "prev_date": "2026-05-14"
+    },
+    {
+     "date": "2025-09-02",
+     "gap_pct": 1.68,
+     "open": 4.297999858856201,
+     "prev_close": 4.2270002365112305,
+     "prev_date": "2025-08-29"
+    },
+    {
+     "date": "2026-05-26",
+     "gap_pct": -1.51,
+     "open": 4.488999843597412,
+     "prev_close": 4.558000087738037,
+     "prev_date": "2026-05-22"
+    },
+    {
+     "date": "2026-03-30",
+     "gap_pct": -1.49,
+     "open": 4.374000072479248,
+     "prev_close": 4.440000057220459,
+     "prev_date": "2026-03-27"
+    }
+   ]
+  },
+  "^VIX": {
+   "label": "VIX (volatilità)",
+   "n_sessions": 252,
+   "weekday_stats": {
+    "lunedì": {
+     "n": 49,
+     "avg_gap_pct": 3.33,
+     "avg_abs_gap_pct": 5.797,
+     "pct_up": 73.5
+    },
+    "martedì": {
+     "n": 53,
+     "avg_gap_pct": 2.282,
+     "avg_abs_gap_pct": 3.407,
+     "pct_up": 66.0
+    },
+    "mercoledì": {
+     "n": 52,
+     "avg_gap_pct": -0.576,
+     "avg_abs_gap_pct": 1.952,
+     "pct_up": 38.5
+    },
+    "giovedì": {
+     "n": 49,
+     "avg_gap_pct": 0.131,
+     "avg_abs_gap_pct": 2.528,
+     "pct_up": 51.0
+    },
+    "venerdì": {
+     "n": 48,
+     "avg_gap_pct": 1.128,
+     "avg_abs_gap_pct": 2.339,
+     "pct_up": 62.5
+    }
+   },
+   "biggest_gaps": [
+    {
+     "date": "2026-01-20",
+     "gap_pct": 25.73,
+     "open": 19.940000534057617,
+     "prev_close": 15.859999656677246,
+     "prev_date": "2026-01-16"
+    },
+    {
+     "date": "2026-03-02",
+     "gap_pct": 24.17,
+     "open": 24.65999984741211,
+     "prev_close": 19.860000610351562,
+     "prev_date": "2026-02-27"
+    },
+    {
+     "date": "2026-03-09",
+     "gap_pct": 19.09,
+     "open": 35.119998931884766,
+     "prev_close": 29.489999771118164,
+     "prev_date": "2026-03-06"
+    },
+    {
+     "date": "2026-04-08",
+     "gap_pct": -18.66,
+     "open": 20.969999313354492,
+     "prev_close": 25.780000686645508,
+     "prev_date": "2026-04-07"
+    },
+    {
+     "date": "2025-11-04",
+     "gap_pct": 14.91,
+     "open": 19.729999542236328,
+     "prev_close": 17.170000076293945,
+     "prev_date": "2025-11-03"
+    }
+   ]
+  }
+ },
+ "errors": []
+}
