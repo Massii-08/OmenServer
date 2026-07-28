@@ -7,7 +7,7 @@ const {
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX, MIGRATE_MIN_DIST, MIGRATE_MAX_DIST,
   MIGRATE_FAR_MIN_DIST, MIGRATE_WOOD_MIN_DIST, MIGRATE_MIN_PROGRESS, MIN_MINUTES_URGENT, COOLDOWN_URGENT_MS,
-  LEG_DIST, LOADED_RADIUS,
+  LEG_DIST, LOADED_RADIUS, legHeading, LEG_STUCK_MIN,
 } = require('./zone');
 
 // ─── Télémétrie du verdict de zone : dedup au changement de raison, toujours sur 'migrate' ───────
@@ -293,6 +293,39 @@ test('jambe : les jambes s enchainent depuis la position courante', () => {
 
 test('jambe : au-dela du cap total, on s arrete (pas de nomadisme infini)', () => {
   assert.strictEqual(migrationLeg({ from: FROM, heading: 0, legs: 99 }), null);
+});
+
+// ─── Contournement d'obstacle : le cap DÉVIE quand une jambe n'a pas progressé ───────────────────
+// Cause racine mesuree world_mn12 (28/07) : la jambe de migration vise `GoalNearXZ` + `canDig=false`
+// ; sur terrain vallonne/obstrue le pathfinder rend NoPath INSTANTANE, le bot ne bouge pas, et la
+// jambe suivante — calculee au MEME cap depuis la MEME position — re-vise le MEME point inatteignable
+// => degenere MAX_LEGS fois sur place (`moved:1/9`, migration `underground:false` en boucle). En
+// deviant le cap a chaque blocage, on tente de contourner l'obstacle au lieu de le re-percuter.
+test('legHeading : cap inchange tant que ca progresse (stuck=0)', () => {
+  assert.strictEqual(legHeading(0.5, 0), 0.5);
+});
+test('legHeading : le cap DÉVIE quand la jambe precedente a echoue', () => {
+  const base = 0;
+  assert.notStrictEqual(legHeading(base, 1), base);   // 1er blocage : on ne re-vise PAS le meme point
+});
+test('legHeading : la deviation OSCILLE de part et d autre du cap de base', () => {
+  const base = 0;
+  const d1 = legHeading(base, 1) - base;
+  const d2 = legHeading(base, 2) - base;
+  assert.ok(d1 > 0 && d2 < 0, 'deviations de signes opposes pour balayer les deux cotes');
+});
+test('legHeading : la deviation GRANDIT quand on reste bloque', () => {
+  const base = 0;
+  assert.ok(Math.abs(legHeading(base, 3) - base) > Math.abs(legHeading(base, 1) - base));
+});
+test('legHeading : la deviation est bornee (ne repart jamais franchement en arriere)', () => {
+  const base = 0;
+  for (let s = 1; s < 30; s++) {
+    assert.ok(Math.abs(legHeading(base, s) - base) <= Math.PI, 'deviation <= 180deg');
+  }
+});
+test('LEG_STUCK_MIN : un seuil de progres franc, sous une vraie jambe', () => {
+  assert.ok(LEG_STUCK_MIN > 0 && LEG_STUCK_MIN < LEG_DIST);
 });
 
 test('terrain : bon si des arbres sont visibles, hors eau, biome terrestre', () => {

@@ -71,7 +71,7 @@ const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTA
 // en mémoire de process, son horloge repartait à zéro à chaque respawn et l'hystérésis de 15 min
 // n'était jamais atteinte — c'est pourquoi la migration n'a jamais tiré de la journée.
 const {
-  zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, minDistFor,
+  zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legIsGood, minDistFor,
   zoneFailureKind, zoneStateInit, zoneStateLoad, zoneStateAfterMigration, MAX_LEGS, MIGRATE_MIN_PROGRESS, LOADED_RADIUS,
 } = require('./zone');
 const { recordWorkDrown, noteDrownedSite, isDrownedNear, offsetFromDrowned } = require('./workDrown'); // chantier adjacent à un aquifère → abandon + BANNISSEMENT du lieu (3a)
@@ -1686,14 +1686,25 @@ async function migrateZone(reason) {
       const moved = pAfter ? Math.hypot(pAfter.x - travelFrom.x, pAfter.z - travelFrom.z) : 0;
       if (moved < MIGRATE_MIN_PROGRESS) {
         if (hops) emit({ type: 'zone_migration_hop_failed', moved: Math.round(moved), toX: target.x, toZ: target.z });
-        const heading = Math.atan2(target.z - travelFrom.z, target.x - travelFrom.x);
+        // ⚠️ CONTOURNEMENT D'OBSTACLE (cause racine mesuree world_mn12, 28/07 : `moved:1/9`
+        // underground:false en 24 jambes = NoPath en boucle). La jambe vise `GoalNearXZ`+`canDig=false` ;
+        // sur terrain vallonne/obstrue le pathfinder rend NoPath INSTANTANE, le bot ne bouge pas, et la
+        // jambe suivante — au MEME cap depuis la MEME position — re-vise le MEME point inatteignable.
+        // On compte les jambes qui n'avancent pas (`stuck`) et on DEVIE le cap pour contourner
+        // (`legHeading`) au lieu de re-percuter l'obstacle. Le cap de base est re-calcule vers la
+        // cible a chaque jambe : des qu'on progresse, `stuck` retombe a 0 et on repointe droit dessus.
+        let stuck = 0;
         for (let i = 0; i < MAX_LEGS && !taskToken.cancelled; i++) {
           const pl = bot.entity && bot.entity.position;
-          const leg = migrationLeg({ from: pl ? { x: pl.x, z: pl.z } : from, heading, legs: i });
+          const base = pl ? { x: pl.x, z: pl.z } : from;
+          const heading = legHeading(Math.atan2(target.z - base.z, target.x - base.x), stuck);
+          const leg = migrationLeg({ from: base, heading, legs: i });
           if (!leg) break;
           await migrationLegTo(leg, yRef);
           _migrationLegs = i + 1;
           const pn = bot.entity && bot.entity.position;
+          const legMoved = (base && pn) ? Math.hypot(pn.x - base.x, pn.z - base.z) : 0;
+          stuck = legMoved < LEG_STUCK_MIN ? stuck + 1 : 0;   // jambe sur place → on deviera au prochain tour
           if (pn && Math.hypot(pn.x - target.x, pn.z - target.z) <= 48) break;   // arrivé
           // ⚠️ « le terrain est bon ici » ne peut sortir de la boucle QU APRES avoir vraiment
           // bouge (mesure live : `zone_migration_legs dist:297` puis `moved: 0`). Au point de
@@ -1706,13 +1717,21 @@ async function migrateZone(reason) {
       }
     } else {
       // MARCHE À L'AVEUGLE : on continue tant que le terrain n'est pas bon, cap total borné.
-      const heading = basecamp.headingForName(bot.username, 3);
+      // Même contournement d'obstacle qu'en migration ciblée : une jambe qui NoPath ne doit pas
+      // re-percuter le même point — on dévie le cap (`legHeading`) tant qu'on n'avance pas.
+      const heading0 = basecamp.headingForName(bot.username, 3);
+      let stuck = 0;
       for (let i = 0; i < MAX_LEGS && !taskToken.cancelled; i++) {
         const p = bot.entity && bot.entity.position;
-        const leg = migrationLeg({ from: p ? { x: p.x, z: p.z } : from, heading, legs: i });
+        const base = p ? { x: p.x, z: p.z } : from;
+        const heading = legHeading(heading0, stuck);
+        const leg = migrationLeg({ from: base, heading, legs: i });
         if (!leg) break;
         await migrationLegTo(leg, yRef);
         _migrationLegs = i + 1;
+        const pn = bot.entity && bot.entity.position;
+        const legMoved = (base && pn) ? Math.hypot(pn.x - base.x, pn.z - base.z) : 0;
+        stuck = legMoved < LEG_STUCK_MIN ? stuck + 1 : 0;
         if (legIsGood(probeTerrain())) break;      // « le bon endroit » : arbres, au sec, pas d'océan
       }
     }

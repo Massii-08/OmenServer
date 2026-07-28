@@ -242,6 +242,32 @@ function migrationLeg({ from, heading = 0, legs = 0, legDist = LEG_DIST, maxLegs
   };
 }
 
+// En dessous de ce déplacement (blocs) pendant une jambe, on considère qu'elle a ÉCHOUÉ (NoPath
+// sur un obstacle) : une vraie jambe fait ~LEG_DIST blocs, un NoPath en fait ~0. Seuil franc, bien
+// sous une jambe complète.
+const LEG_STUCK_MIN = 16;
+
+/**
+ * Cap de la jambe de migration SUIVANTE. (PUR)
+ *
+ * Tant que la marche progresse (`stuckStreak === 0`) on garde le cap de base — droit vers la
+ * cible / la direction assignée. Mais quand la jambe précédente n'a PAS avancé (le pathfinder a
+ * rendu NoPath sur un obstacle : colline, ravin, mur), re-viser le même cap re-calcule le MÊME
+ * point inatteignable et la marche dégénère MAX_LEGS fois sur place (mesuré world_mn12 : `moved:1/9`
+ * en 24 jambes). On DÉVIE alors le cap pour tenter de contourner : on oscille de part et d'autre du
+ * cap de base (droite, gauche, droite…), d'un angle qui GRANDIT tant qu'on reste bloqué, borné pour
+ * ne jamais repartir franchement en arrière.
+ */
+function legHeading(baseHeading, stuckStreak) {
+  const s = Number.isFinite(stuckStreak) ? Math.max(0, Math.floor(stuckStreak)) : 0;
+  if (!s) return baseHeading;
+  const step = (40 * Math.PI) / 180;          // 40° par palier de déviation
+  const cap = (120 * Math.PI) / 180;          // au plus 120° : on contourne, on ne recule pas tout droit
+  const magnitude = Math.min(cap, Math.ceil(s / 2) * step);
+  const sign = (s % 2 === 1) ? 1 : -1;        // impair → un côté, pair → l'autre
+  return baseHeading + sign * magnitude;
+}
+
 // ─── L'ÉTAT DE ZONE DOIT SURVIVRE AU PROCESS (cause racine trouvée le 27/07 au soir) ────────────
 //
 // La migration n'a JAMAIS tiré de la journée, alors que la flotte était visiblement noyée
@@ -325,7 +351,7 @@ function legIsGood({ treesNear = 0, inWater = false, biome = null } = {}) {
 }
 
 module.exports = {
-  zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legIsGood, isWetBiome, minDistFor, zoneFailureKind,
+  zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legIsGood, isWetBiome, minDistFor, zoneFailureKind,
   zoneStateInit, zoneStateLoad, zoneStateAfterMigration,
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX,
