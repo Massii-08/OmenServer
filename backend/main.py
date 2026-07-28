@@ -149,6 +149,7 @@ from backend.bots.mc_agent_router import router as mc_agent_router
 from backend.bots.mc_capture_router import router as mc_capture_router
 from backend.bots.harvester_router import router as harvester_router
 from backend.bots.oracle_router import router as oracle_router
+from backend.bots.market_router import router as market_router
 from backend.gdrive.router import router as gdrive_router
 from backend.media.router import router as media_router
 from backend.webserver.router import router as webserver_router
@@ -184,6 +185,7 @@ app.include_router(mc_agent_router)
 app.include_router(mc_capture_router)
 app.include_router(harvester_router)
 app.include_router(oracle_router)
+app.include_router(market_router)
 app.include_router(gdrive_router)
 app.include_router(media_router)
 app.include_router(webserver_router)
@@ -378,6 +380,19 @@ async def startup_event():
             logger.info(f"🧹 Harvester: {len(purged)} run(s) ancien(s) purgé(s)")
     except Exception as e:
         logger.warning(f"Harvester resume au démarrage échoué: {e}")
+
+    # Market Pulse : (ré)installe le job du matin et RATTRAPE le créneau s'il a
+    # été manqué. Indispensable ici : la machine dort de 01:00 à 06:00 et
+    # APScheduler, sans jobstore persistant, ne sait rien d'un déclenchement
+    # survenu pendant qu'elle était éteinte.
+    try:
+        from backend.bots.market_router import register_startup_job, purge_old_runs as _mp_purge
+        register_startup_job()
+        _mp_purged = _mp_purge()
+        if _mp_purged:
+            logger.info(f"🧹 Market Pulse: {len(_mp_purged)} run(s) ancien(s) purgé(s)")
+    except Exception as e:
+        logger.warning(f"Market Pulse au démarrage échoué: {e}")
 
     logger.info(f"🚀 {settings.SERVER_NAME} est prêt ! → http://localhost:{settings.PORT}")
 
