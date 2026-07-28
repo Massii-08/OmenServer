@@ -467,7 +467,12 @@ async function trySquad() {
   // Minage/tâche longue en cours → on ne yanke pas (piège #42c). Même jeu de gardes que
   // l'enforcement confine (bot.targetDigBlock + immobilités légitimes) : le squad était le SEUL
   // mécanisme de tp sans ce garde-fou → il rejetait les branchMine des workers toutes les ~30 s.
-  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy;
+  // ⚠️ `_migrating` EN FAIT PARTIE (mesure 04:12 : 5 migrations, 0 aboutie, toutes en
+  // `no_progress` avec spread=200). Je l'avais ajouté à l'enforcement confine et OUBLIÉ ici : le
+  // /tpa de regroupement arrachait le bot en pleine marche de migration et le ramenait au chef,
+  // donc le compteur de progrès repartait de zéro et le déménagement ne pouvait jamais aboutir.
+  // Exactement la même classe que le yank du confine — un TP qui ignore une tâche longue.
+  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating;
   const pick = squadTarget({
     // `y`/`ironZone` de SOI : sans eux un mineur productif se croirait « rien du tout » et
     // remonterait rejoindre un flâneur resté en surface — l'inverse exact du but.
