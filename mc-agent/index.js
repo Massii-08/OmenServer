@@ -1619,6 +1619,7 @@ async function migrateZone(reason) {
     });
 
     let travelFrom = { x: from.x, z: from.z };   // origine RÉELLE du voyage (mise à jour après la remontée)
+    let yRef = SAFE_HOME_MIN_Y + 4;              // altitude de référence du voyage : la SURFACE
     // L'ORDRE COMPTE : on remonte AVANT de voyager. Auparavant la remontée venait après les
     // tentatives de trajet — le bot tentait donc la traversée SOUS TERRE (NoPath quasi garanti sur
     // plusieurs centaines de blocs), remontait ensuite, et jugeait son arrivée là où il n'avait pas
@@ -1655,7 +1656,7 @@ async function migrateZone(reason) {
     // ré-ancrait sur son ANCIENNE base et brûlait le cooldown sans avoir bougé d'un pouce.
     {
       const pT = bot.entity && bot.entity.position;
-      if (pT) travelFrom = { x: pT.x, z: pT.z };
+      if (pT) { travelFrom = { x: pT.x, z: pT.z }; yRef = Math.round(pT.y); }
     }
     if (target) {
       // ⚠️ UNE CIBLE HORS DES CHUNKS CHARGES EST INVISIBLE DU PATHFINDER (view-distance 6 = 96
@@ -1690,9 +1691,7 @@ async function migrateZone(reason) {
           const pl = bot.entity && bot.entity.position;
           const leg = migrationLeg({ from: pl ? { x: pl.x, z: pl.z } : from, heading, legs: i });
           if (!leg) break;
-          await withTimeout(
-            bot.pathfinder.goto(new pfGoals.GoalNearXZ(leg.x, leg.z, 16)),
-            90000, () => { try { stopMotion(); } catch (e) {} });
+          await migrationLegTo(leg, yRef);
           _migrationLegs = i + 1;
           const pn = bot.entity && bot.entity.position;
           if (pn && Math.hypot(pn.x - target.x, pn.z - target.z) <= 48) break;   // arrivé
@@ -1712,9 +1711,7 @@ async function migrateZone(reason) {
         const p = bot.entity && bot.entity.position;
         const leg = migrationLeg({ from: p ? { x: p.x, z: p.z } : from, heading, legs: i });
         if (!leg) break;
-        await withTimeout(
-          bot.pathfinder.goto(new pfGoals.GoalNearXZ(leg.x, leg.z, 16)),
-          90000, () => { try { stopMotion(); } catch (e) {} });
+        await migrationLegTo(leg, yRef);
         _migrationLegs = i + 1;
         if (legIsGood(probeTerrain())) break;      // « le bon endroit » : arbres, au sec, pas d'océan
       }
@@ -1815,6 +1812,30 @@ function probeTerrain() {
     if (b && b.biome && b.biome.name) biome = String(b.biome.name).replace(/^minecraft:/, '');
   } catch (e) { biome = null; }
   return { treesNear, inWater: (function () { try { return isInWater(bot); } catch (e) { return false; } })(), biome };
+}
+
+/**
+ * Une JAMBE de migration, en restant EN SURFACE. (cause racine mesuree le 28/07 : 21 migrations,
+ * 0 aboutie, majorite d echecs `underground:true` — et 61 remontees pour 21 migrations.)
+ *
+ * `GoalNearXZ` ne contraint que X/Z : l altitude est LIBRE, donc le pathfinder plonge volontiers
+ * dans une grotte ou un ravin quand c est le chemin le moins cher, et le bot arrive sous terre.
+ * On vise donc en 3D (`GoalNear`) a l altitude de reference — celle a laquelle on a demarre le
+ * voyage, c est-a-dire la surface — ce qui rend les descentes couteuses sans les interdire.
+ * Puis on RE-REMONTE apres chaque jambe si on a quand meme fini sous terre : court (30 s) et
+ * local, au lieu des 50 blocs de roche a percer une fois arrive au bout.
+ */
+async function migrationLegTo(leg, yRef) {
+  await withTimeout(
+    bot.pathfinder.goto(new pfGoals.GoalNear(leg.x, yRef, leg.z, 16)),
+    90000, () => { try { stopMotion(); } catch (e) {} });
+  const p = bot.entity && bot.entity.position;
+  if (p && p.y < SAFE_HOME_MIN_Y) {
+    try {
+      await withTimeout(bot.pathfinder.goto(new pfGoals.GoalY(SAFE_HOME_MIN_Y + 4)),
+        30000, () => { try { stopMotion(); } catch (e) {} });
+    } catch (e) { /* best-effort : la jambe suivante retentera */ }
+  }
 }
 
 /** Le verdict de zone, évalué périodiquement. Migre si la zone ne vaut plus le temps qu'on y passe. */
