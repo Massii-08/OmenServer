@@ -98,20 +98,37 @@ Tâches ordonnées :
 
 ## Phase C — sentiment presse & Reddit (V5)
 
+**Consigne de Massii, première classe (pas un dernier recours)** : « ne pas se limiter aux API
+publiques — scraper les infos grâce au système du Harvester IA ». Le moteur du AI Harvester
+(`backend/bots/harvester/`) est ta **boîte à outils d'accès standard** pour toute source
+protégée ; importe ses modules, ne réécris rien :
+
+| Module Harvester | Ce qu'il t'apporte |
+|---|---|
+| `fetch.py` | fetcher httpx + RateLimiter (sources simples : RSS, Reddit JSON) |
+| `fetch_stealth.py` | **tier stealth patchright + Chrome + Xvfb `:100`** (opérationnel sur l'Omen, `DISPLAY` hérité par les subprocess) — pour sites de presse à protection anti-bot/Cloudflare |
+| `fetch_unblocker.py` + `unblocker_config.py` | tier débloqueur (API managée, clé déjà configurable depuis l'UI du Harvester) si le stealth ne passe pas |
+| `pacing.py` | pacing adaptatif (backoff sur pushback) — obligatoire sur toute source scrapée |
+| `dom.py` + `recipe.py` | extraction déterministe par sélecteurs (articles de presse HTML) |
+| `policy.py` | gate no-PII sur ce qu'on stocke |
+
+Escalade par source, dans l'ordre (doctrine « test to the end ») : httpx/curl_cffi → stealth →
+unblocker. On n'abandonne une source qu'après avoir épuisé les trois tiers.
+
 1. `pulse/sentiment.py` + module de collecte : **RSS presse** (candidats à VALIDER un par un
    avant de coder le parse : Il Sole 24 Ore mercati, CNBC World Markets, MarketWatch,
-   Investing.com news — garder ceux qui répondent en httpx simple, stdlib `xml.etree` pour le
-   parse) + **Reddit JSON public** (`https://www.reddit.com/r/investing/hot.json`,
-   `r/StockMarket`, User-Agent custom obligatoire, pacing low-and-slow doctrine Harvester).
+   Investing.com news — stdlib `xml.etree` pour le parse) + **sites de presse protégés via le
+   tier stealth du Harvester** quand le flux RSS n'existe pas ou est tronqué + **Reddit JSON
+   public** (`https://www.reddit.com/r/investing/hot.json`, `r/StockMarket`, User-Agent custom
+   obligatoire, pacing low-and-slow).
 2. Sortie déterministe : top titres par source + comptage de thèmes/tickers mentionnés
    (matching par mots-clés, pas de LLM) → section « Notizie e tendenze » du rapport + panneau UI.
 3. **Synthèse LLM optionnelle** (1 appel/jour max) : réutiliser le pattern `_claude`
    (`backend/bots/harvester/llm.py`, CLI Claude sur le token OAuth de l'Omen —
    `~/.config/claude-code-oauth.env`). **Dégradation gracieuse** : sans LLM le rapport sort en
-   format structuré. Si une source résiste (paywall/anti-bot), utiliser les fetchers du
-   **AI Harvester** (tier stealth patchright/Xvfb `:100` opérationnel sur l'Omen) — demande
-   explicite de Massii de ne pas se limiter aux API publiques. **Twitter/X reste exclu.**
-4. Tests offline (fixtures RSS/Reddit réelles capturées), même doctrine.
+   format structuré. **Twitter/X reste exclu** (seule exception à la consigne d'escalade).
+4. Tests offline (fixtures RSS/Reddit/HTML réelles capturées), fetchers injectés — même doctrine
+   que les tests du Harvester.
 
 ## Pièges du repo OBLIGATOIRES (numéros = CLAUDE.md)
 
