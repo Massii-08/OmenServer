@@ -610,6 +610,15 @@ test('MAPPER_ARMOR_CHAIN: cible + pioche + buffer de bois EN SURFACE → on desc
   assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx).name, 'gift_descend');
 });
 
+test('MAPPER_ARMOR_CHAIN: cible + pioche EN SURFACE sans bois MAIS zone prouvée wood-desert (noWood) → gift_planks SAUTÉ → on descend miner (mirror EXACT plank_buffer.noWood, fix world_mn12 28/07)', () => {
+  // Le mirror de plank_buffer avait OUBLIÉ l'escape `!!c.noWood` (884093e) : dans un wood-desert de
+  // SURFACE, gift_planks bouclait gatherLog→not_found à l'infini → le worker n'armait JAMAIS son
+  // mappeur (mesuré : NethBot1 sur mapper_armor, 18× gift_planks not_found, 0 livraison). Comme le
+  // main chain, quand le bois est prouvé rare on saute le buffer et on descend miner le fer du set.
+  const ctx = { inv: { stone_pickaxe: 1 }, y: 70, mapperTarget: 'MapBot1', giftReady: false, noWood: true };
+  assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx).name, 'gift_descend');
+});
+
 test('MAPPER_ARMOR_CHAIN: cible + pioche SOUS TERRE sans bois → le buffer est SAUTÉ (déjà engagé, pas de churn) → on mine le fer', () => {
   // Comme T1 : le buffer ne force le bois qu'EN SURFACE (y>30). Sous terre (y<=30) il est sauté pour
   // ne pas déclencher un aller-retour bois — le churn qu'on cherche justement à éviter.

@@ -506,10 +506,16 @@ const MAPPER_ARMOR_CHAIN = [
   // world_mn11 28/07 : gift_furnace 100% échec (no_table:unknown_item 53/30min), mappeurs jamais armés.
   // Comme T1 : on n'exige le buffer qu'EN SURFACE (y>30) ; sous terre (y<=30) le but est sauté pour ne
   // PAS déclencher un aller-retour bois. Satisfiable-ou-sautable → ne peut jamais bloquer la chaîne.
+  // ⚠️ world_mn12 28/07 : le « mirror EXACT de plank_buffer » avait OUBLIÉ l'escape `!!c.noWood`
+  // (884093e) → dans un wood-desert de SURFACE, gift_planks bouclait gatherLog→not_found à l'infini
+  // et le worker n'armait JAMAIS son cartographe (mesuré : NethBot1 sur mapper_armor, 18× gift_planks
+  // not_found, 0 livraison). Bois prouvé rare → on saute le buffer et on descend miner le fer du set
+  // (table portable en poche + four = cobble → aucun bois requis en aval). Vraiment aligné sur plank_buffer.
   { name: 'gift_planks',  met: (c) => !c.mapperTarget
       || (c.y !== undefined && c.y <= 30)
       || (anyPlanks(c.inv) + anyLog(c.inv) * 4 >= 24)
-      || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
+      || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS
+      || !!c.noWood,
     skill: 'gatherLog',    args: { count: 6 } },
   { name: 'gift_descend', met: (c) => !c.mapperTarget
       || (c.y !== undefined && c.y <= 18) || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
