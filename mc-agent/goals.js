@@ -603,7 +603,13 @@ function nextObjectiveAfter(objective, mates) {
 // atteindre le but de chaîne ne forgeait JAMAIS la pièce qu'il pouvait pourtant s'offrir → armure
 // figée des heures. Le timer de FONTE juste en dessous, lui, incluait bien iron_armor/diamond_armor
 // (d'où des lingots qui s'accumulaient… et dormaient). Source unique, testée, importée par index.js.
-const ARMOR_FORGE_OBJECTIVES = new Set(['resource', 'diamond', 'mapper', 'iron_armor', 'diamond_armor']);
+// ⚠️ #61 BIS (world_mn12, 28/07) : mapper_armor/iron_help étaient ABSENTS → un worker qui perd une
+// pièce d'armure (usure #54e) après être passé sur ces objectifs ne repasse jamais par iron_armor
+// (nextObjectiveAfter ne route pas en arrière) et ne reforge donc JAMAIS sa pièce manquante, même
+// avec du raw_iron plein (mesuré : NethBot2 3/4 + 64 raw_iron, spin mapper_armor à vide → straggler
+// `manque` qui fige la porte mapper_armor pour toute la flotte). Le timer d'armure forge la pièce
+// abordable ⇒ un mappeur-armurier / un aidant finit d'abord sa propre armure avant de donner.
+const ARMOR_FORGE_OBJECTIVES = new Set(['resource', 'diamond', 'mapper', 'iron_armor', 'diamond_armor', 'mapper_armor', 'iron_help']);
 function wantsOpportunisticArmor(objType) {
   return ARMOR_FORGE_OBJECTIVES.has(objType);
 }

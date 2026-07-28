@@ -730,3 +730,15 @@ test('wantsOpportunisticArmor : couvre toujours resource/diamond/mapper (non-ré
   for (const o of ['resource', 'diamond', 'mapper']) assert.strictEqual(wantsOpportunisticArmor(o), true);
   assert.strictEqual(wantsOpportunisticArmor('mvp'), false);
 });
+
+// PIÈGE #61 bis (world_mn12, 28/07) — même classe de bug, autre trou du Set. Un worker qui passe à
+// `mapper_armor` (ou `iron_help`) et PERD une pièce d'armure (usure #54e → _wornArmor la lâche →
+// worn 3/4) ne repasse JAMAIS par `iron_armor` (nextObjectiveAfter ne route pas en arrière) ET le
+// timer d'armure opportuniste ne tournait pas pour ces objectifs → la pièce n'était jamais reforgée
+// même avec 64 raw_iron + four + table en poche. Mesuré live : NethBot2 3/4 armure, 64 raw_iron,
+// objectif mapper_armor, spin 6547× autonomous_done sans rien produire → toute la flotte figée sur
+// un straggler `manque=5` qui bloque la porte mapper_armor.
+test('wantsOpportunisticArmor : couvre mapper_armor ET iron_help (piège #61 bis)', () => {
+  assert.strictEqual(wantsOpportunisticArmor('mapper_armor'), true);
+  assert.strictEqual(wantsOpportunisticArmor('iron_help'), true);
+});
