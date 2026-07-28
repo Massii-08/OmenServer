@@ -79,7 +79,7 @@ const { recordWorkStuck } = require('./workStuck'); // chantier menant à une im
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
 // de mort. Le serveur n'autorise que 3 homes et le code en posait 4 → un /sethome échouait EN
 // SILENCE sur chaque bot (bug prouvé world_mn5). Voir homes.js.
-const { HOME_SAFE, HOME_WORK, HOME_DEATH, LEGACY_HOMES, canBookmarkDeath, openDebt, debtAction, isSurfaceSpot, SAFE_HOME_MIN_Y } = require('./homes');
+const { HOME_SAFE, HOME_WORK, HOME_DEATH, LEGACY_HOMES, canBookmarkDeath, openDebt, debtAction, isSurfaceSpot, SAFE_HOME_MIN_Y, isSilentSafeFailure } = require('./homes');
 const { recordJam } = require('./jamEscalate'); // JAM persistant au MÊME endroit → relocate forcé (live 22/06 SOIR ResBot2)
 const { runResource } = require('./skills/resource');
 const { planSmeltRaw } = require('./bank');   // fonte périodique du brut or/fer → lingots bankables
@@ -278,6 +278,8 @@ let _homeRefusedAt = {};      // RC3 : refus TP Essentials par home {safe|chanti
 function safeWarpDown() {
   return !!(_homeRefusedAt.safe && (Date.now() - _homeRefusedAt.safe) <= homewarp.REFUSAL_DEGRADE_MS);
 }
+let _safeNoopStreak = 0;      // /home safe SILENCIEUX consécutifs depuis sous terre (signet cassé vs
+const SAFE_NOOP_MAX = 3;      // warmup teleport-delay ponctuel) — au 3e, on invalide safe (piège world_mn11)
 let _tpCancelledAt = 0;       // secure-then-warp : dernière annulation Essentials vue (teleport-delay)
 let _confineDyn = null;       // confine AUTO-ancré (brique 2) : posé à la 1re terre sèche stable
 let _anchorSet = false;      // home 'ancre' posé à l'ancre → l'enforcement /home peut tirer
@@ -529,6 +531,26 @@ async function safeWarpHome(name, opts = {}) {
   }
   if (tactic === 'float') { try { bot.setControlState('jump', false); } catch (e) {} }
   emit({ type: 'safe_warp', name, tactic, warped: !!r.warped });
+  // /home safe SILENCIEUX depuis sous terre (warped:false, non annulé, aucun message de refus reconnu
+  // par refusedHome) = signet safe cassé → le bot reste piégé en profondeur, /home safe ne le
+  // remontera jamais. La voie « refus » (home_tp_refused) ne couvre que le refus EXPLICITE ; ce no-op
+  // muet n'armait donc JAMAIS le self-heal `safe_home_reset` (mesuré world_mn11 : NethBot3 392 min à
+  // y17, warped:false en boucle, 0 home_tp_refused). On l'invalide APRÈS quelques occurrences
+  // consécutives (un warmup teleport-delay ponctuel ne se répète pas) → le self-heal re-pose un safe
+  // sain à la prochaine surface sèche, et la survie cesse de compter sur ce warp mort.
+  try {
+    const py = bot.entity && bot.entity.position ? bot.entity.position.y : null;
+    if (isSilentSafeFailure({ name, warped: !!r.warped, cancelled: !!r.cancelled, y: py })) {
+      _safeNoopStreak++;
+      if (_safeNoopStreak >= SAFE_NOOP_MAX && !_homeRefusedAt.safe) {
+        _homeRefusedAt.safe = Date.now();
+        _safeHomeSurface = false;
+        emit({ type: 'safe_home_broken', y: Math.round(py), streak: _safeNoopStreak });
+      }
+    } else if (name === HOME_SAFE && r.warped) {
+      _safeNoopStreak = 0;   // un warp qui déplace vraiment le bot prouve que le signet est sain
+    }
+  } catch (e) { /* best-effort */ }
   return r;
 }
 let _convoPauseUntil = 0;   // stop-pour-répondre : gèle les gotos pendant réflexion+frappe (HUMANIZE)

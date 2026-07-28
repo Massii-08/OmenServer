@@ -52,6 +52,29 @@ function isSurfaceSpot(s = {}) {
   return typeof y === 'number' && Number.isFinite(y) && y >= SAFE_HOME_MIN_Y;
 }
 
+// ─── /home safe SILENCIEUX depuis sous terre = signet cassé ──────────────────────────────────────
+// Mesuré live sur world_mn11 (28/07) : NethBot3 est resté 392 min piégé à y≈17, `safe_warp
+// warped:false` en boucle, SANS un seul `home_tp_refused`. La voie « refus » (refusedHome, sur
+// message Essentials) ne couvre que le refus EXPLICITE de la teleport-safety ; un `/home safe` qui
+// n'a tout simplement PAS téléporté (signet pointant sous terre, ou home absent) est un no-op
+// MUET → `_homeRefusedAt.safe` restait nul → le self-heal `safe_home_reset` ne s'armait jamais →
+// le bot ne remontait JAMAIS chercher du bois ni se re-poser un safe sain. C'est le cœur du piège :
+// safe sous terre → impossible de remonter → impossible de re-poser safe en surface.
+//
+// On ne se fie qu'au signal robuste : le TP n'a pas déplacé le bot (warped:false), il n'a pas été
+// annulé (mouvement/coup → simple retry, pas un signet cassé), et le bot est SOUS TERRE (y<58) —
+// c'est là, et seulement là, que le no-op piège (en surface, un /home safe muet = déjà chez soi,
+// sans danger). L'appelant ne déclenche qu'après quelques occurrences CONSÉCUTIVES pour ignorer un
+// warmup teleport-delay ponctuel plus long que le timeout d'attente. (pur)
+// @param {{name?: string, warped?: boolean, cancelled?: boolean, y?: number}} s
+function isSilentSafeFailure(s = {}) {
+  if (!s || s.name !== HOME_SAFE) return false;
+  if (s.warped || s.cancelled) return false;
+  const y = s.y;
+  if (typeof y !== 'number' || !Number.isFinite(y)) return false;
+  return y < SAFE_HOME_MIN_Y;
+}
+
 // ─── Garde lave sur la pose du home `death` ─────────────────────────────────────────────────────
 // Massii : « posé quand il va mourir (sauf si l'endroit est dans la lave) ». Revenir dans la lave
 // n'est pas une récupération, c'est une deuxième mort — et le loot y a de toute façon brûlé.
@@ -113,5 +136,5 @@ function debtAction(o = {}) {
 module.exports = {
   HOME_SAFE, HOME_WORK, HOME_DEATH, HOMES, LEGACY_HOMES,
   canBookmarkDeath, openDebt, debtAction, DEBT_TTL_MS,
-  isSurfaceSpot, SAFE_HOME_MIN_Y,
+  isSurfaceSpot, SAFE_HOME_MIN_Y, isSilentSafeFailure,
 };

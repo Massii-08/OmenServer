@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const {
   HOME_SAFE, HOME_WORK, HOME_DEATH, HOMES, LEGACY_HOMES,
   canBookmarkDeath, openDebt, debtAction, DEBT_TTL_MS,
-  isSurfaceSpot, SAFE_HOME_MIN_Y,
+  isSurfaceSpot, SAFE_HOME_MIN_Y, isSilentSafeFailure,
 } = require('./homes');
 
 // ─── Le contrat des 3 noms ──────────────────────────────────────────────────────────────────────
@@ -54,6 +54,36 @@ test('surface : y absent ou non fini => refuse (on ne pose pas un safe sur une l
   assert.strictEqual(isSurfaceSpot({ inWater: false }), false);
   assert.strictEqual(isSurfaceSpot({ y: NaN, inWater: false }), false);
   assert.strictEqual(isSurfaceSpot({}), false);
+});
+
+// ─── /home safe silencieux depuis sous terre (piege world_mn11 NethBot3) ─────────────────────────
+
+test('safe muet : warped:false, non annule, SOUS TERRE => signet casse (arme le self-heal)', () => {
+  assert.strictEqual(isSilentSafeFailure({ name: HOME_SAFE, warped: false, cancelled: false, y: 17 }), true);
+  assert.strictEqual(isSilentSafeFailure({ name: HOME_SAFE, warped: false, cancelled: false, y: 57 }), true);
+});
+
+test('safe muet : un warp qui a MARCHE (warped:true) ne signale rien', () => {
+  assert.strictEqual(isSilentSafeFailure({ name: HOME_SAFE, warped: true, cancelled: false, y: 17 }), false);
+});
+
+test('safe muet : un warp ANNULE (coup/mouvement) est un simple retry, pas un signet casse', () => {
+  assert.strictEqual(isSilentSafeFailure({ name: HOME_SAFE, warped: false, cancelled: true, y: 17 }), false);
+});
+
+test('safe muet : en SURFACE (y>=58) un no-op = deja chez soi, rien a signaler', () => {
+  assert.strictEqual(isSilentSafeFailure({ name: HOME_SAFE, warped: false, cancelled: false, y: 64 }), false);
+  assert.strictEqual(isSilentSafeFailure({ name: HOME_SAFE, warped: false, cancelled: false, y: 58 }), false);
+});
+
+test('safe muet : ne concerne QUE le home safe (pas work/death)', () => {
+  assert.strictEqual(isSilentSafeFailure({ name: HOME_WORK, warped: false, cancelled: false, y: 17 }), false);
+  assert.strictEqual(isSilentSafeFailure({ name: HOME_DEATH, warped: false, cancelled: false, y: 17 }), false);
+});
+
+test('safe muet : y absent/non fini => on ne signale pas (lecture de position ratee)', () => {
+  assert.strictEqual(isSilentSafeFailure({ name: HOME_SAFE, warped: false, cancelled: false }), false);
+  assert.strictEqual(isSilentSafeFailure({ name: HOME_SAFE, warped: false, cancelled: false, y: NaN }), false);
 });
 
 // ─── Garde lave sur la pose du home death ───────────────────────────────────────────────────────
