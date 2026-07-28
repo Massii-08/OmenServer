@@ -492,6 +492,18 @@ const MAPPER_ARMOR_CHAIN = [
   { name: 'gift_pick',    met: (c) => !c.mapperTarget || canMineIron(c)
       || (invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot')) >= GIFT_SET_INGOTS,
     skill: 'ensurePick' },
+  // BUFFER PLANCHES pré-descente (mirror EXACT de IRON_ARMOR_CHAIN.plank_buffer — le frein n°1
+  // « churn bois↔profondeur »). La chaîne descendait AVANT de sécuriser du bois (contrairement à T1
+  // qui, LUI, réussit) → sous terre gift_furnace/gift_craft bouclaient no_table:unknown_item : aucun
+  // bois pour re-crafter la table exigée par le four ET par le forgeage des 4 pièces du set. Mesure
+  // world_mn11 28/07 : gift_furnace 100% échec (no_table:unknown_item 53/30min), mappeurs jamais armés.
+  // Comme T1 : on n'exige le buffer qu'EN SURFACE (y>30) ; sous terre (y<=30) le but est sauté pour ne
+  // PAS déclencher un aller-retour bois. Satisfiable-ou-sautable → ne peut jamais bloquer la chaîne.
+  { name: 'gift_planks',  met: (c) => !c.mapperTarget
+      || (c.y !== undefined && c.y <= 30)
+      || (anyPlanks(c.inv) + anyLog(c.inv) * 4 >= 24)
+      || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
+    skill: 'gatherLog',    args: { count: 6 } },
   { name: 'gift_descend', met: (c) => !c.mapperTarget
       || (c.y !== undefined && c.y <= 18) || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
     skill: 'descendDiagonal', args: { targetY: 16 } },

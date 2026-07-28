@@ -577,9 +577,24 @@ test('MAPPER_ARMOR_CHAIN: cible + rien en poche (PAS de pioche) → refaire une 
   assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx).name, 'gift_pick');
 });
 
-test('MAPPER_ARMOR_CHAIN: cible + pioche pierre en poche → on descend (le garde pioche est franchi)', () => {
+test('MAPPER_ARMOR_CHAIN: cible + pioche mais AUCUN bois EN SURFACE → sécuriser un buffer de bois AVANT de descendre (mirror T1 plank_buffer, fix churn bois↔profondeur)', () => {
+  // La chaîne descendait AVANT de sécuriser du bois (contrairement à IRON_ARMOR_CHAIN.plank_buffer) →
+  // sous terre gift_furnace/gift_craft échouaient no_table:unknown_item (aucun bois pour re-crafter la
+  // table du set d'armure). Mesure world_mn11 28/07 : gift_furnace 100% échec (no_table:unknown_item 53).
   const ctx = { inv: { stone_pickaxe: 1 }, y: 70, mapperTarget: 'MapBot1', giftReady: false };
+  assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx).name, 'gift_planks');
+});
+
+test('MAPPER_ARMOR_CHAIN: cible + pioche + buffer de bois EN SURFACE → on descend (le buffer est constitué)', () => {
+  const ctx = { inv: { stone_pickaxe: 1, oak_log: 6 }, y: 70, mapperTarget: 'MapBot1', giftReady: false };
   assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx).name, 'gift_descend');
+});
+
+test('MAPPER_ARMOR_CHAIN: cible + pioche SOUS TERRE sans bois → le buffer est SAUTÉ (déjà engagé, pas de churn) → on mine le fer', () => {
+  // Comme T1 : le buffer ne force le bois qu'EN SURFACE (y>30). Sous terre (y<=30) il est sauté pour
+  // ne pas déclencher un aller-retour bois — le churn qu'on cherche justement à éviter.
+  const ctx = { inv: { stone_pickaxe: 1 }, y: 16, mapperTarget: 'MapBot1', giftReady: false };
+  assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, ctx).name, 'gift_iron');
 });
 
 test('MAPPER_ARMOR_CHAIN: en profondeur avec fer brut, combustible ET four → il faut fondre', () => {
