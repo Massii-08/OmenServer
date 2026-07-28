@@ -1787,6 +1787,7 @@ async function migrateZone(reason) {
       emit({
         type: 'zone_migration_failed', reason, wet: p2wet,
         underground: !!(p2 && !p2wet && p2.y < SAFE_HOME_MIN_Y),
+        moved: p2 ? Math.round(Math.hypot(p2.x - travelFrom.x, p2.z - travelFrom.z)) : 0,
       });
     }
   } catch (e) {
@@ -1826,9 +1827,32 @@ function probeTerrain() {
  * local, au lieu des 50 blocs de roche a percer une fois arrive au bout.
  */
 async function migrationLegTo(leg, yRef) {
-  await withTimeout(
-    bot.pathfinder.goto(new pfGoals.GoalNear(leg.x, yRef, leg.z, 16)),
-    90000, () => { try { stopMotion(); } catch (e) {} });
+  // ⚠️ `GoalNear(leg.x, yRef, leg.z, 16)` NE MARCHE PAS SUR DU TERRAIN VALLONNE (mesure live
+  // world_mn12, 28/07 : les migrations longues echouent `moved:0 underground:false wet:false`
+  // en 7-19 events = NoPath INSTANTANE, pas un timeout). Un yRef FIGE + rayon 16 est inatteignable
+  // des que la surface a 64 blocs differe de plus de 16 blocs (la moindre colline/vallee) : aucun
+  // noeud standable n'entre dans le rayon 3D → le pathfinder rend NoPath tout de suite, `withTimeout`
+  // l'avale en silence (il resout `{ok:false}` au lieu de throw), et le bot ne bouge JAMAIS. C'est
+  // le regression introduite par 18321c3 : il a bien tue l'arrivee-sous-terre (`underground` est
+  // desormais false) mais l'a echangee contre un blocage total.
+  //
+  // Le chemin COURT (dist < 96, `hops`) utilise deja `GoalNearXZ` avec succes (mesure : `zone_migrated
+  // dist:68`, arrivee en surface). On aligne donc les JAMBES dessus : `GoalNearXZ` est atteignable a
+  // n'importe quelle altitude de surface. Pour empecher le plongeon-en-grotte que `GoalNearXZ` seul
+  // autorisait (le vrai probleme que 18321c3 visait), on marche avec `canDig=false` : le bot suit la
+  // surface sans pouvoir creuser vers le bas. Belt-and-suspenders : la remontee par jambe ci-dessous
+  // rattrape le rare cas ou il finit quand meme sous terre.
+  const prevMoves = bot.pathfinder.movements;
+  try {
+    const surf = new Movements(bot);
+    try { Object.assign(surf, prevMoves); } catch (e) {}
+    surf.canDig = false;
+    bot.pathfinder.setMovements(surf);
+    await withTimeout(
+      bot.pathfinder.goto(new pfGoals.GoalNearXZ(leg.x, leg.z, 16)),
+      90000, () => { try { stopMotion(); } catch (e) {} });
+  } catch (e) { /* best-effort : la jambe suivante retentera */ }
+  finally { try { if (prevMoves) bot.pathfinder.setMovements(prevMoves); } catch (e) {} }
   const p = bot.entity && bot.entity.position;
   if (p && p.y < SAFE_HOME_MIN_Y) {
     try {
