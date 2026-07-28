@@ -23,11 +23,18 @@ def _effective_prev_close(md) -> Optional[float]:
 
     ⚠️ `meta.chartPreviousClose` est la clôture qui précède le DÉBUT du range
     demandé (10 j ici), pas la veille — l'utiliser donnerait une variation sur
-    10 jours. La vraie référence est la clôture de l'avant-dernière bougie
-    (marché ouvert : veille ; marché fermé : séance précédant la dernière).
+    10 jours. La vraie référence est la dernière clôture DISPONIBLE avant la
+    bougie courante (marché ouvert : veille ; marché fermé : séance précédant
+    la dernière).
+
+    On remonte jusqu'à trouver une clôture non nulle : la bougie de la veille
+    peut n'avoir que son ouverture (clôture pas encore consolidée par Yahoo) —
+    prendre aveuglément `candles[-2].close` rendait alors None, et jeter cette
+    bougie décalait la référence de plusieurs séances (bug ^N225 du 2026-07-28).
     """
-    if len(md.candles) >= 2:
-        return md.candles[-2].close
+    for candle in reversed(md.candles[:-1]):
+        if candle.close:
+            return candle.close
     return md.prev_close
 
 

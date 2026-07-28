@@ -5,11 +5,11 @@ from typing import List, Optional
 
 @dataclass
 class Candle:
-    ts: int          # epoch (début de séance pour l'intervalle 1d)
-    open: float
-    high: float
-    low: float
-    close: float
+    ts: int                    # epoch (début de séance pour l'intervalle 1d)
+    open: Optional[float]
+    high: Optional[float]
+    low: Optional[float]
+    close: Optional[float]     # None tant que Yahoo n'a pas consolidé la clôture
 
 
 @dataclass
@@ -30,8 +30,16 @@ def parse_chart(raw: dict) -> MarketData:
     """Transforme la réponse brute /v8/finance/chart en MarketData.
 
     Lève ValueError si Yahoo renvoie une erreur ou une structure inattendue.
-    Les points sans open/close (None, séance en cours sur certains marchés)
-    sont ignorés dans la liste des bougies.
+
+    Un point ENTIÈREMENT nul (ni ouverture ni clôture) = pas de séance ce
+    jour-là (férié, trou de données) → écarté. Un point à moitié rempli est
+    CONSERVÉ, avec le côté manquant à None :
+
+    - ouverture seule = la séance a ouvert mais Yahoo n'a pas encore consolidé
+      la clôture quotidienne. C'est justement le gap du jour → le jeter
+      décalerait toutes les références d'une séance (bug du 2026-07-28 sur
+      ^N225 : -6,11 % affiché au lieu de -3,95 %).
+    - clôture seule = référence valable pour le gap du lendemain.
     """
     chart = (raw or {}).get("chart") or {}
     if chart.get("error"):
@@ -59,10 +67,14 @@ def parse_chart(raw: dict) -> MarketData:
             o, h, l, c = opens[i], highs[i], lows[i], closes[i]
         except IndexError:
             break
-        if o is None or c is None:
+        if o is None and c is None:
             continue
-        candles.append(Candle(ts=ts, open=o, high=h if h is not None else max(o, c),
-                              low=l if l is not None else min(o, c), close=c))
+        known = [v for v in (o, c) if v is not None]
+        candles.append(Candle(
+            ts=ts, open=o, close=c,
+            high=h if h is not None else max(known),
+            low=l if l is not None else min(known),
+        ))
 
     return MarketData(
         symbol=meta.get("symbol") or "",

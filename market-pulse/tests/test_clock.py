@@ -47,3 +47,18 @@ def test_local_time_uses_market_timezone():
     tokyo = _md()
     tokyo.tz_name = "Asia/Tokyo"
     assert market_state(tokyo, noon_utc).local_time == "21:00"
+
+
+def test_session_hours_are_exposed_in_local_time():
+    """L'heure de séance (stable) permet d'afficher « riapre alle 09:00 » sans
+    inventer une DATE de réouverture (jours fériés)."""
+    st = market_state(_md(), END + 60)
+    assert st.status == "closed"
+    assert st.opens_at is None          # on ne devine pas le jour
+    assert st.session_open == "09:00"   # mais l'heure, oui
+    assert st.session_close == "17:30"
+
+
+def test_session_hours_absent_when_period_unknown():
+    st = market_state(_md(start=None, end=None), START)
+    assert st.session_open is None and st.session_close is None

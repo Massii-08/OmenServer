@@ -11,37 +11,53 @@ WEEKDAYS_IT = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sab
 
 @dataclass
 class Gap:
-    date: str          # date de la séance qui a ouvert (YYYY-MM-DD, tz de la place)
-    gap_pct: float     # (open - prev_close) / prev_close * 100
+    date: str                        # séance qui a ouvert (YYYY-MM-DD, tz de la place)
+    gap_pct: float                   # (open - prev_close) / prev_close * 100
     open: float
     prev_close: float
+    prev_date: Optional[str] = None  # séance de la clôture de référence
 
 
 def _day(ts: int, tz_name: str) -> str:
     return datetime.fromtimestamp(ts, ZoneInfo(tz_name)).strftime("%Y-%m-%d")
 
 
+def _pair_gap(prev: Candle, cur: Candle, tz_name: str) -> Optional[Gap]:
+    """Gap d'une paire adjacente, ou None si la paire n'est pas calculable.
+
+    Il faut une ouverture pour `cur` et une clôture pour `prev` : la bougie du
+    jour peut n'avoir que son ouverture (clôture non consolidée), et une bougie
+    de séance écourtée peut n'avoir que sa clôture.
+    """
+    if cur.open is None or not prev.close:
+        return None
+    pct = (cur.open - prev.close) / prev.close * 100.0
+    return Gap(date=_day(cur.ts, tz_name), gap_pct=round(pct, 2),
+               open=cur.open, prev_close=prev.close,
+               prev_date=_day(prev.ts, tz_name))
+
+
 def latest_gap(candles: List[Candle], tz_name: str) -> Optional[Gap]:
-    """Gap entre la dernière bougie et la clôture de la précédente."""
-    if len(candles) < 2:
-        return None
-    prev, last = candles[-2], candles[-1]
-    if not prev.close:
-        return None
-    pct = (last.open - prev.close) / prev.close * 100.0
-    return Gap(date=_day(last.ts, tz_name), gap_pct=round(pct, 2),
-               open=last.open, prev_close=prev.close)
+    """Gap le plus récent CALCULABLE, en remontant depuis la fin.
+
+    On ne saute pas de séance pour fabriquer un gap : on cherche la dernière
+    paire adjacente exploitable. Si la bougie du jour n'a pas encore
+    d'ouverture, on rend le gap de la séance d'avant (et `date` le dit).
+    """
+    for i in range(len(candles) - 1, 0, -1):
+        gap = _pair_gap(candles[i - 1], candles[i], tz_name)
+        if gap is not None:
+            return gap
+    return None
 
 
 def all_gaps(candles: List[Candle], tz_name: str) -> List[Gap]:
     """Tous les gaps consécutifs d'une série de bougies (pour les stats V4)."""
     gaps: List[Gap] = []
     for prev, cur in zip(candles, candles[1:]):
-        if not prev.close:
-            continue
-        pct = (cur.open - prev.close) / prev.close * 100.0
-        gaps.append(Gap(date=_day(cur.ts, tz_name), gap_pct=round(pct, 2),
-                        open=cur.open, prev_close=prev.close))
+        gap = _pair_gap(prev, cur, tz_name)
+        if gap is not None:
+            gaps.append(gap)
     return gaps
 
 
