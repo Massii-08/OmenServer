@@ -378,6 +378,18 @@ test('not_found n accuse la zone que sur un but de bois', () => {
   assert.strictEqual(zoneFailureKind('cobble_furnace', 'not_found'), null);
 });
 
+// ⚠️ world_mn12 28/07 : la chaine mapper_armor bouclait gift_planks not_found A VIE en wood-desert.
+// L escape noWood (66a5e45) sur gift_planks depend de _zoneLogsNotFound >= 8, mais ce compteur
+// n est alimente QUE par les buts de _WOOD_GOALS. gift_planks/gift_fuel (gatherLog du gift chain)
+// n y etaient PAS -> leurs echecs n incrementaient jamais le compteur -> noWood restait false a vie
+// sur un worker en mapper_armor (qui ne lance jamais le `logs`/`plank_buffer` de la chaine principale)
+// -> gift_planks deadlock -> mappeurs JAMAIS armes. Meme classe que #52/#61 : un escape cable sur
+// un signal que la branche concernee ne produit jamais.
+test('les buts bois de la chaine gift comptent aussi (mapper_armor wood-desert)', () => {
+  assert.strictEqual(zoneFailureKind('gift_planks', 'not_found'), 'wood');
+  assert.strictEqual(zoneFailureKind('gift_fuel', 'not_found'), 'wood');
+});
+
 // ─── L ETAT DE ZONE DOIT SURVIVRE AU PROCESS (cause racine, 27/07 soir) ─────────────────────────
 // La migration n a JAMAIS tire de la journee alors que la flotte etait visiblement noyee
 // (descend_y16 water_ahead 77-82 %, ~20 sauvetages eau par session). Raison : l horloge de zone

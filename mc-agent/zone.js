@@ -324,7 +324,13 @@ function zoneStateAfterMigration(now) {
 
 const _WOOD_LACK_RE = /no_wood|no_sticks|no_planks|no_log/i;
 const _WATER_LACK_RE = /water|flood|drown/i;
-const _WOOD_GOALS = new Set(['logs', 'planks', 'plank_buffer', 'crafting_table', 'sticks', 'wooden_pickaxe']);
+// ⚠️ world_mn12 28/07 : gift_planks/gift_fuel (les gatherLog de la CHAÎNE mapper_armor) doivent y
+// figurer. Un worker qui arme un cartographe ne lance jamais le `logs`/`plank_buffer` de la chaîne
+// principale ; sans ces deux buts, ses échecs bois n'alimentaient PAS _zoneLogsNotFound → l'escape
+// `noWood` de gift_planks (66a5e45) ne pouvait jamais s'armer → gift_planks bouclait not_found à vie
+// en wood-desert → mappeurs JAMAIS armés. Le signal doit être produit par la branche qui le lit (#61).
+const _WOOD_GOALS = new Set(['logs', 'planks', 'plank_buffer', 'crafting_table', 'sticks', 'wooden_pickaxe',
+  'gift_planks', 'gift_fuel']);
 
 /**
  * @returns {'wood'|'water'|null} — ce que cet échec dit de la ZONE (null = il accuse le bot).
