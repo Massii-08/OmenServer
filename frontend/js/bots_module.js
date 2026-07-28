@@ -51,6 +51,10 @@ const BotsModule = {
  if (typeof OracleModule !== 'undefined' && OracleModule.unload) {
  OracleModule.unload();
  }
+ // Idem pour Market Pulse (poll du snapshot + suivi d'un run en cours)
+ if (typeof MarketModule !== 'undefined' && MarketModule.unload) {
+ MarketModule.unload();
+ }
  },
 
  async loadBots() {
@@ -136,6 +140,23 @@ const BotsModule = {
             sharedWithYou: false,
         }) : '';
 
+        // Market Pulse virtual card — 3e bot de la suite finance, même
+        // audience que le Yield Bot et le Bond Scanner (admin + money) :
+        // c'est l'utilisateur "money" qui lit le rapport du matin.
+        const canSeeMarket = u && (u.is_admin || u.role === 'money' || u.role === 'admin');
+        const marketCard = canSeeMarket ? buildBotCard({
+            icon: 'MKT',
+            name: 'Market Pulse',
+            type: 'analysis',
+            desc: Lang.t('market.desc'),
+            status: 'online',
+            statusLabel: Lang.t('modules.active'),
+            onClick: 'BotsModule.openMarket()',
+            actions: `<button class="btn btn-ghost btn-sm">${Lang.t('market.open')}</button>`,
+            selected: false,
+            sharedWithYou: false,
+        }) : '';
+
         // Oracle virtual card (admin-only — Polymarket × Deribit, monitoring)
         const canSeeOracle = u && u.is_admin;
         const oracleCard = canSeeOracle ? buildBotCard({
@@ -157,6 +178,7 @@ const BotsModule = {
  <div class="bots-grid-bento">
  ${yieldBotCard}
  ${scannerBotCard}
+ ${marketCard}
  ${mcAgentCard}
  ${harvesterCard}
  ${oracleCard}
@@ -205,6 +227,7 @@ const BotsModule = {
  <div class="bots-grid-bento">
  ${yieldBotCard}
  ${scannerBotCard}
+ ${marketCard}
  ${mcAgentCard}
  ${harvesterCard}
  ${oracleCard}
@@ -1099,6 +1122,15 @@ const BotsModule = {
         if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
         if (typeof HarvesterModule !== 'undefined') {
             HarvesterModule.render(this._container);
+        }
+    },
+
+    openMarket() {
+        const u = (typeof Auth !== 'undefined' && Auth.getUser) ? Auth.getUser() : null;
+        if (!u || !(u.is_admin || u.role === 'money')) return;
+        if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
+        if (typeof MarketModule !== 'undefined') {
+            MarketModule.render(this._container);
         }
     },
 
