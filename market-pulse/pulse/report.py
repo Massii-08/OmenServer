@@ -183,6 +183,11 @@ def _clock_chunks(market: Dict[str, Any]) -> List[str]:
 
 def _gap_chunks(market: Dict[str, Any]) -> List[str]:
     gap = market.get("gap") or {}
+    if market.get("gap_note") == "open_non_significativo":
+        # Mieux vaut dire « pas mesurable ici » qu'afficher un 0,00 % qui
+        # passerait pour une séance ouverte sans écart (cf. ^FTSE).
+        return ["gap non calcolabile: questa borsa non pubblica un vero "
+                "prezzo di apertura"]
     if not gap or _as_float(gap.get("gap_pct")) is None:
         return []
     pct = fmt_pct(gap.get("gap_pct"))

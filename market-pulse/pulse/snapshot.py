@@ -8,7 +8,7 @@ from typing import Callable, List, Optional
 
 from .clock import market_state
 from .config import Instrument
-from .gaps import all_gaps, is_same_local_day, latest_gap
+from .gaps import all_gaps, is_same_local_day, latest_gap, open_is_degenerate
 from .quotes import parse_chart
 
 
@@ -54,6 +54,12 @@ def build_snapshot(
             md = parse_chart(fetch_chart(inst.symbol))
             clock = market_state(md, now_ts)
             gap = latest_gap(md.candles, md.tz_name)
+            # Place dont l'`open` publié vaut la clôture de la veille : le gap
+            # serait nul par construction. On ne l'affiche pas, et on dit
+            # pourquoi (cf. gaps.open_is_degenerate — ^FTSE, mesuré).
+            gap_note = None
+            if open_is_degenerate(all_gaps(md.candles, md.tz_name)):
+                gap, gap_note = None, "open_non_significativo"
             gap_is_today = bool(
                 gap and md.candles
                 and is_same_local_day(md.candles[-1].ts, now_ts, md.tz_name)
@@ -71,6 +77,7 @@ def build_snapshot(
                 "change_pct": _change_pct(md.price, prev),
                 "clock": asdict(clock),
                 "gap": asdict(gap) if gap else None,
+                "gap_note": gap_note,
                 "gap_is_today": gap_is_today,
             })
         except Exception as e:
@@ -95,11 +102,16 @@ def build_history_stats(
         try:
             md = parse_chart(fetch_chart(inst.symbol, range_))
             gaps = all_gaps(md.candles, md.tz_name)
+            # Une série d'ouvertures dégénérée produirait des statistiques de
+            # gap toutes à ~0 % : des chiffres présentés comme des observations
+            # alors qu'ils ne mesurent rien.
+            degenerate = open_is_degenerate(gaps)
             out[inst.symbol] = {
                 "label": inst.label,
                 "n_sessions": len(md.candles),
-                "weekday_stats": weekday_stats(gaps),
-                "biggest_gaps": [asdict(g) for g in biggest_gaps(gaps)],
+                "open_usable": not degenerate,
+                "weekday_stats": {} if degenerate else weekday_stats(gaps),
+                "biggest_gaps": [] if degenerate else [asdict(g) for g in biggest_gaps(gaps)],
             }
         except Exception as e:
             errors.append({"symbol": inst.symbol, "error": "%s: %s" % (type(e).__name__, e)})

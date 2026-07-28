@@ -79,6 +79,30 @@ def weekday_stats(gaps: List[Gap]) -> Dict[str, dict]:
     return out
 
 
+def open_is_degenerate(gaps: Optional[List[Gap]], min_n: int = 5,
+                       threshold: float = 0.6) -> bool:
+    """La série d'ouvertures est-elle inexploitable pour un gap ?
+
+    Certaines places ne publient pas de vrai prix d'ouverture chez Yahoo :
+    l'`open` du jour vaut la clôture de la veille, donc le gap est nul par
+    construction. Mesuré sur 2 ans le 2026-07-28 :
+
+        ^FTSE      94,8 % de gaps exactement nuls  (|gap| moyen 0,002 %)
+        ^STOXX50E   1,4 %                          (mais amplitude comprimée)
+        ^GDAXI      0,6 %   ^FCHI 0,8 %   ^GSPC 1,6 %
+
+    Afficher « gap ap. 0,00 % » tous les matins serait un fait FAUX. Mieux vaut
+    ne rien afficher et dire pourquoi.
+
+    En dessous de `min_n` points on ne tranche pas : accuser à tort priverait
+    le lecteur d'un gap réel.
+    """
+    if not gaps or len(gaps) < min_n:
+        return False
+    nulls = sum(1 for g in gaps if g and abs(g.gap_pct) < 0.001)
+    return nulls / float(len(gaps)) >= threshold
+
+
 def biggest_gaps(gaps: List[Gap], n: int = 5) -> List[Gap]:
     return sorted(gaps, key=lambda g: abs(g.gap_pct), reverse=True)[:n]
 
