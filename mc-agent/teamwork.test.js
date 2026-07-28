@@ -114,6 +114,33 @@ test('don minuscule (< MIN_GIFT) → on ne se déplace pas pour ça', () => {
   assert.strictEqual(r, null);
 });
 
+// ─── opts.reserve : lingots RÉSERVÉS (armure d'un cartographe en cours d'assemblage) ──────────
+// world_mn12, 28/07 : un worker sur `mapper_armor` (need=0) voit TOUT son fer compté en surplus
+// et le team_gift périodique le vide vers les stragglers AVANT qu'il ait pu réunir les 24 lingots
+// d'un set — mesuré : 21 lingots donnés depuis mapper_armor, 0 set livré, mappeurs 0/4 toute la
+// nuit. On earmarke donc GIFT_SET_INGOTS tant qu'une cible mappeur est réservée.
+
+test('reserve earmarke le fer du set mappeur → pas de don pendant l\'accumulation', () => {
+  const base = {
+    self: { x: 0, z: 0 }, selfName: 'NethBot1',
+    selfStatus: { armor: 4, ingots: 9, need: 0 },
+    mates: [mate('NethBot2', 10, 0, { armor: 3, need: 5 })], now: NOW,
+  };
+  // Sans réserve, il donnerait son surplus (9) au straggler.
+  assert.strictEqual(pickDonation(base).to, 'NethBot2');
+  // Avec 24 lingots réservés pour le set mappeur, 9 - 0 - 24 < 0 → aucun don.
+  assert.strictEqual(pickDonation({ ...base, opts: { reserve: 24 } }), null);
+});
+
+test('reserve : seul le fer AU-DESSUS du set réservé est donnable', () => {
+  const r = pickDonation({
+    self: { x: 0, z: 0 }, selfName: 'A', selfStatus: { armor: 4, ingots: 30, need: 0 },
+    mates: [mate('B', 10, 0, { armor: 2, need: 10 })], now: NOW,
+    opts: { reserve: 24 },
+  });
+  assert.strictEqual(r.amount, 6, '30 - 24 réservés = 6 donnables (< les 10 manquants de B)');
+});
+
 // ─── allArmored : le signal de SÉPARATION ─────────────────────────────────────
 
 test('tous équipés → séparation', () => {

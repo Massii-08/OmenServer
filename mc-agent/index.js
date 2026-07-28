@@ -40,7 +40,7 @@ const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
 const fs = require('fs');
 const { runPlanner } = require('./planner');
-const { chainFor, buildCtxInv, firstUnmet, cookedCount, armorNeed, nextObjectiveAfter, wantsOpportunisticArmor } = require('./goals');
+const { chainFor, buildCtxInv, firstUnmet, cookedCount, armorNeed, nextObjectiveAfter, wantsOpportunisticArmor, GIFT_SET_INGOTS } = require('./goals');
 const { isForbiddenCheat } = require('./nogive');
 const homewarp = require('./homewarp'); // couche warp LÉGITIME sans-give (/sethome+/home ; goSpawn=/home safe)
 const { secureSpot } = require('./skills/secureSpot'); // secure-then-warp : pilier/se murer/flotter AVANT le /home
@@ -3815,9 +3815,15 @@ async function onSpawn() {
           _split = false;
 
           // 1) ENTRAIDE : donner son surplus de lingots au coéquipier le moins équipé.
+          // ⚠️ world_mn12 (28/07) : si CE worker assemble un set d'armure de cartographe
+          // (`_giftTarget` réservé), son fer est EARMARKÉ — sans ça le team_gift le vidait vers les
+          // stragglers avant qu'il réunisse les 24 lingots → mappeurs jamais armés (mesuré : 21
+          // lingots drainés depuis mapper_armor, 0 set livré de toute la nuit). Le straggler
+          // wood-softlock ne peut de toute façon pas forger ce fer (pas de table sans bois).
           const gift = pickDonation({
             self: { x: p.x, z: p.z }, selfName: bot.username, selfStatus: me,
             mates, now: Date.now(),
+            opts: { reserve: _giftTarget ? GIFT_SET_INGOTS : 0 },
           });
           if (gift) {
             const ent = bot.players[gift.to] && bot.players[gift.to].entity;

@@ -56,7 +56,14 @@ function pickDonation({ self, selfName, selfStatus, mates, now, opts = {} } = {}
   const t = now || Date.now();
   const range = opts.range || AID_RANGE;
   const minGift = opts.minGift || MIN_GIFT;
-  const surplus = (selfStatus.ingots || 0) - (selfStatus.need || 0);
+  // reserve : lingots EARMARKÉS que le don ne doit pas toucher. Sert au worker qui assemble un set
+  // d'armure de cartographe (GIFT_SET_INGOTS) : sans lui, un done-worker (need=0) voit TOUT son fer
+  // compté en surplus, et le team_gift périodique le vide vers les stragglers avant qu'il n'ait pu
+  // réunir les 24 lingots → mappeurs jamais armés (world_mn12, 28/07 : 21 lingots drainés depuis
+  // mapper_armor, 0 set livré). Le straggler wood-softlock ne peut de toute façon PAS forger l'armure
+  // qu'on lui donne (pas de table sans bois), donc earmarker pour le mappeur est strictement mieux.
+  const reserve = Math.max(0, opts.reserve || 0);
+  const surplus = (selfStatus.ingots || 0) - (selfStatus.need || 0) - reserve;
   if (surplus < minGift) return null;                       // rien à donner sans se pénaliser
 
   const cands = (mates || []).filter((m) => m
