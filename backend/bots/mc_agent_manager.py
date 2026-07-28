@@ -35,9 +35,18 @@ DISTILLED_DIR = _PROJECT_ROOT / "data" / "mc-captures-distilled"
 # Clé Claude posée depuis le dashboard (gitignored, chmod 600). La var d'env prime.
 API_KEY_PATH = _PROJECT_ROOT / "data" / "secrets" / "anthropic.key"
 # Heap max d'un bot Node, en Mo (cf. commentaire au montage de `cmd` dans _spawn/start_session).
-# 640 = ~2,3× le régime observé (200-290 Mo), et 5 bots plafonnent à 3,2 Go — compatible avec les
-# 10 Go du serveur MC sur une machine de 15 Go.
-NODE_HEAP_MB = 640
+# HISTORIQUE : 640 avait été choisi le 25/07 (#48) pour que le fautif OOM VITE et n'emporte pas
+# le serveur MC alors CO-LOCALISÉ sur l'Omen (10 Go / 15 Go). Depuis le 26/07 (#56) le serveur MC
+# tourne sur MINESTRATOR — l'Omen n'héberge plus que les bots, et dispose de ~8 Go libres. Ce
+# plafond n'avait jamais été révisé après ce déménagement. Or les épisodes TURBULENTS (noyade →
+# water_rescue_warp → death_camp_flee → téléports en rafale) font gonfler le cache de colonnes
+# de mineflayer (rétention que V8 ne peut pas mark-compact : mémoire VIVE, pas du garbage) et un
+# bot frais atteignait 640 Mo en ~15 min → OOM → crash-loop toute la flotte (30+ OOM/90 min le
+# 28/07, chaque crash perd le travail en cours = mapper_armor plafonné). 1024 donne aux bots
+# turbulents la marge de SURVIVRE à leur épisode (le cache se vide de toute façon au respawn),
+# tout en restant une ceinture (8 bots × 1024 = 8 Go max ponctuel, régime réel ~290 Mo/bot).
+# Le vrai fix racine (purge des colonnes distantes de mineflayer au téléport) reste à faire.
+NODE_HEAP_MB = 1024
 
 _sessions = {}        # session_id (int) -> dict
 _lock = threading.Lock()

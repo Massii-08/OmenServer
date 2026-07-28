@@ -56,6 +56,10 @@ def test_le_heap_node_est_plafonne(monkeypatch):
     assert flags, f"aucun plafond de heap dans la commande : {cmd}"
     mb = int(flags[0].split("=", 1)[1])
     assert 256 <= mb <= 1536, f"plafond irréaliste ({mb} Mo)"
+    # Relevé le 28/07 (#56 : serveur MC déménagé sur Minestrator → l'Omen n'a plus que les bots)
+    # pour donner de la marge aux épisodes turbulents (cache de colonnes mineflayer) et casser le
+    # crash-loop OOM. En dessous de 1024, on retombe sur l'ancien plafond « anti-co-location ».
+    assert mb >= 1024, f"plafond trop bas depuis l'offload MC ({mb} Mo) — cf. #48/#56"
 
 
 def test_le_plafond_precede_le_script(monkeypatch):
