@@ -1696,6 +1696,22 @@ async function migrateZone(reason) {
     // ARRIVÉE : la nouvelle zone devient LA base. `safe` bouge, le confine se ré-ancre, et le memo
     // persisté fait que tout respawn (self-healing compris) repartira d'ICI — c'est la pièce qui
     // manquait aux deux tentatives précédentes (split-brain confine).
+    // ⚠️ REMONTER AUSSI À L'ARRIVÉE (mesure live 02:30 : 8 échecs de migration sur 12 sont
+    // `underground:true`). La remontée d'avant le voyage marche, mais les jambes visent en X/Z
+    // (`GoalNearXZ`) — l'altitude est libre, donc le pathfinder plonge volontiers dans une grotte
+    // ou un ravin pour atteindre le point, et le bot ARRIVE sous terre. On ne peut pas utiliser
+    // `/home safe` ici (il ramènerait à l'ANCIENNE base et annulerait le déménagement) : on
+    // remonte À PIED, ce qui est possible maintenant que les chunks locaux sont chargés.
+    {
+      const pArr = bot.entity && bot.entity.position;
+      if (pArr && pArr.y < SAFE_HOME_MIN_Y) {
+        emit({ type: 'zone_migration_surfacing', from_y: Math.round(pArr.y), via: 'walk_arrival' });
+        try {
+          await withTimeout(bot.pathfinder.goto(new pfGoals.GoalY(SAFE_HOME_MIN_Y + 4)),
+            60000, () => { try { stopMotion(); } catch (e) {} });
+        } catch (e) { /* best-effort : on juge l'arrivée telle qu'elle est */ }
+      }
+    }
     const p2 = bot.entity && bot.entity.position;
     const p2wet = !!(p2 && isInWater(bot));
     // On n'ancre une NOUVELLE base que si on a réellement déménagé : sans ça un goto raté
