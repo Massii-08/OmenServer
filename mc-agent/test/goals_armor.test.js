@@ -339,3 +339,41 @@ test('combustible : armure complete => plus de collecte (pas de boucle infinie)'
   assert.notStrictEqual(g && g.name, 'armor_fuel');
   assert.notStrictEqual(g && g.name, 't1_coal');
 });
+
+// ── DÉBLOCAGE WOOD-DESERT (world_mn12, 28/07) ────────────────────────────────────────────────────
+// PANNE mesurée : un ouvrier à 3/4 armure remonté EN SURFACE d'une zone SANS BOIS et avec du fer
+// insuffisant restait coincé sur `plank_buffer` (gatherLog → not_found en boucle) et ne DESCENDAIT
+// jamais pour miner le fer du plastron manquant — plank_buffer est AVANT descend_y16 dans la chaîne.
+// C'était un deadlock œuf-et-poule : pour satisfaire le buffer il faut du bois (indisponible) OU du
+// fer (qui exige de descendre, ce que le buffer interdit). Fix : `plank_buffer` devient
+// SATISFIABLE-OU-SAUTABLE quand le bois est PROUVÉ absent (ctx.noWood) — même nature que t1_sword/
+// t1_axe/shield. Le bot descend alors, et sous terre (y≤30) le buffer reste satisfait de toute façon.
+const dryDeadlock = () => ctx(
+  { iron_pickaxe: 1, stone_pickaxe: 2, stone_axe: 1, stone_sword: 1,
+    cobblestone: 20, stick: 4, crafting_table: 1, coal: 40, iron_ingot: 2 },
+  ['iron_helmet', 'iron_leggings', 'iron_boots'], 64,
+);
+
+test('wood-desert : SANS noWood, un 3/4-armure en surface sans bois est bloqué sur plank_buffer', () => {
+  const g = firstUnmet(IRON_ARMOR_CHAIN, dryDeadlock());
+  assert.strictEqual(g && g.name, 'plank_buffer', 'reproduit le deadlock mesuré');
+});
+
+test('wood-desert : AVEC noWood prouvé, plank_buffer se saute → le bot avance vers la descente', () => {
+  const g = firstUnmet(IRON_ARMOR_CHAIN, Object.assign(dryDeadlock(), { noWood: true }));
+  assert.notStrictEqual(g && g.name, 'plank_buffer', 'le buffer ne doit plus bloquer un wood-desert');
+  // Il doit pouvoir atteindre la descente / le minage — plus aucun but BOIS ne le retient en surface.
+  assert.ok(['t1_sword', 't1_axe', 'block_buffer', 'descend_y16', 'iron_deep'].includes(g && g.name),
+    `avance vers la descente, obtenu: ${g && g.name}`);
+});
+
+// Garde-fou : noWood ne doit PAS shortcircuiter le buffer quand le bois EST disponible (buffer utile).
+test('wood-desert : noWood sans effet si le buffer est déjà constitué (bois présent)', () => {
+  const withWood = ctx(
+    { iron_pickaxe: 1, oak_log: 8, stone_axe: 1, stone_sword: 1, cobblestone: 20, stick: 4,
+      crafting_table: 1, coal: 40, iron_ingot: 2 },
+    ['iron_helmet', 'iron_leggings', 'iron_boots'], 64,
+  );
+  // plank_buffer est déjà met (8 bûches ×4 = 32 ≥ 24) → firstUnmet ne s'y arrête pas, noWood ou pas.
+  assert.notStrictEqual(firstUnmet(IRON_ARMOR_CHAIN, withWood).name, 'plank_buffer');
+});

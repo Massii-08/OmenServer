@@ -254,8 +254,15 @@ const IRON_ARMOR_CHAIN = [
   // STOCK GÉNÉREUX (pattern AltoClef, 16/07) : 8 équiv = un aller-retour bois PAR descente = LE
   // churn n°1 (2 jours de stagnation). 24 équiv (6 bûches, 1 expédition woodExpeditionCount) ≈ 3
   // descentes sans remontée. ironOK : le fer est déjà là → on ne bloque pas la fonte.
+  // ⚠️ SATISFIABLE-OU-SAUTABLE QUAND LE BOIS EST PROUVÉ ABSENT (deadlock world_mn12, 28/07) : un
+  // ouvrier à 3/4 armure remonté en surface d'une zone SANS BOIS et à court de fer restait coincé
+  // ICI (gatherLog → not_found en boucle) et ne DESCENDAIT jamais miner le fer du plastron — ce but
+  // est AVANT descend_y16. Œuf-et-poule : le buffer exige du bois (indispo) OU du fer (qui exige de
+  // descendre, ce que le buffer interdit). `c.noWood` (bois prouvé rare dans la zone, cf. ctxExtra
+  // → _zoneLogsNotFound) le rend NON BLOQUANT — même nature que t1_sword/t1_axe/shield. Sous terre
+  // (y≤30) le buffer reste satisfait de toute façon ; en surface avec du bois dispo, il bloque encore.
   { name: 'plank_buffer', met: (c) => (c.y !== undefined && c.y <= 30) ||
-      (anyPlanks(c.inv) + anyLog(c.inv) * 4 >= 24) || ironOK(c) || IA(c),
+      (anyPlanks(c.inv) + anyLog(c.inv) * 4 >= 24) || ironOK(c) || IA(c) || !!c.noWood,
     skill: 'gatherLog',   args: { count: 6 } },
   // ARME (analyse jeu humain 26/07) : la chaîne T1 n'en contenait AUCUNE — le bot menait ses
   // combats au POING (1 dégât, contre 5 pour une épée pierre) en difficulté hard. 2 cobble +

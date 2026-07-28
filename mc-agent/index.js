@@ -73,6 +73,7 @@ const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTA
 const {
   zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legIsGood, minDistFor,
   zoneFailureKind, zoneStateInit, zoneStateLoad, zoneStateAfterMigration, MAX_LEGS, MIGRATE_MIN_PROGRESS, LOADED_RADIUS,
+  LOGS_NOT_FOUND_MAX,
 } = require('./zone');
 const { recordWorkDrown, noteDrownedSite, isDrownedNear, offsetFromDrowned } = require('./workDrown'); // chantier adjacent à un aquifère → abandon + BANNISSEMENT du lieu (3a)
 const { recordWorkStuck } = require('./workStuck'); // chantier menant à une impasse SÈCHE (drop_ahead/max_depth) → abandon+relocate (live 27/07 world_mn9)
@@ -606,9 +607,14 @@ function ctxExtra() {
     offhand = (s && s.name && !isNearlyBroken(s)) ? s.name : null;
   } catch (e) { /* best-effort */ }
   const gift = _giftContext();
+  // noWood : le bois est PROUVÉ rare dans cette zone (même seuil que le verdict « zone rasée »).
+  // Rend `plank_buffer` non bloquant → un ouvrier remonté en surface d'un wood-desert peut enfin
+  // redescendre miner son fer au lieu de boucler gatherLog→not_found (deadlock world_mn12, 28/07).
+  // Se remet à false après une migration (le compteur est réinitialisé au ré-ancrage).
+  const noWood = _zoneLogsNotFound >= LOGS_NOT_FOUND_MAX;
   return {
     hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand,
-    mapperTarget: gift.target, giftReady: gift.ready,
+    mapperTarget: gift.target, giftReady: gift.ready, noWood,
   };
 }
 
