@@ -555,6 +555,26 @@ test('nextObjectiveAfter: un set ne couvre qu_UN mappeur → on reboucle tant qu
   assert.strictEqual(nextObjectiveAfter('mapper_armor', mates), 'mapper_armor');
 });
 
+// ⚠️ FLEET-DEADLOCK (world_mn12, 28/07) : un straggler DÉFINITIVEMENT coincé (soft-lock bois #66g :
+// pas de bois → pas de pioche/table → ne peut JAMAIS forger le fer qu'on lui livre) garde `need`>0
+// à vie. Avec `if (needy) return 'iron_help'` inconditionnel, les 4 workers done restaient pinnés
+// sur iron_help pendant que les 3 mappeurs restaient nus (need 20-24) — mapper_armor et diamond
+// jamais atteints, flotte figée des heures. Le surplus est de toute façon livré au straggler par le
+// périodique team_gift (INDÉPENDANT de l'objectif), donc avancer sur mapper_armor ne l'abandonne
+// pas. On ne pinne donc iron_help qu'UNE passe : depuis iron_help, s'il reste un mappeur nu on
+// l'arme ; sinon on continue d'aider tant qu'un worker est en manque.
+test('nextObjectiveAfter: iron_help fini, straggler ENCORE en manque MAIS un mappeur nu → on arme le mappeur', () => {
+  const mates = [_worker('W5', 15), _mapper('M1', 0)];   // W5 straggler coincé, M1 mappeur nu
+  // La 1re passe (depuis iron_armor) AIDE toujours d'abord le straggler (intent Massii).
+  assert.strictEqual(nextObjectiveAfter('iron_armor', mates), 'iron_help');
+  // Mais après une passe iron_help, un mappeur nu prime sur le re-pin (anti-deadlock).
+  assert.strictEqual(nextObjectiveAfter('iron_help', mates), 'mapper_armor');
+});
+
+test('nextObjectiveAfter: iron_help fini, straggler en manque et AUCUN mappeur nu → on continue d aider', () => {
+  assert.strictEqual(nextObjectiveAfter('iron_help', [_worker('W5', 15)]), 'iron_help');
+});
+
 test('nextObjectiveAfter: `need` est lu a PLAT (presence.beat aplatit le statut)', () => {
   // Le champ etait lu en `m.status.need` : toujours undefined, donc iron_help ne se declenchait
   // jamais. On accepte encore l'ancienne forme par tolerance.

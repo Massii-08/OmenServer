@@ -562,9 +562,23 @@ function nextObjectiveAfter(objective, mates) {
   // qui survit cartographie plus loin — d'où la priorité de Massii (26/07) : les habiller AVANT
   // de partir au diamant. Statut inconnu = considéré nu (on n'abandonne pas sur une supposition).
   const mappersNaked = (mates || []).some((m) => m && m.role === 'mapper' && (m.armor || 0) < 4);
-  if (objective === 'iron_armor' || objective === 'iron_help') {
+  // 1re passe : dès qu'un coéquipier est en manque, on va l'AIDER en priorité (intent Massii).
+  if (objective === 'iron_armor') {
     if (needy) return 'iron_help';
     return mappersNaked ? 'mapper_armor' : 'diamond';
+  }
+  // ⚠️ FLEET-DEADLOCK (world_mn12, 28/07) : `if (needy) return 'iron_help'` inconditionnel pinnait
+  // TOUTE la flotte sur iron_help tant qu'un straggler restait en manque. Un straggler coincé dans
+  // le soft-lock bois (#66g : pas de bois → pas de pioche/table → il ne peut JAMAIS forger le fer
+  // qu'on lui livre) garde `need`>0 à vie → les mappeurs (need 20-24) n'étaient JAMAIS armés,
+  // diamant jamais lancé, flotte figée des heures (mesuré : 4 workers done bloqués iron_help /
+  // 3 mappeurs nus). Le surplus est de toute façon livré au straggler par le périodique team_gift
+  // (INDÉPENDANT de l'objectif, cf. index.js) → avancer sur mapper_armor ne l'abandonne pas. On ne
+  // pinne donc iron_help qu'UNE passe : un mappeur nu prime ensuite sur le re-pin ; sinon on
+  // continue d'aider tant qu'un worker est en manque.
+  if (objective === 'iron_help') {
+    if (mappersNaked) return 'mapper_armor';
+    return needy ? 'iron_help' : 'diamond';
   }
   // Un set livré ne couvre qu'UN mappeur : tant qu'il en reste un nu, on en reforge un autre.
   if (objective === 'mapper_armor') return mappersNaked ? 'mapper_armor' : 'diamond';
