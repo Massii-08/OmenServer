@@ -1610,7 +1610,7 @@ async function migrateZone(reason) {
     // « Si une zone a été vidée de ses minerais, il s'éloigne de BEAUCOUP » (Massii) : pour un
     // épuisement, la cellule d'à côté est le même sous-sol déjà fouillé → plancher bien plus haut.
     const minDist = minDistFor(reason);
-    let target = pickMigrationTarget({ from, biomes: cells.biomes, depleted: cells.depleted, minDist });
+    let target = pickMigrationTarget({ from, biomes: cells.biomes, depleted: cells.depleted, minDist, reason });
     // Claim PARTAGÉ : si un coéquipier a déjà fixé la cible, on adopte la sienne — l'escouade doit
     // atterrir au MÊME endroit même si les cartes divergent d'un bot à l'autre.
     if (target && _teamClaims) {

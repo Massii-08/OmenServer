@@ -195,14 +195,21 @@ function verdictTelemetry(v, prevReason) {
  */
 function pickMigrationTarget({
   from, biomes, depleted, minDist = MIGRATE_MIN_DIST, maxDist = MIGRATE_MAX_DIST,
-  depletedRadius = DEPLETED_RADIUS,
+  depletedRadius = DEPLETED_RADIUS, reason,
 } = {}) {
   if (!from || !Number.isFinite(from.x) || !Number.isFinite(from.z)) return null;
   const list = Array.isArray(biomes) ? biomes : [];
   if (!list.length) return null;
   const wooded = vanillaHint('log');
   const dep = Array.isArray(depleted) ? depleted : [];
-  const isDepleted = (x, z) => dep.some((d) => d && Number.isFinite(d.x)
+  // ⚠️ world_mn12 (28/07) : `depleted` traque l'épuisement du MINERAI (#66a), pas les arbres. Une
+  // migration BOIS ne doit donc PAS écarter une forêt iron-épuisée : elle a toujours ses troncs.
+  // Toutes les forêts proches étaient marquées depleted (les ouvriers y avaient miné le fer) → la
+  // migration bois ne gardait qu'une forêt à 371 blocs (beyond_loaded → NoPath → moved:0) → le bois
+  // n'arrivait jamais → deadlock pioche → mapper_armor mort toute la nuit. Pour le bois on ignore
+  // l'épuisement ; pour un vrai épuisement de filon on continue de l'écarter (on veut du minerai frais).
+  const honorDepleted = reason !== 'wood';
+  const isDepleted = (x, z) => honorDepleted && dep.some((d) => d && Number.isFinite(d.x)
     && _horiz(d.x, d.z, x, z) <= depletedRadius);
 
   let best = null;

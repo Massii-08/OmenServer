@@ -256,6 +256,26 @@ test('cible : une cellule epuisee est ecartee', () => {
   assert.strictEqual(t, null);
 });
 
+test('cible bois : une foret iron-epuisee reste valable (les arbres, eux, restent)', () => {
+  // world_mn12 (28/07) : TOUTES les forets accessibles etaient marquees iron-`depleted` (les
+  // ouvriers y avaient mine le fer) -> la migration bois les ecartait et ne gardait qu'une foret
+  // a 371 blocs (beyond_loaded -> NoPath -> moved:0) -> le bois n'arrivait JAMAIS -> deadlock pioche
+  // -> mapper_armor mort toute la nuit. L'epuisement traque le MINERAI, pas les arbres.
+  const near = { name: 'forest', x: 250, z: 0 };   // iron-depletee MAIS proche/atteignable
+  const far = { name: 'forest', x: 900, z: 0 };     // non depletee MAIS trop loin (chunks non charges)
+  const depleted = [{ x: 250, z: 0 }];
+  const t = pickMigrationTarget({ from: FROM, biomes: [near, far], depleted, minDist: MIGRATE_MIN_DIST, reason: 'wood' });
+  assert.strictEqual(t.x, 250, 'une migration bois doit garder la foret proche meme iron-epuisee');
+});
+
+test('cible epuisement : une cellule epuisee reste ecartee (comportement ore inchange)', () => {
+  const near = { name: 'forest', x: 250, z: 0 };
+  const far = { name: 'forest', x: 900, z: 0 };
+  const depleted = [{ x: 250, z: 0 }];
+  const t = pickMigrationTarget({ from: FROM, biomes: [near, far], depleted, minDist: MIGRATE_MIN_DIST, reason: 'depleted' });
+  assert.strictEqual(t.x, 900, 'une migration d epuisement doit toujours ecarter la cellule epuisee');
+});
+
 test('cible : le bois prime sur la simple proximite', () => {
   const t = pickMigrationTarget({
     from: FROM,
