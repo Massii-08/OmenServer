@@ -68,6 +68,81 @@ def _step(label, fn):
         return None
 
 
+def _briefings(args, snap, now):
+    """Un briefing par borsa choisie — le cœur de la phase D.
+
+    Piloté par prefs.json : quelles bourses, quels titres suivis, quelles
+    sources sociales, synthèse ou pas, quaderno ou pas.
+    """
+    from pulse import prefs as _prefs
+    from pulse.analyst import analyse
+    from pulse.briefing import build_briefing
+    from pulse.discover import discover
+    from pulse.exchanges import by_id, opening_groups
+    from pulse.news import collect_news
+    from pulse.vault import write_note
+
+    conf, warnings = _prefs.load(args.prefs)
+    for w in warnings:
+        print("   ! prefs : %s" % w)
+    opz = conf["opzioni"]
+    venues = [by_id(b) for b in conf["borse"]]
+    venues = [v for v in venues if v]
+    groups = opening_groups(venues)
+    print("   %d borse -> %d aperture distinte" % (len(venues), len(groups)))
+
+    out = {}
+    for venue in venues:
+        # La presse LOCALE de la place, plus les sources sociales si activées.
+        feeds = list(venue.feeds)
+        news = collect_news(feeds=feeds, max_items=opz["max_notizie"])
+
+        followed = _followed_quotes(conf["titoli"].get(venue.id) or [], now)
+        found = discover(news.get("items"), followed=tuple(
+            f["symbol"] for f in followed)) if opz["scoperte"] else []
+
+        brief = build_briefing(exchange=venue, snapshot=snap, news=news,
+                               followed=followed, discovered=found, now_ts=now)
+        analysis = analyse(brief) if opz["sintesi"] else {
+            "text": None, "model": None, "degraded": True,
+            "reason": "sintesi disattivata nelle preferenze"}
+        brief["analysis"] = analysis
+
+        if opz["quaderno"]:
+            note = write_note(args.vault, brief, analysis, now)
+            if note:
+                print("   -> quaderno : %s" % os.path.basename(note))
+
+        out[venue.id] = brief
+        idx = brief.get("index") or {}
+        print("   %-16s %-22s %s | sintesi %s"
+              % (venue.id, idx.get("label") or "n/d",
+                 ("%+.2f%%" % idx["change_pct"]) if idx.get("change_pct") is not None else "n/d",
+                 "no" if analysis["degraded"] else "si"))
+
+    _write_json(os.path.join(args.out, "briefings.json"), out)
+    print("-> %s (%d briefing)" % (os.path.join(args.out, "briefings.json"), len(out)))
+    return out
+
+
+def _followed_quotes(symbols, now):
+    """Les titres suivis, avec leur cours du moment."""
+    from pulse.quotes import parse_chart
+    client = YahooChartClient()
+    out = []
+    for sym in symbols:
+        try:
+            md = parse_chart(client.get_chart(sym, "10d"))
+            prev = next((k.close for k in reversed(md.candles[:-1]) if k.close), None)
+            chg = round((md.price - prev) / prev * 100.0, 2) if (md.price and prev) else None
+            out.append({"symbol": sym, "label": md.name or sym, "price": md.price,
+                        "change_pct": chg, "currency": md.currency})
+        except Exception as e:
+            out.append({"symbol": sym, "label": sym, "price": None,
+                        "change_pct": None, "error": "%s" % type(e).__name__})
+    return out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Market Pulse - snapshot dei mercati")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "out"))
@@ -78,6 +153,11 @@ def main(argv=None) -> int:
     ap.add_argument("--report", action="store_true",
                     help="scrive il rapporto in italiano (report.txt)")
     ap.add_argument("--excel", action="store_true", help="scrive il file Excel")
+    ap.add_argument("--briefings", action="store_true",
+                    help="un briefing per ogni borsa scelta in prefs.json")
+    ap.add_argument("--prefs", default=None, help="percorso di prefs.json")
+    ap.add_argument("--vault", default=None,
+                    help="radice del quaderno Obsidian (default ~/market-vault)")
     ap.add_argument("--range", dest="range_", default="10d")
     args = ap.parse_args(argv)
 
@@ -139,6 +219,9 @@ def main(argv=None) -> int:
             print("-> %s (rapporto)" % path)
             return path
         _step("rapporto", _report)
+
+    if args.briefings:
+        _step("briefing per borsa", lambda: _briefings(args, snap, now))
 
     if args.excel:
         def _excel():
