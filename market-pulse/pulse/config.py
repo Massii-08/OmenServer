@@ -37,6 +37,13 @@ DEFAULT_WATCHLIST: List[Instrument] = [
     Instrument("^IBEX", "IBEX 35 (Madrid)", "europe", "index"),
     Instrument("^SSMI", "SMI (Zurigo)", "europe", "index"),
     Instrument("^STOXX50E", "Euro Stoxx 50", "europe", "index"),
+    # Indices de RÉFÉRENCE des places suivies (pulse/exchanges.py). Sans eux,
+    # build_briefing ne trouve pas l'indice de la place et écrit « n/d » alors
+    # que le snapshot est plein — vu au premier passage complet.
+    Instrument("^N100", "Euronext 100", "europe", "index"),
+    Instrument("^NYA", "NYSE Composite", "usa", "index"),
+    Instrument("^NSEI", "Nifty 50 (Mumbai)", "asia", "index"),
+    Instrument("399001.SZ", "Shenzhen Component", "asia", "index"),
     # — Indici Asia —
     Instrument("^N225", "Nikkei 225 (Tokyo)", "asia", "index"),
     Instrument("^HSI", "Hang Seng (Hong Kong)", "asia", "index"),

@@ -100,9 +100,35 @@ def check_synthesis(text: Any, briefing: Any) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
+def compact(briefing: Dict[str, Any], max_news: int = 8) -> Dict[str, Any]:
+    """Réduit le briefing à ce dont le LLM a besoin.
+
+    ⚠️ Envoyer le briefing ENTIER faisait TRONQUER la réponse : le JSON revenait
+    sans son accolade fermante et la synthèse était perdue (vu au premier
+    passage complet). Les URL, les compteurs de collecte et les champs internes
+    ne servent pas à rédiger trois phrases.
+    """
+    news = briefing.get("news") or {}
+    items = news.get("items") or []
+    facts_only = [i for i in items if (i.get("event") or {}).get("is_event")] or items
+    return {
+        "borsa": briefing.get("label"),
+        "apertura": (briefing.get("session") or {}).get("opens_at"),
+        "indice": {k: (briefing.get("index") or {}).get(k)
+                   for k in ("label", "price", "change_pct", "currency")}
+                  if briefing.get("index") else None,
+        "altre_piazze": [{"nome": c.get("label"), "var": c.get("change_pct"),
+                          "stato": c.get("state")}
+                         for c in (briefing.get("comparison") or [])],
+        "agenda": [{"quando": str(a.get("when"))[:16], "cosa": a.get("what")}
+                   for a in (briefing.get("agenda") or [])],
+        "titoli_notizie": [i.get("title") for i in facts_only[:max_news]],
+    }
+
+
 def build_prompt(briefing: Dict[str, Any]) -> str:
     """Le prompt : les faits, et l'interdiction, explicitement."""
-    facts = json.dumps(briefing, ensure_ascii=False, indent=1, default=str)
+    facts = json.dumps(compact(briefing), ensure_ascii=False, indent=1, default=str)
     return (
         "Sei un redattore che scrive per un investitore privato anziano, in "
         "ITALIANO semplice, senza gergo inglese.\n\n"

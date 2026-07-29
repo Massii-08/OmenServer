@@ -161,3 +161,31 @@ def test_the_model_is_overridable():
     out = analyse(BRIEFING, claude=lambda p, **kw: {"synthesis": BONNE},
                   model="claude-opus-5")
     assert out["model"] == "claude-opus-5"
+
+
+def test_the_prompt_is_compacted_not_the_whole_briefing():
+    """Envoyer le briefing entier faisait TRONQUER la réponse du LLM : le JSON
+    revenait sans accolade fermante et la synthèse était perdue. Vu au premier
+    passage complet."""
+    from pulse.analyst import compact
+    gros = dict(BRIEFING)
+    gros["news"] = {"items": [{"title": "Titolo %d" % i, "url": "https://x/%d" % i,
+                               "source": "S", "published": 1,
+                               "event": {"is_event": True, "actor": "azienda",
+                                         "actions": ["risultati"]}}
+                              for i in range(40)]}
+    small = compact(gros)
+    assert len(small["titoli_notizie"]) == 8
+    import json as _j
+    assert len(_j.dumps(small)) < len(_j.dumps(gros)) / 2
+    # les URL et les compteurs internes ne partent pas au LLM
+    assert "https://" not in _j.dumps(small)
+
+
+def test_the_compacted_prompt_still_carries_every_fact_needed():
+    from pulse.analyst import compact
+    small = compact(BRIEFING)
+    assert small["borsa"] == "Euronext"
+    assert small["indice"]["change_pct"] == 0.35
+    assert small["altre_piazze"][0]["nome"] == "Nikkei 225"
+    assert small["agenda"][0]["cosa"].startswith("BCE")
