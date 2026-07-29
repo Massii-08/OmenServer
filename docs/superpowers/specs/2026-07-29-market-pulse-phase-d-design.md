@@ -217,6 +217,75 @@ périmètre.
 Côté coffre : un dossier `15 - Titoli/` avec une note permanente par titre suivi, liée à sa place
 et aux thèmes. Ferrari pointera vers `[[Euronext]]` et `[[utili-societari]]`.
 
+## 3quinquies. L'agenda d'un titre — RESOLU (la piece qui manquait)
+
+C'etait le seul trou du dispositif. Il est comble, et par une source primaire.
+
+**La route** : `quoteSummary` de Yahoo, module `calendarEvents`, derriere une danse
+cookie + crumb :
+
+```
+1) GET https://fc.yahoo.com                                   -> pose le cookie (404, normal)
+2) GET https://query1.finance.yahoo.com/v1/test/getcrumb      -> rend le crumb (11 car.)
+3) GET https://query1.finance.yahoo.com/v10/finance/quoteSummary/<SYM>
+       ?modules=calendarEvents&crumb=<CRUMB>
+```
+
+**curl_cffi est OBLIGATOIRE** : test discriminant a 6 s d'ecart sur la meme IP, httpx avec un UA
+Chrome rend 429, curl_cffi impersonate=chrome rend 200. Ce n'est donc pas une limite d'IP ni un
+429 auto-inflige : c'est bien l'empreinte TLS.
+
+Cout : **2 requetes d'amorcage + 1 par symbole**. Le couple (cookie, crumb) est reutilisable et
+persistable sur disque. Un crumb perime avec un cookie neuf rend 401 « Invalid Crumb » -> les
+deux se rejouent ensemble.
+
+**Verifie a la main le 2026-07-29, 8/8 symboles en 200** :
+
+| Titre | Symbole | Prochains resultats | Statut | Ex-dividende |
+|---|---|---|---|---|
+| Ferrari | `RACE.MI` | 30/07/2026 | confirmee | 20/04/2026 |
+| ASML | `ASML.AS` | 14/10/2026 | confirmee | 27/07/2026 |
+| SAP | `SAP.DE` | 21/10/2026 | confirmee | 06/05/2026 |
+| Toyota | `7203.T` | 04/08/2026 | confirmee | 29/09/2026 |
+| Tencent | `0700.HK` | 12/08/2026 | confirmee | 15/05/2026 |
+| Shell | `SHEL.L` | 30/07/2026 | confirmee | 21/05/2026 |
+| Nike | `NKE` | 29/09/2026 | **estimee** | 01/06/2026 |
+| Nestle | `NESN.SW` | — | aucune | 20/04/2026 |
+
+**Couverture europeenne native** — c'est ce qui decide de l'utilite : ca marche sur `.MI`, `.AS`,
+`.PA`, `.DE`, `.L`, `.SW`, `.HK`, `.T`, pas seulement sur les ADR americains.
+
+### Deux garde-fous OBLIGATOIRES
+
+**1. La date rendue peut etre DEJA PASSEE.** Yahoo rend la date la plus proche, sans basculer
+immediatement vers la suivante. Mesure du 2026-07-29 : `VOW3.DE` rendait le 24/07 (5 jours plus
+tot), `MC.PA` le 27/07. Sans filtre, le briefing annoncerait « prochains resultats le 27 juillet »
+un 29 juillet. Trois etats a distinguer :
+
+- date >= aujourd'hui et `isEarningsDateEstimate = false` -> **confirmee**
+- date >= aujourd'hui et `isEarningsDateEstimate = true`  -> **estimee** (le dire)
+- date < aujourd'hui -> **pas encore annoncee** : c'est la DERNIERE publication, ne jamais
+  l'afficher comme prochaine.
+
+C'est le piege « HTTP 200 ne prouve pas la fraicheur » applique a un champ de date au lieu d'un
+flux — la meme famille que le FTSE et le Nikkei.
+
+**2. Le meme bloc contient des PREVISIONS d'analystes.** Verifie : `currentQuarterEstimate`,
+`earningsAverage`, `earningsLow`, `earningsHigh`, `revenueAverage`. Ce sont des consensus
+d'analystes, c'est-a-dire exactement ce que le projet s'interdit. **A jeter au parsing**, jamais
+au lecteur. Un test doit verrouiller que ces cles ne peuvent pas atteindre le briefing.
+
+### Complements
+
+- **Montant du dividende, gratuitement** : ajouter `&events=div%2Csplit` a l'appel chart qu'on
+  fait DEJA rend l'historique des detachements avec le montant par action — zero requete de plus.
+  En revanche aucun bloc `earnings` n'y figure, meme en le demandant.
+- **Avant ou apres la seance** : `api.nasdaq.com/api/analyst/<SYM>/earnings-date` le donne
+  (« BEFORE MARKET OPEN » / « AFTER MARKET CLOSE »), en httpx nu avec un UA — information qui
+  n'existe nulle part ailleurs gratuitement, et tres utile pour un briefing d'OUVERTURE.
+  ⚠️ US-listed uniquement, et son `reportText` contient un consensus EPS : n'extraire que la date
+  et le creneau, jeter la phrase.
+
 ## 4. Architecture (option A)
 
 ```
