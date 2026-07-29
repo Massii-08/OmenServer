@@ -161,3 +161,14 @@ def test_market_headlines_are_not_offtopic():
         "Global oil prices settle at a 2-week low",
     ]:
         assert is_offtopic(title) is False, title
+
+
+def test_reader_letters_opening_on_a_quote_are_offtopic():
+    """Mesuré en réel : ces deux titres passaient le filtre parce que mes
+    ancrages étaient en début de chaîne et que la citation les décalait."""
+    from pulse.sentiment import is_offtopic
+    for title in [
+        "'I'm in my peak earning years': I'm working beyond 70. Will that help my Social Security?",
+        "'We already have wills': We're in our 60s with $1.5 million. Should we set up a trust?",
+    ]:
+        assert is_offtopic(title) is True, title

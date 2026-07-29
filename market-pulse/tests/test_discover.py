@@ -230,3 +230,13 @@ def test_a_three_letter_name_is_too_short_to_be_discriminating():
     un ticker explicite, ce que gère extract_tickers."""
     assert "Tap" not in candidate_names("Tap offerte da Lufthansa e Air France")
     assert extract_tickers("Ferrari (RACE) sale") == ["RACE"]
+
+
+def test_a_capitalised_function_word_mid_sentence_is_not_a_company():
+    """Mesuré en réel : « Should we set up a trust » produisait le candidat
+    « Should », résolu en « Shoulder Innovations Inc. » et proposé comme titre
+    à suivre. Un mot commun capitalisé au milieu d'une phrase est aussi
+    dangereux qu'en tête."""
+    names = candidate_names("'We already have wills': We're in our 60s. Should we set up a trust?")
+    for bad in ("Should", "We", "Were"):
+        assert bad not in names, "%r retenu" % bad

@@ -67,6 +67,15 @@ _STOPWORDS = {
     "five", "one", "two", "three", "four", "new", "york", "air", "force",
     "bond", "oil", "gold", "dollar", "euro", "yen", "update", "live",
     "exclusive", "breaking", "opinion", "review", "big", "top", "best",
+    # Mots-outils anglais qui manquaient encore. Mesuré en réel : « Should we
+    # set up a trust » produisait le candidat « Should », resolu en
+    # « Shoulder Innovations Inc. ». Un mot commun capitalisé au milieu d'une
+    # phrase est aussi dangereux qu'en tête.
+    "should", "would", "could", "will", "shall", "must", "have", "has",
+    "our", "your", "their", "his", "her", "its", "we", "you", "they",
+    "she", "him", "them", "were", "was", "been", "being", "does", "did",
+    "more", "most", "less", "than", "then", "into", "over", "under",
+    "about", "just", "only", "also", "even", "still", "back", "down",
     # ⚠️ Mots-outils NON ANGLAIS. Ma première liste était anglocentrée, et
     # ça se voyait immédiatement en réel : « Per quota 49,9%... » (italien
     # pour « pour ») se résolvait en Performance Shipping, « Tap offerte da

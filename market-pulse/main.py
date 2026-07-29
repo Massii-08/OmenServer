@@ -78,11 +78,15 @@ def _briefings(args, snap, now):
     from pulse.analyst import analyse
     from pulse.briefing import build_briefing
     from pulse.discover import discover
+    from pulse.resolve import make_resolver
     from pulse.exchanges import by_id, opening_groups
     from pulse.news import collect_news
     from pulse.vault import write_note
 
     conf, warnings = _prefs.load(args.prefs)
+    # ⚠️ discover() rend une liste VIDE sans résolveur : l'oublier ici rendait
+    # l'option « scoperte » silencieusement inopérante (bug vécu).
+    resolver = make_resolver()
     for w in warnings:
         print("   ! prefs : %s" % w)
     opz = conf["opzioni"]
@@ -98,8 +102,9 @@ def _briefings(args, snap, now):
         news = collect_news(feeds=feeds, max_items=opz["max_notizie"])
 
         followed = _followed_quotes(conf["titoli"].get(venue.id) or [], now)
-        found = discover(news.get("items"), followed=tuple(
-            f["symbol"] for f in followed)) if opz["scoperte"] else []
+        found = discover(news.get("items"),
+                         followed=tuple(f["symbol"] for f in followed),
+                         resolve=resolver) if opz["scoperte"] else []
 
         brief = build_briefing(exchange=venue, snapshot=snap, news=news,
                                followed=followed, discovered=found, now_ts=now)

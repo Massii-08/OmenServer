@@ -99,6 +99,14 @@ _OFFTOPIC_PATTERNS = [
     r"daughter|brother|sister|parents|in-laws|boyfriend|girlfriend|partner|"
     r"neighbou?r|friend|boss)\b",
     r"^\s*i'?m \d{1,3}\b", r"^\s*i am \d{1,3}\b",
+    # Les courriers de lecteurs s'ouvrent souvent sur une CITATION, ce qui
+    # faisait rater tous mes ancrages en début de chaîne. Mesuré :
+    # « 'I'm in my peak earning years': I'm working beyond 70 » et
+    # « 'We already have wills': We're in our 60s with $1.5 million ».
+    r"^\s*[\u2018\u2019'\"\u201c\u201d]",
+    r"\bwe'?re in our \d{2}s\b", r"\bi'?m in my\b", r"\bmy (wife|husband|partner)\b",
+    r"\bshould (we|i) \b", r"\bwill that (help|affect)\b", r"\bsocial security\b",
+    r"\bmy \d{1,3}-year-old\b", r"\bin my (peak|golden) \w+ years\b",
     r"\bdear (quentin|moneyist|therapist)\b", r"\bthe moneyist\b",
     r"\bmio (marito|figlio|padre|suocero)\b", r"\bmia (moglie|figlia|madre)\b",
 ]
