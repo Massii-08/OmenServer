@@ -64,6 +64,54 @@ raison sur les deux. Mesures réelles du 2026-07-28/29, re-vérifiées à la mai
 - X reste **hors v1** : ça marche, mais c'est la route la plus susceptible de casser sans préavis,
   et Bluesky + Reddit couvrent déjà le besoin. Le fetcher restera pluggable.
 
+## 3bis. X sans payer — la recette exacte (dérivée et vérifiée à la main)
+
+Une simple requête `GET https://x.com/<handle>` avec un **User-Agent de navigateur**, en `httpx`
+nu, rend **200 et ~300 Ko de HTML contenant les 5 derniers posts**. Pas de clé, pas de compte, pas
+de cookie, pas d'empreinte TLS (`curl_cffi` n'apporte rien ici). Mesuré le 2026-07-29 sur CNBC,
+MarketWatch et Reuters : 5 posts chacun, le plus récent à **0,0 h** pour Reuters.
+
+⚠️ **Le format n'est PAS du JSON**, et c'est là que j'ai perdu trois essais. C'est une
+sérialisation Relay où **les clés ne sont pas entre guillemets** :
+
+```
+created_at_ms:1785309127000,display_text_range:$R[232]=[0,117],
+self_thread_metadata:null,full_text:"Minister apologizes as Korean …"
+```
+
+Donc : `"full_text"` avec guillemets ne matche **rien**, et il n'y a pas de champ `created_at`
+lisible — l'horodatage est `created_at_ms`, en **millisecondes**.
+
+Recette qui marche :
+
+```python
+RE_TEXT = re.compile(r'full_text:"((?:[^"\\]|\\.)*)"')
+RE_MS   = re.compile(r'created_at_ms:(\d{13})')
+# apparier chaque texte au DERNIER created_at_ms qui le precede dans le HTML.
+# Ne PAS tenter un motif unique englobant : display_text_range vaut $R[232]=[0,117],
+# il CONTIENT une virgule et casse tout [^,]*.
+```
+
+Garde-fous obligatoires (les trois premiers viennent de la vérification adversariale, le
+quatrième de mon propre échec) :
+1. **Le post épinglé casse l'ordre** — trier par horodatage, ne jamais prendre `posts[0]`.
+2. **Ce n'est pas toujours 5** posts ; ne rien coder en dur.
+3. **Attribuer le compte par post**, pas par page (Reuters fait apparaître `ReutersBiz`).
+4. **Alarmer si 0 post sur une page > 100 Ko** : c'est le signal que la sérialisation a changé.
+   Sans cette alarme, le briefing sort silencieusement vide — piège #61 du dépôt.
+
+**Volume et conditions.** Mesuré : 26 requêtes dans la journée, dont un burst à 1 s, **zéro 429**.
+Le `robots.txt` de X met `Disallow: /` pour tout sauf Googlebot/Bingbot ; les CGU prévoient des
+dommages forfaitaires **au-delà de 1 000 000 de posts par 24 h**. Notre usage cible — quelques
+comptes de presse, une fois par ouverture de bourse, ~120 posts/jour — est à **quatre ordres de
+grandeur** en dessous. Risque réel encouru : un blocage d'IP temporaire, rien d'autre (aucun compte
+n'est utilisé, donc rien à bannir). L'API officielle, elle, coûte 0,005 $/post sans allocation
+gratuite, soit ~18 $/mois pour le même volume.
+
+**Reste hors v1** malgré tout : c'est la route la plus susceptible de changer sans préavis (la
+sérialisation vient de me le prouver). Reddit + Bluesky couvrent le besoin ; X se branche en
+ajoutant un collecteur, le contrat de `news.py` ne bouge pas.
+
 ## 4. Architecture (option A)
 
 ```
