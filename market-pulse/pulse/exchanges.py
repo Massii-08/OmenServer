@@ -126,7 +126,7 @@ DEFAULT_EXCHANGES: List[Exchange] = [
                _F("Google News IT (borsa)",
                   "https://news.google.com/rss/search?q=borsa+when:1d&hl=it&gl=IT&ceid=IT:it", "it")),
         reddit_subs=("eupersonalfinance", "ItaliaPersonalFinance"),
-        bluesky_queries=("piazza affari", "borsa milano"),
+        bluesky_queries=("piazza affari", "borsa milano", "ftse mib"),
     ),
     Exchange(
         id="hkex", label="HKEX", country="Hong Kong",
