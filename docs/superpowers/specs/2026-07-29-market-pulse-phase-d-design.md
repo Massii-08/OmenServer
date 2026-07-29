@@ -112,6 +112,56 @@ gratuite, soit ~18 $/mois pour le même volume.
 sérialisation vient de me le prouver). Reddit + Bluesky couvrent le besoin ; X se branche en
 ajoutant un collecteur, le contrat de `news.py` ne bouge pas.
 
+## 3ter. Les dix places retenues (liste donnée par Massii) + le coffre de connaissance
+
+Massii a fourni la liste : **NYSE · Nasdaq · JPX · Euronext · HKEX · SSE · LSE · NSE · SZSE ·
+Deutsche Börse**. Ce sont des **opérateurs de marché**, pas des indices — ça change deux choses :
+
+1. **Euronext regroupe SEPT pays** (Amsterdam, Paris, Bruxelles, Lisbonne, Dublin, **Milan**,
+   Oslo). La bourse du grand-père est donc *dans* Euronext. Une entrée « Euronext » porte un
+   indice large (`^N100`) **et** la liste de ses places, chacune avec son propre indice.
+2. **Dix opérateurs ≠ dix déclencheurs.** Ils se regroupent en **sept ouvertures** :
+
+| Ouverture (locale) | Opérateurs |
+|---|---|
+| 08:00 Europe/London | LSE |
+| 09:00 CET | Euronext (7 places) + Deutsche Börse |
+| 09:00 Asia/Tokyo | JPX |
+| 09:15 Asia/Kolkata | NSE |
+| 09:30 Asia/Shanghai | SSE + SZSE |
+| 09:30 Asia/Hong_Kong | HKEX |
+| 09:30 America/New_York | NYSE + Nasdaq |
+
+Symboles **tous sondés OK le 2026-07-29** : `^NYA` `^IXIC` `^N225` `^N100` `^HSI` `000001.SS`
+`^FTSE` `^NSEI` `399001.SZ` `^GDAXI` — et pour Euronext : `^AEX` `^FCHI` `^BFX` `PSI20.LS`
+`^ISEQ` `FTSEMIB.MI` `OSEBX.OL`.
+
+⚠️ **Pauses déjeuner** : JPX 11:30-12:30, HKEX 12:00-13:00, SSE/SZSE 11:30-13:00. Yahoo rend la
+séance en UN bloc → afficher « aperto » pendant la pause serait faux. À traiter dans `clock.py`
+(le champ existe déjà dans le catalogue).
+
+### Le coffre Obsidian (`~/market-vault` sur l'Omen)
+
+Demande de Massii : que je comprenne **mieux chaque jour** et que je **relie les places entre
+elles**. Créé, avec un script rejouable (`tools/market_vault_init.py`) :
+
+```
+00 - Indice.md          point d'entrée, les 10 places, les thèmes
+10 - Borse/             une note PERMANENTE par place — s'enrichit à chaque briefing
+20 - Giornaliero/       une note par jour ET par place (le briefing)
+30 - Temi/              8 pages transverses (inflazione, banche-centrali, semiconduttori…)
+40 - Fonti/             santé des sources
+90 - Meta/              les pièges de sources déjà mesurés
+```
+
+Le mécanisme qui rend ça utile : **chaque briefing quotidien pointe vers sa place et vers les
+thèmes qu'il évoque**. Au bout de quelques semaines, ouvrir `[[semiconduttori]]` montre toutes
+les fois où le sujet a touché une place — et laquelle a bougé en premier. C'est exactement le
+lien entre bourses que Massii demande, et il se tisse tout seul, sans que rien ait à le calculer.
+
+La phase D doit donc, à la fin de chaque briefing, **écrire sa note dans `20 - Giornaliero/`**
+avec ses wikilinks. C'est une tâche supplémentaire du plan.
+
 ## 4. Architecture (option A)
 
 ```
