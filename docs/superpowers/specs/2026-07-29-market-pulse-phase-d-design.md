@@ -162,6 +162,61 @@ lien entre bourses que Massii demande, et il se tisse tout seul, sans que rien a
 La phase D doit donc, à la fin de chaque briefing, **écrire sa note dans `20 - Giornaliero/`**
 avec ses wikilinks. C'est une tâche supplémentaire du plan.
 
+## 3quater. Suivi de TITRES individuels (demande Massii : « Nike = graphique, news, prévision »)
+
+L'utilisateur coche des actions rattachées à une place ; à l'ouverture de cette place, chaque titre
+suivi apparaît sous le nom de la bourse avec son cours, ses news et son agenda daté.
+
+**Le graphique ne coûte RIEN à construire** : le moteur existant marche déjà tel quel sur les
+actions. Sondé le 2026-07-29, cours + variation + gap + devise obtenus sur les 8 places :
+
+| Titre | Symbole | Place | Cours | Var. |
+|---|---|---|---|---|
+| Nike | `NKE` | NYSE | 42,78 USD | +1,53 % |
+| Ferrari | `RACE.MI` | Euronext Milan | 339,80 EUR | -0,45 % |
+| ASML | `ASML.AS` | Euronext Amsterdam | 1 362,20 EUR | -1,89 % |
+| SAP | `SAP.DE` | Deutsche Börse | 162,04 EUR | +1,76 % |
+| Toyota | `7203.T` | JPX | 3 224 JPY | +7,18 % |
+| Tencent | `0700.HK` | HKEX | 466,40 HKD | +4,29 % |
+| Shell | `SHEL.L` | LSE | 3 323,50 **GBp** | +2,75 % |
+| Reliance | `RELIANCE.NS` | NSE | 1 275,90 INR | +0,65 % |
+
+⚠️ **Shell cote en GBp (pence), pas en GBP** : 3 323,50 GBp = 33,24 £. Afficher
+« 3 323,50 £ » serait faux d'un facteur 100. La devise rendue par Yahoo doit être affichée telle
+quelle, et le formateur doit connaître ce cas.
+
+**Recherche par nom** — `query1.finance.yahoo.com/v1/finance/search?q=<texte>` répond 200 en
+curl_cffi, sans clé, et rend symbole + nom + **code d'échange** (NYQ, NMS, MIL, AMS, FRA, WSE...),
+ce qui rattache automatiquement le titre à l'un des dix opérateurs.
+⚠️ **Multi-cotation** : « ferrari » rend `RACE` (NYQ) *et* `RACE.MI` (MIL) ; « asml » rend
+`ASML` (NMS) *et* `ASML.AS` (AMS). Règle retenue : **on garde la cotation de la place que
+l'utilisateur suit** — c'est elle qui ouvre, c'est son cours qui l'intéresse.
+
+**News par titre — le piège, mesuré.** `feeds.finance.yahoo.com/rss/2.0/headline?s=<SYM>` répond
+**200 en curl_cffi (429 en httpx nu)**, 20 items frais (2-4 h), et couvre les titres non-US. MAIS
+c'est un flux **sectoriel**, pas un flux d'entreprise :
+
+| Symbole | Titres citant vraiment la société |
+|---|---|
+| `NKE` | 15/20 (75 %) |
+| `RACE.MI` | 11/20 (55 %) |
+| `7203.T` | 10/20 (50 %) |
+| `ASML.AS` | **8/20 (40 %)** |
+
+Sous l'entrée « Nike », le flux proposait en tête « VF Shares Tumble... » ; sous ASML,
+« Microsoft's Earnings... ». Publier ça tel quel ferait croire au lecteur que la news concerne
+son titre. **Parade obligatoire** : ne garder que les titres qui mentionnent le nom de la société
+ou son ticker — il en reste 8 à 15, largement assez. Même geste que les filtres déjà écrits
+dans `sentiment.py`.
+
+**L'agenda du titre** (prochains résultats, détachement de dividende) est la seule pièce non encore
+sourcée : recherche en cours. La ligne rouge s'applique à l'identique — une **date** de
+publication est un fait ; un **objectif de cours d'analyste** est une recommandation et reste hors
+périmètre.
+
+Côté coffre : un dossier `15 - Titoli/` avec une note permanente par titre suivi, liée à sa place
+et aux thèmes. Ferrari pointera vers `[[Euronext]]` et `[[utili-societari]]`.
+
 ## 4. Architecture (option A)
 
 ```
