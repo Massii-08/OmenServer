@@ -552,3 +552,299 @@ def test_purge_never_touches_a_live_run(tmp_path, monkeypatch):
 def test_purge_without_runs_dir_is_noop(tmp_path, monkeypatch):
     monkeypatch.setattr(mr, "MARKET_RUNS_DIR", tmp_path / "absent")
     assert mr.purge_old_runs() == []
+
+
+# ================================================================
+#  PHASE D — préférences, briefings, un job par ouverture
+# ================================================================
+
+BRIEFINGS = {
+    "euronext": {"exchange": "euronext", "label": "Euronext",
+                 "index": {"label": "Euronext 100", "change_pct": 0.41},
+                 "agenda": [{"when": "2026-07-31", "what": "BoJ — riunione"}],
+                 "news": {"items": [], "alarms": []},
+                 "analysis": {"text": "Le borse asiatiche…", "degraded": False},
+                 "generated_at": 1785412800},
+}
+
+
+def _prefs_client(tmp_path, monkeypatch, role="admin"):
+    c, launched = make_client(tmp_path, monkeypatch, role=role)
+    monkeypatch.setattr(mr, "PREFS_PATH", str(tmp_path / "prefs.json"))
+    return c, launched
+
+
+# --- accès -----------------------------------------------------------------
+
+def test_prefs_are_readable_by_the_investor_account(tmp_path, monkeypatch):
+    c, _ = _prefs_client(tmp_path, monkeypatch, role="money")
+    assert c.get("/api/bots/market/prefs").status_code == 200
+
+
+def test_prefs_are_not_readable_by_a_player(tmp_path, monkeypatch):
+    c, _ = _prefs_client(tmp_path, monkeypatch, role="player")
+    assert c.get("/api/bots/market/prefs").status_code == 403
+
+
+def test_writing_the_prefs_is_admin_STRICT(tmp_path, monkeypatch):
+    """Choisir les bourses suivies règle les réveils de la machine.
+
+    Miroir de la planification : lecture pour l'investisseur, écriture pour
+    l'administrateur.
+    """
+    c, _ = _prefs_client(tmp_path, monkeypatch, role="money")
+    r = c.post("/api/bots/market/prefs", json={"borse": ["nyse"]})
+    assert r.status_code == 403
+
+
+def test_briefings_refuse_a_player(tmp_path, monkeypatch):
+    c, _ = _prefs_client(tmp_path, monkeypatch, role="player")
+    assert c.get("/api/bots/market/briefings").status_code == 403
+
+
+# --- lecture / écriture ----------------------------------------------------
+
+def test_prefs_without_a_file_serve_the_defaults(tmp_path, monkeypatch):
+    c, _ = _prefs_client(tmp_path, monkeypatch)
+    body = c.get("/api/bots/market/prefs").json()
+    assert body["prefs"]["borse"]
+    assert body["prefs"]["opzioni"]["max_notizie"] >= 1
+
+
+def test_the_catalogue_travels_with_the_prefs(tmp_path, monkeypatch):
+    """Le sélecteur a besoin des noms, des heures et des sous-places.
+
+    Le servir dans le même appel évite un aller-retour et, surtout, évite que
+    l'UI code en dur une liste qui vivrait alors à deux endroits.
+    """
+    c, _ = _prefs_client(tmp_path, monkeypatch)
+    body = c.get("/api/bots/market/prefs").json()
+    assert len(body["exchanges"]) == 10
+    ids = [e["id"] for e in body["exchanges"]]
+    assert "euronext" in ids
+
+
+def test_posting_the_prefs_writes_them_and_serves_them_back(tmp_path, monkeypatch):
+    c, _ = _prefs_client(tmp_path, monkeypatch)
+    r = c.post("/api/bots/market/prefs",
+               json={"borse": ["nyse", "jpx"],
+                     "titoli": {"nyse": ["NKE"]},
+                     "opzioni": {"sintesi": False, "max_notizie": 5}})
+    assert r.status_code == 200, r.text
+    saved = r.json()["prefs"]
+    assert saved["borse"] == ["nyse", "jpx"]
+    assert saved["titoli"] == {"nyse": ["NKE"]}
+    assert saved["opzioni"]["sintesi"] is False
+    assert saved["opzioni"]["max_notizie"] == 5
+    # relu depuis le disque, pas depuis la mémoire
+    again = c.get("/api/bots/market/prefs").json()["prefs"]
+    assert again["borse"] == ["nyse", "jpx"]
+
+
+def test_an_unknown_exchange_is_dropped_and_the_warning_is_served(tmp_path, monkeypatch):
+    c, _ = _prefs_client(tmp_path, monkeypatch)
+    body = c.post("/api/bots/market/prefs",
+                  json={"borse": ["nyse", "borsa-di-marte"]}).json()
+    assert body["prefs"]["borse"] == ["nyse"]
+    assert any("marte" in w for w in body["warnings"]), body["warnings"]
+
+
+def test_the_groups_are_served_so_the_ui_can_say_when_it_will_fire(tmp_path, monkeypatch):
+    c, _ = _prefs_client(tmp_path, monkeypatch)
+    body = c.post("/api/bots/market/prefs", json={"borse": ["nyse", "nasdaq", "jpx"]}).json()
+    # deux ouvertures pour trois opérateurs
+    assert len(body["groups"]) == 2, body["groups"]
+    for group in body["groups"]:
+        assert set(group) >= {"ids", "tz", "opens_at", "fires_at", "key"}
+
+
+def test_posting_prefs_reinstalls_the_opening_jobs(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_register(scheduler, run_fn, groups, cfg=None, **kw):
+        seen["groups"] = groups
+        return []
+
+    c, _ = _prefs_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(mr.ms, "register_exchange_jobs", fake_register)
+    monkeypatch.setattr(mr, "_scheduler", lambda: object())
+    c.post("/api/bots/market/prefs", json={"borse": ["jpx"]})
+    assert seen.get("groups") is not None, "les réveils n'ont pas été réinstallés"
+    assert seen["groups"] and seen["groups"][0][0] == ["jpx"]
+
+
+# --- /briefings ------------------------------------------------------------
+
+def test_briefings_without_any_run_are_clean(tmp_path, monkeypatch):
+    c, _ = _prefs_client(tmp_path, monkeypatch)
+    body = c.get("/api/bots/market/briefings").json()
+    assert body["briefings"] is None
+    assert body["job_id"] is None
+
+
+def test_briefings_of_the_latest_run_are_served(tmp_path, monkeypatch):
+    c, _ = _prefs_client(tmp_path, monkeypatch)
+    job_id = _start(c)
+    run_dir = tmp_path / "runs" / job_id
+    (run_dir / "briefings.json").write_text(json.dumps(BRIEFINGS), encoding="utf-8")
+    body = c.get("/api/bots/market/briefings").json()
+    assert body["job_id"] == job_id
+    assert body["briefings"]["euronext"]["label"] == "Euronext"
+    assert body["ran_at"]
+
+
+def test_a_fresh_run_without_briefings_does_not_hide_yesterdays(tmp_path, monkeypatch):
+    """Un run en cours ne doit pas vider la page.
+
+    Même règle que /snapshot : on saute les runs qui n'ont rien produit plutôt
+    que d'afficher une page blanche pendant les deux minutes du relevé.
+    """
+    c, _ = _prefs_client(tmp_path, monkeypatch)
+    old = _start(c)
+    (tmp_path / "runs" / old / "briefings.json").write_text(json.dumps(BRIEFINGS),
+                                                           encoding="utf-8")
+    _kill_pid(tmp_path, old)
+    time.sleep(0.01)
+    new = _start(c)
+    assert new != old
+    body = c.get("/api/bots/market/briefings").json()
+    assert body["job_id"] == old
+    assert body["briefings"]["euronext"]
+
+
+def test_briefings_tolerate_a_half_written_file(tmp_path, monkeypatch):
+    c, _ = _prefs_client(tmp_path, monkeypatch)
+    job_id = _start(c)
+    (tmp_path / "runs" / job_id / "briefings.json").write_text("{trunc", encoding="utf-8")
+    body = c.get("/api/bots/market/briefings").json()
+    assert body["briefings"] is None       # jamais un 500
+
+
+# --- ligne de commande ------------------------------------------------------
+
+def test_build_cmd_asks_for_the_briefings_and_names_the_prefs_file(tmp_path):
+    cmd = mr._build_cmd("/tmp/rd", {"briefings": True})
+    assert "--briefings" in cmd
+    # Le chemin est passé explicitement : c'est le router qui décide où vit la
+    # config, pas le répertoire courant du subprocess.
+    assert "--prefs" in cmd and cmd[cmd.index("--prefs") + 1] == mr.PREFS_PATH
+
+
+def test_build_cmd_limits_the_briefings_to_the_venue_that_opens(tmp_path):
+    """Sans --borse, l'ouverture de Tokyo régénérerait aussi Milan et New York —
+    et autant d'appels au LLM pour rien."""
+    cmd = mr._build_cmd("/tmp/rd", {"briefings": True, "borse": ["nyse", "nasdaq"]})
+    assert cmd[cmd.index("--borse") + 1] == "nyse,nasdaq"
+
+
+def test_build_cmd_without_briefings_does_not_pass_prefs_or_borse(tmp_path):
+    cmd = mr._build_cmd("/tmp/rd", {"briefings": False, "borse": ["nyse"]})
+    assert "--briefings" not in cmd and "--prefs" not in cmd and "--borse" not in cmd
+
+
+def test_a_manual_run_asks_for_the_briefings_by_default(tmp_path, monkeypatch):
+    c, launched = _prefs_client(tmp_path, monkeypatch)
+    c.post("/api/bots/market/run", json={})
+    assert launched["opts"]["briefings"] is True
+
+
+# --- rattrapage PAR GROUPE --------------------------------------------------
+
+def _enable(tmp_path, time_="07:30"):
+    ms.save({"enabled": True, "time": time_, "tz": "Europe/Rome", "days": "weekdays"},
+            str(tmp_path / "schedule.json"))
+
+
+def test_a_group_run_records_which_group_it_was_for(tmp_path, monkeypatch):
+    """La date du dernier run doit être connue PAR GROUPE.
+
+    Sinon le rattrapage de Tokyo serait annulé par un run de New York, et
+    l'inverse.
+    """
+    c, launched = _prefs_client(tmp_path, monkeypatch)
+    job_id = mr.run_exchange_group(["nyse", "nasdaq"])
+    meta = json.loads((tmp_path / "runs" / job_id / "meta.json").read_text(encoding="utf-8"))
+    assert meta["exchanges"] == ["nyse", "nasdaq"]
+    assert meta["groups"] == [ms.group_key("America/New_York", "09:30")]
+    assert launched["opts"]["borse"] == ["nyse", "nasdaq"]
+
+
+def test_last_run_dates_are_read_per_group(tmp_path, monkeypatch):
+    c, _ = _prefs_client(tmp_path, monkeypatch)
+    job_id = mr.run_exchange_group(["jpx"])
+    dates = mr.last_run_dates()
+    key = ms.group_key("Asia/Tokyo", "09:00")
+    assert key in dates, dates
+    assert dates[key] == json.loads(
+        (tmp_path / "runs" / job_id / "meta.json").read_text(encoding="utf-8"))["date"]
+
+
+def test_last_run_dates_is_empty_without_runs(tmp_path, monkeypatch):
+    c, _ = _prefs_client(tmp_path, monkeypatch)
+    assert mr.last_run_dates() == {}
+
+
+def test_the_asian_opening_missed_during_the_nightly_sleep_is_caught_up(tmp_path, monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    c, launched = _prefs_client(tmp_path, monkeypatch)
+    _enable(tmp_path)
+    # Sélection : Tokyo seulement, pour que la cible soit sans ambiguïté.
+    from backend.bots import market_engine as me
+    me.save_prefs({"borse": ["jpx"]}, str(tmp_path / "prefs.json"))
+    now = datetime(2026, 7, 30, 6, 0, tzinfo=ZoneInfo("Europe/Rome"))   # jeudi 06:00
+    done = mr.catch_up_exchange_groups(now=now)
+    assert done, "l'ouverture de Tokyo n'a pas été rattrapée"
+    assert launched["opts"]["borse"] == ["jpx"]
+
+
+def test_nothing_is_caught_up_when_the_group_already_ran_today(tmp_path, monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from backend.bots import market_engine as me
+    c, _ = _prefs_client(tmp_path, monkeypatch)
+    _enable(tmp_path)
+    me.save_prefs({"borse": ["jpx"]}, str(tmp_path / "prefs.json"))
+    now = datetime(2026, 7, 30, 6, 0, tzinfo=ZoneInfo("Europe/Rome"))
+    mr.run_exchange_group(["jpx"], today=now)
+    _kill_pid(tmp_path, mr._run_dirs()[0].name)
+    assert mr.catch_up_exchange_groups(now=now) == []
+
+
+def test_no_catch_up_when_the_schedule_is_off(tmp_path, monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from backend.bots import market_engine as me
+    c, _ = _prefs_client(tmp_path, monkeypatch)
+    ms.save({"enabled": False, "time": "07:30", "tz": "Europe/Rome",
+             "days": "weekdays"}, str(tmp_path / "schedule.json"))
+    me.save_prefs({"borse": ["jpx"]}, str(tmp_path / "prefs.json"))
+    now = datetime(2026, 7, 30, 6, 0, tzinfo=ZoneInfo("Europe/Rome"))
+    assert mr.catch_up_exchange_groups(now=now) == []
+
+
+def test_catch_up_never_raises_when_the_engine_is_missing(tmp_path, monkeypatch):
+    from datetime import datetime
+    from backend.bots import market_engine as me
+    c, _ = _prefs_client(tmp_path, monkeypatch)
+    _enable(tmp_path)
+
+    def boom(_ids):
+        raise me.EngineUnavailable("pas de moteur")
+
+    monkeypatch.setattr(me, "opening_groups", boom)
+    assert mr.catch_up_exchange_groups(now=datetime(2026, 7, 30, 6, 0)) == []
+
+
+def test_startup_installs_the_opening_jobs_too(tmp_path, monkeypatch):
+    seen = {}
+    c, _ = _prefs_client(tmp_path, monkeypatch)
+    _enable(tmp_path)
+    monkeypatch.setattr(mr, "_scheduler", lambda: object())
+    monkeypatch.setattr(mr.ms, "register_job", lambda *a, **k: None)
+    monkeypatch.setattr(mr.ms, "register_exchange_jobs",
+                        lambda s, f, g, cfg=None, **k: seen.setdefault("groups", g))
+    monkeypatch.setattr(mr, "catch_up_if_needed", lambda *a, **k: None)
+    monkeypatch.setattr(mr, "catch_up_exchange_groups", lambda *a, **k: [])
+    mr.register_startup_job()
+    assert "groups" in seen, "les réveils d'ouverture n'ont pas été installés au boot"

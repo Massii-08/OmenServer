@@ -23,6 +23,15 @@ from zoneinfo import ZoneInfo
 
 JOB_ID = "market_pulse_morning"
 
+# Un job par OUVERTURE de bourse (phase D). Dix opérateurs ne font que cinq
+# ouvertures : Londres sonne au même instant que Paris et Francfort, Hong Kong
+# que Shanghai et Shenzhen, le NYSE que le Nasdaq.
+EXCHANGE_JOB_PREFIX = "market_pulse_open_"
+
+# On déclenche AVANT la cloche : le briefing doit être lu à l'ouverture, pas
+# écrit à ce moment-là.
+LEAD_MINUTES = 15
+
 # Emplacement par défaut de la config. Lu DYNAMIQUEMENT par le router
 # (`market_schedule.DEFAULT_PATH`) pour rester substituable en test.
 DEFAULT_PATH = str(Path(__file__).resolve().parent.parent.parent
@@ -195,6 +204,136 @@ def should_catch_up(cfg: Optional[Dict[str, Any]], last_run: Any,
 # --------------------------------------------------------------------------
 # Branchement APScheduler
 # --------------------------------------------------------------------------
+
+def lead_time(opens_at: Any, lead_minutes: int = LEAD_MINUTES) -> str:
+    """« 09:00 » → « 08:45 ». L'heure de la cloche moins le temps d'avance.
+
+    Le passage par le modulo n'est pas décoratif : un « 00:05 - 15 min » donnerait
+    « -1:50 », que la normalisation transformerait en 23:50 — et le job partirait
+    le mauvais jour.
+    """
+    hour, minute = parse_time(opens_at)
+    total = (hour * 60 + minute - int(lead_minutes)) % (24 * 60)
+    return "%02d:%02d" % (total // 60, total % 60)
+
+
+def group_key(tz: Any, opens_at: Any) -> str:
+    """Identifiant STABLE d'un groupe d'ouverture : l'instant UTC, en HHMM.
+
+    Pourquoi pas la liste des identifiants de bourses : retirer Londres de la
+    sélection changerait la clé, le rattrapage croirait que le groupe n'a jamais
+    tourné et relancerait un run pour rien. L'instant UTC, lui, ne bouge pas —
+    et il est le MÊME pour tous les membres du groupe, par définition du
+    regroupement, donc il ne dépend pas de l'ordre de la liste.
+
+    Calculé sur une date de référence FIXE : on veut un identifiant, pas une
+    heure — le décalage d'été ne doit pas renommer le groupe en novembre.
+    """
+    hour, minute = parse_time(opens_at)
+    ref = datetime(2026, 7, 29, hour, minute, tzinfo=_tzinfo(tz))
+    utc = ref.astimezone(ZoneInfo("UTC"))
+    return "%02d%02d" % (utc.hour, utc.minute)
+
+
+def exchange_job_id(key: str) -> str:
+    return EXCHANGE_JOB_PREFIX + str(key)
+
+
+def _group_cfg(cfg: Dict[str, Any], tz: Any, opens_at: Any,
+               lead_minutes: int) -> Dict[str, Any]:
+    """La config du groupe : l'interrupteur et les jours viennent de la
+    planification globale, l'heure et le fuseau viennent de la place."""
+    return {"enabled": cfg["enabled"], "days": cfg["days"],
+            "time": lead_time(opens_at, lead_minutes), "tz": str(tz)}
+
+
+def register_exchange_jobs(scheduler, run_fn, groups,
+                           cfg: Optional[Dict[str, Any]] = None,
+                           lead_minutes: int = LEAD_MINUTES):
+    """(Ré)installe UN job par groupe d'ouverture. Rend la liste des ids.
+
+    `groups` est ce que rend `pulse.exchanges.opening_groups` :
+    `[(identifiants, fuseau, "HH:MM"), …]`. On le reçoit plutôt que de l'importer
+    pour que ce module reste pur et testable — le moteur vit dans un répertoire
+    frère au nom tirété, pas dans un paquet importable d'ici.
+
+    Les jobs d'un groupe qui n'est PLUS sélectionné sont retirés : décocher une
+    bourse doit vraiment éteindre son réveil, sinon elle continuerait à produire
+    un briefing chaque matin.
+    """
+    from apscheduler.triggers.cron import CronTrigger
+
+    clean = validate(cfg)
+    wanted = []
+    for ids, tz, opens_at in (groups or ()):
+        key = group_key(tz, opens_at)
+        wanted.append((key, list(ids), str(tz), lead_time(opens_at, lead_minutes)))
+
+    # Ménage : tout job d'ouverture déjà installé disparaît, puis on réinstalle
+    # ceux qu'on veut. `get_jobs` n'existe pas sur tous les doubles.
+    try:
+        existing = [j.id for j in scheduler.get_jobs()
+                    if str(getattr(j, "id", "")).startswith(EXCHANGE_JOB_PREFIX)]
+    except Exception:
+        existing = [exchange_job_id(k) for k, _i, _t, _h in wanted]
+    for job_id in existing:
+        try:
+            scheduler.remove_job(job_id)
+        except Exception:
+            pass
+
+    if not clean["enabled"]:
+        return []
+
+    installed = []
+    for key, ids, tz, when in wanted:
+        hour, minute = parse_time(when)
+        job_id = exchange_job_id(key)
+        scheduler.add_job(
+            run_fn,
+            trigger=CronTrigger(hour=hour, minute=minute,
+                                day_of_week=_DAYS[clean["days"]],
+                                timezone=_tzinfo(tz)),
+            id=job_id,
+            name="Market Pulse — apertura %s (%s, %s)" % (when, tz, "+".join(ids)),
+            args=[ids],
+            replace_existing=True,
+            misfire_grace_time=3600,
+            coalesce=True,
+            max_instances=1,
+        )
+        installed.append(job_id)
+    return installed
+
+
+def groups_to_catch_up(cfg: Optional[Dict[str, Any]], groups,
+                       last_runs: Optional[Dict[str, Any]],
+                       now: datetime, lead_minutes: int = LEAD_MINUTES,
+                       max_late_h: float = MAX_CATCHUP_LATE_H):
+    """Groupes dont l'heure est passée sans qu'ils aient tourné aujourd'hui.
+
+    L'Omen dort de 01:00 à 06:00 : trois ouvertures asiatiques tombent pendant
+    son sommeil, et APScheduler — sans jobstore persistant — n'en sait rien au
+    réveil. Le rattrapage est donc arbitré ici, **par groupe**, avec la date du
+    dernier run de CE groupe.
+    """
+    try:
+        clean = validate(cfg)
+    except ScheduleError:
+        return []
+    last_runs = last_runs or {}
+    todo = []
+    for ids, tz, opens_at in (groups or ()):
+        key = group_key(tz, opens_at)
+        try:
+            group_cfg = _group_cfg(clean, tz, opens_at, lead_minutes)
+        except ScheduleError:
+            continue
+        if should_catch_up(group_cfg, last_runs.get(key), now, max_late_h):
+            todo.append({"key": key, "ids": list(ids), "tz": str(tz),
+                         "time": group_cfg["time"]})
+    return todo
+
 
 def register_job(scheduler, run_fn, cfg: Optional[Dict[str, Any]] = None):
     """(Ré)installe le job quotidien. Retourne l'id du job, ou None si désactivé."""
