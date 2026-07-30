@@ -4614,6 +4614,7 @@ select:-webkit-autofill {
 
 @media (max-width: 768px) {
     .oracle-grid-2 { grid-template-columns: 1fr; }
+    .oracle-mk-rules { grid-template-columns: 1fr; }
     .oracle-kpi { grid-template-columns: 1fr 1fr !important; grid-template-rows: auto !important; }
     .oracle-kpi .stat-card.big { grid-column: 1 / -1; }
     .oracle-topbar { flex-wrap: wrap; row-gap: var(--s-3); }
@@ -4661,6 +4662,43 @@ select:-webkit-autofill {
     .oracle-wrap.oracle-enter .oracle-kpi > *, .oracle-wrap.oracle-enter .oracle-section,
     .oracle-wrap.oracle-enter .ov-fill, .oracle-wrap.oracle-enter #ora-hist .bar { animation: none; }
     .oracle-panel, .oracle-table { transition: none; }
+}
+
+/* --- Oracle MK : vue dédiée (portefeuille papier maker/taker). Réutilise au
+   maximum les composants Oracle v1 ci-dessus (.oracle-panel, .oracle-table,
+   .ov-bar-row, .bento-overview, .oracle-note-warn/info...) ; ajouts minimes. --- */
+.oracle-mk-rules { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-4); }
+.oracle-panel.is-control { border-style: dashed; }
+/* Bandeau d'alerte : témoin non plat → instrument faussé, verdict illisible */
+.oracle-mk-alert {
+    border: 1px solid var(--danger);
+    background: color-mix(in srgb, var(--danger) 10%, transparent);
+    border-radius: var(--r-lg);
+    padding: var(--s-4) var(--s-5);
+}
+.oracle-mk-alert-title { color: var(--danger); font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+.oracle-mk-alert-body { font-size: 13px; color: var(--text); margin-bottom: var(--s-2); }
+.oracle-mk-alert-data { font-size: 11px; color: var(--text-muted); }
+/* Tables MK : mêmes .t-head/.t-row que la v1, colonnes propres (spécificité
+   montée comme .oracle-open-tbl/.oracle-perf-tbl pour battre la grille 5-col
+   par défaut de .with-head, cf. commentaire ligne ~4578) */
+.oracle-table.with-head.oracle-mk-exec .t-head,
+.oracle-mk-exec .t-row.oracle-mk-exec-row {
+    display: grid; grid-template-columns: 1.6fr 70px 70px 74px 96px; gap: var(--s-3); align-items: center;
+}
+.oracle-mk-exec .t-row.oracle-mk-exec-row > div:first-child { flex: none; min-width: 0; }
+.oracle-table.with-head.oracle-mk-rare .t-head,
+.oracle-mk-rare .t-row.oracle-mk-rare-row {
+    display: grid; grid-template-columns: 1.6fr 70px 96px; gap: var(--s-3); align-items: center;
+}
+.oracle-mk-rare .t-row.oracle-mk-rare-row > div:first-child { flex: none; min-width: 0; }
+@media (max-width: 768px) {
+    .oracle-table.with-head.oracle-mk-exec .t-head,
+    .oracle-mk-exec .t-row.oracle-mk-exec-row { grid-template-columns: 1.4fr 54px 70px; }
+    .oracle-mk-exec .t-head span:nth-child(4),
+    .oracle-mk-exec .t-row.oracle-mk-exec-row > div:nth-child(4),
+    .oracle-mk-exec .t-head span:nth-child(5),
+    .oracle-mk-exec .t-row.oracle-mk-exec-row > div:nth-child(5) { display: none; }
 }
 
 /* ─── MC Agent — carte du mappeur : police pixel (utilisée par le canvas uniquement) ─── */

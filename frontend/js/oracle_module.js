@@ -16,7 +16,10 @@ const OracleModule = {
     _snap: null,
     // Venue affichée (2026-07-20) : chaque venue = une instance Oracle et
     // son snapshot ; le switch recharge simplement l'autre JSON.
+    // 'mk' (2026-07-30) : Oracle MK, forme de snapshot totalement différente
+    // (execution/rules/verdict) → vue dédiée, voir section "Oracle MK" plus bas.
     _venue: 'polymarket',
+    _MK_RULE_KEYS: ['fade_maker', 'fade_taker', 'random_control'],
 
     async render(container) {
         this.unload();               // coupe tout poll précédent (ré-ouverture / re-render) avant d'en armer un neuf
@@ -35,6 +38,7 @@ const OracleModule = {
                     <div class="lang-switcher oracle-venues" id="oracle-venues">
                         <button class="lang" data-venue="polymarket" onclick="OracleModule._setVenue('polymarket')">Polymarket</button>
                         <button class="lang" data-venue="kalshi" onclick="OracleModule._setVenue('kalshi')">Kalshi</button>
+                        <button class="lang" data-venue="mk" onclick="OracleModule._setVenue('mk')">MK</button>
                     </div>
                     <div class="oracle-top-right" id="oracle-top-right"></div>
                 </div>
@@ -64,7 +68,7 @@ const OracleModule = {
     },
 
     _setVenue(v) {
-        if (v === this._venue || (v !== 'polymarket' && v !== 'kalshi')) return;
+        if (v === this._venue || (v !== 'polymarket' && v !== 'kalshi' && v !== 'mk')) return;
         this._venue = v;
         this._syncVenuePills();
         const body = document.getElementById('oracle-body');
@@ -91,9 +95,16 @@ const OracleModule = {
         try {
             this._snap = await r.json();
         } catch (e) { body.innerHTML = `<div class="oracle-empty">${esc(Lang.t('oracle.load_error'))}</div>`; return; }
-        body.innerHTML = this._dashboard(this._snap);
-        this._topBadge(this._snap);
-        this._drawCharts(this._snap);
+        // Oracle MK (2026-07-30) : forme de snapshot incompatible avec la vue
+        // v1 (execution/rules/verdict au lieu de health/bankroll/edges) → vue dédiée.
+        if (venue === 'mk') {
+            body.innerHTML = this._dashboardMk(this._snap);
+            this._topBadge(this._snap);
+        } else {
+            body.innerHTML = this._dashboard(this._snap);
+            this._topBadge(this._snap);
+            this._drawCharts(this._snap);
+        }
     },
 
     _notReady() {
@@ -107,6 +118,7 @@ const OracleModule = {
         const el = document.getElementById('oracle-top-right');
         if (!el) return;
         if (!snap) { el.innerHTML = ''; return; }
+        if (this._venue === 'mk') { this._topBadgeMk(snap); return; }
         const h = snap.health || {};
         const cls = { ok: 'online', warn: 'warn', error: 'danger' }[h.status] || '';
         const lbl = { ok: 'LIVE', warn: Lang.t('oracle.degraded'), error: 'STALE', unknown: '—' }[h.status] || '—';
@@ -438,6 +450,291 @@ const OracleModule = {
 
     _footer(s) {
         return `<div class="oracle-footer">${esc(Lang.t('oracle.generated'))}: <span class="mono">${esc(s.generated_iso || '')}</span></div>`;
+    },
+
+    // ============================================================
+    // Oracle MK — portefeuille papier maker/taker (2026-07-30).
+    //
+    // Forme de snapshot totalement différente de la v1 (execution/rules/
+    // verdict au lieu de health/bankroll/edges/transactions) → dashboard
+    // dédié, indépendant de _dashboard(s) ci-dessus. Trois règles tournent
+    // en parallèle : fade_maker et fade_taker partagent le même signal (seule
+    // l'exécution diffère, ça isole l'effet maker) ; random_control est un
+    // témoin aléatoire qui teste l'INSTRUMENT lui-même — s'il rapporte, le
+    // simulateur ment et le verdict entier est invalide (verdict.reason ===
+    // 'control_not_flat').
+    //
+    // Aujourd'hui, presque tout est à zéro (aucun marché résolu) : ce n'est
+    // pas un cas limite, c'est l'état courant → chaque section doit rester
+    // lisible avec des compteurs à 0 plutôt que de disparaître.
+    // ============================================================
+
+    _dashboardMk(s) {
+        return [
+            this._mkExecution(s),
+            this._mkRace(s),
+            this._mkGates(s),
+            this._mkRareHits(s),
+            this._mkBreakdowns(s),
+            this._mkFooter(s),
+        ].join('');
+    },
+
+    // --- 1. Bandeau exécution : LE chiffre du moment (taux de remplissage
+    // maker). Ne dépend d'aucune résolution — dit seulement si fade_maker
+    // est ne serait-ce qu'exécutable (un maker en fond de file ne se remplit
+    // que si des preneurs balaient toute la file devant lui).
+    _mkExecution(s) {
+        const ex = s.execution || {};
+        const maker = ex.fade_maker || {};
+        const heroRate = maker.fill_rate_cons;
+        const heroOk = heroRate !== null && heroRate !== undefined && !Number.isNaN(heroRate);
+        const heroCls = heroOk && heroRate > 0 ? 'up' : '';
+        const heroTxt = heroOk ? (Number(heroRate) * 100).toFixed(1) : '—';
+
+        const overview = `<div class="bento-overview oracle-kpi">
+            <div class="stat-card big">
+                <span class="label">${esc(Lang.t('oracle.mk.hero_label'))}</span>
+                <div class="value"><span class="delta ${heroCls}">${heroTxt}</span><span class="unit">%</span></div>
+                <div class="footer">${this._num(maker.posted)} ${esc(Lang.t('oracle.mk.posted_short'))} · ${this._num(maker.filled_cons)} ${esc(Lang.t('oracle.mk.filled_short'))} · ${esc(Lang.t('oracle.mk.avg_queue'))} ${this._num(maker.avg_queue_ahead, 1)}</div>
+            </div>
+            <div class="stat-card"><span class="label">${esc(Lang.t('oracle.mk.rule_fade_taker'))}</span><div class="value">${this._mkPct((ex.fade_taker || {}).fill_rate_cons)}</div><div class="footer">${esc(Lang.t('oracle.mk.fill_rate'))}</div></div>
+            <div class="stat-card"><span class="label">${esc(Lang.t('oracle.mk.rule_random_control'))}</span><div class="value">${this._mkPct((ex.random_control || {}).fill_rate_cons)}</div><div class="footer">${esc(Lang.t('oracle.mk.fill_rate'))}</div></div>
+            <div class="stat-card"><span class="label">${esc(Lang.t('oracle.mk.avg_queue'))}</span><div class="value">${this._num(maker.avg_queue_ahead, 0)}</div><div class="footer">${esc(Lang.t('oracle.mk.rule_fade_maker'))}</div></div>
+        </div>`;
+
+        const rows = this._MK_RULE_KEYS.map(key => {
+            const e = ex[key] || {};
+            const placeable = e.placeable_at_real_bankroll;
+            const sub = (placeable !== null && placeable !== undefined)
+                ? `<div class="t-sub mono">${this._num(placeable)} ${esc(Lang.t('oracle.mk.placeable_short'))}</div>` : '';
+            return `<div class="t-row oracle-mk-exec-row">
+                <div><div class="t-name">${esc(Lang.t('oracle.mk.rule_' + key))}</div>${sub}</div>
+                <div class="t-meta mono">${this._num(e.posted)}</div>
+                <div class="t-meta mono">${this._num(e.filled_cons)}</div>
+                <div class="t-meta">${this._mkPct(e.fill_rate_cons)}</div>
+                <div class="t-meta mono">${this._num(e.avg_queue_ahead, 1)}</div>
+            </div>`;
+        }).join('');
+
+        return `<div class="oracle-section">
+            <div class="oracle-sec-head"><h3>${esc(Lang.t('oracle.mk.execution_title'))}</h3><span class="oracle-sec-note">${esc(Lang.t('oracle.mk.execution_desc'))}</span></div>
+            ${overview}
+            <div class="oracle-table with-head oracle-mk-exec">
+                <div class="t-head"><span>${esc(Lang.t('oracle.mk.col_rule'))}</span><span>${esc(Lang.t('oracle.mk.col_posted'))}</span><span>${esc(Lang.t('oracle.mk.col_filled'))}</span><span>${esc(Lang.t('oracle.mk.col_fill_rate'))}</span><span>${esc(Lang.t('oracle.mk.col_avg_queue'))}</span></div>
+                ${rows}
+            </div>
+            <div class="oracle-note-info">${esc(Lang.t('oracle.mk.execution_note'))}</div>
+        </div>`;
+    },
+
+    // --- 2. La course : P&L conservateur ET optimiste côte à côte par règle
+    // (l'écart mesure la sensibilité au modèle de remplissage — jamais un seul
+    // des deux) + remplissages résolus + clusters. random_control distingué
+    // visuellement (bordure pointillée) : ce n'est pas une stratégie.
+    _mkRace(s) {
+        const rules = s.rules || {};
+        const cards = this._MK_RULE_KEYS.map(key => {
+            const r = rules[key] || {};
+            const isControl = key === 'random_control';
+            const ci = r.ci_cons || {};
+            return `<div class="oracle-panel${isControl ? ' is-control' : ''}">
+                <div class="oracle-panel-title">${esc(Lang.t('oracle.mk.rule_' + key))}</div>
+                <div class="oracle-chart-meta">
+                    <div><span class="ocm-l">${esc(Lang.t('oracle.mk.pnl_cons'))}</span><span class="ocm-v mono ${this._mkPnlCls(r.pnl_cons)}">${this._mkPnlTxt(r.pnl_cons)}</span></div>
+                    <div><span class="ocm-l">${esc(Lang.t('oracle.mk.pnl_opt'))}</span><span class="ocm-v mono ${this._mkPnlCls(r.pnl_opt)}">${this._mkPnlTxt(r.pnl_opt)}</span></div>
+                    <div><span class="ocm-l">${esc(Lang.t('oracle.mk.resolved'))}</span><span class="ocm-v mono">${this._num(r.n_cons)}</span></div>
+                    <div><span class="ocm-l">${esc(Lang.t('oracle.mk.clusters'))}</span><span class="ocm-v mono">${this._num(ci.clusters)}</span></div>
+                </div>
+            </div>`;
+        }).join('');
+        return `<div class="oracle-section">
+            <div class="oracle-sec-head"><h3>${esc(Lang.t('oracle.mk.race_title'))}</h3><span class="oracle-sec-note">${esc(Lang.t('oracle.mk.race_desc'))}</span></div>
+            <div class="oracle-mk-rules">${cards}</div>
+        </div>`;
+    },
+
+    // --- 3. Les portes du verdict : progrès vers 20 clusters, IC, DSR, raison
+    // de blocage, par règle (fade_maker/fade_taker). La porte de VALIDITÉ
+    // (le témoin reste-t-il plat ?) est traitée à part et prime sur tout —
+    // si random_control gagne de l'argent dans notre simulateur, l'instrument
+    // est faussé et rien d'autre n'est lisible.
+    _mkGates(s) {
+        const v = s.verdict || {};
+        const byRule = v.by_rule || {};
+        const control = v.control || {};
+        const valid = v.valid !== false;
+        const reason = v.reason || '';
+        const isControlNotFlat = !valid && reason === 'control_not_flat';
+
+        const controlLine = `${esc(Lang.t('oracle.mk.control_readout'))} ${esc(Lang.t('oracle.mk.clusters'))} ${this._num(control.clusters)}`
+            + ` · IC [${this._num(control.lo, 4)}, ${this._num(control.hi, 4)}]`
+            + ` · ${esc(Lang.t('oracle.mk.mean'))} ${this._num(control.mean, 4)}`;
+
+        let validityBlock;
+        if (!valid) {
+            const body = isControlNotFlat
+                ? esc(Lang.t('oracle.mk.invalid_control_not_flat'))
+                : esc(reason ? reason : Lang.t('oracle.mk.invalid_generic'));
+            validityBlock = `<div class="oracle-mk-alert">
+                <div class="oracle-mk-alert-title">${esc(Lang.t('oracle.mk.invalid_title'))}</div>
+                <div class="oracle-mk-alert-body">${body}</div>
+                <div class="oracle-mk-alert-data mono">${controlLine}</div>
+            </div>`;
+        } else {
+            validityBlock = `<div class="oracle-note-info">${esc(Lang.t('oracle.mk.valid_note'))} <span class="mono">${controlLine}</span></div>`;
+        }
+
+        const ruleBlocks = ['fade_maker', 'fade_taker'].map(key => {
+            const r = byRule[key] || {};
+            const ci = r.ci || {};
+            const passed = !!r.passed;
+            const reasonTxt = this._mkReasonLabel(r.reason);
+            return `<div class="oracle-panel">
+                <div class="oracle-panel-title">${esc(Lang.t('oracle.mk.rule_' + key))} <span class="badge ${passed ? 'online' : ''}">${esc(passed ? Lang.t('oracle.mk.gate_passed') : Lang.t('oracle.mk.gate_pending'))}</span></div>
+                <div class="ov-bar-row"><span class="ov-lab mono">${esc(Lang.t('oracle.mk.clusters'))}</span>${this._progress(100 * ((r.clusters || 0) / 20))}<span class="ov-val mono">${this._num(r.clusters)}/20</span></div>
+                <div class="t-sub mono">IC [${this._num(ci.lo, 4)}, ${this._num(ci.hi, 4)}] · ${esc(Lang.t('oracle.mk.mean'))} ${this._num(ci.mean, 4)} · DSR ${this._num(r.dsr, 3)}</div>
+                ${(!passed && reasonTxt) ? `<div class="oracle-note-warn">${esc(reasonTxt)}</div>` : ''}
+            </div>`;
+        }).join('');
+
+        return `<div class="oracle-section">
+            <div class="oracle-sec-head"><h3>${esc(Lang.t('oracle.mk.gates_title'))}</h3><span class="oracle-sec-note">${esc(Lang.t('oracle.mk.gates_desc'))}</span></div>
+            ${validityBlock}
+            <div class="oracle-grid-2">${ruleBlocks}</div>
+        </div>`;
+    },
+
+    // Traduit un code de blocage par-règle (clusters/ci_includes_zero/dsr) ;
+    // repli sur le code brut si inconnu (piège i18n #12 : Lang.t() renvoie la
+    // clé elle-même si absente, jamais se fier à un `||` seul).
+    _mkReasonLabel(reason) {
+        if (!reason) return '';
+        const key = 'oracle.mk.reason_' + reason;
+        const t = Lang.t(key);
+        return (t || '').startsWith('oracle.mk.reason_') ? reason : t;
+    },
+
+    // --- 4. Coups rares : une courbe de fade est belle jusqu'au premier
+    // favori qui tombe — ce compteur ne doit jamais être caché.
+    _mkRareHits(s) {
+        const rules = s.rules || {};
+        const rows = this._MK_RULE_KEYS.map(key => {
+            const rh = (rules[key] || {}).rare_hits || {};
+            return `<div class="t-row oracle-mk-rare-row">
+                <div class="t-name">${esc(Lang.t('oracle.mk.rule_' + key))}</div>
+                <div class="t-meta mono">${this._num(rh.count)}</div>
+                <div class="t-meta"><span class="mono ${this._mkPnlCls(rh.pnl)}">${this._mkPnlTxt(rh.pnl)}</span></div>
+            </div>`;
+        }).join('');
+        return `<div class="oracle-section">
+            <div class="oracle-sec-head"><h3>${esc(Lang.t('oracle.mk.rare_title'))}</h3><span class="oracle-sec-note">${esc(Lang.t('oracle.mk.rare_desc'))}</span></div>
+            <div class="oracle-table with-head oracle-mk-rare">
+                <div class="t-head"><span>${esc(Lang.t('oracle.mk.col_rule'))}</span><span>${esc(Lang.t('oracle.mk.col_count'))}</span><span>P&L</span></div>
+                ${rows}
+            </div>
+        </div>`;
+    },
+
+    // --- 5. Ventilations (by_shape/by_family/by_venue) : une seule si non
+    // vide, par règle × dimension (forme de contrat/famille/place). Les
+    // contrats one_touch se résolvent bien plus souvent que les
+    // threshold_close, d'où leur séparation (légende by_shape).
+    // Forme interne des entrées non garantie (le backend fait un passthrough
+    // pur du JSON écrit par le projet Oracle, cf. oracle_router.py) → lecture
+    // défensive avec repli n_cons/n puis pnl_cons/pnl.
+    _mkBreakdowns(s) {
+        const rules = s.rules || {};
+        const DIMS = [
+            ['by_shape', 'oracle.mk.by_shape', 'oracle.mk.by_shape_note'],
+            ['by_family', 'oracle.mk.by_family', ''],
+            ['by_venue', 'oracle.mk.by_venue', ''],
+        ];
+        const dimBlocks = DIMS.map(([dimKey, titleKey, noteKey]) => {
+            const panels = this._MK_RULE_KEYS.map(ruleKey => {
+                const data = (rules[ruleKey] || {})[dimKey];
+                if (!data || typeof data !== 'object' || Array.isArray(data) || !Object.keys(data).length) return '';
+                const rows = Object.keys(data).sort().map(subKey => {
+                    const entry = data[subKey] || {};
+                    const n = entry.n_cons !== undefined ? entry.n_cons : entry.n;
+                    const pnl = entry.pnl_cons !== undefined ? entry.pnl_cons : entry.pnl;
+                    return `<div class="t-row oracle-mk-rare-row">
+                        <div class="t-name">${esc(String(subKey))}</div>
+                        <div class="t-meta mono">${this._num(n)}</div>
+                        <div class="t-meta"><span class="mono ${this._mkPnlCls(pnl)}">${this._mkPnlTxt(pnl)}</span></div>
+                    </div>`;
+                }).join('');
+                return `<div class="oracle-panel">
+                    <div class="oracle-panel-title">${esc(Lang.t('oracle.mk.rule_' + ruleKey))}</div>
+                    <div class="oracle-table with-head oracle-mk-rare">
+                        <div class="t-head"><span>${esc(Lang.t('oracle.mk.col_key'))}</span><span>${esc(Lang.t('oracle.mk.col_n'))}</span><span>P&L</span></div>
+                        ${rows}
+                    </div>
+                </div>`;
+            }).filter(Boolean).join('');
+            if (!panels) return '';
+            const note = noteKey ? `<span class="oracle-sec-note">${esc(Lang.t(noteKey))}</span>` : '';
+            return `<div class="oracle-sec-head"><h3>${esc(Lang.t(titleKey))}</h3>${note}</div><div class="oracle-grid-2">${panels}</div>`;
+        }).filter(Boolean).join('');
+        if (!dimBlocks) return '';
+        return `<div class="oracle-section">
+            <div class="oracle-sec-head"><h3>${esc(Lang.t('oracle.mk.breakdowns_title'))}</h3><span class="oracle-sec-note">${esc(Lang.t('oracle.mk.breakdowns_desc'))}</span></div>
+            ${dimBlocks}
+        </div>`;
+    },
+
+    // --- 6. Pied de page : gel du pré-enregistrement, version du modèle,
+    // note frais maker Kalshi si inconnus, alerte si le modèle a expiré.
+    _mkFooter(s) {
+        const expiredNote = s.expired ? `<div class="oracle-note-warn">${esc(Lang.t('oracle.mk.expired_note'))}</div>` : '';
+        const feeNote = s.kalshi_maker_fee_unknown ? `<div class="oracle-note-warn">${esc(Lang.t('oracle.mk.kalshi_fee_note'))}</div>` : '';
+        return `<div class="oracle-section">
+            ${expiredNote}
+            ${feeNote}
+            <div class="oracle-footer">${esc(Lang.t('oracle.mk.model_version'))}: <span class="mono">${esc(s.model_version || '—')}</span> · ${esc(Lang.t('oracle.mk.prereg_frozen'))}: <span class="mono">${this._mkTs(s.prereg_ts)}</span> · ${esc(Lang.t('oracle.generated'))}: <span class="mono">${this._mkTs(s.ts)}</span></div>
+        </div>`;
+    },
+
+    // Badge de la topbar pour la venue MK (health/executor_mode n'existent
+    // pas dans ce schéma → remplacé par la validité du verdict, la donnée la
+    // plus importante de cette vue).
+    _topBadgeMk(snap) {
+        const el = document.getElementById('oracle-top-right');
+        if (!el) return;
+        const v = snap.verdict || {};
+        const valid = v.valid !== false;
+        const cls = valid ? 'online' : 'danger';
+        const lbl = valid ? Lang.t('oracle.mk.instrument_valid') : Lang.t('oracle.mk.instrument_invalid');
+        el.innerHTML = `<span class="oracle-mode">${esc(Lang.t('oracle.mk.model_version_short'))}: <b>${esc(snap.model_version || '—')}</b></span><span class="badge ${cls}">${esc(lbl)}</span>`;
+    },
+
+    // --- Helpers numériques MK (ratio non-signé 0..1 et P&L signé $, formes
+    // différentes de _pct()/toFixed inline utilisées par la v1) ---
+
+    _mkPct(v) {
+        if (v === null || v === undefined || Number.isNaN(v)) return '<span class="mono">—</span>';
+        return `<span class="mono">${(Number(v) * 100).toFixed(1)}%</span>`;
+    },
+
+    _mkPnlCls(v) {
+        if (v === null || v === undefined || Number.isNaN(v)) return '';
+        return v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+    },
+
+    _mkPnlTxt(v) {
+        if (v === null || v === undefined || Number.isNaN(v)) return '—';
+        return (v > 0 ? '+' : '') + Number(v).toFixed(2) + '$';
+    },
+
+    // Timestamp unix (secondes, float) → "JJ/MM HH:MM" en heure locale du
+    // navigateur (≠ _shortDT qui tranche une chaîne ISO déjà formatée : le
+    // snapshot MK envoie des epochs bruts, pas d'ISO string).
+    _mkTs(ts) {
+        if (ts === null || ts === undefined || Number.isNaN(ts)) return '—';
+        const d = new Date(Number(ts) * 1000);
+        if (Number.isNaN(d.getTime())) return '—';
+        const pad = n => String(n).padStart(2, '0');
+        return `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
     },
 
     // ------------------------------------------------------- SVG charts

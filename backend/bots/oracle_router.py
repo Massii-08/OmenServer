@@ -34,6 +34,12 @@ SNAPSHOTS = {
     "kalshi": Path(os.environ.get(
         "ORACLE_SNAPSHOT_KALSHI",
         str(Path.home() / "oracle" / "data" / "snapshot-kalshi.json"))),
+    # Oracle MK (2026-07-30) : portefeuille papier maker/taker. Forme de
+    # snapshot TOTALEMENT différente des deux autres (rules/verdict/execution
+    # au lieu de health/bankroll/edges) -> le frontend a sa propre vue.
+    "mk": Path(os.environ.get(
+        "ORACLE_SNAPSHOT_MK",
+        str(Path.home() / "oracle" / "data" / "snapshot-mk.json"))),
 }
 
 
