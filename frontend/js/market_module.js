@@ -22,6 +22,9 @@ const MarketModule = {
     _running: false,
     _data: null,
     _statsOpen: false,        // survit aux rafraîchissements du corps
+    _briefings: null,         // phase D : un briefing par bourse
+    _prefs: null,             // {prefs, exchanges, groups, warnings}
+    _clickBound: false,
 
     // ------------------------------------------------------------- cycle de vie
 
@@ -29,8 +32,14 @@ const MarketModule = {
         this.unload();                       // coupe tout timer d'un rendu précédent
         this._container = container;
         container.innerHTML = this._shell();
+        this._bindClicks();
         await this._loadActive();            // un run tourne déjà ?
         await this._loadSnapshot();
+        // Les briefings et le sélecteur vivent dans LEURS conteneurs : le
+        // rafraîchissement de l'horloge (60 s) ne doit pas effacer une case
+        // qu'on est en train de cocher.
+        this._loadBriefings();
+        this._loadPrefs();
         if (this._isAdmin()) this._loadSchedule();
         this._refreshInterval = setInterval(() => this._loadSnapshot(), 60000);
     },
@@ -173,8 +182,27 @@ const MarketModule = {
              'background:var(--bg-elev-2);font-size:14px;line-height:1.5;">' +
           esc(Lang.t('market.disclaimer')) +
         '</div>' +
+        // Phase D : un bloc par bourse, puis le sélecteur. Conteneurs SÉPARÉS de
+        // #mkt-body, que le poll de l'horloge réécrit toutes les 60 s.
+        '<div id="mkt-briefings"></div>' +
+        '<div id="mkt-selector"></div>' +
         '<div id="mkt-schedule"></div>' +
         '<div id="mkt-body"><div class="card">' + esc(Lang.t('market.loading')) + '</div></div>';
+    },
+
+    // Un seul écouteur délégué sur le conteneur : les boutons porteurs de DONNÉES
+    // passent par data-* (jamais un onclick avec une valeur interpolée — audit
+    // sécurité 2026-06-21).
+    _bindClicks() {
+        if (this._clickBound || !this._container) return;
+        this._container.addEventListener('click', (ev) => {
+            const btn = ev.target && ev.target.closest ? ev.target.closest('[data-mkt-follow]') : null;
+            if (!btn) return;
+            ev.preventDefault();
+            this.followSymbol(btn.getAttribute('data-mkt-venue'),
+                              btn.getAttribute('data-mkt-follow'));
+        });
+        this._clickBound = true;
     },
 
     // ------------------------------------------------------------- chargement
@@ -278,6 +306,335 @@ const MarketModule = {
             '<h3 style="margin:0;font-size:17px;">' + esc(title) + '</h3>' +
             (note ? '<span style="font-size:12px;color:var(--text-dim);">' + esc(note) + '</span>' : '') +
         '</div>';
+    },
+
+    // =====================================================================
+    //  PHASE D — un bloc par bourse, TOUT sous le nom de la bourse
+    // =====================================================================
+    //
+    // Ordre voulu par Massii, et il ne change pas : état → indice → comparaison
+    // → agenda → notizie (les FAITS d'abord) → titoli seguiti → nuovi titoli →
+    // sintesi. Une section sans donnée le DIT ; elle ne disparaît pas et ne
+    // reste pas vide — une case vide se lit comme « rien ne se passe », ce qui
+    // est faux.
+
+    async _loadBriefings() {
+        const host = document.getElementById('mkt-briefings');
+        if (!host) return;
+        let r = null;
+        try { r = await Auth.apiCall('/api/bots/market/briefings'); } catch (e) { r = null; }
+        if (!r || !r.ok) { host.innerHTML = ''; return; }
+        let d = null;
+        try { d = await r.json(); } catch (e) { d = null; }
+        this._briefings = d || null;
+        host.innerHTML = this._briefingsHtml();
+    },
+
+    _briefingsHtml() {
+        const d = this._briefings;
+        const map = (d && d.briefings && typeof d.briefings === 'object') ? d.briefings : null;
+        const keys = map ? Object.keys(map) : [];
+        if (!keys.length) {
+            return '<div class="card" style="margin-bottom:14px;color:var(--text-muted);">' +
+                esc(Lang.t('market.no_briefings')) + '</div>';
+        }
+        // Les places dans l'ordre de leur ouverture : l'Asie, puis l'Europe,
+        // puis New York — l'ordre dans lequel la journée s'est déroulée.
+        const order = this._exchangeOrder();
+        keys.sort((a, b) => {
+            const ia = order.indexOf(a), ib = order.indexOf(b);
+            return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+        });
+        return keys.map(k => this._briefingCard(map[k])).join('');
+    },
+
+    _exchangeOrder() {
+        const groups = (this._prefs && Array.isArray(this._prefs.groups)) ? this._prefs.groups : [];
+        const out = [];
+        groups.forEach(g => (g.ids || []).forEach(id => { if (out.indexOf(id) < 0) out.push(id); }));
+        return out;
+    },
+
+    _briefingCard(b) {
+        if (!b || typeof b !== 'object') return '';
+        const s = b.session || {};
+        const hours = [];
+        if (s.opens_at) hours.push(Lang.t('market.opens_at') + ' ' + s.opens_at);
+        if (s.closes_at) hours.push(Lang.t('market.closes_at') + ' ' + s.closes_at);
+        if (s.lunch && s.lunch.length === 2) {
+            hours.push(Lang.t('market.session_lunch') + ' ' + s.lunch[0] + '–' + s.lunch[1]);
+        }
+        const mono = 'font-family:var(--font-mono);font-feature-settings:\'tnum\';';
+        return '<div class="card" style="margin-bottom:14px;">' +
+            // --- le nom de la bourse : tout ce qui suit lui appartient ---
+            '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;' +
+                 'border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:12px;">' +
+              '<h3 style="margin:0;font-size:20px;">' + esc(b.label || b.exchange || '') + '</h3>' +
+              (b.country ? '<span style="font-size:13px;color:var(--text-muted);">' +
+                  esc(b.country) + '</span>' : '') +
+              (hours.length ? '<span style="font-size:12px;color:var(--text-dim);margin-left:auto;' + mono + '">' +
+                  esc(hours.join(' · ')) + (s.tz ? ' (' + esc(s.tz) + ')' : '') + '</span>' : '') +
+            '</div>' +
+            this._bIndex(b.index) +
+            this._bComparison(b.comparison) +
+            this._bAgenda(b.agenda) +
+            this._bNews(b.news) +
+            this._bFollowed(b.followed) +
+            this._bDiscovered(b.exchange, b.discovered) +
+            this._bSynthesis(b.analysis) +
+        '</div>';
+    },
+
+    _bHead(key) {
+        return '<div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;' +
+            'color:var(--text-dim);margin:14px 0 6px;">' + esc(Lang.t(key)) + '</div>';
+    },
+
+    _bEmpty(key) {
+        return '<div style="font-size:14px;color:var(--text-muted);">' + esc(Lang.t(key)) + '</div>';
+    },
+
+    // --- l'indice de la place ------------------------------------------------
+
+    _bIndex(m) {
+        if (!m) return this._bHead('market.b_index') + this._bEmpty('market.no_data');
+        const ch = this._change(m);
+        const clock = m.clock || {};
+        const state = clock.status === 'open' ? Lang.t('market.status_open')
+            : (clock.status === 'closed' ? Lang.t('market.status_closed')
+            : Lang.t('market.status_unknown'));
+        const gap = this._gap(m);
+        const mono = 'font-family:var(--font-mono);font-feature-settings:\'tnum\';';
+        return this._bHead('market.b_index') +
+            '<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;">' +
+              '<span style="font-size:16px;font-weight:600;">' + esc(m.label || m.symbol || '') + '</span>' +
+              '<span style="font-size:22px;' + mono + '">' + esc(this._price(m)) + '</span>' +
+              '<span style="font-size:17px;' + mono + 'color:' + this._color(ch.dir) + ';">' +
+                esc(ch.txt) + '</span>' +
+              '<span class="badge' + (clock.status === 'open' ? ' online' : '') + '">' +
+                esc(state) + '</span>' +
+              (gap ? '<span style="font-size:13px;' + mono + 'color:var(--text-muted);">' +
+                  esc(m.gap_is_today ? Lang.t('market.gap_today') : Lang.t('market.gap_last')) +
+                  ' ' + esc(gap.txt) + '</span>' : '') +
+            '</div>';
+    },
+
+    // --- ce que les autres places ont déjà fait ------------------------------
+
+    _bComparison(rows) {
+        if (!Array.isArray(rows) || !rows.length) {
+            return this._bHead('market.b_comparison') + this._bEmpty('market.no_data');
+        }
+        const mono = 'font-family:var(--font-mono);font-feature-settings:\'tnum\';';
+        const td = 'padding:4px 10px;border-bottom:1px solid var(--border);font-size:14px;';
+        // Les places qui ont DÉJÀ parlé d'abord : c'est d'elles que vient la
+        // couleur du jour. Celles qui n'ont pas encore ouvert ferment la liste.
+        const rank = { 'chiuso': 0, 'aperto': 1, 'non ancora aperto': 2 };
+        const sorted = rows.slice().sort((a, b) => {
+            const ra = rank[a.state], rb = rank[b.state];
+            return (ra === undefined ? 3 : ra) - (rb === undefined ? 3 : rb);
+        });
+        const body = sorted.map(r => {
+            const n = Number(r.change_pct);
+            const dir = isFinite(n) ? n : 0;
+            return '<tr>' +
+                '<td style="' + td + '">' + esc(r.label || r.symbol || '') + '</td>' +
+                '<td style="' + td + mono + 'text-align:right;color:' + this._color(dir) + ';">' +
+                  esc(this._fmtSigned(r.change_pct, 2, '%')) + '</td>' +
+                '<td style="' + td + 'color:var(--text-muted);">' + esc(r.state || '') + '</td>' +
+            '</tr>';
+        }).join('');
+        return this._bHead('market.b_comparison') +
+            '<div style="overflow-x:auto;"><table style="border-collapse:collapse;width:100%;min-width:300px;">' +
+              '<tbody>' + body + '</tbody></table></div>';
+    },
+
+    // --- l'agenda : une date est un fait, une direction n'en est pas un ------
+
+    _bAgenda(rows) {
+        const head = this._bHead('market.b_agenda');
+        if (!Array.isArray(rows) || !rows.length) return head + this._bEmpty('market.agenda_empty');
+        const mono = 'font-family:var(--font-mono);font-feature-settings:\'tnum\';';
+        return head + '<div class="row-list">' + rows.map(e => {
+            const url = this._safeUrl(e.source_url);
+            const what = url
+                ? '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer" ' +
+                  'style="color:var(--text);text-decoration:none;border-bottom:1px dotted var(--border-strong);">' +
+                  esc(e.what || '') + '</a>'
+                : esc(e.what || '');
+            return '<div class="row" style="padding:8px 12px;">' +
+                '<div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;">' +
+                  '<span style="' + mono + 'color:var(--accent);font-size:13px;">' +
+                    esc(this._agendaWhen(e)) + '</span>' +
+                  '<span style="font-size:15px;">' + what + '</span>' +
+                '</div>' +
+                (e.at_stake
+                    ? '<div style="font-size:12px;color:var(--text-dim);margin-top:2px;">' +
+                      esc(Lang.t('market.agenda_at_stake')) + ' : ' + esc(e.at_stake) + '</div>'
+                    : '') +
+            '</div>';
+        }).join('') + '</div>';
+    },
+
+    // Un titre de presse fait une ligne ; un post social fait un paragraphe, avec
+    // son lien recopié au milieu. Mesuré sur un vrai run : un post Bluesky de
+    // 300 caractères écrasait les cinq titres suivants. On enlève l'URL nue (elle
+    // est déjà dans le lien du titre) et on coupe — proprement, à un mot.
+    _headline(raw, max) {
+        let s = String(raw == null ? '' : raw).replace(/https?:\/\/\S+/g, ' ');
+        s = s.replace(/\s+/g, ' ').trim();
+        const limit = max || 190;
+        if (s.length <= limit) return s;
+        const cut = s.slice(0, limit);
+        const space = cut.lastIndexOf(' ');
+        return (space > limit * 0.6 ? cut.slice(0, space) : cut) + '…';
+    },
+
+    // « 2026-07-31 » -> « 31/07/2026 » ; avec une heure -> « 31/07/2026 07:15 »
+    _agendaWhen(e) {
+        const raw = String((e && e.when) || '');
+        if (!raw) return '—';
+        if (e.day_only || raw.length <= 10) return this._date(raw);
+        const d = new Date(raw);
+        if (isNaN(d.getTime())) return raw;
+        const p = x => (x < 10 ? '0' : '') + x;
+        return p(d.getDate()) + '/' + p(d.getMonth() + 1) + '/' + d.getFullYear() +
+            ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+    },
+
+    // --- les notizie : les faits d'abord ------------------------------------
+
+    _bNews(news) {
+        const head = this._bHead('market.b_news');
+        const items = (news && Array.isArray(news.items)) ? news.items : [];
+        const alarms = (news && Array.isArray(news.alarms)) ? news.alarms : [];
+        // Une alarme de collecte passe DEVANT : elle explique un briefing maigre.
+        const alarmHtml = alarms.length
+            ? '<div style="border:1px solid var(--warning);border-radius:var(--r-sm);padding:8px 10px;' +
+              'margin-bottom:8px;font-size:13px;">' +
+              alarms.map(a => esc(Lang.t('market.news_alarm') + ' : ' + a)).join('<br>') + '</div>'
+            : '';
+        if (!items.length) return head + alarmHtml + this._bEmpty('market.no_data');
+        const rows = items.slice(0, 14).map(it => {
+            const ev = (it && it.event) ? it.event : {};
+            const url = this._safeUrl(it.url);
+            const shown = this._headline(it.title);
+            const title = url
+                ? '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer" ' +
+                  'style="color:var(--text);text-decoration:none;">' + esc(shown) + '</a>'
+                : esc(shown);
+            const meta = [it.source, it.published ? this._dateTime(it.published) : '']
+                .filter(Boolean).map(x => esc(String(x))).join(' · ');
+            return '<div class="row" style="padding:8px 12px;">' +
+                '<div style="font-size:15px;line-height:1.4;">' +
+                  (ev.is_event
+                    ? '<span class="badge" style="margin-right:6px;">' +
+                      esc(Lang.t('market.news_fact')) + '</span>'
+                    : '') + title +
+                '</div>' +
+                (meta ? '<div style="font-size:12px;color:var(--text-dim);margin-top:2px;">' +
+                    meta + '</div>' : '') +
+            '</div>';
+        }).join('');
+        // Transparence : on écarte des titres, on le dit.
+        const notes = [];
+        const adv = Number(news.filtered_advice) || 0;
+        const off = Number(news.filtered_offtopic) || 0;
+        if (adv) notes.push(Lang.t('market.news_filtered') + ' ' + adv);
+        if (off) notes.push(Lang.t('market.news_offtopic') + ' ' + off);
+        const stale = (news && Array.isArray(news.stale_sources)) ? news.stale_sources : [];
+        if (stale.length) notes.push(Lang.t('market.news_stale') + ' ' + stale.join(', '));
+        const failed = (news && Array.isArray(news.sources_failed)) ? news.sources_failed : [];
+        if (failed.length) {
+            notes.push(Lang.t('market.news_failed') + ' ' +
+                failed.map(f => (f && f.source) || '?').join(', '));
+        }
+        return head + alarmHtml + '<div class="row-list">' + rows + '</div>' +
+            (notes.length
+                ? '<div style="font-size:12px;color:var(--text-dim);margin-top:6px;">' +
+                  esc(notes.join(' · ')) + '</div>'
+                : '');
+    },
+
+    // --- les titres suivis --------------------------------------------------
+
+    _bFollowed(rows) {
+        const head = this._bHead('market.b_followed');
+        if (!Array.isArray(rows) || !rows.length) return head + this._bEmpty('market.followed_empty');
+        const mono = 'font-family:var(--font-mono);font-feature-settings:\'tnum\';';
+        return head + '<div class="row-list">' + rows.map(f => {
+            const n = Number(f.change_pct);
+            const dir = isFinite(n) ? n : 0;
+            return '<div class="row" style="display:flex;gap:12px;align-items:center;' +
+                   'flex-wrap:wrap;padding:8px 12px;">' +
+                '<div style="flex:1 1 180px;min-width:0;">' +
+                  '<div style="font-size:15px;font-weight:600;">' + esc(f.label || f.symbol || '') + '</div>' +
+                  '<div style="font-size:12px;color:var(--text-dim);' + mono + '">' + esc(f.symbol || '') + '</div>' +
+                '</div>' +
+                '<div style="' + mono + 'text-align:right;min-width:130px;">' +
+                  '<div style="font-size:16px;">' + esc(this._money(f.price, f.currency)) + '</div>' +
+                  '<div style="font-size:14px;color:' + this._color(dir) + ';">' +
+                    esc(this._fmtSigned(f.change_pct, 2, '%')) + '</div>' +
+                '</div>' +
+                (f.error ? '<span class="badge danger">' + esc(String(f.error)) + '</span>' : '') +
+            '</div>';
+        }).join('') + '</div>';
+    },
+
+    // ⚠️ La devise s'affiche TELLE QUE la source la rend : Shell cote en GBp
+    // (pence), 3 323,50 GBp = 33,24 £. Écrire « £ » serait faux d'un facteur 100.
+    _money(price, currency) {
+        if (price === null || price === undefined) return '—';
+        const txt = this._fmt(price, 2);
+        return currency ? (txt + ' ' + String(currency)) : txt;
+    },
+
+    // --- les nouveaux titres proposés ---------------------------------------
+
+    _bDiscovered(venue, rows) {
+        const head = this._bHead('market.b_discovered');
+        if (!Array.isArray(rows) || !rows.length) return head + this._bEmpty('market.discovered_empty');
+        const admin = this._isAdmin();
+        const mono = 'font-family:var(--font-mono);font-feature-settings:\'tnum\';';
+        return head +
+            '<div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">' +
+              esc(Lang.t('market.discovered_note')) + '</div>' +
+            '<div class="row-list">' + rows.map(c => {
+                return '<div class="row" style="display:flex;gap:12px;align-items:center;' +
+                       'flex-wrap:wrap;padding:8px 12px;">' +
+                    '<div style="flex:1 1 220px;min-width:0;">' +
+                      '<div style="font-size:15px;">' + esc(c.name || c.symbol || '') +
+                        ' <span style="' + mono + 'color:var(--text-dim);font-size:12px;">' +
+                        esc(c.symbol || '') + '</span></div>' +
+                      (c.headline ? '<div style="font-size:12px;color:var(--text-dim);margin-top:2px;">' +
+                        esc(c.headline) + '</div>' : '') +
+                    '</div>' +
+                    '<span class="badge" style="' + mono + '">' +
+                      esc(Lang.t('market.discovered_mentions') + ' ' + (Number(c.mentions) || 0)) + '</span>' +
+                    (admin
+                      ? '<button class="btn btn-sm" data-mkt-follow="' + esc(c.symbol || '') +
+                        '" data-mkt-venue="' + esc(venue || '') + '">' +
+                        esc(Lang.t('market.follow')) + '</button>'
+                      : '') +
+                '</div>';
+            }).join('') + '</div>';
+    },
+
+    // --- la synthèse ---------------------------------------------------------
+
+    _bSynthesis(a) {
+        const head = this._bHead('market.b_synthesis');
+        if (!a || !a.text) {
+            const why = (a && a.reason) ? (' (' + a.reason + ')') : '';
+            return head +
+                '<div style="font-size:14px;color:var(--text-muted);">' +
+                  esc(Lang.t('market.synthesis_degraded') + why) + '</div>';
+        }
+        return head +
+            '<div style="font-size:15px;line-height:1.65;background:var(--bg-elev-3);' +
+                 'padding:12px 14px;border-radius:var(--r-md);">' + esc(a.text) + '</div>' +
+            (a.model ? '<div style="font-size:11px;color:var(--text-dim);margin-top:4px;">' +
+                esc(a.model) + '</div>' : '');
     },
 
     // --- 1. Horloge des marchés, groupée par zone ---------------------------
@@ -551,6 +908,191 @@ const MarketModule = {
             '<div class="row-list">' + rows + '</div></div>';
     },
 
+    // =====================================================================
+    //  PHASE D — le sélecteur : quelles bourses, quels titres
+    // =====================================================================
+
+    async _loadPrefs() {
+        const host = document.getElementById('mkt-selector');
+        if (!host) return;
+        let r = null;
+        try { r = await Auth.apiCall('/api/bots/market/prefs'); } catch (e) { r = null; }
+        if (!r || !r.ok) { host.innerHTML = ''; return; }
+        let d = null;
+        try { d = await r.json(); } catch (e) { d = null; }
+        if (!d) { host.innerHTML = ''; return; }
+        this._prefs = d;
+        host.innerHTML = this._selectorHtml(d);
+        // Les briefings s'ordonnent selon les groupes d'ouverture : maintenant
+        // qu'on les connaît, on les redessine.
+        const bhost = document.getElementById('mkt-briefings');
+        if (bhost && this._briefings) bhost.innerHTML = this._briefingsHtml();
+    },
+
+    _selectorHtml(d) {
+        const admin = this._isAdmin();
+        const prefs = d.prefs || {};
+        const chosen = Array.isArray(prefs.borse) ? prefs.borse : [];
+        const titoli = (prefs.titoli && typeof prefs.titoli === 'object') ? prefs.titoli : {};
+        const opz = (prefs.opzioni && typeof prefs.opzioni === 'object') ? prefs.opzioni : {};
+        const rows = Array.isArray(d.exchanges) ? d.exchanges : [];
+        const fires = {};
+        (Array.isArray(d.groups) ? d.groups : []).forEach(g => {
+            (g.ids || []).forEach(id => { fires[id] = g.fires_at; });
+        });
+        const dis = admin ? '' : ' disabled';
+        const mono = 'font-family:var(--font-mono);font-feature-settings:\'tnum\';';
+
+        const venues = rows.map(x => {
+            const on = chosen.indexOf(x.id) >= 0;
+            const syms = Array.isArray(titoli[x.id]) ? titoli[x.id].join(', ') : '';
+            const places = (Array.isArray(x.places) && x.places.length)
+                ? x.places.map(p => p.city).join(' · ') : '';
+            return '<div style="border:1px solid var(--border);border-radius:var(--r-md);' +
+                        'padding:10px 12px;margin-bottom:8px;">' +
+                '<label style="display:flex;align-items:center;gap:9px;cursor:pointer;">' +
+                  '<input type="checkbox" class="mkt-ex" value="' + esc(x.id) + '"' +
+                    (on ? ' checked' : '') + dis +
+                    ' style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;" />' +
+                  '<span style="font-size:15px;font-weight:600;">' + esc(x.label || x.id) + '</span>' +
+                  '<span style="font-size:12px;color:var(--text-dim);' + mono + '">' +
+                    esc((x.index_label || '') + ' · ' + (x.opens_at || '')) +
+                    (fires[x.id] ? ' → ' + esc(Lang.t('market.fires_at')) + ' ' + esc(fires[x.id]) : '') +
+                  '</span>' +
+                '</label>' +
+                (places ? '<div style="font-size:11px;color:var(--text-dim);margin:3px 0 0 25px;">' +
+                    esc(places) + '</div>' : '') +
+                '<div style="margin:8px 0 0 25px;">' +
+                  '<label class="form-label" style="font-size:11px;">' +
+                    esc(Lang.t('market.selector_titles')) + '</label>' +
+                  '<input class="form-input mkt-sym" data-venue="' + esc(x.id) + '"' + dis +
+                    ' value="' + esc(syms) + '" placeholder="RACE.MI, ASML.AS" />' +
+                '</div>' +
+            '</div>';
+        }).join('');
+
+        const flag = (key, labelKey) =>
+            '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;">' +
+              '<input type="checkbox" class="mkt-opt" data-opt="' + esc(key) + '"' +
+                (opz[key] ? ' checked' : '') + dis +
+                ' style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;" />' +
+              '<span>' + esc(Lang.t(labelKey)) + '</span></label>';
+
+        const warn = (Array.isArray(d.warnings) && d.warnings.length)
+            ? '<div style="font-size:12px;color:var(--warning);margin-bottom:8px;">' +
+              d.warnings.map(w => esc(w)).join('<br>') + '</div>'
+            : '';
+
+        return '<div class="card" style="margin-bottom:14px;">' +
+            '<details' + (this._selectorOpen ? ' open' : '') +
+                ' ontoggle="MarketModule._selectorOpen=this.open">' +
+              '<summary style="cursor:pointer;font-size:17px;font-weight:600;padding:2px 0;">' +
+                esc(Lang.t('market.selector_title')) + '</summary>' +
+              '<div style="margin-top:12px;">' +
+                warn +
+                '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px;">' +
+                  esc(Lang.t('market.selector_hint')) + '</div>' +
+                venues +
+                '<div style="margin-top:12px;font-size:12px;letter-spacing:.06em;' +
+                     'text-transform:uppercase;color:var(--text-dim);">' +
+                  esc(Lang.t('market.selector_options')) + '</div>' +
+                '<div style="display:flex;gap:16px;flex-wrap:wrap;margin:8px 0 10px;">' +
+                  flag('reddit', 'market.opt_reddit') +
+                  flag('bluesky', 'market.opt_bluesky') +
+                  flag('x', 'market.opt_x') +
+                  flag('sintesi', 'market.opt_sintesi') +
+                  flag('scoperte', 'market.opt_scoperte') +
+                  flag('quaderno', 'market.opt_quaderno') +
+                '</div>' +
+                '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">' +
+                  '<div style="flex:0 1 150px;">' +
+                    '<label class="form-label">' + esc(Lang.t('market.opt_max_notizie')) + '</label>' +
+                    '<input id="mkt-max-notizie" class="form-input" type="number" min="1" max="50"' +
+                      dis + ' value="' + esc(String(opz.max_notizie || 10)) + '" />' +
+                  '</div>' +
+                  (admin
+                    ? '<button class="btn btn-primary" onclick="MarketModule.savePrefs()">' +
+                      esc(Lang.t('market.selector_save')) + '</button>'
+                    : '<span style="font-size:12px;color:var(--text-dim);">' +
+                      esc(Lang.t('market.selector_readonly')) + '</span>') +
+                  '<span id="mkt-pref-msg" style="font-size:12px;color:var(--text-dim);"></span>' +
+                '</div>' +
+              '</div>' +
+            '</details>' +
+        '</div>';
+    },
+
+    _selectorOpen: false,
+
+    // Lit l'état des cases et l'envoie. Le backend re-valide et RÉINSTALLE les
+    // réveils : décocher une bourse éteint vraiment son briefing du matin.
+    async savePrefs() {
+        const body = this._collectPrefs();
+        const msg = document.getElementById('mkt-pref-msg');
+        let r = null;
+        try {
+            r = await Auth.apiCall('/api/bots/market/prefs',
+                { method: 'POST', body: JSON.stringify(body) });
+        } catch (e) { r = null; }
+        if (!r || !r.ok) {
+            if (msg) msg.textContent = Lang.t('market.error');
+            return;
+        }
+        if (msg) msg.textContent = Lang.t('market.selector_saved');
+        await this._loadPrefs();
+    },
+
+    _collectPrefs() {
+        const borse = [];
+        document.querySelectorAll('#mkt-selector .mkt-ex').forEach(el => {
+            if (el.checked) borse.push(el.value);
+        });
+        const titoli = {};
+        document.querySelectorAll('#mkt-selector .mkt-sym').forEach(el => {
+            const venue = el.getAttribute('data-venue');
+            const syms = String(el.value || '').split(',')
+                .map(s => s.trim()).filter(Boolean);
+            if (venue && syms.length && borse.indexOf(venue) >= 0) titoli[venue] = syms;
+        });
+        const opzioni = {};
+        document.querySelectorAll('#mkt-selector .mkt-opt').forEach(el => {
+            opzioni[el.getAttribute('data-opt')] = !!el.checked;
+        });
+        const max = document.getElementById('mkt-max-notizie');
+        if (max) {
+            const n = parseInt(max.value, 10);
+            if (isFinite(n)) opzioni.max_notizie = n;
+        }
+        return { borse: borse, titoli: titoli, opzioni: opzioni };
+    },
+
+    // Depuis « nuovi titoli » : ajouter un symbole à la liste suivie. C'est LUI
+    // qui choisit — le bot ne fait que signaler ce qui est apparu.
+    async followSymbol(venue, symbol) {
+        if (!venue || !symbol || !this._prefs) return;
+        const prefs = this._prefs.prefs || {};
+        const borse = Array.isArray(prefs.borse) ? prefs.borse.slice() : [];
+        const titoli = {};
+        Object.keys(prefs.titoli || {}).forEach(k => { titoli[k] = (prefs.titoli[k] || []).slice(); });
+        titoli[venue] = titoli[venue] || [];
+        if (titoli[venue].indexOf(symbol) < 0) titoli[venue].push(symbol);
+        let r = null;
+        try {
+            r = await Auth.apiCall('/api/bots/market/prefs', {
+                method: 'POST',
+                body: JSON.stringify({ borse: borse, titoli: titoli, opzioni: prefs.opzioni || {} }),
+            });
+        } catch (e) { r = null; }
+        if (!r || !r.ok) {
+            if (typeof Toast !== 'undefined' && Toast.error) Toast.error(Lang.t('market.error'));
+            return;
+        }
+        if (typeof Toast !== 'undefined' && Toast.success) {
+            Toast.success(Lang.t('market.follow_added') + ' ' + symbol);
+        }
+        await this._loadPrefs();
+    },
+
     // ------------------------------------------------------------- planification
 
     async _loadSchedule() {
@@ -649,6 +1191,7 @@ const MarketModule = {
 
     refresh() {
         this._loadSnapshot();
+        this._loadBriefings();
     },
 
     back() {
@@ -675,6 +1218,7 @@ const MarketModule = {
             if (this._pollInterval) { clearInterval(this._pollInterval); this._pollInterval = null; }
             this._paintHeader();
             this._loadSnapshot();          // le run est fini : on relit les données fraîches
+            this._loadBriefings();         // ... y compris les briefings par bourse
         } else {
             this._running = true;
             this._paintHeader();
