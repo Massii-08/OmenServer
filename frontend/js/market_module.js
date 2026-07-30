@@ -47,6 +47,9 @@ const MarketModule = {
     unload() {
         if (this._pollInterval) { clearInterval(this._pollInterval); this._pollInterval = null; }
         if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
+        if (this._onKey) { document.removeEventListener('keydown', this._onKey); this._onKey = null; }
+        document.body.style.overflow = '';
+        this._clickBound = false;
     },
 
     _isAdmin() {
@@ -182,12 +185,14 @@ const MarketModule = {
              'background:var(--bg-elev-2);font-size:14px;line-height:1.5;">' +
           esc(Lang.t('market.disclaimer')) +
         '</div>' +
-        // Phase D : un bloc par bourse, puis le sélecteur. Conteneurs SÉPARÉS de
-        // #mkt-body, que le poll de l'horloge réécrit toutes les 60 s.
-        '<div id="mkt-briefings"></div>' +
+        // Phase D : le sélecteur, puis une TUILE par bourse. Conteneurs SÉPARÉS
+        // de #mkt-body, que le poll de l'horloge réécrit toutes les 60 s.
         '<div id="mkt-selector"></div>' +
+        '<div id="mkt-briefings"></div>' +
         '<div id="mkt-schedule"></div>' +
-        '<div id="mkt-body"><div class="card">' + esc(Lang.t('market.loading')) + '</div></div>';
+        '<div id="mkt-body"><div class="card">' + esc(Lang.t('market.loading')) + '</div></div>' +
+        // L'overlay : une seule instance, remplie au clic sur une tuile.
+        '<div id="mkt-overlay" style="display:none;"></div>';
     },
 
     // Un seul écouteur délégué sur le conteneur : les boutons porteurs de DONNÉES
@@ -196,12 +201,24 @@ const MarketModule = {
     _bindClicks() {
         if (this._clickBound || !this._container) return;
         this._container.addEventListener('click', (ev) => {
-            const btn = ev.target && ev.target.closest ? ev.target.closest('[data-mkt-follow]') : null;
-            if (!btn) return;
-            ev.preventDefault();
-            this.followSymbol(btn.getAttribute('data-mkt-venue'),
-                              btn.getAttribute('data-mkt-follow'));
+            const t = (ev.target && ev.target.closest) ? ev.target : null;
+            if (!t) return;
+            const follow = t.closest('[data-mkt-follow]');
+            if (follow) {
+                ev.preventDefault();
+                ev.stopPropagation();          // ne pas ouvrir l'overlay au passage
+                this.followSymbol(follow.getAttribute('data-mkt-venue'),
+                                  follow.getAttribute('data-mkt-follow'));
+                return;
+            }
+            if (t.closest('[data-mkt-close]')) { ev.preventDefault(); this.closeOverlay(); return; }
+            const tile = t.closest('[data-mkt-open]');
+            if (tile) { ev.preventDefault(); this.openOverlay(tile.getAttribute('data-mkt-open')); }
         });
+        // Échap ferme : c'est le réflexe de tout le monde, et sur mobile le
+        // bouton ✕ reste le chemin visible.
+        this._onKey = (ev) => { if (ev.key === 'Escape') this.closeOverlay(); };
+        document.addEventListener('keydown', this._onKey);
         this._clickBound = true;
     },
 
@@ -330,14 +347,10 @@ const MarketModule = {
         host.innerHTML = this._briefingsHtml();
     },
 
-    _briefingsHtml() {
+    _briefingKeys() {
         const d = this._briefings;
         const map = (d && d.briefings && typeof d.briefings === 'object') ? d.briefings : null;
         const keys = map ? Object.keys(map) : [];
-        if (!keys.length) {
-            return '<div class="card" style="margin-bottom:14px;color:var(--text-muted);">' +
-                esc(Lang.t('market.no_briefings')) + '</div>';
-        }
         // Les places dans l'ordre de leur ouverture : l'Asie, puis l'Europe,
         // puis New York — l'ordre dans lequel la journée s'est déroulée.
         const order = this._exchangeOrder();
@@ -345,7 +358,82 @@ const MarketModule = {
             const ia = order.indexOf(a), ib = order.indexOf(b);
             return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
         });
-        return keys.map(k => this._briefingCard(map[k])).join('');
+        return keys;
+    },
+
+    // Une TUILE par bourse : le nom, les points, la variation, l'état. Tout le
+    // reste vit derrière le clic — la page d'accueil doit tenir d'un coup d'œil.
+    _briefingsHtml() {
+        const map = (this._briefings && this._briefings.briefings) || null;
+        const keys = this._briefingKeys();
+        if (!keys.length) {
+            return '<div class="card" style="margin-bottom:14px;color:var(--text-muted);">' +
+                esc(Lang.t('market.no_briefings')) + '</div>';
+        }
+        return '<div style="display:grid;gap:12px;margin-bottom:14px;' +
+                    'grid-template-columns:repeat(auto-fill,minmax(210px,1fr));">' +
+            keys.map(k => this._tile(map[k])).join('') + '</div>';
+    },
+
+    _tile(b) {
+        if (!b || typeof b !== 'object') return '';
+        const m = b.index || {};
+        const ch = this._change(m);
+        const status = (m.clock && m.clock.status) || 'unknown';
+        const state = status === 'open' ? Lang.t('market.status_open')
+            : (status === 'closed' ? Lang.t('market.status_closed')
+            : Lang.t('market.status_unknown'));
+        const mono = 'font-family:var(--font-mono);font-feature-settings:\'tnum\';';
+        return '<button class="card" data-mkt-open="' + esc(b.exchange || '') + '" ' +
+               'style="text-align:left;cursor:pointer;padding:14px;margin:0;width:100%;' +
+                      'display:flex;flex-direction:column;gap:6px;border:1px solid var(--border);' +
+                      'background:var(--bg-elev-1);color:var(--text);font:inherit;">' +
+            '<div style="display:flex;align-items:baseline;gap:8px;">' +
+              '<span style="font-size:17px;font-weight:600;">' + esc(b.label || b.exchange || '') + '</span>' +
+              '<span class="badge' + (status === 'open' ? ' online' : '') +
+                '" style="margin-left:auto;">' + esc(state) + '</span>' +
+            '</div>' +
+            '<div style="font-size:12px;color:var(--text-dim);">' +
+              esc(m.label || (b.session && b.session.opens_at) || '') + '</div>' +
+            '<div style="display:flex;align-items:baseline;gap:10px;' + mono + '">' +
+              '<span style="font-size:22px;">' + esc(this._price(m)) + '</span>' +
+              '<span style="font-size:15px;color:' + this._color(ch.dir) + ';">' + esc(ch.txt) + '</span>' +
+            '</div>' +
+            '<div style="font-size:12px;color:var(--accent);">' + esc(Lang.t('market.tile_open')) + '</div>' +
+        '</button>';
+    },
+
+    // ------------------------------------------------------------- overlay
+
+    openOverlay(id) {
+        const map = (this._briefings && this._briefings.briefings) || null;
+        const b = (map && id) ? map[id] : null;
+        const host = document.getElementById('mkt-overlay');
+        if (!b || !host) return;
+        host.innerHTML =
+            '<div data-mkt-close="1" style="position:fixed;inset:0;z-index:9000;' +
+                 'background:rgba(0,0,0,.72);display:flex;align-items:flex-start;' +
+                 'justify-content:center;padding:24px 12px;overflow:auto;">' +
+              // Le contenu ne ferme PAS au clic : seul le fond et le ✕ ferment.
+              '<div onclick="event.stopPropagation()" class="card" ' +
+                   'style="max-width:900px;width:100%;margin:0;position:relative;">' +
+                '<button class="btn btn-ghost" data-mkt-close="1" ' +
+                        'style="position:absolute;top:10px;right:10px;z-index:1;">' +
+                  esc(Lang.t('market.close')) + '</button>' +
+                this._briefingCard(b, true) +
+              '</div>' +
+            '</div>';
+        host.style.display = '';
+        // La page de dessous ne doit pas défiler pendant qu'on lit l'overlay.
+        document.body.style.overflow = 'hidden';
+        this._openId = id;
+    },
+
+    closeOverlay() {
+        const host = document.getElementById('mkt-overlay');
+        if (host) { host.innerHTML = ''; host.style.display = 'none'; }
+        document.body.style.overflow = '';
+        this._openId = null;
     },
 
     _exchangeOrder() {
@@ -355,7 +443,9 @@ const MarketModule = {
         return out;
     },
 
-    _briefingCard(b) {
+    // `bare` : dans l'overlay le cadre est déjà porté par la fenêtre, on ne
+    // remet pas une carte dans une carte.
+    _briefingCard(b, bare) {
         if (!b || typeof b !== 'object') return '';
         const s = b.session || {};
         const hours = [];
@@ -365,10 +455,11 @@ const MarketModule = {
             hours.push(Lang.t('market.session_lunch') + ' ' + s.lunch[0] + '–' + s.lunch[1]);
         }
         const mono = 'font-family:var(--font-mono);font-feature-settings:\'tnum\';';
-        return '<div class="card" style="margin-bottom:14px;">' +
+        return (bare ? '<div>' : '<div class="card" style="margin-bottom:14px;">') +
             // --- le nom de la bourse : tout ce qui suit lui appartient ---
             '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;' +
-                 'border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:12px;">' +
+                 'border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:12px;' +
+                 (bare ? 'padding-right:110px;' : '') + '">' +
               '<h3 style="margin:0;font-size:20px;">' + esc(b.label || b.exchange || '') + '</h3>' +
               (b.country ? '<span style="font-size:13px;color:var(--text-muted);">' +
                   esc(b.country) + '</span>' : '') +
@@ -462,7 +553,7 @@ const MarketModule = {
                   'style="color:var(--text);text-decoration:none;border-bottom:1px dotted var(--border-strong);">' +
                   esc(e.what || '') + '</a>'
                 : esc(e.what || '');
-            return '<div class="row" style="padding:8px 12px;">' +
+            return '<div class="row" style="padding:8px 12px;display:block;">' +
                 '<div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;">' +
                   '<span style="' + mono + 'color:var(--accent);font-size:13px;">' +
                     esc(this._agendaWhen(e)) + '</span>' +
@@ -518,22 +609,45 @@ const MarketModule = {
         const rows = items.slice(0, 14).map(it => {
             const ev = (it && it.event) ? it.event : {};
             const url = this._safeUrl(it.url);
-            const shown = this._headline(it.title);
+            // `title_display` porte la traduction quand il y en a une ; le titre
+            // d'origine reste intact et reste consultable juste dessous.
+            const shown = this._headline(it.title_display || it.title);
             const title = url
                 ? '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer" ' +
                   'style="color:var(--text);text-decoration:none;">' + esc(shown) + '</a>'
                 : esc(shown);
             const meta = [it.source, it.published ? this._dateTime(it.published) : '']
                 .filter(Boolean).map(x => esc(String(x))).join(' · ');
-            return '<div class="row" style="padding:8px 12px;">' +
+            // Une news étrangère qu'on n'a PAS su traduire est montrée quand
+            // même, et signalée : la masquer ferait un briefing creux qui a
+            // l'air normal.
+            const flag = it.translated
+                ? '<span style="font-size:11px;color:var(--text-dim);">' +
+                  esc(Lang.t('market.news_translated')) +
+                  (it.lang ? ' · ' + esc(String(it.lang)) : '') + '</span>'
+                : (it.needs_translation
+                    ? '<span class="badge warn" style="font-size:11px;">' +
+                      esc(Lang.t('market.news_untranslated')) + '</span>'
+                    : '');
+            // ⚠️ `display:block` explicite : `.row` du design system est un
+            // conteneur FLEX, donc ces trois enfants se mettaient côte à côte —
+            // le titre d'origine finissait en colonne d'un mot de large.
+            return '<div class="row" style="padding:8px 12px;display:block;">' +
                 '<div style="font-size:15px;line-height:1.4;">' +
                   (ev.is_event
                     ? '<span class="badge" style="margin-right:6px;">' +
                       esc(Lang.t('market.news_fact')) + '</span>'
                     : '') + title +
                 '</div>' +
-                (meta ? '<div style="font-size:12px;color:var(--text-dim);margin-top:2px;">' +
-                    meta + '</div>' : '') +
+                (it.translated
+                    ? '<div style="font-size:12px;color:var(--text-dim);margin-top:3px;' +
+                           'font-style:italic;">' + esc(this._headline(it.title, 140)) + '</div>'
+                    : '') +
+                ((meta || flag)
+                    ? '<div style="font-size:12px;color:var(--text-dim);margin-top:2px;' +
+                           'display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
+                      meta + flag + '</div>'
+                    : '') +
             '</div>';
         }).join('');
         // Transparence : on écarte des titres, on le dit.
@@ -1010,6 +1124,16 @@ const MarketModule = {
                     '<input id="mkt-max-notizie" class="form-input" type="number" min="1" max="50"' +
                       dis + ' value="' + esc(String(opz.max_notizie || 10)) + '" />' +
                   '</div>' +
+                  // La langue de LECTURE : les titres étrangers y sont traduits.
+                  '<div style="flex:0 1 190px;">' +
+                    '<label class="form-label">' + esc(Lang.t('market.opt_lingua')) + '</label>' +
+                    '<select id="mkt-lingua" class="form-input"' + dis + '>' +
+                      ['it', 'fr', 'en'].map(code =>
+                        '<option value="' + code + '"' +
+                        ((opz.lingua || 'it') === code ? ' selected' : '') + '>' +
+                        esc(Lang.t('market.lingua_' + code)) + '</option>').join('') +
+                    '</select>' +
+                  '</div>' +
                   (admin
                     ? '<button class="btn btn-primary" onclick="MarketModule.savePrefs()">' +
                       esc(Lang.t('market.selector_save')) + '</button>'
@@ -1063,6 +1187,8 @@ const MarketModule = {
             const n = parseInt(max.value, 10);
             if (isFinite(n)) opzioni.max_notizie = n;
         }
+        const lingua = document.getElementById('mkt-lingua');
+        if (lingua && lingua.value) opzioni.lingua = lingua.value;
         return { borse: borse, titoli: titoli, opzioni: opzioni };
     },
 

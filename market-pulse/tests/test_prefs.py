@@ -99,3 +99,29 @@ def test_the_example_file_lists_the_available_exchanges(tmp_path):
     data = json.load(io.open(path, encoding="utf-8"))
     assert "euronext" in data["_borse_disponibili"]
     assert "_come_usare" in data
+
+
+# --------------------------------------------------------------------------
+# La langue de lecture — « on ne sait pas lire du chinois »
+# --------------------------------------------------------------------------
+
+def test_the_reading_language_defaults_to_italian():
+    prefs, _warnings = validate({})
+    assert prefs["opzioni"]["lingua"] == "it"
+
+
+def test_the_reading_language_can_be_changed():
+    prefs, warnings = validate({"opzioni": {"lingua": "fr"}})
+    assert prefs["opzioni"]["lingua"] == "fr"
+    assert warnings == []
+
+
+def test_an_unsupported_language_falls_back_and_SAYS_so():
+    prefs, warnings = validate({"opzioni": {"lingua": "kr"}})
+    assert prefs["opzioni"]["lingua"] == "it"
+    assert any("lingua" in w for w in warnings), warnings
+
+
+def test_the_language_is_normalised():
+    prefs, _w = validate({"opzioni": {"lingua": "  FR  "}})
+    assert prefs["opzioni"]["lingua"] == "fr"

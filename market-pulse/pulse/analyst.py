@@ -151,9 +151,23 @@ def compact(briefing: Dict[str, Any], max_news: int = 8) -> Dict[str, Any]:
     }
 
 
-def build_prompt(briefing: Dict[str, Any]) -> str:
-    """Le prompt : les faits, et l'interdiction, explicitement."""
+def build_prompt(briefing: Dict[str, Any], lang: Optional[str] = None) -> str:
+    """Le prompt : les faits, et l'interdiction, explicitement.
+
+    Si `lang` est donné, le MÊME appel demande aussi la traduction des titres
+    étrangers — décision de Massii : « on ne sait pas lire du chinois », et la
+    traduction ne doit coûter aucune requête de plus.
+    """
+    from .translate import build_prompt as translation_block
+    from .translate import to_translate
+
     facts = json.dumps(compact(briefing), ensure_ascii=False, indent=1, default=str)
+    pairs = to_translate(((briefing.get("news") or {}).get("items") or []), lang) \
+        if lang else []
+    shape = ("{\"synthesis\": \"il tuo testo\", \"traduzioni\": "
+             "{\"numero del titolo\": \"traduzione\"}}") if pairs \
+        else "{\"synthesis\": \"il tuo testo\"}"
+    extra = ("\n\n" + translation_block(pairs, lang)) if pairs else ""
     return (
         "Sei un redattore che scrive per un investitore privato anziano, in "
         "ITALIANO semplice, senza gergo inglese.\n\n"
@@ -167,8 +181,8 @@ def build_prompt(briefing: Dict[str, Any]) -> str:
         "nessuna previsione su dove andrà un corso. Descrivi ciò che è "
         "accaduto, mai ciò che accadrà.\n"
         "- Nessuna opinione personale, nessun superlativo.\n\n"
-        "Rispondi in JSON: {\"synthesis\": \"il tuo testo\"}\n\n"
-        "FATTI:\n" + facts
+        "Rispondi in JSON: " + shape + "\n\n"
+        "FATTI:\n" + facts + extra
     )
 
 
@@ -207,23 +221,34 @@ def _claude(prompt: str, model: str = DEFAULT_MODEL, timeout: int = 180,
 
 def analyse(briefing: Optional[Dict[str, Any]],
             claude: Optional[Callable[..., Any]] = None,
-            model: str = DEFAULT_MODEL) -> Dict[str, Any]:
-    """Synthèse italienne du briefing. Ne lève JAMAIS.
+            model: str = DEFAULT_MODEL,
+            lang: Optional[str] = None) -> Dict[str, Any]:
+    """Synthèse italienne du briefing, et traduction des titres. Ne lève JAMAIS.
 
-    Rend `{"text": str|None, "model": str, "degraded": bool, "reason": str|None}`.
+    Rend `{"text", "model", "degraded", "reason", "titles"}`.
+
+    ⚠️ Les deux sorties dégradent **indépendamment** : une synthèse qui dérape
+    ne doit pas coûter des titres parfaitement traduits, et l'inverse non plus.
     """
-    result = {"text": None, "model": model, "degraded": True, "reason": None}
+    from .translate import parse_response
+
+    result = {"text": None, "model": model, "degraded": True, "reason": None,
+              "titles": {}}
     if not briefing:
         result["reason"] = "nessun briefing da sintetizzare"
         return result
 
     caller = claude or _claude
     try:
-        answer = caller(build_prompt(briefing), model=model)
+        answer = caller(build_prompt(briefing, lang), model=model)
     except Exception as e:
         # Le LLM est un LUXE : son absence ne doit jamais coûter le briefing.
         result["reason"] = "%s: %s" % (type(e).__name__, e)
         return result
+
+    # La traduction est récupérée AVANT le contrôle de la synthèse : les deux
+    # voyagent ensemble mais ne se tiennent pas par la main.
+    result["titles"] = parse_response(answer) if lang else {}
 
     text = answer.get("synthesis") if isinstance(answer, dict) else None
     ok, reason = check_synthesis(text, briefing)

@@ -143,6 +143,7 @@ def _briefings(args, snap, now):
     from pulse.resolve import make_resolver
     from pulse.exchanges import by_id, opening_groups
     from pulse.news import collect_news
+    from pulse.translate import apply as translate_apply
     from pulse.vault import write_note
 
     conf, warnings = _prefs.load(args.prefs)
@@ -205,9 +206,24 @@ def _briefings(args, snap, now):
         brief = build_briefing(exchange=venue, snapshot=snap, news=news,
                                agenda=for_venue(agenda["events"], venue.id),
                                followed=followed, discovered=found, now_ts=now)
-        analysis = analyse(brief) if opz["sintesi"] else {
-            "text": None, "model": None, "degraded": True,
+
+        # ⚠️ La traduction se demande APRÈS l'assemblage : c'est `build_briefing`
+        # qui reclasse les news (les faits d'abord), donc c'est seulement ici que
+        # les INDEX correspondent à ce que le lecteur verra. Traduire la liste de
+        # collecte donnerait les bonnes phrases sur les mauvais titres.
+        lingua = opz.get("lingua") or "it"
+        analysis = analyse(brief, lang=lingua) if opz["sintesi"] else {
+            "text": None, "model": None, "degraded": True, "titles": {},
             "reason": "sintesi disattivata nelle preferenze"}
+        items, tstats = translate_apply(brief["news"]["items"],
+                                        analysis.get("titles") or {}, lingua)
+        brief["news"]["items"] = items
+        brief["news"]["lingua"] = lingua
+        brief["news"]["translated"] = tstats["translated"]
+        brief["news"]["untranslated"] = tstats["untranslated"]
+        # Un conseil d'achat qui ne se révélait qu'une fois traduit compte dans
+        # le même compteur de transparence que les autres.
+        brief["news"]["filtered_advice"] += tstats["dropped_advice"]
         brief["analysis"] = analysis
 
         if opz["quaderno"]:
@@ -217,10 +233,12 @@ def _briefings(args, snap, now):
 
         out[venue.id] = brief
         idx = brief.get("index") or {}
-        print("   %-16s %-22s %s | notizie %d (social %d) | agenda %d | sintesi %s"
+        print("   %-16s %-22s %s | notizie %d (social %d, tradotte %d/%d) | "
+              "agenda %d | sintesi %s"
               % (venue.id, idx.get("label") or "n/d",
                  ("%+.2f%%" % idx["change_pct"]) if idx.get("change_pct") is not None else "n/d",
                  len(brief["news"]["items"]), len(social["items"]) if social else 0,
+                 tstats["translated"], tstats["translated"] + tstats["untranslated"],
                  len(brief["agenda"]),
                  "no" if analysis["degraded"] else "si"))
 

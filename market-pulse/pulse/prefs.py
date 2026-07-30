@@ -50,6 +50,11 @@ DEFAULT_OPZIONI = {
     "scoperte": True,        # la liste de nouveaux titres apparus
     "quaderno": True,        # écrire la note dans le coffre Obsidian
     "max_notizie": 10,
+    # La langue dans laquelle on LIT les titres. La presse locale de chaque
+    # place est en japonais, en chinois, en allemand… ; les titres étrangers
+    # sont traduits vers cette langue, dans le même appel LLM que la synthèse
+    # (donc sans requête supplémentaire).
+    "lingua": "it",
 }
 
 _KNOWN_TOP = {"borse", "titoli", "opzioni"}
@@ -121,7 +126,15 @@ def validate(raw: Optional[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[str]]:
                 warnings.append("option inconnue ignorée : %r" % key)
                 continue
             expected = DEFAULT_OPZIONI[key]
-            if isinstance(expected, bool):
+            if key == "lingua":
+                from .translate import SUPPORTED
+                candidate = str(value or "").strip().lower()
+                if candidate in SUPPORTED:
+                    opzioni[key] = candidate
+                else:
+                    warnings.append("lingua sconosciuta %r — attesa %s"
+                                    % (value, "/".join(SUPPORTED)))
+            elif isinstance(expected, bool):
                 if isinstance(value, bool):
                     opzioni[key] = value
                 else:

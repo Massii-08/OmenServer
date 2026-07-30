@@ -35,6 +35,11 @@ from typing import Any, Dict, List, Optional, Tuple
 # récent). Le catalogue complet des 154 flux vit dans
 # docs/superpowers/specs/2026-07-29-market-pulse-sources-locales.md ; on garde
 # ici les deux à quatre plus solides par place.
+#
+# ⚠️ Les requêtes Bluesky font AU MOINS deux mots, toujours. La recherche n'a
+# aucune notion de sujet ni de pays : « nikkei » seul a ramené « SJ Nikkei
+# Resisters » et un post personnel sur la bulle IA sous le nom de la Bourse de
+# Tokyo, et « borsa » rendait 50 % de posts turcs. Un test verrouille la règle.
 _F = lambda name, url, lang: {"name": name, "url": url, "lang": lang}  # noqa: E731
 
 
@@ -98,7 +103,7 @@ DEFAULT_EXCHANGES: List[Exchange] = [
         feeds=(_F("CNBC Mercati", "https://www.cnbc.com/id/15839135/device/rss/rss.html", "en"),
                _F("MarketWatch", "https://feeds.marketwatch.com/marketwatch/topstories/", "en")),
         reddit_subs=("stocks", "wallstreetbets"),
-        bluesky_queries=("nasdaq", "tech stocks"),
+        bluesky_queries=("nasdaq composite", "tech stocks"),
     ),
     Exchange(
         id="jpx", label="JPX", country="Giappone",
@@ -110,7 +115,7 @@ DEFAULT_EXCHANGES: List[Exchange] = [
                   "https://news.google.com/rss/search?q=%E6%97%A5%E7%B5%8C%E5%B9%B3%E5%9D%87"
                   "+when:1d&hl=ja&gl=JP&ceid=JP:ja", "ja")),
         reddit_subs=("JapanFinance",),
-        bluesky_queries=("nikkei",),
+        bluesky_queries=("nikkei 225", "tokyo stocks"),
     ),
     Exchange(
         id="euronext", label="Euronext", country="Area euro (NL, FR, BE, PT, IE, IT, NO)",
@@ -172,7 +177,7 @@ DEFAULT_EXCHANGES: List[Exchange] = [
                   "https://news.google.com/rss/search?q=Nifty+50+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
                   "en")),
         reddit_subs=("IndiaInvestments",),
-        bluesky_queries=("nifty",),
+        bluesky_queries=("nifty 50",),
     ),
     Exchange(
         id="szse", label="SZSE", country="Cina (Shenzhen)",
@@ -195,7 +200,7 @@ DEFAULT_EXCHANGES: List[Exchange] = [
                   "https://news.google.com/rss/search?q=DAX+B%C3%B6rse+when:1d&hl=de&gl=DE&ceid=DE:de",
                   "de")),
         reddit_subs=("Finanzen",),
-        bluesky_queries=("dax",),
+        bluesky_queries=("dax index", "borse dax"),
     ),
 ]
 

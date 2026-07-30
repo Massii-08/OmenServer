@@ -232,3 +232,92 @@ def test_an_index_is_sent_without_a_currency():
                                                   "currency": "EUR"}})
     assert "currency" not in got["indice"]
     assert got["indice"]["price"] == 1907.2
+
+
+# --------------------------------------------------------------------------
+# La traduction voyage dans le MÊME appel que la synthèse
+# --------------------------------------------------------------------------
+#
+# Décision de Massii : la traduction ne doit coûter aucune requête de plus.
+# Le même appel rend la synthèse ET les titres traduits.
+
+def _brief_with_foreign_news():
+    return {
+        "label": "JPX",
+        "session": {"opens_at": "09:00"},
+        "index": {"label": "Nikkei 225", "price": 61867.43, "change_pct": 0.71},
+        "comparison": [], "agenda": [],
+        "news": {"items": [
+            {"title": "Piazza Affari apre in rialzo", "lang": "it",
+             "source": "Il Sole", "url": "https://x.test/1"},
+            {"title": "日経平均は上昇", "lang": "ja",
+             "source": "NHK", "url": "https://x.test/2"},
+        ]},
+    }
+
+
+def test_the_prompt_carries_the_foreign_titles_when_a_language_is_asked():
+    from pulse.analyst import build_prompt
+    prompt = build_prompt(_brief_with_foreign_news(), lang="it")
+    assert "日経平均は上昇" in prompt
+    assert "traduzioni" in prompt.lower()
+
+
+def test_the_prompt_stays_UNCHANGED_when_nothing_needs_translating():
+    from pulse.analyst import build_prompt
+    brief = _brief_with_foreign_news()
+    brief["news"]["items"] = [{"title": "Piazza Affari apre", "lang": "it"}]
+    assert "traduzioni" not in build_prompt(brief, lang="it").lower()
+
+
+def test_analyse_returns_the_translated_titles():
+    from pulse.analyst import analyse
+
+    def fake_claude(prompt, model=None, **kw):
+        return {"synthesis": "Il Nikkei ha chiuso in rialzo dello 0,71%.",
+                "traduzioni": {"1": "Il Nikkei 225 sale"}}
+
+    got = analyse(_brief_with_foreign_news(), claude=fake_claude, lang="it")
+    assert got["degraded"] is False
+    assert got["titles"] == {1: "Il Nikkei 225 sale"}
+
+
+def test_a_rejected_synthesis_does_not_throw_away_the_translations():
+    """Les deux sorties dégradent INDÉPENDAMMENT.
+
+    Une synthèse qui dérape ne doit pas coûter des titres parfaitement traduits
+    — et l'inverse non plus.
+    """
+    from pulse.analyst import analyse
+
+    def prescriptive(prompt, model=None, **kw):
+        return {"synthesis": "Conviene comprare adesso.",
+                "traduzioni": {"1": "Il Nikkei 225 sale"}}
+
+    got = analyse(_brief_with_foreign_news(), claude=prescriptive, lang="it")
+    assert got["text"] is None and got["degraded"] is True
+    assert got["titles"] == {1: "Il Nikkei 225 sale"}
+
+
+def test_no_llm_at_all_yields_no_translation_and_no_crash():
+    from pulse.analyst import analyse
+
+    def broken(prompt, model=None, **kw):
+        raise RuntimeError("claude introuvable")
+
+    got = analyse(_brief_with_foreign_news(), claude=broken, lang="it")
+    assert got["text"] is None
+    assert got["titles"] == {}
+    assert got["degraded"] is True
+
+
+def test_the_synthesis_still_works_exactly_as_before_without_a_language():
+    # Rétro-compatibilité : les appels existants ne passent pas `lang`.
+    from pulse.analyst import analyse
+
+    def fake(prompt, model=None, **kw):
+        return {"synthesis": "Il Nikkei ha chiuso in rialzo dello 0,71%."}
+
+    got = analyse(_brief_with_foreign_news(), claude=fake)
+    assert got["degraded"] is False
+    assert got["titles"] == {}

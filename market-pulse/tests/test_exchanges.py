@@ -186,3 +186,20 @@ def test_exchange_can_be_built_ad_hoc():
                  feeds=({"name": "F", "url": "https://x.test/f", "lang": "it"},))
     assert e.lunch is None and e.places == ()
     assert session_windows(e) == [("09:00", None)]
+
+
+def test_no_bluesky_query_is_a_single_bare_word():
+    """La recherche Bluesky n'a aucune notion de sujet ni de pays.
+
+    Mesuré au premier run réel : la requête « nikkei » a ramené « SJ Nikkei
+    Resisters », « l'article du Nikkei qu'ils résument mal » et un post
+    personnel sur la bulle IA — sous le nom de la Bourse de Tokyo. Le spec le
+    disait déjà : une requête d'un seul mot commun est presque toujours un
+    piège (« borsa » rendait 50 % de posts turcs).
+    """
+    from pulse.exchanges import DEFAULT_EXCHANGES
+    for exchange in DEFAULT_EXCHANGES:
+        for query in exchange.bluesky_queries:
+            assert len(query.split()) >= 2, (
+                "%s : requête « %s » trop large — ajoute un qualifiant"
+                % (exchange.id, query))
