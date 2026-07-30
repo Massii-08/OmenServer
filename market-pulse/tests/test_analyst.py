@@ -189,3 +189,46 @@ def test_the_compacted_prompt_still_carries_every_fact_needed():
     assert small["indice"]["change_pct"] == 0.35
     assert small["altre_piazze"][0]["nome"] == "Nikkei 225"
     assert small["agenda"][0]["cosa"].startswith("BCE")
+
+
+# --------------------------------------------------------------------------
+# Où est le CLI — le chemin n'est pas le même sur les deux machines
+# --------------------------------------------------------------------------
+
+def test_claude_bin_honours_the_environment_variable(monkeypatch):
+    monkeypatch.setenv("CLAUDE_BIN", "/opt/mon/claude")
+    from pulse.analyst import claude_bin
+    assert claude_bin() == "/opt/mon/claude"
+
+
+def test_claude_bin_falls_back_to_the_PATH_when_the_omen_path_is_absent(monkeypatch):
+    """Codé en dur sur `~/.local/bin/claude`, la synthèse tombait en mode
+    dégradé SILENCIEUX sur le Mac de dev (le CLI y vit dans le nvm)."""
+    monkeypatch.delenv("CLAUDE_BIN", raising=False)
+    import pulse.analyst as mod
+    monkeypatch.setattr(mod.os.path, "exists", lambda p: False)
+    monkeypatch.setattr("shutil.which", lambda name: "/ailleurs/bin/claude")
+    assert mod.claude_bin() == "/ailleurs/bin/claude"
+
+
+def test_claude_bin_still_names_a_path_when_nothing_is_found(monkeypatch):
+    # L'erreur doit dire QUEL chemin a été tenté, pas rendre None.
+    monkeypatch.delenv("CLAUDE_BIN", raising=False)
+    import pulse.analyst as mod
+    monkeypatch.setattr(mod.os.path, "exists", lambda p: False)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    assert mod.claude_bin().endswith("claude")
+
+
+def test_an_index_is_sent_without_a_currency():
+    """Un indice est un NIVEAU, pas un montant.
+
+    Yahoo étiquette ^N100 en EUR ; au premier passage réel le LLM a écrit
+    « l'indice Euronext 100 a 1907,2 euro ». On ne lui donne plus l'occasion.
+    """
+    from pulse.analyst import compact
+    got = compact({"label": "Euronext", "index": {"label": "Euronext 100",
+                                                  "price": 1907.2, "change_pct": 0.39,
+                                                  "currency": "EUR"}})
+    assert "currency" not in got["indice"]
+    assert got["indice"]["price"] == 1907.2

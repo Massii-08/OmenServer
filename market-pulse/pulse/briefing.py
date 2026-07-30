@@ -121,6 +121,10 @@ def build_briefing(exchange: Optional[Exchange],
             # Compteurs de transparence : on écarte des titres, on le dit.
             "filtered_advice": src.get("filtered_advice") or 0,
             "filtered_offtopic": src.get("filtered_offtopic") or 0,
+            # Alarmes de collecte (ex. : X a changé sa sérialisation). Elles
+            # DOIVENT traverser jusqu'à l'écran : une source muette rendrait un
+            # briefing vide qui ressemble à « il n'y avait rien à dire ».
+            "alarms": list(src.get("alarms") or []),
         },
         "followed": list(followed or []),
         "discovered": list(discovered or []),

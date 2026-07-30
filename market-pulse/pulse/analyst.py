@@ -29,7 +29,28 @@ import subprocess
 from typing import Any, Callable, Dict, Optional, Tuple
 
 DEFAULT_MODEL = "claude-sonnet-5"
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN") or os.path.expanduser("~/.local/bin/claude")
+
+
+def claude_bin() -> str:
+    """Chemin du CLI Claude, cherché dans cet ordre : `CLAUDE_BIN`, l'emplacement
+    de l'Omen, puis le `PATH`.
+
+    ⚠️ Le chemin n'est PAS le même partout : `~/.local/bin/claude` sur l'Omen,
+    mais dans le nvm sur le Mac de dev. Codé en dur, la synthèse tombait
+    silencieusement en mode dégradé sur l'une des deux machines — et un mode
+    dégradé silencieux, c'est une fonctionnalité morte qui a l'air de marcher.
+    """
+    from shutil import which
+    explicit = os.environ.get("CLAUDE_BIN")
+    if explicit:
+        return explicit
+    omen = os.path.expanduser("~/.local/bin/claude")
+    if os.path.exists(omen):
+        return omen
+    return which("claude") or omen      # l'échec dira quel chemin a été tenté
+
+
+CLAUDE_BIN = claude_bin()
 
 # Vocabulaire prescriptif ou prédictif. Volontairement dupliqué du test du
 # rapport : là-bas c'est un PIN indépendant, ici un contrôle d'exécution. Si
@@ -114,8 +135,12 @@ def compact(briefing: Dict[str, Any], max_news: int = 8) -> Dict[str, Any]:
     return {
         "borsa": briefing.get("label"),
         "apertura": (briefing.get("session") or {}).get("opens_at"),
+        # ⚠️ PAS de `currency` ici : un indice est un NIVEAU, pas un montant.
+        # Yahoo étiquette pourtant ^N100 en EUR, et le LLM a écrit « l'indice
+        # Euronext 100 a 1907,2 euro » au premier passage réel. Ne pas lui donner
+        # une devise, c'est lui retirer l'occasion de se tromper.
         "indice": {k: (briefing.get("index") or {}).get(k)
-                   for k in ("label", "price", "change_pct", "currency")}
+                   for k in ("label", "price", "change_pct")}
                   if briefing.get("index") else None,
         "altre_piazze": [{"nome": c.get("label"), "var": c.get("change_pct"),
                           "stato": c.get("state")}
@@ -161,7 +186,7 @@ def _claude(prompt: str, model: str = DEFAULT_MODEL, timeout: int = 180,
     doit être hermétique — le prompt suffit, le contexte du dépôt le pollue.
     """
     import tempfile
-    cmd = [CLAUDE_BIN, "-p", "--output-format", "json"]
+    cmd = [claude_bin(), "-p", "--output-format", "json"]
     if model:
         cmd += ["--model", model]
     with tempfile.TemporaryDirectory(prefix="market-pulse-llm-") as neutral:

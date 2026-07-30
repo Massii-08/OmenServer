@@ -161,6 +161,21 @@ def test_agenda_is_carried_as_is():
     assert b["agenda"][0]["what"].startswith("BCE")
 
 
+def test_a_collection_alarm_reaches_the_briefing():
+    """Une source qui a changé de format doit se voir à l'écran.
+
+    Sans ce passage, l'alarme mourrait dans les logs et le briefing sortirait
+    vide en ayant l'air normal — le pire échec possible ici.
+    """
+    b = _build(news={"items": [], "alarms": ["x.com/CNBC : 0 post sur 300 Ko"]})
+    assert b["news"]["alarms"] == ["x.com/CNBC : 0 post sur 300 Ko"]
+
+
+def test_no_alarm_is_an_empty_list_never_missing():
+    b = _build(news=None)
+    assert b["news"]["alarms"] == []
+
+
 def test_followed_and_discovered_are_kept_separate():
     """Ne JAMAIS mélanger ce qu'il suit avec ce qu'on lui propose : la
     distinction est tout l'intérêt de la liste."""

@@ -1,0 +1,768 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:cb="http://www.cbwiki.net/wiki/index.php/Specification_1.2/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" version="2.0">
+  <channel>
+    <atom:link href="https://www.snb.ch/en/services-events/digital-services/event-schedule" rel="self" type="application/rss+xml" />
+    <title>Time schedule</title>
+    <link>https://www.snb.ch/en/services-events/digital-services/event-schedule</link>
+    <description>Swiss National Bank (SNB) Time schedule</description>
+    <dc:publisher>SNB</dc:publisher>
+    <dc:date>2026-07-30T07:58:50Z</dc:date>
+    <dc:rights>Copyright © Swiss National Bank, Zurich (Switzerland) 2026</dc:rights>
+    <dcterms:created>2026-07-30T07:58:50Z</dcterms:created>
+    <dcterms:license>https://www.snb.ch/en/srv/disclaimer</dcterms:license>
+    <item>
+      <title>2028-01-13 - Summary of monetary policy discussion</title>
+      <link>https://www.snb.ch/public/ical/event/en/fe6ef6ef-13fb-4d7c-af84-b03c02b818dc.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/fe6ef6ef-13fb-4d7c-af84-b03c02b818dc.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Summary of monetary policy discussion</cb:simpleTitle>
+        <cb:occurrenceDate>2028-01-13T08:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2028-01-13T08:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-12-16 - Monetary policy assessment of 16 December 2027 (introductory remarks, news conference)</title>
+      <link>https://www.snb.ch/public/ical/event/en/08475bd3-3274-4c07-8999-89da0d9f95a6.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/08475bd3-3274-4c07-8999-89da0d9f95a6.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Monetary policy assessment of 16 December 2027 (introductory remarks, news conference)</cb:simpleTitle>
+        <cb:occurrenceDate>2027-12-16T09:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-12-16T09:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-12-16 - Monetary policy assessment of 16 December 2027 (press release)</title>
+      <link>https://www.snb.ch/public/ical/event/en/9088c1d0-10f2-46fd-97e0-ba4d004eb252.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/9088c1d0-10f2-46fd-97e0-ba4d004eb252.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Monetary policy assessment of 16 December 2027 (press release)</cb:simpleTitle>
+        <cb:occurrenceDate>2027-12-16T08:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-12-16T08:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-10-29 - Interim results of the Swiss National Bank as at 30 September 2027</title>
+      <link>https://www.snb.ch/public/ical/event/en/93dbd5a5-12a5-4952-86e4-4bf4dbae285a.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/93dbd5a5-12a5-4952-86e4-4bf4dbae285a.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Interim results of the Swiss National Bank as at 30 September 2027</cb:simpleTitle>
+        <cb:occurrenceDate>2027-10-29T05:15:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-10-29T05:15:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-10-21 - Summary of monetary policy discussion</title>
+      <link>https://www.snb.ch/public/ical/event/en/7a12a769-6af5-4b99-9f73-77b3a5e47d08.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/7a12a769-6af5-4b99-9f73-77b3a5e47d08.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Summary of monetary policy discussion</cb:simpleTitle>
+        <cb:occurrenceDate>2027-10-21T07:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-10-21T07:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-09-23 - Monetary policy assessment of 23 September 2027 (introductory remarks, news conference)</title>
+      <link>https://www.snb.ch/public/ical/event/en/68c05bdb-7af3-4fd8-90de-6e11707277f5.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/68c05bdb-7af3-4fd8-90de-6e11707277f5.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Monetary policy assessment of 23 September 2027 (introductory remarks, news conference)</cb:simpleTitle>
+        <cb:occurrenceDate>2027-09-23T08:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-09-23T08:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-09-23 - Monetary policy assessment of 23 September 2027 (press release)</title>
+      <link>https://www.snb.ch/public/ical/event/en/5bba95ea-2809-44e3-8ef5-bd10c3ceb798.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/5bba95ea-2809-44e3-8ef5-bd10c3ceb798.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Monetary policy assessment of 23 September 2027 (press release)</cb:simpleTitle>
+        <cb:occurrenceDate>2027-09-23T07:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-09-23T07:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-07-30 - Interim results of the Swiss National Bank as at 30 June 2027</title>
+      <link>https://www.snb.ch/public/ical/event/en/fd209fd7-40ee-45de-bf88-0af1a2c050fb.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/fd209fd7-40ee-45de-bf88-0af1a2c050fb.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Interim results of the Swiss National Bank as at 30 June 2027</cb:simpleTitle>
+        <cb:occurrenceDate>2027-07-30T05:15:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-07-30T05:15:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-07-22 - Summary of monetary policy discussion</title>
+      <link>https://www.snb.ch/public/ical/event/en/9a17b47c-5c43-4eae-afe5-eb897aa9e28b.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/9a17b47c-5c43-4eae-afe5-eb897aa9e28b.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Summary of monetary policy discussion</cb:simpleTitle>
+        <cb:occurrenceDate>2027-07-22T07:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-07-22T07:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-06-24 - Monetary policy assessment of 24 June 2027 (introductory remarks, news conference)</title>
+      <link>https://www.snb.ch/public/ical/event/en/61c63314-2ce4-44b0-82d6-895dd81533cc.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/61c63314-2ce4-44b0-82d6-895dd81533cc.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Monetary policy assessment of 24 June 2027 (introductory remarks, news conference)</cb:simpleTitle>
+        <cb:occurrenceDate>2027-06-24T08:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-06-24T08:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-06-24 - Monetary policy assessment of 24 June 2027 (press release)</title>
+      <link>https://www.snb.ch/public/ical/event/en/ecd37136-63cb-4039-831c-a6a213ffedc5.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/ecd37136-63cb-4039-831c-a6a213ffedc5.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Monetary policy assessment of 24 June 2027 (press release)</cb:simpleTitle>
+        <cb:occurrenceDate>2027-06-24T07:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-06-24T07:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-04-29 - Interim results of the Swiss National Bank as at 31 March 2027</title>
+      <link>https://www.snb.ch/public/ical/event/en/4b9ef8fa-74ca-493b-8fbd-2a719ec80374.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/4b9ef8fa-74ca-493b-8fbd-2a719ec80374.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Interim results of the Swiss National Bank as at 31 March 2027</cb:simpleTitle>
+        <cb:occurrenceDate>2027-04-29T05:15:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-04-29T05:15:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-04-15 - Summary of monetary policy discussion</title>
+      <link>https://www.snb.ch/public/ical/event/en/f5a34b1b-0da1-4801-8d05-4fbf1541d4f2.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/f5a34b1b-0da1-4801-8d05-4fbf1541d4f2.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Summary of monetary policy discussion</cb:simpleTitle>
+        <cb:occurrenceDate>2027-04-15T07:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-04-15T07:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-04-01 - Speech by Petra Tschudin and Thomas Moser, Money Market Event, Zurich (with text)</title>
+      <link>https://www.snb.ch/public/ical/event/en/1f86647d-aafa-433a-b5dc-e0a5724fc3e9.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/1f86647d-aafa-433a-b5dc-e0a5724fc3e9.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Speech by Petra Tschudin and Thomas Moser, Money Market Event, Zurich (with text)</cb:simpleTitle>
+        <cb:occurrenceDate>2027-04-01T16:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-04-01T16:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-03-18 - Monetary policy assessment of 18 March 2027 (introductory remarks, news conference)</title>
+      <link>https://www.snb.ch/public/ical/event/en/228898d7-97e8-4372-bf6a-5167e1e05d3d.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/228898d7-97e8-4372-bf6a-5167e1e05d3d.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Monetary policy assessment of 18 March 2027 (introductory remarks, news conference)</cb:simpleTitle>
+        <cb:occurrenceDate>2027-03-18T09:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-03-18T09:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-03-18 - Monetary policy assessment of 18 March 2027 (press release)</title>
+      <link>https://www.snb.ch/public/ical/event/en/32dfec99-61dd-4271-a0c7-b122b74ce4d7.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/32dfec99-61dd-4271-a0c7-b122b74ce4d7.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Monetary policy assessment of 18 March 2027 (press release)</cb:simpleTitle>
+        <cb:occurrenceDate>2027-03-18T08:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-03-18T08:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-03-01 - Annual result of the Swiss National Bank for 2026</title>
+      <link>https://www.snb.ch/public/ical/event/en/7091c602-1898-4cf1-89fc-a95679bb8edf.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/7091c602-1898-4cf1-89fc-a95679bb8edf.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Annual result of the Swiss National Bank for 2026</cb:simpleTitle>
+        <cb:occurrenceDate>2027-03-01T06:15:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-03-01T06:15:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-01-08 - Preliminary data on 2026 annual result</title>
+      <link>https://www.snb.ch/public/ical/event/en/be8daba2-d482-4bfc-8b98-192a1a568f99.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/be8daba2-d482-4bfc-8b98-192a1a568f99.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Preliminary data on 2026 annual result</cb:simpleTitle>
+        <cb:occurrenceDate>2027-01-08T06:15:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-01-08T06:15:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2027-01-07 - Summary of monetary policy discussion</title>
+      <link>https://www.snb.ch/public/ical/event/en/d7ef268f-7df3-40cb-bd01-5e6bc5c4f74e.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/d7ef268f-7df3-40cb-bd01-5e6bc5c4f74e.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Summary of monetary policy discussion</cb:simpleTitle>
+        <cb:occurrenceDate>2027-01-07T08:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2027-01-07T08:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-12-22 - Swiss balance of payments and Switzerland's international investment position: Q3 2026 (press release and SNB data portal)</title>
+      <link>https://www.snb.ch/public/ical/event/en/69b3a263-bd7b-4d7a-b393-648e1ba75b4a.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/69b3a263-bd7b-4d7a-b393-648e1ba75b4a.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Swiss balance of payments and Switzerland's international investment position: Q3 2026 (press release and SNB data portal)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-12-22T08:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-12-22T08:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-12-16 - Quarterly Bulletin 4/2026 (Report and SNB data portal)</title>
+      <link>https://www.snb.ch/public/ical/event/en/618945a7-47f7-4604-a02c-61032a0a4467.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/618945a7-47f7-4604-a02c-61032a0a4467.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Quarterly Bulletin 4/2026 (Report and SNB data portal)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-12-16T14:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-12-16T14:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-12-11 - Direct Investment 2025 (press release, report and SNB data portal)</title>
+      <link>https://www.snb.ch/public/ical/event/en/887fe1e2-8435-429a-b350-5e8562d20582.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/887fe1e2-8435-429a-b350-5e8562d20582.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Direct Investment 2025 (press release, report and SNB data portal)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-12-11T08:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-12-11T08:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-12-10 - Monetary policy assessment of 10 December 2026 (introductory remarks, news conference)</title>
+      <link>https://www.snb.ch/public/ical/event/en/51310b56-0dc5-4b2f-8f51-bdcdc8ca724a.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/51310b56-0dc5-4b2f-8f51-bdcdc8ca724a.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Monetary policy assessment of 10 December 2026 (introductory remarks, news conference)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-12-10T09:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-12-10T09:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-12-10 - Monetary policy assessment of 10 December 2026 (press release)</title>
+      <link>https://www.snb.ch/public/ical/event/en/34ef205a-a8b1-4397-b949-5674a79b2580.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/34ef205a-a8b1-4397-b949-5674a79b2580.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Monetary policy assessment of 10 December 2026 (press release)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-12-10T08:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-12-10T08:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-10-30 - Interim results of the Swiss National Bank as at 30 September 2026</title>
+      <link>https://www.snb.ch/public/ical/event/en/2b1db2d9-7704-4d9a-9ee1-ae39fda41f7b.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/2b1db2d9-7704-4d9a-9ee1-ae39fda41f7b.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Interim results of the Swiss National Bank as at 30 September 2026</cb:simpleTitle>
+        <cb:occurrenceDate>2026-10-30T06:15:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-10-30T06:15:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-10-29 - Speech by Petra Tschudin and Thomas Moser, Money Market Event, Geneva (with text)</title>
+      <link>https://www.snb.ch/public/ical/event/en/a1b1b435-87ff-4f5f-8829-a5b5fc57c85c.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/a1b1b435-87ff-4f5f-8829-a5b5fc57c85c.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Speech by Petra Tschudin and Thomas Moser, Money Market Event, Geneva (with text)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-10-29T17:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-10-29T17:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-10-22 - Summary of monetary policy discussion</title>
+      <link>https://www.snb.ch/public/ical/event/en/0f658b98-5472-498a-8567-ae1b972fd883.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/0f658b98-5472-498a-8567-ae1b972fd883.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Summary of monetary policy discussion</cb:simpleTitle>
+        <cb:occurrenceDate>2026-10-22T07:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-10-22T07:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-10-08 - Results of the Payment Methods Survey of Companies 2026</title>
+      <link>https://www.snb.ch/public/ical/event/en/576eac5b-78d7-4d2a-a6c5-190676f2e5e9.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/576eac5b-78d7-4d2a-a6c5-190676f2e5e9.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Results of the Payment Methods Survey of Companies 2026</cb:simpleTitle>
+        <cb:occurrenceDate>2026-10-08T07:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-10-08T07:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-09-30 - Quarterly Bulletin 3/2026 (Report and SNB data portal)</title>
+      <link>https://www.snb.ch/public/ical/event/en/6ee85783-88c7-4c4c-bcc0-f598aba1c6bd.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/6ee85783-88c7-4c4c-bcc0-f598aba1c6bd.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Quarterly Bulletin 3/2026 (Report and SNB data portal)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-09-30T13:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-09-30T13:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-09-24 - Monetary policy assessment of 24 September 2026 (introductory remarks, news conference)</title>
+      <link>https://www.snb.ch/public/ical/event/en/eda77143-e4e1-47e3-8340-07587e5e1a98.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/eda77143-e4e1-47e3-8340-07587e5e1a98.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Monetary policy assessment of 24 September 2026 (introductory remarks, news conference)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-09-24T08:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-09-24T08:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-09-24 - Monetary policy assessment of 24 September 2026 (press release)</title>
+      <link>https://www.snb.ch/public/ical/event/en/5fd542ec-0025-4fd9-8730-7deeabb26f29.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/5fd542ec-0025-4fd9-8730-7deeabb26f29.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Monetary policy assessment of 24 September 2026 (press release)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-09-24T07:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-09-24T07:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-09-22 - Swiss balance of payments and Switzerland's international investment position: Q2 2026 (press release and SNB data portal)</title>
+      <link>https://www.snb.ch/public/ical/event/en/2c8c851d-8b93-4d77-bea3-8d5d7e60fccd.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/2c8c851d-8b93-4d77-bea3-8d5d7e60fccd.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Swiss balance of payments and Switzerland's international investment position: Q2 2026 (press release and SNB data portal)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-09-22T07:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-09-22T07:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-08-26 - Speech by Antoine Martin, "Monetary policy and financial stability at the SNB: the role of macroprudential tools", University of Basel, Basel (with text)</title>
+      <link>https://www.snb.ch/public/ical/event/en/3fcd7cc1-79b0-4785-b126-5cc4479f0260.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/3fcd7cc1-79b0-4785-b126-5cc4479f0260.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Speech by Antoine Martin, "Monetary policy and financial stability at the SNB: the role of macroprudential tools", University of Basel, Basel (with text)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-08-26T16:15:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-08-26T16:15:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-07-31 - Interim results of the Swiss National Bank as at 30 June 2026</title>
+      <link>https://www.snb.ch/public/ical/event/en/b17b7c02-781b-4ba0-bfb3-14d326d856c5.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/b17b7c02-781b-4ba0-bfb3-14d326d856c5.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Interim results of the Swiss National Bank as at 30 June 2026</cb:simpleTitle>
+        <cb:occurrenceDate>2026-07-31T05:15:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-07-31T05:15:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-07-16 - Summary of monetary policy discussion</title>
+      <link>https://www.snb.ch/public/ical/event/en/5c411330-13db-40d1-8e5f-3c215663f9be.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/5c411330-13db-40d1-8e5f-3c215663f9be.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Summary of monetary policy discussion</cb:simpleTitle>
+        <cb:occurrenceDate>2026-07-16T07:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-07-16T07:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-07-02 - Financial Stability Report 2026</title>
+      <link>https://www.snb.ch/public/ical/event/en/c1cb39f7-17de-4324-b5d1-e717b1356035.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/c1cb39f7-17de-4324-b5d1-e717b1356035.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Financial Stability Report 2026</cb:simpleTitle>
+        <cb:occurrenceDate>2026-07-02T04:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-07-02T04:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-06-24 - Quarterly Bulletin 2/2026 (Report and SNB data portal)</title>
+      <link>https://www.snb.ch/public/ical/event/en/78d0e4a0-a86a-4420-a01f-9a3e600d614f.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/78d0e4a0-a86a-4420-a01f-9a3e600d614f.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Quarterly Bulletin 2/2026 (Report and SNB data portal)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-06-24T13:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-06-24T13:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-06-23 - Swiss balance of payments and Switzerland's international investment position: Q1 2026 (press release and SNB data portal)</title>
+      <link>https://www.snb.ch/public/ical/event/en/6dbe92af-e234-4631-a232-1d1fbb140d6c.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/6dbe92af-e234-4631-a232-1d1fbb140d6c.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Swiss balance of payments and Switzerland's international investment position: Q1 2026 (press release and SNB data portal)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-06-23T07:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-06-23T07:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-06-18 - Monetary policy assessment of 18 June 2026 (introductory remarks, news conference)</title>
+      <link>https://www.snb.ch/public/ical/event/en/2e0e65a4-4a4e-4ccf-8ca3-b7250cad0b52.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/2e0e65a4-4a4e-4ccf-8ca3-b7250cad0b52.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Monetary policy assessment of 18 June 2026 (introductory remarks, news conference)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-06-18T08:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-06-18T08:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-06-18 - Monetary policy assessment of 18 June 2026 (press release)</title>
+      <link>https://www.snb.ch/public/ical/event/en/1d8a3842-9bef-4cba-950f-f91578d4b0d8.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/1d8a3842-9bef-4cba-950f-f91578d4b0d8.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Monetary policy assessment of 18 June 2026 (press release)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-06-18T07:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-06-18T07:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-04-28 - Swiss Financial Accounts: Q4 2025 (press release and SNB data portal)</title>
+      <link>https://www.snb.ch/public/ical/event/en/53e30a34-86a1-48b2-9c1b-f39419fb1d5b.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/53e30a34-86a1-48b2-9c1b-f39419fb1d5b.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Swiss Financial Accounts: Q4 2025 (press release and SNB data portal)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-04-28T07:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-04-28T07:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-04-24 - Speech by Barbara Janom Steiner, SNB's General Meeting of Shareholders, Berne (with text)</title>
+      <link>https://www.snb.ch/public/ical/event/en/3b6ff70f-a038-4798-8401-bd068a4072a5.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/3b6ff70f-a038-4798-8401-bd068a4072a5.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Speech by Barbara Janom Steiner, SNB's General Meeting of Shareholders, Berne (with text)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-04-24T08:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-04-24T08:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-04-24 - Speech by Martin Schlegel, SNB's General Meeting of Shareholders, Berne (with text)</title>
+      <link>https://www.snb.ch/public/ical/event/en/4fa928a9-5f6d-4188-820b-8611f72a418e.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/4fa928a9-5f6d-4188-820b-8611f72a418e.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Speech by Martin Schlegel, SNB's General Meeting of Shareholders, Berne (with text)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-04-24T08:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-04-24T08:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-04-23 - Interim results of the Swiss National Bank as at 31 March 2026</title>
+      <link>https://www.snb.ch/public/ical/event/en/b4fdd841-8b9d-4f88-bf54-d8838a9e3a0f.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/b4fdd841-8b9d-4f88-bf54-d8838a9e3a0f.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Interim results of the Swiss National Bank as at 31 March 2026</cb:simpleTitle>
+        <cb:occurrenceDate>2026-04-23T05:15:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-04-23T05:15:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-04-16 - Speech by Petra Tschudin and Thomas Moser, 'Swipe, scan, tap: der Markt für bargeldloses Bezahlen', Money Market Event, Zurich (with text)</title>
+      <link>https://www.snb.ch/public/ical/event/en/962482eb-d929-4551-b69e-932e9dcd7834.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/962482eb-d929-4551-b69e-932e9dcd7834.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Speech by Petra Tschudin and Thomas Moser, 'Swipe, scan, tap: der Markt für bargeldloses Bezahlen', Money Market Event, Zurich (with text)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-04-16T16:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-04-16T16:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-04-16 - Summary of monetary policy discussion</title>
+      <link>https://www.snb.ch/public/ical/event/en/d33a3771-a6a7-49b8-82c2-95a7be7ff890.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/d33a3771-a6a7-49b8-82c2-95a7be7ff890.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Summary of monetary policy discussion</cb:simpleTitle>
+        <cb:occurrenceDate>2026-04-16T07:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-04-16T07:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-04-09 - Moneyverse opening in Berne's Kaiserhaus (press release)</title>
+      <link>https://www.snb.ch/public/ical/event/en/56539537-715d-436b-baec-303520941675.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/56539537-715d-436b-baec-303520941675.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Moneyverse opening in Berne's Kaiserhaus (press release)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-04-09T08:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-04-09T08:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-03-30 - Results of Payment Methods Survey of Private Individuals 2025 (press release and summary report)</title>
+      <link>https://www.snb.ch/public/ical/event/en/55b5fb23-3f0b-4ad5-a30e-9fc7b7cbac5c.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/55b5fb23-3f0b-4ad5-a30e-9fc7b7cbac5c.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Results of Payment Methods Survey of Private Individuals 2025 (press release and summary report)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-03-30T07:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-03-30T07:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-03-25 - Quarterly Bulletin 1/2026 (Report and SNB data portal)</title>
+      <link>https://www.snb.ch/public/ical/event/en/844cb1ae-2a20-4bf3-9215-8f6c42f1b759.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/844cb1ae-2a20-4bf3-9215-8f6c42f1b759.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Quarterly Bulletin 1/2026 (Report and SNB data portal)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-03-25T14:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-03-25T14:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-03-24 - Swiss balance of payments and Switzerland's international investment position: Q4 2025 (press release and SNB data portal)</title>
+      <link>https://www.snb.ch/public/ical/event/en/36ce661d-9456-48ad-b949-e1ae4257b2b6.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/36ce661d-9456-48ad-b949-e1ae4257b2b6.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Swiss balance of payments and Switzerland's international investment position: Q4 2025 (press release and SNB data portal)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-03-24T08:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-03-24T08:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-03-19 - Monetary policy assessment of 19 March 2026 (introductory remarks, news conference)</title>
+      <link>https://www.snb.ch/public/ical/event/en/b3d4241c-abfa-4158-8267-8d67184354a8.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/b3d4241c-abfa-4158-8267-8d67184354a8.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Monetary policy assessment of 19 March 2026 (introductory remarks, news conference)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-03-19T09:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-03-19T09:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-03-19 - Monetary policy assessment of 19 March 2026 (press release)</title>
+      <link>https://www.snb.ch/public/ical/event/en/b7056b3b-7468-4419-89a9-7a112539183e.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/b7056b3b-7468-4419-89a9-7a112539183e.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Monetary policy assessment of 19 March 2026 (press release)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-03-19T08:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-03-19T08:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-03-17 - 2025 Annual Report of the Swiss National Bank</title>
+      <link>https://www.snb.ch/public/ical/event/en/9885b361-ed2f-47f4-b372-05678b8142a5.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/9885b361-ed2f-47f4-b372-05678b8142a5.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>2025 Annual Report of the Swiss National Bank</cb:simpleTitle>
+        <cb:occurrenceDate>2026-03-17T06:15:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-03-17T06:15:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-03-17 - 2025 Sustainability Report of the Swiss National Bank</title>
+      <link>https://www.snb.ch/public/ical/event/en/dd5f9125-0ea4-4d4b-9186-6994543907b1.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/dd5f9125-0ea4-4d4b-9186-6994543907b1.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>2025 Sustainability Report of the Swiss National Bank</cb:simpleTitle>
+        <cb:occurrenceDate>2026-03-17T06:15:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-03-17T06:15:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-03-04 - Swiss National Bank announces winning team in design competition for new banknote series (press release and news conference)</title>
+      <link>https://www.snb.ch/public/ical/event/en/b63e207f-a581-4a6a-bde0-4026b48f2c3f.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/b63e207f-a581-4a6a-bde0-4026b48f2c3f.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Swiss National Bank announces winning team in design competition for new banknote series (press release and news conference)</cb:simpleTitle>
+        <cb:occurrenceDate>2026-03-04T09:00:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-03-04T09:00:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-03-02 - Annual result of the Swiss National Bank for 2025</title>
+      <link>https://www.snb.ch/public/ical/event/en/5096db16-e36a-4983-bcb3-1fcbd4fe5480.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/5096db16-e36a-4983-bcb3-1fcbd4fe5480.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Annual result of the Swiss National Bank for 2025</cb:simpleTitle>
+        <cb:occurrenceDate>2026-03-02T06:15:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-03-02T06:15:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-01-09 - Preliminary data on 2025 annual result</title>
+      <link>https://www.snb.ch/public/ical/event/en/5a2dfca1-4dd3-4c1d-a724-b4a749aa9e9b.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/5a2dfca1-4dd3-4c1d-a724-b4a749aa9e9b.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Preliminary data on 2025 annual result</cb:simpleTitle>
+        <cb:occurrenceDate>2026-01-09T06:15:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-01-09T06:15:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+    <item>
+      <title>2026-01-08 - Summary of monetary policy discussion</title>
+      <link>https://www.snb.ch/public/ical/event/en/111a987a-63fb-4dfc-9587-fa2a198df36a.ics</link>
+      <guid>https://www.snb.ch/public/ical/event/en/111a987a-63fb-4dfc-9587-fa2a198df36a.ics</guid>
+      <cb:event rdf:parseType="Resource">
+        <rdf:type rdf:resource="http://www.cbwiki.net/wiki/index.php/RSS-CB_1.2_RDF_Schema#Event" />
+        <cb:simpleTitle>Summary of monetary policy discussion</cb:simpleTitle>
+        <cb:occurrenceDate>2026-01-08T08:30:00Z</cb:occurrenceDate>
+        <cb:institutionAbbrev>SNB</cb:institutionAbbrev>
+      </cb:event>
+      <dc:date>2026-01-08T08:30:00Z</dc:date>
+      <dc:language>en</dc:language>
+    </item>
+  </channel>
+</rss>

@@ -22,6 +22,18 @@ ADVICE_TITLES = [
     "Top picks for the second half",
 ]
 
+# Analyse graphique : ce n'est pas un conseil d'achat explicite, mais c'est une
+# PRÉVISION de direction — et recopiée sous le nom de la bourse, elle se lit
+# comme celle du bot. Mesuré sur la vraie recherche Bluesky « borsa milano ».
+CHART_PREDICTION_TITLES = [
+    "Il supporto del 38,2% di Fibonacci e il canale ribassista potrebbero "
+    "preparare un rimbalzo",
+    "Analisi tecnica: il Ftse Mib verso quota 42.000",
+    "Technical analysis: gold eyes a breakout",
+    "Il titolo potrebbe salire fino a 12 euro",
+    "Le azioni potrebbero scendere sotto il supporto",
+]
+
 NEUTRAL_TITLES = [
     "Essilux, nei primi sei mesi l'utile sale a 1,92 miliardi",
     "Il gas prosegue in deciso calo (-3,8%) ad Amsterdam",
@@ -38,8 +50,23 @@ def test_advice_titles_are_detected():
         assert is_advice(title) is True, "non détecté comme conseil: %r" % title
 
 
+def test_chart_prediction_titles_are_treated_as_advice():
+    for title in CHART_PREDICTION_TITLES:
+        assert is_advice(title) is True, "prévision de direction laissée passer: %r" % title
+
+
 def test_neutral_titles_are_not_flagged():
     for title in NEUTRAL_TITLES:
+        assert is_advice(title) is False, "faux positif: %r" % title
+
+
+def test_the_new_patterns_do_not_swallow_ordinary_news():
+    # « supporto » et « canale » existent hors du jargon graphique ; le filtre ne
+    # doit pas manger une dépêche politique ou industrielle.
+    for title in ["Il supporto del governo alla manovra resta incerto",
+                  "Aperto il nuovo canale di Suez",
+                  "L'azienda prepara il rimbalzo degli investimenti",
+                  "Analisi dei conti pubblici: il deficit cala"]:
         assert is_advice(title) is False, "faux positif: %r" % title
 
 

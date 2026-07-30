@@ -28,6 +28,14 @@ _ADVICE_PATTERNS = [
     r"consigli", r"raccomand", r"da comprare", r"su cui investire",
     r"\bmigliori titoli\b", r"titoli da\b", r"portafoglio consigliato",
     r"occasione d[i']acquisto", r"prezzo obiettivo", r"promoss[oa] a",
+    # Analyse graphique. Ce n'est pas un « achetez » explicite, mais c'est une
+    # PRÉVISION de direction — et recopiée sous le nom de la bourse, un lecteur
+    # âgé la prend pour celle du bot. Mesuré sur la recherche Bluesky
+    # « borsa milano » : « Il supporto del 38,2% di Fibonacci e il canale
+    # ribassista potrebbero preparare un rimbalzo ».
+    r"\bfibonacci\b", r"analisi tecnica", r"technical analysis",
+    r"\bcanale (ribassista|rialzista)\b",
+    r"potrebbe(ro)? (salire|scendere|crollare|rimbalzare|puntare|preparare un)",
 ]
 _ADVICE_RE = [re.compile(p, re.IGNORECASE) for p in _ADVICE_PATTERNS]
 

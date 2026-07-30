@@ -41,7 +41,11 @@ DEFAULT_OPZIONI = {
     "reddit": True,
     "bluesky": True,
     "x": False,              # marche, mais c'est la route la plus fragile
-    "x_account": ["CNBC", "Reuters", "MarketWatch"],
+    # Comptes FINANCE seulement. Mesuré au premier run réel : le fil général de
+    # Reuters faisait remonter « Detained Ugandan opposition figure is
+    # unconscious » sous le nom de la Borsa di Milano. Un fil de rédaction
+    # générale n'a pas sa place dans un briefing de marché.
+    "x_account": ["CNBC", "MarketWatch"],
     "sintesi": True,         # la synthèse en italien par le LLM
     "scoperte": True,        # la liste de nouveaux titres apparus
     "quaderno": True,        # écrire la note dans le coffre Obsidian
