@@ -32,7 +32,7 @@ const OracleModule = {
                         <span class="b-ticker">ORC</span>
                         <div>
                             <div class="oracle-h1">Oracle</div>
-                            <div class="oracle-sub">${esc(Lang.t('oracle.subtitle'))}</div>
+                            <div class="oracle-sub" id="oracle-sub">${esc(this._subtitle())}</div>
                         </div>
                     </div>
                     <div class="lang-switcher oracle-venues" id="oracle-venues">
@@ -76,11 +76,22 @@ const OracleModule = {
         this._load();
     },
 
+    // Le sous-titre suit la place : sur MK, afficher « Polymarket × Deribit
+    // — détecteur d'écarts » serait activement trompeur, c'est la thèse
+    // prévisionniste qui a été mesurée morte et que MK ne teste PAS.
+    _subtitle() {
+        return this._venue === 'mk'
+            ? Lang.t('oracle.mk.subtitle')
+            : Lang.t('oracle.subtitle');
+    },
+
     _syncVenuePills() {
         const wrap = document.getElementById('oracle-venues');
         if (!wrap) return;
         wrap.querySelectorAll('.lang').forEach(b =>
             b.classList.toggle('active', b.dataset.venue === this._venue));
+        const sub = document.getElementById('oracle-sub');
+        if (sub) sub.textContent = this._subtitle();
     },
 
     async _load() {
