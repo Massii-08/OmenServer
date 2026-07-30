@@ -92,7 +92,12 @@ def validate(raw: Optional[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[str]]:
                 clean.append(b)
             elif b not in known:
                 warnings.append("bourse inconnue ignorée : %r" % b)
-        if not clean:
+        # ⚠️ Une liste VIDE est un choix : « je n'en coche aucune, récupère les
+        # infos sans les analyser ». Retomber sur les défauts rendait ce choix
+        # inexprimable — décocher tout relançait trois analyses.
+        # En revanche, une liste qui ne contenait QUE des noms inconnus est une
+        # faute de frappe : là on remet les défauts, et on le dit.
+        if not clean and borse:
             warnings.append("aucune bourse valide — valeur par défaut utilisée")
             clean = list(DEFAULT_BORSE)
         if len(clean) > _MAX_BORSE:

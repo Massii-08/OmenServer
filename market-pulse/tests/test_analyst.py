@@ -321,3 +321,52 @@ def test_the_synthesis_still_works_exactly_as_before_without_a_language():
     got = analyse(_brief_with_foreign_news(), claude=fake)
     assert got["degraded"] is False
     assert got["titles"] == {}
+
+
+# --------------------------------------------------------------------------
+# L'économie de jetons se COMPTE, elle ne se raconte pas
+# --------------------------------------------------------------------------
+
+def test_the_llm_is_called_once_per_analysed_exchange_and_not_once_more():
+    """Le plan de run décide qui coûte des jetons.
+
+    Ce test compte les appels : c'est la seule preuve que « on collecte partout,
+    on n'analyse que le coché » économise vraiment quelque chose. Un test qui
+    vérifierait seulement le contenu du briefing passerait même si le LLM était
+    appelé dix fois.
+    """
+    from pulse.analyst import analyse
+    from pulse.exchanges import run_plan
+
+    calls = []
+
+    def counting(prompt, model=None, **kw):
+        calls.append(prompt)
+        return {"synthesis": "Le piazze asiatiche hanno chiuso contrastate."}
+
+    brief = {"label": "x", "session": {"opens_at": "09:00"}, "index": None,
+             "comparison": [], "agenda": [], "news": {"items": []}}
+    for _venue, do_analyse in run_plan(["nyse", "jpx"]):
+        if do_analyse:
+            analyse(brief, claude=counting)
+    assert len(calls) == 2, "un appel par place cochée, pas un de plus"
+
+
+def test_no_selection_means_ZERO_llm_call():
+    from pulse.analyst import analyse
+    from pulse.exchanges import run_plan
+
+    calls = []
+
+    def counting(prompt, model=None, **kw):
+        calls.append(prompt)
+        return {"synthesis": "..."}
+
+    brief = {"label": "x", "session": {}, "index": None, "comparison": [],
+             "agenda": [], "news": {"items": []}}
+    plan = run_plan([])
+    assert len(plan) == 10, "les dix places sont quand même collectées"
+    for _venue, do_analyse in plan:
+        if do_analyse:
+            analyse(brief, claude=counting)
+    assert calls == [], "aucune bourse cochée : aucun jeton dépensé"

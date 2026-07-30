@@ -141,7 +141,7 @@ def _briefings(args, snap, now):
     from pulse.briefing import build_briefing
     from pulse.discover import discover
     from pulse.resolve import make_resolver
-    from pulse.exchanges import by_id, opening_groups
+    from pulse.exchanges import opening_groups, run_plan
     from pulse.news import collect_news
     from pulse.translate import apply as translate_apply
     from pulse.vault import write_note
@@ -153,19 +153,22 @@ def _briefings(args, snap, now):
     for w in warnings:
         print("   ! prefs : %s" % w)
     opz = conf["opzioni"]
-    venues = [by_id(b) for b in conf["borse"]]
-    venues = [v for v in venues if v]
+    # Toutes les places sont COLLECTÉES ; seules les cochées sont ANALYSÉES.
+    # La collecte coûte du réseau, l'analyse coûte des jetons — deux robinets
+    # différents, un seul est cher.
+    only = None
     if args.borse:
         # Le planificateur ne demande QUE la place qui ouvre : sans ce filtre,
-        # chaque ouverture régénérerait les briefings des autres places — et
-        # autant d'appels au LLM pour rien.
-        wanted = set(x.strip() for x in str(args.borse).split(",") if x.strip())
-        venues = [v for v in venues if v.id in wanted]
-        if not venues:
-            print("   ! --borse %r ne correspond à aucune borsa des préférences"
-                  % args.borse)
-    groups = opening_groups(venues)
-    print("   %d borse -> %d aperture distinte" % (len(venues), len(groups)))
+        # chaque ouverture repasserait sur les neuf autres.
+        only = [x.strip() for x in str(args.borse).split(",") if x.strip()]
+    plan = run_plan(conf["borse"], only=only)
+    if not plan:
+        print("   ! --borse %r ne correspond à aucune borsa connue" % args.borse)
+    venues = [v for v, _a in plan]
+    analysed = [v for v, a in plan if a]
+    groups = opening_groups(analysed)
+    print("   %d borse raccolte, %d analizzate -> %d aperture distinte"
+          % (len(venues), len(analysed), len(groups)))
 
     # Un seul fetch mémorisé pour tout le run, et l'agenda des banques centrales
     # une seule fois : les sources sont les mêmes pour toutes les places.
@@ -179,7 +182,7 @@ def _briefings(args, snap, now):
 
     social_budget = max(2, int(opz["max_notizie"]) // 3)
     out = {}
-    for venue in venues:
+    for venue, do_analyse in plan:
         # La presse LOCALE de la place, plus les sources sociales si activées.
         feeds = list(venue.feeds)
         news = collect_news(fetch=fetch, feeds=feeds, max_items=opz["max_notizie"])
@@ -199,9 +202,13 @@ def _briefings(args, snap, now):
         # justement sur la langue de la dépêche.
         press = [i for i in (news.get("items") or [])
                  if not str(i.get("source") or "").startswith(("Reddit", "Bluesky", "X @"))]
+        # La découverte de nouveaux titres est un travail DÉRIVÉ, et le plus
+        # coûteux en requêtes (une résolution Yahoo par nom trouvé). Proposer
+        # des titres à suivre sur une place qu'il ne suit pas n'aurait de toute
+        # façon aucun sens : elle suit la même règle que l'analyse.
         found = discover(press,
                          followed=tuple(f["symbol"] for f in followed),
-                         resolve=resolver) if opz["scoperte"] else []
+                         resolve=resolver) if (opz["scoperte"] and do_analyse) else []
 
         brief = build_briefing(exchange=venue, snapshot=snap, news=news,
                                agenda=for_venue(agenda["events"], venue.id),
@@ -212,9 +219,20 @@ def _briefings(args, snap, now):
         # les INDEX correspondent à ce que le lecteur verra. Traduire la liste de
         # collecte donnerait les bonnes phrases sur les mauvais titres.
         lingua = opz.get("lingua") or "it"
-        analysis = analyse(brief, lang=lingua) if opz["sintesi"] else {
-            "text": None, "model": None, "degraded": True, "titles": {},
-            "reason": "sintesi disattivata nelle preferenze"}
+        if not do_analyse:
+            # ⚠️ Le LLM n'est PAS appelé du tout : c'est là qu'est l'économie.
+            # Les faits sortent quand même, et l'écran dit pourquoi il n'y a ni
+            # synthèse ni traduction — une section muette se lirait « rien à
+            # dire », ce qui serait faux.
+            analysis = {"text": None, "model": None, "degraded": True,
+                        "titles": {}, "reason": "borsa non selezionata: "
+                        "solo i fatti, nessuna analisi"}
+        elif not opz["sintesi"]:
+            analysis = {"text": None, "model": None, "degraded": True,
+                        "titles": {},
+                        "reason": "sintesi disattivata nelle preferenze"}
+        else:
+            analysis = analyse(brief, lang=lingua)
         items, tstats = translate_apply(brief["news"]["items"],
                                         analysis.get("titles") or {}, lingua)
         brief["news"]["items"] = items
@@ -225,6 +243,8 @@ def _briefings(args, snap, now):
         # le même compteur de transparence que les autres.
         brief["news"]["filtered_advice"] += tstats["dropped_advice"]
         brief["analysis"] = analysis
+        # L'écran doit pouvoir distinguer « pas analysée » de « analyse ratée ».
+        brief["selected"] = bool(do_analyse)
 
         if opz["quaderno"]:
             note = write_note(args.vault, brief, analysis, now)
@@ -240,7 +260,8 @@ def _briefings(args, snap, now):
                  len(brief["news"]["items"]), len(social["items"]) if social else 0,
                  tstats["translated"], tstats["translated"] + tstats["untranslated"],
                  len(brief["agenda"]),
-                 "no" if analysis["degraded"] else "si"))
+                 ("si" if not analysis["degraded"] else
+                  ("no" if do_analyse else "-- non selezionata"))))
 
     _write_json(os.path.join(args.out, "briefings.json"), out)
     print("-> %s (%d briefing)" % (os.path.join(args.out, "briefings.json"), len(out)))

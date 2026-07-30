@@ -384,9 +384,14 @@ const MarketModule = {
             : (status === 'closed' ? Lang.t('market.status_closed')
             : Lang.t('market.status_unknown'));
         const mono = 'font-family:var(--font-mono);font-feature-settings:\'tnum\';';
+        // Une place non cochée reste CLIQUABLE et lisible : elle a ses faits, on
+        // ne lui a simplement pas dépensé de jetons. Elle passe au second plan,
+        // elle ne disparaît pas.
+        const dim = b.selected === false;
         return '<button class="card" data-mkt-open="' + esc(b.exchange || '') + '" ' +
                'style="text-align:left;cursor:pointer;padding:14px;margin:0;width:100%;' +
-                      'display:flex;flex-direction:column;gap:6px;border:1px solid var(--border);' +
+                      'display:flex;flex-direction:column;gap:6px;' +
+                      'border:1px solid var(--border);' + (dim ? 'opacity:.72;' : '') +
                       'background:var(--bg-elev-1);color:var(--text);font:inherit;">' +
             '<div style="display:flex;align-items:baseline;gap:8px;">' +
               '<span style="font-size:17px;font-weight:600;">' + esc(b.label || b.exchange || '') + '</span>' +
@@ -399,7 +404,10 @@ const MarketModule = {
               '<span style="font-size:22px;">' + esc(this._price(m)) + '</span>' +
               '<span style="font-size:15px;color:' + this._color(ch.dir) + ';">' + esc(ch.txt) + '</span>' +
             '</div>' +
-            '<div style="font-size:12px;color:var(--accent);">' + esc(Lang.t('market.tile_open')) + '</div>' +
+            '<div style="font-size:12px;color:' +
+              (b.selected === false ? 'var(--text-dim)' : 'var(--accent)') + ';">' +
+              esc(b.selected === false ? Lang.t('market.tile_facts_only')
+                                       : Lang.t('market.tile_open')) + '</div>' +
         '</button>';
     },
 
@@ -472,7 +480,7 @@ const MarketModule = {
             this._bNews(b.news) +
             this._bFollowed(b.followed) +
             this._bDiscovered(b.exchange, b.discovered) +
-            this._bSynthesis(b.analysis) +
+            this._bSynthesis(b.analysis, b.selected) +
         '</div>';
     },
 
@@ -736,8 +744,15 @@ const MarketModule = {
 
     // --- la synthèse ---------------------------------------------------------
 
-    _bSynthesis(a) {
+    _bSynthesis(a, selected) {
         const head = this._bHead('market.b_synthesis');
+        // Une bourse non cochée n'est pas une PANNE : c'est un choix, celui de
+        // ne pas dépenser de jetons dessus. Le dire autrement qu'un échec.
+        if (selected === false) {
+            return head +
+                '<div style="font-size:14px;color:var(--text-muted);">' +
+                  esc(Lang.t('market.not_selected')) + '</div>';
+        }
         if (!a || !a.text) {
             const why = (a && a.reason) ? (' (' + a.reason + ')') : '';
             return head +

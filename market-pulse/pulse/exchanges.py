@@ -149,7 +149,10 @@ DEFAULT_EXCHANGES: List[Exchange] = [
         symbol="000001.SS", index_label="Shanghai Composite",
         tz="Asia/Shanghai", opens_at="09:30", closes_at="15:00",
         lunch=("11:30", "13:00"),
-        feeds=(_F("Caixin Global", "https://www.caixinglobal.com/rss/", "en"),
+        # Caixin Global RETIRE : il rend 403 aux clients serveur (mesure
+        # 2026-07-30). SCMP China rend 50 items frais sur la meme actualite.
+        feeds=(_F("SCMP China", "https://www.scmp.com/rss/4/feed", "en"),
+               _F("SCMP Business", "https://www.scmp.com/rss/92/feed", "en"),
                _F("Google News CN (mercati)",
                   "https://news.google.com/rss/search?q=China+stocks+when:1d&hl=en-US&gl=US&ceid=US:en",
                   "en")),
@@ -184,7 +187,14 @@ DEFAULT_EXCHANGES: List[Exchange] = [
         symbol="399001.SZ", index_label="Shenzhen Component",
         tz="Asia/Shanghai", opens_at="09:30", closes_at="15:00",
         lunch=("11:30", "13:00"),
-        feeds=(_F("Caixin Global", "https://www.caixinglobal.com/rss/", "en"),),
+        # Cette place n'avait qu'UN flux, et c'etait le Caixin en 403 : sa
+        # section notizie sortait VIDE a chaque briefing, sans que rien ne le
+        # dise. Deux sources minimum, desormais verrouille par un test.
+        feeds=(_F("SCMP China", "https://www.scmp.com/rss/4/feed", "en"),
+               _F("SCMP Business", "https://www.scmp.com/rss/92/feed", "en"),
+               _F("Google News SZ (mercati)",
+                  "https://news.google.com/rss/search?q=Shenzhen+Component+OR+China+stocks"
+                  "+when:2d&hl=en-US&gl=US&ceid=US:en", "en")),
         bluesky_queries=("shenzhen stocks",),
     ),
     Exchange(
@@ -253,6 +263,39 @@ def opening_groups(exchanges: Optional[List[Exchange]]
         group = buckets[minutes]
         out.append(([e.id for e in group], group[0].tz, group[0].opens_at))
     return out
+
+
+def run_plan(selected: Optional[List[str]],
+             only: Optional[List[str]] = None) -> List[Tuple[Exchange, bool]]:
+    """Ce que le run traite, et sur quoi il a le droit de dépenser des jetons.
+
+    Rend `[(place, analyser), …]`. **Toutes** les places sont collectées ; seules
+    celles qui sont cochées sont analysées — la collecte coûte du réseau,
+    l'analyse coûte des jetons, ce sont deux robinets différents et un seul est
+    cher. Sans aucune sélection : on récupère tout, on n'analyse rien.
+
+    `only` est la restriction du planificateur (`--borse`) : à l'ouverture de New
+    York on ne repasse pas sur les neuf autres places, ce serait dix fois le
+    travail pour rien. `None` = pas de restriction ; `[]` = restriction vide,
+    donc rien — la nuance compte, une liste vide venue d'une config ne doit pas
+    se lire « tout ».
+
+    Les places cochées sortent en PREMIER : ce qu'il suit doit être en haut de
+    l'écran, pas noyé au milieu des dix.
+    """
+    picked = [x for x in (selected or []) if by_id(x)]
+    rows = list(DEFAULT_EXCHANGES)
+    if only is not None:
+        wanted = set(only)
+        rows = [e for e in rows if e.id in wanted]
+    chosen = set(picked)
+    # L'ordre des cochées suit celui de la sélection ; le reste est rangé dans
+    # l'ordre de la JOURNÉE (Tokyo, puis l'Asie, puis l'Europe, puis New York) —
+    # l'ordre du catalogue, lui, commence par New York et ne veut rien dire pour
+    # un lecteur qui parcourt sa matinée.
+    head = [e for x in picked for e in rows if e.id == x]
+    tail = sorted((e for e in rows if e.id not in chosen), key=_minutes_utc)
+    return [(e, e.id in chosen) for e in head + tail]
 
 
 def session_windows(exchange: Optional[Exchange]) -> List[Tuple[str, Optional[str]]]:

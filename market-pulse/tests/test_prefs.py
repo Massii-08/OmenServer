@@ -125,3 +125,41 @@ def test_an_unsupported_language_falls_back_and_SAYS_so():
 def test_the_language_is_normalised():
     prefs, _w = validate({"opzioni": {"lingua": "  FR  "}})
     assert prefs["opzioni"]["lingua"] == "fr"
+
+
+# --------------------------------------------------------------------------
+# « Aucune bourse » est un CHOIX, pas une erreur
+# --------------------------------------------------------------------------
+
+def test_an_explicitly_empty_selection_is_HONOURED():
+    """« Si j'en sélectionne aucune tu récupères que les infos sans les
+    analyser. »
+
+    Avant, une liste vide retombait sur les trois places par défaut : décocher
+    tout revenait à en cocher trois, et trois appels au LLM partaient quand
+    même. On ne pouvait pas exprimer le choix qu'il demandait.
+    """
+    prefs, warnings = validate({"borse": []})
+    assert prefs["borse"] == []
+    assert warnings == []          # c'est une décision, pas une faute
+
+
+def test_no_borse_key_at_all_still_means_the_defaults():
+    # Une installation neuve, sans fichier, doit tourner toute seule.
+    prefs, _warnings = validate({})
+    assert prefs["borse"]
+
+
+def test_a_list_of_only_unknown_names_falls_back_and_says_so():
+    # Là c'est une faute de frappe, pas une intention : on ne coupe pas tout en
+    # silence, on remet les défauts et on le dit.
+    prefs, warnings = validate({"borse": ["borsa-di-marte"]})
+    assert prefs["borse"]
+    assert any("marte" in w for w in warnings)
+
+
+def test_an_empty_selection_survives_a_round_trip_on_disk(tmp_path):
+    path = str(tmp_path / "prefs.json")
+    save({"borse": []}, path)
+    prefs, _warnings = load(path)
+    assert prefs["borse"] == []

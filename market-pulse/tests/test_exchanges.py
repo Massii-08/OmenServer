@@ -203,3 +203,98 @@ def test_no_bluesky_query_is_a_single_bare_word():
             assert len(query.split()) >= 2, (
                 "%s : requête « %s » trop large — ajoute un qualifiant"
                 % (exchange.id, query))
+
+
+# ==========================================================================
+#  PLAN DE RUN — collecter partout, n'ANALYSER que ce qui est coché
+# ==========================================================================
+#
+# Demande de Massii : « si les bourses n'ont pas été sélectionnées elles peuvent
+# récupérer des infos mais tu ne fais pas d'analyse dessus, pour éviter
+# d'utiliser trop de tokens ». La collecte coûte du réseau, l'analyse coûte des
+# jetons : ce sont deux robinets différents, et un seul est cher.
+
+from pulse.exchanges import run_plan
+
+
+def _ids(plan):
+    return [e.id for e, _a in plan]
+
+
+def _analysed(plan):
+    return [e.id for e, a in plan if a]
+
+
+def test_every_exchange_is_collected_even_without_a_selection():
+    """Aucune bourse cochée ⇒ on récupère TOUT et on n'analyse RIEN.
+
+    C'est l'exemple exact donné par Massii. Rendre une liste vide ici serait
+    lire « aucune sélection » comme « rien à faire ».
+    """
+    plan = run_plan([])
+    assert len(plan) == 10
+    assert _analysed(plan) == []
+
+
+def test_only_the_selected_ones_are_analysed():
+    plan = run_plan(["euronext", "nyse"])
+    assert len(plan) == 10                      # tout est collecté
+    assert sorted(_analysed(plan)) == ["euronext", "nyse"]
+
+
+def test_the_selected_ones_come_FIRST():
+    """Ce qu'il suit doit être en haut de l'écran, pas noyé dans les dix."""
+    plan = run_plan(["nyse"])
+    assert _ids(plan)[0] == "nyse"
+
+
+def test_the_rest_keeps_the_order_of_the_trading_day():
+    # Tokyo ouvre avant l'Europe, qui ouvre avant New York.
+    rest = [i for i in _ids(run_plan([])) if i in ("jpx", "euronext", "nyse")]
+    assert rest == ["jpx", "euronext", "nyse"], rest
+
+
+def test_an_unknown_selected_id_is_ignored_not_a_crash():
+    plan = run_plan(["borsa-di-marte", "nyse"])
+    assert _analysed(plan) == ["nyse"]
+
+
+def test_only_restricts_the_set_that_is_processed_at_all():
+    """`--borse` du planificateur : à l'ouverture de New York on ne repasse pas
+    sur les neuf autres places — ce serait dix fois le travail pour rien."""
+    plan = run_plan(["nyse", "jpx"], only=["nyse", "nasdaq"])
+    assert sorted(_ids(plan)) == ["nasdaq", "nyse"]
+    assert _analysed(plan) == ["nyse"]           # nasdaq n'est pas coché
+
+
+def test_only_with_nothing_known_yields_nothing():
+    assert run_plan(["nyse"], only=["pas-une-bourse"]) == []
+
+
+def test_none_and_empty_only_are_not_the_same_thing():
+    # `only=None` = pas de restriction ; `only=[]` = restriction vide.
+    assert len(run_plan(["nyse"], only=None)) == 10
+    assert run_plan(["nyse"], only=[]) == []
+
+
+def test_every_exchange_has_at_least_TWO_press_feeds():
+    """Une place à source unique n'a aucune redondance.
+
+    Mesuré : `szse` n'avait que Caixin Global, qui répond **403** aux clients
+    serveur — sa section « notizie » sortait donc VIDE à chaque briefing, et
+    rien ne le disait. `sse` partageait ce flux mais survivait grâce à son
+    second. Deux sources minimum, sinon la panne d'une seule est invisible.
+    """
+    from pulse.exchanges import DEFAULT_EXCHANGES
+    for exchange in DEFAULT_EXCHANGES:
+        assert len(exchange.feeds) >= 2, (
+            "%s n'a que %d flux — aucune redondance"
+            % (exchange.id, len(exchange.feeds)))
+
+
+def test_the_dead_caixin_feed_is_gone():
+    from pulse.exchanges import DEFAULT_EXCHANGES
+    for exchange in DEFAULT_EXCHANGES:
+        for feed in exchange.feeds:
+            assert "caixin" not in feed["url"].lower(), (
+                "%s : Caixin rend 403, il ne doit plus être servi" % exchange.id)
