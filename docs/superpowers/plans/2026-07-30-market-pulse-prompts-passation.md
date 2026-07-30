@@ -101,8 +101,13 @@ Contexte : docs/superpowers/specs/2026-07-29-market-pulse-phase-d-design.md
 1. LANCE TOUT, ne te contente pas de lire.
    cd market-pulse && <venv>/bin/python -m pytest tests -q
    <venv>/bin/python -m pytest backend -q
+   # Sans --prefs, le bot tourne sur les defauts (euronext, nyse, jpx) : c'est
+   # le cas REEL aujourd'hui, aucun prefs.json n'existe sur l'Omen.
    cd market-pulse && <venv>/bin/python main.py --briefings --out /tmp/audit \
-     --prefs /tmp/audit-prefs.json --vault /tmp/audit-vault
+     --vault /tmp/audit-vault
+   # Puis refais-le AVEC un prefs.json a toi, pour verifier que la config mord
+   # vraiment (change les bourses, coupe la synthese, allume x) :
+   <venv>/bin/python -c "from pulse.prefs import write_example; print(write_example('/tmp/audit-prefs.json'))"
    Puis LIS les notes produites dans /tmp/audit-vault et les briefings.json.
    Le défaut le plus grave de ce projet a toujours été une section VIDE ou un
    chiffre FAUX qui a l'air normal — ça ne se voit qu'en regardant la sortie.
@@ -126,9 +131,27 @@ Contexte : docs/superpowers/specs/2026-07-29-market-pulse-phase-d-design.md
    de tel ne doit pouvoir atteindre le lecteur, ni depuis le LLM, ni depuis un
    titre de presse recopié.
 
-5. CE QUI MANQUE, par rapport à la spec : le calendrier macro au-delà des
-   banques centrales, le watchdog de l'alarme XSerializationChanged, la vue
-   dashboard connectée (jamais vérifiée : le JWT était expiré).
+5. CE QUI MANQUE, par rapport à la spec — DÉJÀ CONNU, ne le rapporte pas comme
+   une découverte, dis seulement si l'état a changé :
+   - La PLANIFICATION est sur OFF : aucun schedule.json sur l'Omen, donc aucun
+     briefing ne part tout seul. C'est volontaire jusqu'à ce que Massii coche
+     « Rapport automatique du matin » dans l'écran Market Pulse — le même
+     interrupteur arme le rapport ET les cinq réveils d'ouverture.
+   - La BCE n'est PAS dans l'agenda, alors que c'est la banque centrale de la
+     bourse du grand-père : son calendrier n'est pas lisible automatiquement
+     (page JavaScript), il faut écrire ses dates à la main dans
+     data/market_pulse/agenda.json.
+   - Le watchdog de l'alarme XSerializationChanged n'existe pas encore.
+   - Le calendrier macro au-delà des banques centrales est partiel (Eurostat
+     répond, ISTAT 500, BLS 403).
+   - La vue dashboard CONNECTÉE : à vérifier si tu as une session valide.
+
+6. NE REFAIS PAS CES VÉRIFICATIONS, elles sont faites et documentées :
+   - les 7 chiffres du briefing recoupés un par un contre la source ;
+   - le piège #68 : `chartPreviousClose` de Yahoo DÉPEND DE LA FENÊTRE demandée
+     (^N225 : 64 611 sur 5 jours, 70 062 sur 1 mois). Un contre-contrôle bâti
+     dessus accuse le bot à tort — c'est le contre-contrôle qu'il faut sonder,
+     pas seulement la source. Compare toujours contre la série de bougies brute.
 
 Rends : (a) les bugs CONFIRMÉS avec la commande qui les reproduit, (b) ce qui
 manque par rapport à la spec, (c) ce que tu as vérifié et qui est SAIN — sois
