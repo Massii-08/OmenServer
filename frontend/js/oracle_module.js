@@ -162,7 +162,7 @@ const OracleModule = {
         if (min === null) return '—';
         if (min < 90) return Math.round(min) + ' min';
         if (min < 48 * 60) return Math.round(min / 60) + ' h';
-        return Math.round(min / 1440) + ' j';
+        return Math.round(min / 1440) + ' ' + Lang.t('oracle.unit_day');
     },
 
     // ---------------------------------------------------------- dashboard
