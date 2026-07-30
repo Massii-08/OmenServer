@@ -131,10 +131,38 @@ const OracleModule = {
         if (!snap) { el.innerHTML = ''; return; }
         if (this._venue === 'mk') { this._topBadgeMk(snap); return; }
         const h = snap.health || {};
-        const cls = { ok: 'online', warn: 'warn', error: 'danger' }[h.status] || '';
-        const lbl = { ok: 'LIVE', warn: Lang.t('oracle.degraded'), error: 'STALE', unknown: '—' }[h.status] || '—';
         const mode = esc(h.executor_mode || 'paper');
+        // Le champ health.status a été calculé À L'ÉCRITURE du snapshot : il
+        // reste « ok » pour toujours si le bot s'arrête. C'est l'ÂGE RÉEL du
+        // fichier qui dit s'il tourne encore — sinon on affiche « LIVE » et
+        // « dernier cycle 0,7 min » pour un bot mort depuis 5 jours (vécu).
+        const age = this._snapAgeMin(snap);
+        let cls, lbl;
+        if (age !== null && age > 95) {
+            cls = 'danger';
+            lbl = Lang.t('oracle.stopped');
+        } else {
+            cls = { ok: 'online', warn: 'warn', error: 'danger' }[h.status] || '';
+            lbl = { ok: 'LIVE', warn: Lang.t('oracle.degraded'), error: 'STALE', unknown: '—' }[h.status] || '—';
+        }
         el.innerHTML = `<span class="oracle-mode">${esc(Lang.t('oracle.mode'))}: <b>${mode}</b></span><span class="badge ${cls}">${esc(lbl)}</span>`;
+    },
+
+    // Âge RÉEL du snapshot en minutes (null si l'horodatage est absent ou
+    // illisible). Sert à ne jamais présenter une valeur stockée comme fraîche.
+    _snapAgeMin(snap) {
+        const raw = (snap && (snap.generated_iso || snap.ts)) || null;
+        if (raw === null) return null;
+        const ms = typeof raw === 'number' ? raw * 1000 : Date.parse(raw);
+        if (!Number.isFinite(ms)) return null;
+        return (Date.now() - ms) / 60000;
+    },
+
+    _ageLabel(min) {
+        if (min === null) return '—';
+        if (min < 90) return Math.round(min) + ' min';
+        if (min < 48 * 60) return Math.round(min / 60) + ' h';
+        return Math.round(min / 1440) + ' j';
     },
 
     // ---------------------------------------------------------- dashboard
@@ -291,15 +319,21 @@ const OracleModule = {
     // --- Santé + progrès du verdict phase 2
     _verdictStrip(s) {
         const h = s.health || {}, v = s.verdict || {};
+        const reelMin = this._snapAgeMin(s);
         const items = [
-            { l: Lang.t('oracle.cycles_24h'), v: h.cycles_24h ?? '—' },
-            { l: Lang.t('oracle.last_cycle'), v: h.last_cycle_age_min != null ? h.last_cycle_age_min + ' min' : '—', warn: (h.last_cycle_age_min || 0) > 95 },
+            // « dernier cycle » = l'âge RÉEL du snapshot, pas la valeur qui
+            // était vraie au moment de son écriture et qui reste gelée après
+            // l'arrêt du bot.
+            { l: Lang.t('oracle.cycles_24h'), v: reelMin !== null && reelMin > 95 ? '0' : (h.cycles_24h ?? '—'), warn: reelMin !== null && reelMin > 95 },
+            { l: Lang.t('oracle.last_cycle'), v: this._ageLabel(reelMin), err: reelMin !== null && reelMin > 95 },
             { l: 'Degraded', v: h.degraded_cycles ?? 0, err: (h.degraded_cycles || 0) >= 3, warn: (h.degraded_cycles || 0) > 0 },
             { l: Lang.t('oracle.executor'), v: h.executor_mode || 'paper' },
         ];
         const cells = items.map(i => `<div class="diag-item ${i.err ? 'err' : i.warn ? 'warn' : ''}"><span class="d-l">${esc(i.l)}</span><span class="d-v">${esc(String(i.v))}</span></div>`).join('');
         const nPct = v.pct_n ?? 0, cPct = v.pct_clusters ?? 0;
-        const statusTxt = { ok: Lang.t('oracle.healthy'), warn: Lang.t('oracle.degraded'), error: Lang.t('oracle.stale'), unknown: '—' }[h.status] || '—';
+        const statusTxt = (reelMin !== null && reelMin > 95)
+            ? Lang.t('oracle.stopped')
+            : ({ ok: Lang.t('oracle.healthy'), warn: Lang.t('oracle.degraded'), error: Lang.t('oracle.stale'), unknown: '—' }[h.status] || '—');
         return `<div class="diag-strip oracle-health">
             <div class="d-head"><span class="d-title">${esc(Lang.t('oracle.health'))}</span><span class="d-summary">${esc(statusTxt)}</span></div>
             <div class="diag-grid">${cells}</div>
