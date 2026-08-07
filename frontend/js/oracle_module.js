@@ -503,12 +503,18 @@ const OracleModule = {
     // Forme de snapshot totalement différente de la v1 (execution/rules/
     // verdict au lieu de health/bankroll/edges/transactions) → dashboard
     // dédié, indépendant de _dashboard(s) ci-dessus. Trois règles tournent
-    // en parallèle : fade_maker et fade_taker partagent le même signal (seule
-    // l'exécution diffère, ça isole l'effet maker) ; random_control est un
-    // témoin aléatoire qui teste l'INSTRUMENT lui-même — s'il DÉRIVE POSITIF,
-    // le simulateur fabrique du rendement et le verdict entier est invalide
-    // (verdict.reason === 'control_positive_drift' ; legacy v1 :
-    // 'control_not_flat').
+    // en parallèle dans la COURSE (_MK_RULE_KEYS) : fade_maker et fade_taker
+    // partagent le même signal (seule l'exécution diffère, ça isole l'effet
+    // maker) ; random_control est un témoin aléatoire qui teste l'INSTRUMENT
+    // lui-même — s'il DÉRIVE POSITIF, le simulateur fabrique du rendement et
+    // le verdict entier est invalide (verdict.reason === 'control_positive_drift' ;
+    // legacy v1 : 'control_not_flat').
+    //
+    // Un 4ᵉ bras tourne À CÔTÉ de la course, jamais dedans : fade_maker_100
+    // (R4, section _mkArm100) est un portefeuille papier OBSERVATIONNEL qui
+    // démarre à 100$ au lieu de 1000$ et force ses mises au lot minimum de la
+    // place tant que le capital est trop petit. Hors `_MK_RULE_KEYS`, absent
+    // de `verdict.by_rule` PAR CONCEPTION.
     //
     // Aujourd'hui, presque tout est à zéro (aucun marché résolu) : ce n'est
     // pas un cas limite, c'est l'état courant → chaque section doit rester
@@ -519,6 +525,7 @@ const OracleModule = {
         return [
             this._mkExecution(s),
             this._mkRace(s),
+            this._mkArm100(s),
             this._mkGates(s),
             this._mkRareHits(s),
             this._mkBreakdowns(s),
@@ -600,7 +607,33 @@ const OracleModule = {
         </div>`;
     },
 
-    // --- 3. Les portes du verdict : progrès vers 20 clusters, IC, DSR, raison
+    // --- 3. Bras 100$ (R4, fade_maker_100) : portefeuille papier OBSERVATIONNEL
+    // qui démarre à 100$ (vs 1000$ pour les 3 règles de la course ci-dessus) et
+    // force ses mises au lot minimum de la place tant que 1,5 % de l'équité ne
+    // le couvre pas — convergence automatique vers le régime 1,5 % validé une
+    // fois l'équité remontée (~335$, via les gains réinvestis). Volontairement
+    // absent de `_MK_RULE_KEYS` et de `verdict.by_rule` : ne rejoint JAMAIS le
+    // bandeau exécution / la course / les portes du verdict ci-dessus/dessous.
+    // Garde d'absence : vieux snapshot sans ce bras → section invisible.
+    _mkArm100(s) {
+        if (!s.rules || !s.rules.fade_maker_100) return '';
+        const r = s.rules.fade_maker_100 || {};
+        const ex = (s.execution || {}).fade_maker_100 || {};
+        const w = (s.wallets || {}).fade_maker_100 || {};
+        const cards = `<div class="bento-overview oracle-kpi">
+            <div class="stat-card"><span class="label">${esc(Lang.t('oracle.mk.arm100_equity'))}</span><div class="value">${this._num(w.equity, 2)}<span class="unit">$</span></div></div>
+            <div class="stat-card"><span class="label">${esc(Lang.t('oracle.mk.pnl_cons'))}</span><div class="value"><span class="delta ${this._mkPnlCls(r.pnl_cons)}">${this._mkPnlTxt(r.pnl_cons)}</span></div></div>
+            <div class="stat-card"><span class="label">${esc(Lang.t('oracle.mk.resolved'))}</span><div class="value">${this._num(r.n_cons)}</div></div>
+            <div class="stat-card"><span class="label">${esc(Lang.t('oracle.mk.arm100_posted_filled'))}</span><div class="value">${this._num(ex.posted)} / ${this._num(ex.filled_cons)}</div></div>
+        </div>`;
+        return `<div class="oracle-section">
+            <div class="oracle-sec-head"><h3>${esc(Lang.t('oracle.mk.arm100_title'))} <span class="oracle-chip">${esc(Lang.t('oracle.mk.arm100_badge'))}</span></h3><span class="oracle-sec-note">${esc(Lang.t('oracle.mk.arm100_desc'))}</span></div>
+            ${cards}
+            <div class="oracle-note-info">${esc(Lang.t('oracle.mk.arm100_note'))}</div>
+        </div>`;
+    },
+
+    // --- 4. Les portes du verdict : progrès vers 20 clusters, IC, DSR, raison
     // de blocage, par règle (fade_maker/fade_taker). La porte de VALIDITÉ
     // (le témoin dérive-t-il positif ?) est traitée à part et prime sur tout —
     // si random_control gagne de l'argent dans notre simulateur, l'instrument
@@ -667,7 +700,7 @@ const OracleModule = {
         return (t || '').startsWith('oracle.mk.reason_') ? reason : t;
     },
 
-    // --- 4. Coups rares : une courbe de fade est belle jusqu'au premier
+    // --- 5. Coups rares : une courbe de fade est belle jusqu'au premier
     // favori qui tombe — ce compteur ne doit jamais être caché.
     _mkRareHits(s) {
         const rules = s.rules || {};
@@ -688,7 +721,7 @@ const OracleModule = {
         </div>`;
     },
 
-    // --- 5. Ventilations (by_shape/by_family/by_venue) : une seule si non
+    // --- 6. Ventilations (by_shape/by_family/by_venue) : une seule si non
     // vide, par règle × dimension (forme de contrat/famille/place). Les
     // contrats one_touch se résolvent bien plus souvent que les
     // threshold_close, d'où leur séparation (légende by_shape).
@@ -735,7 +768,7 @@ const OracleModule = {
         </div>`;
     },
 
-    // --- 6. Pied de page : gel du pré-enregistrement, version du modèle,
+    // --- 7. Pied de page : gel du pré-enregistrement, version du modèle,
     // note frais maker Kalshi si inconnus, alerte si le modèle a expiré.
     _mkFooter(s) {
         const expiredNote = s.expired ? `<div class="oracle-note-warn">${esc(Lang.t('oracle.mk.expired_note'))}</div>` : '';
