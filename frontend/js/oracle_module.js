@@ -505,8 +505,9 @@ const OracleModule = {
     // dédié, indépendant de _dashboard(s) ci-dessus. Trois règles tournent
     // en parallèle : fade_maker et fade_taker partagent le même signal (seule
     // l'exécution diffère, ça isole l'effet maker) ; random_control est un
-    // témoin aléatoire qui teste l'INSTRUMENT lui-même — s'il rapporte, le
-    // simulateur ment et le verdict entier est invalide (verdict.reason ===
+    // témoin aléatoire qui teste l'INSTRUMENT lui-même — s'il DÉRIVE POSITIF,
+    // le simulateur fabrique du rendement et le verdict entier est invalide
+    // (verdict.reason === 'control_positive_drift' ; legacy v1 :
     // 'control_not_flat').
     //
     // Aujourd'hui, presque tout est à zéro (aucun marché résolu) : ce n'est
@@ -601,7 +602,7 @@ const OracleModule = {
 
     // --- 3. Les portes du verdict : progrès vers 20 clusters, IC, DSR, raison
     // de blocage, par règle (fade_maker/fade_taker). La porte de VALIDITÉ
-    // (le témoin reste-t-il plat ?) est traitée à part et prime sur tout —
+    // (le témoin dérive-t-il positif ?) est traitée à part et prime sur tout —
     // si random_control gagne de l'argent dans notre simulateur, l'instrument
     // est faussé et rien d'autre n'est lisible.
     _mkGates(s) {
@@ -610,7 +611,13 @@ const OracleModule = {
         const control = v.control || {};
         const valid = v.valid !== false;
         const reason = v.reason || '';
-        const isControlNotFlat = !valid && reason === 'control_not_flat';
+        // gate_version=2 (AMENDMENT-1 2026-08-07) émet 'control_positive_drift' ;
+        // 'control_not_flat' = porte v1, gardée pour les vieux snapshots.
+        const INVALID_REASON_KEYS = {
+            control_positive_drift: 'oracle.mk.invalid_control_positive_drift',
+            control_not_flat: 'oracle.mk.invalid_control_not_flat',
+        };
+        const invalidKey = !valid ? INVALID_REASON_KEYS[reason] : null;
 
         const controlLine = `${esc(Lang.t('oracle.mk.control_readout'))} ${esc(Lang.t('oracle.mk.clusters'))} ${this._num(control.clusters)}`
             + ` · IC [${this._num(control.lo, 4)}, ${this._num(control.hi, 4)}]`
@@ -618,8 +625,8 @@ const OracleModule = {
 
         let validityBlock;
         if (!valid) {
-            const body = isControlNotFlat
-                ? esc(Lang.t('oracle.mk.invalid_control_not_flat'))
+            const body = invalidKey
+                ? esc(Lang.t(invalidKey))
                 : esc(reason ? reason : Lang.t('oracle.mk.invalid_generic'));
             validityBlock = `<div class="oracle-mk-alert">
                 <div class="oracle-mk-alert-title">${esc(Lang.t('oracle.mk.invalid_title'))}</div>
