@@ -475,10 +475,9 @@ const MarketModule = {
                   esc(hours.join(' · ')) + (s.tz ? ' (' + esc(s.tz) + ')' : '') + '</span>' : '') +
             '</div>' +
             this._bIndex(b.index) +
-            this._bComparison(b.comparison) +
             this._bAgenda(b.agenda) +
             this._bNews(b.news) +
-            this._bFollowed(b.followed) +
+            this._bFollowed(b) +
             this._bDiscovered(b.exchange, b.discovered) +
             this._bSynthesis(b.analysis, b.selected) +
         '</div>';
@@ -516,36 +515,6 @@ const MarketModule = {
                   esc(m.gap_is_today ? Lang.t('market.gap_today') : Lang.t('market.gap_last')) +
                   ' ' + esc(gap.txt) + '</span>' : '') +
             '</div>';
-    },
-
-    // --- ce que les autres places ont déjà fait ------------------------------
-
-    _bComparison(rows) {
-        if (!Array.isArray(rows) || !rows.length) {
-            return this._bHead('market.b_comparison') + this._bEmpty('market.no_data');
-        }
-        const mono = 'font-family:var(--font-mono);font-feature-settings:\'tnum\';';
-        const td = 'padding:4px 10px;border-bottom:1px solid var(--border);font-size:14px;';
-        // Les places qui ont DÉJÀ parlé d'abord : c'est d'elles que vient la
-        // couleur du jour. Celles qui n'ont pas encore ouvert ferment la liste.
-        const rank = { 'chiuso': 0, 'aperto': 1, 'non ancora aperto': 2 };
-        const sorted = rows.slice().sort((a, b) => {
-            const ra = rank[a.state], rb = rank[b.state];
-            return (ra === undefined ? 3 : ra) - (rb === undefined ? 3 : rb);
-        });
-        const body = sorted.map(r => {
-            const n = Number(r.change_pct);
-            const dir = isFinite(n) ? n : 0;
-            return '<tr>' +
-                '<td style="' + td + '">' + esc(r.label || r.symbol || '') + '</td>' +
-                '<td style="' + td + mono + 'text-align:right;color:' + this._color(dir) + ';">' +
-                  esc(this._fmtSigned(r.change_pct, 2, '%')) + '</td>' +
-                '<td style="' + td + 'color:var(--text-muted);">' + esc(r.state || '') + '</td>' +
-            '</tr>';
-        }).join('');
-        return this._bHead('market.b_comparison') +
-            '<div style="overflow-x:auto;"><table style="border-collapse:collapse;width:100%;min-width:300px;">' +
-              '<tbody>' + body + '</tbody></table></div>';
     },
 
     // --- l'agenda : une date est un fait, une direction n'en est pas un ------
@@ -678,20 +647,60 @@ const MarketModule = {
                 : '');
     },
 
-    // --- les titres suivis --------------------------------------------------
+    // --- les titres suivis ---------------------------------------------------
+    //
+    // Vue AGRÉGÉE : tous les titres suivis, TOUTES bourses confondues — pas
+    // seulement ceux de la place dont ce briefing parle (demande Massii du
+    // 08/08 : « je veux une liste des titres que je suis », en remplacement de
+    // la comparaison entre places). La place OUVERTE (b.exchange) passe en tête, les autres
+    // suivent dans l'ordre d'ouverture (_briefingKeys) ; comme les lignes ne
+    // viennent plus forcément de la bourse affichée, chaque ligne porte son
+    // propre tag de place pour rester lisible une fois mélangées.
 
-    _bFollowed(rows) {
+    _bFollowed(b) {
         const head = this._bHead('market.b_followed');
-        if (!Array.isArray(rows) || !rows.length) return head + this._bEmpty('market.followed_empty');
+        const map = (this._briefings && this._briefings.briefings &&
+            typeof this._briefings.briefings === 'object') ? this._briefings.briefings : {};
+        const openExchange = (b && b.exchange) || null;
+
+        // Place ouverte d'abord, puis les autres dans l'ordre d'ouverture —
+        // sans dupliquer la place ouverte si elle réapparaît dans la liste.
+        const orderedKeys = [];
+        if (openExchange && map[openExchange]) orderedKeys.push(openExchange);
+        this._briefingKeys().forEach(k => {
+            if (map[k] && orderedKeys.indexOf(k) < 0) orderedKeys.push(k);
+        });
+
+        // this._briefings peut être null/incomplet, et un briefing peut ne pas
+        // avoir de `followed` du tout : on ne suppose jamais la présence du champ.
+        const seen = {};
+        const rows = [];
+        orderedKeys.forEach(venueId => {
+            const vb = map[venueId];
+            const followed = (vb && Array.isArray(vb.followed)) ? vb.followed : [];
+            followed.forEach(f => {
+                if (!f || typeof f !== 'object' || !f.symbol) return;
+                const dedupKey = venueId + '|' + f.symbol;         // venue_id + symbol
+                if (seen[dedupKey]) return;
+                seen[dedupKey] = true;
+                rows.push({ f: f, venueLabel: (vb && (vb.label || vb.exchange)) || venueId });
+            });
+        });
+
+        if (!rows.length) return head + this._bEmpty('market.followed_empty_all');
         const mono = 'font-family:var(--font-mono);font-feature-settings:\'tnum\';';
-        return head + '<div class="row-list">' + rows.map(f => {
+        return head + '<div class="row-list">' + rows.map(row => {
+            const f = row.f;
             const n = Number(f.change_pct);
             const dir = isFinite(n) ? n : 0;
             return '<div class="row" style="display:flex;gap:12px;align-items:center;' +
                    'flex-wrap:wrap;padding:8px 12px;">' +
                 '<div style="flex:1 1 180px;min-width:0;">' +
                   '<div style="font-size:15px;font-weight:600;">' + esc(f.label || f.symbol || '') + '</div>' +
-                  '<div style="font-size:12px;color:var(--text-dim);' + mono + '">' + esc(f.symbol || '') + '</div>' +
+                  '<div style="font-size:12px;color:var(--text-dim);">' +
+                    '<span style="' + mono + '">' + esc(f.symbol || '') + '</span>' +
+                    ' · <span style="font-size:12px;color:var(--text-dim);">' + esc(row.venueLabel || '') + '</span>' +
+                  '</div>' +
                 '</div>' +
                 '<div style="' + mono + 'text-align:right;min-width:130px;">' +
                   '<div style="font-size:16px;">' + esc(this._money(f.price, f.currency)) + '</div>' +

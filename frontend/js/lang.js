@@ -471,7 +471,6 @@ const Lang = {
             // --- phase D : un bloc par bourse + le sélecteur ---
             'market.no_briefings': 'Aucun briefing par bourse pour l\'instant.',
             'market.b_index': 'Indice de la place',
-            'market.b_comparison': 'Les autres places',
             'market.b_agenda': 'Agenda',
             'market.b_news': 'Actualité',
             'market.b_followed': 'Titres suivis',
@@ -487,6 +486,7 @@ const Lang = {
             'market.news_failed': 'sources en panne :',
             'market.news_alarm': 'Alerte source',
             'market.followed_empty': 'Aucun titre suivi sur cette place.',
+            'market.followed_empty_all': 'Aucun titre suivi. Ajoute-les dans « Bourses et titres suivis ».',
             'market.discovered_empty': 'Aucun nouveau titre dans l\'actualité du jour.',
             'market.discovered_note': 'Apparus dans l\'actualité, classés par nombre de mentions. Aucune note, aucun jugement.',
             'market.discovered_mentions': 'mentions',
@@ -1971,7 +1971,6 @@ const Lang = {
             // --- phase D: one block per exchange + the selector ---
             'market.no_briefings': 'No per-exchange briefing yet.',
             'market.b_index': 'Exchange index',
-            'market.b_comparison': 'The other venues',
             'market.b_agenda': 'Agenda',
             'market.b_news': 'News',
             'market.b_followed': 'Followed stocks',
@@ -1987,6 +1986,7 @@ const Lang = {
             'market.news_failed': 'sources down:',
             'market.news_alarm': 'Source alarm',
             'market.followed_empty': 'No followed stock on this venue.',
+            'market.followed_empty_all': 'No followed stock yet. Add them under "Exchanges and followed stocks".',
             'market.discovered_empty': 'No new stock in today\'s news.',
             'market.discovered_note': 'Mentioned in the news, ranked by number of mentions. No rating, no judgement.',
             'market.discovered_mentions': 'mentions',
@@ -3469,7 +3469,6 @@ const Lang = {
             // --- fase D: un blocco per borsa + il selettore ---
             'market.no_briefings': 'Nessun briefing per borsa, per ora.',
             'market.b_index': 'Indice della piazza',
-            'market.b_comparison': 'Le altre piazze',
             'market.b_agenda': 'Agenda',
             'market.b_news': 'Notizie',
             'market.b_followed': 'Titoli seguiti',
@@ -3485,6 +3484,7 @@ const Lang = {
             'market.news_failed': 'fonti non raggiungibili:',
             'market.news_alarm': 'Allarme fonte',
             'market.followed_empty': 'Nessun titolo seguito su questa piazza.',
+            'market.followed_empty_all': 'Nessun titolo seguito. Aggiungili da « Borse e titoli seguiti ».',
             'market.discovered_empty': 'Nessun nuovo titolo nelle notizie di oggi.',
             'market.discovered_note': 'Apparsi nelle notizie, in ordine di numero di menzioni. Nessun voto, nessun giudizio.',
             'market.discovered_mentions': 'menzioni',
