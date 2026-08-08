@@ -462,6 +462,13 @@ const MarketModule = {
         if (s.lunch && s.lunch.length === 2) {
             hours.push(Lang.t('market.session_lunch') + ' ' + s.lunch[0] + '–' + s.lunch[1]);
         }
+        // Le jour LOCAL de la place, pas celui du navigateur : à 23 h samedi à
+        // Paris, c'est déjà dimanche à Tokyo.
+        let wd = null;
+        try {
+            wd = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: s.tz || undefined }).format(new Date());
+        } catch (e) { wd = null; }   // tz inconnue → pas de mention, jamais de crash
+        if (wd === 'Sat' || wd === 'Sun') hours.push(Lang.t('market.session_weekend'));
         const mono = 'font-family:var(--font-mono);font-feature-settings:\'tnum\';';
         return (bare ? '<div>' : '<div class="card" style="margin-bottom:14px;">') +
             // --- le nom de la bourse : tout ce qui suit lui appartient ---
