@@ -22,14 +22,26 @@ def _day(ts: int, tz_name: str) -> str:
     return datetime.fromtimestamp(ts, ZoneInfo(tz_name)).strftime("%Y-%m-%d")
 
 
+def _valid_price(x: Optional[float]) -> bool:
+    """Un indice boursier ne vaut jamais 0 (ni négatif) : Yahoo envoie parfois
+    ce sentinel sur une bougie inexploitable — mesuré le 2026-08-03 sur
+    ^STOXX50E, `open=0.0` / `close=None` / `high=0.0`. Un 0 (ou un négatif)
+    doit être traité comme une donnée ABSENTE, exactement comme `None`,
+    jamais comme un vrai prix — sinon le gap se calcule contre zéro et rend
+    -100,00 %, un fait FAUX publié tel quel dans le rapport.
+    """
+    return x is not None and x > 0
+
+
 def _pair_gap(prev: Candle, cur: Candle, tz_name: str) -> Optional[Gap]:
     """Gap d'une paire adjacente, ou None si la paire n'est pas calculable.
 
     Il faut une ouverture pour `cur` et une clôture pour `prev` : la bougie du
     jour peut n'avoir que son ouverture (clôture non consolidée), et une bougie
-    de séance écourtée peut n'avoir que sa clôture.
+    de séance écourtée peut n'avoir que sa clôture. Un `open`/`close` à 0 (ou
+    négatif) est traité comme absent, comme `None` (cf. `_valid_price`).
     """
-    if cur.open is None or not prev.close:
+    if not _valid_price(cur.open) or not _valid_price(prev.close):
         return None
     pct = (cur.open - prev.close) / prev.close * 100.0
     return Gap(date=_day(cur.ts, tz_name), gap_pct=round(pct, 2),

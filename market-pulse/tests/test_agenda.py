@@ -25,7 +25,8 @@ import os
 
 from pulse.agenda import collect_agenda as _collect_agenda
 from pulse.agenda import upcoming_events as _upcoming_events
-from pulse.agenda import (for_venue, load_curated, parse_boj_schedule,
+from pulse.agenda import (for_venue, load_curated, parse_boe_dates,
+                          parse_boj_schedule, parse_ecb_calendar,
                           parse_fomc_calendar, parse_snb_events)
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
@@ -41,8 +42,10 @@ def _raw(name, binary=True):
 SNB = _raw("agenda_snb.xml")
 FOMC = _raw("agenda_fomc.html", binary=False)
 BOJ = _raw("agenda_boj.html", binary=False)
+ECB = _raw("agenda_ecb.html", binary=False)
+BOE = _raw("agenda_boe.html", binary=False)
 
-# 2026-07-30 12:00 UTC — le jour où les trois sources ont été sondées.
+# 2026-07-30 12:00 UTC — le jour où Fed/BoJ/BNS ont été sondées.
 NOW = 1785412800
 
 FORBIDDEN = [
@@ -144,7 +147,10 @@ def test_boj_pdf_noise_never_reaches_the_label():
 
 def test_snb_events_feed_is_read_and_dated():
     events = parse_snb_events(SNB)
-    assert len(events) > 40
+    # 9 « summary of monetary policy discussion » + 16 « monetary policy
+    # assessment » (8 réunions x 2 titres chacune) — le reste (58 items au
+    # total dans le fixture) est du bruit filtré (défaut #2b).
+    assert len(events) == 25, [e["what"] for e in events]
     for e in events:
         assert e["when_ts"] > 0
         assert e["source"] == "BNS"
@@ -174,6 +180,180 @@ def test_snb_keeps_the_ics_link_so_the_reader_can_check():
         assert e["source_url"].startswith("https://"), e
 
 
+def test_snb_only_monetary_policy_events_survive_the_noise():
+    """Le flux BNS charrie beaucoup de bruit non actionnable pour un
+    particulier : discours (« Speech by … »), bulletins trimestriels
+    (« Quarterly Bulletin »), enquêtes (« Results of the Payment Methods
+    Survey »), balance des paiements, résultats intermédiaires/annuels,
+    rapports annuels/de durabilité, concours de billets... Seuls les
+    rendez-vous de politique monétaire (valutazione + verbale) doivent
+    sortir (défaut #2b)."""
+    events = parse_snb_events(SNB)
+    for e in events:
+        assert "politica monetaria" in e["what"], e["what"]
+
+    noise = ("speech", "quarterly bulletin", "payment methods survey",
+             "balance of payments", "interim results", "annual result",
+             "annual report", "sustainability report", "financial accounts",
+             "direct investment", "moneyverse", "design competition",
+             "financial stability report")
+    flat = json.dumps(events, ensure_ascii=False).lower()
+    for word in noise:
+        assert word not in flat, "bruit BNS non filtré: %r" % word
+
+
+def test_snb_source_is_tagged_for_the_three_european_venues_only():
+    from pulse.agenda import SOURCES
+    bns = next(s for s in SOURCES if s["name"] == "BNS")
+    assert set(bns["venues"]) == {"euronext", "deutsche_boerse", "lse"}, bns["venues"]
+
+
+# --------------------------------------------------------------------------
+# BCE
+# --------------------------------------------------------------------------
+
+def test_ecb_calendar_yields_the_nineteen_decision_dates():
+    events = parse_ecb_calendar(ECB)
+    assert len(events) == 19, [e["when"] for e in events]
+    assert events[0]["when"] == "2026-09-10", events[0]
+    assert [e["when"] for e in events] == [
+        "2026-09-10", "2026-10-29", "2026-12-17", "2027-02-04", "2027-03-18",
+        "2027-04-29", "2027-06-10", "2027-07-22", "2027-09-09", "2027-10-28",
+        "2027-12-16", "2028-02-03", "2028-03-23", "2028-05-04", "2028-06-08",
+        "2028-07-20", "2028-09-07", "2028-10-12", "2028-12-07",
+    ], [e["when"] for e in events]
+
+
+def test_ecb_non_monetary_meetings_are_excluded_despite_the_substring_trap():
+    # « non-monetary policy meeting » CONTIENT la sous-chaîne « monetary
+    # policy meeting » — un filtre naïf les laisserait passer. Le fixture en
+    # a plusieurs (30/09/2026 entre autres) : aucune ne doit apparaître.
+    events = parse_ecb_calendar(ECB)
+    whens = {e["when"] for e in events}
+    assert "2026-09-30" not in whens, whens
+    flat = json.dumps(events, ensure_ascii=False).lower()
+    assert "non-monetary" not in flat, flat
+
+
+def test_ecb_meeting_is_dated_on_its_second_day_not_its_first():
+    # « 28/10/2026 (Day 1) » n'est pas la décision : c'est le
+    # « 29/10/2026 (Day 2), followed by press conference ».
+    events = parse_ecb_calendar(ECB)
+    october = [e for e in events if e["when"].startswith("2026-10")]
+    assert len(october) == 1, october
+    assert october[0]["when"] == "2026-10-29", october[0]
+
+
+def test_ecb_handles_a_first_day_without_its_day_marker():
+    # Le 11/10/2028 n'a que « monetary policy meeting in Frankfurt », SANS
+    # « (Day 1) » — chercher ce marqueur laisserait passer une fausse
+    # absence. Seule la décision du 12/10/2028 doit sortir.
+    events = parse_ecb_calendar(ECB)
+    october_2028 = [e for e in events if e["when"].startswith("2028-10")]
+    assert len(october_2028) == 1, october_2028
+    assert october_2028[0]["when"] == "2028-10-12", october_2028[0]
+
+
+def test_ecb_events_are_tagged_for_the_euro_area_venues_only():
+    for e in parse_ecb_calendar(ECB):
+        assert set(e["venues"]) == {"euronext", "deutsche_boerse"}, e
+
+
+def test_ecb_dates_are_day_only_because_no_hour_was_measured():
+    for e in parse_ecb_calendar(ECB):
+        assert e["day_only"] is True
+        assert len(e["when"]) == 10
+
+
+def test_ecb_label_is_in_italian_and_names_the_decision():
+    for e in parse_ecb_calendar(ECB):
+        assert "BCE" in e["what"] and "decisione" in e["what"], e["what"]
+
+
+def test_ecb_at_stake_is_factual_never_a_direction():
+    for e in parse_ecb_calendar(ECB):
+        low = e["at_stake"].lower()
+        assert "costo del denaro" in low, e
+        for banned in ("salirà", "scenderà", "rialzo previsto", "taglio previsto"):
+            assert banned not in low, e
+
+
+def test_ecb_source_is_tagged_for_the_euro_area_only_in_SOURCES():
+    from pulse.agenda import SOURCES
+    bce = next(s for s in SOURCES if s["name"] == "BCE")
+    assert set(bce["venues"]) == {"euronext", "deutsche_boerse"}, bce["venues"]
+    assert "lse" not in bce["venues"], bce["venues"]
+
+
+def test_ecb_tolerates_html_without_any_recognisable_pair():
+    assert parse_ecb_calendar("<html><body>rien ici</body></html>") == []
+    assert parse_ecb_calendar("") == []
+
+
+# --------------------------------------------------------------------------
+# BoE
+# --------------------------------------------------------------------------
+
+def test_boe_dates_yields_the_single_next_due_date():
+    events = parse_boe_dates(BOE)
+    assert len(events) == 1, events
+    assert events[0]["when"] == "2026-09-17", events[0]
+
+
+def test_boe_ignores_the_past_release_dates_scattered_in_the_page():
+    # Les blocs `datetime="2026-04-30"`/`"2026-06-18"`/`"2026-07-30"` sont le
+    # `datePublished` d'annonces déjà PASSÉES, pas des rendez-vous à venir.
+    events = parse_boe_dates(BOE)
+    whens = {e["when"] for e in events}
+    assert "2026-04-30" not in whens, whens
+    assert "2026-06-18" not in whens, whens
+    assert "2026-07-30" not in whens, whens
+
+
+def test_boe_ignores_the_confirmed_and_provisional_dates_tables():
+    # « 2026 confirmed dates » / « 2027 provisional dates » listent « Thursday
+    # 17 December » etc SANS année dans le texte de la ligne — seule la date
+    # du bandeau « Next due » doit sortir, jamais une ligne de ces tables.
+    events = parse_boe_dates(BOE)
+    assert len(events) == 1, events
+
+
+def test_boe_event_is_tagged_for_london_only():
+    for e in parse_boe_dates(BOE):
+        assert e["venues"] == ["lse"], e
+
+
+def test_boe_date_is_day_only_because_no_hour_was_measured():
+    for e in parse_boe_dates(BOE):
+        assert e["day_only"] is True
+        assert len(e["when"]) == 10
+
+
+def test_boe_label_is_in_italian_and_names_the_committee():
+    events = parse_boe_dates(BOE)
+    assert "BoE" in events[0]["what"], events[0]["what"]
+    assert "Comitato" in events[0]["what"], events[0]["what"]
+
+
+def test_boe_at_stake_is_factual_never_a_direction():
+    events = parse_boe_dates(BOE)
+    low = events[0]["at_stake"].lower()
+    assert "costo del denaro" in low, events[0]
+    for banned in ("salirà", "scenderà", "rialzo previsto", "taglio previsto"):
+        assert banned not in low, events[0]
+
+
+def test_boe_source_is_tagged_for_london_only_in_SOURCES():
+    from pulse.agenda import SOURCES
+    boe = next(s for s in SOURCES if s["name"] == "BoE")
+    assert set(boe["venues"]) == {"lse"}, boe["venues"]
+
+
+def test_boe_tolerates_html_without_a_next_due_banner():
+    assert parse_boe_dates("<html><body>rien ici</body></html>") == []
+    assert parse_boe_dates("") == []
+
+
 # --------------------------------------------------------------------------
 # Le garde-fou : jamais une date passée
 # --------------------------------------------------------------------------
@@ -185,6 +365,10 @@ def _fetch_all(url):
         return FOMC
     if "boj.or.jp" in url:
         return BOJ
+    if "ecb.europa.eu" in url:
+        return ECB
+    if "bankofengland.co.uk" in url:
+        return BOE
     raise AssertionError("URL inattendue: %s" % url)
 
 
@@ -275,6 +459,69 @@ def test_no_venue_asked_means_everything():
     got = collect_agenda(NOW, fetch=_fetch_all, curated_path="/nonexistent",
                          horizon_h=24 * 400, max_items=80)
     assert for_venue(got["events"], None) == got["events"]
+
+
+# 2026-09-21T06:00:00Z — semaine où la BNS a une valutazione le 24/09 (mesuré,
+# cf. défaut #2 : ce même briefing partait alors, à tort, sous Tokyo).
+NOW_SEP = 1789970400
+
+
+def test_snb_events_never_reach_asia_or_america_and_stay_monetary_policy_only():
+    got = collect_agenda(NOW_SEP, fetch=_fetch_all, curated_path="/nonexistent",
+                         horizon_h=24 * 400, max_items=80)
+
+    tokyo = for_venue(got["events"], "jpx")
+    assert not any(e["source"] == "BNS" for e in tokyo), tokyo
+
+    nyse = for_venue(got["events"], "nyse")
+    assert not any(e["source"] == "BNS" for e in nyse), nyse
+
+    euronext = for_venue(got["events"], "euronext")
+    whats = [e["what"] for e in euronext]
+    sept24 = [e for e in euronext if e["when"].startswith("2026-09-24")]
+    assert sept24, whats
+    assert all("valutazione di politica monetaria" in e["what"] for e in sept24), whats
+    assert not any("balance of payments" in w.lower() for w in whats), whats
+
+
+# --------------------------------------------------------------------------
+# BCE / BoE — intégration bout en bout (critère d'acceptation)
+# --------------------------------------------------------------------------
+
+# 2026-09-08 12:00 UTC — deux jours avant la décision BCE du 10/09/2026,
+# largement dans l'horizon par défaut (7 jours).
+NOW_ECB = 1788868800
+
+
+def test_the_ecb_decision_shows_under_euronext_with_default_settings():
+    got = collect_agenda(NOW_ECB, fetch=_fetch_all, curated_path="/nonexistent")
+    euronext = for_venue(got["events"], "euronext")
+    assert any(e["when"] == "2026-09-10" and e["source"] == "BCE"
+               for e in euronext), euronext
+
+
+def test_the_ecb_decision_never_shows_under_tokyo():
+    got = collect_agenda(NOW_ECB, fetch=_fetch_all, curated_path="/nonexistent")
+    tokyo = for_venue(got["events"], "jpx")
+    assert not any(e["source"] == "BCE" for e in tokyo), tokyo
+
+
+def test_bce_events_never_reach_tokyo_or_america():
+    got = collect_agenda(NOW, fetch=_fetch_all, curated_path="/nonexistent",
+                         horizon_h=24 * 400, max_items=80)
+    assert any(e["source"] == "BCE" for e in got["events"]), got["events"]
+    for venue in ("jpx", "nyse", "nasdaq"):
+        filtered = for_venue(got["events"], venue)
+        assert not any(e["source"] == "BCE" for e in filtered), (venue, filtered)
+
+
+def test_boe_events_never_reach_the_euro_area_or_asia_or_america():
+    got = collect_agenda(NOW, fetch=_fetch_all, curated_path="/nonexistent",
+                         horizon_h=24 * 400, max_items=80)
+    assert any(e["source"] == "BoE" for e in got["events"]), got["events"]
+    for venue in ("jpx", "nyse", "nasdaq", "euronext", "deutsche_boerse"):
+        filtered = for_venue(got["events"], venue)
+        assert not any(e["source"] == "BoE" for e in filtered), (venue, filtered)
 
 
 # --------------------------------------------------------------------------

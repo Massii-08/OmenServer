@@ -1,4 +1,6 @@
 """Thèmes et filtre de conseil — fonctions pures, aucun réseau."""
+import pytest
+
 from pulse.sentiment import (THEMES, extract_themes, is_advice, tone_counts)
 
 
@@ -79,6 +81,88 @@ def test_is_advice_tolerates_garbage():
 def test_advice_detection_is_case_and_accent_insensitive():
     assert is_advice("LE AZIONI DA COMPRARE") is True
     assert is_advice("Perche conviene vendere") is True   # sans accent
+
+
+# --------------------------------------------------------------------------
+# Vocabulaire prescriptif PARTAGÉ avec analyst.check_synthesis — défaut de la
+# mission : le garde-fou de sortie ne connaissait ni l'anglais de rating
+# ("outperform"/"upgrade") ni "target price" à l'envers ni "dovrebbe salire".
+# Ces mots-là vivent désormais dans `PRESCRIPTIVE_PATTERNS`, donc is_advice()
+# doit aussi les détecter — c'est la même liste utilisée par les deux bouts.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("phrase", [
+    "Rating: outperform, upgrade da hold a buy.",
+    "Gli analisti hanno alzato il target price a 250 dollari.",
+    "Consigliamo di comprare Prysmian: è una buona occasione.",
+    "L'indice dovrebbe salire nella seduta di oggi.",
+    "We recommend buying the dip.",
+    "Il titolo è un buy.",
+])
+def test_the_shared_vocabulary_catches_every_rejected_synthesis_phrase(phrase):
+    """Les 6 formulations que le défaut laissait passer en synthèse LLM (mais
+    pas comme titre de presse) doivent maintenant être détectées ICI aussi,
+    puisque check_synthesis lit la MÊME liste."""
+    assert is_advice(phrase) is True, phrase
+
+
+@pytest.mark.parametrize("phrase", [
+    "L'agenzia di rating Fitch ha confermato la valutazione A di Enel.",
+    "Ieri Wall Street ha chiuso in rialzo: S&P 500 +1,48%.",
+    "Oggi apre Euronext; l'indice Euronext 100 è a 1939,23 punti.",
+])
+def test_bare_rating_mentions_stay_factual_not_prescriptive(phrase):
+    """« rating » seul est un mot parfaitement factuel en italien financier
+    (une agence NOTE, ça ne conseille pas) — le raisonner en motif
+    (« upgrade », « outperform », « target price »...) et pas en mot nu évite
+    de le confondre avec un conseil."""
+    assert is_advice(phrase) is False, phrase
+
+
+def test_recommend_stem_catches_english_recommendation_verbs():
+    assert is_advice("We recommend buying the dip.") is True
+    assert is_advice("Analysts recommend caution ahead of earnings.") is True
+
+
+def test_target_price_is_caught_in_either_word_order():
+    """La presse anglophone écrit « price target », la presse italienne
+    emprunte souvent l'ordre inverse « target price » — les deux doivent
+    tomber."""
+    assert is_advice("Cuts price target to $180.") is True
+    assert is_advice("Gli analisti hanno alzato il target price a 250 dollari.") is True
+
+
+def test_should_rise_or_fall_is_a_direction_prediction():
+    assert is_advice("L'indice dovrebbe salire nella seduta di oggi.") is True
+    assert is_advice("Il titolo dovrebbe scendere ancora.") is True
+
+
+def test_forecast_words_are_caught_but_scheduled_language_is_not():
+    """« previsione »/« prevediamo »/« prevedo » sont une prévision de marché.
+    « previsto »/« prevista » (le PARTICIPE) est une donnée d'AGENDA
+    factuelle — « la riunione della BCE prevista per oggi » ne doit jamais
+    être jetée, sinon le briefing dégrade sur sa propre section agenda."""
+    assert is_advice("La previsione è di un rialzo dell'indice.") is True
+    assert is_advice("Prevediamo un calo del 3%.") is True
+    assert is_advice("Prevedo un rimbalzo domani.") is True
+    assert is_advice("La riunione della BCE prevista per oggi si terrà alle 14.") is False
+    assert is_advice("L'appuntamento previsto oggi riguarda i tassi.") is False
+
+
+def test_suggeriamo_is_prescriptive():
+    assert is_advice("Vi suggeriamo di attendere prima di agire.") is True
+
+
+def test_opportunita_di_acquisto_is_caught_like_occasione():
+    assert is_advice("È un'opportunità di acquisto imperdibile.") is True
+
+
+def test_occasione_di_acquisto_is_caught_with_or_without_the_space():
+    """Motif historique bogué : « occasione d[i']acquisto » n'acceptait aucun
+    espace entre « di » et « acquisto » et ne matchait donc jamais la forme
+    la plus courante « occasione di acquisto »."""
+    assert is_advice("È un'occasione di acquisto.") is True
+    assert is_advice("È un'occasione d'acquisto.") is True
 
 
 # --------------------------------------------------------------------------
@@ -199,3 +283,173 @@ def test_reader_letters_opening_on_a_quote_are_offtopic():
         "'We already have wills': We're in our 60s with $1.5 million. Should we set up a trust?",
     ]:
         assert is_offtopic(title) is True, title
+
+
+# --------------------------------------------------------------------------
+# Hors-sujet — défaut mesuré : 0/13 titres écartés sur un échantillon réel,
+# le briefing de la Bourse de Tokyo publiait une dépêche politique et un
+# article de tourisme. Trois nouvelles catégories : actualité générale sans
+# angle de marché (politique/diplomatie), tourisme/voyage, et questions
+# personnelles de particuliers italiens (forums de finance perso).
+# --------------------------------------------------------------------------
+
+def test_general_wire_news_without_a_market_angle_is_offtopic():
+    from pulse.sentiment import is_offtopic
+    for title in [
+        "Myanmar's Aung San Suu Kyi meets Red Cross official, government says",
+        "Before the art islands, a reason to stop in Okayama",
+        "Streetcar that survived atomic bomb now used for tours in Hiroshima",
+    ]:
+        assert is_offtopic(title) is True, title
+
+
+def test_italian_personal_finance_forum_questions_are_offtopic():
+    """Les questions personnelles de particuliers (forums type
+    r/ItaliaPersonalFinance) charriées par un flux de presse générique : ce
+    n'est pas de l'actualité de marché, et sous le nom d'une bourse ça se lit
+    comme du conseil."""
+    from pulse.sentiment import is_offtopic
+    for title in [
+        "Ho 23 anni, ho appena iniziato un PAC da 500 €/mese su VWCE. Cosa ne pensate?",
+        "Gestione del patrimonio",
+        "Fondo emergenza sovradimensionato? Dubbio su gestione liquidità e acquisto auto",
+    ]:
+        assert is_offtopic(title) is True, title
+
+
+def test_geopolitics_and_macro_headlines_with_a_real_market_angle_are_kept():
+    """Règle d'arbitrage en cas de doute : GARDER. Ces titres partagent du
+    vocabulaire avec les catégories offtopic (guerre, tourisme) mais portent
+    une vraie information de marché — un titre écarté à tort est perdu pour
+    de bon, un titre de trop n'est que du bruit visible."""
+    from pulse.sentiment import is_offtopic
+    for title in [
+        "California's diesel prices have jumped since the Iran war started, "
+        "with ripple effects across the country",
+        "Tourism price wars threaten to dim a rare bright spot in China's "
+        "consumer spending",
+        "Palantir soars 12% on blowout quarter",
+        "Prysmian acquisisce l'americana Atkore, operazione da 3,3 miliardi",
+        "Mef, a luglio avanzo provvisorio di 13,4 miliardi",
+        "Il petrolio chiude a New York in calo del 5%",
+    ]:
+        assert is_offtopic(title) is False, title
+
+
+def test_the_offtopic_patterns_generalize_beyond_the_measured_examples():
+    """Les motifs ne doivent pas être des correspondances exactes des titres
+    mesurés — une autre ville, un autre âge, un autre pays doivent aussi
+    être détectés, sinon le filtre est juste une liste déguisée."""
+    from pulse.sentiment import is_offtopic
+    assert is_offtopic("Detained Ugandan opposition figure is unconscious") is True
+    assert is_offtopic("A reason to stop in Kyoto before the temples close") is True
+    assert is_offtopic("Best tours in Lisbon this summer") is True
+    assert is_offtopic("Ho 45 anni, quanto dovrei investire ogni mese?") is True
+    assert is_offtopic("Dubbi su gestione del mutuo, consigli?") is True
+
+
+# --------------------------------------------------------------------------
+# Durcissement anti-bavardage de forum (2026-08-04) — mesuré sur un run réel :
+# les 3 items Reddit publiés ce matin-là étaient tous du bavardage, et
+# is_offtopic() a rendu False sur les trois. Le point commun n'est pas le
+# sujet (ils parlent bien de finance) mais le REGISTRE : première personne,
+# demande d'avis, récit personnel, question d'assistance, langage
+# familier/vulgaire — jamais un acteur qui fait une action.
+# --------------------------------------------------------------------------
+
+def test_measured_forum_chatter_titles_are_now_offtopic():
+    """Les 3 titres Reddit mesurés en vrai qui passaient le filtre ce
+    matin-là."""
+    from pulse.sentiment import is_offtopic
+    for title in [
+        "Fanculo Vanguard, io mi butto su ALLW!",
+        "What's a piece of investing content you'd hand a beginner today?",
+        "Problemi con acquisto etf su fineco",
+    ]:
+        assert is_offtopic(title) is True, title
+
+
+def test_the_three_already_covered_forum_questions_stay_offtopic():
+    """Rappel de non-régression : ces 3 titres (mission) sont déjà couverts
+    par `test_italian_personal_finance_forum_questions_are_offtopic` —
+    vérifiés ici aussi pour documenter qu'ils font partie du même lot
+    mesuré et qu'ils ne doivent pas être cassés par le durcissement."""
+    from pulse.sentiment import is_offtopic
+    for title in [
+        "Ho 23 anni, ho appena iniziato un PAC da 500 €/mese su VWCE. "
+        "Cosa ne pensate?",
+        "Gestione del patrimonio",
+        "Fondo emergenza sovradimensionato? Dubbio su gestione liquidità "
+        "e acquisto auto",
+    ]:
+        assert is_offtopic(title) is True, title
+
+
+def test_vulgar_or_personal_bet_register_generalizes_beyond_the_measured_title():
+    """Le motif n'est pas le mot « Vanguard »/« ALLW » du titre mesuré — un
+    autre juron, un autre titre coté, une autre tournure doivent aussi être
+    détectés (italien ET anglais, les subreddits sources sont bilingues)."""
+    from pulse.sentiment import is_offtopic
+    for title in [
+        "Cazzo, ho perso 5000 euro su GME",
+        "Vaffanculo Tesla, mi butto su Nvidia domani",
+        "Fuck it, going all in on GME calls",
+        "Sono entrato su Amazon con tutto lo stipendio",
+    ]:
+        assert is_offtopic(title) is True, title
+
+
+def test_broker_support_question_register_generalizes_beyond_fineco():
+    """Le motif n'est pas « fineco »/« etf » du titre mesuré — une autre
+    opération, un autre courtier doivent aussi être détectés."""
+    from pulse.sentiment import is_offtopic
+    for title in [
+        "Problema nel prelievo dal conto Revolut",
+        "Problemi con la vendita di azioni su Directa",
+        "Problemi con il bonifico verso Trade Republic, aiuto",
+    ]:
+        assert is_offtopic(title) is True, title
+
+
+def test_a_real_service_outage_reported_as_news_is_not_caught_by_the_support_pattern():
+    """Contre-exemple volontaire : une panne de service RELATÉE par la
+    presse (acteur + action, l'acteur ouvre le titre) n'est pas une question
+    d'assistance personnelle — elle doit rester une info de marché."""
+    from pulse.sentiment import is_offtopic
+    assert is_offtopic(
+        "Una banca, problemi con l'app mandano in tilt migliaia di utenti"
+    ) is False
+    assert is_offtopic(
+        "Deutsche Bank, problemi con l'acquisto di una quota di controllo, "
+        "il titolo cala in Borsa"
+    ) is False
+
+
+def test_crowdsourced_advice_question_register_generalizes():
+    """Le motif n'est pas « beginner »/« today » du titre mesuré — une autre
+    formulation de la même sollicitation communautaire doit aussi être
+    détectée."""
+    from pulse.sentiment import is_offtopic
+    for title in [
+        "What's a lesson you'd share with a new investor?",
+        "What would you recommend to someone starting out today?",
+        "Anyone else holding VWCE for the long run?",
+        "Does anyone have experience with Trade Republic fees?",
+        "Qualcuno ha esperienza con Fineco per comprare ETF?",
+    ]:
+        assert is_offtopic(title) is True, title
+
+
+def test_more_real_press_headlines_with_forum_adjacent_words_are_kept():
+    """4 dépêches réelles supplémentaires (mission) qui n'étaient pas encore
+    couvertes par les tests existants — aucune ne doit être écartée par le
+    durcissement anti-bavardage."""
+    from pulse.sentiment import is_offtopic
+    for title in [
+        "Gme, il prezzo dell'elettricità sale a 177,16 euro al Mwh",
+        "Istat, a giugno vendite al dettaglio -0,1% su mese; in crescita "
+        "su anno",
+        "Borsa: Punta al rialzo Milano, in aumento dell'1,14% alle 10:30",
+        "HSBC pretax profit beats estimates",
+    ]:
+        assert is_offtopic(title) is False, title

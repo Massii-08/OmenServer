@@ -91,12 +91,24 @@ def _memo_fetch():
     return fetch
 
 
-def _social_for(venue, opz, now, budget):
+# Le cap historique par source pour les TITRES. Le baromètre, lui, veut toute
+# la récolte : la requête Reddit ramène déjà 100 posts, en jeter 88 avant de
+# les compter reviendrait à mesurer l'opinion sur un échantillon de 12.
+SOCIAL_SOURCE_CAP = 6
+BUZZ_PER_SOURCE = 100
+BUZZ_MAX_ITEMS = 400
+
+
+def _social_for(venue, opz, now):
     """Les sources sociales de cette place, selon les options cochées.
 
     ⚠️ Rien de coché ⇒ **aucune requête**. C'est le point qui manquait : les
     quatre options `reddit`/`bluesky`/`x`/`x_account` de prefs.json existaient
     depuis le début mais personne ne les lisait — elles ne faisaient rien.
+
+    On récupère TOUT ce que les requêtes ont déjà ramené (aucun appel réseau
+    supplémentaire) : les titres seront tamisés par `_headline_posts`, le
+    baromètre a besoin du volume brut.
     """
     from pulse.social import collect_social
     subs = list(venue.reddit_subs) if opz.get("reddit") else []
@@ -105,7 +117,33 @@ def _social_for(venue, opz, now, budget):
     if not (subs or queries or handles):
         return None
     return collect_social(subs=subs, queries=queries, handles=handles,
-                          now_ts=now, max_items=budget)
+                          now_ts=now, per_source=BUZZ_PER_SOURCE,
+                          max_items=BUZZ_MAX_ITEMS)
+
+
+def _headline_posts(items, limit, per_source=SOCIAL_SOURCE_CAP):
+    """Les posts sociaux qui rejoignent les TITRES du briefing.
+
+    ⚠️ **Reddit n'en fait plus partie.** Ce n'est pas un fil d'actualité, c'est
+    un capteur d'opinion : ce qui compte n'est pas ce qu'UN post raconte, mais
+    le fait qu'un sujet se mette soudainement à être beaucoup plus discuté. Le
+    publier comme une dépêche a mis « Fanculo Vanguard, io mi butto su ALLW! »
+    sous le nom de la Bourse de Milan. Il alimente désormais `pulse.buzz`.
+
+    Bluesky et X gardent leur place ici : ce sont des comptes qui PUBLIENT de
+    l'information, pas des fils de discussion.
+    """
+    kept, taken = [], {}
+    for item in (items or []):
+        source = str((item or {}).get("source") or "")
+        if source.startswith("Reddit"):
+            continue
+        if taken.get(source, 0) >= per_source:
+            continue
+        taken[source] = taken.get(source, 0) + 1
+        kept.append(item)
+    kept.sort(key=lambda i: i.get("published") or 0, reverse=True)
+    return kept[:limit]
 
 
 def _merge_social(news, social):
@@ -135,6 +173,7 @@ def _briefings(args, snap, now):
     Piloté par prefs.json : quelles bourses, quels titres suivis, quelles
     sources sociales, synthèse ou pas, quaderno ou pas.
     """
+    from pulse import buzz as _buzz
     from pulse import prefs as _prefs
     from pulse.agenda import collect_agenda, for_venue
     from pulse.analyst import analyse
@@ -181,14 +220,27 @@ def _briefings(args, snap, now):
              ", ".join(agenda["sources_ok"]) or "nessuna fonte"))
 
     social_budget = max(2, int(opz["max_notizie"]) // 3)
-    out = {}
+
+    # ⚠️ DEUX temps, et c'est structurel : le baromètre d'opinion se calcule sur
+    # TOUT ce que le run a récolté, il doit donc être prêt AVANT qu'on assemble
+    # le premier briefing. Le calculer place par place ferait trois mesures
+    # partielles au lieu d'une.
+    buzz_pool = {}          # titre normalisé -> post, dédoublonné sur le run
+    gathered = []
     for venue, do_analyse in plan:
         # La presse LOCALE de la place, plus les sources sociales si activées.
         feeds = list(venue.feeds)
         news = collect_news(fetch=fetch, feeds=feeds, max_items=opz["max_notizie"])
-        social = _social_for(venue, opz, now, social_budget)
+        social = _social_for(venue, opz, now)
+        social_n = 0
         if social:
-            news = _merge_social(news, social)
+            for item in (social["items"] or []):
+                key = " ".join(str(item.get("title") or "").lower().split())
+                if key:
+                    buzz_pool.setdefault(key, item)
+            headlines = _headline_posts(social["items"], social_budget)
+            social_n = len(headlines)
+            news = _merge_social(news, dict(social, items=headlines))
             for alarm in social["alarms"]:
                 # Surfacée fort : une source qui a changé de format rendrait un
                 # briefing vide qui a l'air normal.
@@ -209,10 +261,24 @@ def _briefings(args, snap, now):
         found = discover(press,
                          followed=tuple(f["symbol"] for f in followed),
                          resolve=resolver) if (opz["scoperte"] and do_analyse) else []
+        gathered.append((venue, do_analyse, news, followed, found, social_n))
 
+    # UNE agrégation, UNE écriture du journal pour tout le run : trois briefings
+    # ne doivent pas tripler les compteurs de la journée.
+    today = _buzz.day_key(now)
+    opinions = _buzz.aggregate(list(buzz_pool.values()))
+    history = _buzz.record_day(args.buzz_history, today, opinions)
+    surges = _buzz.detect_surge(opinions, history, today)
+    print("   opinione : %d post, %d argomenti, %d insoliti oggi"
+          % (len(buzz_pool), len(opinions),
+             len([s for s in surges if s.get("topic")])))
+
+    out = {}
+    for venue, do_analyse, news, followed, found, social_n in gathered:
         brief = build_briefing(exchange=venue, snapshot=snap, news=news,
                                agenda=for_venue(agenda["events"], venue.id),
-                               followed=followed, discovered=found, now_ts=now)
+                               followed=followed, discovered=found,
+                               buzz=surges, now_ts=now)
 
         # ⚠️ La traduction se demande APRÈS l'assemblage : c'est `build_briefing`
         # qui reclasse les news (les faits d'abord), donc c'est seulement ici que
@@ -257,7 +323,7 @@ def _briefings(args, snap, now):
               "agenda %d | sintesi %s"
               % (venue.id, idx.get("label") or "n/d",
                  ("%+.2f%%" % idx["change_pct"]) if idx.get("change_pct") is not None else "n/d",
-                 len(brief["news"]["items"]), len(social["items"]) if social else 0,
+                 len(brief["news"]["items"]), social_n,
                  tstats["translated"], tstats["translated"] + tstats["untranslated"],
                  len(brief["agenda"]),
                  ("si" if not analysis["degraded"] else
@@ -286,7 +352,10 @@ def _followed_quotes(symbols, now):
     return out
 
 
-def main(argv=None) -> int:
+def _parser():
+    """La ligne de commande, dans une fonction à part pour qu'un test puisse
+    construire EXACTEMENT les mêmes options que le planificateur — un argument
+    qui n'existe que dans le test ne prouve rien du câblage réel."""
     ap = argparse.ArgumentParser(description="Market Pulse - snapshot dei mercati")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "out"))
     ap.add_argument("--stats", action="store_true",
@@ -305,8 +374,15 @@ def main(argv=None) -> int:
                          "rigenera solo il suo briefing")
     ap.add_argument("--vault", default=None,
                     help="radice del quaderno Obsidian (default ~/market-vault)")
+    ap.add_argument("--buzz-history", dest="buzz_history", default=None,
+                    help="giornale del barometro d'opinione "
+                         "(default data/market_pulse/buzz_history.json)")
     ap.add_argument("--range", dest="range_", default="10d")
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv=None) -> int:
+    args = _parser().parse_args(argv)
 
     os.makedirs(args.out, exist_ok=True)
     client = YahooChartClient()

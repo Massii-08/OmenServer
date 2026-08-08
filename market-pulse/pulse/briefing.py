@@ -2,7 +2,7 @@
 
 C'est la pièce qui relie les autres : l'indice de la place, la comparaison avec
 les bourses déjà passées, l'agenda daté, les news triées par « qui a fait quoi »,
-les titres suivis et les nouveaux titres apparus.
+les titres suivis, les nouveaux titres apparus et le baromètre d'opinion.
 
 Deux principes de conception :
 
@@ -70,6 +70,7 @@ def build_briefing(exchange: Optional[Exchange],
                    agenda: Optional[List[Dict[str, Any]]] = None,
                    followed: Optional[List[Dict[str, Any]]] = None,
                    discovered: Optional[List[Dict[str, Any]]] = None,
+                   buzz: Optional[List[Dict[str, Any]]] = None,
                    now_ts: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """Le briefing d'une place, prêt pour le rapport, l'Excel et l'UI.
 
@@ -128,6 +129,12 @@ def build_briefing(exchange: Optional[Exchange],
         },
         "followed": list(followed or []),
         "discovered": list(discovered or []),
+        # Le baromètre d'opinion (`pulse.buzz`) : les sujets dont on parle
+        # anormalement aujourd'hui. VIDE la plupart du temps — c'est voulu, la
+        # section ne s'affiche que quand quelque chose décolle. Le même
+        # baromètre sert tous les briefings d'un run : on le COPIE pour qu'un
+        # briefing ne puisse pas modifier celui des autres.
+        "buzz": list(buzz or []),
         "errors": list(snapshot.get("errors") or []),
         "generated_at": now_ts,
     }

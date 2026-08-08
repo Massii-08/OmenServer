@@ -70,6 +70,76 @@ def _epoch_iso(raw: str) -> Optional[int]:
 
 
 # --------------------------------------------------------------------------
+# Nettoyage du texte AFFICHÉ d'un post — Bluesky et X collent l'URL, une
+# grappe de hashtags et parfois une flèche « suite en dessous » à même le
+# texte. Un correctif précédent ne retirait l'URL qu'EN FIN de texte ; mesuré
+# en prod (tête d'un briefing NYSE), le gabarit « <accroche> <url> <résumé> »
+# — très répandu chez les comptes qui republient un flux RSS — la loge tout
+# aussi souvent au MILIEU :
+#
+#   USA: Wall Street rebondit lundi et offre un nouveau record au Dow Jones
+#   https://www.europesays.com/fr/1106132/ Wall Street a clôturé en hausse
+#   lundi, bénéficiant du repli des cours du pétrole et des taux…#fr #france
+#
+# `item["url"]` (le lien cliquable, construit à partir du handle/rkey ou du
+# handle du compte X) est un champ à PART : cette fonction ne touche jamais
+# qu'au texte affiché.
+# --------------------------------------------------------------------------
+
+_URL_RE = re.compile(r"https?://\S+")
+
+# Grappe de hashtags collée en fin de post, souvent juste après la coupure de
+# la plateforme (« ...des taux…#fr #france ») : on avale aussi le ponctuant
+# qui la précède immédiatement, sinon il reste orphelin en fin de phrase.
+_TRAILING_HASHTAGS_RE = re.compile(r"[\s.…,;:\-–—]*(?:#\w+[\s,]*)+$")
+
+# « Suite en dessous » : hors contexte (pas de fil à dérouler) un lecteur ne
+# peut rien en faire, c'est un artefact de plateforme, pas de l'information.
+_TRAILING_CONTINUATION_RE = re.compile(r"[\s…]*[⬇➡→️]+\s*$")
+
+# Au-delà, un post écrase visuellement les titres qui le suivent dans le
+# rapport/la note — mesuré sur un post Bluesky de 300 caractères.
+SOCIAL_TEXT_LIMIT = 190
+
+
+def _strip_trailing_noise(text: str) -> str:
+    """Hashtags et flèche de continuation peuvent s'empiler dans les deux
+    ordres (`...#fr #france ⬇️` ou `...⬇️ #fr #france`) : on boucle jusqu'à
+    stabilité plutôt que de parier sur lequel vient en premier."""
+    prev = None
+    while prev != text:
+        prev = text
+        text = _TRAILING_HASHTAGS_RE.sub("", text)
+        text = _TRAILING_CONTINUATION_RE.sub("", text)
+    return text
+
+
+def _truncate_on_word(text: str, limit: int = SOCIAL_TEXT_LIMIT) -> str:
+    """Coupe un post trop long SUR UN MOT — un mot tronqué se lit comme une
+    faute de frappe, pas comme un choix éditorial. S'applique APRÈS le
+    nettoyage, pour ne pas gaspiller la longueur utile sur une URL."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    cut = head.rfind(" ")
+    if cut > 0:
+        head = head[:cut]
+    return head.rstrip(" .,;:-") + "…"
+
+
+def clean_social_text(raw: Any) -> str:
+    """Le texte affiché d'un post : jamais son URL — où qu'elle soit dans le
+    texte —, jamais la grappe de hashtags terminale, jamais un marqueur de
+    continuation de plateforme. Un post qui n'était QUE ça rend une chaîne
+    vide : à l'appelant de l'écarter plutôt que de publier un titre nu.
+    """
+    text = _URL_RE.sub(" ", "" if raw is None else str(raw))
+    text = _strip_trailing_noise(text)
+    text = " ".join(text.split())
+    return _truncate_on_word(text)
+
+
+# --------------------------------------------------------------------------
 # Reddit
 # --------------------------------------------------------------------------
 
@@ -124,7 +194,7 @@ def parse_bluesky(data: Any, source: str = "Bluesky",
         if not post:
             continue
         record = post.get("record") or {}
-        text = (record.get("text") or "").strip()
+        text = clean_social_text(record.get("text"))
         if not text:
             continue
         handle = ((post.get("author") or {}).get("handle")) or ""
@@ -132,7 +202,7 @@ def parse_bluesky(data: Any, source: str = "Bluesky",
         rkey = uri.rsplit("/", 1)[-1] if uri else ""
         url = ("https://bsky.app/profile/%s/post/%s" % (handle, rkey)) if handle and rkey else ""
         out.append({
-            "title": " ".join(text.split()),
+            "title": text,
             "source": source,
             "author": handle,
             "url": url,
@@ -168,7 +238,7 @@ def parse_x(page: Any, handle: str, lang: str = "en") -> List[Dict[str, Any]]:
     stamps = [(m.start(), int(m.group(1))) for m in _X_MS.finditer(page)]
     out = []
     for m in _X_TEXT.finditer(page):
-        text = _x_clean(m.group(1))
+        text = clean_social_text(_x_clean(m.group(1)))
         if not text:
             continue
         # On apparie chaque texte au DERNIER horodatage qui le précède : les

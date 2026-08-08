@@ -1,13 +1,21 @@
 """Thèmes de presse et garde-fou éditorial — pur, déterministe, sans LLM.
 
-Deux rôles :
+Trois rôles :
 
-1. **`is_advice`** : un titre de presse peut LUI-MÊME être un conseil
-   d'investissement (« We're upgrading our rating on Boeing », « Le 5 azioni
-   da comprare »). Le bot s'interdit toute recommandation ; recopier celle
-   d'un journal la ferait passer pour la sienne auprès d'un lecteur âgé. Ces
-   titres sont donc écartés, et comptés — pas cachés.
-2. **`extract_themes`** : de quoi parle la presse ce matin, par comptage de
+1. **`is_advice`** / **`find_prescriptive`** : un titre de presse peut
+   LUI-MÊME être un conseil d'investissement (« We're upgrading our rating on
+   Boeing », « Le 5 azioni da comprare »). Le bot s'interdit toute
+   recommandation ; recopier celle d'un journal la ferait passer pour la
+   sienne auprès d'un lecteur âgé. Ces titres sont donc écartés, et comptés —
+   pas cachés. `PRESCRIPTIVE_PATTERNS` est la SOURCE UNIQUE de ce vocabulaire,
+   partagée avec `analyst.check_synthesis` (le même garde-fou, appliqué à la
+   synthèse LLM SORTANTE plutôt qu'aux titres ENTRANTS) — pour qu'une
+   formulation refusée à l'un des deux bouts le soit toujours à l'autre.
+2. **`is_offtopic`** : chronique de vie privée, courrier des lecteurs, ou
+   actualité générale sans angle de marché (politique, voyage) — ce n'est pas
+   de l'actualité de bourse, et publié sous le nom d'une place ça se lit
+   comme si le bot en parlait.
+3. **`extract_themes`** : de quoi parle la presse ce matin, par comptage de
    mots-clés bilingues. Aucun modèle, aucun score d'opinion : un thème est un
    fait vérifiable (« l'inflation revient dans 4 titres »).
 """
@@ -15,19 +23,42 @@ import re
 import unicodedata
 from typing import Any, Dict, List, Optional
 
-# Vocabulaire prescriptif, italien et anglais. Un titre qui en contient un est
-# une recommandation (ou une invitation à en suivre une) → écarté du rapport.
-_ADVICE_PATTERNS = [
+# Vocabulaire prescriptif, italien et anglais. Un titre — ou une synthèse LLM,
+# cf. `find_prescriptive` — qui en contient un est une recommandation (ou une
+# invitation à en suivre une) → écarté du rapport, ou rejeté au profit du mode
+# dégradé. C'est la SOURCE UNIQUE : `is_advice` (titres ENTRANTS) et
+# `analyst.check_synthesis` (synthèse SORTANTE) partagent cette même liste au
+# lieu d'en maintenir chacun une copie — c'est exactement une divergence de ce
+# genre (le filtre d'entrée durci après un incident réel, celui de sortie
+# resté à sa version d'origine) qui laissait passer en synthèse une
+# formulation déjà refusée comme titre de presse.
+#
+# ⚠️ Pour un terme AMBIGU en italien financier courant (« rating » désigne
+# aussi bien la note d'une agence — un FAIT — qu'un conseil d'achat/vente), on
+# raisonne en MOTIF (« upgrade », « outperform », « target price »...), jamais
+# en mot nu : un bot trop strict jette systématiquement la synthèse et personne
+# ne le remarque puisque le mode dégradé est silencieux.
+PRESCRIPTIVE_PATTERNS = [
     # anglais
-    r"\bbuy\b", r"\bsell\b", r"\bupgrad", r"\bdowngrad", r"price target",
+    r"\bbuy\b", r"\bsell\b", r"\bupgrad", r"\bdowngrad",
+    r"price target", r"target price",
     r"\btop picks?\b", r"best stocks?", r"stocks? to (buy|watch|own)",
     r"should you (buy|sell)", r"\boverweight\b", r"\bunderweight\b",
     r"\bstrong buy\b", r"\boutperform\b", r"raises? (its )?target",
+    r"\brecommend",
     # italien
     r"\bcomprare\b", r"\bvendere\b", r"\bacquistare\b", r"\bconviene\b",
-    r"consigli", r"raccomand", r"da comprare", r"su cui investire",
-    r"\bmigliori titoli\b", r"titoli da\b", r"portafoglio consigliato",
-    r"occasione d[i']acquisto", r"prezzo obiettivo", r"promoss[oa] a",
+    r"consigli", r"raccomand", r"\bsuggeriamo\b", r"da comprare",
+    r"su cui investire", r"\bmigliori titoli\b", r"titoli da\b",
+    r"portafoglio consigliato",
+    r"occasione d(?:i|')\s*acquisto", r"opportunita d(?:i|')\s*acquisto",
+    r"prezzo obiettivo", r"promoss[oa] a",
+    r"dovrebbe (salire|scendere)",
+    # « previsione »/« prevediamo »/« prevedo » : le SUBSTANTIF et les verbes à
+    # la 1re personne — jamais « previsto/a », le PARTICIPE qu'emploie une
+    # simple donnée d'AGENDA factuelle (« la riunione della BCE prevista per
+    # oggi »). Border chaque forme pour ne pas avaler ce cas.
+    r"\bprevisione\b", r"\bprevediamo\b", r"\bprevedo\b",
     # Analyse graphique. Ce n'est pas un « achetez » explicite, mais c'est une
     # PRÉVISION de direction — et recopiée sous le nom de la bourse, un lecteur
     # âgé la prend pour celle du bot. Mesuré sur la recherche Bluesky
@@ -37,7 +68,7 @@ _ADVICE_PATTERNS = [
     r"\bcanale (ribassista|rialzista)\b",
     r"potrebbe(ro)? (salire|scendere|crollare|rimbalzare|puntare|preparare un)",
 ]
-_ADVICE_RE = [re.compile(p, re.IGNORECASE) for p in _ADVICE_PATTERNS]
+PRESCRIPTIVE_RE = [re.compile(p, re.IGNORECASE) for p in PRESCRIPTIVE_PATTERNS]
 
 
 # Thèmes suivis. Les mots-clés couvrent l'italien ET l'anglais : la moitié du
@@ -90,12 +121,30 @@ def _norm(text: Any) -> str:
     return "".join(c for c in folded if not unicodedata.combining(c)).lower()
 
 
+def find_prescriptive(text: Any) -> Optional[str]:
+    """Le premier fragment prescriptif trouvé dans `text` (le texte matché,
+    pas le motif regex) — ou `None` si `text` est propre.
+
+    SOURCE UNIQUE utilisée par les deux garde-fous du bot : `is_advice`
+    ci-dessous (titres de presse ENTRANTS) et `analyst.check_synthesis`
+    (synthèse LLM SORTANTE, import direct de cette fonction — jamais une
+    liste dupliquée). Un futur durcissement de `PRESCRIPTIVE_PATTERNS` profite
+    donc automatiquement aux deux, sans qu'on ait à se souvenir de le
+    répercuter à la main.
+    """
+    norm = _norm(text)
+    if not norm:
+        return None
+    for rx in PRESCRIPTIVE_RE:
+        m = rx.search(norm)
+        if m:
+            return m.group(0)
+    return None
+
+
 def is_advice(title: Any) -> bool:
     """Le titre est-il une recommandation d'investissement ?"""
-    text = _norm(title)
-    if not text:
-        return False
-    return any(rx.search(text) for rx in _ADVICE_RE)
+    return find_prescriptive(title) is not None
 
 
 # Courrier des lecteurs / finances personnelles. Les fils « top stories » des
@@ -117,6 +166,82 @@ _OFFTOPIC_PATTERNS = [
     r"\bmy \d{1,3}-year-old\b", r"\bin my (peak|golden) \w+ years\b",
     r"\bdear (quentin|moneyist|therapist)\b", r"\bthe moneyist\b",
     r"\bmio (marito|figlio|padre|suocero)\b", r"\bmia (moglie|figlia|madre)\b",
+
+    # Particuliers italiens qui demandent un avis (forums de finance perso
+    # type r/ItaliaPersonalFinance) : mesures a 0/13 titres ecartes alors
+    # qu'un briefing de bourse en publiait tel quel. Ce n'est pas de
+    # l'actualite de marche, et sous le nom d'une place ca se lit comme du
+    # conseil. Categorie = PREMIERE PERSONNE + demande d'avis -- les motifs
+    # generalisent (ages/formulations differents), pas les mots exacts d'un
+    # titre precis.
+    r"\bho \d{1,3} anni\b",
+    r"\b(cosa|che) ne pens",
+    r"\bdubb(?:io|i)\s+(su|circa)\b",
+    # Titre-etiquette sans verbe ni sujet ("Gestione del patrimonio",
+    # typique d'un fil de forum) -- ancre sur TOUT le titre pour ne jamais
+    # mordre une vraie depeche qui mentionnerait ces mots en passant
+    # ("La Bce vara un piano di gestione del patrimonio da 500 miliardi"
+    # doit rester une info de marche : ces mots n'en forment pas le titre
+    # entier).
+    r"^\s*gestione (del|della|dei|delle) (patrimonio|risparmio|finanze|soldi)"
+    r"[.?!]?\s*$",
+
+    # Durcissement anti-bavardage de forum (mesure : les 3 items Reddit
+    # publies un matin etaient tous du bavardage, is_offtopic() rendait
+    # False sur les trois). Le point commun n'est pas le sujet mais le
+    # REGISTRE -- premiere personne, demande d'avis, recit personnel,
+    # question d'assistance, langage familier/vulgaire -- jamais un acteur
+    # qui fait une action.
+    #
+    # Registre vulgaire / familier : une depeche de presse financiere
+    # n'emploie jamais ces mots, quel que soit le sujet (mesure : "Fanculo
+    # Vanguard, io mi butto su ALLW!"). Italien ET anglais -- les subreddits
+    # sources (r/investing, r/stocks...) sont bilingues.
+    r"\b(vaffanculo|fanculo|cazz\w*|minchia|stronz\w*|merda|fuck\w*|shit)\b",
+    # Declaration de position personnelle a la 1re personne -- meme registre
+    # sans forcement de vulgarite ("mi butto su X", "sono entrato su X") :
+    # un pari personnel raconte au present/preterit, jamais une depeche.
+    r"\b(mi butto|mi sono buttat[oa]|sono entrat[oa]) (su|in)\b",
+
+    # Question d'assistance envers un courtier -- titre-etiquette qui OUVRE
+    # sur le probleme (mesure : "Problemi con acquisto etf su fineco"), pas
+    # sur l'acteur (les vraies depeches de ce flux ouvrent TOUJOURS sur
+    # l'acteur : "Prysmian acquisisce...", "Gme, il prezzo..."). Double
+    # garde-fou pour ne jamais mordre une operation de M&A relatee par la
+    # presse ("Deutsche Bank, problemi con l'acquisto di una quota...") :
+    # ancre en tete de titre + exige une preposition de plateforme/courtier
+    # a proximite (su/dal/presso/verso) -- jamais "da" seul, trop frequent
+    # dans "acquisto ... da parte di" (M&A).
+    r"^\s*problem[ai]\s+(con|nel|nella)\b[^.?!]{0,25}\b"
+    r"(acquisto|vendita|bonifico|prelievo|deposito|trasferimento|ordine)\b"
+    r"[^.?!]{0,20}\b(su|dal|presso|verso)\b",
+
+    # Sollicitation de l'avis/l'experience de la communaute -- jamais le
+    # registre d'une depeche (mesure : "What's a piece of investing content
+    # you'd hand a beginner today?"). 2e personne conditionnelle suivie
+    # d'un verbe de conseil, ou ouverture "anyone else/does anyone"/
+    # "qualcuno ha" typique d'un fil de forum.
+    r"\b(you'?d|would you)\b[^.?!]{0,40}\b(hand|give|recommend|suggest|tell|"
+    r"advise|share|pass)\b",
+    r"^\s*(anyone else|does anyone|has anyone|is anyone)\b",
+    r"^\s*qualcuno\s+(ha|usa|conosce|sa)\b",
+
+    # Actualite generale / geopolitique SANS angle de marche -- le fil
+    # "top stories" d'une agence generaliste (Reuters, AP) en charrie sous
+    # le nom d'une bourse (deja vecu : une depeche sur un opposant detenu
+    # publiee sous le nom de la Borsa di Milano). Motifs de la CONVENTION
+    # journalistique (attribution en fin de titre, vocabulaire diplomatique/
+    # droits politiques), jamais les mots-sujets seuls : "guerra"/"war"
+    # restent libres, ils portent aussi de vraies infos de marche ("diesel
+    # prices... since the Iran war started").
+    r",\s*(government|authorities|officials) says?\b",
+    r"\bdetained\b", r"\bopposition (figure|leader)\b",
+
+    # Tourisme / voyage -- idiomes reconnaissables du journalisme de voyage,
+    # jamais les mots-sujets seuls ("tourism" reste libre : "Tourism price
+    # wars threaten... consumer spending" est de la macro, pas un article de
+    # voyage).
+    r"\breason to (stop|visit)\b", r"\btours? in\b",
 ]
 _OFFTOPIC_RE = [re.compile(p, re.IGNORECASE) for p in _OFFTOPIC_PATTERNS]
 

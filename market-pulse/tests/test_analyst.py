@@ -6,6 +6,8 @@ Trois garde-fous, tous testés ici :
 3. une synthèse contenant un CHIFFRE absent du briefing est JETÉE — c'est le
    garde-fou contre l'invention, le plus dangereux des défauts pour ce lecteur.
 """
+import re
+
 import pytest
 
 from pulse.analyst import DEFAULT_MODEL, analyse, check_synthesis
@@ -48,6 +50,87 @@ def test_a_prescriptive_synthesis_is_rejected(phrase):
     ok, reason = check_synthesis(BONNE + " " + phrase, BRIEFING)
     assert ok is False
     assert "vocabolario" in reason or "prescr" in reason
+
+
+# --------------------------------------------------------------------------
+# Le garde-fou de sortie était plus FAIBLE que celui d'entrée : ces 6
+# formulations sont toutes rejetées comme titre de presse par is_advice()
+# mais l'ancien FORBIDDEN_WORDS (italien seulement, aucun vocabulaire de
+# rating anglais) les publiait comme synthèse LLM. check_synthesis appelle
+# maintenant la MÊME source de vocabulaire (sentiment.find_prescriptive).
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("phrase", [
+    "Rating: outperform, upgrade da hold a buy.",
+    "Gli analisti hanno alzato il target price a 250 dollari.",
+    "Consigliamo di comprare Prysmian: è una buona occasione.",
+    "L'indice dovrebbe salire nella seduta di oggi.",
+    "We recommend buying the dip.",
+    "Il titolo è un buy.",
+])
+def test_synthesis_formulations_rejected_as_press_titles_are_also_rejected(phrase):
+    """Même corpus que le défaut mesuré : chacune de ces phrases était
+    PUBLIÉE comme synthèse malgré son vocabulaire de conseil, alors qu'elle
+    aurait été écartée si elle avait été un titre de presse d'entrée."""
+    from pulse.sentiment import is_advice
+    assert is_advice(phrase) is True, "prérequis : doit être une formulation de conseil"
+    ok, reason = check_synthesis(BONNE + " " + phrase, BRIEFING)
+    assert ok is False, phrase
+    assert "vocabolario" in reason or "prescr" in reason, reason
+
+
+@pytest.mark.parametrize("phrase", [
+    "L'agenzia di rating Fitch ha confermato la valutazione A di Enel.",
+    "Ieri Wall Street ha chiuso in rialzo: S&P 500 +1,48%.",
+    "Oggi apre Euronext; l'indice Euronext 100 è a 1939,23 punti.",
+])
+def test_factual_phrases_are_not_treated_as_prescriptive_vocabulary(phrase):
+    """⚠️ Piège majeur : sur-bloquer est pire que le défaut d'origine, car le
+    mode dégradé est SILENCIEUX — personne ne remarquerait un briefing qui
+    dégrade systématiquement. « rating » seul est un mot factuel (la note
+    d'une agence), à ne jamais confondre avec « upgrade »/« outperform »."""
+    from pulse.sentiment import find_prescriptive
+    assert find_prescriptive(phrase) is None, phrase
+
+
+def test_check_synthesis_accepts_the_two_factual_phrases_end_to_end_with_their_numbers():
+    """Intégration bout-en-bout des 2 phrases factuelles qui portent des
+    chiffres : le vocabulaire ET l'ancrage numérique doivent passer, pas
+    seulement le filtre lexical isolé."""
+    briefing = {
+        "index": {"label": "Euronext 100", "price": 1939.23, "change_pct": 0.10},
+        "comparison": [{"label": "S&P 500", "change_pct": 1.48, "state": "chiuso"}],
+        "news": {"items": []},
+    }
+    ok, reason = check_synthesis(
+        "Ieri Wall Street ha chiuso in rialzo: S&P 500 +1,48%. "
+        "Oggi apre Euronext; l'indice Euronext 100 è a 1939,23 punti.",
+        briefing)
+    assert ok is True, reason
+
+
+def test_check_synthesis_never_diverges_from_is_advice_vocabulary(monkeypatch):
+    """Verrou de non-divergence : si `is_advice` est durci demain (nouveau
+    motif ajouté après un futur incident), `check_synthesis` doit hériter du
+    changement automatiquement, sans qu'on touche analyst.py — c'est la
+    garantie structurelle que les deux garde-fous partagent UNE SEULE source
+    de vocabulaire (`sentiment.PRESCRIPTIVE_RE`), pas deux listes qui peuvent
+    dériver l'une de l'autre."""
+    import pulse.sentiment as sentiment_mod
+
+    clean = "Il mercato resta stabile stamattina, nessun movimento di rilievo."
+    ok_before, _ = check_synthesis(clean, {"news": {"items": []}})
+    assert ok_before is True
+
+    marker = "zorglonium"  # mot arbitraire, absent de tout vocabulaire existant
+    monkeypatch.setattr(
+        sentiment_mod, "PRESCRIPTIVE_RE",
+        sentiment_mod.PRESCRIPTIVE_RE + [re.compile(marker)])
+
+    ok_after, reason_after = check_synthesis(clean + " " + marker,
+                                             {"news": {"items": []}})
+    assert ok_after is False
+    assert "vocabolario" in reason_after or "prescr" in reason_after
 
 
 def test_an_invented_number_is_rejected():

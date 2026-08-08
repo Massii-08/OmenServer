@@ -67,6 +67,13 @@ DISCOVERED = [
 ]
 
 
+BUZZ = [
+    {"topic": "nvidia", "label": "Nvidia", "count": 18, "baseline": 3.0,
+     "tone_pos": 2, "tone_neg": 11,
+     "examples": ["Nvidia, cosa sta succedendo stamattina"]},
+]
+
+
 def _build(**over):
     kwargs = dict(exchange=by_id("euronext"), snapshot=SNAPSHOT, news=NEWS,
                   agenda=AGENDA, followed=FOLLOWED, discovered=DISCOVERED,
@@ -82,7 +89,7 @@ def _build(**over):
 def test_the_briefing_has_the_expected_shape():
     b = _build()
     for key in ("exchange", "label", "index", "comparison", "agenda", "news",
-                "followed", "discovered", "generated_at", "session"):
+                "followed", "discovered", "buzz", "generated_at", "session"):
         assert key in b, key
     assert b["exchange"] == "euronext"
     assert b["label"] == "Euronext"
@@ -187,6 +194,40 @@ def test_followed_and_discovered_are_kept_separate():
 def test_empty_lists_are_lists_not_none():
     b = _build(followed=None, discovered=None, agenda=None)
     assert b["followed"] == [] and b["discovered"] == [] and b["agenda"] == []
+
+
+# --------------------------------------------------------------------------
+# Baromètre d'opinion — il TRAVERSE, sinon la fonctionnalité est morte
+# --------------------------------------------------------------------------
+
+def test_the_buzz_defaults_to_an_empty_list():
+    """Rétro-compatible : aucun appelant existant ne passe `buzz`, et un jour
+    calme n'en produit pas — le champ doit exister quand même, en liste vide."""
+    assert _build()["buzz"] == []
+
+
+def test_the_buzz_reaches_the_briefing_untouched():
+    """Le piège maison : une dépendance injectable qu'on oublie de brancher.
+    Ce test échoue si `build_briefing` ne propage pas le champ."""
+    b = _build(buzz=BUZZ)
+    assert b["buzz"] == BUZZ
+    assert b["buzz"][0]["count"] == 18 and b["buzz"][0]["baseline"] == 3.0
+
+
+def test_the_warmup_note_travels_too():
+    """Pendant la chauffe, le champ DIT pourquoi il ne signale rien — le
+    briefing ne doit pas transformer cet aveu en silence."""
+    b = _build(buzz=[{"status": "storico insufficiente", "days": 1}])
+    assert b["buzz"] == [{"status": "storico insufficiente", "days": 1}]
+
+
+def test_the_buzz_is_copied_not_aliased():
+    """Un même baromètre sert tous les briefings du run : s'il était partagé
+    par référence, modifier l'un modifierait les autres."""
+    source = list(BUZZ)
+    b = _build(buzz=source)
+    source.append({"topic": "x"})
+    assert len(b["buzz"]) == 1
 
 
 # --------------------------------------------------------------------------

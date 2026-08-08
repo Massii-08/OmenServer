@@ -5,18 +5,38 @@ datés qui arrivent, et ce qui est en jeu à chacun**. Une date est un fait ; «
 bourse va monter » n'en est pas un. `at_stake` dit donc ce qui bouge selon l'issue,
 **jamais laquelle** — un test cherche le vocabulaire interdit dans tout l'agenda.
 
-Trois sources vivantes, sondées à la main le 2026-07-30 :
+Cinq sources vivantes, sondées à la main (Fed/BoJ/BNS le 2026-07-30,
+BCE/BoE le 2026-08-04) :
 
-    Fed  federalreserve.gov/monetarypolicy/fomccalendars.htm   -> nyse, nasdaq
-    BoJ  boj.or.jp/en/mopo/mpmsche_minu/index.htm              -> jpx
-    BNS  snb.ch/public/rss/en/events                           -> toutes
+    Fed  federalreserve.gov/monetarypolicy/fomccalendars.htm       -> nyse, nasdaq
+    BoJ  boj.or.jp/en/mopo/mpmsche_minu/index.htm                  -> jpx
+    BNS  snb.ch/public/rss/en/events                               -> euronext, deutsche_boerse, lse
+    BCE  ecb.europa.eu/press/calendars/mgcgc/html/index.en.html    -> euronext, deutsche_boerse
+    BoE  bankofengland.co.uk/monetary-policy/upcoming-mpc-dates    -> lse
 
-⚠️ **BCE et BoE ne sont pas là, et ce n'est pas un oubli** : leurs pages de
-calendrier répondent 200 mais construisent les dates en JavaScript — elles ne
-sont PAS dans le HTML (vérifié : la page BCE ne contient qu'une seule date, et
-c'est celle du jour). Elles passent donc par le fichier curé
-`data/market_pulse/agenda.json`, qu'on remplit à la main. Une date inventée
-serait pire que pas de date : le lecteur n'a aucun moyen de la vérifier.
+⚠️ **La BNS n'est PAS « toutes » les places** : les taux suisses bougent
+l'EUR/CHF et les banques européennes, pas Tokyo/Wall Street/Hong Kong/
+Shanghai/Shenzhen/Mumbai (mesuré : le briefing de Tokyo annonçait « BNS —
+Swiss balance of payments... », absurde). Et le flux RSS lui-même charrie
+beaucoup de bruit non actionnable (discours, bulletins trimestriels,
+enquêtes, résultats financiers, balance des paiements) — seuls les
+rendez-vous de politique monétaire (valutazione + verbale) en sortent,
+cf. `_snb_label`.
+
+⚠️ **BCE et BoE SONT lisibles automatiquement — une version antérieure de ce
+docstring prétendait le contraire, c'était FAUX** (re-vérifié à la main le
+2026-08-04 : les deux pages répondent 200 avec les dates en clair dans le
+HTML, pas en JavaScript). La BCE liste des paires `<dt>DD/MM/YYYY</dt>
+<dd>description</dd>`, une par jour de réunion ; une réunion de politique
+monétaire s'étale sur deux jours et seul le second (« Day 2 », suivi de la
+conférence de presse) est la décision — `parse_ecb_calendar` écarte
+explicitement les « non-monetary policy meeting » (qui CONTIENNENT la
+sous-chaîne « monetary policy meeting », un filtre naïf les laisserait
+passer). La BoE ne publie en clair qu'**UNE SEULE** date à venir, dans le
+bandeau « Next due: <date> » à côté du taux directeur courant — tout le
+reste de sa page (table « confirmed dates » sans année dans le texte, blocs
+`datetime=` de son fil d'actualités) ce sont des annonces déjà PASSÉES,
+jamais des rendez-vous futurs ; `parse_boe_dates` ne lit que le « Next due ».
 
 ⚠️ **Le garde-fou central : jamais une date passée.** Yahoo rend la dernière date
 de résultats quand la prochaine n'est pas annoncée (spec §3quinquies), un flux
@@ -51,8 +71,14 @@ SOURCES = (
      "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"},
     {"name": "BoJ", "kind": "boj_html", "venues": ("jpx",),
      "url": "https://www.boj.or.jp/en/mopo/mpmsche_minu/index.htm"},
-    {"name": "BNS", "kind": "snb_rss", "venues": (),
+    {"name": "BNS", "kind": "snb_rss",
+     "venues": ("euronext", "deutsche_boerse", "lse"),
      "url": "https://www.snb.ch/public/rss/en/events"},
+    {"name": "BCE", "kind": "ecb_html",
+     "venues": ("euronext", "deutsche_boerse"),
+     "url": "https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html"},
+    {"name": "BoE", "kind": "boe_html", "venues": ("lse",),
+     "url": "https://www.bankofengland.co.uk/monetary-policy/upcoming-mpc-dates"},
 )
 
 _MESI = ("gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
@@ -246,6 +272,12 @@ def parse_boj_schedule(html: Any, venues=("jpx",)) -> List[Dict[str, Any]]:
 # BNS — le seul RSS de banque centrale réellement daté dans le futur
 # --------------------------------------------------------------------------
 
+# Seuls les rendez-vous de politique monétaire survivent : le flux charrie
+# aussi discours (« Speech by … »), bulletins trimestriels (« Quarterly
+# Bulletin »), enquêtes (« Results of the Payment Methods Survey »), balance
+# des paiements, résultats intermédiaires/annuels, rapports annuels/de
+# durabilité... du bruit non actionnable pour un particulier qui veut savoir
+# quand les taux ou le franc peuvent bouger.
 # Ordre significatif : « Monetary policy assessment … (news conference) » contient
 # les deux motifs, le plus spécifique doit gagner.
 _SNB_LABELS = (
@@ -254,15 +286,17 @@ _SNB_LABELS = (
     ("monetary policy assessment",
      "BNS — valutazione di politica monetaria",
      "il costo del denaro in Svizzera e il cambio del franco"),
-    ("interim results", "BNS — risultati intermedi", ""),
-    ("annual result", "BNS — risultato annuale", ""),
-    ("news conference", "BNS — conferenza stampa", ""),
 )
 
 _SNB_PREFIX = re.compile(r"^\s*\d{4}-\d{2}-\d{2}\s*-\s*")
 
 
 def _snb_label(title: str):
+    """Étiquette italienne d'un événement BNS de politique monétaire, ou
+    None si le titre n'en est pas un (à écarter — cf. commentaire au-dessus
+    de `_SNB_LABELS`). Avant, un motif non reconnu retombait sur le titre
+    anglais brut préfixé : c'est exactement ce qui laissait passer le bruit.
+    """
     low = title.lower()
     for needle, label, at_stake in _SNB_LABELS:
         if needle in low:
@@ -271,9 +305,7 @@ def _snb_label(title: str):
             elif "news conference" in low and "conferenza" not in label:
                 label += " (conferenza stampa)"
             return label, at_stake
-    # Aucun motif connu : on garde le titre de la source, préfixé — un fait
-    # sourcé en anglais vaut mieux qu'une traduction devinée.
-    return "BNS — " + title, ""
+    return None
 
 
 def parse_snb_events(data: Any, venues=()) -> List[Dict[str, Any]]:
@@ -306,7 +338,10 @@ def parse_snb_events(data: Any, venues=()) -> List[Dict[str, Any]]:
         if ts is None or not title:
             continue
         clean = _SNB_PREFIX.sub("", title).strip()
-        label, at_stake = _snb_label(clean)
+        labelled = _snb_label(clean)
+        if labelled is None:
+            continue                    # hors politique monétaire : écarté
+        label, at_stake = labelled
         out.append(_event(when=when, when_ts=ts, day_only=False, what=label,
                           at_stake=at_stake, source="BNS",
                           source_url=link or "https://www.snb.ch/en/the-snb/events",
@@ -316,7 +351,123 @@ def parse_snb_events(data: Any, venues=()) -> List[Dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------
-# Fichier curé — BCE, BoE, et tout ce que Massii veut ajouter à la main
+# BCE — paires <dt>DD/MM/YYYY</dt><dd>description</dd>, une par jour de
+# réunion ; la décision tombe le second jour
+# --------------------------------------------------------------------------
+
+# Regex mesurée à la main sur la vraie page (2026-08-04) : un `<dt>` porte une
+# date à 10 caractères (« 09/09/2026 »), suivie immédiatement de son `<dd>`.
+_ECB_PAIR = re.compile(
+    r'<dt[^>]*>\s*([0-9/]{10})\s*</dt>\s*<dd[^>]*>(.*?)</dd>', re.S)
+
+_ECB_AT_STAKE = "il costo del denaro nell'area euro"
+
+
+def parse_ecb_calendar(html: Any,
+                       venues=("euronext", "deutsche_boerse")) -> List[Dict[str, Any]]:
+    """Réunions de politique monétaire de la BCE, datées au jour de la DÉCISION.
+
+    Une réunion s'étale sur deux jours ; on ne garde que le second (« Day 2 »,
+    suivi de la conférence de presse) — ancré sur « Day 2 » **OU** « press
+    conference » plutôt que sur la présence de « Day 1 », qui n'étiquette pas
+    toujours le premier jour (ex. la réunion du 11-12/10/2028 n'a que
+    « monetary policy meeting in Frankfurt » pour son premier jour, sans « (Day
+    1) » — chercher ce marqueur laisserait passer une fausse absence).
+
+    ⚠️ **« non-monetary policy meeting » CONTIENT la sous-chaîne « monetary
+    policy meeting »** : un filtre qui cherche seulement ce dernier motif fait
+    entrer les réunions non monétaires (ex. « non-monetary policy meeting
+    (virtual) ») — il faut les exclure explicitement.
+    """
+    if not isinstance(html, str):
+        try:
+            html = html.decode("utf-8", "replace")
+        except AttributeError:
+            return []
+    out = []
+    for date_str, desc in _ECB_PAIR.findall(html):
+        parts = date_str.split("/")
+        if len(parts) != 3:
+            continue
+        day_s, month_s, year_s = parts
+        try:
+            day, month, year = int(day_s), int(month_s), int(year_s)
+        except ValueError:
+            continue
+        low = _strip_tags(desc).lower()
+        if "monetary policy meeting" not in low:
+            continue
+        if "non-monetary policy meeting" in low:
+            continue
+        if "day 2" not in low and "press conference" not in low:
+            continue
+        ts = _epoch_day(year, month, day)
+        if ts is None:
+            continue
+        out.append(_event(
+            when="%04d-%02d-%02d" % (year, month, day),
+            when_ts=ts, day_only=True,
+            what="BCE — riunione di politica monetaria (decisione)",
+            at_stake=_ECB_AT_STAKE, source="BCE",
+            source_url="https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html",
+            venues=venues))
+    out.sort(key=lambda e: e["when_ts"])
+    return out
+
+
+# --------------------------------------------------------------------------
+# BoE — la page ne publie en clair qu'UNE SEULE date à venir
+# --------------------------------------------------------------------------
+
+# « Next due: 17 September 2026 » — le bandeau à côté du taux directeur
+# courant. C'est la SEULE date future en clair sur toute la page : le reste
+# (table « confirmed dates » sans année dans le texte, blocs `datetime=` du
+# fil d'actualités) ce sont des annonces déjà publiées, donc déjà passées.
+_BOE_NEXT_DUE = re.compile(r'Next due:\s*(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})')
+
+_BOE_AT_STAKE = "il costo del denaro nel Regno Unito e il cambio della sterlina"
+
+
+def parse_boe_dates(html: Any, venues=("lse",)) -> List[Dict[str, Any]]:
+    """Prochaine réunion du Comitato di politica monetaria (MPC) de la BoE.
+
+    ⚠️ La page contient d'AUTRES dates (table annuelle sans année écrite dans
+    chaque ligne, `datetime="2026-07-30"` etc. sur le fil d'actualités) mais
+    ce sont toutes des publications PASSÉES — on ne lit QUE le bandeau
+    « Next due: <date> », la seule date future que la page affiche en clair.
+    Une seule date suffit : l'horizon de l'agenda est de 7 jours.
+    """
+    if not isinstance(html, str):
+        try:
+            html = html.decode("utf-8", "replace")
+        except AttributeError:
+            return []
+    found = _BOE_NEXT_DUE.search(html)
+    if not found:
+        return []
+    day_s, month_name, year_s = found.groups()
+    month = _MONTHS.get(month_name.strip().lower().rstrip("."))
+    if not month:
+        return []
+    try:
+        day, year = int(day_s), int(year_s)
+    except ValueError:
+        return []
+    ts = _epoch_day(year, month, day)
+    if ts is None:
+        return []
+    return [_event(
+        when="%04d-%02d-%02d" % (year, month, day),
+        when_ts=ts, day_only=True,
+        what="BoE — riunione del Comitato di politica monetaria",
+        at_stake=_BOE_AT_STAKE, source="BoE",
+        source_url="https://www.bankofengland.co.uk/monetary-policy/upcoming-mpc-dates",
+        venues=venues)]
+
+
+# --------------------------------------------------------------------------
+# Fichier curé — tout ce que Massii veut ajouter à la main (une banque
+# centrale sans parseur dédié, une conférence, un discours attendu...)
 # --------------------------------------------------------------------------
 
 def load_curated(path: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -367,8 +518,8 @@ def write_example(path: Optional[str] = None) -> str:
     if parent:
         os.makedirs(parent, exist_ok=True)
     body = json.dumps({
-        "_come_usare": "Copia in agenda.json. Serve per le banche centrali il cui "
-                       "calendario non e leggibile automaticamente (BCE, BoE): "
+        "_come_usare": "Copia in agenda.json. Serve per una banca centrale senza "
+                       "parser dedicato, o per qualunque altro appuntamento: "
                        "scrivi la data solo se l'hai verificata sul sito.",
         "_campi": {"when": "AAAA-MM-GG oppure AAAA-MM-GGTHH:MMZ",
                    "what": "cosa succede, in italiano",
@@ -398,6 +549,8 @@ _PARSERS = {
     "fomc_html": parse_fomc_calendar,
     "boj_html": parse_boj_schedule,
     "snb_rss": parse_snb_events,
+    "ecb_html": parse_ecb_calendar,
+    "boe_html": parse_boe_dates,
 }
 
 

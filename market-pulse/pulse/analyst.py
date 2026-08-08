@@ -10,6 +10,13 @@ Trois garde-fous, parce qu'un texte fluide est plus dangereux qu'un tableau :
    La synthèse embellit, elle ne conditionne rien. `analyse()` ne lève jamais.
 2. **Vocabulaire** — une synthèse contenant un mot prescriptif est JETÉE, pas
    publiée. Le prompt l'interdit déjà ; ce contrôle est la ceinture.
+   `check_synthesis` appelle `sentiment.find_prescriptive` — la MÊME source
+   de vocabulaire que le garde-fou d'ENTRÉE (`sentiment.is_advice`, appliqué
+   aux titres de presse). Les deux avaient divergé (l'entrée durcie après un
+   incident réel, la sortie restée à sa version d'origine) : une formulation
+   comme « Rating: outperform, upgrade da hold a buy » était rejetée comme
+   titre mais publiée comme synthèse. Partager la source rend cette
+   divergence structurellement impossible désormais.
 3. **Chiffres** — tout nombre de la synthèse doit se retrouver dans le briefing.
    C'est le garde-fou contre l'invention : un chiffre plausible mais faux est le
    pire défaut possible pour un lecteur âgé, qui n'a aucun moyen de le vérifier.
@@ -27,6 +34,8 @@ import os
 import re
 import subprocess
 from typing import Any, Callable, Dict, Optional, Tuple
+
+from .sentiment import find_prescriptive
 
 DEFAULT_MODEL = "claude-sonnet-5"
 
@@ -51,16 +60,6 @@ def claude_bin() -> str:
 
 
 CLAUDE_BIN = claude_bin()
-
-# Vocabulaire prescriptif ou prédictif. Volontairement dupliqué du test du
-# rapport : là-bas c'est un PIN indépendant, ici un contrôle d'exécution. Si
-# l'un des deux dérive, l'autre le rattrape.
-FORBIDDEN_WORDS = (
-    "comprare", "vendere", "acquistare", "consiglio", "consigliamo",
-    "conviene", "raccomand", "occasione", "opportunità di acquisto",
-    "target price", "prezzo obiettivo", "previsione", "prevediamo", "prevedo",
-    "dovrebbe salire", "dovrebbe scendere", "suggeriamo", "portafoglio",
-)
 
 # On ne contrôle que les nombres qui ressemblent à une DONNÉE de marché : au
 # moins une décimale, ou quatre chiffres et plus. « il 30 luglio », « 2026 »,
@@ -107,10 +106,9 @@ def check_synthesis(text: Any, briefing: Any) -> Tuple[bool, Optional[str]]:
     if not isinstance(text, str) or not text.strip():
         return False, "sintesi vuota"
 
-    low = text.lower()
-    for word in FORBIDDEN_WORDS:
-        if word in low:
-            return False, "vocabolario prescrittivo: %r" % word
+    hit = find_prescriptive(text)
+    if hit:
+        return False, "vocabolario prescrittivo: %r" % hit
 
     known = _numbers_of(briefing)
     for raw in _NUM.findall(text):

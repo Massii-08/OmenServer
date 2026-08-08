@@ -28,10 +28,17 @@ import unicodedata
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from .buzz import MIN_HISTORY_DAYS, REF_DAYS
 from .report import fmt_number, fmt_pct
+from .sentiment import find_prescriptive
 
 DAILY_DIR = "20 - Giornaliero"
 DEFAULT_ROOT = os.path.expanduser("~/market-vault")
+
+# Le titre de la section du baromètre d'opinion. Exporté parce que c'est le
+# repère qui permet de vérifier — en test comme à l'œil — que la section reste
+# ABSENTE les jours calmes.
+BUZZ_TITLE = "## Di cosa si parla insolitamente oggi"
 
 
 def theme_slug(name: Any) -> str:
@@ -76,6 +83,85 @@ def _index_lines(briefing: Dict[str, Any]) -> List[str]:
         label = "Gap di apertura" if idx.get("gap_is_today") else "Ultimo gap"
         out.append("%s : %s" % (label, fmt_pct(gap.get("gap_pct"))))
     return out
+
+
+def _buzz_tone(entry: Dict[str, Any]) -> str:
+    """« Tono negativo in 11 titoli su 18. » — un COMPTAGE de mots, jamais un
+    état d'esprit prêté au marché. « il sentiment si deteriora » serait une
+    interprétation ; « négatif dans 11 titres sur 18 » est vérifiable."""
+    positive = int(entry.get("tone_pos") or 0)
+    negative = int(entry.get("tone_neg") or 0)
+    total = int(entry.get("count") or 0)
+    if not (positive or negative):
+        return ""
+    parts = []
+    if negative:
+        parts.append("negativo in %d titoli su %d" % (negative, total))
+    if positive:
+        parts.append("positivo in %d" % positive if negative
+                     else "positivo in %d titoli su %d" % (positive, total))
+    return " Tono " + ", ".join(parts) + "."
+
+
+def _buzz_line(entry: Dict[str, Any]) -> str:
+    label = entry.get("label") or entry.get("topic") or "?"
+    count = int(entry.get("count") or 0)
+    usual = float(entry.get("baseline") or 0)
+    if usual:
+        decimals = 0 if usual == int(usual) else 1
+        against = ("contro %s al giorno negli ultimi %d giorni (mediana)"
+                   % (fmt_number(usual, decimals), REF_DAYS))
+    else:
+        # « contro 0 » se lirait comme une mesure ; ce n'en est pas une, le
+        # sujet n'a simplement jamais été vu dans les journées enregistrées.
+        against = "mai presente nelle giornate precedenti registrate"
+    return "- **%s** — presente in %d post di oggi, %s.%s" % (
+        label, count, against, _buzz_tone(entry))
+
+
+def _buzz_lines(briefing: Dict[str, Any]) -> List[str]:
+    """La section du baromètre d'opinion — ABSENTE tant que rien ne décolle.
+
+    Pas de baromètre permanent : un bloc quotidien « aujourd'hui on parle de
+    X, Y, Z » se cesse de lire en une semaine, et il donnerait du poids à des
+    variations qui n'en ont pas.
+
+    ⚠️ SECOND verrou de la ligne rouge (le premier est l'extraction dans
+    `pulse.buzz`) : une entrée dont le sujet porte du vocabulaire prescriptif
+    n'atteint jamais l'écran. Si plus rien ne reste, la section disparaît —
+    un titre suivi de rien serait pire que pas de titre.
+    """
+    entries = [e for e in (briefing.get("buzz") or []) if isinstance(e, dict)]
+    notes = [e for e in entries if e.get("status")]
+    surges = [e for e in entries if not e.get("status")
+              and find_prescriptive("%s %s" % (e.get("label") or "",
+                                               e.get("topic") or "")) is None]
+    if not surges and not notes:
+        return []
+    lines = ["", BUZZ_TITLE, ""]
+    if surges:
+        lines += ["*Conteggio dei post raccolti oggi, confrontato con le "
+                  "giornate precedenti. Nessun giudizio.*", ""]
+        lines += [_buzz_line(e) for e in surges]
+    else:
+        # « Je ne sais pas encore » plutôt qu'un silence : sans historique tout
+        # ressemble à un emballement, et se taire se lirait « rien ne bouge ».
+        days = int(notes[0].get("days") or 0)
+        suffix = "a" if days == 1 else "e"
+        lines.append("*Storico ancora insufficiente per segnalare un'impennata: "
+                     "%d giornat%s registrat%s su %d necessarie.*"
+                     % (days, suffix, suffix, MIN_HISTORY_DAYS))
+    return lines
+
+
+def _omitted_note(total: int, cap: int) -> List[str]:
+    """Une troncature muette se lit comme « il n'y avait que ça ». Le plafond
+    reste légitime (une note doit rester lisible) mais doit se DÉCLARER dès
+    qu'il écarte réellement quelque chose."""
+    omitted = total - cap
+    if omitted <= 0:
+        return []
+    return ["", "*(e altre %d notizie non mostrate)*" % omitted]
 
 
 def render_note(briefing: Optional[Dict[str, Any]],
@@ -136,17 +222,20 @@ def render_note(briefing: Optional[Dict[str, Any]],
     items = news.get("items") or []
     facts = [i for i in items if (i.get("event") or {}).get("is_event")]
     rest = [i for i in items if not (i.get("event") or {}).get("is_event")]
+    FACTS_CAP, REST_CAP = 12, 6
     if facts:
         lines += ["", "## Notizie — qualcuno ha fatto qualcosa", ""]
-        for i in facts[:12]:
+        for i in facts[:FACTS_CAP]:
             ev = i.get("event") or {}
             tag = "%s · %s" % (ev.get("actor") or "?",
                                ", ".join(ev.get("actions") or []) or "-")
             lines.append("- `%s` %s — *%s*" % (tag, i.get("title"), i.get("source") or "?"))
+        lines += _omitted_note(len(facts), FACTS_CAP)
     if rest:
         lines += ["", "### Commenti e analisi", ""]
-        for i in rest[:6]:
+        for i in rest[:REST_CAP]:
             lines.append("- %s — *%s*" % (i.get("title"), i.get("source") or "?"))
+        lines += _omitted_note(len(rest), REST_CAP)
 
     themes = news.get("themes") or []
     if themes:
@@ -172,6 +261,8 @@ def render_note(briefing: Optional[Dict[str, Any]],
             lines.append("- **%s** (%s) — %s mention(i) — « %s »" % (
                 d.get("name") or d.get("symbol"), d.get("symbol"),
                 d.get("mentions"), (d.get("headline") or "")[:90]))
+
+    lines += _buzz_lines(briefing)
 
     tone = news.get("tone") or {}
     lines += ["", "## Nota di raccolta", ""]
