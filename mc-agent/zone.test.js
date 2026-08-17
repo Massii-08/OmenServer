@@ -506,3 +506,230 @@ test('preuve moderee : les seuils prudents restent en vigueur', () => {
   assert.strictEqual(r.verdict, 'stay');
   assert.strictEqual(r.reason, 'too_soon');
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// FENÊTRE GLISSANTE DES COMPTEURS D'ÉVÉNEMENTS (run world_mn14, 28/07)
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// Les compteurs d'événements étaient des CUMULS DE ZONE : un bot au passé productif ne migrait
+// JAMAIS, même d'une zone morte. Verdicts RÉELS extraits des session-*.jsonl :
+//   stay/ok       minutesInZone 221 waterFails 25 logsNotFound 5 ironMined 150 miningMinutes 2 depletedNear 23
+//   stay/cooldown minutesInZone 282 waterFails 14 logsNotFound 8 ironMined  67 miningMinutes 3 depletedNear 29
+// 150 fers EN CUMUL, 0 récemment (miningMinutes 2 !), 23 cellules épuisées autour — et le bot vote
+// « rester » parce que `ironMined=150` passe la garde anti-migration « le filon produit ».
+// Cascade : pas de migration → pas de bois frais → pas de combustible → armures jamais finies.
+
+const {
+  windowAdd, windowSum, windowPrune, windowLoad, ZONE_WINDOW_MS, ZONE_BUCKET_MS,
+} = require('./zone');
+
+const T0 = 100 * 3600 * 1000;   // horloge de référence des tests de fenêtre (injectée partout)
+
+// ─── Le helper de fenêtre ───────────────────────────────────────────────────────────────────────
+
+test('fenetre : la somme ne compte que ce qui est DANS la fenetre', () => {
+  let w = windowAdd([], 5, T0);
+  w = windowAdd(w, 3, T0 + 5 * 60000);
+  assert.strictEqual(windowSum(w, T0 + 5 * 60000), 8);
+});
+
+test('fenetre : un evenement plus vieux que la fenetre SORT du compte', () => {
+  const w = windowAdd([], 150, T0);
+  assert.strictEqual(windowSum(w, T0), 150);
+  assert.strictEqual(windowSum(w, T0 + ZONE_WINDOW_MS), 0, 'pile au bord => dehors');
+  assert.strictEqual(windowSum(w, T0 + 3 * 3600 * 1000), 0, '3 h plus tard => plus rien');
+});
+
+test('fenetre : juste avant le bord, l evenement compte encore', () => {
+  const w = windowAdd([], 7, T0);
+  assert.strictEqual(windowSum(w, T0 + ZONE_WINDOW_MS - 1), 7);
+});
+
+test('fenetre : les ajouts d une meme minute sont fusionnes (memo borne)', () => {
+  let w = [];
+  for (let i = 0; i < 40; i++) w = windowAdd(w, 1, T0 + i * 1000);   // 40 s d'affilee
+  assert.strictEqual(w.length, 1, 'un seul seau par minute');
+  assert.strictEqual(windowSum(w, T0 + 40000), 40);
+});
+
+test('fenetre : le nombre d entrees reste borne meme sous un deluge d evenements', () => {
+  let w = [];
+  for (let i = 0; i < 3600; i++) w = windowAdd(w, 1, T0 + i * 1000);   // 1/s pendant 1 h
+  assert.ok(w.length <= ZONE_WINDOW_MS / ZONE_BUCKET_MS + 1, `bornee, vu ${w.length}`);
+  // Granularite assumee : le seau qui chevauche le bord de la fenetre sort ENTIER (ici le seau
+  // t-20min, soit 60 evenements) => 19 minutes pleines. A l'echelle d'un verdict qui juge une zone
+  // sur 20 min, une minute de resolution n'a aucune importance ; la borne memoire, si.
+  assert.strictEqual(windowSum(w, T0 + 3600 * 1000), 1140, '19 seaux pleins de 60');
+});
+
+test('fenetre : windowAdd ne MUTE PAS son entree (module pur)', () => {
+  const before = windowAdd([], 4, T0);
+  const snapshot = JSON.parse(JSON.stringify(before));
+  windowAdd(before, 9, T0 + 1000);
+  assert.deepStrictEqual(before, snapshot);
+});
+
+test('fenetre : un ajout nul ou negatif ne fait jamais RECULER le compteur', () => {
+  let w = windowAdd([], 5, T0);
+  w = windowAdd(w, 0, T0 + 1000);
+  w = windowAdd(w, -3, T0 + 2000);
+  assert.strictEqual(windowSum(w, T0 + 2000), 5);
+});
+
+test('fenetre : windowLoad assainit un memo corrompu (jamais de crash au respawn)', () => {
+  assert.deepStrictEqual(windowLoad(null), []);
+  assert.deepStrictEqual(windowLoad('nope'), []);
+  assert.deepStrictEqual(windowLoad([null, 3, { t: 'x', n: 1 }, { t: 1, n: NaN }, { t: 2, n: -1 }]), []);
+  assert.deepStrictEqual(windowLoad([{ t: 20, n: 1 }, { t: 10, n: 2 }]), [{ t: 10, n: 2 }, { t: 20, n: 1 }],
+    'trie par horodatage');
+});
+
+test('fenetre : une entree DATEE DU FUTUR est jetee (changement d heure, memo herite)', () => {
+  const w = [{ t: T0 + 3600000, n: 99 }];
+  assert.strictEqual(windowSum(w, T0), 0);
+  assert.deepStrictEqual(windowPrune(w, T0), []);
+});
+
+// ─── L'état persisté porte la fenêtre (le bot meurt toutes les 3 min : #63b) ─────────────────────
+
+test('etat de zone : les fenetres naissent vides', () => {
+  const s = zoneStateInit(T0);
+  assert.deepStrictEqual(s.waterFailsWin, []);
+  assert.deepStrictEqual(s.logsNotFoundWin, []);
+  assert.deepStrictEqual(s.ironMinedWin, []);
+});
+
+test('etat de zone : la fenetre SURVIT au respawn, mais elaguee de ce qui a expire', () => {
+  const saved = {
+    anchoredAt: T0,
+    ironMinedWin: [{ t: T0, n: 150 }, { t: T0 + 3 * 3600000, n: 4 }],
+  };
+  const s = zoneStateLoad(saved, T0 + 3 * 3600000 + 60000);
+  assert.deepStrictEqual(s.ironMinedWin, [{ t: T0 + 3 * 3600000, n: 4 }],
+    'le fer d il y a 3 h ne doit pas ressusciter au respawn');
+});
+
+test('etat de zone : un memo SANS fenetre (ancien format) se charge sans casser', () => {
+  const s = zoneStateLoad({ anchoredAt: T0, waterFails: 4, ironMined: 7 }, T0 + 1000);
+  assert.deepStrictEqual(s.ironMinedWin, []);
+  assert.strictEqual(s.ironMined, 7, 'le cumul de session reste, lui');
+});
+
+test('etat de zone : une migration vide les fenetres', () => {
+  const s = zoneStateAfterMigration(T0);
+  assert.deepStrictEqual(s.ironMinedWin, []);
+  assert.deepStrictEqual(s.waterFailsWin, []);
+});
+
+// ─── LES DEUX VERDICTS RÉELS DOIVENT BASCULER ───────────────────────────────────────────────────
+
+/** Verdict réel n°1 (world_mn14) : stay/ok — 221 min sur place, 150 fers EN CUMUL, 0 récemment. */
+function realA(over = {}) {
+  return Object.assign({
+    minutesInZone: 221, waterFails: 25, logsNotFound: 5, ironMined: 150,
+    miningMinutes: 2, depletedNear: 23, dryCellKnown: true, lastMigrationAt: 0, now: NOW,
+  }, over);
+}
+
+/** Verdict réel n°2 (world_mn14) : stay/cooldown — 282 min, 67 fers en cumul, 29 cellules epuisees. */
+function realB(over = {}) {
+  return Object.assign({
+    minutesInZone: 282, waterFails: 14, logsNotFound: 8, ironMined: 67,
+    miningMinutes: 3, depletedNear: 29, dryCellKnown: true, lastMigrationAt: 0, now: NOW,
+  }, over);
+}
+
+test('LE BUG : verdict reel n1 avec le CUMUL de session => le bot reste dans une zone morte', () => {
+  const r = zoneVerdict(realA());
+  assert.strictEqual(r.verdict, 'stay');
+  assert.strictEqual(r.reason, 'ok', '150 fers cumules passent la garde « le filon produit »');
+});
+
+test('LE FIX : verdict reel n1 avec le fer FENETRE => migrate:depleted', () => {
+  const r = zoneVerdict(realA({ ironMined: 0 }));
+  assert.strictEqual(r.verdict, 'migrate');
+  assert.strictEqual(r.reason, 'depleted');
+});
+
+test('LE FIX : verdict reel n2 (hors cooldown) avec les compteurs FENETRES => migrate:depleted', () => {
+  // Le cumul ne se contente pas de clouer le bot : quand il finit par lacher (cooldown ecoule), il
+  // migre pour le MAUVAIS MOTIF — `wood`, dont le plancher est 64 blocs (piege #63d) — alors que la
+  // zone est EPUISEE et exige 600 blocs. Un saut de 64 blocs, c'est le meme sous-sol deja fouille.
+  const cumul = zoneVerdict(realB());
+  assert.strictEqual(cumul.reason, 'wood', 'cumul logsNotFound=8 => motif errone');
+  assert.strictEqual(minDistFor(cumul.reason), MIGRATE_WOOD_MIN_DIST, '... donc 64 blocs seulement');
+
+  const r = zoneVerdict(realB({ ironMined: 0, logsNotFound: 0, waterFails: 0 }));
+  assert.strictEqual(r.verdict, 'migrate');
+  assert.strictEqual(r.reason, 'depleted');
+  assert.strictEqual(minDistFor(r.reason), MIGRATE_FAR_MIN_DIST, 'zone videe => on s eloigne pour de bon');
+});
+
+test('CHAINE COMPLETE : 150 fers mines il y a 3 h => la fenetre les oublie => migrate:depleted', () => {
+  // Exactement ce que fait index.js : on ACCUMULE dans la fenetre, on SOMME au moment du verdict.
+  const mined3hAgo = windowAdd([], 150, NOW - 3 * 3600 * 1000);
+  const r = zoneVerdict(realA({ ironMined: windowSum(mined3hAgo, NOW) }));
+  assert.strictEqual(r.verdict, 'migrate');
+  assert.strictEqual(r.reason, 'depleted');
+});
+
+test('ANTI-CHURN (regression world_mn10) : du fer mine RECEMMENT protege toujours la zone', () => {
+  // La garde qui a corrige mn10 doit rester vivante : un bot qui sort 40 fers dans la fenetre
+  // n est PAS « en rond », il ne doit pas partir sur le seul signal depletedNear.
+  const fresh = windowAdd([], 40, NOW - 60000);
+  const r = zoneVerdict(realA({ ironMined: windowSum(fresh, NOW) }));
+  assert.strictEqual(r.verdict, 'stay');
+  assert.strictEqual(r.reason, 'ok');
+});
+
+test('l EAU aussi se fenetre : 25 echecs il y a 3 h ne noient plus la zone d aujourd hui', () => {
+  const old = windowAdd([], 25, NOW - 3 * 3600 * 1000);
+  const r = zoneVerdict(realA({
+    waterFails: windowSum(old, NOW), dryCellKnown: false, depletedNear: 0, ironMined: 0,
+    miningMinutes: 0,
+  }));
+  assert.strictEqual(r.verdict, 'stay', 'plus aucun echec eau recent');
+});
+
+test('le BOIS aussi se fenetre : des echecs recents suffisent, les vieux non', () => {
+  const old = windowAdd([], LOGS_NOT_FOUND_MAX, NOW - 3 * 3600 * 1000);
+  const recent = windowAdd(old, LOGS_NOT_FOUND_MAX, NOW - 60000);
+  const base = { depletedNear: 0, ironMined: 40, miningMinutes: 0, dryCellKnown: true, waterFails: 0 };
+  assert.strictEqual(zoneVerdict(realA(Object.assign({}, base, { logsNotFound: windowSum(old, NOW) }))).verdict, 'stay');
+  const r = zoneVerdict(realA(Object.assign({}, base, { logsNotFound: windowSum(recent, NOW) })));
+  assert.strictEqual(r.verdict, 'migrate');
+  assert.strictEqual(r.reason, 'wood');
+});
+
+// ─── Le trou `exhausted` (documenté, cf. rapport) ────────────────────────────────────────────────
+// `exhausted` mesure un EFFORT cumule (miningMinutes) contre un RENDEMENT desormais fenetre.
+// L effort reste un CUMUL DE ZONE a dessein : ce n est pas un flux d evenements mais un chronometre,
+// et le fenetrer a 20 min exigerait de miner 100 % du temps => la regle serait morte pour de bon.
+// Fenetrer le seul rendement suffit a la REANIMER : un bot au passe productif la declenche enfin.
+
+test('exhausted : un passe productif ne protege plus une zone qui ne rend PLUS rien', () => {
+  const r = zoneVerdict(healthy({
+    miningMinutes: EXHAUSTED_MINING_MIN, ironMined: 0, depletedNear: 0,
+  }));
+  assert.strictEqual(r.verdict, 'migrate');
+  assert.strictEqual(r.reason, 'exhausted');
+});
+
+test('exhausted : du fer dans la fenetre garde le bot sur place', () => {
+  const r = zoneVerdict(healthy({
+    miningMinutes: EXHAUSTED_MINING_MIN, ironMined: EXHAUSTED_IRON_MIN, depletedNear: 0,
+  }));
+  assert.strictEqual(r.verdict, 'stay');
+});
+
+test('fenetre : une horloge qui RECULE oublie, elle n empile pas (jamais de seau en double)', () => {
+  // NTP, veille/reprise : `now` peut repasser en arriere. L'elagage jetant ce qui est date du
+  // FUTUR, un saut en arriere fait PERDRE les seaux recents — le compteur repart du passe. C'est
+  // le sens sur : moins de preuve => le bot RESTE, il ne migre jamais sur du bruit d'horloge.
+  let w = windowAdd([], 2, T0 + 5 * 60000);
+  w = windowAdd(w, 3, T0);                       // en arriere : le seau « futur » est jete
+  assert.deepStrictEqual(w, [{ t: T0, n: 3 }]);
+  w = windowAdd(w, 4, T0 + 5 * 60000);           // l'horloge repart en avant
+  assert.strictEqual(w.length, 2, 'deux seaux distincts');
+  assert.deepStrictEqual(w.map((e) => e.t), [T0, T0 + 5 * 60000], 'et la liste reste triee');
+  assert.strictEqual(windowSum(w, T0 + 5 * 60000), 7);
+});

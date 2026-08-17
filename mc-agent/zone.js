@@ -37,6 +37,10 @@ const OVERWHELMING_FACTOR = 3;
 const MIN_MINUTES_URGENT = 4;                   // on laisse quand même le temps de constater
 const COOLDOWN_URGENT_MS = 5 * 60 * 1000;       // et on garde un anti-yo-yo
 
+// ⚠️ CES SEUILS S'APPLIQUENT À UNE FENÊTRE GLISSANTE, PAS À UN CUMUL DE ZONE (fix world_mn14,
+// 28/07). Les compteurs d'ÉVÉNEMENTS (waterFails / logsNotFound / ironMined) sont désormais
+// alimentés par `windowAdd` et lus par `windowSum` sur les ZONE_WINDOW_MS dernières minutes —
+// cf. le bloc « FENÊTRE GLISSANTE » plus bas pour la cause racine mesurée.
 const WATER_FAILS_MAX = 6;         // échecs eau (water_ahead/drowning/sauvetages) → nappe, pas malchance
 const LOGS_NOT_FOUND_MAX = 8;      // `logs not_found` → la zone est rasée (le goulot d'ax4)
 const EXHAUSTED_MINING_MIN = 20;   // minutes de minage effectif avant de juger le rendement
@@ -90,6 +94,87 @@ const LEG_DIST = 64;
 const MAX_LEGS = 24;               // 24 × 64 ≈ 1536 blocs : meme portee totale qu'avant
 const LOADED_RADIUS = 96;          // au-dela, le pathfinder est aveugle → passer par les jambes
 
+// ─── FENÊTRE GLISSANTE DES COMPTEURS D'ÉVÉNEMENTS (fix world_mn14, 28/07) ───────────────────────
+//
+// Les compteurs d'événements étaient des CUMULS DE ZONE : un bot au passé productif ne migrait
+// JAMAIS, même d'une zone morte. Verdicts RÉELS lus dans les session-*.jsonl du run :
+//   stay/ok       minutesInZone 221 waterFails 25 logsNotFound 5 ironMined 150 miningMinutes 2 depletedNear 23
+//   stay/cooldown minutesInZone 282 waterFails 14 logsNotFound  8 ironMined  67 miningMinutes 3 depletedNear 29
+// 150 fers EN CUMUL, 0 récemment (miningMinutes 2 !), 23 cellules épuisées AUTOUR — et le bot vote
+// « rester », parce que `ironMined=150` passe la garde anti-migration « le filon produit encore »
+// (`depletedNear >= 3 ET ironMined < 8` ne peut JAMAIS être vrai avec un cumul qui ne redescend pas).
+// Cascade mesurée : pas de migration → pas de bois frais (camp déforesté, `logs not_found` ×135/h)
+// → pas de combustible → les sets d'armure des cartographes ne se complètent jamais.
+//
+// Un cumul répond à « ce bot a-t-il DÉJÀ produit ici ? ». Le verdict pose une tout autre question :
+// « cette zone produit-elle ENCORE ? ». C'est un DÉBIT, donc une fenêtre.
+//
+// Forme : une liste de seaux `{t, n}` d'une minute, élaguée à chaque ajout. Bornée par construction
+// (≤ 21 entrées par compteur), donc sérialisable dans le mémo de base sans le faire enfler — et
+// c'est indispensable : le bot meurt toutes les 3 min, la fenêtre DOIT survivre au process, sinon
+// on refait le bug de la mémoire d'échec par process (pièges #52, #63b).
+const ZONE_WINDOW_MS = 20 * 60 * 1000;   // « récemment » = les 20 dernières minutes
+const ZONE_BUCKET_MS = 60 * 1000;        // granularité d'un seau (la résolution exacte n'importe pas)
+
+function _winOpts(opts) {
+  const o = opts || {};
+  return {
+    windowMs: Number.isFinite(o.windowMs) && o.windowMs > 0 ? o.windowMs : ZONE_WINDOW_MS,
+    bucketMs: Number.isFinite(o.bucketMs) && o.bucketMs > 0 ? o.bucketMs : ZONE_BUCKET_MS,
+  };
+}
+
+/** Relit une fenêtre venue du mémo (JSON quelconque) : entrées valides seulement, triées. (pur) */
+function windowLoad(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const e of raw) {
+    if (!e || typeof e !== 'object') continue;
+    const t = e.t; const n = e.n;
+    if (!Number.isFinite(t) || !Number.isFinite(n) || n <= 0) continue;
+    out.push({ t, n });
+  }
+  out.sort((a, b) => a.t - b.t);
+  return out;
+}
+
+/**
+ * Élague : ne garde que les seaux DANS la fenêtre. (pur, ne mute jamais l'entrée)
+ * Un seau daté du FUTUR est jeté — il ne peut venir que d'un changement d'heure ou d'un mémo
+ * hérité (même paranoïa que `zoneStateLoad`), et le garder gèlerait le compteur.
+ */
+function windowPrune(win, now, opts = {}) {
+  const { windowMs } = _winOpts(opts);
+  const t1 = _num(now);
+  const cutoff = t1 - windowMs;
+  return windowLoad(win).filter((e) => e.t > cutoff && e.t <= t1);
+}
+
+/** Compte `n` occurrences à l'instant `now`. (pur : rend une NOUVELLE fenêtre, élaguée) */
+function windowAdd(win, n, now, opts = {}) {
+  const { bucketMs } = _winOpts(opts);
+  const t = _num(now);
+  const amount = _num(n);
+  const out = windowPrune(win, t, opts);
+  if (!(amount > 0)) return out;          // un compteur d'événements ne recule jamais
+  const bucket = Math.floor(t / bucketMs) * bucketMs;
+  // On cherche le seau PARTOUT et on garde la liste triée : `windowAdd` est alors correct TOUT SEUL,
+  // sans dépendre de l'invariant « l'élagage a déjà jeté le futur » (une horloge qui recule ne peut
+  // pas créer de seau en double). Défensif et gratuit : ≤21 éléments.
+  const hit = out.find((e) => e.t === bucket);       // `out` est une copie fraîche : mutation sûre
+  if (hit) { hit.n += amount; return out; }
+  out.push({ t: bucket, n: amount });
+  out.sort((a, b) => a.t - b.t);                     // ≤21 éléments : le tri est gratuit
+  return out;
+}
+
+/** Ce que la fenêtre compte à l'instant `now` — LA valeur que lit `zoneVerdict`. (pur) */
+function windowSum(win, now, opts = {}) {
+  let s = 0;
+  for (const e of windowPrune(win, now, opts)) s += e.n;
+  return s;
+}
+
 const _WET_BIOME_RE = /ocean|river/i;
 
 /** Biome aquatique (océan/rivière) : un ouvrier n'y va jamais — ce sont les cartographes qui naviguent. */
@@ -103,8 +188,15 @@ function _horiz(ax, az, bx, bz) { return Math.hypot(ax - bx, az - bz); }
 /**
  * Faut-il quitter cette zone ? (PUR)
  *
- * @param {object} s compteurs accumulés depuis le dernier ré-ancrage :
- *   minutesInZone, waterFails, logsNotFound, ironMined, miningMinutes, depletedNear,
+ * ⚠️ CONTRAT DES ENTRÉES (fix world_mn14) — trois régimes, à ne pas mélanger :
+ *   • waterFails / logsNotFound / ironMined = compteurs d'ÉVÉNEMENTS **sur la FENÊTRE GLISSANTE**
+ *     (`windowSum(win, now)`, 20 min). Un CUMUL de zone rendrait la garde « le filon produit
+ *     encore » (`depletedNear>=3 ET ironMined<8`) INSATISFIABLE dès qu'un bot a eu un bon passé —
+ *     c'est très exactement le bug mesuré (150 fers cumulés, 0 récent, zone morte, verdict `stay`).
+ *   • miningMinutes = CHRONOMÈTRE cumulé depuis le ré-ancrage (effort, pas événement).
+ *   • minutesInZone = horloge d'hystérésis, cumulée elle aussi — c'est sa raison d'être.
+ *
+ * @param {object} s minutesInZone, waterFails, logsNotFound, ironMined, miningMinutes, depletedNear,
  *   dryCellKnown (une cellule sèche mappée est-elle atteignable ?), lastMigrationAt, now.
  * @returns {{verdict:'stay'|'migrate', reason:string}}
  */
@@ -287,11 +379,23 @@ function legHeading(baseHeading, stuckStreak) {
 // d'échec par process ne sert à rien quand les sessions redémarrent sans cesse.** L'état de zone
 // rejoint donc le mémo de base, là où vit déjà la dette de mort.
 
+// Deux familles de compteurs cohabitent, à dessein :
+//   • `*Win`  = FENÊTRE GLISSANTE (20 min) — ce que lit le VERDICT : « la zone produit-elle ENCORE ? »
+//   • scalaires (`waterFails`, `logsNotFound`, `ironMined`) = CUMUL DE ZONE — conservés parce que
+//     d'autres consommateurs posent une question de PALMARÈS, pas de débit : `ironMined` part dans
+//     le heartbeat de présence (`ironZone`) où `regroup.squadLeader` s'en sert pour désigner le
+//     mineur productif du groupe, et `logsNotFound` arme le verrou `noWood` (qui doit rester
+//     enclenché jusqu'à la migration, sinon `plank_buffer` redevient bloquant en plein wood-desert
+//     — deadlock world_mn12). Les fenêtrer aurait changé ces comportements-là aussi (piège #55b).
+//   • `miningMs` reste un CHRONOMÈTRE cumulé : ce n'est pas un flux d'événements, et le fenêtrer à
+//     20 min exigerait de miner 100 % du temps pour atteindre EXHAUSTED_MINING_MIN → règle morte.
+
 /** Compteurs de zone vierges, horloge démarrée maintenant. (pur) */
 function zoneStateInit(now) {
   return {
     anchoredAt: now, waterFails: 0, logsNotFound: 0,
     ironMined: 0, miningMs: 0, lastMigrationAt: 0,
+    waterFailsWin: [], logsNotFoundWin: [], ironMinedWin: [],
   };
 }
 
@@ -312,6 +416,13 @@ function zoneStateLoad(saved, now) {
     ironMined: _num(saved.ironMined),
     miningMs: _num(saved.miningMs),
     lastMigrationAt: _num(saved.lastMigrationAt),
+    // Les fenêtres SURVIVENT au respawn (c'est tout l'intérêt de les persister : un bot qui meurt
+    // toutes les 3 min ne capitalise rien sinon) mais on les élague à l'instant du chargement —
+    // le fer d'il y a trois heures ne doit pas ressusciter. Un mémo d'avant le fenêtrage n'a pas
+    // ces champs : on repart d'une fenêtre vide, sans casser (rétro-compat).
+    waterFailsWin: windowPrune(saved.waterFailsWin, now),
+    logsNotFoundWin: windowPrune(saved.logsNotFoundWin, now),
+    ironMinedWin: windowPrune(saved.ironMinedWin, now),
   };
 }
 
@@ -366,6 +477,7 @@ function legIsGood({ treesNear = 0, inWater = false, biome = null } = {}) {
 module.exports = {
   zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legIsGood, isWetBiome, minDistFor, zoneFailureKind,
   zoneStateInit, zoneStateLoad, zoneStateAfterMigration,
+  windowAdd, windowSum, windowPrune, windowLoad, ZONE_WINDOW_MS, ZONE_BUCKET_MS,
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX,
   MIGRATE_MIN_DIST, MIGRATE_MAX_DIST, MIGRATE_FAR_MIN_DIST, MIGRATE_WOOD_MIN_DIST, MIGRATE_MIN_PROGRESS, LEG_DIST, MAX_LEGS, LOADED_RADIUS,

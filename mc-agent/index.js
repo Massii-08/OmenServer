@@ -74,7 +74,7 @@ const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTA
 const {
   zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legIsGood, minDistFor,
   zoneFailureKind, zoneStateInit, zoneStateLoad, zoneStateAfterMigration, MAX_LEGS, MIGRATE_MIN_PROGRESS, LOADED_RADIUS,
-  LOGS_NOT_FOUND_MAX,
+  LOGS_NOT_FOUND_MAX, windowAdd, windowSum, windowPrune, ZONE_WINDOW_MS,
 } = require('./zone');
 const { recordWorkDrown, noteDrownedSite, isDrownedNear, offsetFromDrowned } = require('./workDrown'); // chantier adjacent à un aquifère → abandon + BANNISSEMENT du lieu (3a)
 const { createDeathSpots } = require('./deathspots');
@@ -116,6 +116,13 @@ const { shouldTakeCover } = require('./cover');
 // torche en main ~10 % du temps) — le bot n'éclairait QUE le tunnel de branch-mine.
 const { shouldPlaceTorch } = require('./torches');
 const { takeCover, pickCoverBlock } = require('./skills/takeCover');
+// PRUDENCE / FIABILITÉ D'ÉQUIPEMENT DU CARTOGRAPHE (mesure live world_mn14 : les 3 mappeurs
+// concentrent la moitié des morts de la flotte, MapBot1 92 morts en respawnant `worn:0` en boucle).
+// Décisions PURES : abri tant qu'il est nu, ré-essai d'équipement, ramassage → équipement,
+// raison de fonte toujours renseignée. Cf. caution.js.
+const {
+  mapperCaution, equipRetryPlan, isEquipPickup, normalizeSmeltResult, PICKUP_EQUIP_DELAY_MS,
+} = require('./caution');
 
 function parseArgs(argv) {
   const o = {};
@@ -270,6 +277,7 @@ function abandonWorkIfDrowned() {
   }
   _descendWaterFails += 1;   // arme le relogement (même effet que waterlocked_relocate)
   _zoneWaterFails += 1;      // ET alimente le verdict de ZONE : chantier noyé → zone peut-être noyée
+  _zoneWaterWin = windowAdd(_zoneWaterWin, 1, Date.now());   // ... sur la fenêtre, seule lue par le verdict
 }
 // LIEUX DE MORT RÉPÉTÉE (deathspots.js) — miroir de abandonWorkIfDrowned : si le chantier courant
 // est proche du spot fraîchement banni (mort réelle, toute cause), on l'oublie — pour que
@@ -629,6 +637,11 @@ function ctxExtra() {
   // Rend `plank_buffer` non bloquant → un ouvrier remonté en surface d'un wood-desert peut enfin
   // redescendre miner son fer au lieu de boucler gatherLog→not_found (deadlock world_mn12, 28/07).
   // Se remet à false après une migration (le compteur est réinitialisé au ré-ancrage).
+  // ⚠️ VOLONTAIREMENT sur le CUMUL de zone, pas sur la fenêtre du verdict (fix world_mn14) : c'est
+  // un VERROU qui doit tenir jusqu'à la migration. Fenêtré, il se relâcherait après 20 min de calme,
+  // `plank_buffer` redeviendrait bloquant en plein wood-desert et on recréerait le deadlock mn12 —
+  // le bot re-tente, re-échoue, le verrou revient : du churn pour rien. Le verdict pose une question
+  // de DÉBIT, ce verrou une question de FAIT ÉTABLI (piège #55b : identifier le consommateur).
   const noWood = _zoneLogsNotFound >= LOGS_NOT_FOUND_MAX;
   return {
     hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand,
@@ -860,7 +873,12 @@ function fuelNames() {
 // le four brûle l'input qu'on veut fondre).
 async function smeltWithFurnace(input, output, count, fuelOverride) {
   _stillBusy = true;    // immobilité LÉGITIME (poll du four ≤3 min) — le desync-watchdog ne doit pas tirer
-  try { return await _smeltWithFurnaceInner(input, output, count, fuelOverride); }
+  // RAISON TOUJOURS RENSEIGNÉE (vu en session vivante : `armor_smelt ok:false reason:"?"`, un échec
+  // à la cause PERDUE sur le chemin qui fabrique l'armure). Le trou est dans `smelt` lui-même
+  // (skills/smelt.js) qui rend `{ok: got >= want, got}` — donc SANS `reason` dès qu'il fond moins
+  // que demandé. On normalise ICI, point de passage UNIQUE de tous les appelants ; les raisons
+  // amont (no_furnace/no_fuel/no_input/open_failed…) ne sont jamais écrasées.
+  try { return normalizeSmeltResult(await _smeltWithFurnaceInner(input, output, count, fuelOverride), count); }
   finally { _stillBusy = false; }
 }
 async function _smeltWithFurnaceInner(input, output, count, fuelOverride) {
@@ -1502,7 +1520,14 @@ let lastShelterT = 0; // anti re-trigger : 1 abri par nuit max
 // d'abri depuis 10 min → trou couvert jusqu'à l'aube (borné 13 min). Retourne true si on s'est abrité.
 // `proactive=true` (mappeurs en roaming, fix fable1) : la nuit SUFFIT — attendre une mort pour
 // s'abriter, c'est déjà avoir perdu (MapperBot1+2 sniped par squelettes la 1re nuit du monde neuf).
-async function maybeNightShelter(proactive = false) {
+// `opts.force` (cartographe NU, cf. mapperNightGuard) : relâche le cooldown « 1 abri / 10 min ».
+// Ce cooldown laissait passer EXACTEMENT le cas mortel — mourir pendant l'abri, respawner en pleine
+// nuit, et repartir marcher parce que le cooldown venait d'être armé (le compteur vit dans le
+// process, il survit à la mort). Un mappeur nu de nuit s'abrite, cooldown ou pas ; l'espacement
+// minimal de 60 s reste, lui, pour qu'un abri qui ÉCHOUE (impossible de creuser/se murer) ne
+// devienne pas une boucle chaude.
+const FORCED_SHELTER_MIN_GAP_MS = 60 * 1000;
+async function maybeNightShelter(proactive = false, opts = {}) {
   const deathsRecent = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000).length;
   // Décision d'abri déléguée à shouldShelter (skills/shelter) : sensible à l'OBSCURITÉ (lightLevel
   // ≤7) en plus de la nuit — un bot dans une grotte sombre / à l'ombre profonde de jour se terre
@@ -1518,7 +1543,8 @@ async function maybeNightShelter(proactive = false) {
   // Sous terre (y<45, seuil historique) : pas d'abri du tout — un mineur s'enterrait en boucle
   // dans sa propre mine (dark permanent + nu en chaîne armure), 10-13 min perdues par cycle.
   const sig = { night: isNight(bot), lightLevel, naked, lowHp: (bot.health != null && bot.health <= 10), hostilesNear, proactive, underground: !!(_pp && _pp.y < 45) };
-  if (shouldShelter(sig).shelter && Date.now() - lastShelterT > 10 * 60 * 1000) {
+  const _shelterGap = opts.force ? FORCED_SHELTER_MIN_GAP_MS : 10 * 60 * 1000;
+  if (shouldShelter(sig).shelter && Date.now() - lastShelterT > _shelterGap) {
     lastShelterT = Date.now();
     // MAPPEUR (Massii 2026-07-15) : d'abord REVENIR au home 'safe' de surface (/home safe, visible),
     // puis se terrer là — plutôt que de creuser un trou au hasard là où la nuit l'a surpris.
@@ -1542,10 +1568,22 @@ let _descendWaterFails = 0;
 // Remis à ZÉRO à chaque ré-ancrage : ils jugent la zone COURANTE, pas la carrière du bot.
 // Ce sont les entrées de zone.zoneVerdict — cf. zone.js pour les seuils et leur justification.
 let _zoneAnchoredAt = 0;      // instant du dernier ancrage/migration (0 = pas encore ancré)
-let _zoneWaterFails = 0;      // échecs eau (descente noyée, sauvetages) dans la zone
-let _zoneLogsNotFound = 0;    // `logs`/bois introuvable → la zone est rasée
-let _zoneIronMined = 0;       // fers récoltés dans la zone (rendement)
-let _zoneMiningMs = 0;        // temps de minage effectif dans la zone
+let _zoneWaterFails = 0;      // échecs eau (descente noyée, sauvetages) dans la zone — CUMUL
+let _zoneLogsNotFound = 0;    // `logs`/bois introuvable → la zone est rasée — CUMUL (verrou noWood)
+let _zoneIronMined = 0;       // fers récoltés dans la zone — CUMUL (publié en `ironZone`, cf. regroup)
+let _zoneMiningMs = 0;        // temps de minage effectif dans la zone (chronomètre, pas événement)
+
+// ⚠️ CE QUE LIT LE VERDICT, ce sont ces FENÊTRES GLISSANTES (20 min), pas les cumuls ci-dessus.
+// Bug mesuré sur world_mn14 : un bot à 221 min sur place avec 150 fers EN CUMUL mais 0 récemment
+// (miningMinutes 2 !) et 23 cellules épuisées autour votait « rester », parce que le cumul passait
+// la garde « le filon produit encore ». Un cumul dit « ce bot a DÉJÀ produit ici » ; le verdict
+// demande « cette zone produit-elle ENCORE ». Les cumuls restent pour leurs autres consommateurs
+// (`ironZone` → regroup.squadLeader, `noWood` → plank_buffer non bloquant) — cf. zone.js.
+// ⚠️ Déclarées AU NIVEAU MODULE comme leurs sœurs : une garde lue par plusieurs fonctions mais
+// déclarée dans `onSpawn` compile, passe les tests, et tue le bot en prod (piège #56).
+let _zoneWaterWin = [];       // échecs eau des ZONE_WINDOW_MS dernières minutes
+let _zoneLogsWin = [];        // échecs bois de la fenêtre
+let _zoneIronWin = [];        // fers récoltés dans la fenêtre = LE rendement courant
 let _lastMigrationAt = 0;     // cooldown anti-nomadisme
 let _lastZoneVerdictReason = null; // dedup télémétrie : dernière raison de verdict tracée
 let _migrating = false;       // marche de migration en cours → l'enforcement confine est SUSPENDU
@@ -1559,13 +1597,23 @@ function _applyZoneState(s) {
   _zoneIronMined = s.ironMined;
   _zoneMiningMs = s.miningMs;
   _lastMigrationAt = s.lastMigrationAt;
+  _zoneWaterWin = s.waterFailsWin || [];
+  _zoneLogsWin = s.logsNotFoundWin || [];
+  _zoneIronWin = s.ironMinedWin || [];
 }
 
-/** Sérialise l'état de zone courant pour le mémo de base. */
+/** Sérialise l'état de zone courant pour le mémo de base.
+ *  Les fenêtres y vont ÉLAGUÉES : bornées (≤21 seaux), elles ne font pas enfler le mémo — et elles
+ *  DOIVENT y aller, sinon un bot qui meurt toutes les 3 min réapprend la zone à chaque respawn
+ *  (la mémoire d'échec par process, pièges #52 et #63b). */
 function _zoneStateNow() {
+  const now = Date.now();
   return {
     anchoredAt: _zoneAnchoredAt, waterFails: _zoneWaterFails, logsNotFound: _zoneLogsNotFound,
     ironMined: _zoneIronMined, miningMs: _zoneMiningMs, lastMigrationAt: _lastMigrationAt,
+    waterFailsWin: windowPrune(_zoneWaterWin, now),
+    logsNotFoundWin: windowPrune(_zoneLogsWin, now),
+    ironMinedWin: windowPrune(_zoneIronWin, now),
   };
 }
 
@@ -1607,8 +1655,15 @@ let _needsWoodTrip = false;   // un échec a prouvé le manque de bois → la pr
  *  `pick_recovery:no_sticks` accuse la ZONE (pas de bois) et non le bot. */
 function noteZoneFailure(goalName, reason) {
   const kind = zoneFailureKind(goalName, reason);
-  if (kind === 'water') _zoneWaterFails += 1;
-  else if (kind === 'wood') { _zoneLogsNotFound += 1; _needsWoodTrip = true; }
+  const now = Date.now();
+  // Chaque échec alimente DEUX compteurs : le cumul de zone (verrou `noWood`, qui doit tenir
+  // jusqu'à la migration) et la fenêtre glissante (le verdict, qui juge un DÉBIT).
+  if (kind === 'water') { _zoneWaterFails += 1; _zoneWaterWin = windowAdd(_zoneWaterWin, 1, now); }
+  else if (kind === 'wood') {
+    _zoneLogsNotFound += 1;
+    _zoneLogsWin = windowAdd(_zoneLogsWin, 1, now);
+    _needsWoodTrip = true;
+  }
 }
 
 // Rendement fer : mesuré par ÉCHANTILLONNAGE de l'inventaire (branchMine n'émet pas par minerai,
@@ -1619,7 +1674,11 @@ function sampleZoneIron() {
   try {
     const inv = buildCtxInv(bot);
     const n = (inv.raw_iron || 0) + (inv.iron_ingot || 0);
-    if (_lastIronSample != null && n > _lastIronSample) _zoneIronMined += (n - _lastIronSample);
+    if (_lastIronSample != null && n > _lastIronSample) {
+      const gained = n - _lastIronSample;
+      _zoneIronMined += gained;
+      _zoneIronWin = windowAdd(_zoneIronWin, gained, Date.now());   // le RENDEMENT courant
+    }
     _lastIronSample = n;
   } catch (e) { /* best-effort */ }
 }
@@ -1963,12 +2022,18 @@ function checkZoneVerdict() {
   } catch (e) { dryCellKnown = false; }
   const depletedNear = (cells.depleted || []).filter((d) => d && Number.isFinite(d.x) && from
     && Math.hypot(d.x - from.x, d.z - from.z) <= 160).length;
+  // ⚠️ FENÊTRE, PAS CUMUL (fix world_mn14) : les compteurs d'ÉVÉNEMENTS entrent dans le verdict par
+  // leur somme sur les 20 dernières minutes. Avec les cumuls, un bot au passé productif ne migrait
+  // JAMAIS d'une zone morte — 150 fers cumulés / 0 récent / 23 cellules épuisées autour → `stay`.
+  const waterFailsRecent = windowSum(_zoneWaterWin, now);
+  const logsNotFoundRecent = windowSum(_zoneLogsWin, now);
+  const ironMinedRecent = windowSum(_zoneIronWin, now);
   const v = zoneVerdict({
-    minutesInZone: (now - _zoneAnchoredAt) / 60000,
-    waterFails: _zoneWaterFails,
-    logsNotFound: _zoneLogsNotFound,
-    ironMined: _zoneIronMined,
-    miningMinutes: _zoneMiningMs / 60000,
+    minutesInZone: (now - _zoneAnchoredAt) / 60000,   // hystérésis : cumulée, c'est sa raison d'être
+    waterFails: waterFailsRecent,
+    logsNotFound: logsNotFoundRecent,
+    ironMined: ironMinedRecent,
+    miningMinutes: _zoneMiningMs / 60000,             // chronomètre d'effort, pas un flux d'événements
     depletedNear,
     dryCellKnown,
     lastMigrationAt: _lastMigrationAt,
@@ -1978,11 +2043,16 @@ function checkZoneVerdict() {
   // (trop tôt / cooldown / cellule sèche connue). Dédup au changement de raison (anti-emballement).
   const tel = verdictTelemetry(v, _lastZoneVerdictReason);
   _lastZoneVerdictReason = tel.reason;
+  // Les champs sans suffixe sont CE QUE LE VERDICT A VU (la fenêtre) ; les `*Total` sont le cumul
+  // de zone. C'est la comparaison des deux qui a permis de trouver le bug — sans elle, un
+  // `ironMined: 150` sur un bot qui ne mine plus depuis des heures reste indéchiffrable.
   if (tel.log) emit({
     type: 'zone_verdict', verdict: v.verdict, reason: v.reason,
     minutesInZone: Math.round((now - _zoneAnchoredAt) / 60000),
-    waterFails: _zoneWaterFails, logsNotFound: _zoneLogsNotFound,
-    ironMined: _zoneIronMined, miningMinutes: Math.round(_zoneMiningMs / 60000),
+    windowMin: Math.round(ZONE_WINDOW_MS / 60000),
+    waterFails: waterFailsRecent, logsNotFound: logsNotFoundRecent, ironMined: ironMinedRecent,
+    waterFailsTotal: _zoneWaterFails, logsNotFoundTotal: _zoneLogsNotFound, ironMinedTotal: _zoneIronMined,
+    miningMinutes: Math.round(_zoneMiningMs / 60000),
     depletedNear, dryCellKnown,
   });
   persistZoneState();          // les compteurs accumulés doivent survivre au prochain respawn
@@ -2026,6 +2096,39 @@ async function startMapper() {
   const mapperToken = {
     get cancelled() { return mapperCancelled || taskToken.cancelled || bot._mapperGen !== gen; },
     set cancelled(v) { mapperCancelled = !!v; },
+  };
+  installPickupEquip();    // une pièce reçue d'un coéquipier est PORTÉE dans la foulée (cf. plus haut)
+  // ── PRUDENCE TANT QU'IL EST NU (18/08) : un cartographe SANS armure ne voyage plus de nuit.
+  // Verdict PUR/testé (caution.mapperCaution) : < 2 pièces portées + nuit → il se terre et attend
+  // l'aube ; le matin, ou dès qu'il porte 2 pièces, il repart. L'abri réutilise l'existant
+  // (maybeNightShelter → shelterUntilDawn), mais en FORÇANT : le cooldown « 1 abri / 10 min » vit
+  // dans le process et survit à la mort, donc un mappeur tué pendant son abri repartait marcher au
+  // respawn, en pleine nuit, nu — la boucle exacte des 92 morts de MapBot1.
+  // L'épisode est tracé UNE fois (pas une par jambe) : le drapeau vit sur `bot` pour survivre aux
+  // ré-entrées de startMapper (chaque respawn en ouvre une nouvelle).
+  const mapperNightGuard = async () => {
+    let worn = 0;
+    try { worn = _wornArmor().size; } catch (e) { /* inventaire pas encore livré → 0 = prudent */ }
+    // `bot.time` peut ne pas être livré juste après un spawn/une reconnexion — c'est-à-dire
+    // exactement quand le bot est nu : on passe alors `null` (inconnu) et mapperCaution retombe
+    // honnêtement sur la présence d'hostiles, au lieu de conclure « il fait jour ».
+    const nightKnown = !!(bot && bot.time && bot.time.timeOfDay != null);
+    let hostilesNear = false;
+    try {
+      const h = bot.nearestEntity((x) => x && x.kind === 'Hostile mobs');
+      hostilesNear = !!(h && bot.entity && h.position.distanceTo(bot.entity.position) <= 8);
+    } catch (e) { /* best-effort */ }
+    const decision = mapperCaution({ worn, isNight: nightKnown ? isNight(bot) : null, hostilesNear });
+    if (decision === 'shelter') {
+      if (!bot._mapperCautionEpisode) { bot._mapperCautionEpisode = true; emit({ type: 'mapper_caution', worn }); }
+      // DANS L'EAU on ne force rien : on ne creuse pas de trou au milieu d'un océan, et le
+      // sauvetage d'eau (escapeWater / watchdog) doit garder la main → chemin historique.
+      let inWater = false;
+      try { inWater = isInWater(bot); } catch (e) { /* best-effort */ }
+      return maybeNightShelter(true, inWater ? {} : { force: true });
+    }
+    bot._mapperCautionEpisode = false;   // aube OU 2+ pièces portées → l'épisode est clos
+    return maybeNightShelter(true);
   };
   await survivalKitUp();   // /kit + équipement (si configuré) — AVANT le mini-kit pierre
   if (mapperToken.cancelled) return;
@@ -2131,7 +2234,10 @@ async function startMapper() {
     emit,
     fleeFrom,
     preferFlee: true,  // mappeur : fuit par défaut, ne se défend qu'à portée de coup (Massii 2026-07-15)
-    nightShelter: () => maybeNightShelter(true), // fix fable1 bis : se terrer AVANT chaque départ de nuit
+    // fix fable1 bis : se terrer AVANT chaque départ de nuit — et depuis le 18/08, se terrer
+    // COÛTE QUE COÛTE tant que le cartographe est nu (mapperNightGuard, verdict pur ci-dessus).
+    // Le hook est appelé en TÊTE de boucle : quand il s'abrite, aucune jambe ne part.
+    nightShelter: () => mapperNightGuard(),
 
     // kit incomplet (stall terrain au départ) → re-tenté discrètement toutes les ~10 arrivées :
     // le terrain a changé (le bot a bougé), la pose de table a souvent une 2e chance ailleurs.
@@ -2140,7 +2246,7 @@ async function startMapper() {
       if (firstUnmet(kitChain, ctx)) { emit({ type: 'mapper_kit_retry' }); await runKit(); }
       try { await armorUp(0); } catch (e) { /* best-effort */ }   // hole A : le mappeur s'arme aussi
       try { if (needDirtBuffer(bot.inventory.items(), 4)) await gather(bot, { name: ['dirt', 'grass_block', 'gravel'], count: 8, maxDistance: 48 }, mapperToken); } catch (e) {}
-      try { await maybeNightShelter(true); } catch (e) {}         // hole §1.4 : abri nocturne en roaming
+      try { await mapperNightGuard(); } catch (e) {}              // hole §1.4 : abri nocturne en roaming
     },
     // CHASSE OPPORTUNISTE (vécu Surv1 : le retry périodique coïncide rarement avec des proies à
     // portée → stock jamais constitué) : à chaque arrivée, si le stock cuit est bas ET qu'une proie
@@ -2148,7 +2254,7 @@ async function startMapper() {
     onArrive: async () => {
       // Fix fable1 : abri nocturne PROACTIF à CHAQUE arrivée (onPeriodic = 1/10 arrivées, trop rare —
       // les mappeurs se faisaient sniper en surface la nuit avant le prochain check). No-op le jour.
-      if (await maybeNightShelter(true)) return; // aube : on reprend au prochain cycle (pas de chasse de nuit)
+      if (await mapperNightGuard()) return; // aube : on reprend au prochain cycle (pas de chasse de nuit)
       const inv = buildCtxInv(bot);
       const rawHave = Object.keys(RAW2COOKED).reduce((s, n) => s + (inv[n] || 0), 0);
       const missing = 4 - cookedCount(inv) - rawHave;
@@ -2732,22 +2838,81 @@ function _wornArmor() {
   } catch (e) {}
   return worn;
 }
+// Dernier ré-essai d'équipement FORCÉ (arrêt + 1,5 s) — rationne l'immobilisation quand un
+// équipement échoue durablement. ⚠️ AU NIVEAU MODULE comme ses sœurs (_armorBusy, _stillBusy…) :
+// une garde déclarée dans une fonction et lue ailleurs compile, passe les tests, et tue le bot en
+// prod (piège #56).
+let _lastEquipRetryAt = 0;
 async function ensureArmor(opts = {}) {
+  installPickupEquip();   // idempotent — posé ici : TOUS les rôles passent par ensureArmor
   const items = () => ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, count: i.count }));
   const cnt = (n) => items().filter((i) => i.name === n).reduce((a, i) => a + i.count, 0);
   const worn = _wornArmor();
+  // ⚠️ ÉQUIPEMENT INSTRUMENTÉ + RÉ-ESSAI (18/08, cause n°1 des cartographes nus) : l'échec de
+  // `bot.equip` partait dans un `catch (e) {}` MUET — invisible dans les events et jamais re-tenté.
+  // MapBot1 porte `picked_up: iron_chestplate 1, iron_helmet 1` dans ses stats vanilla (pièces
+  // reçues d'un coéquipier) pendant que la présence le donne `armor:0` : il ne PORTE pas ce qu'il a
+  // en poche, 92 morts. Or `equip` échoue surtout EN MOUVEMENT (le serveur refuse le changement de
+  // slot pendant un déplacement/dig) → on ÉMET (#55a « le silence est un bug »), on coupe le
+  // mouvement, on souffle ~1,5 s et on re-tente UNE fois (caution.equipRetryPlan, pur/testé).
+  // Déclaré AVANT la garde « déjà 4 pièces » : le bouclier ci-dessous doit être équipé même par un
+  // bot en set complet, et les chemins de craft plus bas passent par le même helper.
+  const equipFails = [];
+  const equipOnce = async (name, dest, isRetry) => {
+    const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === name);
+    if (!it) return { ok: false, reason: 'gone' };   // consommé/perdu entre-temps : rien à signaler
+    try {
+      await bot.equip(it, dest);
+      worn.add(name);
+      if (isRetry) emit({ type: 'armor_equipped', piece: name, dest, retry: true });
+      return { ok: true };
+    } catch (e) {
+      const reason = (e && e.message) ? String(e.message).slice(0, 80) : 'error';
+      emit({ type: 'armor_equip_failed', piece: name, dest, reason, retry: !!isRetry });
+      return { ok: false, reason };
+    }
+  };
+  const noteFail = (name, dest, r) => {
+    if (!r.ok && r.reason !== 'gone') equipFails.push({ piece: name, dest, reason: r.reason });
+  };
+  // BOUCLIER DÉJÀ EN POCHE mais pas en main secondaire : personne ne l'équipait — le plan de craft
+  // (§3 plus bas) compte le SAC dans `hasShield`, donc `shieldPlan` ne rend rien et le bouclier
+  // dormait. Un bouclier dans le sac n'arrête aucune flèche, et le squelette est le tueur n°1 des
+  // cartographes (25 morts sur les 92 de MapBot1).
+  const _offhandName = () => {
+    try { const s = bot.inventory && bot.inventory.slots && bot.inventory.slots[45]; return s && s.name; }
+    catch (e) { return null; }
+  };
+  if (_offhandName() !== 'shield' && items().some((i) => i.name === 'shield')) {
+    noteFail('shield', 'off-hand', await equipOnce('shield', 'off-hand', false));
+  }
+  // Ré-essai UNIQUE, à l'arrêt (politique pure). Appelé aux DEUX sorties : le bot en set complet
+  // repart tout de suite plus bas, il ne doit pas perdre son ré-essai de bouclier au passage.
+  const flushEquipRetry = async () => {
+    const plan = equipRetryPlan(equipFails.splice(0),
+      { attempt: 1, now: Date.now(), lastRetryAt: _lastEquipRetryAt });
+    if (!plan.retry) return;
+    _lastEquipRetryAt = Date.now();
+    if (plan.stopFirst) { try { stopMotion(); } catch (e) {} }
+    await sleep(plan.waitMs);
+    for (const f of plan.pieces) await equipOnce(f.piece, f.dest, true);
+  };
   // bug #4 : déjà 4 pièces d'armure (TOUTE matière — ex. diamant du kit OP) → ne RIEN faire. Sinon le
   // craft ci-dessous re-fabriquerait du FER et l'équiperait PAR-DESSUS le diamant (downgrade). Slot-agnostique.
   const _SLOT_SUF = ['_helmet', '_chestplate', '_leggings', '_boots'];
-  if (_SLOT_SUF.filter((suf) => [...worn].some((w) => String(w).endsWith(suf))).length >= 4) return;
+  if (_SLOT_SUF.filter((suf) => [...worn].some((w) => String(w).endsWith(suf))).length >= 4) {
+    await flushEquipRetry();
+    return;
+  }
   // 1) Équiper la MEILLEURE pièce d'armure en poche par slot (TOUTE matière, jamais downgrade).
   //    ⚠️ L'ancienne boucle ne connaissait QUE ARMOR_PIECES (fer) → un kit DIAMANT fourni restait en
   //    poche, le bot combattait NON ARMURÉ → morts en boucle (vécu live cette nuit : ResBot2 0 armure).
   //    bestArmorToEquip (pur, testé) couvre diamant/netherite/fer/… → on équipe le kit donné.
   for (const piece of bestArmorToEquip(items(), worn)) {
-    const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === piece.name);
-    if (it) { try { await bot.equip(it, ARMOR_SLOTS[piece.slot]); worn.add(piece.name); } catch (e) {} }
+    const dest = ARMOR_SLOTS[piece.slot];
+    noteFail(piece.name, dest, await equipOnce(piece.name, dest, false));
   }
+  await flushEquipRetry();
   // 2) Craft la prochaine pièce. ironKeep FIXE bas (8) — l'armure PRIME (survie #1 Massii) : le
   //    bot re-mine le quota fer, l'armure survit aux morts (keepInventory). Le gate quota-strict
   //    bloquait tout (armorPlan null en boucle, vécu : 0 armure craftée). Smelt FORCÉ du raw_iron
@@ -2762,8 +2927,13 @@ async function ensureArmor(opts = {}) {
         // event diagnostic (fix n°4 water-wall) : l'échec de fonte était AVALÉ → armor_no_progress
         // en boucle sans cause visible (vécu live NethBot3 : 0 combustible, indevinable des events).
         let sm = null;
-        try { sm = await smeltWithFurnace('raw_iron', 'iron_ingot', need); } catch (e) { sm = { ok: false, reason: 'threw' }; }
-        if (!sm || !sm.ok) emit({ type: 'armor_smelt', ok: false, reason: (sm && sm.reason) || '?' });
+        try { sm = await smeltWithFurnace('raw_iron', 'iron_ingot', need); }
+        catch (e) { sm = { ok: false, reason: 'threw:' + ((e && e.message) ? String(e.message).slice(0, 60) : 'error') }; }
+        // `smeltWithFurnace` normalise désormais son retour (caution.normalizeSmeltResult) et le
+        // catch nomme l'exception : le fameux `reason:"?"` (vu en session vivante) n'a plus de
+        // chemin pour sortir. Le `|| 'no_result'` reste comme dernier filet, jamais comme point
+        // d'interrogation. `got` dit si le four a produit QUELQUE CHOSE (partial vs no_output).
+        if (!sm || !sm.ok) emit({ type: 'armor_smelt', ok: false, reason: (sm && sm.reason) || 'no_result', got: (sm && sm.got) || 0, want: need });
       }
     }
   }
@@ -2776,11 +2946,13 @@ async function ensureArmor(opts = {}) {
     try {
       const r = await craftSmart({ name: plan.craft, count: 1 });
       if (r && r.ok) {
-        const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === plan.craft);
-        if (it) { try { await bot.equip(it, ARMOR_SLOTS[plan.slot]); } catch (e) {} }
+        // même helper instrumenté : une pièce FRAÎCHEMENT forgée qui ne s'équipe pas est le même
+        // bug (le bot la trimballe au lieu de la porter), et l'échec était muet ici aussi.
+        noteFail(plan.craft, ARMOR_SLOTS[plan.slot], await equipOnce(plan.craft, ARMOR_SLOTS[plan.slot], false));
         emit({ type: 'gear_craft', item: plan.craft, ok: true, why: 'armor' });
       }
     } catch (e) {}
+    await flushEquipRetry();   // no-op si rien n'a raté
   }
   // 3) Bouclier (anti-projectile) : craft + garde en off-hand.
   const hasShield = ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'shield')
@@ -2790,8 +2962,10 @@ async function ensureArmor(opts = {}) {
     try {
       const r = await craftSmart({ name: 'shield', count: 1 });
       if (r && r.ok) {
-        const sh = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === 'shield');
-        if (sh) { try { await bot.equip(sh, 'off-hand'); emit({ type: 'gear_craft', item: 'shield', ok: true, why: 'armor' }); } catch (e) {} }
+        // idem : équipement instrumenté (un bouclier forgé puis laissé dans le sac = 0 protection).
+        const eq = await equipOnce('shield', 'off-hand', false);
+        if (eq.ok) emit({ type: 'gear_craft', item: 'shield', ok: true, why: 'armor' });
+        else { noteFail('shield', 'off-hand', eq); await flushEquipRetry(); }
       }
     } catch (e) {}
   }
@@ -2827,6 +3001,48 @@ async function ensureTorches() {
 async function armorUp(ironKeep = 8) {
   try { await ensureTorches(); } catch (e) { /* best-effort */ }
   try { await ensureArmor({ ironKeep }); } catch (e) { /* best-effort */ }
+}
+
+// ── ÉQUIPEMENT ÉCLAIR AU RAMASSAGE (cause n°3 des cartographes nus) ─────────────────────────────
+// Une pièce donnée par un coéquipier (worker qui lance un plastron au mappeur) tombe au sol
+// N'IMPORTE QUAND. Or le bot ne tentait de s'habiller qu'au kit (spawn + 2,5 s) et à l'onPeriodic
+// du mappeur (1 arrivée sur 10) : MapBot1 mourait souvent AVANT — d'où `picked_up: iron_chestplate`
+// dans ses stats et `armor:0` à la présence. On équipe désormais dans la foulée du ramassage,
+// DÉBOUNCÉ (un mineur ramasse des centaines d'items ; une rafale = une seule passe).
+let _pickupEquipTimer = null;
+function schedulePickupEquip(delayMs = PICKUP_EQUIP_DELAY_MS) {
+  if (_pickupEquipTimer) return;                         // débounce : une passe par rafale
+  _pickupEquipTimer = setTimeout(() => {
+    _pickupEquipTimer = null;
+    // ironKeep 0 : s'habiller PRIME sur le buffer fer (l'armure survit aux morts, pas le bot).
+    Promise.resolve(ensureArmor({ ironKeep: 0 })).catch(() => {});
+  }, delayMs);
+  if (_pickupEquipTimer.unref) _pickupEquipTimer.unref();  // ne retient jamais le process
+}
+function installPickupEquip() {
+  if (!bot || bot._pickupEquipInstalled) return;          // idempotent : appelé à chaque ensureArmor
+  bot._pickupEquipInstalled = true;                       // et à chaque entrée de startMapper
+  bot.on('playerCollect', (collector, collected) => {
+    try {
+      if (!collector || !bot.entity || collector.id !== bot.entity.id) return;  // ramassage d'un AUTRE joueur
+      let name = null;
+      try { const it = collected && collected.getDroppedItem && collected.getDroppedItem(); name = it && it.name; }
+      catch (e) { /* métadonnées absentes selon la version → fallback ci-dessous */ }
+      // Nom indisponible → on pose la question qui compte vraiment, et qui ne coûte qu'un scan
+      // d'inventaire : reste-t-il en poche une pièce MEILLEURE que celle portée ?
+      const worthIt = name != null
+        ? isEquipPickup(name)
+        : (() => {
+          try {
+            const inv = ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, count: i.count }));
+            if (bestArmorToEquip(inv, _wornArmor()).length > 0) return true;
+            const off = bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
+            return !!(inv.some((i) => i.name === 'shield') && (!off || off.name !== 'shield'));
+          } catch (e) { return false; }
+        })();
+      if (worthIt) schedulePickupEquip();
+    } catch (e) { /* un ramassage ne doit JAMAIS casser la boucle du bot */ }
+  });
 }
 
 // /kit serveur (configuré au profil, policy.kit_command) : lancé au démarrage du mappeur + à chaque
@@ -5114,7 +5330,10 @@ setInterval(async () => {
       try {
         await withTimeout(bot.dig(blk), 12000, () => { try { bot.stopDigging(); } catch (e) {} });
         emit({ type: 'ore_grabbed', ore: blk.name, y: Math.round(blk.position.y) });
-        if (/iron/i.test(String(blk.name))) _zoneIronMined += 1;   // rendement de la zone courante
+        if (/iron/i.test(String(blk.name))) {
+          _zoneIronMined += 1;                                     // rendement de la zone courante
+          _zoneIronWin = windowAdd(_zoneIronWin, 1, Date.now());   // ... et sa fenêtre glissante
+        }
       } catch (e) { /* best-effort : le bloc peut disparaître ou être hors ligne de vue */ }
       break;                                             // un seul par passe : on reste ponctuel
     }
