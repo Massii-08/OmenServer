@@ -181,7 +181,7 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   // évasion d'eau injectable (tests) — défaut = la vraie manœuvre unstuck.escapeWater
   const escapeWaterFn = opts.escapeWater || escapeWater;
   const getSector = opts.getSector || (() => opts.sector || null);
-  const memory = opts.memory || null;
+  let memory = opts.memory || null;
   const periodicEvery = opts.periodicEvery || 10;
   const sampleRings = opts.sampleRings != null ? opts.sampleRings : SAMPLE_RINGS;
 

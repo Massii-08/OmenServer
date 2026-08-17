@@ -707,6 +707,45 @@ test('runMapper frontier : boat cross SANS progrès (bot ne bouge pas) → ne re
   assert.ok(gotos.length >= 1, 'après un boat cross sans progrès, le bot doit MARCHER (random walk), pas reboucler sur le bateau');
 });
 
+test('runMapper frontier : la mémoire RE-LUE (--wm-live) est PRISE EN COMPTE — une cellule couverte entre-temps n\'est plus ciblée', async () => {
+  // Bug vécu : `memory` était déclarée `const` → l'assignation de reloadMemory() levait TypeError,
+  // avalée par le catch best-effort → chaque mappeur restait sur le snapshot du boot (classe #61 :
+  // rien ne plante, la fonctionnalité est juste morte). Ici : le bot est ÉPINGLÉ sur place (goto
+  // ne le déplace pas) → il re-cible la même cellule frontière à chaque jambe ; à la jambe 3, la
+  // mémoire rechargée couvre cette cellule → nextLandLeg DOIT basculer sur une autre cible.
+  const bot = fakeMapperBot();
+  const gotos = [];
+  const token = { cancelled: false };
+  // la mémoire « fraîche » : couvre la cellule du 1er goto (comme si un coéquipier / la persistance
+  // l'avait peinte pendant la marche)
+  const reloaded = { worlds: { overworld: { biomes: [] } } };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    memory: { worlds: { overworld: { biomes: [] } } },   // bootstrap : rien de couvert
+    frontier: true,
+    reloadMemory: () => reloaded,
+    emit: () => {},
+    goto: async (wp) => {
+      if (gotos.length === 0) {
+        // 1re cible observée → la mémoire fraîche la marque couverte (quantifiée grille 128)
+        reloaded.worlds.overworld.biomes.push({ name: 'plains', x: Math.floor(wp.x / 128) * 128, z: Math.floor(wp.z / 128) * 128 });
+      }
+      gotos.push({ x: wp.x, z: wp.z });
+      if (gotos.length >= 6) token.cancelled = true;
+      // NE PAS déplacer le bot : sans reload effectif, la cible resterait identique à chaque jambe
+    },
+    sleep: async () => {},
+  }, token);
+  assert.ok(gotos.length >= 5, `pas assez de jambes pour conclure (${gotos.length})`);
+  const t1 = cellKey(gotos[0].x, gotos[0].z);
+  assert.strictEqual(cellKey(gotos[1].x, gotos[1].z), t1, 'sanity : avant le reload (jambe 2), la cible doit être identique');
+  // dès la jambe 3 (legs % 3 === 0 → reload AVANT nextLandLeg), la cellule couverte ne doit PLUS être ciblée
+  for (let i = 2; i < gotos.length; i++) {
+    assert.notStrictEqual(cellKey(gotos[i].x, gotos[i].z), t1,
+      `jambe ${i + 1} re-cible la cellule pourtant couverte par la mémoire re-lue (reload muet)`);
+  }
+});
+
 // ─── EMBALLEMENT « BATEAU » : le gate doit vivre sur le BOT, pas dans la boucle (run 17/08) ─────
 // Mesuré dans les session-*.jsonl : `mapper_boat_cross` par dizaines de milliers, ~100 % en échec
 // `no_crossable_water`. Le garde-fou `shouldRetryBoat` (26/07) EXISTAIT et ne mordait pas, pour
