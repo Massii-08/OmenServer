@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OmenServer — Connexion</title>
     <meta name="description" content="Panel de gestion de serveur dédié polyvalent">
+    <script>try{if(localStorage.getItem('omen-mode')==='light'){document.documentElement.setAttribute('data-mode','light');var _m=document.querySelector('meta[name="theme-color"]');if(_m)_m.setAttribute('content','#EBF0FA')}}catch(e){}</script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2">
-    <link rel="stylesheet" href="/css/style.css?v=114">
+    <link rel="stylesheet" href="/css/style.css?v=123">
     <!-- Fallback dark style : visible dans Claude Desktop preview / file:// direct (qui ne résolvent pas /css/style.css absolu).
          Override total par style.css quand servi par le backend FastAPI. -->
     <meta name="color-scheme" content="dark">
@@ -24,6 +25,9 @@
 <body>
     <div class="login-page">
         <div class="login-card fade-in">
+            <button class="mode-btn" id="mode-toggle" aria-pressed="false" title="">
+                <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75 A6.25 6.25 0 0 1 8 14.25 Z" fill="currentColor"/></svg>
+            </button>
             <!-- Brand (Bento — same as topbar pattern) -->
             <div class="login-brand" id="login-brand">
                 <div class="login-logo">O</div>
@@ -377,6 +381,29 @@
                 if (wizBtn_2) wizBtn_2.textContent = t('login.setup_create');
             },
         };
+
+        // Toggle clair/sombre (standalone — pas d'app.js sur cette page)
+        (function () {
+            var btn = document.getElementById('mode-toggle');
+            if (!btn) return;
+            function refresh() {
+                var light = document.documentElement.getAttribute('data-mode') === 'light';
+                btn.setAttribute('aria-pressed', String(light));
+                btn.title = (typeof Lang !== 'undefined' && Lang.t) ? Lang.t('common.theme_toggle') : 'Clair / sombre';
+            }
+            btn.addEventListener('click', function () {
+                var light = document.documentElement.getAttribute('data-mode') === 'light';
+                if (light) {
+                    document.documentElement.removeAttribute('data-mode');
+                    localStorage.removeItem('omen-mode');
+                } else {
+                    document.documentElement.setAttribute('data-mode', 'light');
+                    localStorage.setItem('omen-mode', 'light');
+                }
+                refresh();
+            });
+            refresh();
+        })();
 
         // Initialiser au chargement
         document.addEventListener('DOMContentLoaded', () => LoginPage.init());

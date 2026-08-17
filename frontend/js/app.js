@@ -49,6 +49,7 @@ const App = {
  // Charger l'accent Bento Tech + migration depuis legacy theme
  // (système de thèmes legacy purgé en PR 12 — voir CLAUDE.md §Design System v5)
  this._loadAccent();
+ this._loadMode();
  if (typeof Anim !== 'undefined') Anim.navInit();
 
  // Appliquer la langue sauvegardée sur la sidebar
@@ -204,6 +205,40 @@ const App = {
  document.querySelectorAll('.accent-switcher-mini .accent-dot').forEach(d => {
  d.classList.toggle('active', d.dataset.acc === active);
  });
+ },
+
+ // === MODE CLAIR « Givre » (2026-08-17) ===
+ // data-mode="light" sur <html> ; absence = dark (défaut). Persisté omen-mode.
+ // L'anti-flash inline d'index.html a déjà posé l'attribut avant le 1er paint —
+ // ici on (re)synchronise bouton + meta, source de vérité unique.
+ _loadMode() {
+ const light = localStorage.getItem('omen-mode') === 'light';
+ this._applyMode(light);
+ },
+
+ toggleMode() {
+ const light = document.documentElement.getAttribute('data-mode') !== 'light';
+ if (light) {
+ localStorage.setItem('omen-mode', 'light');
+ } else {
+ localStorage.removeItem('omen-mode');
+ }
+ this._applyMode(light);
+ },
+
+ _applyMode(light) {
+ if (light) {
+ document.documentElement.setAttribute('data-mode', 'light');
+ } else {
+ document.documentElement.removeAttribute('data-mode');
+ }
+ const meta = document.querySelector('meta[name="theme-color"]');
+ if (meta) meta.setAttribute('content', light ? '#EBF0FA' : '#050810');
+ const btn = document.getElementById('mode-toggle');
+ if (btn) {
+ btn.setAttribute('aria-pressed', String(light));
+ if (typeof Lang !== 'undefined') btn.title = Lang.t('common.theme_toggle');
+ }
  },
 
  /**

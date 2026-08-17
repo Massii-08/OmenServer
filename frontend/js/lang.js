@@ -284,6 +284,7 @@ const Lang = {
             'common.confirm': 'Confirmer',
             'common.locale': 'fr-FR',
             'common.admin': 'Administrateur',
+            'common.theme_toggle': 'Basculer clair/sombre',
 
             // Bots
             'bots.title': 'Bots & Automatisation',
@@ -1785,6 +1786,7 @@ const Lang = {
             'common.confirm': 'Confirm',
             'common.locale': 'en-US',
             'common.admin': 'Administrator',
+            'common.theme_toggle': 'Toggle light/dark',
 
             // Bots
             'bots.title': 'Bots & Automation',
@@ -3286,6 +3288,7 @@ const Lang = {
             'common.confirm': 'Conferma',
             'common.locale': 'it-IT',
             'common.admin': 'Amministratore',
+            'common.theme_toggle': 'Tema chiaro/scuro',
 
             // Bots
             'bots.title': 'Bot e Automazione',

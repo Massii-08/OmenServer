@@ -9,10 +9,11 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#050810">
+    <script>try{if(localStorage.getItem('omen-mode')==='light'){document.documentElement.setAttribute('data-mode','light');var _m=document.querySelector('meta[name="theme-color"]');if(_m)_m.setAttribute('content','#EBF0FA')}}catch(e){}</script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2">
     <link rel="apple-touch-icon" href="/icon-512.svg?v=2">
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/css/style.css?v=122">
+    <link rel="stylesheet" href="/css/style.css?v=123">
     <!-- Fallback dark style : visible dans Claude Desktop preview / file:// direct (qui ne résolvent pas /css/style.css absolu).
          Override total par style.css quand servi par le backend FastAPI. Voir CLAUDE.md / vault concept page. -->
     <meta name="color-scheme" content="dark">
@@ -58,6 +59,9 @@
                     <span class="accent-dot" data-acc="magenta" title="Magenta"></span>
                     <span class="accent-dot" data-acc="amber" title="Ambre"></span>
                 </div>
+                <button class="mode-btn" id="mode-toggle" onclick="App.toggleMode()" aria-pressed="false" title="">
+                    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75 A6.25 6.25 0 0 1 8 14.25 Z" fill="currentColor"/></svg>
+                </button>
                 <div class="user-menu-wrap" id="user-menu-wrap">
                     <button class="user-pill" id="user-pill-btn" onclick="App._toggleUserMenu(event)" aria-haspopup="menu" aria-expanded="false">
                         <div class="user-avatar" id="user-avatar">?</div>
@@ -88,7 +92,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="/js/lang.js?v=262"></script>
+    <script src="/js/lang.js?v=263"></script>
     <script src="/js/anim.js?v=4"></script>
     <script src="/js/toast.js?v=88"></script>
     <script src="/js/auth.js?v=87"></script>
@@ -111,7 +115,7 @@
     <script src="/js/web_module.js?v=91"></script>
     <script src="/js/network_module.js?v=94"></script>
     <script src="/js/sysdoc_module.js?v=13"></script>
-    <script src="/js/app.js?v=221"></script>
+    <script src="/js/app.js?v=222"></script>
     <script>
         // Enregistrement du Service Worker (PWA)
         if ('serviceWorker' in navigator) {
