@@ -1,0 +1,602 @@
+<meta charset="utf-8">
+<title>Ion clair — 3 directions</title>
+<style>
+/* ============================================================
+   ION LIGHT — mockup 3 directions (2026-08-08)
+   Réplique du dashboard OmenServer. Le DARK est l'Ion actuel,
+   identique pour les 3 directions. Chaque direction ne définit
+   que sa version LIGHT.
+   ============================================================ */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ---- Accents : néon (dark) + 3 déclinaisons foncées (light A/B/C) ---- */
+:root[data-accent="green"]   { --neon:#00FFB0; --la:#00885C; --lb:#009468; --lc:#00714C; }
+:root[data-accent="cyan"]    { --neon:#00D2FF; --la:#0077A8; --lb:#0083B8; --lc:#00688F; }
+:root[data-accent="violet"]  { --neon:#8B5CFF; --la:#6A3FE0; --lb:#7146EA; --lc:#5A2ED0; }
+:root[data-accent="magenta"] { --neon:#FF3DA6; --la:#D01C7C; --lb:#DB2285; --lc:#B3106B; }
+:root[data-accent="amber"]   { --neon:#FFB020; --la:#A96A00; --lb:#B37100; --lc:#925C00; }
+
+/* ---- DARK = Ion v6 actuel (commun aux 3 directions) ---- */
+:root {
+  --acc: var(--neon);
+  --acc-dim:  color-mix(in srgb, var(--acc) 14%, transparent);
+  --acc-glow: color-mix(in srgb, var(--acc) 65%, transparent);
+  --acc-text: #041007;
+
+  --bg:  #050810;
+  --e1:  #0A101E;
+  --e2:  #0E1526;
+  --e3:  #131C33;
+  --bd:  #1C2947;
+  --bds: #2C4066;
+  --tx:  #EDF2FA;
+  --tm:  #8FA3C4;
+  --td:  #5A6C90;
+
+  --grid-dot: rgba(91, 140, 255, 0.08);
+  --card-shadow: none;
+  --top-light: rgba(140, 180, 255, 0.07);
+
+  --console-bg: #0A101E;
+  --console-bd: #1C2947;
+  --console-tx: #C7D4EC;
+  --console-dim: #5A6C90;
+
+  --danger:#F87171; --warning:#FBBF24; --info:#60A5FA; --violet-r:#C084FC;
+
+  --font-ui: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --orbit: 1;          /* orbite conique de la carte maîtresse */
+  --halo-amb: 0;       /* halos ambiants (direction B light) */
+  --live-solid: 0;     /* badge LIVE plein (direction C light) */
+}
+
+/* ---- LIGHT A « Givre » : papier froid bleuté, console reste noire ---- */
+:root[data-mode="light"][data-dir="a"] {
+  --acc: var(--la);
+  --acc-dim:  color-mix(in srgb, var(--acc) 11%, transparent);
+  --acc-glow: color-mix(in srgb, var(--acc) 22%, transparent);
+  --acc-text: #FFFFFF;
+  --bg:  #EBF0FA;
+  --e1:  #F7FAFF;
+  --e2:  #FFFFFF;
+  --e3:  #E3EAF6;
+  --bd:  #CBD7EB;
+  --bds: #A9BCDA;
+  --tx:  #0C1526;
+  --tm:  #46597E;
+  --td:  #7C8FB0;
+  --grid-dot: rgba(43, 84, 160, 0.10);
+  --top-light: rgba(255, 255, 255, 0.85);
+  /* la console garde le noir Ion : îlot terminal dans l'UI claire */
+  --console-bg: #0A101E; --console-bd: #1C2947; --console-tx: #C7D4EC; --console-dim: #5A6C90;
+}
+
+/* ---- LIGHT B « Illuminé » : blanc lumineux, halos, profondeur par la lumière ---- */
+:root[data-mode="light"][data-dir="b"] {
+  --acc: var(--lb);
+  --acc-dim:  color-mix(in srgb, var(--acc) 12%, transparent);
+  --acc-glow: color-mix(in srgb, var(--acc) 30%, transparent);
+  --acc-text: #FFFFFF;
+  --bg:  #FBFCFF;
+  --e1:  #FFFFFF;
+  --e2:  #FFFFFF;
+  --e3:  #EEF3FC;
+  --bd:  #DEE6F4;
+  --bds: #BCCAE4;
+  --tx:  #0A1424;
+  --tm:  #4C6188;
+  --td:  #8496B6;
+  --grid-dot: rgba(70, 110, 200, 0.07);
+  --card-shadow: 0 1px 2px rgba(20,40,90,.04), 0 10px 30px rgba(20,40,90,.06);
+  --top-light: rgba(255, 255, 255, 0.95);
+  --console-bg: #F3F7FE; --console-bd: #DEE6F4; --console-tx: #24344F; --console-dim: #8496B6;
+  --halo-amb: 1;
+}
+
+/* ---- LIGHT C « Blanc sec » : print technique, zéro effet, tout dans le trait ---- */
+:root[data-mode="light"][data-dir="c"] {
+  --acc: var(--lc);
+  --acc-dim:  color-mix(in srgb, var(--acc) 10%, transparent);
+  --acc-glow: transparent;
+  --acc-text: #FFFFFF;
+  --bg:  #FFFFFF;
+  --e1:  #FFFFFF;
+  --e2:  #F7F8FB;
+  --e3:  #EFF1F6;
+  --bd:  #E3E7EF;
+  --bds: #C6CDDB;
+  --tx:  #0B0F17;
+  --tm:  #4A5568;
+  --td:  #8A94A6;
+  --grid-dot: transparent;
+  --top-light: transparent;
+  --console-bg: #FFFFFF; --console-bd: #E3E7EF; --console-tx: #24303F; --console-dim: #8A94A6;
+  --orbit: 0;
+  --live-solid: 1;
+}
+
+html { font-size: 16px; }
+body {
+  font-family: var(--font-ui);
+  background:
+    radial-gradient(var(--grid-dot) 1px, transparent 1.5px) 0 0 / 26px 26px,
+    var(--bg);
+  color: var(--tx);
+  line-height: 1.6;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  transition: background .25s ease, color .25s ease;
+}
+/* Halos ambiants de la direction B — suivent l'accent choisi */
+body::before {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  opacity: var(--halo-amb);
+  background:
+    radial-gradient(560px 320px at 12% -6%, color-mix(in srgb, var(--acc) 9%, transparent), transparent 70%),
+    radial-gradient(680px 360px at 88% -10%, rgba(91, 140, 255, 0.10), transparent 70%);
+  transition: opacity .25s ease;
+}
+.stage { position: relative; z-index: 1; }
+
+/* ============ BANDEAU DE CONTRÔLE DU MOCKUP ============ */
+.ctl {
+  position: sticky; top: 0; z-index: 50;
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 10px 20px;
+  background: color-mix(in srgb, var(--e1) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--bd);
+  font-size: 12px;
+}
+.ctl .t { font-family: var(--font-mono); font-weight: 600; letter-spacing: .08em; color: var(--td); }
+.seg { display: flex; gap: 2px; background: var(--e3); border: 1px solid var(--bd); border-radius: 999px; padding: 2px; }
+.seg button {
+  border: none; background: none; cursor: pointer; font-family: inherit;
+  font-size: 12px; font-weight: 600; color: var(--tm);
+  padding: 4px 12px; border-radius: 999px; transition: all .15s ease;
+}
+.seg button.on { background: var(--acc); color: var(--acc-text); }
+.ctl .desc { flex: 1 1 260px; min-width: 200px; color: var(--tm); font-size: 12px; }
+.ctl .desc b { color: var(--tx); }
+
+/* ============ TOPBAR (réplique) ============ */
+.topbar {
+  display: flex; align-items: center; gap: 24px;
+  padding: 12px 24px;
+  background: var(--e1);
+  border-bottom: 1px solid var(--bd);
+  box-shadow: var(--card-shadow);
+  transition: background .25s ease;
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; letter-spacing: -.01em; }
+.brand .logo {
+  width: 22px; height: 22px; border-radius: 8px;
+  background: var(--acc); color: var(--acc-text);
+  display: grid; place-items: center; font-weight: 700; font-size: 12px;
+}
+.brand .bt { font-family: var(--font-mono); font-size: 13px; letter-spacing: .06em; }
+.nav-tabs { display: flex; gap: 4px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.nav-tab {
+  padding: 6px 10px; border: none; background: none; cursor: pointer; font-family: inherit;
+  color: var(--tm); font-size: 13px; font-weight: 500; border-radius: 8px; white-space: nowrap;
+}
+.nav-tab:hover { background: var(--e2); color: var(--tx); }
+.nav-tab.active { background: var(--e2); color: var(--tx); }
+:root[data-mode="light"] .nav-tab.active { background: var(--e3); }
+.nav-tab.active::before {
+  content: ""; display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--acc); margin-right: 6px; vertical-align: middle;
+  box-shadow: 0 0 8px var(--acc-glow);
+}
+.tab-badge {
+  display: inline-block; margin-left: 6px; padding: 1px 6px;
+  background: var(--acc-dim); color: var(--acc); border-radius: 999px;
+  font-family: var(--font-mono); font-size: 10px; font-weight: 600; line-height: 1.4;
+}
+.tb-right { display: flex; align-items: center; gap: 12px; }
+.lang { display: flex; background: var(--e3); border: 1px solid var(--bd); border-radius: 999px; padding: 2px; }
+.lang span { padding: 3px 9px; font-size: 11px; font-weight: 600; color: var(--td); border-radius: 999px; cursor: default; }
+.lang span.on { background: var(--e1); color: var(--tx); border: 1px solid var(--bd); }
+.dots { display: flex; gap: 6px; }
+.dot-a {
+  width: 14px; height: 14px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0;
+}
+.dot-a.on { border-color: var(--tx); }
+/* ◐ le toggle proposé — vit à côté des pastilles accent */
+.mode-btn {
+  width: 28px; height: 28px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--e3); color: var(--tm);
+  font-size: 14px; line-height: 1; display: grid; place-items: center;
+  transition: all .15s ease;
+}
+.mode-btn:hover { color: var(--tx); border-color: var(--bds); }
+.user-pill {
+  display: flex; align-items: center; gap: 8px; padding: 4px 10px 4px 4px;
+  background: var(--e3); border: 1px solid var(--bd); border-radius: 999px;
+}
+.user-pill .av {
+  width: 24px; height: 24px; border-radius: 50%; background: var(--acc-dim); color: var(--acc);
+  display: grid; place-items: center; font-size: 11px; font-weight: 700;
+}
+.user-pill .nm { font-size: 12px; font-weight: 600; line-height: 1.1; }
+.user-pill .rl { font-size: 10px; color: var(--td); line-height: 1.1; }
+.user-pill .cr { color: var(--td); font-size: 9px; }
+
+/* ============ CONTENU ============ */
+.page { max-width: 1160px; margin: 0 auto; padding: 28px 24px 48px; }
+h1 { font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
+.sub { color: var(--td); font-size: 13px; margin-bottom: 22px; }
+.sec { margin-top: 30px; }
+.sec .sh { font-size: 13px; font-weight: 600; color: var(--tm); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 12px; }
+
+/* ---- Bento overview ---- */
+.bento { display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr; gap: 14px; }
+.card {
+  position: relative; overflow: hidden;
+  background: var(--e1); border: 1px solid var(--bd); border-radius: 14px;
+  padding: 16px 18px;
+  box-shadow: var(--card-shadow);
+  background-image: linear-gradient(var(--top-light), transparent 26%);
+  transition: transform .18s ease, border-color .18s ease, background .25s ease;
+  display: flex; flex-direction: column; min-height: 128px;
+}
+.card:hover { transform: translateY(-2px); border-color: var(--bds); }
+.card .label { color: var(--tm); font-size: 12px; }
+.card .value {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 32px; font-weight: 600; margin-top: 6px; line-height: 1.1;
+}
+.card .value .unit { color: var(--td); font-size: 15px; margin-left: 2px; font-weight: 500; }
+.card .footer { color: var(--td); font-size: 12px; margin-top: auto; padding-top: 8px; }
+
+/* Carte maîtresse : valeur accent + orbite conique + LIVE + sparkline */
+@property --oa { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
+.card.main .value { color: var(--acc); text-shadow: 0 0 18px var(--acc-glow); }
+.card.main::before {
+  content: ""; position: absolute; inset: -1px; border-radius: 14px; padding: 1px;
+  background: conic-gradient(from var(--oa), transparent 0 78%, var(--acc) 92%, transparent 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  animation: orbit 6s linear infinite;
+  opacity: var(--orbit);
+  pointer-events: none;
+}
+@keyframes orbit { to { --oa: 360deg; } }
+.blive {
+  position: absolute; top: 14px; right: 14px;
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--font-mono); font-size: 9px; font-weight: 700; letter-spacing: .12em;
+  color: var(--acc); background: var(--acc-dim);
+  border: 1px solid color-mix(in srgb, var(--acc) 30%, transparent);
+  padding: 2px 7px; border-radius: 999px;
+}
+:root[data-mode="light"] .blive { opacity: calc(1 - var(--live-solid)); }
+.blive.solid {
+  opacity: 0; position: absolute; top: 14px; right: 14px;
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--font-mono); font-size: 9px; font-weight: 700; letter-spacing: .12em;
+  color: #fff; background: var(--acc); border: none; padding: 3px 8px; border-radius: 999px;
+}
+:root[data-mode="light"] .blive.solid { opacity: var(--live-solid); }
+.bdot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: brdot 1.8s ease-in-out infinite; }
+@keyframes brdot { 0%,100% { opacity: .5; transform: scale(.85);} 50% { opacity: 1; transform: scale(1.1);} }
+.spark { width: 100%; height: 34px; margin-top: 8px; }
+.spark polyline { fill: none; stroke: var(--acc); stroke-width: 1.6; stroke-linejoin: round; filter: drop-shadow(0 0 4px var(--acc-glow)); }
+.spark .fill { fill: var(--acc-dim); stroke: none; }
+
+.card .mbar { height: 4px; background: color-mix(in srgb, var(--tx) 7%, transparent); border-radius: 2px; margin-top: 10px; overflow: hidden; }
+.card .mbar i { display: block; height: 100%; border-radius: 2px; background: var(--acc); }
+.card .mbar i.w { background: var(--warning); }
+
+/* ---- Machines ---- */
+.machines { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+.mcard {
+  position: relative; background: var(--e1); border: 1px solid var(--bd); border-radius: 14px; padding: 16px 18px;
+  box-shadow: var(--card-shadow);
+  background-image: linear-gradient(var(--top-light), transparent 26%);
+  transition: transform .18s ease, border-color .18s ease;
+}
+.mcard:hover { transform: translateY(-2px); border-color: var(--bds); }
+.mcard.brain { border-color: color-mix(in srgb, var(--acc) 45%, var(--bd)); }
+.mcard .tag {
+  position: absolute; top: 12px; right: 12px;
+  font-family: var(--font-mono); font-size: 9px; font-weight: 700; letter-spacing: .1em;
+  padding: 2px 7px; border-radius: 999px;
+}
+.mcard.brain .tag { color: var(--violet-r); background: color-mix(in srgb, var(--violet-r) 14%, transparent); }
+.mcard.arm .tag { color: var(--info); background: color-mix(in srgb, var(--info) 14%, transparent); }
+:root[data-mode="light"] .mcard.brain .tag { color: #7C3AED; }
+:root[data-mode="light"] .mcard.arm .tag { color: #1D4ED8; }
+.mhead { display: flex; align-items: center; gap: 8px; padding-right: 56px; }
+.mhead .st { width: 7px; height: 7px; border-radius: 50%; background: var(--acc); box-shadow: 0 0 9px var(--acc-glow); animation: brdot 2.2s ease-in-out infinite; }
+.mcard.off .mhead .st { background: var(--danger); box-shadow: none; animation: none; }
+.mhead .nm { font-weight: 600; font-size: 14px; }
+.mhead .rr { color: var(--td); font-size: 12px; }
+.mstats { display: flex; gap: 18px; margin-top: 12px; }
+.mstat .l { color: var(--td); font-size: 11px; }
+.mstat .v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 14px; font-weight: 600; }
+.mstat .v.w { color: var(--warning); }
+:root[data-mode="light"] .mstat .v.w { color: #B45309; }
+.mcard.off { opacity: .62; }
+.mcard.off:hover { transform: translateY(-2px); }
+
+/* ---- Deux colonnes : serveurs + feed ---- */
+.cols { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; align-items: start; }
+.rows { background: var(--e1); border: 1px solid var(--bd); border-radius: 14px; overflow: hidden; box-shadow: var(--card-shadow); }
+.row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }
+.row + .row { border-top: 1px solid var(--bd); }
+.gico {
+  width: 34px; height: 34px; border-radius: 10px; background: var(--e3); border: 1px solid var(--bd);
+  display: grid; place-items: center; font-family: var(--font-mono); font-size: 10px; font-weight: 700; color: var(--tm);
+}
+.row .ri { flex: 1; min-width: 0; }
+.row .rn { font-weight: 600; font-size: 13px; }
+.row .rd { color: var(--td); font-size: 11px; font-family: var(--font-mono); }
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+}
+.badge.online { color: var(--acc); background: var(--acc-dim); box-shadow: 0 0 12px var(--acc-glow); }
+.badge.online::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.badge.stopped { color: var(--td); background: color-mix(in srgb, var(--tx) 6%, transparent); }
+.badge.warn { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
+:root[data-mode="light"] .badge.warn { color: #B45309; }
+
+/* ---- Console / events-feed ---- */
+.feed {
+  background: var(--console-bg); border: 1px solid var(--console-bd); border-radius: 14px;
+  padding: 12px 14px; font-family: var(--font-mono); font-size: 11.5px;
+  color: var(--console-tx); box-shadow: var(--card-shadow);
+  transition: background .25s ease;
+}
+.feed .fh { font-size: 10px; font-weight: 700; letter-spacing: .1em; color: var(--console-dim); margin-bottom: 8px; }
+.ev { display: flex; gap: 10px; padding: 3px 0; white-space: nowrap; overflow: hidden; }
+.ev .ts { color: var(--console-dim); flex-shrink: 0; }
+.ev .ty { flex-shrink: 0; width: 52px; font-weight: 600; }
+.ev .ty.ok { color: var(--acc); }
+:root[data-mode="light"][data-dir="a"] .ev .ty.ok { color: var(--neon); }  /* console noire ⇒ néon lisible */
+.ev .ty.wa { color: var(--warning); }
+.ev .ty.er { color: var(--danger); }
+.ev .ms { overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- Boutons & pills ---- */
+.btnrow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.btn {
+  font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  padding: 8px 16px; border-radius: 10px;
+  background: var(--e3); color: var(--tx); border: 1px solid var(--bd);
+  transition: all .15s ease;
+}
+.btn:hover { border-color: var(--bds); transform: translateY(-1px); }
+.btn.pri { background: var(--acc); color: var(--acc-text); border-color: transparent; box-shadow: 0 0 16px var(--acc-glow); }
+.btn.dng { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+:root[data-mode="light"] .btn.dng { color: #B91C1C; }
+.btn.sm { padding: 5px 11px; font-size: 12px; border-radius: 8px; }
+.rpill {
+  display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 10px; border-radius: 999px;
+}
+.rpill.admin { color: var(--acc); background: var(--acc-dim); border: 1px solid color-mix(in srgb, var(--acc) 30%, transparent); }
+.rpill.dev { color: var(--violet-r); background: color-mix(in srgb, var(--violet-r) 12%, transparent); }
+:root[data-mode="light"] .rpill.dev { color: #7C3AED; }
+
+.note { margin-top: 34px; color: var(--td); font-size: 12px; border-top: 1px solid var(--bd); padding-top: 14px; }
+.note b { color: var(--tm); }
+
+@media (max-width: 900px) {
+  .bento { grid-template-columns: 1fr 1fr; }
+  .cols { grid-template-columns: 1fr; }
+  .nav-tabs { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card.main::before, .bdot, .mhead .st { animation: none; }
+}
+</style>
+
+<div class="ctl">
+  <span class="t">ION · VERSION CLAIRE</span>
+  <div class="seg" id="segdir">
+    <button data-dir="a">A — Givre</button>
+    <button data-dir="b" class="on">B — Illuminé</button>
+    <button data-dir="c">C — Blanc sec</button>
+  </div>
+  <div class="seg" id="segmode">
+    <button data-mode="dark">Dark (actuel)</button>
+    <button data-mode="light" class="on">Light</button>
+  </div>
+  <span class="desc" id="desc"></span>
+</div>
+
+<div class="stage">
+  <div class="topbar">
+    <div class="brand"><span class="logo">O</span><span class="bt">OMENSERVER</span></div>
+    <nav class="nav-tabs">
+      <button class="nav-tab active">Dashboard</button>
+      <button class="nav-tab">Serveurs</button>
+      <button class="nav-tab">Bots<span class="tab-badge">2</span></button>
+      <button class="nav-tab">Fichiers</button>
+      <button class="nav-tab">Média</button>
+      <button class="nav-tab">Web</button>
+      <button class="nav-tab">Réseau</button>
+      <button class="nav-tab">Diagnostic</button>
+    </nav>
+    <div class="tb-right">
+      <div class="lang"><span class="on">FR</span><span>EN</span><span>IT</span></div>
+      <div class="dots" id="dots">
+        <button class="dot-a on" data-acc="green"   style="background:#00FFB0" title="green"></button>
+        <button class="dot-a" data-acc="cyan"    style="background:#00D2FF" title="cyan"></button>
+        <button class="dot-a" data-acc="violet"  style="background:#8B5CFF" title="violet"></button>
+        <button class="dot-a" data-acc="magenta" style="background:#FF3DA6" title="magenta"></button>
+        <button class="dot-a" data-acc="amber"   style="background:#FFB020" title="amber"></button>
+      </div>
+      <button class="mode-btn" id="modetgl" title="Basculer clair/sombre — le toggle proposé">◐</button>
+      <div class="user-pill">
+        <span class="av">M</span>
+        <span><span class="nm">Massii_08</span><br><span class="rl">Administrateur</span></span>
+        <span class="cr">▾</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="page">
+    <h1>Dashboard</h1>
+    <div class="sub">Vue d'ensemble du réseau — 3 machines · 2 serveurs · 2 bots actifs</div>
+
+    <div class="bento">
+      <div class="card main">
+        <span class="blive"><span class="bdot"></span>LIVE</span>
+        <span class="blive solid"><span class="bdot"></span>LIVE</span>
+        <div class="label">CPU combiné</div>
+        <div class="value">23<span class="unit">%</span></div>
+        <svg class="spark" viewBox="0 0 200 34" preserveAspectRatio="none">
+          <polygon class="fill" points="0,30 20,26 40,28 60,18 80,22 100,12 120,16 140,8 160,14 180,10 200,13 200,34 0,34"/>
+          <polyline points="0,30 20,26 40,28 60,18 80,22 100,12 120,16 140,8 160,14 180,10 200,13"/>
+        </svg>
+      </div>
+      <div class="card">
+        <div class="label">Mémoire</div>
+        <div class="value">5.2<span class="unit">/ 15 Go</span></div>
+        <div class="mbar"><i style="width:35%"></i></div>
+        <div class="footer">Omen 3.4 · Bureau 1.8</div>
+      </div>
+      <div class="card">
+        <div class="label">Stockage</div>
+        <div class="value">342<span class="unit">Go</span></div>
+        <div class="mbar"><i style="width:26%"></i></div>
+        <div class="footer">HDD + SSD · 1.3 To total</div>
+      </div>
+      <div class="card">
+        <div class="label">Température max</div>
+        <div class="value">54<span class="unit">°C</span></div>
+        <div class="mbar"><i class="w" style="width:54%"></i></div>
+        <div class="footer">Omen · CPU package</div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sh">Réseau de machines</div>
+      <div class="machines">
+        <div class="mcard brain">
+          <span class="tag">CERVEAU</span>
+          <div class="mhead"><span class="st"></span><span class="nm">Omen</span><span class="rr">Ubuntu Server</span></div>
+          <div class="mstats">
+            <div class="mstat"><div class="l">CPU</div><div class="v">18%</div></div>
+            <div class="mstat"><div class="l">RAM</div><div class="v">3.4 Go</div></div>
+            <div class="mstat"><div class="l">Temp</div><div class="v w">54°C</div></div>
+          </div>
+        </div>
+        <div class="mcard arm">
+          <span class="tag">BRAS</span>
+          <div class="mhead"><span class="st"></span><span class="nm">PC-Bureau</span><span class="rr">Windows 11</span></div>
+          <div class="mstats">
+            <div class="mstat"><div class="l">CPU</div><div class="v">31%</div></div>
+            <div class="mstat"><div class="l">RAM</div><div class="v">1.8 Go</div></div>
+            <div class="mstat"><div class="l">Temp</div><div class="v">47°C</div></div>
+          </div>
+        </div>
+        <div class="mcard arm off">
+          <span class="tag">BRAS</span>
+          <div class="mhead"><span class="st"></span><span class="nm">Laptop</span><span class="rr">macOS</span></div>
+          <div class="mstats">
+            <div class="mstat"><div class="l">Vu</div><div class="v">il y a 2 h</div></div>
+            <div class="mstat"><div class="l">État</div><div class="v">hors ligne</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="cols">
+        <div>
+          <div class="sh">Serveurs de jeux</div>
+          <div class="rows">
+            <div class="row">
+              <span class="gico">MC</span>
+              <span class="ri"><span class="rn">Minecraft — world_mn5</span><br><span class="rd">paper 1.21.4 · 5 joueurs</span></span>
+              <span class="badge online">En ligne</span>
+              <button class="btn sm">Arrêter</button>
+            </div>
+            <div class="row">
+              <span class="gico">ARK</span>
+              <span class="ri"><span class="rn">ARK — The Island</span><br><span class="rd">v358.17 · éteint</span></span>
+              <span class="badge stopped">Arrêté</span>
+              <button class="btn sm">Démarrer</button>
+            </div>
+            <div class="row">
+              <span class="gico">BOT</span>
+              <span class="ri"><span class="rn">Bond Scanner</span><br><span class="rd">scan EUR · 12 min restantes</span></span>
+              <span class="badge warn">Scan en cours</span>
+              <button class="btn sm">Voir</button>
+            </div>
+          </div>
+          <div class="btnrow" style="margin-top:14px">
+            <button class="btn pri">Nouveau serveur</button>
+            <button class="btn">Paramètres</button>
+            <button class="btn dng">Supprimer</button>
+            <span class="rpill admin">Admin</span>
+            <span class="rpill dev">Developer</span>
+          </div>
+        </div>
+        <div>
+          <div class="sh">Activité</div>
+          <div class="feed">
+            <div class="fh">EVENTS — OMEN</div>
+            <div class="ev"><span class="ts">11:42:07</span><span class="ty ok">OK</span><span class="ms">backup Minecraft terminé (412 Mo)</span></div>
+            <div class="ev"><span class="ts">11:39:54</span><span class="ty ok">OK</span><span class="ms">MapBot2 — cellule (256,384) cartographiée</span></div>
+            <div class="ev"><span class="ts">11:31:12</span><span class="ty wa">WARN</span><span class="ms">température CPU 54°C (seuil 50)</span></div>
+            <div class="ev"><span class="ts">11:28:40</span><span class="ty ok">OK</span><span class="ms">auto-deploy — 2941310 déployé</span></div>
+            <div class="ev"><span class="ts">11:14:03</span><span class="ty er">ERR</span><span class="ms">Laptop — heartbeat perdu (2 h)</span></div>
+            <div class="ev"><span class="ts">10:58:22</span><span class="ty ok">OK</span><span class="ms">Harvester — 440 records (books)</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="note" id="ftnote"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var DESCS = {
+    a: "<b>A — Givre.</b> Papier froid bleuté, même ADN qu'Ion. Hairlines, pas d'ombres. La console RESTE noire : îlot terminal dans l'UI claire.",
+    b: "<b>B — Illuminé</b> (reco). Blanc lumineux : halos d'accent en haut de page, cartes qui flottent sur une lumière douce. Le vivant émet toujours — en lumière du jour.",
+    c: "<b>C — Blanc sec.</b> Print technique : blanc pur, zéro halo, zéro ombre, accents profonds. Tout passe par le trait et la typo."
+  };
+  var NOTES = {
+    dark: "Mode <b>dark</b> = Ion v6 actuel, identique quelle que soit la direction — il ne change pas. Bascule en Light (ou clique ◐ dans la topbar) pour comparer.",
+    light: "Le bouton <b>◐</b> dans la topbar est l'emplacement proposé du vrai toggle (à côté des pastilles accent). Teste aussi les 5 accents — chaque direction a ses 5 déclinaisons foncées."
+  };
+  function sync() {
+    var dir = root.getAttribute('data-dir'), mode = root.getAttribute('data-mode');
+    document.getElementById('desc').innerHTML = DESCS[dir];
+    document.getElementById('ftnote').innerHTML = NOTES[mode];
+    document.querySelectorAll('#segdir button').forEach(function (b) { b.classList.toggle('on', b.dataset.dir === dir); });
+    document.querySelectorAll('#segmode button').forEach(function (b) { b.classList.toggle('on', b.dataset.mode === mode); });
+  }
+  document.getElementById('segdir').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    root.setAttribute('data-dir', b.dataset.dir);
+    root.setAttribute('data-mode', 'light');   // choisir une direction bascule en light pour la voir
+    sync();
+  });
+  document.getElementById('segmode').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    root.setAttribute('data-mode', b.dataset.mode); sync();
+  });
+  document.getElementById('modetgl').addEventListener('click', function () {
+    root.setAttribute('data-mode', root.getAttribute('data-mode') === 'dark' ? 'light' : 'dark'); sync();
+  });
+  document.getElementById('dots').addEventListener('click', function (e) {
+    var b = e.target.closest('.dot-a'); if (!b) return;
+    root.setAttribute('data-accent', b.dataset.acc);
+    document.querySelectorAll('.dot-a').forEach(function (d) { d.classList.toggle('on', d === b); });
+  });
+  root.setAttribute('data-dir', 'b');
+  root.setAttribute('data-mode', 'light');
+  root.setAttribute('data-accent', 'green');
+  sync();
+})();
+</script>
