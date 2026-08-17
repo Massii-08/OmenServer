@@ -100,14 +100,14 @@ Le glow à ~22 % (vs 65 % dark) suffit à faire vivre orbite, badge LIVE, dots o
 ```css
 html[data-mode="light"] {
     --danger:  #B91C1C;
-    --warning: #B45309;
+    --warning: #92400E;   /* amber-800 — le 700 (#B45309) mesurait 4.3:1 sur pastel, sous AA */
     --info:    #1D4ED8;
     --violet:  #7C3AED;
     --orange:  #C2570A;
 }
 ```
 
-Les **fonds** pastel construits en rgba hardcodées sur les teintes claires (ex. `.badge.warn` `rgba(251,191,36,0.12)`) **restent tels quels** : fond jaune pâle + texte `#B45309` = paire lisible classique. Seuls les tokens texte changent.
+Les **fonds** pastel construits en rgba hardcodées sur les teintes claires (ex. `.badge.warn` `rgba(251,191,36,0.12)`) **restent tels quels** : fond jaune pâle + texte `#92400E` = paire lisible classique. Seuls les tokens texte changent. S'y ajoutent (décision d'audit) les pendants light des **alias legacy chromatiques** `--accent-green/-blue/-cyan/-red/-purple/-yellow`, alignés sur les mêmes déclinaisons foncées.
 
 ### 4.5 Console (nouveaux tokens, invariants au mode)
 

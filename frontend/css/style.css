@@ -37,8 +37,8 @@
     --border-active: var(--accent-dim);
 
     /* Ombres */
-    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
-    --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.5);
+    --shadow-md: 0 4px 12px var(--shadow-drop);
+    --shadow-lg: 0 8px 30px var(--shadow-drop);
     --shadow-glow-green: 0 0 20px rgba(16, 185, 129, 0.2);
     --shadow-glow-red: 0 0 20px rgba(239, 68, 68, 0.2);
 
@@ -135,6 +135,18 @@
     --console-err:    #F87171;
     --console-accent: var(--accent);   /* dark : l'accent EST déjà néon */
     --accent-neon:    #00FFB0;         /* valeur néon de l'accent courant (cf. variants) */
+
+    /* Voiles & ombres (tokenisés pour le mode clair) */
+    --surface-hint:        rgba(255, 255, 255, 0.04);  /* barres, rails, hover discrets */
+    --surface-hint-strong: rgba(255, 255, 255, 0.08);
+    --shadow-drop:         rgba(0, 0, 0, 0.38);        /* seules ombres autorisées (user-menu, toasts) */
+
+    /* Pastilles du sélecteur d'accent — identité de chaque accent (cf. bloc light) */
+    --dot-green:   #00FFB0;
+    --dot-cyan:    #00D2FF;
+    --dot-violet:  #8B5CFF;
+    --dot-magenta: #FF3DA6;
+    --dot-amber:   #FFB020;
 }
 
 /* === Ion v6 accent variants ===
@@ -175,15 +187,37 @@ html[data-mode="light"] {
     --grid-dot:  rgba(43, 84, 160, 0.10);
 
     /* Sémantiques par mode : versions foncées lisibles sur clair.
-       Les FONDS pastel rgba existants restent tels quels (paire classique). */
+       Les FONDS pastel rgba existants restent tels quels (paire classique).
+       --warning : amber-800 (pas 700) — 700 rendait 4.3:1 sur pastel, sous AA. */
     --danger:  #B91C1C;
-    --warning: #B45309;
+    --warning: #92400E;
     --info:    #1D4ED8;
     --violet:  #7C3AED;
     --orange:  #C2570A;
 
+    /* Alias legacy chromatiques : mêmes déclinaisons foncées que les tokens Ion
+       (sinon les composants pré-Bento gardent leurs teintes claires sur blanc). */
+    --accent-green:  #00885C;
+    --accent-blue:   #1D4ED8;
+    --accent-cyan:   #0077A8;
+    --accent-red:    #B91C1C;
+    --accent-purple: #7C3AED;
+    --accent-yellow: #92400E;
+
     /* Dans la console (qui reste bleu-nuit), l'accent redevient NÉON */
     --console-accent: var(--accent-neon);
+
+    /* Voiles & ombres : encre bleu-nuit très diluée au lieu du blanc (invisible sur clair) */
+    --surface-hint:        rgba(12, 21, 38, 0.04);
+    --surface-hint-strong: rgba(12, 21, 38, 0.09);
+    --shadow-drop:         rgba(20, 40, 90, 0.16);
+
+    /* Pastilles = déclinaisons FONCÉES (identiques aux --accent des 4 variants light) */
+    --dot-green:   #00885C;
+    --dot-cyan:    #0077A8;
+    --dot-violet:  #6A3FE0;
+    --dot-magenta: #D01C7C;
+    --dot-amber:   #A96A00;
 }
 html[data-mode="light"][data-accent="cyan"]    { --accent: #0077A8; --accent-dim: rgba(  0, 119, 168, .11); --accent-glow: rgba(  0, 119, 168, .22); }
 html[data-mode="light"][data-accent="violet"]  { --accent: #6A3FE0; --accent-dim: rgba(106,  63, 224, .12); --accent-glow: rgba(106,  63, 224, .24); }
@@ -441,7 +475,7 @@ body {
     border: 1px solid var(--border-strong);
     border-radius: var(--r-md);
     padding: 6px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    box-shadow: 0 8px 24px var(--shadow-drop);
     z-index: 200;
     display: flex;
     flex-direction: column;
@@ -596,7 +630,7 @@ body {
 }
 
 .nav-item:hover {
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--surface-hint);
     color: var(--text-primary);
 }
 
@@ -763,7 +797,7 @@ canvas {
 
 .stat-bar {
     height: 4px;
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--surface-hint-strong);
     border-radius: 2px;
     margin-top: 12px;
     overflow: hidden;
@@ -795,12 +829,12 @@ canvas {
     font-size: 11px;
     padding: 3px 6px;
     border-radius: 4px;
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--surface-hint);
     transition: background var(--transition-fast);
 }
 
 .stat-machine-item:hover {
-    background: rgba(255, 255, 255, 0.07);
+    background: var(--surface-hint-strong);
 }
 
 .stat-machine-name {
@@ -851,7 +885,7 @@ canvas {
 .module-card:hover {
     border-color: var(--module-color, var(--accent-green));
     transform: translateY(-4px);
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 8px 30px var(--shadow-drop);
 }
 
 .module-card:hover::before {
@@ -927,28 +961,28 @@ canvas {
 
 .btn-primary {
     background: var(--accent-green);
-    color: #fff;
+    color: var(--accent-text);
 }
 
 .btn-primary:hover {
-    background: #0ea571;
+    background: #0ea571;  /* dark-only OK: mort — l'override PR7 pose background:var(--accent) !important sur .btn-primary */
     box-shadow: var(--shadow-glow-green);
     transform: translateY(-1px);
 }
 
 .btn-danger {
     background: var(--accent-red);
-    color: #fff;
+    color: #fff;  /* dark-only OK: mort — l'override PR7 pose color:var(--bg) !important sur .btn-danger (L3239) */
 }
 
 .btn-danger:hover {
-    background: #dc2626;
+    background: #dc2626;  /* dark-only OK: fond de bouton rouge fixe dans les 2 modes */
     box-shadow: var(--shadow-glow-red);
 }
 
 .btn-kill-all {
-    background: linear-gradient(135deg, #991b1b, #7f1d1d);
-    color: #fca5a5;
+    background: linear-gradient(135deg, #991b1b, #7f1d1d);  /* dark-only OK: Kill All, surface rouge sombre fixe */
+    color: #fca5a5;  /* dark-only OK: encre claire sur le rouge sombre ci-dessus */
     border: 1px solid rgba(239, 68, 68, 0.3);
     padding: 8px 20px;
     border-radius: 8px;
@@ -960,9 +994,9 @@ canvas {
 }
 
 .btn-kill-all:hover {
-    background: linear-gradient(135deg, #b91c1c, #991b1b);
+    background: linear-gradient(135deg, #b91c1c, #991b1b);  /* dark-only OK: hover Kill All, surface rouge sombre fixe */
     box-shadow: 0 0 20px rgba(239, 68, 68, 0.4);
-    color: #fff;
+    color: #fff;  /* dark-only OK: blanc sur le rouge sombre du hover */
     transform: scale(1.03);
 }
 
@@ -972,13 +1006,13 @@ canvas {
 }
 
 .btn-secondary {
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--surface-hint);
     color: var(--text-secondary);
     border: 1px solid var(--border-color);
 }
 
 .btn-secondary:hover {
-    background: rgba(255, 255, 255, 0.1);
+    background: var(--surface-hint-strong);
     color: var(--text-primary);
 }
 
@@ -1000,7 +1034,7 @@ canvas {
 
 /* Bouton Kill All */
 .btn-kill-all {
-    background: linear-gradient(135deg, #ef4444, #dc2626);
+    background: linear-gradient(135deg, #ef4444, #dc2626);  /* dark-only OK: 2e def .btn-kill-all, surface rouge fixe */
     color: white;
     font-weight: 700;
     padding: 10px 24px;
@@ -1078,12 +1112,12 @@ canvas {
 .status-badge.starting,
 .status-badge.restarting {
     background: rgba(245, 158, 11, 0.15);
-    color: #f59e0b;
+    color: var(--warning);
 }
 
 .status-badge.stopping {
     background: rgba(239, 68, 68, 0.12);
-    color: #f87171;
+    color: var(--danger);
 }
 
 .status-dot {
@@ -1192,7 +1226,7 @@ canvas {
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.7);
+    background: rgba(0, 0, 0, 0.7);  /* dark-only OK: voile de modale — un scrim reste sombre dans les 2 modes */
     /* backdrop-filter: blur(4px) removed in PR23 — MASTER §6 bans glassmorphism */
     display: flex;
     align-items: center;
@@ -1264,7 +1298,7 @@ canvas {
     width: 32px;
     height: 32px;
     background: var(--accent);
-    color: #0A0A0A;
+    color: var(--accent-text);
     border-radius: var(--r-sm);
     display: grid;
     place-items: center;
@@ -1313,7 +1347,7 @@ canvas {
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.1);
+    background: var(--surface-hint-strong);
     transition: all var(--transition-fast);
 }
 
@@ -1380,7 +1414,7 @@ canvas {
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,0.5);
+    background: rgba(0,0,0,0.5);  /* dark-only OK: voile sidebar mobile — un scrim reste sombre dans les 2 modes */
     z-index: 99;
     /* backdrop-filter: blur(2px) removed in PR23 — MASTER §6 (no glassmorphism) */
 }
@@ -1600,7 +1634,7 @@ canvas {
     text-align: center;
     cursor: pointer;
     transition: all var(--transition-normal);
-    background: rgba(255, 255, 255, 0.02);
+    background: var(--surface-hint);
     position: relative;
 }
 
@@ -1761,7 +1795,7 @@ canvas {
 
 .yield-progress-bar {
     height: 8px;
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--surface-hint-strong);
     border-radius: 4px;
     overflow: hidden;
     position: relative;
@@ -1785,7 +1819,7 @@ canvas {
     background: linear-gradient(
         90deg,
         transparent,
-        rgba(255, 255, 255, 0.2),
+        rgba(255, 255, 255, 0.2),  /* dark-only OK: reflet sur la barre accent (colorée dans les 2 modes) */
         transparent
     );
     animation: yield-shimmer 2s infinite;
@@ -1813,8 +1847,8 @@ canvas {
 
 /* Terminal logs */
 .yield-terminal {
-    background: #0d1117;
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: var(--console-bg);
+    border: 1px solid var(--console-border);
     border-radius: var(--border-radius);
     padding: 16px;
     max-height: 400px;
@@ -1822,7 +1856,7 @@ canvas {
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
     font-size: 12px;
     line-height: 1.7;
-    color: #c9d1d9;
+    color: var(--console-text);
     scroll-behavior: smooth;
 }
 
@@ -1835,7 +1869,7 @@ canvas {
 }
 
 .yield-terminal::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.1);  /* dark-only OK: ascenseur DANS le terminal (îlot bleu-nuit invariant) */
     border-radius: 3px;
 }
 
@@ -1846,11 +1880,11 @@ canvas {
 }
 
 .yield-log-line:hover {
-    background: rgba(255, 255, 255, 0.03);
+    background: rgba(255, 255, 255, 0.03);  /* dark-only OK: hover DANS le terminal (îlot bleu-nuit invariant) */
 }
 
 .yield-log-num {
-    color: #6b7280;
+    color: var(--console-dim);
     min-width: 28px;
     text-align: right;
     user-select: none;
@@ -1904,7 +1938,7 @@ canvas {
     width: 100%;
     padding: 14px 28px;
     background: linear-gradient(135deg, var(--accent-green), var(--accent-cyan));
-    color: #fff;
+    color: #fff;  /* dark-only OK: blanc sur le dégradé accent-green→accent-cyan (saturé dans les 2 modes) */
     border: none;
     border-radius: var(--border-radius);
     font-family: inherit;
@@ -1928,7 +1962,7 @@ canvas {
 }
 
 .yield-launch-btn.running {
-    background: linear-gradient(135deg, var(--accent-red), #dc2626);
+    background: linear-gradient(135deg, var(--accent-red), #dc2626);  /* dark-only OK: état running, dégradé rouge fixe */
 }
 
 /* Header bar */
@@ -2000,7 +2034,7 @@ canvas {
 
 .role-badge.spectator {
     background: rgba(107, 114, 128, 0.12);
-    color: #9ca3af;
+    color: var(--text-muted);
     border: 1px solid rgba(107, 114, 128, 0.2);
 }
 
@@ -2012,7 +2046,7 @@ canvas {
 
 .role-badge.money {
     background: rgba(245, 158, 11, 0.12);
-    color: #f59e0b;
+    color: var(--warning);
     border: 1px solid rgba(245, 158, 11, 0.2);
 }
 
@@ -2024,13 +2058,13 @@ canvas {
 
 .role-badge.developer {
     background: rgba(139, 92, 246, 0.12);
-    color: #a78bfa;
+    color: var(--violet);
     border: 1px solid rgba(139, 92, 246, 0.2);
 }
 
 .role-badge.admin {
     background: linear-gradient(135deg, rgba(59, 130, 246, 0.12), rgba(139, 92, 246, 0.12));
-    color: #818cf8;
+    color: var(--info);
     border: 1px solid rgba(99, 102, 241, 0.25);
 }
 
@@ -2122,7 +2156,7 @@ canvas {
 
 .sharing-access-badge.view_only {
     background: rgba(107, 114, 128, 0.12);
-    color: #9ca3af;
+    color: var(--text-muted);
 }
 
 .sharing-access-badge.start {
@@ -2145,7 +2179,7 @@ canvas {
     font-size: 12px;
     font-weight: 600;
     background: rgba(139, 92, 246, 0.1);
-    color: #a78bfa;
+    color: var(--violet);
     border: 1px solid rgba(139, 92, 246, 0.15);
 }
 
@@ -2427,11 +2461,14 @@ canvas {
     transition: var(--t-fast);
     box-sizing: border-box;
 }
-.accent-switcher-mini .accent-dot[data-acc="green"]   { background: #00FFB0; }
-.accent-switcher-mini .accent-dot[data-acc="cyan"]    { background: #00D2FF; }
-.accent-switcher-mini .accent-dot[data-acc="violet"]  { background: #8B5CFF; }
-.accent-switcher-mini .accent-dot[data-acc="magenta"] { background: #FF3DA6; }
-.accent-switcher-mini .accent-dot[data-acc="amber"]   { background: #FFB020; }
+/* Pastilles = identité de chaque accent → tokens --dot-* : le bloc light porte
+   la déclinaison FONCÉE réellement appliquée (WYSIWYG ; les néons sont délavés
+   sur blanc). Valeurs light = §4.3 de la spec. */
+.accent-switcher-mini .accent-dot[data-acc="green"]   { background: var(--dot-green); }
+.accent-switcher-mini .accent-dot[data-acc="cyan"]    { background: var(--dot-cyan); }
+.accent-switcher-mini .accent-dot[data-acc="violet"]  { background: var(--dot-violet); }
+.accent-switcher-mini .accent-dot[data-acc="magenta"] { background: var(--dot-magenta); }
+.accent-switcher-mini .accent-dot[data-acc="amber"]   { background: var(--dot-amber); }
 .accent-switcher-mini .accent-dot.active {
     border-color: var(--text);
     /* Slight ring effect when active */
@@ -3300,7 +3337,7 @@ input:focus, select:focus, textarea:focus {
     background: var(--bg-elev-2) !important;
     border: 1px solid var(--border) !important;
     border-radius: var(--r-md) !important;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;  /* one allowed shadow for floating notif */
+    box-shadow: 0 4px 12px var(--shadow-drop) !important;  /* one allowed shadow for floating notif */
     color: var(--text) !important;
 }
 .toast.info { border-left: 3px solid var(--info) !important; }
@@ -3334,13 +3371,13 @@ table tr:hover td {
 
 /* ===== Modals ===== */
 .modal-overlay, .overlay {
-    background: rgba(0,0,0,0.6) !important;
+    background: rgba(0,0,0,0.6) !important;  /* dark-only OK: voile de modale — un scrim reste sombre dans les 2 modes */
 }
 .modal, .modal-content {
     background: var(--bg-elev-1) !important;
     border: 1px solid var(--border) !important;
     border-radius: var(--r-lg) !important;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.6) !important;  /* deeper for modal */
+    box-shadow: 0 8px 32px var(--shadow-drop) !important;  /* blur plus large pour la modale */
 }
 
 /* PR20 cleanup : 2 orphan rules removed
@@ -3851,7 +3888,7 @@ select:-webkit-autofill {
 .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.65);
+    background: rgba(0, 0, 0, 0.65);  /* dark-only OK: voile de modale Bento — un scrim reste sombre dans les 2 modes */
     display: none;
     align-items: center;
     justify-content: center;
@@ -4432,7 +4469,7 @@ select:-webkit-autofill {
     /* height:auto obligatoire : le ::before legacy (L635) pose height:3px qui sinon
        écrase l'anneau en lamelle (position sur-contrainte, bottom ignoré) */
     background: conic-gradient(from var(--omen-ang), transparent 0 70%, var(--accent) 88%, transparent 100%);
-    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);  /* dark-only OK: masque de composition (la couleur ne peint rien) */
     -webkit-mask-composite: xor; mask-composite: exclude;
     animation: omen-orbit 4s linear infinite;
     filter: drop-shadow(0 0 4px var(--accent-glow));
@@ -4455,7 +4492,7 @@ select:-webkit-autofill {
 .topbar .logo, .login-logo { position: relative; overflow: hidden; }
 .topbar .logo::after, .login-logo::after {
     content: ''; position: absolute; inset: 0; pointer-events: none;
-    background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, .35) 50%, transparent 70%);
+    background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, .35) 50%, transparent 70%);  /* dark-only OK: reflet sur le carré accent du logo */
     transform: translateX(-110%);
     animation: omen-shine 1.4s .8s ease-out 1;
 }
