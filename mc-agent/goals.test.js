@@ -341,6 +341,33 @@ test('but shield : NON satisfait quand lingot + planches sont là → on le craf
   assert.equal(goalNamed('shield').met({ inv: { iron_ingot: 1, oak_planks: 6 } }), false);
 });
 
+// ─── PLANCHES PAR ESSENCE (blocage world_mn14 : 235 échecs, 0 succès en 3 h) ───
+// Les 12 recettes du bouclier exigent 6 planches d'UNE MÊME essence. `anyPlanks` les additionnait
+// toutes : 3 oak + 3 birch faisaient « 6 » et le but se déclarait faisable pour un craft
+// structurellement impossible. Le prédicat doit poser la question que la skill sait résoudre.
+
+test('but shield : 3 oak + 3 birch SANS bûches → SAUTÉ (le craft ne peut pas aboutir)', () => {
+  assert.equal(goalNamed('shield').met({ inv: { iron_ingot: 1, oak_planks: 3, birch_planks: 3 } }), true);
+});
+
+test('but shield : 3 oak + 3 birch AVEC des bûches → NON satisfait (la skill homogénéise)', () => {
+  assert.equal(goalNamed('shield').met({ inv: { iron_ingot: 1, oak_planks: 3, birch_planks: 3, oak_log: 30 } }), false);
+});
+
+// Cas réel des ouvriers : zéro planche mais des bûches plein les poches. Avant, `anyPlanks` = 0
+// sautait le but et aucun bouclier ne sortait jamais d'un inventaire pourtant riche en bois.
+test('but shield : zéro planche mais 240 bûches → NON satisfait (2 bûches suffisent)', () => {
+  assert.equal(goalNamed('shield').met({ inv: { iron_ingot: 1, oak_log: 240 } }), false);
+});
+
+test('but shield : bûches sous la réserve (input du charbon) → SAUTÉ, jamais de boucle', () => {
+  assert.equal(goalNamed('shield').met({ inv: { iron_ingot: 1, oak_planks: 3, birch_planks: 3, oak_log: 2 } }), true);
+});
+
+test('but shield : 6 planches d\'une SEULE essence, sans bûches → NON satisfait', () => {
+  assert.equal(goalNamed('shield').met({ inv: { iron_ingot: 1, birch_planks: 6 } }), false);
+});
+
 // ─── BUFFER DE BLOCS POSABLES (mesure live world_ax4, 25/07) ──────────────────
 // Les deux protections livrées ce soir — se mettre à COUVERT d'un tireur et se MURER quand
 // creuser échoue — posent des blocs. Sans blocs, elles sont inopérantes : 12 abris avortés et

@@ -743,6 +743,9 @@ async function withCraftingTable(fn) {
   // On CHERCHE loin (TABLE_SEEK) puis on marche jusqu'à la table : réutiliser une table déjà
   // posée évite d'en semer une nouvelle à chaque craft. Avec l'ancien rayon de 6, une table à
   // 10 blocs était invisible → une vingtaine de tables accumulées au spawn (signalé par Massii).
+  let lastFail = null;   // dernier échec de fn() — propagé dans la raison (le libellé nu
+                         // `table_present` a fait pointer 3 h de logs vers la table alors que
+                         // la vraie cause était `no_recipe`, run world_mn14)
   const t = _nearestTable(bot, TABLE_SEEK);
   if (t) {
     try {
@@ -755,6 +758,7 @@ async function withCraftingTable(fn) {
     } catch (e) { /* pas de chemin → on tentera la table portable */ }
     const r0 = await fn();
     if (r0.ok) return r0;                          // table existante atteinte → craft passé
+    lastFail = r0;
   }
   // Barreau manquant de l'échelle (vécu V2Res1 en crash-loop) : table PERDUE (kick avant
   // reclaim) → placeBlockNear échouait 'unknown_item' pour toujours. Une table se re-craft
@@ -768,7 +772,10 @@ async function withCraftingTable(fn) {
   // Une table est DÉJÀ à portée de craft : en poser une seconde ne peut RIEN changer (l'échec
   // vient des matériaux). C'était la branche qui semait une table par craft raté — des traînées
   // de tables sur tout le parcours des bots (photo Massii 26/07).
-  if (plan === 'use_existing') return { ok: false, reason: 'craft_failed:table_present' };
+  if (plan === 'use_existing') {
+    const inner = lastFail && lastFail.reason ? ':' + lastFail.reason : '';
+    return { ok: false, reason: 'craft_failed:table_present' + inner };
+  }
   // Table ABANDONNÉE en vue (une mort ou un timeout a coupé le cycle avant la reprise) : aller
   // la REPRENDRE plutôt que d'en fabriquer une neuve → le terrain se nettoie au lieu de se joncher.
   if (plan === 'recycle') {

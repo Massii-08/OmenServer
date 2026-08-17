@@ -52,6 +52,14 @@ function anyPlanks(inv) {
   return Object.keys(inv).filter((n) => n.endsWith('_planks')).reduce((s, n) => s + inv[n], 0);
 }
 
+// ⚠️ `anyPlanks` répond « combien de planches en tout », JAMAIS « ce craft est-il possible » :
+// minecraft-data n'a aucune recette « n'importe quelles planches », elles sont concrètes PAR
+// ESSENCE (bouclier 6, table 4, pioche bois 3, bâtons 2). Pour juger un craft, c'est `plankable`
+// qu'il faut — il demande si UNE essence peut atteindre le compte, bûches convertibles comprises.
+// Même décision que la skill (skills/craft.js) : les deux appellent planksPlan.
+const { planksPlan } = require('./planks');
+const plankable = (inv, n) => planksPlan(inv || {}, n).action !== 'impossible';
+
 // Chaîne ordonnée. `met(ctx)` = ce but est-il déjà accompli ? `skill`+`args` = comment l'accomplir.
 // Quantités : table 4 + pioche bois 3 + sticks (2 planks→4 sticks) ⇒ ≥9 planks ; 4 sticks ; 3 cobble.
 // `met` MONOTONE : on OR avec les artefacts AVAL (table posée, pioche bois/pierre) pour qu'une
@@ -301,10 +309,16 @@ const IRON_ARMOR_CHAIN = [
   { name: 'iron_pickaxe', met: (c) => invCount(c.inv, 'iron_pickaxe') >= 1 || IA(c),
     skill: 'craft',       args: { name: 'iron_pickaxe', count: 1 } },
   // BOUCLIER — juste après la pioche, très loin AVANT l'armure (1 lingot contre 24). `met` est
-  // volontairement SATISFIABLE-OU-SAUTABLE : sans lingot libre ou sans 6 planches le but est
-  // considéré atteint → il ne peut jamais bloquer la chaîne, et il se déclenchera tout seul dès
-  // que la matière sera là (le planner ré-évalue firstUnmet à chaque tour).
-  { name: 'shield',       met: (c) => hasShield(c) || invCount(c.inv, 'iron_ingot') < 1 || anyPlanks(c.inv) < 6,
+  // volontairement SATISFIABLE-OU-SAUTABLE : sans lingot libre ou sans 6 planches CRAFTABLES le
+  // but est considéré atteint → il ne peut jamais bloquer la chaîne, et il se déclenchera tout
+  // seul dès que la matière sera là (le planner ré-évalue firstUnmet à chaque tour).
+  // ⚠️ `anyPlanks(c.inv) >= 6` était FAUX et a coûté 3 h de boucle (world_mn14 : 235 échecs, 0
+  // succès) : il additionne les essences, alors que les 12 recettes du bouclier en exigent 6 de
+  // la MÊME. 3 oak + 3 birch ⇒ le but se déclarait faisable et le craft ne pouvait pas aboutir.
+  // `plankable` pose exactement la question que la skill sait résoudre — bûches convertibles
+  // comprises. Prédicat et skill lisent la MÊME décision (planks.planksPlan) : s'ils divergeaient,
+  // la boucle reviendrait (le but réclamerait un craft que la skill refuse).
+  { name: 'shield',       met: (c) => hasShield(c) || invCount(c.inv, 'iron_ingot') < 1 || !plankable(c.inv, 6),
     skill: 'craft',       args: { name: 'shield', count: 1 } },
   // Fix n°4 water-wall — le DERNIER MÈTRE de T1 (vécu live NethBot3 : 85× armor_no_progress).
   // Un bot qui REPREND avec pioche fer + fer brut banké a tous les buts amont « met » via I(c) →
