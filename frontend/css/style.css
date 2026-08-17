@@ -122,15 +122,93 @@
     /* Motion */
     --t-fast: 120ms ease;
     --t-base: 200ms ease;
+
+    /* Micro-grille body (tokenisée pour le mode clair) */
+    --grid-dot: rgba(91, 140, 255, 0.08);
+
+    /* Console / terminal — INVARIANTS au mode (îlot bleu-nuit en light, signature Givre) */
+    --console-bg:     #0A101E;
+    --console-border: #1C2947;
+    --console-text:   #C7D4EC;
+    --console-dim:    #5A6C90;
+    --console-warn:   #FBBF24;   /* teintes claires FIXES : lisibles sur bleu-nuit */
+    --console-err:    #F87171;
+    --console-accent: var(--accent);   /* dark : l'accent EST déjà néon */
+    --accent-neon:    #00FFB0;         /* valeur néon de l'accent courant (cf. variants) */
 }
 
 /* === Ion v6 accent variants ===
    The default in :root is electric green. Override --accent via data-accent
    on <html> for cyan / violet / magenta / amber signatures. */
-[data-accent="cyan"]    { --accent: #00D2FF; --accent-dim: rgba(  0, 210, 255, .14); --accent-glow: rgba(  0, 210, 255, .65); }
-[data-accent="violet"]  { --accent: #8B5CFF; --accent-dim: rgba(139,  92, 255, .15); --accent-glow: rgba(139,  92, 255, .70); }
-[data-accent="magenta"] { --accent: #FF3DA6; --accent-dim: rgba(255,  61, 166, .14); --accent-glow: rgba(255,  61, 166, .65); }
-[data-accent="amber"]   { --accent: #FFB020; --accent-dim: rgba(255, 176,  32, .14); --accent-glow: rgba(255, 176,  32, .60); }
+[data-accent="cyan"]    { --accent: #00D2FF; --accent-dim: rgba(  0, 210, 255, .14); --accent-glow: rgba(  0, 210, 255, .65); --accent-neon: #00D2FF; }
+[data-accent="violet"]  { --accent: #8B5CFF; --accent-dim: rgba(139,  92, 255, .15); --accent-glow: rgba(139,  92, 255, .70); --accent-neon: #8B5CFF; }
+[data-accent="magenta"] { --accent: #FF3DA6; --accent-dim: rgba(255,  61, 166, .14); --accent-glow: rgba(255,  61, 166, .65); --accent-neon: #FF3DA6; }
+[data-accent="amber"]   { --accent: #FFB020; --accent-dim: rgba(255, 176,  32, .14); --accent-glow: rgba(255, 176,  32, .60); --accent-neon: #FFB020; }
+
+/* ============================================================================
+   ION LIGHT « Givre » (2026-08-17) — activé par data-mode="light" sur <html>.
+   Absence d'attribut = dark (défaut). Réf: specs/2026-08-17-omenserver-light-mode-design.md
+   Le dark ne change pas : ce bloc ne fait que REDÉFINIR les tokens.
+   ============================================================================ */
+html[data-mode="light"] {
+    color-scheme: light;   /* form controls / scrollbars natifs (bat la meta color-scheme dark) */
+
+    --bg:        #EBF0FA;
+    --bg-elev-1: #F7FAFF;
+    --bg-elev-2: #FFFFFF;   /* en light, l'élévation ÉCLAIRCIT (inverse du dark) */
+    --bg-elev-3: #E3EAF6;   /* inputs : légèrement enfoncés */
+
+    --border:        #CBD7EB;
+    --border-strong: #A9BCDA;
+
+    --text:       #0C1526;
+    --text-muted: #46597E;
+    --text-dim:   #7C8FB0;
+
+    /* Accent green par défaut — déclinaison foncée (les néons sont illisibles sur blanc) */
+    --accent:      #00885C;
+    --accent-dim:  rgba(0, 136, 92, 0.11);
+    --accent-glow: rgba(0, 136, 92, 0.22);
+    --accent-text: #FFFFFF;
+
+    --top-light: rgba(255, 255, 255, 0.85);
+    --grid-dot:  rgba(43, 84, 160, 0.10);
+
+    /* Sémantiques par mode : versions foncées lisibles sur clair.
+       Les FONDS pastel rgba existants restent tels quels (paire classique). */
+    --danger:  #B91C1C;
+    --warning: #B45309;
+    --info:    #1D4ED8;
+    --violet:  #7C3AED;
+    --orange:  #C2570A;
+
+    /* Dans la console (qui reste bleu-nuit), l'accent redevient NÉON */
+    --console-accent: var(--accent-neon);
+}
+html[data-mode="light"][data-accent="cyan"]    { --accent: #0077A8; --accent-dim: rgba(  0, 119, 168, .11); --accent-glow: rgba(  0, 119, 168, .22); }
+html[data-mode="light"][data-accent="violet"]  { --accent: #6A3FE0; --accent-dim: rgba(106,  63, 224, .12); --accent-glow: rgba(106,  63, 224, .24); }
+html[data-mode="light"][data-accent="magenta"] { --accent: #D01C7C; --accent-dim: rgba(208,  28, 124, .11); --accent-glow: rgba(208,  28, 124, .22); }
+html[data-mode="light"][data-accent="amber"]   { --accent: #A96A00; --accent-dim: rgba(169, 106,   0, .12); --accent-glow: rgba(169, 106,   0, .22); }
+
+/* Miroir du fallback <style> inline d'index.html/login.html (qui vient APRÈS le
+   <link> et gagnerait à spécificité égale). :where() calibre la spécificité à
+   (0,0,2) : bat les type-selectors du fallback (0,0,1), perd contre toute
+   classe (0,1,0) — les .btn/.badge/etc. restent maîtres. */
+html:where([data-mode="light"]) h1, html:where([data-mode="light"]) h2,
+html:where([data-mode="light"]) h3, html:where([data-mode="light"]) h4,
+html:where([data-mode="light"]) p,  html:where([data-mode="light"]) span,
+html:where([data-mode="light"]) td, html:where([data-mode="light"]) th,
+html:where([data-mode="light"]) li, html:where([data-mode="light"]) label,
+html:where([data-mode="light"]) a {
+    color: var(--text);
+}
+html:where([data-mode="light"]) button, html:where([data-mode="light"]) input,
+html:where([data-mode="light"]) select, html:where([data-mode="light"]) textarea {
+    background: var(--bg-elev-3);
+    color: var(--text);
+    border-color: var(--border);
+}
+html:where([data-mode="light"]) ::placeholder { color: var(--text-muted); }
 
 /* === RESET === */
 *, *::before, *::after {
@@ -147,7 +225,7 @@ html {
 body {
     font-family: var(--font-ui);
     background:
-        radial-gradient(rgba(91, 140, 255, 0.08) 1px, transparent 1.5px) 0 0 / 26px 26px,
+        radial-gradient(var(--grid-dot) 1px, transparent 1.5px) 0 0 / 26px 26px,
         var(--bg);
     color: var(--text-primary);
     line-height: 1.6;
@@ -187,7 +265,7 @@ body {
     width: 22px;
     height: 22px;
     background: var(--accent);
-    color: #0A0A0A;
+    color: var(--accent-text);
     border-radius: var(--r-sm);
     display: grid;
     place-items: center;
@@ -422,6 +500,24 @@ body {
     height: 14px;
     cursor: pointer;
 }
+
+/* Toggle clair/sombre (mode Givre) — topbar + login */
+.mode-btn {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    background: var(--bg-elev-2);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    cursor: pointer;
+    transition: color var(--t-fast), border-color var(--t-fast);
+}
+.mode-btn:hover { color: var(--text); border-color: var(--border-strong); }
+.mode-btn svg { display: block; }
+.login-card .mode-btn { position: absolute; top: 16px; right: 16px; }
 
 /* === SIDEBAR === */
 .sidebar {
@@ -1075,14 +1171,14 @@ canvas {
 
 /* === CONSOLE LOGS === */
 .console {
-    background: #0d0d0d;
+    background: var(--console-bg);
     border: 1px solid var(--border-color);
     border-radius: var(--border-radius);
     padding: 16px;
     font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
     font-size: 12px;
     line-height: 1.8;
-    color: #a0ffa0;
+    color: var(--console-text);
     max-height: 400px;
     overflow-y: auto;
     white-space: pre-wrap;
@@ -1146,6 +1242,7 @@ canvas {
 }
 
 .login-card {
+    position: relative;
     background: var(--bg-elev-1);
     border: 1px solid var(--border);
     border-radius: var(--r-lg);
@@ -2264,8 +2361,8 @@ canvas {
 
 /* ===== Events feed (activity log — Users / Network / History / Tasks) ===== */
 .events-feed {
-    background: var(--bg-elev-1);
-    border: 1px solid var(--border);
+    background: var(--console-bg);
+    border: 1px solid var(--console-border);
     border-radius: var(--r-lg);
     padding: var(--s-4);
     font-family: var(--font-mono);
@@ -2279,18 +2376,18 @@ canvas {
     grid-template-columns: 90px 80px 1fr;
     gap: var(--s-3);
 }
-.events-feed .ev .ts { color: var(--text-dim); }
+.events-feed .ev .ts { color: var(--console-dim); }
 .events-feed .ev .typ {
-    color: var(--text-muted);
+    color: var(--console-dim);
     text-transform: uppercase;
     font-size: 10px;
     letter-spacing: 0.1em;
     padding-top: 2px;
 }
-.events-feed .ev .typ.ok   { color: var(--accent); }
-.events-feed .ev .typ.warn { color: var(--warning); }
-.events-feed .ev .typ.err  { color: var(--danger); }
-.events-feed .ev .msg { color: var(--text); }
+.events-feed .ev .typ.ok   { color: var(--console-accent); }
+.events-feed .ev .typ.warn { color: var(--console-warn); }
+.events-feed .ev .typ.err  { color: var(--console-err); }
+.events-feed .ev .msg { color: var(--console-text); }
 
 /* ===== Sparkline (subtle area chart under big stat) =====
    Real data path injected via JS — this default polygon is visual reference */
@@ -3190,11 +3287,11 @@ input:focus, select:focus, textarea:focus {
 
 /* ===== Console / log output ===== */
 .console, .console-output, .log-output, .terminal-output {
-    background: #0A0A0B !important;
-    border: 1px solid var(--border) !important;
+    background: var(--console-bg) !important;
+    border: 1px solid var(--console-border) !important;
     border-radius: var(--r-lg) !important;
     font-family: var(--font-mono) !important;
-    color: #D4D4D8 !important;
+    color: var(--console-text) !important;
     box-shadow: none !important;
 }
 
@@ -4473,7 +4570,7 @@ select:-webkit-autofill {
 
 /* --- Historique serveur en events-feed (cascade .ev-in au chargement) --- */
 .events-feed .ev .typ { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.events-feed .ev .msg b { color: var(--text); font-weight: 600; }
+.events-feed .ev .msg b { color: var(--console-text); font-weight: 600; }
 
 @media (prefers-reduced-motion: reduce) {
     .sv-ind { transition: none; }
