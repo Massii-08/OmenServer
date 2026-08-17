@@ -10,10 +10,6 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#050810">
     <script>try{if(localStorage.getItem('omen-mode')==='light'){document.documentElement.setAttribute('data-mode','light');var _m=document.querySelector('meta[name="theme-color"]');if(_m)_m.setAttribute('content','#EBF0FA')}}catch(e){}</script>
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2">
-    <link rel="apple-touch-icon" href="/icon-512.svg?v=2">
-    <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/css/style.css?v=123">
     <!-- Fallback dark style : visible dans Claude Desktop preview / file:// direct (qui ne résolvent pas /css/style.css absolu).
          Override total par style.css quand servi par le backend FastAPI. Voir CLAUDE.md / vault concept page. -->
     <meta name="color-scheme" content="dark">
@@ -28,6 +24,10 @@
         table { border-collapse: collapse; width: 100%; }
         th, td { border-bottom: 1px solid #1C2947; padding: 8px 12px; text-align: left; }
     </style>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2">
+    <link rel="apple-touch-icon" href="/icon-512.svg?v=2">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="stylesheet" href="/css/style.css?v=123">
 </head>
 <body>
     <div class="app-layout">
