@@ -449,10 +449,12 @@ def _on_pump_end(session):
     # Un kick « Connection throttled » est un refus AVANT spawn (collision de joins), pas un
     # crash du bot : il ne compte ni pour crash-on-spawn ni pour le back-off.
     _err = str(session.get("last_error") or "").lower()
+    # « or 0 » et pas .get(k, 0) : une session ADOPTÉE porte ces clés PRÉSENTES à None
+    # (_REG_FIELDS sérialise en null les compteurs jamais posés) — None+1 tuerait le plan.
     plan = _respawn_plan(lifetime, "throttled" in _err,
-                         session.get("fast_fail_count", 0),
-                         session.get("short_count", 0),
-                         session.get("respawn_count", 0))
+                         session.get("fast_fail_count") or 0,
+                         session.get("short_count") or 0,
+                         session.get("respawn_count") or 0)
     if (rs and session.get("objective") in RESPAWN_OBJECTIVES
             and not session.get("user_stopped")):
         if plan["action"] == "give_up":

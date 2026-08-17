@@ -1298,6 +1298,30 @@ def test_pump_fast_fail_count_propagates_and_resets(monkeypatch):
     mgr._sessions.pop(99, None)
 
 
+def test_pump_adopted_session_none_counters_still_respawn(monkeypatch):
+    """Session adoptée du registre : compteurs PRÉSENTS à None (_REG_FIELDS sérialise en null
+    les clés jamais posées). Une mort <60 s ne doit pas crasher le plan (None+1) — sinon le
+    self-healing meurt en silence dans le thread de pompe pour toute session adoptée."""
+    import io
+    monkeypatch.setattr(mgr, "start_for_bot", lambda *a, **k: 99)
+
+    class FakeTimer:
+        def __init__(self, delay, fn): self.fn = fn; self.daemon = False
+        def start(self): self.fn()
+
+    monkeypatch.setattr(mgr.threading, "Timer", FakeTimer)
+    mgr._sessions[99] = {"events": [], "transcript": [], "last_error": None, "status": "x"}
+    s = {"status": "running", "transcript": [], "events": [], "last_error": None,
+         "objective": "resource", "respawn_count": None, "fast_fail_count": None,
+         "short_count": None, "spawned_at": mgr.time.time() - 4,
+         "respawn": {"group_id": "g", "bot_id": "b"},
+         "cmds_path": None, "policy_path": None, "world_path": None,
+         "wm_path": None, "quota_path": None, "login_path": None}
+    mgr._pump(s, io.StringIO(""))
+    assert mgr._sessions[99]["fast_fail_count"] == 1
+    mgr._sessions.pop(99, None)
+
+
 # ── Capture-clone : câblage --style/--clips au niveau du groupe (clone_player) ──
 # Si le profil serveur a `clone_player` ET que ses captures REC sont distillées
 # (data/mc-captures-distilled/<joueur>/), _spawn_bot passe --style/--clips au bot →
