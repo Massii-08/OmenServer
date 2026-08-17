@@ -48,6 +48,7 @@ const { SCAFFOLD } = require('./skills/pillarUp');     // blocs sacrifiables (co
 const basecamp = require('./basecamp');                // base personnelle : s'éloigner du spawn du monde puis /sethome
 const oregrab = require('./oregrab');                  // « ils passent à côté du fer sans le prendre »
 const { huntPassive } = require('./skills/hunt');
+const { fishCatch } = require('./skills/fish');   // pêche : la nourriture qui ne s'épuise pas
 const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, weaponDamage } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
 const { _nearestTable, tablePlan, TABLE_REACH, TABLE_SEEK } = require('./skills/craft'); // craftItem déjà importé plus haut
@@ -76,6 +77,11 @@ const {
   LOGS_NOT_FOUND_MAX,
 } = require('./zone');
 const { recordWorkDrown, noteDrownedSite, isDrownedNear, offsetFromDrowned } = require('./workDrown'); // chantier adjacent à un aquifère → abandon + BANNISSEMENT du lieu (3a)
+const { createDeathSpots } = require('./deathspots');
+// deathzones.js = alertes PRÉ-mortem (camps de mobs, near-death) ; deathspots.js = morts RÉELLES
+// toutes causes (chutes/ravins compris — vécu : 7 morts/12 min dans le même ravin, que le
+// death-camp mobs ne voyait pas). Les deux coexistent.
+const deathSpots = createDeathSpots();
 const { recordWorkStuck } = require('./workStuck'); // chantier menant à une impasse SÈCHE (drop_ahead/max_depth) → abandon+relocate (live 27/07 world_mn9)
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
 // de mort. Le serveur n'autorise que 3 homes et le code en posait 4 → un /sethome échouait EN
@@ -265,6 +271,17 @@ function abandonWorkIfDrowned() {
   _descendWaterFails += 1;   // arme le relogement (même effet que waterlocked_relocate)
   _zoneWaterFails += 1;      // ET alimente le verdict de ZONE : chantier noyé → zone peut-être noyée
 }
+// LIEUX DE MORT RÉPÉTÉE (deathspots.js) — miroir de abandonWorkIfDrowned : si le chantier courant
+// est proche du spot fraîchement banni (mort réelle, toute cause), on l'oublie — pour que
+// returnToWork cesse d'y renvoyer le bot mourir. Le ban lui-même vit dans deathSpots
+// (isBanned/nearestBanDist, cf. fleeDeathCamp + boucle de relocalisation eau) : PAS dans
+// _drownedSites, qui reste spécifique à la noyade d'un chantier (mécanisme distinct, 3a).
+function abandonWorkIfDeathSpot(x, z) {
+  if (!_workSet || !_workPos) return;
+  if (Math.hypot(_workPos.x - x, _workPos.z - z) > 32) return;
+  _workSet = false;
+  emit({ type: 'work_abandoned_death_spot', x: Math.round(x), z: Math.round(z) });
+}
 let _drySteerTries = 0;       // NO_GIVE : marches tentées vers la cellule 128 sèche (arrivée VÉRIFIÉE, ≤3 —
                               // vécu live NethBot2 : goto interrompu par un réflexe → « arrivé » à 180 blocs
                               // de la cible avec l'ancien one-shot → descente en zone humide quand même)
@@ -321,7 +338,8 @@ async function awaitWarp(opts = {}) {
 // Fire-and-forget depuis le watchdog imminent — best-effort, les réflexes couvrent la course.
 async function fleeDeathCamp(fromPos) {
   const now = Date.now();
-  if (_safeHomePos && !deathzones.isBanned(_dzones, _safeHomePos.x, _safeHomePos.z, now)) {
+  if (_safeHomePos && !deathzones.isBanned(_dzones, _safeHomePos.x, _safeHomePos.z, now)
+      && !deathSpots.isBanned(_safeHomePos.x, _safeHomePos.z)) {
     emit({ type: 'death_camp_flee', via: 'home_safe' });
     await safeWarpHome('safe');
     return;
@@ -897,7 +915,7 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // gatherLog 180s (phase 3) : une chasse au bois honnête (biais dirigé + anneaux ≤128) tient en
 // <3 min — au-delà la zone est déforestée et le kit-relocate forêt est plus rentable que d'insister
 // (vécu V3Res1/4 : 480s × 4 tentatives = 32 min d'anneaux stériles avant le stall).
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, huntCook: 480000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000 };
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, huntCook: 480000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
@@ -988,7 +1006,36 @@ async function huntCookGoal(target) {
     if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
   }
   if (cooked() >= target || cookedAny) return { ok: true, got: cooked() };
-  return { ok: false, reason: 'no_prey' };
+  // PLAN B — pêche (#55a) : la chasse a échoué (zone vidée de gibier), tentative bornée AVANT
+  // d'abandonner. Le poisson ne s'épuise pas, contrairement au gibier (20+ « starved to death »
+  // en 3 h de run réel avec huntCook comme SEUL plan nourriture).
+  const fishR = await withTimeout(fishGoal(target - cooked()), 300000, () => { try { stopMotion(); } catch (e) {} });
+  if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  if (fishR && fishR.caught > 0) {
+    // cuit le poisson cru — MÊME mécanisme que ci-dessus (cod/salmon sont déjà dans RAW2COOKED :
+    // bot.fish() les dépose crus dans l'inventaire, exactement comme une proie chassée).
+    for (const [rawName, cookedName] of Object.entries(RAW2COOKED)) {
+      const n = _invTotal((i) => i.name === rawName);
+      if (!n) continue;
+      const s = await smeltWithFurnace(rawName, cookedName, n);
+      if (s.ok) cookedAny = true;
+      if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    }
+    if (cooked() >= target || cookedAny) return { ok: true, got: cooked() };
+  }
+  return { ok: false, reason: `no_prey:${(fishR && fishR.reason) || 'no_fish'}` };
+}
+
+// PÊCHE — plan B nourriture quand la zone est vidée de ses proies (20+ « starved to death » en 3 h
+// de run réel : huntCook était le SEUL plan et échoue à 100 % une fois le gibier épuisé). Le poisson
+// ne s'épuise pas, mord la nuit, ne rend pas les coups. Borné/annulable (#47d).
+async function fishGoal(target = 4) {
+  return fishCatch(bot, {
+    craft: (a) => craftSmart(a),
+    goto: (p) => bot.pathfinder.goto(new pfGoals.GoalNear(p.x, p.y, p.z, 1)),
+    emit,
+    sleep,
+  }, { target, token: taskToken });
 }
 
 // Dispatch d'un but de la chaîne vers le skill réel (0 token).
@@ -1112,8 +1159,9 @@ async function runGoalSkill(goal) {
           _tx = Math.round(_p.x + Math.cos(_ang) * _d);
           _tz = Math.round(_p.z + Math.sin(_ang) * _d);
         }
-        // Et on ne se relogue JAMAIS sur un chantier déjà banni : on repousse jusqu'à sortir.
-        for (let k = 0; k < 6 && isDrownedNear(_drownedSites, { x: _tx, z: _tz }, Date.now()); k++) {
+        // Et on ne se relogue JAMAIS sur un chantier déjà banni (noyade OU mort répétée, cf.
+        // deathspots.js) : on repousse jusqu'à sortir.
+        for (let k = 0; k < 6 && (isDrownedNear(_drownedSites, { x: _tx, z: _tz }, Date.now()) || deathSpots.isBanned(_tx, _tz)); k++) {
           _drownedOffsetSeed += 1;
           const alt = offsetFromDrowned({ x: _tx, z: _tz }, _drownedOffsetSeed);
           _tx = alt.x; _tz = alt.z;
@@ -1187,6 +1235,7 @@ async function runGoalSkill(goal) {
   if (goal.skill === 'smeltIron') return smeltWithFurnace('raw_iron', 'iron_ingot', goal.args.count || 3);
   if (goal.skill === 'smeltCharcoal') return smeltCharcoalGoal(goal.args.count || 2);
   if (goal.skill === 'huntCook') return huntCookGoal(goal.args.target || 4);
+  if (goal.skill === 'fish') return fishGoal(goal.args.target || 4);
   if (goal.skill === 'descendDiagonal') {
     // FIX churn re-descente (NO_GIVE) : un chantier profond SEC est mémorisé → y retourner par
     // /home work (1 tp) plutôt que re-creuser ~52 blocs (chaque re-descente cassait une pioche pierre
@@ -1953,21 +2002,40 @@ async function runSkillWithTelemetry(g) {
 // Boucle cartographe (objectif `mapper`) : mini-kit pierre via planner → upgrade best-effort →
 // cartographie CONTINUE (ne « finit » jamais — seule l'annulation/stop l'arrête).
 async function startMapper() {
+  // ── UNE SEULE boucle de cartographie vivante par bot (mesuré le 17/08 : `mapper_started` = 23,
+  // 15 et 9 dans UN SEUL process pour MapBot1/3/2). CHAQUE respawn ré-entre ici (onSpawn →
+  // startAutonomous → startMapper) et les instances s'EMPILENT : `taskCtl.begin()` n'annule que le
+  // token de la génération précédente, or `taskToken` est une variable GLOBALE lue TARD (au moment
+  // de l'appel) — une vieille instance encore dans sa phase kit repart donc avec le token NEUF et
+  // survit. Résultat vu en clair dans les logs : 4 compteurs `failStreak` indépendants qui avancent
+  // en parallèle (1222, 733, 330, 975 → 1223, 734, 331, 976 …), N boucles qui se disputent le
+  // pathfinder (20 327 `mapper_turn` sur un seul run).
+  // Jeton de GÉNÉRATION : une nouvelle entrée périme immédiatement toutes les précédentes, sans
+  // jamais laisser le bot sans mappeur (à l'inverse d'un « refuse si déjà actif », qui figerait la
+  // flotte si l'ancienne boucle traînait à sortir). `cancelled` est un GETTER : il est ré-évalué à
+  // chaque tour de boucle, et le setter reste dispo pour un consommateur qui voudrait l'armer.
+  const gen = (bot._mapperGen = (bot._mapperGen || 0) + 1);
+  let mapperCancelled = false;
+  const mapperToken = {
+    get cancelled() { return mapperCancelled || taskToken.cancelled || bot._mapperGen !== gen; },
+    set cancelled(v) { mapperCancelled = !!v; },
+  };
   await survivalKitUp();   // /kit + équipement (si configuré) — AVANT le mini-kit pierre
+  if (mapperToken.cancelled) return;
   const kitChain = chainFor('mapper');
   const runKit = () => runPlanner(bot, {
     chain: kitChain,
     runSkill: (g) => runSkillWithTelemetry(g),
     ctxExtra,
     onStep: (g) => emit({ type: 'goal', name: g.name }),
-  }, taskToken);
+  }, mapperToken);
   const res = await runKit();
-  if (taskToken.cancelled) return;
+  if (mapperToken.cancelled) return;
   if (res.stalled) emit({ type: 'mapper_kit_stalled', goal: res.goal }); // on cartographie quand même (dégradé)
   else await tryKitUpgrade();
-  if (taskToken.cancelled) return;
+  if (mapperToken.cancelled) return;
   // filet survie : buffer de terre pour sceller l'abri + bouffe pour régén PV (best-effort, bornés)
-  try { if (needDirtBuffer(bot.inventory.items(), 8)) await gather(bot, { name: ['dirt', 'grass_block', 'gravel'], count: 8, maxDistance: 48 }, taskToken); } catch (e) {}
+  try { if (needDirtBuffer(bot.inventory.items(), 8)) await gather(bot, { name: ['dirt', 'grass_block', 'gravel'], count: 8, maxDistance: 48 }, mapperToken); } catch (e) {}
   try { await huntCookGoal(6); } catch (e) {}
   emit({ type: 'mapper_started', world: bot._worldKey, sector: mapperSector });
   // ── /locate RETIRÉ (Massii 2026-07-26 : « les bots ne doivent pas utiliser de commandes comme
@@ -2064,7 +2132,7 @@ async function startMapper() {
       const ctx = Object.assign({ inv: buildCtxInv(bot) }, ctxExtra());
       if (firstUnmet(kitChain, ctx)) { emit({ type: 'mapper_kit_retry' }); await runKit(); }
       try { await armorUp(0); } catch (e) { /* best-effort */ }   // hole A : le mappeur s'arme aussi
-      try { if (needDirtBuffer(bot.inventory.items(), 4)) await gather(bot, { name: ['dirt', 'grass_block', 'gravel'], count: 8, maxDistance: 48 }, taskToken); } catch (e) {}
+      try { if (needDirtBuffer(bot.inventory.items(), 4)) await gather(bot, { name: ['dirt', 'grass_block', 'gravel'], count: 8, maxDistance: 48 }, mapperToken); } catch (e) {}
       try { await maybeNightShelter(true); } catch (e) {}         // hole §1.4 : abri nocturne en roaming
     },
     // CHASSE OPPORTUNISTE (vécu Surv1 : le retry périodique coïncide rarement avec des proies à
@@ -2079,7 +2147,7 @@ async function startMapper() {
       const missing = 4 - cookedCount(inv) - rawHave;
       if (missing <= 0) return;
       if (!nearestPassive(bot, 24)) return;
-      const r = await withTimeout(huntPassive(bot, { count: Math.min(missing, 2), maxDistance: 24 }, taskToken),
+      const r = await withTimeout(huntPassive(bot, { count: Math.min(missing, 2), maxDistance: 24 }, mapperToken),
         60000, () => { try { stopMotion(); } catch (e) {} });
       if (r && r.kills) emit({ type: 'opportunistic_hunt', kills: r.kills });
     },
@@ -2094,7 +2162,7 @@ async function startMapper() {
         45000, () => { try { stopMotion(); } catch (e) {} });
       if (r && r.ok === false) throw new Error(r.reason || 'goto_failed');
     },
-  }, taskToken);
+  }, mapperToken);
 }
 
 // --- Bot RESSOURCE (objectif `resource`, role worker) : mine les minerais EXPOSÉS de la carte ----
@@ -4852,6 +4920,16 @@ bot.on('death', () => {
   emit({ type: 'status', state: 'dead' });
   const p = bot.entity && bot.entity.position;
   if (p) lastDeath = { x: p.x, y: p.y, z: p.z, t: Date.now() };
+  // LIEUX DE MORT RÉPÉTÉE (deathspots.js, toute cause confondue — chutes/ravins compris, ≠
+  // deathzones.js qui ne voit que les alertes PRÉ-mortem mobs). 2 morts au même endroit en
+  // <15 min → le spot est banni ; si le chantier courant est dedans, on cesse d'y retourner.
+  if (p) {
+    const ds = deathSpots.noteDeath(p.x, p.y, p.z);
+    if (ds && ds.newlyBanned) {
+      emit({ type: 'death_spot_banned', x: ds.x, z: ds.z });
+      abandonWorkIfDeathSpot(ds.x, ds.z);
+    }
+  }
   deathTimes.push(Date.now());
   deathTimes = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000);
   // ANTI-CAMPING (phase B, vécu V3Res1 : zombie campé sur le spawnpoint = 6 morts en 51 s,

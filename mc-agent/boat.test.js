@@ -187,3 +187,111 @@ test('sailToLand : bot immobile sur l\'eau → sort en reason:stuck (et ne tourn
   assert.strictEqual(res.reason, 'stuck');
   assert.ok(t < 30000, `doit sortir bien avant le timeout (sorti à ${t} ms)`);
 });
+
+// ─── GATE DE TRAVERSÉE : ÉTAT PARTAGÉ + ESCALADE (run world_mn14, 17/08) ────────────────────────
+// `shouldRetryBoat` ci-dessus est un PRÉDICAT SANS MÉMOIRE : chaque boucle `runMapper` gardait son
+// `lastBoatFail` dans SA closure. Deux trous mesurés sur les logs de session :
+//  (a) un même PROCESS ouvre jusqu'à 23 boucles `runMapper` (`mapper_started` = 23 / 15 / 9 sur les
+//      3 mappeurs — une par respawn, onSpawn → startAutonomous → startMapper) : chaque instance
+//      NEUVE repart avec le gate GRAND OUVERT, donc le débit agrégé monte avec le nb d'instances ;
+//  (b) le seuil « bougé ≥ 32 b » est OFFERT par les échappements du mappeur lui-même
+//      (`mapper_crossing` / `mapper_relocate` = bonds de 100-160 b) : échec → bond → « j'ai bougé »
+//      → re-tentative, indéfiniment sur la même côte (séquence relevée en clair dans les logs :
+//      cross, failed, blocked×3, crossing, blocked×3, crossing, cross, failed, …).
+// D'où : un état PARTAGÉ (porté par le bot, pas par la boucle) + une ESCALADE qui bannit la zone.
+const { createCrossGate, CROSS_ESCALATE_AFTER, CROSS_ZONE_RADIUS, CROSS_BAN_MS } = require('./boat');
+
+test('createCrossGate : 1re tentative autorisée, puis refusée sur place (le throttle historique)', () => {
+  let t = 1000;
+  const g = createCrossGate({ now: () => t });
+  assert.strictEqual(g.allow({ x: 0, z: 0 }).ok, true);
+  g.noteFailure({ x: 0, z: 0 }, 'no_crossable_water');
+  t += 1000;
+  const r = g.allow({ x: 0, z: 0 });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'cooldown');
+});
+
+test('createCrossGate : déplacement franc ou attente → ré-autorisé (on ne bride pas ce qui peut changer)', () => {
+  let t = 1000;
+  const g = createCrossGate({ now: () => t });
+  g.noteFailure({ x: 0, z: 0 }, 'no_crossable_water');
+  assert.strictEqual(g.allow({ x: 40, z: 0 }).ok, true, 'après un vrai déplacement');
+  const g2 = createCrossGate({ now: () => t });
+  g2.noteFailure({ x: 0, z: 0 }, 'no_crossable_water');
+  t += CROSS_BAN_MS;   // largement au-delà du cooldown
+  assert.strictEqual(g2.allow({ x: 0, z: 0 }).ok, true, 'après l’attente');
+});
+
+test('createCrossGate : ÉTAT PARTAGÉ — un 2e consommateur (autre boucle runMapper) hérite du throttle', () => {
+  let t = 1000;
+  const g = createCrossGate({ now: () => t });
+  g.noteFailure({ x: 0, z: 0 }, 'no_crossable_water');   // boucle A échoue
+  t += 500;
+  assert.strictEqual(g.allow({ x: 0, z: 0 }).ok, false,
+    'la boucle B ne doit PAS repartir gate ouvert (c’est ça qui multipliait les tentatives)');
+});
+
+test('createCrossGate : N échecs consécutifs → ZONE BANNIE, et le bond de 150 b ne rouvre plus rien', () => {
+  let t = 1000;
+  const g = createCrossGate({ now: () => t });
+  let last = null;
+  // le bot bouge de 40 b entre chaque échec (ses propres échappements) : le seuil minMove est
+  // satisfait à CHAQUE fois — c'est exactement le trou du garde-fou d'origine.
+  for (let i = 0; i < CROSS_ESCALATE_AFTER; i++) {
+    const pos = { x: i * 40, z: 0 };
+    assert.strictEqual(g.allow(pos).ok, true, `tentative ${i + 1} doit être autorisée (le bot a bougé)`);
+    last = g.noteFailure(pos, 'no_crossable_water');
+    t += 1000;
+  }
+  assert.strictEqual(last.banned, true, `escalade attendue au bout de ${CROSS_ESCALATE_AFTER} échecs`);
+  assert.strictEqual(last.streak, CROSS_ESCALATE_AFTER);
+  const after = g.allow({ x: CROSS_ESCALATE_AFTER * 40, z: 0 });
+  assert.strictEqual(after.ok, false);
+  assert.strictEqual(after.reason, 'zone_banned', 'la zone doit être bannie, pas juste en cooldown');
+  // et même en bougeant encore franchement DANS la zone : toujours banni
+  assert.strictEqual(g.allow({ x: 0, z: 100 }).ok, false);
+});
+
+test('createCrossGate : le ban expire (une zone n’est pas perdue pour la session)', () => {
+  let t = 1000;
+  // cooldown court devant le ban (en prod : 60 s vs 10 min) pour isoler l'expiration DU BAN
+  const g = createCrossGate({ now: () => t, escalateAfter: 2, banMs: 5000, cooldownMs: 1000 });
+  g.noteFailure({ x: 0, z: 0 }, 'no_crossable_water');
+  const r = g.noteFailure({ x: 0, z: 0 }, 'no_crossable_water');
+  assert.strictEqual(r.banned, true);
+  t += 4999;
+  assert.strictEqual(g.allow({ x: 0, z: 0 }).reason, 'zone_banned');
+  t += 2;
+  assert.strictEqual(g.allow({ x: 0, z: 0 }).ok, true, 'le ban doit expirer après le TTL');
+});
+
+test('createCrossGate : une traversée RÉUSSIE remet tout à zéro (on ne bride jamais ce qui marche)', () => {
+  let t = 1000;
+  const g = createCrossGate({ now: () => t });
+  for (let i = 0; i < CROSS_ESCALATE_AFTER - 1; i++) g.noteFailure({ x: 0, z: 0 }, 'no_crossable_water');
+  g.noteSuccess();
+  assert.strictEqual(g.allow({ x: 0, z: 0 }).ok, true, 'un succès rouvre immédiatement');
+  const r = g.noteFailure({ x: 0, z: 0 }, 'no_crossable_water');
+  assert.strictEqual(r.streak, 1, 'le compteur d’escalade repart de zéro après un succès');
+});
+
+test('createCrossGate : le ban couvre TOUTE la zone parcourue pendant la série (bond compris)', () => {
+  let t = 1000;
+  const g = createCrossGate({ now: () => t, escalateAfter: 3 });
+  g.noteFailure({ x: 0, z: 0 }, 'no_crossable_water');
+  g.noteFailure({ x: 150, z: 0 }, 'no_crossable_water');
+  const r = g.noteFailure({ x: 300, z: 0 }, 'no_crossable_water');
+  assert.strictEqual(r.banned, true);
+  assert.ok(r.zone.r >= 150 + CROSS_ZONE_RADIUS - 1, `rayon trop petit (${r.zone.r})`);
+  for (const x of [0, 150, 300]) {
+    assert.strictEqual(g.allow({ x, z: 0 }).reason, 'zone_banned', `x=${x} devrait être dans le ban`);
+  }
+});
+
+test('createCrossGate : entrées bancales → jamais de crash', () => {
+  const g = createCrossGate({ now: () => 1000 });
+  assert.strictEqual(g.allow(null).ok, true);
+  assert.doesNotThrow(() => g.noteFailure(null, undefined));
+  assert.doesNotThrow(() => g.state());
+});

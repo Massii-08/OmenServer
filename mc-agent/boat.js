@@ -183,7 +183,85 @@ function shouldRetryBoat(lastFail, pos, now, opts = {}) {
   return Math.hypot(pos.x - lastFail.at.x, pos.z - lastFail.at.z) >= minMove;
 }
 
+// ── GATE DE TRAVERSÉE : ÉTAT PARTAGÉ + ESCALADE (run world_mn14, 17/08) ────────────────────────
+// `shouldRetryBoat` ci-dessus est resté un PRÉDICAT SANS MÉMOIRE : à l'appelant de ranger son
+// `lastFail`. `runMapper` le rangeait dans SA closure — et c'est là que le garde-fou de juillet
+// perdait ses dents. Deux trous mesurés sur les `session-*.jsonl` du run :
+//   (a) un même PROCESS ouvre jusqu'à 23 boucles `runMapper` (`mapper_started` = 23 / 15 / 9 sur
+//       les 3 mappeurs : une par respawn, onSpawn → startAutonomous → startMapper). Chaque instance
+//       NEUVE repart `lastBoatFail = null`, donc gate GRAND OUVERT → le débit agrégé de tentatives
+//       monte avec le nombre d'instances, alors que chacune « respecte » son cooldown ;
+//   (b) la condition « bougé ≥ 32 b » est OFFERTE par les échappements du mappeur lui-même :
+//       `mapper_crossing` (île) et `mapper_relocate` (piégé) sont des bonds de 100-160 b. Séquence
+//       relevée telle quelle dans le log : cross, failed, blocked×3, crossing, blocked×3, crossing,
+//       cross, failed, … Le bot ne « revient » jamais au même point : il ne s'en éloigne pas non
+//       plus, et rien ne conclut jamais que ce secteur n'a pas d'eau traversable.
+// D'où ce gate : un OBJET d'état (que l'appelant partage entre toutes ses boucles) + une ESCALADE
+// qui bannit la ZONE (pas le point) pour un TTL, ce qui force le mappeur à aller voir ailleurs.
+const CROSS_ESCALATE_AFTER = 5;             // échecs consécutifs avant de condamner le secteur
+const CROSS_ZONE_RADIUS = 128;              // marge du ban autour de la zone parcourue (1 cellule)
+const CROSS_BAN_MAX_RADIUS = 512;           // garde-fou : on ne condamne jamais la moitié du monde
+const CROSS_BAN_MS = 10 * 60 * 1000;        // même TTL que frontierSkip : rien n'est perdu à vie
+
+/**
+ * État PARTAGÉ des tentatives de traversée. Toutes les boucles d'un même bot doivent utiliser le
+ * MÊME objet (cf. mapper.js : une instance par bot, pas par boucle). Horloge injectable. PUR.
+ *  allow(pos)             → { ok:true } | { ok:false, reason:'zone_banned'|'cooldown' }
+ *  noteFailure(pos,reason)→ { streak, banned, zone? }  (zone = disque banni si escalade)
+ *  noteSuccess()          → remet tout à zéro (une traversée qui MARCHE ne doit jamais être bridée)
+ */
+function createCrossGate(opts = {}) {
+  const now = opts.now || (() => Date.now());
+  const cooldownMs = opts.cooldownMs === undefined ? BOAT_RETRY_COOLDOWN_MS : opts.cooldownMs;
+  const minMove = opts.minMove === undefined ? BOAT_RETRY_MIN_MOVE : opts.minMove;
+  const escalateAfter = opts.escalateAfter === undefined ? CROSS_ESCALATE_AFTER : opts.escalateAfter;
+  const zoneRadius = opts.zoneRadius === undefined ? CROSS_ZONE_RADIUS : opts.zoneRadius;
+  const maxBanRadius = opts.maxBanRadius === undefined ? CROSS_BAN_MAX_RADIUS : opts.maxBanRadius;
+  const banMs = opts.banMs === undefined ? CROSS_BAN_MS : opts.banMs;
+
+  let lastFail = null;   // { at:{x,z}, t }
+  let streak = 0;        // échecs CONSÉCUTIFS (un succès remet à zéro)
+  let box = null;        // boîte englobante des échecs de la série (le bot bouge entre deux essais)
+  let bans = [];         // [{ x, z, r, until }]
+
+  const purge = () => { const t = now(); bans = bans.filter((b) => b.until > t); };
+
+  return {
+    allow(pos) {
+      if (!pos) return { ok: true };
+      purge();
+      const b = bans.find((z) => Math.hypot(pos.x - z.x, pos.z - z.z) <= z.r);
+      if (b) return { ok: false, reason: 'zone_banned', until: b.until };
+      if (shouldRetryBoat(lastFail, pos, now(), { cooldownMs, minMove })) return { ok: true };
+      return { ok: false, reason: 'cooldown' };
+    },
+    noteFailure(pos, reason) {
+      const p = pos || (lastFail && lastFail.at) || { x: 0, z: 0 };
+      lastFail = { at: { x: p.x, z: p.z }, t: now() };
+      box = box
+        ? { minX: Math.min(box.minX, p.x), maxX: Math.max(box.maxX, p.x),
+            minZ: Math.min(box.minZ, p.z), maxZ: Math.max(box.maxZ, p.z) }
+        : { minX: p.x, maxX: p.x, minZ: p.z, maxZ: p.z };
+      streak++;
+      if (streak < escalateAfter) return { streak, banned: false, reason };
+      // ESCALADE : le ban couvre TOUTE l'emprise parcourue pendant la série (+ une marge d'une
+      // cellule), sinon un simple bond de 150 b suffirait à en ressortir — c'est précisément le
+      // trou que le seuil « bougé ≥ 32 b » laissait ouvert.
+      const x = (box.minX + box.maxX) / 2, z = (box.minZ + box.maxZ) / 2;
+      const r = Math.min(maxBanRadius, zoneRadius + Math.hypot(box.maxX - x, box.maxZ - z));
+      const zone = { x, z, r, until: now() + banMs };
+      bans.push(zone);
+      const n = streak;
+      streak = 0; box = null;
+      return { streak: n, banned: true, zone, reason };
+    },
+    noteSuccess() { lastFail = null; streak = 0; box = null; },
+    state() { purge(); return { streak, lastFail, bans: bans.slice() }; },
+  };
+}
+
 module.exports = {
   outwardHeading, landAhead, waterEdgeAlong, waterCrossMode, boatStuck, ensureBoat, sailToLand,
-  shouldRetryBoat, WATER_NAMES, BOAT_RETRY_COOLDOWN_MS, BOAT_RETRY_MIN_MOVE,
+  shouldRetryBoat, createCrossGate, WATER_NAMES, BOAT_RETRY_COOLDOWN_MS, BOAT_RETRY_MIN_MOVE,
+  CROSS_ESCALATE_AFTER, CROSS_ZONE_RADIUS, CROSS_BAN_MAX_RADIUS, CROSS_BAN_MS,
 };

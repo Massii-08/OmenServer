@@ -706,3 +706,131 @@ test('runMapper frontier : boat cross SANS progrès (bot ne bouge pas) → ne re
   }, token);
   assert.ok(gotos.length >= 1, 'après un boat cross sans progrès, le bot doit MARCHER (random walk), pas reboucler sur le bateau');
 });
+
+// ─── EMBALLEMENT « BATEAU » : le gate doit vivre sur le BOT, pas dans la boucle (run 17/08) ─────
+// Mesuré dans les session-*.jsonl : `mapper_boat_cross` par dizaines de milliers, ~100 % en échec
+// `no_crossable_water`. Le garde-fou `shouldRetryBoat` (26/07) EXISTAIT et ne mordait pas, pour
+// deux raisons cumulées :
+//  (a) son état (`let lastBoatFail`) vivait dans la CLOSURE de `runMapper` — or un même process
+//      ouvre jusqu'à 23 boucles `runMapper` (`mapper_started` = 23/15/9 sur les 3 mappeurs du run :
+//      une par respawn, onSpawn → startAutonomous → startMapper) et chaque instance NEUVE repart
+//      avec le gate grand ouvert ;
+//  (b) sa condition « bougé ≥ 32 b » est offerte par les ÉCHAPPEMENTS DU MAPPEUR LUI-MÊME
+//      (`mapper_crossing` / `mapper_relocate` = bonds de 100-160 b) → échec, bond, « j'ai bougé »,
+//      re-tentative… en boucle sur la même côte, sans jamais conclure que ce secteur est mort.
+function coveredBiomes(span = 1024) {
+  const biomes = [];
+  for (let x = -span; x <= span; x += 128) for (let z = -span; z <= span; z += 128) biomes.push({ name: 'plains', x, z });
+  return biomes;
+}
+
+test('runMapper : gate de traversée PARTAGÉ par bot — une 2e boucle (respawn) n’hérite pas d’un gate neuf', async () => {
+  const bot = fakeMapperBot();
+  const biomes = coveredBiomes();          // rien à cartographier à pied → branche bateau
+  const runOnce = async () => {
+    const token = { cancelled: false };
+    let crosses = 0, turns = 0;
+    await runMapper(bot, {
+      worldKey: 'overworld', memory: { worlds: { overworld: { biomes } } }, frontier: true,
+      boat: { cross: async () => { crosses++; return { ok: false, reason: 'no_crossable_water' }; } },
+      emit: (e) => { if (e.type === 'mapper_turn') turns++; if (turns >= 8) token.cancelled = true; },
+      goto: async () => { throw new Error('unreachable'); },   // le bot ne bouge JAMAIS
+      sleep: async () => {},
+    }, token);
+    return crosses;
+  };
+  const first = await runOnce();
+  const second = await runOnce();
+  assert.strictEqual(first, 1, `la 1re boucle tente UNE fois puis se throttle (reçu ${first})`);
+  assert.strictEqual(second, 0,
+    'la 2e boucle (instance neuve sur le MÊME bot) doit hériter du throttle, pas repartir gate ouvert');
+});
+
+test('runMapper : le throttle n’émet qu’UN event par épisode (pas de boucle chaude déguisée)', async () => {
+  const bot = fakeMapperBot();
+  const biomes = coveredBiomes();
+  const events = [];
+  const token = { cancelled: false };
+  let turns = 0;
+  await runMapper(bot, {
+    worldKey: 'overworld', memory: { worlds: { overworld: { biomes } } }, frontier: true,
+    boat: { cross: async () => ({ ok: false, reason: 'no_crossable_water' }) },
+    emit: (e) => { events.push(e); if (e.type === 'mapper_turn') turns++; if (turns >= 10) token.cancelled = true; },
+    goto: async () => { throw new Error('unreachable'); },
+    sleep: async () => {},
+  }, token);
+  assert.ok(turns >= 8, 'pas assez d’itérations pour conclure');
+  assert.strictEqual(events.filter((e) => e.type === 'mapper_boat_throttled').length, 1,
+    'un event par épisode de throttle, pas un par itération');
+  assert.strictEqual(events.filter((e) => e.type === 'mapper_boat_cross').length, 1);
+});
+
+test('runMapper : N échecs no_crossable_water → zone BANNIE, même quand le bot bouge entre deux essais', async () => {
+  const bot = fakeMapperBot();
+  const biomes = coveredBiomes(2048);
+  const events = [];
+  const token = { cancelled: false };
+  let crosses = 0;
+  await runMapper(bot, {
+    worldKey: 'overworld', memory: { worlds: { overworld: { biomes } } }, frontier: true,
+    boat: { cross: async () => { crosses++; return { ok: false, reason: 'no_crossable_water' }; } },
+    // chaque jambe DÉPLACE le bot de 40 b (> minMove) : le seuil de re-tentative est satisfait à
+    // chaque tour — exactement la situation live où le garde-fou ne mordait pas.
+    goto: async () => { bot.entity.position = vec3(bot.entity.position.x + 40, 64, bot.entity.position.z); },
+    emit: (e) => {
+      events.push(e);
+      if (e.type === 'mapper_boat_zone_banned' || events.length > 4000) token.cancelled = true;
+    },
+    sleep: async () => {},
+  }, token);
+  const banned = events.filter((e) => e.type === 'mapper_boat_zone_banned');
+  assert.strictEqual(banned.length, 1, 'la zone doit finir bannie (sinon : tentatives à l’infini)');
+  assert.strictEqual(crosses, 5, `escalade attendue à la 5e tentative (reçu ${crosses})`);
+  assert.ok(banned[0].streak === 5 && Number.isFinite(banned[0].x) && Number.isFinite(banned[0].z));
+});
+
+// ─── Jeton de GÉNÉRATION : une seule boucle vivante par bot (fix `startMapper`, index.js) ───────
+// Mesuré le 17/08 : `mapper_started` = 23 / 15 / 9 dans UN SEUL process (une entrée par respawn).
+// `startMapper` passe désormais un token dont `cancelled` est un GETTER
+// (`bot._mapperGen !== gen`) : la génération suivante périme instantanément toutes les
+// précédentes. Ce contrat ne tient QUE si `runMapper` RELIT la propriété à chaque tour — s'il en
+// capturait la valeur une fois (`const cancelled = token.cancelled`), le fix serait muet.
+test('runMapper : `token.cancelled` est RELU à chaque tour (contrat du jeton de génération)', async () => {
+  const bot = fakeMapperBot();
+  let liveGen = 1;
+  const myGen = 1;
+  const token = { get cancelled() { return liveGen !== myGen; } };   // exactement la forme d'index.js
+  let legs = 0;
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async (wp) => {
+      bot.entity.position = vec3(wp.x, 64, wp.z);
+      if (++legs >= 3) liveGen = 2;        // « une nouvelle boucle démarre » → l'ancienne doit sortir
+      if (legs > 50) liveGen = 2;          // filet : échoue proprement au lieu de boucler à l'infini
+    },
+    sleep: async () => {},
+  }, token);
+  assert.strictEqual(legs, 3, `la boucle doit sortir dès le changement de génération (reçu ${legs})`);
+});
+
+test('runMapper : throttlé DANS L’EAU → le bot regagne la berge (il n’attend pas en barbotant)', async () => {
+  const bot = fakeMapperBot();
+  bot.entity.isInWater = true;                       // le mappeur patiente… dans l'eau (7-8 noyades)
+  const biomes = coveredBiomes();
+  const events = [];
+  const token = { cancelled: false };
+  let escapes = 0, turns = 0;
+  await runMapper(bot, {
+    worldKey: 'overworld', memory: { worlds: { overworld: { biomes } } }, frontier: true,
+    boat: { cross: async () => ({ ok: false, reason: 'no_crossable_water' }) },
+    escapeWater: async () => { escapes++; return { ok: true }; },   // injecté : pas de vraie nage en test
+    emit: (e) => { events.push(e); if (e.type === 'mapper_turn') turns++; if (turns >= 6) token.cancelled = true; },
+    goto: async () => { throw new Error('unreachable'); },
+    sleep: async () => {},
+  }, token);
+  const th = events.filter((e) => e.type === 'mapper_boat_throttled');
+  assert.strictEqual(th.length, 1);
+  assert.strictEqual(th[0].water, true, 'le throttle doit signaler qu’il a fallu sortir de l’eau');
+  assert.ok(escapes >= 1, 'escapeWater doit être déclenché pendant l’attente');
+});

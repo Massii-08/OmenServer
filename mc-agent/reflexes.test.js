@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { installReflexes, DROWN_CRITICAL, tryEat, FOODS, EMERGENCY_FOODS, shouldReleaseSurfacing } = require('./reflexes');
+const { installReflexes, DROWN_CRITICAL, tryEat, FOODS, EMERGENCY_FOODS, shouldReleaseSurfacing, HEALTH_THRESHOLD, REGEN_FOOD, NO_REGEN_HP_MARGIN } = require('./reflexes');
 
 // Bot mock minimal pour piloter le réflexe `breathe` (anti-noyade). On appelle breathe() directement
 // (installReflexes le retourne) avec un oxygenLevel scripté.
@@ -59,13 +59,13 @@ test('meleeAssailant : rayon configurable (mappeur 3) — zombie à 4 blocs hors
 // (portée d'arc 16). Le squelette pèse 52 des 103 morts du run. À PV bas, sans assaillant au
 // contact, se mettre à couvert domine strictement la fuite — un tireur qui ne voit plus sa cible
 // cesse de tirer.
-function botUnderFire({ health = 5, shooter = true, melee = false } = {}) {
+function botUnderFire({ health = 5, shooter = true, melee = false, food = 20 } = {}) {
   const entities = [];
   if (shooter) entities.push({ type: 'mob', name: 'skeleton', position: { x: 12, y: 64, z: 0 } });
   if (melee) entities.push({ type: 'mob', name: 'zombie', position: { x: 1, y: 64, z: 0 } });
   return {
     health,
-    food: 20,
+    food,
     entity: { position: { x: 0, y: 64, z: 0 } },
     entities: Object.fromEntries(entities.map((e, i) => [i, e])),
     on: () => {},
@@ -118,6 +118,21 @@ test('PV corrects → ni fuite ni couvert (on ne se terre pas pour rien)', () =>
   const c = runReact(botUnderFire({ health: 20 }));
   assert.equal(c.flee, 0);
   assert.equal(c.cover.length, 0);
+});
+
+// ─── Faim : décrocher plus tôt (Massii : 167 morts/3h dont beaucoup « starved to death while
+// fighting » — sous REGEN_FOOD la régén vanilla est coupée, chaque PV perdu est définitif tant
+// qu'on n'a pas mangé). Vérifié via le réflexe COMPLET (installReflexes), pas juste shouldFlee en
+// isolation — la faim doit être câblée jusqu'au bout de la chaîne réactive.
+test('faim : PV entre l\'ancien et le nouveau seuil, affamé, SANS tireur ni contact → fuite', () => {
+  const c = runReact(botUnderFire({ health: HEALTH_THRESHOLD + NO_REGEN_HP_MARGIN, shooter: false, melee: false, food: REGEN_FOOD }));
+  assert.equal(c.flee, 1, 'au-dessus de l\'ancien seuil mais sous le seuil relevé par la faim → fuite');
+  assert.equal(c.cover.length, 0);
+});
+
+test('faim : mêmes PV mais RASSASIÉ (food=20 par défaut) → pas de fuite (rétro-compat, seuil historique intact)', () => {
+  const c = runReact(botUnderFire({ health: HEALTH_THRESHOLD + NO_REGEN_HP_MARGIN, shooter: false, melee: false }));
+  assert.equal(c.flee, 0, 'sans faim, ces PV restent au-dessus du seuil de fuite historique');
 });
 
 // ─── Nourriture de détresse (Massii 2026-07-26 : 7 morts de faim en 20 min) ─────────────────────

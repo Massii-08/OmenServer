@@ -6,7 +6,7 @@
 //  - ne plonge pas en grotte : c'est le mapper qui note l'entrée (caves.js), pas ce module.
 // Le tick fait UNE action courte et rend son label — la boucle mapper re-tick tant que ce n'est pas calme.
 const { Vec3 } = require('vec3');
-const { FOODS, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, isFleeOnlyMob } = require('./reflexes');
+const { FOODS, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, isFleeOnlyMob, REGEN_FOOD, NO_REGEN_HP_MARGIN } = require('./reflexes');
 const { bestWeapon } = require('./tools');
 
 const SWARM_COUNT = 3;   // ≥3 hostiles = submergé → fuite (AVEC armure)
@@ -19,6 +19,13 @@ const SWARM_UNARMORED = 2;      // ≥2 hostiles sans armure = on décroche
 // trop tard, le bot mourait PENDANT). Sans armure (cas keepInv=false post-mort) on décroche à 8 cœurs
 // → plus de marge pour s'échapper avant le combo mortel. La survie prime sur quelques coups d'épée.
 const LOW_HEALTH_UNARMORED = 16; // PV ≤ 16 (8 cœurs) sans armure = on décroche TÔT
+// FAIM (hard, Massii : 167 morts/3h dont beaucoup « starved to death while fighting » — un bot
+// affamé se battait comme s'il allait régénérer). Deux mécaniques vanilla exploitées par
+// combatDecision : sous CRITICAL_HUNGER le sprint est coupé (on ne peut plus fuir vite) → `armored`
+// est traité comme false MÊME en armure complète (prudence maximale). Sous REGEN_FOOD (reflexes.js,
+// la régén naturelle s'arrête sous 18) chaque PV perdu est DÉFINITIF tant qu'on n'a pas mangé → le
+// seuil de fuite basse-santé est relevé de NO_REGEN_HP_MARGIN (on décroche plus tôt).
+const CRITICAL_HUNGER = 6;   // faim ≤ 6 (sur 20) : plus de sprint (mécanique vanilla) → prudence max
 const HUNT_HUNGER = 12;  // faim ≤ 12 et rien à manger → chasse un passif
 const EAT_HUNGER = 14;   // faim ≤ 14 et nourriture en poche → mange (plus tôt que les réflexes)
 // bug #3 (Massii) : mobs NEUTRES à NE JAMAIS attaquer/cibler. L'enderman est classé 'Hostile mobs' par
@@ -44,8 +51,10 @@ const PASSIVE_FOOD_MOBS = new Set(['cow', 'pig', 'chicken', 'sheep', 'rabbit', '
  * Décision de combat PURE : 'flee' (submergé ou PV bas), 'fight' (1-2 hostiles), null (calme).
  * `armored` (optionnel) : SANS armure (false) → seuils prudents (fuit dès 2 hostiles ou PV ≤ 12),
  * anti « mort par combo ». Avec armure OU inconnu → seuils historiques courageux (rétro-compat).
+ * `food` (optionnel, 0-20) : hard = pas de régén sous 18 (REGEN_FOOD) ni de sprint sous 7
+ * (CRITICAL_HUNGER). Absent/undefined → comportement STRICTEMENT inchangé (rétro-compat).
  */
-function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, preferFlee, nearestDist, fleeOnly, capability }) {
+function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, preferFlee, nearestDist, fleeOnly, capability, food }) {
   if (!hostileCount) return null;
   // CREEPER : JAMAIS de mêlée (il explose au contact → mort instantanée même en armure diamant, vécu
   // live R3 22/06 : fight creeper ×2 → dead en deep mining). On FUIT pour casser la ligne d'explosion ;
@@ -61,8 +70,15 @@ function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, p
   // Mode MAPPEUR (preferFlee, demande Massii live 2026-07-15) : FUIR par défaut — se défendre
   // UNIQUEMENT si l'assaillant est à portée de coup (risque de hit imminent, ≤3 blocs).
   if (preferFlee) return (nearestDist != null && nearestDist <= 3) ? 'fight' : 'flee';
-  const swarm = armored === false ? SWARM_UNARMORED : SWARM_COUNT;
-  const lowHp = armored === false ? LOW_HEALTH_UNARMORED : LOW_HEALTH;
+  // FAIM (hard, cf. CRITICAL_HUNGER ci-dessus) : ≤6 → sprint coupé, on ne peut plus fuir vite →
+  // `armored` forcé à false (seuils prudents) MÊME en armure complète. ≤REGEN_FOOD (régén coupée,
+  // reflexes.js) → chaque PV perdu est définitif tant qu'on n'a pas mangé → seuil de fuite basse-
+  // santé relevé de NO_REGEN_HP_MARGIN. food absent/undefined → aucun des deux ne s'applique (rétro-compat).
+  const critical = food != null && food <= CRITICAL_HUNGER;
+  const effectiveArmored = critical ? false : armored;
+  const swarm = effectiveArmored === false ? SWARM_UNARMORED : SWARM_COUNT;
+  let lowHp = effectiveArmored === false ? LOW_HEALTH_UNARMORED : LOW_HEALTH;
+  if (food != null && food <= REGEN_FOOD) lowHp += NO_REGEN_HP_MARGIN;
   if (hostileCount >= swarm) return 'flee';
   if (health != null && health <= lowHp) return 'flee';
   // canDealWith (AltoClef) : CAUTIOUS-ONLY + multi-mob-only — si on ne peut pas « gérer » le nombre
@@ -199,7 +215,7 @@ async function survivalTick(bot, deps = {}) {
   })) : null;
   const fleeOnly = hasFleeOnly(hostiles, bot.health);   // wither_skeleton / hoglin bas-PV → jamais de mêlée
   const capability = combatCapability(armorPoints(bot), weaponDamage(bot));   // canDealWith (cautious-only)
-  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear, preferFlee: !!deps.preferFlee, nearestDist, fleeOnly, capability });
+  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear, preferFlee: !!deps.preferFlee, nearestDist, fleeOnly, capability, food: bot.food });
   if (decision === 'flee') {
     try { deps.fleeFrom && deps.fleeFrom(bot); } catch (e) {}
     const ev = { type: 'survival', action: 'flee', hostiles: hostiles.length };
@@ -232,7 +248,7 @@ async function survivalTick(bot, deps = {}) {
 module.exports = {
   combatDecision, isArmored, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick, lavaNearby,
   hasFleeOnly, armorPoints, weaponDamage, combatCapability,
-  SWARM_COUNT, LOW_HEALTH, SWARM_UNARMORED, LOW_HEALTH_UNARMORED, HUNT_HUNGER, EAT_HUNGER,
+  SWARM_COUNT, LOW_HEALTH, SWARM_UNARMORED, LOW_HEALTH_UNARMORED, HUNT_HUNGER, EAT_HUNGER, CRITICAL_HUNGER,
   RAW_FOODS, PASSIVE_FOOD_MOBS, NEUTRAL_NO_PROVOKE,
-  FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD,
+  FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, REGEN_FOOD, NO_REGEN_HP_MARGIN,
 };

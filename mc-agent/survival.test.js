@@ -8,19 +8,22 @@ const {
   combatDecision, isArmored, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick,
   hasFleeOnly, FLEE_ONLY_LOWHP_THRESHOLD, combatCapability, armorPoints, weaponDamage,
   SWARM_COUNT, LOW_HEALTH, SWARM_UNARMORED, LOW_HEALTH_UNARMORED, HUNT_HUNGER, EAT_HUNGER, RAW_FOODS,
+  CRITICAL_HUNGER, REGEN_FOOD, NO_REGEN_HP_MARGIN,
 } = require('./survival');
 
 // --- Fake bot (vrai Vec3, leçon dcd874d) ---
 function fakeEntity(name, kind, pos) {
   return { name, kind, type: 'mob', position: vec3(pos.x, pos.y, pos.z), isValid: true };
 }
-function fakeBot({ pos = { x: 0, y: 64, z: 0 }, health = 20, food = 20, items = [], entities = [] } = {}) {
+function fakeBot({ pos = { x: 0, y: 64, z: 0 }, health = 20, food = 20, items = [], entities = [], slots = null } = {}) {
   const calls = { attack: [], flee: 0, equip: [], consume: 0, goto: [] };
   const bot = {
     health, food,
     entity: { position: vec3(pos.x, pos.y, pos.z) },
     entities: Object.fromEntries(entities.map((e, i) => [i, e])),
-    inventory: { items: () => items.map(([name, count]) => ({ name, count })) },
+    // slots (optionnel) : armure portée pour les tests isArmored/armorPoints via survivalTick.
+    // Omis par défaut → inventory.slots reste undefined, comportement historique intact.
+    inventory: { items: () => items.map(([name, count]) => ({ name, count })), ...(slots ? { slots } : {}) },
     nearestEntity(fn) {
       let best = null, bestD = Infinity;
       for (const e of Object.values(this.entities)) {
@@ -79,6 +82,59 @@ test('combatDecision : AVEC armure garde les seuils courageux (rétro-compat dé
   assert.strictEqual(combatDecision({ health: 9, hostileCount: 1, armored: true }), 'fight');
   assert.strictEqual(combatDecision({ health: 9, hostileCount: 1 }), 'fight'); // défaut (sans flag) = courageux
   assert.ok(SWARM_UNARMORED < SWARM_COUNT && LOW_HEALTH_UNARMORED > LOW_HEALTH);
+});
+
+// --- combatDecision faim-aware (food, Massii : 167 morts/3h dont beaucoup « starved to death while
+// fighting » — un bot affamé se battait comme s'il allait régénérer). food absent/undefined DOIT
+// laisser le comportement STRICTEMENT identique (aucun test existant ci-dessus ne doit changer).
+test('combatDecision : food absent → seuil bas-santé inchangé (pas de +2 fantôme)', () => {
+  // Sans food, le seuil relevé (LOW_HEALTH + marge) ne doit PAS s'appliquer : à cette santé, fight.
+  assert.strictEqual(combatDecision({ health: LOW_HEALTH + NO_REGEN_HP_MARGIN, hostileCount: 1, armored: true }), 'fight');
+});
+test('combatDecision : food absent → armure jamais forcée à false (pas de swarm fantôme)', () => {
+  // Sans food, armored:true garde le seuil de swarm courageux même à 2 hostiles.
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: SWARM_UNARMORED, armored: true }), 'fight');
+});
+test('combatDecision : food EXPLICITEMENT null (bot jamais reçu de packet) → comportement inchangé', () => {
+  assert.strictEqual(combatDecision({ health: LOW_HEALTH_UNARMORED, hostileCount: 1, armored: false, food: null }), 'flee');
+});
+
+test('combatDecision : food critique (≤ CRITICAL_HUNGER) EN ARMURE COMPLÈTE → seuils SANS ARMURE (swarm)', () => {
+  // 2 hostiles + armored:true → historiquement 'fight' (SWARM_COUNT=3) ; food critique force
+  // les seuils non-armurés (SWARM_UNARMORED=2) même en armure complète.
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: SWARM_UNARMORED, armored: true, food: CRITICAL_HUNGER }), 'flee');
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: SWARM_UNARMORED, armored: true, food: CRITICAL_HUNGER - 1 }), 'flee');
+});
+test('combatDecision : food critique (≤ CRITICAL_HUNGER) EN ARMURE COMPLÈTE → seuils SANS ARMURE (PV bas)', () => {
+  assert.strictEqual(combatDecision({ health: LOW_HEALTH_UNARMORED, hostileCount: 1, armored: true, food: CRITICAL_HUNGER }), 'flee');
+});
+test('combatDecision : food JUSTE au-dessus du critique → armure PAS forcée (seul le +2 régén joue)', () => {
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: SWARM_UNARMORED, armored: true, food: CRITICAL_HUNGER + 1 }), 'fight');
+});
+
+test('combatDecision : food ≤ REGEN_FOOD (pas de régén) → seuil de fuite relevé de +NO_REGEN_HP_MARGIN (armure)', () => {
+  const lowHp = LOW_HEALTH + NO_REGEN_HP_MARGIN;
+  assert.strictEqual(combatDecision({ health: lowHp, hostileCount: 1, armored: true, food: REGEN_FOOD }), 'flee');
+  assert.strictEqual(combatDecision({ health: lowHp + 1, hostileCount: 1, armored: true, food: REGEN_FOOD }), 'fight');
+});
+test('combatDecision : food ≤ REGEN_FOOD (pas de régén) → seuil de fuite relevé de +NO_REGEN_HP_MARGIN (sans armure)', () => {
+  const lowHp = LOW_HEALTH_UNARMORED + NO_REGEN_HP_MARGIN;
+  assert.strictEqual(combatDecision({ health: lowHp, hostileCount: 1, armored: false, food: REGEN_FOOD }), 'flee');
+  assert.strictEqual(combatDecision({ health: lowHp + 1, hostileCount: 1, armored: false, food: REGEN_FOOD }), 'fight');
+});
+
+test('combatDecision : food > REGEN_FOOD (régén active) → comportement normal (pas de marge, armure pas forcée)', () => {
+  assert.strictEqual(combatDecision({ health: LOW_HEALTH + NO_REGEN_HP_MARGIN, hostileCount: 1, armored: true, food: REGEN_FOOD + 1 }), 'fight');
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: SWARM_UNARMORED, armored: true, food: 20 }), 'fight');
+});
+
+test('combatDecision : faim (même critique) n\'écrase PAS les priorités creeper/lave/fleeOnly/preferFlee', () => {
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: 1, armored: true, hasCreeper: true, food: CRITICAL_HUNGER }), 'flee');
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: 1, armored: true, lavaNear: true, food: CRITICAL_HUNGER }), 'flee');
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: 1, armored: true, fleeOnly: true, food: 20 }), 'flee');
+  // preferFlee garde sa propre règle de distance, la faim ne la court-circuite pas :
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: 1, armored: true, preferFlee: true, nearestDist: 2, food: CRITICAL_HUNGER }), 'fight');
+  assert.strictEqual(combatDecision({ health: 20, hostileCount: 1, armored: true, preferFlee: true, nearestDist: 10, food: 20 }), 'flee');
 });
 test('isArmored : vrai si une pièce dans les slots 5-8, faux sinon', () => {
   const armored = { inventory: { slots: [null, null, null, null, null, { name: 'iron_chestplate' }, null, null, null] } };
@@ -191,6 +247,41 @@ test('survivalTick : faim + rien à manger + AUCUN passif -> null (n\'engage pas
   const { bot, calls } = fakeBot({ food: 6 });
   assert.strictEqual(await survivalTick(bot, { fleeFrom: () => true }), null);
   assert.deepStrictEqual(calls.attack, []);
+});
+
+// --- survivalTick : câblage réel food -> combatDecision (bot.food, Massii 167 morts/3h) ---
+test('survivalTick : food critique EN ARMURE COMPLÈTE → flee via les seuils sans-armure (câblage bout-en-bout)', async () => {
+  const armorSlots = [null, null, null, null, null, { name: 'iron_chestplate' }, null, null, null];
+  const { bot } = fakeBot({
+    food: CRITICAL_HUNGER, slots: armorSlots,
+    entities: [0, 1].map((i) => fakeEntity('zombie', 'Hostile mobs', { x: 3 + i, y: 64, z: 0 })), // 2 hostiles
+  });
+  assert.strictEqual(isArmored(bot), true, 'préalable : le fake bot est bien détecté armuré');
+  let fled = 0;
+  const act = await survivalTick(bot, { fleeFrom: () => { fled++; return true; } });
+  assert.strictEqual(act, 'flee', 'armure complète MAIS food critique → seuils sans-armure (2 hostiles = submergé)');
+  assert.strictEqual(fled, 1);
+});
+
+test('survivalTick : food ≤ REGEN_FOOD → fuite plus tôt (+NO_REGEN_HP_MARGIN) même sans armure explicite', async () => {
+  const lowHp = LOW_HEALTH_UNARMORED + NO_REGEN_HP_MARGIN;
+  const { bot } = fakeBot({
+    health: lowHp, food: REGEN_FOOD,   // sans armure (pas de slots) : seuil historique LOW_HEALTH_UNARMORED
+    entities: [fakeEntity('zombie', 'Hostile mobs', { x: 4, y: 64, z: 0 })],
+  });
+  let fled = 0;
+  const act = await survivalTick(bot, { fleeFrom: () => { fled++; return true; } });
+  assert.strictEqual(act, 'flee', `${lowHp} PV > seuil historique (${LOW_HEALTH_UNARMORED}) mais <= seuil relevé par la faim`);
+  assert.strictEqual(fled, 1);
+});
+
+test('survivalTick : food = 20 (rassasié, défaut) → seuils historiques intacts (rétro-compat bout-en-bout)', async () => {
+  const { bot } = fakeBot({
+    health: LOW_HEALTH_UNARMORED + NO_REGEN_HP_MARGIN,   // fuirait SI la faim jouait, mais food=20 ici
+    entities: [fakeEntity('zombie', 'Hostile mobs', { x: 4, y: 64, z: 0 })],
+  });
+  const act = await survivalTick(bot, { fleeFrom: () => true });
+  assert.strictEqual(act, 'fight', 'rassasié → le seuil relevé ne doit jamais s\'appliquer');
 });
 
 test('combatDecision preferFlee (mappeur) : fuit par défaut, se défend UNIQUEMENT à portée de coup (≤3)', () => {

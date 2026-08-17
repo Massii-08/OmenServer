@@ -9,6 +9,12 @@ const CREEPER_RADIUS = 6;     // blocs
 // Phase B (régen) : blessé, on mange dès que la faim ne permet plus la régen naturelle (≥18).
 const HURT_HEALTH = 14;       // en dessous : on veut régénérer
 const REGEN_FOOD = 17;        // en dessous de 18 la régen s'arrête → on remange
+// FAIM ET FUITE (hard, Massii : 167 morts/3h dont beaucoup « starved to death while fighting » —
+// un bot affamé fuyait au même seuil qu'un bot qui pouvait encore régénérer). Sous REGEN_FOOD
+// chaque PV perdu en combat est DÉFINITIF tant qu'on n'a pas mangé → shouldFlee doit décrocher
+// plus tôt. Partagé avec combatDecision (survival.js, même pattern que FLEE_ONLY_* plus bas :
+// source canonique ici pour éviter la duplication / l'import circulaire).
+const NO_REGEN_HP_MARGIN = 2; // PV de marge ajoutés au seuil de fuite quand food <= REGEN_FOOD
 
 const FOODS = new Set([
   'bread', 'apple', 'cooked_beef', 'cooked_porkchop', 'cooked_chicken', 'cooked_mutton',
@@ -81,9 +87,12 @@ async function tryEat(bot) {
   return true;
 }
 
-/** Vrai s'il faut fuir : PV bas OU creeper dans le rayon. */
+/** Vrai s'il faut fuir : PV bas (relevé si affamé, cf. NO_REGEN_HP_MARGIN) OU creeper dans le rayon. */
 function shouldFlee(bot) {
-  if (bot.health != null && bot.health <= HEALTH_THRESHOLD) return true;
+  // food absent/undefined → seuil INCHANGÉ (rétro-compat totale). Sous REGEN_FOOD (régén coupée)
+  // chaque PV perdu est définitif tant qu'on n'a pas mangé → on décroche NO_REGEN_HP_MARGIN PV plus tôt.
+  const lowHealth = (bot.food != null && bot.food <= REGEN_FOOD) ? HEALTH_THRESHOLD + NO_REGEN_HP_MARGIN : HEALTH_THRESHOLD;
+  if (bot.health != null && bot.health <= lowHealth) return true;
   const self = (bot.entity && bot.entity.position) || { x: 0, y: 0, z: 0 };
   const creeper = bot.nearestEntity((e) =>
     e && (e.type === 'mob' || e.type === 'hostile') && e.name === 'creeper' && e.position &&
@@ -336,4 +345,4 @@ function installReflexes(bot, opts = {}) {
   return { react, breathe };
 }
 
-module.exports = { shouldReleaseSurfacing, SURFACE_RELEASE_O2, SURFACE_MAX_MS, tryEat, shouldFlee, meleeAssailant, rangedThreat, installReflexes, isFleeOnlyMob, HUNGER_THRESHOLD, HEALTH_THRESHOLD, DEFENSIVE_HEALTH, OXYGEN_THRESHOLD, DROWN_CRITICAL, FOODS, EMERGENCY_FOODS, MELEE_HOSTILES, RANGED, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD };
+module.exports = { shouldReleaseSurfacing, SURFACE_RELEASE_O2, SURFACE_MAX_MS, tryEat, shouldFlee, meleeAssailant, rangedThreat, installReflexes, isFleeOnlyMob, HUNGER_THRESHOLD, HEALTH_THRESHOLD, DEFENSIVE_HEALTH, OXYGEN_THRESHOLD, DROWN_CRITICAL, FOODS, EMERGENCY_FOODS, MELEE_HOSTILES, RANGED, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, REGEN_FOOD, NO_REGEN_HP_MARGIN };

@@ -22,6 +22,7 @@ const { findAllSignatures, findSpawner, structureFoundEvent } = require('./struc
 const { nextFrontierCell, nextLandLeg } = require('./frontier');
 const { biomeSeenEvent, caveFoundEvent, resolveBiome } = require('./worldMemory');
 const { survivalTick } = require('./survival');
+const { createCrossGate } = require('./boat');
 const { isInWater, escapeWater, clearSnares, isFloatingStuck, recoverFloating, WATER } = require('./unstuck');
 let vec3; try { vec3 = require('vec3'); } catch (e) { vec3 = null; }
 
@@ -30,6 +31,19 @@ const SURVIVAL_CAP = 10;   // re-ticks survie max avant de reprendre la route (a
 const TAU = 2 * Math.PI;
 const SAMPLE_RINGS = 3;    // anneaux de cellules échantillonnés autour du bot (cf. record())
 const SKIP_TTL_MS = 10 * 60 * 1000;  // oubli d'une cellule frontière ratée (eau/inatteignable)
+
+// GATE DE TRAVERSÉE PARTAGÉ PAR **BOT** (et non par boucle) — cf. boat.createCrossGate.
+// Un même process ouvre jusqu'à 23 boucles `runMapper` (une par respawn : onSpawn →
+// startAutonomous → startMapper ; `mapper_started` = 23/15/9 sur les 3 mappeurs du run 17/08).
+// Tant que l'anti-boucle vivait dans la closure de `runMapper`, chaque instance neuve repartait
+// gate ouvert et le débit agrégé de tentatives montait avec le nombre d'instances. Porté par le
+// bot, l'état survit aux ré-entrées ; en test, chaque faux bot a naturellement le sien.
+const _crossGates = new WeakMap();
+function crossGateFor(bot, now) {
+  let g = _crossGates.get(bot);
+  if (!g) { g = createCrossGate({ now }); _crossGates.set(bot, g); }
+  return g;
+}
 
 /**
  * Set à oubli : une clé ajoutée expire après `ttlMs`. PUR (horloge injectée).
@@ -160,10 +174,12 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   const emit = opts.emit || (() => {});
   const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const rng = opts.rng || Math.random;
-  const { shouldRetryBoat } = require('./boat');
   const now = opts.now || (() => Date.now());
-  // Dernier échec de traversée {at:{x,z}, t} — gate anti-boucle (cf. boat.shouldRetryBoat).
-  let lastBoatFail = null;
+  // Anti-boucle de traversée : état PARTAGÉ par bot (survit aux ré-entrées de runMapper), injectable.
+  const crossGate = opts.crossGate || crossGateFor(bot, now);
+  let boatThrottleNotified = false;   // 1 event par ÉPISODE de throttle (jamais 1 par itération)
+  // évasion d'eau injectable (tests) — défaut = la vraie manœuvre unstuck.escapeWater
+  const escapeWaterFn = opts.escapeWater || escapeWater;
   const getSector = opts.getSector || (() => opts.sector || null);
   const memory = opts.memory || null;
   const periodicEvery = opts.periodicEvery || 10;
@@ -296,7 +312,7 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   let lastSample = null;
   async function antiStuck() {
     if (isInWater(bot)) {
-      const r = await escapeWater(bot, { emit, sleep });
+      const r = await escapeWaterFn(bot, { emit, sleep });
       lastSample = null;
       return { waterEscapeFailed: !(r && r.ok) };
     }
@@ -406,29 +422,60 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
           frontierSkip.add(cell.key);
           // fallthrough
         }
-      } else if (opts.boat && opts.boat.cross && shouldRetryBoat(lastBoatFail, here0, now())) {
-        // TERRE LOCALE ÉPUISÉE → traversée bateau vers le large (juste traverser).
-        emit({ type: 'mapper_boat_cross' });
-        let res = null;
-        try { res = await opts.boat.cross(here0); } catch (e) { res = { ok: false, reason: 'error' }; }
-        // Garde-fou anti-boucle (miroir du fix warp) : la traversée ne « compte » que si le bot a
-        // RÉELLEMENT bougé (sinon `sailToLand` « atterrit » sur la terre sous ses pieds → boat-spam
-        // sans progrès, vécu live 2026-07-15). Vrai déplacement → on mappe et on reprend. Sinon →
-        // NE PAS reboucler sur le bateau : on tombe dans la marche aléatoire ci-dessous (exploration
-        // à pied vers une terre neuve).
-        const afterCross = _pos(bot);
-        const movedCross = Math.sqrt((afterCross.x - here0.x) ** 2 + (afterCross.z - here0.z) ** 2);
-        if (movedCross > 24) {
-          lastBoatFail = null;                       // traversée réussie : le gate se relâche
-          emit({ type: 'mapper_boat_landed', reason: res && res.reason, moved: Math.round(movedCross) });
-          record();
-          continue;
+      } else if (opts.boat && opts.boat.cross) {
+        // TERRE LOCALE ÉPUISÉE → traversée bateau vers le large (juste traverser), SI le gate
+        // partagé l'autorise (cf. boat.createCrossGate : cooldown/déplacement + zones bannies).
+        const gate = crossGate.allow(here0);
+        if (!gate.ok) {
+          // ANTI-NOYADE PENDANT L'ATTENTE : on ne patiente pas EN BARBOTANT (le run 17/08 a compté
+          // 7-8 noyades et 260 sauvetages sur ce chemin) — on regagne la berge, puis on repart
+          // marcher (fallthrough). Un seul event par épisode : le throttle ne doit pas remplacer
+          // une boucle chaude par une autre.
+          let water = false;
+          if (isInWater(bot)) {
+            water = true;
+            try { await escapeWaterFn(bot, { emit, sleep }); } catch (e) { /* best-effort */ }
+          }
+          if (!boatThrottleNotified) {
+            boatThrottleNotified = true;
+            emit({ type: 'mapper_boat_throttled', reason: gate.reason, water });
+          }
+          // fallthrough → marche aléatoire (le mappeur continue de cartographier à pied)
+        } else {
+          boatThrottleNotified = false;
+          emit({ type: 'mapper_boat_cross' });
+          let res = null;
+          try { res = await opts.boat.cross(here0); } catch (e) { res = { ok: false, reason: 'error' }; }
+          // Garde-fou anti-boucle (miroir du fix warp) : la traversée ne « compte » que si le bot a
+          // RÉELLEMENT bougé (sinon `sailToLand` « atterrit » sur la terre sous ses pieds → boat-spam
+          // sans progrès, vécu live 2026-07-15). Vrai déplacement → on mappe et on reprend. Sinon →
+          // NE PAS reboucler sur le bateau : on tombe dans la marche aléatoire ci-dessous (exploration
+          // à pied vers une terre neuve).
+          const afterCross = _pos(bot);
+          const movedCross = Math.sqrt((afterCross.x - here0.x) ** 2 + (afterCross.z - here0.z) ** 2);
+          if (movedCross > 24) {
+            crossGate.noteSuccess();                   // traversée réussie : le gate se relâche
+            emit({ type: 'mapper_boat_landed', reason: res && res.reason, moved: Math.round(movedCross) });
+            record();
+            continue;
+          }
+          // On MÉMORISE l'échec dans l'état PARTAGÉ : tant que le bot n'a pas franchement bougé (ou
+          // attendu), inutile de reposer la même question — c'est ce qui produisait les dizaines de
+          // milliers d'échecs `no_crossable_water`.
+          const f = crossGate.noteFailure(here0, (res && res.reason) || 'no_progress');
+          emit({ type: 'mapper_boat_failed', reason: (res && res.reason) || 'no_progress', streak: f.streak });
+          if (f.banned) {
+            // ESCALADE : ce secteur n'a pas d'eau traversable. On le condamne pour un TTL (le gate
+            // refusera même après un bond), on marque la cellule courante comme frontière ratée
+            // (mécanisme frontierSkip, TTL lui aussi) et on ÉLIT UNE AUTRE DIRECTION — demi-tour
+            // franc, comme après une évasion d'eau ratée : on quitte cette côte.
+            frontierSkip.add(cellKey(here0.x, here0.z));
+            emit({ type: 'mapper_boat_zone_banned', x: Math.round(f.zone.x), z: Math.round(f.zone.z),
+                   r: Math.round(f.zone.r), streak: f.streak });
+            heading = clampToSector(_norm(heading + Math.PI), sec);
+          }
+          // fallthrough → marche aléatoire
         }
-        // On MÉMORISE l'échec : tant que le bot n'a pas franchement bougé (ou attendu), inutile de
-        // reposer la même question au même endroit — c'est ce qui produisait 115 138 échecs.
-        lastBoatFail = { at: { x: here0.x, z: here0.z }, t: now() };
-        emit({ type: 'mapper_boat_failed', reason: (res && res.reason) || 'no_progress' });
-        // fallthrough → marche aléatoire
       }
       // pas de bateau dispo (ou échec) → marche aléatoire ci-dessous (le crossing nage existant
       // reste le filet anti-blocage)

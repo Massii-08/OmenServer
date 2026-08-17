@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { tryEat, shouldFlee, installReflexes, rangedThreat, DEFENSIVE_HEALTH, isFleeOnlyMob } = require('../reflexes');
+const { tryEat, shouldFlee, installReflexes, rangedThreat, DEFENSIVE_HEALTH, isFleeOnlyMob, HEALTH_THRESHOLD, REGEN_FOOD, NO_REGEN_HP_MARGIN } = require('../reflexes');
 
 function fakeBot({ food = 20, health = 20, hasFood = true, threat = null } = {}) {
   const calls = { equipped: [], consumed: 0, handlers: {} };
@@ -44,6 +44,24 @@ test('shouldFlee vrai si creeper proche même en pleine vie', () => {
 
 test('shouldFlee faux si plein PV et aucune menace', () => {
   assert.strictEqual(shouldFlee(fakeBot({ health: 20, threat: null })), false);
+});
+
+// ─── shouldFlee faim-aware (Massii : 167 morts/3h dont beaucoup « starved to death while fighting »
+// — un bot affamé fuyait au même seuil qu'un bot qui pouvait encore régénérer) ────────────────────
+test('shouldFlee : food absent (undefined) → seuil INCHANGÉ (rétro-compat)', () => {
+  const bare = { health: HEALTH_THRESHOLD + 1, nearestEntity: () => null };   // pas de champ food du tout
+  assert.strictEqual(shouldFlee(bare), false, 'au-dessus du seuil de base, pas de faim connue → pas de marge');
+  assert.strictEqual(shouldFlee({ health: HEALTH_THRESHOLD, nearestEntity: () => null }), true, 'seuil de base inchangé');
+});
+
+test('shouldFlee : food ≤ REGEN_FOOD (pas de régén) → seuil relevé de NO_REGEN_HP_MARGIN', () => {
+  assert.strictEqual(shouldFlee(fakeBot({ health: HEALTH_THRESHOLD + NO_REGEN_HP_MARGIN, food: REGEN_FOOD })), true);
+  assert.strictEqual(shouldFlee(fakeBot({ health: HEALTH_THRESHOLD + NO_REGEN_HP_MARGIN + 1, food: REGEN_FOOD })), false, 'reste au-dessus du seuil relevé');
+});
+
+test('shouldFlee : food > REGEN_FOOD (régén active) → seuil INCHANGÉ (comportement normal)', () => {
+  assert.strictEqual(shouldFlee(fakeBot({ health: HEALTH_THRESHOLD + NO_REGEN_HP_MARGIN, food: REGEN_FOOD + 1 })), false, 'pas relevé au-delà de REGEN_FOOD');
+  assert.strictEqual(shouldFlee(fakeBot({ health: HEALTH_THRESHOLD, food: REGEN_FOOD + 1 })), true, 'seuil de base intact');
 });
 
 test('installReflexes branche un handler sur l event health', () => {
