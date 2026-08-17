@@ -593,6 +593,48 @@ sudo systemctl status cloudflared
 > en media query ; (e) `getComputedStyle` via le pane Claude peut mentir (monde isolé) —
 > trancher au screenshot.
 
+### 🌗 Mode clair « Givre » (2026-08-17)
+
+> **Toggle noir ↔ blanc** : bouton ◐ (SVG inline — JAMAIS le caractère ◐, les sweeps emoji
+> strippent les formes géométriques, cf. #17) dans la topbar + login. Mécanisme :
+> `data-mode="light"` sur `<html>` (absence = dark, défaut pour tous), localStorage
+> **`omen-mode`** (`'light'` | absente — on ne stocke jamais 'dark'), script inline
+> **anti-flash** dans le `<head>` des 2 pages AVANT les `<link>`, `App._loadMode()/toggleMode()/
+> _applyMode()` (miroir de `_loadAccent`/`setAccent`), meta theme-color dynamique
+> `#050810 ↔ #EBF0FA`. Spec : `docs/superpowers/specs/2026-08-17-omenserver-light-mode-design.md`.
+>
+> **Principes Givre** : un bloc `html[data-mode="light"]` redéfinit les tokens (surfaces
+> `#EBF0FA/#F7FAFF/#FFF/#E3EAF6` — l'élévation ÉCLAIRCIT, inverse du dark) ; accents =
+> **déclinaisons foncées** (`green #00885C · cyan #0077A8 · violet #6A3FE0 · magenta #D01C7C ·
+> amber #A96A00`, les néons purs font <1.5:1 sur blanc) ; glows conservés à ~22 % ;
+> **sémantiques « fixes PAR MODE »** (`--danger #B91C1C · --warning #92400E (amber-800, le 700
+> mesurait 4.3:1 = sous AA) · --info #1D4ED8 · --violet #7C3AED · --orange #C2570A`), les FONDS
+> pastel rgba restent ; les **alias legacy chromatiques** (`--accent-green/-blue/-cyan/-red/
+> -purple/-yellow`) ont leurs pendants foncés dans le bloc light ; pastilles d'accent = tokens
+> pairés `--dot-*` (néon en dark, foncé WYSIWYG en light) ; voiles/ombres = `--surface-hint(-strong)`
+> / `--shadow-drop` (blanc alpha en dark, encre bleu-nuit en light) ; les scrims de modale restent
+> sombres dans les 2 modes.
+>
+> **Console = INVARIANTE au mode** (signature Givre) : `.console`, `.events-feed`,
+> `.yield-terminal`, `.log-output` etc. sur tokens `--console-*` (bg `#0A101E` bleu-nuit) ;
+> dedans, l'accent redevient **néon** via `--console-accent: var(--accent-neon)` et warn/err
+> gardent les teintes claires (`--console-warn/-err`).
+>
+> **⚠️ Pièges Givre** : (a) le **fallback `<style>` inline** d'index/login DOIT rester AVANT les
+> `<link>` — placé après, il gagnait la cascade à spécificité égale et écrasait `body` (la
+> micro-grille Ion n'avait JAMAIS été rendue à cause de ça, invisible car #050810==#050810) ;
+> (b) son **miroir light** dans style.css utilise `html:where([data-mode="light"]) …` = spécificité
+> (0,0,2) calibrée : bat les type-selectors du fallback (0,0,1), perd contre toute classe (0,1,0) ;
+> (c) `color-scheme: light` dans le bloc light (form controls/scrollbars natifs — la propriété CSS
+> bat la meta) ; (d) **vérif via le Browser pane : l'onglet en arrière-plan GÈLE les transitions
+> CSS** (`getAnimations()` → `running` à `currentTime: 0` pour toujours) → l'écran ET les computed
+> montrent la valeur de DÉPART ; trancher avec un élément sonde sans transition ou
+> `el.getAnimations().forEach(a => a.finish())` — extension du piège #46 throttling ;
+> (e) `.btn-danger` (override PR7) utilise `color: var(--bg)` comme encre — lisible dans les 2
+> modes mais sémantiquement tordu, à savoir avant de « corriger » ; (f) Chart.js lit ses couleurs
+> au draw → un graphe déjà peint se rethème à la navigation suivante (même sémantique que
+> `setAccent`, assumé).
+
 ### Tokens canoniques v5 (HISTORIQUE — valeurs remplacées par Ion, noms inchangés)
 
 ```css
@@ -720,6 +762,7 @@ PR 7 a appliqué des **overrides `!important`** sur les classes legacy (`.sideba
 
 | Date | Changement |
 |------|-----------|
+| 2026-08-17 | 🌗 **Mode clair « Givre » — toggle noir ↔ blanc sur tout le site** (branche `feat/frontend-light-mode`, brainstorming par mockup 3 directions le 08/08 — Massii a choisi **A « Givre »** —, spec+plan+audit, subagent-driven : 2 Sonnet + 1 Opus, contrôles Fable). `data-mode="light"` sur `<html>` + localStorage `omen-mode` (dark reste le défaut), bouton ◐ SVG topbar+login, anti-flash inline, meta theme-color dynamique. Tokens : surfaces givrées, **accents/sémantiques/alias legacy en déclinaisons foncées** (les néons font <1.5:1 sur blanc ; `--warning` **amber-800** après mesure 4.3:1=sous-AA du 700), pastilles `--dot-*` WYSIWYG, voiles `--surface-hint*`/`--shadow-drop`, **console INVARIANTE bleu-nuit** (`--console-*`, l'accent y redevient néon). **2 bugs préexistants corrigés en chemin** : le fallback `<style>` inline placé APRÈS le `<link>` écrasait `body` → la **micro-grille Ion n'avait jamais été rendue** (fix : fallback déplacé avant les link) ; audit Opus = parité dark **mesurée** (31 sondes Playwright, 34 hardcodés tokenisés, 19 dark-only commentés, contrastes chiffrés). **Piège de vérif découvert** : le Browser pane en arrière-plan **gèle les transitions CSS** (`currentTime: 0` à jamais) → computed ET rendu montrent la valeur de départ ; sonder sans transition ou `getAnimations().forEach(a=>a.finish())`. Détails : sous-section « Mode clair Givre » du Design System. |
 | 2026-07-30 | 📈🗓️ **Market Pulse phase D — un briefing par bourse, declenche a son ouverture** (`8819a57` → `62d2351`, deploye + verifie en prod). Massii coche les places qu'il suit ; chacune produit son briefing **15 minutes avant sa cloche**, tout sous le nom de la bourse : etat → indice → comparaison → **agenda** → notizie (les faits d'abord) → titoli seguiti → nuovi titoli → sintesi italienne. **Le premier acte a encore ete de reparer, pas d'ajouter** : le moteur annonce « complet, 292 tests » avait **deux branches mortes** que seule la lecture de sa SORTIE revele — l'agenda n'etait jamais rempli (`pulse/agenda.py` n'existait pas, `main.py` ne passait pas `agenda=`) et les collecteurs sociaux n'etaient jamais appeles (les 4 options de `prefs.json` ne faisaient rien). Agenda : **Fed** (16 reunions 2026-2027) + **BoJ** + **BNS** sondes a la main ; BCE et BoE construisent leurs dates en JavaScript → fichier cure, **jamais une date inventee**. Garde-fou central : une date passee ne peut pas sortir comme prochain rendez-vous. Backend : `GET/POST /prefs` (lecture `money`, ecriture `admin` strict, catalogue servi avec), `GET /briefings`, et **un reveil par GROUPE d'ouverture** (5 pour 10 operateurs — Londres sonne avec Paris, le NYSE avec le Nasdaq) avec **rattrapage par groupe** pour les ouvertures asiatiques qui tombent pendant la veille de la machine. `--borse` limite le run a la place qui ouvre : sans lui, chaque ouverture regenerait les autres et autant d'appels au LLM. Les 7 chiffres du briefing recoupes contre la serie de bougies brute — ⚠️ pas contre `chartPreviousClose`, qui depend de la fenetre demandee et m'a fait accuser le bot a tort. **Zero nouvelle dependance.** Tests : moteur 292→367, backend 939→999. Piege #68. |
 | 2026-07-28 | 📈 **Market Pulse — 3ᵉ bot de la suite finance (phases B+C), ouvertures des marchés mondiaux** (`90fef8e` → `e3341e5`). Horloge des places, gaps d'ouverture, rapport matinal **en italien**, Excel, stats 1 an et revue de presse — pour le grand-père, même audience que Yield Bot et Bond Scanner (`admin` + `money`). **Le premier acte a été un bugfix, pas une feature** : le run réel a montré le Nikkei à **-6,11 % au lieu de -3,95 %** (et Shanghai, et Hang Seng) parce que Yahoo livre la séance du jour avec `close: null` et que le parseur jetait la bougie entière — exactement le genre de chiffre faux qui n'a rien à faire sous les yeux d'un particulier. Moteur : watchlist 16→20 (ajout `^TNX`, qui parle directement à un porteur d'obligations, `^VIX`, `^IBEX`, `^SSMI`), taux rendus en **points de base** (dire qu'un rendement 4,641→4,592 « baisse de 1,06 % » est trompeur), nombres au format italien. Backend : router sur le patron du Harvester (disque = vérité, subprocess détaché) + **rattrapage matinal explicite** — `misfire_grace_time`/`coalesce` ne rattrapent rien quand la machine dormait, ce qui est précisément le cas ici toutes les nuits. Presse : 7 flux RSS sondés un par un, **Reddit abandonné (403, le plan en dépendait)**, filtre de fraîcheur qui a démasqué un flux MarketWatch répondant 200 avec des titres vieux de treize mois, et un filtre qui écarte les titres de presse qui sont eux-mêmes des conseils d'achat. **Zéro nouvelle dépendance.** Tests : moteur 26→134, backend 939. Piège #67. |
 | 2026-07-27 | 🏠🧭 **MC Agent — 3 homes (safe/work/death) + migration de zone autonome** (`832eda4` → `fd0bd35` → `18b7b8b`, Node 1274→1347 ✓, Python 659 ✓, 2 livraisons séparées + recyclage flotte à chaque fois). **Le « 3 homes » de Massii était un BUGFIX** : le serveur plafonne à 3 (`sethome-multiple: default: 3`) et le code en posait 4 — le 4ᵉ `/sethome` échoue **en silence** et lequel manque dépend de l'ordre → chaque bot avait un filet de sécurité différent troué (preuve `world_mn5` : NethBot2 **sans home `safe`**, sa roue de secours anti-noyade était un no-op). `canchor` absorbé par `safe` (même endroit), `wsite` → `work`, ménage `/delhome` des vieux noms au boot. Dette de mort **persistée** (le self-healing relance à chaque mort, un drapeau mémoire était perdu au seul moment utile), bornée par le despawn 5 min. **Le retour qui manquait** : `deliverMapperArmor` faisait un `/tpa` et ne revenait jamais — vérifié live `work_bookmarked (33,16,61)` → `work_return (33,16,61)`. **Migration de zone** (`zone.js` pur, 37 tests) : verdict eau/épuisée/bois avec hystérésis 15 min + cooldown 20 min, cible **déterministe** (l'escouade migre ensemble), **600 blocs minimum quand la zone est vidée** vs 200 pour un problème local, suppression du vieux `work` à l'arrivée, et `effectiveConfine` qui fait primer la base persistée sur `--confine` (le split-brain qui avait mordu 2×). 3a : chantier noyé **banni** (rayon 16, TTL 30 min) avec décalage sur cap tournant — `descendDiagonal` non touché. Nouveau **`index.smoke.test.js`** : charge réellement index.js (un parse ne résout aucun `require` — c'est ce qui a laissé passer les 2 crashs prod). Pièges #63/#64/#65. |
