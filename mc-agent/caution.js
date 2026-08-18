@@ -12,6 +12,12 @@
 //   3. un cartographe NU voyage quand même la nuit               → mapperCaution
 // (+ la raison d'échec de fonte, maillon du même pipeline d'armure : `armor_smelt reason:"?"`
 //  vu en session vivante = un échec dont la cause est PERDUE → normalizeSmeltResult.)
+//
+// La section 6 (famine / ficelle, 18/08) élargit le module au-delà du cartographe : c'est la même
+// famille de questions — « ai-je le droit de prendre ce risque, et à partir de quand ? ».
+// `rodPlan` en est le SEUL import : une décision pure d'un module pur (skills/fish.js), consommée
+// en LECTURE SEULE pour ne pas recopier ici la recette de la canne à pêche.
+const { rodPlan } = require('./skills/fish');
 
 // ─── 1) Prudence nocturne du cartographe ────────────────────────────────────────────────────────
 
@@ -185,10 +191,109 @@ function sprintAllowed(sig = {}) {
   return food > SPRINT_HUNGER_FLOOR;                     // pas encore coupé : coupe dès 12
 }
 
+// ─── 6) FAMINE : aller chercher la FICELLE, et partir plus tôt (18/08, run world_mn15) ──────────
+//
+// La faim est devenue la cause de mort DOMINANTE : 5 « starved to death » en 10 minutes sur des
+// bots pourtant BLINDÉS (4/5 en armure fer complète, épées) — ce n'est donc plus un problème de
+// combat, c'est un problème d'ACQUISITION. La chaîne était rompue en bout de course :
+//     faim → chasse (`no_prey` : la zone est chassée à mort depuis des heures)
+//          → pêche  (`no_rod` ×444 : la canne coûte 3 bâtons + 2 FICELLES, il n'y a pas de ficelle)
+//          → RIEN.
+// La ficelle n'a qu'une source : l'ARAIGNÉE — qui, elle, pullule autour du camp (les bots la
+// tuaient déjà quand ils étaient nus). D'où les deux décisions ci-dessous : la PORTE (qui a le
+// droit d'aller la chercher) et le DÉCLENCHEUR (à partir de quand on part chercher à manger).
+
+// On ne va chatouiller une araignée que BLINDÉ — et le plancher est le même que celui de la
+// prudence nocturne (section 1) : sous 2 pièces portées, tout contact est un pari.
+const STRING_HUNT_MIN_WORN = CAUTION_MIN_WORN;
+
+/** Nombre de pièces portées, quelle que soit la forme reçue (nombre, Set, tableau) — NaN si
+ *  indéchiffrable. index.js manipule `_wornArmor()` tantôt en Set, tantôt en `.size`, tantôt en
+ *  tableau : `Number(new Set([...]))` vaut NaN et se lirait « 0, nu », rendant la porte
+ *  définitivement fermée sans qu'aucune erreur ne le signale (piège #61). */
+function _wornCount(worn) {
+  if (worn == null) return NaN;
+  if (typeof worn === 'number') return Number.isFinite(worn) ? worn : NaN;
+  if (Array.isArray(worn)) return worn.length;
+  if (typeof worn.size === 'number') return worn.size;
+  return NaN;
+}
+
+/** Inventaire en LISTE `[{name,count}]`, qu'on l'ait reçu ainsi ou en carte `{nom: nombre}`
+ *  (la forme que rend `buildCtxInv`). `rodPlan` n'itère que la liste — lui passer une carte lève
+ *  un TypeError (objet nu non itérable), c'est-à-dire un crash au pire moment. */
+function _asItemList(inventory) {
+  if (!inventory) return [];
+  if (Array.isArray(inventory)) return inventory;
+  if (typeof inventory !== 'object') return [];
+  if (typeof inventory[Symbol.iterator] === 'function') return [...inventory];
+  return Object.keys(inventory).map((name) => ({ name, count: inventory[name] }));
+}
+
+/**
+ * PUR — faut-il partir chasser l'araignée pour sa FICELLE ?
+ * sig = { inventory: [{name,count}] | {nom: nombre}, worn: nb|Set|tableau de pièces PORTÉES,
+ *         hasWeapon: bool }
+ * → true SEULEMENT si les quatre conditions tiennent ensemble :
+ *   1. pas de canne en poche              (sinon la pêche marche déjà)
+ *   2. la canne n'est pas fabricable      (déficit de FICELLE, pas de bâtons — s'il manque des
+ *      bâtons c'est du BOIS qu'il faut, une araignée n'en donne pas : `no_rod` ne veut pas dire
+ *      « chasse l'araignée »)
+ *   3. au moins 2 pièces d'armure PORTÉES
+ *   4. une arme en poche                  (à mains nues : 1 dégât contre 5)
+ * Le déficit est lu par `rodPlan` (skills/fish.js) et JAMAIS recalculé ici : la recette de la
+ * canne ne doit vivre qu'à un seul endroit.
+ */
+function stringHuntNeeded(sig = {}) {
+  if (!sig) return false;
+  const plan = rodPlan(_asItemList(sig.inventory));
+  if (!plan || !plan.missing || !(plan.missing.string > 0)) return false;
+  const worn = _wornCount(sig.worn);
+  if (!Number.isFinite(worn) || worn < STRING_HUNT_MIN_WORN) return false;
+  return !!sig.hasWeapon;
+}
+
+// Partir chercher à manger AVANT le point de non-retour. Les filets existants ne se déclenchent
+// qu'en urgence (faim ≤ 8 pour « mange ce que tu as », ≤ 6 pour la prudence de combat) — beaucoup
+// trop tard pour une EXPÉDITION : à ce niveau la régénération est déjà coupée (< 18) et le bot
+// meurt en route. 14 = le seuil auquel un joueur mange (EAT_HUNGER de survival.js), donc celui
+// auquel un bot sans réserve doit se mettre en quête.
+const FOOD_RUN_HUNGER = 14;
+// Rationnement (même patron que le cooldown d'`equipRetryPlan`) : une quête de nourriture
+// mobilise le bot plusieurs minutes ; la relancer en boucle le ferait tourner en rond au lieu de
+// travailler — et une zone vidée de gibier ne se repeuple pas en trente secondes.
+const FOOD_RUN_COOLDOWN_MS = 180000;
+
+/**
+ * PUR — faut-il lancer MAINTENANT une quête de nourriture (chasse/pêche/butin) ?
+ * sig = { food: 0-20|inconnu, foodItems: nb d'items comestibles en poche (FOODS ∪ EMERGENCY_FOODS),
+ *         now, lastRunAt, cooldownMs? }
+ * → false si la faim est inconnue (`bot.food` n'est pas livré juste après une connexion : le lire
+ *   via `Number(null) === 0` enverrait le bot chasser à chaque spawn), si elle est confortable, s'il
+ *   reste quelque chose à manger (c'est alors au filet « manger » d'agir, pas à une chasse), ou si
+ *   la dernière tentative est trop récente.
+ * Un stock INCONNU est traité comme VIDE : une chasse de trop coûte quelques minutes, une mort de
+ * faim coûte la session.
+ */
+function foodRunNeeded(sig = {}) {
+  if (!sig) return false;
+  if (!(typeof sig.food === 'number' && Number.isFinite(sig.food))) return false;
+  if (sig.food > FOOD_RUN_HUNGER) return false;
+  const stock = Number(sig.foodItems);
+  if (Number.isFinite(stock) && stock > 0) return false;
+  const now = Number(sig.now);
+  const last = Number(sig.lastRunAt);
+  const cooldownMs = sig.cooldownMs != null ? Number(sig.cooldownMs) : FOOD_RUN_COOLDOWN_MS;
+  if (Number.isFinite(now) && Number.isFinite(last) && last > 0 && now - last < cooldownMs) return false;
+  return true;
+}
+
 module.exports = {
   mapperCaution, CAUTION_MIN_WORN, regroupCaution,
   equipRetryPlan, EQUIP_RETRY_WAIT_MS, EQUIP_MAX_ATTEMPTS, EQUIP_RETRY_COOLDOWN_MS,
   isEquipPickup, PICKUP_EQUIP_DELAY_MS,
   normalizeSmeltResult,
   sprintAllowed, SPRINT_HUNGER_FLOOR, SPRINT_HUNGER_RESUME,
+  stringHuntNeeded, STRING_HUNT_MIN_WORN,
+  foodRunNeeded, FOOD_RUN_HUNGER, FOOD_RUN_COOLDOWN_MS,
 };

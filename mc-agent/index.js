@@ -124,7 +124,13 @@ const { takeCover, pickCoverBlock } = require('./skills/takeCover');
 const {
   mapperCaution, regroupCaution, equipRetryPlan, isEquipPickup, normalizeSmeltResult, PICKUP_EQUIP_DELAY_MS,
   sprintAllowed,
+  // FAMINE (run world_mn15, 18/08 — 5 « starved to death » en 10 min sur des bots BLINDÉS) :
+  // la porte de la chasse à la ficelle, et le déclencheur PRÉCOCE de la quête de nourriture.
+  stringHuntNeeded, foodRunNeeded,
 } = require('./caution');
+// LA FICELLE — la pêche exige une canne (3 bâtons + 2 ficelles) et `no_rod` sortait 444 fois :
+// la ficelle ne se ramasse pas au sol, elle se prend sur l'araignée. Cf. skills/huntSpiders.js.
+const { huntSpiders } = require('./skills/huntSpiders');
 
 function parseArgs(argv) {
   const o = {};
@@ -1087,8 +1093,30 @@ async function huntCookGoal(target) {
   // PLAN B — pêche (#55a) : la chasse a échoué (zone vidée de gibier), tentative bornée AVANT
   // d'abandonner. Le poisson ne s'épuise pas, contrairement au gibier (20+ « starved to death »
   // en 3 h de run réel avec huntCook comme SEUL plan nourriture).
-  const fishR = await withTimeout(fishGoal(target - cooked()), 300000, () => { try { stopMotion(); } catch (e) {} });
+  let fishR = await withTimeout(fishGoal(target - cooked()), 300000, () => { try { stopMotion(); } catch (e) {} });
   if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  // ── PLAN C — LA FICELLE (18/08, run world_mn15). Le plan B ne s'ouvrait jamais : `no_rod` ×444
+  // parce qu'une canne coûte 3 bâtons + 2 FICELLES et qu'il n'y a pas de ficelle. La chaîne
+  // mourait donc là — chasse `no_prey` → pêche `no_rod` → RIEN — pendant que 5 bots BLINDÉS
+  // mouraient de faim en 10 minutes. La ficelle ne se ramasse pas au sol : elle se prend sur
+  // l'araignée, qui pullule autour du camp (ils la tuaient déjà quand ils étaient nus).
+  // `stringHuntNeeded` est la porte : blindé (≥2 pièces), armé, et un déficit de FICELLE (un
+  // déficit de BÂTONS veut dire du bois, pas une araignée). UNE seule re-tentative de pêche
+  // derrière — jamais de boucle (piège #47d).
+  if (fishR && fishR.reason === 'no_rod' && stringHuntNeeded({
+    // LISTE `[{name,count}]`, surtout pas `buildCtxInv` qui rend une CARTE `{nom: nombre}` : la
+    // lecture du déficit itère la liste, et un objet nu n'est pas itérable (piège #61).
+    inventory: (bot.inventory && bot.inventory.items()) || [],
+    worn: _wornArmor().size,
+    hasWeapon: !!bestWeapon(bot),
+  })) {
+    const sh = await withTimeout(huntSpidersGoal(), 90000, () => { try { stopMotion(); } catch (e) {} });
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    if (sh && sh.strings > 0) {
+      fishR = await withTimeout(fishGoal(target - cooked()), 300000, () => { try { stopMotion(); } catch (e) {} });
+      if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    }
+  }
   if (fishR && fishR.caught > 0) {
     // cuit le poisson cru — MÊME mécanisme que ci-dessus (cod/salmon sont déjà dans RAW2COOKED :
     // bot.fish() les dépose crus dans l'inventaire, exactement comme une proie chassée).
@@ -1114,6 +1142,18 @@ async function fishGoal(target = 4) {
     emit,
     sleep,
   }, { target, token: taskToken });
+}
+
+// FICELLE — le maillon qui manquait entre « la chasse ne donne plus rien » et « la pêche ne peut
+// pas démarrer ». `lootNearby` est branché en balayage de butin : sans lui la ficelle reste au sol
+// et l'araignée aura été tuée pour rien (c'est exactement ce qui laissait `no_rod` éternel).
+async function huntSpidersGoal(opts = {}) {
+  return huntSpiders(bot, {
+    loot: (o) => lootNearby(o),
+    goto: (p) => bot.pathfinder.goto(new pfGoals.GoalNear(p.x, p.y, p.z, 1)),
+    emit,
+    sleep,
+  }, Object.assign({ token: taskToken }, opts));
 }
 
 // Dispatch d'un but de la chaîne vers le skill réel (0 token).
@@ -5556,6 +5596,35 @@ setInterval(async () => {
   } catch (e) { /* watchdog : ne crash jamais */ }
   finally { _hungerBusy = false; }
 }, 5000);
+
+// ── FAIM : PARTIR CHERCHER À MANGER AVANT LE POINT DE NON-RETOUR (run world_mn15, 18/08 — la
+// famine est devenue la cause de mort DOMINANTE : 5 « starved to death » en 10 min sur des bots
+// pourtant BLINDÉS). Le filet ci-dessus ne sait que MANGER ce qu'on a ; quand il n'y a plus RIEN
+// en poche il se contente de sortir, et `ensureFood` (butin → chasse → pêche → ficelle) n'était
+// appelé qu'au montage du kit, jamais en cours de vie. Le déclencher au seuil d'urgence serait de
+// toute façon trop tard pour une EXPÉDITION : sous 18 la régénération est coupée, le bot part
+// chasser à moitié mort et meurt en route. On part donc dès 14 (FOOD_RUN_HUNGER) et le ventre
+// vide, au plus une fois toutes les 3 minutes — une zone vidée de gibier ne se repeuple pas en
+// trente secondes, et une quête mobilise le bot plusieurs minutes.
+let _foodRunBusy = false;
+let _lastFoodRunAt = 0;
+setInterval(async () => {
+  if (_foodRunBusy) return;
+  if (_imminentBusy || panicInFlight || _armorBusy || _baseBusy) return;   // la survie passe devant
+  try {
+    if (!bot.inventory || !bot.entity) return;
+    let stock = 0;
+    for (const i of (bot.inventory.items() || [])) {
+      if (i && (FOODS.has(i.name) || EMERGENCY_FOODS.has(i.name))) stock += (i.count || 0);
+    }
+    if (!foodRunNeeded({ food: bot.food, foodItems: stock, now: Date.now(), lastRunAt: _lastFoodRunAt })) return;
+    _foodRunBusy = true;
+    _lastFoodRunAt = Date.now();
+    emit({ type: 'food_run', food: bot.food, y: bot.entity.position ? Math.round(bot.entity.position.y) : null });
+    await withTimeout(ensureFood(), 240000, () => { try { stopMotion(); } catch (e) {} });
+  } catch (e) { /* watchdog : ne crash jamais */ }
+  finally { _foodRunBusy = false; }
+}, 30000);
 
 // ── PLUS DE PIOCHE → EN REFAIRE UNE (Massii 2026-07-26 : « si ils n'ont plus de pioche ils doivent
 // en faire une »). La capacité existait (`recoverPickaxe`, buts wooden_pickaxe/stone_pickaxe) mais
