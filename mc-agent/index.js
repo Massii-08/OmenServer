@@ -127,10 +127,21 @@ const {
   // FAMINE (run world_mn15, 18/08 — 5 « starved to death » en 10 min sur des bots BLINDÉS) :
   // la porte de la chasse à la ficelle, et le déclencheur PRÉCOCE de la quête de nourriture.
   stringHuntNeeded, foodRunNeeded,
+  // v7 « ALLER LÀ OÙ LA NOURRITURE EST » (run world_mn15 : les mécanismes v6 tournaient tous, mais
+  // À VIDE — 385 chasses à la ficelle pour 0 ficelle, 737 pêches pour 0 poisson, 392 quêtes
+  // stériles). Ces quatre décisions ajoutent la question qui manquait : « y a-t-il seulement
+  // quelque chose à aller chercher ici et maintenant ? ».
+  spiderHuntWindow, spiderHuntStreak, foodRunCooldownAfter, FOOD_RUN_COOLDOWN_MS,
+  surfaceTripNeeded, FOOD_SURFACE_Y,
 } = require('./caution');
 // LA FICELLE — la pêche exige une canne (3 bâtons + 2 ficelles) et `no_rod` sortait 444 fois :
 // la ficelle ne se ramasse pas au sol, elle se prend sur l'araignée. Cf. skills/huntSpiders.js.
-const { huntSpiders } = require('./skills/huntSpiders');
+// `nearestSpider`/`HUNT_RADIUS` : la SONDE de visibilité qui ouvre la fenêtre de chasse — même
+// rayon que la chasse elle-même, sinon on part chercher ce qu'on n'a pas vu.
+const { huntSpiders, nearestSpider, HUNT_RADIUS } = require('./skills/huntSpiders');
+// L'EAU CONNUE — de la carte du groupe (cellules océan/rivière peintes par les cartographes) vers
+// un point où marcher. Cf. waterfind.js.
+const { nearestWater, WATER_TRIP_MAX } = require('./waterfind');
 
 function parseArgs(argv) {
   const o = {};
@@ -1093,7 +1104,8 @@ async function huntCookGoal(target) {
   // PLAN B — pêche (#55a) : la chasse a échoué (zone vidée de gibier), tentative bornée AVANT
   // d'abandonner. Le poisson ne s'épuise pas, contrairement au gibier (20+ « starved to death »
   // en 3 h de run réel avec huntCook comme SEUL plan nourriture).
-  let fishR = await withTimeout(fishGoal(target - cooked()), 300000, () => { try { stopMotion(); } catch (e) {} });
+  // (`fishTry` = pêche ici, et si l'eau manque, pêche à l'eau CONNUE — cf. PLAN B-bis ci-dessous.)
+  let fishR = await fishTry(target - cooked());
   if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
   // ── PLAN C — LA FICELLE (18/08, run world_mn15). Le plan B ne s'ouvrait jamais : `no_rod` ×444
   // parce qu'une canne coûte 3 bâtons + 2 FICELLES et qu'il n'y a pas de ficelle. La chaîne
@@ -1110,11 +1122,37 @@ async function huntCookGoal(target) {
     worn: _wornArmor().size,
     hasWeapon: !!bestWeapon(bot),
   })) {
-    const sh = await withTimeout(huntSpidersGoal(), 90000, () => { try { stopMotion(); } catch (e) {} });
-    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
-    if (sh && sh.strings > 0) {
-      fishR = await withTimeout(fishGoal(target - cooked()), 300000, () => { try { stopMotion(); } catch (e) {} });
+    // v7 — LA FENÊTRE : `stringHuntNeeded` dit « j'ai le DROIT » ; elle ne dit rien de la PRÉSENCE
+    // d'une araignée. D'où 376 `no_spider` sur 385 tentatives : on partait en plein jour, dans une
+    // zone qui n'en avait pas. On ne part donc que si on en VOIT une, ou si c'est l'heure où elles
+    // sortent — et trois zones vides d'affilée coupent la chasse pour 15 minutes.
+    let spiderSeen = false;
+    try { spiderSeen = !!nearestSpider(bot, HUNT_RADIUS); } catch (e) { /* lecture du monde KO */ }
+    const nightKnown = !!(bot && bot.time && bot.time.timeOfDay != null);
+    const win = spiderHuntWindow({
+      spiderVisible: spiderSeen,
+      isNight: nightKnown ? isNight(bot) : null,
+      timeOfDay: nightKnown ? bot.time.timeOfDay : null,
+      noSpiderStreak: _noSpiderStreak,
+      lastNoSpiderAt: _lastNoSpiderAt,
+      now: Date.now(),
+    });
+    if (!win.go) {
+      // Un refus TRACÉ : sans ça on ne saurait pas distinguer « la porte a fermé » de « la chasse a
+      // échoué » — c'est exactement ce qui a rendu les 376 no_spider si longs à comprendre (#55a).
+      emit({ type: 'string_hunt_skipped', reason: win.reason, streak: _noSpiderStreak });
+    } else {
+      const sh = await withTimeout(huntSpidersGoal(), 90000, () => { try { stopMotion(); } catch (e) {} });
       if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+      _noSpiderStreak = spiderHuntStreak(sh, _noSpiderStreak);
+      if (sh && sh.reason === 'no_spider') _lastNoSpiderAt = Date.now();
+      if (sh && sh.strings > 0) {
+        // `fishTry` et NON `fishGoal` : la canne vient d'être débloquée, mais rien ne dit qu'il y a
+        // de l'eau ICI — sans le repli, la chaîne rouvrirait pour se refermer aussitôt sur
+        // `no_water`, c'est-à-dire exactement le mécanisme-qui-tourne-à-vide qu'on répare.
+        fishR = await fishTry(target - cooked());
+        if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+      }
     }
   }
   if (fishR && fishR.caught > 0) {
@@ -1143,6 +1181,77 @@ async function fishGoal(target = 4) {
     sleep,
   }, { target, token: taskToken });
 }
+
+// ── PLAN B-bis (v7) — PÊCHER, ET SI L'EAU MANQUE, ALLER LÀ OÙ ELLE EST.
+// Le plan B a été appelé 737 fois sur le run world_mn15 pour ZÉRO poisson : `fishCatch` ne cherche
+// l'eau qu'à 24 blocs, et un puits de mine n'est presque jamais au bord d'une rivière (`no_water`).
+// Le mécanisme tournait donc à vide — alors que la flotte SAIT où est l'eau, les cartographes
+// peignant les cellules océan/rivière dans la carte partagée (#52b).
+// UN SEUL point d'entrée pour toute la chaîne nourriture : les DEUX endroits qui pêchent (le plan B
+// et la reprise après la chasse à la ficelle) passent par ici, sinon l'un des deux se refermerait
+// sur `no_water` sans jamais tenter le voyage — le trou qu'on répare, reproduit à l'identique.
+// `no_water` implique que la canne était en main (fishCatch la vérifie AVANT l'eau) : rien à
+// redoubler. Un échec de voyage ne casse rien : on rend le résultat de la pêche d'origine.
+async function fishTry(target) {
+  const here = await withTimeout(fishGoal(target), 300000, () => { try { stopMotion(); } catch (e) {} });
+  if (taskToken.cancelled || !here || here.reason !== 'no_water') return here;
+  const away = await withTimeout(fishAtKnownWater(target), 300000, () => { try { stopMotion(); } catch (e) {} });
+  if (taskToken.cancelled) return here;
+  // `withTimeout` rend `{ok:false, reason:'timeout'}` : on ne remplace le résultat que par un VRAI
+  // retour de fishCatch (celui-là seul porte `caught`), jamais par un verdict d'horloge.
+  return (away && away.caught != null) ? away : here;
+}
+
+// v7 — ALLER À L'EAU CONNUE. Le trajet, puis la ligne, une seule fois et borné de bout en bout.
+// La carte du groupe porte les cellules de biome peintes par les cartographes (océan/rivière
+// compris depuis #52b) : `nearestWater` en tire un point où marcher, on y va, on relance la pêche
+// avec un rayon ÉLARGI — on arrive dans la CELLULE, pas sur la berge, et 24 blocs ne suffisent pas
+// à la retrouver. 48 = la portée du cache client (view-distance 6 → 96 blocs), donc de la vraie
+// donnée, pas une extrapolation.
+// ⚠️ LE BOT N'ENTRE JAMAIS DANS L'EAU (la noyade est le premier tueur du projet) : c'est
+// `pickFishingSpot` qui élit la berge, et si le trajet nous a posés dedans on se dégage d'abord —
+// même réflexe qu'en tête de `runGoalSkill`.
+async function fishAtKnownWater(target = 4) {
+  const me = bot.entity && bot.entity.position;
+  if (!me) return null;
+  // JAMAIS depuis le fond : `GoalNearXZ` laisse l'altitude libre (le pathfinder plonge volontiers,
+  // cf. la note de migrationLegTo) et une rivière visée depuis y=12 se marche EN SOUS-SOL. Sous
+  // terre, c'est `surfaceTripNeeded` qui fait remonter d'abord — un warp, pas un trek.
+  if (me.y < FOOD_SURFACE_Y) {
+    emit({ type: 'fish_travel', ok: false, reason: 'underground', y: Math.round(me.y) });
+    return null;
+  }
+  const mem = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
+  const spot = nearestWater({ memory: mem, worldKey: bot._worldKey, pos: me, maxDist: WATER_TRIP_MAX });
+  if (!spot) { emit({ type: 'fish_travel', ok: false, reason: 'no_known_water' }); return null; }
+  const dist = Math.round(spot.dist);
+  emit({ type: 'fish_travel', x: spot.x, z: spot.z, dist, biome: spot.biome });
+  if (dist > 2) {   // déjà dans la cellule : le voyage est un no-op, seul le rayon élargi compte
+    const trip = await withTimeout(
+      bot.pathfinder.goto(new pfGoals.GoalNearXZ(spot.x, spot.z, 8)),
+      120000, () => { try { stopMotion(); } catch (e) {} });
+    if (taskToken.cancelled) return null;
+    // Un trajet raté ne fait pas tomber la tentative : on a pu s'approcher assez pour voir l'eau.
+    if (trip && trip.ok === false) emit({ type: 'fish_travel', ok: false, reason: trip.reason, dist });
+  }
+  try { if (isInWater(bot)) await escapeWater(bot, { emit }); } catch (e) { /* best-effort */ }
+  if (taskToken.cancelled) return null;
+  return fishCatch(bot, {
+    craft: (a) => craftSmart(a),
+    goto: (p) => bot.pathfinder.goto(new pfGoals.GoalNear(p.x, p.y, p.z, 1)),
+    emit,
+    sleep,
+  }, { target, token: taskToken, maxDistance: 48, totalMs: 120000 });
+}
+
+// v7 — MÉMOIRE DES ZONES SANS ARAIGNÉE. Au niveau MODULE, comme ses sœurs (`_foodRunBusy`,
+// `_baseBusy`, …) : ces deux compteurs sont écrits dans `huntCookGoal` et relus par la fenêtre au
+// tour suivant. Un `let` posé dans une fonction compilerait, passerait tous les tests, et tuerait
+// le bot au premier tick (piège #56) ou, plus sournois ici, remettrait le compteur à zéro à chaque
+// passe — c'est-à-dire un back-off qui ne se déclenche jamais (piège #52a : une mémoire d'échec
+// qui vit dans le process ne capitalise rien).
+let _noSpiderStreak = 0;
+let _lastNoSpiderAt = 0;
 
 // FICELLE — le maillon qui manquait entre « la chasse ne donne plus rien » et « la pêche ne peut
 // pas démarrer ». `lootNearby` est branché en balayage de butin : sans lui la ficelle reste au sol
@@ -3162,10 +3271,27 @@ async function survivalKitUp() {
 // difficulté HARD la famine TUE (+ bloque la régen). Filet de survie : (1) en surface, chasse RÉELLE
 // bornée (huntCook) ; (2) sinon (sous terre) /give déterministe (bot OP serveur de test, cohérent avec
 // les warps/tp/spawnpoint déjà utilisés ; no-op silencieux si non-OP → le kit huntCook prend le relais).
+// Stock de COMESTIBLES en poche (FOODS ∪ EMERGENCY_FOODS) — la mesure que lisent le déclencheur de
+// quête, la décision de remontée et le back-off stérile. UNE seule définition : trois lectures
+// divergentes du même mot (« a-t-il de quoi manger ? ») finiraient par se contredire.
+function foodStock() {
+  let n = 0;
+  try {
+    for (const i of ((bot.inventory && bot.inventory.items()) || [])) {
+      if (i && (FOODS.has(i.name) || EMERGENCY_FOODS.has(i.name))) n += (i.count || 0);
+    }
+  } catch (e) { /* best-effort : un inventaire illisible se lit « vide », côté prudent */ }
+  return n;
+}
+
+// v7 — une seule remontée à la fois (deux appels concurrents d'ensureFood ne doivent pas déclencher
+// deux warps). Niveau MODULE, comme `_baseBusy`/`_armorBusy` (piège #56).
+let _surfaceTripBusy = false;
+
 async function ensureFood() {
   try {
     if (cookedCount(buildCtxInv(bot)) >= 4) return;            // assez de cuit en poche
-    const y = bot.entity && bot.entity.position ? bot.entity.position.y : 64;
+    let y = bot.entity && bot.entity.position ? bot.entity.position.y : 64;
     // BUTIN D'ABORD (Massii 2026-07-26 : « ils meurent beaucoup de faim aussi » — 7 morts de faim
     // sur les 20 premières minutes du run). Le bot tue des dizaines de mobs et LAISSE tout au sol :
     // `attackNearest` ne ramasse rien. Or la chair putréfiée et la viande crue nourrissent
@@ -3176,7 +3302,29 @@ async function ensureFood() {
       if (got) emit({ type: 'food_loot_swept', items: got });
     } catch (e) { /* best-effort */ }
     if (cookedCount(buildCtxInv(bot)) >= 4) return;
-    if (y >= 45) {                                             // surface → chasse réaliste bornée
+    // ── v7 : SOUS TERRE, REMONTER D'ABORD (le point BORGNE de la v6). Le seul plan ci-dessous est
+    // gated `y >= 45` — « la chasse est impossible sous terre », ce qui est vrai ; mais la
+    // conclusion tirée était « alors on ne fait rien » : un bot affamé à y=12 y restait jusqu'à
+    // mourir, et c'est une part des morts de faim du run. Le home `safe` est EN SURFACE : remonter
+    // est un warp, pas une expédition — et une fois là-haut TOUTE la quête (chasse → pêche → eau
+    // connue) redevient disponible. Placé APRÈS le balayage de butin : si de la chair putréfiée
+    // traîne à trois blocs, on ne remonte pas pour rien. Borné, une seule remontée par passe.
+    if (!_surfaceTripBusy && surfaceTripNeeded({ y, food: bot.food, foodItems: foodStock() })) {
+      _surfaceTripBusy = true;
+      try {
+        emit({ type: 'food_surface_trip', y: Math.round(y), food: bot.food });
+        await withTimeout(safeWarpHome(HOME_SAFE), 90000, () => { try { stopMotion(); } catch (e) {} });
+        // RELIRE l'altitude : sans ça le gate ci-dessous jugerait sur la position d'AVANT le warp
+        // et la remontée n'aurait servi à rien (piège #61 — un champ lu au mauvais moment ne plante
+        // jamais, il rend la fonctionnalité morte).
+        y = bot.entity && bot.entity.position ? bot.entity.position.y : y;
+      } catch (e) { /* best-effort : à défaut on retombe sur le comportement d'avant */ }
+      finally { _surfaceTripBusy = false; }
+    }
+    // FOOD_SURFACE_Y et non « 45 » en dur : c'est LE MÊME plancher que celui de la décision de
+    // remontée ci-dessus. Les laisser diverger, c'est un bot qui remonte à 44 pour se voir refuser
+    // la chasse à 44 — un aller-retour pour rien, invisible dans les logs.
+    if (y >= FOOD_SURFACE_Y) {                                 // surface → chasse réaliste bornée
       try { await withTimeout(huntCookGoal(6), 120000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
     }
     if (cookedCount(buildCtxInv(bot)) >= 4) return;
@@ -5600,20 +5748,37 @@ setInterval(async () => {
 // trente secondes, et une quête mobilise le bot plusieurs minutes.
 let _foodRunBusy = false;
 let _lastFoodRunAt = 0;
+// v7 — RATIONNEMENT ADAPTATIF. 392 quêtes sur le run, quasi toutes stériles, relancées toutes les
+// 3 minutes : du churn pur (CPU, déplacement, et un bot qui ne travaille pas). Une passe qui ne
+// rapporte RIEN dit quelque chose de la ZONE, pas de l'instant — on passe donc en sourdine (15 min)
+// jusqu'au premier gain, qui rétablit le régime nerveux. Niveau MODULE (piège #56).
+let _foodRunCooldownMs = FOOD_RUN_COOLDOWN_MS;
 setInterval(async () => {
   if (_foodRunBusy) return;
   if (_imminentBusy || panicInFlight || _armorBusy || _baseBusy) return;   // la survie passe devant
   try {
     if (!bot.inventory || !bot.entity) return;
-    let stock = 0;
-    for (const i of (bot.inventory.items() || [])) {
-      if (i && (FOODS.has(i.name) || EMERGENCY_FOODS.has(i.name))) stock += (i.count || 0);
-    }
-    if (!foodRunNeeded({ food: bot.food, foodItems: stock, now: Date.now(), lastRunAt: _lastFoodRunAt })) return;
+    const stock = foodStock();
+    if (!foodRunNeeded({
+      food: bot.food, foodItems: stock, now: Date.now(), lastRunAt: _lastFoodRunAt,
+      cooldownMs: _foodRunCooldownMs,
+    })) return;
     _foodRunBusy = true;
     _lastFoodRunAt = Date.now();
-    emit({ type: 'food_run', food: bot.food, y: bot.entity.position ? Math.round(bot.entity.position.y) : null });
+    emit({
+      type: 'food_run', food: bot.food,
+      y: bot.entity.position ? Math.round(bot.entity.position.y) : null,
+      wait_min: Math.round(_foodRunCooldownMs / 60000),
+    });
     await withTimeout(ensureFood(), 240000, () => { try { stopMotion(); } catch (e) {} });
+    // Le VERDICT de la passe : ce qu'on a RAMENÉ, pas ce qu'on a tenté. Tracé, parce qu'un
+    // rationnement muet est indistinguable d'un mécanisme mort (#55a).
+    const after = foodStock();
+    _foodRunCooldownMs = foodRunCooldownAfter({ before: stock, after });
+    emit({
+      type: 'food_run_done', before: stock, after, gained: after - stock,
+      next_min: Math.round(_foodRunCooldownMs / 60000),
+    });
   } catch (e) { /* watchdog : ne crash jamais */ }
   finally { _foodRunBusy = false; }
 }, 30000);

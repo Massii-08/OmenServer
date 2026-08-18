@@ -1,15 +1,13 @@
 'use strict';
-// TEMP MOVEMENTS — le bug raconté court. `mineflayer-pathfinder` (v2.4.5 installée) n'expose
-// JAMAIS de getter `movements` sur le plugin (seul `setMovements(movements)` existe) → tout code
-// qui lit `bot.pathfinder.movements` pour « sauvegarder l'actuelle avant d'en poser une
-// temporaire » lit TOUJOURS `undefined`. Deux sites d'index.js (`migrationLegTo` et le callback
-// `mineExposed` de `startResource`) faisaient exactement ça : (1) la Movements temporaire
-// (surface-only / no-dig) héritait d'`undefined` — no-op, donc elle gardait TOUS les défauts de
-// la lib (placeCost 1, pas d'aquaphobie, blocksToAvoid réduits, pas de scafoldingBlocks élargis,
-// pas d'allowSprinting…) au lieu des réglages maison ; (2) le `finally` restaurateur testait
-// `if (prevMoves)`, toujours faux → la restauration ne se produisait JAMAIS. Après le tout
-// premier appel (migration ou minage exposé), le bot tournait à VIE sur cette Movements orpheline
-// — la config posée à la connexion (`bot._mcaMoves`, index.js ~L4384) n'était plus jamais active.
+// TEMP MOVEMENTS — le bug raconté court (RÉCIT CORRIGÉ le 18/08 après vérification DANS la lib :
+// `mineflayer-pathfinder` v2.4.5 EXPOSE bien un getter `movements` — Object.defineProperties,
+// node_modules/mineflayer-pathfinder/index.js:104-115 — la première version de ce commentaire
+// affirmait le contraire sur la foi d'un rapport d'agent non vérifié). Le VRAI bug des deux
+// sites d'index.js (`migrationLegTo`, `mineExposed`) était la DÉSYNCHRONISATION de
+// `bot._mcaMoves` : pendant la fenêtre de Movements temporaire, cette référence — que le
+// sprint-curb (tick 150 ms) mute en continu pour couper `allowSprinting` sous la faim —
+// pointait l'objet INACTIF posé au spawn ; la coupe de sprint restait donc sans effet
+// pendant chaque jambe de migration / cave-first (60-90 s).
 //
 // Ce fichier verrouille le contrat du helper de remplacement (`withTempMovements`, movement.js) :
 // héritage de l'état COURANT (`bot._mcaMoves`, pas un instantané figé), tweaks qui écrasent
@@ -127,4 +125,29 @@ test('les sites connus (migrationLegTo + mineExposed) passent bien par le helper
   const src = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
   const matches = src.match(/withTempMovements\(bot/g) || [];
   assert.strictEqual(matches.length >= 2, true);
+});
+
+// ─── Synchro `_mcaMoves` (le VRAI bug, ajouté 18/08) : la référence suit l'ACTIVE, toujours ────
+
+test('pendant fn, bot._mcaMoves EST la temporaire (le sprint-curb mute l objet actif)', async () => {
+  const mcaMoves = { placeCost: 6, allowSprinting: true };
+  const bot = makeBot(mcaMoves);
+  let seenDuring = null;
+  await withTempMovements(bot, FakeMovements, { canDig: false }, async () => { seenDuring = bot._mcaMoves; });
+  assert.strictEqual(seenDuring, bot.calls[0]);        // identité avec la temp posée
+  assert.notStrictEqual(seenDuring, mcaMoves);         // pas l'objet inactif du spawn
+});
+
+test('apres fn, bot._mcaMoves redevient la nominale (identite ===)', async () => {
+  const mcaMoves = { placeCost: 6 };
+  const bot = makeBot(mcaMoves);
+  await withTempMovements(bot, FakeMovements, {}, async () => {});
+  assert.strictEqual(bot._mcaMoves, mcaMoves);
+});
+
+test('sans _mcaMoves prealable (pas de prev), la temp posee reste refletee apres fn', async () => {
+  const bot = makeBot(undefined);
+  await withTempMovements(bot, FakeMovements, { canDig: false }, async () => {});
+  // pas de restauration possible (prev absent) : la temp reste l'active, _mcaMoves la reflète
+  assert.strictEqual(bot._mcaMoves, bot.calls[0]);
 });

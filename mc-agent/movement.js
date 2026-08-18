@@ -88,13 +88,21 @@ async function withTempMovements(bot, MovementsCtor, tweaks, fn) {
     Object.assign(temp, tweaks || {});
     if (bot && bot.pathfinder && typeof bot.pathfinder.setMovements === 'function') {
       bot.pathfinder.setMovements(temp);
+      // CONTRAINTE : `_mcaMoves` doit toujours désigner la Movements RÉELLEMENT active, fenêtre
+      // temporaire COMPRISE — le sprint-curb (index.js, tick 150 ms) mute `_mcaMoves.allowSprinting`
+      // en continu ; sans cette ligne il muterait l'objet INACTIF pendant toute la fenêtre (60-90 s
+      // par jambe de migration / cave-first) et la coupe de sprint resterait sans effet.
+      bot._mcaMoves = temp;
       applied = true;
     }
   } catch (e) { /* best-effort : sans temp, fn court sur les Movements actuelles */ }
   try {
     return await fn();
   } finally {
-    if (applied && prev) { try { bot.pathfinder.setMovements(prev); } catch (e) {} }
+    if (applied && prev) {
+      try { bot.pathfinder.setMovements(prev); } catch (e) {}
+      bot._mcaMoves = prev;   // la nominale redevient l'active : le sprint-curb la re-suit
+    }
   }
 }
 

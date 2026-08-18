@@ -28,8 +28,17 @@ const { ROD_STRING } = require('./fish');   // 2 : la quantité qui débloque la
 // L'araignée COMMUNE, et elle seule. `cave_spider` est volontairement absente (venin).
 const SPIDERS = new Set(['spider']);
 
+// RAYON DE CHASSE — 24 au départ, porté à 48 après le run world_mn15 : **376 `no_spider` sur 385
+// tentatives**. À 24 blocs on ne voit qu'un carré de 48 de côté autour du chantier, et une araignée
+// qui a spawné en lisière la nuit précédente est déjà hors champ. 48 reste largement dans la portée
+// d'entités du client (view-distance 6 = 96 blocs) et sous la distance qu'un bot blindé parcourt en
+// quelques secondes. Source UNIQUE : `nearestSpider` (la sonde de visibilité que l'appelant utilise
+// pour ouvrir la fenêtre) et `huntSpiders` (la chasse elle-même) doivent regarder le MÊME rayon,
+// sinon on part chasser ce qu'on n'a pas vu — ou l'inverse.
+const HUNT_RADIUS = 48;
+
 /** L'araignée commune la plus proche dans le rayon (null si aucune). Ignore les entités mortes. */
-function nearestSpider(bot, radius = 24) {
+function nearestSpider(bot, radius = HUNT_RADIUS) {
   const self = bot && bot.entity && bot.entity.position;
   if (!self || typeof bot.nearestEntity !== 'function') return null;
   const e = bot.nearestEntity((x) => x && SPIDERS.has(x.name) && x.position && x.isValid !== false);
@@ -79,7 +88,7 @@ function _stringCount(bot) {
  *   now()    : horloge (injectable pour les tests).
  *   shouldAbort(bot) : surcharge du veto de survie.
  *
- * opts : { count=2, maxDistance=24, totalMs=60000, targetStrings=ROD_STRING, killTimeoutMs=20000,
+ * opts : { count=2, maxDistance=HUNT_RADIUS, totalMs=60000, targetStrings=ROD_STRING, killTimeoutMs=20000,
  *          pollMs=250, lootRadius=8, lootMs=12000, token }
  *
  * `ok` = « on ramène de la FICELLE » (strings > 0) — pas « on a tué des araignées » : c'est la
@@ -89,7 +98,7 @@ function _stringCount(bot) {
  */
 async function huntSpiders(bot, deps = {}, opts = {}) {
   const count = opts.count != null ? opts.count : 2;
-  const maxDistance = opts.maxDistance != null ? opts.maxDistance : 24;
+  const maxDistance = opts.maxDistance != null ? opts.maxDistance : HUNT_RADIUS;
   const totalMs = opts.totalMs != null ? opts.totalMs : 60000;
   const targetStrings = opts.targetStrings != null ? opts.targetStrings : ROD_STRING;
   const killTimeoutMs = opts.killTimeoutMs != null ? opts.killTimeoutMs : 20000;
@@ -160,4 +169,4 @@ async function huntSpiders(bot, deps = {}, opts = {}) {
   return done('count');
 }
 
-module.exports = { huntSpiders, nearestSpider, SPIDERS };
+module.exports = { huntSpiders, nearestSpider, SPIDERS, HUNT_RADIUS };

@@ -288,6 +288,128 @@ function foodRunNeeded(sig = {}) {
   return true;
 }
 
+// ─── 7) v7 : ALLER LÀ OÙ LA NOURRITURE EST (run world_mn15, ~5 h de flotte v6) ──────────────────
+//
+// La section 6 avait branché la chaîne ; les compteurs du run montrent qu'elle tournait À VIDE :
+//   `string_hunt` 385 tentatives → 0 ficelle, dont **`no_spider` ×376** ;
+//   `fish` 737 appels → 0 poisson ;
+//   `food_run` 392 départs quasi tous stériles, relancés toutes les 3 min.
+// Les mécanismes marchaient : ce qu'ils visaient n'était pas là. Trois décisions de plus, qui
+// répondent toutes à la même question neuve — « y a-t-il seulement quelque chose à aller chercher,
+// et est-ce le bon moment ? ».
+
+// La chasse à la ficelle n'a de sens que dans la FENÊTRE où l'araignée existe. Deux repères :
+const SPIDER_NO_SPIDER_MAX = 3;         // 3 zones vides d'affilée = la zone est vide, point
+const SPIDER_BACKOFF_MS = 900000;       // …et on n'y revient pas avant 15 min (elle se repeuple la nuit)
+// L'araignée, contrairement au zombie et au squelette, NE BRÛLE PAS au lever du jour : celles de la
+// nuit traînent encore au petit matin. La fenêtre déborde donc sur le début du jour — c'est même le
+// cas le plus utile (un bot qui a faim à l'aube). 2000 ticks ≈ les 100 premières secondes du jour.
+const SPIDER_DAWN_END = 2000;
+
+/**
+ * PUR — la FENÊTRE est-elle ouverte pour partir chasser l'araignée ?
+ *
+ * Volontairement SÉPARÉE de `stringHuntNeeded`, qui répond à une autre question : celle-là dit
+ * « ai-je le DROIT » (blindé, armé, déficit de ficelle), celle-ci dit « y a-t-il une PROIE ».
+ * L'appelant les combine en ET. Les garder distinctes, c'est pouvoir tracer LAQUELLE a fermé la
+ * porte — et les 376 `no_spider` prouvent qu'on ne se posait que la première.
+ *
+ * sig = { spiderVisible: bool (une araignée réellement vue par bot.nearestEntity),
+ *         isNight: bool|null (null = `bot.time` pas encore livré), timeOfDay: nb|null,
+ *         noSpiderStreak, lastNoSpiderAt, now, backoffMs? }
+ * → { go: bool, reason: 'visible'|'night'|'dawn'|'backoff'|'no_target' }
+ *
+ * Le back-off passe AVANT la vue : voir une araignée juste après trois zones vides, c'est
+ * typiquement le mob qui vient d'apparaître sur le bot — repartir, c'est re-échouer. Pendant ces
+ * 15 minutes la faim garde tous ses autres filets ; ce qu'on veut, c'est qu'il RETOURNE TRAVAILLER.
+ */
+function spiderHuntWindow(sig = {}) {
+  if (!sig) return { go: false, reason: 'no_target' };
+  const streak = Number(sig.noSpiderStreak) || 0;
+  const now = Number(sig.now);
+  const last = Number(sig.lastNoSpiderAt);
+  const backoffMs = sig.backoffMs != null ? Number(sig.backoffMs) : SPIDER_BACKOFF_MS;
+  // Rationnement seulement si l'horloge est exploitable (les DEUX bornes) — sans elle on ne bloque
+  // jamais : un bot gelé par une donnée absente coûte plus cher que quelques chasses de trop.
+  if (streak >= SPIDER_NO_SPIDER_MAX && Number.isFinite(now) && Number.isFinite(last) && last > 0
+      && now - last < backoffMs) {
+    return { go: false, reason: 'backoff' };
+  }
+  if (sig.spiderVisible) return { go: true, reason: 'visible' };
+  if (sig.isNight === true) return { go: true, reason: 'night' };
+  const t = Number(sig.timeOfDay);
+  if (Number.isFinite(t) && (((t % 24000) + 24000) % 24000) < SPIDER_DAWN_END) {
+    return { go: true, reason: 'dawn' };
+  }
+  return { go: false, reason: 'no_target' };
+}
+
+/**
+ * PUR — le compteur de zones vides après une chasse. `result` = le retour de `huntSpiders`
+ * ({reason, strings, kills}) ou celui de `withTimeout` ({reason:'timeout'}).
+ *
+ * Seul `no_spider` incrémente : c'est le SEUL retour qui prouve une absence. Une fuite, un délai de
+ * mise à mort ou une annulation disent quelque chose du bot, pas de la faune — les compter
+ * mettrait la chasse en sourdine pour de mauvaises raisons. À l'inverse, toute preuve de présence
+ * (de la ficelle, ou même une simple mise à mort sans butin) remet le compteur à zéro.
+ */
+function spiderHuntStreak(result, streak = 0) {
+  const s = Number(streak) || 0;
+  if (!result) return s;
+  if (Number(result.strings) > 0 || Number(result.kills) > 0) return 0;
+  return result.reason === 'no_spider' ? s + 1 : s;
+}
+
+// Une quête de nourriture qui ne rapporte RIEN dit quelque chose de la ZONE, pas de l'instant : y
+// retourner trois minutes plus tard, c'est refaire le même tour à vide (392 fois, mesuré). On passe
+// donc en sourdine — sans jamais renoncer : la zone se repeuple, et le premier gain rétablit le
+// régime nerveux.
+const FOOD_RUN_STERILE_COOLDOWN_MS = 900000;   // 15 min
+
+/**
+ * PUR — combien attendre avant la PROCHAINE quête, au vu de ce que celle-ci a rapporté ?
+ * sig = { before, after } : le stock de comestibles (FOODS ∪ EMERGENCY_FOODS) avant et après.
+ * → FOOD_RUN_COOLDOWN_MS (3 min) si la passe a rapporté, FOOD_RUN_STERILE_COOLDOWN_MS (15 min) sinon.
+ * Mesure impossible (donnée absente/NaN) → régime NORMAL : on ne met jamais un bot en sourdine sur
+ * une donnée qu'on n'a pas su lire.
+ */
+function foodRunCooldownAfter(sig = {}) {
+  if (!sig) return FOOD_RUN_COOLDOWN_MS;
+  const before = sig.before, after = sig.after;
+  const ok = typeof before === 'number' && Number.isFinite(before)
+    && typeof after === 'number' && Number.isFinite(after);
+  if (!ok) return FOOD_RUN_COOLDOWN_MS;
+  return after > before ? FOOD_RUN_COOLDOWN_MS : FOOD_RUN_STERILE_COOLDOWN_MS;
+}
+
+// Le point BORGNE de la v6 : le seul plan de `ensureFood` (la chasse) est gated `y >= 45` — « la
+// chasse est impossible sous terre », ce qui est vrai ; mais la conclusion tirée était « alors on ne
+// fait rien ». Un bot affamé à y=12 restait donc à y=12 jusqu'à mourir. Le home `safe` est EN
+// SURFACE : remonter est un warp, pas une expédition — et une fois là-haut toute la quête normale
+// (butin → chasse → pêche → eau connue) redevient disponible.
+const FOOD_SURFACE_Y = 45;          // le MÊME plancher que le gate existant d'ensureFood
+const FOOD_SURFACE_HUNGER = 10;     // sous 10 la régénération est coupée depuis longtemps (<18)
+
+/**
+ * PUR — faut-il REMONTER avant de chercher à manger ?
+ * sig = { y, food: 0-20|inconnu, foodItems: nb de comestibles en poche }
+ * → true seulement si les trois tiennent : sous terre, affamé, et le sac vide. Avec de la
+ *   nourriture en poche ou une faim confortable, on ne coupe pas un minage pour du confort.
+ * Faim ou altitude inconnues → false (`Number(null) === 0` ferait remonter un bot à chaque spawn).
+ * Stock inconnu → traité comme VIDE, même arbitrage que `foodRunNeeded` : un warp de trop coûte une
+ * minute, une mort de faim coûte la session.
+ */
+function surfaceTripNeeded(sig = {}) {
+  if (!sig) return false;
+  const y = sig.y;
+  if (!(typeof y === 'number' && Number.isFinite(y)) || y >= FOOD_SURFACE_Y) return false;
+  if (!(typeof sig.food === 'number' && Number.isFinite(sig.food))) return false;
+  if (sig.food > FOOD_SURFACE_HUNGER) return false;
+  const stock = Number(sig.foodItems);
+  if (Number.isFinite(stock) && stock > 0) return false;
+  return true;
+}
+
 module.exports = {
   mapperCaution, CAUTION_MIN_WORN, regroupCaution,
   equipRetryPlan, EQUIP_RETRY_WAIT_MS, EQUIP_MAX_ATTEMPTS, EQUIP_RETRY_COOLDOWN_MS,
@@ -296,4 +418,7 @@ module.exports = {
   sprintAllowed, SPRINT_HUNGER_FLOOR, SPRINT_HUNGER_RESUME,
   stringHuntNeeded, STRING_HUNT_MIN_WORN,
   foodRunNeeded, FOOD_RUN_HUNGER, FOOD_RUN_COOLDOWN_MS,
+  spiderHuntWindow, spiderHuntStreak, SPIDER_NO_SPIDER_MAX, SPIDER_BACKOFF_MS, SPIDER_DAWN_END,
+  foodRunCooldownAfter, FOOD_RUN_STERILE_COOLDOWN_MS,
+  surfaceTripNeeded, FOOD_SURFACE_Y, FOOD_SURFACE_HUNGER,
 };
