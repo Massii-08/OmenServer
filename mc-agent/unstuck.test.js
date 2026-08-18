@@ -173,3 +173,112 @@ test('isFrozenDesync : digging → fenêtre ÉTENDUE (20) au lieu de reset — u
   assert.strictEqual(isFrozenDesync(frozen20, { digging: true }), true);    // 10 min figé en dig = desync
   assert.strictEqual(isFrozenDesync(frozen10, { digging: false }), true);   // hors dig : 5 min suffisent (inchangé)
 });
+
+// ─── ANTI-CAMPING DU SPAWNPOINT (escapePlan / escapeReached / canReanchorSpawn) ──────────────────
+// Flagrant délit world_mn15 (NethBot3, 02:50-02:51) : un squelette campe le point de réapparition,
+// le bot respawne, se fait abattre, ré-ancre le /spawnpoint AU MÊME ENDROIT, recommence.
+// 4 morts en 36 s. En sans-give le « warp » d'évasion (/spreadplayers) est bloqué par nogive :
+// il ne restait donc QUE le ré-ancrage, qui CIMENTE le piège.
+const { escapePlan, escapeReached, canReanchorSpawn,
+  ESCAPE_MIN_DIST, ESCAPE_MAX_DIST, ESCAPE_SAFE_RADIUS, ESCAPE_REACHED_DIST } = require('./unstuck');
+
+const _d2 = (a, b) => Math.hypot(b.x - a.x, b.z - a.z);
+
+test('escapePlan : sans-give → fuite À PIED (jamais le warp, qui est un no-op bloqué par nogive)', () => {
+  const p = escapePlan({ noGive: true, pos: { x: 10, y: 64, z: -20 }, rand: () => 0.5 });
+  assert.strictEqual(p.mode, 'walk');
+});
+
+test('escapePlan : mode admin (give autorisé) → warp, comportement historique INCHANGÉ', () => {
+  const p = escapePlan({ noGive: false, pos: { x: 10, y: 64, z: -20 }, rand: () => 0.5 });
+  assert.strictEqual(p.mode, 'warp');
+});
+
+test('escapePlan : distance de fuite dans [30, 60] blocs, quel que soit le tirage', () => {
+  for (const r of [0, 0.25, 0.5, 0.75, 0.999]) {
+    const p = escapePlan({ noGive: true, pos: { x: 0, y: 64, z: 0 }, rand: () => r });
+    assert.ok(p.dist >= ESCAPE_MIN_DIST, `dist ${p.dist} >= ${ESCAPE_MIN_DIST}`);
+    assert.ok(p.dist <= ESCAPE_MAX_DIST, `dist ${p.dist} <= ${ESCAPE_MAX_DIST}`);
+    // et la cible est bien à cette distance du point campé
+    assert.ok(Math.abs(_d2({ x: 0, z: 0 }, p) - p.dist) < 1.5);
+  }
+});
+
+test('escapePlan : hostile en vue → on part À L OPPOSÉ (jamais vers le squelette)', () => {
+  // squelette plein EST du bot → la cible doit être à l'OUEST (x < 0)
+  const p = escapePlan({ noGive: true, pos: { x: 0, y: 64, z: 0 }, hostile: { x: 12, y: 64, z: 0 }, rand: () => 0.5 });
+  assert.ok(p.x < 0, `cible x=${p.x} doit être à l'opposé (x<0)`);
+  assert.ok(Math.abs(p.z) < 1, 'même axe → pas de dérive latérale');
+  // et on s'éloigne bien de la menace
+  assert.ok(_d2(p, { x: 12, z: 0 }) > _d2({ x: 0, z: 0 }, { x: 12, z: 0 }));
+});
+
+test('escapePlan : hostile PILE sur le bot (même colonne) → cap arbitraire, jamais NaN', () => {
+  const p = escapePlan({ noGive: true, pos: { x: 5, y: 64, z: 5 }, hostile: { x: 5, y: 64, z: 5 }, rand: () => 0.5 });
+  assert.ok(Number.isFinite(p.x) && Number.isFinite(p.z));
+  assert.ok(_d2({ x: 5, z: 5 }, p) >= ESCAPE_MIN_DIST - 1);
+});
+
+test('escapePlan : sans hostile en vue → direction aléatoire (rand injectable = déterministe)', () => {
+  const a = escapePlan({ noGive: true, pos: { x: 0, y: 64, z: 0 }, rand: () => 0 });
+  const b = escapePlan({ noGive: true, pos: { x: 0, y: 64, z: 0 }, rand: () => 0.5 });
+  assert.ok(Number.isFinite(a.x) && Number.isFinite(b.x));
+  assert.notDeepStrictEqual({ x: a.x, z: a.z }, { x: b.x, z: b.z });   // deux tirages ≠ même cap
+});
+
+test('escapePlan : sans position → null (pas de fuite fantôme, pas de ré-ancrage)', () => {
+  assert.strictEqual(escapePlan({ noGive: true, pos: null }), null);
+  assert.strictEqual(escapePlan({ noGive: true }), null);
+});
+
+test('escapePlan : la cible garde une altitude de référence (celle du bot)', () => {
+  const p = escapePlan({ noGive: true, pos: { x: 0, y: 71, z: 0 }, rand: () => 0.5 });
+  assert.strictEqual(p.y, 71);
+});
+
+test('escapeReached : il faut avoir VRAIMENT quitté le lieu du camping', () => {
+  const from = { x: 0, y: 64, z: 0 };
+  assert.strictEqual(escapeReached(from, { x: 40, y: 64, z: 0 }), true);
+  assert.strictEqual(escapeReached(from, { x: 3, y: 64, z: 2 }), false);   // coincé sur place
+  assert.strictEqual(escapeReached(from, from), false);
+  assert.strictEqual(escapeReached(from, null), false);
+  assert.strictEqual(escapeReached(null, { x: 99, y: 64, z: 99 }), false);
+});
+
+test('escapeReached : l ALTITUDE ne compte pas (fuir en descendant reste une fuite)', () => {
+  assert.strictEqual(escapeReached({ x: 0, y: 64, z: 0 }, { x: 0, y: 12, z: 40 }), true);
+});
+
+test('escapeReached : seuil injectable', () => {
+  assert.strictEqual(escapeReached({ x: 0, y: 64, z: 0 }, { x: 10, y: 64, z: 0 }, 8), true);
+  assert.strictEqual(escapeReached({ x: 0, y: 64, z: 0 }, { x: 10, y: 64, z: 0 }, 12), false);
+});
+
+test('canReanchorSpawn : LE cœur du fix — jamais de /spawnpoint sur le lieu du camping', () => {
+  // fuite échouée (bot coincé) → on ne ré-ancre PAS DU TOUT cette fois
+  assert.strictEqual(canReanchorSpawn({ escaped: false, nearestHostileDist: null }), false);
+  // fuite réussie mais un hostile campe encore la zone d'arrivée → pas d'ancrage non plus
+  assert.strictEqual(canReanchorSpawn({ escaped: true, nearestHostileDist: 9 }), false);
+  // fuite réussie + zone propre → ancrage
+  assert.strictEqual(canReanchorSpawn({ escaped: true, nearestHostileDist: null }), true);
+  assert.strictEqual(canReanchorSpawn({ escaped: true, nearestHostileDist: Infinity }), true);
+  assert.strictEqual(canReanchorSpawn({ escaped: true, nearestHostileDist: ESCAPE_SAFE_RADIUS + 1 }), true);
+});
+
+test('canReanchorSpawn : la frontière des 16 blocs est INCLUSIVE côté danger', () => {
+  assert.strictEqual(canReanchorSpawn({ escaped: true, nearestHostileDist: ESCAPE_SAFE_RADIUS }), false);
+});
+
+test('canReanchorSpawn : entrée vide/absurde → refus (par défaut on ne cimente rien)', () => {
+  assert.strictEqual(canReanchorSpawn({}), false);
+  assert.strictEqual(canReanchorSpawn(), false);
+  assert.strictEqual(canReanchorSpawn({ escaped: true, nearestHostileDist: NaN }), false);
+});
+
+test('constantes : les seuils sont exportés et cohérents entre eux', () => {
+  assert.ok(ESCAPE_MIN_DIST < ESCAPE_MAX_DIST);
+  // on doit pouvoir « réussir » une fuite plus courte que le plan (terrain accidenté, NoPath partiel)
+  assert.ok(ESCAPE_REACHED_DIST < ESCAPE_MIN_DIST);
+  // sortir de la zone dangereuse doit être garanti par une fuite réussie
+  assert.ok(ESCAPE_REACHED_DIST > ESCAPE_SAFE_RADIUS / 2);
+});

@@ -213,4 +213,102 @@ function isFrozenDesync(samples, { need = 10, digging = false } = {}) {
   return last.every((p) => p && k(p) === first);
 }
 
-module.exports = { isInWater, findLandTarget, escapeWater, WATER, SNARES, clearSnares, isFloatingStuck, recoverFloating, isFrozenDesync };
+// --- ANTI-CAMPING DU SPAWNPOINT : décisions PURES de la fuite d'évasion ---------------------------
+//
+// Flagrant délit world_mn15 (NethBot3, 02:50-02:51 — 26 morts en 1 h 30) :
+//   02:50:37 shot by Skeleton · 02:50:54 shot by Skeleton · 02:50:57 issued /spawnpoint
+//   02:51:01 shot by Skeleton · 02:51:05 issued /spawnpoint · 02:51:13 shot by Skeleton
+// Un squelette campe le point de réapparition ; le bot respawne, se fait abattre avant d'avoir agi,
+// et RÉ-ANCRE son respawn au même endroit — la boucle se referme sur elle-même.
+//
+// Pourquoi l'anti-camping existant ne servait à rien EN SANS-GIVE : son évasion était
+// `relocateToRegion()`, c'est-à-dire un `/spreadplayers` — commande de triche BLOQUÉE par
+// nogive.js. Le « warp » était donc un NO-OP silencieux… mais le `/spawnpoint` qui le suivait
+// s'exécutait quand même, sur place. Le seul effet net du secours était de CIMENTER le piège
+// (piège projet #47b : « les warps historiques deviennent des no-ops → chaque secours doit avoir
+// un fallback vrai joueur »).
+//
+// Le fallback vrai joueur, c'est ce qu'un humain fait : il COURT, puis il ne repose son lit que
+// là où plus rien ne le vise.
+
+const ESCAPE_MIN_DIST = 30;      // assez pour sortir de la portée d'arc + de l'agro du campeur
+const ESCAPE_MAX_DIST = 60;      // et pas plus : on fuit, on n'émigre pas (le confine/la base restent)
+const ESCAPE_SAFE_RADIUS = 16;   // « zone sûre » = aucun hostile à ≤16 blocs de l'arrivée
+const ESCAPE_REACHED_DIST = 16;  // fuite RÉUSSIE = on a vraiment quitté le lieu du camping
+
+/**
+ * PUR — plan d'évasion après une mort en rafale sur un spawnpoint campé.
+ *
+ * @param {object} opts
+ *   noGive  {boolean}          mode sans-give : les warps serveur sont bloqués → fuite À PIED
+ *   pos     {{x,y,z}}          position de respawn (le lieu campé)
+ *   hostile {{x,y,z}|null}     position de l'hostile le plus proche s'il est en vue
+ *   rand    {function}         générateur [0,1) injectable (tests déterministes)
+ * @returns {{mode:'walk',x:number,y:number,z:number,dist:number,heading:number}
+ *           |{mode:'warp'}|null}
+ */
+function escapePlan(opts = {}) {
+  // Mode ADMIN (give autorisé : mappeurs, serveurs de test historiques) : /spreadplayers marche
+  // vraiment là-bas → on ne touche à rien, le warp historique reste le meilleur outil.
+  if (!opts.noGive) return { mode: 'warp' };
+
+  const pos = opts.pos;
+  if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.z)) return null;
+  const rand = typeof opts.rand === 'function' ? opts.rand : Math.random;
+
+  // Cap : à l'OPPOSÉ du campeur quand on le voit (c'est lui le problème), sinon au hasard.
+  let heading = null;
+  const h = opts.hostile;
+  if (h && Number.isFinite(h.x) && Number.isFinite(h.z)) {
+    const dx = pos.x - h.x;
+    const dz = pos.z - h.z;
+    if (Math.hypot(dx, dz) > 1e-6) heading = Math.atan2(dz, dx);
+    // même colonne (mob PILE sur le bot) → pas de direction opposée définie : cap arbitraire.
+  }
+  if (heading == null) heading = rand() * Math.PI * 2;
+
+  const dist = ESCAPE_MIN_DIST + rand() * (ESCAPE_MAX_DIST - ESCAPE_MIN_DIST);
+  return {
+    mode: 'walk',
+    x: Math.round(pos.x + Math.cos(heading) * dist),
+    // altitude de RÉFÉRENCE (celle du respawn) : le but reste un GoalNearXZ, ce y ne sert qu'aux
+    // appelants qui veulent une cible 3D — jamais à contraindre la fuite.
+    y: pos.y,
+    z: Math.round(pos.z + Math.sin(heading) * dist),
+    dist,
+    heading,
+  };
+}
+
+/**
+ * PUR — a-t-on VRAIMENT quitté le lieu du camping ? (distance horizontale ; l'altitude ne compte
+ * pas : fuir en descendant dans un ravin reste une fuite). Un `goto` peut rendre NoPath ou expirer
+ * après quelques blocs — c'est la distance parcourue qui tranche, pas le retour du pathfinder.
+ */
+function escapeReached(from, to, minDist = ESCAPE_REACHED_DIST) {
+  if (!from || !to) return false;
+  if (!Number.isFinite(from.x) || !Number.isFinite(to.x)) return false;
+  return Math.hypot(to.x - from.x, to.z - from.z) >= minDist;
+}
+
+/**
+ * PUR — LE cœur du fix : peut-on ré-ancrer le respawn ICI ?
+ * Deux conditions, jamais l'une sans l'autre :
+ *   - la fuite a réussi (sinon on ré-ancrerait sur le lieu du camping, exactement le bug) ;
+ *   - la zone d'arrivée est propre (aucun hostile à ≤ ESCAPE_SAFE_RADIUS).
+ * Fuite ratée (bot acculé/coincé) ⇒ on ne ré-ancre PAS DU TOUT cette fois : garder l'ancien
+ * spawnpoint est moins pire que d'en poser un neuf sous le nez d'un archer.
+ */
+function canReanchorSpawn(opts = {}) {
+  if (!opts || opts.escaped !== true) return false;
+  const d = opts.nearestHostileDist;
+  if (d == null) return true;                    // aucun hostile en vue
+  if (typeof d !== 'number' || Number.isNaN(d)) return false;   // mesure douteuse → on ne cimente rien
+  return d > ESCAPE_SAFE_RADIUS;
+}
+
+module.exports = {
+  isInWater, findLandTarget, escapeWater, WATER, SNARES, clearSnares, isFloatingStuck, recoverFloating, isFrozenDesync,
+  escapePlan, escapeReached, canReanchorSpawn,
+  ESCAPE_MIN_DIST, ESCAPE_MAX_DIST, ESCAPE_SAFE_RADIUS, ESCAPE_REACHED_DIST,
+};

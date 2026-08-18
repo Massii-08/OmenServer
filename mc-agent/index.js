@@ -65,7 +65,8 @@ const { recordAnchor, pickDryAnchor } = require('./anchors'); // ancres profonde
 const { runMapper } = require('./mapper');
 // (LOCATE_KINDS / parseLocateResponse ne sont plus importés : /locate est retiré des bots, cf. plus bas.
 //  structureFoundEvent est émis par mapper.js depuis les signatures VUES.)
-const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync } = require('./unstuck');
+const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync,
+  escapePlan, escapeReached, canReanchorSpawn, ESCAPE_SAFE_RADIUS } = require('./unstuck');
 const deathzones = require('./deathzones'); // ban-zone des camps de mort (≥2 alertes → fuite active)
 const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTANTE → relocate forcé (live 22/06 ResBot1)
 // Verdict de zone + migration autonome (Massii 27/07). L'état de zone est PERSISTÉ (zoneState*) :
@@ -225,7 +226,18 @@ const world = loadWorld(worldFile);
 const IS_MAPPER = !!(world && world.objective && world.objective.type === 'mapper');
 let taskToken = { cancelled: true };
 let deathTimes = [];
-let _escapeOnSpawn = false; // anti-camping : 2 morts <60 s → warp + re-spawnpoint au prochain spawn
+let _escapeOnSpawn = false; // anti-camping : 2 morts <60 s → au prochain spawn, escapeDeathCamp()
+                            // (sans-give : fuite À PIED puis re-spawnpoint SEULEMENT si au calme)
+// Fuite d'évasion EN COURS. Garde de niveau MODULE (piège #56) lue par les deux mécanismes de TP
+// automatique (enforcement confine + squad /tpa) : un yank pendant la fuite ramènerait le bot vers
+// l'ancre/le chef, donc potentiellement DANS le camp qu'il est en train de quitter — exactement la
+// classe de bug déjà vécue avec `_migrating`.
+let _escaping = false;
+// Génération de fuite : le bot peut MOURIR pendant sa course (c'est même le cas nominal quand le
+// camp est tenace) → un nouveau onSpawn relance une évasion pendant que l'ancienne attend encore
+// son `goto`. Sans ce jeton, la vieille invocation reprendrait la main après coup et poserait un
+// /spawnpoint en jugeant une arrivée qui n'est plus la sienne — le bug qu'on répare, en pire.
+let _escapeGen = 0;
 let _safeHomeSet = false;     // warp légitime : /sethome safe posé (fallback = position de spawn courante)
 let _safeHomeSurface = false; // safe posé à une VRAIE surface (y≥58) → cible idéale pour goSpawn
 let _deathDebtBusy = false;   // une seule récupération de dette en vol (le respawn peut se répéter en rafale)
@@ -406,7 +418,9 @@ setInterval(() => {
     if (!_campEstablished) tryEstablishCamp().catch(() => {});    // retry léger du camp
     // `_migrating` DOIT compter comme occupé : sinon l'enforcement yank le marcheur vers l'ancre
     // qu'on est précisément en train de quitter (même classe que les autres gardes busy).
-    const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating;
+    // `_escaping` idem : ramener le bot à l'ancre pendant une fuite anti-camping le remettrait
+    // sous le nez du campeur (le spawnpoint campé est presque toujours près de la base).
+    const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping;
     const dist = Math.hypot(p.x - conf.x, p.z - conf.z);
     if (shouldEnforceConfine({ dist, radius: conf.radius, busy, now: Date.now(), lastAt: _lastConfineEnforceAt })) {
       _lastConfineEnforceAt = Date.now();
@@ -537,7 +551,9 @@ async function trySquad() {
   // /tpa de regroupement arrachait le bot en pleine marche de migration et le ramenait au chef,
   // donc le compteur de progrès repartait de zéro et le déménagement ne pouvait jamais aboutir.
   // Exactement la même classe que le yank du confine — un TP qui ignore une tâche longue.
-  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating;
+  // `_escaping` (fuite anti-camping) est de la même famille : le /tpa arracherait le bot en pleine
+  // évasion et le ré-ancrage post-fuite jugerait une zone qu'il n'a jamais atteinte.
+  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping;
   const pick = squadTarget({
     // `y`/`ironZone` de SOI : sans eux un mineur productif se croirait « rien du tout » et
     // remonterait rejoindre un flâneur resté en surface — l'inverse exact du but.
@@ -3578,6 +3594,90 @@ async function relocateToRegion(opts = {}) {
   await sleep(5000);                                     // atterrissage + chunks
 }
 
+// ─── ÉVASION D'UN SPAWNPOINT CAMPÉ (anti-camping, refonte sans-give) ─────────────────────────────
+// Vécu world_mn15 (NethBot3, 02:50→02:51) : un squelette campe le point de réapparition ; le bot
+// respawne, est abattu avant d'avoir agi, ré-ancre son /spawnpoint AU MÊME ENDROIT, recommence —
+// 4 morts en 36 s, 26 sur la session.
+//
+// L'ancien secours faisait `relocateToRegion()` PUIS `/spawnpoint`. Or relocateToRegion est
+// PUREMENT un `/spreadplayers`, BLOQUÉ par nogive : en sans-give le déplacement était un no-op
+// silencieux et il ne restait que le ré-ancrage… qui CIMENTAIT le piège à chaque tour.
+//
+// Fallback « vrai joueur » : on COURT (30-60 blocs, à l'opposé du campeur), et on ne repose le
+// respawn QUE si on est effectivement arrivé au calme. Fuite ratée ⇒ aucun ré-ancrage (garder
+// l'ancien spawnpoint est moins pire que d'en poser un neuf sous le nez d'un archer).
+// ⚠️ Fonction de NIVEAU MODULE (piège #56 : une garde déclarée dans onSpawn et lue ailleurs
+// compile, passe les tests, et tue le process au 1er tick).
+const ESCAPE_WALK_TIMEOUT_MS = 20000;   // la fuite est prioritaire mais BORNÉE : le planner attend
+async function escapeDeathCamp() {
+  const p0 = bot.entity && bot.entity.position;
+  // ⚠️ COPIE IMMÉDIATE : `bot.entity.position` est un Vec3 MUTÉ EN PLACE par mineflayer — garder la
+  // référence ferait « bouger » le point de départ avec le bot, et la distance parcourue mesurée
+  // après la fuite vaudrait toujours 0 (fuite réussie jugée ratée, jamais de ré-ancrage).
+  const start = p0 ? { x: p0.x, y: p0.y, z: p0.z } : null;
+  const threat = (() => {
+    try { return bot.nearestEntity((e) => e && e.position && isFleeHostile(e)); } catch (e) { return null; }
+  })();
+  const plan = escapePlan({
+    noGive: NO_GIVE,
+    pos: start,
+    hostile: threat && threat.position,
+  });
+  if (!plan) { emit({ type: 'death_camp_escape', mode: 'none' }); return; }
+
+  if (plan.mode === 'warp') {
+    // ADMIN (mappeurs, serveurs de test) : /spreadplayers marche vraiment → comportement HISTORIQUE.
+    emit({ type: 'death_camp_escape', mode: 'warp' });
+    try { await relocateToRegion(); } catch (e) { /* best-effort */ }
+    try { bot.chat('/spawnpoint'); } catch (e) {}
+    return;
+  }
+
+  emit({
+    type: 'death_camp_escape', mode: 'walk',
+    x: plan.x, z: plan.z, dist: Math.round(plan.dist), hostile: !!threat,
+  });
+  // La fuite PRIME : on coupe ce qui traîne (une tâche de la vie précédente peut encore tenir le
+  // pathfinder) et on part. Les réflexes de survie, eux, restent branchés (timers indépendants) —
+  // seuls les TP automatiques (confine, squad) sont suspendus le temps de la course.
+  const gen = ++_escapeGen;
+  _escaping = true;
+  try { taskCtl.cancel(); } catch (e) {}
+  try { stopMotion(); } catch (e) {}
+  // GoalNearXZ : l'altitude est libre — n'importe quelle sortie fait l'affaire quand on fuit
+  // (et un but concret a une heuristique positive/décroissante : A* fini, borné par
+  // applyPathfinderBounds — JAMAIS de GoalInvert ici, piège #48/OOM du 25/07).
+  try {
+    await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(plan.x, plan.z, 4)),
+      ESCAPE_WALK_TIMEOUT_MS, () => { try { stopMotion(); } catch (e) {} });
+  } catch (e) { /* NoPath/annulation : c'est la distance PARCOURUE qui tranche, pas ce retour */ }
+  // JAMAIS coincé à true (un flag busy figé gèlerait les 2 TP) — mais on ne relâche que si
+  // personne n'a pris la main entre-temps, sinon on éteindrait la garde d'une fuite VIVANTE.
+  finally { if (gen === _escapeGen) _escaping = false; }
+  if (gen !== _escapeGen) { emit({ type: 'death_camp_escape_superseded' }); return; }
+
+  const p1 = bot.entity && bot.entity.position;
+  const escaped = escapeReached(start, p1 && { x: p1.x, y: p1.y, z: p1.z });
+  let nearestHostileDist = null;
+  try {
+    const near = nearbyHostiles(bot, ESCAPE_SAFE_RADIUS);
+    if (near.length && p1) {
+      nearestHostileDist = near.reduce((m, e) => Math.min(m, e.position.distanceTo(p1)), Infinity);
+    }
+  } catch (e) { nearestHostileDist = null; }
+
+  if (canReanchorSpawn({ escaped, nearestHostileDist })) {
+    try { bot.chat('/spawnpoint'); } catch (e) {}
+    emit({ type: 'death_camp_reanchor', x: Math.round(p1.x), z: Math.round(p1.z) });
+  } else {
+    // Pas d'ancrage : on ne fige RIEN dans une zone qu'on n'a pas su quitter proprement.
+    emit({
+      type: 'death_camp_escape_failed', escaped,
+      hostileDist: nearestHostileDist == null ? null : Math.round(nearestHostileDist),
+    });
+  }
+}
+
 // FONTE FINALE (exigence Massii : LIVRER des lingots d'or/fer FONDUS, pas du minerai brut).
 // Appelée UNIQUEMENT quand le quota est atteint (rare) → ne peut pas casser la boucle de minage.
 // Fond tout le raw_iron/raw_gold restant en lingots via le four portable du kit. Best-effort,
@@ -4729,12 +4829,13 @@ async function onSpawn() {
     bootDone = true;
   }
   // ANTI-CAMPING (phase B) : mort en rafale → on FUIT la zone du spawnpoint campé AVANT de
-  // reprendre (warp terre fraîche + ré-ancrage du respawn ici). Casse les boucles zombie-camp.
+  // reprendre. AWAIT volontaire et placé EN TÊTE : tout ce qui suit dans onSpawn (base, dette de
+  // mort, /tpa de regroupement, planner autonome) attend la fin de la fuite — sinon le bot
+  // repartirait travailler à portée d'arc du campeur. Voir escapeDeathCamp : en sans-give c'est
+  // une fuite À PIED, et le /spawnpoint n'est reposé qu'une fois au calme.
   if (_escapeOnSpawn) {
     _escapeOnSpawn = false;
-    emit({ type: 'death_camp_escape' });
-    try { await relocateToRegion(); } catch (e) { /* best-effort */ }
-    try { bot.chat('/spawnpoint'); } catch (e) {}
+    try { await escapeDeathCamp(); } catch (e) { /* best-effort : jamais bloquer le respawn */ }
   }
   // ─── Warp légitime (NO_GIVE + MAPPEUR) : home 'safe' surface + récupération post-mort ───────────
   // Le MAPPEUR (Massii live 2026-07-15 : « je ne le vois pas poser l'home et revenir ») pose aussi
@@ -5193,7 +5294,11 @@ bot.on('death', () => {
   deathTimes = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000);
   // ANTI-CAMPING (phase B, vécu V3Res1 : zombie campé sur le spawnpoint = 6 morts en 51 s,
   // et l'ancienne pause à 3 morts le laissait IDLE en punching-ball) : 2 morts en <60 s →
-  // au prochain spawn, WARP ailleurs + ré-ancrage du spawnpoint (le camping est cassé net).
+  // au prochain spawn on s'ARRACHE de la zone (escapeDeathCamp) avant toute autre activité.
+  // ⚠️ Le secours historique (warp /spreadplayers + ré-ancrage) est un NO-OP en sans-give — le
+  // warp est bloqué par nogive (asymétrie pinnée dans test/nogive.test.js : /spreadplayers
+  // interdit, /spawnpoint autorisé) et seul le ré-ancrage passait, CIMENTANT le camping
+  // (world_mn15, NethBot3 : 4 morts en 36 s en alternance shot/spawnpoint).
   const burst = deathTimes.filter((t) => Date.now() - t < 60000).length;
   // Fix fable1 ter : le camping LENT (zombie sur le spawnpoint, morts espacées 2-7 min — MapperBot2
   // 5 morts/22 min) passait sous le radar du burst <60 s. 3 morts en 10 min = même endroit pourri
