@@ -19,6 +19,12 @@ yield-bot/uploads/
 **/.venv/
 **/venv/
 
+# Node — jamais committé (piège #42h : un symlink node_modules absolu committé
+# depuis un worktree a cassé tous les bots en prod, silencieusement).
+# SANS slash final : avec « / » le pattern ne matche que les répertoires, et
+# c'est justement un SYMLINK qui avait fui.
+**/node_modules
+
 # Système macOS
 **/.DS_Store
 

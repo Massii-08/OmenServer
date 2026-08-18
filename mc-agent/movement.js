@@ -62,7 +62,44 @@ function applyPathfinderBounds(pathfinder) {
   }
 }
 
+// mineflayer-pathfinder n'expose PAS de getter `movements` (v2.4.5 : seul `setMovements` existe)
+// → lire `bot.pathfinder.movements` rend `undefined`. L'ancien pattern inline (2 sites d'index.js,
+// migration + minage exposé) héritait donc d'undefined (temp aux défauts de la lib : placeCost 1,
+// pas d'aquaphobie, blocksToAvoid réduits) et sa restauration `if (prevMoves)` ne tirait jamais —
+// après le 1er appel, le bot restait à VIE sur la Movements orpheline. La seule référence tenue
+// est `bot._mcaMoves` (posée à la connexion) : c'est elle qu'on hérite et qu'on restaure.
+/**
+ * Pose une Movements TEMPORAIRE (héritée de l'état courant + tweaks) pour la durée de `fn`, puis
+ * restaure la Movements nominale. Best-effort : `fn` s'exécute même si la pose a échoué (la
+ * mission de déplacement prime sur le réglage) ; les erreurs de `fn` se PROPAGENT (les call sites
+ * ont leurs propres catch), la restauration a lieu quand même (finally).
+ * @param {object} bot — le bot mineflayer (lit `_mcaMoves`, `pathfinder.setMovements`)
+ * @param {Function} MovementsCtor — le constructeur `Movements` de mineflayer-pathfinder
+ * @param {object} tweaks — réglages qui écrasent l'hérité sur la temp (ex: {canDig:false})
+ * @param {Function} fn — async, exécutée pendant que la temp est active
+ * @returns {Promise<*>} le retour de `fn`
+ */
+async function withTempMovements(bot, MovementsCtor, tweaks, fn) {
+  const prev = bot && bot._mcaMoves;
+  let applied = false;
+  try {
+    const temp = new MovementsCtor(bot);
+    if (prev) { try { Object.assign(temp, prev); } catch (e) {} }
+    Object.assign(temp, tweaks || {});
+    if (bot && bot.pathfinder && typeof bot.pathfinder.setMovements === 'function') {
+      bot.pathfinder.setMovements(temp);
+      applied = true;
+    }
+  } catch (e) { /* best-effort : sans temp, fn court sur les Movements actuelles */ }
+  try {
+    return await fn();
+  } finally {
+    if (applied && prev) { try { bot.pathfinder.setMovements(prev); } catch (e) {} }
+  }
+}
+
 module.exports = {
   shouldSprint, SPRINT_MIN_FOOD, SPRINT_RESUME_FOOD,
   applyPathfinderBounds, PATHFINDER_SEARCH_RADIUS,
+  withTempMovements,
 };

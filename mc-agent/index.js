@@ -28,7 +28,7 @@ const { parseOrder } = require('./orders');
 const { createTaskController } = require('./tasks');
 const { createMemory } = require('./memory');
 const { bestWeapon, bestToolFor } = require('./tools');
-const { shouldSprint, applyPathfinderBounds } = require('./movement');   // sprint « vrai joueur » ON par défaut (Massii 2026-06-22) + bornage A* (anti-OOM 2026-07-25)
+const { shouldSprint, applyPathfinderBounds, withTempMovements } = require('./movement');   // sprint « vrai joueur » ON par défaut (Massii 2026-06-22) + bornage A* (anti-OOM 2026-07-25)
 const vec3Lib = require('vec3'); // watchdog anti-jam (blocs barrants)
 const { gather, woodExpeditionCount } = require('./skills/gather');
 const { mineDown } = require('./skills/mineDown');
@@ -2075,17 +2075,13 @@ async function migrationLegTo(leg, yRef) {
   // autorisait (le vrai probleme que 18321c3 visait), on marche avec `canDig=false` : le bot suit la
   // surface sans pouvoir creuser vers le bas. Belt-and-suspenders : la remontee par jambe ci-dessous
   // rattrape le rare cas ou il finit quand meme sous terre.
-  const prevMoves = bot.pathfinder.movements;
-  try {
-    const surf = new Movements(bot);
-    try { Object.assign(surf, prevMoves); } catch (e) {}
-    surf.canDig = false;
-    bot.pathfinder.setMovements(surf);
-    await withTimeout(
-      bot.pathfinder.goto(new pfGoals.GoalNearXZ(leg.x, leg.z, 16)),
-      90000, () => { try { stopMotion(); } catch (e) {} });
-  } catch (e) { /* best-effort : la jambe suivante retentera */ }
-  finally { try { if (prevMoves) bot.pathfinder.setMovements(prevMoves); } catch (e) {} }
+  await withTempMovements(bot, Movements, { canDig: false }, async () => {
+    try {
+      await withTimeout(
+        bot.pathfinder.goto(new pfGoals.GoalNearXZ(leg.x, leg.z, 16)),
+        90000, () => { try { stopMotion(); } catch (e) {} });
+    } catch (e) { /* best-effort : la jambe suivante retentera */ }
+  });
   const p = bot.entity && bot.entity.position;
   if (p && p.y < SAFE_HOME_MIN_Y) {
     try {
@@ -3913,21 +3909,17 @@ async function startResource() {
         const air = openNeighborOf(target);
         const goal = air ? new pfGoals.GoalNear(air.x, air.y, air.z, 1)
                          : new pfGoals.GoalGetToBlock(target.x, target.y, target.z);
-        const prevMoves = bot.pathfinder.movements;
         // CAVE-FIRST (bug #3 Massii). Phase 1 : rejoindre la grotte SANS creuser (canDig=false) — le
         // chemin le plus humain (on entre par l'ouverture). Phase 2 (clarif #3) : pas walkable → creuser
         // POUR ATTEINDRE est AUTORISÉ (ne PAS sacrifier le diamant), MAIS le tunnel doit SERPENTER (un
         // tunnel parfaitement droit vers une grotte est AUSSI un tell X-ray) → on creuse via un point
         // intermédiaire décalé LATÉRALEMENT (coude aléatoire), pas en ligne droite.
         let r = null;
-        try {
-          const noDig = new Movements(bot);
-          try { Object.assign(noDig, prevMoves); } catch (e) {}
-          noDig.canDig = false;
-          bot.pathfinder.setMovements(noDig);
-          r = await withTimeout(bot.pathfinder.goto(goal), 60000, () => { try { stopMotion(); } catch (e) {} });
-        } catch (e) { r = { ok: false }; }
-        finally { try { if (prevMoves) bot.pathfinder.setMovements(prevMoves); } catch (e) {} }
+        await withTempMovements(bot, Movements, { canDig: false }, async () => {
+          try {
+            r = await withTimeout(bot.pathfinder.goto(goal), 60000, () => { try { stopMotion(); } catch (e) {} });
+          } catch (e) { r = { ok: false }; }
+        });
         if (taskToken.cancelled) return;
         if (r && r.ok === false) {                              // phase 2 : creuser en SERPENTANT (clarif #3)
           const p0 = bot.entity && bot.entity.position;
