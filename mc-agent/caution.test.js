@@ -6,6 +6,7 @@ const {
   equipRetryPlan, EQUIP_RETRY_WAIT_MS, EQUIP_MAX_ATTEMPTS, EQUIP_RETRY_COOLDOWN_MS,
   isEquipPickup, PICKUP_EQUIP_DELAY_MS,
   normalizeSmeltResult,
+  sprintAllowed, SPRINT_HUNGER_FLOOR, SPRINT_HUNGER_RESUME,
 } = require('./caution');
 
 // ─── PRUDENCE DU CARTOGRAPHE TANT QU'IL EST NU ──────────────────────────────────────────────────
@@ -292,4 +293,57 @@ test('le resultat d origine n est jamais mute (objet neuf a la normalisation)', 
   const n = normalizeSmeltResult(src, 3);
   assert.notStrictEqual(n, src);
   assert.strictEqual(src.reason, undefined);
+});
+
+// ─── RÉSERVE DE FAIM POUR LE SPRINT (18/08, suite directe) ──────────────────────────────────────
+// Mesure live world_mn15 (stats vanilla) : sprint_one_cm = 2,2 a 2,5 MILLIONS de cm (22-25 km) par
+// bot en quelques heures, walk_one_cm ~10x moindre — un bot sprinte quasi en permanence, affame ou
+// pas. Le sprint epuise la faim ~4x plus vite ; le plancher DUR du serveur (6/7, movement.js) coupe
+// trop tard : la reserve necessaire a la regeneration de PV (hard, faim>=18) est deja vide avant
+// meme d'atteindre ce plancher. Morts "starved to death" en serie (3 dans les 25 dernieres minutes
+// du run). `sprintAllowed` pose un plancher PROACTIF (12) nettement au-dessus du plancher vanilla,
+// avec hysteresis +2 (reprise a 14 seulement) pour eviter le clignotement.
+
+test('plancher : faim au-dessus de 12 -> sprint autorise (pas encore coupe)', () => {
+  assert.strictEqual(sprintAllowed({ food: 20 }), true);
+  assert.strictEqual(sprintAllowed({ food: 13 }), true);
+});
+
+test('plancher : faim a 12 pile ou en dessous -> sprint refuse (garder la reserve pour la regen)', () => {
+  assert.strictEqual(SPRINT_HUNGER_FLOOR, 12);
+  assert.strictEqual(sprintAllowed({ food: 12 }), false);
+  assert.strictEqual(sprintAllowed({ food: 6 }), false);
+  assert.strictEqual(sprintAllowed({ food: 0 }), false);
+});
+
+test('hysteresis : deja coupe -> ne reprend qu au seuil de reprise (14), pas des le plancher (12)', () => {
+  assert.strictEqual(SPRINT_HUNGER_RESUME, 14);
+  assert.strictEqual(sprintAllowed({ food: 12, curbed: true }), false);
+  assert.strictEqual(sprintAllowed({ food: 13, curbed: true }), false);
+  assert.strictEqual(sprintAllowed({ food: 14, curbed: true }), true);
+  assert.strictEqual(sprintAllowed({ food: 20, curbed: true }), true);
+});
+
+test('hysteresis : PAS encore coupe -> le plancher simple suffit (13 rouvre sans attendre 14)', () => {
+  assert.strictEqual(sprintAllowed({ food: 13, curbed: false }), true);
+  assert.strictEqual(sprintAllowed({ food: 13 }), true);   // curbed absent = comme false
+});
+
+test('food inconnu -> autorise (retro-compat, jamais de blocage sur donnee absente)', () => {
+  assert.strictEqual(sprintAllowed({}), true);
+  assert.strictEqual(sprintAllowed(), true);
+  assert.strictEqual(sprintAllowed({ food: undefined }), true);
+  assert.strictEqual(sprintAllowed({ food: null }), true);
+  assert.strictEqual(sprintAllowed({ food: NaN }), true);
+  assert.strictEqual(sprintAllowed({ food: 'plein' }), true);
+});
+
+test('food inconnu + deja coupe -> autorise quand meme (retro-compat prime sur l hysteresis)', () => {
+  assert.strictEqual(sprintAllowed({ curbed: true }), true);
+  assert.strictEqual(sprintAllowed({ food: undefined, curbed: true }), true);
+});
+
+test('le plancher est nettement au-dessus du plancher dur vanilla (6/7, movement.js) — proactif', () => {
+  // Sinon aucun gain vs shouldSprint qui coupe deja a 6/7 : la reserve serait vide avant de couper.
+  assert.ok(SPRINT_HUNGER_FLOOR > 7, 'doit couper AVANT le plancher dur vanilla, pas au meme endroit');
 });

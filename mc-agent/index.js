@@ -123,6 +123,7 @@ const { takeCover, pickCoverBlock } = require('./skills/takeCover');
 // raison de fonte toujours renseignée. Cf. caution.js.
 const {
   mapperCaution, regroupCaution, equipRetryPlan, isEquipPickup, normalizeSmeltResult, PICKUP_EQUIP_DELAY_MS,
+  sprintAllowed,
 } = require('./caution');
 
 function parseArgs(argv) {
@@ -4424,10 +4425,48 @@ async function onSpawn() {
     // quasi jamais (lent + tell). Garde tick : on FORCE le sprint dès qu'on avance sur la terre
     // ferme (faim ok, pas minage/eau/sneak). Décision pure dans movement.js (testée), état lu ici.
     // Dans le bloc bootDone → 1 seul interval par connexion (pas de fuite au respawn).
+    //
+    // RÉSERVE DE FAIM (Massii 18/08, suite directe — caution.sprintAllowed) : `shouldSprint`
+    // ci-dessous ne coupe qu'au plancher DUR du serveur (6/7) — trop tard, la réserve nécessaire à
+    // la régén de PV (hard, faim≥18) est déjà vide (mesure world_mn15 : sprint_one_cm = 2,2 à 2,5
+    // millions de cm/bot, walk_one_cm ~10× moindre → morts « starved to death » en série). On coupe
+    // donc PROACTIVEMENT dès 12 (hystérésis +2, reprise à 14).
+    // Forcer `setControlState('sprint', false)` ICI NE SUFFIT PAS : mineflayer-pathfinder a son
+    // PROPRE handler sur 'physicsTick' (monitorMovement, node_modules/mineflayer-pathfinder/
+    // index.js:614) qui RALLUME le sprint tout seul dès qu'il voit une ligne droite ET que
+    // `Movements.allowSprinting` est vrai — indépendant de la faim, et physicsTick (~50ms) est PLUS
+    // FRÉQUENT que ce tick (150ms) : notre `false` était donc écrasé avant le tour suivant, ce qui
+    // explique que le sprint ne s'arrêtait quasi jamais malgré `shouldSprint`. On coupe donc AUSSI
+    // `bot._mcaMoves.allowSprinting` le temps de l'épisode (état d'origine mémorisé pour la
+    // restauration exacte — certains rôles pourraient l'avoir différent de `true`).
+    // Pas d'exemption fuite : `fleeFrom` (skills/fleeFrom.js) ne pose qu'un but pathfinder, aucun
+    // flag identifiable côté bot pour distinguer « fuit un hostile » d'un trajet normal — donc une
+    // fuite en cours reste sprint-coupée sous 12 de faim. Accepté : la plupart des hostiles de
+    // mêlée (zombie, squelette) se déplacent à la vitesse de MARCHE d'un joueur, pas plus vite ;
+    // perdre le sprint réduit la marge mais ne cloue pas le bot sur place, et le plancher dur
+    // vanilla (6/7) aurait de toute façon coupé cette même fuite un peu plus tard.
     setInterval(() => {
       try {
         const ent = bot.entity;
         if (!ent) return;
+        const wasCurbed = !!bot._sprintCurbEpisode;
+        const foodOk = sprintAllowed({ food: bot.food, curbed: wasCurbed });
+        if (!foodOk) {
+          if (!wasCurbed) {
+            bot._sprintCurbEpisode = true;
+            // état d'origine mémorisé AVANT de l'écraser (certains rôles pourraient l'avoir à false)
+            bot._sprintCurbOrigAllow = bot._mcaMoves ? bot._mcaMoves.allowSprinting : true;
+            if (bot._mcaMoves) bot._mcaMoves.allowSprinting = false;
+            emit({ type: 'sprint_curbed', food: bot.food });
+          }
+          if (bot.getControlState('sprint')) bot.setControlState('sprint', false);
+          return;
+        }
+        if (wasCurbed) {
+          bot._sprintCurbEpisode = false;
+          if (bot._mcaMoves) bot._mcaMoves.allowSprinting = bot._sprintCurbOrigAllow;
+          emit({ type: 'sprint_restored', food: bot.food });
+        }
         const moving = (bot.pathfinder && bot.pathfinder.isMoving && bot.pathfinder.isMoving())
           || bot.getControlState('forward') || bot.getControlState('back');
         const want = shouldSprint({

@@ -143,9 +143,52 @@ function normalizeSmeltResult(r, want = 0) {
   return Object.assign({}, r, { ok: false, reason: got > 0 ? 'partial' : 'no_output', want: Number(want) || 0 });
 }
 
+// ─── 5) Réserve de faim pour le sprint (18/08, suite directe) ───────────────────────────────────
+
+// Mesure live world_mn15 (stats vanilla, même source canonique que la section 1) : `sprint_one_cm`
+// = 2,2 à 2,5 MILLIONS de cm (22-25 km) par bot en quelques heures, contre `walk_one_cm` ~10× moindre
+// — un bot sprinte QUASI EN PERMANENCE, affamé ou pas. Le sprint augmente l'épuisement de faim ~4×
+// (mécanique vanilla) ; sous faim ≤6 le SERVEUR coupe le sprint de force (movement.js
+// SPRINT_MIN_FOOD/SPRINT_RESUME_FOOD — mécanique du sprint EN COURS, pas une décision de prudence)
+// — mais le mal est fait AVANT d'atteindre ce plancher : la régénération de PV (hard) exige faim
+// ≥18 (reflexes.js REGEN_FOOD=17), donc un bot qui sprinte jusqu'à 7 puis marche jusqu'à 6 n'a plus
+// JAMAIS de réserve suffisante pour régénérer tant qu'il continue de bouger → morts « starved to
+// death » en série (3 dans les 25 dernières minutes du run). Un vrai joueur affamé ARRÊTE de courir
+// bien avant le plancher dur du serveur, pour garder une marge de manœuvre. `sprintAllowed` pose ce
+// plancher PROACTIF, nettement au-dessus du plancher vanilla (12 contre 6/7), avec la même
+// hystérésis « +2 » que movement.js pour éviter le clignotement. Vit ICI (pas dans movement.js)
+// parce que c'est une question de PRUDENCE (garder une réserve pour plus tard), pas de mécanique de
+// déplacement — même famille que mapperCaution/regroupCaution ci-dessus, pas que la mécanique pure
+// de shouldSprint.
+const SPRINT_HUNGER_FLOOR = 12;
+const SPRINT_HUNGER_RESUME = SPRINT_HUNGER_FLOOR + 2;   // hystérésis : ne reprend qu'à 14, jamais pile 12
+
+/**
+ * PUR — le sprint reste-t-il autorisé du point de vue de la RÉSERVE de faim ? Orthogonal à
+ * `shouldSprint` de movement.js (qui décide de la mécanique EN COURS : déplacement/sol/eau/dig/
+ * sneak/plancher dur 6-7) — les deux se combinent en ET côté appelant, celui-ci coupe plus tôt.
+ * sig = { food: 0-20|inconnu, curbed: bool (le sprint est déjà coupé par CETTE garde en ce moment,
+ *         pour l'hystérésis — même rôle que `sprinting` dans shouldSprint) }
+ * → false SEULEMENT si la faim est au plancher ou en dessous (et, si déjà coupé, tant qu'elle n'a
+ *   pas atteint le seuil de reprise) ; true sinon, et TOUJOURS true si food est inconnu (rétro-
+ *   compat : bot.food peut ne pas être livré juste après une connexion — ne jamais bloquer le
+ *   sprint sur une donnée absente).
+ * ⚠️ `typeof === 'number'` et PAS `Number(...)` : `Number(null) === 0` (piège JS classique) ferait
+ * lire un `food` absent comme « 0, affamé » au lieu de « inconnu » — même idiome que shouldSprint
+ * (movement.js : `typeof s.food === 'number' ? s.food : 20`).
+ */
+function sprintAllowed(sig = {}) {
+  const hasFood = !!sig && typeof sig.food === 'number' && Number.isFinite(sig.food);
+  if (!hasFood) return true;
+  const food = sig.food;
+  if (sig.curbed) return food >= SPRINT_HUNGER_RESUME;   // déjà coupé : ne reprend qu'à 14
+  return food > SPRINT_HUNGER_FLOOR;                     // pas encore coupé : coupe dès 12
+}
+
 module.exports = {
   mapperCaution, CAUTION_MIN_WORN, regroupCaution,
   equipRetryPlan, EQUIP_RETRY_WAIT_MS, EQUIP_MAX_ATTEMPTS, EQUIP_RETRY_COOLDOWN_MS,
   isEquipPickup, PICKUP_EQUIP_DELAY_MS,
   normalizeSmeltResult,
+  sprintAllowed, SPRINT_HUNGER_FLOOR, SPRINT_HUNGER_RESUME,
 };
