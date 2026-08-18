@@ -40,6 +40,20 @@ function mapperCaution(sig = {}) {
   return night ? 'shelter' : 'map';
 }
 
+// ─── 1bis) Prudence nocturne du REGROUPEMENT post-mort (18/08, suite directe) ───────────────────
+// Flagrant délit world_mn15 ~02:30 : 6 morts en 2 min AU MÊME POINT. Chaque mort → respawn →
+// `/tpa` immédiat vers le groupe (--regroup) → bot téléporté NU, DE NUIT, dans le camp où les
+// hostiles ont convergé → re-mort → re-tpa. Le regroupement (pensé pour la logistique de jour :
+// entraide de lingots, cohésion de squad) devient un aimant à morts la nuit — il CONCENTRE les
+// bots sans armure là où les hostiles convergent et COURT-CIRCUITE l'abri-si-nu (le bot se
+// téléporte au lieu de s'abriter). Exactement le mécanisme de mapperCaution ; seul le vocabulaire
+// de sortie change ('regroup' au lieu de 'map', puisque index.js appelle tryRegroup/trySquad, pas
+// une boucle de cartographie). Délègue plutôt que de dupliquer : le seuil (CAUTION_MIN_WORN) et le
+// traitement d'un signal isNight/hostilesNear inconnu ne doivent vivre qu'à UN endroit.
+function regroupCaution(sig = {}) {
+  return mapperCaution(sig) === 'shelter' ? 'shelter' : 'regroup';
+}
+
 // ─── 2) Ré-essai d'équipement ───────────────────────────────────────────────────────────────────
 
 // `bot.equip` échoue surtout EN MOUVEMENT (le serveur refuse le changement de slot pendant un
@@ -130,7 +144,7 @@ function normalizeSmeltResult(r, want = 0) {
 }
 
 module.exports = {
-  mapperCaution, CAUTION_MIN_WORN,
+  mapperCaution, CAUTION_MIN_WORN, regroupCaution,
   equipRetryPlan, EQUIP_RETRY_WAIT_MS, EQUIP_MAX_ATTEMPTS, EQUIP_RETRY_COOLDOWN_MS,
   isEquipPickup, PICKUP_EQUIP_DELAY_MS,
   normalizeSmeltResult,

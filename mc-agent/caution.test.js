@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  mapperCaution, CAUTION_MIN_WORN,
+  mapperCaution, CAUTION_MIN_WORN, regroupCaution,
   equipRetryPlan, EQUIP_RETRY_WAIT_MS, EQUIP_MAX_ATTEMPTS, EQUIP_RETRY_COOLDOWN_MS,
   isEquipPickup, PICKUP_EQUIP_DELAY_MS,
   normalizeSmeltResult,
@@ -62,6 +62,61 @@ test('worn absent / non numerique = 0 piece portee', () => {
 test('signature vide -> map (aucune raison de se terrer)', () => {
   assert.strictEqual(mapperCaution(), 'map');
   assert.strictEqual(mapperCaution({}), 'map');
+});
+
+// ─── PRUDENCE NOCTURNE DU REGROUPEMENT (18/08, suite directe) ───────────────────────────────────
+// Flagrant délit world_mn15 ~02:30 : 6 morts en 2 min AU MÊME POINT. Chaque mort → respawn →
+// /tpa immédiat vers le groupe (--regroup) → bot téléporté NU, DE NUIT, dans le camp où les
+// hostiles ont convergé → re-mort → re-tpa. Le regroupement (pensé pour la logistique de jour)
+// court-circuitait l'abri-si-nu. `regroupCaution` délègue à `mapperCaution` (même seuil
+// CAUTION_MIN_WORN, même traitement du signal isNight/hostilesNear inconnu) et traduit le verdict
+// dans le vocabulaire du regroupement : 'map' → 'regroup', 'shelter' reste 'shelter'.
+
+test('nuit + aucune piece portee -> abri (ne pas se regrouper)', () => {
+  assert.strictEqual(regroupCaution({ worn: 0, isNight: true, hostilesNear: false }), 'shelter');
+});
+
+test('nuit + 1 seule piece -> abri', () => {
+  assert.strictEqual(regroupCaution({ worn: 1, isNight: true, hostilesNear: false }), 'shelter');
+});
+
+test('nuit + 2 pieces (seuil CAUTION_MIN_WORN) -> il se regroupe', () => {
+  assert.strictEqual(CAUTION_MIN_WORN, 2);
+  assert.strictEqual(regroupCaution({ worn: 2, isNight: true, hostilesNear: true }), 'regroup');
+});
+
+test('nuit + set complet -> il se regroupe', () => {
+  assert.strictEqual(regroupCaution({ worn: 4, isNight: true, hostilesNear: true }), 'regroup');
+});
+
+test('JOUR + nu -> il se regroupe quand meme (comportement actuel intact de jour)', () => {
+  assert.strictEqual(regroupCaution({ worn: 0, isNight: false, hostilesNear: false }), 'regroup');
+});
+
+test('JOUR + nu + hostiles proches -> il se regroupe (fuir/riposter reste le role de survivalTick)', () => {
+  assert.strictEqual(regroupCaution({ worn: 0, isNight: false, hostilesNear: true }), 'regroup');
+});
+
+test('nuit INCONNUE (null) + nu + hostiles proches -> abri (les hostiles sont le proxy honnete)', () => {
+  assert.strictEqual(regroupCaution({ worn: 0, isNight: null, hostilesNear: true }), 'shelter');
+});
+
+test('nuit INCONNUE (null) + nu SANS hostile -> il se regroupe (pas de paranoia)', () => {
+  assert.strictEqual(regroupCaution({ worn: 0, isNight: null, hostilesNear: false }), 'regroup');
+});
+
+test('nuit inconnue + hostiles mais 2 pieces portees -> il se regroupe', () => {
+  assert.strictEqual(regroupCaution({ worn: 2, isNight: null, hostilesNear: true }), 'regroup');
+});
+
+test('worn absent / non numerique = 0 piece portee -> abri de nuit', () => {
+  assert.strictEqual(regroupCaution({ isNight: true }), 'shelter');
+  assert.strictEqual(regroupCaution({ worn: 'deux', isNight: true }), 'shelter');
+});
+
+test('signature vide -> regroup (jamais throw, jamais le mot "map")', () => {
+  assert.strictEqual(regroupCaution(), 'regroup');
+  assert.strictEqual(regroupCaution({}), 'regroup');
 });
 
 // ─── POLITIQUE DE RÉ-ESSAI D'ÉQUIPEMENT ─────────────────────────────────────────────────────────

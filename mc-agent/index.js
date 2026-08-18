@@ -121,7 +121,7 @@ const { takeCover, pickCoverBlock } = require('./skills/takeCover');
 // Décisions PURES : abri tant qu'il est nu, ré-essai d'équipement, ramassage → équipement,
 // raison de fonte toujours renseignée. Cf. caution.js.
 const {
-  mapperCaution, equipRetryPlan, isEquipPickup, normalizeSmeltResult, PICKUP_EQUIP_DELAY_MS,
+  mapperCaution, regroupCaution, equipRetryPlan, isEquipPickup, normalizeSmeltResult, PICKUP_EQUIP_DELAY_MS,
 } = require('./caution');
 
 function parseArgs(argv) {
@@ -451,6 +451,40 @@ async function tryTpToMapper(goal) {
   return { ok: !!r.warped };
 }
 
+// PRUDENCE NOCTURNE DU REGROUPEMENT (18/08) — même mécanisme que mapperNightGuard (startMapper),
+// appliqué à tryRegroup/trySquad. Flagrant délit world_mn15 ~02:30 : 6 morts en 2 min AU MÊME
+// POINT — chaque mort → respawn → /tpa immédiat vers le groupe → bot téléporté NU, DE NUIT, dans
+// le camp qui vient de le tuer (les hostiles y ont convergé) → re-mort → re-tpa. Le regroupement
+// (pensé pour la logistique de jour) court-circuitait l'abri-si-nu. Décision pure :
+// caution.regroupCaution (même seuil que mapperCaution : < 2 pièces portées + nuit → abri).
+// Renvoie true si le bot doit se terrer (donc NE PAS /tpa) ; false si le regroupement peut suivre
+// son cours normal — comportement d'avant cette fonction, intact (jour ou 2+ pièces portées).
+async function regroupNightGuard() {
+  let worn = 0;
+  try { worn = _wornArmor().size; } catch (e) { /* inventaire pas encore livré → 0 = prudent */ }
+  // `bot.time` peut manquer juste après un spawn/une reconnexion — exactement le moment où le bot
+  // est nu : on passe alors `null` (inconnu) et regroupCaution retombe honnêtement sur les
+  // hostiles, au lieu de conclure « il fait jour » (même garde que mapperNightGuard).
+  const nightKnown = !!(bot && bot.time && bot.time.timeOfDay != null);
+  let hostilesNear = false;
+  try {
+    const h = bot.nearestEntity((x) => x && x.kind === 'Hostile mobs');
+    hostilesNear = !!(h && bot.entity && h.position.distanceTo(bot.entity.position) <= 8);
+  } catch (e) { /* best-effort */ }
+  const decision = regroupCaution({ worn, isNight: nightKnown ? isNight(bot) : null, hostilesNear });
+  if (decision !== 'shelter') {
+    bot._regroupCautionEpisode = false;   // aube OU 2+ pièces portées → l'épisode est clos
+    return false;
+  }
+  if (!bot._regroupCautionEpisode) { bot._regroupCautionEpisode = true; emit({ type: 'regroup_caution', worn }); }
+  // DANS L'EAU on ne force rien : pas de trou creusé en plein océan, le sauvetage d'eau garde la
+  // main (même garde que mapperNightGuard).
+  let inWater = false;
+  try { inWater = isInWater(bot); } catch (e) { /* best-effort */ }
+  try { await maybeNightShelter(true, inWater ? {} : { force: true }); } catch (e) { /* best-effort */ }
+  return true;
+}
+
 // REGROUPEMENT APRÈS MORT (--regroup, OFF par défaut). Avec keepInventory, mourir ne coûte
 // presque rien : ce qui tue une 2e fois, c'est le RETOUR à pied (200-400 blocs sous les mobs).
 // Un /tpa vers le coéquipier le plus proche supprime ce trajet — 100 % « vrai joueur », et /tpa
@@ -462,6 +496,7 @@ async function tryRegroup() {
   if (!presence) return { ok: false, reason: 'no_presence' };
   const p = bot.entity && bot.entity.position;
   if (!p) return { ok: false, reason: 'no_pos' };
+  if (await regroupNightGuard()) return { ok: false, reason: 'night_shelter' };
   let armorComplete = false;
   try { armorComplete = armorNeed({ inv: buildCtxInv(bot), worn: [..._wornArmor()] }, 3) === 0; } catch (e) {}
   const pick = pickRegroupTarget({
@@ -491,6 +526,7 @@ async function trySquad() {
   if (!REGROUP || !presence) return { ok: false, reason: 'disabled' };
   const p = bot.entity && bot.entity.position;
   if (!p) return { ok: false, reason: 'no_pos' };
+  if (await regroupNightGuard()) return { ok: false, reason: 'night_shelter' };
   let armorComplete = false;
   try { armorComplete = armorNeed({ inv: buildCtxInv(bot), worn: [..._wornArmor()] }, 3) === 0; } catch (e) {}
   // Minage/tâche longue en cours → on ne yanke pas (piège #42c). Même jeu de gardes que
