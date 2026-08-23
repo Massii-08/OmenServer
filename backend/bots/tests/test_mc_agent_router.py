@@ -855,3 +855,130 @@ def test_reset_memory_unknown_profile_is_404(monkeypatch):
     c = make_client()
     assert c.post("/api/mc-agent/servers/zzz999/memory/reset").status_code == 404
     assert called == []          # on ne purge pas la mémoire d'un profil inconnu
+
+
+# ── Run serveur externe (2026-08-23) : version protocole forcée + x-ray autorisé par run ──────
+
+def test_create_server_accepts_mc_version(monkeypatch):
+    """ServerPayload doit transporter mc_version jusqu'au store (sinon model_dump le drop, #61)."""
+    captured = {}
+    monkeypatch.setattr(r.servers_store, "create_server",
+                        lambda payload: (captured.update(payload) or {"id": "ab12cd", **payload}))
+    c = make_client()
+    resp = c.post("/api/mc-agent/servers", json={"name": "Ember", "mc_version": "1.21.11"})
+    assert resp.status_code == 200
+    assert captured["mc_version"] == "1.21.11"
+
+
+def test_run_with_server_id_passes_mc_version(monkeypatch):
+    """Profil serveur avec mc_version → transmis à start_session (proxy sans status-ping)."""
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    captured = {}
+
+    def fake_start(*a, **kw):
+        captured.update(kw)
+        return 21
+
+    monkeypatch.setattr(mgr, "start_session", fake_start)
+    monkeypatch.setattr(r.servers_store, "get_server", lambda sid: {
+        "id": sid, "host": "embersmp.aternos.me", "port": 25565, "user": "Bot", "auth": "offline",
+        "intelligence": "intermediaire", "language": "fr", "commands": [], "custom": [],
+        "trusted": [], "trade": None, "mc_version": "1.21.11"})
+    monkeypatch.setattr(r.servers_store, "resolve_commands", lambda srv: [])
+    monkeypatch.setattr(r.servers_store, "resolve_policy", lambda srv: {"trusted": [], "trade": None})
+    c = make_client()
+    resp = c.post("/api/mc-agent/run", json={"server_id": "abc"})
+    assert resp.status_code == 200
+    assert captured["mc_version"] == "1.21.11"
+
+
+def test_run_sans_mc_version_ne_passe_pas_le_kwarg(monkeypatch):
+    """Profil sans mc_version → AUCUN kwarg (les monkeypatchs à signature stricte tiennent)."""
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    captured = {}
+
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None,
+                   policy=None, server_id=None, language="fr", autonomous=False,
+                   objective="stone_pickaxe", world_label=None):
+        captured["host"] = host
+        return 22
+
+    monkeypatch.setattr(mgr, "start_session", fake_start)
+    monkeypatch.setattr(r.servers_store, "get_server", lambda sid: {
+        "id": sid, "host": "play.x", "port": 25565, "user": "Bot", "auth": "offline",
+        "intelligence": "expert", "language": "fr", "commands": [], "custom": [],
+        "trusted": [], "trade": None})
+    monkeypatch.setattr(r.servers_store, "resolve_commands", lambda srv: [])
+    monkeypatch.setattr(r.servers_store, "resolve_policy", lambda srv: {"trusted": [], "trade": None})
+    c = make_client()
+    assert c.post("/api/mc-agent/run", json={"server_id": "abc"}).status_code == 200
+    assert captured["host"] == "play.x"
+
+
+def test_run_passes_xray(monkeypatch):
+    """POST /run avec xray:true → start_session reçoit xray=True (débride exposedOnly côté bot)."""
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    captured = {}
+
+    def fake_start(*a, **kw):
+        captured.update(kw)
+        return 23
+
+    monkeypatch.setattr(mgr, "start_session", fake_start)
+    c = make_client()
+    resp = c.post("/api/mc-agent/run", json={"host": "h", "user": "U", "no_give": True, "xray": True})
+    assert resp.status_code == 200
+    assert captured["xray"] is True
+
+
+def test_run_sans_xray_ne_passe_pas_le_kwarg(monkeypatch):
+    """Sans le champ → AUCUN kwarg xray : rétro-compat stricte des monkeypatchs existants."""
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    captured = {}
+
+    def fake_start(host, port, user, model=None, auth="offline", profile=None, commands=None,
+                   policy=None, server_id=None, language="fr", autonomous=False,
+                   objective="stone_pickaxe", world_label=None):
+        captured["user"] = user
+        return 24
+
+    monkeypatch.setattr(mgr, "start_session", fake_start)
+    c = make_client()
+    assert c.post("/api/mc-agent/run", json={"host": "h", "user": "U"}).status_code == 200
+    assert captured["user"] == "U"
+
+
+def test_run_roster_passes_xray(monkeypatch):
+    """POST /run server_id+bot_id : xray transmis à start_for_bot (mémorisé pour le respawn)."""
+    captured = {}
+
+    def fake_start_for_bot(gid, bid, **kw):
+        captured.update(kw)
+        return 25
+
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    monkeypatch.setattr(mgr, "start_for_bot", fake_start_for_bot)
+    client = make_client()
+    resp = client.post("/api/mc-agent/run", json={
+        "server_id": "ab12cd", "bot_id": "b1", "objective": "resource",
+        "autonomous": True, "xray": True,
+    })
+    assert resp.status_code == 200
+    assert captured["xray"] is True
+
+
+def test_run_roster_sans_xray_ne_passe_pas_le_kwarg(monkeypatch):
+    """Roster sans xray → kwarg absent (mêmes garanties que no_give)."""
+    captured = {}
+
+    def fake_start_for_bot(gid, bid, **kw):
+        captured.update(kw)
+        return 26
+
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    monkeypatch.setattr(mgr, "start_for_bot", fake_start_for_bot)
+    client = make_client()
+    resp = client.post("/api/mc-agent/run", json={
+        "server_id": "ab12cd", "bot_id": "b1", "objective": "resource", "autonomous": True})
+    assert resp.status_code == 200
+    assert "xray" not in captured

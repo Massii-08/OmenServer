@@ -210,3 +210,51 @@ def test_resolve_policy_group_bots(tmp_store):
     pol = ss.resolve_policy(ss.get_server(s["id"]))
     assert pol["trusted"] == ["Bob"]                      # gating des ordres INCHANGÉ
     assert sorted(pol["group_bots"]) == ["MapBot1", "ResBot1"]
+
+
+# ── Version protocole forcée (mc_version) — serveurs dont le status-ping est coupé ────────────
+# Aternos & co coupent le ping de status → l'auto-détection de version de mineflayer crashe en
+# ECONNRESET. Le profil serveur porte donc la version à forcer (passée au bot via --mc-version).
+
+def test_create_persists_mc_version_roundtrip(tmp_store):
+    """mc_version survit à _clean_server + à l'aller-retour disque (piège #61 : 4 couches)."""
+    s = ss.create_server({"name": "X", "host": "h", "mc_version": "1.21.11"})
+    assert s["mc_version"] == "1.21.11"
+    reloaded = ss.get_server(s["id"])
+    assert reloaded["mc_version"] == "1.21.11"
+
+
+def test_mc_version_defaut_vide_si_absent(tmp_store):
+    """Champ absent (profils existants sur disque) → "" = auto-détection, comportement historique."""
+    s = ss.create_server({"name": "X", "host": "h"})
+    assert s["mc_version"] == ""
+
+
+@pytest.mark.parametrize("dirty", [
+    "1.21.11; rm -rf /",       # injection shell
+    "latest",                  # alias non numérique
+    "1.21.11 --host evil",     # injection d'argv
+    "9" * 40,                  # trop long (cap 16)
+    "1.2.3.4.5",               # trop de segments
+    "",
+    None,
+    12111,                     # pas une chaîne
+])
+def test_mc_version_valeur_sale_rejetee(tmp_store, dirty):
+    """Validation STRICTE : seul ^[0-9]+(\\.[0-9]+){0,3}$ (≤16 car.) passe, sinon "" (auto)."""
+    s = ss.create_server({"name": "X", "host": "h", "mc_version": dirty})
+    assert s["mc_version"] == ""
+
+
+def test_mc_version_formats_valides(tmp_store):
+    for ok in ("1.21.11", "1.20", "26", "1.21.11.1"):
+        s = ss.create_server({"name": "X", "host": "h", "mc_version": ok})
+        assert s["mc_version"] == ok
+
+
+def test_update_persists_mc_version(tmp_store):
+    """update_server passe aussi par _clean_server → mc_version persiste (miroir kit_command)."""
+    s = ss.create_server({"name": "A", "host": "h"})
+    out = ss.update_server(s["id"], {"name": "A", "host": "h", "mc_version": "1.21.11"})
+    assert out["mc_version"] == "1.21.11"
+    assert ss.load_servers()[0]["mc_version"] == "1.21.11"

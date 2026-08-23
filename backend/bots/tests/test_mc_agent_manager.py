@@ -1683,3 +1683,160 @@ def test_start_session_flushes_world_memory_before_bootstrap(monkeypatch, tmp_pa
     cells = _json.loads(open(path).read())["worlds"]["w"]["biomes"]
     assert len(cells) == 2, "le bot démarre avec une carte tronquée (debounce non vidé)"
     _wm_reset()
+
+
+# ── Version protocole forcée + x-ray débridé (run serveur externe, 2026-08-23) ────────────────
+# mc_version : le proxy Aternos coupe les status-pings → l'auto-détection mineflayer crashe
+# (ECONNRESET). --mc-version <v> la court-circuite. xray : débride le ciblage anti-xray
+# (exposedOnly) quand le run l'autorise explicitement.
+
+def _fake_proc_cls(pid):
+    import io
+
+    class FakeProc:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter(())
+            self.pid = pid
+
+        def poll(self):
+            return None
+
+    return FakeProc
+
+
+def test_start_session_mc_version_flag(monkeypatch, tmp_path):
+    """mc_version → --mc-version <v> dans l'argv Node ; absent par défaut (rétro-compat)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+    FakeProc = _fake_proc_cls(4340)
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen",
+                        lambda cmd, **kw: (captured.__setitem__("cmd", cmd) or FakeProc()))
+    mgr.start_session("h", 25565, "U", mc_version="1.21.11")
+    cmd = captured["cmd"]
+    assert "--mc-version" in cmd and cmd[cmd.index("--mc-version") + 1] == "1.21.11"
+    mgr.start_session("h", 25565, "U2")
+    assert "--mc-version" not in captured["cmd"]
+
+
+def test_start_session_xray_flag(monkeypatch, tmp_path):
+    """xray=True → --xray 1 ; défaut → absent (le filtre anti-xray reste actif)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+    FakeProc = _fake_proc_cls(4341)
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen",
+                        lambda cmd, **kw: (captured.__setitem__("cmd", cmd) or FakeProc()))
+    mgr.start_session("h", 25565, "U", xray=True)
+    cmd = captured["cmd"]
+    assert "--xray" in cmd and cmd[cmd.index("--xray") + 1] == "1"
+    mgr.start_session("h", 25565, "U2")
+    assert "--xray" not in captured["cmd"]
+
+
+def _stub_group(monkeypatch, extra=None):
+    group = {
+        "id": "g10", "host": "h", "port": 25565, "intelligence": "intermediaire",
+        "language": "fr", "has_login": False, "stealth": False,
+        "bots": [{"id": "n1", "role": "worker", "username": "EmberBot1", "auth": "offline"}],
+    }
+    group.update(extra or {})
+    monkeypatch.setattr(mgr.servers_store, "get_server", lambda gid: group)
+    monkeypatch.setattr(mgr.servers_store, "resolve_commands", lambda g: None)
+    monkeypatch.setattr(mgr.servers_store, "resolve_policy", lambda g: None)
+    monkeypatch.setattr(mgr.mc_agent_secrets, "get_secret", lambda gid, bid: None)
+    return group
+
+
+def test_start_for_bot_propage_mc_version_du_groupe(monkeypatch, tmp_path):
+    """La version est RÉSOLUE DU GROUPE à chaque lancement → un respawn la re-résout gratis."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    _stub_group(monkeypatch, {"mc_version": "1.21.11"})
+    monkeypatch.setattr(mgr, "_spawn_bot", lambda **kw: (captured.update(kw) or 77))
+    mgr.start_for_bot("g10", "n1", autonomous=True, objective="iron_armor")
+    assert captured["mc_version"] == "1.21.11"
+
+
+def test_start_for_bot_sans_mc_version_passe_none(monkeypatch, tmp_path):
+    """Groupe sans mc_version (ou "") → None : aucun flag, auto-détection historique."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    _stub_group(monkeypatch, {"mc_version": ""})
+    monkeypatch.setattr(mgr, "_spawn_bot", lambda **kw: (captured.update(kw) or 78))
+    mgr.start_for_bot("g10", "n1")
+    assert captured["mc_version"] is None
+
+
+def test_start_for_bot_xray_dans_respawn_memo(monkeypatch, tmp_path):
+    """xray survit au self-healing : un bot relancé après une mort garde son débridage (#66a)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+    FakeProc = _fake_proc_cls(5010)
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: cmds.append(cmd) or FakeProc())
+    _stub_group(monkeypatch, {"mc_version": "1.21.11"})
+    sid = mgr.start_for_bot("g10", "n1", autonomous=True, objective="iron_armor", xray=True)
+    assert "--xray" in cmds[-1]
+    assert "--mc-version" in cmds[-1]
+    sess = mgr._sessions.get(sid)
+    assert sess is not None and sess["respawn"].get("xray") is True
+    mgr._sessions.pop(sid, None)
+
+
+def test_start_for_bot_sans_xray_memo_false(monkeypatch, tmp_path):
+    """Défaut : le memo porte xray=False → un respawn ne débride RIEN par surprise."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+    FakeProc = _fake_proc_cls(5011)
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: cmds.append(cmd) or FakeProc())
+    _stub_group(monkeypatch)
+    sid = mgr.start_for_bot("g10", "n1", autonomous=True, objective="iron_armor")
+    assert "--xray" not in cmds[-1]
+    sess = mgr._sessions.get(sid)
+    assert sess is not None and sess["respawn"].get("xray") is False
+    mgr._sessions.pop(sid, None)
+
+
+def test_start_mappers_propage_mc_version(monkeypatch, tmp_path):
+    """start_mappers appelle _spawn_bot DIRECTEMENT : sans ça les cartographes boot en ECONNRESET
+    (auto-détection impossible) pendant que les workers, eux, passent."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+    monkeypatch.setattr(mgr, "MAPPER_SPAWN_STAGGER_S", 0)
+    monkeypatch.setattr(mgr.servers_store, "get_server", lambda gid: {
+        "id": gid, "host": "h", "port": 25565, "intelligence": "intermediaire",
+        "language": "fr", "has_login": False, "stealth": False, "mc_version": "1.21.11",
+        "bots": [{"id": "m1", "role": "mapper", "username": "EmberMap1", "auth": "offline"}],
+    })
+    monkeypatch.setattr(mgr.servers_store, "resolve_commands", lambda g: None)
+    monkeypatch.setattr(mgr.servers_store, "resolve_policy", lambda g: None)
+    monkeypatch.setattr(mgr.mc_agent_secrets, "get_secret", lambda gid, bid: None)
+    monkeypatch.setattr(mgr, "_spawn_bot", lambda **kw: (captured.update(kw) or 91))
+    out = mgr.start_mappers("g11", 1)
+    assert out["launched"] == 1
+    assert captured["mc_version"] == "1.21.11"
+    mgr._sessions.pop(91, None)
+
+
+def test_start_mappers_sans_mc_version_passe_none(monkeypatch, tmp_path):
+    """Groupe sans mc_version → None → aucun flag (comportement historique des cartographes)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+    monkeypatch.setattr(mgr, "MAPPER_SPAWN_STAGGER_S", 0)
+    monkeypatch.setattr(mgr.servers_store, "get_server", lambda gid: {
+        "id": gid, "host": "h", "port": 25565, "intelligence": "intermediaire",
+        "language": "fr", "has_login": False, "stealth": False,
+        "bots": [{"id": "m1", "role": "mapper", "username": "EmberMap1", "auth": "offline"}],
+    })
+    monkeypatch.setattr(mgr.servers_store, "resolve_commands", lambda g: None)
+    monkeypatch.setattr(mgr.servers_store, "resolve_policy", lambda g: None)
+    monkeypatch.setattr(mgr.mc_agent_secrets, "get_secret", lambda gid, bid: None)
+    monkeypatch.setattr(mgr, "_spawn_bot", lambda **kw: (captured.update(kw) or 92))
+    mgr.start_mappers("g11", 1)
+    assert captured["mc_version"] is None
+    mgr._sessions.pop(92, None)

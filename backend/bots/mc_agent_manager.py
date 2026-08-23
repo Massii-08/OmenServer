@@ -469,7 +469,8 @@ def _on_pump_end(session):
                                         world_label=rs.get("world_label"), quota=rs.get("quota"),
                                         humanize=rs.get("humanize", True), confine=rs.get("confine"),
                                         no_give=rs.get("no_give", False),
-                                        regroup=rs.get("regroup", False))
+                                        regroup=rs.get("regroup", False),
+                                        xray=rs.get("xray", False))
                 ns = _sessions.get(new_sid)
                 if ns is not None:
                     ns["respawn_count"] = plan["respawn_count"]
@@ -568,7 +569,7 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
                policy=None, server_id=None, language="fr", autonomous=False,
                objective="stone_pickaxe", world_label=None, login_command=None,
                sector_index=None, sector_count=None, quota=None, stealth=False, humanize=False,
-               confine=None, no_give=False, regroup=False):
+               confine=None, no_give=False, regroup=False, mc_version=None, xray=False):
     """Spawn le process Node détaché et enregistre la session. Retourne son id.
 
     Point monkeypatchable des lancements par roster (start_for_bot/start_mappers).
@@ -621,6 +622,16 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
         # Run nether 2026-07-13 : ZÉRO /give — le bot mine/fond/crafte tout (kit + filet food coupés,
         # filtre dur bot.chat côté Node). Off par défaut = rétro-compat stricte.
         cmd += ["--no-give", "1"]
+    if xray:
+        # Run « full x-ray autorisé » (par run, décision opérateur) : débride le filtre exposedOnly
+        # du CIBLAGE — le bot exploite aussi les minerais mappés ENTERRÉS (comportement
+        # pré-water-wall). Off par défaut : le couplage historique reste au mode sans-give.
+        cmd += ["--xray", "1"]
+    if mc_version:
+        # Version protocole FORCÉE : sur un proxy qui coupe les status-pings (Aternos), le ping
+        # d'auto-détection de mineflayer crashe en ECONNRESET au boot. La valeur est validée en
+        # amont (_clean_mc_version : chiffres et points uniquement) → aucune injection d'argv.
+        cmd += ["--mc-version", str(mc_version)]
     # Capture-clone : si le profil serveur a `clone_player` ET que ses captures REC sont distillées
     # (DISTILLED_DIR/<joueur>/{style.json,clips/}), passe --style/--clips → le bot rejoue la motricité
     # HUMAINE réelle (swing anti-snap, wobble de visée, latence de réaction). Best-effort + rétro-compat
@@ -817,7 +828,7 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     return sid
 
 
-def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, stealth=False, humanize=True, confine=None, no_give=False, regroup=False):
+def start_session(host, port, user, model=None, auth="offline", profile=None, commands=None, policy=None, server_id=None, language="fr", autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, stealth=False, humanize=True, confine=None, no_give=False, regroup=False, mc_version=None, xray=False):
     """Lancement manuel (path historique du router + compat tests). Délègue à `_spawn_bot`.
 
     `humanize` par DÉFAUT True (paquet 1 anti-tell, décision Massii 07/06) : un bot lancé
@@ -828,7 +839,7 @@ def start_session(host, port, user, model=None, auth="offline", profile=None, co
                       commands=commands, policy=policy, server_id=server_id, language=language,
                       autonomous=autonomous, objective=objective, world_label=world_label,
                       quota=quota, stealth=stealth, humanize=humanize, confine=confine,
-                      no_give=no_give, regroup=regroup)
+                      no_give=no_give, regroup=regroup, mc_version=mc_version, xray=xray)
 
 
 def _resolve_login_command(group, group_id, bot_id, secret):
@@ -856,7 +867,7 @@ def _online_usernames(group_id):
     return out
 
 
-def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, humanize=True, confine=None, no_give=False, regroup=False):
+def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="stone_pickaxe", world_label=None, quota=None, humanize=True, confine=None, no_give=False, regroup=False, xray=False):
     """Lance un bot du roster d'un groupe (résout connexion + compte + login + intelligence).
 
     `humanize` par DÉFAUT True, comme `start_session`. L'incohérence précédente (False ici, True
@@ -884,7 +895,10 @@ def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="sto
         language=group.get("language", "fr"), autonomous=autonomous, objective=objective,
         world_label=world_label, model=model, login_command=login_command, quota=quota,
         stealth=bool(group.get("stealth")), humanize=humanize, confine=confine, no_give=no_give,
-        regroup=regroup,
+        regroup=regroup, xray=xray,
+        # Version protocole RÉ-RÉSOLUE DU GROUPE à chaque lancement (comme language/stealth) → un
+        # respawn du self-healing la retrouve tout seul, rien à mémoriser dans le memo.
+        mc_version=group.get("mc_version") or None,
     )
     # Self-healing (phase 2) : mémorise QUOI respawner si le process meurt naturellement
     # (kick/Timed out/watchdog) — l'inventaire du compte persiste, le quota repart d'où il était.
@@ -893,7 +907,10 @@ def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="sto
         sess["respawn"] = {"group_id": group_id, "bot_id": bot_id, "model": model,
                            "autonomous": autonomous, "objective": objective,
                            "world_label": world_label, "quota": quota, "humanize": humanize,
-                           "confine": confine, "no_give": no_give, "regroup": regroup}
+                           "confine": confine, "no_give": no_give, "regroup": regroup,
+                           # #66a : un état qui ne survit pas au respawn est un état mort — le
+                           # self-healing relance le bot des dizaines de fois par nuit.
+                           "xray": xray}
         sess.setdefault("respawn_count", 0)
         _registry_sync()  # le plan de respawn doit survivre au restart (self-healing adopté)
     return sid
@@ -946,6 +963,10 @@ def start_mappers(group_id, count):
             server_id=group_id, language=group.get("language", "fr"), autonomous=True,
             objective="mapper", login_command=login_command, sector_index=i, sector_count=n,
             stealth=bool(group.get("stealth")), humanize=True,
+            # start_mappers ne passe NI par start_session NI par start_for_bot : sans ce relais, les
+            # cartographes boot en ECONNRESET (auto-détection impossible) pendant que les workers,
+            # eux, passent. Leur respawn, lui, passe par start_for_bot (qui re-résout du groupe).
+            mc_version=group.get("mc_version") or None,
         )
         # Self-healing mapper (Massii #1) : un cartographe tué par les mobs REVIENT (mêmes
         # règles que resource : 15 s + jitter, cap 12, garde crash-on-spawn, spawn gate).

@@ -157,6 +157,12 @@ const args = parseArgs(process.argv.slice(2));
 // --no-give 1 → (1) provisionStartKit/ensureFood ne /give plus RIEN, (2) filtre dur sur bot.chat
 // (isForbiddenCheat) qui bloque tout /give //tp //effect… résiduel (défense en profondeur).
 const NO_GIVE = args['no-give'] === '1' || args['no-give'] === 'true';
+// --xray 1 : run où le « full x-ray » est AUTORISÉ (décision opérateur, par run). Débride le
+// filtre `exposedOnly` du CIBLAGE : le bot peut viser les minerais mappés ENTERRÉS, comme avant
+// le durcissement water-wall. ÉTEINT par défaut → le couplage historique (anti-xray armé par le
+// mode sans-give) reste strictement inchangé. Ne touche PAS à caveHunt, dont l'`exposedOnly` est
+// une contrainte PHYSIQUE (il rejoint sa cible par la grotte, sans creuser).
+const XRAY = args.xray === '1' || args.xray === 'true';
 // --regroup : après une mort, rejoindre le groupe en /tpa tant que l'armure fer n'est pas là
 // (idée Massii 25/07). ÉTEINT par défaut — à activer explicitement, run par run.
 const REGROUP = args.regroup === '1' || args.regroup === 'true';
@@ -746,6 +752,12 @@ function _giftContext() {
   try {
     const items = (bot && bot.inventory && bot.inventory.items()) || [];
     const ready = giftSetPlan(items).ready;
+    // Serveur SANS plugin de téléportation (whitelist sans /tpa) : la livraison est IMPOSSIBLE par
+    // construction — `deliverMapperArmor` est gated par le même isAllowed. Sans cette sortie on
+    // réserverait une cible que PERSONNE ne peut servir, et comme les cartographes y restent nus en
+    // permanence, la chaîne mapper_armor bouclerait à vie sur gift_blocked sans jamais atteindre le
+    // diamant. Pas de cible ⇒ tous les buts de la chaîne sont satisfaits d'office → le bot enchaîne.
+    if (!isAllowed('/tpa x', whitelist)) { _giftTarget = null; return { target: null, ready }; }
     const now = Date.now();
     if (now - _giftAt < GIFT_CACHE_MS) return { target: _giftTarget, ready };
     _giftAt = now;
@@ -1607,7 +1619,12 @@ async function runGoalSkill(goal) {
     const to = _giftTarget;
     if (!to) return { ok: true };                       // plus personne à servir
     if (!isAllowed('/tpa ' + to, whitelist)) {
-      emit({ type: 'gift_blocked', to });               // /tpa pas coché dans le profil serveur
+      // /tpa pas coché dans le profil serveur. Défense en profondeur (la cible est déjà gatée à la
+      // source dans _giftContext) : on nettoie COMME l'échec de TP ci-dessous — sinon une whitelist
+      // qui change en cours de session laisserait la réservation `marmor:` et `_giftTarget` posés.
+      try { if (_teamClaims) _teamClaims.release('marmor:' + to); } catch (e) {}
+      _giftTarget = null; _giftAt = 0;
+      emit({ type: 'gift_blocked', to });
       return { ok: false, reason: 'tpa_not_whitelisted' };
     }
     emit({ type: 'gift_tpa', to });
@@ -3728,7 +3745,9 @@ async function relocateToRegion(opts = {}) {
       const cur = bot.entity && bot.entity.position;
       const cells = new Map();
       for (const o of w.ores) {
-        if (!o || !o.exposed || o.wet || !String(o.material || '').includes('diamond')) continue;  // jamais un cluster NOYÉ (H7+)
+        // `wet` reste INCONDITIONNEL (anti-noyade) ; l'exigence « exposé » tombe sous --xray 1 :
+        // un cluster de diamants ENTERRÉS devient une destination de relocate valable.
+        if (!o || (!XRAY && !o.exposed) || o.wet || !String(o.material || '').includes('diamond')) continue;  // jamais un cluster NOYÉ (H7+)
         if (cur && Math.abs(o.x - cur.x) < 80 && Math.abs(o.z - cur.z) < 80) continue;  // pas la zone épuisée
         if ((o.x - hb.x) ** 2 + (o.z - hb.z) ** 2 > HOME_RANGE * HOME_RANGE) continue;   // anti-dispersion : reste near-spawn (sec)
         const k = Math.floor(o.x / 48) + ',' + Math.floor(o.z / 48);
@@ -4005,7 +4024,9 @@ async function startResource() {
     quota,
     // Garantie B anti-xray (§0 water-wall) : en sans-give, ne JAMAIS cibler un ore mappé enterré
     // (exposed:false) — même si l'obfuscation serveur fuit, le bot n'exploite que le visible.
-    exposedOnly: NO_GIVE,
+    // --xray 1 (run où le x-ray est autorisé) DÉBRIDE ce filtre : le bot cible alors AUSSI les
+    // minerais mappés enterrés (comportement pré-water-wall). `wet` reste exclu (anti-noyade).
+    exposedOnly: NO_GIVE && !XRAY,
     // Durabilité de la progression bankée (cf. loadBanked/saveBanked) : seed au démarrage + persiste à
     // chaque dépôt → respawn/re-entrée/deploy ne remettent plus le compteur à 0 (les coffres tiennent au sol).
     bankedSeed: quota ? loadBanked() : null,
@@ -5227,6 +5248,10 @@ const botOpts = {
   username: args.user || 'TrainBot',
   auth: authMode,
 };
+// Version protocole FORCÉE (--mc-version, résolue du profil serveur). Sans elle, mineflayer
+// auto-détecte la version par un status-ping — que certains proxys (Aternos) COUPENT : le ping
+// meurt en ECONNRESET et le bot ne se connecte jamais. Fournie, la détection est court-circuitée.
+if (args['mc-version']) botOpts.version = String(args['mc-version']);
 if (authMode === 'microsoft') {
   // Compte officiel requis sur un serveur online-mode (refuse les crackés).
   // device-code flow : on surface le code de login dans le transcript.

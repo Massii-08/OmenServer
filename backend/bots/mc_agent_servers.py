@@ -20,6 +20,11 @@ VALID_INTELLIGENCE = ("evident", "intermediaire", "expert")
 VALID_AUTH = ("offline", "microsoft")
 VALID_LANGUAGE = ("fr", "en", "it")
 _SAFE_ID = re.compile(r"^[a-z0-9]+$")
+# Version protocole FORCÉE (ex. "1.21.11") : certains proxys (Aternos) coupent les status-pings →
+# l'auto-détection de version de mineflayer crashe en ECONNRESET au boot. Cette version part dans
+# l'argv du process Node (--mc-version) : validation STRICTE (chiffres et points UNIQUEMENT) pour
+# qu'aucune injection d'argument/shell ne puisse s'y glisser. "" = auto (défaut historique).
+_SAFE_MC_VERSION = re.compile(r"^[0-9]+(\.[0-9]+){0,3}$")
 
 
 def load_catalog():
@@ -143,6 +148,15 @@ def _clean_trade(raw):
     return {"acceptCmd": accept.strip()[:60], "requestPattern": str(raw.get("requestPattern") or "")[:200]}
 
 
+def _clean_mc_version(raw):
+    """Version protocole forcée : chaîne numérique pointée ≤16 car., sinon "" (= auto-détection)."""
+    v = raw if isinstance(raw, str) else ""
+    v = v.strip()
+    if len(v) > 16 or not _SAFE_MC_VERSION.match(v):
+        return ""
+    return v
+
+
 def _clean_server(payload, sid):
     """Normalise/valide un payload de profil serveur (anti-injection, bornes, défauts sûrs)."""
     catalog_ids = _catalog_ids()
@@ -170,6 +184,9 @@ def _clean_server(payload, sid):
         "auth": auth,
         "intelligence": intelligence,
         "language": language,
+        # Version protocole à forcer côté bot (--mc-version). "" = auto-détection par status-ping
+        # (défaut historique) ; à renseigner sur un serveur dont le proxy coupe le ping (Aternos).
+        "mc_version": _clean_mc_version(payload.get("mc_version")),
         # Mode furtif (phase 3) : humanisation (latence chat, loiter, jitter explore) — OFF par
         # défaut, les bots utilitaires vont à vitesse machine. Toggle gardé pour plus tard.
         "stealth": bool(payload.get("stealth")),

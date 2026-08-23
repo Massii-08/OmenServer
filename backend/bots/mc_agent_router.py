@@ -37,6 +37,7 @@ class StartReq(BaseModel):
     confine: Optional[str] = None   # "X Z R" → garde le bot dans R blocs de l'ancre (test arène ; cf. confine.js)
     no_give: Optional[bool] = None  # True → ZÉRO /give côté bot (run nether : tout est miné/fondu/crafté)
     regroup: Optional[bool] = None  # True → après une mort, /tpa vers le groupe tant que l'armure fer manque
+    xray: Optional[bool] = None     # True → run « full x-ray autorisé » : débride le filtre exposedOnly du ciblage
 
 
 class SayReq(BaseModel):
@@ -59,6 +60,7 @@ class ServerPayload(BaseModel):
     auth: str = "offline"
     intelligence: str = "intermediaire"
     language: str = "fr"
+    mc_version: str = ""            # version protocole forcée ("" = auto) — Python 3.9 : pas de `str | None`
     commands: list = []
     custom: list = []
     trusted: list = []
@@ -126,6 +128,8 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
                 extra["no_give"] = True  # run sans /give (rétro-compat : passé seulement si actif)
             if req.regroup:
                 extra["regroup"] = True  # regroupement après mort (idem : seulement si demandé)
+            if req.xray:
+                extra["xray"] = True  # run x-ray autorisé (idem : seulement si demandé)
             sid = mgr.start_for_bot(req.server_id, req.bot_id, model=req.model,
                                     autonomous=req.autonomous, objective=req.objective,
                                     world_label=req.world_label, **extra)
@@ -140,6 +144,7 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
     auth, profile, commands, policy = req.auth, req.profile, None, None
     language = req.language
     stealth = False
+    mc_version = ""
     if req.server_id:
         srv = servers_store.get_server(req.server_id)
         if not srv:
@@ -148,6 +153,7 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
         auth, profile = srv["auth"], srv["intelligence"]
         language = srv.get("language", "fr")
         stealth = bool(srv.get("stealth"))
+        mc_version = str(srv.get("mc_version") or "")  # "" = auto-détection (défaut historique)
         commands = servers_store.resolve_commands(srv)
         policy = servers_store.resolve_policy(srv)
     if not host:
@@ -165,6 +171,10 @@ def run(req: StartReq, current_user: User = Depends(get_current_user)):
             extra["no_give"] = True  # run sans /give (rétro-compat : passé seulement si actif)
         if req.regroup:
             extra["regroup"] = True  # regroupement après mort (idem : seulement si demandé)
+        if req.xray:
+            extra["xray"] = True  # run x-ray autorisé (idem : seulement si demandé)
+        if mc_version:
+            extra["mc_version"] = mc_version  # idem : passé UNIQUEMENT si le profil en porte une
         sid = mgr.start_session(host, port, user, req.model, auth, profile, commands, policy, server_id=req.server_id, language=language, autonomous=req.autonomous, objective=req.objective, world_label=req.world_label, **extra)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Impossible de demarrer Node : {exc}")

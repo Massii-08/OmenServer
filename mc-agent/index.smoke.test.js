@@ -43,3 +43,40 @@ test('index.js se charge entierement : aucun require casse, aucune ReferenceErro
   }).trim();
   assert.strictEqual(out, 'OK', 'index.js n\'a pas pu etre charge : ' + out);
 });
+
+// --mc-version : la version protocole DOIT arriver jusqu'a mineflayer.createBot. Sans elle, la
+// lib auto-detecte par un status-ping — que certains proxys (Aternos) coupent : le bot ne se
+// connecte JAMAIS (ECONNRESET au boot). Meme machinerie que le smoke ci-dessus : on stubbe
+// createBot, mais pour CAPTURER les options au lieu de lever tout de suite.
+const OPTS_LOADER = (extraArgv) => `
+const Module = require('module');
+const orig = Module.prototype.require;
+Module.prototype.require = function (id) {
+  if (id === 'mineflayer') {
+    return { createBot: (opts) => { const e = new Error('SMOKE_STOP'); e.smoke = true; e.opts = opts; throw e; } };
+  }
+  return orig.apply(this, arguments);
+};
+process.argv = [process.argv[0], 'index.js',
+  '--host', '127.0.0.1', '--user', 'SmokeBot'${extraArgv}];
+let out = 'FAIL: createBot jamais atteint';
+try { require(${JSON.stringify(path.join(__dirname, 'index.js'))}); }
+catch (e) { out = (e && e.smoke) ? JSON.stringify({ version: e.opts && e.opts.version, host: e.opts && e.opts.host }) : 'FAIL: ' + (e && e.message); }
+process.stdout.write(out);
+process.exit(0);
+`;
+
+const createBotOpts = (extraArgv) => JSON.parse(execFileSync(process.execPath, ['-e', OPTS_LOADER(extraArgv)], {
+  cwd: __dirname, encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'],
+}).trim());
+
+test('--mc-version force la version protocole passee a createBot', () => {
+  const opts = createBotOpts(", '--mc-version', '1.21.11'");
+  assert.strictEqual(opts.version, '1.21.11');
+});
+
+test('sans --mc-version : aucune version imposee (auto-detection, comportement historique)', () => {
+  const opts = createBotOpts('');
+  assert.strictEqual(opts.version, undefined);
+  assert.strictEqual(opts.host, '127.0.0.1');   // le stub a bien vu de vraies options
+});
