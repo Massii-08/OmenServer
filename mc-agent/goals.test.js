@@ -582,6 +582,53 @@ test('nextObjectiveAfter: un set ne couvre qu_UN mappeur → on reboucle tant qu
   assert.strictEqual(nextObjectiveAfter('mapper_armor', mates), 'mapper_armor');
 });
 
+// ⚠️ BOUCLE MESURÉE EN LIVE (EmberSMP, 48 cycles à ~1/1,5 s) : sur un serveur SANS /tpa, la
+// livraison d'armure aux cartographes est IMPOSSIBLE par construction (deliverMapperArmor est gaté
+// par isAllowed, et le worker se téléporte VERS le mappeur — c'est le seul chemin, un mappeur ne
+// s'arrête pas pour venir). Le gate de `_giftContext` empêchait bien d'ARMER une cible, donc la
+// chaîne mapper_armor était satisfaite d'office → `autonomous_done` immédiat. Mais le ROUTAGE, lui,
+// voyait toujours des mappeurs nus (personne ne peut les habiller) et renvoyait mapper_armor :
+// start → done → chain(mapper_armor→mapper_armor) → start… à l'infini, diamant jamais atteint.
+// `canGift:false` neutralise `mappersNaked` : un mappeur qu'on ne PEUT pas servir ne justifie plus
+// le détour. NB : on ne touche PAS à `needy` — l'entraide entre workers est livrée À PIED par le
+// périodique team_gift (pathfinder.goto), elle ne dépend d'aucune commande serveur.
+test('nextObjectiveAfter: canGift:false → post mapper_armor on part au diamant (fin de la boucle)', () => {
+  const mates = [_mapper('M1', 0), _mapper('M2', 0)];
+  assert.strictEqual(nextObjectiveAfter('mapper_armor', mates, { canGift: false }), 'diamond');
+});
+
+test('nextObjectiveAfter: canGift:false → post iron_armor on part au diamant malgré des mappeurs nus', () => {
+  const mates = [_worker('W2', 0), _mapper('M1', 0)];
+  assert.strictEqual(nextObjectiveAfter('iron_armor', mates, { canGift: false }), 'diamond');
+});
+
+test('nextObjectiveAfter: canGift:false → post iron_help, JAMAIS mapper_armor', () => {
+  const mates = [_worker('W5', 15), _mapper('M1', 0)];   // straggler en manque + mappeur nu
+  // on continue d'aider le straggler (livraison à pied, possible sans /tpa)…
+  assert.strictEqual(nextObjectiveAfter('iron_help', mates, { canGift: false }), 'iron_help');
+  // …et une fois plus personne en manque, on va au diamant au lieu de boucler sur le mappeur.
+  assert.strictEqual(nextObjectiveAfter('iron_help', [_mapper('M1', 0)], { canGift: false }), 'diamond');
+});
+
+test('nextObjectiveAfter: canGift par DÉFAUT true → les appels existants sont inchangés', () => {
+  const mates = [_worker('W2', 0), _mapper('M1', 0)];
+  // sans 3e argument (tous les appels historiques)
+  assert.strictEqual(nextObjectiveAfter('iron_armor', mates), 'mapper_armor');
+  assert.strictEqual(nextObjectiveAfter('iron_help', mates), 'mapper_armor');
+  assert.strictEqual(nextObjectiveAfter('mapper_armor', mates), 'mapper_armor');
+  // avec un opts vide, ou canGift:true explicite → strictement identique
+  assert.strictEqual(nextObjectiveAfter('mapper_armor', mates, {}), 'mapper_armor');
+  assert.strictEqual(nextObjectiveAfter('mapper_armor', mates, { canGift: true }), 'mapper_armor');
+});
+
+test('nextObjectiveAfter: canGift:false ne rend pas le bot inerte (jamais null hors diamond)', () => {
+  // la sortie de secours DOIT rester un objectif utile, sinon on remplace une boucle par un arrêt
+  for (const obj of ['iron_armor', 'iron_help', 'mapper_armor']) {
+    const out = nextObjectiveAfter(obj, [_mapper('M1', 0)], { canGift: false });
+    assert.strictEqual(out, 'diamond', obj + ' devrait router vers diamond');
+  }
+});
+
 // ⚠️ FLEET-DEADLOCK (world_mn12, 28/07) : un straggler DÉFINITIVEMENT coincé (soft-lock bois #66g :
 // pas de bois → pas de pioche/table → ne peut JAMAIS forger le fer qu'on lui livre) garde `need`>0
 // à vie. Avec `if (needy) return 'iron_help'` inconditionnel, les 4 workers done restaient pinnés

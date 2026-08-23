@@ -4226,7 +4226,11 @@ async function startAutonomous(sender) {
     // ENCHAÎNEMENT (Massii, live 26/07 : « si ils ont finis il aident en priorité les autres bot et
     // après il vont chercher les diamant »). Sans ça, `clearObjective` laissait le bot INERTE —
     // 3 workers sur 5 à l'arrêt une fois leur armure bouclée.
-    const nextObj = nextObjectiveAfter(objType, presence ? presence.list() : []);
+    // `canGift` = MÊME test que le gate de `_giftContext` : sans /tpa dans la whitelist, aucun
+    // cartographe ne peut être servi → un mappeur nu ne doit plus router vers `mapper_armor`,
+    // sinon start → done → chain(mapper_armor→mapper_armor) → start… (48 cycles mesurés en live).
+    const nextObj = nextObjectiveAfter(objType, presence ? presence.list() : [],
+      { canGift: isAllowed('/tpa x', whitelist) });
     if (nextObj) {
       setObjective(world, { type: nextObj, status: 'in_progress' });
       saveWorld(worldFile, world);

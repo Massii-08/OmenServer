@@ -571,7 +571,7 @@ const MAPPER_ARMOR_CHAIN = [
  * Ne renvoie JAMAIS l'inertie tant qu'il reste quelque chose d'utile à faire.
  * `mates` = presence.list() — on lit `status.need` (lingots manquants) de chaque coéquipier.
  */
-function nextObjectiveAfter(objective, mates) {
+function nextObjectiveAfter(objective, mates, opts = {}) {
   // ⚠️ presence.beat() APLATIT le statut dans l'entrée ({x,z,role,at,armor,ingots,need}) : il n'y
   // a pas de sous-objet `status`. On lisait `m.status.need`, donc TOUJOURS undefined — la branche
   // `iron_help` ne s'est jamais déclenchée depuis son ajout. On lit le champ plat, en tolérant
@@ -581,7 +581,20 @@ function nextObjectiveAfter(objective, mates) {
   // Cartographes encore nus : ils ne minent pas, donc ils ne s'équipent jamais seuls. Un mappeur
   // qui survit cartographie plus loin — d'où la priorité de Massii (26/07) : les habiller AVANT
   // de partir au diamant. Statut inconnu = considéré nu (on n'abandonne pas sur une supposition).
-  const mappersNaked = (mates || []).some((m) => m && m.role === 'mapper' && (m.armor || 0) < 4);
+  // ⚠️ BOUCLE MESURÉE (EmberSMP, 48 cycles à ~1/1,5 s) : sur un serveur SANS /tpa, habiller un
+  // cartographe est IMPOSSIBLE par construction — `deliverMapperArmor` est gaté par la whitelist,
+  // et c'est le worker qui se téléporte VERS le mappeur (un mappeur ne s'arrête pas). Le gate de
+  // `_giftContext` (index.js) empêchait bien d'ARMER une cible → chaîne satisfaite d'office →
+  // `autonomous_done` immédiat ; mais le ROUTAGE ci-dessous voyait toujours des mappeurs nus (et
+  // pour cause : personne ne peut les servir) et renvoyait `mapper_armor` → start → done → chain →
+  // start… à l'infini, diamant jamais atteint. `canGift:false` neutralise donc `mappersNaked` : un
+  // mappeur qu'on ne PEUT pas servir ne justifie plus le détour. DÉFAUT true = routage historique
+  // byte-identique pour tous les appels existants (aucun n'a de 3e argument).
+  // NB : `needy` n'est VOLONTAIREMENT pas gaté — l'entraide entre workers est livrée À PIED par le
+  // périodique team_gift (pathfinder.goto vers le coéquipier), elle ne dépend d'aucune commande.
+  const canGift = opts.canGift !== false;
+  const mappersNaked = canGift
+    && (mates || []).some((m) => m && m.role === 'mapper' && (m.armor || 0) < 4);
   // 1re passe : dès qu'un coéquipier est en manque, on va l'AIDER en priorité (intent Massii).
   if (objective === 'iron_armor') {
     if (needy) return 'iron_help';
