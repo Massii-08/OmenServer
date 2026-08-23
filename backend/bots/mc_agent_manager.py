@@ -773,7 +773,12 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     log_f = None
     try:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        log_path = LOGS_DIR / f"session-{sid}.jsonl"
+        # Nom UNIQUE par lancement : le compteur de sids repart à 1 à chaque restart uvicorn — avec
+        # un nom par sid seul, la session neuve APPENDAIT au fichier d'un ancien run et le pump
+        # (log_pos=0) relisait des events d'un AUTRE bot (vécu EmberSMP 23/08 : /events/1 montrait
+        # le MapBot1 du 17/08, et les last_error fantômes du vieux contenu). L'adoption/le pump
+        # lisent log_path via le registre → le renommage est transparent pour eux.
+        log_path = LOGS_DIR / f"session-{sid}-{int(time.time())}.jsonl"
         log_f = open(log_path, "ab")
     except OSError:
         log_path, log_f = None, None

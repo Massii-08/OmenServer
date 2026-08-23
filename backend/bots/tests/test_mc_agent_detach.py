@@ -6,6 +6,7 @@ que le fix concerne.
 import io
 import json
 import os
+import re
 import signal
 import time
 
@@ -60,7 +61,8 @@ def test_spawn_opens_logfile_and_writes_registry(monkeypatch):
     assert captured["stdout"] is not mgr.subprocess.PIPE
     assert hasattr(captured["stdout"], "fileno")
     s = mgr._sessions[sid]
-    assert s["log_path"] and s["log_path"].endswith(f"session-{sid}.jsonl")
+    # nom unique par lancement : session-<sid>-<epoch>.jsonl (anti-collision post-restart uvicorn)
+    assert s["log_path"] and re.search(rf"session-{sid}-\d+\.jsonl$", s["log_path"])
     assert os.path.isfile(s["log_path"])
     # registre écrit avec pid + log_path
     reg = json.loads(mgr._registry_path().read_text(encoding="utf-8"))
