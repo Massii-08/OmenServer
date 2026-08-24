@@ -4841,3 +4841,46 @@ select:-webkit-autofill {
   src: url('/fonts/press-start-2p-latin.woff2') format('woff2');
   font-display: swap;
 }
+
+/* ─── PAPER TRADING — sous-navigation + courbe d'équité ───────────────────────
+   Deux seules classes manquaient au design system : la barre d'onglets en pills
+   (les onglets existants sont soit la topbar, soit la sidebar vue serveur) et
+   l'habillage de la sparkline hors carte maîtresse (`.stat-card.main .spark`
+   est scopé au Dashboard). Tout le reste du module réutilise .card,
+   .bento-overview/.stat-card, .row/.row-list, .events-feed/.ev, .badge,
+   .form-input/.form-label, .btn* et .console tels quels.
+   Tokens uniquement → le mode clair « Givre » suit sans une ligne de plus. */
+.paper-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.paper-tab {
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 7px 14px;
+    border-radius: var(--r-pill);
+    background: var(--bg-elev-1);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    transition: color .18s ease, border-color .18s ease, background .18s ease;
+}
+.paper-tab:hover { color: var(--text); border-color: var(--border-strong); }
+.paper-tab.active {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-dim);
+}
+/* Courbe d'équité : mêmes noeuds que la sparkline du Dashboard (polygon.area +
+   polyline + circle.tip) pour être peinte par Anim.sparkline sans duplication. */
+.paper-spark { width: 100%; height: 130px; display: block; margin: 4px 0 6px; }
+.paper-spark polyline {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1.8;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+}
+.paper-spark .area { fill: var(--accent-dim); }
+.paper-spark .tip { fill: var(--accent); }
+/* Une équité en baisse se dit en rouge : --danger est FIXE, il ne suit pas l'accent. */
+.paper-spark.neg polyline { stroke: var(--danger); }
+.paper-spark.neg .area { fill: color-mix(in srgb, var(--danger) 14%, transparent); }
+.paper-spark.neg .tip { fill: var(--danger); }

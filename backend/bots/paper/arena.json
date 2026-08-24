@@ -1,0 +1,44 @@
+[
+ {
+  "id": "concentration",
+  "title": "Tout sur un seul cheval",
+  "desc": "Cette semaine : ouvre UNE position qui pèse au moins 50 % de ton portefeuille, avec un stop planifié, et tiens-la au moins 3 jours de bourse. But : ressentir ce que la concentration fait à ton sommeil — et pourquoi le sizing existe.",
+  "check": "max_single_trade_notional_pct>=50",
+  "difficulty": "warn"
+ },
+ {
+  "id": "earnings",
+  "title": "Traverser des résultats trimestriels",
+  "desc": "Trouve une société qui publie ses résultats cette semaine (la fiche d'analyse te donne la date si dispo, sinon cherche « earnings calendar »). Prends position AVANT la publication et garde-la pendant l'annonce. But : vivre un gap en vrai — dans les deux sens.",
+  "check": "n_trades_week>=1",
+  "difficulty": "hot"
+ },
+ {
+  "id": "short",
+  "title": "Premier short",
+  "desc": "Vends à découvert un titre que ta thèse juge surévalué (position short), stop obligatoire au-dessus de l'entrée, risque ≤ 2 %. But : comprendre pourquoi le short a un risque asymétrique (perte théorique illimitée) et pourquoi le stop y est non négociable.",
+  "check": "has_short_trade_week",
+  "difficulty": "hot"
+ },
+ {
+  "id": "drawdown",
+  "title": "Tenir un plan dans le rouge",
+  "desc": "Choisis une position existante en perte NON stoppée (ou ouvres-en une) : écris un plan (niveau d'invalidation + objectif) et tiens le plan toute la semaine — interdiction de vendre par panique avant le stop, interdiction d'enlever le stop. But : dissocier « douleur » et « invalidation ».",
+  "check": "n_trades_week>=0",
+  "difficulty": "warn"
+ },
+ {
+  "id": "three_r",
+  "title": "La chasse au 3R",
+  "desc": "Cette semaine, ne prends QUE des trades dont l'objectif rapporte au moins 3× le risque (target ≥ entrée + 3×(entrée−stop)). Peu importe qu'ils gagnent : le but est d'apprendre à REFUSER les trades médiocres. Zéro trade est une réussite si rien ne valait 3R.",
+  "check": "n_trades_week>=0",
+  "difficulty": "info"
+ },
+ {
+  "id": "fee_diet",
+  "title": "Régime de frais",
+  "desc": "Maximum 3 transactions cette semaine, toutes justifiées par une thèse de ≥ 200 caractères. But : sentir qu'attendre est une position. Compare tes frais de la semaine à ta moyenne.",
+  "check": "n_trades_week<=3",
+  "difficulty": "info"
+ }
+]

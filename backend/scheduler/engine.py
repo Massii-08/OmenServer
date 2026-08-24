@@ -149,6 +149,73 @@ def _auto_network_ping():
         db.close()
 
 
+def _arm_paper_jobs(scheduler):
+    """
+    Arme les jobs planifiés du simulateur paper trading (Lot E : veille news
+    des positions) et des guetteurs qui suivent (dépôts SEC "whales", radar
+    d'hypothèses). Ces modules sont écrits par d'autres lots EN PARALLÈLE ->
+    chaque job est isolé dans son PROPRE try/except : l'échec d'import de
+    l'un ne doit JAMAIS empêcher les autres de s'armer, ni empêcher le
+    scheduler de démarrer. Extrait dans sa propre fonction pour rester
+    testable (double de scheduler injectable).
+    """
+    try:
+        from backend.bots.paper import newswatch
+        scheduler.add_job(
+            newswatch.run_once,
+            trigger=IntervalTrigger(minutes=5),
+            id="paper_news_watch",
+            name="Paper Trading — veille news (5min)",
+            replace_existing=True,
+        )
+        logger.info("📰 Veille news paper trading activée (toutes les 5 min)")
+    except Exception:
+        logger.warning("📰 Veille news paper trading NON armée", exc_info=True)
+
+    try:
+        from backend.bots.paper import whales
+        scheduler.add_job(
+            whales.check_new_filings,
+            trigger=IntervalTrigger(minutes=30),
+            id="paper_whales_watch",
+            name="Paper Trading — dépôts SEC (30min)",
+            replace_existing=True,
+        )
+        logger.info("🐳 Veille dépôts SEC (whales) paper trading activée (toutes les 30 min)")
+    except Exception:
+        logger.warning("🐳 Veille dépôts SEC (whales) paper trading NON armée", exc_info=True)
+
+    try:
+        # 3 déclenchements/jour (décision Massii 24/08 soir) -- même import,
+        # même try : si le module manque, aucun des trois ne s'arme, mais un
+        # seul warning suffit (pas besoin de 3 try séparés ici).
+        from backend.bots.paper import radar
+        scheduler.add_job(
+            radar.run_once,
+            trigger=CronTrigger(hour=7, minute=45),
+            id="paper_radar_0745",
+            name="Paper Trading — radar d'hypothèses (07:45)",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            radar.run_once,
+            trigger=CronTrigger(hour=12, minute=0),
+            id="paper_radar_1200",
+            name="Paper Trading — radar d'hypothèses (12:00)",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            radar.run_once,
+            trigger=CronTrigger(hour=19, minute=0),
+            id="paper_radar_1900",
+            name="Paper Trading — radar d'hypothèses (19:00)",
+            replace_existing=True,
+        )
+        logger.info("📡 Radar d'hypothèses paper trading activé (07:45 / 12:00 / 19:00)")
+    except Exception:
+        logger.warning("📡 Radar d'hypothèses paper trading NON armé", exc_info=True)
+
+
 def start_scheduler():
     """
     Démarre le scheduler et charge toutes les tâches actives depuis la DB.
@@ -181,6 +248,9 @@ def start_scheduler():
         replace_existing=True,
     )
     logger.info("📡 Auto-ping réseau activé (toutes les 5 min)")
+
+    # Jobs planifiés du paper trading (Lot E : veille news + whales + radar)
+    _arm_paper_jobs(_scheduler)
 
     # Auto-extinction programmée (Power Schedule)
     from backend.scheduler.power_manager import get_power_schedule

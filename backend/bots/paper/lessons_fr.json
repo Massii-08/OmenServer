@@ -1,0 +1,298 @@
+[
+ {
+  "id": "basics",
+  "title": "C'est quoi une action, vraiment",
+  "body": "Une action est une part de propriété d'une entreprise. Si Nestlé vaut 250 milliards et que tu détiens une action à 90 CHF, tu possèdes une fraction réelle de ses usines, de ses marques et de ses profits futurs. Le prix bouge parce que des milliers d'acheteurs et de vendeurs révisent en permanence ce que valent ces profits futurs.\n\nDeux façons de gagner : la plus-value (revendre plus cher) et le dividende (la part du profit distribuée, souvent 2-4 %/an en Suisse). Deux façons de perdre : le prix baisse, ou l'entreprise fait faillite (l'actionnaire est servi DERNIER, après les créanciers).\n\nCe qui fait monter une action à long terme : les profits. Ce qui la fait bouger à court terme : les surprises (résultats, taux d'intérêt, macro) et les émotions de la foule. Le trader actif travaille dans ce deuxième monde — c'est pour ça que la méthode compte plus que l'intuition.",
+  "quiz": [
+   {
+    "q": "Que possèdes-tu quand tu achètes une action ?",
+    "options": [
+     "Une créance que l'entreprise doit te rembourser",
+     "Une part de propriété de l'entreprise",
+     "Un droit à un salaire de l'entreprise"
+    ],
+    "correct": 1,
+    "explain": "C'est une part de propriété. La créance à rembourser, c'est l'obligation — pas l'action."
+   },
+   {
+    "q": "En cas de faillite, l'actionnaire est remboursé…",
+    "options": [
+     "En premier",
+     "Après les créanciers, en dernier",
+     "Jamais concerné par la faillite"
+    ],
+    "correct": 1,
+    "explain": "L'actionnaire porte le risque final : il est servi après tous les créanciers, souvent zéro."
+   },
+   {
+    "q": "Sur le court terme, le prix d'une action bouge surtout à cause…",
+    "options": [
+     "Des profits réalisés il y a 10 ans",
+     "Des surprises et des émotions du marché",
+     "Du nombre d'employés"
+    ],
+    "correct": 1,
+    "explain": "À court terme, ce sont les surprises vs les attentes et la psychologie qui dominent."
+   }
+  ]
+ },
+ {
+  "id": "orders",
+  "title": "Les 3 types d'ordres — et le piège du gap",
+  "body": "MARKET : exécuté tout de suite au prix courant. Simple, mais tu acceptes le prix qu'on te donne.\n\nLIMIT : « j'achète à 95 ou moins » / « je vends à 105 ou plus ». Tu contrôles le prix, pas l'exécution (l'ordre peut ne jamais se remplir).\n\nSTOP : un déclencheur. Le stop-loss de protection est le plus important : « si ça tombe à 88, vends » — il borne ta perte pendant que tu dors.\n\nLE PIÈGE : le gap. Le stop n'est PAS une garantie de prix. Si une action clôture à 92 et ouvre le lendemain à 80 (mauvais résultats publiés la nuit), ton stop à 88 s'exécute à 80, pas à 88. Le simulateur reproduit ce comportement — tu le vivras. C'est pour ça qu'on dimensionne la position AVANT (leçon Risque) : le stop limite la perte NORMALE, le sizing limite la perte CATASTROPHE.",
+  "quiz": [
+   {
+    "q": "Un ordre limit d'achat à 95 quand le cours est à 97…",
+    "options": [
+     "S'exécute immédiatement à 97",
+     "Attend que le cours descende à 95 ou moins",
+     "Est rejeté"
+    ],
+    "correct": 1,
+    "explain": "Le limit garantit le prix maximum, pas l'exécution : il attend 95."
+   },
+   {
+    "q": "Ton stop-loss est à 88, l'action ouvre à 80 après une mauvaise nouvelle. Tu vends vers…",
+    "options": [
+     "88, le stop est garanti",
+     "80, le stop s'exécute au prix disponible",
+     "92, le prix d'hier"
+    ],
+    "correct": 1,
+    "explain": "C'est le gap : le stop déclenche une vente au marché, au prix réel d'ouverture."
+   },
+   {
+    "q": "La protection contre le scénario catastrophe, c'est…",
+    "options": [
+     "Le stop-loss",
+     "La taille de position",
+     "La diversification du courtier"
+    ],
+    "correct": 1,
+    "explain": "Le stop gère la perte normale ; seul le sizing borne la perte quand le stop saute (gap)."
+   }
+  ]
+ },
+ {
+  "id": "fees",
+  "title": "Frais et droit de timbre suisse — l'ennemi silencieux",
+  "body": "Chaque transaction coûte : le courtage (ce que prend le broker) + en Suisse, le droit de timbre fédéral si ton courtier est suisse : 0,075 % (titre suisse) ou 0,15 % (titre étranger), à l'ACHAT ET à la vente.\n\nExemple réel : 20 allers-retours de 5'000 CHF sur des actions US via un courtier suisse ≈ 20 × (2 × 7.50 timbre + 2 × courtage). Chez Swissquote (~20 CHF l'ordre) ça fait ~1'100 CHF de frais — 11 % d'un capital de 10'000 CHF, à regagner avant même d'être à zéro. Via Interactive Brokers (étranger : pas de timbre, courtage ~2 CHF) : ~80 CHF.\n\nLa règle : plus tu trades, plus les frais décident de ta performance à ta place. Le simulateur affiche tes frais cumulés en permanence — si la ligne « frais » rivalise avec la ligne « P&L », le marché n'est pas ton problème.",
+  "quiz": [
+   {
+    "q": "Le droit de timbre suisse s'applique…",
+    "options": [
+     "Seulement à l'achat",
+     "À l'achat et à la vente, chez un courtier suisse",
+     "Seulement sur les actions suisses"
+    ],
+    "correct": 1,
+    "explain": "Les deux sens, 0,075 %/0,15 %, et uniquement via un intermédiaire suisse."
+   },
+   {
+    "q": "Quel courtier ne prélève PAS le droit de timbre ?",
+    "options": [
+     "Swissquote",
+     "Yuh",
+     "Interactive Brokers (courtier étranger)"
+    ],
+    "correct": 2,
+    "explain": "Le timbre est dû par les négociants suisses ; IBKR n'en est pas un."
+   },
+   {
+    "q": "Si tes frais cumulés dépassent 20 % de tes gains bruts…",
+    "options": [
+     "C'est normal en trading actif",
+     "Tu sur-trades : la structure de coûts mange ta performance",
+     "Il faut trader plus pour compenser"
+    ],
+    "correct": 1,
+    "explain": "C'est le biais fee_bleed que le coach détecte : réduire la fréquence, pas l'augmenter."
+   }
+  ]
+ },
+ {
+  "id": "risk",
+  "title": "Le R : la seule unité qui compte",
+  "body": "Avant chaque trade, décide : où est mon stop, et combien je perds s'il est touché. Cette perte planifiée = 1R.\n\nLa règle des 1-2 % : ne risque jamais plus de 1-2 % du capital par trade. Capital 10'000, risque 1 % = 100 CHF. Entrée à 50, stop à 48 → risque 2 CHF/action → position de 50 actions (2'500 CHF investis, mais seulement 100 CHF RISQUÉS). C'est ça, « prendre du risque proprement » : la taille découle du stop, jamais l'inverse.\n\nEnsuite, mesure tout en R. Un gain de 300 CHF avec 100 risqués = +3R (excellent). Un gain de 300 avec 600 risqués = +0.5R (médiocre, quoi qu'en dise le montant). Avec 1-2 % par trade, il faut ~50 pertes D'AFFILÉE pour être en vrai danger — tu peux te tromper souvent et survivre. L'amateur qui risque 20 % par trade est mort en 5 erreurs. Le simulateur calcule ton R sur chaque trade clos et ton espérance moyenne : c'est TA statistique vitale.",
+  "quiz": [
+   {
+    "q": "Capital 10'000 CHF, risque 1 %, entrée 100, stop 95. Taille de position ?",
+    "options": [
+     "100 actions",
+     "20 actions",
+     "10 actions"
+    ],
+    "correct": 1,
+    "explain": "Risque/action = 5 CHF ; 100 CHF de risque total / 5 = 20 actions."
+   },
+   {
+    "q": "+3R signifie…",
+    "options": [
+     "3 % de gain",
+     "Un gain de 3× la perte planifiée du trade",
+     "3 trades gagnants de suite"
+    ],
+    "correct": 1,
+    "explain": "Le R normalise tout : 3R = tu as gagné trois fois ce que tu acceptais de perdre."
+   },
+   {
+    "q": "Pourquoi limiter le risque à 1-2 % par trade ?",
+    "options": [
+     "Pour payer moins de frais",
+     "Pour survivre à une longue série de pertes, statistiquement inévitable",
+     "Parce que c'est la loi"
+    ],
+    "correct": 1,
+    "explain": "Des séries de 5-10 pertes arrivent à TOUT trader ; à 1-2 % elles sont indolores, à 20 % elles sont fatales."
+   }
+  ]
+ },
+ {
+  "id": "psychology",
+  "title": "Tes vrais adversaires : les biais",
+  "body": "Le marché ne te connaît pas. Tes pertes viendront surtout de toi. Les 4 démons classiques :\n\n1. COUPER LES GAGNANTS TROP TÔT / LAISSER COURIR LES PERDANTS : vendre à +5 % « pour sécuriser » mais garder un -20 % « parce que ça va remonter ». C'est l'aversion à la perte — réaliser une perte fait mal, donc on la nie.\n2. LE REVENGE TRADE : re-rentrer 10 minutes après une perte, plus gros, pour « se refaire ». C'est le casino, plus le trading.\n3. LE BIAIS DE CONFIRMATION : ne lire que ce qui confirme ta position.\n4. L'EXCÈS DE CONFIANCE : 3 gains de suite → doubler la taille. Le marché adore cette séquence.\n\nL'antidote unique : la thèse ÉCRITE avant l'entrée (pourquoi j'achète, où je sors si j'ai tort, où je sors si j'ai raison) + la relecture après la sortie. Le simulateur t'oblige à écrire la thèse et le coach compare ta sortie réelle à ton plan : l'écart entre les deux, c'est exactement la taille de ton biais.",
+  "quiz": [
+   {
+    "q": "Garder une position à -20 % sans stop « parce que ça va remonter », c'est…",
+    "options": [
+     "De la patience d'investisseur",
+     "L'aversion à la perte qui refuse de réaliser",
+     "Une stratégie de moyenne à la baisse maîtrisée"
+    ],
+    "correct": 1,
+    "explain": "Sans thèse ni stop, ce n'est pas de la patience : c'est le refus psychologique d'acter la perte."
+   },
+   {
+    "q": "Le revenge trade se reconnaît à…",
+    "options": [
+     "Une entrée rapide après une perte, en taille supérieure",
+     "Un achat après analyse de 2 jours",
+     "Une vente sur stop"
+    ],
+    "correct": 0,
+    "explain": "Vitesse + taille augmentée après une perte : le coach du simulateur le détecte automatiquement."
+   },
+   {
+    "q": "Le meilleur antidote aux biais est…",
+    "options": [
+     "Plus d'écrans et d'indicateurs",
+     "Une thèse écrite avant l'entrée, relue après la sortie",
+     "Suivre les conseils d'un forum"
+    ],
+    "correct": 1,
+    "explain": "L'écrit fige ce que tu pensais AVANT — impossible de se raconter une autre histoire après."
+   }
+  ]
+ },
+ {
+  "id": "tax",
+  "title": "Fiscalité suisse : ton privilège, et comment le perdre",
+  "body": "En Suisse, les gains en capital privés sont EXONÉRÉS d'impôt — un privilège rare au monde. Mais si le fisc te considère « commerçant professionnel de titres », tes gains deviennent un revenu imposable + cotisations AVS (~25-40 % de ponction selon ton canton).\n\nLes 5 critères de la circulaire AFC n°36 (les remplir TOUS te met à l'abri) :\n1. Titres détenus au moins 6 mois.\n2. Volume annuel de transactions ≤ 5× ta fortune titres au 1er janvier.\n3. Les gains boursiers ne sont pas nécessaires pour vivre (< 50 % du revenu net).\n4. Pas d'achat à crédit (pas de levier).\n5. Dérivés uniquement en couverture.\n\nNe pas tous les remplir ≠ requalification automatique (le fisc apprécie le tableau d'ensemble), mais chaque critère violé augmente le risque. Un trader actif viole par nature les critères 1 et 2 : c'est un CHOIX à faire en connaissance de cause, pas un détail. Le simulateur affiche ton compteur AFC en permanence — regarde-le comme tu regardes ton P&L. Et note : les DIVIDENDES, eux, sont toujours imposés comme revenu (avec impôt anticipé 35 % récupérable à la déclaration).",
+  "quiz": [
+   {
+    "q": "En Suisse, les gains en capital d'un investisseur privé sont…",
+    "options": [
+     "Imposés à 35 %",
+     "Exonérés d'impôt",
+     "Imposés seulement au-delà de 100'000 CHF"
+    ],
+    "correct": 1,
+    "explain": "Exonérés — tant que tu gardes le statut d'investisseur privé."
+   },
+   {
+    "q": "Le critère AFC de volume annuel tolère jusqu'à…",
+    "options": [
+     "2× la fortune titres",
+     "5× la fortune titres au 1er janvier",
+     "10× le salaire"
+    ],
+    "correct": 1,
+    "explain": "Somme des achats + ventes ≤ 5× le portefeuille de début d'année."
+   },
+   {
+    "q": "Les dividendes reçus sont…",
+    "options": [
+     "Exonérés comme les gains en capital",
+     "Toujours imposés comme revenu (impôt anticipé 35 % récupérable)",
+     "Imposés seulement si réinvestis"
+    ],
+    "correct": 1,
+    "explain": "L'exonération ne concerne QUE les gains en capital ; le dividende est du revenu."
+   }
+  ]
+ },
+ {
+  "id": "analysis",
+  "title": "Lire une entreprise en 10 minutes",
+  "body": "Avant d'acheter, quatre questions :\n\n1. ELLE GAGNE COMBIEN ? Chiffre d'affaires et bénéfice net, en croissance ou pas. La marge nette (bénéfice/CA) dit la qualité : 20 % = machine à cash (Nestlé ~11 %, Novartis ~20 %), 2 % = business fragile.\n2. C'EST CHER ? Le PER (prix/bénéfice par action) : à 15, tu paies 15 ans de bénéfices actuels. PER 10 = bon marché (ou marché inquiet…), PER 40 = cher (ou forte croissance attendue). Un PER ne se lit JAMAIS seul : compare aux concurrents du même secteur.\n3. ELLE DOIT COMBIEN ? Dette nette / EBITDA : < 1 = solide, > 3 = fragile quand les taux montent.\n4. POURQUOI MAINTENANT ? Un catalyseur : résultats, nouveau produit, cycle sectoriel. « C'est une bonne boîte » n'est pas une thèse de TRADE — une bonne boîte peut stagner 5 ans.\n\nDans le simulateur, le bouton « Fiche d'analyse » te sort ces chiffres pour n'importe quel titre. Lis la fiche AVANT d'écrire ta thèse, pas après.",
+  "quiz": [
+   {
+    "q": "Un PER de 15 signifie…",
+    "options": [
+     "15 % de rendement annuel",
+     "Le prix vaut 15 années du bénéfice actuel",
+     "La dette vaut 15× les fonds propres"
+    ],
+    "correct": 1,
+    "explain": "Price/Earnings : combien d'années de bénéfice actuel tu paies au prix courant."
+   },
+   {
+    "q": "Un PER de 40 face à un secteur à 18 suggère…",
+    "options": [
+     "Une aubaine évidente",
+     "Que le marché attend une forte croissance — à vérifier dans ta thèse",
+     "Une erreur du marché"
+    ],
+    "correct": 1,
+    "explain": "Cher n'est pas interdit — mais la croissance attendue devient TON pari, écris-le."
+   },
+   {
+    "q": "Dette nette / EBITDA > 3 signale…",
+    "options": [
+     "Une entreprise agressive fiscalement",
+     "Une fragilité si les taux montent ou si le cash flow baisse",
+     "Un dividende élevé garanti"
+    ],
+    "correct": 1,
+    "explain": "Plus de 3 ans de cash-flow rien que pour rembourser : peu de marge d'erreur."
+   }
+  ]
+ },
+ {
+  "id": "swing",
+  "title": "Le swing trading avec des cours différés — ton terrain réel",
+  "body": "Tes cours Yahoo sont différés d'environ 15 minutes. Oublie donc le scalping à la minute : ton terrain, c'est le SWING — des positions tenues de quelques jours à quelques semaines, décidées sur des mouvements de fond, pas sur le bruit de la seconde.\n\nLa routine du swing trader (30 min/jour suffisent) :\n1. Le soir, APRÈS la clôture : revue des positions, ajustement des stops, préparation des ordres du lendemain (limit/stop — pas market : tu poses tes conditions à froid).\n2. Jamais de décision en séance sous le coup d'une bougie rouge.\n3. Un journal : chaque trade a sa thèse, chaque sortie son post-mortem.\n\nAvantages cachés : moins de frais (leçon 3), moins de biais chauds (leçon 5), compatible avec un travail — et beaucoup plus proche des critères AFC qu'un day-trading frénétique. Le différé de 15 min n'est PAS un handicap pour ce style : une décision qui ne survit pas à 15 minutes de retard n'était pas une décision de swing, c'était un réflexe.",
+  "quiz": [
+   {
+    "q": "Avec des cours différés de 15 min, le style adapté est…",
+    "options": [
+     "Le scalping à la seconde",
+     "Le swing sur plusieurs jours/semaines",
+     "Aucun trading n'est possible"
+    ],
+    "correct": 1,
+    "explain": "Le swing se décide sur des mouvements de fond ; 15 min de retard n'y changent rien."
+   },
+   {
+    "q": "Le meilleur moment pour décider tes ordres est…",
+    "options": [
+     "En pleine séance, dès qu'une bougie bouge",
+     "Le soir à froid, avec des ordres limit/stop préparés",
+     "À l'ouverture, dans les 5 premières minutes"
+    ],
+    "correct": 1,
+    "explain": "Décider à froid + poser des ordres conditionnels = la discipline fait le travail en séance."
+   },
+   {
+    "q": "Une décision qui exige une réaction à la seconde est…",
+    "options": [
+     "Le signe d'un bon trader",
+     "Un réflexe, pas une décision de swing",
+     "Obligatoire pour battre le marché"
+    ],
+    "correct": 1,
+    "explain": "Si 15 minutes la tuent, c'était du bruit — pas une thèse."
+   }
+  ]
+ }
+]
