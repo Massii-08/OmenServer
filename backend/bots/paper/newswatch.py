@@ -3,11 +3,12 @@ Telegram immédiate (Lot E, spec docs/superpowers/specs/2026-08-24-paper-trading
 section 13 pour l'extension politique/radar du 24/08 soir).
 
 Deux volets :
-  1. Par utilisateur -- tant qu'un utilisateur détient une position, on
-     interroge le flux RSS Yahoo Finance de chaque symbole détenu et on
-     notifie par Telegram toute news classée bonne/mauvaise (déjà tombée) OU
-     catalyseur à venir (anticipation d'un mouvement -- résultats annoncés,
-     fusion/acquisition, décision FDA...).
+  1. Par utilisateur -- tant qu'un utilisateur détient une position OU un
+     symbole en watchlist (union des deux, extension 25/08 -- cf.
+     _merged_symbols), on interroge le flux RSS Yahoo Finance de chaque
+     symbole surveillé et on notifie par Telegram toute news classée
+     bonne/mauvaise (déjà tombée) OU catalyseur à venir (anticipation d'un
+     mouvement -- résultats annoncés, fusion/acquisition, décision FDA...).
   2. GLOBAL (pas par utilisateur) -- veille des annonces politiques à impact
      économique probable (tarifs, sanctions, participation de l'État...),
      tirée de Google News + de l'archive RSS Truth Social. Tourne à CHAQUE
@@ -95,6 +96,32 @@ _GOV_SOURCES = [
 ]
 _GOV_MAX_AGE_S = 24 * 3600       # plus court que le 48h "par symbole" : l'immédiateté est le but
 _MAX_GOV_NOTIFY_PER_RUN = 3      # cap partagé entre LES DEUX sources gov, par run
+
+# --------------------------------------------------------------------------- #
+# Anti-spam du volet politique — incident mesuré le 24/08 au soir : ~53 messages
+# entre 20h et 22h.
+#
+# Cause exacte : le dédoublonnage se fait par LIEN, or la MÊME histoire (les
+# tarifs Trump/Canada, les sanctions Iran) est reprise par une quinzaine de
+# médias, donc quinze liens différents -> quinze messages. Multiplié par les 12
+# passages horaires du planificateur (IntervalTrigger 5 min) et le cap de 3
+# notifications par passage, le plafond réel était de 36 messages par heure.
+#
+# Deux couches, dans cet ordre :
+#
+#   1. ``story_key`` — une clé d'HISTOIRE dérivée du titre. Une histoire déjà
+#      envoyée il y a moins de ``_GOV_STORY_MUTE_H`` heures est mise en
+#      sourdine. Elle rattrape les reprises quasi identiques (fil repris tel
+#      quel, titre re-ponctué, suffixe « - Source » de Google News) ;
+#   2. ``_GOV_MAX_SENDS_PER_HOUR`` — un budget DUR sur une fenêtre glissante
+#      d'une heure. C'est LA garantie : quelle que soit la matière entrante,
+#      le téléphone ne reçoit pas plus de 4 annonces politiques par heure.
+#
+# Rien n'est perdu : un item mis en sourdine est marqué vu ET journalisé avec
+# ``"muted": True`` -> il reste visible dans le feed de l'UI et il compte
+# toujours comme facteur pour la convergence. Seul l'ENVOI est supprimé.
+_GOV_STORY_MUTE_H = 6            # même histoire : au plus un envoi / 6 h
+_GOV_MAX_SENDS_PER_HOUR = 4      # budget dur, fenêtre glissante
 
 
 # =========================================================================== #
@@ -310,6 +337,99 @@ def format_gov_message(title: str, link: str) -> str:
     )
 
 
+# --- anti-spam du volet politique : clé d'HISTOIRE (cf. le commentaire de
+# tête de fichier ~L99 pour le design complet -- deux couches, story_key ici
+# pour la couche 1) ---------------------------------------------------------- #
+
+# 4 et non 6 : la règle PRIMAIRE décrite au design (les 6 tokens
+# significatifs les plus longs) a été essayée en premier et NE CONVERGE PAS
+# naturellement sur les paires réelles de calibration -- des mots longs mais
+# non partagés ("economic"/"unveils"/"partners") battent systématiquement des
+# mots courts mais identifiants ("Iran"/"US") dans une sélection par
+# longueur. Repli DOCUMENTÉ (comme prévu) : 4 tokens, triés alphabétiquement.
+# Validé par calibration -- cf. tests test_story_key_*.
+_STORY_KEY_TOKENS = 4
+_STORY_KEY_TRUNC = 6   # troncature légère type "stemming pauvre" -- unifie
+                        # threatened/threats -> "threat", tariff/tariffs ->
+                        # "tariff", sans dépendance externe.
+
+_STORY_KEY_STOPWORDS = frozenset(
+    ("the a an of to on as and in for with after new les des sur "
+     "at its against by from "
+     "le la les des du un une et ou mais donc car dans sous avec sans pour "
+     "par en au aux ce cet cette ces qui que quoi dont").split()
+) | frozenset({
+    # Verbes de reportage génériques -- omniprésents dans les titres de
+    # presse quel que soit le SUJET (annoncer/dévoiler/avertir...), donc zéro
+    # pouvoir discriminant pour identifier UNE histoire précise (même
+    # raisonnement que "new"/"after" ci-dessus, juste plus long à énumérer).
+    "unveils", "unveiled", "announces", "announced", "says", "said",
+    "tells", "told", "warns", "warned", "reports", "reported",
+    "vows", "vowed", "urges", "urged", "look", "looks", "looking",
+    "eyes", "eyed",
+    # "trump" : quasi omniprésent dans CE flux précis -- la requête Google
+    # News de _GOV_SOURCES filtre déjà sur Trump/White House/executive
+    # order -- donc zéro pouvoir discriminant pour séparer une histoire
+    # d'une autre ICI (vérifié sans collision entre histoires réellement
+    # différentes dans les tests de calibration).
+    "trump",
+})
+
+# Suffixe " - Source" de Google News (1 à 5 mots après le tiret -- borné pour
+# ne pas avaler une vraie clause finale du titre qui utiliserait aussi un
+# tiret comme séparateur).
+_GNEWS_SUFFIX_RE = re.compile(r"\s+-\s+[A-Za-z0-9.&']+(?:\s+[A-Za-z0-9.&']+){0,4}$")
+# Citation entre guillemets (droits ou courbes) : la formule PERSONNELLE de
+# quelqu'un, pas le fait rapporté par l'article -- ne se retrouve quasiment
+# jamais telle quelle dans la reprise d'un autre média.
+_QUOTED_RE = re.compile(r'["“”].*?["“”]')
+# "trading partner(s)" : formule diplomatique générique (n'importe quel pays
+# a des "trading partners") -- même statut que "trade deal"/"executive
+# order", déjà traités comme génériques dans _GOV_KEYWORDS.
+_TRADING_PARTNERS_RE = re.compile(r"trading partners?", re.IGNORECASE)
+_STORY_KEY_PUNCT_RE = re.compile(r"[^a-z0-9]+")
+
+
+def story_key(title: str) -> str:
+    """Clé d'HISTOIRE dérivée d'un titre (PUR -- cf. le commentaire de tête
+    de fichier ~L99 pour le design complet de l'anti-spam politique).
+
+    Pipeline : retrait du suffixe " - Source" de Google News -> retrait des
+    citations entre guillemets -> retrait de la formule "trading partner(s)"
+    -> minuscules -> retrait ponctuation -> retrait stopwords EN/FR + verbes
+    de reportage génériques + "trump" (cf. _STORY_KEY_STOPWORDS) -> troncature
+    légère à 6 caractères (stemming pauvre) -> garde les 4 tokens
+    significatifs restants (dédupliqués), triés alphabétiquement, joints
+    par '-'. "" si le titre est vide.
+
+    4 et non 6 -- cf. le commentaire au-dessus de _STORY_KEY_TOKENS : la
+    règle des 6 tokens les plus longs ne convergeait pas naturellement sur
+    les paires réelles de calibration, ce repli à 4 est le résultat DOCUMENTÉ
+    de cette calibration."""
+    if not title:
+        return ""
+    t = _GNEWS_SUFFIX_RE.sub("", title)
+    t = _QUOTED_RE.sub(" ", t)
+    t = _TRADING_PARTNERS_RE.sub(" ", t)
+    t = t.lower()
+    t = t.replace("’", "'")
+    t = re.sub(r"[.']", "", t)            # "U.S." -> "us" (pas "u s")
+    t = _STORY_KEY_PUNCT_RE.sub(" ", t)    # reste de la ponctuation -> espace
+    tokens = [w for w in t.split() if w]
+    tokens = [w for w in tokens if w not in _STORY_KEY_STOPWORDS]
+    # Token court gardé seulement s'il est un code entité reconnu (US/UE/
+    # UK/ONU) -- sinon c'est du bruit (particule/article mal filtré).
+    tokens = [w for w in tokens if len(w) >= 3 or w in ("us", "eu", "uk", "un")]
+    tokens = [w[:_STORY_KEY_TRUNC] for w in tokens]
+    seen_local = set()
+    significant = []
+    for w in tokens:
+        if w not in seen_local:
+            seen_local.add(w)
+            significant.append(w)
+    return "-".join(sorted(significant)[:_STORY_KEY_TOKENS])
+
+
 # =========================================================================== #
 #  I/O -- réseau (curl_cffi), Telegram, disque. Tout injectable dans run_once.
 # =========================================================================== #
@@ -365,7 +485,7 @@ def _global_seen_path() -> Path:
 
 
 def _default_seen_state() -> Dict[str, Any]:
-    return {"seen": {}, "events": [], "seeded": {}}
+    return {"seen": {}, "events": [], "seeded": {}, "stories": {}, "sent_log": []}
 
 
 def _load_seen_state(path: Path) -> Dict[str, Any]:
@@ -373,7 +493,14 @@ def _load_seen_state(path: Path) -> Dict[str, Any]:
     stores : par-utilisateur et global). Absent -> état vierge. Corrompu ->
     état vierge SANS jamais planter (le fichier fautif est renommé en
     .corrupt, même convention que store.py -- on garde la trace du bug sans
-    perdre la capacité de tourner)."""
+    perdre la capacité de tourner).
+
+    "stories" (dict story_key -> dernier envoi ISO) et "sent_log" (liste
+    d'horodatages ISO d'envois gov, fenêtre glissante 1h) ne servent QUE
+    l'état global politique (anti-spam par histoire, cf. tête de fichier
+    ~L99) -- absents/mal typés (y compris un état "ancien format" écrit
+    AVANT cette extension) -> repartent d'un dict/liste vide SANS planter,
+    même philosophie que "seen"/"events"/"seeded" ci-dessous."""
     if not path.is_file():
         return _default_seen_state()
     try:
@@ -390,10 +517,14 @@ def _load_seen_state(path: Path) -> Dict[str, Any]:
     seen = data.get("seen")
     events = data.get("events")
     seeded = data.get("seeded")
+    stories = data.get("stories")
+    sent_log = data.get("sent_log")
     return {
         "seen": seen if isinstance(seen, dict) else {},
         "events": events if isinstance(events, list) else [],
         "seeded": seeded if isinstance(seeded, dict) else {},
+        "stories": stories if isinstance(stories, dict) else {},
+        "sent_log": sent_log if isinstance(sent_log, list) else [],
     }
 
 
@@ -463,6 +594,27 @@ def _purge_old_seen(state: Dict[str, Any], now_dt: datetime,
         del seen[key]
 
 
+def _purge_old_sent_log(sent_log: List[str], now_dt: datetime, max_age_h: float) -> None:
+    """Purge EN PLACE les horodatages d'envoi gov plus vieux que max_age_h
+    heures -- fenêtre glissante du budget dur (_GOV_MAX_SENDS_PER_HOUR, cf.
+    tête de fichier ~L99). Une entrée illisible est purgée par prudence,
+    même raisonnement que _purge_old_seen : mieux vaut sous-compter le budget
+    (donc parfois muter un envoi qui aurait pu passer) que le laisser
+    grossir indéfiniment sur une entrée cassée."""
+    cutoff = now_dt.timestamp() - max_age_h * 3600
+    kept = []
+    for iso_ts in sent_log:
+        try:
+            ts = datetime.fromisoformat(iso_ts)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts.timestamp() >= cutoff:
+                kept.append(iso_ts)
+        except (TypeError, ValueError):
+            continue
+    sent_log[:] = kept
+
+
 def _hash_link(link: str) -> str:
     return hashlib.md5(link.encode("utf-8")).hexdigest()
 
@@ -484,7 +636,9 @@ def recent_events(username: str) -> List[Dict[str, Any]]:
     return merged
 
 
-# --- portefeuilles ------------------------------------------------------------ #
+# --- portefeuilles + watchlist (extension 25/08 -- "sans baisser le nombre
+# d'infos générales" : le volet gov ci-dessus est INCHANGÉ, cette union ne
+# touche QUE le volet par-symbole) ------------------------------------------ #
 
 def _position_symbols(portfolio: Dict[str, Any]) -> List[str]:
     """Symboles distincts (ordre de première apparition) des positions
@@ -499,10 +653,46 @@ def _position_symbols(portfolio: Dict[str, Any]) -> List[str]:
     return symbols
 
 
+def _load_watchlist_symbols(username: str) -> List[str]:
+    """Symboles de la watchlist d'un utilisateur -- délègue à
+    store.load_watchlist() (source de vérité I/O du paquet paper/, écrite et
+    lue via le même chemin store.watchlist_path() par TOUS les modules,
+    watchlist et news compris ; corrompu/absent -> [] par construction, cf.
+    store.py). Entrée sans "symbol" -> ignorée en silence, jamais de crash --
+    le volet news ne doit jamais tomber pour une donnée d'un AUTRE module."""
+    symbols: List[str] = []
+    for entry in store.load_watchlist(username):
+        sym = entry.get("symbol")
+        if isinstance(sym, str) and sym:
+            symbols.append(sym)
+    return symbols
+
+
+def _merged_symbols(portfolio: Dict[str, Any], username: str) -> List[str]:
+    """Symboles à surveiller pour un utilisateur : positions ouvertes UNION
+    watchlist, dédupliqués de façon insensible à la casse (la casse de la
+    PREMIÈRE occurrence est conservée -- positions d'abord, puis
+    watchlist)."""
+    merged: List[str] = []
+    seen_upper = set()
+    for sym in _position_symbols(portfolio):
+        upper = sym.upper()
+        if upper not in seen_upper:
+            seen_upper.add(upper)
+            merged.append(sym)
+    for sym in _load_watchlist_symbols(username):
+        upper = sym.upper()
+        if upper not in seen_upper:
+            seen_upper.add(upper)
+            merged.append(sym)
+    return merged
+
+
 def _discover_portfolios() -> List[Tuple[str, Dict[str, Any]]]:
     """Liste (username, portfolio) pour chaque portefeuille possédant au
-    moins une position ouverte. Ignore les fichiers auxiliaires (.coach.json,
-    .news_seen.json -- ils matchent aussi le glob "*.json") ; les fichiers
+    moins une position ouverte OU un symbole en watchlist (extension 25/08).
+    Ignore les fichiers auxiliaires (.coach.json, .news_seen.json,
+    .watchlist.json -- ils matchent aussi le glob "*.json") ; les fichiers
     corrompus sont déjà hors du glob (store.py les renomme en .corrupt à la
     lecture, extension qui ne matche plus "*.json")."""
     data_dir = store.DATA_DIR
@@ -511,7 +701,8 @@ def _discover_portfolios() -> List[Tuple[str, Dict[str, Any]]]:
     out: List[Tuple[str, Dict[str, Any]]] = []
     for path in sorted(data_dir.glob("*.json")):
         name = path.name
-        if name.endswith(".coach.json") or name.endswith(".news_seen.json"):
+        if (name.endswith(".coach.json") or name.endswith(".news_seen.json")
+                or name.endswith(".watchlist.json")):
             continue
         username = path.stem
         try:
@@ -520,7 +711,7 @@ def _discover_portfolios() -> List[Tuple[str, Dict[str, Any]]]:
             continue
         if not isinstance(portfolio, dict):
             continue
-        if _position_symbols(portfolio):
+        if _position_symbols(portfolio) or _load_watchlist_symbols(username):
             out.append((username, portfolio))
     return out
 
@@ -533,12 +724,13 @@ def run_once(now: Optional[datetime] = None,
             tg_cfg: Optional[Dict[str, Any]] = None,
             sleep: Optional[Callable[[float], None]] = None) -> Dict[str, int]:
     """Un cycle de veille news : (1) volet politique GLOBAL (toujours, même
-    sans portefeuille) puis (2) pour chaque portefeuille ayant des positions,
-    interroge le flux RSS Yahoo de chaque symbole détenu. Notifie Telegram sur
-    toute news neg/pos/watch (par symbole) ou gov (globale) nouvelle. Retourne
-    les compteurs {users, symbols, fetched, notified, errors} -- le volet gov
-    contribue à fetched/notified/errors mais jamais à users/symbols (qui ne
-    parlent que des portefeuilles).
+    sans portefeuille) puis (2) pour chaque utilisateur ayant des positions
+    ouvertes ET/OU des symboles en watchlist, interroge le flux RSS Yahoo de
+    chaque symbole surveillé (union dédupliquée, cf. _merged_symbols).
+    Notifie Telegram sur toute news neg/pos/watch (par symbole) ou gov
+    (globale) nouvelle. Retourne les compteurs {users, symbols, fetched,
+    notified, errors} -- le volet gov contribue à fetched/notified/errors
+    mais jamais à users/symbols (qui ne parlent que des portefeuilles).
 
     Sans config Telegram -> ne fait RIEN du tout, ni le volet gov ni le volet
     par utilisateur (ni disque ni réseau, feature opt-in silencieuse) : c'est
@@ -564,11 +756,23 @@ def run_once(now: Optional[datetime] = None,
     # Volet 1 -- annonces politiques GLOBALES (§13). Tourne TOUJOURS, même
     # si personne ne détient de position : une politique commerciale ne
     # demande pas la permission d'un portefeuille pour bouger le marché.
+    #
+    # Anti-spam par HISTOIRE (incident du 24/08 soir, cf. commentaire de tête
+    # ~L99) : deux couches AVANT le cap historique par-run
+    # (_MAX_GOV_NOTIFY_PER_RUN, inchangé) -- mute par story_key (6h) puis
+    # budget dur glissant (_GOV_MAX_SENDS_PER_HOUR). Les deux marquent
+    # l'item vu (déjà fait plus haut) ET journalisent un event
+    # "muted": True (rien n'est perdu, cf. tête de fichier) ; le cap
+    # historique, lui, continue de sauter l'item EN SILENCE (comportement
+    # préexistant conservé tel quel).
     # ----------------------------------------------------------------- #
     gov_state = _load_global_seen()
     gov_seen = gov_state["seen"]
     gov_seeded = gov_state["seeded"]
     gov_events = gov_state["events"]
+    gov_stories = gov_state["stories"]
+    gov_sent_log = gov_state["sent_log"]
+    _purge_old_sent_log(gov_sent_log, now_dt, max_age_h=1)
     gov_changed = False
     gov_is_first_pass = "gov" not in gov_seeded
     gov_notified_count = 0
@@ -604,12 +808,40 @@ def run_once(now: Optional[datetime] = None,
             age_s = now_dt.timestamp() - pub_ts
             if age_s < 0 or age_s > _GOV_MAX_AGE_S:
                 continue
-            if gov_notified_count >= _MAX_GOV_NOTIFY_PER_RUN:
-                continue
-            if not classify_gov(item.get("title", "")):
+            title = item.get("title", "")
+            if not classify_gov(title):
                 continue  # neutre/électoral -> juste marqué vu
 
-            message = format_gov_message(item["title"], link)
+            skey = story_key(title)
+            muted = False
+            last_sent_iso = gov_stories.get(skey)
+            if last_sent_iso:
+                try:
+                    last_sent_dt = datetime.fromisoformat(last_sent_iso)
+                    if last_sent_dt.tzinfo is None:
+                        last_sent_dt = last_sent_dt.replace(tzinfo=timezone.utc)
+                    age_story_h = (now_dt - last_sent_dt).total_seconds() / 3600
+                    muted = age_story_h < _GOV_STORY_MUTE_H
+                except (TypeError, ValueError):
+                    muted = False  # horodatage illisible -> pas de mute par prudence
+            if not muted and len(gov_sent_log) >= _GOV_MAX_SENDS_PER_HOUR:
+                muted = True
+
+            if muted:
+                gov_events.insert(0, {
+                    "ts": now_dt.isoformat(),
+                    "symbol": "GOV",
+                    "title": title,
+                    "link": link,
+                    "sentiment": "gov",
+                    "muted": True,
+                })
+                continue
+
+            if gov_notified_count >= _MAX_GOV_NOTIFY_PER_RUN:
+                continue
+
+            message = format_gov_message(title, link)
             try:
                 ok = notify_fn(message, cfg)
             except Exception as exc:
@@ -618,12 +850,15 @@ def run_once(now: Optional[datetime] = None,
             if ok:
                 counters["notified"] += 1
                 gov_notified_count += 1
+                gov_stories[skey] = now_dt.isoformat()
+                gov_sent_log.append(now_dt.isoformat())
                 gov_events.insert(0, {
                     "ts": now_dt.isoformat(),
                     "symbol": "GOV",
-                    "title": item["title"],
+                    "title": title,
                     "link": link,
                     "sentiment": "gov",
+                    "muted": False,
                 })
             else:
                 counters["errors"] += 1
@@ -638,11 +873,12 @@ def run_once(now: Optional[datetime] = None,
         _save_global_seen(gov_state)
 
     # ----------------------------------------------------------------- #
-    # Volet 2 -- par utilisateur, par symbole détenu.
+    # Volet 2 -- par utilisateur, par symbole détenu ∪ symbole en watchlist
+    # (extension 25/08 -- cf. _merged_symbols).
     # ----------------------------------------------------------------- #
     for username, portfolio in _discover_portfolios():
         counters["users"] += 1
-        symbols = _position_symbols(portfolio)
+        symbols = _merged_symbols(portfolio, username)
         state = _load_seen(username)
         seen = state["seen"]
         seeded = state["seeded"]

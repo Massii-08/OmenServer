@@ -8,6 +8,7 @@ Aucun test ne touche le réseau ni le disque réel : le faux marché ``Market``
 remplace ``quotes``, les trois fonctions du ``llm`` sont neutralisées, et
 ``store.DATA_DIR`` pointe sur le répertoire temporaire du test.
 """
+import json
 from datetime import datetime
 
 import pytest
@@ -96,11 +97,17 @@ def make_client(tmp_path, monkeypatch, role="admin"):
                  "fiche_facts"):
         monkeypatch.setattr(quotes, name, getattr(market, name))
 
+    # ``lang="fr"`` sur chaque doublure : le router passe désormais la langue de
+    # lecture aux QUATRE fonctions du LLM (même patron que ``suggest_ideas``).
     monkeypatch.setattr(pr.llm, "ask_coach",
-                        lambda context, question: "Ta taille est le sujet.")
+                        lambda context, question, lang="fr": "Ta taille est le sujet.")
     monkeypatch.setattr(pr.llm, "write_postmortem",
-                        lambda trade, context: "Post-mortem du trade.")
-    monkeypatch.setattr(pr.llm, "write_analysis", lambda facts: "Fiche du titre.")
+                        lambda trade, context, lang="fr": "Post-mortem du trade.")
+    monkeypatch.setattr(pr.llm, "write_analysis",
+                        lambda facts, lang="fr": "Fiche du titre.")
+    monkeypatch.setattr(pr.llm, "suggest_ideas",
+                        lambda context, lang="fr": 'Pas de matière suffisante.\n'
+                        '```json\n{"ideas": []}\n```')
 
     app = FastAPI()
     app.include_router(pr.router)
@@ -150,11 +157,32 @@ def test_player_role_is_refused_everywhere(tmp_path, monkeypatch):
     assert c.get("/api/paper/digest").status_code == 403
     assert c.post("/api/paper/digest/run").status_code == 403
     assert c.get("/api/paper/candles?symbol=NESN.SW").status_code == 403
+    assert c.get("/api/paper/community").status_code == 403
+    assert c.post("/api/paper/ideas", json={}).status_code == 403
+    assert c.get("/api/paper/watchlist").status_code == 403
 
 
 def test_money_role_is_allowed(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch, role="money")
     assert c.get("/api/paper/portfolio").status_code == 200
+
+
+def test_trader_role_is_allowed(tmp_path, monkeypatch):
+    """Nouveau rôle : accès au SEUL module Trading — mêmes endpoints que
+    money/admin (précédent exact : rectester, piège #37 CLAUDE.md)."""
+    c, _ = make_client(tmp_path, monkeypatch, role="trader")
+    assert c.get("/api/paper/portfolio").status_code == 200
+    assert c.get("/api/paper/community").status_code == 200
+    assert c.post("/api/paper/ideas", json={}).status_code == 200
+    assert c.get("/api/paper/watchlist").status_code == 200
+
+
+def test_trader_role_is_registered_but_not_invitable():
+    """Même politique que rectester : admin-assigné uniquement, jamais
+    distribuable via un code d'invitation."""
+    from backend.auth import permissions as perms
+    assert "trader" in perms.VALID_ROLES
+    assert "trader" not in perms.INVITABLE_ROLES
 
 
 # ================================================================
@@ -631,13 +659,43 @@ def test_coach_ask_answers_and_journals(tmp_path, monkeypatch):
 def test_coach_ask_returns_502_when_the_llm_fails(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
 
-    def boom(context, question):
+    def boom(context, question, lang="fr"):
         raise RuntimeError("le coach n'a pas répondu dans les 120 s")
 
     monkeypatch.setattr(pr.llm, "ask_coach", boom)
     response = c.post("/api/paper/coach/ask", json={})
     assert response.status_code == 502
     assert "120" in response.json()["detail"]
+
+
+def test_coach_ask_persists_the_discussion_in_the_shared_vault(tmp_path, monkeypatch):
+    """Discussions.md est un carnet PARTAGÉ (extension communauté) — distinct
+    du Journal.md privé déjà couvert par test_coach_ask_answers_and_journals."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = c.post("/api/paper/coach/ask", json={"question": "je fais quoi ?"}).json()
+    assert body["answer"] == "Ta taille est le sujet."
+
+    names = [n["name"] for n in c.get("/api/paper/coach/notes").json()]
+    assert "Discussions.md" in names
+    note = c.get("/api/paper/coach/notes/Discussions.md").json()
+    assert "je fais quoi ?" in note["markdown"]
+    assert "Ta taille est le sujet." in note["markdown"]
+    assert "Question de tester" in note["markdown"]        # FakeUser.username
+
+
+def test_coach_ask_survives_a_broken_vault_write(tmp_path, monkeypatch):
+    """Un carnet en panne (Journal.md ET Discussions.md) ne doit JAMAIS casser
+    la réponse HTTP déjà obtenue du LLM — même invariant best-effort que
+    _append_journal, étendu à _append_discussion."""
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom(username, rel_name, markdown_text):
+        raise OSError("disque plein")
+
+    monkeypatch.setattr(pr.store, "append_note", boom)
+    response = c.post("/api/paper/coach/ask", json={"question": "je fais quoi ?"})
+    assert response.status_code == 200
+    assert response.json()["answer"] == "Ta taille est le sujet."
 
 
 def test_postmortem_needs_a_closed_trade(tmp_path, monkeypatch):
@@ -673,7 +731,7 @@ def test_postmortem_502_when_the_llm_fails(tmp_path, monkeypatch):
     market.prices["NESN.SW"] = (120.0, "CHF", "Nestle SA")
     buy(c, side="sell", qty=10)
 
-    def boom(trade, context):
+    def boom(trade, context, lang="fr"):
         raise RuntimeError("claude cli rc=2")
 
     monkeypatch.setattr(pr.llm, "write_postmortem", boom)
@@ -692,7 +750,7 @@ def test_analysis_guards(tmp_path, monkeypatch):
     assert c.post("/api/paper/analysis", json={"symbol": ""}).status_code == 400
     assert c.post("/api/paper/analysis", json={"symbol": "ZZZZ"}).status_code == 404
 
-    def boom(facts):
+    def boom(facts, lang="fr"):
         raise RuntimeError("claude introuvable")
 
     monkeypatch.setattr(pr.llm, "write_analysis", boom)
@@ -727,6 +785,244 @@ def test_reading_the_portfolio_does_not_grow_the_profile(tmp_path, monkeypatch):
         portfolio_of(c)
         c.post("/api/paper/tick")
     assert store.load_coach("tester") is None
+
+
+# ================================================================
+#  COMMUNAUTÉ (carnets partagés entre traders)
+# ================================================================
+
+def test_community_lists_vaults_and_reads_another_traders_note(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.append_note("alice", "Journal.md", "## note d'alice\n")
+    store.append_note("bob", "Journal.md", "## note de bob\n")
+
+    body = c.get("/api/paper/community").json()
+    users = {row["user"] for row in body["users"]}
+    assert users == {"alice", "bob"}
+    alice_row = next(row for row in body["users"] if row["user"] == "alice")
+    assert [n["name"] for n in alice_row["notes"]] == ["Journal.md"]
+
+    # "tester" (l'utilisateur courant du client) lit le carnet de bob -
+    # LECTURE d'un AUTRE utilisateur, aucune écriture cross-user en jeu.
+    note = c.get("/api/paper/community/bob/Journal.md")
+    assert note.status_code == 200
+    assert note.json() == {"user": "bob", "name": "Journal.md",
+                           "markdown": "## note de bob\n"}
+
+
+def test_community_is_empty_without_any_vault(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.get("/api/paper/community").json() == {"users": []}
+
+
+def test_community_404s_a_user_absent_from_the_vault_list(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.append_note("alice", "Journal.md", "## note d'alice\n")
+    assert c.get("/api/paper/community/does-not-exist/Journal.md").status_code == 404
+
+
+def test_community_rejects_a_forged_user(tmp_path, monkeypatch):
+    """``..`` ne peut structurellement jamais figurer dans
+    ``list_vault_users`` (allowlist stricte de ``_sanitize_username``, aucun
+    ``.`` autorisé) : 404 avant même de toucher le disque, comme n'importe
+    quel autre utilisateur inconnu."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    resp = c.get("/api/paper/community/%2e%2e/Journal.md")
+    assert resp.status_code in (400, 404)
+
+
+def test_community_404s_an_absent_note_of_a_real_vault(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.append_note("alice", "Journal.md", "## note d'alice\n")
+    assert c.get("/api/paper/community/alice/Nope.md").status_code == 404
+
+
+def test_community_400s_an_invalid_note_name(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.append_note("alice", "Journal.md", "## note d'alice\n")
+    assert c.get("/api/paper/community/alice/Journal.txt").status_code == 400
+
+
+def test_watchlist_file_does_not_create_a_ghost_radar_user(tmp_path, monkeypatch):
+    """<user>.watchlist.json porte un point dans le radical (même mécanisme
+    que .coach.json et .news_seen.json, cf. radar._USER_FILE_RE) : il ne doit
+    JAMAIS être compté comme un compte fantôme par le radar."""
+    from backend.bots.paper import radar
+    make_client(tmp_path, monkeypatch)          # applique le monkeypatch DATA_DIR
+    store.save_portfolio("tester", pr.new_portfolio().to_dict())
+    store.save_watchlist("tester", [{"symbol": "NESN.SW", "name": "Nestle SA",
+                                     "currency": "CHF", "added_at": FIXED_NOW}])
+    assert radar._users_with_portfolio() == ["tester"]
+
+
+# ================================================================
+#  IDÉES DE TRADE (extension coach, orientées rentabilité)
+# ================================================================
+
+def test_ideas_prompt_carries_the_profitability_doctrine():
+    """Doctrine explicite : sizing/stop plutôt que « sûr », catalyseur cité."""
+    from backend.bots.paper import llm as llm_mod
+    prompt = llm_mod.build_ideas_prompt({}, lang="fr")
+    assert "sizing" in prompt
+    assert "catalyseur" in prompt
+    assert "sûr" in prompt
+
+
+def test_ideas_prompt_switches_language():
+    from backend.bots.paper import llm as llm_mod
+    assert "English" in llm_mod.build_ideas_prompt({}, lang="en")
+    assert "italiano" in llm_mod.build_ideas_prompt({}, lang="it")
+    assert "français" in llm_mod.build_ideas_prompt({}, lang="fr")
+
+
+def _ideas_json(*rows):
+    payload = json.dumps({"ideas": list(rows)})
+    return "Voici mes idées.\n```json\n%s\n```" % payload
+
+
+def test_ideas_happy_path_registers_radar_hypotheses(tmp_path, monkeypatch):
+    from backend.bots.paper import radar
+    c, _ = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(pr.llm, "suggest_ideas", lambda context, lang="fr": _ideas_json(
+        {"ticker": "aapl", "direction": "up", "horizon_days": 10, "thesis": "Momentum"},
+        {"ticker": "tsla", "direction": "down", "horizon_days": 5, "thesis": "Retournement"},
+    ))
+    body = c.post("/api/paper/ideas", json={}).json()
+    assert len(body["ideas"]) == 2
+    assert all(idea["tracked"] for idea in body["ideas"])
+    assert {idea["ticker"] for idea in body["ideas"]} == {"AAPL", "TSLA"}
+
+    state = radar.load_state()
+    assert len(state["hypotheses"]) == 2
+    assert {h.get("source") for h in state["hypotheses"]} == {"coach"}
+    assert {h.get("tickers", [None])[0] for h in state["hypotheses"]} == {"AAPL", "TSLA"}
+
+
+def test_ideas_respects_the_radar_max_open_queue(tmp_path, monkeypatch):
+    from backend.bots.paper import radar
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    state = radar.blank_state()
+    for i in range(radar.MAX_OPEN):
+        state["hypotheses"].append({
+            "id": "h%d" % i, "created_at": FIXED_NOW, "status": "open",
+            "outcome": None, "scored_at": None, "move_pct": None,
+            "thesis": "déjà ouverte", "chain": [], "markets": [],
+            "tickers": ["X%d" % i], "direction": "up", "horizon_days": 7,
+            "confidence": "moyenne", "invalidation": "?",
+        })
+    radar.save_state(state)
+
+    monkeypatch.setattr(pr.llm, "suggest_ideas", lambda context, lang="fr": _ideas_json(
+        {"ticker": "AAPL", "direction": "up", "horizon_days": 10, "thesis": "Momentum"}))
+    body = c.post("/api/paper/ideas", json={}).json()
+    assert body["ideas"] == [{"ticker": "AAPL", "direction": "up",
+                             "horizon_days": 10, "thesis": "Momentum",
+                             "tracked": False}]
+    assert len(radar.load_state()["hypotheses"]) == radar.MAX_OPEN
+
+
+def test_ideas_without_a_json_block_still_returns_the_text(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(pr.llm, "suggest_ideas",
+                        lambda context, lang="fr":
+                        "Contexte trop maigre, je ne peux rien proposer.")
+    body = c.post("/api/paper/ideas", json={}).json()
+    assert body["text"] == "Contexte trop maigre, je ne peux rien proposer."
+    assert body["ideas"] == []
+
+
+def test_ideas_returns_502_when_the_llm_fails(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom(context, lang="fr"):
+        raise RuntimeError("le coach n'a pas répondu dans les 120 s")
+
+    monkeypatch.setattr(pr.llm, "suggest_ideas", boom)
+    response = c.post("/api/paper/ideas", json={})
+    assert response.status_code == 502
+
+
+def test_ideas_context_includes_the_watchlist(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.save_watchlist("tester", [{"symbol": "TSLA", "name": "Tesla Inc",
+                                     "currency": "USD", "added_at": FIXED_NOW}])
+    seen = {}
+
+    def fake_suggest(context, lang="fr"):
+        seen["context"] = context
+        return _ideas_json()
+
+    monkeypatch.setattr(pr.llm, "suggest_ideas", fake_suggest)
+    c.post("/api/paper/ideas", json={})
+    assert seen["context"]["watchlist"] == [{"symbol": "TSLA", "name": "Tesla Inc",
+                                             "currency": "USD", "added_at": FIXED_NOW}]
+
+
+def test_coach_ask_context_includes_the_watchlist(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.save_watchlist("tester", [{"symbol": "TSLA", "name": "Tesla Inc",
+                                     "currency": "USD", "added_at": FIXED_NOW}])
+    seen = {}
+
+    def fake_ask(context, question, lang="fr"):
+        seen["context"] = context
+        return "Ta taille est le sujet."
+
+    monkeypatch.setattr(pr.llm, "ask_coach", fake_ask)
+    c.post("/api/paper/coach/ask", json={"question": "?"})
+    assert seen["context"]["watchlist"][0]["symbol"] == "TSLA"
+
+
+# ================================================================
+#  WATCHLIST (titres favoris)
+# ================================================================
+
+def test_watchlist_add_list_remove_roundtrip(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.get("/api/paper/watchlist").json() == {"symbols": []}
+
+    body = c.post("/api/paper/watchlist", json={"symbol": "nesn.sw"}).json()
+    assert body["symbols"] == [{"symbol": "NESN.SW", "name": "Nestle SA",
+                                "currency": "CHF", "added_at": FIXED_NOW}]
+    assert c.get("/api/paper/watchlist").json() == body
+
+    removed = c.delete("/api/paper/watchlist/NESN.SW")
+    assert removed.status_code == 200
+    assert removed.json()["symbols"] == []
+    assert c.get("/api/paper/watchlist").json() == {"symbols": []}
+
+
+def test_watchlist_add_is_idempotent_case_insensitive(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    c.post("/api/paper/watchlist", json={"symbol": "NESN.SW"})
+    body = c.post("/api/paper/watchlist", json={"symbol": "nesn.sw"}).json()
+    assert len(body["symbols"]) == 1
+
+
+def test_watchlist_rejects_an_empty_symbol(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.post("/api/paper/watchlist", json={"symbol": "   "}).status_code == 400
+
+
+def test_watchlist_rejects_an_unknown_symbol(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.post("/api/paper/watchlist", json={"symbol": "ZZZZ"}).status_code == 404
+
+
+def test_watchlist_caps_at_the_maximum(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    for i in range(pr.MAX_WATCHLIST):
+        symbol = "SYM%d" % i
+        market.prices[symbol] = (10.0, "CHF", "Titre %d" % i)
+        assert c.post("/api/paper/watchlist", json={"symbol": symbol}).status_code == 200
+    market.prices["OVERFLOW"] = (10.0, "CHF", "Trop")
+    assert c.post("/api/paper/watchlist", json={"symbol": "OVERFLOW"}).status_code == 400
+
+
+def test_watchlist_remove_unknown_is_404(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.delete("/api/paper/watchlist/ZZZZ").status_code == 404
 
 
 # ================================================================
@@ -1163,3 +1459,245 @@ def test_router_is_mounted_in_main():
     assert "/api/paper/portfolio" in paths
     assert "/api/paper/orders" in paths
     assert "/api/paper/tick" in paths
+
+
+# ================================================================
+#  CONTENU MULTILINGUE (le simulateur parle la langue de l'interface)
+#
+#  Le chrome de l'interface était déjà traduit ×3 ; ce qui restait en
+#  français, c'est le CONTENU servi par le backend. La priorité est
+#  l'italien (Massii est italophone) ; l'anglais retombe sur le français.
+# ================================================================
+
+# Mots FRANÇAIS-SEULEMENT, cherchés en MOT ENTIER. Deux pièges évités :
+#   - la sous-chaîne (« les » vit dans « valse ») -> on tokenise ;
+#   - le mot commun aux deux langues -> « le », « tu », « da », « credito » sont
+#     de l'italien parfaitement valide ; les inclure ferait échouer une
+#     traduction IRRÉPROCHABLE (c'est ce qui est arrivé au premier jet).
+# HEURISTIQUE assumée : elle ne juge pas la QUALITÉ de l'italien, elle attrape
+# le cas réel — un bloc laissé dans la langue d'origine. Sa discriminance est
+# elle-même testée plus bas : un détecteur qui ne détecte rien ne prouve rien.
+FRENCH_MARKERS = ("les", "vous", "des", "une", "est", "sont", "avec", "pour",
+                  "dans", "cette", "leur", "aussi", "après", "toujours", "jamais",
+                  "moins", "plus", "quand", "parce", "perte", "pertes", "prix",
+                  "titre", "titres", "marché", "frais", "risque", "seuil",
+                  "gagnants", "perdants", "achat", "vente", "année", "jours",
+                  "semaine", "semaines", "chaque", "ordre", "ordres", "thèse",
+                  "suisse", "impôt", "actions", "entreprise", "bénéfice")
+
+
+def _words(text):
+    """Tokens alphabétiques, apostrophes COUPÉES (« l'azione » -> {l, azione}) :
+    sans cela « d'une » serait un seul token et « une » passerait au travers."""
+    import re
+    return set(w.lower() for w in re.findall(r"[a-zA-ZÀ-ÿ]+", str(text or "")))
+
+
+def _lesson_strings(lesson):
+    out = [lesson.get("title", ""), lesson.get("body", "")]
+    for question in lesson.get("quiz") or []:
+        out.append(question.get("q", ""))
+        out.append(question.get("explain", ""))
+        out.extend(question.get("options") or [])
+    return out
+
+
+def test_the_italian_lessons_mirror_the_french_ones_exactly():
+    """LE test de parité : mêmes leçons, mêmes questions, MÊMES index corrects.
+
+    C'est lui qui empêche une traduction de fausser une correction de quiz —
+    un `correct` décalé rendrait le quiz italien faux sans lever la moindre
+    erreur, et personne ne s'en apercevrait avant que Massii échoue à un quiz
+    auquel il a bien répondu.
+    """
+    fr = pr.lessons_catalog("fr")
+    it = pr.lessons_catalog("it")
+    assert fr and it
+    assert [l["id"] for l in fr] == [l["id"] for l in it]
+
+    for lesson_fr, lesson_it in zip(fr, it):
+        quiz_fr = lesson_fr["quiz"]
+        quiz_it = lesson_it["quiz"]
+        assert len(quiz_fr) == len(quiz_it), lesson_fr["id"]
+        for question_fr, question_it in zip(quiz_fr, quiz_it):
+            assert question_fr["correct"] == question_it["correct"], lesson_fr["id"]
+            assert len(question_fr["options"]) == len(question_it["options"])
+            assert question_it["explain"].strip()
+
+
+def test_the_italian_lessons_are_actually_translated():
+    """Parité structurelle sans traduction = 8 leçons françaises rebaptisées."""
+    for lesson_fr, lesson_it in zip(pr.lessons_catalog("fr"), pr.lessons_catalog("it")):
+        assert lesson_it["title"] != lesson_fr["title"], lesson_fr["id"]
+        assert lesson_it["body"] != lesson_fr["body"], lesson_fr["id"]
+
+
+def test_no_french_leftovers_in_the_italian_lessons():
+    for lesson in pr.lessons_catalog("it"):
+        for text in _lesson_strings(lesson):
+            leftovers = _words(text) & set(FRENCH_MARKERS)
+            assert not leftovers, "%s: %s dans %r" % (lesson["id"], leftovers, text[:80])
+
+
+def test_the_french_detector_actually_detects_french():
+    """Garde-fou du garde-fou : la liste ci-dessus doit repérer CHAQUE leçon
+    française. Sinon le test précédent passerait même sur un fichier italien
+    entièrement rédigé en français."""
+    for lesson in pr.lessons_catalog("fr"):
+        blob = " ".join(_lesson_strings(lesson))
+        assert _words(blob) & set(FRENCH_MARKERS), lesson["id"]
+    for challenge in pr.arena_catalog("fr"):
+        blob = challenge["title"] + " " + challenge["desc"]
+        assert _words(blob) & set(FRENCH_MARKERS), challenge["id"]
+
+
+def test_the_italian_arena_mirrors_the_french_one():
+    fr = pr.arena_catalog("fr")
+    it = pr.arena_catalog("it")
+    assert fr and it
+    assert [c["id"] for c in fr] == [c["id"] for c in it]
+    for challenge_fr, challenge_it in zip(fr, it):
+        assert challenge_fr["check"] == challenge_it["check"], challenge_fr["id"]
+        assert challenge_fr["difficulty"] == challenge_it["difficulty"]
+        assert challenge_it["title"] != challenge_fr["title"]
+        assert challenge_it["desc"] != challenge_fr["desc"]
+        leftovers = (_words(challenge_it["title"]) | _words(challenge_it["desc"])) \
+            & set(FRENCH_MARKERS)
+        assert not leftovers, "%s: %s" % (challenge_fr["id"], leftovers)
+
+
+def test_english_and_unknown_languages_fall_back_to_french_content():
+    """Repli SILENCIEUX et voulu : pas de fichier anglais (décision utilisateur),
+    et servir une demi-traduction serait pire que d'assumer le français."""
+    french = pr.lessons_catalog("fr")
+    for lang in ("en", "de", "", None, "zz"):
+        assert pr.lessons_catalog(lang) is french
+        assert pr.arena_catalog(lang) is pr.arena_catalog("fr")
+
+
+def test_lessons_endpoint_serves_the_requested_language(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    italian = c.get("/api/paper/lessons?lang=it").json()["lessons"]
+    french = c.get("/api/paper/lessons?lang=fr").json()["lessons"]
+    english = c.get("/api/paper/lessons?lang=en").json()["lessons"]
+    default = c.get("/api/paper/lessons").json()["lessons"]
+
+    assert [l["id"] for l in italian] == [l["id"] for l in french]
+    assert italian[0]["title"] != french[0]["title"]
+    assert "azione" in italian[0]["title"].lower()
+    assert english == french == default
+    # les réponses ne fuitent dans AUCUNE langue
+    for lesson in italian:
+        for question in lesson["quiz"]:
+            assert set(question) == {"q", "options"}
+
+
+def test_quiz_corrections_are_explained_in_the_requested_language(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    lesson = pr.lessons_catalog("fr")[0]
+    wrong = [(q["correct"] + 1) % len(q["options"]) for q in lesson["quiz"]]
+
+    body = c.post("/api/paper/lessons/%s/quiz" % lesson["id"],
+                  json={"answers": wrong, "lang": "it"}).json()
+    assert body["passed"] is False
+    explains = " ".join(row["explain"] for row in body["corrections"])
+    assert explains.strip()
+    assert not (_words(explains) & set(FRENCH_MARKERS)), explains
+
+
+def test_quiz_progress_is_the_same_whatever_the_language(tmp_path, monkeypatch):
+    """On valide une LEÇON, pas une traduction : réussie en italien, réussie
+    tout court."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    lesson = pr.lessons_catalog("fr")[0]
+    answers = [q["correct"] for q in lesson["quiz"]]
+
+    body = c.post("/api/paper/lessons/%s/quiz" % lesson["id"],
+                  json={"answers": answers, "lang": "it"}).json()
+    assert body["passed"] is True
+    assert c.get("/api/paper/lessons?lang=fr").json()["passed"] == [lesson["id"]]
+    assert c.get("/api/paper/lessons?lang=it").json()["passed"] == [lesson["id"]]
+
+
+def test_arena_endpoint_translates_the_challenge_without_changing_it(tmp_path,
+                                                                    monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    italian = c.get("/api/paper/arena?lang=it").json()
+    french = c.get("/api/paper/arena?lang=fr").json()
+    assert italian["challenge"]["id"] == french["challenge"]["id"]
+    assert italian["challenge"]["check"] == french["challenge"]["check"]
+    assert italian["challenge"]["title"] != french["challenge"]["title"]
+    assert not (_words(italian["challenge"]["desc"]) & set(FRENCH_MARKERS))
+
+
+def test_coach_endpoint_serves_italian_evidence(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    for i in range(5):                      # 5 allers-retours SANS stop planifié
+        buy(c, qty=1)
+        market.prices["NESN.SW"] = (95.0 + i, "CHF", "Nestle SA")
+        buy(c, side="sell", qty=1)
+
+    biases = c.get("/api/paper/coach?lang=it").json()["biases"]
+    no_stop = [b for b in biases if b["code"] == "no_stop"]
+    assert no_stop, [b["code"] for b in biases]
+    assert "senza stop pianificato" in no_stop[0]["evidence"][0]
+
+    french = c.get("/api/paper/coach").json()["biases"]
+    assert [b["code"] for b in french] == [b["code"] for b in biases]
+    assert "sans stop planifié" in [b for b in french if b["code"] == "no_stop"][0]["evidence"][0]
+
+
+def test_portfolio_biases_follow_the_language(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    for i in range(5):
+        buy(c, qty=1)
+        market.prices["NESN.SW"] = (95.0 + i, "CHF", "Nestle SA")
+        buy(c, side="sell", qty=1)
+
+    italian = c.get("/api/paper/portfolio?lang=it").json()["biases"]
+    assert any("senza stop pianificato" in " ".join(b["evidence"]) for b in italian)
+    assert not any("planifié" in " ".join(b["evidence"]) for b in italian)
+
+
+def test_the_concentration_evidence_is_translated_too():
+    """9ᵉ règle : elle vit dans le router (elle a besoin des cours), donc elle
+    a sa propre table — c'est exactement celle qu'une traduction oublie."""
+    exposure = {"max_concentration_pct": 60.0, "per_position_pct": {"NESN.SW": 60.0}}
+    italian = pr._with_concentration([], exposure, "it")
+    french = pr._with_concentration([], exposure)
+    assert italian[0]["code"] == french[0]["code"] == "concentration"
+    assert italian[0]["metric"] == french[0]["metric"]
+    assert "pesa il 60.0% del portafoglio" in italian[0]["evidence"][0]
+    assert "pèse 60.0% du portefeuille" in french[0]["evidence"][0]
+    assert pr._with_concentration([], exposure, "en") == french
+
+
+def test_the_llm_endpoints_forward_the_reading_language(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10, thesis="Thèse suffisamment longue pour passer le seuil")
+    market.prices["NESN.SW"] = (120.0, "CHF", "Nestle SA")
+    buy(c, side="sell", qty=10)
+
+    seen = {}
+    monkeypatch.setattr(pr.llm, "ask_coach",
+                        lambda context, question, lang="fr":
+                        seen.__setitem__("ask", lang) or "risposta")
+    monkeypatch.setattr(pr.llm, "write_postmortem",
+                        lambda trade, context, lang="fr":
+                        seen.__setitem__("postmortem", lang) or "risposta")
+    monkeypatch.setattr(pr.llm, "write_analysis",
+                        lambda facts, lang="fr":
+                        seen.__setitem__("analysis", lang) or "risposta")
+    monkeypatch.setattr(pr.llm, "suggest_ideas",
+                        lambda context, lang="fr":
+                        seen.__setitem__("ideas", lang) or '```json\n{"ideas": []}\n```')
+
+    c.post("/api/paper/coach/ask", json={"question": "?", "lang": "it"})
+    c.post("/api/paper/postmortem", json={"lang": "it"})
+    c.post("/api/paper/analysis", json={"symbol": "NESN.SW", "lang": "it"})
+    c.post("/api/paper/ideas", json={"lang": "it"})
+    assert seen == {"ask": "it", "postmortem": "it", "analysis": "it", "ideas": "it"}
+
+    c.post("/api/paper/coach/ask", json={"question": "?"})
+    c.post("/api/paper/analysis", json={"symbol": "NESN.SW", "lang": "klingon"})
+    assert seen["ask"] == "fr" and seen["analysis"] == "fr"

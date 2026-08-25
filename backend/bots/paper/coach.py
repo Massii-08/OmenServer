@@ -40,6 +40,11 @@ _NO_THESIS_FRACTION = 0.30       # 30 % des trades+ordres
 _NO_THESIS_MIN_LEN = 15          # caractères
 _LOSER_HOLD_MULTIPLIER = 1.5     # 1.5x la durée des gagnants
 
+# Langues de CONTENU servies par le module (le simulateur parle la langue de
+# l'interface). ``en`` est reconnu mais retombe sur ``fr`` : les gabarits
+# anglais n'existent pas — repli SILENCIEUX et documenté, pas une erreur.
+CONTENT_LANGS = ("fr", "en", "it")
+
 MILESTONE_DEFS = [
     ("first_10_trades", lambda s: s.get("n_trades", 0) >= 10),
     ("first_positive_expectancy",
@@ -47,6 +52,115 @@ MILESTONE_DEFS = [
     ("survived_20pct_drawdown", lambda s: s.get("max_drawdown_pct", 0) >= 20),
     ("fifty_trades", lambda s: s.get("n_trades", 0) >= 50),
 ]
+
+
+# --------------------------------------------------------------------------- #
+# Gabarits de texte — les seules chaînes VISIBLES par l'utilisateur
+#
+# Les ``code`` de biais, les seuils et la structure du retour ne dépendent
+# JAMAIS de la langue : seule la phrase de preuve change. Un gabarit manquant
+# dans une langue ferait un ``KeyError`` au moment le plus visible — d'où le
+# repli par langue ENTIÈRE (``_texts``), jamais clé par clé.
+#
+# Registre italien : celui d'un trader, pas d'un dictionnaire — « size »,
+# « revenge trade », « P&L » sont les mots réellement employés en italien.
+# --------------------------------------------------------------------------- #
+
+_TEXTS: Dict[str, Dict[str, str]] = {
+    "fr": {
+        "unknown_date": "date inconnue",
+        "dur_hours": "{hours:.1f}h",
+        "dur_days": "{days:.1f}j",
+        "more": "... et {n} autres",
+
+        "cut_winners_summary": ("R moyen des gagnants +{avg_win:.2f}R < R moyen des "
+                                "perdants {avg_loss:.2f}R (|{abs_loss:.2f}R|)"),
+        "cut_winners_item": "{symbol} ({date}): clôturé à +{r:.2f}R",
+
+        "let_losers_summary": ("Durée moyenne de détention des perdants {loss_dur} > "
+                               "{multiplier}x celle des gagnants {win_dur} "
+                               "(ratio {ratio:.2f}x)"),
+        "let_losers_item": "{symbol} ({entry} → {exit}): détenu {duration} en perte",
+
+        "no_stop_summary": "{missing}/{n} trades clos sans stop planifié ({pct:.0f}%)",
+        "no_stop_item": "{symbol} ({entry} → {exit}): aucun stop planifié",
+
+        "oversized_order": ("Ordre {symbol} ({date}): risque planifié {risk:.2f} CHF "
+                            "({pct:.1f}% du capital)"),
+        "oversized_trade": ("{symbol} ({date}): risque planifié {risk:.2f} CHF "
+                            "({pct:.1f}% du capital)"),
+
+        "revenge_summary": ("{n} entrée(s) en revanche détectée(s) (< {window} min "
+                            "après une perte, taille supérieure)"),
+        "revenge_item": ("{symbol} ({date}): entré {minutes} min après une perte sur "
+                         "{loser}, taille notionnelle supérieure"),
+
+        "overtrading_summary": ("Volume annualisé estimé {volume:.2f} CHF, soit "
+                                "{multiplier:.2f}x le capital initial ({n} trades "
+                                "clos en {year})"),
+        "overtrading_item": "{symbol} ({date})",
+
+        "fee_bleed_summary": ("Frais cumulés {fees:.2f} CHF = {pct:.0f}% du P&L brut "
+                              "({pnl:.2f} CHF sur {n} trades)"),
+        "fee_bleed_item": "{symbol} ({date}): {fees:.2f} CHF de frais/timbre",
+
+        "no_thesis_summary": ("{missing}/{n} trades+ordres sans thèse (ou < {min_len} "
+                              "caractères) ({pct:.0f}%)"),
+        "no_thesis_item": "{symbol} ({date}): thèse absente ou trop courte",
+    },
+    "it": {
+        "unknown_date": "data sconosciuta",
+        "dur_hours": "{hours:.1f}h",
+        "dur_days": "{days:.1f}g",
+        "more": "... e altri {n}",
+
+        "cut_winners_summary": ("R media dei trade vincenti +{avg_win:.2f}R < R media "
+                                "dei perdenti {avg_loss:.2f}R (|{abs_loss:.2f}R|)"),
+        "cut_winners_item": "{symbol} ({date}): chiuso a +{r:.2f}R",
+
+        "let_losers_summary": ("Durata media di detenzione dei perdenti {loss_dur} > "
+                               "{multiplier}x quella dei vincenti {win_dur} "
+                               "(rapporto {ratio:.2f}x)"),
+        "let_losers_item": "{symbol} ({entry} → {exit}): tenuto {duration} in perdita",
+
+        "no_stop_summary": "{missing}/{n} trade chiusi senza stop pianificato ({pct:.0f}%)",
+        "no_stop_item": "{symbol} ({entry} → {exit}): nessuno stop pianificato",
+
+        "oversized_order": ("Ordine {symbol} ({date}): rischio pianificato {risk:.2f} CHF "
+                            "({pct:.1f}% del capitale)"),
+        "oversized_trade": ("{symbol} ({date}): rischio pianificato {risk:.2f} CHF "
+                            "({pct:.1f}% del capitale)"),
+
+        "revenge_summary": ("{n} revenge trade rilevati (< {window} min dopo una "
+                            "perdita, con size maggiore)"),
+        "revenge_item": ("{symbol} ({date}): entrato {minutes} min dopo una perdita su "
+                         "{loser}, size nozionale maggiore"),
+
+        "overtrading_summary": ("Volume annuo stimato {volume:.2f} CHF, pari a "
+                                "{multiplier:.2f}x il capitale iniziale ({n} trade "
+                                "chiusi nel {year})"),
+        "overtrading_item": "{symbol} ({date})",
+
+        "fee_bleed_summary": ("Costi cumulati {fees:.2f} CHF = {pct:.0f}% del P&L lordo "
+                              "({pnl:.2f} CHF su {n} trade)"),
+        "fee_bleed_item": "{symbol} ({date}): {fees:.2f} CHF di commissioni/bollo",
+
+        "no_thesis_summary": ("{missing}/{n} trade+ordini senza tesi (o < {min_len} "
+                              "caratteri) ({pct:.0f}%)"),
+        "no_thesis_item": "{symbol} ({date}): tesi assente o troppo corta",
+    },
+}
+
+
+def normalize_lang(value: Any) -> str:
+    """Normalise une langue demandée. Inconnue -> ``fr``, jamais d'erreur."""
+    code = str(value or "").strip().lower()
+    return code if code in CONTENT_LANGS else "fr"
+
+
+def _texts(lang: Any) -> Dict[str, str]:
+    """Table de gabarits d'UNE langue. ``en`` (pas de table) retombe sur ``fr``."""
+    return _TEXTS.get(normalize_lang(lang)) or _TEXTS["fr"]
 
 
 # --------------------------------------------------------------------------- #
@@ -65,19 +179,20 @@ def _safe_iso(value: Any) -> Optional[datetime]:
         return None
 
 
-def _short_date(value: Any) -> str:
+def _short_date(value: Any, texts: Optional[Dict[str, str]] = None) -> str:
     """Réduit un ISO à sa date (10 premiers caractères) pour des libellés courts."""
     if not value:
-        return "date inconnue"
+        return (texts or _TEXTS["fr"])["unknown_date"]
     s = str(value)
     return s[:10] if len(s) >= 10 else s
 
 
-def _fmt_duration(seconds: float) -> str:
+def _fmt_duration(seconds: float, texts: Optional[Dict[str, str]] = None) -> str:
+    t = texts or _TEXTS["fr"]
     hours = seconds / 3600.0
     if hours < 48:
-        return f"{hours:.1f}h"
-    return f"{hours / 24:.1f}j"
+        return t["dur_hours"].format(hours=hours)
+    return t["dur_days"].format(days=hours / 24)
 
 
 def _trade_notional(trade: Dict[str, Any]) -> float:
@@ -99,18 +214,21 @@ def _item_date(item: Dict[str, Any]) -> Any:
     return item.get("entry_at") or item.get("created_at") or item.get("exit_at")
 
 
-def _cap_evidence(evidence: List[str]) -> List[str]:
+def _cap_evidence(evidence: List[str],
+                  texts: Optional[Dict[str, str]] = None) -> List[str]:
     """Borne une liste de preuves pour ne pas noyer le coach (choix d'implém.)."""
     if len(evidence) <= _MAX_EVIDENCE:
         return evidence
     kept = list(evidence[:_MAX_EVIDENCE])
-    kept.append(f"... et {len(evidence) - _MAX_EVIDENCE} autres")
+    kept.append((texts or _TEXTS["fr"])["more"].format(n=len(evidence) - _MAX_EVIDENCE))
     return kept
 
 
 def _bias(code: str, severity: str, evidence: List[str],
-          metric: Optional[float] = None) -> Dict[str, Any]:
-    return {"code": code, "severity": severity, "evidence": _cap_evidence(list(evidence)),
+          metric: Optional[float] = None,
+          texts: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    return {"code": code, "severity": severity,
+            "evidence": _cap_evidence(list(evidence), texts),
             "metric": metric}
 
 
@@ -118,7 +236,8 @@ def _bias(code: str, severity: str, evidence: List[str],
 # Règle 1 — cut_winners_early
 # --------------------------------------------------------------------------- #
 
-def _rule_cut_winners_early(trades: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _rule_cut_winners_early(trades: List[Dict[str, Any]],
+                             texts: Dict[str, str]) -> Optional[Dict[str, Any]]:
     scoped = [t for t in trades if t.get("r_multiple") is not None]
     winners = [t for t in scoped if t["r_multiple"] > 0]
     losers = [t for t in scoped if t["r_multiple"] < 0]
@@ -128,21 +247,24 @@ def _rule_cut_winners_early(trades: List[Dict[str, Any]]) -> Optional[Dict[str, 
     avg_loss = sum(t["r_multiple"] for t in losers) / len(losers)
     if avg_win >= abs(avg_loss):
         return None
-    summary = (f"R moyen des gagnants +{avg_win:.2f}R < R moyen des perdants "
-               f"{avg_loss:.2f}R (|{abs(avg_loss):.2f}R|)")
+    summary = texts["cut_winners_summary"].format(
+        avg_win=avg_win, avg_loss=avg_loss, abs_loss=abs(avg_loss))
     evidence = [summary] + [
-        f"{t.get('symbol', '?')} ({_short_date(t.get('exit_at'))}): clôturé à +{t['r_multiple']:.2f}R"
+        texts["cut_winners_item"].format(symbol=t.get("symbol", "?"),
+                                         date=_short_date(t.get("exit_at"), texts),
+                                         r=t["r_multiple"])
         for t in winners
     ]
     ratio = avg_win / abs(avg_loss) if avg_loss != 0 else None
-    return _bias("cut_winners_early", "warn", evidence, ratio)
+    return _bias("cut_winners_early", "warn", evidence, ratio, texts)
 
 
 # --------------------------------------------------------------------------- #
 # Règle 2 — let_losers_run
 # --------------------------------------------------------------------------- #
 
-def _rule_let_losers_run(trades: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _rule_let_losers_run(trades: List[Dict[str, Any]],
+                          texts: Dict[str, str]) -> Optional[Dict[str, Any]]:
     winners, losers = [], []
     for t in trades:
         pnl = t.get("pnl_chf")
@@ -167,22 +289,27 @@ def _rule_let_losers_run(trades: List[Dict[str, Any]]) -> Optional[Dict[str, Any
     if avg_loss_dur <= _LOSER_HOLD_MULTIPLIER * avg_win_dur:
         return None
     ratio = avg_loss_dur / avg_win_dur
-    summary = (f"Durée moyenne de détention des perdants {_fmt_duration(avg_loss_dur)} "
-               f"> {_LOSER_HOLD_MULTIPLIER}x celle des gagnants {_fmt_duration(avg_win_dur)} "
-               f"(ratio {ratio:.2f}x)")
+    summary = texts["let_losers_summary"].format(
+        loss_dur=_fmt_duration(avg_loss_dur, texts),
+        multiplier=_LOSER_HOLD_MULTIPLIER,
+        win_dur=_fmt_duration(avg_win_dur, texts), ratio=ratio)
     evidence = [summary] + [
-        f"{t.get('symbol', '?')} ({_short_date(t.get('entry_at'))} → {_short_date(t.get('exit_at'))}): "
-        f"détenu {_fmt_duration(d)} en perte"
+        texts["let_losers_item"].format(
+            symbol=t.get("symbol", "?"),
+            entry=_short_date(t.get("entry_at"), texts),
+            exit=_short_date(t.get("exit_at"), texts),
+            duration=_fmt_duration(d, texts))
         for t, d in losers
     ]
-    return _bias("let_losers_run", "warn", evidence, ratio)
+    return _bias("let_losers_run", "warn", evidence, ratio, texts)
 
 
 # --------------------------------------------------------------------------- #
 # Règle 3 — no_stop
 # --------------------------------------------------------------------------- #
 
-def _rule_no_stop(trades: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _rule_no_stop(trades: List[Dict[str, Any]],
+                   texts: Dict[str, str]) -> Optional[Dict[str, Any]]:
     n = len(trades)
     if n < 5:
         return None
@@ -190,13 +317,14 @@ def _rule_no_stop(trades: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     frac = len(missing) / n
     if frac <= _NO_STOP_FRACTION:
         return None
-    summary = f"{len(missing)}/{n} trades clos sans stop planifié ({frac * 100:.0f}%)"
+    summary = texts["no_stop_summary"].format(missing=len(missing), n=n, pct=frac * 100)
     evidence = [summary] + [
-        f"{t.get('symbol', '?')} ({_short_date(t.get('entry_at'))} → {_short_date(t.get('exit_at'))}): "
-        f"aucun stop planifié"
+        texts["no_stop_item"].format(symbol=t.get("symbol", "?"),
+                                     entry=_short_date(t.get("entry_at"), texts),
+                                     exit=_short_date(t.get("exit_at"), texts))
         for t in missing
     ]
-    return _bias("no_stop", "critical", evidence, frac)
+    return _bias("no_stop", "critical", evidence, frac, texts)
 
 
 # --------------------------------------------------------------------------- #
@@ -204,7 +332,8 @@ def _rule_no_stop(trades: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 
 def _rule_oversized(trades: List[Dict[str, Any]], orders: List[Dict[str, Any]],
-                     initial_capital: Optional[float]) -> Optional[Dict[str, Any]]:
+                     initial_capital: Optional[float],
+                     texts: Dict[str, str]) -> Optional[Dict[str, Any]]:
     if not initial_capital or initial_capital <= 0:
         return None
     threshold = _OVERSIZED_RATIO * initial_capital
@@ -219,10 +348,10 @@ def _rule_oversized(trades: List[Dict[str, Any]], orders: List[Dict[str, Any]],
             continue
         ratio = risk / initial_capital
         max_ratio = max(max_ratio, ratio)
-        evidence.append(
-            f"Ordre {o.get('symbol', '?')} ({_short_date(o.get('created_at'))}): "
-            f"risque planifié {risk:.2f} CHF ({ratio * 100:.1f}% du capital)"
-        )
+        evidence.append(texts["oversized_order"].format(
+            symbol=o.get("symbol", "?"),
+            date=_short_date(o.get("created_at"), texts),
+            risk=risk, pct=ratio * 100))
 
     for t in trades:
         stop = t.get("planned_stop")
@@ -236,21 +365,22 @@ def _rule_oversized(trades: List[Dict[str, Any]], orders: List[Dict[str, Any]],
             continue
         ratio = risk / initial_capital
         max_ratio = max(max_ratio, ratio)
-        evidence.append(
-            f"{t.get('symbol', '?')} ({_short_date(t.get('entry_at'))}): "
-            f"risque planifié {risk:.2f} CHF ({ratio * 100:.1f}% du capital)"
-        )
+        evidence.append(texts["oversized_trade"].format(
+            symbol=t.get("symbol", "?"),
+            date=_short_date(t.get("entry_at"), texts),
+            risk=risk, pct=ratio * 100))
 
     if not evidence:
         return None
-    return _bias("oversized", "critical", evidence, max_ratio)
+    return _bias("oversized", "critical", evidence, max_ratio, texts)
 
 
 # --------------------------------------------------------------------------- #
 # Règle 5 — revenge_trade
 # --------------------------------------------------------------------------- #
 
-def _rule_revenge_trade(trades: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _rule_revenge_trade(trades: List[Dict[str, Any]],
+                         texts: Dict[str, str]) -> Optional[Dict[str, Any]]:
     parsed = [(t, _safe_iso(t.get("entry_at")), _safe_iso(t.get("exit_at"))) for t in trades]
     flagged = []
     for t, entry_dt, _exit_dt in parsed:
@@ -271,13 +401,16 @@ def _rule_revenge_trade(trades: List[Dict[str, Any]]) -> Optional[Dict[str, Any]
                 break  # une preuve suffit par trade candidat
     if not flagged:
         return None
-    summary = f"{len(flagged)} entrée(s) en revanche détectée(s) (< 30 min après une perte, taille supérieure)"
+    window_min = int(_REVENGE_WINDOW.total_seconds() // 60)
+    summary = texts["revenge_summary"].format(n=len(flagged), window=window_min)
     evidence = [summary] + [
-        f"{t.get('symbol', '?')} ({_short_date(t.get('entry_at'))}): entré {int(delta // 60)} min après "
-        f"une perte sur {loser.get('symbol', '?')}, taille notionnelle supérieure"
+        texts["revenge_item"].format(symbol=t.get("symbol", "?"),
+                                     date=_short_date(t.get("entry_at"), texts),
+                                     minutes=int(delta // 60),
+                                     loser=loser.get("symbol", "?"))
         for t, loser, delta in flagged
     ]
-    return _bias("revenge_trade", "warn", evidence, float(len(flagged)))
+    return _bias("revenge_trade", "warn", evidence, float(len(flagged)), texts)
 
 
 # --------------------------------------------------------------------------- #
@@ -285,7 +418,8 @@ def _rule_revenge_trade(trades: List[Dict[str, Any]]) -> Optional[Dict[str, Any]
 # --------------------------------------------------------------------------- #
 
 def _rule_overtrading(trades: List[Dict[str, Any]],
-                       initial_capital: Optional[float]) -> Optional[Dict[str, Any]]:
+                       initial_capital: Optional[float],
+                       texts: Dict[str, str]) -> Optional[Dict[str, Any]]:
     if not initial_capital or initial_capital <= 0:
         return None
     # "année civile courante" exige une horloge : cf. section "Points douteux"
@@ -304,13 +438,14 @@ def _rule_overtrading(trades: List[Dict[str, Any]],
     if multiplier < _OVERTRADING_WARN:
         return None
     severity = "critical" if multiplier >= _OVERTRADING_CRITICAL else "warn"
-    summary = (f"Volume annualisé estimé {volume:.2f} CHF, soit {multiplier:.2f}x le capital "
-               f"initial ({len(this_year)} trades clos en {year})")
+    summary = texts["overtrading_summary"].format(
+        volume=volume, multiplier=multiplier, n=len(this_year), year=year)
     evidence = [summary] + [
-        f"{t.get('symbol', '?')} ({_short_date(t.get('exit_at'))})"
+        texts["overtrading_item"].format(symbol=t.get("symbol", "?"),
+                                         date=_short_date(t.get("exit_at"), texts))
         for t in this_year
     ]
-    return _bias("overtrading", severity, evidence, multiplier)
+    return _bias("overtrading", severity, evidence, multiplier, texts)
 
 
 # --------------------------------------------------------------------------- #
@@ -327,7 +462,8 @@ def _rule_overtrading(trades: List[Dict[str, Any]],
 # Règle 8 — fee_bleed
 # --------------------------------------------------------------------------- #
 
-def _rule_fee_bleed(trades: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _rule_fee_bleed(trades: List[Dict[str, Any]],
+                     texts: Dict[str, str]) -> Optional[Dict[str, Any]]:
     n = len(trades)
     if n < 5:
         return None
@@ -338,17 +474,19 @@ def _rule_fee_bleed(trades: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     ratio = fees_sum / pnl_abs_sum
     if ratio <= _FEE_BLEED_RATIO:
         return None
-    summary = (f"Frais cumulés {fees_sum:.2f} CHF = {ratio * 100:.0f}% du P&L brut "
-               f"({pnl_abs_sum:.2f} CHF sur {n} trades)")
+    summary = texts["fee_bleed_summary"].format(
+        fees=fees_sum, pct=ratio * 100, pnl=pnl_abs_sum, n=n)
     ranked = sorted(trades, key=lambda t: (t.get("fees_chf") or 0) + (t.get("stamp_duty_chf") or 0),
                      reverse=True)
     top = [t for t in ranked if (t.get("fees_chf") or 0) + (t.get("stamp_duty_chf") or 0) > 0][:5]
     evidence = [summary] + [
-        f"{t.get('symbol', '?')} ({_short_date(t.get('exit_at'))}): "
-        f"{(t.get('fees_chf') or 0) + (t.get('stamp_duty_chf') or 0):.2f} CHF de frais/timbre"
+        texts["fee_bleed_item"].format(
+            symbol=t.get("symbol", "?"),
+            date=_short_date(t.get("exit_at"), texts),
+            fees=(t.get("fees_chf") or 0) + (t.get("stamp_duty_chf") or 0))
         for t in top
     ]
-    return _bias("fee_bleed", "warn", evidence, ratio)
+    return _bias("fee_bleed", "warn", evidence, ratio, texts)
 
 
 # --------------------------------------------------------------------------- #
@@ -360,8 +498,8 @@ def _has_thesis(item: Dict[str, Any]) -> bool:
     return bool(thesis) and len(str(thesis).strip()) >= _NO_THESIS_MIN_LEN
 
 
-def _rule_no_thesis(trades: List[Dict[str, Any]],
-                     orders: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _rule_no_thesis(trades: List[Dict[str, Any]], orders: List[Dict[str, Any]],
+                     texts: Dict[str, str]) -> Optional[Dict[str, Any]]:
     items = list(trades) + list(orders)
     n = len(items)
     if n < 3:
@@ -370,12 +508,14 @@ def _rule_no_thesis(trades: List[Dict[str, Any]],
     frac = len(missing) / n
     if frac <= _NO_THESIS_FRACTION:
         return None
-    summary = f"{len(missing)}/{n} trades+ordres sans thèse (ou < {_NO_THESIS_MIN_LEN} caractères) ({frac * 100:.0f}%)"
+    summary = texts["no_thesis_summary"].format(
+        missing=len(missing), n=n, min_len=_NO_THESIS_MIN_LEN, pct=frac * 100)
     evidence = [summary] + [
-        f"{it.get('symbol', '?')} ({_short_date(_item_date(it))}): thèse absente ou trop courte"
+        texts["no_thesis_item"].format(symbol=it.get("symbol", "?"),
+                                       date=_short_date(_item_date(it), texts))
         for it in missing
     ]
-    return _bias("no_thesis", "warn", evidence, frac)
+    return _bias("no_thesis", "warn", evidence, frac, texts)
 
 
 # --------------------------------------------------------------------------- #
@@ -383,7 +523,8 @@ def _rule_no_thesis(trades: List[Dict[str, Any]],
 # --------------------------------------------------------------------------- #
 
 def detect_biases(trades: List[Dict[str, Any]], orders: List[Dict[str, Any]],
-                   initial_capital: float) -> List[Dict[str, Any]]:
+                   initial_capital: float,
+                   lang: str = "fr") -> List[Dict[str, Any]]:
     """Détecte les biais comportementaux du trader, 100% déterministe (zéro LLM).
 
     ``trades`` = positions CLÔTURÉES (contrat Trade §4). ``orders`` = ordres
@@ -391,19 +532,26 @@ def detect_biases(trades: List[Dict[str, Any]], orders: List[Dict[str, Any]],
     de dicts ``{"code", "severity", "evidence", "metric"}``, triée critical
     puis warn puis info (tri stable : à égalité de sévérité, ordre des règles
     ci-dessus 1→9).
+
+    ``lang`` ne touche QUE les phrases de ``evidence`` : les ``code``, les
+    ``severity``, les ``metric`` et les seuils sont identiques dans toutes les
+    langues (le frontend traduit les codes, le backend traduit les preuves).
+    Défaut ``fr`` -> un appel à trois arguments rend exactement ce qu'il rendait
+    avant l'ajout du paramètre.
     """
     trades = trades or []
     orders = orders or []
+    texts = _texts(lang)
     rules = (
-        _rule_cut_winners_early(trades),
-        _rule_let_losers_run(trades),
-        _rule_no_stop(trades),
-        _rule_oversized(trades, orders, initial_capital),
-        _rule_revenge_trade(trades),
-        _rule_overtrading(trades, initial_capital),
+        _rule_cut_winners_early(trades, texts),
+        _rule_let_losers_run(trades, texts),
+        _rule_no_stop(trades, texts),
+        _rule_oversized(trades, orders, initial_capital, texts),
+        _rule_revenge_trade(trades, texts),
+        _rule_overtrading(trades, initial_capital, texts),
         # règle 7 (concentration) volontairement absente, cf. commentaire ci-dessus
-        _rule_fee_bleed(trades),
-        _rule_no_thesis(trades, orders),
+        _rule_fee_bleed(trades, texts),
+        _rule_no_thesis(trades, orders, texts),
     )
     results = [r for r in rules if r is not None]
     results.sort(key=lambda b: _SEVERITY_ORDER.get(b["severity"], 99))
@@ -505,7 +653,8 @@ def update_profile(profile: Dict[str, Any], biases: List[Dict[str, Any]],
     return new_profile
 
 
-def coach_summary(profile: Dict[str, Any], biases: List[Dict[str, Any]]) -> Dict[str, Any]:
+def coach_summary(profile: Dict[str, Any], biases: List[Dict[str, Any]],
+                   lang: str = "fr") -> Dict[str, Any]:
     """Résumé compact du profil — c'est ce que le router passera au LLM comme
     contexte (jamais pour décider, seulement pour rédiger).
 
@@ -514,7 +663,16 @@ def coach_summary(profile: Dict[str, Any], biases: List[Dict[str, Any]]) -> Dict
     (``detect_biases`` → ``update_profile`` → ``coach_summary``),
     ``bias_history`` du profil passé ici a déjà absorbé ``biases``. Le
     paramètre est conservé pour la stabilité de l'interface — cf. rapport.
+
+    ⚠️ ``lang`` est accepté (symétrie avec ``detect_biases`` : le router passe
+    la même langue aux deux) mais la SORTIE est identique dans toutes les
+    langues, et c'est voulu — ce résumé ne contient AUCUNE phrase, seulement
+    des CODES (``top_biases``, ``recent_progress[].code``, ``milestones[].key``)
+    que le client traduit avec ses propres libellés. Traduire ici casserait
+    justement ce contrat. Le jour où une phrase apparaît dans ce résumé, elle
+    aura déjà sa langue sous la main sans changer aucun appelant.
     """
+    _texts(lang)                                  # valide la langue, ne l'utilise pas
     bh = profile.get("bias_history") or {}
     top = sorted(bh.items(), key=lambda kv: (kv[1] or {}).get("count", 0), reverse=True)
     top_codes = [code for code, _ in top[:3]]

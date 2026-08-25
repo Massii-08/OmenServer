@@ -302,6 +302,56 @@ def test_format_gov_message_wording():
 
 
 # =========================================================================== #
+#  PUR -- story_key (anti-spam par histoire, incident du 24/08 soir)
+#
+#  Calibration OBLIGATOIRE sur 2 paires réelles (cf. mission) :
+#   - Iran/sanctions : même histoire racontée sous 2 angles très différents
+#     -> MÊME clé attendue. La règle primaire du design (6 tokens les plus
+#     longs) NE convergeait PAS naturellement dessus (des mots longs mais non
+#     partagés comme "economic"/"unveils"/"partners" battent "Iran"/"US" à la
+#     sélection par longueur) -> repli documenté à 4 tokens (cf.
+#     _STORY_KEY_TOKENS dans newswatch.py), qui lui converge.
+#   - Tarifs Canada : 2 dépêches sur le MÊME sujet (tarifs autos canadiens)
+#     mais formulées trop différemment pour partager assez de vocabulaire ->
+#     divergence ACCEPTÉE (le but est de compresser 15 reprises en 1-3 clés,
+#     pas la perfection -- cf. mission).
+# =========================================================================== #
+
+def test_story_key_converges_on_same_underlying_story():
+    a = 'U.S. unveils new Iran sanctions after Trump threatened "economic D-Day"'
+    b = 'A look at the new U.S. sanctions on Iran and threats against its trading partners'
+    assert newswatch.story_key(a) == newswatch.story_key(b)
+    assert newswatch.story_key(a) != ""
+
+
+def test_story_key_diverges_on_differently_worded_tariff_stories():
+    c = "Trump vows to double Canadian auto tariffs, escalating fight"
+    d = "Retaliatory tariffs expected Tuesday as Trump threatens 50% duties on Canadian autos"
+    assert newswatch.story_key(c) != newswatch.story_key(d)
+
+
+def test_story_key_strips_google_news_source_suffix():
+    base = "Trump announces new sanctions on Iranian oil exports"
+    assert newswatch.story_key(base) == newswatch.story_key(base + " - CNN")
+    assert newswatch.story_key(base) == newswatch.story_key(base + " - Reuters")
+
+
+def test_story_key_is_stable_across_calls():
+    t = "White House announces new tariffs on steel imports"
+    assert newswatch.story_key(t) == newswatch.story_key(t)
+
+
+def test_story_key_case_and_punctuation_insensitive():
+    x = "TRUMP ANNOUNCES NEW TARIFF ON STEEL IMPORTS!!"
+    y = "Trump, announces: new tariff... on steel imports?"
+    assert newswatch.story_key(x) == newswatch.story_key(y)
+
+
+def test_story_key_empty_title_returns_empty_string():
+    assert newswatch.story_key("") == ""
+
+
+# =========================================================================== #
 #  I/O -- run_once, volet "par utilisateur"
 # =========================================================================== #
 
@@ -616,6 +666,78 @@ def test_run_once_no_portfolios_still_runs_gov_watch():
 
 
 # =========================================================================== #
+#  I/O -- run_once, volet "par utilisateur" étendu à la WATCHLIST (25/08) --
+#  positions ∪ watchlist. Le volet gov (nombre d'infos générales) est
+#  INCHANGÉ, ces tests ne portent que sur le volet par-symbole.
+# =========================================================================== #
+
+def _write_watchlist(username, symbols):
+    """symbols : liste de strings -> persiste via store.save_watchlist(),
+    l'API canonique du paquet paper/ (même chemin/contrat que le module qui
+    écrit la VRAIE watchlist ; newswatch._load_watchlist_symbols lit via
+    store.load_watchlist())."""
+    store.save_watchlist(username, [{"symbol": s} for s in symbols])
+
+
+def test_run_once_watchlist_only_user_with_zero_positions_still_fetches():
+    store.save_portfolio("wendy", _portfolio([]))  # 0 position ouverte
+    _write_watchlist("wendy", ["AAPL", "MSFT"])
+
+    fetch = _FetchQueue()
+    fetch.push(_rss([]))  # AAPL, seed
+    fetch.push(_rss([]))  # MSFT, seed
+    counters = _run(fetch, _NotifySpy())
+    assert counters["users"] == 1
+    assert counters["symbols"] == 2
+
+
+def test_run_once_watchlist_dedups_against_position_case_insensitive():
+    store.save_portfolio("xavier", _portfolio(["AAPL"]))
+    _write_watchlist("xavier", ["aapl"])  # même symbole, casse différente
+
+    fetch = _FetchQueue()
+    fetch.push(_rss([]))  # UN SEUL fetch -- pas 2
+    counters = _run(fetch, _NotifySpy())
+    assert counters["users"] == 1
+    assert counters["symbols"] == 1
+
+
+def test_run_once_corrupt_watchlist_does_not_block_the_run():
+    store.save_portfolio("yara", _portfolio(["TSLA"]))
+    store.watchlist_path("yara").write_text("{not valid json", encoding="utf-8")
+
+    fetch = _FetchQueue()
+    fetch.push(_rss([("Some headline", "https://y/z1", NOW - timedelta(hours=1))]))
+    counters = _run(fetch, _NotifySpy())
+    assert counters["users"] == 1
+    assert counters["symbols"] == 1  # la watchlist corrompue n'ajoute rien -- TSLA seul
+    assert counters["errors"] == 0
+
+
+def test_run_once_watchlist_with_unexpected_shape_is_ignored():
+    store.save_portfolio("noemi", _portfolio(["NESN.SW"]))
+    # "symbols" n'est pas une liste -- rien de tout ça ne doit planter le run.
+    store.watchlist_path("noemi").write_text('{"symbols": "not-a-list"}', encoding="utf-8")
+
+    fetch = _FetchQueue()
+    fetch.push(_rss([]))
+    counters = _run(fetch, _NotifySpy())
+    assert counters["users"] == 1
+    assert counters["symbols"] == 1
+    assert counters["errors"] == 0
+
+
+def test_discover_portfolios_glob_excludes_watchlist_files():
+    store.save_portfolio("zack", _portfolio(["NESN.SW"]))
+    _write_watchlist("zack", ["MSFT"])
+
+    discovered = newswatch._discover_portfolios()
+    # "zack.watchlist.json" ne doit JAMAIS apparaître comme un utilisateur à
+    # part entière (ni via le glob, ni via une validation de nom accidentelle).
+    assert [u for u, _p in discovered] == ["zack"]
+
+
+# =========================================================================== #
 #  I/O -- run_once, volet politique GLOBAL (§13)
 # =========================================================================== #
 
@@ -806,6 +928,181 @@ def test_run_once_gov_recovers_from_corrupt_global_seen_file():
     assert counters["errors"] == 0
     assert notifier.calls == []  # état corrompu -> reparti de zéro -> 1er passage = seed
     assert (global_path.parent / "newswatch_global.json.corrupt").is_file()
+
+
+# =========================================================================== #
+#  I/O -- run_once, anti-spam par HISTOIRE du volet gov (incident du 24/08
+#  soir -- cf. commentaire de tête de newswatch.py ~L99). Titres choisis et
+#  calibrés (cf. tests story_key_* ci-dessus) pour converger/diverger comme
+#  voulu -- ce ne sont pas des exemples arbitraires.
+# =========================================================================== #
+
+def test_run_once_gov_same_story_x3_sends_once_and_mutes_the_rest():
+    fetch = _FetchQueue()
+    fetch.push(_rss([]))
+    fetch.push(_rss([]))
+    notifier = _NotifySpy()
+    _run(fetch, notifier, prime_gov=False)  # seed
+
+    later = NOW + timedelta(minutes=10)
+    same_story = [
+        ("Trump announces new sanctions on Iranian oil exports", "https://n/s1", later),
+        ("Trump announces new sanctions on Iranian oil exports - Reuters", "https://n/s2", later),
+        ("Trump announces new sanctions on Iranian oil exports - AP News", "https://n/s3", later),
+    ]
+    fetch.push(_rss(same_story))
+    fetch.push(_rss([]))
+    counters = _run(fetch, notifier, now=later, prime_gov=False)
+    assert counters["notified"] == 1
+    assert len(notifier.calls) == 1
+
+    events = newswatch.recent_events("anyone")
+    assert len(events) == 3  # rien n'est perdu -- les 2 mutés restent dans le feed
+    assert sorted(e["muted"] for e in events) == [False, True, True]
+    sent = [e for e in events if not e["muted"]]
+    assert sent[0]["link"] == "https://n/s1"
+
+
+def test_run_once_gov_story_mute_blocks_resend_within_6h():
+    fetch = _FetchQueue()
+    fetch.push(_rss([]))
+    fetch.push(_rss([]))
+    notifier = _NotifySpy()
+    _run(fetch, notifier, prime_gov=False)  # seed
+
+    t1 = NOW + timedelta(minutes=10)
+    nk_title = "Trump announces new sanctions on North Korea over missile tests"
+    fetch.push(_rss([(nk_title, "https://n/nk1", t1)]))
+    fetch.push(_rss([]))
+    counters1 = _run(fetch, notifier, now=t1, prime_gov=False)
+    assert counters1["notified"] == 1
+
+    t2 = t1 + timedelta(hours=2)  # < 6h -- même histoire, encore mutée
+    fetch.push(_rss([(nk_title + " - Reuters", "https://n/nk2", t2)]))
+    fetch.push(_rss([]))
+    counters2 = _run(fetch, notifier, now=t2, prime_gov=False)
+    assert counters2["notified"] == 0
+    assert len(notifier.calls) == 1  # toujours 1 au total
+
+    events = newswatch.recent_events("anyone")
+    muted_evt = next(e for e in events if e["link"] == "https://n/nk2")
+    assert muted_evt["muted"] is True
+
+
+def test_run_once_gov_story_mute_expires_after_6h():
+    fetch = _FetchQueue()
+    fetch.push(_rss([]))
+    fetch.push(_rss([]))
+    notifier = _NotifySpy()
+    _run(fetch, notifier, prime_gov=False)  # seed
+
+    t1 = NOW + timedelta(minutes=10)
+    nk_title = "Trump announces new sanctions on North Korea over missile tests"
+    fetch.push(_rss([(nk_title, "https://n/nk1", t1)]))
+    fetch.push(_rss([]))
+    _run(fetch, notifier, now=t1, prime_gov=False)
+
+    t2 = t1 + timedelta(hours=7)  # > 6h -- l'histoire peut de nouveau être envoyée
+    fetch.push(_rss([(nk_title + " - Reuters", "https://n/nk2", t2)]))
+    fetch.push(_rss([]))
+    counters2 = _run(fetch, notifier, now=t2, prime_gov=False)
+    assert counters2["notified"] == 1
+    assert len(notifier.calls) == 2
+
+    events = newswatch.recent_events("anyone")
+    resent_evt = next(e for e in events if e["link"] == "https://n/nk2")
+    assert resent_evt["muted"] is False
+
+
+def test_run_once_gov_hard_budget_mutes_the_fifth_send_within_the_hour():
+    fetch = _FetchQueue()
+    fetch.push(_rss([]))
+    fetch.push(_rss([]))
+    notifier = _NotifySpy()
+    _run(fetch, notifier, prime_gov=False)  # seed
+
+    # 3 histoires DISTINCTES en 1 run -- le cap historique par-run (3) est
+    # respecté, rien à voir avec le budget dur.
+    t1 = NOW + timedelta(minutes=10)
+    first_three = [
+        ("Trump announces tariff on French wine imports", "https://n/b1", t1),
+        ("White House announces sanctions on Cuban officials", "https://n/b2", t1),
+        ("Government announces bailout for steel industry", "https://n/b3", t1),
+    ]
+    fetch.push(_rss(first_three))
+    fetch.push(_rss([]))
+    counters1 = _run(fetch, notifier, now=t1, prime_gov=False)
+    assert counters1["notified"] == 3
+
+    # 2 histoires DISTINCTES de plus, même heure glissante : la 4e passe
+    # encore (budget dur = 4/h), la 5e est muette.
+    t2 = t1 + timedelta(minutes=10)
+    next_two = [
+        ("New executive order on semiconductor exports", "https://n/b4", t2),
+        ("Trump announces tariff on Japanese electronics", "https://n/b5", t2),
+    ]
+    fetch.push(_rss(next_two))
+    fetch.push(_rss([]))
+    counters2 = _run(fetch, notifier, now=t2, prime_gov=False)
+    assert counters2["notified"] == 1
+    assert len(notifier.calls) == 4
+
+    events = newswatch.recent_events("anyone")
+    muted_evt = next(e for e in events if e["link"] == "https://n/b5")
+    assert muted_evt["muted"] is True
+
+
+def test_run_once_gov_hard_budget_resets_after_sent_log_purge():
+    fetch = _FetchQueue()
+    fetch.push(_rss([]))
+    fetch.push(_rss([]))
+    notifier = _NotifySpy()
+    _run(fetch, notifier, prime_gov=False)  # seed
+
+    t1 = NOW + timedelta(minutes=10)
+    burst = [
+        ("Trump announces tariff on French wine imports", "https://n/c1", t1),
+        ("White House announces sanctions on Cuban officials", "https://n/c2", t1),
+        ("Government announces bailout for steel industry", "https://n/c3", t1),
+    ]
+    fetch.push(_rss(burst))
+    fetch.push(_rss([]))
+    _run(fetch, notifier, now=t1, prime_gov=False)
+
+    t2 = t1 + timedelta(minutes=5)  # toujours dans l'heure -- 4e envoi, encore permis
+    fetch.push(_rss([("New executive order on semiconductor exports", "https://n/c4", t2)]))
+    fetch.push(_rss([]))
+    counters2 = _run(fetch, notifier, now=t2, prime_gov=False)
+    assert counters2["notified"] == 1
+    assert len(notifier.calls) == 4
+
+    # plus d'1h après CHACUN des 4 envois précédents -> sent_log entièrement
+    # purgé -> le budget est de nouveau disponible (pas de plafond permanent).
+    t3 = t1 + timedelta(hours=1, minutes=30)
+    fetch.push(_rss([("Trump announces tariff on Japanese electronics", "https://n/c5", t3)]))
+    fetch.push(_rss([]))
+    counters3 = _run(fetch, notifier, now=t3, prime_gov=False)
+    assert counters3["notified"] == 1
+    assert len(notifier.calls) == 5
+
+
+def test_run_once_gov_missing_stories_key_in_state_does_not_crash():
+    global_path = store.DATA_DIR / "newswatch_global.json"
+    global_path.parent.mkdir(parents=True, exist_ok=True)
+    # état "ancien format" (écrit avant l'extension anti-spam par histoire) --
+    # JSON valide, seed déjà fait, mais sans les clés stories/sent_log.
+    global_path.write_text(
+        '{"seen": {}, "events": [], "seeded": {"gov": true}}', encoding="utf-8",
+    )
+
+    fetch = _FetchQueue()
+    fetch.push(_rss([("Trump announces new sanctions on Iranian oil exports", "https://n/old1", NOW)]))
+    fetch.push(_rss([]))
+    notifier = _NotifySpy()
+    counters = _run(fetch, notifier, prime_gov=False)
+    assert counters["errors"] == 0
+    assert counters["notified"] == 1  # ni stories ni sent_log absents ne bloquent l'envoi
+    assert len(notifier.calls) == 1
 
 
 # =========================================================================== #

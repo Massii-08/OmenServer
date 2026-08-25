@@ -29,8 +29,11 @@ const App = {
  // Afficher les infos utilisateur dans la sidebar
  this.updateUserInfo();
 
- // Déterminer la vue initiale depuis le hash de l'URL
- const initialView = this._getViewFromHash() || 'hub';
+ // Déterminer la vue initiale depuis le hash de l'URL.
+ // Un trader n'a pas de dashboard : sa porte d'entrée EST le simulateur.
+ const initialView = this._isTraderOnly(Auth.getUser())
+ ? 'trading'
+ : (this._getViewFromHash() || 'hub');
 
  // Charger la vue initiale (sans push dans l'historique)
  this._skipPush = true;
@@ -127,7 +130,7 @@ const App = {
  if (!hash) return null;
  // server_view/ID → retourne 'game_server' (on ne peut pas restaurer un server_view sans contexte complet)
  if (hash.startsWith('server_view')) return 'game_server';
- const validViews = ['hub', 'game_server', 'bots', 'files', 'media', 'web', 'network', 'sysdoc', 'settings', 'users'];
+ const validViews = ['hub', 'game_server', 'bots', 'trading', 'files', 'media', 'web', 'network', 'sysdoc', 'settings', 'users'];
  return validViews.includes(hash) ? hash : null;
  },
 
@@ -285,6 +288,10 @@ const App = {
  usersItem.hidden = !user.is_admin;
  }
 
+ // Onglet Trading : admin, money et trader. Caché aux autres.
+ const navTrading = document.getElementById('nav-trading');
+ if (navTrading) navTrading.style.display = this._canTrade(user) ? '' : 'none';
+
  // Afficher le lien Réseau seulement pour les admins (Utilisateurs vit maintenant dans le menu profil — cf. PR38)
  const navNetwork = document.getElementById('nav-network');
  if (navNetwork) navNetwork.style.display = user.is_admin ? '' : 'none';
@@ -298,6 +305,20 @@ const App = {
  navEl.style.display = ''; // Admin ou null = tout visible
  } else {
  navEl.style.display = user.allowed_modules.includes(modId) ? '' : 'none';
+ }
+ });
+
+ // Un trader ne voit QUE Trading. Ce bloc vient APRÈS les règles par
+ // module : posé avant, la boucle ci-dessus rallumait tout (elle rend
+ // visible tout module quand allowed_modules est null — vu à l'écran).
+ // Sinon, on rétablit explicitement le Dashboard : il n'appartient à
+ // aucune liste de modules, donc personne d'autre ne le rallumerait.
+ const traderOnly = this._isTraderOnly(user);
+ document.querySelectorAll('#nav-tabs .nav-tab').forEach(tab => {
+ if (traderOnly) {
+ tab.style.display = (tab.dataset.view === 'trading') ? '' : 'none';
+ } else if (tab.dataset.view === 'hub') {
+ tab.style.display = '';
  }
  });
  },
@@ -355,6 +376,22 @@ const App = {
  },
 
  /**
+ * Qui a le droit d'ouvrir le simulateur : les deux rôles finance et l'admin.
+ * Le backend garde la même porte (require_role admin/money/trader).
+ */
+ _canTrade(user) {
+ return !!(user && (user.is_admin || user.role === 'money' || user.role === 'trader'));
+ },
+
+ /**
+ * Un « trader » ne voit QUE Trading : pas de dashboard, pas de serveurs,
+ * pas de bots. Le menu profil (Paramètres / Déconnexion) lui reste.
+ */
+ _isTraderOnly(user) {
+ return !!(user && !user.is_admin && user.role === 'trader');
+ },
+
+ /**
  * Navigation entre les vues.
  * C'est la fonction principale qui change le contenu affiché.
  */
@@ -385,6 +422,9 @@ const App = {
  if (this.currentView === 'sysdoc' && typeof SysDocModule !== 'undefined') {
  SysDocModule.unload();
  }
+ if (this.currentView === 'trading' && typeof PaperModule !== 'undefined') {
+ PaperModule.unload();
+ }
 
  this.currentView = view;
 
@@ -408,11 +448,25 @@ const App = {
  // Supprimer le padding pour la vue serveur (sidebar doit coller au bord)
  content.classList.toggle('sv-fullscreen', view === 'server_view');
 
- // Vérifier l'accès admin pour le module Réseau
  const user = Auth.getUser();
+
+ // Un trader qui tape le hash d'un autre module est ramené chez lui.
+ // (Garde de la même famille que le contrôle admin du module Réseau.)
+ if (view !== 'trading' && this._isTraderOnly(user)) {
+ return this.navigateTo('trading');
+ }
+
+ // Vérifier l'accès admin pour le module Réseau
  if (view === 'network' && user && !user.is_admin) {
  content.innerHTML = `
  <div class="text-center" style="padding: 60px; color: var(--text-muted);"><div style="font-size: 48px; margin-bottom: 16px;"></div><p style="font-size:16px;font-weight:600;color:var(--text);">${Lang.t('access.denied')}</p><p style="margin-top:8px;">${Lang.t('access.denied_msg')}</p><button class="btn btn-secondary mt-4" onclick="App.navigateTo('hub')">${Lang.t('access.back')}</button></div>
+ `;
+ return;
+ }
+
+ if (view === 'trading' && !this._canTrade(user)) {
+ content.innerHTML = `
+ <div class="text-center" style="padding: 60px; color: var(--text-muted);"><p style="font-size:16px;font-weight:600;color:var(--text);">${Lang.t('access.denied')}</p><p style="margin-top:8px;">${Lang.t('access.denied_msg')}</p><button class="btn btn-secondary mt-4" onclick="App.navigateTo('hub')">${Lang.t('access.back')}</button></div>
  `;
  return;
  }
@@ -453,6 +507,10 @@ const App = {
 
  case 'bots':
  await BotsModule.render(content);
+ break;
+
+ case 'trading':
+ await PaperModule.render(content);
  break;
 
  case 'files':
@@ -1166,7 +1224,7 @@ const App = {
  ${t('settings.invite_create')}
  </button></div><p style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">
  ${t('settings.invite_desc')}
- </p><div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;"><select class="form-input" id="invite-role" style="flex: 1; min-width: 140px;"><option value="spectator">${t('settings.invite_spectator')}</option><option value="rectester">${t('settings.invite_rectester')}</option><option value="player" selected>${t('settings.invite_player')}</option><option value="money">${t('settings.invite_money')}</option><option value="moderator">${t('settings.invite_mod')}</option><option value="developer">${t('settings.invite_dev')}</option></select><select class="form-input" id="invite-expiry" style="flex: 1; min-width: 140px;" onchange="App._toggleInviteCustom()"><option value="0">${t('settings.invite_expiry_never')}</option><option value="60">${t('settings.invite_expiry_1h')}</option><option value="360">${t('settings.invite_expiry_6h')}</option><option value="1440">${t('settings.invite_expiry_1d')}</option><option value="10080" selected>${t('settings.invite_expiry_7d')}</option><option value="43200">${t('settings.invite_expiry_30d')}</option><option value="custom">${t('settings.invite_expiry_custom')}</option></select></div><div id="invite-custom-expiry" style="display: none; gap: 8px; margin-top: 8px;"><input type="number" min="1" id="invite-custom-value" class="form-input" placeholder="10" style="flex: 1;" /><select class="form-input" id="invite-custom-unit" style="flex: 1;"><option value="1">${t('settings.invite_unit_minutes')}</option><option value="60" selected>${t('settings.invite_unit_hours')}</option><option value="1440">${t('settings.invite_unit_days')}</option></select></div><div id="invite-result" style="margin-top: 12px;"></div><div id="invitations-list" style="margin-top: 16px;"><div style="text-align: center; padding: 16px; color: var(--text-muted); font-size: 13px;">${t('common.loading')}</div></div></div><!-- Créer un utilisateur --><div class="card" style="margin-bottom:20px;"><h3 style="margin:0 0 16px;">${t('users.create_title')}</h3><div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end;"><div><label class="form-label">${t('users.username')}</label><input id="new-user-name" class="form-input" placeholder="${t('users.username_hint')}" /></div><div><label class="form-label">${t('users.password')}</label><input id="new-user-pass" class="form-input" type="password" placeholder="${t('users.password_hint')}" /></div><div><label class="form-label">${t('users.role')}</label><select id="new-user-role" class="form-input"><option value="spectator">${t('users.role_spectator')}</option><option value="rectester">${t('users.role_rectester')}</option><option value="player" selected>${t('users.role_player')}</option><option value="money">${t('users.role_money')}</option><option value="moderator">${t('users.role_moderator')}</option><option value="developer">${t('users.role_developer')}</option><option value="admin">${t('users.role_admin')}</option></select></div><button class="btn btn-primary" onclick="App.createUser()" style="height:38px;">${t('users.create_btn')}</button></div><div id="create-user-msg" style="font-size:13px;margin-top:8px;"></div></div><!-- Liste des utilisateurs --><div class="card"><h3 style="margin:0 0 16px;">${t('users.list_title')}</h3><div id="users-admin-list"><div style="text-align:center;padding:20px;color:var(--text-muted);">${t('users.loading')}</div></div></div>
+ </p><div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;"><select class="form-input" id="invite-role" style="flex: 1; min-width: 140px;"><option value="spectator">${t('settings.invite_spectator')}</option><option value="rectester">${t('settings.invite_rectester')}</option><option value="player" selected>${t('settings.invite_player')}</option><option value="money">${t('settings.invite_money')}</option><option value="trader">${t('settings.invite_trader')}</option><option value="moderator">${t('settings.invite_mod')}</option><option value="developer">${t('settings.invite_dev')}</option></select><select class="form-input" id="invite-expiry" style="flex: 1; min-width: 140px;" onchange="App._toggleInviteCustom()"><option value="0">${t('settings.invite_expiry_never')}</option><option value="60">${t('settings.invite_expiry_1h')}</option><option value="360">${t('settings.invite_expiry_6h')}</option><option value="1440">${t('settings.invite_expiry_1d')}</option><option value="10080" selected>${t('settings.invite_expiry_7d')}</option><option value="43200">${t('settings.invite_expiry_30d')}</option><option value="custom">${t('settings.invite_expiry_custom')}</option></select></div><div id="invite-custom-expiry" style="display: none; gap: 8px; margin-top: 8px;"><input type="number" min="1" id="invite-custom-value" class="form-input" placeholder="10" style="flex: 1;" /><select class="form-input" id="invite-custom-unit" style="flex: 1;"><option value="1">${t('settings.invite_unit_minutes')}</option><option value="60" selected>${t('settings.invite_unit_hours')}</option><option value="1440">${t('settings.invite_unit_days')}</option></select></div><div id="invite-result" style="margin-top: 12px;"></div><div id="invitations-list" style="margin-top: 16px;"><div style="text-align: center; padding: 16px; color: var(--text-muted); font-size: 13px;">${t('common.loading')}</div></div></div><!-- Créer un utilisateur --><div class="card" style="margin-bottom:20px;"><h3 style="margin:0 0 16px;">${t('users.create_title')}</h3><div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end;"><div><label class="form-label">${t('users.username')}</label><input id="new-user-name" class="form-input" placeholder="${t('users.username_hint')}" /></div><div><label class="form-label">${t('users.password')}</label><input id="new-user-pass" class="form-input" type="password" placeholder="${t('users.password_hint')}" /></div><div><label class="form-label">${t('users.role')}</label><select id="new-user-role" class="form-input"><option value="spectator">${t('users.role_spectator')}</option><option value="rectester">${t('users.role_rectester')}</option><option value="player" selected>${t('users.role_player')}</option><option value="money">${t('users.role_money')}</option><option value="trader">${t('users.role_trader')}</option><option value="moderator">${t('users.role_moderator')}</option><option value="developer">${t('users.role_developer')}</option><option value="admin">${t('users.role_admin')}</option></select></div><button class="btn btn-primary" onclick="App.createUser()" style="height:38px;">${t('users.create_btn')}</button></div><div id="create-user-msg" style="font-size:13px;margin-top:8px;"></div></div><!-- Liste des utilisateurs --><div class="card"><h3 style="margin:0 0 16px;">${t('users.list_title')}</h3><div id="users-admin-list"><div style="text-align:center;padding:20px;color:var(--text-muted);">${t('users.loading')}</div></div></div>
  `;
  this.loadInvitations();
  this._loadUsersAdmin();
@@ -1211,7 +1269,11 @@ const App = {
  const users = await response.json();
  const currentUser = Auth.getUser();
 
- const roleLabels = { admin: Lang.t('users.role_admin'), moderator: Lang.t('users.role_moderator'), developer: Lang.t('users.role_developer'), money: Lang.t('users.role_money'), player: Lang.t('users.role_player'), rectester: Lang.t('users.role_rectester'), spectator: Lang.t('users.role_spectator') };
+ const roleLabels = { admin: Lang.t('users.role_admin'), moderator: Lang.t('users.role_moderator'), developer: Lang.t('users.role_developer'), money: Lang.t('users.role_money'), trader: Lang.t('users.role_trader'), player: Lang.t('users.role_player'), rectester: Lang.t('users.role_rectester'), spectator: Lang.t('users.role_spectator') };
+        // Le rôle arrive du backend : on ne le met dans un `class` qu'après
+        // l'avoir reconnu (une valeur inattendue ne doit rien pouvoir injecter).
+        const KNOWN_ROLES = ['admin', 'developer', 'moderator', 'money', 'trader', 'player', 'rectester', 'spectator'];
+        const roleClass = (r) => (KNOWN_ROLES.indexOf(String(r)) >= 0 ? String(r) : '');
  const permLabels = {
  view: Lang.t('users.perm_view'), start: Lang.t('users.perm_start'), stop: Lang.t('users.perm_stop'),
  restart: Lang.t('users.perm_restart'), console: Lang.t('users.perm_console'), backup: Lang.t('users.perm_backup'),
@@ -1223,6 +1285,7 @@ const App = {
  spectator: ['view'],
  player: ['view','start'],
  money: ['view','start','yield_bot'],
+ trader: ['view'],
  moderator: ['view','start','stop','restart','console','backup','logs','create_server','delete','invite'],
  developer: ['view','start','stop','restart','console','backup','logs','create_server','create_bot','delete','invite'],
  admin: Object.keys(permLabels)
@@ -1266,7 +1329,10 @@ const App = {
  + '<div style="width:36px;height:36px;border-radius:50%;background:' + (u.is_admin ? 'var(--violet)' : 'var(--bg-elev-1)') + ';display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:' + (u.is_admin ? 'white' : 'var(--text-muted)') + '">' + esc((u.username || '?').charAt(0).toUpperCase()) + '</div>'
  + '<div>'
  + '<div style="font-weight:600;font-size:14px;">' + esc(u.username) + '</div>'
- + '<div style="font-size:12px;color:var(--text-muted);">' + (roleLabels[u.role] || u.role) + (u.created_at ? ' · ' + Lang.t('users.created_on') + ' ' + new Date(u.created_at).toLocaleDateString() : '') + '</div>'
+ + '<div style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
+    + '<span class="role-pill ' + roleClass(u.role) + '">' + esc(roleLabels[u.role] || u.role) + '</span>'
+    + (u.created_at ? '<span>' + esc(Lang.t('users.created_on') + ' ' + new Date(u.created_at).toLocaleDateString()) + '</span>' : '')
+  + '</div>'
  + '</div>'
  + '</div>'
  + '<div style="display:flex;align-items:center;gap:8px;">'
@@ -1276,6 +1342,7 @@ const App = {
  + '<option value="rectester"' + (u.role === 'rectester' ? ' selected' : '') + '>' + Lang.t('users.role_rectester') + '</option>'
  + '<option value="player"' + (u.role === 'player' ? ' selected' : '') + '>' + Lang.t('users.role_player') + '</option>'
  + '<option value="money"' + (u.role === 'money' ? ' selected' : '') + '>' + Lang.t('users.role_money') + '</option>'
+ + '<option value="trader"' + (u.role === 'trader' ? ' selected' : '') + '>' + Lang.t('users.role_trader') + '</option>'
  + '<option value="moderator"' + (u.role === 'moderator' ? ' selected' : '') + '>' + Lang.t('users.role_moderator') + '</option>'
  + '<option value="developer"' + (u.role === 'developer' ? ' selected' : '') + '>' + Lang.t('users.role_developer') + '</option>'
  + '<option value="admin"' + (u.role === 'admin' ? ' selected' : '') + '>' + Lang.t('users.role_admin') + '</option>'

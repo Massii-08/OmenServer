@@ -49,6 +49,13 @@ _PAPER_DIR = Path(__file__).resolve().parent / "paper"
 LESSONS_PATH = _PAPER_DIR / "lessons_fr.json"
 ARENA_PATH = _PAPER_DIR / "arena.json"
 
+# Contenu pédagogique par langue. L'ANGLAIS n'a volontairement pas de fichier :
+# il retombe sur le français (repli SILENCIEUX, cf. ``content_lang``) — la
+# demande est « italien d'abord, l'anglais on laisse tomber », et servir une
+# traduction anglaise bâclée serait pire que d'assumer le repli.
+LESSONS_PATHS = {"fr": LESSONS_PATH, "it": _PAPER_DIR / "lessons_it.json"}
+ARENA_PATHS = {"fr": ARENA_PATH, "it": _PAPER_DIR / "arena_it.json"}
+
 # Seuils d'AVERTISSEMENT (jamais de blocage — cf. invariant 1).
 CONCENTRATION_PCT = 25.0     # une ligne qui pèse plus d'un quart du portefeuille
 OVERSIZED_PCT = 2.0          # risque planifié au-delà de 2 % du capital initial
@@ -56,6 +63,14 @@ MIN_THESIS_LEN = 15          # même seuil que coach._NO_THESIS_MIN_LEN
 
 MAX_QUOTE_SYMBOLS = 20
 MIN_SEARCH_LEN = 2
+
+# Watchlist : bornée pour rester une liste de titres à CREUSER, pas un
+# fourre-tout qui finirait par ne plus rien dire au coach.
+MAX_WATCHLIST = 30
+
+# Horizon par défaut d'une idée de trade sans horizon exploitable dans le
+# JSON du LLM — même ordre de grandeur que ``radar.DEFAULT_HORIZON_D``.
+DEFAULT_IDEA_HORIZON_D = 7
 
 # Fenêtres autorisées pour le graphique. Liste FERMÉE : on ne proxifie pas
 # Yahoo en aveugle — un paramètre libre transformerait l'endpoint en relais
@@ -70,9 +85,10 @@ TICK_INTERVAL = "15m"
 
 _SEVERITY_ORDER = {"critical": 0, "warn": 1, "info": 2}
 
-# Cache mémoire du contenu pédagogique (fichiers statiques versionnés).
-_lessons_cache: Optional[List[Dict[str, Any]]] = None
-_arena_cache: Optional[List[Dict[str, Any]]] = None
+# Cache mémoire du contenu pédagogique (fichiers statiques versionnés), UNE
+# entrée par langue effectivement servie.
+_lessons_cache: Dict[str, List[Dict[str, Any]]] = {}
+_arena_cache: Dict[str, List[Dict[str, Any]]] = {}
 
 
 class OrderError(Exception):
@@ -582,8 +598,18 @@ def run_tick(portfolio: models.Portfolio, now_iso: str,
 # --------------------------------------------------------------------------- #
 # Coach — synchronisation du profil et du carnet
 # --------------------------------------------------------------------------- #
+# 9ᵉ règle de biais : sa phrase de preuve vit ici (et pas dans les gabarits de
+# ``coach.py``) parce que la RÈGLE elle-même vit ici — les deux doivent rester
+# au même endroit, sinon la prochaine traduction en oubliera une moitié.
+_CONCENTRATION_EVIDENCE = {
+    "fr": "{symbol} pèse {pct:.1f}% du portefeuille (seuil {threshold:.0f}%)",
+    "it": "{symbol} pesa il {pct:.1f}% del portafoglio (soglia {threshold:.0f}%)",
+}
+
+
 def _with_concentration(biases: List[Dict[str, Any]],
-                        exposure: Dict[str, Any]) -> List[Dict[str, Any]]:
+                        exposure: Dict[str, Any],
+                        lang: str = "fr") -> List[Dict[str, Any]]:
     """Complète les biais déterministes par la CONCENTRATION.
 
     ``coach.detect_biases`` ne peut pas la calculer : elle demande la valeur de
@@ -596,11 +622,13 @@ def _with_concentration(biases: List[Dict[str, Any]],
 
     per = exposure.get("per_position_pct") or {}
     worst = max(per.items(), key=lambda kv: kv[1])[0] if per else "?"
+    template = _CONCENTRATION_EVIDENCE.get(normalize_lang(lang),
+                                           _CONCENTRATION_EVIDENCE["fr"])
     out = list(biases) + [{
         "code": "concentration",
         "severity": "warn",
-        "evidence": ["%s pèse %.1f%% du portefeuille (seuil %.0f%%)"
-                     % (worst, top, CONCENTRATION_PCT)],
+        "evidence": [template.format(symbol=worst, pct=top,
+                                     threshold=CONCENTRATION_PCT)],
         "metric": round(top / 100.0, 4),
     }]
     out.sort(key=lambda b: _SEVERITY_ORDER.get(b.get("severity"), 99))
@@ -692,6 +720,29 @@ def _append_journal(username: str, title: str, body: str, now_iso: str) -> None:
         logger.warning("paper: entrée de journal non écrite: %s", e)
 
 
+def _append_discussion(username: str, question: str, answer: str, now_iso: str) -> None:
+    """Ajoute la question et la réponse du coach à ``Discussions.md``.
+
+    Carnet PARTAGÉ entre tous les traders (décision utilisateur) : lu par
+    n'importe qui via ``/community`` (cf. ``store.list_vault_users``) —
+    contrairement au portefeuille (argent + positions), qui reste strictement
+    privé et n'est touché nulle part ici.
+
+    ``coach.py`` n'expose aucun générateur pour ce format Q/A (à la différence
+    de ``journal_entry``/``bias_note_entry``, pensés pour un titre + un corps
+    déjà rédigé) : le bloc est construit ici, dans le même esprit visuel (date
+    courte en tête de ligne ``##``). Best-effort comme ``_append_journal`` :
+    un échec d'écriture ne casse jamais la réponse HTTP déjà obtenue du LLM.
+    """
+    date = str(now_iso or "")[:10] or "date inconnue"
+    entry = ("## %s — Question de %s\n\n**Q :** %s\n\n**Coach :** %s\n"
+             % (date, username, question, answer))
+    try:
+        store.append_note(username, "Discussions.md", entry)
+    except (ValueError, OSError) as e:
+        logger.warning("paper: discussion non persistée: %s", e)
+
+
 def _coach_context(portfolio: models.Portfolio, profile: Dict[str, Any],
                    biases: List[Dict[str, Any]],
                    stats: Dict[str, Any]) -> Dict[str, Any]:
@@ -704,6 +755,18 @@ def _coach_context(portfolio: models.Portfolio, profile: Dict[str, Any],
         "capital_initial_chf": portfolio.initial_capital,
         "cash_chf": portfolio.cash_chf,
     }
+
+
+def _watchlist_context(username: str) -> List[Dict[str, Any]]:
+    """La watchlist de l'utilisateur, telle quelle (symbol/name/currency/
+    added_at) — matière de contexte pour le coach (``/coach/ask``, ``/ideas``).
+    Best-effort : un fichier watchlist corrompu ne casse jamais l'appel LLM,
+    il rétrécit juste le contexte."""
+    try:
+        return store.load_watchlist(username)
+    except Exception as e:                          # noqa: BLE001 - best-effort
+        logger.warning("paper: watchlist indisponible pour le contexte: %s", e)
+        return []
 
 
 # --------------------------------------------------------------------------- #
@@ -719,18 +782,45 @@ def _load_json_file(path: Path) -> List[Dict[str, Any]]:
     return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
 
 
-def lessons_catalog() -> List[Dict[str, Any]]:
-    global _lessons_cache
-    if _lessons_cache is None:
-        _lessons_cache = _load_json_file(LESSONS_PATH)
-    return _lessons_cache
+def normalize_lang(value: Any) -> str:
+    """Langue DEMANDÉE, normalisée. Inconnue -> ``fr``, jamais d'erreur : une
+    langue exotique dans une query string ne doit pas rendre 422 sur du contenu
+    pédagogique."""
+    return coach.normalize_lang(value)
 
 
-def arena_catalog() -> List[Dict[str, Any]]:
-    global _arena_cache
-    if _arena_cache is None:
-        _arena_cache = _load_json_file(ARENA_PATH)
-    return _arena_cache
+def content_lang(value: Any, available: Optional[Dict[str, Path]] = None) -> str:
+    """Langue effectivement SERVIE pour un contenu statique donné.
+
+    ``en`` est une langue valide de l'interface mais n'a pas de fichier de
+    contenu -> repli sur ``fr``. Le repli est silencieux **par contrat** : le
+    client demande sa langue, le serveur rend la meilleure disponible.
+    """
+    lang = normalize_lang(value)
+    table = LESSONS_PATHS if available is None else available
+    return lang if lang in table else "fr"
+
+
+def _catalog(paths: Dict[str, Path], cache: Dict[str, List[Dict[str, Any]]],
+             lang: Any) -> List[Dict[str, Any]]:
+    """Contenu statique d'une langue, mis en cache. Un fichier de traduction
+    absent ou illisible retombe sur le FRANÇAIS plutôt que de rendre une liste
+    vide : une leçon dans la mauvaise langue reste lisible, une leçon absente
+    ne l'est pas."""
+    key = content_lang(lang, paths)
+    if key not in cache:
+        cache[key] = _load_json_file(paths[key]) or _load_json_file(paths["fr"])
+    return cache[key]
+
+
+def lessons_catalog(lang: str = "fr") -> List[Dict[str, Any]]:
+    """Catalogue des leçons dans la langue demandée (repli ``fr``)."""
+    return _catalog(LESSONS_PATHS, _lessons_cache, lang)
+
+
+def arena_catalog(lang: str = "fr") -> List[Dict[str, Any]]:
+    """Catalogue des défis dans la langue demandée (repli ``fr``)."""
+    return _catalog(ARENA_PATHS, _arena_cache, lang)
 
 
 def public_lesson(lesson: Dict[str, Any]) -> Dict[str, Any]:
@@ -900,26 +990,43 @@ class ClosePayload(BaseModel):
 
 class AskPayload(BaseModel):
     question: str = ""
+    lang: str = "fr"
 
 
 class PostmortemPayload(BaseModel):
     trade_index: Optional[int] = None
+    lang: str = "fr"
 
 
 class AnalysisPayload(BaseModel):
     symbol: str = ""
+    lang: str = "fr"
 
 
 class QuizPayload(BaseModel):
     answers: List[int] = []
+    lang: str = "fr"
+
+
+class IdeasPayload(BaseModel):
+    lang: str = "fr"
+
+
+class WatchlistPayload(BaseModel):
+    symbol: str = ""
 
 
 # --------------------------------------------------------------------------- #
 # Endpoints — portefeuille
 # --------------------------------------------------------------------------- #
 @router.get("/portfolio")
-def paper_portfolio(current_user: User = Depends(require_role("admin", "money"))):
-    """État complet : positions valorisées, exposition, statistiques, biais, AFC."""
+def paper_portfolio(lang: str = "fr",
+                    current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """État complet : positions valorisées, exposition, statistiques, biais, AFC.
+
+    ``lang`` ne pilote QUE les phrases de preuve des biais (les codes restent
+    des codes, traduits côté client) — le reste de la réponse est numérique.
+    """
     username = current_user.username
     portfolio = _load(username)
 
@@ -957,7 +1064,8 @@ def paper_portfolio(current_user: User = Depends(require_role("admin", "money"))
     stats = risk.portfolio_stats(trades, initial_capital=portfolio.initial_capital)
     afc = risk.afc_counters(trades, positions, portfolio.initial_capital, _now_iso())
     biases = _with_concentration(
-        coach.detect_biases(trades, orders, portfolio.initial_capital), exposure)
+        coach.detect_biases(trades, orders, portfolio.initial_capital, lang=lang),
+        exposure, lang)
 
     return {
         "portfolio": portfolio.to_dict(),
@@ -973,7 +1081,7 @@ def paper_portfolio(current_user: User = Depends(require_role("admin", "money"))
 
 @router.post("/portfolio/reset")
 def paper_reset(data: ResetPayload,
-                current_user: User = Depends(require_role("admin", "money"))):
+                current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Remet le portefeuille à neuf. Le carnet et le profil du coach SURVIVENT —
     c'est la mémoire : elle est justement ce qu'on ne veut pas perdre."""
     capital = data.initial_capital
@@ -994,7 +1102,7 @@ def paper_reset(data: ResetPayload,
 # --------------------------------------------------------------------------- #
 @router.get("/search")
 def paper_search(q: str = "",
-                 current_user: User = Depends(require_role("admin", "money"))):
+                 current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Recherche de ticker. Moins de 2 caractères -> liste vide, sans réseau."""
     if len(str(q or "").strip()) < MIN_SEARCH_LEN:
         return []
@@ -1006,7 +1114,7 @@ def paper_search(q: str = "",
 
 @router.get("/quotes")
 def paper_quotes(symbols: str = "",
-                 current_user: User = Depends(require_role("admin", "money"))):
+                 current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Cotations d'une liste de symboles séparés par des virgules (20 maximum)."""
     wanted = [s.strip().upper() for s in str(symbols or "").split(",") if s.strip()]
     out: Dict[str, Any] = {}
@@ -1027,7 +1135,7 @@ def paper_quotes(symbols: str = "",
 
 @router.get("/candles")
 def paper_candles(symbol: str = "", range_: str = "6mo", interval: str = "1d",
-                  current_user: User = Depends(require_role("admin", "money"))):
+                  current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Bougies brutes d'un titre, pour le graphique du frontend.
 
     Les bougies « à moitié écrites » (séance en cours : ``close`` encore nul)
@@ -1071,7 +1179,7 @@ def paper_candles(symbol: str = "", range_: str = "6mo", interval: str = "1d",
 # --------------------------------------------------------------------------- #
 @router.post("/orders")
 def paper_place_order(data: OrderPayload,
-                      current_user: User = Depends(require_role("admin", "money"))):
+                      current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Passe un ordre. Marché = exécuté tout de suite ; limite/stop = mis en attente.
 
     On AVERTIT (thèse absente, pas de stop, taille excessive, concentration) mais
@@ -1170,7 +1278,7 @@ def paper_place_order(data: OrderPayload,
 
 @router.post("/orders/{order_id}/cancel")
 def paper_cancel_order(order_id: str,
-                       current_user: User = Depends(require_role("admin", "money"))):
+                       current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Annule un ordre en attente."""
     username = current_user.username
     portfolio = _load(username)
@@ -1190,7 +1298,7 @@ def paper_cancel_order(order_id: str,
 
 @router.post("/positions/{symbol}/close")
 def paper_close_position(symbol: str, data: ClosePayload,
-                         current_user: User = Depends(require_role("admin", "money"))):
+                         current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Clôture au marché tout ou partie d'une ligne."""
     username = current_user.username
     wanted = str(symbol or "").strip().upper()
@@ -1231,7 +1339,7 @@ def paper_close_position(symbol: str, data: ClosePayload,
 
 
 @router.post("/tick")
-def paper_tick(current_user: User = Depends(require_role("admin", "money"))):
+def paper_tick(current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Confronte ordres en attente et stops aux bougies récentes (15 min).
 
     Appelé par le front au chargement et au rafraîchissement. Ne rend jamais
@@ -1253,7 +1361,8 @@ def paper_tick(current_user: User = Depends(require_role("admin", "money"))):
 # Endpoints — coach
 # --------------------------------------------------------------------------- #
 @router.get("/coach")
-def paper_coach(current_user: User = Depends(require_role("admin", "money"))):
+def paper_coach(lang: str = "fr",
+                current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Biais courants + résumé du profil + statistiques. Aucun réseau, aucun LLM."""
     username = current_user.username
     portfolio = _load(username)
@@ -1261,12 +1370,12 @@ def paper_coach(current_user: User = Depends(require_role("admin", "money"))):
 
     trades = [t.to_dict() for t in portfolio.trades]
     orders = [o.to_dict() for o in portfolio.open_orders]
-    biases = coach.detect_biases(trades, orders, portfolio.initial_capital)
+    biases = coach.detect_biases(trades, orders, portfolio.initial_capital, lang=lang)
     stats = risk.portfolio_stats(trades, initial_capital=portfolio.initial_capital)
 
     return {
         "biases": biases,
-        "summary": coach.coach_summary(profile, biases),
+        "summary": coach.coach_summary(profile, biases, lang=lang),
         "stats": stats,
         "profile": profile,
     }
@@ -1274,25 +1383,35 @@ def paper_coach(current_user: User = Depends(require_role("admin", "money"))):
 
 @router.post("/coach/ask")
 def paper_coach_ask(data: AskPayload,
-                    current_user: User = Depends(require_role("admin", "money"))):
-    """Une question au coach. Le LLM RÉDIGE à partir de faits déjà calculés."""
+                    current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Une question au coach. Le LLM RÉDIGE à partir de faits déjà calculés.
+
+    ``lang`` change la langue de la RÉPONSE, pas celle du contexte : les faits
+    passés au modèle restent en français (ce sont ceux que ``_sync_coach`` vient
+    d'écrire dans le carnet, qui reste français par décision) — un modèle lit
+    des faits dans une langue et rédige dans une autre sans difficulté.
+    """
     username = current_user.username
     portfolio = _load(username)
     synced = _sync_coach(username, portfolio.to_dict(), force=True)
     context = _coach_context(portfolio, synced["profile"], synced["biases"],
                              synced["stats"])
+    context["watchlist"] = _watchlist_context(username)
+    question = data.question or ""
     try:
-        answer = llm.ask_coach(context, data.question or "")
+        answer = llm.ask_coach(context, question, lang=normalize_lang(data.lang))
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)[:300])
 
-    _append_journal(username, "session coach", answer, _now_iso())
+    now = _now_iso()
+    _append_journal(username, "session coach", answer, now)
+    _append_discussion(username, question, answer, now)
     return {"answer": answer}
 
 
 @router.post("/postmortem")
 def paper_postmortem(data: PostmortemPayload,
-                     current_user: User = Depends(require_role("admin", "money"))):
+                     current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Post-mortem d'un trade clôturé, archivé dans le ``Journal.md`` (§11)."""
     username = current_user.username
     portfolio = _load(username)
@@ -1313,7 +1432,9 @@ def paper_postmortem(data: PostmortemPayload,
     stats = risk.portfolio_stats(trades, initial_capital=portfolio.initial_capital)
 
     try:
-        text = llm.write_postmortem(trade, _coach_context(portfolio, profile, biases, stats))
+        text = llm.write_postmortem(trade,
+                                    _coach_context(portfolio, profile, biases, stats),
+                                    lang=normalize_lang(data.lang))
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)[:300])
 
@@ -1326,7 +1447,7 @@ def paper_postmortem(data: PostmortemPayload,
 
 @router.post("/analysis")
 def paper_analysis(data: AnalysisPayload,
-                   current_user: User = Depends(require_role("admin", "money"))):
+                   current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Fiche pédagogique d'un titre : les chiffres ET leur lecture, sans opinion."""
     symbol = str(data.symbol or "").strip().upper()
     if not symbol:
@@ -1338,21 +1459,21 @@ def paper_analysis(data: AnalysisPayload,
     except quotes.QuoteError as e:
         raise HTTPException(status_code=502, detail=str(e))
     try:
-        text = llm.write_analysis(facts)
+        text = llm.write_analysis(facts, lang=normalize_lang(data.lang))
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)[:300])
     return {"facts": facts, "analysis": text}
 
 
 @router.get("/coach/notes")
-def paper_notes(current_user: User = Depends(require_role("admin", "money"))):
+def paper_notes(current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Liste des pages du carnet Markdown (contrat §11 : la liste, telle quelle)."""
     return store.list_notes(current_user.username)
 
 
 @router.get("/coach/notes/{name:path}")
 def paper_note(name: str,
-               current_user: User = Depends(require_role("admin", "money"))):
+               current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Contenu brut d'une page du carnet (nom validé par ``store``, anti-traversal)."""
     try:
         markdown = store.read_note(current_user.username, name)
@@ -1364,23 +1485,76 @@ def paper_note(name: str,
 
 
 # --------------------------------------------------------------------------- #
+# Endpoints — communauté (carnets PARTAGÉS entre tous les traders)
+#
+# Décision utilisateur : les discussions de coaching et l'analyse de biais
+# profitent à toute la communauté — SEULS l'argent et les positions restent
+# strictement privés (le portefeuille, lui, ne change rien : toujours résolu
+# par le ``username`` de la session courante, jamais par un ``user`` de path).
+# Lecture SEULE : aucun endpoint n'écrit dans le carnet d'un AUTRE utilisateur.
+# --------------------------------------------------------------------------- #
+@router.get("/community")
+def paper_community(current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Catalogue de la communauté : chaque trader qui a un carnet + ses notes."""
+    return {"users": [{"user": u, "notes": store.list_notes(u)}
+                       for u in store.list_vault_users()]}
+
+
+@router.get("/community/{user}/{name:path}")
+def paper_community_note(user: str, name: str,
+                         current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Contenu brut d'une note du carnet d'UN AUTRE trader (lecture seule).
+
+    ``user`` doit être un carnet RÉELLEMENT recensé par
+    ``store.list_vault_users`` — c'est la même allowlist que partout ailleurs
+    dans ``store`` : un nom forgé (ex. ``..``) n'y figure jamais, donc 404
+    avant même de toucher le disque (pas de tentative de lecture hors
+    sandbox). ``name`` passe par la même validation que ``/coach/notes`` —
+    400 si le format est invalide.
+    """
+    if user not in store.list_vault_users():
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
+    try:
+        markdown = store.read_note(user, name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if markdown is None:
+        raise HTTPException(status_code=404, detail="Note introuvable.")
+    return {"user": user, "name": name, "markdown": markdown}
+
+
+# --------------------------------------------------------------------------- #
 # Endpoints — pédagogie
 # --------------------------------------------------------------------------- #
 @router.get("/lessons")
-def paper_lessons(current_user: User = Depends(require_role("admin", "money"))):
-    """Catalogue des leçons SANS les réponses + progression de l'utilisateur."""
+def paper_lessons(lang: str = "fr",
+                  current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Catalogue des leçons SANS les réponses + progression de l'utilisateur.
+
+    ``passed`` est une liste d'``id`` : la progression est donc INDÉPENDANTE de
+    la langue — une leçon réussie en français reste réussie en italien, parce
+    que c'est la même leçon.
+    """
     profile = store.load_coach(current_user.username) or coach.empty_profile()
     passed = [str(x) for x in (profile.get("lessons_passed") or [])]
-    return {"lessons": [public_lesson(l) for l in lessons_catalog()], "passed": passed}
+    return {"lessons": [public_lesson(l) for l in lessons_catalog(lang)],
+            "passed": passed}
 
 
 @router.post("/lessons/{lesson_id}/quiz")
 def paper_quiz(lesson_id: str, data: QuizPayload,
-               current_user: User = Depends(require_role("admin", "money"))):
-    """Corrige le quiz côté serveur et enregistre la réussite dans le profil."""
+               current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Corrige le quiz côté serveur et enregistre la réussite dans le profil.
+
+    La correction se fait sur le catalogue de la LANGUE demandée : les
+    ``explain`` rendus au client suivent la langue de lecture. Les index
+    ``correct`` sont identiques d'une langue à l'autre (parité verrouillée par
+    un test) — c'est ce qui garantit qu'une traduction ne peut pas fausser une
+    correction.
+    """
     username = current_user.username
     lesson = None
-    for row in lessons_catalog():
+    for row in lessons_catalog(data.lang):
         if row.get("id") == lesson_id:
             lesson = row
             break
@@ -1399,19 +1573,25 @@ def paper_quiz(lesson_id: str, data: QuizPayload,
 
 
 @router.get("/arena")
-def paper_arena(current_user: User = Depends(require_role("admin", "money"))):
-    """Défi de la semaine (déterministe) + historique évalué des semaines passées."""
+def paper_arena(lang: str = "fr",
+                current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Défi de la semaine (déterministe) + historique évalué des semaines passées.
+
+    Le tirage du défi et l'évaluation des semaines passées travaillent sur les
+    ``id`` et les ``check`` : changer de langue ne change NI le défi de la
+    semaine NI le verdict d'une semaine déjà jouée, seulement leur libellé.
+    """
     username = current_user.username
     portfolio = _load(username)
     profile = store.load_coach(username) or coach.empty_profile()
     history = [h for h in (profile.get("arena_history") or []) if isinstance(h, dict)]
-    return arena_view(arena_catalog(), history,
+    return arena_view(arena_catalog(lang), history,
                       [t.to_dict() for t in portfolio.trades],
                       portfolio.initial_capital, _week_id(datetime.now()))
 
 
 @router.post("/arena/accept")
-def paper_arena_accept(current_user: User = Depends(require_role("admin", "money"))):
+def paper_arena_accept(current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Accepte le défi de la semaine. Idempotent : deux clics = une acceptation."""
     username = current_user.username
     week = _week_id(datetime.now())
@@ -1443,7 +1623,7 @@ def _radar():
 
 
 @router.get("/radar")
-def paper_radar(current_user: User = Depends(require_role("admin", "money"))):
+def paper_radar(current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Hypothèses du radar et leur score. Module absent -> radar vide, pas d'erreur."""
     try:
         module = _radar()
@@ -1457,7 +1637,7 @@ def paper_radar(current_user: User = Depends(require_role("admin", "money"))):
 
 
 @router.post("/radar/run")
-def paper_radar_run(current_user: User = Depends(require_role("admin", "money"))):
+def paper_radar_run(current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Lance un passage du radar. SYNCHRONE et long (~2 min) : l'UI affiche un
     chargement. Ici, contrairement à la lecture, l'absence du module est une
     vraie erreur — l'utilisateur a demandé une action qui ne peut pas avoir lieu."""
@@ -1484,7 +1664,7 @@ def _newswatch():
 
 
 @router.get("/news")
-def paper_news(current_user: User = Depends(require_role("admin", "money"))):
+def paper_news(current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Dernières nouvelles concernant les positions détenues.
 
     Best-effort de bout en bout : module absent ou veille en panne -> liste vide.
@@ -1508,7 +1688,7 @@ def _convergence():
 
 
 @router.get("/digest")
-def paper_digest(current_user: User = Depends(require_role("admin", "money"))):
+def paper_digest(current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Historique des digests de convergence. Best-effort comme ses voisins."""
     try:
         module = _convergence()
@@ -1523,7 +1703,7 @@ def paper_digest(current_user: User = Depends(require_role("admin", "money"))):
 
 @router.post("/digest/run")
 def paper_digest_run(force: bool = False,
-                     current_user: User = Depends(require_role("admin", "money"))):
+                     current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Évalue la convergence maintenant et envoie un digest si elle est réunie.
 
     ``force=true`` saute le cooldown de 6 h et l'empreinte anti-redite — c'est
@@ -1544,3 +1724,259 @@ def paper_digest_run(force: bool = False,
         return module.maybe_fire(force=bool(force))
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)[:300])
+
+
+def _whales():
+    """Le module 13F (Grands portefeuilles), importé paresseusement — même
+    esprit que ``_radar``/``_newswatch``/``_convergence`` : le router doit
+    vivre sans lui (déploiement partiel)."""
+    from backend.bots.paper import whales
+    return whales
+
+
+# --------------------------------------------------------------------------- #
+# Endpoints — idées de trade (extension utilisateur, orientées rentabilité)
+#
+# Le coach change de registre : il ne fait plus le point, il PROPOSE. Chaque
+# idée valide est enregistrée comme hypothèse RADAR (``source: "coach"``),
+# bornée par ``radar.MAX_OPEN`` comme n'importe quelle autre hypothèse.
+# --------------------------------------------------------------------------- #
+
+def _parse_ideas_json(text: Any) -> List[Dict[str, Any]]:
+    """Extrait le bloc JSON final ``{"ideas": [...]}`` de la réponse texte du
+    coach (PUR — aucune I/O). Même patron find/rfind que ``radar.parse_llm``
+    (tolérant : bloc absent ou invalide -> liste vide, jamais une exception —
+    le texte pédagogique reste affiché même sans câblage radar).
+
+    Un item invalide (pas de ticker) est jeté SEUL, jamais tout le lot.
+    """
+    if not isinstance(text, str):
+        return []
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return []
+    try:
+        payload = json.loads(text[start:end + 1])
+    except ValueError:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    items = payload.get("ideas")
+    if not isinstance(items, list):
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        ticker = str(item.get("ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        direction = str(item.get("direction") or "").strip().lower()
+        if direction not in ("up", "down"):
+            direction = "up"
+        try:
+            horizon_days = int(float(item.get("horizon_days")))
+        except (TypeError, ValueError):
+            horizon_days = DEFAULT_IDEA_HORIZON_D
+        out.append({
+            "ticker": ticker,
+            "direction": direction,
+            "horizon_days": horizon_days,
+            "thesis": str(item.get("thesis") or "").strip(),
+        })
+    return out
+
+
+def _open_radar_hypotheses() -> List[Dict[str, Any]]:
+    """Hypothèses radar actuellement OUVERTES — matière de contexte pour
+    ``/ideas`` (pour ne pas reproposer ce que le radar suit déjà). Best-effort :
+    module absent ou en panne -> liste vide, jamais une exception."""
+    try:
+        radar_module = _radar()
+    except ImportError:
+        return []
+    try:
+        state = radar_module.load_state()
+    except Exception as e:                      # noqa: BLE001 - lecture best-effort
+        logger.warning("paper: radar indisponible pour /ideas: %s", e)
+        return []
+    return [h for h in (state.get("hypotheses") or [])
+           if isinstance(h, dict) and h.get("status") == "open"]
+
+
+def _register_radar_ideas(ideas: List[Dict[str, Any]], now_iso: str) -> List[Dict[str, Any]]:
+    """Enregistre chaque idée comme hypothèse radar ``source: "coach"`` — même
+    forme d'hypothèse que ``radar._score_and_generate`` (id/created_at/status/
+    outcome/scored_at/move_pct), et respecte ``radar.MAX_OPEN`` : au-delà,
+    l'idée est rendue au client mais PAS enregistrée (``tracked: False``).
+
+    Best-effort de bout en bout : le module radar absent ou en panne (à
+    N'IMPORTE quelle étape — lecture, écriture) ne casse jamais la réponse ;
+    dans ce cas TOUTES les idées reviennent non trackées plutôt que de
+    prétendre à moitié un enregistrement qui n'a pas eu lieu.
+    """
+    if not ideas:
+        return []
+    try:
+        radar_module = _radar()
+    except ImportError:
+        return [dict(idea, tracked=False) for idea in ideas]
+
+    try:
+        state = radar_module.load_state()
+        hypotheses = state["hypotheses"]
+        open_count = sum(1 for h in hypotheses
+                         if isinstance(h, dict) and h.get("status") == "open")
+        out: List[Dict[str, Any]] = []
+        changed = False
+        for idea in ideas:
+            row = dict(idea)
+            if open_count >= radar_module.MAX_OPEN:
+                row["tracked"] = False
+                out.append(row)
+                continue
+            hypotheses.append({
+                "id": uuid.uuid4().hex[:8],
+                "created_at": now_iso,
+                "status": "open",
+                "outcome": None,
+                "scored_at": None,
+                "move_pct": None,
+                "source": "coach",
+                "thesis": idea.get("thesis") or "",
+                "chain": [],
+                "markets": [],
+                "tickers": [idea.get("ticker")] if idea.get("ticker") else [],
+                "direction": idea.get("direction") or "up",
+                "horizon_days": idea.get("horizon_days") or DEFAULT_IDEA_HORIZON_D,
+                "confidence": "moyenne",
+                "invalidation": "(non précisée)",
+            })
+            open_count += 1
+            changed = True
+            row["tracked"] = True
+            out.append(row)
+        if changed:
+            radar_module.save_state(state)
+        return out
+    except Exception as e:                       # noqa: BLE001 - best-effort
+        logger.warning("paper: idées non enregistrées au radar: %s", e)
+        return [dict(idea, tracked=False) for idea in ideas]
+
+
+@router.post("/ideas")
+def paper_ideas(data: IdeasPayload,
+                current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Idées de trade orientées RENTABILITÉ — le coach change de registre : il
+    ne fait plus le point, il propose (décision utilisateur).
+
+    Contexte assemblé COMME ``/coach/ask`` (portefeuille synchronisé, biais,
+    stats, watchlist) + les hypothèses radar déjà ouvertes (pour ne pas les
+    reproposer) + les événements récents (presse, dépôts 13F) — les trois
+    derniers en best-effort, modules importés paresseusement comme leurs
+    voisins ``/news``/``/radar``/``whales``.
+
+    Chaque idée valide (ticker Yahoo présent) est enregistrée comme
+    hypothèse RADAR ``source: "coach"`` — la file reste bornée par
+    ``radar.MAX_OPEN`` : au-delà, l'idée est rendue au client
+    (``tracked: false``) mais pas persistée. Panne LLM -> 502 propre.
+    """
+    username = current_user.username
+    portfolio = _load(username)
+    synced = _sync_coach(username, portfolio.to_dict(), force=True)
+    context = _coach_context(portfolio, synced["profile"], synced["biases"],
+                             synced["stats"])
+    context["watchlist"] = _watchlist_context(username)
+    context["radar_open_hypotheses"] = _open_radar_hypotheses()
+
+    news_events: List[Dict[str, Any]] = []
+    try:
+        news_events = list(_newswatch().recent_events(username) or [])
+    except ImportError:
+        pass
+    except Exception as e:                      # noqa: BLE001 - veille best-effort
+        logger.warning("paper: veille news indisponible pour /ideas: %s", e)
+    context["recent_news"] = news_events
+
+    filing_events: List[Dict[str, Any]] = []
+    try:
+        filing_events = list(_whales().recent_filing_events() or [])
+    except ImportError:
+        pass
+    except Exception as e:                      # noqa: BLE001 - dépôts best-effort
+        logger.warning("paper: dépôts 13F indisponibles pour /ideas: %s", e)
+    context["recent_filings"] = filing_events
+
+    lang = normalize_lang(data.lang)
+    try:
+        text = llm.suggest_ideas(context, lang)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)[:300])
+
+    ideas = _register_radar_ideas(_parse_ideas_json(text), _now_iso())
+    return {"text": text, "ideas": ideas}
+
+
+# --------------------------------------------------------------------------- #
+# Endpoints — watchlist (titres favoris à creuser)
+#
+# Fichier SÉPARÉ du portefeuille (cf. ``store.watchlist_path``) : le round-trip
+# par la dataclass ``models.Portfolio`` stripperait toute clé inconnue.
+# --------------------------------------------------------------------------- #
+
+@router.get("/watchlist")
+def paper_watchlist_list(current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """La watchlist de l'utilisateur, telle quelle."""
+    return {"symbols": store.load_watchlist(current_user.username)}
+
+
+@router.post("/watchlist")
+def paper_watchlist_add(data: WatchlistPayload,
+                        current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Ajoute un titre à la watchlist. Idempotent sur un doublon (pas d'erreur,
+    liste inchangée) — dédoublonnage CASE-INSENSITIVE."""
+    symbol = str(data.symbol or "").strip().upper()
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Symbole manquant.")
+
+    username = current_user.username
+    symbols = store.load_watchlist(username)
+    if any(str(row.get("symbol") or "").upper() == symbol for row in symbols):
+        return {"symbols": symbols}
+    if len(symbols) >= MAX_WATCHLIST:
+        raise HTTPException(status_code=400,
+                            detail="Liste de suivi pleine (%d titres maximum)."
+                                   % MAX_WATCHLIST)
+
+    try:
+        quote = quotes.get_quote(symbol)
+    except quotes.UnknownSymbol as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except quotes.QuoteError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    symbols.append({
+        "symbol": symbol,
+        "name": quote.get("name") or "",
+        "currency": quote.get("currency") or models.DEFAULT_CURRENCY,
+        "added_at": _now_iso(),
+    })
+    store.save_watchlist(username, symbols)
+    return {"symbols": symbols}
+
+
+@router.delete("/watchlist/{symbol}")
+def paper_watchlist_remove(symbol: str,
+                           current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Retire un titre de la watchlist. 404 s'il n'y était pas."""
+    username = current_user.username
+    wanted = str(symbol or "").strip().upper()
+    symbols = store.load_watchlist(username)
+    remaining = [row for row in symbols
+                if str(row.get("symbol") or "").upper() != wanted]
+    if len(remaining) == len(symbols):
+        raise HTTPException(status_code=404, detail="Titre absent de la liste de suivi.")
+    store.save_watchlist(username, remaining)
+    return {"symbols": remaining}

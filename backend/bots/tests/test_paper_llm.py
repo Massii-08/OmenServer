@@ -187,3 +187,66 @@ def test_write_analysis_returns_the_text():
     out = llm.write_analysis({"symbol": "X"},
                              run=runner(FakeProc(0, envelope("Fiche."))))
     assert out == "Fiche."
+
+
+# --------------------------------------------------------------------------- #
+# Langue de sortie — UNE table, quatre prompts
+#
+# Le prompt reste français (c'est l'instruction au modèle) ; seule la consigne
+# de langue de RÉPONSE change. Ces tests interdisent qu'un des quatre endpoints
+# reparte en français pendant que les trois autres suivent l'interface.
+# --------------------------------------------------------------------------- #
+
+def _all_prompts(lang):
+    return {
+        "coach": llm.build_coach_prompt({"stats": {}}, "ça va ?", lang),
+        "postmortem": llm.build_postmortem_prompt({"symbol": "X"}, {}, lang),
+        "analysis": llm.build_analysis_prompt({"symbol": "X"}, lang),
+        "ideas": llm.build_ideas_prompt({}, lang),
+    }
+
+
+@pytest.mark.parametrize("lang,needle", [("it", "italiano"), ("en", "English"),
+                                         ("fr", "français")])
+def test_every_prompt_carries_the_output_language(lang, needle):
+    for name, prompt in _all_prompts(lang).items():
+        assert "réponds exclusivement en %s" % needle in prompt, name
+
+
+@pytest.mark.parametrize("lang", ["", None, "de", "zz"])
+def test_an_unknown_language_falls_back_to_french(lang):
+    for name, prompt in _all_prompts(lang).items():
+        assert "réponds exclusivement en français" in prompt, name
+
+
+def test_the_italian_prompt_keeps_its_instructions_in_french():
+    """Traduire les CONSIGNES serait une régression : le modèle lit le français,
+    c'est la réponse qui doit être italienne."""
+    prompt = llm.build_postmortem_prompt({"symbol": "X"}, {}, "it")
+    assert "Structure ta réponse en quatre parties" in prompt
+    assert "n'inventes AUCUN chiffre" in prompt
+
+
+def test_the_analysis_prompt_no_longer_hardcodes_a_reading_language():
+    """« en français simple » contredisait la consigne italienne : le seul
+    endroit qui décide de la langue de sortie est la ligne de consigne."""
+    assert "en français simple" not in llm.build_analysis_prompt({}, "it")
+    assert "en mots simples" in llm.build_analysis_prompt({}, "it")
+
+
+def test_public_helpers_forward_the_language(monkeypatch):
+    seen = {}
+
+    def fake_claude(prompt, model=llm.DEFAULT_MODEL, timeout=llm.DEFAULT_TIMEOUT,
+                    run=None):
+        seen.setdefault("prompts", []).append(prompt)
+        return "risposta"
+
+    monkeypatch.setattr(llm, "_claude_text", fake_claude)
+    assert llm.ask_coach({}, "?", lang="it") == "risposta"
+    llm.write_postmortem({}, {}, lang="it")
+    llm.write_analysis({}, lang="it")
+    llm.suggest_ideas({}, lang="it")
+    assert len(seen["prompts"]) == 4
+    for prompt in seen["prompts"]:
+        assert "réponds exclusivement en italiano" in prompt

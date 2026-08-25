@@ -34,7 +34,14 @@ const PaperModule = {
     _p: null,                  // portefeuille normalisé
     _news: null,               // veille des positions : [{ts,symbol,title,link,sentiment}]
     _coach: null,              // {biases, summary}
-    _notes: null,              // carnet : [{name,size,modified}]
+    _notes: null,              // carnet PERSONNEL : [{name,size,modified}]
+    _community: null,          // carnets des autres : {users:[{user,notes:[...]}]}
+    _noteOwner: null,          // carnet affiche (null = le mien)
+    _contentLang: null,        // langue du contenu backend actuellement en cache
+    _ideas: null,              // {text, ideas:[{ticker,direction,horizon_days,thesis,tracked}]}
+    _watch: null,              // favoris : {symbols:[{symbol,name,currency,added_at}]}
+    _watchQuotes: {},          // cours des favoris (best-effort, un seul appel groupé)
+    _analysisPrefill: '',      // symbole poussé vers la fiche d'analyse
     _noteName: null,
     _noteBody: null,
     _lessons: null,
@@ -69,6 +76,7 @@ const PaperModule = {
 
     async render(container) {
         this.unload();                       // coupe tout timer d'un rendu précédent
+        this._syncContentLang();             // langue changée ? le contenu périmé part
         this._container = container;
         if (!container) return;
         container.innerHTML = this._shell();
@@ -76,6 +84,11 @@ const PaperModule = {
         this._renderTabs();
         await this._tickAndLoad();
         this._renderBody();
+        // L'onglet ouvert redemande SES données. Indispensable après un
+        // changement de langue : _syncContentLang vient de jeter le contenu
+        // périmé, et sans cet appel la vue resterait sur « Chargement… » —
+        // _loadTab ne tourne sinon qu'au clic sur un onglet. (Vu à l'écran.)
+        this._loadTab();
         // Un seul rendez-vous périodique : passer les ordres en attente puis
         // relire le portefeuille. Il ne réécrit le corps que si l'onglet
         // Portefeuille est affiché — sinon il effacerait un formulaire en cours
@@ -109,13 +122,6 @@ const PaperModule = {
         host.addEventListener('click', this._onClick);
         host.addEventListener('input', this._onInput);
         host.addEventListener('change', this._onInput);
-    },
-
-    back() {
-        this.unload();
-        if (typeof BotsModule !== 'undefined' && BotsModule.render) {
-            BotsModule.render(BotsModule._container);
-        }
     },
 
     // --------------------------------------------------------------- outillage
@@ -229,6 +235,38 @@ const PaperModule = {
         return this._label('paper.bias_' + c, c);
     },
 
+    // La langue de l'interface pilote aussi le CONTENU rendu par le backend
+    // (leçons, quiz, défis, coach). Repli fr côté serveur si indisponible.
+    _lang() {
+        try {
+            const l = (typeof Lang !== 'undefined' && Lang.current) ? String(Lang.current) : 'fr';
+            return (l === 'fr' || l === 'en' || l === 'it') ? l : 'fr';
+        } catch (e) { return 'fr'; }
+    },
+
+    _withLang(url) {
+        const u = String(url || '');
+        return u + (u.indexOf('?') >= 0 ? '&' : '?') + 'lang=' + encodeURIComponent(this._lang());
+    },
+
+    // Changer de langue passe par Lang.set, qui re-navigue donc re-rend ce
+    // module : c'est ICI qu'on jette le contenu chargé dans l'ancienne langue.
+    // Le rechargement se fait au prochain rendu de l'onglet concerné — pas de
+    // re-fetch à chaud de tout, et l'utilisateur ne voit jamais de texte périmé.
+    _syncContentLang() {
+        const l = this._lang();
+        if (this._contentLang === l) return;
+        this._contentLang = l;
+        this._lessons = null;
+        this._arena = null;
+        this._coach = null;
+        this._quizResult = null;
+        this._answer = null;
+        this._analysis = null;
+        this._postmortem = null;
+        this._ideas = null;
+    },
+
     // Un href ne part JAMAIS dans le DOM sans être vérifié : seuls http(s)
     // passent (une URL vient du flux de presse, donc de l'extérieur).
     _safeUrl(u) {
@@ -269,9 +307,14 @@ const PaperModule = {
           '</div>' +
           '<div style="font-size:14px;line-height:1.55;color:var(--text-muted);margin-bottom:10px;">' +
             esc(Lang.t('paper.desc')) + '</div>' +
-          '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">' +
             '<button class="btn btn-ghost" data-paper-act="refresh">' + esc(Lang.t('paper.refresh')) + '</button>' +
-            '<button class="btn btn-ghost" data-paper-act="back">' + esc(Lang.t('paper.back')) + '</button>' +
+            // Trading est un module de PREMIER RANG : il n'y a plus de vue
+            // parente ou revenir. A la place, l'acces au bot d'alertes.
+            '<a class="btn btn-ghost btn-sm" href="https://t.me/OracleOmen_bot" ' +
+                'target="_blank" rel="noopener noreferrer" style="text-decoration:none;" ' +
+                'title="' + esc(Lang.t('paper.telegram_hint')) + '">' +
+              esc(Lang.t('paper.telegram_btn')) + '</a>' +
           '</div>' +
         '</div>' +
         // Rappel permanent : argent fictif, cours différés, aucun conseil.
@@ -359,6 +402,7 @@ const PaperModule = {
         await this._tick();
         await this._loadPortfolio();
         await this._loadNews();
+        await this._loadWatchlist();
     },
 
     // Veille de presse sur les positions détenues. Les alertes partent déjà sur
@@ -514,6 +558,7 @@ const PaperModule = {
         await this._tick();
         await this._loadPortfolio();
         await this._loadNews();
+        await this._loadWatchlist();
         // On ne réécrit le corps que là où aucune saisie n'est en cours.
         if (this._tab === 'portfolio') this._renderBody();
     },
@@ -542,18 +587,19 @@ const PaperModule = {
             return;
         }
         if (this._tab === 'coach' && !this._coach) {
-            this._coach = await this._get('/api/paper/coach') || {};
+            this._coach = await this._get(this._withLang('/api/paper/coach')) || {};
             this._notes = await this._get('/api/paper/coach/notes');
+            this._community = await this._get('/api/paper/community');
             if (this._tab === 'coach') this._renderBody();
             return;
         }
         if (this._tab === 'lessons' && !this._lessons) {
-            this._lessons = await this._get('/api/paper/lessons') || {};
+            this._lessons = await this._get(this._withLang('/api/paper/lessons')) || {};
             if (this._tab === 'lessons') this._renderBody();
             return;
         }
         if (this._tab === 'arena' && !this._arena) {
-            this._arena = await this._get('/api/paper/arena') || {};
+            this._arena = await this._get(this._withLang('/api/paper/arena')) || {};
             if (this._tab === 'arena') this._renderBody();
         }
     },
@@ -582,12 +628,13 @@ const PaperModule = {
         await this._tickAndLoad();
         // Un rafraîchissement demandé À LA MAIN relit aussi l'onglet courant.
         if (this._tab === 'coach') {
-            this._coach = await this._get('/api/paper/coach') || {};
+            this._coach = await this._get(this._withLang('/api/paper/coach')) || {};
             this._notes = await this._get('/api/paper/coach/notes');
+            this._community = await this._get('/api/paper/community');
         } else if (this._tab === 'lessons') {
-            this._lessons = await this._get('/api/paper/lessons') || {};
+            this._lessons = await this._get(this._withLang('/api/paper/lessons')) || {};
         } else if (this._tab === 'arena') {
-            this._arena = await this._get('/api/paper/arena') || {};
+            this._arena = await this._get(this._withLang('/api/paper/arena')) || {};
         } else if (this._tab === 'whales') {
             this._whales = await this._get('/api/paper/whales') || {};
             this._whaleEvents = await this._get('/api/paper/whales/events');
@@ -606,8 +653,10 @@ const PaperModule = {
 
     _viewPortfolio() {
         if (!this._p) return this._card(this._muted(Lang.t('paper.no_data')));
+        // « Favoris » vit SOUS les positions : d'abord ce que je détiens,
+        // ensuite ce que je surveille, puis ce que j'ai commandé.
         return this._statCards() + this._equityCard() + this._positionsCard() +
-            this._ordersCard() + this._newsCard() + this._resetCard();
+            this._watchlistCard() + this._ordersCard() + this._newsCard() + this._resetCard();
     },
 
     // --- Actualités des positions -------------------------------------------
@@ -649,6 +698,8 @@ const PaperModule = {
                 '<span class="badge ' + s.cls + '">' + esc(Lang.t(s.key)) + '</span>' +
                 '<span style="' + this._mono + 'font-size:13px;font-weight:600;color:' +
                   s.color + ';">' + esc((e && e.symbol) || '') + '</span>' +
+                (this._isWatched(e && e.symbol)
+                  ? '<span class="badge">' + esc(Lang.t('paper.watchlist_title')) + '</span>' : '') +
                 '<span style="flex:1 1 260px;min-width:0;font-size:14px;line-height:1.45;">' +
                   esc((e && e.title) || '') + '</span>' +
                 '<span style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
@@ -842,6 +893,133 @@ const PaperModule = {
             ], body));
     },
 
+
+    // --- Favoris -------------------------------------------------------------
+    //
+    // Ce que l'utilisateur SURVEILLE, par opposition à ce qu'il détient. Le
+    // backend s'en sert pour creuser les news et nourrir le coach ; ici on ne
+    // fait que la tenir et offrir les deux raccourcis qui comptent (analyser,
+    // trader). Les cours sont un CONFORT : un échec de /quotes laisse la liste
+    // lisible plutôt que de la faire disparaître.
+
+    _watchRows() {
+        const w = this._watch;
+        if (Array.isArray(w)) return w;
+        if (w && Array.isArray(w.symbols)) return w.symbols;
+        return [];
+    },
+
+    _isWatched(symbol) {
+        const sym = String(symbol || '');
+        if (!sym) return false;
+        const rows = this._watchRows();
+        for (let i = 0; i < rows.length; i++) {
+            if (String(rows[i] && rows[i].symbol) === sym) return true;
+        }
+        return false;
+    },
+
+    async _loadWatchlist() {
+        const d = await this._get('/api/paper/watchlist');
+        if (d) this._watch = d;
+        const rows = this._watchRows();
+        if (!rows.length) { this._watchQuotes = {}; return; }
+        const syms = rows.map((r) => String((r && r.symbol) || '')).filter(Boolean);
+        if (!syms.length) return;
+        // Un seul appel groupé pour toute la liste.
+        const q = await this._get('/api/paper/quotes?symbols=' + encodeURIComponent(syms.join(',')));
+        this._watchQuotes = (q && typeof q === 'object') ? q : {};
+    },
+
+    _watchlistCard() {
+        const rows = this._watchRows();
+        if (!rows.length) {
+            return this._card(this._head(Lang.t('paper.watchlist_title')) +
+                this._muted(Lang.t('paper.watchlist_empty')));
+        }
+        const td = this._td();
+        const body = rows.map((r) => {
+            const sym = String((r && r.symbol) || '');
+            const q = this._watchQuotes[sym] || null;
+            const chg = q ? this._n(q.change_pct) : null;
+            return '<tr>' +
+                '<td style="' + td + this._mono + 'font-weight:600;">' + esc(sym) + '</td>' +
+                '<td style="' + td + '">' + esc((r && r.name) || '') + '</td>' +
+                '<td style="' + td + this._mono + '">' +
+                  esc(q ? this._money(q.price, q.currency || (r && r.currency)) : '—') + '</td>' +
+                '<td style="' + td + this._mono + 'color:' + this._color(chg) + ';">' +
+                  esc(chg === null ? '—' : this._signed(chg, 2, '%')) + '</td>' +
+                '<td style="' + td + '">' +
+                  '<span style="display:flex;gap:6px;flex-wrap:wrap;">' +
+                    '<button class="btn btn-sm" data-paper-act="watch-analyze" ' +
+                        'data-sym="' + esc(sym) + '">' + esc(Lang.t('paper.watchlist_analyze')) + '</button>' +
+                    '<button class="btn btn-sm" data-paper-act="watch-trade" ' +
+                        'data-sym="' + esc(sym) + '">' + esc(Lang.t('paper.watchlist_trade')) + '</button>' +
+                    '<button class="btn btn-ghost btn-sm" data-paper-act="watch-remove" ' +
+                        'data-sym="' + esc(sym) + '" style="color:var(--danger);">' +
+                      esc(Lang.t('paper.watchlist_remove')) + '</button>' +
+                  '</span>' +
+                '</td>' +
+            '</tr>';
+        }).join('');
+        return this._card(this._head(Lang.t('paper.watchlist_title')) +
+            this._table([
+                Lang.t('paper.col_symbol'), Lang.t('paper.watchlist_name'),
+                Lang.t('paper.col_last'), Lang.t('paper.watchlist_change'),
+                Lang.t('paper.col_actions'),
+            ], body));
+    },
+
+    async addWatch(symbol) {
+        const sym = String(symbol || '');
+        if (!sym || this._isWatched(sym)) return;
+        let r = null;
+        try {
+            r = await Auth.apiCall('/api/paper/watchlist',
+                { method: 'POST', body: JSON.stringify({ symbol: sym }) });
+        } catch (e) { r = null; }
+        if (!r || !r.ok) {
+            // 400 = la liste est pleine. On le DIT, on ne laisse pas le bouton muet.
+            this._toast('warn', (r && r.status === 400)
+                ? Lang.t('paper.watchlist_full') : await this._detail(r));
+            return;
+        }
+        await this._loadWatchlist();
+        this._renderBody();
+    },
+
+    async removeWatch(symbol) {
+        const sym = String(symbol || '');
+        if (!sym) return;
+        let r = null;
+        try {
+            r = await Auth.apiCall('/api/paper/watchlist/' + encodeURIComponent(sym),
+                { method: 'DELETE' });
+        } catch (e) { r = null; }
+        if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
+        await this._loadWatchlist();
+        this._renderBody();
+    },
+
+    // Raccourci « Trader » : ouvre Nouveau trade sur ce titre, rien de plus.
+    async openTrade(symbol) {
+        if (!symbol) return;
+        this._tab = 'trade';
+        this._renderTabs();
+        this._renderBody();
+        await this.pick(symbol, '', '', '');
+    },
+
+    // Raccourci « Analyser » : bascule sur le Coach, champ symbole prérempli.
+    analyzeSymbol(symbol) {
+        if (!symbol) return;
+        this._analysisPrefill = String(symbol);
+        this._tab = 'coach';
+        this._renderTabs();
+        this._renderBody();
+        this._loadTab();
+    },
+
     async closePosition(symbol) {
         if (!symbol) return;
         let r = null;
@@ -903,6 +1081,11 @@ const PaperModule = {
                         (x.currency ? ' · ' + esc(String(x.currency)) : '') + '</div>' +
                     '</div>' +
                     '<span class="badge">' + esc(Lang.t('paper.pick')) + '</span>' +
+                    // Déjà suivi ? Le bouton reste VISIBLE mais désactivé — il
+                    // répond ainsi à la question « est-ce que je le suis déjà ? ».
+                    '<button class="btn btn-ghost btn-sm" data-paper-act="watch-add" ' +
+                        'data-sym="' + esc(sym) + '"' + (this._isWatched(sym) ? ' disabled' : '') + '>' +
+                      esc(Lang.t('paper.watchlist_add')) + '</button>' +
                 '</div>';
             }).join('') + '</div>';
         }
@@ -1223,7 +1406,7 @@ const PaperModule = {
     _viewCoach() {
         if (!this._coach) return this._card(this._muted(Lang.t('paper.loading')));
         return this._biasesCard() + this._summaryCard() + this._askCard() +
-            this._analysisCard() + this._notesCard();
+            this._ideasCard() + this._analysisCard() + this._notesCard();
     },
 
     _biasList() {
@@ -1325,6 +1508,81 @@ const PaperModule = {
         );
     },
 
+
+    // --- Idées du coach ------------------------------------------------------
+    //
+    // Le coach ne dit toujours pas quoi acheter : il propose des paris RAISONNÉS,
+    // que le radar note ensuite à l'échéance. La ligne d'honnêteté est
+    // permanente, pas un pied de page qu'on oublie de lire.
+
+    // La direction arrive du backend DANS LA LANGUE demandée (cf. _withLang) :
+    // on ne la retraduit pas, on la colore.
+    _direction(v) {
+        const d = String(v == null ? '' : v).toLowerCase();
+        if (d === 'down' || d === 'baisse' || d === 'ribasso' || d === 'short') {
+            return 'danger';
+        }
+        if (d === 'up' || d === 'hausse' || d === 'rialzo' || d === 'long') {
+            return 'online';
+        }
+        return '';
+    },
+
+    _ideasCard() {
+        const d = this._ideas;
+        const rows = (d && Array.isArray(d.ideas)) ? d.ideas : [];
+        const cards = rows.map((it) => {
+            const ticker = String((it && it.ticker) || '');
+            const horizon = this._n(it && it.horizon_days);
+            const tracked = !!(it && it.tracked);
+            return '<div class="row" style="display:block;padding:10px 12px;">' +
+                '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
+                  // Le ticker EST le raccourci : un clic ouvre Nouveau trade dessus.
+                  (ticker
+                    ? '<button class="btn btn-ghost btn-sm" data-paper-act="idea-pick" ' +
+                          'data-sym="' + esc(ticker) + '" style="' + this._mono +
+                          'font-weight:600;">' + esc(ticker) + '</button>'
+                    : '') +
+                  (it && it.direction
+                    ? '<span class="badge ' + this._direction(it.direction) + '">' +
+                      esc(String(it.direction)) + '</span>' : '') +
+                  (horizon === null ? '' :
+                    '<span style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
+                    esc(Lang.t('paper.radar_horizon') + ' ' + this._num(horizon, 0) + ' ' +
+                        Lang.t('paper.radar_days')) + '</span>') +
+                  '<span class="badge' + (tracked ? ' online' : '') + '" style="margin-left:auto;">' +
+                    esc(tracked ? Lang.t('paper.ideas_tracked') : Lang.t('paper.ideas_untracked')) +
+                  '</span>' +
+                '</div>' +
+                (it && it.thesis
+                  ? '<div style="font-size:14px;line-height:1.55;margin-top:6px;">' +
+                    esc(String(it.thesis)) + '</div>' : '') +
+            '</div>';
+        }).join('');
+        return this._card(
+            this._head(Lang.t('paper.ideas_title')) +
+            '<div style="font-size:13px;color:var(--text-muted);line-height:1.5;margin-bottom:10px;">' +
+              esc(Lang.t('paper.ideas_hint')) + '</div>' +
+            '<button class="btn btn-primary" data-paper-act="ideas">' +
+              esc(Lang.t('paper.ideas_btn')) + '</button>' +
+            ((d && d.text) ? this._panel(Lang.t('paper.ideas_title'), String(d.text)) : '') +
+            (cards ? '<div class="row-list" style="margin-top:12px;">' + cards + '</div>' : '')
+        );
+    },
+
+    async askIdeas(btn) {
+        await this._llm(btn, '/api/paper/ideas', { lang: this._lang() }, (d) => {
+            this._ideas = (d && typeof d === 'object') ? d : null;
+            if (this._tab === 'coach') this._renderBody();
+        });
+    },
+
+    // Depuis une idée : on ouvre Nouveau trade sur ce titre. C'est LUI qui
+    // décide ensuite — le module ne passe aucun ordre tout seul.
+    async useIdea(ticker) {
+        await this.openTrade(ticker);
+    },
+
     _analysisCard() {
         return this._card(
             this._head(Lang.t('paper.analysis_title'), Lang.t('paper.analysis_hint')) +
@@ -1332,10 +1590,13 @@ const PaperModule = {
               '<div style="flex:0 1 220px;">' +
                 '<label class="form-label">' + esc(Lang.t('paper.col_symbol')) + '</label>' +
                 '<input id="paper-analysis-sym" class="form-input" autocomplete="off" ' +
+                     'value="' + esc(this._analysisPrefill || '') + '" ' +
                      'placeholder="' + esc(Lang.t('paper.analysis_symbol_ph')) + '" />' +
               '</div>' +
               '<button class="btn btn-primary" data-paper-act="analysis">' +
                 esc(Lang.t('paper.analysis_btn')) + '</button>' +
+              '<button class="btn btn-ghost" data-paper-act="watch-add-analysis">' +
+                esc(Lang.t('paper.watchlist_add')) + '</button>' +
             '</div>' +
             // Le graphique passe AU-DESSUS du texte : on lit la courbe, puis le commentaire.
             ((this._analysis && this._analysisSymbol)
@@ -1351,7 +1612,75 @@ const PaperModule = {
     // Le bloc mono .console du design system fait exactement ce qu'il faut (pre-wrap,
     // fond bleu-nuit invariant au mode clair).
 
+    // Les carnets et les discussions coach sont PARTAGES entre traders ; l'argent
+    // et les positions restent prives. La carte a donc deux niveaux : a qui, puis
+    // quelle note. Le carnet d'un autre est en lecture seule (le backend aussi).
+    _me() {
+        try {
+            const u = (typeof Auth !== 'undefined' && Auth.getUser) ? Auth.getUser() : null;
+            return (u && u.username) ? String(u.username) : '';
+        } catch (e) { return ''; }
+    },
+
+    // Moi d'abord — c'est mon carnet que j'ouvre le plus souvent —, les autres
+    // ensuite dans l'ordre rendu par le backend.
+    _communityUsers() {
+        const c = this._community;
+        const raw = (c && Array.isArray(c.users)) ? c.users
+            : (Array.isArray(c) ? c : []);
+        const me = this._me();
+        const out = [];
+        const seen = {};
+        raw.forEach((row) => {
+            const name = String((row && row.user) || '');
+            if (!name || seen[name]) return;
+            seen[name] = true;
+            out.push({ user: name, notes: (row && Array.isArray(row.notes)) ? row.notes : [] });
+        });
+        // Mon carnet existe meme si /community n'a pas repondu.
+        if (me && !seen[me]) out.unshift({ user: me, notes: this._ownNotes() });
+        out.sort((a, b) => (a.user === me ? -1 : (b.user === me ? 1 : 0)));
+        return out;
+    },
+
+    _ownNotes() {
+        const n = this._notes;
+        if (Array.isArray(n)) return n;
+        if (n && Array.isArray(n.notes)) return n.notes;
+        return [];
+    },
+
+    _currentOwner() { return this._noteOwner || this._me(); },
+
+    // Pour MOI, la liste fraiche de /coach/notes fait foi ; pour les autres,
+    // celle que /community a livree.
+    _noteList() {
+        const owner = this._currentOwner();
+        if (owner && owner === this._me()) {
+            const own = this._ownNotes();
+            if (own.length) return own;
+        }
+        const rows = this._communityUsers();
+        for (let i = 0; i < rows.length; i++) {
+            if (rows[i].user === owner) return rows[i].notes;
+        }
+        return owner === this._me() ? this._ownNotes() : [];
+    },
+
     _notesCard() {
+        const me = this._me();
+        const owner = this._currentOwner();
+        const users = this._communityUsers();
+        const pills = users.length > 1
+            ? '<div class="paper-tabs" style="margin-bottom:10px;">' + users.map((x) =>
+                '<button class="paper-tab' + (x.user === owner ? ' active' : '') + '" ' +
+                    'data-paper-act="note-owner" data-owner="' + esc(x.user) + '">' +
+                  esc(x.user) +
+                  (x.user === me ? ' <span style="font-size:11px;opacity:.75;">' +
+                      esc(Lang.t('paper.community_me')) + '</span>' : '') +
+                '</button>'
+              ).join('') + '</div>'
+            : '';
         const rows = this._noteList();
         const list = rows.length
             ? '<div class="row-list">' + rows.map((n) => {
@@ -1373,32 +1702,40 @@ const PaperModule = {
             : this._muted(Lang.t('paper.notes_empty'));
         const body = (this._noteName && this._noteBody !== null)
             ? '<div style="margin-top:12px;">' +
-                '<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px;">' +
+                '<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px;' +
+                     'flex-wrap:wrap;">' +
                   '<span style="font-size:13px;' + this._mono + 'color:var(--text-muted);">' +
-                    esc(this._noteName) + '</span>' +
+                    esc(owner) + ' · ' + esc(this._noteName) + '</span>' +
+                  (owner === me ? '' :
+                    '<span class="badge">' + esc(Lang.t('paper.community_readonly')) + '</span>') +
                   '<button class="btn btn-ghost btn-sm" data-paper-act="close-note" ' +
                           'style="margin-left:auto;">' + esc(Lang.t('paper.close')) + '</button>' +
                 '</div>' +
                 '<pre class="console" style="margin:0;">' + esc(this._noteBody) + '</pre>' +
               '</div>'
             : '';
-        return this._card(this._head(Lang.t('paper.notes_title'), Lang.t('paper.notes_hint')) +
-            list + body);
-    },
-
-    _noteList() {
-        const n = this._notes;
-        if (Array.isArray(n)) return n;
-        if (n && Array.isArray(n.notes)) return n.notes;
-        return [];
+        return this._card(this._head(Lang.t('paper.community_title'),
+                Lang.t('paper.community_hint')) + pills + list + body);
     },
 
     // Le nom peut contenir des « / » (« Biais/revenge_trade.md ») : on encode
     // CHAQUE segment et on rejoint avec de vrais « / » — un %2F serait décodé
     // par le serveur ASGI avant le routage et ne matcherait plus la route.
-    _noteUrl(name) {
-        const parts = String(name || '').split('/').filter((s) => s !== '');
-        return '/api/paper/coach/notes/' + parts.map(encodeURIComponent).join('/');
+    _noteUrl(name, owner) {
+        const parts = String(name || '').split('/').filter((x) => x !== '');
+        const path = parts.map(encodeURIComponent).join('/');
+        if (owner && owner !== this._me()) {
+            return '/api/paper/community/' + encodeURIComponent(owner) + '/' + path;
+        }
+        return '/api/paper/coach/notes/' + path;
+    },
+
+    selectNoteOwner(owner) {
+        if (!owner) return;
+        this._noteOwner = String(owner);
+        this._noteName = null;
+        this._noteBody = null;
+        this._renderBody();
     },
 
     async openNote(name) {
@@ -1406,7 +1743,7 @@ const PaperModule = {
         if (this._noteName === name && this._noteBody !== null) {
             this._noteName = null; this._noteBody = null; this._renderBody(); return;
         }
-        const d = await this._get(this._noteUrl(name));
+        const d = await this._get(this._noteUrl(name, this._currentOwner()));
         if (!d) { this._toast('error', Lang.t('paper.error')); return; }
         this._noteName = String(d.name || name);
         this._noteBody = String(this._pickField(d, ['markdown', 'content', 'text']) || '');
@@ -1552,7 +1889,7 @@ const PaperModule = {
         let r = null;
         try {
             r = await Auth.apiCall('/api/paper/lessons/' + encodeURIComponent(String(id)) + '/quiz',
-                { method: 'POST', body: JSON.stringify({ answers: answers }) });
+                { method: 'POST', body: JSON.stringify({ answers: answers, lang: this._lang() }) });
         } catch (e) { r = null; }
         if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
         let d = null;
@@ -1561,7 +1898,7 @@ const PaperModule = {
         this._toast(this._quizResult.passed ? 'success' : 'warn',
             this._quizResult.passed ? Lang.t('paper.quiz_passed') : Lang.t('paper.quiz_failed'));
         // La progression vit dans le profil coach : on relit le catalogue.
-        this._lessons = await this._get('/api/paper/lessons') || this._lessons;
+        this._lessons = await this._get(this._withLang('/api/paper/lessons')) || this._lessons;
         if (this._tab === 'lessons') this._renderBody();
     },
 
@@ -1623,7 +1960,7 @@ const PaperModule = {
         catch (e) { r = null; }
         if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
         this._toast('success', Lang.t('paper.arena_accepted'));
-        this._arena = await this._get('/api/paper/arena') || this._arena;
+        this._arena = await this._get(this._withLang('/api/paper/arena')) || this._arena;
         if (this._tab === 'arena') this._renderBody();
     },
 
@@ -2686,7 +3023,7 @@ const PaperModule = {
     async ask(btn) {
         const el = document.getElementById('paper-question');
         const q = el ? String(el.value || '').trim() : '';
-        await this._llm(btn, '/api/paper/coach/ask', { question: q }, (d) => {
+        await this._llm(btn, '/api/paper/coach/ask', { question: q, lang: this._lang() }, (d) => {
             this._answer = this._llmText(d) || Lang.t('paper.no_data');
             if (this._tab === 'coach') this._renderBody();
         });
@@ -2697,14 +3034,15 @@ const PaperModule = {
         const sym = el ? String(el.value || '').trim() : '';
         if (!sym) { this._toast('warn', Lang.t('paper.symbol_required')); return; }
         this._analysisSymbol = sym;
-        await this._llm(btn, '/api/paper/analysis', { symbol: sym }, (d) => {
+        await this._llm(btn, '/api/paper/analysis', { symbol: sym, lang: this._lang() }, (d) => {
             this._analysis = this._llmText(d) || Lang.t('paper.no_data');
             if (this._tab === 'coach') this._renderBody();
         });
     },
 
     async postmortem(btn, idx) {
-        const body = (idx === null || idx === undefined) ? {} : { trade_index: idx };
+        const body = { lang: this._lang() };
+        if (idx !== null && idx !== undefined) body.trade_index = idx;
         await this._llm(btn, '/api/paper/postmortem', body, (d) => {
             this._postmortem = this._llmText(d) || Lang.t('paper.no_data');
             if (this._tab === 'journal') this._renderBody();
@@ -2724,7 +3062,6 @@ const PaperModule = {
         if (!el) return;
         const act = el.getAttribute('data-paper-act');
         ev.preventDefault();
-        if (act === 'back') { this.back(); return; }
         if (act === 'refresh') { this.refresh(); return; }
         if (act === 'pick') {
             this.pick(el.getAttribute('data-sym'), el.getAttribute('data-name'),
@@ -2749,6 +3086,18 @@ const PaperModule = {
         }
         if (act === 'ask') { this.ask(el); return; }
         if (act === 'analysis') { this.analysis(el); return; }
+        if (act === 'ideas') { this.askIdeas(el); return; }
+        if (act === 'idea-pick') { this.useIdea(el.getAttribute('data-sym')); return; }
+        if (act === 'watch-add') { this.addWatch(el.getAttribute('data-sym')); return; }
+        if (act === 'watch-add-analysis') {
+            const inp = document.getElementById('paper-analysis-sym');
+            this.addWatch(inp ? String(inp.value || '').trim() : '');
+            return;
+        }
+        if (act === 'watch-remove') { this.removeWatch(el.getAttribute('data-sym')); return; }
+        if (act === 'watch-analyze') { this.analyzeSymbol(el.getAttribute('data-sym')); return; }
+        if (act === 'watch-trade') { this.openTrade(el.getAttribute('data-sym')); return; }
+        if (act === 'note-owner') { this.selectNoteOwner(el.getAttribute('data-owner')); return; }
         if (act === 'open-note') { this.openNote(el.getAttribute('data-note')); return; }
         if (act === 'close-note') { this._noteName = null; this._noteBody = null; this._renderBody(); return; }
         if (act === 'open-lesson') {

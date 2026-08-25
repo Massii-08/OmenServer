@@ -1,0 +1,44 @@
+[
+ {
+  "id": "concentration",
+  "title": "Tutto su un cavallo solo",
+  "desc": "Questa settimana: apri UNA posizione che pesi almeno il 50 % del tuo portafoglio, con uno stop pianificato, e tienila per almeno 3 giorni di borsa. Obiettivo: sentire cosa fa la concentrazione al tuo sonno — e perché il sizing esiste.",
+  "check": "max_single_trade_notional_pct>=50",
+  "difficulty": "warn"
+ },
+ {
+  "id": "earnings",
+  "title": "Attraversare una trimestrale",
+  "desc": "Trova una società che pubblica i risultati questa settimana (la scheda di analisi ti dà la data se disponibile, altrimenti cerca «earnings calendar»). Prendi posizione PRIMA della pubblicazione e tienila durante l'annuncio. Obiettivo: vivere un gap sul serio — in tutti e due i sensi.",
+  "check": "n_trades_week>=1",
+  "difficulty": "hot"
+ },
+ {
+  "id": "short",
+  "title": "Primo short",
+  "desc": "Vendi allo scoperto un titolo che la tua tesi giudica sopravvalutato (posizione short), stop obbligatorio sopra l'ingresso, rischio ≤ 2 %. Obiettivo: capire perché lo short ha un rischio asimmetrico (perdita teoricamente illimitata) e perché lì lo stop non è negoziabile.",
+  "check": "has_short_trade_week",
+  "difficulty": "hot"
+ },
+ {
+  "id": "drawdown",
+  "title": "Tenere il piano quando sei in rosso",
+  "desc": "Scegli una posizione già aperta e in perdita NON stoppata (o aprine una): scrivi un piano (livello di invalidazione + obiettivo) e tieni il piano per tutta la settimana — vietato vendere per panico prima dello stop, vietato togliere lo stop. Obiettivo: separare «dolore» da «invalidazione».",
+  "check": "n_trades_week>=0",
+  "difficulty": "warn"
+ },
+ {
+  "id": "three_r",
+  "title": "A caccia del 3R",
+  "desc": "Questa settimana prendi SOLO trade il cui obiettivo rende almeno 3× il rischio (target ≥ ingresso + 3×(ingresso−stop)). Non importa se vincono: lo scopo è imparare a RIFIUTARE i trade mediocri. Zero trade è un successo se non c'era niente che valesse 3R.",
+  "check": "n_trades_week>=0",
+  "difficulty": "info"
+ },
+ {
+  "id": "fee_diet",
+  "title": "Dieta di commissioni",
+  "desc": "Massimo 3 transazioni questa settimana, tutte giustificate da una tesi di ≥ 200 caratteri. Obiettivo: sentire che aspettare è una posizione. Confronta i costi della settimana con la tua media.",
+  "check": "n_trades_week<=3",
+  "difficulty": "info"
+ }
+]

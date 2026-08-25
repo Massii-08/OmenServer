@@ -662,3 +662,156 @@ def test_note_entries_return_plain_strings():
     assert isinstance(coach.bias_note_entry(bias, "2026-08-24T09:00:00"), str)
     assert isinstance(coach.resolution_note_entry("no_stop", "2026-08-24T09:00:00"), str)
     assert isinstance(coach.journal_entry("t", "b", "2026-08-24T09:00:00"), str)
+
+
+# --------------------------------------------------------------------------- #
+# Langue des preuves (le simulateur parle la langue de l'interface)
+#
+# Ce que ces tests verrouillent : la langue change les PHRASES et RIEN d'autre.
+# Le jour où quelqu'un traduit un gabarit et déplace un seuil par mégarde, ce
+# sont ces tests qui le disent — pas l'utilisateur italophone.
+# --------------------------------------------------------------------------- #
+
+def _evidence_text(biases, code):
+    hit = [b for b in biases if b["code"] == code]
+    assert len(hit) == 1, "biais %s absent : %s" % (code, codes_of(biases))
+    return "\n".join(hit[0]["evidence"])
+
+
+def test_every_template_exists_in_every_language():
+    """Un gabarit manquant lèverait un KeyError en pleine réponse HTTP."""
+    reference = set(coach._TEXTS["fr"])
+    for lang, table in coach._TEXTS.items():
+        assert set(table) == reference, "gabarits divergents pour %r" % lang
+
+
+def test_no_stop_evidence_is_italian_when_asked():
+    trades = [mk_trade(symbol="T%d" % i, planned_stop=(None if i < 2 else 90.0))
+              for i in range(5)]
+    text = _evidence_text(coach.detect_biases(trades, [], 10000.0, lang="it"),
+                          "no_stop")
+    assert "trade chiusi senza stop pianificato" in text
+    assert "nessuno stop pianificato" in text
+    assert "planifié" not in text
+
+
+def test_oversized_evidence_is_italian_when_asked():
+    orders = [mk_order(symbol="ORD", risk_chf=300.0)]
+    text = _evidence_text(coach.detect_biases([], orders, 10000.0, lang="it"),
+                          "oversized")
+    assert "Ordine ORD" in text
+    assert "rischio pianificato" in text and "del capitale" in text
+
+
+def test_fee_bleed_and_no_thesis_evidence_are_italian():
+    trades = [mk_trade(symbol="T%d" % i, fees_chf=30.0, pnl_chf=10.0,
+                       thesis=THESIS_SHORT) for i in range(5)]
+    biases = coach.detect_biases(trades, [], 10000.0, lang="it")
+    fees = _evidence_text(biases, "fee_bleed")
+    assert "Costi cumulati" in fees and "del P&L lordo" in fees
+    assert "di commissioni/bollo" in fees
+    thesis = _evidence_text(biases, "no_thesis")
+    assert "senza tesi" in thesis and "tesi assente o troppo corta" in thesis
+
+
+def test_revenge_trade_evidence_is_italian():
+    loser = mk_trade(symbol="LOSS", pnl_chf=-50.0, qty=5,
+                     entry_at="2026-06-01T09:00:00", exit_at="2026-06-01T10:00:00")
+    revenge = mk_trade(symbol="REV", qty=50,
+                       entry_at="2026-06-01T10:10:00", exit_at="2026-06-01T11:00:00")
+    text = _evidence_text(coach.detect_biases([loser, revenge], [], 10000.0, lang="it"),
+                          "revenge_trade")
+    assert "revenge trade rilevati" in text
+    assert "dopo una perdita su LOSS" in text and "size nozionale maggiore" in text
+
+
+def test_let_losers_run_evidence_is_italian_including_the_day_unit():
+    """Le suffixe de durée fait partie de la langue : 'j' en français, 'g' en
+    italien (giorni) — un détail, mais c'est le genre de détail qui trahit une
+    traduction faite à moitié."""
+    winners = [mk_trade(symbol="W%d" % i, pnl_chf=10.0,
+                        entry_at="2026-06-01T09:00:00",
+                        exit_at="2026-06-01T10:00:00") for i in range(3)]
+    losers = [mk_trade(symbol="L%d" % i, pnl_chf=-10.0,
+                       entry_at="2026-06-01T09:00:00",
+                       exit_at="2026-06-06T09:00:00") for i in range(3)]
+    text = _evidence_text(coach.detect_biases(winners + losers, [], 10000.0, lang="it"),
+                          "let_losers_run")
+    assert "Durata media di detenzione dei perdenti" in text
+    assert "in perdita" in text
+    assert "5.0g" in text and "5.0j" not in text
+
+
+def test_cut_winners_and_overtrading_evidence_are_italian():
+    winners = [mk_trade(symbol="W%d" % i, r_multiple=0.5, pnl_chf=10.0)
+               for i in range(3)]
+    losers = [mk_trade(symbol="L%d" % i, r_multiple=-2.0, pnl_chf=-10.0)
+              for i in range(3)]
+    text = _evidence_text(coach.detect_biases(winners + losers, [], 10000.0, lang="it"),
+                          "cut_winners_early")
+    assert "R media dei trade vincenti" in text and "chiuso a +" in text
+
+    year = datetime.now().year
+    heavy = [mk_trade(symbol="H%d" % i, qty=100, entry_price=30.0,
+                      exit_at="%d-06-01T12:00:00" % year) for i in range(9)]
+    volume = _evidence_text(coach.detect_biases(heavy, [], 10000.0, lang="it"),
+                            "overtrading")
+    assert "Volume annuo stimato" in volume and "il capitale iniziale" in volume
+
+
+def test_the_capped_evidence_tail_is_translated():
+    trades = [mk_trade(symbol="T%d" % i, planned_stop=None) for i in range(40)]
+    text = _evidence_text(coach.detect_biases(trades, [], 10000.0, lang="it"),
+                          "no_stop")
+    assert "e altri" in text and "et " not in text
+
+
+def test_missing_date_label_is_translated():
+    trades = [mk_trade(symbol="T%d" % i, planned_stop=None, exit_at=None,
+                       pnl_chf=None) for i in range(5)]
+    text = _evidence_text(coach.detect_biases(trades, [], 10000.0, lang="it"),
+                          "no_stop")
+    assert "data sconosciuta" in text
+
+
+def test_language_changes_the_words_but_never_the_verdict():
+    """Codes, sévérités, métriques et ordre : identiques dans les deux langues."""
+    trades = [mk_trade(symbol="T%d" % i, planned_stop=None, fees_chf=30.0,
+                       pnl_chf=10.0, thesis=THESIS_SHORT) for i in range(5)]
+    orders = [mk_order(symbol="ORD", risk_chf=300.0)]
+    fr = coach.detect_biases(trades, orders, 10000.0, lang="fr")
+    it = coach.detect_biases(trades, orders, 10000.0, lang="it")
+    assert [(b["code"], b["severity"], b["metric"]) for b in fr] \
+        == [(b["code"], b["severity"], b["metric"]) for b in it]
+    assert [b["evidence"] for b in fr] != [b["evidence"] for b in it]
+
+
+def test_default_language_is_bit_for_bit_the_previous_behaviour():
+    trades = [mk_trade(symbol="T%d" % i, planned_stop=None) for i in range(5)]
+    orders = [mk_order(symbol="ORD", risk_chf=300.0)]
+    assert coach.detect_biases(trades, orders, 10000.0) \
+        == coach.detect_biases(trades, orders, 10000.0, lang="fr")
+
+
+@pytest.mark.parametrize("lang", ["en", "de", "", None, "IT-CH", "  "])
+def test_unsupported_languages_fall_back_to_french_without_raising(lang):
+    trades = [mk_trade(symbol="T%d" % i, planned_stop=None) for i in range(5)]
+    assert coach.detect_biases(trades, [], 10000.0, lang=lang) \
+        == coach.detect_biases(trades, [], 10000.0)
+
+
+def test_italian_is_accepted_case_insensitively():
+    trades = [mk_trade(symbol="T%d" % i, planned_stop=None) for i in range(5)]
+    assert coach.detect_biases(trades, [], 10000.0, lang="IT") \
+        == coach.detect_biases(trades, [], 10000.0, lang="it")
+
+
+def test_coach_summary_is_language_independent_by_design():
+    """Le résumé ne contient QUE des codes — le client les traduit lui-même.
+    Le paramètre existe pour que le router passe la même langue partout."""
+    p = coach.empty_profile()
+    p["bias_history"] = {"no_stop": {"count": 3, "first_seen": "x", "last_seen": "y",
+                                     "last_severity": "critical"}}
+    p["milestones"] = [{"key": "first_10_trades", "reached_at": "2026-01-01T00:00:00"}]
+    assert coach.coach_summary(p, [], lang="it") == coach.coach_summary(p, [])
+    assert coach.coach_summary(p, [], lang="zz") == coach.coach_summary(p, [])

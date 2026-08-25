@@ -18,7 +18,10 @@ Les cinq facteurs, tous mesurés sur une fenêtre de 48 h :
 ======================  ====================================================
 ``fresh_hyps``          au moins 2 hypothèses de radar ouvertes et fraîches
 ``gov``                 au moins une annonce politique (sentiment ``gov``)
-``held_catalyst``       un catalyseur (``watch``) sur un titre DÉTENU
+``held_catalyst``       un catalyseur (``watch``) sur un titre DÉTENU ou SUIVI
+                        (watchlist) — la clé du facteur reste ``held_catalyst``
+                        (contrat public stable) même si son déclencheur s'est
+                        élargi à la watchlist (extension utilisateur)
 ``whale_filing``        un dépôt 13F d'un grand gérant
 ``cross_source``        un même symbole vu dans ≥ 2 familles de sources
 ======================  ====================================================
@@ -76,7 +79,7 @@ FACTOR_CODES = ("fresh_hyps", "gov", "held_catalyst", "whale_filing",
 FACTOR_LABELS = {
     "fresh_hyps": "plusieurs hypothèses fraîches du radar",
     "gov": "annonce politique",
-    "held_catalyst": "catalyseur sur une position détenue",
+    "held_catalyst": "catalyseur sur un titre détenu ou suivi",
     "whale_filing": "dépôt SEC d'un grand gérant",
     "cross_source": "même titre vu dans plusieurs sources",
 }
@@ -270,7 +273,7 @@ def _item_filing(filing: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def collect_factors(now: Any, hypotheses: Any, news_events: Any,
-                    filing_events: Any, held_symbols: Any) -> Dict[str, Any]:
+                    filing_events: Any, watched_symbols: Any) -> Dict[str, Any]:
     """Les cinq facteurs et les items qui les portent (PUR).
 
     Rend ``{"factors": {code: bool, ...}, "items": [...]}``. Chaque item porte
@@ -281,10 +284,17 @@ def collect_factors(now: Any, hypotheses: Any, news_events: Any,
     moins un facteur VRAI. Un signal isolé qui n'allume rien n'a pas à peser
     dans l'empreinte : sinon la moindre dépêche ferait repartir un digest
     identique sur le fond.
+
+    ``watched_symbols`` = titres DÉTENUS ∪ titres SUIVIS (watchlist) —
+    l'union est faite par l'appelant (``maybe_fire``), cette fonction PURE ne
+    sait pas d'où viennent les symboles, elle regarde juste si un catalyseur
+    (sentiment ``watch``) en touche un. Le facteur produit reste nommé
+    ``held_catalyst`` (clé stable du contrat public) même si son déclencheur
+    s'est élargi.
     """
     now_dt = _parse_dt(now) or _now()
     cutoff = now_dt - timedelta(hours=WINDOW_H)
-    held = {_upper(s) for s in (held_symbols or []) if _text(s)}
+    watched = {_upper(s) for s in (watched_symbols or []) if _text(s)}
 
     fresh_hyps = [h for h in _dicts(hypotheses)
                   if (_text(h.get("status")) or "open") == "open"
@@ -295,7 +305,7 @@ def collect_factors(now: Any, hypotheses: Any, news_events: Any,
 
     gov_events = [e for e in fresh_news if _sentiment(e) == "gov"]
     watch_events = [e for e in fresh_news if _sentiment(e) == "watch"]
-    held_catalysts = [e for e in watch_events if _upper(e.get("symbol")) in held]
+    held_catalysts = [e for e in watch_events if _upper(e.get("symbol")) in watched]
 
     # --- cross_source : le même symbole vu par des familles DIFFÉRENTES ----- #
     # Trois familles seulement (hypothèses / dépêches à tonalité / catalyseurs) :
@@ -740,6 +750,30 @@ def _collect_positions(users: List[str]) -> Tuple[List[Dict[str, Any]], List[str
     return positions, held
 
 
+def _collect_watchlist(users: List[str]) -> List[str]:
+    """Symboles SUIVIS (watchlist) de tous les comptes, dédoublonnés en
+    majuscules, ordre stable (best-effort — un compte sans watchlist ou en
+    panne ne casse rien, même posture que ``_collect_positions``)."""
+    out: List[str] = []
+    try:
+        store = _store()
+    except Exception:      # noqa: BLE001
+        return out
+    seen = set()
+    for username in users:
+        try:
+            symbols = store.load_watchlist(username) or []
+        except Exception:  # noqa: BLE001
+            continue
+        for row in _dicts(symbols):
+            symbol = _upper(row.get("symbol"))
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            out.append(symbol)
+    return out
+
+
 def _note_all(users: List[str], text: str) -> None:
     """Appende un bloc à ``Signaux.md`` de CHAQUE compte. Best-effort : une
     note qui échoue ne doit jamais faire perdre l'état."""
@@ -808,8 +842,12 @@ def maybe_fire(now: Any = None,
     news = _collect_news(users)
     filings = _collect_filings()
     positions, held = _collect_positions(users)
+    watchlist_symbols = _collect_watchlist(users)
+    # Union, ordre stable : un titre juste SUIVI mérite le même facteur qu'un
+    # titre DÉTENU (extension utilisateur — la clé reste ``held_catalyst``).
+    watched_symbols = list(dict.fromkeys(held + watchlist_symbols))
 
-    collected = collect_factors(now_dt, hypotheses, news, filings, held)
+    collected = collect_factors(now_dt, hypotheses, news, filings, watched_symbols)
     flags = collected["factors"]
     items = collected["items"]
     fp = fingerprint(items)

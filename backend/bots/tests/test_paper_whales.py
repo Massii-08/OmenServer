@@ -1245,3 +1245,13 @@ def test_router_allows_the_money_role(monkeypatch):
     assert client.get("/api/paper/whales").status_code == 200
     assert client.get("/api/paper/whales/events").status_code == 200
     assert client.get("/api/paper/whales/berkshire").status_code == 200
+
+
+def test_router_allows_the_trader_role(monkeypatch):
+    """Nouveau rôle : accès au SEUL module Trading — mêmes endpoints que
+    money/admin (précédent exact : rectester, piège #37 CLAUDE.md)."""
+    monkeypatch.setattr(w, "get_snapshot", lambda *a, **k: {"status": "ok"})
+    client = make_client(role="trader")
+    assert client.get("/api/paper/whales").status_code == 200
+    assert client.get("/api/paper/whales/events").status_code == 200
+    assert client.get("/api/paper/whales/berkshire").status_code == 200

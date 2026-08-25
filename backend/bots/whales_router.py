@@ -29,20 +29,20 @@ router = APIRouter(prefix="/api/paper/whales", tags=["paper"])
 
 
 @router.get("")
-def whales_list(current_user: User = Depends(require_role("admin", "money"))):
+def whales_list(current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Catalogue des gérants suivis + état du cache (aucun appel à la SEC)."""
     return {"managers": whales.list_managers()}
 
 
 @router.get("/events")
-def whales_events(current_user: User = Depends(require_role("admin", "money"))):
+def whales_events(current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Derniers dépôts EDGAR détectés par le guetteur (les plus récents en tête)."""
     return {"events": whales.recent_filing_events()}
 
 
 @router.get("/{manager_id}")
 def whales_snapshot(manager_id: str, force: bool = False,
-                    current_user: User = Depends(require_role("admin", "money"))):
+                    current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Dernier trimestre agrégé d'un gérant + comparaison au précédent.
 
     Le premier appel « à froid » peut prendre une dizaine de secondes (4 à 6

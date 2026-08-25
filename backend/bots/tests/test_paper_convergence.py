@@ -583,6 +583,23 @@ def test_maybe_fire_utilise_les_positions_detenues(sources, alice):
     assert out["factors"]["held_catalyst"] is True and out["fired"] is True
 
 
+def test_maybe_fire_utilise_aussi_la_watchlist(sources, alice):
+    """``held_catalyst`` s'allume aussi sur un titre SUIVI (watchlist), pas
+    seulement détenu — extension utilisateur ``watched = held ∪ watchlist``.
+    TSLA n'est PAS dans les positions d'``alice`` (qui détient NESN.SW),
+    seulement dans sa watchlist : c'est bien elle qui doit allumer le facteur.
+    """
+    store.save_watchlist("alice", [{"symbol": "TSLA", "name": "Tesla Inc",
+                                    "currency": "USD",
+                                    "added_at": NOW.isoformat()}])
+    sources.events = [_news(symbol="TSLA", sentiment="watch", link="http://x.test/w2"),
+                      _news(symbol="GOV", sentiment="gov", link="http://x.test/gov")]
+    out = convergence.maybe_fire(now=NOW, llm=_llm("digest"),
+                                 notifier=_notifier([]), tg_cfg=TG,
+                                 fetch_state=_radar_state())
+    assert out["factors"]["held_catalyst"] is True and out["fired"] is True
+
+
 def test_maybe_fire_llm_en_panne_envoie_le_resume_brut(sources, alice):
     """Le déclencheur EST la valeur : une panne de rédaction n'annule pas le
     message, elle le dégrade."""

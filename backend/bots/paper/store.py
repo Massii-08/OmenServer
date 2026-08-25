@@ -153,9 +153,65 @@ def save_coach(username: str, data: Dict[str, Any]) -> None:
     _atomic_write_json(coach_path(username), data)
 
 
+def watchlist_path(username: str) -> Path:
+    """Chemin du fichier watchlist de l'utilisateur (username validé).
+
+    Fichier SÉPARÉ du portefeuille (``<user>.watchlist.json``, pas une clé du
+    JSON ``<user>.json``) : le portefeuille round-trippe par la dataclass
+    ``models.Portfolio`` (``from_dict``/``to_dict``), qui STRIPPE toute clé
+    inconnue — y ranger la watchlist la ferait disparaître au premier
+    ``_save`` (même classe de bug que le piège #61 du dépôt).
+    """
+    safe = _sanitize_username(username)
+    return DATA_DIR / f"{safe}.watchlist.json"
+
+
+def load_watchlist(username: str) -> List[Dict[str, Any]]:
+    """Charge la watchlist de l'utilisateur. Absente/corrompue -> liste vide."""
+    raw = _load_json(watchlist_path(username))
+    if not isinstance(raw, dict):
+        return []
+    symbols = raw.get("symbols")
+    return [s for s in symbols if isinstance(s, dict)] if isinstance(symbols, list) else []
+
+
+def save_watchlist(username: str, symbols: List[Dict[str, Any]]) -> None:
+    """Persiste la watchlist de façon atomique, 0o600."""
+    _atomic_write_json(watchlist_path(username), {"symbols": list(symbols or [])})
+
+
 # --------------------------------------------------------------------------- #
 # API publique — carnet Markdown façon Obsidian (§11)
 # --------------------------------------------------------------------------- #
+
+def list_vault_users() -> List[str]:
+    """Utilisateurs qui ont un carnet (``<user>-vault/`` sous ``DATA_DIR``),
+    ordre alphabétique. Sert la communauté (carnets PARTAGÉS entre traders) :
+    trouver QUI a un carnet avant de lister/lire ses notes.
+
+    Lecture seule : ``DATA_DIR`` absent -> ``[]`` (même esprit que
+    ``list_notes`` — une liste ne crée jamais de répertoire).
+
+    Chaque nom candidat est revalidé par ``_sanitize_username`` (même
+    allowlist que partout ailleurs dans ce module) : un répertoire qui ne
+    serait pas un vault légitime (déposé hors de l'application, nom corrompu)
+    est simplement ignoré plutôt que remonté tel quel à l'appelant.
+    """
+    if not DATA_DIR.is_dir():
+        return []
+    out: List[str] = []
+    for entry in DATA_DIR.iterdir():
+        if not entry.is_dir() or not entry.name.endswith("-vault"):
+            continue
+        candidate = entry.name[: -len("-vault")]
+        try:
+            _sanitize_username(candidate)
+        except ValueError:
+            continue
+        out.append(candidate)
+    out.sort()
+    return out
+
 
 def vault_dir(username: str) -> Path:
     """Répertoire du carnet Markdown de l'utilisateur (créé au besoin). Le

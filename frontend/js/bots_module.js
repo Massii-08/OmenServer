@@ -55,10 +55,6 @@ const BotsModule = {
  if (typeof MarketModule !== 'undefined' && MarketModule.unload) {
  MarketModule.unload();
  }
- // Idem pour Paper Trading (cycle tick + portefeuille toutes les 60 s)
- if (typeof PaperModule !== 'undefined' && PaperModule.unload) {
- PaperModule.unload();
- }
  },
 
  async loadBots() {
@@ -161,23 +157,6 @@ const BotsModule = {
             sharedWithYou: false,
         }) : '';
 
-        // Paper Trading virtual card — 4e bot de la suite finance, même
-        // audience que Market Pulse (admin + money) : c'est l'utilisateur
-        // "money" qui apprend à prendre du risque mesuré, en argent fictif.
-        const canSeePaper = u && (u.is_admin || u.role === 'money' || u.role === 'admin');
-        const paperCard = canSeePaper ? buildBotCard({
-            icon: 'SIM',
-            name: 'Paper Trading',
-            type: 'trading',
-            desc: Lang.t('paper.desc'),
-            status: 'online',
-            statusLabel: Lang.t('modules.active'),
-            onClick: 'BotsModule.openPaper()',
-            actions: `<button class="btn btn-ghost btn-sm">${Lang.t('paper.open')}</button>`,
-            selected: false,
-            sharedWithYou: false,
-        }) : '';
-
         // Oracle virtual card (admin-only — Polymarket × Deribit, monitoring)
         const canSeeOracle = u && u.is_admin;
         const oracleCard = canSeeOracle ? buildBotCard({
@@ -200,7 +179,6 @@ const BotsModule = {
  ${yieldBotCard}
  ${scannerBotCard}
  ${marketCard}
- ${paperCard}
  ${mcAgentCard}
  ${harvesterCard}
  ${oracleCard}
@@ -250,7 +228,6 @@ const BotsModule = {
  ${yieldBotCard}
  ${scannerBotCard}
  ${marketCard}
- ${paperCard}
  ${mcAgentCard}
  ${harvesterCard}
  ${oracleCard}
@@ -1154,15 +1131,6 @@ const BotsModule = {
         if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
         if (typeof MarketModule !== 'undefined') {
             MarketModule.render(this._container);
-        }
-    },
-
-    openPaper() {
-        const u = (typeof Auth !== 'undefined' && Auth.getUser) ? Auth.getUser() : null;
-        if (!u || !(u.is_admin || u.role === 'money')) return;
-        if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
-        if (typeof PaperModule !== 'undefined') {
-            PaperModule.render(this._container);
         }
     },
 

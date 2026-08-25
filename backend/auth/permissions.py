@@ -34,6 +34,10 @@ ROLE_PERMISSIONS = {
         "view",
         "mc_capture",        # Capture comportementale MC : upload/list/suppression de SES sessions + download du mod
     ],
+    "trader": [
+        "view",
+        "paper_trading",     # Accès au module Trading (simulateur paper) UNIQUEMENT — admin-assigné, comme rectester
+    ],
     "player": [
         "view",
         "start",             # Allumer un serveur (si invité)
@@ -42,6 +46,7 @@ ROLE_PERMISSIONS = {
         "view",
         "start",
         "yield_bot",         # Accès au Yield Bot
+        "paper_trading",     # Accès au module Trading (simulateur paper)
     ],
     "moderator": [
         "view",
@@ -85,6 +90,7 @@ ROLE_PERMISSIONS = {
         "invite",            # Gérer les invitations (tous rôles)
         "manage_users",      # Gérer les utilisateurs
         "yield_bot",         # Accès au Yield Bot
+        "paper_trading",     # Accès au module Trading (simulateur paper)
     ],
 }
 
@@ -93,6 +99,7 @@ ROLE_PERMISSIONS = {
 ROLE_NAMES = {
     "spectator": "Spectateur",
     "rectester": "Testeur REC",
+    "trader": "Trader",
     "player": "Joueur",
     "money": "Money",
     "moderator": "Modérateur",
@@ -101,7 +108,7 @@ ROLE_NAMES = {
 }
 
 # Liste ordonnée des rôles (pour la validation)
-VALID_ROLES = ["spectator", "rectester", "player", "money", "moderator", "developer", "admin"]
+VALID_ROLES = ["spectator", "rectester", "trader", "player", "money", "moderator", "developer", "admin"]
 
 # Rôles que les non-admins peuvent assigner via invitation
 INVITABLE_ROLES = ["player"]

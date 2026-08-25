@@ -118,13 +118,33 @@ def _block(title: str, payload: Any) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Langue de SORTIE
+#
+# Les prompts eux-mêmes restent en FRANÇAIS : ce sont des instructions au
+# modèle, pas du texte lu par Massii. Seule la langue de la RÉPONSE change, via
+# une ligne unique injectée juste après ``SYSTEM_PROMPT`` dans les quatre
+# prompts — une seule table, donc aucune divergence possible entre endpoints.
+# --------------------------------------------------------------------------- #
+_LANG_NAMES = {"fr": "français", "en": "English", "it": "italiano"}
+
+
+def _lang_line(lang: str = "fr") -> str:
+    """La consigne de langue de sortie. Langue inconnue -> français."""
+    name = _LANG_NAMES.get(str(lang or "fr").strip().lower(), "français")
+    return ("Consigne de langue pour CETTE réponse : réponds exclusivement en %s "
+            "(cette consigne remplace le « réponse en français » ci-dessus)." % name)
+
+
+# --------------------------------------------------------------------------- #
 # Prompts — PURS (aucun I/O) : testables tels quels
 # --------------------------------------------------------------------------- #
-def build_coach_prompt(context: Optional[Dict[str, Any]], question: str) -> str:
+def build_coach_prompt(context: Optional[Dict[str, Any]], question: str,
+                       lang: str = "fr") -> str:
     """Prompt de la conversation avec le coach."""
     asked = str(question or "").strip() or "Fais le point sur ma méthode."
     return "\n\n".join([
         SYSTEM_PROMPT,
+        _lang_line(lang),
         "Voici l'état du simulateur de Massii : statistiques, biais détectés de "
         "façon déterministe (aucun LLM ne les a produits), résumé de son profil "
         "et ses 5 derniers trades clôturés.",
@@ -137,10 +157,12 @@ def build_coach_prompt(context: Optional[Dict[str, Any]], question: str) -> str:
 
 
 def build_postmortem_prompt(trade: Optional[Dict[str, Any]],
-                            context: Optional[Dict[str, Any]]) -> str:
+                            context: Optional[Dict[str, Any]],
+                            lang: str = "fr") -> str:
     """Prompt du post-mortem d'un trade clôturé."""
     return "\n\n".join([
         SYSTEM_PROMPT,
+        _lang_line(lang),
         "Post-mortem d'un trade CLÔTURÉ. ``thesis`` est la raison que Massii "
         "avait écrite AVANT d'entrer, ``planned_stop`` le niveau d'invalidation "
         "qu'il s'était fixé, ``r_multiple`` le résultat exprimé en multiples du "
@@ -156,15 +178,69 @@ def build_postmortem_prompt(trade: Optional[Dict[str, Any]],
     ])
 
 
-def build_analysis_prompt(facts: Optional[Dict[str, Any]]) -> str:
+def build_ideas_prompt(context: Optional[Dict[str, Any]], lang: str = "fr") -> str:
+    """Prompt des idées de trade orientées RENTABILITÉ (extension utilisateur) —
+    à la différence de ``build_coach_prompt`` (conversation libre), ici Massii
+    ne demande pas de faire le point : il demande des idées concrètes.
+
+    Doctrine explicite : le risque ne se gère JAMAIS en ne choisissant que des
+    titres « sûrs » — il se gère par le sizing (petit) et le stop (toujours
+    posé). On vise le POTENTIEL (catalyseur, momentum, asymétrie), pas la
+    valeur refuge.
+    """
+    return "\n\n".join([
+        SYSTEM_PROMPT,
+        _lang_line(lang),
+        "ICI, ton rôle change de registre : Massii ne te demande pas de faire "
+        "le point, il te demande des IDÉES DE TRADE concrètes, orientées "
+        "RENTABILITÉ. Ta doctrine : le risque ne se gère JAMAIS en ne "
+        "choisissant que des titres « sûrs » — il se gère par le sizing "
+        "(petit) et le stop (toujours posé). Vise le POTENTIEL : un "
+        "catalyseur identifiable, un momentum mesurable, une asymétrie "
+        "gain/perte favorable. Un titre « sûr » sans catalyseur n'a rien à "
+        "faire ici.",
+        "Voici l'état du simulateur : ses positions, ses statistiques, ses "
+        "biais détectés, les titres suivis (watchlist — creuse-les EN "
+        "PRIORITÉ, sans t'y limiter), les hypothèses du radar déjà ouvertes "
+        "(pour ne pas les reproposer), et les événements récents (presse, "
+        "dépôts 13F) qui peuvent servir de catalyseur.",
+        _block("CONTEXTE", context or {}),
+        "Propose 2 à 4 idées. Pour CHACUNE, donne dans le texte : le ticker "
+        "Yahoo, la direction (hausse/baisse), pourquoi MAINTENANT (cite un "
+        "catalyseur du contexte ci-dessus si le contexte en fournit un — "
+        "sinon dis que c'est un pari technique/momentum, sans inventer de "
+        "catalyseur), l'horizon en jours, un stop suggéré (niveau de prix ou "
+        "%), le risque conseillé (0.5 à 2 % du capital), le profil "
+        "(équilibré ou agressif), et la condition « invalidée si ».",
+        "Le format 150-400 mots de la consigne générale s'entend ici PAR "
+        "IDÉE (un paragraphe court et dense par idée, pas un roman) — 4 "
+        "idées bien traitées valent mieux qu'une réponse générique.",
+        "Interdits, comme toujours : jamais le mot « sûr » ou « valeur "
+        "refuge » pour vendre une idée ; jamais de recommandation avec de "
+        "l'argent réel ; n'invente RIEN qui ne soit pas dans le contexte "
+        "ci-dessus — si le contexte est trop maigre pour 2 idées sérieuses, "
+        "dis-le explicitement et rends-en moins (0 est une réponse "
+        "légitime).",
+        "Termine IMPÉRATIVEMENT ta réponse par ce bloc, et rien après : "
+        '```json\n{"ideas": [{"ticker": "AAPL", "direction": "up", '
+        '"horizon_days": 10, "thesis": "une phrase courte"}]}\n```',
+    ])
+
+
+def build_analysis_prompt(facts: Optional[Dict[str, Any]],
+                          lang: str = "fr") -> str:
     """Prompt de la fiche pédagogique d'un titre."""
     return "\n\n".join([
         SYSTEM_PROMPT,
+        _lang_line(lang),
         "Fiche pédagogique sur un titre. Tous les chiffres ci-dessous sont "
         "calculés depuis les bougies Yahoo ; un champ ``null`` veut dire que la "
         "série ne permettait pas de le calculer — dis-le, ne le remplace pas.",
         _block("FAITS", facts or {}),
-        "Écris trois choses : (1) la lecture de ces chiffres en français simple "
+        # « en mots simples » et non « en français simple » : la langue de sortie
+        # est décidée UNIQUEMENT par _lang_line, sinon les deux consignes se
+        # contredisent dès que Massii lit en italien.
+        "Écris trois choses : (1) la lecture de ces chiffres en mots simples "
         "(où est le cours dans son année, ce que disent les moyennes et la "
         "volatilité) ; (2) ce qu'un swing trader regarderait ensuite sur ce "
         "titre ; (3) les questions que Massii doit se poser AVANT d'écrire une "
@@ -178,25 +254,36 @@ def build_analysis_prompt(facts: Optional[Dict[str, Any]]) -> str:
 # API publique
 # --------------------------------------------------------------------------- #
 def ask_coach(context: Optional[Dict[str, Any]], question: str = "",
+              lang: str = "fr",
               model: str = DEFAULT_MODEL, timeout: int = DEFAULT_TIMEOUT,
               run: Callable = subprocess.run) -> str:
     """Réponse du coach à une question (ou point général si la question est vide)."""
-    return _claude_text(build_coach_prompt(context, question),
+    return _claude_text(build_coach_prompt(context, question, lang),
                         model=model, timeout=timeout, run=run)
 
 
 def write_postmortem(trade: Optional[Dict[str, Any]],
                      context: Optional[Dict[str, Any]] = None,
+                     lang: str = "fr",
                      model: str = DEFAULT_MODEL, timeout: int = DEFAULT_TIMEOUT,
                      run: Callable = subprocess.run) -> str:
     """Post-mortem rédigé d'un trade clôturé (destiné au carnet ``Journal.md``)."""
-    return _claude_text(build_postmortem_prompt(trade, context),
+    return _claude_text(build_postmortem_prompt(trade, context, lang),
                         model=model, timeout=timeout, run=run)
 
 
-def write_analysis(facts: Optional[Dict[str, Any]],
+def write_analysis(facts: Optional[Dict[str, Any]], lang: str = "fr",
                    model: str = DEFAULT_MODEL, timeout: int = DEFAULT_TIMEOUT,
                    run: Callable = subprocess.run) -> str:
     """Fiche d'analyse pédagogique d'un titre — sans opinion d'achat ni de vente."""
-    return _claude_text(build_analysis_prompt(facts),
+    return _claude_text(build_analysis_prompt(facts, lang),
+                        model=model, timeout=timeout, run=run)
+
+
+def suggest_ideas(context: Optional[Dict[str, Any]], lang: str = "fr",
+                  model: str = DEFAULT_MODEL, timeout: int = DEFAULT_TIMEOUT,
+                  run: Callable = subprocess.run) -> str:
+    """Idées de trade orientées rentabilité (texte + bloc JSON final destiné au
+    câblage radar — cf. ``paper_router._parse_ideas_json``)."""
+    return _claude_text(build_ideas_prompt(context, lang),
                         model=model, timeout=timeout, run=run)

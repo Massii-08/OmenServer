@@ -1,0 +1,298 @@
+[
+ {
+  "id": "basics",
+  "title": "Cos'è davvero un'azione",
+  "body": "Un'azione è una quota di proprietà di un'azienda. Se Nestlé vale 250 miliardi e tu possiedi un'azione da 90 CHF, possiedi una frazione reale dei suoi stabilimenti, dei suoi marchi e dei suoi utili futuri. Il prezzo si muove perché migliaia di compratori e venditori rivedono di continuo quanto valgono quegli utili futuri.\n\nDue modi per guadagnare: il capital gain (rivendere più caro) e il dividendo (la parte di utile distribuita, spesso il 2-4 % all'anno in Svizzera). Due modi per perdere: il prezzo scende, oppure l'azienda fallisce (l'azionista viene servito PER ULTIMO, dopo i creditori).\n\nCosa fa salire un'azione nel lungo periodo: gli utili. Cosa la fa muovere nel breve: le sorprese (trimestrali, tassi d'interesse, macro) e le emozioni della folla. Il trader attivo lavora in questo secondo mondo — ed è per questo che il metodo conta più dell'intuito.",
+  "quiz": [
+   {
+    "q": "Cosa possiedi quando compri un'azione?",
+    "options": [
+     "Un credito che l'azienda ti deve rimborsare",
+     "Una quota di proprietà dell'azienda",
+     "Il diritto a uno stipendio dall'azienda"
+    ],
+    "correct": 1,
+    "explain": "È una quota di proprietà. Il credito da rimborsare è l'obbligazione — non l'azione."
+   },
+   {
+    "q": "In caso di fallimento, l'azionista viene rimborsato…",
+    "options": [
+     "Per primo",
+     "Dopo i creditori, per ultimo",
+     "Non è mai coinvolto nel fallimento"
+    ],
+    "correct": 1,
+    "explain": "L'azionista porta il rischio finale: viene servito dopo tutti i creditori, spesso zero."
+   },
+   {
+    "q": "Nel breve periodo, il prezzo di un'azione si muove soprattutto per…",
+    "options": [
+     "Gli utili realizzati 10 anni fa",
+     "Le sorprese e le emozioni del mercato",
+     "Il numero di dipendenti"
+    ],
+    "correct": 1,
+    "explain": "Nel breve dominano le sorprese rispetto alle attese, e la psicologia."
+   }
+  ]
+ },
+ {
+  "id": "orders",
+  "title": "I 3 tipi di ordine — e la trappola del gap",
+  "body": "MARKET: eseguito subito al prezzo corrente. Semplice, ma accetti il prezzo che ti danno.\n\nLIMIT: «compro a 95 o meno» / «vendo a 105 o più». Controlli il prezzo, non l'esecuzione (l'ordine può non essere mai eseguito).\n\nSTOP: un innesco. Lo stop-loss di protezione è il più importante: «se scende a 88, vendi» — limita la tua perdita mentre dormi.\n\nLA TRAPPOLA: il gap. Lo stop NON è una garanzia di prezzo. Se un'azione chiude a 92 e il giorno dopo apre a 80 (trimestrale pessima pubblicata di notte), il tuo stop a 88 viene eseguito a 80, non a 88. Il simulatore riproduce questo comportamento — lo vivrai. Ecco perché la posizione si dimensiona PRIMA (lezione Rischio): lo stop limita la perdita NORMALE, il sizing limita la perdita CATASTROFE.",
+  "quiz": [
+   {
+    "q": "Un ordine limit d'acquisto a 95 mentre il prezzo è a 97…",
+    "options": [
+     "Viene eseguito subito a 97",
+     "Aspetta che il prezzo scenda a 95 o meno",
+     "Viene rifiutato"
+    ],
+    "correct": 1,
+    "explain": "Il limit garantisce il prezzo massimo, non l'esecuzione: aspetta 95."
+   },
+   {
+    "q": "Il tuo stop-loss è a 88, l'azione apre a 80 dopo una brutta notizia. Vendi intorno a…",
+    "options": [
+     "88, lo stop è garantito",
+     "80, lo stop viene eseguito al prezzo disponibile",
+     "92, il prezzo di ieri"
+    ],
+    "correct": 1,
+    "explain": "È il gap: lo stop scatena una vendita a mercato, al prezzo reale di apertura."
+   },
+   {
+    "q": "La protezione contro lo scenario catastrofe è…",
+    "options": [
+     "Lo stop-loss",
+     "La dimensione della posizione",
+     "La diversificazione del broker"
+    ],
+    "correct": 1,
+    "explain": "Lo stop gestisce la perdita normale; solo il sizing limita la perdita quando lo stop salta (gap)."
+   }
+  ]
+ },
+ {
+  "id": "fees",
+  "title": "Commissioni e bollo svizzero — il nemico silenzioso",
+  "body": "Ogni transazione costa: la commissione del broker + in Svizzera la tassa di bollo federale se il tuo broker è svizzero: 0,075 % (titolo svizzero) o 0,15 % (titolo estero), sia all'ACQUISTO sia alla vendita.\n\nEsempio reale: 20 andata-e-ritorno da 5'000 CHF su azioni USA tramite un broker svizzero ≈ 20 × (2 × 7.50 di bollo + 2 × commissione). Con Swissquote (~20 CHF a ordine) fanno ~1'100 CHF di costi — l'11 % di un capitale di 10'000 CHF, da recuperare prima ancora di essere in pari. Con Interactive Brokers (broker estero: niente bollo, commissione ~2 CHF): ~80 CHF.\n\nLa regola: più fai trading, più sono i costi a decidere la tua performance al posto tuo. Il simulatore mostra i costi cumulati in permanenza — se la riga «costi» se la gioca con la riga «P&L», il problema non è il mercato.",
+  "quiz": [
+   {
+    "q": "La tassa di bollo svizzera si applica…",
+    "options": [
+     "Solo all'acquisto",
+     "All'acquisto e alla vendita, con un broker svizzero",
+     "Solo sulle azioni svizzere"
+    ],
+    "correct": 1,
+    "explain": "In entrambi i sensi, 0,075 %/0,15 %, e solo tramite un intermediario svizzero."
+   },
+   {
+    "q": "Quale broker NON preleva la tassa di bollo?",
+    "options": [
+     "Swissquote",
+     "Yuh",
+     "Interactive Brokers (broker estero)"
+    ],
+    "correct": 2,
+    "explain": "Il bollo è dovuto dai negoziatori di titoli svizzeri; IBKR non lo è."
+   },
+   {
+    "q": "Se i tuoi costi cumulati superano il 20 % dei tuoi utili lordi…",
+    "options": [
+     "È normale nel trading attivo",
+     "Stai facendo over-trading: la struttura dei costi si mangia la performance",
+     "Bisogna fare più trading per compensare"
+    ],
+    "correct": 1,
+    "explain": "È il bias fee_bleed che il coach rileva: ridurre la frequenza, non aumentarla."
+   }
+  ]
+ },
+ {
+  "id": "risk",
+  "title": "La R: l'unica unità che conta",
+  "body": "Prima di ogni trade decidi: dov'è il mio stop, e quanto perdo se viene toccato. Questa perdita pianificata = 1R.\n\nLa regola dell'1-2 %: non rischiare mai più dell'1-2 % del capitale per trade. Capitale 10'000, rischio 1 % = 100 CHF. Ingresso a 50, stop a 48 → rischio di 2 CHF per azione → posizione da 50 azioni (2'500 CHF investiti, ma solo 100 CHF RISCHIATI). Questo significa «prendere rischio in modo pulito»: la size discende dallo stop, mai il contrario.\n\nPoi misura tutto in R. Un guadagno di 300 CHF con 100 rischiati = +3R (ottimo). Un guadagno di 300 con 600 rischiati = +0.5R (mediocre, qualunque cosa dica l'importo). Con l'1-2 % per trade servono ~50 perdite DI FILA per essere in pericolo vero — puoi sbagliare spesso e sopravvivere. Il dilettante che rischia il 20 % per trade è morto in 5 errori. Il simulatore calcola la tua R su ogni trade chiuso e la tua aspettativa media: è LA tua statistica vitale.",
+  "quiz": [
+   {
+    "q": "Capitale 10'000 CHF, rischio 1 %, ingresso 100, stop 95. Dimensione della posizione?",
+    "options": [
+     "100 azioni",
+     "20 azioni",
+     "10 azioni"
+    ],
+    "correct": 1,
+    "explain": "Rischio per azione = 5 CHF; 100 CHF di rischio totale / 5 = 20 azioni."
+   },
+   {
+    "q": "+3R significa…",
+    "options": [
+     "3 % di guadagno",
+     "Un guadagno pari a 3 volte la perdita pianificata del trade",
+     "3 trade vincenti di fila"
+    ],
+    "correct": 1,
+    "explain": "La R normalizza tutto: 3R = hai guadagnato tre volte quello che accettavi di perdere."
+   },
+   {
+    "q": "Perché limitare il rischio all'1-2 % per trade?",
+    "options": [
+     "Per pagare meno commissioni",
+     "Per sopravvivere a una lunga serie di perdite, statisticamente inevitabile",
+     "Perché lo impone la legge"
+    ],
+    "correct": 1,
+    "explain": "Serie di 5-10 perdite capitano a OGNI trader; all'1-2 % sono indolori, al 20 % sono fatali."
+   }
+  ]
+ },
+ {
+  "id": "psychology",
+  "title": "I tuoi veri avversari: i bias",
+  "body": "Il mercato non ti conosce. Le tue perdite verranno soprattutto da te. I 4 demoni classici:\n\n1. TAGLIARE I VINCENTI TROPPO PRESTO / LASCIAR CORRERE I PERDENTI: vendere a +5 % «per mettere al sicuro» ma tenersi un -20 % «perché tanto risale». È l'avversione alle perdite — realizzare una perdita fa male, quindi la si nega.\n2. IL REVENGE TRADE: rientrare 10 minuti dopo una perdita, più grosso, per «rifarsi». È il casinò, non più trading.\n3. IL BIAS DI CONFERMA: leggere solo ciò che conferma la tua posizione.\n4. L'ECCESSO DI FIDUCIA: 3 guadagni di fila → raddoppiare la size. Il mercato adora questa sequenza.\n\nL'unico antidoto: la tesi SCRITTA prima dell'ingresso (perché compro, dove esco se ho torto, dove esco se ho ragione) + la rilettura dopo l'uscita. Il simulatore ti obbliga a scrivere la tesi e il coach confronta la tua uscita reale con il tuo piano: la distanza fra le due è esattamente la dimensione del tuo bias.",
+  "quiz": [
+   {
+    "q": "Tenersi una posizione a -20 % senza stop «perché tanto risale» è…",
+    "options": [
+     "Pazienza da investitore",
+     "L'avversione alle perdite che rifiuta di realizzare",
+     "Una strategia di mediazione al ribasso controllata"
+    ],
+    "correct": 1,
+    "explain": "Senza tesi né stop non è pazienza: è il rifiuto psicologico di accettare la perdita."
+   },
+   {
+    "q": "Il revenge trade si riconosce da…",
+    "options": [
+     "Un ingresso rapido dopo una perdita, con size maggiore",
+     "Un acquisto dopo due giorni di analisi",
+     "Una vendita sullo stop"
+    ],
+    "correct": 0,
+    "explain": "Velocità + size aumentata dopo una perdita: il coach del simulatore lo rileva in automatico."
+   },
+   {
+    "q": "Il miglior antidoto ai bias è…",
+    "options": [
+     "Più schermi e più indicatori",
+     "Una tesi scritta prima dell'ingresso, riletta dopo l'uscita",
+     "Seguire i consigli di un forum"
+    ],
+    "correct": 1,
+    "explain": "Lo scritto fissa quello che pensavi PRIMA — impossibile raccontarsi un'altra storia dopo."
+   }
+  ]
+ },
+ {
+  "id": "tax",
+  "title": "Fiscalità svizzera: il tuo privilegio, e come perderlo",
+  "body": "In Svizzera i capital gain privati sono ESENTI da imposta — un privilegio raro al mondo. Ma se il fisco ti considera «commerciante professionale di titoli», i tuoi guadagni diventano reddito imponibile + contributi AVS (~25-40 % di prelievo secondo il cantone).\n\nI 5 criteri della circolare AFC n° 36 (soddisfarli TUTTI ti mette al riparo):\n1. Titoli detenuti almeno 6 mesi.\n2. Volume annuo delle transazioni ≤ 5× il tuo patrimonio in titoli al 1° gennaio.\n3. I guadagni di borsa non ti servono per vivere (< 50 % del reddito netto).\n4. Nessun acquisto a credito (niente leva).\n5. Derivati solo a copertura.\n\nNon soddisfarli tutti ≠ riqualificazione automatica (il fisco valuta il quadro d'insieme), ma ogni criterio violato aumenta il rischio. Un trader attivo viola per natura i criteri 1 e 2: è una SCELTA da fare con cognizione di causa, non un dettaglio. Il simulatore mostra il tuo contatore AFC in permanenza — guardalo come guardi il tuo P&L. E nota: i DIVIDENDI, invece, sono sempre tassati come reddito (con imposta preventiva del 35 % recuperabile in dichiarazione).",
+  "quiz": [
+   {
+    "q": "In Svizzera i capital gain di un investitore privato sono…",
+    "options": [
+     "Tassati al 35 %",
+     "Esenti da imposta",
+     "Tassati solo oltre i 100'000 CHF"
+    ],
+    "correct": 1,
+    "explain": "Esenti — finché mantieni lo statuto di investitore privato."
+   },
+   {
+    "q": "Il criterio AFC sul volume annuo tollera fino a…",
+    "options": [
+     "2× il patrimonio in titoli",
+     "5× il patrimonio in titoli al 1° gennaio",
+     "10× lo stipendio"
+    ],
+    "correct": 1,
+    "explain": "Somma di acquisti + vendite ≤ 5× il portafoglio d'inizio anno."
+   },
+   {
+    "q": "I dividendi incassati sono…",
+    "options": [
+     "Esenti come i capital gain",
+     "Sempre tassati come reddito (imposta preventiva 35 % recuperabile)",
+     "Tassati solo se reinvestiti"
+    ],
+    "correct": 1,
+    "explain": "L'esenzione riguarda SOLO i capital gain; il dividendo è reddito."
+   }
+  ]
+ },
+ {
+  "id": "analysis",
+  "title": "Leggere un'azienda in 10 minuti",
+  "body": "Prima di comprare, quattro domande:\n\n1. QUANTO GUADAGNA? Fatturato e utile netto, in crescita oppure no. Il margine netto (utile/fatturato) dice la qualità: 20 % = macchina da cassa (Nestlé ~11 %, Novartis ~20 %), 2 % = business fragile.\n2. È CARA? Il P/E (prezzo/utile per azione): a 15 stai pagando 15 anni di utili attuali. P/E 10 = a buon mercato (o mercato preoccupato…), P/E 40 = caro (o forte crescita attesa). Un P/E non si legge MAI da solo: confrontalo con i concorrenti dello stesso settore.\n3. QUANTO DEVE? Debito netto / EBITDA: < 1 = solida, > 3 = fragile quando i tassi salgono.\n4. PERCHÉ ADESSO? Un catalizzatore: trimestrale, nuovo prodotto, ciclo settoriale. «È una bella azienda» non è una tesi di TRADE — una bella azienda può restare ferma 5 anni.\n\nNel simulatore, il pulsante «Scheda di analisi» ti tira fuori questi numeri per qualunque titolo. Leggi la scheda PRIMA di scrivere la tua tesi, non dopo.",
+  "quiz": [
+   {
+    "q": "Un P/E di 15 significa…",
+    "options": [
+     "15 % di rendimento annuo",
+     "Il prezzo vale 15 anni dell'utile attuale",
+     "Il debito vale 15× il patrimonio netto"
+    ],
+    "correct": 1,
+    "explain": "Price/Earnings: quanti anni di utile attuale stai pagando al prezzo corrente."
+   },
+   {
+    "q": "Un P/E di 40 contro un settore a 18 suggerisce…",
+    "options": [
+     "Un affare evidente",
+     "Che il mercato si aspetta una forte crescita — da verificare nella tua tesi",
+     "Un errore del mercato"
+    ],
+    "correct": 1,
+    "explain": "Caro non è vietato — ma la crescita attesa diventa la TUA scommessa: scrivila."
+   },
+   {
+    "q": "Debito netto / EBITDA > 3 segnala…",
+    "options": [
+     "Un'azienda fiscalmente aggressiva",
+     "Una fragilità se i tassi salgono o se il flusso di cassa cala",
+     "Un dividendo elevato garantito"
+    ],
+    "correct": 1,
+    "explain": "Più di 3 anni di cash flow solo per rimborsare: poco margine d'errore."
+   }
+  ]
+ },
+ {
+  "id": "swing",
+  "title": "Lo swing trading con quotazioni ritardate — il tuo terreno reale",
+  "body": "Le tue quotazioni Yahoo sono ritardate di circa 15 minuti. Scordati quindi lo scalping al minuto: il tuo terreno è lo SWING — posizioni tenute da qualche giorno a qualche settimana, decise su movimenti di fondo e non sul rumore del secondo.\n\nLa routine dello swing trader (bastano 30 min al giorno):\n1. La sera, DOPO la chiusura: revisione delle posizioni, aggiustamento degli stop, preparazione degli ordini per il giorno dopo (limit/stop — non market: le tue condizioni le poni a mente fredda).\n2. Mai una decisione durante la seduta sotto il colpo di una candela rossa.\n3. Un diario: ogni trade ha la sua tesi, ogni uscita il suo post-mortem.\n\nVantaggi nascosti: meno costi (lezione 3), meno bias a caldo (lezione 5), compatibile con un lavoro — e molto più vicino ai criteri AFC di un day trading frenetico. Il ritardo di 15 min NON è un handicap per questo stile: una decisione che non sopravvive a 15 minuti di ritardo non era una decisione di swing, era un riflesso.",
+  "quiz": [
+   {
+    "q": "Con quotazioni ritardate di 15 min, lo stile adatto è…",
+    "options": [
+     "Lo scalping al secondo",
+     "Lo swing su più giorni/settimane",
+     "Nessun trading è possibile"
+    ],
+    "correct": 1,
+    "explain": "Lo swing si decide su movimenti di fondo; 15 min di ritardo non cambiano nulla."
+   },
+   {
+    "q": "Il momento migliore per decidere i tuoi ordini è…",
+    "options": [
+     "In piena seduta, appena una candela si muove",
+     "La sera a mente fredda, con ordini limit/stop già preparati",
+     "In apertura, nei primi 5 minuti"
+    ],
+    "correct": 1,
+    "explain": "Decidere a freddo + porre ordini condizionati = durante la seduta lavora la disciplina."
+   },
+   {
+    "q": "Una decisione che pretende una reazione al secondo è…",
+    "options": [
+     "Il segno di un buon trader",
+     "Un riflesso, non una decisione di swing",
+     "Obbligatoria per battere il mercato"
+    ],
+    "correct": 1,
+    "explain": "Se 15 minuti la uccidono, era rumore — non una tesi."
+   }
+  ]
+ }
+]
