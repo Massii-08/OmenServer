@@ -206,3 +206,30 @@ Gérants curés (CIK vérifié au fetch contre le champ `name` du submissions JS
   mesuré 1 req/60 s/IP → UNE requête par run ; recherche Bluesky ×2 ; X par
   handles finance best-effort, garde `XSerializationChanged`). Étiquetées
   « bruit élevé, à recouper » dans le prompt.
+
+## 13. Convergence — le radar se tait, Claude s'active (ajout Massii 2026-08-24 soir)
+
+Retours : (a) les notifs paper doivent passer par le BOT ORACLE, pas celui du
+Harvester ; (b) le radar notifie trop — il doit ACCUMULER en silence dans la
+mémoire de l'Omen (radar.json + vault) ; (c) quand PLUSIEURS facteurs spéciaux
+convergent, UN message : résumé + meilleurs mouvements à jouer (simulateur).
+Doctrine Massii verbatim : « n'attends pas le parfait parce que ce sera déjà
+trop tard — il faut faire des hypothèses pour prévoir » → seuil de déclenchement
+VOLONTAIREMENT bas (2 facteurs), confiance affichée, bilan radar rappelé dans
+chaque digest (on risque, on ne se ment pas).
+
+- `paper/alerts.py` : `load_cfg()` → `data/paper_telegram.json` (bot Oracle,
+  posé serveur-side, 0600) sinon repli config Harvester. Tous les envois paper
+  (newswatch, whales, convergence) passent par lui.
+- Radar : plus AUCUN envoi Telegram par hypothèse ni par verdict — tout va à
+  l'état + Radar.md. Les fonctions de formatage restent (digest les réutilise).
+- `paper/convergence.py` : facteurs 48 h — F1 ≥2 hypothèses fraîches ·
+  F2 annonce politique · F3 catalyseur sur position DÉTENUE · F4 dépôt SEC
+  whale · F5 même symbole dans ≥2 sources distinctes. `should_fire` = ≥2
+  facteurs ET cooldown 6 h ET empreinte des items contributifs ≠ dernière
+  (pas de redite). Digest LLM (résumé + 2-4 mouvements simulateur : direction,
+  ticker, thèse, horizon, risque 0.5-1 %, invalidation) ; panne LLM → résumé
+  déterministe compact QUAND MÊME envoyé (le déclencheur est la valeur).
+  État `data/paper_trading/convergence.json`, note vault `Signaux.md`.
+- Câblage : fin de `radar.run_once` (3×/j) + `POST /api/paper/digest/run`
+  (manuel) + `GET /api/paper/digest` (historique).

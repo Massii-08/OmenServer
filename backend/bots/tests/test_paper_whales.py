@@ -944,15 +944,37 @@ def test_recent_filing_events_without_any_state_file():
     assert w.recent_filing_events() == []
 
 
-def test_watcher_reads_the_harvester_telegram_config_by_default(monkeypatch):
-    """Sans ``tg_cfg``, la config Telegram partagée du dépôt fait foi."""
+def test_watcher_reads_the_paper_telegram_config_by_default(monkeypatch):
+    """Spec §13 : sans ``tg_cfg``, c'est le canal du paper trading (bot ORACLE,
+    ``paper/alerts``) qui fait foi — plus directement celui du Harvester."""
     _one_manager(monkeypatch)
-    from backend.bots.harvester import telegram_config
-    monkeypatch.setattr(telegram_config, "load", lambda path=None: {})
+    from backend.bots.paper import alerts
+    monkeypatch.setattr(alerts, "load_cfg", lambda path=None: None)
     client = FakeClient(_watch_routes([("4", "a1", "2026-08-20", "")]))
     out = w.check_new_filings(client=client, notifier=FakeNotifier(),
                               sleep=Recorder(), now=1.0)
-    assert out["managers"] == 0 and client.calls == []
+    assert out["managers"] == 0 and client.calls == []   # éteint : zéro réseau
+
+
+def test_watcher_notifies_through_the_paper_channel(monkeypatch):
+    """Et les dépôts détectés partent par ``alerts.send``, pas par le notifieur
+    du Harvester."""
+    _one_manager(monkeypatch)
+    from backend.bots.paper import alerts
+    sent = []
+    monkeypatch.setattr(alerts, "load_cfg",
+                        lambda path=None: {"token": "t", "chat_id": "c"})
+    monkeypatch.setattr(alerts, "send",
+                        lambda text, cfg=None, client=None: sent.append((text, cfg)) or True)
+
+    client = FakeClient(_watch_routes([("4", "a1", "2026-08-20", "")]))
+    w.check_new_filings(client=client, sleep=Recorder(), now=1000.0)   # amorçage muet
+    client = FakeClient(_watch_routes([("4", "a2", "2026-08-21", ""),
+                                       ("4", "a1", "2026-08-20", "")]))
+    out = w.check_new_filings(client=client, sleep=Recorder(), now=2000.0)
+
+    assert out["notified"] == 1
+    assert len(sent) == 1 and sent[0][1] == {"token": "t", "chat_id": "c"}
 
 
 # =========================================================================== #

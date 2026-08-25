@@ -57,6 +57,12 @@ MIN_THESIS_LEN = 15          # même seuil que coach._NO_THESIS_MIN_LEN
 MAX_QUOTE_SYMBOLS = 20
 MIN_SEARCH_LEN = 2
 
+# Fenêtres autorisées pour le graphique. Liste FERMÉE : on ne proxifie pas
+# Yahoo en aveugle — un paramètre libre transformerait l'endpoint en relais
+# ouvert vers un service tiers, avec notre IP au bout.
+CANDLE_RANGES = ("1d", "5d", "1mo", "6mo", "1y", "5y")
+CANDLE_INTERVALS = ("15m", "1h", "1d", "1wk")
+
 # Fenêtre lue par le tick : la journée en cours, par tranches de 15 minutes.
 # Assez fin pour voir un stop sauter, assez court pour ne pas relire l'histoire.
 TICK_RANGE = "1d"
@@ -1019,6 +1025,47 @@ def paper_quotes(symbols: str = "",
     return out
 
 
+@router.get("/candles")
+def paper_candles(symbol: str = "", range_: str = "6mo", interval: str = "1d",
+                  current_user: User = Depends(require_role("admin", "money"))):
+    """Bougies brutes d'un titre, pour le graphique du frontend.
+
+    Les bougies « à moitié écrites » (séance en cours : ``close`` encore nul)
+    sont CONSERVÉES telles que ``quotes.parse_candles`` les rend — les jeter
+    ferait reculer la dernière clôture d'une séance et fausserait la variation
+    du jour (piège #67a, vécu sur Market Pulse).
+
+    La devise vient de ``get_meta`` en best-effort : un graphique sans étiquette
+    de devise reste lisible, un 502 pour ça ne le serait pas.
+    """
+    wanted = str(symbol or "").strip().upper()
+    if not wanted:
+        raise HTTPException(status_code=400, detail="Symbole requis.")
+    if range_ not in CANDLE_RANGES:
+        raise HTTPException(status_code=400,
+                            detail="Fenêtre invalide (attendu : %s)."
+                                   % ", ".join(CANDLE_RANGES))
+    if interval not in CANDLE_INTERVALS:
+        raise HTTPException(status_code=400,
+                            detail="Intervalle invalide (attendu : %s)."
+                                   % ", ".join(CANDLE_INTERVALS))
+
+    try:
+        candles = quotes.get_candles(wanted, range_, interval)
+    except quotes.UnknownSymbol as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except quotes.QuoteError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    currency = None
+    try:
+        currency = (quotes.get_meta(wanted, range_, interval) or {}).get("currency")
+    except Exception as e:                      # noqa: BLE001 - étiquette optionnelle
+        logger.debug("paper: devise indisponible pour %s (%s)", wanted, e)
+
+    return {"symbol": wanted, "currency": currency, "candles": candles}
+
+
 # --------------------------------------------------------------------------- #
 # Endpoints — ordres et positions
 # --------------------------------------------------------------------------- #
@@ -1452,3 +1499,48 @@ def paper_news(current_user: User = Depends(require_role("admin", "money"))):
     except Exception as e:                      # noqa: BLE001 - veille best-effort
         logger.warning("paper: veille news indisponible: %s", e)
         return {"events": [], "error": str(e)[:200]}
+
+
+def _convergence():
+    """Le module de convergence (digest Telegram), importé paresseusement."""
+    from backend.bots.paper import convergence
+    return convergence
+
+
+@router.get("/digest")
+def paper_digest(current_user: User = Depends(require_role("admin", "money"))):
+    """Historique des digests de convergence. Best-effort comme ses voisins."""
+    try:
+        module = _convergence()
+    except ImportError:
+        return {"history": []}
+    try:
+        return module.recent()
+    except Exception as e:                      # noqa: BLE001 - lecture best-effort
+        logger.warning("paper: convergence indisponible: %s", e)
+        return {"history": [], "error": str(e)[:200]}
+
+
+@router.post("/digest/run")
+def paper_digest_run(force: bool = False,
+                     current_user: User = Depends(require_role("admin", "money"))):
+    """Évalue la convergence maintenant et envoie un digest si elle est réunie.
+
+    ``force=true`` saute le cooldown de 6 h et l'empreinte anti-redite — c'est
+    la porte de sortie du test manuel, qui ne doit pas attendre six heures. Il
+    ne saute PAS le seuil de facteurs : avec moins de deux facteurs, la réponse
+    reste ``{"fired": false, "reason": "too_few"}``, parce qu'un digest sans
+    convergence n'aurait rien à dire.
+
+    Comme pour le radar, l'absence du module est ici une vraie erreur (503) :
+    l'utilisateur a demandé une action qui ne peut pas avoir lieu.
+    """
+    try:
+        module = _convergence()
+    except ImportError:
+        raise HTTPException(status_code=503,
+                            detail="La convergence n'est pas déployée sur ce serveur.")
+    try:
+        return module.maybe_fire(force=bool(force))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)[:300])

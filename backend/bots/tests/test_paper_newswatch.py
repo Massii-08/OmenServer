@@ -21,7 +21,7 @@ from email.utils import format_datetime
 
 import pytest
 
-from backend.bots.paper import newswatch, store
+from backend.bots.paper import alerts, newswatch, store
 
 
 @pytest.fixture(autouse=True)
@@ -314,6 +314,42 @@ def test_run_once_no_config_does_nothing():
     assert counters == {"users": 0, "symbols": 0, "fetched": 0, "notified": 0, "errors": 0}
     assert fetch.calls == []   # ni le volet gov ni le volet par symbole ne tournent
     assert notifier.calls == []
+
+
+def test_le_canal_par_defaut_est_celui_du_paper_trading(monkeypatch):
+    """Spec §13 : sans ``tg_cfg``, la config vient de ``paper/alerts`` (bot
+    ORACLE, avec son repli interne), plus directement de celle du Harvester."""
+    store.save_portfolio("alice", _portfolio(["NESN.SW"]))
+    monkeypatch.setattr(alerts, "load_cfg", lambda path=None: None)
+    fetch = _FetchQueue()
+    counters = newswatch.run_once(now=NOW, fetch=fetch, sleep=lambda s: None)
+    assert counters["fetched"] == 0 and fetch.calls == []   # éteint : zéro réseau
+
+
+def test_le_notifieur_par_defaut_est_celui_du_paper_trading(monkeypatch):
+    """Et les messages partent par ``alerts.send``, pas par celui du Harvester."""
+    sent = []
+    monkeypatch.setattr(alerts, "load_cfg", lambda path=None: CFG)
+    monkeypatch.setattr(alerts, "send",
+                        lambda text, cfg=None, client=None: sent.append((text, cfg)) or True)
+    store.save_portfolio("hank", _portfolio(["TSLA"]))
+
+    fetch = _FetchQueue()
+    fetch.push(_rss([("Seed", "https://y/seed", NOW - timedelta(hours=10))]))
+    fetch.prime_gov()
+    newswatch.run_once(now=NOW, fetch=fetch, sleep=lambda s: None)   # amorçage muet
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push(_rss([
+        ("Seed", "https://y/seed", NOW - timedelta(hours=10)),
+        ("Tesla set to announce Q3 deliveries next week", "https://y/watch1", later),
+    ]))
+    fetch.prime_gov()
+    counters = newswatch.run_once(now=later, fetch=fetch, sleep=lambda s: None)
+
+    assert counters["notified"] == 1
+    assert len(sent) == 1 and sent[0][1] == CFG
+    assert "TSLA" in sent[0][0]
 
 
 def test_run_once_no_config_missing_chat_id_does_nothing():

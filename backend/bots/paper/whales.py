@@ -43,6 +43,9 @@ d'autre.
 
 Tout est injectable (``client``, ``sleep``, ``now``, ``notifier``) : les tests
 tournent 100 % hors ligne.
+
+Canal Telegram : ``paper/alerts.py`` (bot ORACLE, spec §13) — seuls les DÉFAUTS
+de ``notifier``/``tg_cfg`` ont changé, l'injection reste la même.
 """
 import json
 import os
@@ -852,14 +855,16 @@ def check_new_filings(client=None, notifier=None, tg_cfg=None,
     if tg_cfg is not None:
         cfg = tg_cfg
     else:
-        from backend.bots.harvester import telegram_config
-        cfg = telegram_config.load()
+        # Canal du paper trading (bot ORACLE, spec §13) : ``alerts`` lit le
+        # fichier dédié et retombe tout seul sur la config du Harvester.
+        from backend.bots.paper import alerts
+        cfg = alerts.load_cfg()
     if not (cfg or {}).get("token") or not (cfg or {}).get("chat_id"):
         return counters                            # éteint : zéro réseau
 
     if notifier is None:
-        from backend.bots.harvester import notify as _notify
-        notifier = _notify.send
+        from backend.bots.paper import alerts as _alerts
+        notifier = _alerts.send
 
     stamp = now if now is not None else _now()
     when = datetime.fromtimestamp(stamp).isoformat()

@@ -1,0 +1,877 @@
+"""Convergence — le radar se tait, et quand plusieurs signaux s'alignent, UN
+message (spec §13).
+
+Le problème résolu : le radar notifiait à chaque hypothèse et à chaque verdict,
+c'est-à-dire souvent, donc plus personne ne lisait. Il ACCUMULE désormais en
+silence dans sa mémoire (``radar.json`` + ``Radar.md``) ; ce module regarde
+périodiquement ce qui s'est accumulé et n'ouvre la bouche que lorsque
+**plusieurs facteurs indépendants convergent**.
+
+Doctrine, verbatim de l'utilisateur : « n'attends pas le parfait parce que ce
+sera déjà trop tard — il faut faire des hypothèses pour prévoir ». Le seuil est
+donc VOLONTAIREMENT bas (2 facteurs sur 5), et l'honnêteté est reportée sur
+l'affichage : chaque digest rappelle le bilan chiffré du radar (réussies /
+ratées / indécises). On risque, on ne se ment pas.
+
+Les cinq facteurs, tous mesurés sur une fenêtre de 48 h :
+
+======================  ====================================================
+``fresh_hyps``          au moins 2 hypothèses de radar ouvertes et fraîches
+``gov``                 au moins une annonce politique (sentiment ``gov``)
+``held_catalyst``       un catalyseur (``watch``) sur un titre DÉTENU
+``whale_filing``        un dépôt 13F d'un grand gérant
+``cross_source``        un même symbole vu dans ≥ 2 familles de sources
+======================  ====================================================
+
+Trois garde-fous contre le bavardage : seuil de 2 facteurs, **cooldown de 6 h**,
+et **empreinte des items contributifs** — si rien de neuf n'est entré depuis le
+dernier envoi, le message serait une redite et il ne part pas.
+
+Panne du LLM -> on envoie QUAND MÊME un résumé déterministe : la valeur est
+dans le DÉCLENCHEUR (« regarde maintenant »), pas dans la prose.
+
+Découpage habituel du lot : ``collect_factors`` / ``fingerprint`` /
+``should_fire`` / ``build_digest_prompt`` / ``fallback_digest`` sont PURS (zéro
+I/O, zéro réseau) ; ``maybe_fire`` et ``recent`` sont les seules fonctions
+d'I/O et toutes leurs dépendances (horloge, LLM, notifieur, config Telegram,
+état du radar) sont injectables -> tests 100 % hors-ligne.
+
+Les modules voisins (``radar``, ``newswatch``, ``whales``, ``store``, ``llm``,
+``alerts``) sont importés PARESSEUSEMENT et chaque source est best-effort : une
+source muette ne fait jamais tomber le calcul, elle rétrécit juste la matière.
+"""
+import hashlib
+import json
+import logging
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+logger = logging.getLogger("omenserver")
+
+STATE_NAME = "convergence.json"
+NOTE_NAME = "Signaux.md"
+
+# Fenêtre d'observation. Au-delà de 48 h, un signal a déjà été digéré par le
+# marché : le faire compter dans une « convergence » serait se raconter une
+# histoire après coup.
+WINDOW_H = 48
+
+# Seuil VOLONTAIREMENT bas (doctrine ci-dessus) : 2 facteurs sur 5.
+MIN_FACTORS = 2
+
+# Deux digests à moins de 6 h d'intervalle, c'est le bruit qu'on vient de tuer.
+COOLDOWN_H = 6
+
+MAX_HISTORY = 30
+MAX_ITEMS_IN_PROMPT = 40
+MAX_POSITIONS_IN_PROMPT = 20
+MAX_FALLBACK_ITEMS = 18
+MAX_FALLBACK_LINES = 25
+
+FACTOR_CODES = ("fresh_hyps", "gov", "held_catalyst", "whale_filing",
+                "cross_source")
+
+FACTOR_LABELS = {
+    "fresh_hyps": "plusieurs hypothèses fraîches du radar",
+    "gov": "annonce politique",
+    "held_catalyst": "catalyseur sur une position détenue",
+    "whale_filing": "dépôt SEC d'un grand gérant",
+    "cross_source": "même titre vu dans plusieurs sources",
+}
+
+# En-tête COMMUN au digest rédigé et au résumé de secours : quel que soit
+# l'état du LLM, le message porte la même signature dans le fil Telegram.
+HEADER = "[Simulateur] CONVERGENCE — plusieurs signaux s'alignent"
+
+FALLBACK_TAIL = "(LLM indisponible — résumé brut, à toi de composer le mouvement.)"
+
+
+# --------------------------------------------------------------------------- #
+# Horloge & dates — tout en UTC NAÏF
+#
+# Mêmes règles que ``radar._parse_dt`` (ISO, epoch, date courte), volontairement
+# RECOPIÉES ici : les fonctions pures de ce module doivent rester utilisables et
+# testables même si le radar n'est pas déployé, et une fonction pure n'a pas à
+# dépendre d'un module d'I/O.
+# --------------------------------------------------------------------------- #
+
+def _naive(value: datetime) -> datetime:
+    """Ramène un datetime en UTC naïf (sans fuseau)."""
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _now() -> datetime:
+    """Maintenant, en UTC naïf."""
+    return _naive(datetime.now(timezone.utc))
+
+
+def _parse_dt(value: Any) -> Optional[datetime]:
+    """Date depuis un ISO, un epoch ou ``AAAA-MM-JJ``. ``None`` si illisible."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, datetime):
+        return _naive(value)
+    if isinstance(value, (int, float)):
+        try:
+            return _naive(datetime.fromtimestamp(float(value), tz=timezone.utc))
+        except (OverflowError, OSError, ValueError):
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        # fromisoformat (3.9) ne connaît pas le suffixe « Z ».
+        return _naive(datetime.fromisoformat(text.replace("Z", "+00:00")))
+    except ValueError:
+        pass
+    try:
+        return _naive(datetime.fromtimestamp(float(text), tz=timezone.utc))
+    except (TypeError, ValueError, OverflowError, OSError):
+        pass
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _short_date(value: Any) -> str:
+    """Les 10 premiers caractères d'un ISO — pour les titres de notes."""
+    if not value:
+        return "date inconnue"
+    text = str(value)
+    return text[:10] if len(text) >= 10 else text
+
+
+# --------------------------------------------------------------------------- #
+# Petits utilitaires PURS
+# --------------------------------------------------------------------------- #
+
+def _dicts(values: Any) -> List[Dict[str, Any]]:
+    """Ne garde que les dictionnaires d'une séquence hétérogène."""
+    if not isinstance(values, (list, tuple)):
+        return []
+    return [v for v in values if isinstance(v, dict)]
+
+
+def _text(value: Any) -> str:
+    return str(value if value is not None else "").strip()
+
+
+def _upper(value: Any) -> str:
+    return _text(value).upper()
+
+
+def _hash(*parts: Any) -> str:
+    """Identifiant court et STABLE dérivé du contenu (quand la source n'en
+    fournit aucun : une dépêche sans lien, une hypothèse sans id)."""
+    raw = "|".join(_text(p) for p in parts)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def _stats_line(stats: Optional[Dict[str, Any]]) -> str:
+    """« X réussies / Y ratées / Z indécises » — la formule du radar, à
+    l'identique : le bilan lu dans un digest doit être littéralement celui
+    affiché par le radar."""
+    stats = stats or {}
+
+    def _n(key: str) -> int:
+        try:
+            return int(stats.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    return "%d réussies / %d ratées / %d indécises" % (
+        _n("hits"), _n("misses"), _n("unclear"))
+
+
+def _tickers(hyp: Dict[str, Any]) -> List[str]:
+    """Tickers d'une hypothèse, en majuscules, dédoublonnés dans l'ordre."""
+    raw = hyp.get("tickers")
+    if isinstance(raw, (list, tuple)):
+        values = [_upper(t) for t in raw]
+    else:
+        values = [_upper(raw)]
+    return list(dict.fromkeys([v for v in values if v]))
+
+
+def _sentiment(event: Dict[str, Any]) -> str:
+    return _text(event.get("sentiment")).lower()
+
+
+def _is_polar(event: Dict[str, Any]) -> bool:
+    """Dépêche à tonalité marquée (``pos``/``neg`` de ``newswatch.classify``).
+
+    On teste le PRÉFIXE : ``newswatch`` écrit ``pos``/``neg``, mais des états
+    plus anciens (ou un futur classifieur) peuvent porter ``positive`` /
+    ``negative`` — un facteur ne doit pas s'éteindre sur un synonyme.
+    """
+    tone = _sentiment(event)
+    return tone.startswith("pos") or tone.startswith("neg")
+
+
+def _within(value: Any, cutoff: datetime) -> bool:
+    """L'horodatage est-il dans la fenêtre ?
+
+    Une date ILLISIBLE rend ``True`` : même posture que ``radar._collect_events``
+    — mieux vaut un déclencheur de trop qu'un déclencheur perdu parce qu'une
+    source a changé son format de date.
+    """
+    when = _parse_dt(value)
+    return when is None or when >= cutoff
+
+
+# --------------------------------------------------------------------------- #
+# PUR — les facteurs
+# --------------------------------------------------------------------------- #
+
+def _item_hyp(hyp: Dict[str, Any]) -> Dict[str, Any]:
+    thesis = _text(hyp.get("thesis"))
+    tickers = _tickers(hyp)
+    return {
+        "src": "hyp",
+        "id": _text(hyp.get("id")) or _hash("hyp", thesis),
+        "title": thesis or "(hypothèse sans thèse)",
+        "symbol": ", ".join(tickers),
+        "ts": _text(hyp.get("created_at")),
+    }
+
+
+def _item_news(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Un item de presse. ``src`` distingue l'annonce politique (``gov``) du
+    reste (``news``) : le prompt ne les pèse pas pareil."""
+    title = _text(event.get("title"))
+    symbol = _upper(event.get("symbol"))
+    src = "gov" if _sentiment(event) == "gov" else "news"
+    return {
+        "src": src,
+        "id": _text(event.get("link")) or _hash("news", symbol, title),
+        "title": title or "(dépêche sans titre)",
+        "symbol": symbol,
+        "ts": _text(event.get("ts")),
+        "sentiment": _sentiment(event),
+    }
+
+
+def _item_filing(filing: Dict[str, Any]) -> Dict[str, Any]:
+    label = _text(filing.get("label")) or _text(filing.get("manager_id")) or "?"
+    form = _text(filing.get("form")) or "13F"
+    date = _text(filing.get("filing_date")) or _text(filing.get("ts"))
+    return {
+        "src": "filing",
+        "id": _text(filing.get("accession")) or _hash("filing", label, date),
+        "title": "%s — dépôt %s" % (label, form),
+        "symbol": "",
+        "ts": date,
+    }
+
+
+def collect_factors(now: Any, hypotheses: Any, news_events: Any,
+                    filing_events: Any, held_symbols: Any) -> Dict[str, Any]:
+    """Les cinq facteurs et les items qui les portent (PUR).
+
+    Rend ``{"factors": {code: bool, ...}, "items": [...]}``. Chaque item porte
+    un ``src`` (``hyp``/``news``/``gov``/``filing``) et un ``id`` STABLE : c'est
+    de ces ids que sort l'empreinte anti-redite.
+
+    ``items`` ne contient QUE des éléments contributifs — ceux qui portent au
+    moins un facteur VRAI. Un signal isolé qui n'allume rien n'a pas à peser
+    dans l'empreinte : sinon la moindre dépêche ferait repartir un digest
+    identique sur le fond.
+    """
+    now_dt = _parse_dt(now) or _now()
+    cutoff = now_dt - timedelta(hours=WINDOW_H)
+    held = {_upper(s) for s in (held_symbols or []) if _text(s)}
+
+    fresh_hyps = [h for h in _dicts(hypotheses)
+                  if (_text(h.get("status")) or "open") == "open"
+                  and _within(h.get("created_at"), cutoff)]
+    fresh_news = [e for e in _dicts(news_events) if _within(e.get("ts"), cutoff)]
+    fresh_filings = [f for f in _dicts(filing_events)
+                     if _within(f.get("ts") or f.get("filing_date"), cutoff)]
+
+    gov_events = [e for e in fresh_news if _sentiment(e) == "gov"]
+    watch_events = [e for e in fresh_news if _sentiment(e) == "watch"]
+    held_catalysts = [e for e in watch_events if _upper(e.get("symbol")) in held]
+
+    # --- cross_source : le même symbole vu par des familles DIFFÉRENTES ----- #
+    # Trois familles seulement (hypothèses / dépêches à tonalité / catalyseurs) :
+    # deux dépêches du même flux sur le même titre, ce n'est pas une
+    # convergence, c'est la même information comptée deux fois.
+    fam_hyp = {t for h in fresh_hyps for t in _tickers(h)}
+    fam_news = {_upper(e.get("symbol")) for e in fresh_news if _is_polar(e)}
+    fam_watch = {_upper(e.get("symbol")) for e in watch_events}
+    families = [{s for s in fam if s} for fam in (fam_hyp, fam_news, fam_watch)]
+
+    crossing = set()
+    for symbol in set().union(*families) if families else set():
+        if sum(1 for fam in families if symbol in fam) >= 2:
+            crossing.add(symbol)
+
+    cross_items: List[Dict[str, Any]] = []
+    for hyp in fresh_hyps:
+        if crossing.intersection(_tickers(hyp)):
+            cross_items.append(_item_hyp(hyp))
+    for event in fresh_news:
+        if _upper(event.get("symbol")) in crossing and (_is_polar(event)
+                                                        or _sentiment(event) == "watch"):
+            cross_items.append(_item_news(event))
+
+    by_factor: Dict[str, List[Dict[str, Any]]] = {
+        "fresh_hyps": [_item_hyp(h) for h in fresh_hyps] if len(fresh_hyps) >= 2 else [],
+        "gov": [_item_news(e) for e in gov_events],
+        "held_catalyst": [_item_news(e) for e in held_catalysts],
+        "whale_filing": [_item_filing(f) for f in fresh_filings],
+        "cross_source": cross_items,
+    }
+    factors = {code: bool(by_factor[code]) for code in FACTOR_CODES}
+
+    items: List[Dict[str, Any]] = []
+    seen = set()
+    for code in FACTOR_CODES:
+        if not factors[code]:
+            continue
+        for item in by_factor[code]:
+            key = (item["src"], item["id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(item)
+
+    return {"factors": factors, "items": items}
+
+
+def fingerprint(items: Any) -> str:
+    """Empreinte STABLE des items contributifs (PUR).
+
+    Indépendante de l'ordre (les sources ne rendent pas toujours leurs listes
+    dans le même sens) et qualifiée par la source : deux familles différentes
+    peuvent porter le même identifiant sans se confondre.
+    """
+    keys = sorted("%s:%s" % (_text(i.get("src")) or "?", _text(i.get("id")))
+                  for i in _dicts(items))
+    return hashlib.sha1("|".join(keys).encode("utf-8")).hexdigest()
+
+
+def _flags(factors: Any) -> Dict[str, bool]:
+    """Normalise l'entrée : on accepte le dict de drapeaux OU le retour complet
+    de ``collect_factors`` (une signature tolérante évite le bug idiot du
+    mauvais niveau — piège #61 du dépôt)."""
+    if isinstance(factors, dict) and isinstance(factors.get("factors"), dict):
+        factors = factors["factors"]
+    if not isinstance(factors, dict):
+        return {code: False for code in FACTOR_CODES}
+    return {code: bool(factors.get(code)) for code in FACTOR_CODES}
+
+
+def active_factors(factors: Any) -> List[str]:
+    """Les codes de facteurs VRAIS, dans l'ordre canonique (PUR)."""
+    flags = _flags(factors)
+    return [code for code in FACTOR_CODES if flags[code]]
+
+
+def should_fire(factors: Any, state: Any, now: Any, fingerprint_: Any,
+                force: bool = False) -> Tuple[bool, str]:
+    """Faut-il envoyer un digest ? (PUR) -> ``(bool, raison)``.
+
+    Raisons : ``ok`` / ``too_few`` (moins de 2 facteurs) / ``cooldown`` (moins
+    de 6 h depuis le dernier envoi) / ``same_items`` (exactement la même
+    matière que la dernière fois).
+
+    ``force`` saute le cooldown et l'empreinte — PAS le seuil de facteurs : un
+    digest sans convergence n'a rien à dire, le forcer produirait justement le
+    bruit qu'on vient de supprimer.
+
+    Un ``last_fired`` situé dans le FUTUR (horloge décalée, état recopié depuis
+    une autre machine) est IGNORÉ plutôt que respecté : sinon le cooldown se
+    verrouillerait pour toujours (leçon du piège #66a).
+    """
+    state = state if isinstance(state, dict) else {}
+    if len(active_factors(factors)) < MIN_FACTORS:
+        return False, "too_few"
+    if force:
+        return True, "ok"
+
+    now_dt = _parse_dt(now) or _now()
+    last = _parse_dt(state.get("last_fired"))
+    if last is not None and last <= now_dt and (now_dt - last) < timedelta(hours=COOLDOWN_H):
+        return False, "cooldown"
+
+    fp = _text(fingerprint_)
+    if fp and fp == _text(state.get("last_fingerprint")):
+        return False, "same_items"
+    return True, "ok"
+
+
+# --------------------------------------------------------------------------- #
+# PUR — le prompt et son filet de secours
+# --------------------------------------------------------------------------- #
+
+def _item_line(item: Dict[str, Any]) -> str:
+    """Une ligne d'item, même forme dans le prompt et dans le résumé brut."""
+    symbol = _text(item.get("symbol"))
+    return "- [%s] %s%s%s" % (
+        _text(item.get("src")) or "?",
+        _text(item.get("title")) or "(sans titre)",
+        (" — %s" % symbol) if symbol else "",
+        (" — %s" % _short_date(item.get("ts"))) if item.get("ts") else "",
+    )
+
+
+def build_digest_prompt(factors: Any, items: Any, stats: Any, positions: Any,
+                        now_iso: str) -> str:
+    """Le prompt du digest de convergence (PUR).
+
+    Il demande explicitement des MOUVEMENTS À JOUER — c'est la demande de
+    l'utilisateur, qui veut du risque assumé et pas une revue de presse — tout
+    en interdisant les deux dérives : le vocabulaire de la certitude et le
+    conseil d'investissement réel.
+    """
+    flags = _flags(factors)
+    rows = _dicts(items)[:MAX_ITEMS_IN_PROMPT]
+    lines: List[str] = []
+
+    lines.append(
+        "Tu es le conseiller d'un SIMULATEUR de trading (argent FICTIF, "
+        "utilisateur débutant, résident suisse, cours différés 15 min).")
+    lines.append("Date du jour : %s." % (now_iso or "inconnue"))
+    lines.append("")
+    lines.append(
+        "Cet utilisateur VEUT du risque ASSUMÉ : il apprend à parier et à "
+        "dimensionner, pas à attendre le signal parfait. Sa doctrine : "
+        "« n'attends pas le parfait, ce serait déjà trop tard — il faut faire "
+        "des hypothèses pour prévoir ». Tu es donc DIRECT et ASSERTIF, tu le "
+        "tutoies, et tu proposes des mouvements — en assumant que ce sont des "
+        "PARIS raisonnés, jamais des prédictions.")
+    lines.append("")
+
+    lines.append("POURQUOI CE MESSAGE PART MAINTENANT — facteurs alignés :")
+    for code in FACTOR_CODES:
+        if flags[code]:
+            lines.append("- %s (%s)" % (FACTOR_LABELS[code], code))
+    lines.append("")
+
+    lines.append("MATIÈRE (48 h) — tu n'as le droit d'utiliser QUE ceci :")
+    if rows:
+        for item in rows:
+            lines.append(_item_line(item))
+    else:
+        lines.append("- (aucun item)")
+    lines.append("")
+
+    lines.append("POSITIONS ACTUELLEMENT DÉTENUES DANS LE SIMULATEUR :")
+    held = _dicts(positions)[:MAX_POSITIONS_IN_PROMPT]
+    if held:
+        for pos in held:
+            lines.append("- %s %s x%s" % (
+                _upper(pos.get("symbol")) or "?",
+                _text(pos.get("side")) or "long",
+                _text(pos.get("qty")) or "?"))
+    else:
+        lines.append("- (aucune)")
+    lines.append("")
+
+    lines.append("BILAN CUMULÉ DU RADAR : %s." % _stats_line(stats))
+    lines.append("")
+
+    lines.append("STRUCTURE IMPOSÉE DE TA RÉPONSE, dans cet ordre :")
+    lines.append(
+        "1. RÉSUMÉ — 3 à 5 lignes : ce qui converge, et pourquoi ça compte "
+        "maintenant.")
+    lines.append(
+        "2. Un bloc titré exactement « MOUVEMENTS À JOUER (simulateur) » : 2 à "
+        "4 mouvements, chacun sur ce moule — direction (achat/vente à "
+        "découvert) + ticker(s) Yahoo + thèse en UNE ligne + horizon en jours "
+        "+ risque suggéré entre 0,5 % et 1 % du capital + « invalidé si : … ».")
+    lines.append(
+        "3. Une dernière ligne rappelant le bilan du radar : %s."
+        % _stats_line(stats))
+    lines.append("")
+
+    lines.append("INTERDITS ABSOLUS :")
+    lines.append(
+        "- les mots « sûr » et « garanti », et tout vocabulaire de la "
+        "certitude : ce sont des paris, tu le dis ;")
+    lines.append(
+        "- toute recommandation d'acheter ou de vendre avec de l'ARGENT RÉEL : "
+        "on est dans un simulateur d'apprentissage ;")
+    lines.append(
+        "- inventer une donnée, un chiffre ou un événement qui n'est pas dans "
+        "la matière ci-dessus.")
+    lines.append("")
+    lines.append("Réponds en français, sans emojis, sans titres markdown "
+                 "pompeux, 150 à 400 mots.")
+
+    return "\n".join(lines)
+
+
+def fallback_digest(factors: Any, items: Any, stats: Any) -> str:
+    """Le résumé de secours quand le LLM ne répond pas (PUR).
+
+    Déterministe, compact, et ENVOYÉ QUAND MÊME : la valeur du digest est le
+    déclencheur (« regarde maintenant, voici ce qui s'est aligné »), pas la
+    prose. Borné à ``MAX_FALLBACK_LINES`` (25) lignes pour rester lisible sur
+    un téléphone.
+    """
+    flags = _flags(factors)
+    rows = _dicts(items)
+    labels = [FACTOR_LABELS[c] for c in FACTOR_CODES if flags[c]] or ["(aucun)"]
+
+    lines = [HEADER, "Facteurs alignés : %s." % ", ".join(labels)]
+    for item in rows[:MAX_FALLBACK_ITEMS]:
+        lines.append(_item_line(item))
+    extra = len(rows) - MAX_FALLBACK_ITEMS
+    if extra > 0:
+        lines.append("- … et %d autre(s) élément(s)." % extra)
+    lines.append("Bilan du radar : %s." % _stats_line(stats))
+    lines.append(FALLBACK_TAIL)
+    return "\n".join(lines[:MAX_FALLBACK_LINES])
+
+
+def with_header(text: Any) -> str:
+    """Préfixe le digest de l'en-tête commun (idempotent : le résumé de secours
+    le porte déjà)."""
+    body = _text(text)
+    if body.startswith(HEADER):
+        return body
+    return "%s\n%s" % (HEADER, body) if body else HEADER
+
+
+def format_note(digest: str, now_iso: str, factors: Any, used_llm: bool) -> str:
+    """Bloc markdown appendable à ``Signaux.md`` (PUR) — même convention que le
+    carnet du coach et ``Radar.md`` : ``## date — titre``, bloc terminé par une
+    ligne vide pour que deux appends restent lisibles.
+
+    Le titre ne porte que les trois premiers facteurs : une ligne de titre de
+    200 caractères n'est plus un titre, et le détail complet est de toute façon
+    dans le digest juste en dessous.
+    """
+    codes = active_factors(factors)
+    labels = [FACTOR_LABELS[c] for c in codes[:3]] or ["(aucun)"]
+    if len(codes) > 3:
+        labels.append("+%d" % (len(codes) - 3))
+    lines = [
+        "## %s — convergence (%s)" % (_short_date(now_iso), ", ".join(labels)),
+        "",
+        _text(digest),
+        "",
+        "- Rédigé par le modèle." if used_llm
+        else "- Résumé de secours (modèle indisponible).",
+        "- Ce sont des paris de simulateur, notés par le radar à l'échéance.",
+        "",
+        "[[Radar]] · [[Journal]]",
+        "",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------- #
+# État persistant — data/paper_trading/convergence.json
+#
+# Écriture ATOMIQUE 0o600 (patron du projet) : le temporaire NAÎT en 0o600 via
+# ``os.open``, ``os.replace`` bascule d'un coup.
+# --------------------------------------------------------------------------- #
+
+def _store():
+    """Le module de persistance du paper trading (import paresseux)."""
+    from backend.bots.paper import store
+    return store
+
+
+def state_path() -> Path:
+    """Chemin du fichier d'état, relu à CHAQUE appel depuis ``store.DATA_DIR``
+    (un test qui isole ce répertoire isole aussi la convergence)."""
+    return Path(_store().DATA_DIR) / STATE_NAME
+
+
+def blank_state() -> Dict[str, Any]:
+    """État vierge (PUR) — la forme canonique, en un seul endroit."""
+    return {"last_fired": None, "last_fingerprint": None, "history": []}
+
+
+def load_state() -> Dict[str, Any]:
+    """Charge l'état. Absent, illisible ou déformé -> état vierge."""
+    state = blank_state()
+    try:
+        path = state_path()
+        if not path.is_file():
+            return state
+        with open(str(path), "r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except (OSError, ValueError, ImportError):
+        return state
+    if not isinstance(raw, dict):
+        return state
+    last_fired = raw.get("last_fired")
+    state["last_fired"] = last_fired if isinstance(last_fired, str) else None
+    fp = raw.get("last_fingerprint")
+    state["last_fingerprint"] = fp if isinstance(fp, str) else None
+    history = raw.get("history")
+    if isinstance(history, list):
+        state["history"] = [h for h in history if isinstance(h, dict)][:MAX_HISTORY]
+    return state
+
+
+def save_state(state: Dict[str, Any]) -> None:
+    """Persiste l'état de façon atomique, 0o600."""
+    path = state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.parent / (".%s.tmp-%d" % (path.name, os.getpid()))
+    fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    except (AttributeError, OSError):
+        pass
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(state, handle, ensure_ascii=False, indent=2)
+        os.replace(str(tmp_path), str(path))
+    except Exception:
+        try:
+            os.remove(str(tmp_path))
+        except OSError:
+            pass
+        raise
+
+
+# --------------------------------------------------------------------------- #
+# I/O — collecte des entrées, toutes best-effort
+# --------------------------------------------------------------------------- #
+
+def _default_llm(prompt: str) -> str:
+    """Le CLI Claude via ``paper/llm.py`` (texte brut)."""
+    from backend.bots.paper import llm as llm_mod
+    return llm_mod._claude_text(prompt)
+
+
+def _radar_state(fetch_state: Optional[Callable[[], Any]]) -> Dict[str, Any]:
+    """L'état du radar : ses hypothèses et son bilan. Injectable pour les tests
+    (et pour un futur appelant qui l'aurait déjà en main)."""
+    try:
+        if fetch_state is not None:
+            state = fetch_state()
+        else:
+            from backend.bots.paper import radar
+            state = radar.load_state()
+    except Exception:      # noqa: BLE001 — radar absent ou en panne
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _users() -> List[str]:
+    """Les comptes ayant un portefeuille — la liste du RADAR (source unique :
+    deux listes divergentes écriraient les notes chez des gens différents)."""
+    try:
+        from backend.bots.paper import radar
+        return list(radar._users_with_portfolio() or [])
+    except Exception:      # noqa: BLE001
+        return []
+
+
+def _collect_news(users: List[str]) -> List[Dict[str, Any]]:
+    """Les dépêches récentes de tous les comptes, dédupliquées par lien.
+
+    ``newswatch.recent_events`` fusionne déjà les événements politiques
+    GLOBAUX dans le retour de chaque utilisateur : sans déduplication, une
+    annonce politique compterait autant de fois qu'il y a de comptes.
+    """
+    try:
+        from backend.bots.paper import newswatch
+    except Exception:      # noqa: BLE001
+        return []
+
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for username in users:
+        try:
+            events = newswatch.recent_events(username) or []
+        except Exception:  # noqa: BLE001 — une source muette ne casse rien
+            continue
+        for event in _dicts(events):
+            key = _text(event.get("link")) or "%s|%s" % (
+                _text(event.get("symbol")), _text(event.get("title")))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(event)
+    return out
+
+
+def _collect_filings() -> List[Dict[str, Any]]:
+    """Les dépôts 13F détectés (best-effort)."""
+    try:
+        from backend.bots.paper import whales
+        return _dicts(whales.recent_filing_events() or [])
+    except Exception:      # noqa: BLE001
+        return []
+
+
+def _collect_positions(users: List[str]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """``(positions, symboles détenus)`` de tous les comptes (best-effort).
+
+    Le simulateur est mono-utilisateur en pratique ; on additionne quand même
+    les comptes pour que le facteur « catalyseur sur une position détenue » ne
+    dépende pas de QUI a ouvert la ligne.
+    """
+    positions: List[Dict[str, Any]] = []
+    held: List[str] = []
+    try:
+        store = _store()
+    except Exception:      # noqa: BLE001
+        return positions, held
+
+    for username in users:
+        try:
+            portfolio = store.load_portfolio(username) or {}
+        except Exception:  # noqa: BLE001
+            continue
+        for pos in _dicts(portfolio.get("positions")):
+            symbol = _upper(pos.get("symbol"))
+            if not symbol:
+                continue
+            positions.append({"symbol": symbol,
+                              "side": _text(pos.get("side")) or "long",
+                              "qty": pos.get("qty")})
+            if symbol not in held:
+                held.append(symbol)
+    return positions, held
+
+
+def _note_all(users: List[str], text: str) -> None:
+    """Appende un bloc à ``Signaux.md`` de CHAQUE compte. Best-effort : une
+    note qui échoue ne doit jamais faire perdre l'état."""
+    try:
+        store = _store()
+    except Exception:      # noqa: BLE001
+        return
+    for username in users:
+        try:
+            store.append_note(username, NOTE_NAME, text)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _send(notifier: Optional[Callable[[str, Dict[str, Any]], Any]],
+          text: str, cfg: Dict[str, Any]) -> bool:
+    """Envoi best-effort. Le notifieur injecté a la même signature que celui du
+    radar et du newswatch : ``(texte, cfg) -> bool``."""
+    try:
+        if notifier is not None:
+            return bool(notifier(text, cfg))
+        from backend.bots.paper import alerts
+        return bool(alerts.send(text, cfg))
+    except Exception:      # noqa: BLE001 — ne fuite jamais le jeton
+        return False
+
+
+# --------------------------------------------------------------------------- #
+# I/O — le déclencheur
+# --------------------------------------------------------------------------- #
+
+def maybe_fire(now: Any = None,
+               llm: Optional[Callable[[str], str]] = None,
+               notifier: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+               tg_cfg: Optional[Dict[str, Any]] = None,
+               fetch_state: Optional[Callable[[], Any]] = None,
+               force: bool = False) -> Dict[str, Any]:
+    """Regarde ce qui s'est accumulé et envoie UN digest si ça converge.
+
+    Retourne ``{fired, reason, factors, sent, llm}``. ``fired`` dit si un
+    digest est parti (ou a tenté de partir), ``reason`` pourquoi pas
+    (``too_few``/``cooldown``/``same_items``/``no_telegram``), ``sent`` si
+    Telegram a accusé réception, ``llm`` si la prose vient du modèle.
+
+    Appelée à la fin de chaque passage du radar (3×/jour) et par
+    ``POST /api/paper/digest/run``. Toutes les dépendances sont injectables ->
+    tests 100 % hors-ligne.
+
+    **L'état est armé même si l'envoi Telegram échoue** : le cooldown et
+    l'empreinte protègent de la REDITE, et une panne de réseau qui les laisserait
+    désarmés ferait repartir le même message à chaque passage du radar. Un
+    digest perdu se rattrape au prochain signal ; une boucle de redites, non.
+    En revanche, **aucun canal configuré n'arme rien** : le message n'a jamais
+    été composé pour personne, il doit pouvoir partir dès qu'un canal existe.
+    """
+    now_dt = _parse_dt(now) if now is not None else _now()
+    if now_dt is None:
+        now_dt = _now()
+    now_iso = now_dt.isoformat()
+
+    radar_state = _radar_state(fetch_state)
+    hypotheses = radar_state.get("hypotheses") if isinstance(radar_state, dict) else []
+    stats = radar_state.get("stats") if isinstance(radar_state, dict) else {}
+
+    users = _users()
+    news = _collect_news(users)
+    filings = _collect_filings()
+    positions, held = _collect_positions(users)
+
+    collected = collect_factors(now_dt, hypotheses, news, filings, held)
+    flags = collected["factors"]
+    items = collected["items"]
+    fp = fingerprint(items)
+
+    state = load_state()
+    ok, reason = should_fire(flags, state, now_dt, fp, force=force)
+    if not ok:
+        return {"fired": False, "reason": reason, "factors": flags,
+                "sent": False, "llm": False}
+
+    cfg = tg_cfg
+    if cfg is None:
+        try:
+            from backend.bots.paper import alerts
+            cfg = alerts.load_cfg()
+        except Exception:  # noqa: BLE001
+            cfg = None
+    if not (cfg or {}).get("token") or not (cfg or {}).get("chat_id"):
+        logger.debug("paper convergence: convergence détectée mais aucun canal")
+        return {"fired": False, "reason": "no_telegram", "factors": flags,
+                "sent": False, "llm": False}
+
+    used_llm = True
+    try:
+        text = (llm or _default_llm)(
+            build_digest_prompt(flags, items, stats, positions, now_iso))
+        text = _text(text)
+        if not text:
+            raise RuntimeError("digest vide")
+    except Exception:      # noqa: BLE001 — LLM muet : on envoie le résumé brut
+        used_llm = False
+        text = fallback_digest(flags, items, stats)
+    message = with_header(text)
+
+    sent = _send(notifier, message, cfg)
+
+    state["last_fired"] = now_iso
+    state["last_fingerprint"] = fp
+    entry = {
+        "ts": now_iso,
+        "factors": active_factors(flags),
+        "n_items": len(items),
+        "digest": message,
+        "llm": used_llm,
+    }
+    state["history"] = ([entry] + list(state.get("history") or []))[:MAX_HISTORY]
+    try:
+        save_state(state)
+    except (OSError, ImportError):
+        logger.warning("paper convergence: état non persisté")
+
+    _note_all(users, format_note(message, now_iso, flags, used_llm))
+    return {"fired": True, "reason": "ok", "factors": flags,
+            "sent": sent, "llm": used_llm}
+
+
+def recent(limit: int = 10) -> Dict[str, Any]:
+    """CONTRAT PUBLIC pour le router : les derniers digests, le plus récent en
+    tête (l'historique est déjà stocké dans cet ordre)."""
+    try:
+        limit = max(0, int(limit))
+    except (TypeError, ValueError):
+        limit = 10
+    state = load_state()
+    return {"history": list(state.get("history") or [])[:limit]}

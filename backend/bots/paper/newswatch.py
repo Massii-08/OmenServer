@@ -21,9 +21,10 @@ seulement après.
 Séparation stricte PUR / I-O (même règle que le reste du lot, cf. store.py) :
   - PUR  : parse_rss / classify / classify_gov / format_message /
            format_gov_message -- zéro I/O, 100% testable hors-ligne.
-  - I/O  : tout le reste -- fetch réseau (curl_cffi), Telegram (notify.py /
-           telegram_config.py), lecture/écriture des états "vu" sur disque.
-           fetch/notifier/tg_cfg/sleep sont TOUS injectables dans run_once().
+  - I/O  : tout le reste -- fetch réseau (curl_cffi), Telegram (paper/alerts.py
+           -- le bot ORACLE, spec §13), lecture/écriture des états "vu" sur
+           disque. fetch/notifier/tg_cfg/sleep sont TOUS injectables dans
+           run_once().
 
 Pas de configuration Telegram -> le watcher NE FAIT RIEN (aucun accès disque,
 aucun accès réseau, PAS MÊME le volet politique global) : silencieux, log
@@ -39,6 +40,10 @@ d'éteindre.
 Écriture atomique 0o600 pour les deux, même patron que store.py /
 telegram_config.py / unblocker_config.py (le fichier tmp NAÎT en 0o600 via
 os.open, jamais un open()+chmod() qui laisserait une fenêtre world-readable).
+
+Canal Telegram : ``paper/alerts.py`` (bot Oracle, repli sur la config du
+Harvester). Les paramètres ``notifier``/``tg_cfg`` restent injectables — seuls
+les DÉFAUTS ont changé.
 
 recent_events(username) FUSIONNE désormais les événements propres à
 l'utilisateur ET les événements politiques globaux (sentiment "gov", symbole
@@ -62,8 +67,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
-from backend.bots.harvester import notify, telegram_config
-from backend.bots.paper import store
+from backend.bots.paper import alerts, store
 
 logger = logging.getLogger("omenserver")
 
@@ -542,7 +546,7 @@ def run_once(now: Optional[datetime] = None,
     """
     counters = {"users": 0, "symbols": 0, "fetched": 0, "notified": 0, "errors": 0}
 
-    cfg = tg_cfg if tg_cfg is not None else telegram_config.load()
+    cfg = tg_cfg if tg_cfg is not None else (alerts.load_cfg() or {})
     if not cfg.get("token") or not cfg.get("chat_id"):
         logger.debug("paper newswatch: Telegram non configuré, rien à faire")
         return counters
@@ -551,7 +555,7 @@ def run_once(now: Optional[datetime] = None,
     if now_dt.tzinfo is None:
         now_dt = now_dt.replace(tzinfo=timezone.utc)
     fetch_fn = fetch if fetch is not None else _fetch_rss
-    notify_fn = notifier if notifier is not None else notify.send
+    notify_fn = notifier if notifier is not None else alerts.send
     sleep_fn = sleep if sleep is not None else time.sleep
 
     first_call = True

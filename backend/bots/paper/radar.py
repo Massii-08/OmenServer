@@ -6,9 +6,18 @@ ne veux pas du sûr : prends des risques avec moi. »
 
 Le radar lit ce que voient les autres capteurs du module (la presse suivie par
 ``newswatch``, les dépôts 13F suivis par ``whales``, les tendances sociales du
-moteur Market Pulse), en tire 0 à 3 **hypothèses spéculatives assumées**, les
-notifie — puis, et c'est le cœur, **LES NOTE automatiquement à l'échéance** et
-tient un bilan cumulé public.
+moteur Market Pulse), en tire 0 à 3 **hypothèses spéculatives assumées** —
+puis, et c'est le cœur, **LES NOTE automatiquement à l'échéance** et tient un
+bilan cumulé public.
+
+⚠️ **Le radar n'envoie plus RIEN sur Telegram** (spec §13) : ni à la naissance
+d'une hypothèse, ni au verdict. Il notifiait à chaque signal, c'est-à-dire
+souvent, donc plus personne ne lisait. Tout va désormais à l'état et au carnet
+(``Radar.md``), en SILENCE ; la parole est déléguée à ``convergence.py``, qui
+n'ouvre la bouche que lorsque plusieurs facteurs indépendants s'alignent. Les
+deux formateurs (``format_alert``/``format_verdict``) restent en place : ils
+sont la mise en forme de RÉFÉRENCE d'une hypothèse et de son verdict, à
+disposition de l'UI et de la convergence.
 
 Doctrine du projet (leçon Oracle) : **un pari non scoré est de l'astrologie.**
 Toute hypothèse naît avec sa date d'échéance, ses tickers de mesure et son
@@ -40,6 +49,7 @@ manque, et chaque source est best-effort — une source muette ne fait jamais
 tomber le run, elle incrémente le compteur ``errors``.
 """
 import json
+import logging
 import os
 import re
 import sys
@@ -47,6 +57,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+logger = logging.getLogger("omenserver")
 
 # backend/bots/paper/radar.py -> racine projet = parents[3]
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -103,7 +115,17 @@ MAX_SCORED_IN_PROMPT = 12
 # Fichiers de ``data/paper_trading/`` qui ne sont PAS des portefeuilles.
 # ``<user>.coach.json`` et ``<user>.news_seen.json`` sont écartés par la regex
 # (leur radical porte un point) ; ceux-ci ne le sont pas -> liste explicite.
-_NON_USER_FILES = frozenset({STATE_NAME, "whales_cache.json"})
+# ⚠️ Les états des MODULES vivent dans le même répertoire que les comptes :
+# oublier l'un d'eux fabrique un utilisateur fantôme (« whales_watch » recevrait
+# des notes de carnet dans son propre vault). Tout nouvel état de module doit
+# être ajouté ici.
+_NON_USER_FILES = frozenset({
+    STATE_NAME,
+    "convergence.json",
+    "whales_cache.json",
+    "whales_watch.json",
+    "newswatch_global.json",
+})
 _USER_FILE_RE = re.compile(r"^([A-Za-z0-9_-]+)\.json$")
 
 
@@ -660,7 +682,11 @@ def _move_text(hyp: Optional[Dict[str, Any]]) -> str:
 
 
 def format_alert(hyp: Dict[str, Any], stats: Optional[Dict[str, Any]] = None) -> str:
-    """Le message d'alerte Telegram (PUR).
+    """Le message d'alerte d'une hypothèse (PUR).
+
+    ⚠️ Le radar ne l'envoie PLUS lui-même (spec §13) : il reste la mise en forme
+    de référence d'une hypothèse, réutilisable par la couche de convergence et
+    par l'UI.
 
     Sobre, et honnête dès la première ligne : « PARI, PAS UNE CERTITUDE ».
     Le bilan cumulé ferme le message — l'utilisateur voit le taux de réussite
@@ -684,7 +710,10 @@ def format_alert(hyp: Dict[str, Any], stats: Optional[Dict[str, Any]] = None) ->
 
 
 def format_verdict(hyp: Dict[str, Any], stats: Optional[Dict[str, Any]] = None) -> str:
-    """Le message Telegram du verdict à l'échéance (PUR). Court et factuel."""
+    """Le message du verdict à l'échéance (PUR). Court et factuel.
+
+    Plus envoyé par le radar (spec §13) — conservé au même titre que
+    ``format_alert`` : mise en forme de référence, réutilisable ailleurs."""
     hyp = hyp or {}
     outcome = _OUTCOME_FR.get(str(hyp.get("outcome") or ""), "indécise")
     return ("[Simulateur] Verdict radar : %s → %s (%s). Bilan : %s."
@@ -762,24 +791,6 @@ def _default_fetch_candles(symbol: str, range_: str, interval: str) -> Any:
     """Les bougies Yahoo via ``paper/quotes.py``."""
     from backend.bots.paper import quotes
     return quotes.get_candles(symbol, range_, interval)
-
-
-def _default_notifier(text: str, cfg: Dict[str, Any]) -> bool:
-    """Notif Telegram best-effort (module du Harvester, déjà en prod)."""
-    from backend.bots.harvester import notify
-    return bool(notify.send(text, cfg))
-
-
-def _load_tg_cfg() -> Dict[str, Any]:
-    """Config Telegram persistée. Absente/illisible -> ``{}`` (pas de notif,
-    mais le radar continue : contrairement au newswatch, il a de la valeur
-    par l'UI seule)."""
-    try:
-        from backend.bots.harvester import telegram_config
-        cfg = telegram_config.load()
-        return cfg if isinstance(cfg, dict) else {}
-    except Exception:      # noqa: BLE001 — best-effort, jamais bloquant
-        return {}
 
 
 def _social_module():
@@ -970,51 +981,20 @@ def _note_all(users: List[str], text: str) -> None:
             pass
 
 
-def _notify(notifier: Callable[[str, Dict[str, Any]], Any],
-            cfg: Optional[Dict[str, Any]], text: str) -> bool:
-    """Envoie une notif si (et seulement si) Telegram est configuré."""
-    if not cfg or not notifier:
-        return False
-    try:
-        return bool(notifier(text, cfg))
-    except Exception:  # noqa: BLE001 — best-effort, ne fuite jamais le token
-        return False
+def _score_and_generate(now_dt: datetime,
+                        llm: Callable[[str], str],
+                        fetch_candles: Callable[..., Any],
+                        social_fetch: Optional[Callable[[str], Any]],
+                        sleep: Optional[Callable[[float], None]]) -> Dict[str, Any]:
+    """Le tour de radar proprement dit — scoring puis génération, EN SILENCE.
 
-
-def run_once(now: Any = None,
-             llm: Optional[Callable[[str], str]] = None,
-             fetch_candles: Optional[Callable[..., Any]] = None,
-             notifier: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
-             tg_cfg: Optional[Dict[str, Any]] = None,
-             social_fetch: Optional[Callable[[str], Any]] = None,
-             sleep: Optional[Callable[[float], None]] = None) -> Dict[str, Any]:
-    """Un tour de radar : on NOTE d'abord, on génère ensuite.
-
-    Retourne ``{"generated", "notified", "scored", "errors"}``.
-
-    L'ordre n'est pas anodin : scorer d'abord libère des places dans la file
-    et met le bilan à jour AVANT que la nouvelle hypothèse ne l'affiche.
-
-    Toutes les dépendances sont injectables (``llm``, ``fetch_candles``,
-    ``notifier``, ``tg_cfg``, ``social_fetch``, ``sleep``, ``now``) → les
-    tests tournent 100 % hors-ligne.
-
-    ``tg_cfg`` non fourni -> chargé du disque ; ``{}`` explicite -> aucune
-    notification, mais la génération et le scoring tournent quand même (le
-    radar vaut par l'UI seule).
+    Extrait de ``run_once`` pour une raison précise : la boucle sort tôt dans
+    trois cas (file pleine, aucune matière, LLM muet), et la convergence doit
+    être consultée dans TOUS les cas — c'est même quand le radar n'a plus rien
+    à produire que ce qui s'est accumulé mérite un regard.
     """
     counters = {"generated": 0, "notified": 0, "scored": 0, "errors": 0}
-
-    now_dt = _parse_dt(now) if now is not None else _now()
-    if now_dt is None:
-        now_dt = _now()
     now_iso = now_dt.isoformat()
-
-    llm = llm or _default_llm
-    fetch_candles = fetch_candles or _default_fetch_candles
-    notifier = notifier or _default_notifier
-    if tg_cfg is None:
-        tg_cfg = _load_tg_cfg()
 
     state = load_state()
     hypotheses: List[Dict[str, Any]] = state["hypotheses"]
@@ -1045,9 +1025,9 @@ def run_once(now: Any = None,
         except (TypeError, ValueError):
             stats[key] = 1
         counters["scored"] += 1
+        # Le verdict va au carnet, PAS sur Telegram (spec §13) : le bilan reste
+        # lisible dans l'UI et dans ``Radar.md``, sans réveiller personne.
         _note_all(users, format_outcome_note(hyp))
-        if _notify(notifier, tg_cfg, format_verdict(hyp, stats)):
-            counters["notified"] += 1
 
     # ---- 2) GÉNÉRATION ---------------------------------------------------- #
     open_hyps = [h for h in hypotheses if h.get("status") == "open"]
@@ -1087,11 +1067,78 @@ def run_once(now: Any = None,
         item["move_pct"] = None
         hypotheses.append(item)
         counters["generated"] += 1
+        # Naissance silencieuse elle aussi : l'hypothèse s'accumule, c'est la
+        # convergence qui décidera si l'ensemble mérite un message.
         _note_all(users, format_hypothesis_note(item))
-        if _notify(notifier, tg_cfg, format_alert(item, stats)):
-            counters["notified"] += 1
 
     save_state(state)
+    return counters
+
+
+def _fire_convergence(now_dt: datetime,
+                      llm: Optional[Callable[[str], str]],
+                      notifier: Optional[Callable[[str, Dict[str, Any]], Any]],
+                      tg_cfg: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Consulte la couche de convergence à la fin du run — best-effort STRICT.
+
+    Le radar a déjà fait son travail et sauvé son état quand on arrive ici :
+    une convergence en panne ne doit jamais faire perdre un scoring. L'échec
+    est donc compté (``errors``) et logué, jamais propagé.
+    """
+    try:
+        from backend.bots.paper import convergence
+        result = convergence.maybe_fire(now=now_dt, llm=llm, notifier=notifier,
+                                        tg_cfg=tg_cfg) or {}
+    except Exception as exc:   # noqa: BLE001 — module absent ou bug interne
+        logger.warning("paper radar: convergence indisponible (%s)",
+                       type(exc).__name__)
+        return {"fired": False, "errors": 1, "notified": 0}
+    return {
+        "fired": bool(result.get("fired")),
+        "errors": 0,
+        "notified": 1 if result.get("sent") else 0,
+    }
+
+
+def run_once(now: Any = None,
+             llm: Optional[Callable[[str], str]] = None,
+             fetch_candles: Optional[Callable[..., Any]] = None,
+             notifier: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+             tg_cfg: Optional[Dict[str, Any]] = None,
+             social_fetch: Optional[Callable[[str], Any]] = None,
+             sleep: Optional[Callable[[float], None]] = None) -> Dict[str, Any]:
+    """Un tour de radar : on NOTE d'abord, on génère ensuite, on se tait — puis
+    on demande à la convergence si l'accumulation mérite UN message.
+
+    Retourne ``{"generated", "notified", "scored", "errors", "fired"}``.
+
+    L'ordre du scoring n'est pas anodin : scorer d'abord libère des places dans
+    la file et met le bilan à jour AVANT que la nouvelle hypothèse ne l'affiche.
+
+    ``notified`` ne compte PLUS les hypothèses ni les verdicts (le radar est
+    muet depuis la spec §13) : il vaut 1 quand le digest de convergence est
+    effectivement parti, 0 sinon. ``fired`` dit si ce digest a été déclenché.
+
+    Toutes les dépendances sont injectables (``llm``, ``fetch_candles``,
+    ``notifier``, ``tg_cfg``, ``social_fetch``, ``sleep``, ``now``) → les tests
+    tournent 100 % hors-ligne. ``notifier``/``tg_cfg`` ne servent plus qu'à la
+    convergence, à laquelle ils sont passés TELS QUELS : non fournis, c'est
+    ``paper/alerts.py`` (bot Oracle) qui tranche ; ``{}`` explicite éteint le
+    canal sans rien empêcher d'autre.
+    """
+    now_dt = _parse_dt(now) if now is not None else _now()
+    if now_dt is None:
+        now_dt = _now()
+
+    counters = _score_and_generate(now_dt,
+                                   llm or _default_llm,
+                                   fetch_candles or _default_fetch_candles,
+                                   social_fetch, sleep)
+
+    outcome = _fire_convergence(now_dt, llm, notifier, tg_cfg)
+    counters["errors"] += outcome["errors"]
+    counters["notified"] += outcome["notified"]
+    counters["fired"] = outcome["fired"]
     return counters
 
 

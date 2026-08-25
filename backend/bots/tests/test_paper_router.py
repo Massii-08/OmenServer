@@ -41,6 +41,9 @@ class Market(object):
         self.fx = {"CHF": 1.0, "USD": 0.88}
         self.candles = {}
         self.broken = set()
+        self.unknown = set()          # symboles que Yahoo ne connaît pas
+        self.meta_broken = set()      # métadonnées en panne, bougies OK
+        self.candle_calls = []
         self.results = []
         self.facts = {"symbol": "NESN.SW", "price": 100.0, "trend": "haussier"}
 
@@ -63,7 +66,16 @@ class Market(object):
     def get_candles(self, symbol, range_="5d", interval="1d"):
         if symbol in self.broken:
             raise quotes.QuoteError("cours indisponible pour %s" % symbol)
+        if symbol in self.unknown:
+            raise quotes.UnknownSymbol("symbole inconnu de Yahoo: %s" % symbol)
+        self.candle_calls.append((symbol, range_, interval))
         return list(self.candles.get(symbol, []))
+
+    def get_meta(self, symbol, range_="5d", interval="1d"):
+        if symbol in self.meta_broken:
+            raise quotes.QuoteError("métadonnées indisponibles pour %s" % symbol)
+        currency = self.prices[symbol][1] if symbol in self.prices else None
+        return {"symbol": symbol, "currency": currency}
 
     def search(self, q):
         return list(self.results)
@@ -80,7 +92,8 @@ def make_client(tmp_path, monkeypatch, role="admin"):
     monkeypatch.setattr(pr, "_now_iso", lambda: FIXED_NOW)
 
     market = Market()
-    for name in ("get_quote", "fx_to_chf", "get_candles", "search", "fiche_facts"):
+    for name in ("get_quote", "fx_to_chf", "get_candles", "get_meta", "search",
+                 "fiche_facts"):
         monkeypatch.setattr(quotes, name, getattr(market, name))
 
     monkeypatch.setattr(pr.llm, "ask_coach",
@@ -134,6 +147,9 @@ def test_player_role_is_refused_everywhere(tmp_path, monkeypatch):
     assert c.get("/api/paper/arena").status_code == 403
     assert c.get("/api/paper/news").status_code == 403
     assert c.get("/api/paper/radar").status_code == 403
+    assert c.get("/api/paper/digest").status_code == 403
+    assert c.post("/api/paper/digest/run").status_code == 403
+    assert c.get("/api/paper/candles?symbol=NESN.SW").status_code == 403
 
 
 def test_money_role_is_allowed(tmp_path, monkeypatch):
@@ -879,6 +895,158 @@ def test_radar_run_failure_is_502(tmp_path, monkeypatch):
     response = c.post("/api/paper/radar/run")
     assert response.status_code == 502
     assert "générateur" in response.json()["detail"]
+
+
+# ================================================================
+#  CONVERGENCE (digest Telegram, spec §13)
+# ================================================================
+
+def _fake_convergence(monkeypatch, **functions):
+    calls = []
+
+    def _maybe_fire(force=False):
+        calls.append(force)
+        return functions.get("result", {"fired": True, "reason": "ok",
+                                        "factors": {}, "sent": True, "llm": True})
+
+    module = FakeModule(recent=functions.get("recent", lambda: {"history": []}),
+                        maybe_fire=functions.get("maybe_fire", _maybe_fire))
+    monkeypatch.setattr(pr, "_convergence", lambda: module)
+    return calls
+
+
+def test_digest_read_and_run(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    history = {"history": [{"ts": "2026-08-24T12:00:00", "factors": ["gov"],
+                            "n_items": 3, "digest": "…", "llm": True}]}
+    calls = _fake_convergence(monkeypatch, recent=lambda: history)
+
+    assert c.get("/api/paper/digest").json() == history
+    body = c.post("/api/paper/digest/run").json()
+    assert body["fired"] is True and body["reason"] == "ok"
+    assert calls == [False]                     # sans ``force`` par défaut
+
+
+def test_digest_run_force_is_passed_through(tmp_path, monkeypatch):
+    """``force=true`` = la porte du test manuel : elle saute le cooldown de 6 h
+    et l'empreinte, mais c'est la convergence qui garde le seuil de facteurs."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    calls = _fake_convergence(monkeypatch)
+    assert c.post("/api/paper/digest/run?force=true").status_code == 200
+    assert calls == [True]
+
+
+def test_digest_run_without_convergence_still_answers(tmp_path, monkeypatch):
+    """Moins de deux facteurs : la réponse est explicite, pas une erreur."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    _fake_convergence(monkeypatch, result={"fired": False, "reason": "too_few",
+                                           "factors": {}, "sent": False,
+                                           "llm": False})
+    body = c.post("/api/paper/digest/run?force=true").json()
+    assert body == {"fired": False, "reason": "too_few", "factors": {},
+                    "sent": False, "llm": False}
+
+
+def test_digest_without_the_module(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def absent():
+        raise ImportError("no module named convergence")
+
+    monkeypatch.setattr(pr, "_convergence", absent)
+    # la LECTURE dégrade en silence...
+    assert c.get("/api/paper/digest").json() == {"history": []}
+    # ...mais une ACTION demandée qui ne peut pas avoir lieu se dit
+    assert c.post("/api/paper/digest/run").status_code == 503
+
+
+def test_digest_read_survives_a_broken_state(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom():
+        raise IOError("état illisible")
+
+    monkeypatch.setattr(pr, "_convergence", lambda: FakeModule(recent=boom))
+    body = c.get("/api/paper/digest").json()
+    assert body["history"] == [] and "error" in body
+
+
+def test_digest_run_failure_is_502(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom(force=False):
+        raise RuntimeError("le digest a échoué")
+
+    monkeypatch.setattr(pr, "_convergence",
+                        lambda: FakeModule(recent=lambda: {}, maybe_fire=boom))
+    response = c.post("/api/paper/digest/run")
+    assert response.status_code == 502
+    assert "digest" in response.json()["detail"]
+
+
+# ================================================================
+#  BOUGIES (graphique du frontend)
+# ================================================================
+
+def test_candles_happy_path(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(9), "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5},
+        # bougie du jour ENCORE OUVERTE : elle doit être servie telle quelle
+        {"ts": _ts(10), "open": 100.5, "high": None, "low": None, "close": None},
+    ]
+    body = c.get("/api/paper/candles?symbol=nesn.sw&range_=6mo&interval=1d").json()
+
+    assert body["symbol"] == "NESN.SW"           # normalisé en majuscules
+    assert body["currency"] == "CHF"
+    assert len(body["candles"]) == 2
+    assert body["candles"][1]["close"] is None
+    assert market.candle_calls == [("NESN.SW", "6mo", "1d")]
+
+
+def test_candles_default_window(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    c.get("/api/paper/candles?symbol=NESN.SW")
+    assert market.candle_calls == [("NESN.SW", "6mo", "1d")]
+
+
+def test_candles_requires_a_symbol(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.get("/api/paper/candles").status_code == 400
+    assert c.get("/api/paper/candles?symbol=%20").status_code == 400
+
+
+@pytest.mark.parametrize("query", [
+    "symbol=NESN.SW&range_=10y",        # fenêtre hors catalogue
+    "symbol=NESN.SW&interval=1m",       # intervalle hors catalogue
+    "symbol=NESN.SW&range_=",           # vide
+])
+def test_candles_refuses_an_unlisted_window(tmp_path, monkeypatch, query):
+    """Liste FERMÉE : on ne proxifie pas Yahoo en aveugle."""
+    c, market = make_client(tmp_path, monkeypatch)
+    assert c.get("/api/paper/candles?" + query).status_code == 400
+    assert market.candle_calls == []             # rien n'est même tenté
+
+
+def test_candles_unknown_symbol_is_404(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.unknown.add("XXXX")
+    assert c.get("/api/paper/candles?symbol=XXXX").status_code == 404
+
+
+def test_candles_quote_failure_is_502(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.broken.add("NESN.SW")
+    assert c.get("/api/paper/candles?symbol=NESN.SW").status_code == 502
+
+
+def test_candles_currency_is_best_effort(tmp_path, monkeypatch):
+    """Un graphique sans étiquette de devise reste lisible ; un 502 pour ça, non."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.candles["NESN.SW"] = [{"ts": _ts(9), "close": 100.0}]
+    market.meta_broken.add("NESN.SW")
+    body = c.get("/api/paper/candles?symbol=NESN.SW").json()
+    assert body["currency"] is None and len(body["candles"]) == 1
 
 
 # ================================================================

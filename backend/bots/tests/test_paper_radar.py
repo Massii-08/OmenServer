@@ -11,6 +11,11 @@ qui « ne prend pas »).
 Isolation disque : ``store.DATA_DIR`` est monkeypatché vers ``tmp_path``, ce
 qui isole du même coup l'état du radar (``state_path()`` le relit à chaque
 appel) et le carnet Markdown.
+
+Depuis la spec §13, le radar est MUET : le silence est verrouillé par des
+tests (un notifieur espion passé à ``run_once`` ne doit recevoir AUCUN appel,
+ni pour une hypothèse ni pour un verdict), et la couche de convergence est
+neutralisée par défaut pour qu'un test du radar ne mesure qu'un comportement.
 """
 import calendar
 import json
@@ -22,7 +27,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from backend.bots.paper import radar, store
+from backend.bots.paper import alerts, convergence, radar, store
 
 # La VRAIE collecte sociale, capturée avant que la fixture autouse ne la
 # neutralise : les 4 tests sociaux la réinstallent explicitement.
@@ -44,6 +49,26 @@ def _isolate_data_dir(tmp_path, monkeypatch):
 def _no_social(monkeypatch):
     """Par défaut : aucune requête sociale (les 2 tests dédiés la réactivent)."""
     monkeypatch.setattr(radar, "_collect_social", lambda *a, **k: ([], 0))
+
+
+@pytest.fixture(autouse=True)
+def _no_convergence(monkeypatch):
+    """Par défaut : la convergence est neutralisée.
+
+    ``run_once`` la consulte désormais à chaque passage ; sans ce garde-fou, la
+    plupart des tests du radar mesureraient DEUX comportements à la fois. Les
+    tests dédiés (section « convergence ») réinstallent un espion."""
+    monkeypatch.setattr(convergence, "maybe_fire",
+                        lambda **kwargs: {"fired": False, "reason": "too_few",
+                                          "factors": {}, "sent": False,
+                                          "llm": False})
+
+
+@pytest.fixture(autouse=True)
+def _no_telegram_channel(monkeypatch):
+    """Aucun test ne doit pouvoir lire la vraie config Telegram du dépôt (ni,
+    a fortiori, envoyer un message) : le canal est éteint par défaut."""
+    monkeypatch.setattr(alerts, "load_cfg", lambda path=None: None)
 
 
 @pytest.fixture
@@ -461,8 +486,13 @@ def test_load_state_tolere_une_forme_deformee():
 
 
 def test_users_with_portfolio_ecarte_les_fichiers_de_module(tmp_path):
+    """Les états des MODULES vivent dans le même répertoire que les comptes :
+    en oublier un fabrique un utilisateur fantôme, qui recevrait des notes de
+    carnet dans son propre vault."""
     for name in ("alice.json", "bob.json", "alice.coach.json",
-                 "alice.news_seen.json", "radar.json", "whales_cache.json"):
+                 "alice.news_seen.json", "radar.json", "whales_cache.json",
+                 "whales_watch.json", "newswatch_global.json",
+                 "convergence.json"):
         (tmp_path / name).write_text("{}", encoding="utf-8")
     assert radar._users_with_portfolio() == ["alice", "bob"]
 
@@ -471,13 +501,16 @@ def test_users_with_portfolio_ecarte_les_fichiers_de_module(tmp_path):
 # run_once — (a) génération
 # --------------------------------------------------------------------------- #
 
-def test_run_once_genere_notifie_et_ecrit_les_notes(sources, alice, tmp_path):
+def test_run_once_genere_ecrit_les_notes_et_se_tait(sources, alice, tmp_path):
+    """Spec §13 : les hypothèses s'accumulent en SILENCE (état + carnet)."""
     sources.events = [EVENT]
     sent = []
     out = radar.run_once(now=NOW, llm=_llm(TWO_HYPS), notifier=_notifier(sent),
                          tg_cfg=TG, fetch_candles=lambda *a: [])
 
-    assert out == {"generated": 2, "notified": 2, "scored": 0, "errors": 0}
+    assert out == {"generated": 2, "notified": 0, "scored": 0, "errors": 0,
+                   "fired": False}
+    assert sent == []            # <- le verrou : plus AUCUN envoi par hypothèse
 
     state = radar.load_state()
     assert [h["thesis"] for h in state["hypotheses"]] == ["T1", "T2"]
@@ -487,8 +520,6 @@ def test_run_once_genere_notifie_et_ecrit_les_notes(sources, alice, tmp_path):
         assert hyp["created_at"] == NOW.isoformat()
         assert len(hyp["id"]) == 8
     assert len({h["id"] for h in state["hypotheses"]}) == 2
-
-    assert all("PARI, PAS UNE CERTITUDE" in msg for msg in sent)
 
     note = (tmp_path / "alice-vault" / "Radar.md").read_text(encoding="utf-8")
     assert "T1" in note and "T2" in note
@@ -618,8 +649,8 @@ def test_run_once_score_a_l_echeance(sources, alice, tmp_path):
     assert hyp["scored_at"] == NOW.isoformat()
     assert state["stats"] == {"hits": 1, "misses": 0, "unclear": 0}
 
-    assert any(m.startswith("[Simulateur] Verdict radar :") and "réussie" in m
-               for m in sent)
+    # Le verdict ne part PLUS sur Telegram (spec §13) : il vit dans le carnet.
+    assert sent == []
     note = (tmp_path / "alice-vault" / "Radar.md").read_text(encoding="utf-8")
     assert "verdict : réussie (+8.0 %)" in note
 
@@ -695,7 +726,8 @@ def test_run_once_sans_matiere_n_appelle_pas_le_llm(sources, alice):
     out = radar.run_once(now=NOW, llm=_llm(TWO_HYPS, calls), tg_cfg={},
                          fetch_candles=lambda *a: [])
     assert calls == []
-    assert out == {"generated": 0, "notified": 0, "scored": 0, "errors": 0}
+    assert out == {"generated": 0, "notified": 0, "scored": 0, "errors": 0,
+                   "fired": False}
     assert radar.load_state() == radar.blank_state()
 
 
@@ -737,6 +769,85 @@ def test_run_once_notifieur_en_panne_ne_casse_rien(sources, alice):
                          fetch_candles=lambda *a: [])
     assert out["generated"] == 2 and out["notified"] == 0
     assert len(radar.load_state()["hypotheses"]) == 2
+
+
+# --------------------------------------------------------------------------- #
+# run_once — (g) passage de relais à la convergence (spec §13)
+# --------------------------------------------------------------------------- #
+
+def _convergence_spy(monkeypatch, result=None, boom=False):
+    """Espionne (ou casse) ``convergence.maybe_fire`` — rend la liste d'appels."""
+    calls = []
+
+    def _fake(**kwargs):
+        calls.append(kwargs)
+        if boom:
+            raise RuntimeError("convergence cassée")
+        return result if result is not None else {"fired": False, "sent": False}
+
+    monkeypatch.setattr(convergence, "maybe_fire", _fake)
+    return calls
+
+
+def test_run_once_passe_la_main_a_la_convergence_en_fin_de_course(
+        sources, alice, monkeypatch):
+    """Le radar se tait, mais il PRÉVIENT la couche qui, elle, a le droit de
+    parler — en lui passant ses propres dépendances injectées."""
+    sources.events = [EVENT]
+    sent = []
+    notifier = _notifier(sent)
+    llm = _llm(TWO_HYPS)
+    calls = _convergence_spy(monkeypatch, {"fired": True, "sent": True})
+
+    out = radar.run_once(now=NOW, llm=llm, notifier=notifier, tg_cfg=TG,
+                         fetch_candles=lambda *a: [])
+
+    assert len(calls) == 1
+    assert calls[0]["now"] == NOW
+    assert calls[0]["llm"] is llm
+    assert calls[0]["notifier"] is notifier
+    assert calls[0]["tg_cfg"] == TG
+    # Le seul message possible d'un run est celui de la convergence.
+    assert out["fired"] is True and out["notified"] == 1
+    assert out["generated"] == 2
+
+
+def test_run_once_consulte_la_convergence_meme_sans_matiere(sources, alice,
+                                                            monkeypatch):
+    """C'est justement quand le radar n'a plus rien à produire que ce qui s'est
+    accumulé mérite un regard : aucune sortie anticipée ne doit la sauter."""
+    calls = _convergence_spy(monkeypatch)
+    out = radar.run_once(now=NOW, llm=_llm(TWO_HYPS), tg_cfg={},
+                         fetch_candles=lambda *a: [])
+    assert len(calls) == 1 and out["generated"] == 0
+
+
+def test_run_once_consulte_la_convergence_meme_file_pleine(sources, alice,
+                                                           monkeypatch):
+    sources.events = [EVENT]
+    radar.save_state({
+        "hypotheses": [_hyp(id="h%d" % i, created_at=(NOW - timedelta(days=1)).isoformat(),
+                            horizon_days=30)
+                       for i in range(radar.MAX_OPEN)],
+        "stats": {"hits": 0, "misses": 0, "unclear": 0}})
+    calls = _convergence_spy(monkeypatch)
+    out = radar.run_once(now=NOW, llm=_llm(TWO_HYPS), tg_cfg={},
+                         fetch_candles=lambda *a: [])
+    assert len(calls) == 1 and out["generated"] == 0
+
+
+def test_run_once_convergence_en_panne_compte_une_erreur_sans_casser(
+        sources, alice, monkeypatch):
+    """Le radar a déjà fait son travail quand la convergence parle : une panne
+    de celle-ci ne doit jamais faire perdre un scoring."""
+    sources.events = [EVENT]
+    _convergence_spy(monkeypatch, boom=True)
+
+    out = radar.run_once(now=NOW, llm=_llm(TWO_HYPS), tg_cfg={},
+                         fetch_candles=lambda *a: [])
+
+    assert out["generated"] == 2 and out["errors"] == 1 and out["fired"] is False
+    assert len(radar.load_state()["hypotheses"]) == 2   # l'état est sauvé
 
 
 # --------------------------------------------------------------------------- #

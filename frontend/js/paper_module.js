@@ -47,6 +47,13 @@ const PaperModule = {
     _whaleLoading: false,     // le fetch SEC a froid dure ~10 s
     _whaleEvents: null,       // fil des derniers depots
     _radar: null,             // {stats, hypotheses}
+    _candles: {},             // cache '<symbole>|<periode>' -> {loading,error,data}
+    _chartRange: {},          // periode choisie PAR emplacement de graphique
+    _chartWanted: [],         // graphiques a charger apres le rendu courant
+    _chartBound: [],          // canvases equipes d'ecouteurs (nettoyes au dechargement)
+    _onChartResize: null,     // UN seul ecouteur window, retire avec les graphiques
+    _posOpen: null,           // position depliee dans la vue Portefeuille
+    _analysisSymbol: null,    // symbole de la derniere fiche d'analyse
     _tradeIdx: null,           // journal : trade ouvert en détail
     _postmortem: null,
     _answer: null,             // réponse du coach
@@ -79,6 +86,7 @@ const PaperModule = {
     unload() {
         if (this._refresh) { clearInterval(this._refresh); this._refresh = null; }
         if (this._searchTimer) { clearTimeout(this._searchTimer); this._searchTimer = null; }
+        this._disposeCharts();
         if (this._host && this._onClick) this._host.removeEventListener('click', this._onClick);
         if (this._host && this._onInput) {
             this._host.removeEventListener('input', this._onInput);
@@ -550,16 +558,24 @@ const PaperModule = {
         }
     },
 
+    // Un re-rendu detruit les canvases : on retire LEURS ecouteurs avant, on
+    // rebranche les nouveaux apres (l'ecouteur resize vit sur window, il ne
+    // meurt pas tout seul avec le DOM).
     _renderBody() {
-        if (this._tab === 'trade') return this._setBody(this._viewTrade());
-        if (this._tab === 'journal') return this._setBody(this._viewJournal());
-        if (this._tab === 'coach') return this._setBody(this._viewCoach());
-        if (this._tab === 'lessons') return this._setBody(this._viewLessons());
-        if (this._tab === 'arena') return this._setBody(this._viewArena());
-        if (this._tab === 'whales') return this._setBody(this._viewWhales());
-        if (this._tab === 'radar') return this._setBody(this._viewRadar());
-        this._setBody(this._viewPortfolio());
-        this._paintEquity();
+        this._disposeCharts();
+        this._chartWanted = [];
+        let html;
+        if (this._tab === 'trade') html = this._viewTrade();
+        else if (this._tab === 'journal') html = this._viewJournal();
+        else if (this._tab === 'coach') html = this._viewCoach();
+        else if (this._tab === 'lessons') html = this._viewLessons();
+        else if (this._tab === 'arena') html = this._viewArena();
+        else if (this._tab === 'whales') html = this._viewWhales();
+        else if (this._tab === 'radar') html = this._viewRadar();
+        else html = this._viewPortfolio();
+        this._setBody(html);
+        if (this._tab === 'portfolio') this._paintEquity();
+        this._mountCharts();
     },
 
     async refresh() {
@@ -761,7 +777,9 @@ const PaperModule = {
             const pnl = this._n(this._pickField(pos, ['pnl_chf', 'unrealized_pnl_chf', 'pnl']));
             const pnlPct = this._n(this._pickField(pos, ['pnl_pct', 'unrealized_pnl_pct']));
             const cur = pos.currency || '';
-            return '<tr>' +
+            return '<tr data-paper-act="pos-toggle" data-sym="' + esc(sym) + '" ' +
+                   'style="cursor:pointer;' +
+                   (this._posOpen === sym ? 'background:var(--bg-elev-2);' : '') + '">' +
                 '<td style="' + td + '">' +
                   '<span style="font-weight:600;">' + esc(sym) + '</span>' +
                   '<span style="font-size:12px;color:var(--text-dim);margin-left:6px;">' +
@@ -781,11 +799,15 @@ const PaperModule = {
                 '</td>' +
             '</tr>';
         }).join('');
-        return this._card(this._head(Lang.t('paper.positions_title')) +
+        // Clic sur une ligne -> le graphique de CETTE position se deplie dessous,
+        // avec ses reperes stop / PRU.
+        const open = this._posOpen ? this._positionChart(this._posOpen) : '';
+        return this._card(this._head(Lang.t('paper.positions_title'),
+                Lang.t('paper.positions_hint')) +
             this._table([
                 Lang.t('paper.col_symbol'), Lang.t('paper.col_qty'), Lang.t('paper.col_avg_price'),
                 Lang.t('paper.col_last'), Lang.t('paper.col_pnl'), Lang.t('paper.col_actions'),
-            ], body));
+            ], body)) + open;
     },
 
     _ordersCard() {
@@ -851,7 +873,11 @@ const PaperModule = {
     // =====================================================================
 
     _viewTrade() {
-        return this._searchCard() + this._orderCard();
+        // Le graphique se glisse ENTRE la recherche et le formulaire : c'est
+        // le moment ou on regarde la courbe avant de decider.
+        const chart = (this._pick && this._pick.symbol)
+            ? this._chartCard('trade', this._pick.symbol, this._pick.currency) : '';
+        return this._searchCard() + chart + this._orderCard();
     },
 
     _searchCard() {
@@ -1311,6 +1337,9 @@ const PaperModule = {
               '<button class="btn btn-primary" data-paper-act="analysis">' +
                 esc(Lang.t('paper.analysis_btn')) + '</button>' +
             '</div>' +
+            // Le graphique passe AU-DESSUS du texte : on lit la courbe, puis le commentaire.
+            ((this._analysis && this._analysisSymbol)
+                ? this._chartCard('analysis', this._analysisSymbol, '') : '') +
             (this._analysis ? this._panel(Lang.t('paper.analysis_title'), this._analysis) : '')
         );
     },
@@ -2028,6 +2057,603 @@ const PaperModule = {
         }
     },
 
+
+    // =====================================================================
+    //  GRAPHIQUE EN BOUGIES — canvas 2D pur, AUCUNE librairie, AUCUN CDN
+    // =====================================================================
+    //
+    // Un seul composant monte a trois endroits (Nouveau trade / Portefeuille /
+    // Analyse). Le dessin relit les tokens CSS a CHAQUE trace : dark et clair
+    // « Givre » sortent justes tous les deux, et un changement d'accent se
+    // rethemera au prochain trace (meme semantique que Chart.js dans ce projet).
+
+    // [periode API, intervalle API, cle du libelle]
+    _CHART_RANGES: [
+        ['5d', '15m', 'paper.chart_5d'],
+        ['1mo', '1d', 'paper.chart_1mo'],
+        ['6mo', '1d', 'paper.chart_6mo'],
+        ['1y', '1d', 'paper.chart_1y'],
+        ['5y', '1wk', 'paper.chart_5y'],
+    ],
+
+    _tok(name) {
+        try {
+            const v = getComputedStyle(document.documentElement).getPropertyValue(name);
+            return String(v || '').trim();
+        } catch (e) { return ''; }
+    },
+
+    _rangeOf(ctxKey) { return this._chartRange[ctxKey] || '6mo'; },
+
+    _intervalOf(range) {
+        for (let i = 0; i < this._CHART_RANGES.length; i++) {
+            if (this._CHART_RANGES[i][0] === range) return this._CHART_RANGES[i][1];
+        }
+        return '1d';
+    },
+
+    _candleKey(symbol, range) { return String(symbol) + '|' + String(range); },
+
+    setChartRange(ctxKey, range) {
+        if (!ctxKey || !range) return;
+        this._chartRange[ctxKey] = range;
+        this._renderBody();
+    },
+
+    // Rendu SYNCHRONE depuis le cache. Ce qui manque est empile dans
+    // _chartWanted et sera demande par _mountCharts, apres l'ecriture du DOM.
+    _chartCard(ctxKey, symbol, currency) {
+        if (!symbol) return '';
+        const range = this._rangeOf(ctxKey);
+        const interval = this._intervalOf(range);
+        const key = this._candleKey(symbol, range);
+        const st = this._candles[key];
+        if (!st) {
+            this._chartWanted.push({ symbol: symbol, range: range, interval: interval });
+        }
+        const pills = this._CHART_RANGES.map((r) =>
+            '<button class="paper-tab' + (r[0] === range ? ' active' : '') + '" ' +
+                'data-paper-act="chart-range" data-ctx="' + esc(ctxKey) + '" ' +
+                'data-range="' + esc(r[0]) + '">' + esc(Lang.t(r[2])) + '</button>'
+        ).join('');
+
+        let body;
+        if (!st || st.loading) {
+            body = this._muted(Lang.t('paper.chart_loading'));
+        } else if (st.error) {
+            body = '<div style="color:var(--danger);font-size:14px;line-height:1.55;">' +
+                esc(Lang.t('paper.chart_error')) + '</div>';
+        } else if (!st.data || !Array.isArray(st.data.candles) || !st.data.candles.length) {
+            body = this._muted(Lang.t('paper.chart_empty'));
+        } else {
+            body = '<canvas data-paper-chart="' + esc(ctxKey) + '" ' +
+                        'data-sym="' + esc(symbol) + '" data-range="' + esc(range) + '" ' +
+                        'style="width:100%;height:300px;display:block;touch-action:pan-y;"></canvas>' +
+                   this._chartLegend(symbol);
+        }
+        const cur = (st && st.data && st.data.currency) || currency || '';
+        return this._card(
+            '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px;">' +
+              '<span style="font-size:16px;font-weight:600;">' + esc(symbol) + '</span>' +
+              (cur ? '<span style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
+                  esc(cur) + '</span>' : '') +
+              '<div class="paper-tabs" style="margin:0 0 0 auto;">' + pills + '</div>' +
+            '</div>' + body
+        );
+    },
+
+    // Le graphique d'une position ouverte : memes bougies, plus ses reperes.
+    _positionChart(symbol) {
+        if (!symbol) return '';
+        const pos = this._positionOf(symbol);
+        const cur = pos ? (pos.currency || '') : '';
+        return this._chartCard('pos:' + symbol, symbol, cur);
+    },
+
+    _positionOf(symbol) {
+        if (!this._p || !symbol) return null;
+        const rows = this._p.positions || [];
+        for (let i = 0; i < rows.length; i++) {
+            if (String(rows[i] && rows[i].symbol) === String(symbol)) return rows[i];
+        }
+        return null;
+    },
+
+    _chartLegend(symbol) {
+        const ov = this._overlayFor(symbol);
+        const bits = [];
+        if (ov.trades.length) bits.push(Lang.t('paper.chart_legend_trades'));
+        if (ov.avg !== null) bits.push(Lang.t('paper.chart_legend_avg'));
+        if (ov.stop !== null) bits.push(Lang.t('paper.chart_legend_stop'));
+        if (!bits.length) return '';
+        return '<div style="font-size:11px;color:var(--text-dim);margin-top:6px;">' +
+            esc(bits.join(' · ')) + '</div>';
+    },
+
+    // Ce que le portefeuille sait de CE symbole : trades clos, prix de revient,
+    // stop de protection. Aucune invention : un champ absent reste null.
+    _overlayFor(symbol) {
+        const out = { trades: [], avg: null, stop: null, entry: null };
+        if (!this._p || !symbol) return out;
+        const sym = String(symbol);
+        (this._p.trades || []).forEach((t) => {
+            if (t && String(t.symbol) === sym) out.trades.push(t);
+        });
+        const pos = this._positionOf(sym);
+        if (pos) {
+            out.avg = this._n(this._pickField(pos, ['avg_price', 'entry_price']));
+            out.stop = this._n(this._pickField(pos, ['stop_loss', 'stop', 'planned_stop']));
+            out.entry = { at: this._pickField(pos, ['opened_at', 'entry_at']), price: out.avg };
+        }
+        return out;
+    },
+
+    // ------------------------------------------------------- chargement
+
+    async _loadCandles(symbol, range, interval) {
+        const key = this._candleKey(symbol, range);
+        if (this._candles[key]) return;
+        this._candles[key] = { loading: true, error: false, data: null };
+        let r = null;
+        try {
+            r = await Auth.apiCall('/api/paper/candles?symbol=' + encodeURIComponent(symbol) +
+                '&range_=' + encodeURIComponent(range) + '&interval=' + encodeURIComponent(interval));
+        } catch (e) { r = null; }
+        if (!r || !r.ok) {
+            this._candles[key] = { loading: false, error: true, data: null };
+        } else {
+            let d = null;
+            try { d = await r.json(); } catch (e) { d = null; }
+            this._candles[key] = { loading: false, error: !d, data: d };
+        }
+        this._renderBody();
+    },
+
+    // ------------------------------------------------------- montage / demontage
+
+    _mountCharts() {
+        const wanted = this._chartWanted || [];
+        this._chartWanted = [];
+        wanted.forEach((w) => { this._loadCandles(w.symbol, w.range, w.interval); });
+
+        const host = document.getElementById('paper-body');
+        if (!host) return;
+        const nodes = host.querySelectorAll('canvas[data-paper-chart]');
+        if (!nodes.length) return;
+        const list = [];
+        Array.prototype.forEach.call(nodes, (cv) => { this._bindChart(cv); list.push(cv); });
+        this._chartBound = list;
+        // UN seul ecouteur window pour tous les graphiques de la vue.
+        this._onChartResize = () => {
+            if (this._resizeTimer) clearTimeout(this._resizeTimer);
+            this._resizeTimer = setTimeout(() => {
+                this._resizeTimer = null;
+                (this._chartBound || []).forEach((cv) => this._paintChart(cv));
+            }, 120);
+        };
+        window.addEventListener('resize', this._onChartResize);
+        list.forEach((cv) => this._paintChart(cv));
+    },
+
+    _disposeCharts() {
+        (this._chartBound || []).forEach((cv) => {
+            if (!cv || !cv._paperOff) return;
+            cv._paperOff();
+            cv._paperOff = null;
+        });
+        this._chartBound = [];
+        if (this._onChartResize) {
+            window.removeEventListener('resize', this._onChartResize);
+            this._onChartResize = null;
+        }
+        if (this._resizeTimer) { clearTimeout(this._resizeTimer); this._resizeTimer = null; }
+    },
+
+    // Pointeur : la souris survole (crosshair suivi), le doigt TAPE (lecture
+    // ponctuelle, pas de crosshair colle sous le doigt).
+    _bindChart(cv) {
+        if (!cv || cv._paperOff) return;
+        const pick = (ev) => {
+            const rect = cv.getBoundingClientRect();
+            cv._paperHover = ev.clientX - rect.left;
+            this._paintChart(cv);
+        };
+        const onMove = (ev) => { if (ev.pointerType !== 'touch') pick(ev); };
+        const onDown = (ev) => pick(ev);
+        const onLeave = (ev) => {
+            if (ev.pointerType === 'touch') return;   // le tap doit rester lisible
+            cv._paperHover = null;
+            this._paintChart(cv);
+        };
+        cv.addEventListener('pointermove', onMove);
+        cv.addEventListener('pointerdown', onDown);
+        cv.addEventListener('pointerleave', onLeave);
+        cv._paperOff = () => {
+            cv.removeEventListener('pointermove', onMove);
+            cv.removeEventListener('pointerdown', onDown);
+            cv.removeEventListener('pointerleave', onLeave);
+        };
+    },
+
+    _paintChart(cv) {
+        if (!cv || !cv.isConnected) return;
+        const st = this._candles[this._candleKey(cv.getAttribute('data-sym'),
+                                                 cv.getAttribute('data-range'))];
+        if (!st || !st.data) return;
+        this._drawCandles(cv, st.data, {
+            interval: this._intervalOf(cv.getAttribute('data-range')),
+            overlay: this._overlayFor(cv.getAttribute('data-sym')),
+            hoverX: cv._paperHover,
+        });
+    },
+
+    // ------------------------------------------------------- graduations
+
+    // Graduations « rondes » : 1, 2, 5 x 10^n. Renvoie aussi le nombre de
+    // decimales a afficher, pour ne pas ecrire 81.10000000000001.
+    _niceTicks(min, max, count) {
+        const span = max - min;
+        if (!(span > 0) || !isFinite(span)) return { ticks: [min], dec: 2 };
+        const raw = span / Math.max(1, count);
+        const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+        const norm = raw / mag;
+        let step = 10;
+        if (norm <= 1) step = 1;
+        else if (norm <= 2) step = 2;
+        else if (norm <= 5) step = 5;
+        step *= mag;
+        const dec = Math.max(0, Math.min(6, -Math.floor(Math.log10(step))));
+        const ticks = [];
+        const start = Math.ceil(min / step) * step;
+        for (let v = start; v <= max + step * 1e-6 && ticks.length < 12; v += step) ticks.push(v);
+        return { ticks: ticks, dec: dec };
+    },
+
+    _axisLabel(ts, interval) {
+        const d = this._toDate(ts);
+        if (!d) return '';
+        const p = (x) => (x < 10 ? '0' : '') + x;
+        if (interval === '15m' || interval === '1h') return p(d.getHours()) + ':' + p(d.getMinutes());
+        if (interval === '1wk') return p(d.getMonth() + 1) + '/' + String(d.getFullYear()).slice(2);
+        return p(d.getDate()) + '/' + p(d.getMonth() + 1);
+    },
+
+    // ------------------------------------------------------- le trace
+
+    _drawCandles(canvas, data, opts) {
+        if (!canvas) return;
+        const ctx = canvas.getContext ? canvas.getContext('2d') : null;
+        if (!ctx) return;
+        const o = opts || {};
+        const rows = (data && Array.isArray(data.candles)) ? data.candles : [];
+
+        // Retina : sans le facteur de densite, tout est flou.
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = canvas.clientWidth || 600;
+        const cssH = canvas.clientHeight || 300;
+        const pw = Math.max(1, Math.round(cssW * dpr));
+        const ph = Math.max(1, Math.round(cssH * dpr));
+        if (canvas.width !== pw || canvas.height !== ph) { canvas.width = pw; canvas.height = ph; }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, cssW, cssH);
+        if (!rows.length) return;
+
+        // Tokens relus MAINTENANT : les deux modes sortent justes.
+        const mono = this._tok('--font-mono') || 'ui-monospace, monospace';
+        const C = {
+            up: this._tok('--accent') || '#00FFB0',
+            down: this._tok('--danger') || '#F87171',
+            grid: this._tok('--border') || '#1C2947',
+            dim: this._tok('--text-dim') || '#5A6C90',
+            muted: this._tok('--text-muted') || '#8FA3C4',
+            fg: this._tok('--text') || '#EDF2FA',
+            panel: this._tok('--bg-elev-3') || '#131C33',
+            strong: this._tok('--border-strong') || '#2C4066',
+        };
+
+        const padT = 10, padB = 22, padR = 62, padL = 6;
+        const plotX = padL;
+        const plotW = Math.max(20, cssW - padL - padR);
+        const totalH = Math.max(40, cssH - padT - padB);
+        const volH = Math.max(10, Math.round(totalH * 0.15));
+        const priceH = Math.max(20, totalH - volH - 8);
+        const priceY = padT;
+        const volY = padT + priceH + 8;
+
+        // Echelle de prix : bougies + reperes du portefeuille (un stop hors
+        // echelle serait dessine hors cadre, donc invisible et trompeur).
+        let lo = Infinity, hi = -Infinity;
+        rows.forEach((c) => {
+            const h = this._n(c && c.high), l = this._n(c && c.low);
+            const op = this._n(c && c.open), cl = this._n(c && c.close);
+            [h, l, op, cl].forEach((v) => {
+                if (v === null) return;
+                if (v > hi) hi = v;
+                if (v < lo) lo = v;
+            });
+        });
+        if (!isFinite(lo) || !isFinite(hi)) return;
+        // Les BOUGIES commandent l'echelle. Un repere du portefeuille (stop, PRU)
+        // ne l'elargit que s'il reste proche — sinon un stop 10 % plus bas ecrase
+        // toutes les bougies dans le haut du cadre (vu a l'ecran sur la vue 1 mois).
+        // Un repere qu'on ne peut pas tracer n'est pas passe sous silence : il est
+        // ECRIT sous le graphique.
+        const ov = o.overlay || { trades: [], avg: null, stop: null };
+        const candleSpan = Math.max(hi - lo, Math.abs(hi) * 1e-4, 1e-9);
+        const offscale = [];
+        const fit = (v, label) => {
+            if (v === null || v === undefined) return;
+            const nlo = Math.min(lo, v), nhi = Math.max(hi, v);
+            if ((nhi - nlo) / candleSpan <= 1.3) { lo = nlo; hi = nhi; return; }
+            offscale.push(label + ' ' + this._num(v, 2));
+        };
+        fit(ov.stop, Lang.t('paper.chart_stop'));
+        fit(ov.avg, Lang.t('paper.chart_avg'));
+        if (hi - lo < 1e-9) { const m = Math.abs(hi) * 0.01 || 1; lo -= m; hi += m; }
+        const margin = (hi - lo) * 0.06;
+        lo -= margin; hi += margin;
+
+        const n = rows.length;
+        const step = (n > 1) ? (plotW / n) : plotW;
+        const yOf = (p) => priceY + priceH - ((p - lo) / (hi - lo)) * priceH;
+        const xOf = (i) => plotX + ((n > 1) ? (i + 0.5) * step : plotW / 2);
+        let bodyW = Math.max(2, Math.floor(step - (step > 6 ? 2 : 1)));
+        if (n === 1) bodyW = Math.min(28, Math.max(6, Math.floor(plotW * 0.3)));
+
+        // --- grille + axe des prix (a droite) ---
+        const tk = this._niceTicks(lo, hi, 5);
+        // L'axe s'arrondit (75 / 80 / 85), mais un PRIX lu garde ses centimes :
+        // « O 82 » au lieu de « O 82.15 » perd l'information qu'on est venu chercher.
+        const priceDec = Math.max(2, tk.dec);
+        ctx.font = '10px ' + mono;
+        ctx.textBaseline = 'middle';
+        ctx.lineWidth = 1;
+        tk.ticks.forEach((t) => {
+            const y = Math.round(yOf(t)) + 0.5;
+            ctx.strokeStyle = C.grid;
+            ctx.beginPath();
+            ctx.moveTo(plotX, y);
+            ctx.lineTo(plotX + plotW, y);
+            ctx.stroke();
+            ctx.fillStyle = C.dim;
+            ctx.textAlign = 'left';
+            ctx.fillText(this._num(t, tk.dec), plotX + plotW + 6, y);
+        });
+
+        // --- bougies + volume ---
+        let vmax = 0;
+        rows.forEach((c) => { const v = this._n(c && c.volume); if (v !== null && v > vmax) vmax = v; });
+        rows.forEach((c, i) => {
+            const op = this._n(c && c.open), cl = this._n(c && c.close);
+            const h = this._n(c && c.high), l = this._n(c && c.low);
+            if (op === null || cl === null) return;
+            const col = (cl >= op) ? C.up : C.down;
+            const x = xOf(i);
+            const xc = Math.round(x) + 0.5;
+            if (h !== null && l !== null) {
+                ctx.strokeStyle = col;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(xc, yOf(h));
+                ctx.lineTo(xc, yOf(l));
+                ctx.stroke();
+            }
+            const yo = yOf(op), yc = yOf(cl);
+            const top = Math.min(yo, yc);
+            const hgt = Math.max(1, Math.abs(yc - yo));
+            ctx.fillStyle = col;
+            ctx.fillRect(Math.round(x - bodyW / 2), Math.round(top), bodyW, Math.max(1, Math.round(hgt)));
+            if (vmax > 0) {
+                const v = this._n(c && c.volume) || 0;
+                const vh = (v / vmax) * volH;
+                ctx.globalAlpha = 0.25;           // 25 % : le volume accompagne, il ne crie pas
+                ctx.fillRect(Math.round(x - bodyW / 2), volY + volH - vh, bodyW, Math.max(0, vh));
+                ctx.globalAlpha = 1;
+            }
+        });
+
+        // --- axe des dates, clairseme ---
+        // Le premier et le dernier libelle sont CALES sur le bord : centres, ils
+        // debordent du canvas et se font couper (vu a l'ecran : « 4/02 » au lieu
+        // de « 04/02 »).
+        ctx.fillStyle = C.dim;
+        ctx.textBaseline = 'top';
+        const dateY = padT + totalH + 5;
+        const want = Math.max(2, Math.min(7, Math.floor(plotW / 90)));
+        const putDate = (i, align) => {
+            ctx.textAlign = align;
+            const x = (align === 'left') ? plotX
+                : ((align === 'right') ? plotX + plotW : xOf(i));
+            ctx.fillText(this._axisLabel(rows[i] && rows[i].ts, o.interval), x, dateY);
+        };
+        if (n === 1) {
+            putDate(0, 'center');
+        } else {
+            for (let k = 0; k < want; k++) {
+                const i = Math.round(k * (n - 1) / (want - 1));
+                putDate(i, k === 0 ? 'left' : (k === want - 1 ? 'right' : 'center'));
+            }
+        }
+
+        // Un repere trop loin pour tenir dans l'echelle est ANNONCE, pas oublie.
+        if (offscale.length) {
+            ctx.font = '10px ' + mono;
+            ctx.fillStyle = C.dim;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            // Au-dessus de la bande de volume : zone morte, et la ligne des
+            // dates reste lisible.
+            ctx.fillText(Lang.t('paper.chart_offscale') + ' ' + offscale.join(' · '),
+                plotX, volY + 1);
+        }
+
+        // --- reperes du portefeuille ---
+        const level = (price, label, color) => {
+            if (price === null || price === undefined) return;
+            const y = Math.round(yOf(price)) + 0.5;
+            if (y < priceY - 2 || y > priceY + priceH + 2) return;
+            ctx.save();
+            ctx.setLineDash([4, 3]);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(plotX, y);
+            ctx.lineTo(plotX + plotW, y);
+            ctx.stroke();
+            ctx.restore();
+            ctx.font = '10px ' + mono;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'bottom';
+            ctx.fillStyle = color;
+            ctx.fillText(label + ' ' + this._num(price, priceDec), plotX + 4, y - 2);
+        };
+        level(ov.stop, Lang.t('paper.chart_stop'), C.down);
+        level(ov.avg, Lang.t('paper.chart_avg'), C.muted);
+
+        // --- pastilles BUY / SELL ---
+        const firstTs = this._toDate(rows[0] && rows[0].ts);
+        const lastTs = this._toDate(rows[n - 1] && rows[n - 1].ts);
+        const indexAt = (ts) => {
+            const d = this._toDate(ts);
+            if (!d || !firstTs || !lastTs) return -1;
+            const t = d.getTime();
+            // Hors fenetre -> pas de pastille. Coller au bord ferait croire a
+            // une operation qui n'a pas eu lieu la.
+            if (t < firstTs.getTime() || t > lastTs.getTime()) return -1;
+            let best = -1, bestD = Infinity;
+            for (let i = 0; i < n; i++) {
+                const dd = this._toDate(rows[i] && rows[i].ts);
+                if (!dd) continue;
+                const gap = Math.abs(dd.getTime() - t);
+                if (gap < bestD) { bestD = gap; best = i; }
+            }
+            return best;
+        };
+        const placed = [];
+        const pill = (idx, price, label, color) => {
+            if (idx < 0 || price === null || price === undefined) return;
+            ctx.font = '10px ' + mono;
+            const tw = ctx.measureText(label).width;
+            const w = Math.round(tw + 12), h = 16;
+            const px = xOf(idx);
+            let py = yOf(price) - 14;
+            let x0 = Math.round(px - w / 2);
+            if (x0 < plotX) x0 = plotX;
+            if (x0 + w > plotX + plotW) x0 = plotX + plotW - w;
+            // Anti-chevauchement : on remonte tant que ca se cogne (lecon carte MC).
+            for (let guard = 0; guard < 8; guard++) {
+                let hit = false;
+                for (let j = 0; j < placed.length; j++) {
+                    const r = placed[j];
+                    if (x0 < r.x + r.w && x0 + w > r.x && py < r.y + r.h && py + h > r.y) { hit = true; break; }
+                }
+                if (!hit) break;
+                py -= (h + 3);
+            }
+            if (py < priceY) py = priceY;
+            placed.push({ x: x0, y: py, w: w, h: h });
+            ctx.fillStyle = color;
+            const r = 4;
+            ctx.beginPath();
+            ctx.moveTo(x0 + r, py);
+            ctx.lineTo(x0 + w - r, py);
+            ctx.quadraticCurveTo(x0 + w, py, x0 + w, py + r);
+            ctx.lineTo(x0 + w, py + h - r);
+            ctx.quadraticCurveTo(x0 + w, py + h, x0 + w - r, py + h);
+            ctx.lineTo(x0 + r, py + h);
+            ctx.quadraticCurveTo(x0, py + h, x0, py + h - r);
+            ctx.lineTo(x0, py + r);
+            ctx.quadraticCurveTo(x0, py, x0 + r, py);
+            ctx.closePath();
+            ctx.fill();
+            // Pointe vers le point exact.
+            const ty = yOf(price);
+            ctx.beginPath();
+            ctx.moveTo(px - 4, py + h);
+            ctx.lineTo(px + 4, py + h);
+            ctx.lineTo(px, Math.max(py + h, ty - 1));
+            ctx.closePath();
+            ctx.fill();
+            ctx.fillStyle = C.panel;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, x0 + w / 2, py + h / 2 + 0.5);
+        };
+        const buyTxt = Lang.t('paper.chart_buy');
+        const sellTxt = Lang.t('paper.chart_sell');
+        (ov.trades || []).forEach((t) => {
+            pill(indexAt(t && t.entry_at), this._n(t && t.entry_price), buyTxt, C.up);
+            pill(indexAt(t && t.exit_at), this._n(t && t.exit_price), sellTxt, C.down);
+        });
+        if (ov.entry && ov.entry.price !== null && ov.entry.price !== undefined) {
+            pill(indexAt(ov.entry.at), this._n(ov.entry.price), buyTxt, C.up);
+        }
+
+        // --- crosshair + encart de lecture ---
+        const hx = o.hoverX;
+        if (hx === null || hx === undefined) return;
+        let idx = (n > 1) ? Math.floor((hx - plotX) / step) : 0;
+        if (idx < 0) idx = 0;
+        if (idx > n - 1) idx = n - 1;
+        const c = rows[idx];
+        if (!c) return;
+        const cx = Math.round(xOf(idx)) + 0.5;
+        const cl = this._n(c.close);
+        ctx.save();
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = C.strong;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(cx, priceY);
+        ctx.lineTo(cx, padT + totalH);
+        ctx.stroke();
+        if (cl !== null) {
+            const cy = Math.round(yOf(cl)) + 0.5;
+            ctx.beginPath();
+            ctx.moveTo(plotX, cy);
+            ctx.lineTo(plotX + plotW, cy);
+            ctx.stroke();
+        }
+        ctx.restore();
+
+        const op = this._n(c.open);
+        const prev = (idx > 0) ? this._n(rows[idx - 1].close) : null;
+        const base = (prev !== null) ? prev : op;
+        const chg = (base !== null && base !== 0 && cl !== null) ? ((cl - base) / base) * 100 : null;
+        const intraday = (o.interval === '15m' || o.interval === '1h');
+        const lines = [
+            intraday ? this._dateTime(c.ts) : this._date(c.ts),
+            'O ' + this._num(op, priceDec) + '  H ' + this._num(this._n(c.high), priceDec),
+            'L ' + this._num(this._n(c.low), priceDec) + '  C ' + this._num(cl, priceDec),
+        ];
+        const vol = this._n(c.volume);
+        if (vol !== null) lines.push(Lang.t('paper.chart_vol') + ' ' + this._num(vol, 0));
+        ctx.font = '11px ' + mono;
+        let boxW = 0;
+        lines.forEach((L) => { boxW = Math.max(boxW, ctx.measureText(L).width); });
+        const chgTxt = (chg === null) ? '' : this._signed(chg, 2, '%');
+        if (chgTxt) boxW = Math.max(boxW, ctx.measureText(chgTxt).width);
+        boxW = Math.round(boxW + 16);
+        const lineH = 14;
+        const boxH = lineH * (lines.length + (chgTxt ? 1 : 0)) + 10;
+        ctx.globalAlpha = 0.94;
+        ctx.fillStyle = C.panel;
+        ctx.fillRect(plotX + 4, priceY + 4, boxW, boxH);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = C.grid;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(plotX + 4.5, priceY + 4.5, boxW, boxH);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        let ty = priceY + 9;
+        ctx.fillStyle = C.fg;
+        lines.forEach((L) => { ctx.fillText(L, plotX + 12, ty); ty += lineH; });
+        if (chgTxt) {
+            ctx.fillStyle = (chg > 0) ? C.up : ((chg < 0) ? C.down : C.muted);
+            ctx.fillText(chgTxt, plotX + 12, ty);
+        }
+    },
+
     // =====================================================================
     //  LLM — trois endpoints, jusqu'à 120 s : le bouton DIT qu'il travaille
     // =====================================================================
@@ -2070,6 +2696,7 @@ const PaperModule = {
         const el = document.getElementById('paper-analysis-sym');
         const sym = el ? String(el.value || '').trim() : '';
         if (!sym) { this._toast('warn', Lang.t('paper.symbol_required')); return; }
+        this._analysisSymbol = sym;
         await this._llm(btn, '/api/paper/analysis', { symbol: sym }, (d) => {
             this._analysis = this._llmText(d) || Lang.t('paper.no_data');
             if (this._tab === 'coach') this._renderBody();
@@ -2137,7 +2764,16 @@ const PaperModule = {
         if (act === 'arena-accept') { this.acceptArena(); return; }
         if (act === 'reset') { this.resetPortfolio(); return; }
         if (act === 'whale-pick') { this.openWhale(el.getAttribute('data-whale')); return; }
-        if (act === 'radar-run') { this.runRadar(el); }
+        if (act === 'radar-run') { this.runRadar(el); return; }
+        if (act === 'chart-range') {
+            this.setChartRange(el.getAttribute('data-ctx'), el.getAttribute('data-range'));
+            return;
+        }
+        if (act === 'pos-toggle') {
+            const sy = el.getAttribute('data-sym');
+            this._posOpen = (this._posOpen === sy) ? null : sy;
+            this._renderBody();
+        }
     },
 
     _input(ev) {
