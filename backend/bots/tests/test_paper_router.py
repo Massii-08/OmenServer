@@ -106,7 +106,8 @@ def make_client(tmp_path, monkeypatch, role="admin"):
     monkeypatch.setattr(pr.llm, "write_analysis",
                         lambda facts, lang="fr": "Fiche du titre.")
     monkeypatch.setattr(pr.llm, "suggest_ideas",
-                        lambda context, lang="fr": 'Pas de matière suffisante.\n'
+                        lambda context, lang="fr", risk_level="mesure":
+                        'Pas de matière suffisante.\n'
                         '```json\n{"ideas": []}\n```')
 
     app = FastAPI()
@@ -883,10 +884,14 @@ def _ideas_json(*rows):
 def test_ideas_happy_path_registers_radar_hypotheses(tmp_path, monkeypatch):
     from backend.bots.paper import radar
     c, _ = make_client(tmp_path, monkeypatch)
-    monkeypatch.setattr(pr.llm, "suggest_ideas", lambda context, lang="fr": _ideas_json(
-        {"ticker": "aapl", "direction": "up", "horizon_days": 10, "thesis": "Momentum"},
-        {"ticker": "tsla", "direction": "down", "horizon_days": 5, "thesis": "Retournement"},
-    ))
+    monkeypatch.setattr(
+        pr.llm, "suggest_ideas",
+        lambda context, lang="fr", risk_level="mesure": _ideas_json(
+            {"ticker": "aapl", "direction": "up", "horizon_days": 10,
+             "thesis": "Momentum"},
+            {"ticker": "tsla", "direction": "down", "horizon_days": 5,
+             "thesis": "Retournement"},
+        ))
     body = c.post("/api/paper/ideas", json={}).json()
     assert len(body["ideas"]) == 2
     assert all(idea["tracked"] for idea in body["ideas"])
@@ -913,11 +918,15 @@ def test_ideas_respects_the_radar_max_open_queue(tmp_path, monkeypatch):
         })
     radar.save_state(state)
 
-    monkeypatch.setattr(pr.llm, "suggest_ideas", lambda context, lang="fr": _ideas_json(
-        {"ticker": "AAPL", "direction": "up", "horizon_days": 10, "thesis": "Momentum"}))
+    monkeypatch.setattr(
+        pr.llm, "suggest_ideas",
+        lambda context, lang="fr", risk_level="mesure": _ideas_json(
+            {"ticker": "AAPL", "direction": "up", "horizon_days": 10,
+             "thesis": "Momentum"}))
     body = c.post("/api/paper/ideas", json={}).json()
     assert body["ideas"] == [{"ticker": "AAPL", "direction": "up",
                              "horizon_days": 10, "thesis": "Momentum",
+                             "risk_level": "mesure", "asset_kind": "equity",
                              "tracked": False}]
     assert len(radar.load_state()["hypotheses"]) == radar.MAX_OPEN
 
@@ -925,7 +934,7 @@ def test_ideas_respects_the_radar_max_open_queue(tmp_path, monkeypatch):
 def test_ideas_without_a_json_block_still_returns_the_text(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     monkeypatch.setattr(pr.llm, "suggest_ideas",
-                        lambda context, lang="fr":
+                        lambda context, lang="fr", risk_level="mesure":
                         "Contexte trop maigre, je ne peux rien proposer.")
     body = c.post("/api/paper/ideas", json={}).json()
     assert body["text"] == "Contexte trop maigre, je ne peux rien proposer."
@@ -935,7 +944,7 @@ def test_ideas_without_a_json_block_still_returns_the_text(tmp_path, monkeypatch
 def test_ideas_returns_502_when_the_llm_fails(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
 
-    def boom(context, lang="fr"):
+    def boom(context, lang="fr", risk_level="mesure"):
         raise RuntimeError("le coach n'a pas répondu dans les 120 s")
 
     monkeypatch.setattr(pr.llm, "suggest_ideas", boom)
@@ -949,7 +958,7 @@ def test_ideas_context_includes_the_watchlist(tmp_path, monkeypatch):
                                      "currency": "USD", "added_at": FIXED_NOW}])
     seen = {}
 
-    def fake_suggest(context, lang="fr"):
+    def fake_suggest(context, lang="fr", risk_level="mesure"):
         seen["context"] = context
         return _ideas_json()
 
@@ -957,6 +966,181 @@ def test_ideas_context_includes_the_watchlist(tmp_path, monkeypatch):
     c.post("/api/paper/ideas", json={})
     assert seen["context"]["watchlist"] == [{"symbol": "TSLA", "name": "Tesla Inc",
                                              "currency": "USD", "added_at": FIXED_NOW}]
+
+
+# ================================================================
+#  NIVEAUX DE RISQUE (mesuré / agressif / spéculatif)
+#
+#  Le niveau traverse quatre couches : payload -> normalisation -> prompt ->
+#  hypothèse persistée. C'est exactement la classe de champ qui se fait
+#  stripper en silence (piège #61) : chaque étage est vérifié.
+# ================================================================
+
+def _ideas_double(monkeypatch, *rows):
+    """Double de ``suggest_ideas`` qui NOTE le niveau reçu et rend ``rows``."""
+    seen = {}
+
+    def fake(context, lang="fr", risk_level="mesure"):
+        seen["lang"] = lang
+        seen["risk_level"] = risk_level
+        return _ideas_json(*rows)
+
+    monkeypatch.setattr(pr.llm, "suggest_ideas", fake)
+    return seen
+
+
+def test_ideas_defaults_to_the_measured_level(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    seen = _ideas_double(monkeypatch)
+    assert c.post("/api/paper/ideas", json={}).json()["risk_level"] == "mesure"
+    assert seen["risk_level"] == "mesure"
+
+
+def test_ideas_forwards_the_requested_level_to_the_coach(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    seen = _ideas_double(monkeypatch)
+    body = c.post("/api/paper/ideas", json={"risk_level": "spéculatif"}).json()
+    assert seen["risk_level"] == "speculatif"
+    # la réponse dit l'étage RÉELLEMENT appliqué, pas celui qu'on croit avoir
+    # demandé (l'accent a été normalisé en chemin)
+    assert body["risk_level"] == "speculatif"
+
+
+def test_an_unknown_level_falls_back_to_measured(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    seen = _ideas_double(monkeypatch)
+    body = c.post("/api/paper/ideas", json={"risk_level": "yolo"}).json()
+    assert seen["risk_level"] == "mesure"
+    assert body["risk_level"] == "mesure"
+
+
+def test_the_level_and_the_asset_kind_reach_the_radar(tmp_path, monkeypatch):
+    from backend.bots.paper import radar
+    c, _ = make_client(tmp_path, monkeypatch)
+    _ideas_double(monkeypatch,
+                  {"ticker": "btc-usd", "direction": "down", "horizon_days": 12,
+                   "thesis": "Short crypto", "asset_kind": "crypto"},
+                  {"ticker": "EURUSD=X", "direction": "up", "horizon_days": 60,
+                   "thesis": "Semi-long euro", "asset_kind": "forex"})
+    body = c.post("/api/paper/ideas", json={"risk_level": "speculatif"}).json()
+    assert [(i["ticker"], i["asset_kind"], i["risk_level"]) for i in body["ideas"]] == [
+        ("BTC-USD", "crypto", "speculatif"),
+        ("EURUSD=X", "forex", "speculatif")]
+
+    stored = {h["tickers"][0]: h for h in radar.load_state()["hypotheses"]}
+    assert stored["BTC-USD"]["risk_level"] == "speculatif"
+    assert stored["BTC-USD"]["asset_kind"] == "crypto"
+    assert stored["EURUSD=X"]["asset_kind"] == "forex"
+    assert stored["BTC-USD"]["source"] == "coach"
+
+
+def test_a_semi_long_forex_idea_keeps_its_real_horizon(tmp_path, monkeypatch):
+    """Bout en bout : une idée forex à 75 jours est PERSISTÉE à 75 jours (pas
+    rabotée à 30) et n'est donc pas notée au 40ᵉ jour — c'est ce qui rend le
+    semi-long du niveau spéculatif jugeable pour ce qu'il est."""
+    from datetime import timedelta
+    from backend.bots.paper import radar
+    c, _ = make_client(tmp_path, monkeypatch)
+    _ideas_double(monkeypatch,
+                  {"ticker": "EURUSD=X", "direction": "up", "horizon_days": 75,
+                   "thesis": "Écart de taux Fed/BCE", "asset_kind": "forex"})
+    c.post("/api/paper/ideas", json={"risk_level": "speculatif"})
+
+    stored = radar.load_state()["hypotheses"][0]
+    assert stored["horizon_days"] == 75
+    born = datetime.fromisoformat(FIXED_NOW)
+    assert radar.is_mature(stored, born + timedelta(days=40)) is False
+    assert radar.is_mature(stored, born + timedelta(days=76)) is True
+
+
+def test_the_coach_cannot_promote_its_own_ideas(tmp_path, monkeypatch):
+    """Le niveau est celui DEMANDÉ, jamais celui que le modèle s'attribue :
+    sinon le bilan par étage mesurerait ce que le LLM a envie de raconter."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    _ideas_double(monkeypatch,
+                  {"ticker": "AAPL", "direction": "up", "horizon_days": 10,
+                   "thesis": "Momentum", "risk_level": "speculatif"})
+    body = c.post("/api/paper/ideas", json={"risk_level": "mesure"}).json()
+    assert body["ideas"][0]["risk_level"] == "mesure"
+
+
+def test_the_asset_kind_is_guessed_when_the_coach_omits_it(tmp_path, monkeypatch):
+    """Un genre absent ou fantaisiste ne salit pas le bilan : il est déduit de
+    la forme du ticker (BTC-USD -> crypto, =X -> forex)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    _ideas_double(monkeypatch,
+                  {"ticker": "ETH-USD", "direction": "up", "horizon_days": 9,
+                   "thesis": "Sans genre"},
+                  {"ticker": "USDJPY=X", "direction": "down", "horizon_days": 45,
+                   "thesis": "Genre fantaisiste", "asset_kind": "banane"},
+                  {"ticker": "AAPL", "direction": "up", "horizon_days": 8,
+                   "thesis": "Action ordinaire"})
+    ideas = c.post("/api/paper/ideas", json={"risk_level": "speculatif"}).json()["ideas"]
+    assert [i["asset_kind"] for i in ideas] == ["crypto", "forex", "equity"]
+
+
+def test_the_radar_endpoint_exposes_the_scoreboard_by_level(tmp_path, monkeypatch):
+    from backend.bots.paper import radar
+    c, _ = make_client(tmp_path, monkeypatch)
+    state = radar.blank_state()
+    state["hypotheses"] = [
+        {"id": "a", "created_at": FIXED_NOW, "status": "scored", "outcome": "hit",
+         "scored_at": FIXED_NOW, "move_pct": 6.0, "source": "coach",
+         "risk_level": "speculatif", "asset_kind": "crypto",
+         "thesis": "Short crypto", "chain": [], "markets": [],
+         "tickers": ["BTC-USD"], "direction": "down", "horizon_days": 12,
+         "confidence": "moyenne", "invalidation": "?"},
+        # hypothèse du radar automatique : sa propre case, pas un étage
+        {"id": "b", "created_at": FIXED_NOW, "status": "scored", "outcome": "miss",
+         "scored_at": FIXED_NOW, "move_pct": -4.0, "thesis": "Ricochet",
+         "chain": ["a", "b"], "markets": [], "tickers": ["NESN.SW"],
+         "direction": "up", "horizon_days": 7, "confidence": "moyenne",
+         "invalidation": "?"},
+    ]
+    state["stats"] = {"hits": 1, "misses": 1, "unclear": 0}
+    radar.save_state(state)
+
+    body = c.get("/api/paper/radar").json()
+    assert body["stats_by_level"] == {
+        "speculatif": {"hits": 1, "misses": 0, "unclear": 0},
+        "radar": {"hits": 0, "misses": 1, "unclear": 0}}
+
+
+def test_an_old_radar_state_is_reread_and_extended(tmp_path, monkeypatch):
+    """Un état écrit AVANT les niveaux (aucun ``risk_level``, aucun
+    ``asset_kind``) se relit, s'affiche et accueille une idée neuve sans
+    migration ni exception."""
+    from backend.bots.paper import radar
+    c, _ = make_client(tmp_path, monkeypatch)
+    state = radar.blank_state()
+    state["hypotheses"] = [{
+        "id": "vieille", "created_at": FIXED_NOW, "status": "open",
+        "outcome": None, "scored_at": None, "move_pct": None, "source": "coach",
+        "thesis": "Idée d'avant les niveaux", "chain": [], "markets": [],
+        "tickers": ["MSFT"], "direction": "up", "horizon_days": 7,
+        "confidence": "moyenne", "invalidation": "(non précisée)",
+    }]
+    radar.save_state(state)
+
+    assert c.get("/api/paper/radar").status_code == 200
+    _ideas_double(monkeypatch, {"ticker": "SOL-USD", "direction": "up",
+                                "horizon_days": 14, "thesis": "Nouvelle"})
+    body = c.post("/api/paper/ideas", json={"risk_level": "agressif"}).json()
+    assert body["ideas"][0]["tracked"] is True
+
+    stored = radar.load_state()["hypotheses"]
+    assert [h["id"] for h in stored][0] == "vieille"
+    assert "risk_level" not in stored[0]            # l'ancienne n'est pas réécrite
+    assert stored[1]["risk_level"] == "agressif"
+
+
+def test_search_exposes_the_kind_of_each_result(tmp_path, monkeypatch):
+    """Champ traversant : le router rend ce que ``quotes.search`` produit, le
+    frontend a besoin du genre pour dire « crypto » plutôt que « action »."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.results = [{"symbol": "BTC-USD", "name": "Bitcoin USD",
+                       "exchange": "CCC", "currency": "", "kind": "crypto"}]
+    assert c.get("/api/paper/search?q=btc").json() == market.results
 
 
 def test_coach_ask_context_includes_the_watchlist(tmp_path, monkeypatch):
@@ -1174,8 +1358,10 @@ def test_radar_without_the_module(tmp_path, monkeypatch):
         raise ImportError("no module named radar")
 
     monkeypatch.setattr(pr, "_radar", absent)
-    # la LECTURE dégrade en silence...
-    assert c.get("/api/paper/radar").json() == {"stats": {}, "hypotheses": []}
+    # la LECTURE dégrade en silence — bilan par niveau vide compris, pour que le
+    # client n'ait jamais à distinguer « pas de radar » de « pas de verdict »...
+    assert c.get("/api/paper/radar").json() == {"stats": {}, "stats_by_level": {},
+                                                "hypotheses": []}
     # ...mais une ACTION demandée qui ne peut pas avoir lieu se dit
     assert c.post("/api/paper/radar/run").status_code == 503
 
@@ -1689,7 +1875,7 @@ def test_the_llm_endpoints_forward_the_reading_language(tmp_path, monkeypatch):
                         lambda facts, lang="fr":
                         seen.__setitem__("analysis", lang) or "risposta")
     monkeypatch.setattr(pr.llm, "suggest_ideas",
-                        lambda context, lang="fr":
+                        lambda context, lang="fr", risk_level="mesure":
                         seen.__setitem__("ideas", lang) or '```json\n{"ideas": []}\n```')
 
     c.post("/api/paper/coach/ask", json={"question": "?", "lang": "it"})

@@ -2230,6 +2230,11 @@ canvas {
 }
 .badge.warn   { background: rgba(251, 191, 36, 0.12); color: var(--warning); border-color: transparent; }
 .badge.danger { background: rgba(248, 113, 113, 0.12); color: var(--danger); border-color: transparent; }
+/* Fond pastel rgba + couleur par token : le mode clair « Givre » suit tout seul
+   (--info y a sa declinaison foncee), exactement comme .warn et .danger.
+   .muted reprend l'aspect du badge nu, mais NOMME : la classe dit l'intention. */
+.badge.info   { background: rgba(96, 165, 250, 0.12); color: var(--info); border-color: transparent; }
+.badge.muted  { background: var(--bg-elev-3); color: var(--text-muted); border-color: var(--border); }
 
 /* ===== Role pill (matches backend permissions.py roles) ===== */
 .role-pill {

@@ -1010,6 +1010,10 @@ class QuizPayload(BaseModel):
 
 class IdeasPayload(BaseModel):
     lang: str = "fr"
+    # Étage de risque demandé : "mesure" (défaut) / "agressif" / "speculatif".
+    # Normalisé côté serveur — une valeur inconnue retombe sur "mesure", jamais
+    # sur un étage plus haut que celui demandé.
+    risk_level: str = llm.DEFAULT_RISK_LEVEL
 
 
 class WatchlistPayload(BaseModel):
@@ -1624,16 +1628,22 @@ def _radar():
 
 @router.get("/radar")
 def paper_radar(current_user: User = Depends(require_role("admin", "money", "trader"))):
-    """Hypothèses du radar et leur score. Module absent -> radar vide, pas d'erreur."""
+    """Hypothèses du radar et leur score. Module absent -> radar vide, pas d'erreur.
+
+    La réponse porte aussi ``stats_by_level`` (bilan ventilé par étage de risque
+    des idées du coach) — vide dans les replis, pour que le client n'ait jamais
+    à distinguer « pas de radar » de « pas encore de verdict ».
+    """
     try:
         module = _radar()
     except ImportError:
-        return {"stats": {}, "hypotheses": []}
+        return {"stats": {}, "stats_by_level": {}, "hypotheses": []}
     try:
         return module.recent()
     except Exception as e:                      # noqa: BLE001 - lecture best-effort
         logger.warning("paper: radar indisponible: %s", e)
-        return {"stats": {}, "hypotheses": [], "error": str(e)[:200]}
+        return {"stats": {}, "stats_by_level": {}, "hypotheses": [],
+                "error": str(e)[:200]}
 
 
 @router.post("/radar/run")
@@ -1742,16 +1752,27 @@ def _whales():
 # bornée par ``radar.MAX_OPEN`` comme n'importe quelle autre hypothèse.
 # --------------------------------------------------------------------------- #
 
-def _parse_ideas_json(text: Any) -> List[Dict[str, Any]]:
+def _parse_ideas_json(text: Any,
+                      risk_level: str = llm.DEFAULT_RISK_LEVEL) -> List[Dict[str, Any]]:
     """Extrait le bloc JSON final ``{"ideas": [...]}`` de la réponse texte du
     coach (PUR — aucune I/O). Même patron find/rfind que ``radar.parse_llm``
     (tolérant : bloc absent ou invalide -> liste vide, jamais une exception —
     le texte pédagogique reste affiché même sans câblage radar).
 
     Un item invalide (pas de ticker) est jeté SEUL, jamais tout le lot.
+
+    Deux champs sont posés par le SERVEUR, pas lus du LLM :
+
+    * ``risk_level`` est l'étage DEMANDÉ. Le modèle n'a pas le droit de se
+      promouvoir : une série demandée « mesurée » reste mesurée dans le bilan,
+      quoi qu'il écrive dans son JSON ;
+    * ``asset_kind`` est repris du LLM s'il est valide, sinon DEVINÉ depuis la
+      forme du ticker (``BTC-USD`` -> crypto, ``EURUSD=X`` -> forex). Une idée
+      crypto étiquetée « action » salirait le bilan par étage.
     """
     if not isinstance(text, str):
         return []
+    level = llm.normalize_risk_level(risk_level)
     start = text.find("{")
     end = text.rfind("}")
     if start < 0 or end <= start:
@@ -1780,11 +1801,16 @@ def _parse_ideas_json(text: Any) -> List[Dict[str, Any]]:
             horizon_days = int(float(item.get("horizon_days")))
         except (TypeError, ValueError):
             horizon_days = DEFAULT_IDEA_HORIZON_D
+        asset_kind = str(item.get("asset_kind") or "").strip().lower()
+        if asset_kind not in quotes.ASSET_KINDS:
+            asset_kind = quotes.kind_from_symbol(ticker)
         out.append({
             "ticker": ticker,
             "direction": direction,
             "horizon_days": horizon_days,
             "thesis": str(item.get("thesis") or "").strip(),
+            "risk_level": level,
+            "asset_kind": asset_kind,
         })
     return out
 
@@ -1853,6 +1879,12 @@ def _register_radar_ideas(ideas: List[Dict[str, Any]], now_iso: str) -> List[Dic
                 "horizon_days": idea.get("horizon_days") or DEFAULT_IDEA_HORIZON_D,
                 "confidence": "moyenne",
                 "invalidation": "(non précisée)",
+                # Champs TRAVERSANTS : c'est eux qui permettent au radar de
+                # ventiler son bilan par étage (``radar.stats_by_level``). Une
+                # hypothèse écrite sans eux compterait sous « radar » et le
+                # niveau spéculatif ne serait jamais jugé.
+                "risk_level": idea.get("risk_level") or llm.DEFAULT_RISK_LEVEL,
+                "asset_kind": idea.get("asset_kind") or quotes.DEFAULT_KIND,
             })
             open_count += 1
             changed = True
@@ -1882,6 +1914,12 @@ def paper_ideas(data: IdeasPayload,
     hypothèse RADAR ``source: "coach"`` — la file reste bornée par
     ``radar.MAX_OPEN`` : au-delà, l'idée est rendue au client
     (``tracked: false``) mais pas persistée. Panne LLM -> 502 propre.
+
+    ``risk_level`` choisit l'étage (« mesuré » par défaut, « agressif »,
+    « spéculatif » = crypto et forex ouverts). Il est NORMALISÉ ici et renvoyé
+    dans la réponse : le client lit l'étage réellement appliqué, pas celui qu'il
+    croit avoir demandé. Chaque idée le porte, et le radar le garde — c'est ce
+    qui rend le bilan par niveau possible.
     """
     username = current_user.username
     portfolio = _load(username)
@@ -1910,13 +1948,14 @@ def paper_ideas(data: IdeasPayload,
     context["recent_filings"] = filing_events
 
     lang = normalize_lang(data.lang)
+    risk_level = llm.normalize_risk_level(data.risk_level)
     try:
-        text = llm.suggest_ideas(context, lang)
+        text = llm.suggest_ideas(context, lang, risk_level)
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)[:300])
 
-    ideas = _register_radar_ideas(_parse_ideas_json(text), _now_iso())
-    return {"text": text, "ideas": ideas}
+    ideas = _register_radar_ideas(_parse_ideas_json(text, risk_level), _now_iso())
+    return {"text": text, "ideas": ideas, "risk_level": risk_level}
 
 
 # --------------------------------------------------------------------------- #

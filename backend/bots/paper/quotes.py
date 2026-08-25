@@ -20,6 +20,25 @@ est le seul du lot à connaître deux détails d'infrastructure :
   n'est JAMAIS utilisé pour calculer une variation. La seule référence honnête
   est la série de bougies.
 
+**Univers couvert (élargi 2026-08-25).** Actions, ETF, CRYPTO (``BTC-USD``) et
+FOREX (``EURUSD=X``) — tous servis par le MÊME endpoint chart, donc
+``get_quote``/``get_candles``/``fx_to_chf`` n'ont eu besoin d'aucun cas
+particulier. Deux simplifications ASSUMÉES, parce que c'est un simulateur
+pédagogique et pas une plateforme de change :
+
+* une paire de devises est traitée comme n'importe quel instrument coté dans la
+  devise que Yahoo annonce dans ses métadonnées — pour ``EURUSD=X`` c'est
+  ``USD``, le prix étant « combien de dollars vaut un euro ». Acheter la paire,
+  c'est donc acheter des UNITÉS de ce prix, converties en francs par
+  ``fx_to_chf`` comme un titre américain ;
+* aucune notion de LOT, de PIP ni de levier : pas de lot standard à 100 000
+  unités, pas de marge, pas de swap overnight. Le simulateur enseigne le
+  mouvement et le dimensionnement, pas la mécanique d'un courtier FX.
+
+Les indices (``^SSMI``) et les contrats à terme restent HORS de la recherche :
+un indice ne se détient pas, un future a des échéances et un levier qui n'ont
+rien à faire ici (l'or et le pétrole se jouent via des ETF).
+
 Injection : toutes les fonctions acceptent ``client=`` ; à défaut elles prennent
 l'instance module ``_client`` (paresseuse). Les tests posent leur faux client via
 ``set_client()`` et remplacent ``_fetch_json`` pour la recherche.
@@ -47,9 +66,22 @@ FX_TTL_S = 600.0
 SEARCH_URL = ("https://query1.finance.yahoo.com/v1/finance/search"
               "?q=%s&quotesCount=8&newsCount=0")
 SEARCH_TIMEOUT_S = 20.0
-# Actions et ETF : ce qu'on peut détenir. Le reste (devises, futures, indices,
-# options) n'a rien à faire dans un portefeuille de simulation d'actions.
-SEARCH_KEEP_TYPES = frozenset({"EQUITY", "ETF"})
+
+# Ce que la recherche garde, ET le « genre » rendu au client. La table est la
+# SOURCE UNIQUE : le filtre en DÉRIVE, donc les deux ne peuvent pas diverger le
+# jour où l'on ouvrira l'univers un cran de plus.
+#
+# ``FUTURE``/``INDEX``/``OPTION`` restent dehors (cf. docstring de module).
+KIND_BY_QUOTE_TYPE = {
+    "EQUITY": "equity",
+    "ETF": "etf",
+    "CRYPTOCURRENCY": "crypto",
+    "CURRENCY": "forex",
+}
+SEARCH_KEEP_TYPES = frozenset(KIND_BY_QUOTE_TYPE)
+ASSET_KINDS = frozenset(KIND_BY_QUOTE_TYPE.values())
+# Repli le moins surprenant : c'est de loin le cas le plus fréquent.
+DEFAULT_KIND = "equity"
 
 # Nombre de séances de bourse par période (approximations usuelles).
 SESSIONS_1M = 21
@@ -346,12 +378,44 @@ def fx_to_chf(currency: str, client=None) -> float:
     return rate
 
 
-def search(q: str, client=None) -> List[Dict[str, Any]]:
-    """Recherche de ticker Yahoo -> ``[{symbol, name, exchange, currency}]``.
+def kind_for_quote_type(quote_type: Any) -> str:
+    """Genre d'instrument depuis le ``quoteType`` Yahoo (PUR).
 
-    Ne garde que les actions et les ETF : le reste (devises, futures, indices)
-    n'est pas détenable dans ce simulateur. Une requête de moins de 2 caractères
-    rend ``[]`` sans appel réseau.
+    ``EQUITY`` -> ``equity``, ``ETF`` -> ``etf``, ``CRYPTOCURRENCY`` ->
+    ``crypto``, ``CURRENCY`` -> ``forex``. Type inconnu -> ``equity``.
+    """
+    return KIND_BY_QUOTE_TYPE.get(str(quote_type or "").strip().upper(), DEFAULT_KIND)
+
+
+def kind_from_symbol(symbol: Any) -> str:
+    """Genre DEVINÉ depuis la forme du symbole Yahoo (PUR) — ``EURUSD=X`` ->
+    ``forex``, ``BTC-USD`` -> ``crypto``, tout le reste -> ``equity``.
+
+    C'est un REPLI, jamais une source : il ne sert que là où personne n'a fourni
+    de ``quoteType`` (une idée écrite par le LLM, typiquement). Un ETF ne se
+    distingue pas d'une action par son ticker — deviner ne remplace pas savoir.
+    """
+    text = str(symbol or "").strip().upper()
+    if not text:
+        return DEFAULT_KIND
+    if text.endswith("=X"):
+        return "forex"
+    # Yahoo cote les cryptos en paires ``PIÈCE-FIAT`` (BTC-USD, ETH-EUR…).
+    for fiat in ("-USD", "-EUR", "-CHF", "-GBP", "-JPY"):
+        if text.endswith(fiat):
+            return "crypto"
+    return DEFAULT_KIND
+
+
+def search(q: str, client=None) -> List[Dict[str, Any]]:
+    """Recherche de ticker Yahoo -> ``[{symbol, name, exchange, currency, kind}]``.
+
+    Garde les actions, les ETF, les CRYPTOS et les DEVISES (cf. docstring de
+    module : univers élargi 2026-08-25 pour le niveau spéculatif du coach) ;
+    jette le reste, indices et futures en tête. ``kind`` dit lequel des quatre
+    genres est rendu — champ ADDITIF, les appelants d'avant l'ignorent.
+
+    Une requête de moins de 2 caractères rend ``[]`` sans appel réseau.
 
     ``client`` est accepté pour la symétrie des signatures mais N'EST PAS utilisé :
     l'endpoint de recherche n'est pas l'endpoint chart, il passe par
@@ -371,7 +435,8 @@ def search(q: str, client=None) -> List[Dict[str, Any]]:
     for quote in (payload.get("quotes") or []):
         if not isinstance(quote, dict):
             continue
-        if (quote.get("quoteType") or "").upper() not in SEARCH_KEEP_TYPES:
+        quote_type = str(quote.get("quoteType") or "").strip().upper()
+        if quote_type not in SEARCH_KEEP_TYPES:
             continue
         symbol = quote.get("symbol")
         if not symbol:
@@ -380,7 +445,10 @@ def search(q: str, client=None) -> List[Dict[str, Any]]:
             "symbol": symbol,
             "name": quote.get("longname") or quote.get("shortname") or symbol,
             "exchange": quote.get("exchDisp") or quote.get("exchange") or "",
+            # Yahoo n'annonce PAS de devise sur une paire de change ni sur
+            # certaines cryptos : chaîne vide, comme pour tout champ absent.
             "currency": (quote.get("currency") or "").upper(),
+            "kind": kind_for_quote_type(quote_type),
         })
     return out
 

@@ -360,6 +360,84 @@ def test_is_mature_sans_date_de_naissance():
     assert radar.is_mature({"created_at": "n'importe quoi"}, NOW) is True
 
 
+# ================================================================
+#  ÉCHÉANCE DES IDÉES DU COACH — le semi-long forex tient jusqu'au bout
+#
+#  Le niveau spéculatif propose du forex sur 2-3 MOIS. Scoré au 30ᵉ jour comme
+#  une hypothèse de radar, un tel pari mesurerait le bruit de son premier tiers
+#  et le bilan par niveau accuserait le spéculatif d'un échec fabriqué ici.
+# ================================================================
+
+def _coach_idea(days, horizon):
+    """Une idée du coach née il y a ``days`` jours, d'horizon ``horizon``."""
+    return _hyp(source="coach", risk_level="speculatif", asset_kind="forex",
+                created_at=(NOW - timedelta(days=days)).isoformat(),
+                horizon_days=horizon, tickers=["EURUSD=X"])
+
+
+def test_une_idee_coach_de_75_jours_n_est_pas_mature_au_40e():
+    assert radar.is_mature(_coach_idea(40, 75), NOW) is False
+
+
+def test_une_idee_coach_de_75_jours_est_mature_au_76e():
+    assert radar.is_mature(_coach_idea(76, 75), NOW) is True
+
+
+def test_une_hypothese_du_radar_reste_plafonnee_a_30_jours():
+    """Comportement EXISTANT verrouillé : la doctrine du radar (« au-delà d'un
+    mois on ne sait plus relier au déclencheur ») ne bouge pas d'un jour."""
+    radar_hyp = _hyp(created_at=(NOW - timedelta(days=31)).isoformat(),
+                     horizon_days=75)
+    assert radar.is_mature(radar_hyp, NOW) is True
+
+
+def test_un_etat_ancien_sans_source_garde_le_plafond_de_30():
+    """Aucune migration : ce qui a été écrit avant se comporte comme avant."""
+    ancienne = _hyp(created_at=(NOW - timedelta(days=31)).isoformat(),
+                    horizon_days=90)
+    assert "source" not in ancienne
+    assert radar.max_horizon_for(ancienne) == radar.MAX_HORIZON_D
+    assert radar.is_mature(ancienne, NOW) is True
+
+
+@pytest.mark.parametrize("source,expected", [
+    ("coach", 120), ("COACH", 120), (None, 30), ("", 30), ("radar", 30),
+])
+def test_le_plafond_depend_de_la_source(source, expected):
+    hyp = {"horizon_days": 75}
+    if source is not None:
+        hyp["source"] = source
+    assert radar.max_horizon_for(hyp) == expected
+    assert radar.hypothesis_horizon(hyp) == min(75, expected)
+
+
+@pytest.mark.parametrize("given,expected", [
+    (75, 75), (400, 120), (1, 3), (None, radar.DEFAULT_HORIZON_D),
+])
+def test_l_horizon_d_une_idee_coach_reste_borne(given, expected):
+    """Ouvrir le plafond n'est pas l'enlever : 400 jours reste un pari qu'on ne
+    saurait plus juger, et une valeur illisible retombe sur le défaut."""
+    assert radar.hypothesis_horizon({"source": "coach",
+                                     "horizon_days": given}) == expected
+
+
+def test_parse_llm_clampe_toujours_les_hypotheses_du_radar_a_30():
+    """Le plafond ouvert vaut pour les idées du COACH, pas pour ce que le radar
+    s'autorise à générer lui-même."""
+    raw = json.dumps({"hypotheses": [
+        {"thesis": "t", "chain": ["a"], "tickers": ["AAA"], "horizon_days": 75}]})
+    assert radar.parse_llm(raw)[0]["horizon_days"] == radar.MAX_HORIZON_D
+
+
+def test_le_carnet_annonce_l_horizon_REELLEMENT_score():
+    """Une seule définition de l'horizon : le carnet ne peut pas écrire « 30
+    jours » pour un pari qui sera noté au 75ᵉ (mensonge invisible trois mois)."""
+    idea = _coach_idea(0, 75)
+    assert "- Horizon : 75 jours" in radar.format_hypothesis_note(idea)
+    assert "Horizon ~75 j." in radar.format_alert(idea)
+    assert "horizon 75 jours" in radar.format_outcome_note(idea)
+
+
 # --------------------------------------------------------------------------- #
 # build_prompt
 # --------------------------------------------------------------------------- #
@@ -991,7 +1069,127 @@ def test_recent_respecte_la_limite():
 
 def test_recent_sans_etat():
     assert radar.recent() == {"stats": {"hits": 0, "misses": 0, "unclear": 0},
-                              "hypotheses": []}
+                              "stats_by_level": {}, "hypotheses": []}
+
+
+# ================================================================
+#  bilan PAR NIVEAU DE RISQUE — l'honnêteté par étage
+#
+#  But produit : voir si le niveau spéculatif gagne ou s'il brûle du crédit.
+#  Un bilan global le noierait dans la masse.
+# ================================================================
+
+def _scored(level=None, outcome="hit", source=None, **over):
+    """Une hypothèse NOTÉE, avec (ou sans) niveau de risque."""
+    row = _hyp(status="scored", outcome=outcome,
+               scored_at=NOW.isoformat(), move_pct=4.0, **over)
+    if level is not None:
+        row["risk_level"] = level
+    if source is not None:
+        row["source"] = source
+    return row
+
+
+def test_stats_by_level_ventile_par_etage():
+    rows = [
+        _scored("speculatif", "hit", source="coach"),
+        _scored("speculatif", "miss", source="coach"),
+        _scored("speculatif", "unclear", source="coach"),
+        _scored("agressif", "hit", source="coach"),
+        _scored("mesure", "miss", source="coach"),
+    ]
+    assert radar.stats_by_level(rows) == {
+        "speculatif": {"hits": 1, "misses": 1, "unclear": 1},
+        "agressif": {"hits": 1, "misses": 0, "unclear": 0},
+        "mesure": {"hits": 0, "misses": 1, "unclear": 0},
+    }
+
+
+def test_stats_by_level_ne_compte_que_les_hypotheses_notees():
+    """Une hypothèse OUVERTE n'a encore rien prouvé : elle n'entre pas au
+    bilan, sinon le niveau spéculatif aurait l'air excellent le temps que ses
+    paris arrivent à échéance."""
+    rows = [_hyp(risk_level="speculatif", source="coach"),          # ouverte
+            _scored("speculatif", "hit", source="coach")]
+    assert radar.stats_by_level(rows) == {
+        "speculatif": {"hits": 1, "misses": 0, "unclear": 0}}
+
+
+def test_stats_by_level_range_le_radar_automatique_a_part():
+    """Les hypothèses du radar ne sont pas des idées de trade dimensionnées :
+    elles ont leur propre case, elles ne gonflent aucun étage."""
+    rows = [_scored(None, "hit"), _scored(None, "miss")]
+    assert radar.stats_by_level(rows) == {
+        "radar": {"hits": 1, "misses": 1, "unclear": 0}}
+
+
+def test_stats_by_level_compte_les_vieilles_idees_du_coach_en_mesure():
+    """État d'AVANT la fonctionnalité : une idée du coach sans niveau a été
+    produite avec la doctrine devenue « mesuré » — la compter sous « radar »
+    serait faux."""
+    rows = [_scored(None, "hit", source="coach")]
+    assert radar.stats_by_level(rows) == {
+        "mesure": {"hits": 1, "misses": 0, "unclear": 0}}
+
+
+def test_stats_by_level_repli_vers_le_bas_sur_un_niveau_inconnu():
+    rows = [_scored("yolo", "hit", source="coach")]
+    assert radar.stats_by_level(rows) == {
+        "mesure": {"hits": 1, "misses": 0, "unclear": 0}}
+
+
+def test_stats_by_level_ignore_les_entrees_deformees():
+    assert radar.stats_by_level(None) == {}
+    assert radar.stats_by_level(["pas un dict", 42, {}]) == {}
+
+
+def test_stats_by_level_case_absente_plutot_que_zeros():
+    """« 0 réussie / 0 ratée » se lirait comme un échec ; « pas encore de
+    verdict » se dit en n'affichant pas la case."""
+    assert "agressif" not in radar.stats_by_level([_scored("mesure", "hit",
+                                                           source="coach")])
+
+
+def test_recent_expose_le_bilan_par_niveau_sur_tout_l_etat():
+    """Le bilan porte sur l'état entier, pas sur la tranche rendue : un bilan
+    qui rétrécirait avec ``limit`` ne serait plus un bilan."""
+    radar.save_state({
+        "hypotheses": [_scored("speculatif", "hit", source="coach", id="s1"),
+                       _scored("speculatif", "miss", source="coach", id="s2"),
+                       _scored("mesure", "hit", source="coach", id="m1")],
+        "stats": {"hits": 2, "misses": 1, "unclear": 0},
+    })
+    out = radar.recent(limit=1)
+    assert len(out["hypotheses"]) == 1
+    assert out["stats_by_level"] == {
+        "speculatif": {"hits": 1, "misses": 1, "unclear": 0},
+        "mesure": {"hits": 1, "misses": 0, "unclear": 0},
+    }
+
+
+def test_un_etat_ancien_sans_niveau_se_relit_sans_erreur():
+    """Rétro-compatibilité stricte : un radar.json écrit AVANT cette
+    fonctionnalité se relit, se trie et se ventile sans exception."""
+    radar.save_state({
+        "hypotheses": [_hyp(id="vieille_ouverte"),
+                       _scored(None, "hit", id="vieux_verdict")],
+        "stats": {"hits": 1, "misses": 0, "unclear": 0},
+    })
+    out = radar.recent()
+    assert [h["id"] for h in out["hypotheses"]] == ["vieille_ouverte",
+                                                    "vieux_verdict"]
+    assert out["stats_by_level"] == {"radar": {"hits": 1, "misses": 0,
+                                               "unclear": 0}}
+
+
+def test_les_cases_de_bilan_refletent_les_niveaux_du_coach():
+    """⚠️ Miroir VOLONTAIRE (le radar n'importe pas le module LLM) : ce test est
+    le seul garde-fou contre une divergence silencieuse le jour où un quatrième
+    niveau apparaîtra — piège #61 du dépôt."""
+    from backend.bots.paper import llm
+    assert radar.RISK_BUCKETS == llm.RISK_LEVELS
+    assert radar.DEFAULT_BUCKET == llm.DEFAULT_RISK_LEVEL
+    assert radar.RADAR_BUCKET not in llm.RISK_LEVELS
 
 
 def test_collect_social_partage_equitablement_les_places(monkeypatch):

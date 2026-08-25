@@ -172,6 +172,51 @@ def test_get_candles_passes_range_and_interval():
 
 
 # ================================================================
+#  crypto et forex — MÊME endpoint chart, aucun cas particulier
+#
+#  C'est le point qui rend l'élargissement d'univers presque gratuit : Yahoo
+#  sert BTC-USD et EURUSD=X par la même route que NESN.SW. Ces deux tests
+#  FIGENT ça — le jour où quelqu'un ajoutera un cas particulier, ils diront
+#  pourquoi il n'en fallait pas.
+# ================================================================
+
+def test_get_quote_works_on_a_crypto_pair():
+    """BTC-USD : Yahoo annonce ``currency: USD`` — le simulateur convertit donc
+    en francs exactement comme pour une action américaine."""
+    client = FakeClient({"BTC-USD": chart(symbol="BTC-USD", currency="USD",
+                                          name="Bitcoin USD", price=63000.0,
+                                          timestamps=[1, 2],
+                                          opens=[59000.0, 60000.0],
+                                          closes=[60000.0, 63000.0])})
+    quote = quotes.get_quote("BTC-USD", client=client)
+    assert quote == {"symbol": "BTC-USD", "price": 63000.0, "currency": "USD",
+                     "change_pct": 5.0, "name": "Bitcoin USD"}
+
+
+def test_get_quote_works_on_a_forex_pair():
+    """EURUSD=X : la « devise » rendue par Yahoo est USD (le prix dit combien de
+    dollars vaut un euro). Le simulateur le traite comme n'importe quel
+    instrument coté en USD — pas de lot, pas de pip, cf. docstring de module."""
+    client = FakeClient({"EURUSD=X": chart(symbol="EURUSD=X", currency="USD",
+                                           name="EUR/USD", price=1.1,
+                                           timestamps=[1, 2],
+                                           opens=[1.08, 1.09],
+                                           closes=[1.0, 1.1])})
+    quote = quotes.get_quote("EURUSD=X", client=client)
+    assert quote["currency"] == "USD"
+    assert quote["price"] == 1.1
+    assert quote["change_pct"] == 10.0
+
+
+def test_fx_to_chf_serves_a_crypto_quoted_in_usd():
+    """Aucune passerelle spéciale : la devise d'une crypto est une devise."""
+    client = FakeClient({"USDCHF=X": chart(symbol="USDCHF=X", price=None,
+                                           timestamps=[1], opens=[0.9],
+                                           closes=[0.88])})
+    assert quotes.fx_to_chf("USD", client=client) == 0.88
+
+
+# ================================================================
 #  taux de change
 # ================================================================
 
@@ -236,20 +281,77 @@ def test_search_short_query_does_no_network(monkeypatch):
     assert called == []
 
 
-def test_search_keeps_equity_and_etf_only(monkeypatch):
-    payload = {"quotes": [
+def _search_payload():
+    """Une réponse ``/v1/finance/search`` à la forme RÉELLE de Yahoo : les
+    cryptos et les devises n'y portent PAS de champ ``currency``, et leur
+    ``exchDisp`` vaut ``CCC``/``CCY``."""
+    return {"quotes": [
         {"symbol": "NESN.SW", "shortname": "Nestle", "longname": "Nestle SA",
          "exchDisp": "Swiss", "currency": "chf", "quoteType": "EQUITY"},
         {"symbol": "CSPX.L", "shortname": "iShares Core", "exchDisp": "LSE",
          "currency": "USD", "quoteType": "ETF"},
-        {"symbol": "EURCHF=X", "shortname": "EUR/CHF", "quoteType": "CURRENCY"},
+        {"symbol": "BTC-USD", "shortname": "Bitcoin USD", "longname": "Bitcoin USD",
+         "exchDisp": "CCC", "typeDisp": "Cryptocurrency",
+         "quoteType": "CRYPTOCURRENCY"},
+        {"symbol": "EURUSD=X", "shortname": "EUR/USD", "longname": "EUR/USD",
+         "exchDisp": "CCY", "typeDisp": "Currency", "quoteType": "CURRENCY"},
         {"symbol": "^SSMI", "shortname": "SMI", "quoteType": "INDEX"},
+        {"symbol": "GC=F", "shortname": "Gold Dec 26", "quoteType": "FUTURE"},
     ]}
-    monkeypatch.setattr(quotes, "_fetch_json", lambda url: payload)
+
+
+def test_search_keeps_equity_etf_crypto_and_forex(monkeypatch):
+    """Univers élargi (niveau spéculatif du coach) : crypto et devises passent,
+    les indices et les contrats à terme restent dehors."""
+    monkeypatch.setattr(quotes, "_fetch_json", lambda url: _search_payload())
     results = quotes.search("nestle")
-    assert [r["symbol"] for r in results] == ["NESN.SW", "CSPX.L"]
+    assert [r["symbol"] for r in results] == ["NESN.SW", "CSPX.L", "BTC-USD",
+                                              "EURUSD=X"]
     assert results[0] == {"symbol": "NESN.SW", "name": "Nestle SA",
-                          "exchange": "Swiss", "currency": "CHF"}
+                          "exchange": "Swiss", "currency": "CHF",
+                          "kind": "equity"}
+
+
+def test_search_tags_the_kind_of_each_result(monkeypatch):
+    monkeypatch.setattr(quotes, "_fetch_json", lambda url: _search_payload())
+    kinds = {r["symbol"]: r["kind"] for r in quotes.search("nestle")}
+    assert kinds == {"NESN.SW": "equity", "CSPX.L": "etf",
+                     "BTC-USD": "crypto", "EURUSD=X": "forex"}
+
+
+def test_search_survives_a_crypto_without_currency(monkeypatch):
+    """Yahoo n'annonce pas de devise sur BTC-USD : chaîne vide, pas de crash."""
+    monkeypatch.setattr(quotes, "_fetch_json", lambda url: _search_payload())
+    crypto = [r for r in quotes.search("btc") if r["symbol"] == "BTC-USD"][0]
+    assert crypto["currency"] == ""
+    assert crypto["name"] == "Bitcoin USD"
+
+
+def test_the_filter_derives_from_the_kind_table():
+    """Une seule table : le filtre ne peut pas accepter un type qu'on ne sait
+    pas nommer, ni nommer un type qu'on filtre."""
+    assert quotes.SEARCH_KEEP_TYPES == frozenset(quotes.KIND_BY_QUOTE_TYPE)
+    assert quotes.ASSET_KINDS == {"equity", "etf", "crypto", "forex"}
+
+
+@pytest.mark.parametrize("quote_type,kind", [
+    ("EQUITY", "equity"), ("etf", "etf"), ("CRYPTOCURRENCY", "crypto"),
+    ("CURRENCY", "forex"), ("INDEX", "equity"), ("", "equity"), (None, "equity"),
+])
+def test_kind_for_quote_type(quote_type, kind):
+    assert quotes.kind_for_quote_type(quote_type) == kind
+
+
+@pytest.mark.parametrize("symbol,kind", [
+    ("EURUSD=X", "forex"), ("usdchf=x", "forex"),
+    ("BTC-USD", "crypto"), ("eth-eur", "crypto"),
+    ("AAPL", "equity"), ("NESN.SW", "equity"), ("", "equity"), (None, "equity"),
+])
+def test_kind_from_symbol_is_a_fallback_not_a_source(symbol, kind):
+    """Deviner le genre depuis le ticker ne sert QUE là où personne n'a fourni
+    de quoteType (une idée écrite par le LLM) : un ETF y passe pour une action,
+    et c'est assumé."""
+    assert quotes.kind_from_symbol(symbol) == kind
 
 
 def test_search_encodes_the_query(monkeypatch):

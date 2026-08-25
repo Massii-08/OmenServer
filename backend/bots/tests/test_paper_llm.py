@@ -234,6 +234,134 @@ def test_the_analysis_prompt_no_longer_hardcodes_a_reading_language():
     assert "en mots simples" in llm.build_analysis_prompt({}, "it")
 
 
+# --------------------------------------------------------------------------- #
+# Niveaux de risque — l'univers et la fourchette changent, la doctrine JAMAIS
+#
+# Ces blocs SONT le produit (« une option où le coach prend des risques élevés —
+# genre short crypto, ou du semi-long sur du forex ») : ce qui est vérifié ici
+# n'est pas de la décoration, c'est ce que Massii recevra.
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("given,expected", [
+    ("mesure", "mesure"), ("mesuré", "mesure"), ("MESURE", "mesure"),
+    (" agressif ", "agressif"), ("aggressive", "agressif"),
+    ("speculatif", "speculatif"), ("spéculatif", "speculatif"),
+    ("speculative", "speculatif"),
+])
+def test_risk_level_normalisation(given, expected):
+    assert llm.normalize_risk_level(given) == expected
+
+
+@pytest.mark.parametrize("given", ["", None, "extrême", "yolo", "haut", 42])
+def test_an_unknown_risk_level_falls_back_to_the_lowest(given):
+    """Le repli va vers le BAS : une valeur illisible ne doit jamais promouvoir
+    une série d'idées à un étage qu'on ne lui a pas demandé."""
+    assert llm.normalize_risk_level(given) == llm.DEFAULT_RISK_LEVEL == "mesure"
+
+
+def test_the_measured_level_stays_on_stocks_and_etfs():
+    prompt = llm.build_ideas_prompt({}, risk_level="mesure")
+    assert "MESURÉ" in prompt
+    assert "0,5 à 1 %" in prompt
+    # l'univers interdit n'est même pas NOMMÉ : le schéma JSON de ce niveau
+    # n'énumère que equity/etf, donc le mot ne peut pas donner d'idées.
+    assert "crypto" not in prompt
+    assert "forex" not in prompt
+    assert "EURUSD=X" not in prompt
+    assert '"asset_kind"' in prompt
+    assert '"risk_level": "mesure"' in prompt
+
+
+def test_the_aggressive_level_opens_shorts_and_concentration():
+    prompt = llm.build_ideas_prompt({}, risk_level="agressif")
+    assert "AGRESSIF" in prompt
+    assert "VENTES À DÉCOUVERT" in prompt
+    assert "short squeeze" in prompt
+    assert "CONCENTRATION" in prompt
+    assert "1 à 2 %" in prompt
+    assert "invalidation SERRÉ" in prompt
+    # un étage plus haut ne veut pas dire un univers plus large ici
+    assert "crypto" not in prompt
+    assert '"risk_level": "agressif"' in prompt
+
+
+def test_the_speculative_level_opens_crypto_shorts_and_semi_long_forex():
+    prompt = llm.build_ideas_prompt({}, risk_level="speculatif")
+    assert "SPÉCULATIF" in prompt
+    assert "crypto" in prompt.lower()
+    assert "short" in prompt.lower()          # short crypto explicitement permis
+    assert "forex" in prompt.lower()
+    assert "BTC-USD" in prompt and "EURUSD=X" in prompt
+    # le semi-long demandé : semaines à 2-3 mois, pas trois séances
+    assert "SEMAINES" in prompt
+    assert "MOIS" in prompt
+    assert "2 à 3 %" in prompt
+    assert '"asset_kind"' in prompt and '"crypto"' in prompt
+
+
+def test_the_speculative_level_teaches_wide_stop_small_size():
+    """La leçon centrale de l'étage : la volatilité n'augmente pas le risque
+    autorisé, elle RÉTRÉCIT la position."""
+    prompt = llm.build_ideas_prompt({}, risk_level="speculatif")
+    assert "stop large, donc position petite" in prompt
+    assert "TAILLE de la position qui rétrécit" in prompt
+
+
+def test_the_speculative_level_caps_the_crypto_share():
+    prompt = llm.build_ideas_prompt({}, risk_level="speculatif")
+    assert "JAMAIS plus de 2 idées crypto sur 4" in prompt
+
+
+@pytest.mark.parametrize("level,label", [("mesure", "mesuré"),
+                                         ("agressif", "agressif"),
+                                         ("speculatif", "spéculatif")])
+def test_every_level_keeps_the_hard_rules_and_announces_itself(level, label):
+    """Un étage plus haut n'achète AUCUN passe-droit : mêmes interdits, même
+    stop, même invalidation — seul le curseur de risque bouge."""
+    prompt = llm.build_ideas_prompt({}, risk_level=level)
+    assert "argent réel" in prompt
+    assert "n'inventes AUCUN chiffre" in prompt
+    assert "« sûr »" in prompt
+    assert "sizing" in prompt
+    # l'en-tête de la réponse annonce le niveau (en toutes lettres) et sa
+    # fourchette ; le CODE, lui, part dans le JSON
+    assert "Niveau %s" % label in prompt
+    assert '"risk_level": "%s"' % level in prompt
+
+
+def test_an_unknown_level_produces_the_measured_prompt():
+    assert llm.build_ideas_prompt({}, risk_level="yolo") == \
+        llm.build_ideas_prompt({}, risk_level="mesure")
+
+
+def test_the_default_ideas_prompt_is_the_measured_one():
+    """Rétro-compatibilité : l'appel d'avant la fonctionnalité rend exactement
+    le prompt de l'étage mesuré."""
+    assert llm.build_ideas_prompt({}) == llm.build_ideas_prompt({}, "fr", "mesure")
+
+
+def test_the_level_and_the_language_are_independent():
+    prompt = llm.build_ideas_prompt({}, lang="it", risk_level="speculatif")
+    assert "réponds exclusivement en italiano" in prompt
+    assert "SPÉCULATIF" in prompt              # la consigne, elle, reste française
+
+
+def test_suggest_ideas_forwards_the_risk_level(monkeypatch):
+    seen = {}
+
+    def fake_claude(prompt, model=llm.DEFAULT_MODEL, timeout=llm.DEFAULT_TIMEOUT,
+                    run=None):
+        seen["prompt"] = prompt
+        return "idées"
+
+    monkeypatch.setattr(llm, "_claude_text", fake_claude)
+    assert llm.suggest_ideas({}, "fr", "speculatif") == "idées"
+    assert "SPÉCULATIF" in seen["prompt"]
+
+    llm.suggest_ideas({}, "fr", "n'importe quoi")
+    assert "MESURÉ" in seen["prompt"]
+
+
 def test_public_helpers_forward_the_language(monkeypatch):
     seen = {}
 

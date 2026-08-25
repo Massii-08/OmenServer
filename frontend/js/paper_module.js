@@ -72,11 +72,38 @@ const PaperModule = {
 
     _mono: 'font-family:var(--font-mono);font-feature-settings:\'tnum\';',
 
+    // Niveau de risque demandé au coach pour ses idées. Le choix est PERSONNEL
+    // et persiste d'une visite à l'autre (localStorage), mais la liste reste
+    // une WHITELIST FERMÉE : une valeur venue du stockage (que n'importe qui
+    // peut éditer dans la console) qui n'y figure pas ne produit ni clé i18n
+    // ni classe CSS — on ne concatène jamais une chaîne étrangère dans un nom.
+    _LEVELS: ['mesure', 'agressif', 'speculatif'],
+    _LEVEL_KEY: 'paper-risk-level',
+    _level: 'mesure',
+
+    // Le bilan du radar compte AUSSI les hypothèses qu'il a générées tout seul
+    // (« radar »), qui n'est donc pas un niveau proposé à la demande d'idées.
+    // Ordre FIXE : un objet JSON n'a pas d'ordre garanti et le lecteur doit
+    // retrouver ses niveaux à la même place d'une fois sur l'autre.
+    _LEVEL_ORDER: ['mesure', 'agressif', 'speculatif', 'radar'],
+
+    // Nature de l'actif → [clé i18n, classe .badge]. Table FERMÉE elle aussi :
+    // « equity » n'a pas de badge (c'est le cas ordinaire, le signaler
+    // n'apprendrait rien) et une valeur inconnue non plus. Noter que la valeur
+    // backend « forex » porte la clé courte paper.kind_fx : d'où la table
+    // plutôt qu'une concaténation 'paper.kind_' + kind.
+    _ASSET_KINDS: {
+        crypto: ['paper.kind_crypto', 'warn'],
+        forex: ['paper.kind_fx', 'info'],
+        etf: ['paper.kind_etf', 'muted'],
+    },
+
     // ------------------------------------------------------------ cycle de vie
 
     async render(container) {
         this.unload();                       // coupe tout timer d'un rendu précédent
         this._syncContentLang();             // langue changée ? le contenu périmé part
+        this._loadLevel();                   // le niveau a pu être choisi dans un autre onglet
         this._container = container;
         if (!container) return;
         container.innerHTML = this._shell();
@@ -233,6 +260,44 @@ const PaperModule = {
     _biasLabel(code) {
         const c = String(code || '');
         return this._label('paper.bias_' + c, c);
+    },
+
+    // --- Niveau de risque des idées -----------------------------------------
+
+    _isLevel(v) { return this._LEVELS.indexOf(String(v == null ? '' : v)) >= 0; },
+
+    // Le niveau EFFECTIF, toujours valide. Une valeur douteuse retombe sur
+    // « mesuré » : le repli est le niveau le plus prudent, jamais le plus vif.
+    _riskLevel() { return this._isLevel(this._level) ? this._level : 'mesure'; },
+
+    // Relu à CHAQUE rendu (le choix a pu être fait dans un autre onglet du
+    // navigateur). Un stockage indisponible — Safari en navigation privée,
+    // cookies refusés — ne doit jamais casser la vue : d'où le try/catch.
+    _loadLevel() {
+        let v = null;
+        try { v = localStorage.getItem(this._LEVEL_KEY); } catch (e) { v = null; }
+        if (this._isLevel(v)) this._level = String(v);
+        else if (!this._isLevel(this._level)) this._level = 'mesure';
+        return this._level;
+    },
+
+    setLevel(v) {
+        if (!this._isLevel(v)) return;              // rien de forgé n'entre ici
+        this._level = String(v);
+        // L'écriture peut être refusée : le choix vaut alors pour la session,
+        // ce qui est très bien — on ne perd que la mémoire, pas la fonction.
+        try { localStorage.setItem(this._LEVEL_KEY, this._level); } catch (e) { /* sans mémoire */ }
+        if (this._tab === 'coach') this._renderBody();
+    },
+
+    // Badge de nature d'actif. Rend '' pour « equity » (le cas ordinaire) et
+    // pour tout ce qui n'est pas dans la table — hasOwnProperty écarte au
+    // passage les clés héritées du prototype (« constructor », « toString »…).
+    _kindBadge(kind) {
+        const k = String(kind == null ? '' : kind).toLowerCase();
+        if (!Object.prototype.hasOwnProperty.call(this._ASSET_KINDS, k)) return '';
+        const d = this._ASSET_KINDS[k];
+        return '<span class="badge ' + d[1] + '">' + esc(Lang.t(d[0])) + '</span>';
     },
 
     // La langue de l'interface pilote aussi le CONTENU rendu par le backend
@@ -1075,7 +1140,12 @@ const PaperModule = {
                        'data-cur="' + esc(x.currency || '') + '" ' +
                        'data-exch="' + esc(x.exchange || '') + '">' +
                     '<div style="flex:1 1 220px;min-width:0;">' +
-                      '<div style="font-size:15px;">' + esc(x.name || sym) + '</div>' +
+                      '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
+                        '<span style="font-size:15px;">' + esc(x.name || sym) + '</span>' +
+                        // Crypto, forex, ETF : la nature de l'actif se voit AVANT
+                        // le clic — c'est elle qui change la façon de le traiter.
+                        this._kindBadge(x.kind) +
+                      '</div>' +
                       '<div style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
                         esc(sym) + (x.exchange ? ' · ' + esc(String(x.exchange)) : '') +
                         (x.currency ? ' · ' + esc(String(x.currency)) : '') + '</div>' +
@@ -1546,6 +1616,7 @@ const PaperModule = {
                   (it && it.direction
                     ? '<span class="badge ' + this._direction(it.direction) + '">' +
                       esc(String(it.direction)) + '</span>' : '') +
+                  this._kindBadge(it && it.asset_kind) +
                   (horizon === null ? '' :
                     '<span style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
                     esc(Lang.t('paper.radar_horizon') + ' ' + this._num(horizon, 0) + ' ' +
@@ -1559,10 +1630,25 @@ const PaperModule = {
                     esc(String(it.thesis)) + '</div>' : '') +
             '</div>';
         }).join('');
+        // Le niveau se choisit AVANT de demander : c'est lui qui décide de la
+        // nature des paris proposés, pas un filtre appliqué après coup.
+        const level = this._riskLevel();
+        const pills = this._LEVELS.map((lv) =>
+            '<button class="paper-tab' + (lv === level ? ' active' : '') + '" ' +
+                'data-paper-act="idea-level" data-level="' + esc(lv) + '">' +
+              esc(Lang.t('paper.level_' + lv)) + '</button>'
+        ).join('');
+
         return this._card(
             this._head(Lang.t('paper.ideas_title')) +
             '<div style="font-size:13px;color:var(--text-muted);line-height:1.5;margin-bottom:10px;">' +
-              esc(Lang.t('paper.ideas_hint')) + '</div>' +
+              esc(Lang.t('paper.ideas_hint')) + '<br>' +
+              // Mention permanente, pas un pied de page qu'on oublie de lire :
+              // monter en volatilité ne change PAS la règle de risque.
+              esc(Lang.t('paper.ideas_spec_note')) + '</div>' +
+            '<div class="paper-tabs" style="margin-bottom:6px;">' + pills + '</div>' +
+            '<div style="font-size:13px;color:var(--text-dim);line-height:1.5;margin-bottom:10px;">' +
+              esc(Lang.t('paper.level_' + level + '_hint')) + '</div>' +
             '<button class="btn btn-primary" data-paper-act="ideas">' +
               esc(Lang.t('paper.ideas_btn')) + '</button>' +
             ((d && d.text) ? this._panel(Lang.t('paper.ideas_title'), String(d.text)) : '') +
@@ -1571,7 +1657,8 @@ const PaperModule = {
     },
 
     async askIdeas(btn) {
-        await this._llm(btn, '/api/paper/ideas', { lang: this._lang() }, (d) => {
+        const body = { lang: this._lang(), risk_level: this._riskLevel() };
+        await this._llm(btn, '/api/paper/ideas', body, (d) => {
             this._ideas = (d && typeof d === 'object') ? d : null;
             if (this._tab === 'coach') this._renderBody();
         });
@@ -2246,7 +2333,42 @@ const PaperModule = {
 
     _viewRadar() {
         if (!this._radar) return this._card(this._muted(Lang.t('paper.loading')));
-        return this._radarStats() + this._radarList();
+        return this._radarStats() + this._radarLevels() + this._radarList();
+    },
+
+    // Bilan par niveau : une ligne par niveau PRÉSENT dans la réponse, dans
+    // l'ordre fixe de _LEVEL_ORDER. C'est la seule façon de voir si le grand
+    // frisson tient ses promesses ou s'il ne fait que du bruit — le total seul
+    // le noierait dans la masse des paris mesurés.
+    _radarLevels() {
+        const src = (this._radar && this._radar.stats_by_level &&
+                     typeof this._radar.stats_by_level === 'object')
+            ? this._radar.stats_by_level : null;
+        if (!src) return '';
+        const num = (v, color) =>
+            '<span style="' + this._mono + 'color:' + color + ';font-size:14px;">' +
+              esc(this._num(this._n(v) === null ? 0 : this._n(v), 0)) + '</span>';
+        const part = (labelKey, v, color) =>
+            '<span style="display:inline-flex;gap:5px;align-items:baseline;">' +
+              '<span style="font-size:12px;color:var(--text-dim);">' +
+                esc(Lang.t(labelKey)) + '</span>' + num(v, color) +
+            '</span>';
+        const rows = this._LEVEL_ORDER.map((lv) => {
+            if (!Object.prototype.hasOwnProperty.call(src, lv)) return '';
+            const s = src[lv];
+            if (!s || typeof s !== 'object') return '';
+            return '<div class="row" style="display:flex;gap:14px;align-items:baseline;' +
+                        'flex-wrap:wrap;padding:8px 12px;">' +
+                '<span style="flex:1 1 150px;min-width:0;font-size:14px;">' +
+                  esc(Lang.t('paper.level_' + lv)) + '</span>' +
+                part('paper.radar_hits', s.hits, 'var(--accent)') +
+                part('paper.radar_misses', s.misses, 'var(--danger)') +
+                part('paper.radar_unclear', s.unclear, 'var(--text-muted)') +
+            '</div>';
+        }).join('');
+        if (!rows) return '';
+        return this._card(this._head(Lang.t('paper.radar_by_level')) +
+            '<div class="row-list">' + rows + '</div>');
     },
 
     _radarStats() {
@@ -3087,6 +3209,7 @@ const PaperModule = {
         if (act === 'ask') { this.ask(el); return; }
         if (act === 'analysis') { this.analysis(el); return; }
         if (act === 'ideas') { this.askIdeas(el); return; }
+        if (act === 'idea-level') { this.setLevel(el.getAttribute('data-level')); return; }
         if (act === 'idea-pick') { this.useIdea(el.getAttribute('data-sym')); return; }
         if (act === 'watch-add') { this.addWatch(el.getAttribute('data-sym')); return; }
         if (act === 'watch-add-analysis') {

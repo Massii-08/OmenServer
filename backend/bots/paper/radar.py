@@ -85,6 +85,22 @@ MIN_HORIZON_D = 3
 MAX_HORIZON_D = 30
 DEFAULT_HORIZON_D = 7
 
+# ⚠️ DEUX plafonds, et c'est VOULU (2026-08-25).
+#
+# 30 jours reste la règle du RADAR : ses hypothèses de second ordre partent d'un
+# déclencheur DATÉ (une dépêche, un dépôt 13F), et au-delà d'un mois plus
+# personne ne saurait dire si le mouvement vient de ce déclencheur ou d'autre
+# chose. Cet argument tient pour LUI.
+#
+# Il ne tient PAS pour une idée du COACH (``source: "coach"``) : le niveau
+# spéculatif propose explicitement du forex en SEMI-LONG — semaines à deux ou
+# trois mois — adossé à un moteur macro NOMMÉ (écart de taux, cycle de banque
+# centrale, balance commerciale), qui reste lisible sur un trimestre. Scorer un
+# tel pari au bout de 30 jours ne mesurerait pas la thèse mais le bruit de son
+# premier tiers — et le bilan par niveau reprocherait au niveau spéculatif un
+# échec que nous aurions fabriqué nous-mêmes.
+MAX_HORIZON_COACH_D = 120
+
 # Seuil de verdict. En dessous de 3 % sur l'horizon, on ne peut pas distinguer
 # la thèse du bruit : c'est « indécis », pas une réussite.
 MOVE_THRESHOLD_PCT = 3.0
@@ -95,6 +111,25 @@ SCORE_INTERVAL = "1d"
 VALID_CONFIDENCE = ("basse", "moyenne")
 DEFAULT_CONFIDENCE = "moyenne"
 VALID_DIRECTIONS = ("up", "down")
+
+# --- bilan PAR NIVEAU DE RISQUE (extension 2026-08-25) --------------------- #
+# Le radar héberge deux populations d'hypothèses : les siennes (générées ici) et
+# celles du coach (idées de ``/ideas``, ``source: "coach"``), qui portent
+# désormais un étage de risque. Les mélanger dans un bilan unique cacherait
+# exactement ce qu'on veut voir : est-ce que le niveau spéculatif gagne, ou
+# est-ce qu'il brûle du crédit ?
+#
+# ⚠️ MIROIR de ``llm.RISK_LEVELS`` — et volontairement PAS un import : le radar
+# doit rester importable sans le module LLM (patron du fichier : tous les
+# voisins sont importés paresseusement). La correspondance est figée par un test
+# (piège #61 : un champ qui traverse plusieurs couches diverge en silence).
+RISK_BUCKETS = ("mesure", "agressif", "speculatif")
+DEFAULT_BUCKET = "mesure"
+# Les hypothèses générées par le radar lui-même n'ont PAS de niveau de risque :
+# elles ne sont pas des idées de trade dimensionnées, elles n'ont donc rien à
+# faire dans le bilan d'un étage. Leur propre case.
+RADAR_BUCKET = "radar"
+COACH_SOURCE = "coach"
 
 # --- tendances sociales (spec §13) ----------------------------------------- #
 # Reddit : plafond MESURÉ à 1 requête / 60 s / IP -> UNE seule requête par run,
@@ -250,13 +285,40 @@ def _stats_line(stats: Optional[Dict[str, Any]]) -> str:
         _n("hits"), _n("misses"), _n("unclear"))
 
 
-def _clamp_horizon(value: Any) -> int:
-    """Horizon borné à [3, 30] jours. Valeur absente/illisible -> défaut."""
+def _clamp_horizon(value: Any, max_days: int = MAX_HORIZON_D) -> int:
+    """Horizon borné à [3, ``max_days``] jours. Valeur absente/illisible ->
+    défaut. Le plafond par défaut est celui du radar (30) : c'est
+    ``hypothesis_horizon`` qui l'ouvre à 120 pour les idées du coach."""
     try:
         days = int(float(value))
     except (TypeError, ValueError):
         return DEFAULT_HORIZON_D
-    return max(MIN_HORIZON_D, min(MAX_HORIZON_D, days))
+    return max(MIN_HORIZON_D, min(max_days, days))
+
+
+def max_horizon_for(hyp: Optional[Dict[str, Any]]) -> int:
+    """Le plafond d'horizon applicable à CETTE hypothèse (PUR).
+
+    Il dépend de la SOURCE, pas du contenu : idée du coach -> 120 jours (le
+    semi-long forex du niveau spéculatif), tout le reste -> 30 jours. Un état
+    ANCIEN, sans champ ``source``, retombe donc sur 30 : rien ne change pour ce
+    qui a été écrit avant.
+    """
+    if str((hyp or {}).get("source") or "").strip().lower() == COACH_SOURCE:
+        return MAX_HORIZON_COACH_D
+    return MAX_HORIZON_D
+
+
+def hypothesis_horizon(hyp: Optional[Dict[str, Any]]) -> int:
+    """L'horizon EFFECTIF d'une hypothèse, en jours (PUR).
+
+    UNE seule définition, utilisée par le scoring (``is_mature``) ET par tout ce
+    qui l'affiche (prompt, alertes, notes de carnet). Deux définitions
+    divergentes donneraient un carnet qui annonce 30 jours pour un pari
+    réellement noté à 75 — le genre de mensonge tranquille qu'on ne voit qu'au
+    bout de trois mois.
+    """
+    return _clamp_horizon((hyp or {}).get("horizon_days"), max_horizon_for(hyp))
 
 
 def _clamp_confidence(value: Any) -> str:
@@ -467,7 +529,7 @@ def build_prompt(events: Any, filings: Any, open_hyps: Any, scored_hyps: Any,
             lines.append("- %s [marchés : %s | horizon %d j]" % (
                 str(hyp.get("thesis") or "").strip() or "(sans thèse)",
                 _join(hyp.get("markets")) or "?",
-                _clamp_horizon(hyp.get("horizon_days")),
+                hypothesis_horizon(hyp),
             ))
     else:
         lines.append("- (aucune)")
@@ -577,6 +639,11 @@ def is_mature(hyp: Optional[Dict[str, Any]], now: Any) -> bool:
     Une date de naissance illisible rend ``True`` : mieux vaut clore un pari
     dont on a perdu la date que le laisser ouvert pour toujours (une hypothèse
     éternelle ne serait jamais notée — exactement ce qu'on s'interdit).
+
+    L'échéance est celle de ``hypothesis_horizon`` : 30 jours au plus pour le
+    radar, 120 pour une idée du coach (le semi-long forex). Une idée à 75 jours
+    n'est donc PAS mature au 40ᵉ jour — la noter là serait mesurer le bruit du
+    premier tiers de la thèse.
     """
     created = _parse_dt((hyp or {}).get("created_at"))
     if created is None:
@@ -584,8 +651,7 @@ def is_mature(hyp: Optional[Dict[str, Any]], now: Any) -> bool:
     now_dt = _parse_dt(now)
     if now_dt is None:
         return False
-    horizon = _clamp_horizon((hyp or {}).get("horizon_days"))
-    return now_dt >= created + timedelta(days=horizon)
+    return now_dt >= created + timedelta(days=hypothesis_horizon(hyp))
 
 
 def _move_pct(candles: Any, created: Optional[datetime]) -> Optional[float]:
@@ -667,6 +733,58 @@ def score_hypothesis(hyp: Optional[Dict[str, Any]],
 
 
 # --------------------------------------------------------------------------- #
+# PUR — bilan ventilé par niveau de risque
+# --------------------------------------------------------------------------- #
+
+def level_bucket(hyp: Optional[Dict[str, Any]]) -> str:
+    """La case de bilan d'une hypothèse (PUR).
+
+    Trois cas, dans cet ordre :
+
+    1. un ``risk_level`` connu -> sa case (``mesure``/``agressif``/
+       ``speculatif``). Un niveau écrit mais illisible retombe sur « mesuré » :
+       le repli va vers le BAS, jamais vers le haut ;
+    2. pas de niveau mais ``source: "coach"`` -> « mesuré ». Ce sont les idées
+       d'AVANT cette fonctionnalité : elles ont été produites avec la doctrine
+       qui est devenue le niveau mesuré, les compter ailleurs serait faux ;
+    3. tout le reste -> ``radar`` : les hypothèses de second ordre générées par
+       le radar lui-même, qui ne sont pas des idées de trade dimensionnées.
+    """
+    hyp = hyp or {}
+    level = str(hyp.get("risk_level") or "").strip().lower()
+    if level:
+        return level if level in RISK_BUCKETS else DEFAULT_BUCKET
+    if str(hyp.get("source") or "").strip().lower() == COACH_SOURCE:
+        return DEFAULT_BUCKET
+    return RADAR_BUCKET
+
+
+def stats_by_level(hypotheses: Any) -> Dict[str, Dict[str, int]]:
+    """Bilan ``{case: {hits, misses, unclear}}`` des hypothèses NOTÉES (PUR).
+
+    Calculé à la volée depuis l'état, jamais accumulé dans un compteur : un
+    bilan recalculé ne peut pas dériver de la réalité qu'il prétend décrire (et
+    la ventilation par niveau peut donc changer de définition sans migration).
+
+    Seules les hypothèses ``status == "scored"`` comptent — une hypothèse
+    ouverte n'a encore rien prouvé. Une case sans aucune hypothèse notée est
+    ABSENTE du résultat plutôt que remplie de zéros : « 0 réussie / 0 ratée »
+    se lirait comme un échec, alors que c'est simplement « pas encore de
+    verdict ».
+    """
+    out: Dict[str, Dict[str, int]] = {}
+    for hyp in (hypotheses or []):
+        if not isinstance(hyp, dict) or hyp.get("status") != "scored":
+            continue
+        row = out.setdefault(level_bucket(hyp),
+                             {"hits": 0, "misses": 0, "unclear": 0})
+        key = {"hit": "hits", "miss": "misses"}.get(
+            str(hyp.get("outcome") or "").strip().lower(), "unclear")
+        row[key] += 1
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # PUR — mise en forme (Telegram + carnet)
 # --------------------------------------------------------------------------- #
 
@@ -702,7 +820,7 @@ def format_alert(hyp: Dict[str, Any], stats: Optional[Dict[str, Any]] = None) ->
         "Chaîne : %s" % (_chain_text(hyp.get("chain")) or "—"),
         "Marchés : %s (ex. %s)" % (markets, tickers),
         "Horizon ~%d j. Invalidée si : %s" % (
-            _clamp_horizon(hyp.get("horizon_days")),
+            hypothesis_horizon(hyp),
             str(hyp.get("invalidation") or "(non précisée)").strip()),
         "Si tu veux la jouer : simulateur, thèse écrite, petit sizing (≤ 1 %).",
         "Bilan du radar : %s." % _stats_line(stats),
@@ -740,7 +858,7 @@ def format_hypothesis_note(hyp: Dict[str, Any]) -> str:
         "- Marchés : %s" % (_join(hyp.get("markets")) or "—"),
         "- Mesurée sur : %s (%s attendue)" % (
             _join(hyp.get("tickers")) or "—", direction),
-        "- Horizon : %d jours" % _clamp_horizon(hyp.get("horizon_days")),
+        "- Horizon : %d jours" % hypothesis_horizon(hyp),
         "- Invalidée si : %s" % str(hyp.get("invalidation") or "(non précisée)").strip(),
         "- Pari assumé, pas une certitude. Sera notée automatiquement à l'échéance.",
         "",
@@ -769,7 +887,7 @@ def format_outcome_note(hyp: Dict[str, Any]) -> str:
             _join(hyp.get("tickers")) or "—",
             "hausse" if _clamp_direction(hyp.get("direction")) == "up" else "baisse"),
         "- Ouverte le %s, horizon %d jours." % (
-            _short_date(hyp.get("created_at")), _clamp_horizon(hyp.get("horizon_days"))),
+            _short_date(hyp.get("created_at")), hypothesis_horizon(hyp)),
         "",
         "[[Journal]]",
         "",
@@ -1145,7 +1263,13 @@ def run_once(now: Any = None,
 def recent(limit: int = 30) -> Dict[str, Any]:
     """CONTRAT PUBLIC pour le router : le bilan + les N hypothèses les plus
     récentes, les ouvertes d'abord (ce sont elles qui engagent le radar), puis
-    les notées de la plus fraîche à la plus ancienne."""
+    les notées de la plus fraîche à la plus ancienne.
+
+    ``stats_by_level`` ventile le bilan par étage de risque (idées du coach) et
+    isole les hypothèses du radar sous ``radar``. Il porte sur TOUT l'état, pas
+    sur la tranche rendue : un bilan qui rétrécirait avec ``limit`` ne serait
+    plus un bilan.
+    """
     try:
         limit = max(0, int(limit))
     except (TypeError, ValueError):
@@ -1158,4 +1282,6 @@ def recent(limit: int = 30) -> Dict[str, Any]:
     opens.sort(key=lambda h: str(h.get("created_at") or ""), reverse=True)
     others.sort(key=lambda h: str(h.get("scored_at") or h.get("created_at") or ""),
                 reverse=True)
-    return {"stats": state["stats"], "hypotheses": (opens + others)[:limit]}
+    return {"stats": state["stats"],
+            "stats_by_level": stats_by_level(hypotheses),
+            "hypotheses": (opens + others)[:limit]}
