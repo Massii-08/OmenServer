@@ -39,7 +39,8 @@ from pydantic import BaseModel
 
 from backend.auth.models import User
 from backend.auth.permissions import require_role
-from backend.bots.paper import coach, fees, fills, llm, models, quotes, risk, store
+from backend.bots.paper import (board, coach, fees, fills, llm, models, quotes,
+                                risk, store)
 
 logger = logging.getLogger("omenserver")
 
@@ -1020,6 +1021,25 @@ class WatchlistPayload(BaseModel):
     symbol: str = ""
 
 
+class BoardItemPayload(BaseModel):
+    symbol: str = ""
+    thesis: str = ""
+
+
+class BoardStagePayload(BaseModel):
+    # Seules les DEUX étapes manuelles sont acceptées : les trois autres
+    # (ordre/position/clos) se méritent, elles ne se déclarent pas.
+    stage_manual: str = ""
+
+
+class BoardScenarioPayload(BaseModel):
+    lang: str = "fr"
+
+
+class BoardBranchPayload(BaseModel):
+    status: str = ""
+
+
 # --------------------------------------------------------------------------- #
 # Endpoints — portefeuille
 # --------------------------------------------------------------------------- #
@@ -1832,6 +1852,49 @@ def _open_radar_hypotheses() -> List[Dict[str, Any]]:
            if isinstance(h, dict) and h.get("status") == "open"]
 
 
+def _recent_news(username: str) -> List[Dict[str, Any]]:
+    """Les dépêches récentes de la veille — best-effort : module absent ou en
+    panne -> liste vide, jamais une exception (le coach écrit sans, il écrit
+    juste moins bien)."""
+    try:
+        return list(_newswatch().recent_events(username) or [])
+    except ImportError:
+        return []
+    except Exception as e:                      # noqa: BLE001 - veille best-effort
+        logger.warning("paper: veille news indisponible pour le contexte: %s", e)
+        return []
+
+
+def _recent_filings() -> List[Dict[str, Any]]:
+    """Les dépôts 13F récents — best-effort, même contrat que ``_recent_news``."""
+    try:
+        return list(_whales().recent_filing_events() or [])
+    except ImportError:
+        return []
+    except Exception as e:                      # noqa: BLE001 - dépôts best-effort
+        logger.warning("paper: dépôts 13F indisponibles pour le contexte: %s", e)
+        return []
+
+
+def _strategy_context(username: str) -> Dict[str, Any]:
+    """Le contexte du coach quand il PROPOSE (``/ideas``) ou qu'il
+    CARTOGRAPHIE (``/board/scenarios/generate``).
+
+    UNE seule fonction pour les deux : ce sont les mêmes faits, et deux
+    assemblages parallèles finiraient par diverger (l'un recevrait les
+    annonces politiques, l'autre pas — sans que rien ne le signale).
+    """
+    portfolio = _load(username)
+    synced = _sync_coach(username, portfolio.to_dict(), force=True)
+    context = _coach_context(portfolio, synced["profile"], synced["biases"],
+                             synced["stats"])
+    context["watchlist"] = _watchlist_context(username)
+    context["radar_open_hypotheses"] = _open_radar_hypotheses()
+    context["recent_news"] = _recent_news(username)
+    context["recent_filings"] = _recent_filings()
+    return context
+
+
 def _register_radar_ideas(ideas: List[Dict[str, Any]], now_iso: str) -> List[Dict[str, Any]]:
     """Enregistre chaque idée comme hypothèse radar ``source: "coach"`` — même
     forme d'hypothèse que ``radar._score_and_generate`` (id/created_at/status/
@@ -1898,6 +1961,35 @@ def _register_radar_ideas(ideas: List[Dict[str, Any]], now_iso: str) -> List[Dic
         return [dict(idea, tracked=False) for idea in ideas]
 
 
+def _pipeline_from_ideas(username: str, ideas: List[Dict[str, Any]]) -> None:
+    """Le coach ÉCRIT dans le tableau : chaque idée effectivement SUIVIE par le
+    radar devient aussi une ligne du pipeline (``source: "coach"``).
+
+    C'est le point de la demande — « le coach pourra utiliser aussi cet
+    outil » : sans ça, ses idées vivraient dans une réponse qu'on ferme, au
+    lieu d'atterrir dans la file de travail.
+
+    Seules les idées ``tracked`` sont reprises : une idée refusée par la file
+    du radar (``MAX_OPEN``) n'est suivie nulle part, l'écrire ici ferait croire
+    le contraire. Le dédoublonnage est celui de ``board.add_pipeline_item``
+    (par symbole ACTIF) — le coach peut reproposer AAPL trois jours de suite,
+    il n'y aura qu'une ligne.
+
+    Best-effort PAR IDÉE : un symbole bancal ne doit pas faire perdre les
+    autres, ni casser une réponse LLM déjà payée.
+    """
+    for idea in ideas or []:
+        if not idea.get("tracked"):
+            continue
+        try:
+            board.add_pipeline_item(username, idea.get("ticker") or "",
+                                    idea.get("thesis") or "", "coach",
+                                    now_iso=_now_iso())
+        except Exception as e:                  # noqa: BLE001 - tableau best-effort
+            logger.warning("paper: idée %r non ajoutée au pipeline: %s",
+                           idea.get("ticker"), e)
+
+
 @router.post("/ideas")
 def paper_ideas(data: IdeasPayload,
                 current_user: User = Depends(require_role("admin", "money", "trader"))):
@@ -1915,6 +2007,10 @@ def paper_ideas(data: IdeasPayload,
     ``radar.MAX_OPEN`` : au-delà, l'idée est rendue au client
     (``tracked: false``) mais pas persistée. Panne LLM -> 502 propre.
 
+    Les idées SUIVIES atterrissent en plus dans le pipeline de la vue « Plan »
+    (``_pipeline_from_ideas``, best-effort) : le coach ne se contente pas de
+    parler, il remplit le tableau.
+
     ``risk_level`` choisit l'étage (« mesuré » par défaut, « agressif »,
     « spéculatif » = crypto et forex ouverts). Il est NORMALISÉ ici et renvoyé
     dans la réponse : le client lit l'étage réellement appliqué, pas celui qu'il
@@ -1922,30 +2018,7 @@ def paper_ideas(data: IdeasPayload,
     qui rend le bilan par niveau possible.
     """
     username = current_user.username
-    portfolio = _load(username)
-    synced = _sync_coach(username, portfolio.to_dict(), force=True)
-    context = _coach_context(portfolio, synced["profile"], synced["biases"],
-                             synced["stats"])
-    context["watchlist"] = _watchlist_context(username)
-    context["radar_open_hypotheses"] = _open_radar_hypotheses()
-
-    news_events: List[Dict[str, Any]] = []
-    try:
-        news_events = list(_newswatch().recent_events(username) or [])
-    except ImportError:
-        pass
-    except Exception as e:                      # noqa: BLE001 - veille best-effort
-        logger.warning("paper: veille news indisponible pour /ideas: %s", e)
-    context["recent_news"] = news_events
-
-    filing_events: List[Dict[str, Any]] = []
-    try:
-        filing_events = list(_whales().recent_filing_events() or [])
-    except ImportError:
-        pass
-    except Exception as e:                      # noqa: BLE001 - dépôts best-effort
-        logger.warning("paper: dépôts 13F indisponibles pour /ideas: %s", e)
-    context["recent_filings"] = filing_events
+    context = _strategy_context(username)
 
     lang = normalize_lang(data.lang)
     risk_level = llm.normalize_risk_level(data.risk_level)
@@ -1955,6 +2028,7 @@ def paper_ideas(data: IdeasPayload,
         raise HTTPException(status_code=502, detail=str(e)[:300])
 
     ideas = _register_radar_ideas(_parse_ideas_json(text, risk_level), _now_iso())
+    _pipeline_from_ideas(username, ideas)
     return {"text": text, "ideas": ideas, "risk_level": risk_level}
 
 
@@ -2019,3 +2093,196 @@ def paper_watchlist_remove(symbol: str,
         raise HTTPException(status_code=404, detail="Titre absent de la liste de suivi.")
     store.save_watchlist(username, remaining)
     return {"symbols": remaining}
+
+
+# --------------------------------------------------------------------------- #
+# Endpoints — vue « Plan » (pipeline d'achats, progression, scénarios)
+#
+# Le tableau de bord du module, dans l'esprit de Mission Control : ce qu'on
+# prépare, où on en est, et les chemins que le coach imagine pour le marché.
+#
+# Invariant : le tableau ne peut pas mentir. Les trois dernières étapes d'un
+# item (ordre/position/clos) sont DÉRIVÉES du portefeuille à chaque lecture, et
+# la progression est RECALCULÉE depuis le profil coach — rien de tout cela
+# n'est stocké dans le tableau, donc rien ne peut dériver du réel.
+# --------------------------------------------------------------------------- #
+
+def _arena_rows(profile: Dict[str, Any],
+                portfolio: models.Portfolio) -> List[Dict[str, Any]]:
+    """L'historique ÉVALUÉ des défis (``arena_view``), seule source honnête du
+    nombre de défis RÉUSSIS : le profil ne stocke que l'acceptation, le verdict
+    se recalcule depuis le catalogue et les trades de la semaine."""
+    history = [h for h in (profile.get("arena_history") or []) if isinstance(h, dict)]
+    view = arena_view(arena_catalog(), history,
+                      [t.to_dict() for t in portfolio.trades],
+                      portfolio.initial_capital, _week_id(datetime.now()))
+    return view.get("history") or []
+
+
+def _board_payload(username: str) -> Dict[str, Any]:
+    """Le tableau complet, tel que l'interface le consomme."""
+    portfolio = _load(username)
+    portfolio_dict = portfolio.to_dict()
+    profile = store.load_coach(username) or coach.empty_profile()
+    data = board.load_board(username)
+    return {
+        "pipeline": board.pipeline_view(data.get("pipeline"), portfolio_dict),
+        "learning": board.learning_summary(
+            profile, portfolio_dict.get("trades") or [],
+            lessons_total=len(lessons_catalog()),
+            initial_capital=portfolio.initial_capital,
+            arena_rows=_arena_rows(profile, portfolio)),
+        "scenarios": board.scenarios_view(data),
+    }
+
+
+def _pipeline_view(username: str) -> List[Dict[str, Any]]:
+    """Le pipeline seul, enrichi des étapes dérivées (retour des écritures)."""
+    portfolio = _load(username)
+    return board.pipeline_view(board.load_board(username).get("pipeline"),
+                               portfolio.to_dict())
+
+
+@router.get("/board")
+def paper_board(current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Pipeline (étapes dérivées du portefeuille) + progression + scénarios.
+
+    Aucun réseau, aucun LLM : tout est lu sur disque et recalculé.
+    """
+    return _board_payload(current_user.username)
+
+
+@router.post("/board/pipeline")
+def paper_board_pipeline_add(data: BoardItemPayload,
+                             current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Note un futur achat. Le symbole est VÉRIFIÉ chez Yahoo (404 s'il est
+    inconnu) — un pipeline plein de tickers fantômes ne servirait qu'à
+    fabriquer des idées sur des titres qui n'existent pas.
+
+    Idempotent par symbole ACTIF : re-poster un titre déjà suivi rend la ligne
+    existante (``duplicate: true``) sans rien dupliquer.
+    """
+    symbol = str(data.symbol or "").strip().upper()
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Symbole manquant.")
+
+    username = current_user.username
+    try:
+        quote = quotes.get_quote(symbol)
+    except quotes.UnknownSymbol as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except quotes.QuoteError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    item = board.add_pipeline_item(username, symbol, data.thesis, "moi",
+                                   name=quote.get("name") or "",
+                                   now_iso=_now_iso())
+    pipeline = _pipeline_view(username)
+    decorated = next((row for row in pipeline if row.get("id") == item.get("id")), item)
+    decorated = dict(decorated)
+    decorated["duplicate"] = bool(item.get("duplicate"))
+    return {"item": decorated, "pipeline": pipeline}
+
+
+@router.post("/board/pipeline/{item_id}")
+def paper_board_pipeline_stage(item_id: str, data: BoardStagePayload,
+                               current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Passe un item de « à l'étude » à « prêt » (et retour).
+
+    400 sur toute autre étape : ``ordre``/``position``/``clos`` se méritent (un
+    ordre passé, une position ouverte, un trade clos) — les déclarer à la main
+    rendrait le tableau menteur.
+    """
+    username = current_user.username
+    try:
+        item = board.set_stage(username, item_id, data.stage_manual)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Étape inconnue (attendu : %s)." % " ou ".join(board.MANUAL_STAGES))
+    if item is None:
+        raise HTTPException(status_code=404, detail="Ligne introuvable.")
+
+    pipeline = _pipeline_view(username)
+    decorated = next((row for row in pipeline if row.get("id") == item.get("id")), item)
+    return {"item": decorated, "pipeline": pipeline}
+
+
+@router.delete("/board/pipeline/{item_id}")
+def paper_board_pipeline_remove(item_id: str,
+                                current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Retire une ligne du pipeline. 404 si elle n'y était pas."""
+    username = current_user.username
+    if not board.remove_pipeline_item(username, item_id):
+        raise HTTPException(status_code=404, detail="Ligne introuvable.")
+    return {"pipeline": _pipeline_view(username)}
+
+
+@router.post("/board/scenarios/generate")
+def paper_board_scenarios_generate(data: BoardScenarioPayload,
+                                   current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Le coach dessine un arbre de chemins possibles pour le marché.
+
+    Contexte assemblé comme ``/ideas`` (``_strategy_context``) + le pipeline en
+    cours : les futurs achats notés font partie de ce qui est en jeu.
+
+    L'arbre est normalisé et rangé côté serveur (identifiants, statuts, dates
+    — jamais lus du modèle). Réponse illisible (pas d'arbre exploitable) ->
+    502, comme une panne du LLM : mieux vaut le dire que d'afficher un
+    demi-arbre.
+    """
+    username = current_user.username
+    context = _strategy_context(username)
+    context["pipeline"] = _pipeline_view(username)
+
+    lang = normalize_lang(data.lang)
+    try:
+        text = llm.suggest_scenarios(context, lang)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)[:300])
+
+    parsed = llm.parse_scenarios(text)
+    if parsed is None:
+        raise HTTPException(status_code=502,
+                            detail="Le coach n'a pas rendu d'arbre exploitable.")
+
+    tree = board.add_scenario(username, parsed, _now_iso())
+    return {"text": llm.intro_of(text), "tree": tree,
+            "scenarios": board.scenarios_view(board.load_board(username))}
+
+
+@router.post("/board/scenarios/{tree_id}/branches/{branch_id}")
+def paper_board_branch_resolve(tree_id: str, branch_id: str, data: BoardBranchPayload,
+                               current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Marque une branche : ce chemin s'est produit, ou il est mort.
+
+    C'est ce qui donne sa valeur à l'arbre — sans verdict, une prévision reste
+    de l'astrologie. Aucun retour en arrière (400 sur tout autre statut) : la
+    trace de ce qu'on avait prévu ne se réécrit pas.
+    """
+    username = current_user.username
+    try:
+        tree = board.resolve_scenario_branch(username, tree_id, branch_id,
+                                             data.status, _now_iso())
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Statut inconnu (attendu : %s)." % " ou ".join(board.RESOLVABLE_STATUSES))
+    if tree is None:
+        raise HTTPException(status_code=404, detail="Scénario ou branche introuvable.")
+    return {"tree": tree,
+            "scenarios": board.scenarios_view(board.load_board(username))}
+
+
+@router.delete("/board/scenarios/{tree_id}")
+def paper_board_scenario_archive(tree_id: str,
+                                 current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Archive un arbre — jamais de suppression dure : un scénario périmé
+    raconte ce qu'on croyait, et c'est exactement ce qu'on veut pouvoir
+    relire."""
+    username = current_user.username
+    tree = board.archive_scenario(username, tree_id, _now_iso())
+    if tree is None:
+        raise HTTPException(status_code=404, detail="Scénario introuvable.")
+    return {"tree": tree,
+            "scenarios": board.scenarios_view(board.load_board(username))}

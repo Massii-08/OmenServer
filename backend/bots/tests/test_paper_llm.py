@@ -203,6 +203,7 @@ def _all_prompts(lang):
         "postmortem": llm.build_postmortem_prompt({"symbol": "X"}, {}, lang),
         "analysis": llm.build_analysis_prompt({"symbol": "X"}, lang),
         "ideas": llm.build_ideas_prompt({}, lang),
+        "scenarios": llm.build_scenarios_prompt({}, lang),
     }
 
 
@@ -375,6 +376,129 @@ def test_public_helpers_forward_the_language(monkeypatch):
     llm.write_postmortem({}, {}, lang="it")
     llm.write_analysis({}, lang="it")
     llm.suggest_ideas({}, lang="it")
-    assert len(seen["prompts"]) == 4
+    llm.suggest_scenarios({}, lang="it")
+    assert len(seen["prompts"]) == 5
     for prompt in seen["prompts"]:
         assert "réponds exclusivement en italiano" in prompt
+
+
+# --------------------------------------------------------------------------- #
+# Arbres de scénarios — le coach cartographie les chemins du marché
+# --------------------------------------------------------------------------- #
+
+def test_the_scenarios_prompt_demands_divergent_paths():
+    """Trois formulations du même scénario ne préparent à rien : c'est la
+    DIVERGENCE qui fait la valeur de l'arbre."""
+    prompt = llm.build_scenarios_prompt({"stats": {}})
+    assert "DIVERGENT" in prompt
+    assert "s'excluent" in prompt
+    assert "2 à 4 BRANCHES" in prompt
+
+
+def test_the_scenarios_prompt_demands_coherent_probabilities():
+    """Trois « haute » sur trois chemins qui s'excluent, c'est une
+    contradiction, pas une prévision."""
+    prompt = llm.build_scenarios_prompt({})
+    assert "COHÉRENTES entre elles" in prompt
+    assert "ne peuvent pas être tous « haute »" in prompt
+
+
+def test_the_scenarios_prompt_keeps_the_hard_rules():
+    prompt = llm.build_scenarios_prompt({})
+    assert "sûr" in prompt                        # interdit de vendre du « sûr »
+    assert "argent réel" in prompt
+    assert "n'invente RIEN" in prompt
+    assert "deux niveaux au MAXIMUM" in prompt
+
+
+def test_the_scenarios_prompt_leaves_ids_and_status_to_the_server():
+    """Laisser le modèle déclarer qu'une branche s'est réalisée, ce serait lui
+    laisser écrire le verdict de son propre pari."""
+    assert "posés par le serveur" in llm.build_scenarios_prompt({})
+
+
+def _tree_answer(payload, intro="Voici comment je vois les choses.\n"):
+    return "%s\n```json\n%s\n```" % (intro, json.dumps(payload))
+
+
+def _valid_payload():
+    return {
+        "title": "La Fed baisse-t-elle en septembre ?",
+        "context": "Deux phrases.",
+        "branches": [
+            {"label": "la Fed coupe", "prob": "haute", "consequence": "small caps",
+             "plays": [{"ticker": "iwm", "direction": "up"}]},
+            {"label": "statu quo", "prob": "moyenne", "consequence": "rien ne bouge",
+             "plays": [{"ticker": "spy", "direction": "down"}]},
+        ],
+    }
+
+
+def test_parse_scenarios_reads_a_dirty_answer():
+    tree = llm.parse_scenarios(_tree_answer(_valid_payload()))
+    assert tree["title"].startswith("La Fed")
+    assert [b["label"] for b in tree["branches"]] == ["la Fed coupe", "statu quo"]
+    assert tree["branches"][0]["plays"] == [{"ticker": "IWM", "direction": "up"}]
+    # ni id ni status : c'est le serveur qui les pose
+    assert "id" not in tree["branches"][0]
+    assert "status" not in tree["branches"][0]
+
+
+def test_parse_scenarios_normalises_probabilities_and_directions():
+    payload = _valid_payload()
+    payload["branches"][0]["prob"] = "TRÈS haute"
+    payload["branches"][1]["plays"][0]["direction"] = "vers le haut"
+    tree = llm.parse_scenarios(_tree_answer(payload))
+    assert tree["branches"][0]["prob"] == "moyenne"       # repli au MILIEU
+    assert tree["branches"][1]["plays"][0]["direction"] == "up"
+
+
+def test_parse_scenarios_clamps_depth_and_counts():
+    payload = _valid_payload()
+    payload["branches"][0]["children"] = [
+        {"label": "niveau 2", "children": [{"label": "niveau 3"}]}]
+    payload["branches"].extend([{"label": "b%d" % i} for i in range(5)])
+    tree = llm.parse_scenarios(_tree_answer(payload))
+    assert len(tree["branches"]) == llm.SCENARIO_MAX_BRANCHES
+    assert tree["branches"][0]["children"][0]["children"] == []
+
+
+def test_parse_scenarios_drops_a_branch_without_a_label_alone():
+    payload = _valid_payload()
+    payload["branches"].append({"prob": "haute"})
+    tree = llm.parse_scenarios(_tree_answer(payload))
+    assert len(tree["branches"]) == 2
+
+
+@pytest.mark.parametrize("raw", [
+    None, 42, "",
+    "aucun bloc json ici",
+    "```json\n{pas du json}\n```",
+    "```json\n[1, 2]\n```",
+    '```json\n{"title": "", "branches": [{"label": "a"}, {"label": "b"}]}\n```',
+    '```json\n{"title": "T", "branches": "pas une liste"}\n```',
+])
+def test_parse_scenarios_returns_none_on_anything_unusable(raw):
+    assert llm.parse_scenarios(raw) is None
+
+
+def test_parse_scenarios_refuses_a_single_branch():
+    """Un arbre à une branche n'est pas un arbre : c'est une prédiction
+    déguisée, exactement ce que cette vue refuse de produire."""
+    payload = _valid_payload()
+    payload["branches"] = payload["branches"][:1]
+    assert llm.parse_scenarios(_tree_answer(payload)) is None
+
+
+def test_intro_of_keeps_only_the_prose():
+    answer = _tree_answer(_valid_payload(), intro="La question du moment.")
+    assert llm.intro_of(answer) == "La question du moment."
+
+
+def test_intro_of_falls_back_to_the_whole_text():
+    assert llm.intro_of("rien que du texte") == "rien que du texte"
+    assert llm.intro_of(None) == ""
+
+
+def test_intro_of_cuts_on_a_bare_json_block():
+    assert llm.intro_of('Mon avis.\n{"title": "T"}') == "Mon avis."

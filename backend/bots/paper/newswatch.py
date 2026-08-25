@@ -692,9 +692,17 @@ def _discover_portfolios() -> List[Tuple[str, Dict[str, Any]]]:
     """Liste (username, portfolio) pour chaque portefeuille possédant au
     moins une position ouverte OU un symbole en watchlist (extension 25/08).
     Ignore les fichiers auxiliaires (.coach.json, .news_seen.json,
-    .watchlist.json -- ils matchent aussi le glob "*.json") ; les fichiers
-    corrompus sont déjà hors du glob (store.py les renomme en .corrupt à la
-    lecture, extension qui ne matche plus "*.json")."""
+    .watchlist.json, .board.json -- ils matchent aussi le glob "*.json") ; les
+    fichiers corrompus sont déjà hors du glob (store.py les renomme en .corrupt
+    à la lecture, extension qui ne matche plus "*.json").
+
+    Ceinture ET bretelles : même si un suffixe auxiliaire manquait à la liste
+    ci-dessous, son radical porterait un point ("alice.board") et
+    store.portfolio_path() le REJETTERAIT (ValueError -- allowlist stricte, un
+    '.' est structurellement interdit), ce que le except ci-dessous transforme
+    en simple saut. La liste explicite reste la première ligne de défense :
+    elle DOCUMENTE ce qui n'est pas un compte, là où l'exception ne fait que le
+    constater."""
     data_dir = store.DATA_DIR
     if not data_dir.is_dir():
         return []
@@ -702,7 +710,8 @@ def _discover_portfolios() -> List[Tuple[str, Dict[str, Any]]]:
     for path in sorted(data_dir.glob("*.json")):
         name = path.name
         if (name.endswith(".coach.json") or name.endswith(".news_seen.json")
-                or name.endswith(".watchlist.json")):
+                or name.endswith(".watchlist.json")
+                or name.endswith(".board.json")):
             continue
         username = path.stem
         try:

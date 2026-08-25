@@ -87,6 +87,22 @@ class Market(object):
         return dict(self.facts)
 
 
+def scenarios_answer(title="La Fed baisse-t-elle en septembre ?", labels=None,
+                     intro="Voici les chemins que je vois."):
+    """Réponse type du coach stratège : du texte, puis le bloc JSON final."""
+    labels = labels or ["la Fed coupe", "statu quo"]
+    payload = {
+        "title": title,
+        "context": "Le marché hésite avant la réunion.",
+        "branches": [
+            {"label": label, "prob": "moyenne", "consequence": "les small caps",
+             "plays": [{"ticker": "IWM", "direction": "up"}]}
+            for label in labels
+        ],
+    }
+    return "%s\n```json\n%s\n```" % (intro, json.dumps(payload))
+
+
 def make_client(tmp_path, monkeypatch, role="admin"):
     """Client isolé : disque en tmp, horloge figée, marché et LLM factices."""
     monkeypatch.setattr(store, "DATA_DIR", tmp_path / "paper_trading")
@@ -109,6 +125,10 @@ def make_client(tmp_path, monkeypatch, role="admin"):
                         lambda context, lang="fr", risk_level="mesure":
                         'Pas de matière suffisante.\n'
                         '```json\n{"ideas": []}\n```')
+    # Le 5e prompt (arbres de scénarios) est doublé comme les quatre autres :
+    # sans ce stub, un test de la vue « Plan » lancerait le VRAI CLI Claude.
+    monkeypatch.setattr(pr.llm, "suggest_scenarios",
+                        lambda context, lang="fr": scenarios_answer())
 
     app = FastAPI()
     app.include_router(pr.router)
@@ -161,6 +181,14 @@ def test_player_role_is_refused_everywhere(tmp_path, monkeypatch):
     assert c.get("/api/paper/community").status_code == 403
     assert c.post("/api/paper/ideas", json={}).status_code == 403
     assert c.get("/api/paper/watchlist").status_code == 403
+    assert c.get("/api/paper/board").status_code == 403
+    assert c.post("/api/paper/board/pipeline", json={"symbol": "NESN.SW"}).status_code == 403
+    assert c.post("/api/paper/board/pipeline/x", json={"stage_manual": "pret"}).status_code == 403
+    assert c.delete("/api/paper/board/pipeline/x").status_code == 403
+    assert c.post("/api/paper/board/scenarios/generate", json={}).status_code == 403
+    assert c.post("/api/paper/board/scenarios/t/branches/b",
+                  json={"status": "happened"}).status_code == 403
+    assert c.delete("/api/paper/board/scenarios/t").status_code == 403
 
 
 def test_money_role_is_allowed(tmp_path, monkeypatch):
@@ -176,6 +204,10 @@ def test_trader_role_is_allowed(tmp_path, monkeypatch):
     assert c.get("/api/paper/community").status_code == 200
     assert c.post("/api/paper/ideas", json={}).status_code == 200
     assert c.get("/api/paper/watchlist").status_code == 200
+    assert c.get("/api/paper/board").status_code == 200
+    assert c.post("/api/paper/board/pipeline",
+                  json={"symbol": "NESN.SW"}).status_code == 200
+    assert c.post("/api/paper/board/scenarios/generate", json={}).status_code == 200
 
 
 def test_trader_role_is_registered_but_not_invitable():
@@ -1887,3 +1919,355 @@ def test_the_llm_endpoints_forward_the_reading_language(tmp_path, monkeypatch):
     c.post("/api/paper/coach/ask", json={"question": "?"})
     c.post("/api/paper/analysis", json={"symbol": "NESN.SW", "lang": "klingon"})
     assert seen["ask"] == "fr" and seen["analysis"] == "fr"
+
+
+# ================================================================
+#  VUE « PLAN » — pipeline, progression, arbres de scénarios
+# ================================================================
+
+def add_item(client, symbol="NESN.SW", thesis="À creuser"):
+    return client.post("/api/paper/board/pipeline",
+                       json={"symbol": symbol, "thesis": thesis})
+
+
+def test_board_of_a_fresh_account_is_readable(tmp_path, monkeypatch):
+    """Un compte neuf rend un tableau vide et LISIBLE, jamais un 500."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = c.get("/api/paper/board").json()
+    assert body["pipeline"] == []
+    assert body["scenarios"] == []
+    assert body["learning"]["lessons"] == {"passed": 0, "total": 8}
+    assert body["learning"]["arena"] == {"accepted": 0, "done": 0}
+    assert body["learning"]["n_trades"] == 0
+
+
+def test_board_learning_counts_the_real_catalogue(tmp_path, monkeypatch):
+    """``total`` vient du catalogue servi, pas d'un 8 codé en dur qui mentirait
+    le jour où une 9e leçon arrive."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = c.get("/api/paper/board").json()
+    assert body["learning"]["lessons"]["total"] == len(pr.lessons_catalog())
+
+
+def test_pipeline_add_validates_the_symbol(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert add_item(c, "N-EXISTE-PAS").status_code == 404
+    assert add_item(c, "   ").status_code == 400
+
+
+def test_pipeline_add_reads_the_name_from_the_quote(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = add_item(c).json()
+    assert body["item"]["symbol"] == "NESN.SW"
+    assert body["item"]["name"] == "Nestle SA"
+    assert body["item"]["source"] == "moi"
+    assert body["item"]["computed_stage"] == "etude"
+    assert body["item"]["duplicate"] is False
+    assert len(body["pipeline"]) == 1
+
+
+def test_pipeline_add_is_idempotent_on_an_active_symbol(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    add_item(c)
+    again = add_item(c, thesis="autre thèse").json()
+    assert again["item"]["duplicate"] is True
+    assert len(again["pipeline"]) == 1
+
+
+def test_the_stage_follows_the_portfolio_not_the_declaration(tmp_path, monkeypatch):
+    """LE point du tableau : acheter le titre change son étape TOUT SEUL, sans
+    que personne n'ait rien déclaré."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    item_id = add_item(c).json()["item"]["id"]
+    buy(c, qty=5, thesis="Thèse suffisamment longue pour passer le seuil")
+
+    row = c.get("/api/paper/board").json()["pipeline"][0]
+    assert row["id"] == item_id
+    assert row["computed_stage"] == "position"
+
+    # …et refermer la position la fait passer à « clos », avec son R.
+    c.post("/api/paper/positions/NESN.SW/close", json={})
+    row = c.get("/api/paper/board").json()["pipeline"][0]
+    assert row["computed_stage"] == "clos"
+    assert "last_r" in row
+
+
+def test_a_pending_order_shows_as_ordre(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    add_item(c)
+    assert order(c, kind="limit", limit_price=90.0, qty=3).status_code == 200
+    row = c.get("/api/paper/board").json()["pipeline"][0]
+    assert row["computed_stage"] == "ordre"
+
+
+def test_pipeline_stage_endpoint(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    item_id = add_item(c).json()["item"]["id"]
+
+    body = c.post("/api/paper/board/pipeline/%s" % item_id,
+                  json={"stage_manual": "pret"})
+    assert body.status_code == 200
+    assert body.json()["item"]["computed_stage"] == "pret"
+
+    # une étape DÉRIVÉE ne se déclare pas
+    assert c.post("/api/paper/board/pipeline/%s" % item_id,
+                  json={"stage_manual": "position"}).status_code == 400
+    assert c.post("/api/paper/board/pipeline/inconnu",
+                  json={"stage_manual": "pret"}).status_code == 404
+
+
+def test_pipeline_delete(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    item_id = add_item(c).json()["item"]["id"]
+    body = c.delete("/api/paper/board/pipeline/%s" % item_id)
+    assert body.status_code == 200
+    assert body.json()["pipeline"] == []
+    assert c.delete("/api/paper/board/pipeline/%s" % item_id).status_code == 404
+
+
+def test_ideas_land_in_the_pipeline(tmp_path, monkeypatch):
+    """« Le coach pourra utiliser aussi cet outil » : ses idées SUIVIES
+    atterrissent dans la file de travail, pas seulement dans une réponse
+    qu'on ferme."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pr.llm, "suggest_ideas",
+        lambda context, lang="fr", risk_level="mesure": _ideas_json(
+            {"ticker": "aapl", "direction": "up", "horizon_days": 10,
+             "thesis": "Momentum"},
+        ))
+    assert c.post("/api/paper/ideas", json={}).status_code == 200
+
+    pipeline = c.get("/api/paper/board").json()["pipeline"]
+    assert [row["symbol"] for row in pipeline] == ["AAPL"]
+    assert pipeline[0]["source"] == "coach"
+    assert pipeline[0]["thesis"] == "Momentum"
+
+    # relancer le coach ne duplique pas la ligne
+    c.post("/api/paper/ideas", json={})
+    assert len(c.get("/api/paper/board").json()["pipeline"]) == 1
+
+
+def test_an_untracked_idea_never_lands_in_the_pipeline(tmp_path, monkeypatch):
+    """Une idée refusée par la file du radar n'est suivie NULLE PART : l'écrire
+    au tableau ferait croire le contraire."""
+    from backend.bots.paper import radar
+    c, _ = make_client(tmp_path, monkeypatch)
+    state = radar.blank_state()
+    for i in range(radar.MAX_OPEN):
+        state["hypotheses"].append({
+            "id": "h%d" % i, "created_at": FIXED_NOW, "status": "open",
+            "outcome": None, "scored_at": None, "move_pct": None,
+            "thesis": "déjà ouverte", "chain": [], "markets": [],
+            "tickers": ["X%d" % i], "direction": "up", "horizon_days": 7,
+            "confidence": "moyenne", "invalidation": "?",
+        })
+    radar.save_state(state)
+
+    monkeypatch.setattr(
+        pr.llm, "suggest_ideas",
+        lambda context, lang="fr", risk_level="mesure": _ideas_json(
+            {"ticker": "AAPL", "direction": "up", "thesis": "Momentum"}))
+    body = c.post("/api/paper/ideas", json={}).json()
+    assert body["ideas"][0]["tracked"] is False
+    assert c.get("/api/paper/board").json()["pipeline"] == []
+
+
+def test_a_broken_board_never_breaks_the_ideas_answer(tmp_path, monkeypatch):
+    """Le tableau est best-effort : une réponse LLM déjà obtenue ne doit pas
+    être perdue parce que le disque a hoqueté."""
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise OSError("disque plein")
+
+    monkeypatch.setattr(pr.board, "add_pipeline_item", boom)
+    monkeypatch.setattr(
+        pr.llm, "suggest_ideas",
+        lambda context, lang="fr", risk_level="mesure": _ideas_json(
+            {"ticker": "AAPL", "direction": "up", "thesis": "Momentum"}))
+    body = c.post("/api/paper/ideas", json={})
+    assert body.status_code == 200
+    assert body.json()["ideas"][0]["tracked"] is True
+
+
+def test_scenarios_generate_happy_path(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = c.post("/api/paper/board/scenarios/generate", json={})
+    assert body.status_code == 200
+    data = body.json()
+    assert data["text"] == "Voici les chemins que je vois."      # sans le bloc JSON
+    assert data["tree"]["title"].startswith("La Fed")
+    assert data["tree"]["status"] == "active"
+    assert [b["label"] for b in data["tree"]["branches"]] == ["la Fed coupe", "statu quo"]
+    assert all(b["status"] == "open" for b in data["tree"]["branches"])
+    assert len(data["scenarios"]) == 1
+    assert c.get("/api/paper/board").json()["scenarios"][0]["id"] == data["tree"]["id"]
+
+
+def test_scenarios_generate_sees_the_pipeline(tmp_path, monkeypatch):
+    """Les futurs achats notés font partie de ce qui est en jeu."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    add_item(c)
+    seen = {}
+    monkeypatch.setattr(pr.llm, "suggest_scenarios",
+                        lambda context, lang="fr":
+                        seen.update(context) or scenarios_answer())
+    c.post("/api/paper/board/scenarios/generate", json={})
+    assert [row["symbol"] for row in seen["pipeline"]] == ["NESN.SW"]
+    assert "watchlist" in seen and "stats" in seen
+
+
+def test_scenarios_generate_forwards_the_language(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    seen = {}
+    monkeypatch.setattr(pr.llm, "suggest_scenarios",
+                        lambda context, lang="fr":
+                        seen.__setitem__("lang", lang) or scenarios_answer())
+    c.post("/api/paper/board/scenarios/generate", json={"lang": "it"})
+    assert seen["lang"] == "it"
+    c.post("/api/paper/board/scenarios/generate", json={"lang": "klingon"})
+    assert seen["lang"] == "fr"
+
+
+def test_scenarios_generate_502s_on_a_llm_outage(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom(context, lang="fr"):
+        raise RuntimeError("le coach n'a pas répondu dans les 120 s")
+
+    monkeypatch.setattr(pr.llm, "suggest_scenarios", boom)
+    assert c.post("/api/paper/board/scenarios/generate", json={}).status_code == 502
+
+
+def test_scenarios_generate_502s_on_an_unusable_answer(tmp_path, monkeypatch):
+    """Mieux vaut le dire que d'afficher un demi-arbre."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(pr.llm, "suggest_scenarios",
+                        lambda context, lang="fr": "je n'ai rien à dire")
+    resp = c.post("/api/paper/board/scenarios/generate", json={})
+    assert resp.status_code == 502
+    assert c.get("/api/paper/board").json()["scenarios"] == []
+
+
+def test_only_three_scenarios_stay_active_through_the_api(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    for i in range(4):
+        c.post("/api/paper/board/scenarios/generate", json={})
+    statuses = [t["status"] for t in c.get("/api/paper/board").json()["scenarios"]]
+    assert statuses.count("active") == 3
+    assert statuses.count("archived") == 1
+
+
+def test_resolving_a_branch(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    tree = c.post("/api/paper/board/scenarios/generate", json={}).json()["tree"]
+    branch_id = tree["branches"][0]["id"]
+
+    body = c.post("/api/paper/board/scenarios/%s/branches/%s" % (tree["id"], branch_id),
+                  json={"status": "happened"})
+    assert body.status_code == 200
+    assert body.json()["tree"]["branches"][0]["status"] == "happened"
+
+    stored = c.get("/api/paper/board").json()["scenarios"][0]
+    assert stored["branches"][0]["status"] == "happened"
+    assert stored["branches"][1]["status"] == "open"
+
+
+def test_resolving_a_branch_refuses_a_reopening(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    tree = c.post("/api/paper/board/scenarios/generate", json={}).json()["tree"]
+    url = "/api/paper/board/scenarios/%s/branches/%s" % (tree["id"],
+                                                         tree["branches"][0]["id"])
+    assert c.post(url, json={"status": "open"}).status_code == 400
+    assert c.post(url, json={}).status_code == 400
+
+
+def test_resolving_an_unknown_branch_or_tree_is_a_404(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    tree = c.post("/api/paper/board/scenarios/generate", json={}).json()["tree"]
+    assert c.post("/api/paper/board/scenarios/nope/branches/x",
+                  json={"status": "happened"}).status_code == 404
+    assert c.post("/api/paper/board/scenarios/%s/branches/nope" % tree["id"],
+                  json={"status": "happened"}).status_code == 404
+
+
+def test_deleting_a_scenario_archives_it(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    tree = c.post("/api/paper/board/scenarios/generate", json={}).json()["tree"]
+    body = c.delete("/api/paper/board/scenarios/%s" % tree["id"])
+    assert body.status_code == 200
+    assert body.json()["tree"]["status"] == "archived"
+    scenarios = c.get("/api/paper/board").json()["scenarios"]
+    assert [t["status"] for t in scenarios] == ["archived"]     # jamais supprimé
+    assert c.delete("/api/paper/board/scenarios/nope").status_code == 404
+
+
+def test_board_file_does_not_create_a_ghost_radar_user(tmp_path, monkeypatch):
+    """<user>.board.json porte un point dans le radical (même mécanisme que
+    .coach.json / .watchlist.json, cf. radar._USER_FILE_RE) : jamais un compte
+    fantôme pour le radar."""
+    from backend.bots.paper import radar
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.save_portfolio("tester", pr.new_portfolio().to_dict())
+    add_item(c)
+    assert pr.board.board_path("tester").is_file()      # le fichier existe bien
+    assert radar._users_with_portfolio() == ["tester"]
+
+
+def test_board_file_does_not_create_a_ghost_newswatch_user(tmp_path, monkeypatch):
+    """Le veilleur news globe le MÊME dossier : son radical à point est écarté
+    par la liste explicite ET rejeté par store.portfolio_path (ceinture et
+    bretelles). Sans quoi « tester.board » recevrait ses propres dépêches."""
+    from backend.bots.paper import newswatch
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.save_portfolio("tester", pr.new_portfolio().to_dict())
+    store.save_watchlist("tester", [{"symbol": "NESN.SW", "name": "Nestle SA",
+                                     "currency": "CHF", "added_at": FIXED_NOW}])
+    add_item(c)
+    assert pr.board.board_path("tester").is_file()
+    assert [name for name, _ in newswatch._discover_portfolios()] == ["tester"]
+
+
+def test_board_learning_counts_a_challenge_actually_WON(tmp_path, monkeypatch):
+    """Le verdict d'un défi n'est PAS stocké dans le profil : il se recalcule
+    depuis le catalogue et les trades de la semaine. Ce test épingle le
+    câblage — sans lui, ``done`` resterait à zéro pour toujours en ayant l'air
+    de marcher (la classe de bug des pièges #52a/#61)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    profile = coach.empty_profile()
+    # "drawdown" a pour condition n_trades_week>=0 : une semaine PASSÉE sans
+    # trade la remplit, donc le verdict est "done" et rien d'autre.
+    profile["arena_history"] = [{"week": "2020-W01", "id": "drawdown",
+                                 "accepted_at": FIXED_NOW}]
+    profile["lessons_passed"] = ["risque_1", "stop"]
+    store.save_coach("tester", profile)
+
+    learning = c.get("/api/paper/board").json()["learning"]
+    assert learning["arena"] == {"accepted": 1, "done": 1}
+    assert learning["lessons"]["passed"] == 2
+
+
+def test_the_strategy_context_is_the_same_for_ideas_and_scenarios(tmp_path, monkeypatch):
+    """UNE seule assemblée de contexte pour les deux registres : deux
+    assemblages parallèles finiraient par diverger (l'un recevrait les
+    annonces politiques, l'autre pas — sans que rien ne le signale)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    seen = {}
+    monkeypatch.setattr(pr.llm, "suggest_ideas",
+                        lambda context, lang="fr", risk_level="mesure":
+                        seen.__setitem__("ideas", dict(context))
+                        or '```json\n{"ideas": []}\n```')
+    monkeypatch.setattr(pr.llm, "suggest_scenarios",
+                        lambda context, lang="fr":
+                        seen.__setitem__("scenarios", dict(context))
+                        or scenarios_answer())
+    c.post("/api/paper/ideas", json={})
+    c.post("/api/paper/board/scenarios/generate", json={})
+
+    expected = {"stats", "biases", "coach_summary", "last_trades",
+                "capital_initial_chf", "cash_chf", "watchlist",
+                "radar_open_hypotheses", "recent_news", "recent_filings"}
+    assert expected <= set(seen["ideas"])
+    # les scénarios voient la MÊME chose, plus le pipeline
+    assert set(seen["scenarios"]) == set(seen["ideas"]) | {"pipeline"}

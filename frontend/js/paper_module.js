@@ -54,6 +54,9 @@ const PaperModule = {
     _whaleLoading: false,     // le fetch SEC a froid dure ~10 s
     _whaleEvents: null,       // fil des derniers depots
     _radar: null,             // {stats, hypotheses}
+    _board: null,             // plan : {pipeline, learning, scenarios}
+    _scenarioText: null,      // texte libre du dernier « Dessiner les chemins »
+    _planArchOpen: false,     // les arbres archivés sont repliés par défaut
     _candles: {},             // cache '<symbole>|<periode>' -> {loading,error,data}
     _chartRange: {},          // periode choisie PAR emplacement de graphique
     _chartWanted: [],         // graphiques a charger apres le rendu courant
@@ -96,6 +99,43 @@ const PaperModule = {
         crypto: ['paper.kind_crypto', 'warn'],
         forex: ['paper.kind_fx', 'info'],
         etf: ['paper.kind_etf', 'muted'],
+    },
+
+    // --- Plan : whitelists FERMÉES ------------------------------------------
+    //
+    // Même doctrine que _LEVELS et _ASSET_KINDS : un état, une probabilité ou
+    // un code d'étape venu du backend ne sert JAMAIS à fabriquer une clé i18n
+    // ni un nom de classe par concaténation. Ce qui n'est pas dans la table ne
+    // produit rien — pas de badge inventé, pas de clé fantôme à l'écran.
+
+    // Ordre FIXE des colonnes du pipeline : c'est le trajet d'une idée, de
+    // « je regarde » jusqu'à « c'est fini ». Un objet JSON n'a pas d'ordre.
+    _PIPE_STAGES: ['etude', 'pret', 'ordre', 'position', 'clos'],
+
+    // Les DEUX seules colonnes que la main peut choisir. Les trois autres sont
+    // dérivées du portefeuille (un ordre passé, une position ouverte, un trade
+    // clos) : les déplacer à la main ferait mentir le board.
+    _PIPE_MANUAL: { etude: 1, pret: 1 },
+
+    // Le pas suivant d'une colonne manuelle (etude ↔ pret), et rien d'autre.
+    _PIPE_NEXT: { etude: 'pret', pret: 'etude' },
+
+    // Probabilité d'une branche → classe .badge. « faible » reste neutre :
+    // la teinte monte avec la vraisemblance, elle ne juge pas la branche.
+    _SCN_PROBS: { faible: '', moyenne: 'warn', haute: 'online' },
+
+    // Sort d'une branche. « open » n'a pas de badge : ce sont ses deux boutons
+    // qui l'affichent — un pari encore ouvert n'a rien à annoncer.
+    _SCN_STATUS: { happened: 'online', invalidated: 'danger' },
+
+    // Étapes franchies connues du coach (backend : MILESTONE_DEFS). Un code
+    // inconnu s'affiche BRUT plutôt que de disparaître — on ne cache jamais un
+    // acquis parce qu'on ne sait pas le traduire.
+    _MILESTONES: {
+        first_10_trades: 1,
+        first_positive_expectancy: 1,
+        survived_20pct_drawdown: 1,
+        fifty_trades: 1,
     },
 
     // ------------------------------------------------------------ cycle de vie
@@ -330,6 +370,10 @@ const PaperModule = {
         this._analysis = null;
         this._postmortem = null;
         this._ideas = null;
+        // Le plan porte du texte écrit par le coach (titres et contextes des
+        // arbres) : il est périmé lui aussi dès que la langue change.
+        this._board = null;
+        this._scenarioText = null;
     },
 
     // Un href ne part JAMAIS dans le DOM sans être vérifié : seuls http(s)
@@ -401,6 +445,7 @@ const PaperModule = {
             ['arena', 'paper.tab_arena'],
             ['whales', 'paper.tab_whales'],
             ['radar', 'paper.tab_radar'],
+            ['plan', 'paper.tab_plan'],
         ];
     },
 
@@ -666,6 +711,11 @@ const PaperModule = {
         if (this._tab === 'arena' && !this._arena) {
             this._arena = await this._get(this._withLang('/api/paper/arena')) || {};
             if (this._tab === 'arena') this._renderBody();
+            return;
+        }
+        if (this._tab === 'plan' && !this._board) {
+            this._board = await this._get('/api/paper/board') || {};
+            if (this._tab === 'plan') this._renderBody();
         }
     },
 
@@ -683,6 +733,7 @@ const PaperModule = {
         else if (this._tab === 'arena') html = this._viewArena();
         else if (this._tab === 'whales') html = this._viewWhales();
         else if (this._tab === 'radar') html = this._viewRadar();
+        else if (this._tab === 'plan') html = this._viewPlan();
         else html = this._viewPortfolio();
         this._setBody(html);
         if (this._tab === 'portfolio') this._paintEquity();
@@ -708,6 +759,8 @@ const PaperModule = {
             if (this._whaleId) { this._renderBody(); await this.openWhale(this._whaleId, true); return; }
         } else if (this._tab === 'radar') {
             this._radar = await this._get('/api/paper/radar') || {};
+        } else if (this._tab === 'plan') {
+            this._board = await this._get('/api/paper/board') || this._board;
         }
         this._renderBody();
     },
@@ -2518,6 +2571,496 @@ const PaperModule = {
 
 
     // =====================================================================
+    //  9. PLAN — pipeline d'achats, apprentissage, scénarios
+    // =====================================================================
+    //
+    // Le board de mission du trader : ce que je regarde, ce que j'ai appris,
+    // et les chemins que le monde peut prendre. Trois sections, aucune magie.
+    //
+    // Règle centrale, écrite à l'écran : les colonnes « Ordre placé », « En
+    // position » et « Clôturé » sont CALCULÉES depuis le portefeuille. On peut
+    // pousser une idée de « À étudier » à « Thèse prête » — pas au-delà : un
+    // board qu'on déplace à la main finit toujours par raconter autre chose
+    // que ce qui s'est vraiment passé.
+
+    _viewPlan() {
+        if (!this._board) return this._card(this._muted(Lang.t('paper.loading')));
+        return this._pipelineCard() + this._learningCard() + this._scenariosCard();
+    },
+
+    // --- Lectures tolérantes -------------------------------------------------
+
+    _boardPipeline() {
+        const b = this._board;
+        if (Array.isArray(b)) return b;
+        return (b && Array.isArray(b.pipeline)) ? b.pipeline : [];
+    },
+
+    _boardScenarios() {
+        const b = this._board;
+        return (b && Array.isArray(b.scenarios)) ? b.scenarios : [];
+    },
+
+    // L'étape EFFECTIVE d'une ligne. Tout ce qui n'est pas une colonne connue
+    // retombe sur « À étudier » : une idée mal étiquetée reste visible dans la
+    // première colonne plutôt que de disparaître du board.
+    _pipeStage(it) {
+        const s = String((it && it.computed_stage) || '');
+        return (this._PIPE_STAGES.indexOf(s) >= 0) ? s : 'etude';
+    },
+
+    _pipeStageLabel(stage) {
+        return (this._PIPE_STAGES.indexOf(stage) >= 0)
+            ? Lang.t('paper.stage_' + stage) : String(stage || '');
+    },
+
+    // Une thèse tient en une ligne dans la carte ; le texte entier vit dans le
+    // title (survol) — on ne coupe jamais l'information, on la range.
+    _clip(txt, max) {
+        const s = String(txt == null ? '' : txt);
+        const n = max || 96;
+        return (s.length <= n) ? s : (s.slice(0, n - 1) + '…');
+    },
+
+    // --- Section 1 : pipeline d'achats --------------------------------------
+
+    _pipeCardHtml(it) {
+        const stage = this._pipeStage(it);
+        const id = String((it && it.id) || '');
+        const symbol = String((it && it.symbol) || '');
+        const name = String((it && it.name) || '');
+        const thesis = String((it && it.thesis) || '');
+        const fromCoach = (String((it && it.source) || '') === 'coach');
+        const lastR = (stage === 'clos') ? this._n(it && it.last_r) : null;
+        const manual = Object.prototype.hasOwnProperty.call(this._PIPE_MANUAL, stage);
+        const next = manual ? this._PIPE_NEXT[stage] : '';
+
+        // Le verrou est DIT, pas seulement subi : sans lui, l'absence de bouton
+        // passerait pour un oubli d'interface.
+        const lock = manual ? ''
+            : '<span class="badge muted" title="' + esc(Lang.t('paper.plan_locked_hint')) + '">' +
+              esc(Lang.t('paper.plan_locked')) + '</span>';
+
+        const move = (manual && id && next)
+            ? '<button class="btn btn-ghost btn-sm" data-paper-act="plan-stage" ' +
+                  'data-id="' + esc(id) + '" data-stage="' + esc(next) + '">' +
+              esc(Lang.t('paper.plan_move_' + next)) + '</button>'
+            : '';
+
+        return '<div class="paper-pipe-card">' +
+            '<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;">' +
+              '<span style="' + this._mono + 'font-size:14px;font-weight:600;">' +
+                esc(symbol) + '</span>' +
+              '<span class="badge ' + (fromCoach ? 'online' : 'muted') + '">' +
+                esc(Lang.t(fromCoach ? 'paper.plan_src_coach' : 'paper.plan_src_me')) + '</span>' +
+              lock +
+              ((lastR === null) ? ''
+                : '<span style="' + this._mono + 'font-size:13px;font-weight:600;margin-left:auto;' +
+                       'color:' + this._color(lastR) + ';">' +
+                  esc(this._signed(lastR, 2, ' R')) + '</span>') +
+            '</div>' +
+            (name
+              ? '<div style="font-size:13px;color:var(--text-muted);margin-top:4px;' +
+                     'overflow-wrap:anywhere;">' + esc(name) + '</div>' : '') +
+            (thesis
+              ? '<div style="font-size:13px;line-height:1.5;margin-top:6px;color:var(--text);' +
+                     'overflow-wrap:anywhere;" title="' + esc(thesis) + '">' +
+                esc(this._clip(thesis, 96)) + '</div>' : '') +
+            '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">' +
+              move +
+              (symbol
+                ? '<button class="btn btn-sm" data-paper-act="plan-trade" ' +
+                      'data-sym="' + esc(symbol) + '">' +
+                  esc(Lang.t('paper.watchlist_trade')) + '</button>' : '') +
+              (id
+                ? '<button class="btn btn-ghost btn-sm" data-paper-act="plan-del" ' +
+                      'data-id="' + esc(id) + '" style="color:var(--danger);">' +
+                  esc(Lang.t('paper.watchlist_remove')) + '</button>' : '') +
+            '</div>' +
+        '</div>';
+    },
+
+    _pipelineCard() {
+        const rows = this._boardPipeline();
+        const cols = this._PIPE_STAGES.map((stage) => {
+            const items = rows.filter((it) => this._pipeStage(it) === stage);
+            const cards = items.length
+                ? items.map((it) => this._pipeCardHtml(it)).join('')
+                : '<div style="font-size:12px;color:var(--text-dim);padding:6px 2px;">' +
+                  esc(Lang.t('paper.plan_col_empty')) + '</div>';
+            return '<div class="paper-pipe-col">' +
+                '<div class="paper-pipe-head">' +
+                  '<span>' + esc(this._pipeStageLabel(stage)) + '</span>' +
+                  '<span style="' + this._mono + '">' + esc(String(items.length)) + '</span>' +
+                '</div>' + cards +
+            '</div>';
+        }).join('');
+
+        // Le formulaire d'ajout vit EN HAUT : une idée se note quand elle
+        // arrive, pas après avoir fait défiler cinq colonnes.
+        const form =
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">' +
+              '<div style="flex:0 1 180px;">' +
+                '<label class="form-label" for="paper-plan-sym">' +
+                  esc(Lang.t('paper.col_symbol')) + '</label>' +
+                '<input id="paper-plan-sym" class="form-input" autocomplete="off" ' +
+                     'placeholder="' + esc(Lang.t('paper.analysis_symbol_ph')) + '" />' +
+              '</div>' +
+              '<div style="flex:1 1 280px;min-width:0;">' +
+                '<label class="form-label" for="paper-plan-thesis">' +
+                  esc(Lang.t('paper.plan_thesis_label')) + '</label>' +
+                '<input id="paper-plan-thesis" class="form-input" autocomplete="off" ' +
+                     'placeholder="' + esc(Lang.t('paper.plan_thesis_ph')) + '" />' +
+              '</div>' +
+              '<button class="btn btn-primary" data-paper-act="plan-add">' +
+                esc(Lang.t('paper.plan_add')) + '</button>' +
+            '</div>';
+
+        return this._card(
+            this._head(Lang.t('paper.plan_pipeline_title'), Lang.t('paper.plan_pipeline_hint')) +
+            form +
+            '<div style="font-size:13px;color:var(--text-muted);line-height:1.5;margin-bottom:12px;">' +
+              esc(Lang.t('paper.plan_derived_note')) + '</div>' +
+            '<div class="paper-pipe">' + cols + '</div>'
+        );
+    },
+
+    async addPipeline() {
+        const si = document.getElementById('paper-plan-sym');
+        const ti = document.getElementById('paper-plan-thesis');
+        const sym = si ? String(si.value || '').trim() : '';
+        if (!sym) { this._toast('warn', Lang.t('paper.symbol_required')); return; }
+        const body = { symbol: sym };
+        const th = ti ? String(ti.value || '').trim() : '';
+        if (th) body.thesis = th;
+        let r = null;
+        try {
+            r = await Auth.apiCall('/api/paper/board/pipeline',
+                { method: 'POST', body: JSON.stringify(body) });
+        } catch (e) { r = null; }
+        if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
+        let d = null;
+        try { d = await r.json(); } catch (e) { d = null; }
+        // Un doublon n'est pas une erreur : la ligne existait déjà, on le DIT
+        // au lieu de laisser croire à un deuxième ajout.
+        this._toast(d && d.duplicate ? 'info' : 'success',
+            Lang.t(d && d.duplicate ? 'paper.plan_dup' : 'paper.plan_added') + ' ' + sym);
+        this._board = await this._get('/api/paper/board') || this._board;
+        if (this._tab === 'plan') this._renderBody();
+    },
+
+    async setPipelineStage(id, stage) {
+        // Rien de forgé ne part vers le backend : seules les deux colonnes
+        // manuelles sont acceptées ici.
+        if (!id || !Object.prototype.hasOwnProperty.call(this._PIPE_MANUAL, String(stage))) return;
+        let r = null;
+        try {
+            r = await Auth.apiCall('/api/paper/board/pipeline/' + encodeURIComponent(String(id)),
+                { method: 'POST', body: JSON.stringify({ stage_manual: String(stage) }) });
+        } catch (e) { r = null; }
+        if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
+        this._board = await this._get('/api/paper/board') || this._board;
+        if (this._tab === 'plan') this._renderBody();
+    },
+
+    async removePipeline(id) {
+        if (!id) return;
+        if (!window.confirm(Lang.t('paper.plan_del_confirm'))) return;
+        let r = null;
+        try {
+            r = await Auth.apiCall('/api/paper/board/pipeline/' + encodeURIComponent(String(id)),
+                { method: 'DELETE' });
+        } catch (e) { r = null; }
+        if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
+        this._board = await this._get('/api/paper/board') || this._board;
+        if (this._tab === 'plan') this._renderBody();
+    },
+
+    // --- Section 2 : apprentissage ------------------------------------------
+
+    // Une barre = une fraction lisible. La largeur est un NOMBRE borné 0-100
+    // calculé ici, jamais une chaîne venue du backend (même doctrine que les
+    // barres 13F).
+    _learnBar(labelKey, done, total) {
+        const d = this._n(done);
+        const t = this._n(total);
+        const dv = (d === null || d < 0) ? 0 : d;
+        const tv = (t === null || t < 0) ? 0 : t;
+        let w = (tv > 0) ? (dv / tv) * 100 : 0;
+        if (!isFinite(w) || w < 0) w = 0;
+        if (w > 100) w = 100;
+        return '<div style="margin-bottom:12px;">' +
+            '<div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;">' +
+              '<span style="flex:1 1 200px;min-width:0;font-size:14px;">' +
+                esc(Lang.t(labelKey)) + '</span>' +
+              '<span style="' + this._mono + 'font-size:14px;font-weight:600;">' +
+                esc(this._num(dv, 0) + ' / ' + this._num(tv, 0)) + '</span>' +
+            '</div>' +
+            '<div style="height:6px;background:var(--bg-elev-3);border-radius:var(--r-pill);' +
+                 'overflow:hidden;margin-top:7px;">' +
+              '<div style="height:100%;width:' + w.toFixed(2) + '%;background:var(--accent);' +
+                   'border-radius:var(--r-pill);"></div>' +
+            '</div>' +
+        '</div>';
+    },
+
+    // Le backend range les étapes en objets « {key, reached_at} » (elles portent
+    // leur date), mais une liste de codes nus reste lisible : on accepte les
+    // deux formes plutôt que d'afficher « [object Object] ».
+    _milestoneCode(x) {
+        if (x && typeof x === 'object') {
+            const v = this._pickField(x, ['key', 'code', 'id']);
+            return v ? String(v) : '';
+        }
+        return String(x == null ? '' : x);
+    },
+
+    // Un code d'étape inconnu s'affiche BRUT (échappé) : on ne fabrique pas de
+    // clé i18n à partir d'une chaîne étrangère, et on ne cache pas un acquis.
+    _milestoneLabel(code) {
+        const c = this._milestoneCode(code);
+        if (!Object.prototype.hasOwnProperty.call(this._MILESTONES, c)) return c;
+        return this._label('paper.milestone_' + c, c);
+    },
+
+    _learningCard() {
+        const b = this._board || {};
+        const l = (b.learning && typeof b.learning === 'object') ? b.learning : {};
+        const les = (l.lessons && typeof l.lessons === 'object') ? l.lessons : {};
+        const ar = (l.arena && typeof l.arena === 'object') ? l.arena : {};
+        const bi = (l.biases && typeof l.biases === 'object') ? l.biases : {};
+
+        // Biais : le total, c'est TOUT ce qui a été repéré — résolus compris.
+        // Rapporter les résolus aux seuls actifs ferait une barre qui recule
+        // quand on progresse.
+        const resolved = this._n(bi.resolved);
+        const active = this._n(bi.active);
+        const biTotal = (resolved === null ? 0 : resolved) + (active === null ? 0 : active);
+
+        // Une étape sans code exploitable est écartée : un badge vide ne dit rien.
+        const codes = (Array.isArray(l.milestones) ? l.milestones : [])
+            .filter((c) => this._milestoneCode(c) !== '');
+        const chips = codes.length
+            ? this._sub('paper.milestones') +
+              '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
+              codes.map((c) => '<span class="badge online">' +
+                  esc(this._milestoneLabel(c)) + '</span>').join('') + '</div>'
+            : '';
+
+        const exp = this._n(l.expectancy_r);
+        const stats =
+            '<div class="bento-overview" style="grid-template-columns:repeat(2,1fr);' +
+                 'grid-template-rows:auto;margin:14px 0 0;">' +
+              '<div class="stat-card">' +
+                '<div class="label">' + esc(Lang.t('paper.plan_n_trades')) + '</div>' +
+                '<div class="value">' + esc(this._num(this._n(l.n_trades), 0)) + '</div>' +
+              '</div>' +
+              '<div class="stat-card">' +
+                '<div class="label">' + esc(Lang.t('paper.plan_expectancy')) + '</div>' +
+                '<div class="value" style="color:' + this._color(exp) + ';">' +
+                  esc(this._signed(exp, 2, '')) + '<span class="unit">R</span></div>' +
+              '</div>' +
+            '</div>';
+
+        return this._card(
+            this._head(Lang.t('paper.plan_learning_title'), Lang.t('paper.plan_learning_hint')) +
+            this._learnBar('paper.plan_bar_lessons', les.passed, les.total) +
+            this._learnBar('paper.plan_bar_arena', ar.done, ar.accepted) +
+            this._learnBar('paper.plan_bar_biases', bi.resolved, biTotal) +
+            chips + stats
+        );
+    },
+
+    // --- Section 3 : scénarios du coach -------------------------------------
+
+    // La flèche est un CARACTÈRE, pas une image ni un emoji, et elle porte son
+    // sens en title : la couleur seule ne suffit jamais à dire une direction.
+    _playArrow(direction) {
+        const cls = this._direction(direction);
+        if (cls === 'online') {
+            return '<span style="color:var(--accent);" title="' + esc(String(direction)) + '">↑</span>';
+        }
+        if (cls === 'danger') {
+            return '<span style="color:var(--danger);" title="' + esc(String(direction)) + '">↓</span>';
+        }
+        return '';
+    },
+
+    _probBadge(p) {
+        const v = String(p == null ? '' : p).toLowerCase();
+        if (!Object.prototype.hasOwnProperty.call(this._SCN_PROBS, v)) return '';
+        const cls = this._SCN_PROBS[v];
+        return '<span class="badge' + (cls ? ' ' + cls : '') + '">' +
+            esc(Lang.t('paper.prob_' + v)) + '</span>';
+    },
+
+    _branchStatusHtml(treeId, br) {
+        const st = String((br && br.status) || '').toLowerCase();
+        const bid = String((br && br.id) || '');
+        if (Object.prototype.hasOwnProperty.call(this._SCN_STATUS, st)) {
+            const strike = (st === 'invalidated') ? 'text-decoration:line-through;' : '';
+            return '<span class="badge ' + this._SCN_STATUS[st] + '" style="' + strike + '">' +
+                esc(Lang.t('paper.branch_' + st)) + '</span>';
+        }
+        // Tout le reste (« open » et l'inconnu) est encore à trancher.
+        if (!treeId || !bid) return '';
+        return '<span style="display:inline-flex;gap:6px;flex-wrap:wrap;">' +
+            '<button class="btn btn-ghost btn-sm" data-paper-act="plan-branch" ' +
+                'data-tree="' + esc(treeId) + '" data-branch="' + esc(bid) + '" ' +
+                'data-status="happened">' + esc(Lang.t('paper.branch_happened')) + '</button>' +
+            '<button class="btn btn-ghost btn-sm" data-paper-act="plan-branch" ' +
+                'data-tree="' + esc(treeId) + '" data-branch="' + esc(bid) + '" ' +
+                'data-status="invalidated">' + esc(Lang.t('paper.branch_invalidated')) + '</button>' +
+        '</span>';
+    },
+
+    // Profondeur bornée à 2 (0 et 1) : au-delà on n'anticipe plus, on rêve.
+    _branchHtml(treeId, br, depth) {
+        if (!br || typeof br !== 'object') return '';
+        const d = depth || 0;
+        const plays = Array.isArray(br.plays) ? br.plays : [];
+        const playHtml = plays.map((p) => {
+            const tk = String((p && p.ticker) || '');
+            if (!tk) return '';
+            return '<span style="display:inline-flex;gap:4px;align-items:center;">' +
+                '<button class="btn btn-ghost btn-sm" data-paper-act="plan-trade" ' +
+                    'data-sym="' + esc(tk) + '" style="' + this._mono + 'font-weight:600;">' +
+                  esc(tk) + '</button>' + this._playArrow(p && p.direction) +
+            '</span>';
+        }).join('');
+        const kids = (d < 1 && Array.isArray(br.children))
+            ? br.children.map((c) => this._branchHtml(treeId, c, d + 1)).join('') : '';
+        return '<div style="border-left:2px solid var(--border-strong);padding-left:12px;' +
+                    'margin:10px 0 0 ' + (d ? '12px' : '0') + ';">' +
+            '<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;">' +
+              '<span style="flex:1 1 220px;min-width:0;font-size:14px;font-weight:600;' +
+                   'line-height:1.5;overflow-wrap:anywhere;">' +
+                esc(String(br.label || '')) + '</span>' +
+              this._probBadge(br.prob) +
+              this._branchStatusHtml(treeId, br) +
+            '</div>' +
+            (br.consequence
+              ? '<div style="font-size:13px;line-height:1.55;color:var(--text-muted);' +
+                     'margin-top:5px;overflow-wrap:anywhere;">' +
+                esc(String(br.consequence)) + '</div>' : '') +
+            (playHtml
+              ? '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px;">' +
+                '<span style="font-size:12px;color:var(--text-dim);">' +
+                  esc(Lang.t('paper.plan_plays')) + '</span>' + playHtml + '</div>' : '') +
+            kids +
+        '</div>';
+    },
+
+    _treeHtml(t) {
+        if (!t || typeof t !== 'object') return '';
+        const id = String(t.id || '');
+        const branches = Array.isArray(t.branches) ? t.branches : [];
+        return this._card(
+            '<div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;">' +
+              '<span style="flex:1 1 240px;min-width:0;font-size:16px;font-weight:600;' +
+                   'line-height:1.45;overflow-wrap:anywhere;">' +
+                esc(String(t.title || '')) + '</span>' +
+              (t.updated_at
+                ? '<span style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
+                  esc(this._date(t.updated_at)) + '</span>' : '') +
+              (id
+                ? '<button class="btn btn-ghost btn-sm" data-paper-act="plan-scn-del" ' +
+                      'data-tree="' + esc(id) + '">' +
+                  esc(Lang.t('paper.plan_scn_archive')) + '</button>' : '') +
+            '</div>' +
+            (t.context
+              ? '<div style="font-size:14px;line-height:1.6;color:var(--text-muted);margin-top:6px;' +
+                     'overflow-wrap:anywhere;">' + esc(String(t.context)) + '</div>' : '') +
+            (branches.length
+              ? branches.map((b) => this._branchHtml(id, b, 0)).join('')
+              : this._muted(Lang.t('paper.plan_scn_no_branch')))
+        );
+    },
+
+    _scenariosCard() {
+        const trees = this._boardScenarios();
+        const active = trees.filter((t) => String((t && t.status) || 'active') !== 'archived');
+        const archived = trees.filter((t) => String((t && t.status) || '') === 'archived');
+
+        const archHtml = archived.length
+            ? this._card(
+                '<button class="btn btn-ghost btn-sm" data-paper-act="plan-arch">' +
+                  esc(Lang.t(this._planArchOpen
+                      ? 'paper.plan_scn_hide_archived' : 'paper.plan_scn_show_archived')) +
+                  ' (' + esc(String(archived.length)) + ')' +
+                '</button>') +
+              (this._planArchOpen ? archived.map((t) => this._treeHtml(t)).join('') : '')
+            : '';
+
+        const head = this._card(
+            this._head(Lang.t('paper.plan_scn_title'), Lang.t('paper.plan_scn_hint')) +
+            '<div style="font-size:13px;color:var(--text-muted);line-height:1.5;margin-bottom:10px;">' +
+              esc(Lang.t('paper.plan_scn_honesty')) + '</div>' +
+            '<button class="btn btn-primary" data-paper-act="plan-scn-gen">' +
+              esc(Lang.t('paper.plan_scn_gen')) + '</button>' +
+            (this._scenarioText
+              ? this._panel(Lang.t('paper.plan_scn_title'), this._scenarioText) : '')
+        );
+
+        const body = active.length
+            ? active.map((t) => this._treeHtml(t)).join('')
+            : this._card(this._muted(Lang.t('paper.plan_scn_empty')));
+
+        return head + body + archHtml;
+    },
+
+    async generateScenarios(btn) {
+        // _llm n'attend PAS son callback : on ne lui confie donc que du travail
+        // synchrone, et la relecture du board se fait ici, après coup — sinon la
+        // promesse du GET flotterait pendant que le bouton se croit fini.
+        let ok = false;
+        await this._llm(btn, '/api/paper/board/scenarios/generate', { lang: this._lang() }, (d) => {
+            this._scenarioText = this._llmText(d);
+            ok = true;
+        });
+        if (!ok) return;
+        // L'arbre rendu par l'appel est déjà persisté côté backend : on relit le
+        // board plutôt que de le greffer à la main — la liste affichée reste
+        // celle du serveur, jamais une copie locale.
+        this._board = await this._get('/api/paper/board') || this._board;
+        if (this._tab === 'plan') this._renderBody();
+    },
+
+    async resolveBranch(treeId, branchId, status) {
+        const st = String(status || '');
+        if (!treeId || !branchId) return;
+        if (!Object.prototype.hasOwnProperty.call(this._SCN_STATUS, st)) return;
+        if (!window.confirm(Lang.t('paper.branch_confirm_' + st))) return;
+        let r = null;
+        try {
+            r = await Auth.apiCall('/api/paper/board/scenarios/' +
+                    encodeURIComponent(String(treeId)) + '/branches/' +
+                    encodeURIComponent(String(branchId)),
+                { method: 'POST', body: JSON.stringify({ status: st }) });
+        } catch (e) { r = null; }
+        if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
+        this._board = await this._get('/api/paper/board') || this._board;
+        if (this._tab === 'plan') this._renderBody();
+    },
+
+    // « Archiver » passe par le DELETE du contrat, mais le backend ne supprime
+    // RIEN : il bascule l'arbre en « archived », d'où sa réapparition sous le
+    // repli des archivés. La confirmation dit donc « il passe aux archivés »,
+    // pas « il disparaît » — on garde la trace de ce qu'on avait imaginé.
+    async deleteScenario(treeId) {
+        if (!treeId) return;
+        if (!window.confirm(Lang.t('paper.plan_scn_del_confirm'))) return;
+        let r = null;
+        try {
+            r = await Auth.apiCall('/api/paper/board/scenarios/' +
+                    encodeURIComponent(String(treeId)), { method: 'DELETE' });
+        } catch (e) { r = null; }
+        if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
+        this._board = await this._get('/api/paper/board') || this._board;
+        if (this._tab === 'plan') this._renderBody();
+    },
+
+    // =====================================================================
     //  GRAPHIQUE EN BOUGIES — canvas 2D pur, AUCUNE librairie, AUCUN CDN
     // =====================================================================
     //
@@ -3237,6 +3780,21 @@ const PaperModule = {
         if (act === 'reset') { this.resetPortfolio(); return; }
         if (act === 'whale-pick') { this.openWhale(el.getAttribute('data-whale')); return; }
         if (act === 'radar-run') { this.runRadar(el); return; }
+        if (act === 'plan-add') { this.addPipeline(); return; }
+        if (act === 'plan-stage') {
+            this.setPipelineStage(el.getAttribute('data-id'), el.getAttribute('data-stage'));
+            return;
+        }
+        if (act === 'plan-del') { this.removePipeline(el.getAttribute('data-id')); return; }
+        if (act === 'plan-trade') { this.openTrade(el.getAttribute('data-sym')); return; }
+        if (act === 'plan-scn-gen') { this.generateScenarios(el); return; }
+        if (act === 'plan-branch') {
+            this.resolveBranch(el.getAttribute('data-tree'), el.getAttribute('data-branch'),
+                el.getAttribute('data-status'));
+            return;
+        }
+        if (act === 'plan-scn-del') { this.deleteScenario(el.getAttribute('data-tree')); return; }
+        if (act === 'plan-arch') { this._planArchOpen = !this._planArchOpen; this._renderBody(); return; }
         if (act === 'chart-range') {
             this.setChartRange(el.getAttribute('data-ctx'), el.getAttribute('data-range'));
             return;

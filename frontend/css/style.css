@@ -4893,3 +4893,43 @@ select:-webkit-autofill {
 .paper-spark.neg polyline { stroke: var(--danger); }
 .paper-spark.neg .area { fill: color-mix(in srgb, var(--danger) 14%, transparent); }
 .paper-spark.neg .tip { fill: var(--danger); }
+
+/* --- Plan : pipeline d'achats -------------------------------------------
+   Cinq colonnes sur grand écran, deux sur tablette, une en mobile. Ce n'est
+   PAS un kanban : rien ne se glisse à la souris — trois des cinq colonnes
+   sont calculées depuis le portefeuille et ne se déplacent pas à la main.
+   minmax(0,1fr) est obligatoire : sans lui une thèse longue élargit sa
+   colonne au lieu de revenir à la ligne (défaut `min-width:auto` du grid). */
+.paper-pipe {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 10px;
+    align-items: start;
+}
+.paper-pipe-col { min-width: 0; }
+.paper-pipe-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 12px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+.paper-pipe-card {
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: 10px 12px;
+    margin-bottom: 8px;
+}
+@media (max-width: 1100px) {
+    .paper-pipe { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+    .paper-pipe { grid-template-columns: minmax(0, 1fr); }
+}

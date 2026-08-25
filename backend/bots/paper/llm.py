@@ -388,6 +388,80 @@ def build_ideas_prompt(context: Optional[Dict[str, Any]], lang: str = "fr",
     ])
 
 
+def build_scenarios_prompt(context: Optional[Dict[str, Any]],
+                           lang: str = "fr") -> str:
+    """Prompt des ARBRES DE SCÉNARIOS — le coach dessine les chemins que le
+    marché peut prendre (vue « Plan »).
+
+    Registre encore différent des trois autres : ici on ne fait ni le point
+    (``build_coach_prompt``), ni des paris (``build_ideas_prompt``) — on
+    CARTOGRAPHIE. La valeur d'un arbre n'est pas de deviner la bonne branche,
+    c'est d'avoir écrit AVANT ce qu'on ferait dans chacune : le jour où l'une
+    se réalise, la décision est déjà prise à froid.
+
+    D'où les deux exigences structurelles du prompt : des chemins qui
+    DIVERGENT vraiment (trois formulations du même scénario ne préparent à
+    rien) et des probabilités COHÉRENTES entre elles (trois « haute » sur trois
+    chemins qui s'excluent, c'est une contradiction, pas une prévision).
+    """
+    return "\n\n".join([
+        SYSTEM_PROMPT,
+        _lang_line(lang),
+        "ICI, ton rôle change de registre : tu es le STRATÈGE du simulateur. "
+        "Massii ne te demande ni un bilan ni des paris — il te demande de "
+        "CARTOGRAPHIER les chemins que le marché peut prendre à partir "
+        "d'aujourd'hui, pour savoir d'avance quoi faire dans chaque cas. Un "
+        "arbre de scénarios ne sert pas à deviner la bonne branche : il sert à "
+        "ce que la décision soit déjà prise, à froid, le jour où l'une des "
+        "branches se réalise.",
+        "Voici l'état du simulateur : ses positions, ses statistiques, les "
+        "titres suivis, les futurs achats déjà notés dans son tableau "
+        "(``pipeline``), les hypothèses du radar ouvertes, et les événements "
+        "récents (presse, annonces politiques, dépôts 13F).",
+        _block("CONTEXTE", context or {}),
+        "Construis UN SEUL arbre :\n"
+        "- un TITRE : la question macro du moment, celle dont dépend le reste "
+        "(ex. « La Fed baisse-t-elle en septembre ? ») — une question, pas un "
+        "thème vague ;\n"
+        "- un CONTEXTE de 2 à 3 phrases : où on en est, et pourquoi cette "
+        "question se pose MAINTENANT, en citant les faits du contexte "
+        "ci-dessus ;\n"
+        "- 2 à 4 BRANCHES, c'est-à-dire des chemins qui DIVERGENT vraiment et "
+        "s'excluent les uns les autres (ex. « la Fed coupe » / « statu quo » / "
+        "« surprise restrictive »). Trois façons de dire la même chose ne sont "
+        "pas trois branches et ne préparent à rien.\n"
+        "Pour CHAQUE branche : un ``label`` court (quelques mots) ; une "
+        "probabilité ``prob`` parmi « faible », « moyenne », « haute » ; une "
+        "``consequence`` CONCRÈTE (quels secteurs, quels actifs bougent, dans "
+        "quel sens) ; 1 ou 2 ``plays`` — le ticker Yahoo exact et la direction "
+        "(``up`` / ``down``) ; et, seulement si ça éclaire quelque chose, 1 ou "
+        "2 sous-branches (deux niveaux au MAXIMUM, on n'en lit pas plus).",
+        "Les probabilités doivent être COHÉRENTES entre elles : des chemins "
+        "qui s'excluent ne peuvent pas être tous « haute ». Si tu ne sais pas "
+        "départager, mets « moyenne » partout et DIS-LE dans le texte — c'est "
+        "une information, pas un aveu de faiblesse.",
+        "Interdits, comme toujours : jamais le mot « sûr » ni « valeur "
+        "refuge » ; jamais de recommandation avec de l'argent réel ; "
+        "n'invente RIEN qui ne soit pas dans le contexte ci-dessus — si le "
+        "contexte ne permet pas de poser une vraie question macro, prends la "
+        "question qui découle le plus directement des positions et des titres "
+        "suivis, et dis franchement qu'elle est déduite de son portefeuille et "
+        "non de l'actualité.",
+        "Écris d'abord 3 à 6 lignes de texte : la question, pourquoi elle se "
+        "pose, et ce que Massii doit surveiller pour savoir quelle branche "
+        "l'emporte. Termine IMPÉRATIVEMENT par ce bloc, et rien après "
+        "(``status`` et identifiants sont posés par le serveur, ne les écris "
+        "pas) : "
+        '```json\n{"title": "La Fed baisse-t-elle en septembre ?", '
+        '"context": "deux ou trois phrases", "branches": [{"label": "la Fed '
+        'coupe", "prob": "moyenne", "consequence": "ce qui bouge, et dans '
+        'quel sens", "plays": [{"ticker": "IWM", "direction": "up"}], '
+        '"children": [{"label": "et l\'inflation repart", "prob": "faible", '
+        '"consequence": "...", "plays": [{"ticker": "GLD", "direction": '
+        '"up"}]}]}]}\n```',
+    ])
+
+
 def build_analysis_prompt(facts: Optional[Dict[str, Any]],
                           lang: str = "fr") -> str:
     """Prompt de la fiche pédagogique d'un titre."""
@@ -409,6 +483,147 @@ def build_analysis_prompt(facts: Optional[Dict[str, Any]],
         "INTERDIT ABSOLU : ne donne aucun avis d'achat ou de vente, aucun "
         "objectif de cours, aucune prévision. Tu décris et tu enseignes à lire.",
     ])
+
+
+# --------------------------------------------------------------------------- #
+# Lecture de la réponse « scénarios » — PUR
+#
+# Le bloc JSON final est la SEULE partie que la machine consomme ; le texte qui
+# le précède est pour Massii. Les bornes ci-dessous doivent rester identiques à
+# celles de ``board.py`` (un test les épingle l'une contre l'autre) : un prompt
+# qui promet 4 branches à un stockage qui n'en garde que 3 perdrait la
+# dernière en silence.
+# --------------------------------------------------------------------------- #
+SCENARIO_MIN_BRANCHES = 2
+SCENARIO_MAX_BRANCHES = 4
+SCENARIO_MAX_DEPTH = 2
+SCENARIO_MAX_PLAYS = 2
+SCENARIO_PROBS = ("faible", "moyenne", "haute")
+SCENARIO_DEFAULT_PROB = "moyenne"
+SCENARIO_DIRECTIONS = ("up", "down")
+
+
+def intro_of(raw: Any) -> str:
+    """Le texte d'introduction SEUL — ce que le coach a écrit avant son bloc
+    JSON (PUR).
+
+    On coupe à la clôture de code (```` ``` ````) si elle existe, sinon à la
+    première accolade. Rien à couper -> le texte entier : mieux vaut afficher
+    un peu trop que de rendre un encadré vide parce que le modèle a changé sa
+    mise en forme.
+    """
+    if not isinstance(raw, str):
+        return ""
+    for marker in ("```", "{"):
+        cut = raw.find(marker)
+        if cut > 0:
+            head = raw[:cut].strip()
+            if head:
+                return head
+    return raw.strip()
+
+
+def _scenario_prob(value: Any) -> str:
+    """Probabilité normalisée. Inconnue -> « moyenne » (jamais « haute » : une
+    valeur illisible ne doit pas promouvoir un chemin)."""
+    text = str(value or "").strip().lower()
+    return text if text in SCENARIO_PROBS else SCENARIO_DEFAULT_PROB
+
+
+def _scenario_plays(value: Any) -> list:
+    """Les mouvements d'une branche : ``{ticker, direction}``, bornés."""
+    out = []
+    if not isinstance(value, list):
+        return out
+    for play in value:
+        if not isinstance(play, dict):
+            continue
+        ticker = str(play.get("ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        direction = str(play.get("direction") or "").strip().lower()
+        if direction not in SCENARIO_DIRECTIONS:
+            direction = SCENARIO_DIRECTIONS[0]
+        out.append({"ticker": ticker, "direction": direction})
+        if len(out) >= SCENARIO_MAX_PLAYS:
+            break
+    return out
+
+
+def _scenario_branch(raw: Any, depth: int = 1) -> Optional[Dict[str, Any]]:
+    """Une branche validée, ou ``None`` si elle n'a pas de libellé.
+
+    Une branche bancale est jetée SEULE, jamais tout l'arbre (même patron que
+    ``radar.parse_llm``). La profondeur est CLAMPÉE ici : au-delà de
+    ``SCENARIO_MAX_DEPTH``, les enfants sont ignorés — on ne rend pas un arbre
+    plus profond que ce que l'écran et le jugement supportent.
+    """
+    if not isinstance(raw, dict):
+        return None
+    label = str(raw.get("label") or "").strip()
+    if not label:
+        return None
+    children = []
+    if depth < SCENARIO_MAX_DEPTH and isinstance(raw.get("children"), list):
+        for child in raw["children"][:SCENARIO_MAX_BRANCHES]:
+            norm = _scenario_branch(child, depth + 1)
+            if norm is not None:
+                children.append(norm)
+    return {
+        "label": label,
+        "prob": _scenario_prob(raw.get("prob")),
+        "consequence": str(raw.get("consequence") or "").strip(),
+        "plays": _scenario_plays(raw.get("plays")),
+        "children": children,
+    }
+
+
+def parse_scenarios(raw: Any) -> Optional[Dict[str, Any]]:
+    """Extrait l'arbre du bloc JSON final de la réponse (PUR).
+
+    Rend ``None`` — et jamais une exception — quand la réponse ne contient pas
+    d'arbre EXPLOITABLE : pas de bloc JSON, JSON illisible, titre absent, ou
+    moins de ``SCENARIO_MIN_BRANCHES`` branches valides. Un arbre à une seule
+    branche n'est pas un arbre : c'est une prédiction déguisée, exactement ce
+    que cette vue refuse de produire. Le router en fait un 502 propre plutôt
+    que d'afficher un demi-arbre.
+
+    ``id`` et ``status`` ne sont JAMAIS lus du modèle (le serveur les pose,
+    cf. ``board.normalize_tree``) : laisser le modèle déclarer qu'une branche
+    s'est déjà réalisée, ce serait lui laisser écrire le verdict de son propre
+    pari.
+    """
+    if not isinstance(raw, str):
+        return None
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        payload = json.loads(raw[start:end + 1])
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    title = str(payload.get("title") or "").strip()
+    items = payload.get("branches")
+    if not title or not isinstance(items, list):
+        return None
+
+    branches = []
+    for candidate in items[:SCENARIO_MAX_BRANCHES]:
+        norm = _scenario_branch(candidate, 1)
+        if norm is not None:
+            branches.append(norm)
+    if len(branches) < SCENARIO_MIN_BRANCHES:
+        return None
+
+    return {
+        "title": title,
+        "context": str(payload.get("context") or "").strip(),
+        "branches": branches,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -438,6 +653,15 @@ def write_analysis(facts: Optional[Dict[str, Any]], lang: str = "fr",
                    run: Callable = subprocess.run) -> str:
     """Fiche d'analyse pédagogique d'un titre — sans opinion d'achat ni de vente."""
     return _claude_text(build_analysis_prompt(facts, lang),
+                        model=model, timeout=timeout, run=run)
+
+
+def suggest_scenarios(context: Optional[Dict[str, Any]], lang: str = "fr",
+                      model: str = DEFAULT_MODEL, timeout: int = DEFAULT_TIMEOUT,
+                      run: Callable = subprocess.run) -> str:
+    """Arbre de scénarios du marché (texte d'introduction + bloc JSON final,
+    lu par ``parse_scenarios`` puis rangé par ``board.add_scenario``)."""
+    return _claude_text(build_scenarios_prompt(context, lang),
                         model=model, timeout=timeout, run=run)
 
 
