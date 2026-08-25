@@ -8,6 +8,9 @@ Deux usages, une seule source :
 2. **Guetteur** (`check_new_filings`) : détecte les NOUVEAUX dépôts EDGAR des
    gérants du catalogue et prévient par Telegram. Aucun job n'est armé ici —
    ce module expose la fonction, le planificateur est ailleurs.
+   ⚠️ « Nouveau » veut dire DEUX choses et il faut les deux : jamais vu ET
+   déposé il y a moins de ``NOTIFY_MAX_AGE_D`` jours (cf. le bloc de constantes
+   du guetteur — l'incident du 25/08 est né de l'oubli de la seconde).
 
 Honnêteté pédagogique (à afficher dans l'UI, pas seulement ici) : un 13F paraît
 jusqu'à 45 jours APRÈS la fin du trimestre et ne couvre que les actions US
@@ -52,7 +55,7 @@ import os
 import re
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus, urljoin
@@ -100,7 +103,36 @@ WATCHED_FORMS = frozenset({
 })
 MAX_NOTIFY_PER_MANAGER = 3   # anti-tempête : le reste est marqué vu, pas notifié
 MAX_EVENTS = 100             # journal des dépôts détectés (les plus récents en tête)
-MAX_SEEN_PER_MANAGER = 300
+
+# --------------------------------------------------------------------------- #
+# Anti-spam de dépôts ANTIQUES — incident mesuré le 25/08 (30 messages à 09:02
+# pour des dépôts SEC de 2009-2021, et le spam serait reparti toutes les 30 min).
+#
+# Mécanisme exact du bug : ``state["seen"][mid]`` était CAPÉ à 300 accessions
+# alors que ``filings.recent`` de la SEC en renvoie couramment plusieurs
+# centaines (mesuré : 300 PILE pour berkshire/pershing/soros/gates/renaissance/
+# tiger = le cap, donc troncature). Les accessions évincées du cap
+# redevenaient « inconnues » au passage suivant -> re-notifiées -> re-évincées ->
+# re-notifiées : une boucle infinie de dépôts vieux de dix ans.
+#
+# Deux protections, dans cet ordre :
+#
+#   1. CEINTURE — ``NOTIFY_MAX_AGE_D`` : un dépôt plus vieux que 14 jours n'est
+#      JAMAIS notifié ni journalisé, quel que soit l'état de ``seen``. C'est la
+#      garde qui tient même si la mémoire est vide, corrompue ou remise à neuf.
+#   2. BRETELLES — un plafond de ``seen`` qui ne peut plus causer de
+#      ré-émission : tout dépôt de moins de ``SEEN_RECENT_D`` jours est gardé
+#      quoi qu'il arrive, et le reste est capé LARGE (``MAX_SEEN_PER_MANAGER``,
+#      bien au-dessus de la fenêtre ``filings.recent`` de la SEC, plafonnée à
+#      1000) en gardant les PLUS RÉCENTS.
+#
+# ⚠️ Leçon générale : un cap qui ÉVINCE une mémoire « déjà vu » ne borne pas un
+# fichier, il fabrique des faux positifs récurrents. Soit la mémoire couvre
+# toute la fenêtre de la source, soit la décision d'alerte ne dépend pas d'elle
+# (ici : les deux).
+NOTIFY_MAX_AGE_D = 14
+SEEN_RECENT_D = 90
+MAX_SEEN_PER_MANAGER = 2000
 
 
 class WhaleError(RuntimeError):
@@ -788,6 +820,76 @@ def form_explanation(form: str) -> str:
     return "Nouveau dépôt SEC"
 
 
+# --- PUR : âge d'un dépôt et mémoire « déjà vu » --------------------------- #
+
+def _as_datetime(value: Any) -> datetime:
+    """Normalise une horloge : ``datetime`` tel quel, epoch -> ``datetime``.
+    Valeur illisible -> maintenant (on ne fabrique jamais une date arbitraire
+    qui fausserait un calcul d'âge)."""
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromtimestamp(float(value))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return datetime.fromtimestamp(_now())
+
+
+def _parse_filing_date(value: Any) -> Optional[datetime]:
+    """``2026-08-21`` (forme EDGAR) -> ``datetime``. Illisible/absent -> None."""
+    text = str(value or "").strip()
+    if len(text) < 10:
+        return None
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def is_stale_filing(filing_date: Any, now: Any,
+                    max_age_days: int = NOTIFY_MAX_AGE_D) -> bool:
+    """Ce dépôt est-il trop VIEUX pour mériter une alerte ? (PUR)
+
+    Une date ILLISIBLE rend ``False`` : on ne peut pas PROUVER l'ancienneté, et
+    museler sur un doute ferait taire une vraie alerte. Une date dans le futur
+    (horloge décalée, fixture de test) n'est pas « vieille » non plus.
+
+    La comparaison se fait au JOUR : une ``filingDate`` EDGAR n'a pas d'heure,
+    comparer un minuit contre l'heure courante rendrait le verdict dépendant de
+    l'heure à laquelle le guetteur tourne (un dépôt « de 14 jours » serait
+    périmé à 09:02 et frais à 00:01).
+    """
+    when = _parse_filing_date(filing_date)
+    if when is None:
+        return False
+    cutoff = (_as_datetime(now) - timedelta(days=max_age_days)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    return when < cutoff
+
+
+def prune_seen(filings: List[Dict[str, str]], now: Any,
+               recent_days: int = SEEN_RECENT_D,
+               cap: int = MAX_SEEN_PER_MANAGER) -> List[str]:
+    """Les accessions à retenir comme « déjà vues » pour un gérant (PUR).
+
+    ``filings`` arrive dans l'ordre SEC (du plus récent au plus ancien). On
+    garde **toutes** celles dont le dépôt a moins de ``recent_days`` jours — ce
+    sont les seules qu'un oubli pourrait faire re-notifier — puis on complète
+    avec les plus récentes des anciennes jusqu'au plafond ``cap``.
+    """
+    now_dt = _as_datetime(now)
+    recent, older = [], []
+    for filing in filings or []:
+        accession = str((filing or {}).get("accession") or "")
+        if not accession:
+            continue
+        if is_stale_filing((filing or {}).get("filing_date"), now_dt, recent_days):
+            older.append(accession)
+        else:
+            recent.append(accession)
+    room = cap - len(recent)
+    return recent + (older[:room] if room > 0 else [])
+
+
 def _notification_text(manager: Dict[str, str], form: str,
                        filing_date: str) -> str:
     """Texte SOBRE (aucun emoji) : l'alerte doit se lire, pas se décorer."""
@@ -836,13 +938,17 @@ def check_new_filings(client=None, notifier=None, tg_cfg=None,
 
     Retourne ``{managers, new_filings, notified, errors}``.
 
-    Trois garde-fous :
+    Quatre garde-fous :
       * **Telegram non configuré → zéro requête réseau** (la fonction sort
         immédiatement) : une fonctionnalité éteinte ne consomme rien et ne
         martèle pas la SEC ;
       * **premier passage d'un gérant → tout est marqué vu, RIEN n'est
         notifié** : sans ça, le déploiement déclencherait une tempête de
         centaines d'alertes pour des dépôts déjà anciens ;
+      * **garde d'âge ABSOLUE** (``NOTIFY_MAX_AGE_D``) : un dépôt de plus de
+        14 jours est marqué vu et rien d'autre — ni alerte, ni event. Elle ne
+        dépend d'AUCUN état, donc une mémoire vide, corrompue ou tronquée ne
+        peut plus faire sonner un dépôt de 2011 (incident du 25/08) ;
       * **cap de ``MAX_NOTIFY_PER_MANAGER`` notifications par gérant et par
         passage** : le surplus est marqué vu (il ne repartira pas au tour
         suivant) mais n'est pas envoyé.
@@ -867,7 +973,8 @@ def check_new_filings(client=None, notifier=None, tg_cfg=None,
         notifier = _alerts.send
 
     stamp = now if now is not None else _now()
-    when = datetime.fromtimestamp(stamp).isoformat()
+    now_dt = _as_datetime(stamp)
+    when = now_dt.isoformat()
     state = _load_watch_state()
     pacer = _Pacer(sleep)
     fresh_events = []  # type: List[Dict[str, Any]]
@@ -891,7 +998,16 @@ def check_new_filings(client=None, notifier=None, tg_cfg=None,
             state["seeded"][mid] = True            # amorçage muet
         elif new_ones:
             counters["new_filings"] += len(new_ones)
-            for filing in new_ones[:MAX_NOTIFY_PER_MANAGER]:
+            handled = 0
+            for filing in new_ones:
+                # CEINTURE : un dépôt antique est marqué vu (plus bas) et rien
+                # de plus. Aucune alerte, aucun event -> l'UI et la convergence
+                # ne voient pas passer un dépôt de 2011 comme une nouveauté.
+                if is_stale_filing(filing["filing_date"], now_dt):
+                    continue
+                if handled >= MAX_NOTIFY_PER_MANAGER:
+                    break
+                handled += 1
                 fresh_events.append({
                     "ts": when, "manager_id": mid, "label": manager["label"],
                     "form": filing["form"], "filing_date": filing["filing_date"],
@@ -905,10 +1021,11 @@ def check_new_filings(client=None, notifier=None, tg_cfg=None,
                     pass                           # une notif perdue n'annule
                                                    # pas la détection
 
-        # Tous les dépôts vus deviennent connus (y compris ceux au-delà du cap) :
-        # sinon la prochaine ronde les re-notifierait. La liste est bornée par la
-        # fenêtre SEC elle-même, puis capée.
-        state["seen"][mid] = [f["accession"] for f in filings][:MAX_SEEN_PER_MANAGER]
+        # Tous les dépôts vus deviennent connus (y compris ceux au-delà du cap et
+        # les antiques) : sinon la prochaine ronde les redécouvrirait. Le plafond
+        # ne peut PLUS évincer un dépôt récent (cf. ``prune_seen`` et le bloc de
+        # constantes) — c'est exactement ce que faisait l'ancien cap de 300.
+        state["seen"][mid] = prune_seen(filings, now_dt)
 
     if fresh_events:
         state["events"] = (fresh_events + state["events"])[:MAX_EVENTS]
@@ -919,6 +1036,22 @@ def check_new_filings(client=None, notifier=None, tg_cfg=None,
     return counters
 
 
-def recent_filing_events() -> List[Dict[str, Any]]:
-    """Journal des dépôts détectés, les plus récents en tête (absent → [])."""
-    return _load_watch_state()["events"]
+def recent_filing_events(now: Any = None) -> List[Dict[str, Any]]:
+    """Journal des dépôts détectés, les plus récents en tête (absent → []).
+
+    **Filtré À LA LECTURE** par la même garde d'âge que la notification : un
+    event dont le dépôt a plus de ``NOTIFY_MAX_AGE_D`` jours ne sort pas d'ici.
+    Deux raisons :
+
+      * l'écran et la convergence consomment cette fonction — un dépôt de 2011
+        n'est un « signal » ni pour l'un ni pour l'autre ;
+      * cela PURGE de fait les events pourris déjà écrits par l'incident du
+        25/08, sans avoir à toucher au fichier d'état en production.
+
+    ``now`` (epoch ou ``datetime``) est injectable pour les tests ; par défaut
+    l'horloge du module.
+    """
+    now_dt = _as_datetime(now if now is not None else _now())
+    return [event for event in _load_watch_state()["events"]
+            if isinstance(event, dict)
+            and not is_stale_filing(event.get("filing_date"), now_dt)]

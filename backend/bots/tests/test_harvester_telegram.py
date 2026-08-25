@@ -88,3 +88,61 @@ def test_send_returns_false_on_http_error_status():
     client = httpx.Client(transport=httpx.MockTransport(
         lambda r: httpx.Response(403, json={"ok": False})))
     assert notify.send("x", {"token": "T", "chat_id": "C"}, client=client) is False
+
+
+# --------------------------------------------------------------------------- #
+#  Le jeton ne doit JAMAIS finir dans les logs système
+#
+#  Mesuré en prod (journalctl) : « httpx | HTTP Request: POST
+#  https://api.telegram.org/bot<TOKEN>/sendMessage » — httpx logge l'URL
+#  COMPLÈTE en INFO, or l'URL Telegram porte le jeton du bot.
+# --------------------------------------------------------------------------- #
+
+import importlib
+import logging
+
+
+def test_importer_notify_fait_taire_les_logs_httpx_de_niveau_info():
+    assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
+
+
+def test_le_module_repose_le_niveau_meme_si_quelquun_l_a_rabaisse():
+    """Preuve que c'est bien CE module qui pose le garde-fou (et pas un état
+    hérité d'un autre import de la session de test) : on rabaisse le logger à
+    INFO, on recharge le module, il doit être remonté."""
+    httpx_logger = logging.getLogger("httpx")
+    previous = httpx_logger.level
+    try:
+        httpx_logger.setLevel(logging.INFO)
+        assert httpx_logger.getEffectiveLevel() == logging.INFO   # bien rabaissé
+        importlib.reload(notify)
+        assert httpx_logger.getEffectiveLevel() >= logging.WARNING
+    finally:
+        httpx_logger.setLevel(max(previous, logging.WARNING))
+
+
+def test_aucune_url_telegram_n_est_loguee_pendant_un_envoi():
+    """Ceinture : pendant un envoi réel (transport bouchonné), RIEN ne doit
+    passer par logging avec le jeton ou l'hôte de l'API."""
+    records = []
+
+    class _Catch(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler = _Catch()
+    root = logging.getLogger()
+    root.addHandler(handler)
+    previous_level = root.level
+    root.setLevel(logging.DEBUG)
+    try:
+        client = httpx.Client(transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json={"ok": True})))
+        assert notify.send("x", {"token": "SECRET-TOKEN", "chat_id": "C"},
+                           client=client) is True
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(previous_level)
+
+    assert not any("SECRET-TOKEN" in msg for msg in records)
+    assert not any("api.telegram.org" in msg for msg in records)

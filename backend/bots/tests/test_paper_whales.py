@@ -7,6 +7,7 @@ Les fixtures XML/JSON reproduisent la forme RÉELLE mesurée sur EDGAR le 24/08
 """
 import json
 import os
+from datetime import datetime, timedelta
 
 import pytest
 from fastapi import FastAPI
@@ -782,7 +783,7 @@ def test_watcher_notifies_a_new_filing_on_the_second_pass(monkeypatch):
     # sobriété exigée : aucun emoji dans l'alerte
     assert all(ord(ch) < 0x2190 for ch in text)
 
-    events = w.recent_filing_events()
+    events = w.recent_filing_events(now=2000.0)
     assert len(events) == 1
     assert events[0]["accession"] == "brand-new"
     assert events[0]["form"] == "4"
@@ -907,7 +908,9 @@ def test_a_failing_notifier_never_breaks_the_watch(monkeypatch):
         notifier=boom, tg_cfg=TG, sleep=Recorder(), now=2.0)
     assert out["new_filings"] == 1
     assert out["notified"] == 0                 # l'envoi a échoué...
-    assert len(w.recent_filing_events()) == 1   # ...mais la détection est gardée
+    # ...mais la détection est gardée (``now`` explicite : sans lui le test
+    # dépendrait de l'horloge réelle via la garde d'âge de lecture).
+    assert len(w.recent_filing_events(now=2.0)) == 1
 
 
 def test_watcher_paces_its_requests(monkeypatch):
@@ -935,13 +938,185 @@ def test_events_are_capped_newest_first(monkeypatch):
         [("4", "n3", "2026-08-23", ""), ("4", "n2", "2026-08-22", ""),
          ("4", "n1", "2026-08-21", "")] + seed)),
         notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=3.0)
-    events = w.recent_filing_events()
+    events = w.recent_filing_events(now=3.0)
     assert len(events) == 2
     assert [e["accession"] for e in events] == ["n3", "n2"]   # les plus récents
 
 
 def test_recent_filing_events_without_any_state_file():
     assert w.recent_filing_events() == []
+
+
+# =========================================================================== #
+#  Anti-spam de dépôts ANTIQUES — incident mesuré le 25/08 à 09:02
+#
+#  30 messages Telegram d'un coup pour des dépôts SEC de 2009-2021, et le
+#  scénario allait se répéter toutes les 30 minutes : le cap de ``seen``
+#  (300) tronquait une fenêtre SEC plus longue, donc les accessions évincées
+#  redevenaient « nouvelles » à chaque ronde.
+# =========================================================================== #
+
+INCIDENT = datetime(2026, 8, 25, 9, 2, 0)      # l'heure exacte de l'incident
+INCIDENT_TS = INCIDENT.timestamp()
+
+
+def _at(days_ago):
+    """Date de dépôt EDGAR à N jours de l'incident."""
+    return (INCIDENT - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+
+
+@pytest.mark.parametrize("filing_date,stale", [
+    ("2011-05-16", True),                      # un vrai des 30 messages reçus
+    ("2009-11-13", True),
+    ("2021-02-16", True),
+    (_at(15), True),                           # juste au-delà de la fenêtre
+    (_at(14), False),                          # la borne elle-même reste fraîche
+    (_at(1), False),
+    (_at(0), False),
+    ("2027-01-01", False),                     # futur : pas « vieux »
+    ("", False),                               # illisible -> on ne museler pas
+    ("pas une date", False),
+    (None, False),
+])
+def test_is_stale_filing_juge_l_age_sans_jamais_museler_sur_un_doute(filing_date, stale):
+    assert w.is_stale_filing(filing_date, INCIDENT) is stale
+
+
+def test_un_depot_antique_n_est_jamais_notifie_meme_absent_de_seen(monkeypatch):
+    """LA garde : quel que soit l'état de ``seen`` (ici : vierge de ce dépôt),
+    un dépôt de 2011 ne sonne pas et n'entre pas dans le journal."""
+    _one_manager(monkeypatch)
+    notifier = FakeNotifier()
+    w.check_new_filings(client=FakeClient(_watch_routes([
+        ("4", "seed", _at(3), "")])),
+        notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=INCIDENT_TS)
+    assert notifier.sent == []                  # amorçage muet
+
+    out = w.check_new_filings(client=FakeClient(_watch_routes([
+        ("13F-HR", "antique-2011", "2011-05-16", "2011-03-31"),
+        ("SC 13G", "antique-2009", "2009-11-13", ""),
+        ("4", "seed", _at(3), "")])),
+        notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=INCIDENT_TS)
+
+    assert out["new_filings"] == 2              # détectés (ils sont inconnus)...
+    assert out["notified"] == 0                 # ...mais jamais envoyés
+    assert notifier.sent == []
+    assert w.recent_filing_events(now=INCIDENT_TS) == []   # ni journalisés
+
+
+def test_un_depot_antique_est_quand_meme_marque_vu(monkeypatch):
+    """Sinon il serait « re-détecté » à chaque ronde — 48 redécouvertes par
+    jour à raison d'un passage toutes les 30 minutes."""
+    _one_manager(monkeypatch)
+    filings = [("13F-HR", "antique", "2011-05-16", "2011-03-31"),
+               ("4", "seed", _at(3), "")]
+    w.check_new_filings(client=FakeClient(_watch_routes([("4", "seed", _at(3), "")])),
+                        notifier=FakeNotifier(), tg_cfg=TG, sleep=Recorder(),
+                        now=INCIDENT_TS)
+    w.check_new_filings(client=FakeClient(_watch_routes(filings)),
+                        notifier=FakeNotifier(), tg_cfg=TG, sleep=Recorder(),
+                        now=INCIDENT_TS)
+    state = json.loads(w.watch_path().read_text(encoding="utf-8"))
+    assert "antique" in state["seen"]["berkshire"]
+
+    out = w.check_new_filings(client=FakeClient(_watch_routes(filings)),
+                              notifier=FakeNotifier(), tg_cfg=TG,
+                              sleep=Recorder(), now=INCIDENT_TS)
+    assert out["new_filings"] == 0              # plus jamais « nouveau »
+
+
+def test_un_depot_frais_sonne_toujours(monkeypatch):
+    """Contre-épreuve : la garde d'âge ne doit pas avoir tué la fonctionnalité."""
+    _one_manager(monkeypatch)
+    notifier = FakeNotifier()
+    w.check_new_filings(client=FakeClient(_watch_routes([("4", "seed", _at(3), "")])),
+                        notifier=notifier, tg_cfg=TG, sleep=Recorder(),
+                        now=INCIDENT_TS)
+    out = w.check_new_filings(client=FakeClient(_watch_routes([
+        ("13F-HR", "tout-frais", _at(1), "2026-06-30"),
+        ("4", "seed", _at(3), "")])),
+        notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=INCIDENT_TS)
+    assert out["notified"] == 1
+    assert len(notifier.sent) == 1
+    assert len(w.recent_filing_events(now=INCIDENT_TS)) == 1
+
+
+# --- le plafond de ``seen`` ne doit plus pouvoir causer de ré-émission ------ #
+
+def test_prune_seen_ne_sacrifie_jamais_un_depot_recent():
+    filings = [{"accession": "a%d" % i, "filing_date": _at(i)} for i in range(5)]
+    kept = w.prune_seen(filings, INCIDENT, cap=2)
+    assert kept == ["a0", "a1", "a2", "a3", "a4"]   # le cap ne les touche pas
+
+
+def test_prune_seen_cape_les_anciens_en_gardant_les_plus_recents():
+    filings = ([{"accession": "frais", "filing_date": _at(1)}]
+               + [{"accession": "vieux%d" % i, "filing_date": _at(100 + i)}
+                  for i in range(5)])
+    kept = w.prune_seen(filings, INCIDENT, cap=3)
+    assert kept == ["frais", "vieux0", "vieux1"]
+
+
+def test_prune_seen_ignore_une_ligne_sans_accession():
+    assert w.prune_seen([{"filing_date": _at(1)}, {"accession": "ok",
+                                                   "filing_date": _at(1)}],
+                        INCIDENT) == ["ok"]
+
+
+def test_l_eviction_du_cap_ne_renotifie_plus(monkeypatch):
+    """Régression EXACTE de l'incident : avec l'ancien cap (troncature dure),
+    les accessions évincées repartaient en alerte au passage suivant."""
+    _one_manager(monkeypatch)
+    monkeypatch.setattr(w, "MAX_SEEN_PER_MANAGER", 2)   # cap volontairement ridicule
+    notifier = FakeNotifier()
+    filings = [("4", "n%d" % i, _at(i + 1), "") for i in range(5)]
+
+    w.check_new_filings(client=FakeClient(_watch_routes(filings)),
+                        notifier=notifier, tg_cfg=TG, sleep=Recorder(),
+                        now=INCIDENT_TS)                # amorçage
+    state = json.loads(w.watch_path().read_text(encoding="utf-8"))
+    assert len(state["seen"]["berkshire"]) == 5         # rien n'a été évincé
+
+    out = w.check_new_filings(client=FakeClient(_watch_routes(filings)),
+                              notifier=notifier, tg_cfg=TG, sleep=Recorder(),
+                              now=INCIDENT_TS)
+    assert out["new_filings"] == 0 and out["notified"] == 0
+    assert notifier.sent == []
+
+
+# --- purge à la LECTURE des events déjà pourris en production -------------- #
+
+def test_recent_filing_events_filtre_les_events_pourris_deja_ecrits():
+    """Fixture = ce que l'incident a laissé dans ``whales_watch.json``. La
+    lecture les écarte -> pas de nettoyage manuel à faire sur l'Omen."""
+    w._atomic_write_json(w.watch_path(), {
+        "seen": {}, "seeded": {"berkshire": True},
+        "events": [
+            {"ts": INCIDENT.isoformat(), "manager_id": "berkshire",
+             "label": "Berkshire", "form": "13F-HR",
+             "filing_date": "2011-05-16", "accession": "vieux-1"},
+            {"ts": INCIDENT.isoformat(), "manager_id": "soros",
+             "label": "Soros", "form": "SC 13G",
+             "filing_date": "2009-11-13", "accession": "vieux-2"},
+            {"ts": INCIDENT.isoformat(), "manager_id": "gates",
+             "label": "Gates", "form": "4",
+             "filing_date": _at(2), "accession": "vraiment-neuf"},
+        ],
+    })
+    events = w.recent_filing_events(now=INCIDENT_TS)
+    assert [e["accession"] for e in events] == ["vraiment-neuf"]
+
+
+def test_recent_filing_events_garde_un_event_sans_date_lisible():
+    """Une date illisible n'est pas une preuve d'ancienneté (même règle qu'à
+    la notification) : on ne fait pas disparaître un signal sur un doute."""
+    w._atomic_write_json(w.watch_path(), {
+        "seen": {}, "seeded": {},
+        "events": [{"ts": INCIDENT.isoformat(), "form": "4",
+                    "filing_date": "", "accession": "sans-date"}],
+    })
+    assert [e["accession"] for e in w.recent_filing_events(now=INCIDENT_TS)] \
+        == ["sans-date"]
 
 
 def test_watcher_reads_the_paper_telegram_config_by_default(monkeypatch):
