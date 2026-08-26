@@ -130,7 +130,7 @@ const App = {
  if (!hash) return null;
  // server_view/ID → retourne 'game_server' (on ne peut pas restaurer un server_view sans contexte complet)
  if (hash.startsWith('server_view')) return 'game_server';
- const validViews = ['hub', 'game_server', 'bots', 'trading', 'files', 'media', 'web', 'network', 'sysdoc', 'settings', 'users'];
+ const validViews = ['hub', 'game_server', 'bots', 'trading', 'web', 'network', 'sysdoc', 'settings', 'users'];
  return validViews.includes(hash) ? hash : null;
  },
 
@@ -297,7 +297,7 @@ const App = {
  if (navNetwork) navNetwork.style.display = user.is_admin ? '' : 'none';
 
  // Masquer les modules non autorisés dans la sidebar
- const moduleIds = ['game_server', 'bots', 'files', 'media', 'web'];
+ const moduleIds = ['game_server', 'bots', 'web'];
  moduleIds.forEach(modId => {
  const navEl = document.getElementById(`nav-${modId}`);
  if (!navEl) return;
@@ -410,9 +410,6 @@ const App = {
  if (this.currentView === 'bots' && typeof BotsModule !== 'undefined') {
  BotsModule.unload();
  }
- if (this.currentView === 'media' && typeof MediaModule !== 'undefined') {
- MediaModule.unload();
- }
  if (this.currentView === 'web' && typeof WebModule !== 'undefined') {
  WebModule.unload();
  }
@@ -472,7 +469,7 @@ const App = {
  }
 
  // Vérifier l'accès au module (non-admin seulement)
- const moduleViews = ['game_server', 'bots', 'files', 'media', 'web'];
+ const moduleViews = ['game_server', 'bots', 'web'];
  if (moduleViews.includes(view) && user && !user.is_admin && user.allowed_modules) {
  if (!user.allowed_modules.includes(view)) {
  content.innerHTML = `
@@ -511,14 +508,6 @@ const App = {
 
  case 'trading':
  await PaperModule.render(content);
- break;
-
- case 'files':
- await FilesModule.render(content);
- break;
-
- case 'media':
- await MediaModule.render(content);
  break;
 
  case 'web':
@@ -1294,8 +1283,6 @@ const App = {
  const allModules = [
  { id: 'game_server', icon: '', label: Lang.t('users.mod_games') },
  { id: 'bots', icon: '', label: Lang.t('users.mod_bots') },
- { id: 'files', icon: '', label: Lang.t('users.mod_files') },
- { id: 'media', icon: '', label: Lang.t('users.mod_media') },
  { id: 'web', icon: '', label: Lang.t('users.mod_web') },
  { id: 'network', icon: '', label: Lang.t('users.mod_network') },
  ];
@@ -1404,7 +1391,7 @@ const App = {
  });
 
  // Si tous les modules sont activés, envoyer null (= tous)
- const allModuleIds = ['game_server', 'bots', 'files', 'media', 'web', 'network'];
+ const allModuleIds = ['game_server', 'bots', 'web', 'network'];
  const payload = currentModules.length === allModuleIds.length ? null : currentModules;
 
  // Feedback visuel immédiat

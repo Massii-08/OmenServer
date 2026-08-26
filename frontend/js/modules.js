@@ -10,16 +10,12 @@ const Modules = {
     _nameKeys: {
         game_server: 'modules.game_servers',
         bots: 'modules.bots',
-        files: 'modules.files',
-        media: 'modules.media',
         web: 'modules.web',
         network: 'modules.network',
     },
     _descKeys: {
         game_server: 'modules.game_servers_desc',
         bots: 'modules.bots_desc',
-        files: 'modules.files_desc',
-        media: 'modules.media_desc',
         web: 'modules.web_desc',
         network: 'modules.network_desc',
     },

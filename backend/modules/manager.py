@@ -42,26 +42,6 @@ class ModuleManager:
                 "version": "1.0.0",
                 "category": "automation",
             },
-            "files": {
-                "id": "files",
-                "name": "Fichiers & Cloud",
-                "description": "Cloud personnel + sync Google Drive",
-                "icon": "📁",
-                "color": "#3b82f6",  # Bleu
-                "enabled": True,  # V3 ✅
-                "version": "1.0.0",
-                "category": "storage",
-            },
-            "media": {
-                "id": "media",
-                "name": "Média & Streaming",
-                "description": "Serveur Jellyfin pour tes films et séries",
-                "icon": "📺",
-                "color": "#f59e0b",  # Orange
-                "enabled": True,  # V4 ✅
-                "version": "1.0.0",
-                "category": "media",
-            },
             "web": {
                 "id": "web",
                 "name": "Serveur Web",

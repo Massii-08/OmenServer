@@ -1,1 +1,0 @@
-# Module Média & Streaming (Jellyfin)
