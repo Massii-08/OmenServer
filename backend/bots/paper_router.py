@@ -39,8 +39,8 @@ from pydantic import BaseModel
 
 from backend.auth.models import User
 from backend.auth.permissions import require_role
-from backend.bots.paper import (alerts, board, coach, fees, fills, idea_journal,
-                                llm, models, quotes, risk, store)
+from backend.bots.paper import (alerts, board, coach, fees, fills, graph,
+                                idea_journal, llm, models, quotes, risk, store)
 
 logger = logging.getLogger("omenserver")
 
@@ -1851,10 +1851,15 @@ def _parse_ideas_json(text: Any,
     return out
 
 
-def _open_radar_hypotheses() -> List[Dict[str, Any]]:
-    """Hypothèses radar actuellement OUVERTES — matière de contexte pour
-    ``/ideas`` (pour ne pas reproposer ce que le radar suit déjà). Best-effort :
-    module absent ou en panne -> liste vide, jamais une exception."""
+def _radar_hypotheses() -> List[Dict[str, Any]]:
+    """TOUTES les hypothèses du radar, ouvertes comme notées — best-effort :
+    module absent ou en panne -> liste vide, jamais une exception.
+
+    Deux consommateurs, deux besoins : ``/ideas`` ne veut que les vivantes (voir
+    ``_open_radar_hypotheses``), le graphe des connexions veut aussi les
+    verdicts récents. Une seule lecture d'état pour les deux — deux lectures
+    parallèles finiraient par diverger.
+    """
     try:
         radar_module = _radar()
     except ImportError:
@@ -1862,10 +1867,15 @@ def _open_radar_hypotheses() -> List[Dict[str, Any]]:
     try:
         state = radar_module.load_state()
     except Exception as e:                      # noqa: BLE001 - lecture best-effort
-        logger.warning("paper: radar indisponible pour /ideas: %s", e)
+        logger.warning("paper: radar indisponible: %s", e)
         return []
-    return [h for h in (state.get("hypotheses") or [])
-           if isinstance(h, dict) and h.get("status") == "open"]
+    return [h for h in (state.get("hypotheses") or []) if isinstance(h, dict)]
+
+
+def _open_radar_hypotheses() -> List[Dict[str, Any]]:
+    """Hypothèses radar actuellement OUVERTES — matière de contexte pour
+    ``/ideas`` (pour ne pas reproposer ce que le radar suit déjà)."""
+    return [h for h in _radar_hypotheses() if h.get("status") == "open"]
 
 
 def _recent_news(username: str) -> List[Dict[str, Any]]:
@@ -2741,3 +2751,110 @@ def paper_board_scenario_archive(tree_id: str,
         raise HTTPException(status_code=404, detail="Scénario introuvable.")
     return {"tree": tree,
             "scenarios": board.scenarios_view(board.load_board(username))}
+
+
+# --------------------------------------------------------------------------- #
+# Endpoints — graphe des connexions (§ vue « toile »)
+#
+# Doctrine, en une phrase : les nœuds sont étiquetés à l'ÉCRITURE (chaque module
+# range déjà ce qu'il sait avec son symbole, ses tickers, son nom d'émetteur),
+# les ARÊTES sont recalculées à la LECTURE. Aucun lien n'est stocké, donc aucun
+# lien ne périme quand une position se solde ou qu'une hypothèse se referme.
+#
+# Zéro appel au modèle, zéro requête réseau : on relit ce qui est déjà sur le
+# disque, par les mêmes accès que ``_strategy_context`` et ``/ideas/for-symbol``.
+# --------------------------------------------------------------------------- #
+
+def _graph_inputs(username: str) -> Dict[str, Any]:
+    """Les entrées du graphe, assemblées par les accès qui EXISTENT déjà.
+
+    BEST-EFFORT PAR SOURCE : une source en panne est simplement ABSENTE du
+    graphe — jamais un 500. Un graphe partiel se lit ; une erreur, non. C'est
+    la même posture que ``_strategy_context``, dont ce bloc réutilise les
+    lecteurs (``_watchlist_context``, ``_recent_news``, ``_whale_moves``,
+    ``_radar_hypotheses``) plutôt que d'en ouvrir de parallèles.
+
+    ⚠️ Une POSITION ne porte pas de nom (``models.Position`` n'a que le
+    symbole) : c'est la watchlist ou le pipeline qui le fournit, et sans nom
+    aucun émetteur 13F ne rejoindrait jamais ce titre. ``graph.collect_anchors``
+    fait la fusion — d'où l'intérêt d'envoyer les trois familles telles quelles.
+    """
+    anchors: List[Dict[str, Any]] = []
+    try:
+        for position in _load(username).positions:
+            symbol = str(position.symbol or "").strip().upper()
+            if symbol:
+                anchors.append({"symbol": symbol, "kind": "position"})
+    except Exception as e:                          # noqa: BLE001 — best-effort
+        logger.warning("paper: portefeuille indisponible pour le graphe: %s", e)
+
+    for row in _watchlist_context(username):
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if symbol:
+            anchors.append({"symbol": symbol, "name": row.get("name"),
+                            "kind": "watchlist"})
+
+    try:
+        pipeline = _pipeline_view(username)
+    except Exception as e:                          # noqa: BLE001 — best-effort
+        logger.warning("paper: pipeline indisponible pour le graphe: %s", e)
+        pipeline = []
+
+    return {
+        "anchors": anchors,
+        "pipeline": pipeline,
+        "events": _recent_news(username),
+        "hypotheses": _radar_hypotheses(),
+        "whale_moves": _whale_moves(),
+    }
+
+
+def _build_graph(username: str, symbol: Optional[str],
+                 now_iso: Optional[str] = None) -> Dict[str, Any]:
+    """Assemble puis construit — le chemin COMMUN au graphe et au compteur.
+
+    ``now_iso`` vient de l'appelant pour que la fenêtre de fraîcheur et le
+    ``generated_at`` de la réponse parlent du MÊME instant.
+    """
+    data = _graph_inputs(username)
+    return graph.build_graph(data["anchors"], data["events"], data["hypotheses"],
+                             data["whale_moves"], data["pipeline"],
+                             now_iso or _now_iso(), symbol=symbol)
+
+
+@router.get("/graph")
+def paper_graph(symbol: str = "",
+                current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Le graphe des connexions — LECTURE PURE.
+
+    Sans ``symbol`` : la vue d'ensemble, tes titres au centre et autour tout ce
+    que la mémoire y rattache (dépêches, catalyseurs, politique, crypto, posts
+    X, hypothèses du radar, mouvements des grands gérants). Le macro qui ne
+    nomme aucun titre se range sous un pivot « monde » unique, relié à aucune
+    ancre — jamais un lien inventé.
+
+    Avec ``symbol=X`` : la BRANCHE de ce titre — son ancre et ses voisins
+    directs. Un titre ni détenu, ni suivi, ni en projet n'a pas d'ancre : la
+    branche est alors vide, et c'est un 200 (le frontend n'affiche rien, ce
+    n'est pas une erreur).
+    """
+    wanted = str(symbol or "").strip().upper()
+    now_iso = _now_iso()
+    built = _build_graph(current_user.username, wanted or None, now_iso)
+    return {"nodes": built["nodes"], "edges": built["edges"],
+            "truncated": built["truncated"], "generated_at": now_iso}
+
+
+@router.get("/graph/count")
+def paper_graph_count(symbol: str = "",
+                      current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Combien de connexions la mémoire porte sur CE titre — réponse minimale,
+    faite pour un pastillage (« N connexions en mémoire ») sans transporter tout
+    le graphe. Même assemblage que ``/graph`` : les deux ne peuvent pas
+    diverger."""
+    wanted = str(symbol or "").strip().upper()
+    if not wanted:
+        raise HTTPException(status_code=400, detail="Symbole manquant.")
+    nodes = _build_graph(current_user.username, wanted)["nodes"]
+    # ``nodes`` = l'ancre + ses voisins (vide si le titre n'est pas une ancre).
+    return {"count": max(0, len(nodes) - 1)}

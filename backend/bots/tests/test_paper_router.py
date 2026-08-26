@@ -189,6 +189,8 @@ def test_player_role_is_refused_everywhere(tmp_path, monkeypatch):
     assert c.post("/api/paper/board/scenarios/t/branches/b",
                   json={"status": "happened"}).status_code == 403
     assert c.delete("/api/paper/board/scenarios/t").status_code == 403
+    assert c.get("/api/paper/graph").status_code == 403
+    assert c.get("/api/paper/graph/count?symbol=NESN.SW").status_code == 403
 
 
 def test_money_role_is_allowed(tmp_path, monkeypatch):
@@ -205,6 +207,7 @@ def test_trader_role_is_allowed(tmp_path, monkeypatch):
     assert c.post("/api/paper/ideas", json={}).status_code == 200
     assert c.get("/api/paper/watchlist").status_code == 200
     assert c.get("/api/paper/board").status_code == 200
+    assert c.get("/api/paper/graph").status_code == 200
     assert c.post("/api/paper/board/pipeline",
                   json={"symbol": "NESN.SW"}).status_code == 200
     assert c.post("/api/paper/board/scenarios/generate", json={}).status_code == 200
@@ -2776,3 +2779,181 @@ def test_review_asks_the_price_once_per_symbol(tmp_path, monkeypatch):
                         lambda s: calls.append(s) or real_get_quote(s))
     c.post("/api/paper/positions/review", json={})
     assert calls.count("NESN.SW") == 1
+
+
+# ================================================================
+#  GRAPHE DES CONNEXIONS (lecture pure — zéro LLM, zéro réseau)
+# ================================================================
+
+def graph_stubs(monkeypatch, events=None, hypotheses=None, moves=None):
+    """Câble les trois modules OPTIONNELS que le graphe consomme. Chacun est
+    lazy dans le router, donc on remplace l'accesseur, pas le module."""
+    monkeypatch.setattr(pr, "_newswatch",
+                        lambda: FakeModule(recent_events=lambda user: list(events or [])))
+    monkeypatch.setattr(pr, "_radar",
+                        lambda: FakeModule(load_state=lambda: {
+                            "hypotheses": list(hypotheses or []),
+                            "stats": {"hits": 0, "misses": 0, "unclear": 0}}))
+    monkeypatch.setattr(pr, "_whales",
+                        lambda: FakeModule(moves_summary=lambda: list(moves or []),
+                                           recent_filing_events=lambda: []))
+
+
+def graph_of(client, symbol=None):
+    url = "/api/paper/graph" + ("?symbol=%s" % symbol if symbol else "")
+    response = client.get(url)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_graph_puts_the_held_title_at_the_centre(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch, events=[
+        {"ts": FIXED_NOW, "symbol": "NESN.SW", "title": "Résultats",
+         "link": "http://n/1", "sentiment": "pos"}])
+    buy(c)
+
+    body = graph_of(c)
+    assert body["generated_at"] == FIXED_NOW
+    assert body["truncated"] is False
+    types = {node["id"]: node["type"] for node in body["nodes"]}
+    assert types["NESN.SW"] == "position"
+    news = [node for node in body["nodes"] if node["type"] == "news"]
+    assert len(news) == 1
+    assert body["edges"] == [{"source": news[0]["id"], "target": "NESN.SW",
+                              "type": "symbol", "sentiment": "pos"}]
+
+
+def test_graph_reads_the_watchlist_the_pipeline_the_radar_and_the_whales(
+        tmp_path, monkeypatch):
+    """Les quatre sources arrivent bien jusqu'au graphe — c'est le test qui
+    attrape un champ perdu en route (piège #61 du dépôt)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.save_watchlist("tester", [{"symbol": "AAPL", "name": "Apple Inc"}])
+    graph_stubs(
+        monkeypatch,
+        hypotheses=[{"id": "h1", "status": "open", "created_at": FIXED_NOW,
+                     "thesis": "Le cycle repart", "tickers": ["AAPL"]}],
+        moves=[{"manager_label": "Berkshire", "action": "sortie",
+                "name": "APPLE INC", "quarter": "T2 2026",
+                "fetched_at": FIXED_NOW}])
+    assert c.post("/api/paper/board/pipeline",
+                  json={"symbol": "NESN.SW"}).status_code == 200
+
+    body = graph_of(c)
+    types = {node["id"]: node["type"] for node in body["nodes"]}
+    assert types["AAPL"] == "watchlist"
+    assert types["NESN.SW"] == "pipeline"
+    kinds = sorted(node["type"] for node in body["nodes"])
+    assert kinds == ["hypothesis", "pipeline", "watchlist", "whale_move"]
+    assert sorted(edge["type"] for edge in body["edges"]) == ["issuer", "ticker"]
+    assert all(edge["target"] == "AAPL" for edge in body["edges"])
+
+
+def test_graph_hangs_a_political_headline_on_the_world_pivot(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch, events=[
+        {"ts": FIXED_NOW, "symbol": "GOV", "title": "Nouveaux tarifs",
+         "link": "http://g/1", "sentiment": "gov"}])
+    buy(c)
+
+    body = graph_of(c)
+    assert "monde" in [node["id"] for node in body["nodes"]]
+    assert [edge["target"] for edge in body["edges"]] == ["monde"]
+    # …et la branche du titre ne la voit pas : le pivot n'est relié à aucune ancre.
+    branch = graph_of(c, "NESN.SW")
+    assert [node["id"] for node in branch["nodes"]] == ["NESN.SW"]
+
+
+def test_graph_branch_keeps_only_that_title(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.save_watchlist("tester", [{"symbol": "AAPL", "name": "Apple Inc"}])
+    graph_stubs(monkeypatch, events=[
+        {"ts": FIXED_NOW, "symbol": "NESN.SW", "title": "Sur Nestlé",
+         "link": "http://n/1", "sentiment": "pos"},
+        {"ts": FIXED_NOW, "symbol": "AAPL", "title": "Sur Apple",
+         "link": "http://n/2", "sentiment": "neg"}])
+    buy(c)
+
+    branch = graph_of(c, "NESN.SW")
+    assert "AAPL" not in [node["id"] for node in branch["nodes"]]
+    assert [node["label"] for node in branch["nodes"] if node["type"] == "news"] \
+        == ["Sur Nestlé"]
+    assert all(edge["target"] == "NESN.SW" for edge in branch["edges"])
+
+
+def test_graph_branch_of_an_unknown_symbol_is_empty_and_still_200(tmp_path,
+                                                                  monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch)
+    assert graph_of(c, "ZZZZ") == {"nodes": [], "edges": [], "truncated": False,
+                                   "generated_at": FIXED_NOW}
+
+
+def test_graph_count_gives_the_number_of_direct_neighbours(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(
+        monkeypatch,
+        events=[{"ts": FIXED_NOW, "symbol": "NESN.SW", "title": "Résultats",
+                 "link": "http://n/1", "sentiment": "pos"},
+                {"ts": FIXED_NOW, "symbol": "NESN.SW", "title": "Rachat",
+                 "link": "http://n/2", "sentiment": "pos"}],
+        hypotheses=[{"id": "h1", "status": "open", "created_at": FIXED_NOW,
+                     "thesis": "Le lait remonte", "tickers": ["NESN.SW"]}])
+    buy(c)
+
+    assert c.get("/api/paper/graph/count?symbol=NESN.SW").json() == {"count": 3}
+    assert c.get("/api/paper/graph/count?symbol=nesn.sw").json() == {"count": 3}
+    assert c.get("/api/paper/graph/count?symbol=ZZZZ").json() == {"count": 0}
+
+
+def test_graph_count_without_a_symbol_is_a_400(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch)
+    assert c.get("/api/paper/graph/count").status_code == 400
+
+
+def test_graph_survives_every_source_being_down(tmp_path, monkeypatch):
+    """Une source en panne est ABSENTE du graphe, jamais un 500 : un graphe
+    partiel se lit, une erreur non."""
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise IOError("source injoignable")
+
+    monkeypatch.setattr(pr, "_newswatch", lambda: FakeModule(recent_events=boom))
+    monkeypatch.setattr(pr, "_radar", lambda: FakeModule(load_state=boom))
+    monkeypatch.setattr(pr, "_whales", lambda: FakeModule(moves_summary=boom))
+    monkeypatch.setattr(pr, "_pipeline_view", boom)
+    buy(c)
+
+    body = graph_of(c)
+    assert [node["id"] for node in body["nodes"]] == ["NESN.SW"]
+    assert body["edges"] == []
+
+
+def test_graph_survives_the_optional_modules_being_absent(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def absent():
+        raise ImportError("déploiement partiel")
+
+    monkeypatch.setattr(pr, "_newswatch", absent)
+    monkeypatch.setattr(pr, "_radar", absent)
+    monkeypatch.setattr(pr, "_whales", absent)
+    buy(c)
+
+    assert [node["id"] for node in graph_of(c)["nodes"]] == ["NESN.SW"]
+
+
+def test_graph_survives_a_broken_portfolio(tmp_path, monkeypatch):
+    """Le portefeuille tombe -> on perd les positions, pas la watchlist."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.save_watchlist("tester", [{"symbol": "AAPL", "name": "Apple Inc"}])
+    graph_stubs(monkeypatch)
+
+    def boom(username):
+        raise ValueError("portefeuille illisible")
+
+    monkeypatch.setattr(pr, "_load", boom)
+    assert [node["id"] for node in graph_of(c)["nodes"]] == ["AAPL"]

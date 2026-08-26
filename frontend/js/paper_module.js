@@ -79,11 +79,23 @@ const PaperModule = {
     _reviewOpen: false,        // texte complet de la revue déplié
     _alertsMode: null,         // 'calme' | 'tout' (lu au serveur)
     _alertsBusy: false,        // un POST de bascule est en vol
-    _xAccounts: null,          // comptes X suivis : ['handle', ...]
-    _xInput: '',               // saisie d'ajout (survit aux re-rendus du corps)
     _symIdeas: {},             // symbole -> {items:[...]} : ce que le coach a DÉJÀ dit
     _symIdeasClosed: {},       // symbole -> la carte a été fermée à la main
     _symTextOpen: {},          // 'symbole|rang' -> thèse dépliée
+
+    // --- Toile « Connexions » -----------------------------------------------
+    _graph: null,              // toile affichée : {nodes, edges, truncated, generated_at}
+    _graphSymbol: null,        // ancre du mode ego (null = toile globale)
+    _graphAnchors: [],         // pills : ancres relevées sur la DERNIÈRE toile globale
+    _graphLoading: false,
+    _graphLayout: null,        // positions calculées pour le canvas courant
+    _graphHover: null,         // id du nœud survolé (ou tapé du doigt)
+    _graphRaf: 0,              // repeint groupé par requestAnimationFrame
+    _graphCounts: {},          // symbole -> nombre de connexions (chip du graphique)
+    _graphCanvas: null,        // canvas équipé d'écouteurs (retirés au re-rendu)
+    _onGraphResize: null,      // UN seul écouteur window, retiré avec le canvas
+    _graphResizeTimer: null,
+
     _fabOpen: false,           // panneau coach flottant ouvert
     _fabQ: '',                 // question en cours de saisie (survit à la fermeture)
     _fabAnswer: null,          // dernier échange {q, a}
@@ -171,6 +183,45 @@ const PaperModule = {
     // Régime de notification. « calme » est le défaut et le repli.
     _ALERT_MODES: ['calme', 'tout'],
 
+    // --- Toile « Connexions » : whitelists FERMÉES ---------------------------
+    //
+    // Table des types de nœud : [clé i18n, token de couleur, rayon depuis
+    // l'ancre]. Un type inconnu ne fabrique NI classe NI clé i18n — il tombe
+    // sur une pastille neutre (--text-dim) et n'affiche que son libellé brut.
+    // Le rayon range l'information par distance : ce qui vient de tomber
+    // (presse, catalyseur) est près du titre, l'interprétation (hypothèse,
+    // mouvement de gérant) au-delà, le décor mondial (gouvernement, crypto,
+    // X) tout au bord.
+    _GNODE: {
+        position:   ['paper.gnode_position',   '--accent',     0],
+        watchlist:  ['paper.gnode_watchlist',  '--warning',    0],
+        pipeline:   ['paper.gnode_pipeline',   '--text-muted', 0],
+        news:       ['paper.gnode_news',       '--info',       62],
+        catalyst:   ['paper.gnode_catalyst',   '--warning',    62],
+        hypothesis: ['paper.gnode_hypothesis', '--violet',     92],
+        whale_move: ['paper.gnode_whale',      '--orange',     92],
+        gov:        ['paper.gnode_gov',        '--warning',   120],
+        crypto:     ['paper.gnode_crypto',     '--info',      120],
+        x:          ['paper.gnode_x',          '--text-dim',  120],
+        context:    ['paper.gnode_context',    '--text-dim',    0],
+    },
+
+    // Les trois types qui portent un titre : ce sont EUX les ancres de la
+    // toile, et eux seuls qu'un clic fait basculer en vue rapprochée.
+    _GANCHOR: { position: 1, watchlist: 1, pipeline: 1 },
+
+    // Ordre de dessin des pastilles de légende (un objet JSON n'a pas d'ordre).
+    _GLEGEND: ['position', 'watchlist', 'pipeline', 'news', 'catalyst',
+        'hypothesis', 'whale_move', 'gov', 'crypto', 'x', 'context'],
+
+    // Sentiment d'une arête → token. Neutre (ou inconnu) = le trait de la
+    // grille : une liaison sans jugement ne doit pas se lire comme un avis.
+    _GEDGE: { pos: '--accent', neg: '--danger', watch: '--warning', gov: '--warning' },
+
+    // Plafond de dessin. Au-delà la toile devient illisible AVANT d'être lente :
+    // on garde les ancres puis les nœuds les plus récents, et on le DIT.
+    _GRAPH_MAX: 80,
+
     // --- Plan : whitelists FERMÉES ------------------------------------------
     //
     // Même doctrine que _LEVELS et _ASSET_KINDS : un état, une probabilité ou
@@ -248,6 +299,7 @@ const PaperModule = {
         // quitter la vue ne doit pas coûter les 300 dernières millisecondes.
         if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; this._saveDraft(); }
         this._disposeCharts();
+        this._disposeGraph();
         // Le coach flottant n'existe QUE dans ce module : il part avec lui.
         this._removeFab();
         if (this._onKey) { document.removeEventListener('keydown', this._onKey); this._onKey = null; }
@@ -650,6 +702,7 @@ const PaperModule = {
             ['whales', 'paper.tab_whales'],
             ['radar', 'paper.tab_radar'],
             ['plan', 'paper.tab_plan'],
+            ['graph', 'paper.tab_graph'],
         ];
     },
 
@@ -877,9 +930,11 @@ const PaperModule = {
         await this._loadPortfolio();
         await this._loadNews();
         await this._loadWatchlist();
-        // On ne réécrit le corps que là où aucune saisie n'est en cours — et la
-        // vue Portefeuille en porte désormais (comptes X) : un re-rendu au
-        // mauvais moment volerait le curseur au milieu d'un mot.
+        // On ne réécrit le corps que là où aucune saisie n'est en cours : un
+        // re-rendu au mauvais moment volerait le curseur au milieu d'un mot.
+        // La garde reste, même si la vue Portefeuille ne porte plus de champ —
+        // c'est le poll qui décide de réécrire, pas ce que la vue contient ce
+        // mois-ci.
         if (this._tab === 'portfolio' && !this._typing()) this._renderBody();
     },
 
@@ -916,11 +971,10 @@ const PaperModule = {
             if (this._tab === 'radar') this._renderBody();
             return;
         }
-        // Réglages du portefeuille : régime d'alertes + comptes X suivis. Lus
-        // UNE fois (ils ne bougent que si on les change), pas au poll de 60 s.
-        if (this._tab === 'portfolio' && (this._alertsMode === null || this._xAccounts === null)) {
-            if (this._alertsMode === null) await this._loadAlertsMode();
-            if (this._xAccounts === null) await this._loadXAccounts();
+        // Réglage du portefeuille : régime d'alertes. Lu UNE fois (il ne bouge
+        // que si on le change), pas au poll de 60 s.
+        if (this._tab === 'portfolio' && this._alertsMode === null) {
+            await this._loadAlertsMode();
             if (this._tab === 'portfolio') this._renderBody();
             return;
         }
@@ -947,6 +1001,12 @@ const PaperModule = {
         if (this._tab === 'plan' && !this._board) {
             this._board = await this._get('/api/paper/board') || {};
             if (this._tab === 'plan') this._renderBody();
+            return;
+        }
+        // La toile n'est relue qu'à la première ouverture (ou sur demande) : la
+        // mémoire du module ne bouge pas à la minute.
+        if (this._tab === 'graph' && !this._graph && !this._graphLoading) {
+            await this.loadGraph(this._graphSymbol);
         }
     },
 
@@ -955,6 +1015,7 @@ const PaperModule = {
     // meurt pas tout seul avec le DOM).
     _renderBody() {
         this._disposeCharts();
+        this._disposeGraph();
         this._chartWanted = [];
         let html;
         if (this._tab === 'trade') html = this._viewTrade();
@@ -965,10 +1026,12 @@ const PaperModule = {
         else if (this._tab === 'whales') html = this._viewWhales();
         else if (this._tab === 'radar') html = this._viewRadar();
         else if (this._tab === 'plan') html = this._viewPlan();
+        else if (this._tab === 'graph') html = this._viewGraph();
         else html = this._viewPortfolio();
         this._setBody(html);
         if (this._tab === 'portfolio') this._paintEquity();
         this._mountCharts();
+        if (this._tab === 'graph') this._mountGraph();
     },
 
     async refresh() {
@@ -976,7 +1039,6 @@ const PaperModule = {
         // Un rafraîchissement demandé À LA MAIN relit aussi l'onglet courant.
         if (this._tab === 'portfolio') {
             await this._loadAlertsMode();
-            await this._loadXAccounts();
         } else if (this._tab === 'coach') {
             this._coach = await this._get(this._withLang('/api/paper/coach')) || {};
             this._notes = await this._get('/api/paper/coach/notes');
@@ -996,6 +1058,11 @@ const PaperModule = {
             this._radar = await this._get('/api/paper/radar') || {};
         } else if (this._tab === 'plan') {
             this._board = await this._get('/api/paper/board') || this._board;
+        } else if (this._tab === 'graph') {
+            // loadGraph re-rend déjà : on lui laisse la main, sinon le canvas
+            // serait monté deux fois pour rien.
+            await this.loadGraph(this._graphSymbol);
+            return;
         }
         this._renderBody();
     },
@@ -1080,7 +1147,12 @@ const PaperModule = {
         if (ok) await this._refreshJournal();
     },
 
-    // --- Réglages des alertes : régime de notification + comptes X suivis ----
+    // --- Réglages des alertes : régime de notification -----------------------
+    //
+    // Les comptes X suivis ne se règlent PLUS ici : leur veille est pilotée
+    // côté serveur, et ce qu'elle trouve arrive tout seul dans le fil de presse
+    // (badge « X » + pseudo sur l'événement). Un réglage de moins à l'écran
+    // pour la même information à l'arrivée.
 
     _isAlertMode(v) { return this._ALERT_MODES.indexOf(String(v == null ? '' : v)) >= 0; },
 
@@ -1095,8 +1167,7 @@ const PaperModule = {
             this._head(Lang.t('paper.alerts_title'), Lang.t('paper.telegram_btn')) +
             '<div class="paper-tabs" style="margin-bottom:6px;">' + pills + '</div>' +
             '<div style="font-size:13px;color:var(--text-dim);line-height:1.5;">' +
-              esc(Lang.t('paper.alerts_' + mode + '_hint')) + '</div>' +
-            this._xAccountsBlock()
+              esc(Lang.t('paper.alerts_' + mode + '_hint')) + '</div>'
         );
     },
 
@@ -1119,96 +1190,6 @@ const PaperModule = {
         this._alertsMode = this._isAlertMode(d && d.mode) ? String(d.mode) : m;
         this._toast('success', Lang.t('paper.alerts_saved'));
         if (this._tab === 'portfolio') this._renderBody();
-    },
-
-    // Un pseudo X : lettres, chiffres et tirets bas, 15 au plus. La règle est
-    // celle du réseau ; on la vérifie ICI pour ne pas envoyer au serveur ce
-    // qu'il refusera de toute façon.
-    _isHandle(v) { return /^[A-Za-z0-9_]{1,15}$/.test(String(v == null ? '' : v)); },
-
-    _X_MAX: 10,
-
-    _xList() { return Array.isArray(this._xAccounts) ? this._xAccounts : []; },
-
-    _xAccountsBlock() {
-        const handles = this._xList();
-        const chips = handles.map((h) =>
-            '<span class="badge" style="' + this._mono + 'display:inline-flex;gap:6px;align-items:center;">' +
-              '@' + esc(String(h)) +
-              '<button class="btn btn-ghost btn-sm" data-paper-act="x-remove" ' +
-                  'data-handle="' + esc(String(h)) + '" ' +
-                  'style="padding:0 4px;line-height:1;min-width:0;height:auto;" ' +
-                  'title="' + esc(Lang.t('paper.x_remove')) + '">' +
-                esc(Lang.t('paper.x_remove_mark')) + '</button>' +
-            '</span>').join('');
-        return '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">' +
-            '<div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;' +
-                 'color:var(--text-dim);margin-bottom:8px;">' + esc(Lang.t('paper.x_title')) + '</div>' +
-            (chips
-              ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">' + chips + '</div>'
-              : '<div style="font-size:14px;color:var(--text-muted);margin-bottom:10px;">' +
-                  esc(Lang.t('paper.x_empty')) + '</div>') +
-            '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">' +
-              '<input id="paper-x-input" class="form-input" autocomplete="off" ' +
-                   'style="flex:0 1 200px;" ' +
-                   'value="' + esc(this._xInput || '') + '" ' +
-                   'placeholder="' + esc(Lang.t('paper.x_placeholder')) + '" />' +
-              '<button class="btn btn-ghost btn-sm" data-paper-act="x-add">' +
-                esc(Lang.t('paper.x_add')) + '</button>' +
-              '<button class="btn btn-sm" data-paper-act="x-save">' +
-                esc(Lang.t('paper.x_save')) + '</button>' +
-            '</div>' +
-            '<div style="font-size:13px;color:var(--text-dim);line-height:1.5;margin-top:8px;">' +
-              esc(Lang.t('paper.x_hint')) + '</div>' +
-        '</div>';
-    },
-
-    // Ajout LOCAL : la liste n'est envoyée qu'au clic sur Enregistrer (le
-    // contrat POST prend la liste ENTIÈRE — on ne veut ni un aller-retour par
-    // pseudo tapé, ni un état à moitié écrit côté serveur).
-    addXHandle() {
-        const el = document.getElementById('paper-x-input');
-        const raw = el ? String(el.value || '') : String(this._xInput || '');
-        const h = raw.trim().replace(/^@+/, '');
-        if (!h) return;
-        if (!this._isHandle(h)) { this._toast('warn', Lang.t('paper.x_invalid')); return; }
-        const list = this._xList();
-        if (list.length >= this._X_MAX) { this._toast('warn', Lang.t('paper.x_full')); return; }
-        const low = h.toLowerCase();
-        for (let i = 0; i < list.length; i++) {
-            if (String(list[i]).toLowerCase() === low) { this._toast('info', Lang.t('paper.x_dup')); return; }
-        }
-        this._xAccounts = list.concat([h]);
-        this._xInput = '';
-        if (this._tab === 'portfolio') this._renderBody();
-    },
-
-    removeXHandle(handle) {
-        const h = String(handle || '');
-        if (!h) return;
-        this._xAccounts = this._xList().filter((x) => String(x) !== h);
-        if (this._tab === 'portfolio') this._renderBody();
-    },
-
-    async saveXHandles() {
-        const list = this._xList().filter((h) => this._isHandle(h)).slice(0, this._X_MAX);
-        let r = null;
-        try {
-            r = await Auth.apiCall('/api/paper/x-accounts',
-                { method: 'POST', body: JSON.stringify({ handles: list }) });
-        } catch (e) { r = null; }
-        if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
-        // Relecture : la liste affichée est celle du SERVEUR, jamais une copie
-        // locale qui aurait pu diverger (cap appliqué côté backend, doublons…).
-        await this._loadXAccounts();
-        this._toast('success', Lang.t('paper.x_saved'));
-        if (this._tab === 'portfolio') this._renderBody();
-    },
-
-    async _loadXAccounts() {
-        const d = await this._get('/api/paper/x-accounts');
-        const raw = (d && Array.isArray(d.handles)) ? d.handles : [];
-        this._xAccounts = raw.map((h) => String(h)).filter((h) => this._isHandle(h));
     },
 
     async _loadAlertsMode() {
@@ -1863,6 +1844,9 @@ const PaperModule = {
         this._renderBody();
         // Mémoire du coach sur ce titre : lecture seule, aucun appel LLM.
         this._loadSymIdeas(symbol);
+        // Et ce que la TOILE en sait déjà : un simple compteur, silencieux
+        // tant qu'il vaut 0.
+        this._loadGraphCount(symbol);
         const d = await this._get('/api/paper/quotes?symbols=' + encodeURIComponent(symbol));
         const q = (d && typeof d === 'object') ? (d[symbol] || d[String(symbol).toUpperCase()] || null) : null;
         if (q && typeof q === 'object') this._quote = q;
@@ -3656,6 +3640,759 @@ const PaperModule = {
     },
 
     // =====================================================================
+    //  10. CONNEXIONS — la toile de ce que le module a retenu
+    // =====================================================================
+    //
+    // Une seule question a l'ecran : « qu'est-ce qui touche a ce titre ? ».
+    // Les titres (position, favori, pipeline) sont les ANCRES ; tout ce que
+    // les guetteurs ont ramasse — presse, catalyseur, hypothese du radar,
+    // mouvement de gerant, decor mondial — se range autour de la sienne.
+    //
+    // Canvas 2D pur, aucune librairie, aucun CDN (meme patron que les bougies :
+    // densite de pixels honoree, tokens relus a CHAQUE trace donc dark et clair
+    // « Givre » sortent justes tous les deux).
+    //
+    // Disposition RADIALE DETERMINISTE, PAS de simulation physique : deux
+    // rendus des memes donnees donnent exactement la meme image. Une toile qui
+    // fremit a chaque repeint empeche de reconnaitre ce qu'on regardait — et
+    // rend le survol impossible a viser.
+
+    _isGraphType(t) {
+        return Object.prototype.hasOwnProperty.call(this._GNODE,
+            String(t == null ? '' : t).toLowerCase());
+    },
+
+    _gtype(t) { return String(t == null ? '' : t).toLowerCase(); },
+
+    _isAnchorType(t) {
+        return Object.prototype.hasOwnProperty.call(this._GANCHOR, this._gtype(t));
+    },
+
+    // Couleur d'un type de noeud. Type hors table -> --text-dim (pastille
+    // neutre) : rien n'est fabrique par concatenation depuis la donnee.
+    // Un token vide (feuille de style pas encore la) tombe sur une couleur
+    // litterale : une chaine vide passee a fillStyle laisserait le trace de la
+    // couleur PRECEDENTE, donc un noeud de la mauvaise couleur.
+    _gcolor(t) {
+        const k = this._gtype(t);
+        const d = this._isGraphType(k) ? this._GNODE[k] : null;
+        return this._tok(d ? d[1] : '--text-dim') || '#8FA3C4';
+    },
+
+    _gradius(t) {
+        const k = this._gtype(t);
+        return this._isGraphType(k) ? this._GNODE[k][2] : 92;
+    },
+
+    // Libelle du type. Hors table : chaine vide — on n'invente pas de nom, le
+    // noeud garde son propre libelle et c'est tout.
+    _gtypeLabel(t) {
+        const k = this._gtype(t);
+        return this._isGraphType(k) ? Lang.t(this._GNODE[k][0]) : '';
+    },
+
+    // --------------------------------------------------------------- donnees
+
+    async loadGraph(symbol) {
+        const sym = (symbol === null || symbol === undefined || symbol === '') ? null : String(symbol);
+        this._graphSymbol = sym;
+        this._graphLoading = true;
+        this._graphHover = null;
+        if (this._tab === 'graph') this._renderBody();
+        const url = '/api/paper/graph' + (sym ? ('?symbol=' + encodeURIComponent(sym)) : '');
+        const d = await this._get(url);
+        // Deux pastilles cliquees coup sur coup : les reponses peuvent revenir
+        // dans le desordre. Celle qui n'est plus celle qu'on regarde est jetee,
+        // sinon on afficherait la toile d'un titre sous le nom d'un autre.
+        if (this._graphSymbol !== sym) return;
+        this._graphLoading = false;
+        this._graph = (d && typeof d === 'object') ? d : null;
+        this._noteAnchors();
+        if (this._tab === 'graph') this._renderBody();
+    },
+
+    // La rangee de pills doit survivre au mode ego : une fois rapproche sur un
+    // titre, la toile ne contient plus que LUI — sans cette memoire, la rangee
+    // se reduirait a une seule pastille et on ne pourrait plus sauter d'un
+    // titre a l'autre sans repasser par « Tout ».
+    _noteAnchors() {
+        const nodes = this._graphNodes();
+        if (!this._graphSymbol) {
+            const seen = {};
+            const out = [];
+            nodes.forEach((n) => {
+                if (!this._isAnchorType(n.type)) return;
+                const id = String(n.id);
+                if (seen[id]) return;
+                seen[id] = 1;
+                out.push({ id: id, label: String(n.label || n.id), type: this._gtype(n.type) });
+            });
+            out.sort((a, b) => (a.label < b.label ? -1 : (a.label > b.label ? 1 : 0)));
+            this._graphAnchors = out;
+            return;
+        }
+        // Arrive directement en vue rapprochee (par le chip d'un graphique) :
+        // la rangee n'a jamais ete relevee, on y met au moins ce titre.
+        const cur = String(this._graphSymbol);
+        for (let i = 0; i < this._graphAnchors.length; i++) {
+            if (this._graphAnchors[i].id === cur) return;
+        }
+        let lab = cur, ty = 'position';
+        nodes.forEach((n) => {
+            if (String(n.id) !== cur) return;
+            lab = String(n.label || cur);
+            ty = this._gtype(n.type);
+        });
+        this._graphAnchors = this._graphAnchors.concat([{ id: cur, label: lab, type: ty }])
+            .sort((a, b) => (a.label < b.label ? -1 : (a.label > b.label ? 1 : 0)));
+    },
+
+    _graphNodes() {
+        const g = this._graph;
+        return (g && Array.isArray(g.nodes)) ? g.nodes.filter((n) => n && n.id !== undefined
+            && n.id !== null && String(n.id) !== '') : [];
+    },
+
+    _graphEdges() {
+        const g = this._graph;
+        return (g && Array.isArray(g.edges)) ? g.edges.filter((e) => e && e.source && e.target) : [];
+    },
+
+    // --------------------------------------------------------------- decoupe
+
+    // Plafond de dessin : les ancres d'abord (elles STRUCTURENT la toile, en
+    // perdre une detacherait tout son cortege), puis les plus recents.
+    _graphKept() {
+        const nodes = this._graphNodes();
+        if (nodes.length <= this._GRAPH_MAX) return { nodes: nodes, cut: false };
+        const anchors = nodes.filter((n) => this._isAnchorType(n.type));
+        const rest = nodes.filter((n) => !this._isAnchorType(n.type));
+        // Tri par date DECROISSANTE ; a date egale, par identifiant (stable).
+        rest.sort((a, b) => {
+            const ta = this._graphTs(a), tb = this._graphTs(b);
+            if (tb !== ta) return tb - ta;
+            return String(a.id) < String(b.id) ? -1 : 1;
+        });
+        const room = Math.max(0, this._GRAPH_MAX - anchors.length);
+        return { nodes: anchors.concat(rest.slice(0, room)), cut: true };
+    },
+
+    _graphTs(n) {
+        const d = this._toDate(n && n.ts);
+        return d ? d.getTime() : 0;
+    },
+
+    // =====================================================================
+    //  Disposition radiale DETERMINISTE
+    // =====================================================================
+    //
+    // 1. les ancres se repartissent sur un cercle, dans l'ordre ALPHABETIQUE ;
+    // 2. chaque noeud d'information s'ouvre en eventail autour de SON ancre —
+    //    il herite de son angle, son rayon vient de son type ;
+    // 3. le pivot « contexte » (le monde : gouvernement, crypto) vit a part,
+    //    en satellite du coin haut-gauche, avec ses propres items.
+    //
+    // Les positions sont calculees en repere libre puis RAMENEES dans le
+    // canvas par une seule homothetie : la toile occupe toujours le cadre, quel
+    // que soit le nombre de noeuds, et sans qu'aucune constante ait a deviner
+    // la taille de l'ecran.
+
+    _graphBuild(cssW, cssH) {
+        const kept = this._graphKept();
+        const nodes = kept.nodes;
+        if (!nodes.length) return null;
+
+        const byId = {};
+        nodes.forEach((n) => { byId[String(n.id)] = n; });
+
+        // Voisins, restreints aux noeuds REELLEMENT gardes (une arete vers un
+        // noeud coupe par le plafond ne doit rattacher personne).
+        const edges = this._graphEdges().filter((e) =>
+            Object.prototype.hasOwnProperty.call(byId, String(e.source)) &&
+            Object.prototype.hasOwnProperty.call(byId, String(e.target)));
+        const adj = {};
+        edges.forEach((e) => {
+            const s = String(e.source), t = String(e.target);
+            (adj[s] = adj[s] || []).push(t);
+            (adj[t] = adj[t] || []).push(s);
+        });
+
+        const anchors = nodes.filter((n) => this._isAnchorType(n.type))
+            .map((n) => ({ id: String(n.id), label: String(n.label || n.id) }));
+        anchors.sort((a, b) => (a.label < b.label ? -1 : (a.label > b.label ? 1 : 0)));
+        const anchorAt = {};
+        anchors.forEach((a, i) => { anchorAt[a.id] = i; });
+
+        const pivots = nodes.filter((n) => this._gtype(n.type) === 'context')
+            .map((n) => String(n.id));
+        const isPivot = {};
+        pivots.forEach((id) => { isPivot[id] = 1; });
+
+        // Rattachement d'un noeud d'information : la PREMIERE ancre voisine,
+        // par ordre alphabetique d'identifiant — deterministe meme quand le
+        // backend renvoie ses aretes dans un autre ordre.
+        const hostOf = {};
+        nodes.forEach((n) => {
+            const id = String(n.id);
+            if (Object.prototype.hasOwnProperty.call(anchorAt, id) || isPivot[id]) return;
+            const nb = (adj[id] || []).slice().sort();
+            let host = null, pivot = null;
+            for (let i = 0; i < nb.length; i++) {
+                if (host === null && Object.prototype.hasOwnProperty.call(anchorAt, nb[i])) host = nb[i];
+                if (pivot === null && isPivot[nb[i]]) pivot = nb[i];
+            }
+            hostOf[id] = host || pivot || null;
+        });
+
+        // Enfants par hote, tries par [rayon du type, libelle, id] : les memes
+        // natures se retrouvent cote a cote sur l'eventail.
+        const kids = {};
+        nodes.forEach((n) => {
+            const id = String(n.id);
+            const h = hostOf[id];
+            if (h === undefined) return;
+            const key = (h === null) ? ' orphan' : h;
+            (kids[key] = kids[key] || []).push(n);
+        });
+        Object.keys(kids).forEach((k) => {
+            kids[k].sort((a, b) => {
+                const ra = this._gradius(a.type), rb = this._gradius(b.type);
+                if (ra !== rb) return ra - rb;
+                const la = String(a.label || a.id), lb = String(b.label || b.id);
+                if (la !== lb) return la < lb ? -1 : 1;
+                return String(a.id) < String(b.id) ? -1 : 1;
+            });
+        });
+
+        const pos = {};
+        const TAU = Math.PI * 2;
+        const na = Math.max(1, anchors.length);
+        const ringR = 150 + Math.min(150, na * 12);
+        // L'anneau des ancres suit la FORME du cadre : sur un canvas large, un
+        // anneau rond laisserait deux grosses marges vides a gauche et a droite
+        // (l'homothetie finale est bridee par la hauteur). Les eventails, eux,
+        // restent circulaires — c'est leur lisibilite locale qui compte.
+        const ar = Math.max(1, Math.min(2.2, (cssW || 1) / (cssH || 1)));
+        const ringX = ringR * ar, ringY = ringR;
+
+        // --- 1. les ancres sur leur anneau, midi en premier ---
+        anchors.forEach((a, i) => {
+            const t = -Math.PI / 2 + TAU * (i / na);
+            const x = Math.cos(t) * ringX, y = Math.sin(t) * ringY;
+            // L'eventail s'ouvre vers l'EXTERIEUR : sur un anneau aplati, cette
+            // direction n'est plus l'angle du parametre, il faut la recalculer.
+            pos[a.id] = { x: x, y: y, ang: Math.atan2(y, x) };
+        });
+        // Ancre unique : au centre, son eventail s'ouvre alors tout autour.
+        if (anchors.length === 1) pos[anchors[0].id] = { x: 0, y: 0, ang: -Math.PI / 2, full: true };
+
+        // --- 2. le pivot « contexte », au large dans le coin haut-gauche ---
+        const pivotX = -ringX - 190, pivotY = -ringY - 150;
+        pivots.forEach((id, i) => {
+            pos[id] = { x: pivotX + i * 150, y: pivotY, ang: -Math.PI / 2, full: true };
+        });
+
+        // --- 3. les eventails ---
+        const fanOut = (hostId, list) => {
+            const p = pos[hostId];
+            if (!p || !list || !list.length) return;
+            const k = list.length;
+            const full = !!p.full;
+            // Un eventail large sur peu d'items donne une etoile deserte ; un
+            // eventail etroit sur beaucoup d'items empile tout. L'ouverture
+            // suit donc le nombre, bornee des deux cotes.
+            const spread = full ? TAU : Math.max(0.9, Math.min(2.4, 0.42 * k));
+            list.forEach((n, j) => {
+                const off = full
+                    ? (TAU * (j / k))
+                    : (k === 1 ? 0 : (-spread / 2 + spread * (j / (k - 1))));
+                const ang = p.ang + off;
+                // Une couronne sur deux est repoussee : deux voisins de meme
+                // type ne se recouvrent plus quand l'eventail est charge.
+                const r = this._gradius(n.type) + ((j % 2) ? 22 : 0);
+                pos[String(n.id)] = { x: p.x + Math.cos(ang) * r, y: p.y + Math.sin(ang) * r, ang: ang };
+            });
+        };
+        anchors.forEach((a) => fanOut(a.id, kids[a.id]));
+        pivots.forEach((id) => fanOut(id, kids[id]));
+
+        // Orphelins (rattaches a rien) : une couronne exterieure, sous le
+        // cercle des ancres. Ils EXISTENT, on ne les escamote pas.
+        const orphans = kids[' orphan'] || [];
+        orphans.forEach((n, j) => {
+            const ang = -Math.PI / 2 + TAU * (j / Math.max(1, orphans.length));
+            const r = ringR + 200;
+            pos[String(n.id)] = { x: Math.cos(ang) * r, y: Math.sin(ang) * r, ang: ang };
+        });
+
+        // --- 4. homothetie : tout le monde dans le cadre ---
+        const R_ANCHOR = 9, R_INFO = 5;
+        const rOf = (n) => (this._isAnchorType(n.type) || this._gtype(n.type) === 'context')
+            ? R_ANCHOR : R_INFO;
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        nodes.forEach((n) => {
+            const p = pos[String(n.id)];
+            if (!p) return;
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.y > maxY) maxY = p.y;
+        });
+        if (!isFinite(minX)) return null;
+        // La marge laisse la place aux ETIQUETTES, qui debordent des pastilles.
+        const padX = 96, padY = 34;
+        const spanX = Math.max(1e-6, maxX - minX), spanY = Math.max(1e-6, maxY - minY);
+        const scale = Math.min((cssW - padX * 2) / spanX, (cssH - padY * 2) / spanY, 1.6);
+        const offX = cssW / 2 - ((minX + maxX) / 2) * scale;
+        const offY = cssH / 2 - ((minY + maxY) / 2) * scale;
+
+        const out = [];
+        nodes.forEach((n) => {
+            const p = pos[String(n.id)];
+            if (!p) return;
+            out.push({
+                id: String(n.id),
+                type: this._gtype(n.type),
+                label: String(n.label === undefined || n.label === null ? n.id : n.label),
+                meta: (n.meta && typeof n.meta === 'object') ? n.meta : null,
+                ts: n.ts,
+                link: this._safeUrl(n.link),
+                sentiment: n.sentiment,
+                anchor: this._isAnchorType(n.type),
+                x: p.x * scale + offX,
+                y: p.y * scale + offY,
+                r: rOf(n),
+            });
+        });
+        const idx = {};
+        out.forEach((n, i) => { idx[n.id] = i; });
+        const eout = [];
+        edges.forEach((e) => {
+            const a = idx[String(e.source)], b = idx[String(e.target)];
+            if (a === undefined || b === undefined || a === b) return;
+            eout.push({ a: a, b: b, sentiment: e.sentiment, type: e.type });
+        });
+        return { nodes: out, edges: eout, cut: kept.cut, kept: out.length };
+    },
+
+    // =====================================================================
+    //  Trace
+    // =====================================================================
+
+    _paintGraph() {
+        const cv = this._graphCanvas;
+        if (!cv || !cv.isConnected) return;
+        const ctx = cv.getContext ? cv.getContext('2d') : null;
+        if (!ctx) return;
+
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = cv.clientWidth || 640;
+        const cssH = cv.clientHeight || 460;
+        const pw = Math.max(1, Math.round(cssW * dpr));
+        const ph = Math.max(1, Math.round(cssH * dpr));
+        if (cv.width !== pw || cv.height !== ph) { cv.width = pw; cv.height = ph; }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, cssW, cssH);
+
+        const L = this._graphBuild(cssW, cssH);
+        this._graphLayout = L;
+        if (!L) return;
+
+        // Tokens relus MAINTENANT : les deux modes sortent justes.
+        const mono = this._tok('--font-mono') || 'ui-monospace, monospace';
+        const border = this._tok('--border') || '#1C2947';
+        const dim = this._tok('--text-dim') || '#5A6C90';
+        const fg = this._tok('--text') || '#EDF2FA';
+        const bg = this._tok('--bg-elev-1') || '#0A101E';
+
+        const hov = this._graphHover;
+        const hi = (hov === null || hov === undefined) ? -1 : hov;
+        // Voisinage du noeud survole : lui et ses aretes restent nets, le reste
+        // s'estompe. C'est la seule facon de suivre un fil dans une toile dense.
+        const near = {};
+        if (hi >= 0) {
+            near[hi] = 1;
+            L.edges.forEach((e) => {
+                if (e.a === hi) near[e.b] = 1;
+                if (e.b === hi) near[e.a] = 1;
+            });
+        }
+        const lit = (i) => (hi < 0 || near[i]);
+
+        // --- aretes, en courbes discretes ---
+        L.edges.forEach((e) => {
+            const A = L.nodes[e.a], B = L.nodes[e.b];
+            if (!A || !B) return;
+            const on = (hi < 0) ? false : (e.a === hi || e.b === hi);
+            const faded = (hi >= 0 && !on);
+            const s = this._gtype(e.sentiment);
+            const col = Object.prototype.hasOwnProperty.call(this._GEDGE, s)
+                ? (this._tok(this._GEDGE[s]) || border) : border;
+            // Courbure DETERMINISTE : le signe vient de la parite des indices,
+            // jamais d'un tirage — deux traces donnent la meme courbe.
+            const mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2;
+            const dx = B.x - A.x, dy = B.y - A.y;
+            const len = Math.sqrt(dx * dx + dy * dy) || 1;
+            const bend = Math.min(26, len * 0.12) * (((e.a + e.b) % 2) ? 1 : -1);
+            const cx = mx + (-dy / len) * bend, cy = my + (dx / len) * bend;
+            ctx.globalAlpha = faded ? 0.08 : (on ? 0.85 : 0.34);
+            ctx.strokeStyle = col;
+            ctx.lineWidth = on ? 1.8 : 1;
+            ctx.beginPath();
+            ctx.moveTo(A.x, A.y);
+            ctx.quadraticCurveTo(cx, cy, B.x, B.y);
+            ctx.stroke();
+        });
+        ctx.globalAlpha = 1;
+
+        // --- noeuds ---
+        ctx.textBaseline = 'middle';
+        L.nodes.forEach((n, i) => {
+            const on = lit(i);
+            const col = this._gcolor(n.type);
+            ctx.globalAlpha = on ? 1 : 0.22;
+            // Halo du noeud vise : il se voit sans changer sa taille (donc sans
+            // deplacer la cible sous le curseur).
+            if (i === hi) {
+                ctx.beginPath();
+                ctx.arc(n.x, n.y, n.r + 6, 0, Math.PI * 2);
+                ctx.fillStyle = col;
+                ctx.globalAlpha = 0.18;
+                ctx.fill();
+                ctx.globalAlpha = 1;
+            }
+            ctx.beginPath();
+            ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+            ctx.fillStyle = col;
+            ctx.fill();
+            // Un lisere de fond detache la pastille de l'arete qui passe dessous.
+            ctx.strokeStyle = bg;
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            // Etiquette : le symbole en mono pour une ancre, le libelle tronque
+            // pour le reste. Cote choisi selon la moitie du cadre — une
+            // etiquette ne sort jamais du canvas.
+            const isAnchor = n.anchor;
+            ctx.font = (isAnchor ? '600 12px ' : '11px ') + mono;
+            const raw = isAnchor ? n.label : this._gtrim(n.label, 28);
+            if (!raw) { ctx.globalAlpha = 1; return; }
+            const right = (n.x <= cssW / 2);
+            ctx.textAlign = right ? 'left' : 'right';
+            const tx = right ? (n.x + n.r + 6) : (n.x - n.r - 6);
+            ctx.fillStyle = isAnchor ? fg : dim;
+            if (hi >= 0 && !on) ctx.globalAlpha = 0.18;
+            ctx.fillText(raw, tx, n.y);
+            ctx.globalAlpha = 1;
+        });
+    },
+
+    // Troncature a la LIMITE DE MOT quand c'est possible : « Résultats T3 dé… »
+    // se lit, « Résultats T3 dép » fait croire a un mot coupe par erreur.
+    _gtrim(s, max) {
+        const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+        if (t.length <= max) return t;
+        const cut = t.slice(0, max);
+        const sp = cut.lastIndexOf(' ');
+        return (sp > max * 0.6 ? cut.slice(0, sp) : cut) + '…';
+    },
+
+    // =====================================================================
+    //  Pointeur : survol, tap, clic
+    // =====================================================================
+
+    _graphHit(x, y) {
+        const L = this._graphLayout;
+        if (!L) return -1;
+        let best = -1, bestD = Infinity;
+        for (let i = 0; i < L.nodes.length; i++) {
+            const n = L.nodes[i];
+            const dx = n.x - x, dy = n.y - y;
+            const d = dx * dx + dy * dy;
+            const reach = n.r + 8;
+            if (d <= reach * reach && d < bestD) { bestD = d; best = i; }
+        }
+        return best;
+    },
+
+    // Le repeint est groupe par requestAnimationFrame : un survol traverse des
+    // dizaines de pixels par seconde, et redessiner a chaque pixel bloquerait
+    // le fil pour rien. AUCUNE boucle continue — on ne peint que sur evenement.
+    _graphQueuePaint() {
+        if (this._graphRaf) return;
+        this._graphRaf = window.requestAnimationFrame(() => {
+            this._graphRaf = 0;
+            this._paintGraph();
+            this._paintGraphTip();
+        });
+    },
+
+    _mountGraph() {
+        const cv = document.querySelector('#paper-body canvas[data-paper-graph]');
+        if (!cv) return;
+        this._graphCanvas = cv;
+        const at = (ev) => {
+            const rect = cv.getBoundingClientRect();
+            return this._graphHit(ev.clientX - rect.left, ev.clientY - rect.top);
+        };
+        const setHover = (i) => {
+            const v = (i >= 0) ? i : null;
+            if (v === this._graphHover) return;
+            this._graphHover = v;
+            this._graphQueuePaint();
+        };
+        const onMove = (ev) => {
+            if (ev.pointerType === 'touch') return;   // le doigt TAPE, il ne survole pas
+            const i = at(ev);
+            setHover(i);
+            cv.style.cursor = (i >= 0) ? 'pointer' : 'default';
+        };
+        const onLeave = (ev) => {
+            if (ev && ev.pointerType === 'touch') return;
+            setHover(-1);
+        };
+        // Le tap sert d'abord a LIRE : il pose le survol (donc l'infobulle).
+        const onDown = (ev) => { if (ev.pointerType === 'touch') setHover(at(ev)); };
+        const onClick = (ev) => {
+            const i = at(ev);
+            if (i < 0) return;
+            ev.preventDefault();
+            this._graphActivate(i);
+        };
+        cv.addEventListener('pointermove', onMove);
+        cv.addEventListener('pointerdown', onDown);
+        cv.addEventListener('pointerleave', onLeave);
+        cv.addEventListener('click', onClick);
+        this._onGraphResize = () => {
+            if (this._graphResizeTimer) clearTimeout(this._graphResizeTimer);
+            this._graphResizeTimer = setTimeout(() => {
+                this._graphResizeTimer = null;
+                this._graphHover = null;
+                this._paintGraph();
+                this._paintGraphTip();
+            }, 120);
+        };
+        window.addEventListener('resize', this._onGraphResize);
+        cv._paperGraphOff = () => {
+            cv.removeEventListener('pointermove', onMove);
+            cv.removeEventListener('pointerdown', onDown);
+            cv.removeEventListener('pointerleave', onLeave);
+            cv.removeEventListener('click', onClick);
+        };
+        this._paintGraph();
+        this._paintGraphTip();
+    },
+
+    _disposeGraph() {
+        const cv = this._graphCanvas;
+        if (cv && cv._paperGraphOff) { cv._paperGraphOff(); cv._paperGraphOff = null; }
+        this._graphCanvas = null;
+        this._graphLayout = null;
+        if (this._onGraphResize) {
+            window.removeEventListener('resize', this._onGraphResize);
+            this._onGraphResize = null;
+        }
+        if (this._graphResizeTimer) { clearTimeout(this._graphResizeTimer); this._graphResizeTimer = null; }
+        if (this._graphRaf) { window.cancelAnimationFrame(this._graphRaf); this._graphRaf = 0; }
+    },
+
+    // Clic sur un noeud : une ANCRE rapproche la toile sur elle, un noeud
+    // d'information ouvre sa source quand il en a une. Un noeud sans lien ne
+    // fait rien — mais il a deja tout dit dans son infobulle.
+    _graphActivate(i) {
+        const L = this._graphLayout;
+        const n = L && L.nodes[i];
+        if (!n) return;
+        if (n.anchor) {
+            if (this._graphSymbol === n.id) return;   // deja rapproche sur lui
+            this.loadGraph(n.id);
+            return;
+        }
+        if (!n.link) return;
+        // _safeUrl a deja ecarte tout ce qui n'est pas http(s) a la construction.
+        window.open(n.link, '_blank', 'noopener,noreferrer');
+    },
+
+    // --------------------------------------------------------------- infobulle
+
+    _paintGraphTip() {
+        const tip = document.getElementById('paper-graph-tip');
+        if (!tip) return;
+        const L = this._graphLayout;
+        const i = this._graphHover;
+        const n = (L && i !== null && i !== undefined) ? L.nodes[i] : null;
+        if (!n) { tip.style.display = 'none'; tip.innerHTML = ''; return; }
+
+        const type = this._gtypeLabel(n.type);
+        const when = (n.ts === undefined || n.ts === null || n.ts === '')
+            ? '' : this._dateShort(n.ts);
+        const bits = [];
+        if (type) bits.push(type);
+        if (when && when !== '—') bits.push(when);
+        // meta : lecture DEFENSIVE. On n'affiche que des paires plates et
+        // courtes, et JAMAIS plus de 4 — la donnee vient du serveur, elle n'a
+        // pas a decider de la taille de l'infobulle.
+        let metaHtml = '';
+        if (n.meta) {
+            const keys = Object.keys(n.meta).slice(0, 4);
+            const rows = keys.map((k) => {
+                const v = n.meta[k];
+                if (v === null || v === undefined || typeof v === 'object') return '';
+                return '<div class="paper-graph-tip-meta">' +
+                    '<span>' + esc(this._gtrim(k, 22)) + '</span>' +
+                    '<span>' + esc(this._gtrim(String(v), 46)) + '</span></div>';
+            }).join('');
+            metaHtml = rows;
+        }
+        tip.innerHTML =
+            '<div class="paper-graph-tip-head">' + esc(n.label) + '</div>' +
+            (bits.length ? '<div class="paper-graph-tip-sub">' + esc(bits.join(' · ')) + '</div>' : '') +
+            metaHtml +
+            (n.anchor
+              ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_focus')) + '</div>'
+              : (n.link
+                  ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_link')) + '</div>'
+                  : ''));
+
+        // Placement : a droite du noeud par defaut, bascule a gauche quand il
+        // n'y a plus la place. L'infobulle ne sort jamais du cadre.
+        tip.style.display = 'block';
+        const host = tip.parentNode;
+        const W = (host && host.clientWidth) || 0;
+        const H = (host && host.clientHeight) || 0;
+        const tw = tip.offsetWidth, th = tip.offsetHeight;
+        let x = n.x + n.r + 12;
+        if (x + tw > W - 6) x = n.x - n.r - 12 - tw;
+        if (x < 6) x = 6;
+        let y = n.y - th / 2;
+        if (y < 6) y = 6;
+        if (y + th > H - 6) y = Math.max(6, H - 6 - th);
+        tip.style.left = Math.round(x) + 'px';
+        tip.style.top = Math.round(y) + 'px';
+    },
+
+    // =====================================================================
+    //  La vue
+    // =====================================================================
+
+    _viewGraph() {
+        const nodes = this._graphNodes();
+        const g = this._graph;
+        const ego = this._graphSymbol;
+
+        // Rangee de filtres : « Tout » puis les ancres relevees. Elle reste la
+        // meme en vue rapprochee — c'est ce qui permet de sauter d'un titre a
+        // l'autre sans repasser par la toile entiere.
+        const pills = '<button class="paper-tab' + (ego ? '' : ' active') + '" ' +
+                'data-paper-act="graph-all">' + esc(Lang.t('paper.graph_all')) + '</button>' +
+            this._graphAnchors.map((a) =>
+                '<button class="paper-tab' + (ego === a.id ? ' active' : '') + '" ' +
+                    'data-paper-act="graph-focus" data-sym="' + esc(a.id) + '">' +
+                  esc(a.label) + '</button>').join('');
+
+        let body;
+        if (this._graphLoading && !nodes.length) {
+            body = this._muted(Lang.t('paper.graph_loading'));
+        } else if (!nodes.length) {
+            body = this._muted(Lang.t('paper.graph_empty'));
+        } else {
+            const kept = this._graphKept();
+            const cut = kept.cut || !!(g && g.truncated);
+            body = '<div class="paper-graph-wrap">' +
+                    '<canvas data-paper-graph="1" class="paper-graph"></canvas>' +
+                    '<div id="paper-graph-tip" class="paper-graph-tip"></div>' +
+                  '</div>' +
+                  this._graphLegend() +
+                  (cut
+                    ? '<div style="font-size:12px;color:var(--text-dim);margin-top:8px;">' +
+                        esc(Lang.t('paper.graph_truncated') + ' ' +
+                            this._num(kept.nodes.length, 0) + ' ' + Lang.t('paper.graph_nodes')) +
+                      '</div>'
+                    : '');
+        }
+
+        return this._card(
+            '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px;">' +
+              '<h3 style="margin:0;font-size:17px;">' + esc(Lang.t('paper.graph_title')) + '</h3>' +
+              '<span style="font-size:12px;color:var(--text-dim);">' +
+                esc(ego ? (Lang.t('paper.graph_ego') + ' ' + ego) : Lang.t('paper.graph_hint')) +
+              '</span>' +
+              '<button class="btn btn-ghost btn-sm" data-paper-act="graph-reload" ' +
+                  'style="margin-left:auto;">' + esc(Lang.t('paper.refresh')) + '</button>' +
+            '</div>' +
+            '<div class="paper-tabs">' + pills + '</div>' +
+            body
+        );
+    },
+
+    _graphLegend() {
+        const seen = {};
+        this._graphNodes().forEach((n) => { seen[this._gtype(n.type)] = 1; });
+        // Un type hors table figure quand meme dans la legende — en pastille
+        // neutre et sous son propre nom : on ne cache pas ce qu'on ne sait pas
+        // nommer, et on n'invente pas de classe pour lui.
+        const known = this._GLEGEND.filter((t) => seen[t]);
+        const others = Object.keys(seen).filter((t) => !this._isGraphType(t)).sort();
+        const item = (t, label) =>
+            '<span class="paper-graph-key">' +
+              '<i style="background:' + esc(this._gcolor(t)) + ';"></i>' +
+              esc(label) + '</span>';
+        return '<div class="paper-graph-legend">' +
+            known.map((t) => item(t, this._gtypeLabel(t))).join('') +
+            others.map((t) => item(t, t)).join('') +
+        '</div>';
+    },
+
+    // =====================================================================
+    //  Le signal : « ce titre a deja des connexions »
+    // =====================================================================
+    //
+    // Regle dure, la meme que la memoire du coach : zero connexion => AUCUN
+    // element a l'ecran. Un compteur a 0 est du bruit, et un encart vide
+    // apprend a ignorer l'encart.
+
+    async _loadGraphCount(symbol) {
+        const sym = String(symbol || '');
+        if (!sym) return;
+        const d = await this._get('/api/paper/graph/count?symbol=' + encodeURIComponent(sym));
+        const n = this._n(d && d.count);
+        this._graphCounts[sym] = (n === null || n < 0) ? 0 : Math.floor(n);
+        if (!this._graphCounts[sym]) return;      // rien a dire : on ne dessine rien
+        // Le chip ne vit que dans ces deux vues : ailleurs, rien a redessiner.
+        if (this._tab === 'trade' || this._tab === 'portfolio') this._renderBody();
+    },
+
+    // Pastille de la rangée de filtres : « Tout » (null) ou une ancre.
+    focusGraph(symbol) {
+        const sym = (symbol === null || symbol === undefined || symbol === '') ? null : String(symbol);
+        if (sym === this._graphSymbol) return;
+        this.loadGraph(sym);
+    },
+
+    // Chip d'un graphique : on OUVRE la vue Connexions déjà rapprochée sur ce
+    // titre. L'onglet bascule tout de suite (l'écran répond), la toile arrive
+    // derrière — jamais l'inverse.
+    openGraph(symbol) {
+        const sym = String(symbol || '');
+        if (!sym) return;
+        if (this._tab === 'trade') { this._captureForm(); this._saveDraft(); }
+        this._tab = 'graph';
+        this._saveUi();
+        this._renderTabs();
+        this.loadGraph(sym);
+    },
+
+    _graphChip(symbol) {
+        const sym = String(symbol || '');
+        const n = this._graphCounts[sym];
+        if (!n) return '';
+        return '<button class="btn btn-ghost btn-sm paper-graph-chip" ' +
+                'data-paper-act="graph-open" data-sym="' + esc(sym) + '" ' +
+                'title="' + esc(Lang.t('paper.graph_chip_hint')) + '">' +
+            esc(this._num(n, 0) + ' ' + Lang.t('paper.graph_chip')) + '</button>';
+    },
+
+    // =====================================================================
     //  GRAPHIQUE EN BOUGIES — canvas 2D pur, AUCUNE librairie, AUCUN CDN
     // =====================================================================
     //
@@ -3739,8 +4476,11 @@ const PaperModule = {
         // La memoire du coach ne s'affiche QUE la ou on decide (Nouveau trade)
         // ou l'on ouvre une position — pas sous la fiche d'analyse, qui est
         // deja un texte du coach.
-        const memory = (ctxKey === 'trade' || String(ctxKey).indexOf('pos:') === 0)
-            ? this._symIdeasHtml(symbol) : '';
+        const decides = (ctxKey === 'trade' || String(ctxKey).indexOf('pos:') === 0);
+        const memory = decides ? this._symIdeasHtml(symbol) : '';
+        // Meme endroit, meme regle : le chip n'existe que si la toile a
+        // VRAIMENT quelque chose sur ce titre (compteur a 0 => rien du tout).
+        const chip = decides ? this._graphChip(symbol) : '';
         return this._card(
             // position:relative : la carte flottante s'ancre a CE bloc, jamais
             // au formulaire d'ordre qui vit dessous. Et quand elle est la, la
@@ -3753,6 +4493,7 @@ const PaperModule = {
               '<span style="font-size:16px;font-weight:600;">' + esc(symbol) + '</span>' +
               (cur ? '<span style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
                   esc(cur) + '</span>' : '') +
+              chip +
               '<div class="paper-tabs" style="margin:0 0 0 auto;">' + pills + '</div>' +
             '</div>' + body,
             'position:relative;'
@@ -3851,7 +4592,7 @@ const PaperModule = {
               '<button class="btn btn-ghost btn-sm" data-paper-act="sym-close" ' +
                   'data-sym="' + esc(sym) + '" style="padding:0 6px;line-height:1.2;" ' +
                   'title="' + esc(Lang.t('paper.close')) + '">' +
-                esc(Lang.t('paper.x_remove_mark')) + '</button>' +
+                esc(Lang.t('paper.close_mark')) + '</button>' +
             '</div>' +
             items.slice(0, 2).map((it, i) => this._symIdeaItem(sym, it, i)).join('') +
             '<div style="margin-top:6px;">' +
@@ -4544,7 +5285,7 @@ const PaperModule = {
                 esc(Lang.t('paper.fab_title')) + '</span>' +
               '<button class="btn btn-ghost btn-sm" data-paper-act="fab-toggle" ' +
                   'style="padding:0 6px;" title="' + esc(Lang.t('paper.close')) + '">' +
-                esc(Lang.t('paper.x_remove_mark')) + '</button>' +
+                esc(Lang.t('paper.close_mark')) + '</button>' +
             '</div>' +
             '<div class="paper-fab-body">' +
               (ex
@@ -4653,9 +5394,6 @@ const PaperModule = {
         if (act === 'review') { this.reviewPositions(); return; }
         if (act === 'review-text') { this._reviewOpen = !this._reviewOpen; this._renderBody(); return; }
         if (act === 'alerts-mode') { this.setAlertsMode(el.getAttribute('data-mode')); return; }
-        if (act === 'x-add') { this.addXHandle(); return; }
-        if (act === 'x-remove') { this.removeXHandle(el.getAttribute('data-handle')); return; }
-        if (act === 'x-save') { this.saveXHandles(); return; }
         if (act === 'sym-close') { this.closeSymIdeas(el.getAttribute('data-sym')); return; }
         if (act === 'sym-text') { this.toggleSymText(el.getAttribute('data-key')); return; }
         if (act === 'sym-all') { this.switchTab('coach'); return; }
@@ -4705,6 +5443,10 @@ const PaperModule = {
         }
         if (act === 'plan-scn-del') { this.deleteScenario(el.getAttribute('data-tree')); return; }
         if (act === 'plan-arch') { this._planArchOpen = !this._planArchOpen; this._renderBody(); return; }
+        if (act === 'graph-all') { this.focusGraph(null); return; }
+        if (act === 'graph-focus') { this.focusGraph(el.getAttribute('data-sym')); return; }
+        if (act === 'graph-reload') { this.loadGraph(this._graphSymbol); return; }
+        if (act === 'graph-open') { this.openGraph(el.getAttribute('data-sym')); return; }
         if (act === 'chart-range') {
             this.setChartRange(el.getAttribute('data-ctx'), el.getAttribute('data-range'));
             return;
@@ -4717,8 +5459,8 @@ const PaperModule = {
             // Deplier le graphique d'une position, c'est se demander « qu'est-ce
             // que le coach avait dit de ce titre ? » : on va lire sa MEMOIRE
             // (aucun appel LLM, aucune depense) et on n'affiche rien s'il n'a
-            // jamais rien dit.
-            if (opening) this._loadSymIdeas(sy);
+            // jamais rien dit. Meme geste pour la toile : un compteur, muet a 0.
+            if (opening) { this._loadSymIdeas(sy); this._loadGraphCount(sy); }
         }
     },
 
@@ -4732,11 +5474,10 @@ const PaperModule = {
             this._searchTimer = setTimeout(() => { this._searchTimer = null; this.search(v); }, 400);
             return;
         }
-        // Ces deux champs vivent HORS du corps re-rendu : leur valeur est
-        // recopiée dans l'état du module à la frappe, sinon un re-rendu du
-        // corps (poll de 60 s) la laisserait derrière.
+        // Ce champ vit HORS du corps re-rendu : sa valeur est recopiée dans
+        // l'état du module à la frappe, sinon un re-rendu du corps (poll de
+        // 60 s) la laisserait derrière.
         if (el.id === 'paper-fab-q') { this._fabQ = el.value; return; }
-        if (el.id === 'paper-x-input') { this._xInput = el.value; return; }
         // Brouillon de l'ordre : tout ce qui est tapé part sur le disque, par
         // titre, à l'anti-rebond. C'est ce qui rend un rechargement inoffensif.
         if (Object.prototype.hasOwnProperty.call(this._FORM_IDS, String(el.id || ''))) {
