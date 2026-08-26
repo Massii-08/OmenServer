@@ -2964,6 +2964,30 @@ def test_graph_count_without_a_symbol_is_a_400(tmp_path, monkeypatch):
     assert c.get("/api/paper/graph/count").status_code == 400
 
 
+def test_graph_count_ignores_the_theme_nodes(tmp_path, monkeypatch):
+    """Un thème est un intercalaire de mise en forme, pas une connexion : le
+    compter ferait grimper « N connexions en mémoire » sans qu'une seule
+    information de plus soit arrivée."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    titles = ["Nestle cuts its dairy outlook after weak sales",
+              "Nestle dairy sales weigh on the outlook",
+              "Nestle confirms weak dairy sales in Europe",
+              "Nestle dairy division cuts jobs",
+              "Analysts trim Nestle dairy forecasts",
+              "Nestle dairy margins under pressure",
+              "Nestle dairy recall widens in Germany",
+              "Nestle reshuffles its dairy leadership"]
+    graph_stubs(monkeypatch, events=[
+        {"ts": FIXED_NOW, "symbol": "NESN.SW", "title": title,
+         "link": "http://n/%d" % i, "sentiment": "pos"}
+        for i, title in enumerate(titles)])
+    buy(c)
+
+    branch = graph_of(c, "NESN.SW")
+    assert [n for n in branch["nodes"] if n["type"] == "theme"]
+    assert c.get("/api/paper/graph/count?symbol=NESN.SW").json() == {"count": 8}
+
+
 def test_graph_survives_every_source_being_down(tmp_path, monkeypatch):
     """Une source en panne est ABSENTE du graphe, jamais un 500 : un graphe
     partiel se lit, une erreur non."""

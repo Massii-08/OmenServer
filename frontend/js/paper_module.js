@@ -226,6 +226,13 @@ const PaperModule = {
         // légende. Sa couleur d'affichage est celle de son bosquet, estompée ;
         // ce token n'est que le repli quand le bosquet n'a pas de famille.
         aggregate:    ['paper.gnode_aggregate',  '--text-muted',  ''],
+        // Le THÈME n'est pas une information non plus : c'est un SUJET, un
+        // intercalaire que le serveur pose quand une famille déborde (huit
+        // dépêches Trump/Canada sous le même rameau — capture du 26/08).
+        // Famille vide À DESSEIN, comme l'agrégat : il ne vient d'aucune
+        // source, il prend celle de ses feuilles (qui n'en ont qu'une, le
+        // serveur ne groupe que DANS une famille).
+        theme:        ['paper.gnode_theme',      '--text-muted',  ''],
     },
 
     // Les trois types qui portent un titre : ce sont EUX les ancres de la
@@ -274,7 +281,12 @@ const PaperModule = {
     // Longueur d'étiquette PAR TYPE de nœud (voir _gLabelMax). Une thèse du
     // radar a droit à plus de place — c'est une phrase, et son bosquet en tient
     // douze au plus. Tout ce qui n'est pas listé tient en trente signes.
-    _GLABEL_MAX: { hypothesis: 40, aggregate: 30 },
+    _GLABEL_MAX: { hypothesis: 40, aggregate: 30, theme: 26 },
+
+    // Le fourre-tout d'un regroupement thématique. Le serveur l'envoie nommé en
+    // français (« Divers ») comme les pivots et l'agrégat : on le RECONNAÎT par
+    // sa clé — whitelist FERMÉE — et on rend le nom de la langue de l'écran.
+    _GTHEME_MISC: 'divers',
 
     // Mécanisme du rapprochement qui se dessine en POINTILLÉS. « issuer » = on
     // a rapproché un nom d'émetteur d'un ticker : c'est le lien le plus
@@ -3950,14 +3962,16 @@ const PaperModule = {
             return ka < kb ? -1 : (ka > kb ? 1 : 0);
         });
 
-        const isAnchor = {}, isPivot = {};
+        const isAnchor = {}, isPivot = {}, isTheme = {};
         const anchors = [], infos = [], trends = [], pivots = [], aggs = [];
+        const themeNodes = [];
         const typeOf = {};
         nodes.forEach((n) => {
             const id = String(n.id), t = this._gtype(n.type);
             typeOf[id] = t;
             if (this._isAnchorType(t)) { isAnchor[id] = 1; anchors.push(n); return; }
             if (t === 'context') { isPivot[id] = 1; pivots.push(n); return; }
+            if (t === 'theme') { isTheme[id] = 1; themeNodes.push(n); return; }
             if (t === 'aggregate') { aggs.push(n); return; }
             if (t === 'reddit_trend') { trends.push(n); return; }
             infos.push(n);
@@ -3980,13 +3994,41 @@ const PaperModule = {
         // Pour chaque info : les ancres qu'elle touche, et le pivot dont elle
         // est le satellite. On lit l'arete dans les DEUX sens plutot que de
         // parier sur la convention du backend (source = info, cible = ancre).
+        // Le niveau des THEMES s'y glisse SANS rien changer aux deux regles
+        // ci-dessus : un theme est le satellite de son hote (pivot ou ancre) et
+        // se lit donc par les memes lignes ; ses feuilles, elles, ne parlent
+        // plus qu'a lui — c'est la branche ajoutee en tete de la boucle.
         const hosts = {}, linkOf = {}, pivotOf = {}, pivotLink = {};
+        const themeOf = {}, themeKids = {}, themeLink = {}, themesOf = {};
         edges.forEach((e) => {
             const s = String(e.source), t = String(e.target);
+            // Feuille <-> theme : la feuille pend au theme, et l'arete GARDE ce
+            // qu'elle disait (mecanisme + tonalite) — c'est elle qui colore le
+            // lien, le backend l'a re-routee sans la vider.
+            //
+            // ⚠️ Un theme a DEUX sortes d'aretes : celles de ses feuilles, et
+            // celle qui le rattache a son HOTE. Comme on lit les aretes dans les
+            // deux sens (on ne parie pas sur la convention du backend), il faut
+            // dire ce qu'une feuille n'est PAS : ni pivot, ni ancre. Sans cette
+            // garde, l'arete « theme -> pivot » faisait du PIVOT une feuille de
+            // son propre theme — vu a l'ecran : « Contexte mondial » dessine en
+            // feuille au milieu des depeches, et une ligne de trop dans la bande.
+            let kid = null;
+            if (isTheme[t] && !isTheme[s] && !isPivot[s] && !isAnchor[s]) kid = [s, t];
+            else if (isTheme[s] && !isTheme[t] && !isPivot[t] && !isAnchor[t]) kid = [t, s];
+            if (kid && themeOf[kid[0]] === undefined) {
+                themeOf[kid[0]] = kid[1]; themeLink[kid[0]] = e;
+            }
             let side = null, anc = null;
             if (isAnchor[t] && !isAnchor[s]) { side = s; anc = t; }
             else if (isAnchor[s] && !isAnchor[t]) { side = t; anc = s; }
             if (side !== null) {
+                if (isTheme[side]) {
+                    // Un theme n'est pas une info : il ne compte pas dans les
+                    // pastilles du tronc, il RANGE ce qui compte.
+                    (themesOf[anc] = themesOf[anc] || []).push(byId[side]);
+                    return;
+                }
                 const list = (hosts[side] = hosts[side] || []);
                 if (list.indexOf(anc) < 0) list.push(anc);
                 linkOf[side + '\u0000' + anc] = e;
@@ -4000,6 +4042,43 @@ const PaperModule = {
         });
         Object.keys(hosts).forEach((k) => { hosts[k].sort(); });
 
+        // Les feuilles d'un theme sortent des listes A PLAT : elles ne sont plus
+        // atteintes par leur hote mais PAR LUI. Sans ce retrait elles seraient
+        // dessinees deux fois — une fois sous le rameau, une fois sous le theme.
+        themeNodes.forEach((n) => { themeKids[String(n.id)] = []; });
+        nodes.forEach((n) => {
+            const th = themeOf[String(n.id)];
+            if (th !== undefined && themeKids[th]) themeKids[th].push(n);
+        });
+        Object.keys(themeKids).forEach((k) => {
+            themeKids[k].sort((a, b) => this._gCmpRecent(a, b));
+        });
+        // Les sujets d'un hote : les gros paquets EN TETE (c'est ce qu'on vient
+        // chercher), l'identifiant tranchant les ex aequo. Un theme n'a pas de
+        // date : le trier par fraicheur le renverrait toujours en queue de
+        // bande, derriere les feuilles restees a plat.
+        const themeSort = (a, b) => {
+            const ka = (themeKids[String(a.id)] || []).length;
+            const kb = (themeKids[String(b.id)] || []).length;
+            if (ka !== kb) return kb - ka;
+            return String(a.id) < String(b.id) ? -1 : 1;
+        };
+        Object.keys(themesOf).forEach((k) => { themesOf[k].sort(themeSort); });
+        // …et une feuille rangee sous un sujet n'est plus une feuille A PLAT.
+        [infos, trends].forEach((list) => {
+            for (let i = list.length - 1; i >= 0; i--) {
+                if (themeOf[String(list[i].id)] !== undefined) list.splice(i, 1);
+            }
+        });
+        // Le type EFFECTIF d'un theme est celui de ses feuilles (le serveur ne
+        // groupe que DANS une famille) : sans ca, un bosquet radar dont les
+        // hypotheses sont rangees en sujets se lirait « Contexte mondial ».
+        const effType = (id) => {
+            if (typeOf[id] !== 'theme') return typeOf[id];
+            const kids = themeKids[id] || [];
+            return kids.length ? this._gtype(kids[0].type) : 'other';
+        };
+
         // --- la FORME de chaque pivot ---------------------------------------
         //
         // On compte les satellites d'un pivot par sorte. Un pivot dont tous les
@@ -4012,7 +4091,7 @@ const PaperModule = {
         Object.keys(pivotOf).forEach((id) => {
             const pv = pivotOf[id];
             const b = (bag[pv] = bag[pv] || { trend: 0, hyp: 0, agg: 0, other: 0 });
-            const t = typeOf[id];
+            const t = effType(id);
             if (t === 'reddit_trend') b.trend += 1;
             else if (t === 'hypothesis') b.hyp += 1;
             else if (t === 'aggregate') b.agg += 1;
@@ -4050,6 +4129,10 @@ const PaperModule = {
         });
         const radarItems = infos.filter((n) => inRadar[String(n.id)]);
         const rest = infos.filter((n) => !inRadar[String(n.id)]);
+        // …et les hypotheses RANGEES EN SUJETS dans ce meme bosquet : elles
+        // n'ont plus de pivot direct, c'est leur theme qui l'a.
+        const themedRadar = themeNodes.filter((n) =>
+            roleOf[pivotOf[String(n.id)]] === 'radar');
 
         // Satellites d'un pivot, DEJA tries : on les prend dans les listes deja
         // ordonnees (tendances par nombre de mentions, le reste par fraicheur)
@@ -4062,20 +4145,26 @@ const PaperModule = {
             if (pv === undefined) return;
             (satOf[pv] = satOf[pv] || []).push(n);
         };
+        // Les SUJETS ouvrent la bande : un theme est un satellite du pivot
+        // comme les autres, mais il en range plusieurs — le mettre en tete,
+        // c'est mettre le gros paquet la ou l'oeil arrive.
+        themeNodes.slice().sort(themeSort).forEach(bucket);
         trends.forEach(bucket);
         radarItems.forEach(bucket);
         rest.forEach(bucket);
 
         // « loose » = ce qui ne pend a aucun tronc mais doit quand meme exister
         // en vue rapprochee, ou il n'y a plus de coin ou aller.
-        const loose = radarItems.concat(aggs.filter((n) =>
+        const loose = radarItems.concat(themedRadar, aggs.filter((n) =>
             pivotOf[String(n.id)] !== undefined));
 
         return { anchors: anchors, infos: rest, trends: trends,
             pivots: pivots.filter((n) => roleOf[String(n.id)] === 'world'),
             allPivots: pivots, roleOf: roleOf, satOf: satOf,
             hosts: hosts, linkOf: linkOf, pivotOf: pivotOf, pivotLink: pivotLink,
-            aggOf: aggOf, loose: loose, radarItems: radarItems };
+            aggOf: aggOf, loose: loose, radarItems: radarItems,
+            themes: themeNodes, themeOf: themeOf, themeKids: themeKids,
+            themeLink: themeLink, themesOf: themesOf };
     },
 
     _gCmpLabel(a, b) {
@@ -4107,6 +4196,14 @@ const PaperModule = {
             const k = this._n(n.meta && n.meta.count);
             return (k === null || k < 0) ? base
                 : ('+' + this._num(k, 0) + ' ' + Lang.t('paper.graph_agg_more'));
+        }
+        // Le fourre-tout d'un regroupement arrive lui aussi nomme en francais
+        // (« Divers ») : on le RECONNAIT par sa cle — whitelist fermee — et on
+        // rend le nom de la langue de l'ecran. Un sujet nomme, lui, est fait
+        // des mots du titre : il n'a pas de traduction, et n'en veut pas.
+        if (t === 'theme') {
+            const k = String((n.meta && n.meta.key) == null ? '' : n.meta.key);
+            return (k === this._GTHEME_MISC) ? Lang.t('paper.theme_misc') : base;
         }
         if (t !== 'reddit_trend') return base;
         const c = this._n(n.meta && n.meta.count), p = this._n(n.meta && n.meta.prev);
@@ -4156,10 +4253,19 @@ const PaperModule = {
         return Object.prototype.hasOwnProperty.call(this._GHYP_OUT, c) ? c : '';
     },
 
+    // « 8 elements sous ce sujet ». Le compteur du serveur, en toutes lettres :
+    // la pastille dit de QUOI on parle, l'infobulle dit COMBIEN.
+    _gThemeLines(n) {
+        const c = this._n(n && n.meta && n.meta.count);
+        if (c === null || c < 0) return [];
+        return [this._num(c, 0) + ' ' + Lang.t('paper.theme_count')];
+    },
+
     _gLines(n, t) {
         if (t === 'reddit_trend') return this._gTrendLines(n);
         if (t === 'aggregate') return this._gAggLines(n);
         if (t === 'hypothesis') return this._gHypLines(n);
+        if (t === 'theme') return this._gThemeLines(n);
         return [];
     },
 
@@ -4392,12 +4498,34 @@ const PaperModule = {
             // Tendances, pivots et bosquets compris : en vue rapprochee, TOUT
             // ce que la memoire rattache a ce titre devient une feuille — il
             // n'y a plus de coin oppose ou aller, et rien ne doit disparaitre.
-            items = P.infos.concat(P.trends, P.pivots, P.loose);
+            // Les SUJETS de ce titre ouvrent la liste : ce sont eux qui portent
+            // les feuilles que le serveur a rangees.
+            items = (P.themesOf[want] || []).concat(P.infos, P.trends, P.pivots,
+                P.loose);
         }
 
         const out = [], edges = [], titles = [];
         const push = (rec) => { out.push(rec); return out.length - 1; };
         const X_BR = 200, X_LEAF = 230, GAP_LEAF = 30, GAP_FAM = 36;
+        // Un cran de plus quand un SUJET s'intercale : le sujet prend la place
+        // de la feuille (X_LEAF), ses feuilles reculent d'autant.
+        const X_KID = 250;
+        const isTheme = (n) => this._gtype(n.type) === 'theme';
+        // La famille d'un sujet est celle de ses feuilles — le serveur ne
+        // groupe que DANS une famille, elles n'en ont donc qu'une.
+        const famOf = (n) => {
+            if (!isTheme(n)) return this._gfam(n.type) || 'other';
+            const kids = P.themeKids[String(n.id)] || [];
+            return kids.length ? (this._gfam(kids[0].type) || 'other') : 'other';
+        };
+        // Combien de LIGNES un item occupe dans sa bande : une feuille en prend
+        // une, un sujet en prend autant que de feuilles — sinon deux sujets
+        // voisins se marcheraient dessus.
+        const rowsOf = (n) => (isTheme(n)
+            ? Math.max(1, (P.themeKids[String(n.id)] || []).length) : 1);
+        // L'arete de DONNEE entre une feuille restee a plat et le sujet
+        // deplie (cle composee jointe par un OCTET NUL, comme partout ici).
+        const hostLink = (n) => P.linkOf[String(n.id) + '\u0000' + String(root.id)];
 
         const rootRec = this._gRec(root, {
             kind: role ? 'card' : 'anchor', x: 0, y: 0, r: 10,
@@ -4408,49 +4536,93 @@ const PaperModule = {
 
         const groups = {};
         items.forEach((n) => {
-            const f = this._gfam(n.type) || 'other';
+            const f = famOf(n);
             (groups[f] = groups[f] || []).push(n);
         });
         const fams = this._GFAM_ORDER.filter((f) => groups[f] && groups[f].length);
 
-        // Bandes verticales : la hauteur d'une famille suit son nombre d'items,
-        // donc deux feuilles ne peuvent pas se marcher dessus.
+        // Bandes verticales : la hauteur d'une famille suit son nombre de
+        // LIGNES (feuilles rangees en sujets comprises), donc deux feuilles ne
+        // peuvent pas se marcher dessus.
         let cursor = 0;
         const bands = fams.map((f) => {
-            const h = Math.max(1, groups[f].length) * GAP_LEAF;
+            let lines = 0;
+            groups[f].forEach((n) => { lines += rowsOf(n); });
+            const h = Math.max(1, lines) * GAP_LEAF;
             const band = { fam: f, top: cursor, h: h };
             cursor += h + GAP_FAM;
             return band;
         });
         const y0 = -Math.max(1, cursor - GAP_FAM) / 2;
 
+        // Une feuille : la SORTE suit le TYPE, jamais le chemin par lequel le
+        // noeud est arrive — un agregat garde son anneau meme quand il tombe
+        // dans une bande de famille (vue rapprochee d'un titre).
+        const leafRec = (n, x, y) => {
+            const t = this._gtype(n.type);
+            const li = push(this._gRec(n, {
+                kind: (t === 'reddit_trend') ? 'trend'
+                    : ((t === 'aggregate') ? 'agg' : 'leaf'),
+                x: x, y: y,
+                r: (t === 'reddit_trend') ? this._gTrendR(n)
+                    : ((t === 'aggregate') ? 6.5 : 4.5),
+                gx: 1, gy: 0, labelPos: 'right',
+            }));
+            // Un agregat tombe dans une bande de famille reste un COMPTEUR : il
+            // doit savoir DE QUEL bosquet il compte le reste, sinon le clic
+            // « tout voir » n'aurait rien a demander.
+            if (t === 'aggregate') {
+                out[li].grove = this._groveKindOf(P.pivotOf[String(n.id)]);
+            }
+            return li;
+        };
+
         bands.forEach((band) => {
-            const list = groups[band.fam].slice().sort((a, b) => this._gCmpRecent(a, b));
-            const bi = push(this._gBranchRec(String(root.id), band.fam, list.length,
+            // Les SUJETS sont deja ranges (les gros paquets en tete, cf.
+            // _graphParts) ; les feuilles restees a plat suivent, de la plus
+            // fraiche a la plus vieille. On ne retrie donc QUE ces dernieres.
+            const themesHere = groups[band.fam].filter(isTheme);
+            const flat = groups[band.fam].filter((n) => !isTheme(n))
+                .sort((a, b) => this._gCmpRecent(a, b));
+            let lines = 0;
+            groups[band.fam].forEach((n) => { lines += rowsOf(n); });
+            const bi = push(this._gBranchRec(String(root.id), band.fam, lines,
                 X_BR, y0 + band.top + band.h / 2, 1, 0, 'above'));
             edges.push({ a: ri, b: bi, sentiment: '', type: '', struct: true, cross: false });
-            list.forEach((n, j) => {
-                const t = this._gtype(n.type);
-                // La SORTE suit le TYPE, jamais le chemin par lequel le noeud
-                // est arrive : un agregat garde son anneau meme quand il tombe
-                // dans une bande de famille (vue rapprochee d'un titre).
-                const li = push(this._gRec(n, {
-                    kind: (t === 'reddit_trend') ? 'trend'
-                        : ((t === 'aggregate') ? 'agg' : 'leaf'),
-                    x: X_BR + X_LEAF + ((j % 2) ? 26 : 0),
-                    y: y0 + band.top + GAP_LEAF * (j + 0.5),
-                    r: (t === 'reddit_trend') ? this._gTrendR(n)
-                        : ((t === 'aggregate') ? 6.5 : 4.5),
-                    gx: 1, gy: 0, labelPos: 'right',
-                }));
-                // Un agregat tombe dans une bande de famille reste un COMPTEUR :
-                // il doit savoir DE QUEL bosquet il compte le reste, sinon le
-                // clic « tout voir » n'aurait rien a demander.
-                if (t === 'aggregate') {
-                    out[li].grove = this._groveKindOf(P.pivotOf[String(n.id)]);
+
+            let row = 0;
+            themesHere.concat(flat).forEach((n) => {
+                if (!isTheme(n)) {
+                    const li = leafRec(n, X_BR + X_LEAF + ((row % 2) ? 26 : 0),
+                        y0 + band.top + GAP_LEAF * (row + 0.5));
+                    edges.push(this._gDataEdge(bi, li, hostLink(n)));
+                    row += 1;
+                    return;
                 }
-                edges.push(this._gDataEdge(bi, li,
-                    P.linkOf[String(n.id) + '\u0000' + String(root.id)]));
+                // Le SUJET : une etiquette a la place d'une feuille, et ses
+                // feuilles en eventail derriere lui. Son rayon est la DEMI-
+                // HAUTEUR de sa pastille ; sa largeur se mesure au trace, ou le
+                // texte affiche est connu (cf. _paintGraph).
+                const kids = P.themeKids[String(n.id)] || [];
+                const span = rowsOf(n);
+                const ti = push(this._gRec(n, {
+                    kind: 'theme', x: X_BR + X_LEAF,
+                    y: y0 + band.top + GAP_LEAF * (row + span / 2),
+                    r: 9, gx: 1, gy: 0, labelPos: 'center',
+                }));
+                // La couleur d'un sujet est celle de sa bande : il ne vient
+                // d'aucune source, il range celles de ses feuilles.
+                out[ti].fam = band.fam;
+                // Un sujet de BOSQUET sait lequel : son clic ouvre la liste
+                // complete, ou les memes sujets font les intertitres.
+                out[ti].grove = this._groveKindOf(P.pivotOf[String(n.id)]);
+                edges.push({ a: bi, b: ti, sentiment: '', type: '', struct: true, cross: false });
+                kids.forEach((k, j) => {
+                    const ki = leafRec(k, X_BR + X_LEAF + X_KID + ((j % 2) ? 26 : 0),
+                        y0 + band.top + GAP_LEAF * (row + j + 0.5));
+                    edges.push(this._gDataEdge(ti, ki, P.themeLink[String(k.id)]));
+                });
+                row += span;
             });
         });
 
@@ -4651,6 +4823,14 @@ const PaperModule = {
             const on = lit(i);
             const col = this._gNodeColor(n);
             ctx.globalAlpha = on ? 1 : 0.2;
+            // Le SUJET n'est pas un point : c'est une PASTILLE rectangulaire
+            // qui porte son nom DEDANS. Un disque de plus se lirait comme une
+            // information de plus, alors qu'il n'en est pas une — il en range.
+            if (n.kind === 'theme') {
+                this._paintTheme(ctx, n, col, mono, on, i === hi);
+                if (n.label) labels.push({ n: n, i: i, on: on, strong: false, theme: true });
+                return;
+            }
             // Halo du noeud vise : il se voit sans changer sa taille (donc sans
             // deplacer la cible sous le curseur).
             if (i === hi) {
@@ -4739,9 +4919,12 @@ const PaperModule = {
             const n = it.n;
             const hovered = (it.i === hi);
             const alpha = (hi >= 0 && !it.on) ? 0.16 : 1;
-            ctx.font = (it.strong ? '600 12px ' : '11px ') + mono;
+            // Un SUJET s'ecrit DANS sa pastille : meme fonte qu'a la mesure
+            // (_paintTheme), sinon le texte deborderait du cadre trace.
+            ctx.font = it.theme ? ('600 11px ' + mono)
+                : ((it.strong ? '600 12px ' : '11px ') + mono);
             ctx.globalAlpha = alpha;
-            ctx.fillStyle = (it.strong || hovered) ? fg
+            ctx.fillStyle = (it.strong || hovered || it.theme) ? fg
                 : ((n.kind === 'branch' || n.kind === 'agg') ? muted : dim);
             const text = (it.strong || n.kind === 'branch')
                 ? n.label : this._gtrim(n.label, this._gLabelMax(n));
@@ -4754,7 +4937,12 @@ const PaperModule = {
             // — rendre chaque etiquette cliquable ouvrirait des liens au moindre
             // frolement de texte.
             if (n.kind === 'agg') n.hitBox = this._gLabelBox(ctx, n, text, pos);
-            if (pos === 'below') {
+            if (pos === 'center') {
+                // Le nom d'un sujet, au milieu de sa pastille.
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(text, n.x, n.y);
+            } else if (pos === 'below') {
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'top';
                 ctx.fillText(text, n.x, n.y + n.r + 6);
@@ -4779,6 +4967,57 @@ const PaperModule = {
         ctx.globalAlpha = 1;
     },
 
+    // La pastille d'un SUJET : un rectangle arrondi, teinte de la couleur de sa
+    // famille, avec son nom dedans (ecrit au passage des etiquettes, qui vient
+    // apres — sinon une pastille voisine passerait par-dessus le texte).
+    //
+    // Rectangle et non disque A DESSEIN : le sujet n'est pas une information de
+    // plus, c'est le CASIER qui range celles d'en dessous. La forme le dit sans
+    // qu'on ait a l'ecrire.
+    _paintTheme(ctx, n, col, mono, on, hovered) {
+        ctx.font = '600 11px ' + mono;
+        const text = this._gtrim(n.label, this._gLabelMax(n));
+        const w = ctx.measureText(text).width + 20;
+        const h = n.r * 2;
+        const x0 = n.x - w / 2, y0 = n.y - h / 2;
+        // La boite de visee EST la pastille : le sujet se clique sur tout son
+        // rectangle, pas sur les neuf pixels de son centre.
+        n.hitBox = { x0: x0, x1: x0 + w, y0: y0, y1: y0 + h };
+        if (hovered) {
+            ctx.globalAlpha = 0.2;
+            ctx.fillStyle = col;
+            this._roundRect(ctx, x0 - 5, y0 - 5, w + 10, h + 10, n.r + 4);
+            ctx.fill();
+        }
+        ctx.globalAlpha = on ? 0.18 : 0.07;
+        ctx.fillStyle = col;
+        this._roundRect(ctx, x0, y0, w, h, n.r);
+        ctx.fill();
+        ctx.globalAlpha = on ? 0.95 : 0.2;
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1.5;
+        this._roundRect(ctx, x0, y0, w, h, n.r);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+    },
+
+    // Rectangle arrondi trace a la main : ctx.roundRect n'existe pas partout,
+    // et une librairie pour quatre arcs serait une dependance de trop.
+    _roundRect(ctx, x, y, w, h, r) {
+        const rad = Math.max(0, Math.min(r, w / 2, h / 2));
+        ctx.beginPath();
+        ctx.moveTo(x + rad, y);
+        ctx.lineTo(x + w - rad, y);
+        ctx.quadraticCurveTo(x + w, y, x + w, y + rad);
+        ctx.lineTo(x + w, y + h - rad);
+        ctx.quadraticCurveTo(x + w, y + h, x + w - rad, y + h);
+        ctx.lineTo(x + rad, y + h);
+        ctx.quadraticCurveTo(x, y + h, x, y + h - rad);
+        ctx.lineTo(x, y + rad);
+        ctx.quadraticCurveTo(x, y, x + rad, y);
+        ctx.closePath();
+    },
+
     // Couleur d'une pastille. Un rameau porte celle de sa famille ; l'agregat
     // celle du bosquet qu'il resume (et le gris neutre quand ce bosquet n'a pas
     // de famille) ; une carte celle de son bosquet ; tout le reste celle de son
@@ -4786,6 +5025,8 @@ const PaperModule = {
     _gNodeColor(n) {
         if (n.kind === 'branch') return this._gfamColor(n.fam);
         if (n.kind === 'card') return this._gPivotColor(n.role);
+        // Un sujet porte la couleur de sa bande — celle de ses feuilles.
+        if (n.kind === 'theme') return this._gfamColor(n.fam);
         if (n.kind === 'agg') {
             return n.fam ? this._gfamColor(n.fam) : this._gcolor(n.type);
         }
@@ -5007,6 +5248,11 @@ const PaperModule = {
         // « +71 autres » etait un cul-de-sac : il annoncait une masse et la
         // cachait. Il OUVRE desormais cette masse, en liste, sous la toile.
         if (n.kind === 'agg') { this.openGrove(n.grove); return; }
+        // Un SUJET de bosquet ouvre la meme liste : elle est rangee par ces
+        // memes sujets, donc on y retrouve le sien en tete de section. Un sujet
+        // de TITRE (qui n'a pas de bosquet) ne fait rien — il a deja tout dit
+        // dans son infobulle.
+        if (n.kind === 'theme') { if (n.grove) this.openGrove(n.grove); return; }
         if (n.anchor) {
             if (this._graphSymbol === n.id) return;   // deja rapproche sur lui
             this.loadGraph(n.id);
@@ -5030,7 +5276,10 @@ const PaperModule = {
         // La carte d'un bosquet ne repete pas son type : les trois sont des
         // pivots « contexte » cote serveur, et l'ecrire sous « Radar » dirait
         // « Contexte mondial » — un contresens.
-        const type = (n.kind === 'card') ? '' : this._gtypeLabel(n.type);
+        // Un SUJET ne repete pas son type non plus : son nom EST son sujet, et
+        // « Sujet » ecrit sous « Canada · Tariffs » n'apprend rien.
+        const type = (n.kind === 'card' || n.kind === 'theme')
+            ? '' : this._gtypeLabel(n.type);
         const when = (n.ts === undefined || n.ts === null || n.ts === '')
             ? '' : this._dateShort(n.ts);
         const bits = [];
@@ -5080,7 +5329,7 @@ const PaperModule = {
               // anneau qui compte 71 elements se lit comme un cul-de-sac, et
               // personne n'essaie de cliquer dessus. Il ne la porte que s'il
               // sait DE QUEL bosquet il compte le reste.
-              : ((n.kind === 'agg' && n.grove)
+              : (((n.kind === 'agg' || n.kind === 'theme') && n.grove)
                 ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_agg_open')) + '</div>'
                 : (n.anchor
                   ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_focus')) + '</div>'
@@ -5343,7 +5592,10 @@ const PaperModule = {
             body = this._muted(Lang.t('paper.grove_empty'));
         } else {
             body = '<div class="row-list" style="max-height:380px;overflow-y:auto;">' +
-                items.map((n) => this._groveRow(n, kind)).join('') + '</div>' +
+                this._groveSections(items).map((sec) =>
+                    this._groveHead(sec) +
+                    sec.rows.map((n) => this._groveRow(n, kind)).join('')).join('') +
+                '</div>' +
                 // Le plafond de liste DIT ce qu'il laisse dehors, comme
                 // l'agrégat de la toile : une liste qui s'arrête en silence
                 // ment par omission.
@@ -5362,6 +5614,51 @@ const PaperModule = {
               '<button class="btn btn-ghost btn-sm" data-paper-act="grove-close" ' +
                   'style="margin-left:auto;">' + esc(Lang.t('paper.close')) + '</button>' +
             '</div>' + body +
+        '</div>';
+    },
+
+    // La liste, coupée en SUJETS. Le serveur envoie chaque item avec son thème
+    // et les a DÉJÀ rangés ; on ne fait que découper les tranches CONSÉCUTIVES,
+    // sans jamais re-trier — deux lectures de la même liste donnent la même
+    // page, et l'ordre reste celui de la toile.
+    //
+    // Aucun champ de thème (bosquet où rien ne se groupe) : une seule tranche
+    // sans intertitre, donc la liste à plat d'avant, à l'octet près.
+    _groveSections(items) {
+        const out = [];
+        let cur = null;
+        items.forEach((n) => {
+            const key = (typeof n.theme_key === 'string') ? n.theme_key : '';
+            if (cur === null || cur.key !== key) {
+                cur = { key: key, label: this._groveThemeLabel(n), rows: [] };
+                out.push(cur);
+            }
+            cur.rows.push(n);
+        });
+        return out;
+    },
+
+    // Le nom d'un sujet dans la liste. Le fourre-tout arrive nommé en français
+    // par le serveur : on le RECONNAÎT par sa clé (whitelist FERMÉE) et on rend
+    // le nom de la langue de l'écran — jamais le mot du serveur.
+    _groveThemeLabel(n) {
+        const key = (typeof n.theme_key === 'string') ? n.theme_key : '';
+        if (!key) return '';
+        if (key === this._GTHEME_MISC) return Lang.t('paper.theme_misc');
+        return String(n.theme_label === undefined || n.theme_label === null
+            ? '' : n.theme_label);
+    },
+
+    // L'intertitre : le sujet, et le nombre de lignes qu'il porte. Muted et
+    // mono — il structure la lecture, il ne se dispute pas la place avec les
+    // titres.
+    _groveHead(sec) {
+        if (!sec.label) return '';
+        return '<div style="display:flex;gap:8px;align-items:baseline;' +
+               'padding:12px 12px 4px;font-size:12px;color:var(--text-dim);' +
+               this._mono + 'text-transform:uppercase;letter-spacing:.06em;">' +
+            '<span>' + esc(this._gtrim(sec.label, 42)) + '</span>' +
+            '<span style="opacity:.7;">' + esc(this._num(sec.rows.length, 0)) + '</span>' +
         '</div>';
     },
 

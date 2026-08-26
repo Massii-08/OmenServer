@@ -441,6 +441,50 @@ def test_story_key_empty_title_returns_empty_string():
     assert newswatch.story_key("") == ""
 
 
+# --- l'étage COMMUN, emprunté par graph.theme_clusters ---------------------- #
+#
+# ``story_tokens``/``story_stem`` ont été SORTIS de ``story_key`` le 26/08 pour
+# que le regroupement thématique du graphe reparte du même découpage. Ces tests
+# pinnent le contrat de l'étage extrait ; les six ci-dessus, inchangés, prouvent
+# que l'extraction n'a pas bougé ``story_key`` d'un pouce.
+
+def test_story_tokens_keeps_the_surface_form_in_reading_order():
+    """Formes de SURFACE, non tronquées, dans l'ordre du titre : c'est le seul
+    étage qui sait encore que le titre dit « tariffs » et pas « tariff »."""
+    assert newswatch.story_tokens(
+        "White House confirms Canada tariff exemption for autos - Bloomberg") == \
+        ["white", "house", "confirms", "canada", "tariff", "exemption", "autos"]
+
+
+def test_story_tokens_drops_stopwords_reporting_verbs_and_short_noise():
+    """« new »/« on » (stopwords), « announces » (verbe de dépêche) et
+    « trump » (omniprésent dans CE flux) ne disent rien d'une histoire ; « US »,
+    lui, est un code entité — il reste malgré ses deux lettres."""
+    assert newswatch.story_tokens("Trump announces new US tariffs on steel") == \
+        ["us", "tariffs", "steel"]
+
+
+def test_story_tokens_empty_title_is_an_empty_list():
+    assert newswatch.story_tokens("") == []
+    assert newswatch.story_tokens(None) == []
+
+
+def test_story_stem_unifies_the_variants_of_a_word():
+    assert newswatch.story_stem("tariffs") == newswatch.story_stem("tariff")
+    assert newswatch.story_stem("threatened") == newswatch.story_stem("threats")
+    assert newswatch.story_stem("") == ""
+
+
+def test_story_key_is_exactly_story_tokens_stemmed_deduped_sorted_and_cut():
+    """La clé n'est plus qu'un ARRANGEMENT de l'étage commun — si les deux
+    divergeaient, un thème serait nommé sur d'autres mots que ceux qui l'ont
+    formé, ce qui se lirait comme un bug de la mémoire."""
+    title = "Trump doubles steel tariffs on Canada and Mexico - Financial Times"
+    stems = [newswatch.story_stem(w) for w in newswatch.story_tokens(title)]
+    expected = "-".join(sorted(dict.fromkeys(stems))[:4])
+    assert newswatch.story_key(title) == expected
+
+
 # =========================================================================== #
 #  I/O -- run_once, volet "par utilisateur"
 # =========================================================================== #

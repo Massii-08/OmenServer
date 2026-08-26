@@ -42,6 +42,14 @@ Trois règles qui tiennent le graphe honnête :
    n'est perdu en silence, l'agrégat dit combien il en reste — et
    ``build_grove`` rend ce reste à qui veut le LIRE (« quand on ouvre, on voit
    tout » : le canvas garde ses douze, la masse passe en liste).
+5. **Une famille qui déborde se coupe en SUJETS.** Au-delà de
+   ``THEME_MIN_LEAVES`` feuilles d'une même famille, un niveau de THÈMES
+   s'intercale entre l'hôte (pivot ou ancre) et ses feuilles. Mesuré le 26/08
+   sur le compte réel : douze feuilles « Politique » dont HUIT sur la même
+   histoire Trump/Canada — douze points identiques à survoler un par un. Le
+   regroupement emprunte ``newswatch.story_key``, le regroupeur DÉJÀ calibré
+   sur ce flux ; il RÉPARTIT sans rien ajouter (les douze dessinés restent
+   douze) et il ne s'invite jamais là où rien ne se groupe.
 
 Module PUR au sens du dépôt : aucune I/O, aucune écriture, aucune horloge
 implicite (``now`` est un paramètre). Le seul import du dehors est PARESSEUX et
@@ -107,6 +115,57 @@ MAX_GROVE = 12
 AGGREGATE_TYPE = "aggregate"
 _AGGREGATE_PREFIX = "agg:"
 
+# --- Les THÈMES : une branche qui déborde se coupe en sous-sujets ----------- #
+#
+# Mesuré le 26/08 (capture utilisateur) : douze feuilles « Politique » sous un
+# même rameau, dont HUIT sur la même histoire Trump/Canada. Le lecteur voyait
+# douze points identiques et devait les survoler un par un. « Pourquoi pas une
+# branche que pour ça, ça se répartit mieux. »
+#
+# Le regroupeur existe DÉJÀ dans la maison : ``newswatch.story_key``, calibré
+# sur ce flux précis (stopwords, verbes de dépêche, « trump » neutralisé). On
+# l'emprunte — on ne le réécrit pas.
+THEME_TYPE = "theme"
+_THEME_PREFIX = "th:"
+
+# Au-delà de six feuilles dans une même famille, le sous-niveau vaut la peine.
+# À six ou moins, l'ajouter ne fait qu'allonger le chemin de l'œil.
+THEME_MIN_LEAVES = 6
+
+# Deux histoires se rejoignent quand elles partagent au moins DEUX tokens
+# significatifs. Un seul token commun ne dit rien (« canada » à lui seul relie
+# une taxe douanière à un match de hockey) ; deux disent un sujet.
+THEME_MERGE_MIN_SHARED = 2
+
+# Un nom de thème tient en deux mots — « Canada · Tariffs ». Trois se lisent
+# comme une phrase tronquée, un seul ne distingue plus rien.
+THEME_LABEL_TOKENS = 2
+
+# Le fourre-tout : les feuilles que rien ne rapproche. Le libellé part en
+# français comme celui des pivots et de l'agrégat ; le frontend le RETRADUIT
+# par la clé (whitelist fermée), il n'affiche jamais le mot du serveur.
+MISC_THEME_KEY = "divers"
+MISC_THEME_LABEL = "Divers"
+
+# Codes d'entité qui s'écrivent en capitales dans un nom de thème (« US » et
+# non « Us »). Même liste que le filtre de tokens courts de ``newswatch``.
+_THEME_UPPER = frozenset({"us", "eu", "uk", "un"})
+
+# FAMILLE d'un nœud d'info = ce que le frontend peint sous un même rameau. Le
+# regroupement thématique se fait DANS une famille : un thème doit avoir une
+# couleur, et une seule.
+#
+# ⚠️ MIROIR de ``paper_module._GFAM`` — les deux tables doivent bouger
+# ensemble. Une dérive n'est pas fatale (un thème se retrouverait dans un
+# rameau dont un enfant a une autre couleur), mais elle se verrait.
+_FAMILY_OF = {
+    "news": "press", "catalyst": "press",
+    "gov": "gov", "crypto": "crypto",
+    "x": "social", "reddit": "social", "reddit_trend": "social",
+    "whale_move": "whale", "hypothesis": "radar",
+}
+DEFAULT_FAMILY = "other"
+
 # Les bosquets qu'on sait LISTER, et le plafond de cette liste.
 #
 # Le dessin garde ses douze (au-delà un bosquet ne se lit plus, cf. règle 4),
@@ -145,6 +204,7 @@ EDGE_SYMBOL = "symbol"       # l'info porte le symbole de l'ancre
 EDGE_TICKER = "ticker"       # l'hypothèse liste le ticker de l'ancre
 EDGE_ISSUER = "issuer"       # le nom d'émetteur 13F a été rapproché du ticker
 EDGE_CONTEXT = "context"     # le macro rejoint le pivot « monde »
+EDGE_THEME = "theme"         # le thème rejoint son hôte (pivot ou ancre)
 
 # ``newswatch`` range les annonces politiques GLOBALES sous le pseudo-symbole
 # « GOV ». Ce n'est pas un ticker : le laisser passer accrocherait toute la
@@ -512,6 +572,258 @@ def _whale_symbol(move: Dict[str, Any], names: Dict[str, str],
 
 
 # --------------------------------------------------------------------------- #
+# PUR — les thèmes : découper une famille trop nombreuse en sous-sujets
+# --------------------------------------------------------------------------- #
+
+def _story_tools() -> Optional[Tuple[Callable[[str], List[str]],
+                                     Callable[[str], str],
+                                     Callable[[str], str]]]:
+    """``(story_tokens, story_key, story_stem)`` de ``newswatch`` — le
+    regroupeur de la maison, calibré sur CE flux (stopwords, verbes de dépêche,
+    « trump » neutralisé).
+
+    Import PARESSEUX pour la même raison que ``_default_matcher`` : ce module
+    doit rester chargeable dans un déploiement où ``newswatch`` manque. Sans
+    lui, il n'y a simplement pas de thèmes — le graphe garde sa forme d'avant,
+    à plat, ce qui se lit toujours.
+    """
+    try:
+        from backend.bots.paper import newswatch
+        return (newswatch.story_tokens, newswatch.story_key, newswatch.story_stem)
+    except Exception:      # noqa: BLE001 — module absent
+        return None
+
+
+def _family_of(node: Dict[str, Any]) -> str:
+    """La famille de source d'un nœud d'info (cf. ``_FAMILY_OF``)."""
+    return _FAMILY_OF.get(_text(node.get("type")), DEFAULT_FAMILY)
+
+
+def _theme_word(token: str) -> str:
+    """Un token de titre rendu présentable : « us » -> « US », « tariffs » ->
+    « Tariffs ». On ne touche QUE la première lettre — mettre le reste en
+    minuscules abîmerait un sigle."""
+    word = _text(token)
+    if not word:
+        return ""
+    if word.lower() in _THEME_UPPER:
+        return word.upper()
+    return word[:1].upper() + word[1:]
+
+
+def _theme_label(titles: List[str],
+                 tokens_of: Callable[[str], List[str]],
+                 stem_of: Callable[[str], str]) -> str:
+    """Le nom HUMAIN d'un thème : les deux tokens les plus fréquents dans ses
+    titres, capitalisés, joints par « · » (PUR).
+
+    Deux subtilités qui font la différence entre un nom lisible et une bouillie
+    de racines :
+
+    * on COMPTE par stem (``tariff`` + ``tariffs`` = un seul sujet, huit
+      occurrences) — sinon deux orthographes du même mot se battraient et
+      perdraient toutes les deux contre un mot moins pertinent ;
+    * on AFFICHE la forme de surface la plus fréquente de ce stem (« Nuclear »,
+      pas « Nuclea » ; « Tariffs », pas « Tariff »). Le stem est un artefact de
+      la clé, il n'a pas à s'afficher.
+
+    Tri TOTAL de bout en bout (fréquence décroissante puis ordre alphabétique,
+    aux deux étages) : deux appels rendent exactement le même nom.
+    """
+    counts: Dict[str, int] = {}
+    surfaces: Dict[str, Dict[str, int]] = {}
+    for title in titles:
+        for token in tokens_of(title):
+            stem = stem_of(token)
+            if not stem:
+                continue
+            counts[stem] = counts.get(stem, 0) + 1
+            bag = surfaces.setdefault(stem, {})
+            bag[token] = bag.get(token, 0) + 1
+    if not counts:
+        return ""
+    best = sorted(counts, key=lambda s: (-counts[s], s))[:THEME_LABEL_TOKENS]
+    words = []
+    for stem in best:
+        bag = surfaces[stem]
+        word = sorted(bag, key=lambda w: (-bag[w], w))[0]
+        words.append(_theme_word(word))
+    return " · ".join([w for w in words if w])
+
+
+def _merge_stories(keys: List[str], stems: Dict[str, set]) -> Dict[str, str]:
+    """``{clé d'histoire: clé du groupe}`` — la fusion par tokens partagés (PUR).
+
+    Union-find sur les clés TRIÉES, la représentante d'un groupe étant toujours
+    la plus petite : l'identité d'un groupe ne dépend donc ni de l'ordre des
+    entrées ni du hasard d'un dictionnaire.
+
+    La comparaison porte sur le jeu de tokens ORIGINAL de chaque histoire (pas
+    sur celui, grandissant, du groupe) : sinon un groupe absorberait de proche
+    en proche tout ce qui partage deux mots avec n'importe lequel de ses
+    membres — l'effet boule de neige.
+    """
+    parent = {k: k for k in keys}
+
+    def find(key: str) -> str:
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    for i, left in enumerate(keys):
+        for right in keys[i + 1:]:
+            if len(stems[left] & stems[right]) < THEME_MERGE_MIN_SHARED:
+                continue
+            a, b = find(left), find(right)
+            if a == b:
+                continue
+            # La plus PETITE clé devient la représentante -> ``find`` rend le
+            # ``min`` du groupe, qui sert de clé publique du thème.
+            if a < b:
+                parent[b] = a
+            else:
+                parent[a] = b
+    return {k: find(k) for k in keys}
+
+
+def theme_clusters(leaves: Any) -> List[Dict[str, Any]]:
+    """Les SOUS-SUJETS d'un paquet de feuilles — ``[{key, label, leaf_ids}]`` (PUR).
+
+    Trois étapes, dans cet ordre :
+
+    1. **une histoire = une ``newswatch.story_key``** du libellé. C'est le
+       regroupeur calibré de la maison : deux reprises de la même dépêche par
+       deux médias tombent sur la même clé. Un libellé vide (ou dont il ne
+       reste aucun token significatif) part directement au fourre-tout.
+    2. **fusion des variantes** : deux histoires partageant au moins
+       ``THEME_MERGE_MIN_SHARED`` tokens significatifs se rejoignent, par
+       fermeture transitive (``_merge_stories``).
+
+       ⚠️ La comparaison porte sur les tokens du TITRE, pas sur ceux de la
+       clé. Mesuré sur les huit titres Trump/Canada de la capture : la clé ne
+       garde que les quatre stems alphabétiquement premiers, si bien que
+       « tariff » en tombe une fois sur deux (``autos-canada-confir-exempt``,
+       ``canada-double-mexico-steel``…) — la fusion par clé n'en regroupait
+       que trois sur huit, les cinq autres restant en « Divers », c'est-à-dire
+       exactement le mur de points que l'utilisateur a signalé. Par tokens de
+       titre, les huit partagent ``{canada, tariff}`` et se rejoignent.
+    3. **nommage** (``_theme_label``) et **rangement** : les thèmes nommés du
+       plus gros au plus petit (clé alphabétique aux ex æquo), le fourre-tout
+       TOUJOURS en dernier — c'est un reste, pas un sujet.
+
+    Une feuille SEULE n'est pas un thème : elle rejoint le fourre-tout. Le
+    fourre-tout n'est rendu que s'il a au moins une feuille.
+
+    Rend une liste VIDE quand ``newswatch`` n'est pas là, ou quand aucune
+    feuille exploitable n'a été fournie — l'appelant retombe alors sur la forme
+    à plat, qui se lit toujours.
+    """
+    tools = _story_tools()
+    rows = [row for row in _dicts(leaves) if _text(row.get("id"))]
+    if tools is None or not rows:
+        return []
+    tokens_of, key_of, stem_of = tools
+
+    order = {_text(row.get("id")): i for i, row in enumerate(rows)}
+    loose: List[str] = []                                  # feuilles sans histoire
+    stories: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        node_id = _text(row.get("id"))
+        title = _text(row.get("label"))
+        key = key_of(title) if title else ""
+        if not key:
+            loose.append(node_id)
+            continue
+        story = stories.setdefault(key, {"ids": [], "titles": []})
+        if node_id not in story["ids"]:
+            story["ids"].append(node_id)
+        story["titles"].append(title)
+
+    keys = sorted(stories)
+    stems = {k: {stem_of(t) for title in stories[k]["titles"]
+                 for t in tokens_of(title)} for k in keys}
+    groups_of = _merge_stories(keys, stems)
+
+    merged: Dict[str, Dict[str, Any]] = {}
+    for key in keys:
+        group = merged.setdefault(groups_of[key], {"ids": [], "titles": []})
+        group["ids"].extend(stories[key]["ids"])
+        group["titles"].extend(stories[key]["titles"])
+
+    named: List[Dict[str, Any]] = []
+    for key in sorted(merged):
+        group = merged[key]
+        if len(group["ids"]) < 2:
+            loose.extend(group["ids"])              # une feuille seule n'est pas un sujet
+            continue
+        # Une clé d'histoire est faite de stems [a-z0-9] joints par « - » : elle
+        # pourrait, une fois sur mille, valoir le mot du fourre-tout. On la
+        # décale plutôt que de laisser deux thèmes se confondre à l'écran.
+        public = (key + "-") if key == MISC_THEME_KEY else key
+        named.append({"key": public,
+                      "label": _theme_label(group["titles"], tokens_of, stem_of) or public,
+                      "leaf_ids": sorted(group["ids"], key=lambda i: order[i])})
+
+    named.sort(key=lambda c: (-len(c["leaf_ids"]), c["key"]))
+    if loose:
+        named.append({"key": MISC_THEME_KEY, "label": MISC_THEME_LABEL,
+                      "leaf_ids": sorted(set(loose), key=lambda i: order[i])})
+    return named
+
+
+def _theme_node(host_id: str, family: str, cluster: Dict[str, Any]) -> Dict[str, Any]:
+    """Le nœud intermédiaire d'un thème.
+
+    Comme le pivot et l'agrégat, c'est un nœud de STRUCTURE : ni symbole, ni
+    date — il ne représente aucun événement, il en rassemble plusieurs. Son
+    identité tient à l'hôte ET à la famille en plus de la clé : deux rameaux
+    différents peuvent parler du même sujet sans partager un nœud.
+    """
+    return {"id": _THEME_PREFIX + _hash("theme", host_id, family, cluster["key"]),
+            "type": THEME_TYPE, "label": cluster["label"], "symbol": "", "ts": "",
+            "meta": {"count": len(cluster["leaf_ids"]), "key": cluster["key"]}}
+
+
+def _theme_layer(host_id: str, leaves: List[Dict[str, Any]]
+                 ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+    """``([nœuds thème], {id de feuille: id de thème})`` pour un hôte (PUR).
+
+    Une famille de ``THEME_MIN_LEAVES`` feuilles ou moins reste À PLAT : un
+    niveau de plus ne se justifie que quand l'œil ne suit plus. Et une famille
+    où RIEN ne se groupe (que du fourre-tout) reste à plat aussi — un unique
+    nœud « Divers » qui rassemble tout allonge le chemin sans rien répartir.
+
+    Les familles sont traitées dans l'ordre de PREMIÈRE APPARITION des feuilles,
+    qui arrivent déjà triées : la sortie ne dépend d'aucun dictionnaire.
+    """
+    order: List[str] = []
+    by_family: Dict[str, List[Dict[str, Any]]] = {}
+    for node in leaves:
+        family = _family_of(node)
+        if family not in by_family:
+            by_family[family] = []
+            order.append(family)
+        by_family[family].append(node)
+
+    themes: List[Dict[str, Any]] = []
+    mapping: Dict[str, str] = {}
+    for family in order:
+        members = by_family[family]
+        if len(members) <= THEME_MIN_LEAVES:
+            continue
+        clusters = theme_clusters(members)
+        if not [c for c in clusters if c["key"] != MISC_THEME_KEY]:
+            continue
+        for cluster in clusters:
+            node = _theme_node(host_id, family, cluster)
+            themes.append(node)
+            for leaf_id in cluster["leaf_ids"]:
+                mapping[leaf_id] = node["id"]
+    return themes, mapping
+
+
+# --------------------------------------------------------------------------- #
 # PUR — assemblage
 # --------------------------------------------------------------------------- #
 
@@ -599,11 +911,20 @@ def _grove(pivot_id: str, members: List[Dict[str, Any]]
     Les ``MAX_GROVE`` premiers selon la clé du bosquet, puis UN agrégat pour
     tout le reste. Un bosquet vide ne rend rien — donc pas de pivot, donc pas
     de nœud solitaire à l'écran.
+
+    Quand une famille déborde (``_theme_layer``), ses satellites passent par un
+    niveau de THÈMES : le satellite rejoint son thème, le thème rejoint le
+    pivot. Les douze dessinés restent douze — le thème RÉPARTIT, il n'ajoute
+    aucune feuille.
     """
     ordered = sorted(members, key=_GROVE_KEYS.get(pivot_id, _recency_key))
     shown = ordered[:MAX_GROVE]
-    nodes = list(shown)
-    edges = [_context_edge(node, pivot_id) for node in shown]
+    themes, theme_of = _theme_layer(pivot_id, shown)
+    nodes = list(shown) + themes
+    edges = [_context_edge(node, theme_of.get(node["id"], pivot_id))
+             for node in shown]
+    edges.extend([{"source": node["id"], "target": pivot_id, "type": EDGE_THEME}
+                  for node in themes])
     extra = len(ordered) - len(shown)
     if extra > 0:
         aggregate = _aggregate_node(pivot_id, extra)
@@ -799,6 +1120,12 @@ def build_grove(kind: Any, anchors: Any, events: Any, hypotheses: Any,
     ``kind`` doit être l'un de ``GROVE_KINDS`` — un bosquet inconnu lève
     ``ValueError`` plutôt que de rendre une liste vide qui se lirait « il n'y a
     rien » alors qu'on a simplement mal demandé.
+
+    Chaque item porte en plus son ``theme_key``/``theme_label`` et la liste est
+    RANGÉE par thème (cf. ``_grove_themed``). Le clustering tourne ici sur la
+    liste ENTIÈRE, alors que le dessin ne voit que ses douze : les thèmes de la
+    liste sont donc plus riches que ceux de la toile, et c'est voulu — c'est
+    justement en ouvrant qu'on veut voir la répartition.
     """
     wanted = _text(kind).lower()
     if wanted not in GROVE_KINDS:
@@ -808,14 +1135,58 @@ def build_grove(kind: Any, anchors: Any, events: Any, hypotheses: Any,
     _, groves = _dispatch(info, edges)
     members = sorted(groves.get(wanted) or [],
                      key=_GROVE_KEYS.get(wanted, _recency_key))
-    return {"kind": wanted, "items": members[:GROVE_LIST_CAP],
+    return {"kind": wanted, "items": _grove_themed(members)[:GROVE_LIST_CAP],
             "total": len(members)}
+
+
+def _grove_themed(members: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Les membres d'un bosquet, chacun portant son thème, RANGÉS par thème (PUR).
+
+    L'ordre : les thèmes dans celui que ``theme_clusters`` a fixé (les nommés du
+    plus gros au plus petit, le fourre-tout en dernier), et DANS un thème,
+    l'ordre du bosquet lui-même — celui du dessin, donc la fraîcheur partout et
+    les hypothèses ouvertes d'abord au radar. Reprendre un tri par date ici
+    ferait diverger la liste du dessin sur le seul bosquet où l'ordre dit
+    quelque chose.
+
+    Quand RIEN ne se groupe (que du fourre-tout, ou pas de ``newswatch``), les
+    membres ressortent tels quels, SANS champ de thème : le frontend affiche
+    alors une liste à plat, plutôt qu'un unique intertitre « Divers » qui ne
+    répartit rien.
+
+    Les items sont des COPIES : le nœud du dessin n'est pas touché.
+    """
+    clusters = theme_clusters(members)
+    if not [c for c in clusters if c["key"] != MISC_THEME_KEY]:
+        return list(members)
+
+    out: List[Dict[str, Any]] = []
+    placed = set()
+    for cluster in clusters:
+        wanted_ids = set(cluster["leaf_ids"])
+        for node in members:
+            node_id = _text(node.get("id"))
+            if node_id in wanted_ids and node_id not in placed:
+                placed.add(node_id)
+                out.append(dict(node, theme_key=cluster["key"],
+                                theme_label=cluster["label"]))
+    # Ceinture : une feuille qu'aucun thème n'a réclamée (identifiant vide) ne
+    # doit pas disparaître de la liste — on la rend telle quelle, à la fin.
+    out.extend([dict(node) for node in members
+                if _text(node.get("id")) not in placed])
+    return out
 
 
 def _branch(anchor_map: Dict[str, Dict[str, Any]],
             info: Dict[str, Dict[str, Any]],
             edges: List[Dict[str, Any]], wanted: str) -> Dict[str, Any]:
-    """La branche d'un titre : son ancre et ses voisins DIRECTS."""
+    """La branche d'un titre : son ancre et ses voisins DIRECTS.
+
+    Quand une famille de voisins déborde, un niveau de THÈMES s'intercale :
+    l'arête du voisin est RE-ROUTÉE vers son thème (elle garde son mécanisme et
+    sa tonalité — c'est elle qui colore le lien), et le thème rejoint l'ancre.
+    Aucune arête ne pend : ce qui n'entre dans aucun thème garde son lien direct.
+    """
     anchor = anchor_map.get(wanted)
     if anchor is None:
         return {"nodes": [], "edges": [], "truncated": False}
@@ -828,6 +1199,15 @@ def _branch(anchor_map: Dict[str, Dict[str, Any]],
             continue
         seen.add(node["id"])
         neighbours.append(node)
+
+    themes, theme_of = _theme_layer(wanted, neighbours)
+    if themes:
+        kept_edges = [dict(edge, target=theme_of[edge["source"]])
+                      if edge["source"] in theme_of else edge
+                      for edge in kept_edges]
+        kept_edges.extend([{"source": node["id"], "target": wanted,
+                            "type": EDGE_THEME} for node in themes])
+        neighbours = neighbours + themes
     return _assemble([anchor], neighbours, kept_edges)
 
 

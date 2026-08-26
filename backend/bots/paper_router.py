@@ -3345,4 +3345,8 @@ def paper_graph_count(symbol: str = "",
         raise HTTPException(status_code=400, detail="Symbole manquant.")
     nodes = _build_graph(current_user.username, wanted)["nodes"]
     # ``nodes`` = l'ancre + ses voisins (vide si le titre n'est pas une ancre).
-    return {"count": max(0, len(nodes) - 1)}
+    # Les nœuds de THÈME sont des intercalaires de mise en forme, pas des
+    # connexions : les compter ferait grimper « N connexions en mémoire » sans
+    # qu'une seule information de plus soit arrivée.
+    real = [n for n in nodes if n.get("type") != graph.THEME_TYPE]
+    return {"count": max(0, len(real) - 1)}

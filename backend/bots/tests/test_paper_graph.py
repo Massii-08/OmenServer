@@ -1074,3 +1074,283 @@ def test_the_list_is_deterministic():
     kwargs = {"anchors": [{"symbol": "AAPL", "kind": "position"}],
               "events": _many_gov(20)}
     assert grove(graph.WORLD_ID, **kwargs) == grove(graph.WORLD_ID, **kwargs)
+
+
+# --------------------------------------------------------------------------- #
+# Les THÈMES — « une branche que pour ça, ça se répartit mieux »
+#
+# Le scénario MESURÉ (capture utilisateur du 26/08) : douze feuilles
+# « Politique » sous un même rameau, dont HUIT sur la même histoire
+# Trump/Canada. Douze points identiques, à survoler un par un.
+# --------------------------------------------------------------------------- #
+
+#: Les douze titres de la capture (huit Trump/Canada, trois Iran, un isolé).
+CAPTURE_TITLES = [
+    "Trump threatens Canada with new tariffs over dairy dispute - Reuters",
+    "Trump says Canada tariffs will start on Friday - CNBC",
+    "Canada retaliates against US tariffs with counter-measures - BBC",
+    "White House confirms Canada tariff exemption for autos - Bloomberg",
+    "Trump doubles steel tariffs on Canada and Mexico - Financial Times",
+    "Canada PM calls Trump tariffs unjustified - Globe and Mail",
+    "Trump tariffs on Canada spark market selloff - MarketWatch",
+    "US Senate votes to block Canada tariffs - Politico",
+    "Iran nuclear talks resume in Geneva - Reuters",
+    "Iran rejects new sanctions over nuclear programme - AP",
+    "Iran nuclear deal deadline extended by two weeks - Al Jazeera",
+    "ICC issues arrest warrant in Sudan case - Le Monde",
+]
+
+
+def _capture_gov(titles=None):
+    """Les dépêches de la capture, la n° 0 étant la plus RÉCENTE."""
+    rows = CAPTURE_TITLES if titles is None else titles
+    return [{"ts": _iso(hours_ago=i + 1), "symbol": "GOV", "title": title,
+             "link": "http://g/c%02d" % i, "sentiment": "gov"}
+            for i, title in enumerate(rows)]
+
+
+def _leaves(titles, kind="gov"):
+    return [{"id": "ev:%02d" % i, "type": kind, "label": title}
+            for i, title in enumerate(titles)]
+
+
+def themes(built):
+    return [n for n in built["nodes"] if n["type"] == graph.THEME_TYPE]
+
+
+def test_the_measured_scenario_twelve_political_leaves_become_three_subjects():
+    """LE test de la fonctionnalité : les huit Trump/Canada se rassemblent sous
+    un seul sujet NOMMÉ, les trois Iran sous un autre, l'isolée tombe au
+    fourre-tout."""
+    got = graph.theme_clusters(_leaves(CAPTURE_TITLES))
+    assert [(c["label"], len(c["leaf_ids"])) for c in got] == [
+        ("Canada · Tariffs", 8), ("Iran · Nuclear", 3), ("Divers", 1)]
+    # …et le fourre-tout contient bien la dépêche isolée (la CPI), pas une autre.
+    assert got[-1]["leaf_ids"] == ["ev:11"]
+    assert got[-1]["key"] == graph.MISC_THEME_KEY
+
+
+def test_two_stories_merge_when_they_share_two_significant_tokens():
+    """« canada » + « tariff » de part et d'autre : c'est le même sujet."""
+    got = graph.theme_clusters(_leaves([
+        "Canada PM calls Trump tariffs unjustified",
+        "US Senate votes to block Canada tariffs"]))
+    assert [len(c["leaf_ids"]) for c in got] == [2]
+    assert got[0]["key"] != graph.MISC_THEME_KEY
+
+
+def test_one_shared_token_is_not_a_subject():
+    """« canada » seul relie une taxe douanière à un match de hockey : deux
+    histoires, deux singletons, donc le fourre-tout."""
+    got = graph.theme_clusters(_leaves([
+        "Canada raises tariffs on imported steel",
+        "Canada wins Olympic hockey final in Milan"]))
+    assert [(c["key"], len(c["leaf_ids"])) for c in got] == [(graph.MISC_THEME_KEY, 2)]
+
+
+def test_the_label_shows_the_surface_word_not_the_stem():
+    """On COMPTE par racine (tariff + tariffs = un seul sujet) mais on AFFICHE
+    le mot tel qu'il est écrit : « Nuclear », jamais « Nuclea »."""
+    got = graph.theme_clusters(_leaves(CAPTURE_TITLES[8:11]))
+    assert got[0]["label"] == "Iran · Nuclear"
+
+
+def test_a_leaf_without_a_title_lands_in_the_misc_cluster():
+    leaves = _leaves(CAPTURE_TITLES[:2]) + [{"id": "ev:99", "type": "gov", "label": ""}]
+    got = graph.theme_clusters(leaves)
+    assert got[-1]["key"] == graph.MISC_THEME_KEY
+    assert got[-1]["leaf_ids"] == ["ev:99"]
+
+
+def test_the_clusters_do_not_depend_on_the_order_of_the_leaves():
+    """Deux appels, et deux ORDRES d'entrée, rendent exactement la même
+    répartition : c'est ce qui fait qu'ouvrir deux fois le même bosquet donne
+    deux fois la même image."""
+    leaves = _leaves(CAPTURE_TITLES)
+    straight = graph.theme_clusters(leaves)
+    assert straight == graph.theme_clusters(leaves)
+    reversed_ = graph.theme_clusters(list(reversed(leaves)))
+    assert [(c["key"], c["label"], sorted(c["leaf_ids"])) for c in straight] == \
+        [(c["key"], c["label"], sorted(c["leaf_ids"])) for c in reversed_]
+
+
+def test_no_leaves_no_clusters():
+    assert graph.theme_clusters([]) == []
+    assert graph.theme_clusters(None) == []
+    assert graph.theme_clusters([{"label": "sans identifiant"}]) == []
+
+
+def test_a_leaf_is_never_lost_by_the_clustering():
+    """Ceinture : chaque feuille est dans un thème et un seul."""
+    got = graph.theme_clusters(_leaves(CAPTURE_TITLES))
+    seen = [lid for c in got for lid in c["leaf_ids"]]
+    assert sorted(seen) == ["ev:%02d" % i for i in range(len(CAPTURE_TITLES))]
+    assert len(seen) == len(set(seen))
+
+
+def test_without_newswatch_there_is_simply_no_theme(monkeypatch):
+    """Le graphe garde sa forme d'avant, à plat — qui se lit toujours."""
+    monkeypatch.setattr(graph, "_story_tools", lambda: None)
+    assert graph.theme_clusters(_leaves(CAPTURE_TITLES)) == []
+    assert themes(build(events=_capture_gov())) == []
+
+
+# --- l'insertion dans le dessin --------------------------------------------- #
+
+def test_six_leaves_or_fewer_keep_no_theme_level():
+    """Un niveau de plus ne se justifie que quand l'œil ne suit plus."""
+    six = _capture_gov(CAPTURE_TITLES[:graph.THEME_MIN_LEAVES])
+    built = build(events=six)
+    assert themes(built) == []
+    assert len(node_by_type(built, "gov")) == graph.THEME_MIN_LEAVES
+    # …et chaque feuille garde son lien DIRECT au pivot.
+    assert {e["target"] for e in built["edges"]} == {graph.WORLD_ID}
+
+
+def test_beyond_six_the_grove_gains_its_subjects():
+    built = build(events=_capture_gov())
+    assert [(n["label"], n["meta"]["count"]) for n in themes(built)] == [
+        ("Canada · Tariffs", 8), ("Iran · Nuclear", 3), ("Divers", 1)]
+    # Le thème est un nœud de STRUCTURE : ni symbole, ni date.
+    for node in themes(built):
+        assert node["id"].startswith("th:")
+        assert node["symbol"] == "" and node["ts"] == ""
+        assert node["meta"]["key"]
+
+
+def test_the_twelve_drawn_leaves_stay_twelve():
+    """Le thème RÉPARTIT, il n'ajoute aucune feuille (règle 5 du module)."""
+    built = build(events=_capture_gov(CAPTURE_TITLES * 3))
+    assert len(node_by_type(built, "gov")) == graph.MAX_GROVE
+
+
+def test_the_edges_are_rerouted_leaf_to_theme_to_pivot():
+    built = build(events=_capture_gov())
+    by_id = {n["id"]: n for n in built["nodes"]}
+    theme_ids = {n["id"] for n in themes(built)}
+    for edge in built["edges"]:
+        if edge["source"] in theme_ids:
+            assert edge["target"] == graph.WORLD_ID
+            assert edge["type"] == graph.EDGE_THEME
+        else:
+            # Une feuille ne parle plus qu'à son thème.
+            assert edge["target"] in theme_ids
+            assert by_id[edge["source"]]["type"] == "gov"
+
+
+def test_no_edge_dangles_once_the_themes_are_in():
+    built = build(events=_capture_gov())
+    known = {n["id"] for n in built["nodes"]} | set(graph.PIVOT_IDS)
+    assert all(e["source"] in known and e["target"] in known for e in built["edges"])
+    # Le pivot est toujours là : le thème le vise, donc il n'est pas solitaire.
+    assert graph.WORLD_ID in {n["id"] for n in built["nodes"]}
+
+
+def test_a_grove_where_nothing_groups_stays_flat():
+    """Douze annonces sans vocabulaire commun : un unique nœud « Divers » qui
+    rassemblerait tout allongerait le chemin sans rien répartir."""
+    built = build(events=_many_gov(12))
+    assert themes(built) == []
+
+
+def test_a_reddit_trend_grove_stays_flat():
+    """« GME ×42 » n'est pas une histoire : rien à regrouper, aucun niveau."""
+    trends = {"SYM%02d" % i: {"count": 40 - i, "prev": 1} for i in range(10)}
+    built = build(reddit_trends=trends)
+    assert themes(built) == []
+    assert len(node_by_type(built, graph.TREND_TYPE)) == 10
+
+
+def test_the_branch_of_a_title_gets_its_subjects_too():
+    """Même règle sur un titre : douze dépêches qui le nomment se répartissent."""
+    events = [dict(e, symbol="NVDA") for e in _capture_gov()]
+    built = build(anchors=[{"symbol": "NVDA", "kind": "position"}],
+                  events=events, symbol="NVDA")
+    assert sorted(n["meta"]["count"] for n in themes(built)) == [1, 3, 8]
+    theme_ids = {n["id"] for n in themes(built)}
+    for edge in built["edges"]:
+        if edge["source"] in theme_ids:
+            assert edge["target"] == "NVDA" and edge["type"] == graph.EDGE_THEME
+        else:
+            assert edge["target"] in theme_ids
+
+
+def test_a_rerouted_branch_edge_keeps_its_mechanism_and_its_tone():
+    """C'est l'arête de la feuille qui COLORE le lien : la re-router ne doit
+    pas lui faire perdre ce qu'elle disait."""
+    events = [dict(e, symbol="NVDA", sentiment="neg") for e in _capture_gov()]
+    built = build(anchors=[{"symbol": "NVDA", "kind": "position"}],
+                  events=events, symbol="NVDA")
+    theme_ids = {n["id"] for n in themes(built)}
+    leaf_edges = [e for e in built["edges"] if e["source"] not in theme_ids]
+    assert leaf_edges and all(e["type"] == graph.EDGE_SYMBOL
+                              and e["sentiment"] == "neg" for e in leaf_edges)
+
+
+def test_themes_never_reach_the_index_branches():
+    """La vue globale COMPTE les feuilles d'un titre (« Presse 12 ») : y
+    intercaler des thèmes ferait tomber le compteur à trois."""
+    events = [dict(e, symbol="NVDA") for e in _capture_gov()]
+    built = build(anchors=[{"symbol": "NVDA", "kind": "position"}], events=events)
+    assert themes(built) == []
+    assert len([e for e in built["edges"] if e["target"] == "NVDA"]) == 12
+
+
+def test_the_themed_graph_is_deterministic():
+    kwargs = {"events": _capture_gov()}
+    assert build(**kwargs) == build(**kwargs)
+
+
+# --- la LISTE : chaque item sait de quel sujet il relève -------------------- #
+
+def test_the_list_labels_each_item_with_its_subject_and_groups_them():
+    listed = grove(graph.WORLD_ID, events=_capture_gov())
+    assert [item["theme_label"] for item in listed["items"]] == \
+        ["Canada · Tariffs"] * 8 + ["Iran · Nuclear"] * 3 + ["Divers"]
+    # …le fourre-tout est reconnaissable par sa CLÉ, pas par son libellé
+    # français (que le frontend retraduit).
+    assert listed["items"][-1]["theme_key"] == graph.MISC_THEME_KEY
+    assert listed["items"][0]["theme_key"] != graph.MISC_THEME_KEY
+
+
+def test_inside_a_subject_the_list_keeps_the_order_of_the_canvas():
+    listed = grove(graph.WORLD_ID, events=_capture_gov())
+    canada = [item["label"] for item in listed["items"]
+              if item["theme_key"] != graph.MISC_THEME_KEY][:8]
+    assert canada == CAPTURE_TITLES[:8]          # la n° 0 est la plus récente
+
+
+def test_the_list_groups_further_than_the_canvas_can_draw():
+    """Le dessin ne voit que douze satellites, la liste voit tout : le sujet de
+    la liste peut donc être PLUS gros que celui de la toile. C'est justement en
+    ouvrant qu'on veut voir la répartition."""
+    events = _capture_gov(CAPTURE_TITLES[:8] * 3)     # 24 dépêches Canada
+    assert [n["meta"]["count"] for n in themes(build(events=events))] == [12]
+    listed = grove(graph.WORLD_ID, events=events)
+    assert listed["total"] == 24
+    assert len([i for i in listed["items"]
+                if i["theme_label"] == "Canada · Tariffs"]) == 24
+
+
+def test_the_list_stays_flat_when_nothing_groups():
+    """Un unique intertitre « Divers » au-dessus d'une liste plate est du bruit :
+    on n'envoie alors aucun champ de thème."""
+    listed = grove(graph.WORLD_ID, events=_many_gov(20))
+    assert all("theme_label" not in item for item in listed["items"])
+
+
+def test_the_listed_item_still_carries_everything_the_canvas_node_had():
+    listed = grove(graph.WORLD_ID, events=_capture_gov())
+    item = listed["items"][0]
+    assert item["type"] == "gov" and item["sentiment"] == "gov"
+    assert item["label"] == CAPTURE_TITLES[0] and item["link"] == "http://g/c00"
+
+
+def test_the_themed_list_is_deterministic():
+    kwargs = {"events": _capture_gov()}
+    assert grove(graph.WORLD_ID, **kwargs) == grove(graph.WORLD_ID, **kwargs)
+
+
+def test_the_list_never_loses_an_item_to_the_grouping():
+    listed = grove(graph.WORLD_ID, events=_capture_gov())
+    assert sorted(i["label"] for i in listed["items"]) == sorted(CAPTURE_TITLES)

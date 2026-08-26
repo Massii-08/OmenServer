@@ -906,26 +906,34 @@ _QUOTED_RE = re.compile(r'["“”].*?["“”]')
 # order", déjà traités comme génériques dans _GOV_KEYWORDS.
 _TRADING_PARTNERS_RE = re.compile(r"trading partners?", re.IGNORECASE)
 _STORY_KEY_PUNCT_RE = re.compile(r"[^a-z0-9]+")
+# Codes d'entité assez courts pour tomber sous le filtre de longueur, assez
+# identifiants pour qu'on les garde quand même (US/UE/UK/ONU).
+_STORY_ENTITY_CODES = ("us", "eu", "uk", "un")
 
 
-def story_key(title: str) -> str:
-    """Clé d'HISTOIRE dérivée d'un titre (PUR -- cf. le commentaire de tête
-    de fichier ~L99 pour le design complet de l'anti-spam politique).
+def story_tokens(title: str) -> List[str]:
+    """Les tokens SIGNIFICATIFS d'un titre (PUR) -- l'étage COMMUN de
+    ``story_key`` et du regroupement thématique du graphe.
 
     Pipeline : retrait du suffixe " - Source" de Google News -> retrait des
     citations entre guillemets -> retrait de la formule "trading partner(s)"
     -> minuscules -> retrait ponctuation -> retrait stopwords EN/FR + verbes
-    de reportage génériques + "trump" (cf. _STORY_KEY_STOPWORDS) -> troncature
-    légère à 6 caractères (stemming pauvre) -> garde les 4 tokens
-    significatifs restants (dédupliqués), triés alphabétiquement, joints
-    par '-'. "" si le titre est vide.
+    de reportage génériques + "trump" (cf. _STORY_KEY_STOPWORDS) -> retrait
+    des tokens courts non identifiants.
 
-    4 et non 6 -- cf. le commentaire au-dessus de _STORY_KEY_TOKENS : la
-    règle des 6 tokens les plus longs ne convergeait pas naturellement sur
-    les paires réelles de calibration, ce repli à 4 est le résultat DOCUMENTÉ
-    de cette calibration."""
+    Rend les formes de SURFACE, dans l'ordre du titre et SANS dédoublonnage :
+    c'est le seul étage où l'on sait encore que le titre dit "tariffs" et pas
+    "tariff" -- ``story_key`` tronque juste après (cf. ``story_stem``), et le
+    graphe a besoin des deux (le stem pour RAPPROCHER deux variantes, la
+    surface pour ÉCRIRE un nom de thème lisible).
+
+    Sorti de ``story_key`` le 26/08 pour que graph.theme_clusters emprunte
+    exactement le même découpage -- deux tokenisations finiraient par diverger,
+    et un thème nommé sur d'autres mots que ceux qui l'ont formé se lirait
+    comme un bug de la mémoire.
+    """
     if not title:
-        return ""
+        return []
     t = _GNEWS_SUFFIX_RE.sub("", title)
     t = _QUOTED_RE.sub(" ", t)
     t = _TRADING_PARTNERS_RE.sub(" ", t)
@@ -937,8 +945,29 @@ def story_key(title: str) -> str:
     tokens = [w for w in tokens if w not in _STORY_KEY_STOPWORDS]
     # Token court gardé seulement s'il est un code entité reconnu (US/UE/
     # UK/ONU) -- sinon c'est du bruit (particule/article mal filtré).
-    tokens = [w for w in tokens if len(w) >= 3 or w in ("us", "eu", "uk", "un")]
-    tokens = [w[:_STORY_KEY_TRUNC] for w in tokens]
+    return [w for w in tokens if len(w) >= 3 or w in _STORY_ENTITY_CODES]
+
+
+def story_stem(token: str) -> str:
+    """Le "stemming pauvre" de la maison : troncature à 6 caractères. C'est lui
+    qui unifie threatened/threats -> "threat" et tariff/tariffs -> "tariff",
+    sans dépendance externe."""
+    return str(token or "")[:_STORY_KEY_TRUNC]
+
+
+def story_key(title: str) -> str:
+    """Clé d'HISTOIRE dérivée d'un titre (PUR -- cf. le commentaire de tête
+    de fichier ~L99 pour le design complet de l'anti-spam politique).
+
+    ``story_tokens`` (le découpage commun) -> ``story_stem`` sur chacun ->
+    garde les 4 tokens significatifs restants (dédupliqués), triés
+    alphabétiquement, joints par '-'. "" si le titre est vide.
+
+    4 et non 6 -- cf. le commentaire au-dessus de _STORY_KEY_TOKENS : la
+    règle des 6 tokens les plus longs ne convergeait pas naturellement sur
+    les paires réelles de calibration, ce repli à 4 est le résultat DOCUMENTÉ
+    de cette calibration."""
+    tokens = [story_stem(w) for w in story_tokens(title)]
     seen_local = set()
     significant = []
     for w in tokens:
