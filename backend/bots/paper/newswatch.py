@@ -76,6 +76,30 @@ Extension 2026-08-26 (soir) — deux volets MONDE de plus, ``eco`` et ``climat``
     ``held_risk`` sur un titre détenu) sans jamais allumer le facteur politique,
     et sans qu'aucun facteur nouveau ait été inventé.
 
+Extension 2026-08-26 (W2a) — **le scanner devient MONDIAL** (« tout ce qui peut
+bouger la courbe, ne te limite pas ») :
+
+  * volet ``bc`` — les **banques centrales à la source** (Fed, BCE, BNS), un
+    cycle sur trois. Doctrine : *la source décide, la presse commente*. Pas de
+    gate de pertinence, parce qu'un flux de banque centrale est intégralement de
+    la banque centrale — et parce que le communiqué qui compte est justement
+    celui dont le titre ne contient aucun mot-clé ;
+  * volet ``pressefi`` — la **presse financière mondiale** (Suisse, Allemagne,
+    Royaume-Uni, Hong Kong, Inde + les flux du moteur Market Pulse), un cycle
+    sur six. Sa cascade de collecte est EMPRUNTÉE à ``pulse.news.collect_news``,
+    jamais réécrite : elle porte cinq leçons sondées (fraîcheur, flux périmés,
+    refus des conseils, refus du hors-sujet, partage équitable par langue) ;
+  * volet ``bsky`` — **Bluesky**, le social OUVERT, un cycle sur trois. Deux
+    requêtes fixes génériques + le nom de chaque titre détenu ou suivi, toutes
+    d'au moins deux mots (piège #68k) ;
+  * **six subreddits internationaux** de plus, pour la même requête et le même
+    coût réseau (un multireddit ajoute des sources, pas des requêtes) ;
+  * une **file de PROBATION** des comptes X : toute ``@mention`` trouvée dans un
+    texte RETENU (presse, X, Bluesky — jamais le volet politique, cf.
+    ``_note_mentions_from``) devient un candidat, sondé à basse fréquence, muet
+    par construction, promu après deux publications importantes et éjecté après
+    six passages silencieux. **La liste manuelle n'est jamais évincée.**
+
 Aucune nouvelle dépendance : curl_cffi (déjà utilisé par bond-scanner et
 market-pulse -- Yahoo bloque les clients HTTP nus au niveau TLS, piège #67/#68)
 + stdlib (xml.etree, email.utils, re, hashlib, json, os).
@@ -271,6 +295,181 @@ _CLIMAT_MAX_SENDS_PER_HOUR = 4
 # médias — c'est exactement l'incident du 24/08 au soir.
 _WORLD_STORY_MUTE_H = _GOV_STORY_MUTE_H
 
+# --- volet BANQUES CENTRALES « bc » (extension 2026-08-26, W2a) ------------- #
+#
+# Doctrine : **la source décide, la presse commente.** Les volets ``eco`` et
+# ``pressefi`` lisent ce que les journaux écrivent D'UNE décision ; celui-ci lit
+# la décision elle-même, à la source, sans intermédiaire et sans délai
+# rédactionnel. Quand les deux se contredisent, c'est celui-ci qui a raison.
+#
+# Les trois flux ont été SONDÉS (200 confirmé, RSS/Atom standard avec date) :
+# Fed (press_all), BCE (press) et BNS (news). Ils sont servis par le MÊME moteur
+# que ``eco``/``climat`` (``_run_world_volet``), qui sait déjà itérer plusieurs
+# sources dans une même fiche — d'où une fiche unique à trois URL plutôt que
+# trois fiches jumelles qui divergeraient au premier correctif.
+_BC_SOURCES = [
+    "https://www.federalreserve.gov/feeds/press_all.xml",
+    "https://www.ecb.europa.eu/rss/press.html",
+    "https://www.snb.ch/public/en/rss/news",
+]
+
+# 48 h et non 24 : une décision de banque centrale reste L'ÉVÉNEMENT pendant
+# plusieurs jours, là où une dépêche de presse est périmée le lendemain. On ne
+# perd rien à laisser la fenêtre ouverte — le dédoublonnage par lien empêche de
+# toute façon qu'un communiqué soit relu deux fois.
+_BC_MAX_AGE_S = 48 * 3600
+_MAX_BC_NOTIFY_PER_RUN = 3
+_BC_MAX_SENDS_PER_HOUR = 4
+# Cap d'événements JOURNALISÉS par passage. ``eco``/``climat`` n'en ont pas :
+# leur classifieur a un gate qui jette la plus grande partie de ce que Google
+# News rend. Celui-ci n'en a pas, par construction — sans ce plafond, trois flux
+# institutionnels relus après une purge de l'état « vu » rempliraient à eux
+# seuls l'historique (``_MAX_EVENTS``) et en chasseraient tout le reste.
+_BC_MAX_EVENTS_PER_RUN = 8
+
+# UN CYCLE SUR TROIS (~15 min). Les guetteurs tournent toutes les 5 minutes ;
+# une banque centrale ne publie pas toutes les 5 minutes. Interroger trois
+# serveurs institutionnels 288 fois par jour pour rien serait un martèlement
+# sans contrepartie.
+_BC_CYCLE_EVERY = 3
+
+# --- volet PRESSE FINANCIÈRE MONDIALE « pressefi » (W2a) ------------------- #
+#
+# « Tout ce qui peut bouger la courbe, ne te limite pas. » Les volets écrits
+# jusqu'ici regardent le monde par le trou de serrure d'une requête Google News
+# anglophone. Il manquait la presse elle-même — suisse, allemande, britannique,
+# asiatique, indienne — celle qui parle des entreprises que Massii détient dans
+# la langue du pays où elles sont cotées.
+#
+# ⚠️ La cascade de collecte n'est PAS réécrite ici : ``pulse.news.collect_news``
+# du moteur Market Pulse la porte déjà, sondée et corrigée par l'expérience
+# (fraîcheur, ``stale_sources``, ``is_advice``, ``is_offtopic``, partage
+# ÉQUITABLE par source avant troncature — cf. piège #67e, une simple coupe par
+# récence effaçait toute une langue). La réécrire, c'est se garantir de perdre
+# ces cinq leçons une par une.
+#
+# Les neuf flux ci-dessous ont été sondés le 26/08. La langue est TAGGÉE parce
+# que la cascade s'en sert pour le partage équitable — et parce qu'un titre
+# allemand ne sera pas classé par ``classify`` (calibré EN/FR/IT) : il entrera
+# en ``neutral``, ce qui est honnête, plutôt que forcé dans une tonalité.
+PRESSEFI_EXTRA_FEEDS: Tuple[Dict[str, str], ...] = (
+    {"name": "cash.ch", "lang": "de", "url": "https://www.cash.ch/feeds/latest/news"},
+    {"name": "NZZ Wirtschaft", "lang": "de", "url": "https://www.nzz.ch/wirtschaft.rss"},
+    {"name": "Handelsblatt Finanzen", "lang": "de",
+     "url": "https://www.handelsblatt.com/contentexport/feed/finanzen"},
+    {"name": "DW Business", "lang": "en", "url": "https://rss.dw.com/rdf/rss-en-bus"},
+    {"name": "BBC Business", "lang": "en",
+     "url": "https://feeds.bbci.co.uk/news/business/rss.xml"},
+    {"name": "Guardian Business", "lang": "en",
+     "url": "https://www.theguardian.com/uk/business/rss"},
+    {"name": "SCMP Business", "lang": "en", "url": "https://www.scmp.com/rss/92/feed"},
+    {"name": "Economic Times Markets", "lang": "en",
+     "url": "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"},
+    {"name": "Yahoo Finance", "lang": "en",
+     "url": "https://finance.yahoo.com/news/rssindex"},
+)
+
+# UN CYCLE SUR SIX (~30 min). C'est du CONTEXTE, pas de l'urgence : une revue de
+# presse mondiale ne se lit pas toutes les cinq minutes, et seize sources à
+# chaque cycle, ce serait seize fois le martèlement pour la même information.
+_PRESSEFI_CYCLE_EVERY = 6
+_PRESSEFI_MAX_AGE_H = 24.0
+_PRESSEFI_PER_SOURCE = 3        # par source, AVANT le partage équitable
+_PRESSEFI_MAX_ITEMS = 24        # ce que la cascade rend au plus, toutes sources
+# Cap d'événements JOURNALISÉS par passage : sans lui, un seul passage de presse
+# mondiale chasserait toute la politique et toute la mémoire du fil (plafonné à
+# ``_MAX_EVENTS``). Même raison, même chiffre d'ordre de grandeur que Reddit.
+_PRESSEFI_MAX_EVENTS_PER_RUN = 8
+# Budget d'envoi PROPRE, et volontairement le plus SERRÉ de tous les volets :
+# c'est du contexte. Il parle peu, il nourrit surtout la mémoire.
+_MAX_PRESSEFI_NOTIFY_PER_RUN = 2
+_PRESSEFI_MAX_SENDS_PER_HOUR = 3
+
+# --- volet BLUESKY « bsky » : le social OUVERT (W2a) ----------------------- #
+#
+# X se referme (empreinte TLS, murs, escalade vers un navigateur furtif) ;
+# Bluesky sert une API de recherche PUBLIQUE, sans clé, et ``pulse.social`` sait
+# déjà en lire la réponse (chemin PROUVÉ en production sur Market Pulse — un 403
+# sondé depuis le Mac est un accident de réseau local, pas un refus de Bluesky).
+#
+# Deux natures de requêtes, et c'est délibéré :
+#   * DEUX requêtes fixes et GÉNÉRIQUES — « market selloff », « rate decision ».
+#     Pas de sujet d'actualité figé dans le code : « tariffs canada » serait vrai
+#     six semaines puis mort, et personne ne s'en apercevrait ;
+#   * le NOM de chaque ancre (positions ∪ watchlist, cap 4) — ce dont la foule
+#     dit quelque chose SUR CE PORTEFEUILLE.
+#
+# ⚠️ Leçon #68k, câblée dans ``bsky_queries`` : **une requête d'un seul mot
+# courant est presque toujours un piège** (« borsa » rendait la moitié de posts
+# turcs, « nikkei » ramenait un collectif militant). Toute requête sort d'ici
+# avec AU MOINS deux mots.
+BSKY_FIXED_QUERIES: Tuple[str, ...] = ("market selloff", "rate decision")
+BSKY_MAX_ANCHOR_QUERIES = 4
+BSKY_SEARCH_LIMIT = 25
+# Le mot ajouté à un nom d'ancre d'un seul mot pour satisfaire la règle des deux
+# mots. « stock » plutôt que « news » : il désigne l'objet, il ne décrit pas un
+# genre de contenu — « nestle stock » parle de bourse, « nestle news » ramènerait
+# la moitié du marketing de la marque.
+BSKY_ANCHOR_SUFFIX = "stock"
+_BSKY_CYCLE_EVERY = 3
+_BSKY_MAX_AGE_S = 24 * 3600
+_BSKY_MAX_POSTS_PER_QUERY = 8
+_BSKY_MAX_EVENTS_PER_RUN = 8
+_MAX_BSKY_NOTIFY_PER_RUN = 3
+_BSKY_MAX_SENDS_PER_HOUR = 4
+
+# --- DÉCOUVERTE de comptes X, EN PROBATION (W2a) --------------------------- #
+#
+# « Des annonces intéressantes d'autres utilisateurs. » La liste des comptes
+# suivis est aujourd'hui figée à la main ; or les comptes qui comptent se citent
+# entre eux. La liste grandit donc DEPUIS LE RÉSEAU DE CE QU'ON LIT DÉJÀ : toute
+# mention ``@handle`` trouvée dans un post retenu (X, Bluesky) ou dans un titre
+# de presse devient un CANDIDAT.
+#
+# Un candidat n'est pas un compte suivi : il est en PROBATION. Il est interrogé à
+# BASSE FRÉQUENCE, il ne parle JAMAIS au téléphone (ses événements naissent en
+# sourdine), et il ne rejoint la vraie liste qu'après avoir PROUVÉ deux fois
+# qu'il publie quelque chose d'important.
+X_CANDIDATE_MAX = 10             # cap de la file d'attente
+X_CANDIDATE_PROMOTE_HITS = 2     # deux preuves valent mieux qu'un coup de chance
+X_CANDIDATE_EVICT_POLLS = 6      # six passages muets = ce n'était pas la peine
+_X_CANDIDATE_EVERY = 6           # un cycle X sur six (le volet X tourne déjà 1/2)
+
+# Un candidat qui a fait ses preuves alors que la liste manuelle est PLEINE
+# reste dans la file, marqué ``pending_manual`` (on n'évince pas un compte que
+# Massii a choisi lui-même). Il y restait POUR TOUJOURS : son verdict est
+# « promote » à vie, et l'éjection ordinaire exige ``hits == 0``. Dix comptes
+# dans cet état, et la file est pleine de gens qui ne bougeront plus — plus
+# aucune inscription possible, donc **la découverte meurt**, en silence.
+#
+# Il est donc LIBÉRÉ après ce nombre de passages supplémentaires. On ne perd pas
+# son nom pour autant : il rejoint ``x_pending_seen``, une trace consultable
+# (« ces comptes-là méritaient une place, il n'y en avait pas »).
+X_CANDIDATE_PENDING_POLLS = 6
+X_PENDING_SEEN_MAX = 10
+
+# Cap d'événements JOURNALISÉS par passage de la file de probation. Dix
+# candidats × huit posts = quatre-vingts événements possibles en un passage,
+# contre ``_MAX_EVENTS`` = 100 pour TOUT l'historique : la file la moins fiable
+# du guetteur pouvait à elle seule chasser la presse, la politique et les
+# banques centrales du fil. Le cap borne la JOURNALISATION, jamais la MESURE :
+# les ``hits`` qui décident d'une promotion continuent de compter au-delà (même
+# règle que le cap du volet monde, cf. ``_run_world_volet``).
+X_CANDIDATE_MAX_EVENTS_PER_RUN = 4
+
+# Anomalies tolérées sur un CANDIDAT avant de le sortir de la file. Un candidat
+# est souvent un compte qui n'existe pas (une mention mal lue, un compte
+# supprimé) : deux refus suffisent à le dire, et il n'a droit à aucune escalade
+# vers le navigateur furtif — cf. ``_x_posts_for``.
+X_CANDIDATE_MAX_FAILS = 2
+
+# ⚠️ La longueur est vérifiée EN PYTHON, pas dans l'expression. Un ``{1,15}``
+# suivi d'une garde de fin de mot BACKTRACKE : sur un jeton de dix-sept
+# caractères il finirait par accepter les quatorze premiers, c'est-à-dire un
+# compte qui n'existe pas. On capture le jeton ENTIER, puis on jette ce qui
+# dépasse — un handle X fait au plus quinze caractères.
+_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_@])@([A-Za-z0-9_]+)")
+
 # --- volet X « comptes influents » (extension 2026-08-26) ------------------ #
 #
 # Canal SONDÉ : ``GET https://x.com/<handle>`` en curl_cffi
@@ -285,7 +484,12 @@ _WORLD_STORY_MUTE_H = _GOV_STORY_MUTE_H
 X_ACCOUNTS_NAME = "x_accounts.json"
 X_DEFAULT_HANDLES = ("elonmusk", "WhiteHouse")
 X_MAX_HANDLES = 10
-_X_HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
+# Longueur maximale d'un handle X. Écrite ICI et réutilisée par
+# ``_X_HANDLE_RE`` comme par ``extract_mentions`` : deux chiffres en dur
+# finiraient par diverger, et le jour où X change sa limite on ne
+# corrigerait que la moitié du fichier.
+X_HANDLE_MAX_LEN = 15
+_X_HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{1,%d}$" % X_HANDLE_MAX_LEN)
 _X_CYCLE_EVERY = 2               # 1 cycle sur 2 (cf. ci-dessus)
 _X_PACE_S = 1.5                  # plancher entre deux comptes
 _X_POST_MAX_LEN = 140            # un post tronqué reste un titre lisible
@@ -317,7 +521,50 @@ _CASHTAG_RE = re.compile(r"\$([A-Z]{1,5})\b")
 # dans le même cycle (marteler un service qui vient de dire non est la façon la
 # plus sûre de se faire bloquer l'IP) : il compte une erreur, et le prochain
 # cycle dû retentera un quart d'heure plus tard.
-REDDIT_SUBS = ("wallstreetbets", "stocks", "investing", "StockMarket")
+# --- DEUX groupes, interrogés en ALTERNANCE (correctif 27/08) -------------- #
+#
+# L'élargissement du 26/08 avait mis les dix subs dans UN multireddit, au motif
+# qu'il ne coûtait pas une requête de plus. Deux défauts, dont un mesuré en
+# production :
+#
+# 1. **panne totale** — le multireddit à dix a rendu **403 depuis l'Omen**. Un
+#    seul sub en quarantaine, privé ou renommé, et TOUT tombe : les six
+#    nouveaux ET les quatre d'origine, qui marchaient très bien avant. Une
+#    source unique qui agrège dix dépendances est dix fois plus fragile qu'une
+#    source unique. (Le 403 n'a PAS pu être attribué à un sub précis : les
+#    sondes par-sub rendent 200 — l'hypothèse encore ouverte est une
+#    heuristique anti-bot sur les URL longues, d'où des groupes COURTS.)
+# 2. **dilution** — la réponse est plafonnée à cent posts, quel que soit le
+#    nombre de subs. Dix subs dans la même requête, c'est dix fois moins de
+#    chaque : le compteur de mentions, qui cherche une ACCÉLÉRATION, perdait la
+#    résolution qui lui sert à la voir.
+#
+# Chaque passage n'interroge donc qu'UN groupe (une requête, le plafond de
+# 1 req/60 s reste tenu avec la même marge), et les groupes alternent. Un
+# groupe qui échoue compte une erreur et laisse l'autre continuer : le passage
+# suivant tombe sur l'autre groupe, quoi qu'il arrive.
+#
+# Le prix, assumé : chaque groupe est vu deux fois moins souvent (~1 cycle sur
+# six, soit une demi-heure). Pour un compteur dont la fenêtre est de 24 h, c'est
+# indolore ; la panne totale, elle, ne l'était pas.
+REDDIT_CORE = ("wallstreetbets", "stocks", "investing", "StockMarket")
+
+# Le monde. « IndianStreetBets » manque VOLONTAIREMENT : la sonde par-sub
+# depuis l'Omen n'en a tiré que des 429 de collision avec le guetteur vivant —
+# ni mort ni sain prouvé. Le mécanisme d'alternance tolérerait un sub malade,
+# mais on ne lance pas avec un doute connu. Réintégrable après une sonde propre :
+#     "IndianStreetBets",
+REDDIT_INTL = ("mauerstrassenwetten", "UKInvesting", "ASX_Bets",
+               "CanadianInvestor", "eupersonalfinance")
+
+#: Les groupes, dans l'ordre d'alternance. Le groupe HISTORIQUE d'abord : un
+#: état neuf (compteur à 0) commence par les quatre subs qui ont toujours
+#: répondu.
+REDDIT_GROUPS: Tuple[Tuple[str, ...], ...] = (REDDIT_CORE, REDDIT_INTL)
+
+#: Tous les subs suivis, toutes rotations confondues — c'est la vue « qui
+#: nourrit ce compteur », pas une URL : aucune requête ne les demande ensemble.
+REDDIT_SUBS = REDDIT_CORE + REDDIT_INTL
 REDDIT_LIMIT = 100
 _REDDIT_CYCLE_EVERY = 3          # 1 cycle sur 3 (cf. ci-dessus)
 _REDDIT_MAX_AGE_S = 24 * 3600    # comme le gov et le crypto : l'immédiateté
@@ -952,6 +1199,78 @@ def format_climat_message(title: str, link: str, sentiment: str,
     return "[Simulateur] %s%s\n« %s »\n%s" % (head, tail, title, link)
 
 
+# --- classification BANQUES CENTRALES (volet « bc », W2a) ------------------ #
+#
+# Pas de GATE de pertinence, et c'est le point : ces trois flux sont
+# INTÉGRALEMENT de la banque centrale. Un gate y serait une seconde opinion sur
+# une source qui n'en a pas besoin — et il ferait taire précisément ce qu'on est
+# venu chercher (un communiqué dont le titre ne contient aucun mot-clé macro,
+# « Statement by the Board of Governors », est exactement le communiqué qui
+# compte).
+#
+# La tonalité est celle du MARCHÉ, comme partout ailleurs dans ce fichier : un
+# resserrement est ``neg`` (il pèse sur les actifs), une détente est ``pos``.
+_BC_NEG_KEYWORDS = [
+    "emergency", "unscheduled", "intervention", "intervenes", "intervened",
+    "crisis", "bailout", "rescue", "failure", "failed bank", "resolution",
+    "enforcement action", "cease and desist", "penalty", "fine", "fines",
+    "sanction", "suspends", "suspension", "restrictions", "systemic risk",
+    "raises rates", "raise rates", "rate hike", "rate increase", "hikes",
+    "tightening", "tighter policy", "quantitative tightening",
+    "hausse des taux", "resserrement", "rialzo dei tassi",
+]
+
+# RARE, et c'est normal : une banque centrale annonce rarement une bonne
+# nouvelle en toutes lettres. La liste existe pour ne pas ranger une DÉTENTE
+# parmi les menaces.
+_BC_POS_KEYWORDS = [
+    "rate cut", "rate cuts", "cuts rates", "cut rates", "lowers rates",
+    "lower rates", "lowers the target", "easing", "accommodative",
+    "asset purchases", "liquidity support", "swap line", "swap lines",
+    "baisse des taux", "assouplissement", "taglio dei tassi",
+]
+
+
+def classify_bc(title: str) -> Optional[str]:
+    """Classe un communiqué de banque centrale : ``"neg"`` | ``"pos"`` |
+    ``"watch"`` (PUR). Ne rend ``None`` que sur un titre VIDE — ou sur un conseil
+    d'investissement, cas qui n'arrivera jamais depuis ces sources mais dont la
+    garde reste posée : la doctrine « on ne relaie jamais un conseil » (piège
+    #67d) ne souffre aucune exception de provenance.
+
+    ``"watch"`` est le DÉFAUT, pas un repli : un communiqué, un procès-verbal, un
+    discours de gouverneur sont par nature des choses **à surveiller**. Les
+    ranger en pos ou en neg serait prétendre lire une décision que le texte ne
+    contient pas.
+    """
+    if not title:
+        return None
+    t = title.lower()
+    if any(_keyword_matches(t, kw) for kw in _ADVICE_KEYWORDS):
+        return None
+    if any(_keyword_matches(t, kw) for kw in _BC_NEG_KEYWORDS):
+        return "neg"
+    if any(_keyword_matches(t, kw) for kw in _BC_POS_KEYWORDS):
+        return "pos"
+    return "watch"
+
+
+def format_bc_message(title: str, link: str, sentiment: str,
+                      symbol: Optional[str] = None) -> str:
+    """Message Telegram d'un communiqué de banque centrale.
+
+    L'en-tête dit d'où ça vient — « source officielle » — parce que c'est
+    précisément ce qui distingue ce volet des trois autres : ce n'est pas un
+    journal qui rapporte, c'est l'institution qui parle.
+    """
+    head = {"neg": "Banque centrale — resserrement ou mesure d'urgence",
+            "pos": "Banque centrale — détente"}.get(
+                sentiment, "Banque centrale — publication à surveiller")
+    tail = " — %s" % symbol if symbol else ""
+    return ("[Simulateur] %s%s (source officielle)\n« %s »\n%s"
+            % (head, tail, title, link))
+
+
 # --- classification des posts X (volet « comptes influents », 26/08) ------- #
 
 def x_post_title(text: str) -> str:
@@ -1024,6 +1343,142 @@ def format_x_message(handle: str, title: str, link: str, sentiment: str,
             % (handle, tail, title, link))
 
 
+def format_pressefi_message(source: str, title: str, link: str, sentiment: str,
+                            symbol: Optional[str] = None) -> str:
+    """Message Telegram d'une dépêche de presse mondiale.
+
+    Le NOM DU JOURNAL est affiché : sur ce volet, il est la moitié de
+    l'information. « Nestlé rachète » vu par la NZZ et vu par le South China
+    Morning Post ne se lisent pas de la même façon, et savoir d'où ça vient est
+    ce qui permet à Massii de juger sans nous croire sur parole.
+    """
+    label = {"neg": "Mauvaise nouvelle", "pos": "Bonne nouvelle"}.get(
+        sentiment, "Catalyseur à venir")
+    who = " ".join(str(source or "").split()) or "presse"
+    tail = " — %s" % symbol if symbol else ""
+    return ("[Simulateur] %s (%s)%s\n« %s »\n%s"
+            % (label, who, tail, title, link))
+
+
+def classify_social(text: str, anchors: Any = None) -> Optional[Dict[str, Any]]:
+    """Un post SOCIAL est-il important ? -> ``{"sentiment", "symbol"}`` ou
+    ``None`` (PUR).
+
+    C'est ``classify_x`` — ses quatre portes, dans son ordre — plus **deux
+    portes de plus**, et elles ne sont pas décoratives : les deux requêtes fixes
+    du volet Bluesky (« market selloff », « rate decision ») ramènent
+    précisément des posts MACRO. Or « the Fed cuts rates » ne porte ni cashtag,
+    ni mot de ``_GOV_KEYWORDS``, ni marqueur crypto, ni nom d'entreprise : sans
+    ces deux portes, les deux requêtes génériques ne rendraient jamais rien et
+    le volet serait un décor.
+
+    5. **macroéconomie** (``classify_eco``, gate compris) ;
+    6. **climat à impact économique** (``classify_climat``, dont le gate exige
+       DÉJÀ un aléa ET une dimension économique — la porte la plus étroite des
+       six, donc la moins susceptible de laisser passer du bruit).
+
+    Le symbole reste celui de l'entreprise NOMMÉE quand il y en a une : une
+    dépêche macro qui cite Nestlé rejoint la branche de Nestlé, pas le pivot
+    « monde ». ``classify_x`` n'est PAS modifiée — le volet X garde exactement
+    le comportement épinglé par ses tests, et cette extension ne vaut que pour
+    les canaux qui la demandent.
+    """
+    verdict = classify_x(text, anchors)
+    if verdict is not None:
+        return verdict
+    if not text:
+        return None
+    body = str(text)
+    for classifier in (classify_eco, classify_climat):
+        sentiment = classifier(body)
+        if sentiment:
+            return {"sentiment": sentiment,
+                    "symbol": entities.first_company(body, anchors)}
+    return None
+
+
+def format_bsky_message(author: str, title: str, link: str, sentiment: str,
+                        symbol: Optional[str] = None) -> str:
+    """Message Telegram d'un post Bluesky retenu.
+
+    L'auteur est affiché SANS ``@`` collé au nom : un handle Bluesky est un nom
+    de domaine (``ledger.bsky.social``), l'arobase y ferait croire à un compte X.
+    """
+    who = str(author or "").strip() or "inconnu"
+    tail = " — %s" % symbol if symbol else ""
+    return ("[Simulateur] Bluesky (%s)%s\n« %s »\n%s"
+            % (who, tail, title, link))
+
+
+# --- Bluesky : les requêtes, construites à chaque cycle (PUR) -------------- #
+
+def _anchor_names(anchors: Any) -> List[str]:
+    """Un nom par SYMBOLE ancré, ordre déterministe (PUR).
+
+    ``anchors`` est ``{nom en minuscules: SYMBOLE}`` (cf.
+    ``entities.anchor_index``) : plusieurs clés y pointent le même symbole — le
+    nom complet, le nom sans sa forme juridique, ET LE TICKER LUI-MÊME. D'où
+    deux règles de choix, les deux mesurées :
+
+    1. **le ticker est un DERNIER RECOURS.** « nesn.sw stock » ne ramène rien sur
+       un réseau social, « nestle stock » ramène ce dont les gens parlent — et
+       c'est le ticker qui gagnait tant qu'on prenait le nom le plus LONG
+       (« nesn.sw » fait sept caractères, « nestle » six) ;
+    2. entre deux VRAIS noms, **le plus court gagne** : c'est la MARQUE.
+       « apple » trouve ce que « apple inc. » manque, et ``strip_legal_suffix``
+       garantit déjà que le plus court reste un nom, pas un fragment.
+
+    Le tri final se fait par SYMBOLE pour que deux cycles produisent exactement
+    la même liste de requêtes.
+    """
+    if not isinstance(anchors, dict):
+        return []
+    best: Dict[str, Tuple[int, int, str]] = {}
+    for name, symbol in anchors.items():
+        key = str(symbol or "").strip().upper()
+        value = " ".join(str(name or "").split())
+        if not key or not value:
+            continue
+        # (0) un vrai nom passe avant (1) le ticker ; puis le plus court ; puis
+        # l'ordre alphabétique, pour ne jamais dépendre de l'ordre du dict.
+        rank = (1 if value.lower() == key.lower() else 0, len(value), value)
+        if key not in best or rank < best[key]:
+            best[key] = rank
+    return [best[symbol][2] for symbol in sorted(best)]
+
+
+def bsky_queries(anchors: Any = None,
+                 fixed: Any = BSKY_FIXED_QUERIES,
+                 cap: int = BSKY_MAX_ANCHOR_QUERIES) -> List[str]:
+    """Les requêtes de recherche Bluesky de ce cycle (PUR).
+
+    Les deux fixes d'abord (le monde), puis au plus ``cap`` requêtes d'ancre (ce
+    portefeuille). Dédoublonnées sans tenir compte de la casse, ordre stable.
+
+    **Invariant, leçon #68k : toute requête rendue a au moins DEUX mots.** Un
+    nom d'ancre d'un seul mot se voit adjoindre ``BSKY_ANCHOR_SUFFIX``
+    (« nestle » -> « nestle stock ») ; une requête fixe d'un seul mot est
+    REFUSÉE plutôt que rafistolée — si quelqu'un en écrit une un jour, c'est le
+    catalogue qu'il faut corriger, pas la requête qu'il faut deviner.
+    """
+    out: List[str] = []
+    seen = set()
+
+    def _add(query: str) -> None:
+        clean = " ".join(str(query or "").split())
+        if len(clean.split()) < 2 or clean.lower() in seen:
+            return
+        seen.add(clean.lower())
+        out.append(clean)
+
+    for query in (fixed or ()):
+        _add(query)
+    for name in _anchor_names(anchors)[:max(0, int(cap))]:
+        _add(name if len(name.split()) >= 2
+             else "%s %s" % (name, BSKY_ANCHOR_SUFFIX))
+    return out
+
+
 def normalize_handles(values: Any) -> List[str]:
     """Liste de comptes X validée (PUR) : ``@`` retiré, format
     ``^[A-Za-z0-9_]{1,15}$``, dédoublonnée sans tenir compte de la casse,
@@ -1045,6 +1500,256 @@ def normalize_handles(values: Any) -> List[str]:
         if len(out) >= X_MAX_HANDLES:
             break
     return out
+
+
+# --------------------------------------------------------------------------- #
+# DÉCOUVERTE de comptes X — la file de probation (PUR)
+#
+# Doctrine : **la liste grandit depuis le réseau de ce qu'on lit déjà.** On ne
+# va pas chercher des comptes dans un annuaire ni dans un classement de
+# popularité — on regarde qui les comptes et les journaux qu'on lit DÉJÀ citent.
+# Un compte cité par une source qu'on a jugée digne d'être lue a, par
+# construction, une chance d'être lui aussi digne d'être lu.
+#
+# Et on ne le croit pas sur parole : il entre en PROBATION. Interrogé à basse
+# fréquence, muet par construction (ses événements naissent en sourdine), il ne
+# rejoint la vraie liste qu'après ``X_CANDIDATE_PROMOTE_HITS`` publications
+# jugées importantes par le classifieur ordinaire. Sans rien de tel au bout de
+# ``X_CANDIDATE_EVICT_POLLS`` passages, il repart — la file ne se transforme pas
+# en cimetière.
+# --------------------------------------------------------------------------- #
+
+def extract_mentions(text: Any) -> List[str]:
+    """Les comptes ``@mentionnés`` dans un texte (PUR).
+
+    Dédoublonnés sans tenir compte de la casse, dans l'ordre d'apparition, avec
+    la casse d'ORIGINE (un handle X est insensible à la casse mais s'affiche
+    comme son porteur l'écrit).
+
+    Trois gardes valent d'être dites :
+
+    * la mention doit être un MOT (pas d'``@`` collé à une lettre, sinon
+      ``john@example.com`` deviendrait un compte) ;
+    * un jeton de plus de quinze caractères est JETÉ, pas tronqué — au-delà, ce
+      n'est plus un handle X, et en tronquer un fabriquerait un compte qui
+      n'existe pas ;
+    * ⚠️ un jeton suivi d'un **point puis d'une lettre ou d'un chiffre** est
+      jeté aussi : c'est un NOM DE DOMAINE, donc une mention **Bluesky**
+      (``@nytimes.com``, ``@bloomberg.bsky.social``), pas un handle X. Sans
+      cette garde on gardait la TÊTE (``nytimes``, ``bloomberg``) et on
+      inscrivait dans la file de probation un compte X *inventé* : il rend 404,
+      deux 404 valaient une escalade, et on démarrait un Chrome furtif pour un
+      compte qui n'existe pas — jusqu'à dix fois par heure. Le volet Bluesky en
+      ramène à chaque passage : le robinet ne se fermait jamais.
+
+    Le test porte sur le point ET sur ce qui le suit : un point de FIN DE PHRASE
+    (« merci @elonmusk. ») n'est pas un domaine, et ce compte-là existe. La
+    garde est écrite EN PYTHON et non dans l'expression — un ``(?!\\.)`` ferait
+    BACKTRACKER le moteur, qui accepterait alors ``nytime``, c'est-à-dire
+    exactement le compte inventé qu'on cherche à éviter (même piège que la note
+    de ``_MENTION_RE``).
+    """
+    body = str(text or "")
+    out: List[str] = []
+    seen = set()
+    for match in _MENTION_RE.finditer(body):
+        handle = match.group(1)
+        if len(handle) > X_HANDLE_MAX_LEN or handle.lower() in seen:
+            continue
+        tail = body[match.end():match.end() + 2]
+        if tail[:1] == "." and tail[1:2].isalnum():
+            continue                  # domaine -> mention Bluesky, pas un handle X
+        seen.add(handle.lower())
+        out.append(handle)
+    return out
+
+
+def note_mentions(candidates: Any, mentions: Any, now_iso: str,
+                  known: Any = (), cap: int = X_CANDIDATE_MAX) -> List[str]:
+    """Inscrit des comptes mentionnés dans la file de probation — MUTE
+    ``candidates`` et rend la liste des handles RÉELLEMENT ajoutés (PUR au sens
+    « aucune I/O »).
+
+    Trois refus, tous silencieux : un compte DÉJÀ suivi (il n'est pas candidat,
+    il est en poste), un compte déjà candidat (son compteur ne repart pas de
+    zéro à chaque citation — sinon un compte cité tous les jours ne serait
+    jamais ni promu ni éjecté), et tout le reste une fois le cap atteint.
+    """
+    if not isinstance(candidates, dict):
+        return []
+    followed = {str(h or "").strip().lstrip("@").lower()
+                for h in (known or ()) if str(h or "").strip()}
+    existing = {str(h).lower() for h in candidates}
+    added: List[str] = []
+    for handle in (mentions or []):
+        name = str(handle or "").strip().lstrip("@")
+        low = name.lower()
+        if not _X_HANDLE_RE.match(name) or low in followed or low in existing:
+            continue
+        if len(candidates) >= max(0, int(cap)):
+            break
+        candidates[name] = {"first_seen": now_iso, "polls": 0, "hits": 0}
+        existing.add(low)
+        added.append(name)
+    return added
+
+
+def candidate_verdict(entry: Any,
+                      promote_hits: int = X_CANDIDATE_PROMOTE_HITS,
+                      evict_polls: int = X_CANDIDATE_EVICT_POLLS) -> str:
+    """Le sort d'un candidat : ``"promote"`` | ``"evict"`` | ``"keep"`` (PUR).
+
+    L'éjection exige ``hits == 0`` : un candidat qui a montré UNE chose
+    intéressante mais pas deux n'est pas un mauvais compte, c'est un compte
+    lent — on le garde. Seul le silence complet est éliminatoire.
+
+    Un état illisible rend ``"keep"`` : on ne promeut ni n'éjecte sur une
+    donnée qu'on ne sait pas lire.
+    """
+    if not isinstance(entry, dict):
+        return "keep"
+    try:
+        hits = int(entry.get("hits") or 0)
+        polls = int(entry.get("polls") or 0)
+    except (TypeError, ValueError):
+        return "keep"
+    if hits >= promote_hits:
+        return "promote"
+    if hits <= 0 and polls >= evict_polls:
+        return "evict"
+    return "keep"
+
+
+def _int_field(entry: Dict[str, Any], key: str) -> int:
+    """Un compteur d'entrée de file, illisible -> 0 (PUR)."""
+    try:
+        return int(entry.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def promote_candidates(candidates: Any, known: Any,
+                       cap: int = X_MAX_HANDLES,
+                       pending_seen: Any = None,
+                       pending_polls: int = X_CANDIDATE_PENDING_POLLS
+                       ) -> Dict[str, List[str]]:
+    """Applique les verdicts à toute la file — MUTE ``candidates``.
+
+    Rend ``{"promoted", "pending", "evicted", "released"}``.
+
+    **La liste manuelle est intouchable.** Quand elle est PLEINE, un candidat qui
+    a fait ses preuves n'évince personne : il est marqué ``pending_manual`` et
+    reste dans la file, visible. Évincer un compte que Massii a choisi lui-même
+    au profit d'un compte découvert tout seul, ce serait décider à sa place —
+    et il n'aurait aucun moyen de savoir ce qui a disparu.
+
+    ``pending`` ne liste que les candidats NOUVELLEMENT en attente : sans ça,
+    l'appelant rejournaliserait les mêmes noms toutes les dix minutes jusqu'à
+    ce qu'une place se libère. Le drapeau, lui, reste posé — et il n'empêche
+    JAMAIS une promotion le jour où une place se libère vraiment.
+
+    ⚠️ **Mais il ne squatte plus la file à vie.** Un candidat en attente a un
+    verdict « promote » PERPÉTUEL et l'éjection ordinaire exige ``hits == 0`` :
+    il ne pouvait donc plus jamais sortir. Dix comptes dans cet état, et plus
+    aucune inscription n'était possible — la découverte mourait, sans un mot.
+    Après ``pending_polls`` passages de plus, il est **libéré** (``released``),
+    et son nom rejoint ``pending_seen`` (liste MUTÉE, plafonnée à
+    ``X_PENDING_SEEN_MAX``, les plus récents gardés) pour qu'on sache ce qu'on
+    a laissé partir. Une place qui se libère AVANT ce délai le promeut quand
+    même : la libération est un plan B, pas une condamnation.
+    """
+    result = {"promoted": [], "pending": [], "evicted": [], "released": []}
+    if not isinstance(candidates, dict):
+        return result
+    room = max(0, int(cap) - len(normalize_handles(list(known or []))))
+    for handle in sorted(candidates):
+        entry = candidates.get(handle)
+        verdict = candidate_verdict(entry)
+        if verdict == "evict":
+            candidates.pop(handle, None)
+            result["evicted"].append(handle)
+        elif verdict == "promote":
+            if room > 0:
+                candidates.pop(handle, None)
+                result["promoted"].append(handle)
+                room -= 1
+                continue
+            if not isinstance(entry, dict):
+                continue
+            already = bool(entry.get("pending_manual"))
+            entry["pending_manual"] = True
+            if not already:
+                # Le passage de RÉFÉRENCE, posé une seule fois : c'est de lui
+                # que se compte l'attente. Un état écrit avant cette extension
+                # n'en a pas -> il le reçoit ici et repart pour un tour plein.
+                entry["pending_since_polls"] = _int_field(entry, "polls")
+                result["pending"].append(handle)
+                continue
+            entry.setdefault("pending_since_polls", _int_field(entry, "polls"))
+            waited = _int_field(entry, "polls") - _int_field(entry, "pending_since_polls")
+            if waited >= max(0, int(pending_polls)):
+                candidates.pop(handle, None)
+                result["released"].append(handle)
+                _note_pending_seen(pending_seen, handle, entry)
+    return result
+
+
+def _note_pending_seen(pending_seen: Any, handle: str,
+                       entry: Dict[str, Any]) -> None:
+    """Garde la trace d'un candidat LIBÉRÉ faute de place — MUTE la liste.
+
+    Ce n'est pas une file de travail, c'est un pense-bête : « ces comptes-là
+    avaient fait leurs preuves, la liste manuelle était pleine ». Plafonné, les
+    plus récents gardés (une trace qui grossit sans fin n'est plus une trace).
+    """
+    if not isinstance(pending_seen, list):
+        return
+    pending_seen.append({
+        "handle": handle,
+        "hits": _int_field(entry, "hits"),
+        "first_seen": str(entry.get("first_seen") or ""),
+    })
+    if len(pending_seen) > X_PENDING_SEEN_MAX:
+        pending_seen[:] = pending_seen[-X_PENDING_SEEN_MAX:]
+
+
+def reddit_group(counter: Any) -> Tuple[str, ...]:
+    """Le groupe de subreddits à interroger à ce passage (PUR).
+
+    Alternance stricte sur un compteur qui monte à CHAQUE passage, réussi ou
+    non : c'est ce qui garantit qu'un groupe en panne ne peut pas retenir
+    l'autre en otage — le passage suivant change de groupe quoi qu'il arrive.
+
+    Compteur illisible -> le premier groupe (le groupe historique), jamais une
+    exception : un état corrompu ne doit pas éteindre le volet.
+    """
+    try:
+        index = int(counter)
+    except (TypeError, ValueError):
+        index = 0
+    if not REDDIT_GROUPS:
+        return ()
+    return REDDIT_GROUPS[index % len(REDDIT_GROUPS)]
+
+
+def cycle_due(cycle: Any, every: Any) -> bool:
+    """Ce cycle doit-il faire tourner un volet cadencé ? (PUR.)
+
+    Généralisation de ``x_cycle_due``/``reddit_cycle_due`` pour les volets
+    arrivés ensuite (banques centrales, presse mondiale, Bluesky), qui n'ont pas
+    tous la même période. Même posture qu'eux sur une donnée illisible :
+    ``True`` — un état corrompu ne doit jamais éteindre un volet pour toujours.
+    """
+    try:
+        period = int(every)
+    except (TypeError, ValueError):
+        return True
+    if period <= 1:
+        return True
+    try:
+        return int(cycle) % period == 0
+    except (TypeError, ValueError):
+        return True
 
 
 def x_cycle_due(cycle: Any) -> bool:
@@ -1353,8 +2058,11 @@ def _default_seen_state() -> Dict[str, Any]:
     return {"seen": {}, "events": [], "seeded": {}, "stories": {},
             "sent_log": [], "crypto_sent_log": [], "x_sent_log": [],
             "eco_sent_log": [], "climat_sent_log": [],
+            "bc_sent_log": [], "pressefi_sent_log": [], "bsky_sent_log": [],
             "x_cycle": 0, "x_tiers": {}, "x_fails": {},
-            "reddit_cycle": 0, "reddit_trends": {}}
+            "x_candidates": {}, "x_cand_cycle": 0, "x_pending_seen": [],
+            "bc_cycle": 0, "pressefi_cycle": 0, "bsky_cycle": 0,
+            "reddit_cycle": 0, "reddit_group_cycle": 0, "reddit_trends": {}}
 
 
 def _load_seen_state(path: Path) -> Dict[str, Any]:
@@ -1384,7 +2092,19 @@ def _load_seen_state(path: Path) -> Dict[str, Any]:
     "climat_sent_log" (leurs budgets horaires propres). Un état écrit avant eux
     repart d'une liste vide, donc d'un budget plein — c'est le bon défaut : au
     pire un volet neuf parle une fois de trop à son premier passage, jamais
-    l'inverse."""
+    l'inverse.
+
+    Idem, encore, pour les trois volets MONDIAUX du 26/08 (W2a) :
+    "bc_sent_log"/"pressefi_sent_log"/"bsky_sent_log" (budgets propres) et
+    "bc_cycle"/"pressefi_cycle"/"bsky_cycle" (leurs cadences, qui n'ont pas
+    toutes la même période — cf. ``cycle_due``). Et pour la file de probation
+    des comptes X : "x_candidates" (les candidats et leurs compteurs),
+    "x_cand_cycle" (leur cadence de sondage) et "x_pending_seen" (la trace des
+    candidats libérés faute de place dans la liste manuelle).
+
+    Idem, enfin, pour "reddit_group_cycle" (27/08) : quel GROUPE de subreddits
+    a été interrogé au dernier passage — cf. REDDIT_GROUPS. Absent -> 0, donc
+    le groupe historique d'abord."""
     if not path.is_file():
         return _default_seen_state()
     try:
@@ -1422,10 +2142,20 @@ def _load_seen_state(path: Path) -> Dict[str, Any]:
         "x_sent_log": _list("x_sent_log"),
         "eco_sent_log": _list("eco_sent_log"),
         "climat_sent_log": _list("climat_sent_log"),
+        "bc_sent_log": _list("bc_sent_log"),
+        "pressefi_sent_log": _list("pressefi_sent_log"),
+        "bsky_sent_log": _list("bsky_sent_log"),
         "x_cycle": _counter("x_cycle"),
         "x_tiers": _dict("x_tiers"),
         "x_fails": _dict("x_fails"),
+        "x_candidates": _dict("x_candidates"),
+        "x_cand_cycle": _counter("x_cand_cycle"),
+        "x_pending_seen": _list("x_pending_seen"),
+        "bc_cycle": _counter("bc_cycle"),
+        "pressefi_cycle": _counter("pressefi_cycle"),
+        "bsky_cycle": _counter("bsky_cycle"),
         "reddit_cycle": _counter("reddit_cycle"),
+        "reddit_group_cycle": _counter("reddit_group_cycle"),
         "reddit_trends": _dict("reddit_trends"),
     }
 
@@ -1632,6 +2362,102 @@ def _social_module():
     return social
 
 
+def _news_module():
+    """``pulse.news`` du moteur Market Pulse (même pont ``sys.path`` que
+    ``_social_module``).
+
+    ⚠️ C'est LUI qui porte la cascade de collecte de presse — fraîcheur,
+    ``stale_sources``, filtre des conseils, filtre du hors-sujet, partage
+    ÉQUITABLE par source avant troncature. Cinq comportements sondés et corrigés
+    par l'expérience (cf. piège #67c/e). On l'EMPRUNTE ; on ne le réécrit pas.
+    """
+    path = str(ENGINE_DIR)
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    from pulse import news                    # noqa: E402 — pont sys.path
+    return news
+
+
+def pressefi_feeds() -> List[Dict[str, str]]:
+    """La liste des flux du volet presse mondiale.
+
+    Les flux du moteur Market Pulse (italiens et anglophones, déjà sondés)
+    PLUS les neuf sondés le 26/08. Deux précisions :
+
+    * un flux déjà servi par le volet **banques centrales** est RETIRÉ ici (le
+      moteur embarque celui de la BCE). Un même communiqué lu par deux volets ne
+      produirait qu'un seul événement — le dédoublonnage se fait par lien — mais
+      ce serait celui des DEUX qui a tourné le premier, donc au hasard : le
+      communiqué de la BCE finirait tantôt en « source officielle », tantôt en
+      « presse ». La source officielle a la priorité, c'est la doctrine du volet ;
+    * moteur absent -> les neuf sondés suffisent. Le volet rétrécit, il ne meurt
+      pas.
+    """
+    owned = {str(url) for url in _BC_SOURCES}
+    feeds: List[Dict[str, str]] = []
+    try:
+        base = _news_module().FEEDS or []
+    except Exception:      # noqa: BLE001 — moteur absent
+        logger.warning("paper newswatch: moteur market-pulse absent, "
+                       "presse mondiale réduite aux flux propres")
+        base = []
+    for feed in base:
+        if isinstance(feed, dict) and str(feed.get("url") or "") not in owned:
+            feeds.append(dict(feed))
+    feeds.extend(dict(feed) for feed in PRESSEFI_EXTRA_FEEDS)
+    return feeds
+
+
+def _collect_news(**kwargs) -> Dict[str, Any]:
+    """La cascade de presse du moteur, appelée telle quelle."""
+    return _news_module().collect_news(**kwargs)
+
+
+# --- volet Bluesky : URL, fetch et parseur (I/O) ---------------------------- #
+
+def _bsky_urls(queries: Any) -> List[Tuple[str, str]]:
+    """``[(requête, URL de recherche)]``, ou ``[]`` si le moteur manque.
+
+    ``pulse.social.bluesky_search_url`` est empruntée telle quelle : c'est elle
+    qui porte la connaissance de l'endpoint public (``app.bsky.feed.searchPosts``),
+    sondé et vérifié en production sur Market Pulse.
+    """
+    try:
+        social = _social_module()
+    except Exception:      # noqa: BLE001 — moteur absent
+        logger.warning("paper newswatch: moteur market-pulse absent, "
+                       "Bluesky ignoré")
+        return []
+    out: List[Tuple[str, str]] = []
+    for query in (queries or []):
+        url = social.bluesky_search_url(query, BSKY_SEARCH_LIMIT)
+        if url:
+            out.append((query, url))
+    return out
+
+
+def _fetch_bsky(url: str) -> Any:
+    """La réponse JSON de la recherche Bluesky, en OCTETS.
+
+    Même session curl_cffi que les autres volets. Tout statut non-200 lève :
+    l'appelant compte une erreur et passe à la requête suivante — une recherche
+    en panne ne doit jamais emporter les autres.
+    """
+    session = _get_session()
+    resp = session.get(url, timeout=20.0)
+    status = getattr(resp, "status_code", 0)
+    if status != 200:
+        raise RuntimeError("Bluesky HTTP %s" % status)
+    return resp.content
+
+
+def _parse_bsky_posts(raw: Any) -> List[Dict[str, Any]]:
+    """Les posts d'une réponse de recherche, via ``pulse.social.parse_bluesky``
+    (qui nettoie déjà les textes : URL collée, grappe de hashtags, marqueurs de
+    continuation)."""
+    return _social_module().parse_bluesky(raw) or []
+
+
 def _parse_x_posts(page: str, handle: str) -> List[Dict[str, Any]]:
     """Les posts d'une page de profil, via ``pulse.social.parse_x``.
 
@@ -1655,15 +2481,21 @@ def _x_serialization_error():
 
 # --- volet Reddit : URL, fetch et parseur (I/O) ----------------------------- #
 
-def _reddit_url() -> str:
-    """L'URL multireddit du flux Atom, ou ``""`` si le moteur manque.
+def _reddit_url(subs: Any = None) -> str:
+    """L'URL multireddit du flux Atom pour ``subs``, ou ``""`` si le moteur
+    manque.
 
     ``pulse.social.reddit_url`` est empruntée telle quelle : c'est elle qui
     porte la connaissance du format (``/r/a+b+c/.rss?limit=N``), sondée et
     vérifiée à la main pour le radar.
+
+    ``subs`` absent -> TOUS les subs suivis. Ce n'est PAS ce que le volet
+    demande (il passe un groupe, cf. ``REDDIT_GROUPS``) : c'est le défaut de
+    lecture, pour qui veut savoir à quoi ressemble l'URL de la totalité.
     """
     try:
-        return _social_module().reddit_url(REDDIT_SUBS, REDDIT_LIMIT) or ""
+        return _social_module().reddit_url(subs or REDDIT_SUBS,
+                                           REDDIT_LIMIT) or ""
     except Exception:      # noqa: BLE001 — moteur absent
         logger.warning("paper newswatch: moteur market-pulse absent, Reddit ignoré")
         return ""
@@ -1927,9 +2759,16 @@ def _run_reddit_volet(state: Dict[str, Any], now_dt: datetime,
                       reddit_fetch: Optional[Callable[[str], Any]] = None,
                       reddit_parse: Optional[Callable[[Any], List[Dict[str, Any]]]] = None
                       ) -> None:
-    """Le volet « tendances de la foule » : UNE requête multireddit, deux
-    produits, ZÉRO notification. MUTE ``state`` — la persistance est faite par
-    l'appelant.
+    """Le volet « tendances de la foule » : UNE requête multireddit sur UN
+    groupe de subs, deux produits, ZÉRO notification. MUTE ``state`` — la
+    persistance est faite par l'appelant.
+
+    Les deux groupes (``REDDIT_GROUPS``) alternent d'un passage à l'autre, et le
+    compteur d'alternance monte AVANT la requête : un groupe qui rend 403 compte
+    une erreur et rend la main, l'autre passera au tour suivant. C'est tout
+    l'objet du découpage — un multireddit de dix subs tombe entièrement dès
+    qu'un seul d'entre eux est en quarantaine, et il a effectivement rendu 403
+    en production.
 
     **Il n'envoie jamais rien, dans aucun mode.** Ce n'est pas un oubli : la
     foule est un ACCÉLÉRANT, pas une preuve, et lui donner un canal direct vers
@@ -1947,7 +2786,16 @@ def _run_reddit_volet(state: Dict[str, Any], now_dt: datetime,
     n'en émet aucune. Ce sont le filtre de fraîcheur (24 h) et le cap
     d'événements par passage qui tiennent le premier cycle.
     """
-    url = _reddit_url()
+    # Le compteur monte AVANT la requête, et même si elle échoue : c'est ce qui
+    # empêche un groupe en panne de bloquer l'autre (cf. ``reddit_group``).
+    group_cycle = state.get("reddit_group_cycle") or 0
+    subs = reddit_group(group_cycle)
+    try:
+        state["reddit_group_cycle"] = int(group_cycle) + 1
+    except (TypeError, ValueError):
+        state["reddit_group_cycle"] = 1
+
+    url = _reddit_url(subs)
     if not url:
         return
 
@@ -1956,9 +2804,11 @@ def _run_reddit_volet(state: Dict[str, Any], now_dt: datetime,
 
     try:
         raw = fetch_fn(url)
-    except Exception as exc:      # noqa: BLE001 — 429, réseau, TLS
-        logger.warning("paper newswatch: Reddit injoignable (%s)",
-                       type(exc).__name__)
+    except Exception as exc:      # noqa: BLE001 — 403, 429, réseau, TLS
+        # Le groupe est nommé : sans lui, un 403 récurrent reste indébuggable —
+        # on ne saurait pas LEQUEL des deux est fâché.
+        logger.warning("paper newswatch: Reddit injoignable sur [%s] (%s)",
+                       "+".join(subs), type(exc).__name__)
         counters["errors"] += 1
         return
     counters["fetched"] += 1
@@ -2084,15 +2934,26 @@ def _x_posts_for(handle: str, now_dt: datetime, tiers: Dict[str, Any],
                  heavy: Callable[[str], str],
                  parse_fn: Callable[[str, str], List[Dict[str, Any]]],
                  pacer: Any, counters: Dict[str, Any],
-                 serial_error: Any) -> List[Dict[str, Any]]:
+                 serial_error: Any,
+                 escalate: bool = True) -> List[Dict[str, Any]]:
     """Les posts d'un compte, en montant d'un étage SEULEMENT si nécessaire.
 
     Le compteur d'anomalies est PERSISTÉ par compte : c'est lui qui distingue
     un blip (une page vide un cycle) d'un vrai mur (deux cycles de suite), et
     il ne peut pas vivre en mémoire de process — la veille redémarre à chaque
     déploiement.
+
+    ``escalate=False`` interdit TOUT recours au navigateur furtif : c'est le
+    régime des comptes EN PROBATION. Un candidat est très souvent un compte qui
+    n'existe pas (une mention mal lue, un compte supprimé) ; démarrer un Chrome
+    pour lui, c'est payer le prix fort pour un 404, et le faire en boucle. Le
+    furtif reste réservé aux comptes CHOISIS À LA MAIN, qui eux existent. Le
+    compteur d'échecs monte quand même — c'est lui qui sort le candidat de la
+    file (cf. ``_poll_candidates``).
     """
-    tier = x_tier_for(handle, tiers, now_dt)
+    # Un candidat reste sur le chemin léger même si ``tiers`` porte un étage
+    # furtif hérité : l'interdiction est sur le CANAL, pas sur l'historique.
+    tier = x_tier_for(handle, tiers, now_dt) if escalate else "light"
     posts: Optional[List[Dict[str, Any]]] = None
 
     if tier == "light":
@@ -2105,6 +2966,8 @@ def _x_posts_for(handle: str, now_dt: datetime, tiers: Dict[str, Any],
             fails[handle] = _X_ESCALATE_AFTER      # refus franc : on monte tout de suite
         else:
             fails[handle] = int(fails.get(handle) or 0) + 1
+        if not escalate:
+            return []                              # un candidat ne réveille JAMAIS Chrome
         if int(fails.get(handle) or 0) < _X_ESCALATE_AFTER:
             return []                              # un blip ne réveille pas Chrome
         tier = "stealth"
@@ -2140,10 +3003,14 @@ def _run_x_volet(state: Dict[str, Any], now_dt: datetime, cfg: Dict[str, Any],
 
     ``anchor_extra`` (les noms des titres détenus et suivis) descend jusqu'à
     ``classify_x`` : c'est ce qui fait qu'un post nommant une entreprise, sans
-    cashtag ni mot politique, devient un événement SYMBOLISÉ."""
+    cashtag ni mot politique, devient un événement SYMBOLISÉ.
+
+    ⚠️ Une liste manuelle VIDE ne coupe pas la probation. Elle le faisait (un
+    ``return`` en tête), et c'était le pire moment pour l'éteindre : sans compte
+    choisi à la main, la découverte est le SEUL moyen d'en avoir un — et il y a
+    dix places libres. La boucle ci-dessous ne fait simplement rien quand la
+    liste est vide."""
     handles = load_x_accounts()
-    if not handles:
-        return
 
     light = x_fetch if x_fetch is not None else _fetch_x_light
     heavy = x_stealth if x_stealth is not None else _fetch_x_stealth
@@ -2196,6 +3063,7 @@ def _run_x_volet(state: Dict[str, Any], now_dt: datetime, cfg: Dict[str, Any],
             if verdict is None:
                 continue  # mème, pique, photo : jeté, c'est la demande
 
+            _note_mentions_from(state, text, now_dt, handles)
             title = x_post_title(text)
             link = str(post.get("url") or _x_url(handle))
             event = {
@@ -2233,6 +3101,146 @@ def _run_x_volet(state: Dict[str, Any], now_dt: datetime, cfg: Dict[str, Any],
 
         if is_first_pass and posts:
             seeded[seed_key] = True
+
+    # --- la file de probation, à basse fréquence ---------------------------- #
+    if _counter_due(state, "x_cand_cycle", _X_CANDIDATE_EVERY):
+        _poll_candidates(state, now_dt, counters, light, heavy, parse_fn,
+                         pacer, serial_error, sleep_fn, anchor_extra)
+
+    candidates = state.get("x_candidates")
+    # Photo AVANT le verdict : ``promote_candidates`` SORT le promu de la file,
+    # et la persistance vient après. Une écriture qui échoue (disque plein,
+    # droits) le perdait des DEUX côtés — ni suivi, ni candidat, et ses deux
+    # preuves avec lui.
+    before = dict(candidates) if isinstance(candidates, dict) else {}
+    outcome = promote_candidates(candidates, handles,
+                                 pending_seen=state.get("x_pending_seen"))
+    if outcome["promoted"]:
+        try:
+            save_x_accounts(list(handles) + outcome["promoted"])
+        except Exception as exc:      # noqa: BLE001 — disque plein, droits
+            # Non persisté -> on REMET les candidats dans la file, avec leurs
+            # compteurs intacts. Le prochain passage réessaiera ; rien n'est
+            # perdu, et surtout rien n'est promu « à moitié ».
+            if isinstance(candidates, dict):
+                for handle in outcome["promoted"]:
+                    entry = before.get(handle)
+                    if isinstance(entry, dict):
+                        candidates[handle] = entry
+            logger.warning("paper newswatch: promotion X non persistée (%s) — "
+                           "candidats replacés dans la file",
+                           type(exc).__name__)
+        else:
+            logger.info("paper newswatch: comptes X promus (%s)",
+                        ", ".join(outcome["promoted"]))
+    if outcome["pending"]:
+        logger.info("paper newswatch: comptes X en attente d'une place "
+                    "(la liste manuelle est pleine) : %s",
+                    ", ".join(outcome["pending"]))
+    if outcome["released"]:
+        logger.info("paper newswatch: comptes X libérés de la file après une "
+                    "attente sans place (trace gardée) : %s",
+                    ", ".join(outcome["released"]))
+
+
+def _poll_candidates(state: Dict[str, Any], now_dt: datetime,
+                     counters: Dict[str, Any], light: Callable[[str], str],
+                     heavy: Callable[[str], str],
+                     parse_fn: Callable[[str, str], List[Dict[str, Any]]],
+                     pacer: Any, serial_error: Any,
+                     sleep_fn: Callable[[float], None],
+                     anchor_extra: Optional[Dict[str, str]] = None) -> None:
+    """Interroge les comptes EN PROBATION — MUTE ``state``.
+
+    Ils passent par exactement la même machinerie que les comptes suivis
+    (``_x_posts_for``, ses deux étages, sa mémoire de tier, son cadenceur) : un
+    candidat qui se comporte comme un compte suivi doit être MESURÉ comme un
+    compte suivi, sinon la promotion ne voudrait rien dire.
+
+    Quatre différences, et elles vont toutes dans le même sens :
+
+    * un candidat **ne parle jamais au téléphone** (ses événements naissent en
+      sourdine, quel que soit le mode) ;
+    * son compteur de passages monte MÊME quand la page ne rend rien — un compte
+      supprimé ou muré doit finir par quitter la file tout seul ;
+    * il **ne déclenche jamais le navigateur furtif** (``escalate=False``) et
+      ``X_CANDIDATE_MAX_FAILS`` refus le SORTENT de la file séance tenante : un
+      candidat est très souvent un compte qui n'existe pas, et payer un Chrome
+      pour un 404 en boucle est le pire achat du guetteur ;
+    * ses événements sont plafonnés à ``X_CANDIDATE_MAX_EVENTS_PER_RUN`` pour
+      TOUT le passage (dix candidats × huit posts = quatre-vingts événements
+      possibles contre ``_MAX_EVENTS`` = 100 pour l'historique entier : la file
+      la moins fiable chassait tout le reste du fil). Le cap borne la
+      JOURNALISATION, jamais la MESURE — les ``hits`` qui décident d'une
+      promotion continuent de compter au-delà.
+    """
+    candidates = state.get("x_candidates")
+    if not isinstance(candidates, dict) or not candidates:
+        return
+    seen = state["seen"]
+    events = state["events"]
+    tiers = state["x_tiers"]
+    fails = state["x_fails"]
+    logged = 0
+
+    for handle in sorted(candidates)[:X_CANDIDATE_MAX]:
+        entry = candidates.get(handle)
+        if not isinstance(entry, dict):
+            candidates.pop(handle, None)      # état illisible : on repart net
+            continue
+        sleep_fn(pacer.interval())
+        posts = _x_posts_for(handle, now_dt, tiers, fails, light, heavy,
+                             parse_fn, pacer, counters, serial_error,
+                             escalate=False)
+        try:
+            entry["polls"] = int(entry.get("polls") or 0) + 1
+        except (TypeError, ValueError):
+            entry["polls"] = 1
+
+        if int(fails.get(handle) or 0) >= X_CANDIDATE_MAX_FAILS:
+            # Injoignable ou inexistant : on ne le garde pas six passages de
+            # plus à re-cogner sur une porte fermée.
+            candidates.pop(handle, None)
+            fails.pop(handle, None)
+            tiers.pop(handle, None)
+            logger.info("paper newswatch: candidat X @%s sorti de la file "
+                        "(injoignable)", handle)
+            continue
+
+        for post in (posts or [])[:_X_MAX_POSTS_PER_HANDLE]:
+            text = str((post or {}).get("title") or "")
+            if not text.strip():
+                continue
+            key = _hash_link("x:%s:%s" % (handle, text))
+            if key in seen:
+                continue
+            seen[key] = now_dt.isoformat()
+            verdict = classify_x(text, anchor_extra)
+            if verdict is None:
+                continue
+            try:
+                entry["hits"] = int(entry.get("hits") or 0) + 1
+            except (TypeError, ValueError):
+                entry["hits"] = 1
+            # La MESURE (ci-dessus) n'est jamais capée ; seule la trace l'est.
+            if logged >= X_CANDIDATE_MAX_EVENTS_PER_RUN:
+                continue
+            logged += 1
+            events.insert(0, {
+                "ts": now_dt.isoformat(),
+                "symbol": verdict.get("symbol"),
+                "title": x_post_title(text),
+                "link": str(post.get("url") or _x_url(handle)),
+                "sentiment": verdict.get("sentiment"),
+                "src": "x",
+                "handle": handle,
+                # Ce qui distingue un candidat d'un compte suivi dans le fil :
+                # sans ce drapeau, on ne saurait pas d'où vient l'information —
+                # et c'est LUI que la convergence lit pour ne PAS le compter
+                # (cf. ``convergence.collect_factors``).
+                "candidate": True,
+                "muted": True,
+            })
 
 
 # --- le cycle ----------------------------------------------------------------- #
@@ -2300,13 +3308,39 @@ def _world_event(now_dt: datetime, src: str, title: str, link: str,
             "link": link, "sentiment": sentiment, "src": src, "muted": muted}
 
 
+def _note_mentions_from(state: Dict[str, Any], text: Any, now_dt: datetime,
+                        known: Any = ()) -> None:
+    """Verse les ``@mentions`` d'un texte RETENU dans la file de probation.
+
+    Appelée depuis chaque volet qui garde quelque chose (monde, presse, X,
+    Bluesky) : la découverte se nourrit de ce qu'on a jugé digne d'être gardé,
+    jamais de ce qu'on vient de jeter. Best-effort STRICT — un état de
+    candidats déformé ne doit pas coûter un cycle de veille.
+
+    ⚠️ **Le volet POLITIQUE en est délibérément exclu.** Une de ses deux sources
+    est l'archive de Truth Social, où presque chaque publication interpelle
+    quelqu'un : branchée là, la file de dix places se remplirait de comptes
+    politiques en une soirée et il n'y aurait plus de place pour un compte de
+    marché. On découvre des comptes DE FINANCE, dans de la presse de finance.
+    """
+    mentions = extract_mentions(text)
+    if not mentions:
+        return
+    candidates = state.get("x_candidates")
+    if not isinstance(candidates, dict):
+        candidates = {}
+        state["x_candidates"] = candidates
+    note_mentions(candidates, mentions, now_dt.isoformat(), known)
+
+
 def _run_world_volet(spec: Dict[str, Any], state: Dict[str, Any],
                      now_dt: datetime, cfg: Dict[str, Any],
                      notify_fn: Callable[[str, Dict[str, Any]], bool],
                      pace: Callable[[], None], quiet: bool,
                      counters: Dict[str, Any],
                      fetch_fn: Callable[[str], str],
-                     anchor_extra: Dict[str, str]) -> None:
+                     anchor_extra: Dict[str, str],
+                     known_handles: Any = ()) -> None:
     """Un volet monde (éco ou climat) — un passage complet.
 
     Le déroulé est celui du volet politique, dans le même ordre : dédoublonnage
@@ -2321,6 +3355,12 @@ def _run_world_volet(spec: Dict[str, Any], state: Dict[str, Any],
       convergence le voient, seul l'envoi tombe ;
     * son budget horaire est le sien (``spec["sent_log"]``).
 
+    ⚠️ ``spec["max_events"]`` borne la JOURNALISATION, **jamais l'envoi** : une
+    décision de taux arrivée en neuvième position doit pouvoir partir. L'envoi
+    a ses bornes à lui (``max_notify``, ``max_per_hour``), et un item envoyé est
+    journalisé quoi qu'il arrive — le fil doit porter ce que l'utilisateur a
+    reçu.
+
     L'état est modifié EN PLACE (``seen``/``events``/``seeded``/``stories``) ;
     l'appelant sauve une fois pour tous les volets.
     """
@@ -2332,6 +3372,15 @@ def _run_world_volet(spec: Dict[str, Any], state: Dict[str, Any],
     _purge_old_sent_log(sent_log, now_dt, max_age_h=1)
     is_first_pass = src not in state["seeded"]
     notified = 0
+    # Cap d'événements JOURNALISÉS par passage, OPTIONNEL (absent -> aucun) —
+    # et journalisés SEULEMENT : il ne peut pas empêcher un envoi (cf. plus bas).
+    # ``eco``/``climat`` n'en ont pas besoin : leur classifieur a un gate, il
+    # rejette la plus grande partie de ce que Google News rend. ``bc``, lui,
+    # n'a PAS de gate par construction (la source décide) — trois flux
+    # institutionnels relus après une purge de l'état « vu » pourraient donc
+    # remplir à eux seuls l'historique et en chasser tout le reste.
+    max_events = spec.get("max_events")
+    logged = 0
 
     for url in spec["sources"]:
         pace()
@@ -2366,11 +3415,25 @@ def _run_world_volet(spec: Dict[str, Any], state: Dict[str, Any],
                 continue  # hors sujet, neutre, ou conseil -> juste marqué vu
 
             symbol = entities.first_company(title, anchor_extra)
+            _note_mentions_from(state, title, now_dt, known_handles)
+            # ⚠️ Ce cap ne borne QUE la JOURNALISATION, jamais l'ENVOI.
+            #
+            # Il bornait les deux : un ``continue`` sautait tout le bloc, donc
+            # aussi la notification. Sur ``bc``, dont les sources sont trois flux
+            # institutionnels relus d'un coup, la décision de taux arrivée en
+            # neuvième position était donc étouffée — l'événement le plus
+            # important du volet, tu par un garde-fou d'HISTORIQUE.
+            #
+            # L'envoi a déjà ses propres bornes, et elles sont faites pour ça :
+            # ``max_notify`` par passage et ``max_per_hour`` par heure.
+            loggable = max_events is None or logged < max_events
             event = _world_event(now_dt, src, title, link, symbol, sentiment,
                                  muted=True)
 
             if quiet:
-                events.insert(0, event)
+                if loggable:
+                    logged += 1
+                    events.insert(0, event)
                 continue
 
             # Clé d'histoire PRÉFIXÉE par le volet : deux volets peuvent parler
@@ -2381,7 +3444,9 @@ def _run_world_volet(spec: Dict[str, Any], state: Dict[str, Any],
             if (_story_muted(stories, mute_key, now_dt, spec["mute_h"])
                     or len(sent_log) >= spec["max_per_hour"]
                     or notified >= spec["max_notify"]):
-                events.insert(0, event)
+                if loggable:
+                    logged += 1
+                    events.insert(0, event)
                 continue
 
             try:
@@ -2398,6 +3463,10 @@ def _run_world_volet(spec: Dict[str, Any], state: Dict[str, Any],
                     stories[mute_key] = now_dt.isoformat()
                 sent_log.append(now_dt.isoformat())
                 event["muted"] = False
+                # Journalisé même au-delà du cap : le fil doit porter ce que
+                # l'utilisateur a reçu sur son téléphone. Le compteur monte
+                # quand même, pour que le cap reste une comptabilité honnête.
+                logged += 1
                 events.insert(0, event)
             else:
                 counters["errors"] += 1
@@ -2406,9 +3475,15 @@ def _run_world_volet(spec: Dict[str, Any], state: Dict[str, Any],
         state["seeded"][src] = True
 
 
-#: Les deux fiches. L'ORDRE est figé (éco puis climat) pour que deux cycles
-#: consomment les sources dans le même sens — un test qui scripte des réponses
-#: ne doit pas dépendre du hasard d'un dictionnaire.
+#: Les fiches. L'ORDRE est figé (éco, climat, puis banques centrales) pour que
+#: deux cycles consomment les sources dans le même sens — un test qui scripte des
+#: réponses ne doit pas dépendre du hasard d'un dictionnaire. Une fiche ajoutée
+#: se met À LA FIN, pour la même raison.
+#:
+#: ``cycle_key``/``cycle_every`` sont OPTIONNELS : sans eux le volet tourne à
+#: chaque cycle (c'est le cas d'``eco`` et de ``climat``, dont Google News
+#: rafraîchit la requête en continu). ``bc`` les porte parce qu'une banque
+#: centrale ne publie pas toutes les cinq minutes.
 WORLD_VOLETS: Tuple[Dict[str, Any], ...] = (
     {"src": "eco", "sources": _ECO_SOURCES, "max_age_s": _ECO_MAX_AGE_S,
      "classify": classify_eco, "format": format_eco_message,
@@ -2421,7 +3496,297 @@ WORLD_VOLETS: Tuple[Dict[str, Any], ...] = (
      "max_notify": _MAX_CLIMAT_NOTIFY_PER_RUN,
      "max_per_hour": _CLIMAT_MAX_SENDS_PER_HOUR,
      "sent_log": "climat_sent_log", "mute_h": _WORLD_STORY_MUTE_H},
+    {"src": "bc", "sources": _BC_SOURCES, "max_age_s": _BC_MAX_AGE_S,
+     "classify": classify_bc, "format": format_bc_message,
+     "max_notify": _MAX_BC_NOTIFY_PER_RUN,
+     "max_per_hour": _BC_MAX_SENDS_PER_HOUR,
+     "sent_log": "bc_sent_log", "mute_h": _WORLD_STORY_MUTE_H,
+     "cycle_key": "bc_cycle", "cycle_every": _BC_CYCLE_EVERY,
+     "max_events": _BC_MAX_EVENTS_PER_RUN},
 )
+
+
+def _volet_due(state: Dict[str, Any], spec: Dict[str, Any]) -> bool:
+    """Ce volet cadencé doit-il tourner ce cycle ? — MUTE ``state`` (le compteur
+    est incrémenté À CHAQUE cycle, qu'on tourne ou non).
+
+    Le compteur est lu AVANT d'être incrémenté, exactement comme les volets X et
+    Reddit : un déploiement neuf (compteur à 0) interroge donc la source dès son
+    premier cycle, au lieu d'attendre un quart d'heure sans raison.
+    """
+    key = spec.get("cycle_key")
+    if not key:
+        return True
+    cycle = state.get(key) or 0
+    try:
+        state[key] = int(cycle) + 1
+    except (TypeError, ValueError):
+        state[key] = 1
+    return cycle_due(cycle, spec.get("cycle_every"))
+
+
+def _counter_due(state: Dict[str, Any], key: str, every: int) -> bool:
+    """Version « volet libre » de ``_volet_due`` (pour ceux qui n'ont pas de
+    fiche ``WORLD_VOLETS``) — même règle, même lecture-avant-incrément."""
+    return _volet_due(state, {"cycle_key": key, "cycle_every": every})
+
+
+# --- volet PRESSE FINANCIÈRE MONDIALE (W2a) -------------------------------- #
+
+def _run_pressefi_volet(state: Dict[str, Any], now_dt: datetime,
+                        cfg: Dict[str, Any],
+                        notify_fn: Callable[[str, Dict[str, Any]], bool],
+                        sleep_fn: Callable[[float], None], quiet: bool,
+                        counters: Dict[str, Any],
+                        fetch_fn: Callable[[str], Any],
+                        anchor_extra: Dict[str, str],
+                        known_handles: Any = (),
+                        collect: Optional[Callable[..., Any]] = None) -> None:
+    """La presse financière du monde — MUTE ``state``, la persistance est faite
+    par l'appelant.
+
+    **La collecte n'est pas écrite ici.** Elle est déléguée à
+    ``pulse.news.collect_news`` (cf. ``_news_module``), qui porte déjà la
+    fraîcheur, la détection des flux périmés, le refus des conseils
+    d'investissement, le refus du hors-sujet et le partage équitable par source.
+    Ce qui est écrit ici, c'est ce que la veille en FAIT : dédoublonnage,
+    symbolisation, tonalité, anti-spam, journalisation.
+
+    Tonalité : ``classify`` est calibré EN/FR/IT. Un titre allemand qu'il ne sait
+    pas trancher devient ``neutral`` — journalisé, jamais envoyé, et PLAFONNÉ par
+    symbole (``cap_neutral``). C'est la posture honnête : on garde le fait, on ne
+    lui invente pas une couleur.
+    """
+    feeds = pressefi_feeds()
+    if not feeds:
+        return
+    collect_fn = collect if collect is not None else _collect_news
+
+    try:
+        payload = collect_fn(fetch=fetch_fn, feeds=feeds,
+                             now_ts=int(now_dt.timestamp()),
+                             max_age_h=_PRESSEFI_MAX_AGE_H,
+                             per_source=_PRESSEFI_PER_SOURCE,
+                             max_items=_PRESSEFI_MAX_ITEMS,
+                             pacing_s=_PACE_S, sleep=sleep_fn)
+    except Exception as exc:      # noqa: BLE001 — moteur absent, réseau, TLS
+        logger.warning("paper newswatch: presse mondiale indisponible (%s)",
+                       type(exc).__name__)
+        counters["errors"] += 1
+        return
+
+    payload = payload if isinstance(payload, dict) else {}
+    counters["fetched"] += len(payload.get("sources_ok") or [])
+    counters["errors"] += len(payload.get("sources_failed") or [])
+    stale = payload.get("stale_sources") or []
+    if stale:
+        # Un flux qui répond 200 avec des titres vieux de treize mois est
+        # indiscernable d'un flux sain sans regarder les dates (piège #67c).
+        # On le DIT dans les journaux plutôt que de recopier ses titres.
+        logger.info("paper newswatch: flux de presse sans rien de frais (%s)",
+                    ", ".join(str(name) for name in stale[:8]))
+
+    seen = state["seen"]
+    events = state["events"]
+    stories = state["stories"]
+    sent_log = state["pressefi_sent_log"]
+    _purge_old_sent_log(sent_log, now_dt, max_age_h=1)
+    is_first_pass = "pressefi" not in state["seeded"]
+    logged = 0
+    notified = 0
+    saw_something = False
+
+    for item in (payload.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        title = " ".join(str(item.get("title") or "").split())
+        if not title:
+            continue
+        saw_something = True
+        link = str(item.get("url") or "").strip()
+        # Clé sur le LIEN NU (et non préfixée par le volet) : c'est ce qui fait
+        # qu'une dépêche déjà vue par un autre volet n'est pas racontée deux
+        # fois sous deux étiquettes différentes.
+        key = _hash_link(link or "pressefi:%s" % title)
+        if key in seen:
+            continue
+        seen[key] = now_dt.isoformat()
+
+        if is_first_pass:
+            continue          # amorçage muet, comme tous les autres volets
+
+        if is_advice(title):
+            # La cascade les a déjà écartés ; la garde reste posée parce que la
+            # doctrine ne dépend pas du bon vouloir d'un module voisin.
+            continue
+
+        symbol = entities.first_company(title, anchor_extra)
+        _note_mentions_from(state, title, now_dt, known_handles)
+        sentiment = classify(title) or NEUTRAL_SENTIMENT
+
+        if logged >= _PRESSEFI_MAX_EVENTS_PER_RUN:
+            continue
+        logged += 1
+        event = {"ts": now_dt.isoformat(), "symbol": symbol, "title": title,
+                 "link": link, "sentiment": sentiment, "src": "pressefi",
+                 "source": str(item.get("source") or ""),
+                 "lang": str(item.get("lang") or ""), "muted": True}
+
+        skey = story_key(title)
+        mute_key = ("pressefi:%s" % skey) if skey else ""
+        if (quiet
+                or sentiment == NEUTRAL_SENTIMENT
+                or _story_muted(stories, mute_key, now_dt, _WORLD_STORY_MUTE_H)
+                or len(sent_log) >= _PRESSEFI_MAX_SENDS_PER_HOUR
+                or notified >= _MAX_PRESSEFI_NOTIFY_PER_RUN):
+            events.insert(0, event)
+            if sentiment == NEUTRAL_SENTIMENT:
+                cap_neutral(events, symbol)
+            continue
+
+        try:
+            ok = notify_fn(format_pressefi_message(
+                event["source"], title, link, sentiment, symbol), cfg)
+        except Exception as exc:  # noqa: BLE001 — un notifieur injecté peut lever
+            logger.warning("paper newswatch: notif presse échouée (%s)",
+                           type(exc).__name__)
+            ok = False
+        if ok:
+            counters["notified"] += 1
+            notified += 1
+            if mute_key:
+                stories[mute_key] = now_dt.isoformat()
+            sent_log.append(now_dt.isoformat())
+            event["muted"] = False
+            events.insert(0, event)
+        else:
+            counters["errors"] += 1
+
+    if is_first_pass and saw_something:
+        # Seulement si la cascade a VRAIMENT rendu quelque chose : marquer
+        # l'amorçage fait alors que les seize sources étaient muettes ferait
+        # partir une rafale au cycle suivant, exactement ce que l'amorçage
+        # existe pour empêcher.
+        state["seeded"]["pressefi"] = True
+
+
+# --- volet BLUESKY (W2a) ---------------------------------------------------- #
+
+def _run_bsky_volet(state: Dict[str, Any], now_dt: datetime,
+                    cfg: Dict[str, Any],
+                    notify_fn: Callable[[str, Dict[str, Any]], bool],
+                    sleep_fn: Callable[[float], None], quiet: bool,
+                    counters: Dict[str, Any],
+                    anchor_extra: Dict[str, str],
+                    known_handles: Any = (),
+                    bsky_fetch: Optional[Callable[[str], Any]] = None,
+                    bsky_parse: Optional[Callable[[Any], List[Dict[str, Any]]]] = None
+                    ) -> None:
+    """Le social OUVERT — recherche Bluesky, une requête à la fois. MUTE
+    ``state``.
+
+    Les requêtes sont RECONSTRUITES à chaque passage depuis les ancres du
+    portefeuille (``bsky_queries``) : quand Massii achète un titre, le volet se
+    met à écouter ce qu'on en dit, sans qu'il ait rien à configurer. Et quand il
+    le vend, on arrête — sans qu'une requête morte reste dans un fichier.
+    """
+    targets = _bsky_urls(bsky_queries(anchor_extra))
+    if not targets:
+        return
+    fetch = bsky_fetch if bsky_fetch is not None else _fetch_bsky
+    parse = bsky_parse if bsky_parse is not None else _parse_bsky_posts
+
+    seen = state["seen"]
+    events = state["events"]
+    sent_log = state["bsky_sent_log"]
+    _purge_old_sent_log(sent_log, now_dt, max_age_h=1)
+    is_first_pass = "bsky" not in state["seeded"]
+    logged = 0
+    notified = 0
+    saw_something = False
+    first = True
+
+    for query, url in targets:
+        if not first:
+            sleep_fn(_PACE_S)
+        first = False
+
+        try:
+            raw = fetch(url)
+        except Exception as exc:      # noqa: BLE001 — réseau, TLS, 429
+            logger.warning("paper newswatch: Bluesky injoignable (%s)",
+                           type(exc).__name__)
+            counters["errors"] += 1
+            continue
+        counters["fetched"] += 1
+
+        try:
+            posts = parse(raw) or []
+        except Exception as exc:      # noqa: BLE001 — réponse illisible
+            logger.warning("paper newswatch: Bluesky illisible (%s)",
+                           type(exc).__name__)
+            counters["errors"] += 1
+            continue
+
+        for post in posts[:_BSKY_MAX_POSTS_PER_QUERY]:
+            if not isinstance(post, dict):
+                continue
+            text = str(post.get("title") or "").strip()
+            if not text:
+                continue
+            saw_something = True
+            link = str(post.get("url") or "").strip()
+            key = _hash_link("bsky:%s" % (link or text))
+            if key in seen:
+                continue
+            seen[key] = now_dt.isoformat()
+
+            if is_first_pass:
+                continue          # amorçage muet, comme tous les autres volets
+
+            if _post_dt(post.get("published"), now_dt, _BSKY_MAX_AGE_S) is None:
+                continue
+
+            verdict = classify_social(text, anchor_extra)
+            if verdict is None:
+                continue          # bavardage : jeté, comme sur X
+
+            title = x_post_title(text)
+            author = str(post.get("author") or "")
+            _note_mentions_from(state, text, now_dt, known_handles)
+
+            if logged >= _BSKY_MAX_EVENTS_PER_RUN:
+                continue
+            logged += 1
+            event = {"ts": now_dt.isoformat(), "symbol": verdict.get("symbol"),
+                     "title": title, "link": link,
+                     "sentiment": verdict.get("sentiment"), "src": "bsky",
+                     "handle": author, "query": query, "muted": True}
+
+            if (quiet or notified >= _MAX_BSKY_NOTIFY_PER_RUN
+                    or len(sent_log) >= _BSKY_MAX_SENDS_PER_HOUR):
+                events.insert(0, event)
+                continue
+
+            try:
+                ok = notify_fn(format_bsky_message(author, title, link,
+                                                   event["sentiment"],
+                                                   event["symbol"]), cfg)
+            except Exception as exc:      # noqa: BLE001
+                logger.warning("paper newswatch: notif Bluesky échouée (%s)",
+                               type(exc).__name__)
+                ok = False
+            if ok:
+                counters["notified"] += 1
+                notified += 1
+                sent_log.append(now_dt.isoformat())
+                event["muted"] = False
+                events.insert(0, event)
+            else:
+                counters["errors"] += 1
+
+    if is_first_pass and saw_something:
+        state["seeded"]["bsky"] = True
 
 
 def run_once(now: Optional[datetime] = None,
@@ -2436,8 +3801,11 @@ def run_once(now: Optional[datetime] = None,
             x_pacer: Any = None,
             reddit_fetch: Optional[Callable[[str], Any]] = None,
             reddit_parse: Optional[Callable[[Any], List[Dict[str, Any]]]] = None,
+            news_collect: Optional[Callable[..., Any]] = None,
+            bsky_fetch: Optional[Callable[[str], Any]] = None,
+            bsky_parse: Optional[Callable[[Any], List[Dict[str, Any]]]] = None,
             converge: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
-    """Un cycle de veille news, SEPT volets :
+    """Un cycle de veille news, DIX volets :
 
     1. **politique GLOBAL** (toujours, même sans portefeuille) ;
     2. **crypto GLOBAL** (26/08 — le coach n'avait aucune matière crypto) ;
@@ -2445,9 +3813,16 @@ def run_once(now: Optional[datetime] = None,
        taux, emploi, pétrole) ;
     4. **écologie GLOBALE** (26/08 soir — un aléa climatique ET sa dimension
        économique, jamais la météo seule) ;
-    5. **comptes X influents** (26/08 — un cycle sur deux) ;
-    6. **tendances Reddit** (26/08 — un cycle sur trois, ne notifie jamais) ;
-    7. **par utilisateur, par symbole** détenu ∪ suivi (RSS Yahoo).
+    5. **banques centrales OFFICIELLES** (W2a — un cycle sur trois : Fed, BCE,
+       BNS à la source, sans intermédiaire ni délai rédactionnel) ;
+    6. **presse financière MONDIALE** (W2a — un cycle sur six, cascade Market
+       Pulse : Suisse, Allemagne, Royaume-Uni, Hong Kong, Inde) ;
+    7. **Bluesky** (W2a — un cycle sur trois : le social ouvert, deux requêtes
+       génériques + le nom de chaque titre détenu ou suivi) ;
+    8. **comptes X influents** (26/08 — un cycle sur deux) — plus, depuis W2a,
+       la **file de probation** des comptes découverts par ``@mention`` ;
+    9. **tendances Reddit** (26/08 — un cycle sur trois, ne notifie jamais) ;
+    10. **par utilisateur, par symbole** détenu ∪ suivi (RSS Yahoo).
 
     Retourne ``{users, symbols, fetched, notified, errors, convergence_fired}``
     — les volets globaux contribuent à fetched/notified/errors mais jamais à
@@ -2725,10 +4100,45 @@ def run_once(now: Optional[datetime] = None,
             sleep_fn(_PACE_S)
         first_call = False
 
+    # Les comptes X déjà suivis, lus UNE fois : la file de probation ne doit
+    # jamais inscrire un compte qui est déjà en poste, et chaque volet qui garde
+    # un texte y verse ses ``@mentions`` (cf. ``_note_mentions_from``).
+    try:
+        known_handles = tuple(load_x_accounts())
+    except Exception as exc:      # noqa: BLE001 — fichier illisible
+        logger.warning("paper newswatch: comptes X illisibles (%s)",
+                       type(exc).__name__)
+        known_handles = ()
+
     for spec in WORLD_VOLETS:
+        if not _volet_due(gov_state, spec):
+            continue
         _run_world_volet(spec, gov_state, now_dt, cfg, notify_fn, _pace,
-                         quiet, counters, fetch_fn, anchor_extra)
+                         quiet, counters, fetch_fn, anchor_extra,
+                         known_handles=known_handles)
     gov_changed = True
+
+    # ----------------------------------------------------------------- #
+    # Volet 1sexies -- PRESSE FINANCIÈRE MONDIALE (W2a), UN CYCLE SUR SIX.
+    #
+    # C'est du CONTEXTE : seize sources, une revue de presse, pas une alerte.
+    # Sa cascade de collecte est celle de Market Pulse, empruntée telle
+    # quelle (cf. _run_pressefi_volet) — la réécrire, ce serait reperdre
+    # une par une les cinq leçons qu'elle porte.
+    # ----------------------------------------------------------------- #
+    if _counter_due(gov_state, "pressefi_cycle", _PRESSEFI_CYCLE_EVERY):
+        _run_pressefi_volet(gov_state, now_dt, cfg, notify_fn, sleep_fn, quiet,
+                            counters, fetch_fn, anchor_extra,
+                            known_handles=known_handles, collect=news_collect)
+
+    # ----------------------------------------------------------------- #
+    # Volet 1septies -- BLUESKY (W2a), UN CYCLE SUR TROIS. Le social OUVERT :
+    # deux requêtes génériques + le nom des titres détenus/suivis.
+    # ----------------------------------------------------------------- #
+    if _counter_due(gov_state, "bsky_cycle", _BSKY_CYCLE_EVERY):
+        _run_bsky_volet(gov_state, now_dt, cfg, notify_fn, sleep_fn, quiet,
+                        counters, anchor_extra, known_handles=known_handles,
+                        bsky_fetch=bsky_fetch, bsky_parse=bsky_parse)
 
     # ----------------------------------------------------------------- #
     # Volet 1quater -- comptes X influents (26/08), UN CYCLE SUR DEUX.

@@ -184,6 +184,34 @@ _SWEEP_LINE = (
     "ABSENT de ``historique``, qui n'a lui jamais été collecté.")
 
 
+# --------------------------------------------------------------------------- #
+# Doctrine « le pouvoir nomme, l'administration investit » (2026-08-26)
+#
+# Observation de Massii : quand un dirigeant politique cite une entreprise par
+# son nom — commande publique, participation de l'État, contrôle à l'export,
+# reproche public — l'argent public suit souvent, et le marché le sait avant
+# que le contrat soit signé. Une mention nominative n'est donc pas du bruit
+# politique : c'est un INDICATEUR AVANCÉ sur ce titre-là.
+#
+# La consigne est écrite UNE fois et injectée dans les trois prompts qui
+# proposent des mouvements (idées, scénarios, digest de convergence) — trois
+# formulations parallèles finiraient par diverger, et c'est exactement le genre
+# de dérive qu'on ne verrait jamais.
+#
+# La deuxième moitié de la phrase compte autant que la première : une mention
+# n'est pas une promesse. Un dirigeant qui nomme une entreprise ne signe rien —
+# le modèle doit PESER, pas croire.
+# --------------------------------------------------------------------------- #
+POWER_NAMED_LINE = (
+    "DOCTRINE — LE POUVOIR QUI NOMME : une entreprise NOMMÉE par un dirigeant "
+    "politique (commande publique, participation de l'État, contrôle à "
+    "l'export, reproche public) est un INDICATEUR AVANCÉ sur ce titre — "
+    "l'administration investit souvent ensuite, et le marché s'y positionne "
+    "avant la signature. Pèse ces mentions comme des CATALYSEURS, au même titre "
+    "qu'un résultat annoncé — sans jamais les traiter comme des PROMESSES : "
+    "une déclaration n'est pas un contrat, et dis-le si tu t'appuies dessus.")
+
+
 def _sweep_line(context: Optional[Dict[str, Any]]) -> list:
     """La consigne de balayage frais, ou rien du tout (PUR).
 
@@ -488,6 +516,7 @@ def build_ideas_prompt(context: Optional[Dict[str, Any]], lang: str = "fr",
         "dépôts 13F) qui peuvent servir de catalyseur.",
         _block("CONTEXTE", context or {}),
         _HISTORY_LINE,
+        POWER_NAMED_LINE,
     ] + _sweep_line(context) + memory + [
         _RISK_BLOCKS[level],
         "Commence ta réponse par UNE ligne d'en-tête qui annonce le niveau de "
@@ -558,6 +587,7 @@ def build_scenarios_prompt(context: Optional[Dict[str, Any]],
         "récents (presse, annonces politiques, dépôts 13F).",
         _block("CONTEXTE", context or {}),
         _HISTORY_LINE,
+        POWER_NAMED_LINE,
     ] + _sweep_line(context) + [
         "Construis UN SEUL arbre :\n"
         "- un TITRE : la question macro du moment, celle dont dépend le reste "

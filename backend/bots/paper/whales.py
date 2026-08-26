@@ -17,6 +17,24 @@ jusqu'à 45 jours APRÈS la fin du trimestre et ne couvre que les actions US
 longues — ni ventes à découvert, ni liquidités, ni titres hors US. On y apprend
 l'ALLOCATION des grands, on n'y copie pas des trades « live ».
 
+⚠️ **Limite structurelle des gérants INTERNATIONAUX** (BNS, Norges Bank, Baillie
+Gifford, TCI, Temasek, Nomura — ajoutés le 26/08) : le 13F est une obligation
+AMÉRICAINE. On ne voit donc de ces fonds **que leur poche d'actions cotées aux
+États-Unis**, jamais leur portefeuille réel. Le fonds souverain norvégien
+détient des milliers de lignes dans le monde entier ; son 13F n'en montre
+qu'une tranche. Lire « voilà ce que fait Norges Bank » serait faux — la bonne
+lecture est « voilà ce que fait Norges Bank AUX ÉTATS-UNIS ». Cette phrase doit
+accompagner ces gérants partout où ils s'affichent.
+
+Trois volets tournent dans la même ronde (``check_new_filings``), au même
+rythme et avec le même pacing :
+
+1. les **dépôts des gérants** du catalogue (13F, 13D/G, formulaires 4) ;
+2. les **dépôts des titres de l'utilisateur** (8-K et compagnie — cf. le bloc
+   « volet SES titres ») ;
+3. les **rendez-vous des banques centrales** à moins de 7 jours (cf. le bloc
+   « volet AGENDA »), empruntés au moteur Market Pulse via ``agenda_bridge``.
+
 Faits MESURÉS sur la source (sonde du 24/08, pas des suppositions) :
 
 * ``data.sec.gov/submissions/CIK{10 chiffres}.json`` → 200 avec un User-Agent
@@ -168,6 +186,32 @@ MANAGERS = [
      "cik": "0001167483", "expect": "tiger"},
     {"id": "appaloosa", "label": "David Tepper — Appaloosa",
      "cik": "0001656456", "expect": "appaloosa"},
+    # --- Gérants INTERNATIONAUX (26/08) ------------------------------------- #
+    # Ils déposent un 13F parce qu'ils détiennent des actions américaines, pas
+    # parce qu'ils sont américains : on ne voit donc que leur poche US (cf. la
+    # limite structurelle en tête de fichier). CIK vérifiés un par un contre
+    # ``data.sec.gov/submissions`` le 26/08 — le champ ``name`` renvoyé par la
+    # SEC est cité en commentaire quand il ne se devine pas.
+    # Le nom SEC est cité DANS le libellé : c'est lui que Massii retrouvera sur
+    # EDGAR, et c'est aussi ce qui garde le mot clé ``expect`` vérifiable contre
+    # le libellé (invariant du catalogue — un libellé traduit sans son original
+    # rendrait la garde anti-mauvais-nom impossible à relire).
+    {"id": "snb-ch", "label": "Banque nationale suisse (Swiss National Bank)",
+     "cik": "0001582202", "expect": "swiss national"},
+    # ⚠️ PAS 0001374911 : ce CIK-là est « CAPITAL CITY ENERGY FUND XIV LLC »,
+    # un fonds texan. C'est exactement le genre de confusion que la garde
+    # ``expect`` attrape (elle refuserait de servir ses lignes sous le nom du
+    # fonds souverain norvégien) — mesuré, pas supposé.
+    {"id": "norges", "label": "Norges Bank (fonds souverain norvégien)",
+     "cik": "0001374170", "expect": "norges"},
+    {"id": "baillie", "label": "Baillie Gifford (UK)",
+     "cik": "0001088875", "expect": "baillie"},
+    {"id": "tci", "label": "TCI Fund (UK)",
+     "cik": "0001647251", "expect": "tci"},
+    {"id": "temasek", "label": "Temasek (Singapour)",
+     "cik": "0001021944", "expect": "temasek"},
+    {"id": "nomura", "label": "Nomura (Japon)",
+     "cik": "0001163653", "expect": "nomura"},
 ]
 
 
@@ -1028,17 +1072,32 @@ def _notification_text(manager: Dict[str, str], form: str,
 
 def _load_watch_state() -> Dict[str, Any]:
     """État du guetteur. Fichier absent OU corrompu → état neuf : le guetteur
-    repart de zéro (donc re-seed silencieux) plutôt que de planter."""
+    repart de zéro (donc re-seed silencieux) plutôt que de planter.
+
+    Les cinq clés des volets du 26/08 (``own_*`` pour les dépôts des titres de
+    l'utilisateur, ``agenda_*`` pour les banques centrales) suivent la même
+    règle que les trois anciennes : mal typées ou absentes — donc y compris
+    dans un état écrit AVANT elles — elles repartent vides. Aucune migration à
+    écrire, et le pire qui arrive est un amorçage muet de plus.
+    """
     data = _load_json(watch_path())
     if not isinstance(data, dict):
         data = {}
-    seen = data.get("seen")
-    seeded = data.get("seeded")
+
+    def _dict(key: str) -> Dict[str, Any]:
+        value = data.get(key)
+        return value if isinstance(value, dict) else {}
+
     events = data.get("events")
     return {
-        "seen": seen if isinstance(seen, dict) else {},
-        "seeded": seeded if isinstance(seeded, dict) else {},
+        "seen": _dict("seen"),
+        "seeded": _dict("seeded"),
         "events": events if isinstance(events, list) else [],
+        "own_seen": _dict("own_seen"),
+        "own_seeded": _dict("own_seeded"),
+        "own_cursor": data.get("own_cursor"),
+        "agenda_seen": _dict("agenda_seen"),
+        "agenda_seeded": bool(data.get("agenda_seeded")),
     }
 
 
@@ -1065,8 +1124,16 @@ def stalest_manager(cache: Any, now_ts: float,
     Un gérant jamais récupéré passe en premier (âge infini) : c'est le seul
     moyen pour le cache de se remplir tout seul sur une installation neuve.
     Sert la rotation douce de ``check_new_filings`` — UN gérant par cycle, donc
-    la dizaine du catalogue est couverte en une demi-journée sans jamais
-    envoyer de rafale à la SEC.
+    aucune rafale à la SEC, jamais.
+
+    ⚠️ **Ce que coûtent les six gérants internationaux du 26/08** : la rotation
+    reste d'UN par cycle (le pacing ne bouge pas d'un pouce), mais un tour
+    complet passe de dix à SEIZE cycles — soit, au rythme de 30 minutes du
+    planificateur, **environ huit heures** au lieu de cinq. C'est le seul prix
+    payé, et il est payé par la fraîcheur du cache, pas par la SEC : un
+    snapshot peut donc dater de huit heures au lieu de cinq. Sans conséquence
+    ici — un 13F ne bouge qu'une fois par trimestre, et un 13F qui vient de
+    tomber court-circuite la rotation (cf. ``_warm_cache``, règle 1).
     """
     data = cache if isinstance(cache, dict) else {}
     worst, worst_age = None, None
@@ -1144,15 +1211,581 @@ def _fire_convergence(tg_cfg: Optional[Dict[str, Any]] = None,
     return bool(result.get("fired"))
 
 
+# --------------------------------------------------------------------------- #
+# Volet « SES titres » — les 8-K des ancres de l'utilisateur (26/08)
+#
+# Le guetteur savait dire « Buffett a déposé quelque chose » et restait MUET sur
+# « ta position vient de publier un événement matériel » — alors que c'est ce
+# second cas qui bouge son argent. Même infrastructure EDGAR, même pacing, même
+# ronde : un volet de plus, pas un second guetteur.
+#
+# Formulaires suivis et ce qu'ils veulent dire :
+#   8-K    l'entreprise SIGNALE un événement matériel (fusion, départ du
+#          directeur général, perte d'un contrat, résultats préliminaires) —
+#          c'est le formulaire « il vient de se passer quelque chose » ;
+#   10-Q   le trimestre ; 10-K l'année ; 6-K l'équivalent d'un 8-K pour un
+#          émetteur ÉTRANGER coté aux États-Unis (sans lui, un ADR européen
+#          n'émettrait jamais rien).
+#
+# ⚠️ Ce volet ne connaît que les titres cotés aux ÉTATS-UNIS : la table de
+# correspondance est celle de la SEC. Un ``NESN.SW`` n'y est pas, et c'est
+# normal — il est compté (``own_non_us``) puis SAUTÉ en silence, jamais signalé
+# comme une erreur.
+# --------------------------------------------------------------------------- #
+
+# Mesuré le 26/08 : 200 OK, 10 388 entrées de la forme
+# ``{"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}, ...}``.
+# User-Agent maison obligatoire, comme partout chez la SEC.
+TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+# Sept jours : une introduction en bourse ou un changement de symbole n'a pas
+# besoin d'être connu à l'heure, et re-télécharger 220 Ko toutes les 30 minutes
+# pour une table qui bouge une fois par semaine serait grossier.
+TICKERS_TTL_S = 7 * 24 * 3600.0
+
+# Page de consultation HUMAINE d'un dépôt précis (l'index du dossier). Vérifiée
+# le 26/08 : 200 sur ``0000320193-26-000018`` (8-K Apple du 30 juillet).
+FILING_INDEX_URL = ("https://www.sec.gov/Archives/edgar/data/{cik}/{nodash}/"
+                    "{accession}-index.htm")
+
+OWN_FORMS = frozenset({"8-K", "8-K/A", "10-Q", "10-K", "6-K"})
+# Même garde d'âge que les dépôts de gérants : un 8-K de l'an dernier n'est pas
+# une nouvelle (cf. l'incident du 25/08 en tête de fichier).
+OWN_MAX_AGE_D = 14
+# Une à deux ancres par cycle. Le pacing d'une seconde s'applique à ces requêtes
+# comme aux autres : deux ancres = deux secondes de plus, et un portefeuille de
+# vingt titres est balayé en dix cycles (cinq heures au rythme du
+# planificateur). Monter ce chiffre, c'est marteler la SEC pour gagner des
+# minutes sur une information qui reste vraie quatorze jours.
+OWN_PER_CYCLE = 2
+MAX_OWN_NOTIFY_PER_SYMBOL = 2
+
+
+def tickers_path() -> Path:
+    # ⚠️ Le POINT dans le nom est STRUCTUREL, pas cosmétique : les fichiers de
+    # ce dossier sont recensés comme des COMPTES par
+    # ``radar._users_with_portfolio`` (regex ``^[A-Za-z0-9_-]+\.json$``) et la
+    # convergence écrit un carnet à chacun. Un ``edgar_tickers.json`` créerait
+    # donc un utilisateur fantôme « edgar_tickers » — exactement le bug déjà
+    # payé deux fois par le dépôt (``alerts_mode``/``x_accounts``, puis
+    # ``backfill``), rattrapé chaque fois par une liste d'exclusion qu'il faut
+    # penser à tenir. Un radical qui porte un point ne peut PAS matcher.
+    return DATA_DIR / "edgar.tickers.json"
+
+
+def parse_ticker_map(payload: Any) -> Dict[str, str]:
+    """``company_tickers.json`` → ``{SYMBOLE: CIK sur 10 chiffres}`` (PUR).
+
+    Les deux formes sont acceptées : le dictionnaire indexé par rang que la SEC
+    sert aujourd'hui, et une liste à la racine (au cas où elle changerait d'avis
+    — le contenu de chaque entrée, lui, est ce qui fait foi).
+
+    Une entrée sans symbole ou sans CIK est ignorée. Le PREMIER symbole
+    rencontré gagne : la table est ordonnée par capitalisation décroissante, et
+    en cas de doublon c'est le gros émetteur qu'on veut.
+    """
+    rows = payload.values() if isinstance(payload, dict) else payload
+    out: Dict[str, str] = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("ticker") or "").strip().upper()
+        digits = re.sub(r"\D", "", str(row.get("cik_str") or ""))
+        if not symbol or not digits:
+            continue
+        out.setdefault(symbol, _cik10(digits))
+    return out
+
+
+def load_ticker_map(client=None, pacer: Optional[_Pacer] = None,
+                    now: Optional[float] = None,
+                    force: bool = False) -> Dict[str, str]:
+    """La table symbole → CIK, servie par un cache 7 jours.
+
+    Même politique que ``get_snapshot`` : cache frais → zéro requête ; sinon on
+    télécharge ; échec avec un cache périmé → on sert le périmé. Une table d'il
+    y a huit jours reste juste pour 10 387 symboles sur 10 388.
+
+    Ne lève jamais : sans table, le volet « ses titres » se tait, il ne casse
+    pas la ronde.
+    """
+    stamp = now if now is not None else _now()
+    cached = _load_json(tickers_path())
+    cached = cached if isinstance(cached, dict) else {}
+    rows = cached.get("map") if isinstance(cached.get("map"), dict) else {}
+    try:
+        cached_ts = float(cached.get("fetched_ts"))
+    except (TypeError, ValueError):
+        cached_ts = None
+
+    fresh = (rows and cached_ts is not None
+             and 0 <= (stamp - cached_ts) < TICKERS_TTL_S)
+    if fresh and not force:
+        return dict(rows)
+
+    try:
+        resp = _http_get(TICKERS_URL, client=client, pacer=pacer)
+        payload = resp.json()
+    except Exception:                             # noqa: BLE001 — best-effort
+        return dict(rows)                         # périmé > vide
+
+    fetched = parse_ticker_map(payload)
+    if not fetched:
+        return dict(rows)
+    try:
+        _atomic_write_json(tickers_path(),
+                           {"fetched_ts": stamp,
+                            "fetched_at": datetime.fromtimestamp(stamp).isoformat(),
+                            "map": fetched})
+    except OSError:
+        pass
+    return fetched
+
+
+def _paper_users() -> List[str]:
+    """Les comptes du simulateur — MÊME liste que la convergence et le radar.
+
+    Source unique volontaire : deux listes divergentes iraient chercher les
+    ancres de gens différents.
+    """
+    try:
+        from backend.bots.paper import radar
+        return list(radar._users_with_portfolio() or [])
+    except Exception:                             # noqa: BLE001
+        return []
+
+
+def own_anchors() -> List[str]:
+    """Les titres de l'utilisateur : positions ∪ watchlist ∪ pipeline.
+
+    Ordre de première apparition, et cet ordre a un sens : les POSITIONS
+    d'abord (l'argent engagé), puis la watchlist, puis le pipeline. La rotation
+    étant circulaire, tout finit par passer — mais quand le cycle est coupé
+    (redémarrage), c'est le début de la liste qui a été servi.
+
+    Best-effort par compte ET par source : un fichier illisible rétrécit la
+    liste, il ne casse jamais la ronde.
+    """
+    symbols: List[str] = []
+    seen = set()
+
+    def _add(value: Any) -> None:
+        symbol = str(value or "").strip().upper()
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            symbols.append(symbol)
+
+    try:
+        from backend.bots.paper import board, store
+    except Exception:                             # noqa: BLE001
+        return []
+
+    for username in _paper_users():
+        try:
+            portfolio = store.load_portfolio(username) or {}
+            for position in (portfolio.get("positions") or []):
+                if isinstance(position, dict):
+                    _add(position.get("symbol"))
+        except Exception:                         # noqa: BLE001
+            pass
+        try:
+            for row in (store.load_watchlist(username) or []):
+                if isinstance(row, dict):
+                    _add(row.get("symbol"))
+        except Exception:                         # noqa: BLE001
+            pass
+        try:
+            for row in board.load_board(username).get("pipeline") or []:
+                if isinstance(row, dict):
+                    _add(row.get("symbol"))
+        except Exception:                         # noqa: BLE001
+            pass
+    return symbols
+
+
+def next_own_targets(anchors: Any, cursor: Any,
+                     per_cycle: int = OWN_PER_CYCLE) -> Tuple[List[str], int]:
+    """``(les ancres de CE cycle, le curseur suivant)`` — rotation circulaire
+    (PUR).
+
+    Le curseur vit dans l'état du guetteur : sans lui, chaque cycle rebalaierait
+    les deux mêmes titres et le troisième ne serait jamais interrogé. Un curseur
+    illisible ou hors bornes repart de zéro plutôt que de planter.
+    """
+    rows = [str(a or "").strip().upper() for a in (anchors or [])]
+    rows = [a for a in rows if a]
+    if not rows:
+        return [], 0
+    try:
+        start = int(cursor)
+    except (TypeError, ValueError):
+        start = 0
+    if start < 0 or start >= len(rows):
+        start = 0
+    try:
+        take = max(0, int(per_cycle))
+    except (TypeError, ValueError):
+        take = OWN_PER_CYCLE
+    take = min(take, len(rows))
+    picked = [rows[(start + i) % len(rows)] for i in range(take)]
+    return picked, (start + take) % len(rows)
+
+
+def own_form_explanation(form: str) -> str:
+    """Ce que le formulaire veut dire, en trois mots — le titre de l'alerte le
+    porte, pour que « 8-K » ne reste pas un code."""
+    code = str(form or "").upper()
+    if code.startswith("8-K"):
+        return "événement matériel"
+    if code.startswith("10-Q"):
+        return "rapport trimestriel"
+    if code.startswith("10-K"):
+        return "rapport annuel"
+    if code.startswith("6-K"):
+        return "rapport d'émetteur étranger"
+    return "dépôt SEC"
+
+
+def _own_filings(subm: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Dépôts de ``OWN_FORMS``, du plus récent au plus ancien (ordre SEC)."""
+    recent = ((subm or {}).get("filings") or {}).get("recent") or {}
+    forms = recent.get("form") or []
+    accs = recent.get("accessionNumber") or []
+    filed = recent.get("filingDate") or []
+    out = []
+    for form, acc, fdate in zip(forms, accs, filed):
+        if str(form or "") not in OWN_FORMS or not acc:
+            continue
+        out.append({"form": str(form), "accession": str(acc),
+                    "filing_date": str(fdate or "")})
+    return out
+
+
+def filing_index_url(cik: Any, accession: Any) -> str:
+    """Le lien vers l'index du dépôt — la page que Massii ouvre pour LIRE le
+    8-K. Forme vérifiée le 26/08 (200 sur un dépôt Apple réel)."""
+    acc = str(accession or "")
+    return FILING_INDEX_URL.format(cik=str(int(_cik10(cik))),
+                                   nodash=re.sub(r"\D", "", acc),
+                                   accession=acc)
+
+
+def own_event_title(symbol: str, form: str) -> str:
+    """« AAPL — 8-K déposé (événement matériel) »."""
+    return "%s — %s déposé (%s)" % (str(symbol or "").upper(), form,
+                                    own_form_explanation(form))
+
+
+# Ce que le formulaire veut dire pour QUELQU'UN QUI DÉTIENT LE TITRE — une
+# phrase, pas la nomenclature SEC. ⚠️ Ne pas réutiliser ``form_explanation`` ici
+# (celle des gérants) : elle ne connaît que les 13F/13D/13G/4 et rendrait
+# « Nouveau dépôt SEC » pour un 8-K, c'est-à-dire une ligne qui n'apprend rien.
+_OWN_FORM_NOTES = (
+    ("8-K", "L'entreprise signale elle-même un événement qu'elle juge "
+            "important : fusion, changement de dirigeant, gros contrat, "
+            "chiffres préliminaires."),
+    ("10-Q", "Comptes du trimestre."),
+    ("10-K", "Comptes de l'année."),
+    ("6-K", "Communication d'un émetteur étranger coté aux États-Unis "
+            "(l'équivalent d'un 8-K)."),
+)
+
+
+def own_form_note(form: str) -> str:
+    """La phrase d'explication du formulaire, pour un porteur du titre."""
+    code = str(form or "").upper()
+    for prefix, note in _OWN_FORM_NOTES:
+        if code.startswith(prefix):
+            return note
+    return "Nouveau dépôt auprès de la SEC."
+
+
+def _own_notification_text(symbol: str, form: str, filing_date: str,
+                           link: str) -> str:
+    """Texte SOBRE (aucun emoji), même forme que l'alerte des gérants."""
+    return ("[Simulateur] Dépôt SEC sur un de tes titres — %s\n%s\n"
+            "Dépôt du %s. Détail : %s"
+            % (own_event_title(symbol, form), own_form_note(form),
+               filing_date or "?", link))
+
+
+# --------------------------------------------------------------------------- #
+# Volet AGENDA — les rendez-vous des banques centrales (26/08)
+#
+# Un catalyseur DATÉ vaut plus qu'une rumeur : c'est la seule matière du
+# contexte sur laquelle on peut construire un « avant / pendant / après ». Les
+# dates viennent du moteur Market Pulse (``agenda_bridge``), qui les tient déjà
+# à jour pour le briefing — on ne réécrit aucun parseur.
+#
+# ⚠️ L'événement écrit ici porte ``src: "eco"`` et NON ``src: "agenda"``. Ce
+# n'est pas une approximation : c'est ``src`` qui décide où la toile le range.
+# « eco » le fait atterrir sous le pivot « monde », famille macroéconomie —
+# exactement là où doit vivre une réunion de banque centrale. Un ``src``
+# inconnu tomberait dans la famille « presse », et comme l'événement ne nomme
+# aucun titre, la toile l'OMETTRAIT purement et simplement (règle 5 de
+# ``graph._dispatch`` : une dépêche qu'on ne sait rattacher à rien n'est pas une
+# connexion). Le champ ``agenda: True`` reste là pour le reconnaître.
+#
+# ⚠️ Et il porte un lien VIDE, alors qu'on en a un. La mémoire dédoublonne par
+# lien ; or deux réunions de la Fed partagent la même page de calendrier —
+# écrire ce lien fusionnerait la réunion de septembre avec celle d'octobre. Le
+# lien vérifiable voyage donc dans le message Telegram, où il ne dédoublonne
+# rien.
+# --------------------------------------------------------------------------- #
+
+AGENDA_HORIZON_D = 7
+MAX_AGENDA_NOTIFY = 3
+
+
+def agenda_event_key(row: Any) -> str:
+    """La clé de dédoublonnage d'un rendez-vous : ``banque|date`` (PUR).
+
+    Ni le libellé (le moteur peut le reformuler d'une version à l'autre) ni le
+    lien (partagé par toutes les réunions d'une même banque) : la banque et le
+    jour, c'est ce qui identifie un rendez-vous.
+    """
+    if not isinstance(row, dict):
+        return ""
+    bank = str(row.get("bank") or "").strip().lower()
+    date = str(row.get("date") or "").strip()[:10]
+    if not bank or len(date) != 10:
+        return ""
+    return "%s|%s" % (bank, date)
+
+
+def _agenda_notification_text(row: Dict[str, Any]) -> str:
+    """Texte SOBRE. Le lien de la source y figure : c'est ici, et pas dans la
+    mémoire, qu'il sert (cf. le bloc ci-dessus)."""
+    link = str(row.get("source_url") or "").strip()
+    base = ("[Simulateur] Rendez-vous macro — %s\nLe %s."
+            % (row.get("label"), row.get("date")))
+    return base + ("\nSource : %s" % link if link else "")
+
+
+def _upcoming_agenda(agenda: Optional[Callable[..., Any]],
+                     now_dt: datetime) -> List[Dict[str, Any]]:
+    """Les rendez-vous à moins de ``AGENDA_HORIZON_D`` jours — best-effort
+    strict (même patron que ``_fire_convergence``)."""
+    try:
+        if agenda is not None:
+            rows = agenda(now=now_dt, horizon_days=AGENDA_HORIZON_D)
+        else:
+            from backend.bots.paper import agenda_bridge
+            rows = agenda_bridge.upcoming_events(now=now_dt,
+                                                 horizon_days=AGENDA_HORIZON_D)
+    except Exception:                             # noqa: BLE001
+        logger.warning("paper whales: agenda indisponible")
+        return []
+    return [row for row in (rows or []) if isinstance(row, dict)]
+
+
+# --------------------------------------------------------------------------- #
+# La MÉMOIRE partagée — où atterrissent les deux nouveaux volets
+#
+# Les événements de ces volets ne vont PAS dans le journal des dépôts
+# (``whales_watch.json``), qui n'est lu que par l'écran des grands
+# portefeuilles. Ils vont dans la mémoire de la VEILLE (l'état global de
+# ``newswatch``), parce que c'est elle — et elle seule — que lisent les trois
+# consommateurs qu'on vise : le contexte du coach
+# (``paper_router._recent_news``), la toile (``_graph_inputs``) et la
+# convergence (``convergence._collect_news``). Écrire ailleurs aurait obligé à
+# ouvrir un quatrième lecteur dans chacun des trois.
+#
+# ⚠️ Deux processus écrivent donc ce fichier : la veille (toutes les 5 min) et
+# cette ronde (toutes les 30 min). L'écriture est atomique de chaque côté, mais
+# rien n'empêche une lecture-modification-écriture d'en écraser une autre. La
+# fenêtre est de quelques millisecondes contre plusieurs secondes de collecte
+# réseau côté veille, et la conséquence maximale est de perdre un événement.
+# On la rend RÉCUPÉRABLE plutôt que de la nier : l'état « déjà vu » n'est écrit
+# qu'après une mémorisation RÉUSSIE, donc un événement perdu revient au cycle
+# suivant au lieu d'être marqué vu et oublié. Et si l'inverse arrive (mémoire
+# écrite, état du guetteur perdu), le doublon se referme tout seul en aval :
+# les deux consommateurs dédoublonnent par lien, ou à défaut par le couple
+# symbole+titre — identiques dans les deux cas.
+#
+# ⚠️ Cette mémoire est GLOBALE (comme les volets politique, éco, climat, crypto
+# et X de la veille) : les événements ne sont pas rangés par compte. C'est
+# volontaire et cohérent avec le reste du simulateur, mono-utilisateur en
+# pratique, dont les ancres sont déjà additionnées tous comptes confondus
+# (``own_anchors``, ``convergence._collect_positions``).
+# --------------------------------------------------------------------------- #
+
+def remember_events(events: List[Dict[str, Any]]) -> bool:
+    """Range ces événements en tête de la mémoire de la veille.
+
+    Rend ``True`` si l'écriture a eu lieu — c'est ce booléen qui autorise
+    l'appelant à marquer les dépôts « vus » (cf. le bloc ci-dessus).
+    """
+    if not events:
+        return True
+    try:
+        from backend.bots.paper import newswatch
+        state = newswatch._load_global_seen()
+        cap = getattr(newswatch, "_MAX_EVENTS", MAX_EVENTS)
+        existing = state.get("events")
+        state["events"] = (list(events)
+                           + (existing if isinstance(existing, list) else []))[:cap]
+        newswatch._save_global_seen(state)
+        return True
+    except Exception:                             # noqa: BLE001 — best-effort
+        logger.warning("paper whales: mémoire de la veille non écrite")
+        return False
+
+
+def _run_own_volet(state: Dict[str, Any], now_dt: datetime, when: str,
+                   quiet: bool, notifier, cfg, client,
+                   pacer: _Pacer,
+                   counters: Dict[str, Any]) -> Tuple[List[Dict[str, Any]],
+                                                      Optional[Dict[str, Any]]]:
+    """Le volet « ses titres » d'un cycle.
+
+    Rend ``(événements à mémoriser, état à valider)``. L'état n'est PAS écrit
+    ici : l'appelant ne le validera qu'une fois la mémorisation réussie, sinon
+    un dépôt perdu serait marqué vu et jamais revu (cf. le bloc « MÉMOIRE
+    partagée »).
+
+    Aucune ancre → zéro requête, pas même la table des symboles : un compte
+    vide ne doit rien coûter à la SEC.
+    """
+    anchors = own_anchors()
+    if not anchors:
+        return [], None
+    targets, cursor = next_own_targets(anchors, state.get("own_cursor"))
+    if not targets:
+        return [], None
+
+    ticker_map = load_ticker_map(client=client, pacer=pacer,
+                                 now=now_dt.timestamp())
+    pending_seen: Dict[str, List[str]] = {}
+    pending_seeded: Dict[str, bool] = {}
+    fresh: List[Dict[str, Any]] = []
+
+    for symbol in targets:
+        cik = ticker_map.get(symbol)
+        if not cik:
+            # Ni une erreur ni un silence : un titre hors des États-Unis n'est
+            # tout simplement pas dans le registre de la SEC.
+            counters["own_non_us"] += 1
+            continue
+        try:
+            subm = fetch_submissions(cik, client=client, pacer=pacer)
+            filings = _own_filings(subm)
+        except Exception:                          # noqa: BLE001 — un titre HS
+            counters["errors"] += 1                # ne doit pas tuer la ronde
+            continue
+
+        counters["own_checked"] += 1
+        seen = set(state["own_seen"].get(symbol) or [])
+        new_ones = [f for f in filings if f["accession"] not in seen]
+
+        if not state["own_seeded"].get(symbol):
+            pending_seeded[symbol] = True          # amorçage muet
+        elif new_ones:
+            handled = 0
+            for filing in new_ones:
+                if is_stale_filing(filing["filing_date"], now_dt, OWN_MAX_AGE_D):
+                    continue
+                if handled >= MAX_OWN_NOTIFY_PER_SYMBOL:
+                    break
+                handled += 1
+                counters["own_filings"] += 1
+                link = filing_index_url(cik, filing["accession"])
+                event = {
+                    "ts": when, "symbol": symbol,
+                    "title": own_event_title(symbol, filing["form"]),
+                    "link": link, "sentiment": "watch", "src": "sec_own",
+                    "form": filing["form"], "accession": filing["accession"],
+                    "filing_date": filing["filing_date"], "muted": True,
+                }
+                fresh.append(event)
+                if quiet:
+                    # Mode calme : la détection reste entière (mémoire, toile,
+                    # convergence), seul l'envoi disparaît.
+                    continue
+                try:
+                    notifier(_own_notification_text(
+                        symbol, filing["form"], filing["filing_date"], link), cfg)
+                    counters["notified"] += 1
+                    event["muted"] = False
+                except Exception:                  # noqa: BLE001 — best-effort
+                    pass
+
+        pending_seen[symbol] = prune_seen(filings, now_dt)
+
+    return fresh, {"seen": pending_seen, "seeded": pending_seeded,
+                   "cursor": cursor}
+
+
+def _run_agenda_volet(state: Dict[str, Any], now_dt: datetime, when: str,
+                      quiet: bool, notifier, cfg, counters: Dict[str, Any],
+                      agenda: Optional[Callable[..., Any]] = None
+                      ) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Le volet « agenda » d'un cycle — même contrat de retour que le précédent.
+
+    La mémoire des rendez-vous déjà vus est REMPLACÉE par ceux de l'horizon
+    courant : un rendez-vous qui sort de la fenêtre a eu lieu, il ne peut plus
+    revenir (une date passée ne ressort jamais de ``agenda_bridge``). La
+    mémoire se purge donc toute seule et reste bornée par l'horizon.
+
+    Une collecte VIDE laisse la mémoire intacte : cinq banques centrales muettes
+    en même temps est un incident de réseau, et repartir de zéro rejouerait tous
+    les rendez-vous au cycle suivant.
+    """
+    rows = _upcoming_agenda(agenda, now_dt)
+    if not rows:
+        return [], None
+
+    seen = state["agenda_seen"]
+    seeded = bool(state.get("agenda_seeded"))
+    pending: Dict[str, str] = {}
+    fresh: List[Dict[str, Any]] = []
+    handled = 0
+
+    for row in rows:
+        key = agenda_event_key(row)
+        if not key:
+            continue
+        pending[key] = str(row.get("date") or "")
+        if not seeded or key in seen or handled >= MAX_AGENDA_NOTIFY:
+            continue
+        handled += 1
+        counters["agenda_events"] += 1
+        event = {
+            "ts": when,
+            # Pas de symbole : une réunion de banque centrale ne nomme aucun
+            # titre, elle concerne tout le portefeuille. C'est ce qui la range
+            # sous le pivot « monde » de la toile.
+            "symbol": None,
+            "title": str(row.get("label") or ""),
+            # Lien VIDE À DESSEIN — cf. le bloc « volet AGENDA ».
+            "link": "", "sentiment": "watch", "src": "eco",
+            "agenda": True, "bank": row.get("bank"), "date": row.get("date"),
+            "muted": True,
+        }
+        fresh.append(event)
+        if quiet:
+            continue
+        try:
+            notifier(_agenda_notification_text(row), cfg)
+            counters["notified"] += 1
+            event["muted"] = False
+        except Exception:                          # noqa: BLE001 — best-effort
+            pass
+
+    return fresh, {"seen": pending, "seeded": True}
+
+
 def check_new_filings(client=None, notifier=None, tg_cfg=None,
                       sleep: Optional[Callable[[float], None]] = None,
                       now: Optional[float] = None,
                       mode: Optional[str] = None,
                       converge: Optional[Callable[..., Any]] = None,
-                      warm: bool = True) -> Dict[str, Any]:
+                      warm: bool = True,
+                      agenda: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
     """Guette les nouveaux dépôts EDGAR des gérants du catalogue.
 
-    Retourne ``{managers, new_filings, notified, errors}``.
+    Retourne ``{managers, new_filings, notified, errors}`` — plus, depuis le
+    26/08, ``own_checked``/``own_filings``/``own_non_us`` (volet « ses titres »)
+    et ``agenda_events`` (volet « banques centrales »).
 
     Quatre garde-fous :
       * **Telegram non configuré → zéro requête réseau** (la fonction sort
@@ -1181,9 +1814,28 @@ def check_new_filings(client=None, notifier=None, tg_cfg=None,
       gérants quand il réfléchit, pas quand un humain ouvre l'écran ;
     * **convergence événementielle** : un dépôt qui aligne des facteurs
       déclenche le digest tout de suite, pas au prochain réveil planifié.
+
+    Et DEUX volets de plus (26/08 soir), intercalés entre la ronde des gérants
+    et la convergence — donc AVANT elle, pour qu'un 8-K détecté à l'instant
+    puisse compter dans le digest du même cycle :
+
+    * **ses titres** : les 8-K/10-Q/10-K/6-K des ancres de l'utilisateur, une à
+      deux ancres par cycle en rotation ;
+    * **agenda** : les rendez-vous de banques centrales à moins de sept jours.
+
+    Les deux écrivent dans la MÉMOIRE DE LA VEILLE et non dans le journal des
+    dépôts (cf. le bloc « MÉMOIRE partagée ») : c'est elle que lisent le
+    contexte du coach, la toile et la convergence. Les deux sont best-effort
+    intégral et sous le même interrupteur que le reste — Telegram non
+    configuré, rien ne part, rien n'est téléchargé.
+
+    ``agenda`` (injectable) remplace ``agenda_bridge.upcoming_events`` : les
+    tests n'ont ainsi ni banque centrale ni cache à simuler.
     """
     counters: Dict[str, Any] = {"managers": 0, "new_filings": 0, "notified": 0,
-                                "errors": 0, "convergence_fired": False}
+                                "errors": 0, "convergence_fired": False,
+                                "own_checked": 0, "own_filings": 0,
+                                "own_non_us": 0, "agenda_events": 0}
 
     if tg_cfg is not None:
         cfg = tg_cfg
@@ -1268,6 +1920,24 @@ def check_new_filings(client=None, notifier=None, tg_cfg=None,
 
     if fresh_events:
         state["events"] = (fresh_events + state["events"])[:MAX_EVENTS]
+
+    # --- les deux volets du 26/08 soir, avant l'écriture de l'état ---------- #
+    own_events, own_pending = _run_own_volet(
+        state, now_dt, when, quiet, notifier, cfg, client, pacer, counters)
+    agenda_events, agenda_pending = _run_agenda_volet(
+        state, now_dt, when, quiet, notifier, cfg, counters, agenda=agenda)
+
+    # « Vu » ne se grave qu'une fois la mémoire ÉCRITE : un événement perdu par
+    # une écriture concurrente revient au cycle suivant au lieu d'être oublié.
+    if remember_events(own_events + agenda_events):
+        if own_pending is not None:
+            state["own_seen"].update(own_pending["seen"])
+            state["own_seeded"].update(own_pending["seeded"])
+            state["own_cursor"] = own_pending["cursor"]
+        if agenda_pending is not None:
+            state["agenda_seen"] = agenda_pending["seen"]
+            state["agenda_seeded"] = agenda_pending["seeded"]
+
     try:
         _atomic_write_json(watch_path(), state)
     except OSError:

@@ -1320,3 +1320,294 @@ def test_un_titre_detenu_sans_nom_garde_au_moins_sa_cle(tmp_path):
         "positions": [{"symbol": "TSLA", "qty": 1, "side": "long"}],
     })
     assert convergence._symbol_names(["alice"]) == {"TSLA": "TSLA"}
+
+
+# =========================================================================== #
+#  W2a — doctrine « le pouvoir nomme, l'administration investit »
+# =========================================================================== #
+
+def test_une_annonce_politique_qui_NOMME_un_titre_suivi_est_un_catalyseur():
+    """Observation de Massii : quand un dirigeant cite une entreprise par son
+    nom, l'argent public suit souvent, et le marché le sait avant la signature.
+
+    Avant, un « l'administration veut acheter des cartes à Nvidia » n'allumait
+    que ``gov`` — au même titre qu'une annonce de droits de douane sur l'acier
+    qui ne concerne aucune position. Il désignait pourtant un titre précis, et
+    suivi.
+    """
+    named = _news(symbol="NVDA", sentiment="gov",
+                  title="L'administration veut acheter des cartes à Nvidia",
+                  link="http://x.test/named")
+    assert _flags(news=[named], held=["NVDA"])["held_catalyst"] is True
+    assert _flags(news=[named], held=["NVDA"])["gov"] is True      # les DEUX
+
+
+def test_une_annonce_politique_qui_ne_nomme_personne_reste_un_simple_gov():
+    """Le facteur ne s'élargit pas au point de tout allumer : le pseudo-symbole
+    « GOV » d'une annonce anonyme ne touche aucun titre."""
+    anonymous = _news(symbol="GOV", sentiment="gov",
+                      title="Droits de douane à 50 % sur l'acier",
+                      link="http://x.test/anon")
+    out = _flags(news=[anonymous], held=["NVDA"])
+    assert out["gov"] is True and out["held_catalyst"] is False
+
+
+def test_une_annonce_politique_sur_un_titre_NON_suivi_ne_compte_pas():
+    named = _news(symbol="BA", sentiment="gov",
+                  title="Commande publique record chez Boeing",
+                  link="http://x.test/ba")
+    assert _flags(news=[named], held=["NVDA"])["held_catalyst"] is False
+
+
+def test_le_facteur_couvre_aussi_un_titre_DETENU_passe_a_part():
+    """``watched`` porte déjà l'union côté appelant, mais ce facteur ne doit pas
+    dépendre de la discipline d'un appelant pour couvrir les positions."""
+    named = _news(symbol="NVDA", sentiment="gov", title="Nvidia nommée",
+                  link="http://x.test/n2")
+    out = _collect6(news=[named], watched=[], held=["NVDA"])
+    assert out["factors"]["held_catalyst"] is True
+
+
+def test_une_annonce_nommee_n_est_comptee_qu_UNE_fois_dans_la_matiere():
+    """Elle porte deux facteurs (``gov`` et ``held_catalyst``) : le
+    dédoublonnage par identifiant l'empêche de peser double dans l'empreinte."""
+    named = _news(symbol="NVDA", sentiment="gov", title="Nvidia nommée",
+                  link="http://x.test/n3")
+    items = _collect(news=[named], held=["NVDA"])["items"]
+    assert [i["id"] for i in items] == ["http://x.test/n3"]
+
+
+def test_le_digest_porte_la_doctrine_du_pouvoir_qui_nomme():
+    """Écrite UNE fois (dans ``llm.py``) et injectée dans les trois prompts qui
+    proposent des mouvements — deux formulations d'une même doctrine divergent
+    au premier ajustement, et personne ne s'en aperçoit."""
+    from backend.bots.paper.llm import POWER_NAMED_LINE
+    prompt = convergence.build_digest_prompt(
+        {"gov": True, "held_catalyst": True}, [], {}, [], NOW.isoformat())
+    assert POWER_NAMED_LINE in prompt
+    assert "PROMESSES" in prompt      # une mention n'est pas un contrat
+
+
+def test_le_digest_part_quand_meme_si_la_doctrine_est_illisible(monkeypatch):
+    """Une consigne de plus n'a jamais valu qu'on perde un message."""
+    monkeypatch.setattr(convergence, "_power_named_line", lambda: "")
+    prompt = convergence.build_digest_prompt({"gov": True}, [], {}, [],
+                                             NOW.isoformat())
+    assert "POURQUOI CE MESSAGE PART MAINTENANT" in prompt
+
+
+# =========================================================================== #
+#  F1 — DEUX facteurs, mais UN SEUL fait (27/08)
+#
+#  Le seuil comptait des ÉTIQUETTES. Une annonce politique qui nomme un titre
+#  suivi allume ``gov`` ET ``held_catalyst`` : deux facteurs pour un seul
+#  événement, c'est-à-dire exactement ce que le module s'interdit trois
+#  paragraphes plus haut (« la même information comptée deux fois n'est pas une
+#  convergence »).
+# =========================================================================== #
+
+def _named_gov(**over):
+    """Une annonce politique qui NOMME un titre suivi — l'événement qui porte
+    deux étiquettes à lui tout seul."""
+    base = dict(symbol="NVDA", sentiment="gov", link="http://x.test/named",
+                title="L'administration veut acheter des cartes à Nvidia")
+    base.update(over)
+    return _news(**base)
+
+
+def test_F1_un_seul_event_gov_nommant_un_titre_suivi_ne_converge_PAS():
+    """Reproduction du finding : ``gov`` + ``held_catalyst`` = 2 drapeaux, mais
+    une seule dépêche. Le digest partait sur un événement unique."""
+    collected = _collect6(news=[_named_gov()], held=["NVDA"])
+    assert collected["factors"]["gov"] is True
+    assert collected["factors"]["held_catalyst"] is True     # les deux drapeaux
+    assert convergence.independent_factors(collected) == ["gov"]
+    assert convergence.should_fire(collected, {}, NOW, "fp") == (False, "too_few")
+
+
+def test_F1_la_meme_annonce_PLUS_une_depeche_independante_converge():
+    """Le seuil n'est pas devenu inatteignable : un SECOND fait le franchit."""
+    presse = _news(symbol="NVDA", sentiment="watch", link="http://x.test/w",
+                   title="Nvidia dévoile sa nouvelle génération")
+    collected = _collect6(news=[_named_gov(), presse], watched=["NVDA"],
+                          held=["NVDA"])
+    assert convergence.independent_factors(collected) == ["gov", "held_catalyst"]
+    assert convergence.should_fire(collected, {}, NOW, "fp") == (True, "ok")
+
+
+def test_F1_independent_factors_retient_un_facteur_qui_apporte_du_neuf():
+    """Un facteur dont TOUS les ids sont déjà couverts n'ajoute rien ; il suffit
+    d'UN item neuf pour qu'il compte."""
+    payload = {"factors": {"gov": True, "held_catalyst": True},
+               "factor_ids": {"gov": ["a"], "held_catalyst": ["a", "b"]}}
+    assert convergence.independent_factors(payload) == ["gov", "held_catalyst"]
+    payload["factor_ids"]["held_catalyst"] = ["a"]
+    assert convergence.independent_factors(payload) == ["gov"]
+
+
+def test_F1_sans_table_d_ids_on_compte_comme_avant():
+    """Rétro-compatibilité : un appelant qui ne passe que des drapeaux ne peut
+    pas prouver la redite — on ne l'invente pas à sa place."""
+    flags = {"gov": True, "held_catalyst": True}
+    assert convergence.independent_factors(flags) == ["gov", "held_catalyst"]
+    assert convergence.should_fire(flags, {}, NOW, "fp") == (True, "ok")
+
+
+def test_F1_un_facteur_sans_ids_connus_est_retenu():
+    payload = {"factors": {"gov": True, "crowd_buzz": True},
+               "factor_ids": {"gov": ["a"]}}
+    assert convergence.independent_factors(payload) == ["gov", "crowd_buzz"]
+
+
+def test_F1_une_MENACE_tire_toujours_seule_meme_redondante():
+    """Le garde-fou d'indépendance borne le bruit d'opportunité, pas
+    l'avertissement sur une position détenue."""
+    collected = _collect6(news=[_news(sentiment="neg")], held=["NESN.SW"])
+    assert convergence.independent_factors(collected) == ["held_risk"]
+    assert convergence.should_fire(collected, {}, NOW, "fp") == (True, "ok")
+
+
+def test_F1_maybe_fire_passe_bien_la_table_des_ids_a_should_fire(sources, alice):
+    """Le garde-fou meurt en silence si ``maybe_fire`` ne passe que les drapeaux
+    (piège #61 : le champ lu au mauvais niveau ne plante jamais)."""
+    sources.events = [_news(symbol="NESN.SW", sentiment="gov",
+                            title="L'État commande chez Nestlé",
+                            link="http://x.test/one")]
+    sent = []
+    out = convergence.maybe_fire(now=NOW, llm=_llm("texte"),
+                                 notifier=_notifier(sent), tg_cfg=TG,
+                                 fetch_state=lambda: {})
+    assert out["fired"] is False and out["reason"] == "too_few"
+    assert sent == []
+
+
+# =========================================================================== #
+#  F2 — un compte X en PROBATION ne pèse dans aucun facteur (27/08)
+# =========================================================================== #
+
+def _candidate_news(**over):
+    base = dict(symbol="NESN.SW", sentiment="neg", src="x",
+                link="http://x.test/cand", title="Un inconnu tape sur Nestlé")
+    base.update(over)
+    event = _news(**base)
+    event["candidate"] = True
+    return event
+
+
+def test_F2_un_event_de_candidat_n_allume_aucun_facteur():
+    collected = _collect6(news=[_candidate_news()], held=["NESN.SW"],
+                          watched=["NESN.SW"])
+    assert collected["factors"] == {c: False for c in convergence.FACTOR_CODES}
+    assert collected["items"] == []
+
+
+def test_F2_un_event_de_candidat_ne_bouge_pas_l_empreinte():
+    """Il ne doit pas non plus faire repartir un digest identique sur le fond."""
+    vrai = _news(sentiment="neg", link="http://x.test/vrai")
+    seul = _collect6(news=[vrai], held=["NESN.SW"])
+    avec = _collect6(news=[vrai, _candidate_news()], held=["NESN.SW"])
+    assert convergence.fingerprint(avec["items"]) == convergence.fingerprint(seul["items"])
+
+
+def test_F2_un_compte_X_PROMU_lui_compte_normalement():
+    """Le drapeau, pas la source : un compte de la liste manuelle pèse."""
+    promu = _news(symbol="NESN.SW", sentiment="neg", src="x",
+                  link="http://x.test/promu", title="Nestlé rappelle un lot")
+    assert _collect6(news=[promu], held=["NESN.SW"])["factors"]["held_risk"] is True
+
+
+# =========================================================================== #
+#  F7 — la foule et les inconnus ne réveillent jamais SEULS (27/08)
+# =========================================================================== #
+
+@pytest.mark.parametrize("src", ["bsky", "reddit"])
+def test_F7_une_source_ANONYME_n_allume_pas_le_facteur_de_menace(src):
+    """Reproduction : la recherche Bluesky OUVERTE ramène n'importe qui ; un
+    post négatif sur un titre détenu faisait partir le digest à lui seul."""
+    anonyme = _news(symbol="NESN.SW", sentiment="neg", src=src,
+                    link="http://x.test/%s" % src)
+    collected = _collect6(news=[anonyme], held=["NESN.SW"], watched=["NESN.SW"])
+    assert collected["factors"]["held_risk"] is False
+    assert convergence.should_fire(collected, {}, NOW, "fp") == (False, "too_few")
+
+
+def test_F7_un_candidat_est_refuse_meme_avec_une_source_autorisee():
+    anonyme = _candidate_news(src="pressefi")
+    assert _collect6(news=[anonyme], held=["NESN.SW"])["factors"]["held_risk"] is False
+
+
+@pytest.mark.parametrize("src", ["", "gov", "bc", "pressefi", "sec_own",
+                                 "eco", "climat", "crypto", "x"])
+def test_F7_une_source_CUREE_garde_le_droit_de_tirer_seule(src):
+    curee = _news(symbol="NESN.SW", sentiment="neg", src=src,
+                  link="http://x.test/c%s" % (src or "none"))
+    if not src:
+        curee.pop("src", None)          # la dépêche par-symbole n'en écrit pas
+    collected = _collect6(news=[curee], held=["NESN.SW"])
+    assert collected["factors"]["held_risk"] is True
+    assert convergence.should_fire(collected, {}, NOW, "fp") == (True, "ok")
+
+
+def test_F7_une_source_anonyme_pese_quand_meme_comme_facteur_ORDINAIRE():
+    """On lui retire le droit de tirer SEULE, pas le droit d'exister : elle
+    nourrit toujours ``cross_source``."""
+    anonyme = _news(symbol="NESN.SW", sentiment="neg", src="bsky",
+                    link="http://x.test/b")
+    collected = _collect6(hyps=[_hyp(), _hyp(id="h2")], news=[anonyme])
+    assert collected["factors"]["cross_source"] is True
+    assert collected["factors"]["held_risk"] is False
+
+
+def test_F7_whale_sold_watched_ne_vient_JAMAIS_d_une_depeche():
+    """Le second facteur de menace n'a pas besoin de ce garde-fou : sa matière
+    vient de ``whales``, pas du guetteur de presse."""
+    assert convergence.THREAT_FACTORS == ("held_risk", "whale_sold_watched")
+    anonyme = _news(symbol="NESN.SW", sentiment="neg", src="reddit",
+                    link="http://x.test/r2")
+    assert _collect6(news=[anonyme], held=["NESN.SW"],
+                     watched=["NESN.SW"])["factors"]["whale_sold_watched"] is False
+
+
+# =========================================================================== #
+#  F8 — « GOV » n'est pas un titre (27/08)
+# =========================================================================== #
+
+def test_F8_une_watchlist_contenant_GOV_n_allume_pas_held_catalyst():
+    """Reproduction : le pseudo-symbole d'une annonce anonyme rencontrait
+    « GOV » dans la watchlist, et TOUTE la politique du monde devenait un
+    « catalyseur sur un titre suivi »."""
+    anonyme = _news(symbol="GOV", sentiment="gov", link="http://x.test/anon",
+                    title="Droits de douane à 50 % sur l'acier")
+    collected = _collect6(news=[anonyme], watched=["GOV"], held=["GOV"])
+    assert collected["factors"]["gov"] is True
+    assert collected["factors"]["held_catalyst"] is False
+    assert collected["factors"]["held_risk"] is False
+
+
+def test_F8_le_pseudo_symbole_est_ecarte_de_TOUS_les_ensembles():
+    """Un filtre à l'entrée plutôt que six filtres par facteur : « GOV » n'est
+    ni détenu, ni vendu par un gérant, ni un sujet de foule."""
+    trends = {"GOV": {"count": 40, "prev": 0}}
+    collected = convergence.collect_factors(
+        NOW, [], [], [], ["GOV"], held_symbols=["GOV"],
+        whale_moves=[{"action": "sortie", "symbol": "GOV",
+                      "manager_label": "Berkshire", "name": "Gov Inc",
+                      "fetched_at": NOW.isoformat()}],
+        reddit_trends=trends)
+    assert collected["factors"]["crowd_buzz"] is False
+    assert collected["factors"]["whale_sold_watched"] is False
+
+
+def test_F8_le_miroir_des_pseudo_symboles_reste_synchronise_avec_graph():
+    """La constante est RECOPIÉE (une fonction pure ne dépend pas d'un module
+    d'I/O) — donc la synchronisation doit être épinglée, sinon les deux
+    divergeront au premier ajustement."""
+    from backend.bots.paper import graph
+    assert convergence.PSEUDO_SYMBOLS == graph._PSEUDO_SYMBOLS
+
+
+def test_F8_un_vrai_titre_reste_evidemment_compte():
+    """Ceinture : on n'a pas coupé les symboles ordinaires en filtrant GOV."""
+    named = _news(symbol="NVDA", sentiment="gov", link="http://x.test/nv",
+                  title="Nvidia nommée")
+    assert _collect6(news=[named], watched=["NVDA"])["factors"]["held_catalyst"] is True

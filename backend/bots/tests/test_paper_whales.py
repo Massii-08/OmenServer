@@ -151,8 +151,18 @@ Q1_ROWS = [
 
 @pytest.fixture(autouse=True)
 def _isolated_data_dir(tmp_path, monkeypatch):
-    """Cache et état du guetteur en tmp — jamais le vrai ``data/``."""
+    """Cache et état du guetteur en tmp — jamais le vrai ``data/``.
+
+    ``store.DATA_DIR`` est isolé EN PLUS depuis les volets W2b : celui des
+    titres de l'utilisateur LIT les portefeuilles, watchlists et tableaux de
+    bord pour trouver ses ancres, et les deux ÉCRIVENT dans la mémoire de la
+    veille — qui vit sous ce même dossier. Sans cette ligne, un test « hors
+    ligne » irait lire et écrire dans le vrai ``data/paper_trading`` de la
+    machine (mesuré : c'est exactement ce qui est arrivé au premier passage).
+    """
+    from backend.bots.paper import store
     monkeypatch.setattr(w, "DATA_DIR", tmp_path / "paper_trading")
+    monkeypatch.setattr(store, "DATA_DIR", tmp_path / "paper_trading")
     return tmp_path
 
 
@@ -163,16 +173,39 @@ _REAL_WARM_CACHE = w._warm_cache
 
 @pytest.fixture(autouse=True)
 def _no_side_channels(monkeypatch):
-    """Depuis le 26/08, ``check_new_filings`` fait deux choses de plus APRÈS sa
-    ronde : réchauffer le cache des portefeuilles (requêtes SEC) et consulter la
+    """Depuis le 26/08, ``check_new_filings`` fait trois choses de plus APRÈS sa
+    ronde : réchauffer le cache des portefeuilles (requêtes SEC), consulter la
     convergence (qui appellerait le VRAI CLI Claude le jour où des facteurs
-    s'alignent). Les deux sont neutralisés par défaut ici ; les tests qui les
-    visent réinstallent leur propre doublure."""
+    s'alignent) et relever l'agenda des banques centrales (cinq sites web).
+    Les trois sont neutralisés par défaut ici ; les tests qui les visent
+    réinstallent leur propre doublure.
+
+    ⚠️ L'agenda est éteint AU NIVEAU DU PONT (``agenda_bridge``) et non de
+    ``whales._upcoming_agenda`` : cette dernière porte la garde best-effort et
+    l'aiguillage vers le paramètre injecté ``agenda=`` — la doubler ferait
+    passer les tests d'agenda À CÔTÉ du code qu'ils croient exercer.
+    """
     monkeypatch.setattr(w, "_warm_cache",
                         lambda ids, cache, stamp, client, sleep, counters: None)
     from backend.bots.paper import convergence
     monkeypatch.setattr(convergence, "maybe_fire",
                         lambda **kwargs: {"fired": False, "sent": False})
+    from backend.bots.paper import agenda_bridge
+    monkeypatch.setattr(agenda_bridge, "upcoming_events", lambda **kwargs: [])
+
+
+def counters(**overrides):
+    """Le dictionnaire de compteurs ATTENDU, avec ses défauts.
+
+    Écrit une fois : chaque volet ajouté à ``check_new_filings`` en ajoute un,
+    et une douzaine d'égalités littérales réparties dans le fichier finiraient
+    par diverger de la vérité au premier oubli.
+    """
+    base = {"managers": 0, "new_filings": 0, "notified": 0, "errors": 0,
+            "convergence_fired": False, "own_checked": 0, "own_filings": 0,
+            "own_non_us": 0, "agenda_events": 0}
+    base.update(overrides)
+    return base
 
 
 def full_routes():
@@ -690,10 +723,14 @@ def test_get_snapshot_rejects_an_unknown_manager():
 #  Catalogue
 # =========================================================================== #
 
+CATALOGUE_SIZE = 16          # 10 historiques + 6 internationaux (26/08)
+
+
 def test_catalogue_shape_is_sane():
-    assert len(w.MANAGERS) == 10
+    assert len(w.MANAGERS) == CATALOGUE_SIZE
     ids = [m["id"] for m in w.MANAGERS]
-    assert len(set(ids)) == 10
+    assert len(set(ids)) == CATALOGUE_SIZE
+    assert len({m["cik"] for m in w.MANAGERS}) == CATALOGUE_SIZE
     for m in w.MANAGERS:
         assert len(m["cik"]) == 10 and m["cik"].isdigit()
         assert m["expect"] and m["expect"] == m["expect"].lower()
@@ -703,9 +740,70 @@ def test_catalogue_shape_is_sane():
     assert w.find_manager("inconnu") is None
 
 
+def test_the_six_international_managers_are_in_the_catalogue():
+    """Les CIK ont été vérifiés un par un contre ``data.sec.gov`` le 26/08 ;
+    ce test fige le couple (identifiant, CIK) pour qu'une frappe ne le défasse
+    pas en silence."""
+    by_id = {m["id"]: m for m in w.MANAGERS}
+    assert by_id["snb-ch"]["cik"] == "0001582202"
+    assert by_id["norges"]["cik"] == "0001374170"
+    assert by_id["baillie"]["cik"] == "0001088875"
+    assert by_id["tci"]["cik"] == "0001647251"
+    assert by_id["temasek"]["cik"] == "0001021944"
+    assert by_id["nomura"]["cik"] == "0001163653"
+
+
+def test_the_wrong_norges_cik_is_caught_by_the_expect_guard():
+    """LE piège du lot : ``0001374911`` n'est PAS Norges Bank — la SEC le nomme
+    « CAPITAL CITY ENERGY FUND XIV LLC » (fonds texan, mesuré). Avec ce CIK, le
+    gérant doit sortir ``unverified`` et AUCUNE ligne ne doit être servie sous
+    le nom du fonds souverain norvégien."""
+    wrong = {"id": "norges", "label": "Norges Bank (fonds souverain norvégien)",
+             "cik": "0001374911", "expect": "norges"}
+    routes = {"https://data.sec.gov/submissions/CIK0001374911.json":
+              submissions(name="CAPITAL CITY ENERGY FUND XIV LLC")}
+    snap = w.manager_snapshot(wrong, client=FakeClient(routes), sleep=Recorder())
+    assert snap["status"] == "unverified"
+    assert snap["sec_name"] == "CAPITAL CITY ENERGY FUND XIV LLC"
+    assert "top" not in snap and "moves" not in snap
+
+    # ...et le VRAI CIK passe la garde.
+    right = dict(wrong, cik="0001374170")
+    routes = {"https://data.sec.gov/submissions/CIK0001374170.json":
+              submissions(name="NORGES BANK")}
+    assert w.manager_snapshot(
+        right, client=FakeClient(routes), sleep=Recorder())["status"] == "error"
+
+
+def test_rotation_absorbs_the_sixteen_managers_one_per_cycle():
+    """La rotation reste d'UN gérant par cycle : le catalogue élargi coûte des
+    CYCLES (seize au lieu de dix, soit ~8 h au rythme de 30 min), jamais une
+    rafale vers la SEC."""
+    cache, stamp, picked = {}, 10_000_000.0, []
+    for _ in range(len(w.MANAGERS) + 2):
+        stale = w.stalest_manager(cache, stamp)
+        if stale is None:
+            break
+        picked.append(stale)
+        cache[stale] = {"fetched_ts": stamp}       # ce cycle l'a rafraîchi
+    assert len(picked) == CATALOGUE_SIZE           # tout le monde est passé...
+    assert len(set(picked)) == CATALOGUE_SIZE      # ...et une seule fois
+    assert set(picked) == {m["id"] for m in w.MANAGERS}
+    # Tous frais -> la rotation s'arrête (zéro requête inutile).
+    assert w.stalest_manager(cache, stamp) is None
+
+
+def test_the_international_limit_is_written_down():
+    """Un 13F ne montre que la poche AMÉRICAINE d'un fonds étranger. Cette
+    limite doit être ÉCRITE quelque part que l'on relit — sinon on finira par
+    lire « voilà le portefeuille de Norges Bank », ce qui est faux."""
+    assert "13F est une obligation" in w.__doc__
+    assert "AUX ÉTATS-UNIS" in w.__doc__
+
+
 def test_list_managers_reports_the_cache_state():
     before = w.list_managers()
-    assert len(before) == 10
+    assert len(before) == CATALOGUE_SIZE
     assert all(m["cached"] is False and "quarter" not in m for m in before)
 
     w.get_snapshot("berkshire", client=FakeClient(full_routes()),
@@ -752,8 +850,7 @@ def test_watcher_does_nothing_without_telegram_config(monkeypatch):
     notifier = FakeNotifier()
     out = w.check_new_filings(mode="tout", client=client, notifier=notifier, tg_cfg={},
                               sleep=Recorder(), now=1000.0)
-    assert out == {"managers": 0, "new_filings": 0, "notified": 0, "errors": 0,
-                   "convergence_fired": False}
+    assert out == counters()
     assert client.calls == []                   # ZÉRO réseau quand c'est éteint
     assert notifier.sent == []
     assert not w.watch_path().is_file()
@@ -770,8 +867,7 @@ def test_watcher_first_pass_seeds_silently(monkeypatch):
     notifier = FakeNotifier()
     out = w.check_new_filings(mode="tout", client=client, notifier=notifier, tg_cfg=TG,
                               sleep=Recorder(), now=1000.0)
-    assert out == {"managers": 1, "new_filings": 0, "notified": 0, "errors": 0,
-                   "convergence_fired": False}
+    assert out == counters(managers=1)
     assert notifier.sent == []
     assert w.recent_filing_events() == []
     state = json.loads(w.watch_path().read_text(encoding="utf-8"))
@@ -792,8 +888,7 @@ def test_watcher_notifies_a_new_filing_on_the_second_pass(monkeypatch):
         ("4", "brand-new", "2026-08-21", ""),
         ("13F-HR", "old", "2026-05-15", "2026-03-31")])),
         notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=2000.0)
-    assert out == {"managers": 1, "new_filings": 1, "notified": 1, "errors": 0,
-                   "convergence_fired": False}
+    assert out == counters(managers=1, new_filings=1, notified=1)
 
     text, cfg = notifier.sent[0]
     assert cfg is TG
@@ -1196,7 +1291,7 @@ def test_router_lists_the_managers():
     resp = make_client().get("/api/paper/whales")
     assert resp.status_code == 200
     managers = resp.json()["managers"]
-    assert len(managers) == 10
+    assert len(managers) == CATALOGUE_SIZE
     assert managers[0]["id"] == "berkshire"
 
 
@@ -1515,3 +1610,609 @@ def test_une_convergence_en_panne_ne_casse_pas_la_ronde(monkeypatch):
                               notifier=FakeNotifier(), tg_cfg=TG,
                               sleep=Recorder(), now=1000.0, converge=boom)
     assert out["convergence_fired"] is False and out["errors"] == 1
+
+
+# =========================================================================== #
+#  Volet « SES titres » — les 8-K des ancres de l'utilisateur (W2b)
+#
+#  Le guetteur savait dire « Buffett a déposé quelque chose » et restait muet
+#  sur « ta position vient de publier un événement matériel » — alors que c'est
+#  ce second cas qui bouge son argent.
+# =========================================================================== #
+
+AAPL_CIK = "0000320193"
+AAPL_SUBM = "https://data.sec.gov/submissions/CIK0000320193.json"
+
+# Forme MESURÉE le 26/08 sur ``company_tickers.json`` (200 OK, 10 388 entrées).
+TICKERS_PAYLOAD = {
+    "0": {"cik_str": 1045810, "ticker": "NVDA", "title": "NVIDIA CORP"},
+    "1": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
+    "2": {"cik_str": 789019, "ticker": "MSFT", "title": "MICROSOFT CORP"},
+}
+
+
+def _own_subm(filings, name="Apple Inc."):
+    """``filings`` = [(form, accession, filingDate)]"""
+    return {
+        "name": name,
+        "cik": "320193",
+        "filings": {"recent": {
+            "form": [f[0] for f in filings],
+            "accessionNumber": [f[1] for f in filings],
+            "filingDate": [f[2] for f in filings],
+            "reportDate": ["" for _ in filings],
+        }},
+    }
+
+
+def _own_routes(filings, tickers=None):
+    return {
+        w.TICKERS_URL: TICKERS_PAYLOAD if tickers is None else tickers,
+        AAPL_SUBM: _own_subm(filings),
+    }
+
+
+def _anchors(positions=(), watchlist=(), pipeline=(), username="massii"):
+    """Écrit de vraies ancres sur le disque isolé (portefeuille, watchlist,
+    tableau) — le volet les découvre par les mêmes lecteurs que la prod."""
+    from backend.bots.paper import board, store
+    store.save_portfolio(username, {
+        "cash": 1000.0,
+        "positions": [{"symbol": s, "side": "long", "qty": 1, "avg_price": 1.0}
+                      for s in positions],
+        "trades": [],
+    })
+    if watchlist:
+        store.save_watchlist(username, [{"symbol": s, "name": s} for s in watchlist])
+    if pipeline:
+        board.save_board(username, {
+            "pipeline": [{"id": s.lower(), "symbol": s, "thesis": "",
+                          "source": "coach"} for s in pipeline],
+            "scenarios": [],
+        })
+
+
+def _memory_events():
+    """Ce que la MÉMOIRE DE LA VEILLE contient — la lecture qu'utilisent le
+    contexte du coach, la toile et la convergence."""
+    from backend.bots.paper import newswatch
+    return list(newswatch._load_global_seen().get("events") or [])
+
+
+def _no_managers(monkeypatch):
+    monkeypatch.setattr(w, "MANAGERS", [])
+
+
+# --- PUR : table des symboles et rotation ---------------------------------- #
+
+def test_parse_ticker_map_reads_the_measured_shape():
+    mapping = w.parse_ticker_map(TICKERS_PAYLOAD)
+    assert mapping["AAPL"] == "0000320193"        # CIK sur 10 chiffres
+    assert mapping["NVDA"] == "0001045810"
+    assert len(mapping) == 3
+
+
+def test_parse_ticker_map_tolerates_a_list_and_skips_junk():
+    mapping = w.parse_ticker_map([
+        {"cik_str": 320193, "ticker": "aapl"},     # minuscules -> normalisé
+        {"cik_str": 1, "ticker": ""},              # sans symbole
+        {"ticker": "XXX"},                         # sans CIK
+        "pas un dictionnaire",
+    ])
+    assert mapping == {"AAPL": "0000320193"}
+
+
+def test_parse_ticker_map_keeps_the_first_of_a_duplicate():
+    """La table est ordonnée par capitalisation décroissante : en cas de
+    doublon, c'est le gros émetteur qu'on veut."""
+    mapping = w.parse_ticker_map({
+        "0": {"cik_str": 111, "ticker": "DUP"},
+        "1": {"cik_str": 222, "ticker": "DUP"},
+    })
+    assert mapping["DUP"] == "0000000111"
+
+
+@pytest.mark.parametrize("cursor,expected,next_cursor", [
+    (None, ["A", "B"], 2),
+    (0, ["A", "B"], 2),
+    (2, ["C", "D"], 0),                            # boucle
+    (3, ["D", "A"], 1),                            # chevauche la fin
+    ("pas un nombre", ["A", "B"], 2),
+    (99, ["A", "B"], 2),                           # hors bornes -> repart de 0
+])
+def test_next_own_targets_rotates_in_a_circle(cursor, expected, next_cursor):
+    picked, after = w.next_own_targets(["A", "B", "C", "D"], cursor, per_cycle=2)
+    assert picked == expected and after == next_cursor
+
+
+def test_next_own_targets_on_an_empty_list():
+    assert w.next_own_targets([], 3) == ([], 0)
+
+
+def test_next_own_targets_never_asks_for_more_than_there_is():
+    picked, after = w.next_own_targets(["A"], 0, per_cycle=2)
+    assert picked == ["A"] and after == 0          # jamais deux fois le même
+
+
+def test_own_anchors_merges_positions_watchlist_and_pipeline():
+    _anchors(positions=["AAPL"], watchlist=["MSFT", "AAPL"], pipeline=["NVDA"])
+    # Les positions d'abord (l'argent engagé), et jamais de doublon.
+    assert w.own_anchors() == ["AAPL", "MSFT", "NVDA"]
+
+
+def test_own_anchors_without_any_account():
+    assert w.own_anchors() == []
+
+
+def test_the_notification_explains_the_form_to_a_holder():
+    """⚠️ ``form_explanation`` (celle des gérants) ne connaît que les
+    13F/13D/13G/4 : elle rendrait « Nouveau dépôt SEC » pour un 8-K, une ligne
+    qui n'apprend rien à qui détient le titre."""
+    text = w._own_notification_text("AAPL", "8-K", "2026-08-25", "https://x/i.htm")
+    assert "AAPL — 8-K déposé (événement matériel)" in text
+    assert "changement de dirigeant" in text
+    assert w.form_explanation("8-K") not in text     # surtout PAS celle-là
+    assert "https://x/i.htm" in text
+    assert "Comptes du trimestre" in w.own_form_note("10-Q")
+    assert "Comptes de l\'année" in w.own_form_note("10-K")
+    assert "émetteur étranger" in w.own_form_note("6-K")
+
+
+def test_own_event_title_is_readable_without_knowing_the_sec():
+    assert w.own_event_title("aapl", "8-K") == "AAPL — 8-K déposé (événement matériel)"
+    assert "rapport trimestriel" in w.own_event_title("AAPL", "10-Q")
+    assert "rapport annuel" in w.own_event_title("AAPL", "10-K")
+    assert "émetteur étranger" in w.own_event_title("NVO", "6-K")
+
+
+def test_filing_index_url_is_the_measured_form():
+    """Forme vérifiée le 26/08 : 200 sur ce dépôt Apple réel."""
+    assert w.filing_index_url(AAPL_CIK, "0000320193-26-000018") == (
+        "https://www.sec.gov/Archives/edgar/data/320193/000032019326000018/"
+        "0000320193-26-000018-index.htm")
+
+
+# --- Table des symboles : cache 7 jours ------------------------------------ #
+
+def test_the_ticker_map_is_cached_for_seven_days():
+    client = FakeClient({w.TICKERS_URL: TICKERS_PAYLOAD})
+    first = w.load_ticker_map(client=client, now=1000.0)
+    assert first["AAPL"] == "0000320193"
+    assert client.calls == [w.TICKERS_URL]
+    assert oct(w.tickers_path().stat().st_mode & 0o777) == "0o600"
+
+    # Six jours plus tard : toujours le cache, zéro requête de plus.
+    again = w.load_ticker_map(client=client, now=1000.0 + 6 * 86400)
+    assert again == first
+    assert client.calls == [w.TICKERS_URL]
+
+    # Huit jours : la table est re-téléchargée.
+    w.load_ticker_map(client=client, now=1000.0 + 8 * 86400)
+    assert client.calls == [w.TICKERS_URL, w.TICKERS_URL]
+
+
+def test_a_dead_ticker_source_serves_the_stale_map():
+    client = FakeClient({w.TICKERS_URL: TICKERS_PAYLOAD})
+    w.load_ticker_map(client=client, now=1000.0)
+    dead = FakeClient({w.TICKERS_URL: RuntimeError("sec down")})
+    assert w.load_ticker_map(client=dead, now=1000.0 + 9 * 86400)["AAPL"] \
+        == "0000320193"
+
+
+def test_without_any_map_at_all_the_result_is_empty_not_an_error():
+    dead = FakeClient({w.TICKERS_URL: RuntimeError("sec down")})
+    assert w.load_ticker_map(client=dead, now=1000.0) == {}
+
+
+def test_the_cache_files_are_not_mistaken_for_user_accounts(monkeypatch):
+    """Les fichiers de MODULE de ce lot portent un point dans leur radical :
+    sans ça, ``radar._users_with_portfolio`` les recenserait comme des comptes
+    et la convergence leur écrirait un carnet (utilisateurs fantômes — le dépôt
+    a déjà payé ce bug deux fois)."""
+    from backend.bots.paper import agenda_bridge, radar
+    w.load_ticker_map(client=FakeClient({w.TICKERS_URL: TICKERS_PAYLOAD}),
+                      now=1000.0)
+    monkeypatch.setattr(agenda_bridge, "DATA_DIR", w.DATA_DIR)
+    # On écrit le cache de l'agenda par son propre écrivain (la fixture
+    # ``_no_side_channels`` double ``upcoming_events``, qui n'écrirait rien).
+    agenda_bridge._atomic_write_json(agenda_bridge.cache_path(),
+                                     {"fetched_ts": 1000.0, "events": []})
+    assert agenda_bridge.cache_path().is_file()
+    _anchors(positions=["AAPL"])
+    assert "." in w.tickers_path().stem
+    assert "." in agenda_bridge.CACHE_NAME[:-len(".json")]
+    assert w.tickers_path().is_file()
+    assert radar._users_with_portfolio() == ["massii"]
+
+
+# --- La ronde : détection, amorçage, mode calme ---------------------------- #
+
+RECENT = "2026-08-25"                              # frais au regard de NOW_TS
+NOW_TS = datetime(2026, 8, 26, 9, 0, 0).timestamp()
+
+
+def test_own_volet_first_pass_seeds_silently(monkeypatch):
+    """Anti-tempête : au premier passage d'un titre, tout est marqué vu et RIEN
+    n'est notifié ni mémorisé."""
+    _no_managers(monkeypatch)
+    _anchors(positions=["AAPL"])
+    notifier = FakeNotifier()
+    out = w.check_new_filings(mode="tout", client=FakeClient(_own_routes([
+        ("8-K", "acc-1", RECENT), ("10-Q", "acc-2", RECENT)])),
+        notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=NOW_TS)
+    assert out["own_checked"] == 1 and out["own_filings"] == 0
+    assert notifier.sent == [] and _memory_events() == []
+    state = json.loads(w.watch_path().read_text(encoding="utf-8"))
+    assert state["own_seeded"]["AAPL"] is True
+    assert sorted(state["own_seen"]["AAPL"]) == ["acc-1", "acc-2"]
+
+
+def test_own_volet_remembers_a_new_8k_on_the_second_pass(monkeypatch):
+    _no_managers(monkeypatch)
+    _anchors(positions=["AAPL"])
+    notifier = FakeNotifier()
+    w.check_new_filings(mode="tout", client=FakeClient(_own_routes([
+        ("10-Q", "vieux", "2026-08-01")])),
+        notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=NOW_TS)
+
+    out = w.check_new_filings(mode="tout", client=FakeClient(_own_routes([
+        ("8-K", "frais", RECENT), ("10-Q", "vieux", "2026-08-01")])),
+        notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=NOW_TS)
+    assert out["own_filings"] == 1 and out["notified"] == 1
+
+    events = _memory_events()
+    assert len(events) == 1
+    event = events[0]
+    assert event["symbol"] == "AAPL"
+    assert event["src"] == "sec_own"
+    assert event["sentiment"] == "watch"
+    assert event["title"] == "AAPL — 8-K déposé (événement matériel)"
+    assert event["link"].endswith("frais-index.htm")
+    assert event["muted"] is False
+    assert "8-K" in notifier.sent[0][0] and event["link"] in notifier.sent[0][0]
+
+
+def test_own_volet_stays_mute_in_calm_mode_but_still_remembers(monkeypatch):
+    """Mode calme : la détection reste ENTIÈRE (mémoire, toile, convergence),
+    seul l'envoi disparaît. Seule la convergence parle."""
+    _no_managers(monkeypatch)
+    _anchors(positions=["AAPL"])
+    notifier = FakeNotifier()
+    w.check_new_filings(mode="calme", client=FakeClient(_own_routes([])),
+                        notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=NOW_TS)
+    out = w.check_new_filings(mode="calme", client=FakeClient(_own_routes([
+        ("8-K", "frais", RECENT)])),
+        notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=NOW_TS)
+    assert out["own_filings"] == 1 and out["notified"] == 0
+    assert notifier.sent == []
+    assert _memory_events()[0]["muted"] is True
+
+
+def test_own_volet_ignores_an_antique_filing(monkeypatch):
+    """Même garde d'âge absolue que les dépôts de gérants (incident du 25/08) :
+    un 8-K de 2011 est marqué vu et rien d'autre."""
+    _no_managers(monkeypatch)
+    _anchors(positions=["AAPL"])
+    w.check_new_filings(mode="tout", client=FakeClient(_own_routes([])),
+                        notifier=FakeNotifier(), tg_cfg=TG, sleep=Recorder(),
+                        now=NOW_TS)
+    out = w.check_new_filings(mode="tout", client=FakeClient(_own_routes([
+        ("8-K", "antique", "2011-05-16")])),
+        notifier=FakeNotifier(), tg_cfg=TG, sleep=Recorder(), now=NOW_TS)
+    assert out["own_filings"] == 0 and _memory_events() == []
+    state = json.loads(w.watch_path().read_text(encoding="utf-8"))
+    assert "antique" in state["own_seen"]["AAPL"]   # vu, donc plus jamais revu
+
+
+def test_a_non_us_symbol_is_skipped_and_counted(monkeypatch):
+    """``NESN.SW`` n'est pas dans le registre de la SEC — ce n'est ni une
+    erreur ni un silence, c'est un compteur."""
+    _no_managers(monkeypatch)
+    _anchors(positions=["NESN.SW"])
+    client = FakeClient(_own_routes([]))
+    out = w.check_new_filings(mode="tout", client=client, notifier=FakeNotifier(),
+                              tg_cfg=TG, sleep=Recorder(), now=NOW_TS)
+    assert out["own_non_us"] == 1
+    assert out["own_checked"] == 0 and out["errors"] == 0
+    assert AAPL_SUBM not in client.calls            # aucune requête gaspillée
+
+
+def test_the_volet_rotates_across_cycles(monkeypatch):
+    """Une à deux ancres par cycle : un portefeuille de quatre titres est
+    balayé en deux cycles, sans jamais marteler la SEC."""
+    _no_managers(monkeypatch)
+    _anchors(positions=["AAPL", "MSFT"], watchlist=["NVDA"])
+    seen_calls = []
+    routes = dict(_own_routes([]))
+    for cik in ("0000789019", "0001045810"):
+        routes["https://data.sec.gov/submissions/CIK%s.json" % cik] = _own_subm([])
+
+    for _ in range(2):
+        client = FakeClient(routes)
+        w.check_new_filings(mode="tout", client=client, notifier=FakeNotifier(),
+                            tg_cfg=TG, sleep=Recorder(), now=NOW_TS)
+        seen_calls.append([c for c in client.calls if "submissions" in c])
+
+    assert len(seen_calls[0]) == 2                  # AAPL + MSFT
+    assert seen_calls[1] != seen_calls[0]           # puis NVDA (rotation)
+    state = json.loads(w.watch_path().read_text(encoding="utf-8"))
+    assert sorted(state["own_seeded"]) == ["AAPL", "MSFT", "NVDA"]
+
+
+def test_no_anchor_means_no_request_at_all(monkeypatch):
+    """Un compte vide ne doit rien coûter à la SEC — pas même la table des
+    symboles."""
+    _no_managers(monkeypatch)
+    client = FakeClient(_own_routes([]))
+    out = w.check_new_filings(mode="tout", client=client, notifier=FakeNotifier(),
+                              tg_cfg=TG, sleep=Recorder(), now=NOW_TS)
+    assert client.calls == []
+    assert out["own_checked"] == 0 and out["own_non_us"] == 0
+
+
+def test_a_broken_symbol_counts_an_error_and_does_not_kill_the_round(monkeypatch):
+    _no_managers(monkeypatch)
+    _anchors(positions=["AAPL"])
+    routes = dict(_own_routes([]))
+    routes[AAPL_SUBM] = RuntimeError("sec down")
+    out = w.check_new_filings(mode="tout", client=FakeClient(routes),
+                              notifier=FakeNotifier(), tg_cfg=TG,
+                              sleep=Recorder(), now=NOW_TS)
+    assert out["errors"] == 1 and out["own_checked"] == 0
+
+
+def test_seen_is_only_written_once_the_memory_accepted_the_event(monkeypatch):
+    """Deux processus écrivent la mémoire de la veille. Si l'écriture échoue,
+    le dépôt NE DOIT PAS être marqué vu — sinon il serait perdu pour toujours
+    au lieu de revenir au cycle suivant."""
+    _no_managers(monkeypatch)
+    _anchors(positions=["AAPL"])
+    w.check_new_filings(mode="tout", client=FakeClient(_own_routes([])),
+                        notifier=FakeNotifier(), tg_cfg=TG, sleep=Recorder(),
+                        now=NOW_TS)
+    monkeypatch.setattr(w, "remember_events", lambda events: False)
+    w.check_new_filings(mode="tout", client=FakeClient(_own_routes([
+        ("8-K", "frais", RECENT)])),
+        notifier=FakeNotifier(), tg_cfg=TG, sleep=Recorder(), now=NOW_TS)
+    state = json.loads(w.watch_path().read_text(encoding="utf-8"))
+    assert "frais" not in (state["own_seen"].get("AAPL") or [])
+
+
+def test_the_own_volet_is_off_when_telegram_is_off(monkeypatch):
+    _no_managers(monkeypatch)
+    _anchors(positions=["AAPL"])
+    client = FakeClient(_own_routes([("8-K", "frais", RECENT)]))
+    out = w.check_new_filings(mode="tout", client=client, notifier=FakeNotifier(),
+                              tg_cfg={}, sleep=Recorder(), now=NOW_TS)
+    assert client.calls == [] and out == counters()
+
+
+def test_a_watch_on_a_held_symbol_lights_the_held_catalyst_factor(monkeypatch):
+    """Le point d'arrivée du volet : la convergence doit COMPTER ce 8-K comme un
+    catalyseur sur un titre détenu. C'est le sentiment ``watch`` + le symbole
+    qui l'allument — vérifié, pas supposé."""
+    from backend.bots.paper import convergence
+    _no_managers(monkeypatch)
+    _anchors(positions=["AAPL"])
+    w.check_new_filings(mode="calme", client=FakeClient(_own_routes([])),
+                        notifier=FakeNotifier(), tg_cfg=TG, sleep=Recorder(),
+                        now=NOW_TS)
+    w.check_new_filings(mode="calme", client=FakeClient(_own_routes([
+        ("8-K", "frais", RECENT)])),
+        notifier=FakeNotifier(), tg_cfg=TG, sleep=Recorder(), now=NOW_TS)
+
+    now_iso = datetime.fromtimestamp(NOW_TS).isoformat()
+    collected = convergence.collect_factors(
+        now_iso, [], _memory_events(), [], ["AAPL"], held_symbols=["AAPL"])
+    assert collected["factors"]["held_catalyst"] is True
+
+
+def test_the_8k_lands_on_the_branch_of_its_own_stock_in_the_web(monkeypatch):
+    """Dans la toile, un ``sec_own`` porte un symbole et une tonalité
+    ``watch`` : il devient un CATALYSEUR accroché à la branche de ce titre —
+    la famille « presse », via le type existant."""
+    from backend.bots.paper import graph
+    _no_managers(monkeypatch)
+    _anchors(positions=["AAPL"])
+    w.check_new_filings(mode="calme", client=FakeClient(_own_routes([])),
+                        notifier=FakeNotifier(), tg_cfg=TG, sleep=Recorder(),
+                        now=NOW_TS)
+    w.check_new_filings(mode="calme", client=FakeClient(_own_routes([
+        ("8-K", "frais", RECENT)])),
+        notifier=FakeNotifier(), tg_cfg=TG, sleep=Recorder(), now=NOW_TS)
+
+    now_iso = datetime.fromtimestamp(NOW_TS).isoformat()
+    built = graph.build_graph([{"symbol": "AAPL", "kind": "position"}],
+                              _memory_events(), [], [], [], now_iso)
+    node = [n for n in built["nodes"] if n.get("type") == "catalyst"]
+    assert len(node) == 1 and node[0]["symbol"] == "AAPL"
+    assert graph._FAMILY_OF["catalyst"] == "press"
+    # L'ancre d'un titre porte son symbole pour identifiant (cf. ``_collect``).
+    assert any("AAPL" in (e["target"], e["source"]) for e in built["edges"])
+
+
+# =========================================================================== #
+#  Volet AGENDA — les rendez-vous des banques centrales (W2b)
+# =========================================================================== #
+
+def _agenda(rows):
+    """Un fournisseur d'agenda injecté (le pont réel est doublé par la fixture
+    ``_no_side_channels`` — ici on passe par le paramètre ``agenda=``)."""
+    def provider(now=None, horizon_days=None):
+        return list(rows)
+    return provider
+
+
+FED = {"date": "2026-08-28", "bank": "Fed",
+       "label": "Fed — riunione del FOMC (27-28 agosto)",
+       "source_url": "https://fed.test/cal"}
+BCE = {"date": "2026-08-31", "bank": "BCE",
+       "label": "BCE — riunione di politica monetaria (decisione)",
+       "source_url": "https://ecb.test/cal"}
+
+
+def test_agenda_key_is_the_bank_and_the_day():
+    assert w.agenda_event_key(FED) == "fed|2026-08-28"
+    assert w.agenda_event_key({"bank": "", "date": "2026-08-28"}) == ""
+    assert w.agenda_event_key({"bank": "Fed", "date": ""}) == ""
+    assert w.agenda_event_key("pas un dict") == ""
+
+
+def test_agenda_first_pass_seeds_silently(monkeypatch):
+    _no_managers(monkeypatch)
+    notifier = FakeNotifier()
+    out = w.check_new_filings(mode="tout", client=FakeClient({}), notifier=notifier,
+                              tg_cfg=TG, sleep=Recorder(), now=NOW_TS,
+                              agenda=_agenda([FED, BCE]))
+    assert out["agenda_events"] == 0 and notifier.sent == []
+    assert _memory_events() == []
+    state = json.loads(w.watch_path().read_text(encoding="utf-8"))
+    assert state["agenda_seeded"] is True
+    assert sorted(state["agenda_seen"]) == ["bce|2026-08-31", "fed|2026-08-28"]
+
+
+def test_agenda_emits_a_new_meeting_once_only(monkeypatch):
+    _no_managers(monkeypatch)
+    notifier = FakeNotifier()
+    w.check_new_filings(mode="tout", client=FakeClient({}), notifier=notifier,
+                        tg_cfg=TG, sleep=Recorder(), now=NOW_TS,
+                        agenda=_agenda([FED]))                 # amorçage
+
+    out = w.check_new_filings(mode="tout", client=FakeClient({}), notifier=notifier,
+                              tg_cfg=TG, sleep=Recorder(), now=NOW_TS,
+                              agenda=_agenda([FED, BCE]))
+    assert out["agenda_events"] == 1                            # BCE seulement
+    event = _memory_events()[0]
+    assert event["title"] == BCE["label"]
+    assert event["symbol"] is None                              # « held-rien »
+    assert event["sentiment"] == "watch"
+    assert event["agenda"] is True and event["bank"] == "BCE"
+    assert event["link"] == ""                                  # cf. dédup
+    assert BCE["source_url"] in notifier.sent[0][0]             # mais vérifiable
+
+    # Troisième cycle, même agenda : plus rien (dédoublonnage par banque+jour).
+    again = w.check_new_filings(mode="tout", client=FakeClient({}),
+                                notifier=notifier, tg_cfg=TG, sleep=Recorder(),
+                                now=NOW_TS, agenda=_agenda([FED, BCE]))
+    assert again["agenda_events"] == 0 and len(_memory_events()) == 1
+
+
+def test_agenda_is_mute_in_calm_mode_but_still_remembered(monkeypatch):
+    _no_managers(monkeypatch)
+    notifier = FakeNotifier()
+    w.check_new_filings(mode="calme", client=FakeClient({}), notifier=notifier,
+                        tg_cfg=TG, sleep=Recorder(), now=NOW_TS,
+                        agenda=_agenda([FED]))
+    out = w.check_new_filings(mode="calme", client=FakeClient({}), notifier=notifier,
+                              tg_cfg=TG, sleep=Recorder(), now=NOW_TS,
+                              agenda=_agenda([FED, BCE]))
+    assert out["agenda_events"] == 1 and notifier.sent == []
+    assert _memory_events()[0]["muted"] is True
+
+
+def test_an_empty_agenda_never_wipes_the_memory_of_what_was_seen(monkeypatch):
+    """Cinq banques centrales muettes en même temps, c'est un incident réseau —
+    repartir de zéro rejouerait tous les rendez-vous au cycle suivant."""
+    _no_managers(monkeypatch)
+    w.check_new_filings(mode="tout", client=FakeClient({}), notifier=FakeNotifier(),
+                        tg_cfg=TG, sleep=Recorder(), now=NOW_TS,
+                        agenda=_agenda([FED]))
+    w.check_new_filings(mode="tout", client=FakeClient({}), notifier=FakeNotifier(),
+                        tg_cfg=TG, sleep=Recorder(), now=NOW_TS,
+                        agenda=_agenda([]))
+    state = json.loads(w.watch_path().read_text(encoding="utf-8"))
+    assert state["agenda_seen"] == {"fed|2026-08-28": "2026-08-28"}
+
+
+def test_a_past_meeting_leaves_the_memory_by_itself(monkeypatch):
+    """La mémoire est REMPLACÉE par l'horizon courant : un rendez-vous qui a eu
+    lieu en sort tout seul, et ne peut pas revenir (le pont ne rend jamais une
+    date passée). La mémoire reste donc bornée sans purge explicite."""
+    _no_managers(monkeypatch)
+    w.check_new_filings(mode="tout", client=FakeClient({}), notifier=FakeNotifier(),
+                        tg_cfg=TG, sleep=Recorder(), now=NOW_TS,
+                        agenda=_agenda([FED, BCE]))
+    w.check_new_filings(mode="tout", client=FakeClient({}), notifier=FakeNotifier(),
+                        tg_cfg=TG, sleep=Recorder(), now=NOW_TS,
+                        agenda=_agenda([BCE]))                  # la Fed est passée
+    state = json.loads(w.watch_path().read_text(encoding="utf-8"))
+    assert list(state["agenda_seen"]) == ["bce|2026-08-31"]
+
+
+def test_a_broken_agenda_never_breaks_the_round(monkeypatch):
+    _no_managers(monkeypatch)
+
+    def boom(**kwargs):
+        raise RuntimeError("banques centrales injoignables")
+
+    out = w.check_new_filings(mode="tout", client=FakeClient({}),
+                              notifier=FakeNotifier(), tg_cfg=TG,
+                              sleep=Recorder(), now=NOW_TS, agenda=boom)
+    assert out["agenda_events"] == 0 and out["errors"] == 0
+
+
+def test_a_central_bank_meeting_lands_under_the_world_pivot(monkeypatch):
+    """Le point d'arrivée du volet : dans la toile, une réunion ne nomme aucun
+    titre — elle doit donc rejoindre le pivot « monde », famille macro, et NON
+    être omise comme une dépêche orpheline (règle 5 de ``graph._dispatch``)."""
+    from backend.bots.paper import graph
+    _no_managers(monkeypatch)
+    w.check_new_filings(mode="calme", client=FakeClient({}), notifier=FakeNotifier(),
+                        tg_cfg=TG, sleep=Recorder(), now=NOW_TS,
+                        agenda=_agenda([FED]))
+    w.check_new_filings(mode="calme", client=FakeClient({}), notifier=FakeNotifier(),
+                        tg_cfg=TG, sleep=Recorder(), now=NOW_TS,
+                        agenda=_agenda([FED, BCE]))
+
+    now_iso = datetime.fromtimestamp(NOW_TS).isoformat()
+    built = graph.build_graph([{"symbol": "AAPL", "kind": "position"}],
+                              _memory_events(), [], [], [], now_iso)
+    node = [n for n in built["nodes"] if n.get("label") == BCE["label"]]
+    assert len(node) == 1
+    assert node[0]["type"] in graph.PIVOT_TYPES         # macro, pas « presse »
+    assert graph._FAMILY_OF[node[0]["type"]] == "eco"
+    assert any(e["target"] == graph.WORLD_ID or e["source"] == graph.WORLD_ID
+               for e in built["edges"])
+
+
+def test_two_meetings_of_the_same_bank_stay_two_nodes(monkeypatch):
+    """Pourquoi le lien de l'événement est VIDE : la mémoire dédoublonne par
+    lien, et deux réunions de la Fed partagent la même page de calendrier —
+    écrire ce lien fusionnerait septembre et octobre en un seul nœud."""
+    from backend.bots.paper import graph
+    _no_managers(monkeypatch)
+    second = dict(FED, date="2026-09-30",
+                  label="Fed — riunione del FOMC (29-30 settembre)")
+    # L'amorçage muet porte sur une AUTRE banque : les deux réunions de la Fed
+    # doivent toutes les deux être neuves au cycle suivant.
+    w.check_new_filings(mode="calme", client=FakeClient({}), notifier=FakeNotifier(),
+                        tg_cfg=TG, sleep=Recorder(), now=NOW_TS, agenda=_agenda([BCE]))
+    w.check_new_filings(mode="calme", client=FakeClient({}), notifier=FakeNotifier(),
+                        tg_cfg=TG, sleep=Recorder(), now=NOW_TS,
+                        agenda=_agenda([FED, second]))
+
+    # ⚠️ Une ancre est nécessaire : sans elle la vue d'ensemble est VIDE (un
+    # graphe montre des connexions, pas un décor). Ce n'est pas ce qu'on teste
+    # ici, mais sans elle le test serait vert pour la mauvaise raison.
+    now_iso = datetime.fromtimestamp(NOW_TS).isoformat()
+    built = graph.build_graph([{"symbol": "AAPL", "kind": "position"}],
+                              _memory_events(), [], [], [], now_iso)
+    labels = {n.get("label") for n in built["nodes"]}
+    assert FED["label"] in labels and second["label"] in labels
+
+
+def test_an_agenda_that_is_empty_at_the_first_pass_does_not_count_as_seeding(monkeypatch):
+    """L'amorçage muet vaut pour le premier agenda NON VIDE. Sinon un incident
+    réseau au tout premier cycle brûlerait le seed, et le vrai premier agenda —
+    celui qui arrive au cycle suivant — serait envoyé en entier d'un coup."""
+    _no_managers(monkeypatch)
+    w.check_new_filings(mode="tout", client=FakeClient({}), notifier=FakeNotifier(),
+                        tg_cfg=TG, sleep=Recorder(), now=NOW_TS, agenda=_agenda([]))
+    state = json.loads(w.watch_path().read_text(encoding="utf-8"))
+    assert state["agenda_seeded"] is False
+
+    out = w.check_new_filings(mode="tout", client=FakeClient({}),
+                              notifier=FakeNotifier(), tg_cfg=TG, sleep=Recorder(),
+                              now=NOW_TS, agenda=_agenda([FED, BCE]))
+    assert out["agenda_events"] == 0                 # amorçage, enfin
+    assert _memory_events() == []

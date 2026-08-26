@@ -32,6 +32,13 @@ _REAL_LOAD_X_ACCOUNTS = newswatch.load_x_accounts
 # Idem pour le volet Reddit : la fixture l'éteint en rendant une URL vide, et
 # le test qui vérifie le FORMAT de l'URL a besoin de la vraie fonction.
 _REAL_REDDIT_URL = newswatch._reddit_url
+# Idem pour les deux volets W2a que la fixture éteint : capturés AVANT elle.
+_REAL_PRESSEFI_FEEDS = newswatch.pressefi_feeds
+_REAL_BSKY_URLS = newswatch._bsky_urls
+# Les URL de presse mondiale, figées une fois : ``_FetchQueue`` s'en sert pour
+# router ces flux vers leur propre file (patron des volets crypto/éco/climat).
+_PRESSEFI_URLS = frozenset(
+    str(feed.get("url") or "") for feed in _REAL_PRESSEFI_FEEDS())
 
 
 @pytest.fixture(autouse=True)
@@ -42,24 +49,56 @@ def _isolate_data_dir(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_side_channels(monkeypatch):
-    """Trois portes de sortie s'ouvriraient sinon PAR DÉFAUT dans cette suite :
+    """CINQ portes de sortie s'ouvriraient sinon PAR DÉFAUT dans cette suite :
 
     * le **volet X** — sans configuration, ``load_x_accounts`` rend les comptes
       livrés par défaut et le volet irait vraiment chercher x.com ;
     * le **volet Reddit** — il ne dépend d'AUCUNE configuration (les subs sont
       en dur) : sans neutralisation, chaque cycle de test partirait sur
       reddit.com. On coupe par l'URL, seul point de passage du volet ;
+    * le **volet Bluesky** (W2a) — même cas exactement : deux requêtes fixes en
+      dur, aucune configuration, donc chaque cycle partirait sur bsky.app. On
+      coupe par ``_bsky_urls``, son seul point de passage ;
+    * le **volet presse mondiale** (W2a) — celui-là passe bien par le ``fetch``
+      injecté (aucun risque de réseau), mais il demande SEIZE sources à chaque
+      passage dû : laissé branché, il ajouterait seize appels au compteur de la
+      soixantaine de tests écrits avant lui, dont aucun comportement n'a changé.
+      On coupe par sa liste de flux ;
     * la **convergence** — appelée à la fin de chaque cycle, elle appellerait
       le VRAI CLI Claude le jour où deux facteurs s'alignent dans une fixture.
 
-    Les trois sont neutralisés ici, et les tests qui les visent réinstallent
-    leur propre doublure. Un test de veille ne doit jamais dépendre du réseau.
+    Et un SIXIÈME garde-fou, celui-là contre un piège mesuré : un compte X dont
+    la page ne rend AUCUN post compte une « anomalie », et deux anomalies de
+    suite escaladent vers le NAVIGATEUR FURTIF du Harvester. Un test qui rend
+    deux fois une liste de posts vide déclenchait donc le vrai
+    ``_fetch_x_stealth`` — mesuré à 34 secondes sur une machine sans patchright,
+    et une tentative de démarrer un Chrome sur une machine qui en a un. On le
+    remplace par un échec IMMÉDIAT, qui est exactement ce que fait le vrai étage
+    quand patchright manque. Un test qui vise l'escalade injecte le sien.
+
+    Les cinq sont neutralisés ici, et les tests qui les visent réinstallent leur
+    propre doublure. Un test de veille ne doit jamais dépendre du réseau.
+
+    ⚠️ Le volet **banques centrales**, lui, N'EST PAS neutralisé : c'est un volet
+    RSS ordinaire servi par le même moteur qu'``eco``/``climat`` et par le même
+    ``fetch`` injecté. Ses trois sources sont routées par ``_FetchQueue`` vers un
+    flux vide, et elles COMPTENT dans les compteurs — c'est la vérité du cycle,
+    et la cacher rendrait la suite moins fidèle qu'elle ne l'est.
     """
     monkeypatch.setattr(newswatch, "load_x_accounts", lambda: [])
-    monkeypatch.setattr(newswatch, "_reddit_url", lambda: "")
+    monkeypatch.setattr(newswatch, "_reddit_url", lambda subs=None: "")
+    monkeypatch.setattr(newswatch, "_bsky_urls", lambda queries: [])
+    monkeypatch.setattr(newswatch, "pressefi_feeds", lambda: [])
+    monkeypatch.setattr(newswatch, "_fetch_x_stealth", _no_stealth)
     from backend.bots.paper import convergence
     monkeypatch.setattr(convergence, "maybe_fire",
                         lambda **kwargs: {"fired": False, "sent": False})
+
+
+def _no_stealth(handle):
+    """L'étage furtif, INDISPONIBLE — ce que fait le vrai sur une machine sans
+    patchright, mais tout de suite (cf. ``_no_side_channels``)."""
+    raise RuntimeError("navigateur furtif indisponible en test")
 
 
 NOW = datetime(2026, 8, 24, 12, 0, 0, tzinfo=timezone.utc)
@@ -114,6 +153,8 @@ class _FetchQueue:
         self._crypto = []
         self._eco = []
         self._climat = []
+        self._bc = []
+        self._pressefi = []
 
     def push(self, xml_or_exc):
         self._answers.append(xml_or_exc)
@@ -137,6 +178,24 @@ class _FetchQueue:
         """Réponse du volet CLIMAT (26/08 soir) — même séparation que crypto."""
         self._climat.append(xml_or_exc)
 
+    def push_bc(self, xml_or_exc):
+        """Réponse du volet BANQUES CENTRALES (W2a) — même séparation.
+
+        La fiche porte TROIS sources (Fed, BCE, BNS) : une réponse poussée ici
+        sert la PREMIÈRE qui appelle, les deux suivantes reçoivent un flux vide.
+        C'est ce qui permet d'écrire un test de communiqué sans avoir à empiler
+        deux silences derrière lui.
+        """
+        self._bc.append(xml_or_exc)
+
+    def push_pressefi(self, xml_or_exc):
+        """Réponse d'un flux de PRESSE MONDIALE (W2a).
+
+        Le volet est éteint par la fixture autouse ; un test qui le rallume
+        (``pressefi_feeds`` réinstallée) fait passer ses flux par ici.
+        """
+        self._pressefi.append(xml_or_exc)
+
     def prime_gov(self, xml_or_exc=None):
         """Insère 2 réponses gov (une par source, run_once en interroge
         exactement 2 en tête de cycle) EN TÊTE de la file -- quel que soit ce
@@ -153,6 +212,10 @@ class _FetchQueue:
             ans = self._eco.pop(0) if self._eco else _EMPTY_RSS
         elif url in newswatch._CLIMAT_SOURCES:
             ans = self._climat.pop(0) if self._climat else _EMPTY_RSS
+        elif url in newswatch._BC_SOURCES:
+            ans = self._bc.pop(0) if self._bc else _EMPTY_RSS
+        elif url in _PRESSEFI_URLS:
+            ans = self._pressefi.pop(0) if self._pressefi else _EMPTY_RSS
         else:
             ans = self._answers.pop(0)
         if isinstance(ans, Exception):
@@ -575,7 +638,8 @@ def test_run_once_first_pass_seeds_without_notifying():
     counters = _run(fetch, notifier)
     assert counters["users"] == 1
     assert counters["symbols"] == 1
-    assert counters["fetched"] == 7   # 1 symbole + 4 volets globaux (2 gov + crypto + eco + climat)
+    # 1 symbole + les volets globaux : 2 gov + 2 crypto + eco + climat + 3 bc.
+    assert counters["fetched"] == 10
     assert counters["notified"] == 0
     assert counters["errors"] == 0
     assert notifier.calls == []
@@ -798,8 +862,9 @@ def test_run_once_counts_fetch_error_and_continues_other_symbols():
     counters = _run(fetch, notifier)
     assert counters["symbols"] == 2
     assert counters["errors"] == 1
-    assert counters["fetched"] == 7    # BBB (1) + 6 globaux (2 gov, 2 crypto, eco, climat)
-    assert len(fetch.calls) == 8       # 6 globaux + AAA (échoue) + BBB
+    # BBB (1) + 9 globaux (2 gov, 2 crypto, eco, climat, 3 bc).
+    assert counters["fetched"] == 10
+    assert len(fetch.calls) == 11      # 9 globaux + AAA (échoue) + BBB
 
 
 def test_run_once_recovers_from_corrupt_seen_file():
@@ -846,9 +911,10 @@ def test_run_once_paces_between_multiple_fetches():
     fetch.prime_gov()
     newswatch.run_once(now=NOW, fetch=fetch, notifier=_NotifySpy(),
                        tg_cfg=CFG, sleep=sleeps.append, mode="tout")
-    # 8 fetches au total (2 gov + 2 crypto + eco + climat + SYM1 + SYM2) ->
-    # pas de pause avant le 1er, une pause avant chacun des 7 suivants.
-    assert sleeps == [1.1] * 7
+    # 11 fetches au total (2 gov + 2 crypto + eco + climat + 3 bc + SYM1 +
+    # SYM2) -> pas de pause avant le 1er, une pause avant chacun des 10
+    # suivants.
+    assert sleeps == [1.1] * 10
 
 
 def test_run_once_notifies_watch_with_expected_wording():
@@ -924,10 +990,10 @@ def test_run_once_ignores_portfolio_without_positions():
     fetch = _FetchQueue()
     counters = _run(fetch, _NotifySpy())
     assert counters["users"] == 0
-    # les volets GLOBAUX (gov, crypto, éco, climat) tournent quand même --
-    # seul le volet PAR SYMBOLE (les appels qu'il y aurait eu avec une
-    # position) est absent.
-    assert len(fetch.calls) == 6
+    # les volets GLOBAUX (gov, crypto, éco, climat, banques centrales)
+    # tournent quand même -- seul le volet PAR SYMBOLE (les appels qu'il y
+    # aurait eu avec une position) est absent.
+    assert len(fetch.calls) == 9
 
 
 def test_run_once_no_portfolios_still_runs_gov_watch():
@@ -935,7 +1001,7 @@ def test_run_once_no_portfolios_still_runs_gov_watch():
     avant l'extension §13 : le volet politique global tourne quand même."""
     fetch = _FetchQueue()
     counters = _run(fetch, _NotifySpy())
-    assert counters == {"users": 0, "symbols": 0, "fetched": 6, "notified": 0,
+    assert counters == {"users": 0, "symbols": 0, "fetched": 9, "notified": 0,
                         "errors": 0, "convergence_fired": False}
 
 
@@ -1022,7 +1088,7 @@ def test_run_once_gov_first_pass_seeds_silently_even_without_portfolios():
     notifier = _NotifySpy()
     counters = _run(fetch, notifier, prime_gov=False)
     assert counters["notified"] == 0
-    assert counters["fetched"] == 6      # 2 gov + 2 crypto + eco + climat
+    assert counters["fetched"] == 9      # 2 gov + 2 crypto + eco + climat + 3 bc
     assert notifier.calls == []
     assert newswatch.recent_events("anyone") == []
 
@@ -1175,8 +1241,9 @@ def test_run_once_gov_fetch_error_counts_and_does_not_block_second_source():
     fetch.push(_rss([]))
     counters = _run(fetch, _NotifySpy(), prime_gov=False)
     assert counters["errors"] == 1
-    assert counters["fetched"] == 5      # 1 gov qui répond + 2 crypto + eco + climat
-    assert len(fetch.calls) == 6
+    # 1 gov qui répond + 2 crypto + eco + climat + 3 bc.
+    assert counters["fetched"] == 8
+    assert len(fetch.calls) == 9
 
 
 def test_run_once_gov_runs_even_with_zero_portfolios():
@@ -1185,8 +1252,8 @@ def test_run_once_gov_runs_even_with_zero_portfolios():
     fetch.push(_rss([]))
     counters = _run(fetch, _NotifySpy(), prime_gov=False)
     assert counters["users"] == 0
-    assert counters["fetched"] == 6      # 2 gov + 2 crypto + eco + climat
-    assert len(fetch.calls) == 6
+    assert counters["fetched"] == 9      # 2 gov + 2 crypto + eco + climat + 3 bc
+    assert len(fetch.calls) == 9
 
 
 def test_run_once_gov_recovers_from_corrupt_global_seen_file():
@@ -2048,8 +2115,8 @@ def test_le_volet_eco_en_panne_ne_bloque_pas_le_volet_climat():
     fetch.push_climat(_climat_feed())
     counters = _run(fetch, _NotifySpy())
     assert counters["errors"] == 1
-    # 2 gov + 2 crypto + climat (l'éco a levé) = 5 réponses reçues.
-    assert counters["fetched"] == 5
+    # 2 gov + 2 crypto + climat + 3 bc (l'éco a levé) = 8 réponses reçues.
+    assert counters["fetched"] == 8
 
 
 def test_mode_calme_les_volets_monde_n_envoient_plus_rien():
@@ -2630,7 +2697,7 @@ def _reddit_env(monkeypatch, posts, url=_REDDIT_URL):
     """Réinstalle un volet Reddit pilotable (la fixture autouse l'éteint) et
     rend la liste des URL réellement demandées."""
     calls = []
-    monkeypatch.setattr(newswatch, "_reddit_url", lambda: url)
+    monkeypatch.setattr(newswatch, "_reddit_url", lambda subs=None: url)
 
     def fetch(target):
         calls.append(target)
@@ -2648,7 +2715,7 @@ def _run_reddit(monkeypatch, fetch, notifier, now=NOW, mode="tout", due=True,
 
     ``url`` réinstalle la cible que la fixture autouse avait coupée ; ``url=""``
     rejoue le cas « moteur market-pulse absent »."""
-    monkeypatch.setattr(newswatch, "_reddit_url", lambda: url)
+    monkeypatch.setattr(newswatch, "_reddit_url", lambda subs=None: url)
     if due:
         state = newswatch._load_global_seen()
         state["reddit_cycle"] = 0
@@ -2867,3 +2934,1373 @@ def test_la_convergence_est_consultee_apres_l_ecriture_des_etats():
 
     _run(fetch, _NotifySpy(), mode="calme", converge=converge)
     assert seen["events"] is not None           # l'état a bien été relu
+
+
+# =========================================================================== #
+#  W2a — le scanner devient MONDIAL
+#
+#  Trois volets de plus (banques centrales, presse financière mondiale,
+#  Bluesky), six subreddits internationaux, et une file de PROBATION qui fait
+#  grandir la liste des comptes X depuis le réseau de ce qu'on lit déjà.
+# =========================================================================== #
+
+# --- PUR : classify_bc ------------------------------------------------------ #
+
+def test_classify_bc_n_a_pas_de_gate_un_communique_quelconque_passe():
+    """C'est LE point du volet : la source décide. Un titre qui ne contient
+    aucun mot-clé macro est quand même un communiqué de banque centrale, et
+    c'est souvent celui-là qui compte."""
+    assert newswatch.classify_bc("Statement by the Board of Governors") == "watch"
+    assert newswatch.classify_bc("Speech by Governor Waller") == "watch"
+    assert newswatch.classify_bc("Minutes of the March meeting") == "watch"
+
+
+def test_classify_bc_range_un_resserrement_en_mauvaise_nouvelle():
+    """Tonalité du MARCHÉ, comme partout ailleurs dans ce fichier."""
+    assert newswatch.classify_bc("Fed raises rates by 50 basis points") == "neg"
+    assert newswatch.classify_bc("SNB announces emergency liquidity") == "neg"
+    assert newswatch.classify_bc("ECB intervenes in the bond market") == "neg"
+
+
+def test_classify_bc_range_une_detente_en_bonne_nouvelle():
+    assert newswatch.classify_bc("ECB cuts rates by 25 basis points") == "pos"
+    assert newswatch.classify_bc("Fed opens a swap line with the SNB") == "pos"
+
+
+def test_classify_bc_refuse_le_vide_et_le_conseil():
+    assert newswatch.classify_bc("") is None
+    assert newswatch.classify_bc("Top stocks to buy now, says the Fed") is None
+
+
+def test_format_bc_dit_que_la_source_est_officielle_et_ne_conseille_jamais():
+    message = newswatch.format_bc_message("FOMC statement", "https://f/1",
+                                          "watch")
+    assert "officielle" in message and "https://f/1" in message
+    low = message.lower()
+    assert "achet" not in low and "vends" not in low and "buy" not in low
+
+
+# --- I/O : le volet bc ------------------------------------------------------ #
+
+BC_TITLE = "Federal Reserve issues FOMC statement"
+BC_LINK = "https://www.federalreserve.gov/news/1"
+
+
+def _run_bc(fetch, notifier, now=NOW, mode="tout", due=True, **kw):
+    """Un cycle où le volet BANQUES CENTRALES tourne à coup sûr (sa cadence a
+    son propre test — ailleurs elle obligerait à intercaler des cycles blancs
+    illisibles)."""
+    if due:
+        state = newswatch._load_global_seen()
+        state["bc_cycle"] = 0
+        newswatch._save_global_seen(state)
+    fetch.prime_gov()
+    return newswatch.run_once(now=now, fetch=fetch, notifier=notifier,
+                              tg_cfg=CFG, sleep=lambda s: None, mode=mode, **kw)
+
+
+def test_le_volet_bc_interroge_ses_trois_sources():
+    fetch = _FetchQueue()
+    _run_bc(fetch, _NotifySpy())
+    for url in newswatch._BC_SOURCES:
+        assert url in fetch.calls
+    assert len(newswatch._BC_SOURCES) == 3
+
+
+def test_le_volet_bc_amorce_en_silence_puis_notifie():
+    fetch = _FetchQueue()
+    fetch.push_bc(_rss([(BC_TITLE, BC_LINK, NOW)]))
+    notifier = _NotifySpy()
+    _run_bc(fetch, notifier)
+    assert notifier.calls == []                 # amorçage muet
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push_bc(_rss([(BC_TITLE, "https://www.federalreserve.gov/news/2",
+                         later)]))
+    counters = _run_bc(fetch, notifier, now=later)
+    assert counters["notified"] == 1
+    assert "officielle" in notifier.calls[0][0]
+
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "bc"]
+    assert len(events) == 1
+    assert events[0]["sentiment"] == "watch" and events[0]["muted"] is False
+
+
+def test_la_cadence_bc_est_d_un_cycle_sur_trois():
+    assert newswatch.cycle_due(0, 3) is True
+    assert newswatch.cycle_due(1, 3) is False
+    assert newswatch.cycle_due(2, 3) is False
+    assert newswatch.cycle_due(3, 3) is True
+    assert newswatch.cycle_due("cassé", 3) is True     # jamais éteint
+    assert newswatch.cycle_due(7, 1) is True           # période 1 = chaque cycle
+    assert newswatch.cycle_due(7, None) is True
+
+
+def test_le_volet_bc_saute_les_cycles_qui_ne_sont_pas_dus():
+    """Une banque centrale ne publie pas toutes les cinq minutes : on ne va pas
+    frapper trois serveurs institutionnels 288 fois par jour."""
+    fetch = _FetchQueue()
+    _run_bc(fetch, _NotifySpy())                       # cycle 0 : dû
+    assert fetch.calls.count(newswatch._BC_SOURCES[0]) == 1
+
+    for minutes in (5, 10):
+        _run_bc(fetch, _NotifySpy(), now=NOW + timedelta(minutes=minutes),
+                due=False)                             # cycles 1 et 2 : sautés
+    assert fetch.calls.count(newswatch._BC_SOURCES[0]) == 1
+
+    _run_bc(fetch, _NotifySpy(), now=NOW + timedelta(minutes=15), due=False)
+    assert fetch.calls.count(newswatch._BC_SOURCES[0]) == 2   # cycle 3 : dû
+
+
+def test_le_budget_bc_est_distinct_de_celui_des_autres_volets():
+    """Un volet neuf ne doit jamais manger la parole d'un volet existant."""
+    state = newswatch._load_global_seen()
+    assert state["bc_sent_log"] == []
+    assert "bc_sent_log" in newswatch._default_seen_state()
+    for spec in newswatch.WORLD_VOLETS:
+        if spec["src"] == "bc":
+            assert spec["sent_log"] == "bc_sent_log"
+            assert spec["max_per_hour"] == newswatch._BC_MAX_SENDS_PER_HOUR
+            break
+    else:                                              # pragma: no cover
+        raise AssertionError("la fiche bc a disparu de WORLD_VOLETS")
+
+
+def test_le_volet_bc_plafonne_ce_qu_il_journalise_en_un_passage():
+    """Il n'a pas de gate : sans plafond, trois flux institutionnels relus
+    après une purge de l'état « vu » rempliraient à eux seuls l'historique et
+    en chasseraient tout le reste."""
+    fetch = _FetchQueue()
+    fetch.push_bc(_rss([("Seed", "https://f/seed", NOW)]))
+    _run_bc(fetch, _NotifySpy())
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push_bc(_rss([("Statement number %d" % i, "https://f/s%d" % i, later)
+                        for i in range(20)]))
+    _run_bc(fetch, _NotifySpy(), now=later)
+
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "bc"]
+    assert len(events) == newswatch._BC_MAX_EVENTS_PER_RUN
+
+
+def test_les_volets_eco_et_climat_n_ont_PAS_de_plafond_d_evenements():
+    """Leur classifieur a un gate — il jette déjà la plus grande partie de ce
+    que Google News rend. Un plafond de plus les ferait taire sans raison."""
+    for spec in newswatch.WORLD_VOLETS:
+        if spec["src"] in ("eco", "climat"):
+            assert spec.get("max_events") is None
+
+
+def test_mode_calme_le_volet_bc_n_envoie_rien_mais_journalise():
+    fetch = _FetchQueue()
+    fetch.push_bc(_rss([("Seed", "https://f/seed", NOW)]))
+    _run_bc(fetch, _NotifySpy())                       # amorçage
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push_bc(_rss([(BC_TITLE, BC_LINK, later)]))
+    notifier = _NotifySpy()
+    _run_bc(fetch, notifier, now=later, mode="calme")
+
+    assert notifier.calls == []
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "bc"]
+    assert len(events) == 1 and events[0]["muted"] is True
+
+
+def test_un_etat_ecrit_avant_les_volets_mondiaux_ne_plante_pas(tmp_path):
+    """Un état d'AVANT W2a n'a ni les budgets ni les cadences des trois
+    nouveaux volets : il doit repartir de zéro, pas planter."""
+    path = store.DATA_DIR / "newswatch_global.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"seen": {}, "events": [], "seeded": {}}),
+                    encoding="utf-8")
+    state = newswatch._load_global_seen()
+    for key in ("bc_sent_log", "pressefi_sent_log", "bsky_sent_log"):
+        assert state[key] == []
+    for key in ("bc_cycle", "pressefi_cycle", "bsky_cycle", "x_cand_cycle"):
+        assert state[key] == 0
+    assert state["x_candidates"] == {}
+    counters = _run_bc(_FetchQueue(), _NotifySpy())
+    assert counters["errors"] == 0
+
+
+# --- I/O : le volet presse financière MONDIALE ------------------------------ #
+
+_PF_URL = "https://feeds.bbci.co.uk/news/business/rss.xml"
+_PF_FEED = {"name": "BBC Business", "lang": "en", "url": _PF_URL}
+_PF_DE_URL = "https://www.nzz.ch/wirtschaft.rss"
+_PF_DE_FEED = {"name": "NZZ Wirtschaft", "lang": "de", "url": _PF_DE_URL}
+
+
+def _pressefi_env(monkeypatch, feeds=(_PF_FEED,)):
+    """Rallume le volet presse (la fixture autouse l'éteint) avec une liste de
+    flux courte — dont les URL sont de VRAIES URL du catalogue, pour que
+    ``_FetchQueue`` les route vers la file dédiée."""
+    monkeypatch.setattr(newswatch, "pressefi_feeds",
+                        lambda: [dict(feed) for feed in feeds])
+
+
+def _run_pressefi(fetch, notifier, now=NOW, mode="tout", due=True, **kw):
+    if due:
+        state = newswatch._load_global_seen()
+        state["pressefi_cycle"] = 0
+        newswatch._save_global_seen(state)
+    fetch.prime_gov()
+    return newswatch.run_once(now=now, fetch=fetch, notifier=notifier,
+                              tg_cfg=CFG, sleep=lambda s: None, mode=mode, **kw)
+
+
+def test_format_pressefi_nomme_le_journal_et_ne_conseille_jamais():
+    message = newswatch.format_pressefi_message(
+        "SCMP Business", "Tencent beats estimates", "https://scmp/1", "pos",
+        "0700.HK")
+    assert "SCMP Business" in message and "0700.HK" in message
+    low = message.lower()
+    assert "achet" not in low and "vends" not in low and "buy" not in low
+    # Source absente -> un repli lisible, jamais une parenthèse vide.
+    assert "(presse)" in newswatch.format_pressefi_message(
+        "", "un titre", "https://x/1", "neg")
+
+
+def test_la_cascade_de_market_pulse_est_REUTILISEE_pas_reecrite(monkeypatch):
+    """Le point le plus important de ce volet : la collecte n'est pas réécrite.
+
+    On patche ``collect_news`` DANS le moteur — si le volet avait sa propre
+    boucle, ce patch ne changerait rien et l'assertion tomberait."""
+    _pressefi_env(monkeypatch)
+    engine = newswatch._news_module()
+    seen = []
+    monkeypatch.setattr(engine, "collect_news",
+                        lambda **kw: seen.append(kw) or {"items": [],
+                                                         "sources_ok": ["BBC"]})
+    _run_pressefi(_FetchQueue(), _NotifySpy())
+    assert len(seen) == 1
+    assert [f["url"] for f in seen[0]["feeds"]] == [_PF_URL]
+    # Les garde-fous de la cascade sont PASSÉS, pas devinés : fraîcheur bornée,
+    # partage équitable par source, horloge injectée.
+    assert seen[0]["max_age_h"] == newswatch._PRESSEFI_MAX_AGE_H
+    assert seen[0]["per_source"] == newswatch._PRESSEFI_PER_SOURCE
+    assert seen[0]["now_ts"] == int(NOW.timestamp())
+    assert callable(seen[0]["fetch"]) and callable(seen[0]["sleep"])
+
+
+def test_le_volet_pressefi_amorce_en_silence_puis_journalise(monkeypatch):
+    _pressefi_env(monkeypatch)
+    fetch = _FetchQueue()
+    fetch.push_pressefi(_rss([("Nestlé beats estimates", "https://bbc/1", NOW)]))
+    notifier = _NotifySpy()
+    _run_pressefi(fetch, notifier)
+    assert notifier.calls == []                 # amorçage muet
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push_pressefi(_rss([("Nestlé beats estimates", "https://bbc/2",
+                               later)]))
+    _run_pressefi(fetch, notifier, now=later)
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "pressefi"]
+    assert len(events) == 1
+    assert events[0]["symbol"] == "NESN.SW"     # entities, langue indépendante
+    assert events[0]["sentiment"] == "pos"
+    assert events[0]["source"] == "BBC Business"
+    # Une dépêche À TONALITÉ, elle, a bien le droit de parler (mode « tout »),
+    # et le message NOMME LE JOURNAL — sur ce volet, savoir d'où ça vient est la
+    # moitié de l'information.
+    assert len(notifier.calls) == 1
+    assert "NESN.SW" in notifier.calls[0][0]
+    assert "BBC Business" in notifier.calls[0][0]
+    assert events[0]["muted"] is False
+
+
+def test_un_titre_de_presse_ALLEMAND_est_symbolise_meme_sans_tonalite(monkeypatch):
+    """``entities`` ne lit pas la langue, il lit les NOMS : « Nestlé kündigt »
+    donne NESN.SW. ``classify``, lui, est calibré EN/FR/IT — il ne tranche pas,
+    et le titre entre en ``neutral`` plutôt qu'avec une couleur inventée."""
+    _pressefi_env(monkeypatch, feeds=(_PF_DE_FEED,))
+    fetch = _FetchQueue()
+    fetch.push_pressefi(_rss([("Seed", "https://nzz/seed", NOW)]))
+    _run_pressefi(fetch, _NotifySpy())
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push_pressefi(_rss([
+        ("Nestlé kündigt Milliarden-Rückkauf an", "https://nzz/1", later)]))
+    notifier = _NotifySpy()
+    _run_pressefi(fetch, notifier, now=later)
+
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "pressefi"]
+    assert len(events) == 1
+    assert events[0]["symbol"] == "NESN.SW"
+    assert events[0]["sentiment"] == newswatch.NEUTRAL_SENTIMENT
+    assert events[0]["lang"] == "de"
+    # Un titre neutre n'est JAMAIS envoyé, dans aucun mode.
+    assert notifier.calls == []
+    assert events[0]["muted"] is True
+
+
+def test_les_titres_neutres_de_presse_sont_plafonnes_par_symbole(monkeypatch):
+    """Sans ce plafond, du bruit de fond repousserait les vraies dépêches hors
+    de l'historique.
+
+    Il faut plusieurs passages pour l'atteindre : la cascade ne rend au plus que
+    ``_PRESSEFI_PER_SOURCE`` titres par source et par appel — c'est
+    déjà une première digue, celle-ci est la seconde."""
+    _pressefi_env(monkeypatch, feeds=(_PF_DE_FEED,))
+    fetch = _FetchQueue()
+    fetch.push_pressefi(_rss([("Seed", "https://nzz/seed", NOW)]))
+    _run_pressefi(fetch, _NotifySpy())
+
+    written = 0
+    for step in range(1, 4):
+        when = NOW + timedelta(minutes=10 * step)
+        fetch.push_pressefi(_rss([
+            ("Nestlé Nachricht Nummer %d" % (written + i),
+             "https://nzz/n%d" % (written + i), when)
+            for i in range(newswatch._PRESSEFI_PER_SOURCE)]))
+        written += newswatch._PRESSEFI_PER_SOURCE
+        _run_pressefi(fetch, _NotifySpy(), now=when)
+
+    assert written > newswatch._MAX_NEUTRAL_PER_SYMBOL      # le cap a servi
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "pressefi"]
+    assert len(events) == newswatch._MAX_NEUTRAL_PER_SYMBOL
+
+
+def test_la_cadence_pressefi_est_d_un_cycle_sur_six(monkeypatch):
+    _pressefi_env(monkeypatch)
+    fetch = _FetchQueue()
+    _run_pressefi(fetch, _NotifySpy())                 # cycle 0 : dû
+    assert fetch.calls.count(_PF_URL) == 1
+    for minutes in range(5, 30, 5):                    # cycles 1..5 : sautés
+        _run_pressefi(fetch, _NotifySpy(), now=NOW + timedelta(minutes=minutes),
+                      due=False)
+    assert fetch.calls.count(_PF_URL) == 1
+    _run_pressefi(fetch, _NotifySpy(), now=NOW + timedelta(minutes=30),
+                  due=False)
+    assert fetch.calls.count(_PF_URL) == 2             # cycle 6 : dû
+
+
+def test_mode_calme_le_volet_pressefi_n_envoie_rien(monkeypatch):
+    _pressefi_env(monkeypatch)
+    fetch = _FetchQueue()
+    fetch.push_pressefi(_rss([("Seed", "https://bbc/seed", NOW)]))
+    _run_pressefi(fetch, _NotifySpy())
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push_pressefi(_rss([("Nestlé beats estimates", "https://bbc/2",
+                               later)]))
+    notifier = _NotifySpy()
+    _run_pressefi(fetch, notifier, now=later, mode="calme")
+    assert notifier.calls == []
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "pressefi"]
+    assert len(events) == 1 and events[0]["muted"] is True
+
+
+def test_le_budget_pressefi_est_le_sien_et_le_plus_serre(monkeypatch):
+    state = newswatch._load_global_seen()
+    assert state["pressefi_sent_log"] == []
+    assert (newswatch._PRESSEFI_MAX_SENDS_PER_HOUR
+            < newswatch._GOV_MAX_SENDS_PER_HOUR)
+
+
+def test_une_source_de_presse_en_panne_compte_une_erreur_sans_bloquer(monkeypatch):
+    _pressefi_env(monkeypatch, feeds=(_PF_FEED, _PF_DE_FEED))
+    fetch = _FetchQueue()
+    fetch.push_pressefi(RuntimeError("boom"))
+    fetch.push_pressefi(_rss([("Nestlé beats estimates", "https://nzz/1", NOW)]))
+    counters = _run_pressefi(fetch, _NotifySpy())
+    assert counters["errors"] == 1
+    assert counters["fetched"] >= 1
+
+
+def test_le_flux_de_la_bce_n_est_pas_servi_par_deux_volets():
+    """La source OFFICIELLE a la priorité : le flux de la BCE appartient au
+    volet « banques centrales », pas à la revue de presse. Sans cette
+    exclusion, le même communiqué finirait tantôt « source officielle », tantôt
+    « presse », selon le volet qui a tourné le premier."""
+    urls = {feed["url"] for feed in _REAL_PRESSEFI_FEEDS()}
+    assert not urls.intersection(newswatch._BC_SOURCES)
+    # …et les neuf flux sondés le 26/08 sont bien tous là.
+    for feed in newswatch.PRESSEFI_EXTRA_FEEDS:
+        assert feed["url"] in urls
+    assert len(urls) > len(newswatch.PRESSEFI_EXTRA_FEEDS)   # + ceux du moteur
+
+
+# --- PUR : les requêtes Bluesky --------------------------------------------- #
+
+def test_les_requetes_bluesky_ont_toujours_au_moins_deux_mots():
+    """Leçon #68k : une requête d'un seul mot courant est presque toujours un
+    piège (« nikkei » ramenait un collectif militant)."""
+    queries = newswatch.bsky_queries({"nestle": "NESN.SW"})
+    assert all(len(q.split()) >= 2 for q in queries)
+    assert "nestle stock" in queries
+
+
+def test_les_requetes_bluesky_partent_des_deux_fixes_puis_des_ancres():
+    assert newswatch.bsky_queries(None) == list(newswatch.BSKY_FIXED_QUERIES)
+    queries = newswatch.bsky_queries({"general motors": "GM"})
+    assert queries[:2] == list(newswatch.BSKY_FIXED_QUERIES)
+    assert queries[2] == "general motors"       # déjà deux mots : intact
+
+
+def test_les_requetes_d_ancre_sont_plafonnees_et_deterministes():
+    anchors = {"nestle": "NESN.SW", "roche": "ROG.SW", "novartis": "NOVN.SW",
+               "apple": "AAPL", "tesla": "TSLA", "boeing": "BA"}
+    first = newswatch.bsky_queries(anchors)
+    assert first == newswatch.bsky_queries(anchors)     # deux appels, même liste
+    extra = len(first) - len(newswatch.BSKY_FIXED_QUERIES)
+    assert extra == newswatch.BSKY_MAX_ANCHOR_QUERIES
+
+
+def test_le_TICKER_ne_doit_JAMAIS_gagner_contre_le_nom_de_la_marque():
+    """Défaut trouvé au premier essai à blanc : « nesn.sw » fait sept
+    caractères, « nestle » six — en prenant le nom le plus LONG, on interrogeait
+    Bluesky sur « nesn.sw stock », qui ne ramène rien. Le ticker est un dernier
+    recours, jamais un choix."""
+    queries = newswatch.bsky_queries({"nestle": "NESN.SW",
+                                      "nesn.sw": "NESN.SW"})
+    assert "nestle stock" in queries and "nesn.sw stock" not in queries
+
+
+def test_entre_deux_vrais_noms_c_est_la_MARQUE_qui_gagne():
+    """« apple » trouve ce que « apple inc. » manque."""
+    anchors = {"apple inc.": "AAPL", "apple": "AAPL", "aapl": "AAPL"}
+    assert "apple stock" in newswatch.bsky_queries(anchors)
+
+
+def test_un_ticker_reste_utilisable_quand_aucun_nom_n_est_connu():
+    """Une POSITION ne porte pas de nom (``models.Position`` n'a que le
+    symbole) : sans ce repli, un titre détenu mais absent de la watchlist ne
+    serait jamais écouté."""
+    assert "nesn.sw stock" in newswatch.bsky_queries({"nesn.sw": "NESN.SW"})
+
+
+def test_le_nom_retenu_ne_depend_pas_de_l_ordre_du_dictionnaire():
+    a = newswatch.bsky_queries({"general motors": "GM", "gm holding": "GM"})
+    b = newswatch.bsky_queries({"gm holding": "GM", "general motors": "GM"})
+    assert a == b
+
+
+def test_une_requete_fixe_d_un_seul_mot_est_refusee_pas_rafistolee():
+    assert newswatch.bsky_queries(None, fixed=("borsa",)) == []
+
+
+# --- PUR : classify_social --------------------------------------------------- #
+
+def test_classify_social_garde_les_quatre_portes_de_classify_x():
+    assert newswatch.classify_social("$NVDA is ripping")["symbol"] == "NVDA"
+    assert newswatch.classify_social(
+        "New tariffs on imported steel")["sentiment"] == "gov"
+
+
+def test_classify_social_ouvre_la_porte_MACRO_que_classify_x_n_a_pas():
+    """Sans elle, les deux requêtes génériques du volet ne rendraient jamais
+    rien : « the Fed cuts rates » ne porte ni cashtag, ni mot politique, ni
+    marqueur crypto, ni nom d'entreprise."""
+    text = "The Fed cuts rates by 50 basis points, inflation cools"
+    assert newswatch.classify_x(text) is None           # la porte manquait
+    assert newswatch.classify_social(text)["sentiment"] == "pos"
+
+
+def test_classify_social_ouvre_aussi_la_porte_CLIMAT():
+    text = "Drought destroys wheat crops and lifts prices"
+    assert newswatch.classify_social(text)["sentiment"] == "neg"
+
+
+def test_classify_social_jette_toujours_le_bavardage():
+    assert newswatch.classify_social("gm everyone, coffee time") is None
+    assert newswatch.classify_social("") is None
+
+
+# --- I/O : le volet Bluesky -------------------------------------------------- #
+
+def _bpost(text, link, ts=None, author="analyst.bsky.social"):
+    return {"title": text, "url": link, "author": author,
+            "published": int((ts or NOW).timestamp())}
+
+
+def _bsky_env(monkeypatch):
+    """Rallume le volet Bluesky (la fixture autouse l'éteint) et rend la liste
+    des requêtes réellement demandées."""
+    asked = []
+
+    def urls(queries):
+        asked.extend(queries)
+        return [(q, "https://bsky.test/search?q=%s" % q.replace(" ", "+"))
+                for q in queries]
+
+    monkeypatch.setattr(newswatch, "_bsky_urls", urls)
+    return asked
+
+
+def _run_bsky(fetch, notifier, now=NOW, mode="tout", due=True, **kw):
+    if due:
+        state = newswatch._load_global_seen()
+        state["bsky_cycle"] = 0
+        newswatch._save_global_seen(state)
+    fetch.prime_gov()
+    return newswatch.run_once(now=now, fetch=fetch, notifier=notifier,
+                              tg_cfg=CFG, sleep=lambda s: None, mode=mode, **kw)
+
+
+def test_le_volet_bsky_amorce_en_silence_puis_notifie(monkeypatch):
+    asked = _bsky_env(monkeypatch)
+    posts = [_bpost("$NVDA guidance raised, stock surges",
+                    "https://bsky.app/p/1")]
+    kw = dict(bsky_fetch=lambda url: b"{}", bsky_parse=lambda raw: list(posts))
+
+    notifier = _NotifySpy()
+    _run_bsky(_FetchQueue(), notifier, **kw)
+    assert notifier.calls == []                 # amorçage muet
+    assert asked[:2] == list(newswatch.BSKY_FIXED_QUERIES)
+
+    later = NOW + timedelta(minutes=10)
+    posts[:] = [_bpost("$NVDA raises guidance again", "https://bsky.app/p/2",
+                       later)]
+    counters = _run_bsky(_FetchQueue(), notifier, now=later, **kw)
+    assert counters["notified"] == 1
+    assert "Bluesky" in notifier.calls[0][0]
+
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "bsky"]
+    assert len(events) == 1
+    assert events[0]["symbol"] == "NVDA"
+    assert events[0]["handle"] == "analyst.bsky.social"
+    assert events[0]["query"] in newswatch.BSKY_FIXED_QUERIES
+
+
+def test_le_volet_bsky_interroge_les_ancres_du_portefeuille(monkeypatch):
+    store.save_portfolio("alice", _portfolio(["NESN.SW"]))
+    _write_watchlist("alice", ["NESN.SW"])
+    asked = _bsky_env(monkeypatch)
+    fetch = _FetchQueue()
+    fetch.push(_EMPTY_RSS)                      # le volet par symbole d'alice
+    _run_bsky(fetch, _NotifySpy(), bsky_fetch=lambda url: b"{}",
+              bsky_parse=lambda raw: [])
+    assert any("nesn.sw" in q for q in asked)
+
+
+def test_le_volet_bsky_se_tait_en_mode_calme_mais_journalise(monkeypatch):
+    _bsky_env(monkeypatch)
+    posts = [_bpost("Seed post about $NVDA", "https://bsky.app/p/seed")]
+    kw = dict(bsky_fetch=lambda url: b"{}", bsky_parse=lambda raw: list(posts))
+    _run_bsky(_FetchQueue(), _NotifySpy(), **kw)          # amorçage
+
+    later = NOW + timedelta(minutes=10)
+    posts[:] = [_bpost("$NVDA beats estimates", "https://bsky.app/p/2", later)]
+    notifier = _NotifySpy()
+    _run_bsky(_FetchQueue(), notifier, now=later, mode="calme", **kw)
+    assert notifier.calls == []
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "bsky"]
+    assert len(events) == 1 and events[0]["muted"] is True
+
+
+def test_un_post_bluesky_trop_vieux_est_ignore(monkeypatch):
+    _bsky_env(monkeypatch)
+    posts = [_bpost("Seed", "https://bsky.app/p/seed")]
+    kw = dict(bsky_fetch=lambda url: b"{}", bsky_parse=lambda raw: list(posts))
+    _run_bsky(_FetchQueue(), _NotifySpy(), **kw)
+
+    later = NOW + timedelta(minutes=10)
+    posts[:] = [_bpost("$NVDA beats estimates", "https://bsky.app/p/old",
+                       later - timedelta(hours=30))]
+    _run_bsky(_FetchQueue(), _NotifySpy(), now=later, **kw)
+    assert [e for e in newswatch.recent_events("nobody")
+            if e.get("src") == "bsky"] == []
+
+
+def test_la_cadence_bsky_est_d_un_cycle_sur_trois(monkeypatch):
+    asked = _bsky_env(monkeypatch)
+    kw = dict(bsky_fetch=lambda url: b"{}", bsky_parse=lambda raw: [])
+    _run_bsky(_FetchQueue(), _NotifySpy(), **kw)          # cycle 0 : dû
+    assert len(asked) == 2
+    for minutes in (5, 10):
+        _run_bsky(_FetchQueue(), _NotifySpy(), now=NOW + timedelta(minutes=minutes),
+                  due=False, **kw)
+    assert len(asked) == 2                                 # cycles 1 et 2 sautés
+    _run_bsky(_FetchQueue(), _NotifySpy(), now=NOW + timedelta(minutes=15),
+              due=False, **kw)
+    assert len(asked) == 4                                 # cycle 3 : dû
+
+
+def test_une_recherche_bluesky_en_panne_ne_bloque_pas_les_autres(monkeypatch):
+    _bsky_env(monkeypatch)
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+        return b"{}"
+
+    counters = _run_bsky(_FetchQueue(), _NotifySpy(), bsky_fetch=fetch,
+                         bsky_parse=lambda raw: [])
+    assert len(calls) == 2 and counters["errors"] == 1
+
+
+def test_sans_moteur_market_pulse_le_volet_bsky_se_tait(monkeypatch):
+    """La fixture autouse rend déjà ``_bsky_urls`` vide — c'est exactement le
+    cas « moteur absent ». On vérifie qu'il ne coûte RIEN."""
+    called = []
+    counters = _run_bsky(_FetchQueue(), _NotifySpy(),
+                         bsky_fetch=lambda url: called.append(url) or b"{}",
+                         bsky_parse=lambda raw: [])
+    assert called == [] and counters["errors"] == 0
+
+
+def test_le_budget_bsky_est_le_sien():
+    state = newswatch._load_global_seen()
+    assert state["bsky_sent_log"] == []
+    assert newswatch._BSKY_MAX_SENDS_PER_HOUR > 0
+
+
+# --- Reddit : la foule n'est pas qu'américaine ------------------------------ #
+
+def test_les_subs_reddit_couvrent_le_monde_en_DEUX_groupes():
+    """La couverture mondiale reste (correctif 27/08), mais en deux groupes
+    interrogés en alternance : un multireddit de dix subs tombe entièrement dès
+    qu'un seul d'entre eux est en quarantaine — mesuré, 403 depuis l'Omen."""
+    for sub in ("mauerstrassenwetten", "UKInvesting", "ASX_Bets",
+                "CanadianInvestor", "eupersonalfinance"):
+        assert sub in newswatch.REDDIT_INTL
+    assert newswatch.REDDIT_SUBS == newswatch.REDDIT_CORE + newswatch.REDDIT_INTL
+    for group in newswatch.REDDIT_GROUPS:
+        assert _REAL_REDDIT_URL(group).count("https://") == 1   # UNE requête
+
+
+# --- PUR : les @mentions et la file de probation ----------------------------- #
+
+def test_extract_mentions_lit_les_comptes_cites():
+    assert newswatch.extract_mentions(
+        "big call from @zerohedge and @DeItaone today") == ["zerohedge",
+                                                            "DeItaone"]
+
+
+def test_extract_mentions_dedoublonne_sans_tenir_compte_de_la_casse():
+    assert newswatch.extract_mentions("@Elon @elon @ELON") == ["Elon"]
+
+
+def test_extract_mentions_ne_prend_pas_une_adresse_email_pour_un_compte():
+    assert newswatch.extract_mentions("write to john@example.com") == []
+
+
+def test_extract_mentions_JETTE_un_jeton_trop_long_au_lieu_de_le_tronquer():
+    """Un ``{1,15}`` suivi d'une garde de fin de mot backtracke : il finirait
+    par accepter les quatorze premiers caractères, c'est-à-dire un compte qui
+    n'existe pas."""
+    assert newswatch.extract_mentions("@abcdefghijklmnopqrst") == []
+    assert newswatch.extract_mentions("@abcdefghijklmno") == ["abcdefghijklmno"]
+
+
+def test_note_mentions_inscrit_un_compte_inconnu():
+    candidates = {}
+    added = newswatch.note_mentions(candidates, ["zerohedge"], "2026-08-26T12:00:00")
+    assert added == ["zerohedge"]
+    assert candidates["zerohedge"] == {"first_seen": "2026-08-26T12:00:00",
+                                       "polls": 0, "hits": 0}
+
+
+def test_note_mentions_ignore_un_compte_deja_suivi():
+    candidates = {}
+    assert newswatch.note_mentions(candidates, ["ElonMusk"], "t",
+                                   known=["elonmusk"]) == []
+    assert candidates == {}
+
+
+def test_note_mentions_ne_remet_pas_un_candidat_a_zero():
+    """Sinon un compte cité tous les jours ne serait jamais ni promu ni
+    éjecté."""
+    candidates = {"zerohedge": {"first_seen": "t0", "polls": 4, "hits": 1}}
+    assert newswatch.note_mentions(candidates, ["zerohedge"], "t1") == []
+    assert candidates["zerohedge"]["polls"] == 4
+
+
+def test_note_mentions_respecte_le_plafond_de_la_file():
+    candidates = {}
+    newswatch.note_mentions(candidates, ["u%d" % i for i in range(20)], "t")
+    assert len(candidates) == newswatch.X_CANDIDATE_MAX
+
+
+def test_le_verdict_promeut_a_deux_preuves_et_ejecte_apres_six_silences():
+    assert newswatch.candidate_verdict({"polls": 2, "hits": 2}) == "promote"
+    assert newswatch.candidate_verdict({"polls": 6, "hits": 0}) == "evict"
+    assert newswatch.candidate_verdict({"polls": 5, "hits": 0}) == "keep"
+    # Un compte LENT (une preuve, pas deux) n'est pas un mauvais compte.
+    assert newswatch.candidate_verdict({"polls": 9, "hits": 1}) == "keep"
+    assert newswatch.candidate_verdict("cassé") == "keep"
+
+
+def test_promote_candidates_sort_les_promus_et_les_ejectes_de_la_file():
+    candidates = {"good": {"polls": 3, "hits": 2},
+                  "mute": {"polls": 6, "hits": 0},
+                  "slow": {"polls": 3, "hits": 1}}
+    out = newswatch.promote_candidates(candidates, ["elonmusk"])
+    assert out["promoted"] == ["good"] and out["evicted"] == ["mute"]
+    assert list(candidates) == ["slow"]
+
+
+def test_un_candidat_promu_n_evince_JAMAIS_un_compte_choisi_a_la_main():
+    """Évincer un compte que Massii a choisi lui-même au profit d'un compte
+    découvert tout seul, ce serait décider à sa place — et il n'aurait aucun
+    moyen de savoir ce qui a disparu."""
+    full = ["h%d" % i for i in range(newswatch.X_MAX_HANDLES)]
+    candidates = {"good": {"polls": 3, "hits": 5}}
+    out = newswatch.promote_candidates(candidates, full)
+    assert out["promoted"] == [] and out["pending"] == ["good"]
+    assert candidates["good"]["pending_manual"] is True
+
+
+def test_un_candidat_deja_en_attente_n_est_signale_qu_UNE_fois():
+    """Sinon l'appelant rejournaliserait les mêmes noms toutes les dix minutes
+    jusqu'à ce qu'une place se libère."""
+    full = ["h%d" % i for i in range(newswatch.X_MAX_HANDLES)]
+    candidates = {"good": {"polls": 3, "hits": 5}}
+    newswatch.promote_candidates(candidates, full)
+    assert newswatch.promote_candidates(candidates, full)["pending"] == []
+
+
+def test_une_place_qui_se_libere_promeut_le_candidat_en_attente():
+    """Le drapeau ``pending_manual`` marque une attente, il n'est pas une
+    condamnation."""
+    full = ["h%d" % i for i in range(newswatch.X_MAX_HANDLES)]
+    candidates = {"good": {"polls": 3, "hits": 5}}
+    newswatch.promote_candidates(candidates, full)
+    out = newswatch.promote_candidates(candidates, full[:-1])
+    assert out["promoted"] == ["good"] and candidates == {}
+
+
+# --- I/O : la découverte, de bout en bout ------------------------------------ #
+
+def test_une_mention_dans_une_depeche_de_presse_cree_un_candidat():
+    fetch = _FetchQueue()
+    fetch.push_eco(_rss([("Seed", "https://g/eseed", NOW)]))
+    _run(fetch, _NotifySpy())                           # amorçage
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push_eco(_rss([
+        ("US inflation surges, warns @zerohedge", "https://g/e1", later)]))
+    _run(fetch, _NotifySpy(), now=later)
+
+    candidates = newswatch._load_global_seen()["x_candidates"]
+    assert "zerohedge" in candidates
+    assert candidates["zerohedge"]["polls"] == 0        # pas encore interrogé
+
+
+def test_le_volet_POLITIQUE_ne_remplit_pas_la_file_de_probation():
+    """Truth Social interpelle quelqu'un à presque chaque publication : branchée
+    là, la file de dix places se remplirait de comptes politiques en une
+    soirée. On découvre des comptes DE FINANCE, dans de la presse de finance."""
+    fetch = _FetchQueue()
+    fetch.push(_rss([("Seed", "https://n/seed", NOW)]))
+    fetch.push(_EMPTY_RSS)
+    _run(fetch, _NotifySpy(), prime_gov=False)          # amorçage gov
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push(_rss([
+        ("Seed", "https://n/seed", NOW),
+        ("Trump announces tariffs, says @SomePolitician", "https://n/1", later),
+    ]))
+    fetch.push(_EMPTY_RSS)
+    _run(fetch, _NotifySpy(), now=later, prime_gov=False)
+
+    assert newswatch._load_global_seen()["x_candidates"] == {}
+
+
+def _seed_candidate(handle, polls=0, hits=0):
+    state = newswatch._load_global_seen()
+    state["x_candidates"][handle] = {"first_seen": NOW.isoformat(),
+                                     "polls": polls, "hits": hits}
+    state["x_cand_cycle"] = 0
+    state["seeded"]["x:%s" % handle] = True
+    newswatch._save_global_seen(state)
+
+
+def test_un_candidat_est_interroge_puis_promu_apres_deux_preuves(monkeypatch):
+    _x_env(monkeypatch)                                 # elonmusk suivi
+    _seed_candidate("zerohedge", polls=0, hits=1)       # une preuve déjà là
+    posts = {"zerohedge": [_post("New tariffs on imported steel announced")]}
+    kw = dict(x_fetch=lambda h: "<html/>", x_pacer=_XPacer(),
+              x_parse=lambda page, handle: list(posts.get(handle, [])))
+
+    _run_x(_FetchQueue(), _NotifySpy(), **kw)
+
+    state = newswatch._load_global_seen()
+    assert "zerohedge" not in state["x_candidates"]     # sorti de la file
+    assert "zerohedge" in _REAL_LOAD_X_ACCOUNTS()       # entré dans la liste
+
+
+def test_un_candidat_ne_parle_JAMAIS_au_telephone(monkeypatch):
+    """Il est en probation : ses événements naissent en sourdine, quel que soit
+    le mode."""
+    _x_env(monkeypatch)
+    _seed_candidate("zerohedge")
+    posts = {"zerohedge": [_post("New tariffs on imported cars announced")]}
+    notifier = _NotifySpy()
+    _run_x(_FetchQueue(), notifier, mode="tout",
+           x_fetch=lambda h: "<html/>", x_pacer=_XPacer(),
+           x_parse=lambda page, handle: list(posts.get(handle, [])))
+
+    assert notifier.calls == []
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("handle") == "zerohedge"]
+    assert len(events) == 1
+    assert events[0]["candidate"] is True and events[0]["muted"] is True
+
+
+def test_un_candidat_muet_finit_par_quitter_la_file(monkeypatch):
+    _x_env(monkeypatch)
+    _seed_candidate("silent", polls=newswatch.X_CANDIDATE_EVICT_POLLS - 1)
+    _run_x(_FetchQueue(), _NotifySpy(), x_fetch=lambda h: "<html/>",
+           x_pacer=_XPacer(), x_parse=lambda page, handle: [])
+
+    state = newswatch._load_global_seen()
+    assert "silent" not in state["x_candidates"]
+    assert "silent" not in _REAL_LOAD_X_ACCOUNTS()
+
+
+def test_la_file_de_probation_n_est_sondee_qu_un_cycle_sur_six(monkeypatch):
+    _x_env(monkeypatch)
+    _seed_candidate("zerohedge")
+    asked = []
+    kw = dict(x_fetch=lambda h: asked.append(h) or "<html/>",
+              x_pacer=_XPacer(), x_parse=lambda page, handle: [])
+
+    _run_x(_FetchQueue(), _NotifySpy(), **kw)           # cycle candidat 0 : dû
+    assert asked.count("zerohedge") == 1
+    for step in range(1, 6):
+        _run_x(_FetchQueue(), _NotifySpy(),
+               now=NOW + timedelta(minutes=10 * step), **kw)
+    assert asked.count("zerohedge") == 1                # cycles 1..5 : sautés
+    _run_x(_FetchQueue(), _NotifySpy(), now=NOW + timedelta(minutes=60), **kw)
+    assert asked.count("zerohedge") == 2                # cycle 6 : dû
+
+
+# --------------------------------------------------------------------------- #
+# Les trois volets ENSEMBLE — le test qui attrape une collision d'état
+# --------------------------------------------------------------------------- #
+
+def test_les_trois_volets_mondiaux_cohabitent_dans_un_meme_cycle(monkeypatch):
+    """Chacun a ses tests ; celui-ci vérifie qu'ils ne se marchent pas dessus.
+
+    Trois budgets, trois cadences, trois clés d'amorçage, trois préfixes de
+    sourdine — tout ça vit dans le MÊME fichier d'état. Une clé partagée par
+    erreur ne se verrait sur aucun test isolé : elle ferait juste taire un volet
+    quand un autre parle.
+    """
+    _pressefi_env(monkeypatch)
+    _bsky_env(monkeypatch)
+    bsky_posts = [_bpost("$NVDA raises guidance", "https://bsky.app/p/1")]
+    kw = dict(bsky_fetch=lambda url: b"{}",
+              bsky_parse=lambda raw: list(bsky_posts))
+
+    def _cycle(now, notifier):
+        fetch = _FetchQueue()
+        fetch.push_bc(_rss([(BC_TITLE, "https://f/%s" % now.minute, now)]))
+        fetch.push_pressefi(_rss([("Nestlé beats estimates",
+                                   "https://bbc/%s" % now.minute, now)]))
+        state = newswatch._load_global_seen()
+        for key in ("bc_cycle", "pressefi_cycle", "bsky_cycle"):
+            state[key] = 0
+        newswatch._save_global_seen(state)
+        fetch.prime_gov()
+        return newswatch.run_once(now=now, fetch=fetch, notifier=notifier,
+                                  tg_cfg=CFG, sleep=lambda s: None,
+                                  mode="tout", **kw)
+
+    _cycle(NOW, _NotifySpy())                          # amorçage des trois
+    later = NOW + timedelta(minutes=10)
+    bsky_posts[:] = [_bpost("$NVDA beats estimates", "https://bsky.app/p/2",
+                            later)]
+    counters = _cycle(later, _NotifySpy())
+
+    srcs = {e.get("src") for e in newswatch.recent_events("nobody")}
+    assert {"bc", "pressefi", "bsky"} <= srcs
+    assert counters["errors"] == 0
+    assert counters["notified"] == 3                   # un par volet
+
+    # Trois budgets DISTINCTS, chacun avec sa propre trace d'envoi.
+    state = newswatch._load_global_seen()
+    for key in ("bc_sent_log", "pressefi_sent_log", "bsky_sent_log"):
+        assert len(state[key]) == 1, key
+    # …et trois amorçages distincts, aucun n'ayant marqué celui d'un autre.
+    assert {"bc", "pressefi", "bsky"} <= set(state["seeded"])
+
+
+# =========================================================================== #
+#  F3 — une mention BLUESKY est un DOMAINE, pas un handle X (27/08)
+# =========================================================================== #
+
+def test_F3_une_mention_bluesky_ne_fabrique_PAS_un_compte_X():
+    """Reproduction du finding : ``@nytimes.com`` donnait ``nytimes``, un compte
+    X inventé qui rend 404 — et deux 404 valaient une escalade vers le
+    navigateur furtif, jusqu'à dix démarrages de Chrome par heure."""
+    assert newswatch.extract_mentions(
+        "@nytimes.com and @bloomberg.bsky.social") == []
+
+
+def test_F3_un_point_de_FIN_DE_PHRASE_ne_jette_pas_le_compte():
+    """Le test porte sur le point ET sur ce qui le suit : « merci @elonmusk. »
+    n'est pas un domaine, et ce compte-là existe."""
+    assert newswatch.extract_mentions("merci @elonmusk.") == ["elonmusk"]
+    assert newswatch.extract_mentions("@elonmusk. Ensuite") == ["elonmusk"]
+
+
+def test_F3_les_deux_formes_dans_la_meme_phrase():
+    assert newswatch.extract_mentions(
+        "via @nytimes.com, repris par @elonmusk") == ["elonmusk"]
+
+
+def test_F3_la_garde_ne_backtracke_pas():
+    """Une garde écrite dans l'expression (``(?!\\.)``) ferait reculer le moteur
+    et accepterait ``nytime`` — c'est-à-dire exactement le compte inventé."""
+    for text in ("@nytimes.com", "@nytimes.co.uk", "@a.b"):
+        assert newswatch.extract_mentions(text) == []
+
+
+# --- ceinture : un CANDIDAT ne réveille jamais le navigateur furtif --------- #
+
+def test_F3_un_candidat_injoignable_ne_declenche_PAS_l_escalade(monkeypatch):
+    """Un candidat est souvent un compte qui n'existe pas. Démarrer un Chrome
+    pour un 404, en boucle, était le pire achat du guetteur.
+
+    DEUX passages : c'est au second que l'ancien code atteignait le seuil
+    d'escalade et sortait le navigateur furtif."""
+    _x_env(monkeypatch)
+    _seed_candidate("ghosthandle")
+    heavy_calls = []
+
+    def light(handle):
+        raise RuntimeError("HTTP 404")
+
+    kw = dict(x_fetch=light, x_pacer=_XPacer(),
+              x_stealth=lambda h: heavy_calls.append(h) or "<html/>",
+              x_parse=lambda page, handle: [])
+    _run_x(_FetchQueue(), _NotifySpy(), **kw)
+    state = newswatch._load_global_seen()
+    state["x_cand_cycle"] = 0                      # le rendre dû à nouveau
+    newswatch._save_global_seen(state)
+    _run_x(_FetchQueue(), _NotifySpy(), now=NOW + timedelta(minutes=10), **kw)
+
+    # « ghosthandle » n'y est pas ; « elonmusk », compte CHOISI À LA MAIN et
+    # injoignable lui aussi dans ce test, y est — c'est bien le régime du
+    # CANDIDAT qui change, pas l'escalade en général (cf. le test suivant).
+    assert "ghosthandle" not in heavy_calls
+
+
+def test_F3_deux_anomalies_sortent_le_candidat_de_la_file(monkeypatch):
+    """Deux refus suffisent à dire qu'un candidat n'existe pas ; on ne le garde
+    pas six passages de plus à cogner sur une porte fermée."""
+    _x_env(monkeypatch)
+    _seed_candidate("ghosthandle")
+
+    def light(handle):
+        raise RuntimeError("HTTP 404")
+
+    kw = dict(x_fetch=light, x_pacer=_XPacer(), x_stealth=lambda h: "<html/>",
+              x_parse=lambda page, handle: [])
+    _run_x(_FetchQueue(), _NotifySpy(), **kw)
+    state = newswatch._load_global_seen()
+    assert "ghosthandle" in state["x_candidates"]           # une anomalie : on garde
+    state["x_cand_cycle"] = 0
+    newswatch._save_global_seen(state)
+
+    _run_x(_FetchQueue(), _NotifySpy(), now=NOW + timedelta(minutes=10), **kw)
+    state = newswatch._load_global_seen()
+    assert "ghosthandle" not in state["x_candidates"]       # deux : il sort
+    assert "ghosthandle" not in state["x_fails"]
+    assert "ghosthandle" not in _REAL_LOAD_X_ACCOUNTS()     # et n'est PAS promu
+
+
+def test_F3_un_compte_SUIVI_garde_lui_son_droit_a_l_escalade(monkeypatch):
+    """Le furtif reste réservé aux comptes choisis à la main — on n'a pas coupé
+    l'escalade, on l'a réservée."""
+    _x_env(monkeypatch, handles=("elonmusk",))
+    heavy_calls = []
+
+    def light(handle):
+        raise RuntimeError("mur")
+
+    kw = dict(x_fetch=light, x_pacer=_XPacer(),
+              x_stealth=lambda h: heavy_calls.append(h) or "<html/>",
+              x_parse=lambda page, handle: [])
+    _run_x(_FetchQueue(), _NotifySpy(), **kw)
+    _run_x(_FetchQueue(), _NotifySpy(), now=NOW + timedelta(minutes=10), **kw)
+
+    assert heavy_calls == ["elonmusk"]
+
+
+# =========================================================================== #
+#  F2 — la file de probation ne chasse plus le fil (27/08)
+# =========================================================================== #
+
+def test_F2_les_events_de_candidats_sont_plafonnes_par_passage(monkeypatch):
+    """Dix candidats × huit posts = quatre-vingts événements possibles, contre
+    cent pour TOUT l'historique : la file la moins fiable du guetteur pouvait à
+    elle seule chasser la presse, la politique et les banques centrales."""
+    _x_env(monkeypatch)
+    for name in ("candone", "candtwo", "candthree"):
+        _seed_candidate(name)
+    posts = [_post("Fed announces tariffs on imported steel n%d" % i)
+             for i in range(8)]
+    _run_x(_FetchQueue(), _NotifySpy(), x_fetch=lambda h: "<html/>",
+           x_pacer=_XPacer(), x_parse=lambda page, handle: list(posts))
+
+    events = [e for e in newswatch.recent_events("nobody") if e.get("candidate")]
+    assert len(events) == newswatch.X_CANDIDATE_MAX_EVENTS_PER_RUN
+
+
+def test_F2_le_cap_ne_touche_PAS_la_MESURE_qui_decide_d_une_promotion(monkeypatch):
+    """Le cap borne la trace, jamais la mesure : sinon un candidat prolixe ne
+    pourrait plus jamais faire ses preuves."""
+    _x_env(monkeypatch)
+    _seed_candidate("prolific")
+    posts = [_post("Fed announces tariffs on imported steel n%d" % i)
+             for i in range(8)]
+    _run_x(_FetchQueue(), _NotifySpy(), x_fetch=lambda h: "<html/>",
+           x_pacer=_XPacer(), x_parse=lambda page, handle: list(posts))
+
+    # 8 preuves comptées (>= 2) -> promu, alors que 4 events seulement journalisés
+    assert "prolific" in _REAL_LOAD_X_ACCOUNTS()
+
+
+def test_F2_un_event_de_candidat_reste_VISIBLE_et_MARQUE(monkeypatch):
+    """On ne le cache pas — la convergence, elle, ne le compte pas."""
+    _x_env(monkeypatch)
+    _seed_candidate("zerohedge")
+    posts = [_post("New tariffs on imported cars announced")]
+    _run_x(_FetchQueue(), _NotifySpy(), x_fetch=lambda h: "<html/>",
+           x_pacer=_XPacer(), x_parse=lambda page, handle: list(posts))
+
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("handle") == "zerohedge"]
+    assert len(events) == 1
+    assert events[0]["candidate"] is True and events[0]["muted"] is True
+
+
+# =========================================================================== #
+#  F4 — une promotion non persistée ne perd plus le candidat (27/08)
+# =========================================================================== #
+
+def test_F4_une_ecriture_ratee_remet_le_candidat_dans_la_file(monkeypatch):
+    """``promote_candidates`` SORT le promu de la file, la persistance vient
+    après : une écriture qui échoue le perdait des DEUX côtés — ni suivi, ni
+    candidat, et ses deux preuves avec lui."""
+    _x_env(monkeypatch)
+    _seed_candidate("zerohedge", polls=3, hits=2)       # déjà promouvable
+
+    def _boom(handles):
+        raise OSError("disque plein")
+
+    monkeypatch.setattr(newswatch, "save_x_accounts", _boom)
+    _run_x(_FetchQueue(), _NotifySpy(), x_fetch=lambda h: "<html/>",
+           x_pacer=_XPacer(), x_parse=lambda page, handle: [])
+
+    candidates = newswatch._load_global_seen()["x_candidates"]
+    assert "zerohedge" in candidates                    # replacé dans la file
+    assert candidates["zerohedge"]["hits"] >= 2         # ses preuves intactes
+
+
+def test_F4_le_passage_suivant_reussit_la_promotion(monkeypatch):
+    """Rien n'est promu « à moitié » : le tour d'après réessaie et aboutit."""
+    _x_env(monkeypatch)
+    _seed_candidate("zerohedge", polls=3, hits=2)
+    real_save = newswatch.save_x_accounts
+    broken = [True]
+
+    def _flaky(handles):
+        if broken[0]:
+            raise OSError("disque plein")
+        return real_save(handles)
+
+    monkeypatch.setattr(newswatch, "save_x_accounts", _flaky)
+    kw = dict(x_fetch=lambda h: "<html/>", x_pacer=_XPacer(),
+              x_parse=lambda page, handle: [])
+    _run_x(_FetchQueue(), _NotifySpy(), **kw)
+    assert "zerohedge" not in _REAL_LOAD_X_ACCOUNTS()
+
+    broken[0] = False
+    _run_x(_FetchQueue(), _NotifySpy(), now=NOW + timedelta(minutes=10), **kw)
+
+    assert "zerohedge" in _REAL_LOAD_X_ACCOUNTS()
+    assert "zerohedge" not in newswatch._load_global_seen()["x_candidates"]
+
+
+# =========================================================================== #
+#  F5 — un candidat en attente ne squatte plus la file à vie (27/08)
+# =========================================================================== #
+
+def _full_list():
+    return ["h%d" % i for i in range(newswatch.X_MAX_HANDLES)]
+
+
+def test_F5_un_pending_finit_par_liberer_sa_place():
+    """Son verdict est « promote » à vie et l'éjection ordinaire exige
+    ``hits == 0`` : il ne pouvait donc plus JAMAIS sortir. Dix comptes dans cet
+    état, et la découverte mourait — sans un mot."""
+    full = _full_list()
+    candidates = {"good": {"polls": 3, "hits": 5, "first_seen": "2026-08-01"}}
+    assert newswatch.promote_candidates(candidates, full)["pending"] == ["good"]
+
+    for extra in range(newswatch.X_CANDIDATE_PENDING_POLLS):
+        candidates["good"]["polls"] += 1
+        out = newswatch.promote_candidates(candidates, full)
+    assert out["released"] == ["good"]
+    assert candidates == {}
+
+
+def test_F5_la_trace_du_libere_est_gardee_et_plafonnee():
+    """« Ces comptes-là méritaient une place, il n'y en avait pas. »"""
+    full = _full_list()
+    seen = []
+    for i in range(newswatch.X_PENDING_SEEN_MAX + 3):
+        name = "cand%d" % i
+        candidates = {name: {"polls": 0, "hits": 5, "first_seen": "2026-08-01"}}
+        newswatch.promote_candidates(candidates, full, pending_seen=seen)
+        candidates[name]["polls"] = newswatch.X_CANDIDATE_PENDING_POLLS
+        newswatch.promote_candidates(candidates, full, pending_seen=seen)
+
+    assert len(seen) == newswatch.X_PENDING_SEEN_MAX     # plafonné
+    assert seen[-1]["handle"] == "cand%d" % (newswatch.X_PENDING_SEEN_MAX + 2)
+    assert seen[-1]["hits"] == 5                         # les plus RÉCENTS gardés
+
+
+def test_F5_une_place_qui_se_libere_AVANT_le_delai_promeut_quand_meme():
+    """La libération est un plan B, pas une condamnation."""
+    full = _full_list()
+    candidates = {"good": {"polls": 3, "hits": 5}}
+    newswatch.promote_candidates(candidates, full)
+    candidates["good"]["polls"] += 1
+    out = newswatch.promote_candidates(candidates, full[:-1])
+    assert out["promoted"] == ["good"] and out["released"] == []
+
+
+def test_F5_la_file_LIBEREE_accepte_de_nouveau_des_inscriptions():
+    """C'est tout l'objet du correctif : la file respire."""
+    full = _full_list()
+    candidates = {}
+    for i in range(newswatch.X_CANDIDATE_MAX):
+        candidates["cand%d" % i] = {"polls": 0, "hits": 5}
+    newswatch.promote_candidates(candidates, full)               # tous pending
+    assert newswatch.note_mentions(candidates, ["nouveau"], "now") == []
+
+    for entry in candidates.values():
+        entry["polls"] = newswatch.X_CANDIDATE_PENDING_POLLS
+    out = newswatch.promote_candidates(candidates, full)
+    assert len(out["released"]) == newswatch.X_CANDIDATE_MAX
+    assert newswatch.note_mentions(candidates, ["nouveau"], "now") == ["nouveau"]
+
+
+def test_F5_un_etat_ecrit_AVANT_cette_extension_repart_pour_un_tour_plein():
+    """Un candidat déjà marqué ``pending_manual`` sans passage de référence ne
+    doit pas être libéré au premier coup d'œil."""
+    full = _full_list()
+    candidates = {"vieux": {"polls": 40, "hits": 5, "pending_manual": True}}
+    out = newswatch.promote_candidates(candidates, full)
+    assert out["released"] == [] and "vieux" in candidates
+    assert candidates["vieux"]["pending_since_polls"] == 40
+
+
+def test_F5_le_volet_persiste_la_trace_des_liberes(monkeypatch):
+    """Bout en bout : la trace vit dans l'état global, pas en mémoire."""
+    _x_env(monkeypatch, handles=_full_list())
+    state = newswatch._load_global_seen()
+    state["x_candidates"]["good"] = {
+        "first_seen": NOW.isoformat(), "polls": 0, "hits": 5,
+        "pending_manual": True,
+        "pending_since_polls": -newswatch.X_CANDIDATE_PENDING_POLLS}
+    state["x_cand_cycle"] = 0
+    newswatch._save_global_seen(state)
+
+    _run_x(_FetchQueue(), _NotifySpy(), x_fetch=lambda h: "<html/>",
+           x_pacer=_XPacer(), x_parse=lambda page, handle: [])
+
+    state = newswatch._load_global_seen()
+    assert "good" not in state["x_candidates"]
+    assert [row["handle"] for row in state["x_pending_seen"]] == ["good"]
+
+
+# =========================================================================== #
+#  F6 — deux groupes Reddit en ALTERNANCE (27/08)
+# =========================================================================== #
+
+def test_F6_le_groupe_alterne_d_un_passage_a_l_autre():
+    assert newswatch.reddit_group(0) == newswatch.REDDIT_CORE
+    assert newswatch.reddit_group(1) == newswatch.REDDIT_INTL
+    assert newswatch.reddit_group(2) == newswatch.REDDIT_CORE
+    assert newswatch.reddit_group("cassé") == newswatch.REDDIT_CORE
+
+
+def test_F6_indianstreetbets_reste_dehors_en_attendant_une_sonde_propre():
+    """La sonde par-sub n'en a tiré que des 429 de collision : ni mort ni sain
+    prouvé. Le mécanisme d'alternance tolérerait un sub malade, mais on ne
+    lance pas avec un doute connu."""
+    assert "IndianStreetBets" not in newswatch.REDDIT_SUBS
+
+
+def _run_reddit_groups(monkeypatch, urls, now=NOW, fetch=None, parse=None):
+    """Un cycle Reddit qui laisse voir QUEL groupe a été demandé.
+
+    ``_run_reddit`` réinstalle ``_reddit_url`` avec une URL figée (c'est son
+    rôle) : ce coureur-ci pose à la place une sonde qui note le groupe reçu. Le
+    compteur d'alternance, lui, vit dans l'état — il survit donc d'un appel à
+    l'autre, ce qui est précisément ce qu'on veut mesurer.
+    """
+    monkeypatch.setattr(
+        newswatch, "_reddit_url",
+        lambda subs=None: urls.append(tuple(subs)) or _REDDIT_URL)
+    state = newswatch._load_global_seen()
+    state["reddit_cycle"] = 0
+    newswatch._save_global_seen(state)
+    queue = _FetchQueue()
+    queue.prime_gov()
+    return newswatch.run_once(
+        now=now, fetch=queue, notifier=_NotifySpy(), tg_cfg=CFG,
+        sleep=lambda s: None, mode="tout",
+        reddit_fetch=fetch or (lambda url: b"x"),
+        reddit_parse=parse or (lambda raw: []))
+
+
+def test_F6_un_passage_n_interroge_QU_UN_groupe(monkeypatch):
+    """Une requête par passage — le plafond mesuré de 1 req/60 s reste tenu
+    avec la même marge qu'avant."""
+    urls, calls = [], []
+    _run_reddit_groups(monkeypatch, urls,
+                       fetch=lambda url: calls.append(url) or b"x")
+
+    assert urls == [newswatch.REDDIT_CORE]
+    assert len(calls) == 1
+
+
+def test_F6_le_passage_suivant_prend_l_AUTRE_groupe(monkeypatch):
+    urls = []
+    for i in range(3):
+        _run_reddit_groups(monkeypatch, urls, now=NOW + timedelta(minutes=10 * i))
+
+    assert urls == [newswatch.REDDIT_CORE, newswatch.REDDIT_INTL,
+                    newswatch.REDDIT_CORE]
+
+
+def test_F6_un_groupe_en_PANNE_ne_bloque_pas_l_autre(monkeypatch):
+    """Reproduction du finding : le multireddit à dix rendait 403 depuis
+    l'Omen, et un sub en quarantaine emportait AUSSI les quatre d'origine."""
+    urls = []
+
+    def fetch(url):
+        if urls[-1] == newswatch.REDDIT_CORE:
+            raise RuntimeError("Reddit HTTP 403")
+        return b"x"
+
+    posts = [_rpost("$NVDA is going to the moon", "https://r.test/1")]
+    counters = _run_reddit_groups(monkeypatch, urls, fetch=fetch)
+    assert urls[-1] == newswatch.REDDIT_CORE
+    assert counters["errors"] == 1                       # le groupe cassé compte
+
+    later = NOW + timedelta(minutes=10)
+    counters = _run_reddit_groups(monkeypatch, urls, now=later, fetch=fetch,
+                                  parse=lambda raw: list(posts))
+    assert urls[-1] == newswatch.REDDIT_INTL             # on est passé à l'autre
+    assert counters["errors"] == 0                       # et il passe
+    assert newswatch.recent_trends(later) == {"NVDA": {"count": 1, "prev": 0}}
+
+
+def test_F6_l_evenement_reddit_garde_sa_provenance_par_sub(monkeypatch):
+    """Un compteur de tendance ne dit pas d'où il vient ; l'ÉVÉNEMENT, si."""
+    posts = [_rpost("$NVDA squeeze incoming", "https://r.test/9",
+                    sub="mauerstrassenwetten")]
+    _run_reddit(monkeypatch, _FetchQueue(), _NotifySpy(),
+                reddit_fetch=lambda url: b"x", reddit_parse=lambda raw: posts)
+
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "reddit"]
+    assert events[0]["subreddit"] == "mauerstrassenwetten"
+
+
+# =========================================================================== #
+#  F9 — le cap d'HISTORIQUE n'étouffe plus un ENVOI (27/08)
+# =========================================================================== #
+
+def test_F9_un_communique_au_dela_du_cap_part_quand_meme():
+    """Reproduction du finding : le cap ``max_events`` sautait tout le bloc,
+    donc aussi la notification. Huit communiqués d'une même histoire (donc
+    muets, budget d'envoi INTACT) remplissaient le cap — et la décision de taux
+    arrivée en neuvième position était étouffée par un garde-fou d'HISTORIQUE."""
+    fetch = _FetchQueue()
+    fetch.push_bc(_rss([("Seed", "https://f/seed", NOW)]))
+    _run_bc(fetch, _NotifySpy())                        # amorçage
+
+    later = NOW + timedelta(minutes=10)
+    items = [("Governor speech on financial stability", "https://f/s%d" % i, later)
+             for i in range(newswatch._BC_MAX_EVENTS_PER_RUN)]
+    items.append(("ECB raises key rate by 50 basis points", "https://f/rate", later))
+    fetch.push_bc(_rss(items))
+    notifier = _NotifySpy()
+    _run_bc(fetch, notifier, now=later)
+
+    envoyes = "\n".join(text for text, _cfg in notifier.calls)
+    assert "50 basis points" in envoyes
+
+
+def test_F9_un_item_ENVOYE_est_journalise_meme_au_dela_du_cap():
+    """Le fil doit porter ce que l'utilisateur a reçu sur son téléphone."""
+    fetch = _FetchQueue()
+    fetch.push_bc(_rss([("Seed", "https://f/seed", NOW)]))
+    _run_bc(fetch, _NotifySpy())
+
+    later = NOW + timedelta(minutes=10)
+    items = [("Governor speech on financial stability", "https://f/s%d" % i, later)
+             for i in range(newswatch._BC_MAX_EVENTS_PER_RUN)]
+    items.append(("ECB raises key rate by 50 basis points", "https://f/rate", later))
+    fetch.push_bc(_rss(items))
+    _run_bc(fetch, _NotifySpy(), now=later)
+
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "bc"]
+    envoye = [e for e in events if e["link"] == "https://f/rate"]
+    assert envoye and envoye[0]["muted"] is False
+
+
+def test_F9_le_cap_borne_toujours_ce_qui_n_est_PAS_envoye():
+    """On n'a pas supprimé le garde-fou : ce qui ne part pas reste plafonné."""
+    fetch = _FetchQueue()
+    fetch.push_bc(_rss([("Seed", "https://f/seed", NOW)]))
+    _run_bc(fetch, _NotifySpy())
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push_bc(_rss([("Statement number %d" % i, "https://f/n%d" % i, later)
+                        for i in range(30)]))
+    _run_bc(fetch, _NotifySpy(), now=later, mode="calme")
+
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "bc"]
+    assert len(events) == newswatch._BC_MAX_EVENTS_PER_RUN
+
+
+# =========================================================================== #
+#  F10 — une liste X vide ne gèle plus la probation (27/08)
+# =========================================================================== #
+
+def test_F10_la_probation_tourne_meme_sans_compte_choisi_a_la_main(monkeypatch):
+    """C'était le pire moment pour l'éteindre : sans compte manuel, la
+    découverte est le SEUL moyen d'en avoir un — et il y a dix places libres."""
+    _x_env(monkeypatch, handles=())
+    _seed_candidate("zerohedge", polls=0, hits=1)
+    posts = {"zerohedge": [_post("New tariffs on imported steel announced")]}
+    _run_x(_FetchQueue(), _NotifySpy(), x_fetch=lambda h: "<html/>",
+           x_pacer=_XPacer(),
+           x_parse=lambda page, handle: list(posts.get(handle, [])))
+
+    assert "zerohedge" in _REAL_LOAD_X_ACCOUNTS()       # promu, liste vide ou pas
+    assert "zerohedge" not in newswatch._load_global_seen()["x_candidates"]
+
+
+def test_F10_une_liste_vide_n_interroge_evidemment_aucun_compte(monkeypatch):
+    """La boucle des comptes suivis ne fait rien — elle n'invente personne."""
+    _x_env(monkeypatch, handles=())
+    calls = []
+    _run_x(_FetchQueue(), _NotifySpy(), x_fetch=lambda h: calls.append(h) or "",
+           x_pacer=_XPacer(), x_parse=lambda page, handle: [])
+
+    assert calls == []

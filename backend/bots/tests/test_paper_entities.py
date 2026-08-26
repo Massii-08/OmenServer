@@ -151,3 +151,47 @@ def test_strip_legal_suffix_ne_vide_jamais_un_nom():
 def test_first_company_rend_le_premier_ou_none():
     assert entities.first_company("Tesla and Apple both fall") == "TSLA"
     assert entities.first_company("rien de connu ici") is None
+
+
+# --------------------------------------------------------------------------- #
+# W2a — la presse MONDIALE : le module ne lit pas la langue, il lit les NOMS
+#
+# C'est ce qui rend le volet « presse financière mondiale » possible sans écrire
+# une ligne de plus ici : une entreprise s'appelle pareil en allemand, en
+# anglais et en italien. La TONALITÉ, elle, reste calibrée EN/FR/IT
+# (``newswatch.classify``) — un titre allemand entre en « neutre » plutôt
+# qu'avec une couleur inventée.
+# --------------------------------------------------------------------------- #
+
+def test_un_titre_ALLEMAND_est_symbolise_comme_les_autres():
+    assert entities.detect_companies(
+        "Nestlé kündigt Milliarden-Rückkauf an") == ["NESN.SW"]
+    assert entities.detect_companies(
+        "Handelsblatt: Siemens und SAP im Fokus, Nvidia legt zu") == ["NVDA"]
+
+
+def test_un_titre_ANGLAIS_BRITANNIQUE_ou_INDIEN_passe_aussi():
+    assert entities.first_company(
+        "BBC: Boeing wins a defence contract") == "BA"
+    assert entities.first_company(
+        "Economic Times: TSMC lifts capex guidance") == "TSM"
+
+
+def test_la_langue_ne_change_JAMAIS_le_symbole_rendu():
+    """Le même fait, dans quatre langues, doit rendre exactement le même
+    ticker — sinon la mémoire d'un titre se scinderait par langue de source."""
+    faits = [
+        "Nestlé beats estimates",
+        "Nestlé dépasse les attentes",
+        "Nestlé übertrifft die Erwartungen",
+        "Nestlé supera le attese",
+    ]
+    assert {entities.first_company(f) for f in faits} == {"NESN.SW"}
+
+
+def test_une_ancre_de_l_utilisateur_prime_meme_sur_un_titre_etranger():
+    """Si quelqu'un suit « Apple » sur une autre place, c'est SON symbole qui
+    doit sortir — quelle que soit la langue de la dépêche."""
+    anchors = entities.anchor_index([{"symbol": "APC.DE", "name": "Apple Inc."}])
+    assert entities.first_company("Apple legt in Frankfurt zu",
+                                  anchors) == "APC.DE"

@@ -24,6 +24,7 @@ from backend.bots.paper import coach, fees, quotes, store
 # tests dédiés les réinstallent avec un ``fetch``/``sleep`` injectés.
 _REAL_FRESH_SWEEP = pr._fresh_sweep
 _REAL_BACKFILL_NEW = pr._backfill_new_tickers
+_REAL_AGENDA_MACRO = pr._agenda_macro
 
 FIXED_NOW = "2026-08-24T10:00:00"
 
@@ -143,6 +144,11 @@ def make_client(tmp_path, monkeypatch, role="admin"):
     # fonctions avec un ``fetch``/``sleep`` injectés.
     monkeypatch.setattr(pr, "_fresh_sweep", lambda targets, **kw: {})
     monkeypatch.setattr(pr, "_backfill_new_tickers", lambda ideas, **kw: [])
+    # TROISIÈME porte réseau (W2b) : l'agenda macro relève CINQ sites de banque
+    # centrale quand son cache de 24 h est froid — mesuré à ~1,7 s par appel
+    # depuis un test qui se croit hors ligne. Les tests dédiés réinstallent la
+    # vraie fonction avec le PONT doublé (cf. ``_agenda_double``).
+    monkeypatch.setattr(pr, "_agenda_macro", lambda: {})
 
     app = FastAPI()
     app.include_router(pr.router)
@@ -3536,3 +3542,127 @@ def test_a_deformed_trend_state_costs_discovery_not_the_answer(tmp_path,
                         lambda: {"GME": {"count": "beaucoup"},
                                  "AMC": {"count": 12}})
     assert [t["symbol"] for t in pr._sweep_targets("tester")] == ["AAPL", "AMC"]
+
+
+# ================================================================
+#  AGENDA MACRO (W2b) — les rendez-vous DATÉS dans le contexte du coach
+#
+#  « Un catalyseur DATÉ vaut plus qu'une rumeur » : la moitié du contexte est
+#  faite de dépêches dont le coach ne peut pas dire QUAND elles produiront un
+#  effet. Ces dates-là, si.
+# ================================================================
+
+AGENDA_ROWS = [
+    {"date": "2026-08-28", "bank": "Fed",
+     "label": "Fed — riunione del FOMC (27-28 agosto)",
+     "source_url": "https://fed.test/cal"},
+    {"date": "2026-09-10", "bank": "BCE",
+     "label": "BCE — riunione di politica monetaria (decisione)",
+     "source_url": "https://ecb.test/cal"},
+]
+
+
+def _agenda_double(monkeypatch, rows):
+    """Réinstalle le VRAI ``_agenda_macro`` (que ``make_client`` neutralise) en
+    doublant le PONT dessous — ainsi la mise en forme du contexte est bien
+    celle du router, et non celle du test."""
+    from backend.bots.paper import agenda_bridge
+    monkeypatch.setattr(agenda_bridge, "upcoming_events", lambda **kw: list(rows))
+    monkeypatch.setattr(pr, "_agenda_macro", _REAL_AGENDA_MACRO)
+
+
+def test_the_agenda_reaches_the_ideas_and_scenarios_context(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    _agenda_double(monkeypatch, AGENDA_ROWS)
+    seen = {}
+    monkeypatch.setattr(pr.llm, "suggest_ideas",
+                        lambda context, lang="fr", risk_level="mesure", journal=None:
+                        seen.__setitem__("ideas", dict(context))
+                        or '```json\n{"ideas": []}\n```')
+    monkeypatch.setattr(pr.llm, "suggest_scenarios",
+                        lambda context, lang="fr":
+                        seen.__setitem__("scenarios", dict(context))
+                        or scenarios_answer())
+    c.post("/api/paper/ideas", json={})
+    c.post("/api/paper/board/scenarios/generate", json={})
+
+    for key in ("ideas", "scenarios"):
+        agenda = seen[key]["agenda_macro"]
+        assert [r["date"] for r in agenda["rendez_vous"]] == ["2026-08-28",
+                                                              "2026-09-10"]
+        assert agenda["consigne"] == pr.AGENDA_CONSIGNE
+
+
+def test_the_agenda_reaches_the_review_factpack(tmp_path, monkeypatch):
+    """Garder une position jusqu'à la veille d'une réunion de banque centrale,
+    ce n'est pas la même décision qu'un mois ordinaire : la revue doit voir ce
+    que la position va TRAVERSER."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10)
+    _agenda_double(monkeypatch, AGENDA_ROWS)
+    seen = _review_double(monkeypatch)
+
+    c.post("/api/paper/positions/review", json={})
+    agenda = seen["context"]["agenda_macro"]
+    assert agenda["rendez_vous"][0]["bank"] == "Fed"
+    assert agenda["consigne"] == pr.AGENDA_CONSIGNE
+
+
+def test_the_consigne_says_a_dated_catalyst_beats_a_rumour():
+    """La consigne voyage AVEC les dates (le bloc ``CONTEXTE`` est sérialisé en
+    entier vers le modèle) : elle ne peut donc pas se désynchroniser de la
+    donnée qu'elle commente."""
+    assert "catalyseur DATÉ" in pr.AGENDA_CONSIGNE
+    assert "construis autour" in pr.AGENDA_CONSIGNE
+    # ...et elle interdit la prévision de sens : une date est un fait, pas une
+    # direction.
+    assert "jamais dans quel sens" in pr.AGENDA_CONSIGNE
+
+
+def test_an_empty_agenda_adds_no_key_at_all(tmp_path, monkeypatch):
+    """Décrire au modèle une section VIDE, c'est l'inviter à la remplir tout
+    seul (même règle que ``llm._sweep_line`` pour la recherche fraîche)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    _agenda_double(monkeypatch, [])
+    seen = {}
+    monkeypatch.setattr(pr.llm, "suggest_ideas",
+                        lambda context, lang="fr", risk_level="mesure", journal=None:
+                        seen.__setitem__("ideas", dict(context))
+                        or '```json\n{"ideas": []}\n```')
+    c.post("/api/paper/ideas", json={})
+    assert "agenda_macro" not in seen["ideas"]
+
+
+def test_a_broken_agenda_never_breaks_an_answer(tmp_path, monkeypatch):
+    from backend.bots.paper import agenda_bridge
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom(**kwargs):
+        raise RuntimeError("banques centrales injoignables")
+
+    monkeypatch.setattr(agenda_bridge, "upcoming_events", boom)
+    monkeypatch.setattr(pr, "_agenda_macro", _REAL_AGENDA_MACRO)
+    assert pr._agenda_macro() == {}
+    assert c.post("/api/paper/ideas", json={}).status_code == 200
+
+
+def test_the_agenda_costs_no_network_when_the_module_is_missing(monkeypatch):
+    """Déploiement partiel : le pont absent coûte l'agenda, jamais le contexte.
+
+    Le faux ``__import__`` COMPTE ses interceptions — sans ce compteur, le test
+    passerait aussi bien si le filtre ne matchait rien (l'appel réel rendrait
+    ``{}`` un jour de calendrier vide) et on croirait avoir vérifié le repli.
+    """
+    import builtins
+    real_import = builtins.__import__
+    blocked = []
+
+    def no_bridge(name, glob=None, loc=None, fromlist=(), level=0):
+        if name.endswith("agenda_bridge") or "agenda_bridge" in (fromlist or ()):
+            blocked.append(name)
+            raise ImportError("pas déployé")
+        return real_import(name, glob, loc, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", no_bridge)
+    assert _REAL_AGENDA_MACRO() == {}
+    assert blocked == ["backend.bots.paper"]

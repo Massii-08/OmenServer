@@ -719,3 +719,32 @@ def test_la_consigne_distingue_une_liste_vide_d_un_titre_jamais_collecte():
     prompt = llm.build_ideas_prompt(_SWEEP_CTX)
     assert "Une liste VIDE" in prompt and "rien de neuf sur sept jours" in prompt
     assert "n'a lui jamais été collecté" in prompt
+
+
+# =========================================================================== #
+#  W2a — doctrine « le pouvoir nomme, l'administration investit »
+# =========================================================================== #
+
+def test_la_doctrine_du_pouvoir_qui_nomme_est_dans_le_prompt_des_idees():
+    prompt = llm.build_ideas_prompt({"positions": []})
+    assert llm.POWER_NAMED_LINE in prompt
+
+
+def test_la_doctrine_du_pouvoir_qui_nomme_est_dans_le_prompt_des_scenarios():
+    prompt = llm.build_scenarios_prompt({"positions": []})
+    assert llm.POWER_NAMED_LINE in prompt
+
+
+def test_la_doctrine_dit_indicateur_avance_ET_jamais_promesse():
+    """Les deux moitiés comptent autant l'une que l'autre : un dirigeant qui
+    nomme une entreprise ne signe rien — le modèle doit PESER, pas croire."""
+    line = llm.POWER_NAMED_LINE
+    assert "INDICATEUR AVANCÉ" in line and "CATALYSEURS" in line
+    assert "PROMESSES" in line
+
+
+def test_la_doctrine_est_ecrite_a_UN_seul_endroit():
+    """Trois formulations parallèles d'une même doctrine finiraient par
+    diverger, et c'est le genre de dérive qu'on ne verrait jamais."""
+    from backend.bots.paper import convergence
+    assert convergence._power_named_line() == llm.POWER_NAMED_LINE

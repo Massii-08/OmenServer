@@ -2420,6 +2420,58 @@ def _whale_moves() -> List[Dict[str, Any]]:
         return []
 
 
+# --------------------------------------------------------------------------- #
+# AGENDA MACRO — les rendez-vous DATÉS (W2b)
+#
+# La moitié du contexte du coach est faite de dépêches dont il ne peut pas dire
+# QUAND elles produiront un effet. Une réunion du FOMC, elle, a une date : c'est
+# la seule matière sur laquelle il peut construire un « avant / pendant /
+# après ». D'où la consigne, qui voyage AVEC les dates plutôt qu'en ligne
+# séparée du prompt : le bloc ``CONTEXTE`` est sérialisé en entier vers le
+# modèle (même mécanique que le champ ``historique``, cf. ``llm._HISTORY_LINE``),
+# et une consigne posée à côté de la donnée qu'elle commente ne peut pas s'en
+# désynchroniser.
+#
+# ⚠️ Contrairement à ``_whale_moves`` (cache SEUL, jamais de requête SEC), cet
+# accès peut RELEVER l'agenda quand son cache de 24 h est froid — cinq sites de
+# banque centrale, ~2 s, une fois par jour. C'est délibéré : le seul autre
+# rafraîchisseur est la ronde des dépôts, et celle-ci ne tourne QUE si Telegram
+# est configuré. Un accès en lecture seule rendrait donc la fonctionnalité
+# silencieusement morte chez qui n'a pas branché Telegram — exactement la classe
+# de bug « la branche est toujours fausse et personne ne le voit ». Deux
+# secondes une fois par jour, sur un endpoint qui appelle déjà un LLM, se
+# paient ; une section vide pour toujours, non.
+# --------------------------------------------------------------------------- #
+
+AGENDA_CONSIGNE = (
+    "AGENDA MACRO (rendez-vous datés officiels) : un catalyseur DATÉ vaut plus "
+    "qu'une rumeur — construis autour. Ces dates sont des FAITS vérifiables "
+    "(calendriers publiés par les banques centrales) ; dis ce qui est EN JEU à "
+    "chacune, jamais dans quel sens elle tournera."
+)
+
+
+def _agenda_macro() -> Dict[str, Any]:
+    """Les rendez-vous de banques centrales à venir, prêts pour le prompt.
+
+    Rend ``{}`` quand il n'y a rien (agenda vide, moteur Market Pulse absent,
+    cache jamais rempli) : l'appelant n'ajoute alors PAS la clé. Décrire au
+    modèle une section vide, c'est l'inviter à la remplir tout seul — la même
+    règle que ``llm._sweep_line`` pour la recherche fraîche.
+    """
+    try:
+        from backend.bots.paper import agenda_bridge
+        rows = list(agenda_bridge.upcoming_events() or [])
+    except ImportError:
+        return {}
+    except Exception as e:                          # noqa: BLE001 — best-effort
+        logger.warning("paper: agenda macro indisponible: %s", e)
+        return {}
+    if not rows:
+        return {}
+    return {"consigne": AGENDA_CONSIGNE, "rendez_vous": rows}
+
+
 def _strategy_context(username: str,
                       risk_level: Optional[str] = None) -> Dict[str, Any]:
     """Le contexte du coach quand il PROPOSE (``/ideas``) ou qu'il
@@ -2443,6 +2495,10 @@ def _strategy_context(username: str,
     context["recent_filings"] = _recent_filings()
     context["recent_crypto"] = _recent_crypto(username)
     context["whale_moves"] = _whale_moves()
+    # Les rendez-vous DATÉS (W2b) — la clé n'existe que s'il y en a.
+    agenda = _agenda_macro()
+    if agenda:
+        context["agenda_macro"] = agenda
     # La BASE : douze mois d'archives sur ce qu'il détient et ce qu'il suit.
     # Sans elle, chaque dépêche du contexte se lit comme un fait isolé, et le
     # coach ne peut pas dire si elle rompt avec l'année ou si elle la répète.
@@ -2888,6 +2944,13 @@ def paper_positions_review(data: ReviewPayload,
                                      for p in portfolio.positions}
             for t in (h.get("tickers") or []))
     ]
+    # Les rendez-vous DATÉS (W2b) — même fait-pack que ``/ideas``. Garder une
+    # position en portefeuille jusqu'à la veille d'une réunion de banque
+    # centrale, ce n'est pas la même décision que la garder un mois ordinaire :
+    # la revue doit voir ce que la position va TRAVERSER.
+    agenda = _agenda_macro()
+    if agenda:
+        context["agenda_macro"] = agenda
 
     try:
         text = llm.review_positions(context, lang)

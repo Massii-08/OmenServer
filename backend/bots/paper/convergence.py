@@ -27,15 +27,20 @@ Les cinq facteurs, tous mesurés sur une fenêtre de 48 h :
 ``crowd_buzz``          la foule Reddit s'agite sur un titre détenu ou suivi
 ======================  ====================================================
 
-Trois garde-fous contre le bavardage : seuil de 2 facteurs, **cooldown de 6 h**,
-et **empreinte des items contributifs** — si rien de neuf n'est entré depuis le
-dernier envoi, le message serait une redite et il ne part pas.
+Quatre garde-fous contre le bavardage : seuil de 2 facteurs **INDÉPENDANTS**
+(cf. ``independent_factors`` — deux étiquettes posées sur la même dépêche ne
+valent qu'un facteur), **cooldown de 6 h**, **empreinte des items contributifs**
+— si rien de neuf n'est entré depuis le dernier envoi, le message serait une
+redite et il ne part pas —, et **provenance CURÉE** exigée des facteurs qui ont
+le droit de tirer seuls (cf. ``CURATED_NEWS_SOURCES`` : la foule et les inconnus
+ne réveillent jamais seuls).
 
 Panne du LLM -> on envoie QUAND MÊME un résumé déterministe : la valeur est
 dans le DÉCLENCHEUR (« regarde maintenant »), pas dans la prose.
 
 Découpage habituel du lot : ``collect_factors`` / ``fingerprint`` /
-``should_fire`` / ``build_digest_prompt`` / ``fallback_digest`` sont PURS (zéro
+``independent_factors`` / ``should_fire`` / ``build_digest_prompt`` /
+``fallback_digest`` sont PURS (zéro
 I/O, zéro réseau) ; ``maybe_fire`` et ``recent`` sont les seules fonctions
 d'I/O et toutes leurs dépendances (horloge, LLM, notifieur, config Telegram,
 état du radar) sont injectables -> tests 100 % hors-ligne.
@@ -114,6 +119,64 @@ FACTOR_LABELS = {
 # intrinsèquement rares — ils n'existent que si un titre DÉTENU ou SUIVI est
 # touché.
 THREAT_FACTORS = ("held_risk", "whale_sold_watched")
+
+# --- qui a le droit de RÉVEILLER seul (garde-fou 27/08) -------------------- #
+#
+# ``held_risk`` est un facteur de MENACE : il tire SEUL, sans le second facteur
+# que le reste du monde doit fournir. Il n'avait pourtant aucune exigence de
+# PROVENANCE — n'importe quelle dépêche à tonalité négative sur un titre détenu
+# l'allumait, y compris un post Bluesky d'un inconnu ramené par une recherche
+# ouverte, ou un post d'un compte X encore EN PROBATION. Un anonyme pouvait donc
+# faire sonner le téléphone à lui tout seul.
+#
+# Doctrine : **la foule et les inconnus ne réveillent jamais seuls.** Le canal
+# de menace est réservé aux sources CURÉES — celles qu'on a choisies, ou des
+# institutions :
+#
+#   * ``""``/``"news"``   la dépêche par-symbole du guetteur (le flux RSS du
+#                         titre lui-même) et l'annonce politique, qui
+#                         n'écrivent pas de champ ``src`` ;
+#   * ``"gov"``           l'annonce politique, si un état l'étiquette ;
+#   * ``"bc"``            les banques centrales (flux institutionnels) ;
+#   * ``"pressefi"``      la presse financière retenue à la main ;
+#   * ``"sec_own"``       les dépôts d'initiés (``whales``), donc la SEC ;
+#   * ``"eco"``/``"climat"``/``"crypto"``  les requêtes Google News du guetteur —
+#                         des flux CHOISIS, pas une place publique (et le fait
+#                         qu'une mauvaise nouvelle macro nommant un titre détenu
+#                         est « de l'argent qui bouge » est une décision déjà
+#                         prise et épinglée par un test) ;
+#   * ``"x"``             les comptes X de la liste MANUELLE — Massii les a
+#                         choisis un par un, exactement comme ``pressefi``. Un
+#                         compte encore EN PROBATION porte le même ``src`` mais
+#                         il est refusé par son drapeau ``candidate``, pas par
+#                         sa source.
+#
+# Écartés, donc : ``reddit`` (la foule) et ``bsky`` (la recherche OUVERTE, où
+# n'importe qui répond), plus tout événement marqué ``candidate``.
+#
+# Liste PERMISSIVE et non liste d'exclusion : elle échoue FERMÉE. Une source
+# ajoutée demain au guetteur n'hérite pas du droit de réveiller seule — il
+# faudra l'inscrire ici, c'est-à-dire y penser.
+#
+# Ce qui en est écarté n'est pas jeté pour autant : ces événements continuent de
+# peser comme facteurs ORDINAIRES et de nourrir ``cross_source``. On leur retire
+# le droit de tirer SEULS, pas le droit d'exister.
+CURATED_NEWS_SOURCES = frozenset({
+    "", "news", "gov", "bc", "pressefi", "sec_own",
+    "eco", "climat", "crypto", "x",
+})
+
+# Pseudo-symboles : « GOV » n'est pas un titre, c'est l'étiquette que
+# ``newswatch`` colle à une annonce politique qui ne nomme AUCUNE entreprise.
+# MIROIR de ``graph._PSEUDO_SYMBOLS`` — recopié plutôt qu'importé pour la même
+# raison que ``_parse_dt`` (une fonction pure ne dépend pas d'un module d'I/O),
+# et la synchronisation des deux est PINNÉE par un test.
+#
+# Sans ce filtre, une watchlist contenant « GOV » (ou une position au symbole
+# « GOV ») faisait de CHAQUE annonce politique non symbolisée un « catalyseur
+# sur un titre suivi » — un facteur de plus, gratuit, sur toute la politique du
+# monde.
+PSEUDO_SYMBOLS = frozenset({"GOV"})
 
 # Un mouvement de gérant plus vieux que ça ne dit plus rien de l'instant : un
 # 13F a déjà jusqu'à 45 jours de retard, y ajouter un snapshot périmé
@@ -254,6 +317,20 @@ def _tickers(hyp: Dict[str, Any]) -> List[str]:
 
 def _sentiment(event: Dict[str, Any]) -> str:
     return _text(event.get("sentiment")).lower()
+
+
+def _curated(event: Dict[str, Any]) -> bool:
+    """Cette dépêche vient-elle d'une source CURÉE ? (PUR.)
+
+    Seules celles-là ont le droit d'allumer un facteur de MENACE, c'est-à-dire
+    de faire partir un digest à elles seules — cf. ``CURATED_NEWS_SOURCES``.
+
+    Un candidat en probation est refusé même si son ``src`` est autorisé : il
+    n'a, par définition, encore rien prouvé.
+    """
+    if event.get("candidate"):
+        return False
+    return _text(event.get("src")).lower() in CURATED_NEWS_SOURCES
 
 
 def _is_polar(event: Dict[str, Any]) -> bool:
@@ -424,7 +501,11 @@ def collect_factors(now: Any, hypotheses: Any, news_events: Any,
     sait pas d'où viennent les symboles, elle regarde juste si un catalyseur
     (sentiment ``watch``) en touche un. Le facteur produit reste nommé
     ``held_catalyst`` (clé stable du contrat public) même si son déclencheur
-    s'est élargi.
+    s'est élargi — et il s'est élargi une seconde fois le 26/08 : une annonce
+    POLITIQUE (sentiment ``gov``) qui nomme un titre détenu ou suivi l'allume
+    elle aussi. Une entreprise nommée par le pouvoir est un catalyseur sur ce
+    titre ; la ranger avec les annonces qui ne concernent personne, c'était
+    perdre la seule chose précise qu'elle disait.
 
     ``held_symbols`` = les titres RÉELLEMENT DÉTENUS, et eux seuls. C'est le
     facteur ``held_risk`` : une mauvaise nouvelle (sentiment ``neg``) sur un
@@ -448,24 +529,55 @@ def collect_factors(now: Any, hypotheses: Any, news_events: Any,
     """
     now_dt = _parse_dt(now) or _now()
     cutoff = now_dt - timedelta(hours=WINDOW_H)
-    watched = {_upper(s) for s in (watched_symbols or []) if _text(s)}
-    held = {_upper(s) for s in (held_symbols or []) if _text(s)}
+    # Les pseudo-symboles sont retirés des DEUX ensembles, à l'entrée : « GOV »
+    # n'est ni détenu, ni suivi, ni vendu par un gérant, ni un sujet de foule.
+    # Le filtre est ici et pas dans chaque facteur — un seul point à ne pas
+    # oublier vaut mieux que six.
+    watched = {s for s in {_upper(x) for x in (watched_symbols or []) if _text(x)}
+               if s and s not in PSEUDO_SYMBOLS}
+    held = {s for s in {_upper(x) for x in (held_symbols or []) if _text(x)}
+            if s and s not in PSEUDO_SYMBOLS}
 
     fresh_hyps = [h for h in _dicts(hypotheses)
                   if (_text(h.get("status")) or "open") == "open"
                   and _within(h.get("created_at"), cutoff)]
-    fresh_news = [e for e in _dicts(news_events) if _within(e.get("ts"), cutoff)]
+    # Un événement d'un compte X EN PROBATION est écarté d'office : il ne pèse
+    # dans aucun facteur, et il ne rentre pas non plus dans l'empreinte
+    # anti-redite. Un candidat n'a rien prouvé — le laisser peser reviendrait à
+    # promouvoir un inconnu au rang de source avant qu'il l'ait mérité. Il reste
+    # VISIBLE dans le fil et la toile (``newswatch`` le journalise avec son
+    # drapeau) : on ne le cache pas, on ne le compte pas.
+    fresh_news = [e for e in _dicts(news_events)
+                  if not e.get("candidate") and _within(e.get("ts"), cutoff)]
     fresh_filings = [f for f in _dicts(filing_events)
                      if _within(f.get("ts") or f.get("filing_date"), cutoff)]
 
     gov_events = [e for e in fresh_news if _sentiment(e) == "gov"]
     watch_events = [e for e in fresh_news if _sentiment(e) == "watch"]
-    held_catalysts = [e for e in watch_events if _upper(e.get("symbol")) in watched]
+    # ⚠️ Doctrine « le pouvoir nomme, l'administration investit » (26/08) : une
+    # entreprise NOMMÉE par un dirigeant politique est un catalyseur sur ce
+    # titre, pas seulement une nouvelle du monde. Un « l'administration veut
+    # acheter des cartes à Nvidia » n'allumait jusqu'ici que le facteur ``gov``,
+    # au même titre qu'une annonce de droits de douane sur l'acier qui ne
+    # concerne aucune position — alors qu'il désigne un titre précis, et suivi.
+    #
+    # ``watched | held`` et non ``watched`` seul : l'appelant passe déjà l'union
+    # dans ``watched``, mais ce facteur ne doit pas dépendre de la discipline
+    # d'un appelant pour couvrir les titres DÉTENUS.
+    named_by_power = [e for e in gov_events
+                      if _upper(e.get("symbol")) in (watched | held)]
+    held_catalysts = ([e for e in watch_events
+                       if _upper(e.get("symbol")) in watched] + named_by_power)
     # Le préfixe (et pas l'égalité) : ``newswatch`` écrit « neg », un état plus
     # ancien peut porter « negative » — même prudence que ``_is_polar``.
+    #
+    # ``_curated`` : ce facteur TIRE SEUL (cf. ``THREAT_FACTORS``), il exige donc
+    # une source choisie ou institutionnelle. Un inconnu ne réveille pas le
+    # téléphone à lui tout seul (cf. ``CURATED_NEWS_SOURCES``).
     held_risks = [e for e in fresh_news
                   if _sentiment(e).startswith("neg")
-                  and _upper(e.get("symbol")) in held]
+                  and _upper(e.get("symbol")) in held
+                  and _curated(e)]
 
     whale_cutoff = now_dt - timedelta(days=WHALE_MOVE_FRESH_D)
     whale_sells = [m for m in _dicts(whale_moves)
@@ -526,7 +638,14 @@ def collect_factors(now: Any, hypotheses: Any, news_events: Any,
             seen.add(key)
             items.append(item)
 
-    return {"factors": factors, "items": items}
+    # QUI porte quoi. C'est de cette table que sort le décompte de facteurs
+    # INDÉPENDANTS (cf. ``independent_factors``) : sans elle, ``should_fire`` ne
+    # peut pas voir qu'un ``gov`` et un ``held_catalyst`` reposent sur la MÊME
+    # dépêche, et il compte deux fois la même information.
+    factor_ids = {code: [item["id"] for item in by_factor[code]]
+                  for code in FACTOR_CODES if factors[code]}
+
+    return {"factors": factors, "items": items, "factor_ids": factor_ids}
 
 
 def fingerprint(items: Any) -> str:
@@ -558,6 +677,49 @@ def active_factors(factors: Any) -> List[str]:
     return [code for code in FACTOR_CODES if flags[code]]
 
 
+def _factor_ids(factors: Any) -> Dict[str, List[str]]:
+    """La table ``{code: [ids]}`` du retour de ``collect_factors``, ou ``{}``
+    quand l'appelant n'a passé qu'un dict de drapeaux (PUR)."""
+    if not (isinstance(factors, dict) and isinstance(factors.get("factor_ids"), dict)):
+        return {}
+    out: Dict[str, List[str]] = {}
+    for code, ids in factors["factor_ids"].items():
+        if isinstance(ids, (list, tuple)):
+            out[_text(code)] = [_text(i) for i in ids if _text(i)]
+    return out
+
+
+def independent_factors(factors: Any) -> List[str]:
+    """Les facteurs qui apportent une information NEUVE (PUR).
+
+    Le seuil de ``MIN_FACTORS`` doit compter des signaux INDÉPENDANTS, et il
+    comptait des ÉTIQUETTES. Une seule annonce politique nommant un titre suivi
+    allume ``gov`` ET ``held_catalyst`` : deux facteurs, un seul fait. Le
+    message partait donc sur un événement unique, ce que le module interdit
+    explicitement deux lignes plus haut (« la même information comptée deux fois
+    n'est pas une convergence »).
+
+    Règle : on parcourt les facteurs actifs dans l'ordre canonique et on retient
+    ceux qui apportent AU MOINS UN item que les facteurs déjà retenus ne
+    portaient pas. Un facteur dont tous les ids sont déjà couverts n'ajoute
+    rien — c'est la même matière sous un autre nom.
+
+    Un facteur SANS identifiants connus est retenu (on ne peut pas prouver la
+    redite) ; c'est aussi ce qui garde la compatibilité avec les appelants qui
+    ne passent qu'un dict de drapeaux — ils comptent alors comme avant.
+    """
+    ids_by_code = _factor_ids(factors)
+    covered: set = set()
+    retained: List[str] = []
+    for code in active_factors(factors):
+        ids = set(ids_by_code.get(code) or ())
+        if ids and ids <= covered:
+            continue
+        retained.append(code)
+        covered |= ids
+    return retained
+
+
 def should_fire(factors: Any, state: Any, now: Any, fingerprint_: Any,
                 force: bool = False) -> Tuple[bool, str]:
     """Faut-il envoyer un digest ? (PUR) -> ``(bool, raison)``.
@@ -565,6 +727,12 @@ def should_fire(factors: Any, state: Any, now: Any, fingerprint_: Any,
     Raisons : ``ok`` / ``too_few`` (moins de 2 facteurs) / ``cooldown`` (moins
     de 6 h depuis le dernier envoi) / ``same_items`` (exactement la même
     matière que la dernière fois).
+
+    Le décompte porte sur les facteurs **indépendants** (cf.
+    ``independent_factors``) : deux étiquettes posées sur la MÊME dépêche ne
+    valent qu'un facteur. Passer le retour COMPLET de ``collect_factors`` (et
+    pas seulement son dict de drapeaux) est donc ce qui arme ce garde-fou —
+    sans la table des ids, on ne peut pas prouver la redite et tout est compté.
 
     **Un facteur de MENACE DIRECTE tire SEUL** (``THREAT_FACTORS`` :
     ``held_risk``, ``whale_sold_watched``). Le seuil de deux facteurs sert à
@@ -584,7 +752,7 @@ def should_fire(factors: Any, state: Any, now: Any, fingerprint_: Any,
     state = state if isinstance(state, dict) else {}
     active = active_factors(factors)
     threatened = any(code in THREAT_FACTORS for code in active)
-    if len(active) < MIN_FACTORS and not threatened:
+    if len(independent_factors(factors)) < MIN_FACTORS and not threatened:
         return False, "too_few"
     if force:
         return True, "ok"
@@ -613,6 +781,24 @@ def _item_line(item: Dict[str, Any]) -> str:
         (" — %s" % symbol) if symbol else "",
         (" — %s" % _short_date(item.get("ts"))) if item.get("ts") else "",
     )
+
+
+def _power_named_line() -> str:
+    """La doctrine « le pouvoir nomme, l'administration investit », écrite UNE
+    seule fois — dans ``llm.py``, avec les deux autres prompts qui la portent.
+
+    Elle est lue par import LOCAL, comme tout ce que ce module emprunte à ses
+    voisins : moteur absent -> la ligne manque, le digest part quand même. Une
+    consigne de plus n'a jamais valu qu'on perde un message.
+
+    La recopier ici serait le vrai risque : deux formulations d'une même
+    doctrine divergent au premier ajustement, et personne ne s'en aperçoit.
+    """
+    try:
+        from backend.bots.paper.llm import POWER_NAMED_LINE
+    except Exception:      # noqa: BLE001 — module absent ou cassé
+        return ""
+    return str(POWER_NAMED_LINE or "")
 
 
 def build_digest_prompt(factors: Any, items: Any, stats: Any, positions: Any,
@@ -673,6 +859,11 @@ def build_digest_prompt(factors: Any, items: Any, stats: Any, positions: Any,
         "(petit) vaut mieux qu'être sûr et dernier — ton bilan public te tient "
         "honnête.")
     lines.append("")
+
+    doctrine = _power_named_line()
+    if doctrine:
+        lines.append(doctrine)
+        lines.append("")
 
     lines.append("POURQUOI CE MESSAGE PART MAINTENANT — facteurs alignés :")
     for code in FACTOR_CODES:
@@ -1209,7 +1400,12 @@ def maybe_fire(now: Any = None,
     # Trois guetteurs peuvent arriver ici en même temps (cf. ``_FIRE_LOCK``).
     with _FIRE_LOCK:
         state = load_state()
-        ok, reason = should_fire(flags, state, now_dt, fp, force=force)
+        # ``collected`` et NON ``flags`` : c'est la table des ids qui permet à
+        # ``should_fire`` de voir que deux étiquettes reposent sur la même
+        # dépêche. Avec les seuls drapeaux, le garde-fou serait muet (piège #61
+        # du dépôt : le champ lu au mauvais niveau ne plante jamais, il rend
+        # juste la fonctionnalité morte).
+        ok, reason = should_fire(collected, state, now_dt, fp, force=force)
         if not ok:
             # Sortie AVANT tout appel au LLM et tout envoi : c'est ce qui rend
             # l'évaluation à chaque cycle de 5 min gratuite (pur I/O local).

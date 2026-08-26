@@ -1647,3 +1647,54 @@ def test_the_second_level_never_loses_an_item():
     titles = _big_canada() + ["Canada tariffs"]
     listed = grove(graph.WORLD_ID, events=_big_gov(titles))
     assert sorted(i["label"] for i in listed["items"]) == sorted(titles)
+
+
+# --------------------------------------------------------------------------- #
+# W2a — les trois volets MONDIAUX dans la toile
+#
+# Piège #61 en tête : un champ lu au mauvais niveau ne plante jamais, il rend
+# juste la fonctionnalité MORTE. Ces trois tests figent la famille de chaque
+# nouvelle provenance — sans eux, un événement `bc`/`pressefi`/`bsky` tomberait
+# en silence dans la famille « other » et personne ne le verrait.
+# --------------------------------------------------------------------------- #
+
+def test_un_communique_de_banque_centrale_est_une_depeche_MACRO():
+    """Il rejoint le rameau « éco » plutôt que d'ouvrir une famille à lui tout
+    seul : ce que sa provenance ajoute (« source officielle ») est déjà dit par
+    son message, un rameau de plus serait un rameau de plus à lire."""
+    built = build(events=[_world("bc", title="FOMC statement",
+                                 sentiment="watch")])
+    node = node_by_type(built, "eco")[0]
+    assert graph._family_of(node) == "eco"
+    assert node["sentiment"] == "watch"
+
+
+def test_une_depeche_de_presse_mondiale_est_de_la_PRESSE():
+    """Une dépêche de la BBC sur Nestlé est une dépêche sur Nestlé : elle tombe
+    sur la tonalité, comme le volet par symbole, et atterrit dans « press » —
+    exactement là où on la cherche."""
+    built = build(anchors=[{"symbol": "NESN.SW", "kind": "position"}],
+                  events=[_world("pressefi", symbol="NESN.SW",
+                                 title="Nestlé beats estimates",
+                                 sentiment="pos")])
+    node = node_by_type(built, "news")[0]
+    assert graph._family_of(node) == "press"
+
+
+def test_un_post_bluesky_est_du_SOCIAL_comme_x_et_reddit():
+    built = build(anchors=[{"symbol": "NVDA", "kind": "position"}],
+                  events=[_world("bsky", symbol="NVDA",
+                                 title="$NVDA raises guidance",
+                                 sentiment="pos")])
+    node = node_by_type(built, "bsky")[0]
+    assert graph._family_of(node) == "social"
+    assert "bsky" in graph.INFO_TYPES
+
+
+def test_un_post_bluesky_ORPHELIN_ne_va_pas_au_pivot_monde():
+    """Même règle qu'un post Reddit orphelin : ce n'est pas du macro, c'est
+    quelqu'un qui parle d'un titre qu'on ne suit pas."""
+    assert "bsky" not in graph.PIVOT_TYPES
+    built = build(anchors=[{"symbol": "AAPL", "kind": "position"}],
+                  events=[_world("bsky", title="marché nerveux ce matin")])
+    assert graph.WORLD_ID not in ids(built["nodes"])

@@ -93,7 +93,7 @@ CLOSED_STAGE = "clos"
 
 # Types de nœuds d'INFO.
 INFO_TYPES = ("news", "catalyst", "gov", "crypto", "eco", "climat", "x",
-              "reddit", "hypothesis", "whale_move", "reddit_trend")
+              "bsky", "reddit", "hypothesis", "whale_move", "reddit_trend")
 
 # Les trois pivots — reliés à RIEN d'autre que leurs satellites.
 CONTEXT_TYPE = "context"
@@ -212,6 +212,12 @@ _FAMILY_OF = {
     # reproche qui a lancé ces deux volets.
     "eco": "eco", "climat": "climat",
     "x": "social", "reddit": "social", "reddit_trend": "social",
+    # Bluesky (W2a) : du social, comme X et Reddit. ⚠️ Le miroir frontend
+    # ``paper_module._GFAM`` n'a PAS encore d'entrée « bsky » — ces nœuds
+    # tombent donc sur la couleur de repli et n'apparaissent pas dans la
+    # légende. Rien n'est cassé (le regroupement par famille, lui, est correct
+    # ici), mais la parité reste à faire côté frontend, avec sa clé i18n.
+    "bsky": "social",
     "whale_move": "whale", "hypothesis": "radar",
 }
 DEFAULT_FAMILY = "other"
@@ -450,7 +456,17 @@ def _event_type(event: Dict[str, Any]) -> str:
     venir), le reste étant de la dépêche.
     """
     src = _text(event.get("src")).lower()
-    if src in ("x", "crypto", "reddit", "eco", "climat"):
+    # Un communiqué de banque centrale EST une dépêche macro : il rejoint le
+    # rameau « éco » plutôt que d'ouvrir une famille à lui tout seul. Ce que sa
+    # provenance ajoute (« source officielle ») est déjà dit par son message ;
+    # ce qu'un rameau supplémentaire coûterait, c'est un rameau de plus à lire.
+    if src == "bc":
+        return "eco"
+    # La PRESSE mondiale, elle, n'est pas nommée par sa provenance : une dépêche
+    # de la BBC sur Nestlé est une dépêche sur Nestlé. Elle tombe donc sur la
+    # tonalité comme le volet par symbole (``news``/``catalyst``/``gov``), et
+    # atterrit dans la famille « press » — exactement là où on la cherche.
+    if src in ("x", "bsky", "crypto", "reddit", "eco", "climat"):
         return src
     tone = _sentiment(event)
     if tone == "gov":

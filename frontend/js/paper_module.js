@@ -227,6 +227,11 @@ const PaperModule = {
         x:            ['paper.gnode_x',          '--dot-magenta', 'social'],
         reddit:       ['paper.gnode_reddit_post', '--dot-magenta', 'social'],
         reddit_trend: ['paper.gnode_reddit',     '--dot-magenta', 'social'],
+        // Bluesky rejoint X et Reddit dans la même famille « social » — même
+        // pastille magenta, même rameau, même légende (renommée pour les
+        // trois réseaux). Rien d'autre ne bouge : _GFAM/_GFAM_ORDER n'ont pas
+        // besoin d'une nouvelle entrée, « social » existe déjà.
+        bsky:         ['paper.gnode_bsky',       '--dot-magenta', 'social'],
         whale_move:   ['paper.gnode_whale',      '--violet',      'whale'],
         hypothesis:   ['paper.gnode_hypothesis', '--info',        'radar'],
         context:      ['paper.gnode_context',    '--text-dim',    ''],
