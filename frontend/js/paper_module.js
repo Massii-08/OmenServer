@@ -96,12 +96,16 @@ const PaperModule = {
     _graphCanvas: null,        // canvas équipé d'écouteurs (retirés au re-rendu)
     _onGraphResize: null,      // UN seul écouteur window, retiré avec le canvas
     _graphResizeTimer: null,
-    // « Quand on ouvre, on voit tout » : le canvas garde ses douze satellites
-    // par bosquet, la MASSE se lit en liste sous lui. Sans elle, « +71 autres »
-    // annonce une masse et la cache (retour utilisateur du 26/08).
-    _grove: null,              // liste servie : {kind, items, total}
-    _groveOpen: null,          // bosquet dont la liste est dépliée (null = fermée)
-    _groveLoading: false,
+    // « Quand on ouvre, on voit tout » : un bosquet se lit désormais PAR
+    // NIVEAUX — familles, puis sujets, puis dépêches — sur sa liste ENTIÈRE
+    // servie par /graph/grove, jamais sur les douze satellites du dessin. Plus
+    // aucun « +N autres » sur ce chemin : ce qui n'est pas dessiné est dans la
+    // liste dépliée dessous (retour utilisateur du 26/08, capture à l'appui).
+    _groveCache: {},           // kind -> {items, total} : lu UNE fois, gardé
+    _groveLoading: '',         // kind en cours de lecture ('' = aucune)
+    _groveOpen: null,          // liste PLATE ouverte par un agrégat d'arbre de titre
+    _drillFam: '',             // bosquet : famille ouverte — une CLÉ, pas un libellé
+    _drillTheme: '',           // bosquet : sujet ouvert — une CLÉ, pas un libellé
 
     _fabOpen: false,           // panneau coach flottant ouvert
     _fabQ: '',                 // question en cours de saisie (survit à la fermeture)
@@ -312,6 +316,24 @@ const PaperModule = {
     // Longueur d'un titre DANS LA LISTE. Le titre entier reste dans l'attribut
     // « title » : on tronque à l'écran, jamais dans la donnée.
     _GROVE_TITLE_MAX: 90,
+
+    // --- Bosquet PAR NIVEAUX : familles > sujets > dépêches -------------------
+    //
+    // Combien de dépêches sont DESSINÉES au dernier niveau. Le canvas montre le
+    // récent, la LISTE dépliée dessous porte tout : c'est ce partage qui
+    // remplace l'anneau « +N autres », lequel annonçait une masse et la cachait.
+    _GDRILL_LEAVES: 18,
+
+    // Types qu'un bosquet ne RANGE pas : ce sont des pièces de la toile, pas des
+    // informations. Whitelist FERMÉE — si le serveur en glisse un dans la liste
+    // (l'agrégat, par exemple), il est simplement IGNORÉ ici plutôt que de
+    // fabriquer une famille « Autre » qui ne veut rien dire.
+    _GDRILL_SKIP: { aggregate: 1, theme: 1, context: 1 },
+
+    // Le chevron du fil d'Ariane, en échappement Unicode À DESSEIN — même raison
+    // que _GTREND_UP : écrit en clair il tomberait au premier balayage de formes
+    // du dépôt (piège #17).
+    _GCRUMB_SEP: '\u203A',
 
     // La flèche de tendance, en échappement Unicode À DESSEIN : écrite en clair
     // elle tomberait au premier balayage d'emojis du dépôt (piège #17).
@@ -3929,6 +3951,15 @@ const PaperModule = {
     // lisent sur la totalite des aretes.
 
     _graphBuild(cssW, cssH) {
+        // Un BOSQUET se lit PAR NIVEAUX, sur sa liste entiere — pas sur les
+        // douze satellites que la toile en a rapportes. Un pivot que la
+        // whitelist ne reconnait pas retombe sur l'arbre couche : c'est le
+        // repli, pas un cas mort.
+        if (this._groveKindOf(this._graphPivot)) {
+            const dr = this._layoutDrill();
+            if (!dr || !dr.nodes.length) return null;
+            return this._graphFit(dr, cssW, cssH);
+        }
         const nodes = this._graphNodes();
         if (!nodes.length) return null;
         const raw = this._graphRootId()
@@ -4653,6 +4684,140 @@ const PaperModule = {
             padRight: 280 };
     },
 
+    // ----------------------------------- vue rapprochee : bosquet PAR NIVEAUX
+    //
+    // Un bosquet ne se lit plus d'un bloc. On DESCEND : les FAMILLES de source
+    // qu'il contient, puis les SUJETS de la famille choisie, puis ses DEPECHES.
+    // A chaque cran, peu de noeuds, tous nommes, tous comptes — l'inverse de
+    // l'arc de douze points muets double d'un « +64 autres » qu'on ne pouvait
+    // pas ouvrir (retour utilisateur du 26/08, capture a l'appui).
+    //
+    // La source est la LISTE ENTIERE du bosquet (/graph/grove, lue une fois et
+    // gardee), jamais les douze satellites du dessin : c'est ce qui permet de
+    // compter juste et de ne plus rien cacher.
+    //
+    // FORME identique aux trois niveaux : un TRONC (ce qu'on vient d'ouvrir,
+    // nomme et compte) et ses enfants en eventail a droite. Le tronc remonte
+    // d'un cran ; le fil d'Ariane au-dessus du canvas dit ou l'on est.
+    _layoutDrill() {
+        const D = this._drillPlan(this._graphPivot);
+        if (!D.kind) return null;
+        const out = [], edges = [];
+        const push = (rec) => { out.push(rec); return out.length - 1; };
+        const X = 210, GAP = 46, GAP_LEAF = 30;
+        // Un tronc qui n'a rien au-dessus de lui ne promet pas de remontee : un
+        // niveau saute quand il n'aurait qu'un noeud, donc un bosquet a une
+        // seule famille n'a PAS de niveau familles ou revenir.
+        const upCta = D.up ? 'paper.gdrill_up' : '';
+        const upFam = D.up ? D.up.fam : '';
+        const upTheme = D.up ? D.up.theme : '';
+
+        let trunk;
+        if (D.level === 1) {
+            trunk = this._gDrillRec('card', {
+                id: 'gd ' + D.kind, type: 'context',
+                label: this._gPivotLabel(D.role), fam: '',
+                x: 0, y: 0, r: 11, labelPos: 'below',
+                counts: [{ fam: '', role: D.role, n: D.items.length }],
+                drillFam: '', drillTheme: '', cta: '',
+            });
+            trunk.role = D.role;
+        } else if (D.level === 2) {
+            trunk = this._gDrillRec('fam', {
+                id: 'gd ' + D.kind + ' ' + D.fam, type: 'branch',
+                label: this._gfamLabel(D.fam), fam: D.fam,
+                x: 0, y: 0, r: 10, labelPos: 'below',
+                counts: [{ fam: D.fam, role: '', n: D.famItems.length }],
+                drillFam: upFam, drillTheme: upTheme, cta: upCta,
+            });
+        } else {
+            trunk = this._gDrillRec('sub', {
+                id: 'gd ' + D.kind + ' ' + D.fam + ' ' + D.theme,
+                type: 'theme', label: D.themeLabel, fam: D.fam,
+                x: 0, y: 0, r: 10, labelPos: 'below',
+                counts: [{ fam: D.fam, role: '', n: D.leaves.length }],
+                drillFam: upFam, drillTheme: upTheme, cta: upCta,
+            });
+        }
+        const ri = push(trunk);
+        const hang = (ci) => {
+            edges.push({ a: ri, b: ci, sentiment: '', type: '', struct: true, cross: false });
+        };
+
+        if (D.level === 1) {
+            const m = D.fams.length;
+            D.fams.forEach((f, i) => {
+                hang(push(this._gDrillRec('fam', {
+                    id: 'gd ' + D.kind + ' ' + f, type: 'branch',
+                    label: this._gfamLabel(f), fam: f,
+                    x: X, y: (i - (m - 1) / 2) * GAP, r: 8, labelPos: 'right',
+                    tail: this._num(D.byFam[f].length, 0),
+                    drillFam: f, drillTheme: '', cta: 'paper.gdrill_open_fam',
+                })));
+            });
+        } else if (D.level === 2) {
+            const m = D.themes.length;
+            D.themes.forEach((t, i) => {
+                hang(push(this._gDrillRec('sub', {
+                    id: 'gd ' + D.kind + ' ' + D.fam + ' ' + t.key,
+                    type: 'theme', label: t.label, fam: D.fam,
+                    x: X, y: (i - (m - 1) / 2) * GAP, r: 8, labelPos: 'right',
+                    tail: this._num(t.rows.length, 0),
+                    drillFam: D.fam, drillTheme: t.key,
+                    cta: 'paper.gdrill_open_theme',
+                })));
+            });
+        } else {
+            // Les plus recentes DESSINEES — dans l'ordre ou le serveur les a
+            // rangees, qui est deja celui du dessin (la fraicheur partout, les
+            // hypotheses ouvertes d'abord au radar). Re-trier ici ferait
+            // diverger le canvas de la liste, qui raconte la meme histoire.
+            const rows = D.leaves.slice(0, this._GDRILL_LEAVES);
+            const m = rows.length;
+            rows.forEach((n, i) => {
+                const t = this._gtype(n.type);
+                const li = push(this._gRec(n, {
+                    kind: (t === 'reddit_trend') ? 'trend' : 'leaf',
+                    x: X + ((i % 2) ? 26 : 0),
+                    y: (i - (m - 1) / 2) * GAP_LEAF,
+                    r: (t === 'reddit_trend') ? this._gTrendR(n) : 4.5,
+                    gx: 1, gy: 0, labelPos: 'right',
+                }));
+                // L'arete porte la TONALITE de la depeche : le noeud dit d'ou
+                // elle vient, le lien dit ce qu'elle raconte — les deux
+                // alphabets de la toile, jusqu'au dernier niveau.
+                edges.push(this._gDataEdge(ri, li, { sentiment: n.sentiment, type: '' }));
+            });
+        }
+
+        // Les feuilles portent leur nom A DROITE : sans cette reserve, le
+        // dernier mot de chaque ligne sort du cadre. Les etages de navigation
+        // en demandent moins (un nom de famille ou de sujet, plus son compteur).
+        return { nodes: out, edges: edges, titles: [], baseline: null,
+            padRight: (D.level === 3) ? 280 : 240,
+            // Peu de noeuds a l'etage de navigation : on les laisse s'ecarter,
+            // sinon trois pastilles se serrent au milieu d'un cadre vide.
+            maxScale: (D.level === 3) ? 1.35 : 1.7 };
+    },
+
+    // Fiche d'un noeud de NAVIGATION (tronc, famille, sujet) : synthetique, il
+    // ne vient d'aucune donnee. Meme forme que _gRec pour que le trace n'ait
+    // jamais a savoir d'ou vient le noeud qu'il dessine.
+    _gDrillRec(kind, o) {
+        return {
+            id: String(o.id), kind: kind, type: String(o.type || ''),
+            fam: o.fam || '', label: String(o.label == null ? '' : o.label),
+            meta: null, lines: [], ts: '', link: '', sentiment: '', outcome: '',
+            anchor: false, counts: o.counts || null, tail: o.tail || '',
+            cta: o.cta || '',
+            // Ces deux-la disent OU mene le clic. Definis (meme vides) sur tout
+            // noeud de bosquet : c'est a ca que _graphActivate le reconnait.
+            drillFam: String(o.drillFam == null ? '' : o.drillFam),
+            drillTheme: String(o.drillTheme == null ? '' : o.drillTheme),
+            x: o.x, y: o.y, r: o.r, gx: 1, gy: 0, labelPos: o.labelPos,
+        };
+    },
+
     // Une seule homothetie ramene tout le monde dans le cadre : la toile occupe
     // toujours la place disponible, sans qu'aucune constante ait a deviner la
     // taille de l'ecran. Les RAYONS, eux, ne suivent pas l'echelle : une
@@ -4843,7 +5008,8 @@ const PaperModule = {
             }
             ctx.beginPath();
             ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
-            if (n.kind === 'agg' || n.kind === 'card') {
+            if (n.kind === 'agg' || n.kind === 'card'
+                || n.kind === 'fam' || n.kind === 'sub') {
                 // ANNEAU, pas disque : ni l'agregat ni la carte d'un bosquet ne
                 // sont une information — ce sont des COMPTEURS. Le creux les
                 // separe a l'oeil de tout ce qui, autour, en est une.
@@ -4903,11 +5069,14 @@ const PaperModule = {
             // quand l'echelle laisse la place ; une feuille sans cote impose
             // uniquement sous le curseur, son titre entier etant dans
             // l'infobulle — l'ecrire partout ferait un mur.
+            // Une FAMILLE et un SUJET de bosquet sont des cibles de navigation :
+            // sans leur nom a l'ecran il n'y a rien a viser. Ils portent donc
+            // toujours leur etiquette, comme un tronc.
             const strong = (n.kind === 'anchor' || n.kind === 'card'
-                || n.kind === 'trend' || n.kind === 'pivot');
+                || n.kind === 'trend' || n.kind === 'pivot' || n.kind === 'fam');
             let show = false;
             if (i === hi) show = true;
-            else if (strong || n.kind === 'agg') show = true;
+            else if (strong || n.kind === 'agg' || n.kind === 'sub') show = true;
             else if (n.kind === 'branch') show = (L.scale >= 0.46);
             else show = (n.labelPos !== 'none' && L.scale >= 0.46);
             if (show && n.label) labels.push({ n: n, i: i, on: on, strong: strong });
@@ -4924,7 +5093,10 @@ const PaperModule = {
             ctx.font = it.theme ? ('600 11px ' + mono)
                 : ((it.strong ? '600 12px ' : '11px ') + mono);
             ctx.globalAlpha = alpha;
-            ctx.fillStyle = (it.strong || hovered || it.theme) ? fg
+            // Un SUJET de bosquet s'ecrit en pleine encre comme les autres cibles
+            // de navigation : au gris du decor, le nom de ce qu'on vient
+            // d'ouvrir se lisait comme une legende (vu a l'ecran).
+            ctx.fillStyle = (it.strong || hovered || it.theme || n.kind === 'sub') ? fg
                 : ((n.kind === 'branch' || n.kind === 'agg') ? muted : dim);
             const text = (it.strong || n.kind === 'branch')
                 ? n.label : this._gtrim(n.label, this._gLabelMax(n));
@@ -4932,11 +5104,16 @@ const PaperModule = {
             // cadre : a droite dans la moitie gauche, a gauche sinon.
             let pos = n.labelPos;
             if (pos === 'none') pos = (n.x <= cssW / 2) ? 'right' : 'left';
-            // Seul l'AGREGAT rend son etiquette cliquable : c'est lui qui ouvre
-            // la liste du bosquet. Les autres gardent l'anneau pour seule cible
-            // — rendre chaque etiquette cliquable ouvrirait des liens au moindre
-            // frolement de texte.
-            if (n.kind === 'agg') n.hitBox = this._gLabelBox(ctx, n, text, pos);
+            // L'AGREGAT et les noeuds de NAVIGATION d'un bosquet rendent leur
+            // etiquette cliquable : « +71 autres » comme « Politique · 76 » sont
+            // des PHRASES — c'est elles qu'on lit et qu'on vise, pas l'anneau de
+            // huit pixels pose a cote. Les feuilles, elles, gardent la pastille
+            // pour seule cible : rendre chaque titre cliquable ouvrirait une
+            // source au moindre frolement de texte.
+            if (n.kind === 'agg' || n.drillFam !== undefined) {
+                n.hitBox = this._gLabelBox(ctx, n,
+                    text + (n.tail ? ('  ' + n.tail) : ''), pos);
+            }
             if (pos === 'center') {
                 // Le nom d'un sujet, au milieu de sa pastille.
                 ctx.textAlign = 'center';
@@ -4961,6 +5138,16 @@ const PaperModule = {
                 ctx.textAlign = 'left';
                 ctx.textBaseline = 'middle';
                 ctx.fillText(text, n.x + n.r + 6, n.y);
+                // Le COMPTEUR d'un noeud de navigation, juste apres son nom :
+                // « Politique · 76 » se lit d'un trait. Mesure prise avec la
+                // fonte de l'etiquette qu'on vient d'ecrire, donc jamais un
+                // chevauchement.
+                if (n.tail) {
+                    const wl = ctx.measureText(text).width;
+                    ctx.font = '600 10px ' + mono;
+                    ctx.fillStyle = muted;
+                    ctx.fillText(String(n.tail), n.x + n.r + 6 + wl + 9, n.y);
+                }
             }
             ctx.textBaseline = 'middle';
         });
@@ -5025,8 +5212,12 @@ const PaperModule = {
     _gNodeColor(n) {
         if (n.kind === 'branch') return this._gfamColor(n.fam);
         if (n.kind === 'card') return this._gPivotColor(n.role);
-        // Un sujet porte la couleur de sa bande — celle de ses feuilles.
-        if (n.kind === 'theme') return this._gfamColor(n.fam);
+        // Un sujet porte la couleur de sa bande — celle de ses feuilles. Les
+        // deux etages de navigation d'un bosquet (famille, sujet) suivent la
+        // meme regle : la couleur dit toujours D'OU vient ce qu'on ouvre.
+        if (n.kind === 'theme' || n.kind === 'fam' || n.kind === 'sub') {
+            return this._gfamColor(n.fam);
+        }
         if (n.kind === 'agg') {
             return n.fam ? this._gfamColor(n.fam) : this._gcolor(n.type);
         }
@@ -5240,6 +5431,14 @@ const PaperModule = {
         const L = this._graphLayout;
         const n = L && L.nodes[i];
         if (!n) return;
+        // Un noeud de BOSQUET dit lui-meme ou il mene : descendre d'un cran
+        // (famille, puis sujet) ou, pour le tronc, remonter. Un chemin qui ne
+        // change rien ne redessine rien — le tronc du premier niveau est donc
+        // muet, ce qui est exact : il n'y a rien au-dessus de lui.
+        if (n.drillFam !== undefined) {
+            this.drillTo(n.drillFam, n.drillTheme);
+            return;
+        }
         if (n.kind === 'card') {
             if (this._graphPivot === n.id) return;    // deja deplie
             this.focusPivot(n.id);
@@ -5278,7 +5477,10 @@ const PaperModule = {
         // « Contexte mondial » — un contresens.
         // Un SUJET ne repete pas son type non plus : son nom EST son sujet, et
         // « Sujet » ecrit sous « Canada · Tariffs » n'apprend rien.
-        const type = (n.kind === 'card' || n.kind === 'theme')
+        // Les etages de navigation d'un bosquet (famille, sujet) ne repetent pas
+        // leur type non plus : leur nom EST leur nature.
+        const type = (n.kind === 'card' || n.kind === 'theme'
+            || n.kind === 'fam' || n.kind === 'sub')
             ? '' : this._gtypeLabel(n.type);
         const when = (n.ts === undefined || n.ts === null || n.ts === '')
             ? '' : this._dateShort(n.ts);
@@ -5298,9 +5500,10 @@ const PaperModule = {
         if (counts.length) {
             // Une carte n'a qu'un compteur, et son nom est deja en tete : la
             // ligne dit « elements », pas une seconde fois le nom du bosquet.
+            const own = (n.kind === 'card' || n.kind === 'fam' || n.kind === 'sub');
             metaHtml = counts.map((b) =>
                 '<div class="paper-graph-tip-meta">' +
-                '<span>' + esc(this._gtrim((n.kind === 'card')
+                '<span>' + esc(this._gtrim(own
                     ? Lang.t('paper.graph_items') : this._gBadgeLabel(b), 22)) + '</span>' +
                 '<span>' + esc(this._num(b.n, 0)) + '</span></div>').join('');
         } else if (lines.length) {
@@ -5323,7 +5526,11 @@ const PaperModule = {
             '<div class="paper-graph-tip-head">' + esc(n.label) + '</div>' +
             (bits.length ? '<div class="paper-graph-tip-sub">' + esc(bits.join(' · ')) + '</div>' : '') +
             metaHtml +
-            (n.kind === 'card'
+            // Un noeud de bosquet DIT lui-meme ce que son clic fait : c'est la
+            // disposition qui l'a decide, pas l'infobulle qui le devine.
+            (n.cta
+              ? '<div class="paper-graph-tip-cta">' + esc(Lang.t(n.cta)) + '</div>'
+              : (n.kind === 'card'
               ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_open_grove')) + '</div>'
               // L'agregat DIT desormais qu'il s'ouvre : sans cette ligne, un
               // anneau qui compte 71 elements se lit comme un cul-de-sac, et
@@ -5335,7 +5542,7 @@ const PaperModule = {
                   ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_focus')) + '</div>'
                   : (n.link
                       ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_link')) + '</div>'
-                      : ''))));
+                      : '')))));
 
         // Placement : a droite du noeud par defaut, bascule a gauche quand il
         // n'y a plus la place. L'infobulle ne sort jamais du cadre.
@@ -5374,13 +5581,25 @@ const PaperModule = {
                     'data-paper-act="graph-focus" data-sym="' + esc(a.id) + '">' +
                   esc(a.label) + '</button>').join('');
 
+        // Un BOSQUET ouvert se lit par niveaux, sur sa propre liste : le fil
+        // d'Ariane dit ou l'on est, et la toile ne dessine QUE le niveau courant.
+        const gk = this._groveKindOf(this._graphPivot);
+        const D = gk ? this._drillPlan(this._graphPivot) : null;
+        const crumbs = D ? this._drillCrumbs(D) : '';
+
         let body;
         if (this._graphLoading && !nodes.length) {
             body = this._muted(Lang.t('paper.graph_loading'));
         } else if (!nodes.length) {
             body = this._muted(Lang.t('paper.graph_empty'));
+        } else if (gk && !this._groveOf(gk)) {
+            // Le bosquet est ouvert mais sa liste n'est pas encore la : on le
+            // DIT, plutot que de dessiner un tronc nu qui se lirait « vide ».
+            body = crumbs + this._muted(Lang.t((this._groveLoading === gk)
+                ? 'paper.grove_loading' : 'paper.grove_empty'));
         } else {
-            body = '<div class="paper-graph-wrap">' +
+            body = crumbs +
+                  '<div class="paper-graph-wrap">' +
                     '<canvas data-paper-graph="1" class="paper-graph"></canvas>' +
                     '<div id="paper-graph-tip" class="paper-graph-tip"></div>' +
                   '</div>' +
@@ -5388,24 +5607,25 @@ const PaperModule = {
                   // Le serveur DIT quand il a rogne ce qu'il envoie. On le
                   // repete tel quel : plus aucun plafond de dessin cote client
                   // ne s'y ajoute, donc ce message ne peut venir que de lui.
-                  ((g && g.truncated)
+                  ((g && g.truncated && !gk)
                     ? '<div style="font-size:12px;color:var(--text-dim);margin-top:8px;">' +
                         esc(Lang.t('paper.graph_truncated') + ' ' +
                             this._num(nodes.length, 0) + ' ' + Lang.t('paper.graph_nodes')) +
                       '</div>'
                     : '') +
-                  // La masse d'un bosquet, quand on l'a ouverte : SOUS la toile,
-                  // pas dans une modale — on garde le dessin a l'oeil pendant
-                  // qu'on lit, et c'est ce qui fait comprendre d'ou sort la liste.
-                  this._groveCard();
+                  // Au dernier niveau d'un bosquet, la liste du sujet s'ouvre
+                  // TOUTE SEULE sous la toile : le canvas montre les plus
+                  // recentes, elle les porte toutes. Ailleurs (arbre d'un titre),
+                  // c'est l'agregat qui deplie la liste plate de son bosquet.
+                  (D ? this._drillList(D) : this._groveCard());
         }
 
-        // L'entete dit CE QU'ON REGARDE : l'index, l'arbre d'un titre, ou celui
-        // d'un bosquet (dont le nom est traduit, jamais celui du serveur).
-        // Un bosquet porte son propre nom, sans « voisins directs de » : ce
-        // n'est pas le voisinage d'un titre, c'est le bosquet lui-meme.
+        // L'entete dit CE QU'ON REGARDE : l'index, l'arbre d'un titre, ou —
+        // dans un bosquet — ce que le niveau courant attend du lecteur (son NOM,
+        // lui, est deja en tete du fil d'Ariane : le repeter serait du bruit).
         let hint = Lang.t('paper.graph_hint');
-        if (this._graphPivot) hint = this._graphGroveLabel();
+        if (D) hint = this._drillHint(D);
+        else if (this._graphPivot) hint = this._graphGroveLabel();
         else if (ego) hint = Lang.t('paper.graph_ego') + ' ' + ego;
 
         return this._card(
@@ -5426,6 +5646,10 @@ const PaperModule = {
     _graphGroveLabel() {
         const id = String(this._graphPivot == null ? '' : this._graphPivot);
         if (!id) return '';
+        // Les trois bosquets connus se nomment par leur whitelist — sans avoir a
+        // relire la toile pour retrouver leur forme.
+        const k = this._groveKindOf(id);
+        if (k) return this._gPivotLabel(this._groveRole(k));
         const P = this._graphParts(this._graphNodes());
         return this._gPivotLabel(P.roleOf[id] || 'world');
     },
@@ -5498,9 +5722,10 @@ const PaperModule = {
         this.loadGraph(sym);
     },
 
-    // Clic sur la carte d'un bosquet : on le déplie DANS la toile déjà chargée.
-    // Aucune requête — le serveur ne connaît pas « monde » comme un symbole, et
-    // ses douze items sont déjà là.
+    // Clic sur la carte d'un bosquet : on l'OUVRE, au premier niveau — ses
+    // familles de source. La liste entière du bosquet est lue ici, UNE fois
+    // (gardée ensuite) : c'est elle, et non les douze satellites du dessin, qui
+    // porte les comptes de tous les niveaux.
     focusPivot(id) {
         const pid = (id === null || id === undefined || id === '') ? null : String(id);
         if (pid === this._graphPivot) return;
@@ -5510,16 +5735,25 @@ const PaperModule = {
         // toile ferait lire les 83 dépêches du monde sous le titre du radar.
         this._closeGrove();
         this._renderBody();
+        const k = this._groveKindOf(pid);
+        if (k) this._groveFetch(k, false);
     },
 
     // =====================================================================
-    //  La liste complète d'un bosquet — « quand on ouvre, on voit tout »
+    //  Le bosquet PAR NIVEAUX — familles > sujets > dépêches
     // =====================================================================
     //
-    // La toile plafonne chaque bosquet à douze satellites et résume le reste en
-    // « +N autres » : lisible, mais muet sur ces N (retour utilisateur du
-    // 26/08, capture à l'appui — « +71 autres, non dessinés », et rien à
-    // cliquer). Le canvas garde ses douze ; la masse se lit en LISTE sous lui.
+    // Ouvrir un bosquet donnait un arc de douze points anonymes et un anneau
+    // « +64 autres » qui annonçait une masse en la cachant (retour utilisateur
+    // du 26/08, capture à l'appui). On DESCEND maintenant : les familles de
+    // source, puis les sujets de celle qu'on ouvre, puis ses dépêches — le
+    // canvas montre les plus récentes, la liste dépliée dessous les porte
+    // TOUTES. Plus aucun agrégat sur ce chemin : il n'a plus rien à résumer.
+    //
+    // Tout se calcule sur la liste ENTIÈRE du bosquet (/graph/grove, lue une
+    // fois et gardée). Le chemin ouvert vit en CLÉS (_drillFam,
+    // _drillTheme), jamais en libellés : changer de langue retraduit l'écran
+    // sans déplacer d'un cran ce qu'on regarde.
 
     // Identifiant de pivot -> « kind » de l'endpoint, par whitelist FERMÉE. Rien
     // ne repart vers le serveur qu'on n'ait d'abord reconnu.
@@ -5529,10 +5763,18 @@ const PaperModule = {
             ? this._GROVE_KIND[k] : '';
     },
 
+    _groveRole(kind) {
+        const k = String(kind == null ? '' : kind);
+        return Object.prototype.hasOwnProperty.call(this._GROVE_ROLE, k)
+            ? this._GROVE_ROLE[k] : 'world';
+    },
+
+    // Le CHEMIN se referme ; le cache, lui, survit — c'est un cache, pas un
+    // état d'écran. Seul « Actualiser » le jette (cf. _groveFetch).
     _closeGrove() {
-        this._grove = null;
         this._groveOpen = null;
-        this._groveLoading = false;
+        this._drillFam = '';
+        this._drillTheme = '';
     },
 
     closeGrove() {
@@ -5540,38 +5782,254 @@ const PaperModule = {
         this._renderBody();
     },
 
-    async openGrove(kind) {
+    // La liste d'un bosquet, lue UNE fois. Le drapeau « force » la relit
+    // (bouton Actualiser) — sans lui, deux allers-retours au même bosquet
+    // dans la même minute referaient la même requête pour la même réponse.
+    async _groveFetch(kind, force) {
         const k = this._groveKindOf(kind);
         // Bosquet non reconnu : aucune requête. Un aller-retour pour un 400 ne
-        // dirait rien de plus à l'écran qu'un anneau qui ne réagit pas.
+        // dirait rien de plus à l'écran qu'une carte qui ne réagit pas.
+        if (!k) return;
+        if (!force && Object.prototype.hasOwnProperty.call(this._groveCache, k)) return;
+        if (force) delete this._groveCache[k];
+        this._groveLoading = k;
+        if (this._tab === 'graph') this._renderBody();
+        const d = await this._get('/api/paper/graph/grove?kind=' + encodeURIComponent(k));
+        const ok = (d && typeof d === 'object');
+        // Une réponse valide se garde MÊME si on regarde ailleurs depuis : c'est
+        // un cache, et jeter ce qu'on vient de payer ferait re-demander la même
+        // chose au premier retour.
+        if (ok) {
+            const items = Array.isArray(d.items)
+                ? d.items.filter((n) => n && typeof n === 'object') : [];
+            const total = this._n(d.total);
+            this._groveCache[k] = { items: items,
+                total: (total === null || total < 0) ? items.length : total };
+        }
+        // Deux bosquets ouverts coup sur coup : seule la lecture EN COURS rend
+        // la main à l'écran, sinon on repeindrait sous le nom d'un autre.
+        if (this._groveLoading !== k) return;
+        this._groveLoading = '';
+        if (!ok) this._toast('error', Lang.t('paper.error'));
+        if (this._tab === 'graph') this._renderBody();
+    },
+
+    _groveOf(kind) {
+        const k = this._groveKindOf(kind);
+        return (k && Object.prototype.hasOwnProperty.call(this._groveCache, k))
+            ? this._groveCache[k] : null;
+    },
+
+    // Descendre (ou remonter) d'un cran. Rien n'est validé ici : c'est
+    // _drillPlan qui confronte le chemin demandé aux données réelles — une
+    // famille ou un sujet qu'elles ne portent pas ramène simplement au niveau
+    // au-dessus, plutôt que d'afficher un niveau vide.
+    drillTo(fam, theme) {
+        const f = String(fam == null ? '' : fam);
+        const t = String(theme == null ? '' : theme);
+        if (f === this._drillFam && t === this._drillTheme) return;
+        this._drillFam = f;
+        this._drillTheme = t;
+        this._graphHover = null;
+        this._renderBody();
+    },
+
+    // La famille de SOURCE d'un item. Un type hors table -> « other » : il
+    // existe, il se range, il ne prend le nom d'aucune famille connue.
+    _drillFamOf(n) {
+        return this._gfam(n && n.type) || 'other';
+    },
+
+    // La clé de sujet d'un item. Le serveur n'en pose PAS quand rien ne se
+    // groupe (cf. _grove_themed) : l'item rejoint alors le fourre-tout, qui est
+    // le seul sujet possible dans ce cas — et un niveau à un seul nœud saute.
+    _drillThemeKey(n) {
+        const k = (n && typeof n.theme_key === 'string') ? n.theme_key : '';
+        return k || this._GTHEME_MISC;
+    },
+
+    // Le NOM d'un sujet. Le fourre-tout arrive nommé en français par le serveur
+    // (« Divers ») : on le RECONNAÎT par sa clé — whitelist FERMÉE — et on rend
+    // le nom de la langue de l'écran. Un sujet nommé, lui, est fait des mots des
+    // titres qu'il range : il n'a pas de traduction, et n'en veut pas.
+    _drillThemeName(key, n) {
+        const k = String(key == null ? '' : key);
+        if (k === this._GTHEME_MISC) return Lang.t('paper.theme_misc');
+        const l = (n && n.theme_label !== undefined && n.theme_label !== null)
+            ? String(n.theme_label) : '';
+        return l || k;
+    },
+
+    // Les sujets d'une famille. Les gros paquets d'abord (c'est ce qu'on vient
+    // chercher), le FOURRE-TOUT toujours en queue (ce n'est pas un sujet, c'est
+    // ce qui n'en a pas), la clé tranchant les ex aequo : deux lectures des
+    // mêmes données rendent exactement la même page.
+    _drillThemes(rows) {
+        const map = {}, order = [];
+        rows.forEach((n) => {
+            const k = this._drillThemeKey(n);
+            if (!Object.prototype.hasOwnProperty.call(map, k)) {
+                map[k] = { key: k, label: this._drillThemeName(k, n), rows: [] };
+                order.push(k);
+            }
+            map[k].rows.push(n);
+        });
+        const misc = this._GTHEME_MISC;
+        return order.map((k) => map[k]).sort((a, b) => {
+            const ma = (a.key === misc) ? 1 : 0, mb = (b.key === misc) ? 1 : 0;
+            if (ma !== mb) return ma - mb;
+            if (a.rows.length !== b.rows.length) return b.rows.length - a.rows.length;
+            return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0);
+        });
+    },
+
+    // Le chemin DEMANDÉ confronté aux données : rend le chemin EFFECTIF et tout
+    // ce qu'il faut pour le dessiner. PUR — mêmes données, même plan.
+    //
+    // Règle « pas de niveau inutile » : un étage qui n'aurait qu'un seul nœud
+    // est SAUTÉ (un bosquet radar n'a qu'une famille, un sujet unique n'est pas
+    // un choix). Un étage sauté n'existe pas non plus dans le fil d'Ariane : on
+    // ne propose pas de revenir là où il n'y a rien à choisir.
+    _drillPlan(pivotId) {
+        const kind = this._groveKindOf(pivotId);
+        const role = this._groveRole(kind);
+        const g = kind ? this._groveOf(kind) : null;
+        // Un type de STRUCTURE glissé dans la liste (l'agrégat, par exemple) est
+        // ignoré : ce n'est pas une information, il n'a pas de famille, et le
+        // ranger fabriquerait une famille « Autre » qui ne veut rien dire.
+        const items = (g ? g.items : []).filter((n) =>
+            !Object.prototype.hasOwnProperty.call(this._GDRILL_SKIP, this._gtype(n.type)));
+        const total = g ? g.total : 0;
+
+        const byFam = {};
+        items.forEach((n) => {
+            const f = this._drillFamOf(n);
+            (byFam[f] = byFam[f] || []).push(n);
+        });
+        // Ordre FIXE de la légende : deux rendus doivent donner la même image.
+        const fams = this._GFAM_ORDER.filter((f) => byFam[f] && byFam[f].length);
+
+        const famSkip = (fams.length <= 1);
+        let fam = String(this._drillFam || '');
+        if (famSkip) fam = fams.length ? fams[0] : '';
+        else if (fam && fams.indexOf(fam) < 0) fam = '';
+        const famItems = fam ? byFam[fam] : [];
+
+        const themes = fam ? this._drillThemes(famItems) : [];
+        const themeSkip = (themes.length <= 1);
+        let theme = fam ? String(this._drillTheme || '') : '';
+        let ti = -1;
+        for (let i = 0; i < themes.length; i++) {
+            if (themes[i].key === theme) { ti = i; break; }
+        }
+        if (themeSkip) { ti = themes.length ? 0 : -1; theme = (ti >= 0) ? themes[0].key : ''; }
+        else if (ti < 0) theme = '';
+
+        const level = theme ? 3 : (fam ? 2 : 1);
+        // Où mène le tronc. Null = il n'y a rien au-dessus : l'étage du dessus a
+        // été sauté, il n'existe pas.
+        let up = null;
+        if (level === 3 && !themeSkip) up = { fam: fam, theme: '' };
+        else if (level >= 2 && !famSkip) up = { fam: '', theme: '' };
+
+        return { kind: kind, role: role, items: items, total: total,
+            fams: fams, byFam: byFam, fam: fam, famSkip: famSkip,
+            famItems: famItems, themes: themes, theme: theme,
+            themeSkip: themeSkip, themeLabel: (ti >= 0) ? themes[ti].label : '',
+            leaves: (ti >= 0) ? themes[ti].rows : [], level: level, up: up };
+    },
+
+    // Le fil d'Ariane, au-dessus du canvas : « Contexte mondial › Politique ›
+    // Tariffs · Canada ». Chaque segment remonte à SON niveau ; le dernier est
+    // là où l'on est, il ne se clique pas. Les étages sautés n'y figurent pas —
+    // il n'y a rien à y choisir.
+    _drillCrumbs(D) {
+        if (!D.kind) return '';
+        const segs = [{ label: this._gPivotLabel(D.role), fam: '', theme: '' }];
+        if (D.fam && !D.famSkip) {
+            segs.push({ label: this._gfamLabel(D.fam), fam: D.fam, theme: '' });
+        }
+        if (D.theme && !D.themeSkip) {
+            segs.push({ label: D.themeLabel, fam: D.fam, theme: D.theme });
+        }
+        const base = 'font:inherit;font-size:13px;line-height:1.4;padding:0;';
+        return '<div style="display:flex;align-items:baseline;gap:6px;' +
+               'flex-wrap:wrap;margin:2px 0 10px;">' +
+            segs.map((s, i) => {
+                const sep = i ? ('<span style="color:var(--text-dim);font-size:12px;">' +
+                    esc(this._GCRUMB_SEP) + '</span>') : '';
+                if (i === segs.length - 1) {
+                    return sep + '<span style="' + base + 'color:var(--text);">' +
+                        esc(this._gtrim(s.label, 42)) + '</span>';
+                }
+                return sep + '<button type="button" data-paper-act="gdrill" ' +
+                    'data-fam="' + esc(s.fam) + '" data-theme="' + esc(s.theme) + '" ' +
+                    'style="' + base + 'background:none;border:0;color:var(--text-muted);' +
+                    'cursor:pointer;text-decoration:underline;text-underline-offset:3px;">' +
+                    esc(this._gtrim(s.label, 42)) + '</button>';
+            }).join('') +
+        '</div>';
+    },
+
+    // Ce que le niveau courant attend du lecteur — en tête de carte, à la place
+    // du nom du bosquet, que le fil d'Ariane porte déjà.
+    _DRILL_HINT: ['paper.gdrill_hint_fam', 'paper.gdrill_hint_theme',
+        'paper.gdrill_hint_leaf'],
+
+    _drillHint(D) {
+        const i = (D.level >= 1 && D.level <= 3) ? (D.level - 1) : 0;
+        return Lang.t(this._DRILL_HINT[i]);
+    },
+
+    // Le dernier niveau : la liste COMPLÈTE du sujet ouvert, sous la toile. Le
+    // canvas en dessine les plus récentes, celle-ci les porte toutes — c'est ce
+    // partage qui remplace l'anneau « +N autres ».
+    _drillList(D) {
+        if (D.level !== 3 || !D.leaves.length) return '';
+        const shown = D.items.length;
+        return '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">' +
+            '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px;">' +
+              '<h4 style="margin:0;font-size:15px;">' +
+                esc(Lang.t('paper.gdrill_all') + ' ' + this._gtrim(D.themeLabel, 42)) + '</h4>' +
+              '<span style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
+                esc(this._num(D.leaves.length, 0) + ' ' + Lang.t('paper.graph_items')) + '</span>' +
+            '</div>' +
+            '<div class="row-list" style="max-height:380px;overflow-y:auto;">' +
+              D.leaves.map((n) => this._groveRow(n, D.kind)).join('') +
+            '</div>' +
+            // Le plafond de liste du SERVEUR dit ce qu'il laisse dehors : une
+            // liste qui s'arrête en silence ment par omission.
+            ((D.total > shown)
+              ? '<div style="font-size:12px;color:var(--text-dim);margin-top:8px;">' +
+                  esc(Lang.t('paper.grove_capped')) + '</div>'
+              : '') +
+        '</div>';
+    },
+
+    // =====================================================================
+    //  La liste PLATE d'un bosquet — ouverte par l'agrégat d'un arbre de titre
+    // =====================================================================
+    //
+    // Ce chemin-là subsiste : rapproché sur un TITRE, la toile porte encore les
+    // agrégats des bosquets qui le touchent, et leur clic doit toujours ouvrir
+    // ce qu'ils comptent. Les bosquets, eux, n'en ont plus (ils se lisent par
+    // niveaux) — d'où deux panneaux et non un seul.
+
+    async openGrove(kind) {
+        const k = this._groveKindOf(kind);
         if (!k) return;
         // Re-cliquer le même agrégat REFERME la liste : c'est le seul geste
         // disponible sur le canvas, il doit faire l'aller ET le retour.
         if (this._groveOpen === k) { this.closeGrove(); return; }
         this._groveOpen = k;
-        this._grove = null;
-        this._groveLoading = true;
         if (this._tab === 'graph') this._renderBody();
-        const d = await this._get('/api/paper/graph/grove?kind=' + encodeURIComponent(k));
-        // Deux agrégats cliqués coup sur coup : la réponse qui n'est plus celle
-        // qu'on regarde est jetée, sinon on listerait un bosquet sous le nom
-        // d'un autre (même garde que loadGraph).
-        if (this._groveOpen !== k) return;
-        this._groveLoading = false;
-        if (!d || typeof d !== 'object') {
-            this._closeGrove();
-            this._toast('error', Lang.t('paper.error'));
-            if (this._tab === 'graph') this._renderBody();
-            return;
-        }
-        this._grove = d;
-        if (this._tab === 'graph') this._renderBody();
+        await this._groveFetch(k, false);
+        if (this._groveOpen === k && this._tab === 'graph') this._renderBody();
     },
 
     _groveItems() {
-        const g = this._grove;
-        return (g && Array.isArray(g.items))
-            ? g.items.filter((n) => n && typeof n === 'object') : [];
+        const g = this._groveOf(this._groveOpen);
+        return g ? g.items : [];
     },
 
     // Le panneau, SOUS la toile — pas une modale : on garde le dessin à l'œil
@@ -5580,13 +6038,13 @@ const PaperModule = {
     _groveCard() {
         const kind = this._groveOpen;
         if (!kind) return '';
-        const role = Object.prototype.hasOwnProperty.call(this._GROVE_ROLE, kind)
-            ? this._GROVE_ROLE[kind] : 'world';
+        const role = this._groveRole(kind);
+        const g = this._groveOf(kind);
         const items = this._groveItems();
-        const total = this._n(this._grove && this._grove.total);
+        const total = g ? this._n(g.total) : null;
         const shown = items.length;
         let body;
-        if (this._groveLoading) {
+        if (this._groveLoading === kind) {
             body = this._muted(Lang.t('paper.grove_loading'));
         } else if (!shown) {
             body = this._muted(Lang.t('paper.grove_empty'));
@@ -6803,8 +7261,23 @@ const PaperModule = {
         if (act === 'plan-arch') { this._planArchOpen = !this._planArchOpen; this._renderBody(); return; }
         if (act === 'graph-all') { this.focusGraph(null); return; }
         if (act === 'graph-focus') { this.focusGraph(el.getAttribute('data-sym')); return; }
-        if (act === 'graph-reload') { this.loadGraph(this._graphSymbol); return; }
+        // « Actualiser » rafraîchit CE QU'ON REGARDE : dans un bosquet, sa liste
+        // (la source de tous ses niveaux), et le chemin ouvert est conservé ;
+        // ailleurs, la toile elle-même.
+        if (act === 'graph-reload') {
+            const gk = this._groveKindOf(this._graphPivot);
+            if (gk) { this._groveFetch(gk, true); return; }
+            this.loadGraph(this._graphSymbol);
+            return;
+        }
         if (act === 'graph-open') { this.openGraph(el.getAttribute('data-sym')); return; }
+        // Fil d'Ariane : les valeurs viennent du DOM, donc de nulle part de sûr
+        // — c'est _drillPlan qui les confronte aux données et retombe au niveau
+        // du dessus quand elles ne désignent rien.
+        if (act === 'gdrill') {
+            this.drillTo(el.getAttribute('data-fam'), el.getAttribute('data-theme'));
+            return;
+        }
         if (act === 'grove-close') { this.closeGrove(); return; }
         if (act === 'chart-range') {
             this.setChartRange(el.getAttribute('data-ctx'), el.getAttribute('data-range'));
