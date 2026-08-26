@@ -39,7 +39,9 @@ Trois règles qui tiennent le graphe honnête :
    compte réel : 79 annonces politiques avaient rempli les 80 places, ne
    laissant au graphe qu'une ancre et un pivot — le sujet du graphe expulsé
    par son décor. Un débordement de bosquet ne lève PAS ``truncated`` : rien
-   n'est perdu en silence, l'agrégat dit combien il en reste.
+   n'est perdu en silence, l'agrégat dit combien il en reste — et
+   ``build_grove`` rend ce reste à qui veut le LIRE (« quand on ouvre, on voit
+   tout » : le canvas garde ses douze, la masse passe en liste).
 
 Module PUR au sens du dépôt : aucune I/O, aucune écriture, aucune horloge
 implicite (``now`` est un paramètre). Le seul import du dehors est PARESSEUX et
@@ -104,6 +106,20 @@ MAX_GROVE = 12
 # « +67 autres » se lit, 67 points anonymes ne se lisent pas.
 AGGREGATE_TYPE = "aggregate"
 _AGGREGATE_PREFIX = "agg:"
+
+# Les bosquets qu'on sait LISTER, et le plafond de cette liste.
+#
+# Le dessin garde ses douze (au-delà un bosquet ne se lit plus, cf. règle 4),
+# mais « +71 autres » n'est une réponse que si on peut ALLER VOIR ces 71 —
+# sinon l'agrégat annonce une masse et la cache. La liste est donc l'autre
+# moitié de la même honnêteté : le canvas montre, la liste énumère.
+#
+# Cent cinquante : très au-dessus de ce qu'une fenêtre de sept jours produit
+# (mesure du 26/08 : 79 annonces politiques), assez bas pour qu'une source
+# devenue folle ne fasse pas une réponse de plusieurs mégaoctets. Au-delà,
+# ``total`` dit combien la mémoire en garde vraiment — jamais un silence.
+GROVE_KINDS = PIVOT_IDS
+GROVE_LIST_CAP = 150
 
 # Tonalité d'une dépêche que ``newswatch.classify`` n'a pas su qualifier. Elle
 # fait un nœud comme les autres (la branche presse serait vide sans elle) mais
@@ -654,29 +670,19 @@ def _assemble(anchor_nodes: List[Dict[str, Any]],
     return {"nodes": nodes, "edges": out_edges, "truncated": truncated}
 
 
-def build_graph(anchors: Any, events: Any, hypotheses: Any, whale_moves: Any,
-                pipeline: Any, now: Any = None,
-                symbol: Any = None, reddit_trends: Any = None) -> Dict[str, Any]:
-    """Le graphe des connexions (PUR) — ``{"nodes", "edges", "truncated"}``.
+def _collect(anchors: Any, events: Any, hypotheses: Any, whale_moves: Any,
+             pipeline: Any, now: Any, reddit_trends: Any
+             ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]],
+                        List[Dict[str, Any]]]:
+    """Le BALAYAGE, une seule fois pour tout le monde — ``(ancres, infos,
+    arêtes)`` (PUR).
 
-    Sans ``symbol`` : la vue GLOBALE — les ancres, tout ce qui s'y rattache, le
-    pivot « monde » pour le macro qui ne nomme aucun titre, le pivot « foule »
-    pour les tendances Reddit, et le pivot « radar » pour les hypothèses dont
-    aucun ticker n'est ancré. Ce qui ne se rattache à rien est OMIS (un graphe
-    montre des connexions).
-
-    Avec ``symbol`` : la BRANCHE de ce titre — son ancre, ses voisins directs,
-    et les arêtes entre eux uniquement. Les pivots n'y entrent jamais : ils
-    ne sont reliés à aucune ancre, donc ils ne sont les voisins de personne. Un
-    symbole qui n'est ni détenu, ni suivi, ni en projet n'a pas d'ancre : la
-    branche est alors VIDE plutôt que d'inventer un centre que la mémoire ne
-    porte pas.
-
-    ``events`` = les dépêches de ``newswatch.recent_events`` (elles portent déjà
-    leur symbole et leur tonalité), ``hypotheses`` = l'état du radar tel quel,
-    ``whale_moves`` = ``whales.moves_summary``, ``pipeline`` = la vue « Plan »,
-    ``reddit_trends`` = ``newswatch.recent_trends`` (``{SYM: {count, prev}}``).
-    Chaque entrée est lue avec prudence : une liste absente vaut liste vide.
+    C'est le corps historique de ``build_graph``, sorti tel quel pour que la
+    liste complète d'un bosquet (``build_grove``) reparte des MÊMES faits, des
+    mêmes fenêtres et du même rapprochement d'émetteurs que le dessin. Deux
+    balayages parallèles finiraient par diverger — un item listé mais jamais
+    dessiné, ou l'inverse — et c'est exactement le genre d'écart qu'un lecteur
+    prendrait pour un bug de la mémoire.
     """
     now_dt = _parse_dt(now) or _now()
     cutoff = now_dt - timedelta(days=WINDOW_D)
@@ -740,10 +746,70 @@ def build_graph(anchors: Any, events: Any, hypotheses: Any, whale_moves: Any,
             edges.append({"source": node["id"], "target": trend_symbol,
                           "type": EDGE_SYMBOL})
 
+    return anchor_map, info, edges
+
+
+def build_graph(anchors: Any, events: Any, hypotheses: Any, whale_moves: Any,
+                pipeline: Any, now: Any = None,
+                symbol: Any = None, reddit_trends: Any = None) -> Dict[str, Any]:
+    """Le graphe des connexions (PUR) — ``{"nodes", "edges", "truncated"}``.
+
+    Sans ``symbol`` : la vue GLOBALE — les ancres, tout ce qui s'y rattache, le
+    pivot « monde » pour le macro qui ne nomme aucun titre, le pivot « foule »
+    pour les tendances Reddit, et le pivot « radar » pour les hypothèses dont
+    aucun ticker n'est ancré. Ce qui ne se rattache à rien est OMIS (un graphe
+    montre des connexions).
+
+    Avec ``symbol`` : la BRANCHE de ce titre — son ancre, ses voisins directs,
+    et les arêtes entre eux uniquement. Les pivots n'y entrent jamais : ils
+    ne sont reliés à aucune ancre, donc ils ne sont les voisins de personne. Un
+    symbole qui n'est ni détenu, ni suivi, ni en projet n'a pas d'ancre : la
+    branche est alors VIDE plutôt que d'inventer un centre que la mémoire ne
+    porte pas.
+
+    ``events`` = les dépêches de ``newswatch.recent_events`` (elles portent déjà
+    leur symbole et leur tonalité), ``hypotheses`` = l'état du radar tel quel,
+    ``whale_moves`` = ``whales.moves_summary``, ``pipeline`` = la vue « Plan »,
+    ``reddit_trends`` = ``newswatch.recent_trends`` (``{SYM: {count, prev}}``).
+    Chaque entrée est lue avec prudence : une liste absente vaut liste vide.
+    """
+    anchor_map, info, edges = _collect(anchors, events, hypotheses, whale_moves,
+                                       pipeline, now, reddit_trends)
     wanted = _upper(symbol)
     if wanted:
         return _branch(anchor_map, info, edges, wanted)
     return _overview(anchor_map, info, edges)
+
+
+def build_grove(kind: Any, anchors: Any, events: Any, hypotheses: Any,
+                whale_moves: Any, pipeline: Any, now: Any = None,
+                reddit_trends: Any = None) -> Dict[str, Any]:
+    """TOUT un bosquet (PUR) — ``{"kind", "items", "total"}``.
+
+    Ce que le dessin ne montre PAS. Le graphe plafonne chaque bosquet à
+    ``MAX_GROVE`` satellites et résume le reste en « +N autres » ; ici on rend
+    la liste ENTIÈRE de ce même bosquet, dans le MÊME ordre (la clé de tri du
+    bosquet : les hypothèses ouvertes d'abord au radar, la fraîcheur partout
+    ailleurs). Les items sont les nœuds tels quels — ils portent déjà leur date,
+    leur libellé, leur tonalité, leur lien et leur ``meta``.
+
+    ``total`` est le nombre RÉEL de membres, avant le plafond de liste : quand
+    ``len(items) < total``, la mémoire en garde davantage et le dit.
+
+    ``kind`` doit être l'un de ``GROVE_KINDS`` — un bosquet inconnu lève
+    ``ValueError`` plutôt que de rendre une liste vide qui se lirait « il n'y a
+    rien » alors qu'on a simplement mal demandé.
+    """
+    wanted = _text(kind).lower()
+    if wanted not in GROVE_KINDS:
+        raise ValueError("bosquet inconnu: %s" % _text(kind))
+    _, info, edges = _collect(anchors, events, hypotheses, whale_moves,
+                              pipeline, now, reddit_trends)
+    _, groves = _dispatch(info, edges)
+    members = sorted(groves.get(wanted) or [],
+                     key=_GROVE_KEYS.get(wanted, _recency_key))
+    return {"kind": wanted, "items": members[:GROVE_LIST_CAP],
+            "total": len(members)}
 
 
 def _branch(anchor_map: Dict[str, Dict[str, Any]],
@@ -765,12 +831,12 @@ def _branch(anchor_map: Dict[str, Dict[str, Any]],
     return _assemble([anchor], neighbours, kept_edges)
 
 
-def _overview(anchor_map: Dict[str, Dict[str, Any]],
-              info: Dict[str, Dict[str, Any]],
-              edges: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """La vue globale : les ancres, leurs infos, et les trois bosquets.
+def _dispatch(info: Dict[str, Dict[str, Any]], edges: List[Dict[str, Any]]
+              ) -> Tuple[List[Dict[str, Any]],
+                         Dict[str, List[Dict[str, Any]]]]:
+    """Range chaque nœud d'info — ``(branches, {pivot: membres})`` (PUR).
 
-    Le tri de chaque nœud d'info, dans CET ordre :
+    Le tri, dans CET ordre :
 
     1. une **tendance Reddit** va toujours au bosquet « foule », même quand
        elle touche une ancre — elle garde alors EN PLUS son arête vers ce
@@ -781,6 +847,10 @@ def _overview(anchor_map: Dict[str, Dict[str, Any]],
        « radar » — le pari existe, il doit se voir (« Canada invisible ») ;
     5. le reste est OMIS : une dépêche d'entreprise qu'on ne sait rattacher à
        rien de ce portefeuille n'est pas une connexion.
+
+    Sorti de ``_overview`` pour que la LISTE d'un bosquet (``build_grove``) le
+    compose exactement comme le DESSIN : un item qui apparaîtrait dans l'une et
+    pas dans l'autre passerait pour une perte de mémoire.
     """
     linked = {edge["source"] for edge in edges}
     kept: List[Dict[str, Any]] = []
@@ -794,4 +864,12 @@ def _overview(anchor_map: Dict[str, Dict[str, Any]],
             groves[WORLD_ID].append(node)
         elif node["type"] == "hypothesis":
             groves[RADAR_ID].append(node)
+    return kept, groves
+
+
+def _overview(anchor_map: Dict[str, Dict[str, Any]],
+              info: Dict[str, Dict[str, Any]],
+              edges: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """La vue globale : les ancres, leurs infos, et les trois bosquets."""
+    kept, groves = _dispatch(info, edges)
     return _assemble(list(anchor_map.values()), kept, edges, groves)

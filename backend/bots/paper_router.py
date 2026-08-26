@@ -3303,6 +3303,36 @@ def paper_graph(symbol: str = "",
             "truncated": built["truncated"], "generated_at": now_iso}
 
 
+@router.get("/graph/grove")
+def paper_graph_grove(kind: str = "",
+                      current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """TOUT un bosquet, en liste — ce que la toile ne DESSINE pas.
+
+    Le graphe plafonne chaque bosquet à douze satellites et résume le reste en
+    « +N autres » : lisible, mais muet sur ces N. Ici on les rend tous (150 au
+    plus, ``total`` disant combien la mémoire en garde vraiment), dans le MÊME
+    ordre que le dessin — c'est le même balayage, la même fenêtre de fraîcheur
+    et le même rapprochement d'émetteurs (``graph._collect``), donc les deux ne
+    peuvent pas diverger.
+
+    Un ``kind`` hors des trois bosquets connus est un 400 : rendre une liste
+    vide se lirait « il n'y a rien », alors qu'on a simplement mal demandé.
+
+    Même posture best-effort par source que ``/graph`` : une source en panne est
+    ABSENTE de la liste, jamais un 500.
+    """
+    wanted = str(kind or "").strip().lower()
+    if wanted not in graph.GROVE_KINDS:
+        raise HTTPException(status_code=400, detail="Bosquet inconnu.")
+    data = _graph_inputs(current_user.username)
+    built = graph.build_grove(wanted, data["anchors"], data["events"],
+                              data["hypotheses"], data["whale_moves"],
+                              data["pipeline"], _now_iso(),
+                              reddit_trends=data["reddit_trends"])
+    return {"kind": built["kind"], "items": built["items"],
+            "total": built["total"]}
+
+
 @router.get("/graph/count")
 def paper_graph_count(symbol: str = "",
                       current_user: User = Depends(require_role("admin", "money", "trader"))):

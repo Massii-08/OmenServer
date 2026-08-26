@@ -917,3 +917,160 @@ def test_a_gov_headline_naming_an_unheld_title_still_reaches_the_world_pivot():
     assert built["edges"] == [{"source": node_by_type(built, "gov")[0]["id"],
                                "target": graph.WORLD_ID,
                                "type": graph.EDGE_CONTEXT, "sentiment": "gov"}]
+
+
+# --------------------------------------------------------------------------- #
+# La LISTE complète d'un bosquet (``build_grove``)
+#
+# Doctrine : « quand on ouvre, on voit tout ». Le dessin garde ses douze, la
+# masse passe en liste — sinon « +71 autres » annonce une masse et la cache.
+# --------------------------------------------------------------------------- #
+
+def grove(kind, **kwargs):
+    params = {"anchors": [], "events": [], "hypotheses": [], "whale_moves": [],
+              "pipeline": [], "now": NOW.isoformat(), "reddit_trends": None}
+    params.update(kwargs)
+    return graph.build_grove(kind, params["anchors"], params["events"],
+                             params["hypotheses"], params["whale_moves"],
+                             params["pipeline"], params["now"],
+                             reddit_trends=params["reddit_trends"])
+
+
+def test_the_world_grove_lists_everything_the_canvas_left_out():
+    """40 annonces politiques : la toile en dessine 12 et compte « +28 », la
+    liste les rend toutes les 40. C'est LE point de la fonctionnalité."""
+    events = _many_gov(40)
+    assert len(node_by_type(build(events=events), "gov")) == graph.MAX_GROVE
+
+    listed = grove(graph.WORLD_ID, events=events)
+    assert listed["kind"] == graph.WORLD_ID
+    assert listed["total"] == 40
+    assert len(listed["items"]) == 40
+
+
+def test_the_listed_items_are_the_canvas_nodes_untouched():
+    """Un item EST le nœud : date, libellé, tonalité, lien et ``meta`` y sont
+    déjà — le frontend n'a rien à reconstituer."""
+    listed = grove(graph.WORLD_ID, events=[
+        {"ts": _iso(hours_ago=1), "symbol": "GOV", "title": "Nouveaux tarifs",
+         "link": "http://g/1", "sentiment": "gov"}])
+    item = listed["items"][0]
+    assert item["type"] == "gov"
+    assert item["label"] == "Nouveaux tarifs"
+    assert item["link"] == "http://g/1"
+    assert item["sentiment"] == "gov"
+    assert item["ts"] == _iso(hours_ago=1)
+
+
+def test_the_world_grove_is_sorted_from_the_freshest_down():
+    listed = grove(graph.WORLD_ID, events=_many_gov(20))
+    # ``_many_gov`` numérote de la plus récente à la plus vieille.
+    assert [item["label"] for item in listed["items"]] == \
+        ["Annonce %03d" % i for i in range(20)]
+
+
+def test_the_crowd_grove_lists_the_trends_from_the_most_mentioned_down():
+    listed = grove(graph.CROWD_ID,
+                   reddit_trends={"GME": {"count": 42, "prev": 3},
+                                  "TSLA": {"count": 9, "prev": 1}})
+    assert listed["total"] == 2
+    assert [item["id"] for item in listed["items"]] == ["rt:GME", "rt:TSLA"]
+    assert listed["items"][0]["meta"] == {"count": 42, "prev": 3}
+
+
+def test_the_radar_grove_lists_open_hypotheses_first_then_fresh_verdicts():
+    """La liste garde l'ordre DU BOSQUET, pas celui de la fraîcheur seule :
+    les paris encore en jeu d'abord."""
+    listed = grove(graph.RADAR_ID, hypotheses=[
+        _hyp("vieux_verdict", status="scored", days_ago=5),
+        _hyp("frais_verdict", status="scored", days_ago=1),
+        _hyp("ouverte", days_ago=20)])
+    assert [item["id"] for item in listed["items"]] == [
+        "hyp:ouverte", "hyp:frais_verdict", "hyp:vieux_verdict"]
+    assert listed["items"][0]["meta"] == {"tickers": ["ZZZZ"]}
+
+
+def _many_gov_within_the_hour(count):
+    """``count`` annonces politiques espacées d'une MINUTE — toutes dans la
+    fenêtre de fraîcheur, quel qu'en soit le nombre.
+
+    ``_many_gov`` les espace d'une heure : passé 168, les plus vieilles sortent
+    des sept jours et la liste se plafonne toute seule. Un test du plafond de
+    LISTE doit mesurer le plafond, pas la fenêtre (mesuré : 168 pour 175
+    demandées).
+    """
+    return [{"ts": _iso(hours_ago=(i + 1) / 60.0), "symbol": "GOV",
+             "title": "Annonce %03d" % i, "link": "http://g/m%03d" % i,
+             "sentiment": "gov"} for i in range(count)]
+
+
+def test_the_list_is_capped_but_says_how_many_the_memory_really_holds():
+    """Au-delà du plafond, ``total`` DIT le reste — jamais un silence."""
+    listed = grove(graph.WORLD_ID,
+                   events=_many_gov_within_the_hour(graph.GROVE_LIST_CAP + 25))
+    assert len(listed["items"]) == graph.GROVE_LIST_CAP
+    assert listed["total"] == graph.GROVE_LIST_CAP + 25
+    # …et ce sont bien les PLUS RÉCENTES qu'on garde.
+    assert listed["items"][0]["label"] == "Annonce 000"
+
+
+def test_a_grove_just_at_the_cap_is_whole():
+    listed = grove(graph.WORLD_ID,
+                   events=_many_gov_within_the_hour(graph.GROVE_LIST_CAP))
+    assert len(listed["items"]) == graph.GROVE_LIST_CAP
+    assert listed["total"] == graph.GROVE_LIST_CAP
+
+
+def test_the_window_of_freshness_still_applies_to_the_list():
+    """La liste rend tout le BOSQUET, pas toutes les archives : une annonce de
+    huit jours n'est plus dans le bosquet, donc pas dans la liste."""
+    listed = grove(graph.WORLD_ID, events=[
+        {"ts": _iso(hours_ago=2), "symbol": "GOV", "title": "Frais",
+         "link": "http://g/1", "sentiment": "gov"},
+        {"ts": _iso(days_ago=8), "symbol": "GOV", "title": "Périmé",
+         "link": "http://g/2", "sentiment": "gov"}])
+    assert [item["label"] for item in listed["items"]] == ["Frais"]
+
+
+def test_the_list_composes_the_grove_exactly_like_the_canvas_does():
+    """Ce qui touche une ancre est une BRANCHE, pas un bosquet : une dépêche
+    politique qui nomme un titre détenu ne doit pas figurer dans « monde », ni
+    dans la liste, ni sur la toile."""
+    events = [{"ts": _iso(hours_ago=1), "symbol": "NVDA",
+               "title": "Tarifs sur les puces Nvidia", "link": "http://g/9",
+               "sentiment": "gov"},
+              {"ts": _iso(hours_ago=2), "symbol": "GOV", "title": "Tarifs acier",
+               "link": "http://g/1", "sentiment": "gov"}]
+    listed = grove(graph.WORLD_ID,
+                   anchors=[{"symbol": "NVDA", "kind": "position"}],
+                   events=events)
+    assert [item["label"] for item in listed["items"]] == ["Tarifs acier"]
+
+
+def test_an_empty_grove_is_an_empty_list_not_an_error():
+    listed = grove(graph.RADAR_ID)
+    assert listed == {"kind": graph.RADAR_ID, "items": [], "total": 0}
+
+
+@pytest.mark.parametrize("kind", ["", None, "titres", "agg:monde", 7, "mondes"])
+def test_an_unknown_grove_is_refused_rather_than_answered_empty(kind):
+    """Une liste vide se lirait « il n'y a rien » alors qu'on a mal demandé."""
+    with pytest.raises(ValueError):
+        grove(kind)
+
+
+@pytest.mark.parametrize("kind", ["MONDE", " monde ", "Monde"])
+def test_the_kind_is_normalised_before_being_judged(kind):
+    """C'est le MÊME bosquet : la casse et les espaces d'une chaîne d'URL ne
+    doivent pas décider qu'un bosquet existe ou non."""
+    assert grove(kind, events=_many_gov(3))["kind"] == graph.WORLD_ID
+
+
+def test_the_three_groves_are_the_public_contract():
+    assert graph.GROVE_KINDS == (graph.WORLD_ID, graph.CROWD_ID, graph.RADAR_ID)
+
+
+def test_the_list_is_deterministic():
+    kwargs = {"anchors": [{"symbol": "AAPL", "kind": "position"}],
+              "events": _many_gov(20)}
+    assert grove(graph.WORLD_ID, **kwargs) == grove(graph.WORLD_ID, **kwargs)

@@ -96,6 +96,12 @@ const PaperModule = {
     _graphCanvas: null,        // canvas équipé d'écouteurs (retirés au re-rendu)
     _onGraphResize: null,      // UN seul écouteur window, retiré avec le canvas
     _graphResizeTimer: null,
+    // « Quand on ouvre, on voit tout » : le canvas garde ses douze satellites
+    // par bosquet, la MASSE se lit en liste sous lui. Sans elle, « +71 autres »
+    // annonce une masse et la cache (retour utilisateur du 26/08).
+    _grove: null,              // liste servie : {kind, items, total}
+    _groveOpen: null,          // bosquet dont la liste est dépliée (null = fermée)
+    _groveLoading: false,
 
     _fabOpen: false,           // panneau coach flottant ouvert
     _fabQ: '',                 // question en cours de saisie (survit à la fermeture)
@@ -274,6 +280,26 @@ const PaperModule = {
     // a rapproché un nom d'émetteur d'un ticker : c'est le lien le plus
     // incertain de la toile, et ça doit se VOIR sans avoir à cliquer.
     _GEDGE_DASH: { issuer: 1 },
+
+    // Bosquet du serveur -> le « kind » que l'endpoint de LISTE accepte. Whitelist
+    // FERMÉE : l'identifiant d'un pivot vient du serveur, on ne le lui renvoie
+    // pas tel quel — on le RECONNAÎT, et un identifiant qu'on ne reconnaît pas
+    // ne déclenche aucune requête (plutôt qu'un aller-retour pour un 400).
+    _GROVE_KIND: { monde: 'monde', foule: 'foule', radar: 'radar' },
+
+    // …et le rôle correspondant, pour NOMMER la liste dans la langue de
+    // l'écran : le serveur envoie « Monde », l'écran doit lire « Contexte
+    // mondial » / « World context » / « Contesto mondiale ».
+    _GROVE_ROLE: { monde: 'world', foule: 'crowd', radar: 'radar' },
+
+    // Verdict d'une hypothèse -> variante de badge. Même whitelist fermée que
+    // _GHYP_OUT (qui, lui, donne le libellé) : un code inconnu ne fabrique ni
+    // classe ni clé i18n par concaténation.
+    _GROVE_OUT_BADGE: { hit: 'online', miss: 'danger', unclear: 'muted' },
+
+    // Longueur d'un titre DANS LA LISTE. Le titre entier reste dans l'attribut
+    // « title » : on tronque à l'écran, jamais dans la donnée.
+    _GROVE_TITLE_MAX: 90,
 
     // La flèche de tendance, en échappement Unicode À DESSEIN : écrite en clair
     // elle tomberait au premier balayage d'emojis du dépôt (piège #17).
@@ -3803,6 +3829,7 @@ const PaperModule = {
         // repart donc de l'index, sinon on afficherait l'arbre d'un bosquet
         // par-dessus les données d'un autre titre.
         this._graphPivot = null;
+        this._closeGrove();
         this._graphLoading = true;
         this._graphHover = null;
         if (this._tab === 'graph') this._renderBody();
@@ -4416,6 +4443,12 @@ const PaperModule = {
                         : ((t === 'aggregate') ? 6.5 : 4.5),
                     gx: 1, gy: 0, labelPos: 'right',
                 }));
+                // Un agregat tombe dans une bande de famille reste un COMPTEUR :
+                // il doit savoir DE QUEL bosquet il compte le reste, sinon le
+                // clic « tout voir » n'aurait rien a demander.
+                if (t === 'aggregate') {
+                    out[li].grove = this._groveKindOf(P.pivotOf[String(n.id)]);
+                }
                 edges.push(this._gDataEdge(bi, li,
                     P.linkOf[String(n.id) + '\u0000' + String(root.id)]));
             });
@@ -4432,6 +4465,9 @@ const PaperModule = {
                 gx: 1, gy: 0, labelPos: 'right',
             });
             aggRec.fam = this._gPivotFam(role);
+            // Le bosquet qu'il resume : c'est CE nom que le clic « tout voir »
+            // envoie au serveur, et rien d'autre ne le porte.
+            aggRec.grove = this._groveKindOf(String(root.id));
             const ai = push(aggRec);
             edges.push({ a: ri, b: ai, sentiment: '', type: '', struct: true, cross: false });
         }
@@ -4713,6 +4749,11 @@ const PaperModule = {
             // cadre : a droite dans la moitie gauche, a gauche sinon.
             let pos = n.labelPos;
             if (pos === 'none') pos = (n.x <= cssW / 2) ? 'right' : 'left';
+            // Seul l'AGREGAT rend son etiquette cliquable : c'est lui qui ouvre
+            // la liste du bosquet. Les autres gardent l'anneau pour seule cible
+            // — rendre chaque etiquette cliquable ouvrirait des liens au moindre
+            // frolement de texte.
+            if (n.kind === 'agg') n.hitBox = this._gLabelBox(ctx, n, text, pos);
             if (pos === 'below') {
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'top';
@@ -4822,7 +4863,42 @@ const PaperModule = {
             const reach = n.r + 8;
             if (d <= reach * reach && d < bestD) { bestD = d; best = i; }
         }
-        return best;
+        if (best >= 0) return best;
+        // Rattrapage : l'ETIQUETTE d'un agregat est une cible a part entiere.
+        // « +71 autres » est une PHRASE — c'est elle qu'on lit et qu'on vise,
+        // pas l'anneau de six pixels pose a cote. La boite est mesuree au trace
+        // (_paintGraph), donc elle suit exactement le texte affiche.
+        //
+        // En SECOND passage seulement : une pastille voisine, qui se vise au
+        // pixel pres, ne doit jamais se faire voler son clic par une boite de
+        // texte large de deux cents pixels.
+        for (let i = 0; i < L.nodes.length; i++) {
+            const b = L.nodes[i].hitBox;
+            if (b && x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1) return i;
+        }
+        return -1;
+    },
+
+    // Boite de l'etiquette d'un noeud, dans le repere du canvas. Le texte vient
+    // d'etre mesure avec la police COURANTE de ctx (l'appel se fait juste avant
+    // fillText), donc la boite colle au rendu et non a une estimation.
+    _gLabelBox(ctx, n, text, pos) {
+        const w = ctx.measureText(String(text == null ? '' : text)).width;
+        const H = 15;                       // hauteur de ligne du 11 px mono
+        if (pos === 'left') {
+            return { x0: n.x - n.r - 6 - w, x1: n.x - n.r - 6,
+                y0: n.y - H / 2, y1: n.y + H / 2 };
+        }
+        if (pos === 'above') {
+            return { x0: n.x - w / 2, x1: n.x + w / 2,
+                y0: n.y - n.r - 6 - H, y1: n.y - n.r - 6 };
+        }
+        if (pos === 'below') {
+            return { x0: n.x - w / 2, x1: n.x + w / 2,
+                y0: n.y + n.r + 6, y1: n.y + n.r + 6 + H };
+        }
+        return { x0: n.x + n.r + 6, x1: n.x + n.r + 6 + w,
+            y0: n.y - H / 2, y1: n.y + H / 2 };
     },
 
     // Le repeint est groupe par requestAnimationFrame : un survol traverse des
@@ -4916,8 +4992,9 @@ const PaperModule = {
 
     // Clic sur un noeud : une ANCRE deplie l'arbre de son titre (une requete au
     // serveur), une CARTE deplie le bosquet dans la toile deja chargee (aucune
-    // requete), un noeud d'information ouvre sa source quand il en a une. Un
-    // noeud sans lien ne fait rien — mais il a deja tout dit dans son infobulle.
+    // requete), un AGREGAT ouvre la liste complete de son bosquet (une requete),
+    // un noeud d'information ouvre sa source quand il en a une. Un noeud sans
+    // lien ne fait rien — mais il a deja tout dit dans son infobulle.
     _graphActivate(i) {
         const L = this._graphLayout;
         const n = L && L.nodes[i];
@@ -4927,6 +5004,9 @@ const PaperModule = {
             this.focusPivot(n.id);
             return;
         }
+        // « +71 autres » etait un cul-de-sac : il annoncait une masse et la
+        // cachait. Il OUVRE desormais cette masse, en liste, sous la toile.
+        if (n.kind === 'agg') { this.openGrove(n.grove); return; }
         if (n.anchor) {
             if (this._graphSymbol === n.id) return;   // deja rapproche sur lui
             this.loadGraph(n.id);
@@ -4996,11 +5076,17 @@ const PaperModule = {
             metaHtml +
             (n.kind === 'card'
               ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_open_grove')) + '</div>'
-              : (n.anchor
-                ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_focus')) + '</div>'
-                : (n.link
-                    ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_link')) + '</div>'
-                    : '')));
+              // L'agregat DIT desormais qu'il s'ouvre : sans cette ligne, un
+              // anneau qui compte 71 elements se lit comme un cul-de-sac, et
+              // personne n'essaie de cliquer dessus. Il ne la porte que s'il
+              // sait DE QUEL bosquet il compte le reste.
+              : ((n.kind === 'agg' && n.grove)
+                ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_agg_open')) + '</div>'
+                : (n.anchor
+                  ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_focus')) + '</div>'
+                  : (n.link
+                      ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_link')) + '</div>'
+                      : ''))));
 
         // Placement : a droite du noeud par defaut, bascule a gauche quand il
         // n'y a plus la place. L'infobulle ne sort jamais du cadre.
@@ -5058,7 +5144,11 @@ const PaperModule = {
                         esc(Lang.t('paper.graph_truncated') + ' ' +
                             this._num(nodes.length, 0) + ' ' + Lang.t('paper.graph_nodes')) +
                       '</div>'
-                    : '');
+                    : '') +
+                  // La masse d'un bosquet, quand on l'a ouverte : SOUS la toile,
+                  // pas dans une modale — on garde le dessin a l'oeil pendant
+                  // qu'on lit, et c'est ce qui fait comprendre d'ou sort la liste.
+                  this._groveCard();
         }
 
         // L'entete dit CE QU'ON REGARDE : l'index, l'arbre d'un titre, ou celui
@@ -5151,6 +5241,7 @@ const PaperModule = {
         if (sym === null && this._graphPivot !== null && this._graphSymbol === null) {
             this._graphPivot = null;
             this._graphHover = null;
+            this._closeGrove();
             this._renderBody();
             return;
         }
@@ -5166,7 +5257,177 @@ const PaperModule = {
         if (pid === this._graphPivot) return;
         this._graphPivot = pid;
         this._graphHover = null;
+        // La liste ouverte est celle d'un AUTRE bosquet : la garder sous la
+        // toile ferait lire les 83 dépêches du monde sous le titre du radar.
+        this._closeGrove();
         this._renderBody();
+    },
+
+    // =====================================================================
+    //  La liste complète d'un bosquet — « quand on ouvre, on voit tout »
+    // =====================================================================
+    //
+    // La toile plafonne chaque bosquet à douze satellites et résume le reste en
+    // « +N autres » : lisible, mais muet sur ces N (retour utilisateur du
+    // 26/08, capture à l'appui — « +71 autres, non dessinés », et rien à
+    // cliquer). Le canvas garde ses douze ; la masse se lit en LISTE sous lui.
+
+    // Identifiant de pivot -> « kind » de l'endpoint, par whitelist FERMÉE. Rien
+    // ne repart vers le serveur qu'on n'ait d'abord reconnu.
+    _groveKindOf(pivotId) {
+        const k = String(pivotId == null ? '' : pivotId);
+        return Object.prototype.hasOwnProperty.call(this._GROVE_KIND, k)
+            ? this._GROVE_KIND[k] : '';
+    },
+
+    _closeGrove() {
+        this._grove = null;
+        this._groveOpen = null;
+        this._groveLoading = false;
+    },
+
+    closeGrove() {
+        this._closeGrove();
+        this._renderBody();
+    },
+
+    async openGrove(kind) {
+        const k = this._groveKindOf(kind);
+        // Bosquet non reconnu : aucune requête. Un aller-retour pour un 400 ne
+        // dirait rien de plus à l'écran qu'un anneau qui ne réagit pas.
+        if (!k) return;
+        // Re-cliquer le même agrégat REFERME la liste : c'est le seul geste
+        // disponible sur le canvas, il doit faire l'aller ET le retour.
+        if (this._groveOpen === k) { this.closeGrove(); return; }
+        this._groveOpen = k;
+        this._grove = null;
+        this._groveLoading = true;
+        if (this._tab === 'graph') this._renderBody();
+        const d = await this._get('/api/paper/graph/grove?kind=' + encodeURIComponent(k));
+        // Deux agrégats cliqués coup sur coup : la réponse qui n'est plus celle
+        // qu'on regarde est jetée, sinon on listerait un bosquet sous le nom
+        // d'un autre (même garde que loadGraph).
+        if (this._groveOpen !== k) return;
+        this._groveLoading = false;
+        if (!d || typeof d !== 'object') {
+            this._closeGrove();
+            this._toast('error', Lang.t('paper.error'));
+            if (this._tab === 'graph') this._renderBody();
+            return;
+        }
+        this._grove = d;
+        if (this._tab === 'graph') this._renderBody();
+    },
+
+    _groveItems() {
+        const g = this._grove;
+        return (g && Array.isArray(g.items))
+            ? g.items.filter((n) => n && typeof n === 'object') : [];
+    },
+
+    // Le panneau, SOUS la toile — pas une modale : on garde le dessin à l'œil
+    // pendant qu'on lit la liste, et c'est ce qui fait comprendre d'où elle
+    // sort. Vide quand aucun bosquet n'est ouvert.
+    _groveCard() {
+        const kind = this._groveOpen;
+        if (!kind) return '';
+        const role = Object.prototype.hasOwnProperty.call(this._GROVE_ROLE, kind)
+            ? this._GROVE_ROLE[kind] : 'world';
+        const items = this._groveItems();
+        const total = this._n(this._grove && this._grove.total);
+        const shown = items.length;
+        let body;
+        if (this._groveLoading) {
+            body = this._muted(Lang.t('paper.grove_loading'));
+        } else if (!shown) {
+            body = this._muted(Lang.t('paper.grove_empty'));
+        } else {
+            body = '<div class="row-list" style="max-height:380px;overflow-y:auto;">' +
+                items.map((n) => this._groveRow(n, kind)).join('') + '</div>' +
+                // Le plafond de liste DIT ce qu'il laisse dehors, comme
+                // l'agrégat de la toile : une liste qui s'arrête en silence
+                // ment par omission.
+                ((total !== null && total > shown)
+                  ? '<div style="font-size:12px;color:var(--text-dim);margin-top:8px;">' +
+                      esc(Lang.t('paper.grove_capped')) + '</div>'
+                  : '');
+        }
+        const count = (total === null) ? shown : total;
+        return '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">' +
+            '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px;">' +
+              '<h4 style="margin:0;font-size:15px;">' +
+                esc(Lang.t('paper.grove_all') + ' ' + this._gPivotLabel(role)) + '</h4>' +
+              '<span style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
+                esc(this._num(count, 0) + ' ' + Lang.t('paper.graph_items')) + '</span>' +
+              '<button class="btn btn-ghost btn-sm" data-paper-act="grove-close" ' +
+                  'style="margin-left:auto;">' + esc(Lang.t('paper.close')) + '</button>' +
+            '</div>' + body +
+        '</div>';
+    },
+
+    // Une ligne : quand · d'où · quoi · où l'ouvrir. Le titre complet vit dans
+    // l'attribut « title » — on tronque à l'écran, jamais dans la donnée.
+    _groveRow(n, kind) {
+        const t = this._gtype(n.type);
+        const fam = this._gfam(t);
+        const label = String(n.label === undefined || n.label === null ? '' : n.label);
+        const when = (n.ts === undefined || n.ts === null || n.ts === '')
+            ? '' : this._dateShort(n.ts);
+        const url = this._safeUrl(n.link);
+        const out = this._gOutcome(n.outcome);
+        const tickers = (n.meta && Array.isArray(n.meta.tickers))
+            ? n.meta.tickers.slice(0, 4).map((s) => String(s)).join(' ') : '';
+        return '<div class="row" style="display:flex;gap:10px;align-items:center;' +
+               'flex-wrap:wrap;padding:9px 12px;">' +
+            ((when && when !== '—')
+              ? '<span style="font-size:12px;color:var(--text-dim);' + this._mono +
+                'flex:0 0 auto;">' + esc(when) + '</span>' : '') +
+            // La pastille de FAMILLE : d'où vient l'item, dans le même
+            // alphabet de couleurs que la toile (composant de la légende).
+            (fam
+              ? '<span class="paper-graph-key" style="flex:0 0 auto;">' +
+                  '<i style="background:' + esc(this._gfamColor(fam)) + ';"></i>' +
+                  esc(this._gfamLabel(fam)) + '</span>'
+              : '') +
+            this._groveSentBadge(n) +
+            // Le VERDICT, en toutes lettres : c'est ce qu'on vient chercher
+            // dans le bosquet du radar.
+            ((kind === 'radar' && out)
+              ? '<span class="badge ' + esc(this._GROVE_OUT_BADGE[out]) + '">' +
+                  esc(Lang.t(this._GHYP_OUT[out][1])) + '</span>' : '') +
+            '<span style="flex:1 1 260px;min-width:0;font-size:14px;line-height:1.45;" ' +
+                'title="' + esc(label) + '">' +
+              esc(this._gtrim(label, this._GROVE_TITLE_MAX)) + '</span>' +
+            (tickers
+              ? '<span style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
+                  esc(tickers) + '</span>' : '') +
+            (url
+              ? '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer" ' +
+                'class="btn btn-ghost btn-sm" style="text-decoration:none;">' +
+                esc(Lang.t('paper.open')) + '</a>'
+              : '') +
+        '</div>';
+    },
+
+    // La tonalité, quand elle en porte une ET qu'elle dit quelque chose.
+    //
+    // Whitelist FERMÉE, et pas le _sentiment() du fil de presse : celui-ci
+    // retombe sur « positif » pour TOUT ce qu'il ne connaît pas, or un bosquet
+    // charrie aussi des tonalités que le fil ne voit jamais (« crowd » d'un
+    // post Reddit, « neutral » d'une dépêche non qualifiée). Un post Reddit
+    // affiché « positif » serait un jugement inventé.
+    _GROVE_SENT: {
+        pos: ['online', 'paper.news_pos'],
+        neg: ['danger', 'paper.news_neg'],
+        watch: ['warn', 'paper.news_watch'],
+        gov: ['warn', 'paper.news_gov'],
+    },
+
+    _groveSentBadge(n) {
+        const s = this._gtype(n && n.sentiment);
+        if (!Object.prototype.hasOwnProperty.call(this._GROVE_SENT, s)) return '';
+        return '<span class="badge ' + esc(this._GROVE_SENT[s][0]) + '">' +
+            esc(Lang.t(this._GROVE_SENT[s][1])) + '</span>';
     },
 
     // Chip d'un graphique : on OUVRE la vue Connexions déjà rapprochée sur ce
@@ -6247,6 +6508,7 @@ const PaperModule = {
         if (act === 'graph-focus') { this.focusGraph(el.getAttribute('data-sym')); return; }
         if (act === 'graph-reload') { this.loadGraph(this._graphSymbol); return; }
         if (act === 'graph-open') { this.openGraph(el.getAttribute('data-sym')); return; }
+        if (act === 'grove-close') { this.closeGrove(); return; }
         if (act === 'chart-range') {
             this.setChartRange(el.getAttribute('data-ctx'), el.getAttribute('data-range'));
             return;

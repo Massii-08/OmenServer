@@ -9,7 +9,7 @@ remplace ``quotes``, les trois fonctions du ``llm`` sont neutralisées, et
 ``store.DATA_DIR`` pointe sur le répertoire temporaire du test.
 """
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from fastapi import FastAPI
@@ -205,6 +205,7 @@ def test_player_role_is_refused_everywhere(tmp_path, monkeypatch):
     assert c.delete("/api/paper/board/scenarios/t").status_code == 403
     assert c.get("/api/paper/graph").status_code == 403
     assert c.get("/api/paper/graph/count?symbol=NESN.SW").status_code == 403
+    assert c.get("/api/paper/graph/grove?kind=monde").status_code == 403
 
 
 def test_money_role_is_allowed(tmp_path, monkeypatch):
@@ -222,6 +223,7 @@ def test_trader_role_is_allowed(tmp_path, monkeypatch):
     assert c.get("/api/paper/watchlist").status_code == 200
     assert c.get("/api/paper/board").status_code == 200
     assert c.get("/api/paper/graph").status_code == 200
+    assert c.get("/api/paper/graph/grove?kind=monde").status_code == 200
     assert c.post("/api/paper/board/pipeline",
                   json={"symbol": "NESN.SW"}).status_code == 200
     assert c.post("/api/paper/board/scenarios/generate", json={}).status_code == 200
@@ -3006,6 +3008,153 @@ def test_graph_survives_a_broken_portfolio(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pr, "_load", boom)
     assert [node["id"] for node in graph_of(c)["nodes"]] == ["AAPL"]
+
+
+# ================================================================
+#  LISTE COMPLÈTE D'UN BOSQUET (« +N autres » devient cliquable)
+#
+#  Doctrine : « quand on ouvre, on voit tout ». La toile garde ses douze
+#  satellites par bosquet (lisibilité) ; la MASSE se lit en liste.
+# ================================================================
+
+def grove_of(client, kind):
+    response = client.get("/api/paper/graph/grove?kind=%s" % kind)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _gov_events(count):
+    """``count`` annonces politiques, espacées d'une minute (donc toutes dans
+    la fenêtre de fraîcheur), la n° 0 étant la plus RÉCENTE."""
+    base = datetime(2026, 8, 24, 9, 0, 0)
+    return [{"ts": (base - timedelta(minutes=i)).isoformat(), "symbol": "GOV",
+             "title": "Annonce %03d" % i, "link": "http://g/%03d" % i,
+             "sentiment": "gov"} for i in range(count)]
+
+
+def test_grove_lists_everything_the_canvas_left_out(tmp_path, monkeypatch):
+    """40 annonces : la toile en dessine 12 et compte « +28 » ; la liste rend
+    les 40. C'est LE point de la fonctionnalité (retour utilisateur du 26/08 :
+    « +71 autres — non dessinés », et rien pour aller voir)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch, events=_gov_events(40))
+    buy(c)
+
+    drawn = [n for n in graph_of(c)["nodes"] if n["type"] == "gov"]
+    assert len(drawn) == 12
+
+    body = grove_of(c, "monde")
+    assert body["kind"] == "monde"
+    assert body["total"] == 40
+    assert len(body["items"]) == 40
+    # Décroissant : la plus fraîche en tête, comme sur la toile.
+    assert [item["label"] for item in body["items"]] == \
+        ["Annonce %03d" % i for i in range(40)]
+    # Un item porte tout ce que la liste affiche — rien à reconstituer.
+    assert body["items"][0]["link"] == "http://g/000"
+    assert body["items"][0]["sentiment"] == "gov"
+
+
+def test_grove_serves_the_three_kinds(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(
+        monkeypatch,
+        events=_gov_events(3),
+        trends={"GME": {"count": 42, "prev": 3}, "TSLA": {"count": 9, "prev": 1}},
+        hypotheses=[{"id": "h1", "status": "open", "created_at": FIXED_NOW,
+                     "thesis": "Le cycle repart", "tickers": ["ZZZZ"]}])
+    buy(c)
+
+    world = grove_of(c, "monde")
+    assert [item["type"] for item in world["items"]] == ["gov"] * 3
+
+    crowd = grove_of(c, "foule")
+    assert [item["id"] for item in crowd["items"]] == ["rt:GME", "rt:TSLA"]
+    assert crowd["items"][0]["meta"] == {"count": 42, "prev": 3}
+
+    radar = grove_of(c, "radar")
+    assert radar["total"] == 1
+    assert radar["items"][0]["status"] == "open"
+    assert radar["items"][0]["meta"] == {"tickers": ["ZZZZ"]}
+
+
+def test_grove_is_capped_at_150_but_says_the_real_total(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch, events=_gov_events(175))
+    buy(c)
+
+    body = grove_of(c, "monde")
+    assert len(body["items"]) == 150
+    assert body["total"] == 175
+    assert body["items"][0]["label"] == "Annonce 000"      # les plus récentes
+
+
+@pytest.mark.parametrize("query", ["", "?kind=", "?kind=titres", "?kind=agg:monde",
+                                   "?kind=NESN.SW"])
+def test_grove_refuses_an_unknown_kind(tmp_path, monkeypatch, query):
+    """Une liste vide se lirait « il n'y a rien » alors qu'on a mal demandé."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch)
+    assert c.get("/api/paper/graph/grove" + query).status_code == 400
+
+
+def test_grove_accepts_the_kind_whatever_its_case(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch, events=_gov_events(2))
+    assert grove_of(c, "MONDE")["kind"] == "monde"
+
+
+def test_grove_survives_every_source_being_down(tmp_path, monkeypatch):
+    """Best-effort par source, comme ``/graph`` : une liste partielle se lit,
+    une erreur non."""
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise IOError("source injoignable")
+
+    monkeypatch.setattr(pr, "_newswatch", lambda: FakeModule(recent_events=boom))
+    monkeypatch.setattr(pr, "_radar", lambda: FakeModule(load_state=boom))
+    monkeypatch.setattr(pr, "_whales", lambda: FakeModule(moves_summary=boom))
+    monkeypatch.setattr(pr, "_pipeline_view", boom)
+    buy(c)
+
+    assert grove_of(c, "monde") == {"kind": "monde", "items": [], "total": 0}
+
+
+def test_grove_survives_one_source_down_and_keeps_the_others(tmp_path, monkeypatch):
+    """La presse tombe, le radar répond : le bosquet du radar reste servi."""
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise IOError("guetteur injoignable")
+
+    monkeypatch.setattr(pr, "_newswatch", lambda: FakeModule(recent_events=boom))
+    monkeypatch.setattr(pr, "_radar", lambda: FakeModule(load_state=lambda: {
+        "hypotheses": [{"id": "h1", "status": "open", "created_at": FIXED_NOW,
+                        "thesis": "Le pari tient", "tickers": ["ZZZZ"]}],
+        "stats": {}}))
+    monkeypatch.setattr(pr, "_whales", lambda: FakeModule(moves_summary=lambda: [],
+                                                          recent_filing_events=lambda: []))
+    buy(c)
+
+    assert grove_of(c, "monde")["total"] == 0
+    assert grove_of(c, "radar")["total"] == 1
+
+
+def test_grove_omits_what_the_canvas_hangs_on_a_title(tmp_path, monkeypatch):
+    """Ce qui touche une ancre est une BRANCHE, pas un bosquet : la liste se
+    compose EXACTEMENT comme le dessin, sinon un item apparaîtrait dans l'une
+    et pas dans l'autre — et ça passerait pour une perte de mémoire."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch, events=[
+        {"ts": FIXED_NOW, "symbol": "NESN.SW", "title": "Tarifs sur Nestlé",
+         "link": "http://g/9", "sentiment": "gov"},
+        {"ts": FIXED_NOW, "symbol": "GOV", "title": "Tarifs acier",
+         "link": "http://g/1", "sentiment": "gov"}])
+    buy(c)
+
+    assert [item["label"] for item in grove_of(c, "monde")["items"]] \
+        == ["Tarifs acier"]
 
 
 # ================================================================
