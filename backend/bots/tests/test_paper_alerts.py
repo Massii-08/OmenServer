@@ -167,6 +167,66 @@ def test_send_avale_toute_exception(monkeypatch):
     assert alerts.send("coucou", cfg=PAPER) is False
 
 
+# --------------------------------------------------------------------------- #
+# Mode d'alerte (26/08) — « calme » par défaut
+# --------------------------------------------------------------------------- #
+
+def test_le_mode_par_defaut_est_calme():
+    """Le défaut est le SILENCE : c'est la demande (« je reçois plein de
+    notifs, pas le temps de tout lire »)."""
+    assert alerts.get_mode() == "calme"
+    assert alerts.is_quiet() is True
+
+
+def test_set_mode_persiste_et_rend_le_mode_applique(tmp_path):
+    assert alerts.set_mode("tout") == "tout"
+    assert alerts.get_mode() == "tout"
+    assert alerts.is_quiet() is False
+
+
+@pytest.mark.parametrize("value", ["n'importe quoi", "", None, 42, "TOUS"])
+def test_un_mode_inconnu_retombe_sur_le_silence(value):
+    """Le repli va vers le BAS : une valeur illisible ne rallume jamais le
+    bruit (même posture que ``llm.normalize_risk_level``)."""
+    assert alerts.normalize_mode(value) == "calme"
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("tout", "tout"), ("TOUT", "tout"), ("all", "tout"), (" Tout ", "tout"),
+    ("quiet", "calme"), ("Calme", "calme"),
+])
+def test_les_synonymes_de_mode_sont_acceptes(value, expected):
+    assert alerts.normalize_mode(value) == expected
+
+
+def test_set_mode_ecrit_un_fichier_0600(tmp_path):
+    alerts.set_mode("tout")
+    path = alerts.mode_path()
+    assert path.is_file()
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_un_fichier_de_mode_illisible_retombe_sur_calme(tmp_path):
+    path = alerts.mode_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{ pas du json", encoding="utf-8")
+    assert alerts.get_mode() == "calme"
+
+
+def test_le_mode_explicite_court_circuite_le_disque(tmp_path):
+    """Un cycle de veille lit le mode UNE fois et le propage : sans ce
+    court-circuit, un même passage pourrait être à moitié bavard."""
+    alerts.set_mode("tout")
+    assert alerts.is_quiet("calme") is True
+    assert alerts.is_quiet() is False
+
+
+def test_le_chemin_du_mode_suit_le_repertoire_de_donnees(tmp_path, monkeypatch):
+    assert alerts.mode_path() == tmp_path / "paper_trading" / alerts.MODE_NAME
+    monkeypatch.setattr(store, "DATA_DIR", tmp_path / "ailleurs")
+    assert alerts.mode_path() == tmp_path / "ailleurs" / alerts.MODE_NAME
+
+
 def test_aucune_valeur_de_config_n_est_loguee(tmp_path, spy, caplog):
     _write_paper(tmp_path, PAPER)
     with caplog.at_level("DEBUG", logger="omenserver"):

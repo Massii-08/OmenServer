@@ -39,8 +39,8 @@ from pydantic import BaseModel
 
 from backend.auth.models import User
 from backend.auth.permissions import require_role
-from backend.bots.paper import (board, coach, fees, fills, llm, models, quotes,
-                                risk, store)
+from backend.bots.paper import (alerts, board, coach, fees, fills, idea_journal,
+                                llm, models, quotes, risk, store)
 
 logger = logging.getLogger("omenserver")
 
@@ -1021,6 +1021,22 @@ class WatchlistPayload(BaseModel):
     symbol: str = ""
 
 
+class AlertsModePayload(BaseModel):
+    # "calme" (défaut) ou "tout". Normalisé côté serveur — une valeur inconnue
+    # retombe sur "calme", jamais sur le mode bavard.
+    mode: str = alerts.DEFAULT_MODE
+
+
+class XAccountsPayload(BaseModel):
+    # REMPLACE la liste entière (ce n'est pas un ajout) : l'interface envoie
+    # l'état voulu, le serveur valide et renvoie ce qui s'applique vraiment.
+    handles: List[str] = []
+
+
+class ReviewPayload(BaseModel):
+    lang: str = "fr"
+
+
 class BoardItemPayload(BaseModel):
     symbol: str = ""
     thesis: str = ""
@@ -1876,13 +1892,106 @@ def _recent_filings() -> List[Dict[str, Any]]:
         return []
 
 
-def _strategy_context(username: str) -> Dict[str, Any]:
+# Les grandes capitalisations que le fait-pack crypto va chercher. Six, et pas
+# vingt : au-delà, le coach lit une liste au lieu de comparer des pièces — et
+# chaque symbole coûte deux requêtes.
+CRYPTO_MAJORS = ("BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "AVAX-USD",
+                 "LINK-USD")
+CRYPTO_FACTS_RANGE = "1mo"
+CRYPTO_FACTS_INTERVAL = "1d"
+CRYPTO_WEEK_SESSIONS = 7      # une crypto cote 7 j/7 : 7 bougies = 7 jours
+
+
+def _pct(new: Any, old: Any) -> Optional[float]:
+    """Variation en pourcentage, ou ``None`` si elle n'est pas calculable."""
+    try:
+        new, old = float(new), float(old)
+    except (TypeError, ValueError):
+        return None
+    if old == 0:
+        return None
+    return round((new - old) * 100.0 / old, 2)
+
+
+def _crypto_factpack() -> List[Dict[str, Any]]:
+    """Prix et variations des grandes cryptos — fait-pack DÉTERMINISTE.
+
+    Raison d'être : en niveau « crypto », le coach répondait honnêtement « le
+    contexte ne contient aucune donnée crypto ». Le trou était dans la
+    collecte, pas dans le prompt. Avec ce bloc il a TOUJOURS des chiffres, même
+    quand la presse crypto est muette.
+
+    Best-effort PAR SYMBOLE : un cours indisponible fait tomber CETTE ligne,
+    jamais la réponse — et une variation qu'on ne sait pas calculer sort à
+    ``null`` plutôt qu'inventée.
+    """
+    out: List[Dict[str, Any]] = []
+    for symbol in CRYPTO_MAJORS:
+        row: Dict[str, Any] = {"symbol": symbol, "price": None,
+                               "change_24h_pct": None, "change_7d_pct": None}
+        try:
+            quote = quotes.get_quote(symbol)
+            row["price"] = quote.get("price")
+            # Une crypto cote sans interruption : la clôture quotidienne
+            # précédente est donc bien « il y a 24 h ».
+            row["change_24h_pct"] = quote.get("change_pct")
+        except Exception as e:                      # noqa: BLE001 — best-effort
+            logger.warning("paper: cours crypto indisponible (%s): %s", symbol, e)
+        try:
+            candles = quotes.get_candles(symbol, CRYPTO_FACTS_RANGE,
+                                         CRYPTO_FACTS_INTERVAL) or []
+            closes = [c.get("close") for c in candles
+                      if isinstance(c, dict) and c.get("close") is not None]
+            if len(closes) > CRYPTO_WEEK_SESSIONS:
+                row["change_7d_pct"] = _pct(closes[-1],
+                                            closes[-1 - CRYPTO_WEEK_SESSIONS])
+        except Exception as e:                      # noqa: BLE001
+            logger.warning("paper: bougies crypto indisponibles (%s): %s",
+                           symbol, e)
+        out.append(row)
+    return out
+
+
+def _recent_crypto(username: str) -> List[Dict[str, Any]]:
+    """Les dépêches CRYPTO de la veille globale (best-effort).
+
+    Extraites du même flux d'événements que le reste (``recent_events`` fusionne
+    les événements globaux dans le retour de chaque compte) : on les isole pour
+    que le coach les voie ÉTIQUETÉES, et non noyées dans la presse actions.
+    """
+    return [e for e in _recent_news(username)
+            if isinstance(e, dict) and e.get("src") == "crypto"]
+
+
+def _whale_moves() -> List[Dict[str, Any]]:
+    """Les mouvements des grands gérants, depuis le CACHE seul (best-effort).
+
+    Demande de l'utilisateur : « ils peuvent voir quelque chose qu'on ne voit
+    pas en VENDANT leurs actions ». Aucune requête SEC ici — le guetteur des
+    dépôts tient ce cache au chaud, précisément pour que le coach puisse le
+    lire à chaque fois qu'il réfléchit.
+    """
+    try:
+        return list(_whales().moves_summary() or [])
+    except ImportError:
+        return []
+    except Exception as e:                          # noqa: BLE001
+        logger.warning("paper: mouvements 13F indisponibles: %s", e)
+        return []
+
+
+def _strategy_context(username: str,
+                      risk_level: Optional[str] = None) -> Dict[str, Any]:
     """Le contexte du coach quand il PROPOSE (``/ideas``) ou qu'il
     CARTOGRAPHIE (``/board/scenarios/generate``).
 
     UNE seule fonction pour les deux : ce sont les mêmes faits, et deux
     assemblages parallèles finiraient par diverger (l'un recevrait les
     annonces politiques, l'autre pas — sans que rien ne le signale).
+
+    ``risk_level`` ne change rien à la doctrine : il n'ouvre QUE le fait-pack
+    crypto, qui coûte une douzaine de requêtes et n'a aucun intérêt pour une
+    série d'actions.
     """
     portfolio = _load(username)
     synced = _sync_coach(username, portfolio.to_dict(), force=True)
@@ -1892,6 +2001,10 @@ def _strategy_context(username: str) -> Dict[str, Any]:
     context["radar_open_hypotheses"] = _open_radar_hypotheses()
     context["recent_news"] = _recent_news(username)
     context["recent_filings"] = _recent_filings()
+    context["recent_crypto"] = _recent_crypto(username)
+    context["whale_moves"] = _whale_moves()
+    if llm.normalize_risk_level(risk_level) == "crypto" and risk_level:
+        context["crypto_market"] = _crypto_factpack()
     return context
 
 
@@ -2018,18 +2131,360 @@ def paper_ideas(data: IdeasPayload,
     qui rend le bilan par niveau possible.
     """
     username = current_user.username
-    context = _strategy_context(username)
-
     lang = normalize_lang(data.lang)
     risk_level = llm.normalize_risk_level(data.risk_level)
+    context = _strategy_context(username, risk_level=data.risk_level)
+    journal = _journal_summary(username)
+
     try:
-        text = llm.suggest_ideas(context, lang, risk_level)
+        text = llm.suggest_ideas(context, lang, risk_level, journal)
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)[:300])
 
     ideas = _register_radar_ideas(_parse_ideas_json(text, risk_level), _now_iso())
     _pipeline_from_ideas(username, ideas)
+    _journal_append(username, "ideas", text, lang=lang, risk_level=risk_level,
+                    ideas=ideas)
     return {"text": text, "ideas": ideas, "risk_level": risk_level}
+
+
+# --------------------------------------------------------------------------- #
+# Endpoints — journal des idées (mémoire du coach)
+#
+# « Journal des vieilles idées avec dates, le coach y a accès pour ne pas
+# reproposer les mêmes. » Le journal est écrit à chaque réponse et relu à
+# chaque demande : c'est ce qui transforme une suite de réponses isolées en
+# une conversation qui se souvient.
+# --------------------------------------------------------------------------- #
+
+JOURNAL_PAGE_LIMIT = 20
+IDEAS_FOR_SYMBOL_LIMIT = 10
+
+
+def _journal_summary(username: str) -> List[Dict[str, Any]]:
+    """Le résumé du journal destiné au prompt (best-effort).
+
+    Croisé avec l'état du radar pour dire ce que les idées passées ont DONNÉ.
+    Une panne ici ne doit jamais empêcher le coach de répondre : il répondrait
+    juste sans mémoire.
+    """
+    try:
+        entries = idea_journal.load_entries(username)
+    except Exception as e:                          # noqa: BLE001
+        logger.warning("paper: journal des idées illisible: %s", e)
+        return []
+    outcomes: Dict[str, str] = {}
+    try:
+        outcomes = idea_journal.outcome_index(_radar().load_state()
+                                              .get("hypotheses") or [])
+    except Exception:                               # noqa: BLE001 — radar absent
+        outcomes = {}
+    return idea_journal.summarize(entries, outcomes=outcomes)
+
+
+def _journal_append(username: str, kind: str, text: str, lang: str = "fr",
+                    risk_level: Optional[str] = None,
+                    ideas: Any = None, verdicts: Any = None) -> None:
+    """Ajoute une entrée au journal — best-effort STRICT.
+
+    Une écriture qui échoue ne doit JAMAIS faire perdre une réponse LLM déjà
+    payée : c'est le même raisonnement que ``_pipeline_from_ideas``.
+    """
+    try:
+        idea_journal.append_entry(username, kind=kind, text=text, lang=lang,
+                                  risk_level=risk_level, ideas=ideas,
+                                  verdicts=verdicts, now_iso=_now_iso())
+    except Exception as e:                          # noqa: BLE001
+        logger.warning("paper: entrée de journal non écrite: %s", e)
+
+
+@router.get("/ideas/journal")
+def paper_ideas_journal(limit: int = JOURNAL_PAGE_LIMIT,
+                        current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Le journal des idées et des revues, la plus récente en tête."""
+    try:
+        limit = max(0, int(limit))
+    except (TypeError, ValueError):
+        limit = JOURNAL_PAGE_LIMIT
+    entries = idea_journal.load_entries(current_user.username)
+    return {"entries": entries[:limit]}
+
+
+@router.get("/ideas/for-symbol")
+def paper_ideas_for_symbol(symbol: str = "",
+                           current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Tout ce que le coach a déjà dit sur UN titre — LECTURE PURE.
+
+    Zéro appel au modèle, zéro requête réseau : on assemble ce qui est déjà
+    écrit sur le disque. Deux sources, trois familles de lignes :
+
+    * l'état du RADAR — les hypothèses (toutes sources confondues) qui portent
+      ce ticker, avec leur verdict quand elles ont été notées ;
+    * le JOURNAL — les idées proposées sur ce ticker, et les postures de revue
+      qui le concernent.
+
+    Trié du plus récent au plus ancien, borné à ``IDEAS_FOR_SYMBOL_LIMIT``.
+    Aucun résultat -> ``{"items": []}`` et un 200 : le frontend n'affiche rien,
+    ce n'est pas une erreur.
+    """
+    wanted = str(symbol or "").strip().upper()
+    if not wanted:
+        raise HTTPException(status_code=400, detail="Symbole manquant.")
+
+    items: List[Dict[str, Any]] = []
+    try:
+        hypotheses = _radar().load_state().get("hypotheses") or []
+    except Exception:                               # noqa: BLE001 — radar absent
+        hypotheses = []
+    for hyp in hypotheses:
+        if not isinstance(hyp, dict):
+            continue
+        tickers = [str(t or "").strip().upper() for t in (hyp.get("tickers") or [])]
+        if wanted not in tickers:
+            continue
+        row = {
+            "from": "radar",
+            "ts": hyp.get("created_at"),
+            "source": hyp.get("source"),
+            "direction": hyp.get("direction"),
+            "horizon_days": hyp.get("horizon_days"),
+            "thesis": hyp.get("thesis"),
+            "status": hyp.get("status"),
+            "outcome": hyp.get("outcome"),
+            "move_pct": hyp.get("move_pct"),
+        }
+        if hyp.get("risk_level"):
+            row["risk_level"] = hyp.get("risk_level")
+        items.append(row)
+
+    for entry in idea_journal.load_entries(current_user.username):
+        ts = entry.get("ts")
+        for idea in (entry.get("ideas") or []):
+            if not isinstance(idea, dict):
+                continue
+            if str(idea.get("ticker") or "").strip().upper() != wanted:
+                continue
+            items.append({
+                "from": "journal",
+                "ts": ts,
+                "risk_level": idea.get("risk_level") or entry.get("risk_level"),
+                "direction": idea.get("direction"),
+                "horizon_days": idea.get("horizon_days"),
+                "thesis": idea.get("thesis"),
+                "tracked": bool(idea.get("tracked")),
+            })
+        for verdict in (entry.get("verdicts") or []):
+            if not isinstance(verdict, dict):
+                continue
+            if str(verdict.get("symbol") or "").strip().upper() != wanted:
+                continue
+            items.append({
+                "from": "review",
+                "ts": ts,
+                "stance": verdict.get("stance"),
+                "reason": verdict.get("reason"),
+            })
+
+    items.sort(key=lambda row: str(row.get("ts") or ""), reverse=True)
+    return {"items": items[:IDEAS_FOR_SYMBOL_LIMIT]}
+
+
+# --------------------------------------------------------------------------- #
+# Endpoint — revue des positions détenues (« prévision de vente »)
+# --------------------------------------------------------------------------- #
+
+REVIEW_NEWS_MAX_AGE_D = 7
+REVIEW_NEWS_PER_SYMBOL = 4
+
+
+def _position_factpack(username: str,
+                       portfolio: models.Portfolio) -> Dict[str, Any]:
+    """Les faits DÉTERMINISTES de chaque position détenue.
+
+    Tout est calculé ici, jamais demandé au modèle : sa plus-value, la distance
+    au stop, les dépêches récentes de ce titre, les mouvements de gérants qui
+    le concernent. Le modèle met en mots des chiffres qu'il ne peut pas se
+    tromper à calculer.
+
+    Un cours indisponible sort à ``null`` — et le prompt DIT au modèle de le
+    signaler plutôt que de l'inventer.
+    """
+    news = _recent_news(username)
+    cutoff = _epoch(_now_iso())
+    cutoff = (cutoff - REVIEW_NEWS_MAX_AGE_D * 86400) if cutoff else None
+    gov_recent = any(isinstance(e, dict) and e.get("sentiment") == "gov"
+                     and (cutoff is None or (_epoch(e.get("ts")) or 0) >= cutoff)
+                     for e in news)
+    moves = _whale_moves()
+
+    # Un seul appel de cours PAR SYMBOLE (une ligne longue et une ligne vendeuse
+    # sur le même titre ne le paient pas deux fois).
+    quotes_by_symbol: Dict[str, Dict[str, Any]] = {}
+    for position in portfolio.positions:
+        symbol = str(position.symbol).upper()
+        if symbol in quotes_by_symbol:
+            continue
+        try:
+            quotes_by_symbol[symbol] = quotes.get_quote(position.symbol) or {}
+        except Exception as e:                      # noqa: BLE001 — best-effort
+            logger.warning("paper: cours indisponible pour la revue (%s): %s",
+                           symbol, e)
+            quotes_by_symbol[symbol] = {}
+
+    # ⚠️ ``models.Position`` ne porte PAS de nom : sans le nom Yahoo (la
+    # cotation) ou celui de la watchlist, ``match_issuer`` comparerait
+    # « APPLE INC » à « AAPL » et ne rapprocherait JAMAIS un mouvement de
+    # gérant d'une position. Le repli sur le ticker ne sert qu'à garder la clé.
+    names = {symbol: (str(quote.get("name") or "").strip() or symbol)
+             for symbol, quote in quotes_by_symbol.items()}
+    for row in _watchlist_context(username):
+        symbol = str(row.get("symbol") or "").upper()
+        name = str(row.get("name") or "").strip()
+        if symbol in names and names[symbol] == symbol and name:
+            names[symbol] = name
+
+    rows: List[Dict[str, Any]] = []
+    for position in portfolio.positions:
+        symbol = str(position.symbol).upper()
+        last_price = quotes_by_symbol.get(symbol, {}).get("price")
+        pnl_pct = _pct(last_price, position.avg_price)
+        if position.side == "short" and pnl_pct is not None:
+            pnl_pct = round(-pnl_pct, 2)            # vendeur : le gain est inversé
+
+        titles = []
+        for event in news:
+            if not isinstance(event, dict):
+                continue
+            if str(event.get("symbol") or "").upper() != symbol:
+                continue
+            if event.get("sentiment") not in ("pos", "neg"):
+                continue
+            if cutoff is not None and (_epoch(event.get("ts")) or 0) < cutoff:
+                continue
+            titles.append({"title": event.get("title"),
+                           "sentiment": event.get("sentiment"),
+                           "ts": event.get("ts")})
+            if len(titles) >= REVIEW_NEWS_PER_SYMBOL:
+                break
+
+        on_this = []
+        for move in moves:
+            try:
+                matched = _whales().match_issuer(move.get("name"), names)
+            except Exception:                       # noqa: BLE001
+                matched = None
+            if matched == symbol:
+                on_this.append({"manager_label": move.get("manager_label"),
+                                "action": move.get("action"),
+                                "quarter": move.get("quarter"),
+                                "delta_pct": move.get("delta_pct")})
+
+        rows.append({
+            "symbol": symbol,
+            "side": position.side,
+            "qty": position.qty,
+            "avg_price": position.avg_price,
+            "last_price": last_price,
+            "pnl_pct": pnl_pct,
+            "stop_loss": position.stop_loss,
+            "distance_stop_pct": _pct(position.stop_loss, last_price),
+            "news_recentes": titles,
+            "gov_recent": gov_recent,
+            "whale_moves_on_this": on_this,
+        })
+    return {"positions": rows}
+
+
+@router.post("/positions/review")
+def paper_positions_review(data: ReviewPayload,
+                           current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Revue des positions DÉTENUES — « le bouton qui analyse avec les infos
+    qu'on a déjà ».
+
+    Aucune nouvelle source : on assemble un fait-pack déterministe (prix de
+    revient, cours, plus-value, stop et sa distance, presse récente du titre,
+    mouvements de gérants) puis le coach le met en mots et conclut par une
+    posture par position.
+
+    Portefeuille sans position -> 400 avec un message clair : demander une
+    revue de rien n'est pas une erreur du serveur, c'est un malentendu.
+    Panne LLM -> 502. Le texte est APPENDÉ au journal, comme les idées.
+    """
+    username = current_user.username
+    portfolio = _load(username)
+    if not portfolio.positions:
+        raise HTTPException(
+            status_code=400,
+            detail="Aucune position ouverte : il n'y a rien à passer en revue.")
+
+    lang = normalize_lang(data.lang)
+    context = _position_factpack(username, portfolio)
+    synced = _sync_coach(username, portfolio.to_dict(), force=True)
+    context["stats"] = synced["stats"]
+    context["radar_open_hypotheses"] = [
+        h for h in _open_radar_hypotheses()
+        if isinstance(h, dict) and any(
+            str(t or "").upper() in {str(p.symbol).upper()
+                                     for p in portfolio.positions}
+            for t in (h.get("tickers") or []))
+    ]
+
+    try:
+        text = llm.review_positions(context, lang)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)[:300])
+
+    verdicts = llm.parse_review(text)
+    _journal_append(username, "review", text, lang=lang, verdicts=verdicts)
+    return {"text": text, "verdicts": verdicts}
+
+
+# --------------------------------------------------------------------------- #
+# Endpoints — réglages de la veille (mode d'alerte, comptes X suivis)
+#
+# Réservés à ``admin``/``money`` : ce sont des réglages qui changent ce que le
+# téléphone reçoit et ce que le serveur va chercher sur le réseau, pas des
+# actions de trading.
+# --------------------------------------------------------------------------- #
+
+@router.get("/alerts-mode")
+def paper_alerts_mode(current_user: User = Depends(require_role("admin", "money"))):
+    """Le mode d'alerte courant et les modes disponibles."""
+    return {"mode": alerts.get_mode(), "modes": list(alerts.MODES)}
+
+
+@router.post("/alerts-mode")
+def paper_set_alerts_mode(data: AlertsModePayload,
+                          current_user: User = Depends(require_role("admin", "money"))):
+    """Change le mode d'alerte. Rend le mode RÉELLEMENT appliqué (normalisé)."""
+    try:
+        mode = alerts.set_mode(data.mode)
+    except OSError as e:
+        raise HTTPException(status_code=500,
+                            detail="Mode non enregistré: %s" % str(e)[:200])
+    return {"mode": mode, "modes": list(alerts.MODES)}
+
+
+@router.get("/x-accounts")
+def paper_x_accounts(current_user: User = Depends(require_role("admin", "money"))):
+    """Les comptes X suivis par la veille."""
+    module = _newswatch()
+    return {"handles": module.load_x_accounts(), "max": module.X_MAX_HANDLES}
+
+
+@router.post("/x-accounts")
+def paper_set_x_accounts(data: XAccountsPayload,
+                         current_user: User = Depends(require_role("admin", "money"))):
+    """REMPLACE la liste des comptes X suivis. Rend la liste réellement écrite
+    — un handle invalide est écarté en silence plutôt que corrigé : un nom
+    sanitisé pointerait sur un AUTRE compte que celui demandé."""
+    module = _newswatch()
+    try:
+        handles = module.save_x_accounts(data.handles)
+    except OSError as e:
+        raise HTTPException(status_code=500,
+                            detail="Comptes non enregistrés: %s" % str(e)[:200])
+    return {"handles": handles, "max": module.X_MAX_HANDLES}
 
 
 # --------------------------------------------------------------------------- #

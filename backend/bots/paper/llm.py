@@ -25,7 +25,7 @@ import json
 import os
 import subprocess
 import tempfile
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 DEFAULT_MODEL = "claude-sonnet-5"
 DEFAULT_TIMEOUT = 120
@@ -149,7 +149,7 @@ def _lang_line(lang: str = "fr") -> str:
 # ainsi le bilan par niveau (``radar.stats_by_level``) mesure vraiment un étage
 # de risque, pas trois prompts qui se contredisent.
 # --------------------------------------------------------------------------- #
-RISK_LEVELS = ("mesure", "agressif", "speculatif")
+RISK_LEVELS = ("mesure", "agressif", "speculatif", "crypto")
 DEFAULT_RISK_LEVEL = "mesure"
 
 # Un niveau peut arriver de l'interface, d'un test ou d'un vieil état : on
@@ -161,6 +161,8 @@ _RISK_ALIASES = {
     "aggressif": "agressif", "aggressive": "agressif",
     "speculatif": "speculatif", "spéculatif": "speculatif",
     "speculative": "speculatif",
+    "crypto": "crypto", "cryptos": "crypto", "cryptomonnaie": "crypto",
+    "crypto-monnaie": "crypto",
 }
 
 # Genres d'actifs ouverts À CHAQUE ÉTAGE. C'est cette table qui écrit la liste
@@ -171,6 +173,10 @@ _LEVEL_KINDS = {
     "mesure": ("equity", "etf"),
     "agressif": ("equity", "etf"),
     "speculatif": ("equity", "etf", "crypto", "forex"),
+    # Étage 100 % crypto : c'est tout l'intérêt de l'avoir séparé du
+    # spéculatif, où la règle « jamais plus de 2 idées crypto sur 4 » empêche
+    # justement de comparer les pièces entre elles.
+    "crypto": ("crypto",),
 }
 
 # Le CODE d'un niveau est sans accent (il voyage en JSON, en URL et dans un
@@ -180,6 +186,7 @@ _RISK_LABELS = {
     "mesure": "mesuré",
     "agressif": "agressif",
     "speculatif": "spéculatif",
+    "crypto": "crypto",
 }
 
 _RISK_BLOCKS = {
@@ -259,6 +266,35 @@ _RISK_BLOCKS = {
         "ASSUMÉ avec son invalidation nommée, et tu dis ce qui peut la tuer "
         "vite AVANT de dire ce qu'elle peut rapporter."
     ),
+    "crypto": (
+        "NIVEAU DE RISQUE DEMANDÉ POUR CETTE SÉRIE : CRYPTO — un étage à "
+        "part, entièrement dédié aux monnaies numériques.\n"
+        "- Univers autorisé : UNIQUEMENT des cryptos, en symboles Yahoo, "
+        "toujours en paire — BTC-USD, ETH-USD, SOL-USD, XRP-USD, AVAX-USD, "
+        "LINK-USD, DOGE-USD, ADA-USD, DOT-USD… Aucune action, aucun ETF, "
+        "aucune paire de devises : si une idée hors crypto te paraît "
+        "meilleure, tu la gardes pour toi — c'est Massii qui choisit son "
+        "étage.\n"
+        "- La HAUSSE comme la BAISSE (``direction: \"down\"`` autorisé).\n"
+        "- COMPARE LES CRYPTOS ENTRE ELLES — c'est le cœur de cet étage, et ce "
+        "qu'aucun autre ne permet : rotation des grandes capitalisations vers "
+        "les petites (ou l'inverse), dominance du bitcoin qui monte ou qui "
+        "cède, flux entrants et sortants des fonds indiciels, force relative "
+        "d'une pièce contre l'ether ou contre le bitcoin. Quatre fois la même "
+        "idée sur quatre pièces différentes n'est PAS une série : c'est un "
+        "seul pari, déguisé en quatre.\n"
+        "- Risque par idée : 1 à 3 % du capital.\n"
+        "- Horizon libre entre 3 et 60 jours — dis-le en jours, et dis "
+        "pourquoi cet horizon-là.\n"
+        "- VOLATILITÉ ET TAILLE, la règle centrale : sur une crypto le stop "
+        "doit être LARGE (un stop serré sur un actif qui bouge de 5 % dans la "
+        "nuit saute pour rien). Comme le risque en % du capital ne change pas, "
+        "c'est la TAILLE de la position qui rétrécit, mécaniquement. Écris-le "
+        "dans chaque idée : « stop large, donc position petite ».\n"
+        "- Si le contexte fourni ne porte pas assez de matière crypto "
+        "(actualité, flux, chiffres), DIS-LE franchement et rends moins "
+        "d'idées — une seule idée solide vaut mieux que quatre inventées."
+    ),
 }
 
 
@@ -316,7 +352,8 @@ def build_postmortem_prompt(trade: Optional[Dict[str, Any]],
 
 
 def build_ideas_prompt(context: Optional[Dict[str, Any]], lang: str = "fr",
-                       risk_level: str = DEFAULT_RISK_LEVEL) -> str:
+                       risk_level: str = DEFAULT_RISK_LEVEL,
+                       journal: Any = None) -> str:
     """Prompt des idées de trade orientées RENTABILITÉ (extension utilisateur) —
     à la différence de ``build_coach_prompt`` (conversation libre), ici Massii
     ne demande pas de faire le point : il demande des idées concrètes.
@@ -326,14 +363,35 @@ def build_ideas_prompt(context: Optional[Dict[str, Any]], lang: str = "fr",
     posé). On vise le POTENTIEL (catalyseur, momentum, asymétrie), pas la
     valeur refuge.
 
-    ``risk_level`` choisit l'ÉTAGE (``mesure``/``agressif``/``speculatif``,
-    cf. ``_RISK_BLOCKS``) : univers autorisé, fourchette de risque, horizon. Le
-    schéma JSON final est écrit DEPUIS cet étage — un prompt « mesuré »
-    n'énumère donc jamais un genre d'actif qu'il vient d'interdire.
+    ``risk_level`` choisit l'ÉTAGE (``mesure``/``agressif``/``speculatif``/
+    ``crypto``, cf. ``_RISK_BLOCKS``) : univers autorisé, fourchette de risque,
+    horizon. Le schéma JSON final est écrit DEPUIS cet étage — un prompt
+    « mesuré » n'énumère donc jamais un genre d'actif qu'il vient d'interdire.
+
+    ``journal`` = le résumé des dernières séries d'idées
+    (``idea_journal.summarize``). C'est la mémoire du coach : sans elle, il
+    reproposait tranquillement la même idée toutes les semaines, et le
+    ré-entendre n'apprend rien à personne. La règle qui l'accompagne autorise
+    explicitement la REDITE quand un facteur a changé — à condition de nommer
+    ce qui a changé.
     """
     level = normalize_risk_level(risk_level)
     kinds = _LEVEL_KINDS[level]
     kinds_text = ", ".join('"%s"' % kind for kind in kinds)
+    memory: list = []
+    rows = [row for row in (journal or []) if isinstance(row, dict)]
+    if rows:
+        memory = [
+            _block("HISTORIQUE DE TES PROPRES IDÉES (le plus récent en tête)",
+                   rows),
+            "Tu as l'HISTORIQUE de tes propres idées ci-dessus. Il t'est "
+            "INTERDIT de reproposer une idée ÉQUIVALENTE (même ticker, même "
+            "direction) — sauf si un facteur du contexte a CHANGÉ LA DONNE, et "
+            "dans ce cas tu DOIS nommer ce qui a changé, sous la forme « je "
+            "l'avais proposée le <date>, depuis <ce qui est arrivé> ». Une "
+            "idée dont l'historique montre le résultat (``outcome``) est une "
+            "information : sers-t'en, ne l'ignore pas.",
+        ]
     return "\n\n".join([
         SYSTEM_PROMPT,
         _lang_line(lang),
@@ -351,6 +409,7 @@ def build_ideas_prompt(context: Optional[Dict[str, Any]], lang: str = "fr",
         "(pour ne pas les reproposer), et les événements récents (presse, "
         "dépôts 13F) qui peuvent servir de catalyseur.",
         _block("CONTEXTE", context or {}),
+    ] + memory + [
         _RISK_BLOCKS[level],
         "Commence ta réponse par UNE ligne d'en-tête qui annonce le niveau de "
         "cette série et sa fourchette de risque par idée — forme attendue : "
@@ -460,6 +519,119 @@ def build_scenarios_prompt(context: Optional[Dict[str, Any]],
         '"consequence": "...", "plays": [{"ticker": "GLD", "direction": '
         '"up"}]}]}]}\n```',
     ])
+
+
+# --------------------------------------------------------------------------- #
+# Revue des positions DÉTENUES — la « prévision de vente » demandée
+#
+# Demande de l'utilisateur : « un bouton dans le portefeuille qui analyse avec
+# les infos qu'on a déjà ». Deux mots comptent : *déjà* (aucune nouvelle
+# source, on assemble ce que le simulateur sait) et *analyse* (on éclaire, on
+# ne décide pas — dans un simulateur, garder / alléger / sortir sont des choix
+# qui appartiennent à Massii).
+# --------------------------------------------------------------------------- #
+REVIEW_STANCES = ("garder", "surveiller", "alleger", "sortir")
+# Repli sur « surveiller » : une posture illisible ne doit ni rassurer
+# (« garder ») ni pousser à la sortie. C'est la même règle que
+# ``_scenario_prob``, qui ne promeut jamais un chemin sur une valeur cassée.
+REVIEW_DEFAULT_STANCE = "surveiller"
+
+_STANCE_ALIASES = {
+    "garder": "garder", "hold": "garder", "conserver": "garder",
+    "surveiller": "surveiller", "watch": "surveiller", "attendre": "surveiller",
+    "alleger": "alleger", "alléger": "alleger", "trim": "alleger",
+    "reduire": "alleger", "réduire": "alleger",
+    "sortir": "sortir", "exit": "sortir", "vendre": "sortir", "sell": "sortir",
+}
+
+
+def normalize_stance(value: Any) -> str:
+    """Posture ramenée dans ``REVIEW_STANCES``. Inconnue -> « surveiller »."""
+    return _STANCE_ALIASES.get(str(value or "").strip().lower(),
+                               REVIEW_DEFAULT_STANCE)
+
+
+def build_review_prompt(context: Optional[Dict[str, Any]],
+                        lang: str = "fr") -> str:
+    """Prompt de la revue des positions DÉTENUES (PUR).
+
+    Le contexte est un fait-pack DÉTERMINISTE assemblé par le router : par
+    position, son prix de revient, son cours, sa plus ou moins-value, son stop
+    et la distance qui l'en sépare, les dépêches récentes qui la concernent, et
+    les mouvements de grands gérants sur ce titre. Le modèle ne va rien
+    chercher : il LIT ces faits et les met en mots.
+    """
+    return "\n\n".join([
+        SYSTEM_PROMPT,
+        _lang_line(lang),
+        "ICI, ton rôle change de registre : Massii ne te demande ni un bilan "
+        "ni des idées neuves — il te demande de PASSER EN REVUE les positions "
+        "qu'il DÉTIENT DÉJÀ, avec les seules informations que le simulateur a "
+        "sous la main. Il est DÉBUTANT : explique en phrases simples, et "
+        "définis en trois mots tout terme de métier que tu emploies.",
+        "Chaque position ci-dessous porte : le prix payé (``avg_price``), le "
+        "cours actuel (``last_price``, ``null`` si le cours n'a pas pu être "
+        "récupéré — dis-le alors, ne l'invente pas), la plus ou moins-value en "
+        "pourcentage (``pnl_pct``), le stop posé (``stop_loss``) et la distance "
+        "qui l'en sépare (``distance_stop_pct``), les dépêches récentes de ce "
+        "titre (``news_recentes``), s'il y a eu une annonce politique récente "
+        "(``gov_recent``) et les mouvements de grands gérants sur ce titre "
+        "(``whale_moves_on_this``).",
+        _block("POSITIONS ET FAITS", context or {}),
+        "Écris d'abord, pour CHAQUE position, un paragraphe court : où elle en "
+        "est, ce qui la menace, ce qui la soutient, et ce que tu surveillerais "
+        "pour trancher. Puis conclus par ta posture.",
+        "PARLE TÔT, ici aussi : « surveiller » n'est PAS un refuge. Si tu "
+        "choisis cette posture, tu DOIS donner le déclencheur PRÉCIS qui te "
+        "fera trancher — un niveau de prix ou un événement nommé, ET le délai "
+        "au bout duquel tu tranches si rien ne se passe. Une revue qui répond "
+        "« on verra » sur toute la ligne n'a servi à rien.",
+        "Rappels non négociables : les décisions restent à LUI — tu éclaires, "
+        "tu ne décides pas ; jamais de recommandation avec de l'argent réel ; "
+        "n'invente aucun chiffre ni aucun événement absent des faits ci-dessus.",
+        "Termine IMPÉRATIVEMENT par ce bloc, et rien après (``stance`` vaut "
+        "exactement l'un de : %s) : "
+        '```json\n{"verdicts": [{"symbol": "AAPL", "stance": "surveiller", '
+        '"reason": "une seule phrase"}]}\n```'
+        % ", ".join('"%s"' % s for s in REVIEW_STANCES),
+    ])
+
+
+def parse_review(raw: Any) -> List[Dict[str, Any]]:
+    """Les verdicts du bloc JSON final de la revue (PUR).
+
+    Tolérant comme ses voisins : pas de bloc, JSON illisible, forme inattendue
+    -> liste VIDE, jamais une exception. Le texte de la revue reste affiché même
+    si la machine n'a rien pu en tirer — c'est lui que Massii lit.
+
+    Une posture inconnue (ou forgée) retombe sur « surveiller » : le modèle
+    n'a pas le droit d'inventer une posture que l'interface ne sait pas rendre.
+    """
+    if not isinstance(raw, str):
+        return []
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end <= start:
+        return []
+    try:
+        payload = json.loads(raw[start:end + 1])
+    except ValueError:
+        return []
+    if not isinstance(payload, dict) or not isinstance(payload.get("verdicts"), list):
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for item in payload["verdicts"]:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        out.append({
+            "symbol": symbol,
+            "stance": normalize_stance(item.get("stance")),
+            "reason": str(item.get("reason") or "").strip(),
+        })
+    return out
 
 
 def build_analysis_prompt(facts: Optional[Dict[str, Any]],
@@ -665,8 +837,18 @@ def suggest_scenarios(context: Optional[Dict[str, Any]], lang: str = "fr",
                         model=model, timeout=timeout, run=run)
 
 
+def review_positions(context: Optional[Dict[str, Any]], lang: str = "fr",
+                     model: str = DEFAULT_MODEL, timeout: int = DEFAULT_TIMEOUT,
+                     run: Callable = subprocess.run) -> str:
+    """Revue des positions détenues (texte + bloc JSON final lu par
+    ``parse_review``) — la « prévision de vente » du portefeuille."""
+    return _claude_text(build_review_prompt(context, lang),
+                        model=model, timeout=timeout, run=run)
+
+
 def suggest_ideas(context: Optional[Dict[str, Any]], lang: str = "fr",
                   risk_level: str = DEFAULT_RISK_LEVEL,
+                  journal: Any = None,
                   model: str = DEFAULT_MODEL, timeout: int = DEFAULT_TIMEOUT,
                   run: Callable = subprocess.run) -> str:
     """Idées de trade orientées rentabilité (texte + bloc JSON final destiné au
@@ -674,6 +856,7 @@ def suggest_ideas(context: Optional[Dict[str, Any]], lang: str = "fr",
 
     ``risk_level`` ∈ ``RISK_LEVELS`` (normalisé, inconnu -> « mesuré ») : c'est
     l'étage de risque demandé, et la SEULE chose que Massii pilote ici.
+    ``journal`` = le résumé des séries précédentes (mémoire anti-redite).
     """
-    return _claude_text(build_ideas_prompt(context, lang, risk_level),
+    return _claude_text(build_ideas_prompt(context, lang, risk_level, journal),
                         model=model, timeout=timeout, run=run)

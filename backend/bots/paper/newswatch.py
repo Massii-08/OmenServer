@@ -60,6 +60,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -122,6 +123,59 @@ _MAX_GOV_NOTIFY_PER_RUN = 3      # cap partagé entre LES DEUX sources gov, par 
 # toujours comme facteur pour la convergence. Seul l'ENVOI est supprimé.
 _GOV_STORY_MUTE_H = 6            # même histoire : au plus un envoi / 6 h
 _GOV_MAX_SENDS_PER_HOUR = 4      # budget dur, fenêtre glissante
+
+# --- volet CRYPTO GLOBAL (extension 2026-08-26) ---------------------------- #
+#
+# Origine : le coach en niveau spéculatif a répondu, honnêtement, « le contexte
+# ne contient aucune donnée crypto ». Le trou n'était pas dans le prompt, il
+# était dans la COLLECTE — rien ne ramenait jamais d'actualité crypto.
+#
+# Sondées le 26/08 (200, RSS standard avec pubDate) : Cointelegraph est un flux
+# PUR crypto (31 items) ; Decrypt est un flux tech MÉLANGÉ (on y trouve du
+# SpaceX) — c'est le GATE de pertinence de ``classify_crypto`` qui le filtre,
+# pas la liste de sources.
+_CRYPTO_SOURCES = [
+    "https://cointelegraph.com/rss",
+    "https://decrypt.co/feed",
+]
+_CRYPTO_MAX_AGE_S = 24 * 3600    # comme le gov : l'immédiateté est le but
+_MAX_CRYPTO_NOTIFY_PER_RUN = 3   # cap partagé entre les deux sources, par run
+# Budget PROPRE (et non celui du gov) : les deux volets parlent de mondes
+# différents, partager le budget ferait taire l'un dès que l'autre s'agite —
+# et l'utilisateur ne saurait jamais lequel a mangé la place.
+_CRYPTO_MAX_SENDS_PER_HOUR = 4
+
+# --- volet X « comptes influents » (extension 2026-08-26) ------------------ #
+#
+# Canal SONDÉ : ``GET https://x.com/<handle>`` en curl_cffi
+# (``impersonate="chrome"``) rend un HTML avec les derniers posts en clair,
+# que ``pulse.social.parse_x`` du moteur market-pulse sait lire (mesuré :
+# elonmusk -> 10 posts, WhiteHouse -> 4).
+#
+# Cadence : UN CYCLE SUR DEUX. Les guetteurs tournent toutes les 5 min ; X
+# serait donc interrogé 288 fois par jour et par compte — c'est beaucoup pour
+# une page qu'on n'a pas le droit de marteler. Une fois sur deux (~10 min)
+# suffit largement pour un signal qui se joue à l'heure.
+X_ACCOUNTS_NAME = "x_accounts.json"
+X_DEFAULT_HANDLES = ("elonmusk", "WhiteHouse")
+X_MAX_HANDLES = 10
+_X_HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
+_X_CYCLE_EVERY = 2               # 1 cycle sur 2 (cf. ci-dessus)
+_X_PACE_S = 1.5                  # plancher entre deux comptes
+_X_POST_MAX_LEN = 140            # un post tronqué reste un titre lisible
+_X_MAX_POSTS_PER_HANDLE = 8      # les plus récents suffisent
+_X_MAX_NOTIFY_PER_RUN = 3
+_X_MAX_SENDS_PER_HOUR = 4
+
+# Escalade vers le navigateur furtif du Harvester. Un blocage FRANC (403/429)
+# escalade tout de suite ; une anomalie molle (page sans post, sérialisation
+# changée) doit se répéter — un blip ne justifie pas de démarrer un Chrome.
+_X_ESCALATE_AFTER = 2
+# Une fois le furtif adopté pour un compte, on y reste 24 h : re-tenter le
+# chemin léger à chaque cycle, ce serait re-payer l'échec toutes les 10 minutes.
+_X_STEALTH_TTL_S = 24 * 3600
+
+_CASHTAG_RE = re.compile(r"\$([A-Z]{1,5})\b")
 
 
 # =========================================================================== #
@@ -337,6 +391,224 @@ def format_gov_message(title: str, link: str) -> str:
     )
 
 
+# --- classification CRYPTO (volet global, 26/08) --------------------------- #
+
+# GATE de pertinence. C'est LUI qui rend un flux mélangé (Decrypt) utilisable :
+# un titre sans le moindre marqueur crypto n'est pas classé du tout, quelle que
+# soit sa tonalité — c'est ainsi qu'un « SpaceX lands... » disparaît sans qu'on
+# ait à maintenir une liste de sujets à exclure.
+_CRYPTO_MARKERS = [
+    "bitcoin", "btc", "ethereum", "ether", "eth", "solana", "xrp", "ripple",
+    "dogecoin", "cardano", "avalanche", "chainlink", "litecoin", "polkadot",
+    "crypto", "cryptos", "cryptocurrency", "cryptocurrencies", "crypto-monnaie",
+    "blockchain", "stablecoin", "stablecoins", "tether", "usdt", "usdc",
+    "defi", "altcoin", "altcoins", "web3", "onchain", "on-chain",
+    "binance", "coinbase", "kraken", "microstrategy",
+    "spot etf", "bitcoin etf", "ether etf", "crypto etf", "halving",
+]
+
+# Mauvaise nouvelle DÉJÀ TOMBÉE — prioritaire sur pos et watch.
+_CRYPTO_NEG_KEYWORDS = [
+    "hack", "hacked", "exploit", "exploited", "stolen", "drained",
+    "sec sues", "sec charges", "charged with", "lawsuit", "delisting",
+    "delisted", "ban", "banned", "crackdown", "liquidations", "liquidated",
+    "outflows", "plunge", "plunges", "crash", "crashes", "slumps", "tumbles",
+    "selloff", "sell-off", "rug pull", "insolvency", "bankruptcy", "fraud",
+    "halts withdrawals", "seizes",
+]
+
+# Bonne nouvelle DÉJÀ TOMBÉE — prioritaire sur watch.
+_CRYPTO_POS_KEYWORDS = [
+    "etf approval", "approves etf", "etf approved", "inflows", "record inflows",
+    "adoption", "adopts", "integration", "integrates", "partnership",
+    "all-time high", "all time high", "record high", "surges", "soars",
+    "rallies", "jumps", "upgrade completed", "upgrade goes live",
+    "mainnet launch", "legal tender", "green light",
+]
+
+# Catalyseur À VENIR — rien n'est tombé, c'est une anticipation.
+_CRYPTO_WATCH_KEYWORDS = [
+    "etf decision", "sec decision", "deadline", "halving", "hard fork",
+    "upgrade scheduled", "scheduled for", "token unlock", "unlock",
+    "vote on", "ruling expected", "expected to rule", "proposal", "testnet",
+    "set to launch", "ahead of",
+]
+
+# Mapping best-effort titre -> paire Yahoo. Liste ORDONNÉE (et non un dict) :
+# le premier marqueur trouvé gagne, et les noms longs passent avant leurs
+# abréviations pour qu'« ethereum » ne soit pas attrapé par « eth ».
+_CRYPTO_SYMBOLS = [
+    ("bitcoin", "BTC-USD"), ("btc", "BTC-USD"),
+    ("ethereum", "ETH-USD"), ("ether", "ETH-USD"), ("eth", "ETH-USD"),
+    ("solana", "SOL-USD"),
+    ("ripple", "XRP-USD"), ("xrp", "XRP-USD"),
+    ("dogecoin", "DOGE-USD"), ("cardano", "ADA-USD"),
+    ("avalanche", "AVAX-USD"), ("chainlink", "LINK-USD"),
+    ("litecoin", "LTC-USD"), ("polkadot", "DOT-USD"),
+]
+
+
+def is_crypto_topic(title: str) -> bool:
+    """Le titre parle-t-il de crypto ? (GATE de pertinence, PUR).
+
+    Séparé de ``classify_crypto`` pour être testable seul : c'est la moitié du
+    volet qui décide ce qui ENTRE, l'autre moitié ne fait que doser le ton.
+    """
+    if not title:
+        return False
+    t = title.lower()
+    return any(_keyword_matches(t, kw) for kw in _CRYPTO_MARKERS)
+
+
+def crypto_symbol(title: str) -> Optional[str]:
+    """La paire Yahoo évoquée par le titre (``BTC-USD``…), ou ``None``.
+
+    Best-effort ASSUMÉ : une dépêche « crypto market falls » ne nomme aucune
+    pièce, et l'event partira sans symbole plutôt qu'avec un symbole inventé —
+    un event mal étiqueté polluerait le facteur « titre détenu » de la
+    convergence.
+    """
+    if not title:
+        return None
+    t = title.lower()
+    for marker, symbol in _CRYPTO_SYMBOLS:
+        if _keyword_matches(t, marker):
+            return symbol
+    return None
+
+
+def classify_crypto(title: str) -> Optional[str]:
+    """Classe un titre CRYPTO : "neg" | "pos" | "watch" | None (PUR).
+
+    Deux étages, dans cet ordre :
+
+    1. le **gate de pertinence** (``is_crypto_topic``) — sans marqueur crypto,
+       ``None`` immédiat, quelle que soit la tonalité du titre. C'est lui qui
+       rend un flux tech mélangé exploitable ;
+    2. la tonalité, avec la même hiérarchie que ``classify`` : conseil
+       d'investissement -> ``None`` toujours ; puis neg > pos > watch.
+    """
+    if not is_crypto_topic(title):
+        return None
+    t = title.lower()
+    if any(_keyword_matches(t, kw) for kw in _ADVICE_KEYWORDS):
+        return None
+    if any(_keyword_matches(t, kw) for kw in _CRYPTO_NEG_KEYWORDS):
+        return "neg"
+    if any(_keyword_matches(t, kw) for kw in _CRYPTO_POS_KEYWORDS):
+        return "pos"
+    if any(_keyword_matches(t, kw) for kw in _CRYPTO_WATCH_KEYWORDS):
+        return "watch"
+    return None
+
+
+def format_crypto_message(title: str, link: str, sentiment: str,
+                          symbol: Optional[str] = None) -> str:
+    """Message Telegram d'une dépêche crypto. Ne recommande JAMAIS d'acheter —
+    même doctrine que les deux autres volets."""
+    head = {"neg": "Mauvaise nouvelle crypto",
+            "pos": "Bonne nouvelle crypto"}.get(sentiment, "Catalyseur crypto à venir")
+    tail = " — %s" % symbol if symbol else ""
+    return ("[Simulateur] %s%s\n« %s »\n%s" % (head, tail, title, link))
+
+
+# --- classification des posts X (volet « comptes influents », 26/08) ------- #
+
+def x_post_title(text: str) -> str:
+    """Le post ramené à un titre lisible : espaces normalisés, tronqué à
+    ``_X_POST_MAX_LEN`` (PUR). Un post de 4 000 caractères n'est pas un titre."""
+    compact = " ".join(str(text or "").split())
+    if len(compact) <= _X_POST_MAX_LEN:
+        return compact
+    return compact[:_X_POST_MAX_LEN - 1].rstrip() + "…"
+
+
+def cashtag_symbol(text: str) -> Optional[str]:
+    """Le premier ``$TICKER`` du post, en majuscules, ou ``None`` (PUR)."""
+    match = _CASHTAG_RE.search(str(text or ""))
+    return match.group(1) if match else None
+
+
+def classify_x(text: str) -> Optional[Dict[str, Any]]:
+    """Un post X est-il IMPORTANT ? -> ``{"sentiment", "symbol"}`` ou ``None``.
+
+    C'est la demande explicite : « important seulement ». Trois portes, aucune
+    ouverte par défaut — un mème, une photo, une pique politique sans contenu
+    économique ne franchit rien et disparaît :
+
+    1. un **cashtag** ``$TICKER`` — l'auteur parle explicitement d'un titre. Le
+       ton est alors affiné par le classifieur ordinaire (``classify``), et à
+       défaut c'est un simple « à surveiller » ;
+    2. **impact politique/économique** (``classify_gov``, réutilisé tel quel) ->
+       ``gov``, exactement comme une dépêche du volet politique ;
+    3. **crypto** (``classify_crypto``, réutilisé tel quel) -> son ton et sa
+       paire Yahoo.
+
+    Ordre de priorité : ``gov`` puis ``crypto`` puis le cashtag seul. Un post
+    qui annonce des droits de douane ET cite ``$F`` est d'abord une annonce
+    politique — mais il garde le symbole, qui reste l'information la plus
+    précise qu'il porte.
+    """
+    if not text:
+        return None
+    body = str(text)
+    if any(_keyword_matches(body.lower(), kw) for kw in _ADVICE_KEYWORDS):
+        return None
+
+    cash = cashtag_symbol(body)
+    if classify_gov(body):
+        return {"sentiment": "gov", "symbol": cash}
+    crypto = classify_crypto(body)
+    if crypto:
+        return {"sentiment": crypto, "symbol": cash or crypto_symbol(body)}
+    if cash:
+        return {"sentiment": classify(body) or "watch", "symbol": cash}
+    return None
+
+
+def format_x_message(handle: str, title: str, link: str, sentiment: str,
+                     symbol: Optional[str] = None) -> str:
+    """Message Telegram d'un post X retenu. Signale, ne recommande jamais."""
+    tail = " — %s" % symbol if symbol else ""
+    return ("[Simulateur] Compte suivi @%s%s\n« %s »\n%s"
+            % (handle, tail, title, link))
+
+
+def normalize_handles(values: Any) -> List[str]:
+    """Liste de comptes X validée (PUR) : ``@`` retiré, format
+    ``^[A-Za-z0-9_]{1,15}$``, dédoublonnée sans tenir compte de la casse,
+    plafonnée à ``X_MAX_HANDLES``.
+
+    On REJETTE en silence un handle invalide plutôt que de le corriger : un
+    nom sanitisé pointerait sur un AUTRE compte que celui demandé.
+    """
+    out: List[str] = []
+    seen = set()
+    if not isinstance(values, (list, tuple)):
+        return out
+    for raw in values:
+        handle = str(raw or "").strip().lstrip("@")
+        if not _X_HANDLE_RE.match(handle) or handle.lower() in seen:
+            continue
+        seen.add(handle.lower())
+        out.append(handle)
+        if len(out) >= X_MAX_HANDLES:
+            break
+    return out
+
+
+def x_cycle_due(cycle: Any) -> bool:
+    """Ce cycle doit-il interroger X ? (PUR — un cycle sur ``_X_CYCLE_EVERY``.)
+
+    Compteur illisible -> ``True`` : mieux vaut un passage de trop qu'un volet
+    éteint pour toujours par un état corrompu.
+    """
+    try:
+        return int(cycle) % _X_CYCLE_EVERY == 0
+    except (TypeError, ValueError):
+        return True
+
+
 # --- anti-spam du volet politique : clé d'HISTOIRE (cf. le commentaire de
 # tête de fichier ~L99 pour le design complet -- deux couches, story_key ici
 # pour la couche 1) ---------------------------------------------------------- #
@@ -485,7 +757,9 @@ def _global_seen_path() -> Path:
 
 
 def _default_seen_state() -> Dict[str, Any]:
-    return {"seen": {}, "events": [], "seeded": {}, "stories": {}, "sent_log": []}
+    return {"seen": {}, "events": [], "seeded": {}, "stories": {},
+            "sent_log": [], "crypto_sent_log": [], "x_sent_log": [],
+            "x_cycle": 0, "x_tiers": {}, "x_fails": {}}
 
 
 def _load_seen_state(path: Path) -> Dict[str, Any]:
@@ -500,7 +774,13 @@ def _load_seen_state(path: Path) -> Dict[str, Any]:
     l'état global politique (anti-spam par histoire, cf. tête de fichier
     ~L99) -- absents/mal typés (y compris un état "ancien format" écrit
     AVANT cette extension) -> repartent d'un dict/liste vide SANS planter,
-    même philosophie que "seen"/"events"/"seeded" ci-dessous."""
+    même philosophie que "seen"/"events"/"seeded" ci-dessous.
+
+    Idem pour les clés des volets ajoutés le 26/08 : "crypto_sent_log" et
+    "x_sent_log" (budgets propres, cf. constantes), "x_cycle" (cadence un
+    cycle sur deux), "x_tiers" (quel chemin de récupération marche pour quel
+    compte) et "x_fails" (anomalies consécutives avant escalade). Un état
+    écrit AVANT cette extension repart donc de zéro sans migration."""
     if not path.is_file():
         return _default_seen_state()
     try:
@@ -514,17 +794,29 @@ def _load_seen_state(path: Path) -> Dict[str, Any]:
         return _default_seen_state()
     if not isinstance(data, dict):
         return _default_seen_state()
-    seen = data.get("seen")
-    events = data.get("events")
-    seeded = data.get("seeded")
-    stories = data.get("stories")
-    sent_log = data.get("sent_log")
+    def _dict(key):
+        value = data.get(key)
+        return value if isinstance(value, dict) else {}
+
+    def _list(key):
+        value = data.get(key)
+        return value if isinstance(value, list) else []
+
+    try:
+        cycle = int(data.get("x_cycle") or 0)
+    except (TypeError, ValueError):
+        cycle = 0
     return {
-        "seen": seen if isinstance(seen, dict) else {},
-        "events": events if isinstance(events, list) else [],
-        "seeded": seeded if isinstance(seeded, dict) else {},
-        "stories": stories if isinstance(stories, dict) else {},
-        "sent_log": sent_log if isinstance(sent_log, list) else [],
+        "seen": _dict("seen"),
+        "events": _list("events"),
+        "seeded": _dict("seeded"),
+        "stories": _dict("stories"),
+        "sent_log": _list("sent_log"),
+        "crypto_sent_log": _list("crypto_sent_log"),
+        "x_sent_log": _list("x_sent_log"),
+        "x_cycle": cycle,
+        "x_tiers": _dict("x_tiers"),
+        "x_fails": _dict("x_fails"),
     }
 
 
@@ -619,6 +911,175 @@ def _hash_link(link: str) -> str:
     return hashlib.md5(link.encode("utf-8")).hexdigest()
 
 
+# --------------------------------------------------------------------------- #
+# Comptes X suivis — config utilisateur (26/08)
+# --------------------------------------------------------------------------- #
+
+def x_accounts_path() -> Path:
+    """Chemin du fichier des comptes X suivis. Relit ``store.DATA_DIR`` à
+    chaque appel (même raison que ``_global_seen_path``)."""
+    return store.DATA_DIR / X_ACCOUNTS_NAME
+
+
+def load_x_accounts() -> List[str]:
+    """Les comptes X suivis. Fichier absent/illisible/vide -> les DÉFAUTS
+    livrés (``X_DEFAULT_HANDLES``) : un volet neuf doit produire quelque chose
+    sans qu'on ait à le configurer. Une liste explicitement VIDE reste vide —
+    c'est une décision de l'utilisateur, pas une absence de décision.
+    """
+    path = x_accounts_path()
+    if not path.is_file():
+        return list(X_DEFAULT_HANDLES)
+    try:
+        with open(str(path), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return list(X_DEFAULT_HANDLES)
+    if not isinstance(data, dict) or not isinstance(data.get("handles"), list):
+        return list(X_DEFAULT_HANDLES)
+    return normalize_handles(data["handles"])
+
+
+def save_x_accounts(handles: Any) -> List[str]:
+    """Persiste la liste (atomique, 0o600) et rend la liste RÉELLEMENT écrite
+    — normalisée, donc ce que l'appelant affiche est ce qui s'applique.
+
+    ``_save_seen_state`` est réutilisé pour son ÉCRITURE (temporaire 0o600 puis
+    ``os.replace``), pas pour la forme de son contenu : il sérialise le
+    dictionnaire qu'on lui donne, quel qu'il soit.
+    """
+    valid = normalize_handles(handles)
+    _save_seen_state(x_accounts_path(), {"handles": valid})
+    return valid
+
+
+# --------------------------------------------------------------------------- #
+# Récupération d'un profil X — DEUX ÉTAGES
+#
+# 1. **léger** : curl_cffi en empreinte Chrome. C'est le chemin normal, prouvé,
+#    et il coûte une requête ;
+# 2. **furtif** : ``StealthFetcher`` du AI Harvester (patchright + vrai Chrome
+#    sur le ``:100`` de l'Omen). Réservé aux cibles dures, exactement comme le
+#    veut la doctrine du Harvester — on n'y va que si l'étage léger a montré un
+#    signal de blocage (403/429, page-challenge, ou sérialisation cassée deux
+#    cycles de suite sur le MÊME compte).
+#
+# Les flux RSS (Yahoo, Google News, Cointelegraph, Decrypt, EDGAR) NE passent
+# jamais par là : ils répondent au chemin léger, y mettre un navigateur serait
+# du gaspillage pur.
+# --------------------------------------------------------------------------- #
+
+def _x_url(handle: str) -> str:
+    return "https://x.com/%s" % handle
+
+
+def _fetch_x_light(handle: str) -> str:
+    """Étage 1 : le HTML du profil via curl_cffi (empreinte Chrome).
+
+    Import PARESSEUX : le module doit rester importable sur une machine sans
+    ``curl_cffi`` — le volet X se contente alors d'échouer proprement.
+    """
+    from curl_cffi import requests as creq   # import paresseux (cf. docstring)
+    session = creq.Session(impersonate="chrome")
+    response = session.get(_x_url(handle), timeout=25)
+    status = getattr(response, "status_code", 0)
+    if status in (403, 429):
+        from backend.bots.harvester.fetch import PushbackError
+        raise PushbackError("x.com/%s a refusé (HTTP %s)" % (handle, status),
+                            status=status)
+    if status >= 400:
+        from backend.bots.harvester.fetch import FetchError
+        raise FetchError("x.com/%s: HTTP %s" % (handle, status))
+    return response.text or ""
+
+
+def _fetch_x_stealth(handle: str) -> str:
+    """Étage 2 : le même HTML, via le navigateur furtif du Harvester.
+
+    Tout est PARESSEUX (module ET instanciation) : sur le Mac de développement
+    ``patchright`` n'est pas installé, et l'étage doit alors être simplement
+    INDISPONIBLE — un compteur d'erreur, jamais une exception qui casserait le
+    cycle de veille des trois autres volets.
+    """
+    from backend.bots.harvester.fetch import RateLimiter
+    from backend.bots.harvester.fetch_stealth import StealthFetcher
+    fetcher = StealthFetcher(rate=RateLimiter(_X_PACE_S))
+    return fetcher.get(_x_url(handle))
+
+
+def _parse_x_posts(page: str, handle: str) -> List[Dict[str, Any]]:
+    """Les posts d'une page de profil, via ``pulse.social.parse_x`` du moteur
+    market-pulse (pont ``sys.path``, même patron que ``quotes.py`` : le dossier
+    est tirété, donc ``import pulse.social`` ne marche pas tel quel).
+
+    Laisse remonter ``XSerializationChanged`` : c'est un SIGNAL (la page a
+    changé de forme, ou on nous sert un mur), pas un détail — l'appelant s'en
+    sert pour décider d'escalader.
+    """
+    engine_dir = str(Path(__file__).resolve().parents[3] / "market-pulse")
+    if engine_dir not in sys.path:
+        sys.path.insert(0, engine_dir)
+    from pulse import social                  # noqa: E402 — pont sys.path
+    return social.parse_x(page, handle)
+
+
+def _x_serialization_error():
+    """La classe ``XSerializationChanged`` du moteur, ou un repli inoffensif si
+    le moteur n'est pas déployé (``except`` sur une classe absente lèverait)."""
+    try:
+        engine_dir = str(Path(__file__).resolve().parents[3] / "market-pulse")
+        if engine_dir not in sys.path:
+            sys.path.insert(0, engine_dir)
+        from pulse import social
+        return social.XSerializationChanged
+    except Exception:      # noqa: BLE001 — moteur absent
+        class _Never(RuntimeError):
+            pass
+        return _Never
+
+
+def _x_default_pacer():
+    """Le ``AdaptivePacer`` du Harvester (c'est sa raison d'être : ralentir
+    quand la cible pousse, réaccélérer quand elle laisse faire). Module absent
+    -> un cadenceur fixe minimal, pour que le volet tourne quand même."""
+    try:
+        from backend.bots.harvester.pacing import AdaptivePacer
+        return AdaptivePacer(_X_PACE_S)
+    except Exception:      # noqa: BLE001
+        class _Fixed(object):
+            def interval(self):
+                return _X_PACE_S
+
+            def penalize(self, retry_after=None):
+                pass
+
+            def relax(self):
+                pass
+        return _Fixed()
+
+
+def x_tier_for(handle: str, tiers: Any, now_dt: datetime) -> str:
+    """Quel étage utiliser pour ce compte ? ``"light"`` ou ``"stealth"`` (PUR).
+
+    Le furtif est MÉMORISÉ par compte pendant ``_X_STEALTH_TTL_S`` : sans ça on
+    re-paierait l'échec du chemin léger à chaque cycle. Passé ce délai on
+    retente le léger — un blocage n'est pas éternel, et le navigateur coûte
+    infiniment plus cher.
+    """
+    since = (tiers or {}).get(handle) if isinstance(tiers, dict) else None
+    if not since:
+        return "light"
+    try:
+        started = datetime.fromisoformat(str(since))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return "light"             # horodatage illisible -> on retente le léger
+    if (now_dt - started).total_seconds() >= _X_STEALTH_TTL_S:
+        return "light"
+    return "stealth"
+
+
 def recent_events(username: str) -> List[Dict[str, Any]]:
     """CONTRAT PUBLIC (consommé par le router) : événements news récents pour
     un utilisateur, TRIÉS PAR ts DÉCROISSANT -- fusionne les événements
@@ -711,7 +1172,12 @@ def _discover_portfolios() -> List[Tuple[str, Dict[str, Any]]]:
         name = path.name
         if (name.endswith(".coach.json") or name.endswith(".news_seen.json")
                 or name.endswith(".watchlist.json")
-                or name.endswith(".board.json")):
+                or name.endswith(".board.json")
+                or name.endswith(".ideas.json")
+                # Fichiers de RÉGLAGE (26/08) : leur radical ne porte pas de
+                # point, donc l'allowlist de store ne les rejette PAS — ils
+                # doivent être nommés explicitement.
+                or name in ("alerts_mode.json", "x_accounts.json")):
             continue
         username = path.stem
         try:
@@ -725,27 +1191,253 @@ def _discover_portfolios() -> List[Tuple[str, Dict[str, Any]]]:
     return out
 
 
+def _pushback_error():
+    """La classe ``PushbackError`` du Harvester, ou un repli inoffensif si le
+    module n'est pas déployé (un ``except`` sur une classe absente lèverait)."""
+    try:
+        from backend.bots.harvester.fetch import PushbackError
+        return PushbackError
+    except Exception:      # noqa: BLE001
+        class _Never(RuntimeError):
+            pass
+        return _Never
+
+
+def _x_try(fetch_fn: Callable[[str], str],
+           parse_fn: Callable[[str, str], List[Dict[str, Any]]],
+           handle: str, pacer: Any, counters: Dict[str, Any],
+           serial_error: Any) -> Tuple[Optional[List[Dict[str, Any]]], str]:
+    """UNE tentative de récupération d'un profil -> ``(posts|None, signal)``.
+
+    ``signal`` vaut ``""`` (succès), ``"block"`` (refus FRANC : 403/429, donc
+    escalade immédiate) ou ``"anomaly"`` (page vide, sérialisation cassée,
+    panne — il en faut deux de suite avant de sortir le navigateur).
+    """
+    try:
+        page = fetch_fn(handle)
+    except _pushback_error() as exc:
+        pacer.penalize(getattr(exc, "retry_after", None))
+        counters["errors"] += 1
+        return None, "block"
+    except Exception as exc:      # noqa: BLE001 — réseau, TLS, module absent
+        logger.warning("paper newswatch: X @%s injoignable (%s)",
+                       handle, type(exc).__name__)
+        counters["errors"] += 1
+        return None, "anomaly"
+
+    counters["fetched"] += 1
+    try:
+        posts = parse_fn(page, handle)
+    except serial_error:
+        # La page est GROSSE mais ne rend plus rien : format changé, ou mur.
+        logger.warning("paper newswatch: X @%s ne rend plus de posts", handle)
+        counters["errors"] += 1
+        return None, "anomaly"
+    except Exception as exc:      # noqa: BLE001
+        logger.warning("paper newswatch: X @%s illisible (%s)",
+                       handle, type(exc).__name__)
+        counters["errors"] += 1
+        return None, "anomaly"
+
+    if not posts:
+        # Petite page sans aucun post = page-challenge probable.
+        return None, "anomaly"
+    pacer.relax()
+    return posts, ""
+
+
+def _x_posts_for(handle: str, now_dt: datetime, tiers: Dict[str, Any],
+                 fails: Dict[str, Any], light: Callable[[str], str],
+                 heavy: Callable[[str], str],
+                 parse_fn: Callable[[str, str], List[Dict[str, Any]]],
+                 pacer: Any, counters: Dict[str, Any],
+                 serial_error: Any) -> List[Dict[str, Any]]:
+    """Les posts d'un compte, en montant d'un étage SEULEMENT si nécessaire.
+
+    Le compteur d'anomalies est PERSISTÉ par compte : c'est lui qui distingue
+    un blip (une page vide un cycle) d'un vrai mur (deux cycles de suite), et
+    il ne peut pas vivre en mémoire de process — la veille redémarre à chaque
+    déploiement.
+    """
+    tier = x_tier_for(handle, tiers, now_dt)
+    posts: Optional[List[Dict[str, Any]]] = None
+
+    if tier == "light":
+        posts, signal = _x_try(light, parse_fn, handle, pacer, counters,
+                               serial_error)
+        if not signal:
+            fails.pop(handle, None)
+            return posts or []
+        if signal == "block":
+            fails[handle] = _X_ESCALATE_AFTER      # refus franc : on monte tout de suite
+        else:
+            fails[handle] = int(fails.get(handle) or 0) + 1
+        if int(fails.get(handle) or 0) < _X_ESCALATE_AFTER:
+            return []                              # un blip ne réveille pas Chrome
+        tier = "stealth"
+
+    posts, signal = _x_try(heavy, parse_fn, handle, pacer, counters,
+                           serial_error)
+    if signal or posts is None:
+        # Le furtif a échoué aussi (typiquement : patchright absent de la
+        # machine). On n'inscrit PAS un étage qui ne marche pas — sinon le
+        # compte resterait 24 h sur un chemin mort.
+        tiers.pop(handle, None)
+        return []
+    # Escalade réussie : mémorisée pour 24 h. L'horodatage n'est PAS rafraîchi
+    # aux passages suivants — sans quoi on ne retenterait jamais le chemin
+    # léger, qui coûte mille fois moins cher.
+    tiers.setdefault(handle, now_dt.isoformat())
+    fails.pop(handle, None)
+    return posts
+
+
+def _run_x_volet(state: Dict[str, Any], now_dt: datetime, cfg: Dict[str, Any],
+                 notify_fn: Callable[[str, Dict[str, Any]], bool],
+                 sleep_fn: Callable[[float], None], quiet: bool,
+                 counters: Dict[str, Any],
+                 x_fetch: Optional[Callable[[str], str]] = None,
+                 x_stealth: Optional[Callable[[str], str]] = None,
+                 x_parse: Optional[Callable[[str, str], List[Dict[str, Any]]]] = None,
+                 x_pacer: Any = None) -> None:
+    """Le volet « comptes influents » : lit les profils suivis, ne garde que ce
+    qui est IMPORTANT (``classify_x``), journalise, et n'envoie qu'en mode
+    « tout ». MUTE ``state`` — la persistance est faite par l'appelant."""
+    handles = load_x_accounts()
+    if not handles:
+        return
+
+    light = x_fetch if x_fetch is not None else _fetch_x_light
+    heavy = x_stealth if x_stealth is not None else _fetch_x_stealth
+    parse_fn = x_parse if x_parse is not None else _parse_x_posts
+    pacer = x_pacer if x_pacer is not None else _x_default_pacer()
+    serial_error = _x_serialization_error()
+
+    seen = state["seen"]
+    events = state["events"]
+    seeded = state["seeded"]
+    tiers = state["x_tiers"]
+    fails = state["x_fails"]
+    sent_log = state["x_sent_log"]
+    _purge_old_sent_log(sent_log, now_dt, max_age_h=1)
+    notified = 0
+    first = True
+
+    for handle in handles:
+        if not first:
+            sleep_fn(pacer.interval())
+        first = False
+
+        posts = _x_posts_for(handle, now_dt, tiers, fails, light, heavy,
+                             parse_fn, pacer, counters, serial_error)
+        seed_key = "x:%s" % handle
+        is_first_pass = seed_key not in seeded
+
+        for post in posts[:_X_MAX_POSTS_PER_HANDLE]:
+            text = str((post or {}).get("title") or "")
+            if not text.strip():
+                continue
+            key = _hash_link("x:%s:%s" % (handle, text))
+            if key in seen:
+                continue
+            seen[key] = now_dt.isoformat()
+
+            if is_first_pass:
+                continue  # seed silencieux, comme les trois autres volets
+
+            published = post.get("published")
+            if published:
+                try:
+                    age_s = now_dt.timestamp() - float(published)
+                except (TypeError, ValueError):
+                    age_s = 0
+                if age_s < 0 or age_s > _GOV_MAX_AGE_S:
+                    continue
+
+            verdict = classify_x(text)
+            if verdict is None:
+                continue  # mème, pique, photo : jeté, c'est la demande
+
+            title = x_post_title(text)
+            link = str(post.get("url") or _x_url(handle))
+            event = {
+                "ts": now_dt.isoformat(),
+                "symbol": verdict.get("symbol"),
+                "title": title,
+                "link": link,
+                "sentiment": verdict.get("sentiment"),
+                "src": "x",
+                "handle": handle,
+            }
+
+            if quiet or notified >= _X_MAX_NOTIFY_PER_RUN \
+                    or len(sent_log) >= _X_MAX_SENDS_PER_HOUR:
+                event["muted"] = True
+                events.insert(0, event)
+                continue
+
+            try:
+                ok = notify_fn(format_x_message(handle, title, link,
+                                                event["sentiment"],
+                                                event["symbol"]), cfg)
+            except Exception as exc:      # noqa: BLE001
+                logger.warning("paper newswatch: notif X échouée (%s)",
+                               type(exc).__name__)
+                ok = False
+            if ok:
+                counters["notified"] += 1
+                notified += 1
+                sent_log.append(now_dt.isoformat())
+                event["muted"] = False
+                events.insert(0, event)
+            else:
+                counters["errors"] += 1
+
+        if is_first_pass and posts:
+            seeded[seed_key] = True
+
+
 # --- le cycle ----------------------------------------------------------------- #
 
 def run_once(now: Optional[datetime] = None,
             fetch: Optional[Callable[[str], str]] = None,
             notifier: Optional[Callable[[str, Dict[str, Any]], bool]] = None,
             tg_cfg: Optional[Dict[str, Any]] = None,
-            sleep: Optional[Callable[[float], None]] = None) -> Dict[str, int]:
-    """Un cycle de veille news : (1) volet politique GLOBAL (toujours, même
-    sans portefeuille) puis (2) pour chaque utilisateur ayant des positions
-    ouvertes ET/OU des symboles en watchlist, interroge le flux RSS Yahoo de
-    chaque symbole surveillé (union dédupliquée, cf. _merged_symbols).
-    Notifie Telegram sur toute news neg/pos/watch (par symbole) ou gov
-    (globale) nouvelle. Retourne les compteurs {users, symbols, fetched,
-    notified, errors} -- le volet gov contribue à fetched/notified/errors
-    mais jamais à users/symbols (qui ne parlent que des portefeuilles).
+            sleep: Optional[Callable[[float], None]] = None,
+            mode: Optional[str] = None,
+            x_fetch: Optional[Callable[[str], str]] = None,
+            x_stealth: Optional[Callable[[str], str]] = None,
+            x_parse: Optional[Callable[[str, str], List[Dict[str, Any]]]] = None,
+            x_pacer: Any = None,
+            converge: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
+    """Un cycle de veille news, QUATRE volets :
 
-    Sans config Telegram -> ne fait RIEN du tout, ni le volet gov ni le volet
-    par utilisateur (ni disque ni réseau, feature opt-in silencieuse) : c'est
-    vérifié EN PREMIER, avant tout accès à data/.
+    1. **politique GLOBAL** (toujours, même sans portefeuille) ;
+    2. **crypto GLOBAL** (26/08 — le coach n'avait aucune matière crypto) ;
+    3. **par utilisateur, par symbole** détenu ∪ suivi (RSS Yahoo) ;
+    4. **comptes X influents** (26/08 — un cycle sur deux).
+
+    Retourne ``{users, symbols, fetched, notified, errors, convergence_fired}``
+    — les volets globaux contribuent à fetched/notified/errors mais jamais à
+    users/symbols (qui ne parlent que des portefeuilles).
+
+    **Mode d'alerte** (``alerts.get_mode``, lu UNE fois ici et propagé) : en
+    « calme » — le défaut — aucun de ces volets n'ENVOIE quoi que ce soit ; ils
+    enregistrent exactement la même matière, marquée ``"muted": True``. Seule
+    la convergence parle. En « tout », comportement historique.
+
+    **Convergence événementielle** : à la toute fin, la couche de convergence
+    est consultée (best-effort). C'est la demande — « quand les bons facteurs
+    sont là, il s'active tout de suite, pas au prochain réveil planifié ». Le
+    coût reste nul en régime normal : ``convergence.should_fire`` sort avant
+    tout appel au modèle tant que les facteurs ne s'alignent pas.
+
+    Sans config Telegram -> ne fait RIEN du tout (ni disque ni réseau, feature
+    opt-in silencieuse) : c'est vérifié EN PREMIER, avant tout accès à data/.
     """
-    counters = {"users": 0, "symbols": 0, "fetched": 0, "notified": 0, "errors": 0}
+    counters: Dict[str, Any] = {"users": 0, "symbols": 0, "fetched": 0,
+                                "notified": 0, "errors": 0,
+                                "convergence_fired": False}
 
     cfg = tg_cfg if tg_cfg is not None else (alerts.load_cfg() or {})
     if not cfg.get("token") or not cfg.get("chat_id"):
@@ -758,6 +1450,10 @@ def run_once(now: Optional[datetime] = None,
     fetch_fn = fetch if fetch is not None else _fetch_rss
     notify_fn = notifier if notifier is not None else alerts.send
     sleep_fn = sleep if sleep is not None else time.sleep
+    # UNE seule lecture du mode pour tout le cycle : deux lectures pourraient
+    # tomber de part et d'autre d'un changement de réglage et rendre le même
+    # passage à moitié bavard.
+    quiet = alerts.is_quiet(mode)
 
     first_call = True
 
@@ -821,6 +1517,20 @@ def run_once(now: Optional[datetime] = None,
             if not classify_gov(title):
                 continue  # neutre/électoral -> juste marqué vu
 
+            if quiet:
+                # Mode calme : la matière est gardée intacte (feed, mémoire,
+                # convergence), seul l'ENVOI disparaît. On court-circuite donc
+                # tout l'appareil anti-spam, qui ne protège que l'envoi.
+                gov_events.insert(0, {
+                    "ts": now_dt.isoformat(),
+                    "symbol": "GOV",
+                    "title": title,
+                    "link": link,
+                    "sentiment": "gov",
+                    "muted": True,
+                })
+                continue
+
             skey = story_key(title)
             muted = False
             last_sent_iso = gov_stories.get(skey)
@@ -875,6 +1585,109 @@ def run_once(now: Optional[datetime] = None,
     if gov_is_first_pass:
         gov_seeded["gov"] = True
         gov_changed = True  # persiste le flag même si les deux flux étaient vides
+
+    # ----------------------------------------------------------------- #
+    # Volet 1bis -- CRYPTO GLOBAL (26/08). Même état que le volet politique
+    # (fichier global) : ces deux volets parlent à TOUT LE MONDE, pas à un
+    # portefeuille. Budget d'envoi PROPRE (cf. _CRYPTO_MAX_SENDS_PER_HOUR).
+    #
+    # Le gate de pertinence de classify_crypto est ce qui rend Decrypt (flux
+    # tech mélangé) utilisable : un titre sans marqueur crypto est marqué vu
+    # et rien d'autre.
+    # ----------------------------------------------------------------- #
+    crypto_sent_log = gov_state["crypto_sent_log"]
+    _purge_old_sent_log(crypto_sent_log, now_dt, max_age_h=1)
+    crypto_is_first_pass = "crypto" not in gov_seeded
+    crypto_notified_count = 0
+
+    for crypto_url in _CRYPTO_SOURCES:
+        if not first_call:
+            sleep_fn(_PACE_S)
+        first_call = False
+
+        try:
+            xml_text = fetch_fn(crypto_url)
+        except Exception as exc:
+            logger.warning("paper newswatch: fetch crypto échoué (%s)",
+                           type(exc).__name__)
+            counters["errors"] += 1
+            continue
+        counters["fetched"] += 1
+
+        for item in parse_rss(xml_text):
+            link = item.get("link")
+            if not link:
+                continue
+            key = _hash_link(link)
+            if key in gov_seen:
+                continue
+            gov_seen[key] = now_dt.isoformat()
+            gov_changed = True
+
+            if crypto_is_first_pass:
+                continue  # seed silencieux, comme les autres volets
+
+            pub_ts = item.get("pub_ts") or 0
+            age_s = now_dt.timestamp() - pub_ts
+            if age_s < 0 or age_s > _CRYPTO_MAX_AGE_S:
+                continue
+            title = item.get("title", "")
+            sentiment = classify_crypto(title)
+            if sentiment is None:
+                continue  # hors sujet (le SpaceX de Decrypt) ou neutre
+
+            symbol = crypto_symbol(title)
+            event = {
+                "ts": now_dt.isoformat(),
+                "symbol": symbol,
+                "title": title,
+                "link": link,
+                "sentiment": sentiment,
+                "src": "crypto",
+            }
+
+            if quiet:
+                event["muted"] = True
+                gov_events.insert(0, event)
+                continue
+            if (crypto_notified_count >= _MAX_CRYPTO_NOTIFY_PER_RUN
+                    or len(crypto_sent_log) >= _CRYPTO_MAX_SENDS_PER_HOUR):
+                event["muted"] = True
+                gov_events.insert(0, event)
+                continue
+
+            try:
+                ok = notify_fn(format_crypto_message(title, link, sentiment,
+                                                     symbol), cfg)
+            except Exception as exc:
+                logger.warning("paper newswatch: notif crypto échouée (%s)",
+                               type(exc).__name__)
+                ok = False
+            if ok:
+                counters["notified"] += 1
+                crypto_notified_count += 1
+                crypto_sent_log.append(now_dt.isoformat())
+                event["muted"] = False
+                gov_events.insert(0, event)
+            else:
+                counters["errors"] += 1
+
+    if crypto_is_first_pass:
+        gov_seeded["crypto"] = True
+        gov_changed = True
+
+    # ----------------------------------------------------------------- #
+    # Volet 1ter -- comptes X influents (26/08), UN CYCLE SUR DEUX.
+    # ----------------------------------------------------------------- #
+    # Le compteur est lu AVANT d'être incrémenté : un déploiement neuf
+    # (compteur à 0) interroge donc X dès son premier cycle, au lieu
+    # d'attendre dix minutes sans raison.
+    x_cycle = int(gov_state.get("x_cycle") or 0)
+    gov_state["x_cycle"] = x_cycle + 1
+    gov_changed = True
+    if x_cycle_due(x_cycle):
+        _run_x_volet(gov_state, now_dt, cfg, notify_fn, sleep_fn, quiet,
+                     counters, x_fetch, x_stealth, x_parse, x_pacer)
 
     if gov_changed:
         gov_state["events"] = gov_events[:_MAX_EVENTS]
@@ -939,6 +1752,21 @@ def run_once(now: Optional[datetime] = None,
                 if sentiment is None:
                     continue  # neutre (ou conseil) -> juste marqué vu
 
+                if quiet:
+                    # Mode calme : on journalise EXACTEMENT ce que le mode
+                    # bavard aurait envoyé (même cap par symbole, donc même
+                    # matière pour la convergence), sans rien envoyer.
+                    notified_for_symbol += 1
+                    events.insert(0, {
+                        "ts": now_dt.isoformat(),
+                        "symbol": symbol,
+                        "title": item["title"],
+                        "link": link,
+                        "sentiment": sentiment,
+                        "muted": True,
+                    })
+                    continue
+
                 message = format_message(symbol, item["title"], link, sentiment)
                 try:
                     ok = notify_fn(message, cfg)
@@ -971,4 +1799,49 @@ def run_once(now: Optional[datetime] = None,
             _purge_old_seen(state, now_dt)
             _save_seen(username, state)
 
+    # ----------------------------------------------------------------- #
+    # Convergence ÉVÉNEMENTIELLE — après les sauvegardes d'état, jamais
+    # avant : la convergence RELIT ces fichiers, elle doit voir la matière du
+    # cycle qui vient de se terminer.
+    # ----------------------------------------------------------------- #
+    counters["convergence_fired"] = _fire_convergence(
+        now_dt, tg_cfg=tg_cfg, notifier=notifier, converge=converge,
+        counters=counters)
     return counters
+
+
+def _fire_convergence(now_dt: datetime,
+                      tg_cfg: Optional[Dict[str, Any]] = None,
+                      notifier: Optional[Callable[..., Any]] = None,
+                      converge: Optional[Callable[..., Any]] = None,
+                      counters: Optional[Dict[str, Any]] = None) -> bool:
+    """Consulte la couche de convergence — best-effort STRICT (même patron que
+    ``radar._fire_convergence``).
+
+    Le guetteur a déjà fait son travail et sauvé son état quand on arrive ici :
+    une convergence en panne ne doit JAMAIS faire perdre un cycle de veille.
+    L'échec est compté et logué, jamais propagé.
+
+    Économie : ``convergence.should_fire`` exige ≥ 2 facteurs, un cooldown de
+    6 h et une empreinte différente de la dernière — tant que ces gardes
+    refusent, l'appel ne fait QUE de la lecture de fichiers locaux, sans
+    toucher au modèle ni au réseau. C'est ce qui rend l'évaluation à chaque
+    cycle de 5 minutes gratuite.
+    """
+    try:
+        if converge is not None:
+            result = converge(now=now_dt, notifier=notifier, tg_cfg=tg_cfg)
+        else:
+            from backend.bots.paper import convergence
+            result = convergence.maybe_fire(now=now_dt, notifier=notifier,
+                                            tg_cfg=tg_cfg)
+    except Exception as exc:      # noqa: BLE001 — module absent ou bug interne
+        logger.warning("paper newswatch: convergence indisponible (%s)",
+                       type(exc).__name__)
+        if counters is not None:
+            counters["errors"] += 1
+        return False
+    result = result if isinstance(result, dict) else {}
+    if counters is not None and result.get("sent"):
+        counters["notified"] += 1
+    return bool(result.get("fired"))

@@ -156,6 +156,25 @@ def _isolated_data_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+# Capturé AVANT toute fixture : ``_no_side_channels`` le remplace pour éteindre
+# le réchauffement du cache par défaut, et ses propres tests ont besoin du vrai.
+_REAL_WARM_CACHE = w._warm_cache
+
+
+@pytest.fixture(autouse=True)
+def _no_side_channels(monkeypatch):
+    """Depuis le 26/08, ``check_new_filings`` fait deux choses de plus APRÈS sa
+    ronde : réchauffer le cache des portefeuilles (requêtes SEC) et consulter la
+    convergence (qui appellerait le VRAI CLI Claude le jour où des facteurs
+    s'alignent). Les deux sont neutralisés par défaut ici ; les tests qui les
+    visent réinstallent leur propre doublure."""
+    monkeypatch.setattr(w, "_warm_cache",
+                        lambda ids, cache, stamp, client, sleep, counters: None)
+    from backend.bots.paper import convergence
+    monkeypatch.setattr(convergence, "maybe_fire",
+                        lambda **kwargs: {"fired": False, "sent": False})
+
+
 def full_routes():
     """Le parcours complet d'un gérant : submissions + 2 dossiers d'archive."""
     return {
@@ -731,9 +750,10 @@ def test_watcher_does_nothing_without_telegram_config(monkeypatch):
     _one_manager(monkeypatch)
     client = FakeClient(_watch_routes([("4", "a1", "2026-08-20", "")]))
     notifier = FakeNotifier()
-    out = w.check_new_filings(client=client, notifier=notifier, tg_cfg={},
+    out = w.check_new_filings(mode="tout", client=client, notifier=notifier, tg_cfg={},
                               sleep=Recorder(), now=1000.0)
-    assert out == {"managers": 0, "new_filings": 0, "notified": 0, "errors": 0}
+    assert out == {"managers": 0, "new_filings": 0, "notified": 0, "errors": 0,
+                   "convergence_fired": False}
     assert client.calls == []                   # ZÉRO réseau quand c'est éteint
     assert notifier.sent == []
     assert not w.watch_path().is_file()
@@ -748,9 +768,10 @@ def test_watcher_first_pass_seeds_silently(monkeypatch):
         ("SC 13D", "a3", "2026-07-01", ""),
     ]))
     notifier = FakeNotifier()
-    out = w.check_new_filings(client=client, notifier=notifier, tg_cfg=TG,
+    out = w.check_new_filings(mode="tout", client=client, notifier=notifier, tg_cfg=TG,
                               sleep=Recorder(), now=1000.0)
-    assert out == {"managers": 1, "new_filings": 0, "notified": 0, "errors": 0}
+    assert out == {"managers": 1, "new_filings": 0, "notified": 0, "errors": 0,
+                   "convergence_fired": False}
     assert notifier.sent == []
     assert w.recent_filing_events() == []
     state = json.loads(w.watch_path().read_text(encoding="utf-8"))
@@ -762,16 +783,17 @@ def test_watcher_first_pass_seeds_silently(monkeypatch):
 def test_watcher_notifies_a_new_filing_on_the_second_pass(monkeypatch):
     _one_manager(monkeypatch)
     notifier = FakeNotifier()
-    w.check_new_filings(client=FakeClient(_watch_routes([
+    w.check_new_filings(mode="tout", client=FakeClient(_watch_routes([
         ("13F-HR", "old", "2026-05-15", "2026-03-31")])),
         notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=1000.0)
     assert notifier.sent == []
 
-    out = w.check_new_filings(client=FakeClient(_watch_routes([
+    out = w.check_new_filings(mode="tout", client=FakeClient(_watch_routes([
         ("4", "brand-new", "2026-08-21", ""),
         ("13F-HR", "old", "2026-05-15", "2026-03-31")])),
         notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=2000.0)
-    assert out == {"managers": 1, "new_filings": 1, "notified": 1, "errors": 0}
+    assert out == {"managers": 1, "new_filings": 1, "notified": 1, "errors": 0,
+                   "convergence_fired": False}
 
     text, cfg = notifier.sent[0]
     assert cfg is TG
@@ -798,11 +820,11 @@ def test_watcher_does_not_renotify_on_a_third_pass(monkeypatch):
     notifier = FakeNotifier()
     filings_v1 = [("13F-HR", "old", "2026-05-15", "2026-03-31")]
     filings_v2 = [("4", "new", "2026-08-21", "")] + filings_v1
-    w.check_new_filings(client=FakeClient(_watch_routes(filings_v1)),
+    w.check_new_filings(mode="tout", client=FakeClient(_watch_routes(filings_v1)),
                         notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=1.0)
-    w.check_new_filings(client=FakeClient(_watch_routes(filings_v2)),
+    w.check_new_filings(mode="tout", client=FakeClient(_watch_routes(filings_v2)),
                         notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=2.0)
-    out = w.check_new_filings(client=FakeClient(_watch_routes(filings_v2)),
+    out = w.check_new_filings(mode="tout", client=FakeClient(_watch_routes(filings_v2)),
                               notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=3.0)
     assert out["new_filings"] == 0 and out["notified"] == 0
     assert len(notifier.sent) == 1
@@ -811,19 +833,19 @@ def test_watcher_does_not_renotify_on_a_third_pass(monkeypatch):
 def test_watcher_caps_at_three_notifications_but_marks_everything_seen(monkeypatch):
     _one_manager(monkeypatch)
     notifier = FakeNotifier()
-    w.check_new_filings(client=FakeClient(_watch_routes([
+    w.check_new_filings(mode="tout", client=FakeClient(_watch_routes([
         ("13F-HR", "old", "2026-05-15", "2026-03-31")])),
         notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=1.0)
 
     many = [("4", "n%d" % i, "2026-08-2%d" % i, "") for i in range(5)]
-    out = w.check_new_filings(client=FakeClient(_watch_routes(
+    out = w.check_new_filings(mode="tout", client=FakeClient(_watch_routes(
         many + [("13F-HR", "old", "2026-05-15", "2026-03-31")])),
         notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=2.0)
     assert out["new_filings"] == 5
     assert out["notified"] == w.MAX_NOTIFY_PER_MANAGER == 3
     assert len(notifier.sent) == 3
     # les 2 restants sont MARQUÉS VUS : ils ne repartiront pas au tour suivant
-    again = w.check_new_filings(client=FakeClient(_watch_routes(
+    again = w.check_new_filings(mode="tout", client=FakeClient(_watch_routes(
         many + [("13F-HR", "old", "2026-05-15", "2026-03-31")])),
         notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=3.0)
     assert again["new_filings"] == 0 and again["notified"] == 0
@@ -832,10 +854,10 @@ def test_watcher_caps_at_three_notifications_but_marks_everything_seen(monkeypat
 def test_watcher_ignores_forms_outside_the_watch_list(monkeypatch):
     _one_manager(monkeypatch)
     notifier = FakeNotifier()
-    w.check_new_filings(client=FakeClient(_watch_routes([
+    w.check_new_filings(mode="tout", client=FakeClient(_watch_routes([
         ("4", "seed", "2026-01-01", "")])),
         notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=1.0)
-    out = w.check_new_filings(client=FakeClient(_watch_routes([
+    out = w.check_new_filings(mode="tout", client=FakeClient(_watch_routes([
         ("8-K", "noise-1", "2026-08-21", ""),
         ("10-K", "noise-2", "2026-08-21", ""),
         ("13F-NT", "noise-3", "2026-08-21", "2026-06-30"),
@@ -874,7 +896,7 @@ def test_watcher_counts_one_broken_manager_and_carries_on(monkeypatch):
     routes = _watch_routes([("4", "a1", "2026-08-20", "")])
     routes["https://data.sec.gov/submissions/CIK0000000001.json"] = \
         RuntimeError("boom")
-    out = w.check_new_filings(client=FakeClient(routes), notifier=FakeNotifier(),
+    out = w.check_new_filings(mode="tout", client=FakeClient(routes), notifier=FakeNotifier(),
                               tg_cfg=TG, sleep=Recorder(), now=1.0)
     assert out["errors"] == 1
     assert out["managers"] == 1                 # le second a bien été traité
@@ -887,7 +909,7 @@ def test_watcher_survives_a_corrupt_state_file(monkeypatch):
     w.watch_path().parent.mkdir(parents=True, exist_ok=True)
     w.watch_path().write_text("<<<pas du json>>>", encoding="utf-8")
     notifier = FakeNotifier()
-    out = w.check_new_filings(client=FakeClient(_watch_routes([
+    out = w.check_new_filings(mode="tout", client=FakeClient(_watch_routes([
         ("4", "a1", "2026-08-20", "")])),
         notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=1.0)
     # état illisible -> on repart de zéro, donc ré-amorçage MUET (pas de tempête)
@@ -899,10 +921,10 @@ def test_watcher_survives_a_corrupt_state_file(monkeypatch):
 def test_a_failing_notifier_never_breaks_the_watch(monkeypatch):
     _one_manager(monkeypatch)
     boom = FakeNotifier(boom=True)
-    w.check_new_filings(client=FakeClient(_watch_routes([
+    w.check_new_filings(mode="tout", client=FakeClient(_watch_routes([
         ("13F-HR", "old", "2026-05-15", "2026-03-31")])),
         notifier=boom, tg_cfg=TG, sleep=Recorder(), now=1.0)
-    out = w.check_new_filings(client=FakeClient(_watch_routes([
+    out = w.check_new_filings(mode="tout", client=FakeClient(_watch_routes([
         ("4", "new", "2026-08-21", ""),
         ("13F-HR", "old", "2026-05-15", "2026-03-31")])),
         notifier=boom, tg_cfg=TG, sleep=Recorder(), now=2.0)
@@ -919,7 +941,7 @@ def test_watcher_paces_its_requests(monkeypatch):
         {"id": "b", "label": "B", "cik": CIK, "expect": "berkshire"},
     ])
     sleeps = Recorder()
-    w.check_new_filings(client=FakeClient(_watch_routes([])),
+    w.check_new_filings(mode="tout", client=FakeClient(_watch_routes([])),
                         notifier=FakeNotifier(), tg_cfg=TG, sleep=sleeps, now=1.0)
     assert sleeps.calls == [w.PACE_S]           # 2 requêtes -> 1 attente
 
@@ -929,12 +951,12 @@ def test_events_are_capped_newest_first(monkeypatch):
     _one_manager(monkeypatch)
     notifier = FakeNotifier()
     seed = [("13F-HR", "old", "2026-05-15", "2026-03-31")]
-    w.check_new_filings(client=FakeClient(_watch_routes(seed)),
+    w.check_new_filings(mode="tout", client=FakeClient(_watch_routes(seed)),
                         notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=1.0)
-    w.check_new_filings(client=FakeClient(_watch_routes(
+    w.check_new_filings(mode="tout", client=FakeClient(_watch_routes(
         [("4", "n1", "2026-08-21", "")] + seed)),
         notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=2.0)
-    w.check_new_filings(client=FakeClient(_watch_routes(
+    w.check_new_filings(mode="tout", client=FakeClient(_watch_routes(
         [("4", "n3", "2026-08-23", ""), ("4", "n2", "2026-08-22", ""),
          ("4", "n1", "2026-08-21", "")] + seed)),
         notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=3.0)
@@ -987,12 +1009,12 @@ def test_un_depot_antique_n_est_jamais_notifie_meme_absent_de_seen(monkeypatch):
     un dépôt de 2011 ne sonne pas et n'entre pas dans le journal."""
     _one_manager(monkeypatch)
     notifier = FakeNotifier()
-    w.check_new_filings(client=FakeClient(_watch_routes([
+    w.check_new_filings(mode="tout", client=FakeClient(_watch_routes([
         ("4", "seed", _at(3), "")])),
         notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=INCIDENT_TS)
     assert notifier.sent == []                  # amorçage muet
 
-    out = w.check_new_filings(client=FakeClient(_watch_routes([
+    out = w.check_new_filings(mode="tout", client=FakeClient(_watch_routes([
         ("13F-HR", "antique-2011", "2011-05-16", "2011-03-31"),
         ("SC 13G", "antique-2009", "2009-11-13", ""),
         ("4", "seed", _at(3), "")])),
@@ -1010,16 +1032,16 @@ def test_un_depot_antique_est_quand_meme_marque_vu(monkeypatch):
     _one_manager(monkeypatch)
     filings = [("13F-HR", "antique", "2011-05-16", "2011-03-31"),
                ("4", "seed", _at(3), "")]
-    w.check_new_filings(client=FakeClient(_watch_routes([("4", "seed", _at(3), "")])),
+    w.check_new_filings(mode="tout", client=FakeClient(_watch_routes([("4", "seed", _at(3), "")])),
                         notifier=FakeNotifier(), tg_cfg=TG, sleep=Recorder(),
                         now=INCIDENT_TS)
-    w.check_new_filings(client=FakeClient(_watch_routes(filings)),
+    w.check_new_filings(mode="tout", client=FakeClient(_watch_routes(filings)),
                         notifier=FakeNotifier(), tg_cfg=TG, sleep=Recorder(),
                         now=INCIDENT_TS)
     state = json.loads(w.watch_path().read_text(encoding="utf-8"))
     assert "antique" in state["seen"]["berkshire"]
 
-    out = w.check_new_filings(client=FakeClient(_watch_routes(filings)),
+    out = w.check_new_filings(mode="tout", client=FakeClient(_watch_routes(filings)),
                               notifier=FakeNotifier(), tg_cfg=TG,
                               sleep=Recorder(), now=INCIDENT_TS)
     assert out["new_filings"] == 0              # plus jamais « nouveau »
@@ -1029,10 +1051,10 @@ def test_un_depot_frais_sonne_toujours(monkeypatch):
     """Contre-épreuve : la garde d'âge ne doit pas avoir tué la fonctionnalité."""
     _one_manager(monkeypatch)
     notifier = FakeNotifier()
-    w.check_new_filings(client=FakeClient(_watch_routes([("4", "seed", _at(3), "")])),
+    w.check_new_filings(mode="tout", client=FakeClient(_watch_routes([("4", "seed", _at(3), "")])),
                         notifier=notifier, tg_cfg=TG, sleep=Recorder(),
                         now=INCIDENT_TS)
-    out = w.check_new_filings(client=FakeClient(_watch_routes([
+    out = w.check_new_filings(mode="tout", client=FakeClient(_watch_routes([
         ("13F-HR", "tout-frais", _at(1), "2026-06-30"),
         ("4", "seed", _at(3), "")])),
         notifier=notifier, tg_cfg=TG, sleep=Recorder(), now=INCIDENT_TS)
@@ -1071,13 +1093,13 @@ def test_l_eviction_du_cap_ne_renotifie_plus(monkeypatch):
     notifier = FakeNotifier()
     filings = [("4", "n%d" % i, _at(i + 1), "") for i in range(5)]
 
-    w.check_new_filings(client=FakeClient(_watch_routes(filings)),
+    w.check_new_filings(mode="tout", client=FakeClient(_watch_routes(filings)),
                         notifier=notifier, tg_cfg=TG, sleep=Recorder(),
                         now=INCIDENT_TS)                # amorçage
     state = json.loads(w.watch_path().read_text(encoding="utf-8"))
     assert len(state["seen"]["berkshire"]) == 5         # rien n'a été évincé
 
-    out = w.check_new_filings(client=FakeClient(_watch_routes(filings)),
+    out = w.check_new_filings(mode="tout", client=FakeClient(_watch_routes(filings)),
                               notifier=notifier, tg_cfg=TG, sleep=Recorder(),
                               now=INCIDENT_TS)
     assert out["new_filings"] == 0 and out["notified"] == 0
@@ -1126,7 +1148,7 @@ def test_watcher_reads_the_paper_telegram_config_by_default(monkeypatch):
     from backend.bots.paper import alerts
     monkeypatch.setattr(alerts, "load_cfg", lambda path=None: None)
     client = FakeClient(_watch_routes([("4", "a1", "2026-08-20", "")]))
-    out = w.check_new_filings(client=client, notifier=FakeNotifier(),
+    out = w.check_new_filings(mode="tout", client=client, notifier=FakeNotifier(),
                               sleep=Recorder(), now=1.0)
     assert out["managers"] == 0 and client.calls == []   # éteint : zéro réseau
 
@@ -1143,10 +1165,10 @@ def test_watcher_notifies_through_the_paper_channel(monkeypatch):
                         lambda text, cfg=None, client=None: sent.append((text, cfg)) or True)
 
     client = FakeClient(_watch_routes([("4", "a1", "2026-08-20", "")]))
-    w.check_new_filings(client=client, sleep=Recorder(), now=1000.0)   # amorçage muet
+    w.check_new_filings(mode="tout", client=client, sleep=Recorder(), now=1000.0)   # amorçage muet
     client = FakeClient(_watch_routes([("4", "a2", "2026-08-21", ""),
                                        ("4", "a1", "2026-08-20", "")]))
-    out = w.check_new_filings(client=client, sleep=Recorder(), now=2000.0)
+    out = w.check_new_filings(mode="tout", client=client, sleep=Recorder(), now=2000.0)
 
     assert out["notified"] == 1
     assert len(sent) == 1 and sent[0][1] == {"token": "t", "chat_id": "c"}
@@ -1255,3 +1277,241 @@ def test_router_allows_the_trader_role(monkeypatch):
     assert client.get("/api/paper/whales").status_code == 200
     assert client.get("/api/paper/whales/events").status_code == 200
     assert client.get("/api/paper/whales/berkshire").status_code == 200
+
+
+# =========================================================================== #
+#  Le coach ASSIMILE les portefeuilles des gérants (26/08)
+# =========================================================================== #
+
+def _ts_of(day):
+    """Epoch d'un jour ``AAAA-MM-JJ`` — le guetteur raisonne en secondes."""
+    return datetime.strptime(day, "%Y-%m-%d").timestamp()
+
+
+def _snapshot(quarter="T2 2026", exits=(), decreased=(), new=(), increased=()):
+    def rows(names, with_delta=False):
+        out = []
+        for i, name in enumerate(names):
+            row = {"cusip": "c%d" % i, "name": name, "class": "COM",
+                   "value_usd": 1000 - i, "shares": 10}
+            if with_delta:
+                row["delta_pct"] = -20.0 - i
+            out.append(row)
+        return out
+
+    return {
+        "status": "ok", "quarter": "2026-06-30", "quarter_label": quarter,
+        "moves": {"exits": rows(exits), "decreased": rows(decreased, True),
+                  "new": rows(new), "increased": rows(increased, True)},
+    }
+
+
+def _write_cache(monkeypatch, entries):
+    """Pose un cache de snapshots (ce que ``get_snapshot`` aurait écrit)."""
+    w._atomic_write_json(w.cache_path(), entries)
+
+
+# --- match_issuer (PUR) ---------------------------------------------------- #
+
+def test_match_issuer_rejoint_les_memes_emetteurs():
+    assert w.match_issuer("APPLE INC", {"AAPL": "Apple Inc."}) == "AAPL"
+    assert w.match_issuer("COCA COLA CO", {"KO": "Coca-Cola Company"}) == "KO"
+
+
+def test_match_issuer_ignore_un_mot_generique_seul():
+    """Leçon du piège #31 : « Deutsche » ne suffit pas à identifier « Deutsche
+    Bank » — ici les formes juridiques sont retirées des DEUX côtés, donc un
+    nom qui n'a plus qu'elles en commun ne matche rien."""
+    assert w.match_issuer("NESTLE SA", {"AAPL": "Apple Inc."}) is None
+    assert w.match_issuer("SOME HOLDINGS INC", {"X": "Other Holdings Inc"}) is None
+
+
+def test_match_issuer_prefere_le_meilleur_candidat():
+    candidates = {"AAPL": "Apple Inc.", "AAPU": "Apple Hospitality REIT"}
+    assert w.match_issuer("APPLE HOSPITALITY REIT", candidates) == "AAPU"
+
+
+def test_match_issuer_sans_candidat_rend_none():
+    assert w.match_issuer("APPLE INC", {}) is None
+    assert w.match_issuer("", {"AAPL": "Apple Inc."}) is None
+    assert w.match_issuer("APPLE INC", None) is None
+
+
+def test_match_issuer_distingue_deux_classes_du_meme_emetteur():
+    """Deux classes d'un même émetteur ont des CUSIP différents et restent deux
+    lignes : le rapprochement porte sur l'émetteur, la classe reste dans le
+    mouvement lui-même."""
+    candidates = {"GOOGL": "Alphabet Inc. Class A", "GOOG": "Alphabet Inc."}
+    assert w.match_issuer("ALPHABET INC", candidates) in candidates
+
+
+# --- moves_summary --------------------------------------------------------- #
+
+def test_moves_summary_met_les_ventes_en_premier(monkeypatch):
+    _one_manager(monkeypatch)
+    _write_cache(monkeypatch, {"berkshire": {
+        "fetched_at": "2026-08-24T10:00:00", "fetched_ts": 1000.0,
+        "snapshot": _snapshot(exits=["KROGER CO"], decreased=["COCA COLA CO"],
+                              new=["NVIDIA CORP"], increased=["APPLE INC"]),
+    }})
+    actions = [row["action"] for row in w.moves_summary()]
+    assert actions == ["sortie", "allégé", "nouveau", "renforcé"]
+
+
+def test_moves_summary_porte_le_gerant_le_trimestre_et_le_delta(monkeypatch):
+    _one_manager(monkeypatch)
+    _write_cache(monkeypatch, {"berkshire": {
+        "fetched_at": "2026-08-24T10:00:00", "fetched_ts": 1000.0,
+        "snapshot": _snapshot(decreased=["COCA COLA CO"]),
+    }})
+    row = w.moves_summary()[0]
+    assert row["manager_label"] == "Warren Buffett — Berkshire Hathaway"
+    assert row["quarter"] == "T2 2026"
+    assert row["name"] == "COCA COLA CO" and row["delta_pct"] == -20.0
+    assert row["fetched_at"] == "2026-08-24T10:00:00"
+
+
+def test_moves_summary_est_plafonne(monkeypatch):
+    _one_manager(monkeypatch)
+    _write_cache(monkeypatch, {"berkshire": {
+        "fetched_at": "2026-08-24T10:00:00", "fetched_ts": 1000.0,
+        "snapshot": _snapshot(exits=["NOM %d" % i for i in range(50)]),
+    }})
+    assert len(w.moves_summary()) == w.MOVES_SUMMARY_MAX
+    assert len(w.moves_summary(limit=5)) == 5
+
+
+def test_moves_summary_ignore_un_snapshot_qui_n_est_pas_ok(monkeypatch):
+    _one_manager(monkeypatch)
+    snap = _snapshot(exits=["KROGER CO"])
+    snap["status"] = "error"
+    _write_cache(monkeypatch, {"berkshire": {"fetched_ts": 1.0, "snapshot": snap}})
+    assert w.moves_summary() == []
+
+
+def test_moves_summary_sans_cache_rend_une_liste_vide(monkeypatch):
+    _one_manager(monkeypatch)
+    assert w.moves_summary() == []
+
+
+def test_moves_summary_ne_fait_aucune_requete(monkeypatch):
+    """Appelée à chaque fois que le coach réfléchit : elle doit être GRATUITE."""
+    _one_manager(monkeypatch)
+
+    def boom(*a, **kw):
+        raise AssertionError("aucune requête SEC ne doit partir d'ici")
+
+    monkeypatch.setattr(w, "_http_get", boom)
+    _write_cache(monkeypatch, {"berkshire": {
+        "fetched_ts": 1.0, "snapshot": _snapshot(exits=["KROGER CO"])}})
+    assert len(w.moves_summary()) == 1
+
+
+# --- rotation du cache ----------------------------------------------------- #
+
+def test_stalest_manager_choisit_le_plus_perime(monkeypatch):
+    monkeypatch.setattr(w, "MANAGERS", [
+        {"id": "a", "label": "A", "cik": "1", "expect": "a"},
+        {"id": "b", "label": "B", "cik": "2", "expect": "b"},
+    ])
+    now = 10 * 86400.0
+    cache = {"a": {"fetched_ts": now - 2 * 86400},     # 2 jours
+             "b": {"fetched_ts": now - 5 * 86400}}     # 5 jours
+    assert w.stalest_manager(cache, now) == "b"
+
+
+def test_stalest_manager_priorise_un_gerant_jamais_recupere(monkeypatch):
+    monkeypatch.setattr(w, "MANAGERS", [
+        {"id": "a", "label": "A", "cik": "1", "expect": "a"},
+        {"id": "b", "label": "B", "cik": "2", "expect": "b"},
+    ])
+    now = 10 * 86400.0
+    assert w.stalest_manager({"a": {"fetched_ts": now - 5 * 86400}}, now) == "b"
+
+
+def test_stalest_manager_rend_none_quand_tout_est_frais(monkeypatch):
+    monkeypatch.setattr(w, "MANAGERS", [
+        {"id": "a", "label": "A", "cik": "1", "expect": "a"}])
+    now = 10 * 86400.0
+    assert w.stalest_manager({"a": {"fetched_ts": now - 60}}, now) is None
+
+
+def test_le_guetteur_rafraichit_un_seul_gerant_par_cycle(monkeypatch):
+    """Rotation DOUCE : la dizaine du catalogue est couverte en une demi-journée
+    sans jamais envoyer de rafale à la SEC."""
+    refreshed = []
+    monkeypatch.setattr(w, "get_snapshot",
+                        lambda mid, **kw: refreshed.append(mid) or {"status": "ok"})
+    monkeypatch.setattr(w, "_fire_convergence", lambda **kw: False)
+    monkeypatch.setattr(w, "MANAGERS", [
+        {"id": "a", "label": "A", "cik": "1", "expect": "a"},
+        {"id": "b", "label": "B", "cik": "2", "expect": "b"}])
+    counters = {"errors": 0}
+    _REAL_WARM_CACHE([], {}, 10 * 86400.0, None, None, counters)
+    assert len(refreshed) == 1
+
+
+def test_un_depot_frais_rafraichit_ce_gerant_la(monkeypatch):
+    refreshed = []
+    monkeypatch.setattr(w, "get_snapshot",
+                        lambda mid, **kw: refreshed.append(mid) or {"status": "ok"})
+    _REAL_WARM_CACHE(["scion"], {}, 10 * 86400.0, None, None, {"errors": 0})
+    assert refreshed == ["scion"]
+
+
+def test_un_rafraichissement_en_panne_est_compte_pas_propage(monkeypatch):
+    def boom(mid, **kw):
+        raise RuntimeError("SEC muette")
+
+    monkeypatch.setattr(w, "get_snapshot", boom)
+    counters = {"errors": 0}
+    _REAL_WARM_CACHE(["scion"], {}, 10 * 86400.0, None, None, counters)
+    assert counters["errors"] == 1
+
+
+# --- mode calme + convergence --------------------------------------------- #
+
+def test_le_guetteur_se_tait_en_mode_calme_mais_journalise(monkeypatch):
+    _one_manager(monkeypatch)
+    routes = _watch_routes([("13F-HR", "a1", "2026-08-14", "2026-06-30")])
+    w.check_new_filings(mode="tout", client=FakeClient(routes),
+                        notifier=FakeNotifier(), tg_cfg=TG, sleep=Recorder(),
+                        now=_ts_of("2026-08-20"))          # amorçage
+
+    routes2 = _watch_routes([("13F-HR", "a1", "2026-08-14", "2026-06-30"),
+                             ("13F-HR", "a2", "2026-08-19", "2026-06-30")])
+    notifier = FakeNotifier()
+    out = w.check_new_filings(mode="calme", client=FakeClient(routes2),
+                              notifier=notifier, tg_cfg=TG, sleep=Recorder(),
+                              now=_ts_of("2026-08-20"))
+    assert notifier.sent == []                  # silence
+    assert out["notified"] == 0 and out["new_filings"] == 1
+    events = w.recent_filing_events(now=_ts_of("2026-08-20"))
+    assert len(events) == 1 and events[0]["muted"] is True
+
+
+def test_le_guetteur_consulte_la_convergence(monkeypatch):
+    _one_manager(monkeypatch)
+    seen = {}
+
+    def converge(notifier=None, tg_cfg=None):
+        seen["tg_cfg"] = tg_cfg
+        return {"fired": True, "sent": True}
+
+    out = w.check_new_filings(mode="tout", client=FakeClient(_watch_routes([])),
+                              notifier=FakeNotifier(), tg_cfg=TG,
+                              sleep=Recorder(), now=1000.0, converge=converge)
+    assert out["convergence_fired"] is True
+    assert out["notified"] == 1 and seen["tg_cfg"] == TG
+
+
+def test_une_convergence_en_panne_ne_casse_pas_la_ronde(monkeypatch):
+    _one_manager(monkeypatch)
+
+    def boom(**kwargs):
+        raise RuntimeError("convergence cassée")
+
+    out = w.check_new_filings(mode="tout", client=FakeClient(_watch_routes([])),
+                              notifier=FakeNotifier(), tg_cfg=TG,
+                              sleep=Recorder(), now=1000.0, converge=boom)
+    assert out["convergence_fired"] is False and out["errors"] == 1

@@ -23,11 +23,34 @@ import pytest
 
 from backend.bots.paper import alerts, newswatch, store
 
+# Capturée AVANT toute fixture : ``_no_side_channels`` remplace la vraie
+# fonction pour éteindre le volet X par défaut, et les tests de la CONFIG des
+# comptes ont justement besoin de la vraie.
+_REAL_LOAD_X_ACCOUNTS = newswatch.load_x_accounts
+
 
 @pytest.fixture(autouse=True)
 def _isolate_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "DATA_DIR", tmp_path)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_side_channels(monkeypatch):
+    """Deux portes de sortie s'ouvriraient sinon PAR DÉFAUT dans cette suite :
+
+    * le **volet X** — sans configuration, ``load_x_accounts`` rend les comptes
+      livrés par défaut et le volet irait vraiment chercher x.com ;
+    * la **convergence** — appelée à la fin de chaque cycle, elle appellerait
+      le VRAI CLI Claude le jour où deux facteurs s'alignent dans une fixture.
+
+    Les deux sont neutralisés ici, et les tests qui les visent réinstallent
+    leur propre doublure. Un test de veille ne doit jamais dépendre du réseau.
+    """
+    monkeypatch.setattr(newswatch, "load_x_accounts", lambda: [])
+    from backend.bots.paper import convergence
+    monkeypatch.setattr(convergence, "maybe_fire",
+                        lambda **kwargs: {"fired": False, "sent": False})
 
 
 NOW = datetime(2026, 8, 24, 12, 0, 0, tzinfo=timezone.utc)
@@ -79,9 +102,21 @@ class _FetchQueue:
     def __init__(self):
         self.calls = []
         self._answers = []
+        self._crypto = []
 
     def push(self, xml_or_exc):
         self._answers.append(xml_or_exc)
+
+    def push_crypto(self, xml_or_exc):
+        """Réponse du volet CRYPTO (26/08), déclarée À PART.
+
+        Les URL crypto sont servies depuis leur propre file et, si le test n'en
+        a déclaré aucune, par un flux VIDE — sans jamais consommer la file
+        principale. Sans cette séparation, l'ajout d'un volet global décalerait
+        l'arithmétique de la vingtaine de tests « par symbole » écrits avant
+        lui, alors qu'aucun de leurs comportements n'a changé.
+        """
+        self._crypto.append(xml_or_exc)
 
     def prime_gov(self, xml_or_exc=None):
         """Insère 2 réponses gov (une par source, run_once en interroge
@@ -93,7 +128,10 @@ class _FetchQueue:
 
     def __call__(self, url):
         self.calls.append(url)
-        ans = self._answers.pop(0)
+        if url in newswatch._CRYPTO_SOURCES:
+            ans = self._crypto.pop(0) if self._crypto else _EMPTY_RSS
+        else:
+            ans = self._answers.pop(0)
         if isinstance(ans, Exception):
             raise ans
         return ans
@@ -109,11 +147,16 @@ class _NotifySpy:
         return self.ok
 
 
-def _run(fetch, notifier, now=NOW, tg_cfg=CFG, prime_gov=True):
+def _run(fetch, notifier, now=NOW, tg_cfg=CFG, prime_gov=True, mode="tout", **kw):
+    """⚠️ ``mode="tout"`` par DÉFAUT ici : la très grande majorité de cette
+    suite décrit le comportement BAVARD (qui envoie message par message), et
+    c'est bien celui-là qu'on veut continuer d'épingler. Le mode « calme »,
+    qui est le défaut de PRODUCTION depuis le 26/08, a ses tests dédiés."""
     if prime_gov:
         fetch.prime_gov()
     return newswatch.run_once(now=now, fetch=fetch, notifier=notifier,
-                              tg_cfg=tg_cfg, sleep=lambda s: None)
+                              tg_cfg=tg_cfg, sleep=lambda s: None, mode=mode,
+                              **kw)
 
 
 # =========================================================================== #
@@ -360,8 +403,9 @@ def test_run_once_no_config_does_nothing():
     fetch = _FetchQueue()
     notifier = _NotifySpy()
     counters = newswatch.run_once(now=NOW, fetch=fetch, notifier=notifier,
-                                  tg_cfg={}, sleep=lambda s: None)
-    assert counters == {"users": 0, "symbols": 0, "fetched": 0, "notified": 0, "errors": 0}
+                                  tg_cfg={}, sleep=lambda s: None, mode="tout")
+    assert counters == {"users": 0, "symbols": 0, "fetched": 0, "notified": 0,
+                        "errors": 0, "convergence_fired": False}
     assert fetch.calls == []   # ni le volet gov ni le volet par symbole ne tournent
     assert notifier.calls == []
 
@@ -372,7 +416,8 @@ def test_le_canal_par_defaut_est_celui_du_paper_trading(monkeypatch):
     store.save_portfolio("alice", _portfolio(["NESN.SW"]))
     monkeypatch.setattr(alerts, "load_cfg", lambda path=None: None)
     fetch = _FetchQueue()
-    counters = newswatch.run_once(now=NOW, fetch=fetch, sleep=lambda s: None)
+    counters = newswatch.run_once(now=NOW, fetch=fetch, sleep=lambda s: None,
+                                  mode="tout")
     assert counters["fetched"] == 0 and fetch.calls == []   # éteint : zéro réseau
 
 
@@ -387,7 +432,8 @@ def test_le_notifieur_par_defaut_est_celui_du_paper_trading(monkeypatch):
     fetch = _FetchQueue()
     fetch.push(_rss([("Seed", "https://y/seed", NOW - timedelta(hours=10))]))
     fetch.prime_gov()
-    newswatch.run_once(now=NOW, fetch=fetch, sleep=lambda s: None)   # amorçage muet
+    newswatch.run_once(now=NOW, fetch=fetch, sleep=lambda s: None,
+                       mode="tout")   # amorçage muet
 
     later = NOW + timedelta(minutes=10)
     fetch.push(_rss([
@@ -395,7 +441,8 @@ def test_le_notifieur_par_defaut_est_celui_du_paper_trading(monkeypatch):
         ("Tesla set to announce Q3 deliveries next week", "https://y/watch1", later),
     ]))
     fetch.prime_gov()
-    counters = newswatch.run_once(now=later, fetch=fetch, sleep=lambda s: None)
+    counters = newswatch.run_once(now=later, fetch=fetch, sleep=lambda s: None,
+                                  mode="tout")
 
     assert counters["notified"] == 1
     assert len(sent) == 1 and sent[0][1] == CFG
@@ -421,7 +468,7 @@ def test_run_once_first_pass_seeds_without_notifying():
     counters = _run(fetch, notifier)
     assert counters["users"] == 1
     assert counters["symbols"] == 1
-    assert counters["fetched"] == 3   # 1 symbole + 2 sources gov (toujours interrogées)
+    assert counters["fetched"] == 5   # 1 symbole + 2 gov + 2 crypto (volets globaux)
     assert counters["notified"] == 0
     assert counters["errors"] == 0
     assert notifier.calls == []
@@ -526,8 +573,8 @@ def test_run_once_counts_fetch_error_and_continues_other_symbols():
     counters = _run(fetch, notifier)
     assert counters["symbols"] == 2
     assert counters["errors"] == 1
-    assert counters["fetched"] == 3    # BBB (1) + 2 sources gov
-    assert len(fetch.calls) == 4       # 2 gov + AAA (échoue) + BBB
+    assert counters["fetched"] == 5    # BBB (1) + 2 gov + 2 crypto
+    assert len(fetch.calls) == 6       # 2 gov + 2 crypto + AAA (échoue) + BBB
 
 
 def test_run_once_recovers_from_corrupt_seen_file():
@@ -573,10 +620,10 @@ def test_run_once_paces_between_multiple_fetches():
     sleeps = []
     fetch.prime_gov()
     newswatch.run_once(now=NOW, fetch=fetch, notifier=_NotifySpy(),
-                       tg_cfg=CFG, sleep=sleeps.append)
+                       tg_cfg=CFG, sleep=sleeps.append, mode="tout")
     # 4 fetches au total (2 gov + SYM1 + SYM2) -> pas de pause avant le 1er,
     # une pause avant chacun des 3 suivants.
-    assert sleeps == [1.1, 1.1, 1.1]
+    assert sleeps == [1.1, 1.1, 1.1, 1.1, 1.1]
 
 
 def test_run_once_notifies_watch_with_expected_wording():
@@ -652,9 +699,9 @@ def test_run_once_ignores_portfolio_without_positions():
     fetch = _FetchQueue()
     counters = _run(fetch, _NotifySpy())
     assert counters["users"] == 0
-    # le volet gov (global) tourne quand même -- seul le volet PAR SYMBOLE
-    # (les 2 derniers appels attendus s'il y avait une position) est absent.
-    assert len(fetch.calls) == 2
+    # les volets GLOBAUX (gov + crypto) tournent quand même -- seul le volet
+    # PAR SYMBOLE (les appels qu'il y aurait eu avec une position) est absent.
+    assert len(fetch.calls) == 4
 
 
 def test_run_once_no_portfolios_still_runs_gov_watch():
@@ -662,7 +709,8 @@ def test_run_once_no_portfolios_still_runs_gov_watch():
     avant l'extension §13 : le volet politique global tourne quand même."""
     fetch = _FetchQueue()
     counters = _run(fetch, _NotifySpy())
-    assert counters == {"users": 0, "symbols": 0, "fetched": 2, "notified": 0, "errors": 0}
+    assert counters == {"users": 0, "symbols": 0, "fetched": 4, "notified": 0,
+                        "errors": 0, "convergence_fired": False}
 
 
 # =========================================================================== #
@@ -748,7 +796,7 @@ def test_run_once_gov_first_pass_seeds_silently_even_without_portfolios():
     notifier = _NotifySpy()
     counters = _run(fetch, notifier, prime_gov=False)
     assert counters["notified"] == 0
-    assert counters["fetched"] == 2
+    assert counters["fetched"] == 4      # 2 gov + 2 crypto
     assert notifier.calls == []
     assert newswatch.recent_events("anyone") == []
 
@@ -901,8 +949,8 @@ def test_run_once_gov_fetch_error_counts_and_does_not_block_second_source():
     fetch.push(_rss([]))
     counters = _run(fetch, _NotifySpy(), prime_gov=False)
     assert counters["errors"] == 1
-    assert counters["fetched"] == 1
-    assert len(fetch.calls) == 2
+    assert counters["fetched"] == 3      # 1 gov qui répond + 2 crypto
+    assert len(fetch.calls) == 4
 
 
 def test_run_once_gov_runs_even_with_zero_portfolios():
@@ -911,8 +959,8 @@ def test_run_once_gov_runs_even_with_zero_portfolios():
     fetch.push(_rss([]))
     counters = _run(fetch, _NotifySpy(), prime_gov=False)
     assert counters["users"] == 0
-    assert counters["fetched"] == 2
-    assert len(fetch.calls) == 2
+    assert counters["fetched"] == 4      # 2 gov + 2 crypto
+    assert len(fetch.calls) == 4
 
 
 def test_run_once_gov_recovers_from_corrupt_global_seen_file():
@@ -1283,3 +1331,557 @@ def test_arm_paper_jobs_all_three_independent_failures_leave_scheduler_intact(mo
     sched = _FakeSchedulerEngine()
     _arm_paper_jobs(sched)  # ne doit lever aucune exception
     assert sched.calls == []
+
+
+# =========================================================================== #
+#  PUR — classification CRYPTO (volet global, 26/08)
+# =========================================================================== #
+
+def test_le_gate_de_pertinence_jette_un_titre_hors_sujet():
+    """Decrypt est un flux tech MÉLANGÉ : c'est le gate qui le rend utilisable,
+    pas une liste de sujets à exclure."""
+    assert newswatch.is_crypto_topic("SpaceX lands another booster") is False
+    assert newswatch.classify_crypto("SpaceX lands another booster") is None
+
+
+def test_un_titre_crypto_negatif_est_classe_neg():
+    assert newswatch.classify_crypto(
+        "Binance hot wallet exploit drains $200M") == "neg"
+
+
+def test_un_titre_crypto_positif_est_classe_pos():
+    assert newswatch.classify_crypto(
+        "Bitcoin ETF sees record inflows for a third week") == "pos"
+
+
+def test_une_decision_a_venir_est_classee_watch():
+    assert newswatch.classify_crypto(
+        "SEC faces Solana ETF decision next month") == "watch"
+
+
+def test_une_mauvaise_nouvelle_prime_sur_une_bonne():
+    assert newswatch.classify_crypto(
+        "Ethereum ETF inflows continue despite exchange hack") == "neg"
+
+
+def test_un_conseil_d_achat_crypto_n_est_jamais_relaye():
+    assert newswatch.classify_crypto("3 crypto to buy now before the halving") is None
+
+
+def test_un_titre_crypto_neutre_ne_produit_rien():
+    assert newswatch.classify_crypto("Bitcoin conference opens in Miami") is None
+
+
+@pytest.mark.parametrize("title,symbol", [
+    ("Bitcoin breaks its all-time high", "BTC-USD"),
+    ("Ethereum upgrade goes live", "ETH-USD"),
+    ("Solana ETF decision expected", "SOL-USD"),
+    ("Ripple wins its ruling", "XRP-USD"),
+    ("BTC outflows accelerate", "BTC-USD"),
+])
+def test_le_symbole_est_devine_depuis_le_titre(title, symbol):
+    assert newswatch.crypto_symbol(title) == symbol
+
+
+def test_un_titre_crypto_sans_piece_nommee_n_a_pas_de_symbole():
+    """Mieux vaut un event sans symbole qu'un event mal étiqueté : c'est le
+    symbole qui décide du facteur « titre détenu » de la convergence."""
+    assert newswatch.crypto_symbol("Crypto market cap slides") is None
+
+
+# =========================================================================== #
+#  I/O — volet CRYPTO
+# =========================================================================== #
+
+CRYPTO_HACK = "Coinbase exchange hack drains user funds"
+CRYPTO_LINK = "https://cointelegraph.com/hack"
+
+
+def _crypto_feed(now=None, title=CRYPTO_HACK, link=CRYPTO_LINK):
+    return _rss([(title, link, now or NOW)])
+
+
+def test_le_volet_crypto_amorce_en_silence_puis_notifie():
+    fetch = _FetchQueue()
+    fetch.push_crypto(_crypto_feed())
+    notifier = _NotifySpy()
+    _run(fetch, notifier)
+    assert notifier.calls == []                 # amorçage muet
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push_crypto(_crypto_feed(now=later, link="https://cointelegraph.com/2"))
+    counters = _run(fetch, notifier, now=later)
+    assert counters["notified"] == 1
+    assert "crypto" in notifier.calls[0][0].lower()
+
+
+def test_le_volet_crypto_journalise_meme_ce_qu_il_n_envoie_pas():
+    fetch = _FetchQueue()
+    fetch.push_crypto(_crypto_feed())
+    _run(fetch, _NotifySpy())                   # seed
+    later = NOW + timedelta(minutes=10)
+    fetch.push_crypto(_crypto_feed(now=later, link="https://cointelegraph.com/2"))
+    _run(fetch, _NotifySpy(), now=later)
+
+    events = [e for e in newswatch.recent_events("nobody") if e.get("src") == "crypto"]
+    assert len(events) == 1
+    assert events[0]["sentiment"] == "neg"
+    assert events[0]["symbol"] is None          # aucune pièce nommée dans ce titre
+
+
+def test_le_volet_crypto_ignore_un_titre_hors_sujet():
+    fetch = _FetchQueue()
+    fetch.push_crypto(_rss([("Seed", "https://c/seed", NOW)]))
+    _run(fetch, _NotifySpy())
+    later = NOW + timedelta(minutes=10)
+    fetch.push_crypto(_rss([
+        ("Seed", "https://c/seed", NOW),
+        ("SpaceX lands another booster", "https://c/space", later),
+    ]))
+    notifier = _NotifySpy()
+    _run(fetch, notifier, now=later)
+    assert notifier.calls == []
+    assert [e for e in newswatch.recent_events("nobody")
+            if e.get("src") == "crypto"] == []
+
+
+def test_le_budget_crypto_est_distinct_de_celui_du_gov():
+    """Partager le budget ferait taire un volet dès que l'autre s'agite — et
+    on ne saurait jamais lequel a mangé la place."""
+    assert newswatch._CRYPTO_MAX_SENDS_PER_HOUR > 0
+    fetch = _FetchQueue()
+    fetch.push_crypto(_rss([("Seed", "https://c/seed", NOW)]))
+    _run(fetch, _NotifySpy())
+    later = NOW + timedelta(minutes=10)
+    burst = [("Seed", "https://c/seed", NOW)] + [
+        ("Exchange hack number %d drains bitcoin" % i,
+         "https://cointelegraph.com/h%d" % i, later) for i in range(6)
+    ]
+    fetch.push_crypto(_rss(burst))
+    notifier = _NotifySpy()
+    _run(fetch, notifier, now=later)
+    assert len(notifier.calls) == newswatch._MAX_CRYPTO_NOTIFY_PER_RUN
+    muted = [e for e in newswatch.recent_events("nobody")
+             if e.get("src") == "crypto" and e.get("muted")]
+    assert muted, "le surplus doit rester dans la mémoire, seul l'envoi tombe"
+
+
+# =========================================================================== #
+#  MODE CALME (26/08) — la mémoire reste, l'envoi disparaît
+# =========================================================================== #
+
+def test_mode_calme_le_volet_gov_n_envoie_plus_rien():
+    fetch = _FetchQueue()
+    gov = _rss([("Trump announces 50% tariffs on EU goods", "https://g/1", NOW)])
+    fetch.prime_gov(_EMPTY_RSS)
+    _run(fetch, _NotifySpy(), prime_gov=False)       # seed
+
+    later = NOW + timedelta(minutes=10)
+    gov_later = _rss([("Trump announces 50% tariffs on EU goods",
+                       "https://g/2", later)])
+    fetch.push(gov_later)
+    fetch.push(_EMPTY_RSS)
+    notifier = _NotifySpy()
+    counters = _run(fetch, notifier, now=later, prime_gov=False, mode="calme")
+
+    assert notifier.calls == []                      # silence
+    assert counters["notified"] == 0
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("sentiment") == "gov"]
+    assert len(events) == 1 and events[0]["muted"] is True
+
+
+def test_mode_calme_le_volet_par_symbole_n_envoie_plus_rien():
+    store.save_portfolio("alice", _portfolio(["NESN.SW"]))
+    fetch = _FetchQueue()
+    fetch.push(_rss([("Seed", "https://y/seed", NOW - timedelta(hours=5))]))
+    _run(fetch, _NotifySpy())                        # seed
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push(_rss([
+        ("Seed", "https://y/seed", NOW - timedelta(hours=5)),
+        ("Nestlé issues profit warning", "https://y/neg", later),
+    ]))
+    notifier = _NotifySpy()
+    counters = _run(fetch, notifier, now=later, mode="calme")
+
+    assert notifier.calls == [] and counters["notified"] == 0
+    events = [e for e in newswatch.recent_events("alice")
+              if e.get("symbol") == "NESN.SW"]
+    assert len(events) == 1
+    assert events[0]["sentiment"] == "neg" and events[0]["muted"] is True
+
+
+def test_mode_calme_est_le_defaut_quand_rien_n_est_precise(monkeypatch):
+    """Le défaut de PRODUCTION est le silence : ``run_once`` lit le réglage,
+    et le réglage absent vaut « calme »."""
+    store.save_portfolio("alice", _portfolio(["NESN.SW"]))
+    fetch = _FetchQueue()
+    fetch.push(_rss([("Seed", "https://y/seed", NOW - timedelta(hours=5))]))
+    _run(fetch, _NotifySpy(), mode=None)
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push(_rss([
+        ("Seed", "https://y/seed", NOW - timedelta(hours=5)),
+        ("Nestlé issues profit warning", "https://y/neg", later),
+    ]))
+    notifier = _NotifySpy()
+    _run(fetch, notifier, now=later, mode=None)
+    assert notifier.calls == []
+
+
+# =========================================================================== #
+#  PUR — classification des posts X
+# =========================================================================== #
+
+def test_un_post_avec_cashtag_est_retenu():
+    out = newswatch.classify_x("Just doubled down on $TSLA today")
+    assert out == {"sentiment": "watch", "symbol": "TSLA"}
+
+
+def test_un_post_a_impact_politique_est_classe_gov():
+    out = newswatch.classify_x("We will impose new tariffs on all imports")
+    assert out["sentiment"] == "gov"
+
+
+def test_un_post_crypto_porte_sa_paire():
+    out = newswatch.classify_x("Bitcoin ETF sees record inflows again")
+    assert out == {"sentiment": "pos", "symbol": "BTC-USD"}
+
+
+def test_un_meme_est_jete():
+    """« Important seulement » : c'est la demande explicite."""
+    assert newswatch.classify_x("good morning everyone") is None
+    assert newswatch.classify_x("") is None
+
+
+def test_un_cashtag_avec_une_mauvaise_nouvelle_est_classe_neg():
+    """C'est ce qui permet au facteur « menace sur une position détenue » de
+    s'allumer depuis un post."""
+    out = newswatch.classify_x("$NESN profit warning after weak sales")
+    assert out == {"sentiment": "neg", "symbol": "NESN"}
+
+
+def test_un_conseil_d_achat_poste_sur_x_n_est_jamais_relaye():
+    assert newswatch.classify_x("top stocks to buy now: $AAPL $MSFT") is None
+
+
+def test_le_titre_d_un_post_est_tronque():
+    long_post = "bitcoin " * 60
+    title = newswatch.x_post_title(long_post)
+    assert len(title) <= newswatch._X_POST_MAX_LEN
+    assert title.endswith("…")
+
+
+def test_les_comptes_x_sont_valides_dedupliques_et_plafonnes():
+    handles = newswatch.normalize_handles(
+        ["@elonmusk", "elonmusk", "ELONMUSK", "nom invalide !", "x" * 20, ""]
+        + ["compte%d" % i for i in range(15)])
+    assert handles[0] == "elonmusk"
+    assert len(handles) == newswatch.X_MAX_HANDLES
+    assert "nom invalide !" not in handles
+
+
+def test_la_cadence_x_est_d_un_cycle_sur_deux():
+    assert newswatch.x_cycle_due(0) is True
+    assert newswatch.x_cycle_due(1) is False
+    assert newswatch.x_cycle_due(2) is True
+    assert newswatch.x_cycle_due("cassé") is True   # jamais éteint pour toujours
+
+
+def test_les_comptes_x_par_defaut_sont_livres():
+    assert _REAL_LOAD_X_ACCOUNTS() == list(newswatch.X_DEFAULT_HANDLES)
+
+
+def test_une_liste_de_comptes_x_vide_reste_vide():
+    """Une liste explicitement vide est une DÉCISION, pas une absence."""
+    assert newswatch.save_x_accounts([]) == []
+    assert _REAL_LOAD_X_ACCOUNTS() == []
+
+
+def test_les_comptes_x_sont_ecrits_en_0600():
+    newswatch.save_x_accounts(["WhiteHouse"])
+    assert _REAL_LOAD_X_ACCOUNTS() == ["WhiteHouse"]
+    assert oct(newswatch.x_accounts_path().stat().st_mode & 0o777) == "0o600"
+
+
+# =========================================================================== #
+#  I/O — volet X : deux étages, escalade, mémoire du tier, pacing
+# =========================================================================== #
+
+class _XPacer:
+    """Faux ``AdaptivePacer`` : enregistre au lieu de temporiser."""
+
+    def __init__(self):
+        self.penalized = []
+        self.relaxed = 0
+
+    def interval(self):
+        return 1.5
+
+    def penalize(self, retry_after=None):
+        self.penalized.append(retry_after)
+
+    def relax(self):
+        self.relaxed += 1
+
+
+def _post(text, ts=None):
+    return {"title": text, "url": "https://x.com/elonmusk",
+            "published": int((ts or NOW).timestamp())}
+
+
+def _x_env(monkeypatch, handles=("elonmusk",)):
+    """Réinstalle un volet X pilotable (la fixture autouse l'éteint)."""
+    monkeypatch.setattr(newswatch, "load_x_accounts", lambda: list(handles))
+
+
+def _run_x(fetch, notifier, now=NOW, mode="tout", due=True, **kw):
+    """Un cycle où le volet X tourne À COUP SÛR.
+
+    La cadence « un cycle sur deux » a son propre test ci-dessous ; partout
+    ailleurs elle obligerait à intercaler des cycles blancs illisibles, donc on
+    remet le compteur à un cycle dû. ``due=False`` laisse la cadence agir."""
+    if due:
+        state = newswatch._load_global_seen()
+        state["x_cycle"] = 0
+        newswatch._save_global_seen(state)
+    fetch.prime_gov()
+    return newswatch.run_once(now=now, fetch=fetch, notifier=notifier,
+                              tg_cfg=CFG, sleep=lambda s: None, mode=mode, **kw)
+
+
+def test_le_volet_x_amorce_en_silence_puis_notifie(monkeypatch):
+    _x_env(monkeypatch)
+    posts = [_post("New tariffs on all imported cars starting Monday")]
+    calls = []
+
+    def light(handle):
+        calls.append(handle)
+        return "<html>page</html>"
+
+    notifier = _NotifySpy()
+    kw = dict(due=False, x_fetch=light, x_pacer=_XPacer(),
+              x_parse=lambda page, handle: list(posts))
+    _run_x(_FetchQueue(), notifier, **kw)
+    assert notifier.calls == []                 # cycle 0 : amorçage muet
+
+    later = NOW + timedelta(minutes=10)
+    posts[:] = [_post("New tariffs on all imported steel next week", later)]
+    _run_x(_FetchQueue(), notifier, now=later, **kw)
+    assert len(calls) == 1                      # cycle 1 : la cadence saute X
+
+    even_later = NOW + timedelta(minutes=20)
+    _run_x(_FetchQueue(), notifier, now=even_later, **kw)
+    assert len(calls) == 2                      # cycle 2 : X est réinterrogé
+    assert len(notifier.calls) == 1
+    assert "@elonmusk" in notifier.calls[0][0]
+
+
+def test_le_volet_x_se_tait_en_mode_calme_mais_journalise(monkeypatch):
+    _x_env(monkeypatch)
+    posts = [_post("We will impose tariffs on every imported car")]
+    parse = lambda page, handle: list(posts)
+    _run_x(_FetchQueue(), _NotifySpy(), x_fetch=lambda h: "<html/>",
+           x_parse=parse, x_pacer=_XPacer())    # seed
+
+    later = NOW + timedelta(minutes=20)
+    posts[:] = [_post("New sanctions on imported steel announced", later)]
+    notifier = _NotifySpy()
+    _run_x(_FetchQueue(), notifier, now=later, mode="calme",
+           x_fetch=lambda h: "<html/>", x_parse=parse, x_pacer=_XPacer())
+
+    assert notifier.calls == []
+    events = [e for e in newswatch.recent_events("nobody") if e.get("src") == "x"]
+    assert len(events) == 1
+    assert events[0]["handle"] == "elonmusk" and events[0]["muted"] is True
+
+
+def test_un_post_deja_vu_n_est_pas_renotifie(monkeypatch):
+    _x_env(monkeypatch)
+    posts = [_post("Tariffs on imported cars announced today")]
+    parse = lambda page, handle: list(posts)
+    _run_x(_FetchQueue(), _NotifySpy(), x_fetch=lambda h: "<html/>",
+           x_parse=parse, x_pacer=_XPacer())    # seed
+    notifier = _NotifySpy()
+    for minutes in (20, 40):
+        _run_x(_FetchQueue(), notifier, now=NOW + timedelta(minutes=minutes),
+               x_fetch=lambda h: "<html/>", x_parse=parse, x_pacer=_XPacer())
+    assert notifier.calls == []                 # même texte = déjà vu
+
+
+def test_une_seule_anomalie_ne_reveille_pas_le_navigateur(monkeypatch):
+    """« Un blip ne déclenche pas le navigateur lourd. »"""
+    _x_env(monkeypatch)
+    heavy_calls = []
+
+    def heavy(handle):
+        heavy_calls.append(handle)
+        return "<html/>"
+
+    _run_x(_FetchQueue(), _NotifySpy(), x_fetch=lambda h: "<html/>",
+           x_parse=lambda p, h: [], x_stealth=heavy, x_pacer=_XPacer())
+    assert heavy_calls == []
+
+
+def test_deux_anomalies_consecutives_declenchent_l_escalade(monkeypatch):
+    _x_env(monkeypatch)
+    serial = newswatch._x_serialization_error()
+
+    def broken_parse(page, handle):
+        raise serial("la page ne rend plus rien")
+
+    heavy_calls = []
+
+    def heavy(handle):
+        heavy_calls.append(handle)
+        return "<html>stealth</html>"
+
+    kw = dict(x_fetch=lambda h: "<html/>", x_stealth=heavy, x_pacer=_XPacer())
+    _run_x(_FetchQueue(), _NotifySpy(), x_parse=broken_parse, **kw)
+    assert heavy_calls == []                    # 1re anomalie : on encaisse
+    _run_x(_FetchQueue(), _NotifySpy(), now=NOW + timedelta(minutes=20),
+           x_parse=broken_parse, **kw)
+    assert heavy_calls == ["elonmusk"]          # 2e : on monte d'un étage
+
+
+def test_un_refus_franc_escalade_tout_de_suite(monkeypatch):
+    """403/429 n'est pas ambigu : inutile d'attendre un second cycle."""
+    from backend.bots.harvester.fetch import PushbackError
+    _x_env(monkeypatch)
+    heavy_calls = []
+    pacer = _XPacer()
+
+    def light(handle):
+        raise PushbackError("x.com refuse", status=429, retry_after=30)
+
+    def heavy(handle):
+        heavy_calls.append(handle)
+        return "<html>stealth</html>"
+
+    _run_x(_FetchQueue(), _NotifySpy(), x_fetch=light, x_stealth=heavy,
+           x_parse=lambda p, h: [_post("Tariffs announced on imports")],
+           x_pacer=pacer)
+    assert heavy_calls == ["elonmusk"]
+    assert pacer.penalized == [30]              # le pacer encaisse le refus
+
+
+def test_l_etage_furtif_indisponible_est_une_erreur_propre(monkeypatch):
+    """Sur le Mac de développement patchright n'est pas installé : l'étage doit
+    être INDISPONIBLE, pas explosif."""
+    from backend.bots.harvester.fetch import PushbackError
+    _x_env(monkeypatch)
+
+    def light(handle):
+        raise PushbackError("x.com refuse", status=403)
+
+    def heavy(handle):
+        raise ImportError("patchright n'est pas installé")
+
+    counters = _run_x(_FetchQueue(), _NotifySpy(), x_fetch=light, x_stealth=heavy,
+                      x_parse=lambda p, h: [], x_pacer=_XPacer())
+    assert counters["errors"] >= 2              # les deux étages ont échoué
+    state = newswatch._load_global_seen()
+    assert state["x_tiers"] == {}               # on n'inscrit pas un étage mort
+
+
+def test_le_tier_furtif_est_memorise_puis_re_teste_apres_24h(monkeypatch):
+    _x_env(monkeypatch)
+    from backend.bots.harvester.fetch import PushbackError
+    light_calls, heavy_calls = [], []
+
+    def light(handle):
+        light_calls.append(handle)
+        raise PushbackError("refus", status=403)
+
+    def heavy(handle):
+        heavy_calls.append(handle)
+        return "<html>stealth</html>"
+
+    parse = lambda p, h: [_post("Tariffs on imported cars", NOW)]
+    kw = dict(x_fetch=light, x_stealth=heavy, x_parse=parse, x_pacer=_XPacer())
+
+    _run_x(_FetchQueue(), _NotifySpy(), **kw)                      # escalade
+    assert len(light_calls) == 1 and len(heavy_calls) == 1
+    state = newswatch._load_global_seen()
+    assert "elonmusk" in state["x_tiers"]
+
+    # Cycle suivant DANS les 24 h : on ne re-paie pas l'échec du léger.
+    _run_x(_FetchQueue(), _NotifySpy(), now=NOW + timedelta(minutes=20), **kw)
+    assert len(light_calls) == 1 and len(heavy_calls) == 2
+
+    # Après 24 h : on retente le chemin léger.
+    _run_x(_FetchQueue(), _NotifySpy(), now=NOW + timedelta(hours=25), **kw)
+    assert len(light_calls) == 2
+
+
+def test_le_pacer_se_detend_quand_x_repond(monkeypatch):
+    _x_env(monkeypatch)
+    pacer = _XPacer()
+    _run_x(_FetchQueue(), _NotifySpy(), x_fetch=lambda h: "<html/>",
+           x_parse=lambda p, h: [_post("Tariffs announced")], x_pacer=pacer)
+    assert pacer.relaxed == 1 and pacer.penalized == []
+
+
+def test_le_volet_x_ne_tourne_pas_sans_compte_configure(monkeypatch):
+    calls = []
+    monkeypatch.setattr(newswatch, "load_x_accounts", lambda: [])
+    _run_x(_FetchQueue(), _NotifySpy(), x_fetch=lambda h: calls.append(h) or "",
+           x_parse=lambda p, h: [], x_pacer=_XPacer())
+    assert calls == []
+
+
+# =========================================================================== #
+#  Convergence ÉVÉNEMENTIELLE (26/08)
+# =========================================================================== #
+
+def test_le_cycle_consulte_la_convergence_et_remonte_le_resultat():
+    seen = {}
+
+    def converge(now=None, notifier=None, tg_cfg=None):
+        seen["now"] = now
+        seen["tg_cfg"] = tg_cfg
+        return {"fired": True, "sent": True}
+
+    counters = _run(_FetchQueue(), _NotifySpy(), converge=converge)
+    assert counters["convergence_fired"] is True
+    assert counters["notified"] == 1            # le digest compte comme un envoi
+    assert seen["tg_cfg"] == CFG and seen["now"] == NOW
+
+
+def test_la_convergence_ne_coute_rien_quand_les_facteurs_ne_s_alignent_pas():
+    """L'évaluation à chaque cycle de 5 min doit être GRATUITE : tant que
+    ``should_fire`` refuse, aucun modèle et aucun réseau."""
+    from backend.bots.paper import convergence
+
+    def boom(prompt):
+        raise AssertionError("le LLM ne doit pas être appelé")
+
+    counters = _run(_FetchQueue(), _NotifySpy(),
+                    converge=lambda **kw: convergence.maybe_fire(llm=boom, **kw))
+    assert counters["convergence_fired"] is False
+
+
+def test_une_convergence_en_panne_ne_casse_pas_le_guetteur():
+    def boom(**kwargs):
+        raise RuntimeError("convergence cassée")
+
+    counters = _run(_FetchQueue(), _NotifySpy(), converge=boom)
+    assert counters["convergence_fired"] is False
+    assert counters["errors"] == 1              # comptée, jamais propagée
+
+
+def test_la_convergence_est_consultee_apres_l_ecriture_des_etats():
+    """Elle RELIT les fichiers du guetteur : elle doit voir la matière du cycle
+    qui vient de se terminer, pas celle du précédent."""
+    store.save_portfolio("alice", _portfolio(["NESN.SW"]))
+    fetch = _FetchQueue()
+    fetch.push(_rss([("Nestlé issues profit warning", "https://y/neg", NOW)]))
+    seen = {}
+
+    def converge(now=None, notifier=None, tg_cfg=None):
+        seen["events"] = newswatch.recent_events("alice")
+        return {"fired": False, "sent": False}
+
+    _run(fetch, _NotifySpy(), mode="calme", converge=converge)
+    assert seen["events"] is not None           # l'état a bien été relu

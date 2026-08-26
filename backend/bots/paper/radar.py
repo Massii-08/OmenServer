@@ -123,7 +123,7 @@ VALID_DIRECTIONS = ("up", "down")
 # doit rester importable sans le module LLM (patron du fichier : tous les
 # voisins sont importés paresseusement). La correspondance est figée par un test
 # (piège #61 : un champ qui traverse plusieurs couches diverge en silence).
-RISK_BUCKETS = ("mesure", "agressif", "speculatif")
+RISK_BUCKETS = ("mesure", "agressif", "speculatif", "crypto")
 DEFAULT_BUCKET = "mesure"
 # Les hypothèses générées par le radar lui-même n'ont PAS de niveau de risque :
 # elles ne sont pas des idées de trade dimensionnées, elles n'ont donc rien à
@@ -146,6 +146,7 @@ SOCIAL_PACING_S = 0.4
 MAX_EVENTS_IN_PROMPT = 40
 MAX_FILINGS_IN_PROMPT = 20
 MAX_SCORED_IN_PROMPT = 12
+MAX_WHALE_MOVES = 20
 
 # Fichiers de ``data/paper_trading/`` qui ne sont PAS des portefeuilles.
 # ``<user>.coach.json`` et ``<user>.news_seen.json`` sont écartés par la regex
@@ -160,6 +161,12 @@ _NON_USER_FILES = frozenset({
     "whales_cache.json",
     "whales_watch.json",
     "newswatch_global.json",
+    # Réglages ajoutés le 26/08. Leur radical ne contient PAS de point : sans
+    # cette liste, ``alerts_mode`` et ``x_accounts`` seraient recensés comme des
+    # comptes — et la convergence leur écrirait un carnet, recréant exactement
+    # les utilisateurs fantômes qu'on vient de faire disparaître de l'écran.
+    "alerts_mode.json",
+    "x_accounts.json",
 })
 _USER_FILE_RE = re.compile(r"^([A-Za-z0-9_-]+)\.json$")
 
@@ -419,7 +426,8 @@ def save_state(state: Dict[str, Any]) -> None:
 # --------------------------------------------------------------------------- #
 
 def build_prompt(events: Any, filings: Any, open_hyps: Any, scored_hyps: Any,
-                 stats: Any, now_iso: str, social: Any = None) -> str:
+                 stats: Any, now_iso: str, social: Any = None,
+                 whale_moves: Any = None) -> str:
     """Le prompt du radar (PUR — aucune I/O, aucun appel).
 
     Il porte toute la doctrine : chercher le RICOCHET et pas le premier degré,
@@ -503,6 +511,25 @@ def build_prompt(events: Any, filings: Any, open_hyps: Any, scored_hyps: Any,
                 _short_date(filing.get("filing_date") or filing.get("ts")),
                 str(filing.get("label") or filing.get("manager_id") or "?").strip(),
                 str(filing.get("form") or "13F").strip(),
+            ))
+    else:
+        lines.append("- (aucun)")
+    lines.append("")
+
+    lines.append(
+        "MOUVEMENTS DE PORTEFEUILLE DES GRANDS GÉRANTS (ce qu'ils ont VENDU "
+        "ou allégé d'abord — c'est là qu'ils disent le plus ; ⚠️ un 13F est "
+        "publié avec jusqu'à 45 jours de retard, et un allègement peut n'être "
+        "qu'une rotation) :")
+    rows = [m for m in (whale_moves or []) if isinstance(m, dict)][:MAX_WHALE_MOVES]
+    if rows:
+        for move in rows:
+            delta = move.get("delta_pct")
+            lines.append("- %s — %s sur %s%s" % (
+                str(move.get("manager_label") or "?").strip(),
+                str(move.get("action") or "mouvement").strip(),
+                str(move.get("name") or "?").strip(),
+                (" (%s %%)" % delta) if delta is not None else "",
             ))
     else:
         lines.append("- (aucun)")
@@ -979,6 +1006,21 @@ def _collect_events(users: List[str], now: datetime) -> List[Dict[str, Any]]:
     return out
 
 
+def _collect_whale_moves() -> List[Dict[str, Any]]:
+    """Ce que les grands gérants ont VENDU, allégé, acheté ou renforcé — depuis
+    le CACHE seul (aucune requête SEC ici, cf. ``whales.moves_summary``).
+
+    Best-effort : module absent ou cache vide -> liste vide. Un dépôt DIT
+    qu'un gérant a bougé ; ces lignes disent SUR QUOI — c'est cette seconde
+    information qui peut porter une hypothèse de second ordre.
+    """
+    try:
+        from backend.bots.paper import whales
+        return list(whales.moves_summary() or [])
+    except Exception:      # noqa: BLE001
+        return []
+
+
 def _collect_filings(now: datetime) -> List[Dict[str, Any]]:
     """Les dépôts 13F récents (7 jours). Best-effort, même posture."""
     try:
@@ -1157,6 +1199,7 @@ def _score_and_generate(now_dt: datetime,
 
     events = _collect_events(users, now_dt)
     filings = _collect_filings(now_dt)
+    whale_moves = _collect_whale_moves()
     social_items, social_errors = _collect_social(social_fetch, sleep)
     counters["errors"] += social_errors
 
@@ -1168,7 +1211,7 @@ def _score_and_generate(now_dt: datetime,
 
     scored_hyps = [h for h in hypotheses if h.get("status") == "scored"]
     prompt = build_prompt(events, filings, open_hyps, scored_hyps, stats,
-                          now_iso, social_items)
+                          now_iso, social_items, whale_moves)
     try:
         raw = llm(prompt)
     except Exception:  # noqa: BLE001 — LLM muet = run dégradé, jamais perdu

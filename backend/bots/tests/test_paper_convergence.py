@@ -51,6 +51,7 @@ def sources(monkeypatch):
         def __init__(self):
             self.events = []
             self.filings = []
+            self.moves = []          # mouvements de gérants (26/08)
             self.asked = []
 
     bag = _Bag()
@@ -59,10 +60,20 @@ def sources(monkeypatch):
         bag.asked.append(username)
         return list(bag.events)
 
+    def _match_issuer(name, candidates):
+        """Rapprochement volontairement NAÏF dans le stub (le vrai est testé
+        chez lui) : premier candidat dont le symbole apparaît dans le nom."""
+        for symbol in (candidates or {}):
+            if symbol.split(".")[0].upper() in str(name or "").upper():
+                return symbol
+        return None
+
     news_stub = types.ModuleType("backend.bots.paper.newswatch")
     news_stub.recent_events = _recent_events
     whales_stub = types.ModuleType("backend.bots.paper.whales")
     whales_stub.recent_filing_events = lambda: list(bag.filings)
+    whales_stub.moves_summary = lambda: list(bag.moves)
+    whales_stub.match_issuer = _match_issuer
 
     import backend.bots.paper as paper_pkg
     monkeypatch.setitem(sys.modules, "backend.bots.paper.newswatch", news_stub)
@@ -409,7 +420,7 @@ def test_le_prompt_porte_les_interdits_et_la_structure():
     out = _digest_items()
     prompt = convergence.build_digest_prompt(out["factors"], out["items"],
                                              {}, [], NOW.isoformat())
-    assert "MOUVEMENTS À JOUER (simulateur)" in prompt
+    assert "OPPORTUNITÉS (simulateur)" in prompt
     assert "invalidé si" in prompt
     assert "0,5 %" in prompt and "1 %" in prompt
     assert "sûr" in prompt and "garanti" in prompt
@@ -459,11 +470,15 @@ def test_le_resume_de_secours_sans_rien():
 
 
 def test_le_titre_de_la_note_ne_deborde_pas():
-    """Cinq facteurs = un titre de 200 caractères : on garde les trois premiers."""
+    """Tous les facteurs = un titre à rallonge : on garde les trois premiers et
+    on compte le reste. Le suffixe SUIT le nombre de facteurs (il n'est donc
+    pas écrit en dur ici) — sinon ajouter un facteur casserait ce test sans
+    qu'aucun comportement n'ait changé."""
     all_true = {c: True for c in convergence.FACTOR_CODES}
     title = convergence.format_note("digest", NOW.isoformat(), all_true, True).split("\n")[0]
     assert title.startswith("## 2026-08-24 — convergence (")
-    assert title.endswith("+2)") and len(title) < 140
+    assert title.endswith("+%d)" % (len(convergence.FACTOR_CODES) - 3))
+    assert len(title) < 160
 
 
 def test_la_note_dit_quand_le_modele_n_a_pas_repondu():
@@ -827,3 +842,269 @@ def test_maybe_fire_borne_l_historique(sources, alice, monkeypatch):
     history = convergence.load_state()["history"]
     assert len(history) == 3
     assert history[0]["digest"].endswith("d4")          # le plus récent en tête
+
+
+# =========================================================================== #
+#  PUR — held_risk : une mauvaise nouvelle sur un titre DÉTENU (26/08)
+# =========================================================================== #
+
+def _collect6(hyps=(), news=(), filings=(), watched=(), held=(), moves=()):
+    """``collect_factors`` avec les deux ensembles SÉPARÉS (suivis / détenus)
+    et les mouvements de gérants."""
+    return convergence.collect_factors(NOW, list(hyps), list(news),
+                                       list(filings), list(watched),
+                                       held_symbols=list(held),
+                                       whale_moves=list(moves))
+
+
+def test_held_risk_s_allume_sur_une_mauvaise_nouvelle_d_un_titre_detenu():
+    out = _collect6(news=[_news(sentiment="neg")], held=["NESN.SW"])
+    assert out["factors"]["held_risk"] is True
+    assert [i["src"] for i in out["items"]] == ["neg_held"]
+
+
+def test_held_risk_ignore_un_titre_seulement_SUIVI():
+    """La watchlist ne suffit PAS : ici on parle d'argent qui bouge, pas
+    d'information."""
+    out = _collect6(news=[_news(sentiment="neg")], watched=["NESN.SW"])
+    assert out["factors"]["held_risk"] is False
+
+
+def test_held_risk_sans_ensemble_detenu_est_faux():
+    """Défaut = ensemble VIDE, jamais un repli sur les titres suivis."""
+    flags = convergence.collect_factors(
+        NOW, [], [_news(sentiment="neg")], [], ["NESN.SW"])["factors"]
+    assert flags["held_risk"] is False
+
+
+def test_held_risk_ignore_une_bonne_nouvelle():
+    out = _collect6(news=[_news(sentiment="pos")], held=["NESN.SW"])
+    assert out["factors"]["held_risk"] is False
+
+
+def test_held_risk_ne_regarde_que_la_fenetre_de_48h():
+    vieux = _news(sentiment="neg", ts=(NOW - timedelta(hours=60)).isoformat())
+    assert _collect6(news=[vieux], held=["NESN.SW"])["factors"]["held_risk"] is False
+
+
+def test_held_risk_accepte_le_synonyme_negative():
+    """Un état plus ancien peut porter « negative » : un facteur ne doit pas
+    s'éteindre sur un synonyme (même prudence que ``_is_polar``)."""
+    out = _collect6(news=[_news(sentiment="negative")], held=["NESN.SW"])
+    assert out["factors"]["held_risk"] is True
+
+
+def test_une_meme_depeche_n_est_comptee_qu_une_fois():
+    """``held_risk`` et ``cross_source`` peuvent proposer LA MÊME dépêche sous
+    deux étiquettes — la matière ne doit pas doubler pour autant."""
+    news = _news(sentiment="neg")
+    out = _collect6(hyps=[_hyp(), _hyp(id="h2")], news=[news], held=["NESN.SW"],
+                    watched=["NESN.SW"])
+    ids = [i["id"] for i in out["items"]]
+    assert len(ids) == len(set(ids))
+
+
+# =========================================================================== #
+#  PUR — whale_sold_watched : un grand gérant a vendu (26/08)
+# =========================================================================== #
+
+def _move(**over):
+    base = {
+        "manager_id": "brk",
+        "manager_label": "Warren Buffett — Berkshire Hathaway",
+        "quarter": "T2 2026",
+        "action": "sortie",
+        "name": "NESTLE SA",
+        "class": "COM",
+        "symbol": "NESN.SW",
+        "fetched_at": (NOW - timedelta(days=1)).isoformat(),
+    }
+    base.update(over)
+    return base
+
+
+def test_whale_sold_watched_sur_un_titre_detenu():
+    out = _collect6(moves=[_move()], held=["NESN.SW"], watched=["NESN.SW"])
+    assert out["factors"]["whale_sold_watched"] is True
+    assert [i["src"] for i in out["items"]] == ["whale_move"]
+    assert "sortie" in out["items"][0]["title"]
+
+
+def test_whale_sold_watched_compte_aussi_un_titre_seulement_suivi():
+    out = _collect6(moves=[_move()], watched=["NESN.SW"])
+    assert out["factors"]["whale_sold_watched"] is True
+
+
+def test_whale_sold_watched_ignore_un_titre_ni_detenu_ni_suivi():
+    out = _collect6(moves=[_move()], watched=["TSLA"])
+    assert out["factors"]["whale_sold_watched"] is False
+
+
+@pytest.mark.parametrize("action", ["nouveau", "renforcé"])
+def test_whale_sold_watched_ignore_les_achats(action):
+    """C'est la VENTE qu'on cherche : « ils peuvent voir quelque chose qu'on ne
+    voit pas en vendant »."""
+    out = _collect6(moves=[_move(action=action)], watched=["NESN.SW"])
+    assert out["factors"]["whale_sold_watched"] is False
+
+
+def test_whale_sold_watched_ignore_un_snapshot_de_dix_jours():
+    vieux = _move(fetched_at=(NOW - timedelta(days=10)).isoformat())
+    out = _collect6(moves=[vieux], watched=["NESN.SW"])
+    assert out["factors"]["whale_sold_watched"] is False
+
+
+def test_whale_sold_watched_accepte_un_allegement_avec_son_pourcentage():
+    out = _collect6(moves=[_move(action="allégé", delta_pct=-31.4)],
+                    watched=["NESN.SW"])
+    assert out["factors"]["whale_sold_watched"] is True
+    assert "-31.4" in out["items"][0]["title"]
+
+
+# =========================================================================== #
+#  PUR — should_fire : les facteurs de MENACE tirent SEULS (26/08)
+# =========================================================================== #
+
+@pytest.mark.parametrize("code", convergence.THREAT_FACTORS)
+def test_un_facteur_de_menace_tire_seul(code):
+    """« Être le dernier à vendre est le seul cas qu'on ne peut pas se
+    permettre » : le seuil de deux facteurs ne s'applique pas ici."""
+    flags = {c: False for c in convergence.FACTOR_CODES}
+    flags[code] = True
+    assert convergence.should_fire(flags, {}, NOW, "fp") == (True, "ok")
+
+
+def test_un_facteur_d_opportunite_seul_ne_tire_toujours_pas():
+    flags = {c: False for c in convergence.FACTOR_CODES}
+    flags["gov"] = True
+    assert convergence.should_fire(flags, {}, NOW, "fp") == (False, "too_few")
+
+
+def test_le_cooldown_tient_meme_pour_un_facteur_de_menace():
+    """Le seuil saute, pas les garde-fous de redite : le coût reste borné."""
+    flags = {c: False for c in convergence.FACTOR_CODES}
+    flags["held_risk"] = True
+    state = {"last_fired": (NOW - timedelta(hours=2)).isoformat()}
+    assert convergence.should_fire(flags, state, NOW, "fp") == (False, "cooldown")
+
+
+def test_l_empreinte_tient_meme_pour_un_facteur_de_menace():
+    flags = {c: False for c in convergence.FACTOR_CODES}
+    flags["held_risk"] = True
+    state = {"last_fingerprint": "abc"}
+    assert convergence.should_fire(flags, state, NOW, "abc") == (False, "same_items")
+
+
+# =========================================================================== #
+#  PUR — le prompt : débutant, risques, gérants, et « parle tôt »
+# =========================================================================== #
+
+def _prompt(**flags):
+    base = {c: False for c in convergence.FACTOR_CODES}
+    base.update(flags)
+    return convergence.build_digest_prompt(base, [], {}, [], NOW.isoformat())
+
+
+def test_le_prompt_s_adresse_a_un_debutant():
+    assert "DÉBUTANT" in _prompt(gov=True)
+
+
+def test_le_prompt_ouvre_une_section_risques_quand_le_compte_est_menace():
+    prompt = _prompt(held_risk=True)
+    assert "RISQUES SUR TES POSITIONS" in prompt
+    assert "neg_held" in prompt
+
+
+def test_le_prompt_n_ouvre_pas_la_section_risques_sans_menace():
+    assert "RISQUES SUR TES POSITIONS" not in _prompt(gov=True)
+
+
+def test_le_prompt_ouvre_une_section_gerant_et_dit_les_45_jours():
+    """L'honnêteté sur la latence est OBLIGATOIRE : un 13F a jusqu'à 45 jours
+    de retard, et le message doit le DIRE."""
+    prompt = _prompt(whale_sold_watched=True)
+    assert "UN GRAND GÉRANT A VENDU" in prompt
+    assert "45 jours" in prompt
+    assert "rotation" in prompt
+
+
+def test_le_prompt_numerote_ses_blocs_dans_l_ordre():
+    prompt = _prompt(held_risk=True, whale_sold_watched=True)
+    for n, titre in ((1, "CE QUI S'ALIGNE"), (2, "OPPORTUNITÉS"),
+                     (3, "RISQUES SUR TES POSITIONS"), (4, "UN GRAND GÉRANT")):
+        assert prompt.index("%d. " % n) < prompt.index(titre)
+    assert "5. Une dernière ligne" in prompt
+
+
+def test_le_prompt_interdit_d_attendre_la_confirmation():
+    """« Le coach ne doit pas attendre le 100 % de sûreté, sinon on sera les
+    derniers à acheter ou vendre »."""
+    prompt = _prompt(gov=True)
+    assert "jamais par l'attente" in prompt
+    assert "attendre la confirmation" in prompt
+    assert "INTERDIT" in prompt
+
+
+# =========================================================================== #
+#  I/O — verrou anti double-digest (26/08)
+# =========================================================================== #
+
+def test_deux_declenchements_dans_la_meme_fenetre_n_envoient_qu_un_digest(
+        sources, alice):
+    """Trois guetteurs (news 5 min, dépôts 30 min, radar 3×/j) tournent dans le
+    MÊME process : sans la section critique, deux entrées simultanées liraient
+    le même ``last_fired`` et enverraient deux fois le même message."""
+    sources.events = [_news(symbol="GOV", sentiment="gov",
+                            link="http://x.test/gov")]
+    sources.filings = [_filing()]
+    sent = []
+    first = convergence.maybe_fire(now=NOW, llm=_llm("digest"),
+                                   notifier=_notifier(sent), tg_cfg=TG,
+                                   fetch_state=_radar_state())
+    second = convergence.maybe_fire(now=NOW, llm=_llm("digest"),
+                                    notifier=_notifier(sent), tg_cfg=TG,
+                                    fetch_state=_radar_state())
+    assert first["fired"] is True
+    assert second["fired"] is False and second["reason"] in ("cooldown", "same_items")
+    assert len(sent) == 1
+
+
+def test_le_verrou_est_relache_meme_quand_rien_ne_part(sources, alice):
+    """Un ``return`` dans la section critique ne doit pas laisser le verrou
+    fermé : le cycle suivant se bloquerait pour toujours."""
+    convergence.maybe_fire(now=NOW, llm=_llm("x"), notifier=_notifier([]),
+                           tg_cfg=TG, fetch_state=_radar_state())
+    assert convergence._FIRE_LOCK.acquire(blocking=False) is True
+    convergence._FIRE_LOCK.release()
+
+
+def test_maybe_fire_lit_les_mouvements_de_gerants(sources, alice):
+    """Le facteur « un gérant a vendu » vient du CACHE des portefeuilles, via
+    ``whales.moves_summary`` — jamais d'une requête SEC."""
+    sources.moves = [_move(name="NESN SA", symbol=None)]
+    out = convergence.maybe_fire(now=NOW, llm=_llm("digest"),
+                                 notifier=_notifier([]), tg_cfg=TG,
+                                 fetch_state=_radar_state())
+    assert out["factors"]["whale_sold_watched"] is True
+    assert out["fired"] is True                 # un facteur de menace tire seul
+
+
+def test_le_nom_de_la_watchlist_l_emporte_sur_le_ticker(tmp_path):
+    """⚠️ ``models.Position`` ne porte PAS de nom. Un titre à la fois DÉTENU et
+    SUIVI est lu deux fois : d'abord sans nom (position), puis avec (watchlist).
+    Si le premier passage gagnait, la clé resterait « NESN.SW » et aucun
+    émetteur 13F (« NESTLE SA ») ne la rejoindrait jamais."""
+    store.save_portfolio("alice", {
+        "cash_chf": 1.0,
+        "positions": [{"symbol": "NESN.SW", "qty": 1, "side": "long"}],
+    })
+    store.save_watchlist("alice", [{"symbol": "NESN.SW", "name": "Nestlé S.A."}])
+    assert convergence._symbol_names(["alice"]) == {"NESN.SW": "Nestlé S.A."}
+
+
+def test_un_titre_detenu_sans_nom_garde_au_moins_sa_cle(tmp_path):
+    store.save_portfolio("alice", {
+        "cash_chf": 1.0,
+        "positions": [{"symbol": "TSLA", "qty": 1, "side": "long"}],
+    })
+    assert convergence._symbol_names(["alice"]) == {"TSLA": "TSLA"}

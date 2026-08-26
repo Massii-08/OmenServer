@@ -1215,3 +1215,84 @@ def test_collect_social_partage_equitablement_les_places(monkeypatch):
     sources_vues = {i["source"] for i in items}
     assert any("Reddit" in s for s in sources_vues)
     assert any("Bluesky" in s for s in sources_vues)     # non étouffé par Reddit
+
+
+# =========================================================================== #
+#  Étage « crypto » et mouvements de gérants (26/08)
+# =========================================================================== #
+
+def test_le_bilan_a_une_case_crypto():
+    """Le 4e étage d'idées doit être JUGÉ comme les trois autres, sinon on ne
+    saura jamais s'il gagne ou s'il brûle du crédit."""
+    assert "crypto" in radar.RISK_BUCKETS
+    hypotheses = [
+        {"status": "scored", "outcome": "hit", "risk_level": "crypto"},
+        {"status": "scored", "outcome": "miss", "risk_level": "crypto"},
+        {"status": "scored", "outcome": "hit", "risk_level": "mesure"},
+    ]
+    stats = radar.stats_by_level(hypotheses)
+    assert stats["crypto"] == {"hits": 1, "misses": 1, "unclear": 0}
+    assert stats["mesure"]["hits"] == 1
+
+
+def test_une_hypothese_crypto_garde_sa_case():
+    assert radar.level_bucket({"risk_level": "crypto"}) == "crypto"
+
+
+def test_le_prompt_porte_les_mouvements_des_gerants():
+    moves = [{"manager_label": "Warren Buffett — Berkshire Hathaway",
+              "action": "sortie", "name": "KROGER CO"},
+             {"manager_label": "Michael Burry — Scion", "action": "allégé",
+              "name": "APPLE INC", "delta_pct": -42.0}]
+    prompt = radar.build_prompt([], [], [], [], {}, "2026-08-26", None, moves)
+    assert "MOUVEMENTS DE PORTEFEUILLE DES GRANDS GÉRANTS" in prompt
+    assert "sortie sur KROGER CO" in prompt
+    assert "allégé sur APPLE INC (-42.0 %)" in prompt
+    assert "45 jours" in prompt                 # l'honnêteté sur la latence
+
+
+def test_le_prompt_dit_quand_aucun_gerant_n_a_bouge():
+    prompt = radar.build_prompt([], [], [], [], {}, "2026-08-26", None, [])
+    assert "MOUVEMENTS DE PORTEFEUILLE DES GRANDS GÉRANTS" in prompt
+
+
+def test_les_mouvements_des_gerants_sont_bornes():
+    moves = [{"manager_label": "M", "action": "sortie", "name": "N%d" % i}
+             for i in range(50)]
+    prompt = radar.build_prompt([], [], [], [], {}, "2026-08-26", None, moves)
+    assert prompt.count("sortie sur N") == radar.MAX_WHALE_MOVES
+
+
+def _install_whales(monkeypatch, stub):
+    """Pose le stub À LA FOIS dans ``sys.modules`` ET en attribut du paquet.
+
+    ⚠️ ``from backend.bots.paper import whales`` lit l'ATTRIBUT du paquet dès
+    que le vrai module a été importé une fois dans la session : sans le second
+    monkeypatch, le test passe seul et échoue dans la suite complète (même
+    piège que la suite de la convergence)."""
+    import backend.bots.paper as paper_pkg
+    monkeypatch.setitem(sys.modules, "backend.bots.paper.whales", stub)
+    monkeypatch.setattr(paper_pkg, "whales", stub, raising=False)
+
+
+def test_les_mouvements_viennent_du_cache_sans_requete(monkeypatch):
+    """``_collect_whale_moves`` lit ``moves_summary``, qui ne touche jamais la
+    SEC — le radar tourne trois fois par jour, il ne doit rien coûter."""
+    import types
+    whales_stub = types.ModuleType("backend.bots.paper.whales")
+    whales_stub.moves_summary = lambda: [{"manager_label": "M",
+                                          "action": "sortie", "name": "X"}]
+    _install_whales(monkeypatch, whales_stub)
+    assert radar._collect_whale_moves()[0]["name"] == "X"
+
+
+def test_un_module_whales_absent_ne_casse_pas_le_radar(monkeypatch):
+    import types
+    whales_stub = types.ModuleType("backend.bots.paper.whales")
+
+    def boom():
+        raise RuntimeError("cache illisible")
+
+    whales_stub.moves_summary = boom
+    _install_whales(monkeypatch, whales_stub)
+    assert radar._collect_whale_moves() == []

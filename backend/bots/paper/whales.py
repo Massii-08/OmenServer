@@ -51,6 +51,7 @@ Canal Telegram : ``paper/alerts.py`` (bot ORACLE, spec §13) — seuls les DÉFA
 de ``notifier``/``tg_cfg`` ont changé, l'injection reste la même.
 """
 import json
+import logging
 import os
 import re
 import time
@@ -59,6 +60,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus, urljoin
+
+logger = logging.getLogger("omenserver")
 
 # --------------------------------------------------------------------------- #
 # Constantes de la source
@@ -663,6 +666,129 @@ def _short(text: Any, limit: int = 160) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Le coach ASSIMILE les mouvements des gérants (extension 2026-08-26)
+#
+# Demande de l'utilisateur : « ils peuvent voir quelque chose qu'on ne voit pas
+# en VENDANT leurs actions ». Les VENTES sont donc le signal principal — c'est
+# l'inverse de la lecture habituelle des 13F, qui ne regarde que les achats.
+#
+# ⚠️ Deux limites que le coach doit TOUJOURS énoncer : un 13F a jusqu'à 45 jours
+# de retard sur la réalité, et une vente peut n'être qu'une rotation interne.
+# On donne un indice, jamais une preuve.
+# --------------------------------------------------------------------------- #
+
+MOVES_SUMMARY_MAX = 30
+
+# Les VENTES d'abord : ce sont elles qu'on cherche.
+_MOVE_ORDER = (("exits", "sortie"), ("decreased", "allégé"),
+               ("new", "nouveau"), ("increased", "renforcé"))
+
+# Suffixes de forme juridique et de classe de titre — retirés avant de comparer
+# deux noms d'émetteur. « APPLE INC » et « Apple Inc. » doivent se rejoindre.
+_ISSUER_SUFFIXES = frozenset({
+    "inc", "incorporated", "corp", "corporation", "co", "company", "plc",
+    "ltd", "limited", "llc", "lp", "sa", "nv", "ag", "spa", "se", "holdings",
+    "holding", "group", "the", "com", "cl", "class", "a", "b", "c",
+    "new", "shs", "shares", "ord", "adr", "reit", "trust", "trusts",
+})
+
+
+def _issuer_tokens(name: Any) -> List[str]:
+    """Tokens SIGNIFICATIFS d'un nom d'émetteur (PUR) : majuscules, ponctuation
+    retirée, formes juridiques et classes de titre écartées."""
+    raw = re.sub(r"[^A-Za-z0-9]+", " ", str(name or "")).upper()
+    return [tok for tok in raw.split()
+            if tok and tok.lower() not in _ISSUER_SUFFIXES]
+
+
+def match_issuer(name: Any, candidates: Any) -> Optional[str]:
+    """Le symbole dont le nom correspond à cet émetteur 13F, ou ``None`` (PUR).
+
+    ``candidates`` = ``{symbole: nom}`` — les noms viennent de Yahoo et sont
+    déjà stockés avec les positions et la watchlist ; on ne devine donc rien.
+
+    Le rapprochement se fait sur les tokens SIGNIFICATIFS et jamais sur un mot
+    générique seul (leçon du piège #31 du dépôt : « Deutsche » ne suffit pas à
+    identifier « Deutsche Bank »). Concrètement il faut au moins un token
+    commun, et ce token doit être distinctif — les formes juridiques et les
+    classes de titre ont été retirées des deux côtés. Aucun candidat -> ``None``
+    plutôt qu'un rapprochement approximatif : un move attribué au mauvais titre
+    serait pire que pas de move du tout.
+    """
+    tokens = set(_issuer_tokens(name))
+    if not tokens or not isinstance(candidates, dict):
+        return None
+    best, best_score = None, 0
+    for symbol, label in candidates.items():
+        if not symbol:
+            continue
+        other = set(_issuer_tokens(label))
+        common = tokens & other
+        if not common:
+            continue
+        score = len(common)
+        if score > best_score:
+            best, best_score = str(symbol), score
+    return best
+
+
+def moves_summary(cache: Any = None,
+                  limit: int = MOVES_SUMMARY_MAX) -> List[Dict[str, Any]]:
+    """Les mouvements du trimestre de TOUS les gérants, depuis le CACHE SEUL.
+
+    Jamais de requête SEC ici : cette fonction est appelée à chaque fois que le
+    coach réfléchit (idées, scénarios, revue de positions, radar). Elle doit
+    donc être gratuite — c'est ``check_new_filings`` qui tient le cache au
+    chaud, en tâche de fond.
+
+    Tri : sorties, puis allégements, puis nouveautés, puis renforcements. Les
+    deux premières familles sont LE signal recherché ; les deux autres sont du
+    contexte. Cap global à ``limit``.
+    """
+    data = cache if isinstance(cache, dict) else _load_cache()
+    try:
+        limit = max(0, int(limit))
+    except (TypeError, ValueError):
+        limit = MOVES_SUMMARY_MAX
+
+    buckets: Dict[str, List[Dict[str, Any]]] = {key: [] for key, _ in _MOVE_ORDER}
+    for manager in MANAGERS:
+        entry = data.get(manager["id"])
+        if not isinstance(entry, dict):
+            continue
+        snap = entry.get("snapshot")
+        if not isinstance(snap, dict) or snap.get("status") != "ok":
+            continue
+        moves = snap.get("moves")
+        if not isinstance(moves, dict):
+            continue
+        for key, action in _MOVE_ORDER:
+            for move in (moves.get(key) or []):
+                if not isinstance(move, dict) or not move.get("name"):
+                    continue
+                row = {
+                    "manager_id": manager["id"],
+                    "manager_label": manager["label"],
+                    "quarter": snap.get("quarter_label") or snap.get("quarter") or "",
+                    "action": action,
+                    "name": move.get("name"),
+                    "class": move.get("class") or "",
+                    "fetched_at": entry.get("fetched_at"),
+                }
+                if move.get("delta_pct") is not None:
+                    row["delta_pct"] = move["delta_pct"]
+                buckets[key].append(row)
+
+    out: List[Dict[str, Any]] = []
+    for key, _action in _MOVE_ORDER:
+        for row in buckets[key]:
+            if len(out) >= limit:
+                return out
+            out.append(row)
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Persistance (cache 24 h + état du guetteur) — écriture ATOMIQUE 0o600
 # --------------------------------------------------------------------------- #
 
@@ -931,9 +1057,99 @@ def _watched_filings(subm: Dict[str, Any]) -> List[Dict[str, str]]:
     return out
 
 
+def stalest_manager(cache: Any, now_ts: float,
+                    ttl_s: float = CACHE_TTL_S) -> Optional[str]:
+    """Le gérant dont le snapshot est le PLUS périmé, ou ``None`` si tous sont
+    frais (PUR).
+
+    Un gérant jamais récupéré passe en premier (âge infini) : c'est le seul
+    moyen pour le cache de se remplir tout seul sur une installation neuve.
+    Sert la rotation douce de ``check_new_filings`` — UN gérant par cycle, donc
+    la dizaine du catalogue est couverte en une demi-journée sans jamais
+    envoyer de rafale à la SEC.
+    """
+    data = cache if isinstance(cache, dict) else {}
+    worst, worst_age = None, None
+    for manager in MANAGERS:
+        entry = data.get(manager["id"])
+        stamp = (entry or {}).get("fetched_ts") if isinstance(entry, dict) else None
+        try:
+            age = now_ts - float(stamp)
+        except (TypeError, ValueError):
+            age = float("inf")                    # jamais récupéré : priorité
+        if age < ttl_s:
+            continue
+        if worst_age is None or age > worst_age:
+            worst, worst_age = manager["id"], age
+    return worst
+
+
+def _warm_cache(manager_ids: Any, cache: Any, stamp: float, client,
+                sleep: Optional[Callable[[float], None]],
+                counters: Dict[str, Any]) -> None:
+    """Tient les snapshots au chaud SANS l'interface (26/08).
+
+    Avant cette extension, un snapshot n'était calculé que lorsqu'un humain
+    ouvrait l'écran des grands portefeuilles. Le coach, lui, réfléchit la nuit :
+    il aurait lu un cache vide. Deux règles, dans cet ordre :
+
+    1. un dépôt 13F FRAIS vient d'être détecté pour un gérant -> son snapshot
+       est recalculé tout de suite (c'est précisément là que ses mouvements
+       changent) ;
+    2. sinon, UN SEUL gérant par cycle : le plus périmé au-delà de 24 h.
+
+    Best-effort intégral : la SEC muette ne doit jamais faire échouer la ronde
+    des dépôts, qui a déjà fait son travail quand on arrive ici.
+    """
+    targets = [mid for mid in (manager_ids or [])]
+    if not targets:
+        stale = stalest_manager(cache, stamp)
+        if stale:
+            targets = [stale]
+    for manager_id in targets:
+        try:
+            get_snapshot(manager_id, client=client, force=True, sleep=sleep,
+                         now=stamp)
+        except Exception:                          # noqa: BLE001 — best-effort
+            counters["errors"] += 1
+
+
+def _fire_convergence(tg_cfg: Optional[Dict[str, Any]] = None,
+                      notifier: Optional[Callable[..., Any]] = None,
+                      converge: Optional[Callable[..., Any]] = None,
+                      counters: Optional[Dict[str, Any]] = None) -> bool:
+    """Consulte la couche de convergence — best-effort STRICT (même patron que
+    ``radar._fire_convergence`` et ``newswatch._fire_convergence``).
+
+    Appelée APRÈS l'écriture de l'état : la convergence relit ce fichier, elle
+    doit voir les dépôts que la ronde vient de découvrir. Tant que
+    ``convergence.should_fire`` refuse (moins de deux facteurs, cooldown, même
+    matière), l'appel ne fait que de la lecture locale — aucun modèle, aucun
+    réseau.
+    """
+    try:
+        if converge is not None:
+            result = converge(notifier=notifier, tg_cfg=tg_cfg)
+        else:
+            from backend.bots.paper import convergence
+            result = convergence.maybe_fire(notifier=notifier, tg_cfg=tg_cfg)
+    except Exception:                              # noqa: BLE001
+        logger.warning("paper whales: convergence indisponible")
+        if counters is not None:
+            counters["errors"] += 1
+        return False
+    result = result if isinstance(result, dict) else {}
+    if counters is not None and result.get("sent"):
+        counters["notified"] += 1
+    return bool(result.get("fired"))
+
+
 def check_new_filings(client=None, notifier=None, tg_cfg=None,
                       sleep: Optional[Callable[[float], None]] = None,
-                      now: Optional[float] = None) -> Dict[str, int]:
+                      now: Optional[float] = None,
+                      mode: Optional[str] = None,
+                      converge: Optional[Callable[..., Any]] = None,
+                      warm: bool = True) -> Dict[str, Any]:
     """Guette les nouveaux dépôts EDGAR des gérants du catalogue.
 
     Retourne ``{managers, new_filings, notified, errors}``.
@@ -955,8 +1171,19 @@ def check_new_filings(client=None, notifier=None, tg_cfg=None,
 
     Une erreur sur UN gérant incrémente ``errors`` et n'interrompt pas les
     autres. Aucun job n'est armé ici : le planificateur appelle cette fonction.
+
+    Trois ajouts du 26/08, tous après la ronde des dépôts :
+
+    * **mode d'alerte** (``alerts.get_mode``) : en « calme » — le défaut — le
+      dépôt est journalisé (``muted: True``) mais RIEN n'est envoyé. Seule la
+      convergence parle ;
+    * **cache tenu au chaud** (``warm``) : le coach lit les portefeuilles des
+      gérants quand il réfléchit, pas quand un humain ouvre l'écran ;
+    * **convergence événementielle** : un dépôt qui aligne des facteurs
+      déclenche le digest tout de suite, pas au prochain réveil planifié.
     """
-    counters = {"managers": 0, "new_filings": 0, "notified": 0, "errors": 0}
+    counters: Dict[str, Any] = {"managers": 0, "new_filings": 0, "notified": 0,
+                                "errors": 0, "convergence_fired": False}
 
     if tg_cfg is not None:
         cfg = tg_cfg
@@ -968,9 +1195,10 @@ def check_new_filings(client=None, notifier=None, tg_cfg=None,
     if not (cfg or {}).get("token") or not (cfg or {}).get("chat_id"):
         return counters                            # éteint : zéro réseau
 
+    from backend.bots.paper import alerts as _alerts
     if notifier is None:
-        from backend.bots.paper import alerts as _alerts
         notifier = _alerts.send
+    quiet = _alerts.is_quiet(mode)
 
     stamp = now if now is not None else _now()
     now_dt = _as_datetime(stamp)
@@ -978,6 +1206,7 @@ def check_new_filings(client=None, notifier=None, tg_cfg=None,
     state = _load_watch_state()
     pacer = _Pacer(sleep)
     fresh_events = []  # type: List[Dict[str, Any]]
+    refreshed = []     # type: List[str]  gérants dont le 13F vient de bouger
 
     for manager in MANAGERS:
         mid = manager["id"]
@@ -1008,15 +1237,25 @@ def check_new_filings(client=None, notifier=None, tg_cfg=None,
                 if handled >= MAX_NOTIFY_PER_MANAGER:
                     break
                 handled += 1
-                fresh_events.append({
+                event = {
                     "ts": when, "manager_id": mid, "label": manager["label"],
                     "form": filing["form"], "filing_date": filing["filing_date"],
                     "accession": filing["accession"],
-                })
+                }
+                fresh_events.append(event)
+                if str(filing.get("form") or "").upper().startswith("13F"):
+                    if mid not in refreshed:
+                        refreshed.append(mid)      # ses mouvements ont changé
+                if quiet:
+                    # Mode calme : la détection reste entière (journal, UI,
+                    # convergence), seul l'envoi disparaît.
+                    event["muted"] = True
+                    continue
                 try:
                     notifier(_notification_text(manager, filing["form"],
                                                 filing["filing_date"]), cfg)
                     counters["notified"] += 1
+                    event["muted"] = False
                 except Exception:                  # noqa: BLE001 — best-effort
                     pass                           # une notif perdue n'annule
                                                    # pas la détection
@@ -1033,6 +1272,14 @@ def check_new_filings(client=None, notifier=None, tg_cfg=None,
         _atomic_write_json(watch_path(), state)
     except OSError:
         pass
+
+    # Le cache des portefeuilles est rafraîchi APRÈS l'écriture de l'état : un
+    # échec SEC ici ne doit pas faire perdre les dépôts qu'on vient de détecter.
+    if warm:
+        _warm_cache(refreshed, _load_cache(), stamp, client, sleep, counters)
+
+    counters["convergence_fired"] = _fire_convergence(
+        tg_cfg=tg_cfg, notifier=notifier, converge=converge, counters=counters)
     return counters
 
 

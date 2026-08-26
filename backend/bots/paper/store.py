@@ -184,18 +184,59 @@ def save_watchlist(username: str, symbols: List[Dict[str, Any]]) -> None:
 # API publique — carnet Markdown façon Obsidian (§11)
 # --------------------------------------------------------------------------- #
 
+# Noms de MODULE qui ont pu, avant le correctif 83a8d4b, se voir écrire un
+# carnet comme s'ils étaient des comptes. Ces répertoires ``*-vault`` existent
+# ENCORE sur les installations déployées : ils ne se suppriment pas tout seuls,
+# et sans cette liste ils continueraient d'apparaître dans la communauté comme
+# des « traders » fantômes (constaté à l'écran : « newswatch_global »,
+# « whales_watch »).
+#
+# ⚠️ Ceinture ET bretelles : la vraie garantie est la règle ci-dessous (« un
+# utilisateur a un portefeuille OU un profil coach »), qui écarte AUSSI les
+# fantômes futurs dont on ignore encore le nom. Cette liste ne fait que
+# DOCUMENTER ceux qu'on connaît.
+RESERVED_VAULT_NAMES = frozenset({
+    "newswatch_global", "whales_watch", "whales_cache", "convergence", "radar",
+    "alerts_mode", "x_accounts",
+})
+
+
+def _is_real_account(username: str) -> bool:
+    """Ce nom correspond-il à un VRAI compte ?
+
+    Un carnet seul ne prouve rien : c'est justement par un carnet écrit à tort
+    que les fantômes sont apparus. La preuve d'existence est un portefeuille
+    (``<user>.json``) ou un profil de coach (``<user>.coach.json``) — les deux
+    seuls fichiers qu'on n'écrit QUE pour un compte connecté.
+
+    Un compte qui a discuté avec le coach sans jamais passer d'ordre a un
+    profil mais pas de portefeuille : il compte, d'où le OU.
+    """
+    if username in RESERVED_VAULT_NAMES:
+        return False
+    try:
+        return portfolio_path(username).is_file() or coach_path(username).is_file()
+    except (ValueError, OSError):
+        return False
+
+
 def list_vault_users() -> List[str]:
-    """Utilisateurs qui ont un carnet (``<user>-vault/`` sous ``DATA_DIR``),
-    ordre alphabétique. Sert la communauté (carnets PARTAGÉS entre traders) :
-    trouver QUI a un carnet avant de lister/lire ses notes.
+    """Utilisateurs qui ont un carnet (``<user>-vault/`` sous ``DATA_DIR``) ET
+    qui sont de VRAIS comptes, ordre alphabétique. Sert la communauté (carnets
+    PARTAGÉS entre traders) : trouver QUI a un carnet avant de lister/lire ses
+    notes.
 
     Lecture seule : ``DATA_DIR`` absent -> ``[]`` (même esprit que
     ``list_notes`` — une liste ne crée jamais de répertoire).
 
     Chaque nom candidat est revalidé par ``_sanitize_username`` (même
-    allowlist que partout ailleurs dans ce module) : un répertoire qui ne
-    serait pas un vault légitime (déposé hors de l'application, nom corrompu)
-    est simplement ignoré plutôt que remonté tel quel à l'appelant.
+    allowlist que partout ailleurs dans ce module), puis par
+    ``_is_real_account``. Cette seconde barrière est le correctif du 26/08 :
+    la fonction listait tout répertoire ``*-vault``, or le bug d'avant 83a8d4b
+    en avait créé pour des NOMS DE MODULE, et ces répertoires existent toujours
+    sur le disque de production. Comme ``/community/{user}/{name}`` valide son
+    paramètre CONTRE cette même liste, le filtre ferme les deux portes d'un
+    coup — la liste et la lecture.
     """
     if not DATA_DIR.is_dir():
         return []
@@ -207,6 +248,8 @@ def list_vault_users() -> List[str]:
         try:
             _sanitize_username(candidate)
         except ValueError:
+            continue
+        if not _is_real_account(candidate):
             continue
         out.append(candidate)
     out.sort()

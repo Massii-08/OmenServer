@@ -122,7 +122,7 @@ def make_client(tmp_path, monkeypatch, role="admin"):
     monkeypatch.setattr(pr.llm, "write_analysis",
                         lambda facts, lang="fr": "Fiche du titre.")
     monkeypatch.setattr(pr.llm, "suggest_ideas",
-                        lambda context, lang="fr", risk_level="mesure":
+                        lambda context, lang="fr", risk_level="mesure", journal=None:
                         'Pas de matière suffisante.\n'
                         '```json\n{"ideas": []}\n```')
     # Le 5e prompt (arbres de scénarios) est doublé comme les quatre autres :
@@ -824,10 +824,21 @@ def test_reading_the_portfolio_does_not_grow_the_profile(tmp_path, monkeypatch):
 #  COMMUNAUTÉ (carnets partagés entre traders)
 # ================================================================
 
+def _real_trader(username, note="## une note\n"):
+    """Un VRAI compte : un carnet ET une preuve d'existence (un portefeuille).
+
+    Depuis le correctif du 26/08, un carnet seul ne suffit plus à figurer dans
+    la communauté — c'est par des carnets écrits à tort que les utilisateurs
+    fantômes « newswatch_global » et « whales_watch » y étaient apparus.
+    """
+    store.save_portfolio(username, pr.new_portfolio().to_dict())
+    store.append_note(username, "Journal.md", note)
+
+
 def test_community_lists_vaults_and_reads_another_traders_note(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
-    store.append_note("alice", "Journal.md", "## note d'alice\n")
-    store.append_note("bob", "Journal.md", "## note de bob\n")
+    _real_trader("alice", "## note d'alice\n")
+    _real_trader("bob", "## note de bob\n")
 
     body = c.get("/api/paper/community").json()
     users = {row["user"] for row in body["users"]}
@@ -872,7 +883,7 @@ def test_community_404s_an_absent_note_of_a_real_vault(tmp_path, monkeypatch):
 
 def test_community_400s_an_invalid_note_name(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
-    store.append_note("alice", "Journal.md", "## note d'alice\n")
+    _real_trader("alice", "## note d'alice\n")
     assert c.get("/api/paper/community/alice/Journal.txt").status_code == 400
 
 
@@ -918,7 +929,7 @@ def test_ideas_happy_path_registers_radar_hypotheses(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     monkeypatch.setattr(
         pr.llm, "suggest_ideas",
-        lambda context, lang="fr", risk_level="mesure": _ideas_json(
+        lambda context, lang="fr", risk_level="mesure", journal=None: _ideas_json(
             {"ticker": "aapl", "direction": "up", "horizon_days": 10,
              "thesis": "Momentum"},
             {"ticker": "tsla", "direction": "down", "horizon_days": 5,
@@ -952,7 +963,7 @@ def test_ideas_respects_the_radar_max_open_queue(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         pr.llm, "suggest_ideas",
-        lambda context, lang="fr", risk_level="mesure": _ideas_json(
+        lambda context, lang="fr", risk_level="mesure", journal=None: _ideas_json(
             {"ticker": "AAPL", "direction": "up", "horizon_days": 10,
              "thesis": "Momentum"}))
     body = c.post("/api/paper/ideas", json={}).json()
@@ -966,7 +977,7 @@ def test_ideas_respects_the_radar_max_open_queue(tmp_path, monkeypatch):
 def test_ideas_without_a_json_block_still_returns_the_text(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     monkeypatch.setattr(pr.llm, "suggest_ideas",
-                        lambda context, lang="fr", risk_level="mesure":
+                        lambda context, lang="fr", risk_level="mesure", journal=None:
                         "Contexte trop maigre, je ne peux rien proposer.")
     body = c.post("/api/paper/ideas", json={}).json()
     assert body["text"] == "Contexte trop maigre, je ne peux rien proposer."
@@ -976,7 +987,7 @@ def test_ideas_without_a_json_block_still_returns_the_text(tmp_path, monkeypatch
 def test_ideas_returns_502_when_the_llm_fails(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
 
-    def boom(context, lang="fr", risk_level="mesure"):
+    def boom(context, lang="fr", risk_level="mesure", journal=None):
         raise RuntimeError("le coach n'a pas répondu dans les 120 s")
 
     monkeypatch.setattr(pr.llm, "suggest_ideas", boom)
@@ -990,7 +1001,7 @@ def test_ideas_context_includes_the_watchlist(tmp_path, monkeypatch):
                                      "currency": "USD", "added_at": FIXED_NOW}])
     seen = {}
 
-    def fake_suggest(context, lang="fr", risk_level="mesure"):
+    def fake_suggest(context, lang="fr", risk_level="mesure", journal=None):
         seen["context"] = context
         return _ideas_json()
 
@@ -1012,9 +1023,11 @@ def _ideas_double(monkeypatch, *rows):
     """Double de ``suggest_ideas`` qui NOTE le niveau reçu et rend ``rows``."""
     seen = {}
 
-    def fake(context, lang="fr", risk_level="mesure"):
+    def fake(context, lang="fr", risk_level="mesure", journal=None):
         seen["lang"] = lang
         seen["risk_level"] = risk_level
+        seen["journal"] = journal
+        seen["context"] = context
         return _ideas_json(*rows)
 
     monkeypatch.setattr(pr.llm, "suggest_ideas", fake)
@@ -1907,7 +1920,7 @@ def test_the_llm_endpoints_forward_the_reading_language(tmp_path, monkeypatch):
                         lambda facts, lang="fr":
                         seen.__setitem__("analysis", lang) or "risposta")
     monkeypatch.setattr(pr.llm, "suggest_ideas",
-                        lambda context, lang="fr", risk_level="mesure":
+                        lambda context, lang="fr", risk_level="mesure", journal=None:
                         seen.__setitem__("ideas", lang) or '```json\n{"ideas": []}\n```')
 
     c.post("/api/paper/coach/ask", json={"question": "?", "lang": "it"})
@@ -2032,7 +2045,7 @@ def test_ideas_land_in_the_pipeline(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     monkeypatch.setattr(
         pr.llm, "suggest_ideas",
-        lambda context, lang="fr", risk_level="mesure": _ideas_json(
+        lambda context, lang="fr", risk_level="mesure", journal=None: _ideas_json(
             {"ticker": "aapl", "direction": "up", "horizon_days": 10,
              "thesis": "Momentum"},
         ))
@@ -2066,7 +2079,7 @@ def test_an_untracked_idea_never_lands_in_the_pipeline(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         pr.llm, "suggest_ideas",
-        lambda context, lang="fr", risk_level="mesure": _ideas_json(
+        lambda context, lang="fr", risk_level="mesure", journal=None: _ideas_json(
             {"ticker": "AAPL", "direction": "up", "thesis": "Momentum"}))
     body = c.post("/api/paper/ideas", json={}).json()
     assert body["ideas"][0]["tracked"] is False
@@ -2084,7 +2097,7 @@ def test_a_broken_board_never_breaks_the_ideas_answer(tmp_path, monkeypatch):
     monkeypatch.setattr(pr.board, "add_pipeline_item", boom)
     monkeypatch.setattr(
         pr.llm, "suggest_ideas",
-        lambda context, lang="fr", risk_level="mesure": _ideas_json(
+        lambda context, lang="fr", risk_level="mesure", journal=None: _ideas_json(
             {"ticker": "AAPL", "direction": "up", "thesis": "Momentum"}))
     body = c.post("/api/paper/ideas", json={})
     assert body.status_code == 200
@@ -2255,7 +2268,7 @@ def test_the_strategy_context_is_the_same_for_ideas_and_scenarios(tmp_path, monk
     c, _ = make_client(tmp_path, monkeypatch)
     seen = {}
     monkeypatch.setattr(pr.llm, "suggest_ideas",
-                        lambda context, lang="fr", risk_level="mesure":
+                        lambda context, lang="fr", risk_level="mesure", journal=None:
                         seen.__setitem__("ideas", dict(context))
                         or '```json\n{"ideas": []}\n```')
     monkeypatch.setattr(pr.llm, "suggest_scenarios",
@@ -2271,3 +2284,495 @@ def test_the_strategy_context_is_the_same_for_ideas_and_scenarios(tmp_path, monk
     assert expected <= set(seen["ideas"])
     # les scénarios voient la MÊME chose, plus le pipeline
     assert set(seen["scenarios"]) == set(seen["ideas"]) | {"pipeline"}
+
+
+# ================================================================
+#  MODE D'ALERTE (26/08) — la partie automatique
+# ================================================================
+
+def test_alerts_mode_defaults_to_quiet(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = c.get("/api/paper/alerts-mode").json()
+    assert body["mode"] == "calme"
+    assert set(body["modes"]) == {"calme", "tout"}
+
+
+def test_alerts_mode_can_be_switched_and_persists(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.post("/api/paper/alerts-mode", json={"mode": "tout"}).json()["mode"] == "tout"
+    assert c.get("/api/paper/alerts-mode").json()["mode"] == "tout"
+
+
+def test_alerts_mode_returns_the_mode_really_applied(tmp_path, monkeypatch):
+    """Le client lit ce qui S'APPLIQUE, pas ce qu'il croyait demander."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.post("/api/paper/alerts-mode",
+                  json={"mode": "yolo"}).json()["mode"] == "calme"
+
+
+def test_alerts_mode_is_refused_to_the_trader_role(tmp_path, monkeypatch):
+    """C'est un réglage de la veille (ce que le téléphone reçoit), pas une
+    action de trading."""
+    c, _ = make_client(tmp_path, monkeypatch, role="trader")
+    assert c.get("/api/paper/alerts-mode").status_code == 403
+    assert c.post("/api/paper/alerts-mode", json={"mode": "tout"}).status_code == 403
+
+
+def test_alerts_mode_is_allowed_to_money(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch, role="money")
+    assert c.get("/api/paper/alerts-mode").status_code == 200
+    assert c.post("/api/paper/alerts-mode", json={"mode": "tout"}).status_code == 200
+
+
+# ================================================================
+#  COMPTES X SUIVIS (26/08)
+# ================================================================
+
+def test_x_accounts_serves_the_defaults(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = c.get("/api/paper/x-accounts").json()
+    assert body["handles"] and body["max"] >= 1
+
+
+def test_x_accounts_replaces_the_whole_list(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = c.post("/api/paper/x-accounts",
+                  json={"handles": ["@WhiteHouse", "elonmusk"]}).json()
+    assert body["handles"] == ["WhiteHouse", "elonmusk"]
+    assert c.get("/api/paper/x-accounts").json()["handles"] == ["WhiteHouse",
+                                                                "elonmusk"]
+
+
+def test_x_accounts_drops_an_invalid_handle(tmp_path, monkeypatch):
+    """Un nom sanitisé pointerait sur un AUTRE compte : on rejette."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = c.post("/api/paper/x-accounts",
+                  json={"handles": ["ok_handle", "pas un handle !", "x" * 20]}).json()
+    assert body["handles"] == ["ok_handle"]
+
+
+def test_x_accounts_caps_the_list(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = c.post("/api/paper/x-accounts",
+                  json={"handles": ["c%d" % i for i in range(30)]}).json()
+    assert len(body["handles"]) == body["max"]
+
+
+def test_x_accounts_is_refused_to_the_trader_role(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch, role="trader")
+    assert c.get("/api/paper/x-accounts").status_code == 403
+    assert c.post("/api/paper/x-accounts", json={"handles": []}).status_code == 403
+
+
+# ================================================================
+#  JOURNAL DES IDÉES (26/08)
+# ================================================================
+
+def test_ideas_are_appended_to_the_journal(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    _ideas_double(monkeypatch, {"ticker": "TSLA", "direction": "up",
+                                "horizon_days": 10, "thesis": "un pari"})
+    c.post("/api/paper/ideas", json={"risk_level": "agressif"})
+
+    entries = c.get("/api/paper/ideas/journal").json()["entries"]
+    assert len(entries) == 1
+    assert entries[0]["kind"] == "ideas"
+    assert entries[0]["risk_level"] == "agressif"
+    assert entries[0]["ideas"][0]["ticker"] == "TSLA"
+
+
+def test_the_journal_reaches_the_next_prompt(tmp_path, monkeypatch):
+    """C'est tout l'objet du journal : ne pas reproposer la même idée."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    seen = _ideas_double(monkeypatch, {"ticker": "TSLA", "direction": "up",
+                                       "horizon_days": 10, "thesis": "un pari"})
+    c.post("/api/paper/ideas", json={})
+    assert seen["journal"] == []                # première série : rien derrière
+    c.post("/api/paper/ideas", json={})
+    assert seen["journal"][0]["ideas"][0]["ticker"] == "TSLA"
+
+
+def test_the_journal_is_capped_by_the_limit_parameter(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    _ideas_double(monkeypatch)
+    for _ in range(3):
+        c.post("/api/paper/ideas", json={})
+    assert len(c.get("/api/paper/ideas/journal?limit=2").json()["entries"]) == 2
+
+
+def test_an_unwritable_journal_never_breaks_the_answer(tmp_path, monkeypatch):
+    """Une écriture ratée ne doit pas faire perdre une réponse déjà payée."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    _ideas_double(monkeypatch)
+
+    def boom(*a, **kw):
+        raise OSError("disque plein")
+
+    monkeypatch.setattr(pr.idea_journal, "append_entry", boom)
+    assert c.post("/api/paper/ideas", json={}).status_code == 200
+
+
+def test_the_journal_is_refused_to_the_player_role(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch, role="player")
+    assert c.get("/api/paper/ideas/journal").status_code == 403
+
+
+# ================================================================
+#  CE QUE LE COACH A DÉJÀ DIT SUR UN TITRE (lecture pure)
+# ================================================================
+
+def test_ideas_for_symbol_aggregates_radar_and_journal(tmp_path, monkeypatch):
+    from backend.bots.paper import radar
+    c, _ = make_client(tmp_path, monkeypatch)
+    _ideas_double(monkeypatch, {"ticker": "TSLA", "direction": "up",
+                                "horizon_days": 10, "thesis": "un pari"})
+    c.post("/api/paper/ideas", json={})
+
+    state = radar.load_state()
+    state["hypotheses"][0]["status"] = "scored"
+    state["hypotheses"][0]["outcome"] = "hit"
+    radar.save_state(state)
+
+    items = c.get("/api/paper/ideas/for-symbol?symbol=tsla").json()["items"]
+    origins = {row["from"] for row in items}
+    assert origins == {"radar", "journal"}
+    radar_row = next(r for r in items if r["from"] == "radar")
+    assert radar_row["outcome"] == "hit" and radar_row["source"] == "coach"
+
+
+def test_ideas_for_symbol_includes_review_verdicts(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.idea_journal.append_entry(
+        "tester", "review", "ma revue",
+        verdicts=[{"symbol": "KO", "stance": "alleger", "reason": "stop proche"}],
+        now_iso=FIXED_NOW)
+    items = c.get("/api/paper/ideas/for-symbol?symbol=KO").json()["items"]
+    assert items == [{"from": "review", "ts": FIXED_NOW, "stance": "alleger",
+                      "reason": "stop proche"}]
+
+
+def test_ideas_for_symbol_is_case_insensitive(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.idea_journal.append_entry(
+        "tester", "ideas", "texte",
+        ideas=[{"ticker": "AAPL", "direction": "up", "tracked": True}],
+        now_iso=FIXED_NOW)
+    assert c.get("/api/paper/ideas/for-symbol?symbol=aapl").json()["items"]
+    assert c.get("/api/paper/ideas/for-symbol?symbol=AAPL").json()["items"]
+
+
+def test_ideas_for_symbol_sorts_and_caps(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    for day in range(1, 15):
+        pr.idea_journal.append_entry(
+            "tester", "ideas", "texte",
+            ideas=[{"ticker": "AAPL", "direction": "up"}],
+            now_iso="2026-08-%02dT10:00:00" % day)
+    items = c.get("/api/paper/ideas/for-symbol?symbol=AAPL").json()["items"]
+    assert len(items) == pr.IDEAS_FOR_SYMBOL_LIMIT
+    assert items[0]["ts"] > items[-1]["ts"]     # le plus récent en tête
+
+
+def test_ideas_for_symbol_is_empty_when_nothing_was_said(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    response = c.get("/api/paper/ideas/for-symbol?symbol=ZZZZ")
+    assert response.status_code == 200
+    assert response.json() == {"items": []}
+
+
+def test_ideas_for_symbol_requires_a_symbol(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.get("/api/paper/ideas/for-symbol?symbol=").status_code == 400
+
+
+def test_ideas_for_symbol_never_calls_the_coach(tmp_path, monkeypatch):
+    """LECTURE PURE : zéro LLM, zéro réseau."""
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom(*a, **kw):
+        raise AssertionError("aucun appel au modèle ne doit partir d'ici")
+
+    for name in ("suggest_ideas", "review_positions", "ask_coach"):
+        monkeypatch.setattr(pr.llm, name, boom)
+    assert c.get("/api/paper/ideas/for-symbol?symbol=AAPL").status_code == 200
+
+
+# ================================================================
+#  REVUE DES POSITIONS (« prévision de vente »)
+# ================================================================
+
+def _review_double(monkeypatch, text=None):
+    """Double de ``review_positions`` qui NOTE le fait-pack reçu."""
+    seen = {}
+    answer = text if text is not None else (
+        'Ma revue.\n```json\n{"verdicts": [{"symbol": "NESN.SW", '
+        '"stance": "alleger", "reason": "le stop est proche"}]}\n```')
+
+    def fake(context, lang="fr"):
+        seen["context"] = context
+        seen["lang"] = lang
+        return answer
+
+    monkeypatch.setattr(pr.llm, "review_positions", fake)
+    return seen
+
+
+def test_review_refuses_an_empty_portfolio(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    _review_double(monkeypatch)
+    response = c.post("/api/paper/positions/review", json={})
+    assert response.status_code == 400
+    assert "revue" in response.json()["detail"]
+
+
+def test_review_builds_a_deterministic_factpack(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10, stop_loss=90.0)
+    market.prices["NESN.SW"] = (92.0, "CHF", "Nestle SA")
+    seen = _review_double(monkeypatch)
+
+    c.post("/api/paper/positions/review", json={})
+    position = seen["context"]["positions"][0]
+    assert position["symbol"] == "NESN.SW"
+    assert position["last_price"] == 92.0
+    assert position["pnl_pct"] == -8.0          # payé 100, vaut 92
+    assert position["stop_loss"] == 90.0
+    assert position["distance_stop_pct"] == -2.17
+    assert position["news_recentes"] == [] and position["gov_recent"] is False
+
+
+def test_review_says_null_when_the_price_is_unavailable(tmp_path, monkeypatch):
+    """Un cours indisponible n'est pas inventé — le prompt dit au coach de le
+    signaler."""
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10)
+    market.broken.add("NESN.SW")
+    seen = _review_double(monkeypatch)
+
+    c.post("/api/paper/positions/review", json={})
+    position = seen["context"]["positions"][0]
+    assert position["last_price"] is None and position["pnl_pct"] is None
+
+
+def test_review_carries_recent_news_and_whale_moves(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10)
+    events = [{"ts": FIXED_NOW, "symbol": "NESN.SW", "sentiment": "neg",
+               "title": "Avertissement sur résultats", "link": "http://x"},
+              {"ts": FIXED_NOW, "symbol": "GOV", "sentiment": "gov",
+               "title": "Droits de douane", "link": "http://g"}]
+    moves = [{"manager_label": "Berkshire", "action": "sortie",
+              "name": "NESTLE SA", "quarter": "T2 2026"}]
+    monkeypatch.setattr(pr, "_newswatch",
+                        lambda: FakeModule(recent_events=lambda user: events))
+    monkeypatch.setattr(pr, "_whales", lambda: FakeModule(
+        moves_summary=lambda: moves,
+        match_issuer=lambda name, candidates: "NESN.SW"))
+    seen = _review_double(monkeypatch)
+
+    c.post("/api/paper/positions/review", json={})
+    position = seen["context"]["positions"][0]
+    assert position["news_recentes"][0]["sentiment"] == "neg"
+    assert position["gov_recent"] is True
+    assert position["whale_moves_on_this"][0]["action"] == "sortie"
+
+
+def test_review_parses_the_verdicts(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10)
+    _review_double(monkeypatch)
+    body = c.post("/api/paper/positions/review", json={}).json()
+    assert body["verdicts"] == [{"symbol": "NESN.SW", "stance": "alleger",
+                                 "reason": "le stop est proche"}]
+    assert body["text"].startswith("Ma revue.")
+
+
+def test_review_survives_an_unreadable_json_block(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10)
+    _review_double(monkeypatch, text="Ma revue sans bloc final.")
+    body = c.post("/api/paper/positions/review", json={}).json()
+    assert body["verdicts"] == [] and body["text"]
+
+
+def test_review_is_appended_to_the_journal(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10)
+    _review_double(monkeypatch)
+    c.post("/api/paper/positions/review", json={})
+
+    entries = c.get("/api/paper/ideas/journal").json()["entries"]
+    assert entries[0]["kind"] == "review"
+    assert entries[0]["verdicts"][0]["symbol"] == "NESN.SW"
+
+
+def test_review_returns_a_clean_502_when_the_coach_is_down(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10)
+
+    def boom(context, lang="fr"):
+        raise RuntimeError("le coach n'a pas répondu")
+
+    monkeypatch.setattr(pr.llm, "review_positions", boom)
+    assert c.post("/api/paper/positions/review", json={}).status_code == 502
+
+
+def test_review_forwards_the_reading_language(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10)
+    seen = _review_double(monkeypatch)
+    c.post("/api/paper/positions/review", json={"lang": "it"})
+    assert seen["lang"] == "it"
+
+
+def test_review_is_refused_to_the_player_role(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch, role="player")
+    assert c.post("/api/paper/positions/review", json={}).status_code == 403
+
+
+def test_review_is_allowed_to_the_trader_role(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch, role="trader")
+    _review_double(monkeypatch)
+    assert c.post("/api/paper/positions/review", json={}).status_code == 400
+
+
+# ================================================================
+#  CONTEXTE DU COACH — crypto et grands gérants (26/08)
+# ================================================================
+
+def test_the_crypto_factpack_is_built_only_for_the_crypto_level(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    for symbol in pr.CRYPTO_MAJORS:
+        market.prices[symbol] = (100.0, "USD", symbol)
+        market.candles[symbol] = [{"ts": i, "close": 90.0 + i} for i in range(12)]
+    seen = _ideas_double(monkeypatch)
+
+    c.post("/api/paper/ideas", json={"risk_level": "mesure"})
+    assert "crypto_market" not in seen["context"]
+
+    c.post("/api/paper/ideas", json={"risk_level": "crypto"})
+    facts = seen["context"]["crypto_market"]
+    assert [row["symbol"] for row in facts] == list(pr.CRYPTO_MAJORS)
+    assert facts[0]["price"] == 100.0
+    assert facts[0]["change_7d_pct"] is not None
+
+
+def test_the_crypto_factpack_survives_a_broken_quote(tmp_path, monkeypatch):
+    """Le coach a TOUJOURS un bloc, même si une pièce ne répond pas."""
+    c, market = make_client(tmp_path, monkeypatch)
+    seen = _ideas_double(monkeypatch)
+    c.post("/api/paper/ideas", json={"risk_level": "crypto"})
+    facts = seen["context"]["crypto_market"]
+    assert len(facts) == len(pr.CRYPTO_MAJORS)
+    assert facts[0]["price"] is None and facts[0]["change_7d_pct"] is None
+
+
+def test_the_context_carries_crypto_news_and_whale_moves(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    events = [{"ts": FIXED_NOW, "symbol": "BTC-USD", "sentiment": "neg",
+               "title": "Exchange hack", "link": "http://c", "src": "crypto"},
+              {"ts": FIXED_NOW, "symbol": "NESN.SW", "sentiment": "neg",
+               "title": "Avertissement", "link": "http://y"}]
+    monkeypatch.setattr(pr, "_newswatch",
+                        lambda: FakeModule(recent_events=lambda user: events))
+    monkeypatch.setattr(pr, "_whales", lambda: FakeModule(
+        moves_summary=lambda: [{"manager_label": "Berkshire", "action": "sortie",
+                                "name": "KROGER CO"}],
+        recent_filing_events=lambda: []))
+    seen = _ideas_double(monkeypatch)
+
+    c.post("/api/paper/ideas", json={})
+    assert [e["title"] for e in seen["context"]["recent_crypto"]] == ["Exchange hack"]
+    assert seen["context"]["whale_moves"][0]["action"] == "sortie"
+
+
+def test_a_broken_whales_module_never_breaks_the_context(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom():
+        raise RuntimeError("cache illisible")
+
+    monkeypatch.setattr(pr, "_whales", lambda: FakeModule(
+        moves_summary=boom, recent_filing_events=lambda: []))
+    seen = _ideas_double(monkeypatch)
+    assert c.post("/api/paper/ideas", json={}).status_code == 200
+    assert seen["context"]["whale_moves"] == []
+
+
+# ================================================================
+#  COMMUNAUTÉ — plus d'utilisateurs fantômes (26/08)
+# ================================================================
+
+def test_a_module_vault_is_not_a_community_user(tmp_path, monkeypatch):
+    """Constaté à l'écran : « newswatch_global » et « whales_watch » listés
+    comme des traders. Ces carnets existent ENCORE sur le disque de production
+    (bug d'avant 83a8d4b) — un carnet seul ne prouve plus rien."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.append_note("newswatch_global", "Journal.md", "## fantôme\n")
+    store.append_note("whales_watch", "Journal.md", "## fantôme\n")
+    _real_trader("alice")
+
+    users = {row["user"] for row in c.get("/api/paper/community").json()["users"]}
+    assert users == {"alice"}
+
+
+def test_a_ghost_user_is_also_404_on_note_reading(tmp_path, monkeypatch):
+    """Le filtre ferme les DEUX portes : la liste ET la lecture (le paramètre
+    ``user`` est validé contre cette même liste)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.append_note("newswatch_global", "Journal.md", "## fantôme\n")
+    response = c.get("/api/paper/community/newswatch_global/Journal.md")
+    assert response.status_code == 404
+
+
+def test_a_vault_without_any_account_file_is_ignored(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.append_note("inconnu", "Journal.md", "## sans compte\n")
+    assert c.get("/api/paper/community").json() == {"users": []}
+
+
+def test_a_coach_profile_is_enough_to_be_a_community_user(tmp_path, monkeypatch):
+    """Un compte qui a discuté avec le coach sans jamais passer d'ordre a un
+    profil mais pas de portefeuille : il compte."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.save_coach("bob", {"profile": {}, "biases": []})
+    store.append_note("bob", "Journal.md", "## note de bob\n")
+    users = {row["user"] for row in c.get("/api/paper/community").json()["users"]}
+    assert users == {"bob"}
+
+
+def test_review_matches_a_whale_move_through_the_yahoo_name(tmp_path, monkeypatch):
+    """⚠️ Une position ne porte pas de nom : c'est la COTATION qui en fournit
+    un. Sans lui, ``match_issuer`` comparerait « NESTLE SA » à « NESN.SW » et
+    aucun mouvement de gérant ne serait jamais rattaché à une position."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10)
+    seen_names = {}
+
+    def match_issuer(name, candidates):
+        seen_names.update(candidates)
+        return "NESN.SW" if "NESTLE" in str(name).upper() else None
+
+    monkeypatch.setattr(pr, "_whales", lambda: FakeModule(
+        moves_summary=lambda: [{"manager_label": "Berkshire", "action": "sortie",
+                                "name": "NESTLE SA", "quarter": "T2 2026"}],
+        match_issuer=match_issuer, recent_filing_events=lambda: []))
+    seen = _review_double(monkeypatch)
+
+    c.post("/api/paper/positions/review", json={})
+    assert seen_names == {"NESN.SW": "Nestle SA"}       # le nom, pas le ticker
+    assert seen["context"]["positions"][0]["whale_moves_on_this"]
+
+
+def test_review_asks_the_price_once_per_symbol(tmp_path, monkeypatch):
+    """Deux lignes sur le même titre ne paient pas deux cotations."""
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10)
+    buy(c, qty=5)
+    _review_double(monkeypatch)
+    calls = []
+    real_get_quote = quotes.get_quote
+    monkeypatch.setattr(quotes, "get_quote",
+                        lambda s: calls.append(s) or real_get_quote(s))
+    c.post("/api/paper/positions/review", json={})
+    assert calls.count("NESN.SW") == 1

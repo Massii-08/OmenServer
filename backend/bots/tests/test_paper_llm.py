@@ -502,3 +502,175 @@ def test_intro_of_falls_back_to_the_whole_text():
 
 def test_intro_of_cuts_on_a_bare_json_block():
     assert llm.intro_of('Mon avis.\n{"title": "T"}') == "Mon avis."
+
+
+# =========================================================================== #
+#  Niveau « crypto » — le 4e étage (26/08)
+# =========================================================================== #
+
+def test_le_niveau_crypto_existe_et_est_normalise():
+    assert "crypto" in llm.RISK_LEVELS
+    assert llm.normalize_risk_level("crypto") == "crypto"
+    assert llm.normalize_risk_level("CRYPTOS") == "crypto"
+
+
+def test_le_prompt_crypto_n_ouvre_que_l_univers_crypto():
+    prompt = llm.build_ideas_prompt({}, "fr", "crypto")
+    assert "BTC-USD" in prompt and "ETH-USD" in prompt
+    assert "Aucune action, aucun ETF" in prompt
+    assert '"asset_kind"' in prompt
+    assert '"crypto"' in prompt
+
+
+def test_le_prompt_crypto_demande_de_comparer_les_pieces_entre_elles():
+    """C'est LA raison d'être de cet étage : « analyse les différentes cryptos
+    les unes par rapport aux autres », pas quatre fois le même pari."""
+    prompt = llm.build_ideas_prompt({}, "fr", "crypto")
+    assert "COMPARE LES CRYPTOS ENTRE ELLES" in prompt
+    assert "dominance" in prompt.lower() and "rotation" in prompt.lower()
+
+
+def test_le_prompt_crypto_ne_porte_PAS_la_regle_des_deux_sur_quatre():
+    """La règle « jamais plus de 2 idées crypto sur 4 » appartient au niveau
+    spéculatif ; l'appliquer ici viderait l'étage de son sens."""
+    crypto = llm.build_ideas_prompt({}, "fr", "crypto")
+    speculatif = llm.build_ideas_prompt({}, "fr", "speculatif")
+    assert "2 idées crypto sur 4" in speculatif
+    assert "2 idées crypto sur 4" not in crypto
+
+
+def test_le_prompt_crypto_rappelle_stop_large_donc_position_petite():
+    prompt = llm.build_ideas_prompt({}, "fr", "crypto")
+    assert "stop large, donc position petite" in prompt
+
+
+def test_le_prompt_crypto_autorise_a_rendre_moins_d_idees():
+    """L'honnêteté du modèle (« le contexte ne contient aucune donnée crypto »)
+    est le comportement VOULU."""
+    assert "rends moins" in llm.build_ideas_prompt({}, "fr", "crypto")
+
+
+# =========================================================================== #
+#  Mémoire du coach — le journal dans le prompt d'idées (26/08)
+# =========================================================================== #
+
+JOURNAL = [
+    {"date": "2026-08-20", "kind": "ideas", "risk_level": "agressif",
+     "ideas": [{"ticker": "TSLA", "direction": "up", "outcome": "miss"}]},
+]
+
+
+def test_le_prompt_porte_l_historique_des_idees_passees():
+    prompt = llm.build_ideas_prompt({}, "fr", "mesure", JOURNAL)
+    assert "HISTORIQUE DE TES PROPRES IDÉES" in prompt
+    assert "TSLA" in prompt and "2026-08-20" in prompt and "miss" in prompt
+
+
+def test_le_prompt_interdit_de_reproposer_sauf_si_un_facteur_a_change():
+    prompt = llm.build_ideas_prompt({}, "fr", "mesure", JOURNAL)
+    assert "INTERDIT de reproposer" in prompt
+    assert "CHANGÉ LA DONNE" in prompt
+    assert "je l'avais proposée le" in prompt
+
+
+def test_sans_historique_le_prompt_ne_parle_pas_de_memoire():
+    """Une première série ne doit pas recevoir un bloc vide qui l'embrouille."""
+    prompt = llm.build_ideas_prompt({}, "fr", "mesure", [])
+    assert "HISTORIQUE DE TES PROPRES IDÉES" not in prompt
+
+
+def test_suggest_ideas_transmet_l_historique():
+    captured = {}
+    proc = FakeProc(stdout=envelope("des idées"))
+    llm.suggest_ideas({}, "fr", "mesure", JOURNAL,
+                      run=runner(proc, captured))
+    assert "HISTORIQUE DE TES PROPRES IDÉES" in captured["input"]
+
+
+# =========================================================================== #
+#  Revue des positions détenues (26/08)
+# =========================================================================== #
+
+FACTS = {"positions": [{"symbol": "NESN.SW", "avg_price": 100.0,
+                        "last_price": 92.0, "pnl_pct": -8.0,
+                        "stop_loss": 90.0, "distance_stop_pct": -2.2,
+                        "news_recentes": [], "gov_recent": False,
+                        "whale_moves_on_this": []}]}
+
+
+def test_le_prompt_de_revue_porte_les_faits_et_le_schema():
+    prompt = llm.build_review_prompt(FACTS, "fr")
+    assert "NESN.SW" in prompt
+    assert "distance_stop_pct" in prompt and "whale_moves_on_this" in prompt
+    assert '"verdicts"' in prompt
+    for stance in llm.REVIEW_STANCES:
+        assert '"%s"' % stance in prompt
+
+
+def test_le_prompt_de_revue_s_adresse_a_un_debutant_et_laisse_la_decision():
+    prompt = llm.build_review_prompt(FACTS, "fr")
+    assert "DÉBUTANT" in prompt
+    assert "les décisions restent à LUI" in prompt
+    assert "argent réel" in prompt
+
+
+def test_le_prompt_de_revue_refuse_surveiller_comme_refuge():
+    """« Le coach ne doit pas attendre le 100 % de sûreté. »"""
+    prompt = llm.build_review_prompt(FACTS, "fr")
+    assert "n'est PAS un refuge" in prompt
+    assert "déclencheur PRÉCIS" in prompt
+    assert "délai" in prompt
+
+
+def test_le_prompt_de_revue_dit_quoi_faire_d_un_cours_manquant():
+    assert "ne l'invente pas" in llm.build_review_prompt(FACTS, "fr")
+
+
+def test_parse_review_lit_les_verdicts():
+    raw = ('Voici ma revue.\n```json\n'
+           '{"verdicts": [{"symbol": "nesn.sw", "stance": "alleger", '
+           '"reason": "le stop est proche"}]}\n```')
+    assert llm.parse_review(raw) == [
+        {"symbol": "NESN.SW", "stance": "alleger", "reason": "le stop est proche"}]
+
+
+def test_parse_review_ramene_une_posture_forgee_sur_surveiller():
+    """Une posture inconnue ne doit ni rassurer (« garder ») ni pousser dehors."""
+    raw = '{"verdicts": [{"symbol": "AAPL", "stance": "VENDS TOUT MAINTENANT"}]}'
+    assert llm.parse_review(raw)[0]["stance"] == "surveiller"
+
+
+@pytest.mark.parametrize("raw", [
+    "pas de bloc json du tout", "{ json cassé", '{"autre": 1}',
+    '{"verdicts": "pas une liste"}', None, 42,
+])
+def test_parse_review_est_tolerant(raw):
+    assert llm.parse_review(raw) == []
+
+
+def test_parse_review_jette_un_verdict_sans_symbole_pas_tout_le_lot():
+    raw = ('{"verdicts": [{"stance": "garder"}, '
+           '{"symbol": "KO", "stance": "garder", "reason": "solide"}]}')
+    assert [v["symbol"] for v in llm.parse_review(raw)] == ["KO"]
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("garder", "garder"), ("HOLD", "garder"), ("alléger", "alleger"),
+    ("sell", "sortir"), ("n'importe quoi", "surveiller"), (None, "surveiller"),
+])
+def test_normalize_stance(value, expected):
+    assert llm.normalize_stance(value) == expected
+
+
+def test_review_positions_appelle_le_cli_avec_le_prompt_de_revue():
+    captured = {}
+    proc = FakeProc(stdout=envelope("ma revue"))
+    assert llm.review_positions(FACTS, "fr", run=runner(proc, captured)) == "ma revue"
+    assert "POSITIONS ET FAITS" in captured["input"]
+
+
+def test_review_positions_respecte_la_langue_de_lecture():
+    captured = {}
+    proc = FakeProc(stdout=envelope("la mia revisione"))
+    llm.review_positions(FACTS, "it", run=runner(proc, captured))
+    assert "italiano" in captured["input"]

@@ -73,6 +73,49 @@ const PaperModule = {
     _quote: null,              // {price,currency,change_pct,fx_rate_chf}
     _form: {},                 // survit aux re-rendus du corps
 
+    _ideasJournal: null,       // journal daté : {entries:[{id,ts,kind,...}]}
+    _journalOpen: {},          // id d'entrée -> texte déplié
+    _review: null,             // revue des positions : {text, verdicts:[...]}
+    _reviewOpen: false,        // texte complet de la revue déplié
+    _alertsMode: null,         // 'calme' | 'tout' (lu au serveur)
+    _alertsBusy: false,        // un POST de bascule est en vol
+    _xAccounts: null,          // comptes X suivis : ['handle', ...]
+    _xInput: '',               // saisie d'ajout (survit aux re-rendus du corps)
+    _symIdeas: {},             // symbole -> {items:[...]} : ce que le coach a DÉJÀ dit
+    _symIdeasClosed: {},       // symbole -> la carte a été fermée à la main
+    _symTextOpen: {},          // 'symbole|rang' -> thèse dépliée
+    _fabOpen: false,           // panneau coach flottant ouvert
+    _fabQ: '',                 // question en cours de saisie (survit à la fermeture)
+    _fabAnswer: null,          // dernier échange {q, a}
+    _onKey: null,              // Échap ferme le panneau flottant
+
+    // Registre des appels LLM EN VOL, au niveau du MODULE. Il vivait avant sur
+    // le bouton (disabled + libellé) : le corps étant réécrit à chaque re-rendu
+    // — changement d'onglet, poll de 60 s —, le bouton porteur de l'état
+    // disparaissait et l'attente devenait invisible pendant que la requête,
+    // elle, continuait toute seule. Ici l'état survit au DOM ; chaque rendu le
+    // RÉAPPLIQUE (_applyBusy) sur les boutons marqués data-paper-busy.
+    // Table FERMÉE : une clé absente n'arme rien.
+    _busy: {
+        ideas: false, scenarios: false, ask: false,
+        review: false, postmortem: false, analysis: false, radar: false,
+    },
+
+    // Libellé d'attente par clé — le radar a le sien. Défaut : paper.thinking.
+    _BUSY_LABEL: { radar: 'paper.radar_thinking' },
+
+    // Onglet propriétaire de chaque réponse + message de bonne arrivée. Quand
+    // la réponse tombe alors qu'on regarde AILLEURS, on le dit : le résultat
+    // attend dans l'état du module, pas dans un DOM détruit.
+    _BUSY_HOME: {
+        ideas: ['coach', 'paper.ready_ideas'],
+        ask: ['coach', 'paper.ready_answer'],
+        analysis: ['coach', 'paper.ready_analysis'],
+        postmortem: ['journal', 'paper.ready_postmortem'],
+        scenarios: ['plan', 'paper.ready_scenarios'],
+        review: ['portfolio', 'paper.ready_review'],
+    },
+
     _mono: 'font-family:var(--font-mono);font-feature-settings:\'tnum\';',
 
     // Niveau de risque demandé au coach pour ses idées. Le choix est PERSONNEL
@@ -80,7 +123,9 @@ const PaperModule = {
     // une WHITELIST FERMÉE : une valeur venue du stockage (que n'importe qui
     // peut éditer dans la console) qui n'y figure pas ne produit ni clé i18n
     // ni classe CSS — on ne concatène jamais une chaîne étrangère dans un nom.
-    _LEVELS: ['mesure', 'agressif', 'speculatif'],
+    // « crypto » est un niveau à part entière, pas une nuance du spéculatif :
+    // l'analyse y est 100 % crypto (majors comparées entre elles, long/short).
+    _LEVELS: ['mesure', 'agressif', 'speculatif', 'crypto'],
     _LEVEL_KEY: 'paper-risk-level',
     _level: 'mesure',
 
@@ -88,7 +133,7 @@ const PaperModule = {
     // (« radar »), qui n'est donc pas un niveau proposé à la demande d'idées.
     // Ordre FIXE : un objet JSON n'a pas d'ordre garanti et le lecteur doit
     // retrouver ses niveaux à la même place d'une fois sur l'autre.
-    _LEVEL_ORDER: ['mesure', 'agressif', 'speculatif', 'radar'],
+    _LEVEL_ORDER: ['mesure', 'agressif', 'speculatif', 'crypto', 'radar'],
 
     // Nature de l'actif → [clé i18n, classe .badge]. Table FERMÉE elle aussi :
     // « equity » n'a pas de badge (c'est le cas ordinaire, le signaler
@@ -100,6 +145,31 @@ const PaperModule = {
         forex: ['paper.kind_fx', 'info'],
         etf: ['paper.kind_etf', 'muted'],
     },
+
+    // --- Revue, journal, alertes : whitelists FERMÉES ------------------------
+    //
+    // Même doctrine que _LEVELS et _ASSET_KINDS : rien de ce qui vient du
+    // backend ne sert à fabriquer une clé i18n ni un nom de classe par
+    // concaténation. Ce qui n'est pas dans la table ne produit rien.
+
+    // Avis du coach sur une position → classe .badge. Un avis inconnu retombe
+    // sur « surveiller » : le repli est le conseil le plus neutre, jamais
+    // « sortir » — on ne fait pas dire au coach ce qu'il n'a pas dit.
+    _STANCES: { garder: 'online', surveiller: 'warn', alleger: 'warn', sortir: 'danger' },
+
+    // Nature d'une entrée du journal des idées. Un genre inconnu n'a pas de
+    // badge : l'entrée reste lisible, elle n'est simplement pas étiquetée.
+    _JOURNAL_KINDS: { ideas: 'paper.ideas_log_kind_ideas', review: 'paper.ideas_log_kind_review' },
+
+    // Provenance d'un avis déjà rendu sur un titre (pop-up « le coach sur X »).
+    _SYM_FROM: {
+        radar: 'paper.symideas_from_radar',
+        journal: 'paper.symideas_from_journal',
+        review: 'paper.symideas_from_review',
+    },
+
+    // Régime de notification. « calme » est le défaut et le repli.
+    _ALERT_MODES: ['calme', 'tout'],
 
     // --- Plan : whitelists FERMÉES ------------------------------------------
     //
@@ -146,6 +216,10 @@ const PaperModule = {
         this._loadLevel();                   // le niveau a pu être choisi dans un autre onglet
         this._container = container;
         if (!container) return;
+        // Rechargement de page : on rouvre l'écran là où il était (onglet,
+        // période du graphique) AVANT le premier rendu, et on note le titre à
+        // re-sélectionner une fois la coquille en place.
+        const pending = this._restoreUi();
         container.innerHTML = this._shell();
         this._bind();
         this._renderTabs();
@@ -156,6 +230,10 @@ const PaperModule = {
         // périmé, et sans cet appel la vue resterait sur « Chargement… » —
         // _loadTab ne tourne sinon qu'au clic sur un onglet. (Vu à l'écran.)
         this._loadTab();
+        this._paintFab();
+        // Le titre qu'on étudiait revient par le MÊME chemin qu'un clic sur
+        // « Choisir » : cours, graphique et brouillon du formulaire compris.
+        if (pending) this.pick(pending, '', '', '');
         // Un seul rendez-vous périodique : passer les ordres en attente puis
         // relire le portefeuille. Il ne réécrit le corps que si l'onglet
         // Portefeuille est affiché — sinon il effacerait un formulaire en cours
@@ -166,7 +244,13 @@ const PaperModule = {
     unload() {
         if (this._refresh) { clearInterval(this._refresh); this._refresh = null; }
         if (this._searchTimer) { clearTimeout(this._searchTimer); this._searchTimer = null; }
+        // Un brouillon en attente d'écriture part sur le disque MAINTENANT :
+        // quitter la vue ne doit pas coûter les 300 dernières millisecondes.
+        if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; this._saveDraft(); }
         this._disposeCharts();
+        // Le coach flottant n'existe QUE dans ce module : il part avec lui.
+        this._removeFab();
+        if (this._onKey) { document.removeEventListener('keydown', this._onKey); this._onKey = null; }
         if (this._host && this._onClick) this._host.removeEventListener('click', this._onClick);
         if (this._host && this._onInput) {
             this._host.removeEventListener('input', this._onInput);
@@ -189,6 +273,12 @@ const PaperModule = {
         host.addEventListener('click', this._onClick);
         host.addEventListener('input', this._onInput);
         host.addEventListener('change', this._onInput);
+        // Échap ferme le panneau flottant. L'écouteur vit sur le document (le
+        // panneau n'a pas le focus quand on lit la réponse) et part au déchargement.
+        this._onKey = (ev) => {
+            if (ev && ev.key === 'Escape' && this._fabOpen) { this._fabOpen = false; this._paintFab(); }
+        };
+        document.addEventListener('keydown', this._onKey);
     },
 
     // --------------------------------------------------------------- outillage
@@ -330,6 +420,111 @@ const PaperModule = {
         if (this._tab === 'coach') this._renderBody();
     },
 
+    // --- Mémoire d'écran : l'onglet, le titre choisi, le brouillon ----------
+    //
+    // Recharger la page pour voir si la courbe a bougé refermait le titre en
+    // cours d'étude et effaçait la thèse à moitié écrite (signalé à l'écran).
+    // L'état d'écran vit donc dans localStorage, et le brouillon de l'ordre est
+    // rangé PAR TITRE — passer de l'un à l'autre ne mélange pas deux réflexions.
+    // Un stockage indisponible (navigation privée, cookies refusés) ne casse
+    // rien : on perd la mémoire, jamais la fonction.
+
+    _UI_KEY: 'paper-ui-state',
+    _DRAFT_PREFIX: 'paper-draft-',
+
+    // Champs du brouillon : liste FERMÉE. Rien d'autre n'est ni écrit ni relu —
+    // un stockage est éditable à la main, il n'a pas à décider de ce qui existe.
+    _DRAFT_FIELDS: ['side', 'kind', 'qty', 'limit_price', 'stop_price',
+        'stop_loss', 'target', 'thesis', 'fee_profile'],
+
+    // Identifiants des champs de l'ordre → sauvegarde du brouillon à la frappe.
+    _FORM_IDS: {
+        'paper-side': 1, 'paper-kind': 1, 'paper-qty': 1, 'paper-limit': 1,
+        'paper-stop': 1, 'paper-sl': 1, 'paper-target': 1, 'paper-thesis': 1,
+        'paper-feeprofile': 1,
+    },
+
+    _draftTimer: null,
+
+    _readStore(key) { try { return localStorage.getItem(key); } catch (e) { return null; } },
+    _writeStore(key, val) { try { localStorage.setItem(key, val); } catch (e) { /* sans mémoire */ } },
+    _dropStore(key) { try { localStorage.removeItem(key); } catch (e) { /* sans mémoire */ } },
+
+    _readJson(key) {
+        const raw = this._readStore(key);
+        if (!raw) return null;
+        let d = null;
+        try { d = JSON.parse(raw); } catch (e) { d = null; }
+        return (d && typeof d === 'object' && !Array.isArray(d)) ? d : null;
+    },
+
+    _isTab(v) {
+        const t = String(v == null ? '' : v);
+        const defs = this._tabDefs();
+        for (let i = 0; i < defs.length; i++) { if (defs[i][0] === t) return true; }
+        return false;
+    },
+
+    _isChartRange(v) {
+        const r = String(v == null ? '' : v);
+        for (let i = 0; i < this._CHART_RANGES.length; i++) {
+            if (this._CHART_RANGES[i][0] === r) return true;
+        }
+        return false;
+    },
+
+    _saveUi() {
+        const st = { tab: this._tab };
+        if (this._pick && this._pick.symbol) st.symbol = String(this._pick.symbol);
+        const per = this._chartRange['trade'];
+        if (per) st.chartPeriod = String(per);
+        this._writeStore(this._UI_KEY, JSON.stringify(st));
+    },
+
+    // Rend le symbole à re-sélectionner (ou null). L'onglet et la période sont
+    // posés tout de suite ; la sélection, elle, demande un aller-retour réseau
+    // et se fait donc APRÈS le premier rendu — l'écran n'attend pas.
+    _restoreUi() {
+        const st = this._readJson(this._UI_KEY);
+        if (!st) return null;
+        if (this._isTab(st.tab)) this._tab = String(st.tab);
+        if (this._isChartRange(st.chartPeriod)) this._chartRange['trade'] = String(st.chartPeriod);
+        const sym = (st.symbol === null || st.symbol === undefined) ? '' : String(st.symbol);
+        return (sym && !this._pick) ? sym : null;
+    },
+
+    _draftKey(symbol) { return this._DRAFT_PREFIX + String(symbol || ''); },
+
+    _saveDraft() {
+        if (!this._pick || !this._pick.symbol) return;
+        const out = {};
+        this._DRAFT_FIELDS.forEach((k) => {
+            const v = this._form[k];
+            if (v !== undefined && v !== null && String(v) !== '') out[k] = String(v);
+        });
+        this._writeStore(this._draftKey(this._pick.symbol), JSON.stringify(out));
+    },
+
+    // Anti-rebond : on n'écrit pas une fois par caractère tapé dans la thèse.
+    _queueDraft() {
+        if (this._draftTimer) clearTimeout(this._draftTimer);
+        this._draftTimer = setTimeout(() => { this._draftTimer = null; this._saveDraft(); }, 300);
+    },
+
+    _loadDraft(symbol) {
+        const d = this._readJson(this._draftKey(symbol));
+        if (!d) return;
+        this._DRAFT_FIELDS.forEach((k) => {
+            const v = d[k];
+            if (v !== undefined && v !== null) this._form[k] = String(v);
+        });
+    },
+
+    _dropDraft(symbol) {
+        if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
+        this._dropStore(this._draftKey(symbol));
+    },
+
     // Badge de nature d'actif. Rend '' pour « equity » (le cas ordinaire) et
     // pour tout ce qui n'est pas dans la table — hasOwnProperty écarte au
     // passage les clés héritées du prototype (« constructor », « toString »…).
@@ -374,6 +569,12 @@ const PaperModule = {
         // arbres) : il est périmé lui aussi dès que la langue change.
         this._board = null;
         this._scenarioText = null;
+        // Journal, revue, avis par titre et dernier échange flottant portent du
+        // texte écrit par le coach dans l'ANCIENNE langue : périmés eux aussi.
+        this._ideasJournal = null;
+        this._review = null;
+        this._symIdeas = {};
+        this._fabAnswer = null;
     },
 
     // Un href ne part JAMAIS dans le DOM sans être vérifié : seuls http(s)
@@ -432,7 +633,10 @@ const PaperModule = {
           esc(Lang.t('paper.disclaimer')) +
         '</div>' +
         '<div class="paper-tabs" id="paper-tabs"></div>' +
-        '<div id="paper-body"><div class="card">' + esc(Lang.t('paper.loading')) + '</div></div>';
+        '<div id="paper-body"><div class="card">' + esc(Lang.t('paper.loading')) + '</div></div>' +
+        // Le coach flottant vit HORS de #paper-body : il survit donc aux
+        // re-rendus du corps (et à eux seuls — il part avec le module).
+        '<div id="paper-fab-wrap"></div>';
     },
 
     _tabDefs() {
@@ -461,6 +665,10 @@ const PaperModule = {
     _setBody(html) {
         const body = document.getElementById('paper-body');
         if (body) body.innerHTML = html;
+        // Le DOM vient d'être remplacé : les boutons d'un appel EN COURS
+        // repartent « actifs » alors que la requête tourne toujours. C'est ici,
+        // et à un seul endroit, qu'on leur remet leur état d'attente.
+        this._applyBusy();
     },
 
     _card(inner, extra) {
@@ -669,14 +877,26 @@ const PaperModule = {
         await this._loadPortfolio();
         await this._loadNews();
         await this._loadWatchlist();
-        // On ne réécrit le corps que là où aucune saisie n'est en cours.
-        if (this._tab === 'portfolio') this._renderBody();
+        // On ne réécrit le corps que là où aucune saisie n'est en cours — et la
+        // vue Portefeuille en porte désormais (comptes X) : un re-rendu au
+        // mauvais moment volerait le curseur au milieu d'un mot.
+        if (this._tab === 'portfolio' && !this._typing()) this._renderBody();
+    },
+
+    // Y a-t-il une saisie EN COURS dans le module ?
+    _typing() {
+        const el = document.activeElement;
+        if (!el || !this._container || !this._container.contains) return false;
+        if (!this._container.contains(el)) return false;
+        const tag = String(el.tagName || '').toLowerCase();
+        return (tag === 'input' || tag === 'textarea' || tag === 'select');
     },
 
     switchTab(tab) {
         if (!tab || tab === this._tab) return;
-        if (this._tab === 'trade') this._captureForm();
+        if (this._tab === 'trade') { this._captureForm(); this._saveDraft(); }
         this._tab = tab;
+        this._saveUi();
         this._renderTabs();
         this._renderBody();
         this._loadTab();
@@ -696,10 +916,21 @@ const PaperModule = {
             if (this._tab === 'radar') this._renderBody();
             return;
         }
-        if (this._tab === 'coach' && !this._coach) {
-            this._coach = await this._get(this._withLang('/api/paper/coach')) || {};
-            this._notes = await this._get('/api/paper/coach/notes');
-            this._community = await this._get('/api/paper/community');
+        // Réglages du portefeuille : régime d'alertes + comptes X suivis. Lus
+        // UNE fois (ils ne bougent que si on les change), pas au poll de 60 s.
+        if (this._tab === 'portfolio' && (this._alertsMode === null || this._xAccounts === null)) {
+            if (this._alertsMode === null) await this._loadAlertsMode();
+            if (this._xAccounts === null) await this._loadXAccounts();
+            if (this._tab === 'portfolio') this._renderBody();
+            return;
+        }
+        if (this._tab === 'coach' && (!this._coach || !this._ideasJournal)) {
+            if (!this._coach) {
+                this._coach = await this._get(this._withLang('/api/paper/coach')) || {};
+                this._notes = await this._get('/api/paper/coach/notes');
+                this._community = await this._get('/api/paper/community');
+            }
+            if (!this._ideasJournal) await this._loadIdeasJournal();
             if (this._tab === 'coach') this._renderBody();
             return;
         }
@@ -743,10 +974,14 @@ const PaperModule = {
     async refresh() {
         await this._tickAndLoad();
         // Un rafraîchissement demandé À LA MAIN relit aussi l'onglet courant.
-        if (this._tab === 'coach') {
+        if (this._tab === 'portfolio') {
+            await this._loadAlertsMode();
+            await this._loadXAccounts();
+        } else if (this._tab === 'coach') {
             this._coach = await this._get(this._withLang('/api/paper/coach')) || {};
             this._notes = await this._get('/api/paper/coach/notes');
             this._community = await this._get('/api/paper/community');
+            await this._loadIdeasJournal();
         } else if (this._tab === 'lessons') {
             this._lessons = await this._get(this._withLang('/api/paper/lessons')) || {};
         } else if (this._tab === 'arena') {
@@ -772,9 +1007,214 @@ const PaperModule = {
     _viewPortfolio() {
         if (!this._p) return this._card(this._muted(Lang.t('paper.no_data')));
         // « Favoris » vit SOUS les positions : d'abord ce que je détiens,
-        // ensuite ce que je surveille, puis ce que j'ai commandé.
+        // ensuite ce que je surveille, puis ce que j'ai commandé. Les réglages
+        // d'alerte suivent le fil des actualités : on lit ce qui est arrivé,
+        // puis on décide comment on veut être prévenu la prochaine fois.
         return this._statCards() + this._equityCard() + this._positionsCard() +
-            this._watchlistCard() + this._ordersCard() + this._newsCard() + this._resetCard();
+            this._reviewCard() + this._watchlistCard() + this._ordersCard() +
+            this._newsCard() + this._alertsCard() + this._resetCard();
+    },
+
+    // --- Revue des positions : l'avis du coach sur ce que je DÉTIENS ---------
+    //
+    // Le coach ne passe aucun ordre et n'en propose aucun : il donne un avis
+    // par ligne (garder / surveiller / alléger / sortir) avec sa raison. La
+    // ligne d'honnêteté est permanente — c'est le lecteur qui tranche.
+
+    _stance(v) {
+        const s = String(v == null ? '' : v).toLowerCase();
+        // Repli sur l'avis le plus neutre : on ne fait jamais dire « sortir »
+        // à un code qu'on n'a pas su lire.
+        return Object.prototype.hasOwnProperty.call(this._STANCES, s) ? s : 'surveiller';
+    },
+
+    _stanceBadge(v) {
+        const s = this._stance(v);
+        return '<span class="badge ' + this._STANCES[s] + '">' +
+            esc(Lang.t('paper.stance_' + s)) + '</span>';
+    },
+
+    _reviewCard() {
+        const d = this._review;
+        if (!d) return '';
+        const rows = Array.isArray(d.verdicts) ? d.verdicts : [];
+        const td = this._td();
+        const body = rows.map((v) =>
+            '<tr>' +
+              '<td style="' + td + this._mono + 'font-weight:600;">' +
+                esc(String((v && v.symbol) || '')) + '</td>' +
+              '<td style="' + td + '">' + this._stanceBadge(v && v.stance) + '</td>' +
+              '<td style="' + td + 'line-height:1.55;">' +
+                esc(String((v && v.reason) || '')) + '</td>' +
+            '</tr>').join('');
+        const text = String(d.text || '');
+        return this._card(
+            this._head(Lang.t('paper.review_title')) +
+            '<div style="font-size:13px;color:var(--text-muted);line-height:1.5;margin-bottom:10px;">' +
+              esc(Lang.t('paper.review_honesty')) + '</div>' +
+            (body ? this._table([
+                Lang.t('paper.col_symbol'), Lang.t('paper.review_stance'), Lang.t('paper.review_reason'),
+            ], body) : this._muted(Lang.t('paper.review_no_verdicts'))) +
+            (text
+              ? '<div style="margin-top:10px;">' +
+                  '<button class="btn btn-ghost btn-sm" data-paper-act="review-text">' +
+                    esc(Lang.t(this._reviewOpen ? 'paper.hide_text' : 'paper.show_text')) + '</button>' +
+                '</div>' + (this._reviewOpen ? this._panel(Lang.t('paper.review_title'), text) : '')
+              : '')
+        );
+    },
+
+    async reviewPositions() {
+        // Garde côté client : sans position, l'appel ne peut que rendre 400.
+        // On le dit clairement plutôt que d'aller chercher une erreur.
+        const rows = (this._p && Array.isArray(this._p.positions)) ? this._p.positions : [];
+        if (!rows.length) { this._toast('warn', Lang.t('paper.review_no_positions')); return; }
+        let ok = false;
+        await this._llm('review', '/api/paper/positions/review', { lang: this._lang() }, (d) => {
+            this._review = (d && typeof d === 'object') ? d : null;
+            this._reviewOpen = false;
+            ok = true;
+            this._arrived('review');
+        });
+        // La revue est une entrée de journal comme les idées : on le relit.
+        if (ok) await this._refreshJournal();
+    },
+
+    // --- Réglages des alertes : régime de notification + comptes X suivis ----
+
+    _isAlertMode(v) { return this._ALERT_MODES.indexOf(String(v == null ? '' : v)) >= 0; },
+
+    _alertsCard() {
+        const mode = this._isAlertMode(this._alertsMode) ? this._alertsMode : 'calme';
+        const pills = this._ALERT_MODES.map((m) =>
+            '<button class="paper-tab' + (m === mode ? ' active' : '') + '" ' +
+                'data-paper-act="alerts-mode" data-mode="' + esc(m) + '">' +
+              esc(Lang.t('paper.alerts_' + m)) + '</button>'
+        ).join('');
+        return this._card(
+            this._head(Lang.t('paper.alerts_title'), Lang.t('paper.telegram_btn')) +
+            '<div class="paper-tabs" style="margin-bottom:6px;">' + pills + '</div>' +
+            '<div style="font-size:13px;color:var(--text-dim);line-height:1.5;">' +
+              esc(Lang.t('paper.alerts_' + mode + '_hint')) + '</div>' +
+            this._xAccountsBlock()
+        );
+    },
+
+    async setAlertsMode(mode) {
+        const m = String(mode || '');
+        if (!this._isAlertMode(m)) return;          // rien de forgé n'entre ici
+        if (this._alertsBusy || m === this._alertsMode) return;
+        this._alertsBusy = true;
+        let r = null;
+        try {
+            r = await Auth.apiCall('/api/paper/alerts-mode',
+                { method: 'POST', body: JSON.stringify({ mode: m }) });
+        } catch (e) { r = null; }
+        this._alertsBusy = false;
+        if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
+        // On relit la réponse du serveur plutôt que de croire notre clic :
+        // c'est LUI qui décide de ce qui est enregistré.
+        let d = null;
+        try { d = await r.json(); } catch (e) { d = null; }
+        this._alertsMode = this._isAlertMode(d && d.mode) ? String(d.mode) : m;
+        this._toast('success', Lang.t('paper.alerts_saved'));
+        if (this._tab === 'portfolio') this._renderBody();
+    },
+
+    // Un pseudo X : lettres, chiffres et tirets bas, 15 au plus. La règle est
+    // celle du réseau ; on la vérifie ICI pour ne pas envoyer au serveur ce
+    // qu'il refusera de toute façon.
+    _isHandle(v) { return /^[A-Za-z0-9_]{1,15}$/.test(String(v == null ? '' : v)); },
+
+    _X_MAX: 10,
+
+    _xList() { return Array.isArray(this._xAccounts) ? this._xAccounts : []; },
+
+    _xAccountsBlock() {
+        const handles = this._xList();
+        const chips = handles.map((h) =>
+            '<span class="badge" style="' + this._mono + 'display:inline-flex;gap:6px;align-items:center;">' +
+              '@' + esc(String(h)) +
+              '<button class="btn btn-ghost btn-sm" data-paper-act="x-remove" ' +
+                  'data-handle="' + esc(String(h)) + '" ' +
+                  'style="padding:0 4px;line-height:1;min-width:0;height:auto;" ' +
+                  'title="' + esc(Lang.t('paper.x_remove')) + '">' +
+                esc(Lang.t('paper.x_remove_mark')) + '</button>' +
+            '</span>').join('');
+        return '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">' +
+            '<div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;' +
+                 'color:var(--text-dim);margin-bottom:8px;">' + esc(Lang.t('paper.x_title')) + '</div>' +
+            (chips
+              ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">' + chips + '</div>'
+              : '<div style="font-size:14px;color:var(--text-muted);margin-bottom:10px;">' +
+                  esc(Lang.t('paper.x_empty')) + '</div>') +
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">' +
+              '<input id="paper-x-input" class="form-input" autocomplete="off" ' +
+                   'style="flex:0 1 200px;" ' +
+                   'value="' + esc(this._xInput || '') + '" ' +
+                   'placeholder="' + esc(Lang.t('paper.x_placeholder')) + '" />' +
+              '<button class="btn btn-ghost btn-sm" data-paper-act="x-add">' +
+                esc(Lang.t('paper.x_add')) + '</button>' +
+              '<button class="btn btn-sm" data-paper-act="x-save">' +
+                esc(Lang.t('paper.x_save')) + '</button>' +
+            '</div>' +
+            '<div style="font-size:13px;color:var(--text-dim);line-height:1.5;margin-top:8px;">' +
+              esc(Lang.t('paper.x_hint')) + '</div>' +
+        '</div>';
+    },
+
+    // Ajout LOCAL : la liste n'est envoyée qu'au clic sur Enregistrer (le
+    // contrat POST prend la liste ENTIÈRE — on ne veut ni un aller-retour par
+    // pseudo tapé, ni un état à moitié écrit côté serveur).
+    addXHandle() {
+        const el = document.getElementById('paper-x-input');
+        const raw = el ? String(el.value || '') : String(this._xInput || '');
+        const h = raw.trim().replace(/^@+/, '');
+        if (!h) return;
+        if (!this._isHandle(h)) { this._toast('warn', Lang.t('paper.x_invalid')); return; }
+        const list = this._xList();
+        if (list.length >= this._X_MAX) { this._toast('warn', Lang.t('paper.x_full')); return; }
+        const low = h.toLowerCase();
+        for (let i = 0; i < list.length; i++) {
+            if (String(list[i]).toLowerCase() === low) { this._toast('info', Lang.t('paper.x_dup')); return; }
+        }
+        this._xAccounts = list.concat([h]);
+        this._xInput = '';
+        if (this._tab === 'portfolio') this._renderBody();
+    },
+
+    removeXHandle(handle) {
+        const h = String(handle || '');
+        if (!h) return;
+        this._xAccounts = this._xList().filter((x) => String(x) !== h);
+        if (this._tab === 'portfolio') this._renderBody();
+    },
+
+    async saveXHandles() {
+        const list = this._xList().filter((h) => this._isHandle(h)).slice(0, this._X_MAX);
+        let r = null;
+        try {
+            r = await Auth.apiCall('/api/paper/x-accounts',
+                { method: 'POST', body: JSON.stringify({ handles: list }) });
+        } catch (e) { r = null; }
+        if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
+        // Relecture : la liste affichée est celle du SERVEUR, jamais une copie
+        // locale qui aurait pu diverger (cap appliqué côté backend, doublons…).
+        await this._loadXAccounts();
+        this._toast('success', Lang.t('paper.x_saved'));
+        if (this._tab === 'portfolio') this._renderBody();
+    },
+
+    async _loadXAccounts() {
+        const d = await this._get('/api/paper/x-accounts');
+        const raw = (d && Array.isArray(d.handles)) ? d.handles : [];
+        this._xAccounts = raw.map((h) => String(h)).filter((h) => this._isHandle(h));
+    },
+
+    async _loadAlertsMode() {
+        const d = await this._get('/api/paper/alerts-mode');
+        // Serveur muet → « calme » : le repli est le régime le plus discret.
+        this._alertsMode = this._isAlertMode(d && d.mode) ? String(d.mode) : 'calme';
     },
 
     // --- Actualités des positions -------------------------------------------
@@ -811,12 +1251,28 @@ const PaperModule = {
                   'class="btn btn-ghost btn-sm" style="text-decoration:none;">' +
                   esc(Lang.t('paper.open')) + '</a>'
                 : '';
+            // Le symbole est FACULTATIF : une nouvelle crypto ou un post X peut
+            // parler du marché sans porter de ticker. On n'affiche alors ni la
+            // pastille de symbole ni le badge « favori » — pas de chip vide.
+            const sym = (e && e.symbol !== null && e.symbol !== undefined)
+                ? String(e.symbol) : '';
+            const src = String((e && e.src) || '').toLowerCase();
+            const handle = String((e && e.handle) || '');
             return '<div class="row" style="display:flex;gap:10px;align-items:center;' +
                    'flex-wrap:wrap;padding:9px 12px;">' +
                 '<span class="badge ' + s.cls + '">' + esc(Lang.t(s.key)) + '</span>' +
-                '<span style="' + this._mono + 'font-size:13px;font-weight:600;color:' +
-                  s.color + ';">' + esc((e && e.symbol) || '') + '</span>' +
-                (this._isWatched(e && e.symbol)
+                (src === 'crypto'
+                  ? '<span class="badge warn">' + esc(Lang.t('paper.kind_crypto')) + '</span>' : '') +
+                (src === 'x'
+                  ? '<span class="badge muted">' + esc(Lang.t('paper.news_src_x')) + '</span>' +
+                    (handle
+                      ? '<span style="' + this._mono + 'font-size:13px;color:var(--text-dim);">@' +
+                        esc(handle) + '</span>' : '')
+                  : '') +
+                (sym
+                  ? '<span style="' + this._mono + 'font-size:13px;font-weight:600;color:' +
+                    s.color + ';">' + esc(sym) + '</span>' : '') +
+                ((sym && this._isWatched(sym))
                   ? '<span class="badge">' + esc(Lang.t('paper.watchlist_title')) + '</span>' : '') +
                 '<span style="flex:1 1 260px;min-width:0;font-size:14px;line-height:1.45;">' +
                   esc((e && e.title) || '') + '</span>' +
@@ -931,10 +1387,24 @@ const PaperModule = {
         }
     },
 
+    // En-tête des positions : le titre, son aide, et à droite « Analyser mes
+    // positions ». Le bouton est là MÊME sans position (la fonction doit rester
+    // visible) ; c'est reviewPositions qui dit gentiment qu'il n'y a rien à lire.
+    _positionsHead() {
+        return '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;' +
+                    'margin-bottom:10px;">' +
+            '<h3 style="margin:0;font-size:17px;">' + esc(Lang.t('paper.positions_title')) + '</h3>' +
+            '<span style="font-size:12px;color:var(--text-dim);">' +
+              esc(Lang.t('paper.positions_hint')) + '</span>' +
+            '<button class="btn btn-sm" data-paper-act="review" data-paper-busy="review" ' +
+                'style="margin-left:auto;">' + esc(Lang.t('paper.review_btn')) + '</button>' +
+        '</div>';
+    },
+
     _positionsCard() {
         const rows = this._p.positions;
         if (!rows.length) {
-            return this._card(this._head(Lang.t('paper.positions_title')) +
+            return this._card(this._positionsHead() +
                 this._muted(Lang.t('paper.positions_empty')));
         }
         const td = this._td();
@@ -971,8 +1441,7 @@ const PaperModule = {
         // Clic sur une ligne -> le graphique de CETTE position se deplie dessous,
         // avec ses reperes stop / PRU.
         const open = this._posOpen ? this._positionChart(this._posOpen) : '';
-        return this._card(this._head(Lang.t('paper.positions_title'),
-                Lang.t('paper.positions_hint')) +
+        return this._card(this._positionsHead() +
             this._table([
                 Lang.t('paper.col_symbol'), Lang.t('paper.col_qty'), Lang.t('paper.col_avg_price'),
                 Lang.t('paper.col_last'), Lang.t('paper.col_pnl'), Lang.t('paper.col_actions'),
@@ -1381,10 +1850,19 @@ const PaperModule = {
     async pick(symbol, name, currency, exchange) {
         if (!symbol) return;
         this._captureForm();
+        this._saveDraft();                  // le brouillon du titre PRÉCÉDENT
         this._pick = { symbol: symbol, name: name || '', currency: currency || '', exchange: exchange || '' };
         this._results = null;
         this._quote = null;
+        // Un brouillon est rangé PAR TITRE : on repart de celui-ci, pas de la
+        // saisie laissée sur un autre. Le champ de recherche, lui, survit.
+        const keepQ = this._form.q;
+        this._form = { q: keepQ };
+        this._loadDraft(symbol);
+        this._saveUi();
         this._renderBody();
+        // Mémoire du coach sur ce titre : lecture seule, aucun appel LLM.
+        this._loadSymIdeas(symbol);
         const d = await this._get('/api/paper/quotes?symbols=' + encodeURIComponent(symbol));
         const q = (d && typeof d === 'object') ? (d[symbol] || d[String(symbol).toUpperCase()] || null) : null;
         if (q && typeof q === 'object') this._quote = q;
@@ -1426,6 +1904,8 @@ const PaperModule = {
             if (txt) this._toast('warn', String(txt));
         });
         this._toast('success', Lang.t('paper.order_ok'));
+        // L'ordre est PASSÉ : le brouillon a fait son travail, il disparaît.
+        this._dropDraft(this._pick.symbol);
         // Le titre choisi reste sélectionné (on enchaîne souvent), la saisie part.
         const keepQ = this._form.q;
         this._form = { q: keepQ, side: this._form.side, kind: this._form.kind,
@@ -1514,7 +1994,7 @@ const PaperModule = {
               esc(t.thesis ? String(t.thesis) : Lang.t('paper.thesis_empty')) +
             '</div>' +
             '<div style="margin-top:12px;">' +
-              '<button class="btn btn-primary" data-paper-act="postmortem" ' +
+              '<button class="btn btn-primary" data-paper-act="postmortem" data-paper-busy="postmortem" ' +
                       'data-idx="' + esc(String(this._tradeIdx)) + '">' +
                 esc(Lang.t('paper.postmortem')) + '</button>' +
             '</div>' +
@@ -1529,7 +2009,7 @@ const PaperModule = {
     _viewCoach() {
         if (!this._coach) return this._card(this._muted(Lang.t('paper.loading')));
         return this._biasesCard() + this._summaryCard() + this._askCard() +
-            this._ideasCard() + this._analysisCard() + this._notesCard();
+            this._ideasCard() + this._journalCard() + this._analysisCard() + this._notesCard();
     },
 
     _biasList() {
@@ -1624,7 +2104,7 @@ const PaperModule = {
                  'style="resize:vertical;line-height:1.5;" ' +
                  'placeholder="' + esc(Lang.t('paper.ask_placeholder')) + '"></textarea>' +
             '<div style="margin-top:10px;">' +
-              '<button class="btn btn-primary" data-paper-act="ask">' +
+              '<button class="btn btn-primary" data-paper-act="ask" data-paper-busy="ask">' +
                 esc(Lang.t('paper.ask_send')) + '</button>' +
             '</div>' +
             (this._answer ? this._panel(Lang.t('paper.answer_title'), this._answer) : '')
@@ -1702,25 +2182,137 @@ const PaperModule = {
             '<div class="paper-tabs" style="margin-bottom:6px;">' + pills + '</div>' +
             '<div style="font-size:13px;color:var(--text-dim);line-height:1.5;margin-bottom:10px;">' +
               esc(Lang.t('paper.level_' + level + '_hint')) + '</div>' +
-            '<button class="btn btn-primary" data-paper-act="ideas">' +
+            '<button class="btn btn-primary" data-paper-act="ideas" data-paper-busy="ideas">' +
               esc(Lang.t('paper.ideas_btn')) + '</button>' +
             ((d && d.text) ? this._panel(Lang.t('paper.ideas_title'), String(d.text)) : '') +
             (cards ? '<div class="row-list" style="margin-top:12px;">' + cards + '</div>' : '')
         );
     },
 
-    async askIdeas(btn) {
+    async askIdeas() {
         const body = { lang: this._lang(), risk_level: this._riskLevel() };
-        await this._llm(btn, '/api/paper/ideas', body, (d) => {
+        let ok = false;
+        await this._llm('ideas', '/api/paper/ideas', body, (d) => {
             this._ideas = (d && typeof d === 'object') ? d : null;
-            if (this._tab === 'coach') this._renderBody();
+            ok = true;
+            this._arrived('ideas');
         });
+        // Le journal vient de gagner une entrée : on le relit APRÈS coup (le
+        // callback de _llm n'est pas attendu, on ne lui confie rien d'async).
+        if (ok) await this._refreshJournal();
     },
 
     // Depuis une idée : on ouvre Nouveau trade sur ce titre. C'est LUI qui
     // décide ensuite — le module ne passe aucun ordre tout seul.
     async useIdea(ticker) {
         await this.openTrade(ticker);
+    },
+
+    // --- Journal des idées : ce que le coach a DÉJÀ dit, daté ---------------
+    //
+    // Sans lui, chaque demande d'idées écrasait la précédente à l'écran : on ne
+    // pouvait pas revenir sur un pari d'il y a trois jours pour voir ce qu'il
+    // valait. Le journal garde la trace des demandes d'idées ET des revues de
+    // positions — mêmes entrées, deux genres.
+
+    _journalEntries() {
+        const d = this._ideasJournal;
+        return (d && Array.isArray(d.entries)) ? d.entries : [];
+    },
+
+    // « 26/08 14:07 » — dans un journal, l'année encombre plus qu'elle n'informe.
+    _dateShort(v) {
+        const dt = this._toDate(v);
+        if (!dt) return '—';
+        const p = (x) => (x < 10 ? '0' : '') + x;
+        return p(dt.getDate()) + '/' + p(dt.getMonth() + 1) + ' ' +
+            p(dt.getHours()) + ':' + p(dt.getMinutes());
+    },
+
+    _journalKindBadge(kind) {
+        const k = String(kind == null ? '' : kind).toLowerCase();
+        if (!Object.prototype.hasOwnProperty.call(this._JOURNAL_KINDS, k)) return '';
+        return '<span class="badge' + (k === 'review' ? ' warn' : '') + '">' +
+            esc(Lang.t(this._JOURNAL_KINDS[k])) + '</span>';
+    },
+
+    // Un ticker du journal est un RACCOURCI : un clic ouvre Nouveau trade.
+    _journalChip(sym, extra) {
+        const t = String(sym == null ? '' : sym);
+        if (!t) return '';
+        return '<span style="display:inline-flex;gap:5px;align-items:center;">' +
+            '<button class="btn btn-ghost btn-sm" data-paper-act="idea-pick" ' +
+                'data-sym="' + esc(t) + '" style="' + this._mono + 'font-weight:600;">' +
+              esc(t) + '</button>' + (extra || '') +
+        '</span>';
+    },
+
+    _journalEntry(e) {
+        if (!e || typeof e !== 'object') return '';
+        const id = String(this._pickField(e, ['id']) || '');
+        const open = !!(id && this._journalOpen[id]);
+        const text = String(e.text || '');
+        const ideas = Array.isArray(e.ideas) ? e.ideas : [];
+        const verdicts = Array.isArray(e.verdicts) ? e.verdicts : [];
+        const chips = ideas.map((it) => this._journalChip(it && it.ticker))
+            .concat(verdicts.map((v) => this._journalChip(v && v.symbol,
+                this._stanceBadge(v && v.stance))))
+            .filter((x) => !!x).join('');
+        // Le niveau n'est affiché que s'il est CONNU : une valeur inattendue ne
+        // fabrique ni clé i18n ni badge (whitelist _LEVELS).
+        const lv = String(e.risk_level == null ? '' : e.risk_level);
+        return '<div class="row" style="display:block;padding:10px 12px;">' +
+            '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
+              '<span style="' + this._mono + 'font-size:12px;color:var(--text-dim);">' +
+                esc(this._dateShort(e.ts)) + '</span>' +
+              this._journalKindBadge(e.kind) +
+              (this._isLevel(lv)
+                ? '<span class="badge">' + esc(Lang.t('paper.level_' + lv)) + '</span>' : '') +
+              (text
+                ? '<button class="btn btn-ghost btn-sm" data-paper-act="journal-toggle" ' +
+                      'data-id="' + esc(id) + '" style="margin-left:auto;">' +
+                    esc(Lang.t(open ? 'paper.hide_text' : 'paper.show_text')) + '</button>'
+                : '') +
+            '</div>' +
+            (chips
+              ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">' + chips + '</div>'
+              : '') +
+            ((open && text) ? this._panel('', text) : '') +
+        '</div>';
+    },
+
+    // ⚠️ Les clés paper.journal_* appartiennent à l'onglet Journal (les trades
+    // CLOS). Le journal des idées porte donc son propre préfixe ideas_log_ :
+    // deux journaux, deux vocabulaires, aucune clé partagée par accident.
+    _journalCard() {
+        const rows = this._journalEntries();
+        if (!rows.length) {
+            return this._card(this._head(Lang.t('paper.ideas_log_title')) +
+                this._muted(Lang.t('paper.ideas_log_empty')));
+        }
+        return this._card(this._head(Lang.t('paper.ideas_log_title'), Lang.t('paper.ideas_log_hint')) +
+            '<div class="row-list">' + rows.map((e) => this._journalEntry(e)).join('') + '</div>');
+    },
+
+    toggleJournal(id) {
+        const k = String(id || '');
+        if (!k) return;
+        if (this._journalOpen[k]) delete this._journalOpen[k];
+        else this._journalOpen[k] = true;
+        if (this._tab === 'coach') this._renderBody();
+    },
+
+    async _loadIdeasJournal() {
+        const d = await this._get('/api/paper/ideas/journal?limit=20');
+        this._ideasJournal = (d && typeof d === 'object') ? d : { entries: [] };
+    },
+
+    // Après une génération d'idées ou une revue : le journal a bougé côté
+    // serveur, on le relit — même si l'utilisateur est ailleurs (il le
+    // retrouvera à jour au retour, sans nouveau clic).
+    async _refreshJournal() {
+        await this._loadIdeasJournal();
+        if (this._tab === 'coach') this._renderBody();
     },
 
     _analysisCard() {
@@ -1733,7 +2325,7 @@ const PaperModule = {
                      'value="' + esc(this._analysisPrefill || '') + '" ' +
                      'placeholder="' + esc(Lang.t('paper.analysis_symbol_ph')) + '" />' +
               '</div>' +
-              '<button class="btn btn-primary" data-paper-act="analysis">' +
+              '<button class="btn btn-primary" data-paper-act="analysis" data-paper-busy="analysis">' +
                 esc(Lang.t('paper.analysis_btn')) + '</button>' +
               '<button class="btn btn-ghost" data-paper-act="watch-add-analysis">' +
                 esc(Lang.t('paper.watchlist_add')) + '</button>' +
@@ -2445,7 +3037,7 @@ const PaperModule = {
                  'display:flex;gap:12px;align-items:center;flex-wrap:wrap;">' +
               '<span style="flex:1 1 320px;min-width:0;">' +
                 esc(Lang.t('paper.radar_disclaimer')) + '</span>' +
-              '<button class="btn btn-primary" data-paper-act="radar-run">' +
+              '<button class="btn btn-primary" data-paper-act="radar-run" data-paper-busy="radar">' +
                 esc(Lang.t('paper.radar_run')) + '</button>' +
             '</div>';
     },
@@ -2543,11 +3135,12 @@ const PaperModule = {
         );
     },
 
-    // Jusqu'a ~2 minutes : le bouton DIT qu'il travaille, et il est rendu meme
-    // si l'appel echoue (finally).
-    async runRadar(btn) {
-        const prev = btn ? btn.textContent : '';
-        if (btn) { btn.disabled = true; btn.textContent = Lang.t('paper.radar_thinking'); }
+    // Jusqu'a ~2 minutes : le bouton DIT qu'il travaille (registre _busy, donc
+    // l'attente survit a un changement d'onglet), et il est rendu meme si
+    // l'appel echoue (finally).
+    async runRadar() {
+        if (this._isBusy('radar')) { this._toast('info', Lang.t('paper.busy_wait')); return; }
+        this._setBusy('radar', true);
         try {
             let r = null;
             try {
@@ -2565,7 +3158,7 @@ const PaperModule = {
             this._radar = await this._get('/api/paper/radar') || this._radar;
             if (this._tab === 'radar') this._renderBody();
         } finally {
-            if (btn) { btn.disabled = false; btn.textContent = prev; }
+            this._setBusy('radar', false);
         }
     },
 
@@ -2996,7 +3589,7 @@ const PaperModule = {
             this._head(Lang.t('paper.plan_scn_title'), Lang.t('paper.plan_scn_hint')) +
             '<div style="font-size:13px;color:var(--text-muted);line-height:1.5;margin-bottom:10px;">' +
               esc(Lang.t('paper.plan_scn_honesty')) + '</div>' +
-            '<button class="btn btn-primary" data-paper-act="plan-scn-gen">' +
+            '<button class="btn btn-primary" data-paper-act="plan-scn-gen" data-paper-busy="scenarios">' +
               esc(Lang.t('paper.plan_scn_gen')) + '</button>' +
             (this._scenarioText
               ? this._panel(Lang.t('paper.plan_scn_title'), this._scenarioText) : '')
@@ -3009,15 +3602,17 @@ const PaperModule = {
         return head + body + archHtml;
     },
 
-    async generateScenarios(btn) {
+    async generateScenarios() {
         // _llm n'attend PAS son callback : on ne lui confie donc que du travail
         // synchrone, et la relecture du board se fait ici, après coup — sinon la
         // promesse du GET flotterait pendant que le bouton se croit fini.
         let ok = false;
-        await this._llm(btn, '/api/paper/board/scenarios/generate', { lang: this._lang() }, (d) => {
+        await this._llm('scenarios', '/api/paper/board/scenarios/generate', { lang: this._lang() }, (d) => {
             this._scenarioText = this._llmText(d);
             ok = true;
         });
+        if (!ok) { return; }
+        if (this._tab !== 'plan') this._toast('success', Lang.t('paper.ready_scenarios'));
         if (!ok) return;
         // L'arbre rendu par l'appel est déjà persisté côté backend : on relit le
         // board plutôt que de le greffer à la main — la liste affichée reste
@@ -3097,8 +3692,10 @@ const PaperModule = {
     _candleKey(symbol, range) { return String(symbol) + '|' + String(range); },
 
     setChartRange(ctxKey, range) {
-        if (!ctxKey || !range) return;
-        this._chartRange[ctxKey] = range;
+        if (!ctxKey || !range || !this._isChartRange(range)) return;
+        if (this._tab === 'trade') this._captureForm();
+        this._chartRange[ctxKey] = String(range);
+        if (ctxKey === 'trade') this._saveUi();
         this._renderBody();
     },
 
@@ -3117,7 +3714,12 @@ const PaperModule = {
             '<button class="paper-tab' + (r[0] === range ? ' active' : '') + '" ' +
                 'data-paper-act="chart-range" data-ctx="' + esc(ctxKey) + '" ' +
                 'data-range="' + esc(r[0]) + '">' + esc(Lang.t(r[2])) + '</button>'
-        ).join('');
+        ).join('') +
+            // La raison des rechargements de page : « voir si la courbe a
+            // bougé ». Ce bouton fait exactement ça, sans rien perdre.
+            '<button class="paper-tab" data-paper-act="chart-reload" ' +
+                'data-sym="' + esc(symbol) + '" title="' + esc(Lang.t('paper.chart_reload')) + '">' +
+              esc(Lang.t('paper.chart_reload')) + '</button>';
 
         let body;
         if (!st || st.loading) {
@@ -3134,14 +3736,150 @@ const PaperModule = {
                    this._chartLegend(symbol);
         }
         const cur = (st && st.data && st.data.currency) || currency || '';
+        // La memoire du coach ne s'affiche QUE la ou on decide (Nouveau trade)
+        // ou l'on ouvre une position — pas sous la fiche d'analyse, qui est
+        // deja un texte du coach.
+        const memory = (ctxKey === 'trade' || String(ctxKey).indexOf('pos:') === 0)
+            ? this._symIdeasHtml(symbol) : '';
         return this._card(
-            '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px;">' +
+            // position:relative : la carte flottante s'ancre a CE bloc, jamais
+            // au formulaire d'ordre qui vit dessous. Et quand elle est la, la
+            // ligne de titre RESERVE sa largeur (.with-memory) : sans ca, la
+            // carte recouvrait les pastilles de periode et le bouton Actualiser
+            // — vu a l'ecran, ils devenaient inclicables.
+            memory +
+            '<div class="paper-chart-head' + (memory ? ' with-memory' : '') + '" ' +
+                 'style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px;">' +
               '<span style="font-size:16px;font-weight:600;">' + esc(symbol) + '</span>' +
               (cur ? '<span style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
                   esc(cur) + '</span>' : '') +
               '<div class="paper-tabs" style="margin:0 0 0 auto;">' + pills + '</div>' +
-            '</div>' + body
+            '</div>' + body,
+            'position:relative;'
         );
+    },
+
+    // --- Ce que le coach a DEJA dit de ce titre (zero LLM) -------------------
+    //
+    // Lecture de memoire pure : radar, journal d'idees, revues de positions.
+    // Regle dure : si le coach n'a jamais parle de ce titre, il n'y a AUCUN
+    // element a l'ecran — pas d'encart vide, pas d'appel, pas de depense.
+
+    async _loadSymIdeas(symbol) {
+        const sym = String(symbol || '');
+        if (!sym) return;
+        // Re-selectionner un titre rouvre sa carte : une fermeture vaut pour
+        // la consultation en cours, pas pour toujours.
+        delete this._symIdeasClosed[sym];
+        const d = await this._get('/api/paper/ideas/for-symbol?symbol=' + encodeURIComponent(sym));
+        const items = (d && Array.isArray(d.items)) ? d.items : [];
+        this._symIdeas[sym] = { items: items };
+        if (!items.length) return;              // rien a dire : on ne dessine rien
+        this._renderBody();
+    },
+
+    closeSymIdeas(symbol) {
+        const sym = String(symbol || '');
+        if (!sym) return;
+        this._symIdeasClosed[sym] = true;
+        this._renderBody();
+    },
+
+    toggleSymText(key) {
+        const k = String(key || '');
+        if (!k) return;
+        if (this._symTextOpen[k]) delete this._symTextOpen[k];
+        else this._symTextOpen[k] = true;
+        this._renderBody();
+    },
+
+    _symFromBadge(from) {
+        const f = String(from == null ? '' : from).toLowerCase();
+        if (!Object.prototype.hasOwnProperty.call(this._SYM_FROM, f)) return '';
+        return '<span class="badge">' + esc(Lang.t(this._SYM_FROM[f])) + '</span>';
+    },
+
+    _symIdeaItem(sym, it, i) {
+        if (!it || typeof it !== 'object') return '';
+        const key = String(sym) + '|' + String(i);
+        const open = !!this._symTextOpen[key];
+        // Une these (idee) ou une raison (revue) : le meme texte pour le lecteur.
+        const txt = String(this._pickField(it, ['thesis', 'reason']) || '');
+        const short = (txt.length > 90) ? (txt.slice(0, 90) + '…') : txt;
+        const horizon = this._n(it.horizon_days);
+        const scored = (String(it.status || '') === 'scored');
+        return '<div style="padding:8px 0;border-top:1px solid var(--border);">' +
+            '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">' +
+              '<span style="' + this._mono + 'font-size:11px;color:var(--text-dim);">' +
+                esc(this._dateShort(it.ts)) + '</span>' +
+              this._symFromBadge(it.from) +
+              (it.direction
+                ? '<span class="badge ' + this._direction(it.direction) + '">' +
+                  esc(String(it.direction)) + '</span>' : '') +
+              (it.stance ? this._stanceBadge(it.stance) : '') +
+              (scored ? this._outcomeBadge(it.outcome) : '') +
+            '</div>' +
+            (horizon === null ? '' :
+              '<div style="' + this._mono + 'font-size:11px;color:var(--text-dim);margin-top:3px;">' +
+                esc(Lang.t('paper.radar_horizon') + ' ' + this._num(horizon, 0) + ' ' +
+                    Lang.t('paper.radar_days')) + '</div>') +
+            (txt
+              ? '<div style="font-size:13px;line-height:1.5;margin-top:4px;">' +
+                  esc(open ? txt : short) +
+                  ((txt.length > 90)
+                    ? ' <button class="btn btn-ghost btn-sm" data-paper-act="sym-text" ' +
+                          'data-key="' + esc(key) + '" style="padding:0 5px;">' +
+                        esc(Lang.t(open ? 'paper.hide_text' : 'paper.show_text')) + '</button>'
+                    : '') +
+                '</div>'
+              : '') +
+        '</div>';
+    },
+
+    _symIdeasHtml(symbol) {
+        const sym = String(symbol || '');
+        if (!sym || this._symIdeasClosed[sym]) return '';
+        const d = this._symIdeas[sym];
+        const items = (d && Array.isArray(d.items)) ? d.items : [];
+        // LA regle : rien a dire => rien du tout dans le DOM.
+        if (!items.length) return '';
+        const head = Lang.t('paper.symideas_title') + ' ' + sym;
+        return '<div class="paper-symideas">' +
+            '<div style="display:flex;gap:8px;align-items:baseline;">' +
+              '<span style="flex:1 1 auto;min-width:0;font-size:12px;letter-spacing:.06em;' +
+                   'text-transform:uppercase;color:var(--text-dim);">' + esc(head) + '</span>' +
+              '<button class="btn btn-ghost btn-sm" data-paper-act="sym-close" ' +
+                  'data-sym="' + esc(sym) + '" style="padding:0 6px;line-height:1.2;" ' +
+                  'title="' + esc(Lang.t('paper.close')) + '">' +
+                esc(Lang.t('paper.x_remove_mark')) + '</button>' +
+            '</div>' +
+            items.slice(0, 2).map((it, i) => this._symIdeaItem(sym, it, i)).join('') +
+            '<div style="margin-top:6px;">' +
+              '<button class="btn btn-ghost btn-sm" data-paper-act="sym-all">' +
+                esc(Lang.t('paper.symideas_all')) + '</button>' +
+            '</div>' +
+        '</div>';
+    },
+
+    // Actualiser le graphique : on jette les bougies EN CACHE de ce titre
+    // (toutes periodes) et on relit le cours. C'est ce que le rechargement de
+    // page faisait — en moins destructeur.
+    async reloadChart(symbol) {
+        const sym = String(symbol || '');
+        if (!sym) return;
+        const pref = sym + '|';
+        Object.keys(this._candles).forEach((k) => {
+            if (k.indexOf(pref) === 0) delete this._candles[k];
+        });
+        if (this._tab === 'trade') this._captureForm();
+        this._renderBody();                     // « chargement… » + demande empilee
+        if (this._pick && String(this._pick.symbol) === sym) {
+            const d = await this._get('/api/paper/quotes?symbols=' + encodeURIComponent(sym));
+            const q = (d && typeof d === 'object')
+                ? (d[sym] || d[sym.toUpperCase()] || null) : null;
+            if (q && typeof q === 'object') this._quote = q;
+            if (this._tab === 'trade') { this._captureForm(); this._renderBody(); }
+        }
     },
 
     // Le graphique d'une position ouverte : memes bougies, plus ses reperes.
@@ -3657,12 +4395,80 @@ const PaperModule = {
     },
 
     // =====================================================================
-    //  LLM — trois endpoints, jusqu'à 120 s : le bouton DIT qu'il travaille
+    //  LLM — plusieurs endpoints, jusqu'à 120 s : l'ATTENTE survit au re-rendu
     // =====================================================================
+    //
+    // L'état d'attente ne vit plus sur le bouton (détruit au premier re-rendu)
+    // mais dans _busy, au niveau du module. Trois conséquences voulues :
+    //   1. on peut changer d'onglet pendant que le coach réfléchit et retrouver
+    //      le bouton en attente au retour ;
+    //   2. un deuxième clic ne relance rien (une seule requête à la fois) ;
+    //   3. la réponse arrive dans l'état du module, donc elle est visible au
+    //      retour même si le corps a été réécrit dix fois entre-temps.
 
-    async _llm(btn, url, body, apply) {
-        const prev = btn ? btn.textContent : '';
-        if (btn) { btn.disabled = true; btn.textContent = Lang.t('paper.thinking'); }
+    _isBusy(key) {
+        const k = String(key == null ? '' : key);
+        return !!(Object.prototype.hasOwnProperty.call(this._busy, k) && this._busy[k]);
+    },
+
+    _busyLabel(key) {
+        const k = String(key == null ? '' : key);
+        return Lang.t(Object.prototype.hasOwnProperty.call(this._BUSY_LABEL, k)
+            ? this._BUSY_LABEL[k] : 'paper.thinking');
+    },
+
+    _setBusy(key, on) {
+        const k = String(key == null ? '' : key);
+        if (!Object.prototype.hasOwnProperty.call(this._busy, k)) return;
+        this._busy[k] = !!on;
+        this._applyBusy();
+    },
+
+    // Réapplique l'état d'attente à TOUS les boutons marqués, corps ET panneau
+    // flottant (qui vit hors du corps). Le libellé d'origine est mis de côté
+    // sur le bouton lui-même : au retour, on le restitue exactement.
+    _applyBusy() {
+        const host = this._container;
+        if (!host || !host.querySelectorAll) return;
+        const nodes = host.querySelectorAll('[data-paper-busy]');
+        Array.prototype.forEach.call(nodes, (el) => {
+            const k = el.getAttribute('data-paper-busy');
+            if (!Object.prototype.hasOwnProperty.call(this._busy, String(k))) return;
+            if (this._busy[String(k)]) {
+                if (el.getAttribute('data-busy-prev') === null) {
+                    el.setAttribute('data-busy-prev', el.textContent);
+                }
+                el.disabled = true;
+                el.textContent = this._busyLabel(k);
+            } else {
+                const prev = el.getAttribute('data-busy-prev');
+                if (prev !== null) {
+                    el.textContent = prev;
+                    el.removeAttribute('data-busy-prev');
+                }
+                el.disabled = false;
+            }
+        });
+    },
+
+    // La réponse est là. Si l'utilisateur regarde l'onglet concerné, on redessine ;
+    // sinon on le PRÉVIENT — le résultat l'attend au retour.
+    _arrived(key) {
+        const k = String(key == null ? '' : key);
+        if (!Object.prototype.hasOwnProperty.call(this._BUSY_HOME, k)) { this._renderBody(); return; }
+        const home = this._BUSY_HOME[k];
+        if (this._tab === home[0]) { this._renderBody(); return; }
+        this._toast('success', Lang.t(home[1]));
+    },
+
+    // key : la clé du registre (obligatoire — c'est elle qui porte l'attente).
+    async _llm(key, url, body, apply) {
+        const k = String(key == null ? '' : key);
+        if (!Object.prototype.hasOwnProperty.call(this._busy, k)) return;
+        // Anti double-clic : une seule requête à la fois par clé. On le DIT,
+        // sinon un deuxième clic a l'air d'être tombé dans le vide.
+        if (this._busy[k]) { this._toast('info', Lang.t('paper.busy_wait')); return; }
+        this._setBusy(k, true);
         try {
             let r = null;
             try { r = await Auth.apiCall(url, { method: 'POST', body: JSON.stringify(body || {}) }); }
@@ -3672,9 +4478,7 @@ const PaperModule = {
             try { d = await r.json(); } catch (e) { d = null; }
             apply(d);
         } finally {
-            // Le corps a pu être re-rendu entre-temps : remettre l'état sur un
-            // bouton détaché est sans effet, et c'est très bien ainsi.
-            if (btn) { btn.disabled = false; btn.textContent = prev; }
+            this._setBusy(k, false);
         }
     },
 
@@ -3685,32 +4489,125 @@ const PaperModule = {
         return v ? String(v) : '';
     },
 
-    async ask(btn) {
+    async ask() {
         const el = document.getElementById('paper-question');
         const q = el ? String(el.value || '').trim() : '';
-        await this._llm(btn, '/api/paper/coach/ask', { question: q, lang: this._lang() }, (d) => {
+        await this._llm('ask', '/api/paper/coach/ask', { question: q, lang: this._lang() }, (d) => {
             this._answer = this._llmText(d) || Lang.t('paper.no_data');
-            if (this._tab === 'coach') this._renderBody();
+            this._arrived('ask');
         });
     },
 
-    async analysis(btn) {
+    async analysis() {
         const el = document.getElementById('paper-analysis-sym');
         const sym = el ? String(el.value || '').trim() : '';
         if (!sym) { this._toast('warn', Lang.t('paper.symbol_required')); return; }
         this._analysisSymbol = sym;
-        await this._llm(btn, '/api/paper/analysis', { symbol: sym, lang: this._lang() }, (d) => {
+        await this._llm('analysis', '/api/paper/analysis', { symbol: sym, lang: this._lang() }, (d) => {
             this._analysis = this._llmText(d) || Lang.t('paper.no_data');
-            if (this._tab === 'coach') this._renderBody();
+            this._arrived('analysis');
         });
     },
 
-    async postmortem(btn, idx) {
+    async postmortem(idx) {
         const body = { lang: this._lang() };
         if (idx !== null && idx !== undefined) body.trade_index = idx;
-        await this._llm(btn, '/api/paper/postmortem', body, (d) => {
+        await this._llm('postmortem', '/api/paper/postmortem', body, (d) => {
             this._postmortem = this._llmText(d) || Lang.t('paper.no_data');
-            if (this._tab === 'journal') this._renderBody();
+            this._arrived('postmortem');
+        });
+    },
+
+    // =====================================================================
+    //  COACH FLOTTANT — une question, d'où qu'on soit dans le module
+    // =====================================================================
+    //
+    // Le coach vivait dans son onglet : poser une question depuis le Journal ou
+    // le Plan obligeait à tout quitter. Le bouton rond en bas à droite ouvre un
+    // petit panneau qui pose la MÊME question au MÊME endpoint, avec le même
+    // registre d'attente (_busy.ask) — on peut donc le refermer pendant que le
+    // coach réfléchit et le rouvrir pour lire la réponse.
+    //
+    // UN SEUL échange est montré : l'historique complet vit déjà dans le carnet
+    // (Discussions.md), et c'est dit à l'écran.
+
+    _fabHtml() {
+        if (!this._fabOpen) {
+            return '<button class="paper-fab" data-paper-act="fab-toggle" ' +
+                       'title="' + esc(Lang.t('paper.fab_open')) + '">' +
+                esc(Lang.t('paper.fab_btn')) + '</button>';
+        }
+        const ex = this._fabAnswer;
+        return '<div class="paper-fab-panel">' +
+            '<div class="paper-fab-head">' +
+              '<span style="flex:1 1 auto;min-width:0;font-size:14px;font-weight:600;">' +
+                esc(Lang.t('paper.fab_title')) + '</span>' +
+              '<button class="btn btn-ghost btn-sm" data-paper-act="fab-toggle" ' +
+                  'style="padding:0 6px;" title="' + esc(Lang.t('paper.close')) + '">' +
+                esc(Lang.t('paper.x_remove_mark')) + '</button>' +
+            '</div>' +
+            '<div class="paper-fab-body">' +
+              (ex
+                ? '<div style="margin-bottom:10px;">' +
+                    '<div style="font-size:12px;color:var(--text-dim);line-height:1.45;' +
+                         'margin-bottom:4px;">' + esc(String(ex.q || '')) + '</div>' +
+                    '<div style="font-size:13px;line-height:1.6;white-space:pre-wrap;' +
+                         'word-break:break-word;">' + esc(String(ex.a || '')) + '</div>' +
+                  '</div>'
+                : '<div style="font-size:13px;color:var(--text-muted);line-height:1.5;' +
+                       'margin-bottom:10px;">' + esc(Lang.t('paper.fab_hint')) + '</div>') +
+            '</div>' +
+            '<div class="paper-fab-foot">' +
+              '<textarea id="paper-fab-q" class="form-input" rows="2" ' +
+                   'style="resize:vertical;line-height:1.5;font-size:13px;" ' +
+                   'placeholder="' + esc(Lang.t('paper.ask_placeholder')) + '">' +
+                esc(this._fabQ || '') + '</textarea>' +
+              '<div style="display:flex;gap:8px;align-items:center;margin-top:8px;">' +
+                '<button class="btn btn-primary btn-sm" data-paper-act="fab-ask" ' +
+                    'data-paper-busy="ask">' + esc(Lang.t('paper.ask_send')) + '</button>' +
+                '<span style="font-size:11px;color:var(--text-dim);line-height:1.4;">' +
+                  esc(Lang.t('paper.fab_history')) + '</span>' +
+              '</div>' +
+            '</div>' +
+        '</div>';
+    },
+
+    _paintFab() {
+        const host = document.getElementById('paper-fab-wrap');
+        if (!host) return;
+        host.innerHTML = this._fabHtml();
+        // Le panneau vient d'être (re)dessiné : si une question est en vol, son
+        // bouton doit repartir en attente (même mécanisme que le corps).
+        this._applyBusy();
+    },
+
+    _removeFab() {
+        const host = document.getElementById('paper-fab-wrap');
+        if (host) host.innerHTML = '';
+        this._fabOpen = false;
+    },
+
+    toggleFab() {
+        this._fabOpen = !this._fabOpen;
+        this._paintFab();
+        if (!this._fabOpen) return;
+        const el = document.getElementById('paper-fab-q');
+        if (el && el.focus) { try { el.focus(); } catch (e) { /* focus refusé */ } }
+    },
+
+    async fabAsk() {
+        const el = document.getElementById('paper-fab-q');
+        const q = el ? String(el.value || '').trim() : String(this._fabQ || '').trim();
+        if (!q) { this._toast('warn', Lang.t('paper.fab_empty')); return; }
+        this._fabQ = q;
+        await this._llm('ask', '/api/paper/coach/ask', { question: q, lang: this._lang() }, (d) => {
+            const txt = this._llmText(d) || Lang.t('paper.no_data');
+            this._fabAnswer = { q: q, a: txt };
+            this._fabQ = '';
+            this._paintFab();
+            // Panneau refermé pendant la réflexion : on le dit, et on dit OÙ —
+            // la réponse attend dans le panneau flottant, pas dans l'onglet Coach.
+            if (!this._fabOpen) this._toast('success', Lang.t('paper.ready_fab'));
         });
     },
 
@@ -3746,12 +4643,25 @@ const PaperModule = {
         if (act === 'close-trade') { this._tradeIdx = null; this._postmortem = null; this._renderBody(); return; }
         if (act === 'postmortem') {
             const i = parseInt(el.getAttribute('data-idx'), 10);
-            this.postmortem(el, isFinite(i) ? i : null);
+            this.postmortem(isFinite(i) ? i : null);
             return;
         }
-        if (act === 'ask') { this.ask(el); return; }
-        if (act === 'analysis') { this.analysis(el); return; }
-        if (act === 'ideas') { this.askIdeas(el); return; }
+        if (act === 'ask') { this.ask(); return; }
+        if (act === 'analysis') { this.analysis(); return; }
+        if (act === 'ideas') { this.askIdeas(); return; }
+        if (act === 'journal-toggle') { this.toggleJournal(el.getAttribute('data-id')); return; }
+        if (act === 'review') { this.reviewPositions(); return; }
+        if (act === 'review-text') { this._reviewOpen = !this._reviewOpen; this._renderBody(); return; }
+        if (act === 'alerts-mode') { this.setAlertsMode(el.getAttribute('data-mode')); return; }
+        if (act === 'x-add') { this.addXHandle(); return; }
+        if (act === 'x-remove') { this.removeXHandle(el.getAttribute('data-handle')); return; }
+        if (act === 'x-save') { this.saveXHandles(); return; }
+        if (act === 'sym-close') { this.closeSymIdeas(el.getAttribute('data-sym')); return; }
+        if (act === 'sym-text') { this.toggleSymText(el.getAttribute('data-key')); return; }
+        if (act === 'sym-all') { this.switchTab('coach'); return; }
+        if (act === 'fab-toggle') { this.toggleFab(); return; }
+        if (act === 'fab-ask') { this.fabAsk(); return; }
+        if (act === 'chart-reload') { this.reloadChart(el.getAttribute('data-sym')); return; }
         if (act === 'idea-level') { this.setLevel(el.getAttribute('data-level')); return; }
         if (act === 'idea-pick') { this.useIdea(el.getAttribute('data-sym')); return; }
         if (act === 'watch-add') { this.addWatch(el.getAttribute('data-sym')); return; }
@@ -3779,7 +4689,7 @@ const PaperModule = {
         if (act === 'arena-accept') { this.acceptArena(); return; }
         if (act === 'reset') { this.resetPortfolio(); return; }
         if (act === 'whale-pick') { this.openWhale(el.getAttribute('data-whale')); return; }
-        if (act === 'radar-run') { this.runRadar(el); return; }
+        if (act === 'radar-run') { this.runRadar(); return; }
         if (act === 'plan-add') { this.addPipeline(); return; }
         if (act === 'plan-stage') {
             this.setPipelineStage(el.getAttribute('data-id'), el.getAttribute('data-stage'));
@@ -3787,7 +4697,7 @@ const PaperModule = {
         }
         if (act === 'plan-del') { this.removePipeline(el.getAttribute('data-id')); return; }
         if (act === 'plan-trade') { this.openTrade(el.getAttribute('data-sym')); return; }
-        if (act === 'plan-scn-gen') { this.generateScenarios(el); return; }
+        if (act === 'plan-scn-gen') { this.generateScenarios(); return; }
         if (act === 'plan-branch') {
             this.resolveBranch(el.getAttribute('data-tree'), el.getAttribute('data-branch'),
                 el.getAttribute('data-status'));
@@ -3801,8 +4711,14 @@ const PaperModule = {
         }
         if (act === 'pos-toggle') {
             const sy = el.getAttribute('data-sym');
-            this._posOpen = (this._posOpen === sy) ? null : sy;
+            const opening = (this._posOpen !== sy);
+            this._posOpen = opening ? sy : null;
             this._renderBody();
+            // Deplier le graphique d'une position, c'est se demander « qu'est-ce
+            // que le coach avait dit de ce titre ? » : on va lire sa MEMOIRE
+            // (aucun appel LLM, aucune depense) et on n'affiche rien s'il n'a
+            // jamais rien dit.
+            if (opening) this._loadSymIdeas(sy);
         }
     },
 
@@ -3815,6 +4731,17 @@ const PaperModule = {
             if (this._searchTimer) clearTimeout(this._searchTimer);
             this._searchTimer = setTimeout(() => { this._searchTimer = null; this.search(v); }, 400);
             return;
+        }
+        // Ces deux champs vivent HORS du corps re-rendu : leur valeur est
+        // recopiée dans l'état du module à la frappe, sinon un re-rendu du
+        // corps (poll de 60 s) la laisserait derrière.
+        if (el.id === 'paper-fab-q') { this._fabQ = el.value; return; }
+        if (el.id === 'paper-x-input') { this._xInput = el.value; return; }
+        // Brouillon de l'ordre : tout ce qui est tapé part sur le disque, par
+        // titre, à l'anti-rebond. C'est ce qui rend un rechargement inoffensif.
+        if (Object.prototype.hasOwnProperty.call(this._FORM_IDS, String(el.id || ''))) {
+            this._captureForm();
+            this._queueDraft();
         }
         if (el.getAttribute && el.getAttribute('data-paper-size')) {
             this._captureForm();

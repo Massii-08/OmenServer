@@ -4933,3 +4933,105 @@ select:-webkit-autofill {
 @media (max-width: 560px) {
     .paper-pipe { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* --- Paper Trading : mémoire du coach ancrée au graphique -----------------
+   Ce que le coach a DÉJÀ dit du titre, posé au coin du bloc graphique pendant
+   qu'on décide. Sur grand écran c'est une carte flottante (elle ne pousse pas
+   le formulaire d'ordre vers le bas) ; sous 760px elle redevient un bloc
+   ordinaire AU-DESSUS du graphique — un survol de 300px sur un téléphone
+   masquerait justement la courbe qu'on est venu regarder.
+   Elle n'existe dans le DOM que si le coach a quelque chose à dire. */
+.paper-symideas {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    z-index: 2;
+    width: 300px;
+    max-width: calc(100% - 24px);
+    max-height: 280px;
+    overflow: auto;
+    background: var(--bg-elev-3);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-md);
+    padding: 10px 12px;
+    box-shadow: var(--shadow-md);
+}
+/* La ligne de titre du graphique réserve la largeur de la carte flottante :
+   sinon celle-ci recouvre les pastilles de période et le bouton Actualiser
+   (vu à l'écran — ils devenaient inclicables). */
+.paper-chart-head.with-memory { padding-right: 312px; }
+@media (max-width: 760px) {
+    .paper-symideas {
+        position: static;
+        width: auto;
+        max-width: none;
+        max-height: none;
+        margin-bottom: 12px;
+        box-shadow: none;
+    }
+    .paper-chart-head.with-memory { padding-right: 0; }
+}
+
+/* --- Paper Trading : coach flottant ---------------------------------------
+   Un bouton rond en bas à droite, et un panneau de la même taille qu'une
+   fenêtre de discussion. `position: fixed` mais DANS le module : le conteneur
+   est réécrit à la navigation, donc le coach ne suit jamais l'utilisateur hors
+   de Trading. La page reste scrollable derrière (aucun voile, aucun piège de
+   focus) : c'est un outil de bord, pas une modale. */
+.paper-fab {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: 40;
+    min-width: 44px;
+    height: 44px;
+    padding: 0 16px;
+    border-radius: var(--r-pill);
+    border: 1px solid var(--accent);
+    background: var(--accent-dim);
+    color: var(--accent);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: var(--shadow-md);
+    transition: background .18s ease, border-color .18s ease, transform .18s ease;
+}
+.paper-fab:hover { border-color: var(--accent); transform: translateY(-1px); }
+.paper-fab-panel {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    width: 360px;
+    max-width: calc(100vw - 32px);
+    max-height: 420px;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+}
+.paper-fab-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+}
+.paper-fab-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    padding: 12px;
+}
+.paper-fab-foot {
+    flex: 0 0 auto;
+    padding: 10px 12px;
+    border-top: 1px solid var(--border);
+}
+@media (max-width: 560px) {
+    .paper-fab-panel { max-height: 70vh; }
+}
