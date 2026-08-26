@@ -937,6 +937,77 @@ def test_une_meme_depeche_n_est_comptee_qu_une_fois():
 
 
 # =========================================================================== #
+#  PUR — les volets MONDE (éco, climat) rejoignent le pool GÉNÉRIQUE (26/08 soir)
+#
+#  Décision de conception : ces deux volets n'ont AUCUN facteur à eux, et ils
+#  n'allument PAS celui de la politique. Ils portent une tonalité ordinaire
+#  (pos/neg/watch), donc ils pèsent exactement comme une dépêche de presse —
+#  ni plus (pas de facteur inventé), ni moins (ils comptent vraiment).
+# =========================================================================== #
+
+def _world_news(src, **over):
+    base = {
+        "ts": (NOW - timedelta(hours=3)).isoformat(),
+        "symbol": None,
+        "title": "L'inflation américaine accélère",
+        "link": "http://w.test/%s" % src,
+        "sentiment": "neg",
+        "src": src,
+    }
+    base.update(over)
+    return base
+
+
+@pytest.mark.parametrize("src", ["eco", "climat"])
+def test_une_depeche_monde_n_allume_pas_le_facteur_politique(src):
+    """C'est l'invariant du chantier : le facteur ``gov`` ne regarde QUE la
+    tonalité ``gov``, que seul le volet politique produit."""
+    out = _collect6(news=[_world_news(src)])
+    assert out["factors"]["gov"] is False
+
+
+def test_une_annonce_politique_allume_toujours_son_facteur():
+    """Ceinture de l'invariant précédent : on n'a rien cassé du volet
+    politique en ajoutant les deux autres."""
+    out = _collect6(news=[_news(sentiment="gov", symbol="GOV")])
+    assert out["factors"]["gov"] is True
+
+
+@pytest.mark.parametrize("src", ["eco", "climat"])
+def test_une_mauvaise_nouvelle_monde_sur_un_titre_detenu_allume_held_risk(src):
+    """« Une sécheresse ampute la récolte » avec un titre DÉTENU dedans, c'est
+    de l'argent qui bouge : ``entities`` a posé le symbole, le facteur de
+    menace le lit comme n'importe quelle mauvaise nouvelle."""
+    out = _collect6(news=[_world_news(src, symbol="NESN.SW")],
+                    held=["NESN.SW"])
+    assert out["factors"]["held_risk"] is True
+    assert out["factors"]["gov"] is False
+
+
+@pytest.mark.parametrize("src", ["eco", "climat"])
+def test_une_depeche_monde_participe_au_croisement_de_sources(src):
+    """Deux familles différentes sur le même titre : une hypothèse du radar et
+    une dépêche macro à tonalité, c'est bien un croisement."""
+    out = _collect6(hyps=[_hyp()], news=[_world_news(src, symbol="NESN.SW")])
+    assert out["factors"]["cross_source"] is True
+
+
+@pytest.mark.parametrize("src", ["eco", "climat"])
+def test_un_catalyseur_monde_sur_un_titre_suivi_allume_held_catalyst(src):
+    out = _collect6(news=[_world_news(src, symbol="NESN.SW",
+                                      sentiment="watch")],
+                    watched=["NESN.SW"])
+    assert out["factors"]["held_catalyst"] is True
+
+
+def test_les_volets_monde_n_ajoutent_aucun_facteur_au_contrat():
+    """« Pas de nouveau facteur » : le contrat public reste les huit codes."""
+    assert convergence.FACTOR_CODES == (
+        "fresh_hyps", "gov", "held_catalyst", "held_risk", "whale_filing",
+        "whale_sold_watched", "cross_source", "crowd_buzz")
+
+
+# =========================================================================== #
 #  PUR — whale_sold_watched : un grand gérant a vendu (26/08)
 # =========================================================================== #
 

@@ -14,10 +14,12 @@ gov VIDES en tête de la file de fetch (`_FetchQueue.prime_gov()`) avant
 chaque appel à run_once -- désactivable via `prime_gov=False` pour les tests
 qui pilotent le volet gov eux-mêmes.
 """
+import json
 import sys
 import types
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
+from urllib.parse import unquote
 
 import pytest
 
@@ -110,6 +112,8 @@ class _FetchQueue:
         self.calls = []
         self._answers = []
         self._crypto = []
+        self._eco = []
+        self._climat = []
 
     def push(self, xml_or_exc):
         self._answers.append(xml_or_exc)
@@ -125,6 +129,14 @@ class _FetchQueue:
         """
         self._crypto.append(xml_or_exc)
 
+    def push_eco(self, xml_or_exc):
+        """Réponse du volet ÉCO (26/08 soir) — même séparation que crypto."""
+        self._eco.append(xml_or_exc)
+
+    def push_climat(self, xml_or_exc):
+        """Réponse du volet CLIMAT (26/08 soir) — même séparation que crypto."""
+        self._climat.append(xml_or_exc)
+
     def prime_gov(self, xml_or_exc=None):
         """Insère 2 réponses gov (une par source, run_once en interroge
         exactement 2 en tête de cycle) EN TÊTE de la file -- quel que soit ce
@@ -137,6 +149,10 @@ class _FetchQueue:
         self.calls.append(url)
         if url in newswatch._CRYPTO_SOURCES:
             ans = self._crypto.pop(0) if self._crypto else _EMPTY_RSS
+        elif url in newswatch._ECO_SOURCES:
+            ans = self._eco.pop(0) if self._eco else _EMPTY_RSS
+        elif url in newswatch._CLIMAT_SOURCES:
+            ans = self._climat.pop(0) if self._climat else _EMPTY_RSS
         else:
             ans = self._answers.pop(0)
         if isinstance(ans, Exception):
@@ -559,7 +575,7 @@ def test_run_once_first_pass_seeds_without_notifying():
     counters = _run(fetch, notifier)
     assert counters["users"] == 1
     assert counters["symbols"] == 1
-    assert counters["fetched"] == 5   # 1 symbole + 2 gov + 2 crypto (volets globaux)
+    assert counters["fetched"] == 7   # 1 symbole + 4 volets globaux (2 gov + crypto + eco + climat)
     assert counters["notified"] == 0
     assert counters["errors"] == 0
     assert notifier.calls == []
@@ -782,8 +798,8 @@ def test_run_once_counts_fetch_error_and_continues_other_symbols():
     counters = _run(fetch, notifier)
     assert counters["symbols"] == 2
     assert counters["errors"] == 1
-    assert counters["fetched"] == 5    # BBB (1) + 2 gov + 2 crypto
-    assert len(fetch.calls) == 6       # 2 gov + 2 crypto + AAA (échoue) + BBB
+    assert counters["fetched"] == 7    # BBB (1) + 6 globaux (2 gov, 2 crypto, eco, climat)
+    assert len(fetch.calls) == 8       # 6 globaux + AAA (échoue) + BBB
 
 
 def test_run_once_recovers_from_corrupt_seen_file():
@@ -830,9 +846,9 @@ def test_run_once_paces_between_multiple_fetches():
     fetch.prime_gov()
     newswatch.run_once(now=NOW, fetch=fetch, notifier=_NotifySpy(),
                        tg_cfg=CFG, sleep=sleeps.append, mode="tout")
-    # 4 fetches au total (2 gov + SYM1 + SYM2) -> pas de pause avant le 1er,
-    # une pause avant chacun des 3 suivants.
-    assert sleeps == [1.1, 1.1, 1.1, 1.1, 1.1]
+    # 8 fetches au total (2 gov + 2 crypto + eco + climat + SYM1 + SYM2) ->
+    # pas de pause avant le 1er, une pause avant chacun des 7 suivants.
+    assert sleeps == [1.1] * 7
 
 
 def test_run_once_notifies_watch_with_expected_wording():
@@ -908,9 +924,10 @@ def test_run_once_ignores_portfolio_without_positions():
     fetch = _FetchQueue()
     counters = _run(fetch, _NotifySpy())
     assert counters["users"] == 0
-    # les volets GLOBAUX (gov + crypto) tournent quand même -- seul le volet
-    # PAR SYMBOLE (les appels qu'il y aurait eu avec une position) est absent.
-    assert len(fetch.calls) == 4
+    # les volets GLOBAUX (gov, crypto, éco, climat) tournent quand même --
+    # seul le volet PAR SYMBOLE (les appels qu'il y aurait eu avec une
+    # position) est absent.
+    assert len(fetch.calls) == 6
 
 
 def test_run_once_no_portfolios_still_runs_gov_watch():
@@ -918,7 +935,7 @@ def test_run_once_no_portfolios_still_runs_gov_watch():
     avant l'extension §13 : le volet politique global tourne quand même."""
     fetch = _FetchQueue()
     counters = _run(fetch, _NotifySpy())
-    assert counters == {"users": 0, "symbols": 0, "fetched": 4, "notified": 0,
+    assert counters == {"users": 0, "symbols": 0, "fetched": 6, "notified": 0,
                         "errors": 0, "convergence_fired": False}
 
 
@@ -1005,7 +1022,7 @@ def test_run_once_gov_first_pass_seeds_silently_even_without_portfolios():
     notifier = _NotifySpy()
     counters = _run(fetch, notifier, prime_gov=False)
     assert counters["notified"] == 0
-    assert counters["fetched"] == 4      # 2 gov + 2 crypto
+    assert counters["fetched"] == 6      # 2 gov + 2 crypto + eco + climat
     assert notifier.calls == []
     assert newswatch.recent_events("anyone") == []
 
@@ -1158,8 +1175,8 @@ def test_run_once_gov_fetch_error_counts_and_does_not_block_second_source():
     fetch.push(_rss([]))
     counters = _run(fetch, _NotifySpy(), prime_gov=False)
     assert counters["errors"] == 1
-    assert counters["fetched"] == 3      # 1 gov qui répond + 2 crypto
-    assert len(fetch.calls) == 4
+    assert counters["fetched"] == 5      # 1 gov qui répond + 2 crypto + eco + climat
+    assert len(fetch.calls) == 6
 
 
 def test_run_once_gov_runs_even_with_zero_portfolios():
@@ -1168,8 +1185,8 @@ def test_run_once_gov_runs_even_with_zero_portfolios():
     fetch.push(_rss([]))
     counters = _run(fetch, _NotifySpy(), prime_gov=False)
     assert counters["users"] == 0
-    assert counters["fetched"] == 4      # 2 gov + 2 crypto
-    assert len(fetch.calls) == 4
+    assert counters["fetched"] == 6      # 2 gov + 2 crypto + eco + climat
+    assert len(fetch.calls) == 6
 
 
 def test_run_once_gov_recovers_from_corrupt_global_seen_file():
@@ -1673,6 +1690,407 @@ def test_le_budget_crypto_est_distinct_de_celui_du_gov():
     muted = [e for e in newswatch.recent_events("nobody")
              if e.get("src") == "crypto" and e.get("muted")]
     assert muted, "le surplus doit rester dans la mémoire, seul l'envoi tombe"
+
+
+# =========================================================================== #
+#  PUR — volets MONDE : ÉCONOMIE et ÉCOLOGIE (26/08 soir)
+#
+#  « Grosse partie des infos c'est que politique — il y a aussi l'économique,
+#  l'écologique. »
+# =========================================================================== #
+
+def test_l_url_google_news_est_encodee_et_en_anglais():
+    """Les guillemets, les parenthèses et le ``:`` de ``when:1d`` appartiennent
+    à la REQUÊTE : ils sont encodés, pas laissés bruts."""
+    url = newswatch.gnews_url('("Federal Reserve" OR inflation) when:1d')
+    assert url.startswith("https://news.google.com/rss/search?q=")
+    assert "hl=en-US" in url and "gl=US" in url and "ceid=US:en" in url
+    assert '"' not in url and " " not in url
+    assert "when%3A1d" in url and "%22Federal%20Reserve%22" in url
+    # …et la requête se relit telle quelle après décodage.
+    query = unquote(url.split("q=", 1)[1].split("&", 1)[0])
+    assert query == '("Federal Reserve" OR inflation) when:1d'
+
+
+def test_les_deux_volets_monde_interrogent_une_url_google_news_chacun():
+    assert len(newswatch._ECO_SOURCES) == 1
+    assert len(newswatch._CLIMAT_SOURCES) == 1
+    assert newswatch._ECO_SOURCES[0] == newswatch.gnews_url(newswatch.ECO_QUERY)
+    assert newswatch._CLIMAT_SOURCES[0] == newswatch.gnews_url(
+        newswatch.CLIMAT_QUERY)
+    assert newswatch._ECO_SOURCES[0] != newswatch._CLIMAT_SOURCES[0]
+
+
+# --- le gate de pertinence ÉCO ---------------------------------------------- #
+
+def test_le_gate_eco_jette_une_depeche_d_entreprise():
+    """Sans marqueur macro, rien n'entre — quelle que soit la tonalité. C'est
+    ce qui empêche une dépêche d'entreprise d'aller peser sur le pivot
+    « monde »."""
+    assert newswatch.is_eco_topic("Nvidia beats estimates in Q3") is False
+    assert newswatch.classify_eco("Nvidia beats estimates in Q3") is None
+
+
+def test_le_gate_eco_reconnait_les_marqueurs_macro():
+    for title in ("US inflation data lands tomorrow",
+                  "ECB weighs its next move",
+                  "Oil prices steady before the OPEC meeting",
+                  "Unemployment ticks up in Germany"):
+        assert newswatch.is_eco_topic(title) is True
+
+
+@pytest.mark.parametrize("title,expected", [
+    ("US inflation surges to 6%", "neg"),
+    ("Recession fears grow as unemployment jumps", "neg"),
+    ("Fed hikes rates by half a point", "neg"),
+    ("Inflation cools to 2.1% in the euro zone", "pos"),
+    ("ECB cuts rates by 25 basis points", "pos"),
+    ("Fed meeting ahead of key CPI report", "watch"),
+    ("Fed holds rates steady", "watch"),
+])
+def test_classify_eco_donne_la_tonalite_du_marche(title, expected):
+    """Un statu quo de taux est un ``watch`` : il ne dit ni « bon » ni
+    « mauvais », il dit que la suite se joue là — le ranger ailleurs mentirait,
+    le laisser tomber effacerait l'événement macro le plus suivi."""
+    assert newswatch.classify_eco(title) == expected
+
+
+def test_une_mauvaise_nouvelle_eco_prime_sur_une_bonne():
+    assert newswatch.classify_eco(
+        "Inflation cools but recession fears grow") == "neg"
+
+
+def test_un_conseil_d_achat_macro_n_est_jamais_relaye():
+    """Doctrine du dépôt : on ne recopie jamais un conseil, même déguisé en
+    dépêche macro."""
+    assert newswatch.classify_eco(
+        "Inflation cools: top stocks to ride the rebound") is None
+
+
+def test_un_titre_macro_sans_tonalite_ne_produit_rien():
+    assert newswatch.classify_eco("The Fed published its usual bulletin") is None
+    assert newswatch.classify_eco("") is None
+    assert newswatch.is_eco_topic("") is False
+
+
+# --- le gate de pertinence CLIMAT (les DEUX moitiés) ------------------------ #
+
+def test_un_ouragan_sans_dimension_economique_ne_passe_pas():
+    """LE test du volet : un simulateur de bourse n'a pas à tenir la chronique
+    météo du monde."""
+    title = "Hurricane Milton approaches Florida coast"
+    assert newswatch.is_climat_topic(title) is False
+    assert newswatch.classify_climat(title) is None
+
+
+def test_le_meme_ouragan_passe_des_qu_il_touche_l_economie():
+    title = "Hurricane forces refinery shutdown as oil prices jump"
+    assert newswatch.is_climat_topic(title) is True
+    assert newswatch.classify_climat(title) == "neg"
+
+
+def test_une_depeche_economique_sans_alea_climatique_ne_passe_pas_non_plus():
+    """L'autre moitié du gate : le croisement est exigé dans les DEUX sens."""
+    assert newswatch.is_climat_topic("Oil prices jump on supply fears") is False
+
+
+@pytest.mark.parametrize("title,expected", [
+    ("Drought destroys wheat crops in Argentina", "neg"),
+    ("Flooding halts production at Thai chip plants", "neg"),
+    ("Wildfires threaten California power supply", "watch"),
+    ("Heatwave warning as energy demand set to peak", "watch"),
+    ("Rains ease Brazil drought and coffee prices fall", "pos"),
+])
+def test_classify_climat_donne_la_tonalite(title, expected):
+    assert newswatch.classify_climat(title) == expected
+
+
+def test_les_deux_volets_monde_ne_produisent_jamais_la_tonalite_gov():
+    """C'est l'invariant qui garde le facteur politique de la convergence
+    propre : ces volets parlent la langue de tout le monde (pos/neg/watch)."""
+    titles = ["US inflation surges to 6%", "Fed holds rates steady",
+              "Drought destroys wheat crops in Argentina",
+              "Wildfires threaten California power supply"]
+    tones = ([newswatch.classify_eco(t) for t in titles]
+             + [newswatch.classify_climat(t) for t in titles])
+    assert "gov" not in tones
+
+
+def test_les_messages_monde_signalent_sans_jamais_conseiller():
+    eco = newswatch.format_eco_message("US inflation surges", "https://g/1",
+                                       "neg")
+    climat = newswatch.format_climat_message("Drought destroys wheat crops",
+                                             "https://g/2", "neg", "ADM")
+    assert eco.startswith("[Simulateur] ") and "https://g/1" in eco
+    assert "ADM" in climat and "https://g/2" in climat
+    for message in (eco, climat):
+        low = message.lower()
+        assert "achet" not in low and "vends" not in low and "buy" not in low
+
+
+# =========================================================================== #
+#  I/O — volets MONDE (éco, climat)
+# =========================================================================== #
+
+ECO_TITLE = "US inflation surges to a 6% annual rate"
+ECO_LINK = "https://news.google.com/eco1"
+CLIMAT_TITLE = "Drought destroys wheat crops and lifts prices"
+CLIMAT_LINK = "https://news.google.com/cli1"
+
+
+def _eco_feed(now=None, title=ECO_TITLE, link=ECO_LINK):
+    return _rss([(title, link, now or NOW)])
+
+
+def _climat_feed(now=None, title=CLIMAT_TITLE, link=CLIMAT_LINK):
+    return _rss([(title, link, now or NOW)])
+
+
+def test_le_volet_eco_amorce_en_silence_puis_notifie():
+    fetch = _FetchQueue()
+    fetch.push_eco(_eco_feed())
+    notifier = _NotifySpy()
+    _run(fetch, notifier)
+    assert notifier.calls == []                 # amorçage muet
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push_eco(_eco_feed(now=later, link="https://news.google.com/eco2"))
+    counters = _run(fetch, notifier, now=later)
+    assert counters["notified"] == 1
+    assert "économique" in notifier.calls[0][0].lower()
+
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "eco"]
+    assert len(events) == 1
+    assert events[0]["sentiment"] == "neg" and events[0]["muted"] is False
+
+
+def test_le_volet_climat_amorce_en_silence_puis_notifie():
+    fetch = _FetchQueue()
+    fetch.push_climat(_climat_feed())
+    notifier = _NotifySpy()
+    _run(fetch, notifier)
+    assert notifier.calls == []
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push_climat(_climat_feed(now=later,
+                                   link="https://news.google.com/cli2"))
+    counters = _run(fetch, notifier, now=later)
+    assert counters["notified"] == 1
+    assert "climatique" in notifier.calls[0][0].lower()
+    assert [e["src"] for e in newswatch.recent_events("nobody")
+            if e.get("src") == "climat"] == ["climat"]
+
+
+def test_le_volet_eco_ignore_un_titre_hors_sujet():
+    fetch = _FetchQueue()
+    fetch.push_eco(_rss([("Seed", "https://g/eseed", NOW)]))
+    _run(fetch, _NotifySpy())
+    later = NOW + timedelta(minutes=10)
+    fetch.push_eco(_rss([
+        ("Seed", "https://g/eseed", NOW),
+        ("Nvidia beats estimates in Q3", "https://g/e-off", later),
+    ]))
+    notifier = _NotifySpy()
+    _run(fetch, notifier, now=later)
+    assert notifier.calls == []
+    assert [e for e in newswatch.recent_events("nobody")
+            if e.get("src") == "eco"] == []
+
+
+def test_le_volet_climat_ignore_un_alea_sans_economie():
+    fetch = _FetchQueue()
+    fetch.push_climat(_rss([("Seed", "https://g/cseed", NOW)]))
+    _run(fetch, _NotifySpy())
+    later = NOW + timedelta(minutes=10)
+    fetch.push_climat(_rss([
+        ("Seed", "https://g/cseed", NOW),
+        ("Hurricane Milton approaches Florida coast", "https://g/c-off", later),
+    ]))
+    _run(fetch, _NotifySpy(), now=later)
+    assert [e for e in newswatch.recent_events("nobody")
+            if e.get("src") == "climat"] == []
+
+
+def test_le_volet_eco_ignore_un_titre_plus_vieux_que_24h():
+    fetch = _FetchQueue()
+    fetch.push_eco(_rss([("Seed", "https://g/eseed", NOW)]))
+    _run(fetch, _NotifySpy())
+    later = NOW + timedelta(minutes=10)
+    fetch.push_eco(_rss([
+        ("Seed", "https://g/eseed", NOW),
+        (ECO_TITLE, "https://g/e-old", later - timedelta(hours=30)),
+    ]))
+    notifier = _NotifySpy()
+    _run(fetch, notifier, now=later)
+    assert notifier.calls == []
+    assert [e for e in newswatch.recent_events("nobody")
+            if e.get("src") == "eco"] == []
+
+
+def test_une_depeche_macro_qui_nomme_une_entreprise_porte_son_symbole():
+    """C'est ``entities`` branché : la dépêche rejoint alors la BRANCHE de ce
+    titre dans la toile, au lieu de finir au pivot « monde »."""
+    fetch = _FetchQueue()
+    fetch.push_eco(_rss([("Seed", "https://g/eseed", NOW)]))
+    _run(fetch, _NotifySpy())
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push_eco(_rss([
+        ("Seed", "https://g/eseed", NOW),
+        ("Fed rate cut lifts Nvidia and the whole chip sector",
+         "https://g/e-nvda", later),
+    ]))
+    _run(fetch, _NotifySpy(), now=later)
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "eco"]
+    assert [e["symbol"] for e in events] == ["NVDA"]
+
+
+def test_une_depeche_macro_qui_ne_nomme_personne_n_invente_pas_de_symbole():
+    fetch = _FetchQueue()
+    fetch.push_eco(_eco_feed())
+    _run(fetch, _NotifySpy())
+    later = NOW + timedelta(minutes=10)
+    fetch.push_eco(_eco_feed(now=later, link="https://news.google.com/eco2"))
+    _run(fetch, _NotifySpy(), now=later)
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "eco"]
+    assert events[0]["symbol"] is None
+
+
+def test_le_budget_eco_est_distinct_de_celui_du_gov_et_du_crypto():
+    """Trois volets, trois budgets : partager ferait taire l'un dès que l'autre
+    s'agite, et personne ne saurait lequel a mangé la place."""
+    state = newswatch._default_seen_state()
+    assert {"sent_log", "crypto_sent_log", "eco_sent_log",
+            "climat_sent_log"} <= set(state)
+
+    fetch = _FetchQueue()
+    fetch.push_eco(_rss([("Seed", "https://g/eseed", NOW)]))
+    _run(fetch, _NotifySpy())
+
+    later = NOW + timedelta(minutes=10)
+    # SIX histoires DIFFÉRENTES : six reprises de la même seraient mises en
+    # sourdine par la couche « histoire », et on ne mesurerait plus le budget.
+    stories = [
+        "US inflation surges to a six percent annual rate",
+        "German unemployment jumps to a decade high",
+        "Oil prices surge after a supply shock in Libya",
+        "Recession fears grow across the euro zone",
+        "Fed hikes rates to fight stubborn price pressure",
+        "Treasury yields spike as investors flee bonds",
+    ]
+    burst = [("Seed", "https://g/eseed", NOW)] + [
+        (title, "https://g/e%d" % i, later)
+        for i, title in enumerate(stories)]
+    fetch.push_eco(_rss(burst))
+    notifier = _NotifySpy()
+    _run(fetch, notifier, now=later)
+
+    assert len(notifier.calls) == newswatch._MAX_ECO_NOTIFY_PER_RUN
+    muted = [e for e in newswatch.recent_events("nobody")
+             if e.get("src") == "eco" and e.get("muted")]
+    assert muted, "le surplus doit rester en mémoire, seul l'envoi tombe"
+    # …et le budget consommé est bien celui du volet, pas celui du gov.
+    state = newswatch._load_global_seen()
+    assert len(state["eco_sent_log"]) == newswatch._MAX_ECO_NOTIFY_PER_RUN
+    assert state["sent_log"] == [] and state["crypto_sent_log"] == []
+
+
+def test_la_meme_histoire_macro_reprise_par_trois_medias_n_envoie_qu_une_fois():
+    """Google News est justement la source où une histoire arrive quinze fois —
+    c'est l'incident du 24/08 au soir, et l'anti-spam est le même."""
+    fetch = _FetchQueue()
+    fetch.push_eco(_rss([("Seed", "https://g/eseed", NOW)]))
+    _run(fetch, _NotifySpy())
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push_eco(_rss([("Seed", "https://g/eseed", NOW)] + [
+        ("US inflation surges to a six percent annual rate - " + source,
+         "https://g/e-" + source, later)
+        for source in ("Reuters", "CNBC", "Bloomberg")]))
+    notifier = _NotifySpy()
+    _run(fetch, notifier, now=later)
+
+    assert len(notifier.calls) == 1
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "eco"]
+    assert [e["muted"] for e in events].count(True) == 2
+
+
+def test_la_sourdine_par_histoire_ne_traverse_pas_les_volets():
+    """Clé PRÉFIXÉE par le volet : l'économie et l'écologie peuvent parler du
+    même sujet le même jour sans se rendre muettes l'une l'autre."""
+    fetch = _FetchQueue()
+    fetch.push_eco(_rss([("Seed", "https://g/eseed", NOW)]))
+    fetch.push_climat(_rss([("Seed", "https://g/cseed", NOW)]))
+    _run(fetch, _NotifySpy())
+
+    later = NOW + timedelta(minutes=10)
+    shared = "Drought destroys wheat crops and oil prices surge"
+    fetch.push_eco(_rss([("Seed", "https://g/eseed", NOW),
+                         (shared, "https://g/e-shared", later)]))
+    fetch.push_climat(_rss([("Seed", "https://g/cseed", NOW),
+                            (shared, "https://g/c-shared", later)]))
+    notifier = _NotifySpy()
+    _run(fetch, notifier, now=later)
+    assert len(notifier.calls) == 2
+
+    state = newswatch._load_global_seen()
+    prefixes = sorted(k.split(":", 1)[0] for k in state["stories"])
+    assert prefixes == ["climat", "eco"]
+
+
+def test_le_volet_eco_en_panne_ne_bloque_pas_le_volet_climat():
+    fetch = _FetchQueue()
+    fetch.push_eco(RuntimeError("boom"))
+    fetch.push_climat(_climat_feed())
+    counters = _run(fetch, _NotifySpy())
+    assert counters["errors"] == 1
+    # 2 gov + 2 crypto + climat (l'éco a levé) = 5 réponses reçues.
+    assert counters["fetched"] == 5
+
+
+def test_mode_calme_les_volets_monde_n_envoient_plus_rien():
+    fetch = _FetchQueue()
+    fetch.push_eco(_rss([("Seed", "https://g/eseed", NOW)]))
+    fetch.push_climat(_rss([("Seed", "https://g/cseed", NOW)]))
+    _run(fetch, _NotifySpy())                        # seed
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push_eco(_rss([("Seed", "https://g/eseed", NOW),
+                         (ECO_TITLE, "https://g/e2", later)]))
+    fetch.push_climat(_rss([("Seed", "https://g/cseed", NOW),
+                            (CLIMAT_TITLE, "https://g/c2", later)]))
+    notifier = _NotifySpy()
+    counters = _run(fetch, notifier, now=later, mode="calme")
+
+    assert notifier.calls == [] and counters["notified"] == 0
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") in ("eco", "climat")]
+    assert sorted(e["src"] for e in events) == ["climat", "eco"]
+    assert all(e["muted"] is True for e in events)
+    # …et aucun budget n'a été consommé : le mode calme ne dépense rien.
+    state = newswatch._load_global_seen()
+    assert state["eco_sent_log"] == [] and state["climat_sent_log"] == []
+
+
+def test_un_etat_ecrit_avant_les_volets_monde_ne_plante_pas():
+    """Rétro-compat : un ``newswatch_global.json`` d'avant l'extension n'a ni
+    ``eco_sent_log`` ni ``climat_sent_log`` — il repart d'un budget plein."""
+    path = store.DATA_DIR / "newswatch_global.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"seen": {}, "events": [],
+                                "seeded": {"gov": True, "crypto": True,
+                                           "eco": True, "climat": True}}),
+                    encoding="utf-8")
+    fetch = _FetchQueue()
+    fetch.push_eco(_eco_feed())
+    notifier = _NotifySpy()
+    counters = _run(fetch, notifier)
+    assert counters["errors"] == 0
+    assert len(notifier.calls) == 1          # déjà amorcé -> il notifie
 
 
 # =========================================================================== #

@@ -920,6 +920,73 @@ def test_a_gov_headline_naming_an_unheld_title_still_reaches_the_world_pivot():
 
 
 # --------------------------------------------------------------------------- #
+# Les deux volets MONDE : économie (src "eco") et écologie (src "climat")
+#
+# « Grosse partie des infos c'est que politique — il y a aussi l'économique,
+# l'écologique. » Ils ont leur FAMILLE, distincte de « gov » : une décision de
+# la Fed n'est pas une annonce politique, et les mélanger rendrait le rameau
+# « Politique » aussi illisible qu'avant.
+# --------------------------------------------------------------------------- #
+
+def _world(src, symbol=None, title="Inflation surges", link="http://w/1",
+           sentiment="neg", hours_ago=2):
+    return {"ts": _iso(hours_ago=hours_ago), "symbol": symbol, "title": title,
+            "link": link, "sentiment": sentiment, "src": src}
+
+
+@pytest.mark.parametrize("src", ["eco", "climat"])
+def test_a_world_headline_keeps_its_own_type_and_family(src):
+    """La PROVENANCE nomme le nœud — la tonalité, elle, est celle de tout le
+    monde (pos/neg/watch), donc elle ne peut pas le faire."""
+    built = build(events=[_world(src)])
+    node = node_by_type(built, src)[0]
+    assert node["sentiment"] == "neg"        # …et pas « gov »
+    assert graph._family_of(node) == src
+    assert src in graph.INFO_TYPES
+
+
+@pytest.mark.parametrize("src", ["eco", "climat"])
+def test_an_orphan_world_headline_reaches_the_world_pivot(src):
+    """« L'inflation américaine accélère » ne nomme aucun titre et concerne
+    tout le portefeuille : c'est du macro, comme la politique et la crypto."""
+    built = build(anchors=[{"symbol": "AAPL", "kind": "position"}],
+                  events=[_world(src)])
+    assert built["edges"] == [{"source": node_by_type(built, src)[0]["id"],
+                               "target": graph.WORLD_ID,
+                               "type": graph.EDGE_CONTEXT, "sentiment": "neg"}]
+    assert src in graph.PIVOT_TYPES
+
+
+@pytest.mark.parametrize("src", ["eco", "climat"])
+def test_a_world_headline_naming_a_held_title_reaches_that_title(src):
+    """C'est ``entities`` de bout en bout : la veille a posé le symbole, la
+    toile le rattache à la branche du titre au lieu du pivot."""
+    built = build(anchors=[{"symbol": "NVDA", "kind": "position"}],
+                  events=[_world(src, symbol="NVDA")])
+    node = node_by_type(built, src)[0]
+    assert built["edges"] == [{"source": node["id"], "target": "NVDA",
+                               "type": graph.EDGE_SYMBOL, "sentiment": "neg"}]
+    assert graph.WORLD_ID not in ids(built["nodes"])
+
+
+def test_the_world_families_are_three_distinct_ones():
+    """Politique, économie, écologie : trois familles, trois rameaux. Le
+    frontend peut leur donner trois couleurs."""
+    families = {graph._family_of({"type": kind})
+                for kind in ("gov", "eco", "climat")}
+    assert families == {"gov", "eco", "climat"}
+
+
+def test_a_world_headline_lands_in_the_world_grove_list():
+    listed = grove(graph.WORLD_ID, events=[
+        _world("eco", link="http://w/e"),
+        _world("climat", title="Drought destroys wheat crops",
+               link="http://w/c", hours_ago=3)])
+    assert [item["type"] for item in listed["items"]] == ["eco", "climat"]
+    assert listed["total"] == 2
+
+
+# --------------------------------------------------------------------------- #
 # La LISTE complète d'un bosquet (``build_grove``)
 #
 # Doctrine : « quand on ouvre, on voit tout ». Le dessin garde ses douze, la
@@ -1354,3 +1421,229 @@ def test_the_themed_list_is_deterministic():
 def test_the_list_never_loses_an_item_to_the_grouping():
     listed = grove(graph.WORLD_ID, events=_capture_gov())
     assert sorted(i["label"] for i in listed["items"]) == sorted(CAPTURE_TITLES)
+
+
+# --------------------------------------------------------------------------- #
+# Les SOUS-SUJETS — « séparer encore plus »
+#
+# Suite du niveau précédent : quand un sujet grossit (soixante-dix dépêches
+# « Canada · Tariffs »), le thème ne répartit plus rien — on a remplacé un mur
+# de points par un mur de lignes sous un seul intertitre.
+# --------------------------------------------------------------------------- #
+
+#: Quatre sujets NETS sous une même histoire Canada/tarifs, six formulations
+#: chacun (une histoire reprise par plusieurs médias, comme dans la vraie vie).
+BEEF = [
+    "Canada beef exports hit by new tariffs",
+    "Beef producers brace as Canada tariffs start",
+    "Tariffs push Canada beef prices to a record",
+    "Ottawa defends beef farmers from Canada tariffs",
+    "Canada beef shipments slow under tariffs",
+    "Grocers flag beef costs as Canada tariffs bite",
+]
+STEEL = [
+    "Canada steel tariffs double overnight",
+    "Steel mills cut output as Canada tariffs land",
+    "Canada steel exporters seek tariff relief",
+    "Tariffs on Canada steel raise construction costs",
+    "Steel prices jump after Canada tariffs",
+    "Canada steel quota talks stall over tariffs",
+]
+AUTOS = [
+    "Canada autos exempt from tariffs for now",
+    "Autos plants idle as Canada tariffs bite",
+    "Tariffs hit Canada autos supply chain",
+    "Canada autos parts makers seek a tariff carve-out",
+    "Autos sector flags Canada tariffs risk",
+    "Canada autos exports slip under tariffs",
+]
+RETALIATION = [
+    "Canada retaliation targets US tariffs",
+    "Ottawa plans retaliation over Canada tariffs",
+    "Canada retaliation list grows as tariffs bite",
+    "Retaliation measures answer Canada tariffs",
+    "Canada weighs retaliation against tariffs",
+    "Retaliation talk rises after Canada tariffs",
+]
+
+
+def _big_canada(blocks=(BEEF, STEEL, AUTOS, RETALIATION), repeats=3):
+    """72 dépêches d'un même thème, quatre sujets de 18."""
+    titles = []
+    for block in blocks:
+        for _ in range(repeats):
+            titles.extend(block)
+    return titles
+
+
+def test_seventy_leaves_of_one_theme_split_into_named_subjects():
+    """LE test de la fonctionnalité : sous « Canada · Tariffs », le bœuf,
+    l'acier, les autos et les représailles se séparent — et se NOMMENT."""
+    leaves = _leaves(_big_canada())
+    assert [(c["label"], len(c["leaf_ids"])) for c in graph.theme_clusters(leaves)] \
+        == [("Canada · Tariffs", 72)]        # un seul thème au premier étage
+
+    subs = graph.subtheme_clusters(leaves, ["canada", "tariffs"])
+    assert [(c["label"], len(c["leaf_ids"])) for c in subs] == [
+        ("Autos", 18), ("Beef", 18), ("Retaliation", 18), ("Steel", 18)]
+
+
+def test_a_subject_never_repeats_the_name_of_its_parent():
+    """« Canada » et « Tariffs » sont le contexte : les répéter à l'étage du
+    dessous n'apprendrait rien."""
+    subs = graph.subtheme_clusters(_leaves(_big_canada()), ["canada", "tariffs"])
+    for cluster in subs:
+        assert "canada" not in cluster["label"].lower()
+        assert "tariff" not in cluster["label"].lower()
+
+
+def test_a_word_shared_by_the_whole_pack_is_context_even_unnamed():
+    """Le second filet : un mot que la moitié du paquet porte est du contexte,
+    que l'appelant l'ait nommé ou non. Sans lui, un « US » omniprésent
+    recollerait entre eux des sous-sujets étrangers."""
+    titles = ["US Canada tariffs hit %s exports" % topic
+              for topic in ("beef", "beef", "steel", "steel",
+                            "autos", "autos", "lumber", "lumber")]
+    subs = graph.subtheme_clusters(_leaves(titles), [])
+    labels = [c["label"] for c in subs]
+    assert "US" not in labels and "Canada" not in labels
+    assert sorted(labels) == ["Autos", "Beef", "Lumber", "Steel"]
+
+
+def test_a_leaf_made_only_of_the_parent_words_lands_in_the_misc_cluster():
+    leaves = _leaves(_big_canada() + ["Canada tariffs"])
+    subs = graph.subtheme_clusters(leaves, ["canada", "tariffs"])
+    assert subs[-1]["key"] == graph.MISC_THEME_KEY
+    assert subs[-1]["leaf_ids"] == ["ev:72"]
+
+
+def test_a_word_carried_by_a_single_leaf_is_not_a_subject():
+    """Un mot qu'on ne voit qu'une fois nommerait un sous-groupe d'un
+    élément — le premier étage refuse déjà ça."""
+    subs = graph.subtheme_clusters(
+        _leaves(["Canada tariffs hit beef", "Canada tariffs raise lumber"]),
+        ["canada", "tariffs"])
+    assert [c["key"] for c in subs] == [graph.MISC_THEME_KEY]
+
+
+def test_no_leaves_no_subthemes():
+    assert graph.subtheme_clusters([]) == []
+    assert graph.subtheme_clusters(None, ["canada"]) == []
+
+
+def test_the_subthemes_do_not_depend_on_the_order_of_the_leaves():
+    leaves = _leaves(_big_canada())
+    straight = graph.subtheme_clusters(leaves, ["canada", "tariffs"])
+    assert straight == graph.subtheme_clusters(leaves, ["canada", "tariffs"])
+    reversed_ = graph.subtheme_clusters(list(reversed(leaves)),
+                                        ["canada", "tariffs"])
+    assert [(c["key"], c["label"], sorted(c["leaf_ids"])) for c in straight] == \
+        [(c["key"], c["label"], sorted(c["leaf_ids"])) for c in reversed_]
+
+
+def test_no_leaf_is_lost_by_the_second_level():
+    subs = graph.subtheme_clusters(_leaves(_big_canada()), ["canada", "tariffs"])
+    seen = [lid for c in subs for lid in c["leaf_ids"]]
+    assert sorted(seen) == sorted("ev:%02d" % i for i in range(72))
+    assert len(seen) == len(set(seen))
+
+
+def test_without_newswatch_there_is_simply_no_subtheme(monkeypatch):
+    monkeypatch.setattr(graph, "_story_tools", lambda: None)
+    assert graph.subtheme_clusters(_leaves(_big_canada()), ["canada"]) == []
+
+
+# --- l'insertion dans la LISTE (le dessin, lui, n'en sait rien) ------------- #
+
+def _big_gov(titles):
+    """Des dépêches politiques dont la n° 0 est la plus RÉCENTE, espacées d'une
+    minute pour tenir toutes dans la fenêtre de fraîcheur."""
+    return [{"ts": _iso(hours_ago=(i + 1) / 60.0), "symbol": "GOV",
+             "title": title, "link": "http://g/b%03d" % i, "sentiment": "gov"}
+            for i, title in enumerate(titles)]
+
+
+def test_a_theme_that_overflows_gains_a_second_level_in_the_list():
+    listed = grove(graph.WORLD_ID, events=_big_gov(_big_canada()))
+    assert {item["theme_label"] for item in listed["items"]} == {"Canada · Tariffs"}
+    # …et sous ce thème unique, quatre sous-sujets nommés, groupés.
+    subs = [item["subtheme_label"] for item in listed["items"]]
+    assert subs == ["Autos"] * 18 + ["Beef"] * 18 + \
+        ["Retaliation"] * 18 + ["Steel"] * 18
+
+
+def test_inside_a_subject_the_list_keeps_the_order_of_the_grove():
+    listed = grove(graph.WORLD_ID, events=_big_gov(_big_canada()))
+    beef = [item["label"] for item in listed["items"]
+            if item.get("subtheme_label") == "Beef"]
+    assert beef == [t for t in _big_canada() if t in BEEF][:18]
+
+
+def test_a_theme_below_the_threshold_stays_at_one_level():
+    """Règle « pas de niveau inutile » : douze feuilles se lisent très bien
+    sous un seul intertitre."""
+    listed = grove(graph.WORLD_ID, events=_capture_gov())
+    assert len(listed["items"]) == 12
+    assert all("subtheme_label" not in item for item in listed["items"])
+
+
+def test_a_theme_where_nothing_further_groups_stays_at_one_level():
+    """Vingt variantes du même communiqué : elles forment bien un thème, mais
+    dessous il n'y a rien à répartir — on n'ajoute pas d'étage."""
+    flat = ["Canada tariffs update number %03d" % i for i in range(20)]
+    listed = grove(graph.WORLD_ID, events=_big_gov(flat))
+    assert len(listed["items"]) == 20
+    labels = {item["theme_label"] for item in listed["items"]}
+    assert len(labels) == 1 and graph.MISC_THEME_LABEL not in labels
+    assert all("subtheme_label" not in item for item in listed["items"])
+
+
+def test_the_misc_theme_never_gets_a_second_level():
+    """Un reste n'a pas de sous-sujets : c'est ce qui le définit."""
+    isolated = ["Annonce %03d" % i for i in range(20)]   # rien ne les relie
+    listed = grove(graph.WORLD_ID, events=_big_gov(_big_canada() + isolated))
+    misc = [item for item in listed["items"]
+            if item["theme_key"] == graph.MISC_THEME_KEY]
+    assert len(misc) == 20
+    assert all("subtheme_label" not in item for item in misc)
+
+
+def test_an_item_without_a_subject_carries_no_subtheme_field():
+    """L'absence dit « sans sous-sujet » — jamais un intertitre « Divers » de
+    plus. Et l'item ferme son thème."""
+    events = _big_gov(_big_canada() + ["Canada tariffs"])
+    listed = grove(graph.WORLD_ID, events=events)
+    orphan = [item for item in listed["items"] if item["label"] == "Canada tariffs"]
+    assert len(orphan) == 1
+    assert "subtheme_label" not in orphan[0]
+    assert orphan[0]["theme_label"] == "Canada · Tariffs"   # le thème, lui, reste
+    assert listed["items"][-1]["label"] == "Canada tariffs"
+
+
+def test_a_subthemed_item_still_carries_everything_the_node_had():
+    listed = grove(graph.WORLD_ID, events=_big_gov(_big_canada()))
+    item = listed["items"][0]
+    assert item["type"] == "gov" and item["sentiment"] == "gov"
+    assert item["link"].startswith("http://g/b") and item["ts"]
+    assert item["theme_key"] and item["subtheme_label"]
+
+
+def test_the_canvas_keeps_a_single_level_of_themes():
+    """Le second étage est une affaire de LISTE : au-delà, on ne lit plus un
+    graphe, on l'explore."""
+    built = build(events=_big_gov(_big_canada()))
+    # Le dessin ne voit que ses douze satellites : il en tire UN thème, et il
+    # s'arrête là (les nœuds de thème de niveau 2 n'existent pas côté serveur).
+    assert len(themes(built)) == 1
+    assert all("subtheme_label" not in n for n in built["nodes"])
+
+
+def test_the_subthemed_list_is_deterministic():
+    kwargs = {"events": _big_gov(_big_canada())}
+    assert grove(graph.WORLD_ID, **kwargs) == grove(graph.WORLD_ID, **kwargs)
+
+
+def test_the_second_level_never_loses_an_item():
+    titles = _big_canada() + ["Canada tariffs"]
+    listed = grove(graph.WORLD_ID, events=_big_gov(titles))
+    assert sorted(i["label"] for i in listed["items"]) == sorted(titles)

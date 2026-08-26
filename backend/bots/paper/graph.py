@@ -18,7 +18,7 @@ Deux vues, une seule fonction :
 * **globale** — toutes les ancres et tout ce qui s'y rattache ;
 * **branche** (``symbol=X``) — l'ancre X, ses voisins DIRECTS, et rien d'autre.
 
-Trois règles qui tiennent le graphe honnête :
+Six règles qui tiennent le graphe honnête :
 
 1. **Aucun lien inventé.** Un rapprochement se fait sur un symbole, un ticker
    ou un nom d'émetteur rapproché par ``whales.match_issuer`` — jamais sur une
@@ -50,6 +50,12 @@ Trois règles qui tiennent le graphe honnête :
    regroupement emprunte ``newswatch.story_key``, le regroupeur DÉJÀ calibré
    sur ce flux ; il RÉPARTIT sans rien ajouter (les douze dessinés restent
    douze) et il ne s'invite jamais là où rien ne se groupe.
+6. **Un sujet qui déborde se coupe encore.** Passé ``SUBTHEME_MIN_LEAVES``
+   items dans un même thème de LISTE, un second étage s'ouvre — les tokens du
+   parent retirés du comptage, ce qui reste nomme le sous-sujet (« Beef »,
+   « Steel », « Autos »). Il ne concerne QUE la liste (``build_grove``) : le
+   dessin garde un seul niveau de thèmes, parce qu'au-delà on ne lit plus un
+   graphe, on l'explore.
 
 Module PUR au sens du dépôt : aucune I/O, aucune écriture, aucune horloge
 implicite (``now`` est un paramètre). Le seul import du dehors est PARESSEUX et
@@ -86,8 +92,8 @@ _ANCHOR_RANK = {kind: rank for rank, kind in enumerate(ANCHOR_TYPES)}
 CLOSED_STAGE = "clos"
 
 # Types de nœuds d'INFO.
-INFO_TYPES = ("news", "catalyst", "gov", "crypto", "x", "reddit", "hypothesis",
-              "whale_move", "reddit_trend")
+INFO_TYPES = ("news", "catalyst", "gov", "crypto", "eco", "climat", "x",
+              "reddit", "hypothesis", "whale_move", "reddit_trend")
 
 # Les trois pivots — reliés à RIEN d'autre que leurs satellites.
 CONTEXT_TYPE = "context"
@@ -151,6 +157,44 @@ MISC_THEME_LABEL = "Divers"
 # non « Us »). Même liste que le filtre de tokens courts de ``newswatch``.
 _THEME_UPPER = frozenset({"us", "eu", "uk", "un"})
 
+# --- Les SOUS-SUJETS : « séparer encore plus » ------------------------------ #
+#
+# Suite directe des thèmes. Quand un sujet grossit (soixante-dix dépêches
+# « Canada · Tariffs »), le niveau qu'on vient d'ajouter ne répartit plus rien :
+# on a remplacé un mur de points par un mur de lignes sous un seul intertitre.
+# Un DEUXIÈME étage s'ouvre alors — « Beef », « Steel », « Autos »,
+# « Retaliation ».
+#
+# Ce qui change par rapport au premier étage, et pourquoi :
+#
+# * **les tokens du PARENT sont exclus du comptage.** Sans ça, chaque
+#   sous-groupe se ferait nommer « Canada · Tariffs » comme son parent : les
+#   mots qui ont formé le thème sont, par construction, ceux que tous ses
+#   membres partagent.
+# * **le regroupement se fait par MOT DOMINANT**, et non par fusion transitive
+#   comme au premier étage — cf. la mesure dans ``subtheme_clusters`` : la
+#   fusion, à un seul token partagé (il n'en reste qu'un à exiger, le contexte
+#   commun ayant été retiré), ramasse les 72 dépêches en UN bloc.
+# * **un seul mot dans le nom** : le parent porte déjà le contexte, le sous-nom
+#   n'a qu'à porter la nuance.
+SUBTHEME_MIN_LEAVES = 18
+SUBTHEME_LABEL_TOKENS = 1
+
+# Un mot porté par une seule dépêche n'est pas un sujet : il nommerait un
+# sous-groupe d'un élément, ce que le premier étage refuse déjà.
+SUBTHEME_MIN_SHARED_LEAVES = 2
+
+# Un stem présent dans au moins la moitié des titres du groupe est du CONTEXTE,
+# pas un sujet — on l'exclut comme on exclut les tokens du parent, même quand
+# l'appelant ne l'a pas nommé. C'est ce qui empêche « US » (présent partout)
+# de recoller entre eux des sous-sujets qui n'ont rien à voir.
+SUBTHEME_COMMON_RATIO = 0.5
+
+# En dessous de deux sous-sujets NOMMÉS, le niveau ne répartit rien : un unique
+# intertitre au-dessus de la même liste allonge le chemin de l'œil sans rien
+# donner. Règle « pas de niveau inutile », déjà celle de ``_theme_layer``.
+SUBTHEME_MIN_CLUSTERS = 2
+
 # FAMILLE d'un nœud d'info = ce que le frontend peint sous un même rameau. Le
 # regroupement thématique se fait DANS une famille : un thème doit avoir une
 # couleur, et une seule.
@@ -161,6 +205,12 @@ _THEME_UPPER = frozenset({"us", "eu", "uk", "un"})
 _FAMILY_OF = {
     "news": "press", "catalyst": "press",
     "gov": "gov", "crypto": "crypto",
+    # Deux familles de plus (26/08 soir) : la macroéconomie et l'écologie à
+    # impact économique. Elles sont DISTINCTES de « gov » à dessein — une
+    # décision de la Fed n'est pas une annonce politique, et les mélanger
+    # rendrait le rameau « Politique » illisible, ce qui est précisément le
+    # reproche qui a lancé ces deux volets.
+    "eco": "eco", "climat": "climat",
     "x": "social", "reddit": "social", "reddit_trend": "social",
     "whale_move": "whale", "hypothesis": "radar",
 }
@@ -190,7 +240,12 @@ NEUTRAL_SENTIMENT = "neutral"
 # sait pas de quoi elle parle pour CE portefeuille. Un post Reddit orphelin
 # suit la même règle — il n'est pas du macro, il parle d'un titre qu'on ne
 # suit pas.
-PIVOT_TYPES = ("gov", "crypto")
+#
+# ``eco`` et ``climat`` (26/08 soir) y ont droit pour la même raison que
+# ``gov`` : « l'inflation américaine accélère » ne nomme aucun titre et
+# concerne tout le portefeuille. Quand la dépêche NOMME une entreprise ancrée,
+# elle rejoint la branche de ce titre et non le pivot (cf. ``_dispatch``).
+PIVOT_TYPES = ("gov", "crypto", "eco", "climat")
 
 # Le bosquet de la foule : les tickers dont Reddit parle. Douze au plus — au-
 # delà ce n'est plus une tendance, c'est la liste des tickers du forum.
@@ -387,12 +442,15 @@ def _event_type(event: Dict[str, Any]) -> str:
     """La famille d'une dépêche.
 
     La PROVENANCE d'abord (``src``) : un post X reste un post X, même quand il
-    parle de politique — le frontend doit pouvoir le montrer comme tel. La
+    parle de politique — le frontend doit pouvoir le montrer comme tel. C'est
+    aussi ce qui distingue une dépêche macro (``eco``) ou climatique
+    (``climat``) d'une dépêche d'entreprise : leur TONALITÉ est celle de tout le
+    monde (``pos``/``neg``/``watch``), seule leur provenance les nomme. La
     tonalité ensuite : ``gov`` (annonce politique), ``watch`` (catalyseur à
     venir), le reste étant de la dépêche.
     """
     src = _text(event.get("src")).lower()
-    if src in ("x", "crypto", "reddit"):
+    if src in ("x", "crypto", "reddit", "eco", "climat"):
         return src
     tone = _sentiment(event)
     if tone == "gov":
@@ -613,7 +671,9 @@ def _theme_word(token: str) -> str:
 
 def _theme_label(titles: List[str],
                  tokens_of: Callable[[str], List[str]],
-                 stem_of: Callable[[str], str]) -> str:
+                 stem_of: Callable[[str], str],
+                 drop: Any = (),
+                 limit: int = THEME_LABEL_TOKENS) -> str:
     """Le nom HUMAIN d'un thème : les deux tokens les plus fréquents dans ses
     titres, capitalisés, joints par « · » (PUR).
 
@@ -629,20 +689,26 @@ def _theme_label(titles: List[str],
 
     Tri TOTAL de bout en bout (fréquence décroissante puis ordre alphabétique,
     aux deux étages) : deux appels rendent exactement le même nom.
+
+    ``drop`` = les stems à NE PAS compter (les mots du thème parent, au
+    deuxième étage) ; ``limit`` = combien de mots tient le nom. Les deux ont
+    leur valeur du premier étage par défaut : un appel écrit avant les
+    sous-sujets se comporte exactement comme avant.
     """
+    dropped = set(drop or ())
     counts: Dict[str, int] = {}
     surfaces: Dict[str, Dict[str, int]] = {}
     for title in titles:
         for token in tokens_of(title):
             stem = stem_of(token)
-            if not stem:
+            if not stem or stem in dropped:
                 continue
             counts[stem] = counts.get(stem, 0) + 1
             bag = surfaces.setdefault(stem, {})
             bag[token] = bag.get(token, 0) + 1
     if not counts:
         return ""
-    best = sorted(counts, key=lambda s: (-counts[s], s))[:THEME_LABEL_TOKENS]
+    best = sorted(counts, key=lambda s: (-counts[s], s))[:max(1, int(limit))]
     words = []
     for stem in best:
         bag = surfaces[stem]
@@ -719,18 +785,151 @@ def theme_clusters(leaves: Any) -> List[Dict[str, Any]]:
     feuille exploitable n'a été fournie — l'appelant retombe alors sur la forme
     à plat, qui se lit toujours.
     """
+    prepared = _prepare_rows(leaves)
+    if prepared is None:
+        return []
+    return _cluster(prepared)
+
+
+def subtheme_clusters(leaves: Any, parent_tokens: Any = ()) -> List[Dict[str, Any]]:
+    """Les SOUS-SUJETS d'un thème déjà formé — même contrat que
+    :func:`theme_clusters` (``[{key, label, leaf_ids}]``, PUR).
+
+    Deux différences avec l'étage du dessus, et la seconde vient d'une mesure.
+
+    **1. Les tokens du PARENT ne comptent plus.** Deux sources, cumulées :
+
+    * ``parent_tokens`` — ce que l'appelant sait du parent (les mots de son
+      nom, typiquement) ; passés en formes de surface, ils sont réduits en
+      stems ici même ;
+    * les stems présents dans au moins ``SUBTHEME_COMMON_RATIO`` des titres du
+      paquet : un mot que la moitié du groupe partage EST le contexte du
+      groupe, que l'appelant l'ait nommé ou non.
+
+    Sans ça, chaque sous-groupe se ferait nommer comme son parent — les mots
+    qui ont formé le thème sont, par construction, ceux que tous ses membres
+    partagent.
+
+    **2. Le regroupement se fait par MOT DOMINANT, pas par fusion transitive.**
+    C'est le point où cet étage s'écarte du précédent, et ce n'est pas un choix
+    d'esthétique : la fusion transitive du premier étage, ramenée ici à un seul
+    token partagé (il en faut bien un seul, le contexte commun ayant été
+    retiré), ramasse TOUT en un bloc. Mesuré sur un corpus de 72 dépêches
+    « Canada · Tariffs » réparties en quatre sujets nets (bœuf, acier, autos,
+    représailles) : **un seul groupe de 72**, parce qu'un « bite » ou un
+    « hit » traînant dans deux familles suffit à les souder de proche en
+    proche. Un sous-niveau qui rend un seul sous-groupe ne répartit rien.
+
+    La règle retenue : le sous-sujet d'une dépêche est **le mot résiduel qui
+    revient le plus souvent dans le paquet** (ex æquo tranchés
+    alphabétiquement). Elle ne chaîne pas — chaque feuille est jugée seule — et
+    elle nomme le sujet par le mot qui le porte vraiment.
+
+    Vont au fourre-tout : les titres dont il ne reste RIEN après exclusion (on
+    ne saurait les nommer autrement que par leur parent), ceux dont aucun mot
+    résiduel n'est partagé par au moins ``SUBTHEME_MIN_SHARED_LEAVES`` feuilles
+    (un mot qu'on ne voit qu'une fois n'est pas un sujet), et les groupes
+    restés seuls.
+    """
+    prepared = _prepare_rows(leaves)
+    if prepared is None:
+        return []
+    tokens_of, _key_of, stem_of = prepared["tools"]
+    drop = {stem_of(_text(t).lower()) for t in (parent_tokens or ()) if _text(t)}
+    drop.discard("")
+    drop |= _common_stems(prepared["titles"], tokens_of, stem_of)
+
+    rows = prepared["rows"]
+    order = {_text(row.get("id")): i for i, row in enumerate(rows)}
+    per_row = [{stem_of(t) for t in tokens_of(title)
+                if stem_of(t) and stem_of(t) not in drop}
+               for title in prepared["titles"]]
+
+    counts: Dict[str, int] = {}
+    for stems in per_row:
+        for stem in stems:
+            counts[stem] = counts.get(stem, 0) + 1
+
+    loose: List[str] = []
+    groups: Dict[str, Dict[str, Any]] = {}
+    for row, title, stems in zip(rows, prepared["titles"], per_row):
+        node_id = _text(row.get("id"))
+        shared = [s for s in stems if counts[s] >= SUBTHEME_MIN_SHARED_LEAVES]
+        if not shared:
+            loose.append(node_id)
+            continue
+        best = sorted(shared, key=lambda s: (-counts[s], s))[0]
+        group = groups.setdefault(best, {"ids": [], "titles": []})
+        if node_id not in group["ids"]:
+            group["ids"].append(node_id)
+        group["titles"].append(title)
+
+    named: List[Dict[str, Any]] = []
+    for stem in sorted(groups):
+        group = groups[stem]
+        if len(group["ids"]) < 2:
+            loose.extend(group["ids"])          # une feuille seule n'est pas un sujet
+            continue
+        # Même précaution qu'au premier étage : une clé qui vaudrait le mot du
+        # fourre-tout est décalée plutôt que de s'y confondre à l'écran.
+        public = (stem + "-") if stem == MISC_THEME_KEY else stem
+        label = _theme_label(group["titles"], tokens_of, stem_of, drop=drop,
+                             limit=SUBTHEME_LABEL_TOKENS)
+        named.append({"key": public, "label": label or public,
+                      "leaf_ids": sorted(group["ids"], key=lambda i: order[i])})
+
+    named.sort(key=lambda c: (-len(c["leaf_ids"]), c["key"]))
+    if loose:
+        named.append({"key": MISC_THEME_KEY, "label": MISC_THEME_LABEL,
+                      "leaf_ids": sorted(set(loose), key=lambda i: order[i])})
+    return named
+
+
+def _prepare_rows(leaves: Any) -> Optional[Dict[str, Any]]:
+    """Le préambule commun aux deux étages : les outils de ``newswatch``, les
+    feuilles IDENTIFIÉES et leurs titres. ``None`` quand il n'y a rien à
+    grouper (module absent, aucune feuille exploitable)."""
     tools = _story_tools()
     rows = [row for row in _dicts(leaves) if _text(row.get("id"))]
     if tools is None or not rows:
-        return []
-    tokens_of, key_of, stem_of = tools
+        return None
+    return {"tools": tools, "rows": rows,
+            "titles": [_text(row.get("label")) for row in rows]}
+
+
+def _common_stems(titles: List[str],
+                  tokens_of: Callable[[str], List[str]],
+                  stem_of: Callable[[str], str]) -> set:
+    """Les stems présents dans au moins ``SUBTHEME_COMMON_RATIO`` des titres —
+    le CONTEXTE du paquet (PUR).
+
+    Compté par TITRE et non par occurrence : un titre qui répète « tariffs »
+    trois fois ne vote qu'une fois. En dessous de trois titres, la notion n'a
+    pas de sens (avec deux titres, tout mot commun serait « partagé par la
+    moitié ») et on ne retire rien.
+    """
+    if len(titles) < 3:
+        return set()
+    counts: Dict[str, int] = {}
+    for title in titles:
+        for stem in {stem_of(t) for t in tokens_of(title) if stem_of(t)}:
+            counts[stem] = counts.get(stem, 0) + 1
+    threshold = SUBTHEME_COMMON_RATIO * len(titles)
+    return {stem for stem, count in counts.items() if count >= threshold}
+
+
+def _cluster(prepared: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Le moteur du PREMIER étage (PUR) — cf. :func:`theme_clusters` pour les
+    trois étapes. Le second étage a le sien (:func:`subtheme_clusters`), pour
+    la raison mesurée qui y est écrite."""
+    tokens_of, key_of, stem_of = prepared["tools"]
+    rows = prepared["rows"]
 
     order = {_text(row.get("id")): i for i, row in enumerate(rows)}
     loose: List[str] = []                                  # feuilles sans histoire
     stories: Dict[str, Dict[str, Any]] = {}
-    for row in rows:
+    for row, title in zip(rows, prepared["titles"]):
         node_id = _text(row.get("id"))
-        title = _text(row.get("label"))
         key = key_of(title) if title else ""
         if not key:
             loose.append(node_id)
@@ -761,8 +960,8 @@ def theme_clusters(leaves: Any) -> List[Dict[str, Any]]:
         # pourrait, une fois sur mille, valoir le mot du fourre-tout. On la
         # décale plutôt que de laisser deux thèmes se confondre à l'écran.
         public = (key + "-") if key == MISC_THEME_KEY else key
-        named.append({"key": public,
-                      "label": _theme_label(group["titles"], tokens_of, stem_of) or public,
+        label = _theme_label(group["titles"], tokens_of, stem_of)
+        named.append({"key": public, "label": label or public,
                       "leaf_ids": sorted(group["ids"], key=lambda i: order[i])})
 
     named.sort(key=lambda c: (-len(c["leaf_ids"]), c["key"]))
@@ -829,8 +1028,8 @@ def _theme_layer(host_id: str, leaves: List[Dict[str, Any]]
 
 def _is_macro(node: Dict[str, Any]) -> bool:
     """Ce nœud parle-t-il du MONDE plutôt que d'un titre ? (annonce politique,
-    actualité crypto — y compris quand elle arrive par un post X, d'où le test
-    sur la tonalité en plus du type)."""
+    actualité crypto, macroéconomie, écologie à impact — y compris quand elles
+    arrivent par un post X, d'où le test sur la tonalité en plus du type)."""
     return node.get("type") in PIVOT_TYPES or _sentiment(node) == "gov"
 
 
@@ -1126,6 +1325,11 @@ def build_grove(kind: Any, anchors: Any, events: Any, hypotheses: Any,
     liste ENTIÈRE, alors que le dessin ne voit que ses douze : les thèmes de la
     liste sont donc plus riches que ceux de la toile, et c'est voulu — c'est
     justement en ouvrant qu'on veut voir la répartition.
+
+    Un thème qui déborde à son tour porte un SECOND étage (``subtheme_label``,
+    cf. ``subtheme_clusters``) — présent seulement là où il veut dire quelque
+    chose. Le DESSIN, lui, n'en sait rien : la toile garde ses thèmes de
+    premier niveau, le second étage est une affaire de liste.
     """
     wanted = _text(kind).lower()
     if wanted not in GROVE_KINDS:
@@ -1154,6 +1358,12 @@ def _grove_themed(members: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     alors une liste à plat, plutôt qu'un unique intertitre « Divers » qui ne
     répartit rien.
 
+    Un thème qui DÉBORDE à son tour (plus de ``SUBTHEME_MIN_LEAVES`` items)
+    gagne un second étage : ses items portent en plus ``subtheme_label`` et
+    sont rangés par sous-sujet. Le sous-fourre-tout ne porte AUCUN champ de
+    sous-thème — « sans sous-sujet » se dit par l'absence, jamais par un
+    intertitre « Divers » de plus — et ses items ferment le thème.
+
     Les items sont des COPIES : le nœud du dessin n'est pas touché.
     """
     clusters = theme_clusters(members)
@@ -1163,17 +1373,73 @@ def _grove_themed(members: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     placed = set()
     for cluster in clusters:
-        wanted_ids = set(cluster["leaf_ids"])
-        for node in members:
-            node_id = _text(node.get("id"))
-            if node_id in wanted_ids and node_id not in placed:
-                placed.add(node_id)
-                out.append(dict(node, theme_key=cluster["key"],
-                                theme_label=cluster["label"]))
+        rows = _members_of(members, cluster["leaf_ids"], placed)
+        for node, sub in _with_subthemes(cluster, rows):
+            placed.add(_text(node.get("id")))
+            item = dict(node, theme_key=cluster["key"],
+                        theme_label=cluster["label"])
+            if sub is not None:
+                # Le LIBELLÉ seul, et pas de clé : à ce niveau le nom EST
+                # l'identité (un sous-sujet = un mot), et deux identités pour
+                # un même groupe finiraient par diverger. L'absence du champ
+                # dit « sans sous-sujet », comme au niveau du dessus.
+                item["subtheme_label"] = sub["label"]
+            out.append(item)
     # Ceinture : une feuille qu'aucun thème n'a réclamée (identifiant vide) ne
     # doit pas disparaître de la liste — on la rend telle quelle, à la fin.
     out.extend([dict(node) for node in members
                 if _text(node.get("id")) not in placed])
+    return out
+
+
+def _members_of(members: List[Dict[str, Any]], leaf_ids: List[str],
+                placed: set) -> List[Dict[str, Any]]:
+    """Les membres d'un cluster, dans l'ordre DU BOSQUET (celui du dessin) et
+    sans redite."""
+    wanted = set(leaf_ids)
+    return [node for node in members
+            if _text(node.get("id")) in wanted
+            and _text(node.get("id")) not in placed]
+
+
+def _label_tokens(label: Any) -> List[str]:
+    """Les mots d'un nom de thème (« Canada · Tariffs » -> [canada, tariffs]).
+
+    C'est ce que l'appelant sait du parent quand il redescend d'un étage : les
+    mots qui l'ont nommé sont, par construction, ceux que tous ses membres
+    partagent.
+    """
+    return [w for w in _text(label).lower().replace("·", " ").split() if w]
+
+
+def _with_subthemes(cluster: Dict[str, Any], rows: List[Dict[str, Any]]
+                    ) -> List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]]:
+    """``[(membre, sous-thème ou None)]`` — le second étage d'UN thème (PUR).
+
+    Trois portes, et il faut les trois : le thème n'est pas le fourre-tout (un
+    reste n'a pas de sous-sujets), il DÉBORDE (``SUBTHEME_MIN_LEAVES``), et le
+    découpage produit au moins ``SUBTHEME_MIN_CLUSTERS`` sous-sujets nommés.
+    Sinon les membres ressortent dans l'ordre du bosquet, sans second étage —
+    règle « pas de niveau inutile ».
+    """
+    if (cluster["key"] == MISC_THEME_KEY
+            or len(rows) <= SUBTHEME_MIN_LEAVES):
+        return [(node, None) for node in rows]
+
+    subs = subtheme_clusters(rows, _label_tokens(cluster["label"]))
+    named = [c for c in subs if c["key"] != MISC_THEME_KEY]
+    if len(named) < SUBTHEME_MIN_CLUSTERS:
+        return [(node, None) for node in rows]
+
+    out: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]] = []
+    seen: set = set()
+    for sub in named:
+        for node in _members_of(rows, sub["leaf_ids"], seen):
+            seen.add(_text(node.get("id")))
+            out.append((node, sub))
+    # Le sous-fourre-tout ferme le thème, SANS champ de sous-sujet.
+    out.extend([(node, None) for node in rows
+                if _text(node.get("id")) not in seen])
     return out
 
 

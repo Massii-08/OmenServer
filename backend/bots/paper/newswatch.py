@@ -64,6 +64,18 @@ Extension 2026-08-26 (fin de journée), deux ajouts qui se répondent :
     regardent les titres DÉTENUS. Avant, il partait au pivot « monde » et ne
     servait à rien de précis.
 
+Extension 2026-08-26 (soir) — deux volets MONDE de plus, ``eco`` et ``climat`` :
+
+  * « grosse partie des infos c'est que politique — il y a aussi l'économique,
+    l'écologique ». Les deux suivent le patron du volet politique à la lettre
+    (Google News, ``parse_rss``, cadence, amorçage muet, mode calme, mémoire +
+    convergence + toile), avec un budget d'envoi PROPRE et une clé d'histoire
+    préfixée par le volet ;
+  * leur tonalité est ``pos``/``neg``/``watch`` — jamais ``gov``. Ils rejoignent
+    donc le pool de presse GÉNÉRIQUE de la convergence (``cross_source``,
+    ``held_risk`` sur un titre détenu) sans jamais allumer le facteur politique,
+    et sans qu'aucun facteur nouveau ait été inventé.
+
 Aucune nouvelle dépendance : curl_cffi (déjà utilisé par bond-scanner et
 market-pulse -- Yahoo bloque les clients HTTP nus au niveau TLS, piège #67/#68)
 + stdlib (xml.etree, email.utils, re, hashlib, json, os).
@@ -188,6 +200,76 @@ _MAX_CRYPTO_NOTIFY_PER_RUN = 3   # cap partagé entre les deux sources, par run
 # différents, partager le budget ferait taire l'un dès que l'autre s'agite —
 # et l'utilisateur ne saurait jamais lequel a mangé la place.
 _CRYPTO_MAX_SENDS_PER_HOUR = 4
+
+# --- volets MONDE : ÉCONOMIE et ÉCOLOGIE (extension 2026-08-26 soir) -------- #
+#
+# Retour utilisateur, mot pour mot : « grosse partie des infos c'est que
+# politique — il y a aussi l'économique, l'écologique ». C'était exact : les
+# deux seuls volets qui parlaient du monde étaient ``gov`` (politique) et
+# ``crypto``. Une décision de la Fed, une vague d'inflation, une sécheresse qui
+# ampute une récolte bougent les marchés sans qu'aucun gouvernement n'annonce
+# quoi que ce soit — et rien ne les ramenait.
+#
+# Deux volets de plus, MÊME patron que ``gov`` (Google News, ``parse_rss``,
+# cadence de 5 min, amorçage muet, mode calme, mémoire + convergence + toile) et
+# MÊME appareil anti-spam. Ce qui leur est PROPRE :
+#
+#   * un **budget horaire à eux** (comme crypto et X). Partager celui du gov
+#     ferait taire l'économie dès que la politique s'agite, et personne ne
+#     saurait lequel a mangé la place ;
+#   * une **clé d'histoire préfixée par le volet** (``eco:``/``climat:``) : deux
+#     volets peuvent parler du même sujet sans se rendre muets l'un l'autre, et
+#     les clés déjà écrites par le volet politique restent valides telles quelles.
+#
+# Ils rejoignent le pool de presse GÉNÉRIQUE de la convergence (``cross_source``,
+# ``held_risk`` quand une mauvaise nouvelle touche un titre détenu) mais PAS le
+# facteur ``gov``, qui reste politique : leur tonalité est ``pos``/``neg``/
+# ``watch``, jamais ``gov``. Aucun facteur nouveau, aucun seuil déplacé.
+_GNEWS_TEMPLATE = ("https://news.google.com/rss/search?q=%s"
+                   "&hl=en-US&gl=US&ceid=US:en")
+
+
+def gnews_url(query: str) -> str:
+    """L'URL Google News d'une requête, correctement encodée (PUR).
+
+    ``safe=""`` : les guillemets, les parenthèses et le ``:`` de ``when:1d``
+    sont des caractères de la REQUÊTE, pas de l'URL — les laisser bruts
+    marcherait par tolérance du serveur, jusqu'au jour où un opérateur en
+    contiendrait un qui ne passe pas. On encode tout, le serveur décode.
+
+    ``hl=en-US`` : la presse macro et climatique de référence est anglophone,
+    et les listes de mots-clés ci-dessous sont d'abord calibrées sur l'anglais
+    (le FR/IT y est en appoint, comme dans ``classify``).
+    """
+    return _GNEWS_TEMPLATE % quote(str(query or "").strip(), safe="")
+
+
+# Requête ÉCO : la macroéconomie mondiale. ``when:1d`` borne à la journée — la
+# fraîcheur est le sujet même de ces volets (cf. ``_ECO_MAX_AGE_S``).
+ECO_QUERY = ('("Federal Reserve" OR ECB OR inflation OR recession OR '
+             '"interest rates" OR "oil prices" OR "energy prices" OR '
+             'unemployment) when:1d')
+_ECO_SOURCES = [gnews_url(ECO_QUERY)]
+_ECO_MAX_AGE_S = 24 * 3600
+_MAX_ECO_NOTIFY_PER_RUN = 3
+_ECO_MAX_SENDS_PER_HOUR = 4
+
+# Requête CLIMAT : un aléa climatique ET sa dimension économique. Le croisement
+# est DANS la requête (elle ne ramène pas un ouragan qui ne touche rien) puis
+# re-vérifié par le gate de ``classify_climat`` — une requête peut dériver, un
+# gate en dur non.
+CLIMAT_QUERY = ('(drought OR hurricane OR wildfire OR flood OR heatwave OR '
+                '"crop failure" OR "climate policy") '
+                '(economy OR prices OR supply OR crops OR insurance) when:1d')
+_CLIMAT_SOURCES = [gnews_url(CLIMAT_QUERY)]
+_CLIMAT_MAX_AGE_S = 24 * 3600
+_MAX_CLIMAT_NOTIFY_PER_RUN = 3
+_CLIMAT_MAX_SENDS_PER_HOUR = 4
+
+# Même fenêtre de sourdine par histoire que le volet politique : ces deux
+# volets tirent de Google News, où une même dépêche est reprise par quinze
+# médias — c'est exactement l'incident du 24/08 au soir.
+_WORLD_STORY_MUTE_H = _GOV_STORY_MUTE_H
 
 # --- volet X « comptes influents » (extension 2026-08-26) ------------------ #
 #
@@ -634,6 +716,242 @@ def format_crypto_message(title: str, link: str, sentiment: str,
     return ("[Simulateur] %s%s\n« %s »\n%s" % (head, tail, title, link))
 
 
+# --- classification ÉCO (volet macroéconomie mondiale, 26/08 soir) --------- #
+
+# GATE de pertinence, même rôle que ``_CRYPTO_MARKERS`` : sans marqueur macro,
+# le titre n'est pas classé DU TOUT, quelle que soit sa tonalité. C'est lui qui
+# empêche « Nvidia beats estimates » — une dépêche d'entreprise — d'entrer par
+# la porte de l'économie mondiale et d'aller peser sur le pivot « monde ».
+_ECO_MARKERS = [
+    "fed", "federal reserve", "fomc", "powell", "central bank", "central banks",
+    "ecb", "bce", "european central bank", "lagarde", "bank of england",
+    "bank of japan", "boj", "snb", "monetary policy", "quantitative easing",
+    "inflation", "cpi", "ppi", "deflation", "stagflation", "consumer prices",
+    "interest rate", "interest rates", "rate hike", "rate cut", "rates",
+    "recession", "gdp", "economic growth", "output gap",
+    "unemployment", "jobless", "payrolls", "jobs report", "chômage",
+    "oil", "crude", "opec", "brent", "wti", "energy prices", "gas prices",
+    "treasury", "treasuries", "bond yield", "bond yields", "yields",
+    "dollar", "euro", "yen", "trade deficit", "retail sales",
+    "consumer confidence", "tariffs on imports",
+    "taux directeur", "inflazione", "disoccupazione",
+]
+
+# Mauvaise nouvelle DÉJÀ TOMBÉE — prioritaire sur pos et watch.
+#
+# Les tournures l'emportent sur les mots nus partout où c'est possible :
+# « recession » seul ferait passer « recession risk fades » pour une mauvaise
+# nouvelle. On garde quelques mots nus (crash, stagflation, default) parce
+# qu'ils ne s'écrivent jamais dans une bonne nouvelle.
+_ECO_NEG_KEYWORDS = [
+    "recession fears", "recession risk", "recession warning", "recession looms",
+    "into recession", "enters recession", "contraction", "shrinks", "slowdown",
+    "hard landing", "stagflation", "crash", "crashes",
+    "inflation surges", "inflation accelerates", "inflation jumps",
+    "inflation rises", "inflation climbs", "inflation heats",
+    "prices surge", "price surge", "prices soar", "cost of living crisis",
+    "rate hike", "hikes rates", "raises rates", "raise rates",
+    "tightening", "plunge", "plunges", "slumps", "tumbles", "selloff",
+    "sell-off", "default", "defaults", "downgrade", "downgraded",
+    "layoffs", "job losses", "jobless claims rise", "unemployment rises",
+    "unemployment jumps", "unemployment climbs",
+    "oil prices surge", "oil prices jump", "energy crisis", "supply shock",
+    "debt crisis", "banking crisis", "trade war", "yields spike",
+    "worse than expected", "récession", "chute",
+]
+
+# Bonne nouvelle DÉJÀ TOMBÉE — prioritaire sur watch.
+_ECO_POS_KEYWORDS = [
+    "inflation cools", "inflation eases", "inflation slows", "inflation falls",
+    "inflation drops", "inflation retreats", "price pressures ease",
+    "rate cut", "rate cuts", "cuts rates", "cut rates", "lowers rates",
+    "easing cycle", "soft landing", "growth beats", "beats forecasts",
+    "better than expected", "recovery", "rebounds", "rebound",
+    "unemployment falls", "unemployment drops", "jobless claims fall",
+    "hiring accelerates", "oil prices fall", "oil prices ease",
+    "energy prices fall", "upgrade", "upgraded", "record growth",
+    "recul de l'inflation", "baisse des taux", "reprise économique",
+    "inflazione rallenta", "taglio dei tassi",
+]
+
+# Catalyseur À VENIR — rien n'est tombé, c'est une anticipation.
+#
+# Une DÉCISION de taux y compris un STATU QUO est rangée ici, et c'est un choix :
+# un « la Fed laisse ses taux inchangés » n'est ni une bonne ni une mauvaise
+# nouvelle, c'est un jalon qui dit où la suite se joue. Le ranger en pos ou en
+# neg mentirait ; le laisser tomber effacerait l'événement macro le plus suivi
+# de tous.
+_ECO_WATCH_KEYWORDS = [
+    "fed meeting", "fomc meeting", "fomc minutes", "rate decision",
+    "policy meeting", "policy decision", "ecb meeting", "boj meeting",
+    "cpi report", "cpi data", "inflation data", "jobs report",
+    "payrolls report", "gdp data", "opec meets", "opec meeting",
+    "expected to", "is due", "are due", "due next", "ahead of", "set to",
+    "scheduled for", "to decide", "awaits", "watch for",
+    "holds rates", "holds interest rates", "keeps rates", "leaves rates",
+    "rates unchanged", "holds steady", "stands pat",
+    "réunion de la fed", "décision de taux", "taux inchangés",
+    "riunione della fed", "tassi invariati",
+]
+
+
+def is_eco_topic(title: str) -> bool:
+    """Le titre parle-t-il de macroéconomie ? (GATE de pertinence, PUR.)"""
+    if not title:
+        return False
+    t = title.lower()
+    return any(_keyword_matches(t, kw) for kw in _ECO_MARKERS)
+
+
+def classify_eco(title: str) -> Optional[str]:
+    """Classe un titre MACRO : ``"neg"`` | ``"pos"`` | ``"watch"`` | ``None`` (PUR).
+
+    Deux étages, exactement comme ``classify_crypto`` : le **gate** d'abord
+    (sans marqueur macro, ``None`` immédiat), la **tonalité** ensuite, avec la
+    hiérarchie de la maison — conseil d'investissement -> ``None`` toujours
+    (doctrine, piège #67d), puis neg > pos > watch.
+
+    La tonalité est celle du MARCHÉ, pas celle du citoyen : une baisse des taux
+    est ``pos`` parce qu'elle porte les actifs, une inflation qui repart est
+    ``neg``. C'est la même convention que ``classify`` et ``classify_crypto``.
+    """
+    if not is_eco_topic(title):
+        return None
+    t = title.lower()
+    if any(_keyword_matches(t, kw) for kw in _ADVICE_KEYWORDS):
+        return None
+    if any(_keyword_matches(t, kw) for kw in _ECO_NEG_KEYWORDS):
+        return "neg"
+    if any(_keyword_matches(t, kw) for kw in _ECO_POS_KEYWORDS):
+        return "pos"
+    if any(_keyword_matches(t, kw) for kw in _ECO_WATCH_KEYWORDS):
+        return "watch"
+    return None
+
+
+def format_eco_message(title: str, link: str, sentiment: str,
+                       symbol: Optional[str] = None) -> str:
+    """Message Telegram d'une dépêche macro. Signale un CONTEXTE, ne recommande
+    jamais un titre — même doctrine que les trois autres volets."""
+    head = {"neg": "Mauvaise nouvelle économique",
+            "pos": "Bonne nouvelle économique"}.get(
+                sentiment, "Rendez-vous économique à venir")
+    tail = " — %s" % symbol if symbol else ""
+    return "[Simulateur] %s%s\n« %s »\n%s" % (head, tail, title, link)
+
+
+# --- classification CLIMAT (volet écologie à impact, 26/08 soir) ----------- #
+
+# L'aléa lui-même. Ne suffit PAS : cf. ``is_climat_topic``.
+_CLIMAT_MARKERS = [
+    "drought", "hurricane", "typhoon", "cyclone", "wildfire", "wildfires",
+    "flood", "floods", "flooding", "heatwave", "heat wave", "heat dome",
+    "crop failure", "climate policy", "climate change", "climate rules",
+    "carbon tax", "carbon price", "emissions", "el nino", "el niño",
+    "la nina", "frost", "monsoon", "storm", "storms", "blizzard", "hailstorm",
+    "sécheresse", "canicule", "inondation", "inondations", "incendies",
+    "ouragan", "tempête", "siccità", "alluvione", "incendi",
+]
+
+# La dimension ÉCONOMIQUE. C'est la MOITIÉ obligatoire du gate : « un ouragan
+# sans dimension économique ne passe pas ». Un simulateur de bourse n'a pas à
+# tenir la chronique météo du monde ; il a à savoir quand un aléa touche une
+# récolte, une raffinerie, un assureur ou un prix.
+_CLIMAT_IMPACT_MARKERS = [
+    "economy", "economic", "price", "prices", "cost", "costs",
+    "supply", "supplies", "supply chain", "shortage", "shortages",
+    "crop", "crops", "harvest", "wheat", "corn", "coffee", "cocoa", "sugar",
+    "cattle", "livestock", "farmers", "farmland",
+    "insurance", "insurers", "insured", "claims",
+    "production", "output", "refinery", "refineries", "oil", "gas", "power",
+    "energy", "shipping", "ports", "exports", "imports", "trade",
+    "damage", "damages", "losses", "billion", "million",
+    "market", "markets", "utility", "utilities", "tourism",
+    "récolte", "prix", "pénurie", "assurance", "raccolto", "prezzi",
+]
+
+# Mauvaise nouvelle DÉJÀ TOMBÉE.
+_CLIMAT_NEG_KEYWORDS = [
+    "destroys", "destroyed", "devastates", "devastated", "wipes out",
+    "crop failure", "crop losses", "harvest fails", "failed harvest",
+    "shortage", "shortages", "supply disruption", "disrupts", "disrupted",
+    "halts production", "shuts down", "shutdown", "forced to close",
+    "damage", "damages", "losses", "insured losses",
+    "prices surge", "prices jump", "prices soar", "prices spike",
+    "evacuated", "evacuation", "state of emergency", "emergency declared",
+    "death toll", "record heat", "worst on record", "hits output",
+    "cuts production", "slashes forecast",
+    "détruit", "détruites", "ravage", "distrugge",
+]
+
+# Bonne nouvelle — RARE, et c'est normal : un aléa climatique fait rarement une
+# bonne nouvelle. La liste existe pour ne pas classer en menace un marché qui
+# se DÉTEND (une récolte record, une sécheresse qui se lève).
+_CLIMAT_POS_KEYWORDS = [
+    "record harvest", "bumper crop", "bumper harvest", "prices ease",
+    "prices fall", "prices drop", "rains ease", "drought eases",
+    "eases drought", "output recovers", "supply recovers",
+    "returns to normal", "better than feared",
+]
+
+# Catalyseur À VENIR — l'aléa n'a pas encore frappé.
+_CLIMAT_WATCH_KEYWORDS = [
+    "approaching", "approaches", "braces for", "bracing for", "warning",
+    "warns", "forecast", "forecasts", "expected to hit", "expected to",
+    "set to hit", "on track to", "alert", "looms",
+    "landfall expected", "could disrupt", "may disrupt", "prepares for",
+    # Toutes les personnes du verbe : ``_keyword_matches`` compare un mot NU en
+    # mot entier, donc « threaten » ne reconnaît pas « threatens » (mesuré sur
+    # « Wildfires threaten California power supply », qui tombait à None).
+    "threaten", "threatens", "threatened", "threat",
+    "menace", "menacée", "menacées", "alerte", "minaccia",
+]
+
+
+def is_climat_topic(title: str) -> bool:
+    """Le titre croise-t-il un aléa climatique ET une dimension économique ?
+    (GATE, PUR.)
+
+    Les DEUX sont exigés. « Hurricane approaches the Florida coast » parle de
+    météo et rien d'autre : il ne passe pas, et c'est la règle qui empêche ce
+    volet de devenir un fil d'actualité générale.
+    """
+    if not title:
+        return False
+    t = title.lower()
+    if not any(_keyword_matches(t, kw) for kw in _CLIMAT_MARKERS):
+        return False
+    return any(_keyword_matches(t, kw) for kw in _CLIMAT_IMPACT_MARKERS)
+
+
+def classify_climat(title: str) -> Optional[str]:
+    """Classe un titre CLIMAT à impact : ``"neg"`` | ``"pos"`` | ``"watch"`` |
+    ``None`` (PUR). Même architecture que ``classify_eco`` : gate, puis conseil
+    -> ``None``, puis neg > pos > watch."""
+    if not is_climat_topic(title):
+        return None
+    t = title.lower()
+    if any(_keyword_matches(t, kw) for kw in _ADVICE_KEYWORDS):
+        return None
+    if any(_keyword_matches(t, kw) for kw in _CLIMAT_NEG_KEYWORDS):
+        return "neg"
+    if any(_keyword_matches(t, kw) for kw in _CLIMAT_POS_KEYWORDS):
+        return "pos"
+    if any(_keyword_matches(t, kw) for kw in _CLIMAT_WATCH_KEYWORDS):
+        return "watch"
+    return None
+
+
+def format_climat_message(title: str, link: str, sentiment: str,
+                          symbol: Optional[str] = None) -> str:
+    """Message Telegram d'une dépêche climatique à impact économique."""
+    head = {"neg": "Aléa climatique — impact économique",
+            "pos": "Détente climatique — impact économique"}.get(
+                sentiment, "Aléa climatique à venir")
+    tail = " — %s" % symbol if symbol else ""
+    return "[Simulateur] %s%s\n« %s »\n%s" % (head, tail, title, link)
+
+
 # --- classification des posts X (volet « comptes influents », 26/08) ------- #
 
 def x_post_title(text: str) -> str:
@@ -1034,6 +1352,7 @@ def _global_seen_path() -> Path:
 def _default_seen_state() -> Dict[str, Any]:
     return {"seen": {}, "events": [], "seeded": {}, "stories": {},
             "sent_log": [], "crypto_sent_log": [], "x_sent_log": [],
+            "eco_sent_log": [], "climat_sent_log": [],
             "x_cycle": 0, "x_tiers": {}, "x_fails": {},
             "reddit_cycle": 0, "reddit_trends": {}}
 
@@ -1059,7 +1378,13 @@ def _load_seen_state(path: Path) -> Dict[str, Any]:
     écrit AVANT cette extension repart donc de zéro sans migration.
 
     Idem pour le volet REDDIT : "reddit_cycle" (cadence un cycle sur trois) et
-    "reddit_trends" (les mentions horodatées par ticker, cf. trends_view)."""
+    "reddit_trends" (les mentions horodatées par ticker, cf. trends_view).
+
+    Idem, enfin, pour les deux volets MONDE du 26/08 au soir : "eco_sent_log" et
+    "climat_sent_log" (leurs budgets horaires propres). Un état écrit avant eux
+    repart d'une liste vide, donc d'un budget plein — c'est le bon défaut : au
+    pire un volet neuf parle une fois de trop à son premier passage, jamais
+    l'inverse."""
     if not path.is_file():
         return _default_seen_state()
     try:
@@ -1095,6 +1420,8 @@ def _load_seen_state(path: Path) -> Dict[str, Any]:
         "sent_log": _list("sent_log"),
         "crypto_sent_log": _list("crypto_sent_log"),
         "x_sent_log": _list("x_sent_log"),
+        "eco_sent_log": _list("eco_sent_log"),
+        "climat_sent_log": _list("climat_sent_log"),
         "x_cycle": _counter("x_cycle"),
         "x_tiers": _dict("x_tiers"),
         "x_fails": _dict("x_fails"),
@@ -1927,6 +2254,176 @@ def _gov_event(now_dt: datetime, title: str, link: str, symbol: str,
             "link": link, "sentiment": "gov", "muted": muted}
 
 
+# --- les deux volets MONDE (éco, climat) — un seul moteur -------------------- #
+#
+# Ils ne diffèrent que par leur requête, leur classifieur, leur formateur et
+# leurs deux compteurs. Écrire deux fois le bloc du volet politique, c'était
+# garantir qu'un correctif futur n'en toucherait qu'un des deux — c'est
+# exactement ce qui rend un anti-spam faux. Un seul moteur, deux fiches.
+
+def _story_muted(stories: Dict[str, Any], key: str, now_dt: datetime,
+                 mute_h: float) -> bool:
+    """Cette histoire a-t-elle déjà été envoyée il y a moins de ``mute_h`` ?
+
+    Horodatage illisible -> ``False`` (pas de sourdine par prudence) : même
+    posture que le volet politique, dont ce code reprend la logique mot pour
+    mot. Une clé VIDE (titre sans token significatif) ne mute jamais rien —
+    sinon deux dépêches sans rapport partageraient la même clé « vide ».
+    """
+    if not key:
+        return False
+    last_iso = stories.get(key)
+    if not last_iso:
+        return False
+    try:
+        last_dt = datetime.fromisoformat(last_iso)
+    except (TypeError, ValueError):
+        return False
+    if last_dt.tzinfo is None:
+        last_dt = last_dt.replace(tzinfo=timezone.utc)
+    return (now_dt - last_dt).total_seconds() / 3600 < mute_h
+
+
+def _world_event(now_dt: datetime, src: str, title: str, link: str,
+                 symbol: Optional[str], sentiment: str,
+                 muted: bool) -> Dict[str, Any]:
+    """Un événement d'un volet monde, sous ses trois formes (envoyé, mis en
+    sourdine, mode calme) — une seule fabrique, comme ``_gov_event``.
+
+    ``symbol`` vient de ``entities.first_company`` : une dépêche macro nomme
+    parfois une entreprise (« les droits de douane frappent Boeing »), et c'est
+    ce symbole qui la fait rejoindre la BRANCHE de ce titre dans la toile au
+    lieu du pivot « monde ». Aucune entreprise reconnue -> ``None``, jamais un
+    symbole inventé (doctrine ``entities``).
+    """
+    return {"ts": now_dt.isoformat(), "symbol": symbol, "title": title,
+            "link": link, "sentiment": sentiment, "src": src, "muted": muted}
+
+
+def _run_world_volet(spec: Dict[str, Any], state: Dict[str, Any],
+                     now_dt: datetime, cfg: Dict[str, Any],
+                     notify_fn: Callable[[str, Dict[str, Any]], bool],
+                     pace: Callable[[], None], quiet: bool,
+                     counters: Dict[str, Any],
+                     fetch_fn: Callable[[str], str],
+                     anchor_extra: Dict[str, str]) -> None:
+    """Un volet monde (éco ou climat) — un passage complet.
+
+    Le déroulé est celui du volet politique, dans le même ordre : dédoublonnage
+    par LIEN -> amorçage muet au premier passage -> fraîcheur -> classement ->
+    symbole -> mode calme -> anti-spam (histoire, budget horaire, cap par
+    passage) -> envoi.
+
+    Deux points où il suit CRYPTO plutôt que GOV, et c'est délibéré :
+
+    * un item écarté par le cap de passage est **journalisé en sourdine** au
+      lieu d'être sauté en silence — rien ne se perd, la toile et la
+      convergence le voient, seul l'envoi tombe ;
+    * son budget horaire est le sien (``spec["sent_log"]``).
+
+    L'état est modifié EN PLACE (``seen``/``events``/``seeded``/``stories``) ;
+    l'appelant sauve une fois pour tous les volets.
+    """
+    src = spec["src"]
+    seen = state["seen"]
+    events = state["events"]
+    stories = state["stories"]
+    sent_log = state[spec["sent_log"]]
+    _purge_old_sent_log(sent_log, now_dt, max_age_h=1)
+    is_first_pass = src not in state["seeded"]
+    notified = 0
+
+    for url in spec["sources"]:
+        pace()
+        try:
+            xml_text = fetch_fn(url)
+        except Exception as exc:      # noqa: BLE001 — réseau/TLS, best-effort
+            logger.warning("paper newswatch: fetch %s échoué (%s)", src,
+                           type(exc).__name__)
+            counters["errors"] += 1
+            continue
+        counters["fetched"] += 1
+
+        for item in parse_rss(xml_text):
+            link = item.get("link")
+            if not link:
+                continue
+            key = _hash_link(link)
+            if key in seen:
+                continue
+            seen[key] = now_dt.isoformat()
+
+            if is_first_pass:
+                continue  # amorçage muet, comme tous les autres volets
+
+            pub_ts = item.get("pub_ts") or 0
+            age_s = now_dt.timestamp() - pub_ts
+            if age_s < 0 or age_s > spec["max_age_s"]:
+                continue
+            title = item.get("title", "")
+            sentiment = spec["classify"](title)
+            if sentiment is None:
+                continue  # hors sujet, neutre, ou conseil -> juste marqué vu
+
+            symbol = entities.first_company(title, anchor_extra)
+            event = _world_event(now_dt, src, title, link, symbol, sentiment,
+                                 muted=True)
+
+            if quiet:
+                events.insert(0, event)
+                continue
+
+            # Clé d'histoire PRÉFIXÉE par le volet : deux volets peuvent parler
+            # du même sujet sans se rendre muets l'un l'autre, et les clés déjà
+            # écrites par le volet politique restent valides telles quelles.
+            skey = story_key(title)
+            mute_key = ("%s:%s" % (src, skey)) if skey else ""
+            if (_story_muted(stories, mute_key, now_dt, spec["mute_h"])
+                    or len(sent_log) >= spec["max_per_hour"]
+                    or notified >= spec["max_notify"]):
+                events.insert(0, event)
+                continue
+
+            try:
+                ok = notify_fn(spec["format"](title, link, sentiment, symbol),
+                               cfg)
+            except Exception as exc:  # noqa: BLE001 — un notifieur injecté peut lever
+                logger.warning("paper newswatch: notif %s échouée (%s)", src,
+                               type(exc).__name__)
+                ok = False
+            if ok:
+                counters["notified"] += 1
+                notified += 1
+                if mute_key:
+                    stories[mute_key] = now_dt.isoformat()
+                sent_log.append(now_dt.isoformat())
+                event["muted"] = False
+                events.insert(0, event)
+            else:
+                counters["errors"] += 1
+
+    if is_first_pass:
+        state["seeded"][src] = True
+
+
+#: Les deux fiches. L'ORDRE est figé (éco puis climat) pour que deux cycles
+#: consomment les sources dans le même sens — un test qui scripte des réponses
+#: ne doit pas dépendre du hasard d'un dictionnaire.
+WORLD_VOLETS: Tuple[Dict[str, Any], ...] = (
+    {"src": "eco", "sources": _ECO_SOURCES, "max_age_s": _ECO_MAX_AGE_S,
+     "classify": classify_eco, "format": format_eco_message,
+     "max_notify": _MAX_ECO_NOTIFY_PER_RUN,
+     "max_per_hour": _ECO_MAX_SENDS_PER_HOUR,
+     "sent_log": "eco_sent_log", "mute_h": _WORLD_STORY_MUTE_H},
+    {"src": "climat", "sources": _CLIMAT_SOURCES,
+     "max_age_s": _CLIMAT_MAX_AGE_S,
+     "classify": classify_climat, "format": format_climat_message,
+     "max_notify": _MAX_CLIMAT_NOTIFY_PER_RUN,
+     "max_per_hour": _CLIMAT_MAX_SENDS_PER_HOUR,
+     "sent_log": "climat_sent_log", "mute_h": _WORLD_STORY_MUTE_H},
+)
+
+
 def run_once(now: Optional[datetime] = None,
             fetch: Optional[Callable[[str], str]] = None,
             notifier: Optional[Callable[[str, Dict[str, Any]], bool]] = None,
@@ -1940,13 +2437,17 @@ def run_once(now: Optional[datetime] = None,
             reddit_fetch: Optional[Callable[[str], Any]] = None,
             reddit_parse: Optional[Callable[[Any], List[Dict[str, Any]]]] = None,
             converge: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
-    """Un cycle de veille news, CINQ volets :
+    """Un cycle de veille news, SEPT volets :
 
     1. **politique GLOBAL** (toujours, même sans portefeuille) ;
     2. **crypto GLOBAL** (26/08 — le coach n'avait aucune matière crypto) ;
-    3. **comptes X influents** (26/08 — un cycle sur deux) ;
-    4. **tendances Reddit** (26/08 — un cycle sur trois, ne notifie jamais) ;
-    5. **par utilisateur, par symbole** détenu ∪ suivi (RSS Yahoo).
+    3. **économie GLOBALE** (26/08 soir — macro : banques centrales, inflation,
+       taux, emploi, pétrole) ;
+    4. **écologie GLOBALE** (26/08 soir — un aléa climatique ET sa dimension
+       économique, jamais la météo seule) ;
+    5. **comptes X influents** (26/08 — un cycle sur deux) ;
+    6. **tendances Reddit** (26/08 — un cycle sur trois, ne notifie jamais) ;
+    7. **par utilisateur, par symbole** détenu ∪ suivi (RSS Yahoo).
 
     Retourne ``{users, symbols, fetched, notified, errors, convergence_fired}``
     — les volets globaux contribuent à fetched/notified/errors mais jamais à
@@ -2207,7 +2708,30 @@ def run_once(now: Optional[datetime] = None,
         gov_changed = True
 
     # ----------------------------------------------------------------- #
-    # Volet 1ter -- comptes X influents (26/08), UN CYCLE SUR DEUX.
+    # Volets 1ter -- ÉCONOMIE et ÉCOLOGIE (26/08 soir).
+    #
+    # « Grosse partie des infos c'est que politique — il y a aussi
+    # l'économique, l'écologique. » Même état global, même cadence, même
+    # anti-spam, budgets d'envoi PROPRES (cf. WORLD_VOLETS). Leur tonalité
+    # est pos/neg/watch : ils rejoignent le pool de presse générique de la
+    # convergence, JAMAIS le facteur « gov », qui reste politique.
+    # ----------------------------------------------------------------- #
+    def _pace() -> None:
+        """L'espacement partagé du cycle (piège #67 : un burst = 429). Pas de
+        pause avant le tout premier fetch, une pause avant chacun des
+        suivants — exactement la règle des volets écrits avant celui-ci."""
+        nonlocal first_call
+        if not first_call:
+            sleep_fn(_PACE_S)
+        first_call = False
+
+    for spec in WORLD_VOLETS:
+        _run_world_volet(spec, gov_state, now_dt, cfg, notify_fn, _pace,
+                         quiet, counters, fetch_fn, anchor_extra)
+    gov_changed = True
+
+    # ----------------------------------------------------------------- #
+    # Volet 1quater -- comptes X influents (26/08), UN CYCLE SUR DEUX.
     # ----------------------------------------------------------------- #
     # Le compteur est lu AVANT d'être incrémenté : un déploiement neuf
     # (compteur à 0) interroge donc X dès son premier cycle, au lieu
@@ -2221,7 +2745,7 @@ def run_once(now: Optional[datetime] = None,
                      anchor_extra=anchor_extra)
 
     # ----------------------------------------------------------------- #
-    # Volet 1quater -- tendances Reddit (26/08), UN CYCLE SUR TROIS.
+    # Volet 1quinquies -- tendances Reddit (26/08), UN CYCLE SUR TROIS.
     #
     # Même lecture du compteur AVANT incrément que le volet X : un
     # déploiement neuf interroge Reddit dès son premier cycle. Ce volet
