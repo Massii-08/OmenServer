@@ -701,6 +701,137 @@ def test_run_once_file_pleine_libere_une_place_en_scorant(sources, alice):
 
 
 # --------------------------------------------------------------------------- #
+# Rotation de file — le garde-fou anti-mutisme (26/08)
+#
+# Mesuré sur le compte réel : 6 ouvertes = MAX_OPEN, plus une seule génération
+# depuis la veille. La file partagée avec le coach se remplit en une soirée, et
+# rien ne mûrit avant deux semaines : le radar se taisait.
+# --------------------------------------------------------------------------- #
+
+def test_la_file_ouverte_tient_douze_paris():
+    """Le plafond est ÉPINGLÉ : il est passé de 6 à 12 parce que les idées du
+    coach partagent la même file depuis la v6."""
+    assert radar.MAX_OPEN == 12
+
+
+def _full_queue(days_ago=3, **over):
+    """Une file PLEINE d'hypothèses du radar, toutes plus vieilles que 48 h et
+    aucune arrivée à échéance (horizon 30 jours)."""
+    return [_hyp(id="h%02d" % i, thesis="t%d" % i, horizon_days=30,
+                 created_at=(NOW - timedelta(days=days_ago + i)).isoformat(),
+                 **over)
+            for i in range(radar.MAX_OPEN)]
+
+
+def test_pick_rotation_choisit_la_doyenne_quand_tout_est_vieux():
+    rows = _full_queue()
+    assert radar.pick_rotation(rows, NOW)["id"] == "h%02d" % (radar.MAX_OPEN - 1)
+
+
+def test_pick_rotation_ne_fait_rien_si_la_file_n_est_pas_pleine():
+    assert radar.pick_rotation(_full_queue()[:-1], NOW) is None
+
+
+def test_pick_rotation_ne_fait_rien_si_une_ouverte_a_moins_de_48h():
+    """Une seule hypothèse fraîche suffit : la file TOURNE encore, il n'y a pas
+    d'embouteillage à casser."""
+    rows = _full_queue()
+    rows[0]["created_at"] = (NOW - timedelta(hours=47)).isoformat()
+    assert radar.pick_rotation(rows, NOW) is None
+
+
+def test_pick_rotation_epargne_toujours_les_idees_du_coach():
+    """Elles portent le bilan par niveau de risque : les roter fabriquerait des
+    « indécises » dans un bilan qu'on lit pour juger ces niveaux-là."""
+    rows = _full_queue()
+    rows[-1]["source"] = "coach"             # la doyenne est une idée du coach
+    rows[-2]["source"] = "COACH  "           # écrit salement : compte pareil
+    assert radar.pick_rotation(rows, NOW)["id"] == "h%02d" % (radar.MAX_OPEN - 3)
+
+
+def test_pick_rotation_prefere_le_silence_a_une_file_100_pourcent_coach():
+    assert radar.pick_rotation(_full_queue(source="coach"), NOW) is None
+
+
+def test_pick_rotation_est_deterministe_sur_les_ex_aequo():
+    rows = _full_queue(days_ago=0)           # toutes la même date... non
+    for row in rows:
+        row["created_at"] = (NOW - timedelta(days=9)).isoformat()
+    assert radar.pick_rotation(rows, NOW)["id"] == "h00"   # l'id tranche
+
+
+def test_pick_rotation_ne_meurt_pas_sur_une_entree_deformee():
+    rows = _full_queue() + ["pas un dict", None]
+    assert radar.pick_rotation(rows, NOW) is not None
+    assert radar.pick_rotation(None, NOW) is None
+
+
+def test_run_once_rote_la_doyenne_et_retrouve_la_parole(sources, alice):
+    """Le tour complet : file pleine et figée -> UNE place rendue -> le radar
+    génère à nouveau."""
+    sources.events = [EVENT]
+    radar.save_state({"hypotheses": _full_queue(tickers=["AAA"]),
+                      "stats": {"hits": 0, "misses": 0, "unclear": 0}})
+
+    calls = []
+    out = radar.run_once(
+        now=NOW, llm=_llm(TWO_HYPS, calls), tg_cfg={},
+        # La doyenne est née il y a 14 jours : les deux bougies lui sont
+        # postérieures, donc mesurables (100 -> 108).
+        fetch_candles=lambda *a: _candles(NOW - timedelta(days=13),
+                                          [100.0, 108.0]))
+
+    assert out["scored"] == 1 and out["generated"] == 2 and calls
+    state = radar.load_state()
+    rotated = [h for h in state["hypotheses"]
+               if h["id"] == "h%02d" % (radar.MAX_OPEN - 1)][0]
+    assert rotated["status"] == "scored"
+    # « indécise » MÊME avec +8 % : on note avant l'échéance, on ne choisit pas
+    # sa fenêtre de mesure après coup.
+    assert rotated["outcome"] == "unclear"
+    assert rotated["move_pct"] == pytest.approx(8.0)
+    assert rotated["note"] == radar.ROTATION_NOTE
+    assert rotated["scored_at"] == NOW.isoformat()
+    assert state["stats"]["unclear"] == 1
+
+
+def test_run_once_ne_rote_qu_une_seule_place_par_passage(sources, alice):
+    sources.events = [EVENT]
+    radar.save_state({"hypotheses": _full_queue(),
+                      "stats": {"hits": 0, "misses": 0, "unclear": 0}})
+    radar.run_once(now=NOW, llm=_llm('{"hypotheses": []}'), tg_cfg={},
+                   fetch_candles=lambda *a: [])
+    open_left = [h for h in radar.load_state()["hypotheses"]
+                 if h["status"] == "open"]
+    assert len(open_left) == radar.MAX_OPEN - 1
+
+
+def test_run_once_file_pleine_de_coach_reste_muette_sans_rien_roter(sources, alice):
+    sources.events = [EVENT]
+    radar.save_state({"hypotheses": _full_queue(source="coach"),
+                      "stats": {"hits": 0, "misses": 0, "unclear": 0}})
+    calls = []
+    out = radar.run_once(now=NOW, llm=_llm(TWO_HYPS, calls), tg_cfg={},
+                         fetch_candles=lambda *a: [])
+    assert calls == [] and out["scored"] == 0 and out["generated"] == 0
+    assert all(h["status"] == "open" for h in radar.load_state()["hypotheses"])
+
+
+def test_le_carnet_dit_qu_un_verdict_vient_d_une_rotation():
+    note = radar.format_outcome_note(_hyp(status="scored", outcome="unclear",
+                                          scored_at=NOW.isoformat(),
+                                          move_pct=1.2,
+                                          note=radar.ROTATION_NOTE))
+    assert radar.ROTATION_NOTE in note
+    assert "AVANT son échéance" in note
+
+
+def test_le_carnet_ordinaire_ne_parle_pas_de_rotation():
+    assert "rotation" not in radar.format_outcome_note(
+        _hyp(status="scored", outcome="hit", scored_at=NOW.isoformat()))
+
+
+# --------------------------------------------------------------------------- #
 # run_once — (c) scoring à l'échéance
 # --------------------------------------------------------------------------- #
 

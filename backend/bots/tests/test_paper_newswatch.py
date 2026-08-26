@@ -278,6 +278,46 @@ def test_classify_advice_beats_catalyst_keywords():
     assert newswatch.classify("Top stocks to buy now ahead of earnings season") is None
 
 
+# --- PUR : is_advice / cap_neutral (titres neutres, 2026-08-26) ------------- #
+
+def test_is_advice_separates_the_two_silences_of_classify():
+    """``classify`` rend ``None`` dans deux cas très différents : un conseil (à
+    ne JAMAIS relayer) et un titre neutre (matière factuelle légitime)."""
+    assert newswatch.is_advice("3 top stocks to buy now for 2026") is True
+    assert newswatch.is_advice("Company opens new headquarters in Zurich") is False
+    assert newswatch.is_advice("") is False
+
+
+def _neutral(symbol, n):
+    return {"ts": "t%d" % n, "symbol": symbol, "title": "neutre %d" % n,
+            "link": "l%d" % n, "sentiment": "neutral", "muted": True}
+
+
+def test_cap_neutral_keeps_the_four_most_recent_of_that_symbol():
+    events = [_neutral("AAA", n) for n in range(6)]      # 0 = le plus récent
+    newswatch.cap_neutral(events, "AAA")
+    assert [e["title"] for e in events] == ["neutre %d" % n for n in range(4)]
+
+
+def test_cap_neutral_touches_neither_other_symbols_nor_tonal_events():
+    tonal = {"ts": "t", "symbol": "AAA", "title": "warning", "link": "l",
+             "sentiment": "neg"}
+    events = ([_neutral("AAA", n) for n in range(3)] + [tonal]
+              + [_neutral("BBB", n) for n in range(9, 15)]
+              + [_neutral("AAA", 3), _neutral("AAA", 4)])
+    newswatch.cap_neutral(events, "AAA")
+    assert tonal in events
+    assert sum(1 for e in events if e["symbol"] == "BBB") == 6   # intact
+    assert [e["title"] for e in events if e["symbol"] == "AAA"
+            and e["sentiment"] == "neutral"] == ["neutre %d" % n for n in range(4)]
+
+
+def test_cap_neutral_survives_a_deformed_history():
+    events = ["pas un dict", None, _neutral("AAA", 0)]
+    newswatch.cap_neutral(events, "AAA")
+    assert events == ["pas un dict", None, _neutral("AAA", 0)]
+
+
 # =========================================================================== #
 #  PUR -- format_message
 # =========================================================================== #
@@ -569,6 +609,124 @@ def test_run_once_caps_notifications_per_symbol_shared_across_categories():
     counters3 = _run(fetch, notifier, now=even_later)
     assert counters3["notified"] == 0
     assert len(notifier.calls) == 3
+
+
+# --- titres NEUTRES : la branche presse de la toile (2026-08-26) ------------ #
+#
+# Mesure du 26/08 : la toile du compte réel affichait 0 événement de presse.
+# Les titres neutres -- l'immense majorité d'un flux Yahoo -- étaient marqués
+# vus puis jetés.
+
+def _seeded(user="alice", symbols=("NESN.SW",)):
+    """Un compte dont le premier passage (seed, silencieux) est déjà fait."""
+    store.save_portfolio(user, _portfolio(list(symbols)))
+    fetch = _FetchQueue()
+    for _ in symbols:
+        fetch.push(_rss([("Seed", "https://y/seed", NOW - timedelta(hours=10))]))
+    _run(fetch, _NotifySpy())
+    return fetch
+
+
+NEUTRAL_TITLE = "Nestlé opens a new plant in Vevey"
+
+
+def test_run_once_records_a_neutral_headline_without_ever_notifying():
+    fetch = _seeded()
+    later = NOW + timedelta(minutes=10)
+    fetch.push(_rss([(NEUTRAL_TITLE, "https://y/n1", later)]))
+    notifier = _NotifySpy()
+    counters = _run(fetch, notifier, now=later)
+
+    assert notifier.calls == [] and counters["notified"] == 0
+    events = newswatch.recent_events("alice")
+    assert len(events) == 1
+    assert events[0]["title"] == NEUTRAL_TITLE
+    assert events[0]["sentiment"] == newswatch.NEUTRAL_SENTIMENT
+    assert events[0]["muted"] is True
+    assert events[0]["symbol"] == "NESN.SW" and events[0]["link"] == "https://y/n1"
+
+
+def test_a_neutral_headline_is_silent_in_the_talkative_mode_too():
+    """« Aucun mode » n'est pas une figure de style : le mode bavard, celui qui
+    envoie dépêche par dépêche, se tait lui aussi sur un titre neutre."""
+    fetch = _seeded(user="bob")
+    later = NOW + timedelta(minutes=10)
+    fetch.push(_rss([(NEUTRAL_TITLE, "https://y/n1", later),
+                     ("Nestlé issues profit warning", "https://y/neg", later)]))
+    notifier = _NotifySpy()
+    _run(fetch, notifier, now=later, mode="tout")
+
+    assert len(notifier.calls) == 1                     # la « neg » SEULEMENT
+    assert "profit warning" in notifier.calls[0][0]
+    tones = sorted(e["sentiment"] for e in newswatch.recent_events("bob"))
+    assert tones == ["neg", "neutral"]
+
+
+def test_an_advice_headline_is_never_recorded_even_as_neutral():
+    """``classify`` rend ``None`` pour un conseil comme pour un titre neutre —
+    mais recopier un conseil dans la mémoire, c'est le relayer."""
+    fetch = _seeded(user="carol")
+    later = NOW + timedelta(minutes=10)
+    fetch.push(_rss([("3 top stocks to buy now for 2026", "https://y/a1", later),
+                     (NEUTRAL_TITLE, "https://y/n1", later)]))
+    _run(fetch, _NotifySpy(), now=later)
+
+    titles = [e["title"] for e in newswatch.recent_events("carol")]
+    assert titles == [NEUTRAL_TITLE]
+
+
+def test_neutral_headlines_are_capped_at_four_per_symbol_across_runs():
+    """Le cap vit dans l'ÉTAT, pas dans le passage : six titres neutres étalés
+    sur deux runs laissent quatre traces, les plus récentes."""
+    fetch = _seeded(user="dave")
+    later = NOW + timedelta(minutes=10)
+    fetch.push(_rss([("Neutre %d de Nestlé" % i, "https://y/x%d" % i, later)
+                     for i in range(3)]))
+    _run(fetch, _NotifySpy(), now=later)
+
+    even_later = later + timedelta(minutes=10)
+    fetch.push(_rss([("Neutre %d de Nestlé" % i, "https://y/x%d" % i, even_later)
+                     for i in range(3, 6)]))
+    _run(fetch, _NotifySpy(), now=even_later)
+
+    titles = [e["title"] for e in newswatch.recent_events("dave")]
+    assert len(titles) == newswatch._MAX_NEUTRAL_PER_SYMBOL
+    assert titles == ["Neutre 5 de Nestlé", "Neutre 4 de Nestlé",
+                      "Neutre 3 de Nestlé", "Neutre 2 de Nestlé"]
+
+
+def test_the_notify_cap_never_silences_the_neutral_trace():
+    """Le cap de 3 envois par symbole ne concerne QUE les envois : trois
+    dépêches à tonalité ne doivent pas rendre la branche presse muette."""
+    fetch = _seeded(user="erin")
+    later = NOW + timedelta(minutes=10)
+    fetch.push(_rss([
+        ("Nestlé issues profit warning", "https://y/1", later),
+        ("Regulator opens probe into Nestlé pricing", "https://y/2", later),
+        ("Nestlé beats estimates", "https://y/3", later),
+        (NEUTRAL_TITLE, "https://y/4", later),
+    ]))
+    counters = _run(fetch, _NotifySpy(), now=later, mode="tout")
+
+    assert counters["notified"] == 3
+    assert newswatch.NEUTRAL_SENTIMENT in [
+        e["sentiment"] for e in newswatch.recent_events("erin")]
+
+
+def test_a_neutral_event_lights_no_convergence_factor():
+    """Garde-fou inter-modules (piège #61) : ``newswatch`` produit la tonalité,
+    ``convergence`` la lit. Les huit facteurs doivent rester ÉTEINTS — un titre
+    neutre est de la matière d'affichage, jamais un déclencheur."""
+    from backend.bots.paper import convergence
+
+    events = [{"ts": NOW.isoformat(), "symbol": "NESN.SW",
+               "title": "Neutre %d" % i, "link": "https://y/%d" % i,
+               "sentiment": newswatch.NEUTRAL_SENTIMENT, "muted": True}
+              for i in range(6)]
+    out = convergence.collect_factors(NOW, [], events, [], ["NESN.SW"],
+                                      held_symbols=["NESN.SW"])
+    assert not any(out["factors"].values())
+    assert out["items"] == []
 
 
 def test_run_once_counts_fetch_error_and_continues_other_symbols():

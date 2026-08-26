@@ -674,3 +674,48 @@ def test_review_positions_respecte_la_langue_de_lecture():
     proc = FakeProc(stdout=envelope("la mia revisione"))
     llm.review_positions(FACTS, "it", run=runner(proc, captured))
     assert "italiano" in captured["input"]
+
+
+# --------------------------------------------------------------------------- #
+# Recherche FRAÎCHE — la consigne du balayage fait au clic (26/08)
+# --------------------------------------------------------------------------- #
+
+_SWEEP_CTX = {"recherche_fraiche": {
+    "fenetre_jours": 7,
+    "titres": {"NESN.SW": [{"ts": "2026-08-23T09:00:00",
+                            "title": "Nestlé beats estimates",
+                            "sentiment": "pos"}]},
+    "momentum": {"NESN.SW": {"prix": 110.0, "pct_7j": 10.0}},
+}}
+
+
+@pytest.mark.parametrize("builder", [
+    lambda ctx: llm.build_ideas_prompt(ctx),
+    lambda ctx: llm.build_scenarios_prompt(ctx),
+])
+def test_la_consigne_de_recherche_fraiche_accompagne_la_cle(builder):
+    prompt = builder(_SWEEP_CTX)
+    assert "RECHERCHE À L'INSTANT" in prompt
+    # L'ORDRE demandé : la mémoire porte la durée, le balayage la surprise.
+    assert "Appuie-toi D'ABORD sur la MÉMOIRE" in prompt
+    # Et la donnée elle-même voyage bien dans le bloc de contexte.
+    assert "Nestlé beats estimates" in prompt
+
+
+@pytest.mark.parametrize("builder", [
+    lambda ctx: llm.build_ideas_prompt(ctx),
+    lambda ctx: llm.build_scenarios_prompt(ctx),
+])
+@pytest.mark.parametrize("ctx", [None, {}, {"recherche_fraiche": {}}])
+def test_sans_balayage_le_prompt_n_annonce_aucune_section(builder, ctx):
+    """Annoncer une section absente inviterait le modèle à la combler seul —
+    même précaution que pour l'historique."""
+    assert "RECHERCHE À L'INSTANT" not in builder(ctx)
+
+
+def test_la_consigne_distingue_une_liste_vide_d_un_titre_jamais_collecte():
+    """Les deux silences ne disent pas la même chose : « rien de neuf sur sept
+    jours » est un FAIT, « absent de l'historique » est une lacune."""
+    prompt = llm.build_ideas_prompt(_SWEEP_CTX)
+    assert "Une liste VIDE" in prompt and "rien de neuf sur sept jours" in prompt
+    assert "n'a lui jamais été collecté" in prompt

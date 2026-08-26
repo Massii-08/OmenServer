@@ -144,6 +144,58 @@ _HISTORY_LINE = (
 
 
 # --------------------------------------------------------------------------- #
+# Balayage FRAIS — la recherche faite AU CLIC (extension 2026-08-26)
+#
+# « Il se base sur ce qu'il a ET il peut chercher plus profondément au-delà. »
+# Le champ ``recherche_fraiche`` voyage DANS le bloc de contexte déjà sérialisé,
+# comme ``historique`` : il n'y a donc qu'une consigne à écrire.
+#
+# Elle dit trois choses, et les trois comptent :
+#   1. d'OÙ ça vient (collecté à la seconde, pas lu en mémoire) — sans quoi le
+#      modèle traiterait ces titres comme des archives de plus ;
+#   2. dans quel ORDRE s'en servir (la mémoire porte la durée, le balayage ne
+#      porte que la surprise) — c'est la demande explicite de Massii ;
+#   3. ce que veut dire une liste VIDE. Même précaution que ``_HISTORY_LINE`` :
+#      là-bas un titre absent ne veut PAS dire « rien ne s'est passé », ici une
+#      liste vide veut dire EXACTEMENT « rien de neuf », et confondre les deux
+#      ferait dire au coach le contraire de ce que les données montrent.
+#
+# La consigne n'est injectée QUE si le contexte porte réellement la clé
+# (``_sweep_line``) : annoncer une section absente inviterait le modèle à
+# inventer ce qu'elle contenait.
+# --------------------------------------------------------------------------- #
+SWEEP_KEY = "recherche_fraiche"
+
+_SWEEP_LINE = (
+    "RECHERCHE À L'INSTANT (balayage fait à ta demande, distinct de la "
+    "mémoire) : le champ ``recherche_fraiche`` du contexte ci-dessus n'a PAS "
+    "été lu dans la mémoire du simulateur — il vient d'être collecté, à la "
+    "seconde où cette demande a été faite : ``titres`` donne, par symbole, ce "
+    "que la presse a publié sur les sept derniers jours (titres détenus, "
+    "suivis, et ceux dont la foule parle en ce moment), et ``momentum`` donne "
+    "leur dernier cours et leur variation sur sept jours. "
+    "Appuie-toi D'ABORD sur la MÉMOIRE (``historique``, ``recent_news``, "
+    "``whale_moves``, ``radar_open_hypotheses``) : c'est elle qui porte la "
+    "durée et le recul. La recherche fraîche sert à VÉRIFIER que rien de NEUF "
+    "ne contredit ni ne renforce ce que la mémoire raconte — et quand c'est le "
+    "cas, dis-le explicitement et cite le titre sur lequel tu t'appuies. "
+    "Une liste VIDE pour un symbole signifie « rien de neuf sur sept jours », "
+    "ce qui est une information en soi — à ne pas confondre avec un titre "
+    "ABSENT de ``historique``, qui n'a lui jamais été collecté.")
+
+
+def _sweep_line(context: Optional[Dict[str, Any]]) -> list:
+    """La consigne de balayage frais, ou rien du tout (PUR).
+
+    Rien du tout quand le contexte ne porte pas la clé : un prompt qui décrit
+    une section absente invite le modèle à la combler tout seul.
+    """
+    if isinstance(context, dict) and context.get(SWEEP_KEY):
+        return [_SWEEP_LINE]
+    return []
+
+
+# --------------------------------------------------------------------------- #
 # Langue de SORTIE
 #
 # Les prompts eux-mêmes restent en FRANÇAIS : ce sont des instructions au
@@ -436,7 +488,7 @@ def build_ideas_prompt(context: Optional[Dict[str, Any]], lang: str = "fr",
         "dépôts 13F) qui peuvent servir de catalyseur.",
         _block("CONTEXTE", context or {}),
         _HISTORY_LINE,
-    ] + memory + [
+    ] + _sweep_line(context) + memory + [
         _RISK_BLOCKS[level],
         "Commence ta réponse par UNE ligne d'en-tête qui annonce le niveau de "
         "cette série et sa fourchette de risque par idée — forme attendue : "
@@ -506,6 +558,7 @@ def build_scenarios_prompt(context: Optional[Dict[str, Any]],
         "récents (presse, annonces politiques, dépôts 13F).",
         _block("CONTEXTE", context or {}),
         _HISTORY_LINE,
+    ] + _sweep_line(context) + [
         "Construis UN SEUL arbre :\n"
         "- un TITRE : la question macro du moment, celle dont dépend le reste "
         "(ex. « La Fed baisse-t-elle en septembre ? ») — une question, pas un "

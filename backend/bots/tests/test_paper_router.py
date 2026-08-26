@@ -19,6 +19,12 @@ from backend.auth.utils import get_current_user
 from backend.bots import paper_router as pr
 from backend.bots.paper import coach, fees, quotes, store
 
+# Les VRAIES fonctions du balayage frais, capturées AVANT que ``make_client`` ne
+# les neutralise (même patron que ``_REAL_COLLECT_SOCIAL`` côté radar) : les
+# tests dédiés les réinstallent avec un ``fetch``/``sleep`` injectés.
+_REAL_FRESH_SWEEP = pr._fresh_sweep
+_REAL_BACKFILL_NEW = pr._backfill_new_tickers
+
 FIXED_NOW = "2026-08-24T10:00:00"
 
 
@@ -129,6 +135,14 @@ def make_client(tmp_path, monkeypatch, role="admin"):
     # sans ce stub, un test de la vue « Plan » lancerait le VRAI CLI Claude.
     monkeypatch.setattr(pr.llm, "suggest_scenarios",
                         lambda context, lang="fr": scenarios_answer())
+    # Deux portes RÉSEAU ouvertes par ``/ideas`` et ``/board/scenarios/generate``
+    # depuis le 26/08 : le balayage de presse fait au clic, et la collecte du
+    # dossier des tickers que le coach vient de choisir. Sans ces doublures,
+    # chaque test de ces endpoints partirait vraiment sur Google News (mesuré :
+    # 34 s pour la section « idées »). Les tests dédiés réinstallent les vraies
+    # fonctions avec un ``fetch``/``sleep`` injectés.
+    monkeypatch.setattr(pr, "_fresh_sweep", lambda targets, **kw: {})
+    monkeypatch.setattr(pr, "_backfill_new_tickers", lambda ideas, **kw: [])
 
     app = FastAPI()
     app.include_router(pr.router)
@@ -2992,3 +3006,360 @@ def test_graph_survives_a_broken_portfolio(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pr, "_load", boom)
     assert [node["id"] for node in graph_of(c)["nodes"]] == ["AAPL"]
+
+
+# ================================================================
+#  BALAYAGE FRAIS AU CLIC + AUTO-BACKFILL (extension 26/08)
+#
+#  « Quand le coach génère des idées, il se base sur ce qu'il a ET il peut
+#  chercher plus profondément au-delà. » Deux portes réseau, toutes deux
+#  best-effort, toutes deux injectables — donc testées hors ligne.
+# ================================================================
+
+def _gnews(*titles):
+    """Un flux Google News RSS minimal, au format que ``backfill`` sait lire
+    (titre + pubDate RFC822 — sans date, l'item est écarté à la source)."""
+    from email.utils import format_datetime
+    when = format_datetime(datetime(2026, 8, 23, 9, 0, 0))
+    items = "".join(
+        "<item><title><![CDATA[%s]]></title><link>https://n/%d</link>"
+        "<pubDate>%s</pubDate></item>" % (title, i, when)
+        for i, title in enumerate(titles))
+    return ('<?xml version="1.0"?><rss version="2.0"><channel>'
+            '<title>News</title>%s</channel></rss>') % items
+
+
+class _SweepFetch:
+    """Fetch RSS injectable : enregistre les URL, rend le flux demandé."""
+
+    def __init__(self, xml=None, boom=False):
+        self.urls = []
+        self.xml = xml if xml is not None else _gnews("Nestlé beats estimates")
+        self.boom = boom
+
+    def __call__(self, url):
+        self.urls.append(url)
+        if self.boom:
+            raise RuntimeError("Google News injoignable")
+        return self.xml
+
+
+def _wire_sweep(monkeypatch, fetch):
+    """Réinstalle le VRAI balayage avec un fetch injecté et une horloge muette.
+    Rend la liste des attentes demandées — c'est elle qui borne la latence."""
+    slept = []
+    monkeypatch.setattr(
+        pr, "_fresh_sweep",
+        lambda targets: _REAL_FRESH_SWEEP(targets, fetch=fetch,
+                                          sleep=slept.append))
+    return slept
+
+
+# --- la CIBLE du balayage ---------------------------------------------------
+
+def test_sweep_targets_put_the_anchors_first_then_the_crowd(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c)                                            # position NESN.SW
+    store.save_watchlist("tester", [{"symbol": "AAPL", "name": "Apple Inc"}])
+    monkeypatch.setattr(pr, "_reddit_trends",
+                        lambda: {"GME": {"count": 42}, "AMC": {"count": 7}})
+
+    targets = pr._sweep_targets("tester")
+    assert [t["symbol"] for t in targets] == ["NESN.SW", "AAPL", "GME", "AMC"]
+    # Seule la watchlist porte un NOM — et c'est le nom qui fait la requête.
+    assert {t["symbol"]: t["name"] for t in targets}["AAPL"] == "Apple Inc"
+    assert {t["symbol"]: t["name"] for t in targets}["NESN.SW"] == ""
+
+
+def test_sweep_targets_are_capped_at_six(tmp_path, monkeypatch):
+    """Un endpoint interactif attend : six symboles, une requête chacun."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.save_watchlist("tester", [{"symbol": "SYM%d" % i} for i in range(10)])
+    monkeypatch.setattr(pr, "_reddit_trends", lambda: {"GME": {"count": 99}})
+
+    targets = pr._sweep_targets("tester")
+    assert len(targets) == pr.SWEEP_MAX_SYMBOLS
+    # Les ancres d'abord : un gros portefeuille consomme tout le budget, et le
+    # balayage reste alors sur ce que Massii détient vraiment.
+    assert [t["symbol"] for t in targets] == ["SYM%d" % i for i in range(6)]
+
+
+def test_a_ticker_with_no_mention_is_not_a_trend(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(pr, "_reddit_trends", lambda: {"GME": {"count": 0}})
+    assert pr._sweep_targets("tester") == []
+
+
+def test_sweep_targets_survive_a_broken_portfolio(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.save_watchlist("tester", [{"symbol": "AAPL", "name": "Apple Inc"}])
+
+    def boom(username):
+        raise ValueError("portefeuille illisible")
+
+    monkeypatch.setattr(pr, "_load", boom)
+    assert [t["symbol"] for t in pr._sweep_targets("tester")] == ["AAPL"]
+
+
+# --- le BALAYAGE lui-même ---------------------------------------------------
+
+def test_the_sweep_collects_headlines_and_momentum(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.candles["NESN.SW"] = [{"ts": _ts(10) - 8 * 86400, "close": 100.0},
+                                 {"ts": _ts(10), "close": 110.0}]
+    fetch = _SweepFetch(_gnews("Nestlé beats estimates", "Nestlé opens a plant"))
+
+    out = _REAL_FRESH_SWEEP([{"symbol": "NESN.SW", "name": "Nestlé S.A."}],
+                            fetch=fetch, sleep=lambda s: None)
+
+    assert out["fenetre_jours"] == 7 and out["fait_a"] == FIXED_NOW
+    titles = out["titres"]["NESN.SW"]
+    assert [row["title"] for row in titles] == ["Nestlé beats estimates",
+                                                "Nestlé opens a plant"]
+    # Sentiment posé par le MÊME classifieur que les archives (``newswatch``),
+    # et le titre neutre garde sa place — c'est la base sur laquelle le reste
+    # se détache.
+    assert [row["sentiment"] for row in titles] == ["pos", "neutre"]
+    assert out["momentum"]["NESN.SW"] == {"prix": 110.0, "pct_7j": 10.0}
+    # La requête part sur le NOM sans sa forme juridique, bornée en date.
+    assert "Nestl" in fetch.urls[0] and "after%3A" in fetch.urls[0]
+
+
+def test_the_sweep_keeps_an_empty_list_apart_from_a_missing_symbol(tmp_path,
+                                                                   monkeypatch):
+    """« Rien de neuf sur sept jours » est une information — et le prompt
+    l'explique au modèle. Elle ne doit donc pas se confondre avec un silence."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    out = _REAL_FRESH_SWEEP([{"symbol": "NESN.SW", "name": "Nestlé"}],
+                            fetch=_SweepFetch(_gnews()), sleep=lambda s: None)
+    assert out["titres"] == {"NESN.SW": []}
+
+
+def test_the_sweep_paces_its_requests_and_bounds_its_latency(tmp_path, monkeypatch):
+    """Piège #67 : un burst vaut un 429. Une attente ENTRE deux symboles, donc
+    n-1 attentes — et la latence ajoutée reste bornée par le cap de symboles."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    slept = []
+    targets = [{"symbol": "SYM%d" % i, "name": "Nom %d" % i} for i in range(6)]
+    fetch = _SweepFetch()
+
+    _REAL_FRESH_SWEEP(targets, fetch=fetch, sleep=slept.append)
+
+    assert len(fetch.urls) == 6                       # UNE requête par symbole
+    assert slept == [pr.SWEEP_PACE_S] * 5
+    assert sum(slept) <= (pr.SWEEP_MAX_SYMBOLS - 1) * pr.SWEEP_PACE_S
+
+
+def test_a_mute_source_costs_its_line_not_the_sweep(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.candles["NESN.SW"] = [{"ts": _ts(9), "close": 100.0},
+                                 {"ts": _ts(10), "close": 100.0}]
+    calls = {"n": 0}
+
+    def flaky(url):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("timeout")
+        return _gnews("Apple beats estimates")
+
+    out = _REAL_FRESH_SWEEP([{"symbol": "NESN.SW", "name": "Nestlé"},
+                             {"symbol": "AAPL", "name": "Apple"}],
+                            fetch=flaky, sleep=lambda s: None)
+    assert "NESN.SW" not in out["titres"] and "AAPL" in out["titres"]
+    assert "NESN.SW" in out["momentum"]                # le cours, lui, a répondu
+
+
+def test_a_total_outage_yields_no_key_at_all(tmp_path, monkeypatch):
+    """Best-effort intégral : rien récolté -> ``{}`` -> clé ABSENTE du contexte,
+    et le prompt n'annonce pas une section vide."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(quotes, "get_candles",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("hs")))
+    out = _REAL_FRESH_SWEEP([{"symbol": "NESN.SW", "name": "Nestlé"}],
+                            fetch=_SweepFetch(boom=True), sleep=lambda s: None)
+    assert out == {}
+
+
+def test_the_sweep_on_nothing_asks_nothing(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    fetch = _SweepFetch()
+    assert _REAL_FRESH_SWEEP([], fetch=fetch, sleep=lambda s: None) == {}
+    assert fetch.urls == []
+
+
+@pytest.mark.parametrize("candles,expected", [
+    ([], None),                                        # rien
+    ([{"ts": 0, "close": 100.0}], None),               # un seul point
+    ([{"ts": 0, "close": 0.0}, {"ts": 1, "close": 5.0}], None),   # base nulle
+])
+def test_the_seven_day_change_refuses_to_invent_a_number(candles, expected):
+    assert pr._pct_over_days(candles, 7, _ts(10)) is expected
+
+
+def test_the_seven_day_change_uses_the_last_close_before_the_boundary():
+    """Sept jours calendaires ne tombent pas sur une séance : on prend la
+    clôture la plus récente ANTÉRIEURE à la borne, pas une date exacte."""
+    now = _ts(10)
+    candles = [{"ts": now - 30 * 86400, "close": 50.0},
+               {"ts": now - 8 * 86400, "close": 100.0},   # la référence
+               {"ts": now - 2 * 86400, "close": 105.0},
+               {"ts": now, "close": 120.0}]
+    assert pr._pct_over_days(candles, 7, now) == 20.0
+
+
+# --- le PROMPT --------------------------------------------------------------
+
+def test_the_fresh_sweep_reaches_the_ideas_prompt(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c)
+    market.candles["NESN.SW"] = [{"ts": _ts(9), "close": 100.0},
+                                 {"ts": _ts(10), "close": 101.0}]
+    _wire_sweep(monkeypatch, _SweepFetch(_gnews("Nestlé beats estimates")))
+
+    seen = {}
+
+    def spy(context, lang="fr", risk_level="mesure", journal=None):
+        seen["context"] = context
+        from backend.bots.paper import llm as llm_mod
+        seen["prompt"] = llm_mod.build_ideas_prompt(context, lang, risk_level,
+                                                    journal)
+        return _ideas_json()
+
+    monkeypatch.setattr(pr.llm, "suggest_ideas", spy)
+    assert c.post("/api/paper/ideas", json={}).status_code == 200
+
+    sweep = seen["context"]["recherche_fraiche"]
+    assert sweep["titres"]["NESN.SW"][0]["title"] == "Nestlé beats estimates"
+    assert "RECHERCHE À L'INSTANT" in seen["prompt"]
+    assert "Appuie-toi D'ABORD sur la MÉMOIRE" in seen["prompt"]
+
+
+def test_the_fresh_sweep_reaches_the_scenarios_prompt(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c)
+    _wire_sweep(monkeypatch, _SweepFetch(_gnews("Nestlé beats estimates")))
+
+    seen = {}
+
+    def spy(context, lang="fr"):
+        from backend.bots.paper import llm as llm_mod
+        seen["prompt"] = llm_mod.build_scenarios_prompt(context, lang)
+        return scenarios_answer()
+
+    monkeypatch.setattr(pr.llm, "suggest_scenarios", spy)
+    assert c.post("/api/paper/board/scenarios/generate",
+                  json={}).status_code == 200
+    assert "RECHERCHE À L'INSTANT" in seen["prompt"]
+
+
+def test_a_sweep_outage_still_calls_the_model_without_the_key(tmp_path, monkeypatch):
+    """La règle qui compte : une panne de recherche ne coûte JAMAIS la réponse."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c)
+    monkeypatch.setattr(quotes, "get_candles",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("hs")))
+    _wire_sweep(monkeypatch, _SweepFetch(boom=True))
+
+    seen = {}
+
+    def spy(context, lang="fr", risk_level="mesure", journal=None):
+        seen["context"] = context
+        from backend.bots.paper import llm as llm_mod
+        seen["prompt"] = llm_mod.build_ideas_prompt(context, lang, risk_level,
+                                                    journal)
+        return _ideas_json()
+
+    monkeypatch.setattr(pr.llm, "suggest_ideas", spy)
+    assert c.post("/api/paper/ideas", json={}).status_code == 200
+    assert "recherche_fraiche" not in seen["context"]
+    assert "RECHERCHE À L'INSTANT" not in seen["prompt"]
+
+
+# --- AUTO-BACKFILL des tickers choisis --------------------------------------
+
+def _collect_spy(monkeypatch, boom=None):
+    """Espionne ``backfill.backfill_symbol`` — aucune requête réelle."""
+    from backend.bots.paper import backfill
+    calls = []
+
+    def fake(symbol, name=None, now=None, fetch=None, sleep=None, force=False):
+        calls.append({"symbol": symbol, "name": name})
+        if boom and symbol in boom:
+            raise RuntimeError("Google News injoignable")
+        return {"symbol": symbol, "reason": "collected", "windows": 4}
+
+    monkeypatch.setattr(backfill, "backfill_symbol", fake)
+    return calls
+
+
+def test_the_coach_curiosity_feeds_its_own_base(tmp_path, monkeypatch):
+    """Doctrine : un titre que le coach vient de choisir et sur lequel on n'a
+    aucun recul est collecté TOUT DE SUITE — la prochaine fois qu'on en parlera,
+    on aura douze mois derrière."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["AAPL"] = (200.0, "USD", "Apple Inc")
+    calls = _collect_spy(monkeypatch)
+    monkeypatch.setattr(pr, "_backfill_new_tickers", _REAL_BACKFILL_NEW)
+
+    monkeypatch.setattr(
+        pr.llm, "suggest_ideas",
+        lambda context, lang="fr", risk_level="mesure", journal=None: _ideas_json(
+            {"ticker": "AAPL", "direction": "up", "horizon_days": 10,
+             "thesis": "Momentum"}))
+    assert c.post("/api/paper/ideas", json={}).status_code == 200
+
+    # Le NOM fait la requête (piège #29a) : il vient de la cotation, pas du ticker.
+    assert calls == [{"symbol": "AAPL", "name": "Apple Inc"}]
+
+
+def test_the_auto_backfill_is_capped_at_two_per_answer(tmp_path, monkeypatch):
+    """Une collecte coûte 4 requêtes espacées de 1,1 s, AJOUTÉES à une réponse
+    déjà payée. Les autres reviendront au prochain clic."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    calls = _collect_spy(monkeypatch)
+    ideas = [{"ticker": "SYM%d" % i} for i in range(5)]
+
+    done = _REAL_BACKFILL_NEW(ideas)
+
+    assert done == ["SYM0", "SYM1"]
+    assert [call["symbol"] for call in calls] == ["SYM0", "SYM1"]
+    assert pr.IDEAS_BACKFILL_MAX == 2
+
+
+def test_a_ticker_that_already_has_a_folder_is_not_recollected(tmp_path, monkeypatch):
+    from backend.bots.paper import backfill
+    c, _ = make_client(tmp_path, monkeypatch)
+    state = backfill.blank_state()
+    state["symbols"]["AAPL"] = {"name": "Apple Inc", "fetched_at": FIXED_NOW,
+                                "windows": []}
+    backfill.save_state(state)
+    calls = _collect_spy(monkeypatch)
+
+    assert _REAL_BACKFILL_NEW([{"ticker": "AAPL"}, {"ticker": "TSLA"}]) == ["TSLA"]
+    assert [call["symbol"] for call in calls] == ["TSLA"]
+
+
+def test_a_failed_collection_never_costs_the_answer(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    calls = _collect_spy(monkeypatch, boom={"SYM0"})
+    assert _REAL_BACKFILL_NEW([{"ticker": "SYM0"}, {"ticker": "SYM1"}]) == ["SYM1"]
+    assert len(calls) == 2                             # la panne n'arrête pas la suite
+
+
+def test_the_auto_backfill_ignores_a_deformed_ideas_block(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    calls = _collect_spy(monkeypatch)
+    assert _REAL_BACKFILL_NEW([None, "texte", {}, {"ticker": ""}]) == []
+    assert calls == []
+
+
+def test_a_deformed_trend_state_costs_discovery_not_the_answer(tmp_path,
+                                                               monkeypatch):
+    """Un compteur non numérique dans l'état de la foule ne doit pas faire
+    tomber ``/ideas`` : il coûte la découverte, jamais la réponse."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.save_watchlist("tester", [{"symbol": "AAPL", "name": "Apple Inc"}])
+    monkeypatch.setattr(pr, "_reddit_trends",
+                        lambda: {"GME": {"count": "beaucoup"},
+                                 "AMC": {"count": 12}})
+    assert [t["symbol"] for t in pr._sweep_targets("tester")] == ["AAPL", "AMC"]

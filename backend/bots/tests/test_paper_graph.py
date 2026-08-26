@@ -108,6 +108,33 @@ def test_a_watch_headline_is_a_catalyst_node():
     assert built["edges"][0]["sentiment"] == "watch"
 
 
+def test_a_neutral_headline_reaches_its_anchor_but_never_colours_the_edge():
+    """Depuis le 26/08 ``newswatch`` garde quelques titres NEUTRES par symbole
+    (sans eux la branche presse était VIDE : 0 event mesuré sur le compte
+    réel). Ils font un nœud « news » comme les autres, mais leur arête sort
+    SANS tonalité — un lien qui ne dit rien ne doit pas se peindre."""
+    built = build(
+        anchors=[{"symbol": "AAPL", "kind": "position"}],
+        events=[{"ts": _iso(hours_ago=2), "symbol": "AAPL",
+                 "title": "Apple nomme un directeur financier",
+                 "link": "http://n/n1", "sentiment": graph.NEUTRAL_SENTIMENT,
+                 "muted": True}])
+    news = node_by_type(built, "news")
+    assert len(news) == 1 and news[0]["sentiment"] == "neutral"
+    assert built["edges"] == [{"source": news[0]["id"], "target": "AAPL",
+                               "type": graph.EDGE_SYMBOL}]
+
+
+def test_a_neutral_headline_appears_in_the_branch_of_its_symbol():
+    built = build(
+        anchors=[{"symbol": "AAPL", "kind": "position"}],
+        events=[{"ts": _iso(hours_ago=2), "symbol": "AAPL", "title": "Neutre",
+                 "link": "http://n/n1", "sentiment": graph.NEUTRAL_SENTIMENT}],
+        symbol="AAPL")
+    assert [n["label"] for n in node_by_type(built, "news")] == ["Neutre"]
+    assert "sentiment" not in built["edges"][0]
+
+
 def test_a_hypothesis_links_to_a_watchlist_symbol_by_ticker():
     built = build(
         anchors=[{"symbol": "AAPL", "name": "Apple Inc", "kind": "watchlist"}],
@@ -254,13 +281,33 @@ def test_an_info_matching_no_anchor_is_omitted():
     assert built["edges"] == []
 
 
-def test_a_hypothesis_on_no_anchor_is_omitted():
+def test_a_hypothesis_on_no_anchor_joins_the_radar_grove():
+    """Le « Canada invisible » (mesure du 26/08) : les paris du radar sur des
+    tickers non détenus n'apparaissaient NULLE PART. Ils sont du premier rang —
+    ils rejoignent leur propre bosquet, avec leurs tickers en meta."""
     built = build(
         anchors=[{"symbol": "AAPL", "kind": "position"}],
         hypotheses=[{"id": "h9", "status": "open", "created_at": _iso(),
-                     "thesis": "Une idée sur un titre qu'on ne suit pas",
-                     "tickers": ["ZZZZ"]}])
-    assert ids(built["nodes"]) == ["AAPL"]
+                     "thesis": "Le rail canadien profite du blé",
+                     "tickers": ["CNI", "CP"]}])
+    hyp = node_by_type(built, "hypothesis")[0]
+    assert hyp["id"] == "hyp:h9" and hyp["meta"] == {"tickers": ["CNI", "CP"]}
+    assert graph.RADAR_ID in ids(built["nodes"])
+    assert built["edges"] == [{"source": "hyp:h9", "target": graph.RADAR_ID,
+                               "type": graph.EDGE_CONTEXT}]
+
+
+def test_a_hypothesis_with_an_anchored_ticker_stays_a_branch():
+    """Un ticker ancré -> la branche, comme avant : le bosquet radar est le
+    RECOURS des orphelines, pas un nouveau passage obligé."""
+    built = build(
+        anchors=[{"symbol": "AAPL", "kind": "position"}],
+        hypotheses=[{"id": "h1", "status": "open", "created_at": _iso(),
+                     "thesis": "Le cycle du iPhone repart",
+                     "tickers": ["AAPL", "ZZZZ"]}])
+    assert graph.RADAR_ID not in ids(built["nodes"])
+    assert built["edges"] == [{"source": "hyp:h1", "target": "AAPL",
+                               "type": graph.EDGE_TICKER}]
 
 
 # --------------------------------------------------------------------------- #
@@ -488,15 +535,162 @@ def test_the_pivot_never_dangles_when_the_edge_cap_cuts_its_link():
     assert node_by_type(built, graph.CONTEXT_TYPE) == []
 
 
-def test_the_pivot_disappears_when_the_cap_eats_all_its_satellites():
-    """Un « Monde » solitaire ne dirait rien : il ne sort que si au moins un
-    satellite survit à la coupe."""
+def test_a_grove_is_never_starved_by_the_branches():
+    """Le budget du bosquet est PRIS À PART : 120 dépêches de branche saturent
+    le plafond, la seule annonce politique garde quand même sa place et son
+    pivot. C'est l'autre moitié de la mesure du 26/08 — avant, le décor et le
+    sujet se disputaient les mêmes 80 places, dans les deux sens."""
     events = _many_events(120)
     events.append({"ts": _iso(days_ago=6), "symbol": "GOV", "title": "Vieux tarifs",
                    "link": "http://g/old", "sentiment": "gov"})
     built = build(anchors=[{"symbol": "AAPL", "kind": "position"}], events=events)
+    assert built["truncated"] is True                    # les branches, elles, coupent
+    assert [n["label"] for n in node_by_type(built, "gov")] == ["Vieux tarifs"]
+    assert [e for e in built["edges"] if e["target"] == graph.WORLD_ID]
+    assert graph.WORLD_ID in ids(built["nodes"])
+
+
+# --------------------------------------------------------------------------- #
+# Sous-plafonds PAR BOSQUET + agrégat
+#
+# La mesure du 26/08 sur le compte réel : ``_build_graph("Massii08")`` rendait
+# 81 nœuds dont 79 annonces politiques, 1 ancre et 1 pivot, ``truncated: true``.
+# Le décor avait mangé le sujet.
+# --------------------------------------------------------------------------- #
+
+def _many_gov(count):
+    """``count`` annonces politiques, la n° 0 étant la plus RÉCENTE."""
+    return [{"ts": _iso(hours_ago=i + 1), "symbol": "GOV",
+             "title": "Annonce %03d" % i, "link": "http://g/%03d" % i,
+             "sentiment": "gov"} for i in range(count)]
+
+
+def aggregates(built):
+    return [n for n in built["nodes"] if n["type"] == graph.AGGREGATE_TYPE]
+
+
+def test_the_measured_scenario_a_grove_no_longer_eats_the_whole_graph():
+    """79 gov + 1 ancre : le bosquet se réduit à 12 + un agrégat « +67 », les
+    branches restent entières, et rien n'est tronqué — l'agrégat DIT ce qu'il
+    reste, donc rien n'a été perdu en silence."""
+    built = build(anchors=[{"symbol": "AAPL", "kind": "position"}],
+                  events=_many_gov(79) + _many_events(3))
+
+    assert len(node_by_type(built, "gov")) == graph.MAX_GROVE
+    assert aggregates(built) == [{"id": "agg:monde", "type": "aggregate",
+                                  "label": "+67 autres", "symbol": "", "ts": "",
+                                  "meta": {"count": 67}}]
+    assert len(node_by_type(built, "news")) == 3        # branches intactes
+    assert built["truncated"] is False
+    assert graph.WORLD_ID in ids(built["nodes"])
+
+
+def test_the_aggregate_hangs_on_its_pivot_and_the_overflow_carries_no_edge():
+    built = build(events=_many_gov(20))
+    world_edges = [e for e in built["edges"] if e["target"] == graph.WORLD_ID]
+    # 12 satellites + l'agrégat, jamais les 8 laissés dehors.
+    assert len(world_edges) == graph.MAX_GROVE + 1
+    assert world_edges[-1] == {"source": "agg:monde", "target": graph.WORLD_ID,
+                               "type": graph.EDGE_CONTEXT}
+    assert len(node_by_type(built, "gov")) == graph.MAX_GROVE
+
+
+def test_the_grove_keeps_the_most_recent():
+    built = build(events=_many_gov(20))
+    labels = [n["label"] for n in node_by_type(built, "gov")]
+    assert labels[0] == "Annonce 000"                   # la plus récente
+    assert "Annonce 019" not in labels                  # la plus vieille saute
+
+
+def test_a_grove_just_at_its_cap_has_no_aggregate():
+    built = build(events=_many_gov(graph.MAX_GROVE))
+    assert len(node_by_type(built, "gov")) == graph.MAX_GROVE
+    assert aggregates(built) == []
+
+
+def test_each_grove_has_its_OWN_budget():
+    """Les bosquets ne se partagent pas un pot commun : « monde » saturé ne
+    coûte pas une place à « foule », ni au « radar »."""
+    built = build(
+        events=_many_gov(40),
+        reddit_trends={"SYM%02d" % i: {"count": 50 - i, "prev": 0}
+                       for i in range(5)},
+        hypotheses=[{"id": "h%d" % i, "status": "open", "created_at": _iso(),
+                     "thesis": "Pari %d" % i, "tickers": ["ZZZ%d" % i]}
+                    for i in range(4)])
+    assert len(node_by_type(built, "gov")) == graph.MAX_GROVE
+    assert len(node_by_type(built, graph.TREND_TYPE)) == 5
+    assert len(node_by_type(built, "hypothesis")) == 4
+    assert {n["id"] for n in node_by_type(built, graph.CONTEXT_TYPE)} == {
+        graph.WORLD_ID, graph.CROWD_ID, graph.RADAR_ID}
+
+
+def test_a_saturated_grove_never_costs_an_anchor():
+    """La règle intangible tient aussi avec les bosquets : 90 ancres restent 90
+    ancres, quoi qu'il arrive à côté."""
+    anchors = [{"symbol": "SYM%03d" % i, "kind": "position"} for i in range(90)]
+    built = build(anchors=anchors, events=_many_gov(50))
+    assert sum(1 for k in types_of(built["nodes"]).values()
+               if k == "position") == 90
+    assert len(node_by_type(built, "gov")) == graph.MAX_GROVE
+
+
+# --------------------------------------------------------------------------- #
+# Le bosquet du radar (hypothèses sans ticker ancré)
+# --------------------------------------------------------------------------- #
+
+def _hyp(id_, status="open", thesis=None, days_ago=0, tickers=("ZZZZ",)):
+    row = {"id": id_, "status": status, "thesis": thesis or "Thèse %s" % id_,
+           "tickers": list(tickers), "created_at": _iso(days_ago=days_ago)}
+    if status != "open":
+        row["scored_at"] = _iso(days_ago=days_ago)
+    return row
+
+
+def test_the_radar_grove_shows_open_first_then_the_freshest_verdicts():
+    built = build(hypotheses=[
+        _hyp("vieux_verdict", status="scored", days_ago=5),
+        _hyp("frais_verdict", status="scored", days_ago=1),
+        _hyp("ouverte", days_ago=20)])
+    assert [n["id"] for n in node_by_type(built, "hypothesis")] == [
+        "hyp:ouverte", "hyp:frais_verdict", "hyp:vieux_verdict"]
+
+
+def test_the_radar_grove_is_capped_and_aggregates_the_rest():
+    built = build(hypotheses=[_hyp("h%02d" % i, days_ago=i) for i in range(20)])
+    assert len(node_by_type(built, "hypothesis")) == graph.MAX_GROVE
+    assert aggregates(built) == [{"id": "agg:radar", "type": "aggregate",
+                                  "label": "+8 autres", "symbol": "", "ts": "",
+                                  "meta": {"count": 8}}]
+
+
+def test_the_branch_never_shows_the_radar_pivot():
+    built = build(anchors=[{"symbol": "AAPL", "kind": "position"}],
+                  hypotheses=[_hyp("h9")], symbol="AAPL")
+    assert ids(built["nodes"]) == ["AAPL"]
+    assert graph.RADAR_ID not in ids(built["nodes"])
+
+
+def test_the_radar_pivot_is_absent_without_any_orphan_hypothesis():
+    built = build(anchors=[{"symbol": "AAPL", "kind": "position"}],
+                  hypotheses=[_hyp("h1", tickers=["AAPL"])])
     assert node_by_type(built, graph.CONTEXT_TYPE) == []
-    assert not [e for e in built["edges"] if e["target"] == graph.WORLD_ID]
+
+
+def test_a_hypothesis_without_tickers_carries_no_meta():
+    built = build(hypotheses=[{"id": "h0", "status": "open",
+                               "created_at": _iso(), "thesis": "Sans mesure"}])
+    assert "meta" not in node_by_type(built, "hypothesis")[0]
+
+
+def test_the_groves_are_deterministic():
+    kwargs = {"anchors": [{"symbol": "AAPL", "kind": "position"}],
+              "events": _many_gov(20),
+              "hypotheses": [_hyp("h%02d" % i, days_ago=i % 3)
+                             for i in range(20)],
+              "reddit_trends": {"GME": {"count": 9, "prev": 0},
+                                "TSLA": {"count": 9, "prev": 2}}}
+    assert build(**kwargs) == build(**kwargs)
 
 
 # --------------------------------------------------------------------------- #

@@ -530,6 +530,64 @@ def _items_from(xml_text: str) -> List[Dict[str, Any]]:
     return rows[:MAX_ITEMS_PER_WINDOW]
 
 
+# =========================================================================== #
+#  I/O — balayage FRAIS à la demande (extension 2026-08-26)
+#
+# « Quand le coach génère des idées, il se base sur ce qu'il a ET il peut
+# chercher plus profondément au-delà » (décision utilisateur).
+#
+# Le dossier historique répond à « qu'est-ce que cette année a raconté ». Il ne
+# répond PAS à « qu'est-ce qui est tombé depuis le dernier cycle de veille » —
+# et c'est justement la question qu'on se pose au moment de miser. D'où cette
+# porte : UNE requête, une fenêtre courte, mais le MÊME chemin que la collecte
+# d'archives (requête sur le NOM entre guillemets, parseur de la veille,
+# conseils écartés, sentiment posé). Un second pipeline de presse divergerait
+# du premier en trois semaines.
+# =========================================================================== #
+
+SWEEP_DAYS = 7
+SWEEP_ITEMS = 5
+
+
+def recent_window(days: int = SWEEP_DAYS,
+                  now: Optional[datetime] = None) -> Dict[str, str]:
+    """La fenêtre ``{from, to}`` des ``days`` derniers jours (PUR).
+
+    ``to`` est DEMAIN et non aujourd'hui : Google News traite ``before:`` comme
+    une borne de journée exclusive, et s'arrêter à aujourd'hui écarterait les
+    titres du jour — exactement ceux qu'un balayage « à l'instant » cherche.
+    """
+    ref = _naive(now) if isinstance(now, datetime) else datetime.utcnow()
+    today = ref.date()
+    span = max(1, int(days or SWEEP_DAYS))
+    return {"from": (today - timedelta(days=span)).isoformat(),
+            "to": (today + timedelta(days=1)).isoformat()}
+
+
+def sweep_recent(name: Any, days: int = SWEEP_DAYS, limit: int = SWEEP_ITEMS,
+                 now: Optional[datetime] = None,
+                 fetch: Optional[Callable[[str], str]] = None
+                 ) -> List[Dict[str, Any]]:
+    """Les titres des ``days`` derniers jours pour UN nom — UNE requête.
+
+    Rend ``[{"ts", "title", "sentiment"}]``, du plus récent au plus ancien, au
+    plus ``limit`` lignes. **N'écrit RIEN** : un balayage est une consultation,
+    pas une collecte ; le laisser toucher l'état d'un symbole écraserait un
+    dossier de douze mois par une semaine.
+
+    ⚠️ Contrairement au reste du module, une panne de ``fetch`` est PROPAGÉE.
+    L'appelant est un endpoint interactif : lui seul sait s'il vaut mieux se
+    passer de ce symbole ou se passer de tout le balayage — et un ``[]`` muet
+    lui ferait confondre « rien de neuf » avec « source injoignable ».
+    """
+    term = query_name(name)
+    if not term:
+        return []
+    fetch = fetch or _default_fetch
+    items = _items_from(fetch(search_url(term, recent_window(days, now))))
+    return items[:max(0, int(limit or 0))]
+
+
 def backfill_symbol(symbol: Any, name: Any = None,
                     now: Optional[datetime] = None,
                     fetch: Optional[Callable[[str], str]] = None,

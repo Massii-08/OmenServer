@@ -828,3 +828,92 @@ def test_un_module_absent_est_une_erreur_au_lancement_mais_pas_a_la_lecture(monk
 
     assert c.post("/api/paper/backfill/run", json={}).status_code == 503
     assert c.get("/api/paper/backfill").json() == {"symbols": []}
+
+
+# =========================================================================== #
+#  Balayage FRAIS à la demande (26/08) — « chercher plus profondément au-delà »
+#
+#  Le dossier historique dit ce que l'année a raconté ; il ne dit pas ce qui est
+#  tombé depuis le dernier cycle de veille. C'est ce que cette porte va chercher,
+#  au clic, en UNE requête.
+# =========================================================================== #
+
+def test_la_fenetre_du_balayage_couvre_bien_les_sept_derniers_jours():
+    window = backfill.recent_window(now=NOW)
+    assert window["from"] == (NOW.date() - timedelta(days=7)).isoformat()
+    # ``before:`` est une borne de JOURNÉE exclusive côté Google News : s'arrêter
+    # à aujourd'hui écarterait les titres du jour, ceux qu'on vient chercher.
+    assert window["to"] == (NOW.date() + timedelta(days=1)).isoformat()
+
+
+def test_le_balayage_rend_les_titres_recents_du_plus_frais_au_plus_vieux():
+    xml = _rss([_item("NVIDIA beats estimates", NOW - timedelta(days=1)),
+                _item("NVIDIA ouvre un centre de recherche", NOW - timedelta(days=5))])
+    rows = backfill.sweep_recent("NVIDIA Corporation", now=NOW,
+                                 fetch=lambda url: xml)
+    assert [row["title"] for row in rows] == ["NVIDIA beats estimates",
+                                              "NVIDIA ouvre un centre de recherche"]
+    assert [row["sentiment"] for row in rows] == ["pos", "neutre"]
+
+
+def test_le_balayage_interroge_le_NOM_sans_sa_forme_juridique():
+    seen = []
+
+    def _fetch(url):
+        seen.append(url)
+        return _rss([])
+
+    backfill.sweep_recent("NVIDIA Corporation", now=NOW, fetch=_fetch)
+    assert len(seen) == 1                      # UNE requête, pas quatre
+    assert "NVIDIA" in seen[0] and "Corporation" not in seen[0]
+    assert "after%3A" in seen[0] and "before%3A" in seen[0]
+
+
+def test_le_balayage_ecarte_les_conseils_comme_les_archives():
+    """Doctrine Market Pulse (piège #67d) : un conseil recopié se lirait comme
+    l'avis DU COACH — la porte fraîche ne le rouvre pas."""
+    xml = _rss([_item("3 top stocks to buy now", NOW - timedelta(days=1)),
+                _item("NVIDIA beats estimates", NOW - timedelta(days=2))])
+    rows = backfill.sweep_recent("NVIDIA", now=NOW, fetch=lambda url: xml)
+    assert [row["title"] for row in rows] == ["NVIDIA beats estimates"]
+
+
+def test_le_balayage_est_borne_en_nombre_de_titres():
+    xml = _rss([_item("Titre %02d" % i, NOW - timedelta(hours=i))
+                for i in range(20)])
+    rows = backfill.sweep_recent("NVIDIA", now=NOW, fetch=lambda url: xml)
+    assert len(rows) == backfill.SWEEP_ITEMS == 5
+    assert rows[0]["title"] == "Titre 00"      # le plus récent
+
+
+def test_le_balayage_n_ECRIT_rien():
+    """Une consultation n'est pas une collecte : laisser le balayage toucher
+    l'état écraserait douze mois d'archives par une semaine."""
+    backfill.save_state(_state_with("NVDA"))
+    before = json.dumps(backfill.load_state(), sort_keys=True)
+
+    backfill.sweep_recent("NVIDIA", now=NOW,
+                          fetch=lambda url: _rss([_item("Neuf", NOW)]))
+
+    assert json.dumps(backfill.load_state(), sort_keys=True) == before
+
+
+def test_un_nom_vide_ne_declenche_aucune_requete():
+    """Sans nom, la requête ramènerait la une du jour — on préfère ne rien
+    demander (même prudence que ``search_url``)."""
+    def _boom(url):
+        raise AssertionError("aucune requête ne devrait partir")
+
+    assert backfill.sweep_recent("", now=NOW, fetch=_boom) == []
+    assert backfill.sweep_recent(None, now=NOW, fetch=_boom) == []
+
+
+def test_une_panne_du_balayage_est_PROPAGEE_a_l_appelant():
+    """Contrairement au reste du module : seul l'appelant sait s'il vaut mieux
+    se passer de ce symbole ou de tout le balayage — et un ``[]`` muet lui
+    ferait confondre « rien de neuf » avec « source injoignable »."""
+    def _boom(url):
+        raise RuntimeError("Google News injoignable")
+
+    with pytest.raises(RuntimeError):
+        backfill.sweep_recent("NVIDIA", now=NOW, fetch=_boom)

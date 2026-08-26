@@ -29,6 +29,7 @@ Les flux de trésorerie réels, eux, portent bien le taux de chaque transaction.
 import hashlib
 import json
 import logging
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -1836,6 +1837,284 @@ def _backfill_digest(symbols: Any,
         return {}
 
 
+# --------------------------------------------------------------------------- #
+# Balayage FRAIS — le coach cherche AU-DELÀ de ce qu'il a
+#
+# Décision utilisateur (26/08) : « quand le coach génère des idées, il se base
+# sur ce qu'il a ET il peut chercher plus profondément au-delà ».
+#
+# Ce que la mémoire ne peut pas donner : la veille tourne toutes les 5 minutes
+# mais seulement sur les titres SUIVIS, le dossier historique a 30 jours de
+# fraîcheur, et les tendances Reddit ne sont que des compteurs. Au moment PRÉCIS
+# où Massii clique, rien ne garantit qu'une dépêche des trois derniers jours a
+# été vue. On va donc la chercher — à la demande, jamais en tâche de fond.
+#
+# Trois bornes, parce qu'un endpoint interactif attend :
+#   * SWEEP_MAX_SYMBOLS symboles au plus, ancres D'ABORD (ce qu'il détient et
+#     suit est le sujet ; les tendances ne prennent que les places qui restent —
+#     conséquence assumée : un gros portefeuille consomme tout le budget et le
+#     balayage reste alors sur ses propres titres) ;
+#   * une SEULE requête de presse par symbole, espacée de SWEEP_PACE_S
+#     (piège #67 : un burst vaut un 429) -> ~5,5 s d'attente au pire ;
+#   * best-effort INTÉGRAL — un symbole muet coûte sa ligne, une panne totale
+#     coûte la clé entière, et l'appel au modèle part quand même. Le coach a
+#     toujours su répondre sans ce balayage : il répondait juste sans.
+# --------------------------------------------------------------------------- #
+
+SWEEP_MAX_SYMBOLS = 6
+SWEEP_TREND_MAX = 3
+SWEEP_PACE_S = 1.1
+SWEEP_MOMENTUM_DAYS = 7
+SWEEP_MOMENTUM_RANGE = "1mo"
+
+
+def _positive_int(value: Any) -> int:
+    """Un compteur lu d'un état sur disque — illisible vaut 0 (PUR)."""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sweep_targets(username: str) -> List[Dict[str, str]]:
+    """Les ``[{"symbol", "name"}]`` à balayer : ancres puis foule (best-effort).
+
+    Les ancres viennent des positions et de la watchlist ; seule la watchlist
+    porte un NOM (``models.Position`` n'en a pas), et c'est le nom qui fait une
+    bonne requête de presse — d'où la fusion, comme dans ``_graph_inputs``.
+
+    Les tendances Reddit apportent ce que la mémoire ne peut pas apporter : un
+    ticker dont on ne sait RIEN parce qu'on ne le suit pas. C'est là qu'on
+    découvre un titre, donc elles entrent dans le balayage même sans nom (la
+    requête retombera sur la racine du ticker).
+    """
+    targets: List[Dict[str, str]] = []
+    seen = set()
+
+    def _add(symbol: Any, name: Any = "") -> None:
+        key = str(symbol or "").strip().upper()
+        if not key or key in seen or len(targets) >= SWEEP_MAX_SYMBOLS:
+            return
+        seen.add(key)
+        targets.append({"symbol": key, "name": str(name or "").strip()})
+
+    try:
+        for position in _load(username).positions:
+            _add(position.symbol)
+    except Exception as e:                          # noqa: BLE001 — best-effort
+        logger.warning("paper: portefeuille indisponible pour le balayage: %s", e)
+    for row in _watchlist_context(username):
+        _add(row.get("symbol"), row.get("name"))
+
+    # Les plus mentionnés d'abord ; le symbole tranche les ex æquo pour que deux
+    # clics d'affilée balayent la même chose. Un état de tendances abîmé
+    # (compteur non numérique) ne doit JAMAIS faire tomber l'endpoint : il coûte
+    # la découverte, pas la réponse.
+    try:
+        ranked = sorted(
+            (-_positive_int((row or {}).get("count")), str(symbol or "").upper())
+            for symbol, row in (_reddit_trends() or {}).items()
+            if isinstance(row, dict))
+    except Exception as e:                          # noqa: BLE001
+        logger.warning("paper: tendances illisibles pour le balayage: %s", e)
+        ranked = []
+    for neg_count, symbol in ranked[:SWEEP_TREND_MAX]:
+        if neg_count < 0:                           # « SYM ×0 » n'est pas une tendance
+            _add(symbol)
+    return targets
+
+
+def _pct_over_days(candles: Any, days: int, now_ts: float) -> Optional[float]:
+    """Variation % entre la dernière clôture et celle d'il y a ``days`` jours
+    (PUR). ``None`` dès qu'un des deux bouts manque — mieux vaut pas de chiffre
+    qu'un chiffre mesuré contre la mauvaise séance.
+
+    La référence est la clôture la plus RÉCENTE parmi celles antérieures à la
+    borne : sept jours calendaires ne tombent pas sur une séance (week-ends,
+    fériés), et exiger une bougie pile à la date ne rendrait presque jamais rien.
+    """
+    rows = [c for c in (candles or [])
+            if isinstance(c, dict) and c.get("close") is not None]
+    if len(rows) < 2:
+        return None
+    cutoff = now_ts - days * 86400
+    ref = None
+    for candle in rows[:-1]:
+        try:
+            when = float(candle.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        if when <= cutoff:
+            ref = candle["close"]
+    if ref is None:
+        ref = rows[0]["close"]                      # série plus courte que la fenêtre
+    try:
+        ref = float(ref)
+        last = float(rows[-1]["close"])
+    except (TypeError, ValueError):
+        return None
+    if ref == 0:
+        return None
+    return round((last - ref) / ref * 100.0, 2)
+
+
+def _fresh_momentum(symbol: str, now_ts: float) -> Dict[str, Any]:
+    """``{prix, pct_7j}`` d'un symbole — best-effort STRICT.
+
+    Une seule requête de bougies (le cours courant en est la dernière clôture) :
+    demander en plus une cotation doublerait le trafic pour la même information.
+    Panne ou symbole inconnu -> ``{}``, jamais une exception.
+    """
+    try:
+        candles = quotes.get_candles(symbol, SWEEP_MOMENTUM_RANGE, "1d")
+    except Exception:                               # noqa: BLE001 — cours muet
+        return {}
+    rows = [c for c in (candles or [])
+            if isinstance(c, dict) and c.get("close") is not None]
+    if not rows:
+        return {}
+    out: Dict[str, Any] = {"prix": rows[-1]["close"]}
+    pct = _pct_over_days(rows, SWEEP_MOMENTUM_DAYS, now_ts)
+    if pct is not None:
+        out["pct_7j"] = pct
+    return out
+
+
+def _fresh_sweep(targets: Any,
+                 fetch: Optional[Callable[[str], str]] = None,
+                 sleep: Optional[Callable[[float], None]] = None
+                 ) -> Dict[str, Any]:
+    """Le balayage de presse + momentum fait AU CLIC — best-effort intégral.
+
+    Rend le bloc ``recherche_fraiche`` du contexte, ou ``{}`` quand rien n'a pu
+    être récolté : la clé est alors ABSENTE du contexte, et le prompt n'annonce
+    pas une section qui n'existe pas (le modèle croirait à un silence de la
+    presse là où il n'y a qu'une panne).
+
+    Une liste de titres VIDE pour un symbole, elle, est CONSERVÉE : « rien de
+    neuf sur sept jours » est une information, et elle se distingue d'un symbole
+    absent — c'est ce que la consigne du prompt explique au modèle.
+
+    ``fetch`` et ``sleep`` sont injectables : les tests tournent hors ligne et
+    sans attendre.
+    """
+    rows = [t for t in (targets or []) if isinstance(t, dict) and t.get("symbol")]
+    if not rows:
+        return {}
+    try:
+        backfill_mod = _backfill()
+    except ImportError:
+        return {}
+
+    sleep = sleep if sleep is not None else time.sleep
+    now_ts = time.time()
+    titles: Dict[str, Any] = {}
+    momentum: Dict[str, Any] = {}
+    reached = 0
+
+    for index, target in enumerate(rows):
+        symbol = target["symbol"]
+        if index:
+            try:
+                sleep(SWEEP_PACE_S)
+            except Exception:                       # noqa: BLE001 — horloge injectée bavarde
+                pass
+        try:
+            items = backfill_mod.sweep_recent(target.get("name") or symbol,
+                                              fetch=fetch)
+        except Exception as e:                      # noqa: BLE001 — source muette
+            logger.warning("paper: balayage frais muet pour %s: %s", symbol, e)
+        else:
+            titles[symbol] = list(items or [])
+            reached += 1
+        shot = _fresh_momentum(symbol, now_ts)
+        if shot:
+            momentum[symbol] = shot
+
+    if not reached and not momentum:
+        return {}                                   # panne totale -> clé absente
+    out: Dict[str, Any] = {"fenetre_jours": backfill_mod.SWEEP_DAYS,
+                           "fait_a": _now_iso()}
+    if titles:
+        out["titres"] = titles
+    if momentum:
+        out["momentum"] = momentum
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Auto-backfill des tickers que le coach vient de CHOISIR
+#
+# Doctrine : **la curiosité du coach nourrit sa base.** La file de travail
+# nocturne ne collecte que les ANCRES (positions ∪ watchlist) — un ticker que le
+# coach découvre aujourd'hui n'y entrera que le jour où Massii l'aura mis en
+# watchlist, c'est-à-dire trop tard pour la prochaine série d'idées. En le
+# collectant tout de suite, la deuxième fois qu'on parlera de ce titre, on aura
+# douze mois de recul dessus.
+#
+# Cap à IDEAS_BACKFILL_MAX : une collecte coûte 4 requêtes espacées de 1,1 s,
+# soit ~3,3 s d'attente par ticker, AJOUTÉES à une réponse déjà payée. Deux, pas
+# plus. Les autres ne sont pas perdus : ils reviendront au prochain clic (ils
+# seront toujours absents du dossier), ou par la file nocturne dès qu'ils
+# deviendront des ancres.
+# --------------------------------------------------------------------------- #
+
+IDEAS_BACKFILL_MAX = 2
+
+
+def _backfill_new_tickers(ideas: Any,
+                          fetch: Optional[Callable[[str], str]] = None,
+                          sleep: Optional[Callable[[float], None]] = None
+                          ) -> List[str]:
+    """Collecte le dossier des tickers INCONNUS du bloc d'idées (best-effort).
+
+    « Inconnu » = aucune entrée dans l'état du backfill. Un dossier PÉRIMÉ n'est
+    pas rafraîchi ici : ce serait le travail de la file nocturne, et le refaire
+    dans le chemin d'un endpoint coûterait la latence sans rien apprendre de
+    neuf (``backfill_symbol`` le sauterait de toute façon, il est frais 30 j).
+
+    Rend la liste des symboles réellement collectés — jamais une exception.
+    """
+    try:
+        backfill_mod = _backfill()
+    except ImportError:
+        return []
+
+    wanted: List[str] = []
+    seen = set()
+    for idea in (ideas or []):
+        if not isinstance(idea, dict):
+            continue
+        symbol = str(idea.get("ticker") or "").strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        try:
+            known = bool(backfill_mod.entry_for(symbol))
+        except Exception:                           # noqa: BLE001 — état illisible
+            known = True                            # dans le doute, on ne collecte pas
+        if not known:
+            wanted.append(symbol)
+
+    done: List[str] = []
+    for symbol in wanted[:IDEAS_BACKFILL_MAX]:
+        # Le NOM fait la requête (piège #29a) : sans lui, « ASML » interroge la
+        # presse sur quatre lettres. Cotation best-effort, repli sur le ticker.
+        try:
+            name = str((quotes.get_quote(symbol) or {}).get("name") or "").strip()
+        except Exception:                           # noqa: BLE001
+            name = ""
+        try:
+            result = backfill_mod.backfill_symbol(symbol, name=name or None,
+                                                  fetch=fetch, sleep=sleep)
+        except Exception as e:                      # noqa: BLE001 — jamais fatal
+            logger.warning("paper: dossier non collecté pour %s: %s", symbol, e)
+            continue
+        if isinstance(result, dict) and result.get("reason") == "collected":
+            done.append(symbol)
+    return done
+
+
 class BackfillPayload(BaseModel):
     """Corps de ``POST /backfill/run``. Défini ICI, à côté de son endpoint,
     plutôt qu'avec les autres modèles : ce lot a été écrit en parallèle d'un
@@ -2301,6 +2580,12 @@ def paper_ideas(data: IdeasPayload,
     lang = normalize_lang(data.lang)
     risk_level = llm.normalize_risk_level(data.risk_level)
     context = _strategy_context(username, risk_level=data.risk_level)
+    # Il se base sur ce qu'il A (le contexte ci-dessus, la mémoire) ET il va
+    # voir AU-DELÀ, à la seconde du clic. Best-effort : rien récolté -> pas de
+    # clé, et l'appel au modèle part quand même.
+    sweep = _fresh_sweep(_sweep_targets(username))
+    if sweep:
+        context["recherche_fraiche"] = sweep
     journal = _journal_summary(username)
 
     try:
@@ -2309,6 +2594,9 @@ def paper_ideas(data: IdeasPayload,
         raise HTTPException(status_code=502, detail=str(e)[:300])
 
     ideas = _register_radar_ideas(_parse_ideas_json(text, risk_level), _now_iso())
+    # La curiosité du coach nourrit sa base : les titres qu'il vient de choisir
+    # et sur lesquels on n'a aucun recul sont collectés maintenant (cap 2).
+    _backfill_new_tickers(ideas)
     _pipeline_from_ideas(username, ideas)
     _journal_append(username, "ideas", text, lang=lang, risk_level=risk_level,
                     ideas=ideas)
@@ -2861,6 +3149,12 @@ def paper_board_scenarios_generate(data: BoardScenarioPayload,
     username = current_user.username
     context = _strategy_context(username)
     context["pipeline"] = _pipeline_view(username)
+    # Même balayage frais que ``/ideas`` : cartographier les chemins possibles
+    # à partir d'une actualité vieille de plusieurs heures dessinerait l'arbre
+    # d'hier. Best-effort, comme là-bas.
+    sweep = _fresh_sweep(_sweep_targets(username))
+    if sweep:
+        context["recherche_fraiche"] = sweep
 
     lang = normalize_lang(data.lang)
     try:

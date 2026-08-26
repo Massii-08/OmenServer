@@ -24,14 +24,22 @@ Trois règles qui tiennent le graphe honnête :
    ou un nom d'émetteur rapproché par ``whales.match_issuer`` — jamais sur une
    intuition. Ce qui ne se rattache à rien de connu n'est pas rattaché.
 2. **Un graphe montre des connexions, pas un dépotoir.** Une info qui ne
-   touche aucune ancre est OMISE de la vue globale. Deux exceptions, et deux
+   touche aucune ancre est OMISE de la vue globale. Trois exceptions, et trois
    seulement : le macro (annonce politique, actualité crypto sans titre nommé)
-   rejoint un pivot unique « monde » ; les tendances Reddit rejoignent un
-   second pivot « foule ». Ni l'un ni l'autre n'est relié à une ancre — donc
-   aucun des deux n'apparaît dans une branche par titre.
+   rejoint un pivot « monde » ; les tendances Reddit rejoignent un pivot
+   « foule » ; les hypothèses du radar dont aucun ticker n'est ancré rejoignent
+   un pivot « radar ». Aucun des trois n'est relié à une ancre — donc aucun
+   n'apparaît dans une branche par titre.
 3. **Les ancres ne se coupent jamais.** Quand le plafond mord, on garde toutes
    les ancres et on sacrifie les infos les plus VIEILLES ; le retour porte
    alors ``truncated: True``, jamais un silence.
+4. **Un bosquet ne mange pas les branches.** Chaque pivot a son PROPRE
+   sous-plafond (``MAX_GROVE``), pris HORS du budget des branches ; le
+   débordement devient UN nœud d'agrégat « +N autres ». Mesuré le 26/08 sur le
+   compte réel : 79 annonces politiques avaient rempli les 80 places, ne
+   laissant au graphe qu'une ancre et un pivot — le sujet du graphe expulsé
+   par son décor. Un débordement de bosquet ne lève PAS ``truncated`` : rien
+   n'est perdu en silence, l'agrégat dit combien il en reste.
 
 Module PUR au sens du dépôt : aucune I/O, aucune écriture, aucune horloge
 implicite (``now`` est un paramètre). Le seul import du dehors est PARESSEUX et
@@ -71,12 +79,36 @@ CLOSED_STAGE = "clos"
 INFO_TYPES = ("news", "catalyst", "gov", "crypto", "x", "reddit", "hypothesis",
               "whale_move", "reddit_trend")
 
-# Les deux pivots — reliés à RIEN d'autre que leurs satellites.
+# Les trois pivots — reliés à RIEN d'autre que leurs satellites.
 CONTEXT_TYPE = "context"
 WORLD_ID = "monde"
 WORLD_LABEL = "Monde"
 CROWD_ID = "foule"
 CROWD_LABEL = "Foule Reddit"
+RADAR_ID = "radar"
+RADAR_LABEL = "Radar"
+
+# L'ORDRE d'émission des bosquets — figé pour que deux appels rendent
+# exactement le même graphe.
+PIVOT_IDS = (WORLD_ID, CROWD_ID, RADAR_ID)
+_PIVOT_LABELS = {WORLD_ID: WORLD_LABEL, CROWD_ID: CROWD_LABEL,
+                 RADAR_ID: RADAR_LABEL}
+
+# Sous-plafond PAR bosquet, PRIS HORS du budget des branches. Douze satellites
+# suffisent à dire « il se passe quelque chose de ce côté » ; au-delà on ne lit
+# plus un bosquet, on le subit — et surtout il expulsait les branches, qui sont
+# le SUJET du graphe (mesure du 26/08, cf. règle 4 en tête de fichier).
+MAX_GROVE = 12
+
+# Le nœud qui dit ce que le sous-plafond a laissé dehors. Un seul par bosquet :
+# « +67 autres » se lit, 67 points anonymes ne se lisent pas.
+AGGREGATE_TYPE = "aggregate"
+_AGGREGATE_PREFIX = "agg:"
+
+# Tonalité d'une dépêche que ``newswatch.classify`` n'a pas su qualifier. Elle
+# fait un nœud comme les autres (la branche presse serait vide sans elle) mais
+# ne colore AUCUNE arête : un lien sans tonalité se dessine en bordure neutre.
+NEUTRAL_SENTIMENT = "neutral"
 
 # Les familles qui ont droit au pivot « monde » quand elles ne nomment aucun
 # titre. Une dépêche d'entreprise orpheline, elle, est simplement omise : on ne
@@ -320,7 +352,14 @@ def _event_node(event: Dict[str, Any]) -> Dict[str, Any]:
 def _hypothesis_node(hyp: Dict[str, Any]) -> Dict[str, Any]:
     """Un nœud d'hypothèse du radar. La date qui compte est celle du VERDICT
     quand il existe : une hypothèse notée hier est une nouvelle d'hier, même si
-    elle a été écrite il y a trois semaines."""
+    elle a été écrite il y a trois semaines.
+
+    Les tickers voyagent dans ``meta`` : quand AUCUN n'est ancré, l'hypothèse
+    part au bosquet « radar » sans la moindre arête, et sans eux le lecteur
+    n'aurait aucun moyen de savoir sur quoi elle se mesure (c'est exactement le
+    « Canada invisible » du 26/08 — les paris CNI/CP n'apparaissaient nulle
+    part parce qu'aucun de leurs tickers n'était détenu).
+    """
     thesis = _text(hyp.get("thesis"))
     node: Dict[str, Any] = {
         "id": "hyp:" + (_text(hyp.get("id")) or _hash("hyp", thesis)),
@@ -334,6 +373,9 @@ def _hypothesis_node(hyp: Dict[str, Any]) -> Dict[str, Any]:
     level = _text(hyp.get("risk_level"))
     if level:
         node["level"] = level
+    tickers = _tickers(hyp)
+    if tickers:
+        node["meta"] = {"tickers": tickers}
     return node
 
 
@@ -464,14 +506,44 @@ def _is_macro(node: Dict[str, Any]) -> bool:
     return node.get("type") in PIVOT_TYPES or _sentiment(node) == "gov"
 
 
-def _world_node() -> Dict[str, Any]:
-    return {"id": WORLD_ID, "type": CONTEXT_TYPE, "label": WORLD_LABEL,
+def _pivot_node(pivot_id: str) -> Dict[str, Any]:
+    return {"id": pivot_id, "type": CONTEXT_TYPE,
+            "label": _PIVOT_LABELS.get(pivot_id, pivot_id),
             "symbol": "", "ts": ""}
 
 
-def _crowd_node() -> Dict[str, Any]:
-    return {"id": CROWD_ID, "type": CONTEXT_TYPE, "label": CROWD_LABEL,
-            "symbol": "", "ts": ""}
+def _aggregate_node(pivot_id: str, count: int) -> Dict[str, Any]:
+    """« +N autres » — le reste d'un bosquet, en UN nœud.
+
+    Il n'a pas d'horodatage : il ne représente aucun événement, il compte ce
+    qu'on ne montre pas. C'est ce qui rend un débordement de bosquet HONNÊTE
+    sans lever ``truncated`` : le lecteur voit qu'il y a plus.
+    """
+    return {"id": _AGGREGATE_PREFIX + pivot_id, "type": AGGREGATE_TYPE,
+            "label": "+%d autres" % count, "symbol": "", "ts": "",
+            "meta": {"count": count}}
+
+
+def _edge_tone(node: Dict[str, Any]) -> str:
+    """La tonalité qui a le droit de COLORER une arête.
+
+    ``neutral`` n'en est pas une : une dépêche que le classifieur n'a pas su
+    qualifier ne doit pas peindre son lien comme si elle disait quelque chose.
+    L'arête sort alors sans ``sentiment`` — bordure neutre côté frontend.
+    """
+    tone = _text(node.get("sentiment"))
+    return "" if tone.lower() == NEUTRAL_SENTIMENT else tone
+
+
+def _context_edge(node: Dict[str, Any], pivot_id: str) -> Dict[str, Any]:
+    """L'arête d'un satellite vers SON pivot — même forme que les autres pour
+    que le frontend colore un lien de la même façon qu'il vienne d'une ancre ou
+    d'un bosquet."""
+    edge = {"source": node["id"], "target": pivot_id, "type": EDGE_CONTEXT}
+    tone = _edge_tone(node)
+    if tone:
+        edge["sentiment"] = tone
+    return edge
 
 
 def _recency_key(node: Dict[str, Any]) -> Tuple[int, float, str]:
@@ -492,20 +564,71 @@ def _recency_key(node: Dict[str, Any]) -> Tuple[int, float, str]:
     return (1, 0.0, node["id"])
 
 
+def _radar_key(node: Dict[str, Any]) -> Tuple[Any, ...]:
+    """Dans le bosquet du radar : les hypothèses OUVERTES d'abord (ce sont les
+    paris encore en jeu), les notées ensuite, de la plus fraîche à la plus
+    vieille."""
+    return (0 if _text(node.get("status")) == "open" else 1,) + _recency_key(node)
+
+
+_GROVE_KEYS: Dict[str, Callable[[Dict[str, Any]], Tuple[Any, ...]]] = {
+    RADAR_ID: _radar_key,
+}
+
+
+def _grove(pivot_id: str, members: List[Dict[str, Any]]
+           ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Un bosquet -> ``(nœuds, arêtes)``, sous-plafond appliqué (PUR).
+
+    Les ``MAX_GROVE`` premiers selon la clé du bosquet, puis UN agrégat pour
+    tout le reste. Un bosquet vide ne rend rien — donc pas de pivot, donc pas
+    de nœud solitaire à l'écran.
+    """
+    ordered = sorted(members, key=_GROVE_KEYS.get(pivot_id, _recency_key))
+    shown = ordered[:MAX_GROVE]
+    nodes = list(shown)
+    edges = [_context_edge(node, pivot_id) for node in shown]
+    extra = len(ordered) - len(shown)
+    if extra > 0:
+        aggregate = _aggregate_node(pivot_id, extra)
+        nodes.append(aggregate)
+        edges.append({"source": aggregate["id"], "target": pivot_id,
+                      "type": EDGE_CONTEXT})
+    return nodes, edges
+
+
 def _assemble(anchor_nodes: List[Dict[str, Any]],
               info_nodes: List[Dict[str, Any]],
-              edges: List[Dict[str, Any]]) -> Dict[str, Any]:
+              edges: List[Dict[str, Any]],
+              groves: Optional[Dict[str, List[Dict[str, Any]]]] = None
+              ) -> Dict[str, Any]:
     """Applique les plafonds et recompose ``{nodes, edges, truncated}``.
 
-    Ordre de coupe : **toutes** les ancres d'abord (elles sont le sujet du
-    graphe, jamais l'accessoire), puis les infos les plus récentes jusqu'au
-    plafond, puis les arêtes qui relient ce qui reste.
+    **Deux budgets, pas un.** Les bosquets (``groves`` = ``{pivot: membres}``)
+    sont servis EN PREMIER, chacun dans sa propre limite de ``MAX_GROVE``, et ce
+    qu'ils consomment ne se prend PAS sur les branches : un pivot ne peut donc
+    plus expulser le sujet du graphe. Le débordement d'un bosquet devient un
+    agrégat et ne lève PAS ``truncated`` — rien n'est perdu en silence.
 
-    Les deux pivots (« monde », « foule ») sont émis EN DERNIER, et seulement
-    si une arête les vise encore APRÈS les deux coupes — un pivot solitaire ne
-    dirait rien. Le décider avant laisserait un nœud orphelin le jour où le
-    plafond d'arêtes mord précisément là.
+    Ordre de coupe des branches ensuite : **toutes** les ancres d'abord (elles
+    sont le sujet du graphe, jamais l'accessoire), puis les infos les plus
+    récentes jusqu'au plafond, puis les arêtes qui relient ce qui reste. C'est
+    là, et là seulement, que ``truncated`` se lève.
+
+    Les pivots sont émis EN DERNIER, et seulement si une arête les vise encore
+    APRÈS les deux coupes — un pivot solitaire ne dirait rien. Le décider avant
+    laisserait un nœud orphelin le jour où le plafond d'arêtes mord là.
+
+    Les arêtes de bosquet passent APRÈS celles des branches : quand le plafond
+    d'arêtes mord, c'est le décor qui saute, jamais un lien vers une ancre.
     """
+    grove_nodes: List[Dict[str, Any]] = []
+    grove_edges: List[Dict[str, Any]] = []
+    for pivot_id in PIVOT_IDS:
+        nodes_, edges_ = _grove(pivot_id, (groves or {}).get(pivot_id) or [])
+        grove_nodes.extend(nodes_)
+        grove_edges.extend(edges_)
+
     truncated = False
     ordered = sorted(info_nodes, key=_recency_key)
     room = max(0, MAX_NODES - len(anchor_nodes))
@@ -513,22 +636,21 @@ def _assemble(anchor_nodes: List[Dict[str, Any]],
         ordered = ordered[:room]
         truncated = True
 
-    nodes = list(anchor_nodes) + ordered
+    nodes = list(anchor_nodes) + ordered + grove_nodes
     # Les pivots sont admis d'office comme CIBLES : aucune arête n'en part
     # jamais (ils ne sont reliés qu'à leurs satellites), donc rien ne peut se
     # glisser par là.
-    kept = {node["id"] for node in nodes} | {WORLD_ID, CROWD_ID}
+    kept = {node["id"] for node in nodes} | set(PIVOT_IDS)
 
-    out_edges = [edge for edge in edges
+    out_edges = [edge for edge in list(edges) + grove_edges
                  if edge["source"] in kept and edge["target"] in kept]
     if len(out_edges) > MAX_EDGES:
         out_edges = out_edges[:MAX_EDGES]
         truncated = True
     targets = {edge["target"] for edge in out_edges}
-    if WORLD_ID in targets:
-        nodes.append(_world_node())
-    if CROWD_ID in targets:
-        nodes.append(_crowd_node())
+    for pivot_id in PIVOT_IDS:
+        if pivot_id in targets:
+            nodes.append(_pivot_node(pivot_id))
     return {"nodes": nodes, "edges": out_edges, "truncated": truncated}
 
 
@@ -538,12 +660,13 @@ def build_graph(anchors: Any, events: Any, hypotheses: Any, whale_moves: Any,
     """Le graphe des connexions (PUR) — ``{"nodes", "edges", "truncated"}``.
 
     Sans ``symbol`` : la vue GLOBALE — les ancres, tout ce qui s'y rattache, le
-    pivot « monde » pour le macro qui ne nomme aucun titre, et le pivot
-    « foule » pour les tendances Reddit. Ce qui ne se rattache à rien est OMIS
-    (un graphe montre des connexions).
+    pivot « monde » pour le macro qui ne nomme aucun titre, le pivot « foule »
+    pour les tendances Reddit, et le pivot « radar » pour les hypothèses dont
+    aucun ticker n'est ancré. Ce qui ne se rattache à rien est OMIS (un graphe
+    montre des connexions).
 
     Avec ``symbol`` : la BRANCHE de ce titre — son ancre, ses voisins directs,
-    et les arêtes entre eux uniquement. Les deux pivots n'y entrent jamais : ils
+    et les arêtes entre eux uniquement. Les pivots n'y entrent jamais : ils
     ne sont reliés à aucune ancre, donc ils ne sont les voisins de personne. Un
     symbole qui n'est ni détenu, ni suivi, ni en projet n'a pas d'ancre : la
     branche est alors VIDE plutôt que d'inventer un centre que la mémoire ne
@@ -576,7 +699,7 @@ def build_graph(anchors: Any, events: Any, hypotheses: Any, whale_moves: Any,
                 continue
             seen_edges.add(key)
             edge = {"source": node["id"], "target": target, "type": edge_type}
-            tone = _text(node.get("sentiment"))
+            tone = _edge_tone(node)
             if tone:
                 edge["sentiment"] = tone
             edges.append(edge)
@@ -605,14 +728,14 @@ def build_graph(anchors: Any, events: Any, hypotheses: Any, whale_moves: Any,
 
     # Le bosquet de la foule. Chaque tendance rejoint TOUJOURS son pivot — un
     # ticker dont Reddit parle a sa place à l'écran même si le portefeuille ne
-    # le connaît pas, c'est précisément là qu'on découvre un titre. Et quand ce
-    # ticker EST une ancre, il gagne EN PLUS une arête vers elle : il apparaît
-    # alors dans la branche de ce titre, à côté des dépêches qui le concernent.
+    # le connaît pas, c'est précisément là qu'on découvre un titre. L'arête
+    # vers le pivot est posée par ``_grove`` (le bosquet possède ses liens,
+    # comme les deux autres). Quand ce ticker EST une ancre, il gagne EN PLUS
+    # une arête vers elle : il apparaît alors dans la branche de ce titre, à
+    # côté des dépêches qui le concernent.
     for trend_symbol, count, prev in _trend_rows(reddit_trends):
         node = _trend_node(trend_symbol, count, prev)
         node = info.setdefault(node["id"], node)
-        edges.append({"source": node["id"], "target": CROWD_ID,
-                      "type": EDGE_CONTEXT})
         if trend_symbol in anchor_map:
             edges.append({"source": node["id"], "target": trend_symbol,
                           "type": EDGE_SYMBOL})
@@ -645,22 +768,30 @@ def _branch(anchor_map: Dict[str, Dict[str, Any]],
 def _overview(anchor_map: Dict[str, Dict[str, Any]],
               info: Dict[str, Dict[str, Any]],
               edges: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """La vue globale : les ancres, leurs infos, et le pivot du macro."""
+    """La vue globale : les ancres, leurs infos, et les trois bosquets.
+
+    Le tri de chaque nœud d'info, dans CET ordre :
+
+    1. une **tendance Reddit** va toujours au bosquet « foule », même quand
+       elle touche une ancre — elle garde alors EN PLUS son arête vers ce
+       titre (elle est comptée une fois, dans le bosquet) ;
+    2. tout ce qui **touche une ancre** est une branche : c'est le sujet ;
+    3. le **macro** orphelin (politique, crypto) va au bosquet « monde » ;
+    4. une **hypothèse** dont aucun ticker n'est ancré va au bosquet
+       « radar » — le pari existe, il doit se voir (« Canada invisible ») ;
+    5. le reste est OMIS : une dépêche d'entreprise qu'on ne sait rattacher à
+       rien de ce portefeuille n'est pas une connexion.
+    """
     linked = {edge["source"] for edge in edges}
     kept: List[Dict[str, Any]] = []
-    all_edges = list(edges)
+    groves: Dict[str, List[Dict[str, Any]]] = {pid: [] for pid in PIVOT_IDS}
     for node in info.values():
-        if node["id"] in linked:
+        if node["type"] == TREND_TYPE:
+            groves[CROWD_ID].append(node)
+        elif node["id"] in linked:
             kept.append(node)
-            continue
-        if not _is_macro(node):
-            continue                    # orphelin : omis, ce n'est pas un lien
-        kept.append(node)
-        edge = {"source": node["id"], "target": WORLD_ID, "type": EDGE_CONTEXT}
-        tone = _text(node.get("sentiment"))
-        if tone:
-            # Même forme que les autres arêtes : le frontend colore un lien de
-            # la même façon qu'il vienne d'une ancre ou du pivot.
-            edge["sentiment"] = tone
-        all_edges.append(edge)
-    return _assemble(list(anchor_map.values()), kept, all_edges)
+        elif _is_macro(node):
+            groves[WORLD_ID].append(node)
+        elif node["type"] == "hypothesis":
+            groves[RADAR_ID].append(node)
+    return _assemble(list(anchor_map.values()), kept, edges, groves)

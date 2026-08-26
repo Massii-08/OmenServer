@@ -35,7 +35,10 @@ Trois garde-fous d'honnêteté, non négociables :
    quotidienne fabrique du bruit ; le prompt l'interdit explicitement, et rien
    dans le code ne réclame un minimum.
 3. **La file est bornée** (``MAX_OPEN``) : au-delà, on SCORE mais on ne
-   GÉNÈRE plus. La discipline avant le volume.
+   GÉNÈRE plus. La discipline avant le volume — mais jamais le silence : une
+   file éternellement pleine rendrait le radar MUET pendant des semaines, alors
+   un cran de rotation (``pick_rotation``) note « indécise » la doyenne des
+   hypothèses du radar pour rendre UNE place par passage.
 
 Découpage : tout ce qui est marqué PUR n'a AUCUN I/O (prompt, parsing,
 scoring, mise en forme) ; ``run_once`` et ``recent`` sont les seules fonctions
@@ -69,10 +72,41 @@ ENGINE_DIR = _PROJECT_ROOT / "market-pulse"
 STATE_NAME = "radar.json"
 NOTE_NAME = "Radar.md"
 
-# Bornes de production. 3 hypothèses par run au plus, 6 ouvertes au total :
-# au-delà, le radar bavarde et son bilan devient illisible.
+# Bornes de production. 3 hypothèses par run au plus, 12 ouvertes au total.
+#
+# ⚠️ 6 -> 12 le 26/08, sur MESURE. Depuis la v6, la file n'est plus au radar
+# seul : chaque idée du coach (``/ideas``) s'y enregistre aussi (``source:
+# "coach"``, cf. ``_register_radar_ideas``). Une soirée de questions au coach
+# remplissait donc les 6 places, et le générateur du radar se taisait ensuite
+# jusqu'à la maturité de la première hypothèse — deux semaines. Constaté sur le
+# compte réel : 6 ouvertes = MAX_OPEN, aucune génération depuis le 25/08 13h22.
+# Douze places rendent la cohabitation vivable sans faire du radar un bavard.
 MAX_PER_RUN = 3
-MAX_OPEN = 6
+MAX_OPEN = 12
+
+# --- rotation de file (garde-fou anti-mutisme, 2026-08-26) ----------------- #
+#
+# Le plafond seul a un angle mort : si TOUTES les ouvertes sont des paris longs,
+# la file reste pleine des semaines et le radar ne produit plus rien. Le silence
+# est alors indiscernable d'une panne, et c'est le pire état possible pour un
+# module dont l'honnêteté est le seul produit.
+#
+# Alors on ROTE : file pleine ET plus aucune hypothèse fraîche (toutes ont
+# dépassé ``ROTATION_MIN_AGE_H``) -> la DOYENNE des hypothèses du radar est
+# notée par anticipation, verdict « indécis », UNE par passage.
+#
+# Trois choix explicites :
+#   * ``unclear`` TOUJOURS, quel que soit le mouvement mesuré. Déclarer « hit »
+#     avant l'échéance serait choisir sa fenêtre après coup — exactement le
+#     mensonge que le scoring existe pour empêcher. L'aveu « indécise » vaut
+#     mieux que le silence ; il ne vaut pas une réussite ;
+#   * ``move_pct`` quand même renseigné si les bougies le permettent : le
+#     lecteur a droit au chiffre, même sans verdict ;
+#   * JAMAIS une idée du coach. Elles portent le bilan par niveau de risque
+#     (``stats_by_level``) : les rogner fabriquerait des « indécises » dans un
+#     bilan qu'on lit précisément pour juger ces niveaux-là.
+ROTATION_MIN_AGE_H = 48
+ROTATION_NOTE = "rotation : file pleine"
 
 # Fenêtres d'entrée : une dépêche de plus de 48 h n'est plus un déclencheur,
 # un 13F de plus de 7 jours a déjà été digéré par le marché.
@@ -308,6 +342,16 @@ def _clamp_horizon(value: Any, max_days: int = MAX_HORIZON_D) -> int:
     return max(MIN_HORIZON_D, min(max_days, days))
 
 
+def _is_coach(hyp: Optional[Dict[str, Any]]) -> bool:
+    """L'hypothèse vient-elle du COACH (``/ideas``) plutôt que du radar ?
+
+    Trois décisions en dépendent — le plafond d'horizon, la case de bilan, et
+    l'exemption de rotation — d'où ce prédicat unique : trois relectures
+    indépendantes du même champ finiraient par diverger (piège #61).
+    """
+    return str((hyp or {}).get("source") or "").strip().lower() == COACH_SOURCE
+
+
 def max_horizon_for(hyp: Optional[Dict[str, Any]]) -> int:
     """Le plafond d'horizon applicable à CETTE hypothèse (PUR).
 
@@ -316,9 +360,7 @@ def max_horizon_for(hyp: Optional[Dict[str, Any]]) -> int:
     ANCIEN, sans champ ``source``, retombe donc sur 30 : rien ne change pour ce
     qui a été écrit avant.
     """
-    if str((hyp or {}).get("source") or "").strip().lower() == COACH_SOURCE:
-        return MAX_HORIZON_COACH_D
-    return MAX_HORIZON_D
+    return MAX_HORIZON_COACH_D if _is_coach(hyp) else MAX_HORIZON_D
 
 
 def hypothesis_horizon(hyp: Optional[Dict[str, Any]]) -> int:
@@ -782,6 +824,50 @@ def score_hypothesis(hyp: Optional[Dict[str, Any]],
     }
 
 
+def _older_than(hyp: Dict[str, Any], now_dt: datetime, hours: int) -> bool:
+    """L'hypothèse a-t-elle passé ``hours`` heures ? Date illisible -> ``True``
+    (même posture qu'``is_mature`` : une date perdue ne rend pas éternel)."""
+    created = _parse_dt(hyp.get("created_at"))
+    if created is None:
+        return True
+    try:
+        return now_dt >= created + timedelta(hours=hours)
+    except OverflowError:              # date absurde -> pas de rotation dessus
+        return False
+
+
+def _rotation_key(hyp: Dict[str, Any]) -> Tuple[datetime, str]:
+    """La doyenne d'abord ; l'identifiant tranche les ex æquo pour que deux
+    passages sur le même état choisissent la MÊME victime. Une date illisible
+    passe en tête : on ne saura jamais quand la noter autrement."""
+    return (_parse_dt(hyp.get("created_at")) or datetime.min,
+            str(hyp.get("id") or ""))
+
+
+def pick_rotation(open_hyps: Any, now: Any) -> Optional[Dict[str, Any]]:
+    """L'hypothèse à noter par anticipation pour rendre UNE place (PUR).
+
+    ``None`` — c'est-à-dire on ne touche à rien — dans tous ces cas :
+
+    * la file n'est pas pleine (le radar peut générer, rien ne bloque) ;
+    * au moins une ouverte a moins de ``ROTATION_MIN_AGE_H`` : la file tourne
+      encore, l'embouteillage n'est pas installé ;
+    * il ne reste que des idées du COACH : leur bilan par niveau de risque
+      n'est pas à nous, on préfère se taire un tour de plus.
+
+    Sinon : la plus ancienne hypothèse du radar. Une seule — libérer la file
+    d'un coup reviendrait à jeter les paris pour pouvoir en prendre d'autres.
+    """
+    rows = [h for h in (open_hyps or []) if isinstance(h, dict)]
+    if len(rows) < MAX_OPEN:
+        return None
+    now_dt = _parse_dt(now) or _now()
+    if not all(_older_than(h, now_dt, ROTATION_MIN_AGE_H) for h in rows):
+        return None
+    mine = [h for h in rows if not _is_coach(h)]
+    return min(mine, key=_rotation_key) if mine else None
+
+
 # --------------------------------------------------------------------------- #
 # PUR — bilan ventilé par niveau de risque
 # --------------------------------------------------------------------------- #
@@ -804,9 +890,7 @@ def level_bucket(hyp: Optional[Dict[str, Any]]) -> str:
     level = str(hyp.get("risk_level") or "").strip().lower()
     if level:
         return level if level in RISK_BUCKETS else DEFAULT_BUCKET
-    if str(hyp.get("source") or "").strip().lower() == COACH_SOURCE:
-        return DEFAULT_BUCKET
-    return RADAR_BUCKET
+    return DEFAULT_BUCKET if _is_coach(hyp) else RADAR_BUCKET
 
 
 def stats_by_level(hypotheses: Any) -> Dict[str, Dict[str, int]]:
@@ -923,6 +1007,11 @@ def format_outcome_note(hyp: Dict[str, Any]) -> str:
 
     Ton factuel : ni triomphalisme quand ça passe, ni excuse quand ça rate.
     C'est le compte-rendu qui donne sa valeur au radar.
+
+    Une hypothèse notée par ROTATION le DIT (``note``) : sans cette ligne, le
+    carnet montrerait une indécise de plus, impossible à distinguer d'un vrai
+    match nul — et le bilan deviendrait illisible pour la seule raison qu'on a
+    voulu le garder vivant.
     """
     hyp = hyp or {}
     date = _short_date(hyp.get("scored_at") or hyp.get("created_at"))
@@ -938,10 +1027,12 @@ def format_outcome_note(hyp: Dict[str, Any]) -> str:
             "hausse" if _clamp_direction(hyp.get("direction")) == "up" else "baisse"),
         "- Ouverte le %s, horizon %d jours." % (
             _short_date(hyp.get("created_at")), hypothesis_horizon(hyp)),
-        "",
-        "[[Journal]]",
-        "",
     ]
+    note = str(hyp.get("note") or "").strip()
+    if note:
+        lines.append("- Notée AVANT son échéance (%s) : « indécise » est un "
+                     "aveu, pas un verdict." % note)
+    lines += ["", "[[Journal]]", ""]
     return "\n".join(lines) + "\n"
 
 
@@ -1199,6 +1290,49 @@ def _note_all(users: List[str], text: str) -> None:
             pass
 
 
+def _bump(stats: Dict[str, Any], key: str) -> None:
+    """Incrémente un compteur de bilan — un état corrompu repart de 1 plutôt
+    que de faire tomber le run."""
+    try:
+        stats[key] = int(stats.get(key) or 0) + 1
+    except (TypeError, ValueError):
+        stats[key] = 1
+
+
+def _rotate(hyp: Dict[str, Any], fetch_candles: Callable[..., Any],
+            now_dt: datetime, stats: Dict[str, Any],
+            counters: Dict[str, Any]) -> None:
+    """Note UNE hypothèse par ANTICIPATION pour rendre sa place (I/O bougies).
+
+    Le verdict est ``unclear`` par construction — pas parce que le mouvement
+    serait faible, mais parce qu'on note AVANT l'échéance : appeler « réussite »
+    un pari qu'on interrompt reviendrait à choisir sa fenêtre de mesure après
+    coup. ``move_pct`` est quand même renseigné quand les bougies le permettent
+    (le chiffre appartient au lecteur), et ``note`` dit POURQUOI ce verdict
+    tombe maintenant — sans elle, le bilan afficherait une indécise de plus sans
+    que personne puisse la distinguer d'un vrai match nul.
+    """
+    moves: Dict[str, float] = {}
+    created = _parse_dt(hyp.get("created_at"))
+    for ticker in hyp.get("tickers") or []:
+        try:
+            candles = fetch_candles(ticker, SCORE_RANGE, SCORE_INTERVAL)
+        except Exception:  # noqa: BLE001 — un ticker muet coûte son chiffre, pas la rotation
+            counters["errors"] += 1
+            continue
+        pct = _move_pct(candles, created)
+        if pct is not None:
+            moves[str(ticker)] = pct
+
+    hyp["status"] = "scored"
+    hyp["outcome"] = "unclear"
+    hyp["move_pct"] = _median(list(moves.values()))
+    hyp["scored_at"] = now_dt.isoformat()
+    hyp["note"] = ROTATION_NOTE
+    _bump(stats, "unclear")
+    counters["scored"] += 1
+
+
 def _score_and_generate(now_dt: datetime,
                         llm: Callable[[str], str],
                         fetch_candles: Callable[..., Any],
@@ -1237,21 +1371,29 @@ def _score_and_generate(now_dt: datetime,
         hyp["outcome"] = verdict["outcome"]
         hyp["move_pct"] = verdict["move_pct"]
         hyp["scored_at"] = now_iso
-        key = {"hit": "hits", "miss": "misses"}.get(verdict["outcome"], "unclear")
-        try:
-            stats[key] = int(stats.get(key) or 0) + 1
-        except (TypeError, ValueError):
-            stats[key] = 1
+        _bump(stats, {"hit": "hits",
+                      "miss": "misses"}.get(verdict["outcome"], "unclear"))
         counters["scored"] += 1
         # Le verdict va au carnet, PAS sur Telegram (spec §13) : le bilan reste
         # lisible dans l'UI et dans ``Radar.md``, sans réveiller personne.
         _note_all(users, format_outcome_note(hyp))
 
+    # ---- 1bis) ROTATION (anti-mutisme) ------------------------------------ #
+    # Après le scoring normal : si l'échéance a déjà libéré une place, il n'y a
+    # rien à roter. C'est le dernier recours, pas un raccourci.
+    victim = pick_rotation([h for h in hypotheses if h.get("status") == "open"],
+                           now_dt)
+    if victim is not None:
+        _rotate(victim, fetch_candles, now_dt, stats, counters)
+        _note_all(users, format_outcome_note(victim))
+
     # ---- 2) GÉNÉRATION ---------------------------------------------------- #
     open_hyps = [h for h in hypotheses if h.get("status") == "open"]
     if len(open_hyps) >= MAX_OPEN:
         # File pleine : on a scoré, on ne génère pas. La discipline avant le
-        # volume — 6 paris ouverts suffisent à juger le radar.
+        # volume — douze paris ouverts suffisent à juger le radar. (Si on
+        # arrive ici, c'est qu'aucune rotation n'était légitime : il reste des
+        # hypothèses fraîches, ou la file n'est faite que d'idées du coach.)
         save_state(state)
         return counters
 

@@ -103,6 +103,32 @@ _MAX_EVENTS = 100                # cap de l'historique persisté (par état)
 _SEEN_MAX_AGE_DAYS = 30          # purge des entrées "seen" trop vieilles
 _PACE_S = 1.1                    # piège #67 : un burst de requêtes = 429
 
+# --- titres NEUTRES du volet par symbole (extension 2026-08-26) ------------- #
+#
+# Mesure du 26/08 sur le compte réel : la toile des connexions affichait **0
+# événement de presse**. Cause exacte : un titre que ``classify`` ne sait pas
+# qualifier était marqué VU et jeté — or c'est la très grande majorité des
+# dépêches d'un flux Yahoo. La branche presse d'un titre restait donc vide en
+# permanence, alors même que le flux parlait de lui tous les jours.
+#
+# Un titre neutre devient maintenant un événement, avec trois verrous :
+#
+#   1. ``sentiment: "neutral"`` — il ne ment pas sur ce qu'il est, et AUCUN
+#      facteur de convergence ne le compte (``_is_polar`` teste les préfixes
+#      ``pos``/``neg``, les autres facteurs testent ``gov``/``watch`` — un test
+#      dédié fige cette exclusion) ;
+#   2. ``muted: True`` — jamais envoyé, dans AUCUN mode. Ce volet ne lui ouvre
+#      aucun canal, exactement comme le volet Reddit ;
+#   3. ``_MAX_NEUTRAL_PER_SYMBOL`` — au plus 4 en mémoire par symbole, les plus
+#      récents chassant les plus vieux. Sans ce cap, du bruit de fond repousserait
+#      les vraies dépêches hors de l'historique (``_MAX_EVENTS``).
+#
+# Un CONSEIL d'investissement, lui, reste jeté : ``classify`` rend ``None`` pour
+# les deux, mais relayer un conseil est interdit par doctrine (piège #67d) et le
+# transformer en nœud de la toile serait précisément le relayer.
+NEUTRAL_SENTIMENT = "neutral"
+_MAX_NEUTRAL_PER_SYMBOL = 4
+
 # --- volet politique GLOBAL (§13 de la spec, ajout 24/08 soir) ------------- #
 
 # Sondées le 24/08 (200 confirmé toutes les deux). Google News ramène toute
@@ -356,6 +382,45 @@ def _keyword_matches(title_lower: str, keyword: str) -> bool:
     return re.search(r"\b" + re.escape(keyword) + r"\b", title_lower) is not None
 
 
+def is_advice(title: str) -> bool:
+    """Le titre EST-IL lui-même un conseil d'investissement ? (PUR)
+
+    ``classify`` rend ``None`` pour un conseil ET pour un titre neutre — deux
+    silences très différents. Un titre neutre a le droit d'exister dans la
+    mémoire (c'est de la matière factuelle) ; un conseil, non : le recopier,
+    même sans l'envoyer, c'est le relayer (doctrine Market Pulse, piège #67d).
+    D'où ce prédicat, extrait pour être appelable SANS repasser par ``classify``.
+    """
+    if not title:
+        return False
+    t = title.lower()
+    return any(_keyword_matches(t, kw) for kw in _ADVICE_KEYWORDS)
+
+
+def cap_neutral(events: List[Dict[str, Any]], symbol: str,
+                cap: int = _MAX_NEUTRAL_PER_SYMBOL) -> List[Dict[str, Any]]:
+    """Ne garde que les ``cap`` événements NEUTRES les plus récents de ``symbol``
+    dans ``events`` — MUTE la liste et la rend (PUR au sens « pas d'I/O »).
+
+    ``events`` est rangé du plus récent au plus vieux (les volets font
+    ``insert(0, …)``) : on garde donc les premiers rencontrés et on retire les
+    suivants. Rien d'autre n'est touché — ni les événements à tonalité, ni les
+    neutres des autres symboles.
+    """
+    kept = 0
+    survivors: List[Dict[str, Any]] = []
+    for event in events:
+        if (isinstance(event, dict)
+                and event.get("sentiment") == NEUTRAL_SENTIMENT
+                and event.get("symbol") == symbol):
+            kept += 1
+            if kept > max(0, cap):
+                continue
+        survivors.append(event)
+    events[:] = survivors
+    return events
+
+
 def classify(title: str) -> Optional[str]:
     """Classe un titre de news PAR SYMBOLE : "neg" | "pos" | "watch" | None.
 
@@ -371,7 +436,7 @@ def classify(title: str) -> Optional[str]:
     if not title:
         return None
     t = title.lower()
-    if any(_keyword_matches(t, kw) for kw in _ADVICE_KEYWORDS):
+    if is_advice(title):
         return None
     if any(_keyword_matches(t, kw) for kw in _NEG_KEYWORDS):
         return "neg"
@@ -2197,12 +2262,31 @@ def run_once(now: Optional[datetime] = None,
                 age_s = now_dt.timestamp() - pub_ts
                 if age_s < 0 or age_s > _MAX_AGE_S:
                     continue  # trop vieux (ou horloge en avance) -> vu, pas notifié
-                if notified_for_symbol >= _MAX_NOTIFY_PER_SYMBOL:
-                    continue  # cap atteint -> le reste reste marqué vu, pas notifié
 
                 sentiment = classify(item.get("title", ""))
                 if sentiment is None:
-                    continue  # neutre (ou conseil) -> juste marqué vu
+                    # NEUTRE : journalisé, JAMAIS envoyé (dans aucun mode),
+                    # jamais compté par la convergence. C'est ce qui donne une
+                    # branche de presse à un titre dont le flux ne dit rien de
+                    # tranché -- le cas le plus fréquent. Un CONSEIL, lui, reste
+                    # jeté : le recopier serait le relayer.
+                    if not is_advice(item.get("title", "")):
+                        events.insert(0, {
+                            "ts": now_dt.isoformat(),
+                            "symbol": symbol,
+                            "title": item["title"],
+                            "link": link,
+                            "sentiment": NEUTRAL_SENTIMENT,
+                            "muted": True,
+                        })
+                        cap_neutral(events, symbol)
+                    continue
+
+                # Le cap ne concerne QUE les envois -- il est donc lu APRÈS le
+                # tri ci-dessus, sinon trois dépêches à tonalité suffiraient à
+                # rendre la branche presse muette pour le reste du passage.
+                if notified_for_symbol >= _MAX_NOTIFY_PER_SYMBOL:
+                    continue  # cap atteint -> le reste reste marqué vu, pas notifié
 
                 if quiet:
                     # Mode calme : on journalise EXACTEMENT ce que le mode

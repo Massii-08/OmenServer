@@ -85,7 +85,8 @@ const PaperModule = {
 
     // --- Toile « Connexions » -----------------------------------------------
     _graph: null,              // toile affichée : {nodes, edges, truncated, generated_at}
-    _graphSymbol: null,        // ancre du mode ego (null = toile globale)
+    _graphSymbol: null,        // ancre du mode ego (null = index global)
+    _graphPivot: null,         // bosquet déplié (monde / foule / radar), sans requête
     _graphAnchors: [],         // pills : ancres relevées sur la DERNIÈRE toile globale
     _graphLoading: false,
     _graphLayout: null,        // positions calculées pour le canvas courant
@@ -213,6 +214,12 @@ const PaperModule = {
         whale_move:   ['paper.gnode_whale',      '--violet',      'whale'],
         hypothesis:   ['paper.gnode_hypothesis', '--info',        'radar'],
         context:      ['paper.gnode_context',    '--text-dim',    ''],
+        // L'AGRÉGAT n'est pas une information : c'est le COMPTEUR de ce que le
+        // serveur a coupé (« +67 autres »). Famille vide À DESSEIN — il ne
+        // vient d'aucune source, il ne doit donc pas ajouter de pastille à la
+        // légende. Sa couleur d'affichage est celle de son bosquet, estompée ;
+        // ce token n'est que le repli quand le bosquet n'a pas de famille.
+        aggregate:    ['paper.gnode_aggregate',  '--text-muted',  ''],
     },
 
     // Les trois types qui portent un titre : ce sont EUX les ancres de la
@@ -237,9 +244,31 @@ const PaperModule = {
     // et deux rendus doivent donner exactement la même image).
     _GFAM_ORDER: ['press', 'gov', 'crypto', 'social', 'whale', 'radar', 'other'],
 
-    // Sentiment d'une arête → token. Neutre (ou inconnu) = le trait de la
-    // grille : une liaison sans jugement ne doit pas se lire comme un avis.
-    _GEDGE: { pos: '--accent', neg: '--danger', watch: '--warning', gov: '--warning' },
+    // Sentiment d'une arête → token. Neutre = le trait de la grille : une
+    // liaison sans jugement ne doit pas se lire comme un avis. « neutral » est
+    // DÉCLARÉ plutôt que laissé au repli des types inconnus : le serveur
+    // l'envoie désormais, et un lecteur du code doit voir que ce gris-là est
+    // voulu, pas le résultat d'un type qu'on n'a pas su lire.
+    _GEDGE: { pos: '--accent', neg: '--danger', watch: '--warning', gov: '--warning',
+        neutral: '--border' },
+
+    // Sentiments qui ATTÉNUENT la pastille : la feuille garde la couleur de sa
+    // source (une dépêche neutre reste cyan « presse »), mais en retrait — elle
+    // est là, elle ne crie pas. Une nouvelle jugée, elle, garde tout son éclat.
+    _GSENT_SOFT: { neutral: 1 },
+
+    // Verdict d'une hypothèse → [token de pastille, clé i18n]. Les clés sont
+    // celles du radar : le même mot pour la même chose aux deux endroits.
+    _GHYP_OUT: {
+        hit:     ['--accent',     'paper.radar_outcome_hit'],
+        miss:    ['--danger',     'paper.radar_outcome_miss'],
+        unclear: ['--text-muted', 'paper.radar_outcome_unclear'],
+    },
+
+    // Longueur d'étiquette PAR TYPE de nœud (voir _gLabelMax). Une thèse du
+    // radar a droit à plus de place — c'est une phrase, et son bosquet en tient
+    // douze au plus. Tout ce qui n'est pas listé tient en trente signes.
+    _GLABEL_MAX: { hypothesis: 40, aggregate: 30 },
 
     // Mécanisme du rapprochement qui se dessine en POINTILLÉS. « issuer » = on
     // a rapproché un nom d'émetteur d'un ticker : c'est le lien le plus
@@ -250,9 +279,11 @@ const PaperModule = {
     // elle tomberait au premier balayage d'emojis du dépôt (piège #17).
     _GTREND_UP: '\u2191',
 
-    // Plafond de dessin. Au-delà la toile devient illisible AVANT d'être lente :
-    // on garde les ancres puis les nœuds les plus récents, et on le DIT.
-    _GRAPH_MAX: 80,
+    // PLUS AUCUN plafond de dessin côté client. La vue globale ne dessine que
+    // des troncs et trois cartes ; un arbre déplié ne concerne qu'un sujet, dont
+    // le serveur borne déjà le cortège (douze items par bosquet + un agrégat).
+    // Un plafond ici mutilerait surtout les COMPTEURS, qui se lisent sur la
+    // totalité des arêtes — c'est le serveur, et lui seul, qui dit avoir rogné.
 
     // --- Plan : whitelists FERMÉES ------------------------------------------
     //
@@ -3697,9 +3728,19 @@ const PaperModule = {
     //     tronc, les familles en branches maitresses, les items dates en
     //     feuilles. C'est la vue « tout ce que le systeme sait sur CE trade ».
     //
-    // Le pivot « monde » (macro sans titre nomme) est un arbuste a part, et les
-    // tendances Reddit un bosquet au coin oppose : ni l'un ni l'autre ne
-    // pendent a un tronc, donc ni l'un ni l'autre ne doit s'y greffer.
+    // TROIS bosquets ne pendent a AUCUN tronc, et ne doivent donc jamais s'y
+    // greffer : le « monde » (macro sans titre nomme, coin haut gauche), la
+    // « foule » (tendances Reddit, coin haut droit) et le « radar » (hypotheses
+    // sans titre nomme, sous la ligne de base). Chacun est reconnu PAR SA
+    // FORME — un pivot contexte dont les satellites sont tous d'une seule sorte
+    // — jamais par son identifiant : le jour ou le serveur y accroche autre
+    // chose, il redevient un bosquet ordinaire sans qu'on ait a y toucher.
+    //
+    // Chaque bosquet est plafonne a douze items par le SERVEUR, qui envoie en
+    // plus un noeud AGREGAT (« +67 autres ») accroche au pivot. Douze items,
+    // c'est peu : chacun peut donc porter son nom. C'est tout l'objet de cette
+    // forme — un arc de douze points anonymes ne disait rien de ce qu'il
+    // contenait (retour utilisateur, capture a l'appui : « il y a que ca »).
 
     _isGraphType(t) {
         return Object.prototype.hasOwnProperty.call(this._GNODE,
@@ -3758,6 +3799,10 @@ const PaperModule = {
     async loadGraph(symbol) {
         const sym = (symbol === null || symbol === undefined || symbol === '') ? null : String(symbol);
         this._graphSymbol = sym;
+        // Un bosquet déplié se lit dans la toile DÉJÀ chargée ; toute requête
+        // repart donc de l'index, sinon on afficherait l'arbre d'un bosquet
+        // par-dessus les données d'un autre titre.
+        this._graphPivot = null;
         this._graphLoading = true;
         this._graphHover = null;
         if (this._tab === 'graph') this._renderBody();
@@ -3820,42 +3865,38 @@ const PaperModule = {
         return (g && Array.isArray(g.edges)) ? g.edges.filter((e) => e && e.source && e.target) : [];
     },
 
-    // --------------------------------------------------------------- decoupe
-
-    // Plafond de dessin : les ancres d'abord (elles STRUCTURENT la toile, en
-    // perdre une detacherait tout son cortege), puis les plus recents.
-    _graphKept() {
-        const nodes = this._graphNodes();
-        if (nodes.length <= this._GRAPH_MAX) return { nodes: nodes, cut: false };
-        const anchors = nodes.filter((n) => this._isAnchorType(n.type));
-        const rest = nodes.filter((n) => !this._isAnchorType(n.type));
-        // Tri par date DECROISSANTE ; a date egale, par identifiant (stable).
-        rest.sort((a, b) => {
-            const ta = this._graphTs(a), tb = this._graphTs(b);
-            if (tb !== ta) return tb - ta;
-            return String(a.id) < String(b.id) ? -1 : 1;
-        });
-        const room = Math.max(0, this._GRAPH_MAX - anchors.length);
-        return { nodes: anchors.concat(rest.slice(0, room)), cut: true };
-    },
-
     _graphTs(n) {
         const d = this._toDate(n && n.ts);
         return d ? d.getTime() : 0;
     },
 
+    // Le sujet DÉPLIÉ, s'il y en a un : un titre (venu du serveur) ou un
+    // bosquet (déplié sur place, sans requête). Vide = l'index.
+    _graphRootId() {
+        const p = this._graphPivot, s = this._graphSymbol;
+        if (p !== null && p !== undefined && p !== '') return String(p);
+        if (s !== null && s !== undefined && s !== '') return String(s);
+        return '';
+    },
+
     // =====================================================================
-    //  Disposition en RAMIFICATION — deterministe de bout en bout
+    //  Disposition — deterministe de bout en bout
     // =====================================================================
+    //
+    // AUCUN plafond de dessin ici. La vue globale ne dessine plus que des
+    // troncs et trois cartes (le nombre de titres suivis est petit par nature),
+    // et un arbre deplie ne concerne qu'UN sujet — le serveur en borne deja le
+    // cortege. Un plafond cote client mutilerait surtout les COMPTEURS, qui se
+    // lisent sur la totalite des aretes.
 
     _graphBuild(cssW, cssH) {
-        const kept = this._graphKept();
-        if (!kept.nodes.length) return null;
-        const raw = this._graphSymbol
-            ? this._layoutTree(kept.nodes)      // vue rapprochee : l'arbre couche
-            : this._layoutForest(kept.nodes);   // vue globale : la foret
+        const nodes = this._graphNodes();
+        if (!nodes.length) return null;
+        const raw = this._graphRootId()
+            ? this._layoutTree(nodes)            // sujet deplie : l'arbre couche
+            : this._layoutIndex(nodes, cssW);    // vue globale : l'index
         if (!raw || !raw.nodes.length) return null;
-        return this._graphFit(raw, cssW, cssH, kept.cut);
+        return this._graphFit(raw, cssW, cssH);
     },
 
     // Decoupe commune aux deux dispositions. TOUT y est trie par une cle
@@ -3883,14 +3924,20 @@ const PaperModule = {
         });
 
         const isAnchor = {}, isPivot = {};
-        const anchors = [], infos = [], trends = [], pivots = [];
+        const anchors = [], infos = [], trends = [], pivots = [], aggs = [];
+        const typeOf = {};
         nodes.forEach((n) => {
             const id = String(n.id), t = this._gtype(n.type);
+            typeOf[id] = t;
             if (this._isAnchorType(t)) { isAnchor[id] = 1; anchors.push(n); return; }
             if (t === 'context') { isPivot[id] = 1; pivots.push(n); return; }
+            if (t === 'aggregate') { aggs.push(n); return; }
             if (t === 'reddit_trend') { trends.push(n); return; }
             infos.push(n);
         });
+        // A identifiant egal la reponse est la meme : l'agregat retenu pour un
+        // bosquet ne depend pas de l'ordre des listes du serveur.
+        aggs.sort((a, b) => (String(a.id) < String(b.id) ? -1 : 1));
         anchors.sort((a, b) => this._gCmpLabel(a, b));
         // Le bosquet se lit du plus mentionne au moins mentionne — c'est la
         // seule information qu'il porte. A egalite, l'identifiant tranche.
@@ -3926,27 +3973,82 @@ const PaperModule = {
         });
         Object.keys(hosts).forEach((k) => { hosts[k].sort(); });
 
-        // Un pivot dont TOUS les satellites sont des tendances est le pivot du
-        // BOSQUET : celui-ci porte deja son titre traduit, donc le redessiner
-        // dans l'arbuste n'ajouterait qu'un doublon — et un doublon nomme en
-        // francais par le serveur. Reconnu par sa FORME, pas par son
-        // identifiant : le jour ou le serveur y accroche autre chose, il
-        // redevient un arbuste ordinaire sans qu'on ait a y toucher.
-        const isTrend = {};
-        trends.forEach((n) => { isTrend[String(n.id)] = 1; });
-        const sat = {}, satTrend = {};
+        // --- la FORME de chaque pivot ---------------------------------------
+        //
+        // On compte les satellites d'un pivot par sorte. Un pivot dont tous les
+        // satellites (l'agregat mis a part, qui n'est le satellite de rien) sont
+        // des TENDANCES est le pivot de la foule ; tous des HYPOTHESES, celui du
+        // radar. Ces deux-la portent deja leur titre traduit dans leur bosquet :
+        // les redessiner en pivot n'ajouterait qu'un doublon — et un doublon
+        // nomme en francais par le serveur. Tout le reste est un pivot « monde ».
+        const bag = {};
         Object.keys(pivotOf).forEach((id) => {
             const pv = pivotOf[id];
-            sat[pv] = (sat[pv] || 0) + 1;
-            if (isTrend[id]) satTrend[pv] = (satTrend[pv] || 0) + 1;
+            const b = (bag[pv] = bag[pv] || { trend: 0, hyp: 0, agg: 0, other: 0 });
+            const t = typeOf[id];
+            if (t === 'reddit_trend') b.trend += 1;
+            else if (t === 'hypothesis') b.hyp += 1;
+            else if (t === 'aggregate') b.agg += 1;
+            else b.other += 1;
         });
-        const kept = pivots.filter((n) => {
+        const roleOf = {};
+        pivots.forEach((n) => {
             const id = String(n.id);
-            return !(sat[id] && sat[id] === (satTrend[id] || 0));
+            const b = bag[id];
+            let role = 'world';
+            if (b && !b.other) {
+                if (b.trend && !b.hyp) role = 'crowd';
+                else if (b.hyp && !b.trend) role = 'radar';
+            }
+            roleOf[id] = role;
         });
 
-        return { anchors: anchors, infos: infos, trends: trends, pivots: kept,
-            hosts: hosts, linkOf: linkOf, pivotOf: pivotOf, pivotLink: pivotLink };
+        // L'agregat suit son pivot. Sans pivot lisible il rejoint les infos :
+        // il finira satellite du bosquet « monde » plutot que de disparaitre —
+        // un compteur qu'on n'affiche pas ment par omission.
+        const aggOf = {};
+        aggs.forEach((n) => {
+            const pv = pivotOf[String(n.id)];
+            if (pv !== undefined && aggOf[pv] === undefined) { aggOf[pv] = n; return; }
+            if (pv === undefined) infos.push(n);
+        });
+
+        // Les hypotheses du bosquet radar sortent des infos : ce ne sont pas des
+        // feuilles de tronc, elles ont leur propre bosquet. Celles qui touchent
+        // un titre, elles, restent des feuilles — c'est la ou elles parlent.
+        const inRadar = {};
+        Object.keys(pivotOf).forEach((id) => {
+            if (typeOf[id] === 'hypothesis'
+                && roleOf[pivotOf[id]] === 'radar') inRadar[id] = 1;
+        });
+        const radarItems = infos.filter((n) => inRadar[String(n.id)]);
+        const rest = infos.filter((n) => !inRadar[String(n.id)]);
+
+        // Satellites d'un pivot, DEJA tries : on les prend dans les listes deja
+        // ordonnees (tendances par nombre de mentions, le reste par fraicheur)
+        // plutot que de retrier — c'est ce qui garantit que deplier un bosquet
+        // deux fois donne exactement le meme arbre. L'agregat n'y est PAS : il
+        // se pose a part, au pied de l'arbre.
+        const satOf = {};
+        const bucket = (n) => {
+            const pv = pivotOf[String(n.id)];
+            if (pv === undefined) return;
+            (satOf[pv] = satOf[pv] || []).push(n);
+        };
+        trends.forEach(bucket);
+        radarItems.forEach(bucket);
+        rest.forEach(bucket);
+
+        // « loose » = ce qui ne pend a aucun tronc mais doit quand meme exister
+        // en vue rapprochee, ou il n'y a plus de coin ou aller.
+        const loose = radarItems.concat(aggs.filter((n) =>
+            pivotOf[String(n.id)] !== undefined));
+
+        return { anchors: anchors, infos: rest, trends: trends,
+            pivots: pivots.filter((n) => roleOf[String(n.id)] === 'world'),
+            allPivots: pivots, roleOf: roleOf, satOf: satOf,
+            hosts: hosts, linkOf: linkOf, pivotOf: pivotOf, pivotLink: pivotLink,
+            aggOf: aggOf, loose: loose, radarItems: radarItems };
     },
 
     _gCmpLabel(a, b) {
@@ -3968,8 +4070,17 @@ const PaperModule = {
     // backend : on lui rend son nom traduit — c'est un noeud du systeme, pas
     // une donnee. Une tendance qui MONTE porte sa fleche.
     _gLabelOf(n, t) {
-        if (t === 'context') return Lang.t('paper.gnode_context');
+        if (t === 'context') return this._gPivotLabel('world');
         const base = String(n.label === undefined || n.label === null ? n.id : n.label);
+        // L'agregat arrive lui aussi nomme en francais par le serveur
+        // (« +67 autres ») : on le RECONSTRUIT depuis son compteur, sinon un
+        // ecran en anglais afficherait un mot francais. Compteur illisible : on
+        // garde le libelle du serveur plutot que d'afficher un « + » tout seul.
+        if (t === 'aggregate') {
+            const k = this._n(n.meta && n.meta.count);
+            return (k === null || k < 0) ? base
+                : ('+' + this._num(k, 0) + ' ' + Lang.t('paper.graph_agg_more'));
+        }
         if (t !== 'reddit_trend') return base;
         const c = this._n(n.meta && n.meta.count), p = this._n(n.meta && n.meta.prev);
         return (c !== null && p !== null && c > p) ? (base + ' ' + this._GTREND_UP) : base;
@@ -3996,6 +4107,61 @@ const PaperModule = {
             : (head + ' (' + Lang.t('paper.graph_trend_prev') + ' ' + this._num(p, 0) + ')')];
     },
 
+    // « 67 elements de plus, non dessines ». L'agregat DIT ce qu'il cache : sans
+    // cette phrase, un anneau muet laisserait croire que le bosquet est complet.
+    _gAggLines(n) {
+        const c = this._n(n && n.meta && n.meta.count);
+        if (c === null || c < 0) return [];
+        return [this._num(c, 0) + ' ' + Lang.t('paper.graph_agg_tip')];
+    },
+
+    // Verdict d'une hypothese, en toutes lettres dans l'infobulle : la pastille
+    // de couleur posee a cote du noeud ne se lit pas seule.
+    _gHypLines(n) {
+        const c = this._gOutcome(n && n.outcome);
+        return c ? [Lang.t(this._GHYP_OUT[c][1])] : [];
+    },
+
+    // Verdict lu par WHITELIST : un code inconnu ne fabrique ni couleur ni cle
+    // i18n — il ne produit simplement aucune pastille.
+    _gOutcome(o) {
+        const c = this._gtype(o);
+        return Object.prototype.hasOwnProperty.call(this._GHYP_OUT, c) ? c : '';
+    },
+
+    _gLines(n, t) {
+        if (t === 'reddit_trend') return this._gTrendLines(n);
+        if (t === 'aggregate') return this._gAggLines(n);
+        if (t === 'hypothesis') return this._gHypLines(n);
+        return [];
+    },
+
+    // Nom d'un bosquet, par son ROLE (reconnu a la forme) et jamais par son
+    // identifiant serveur : les trois arrivent nommes en francais, on leur rend
+    // le nom de la langue de l'ecran. Role inconnu -> le nom du monde, qui est
+    // le cas general d'un pivot contexte.
+    _GPIVOT_LABEL: {
+        world: 'paper.gnode_context',
+        crowd: 'paper.gnode_reddit',
+        radar: 'paper.gnode_radar',
+    },
+
+    _gPivotLabel(role) {
+        const k = String(role == null ? '' : role);
+        return Lang.t(Object.prototype.hasOwnProperty.call(this._GPIVOT_LABEL, k)
+            ? this._GPIVOT_LABEL[k] : 'paper.gnode_context');
+    },
+
+    // Couleur d'un bosquet : celle de ce qu'il contient. Le monde n'a pas de
+    // famille (il melange politique, crypto et macro) -> le gris du decor.
+    _GPIVOT_TOKEN: { world: '--text-dim', crowd: '--dot-magenta', radar: '--info' },
+
+    _gPivotColor(role) {
+        const k = String(role == null ? '' : role);
+        return this._tok(Object.prototype.hasOwnProperty.call(this._GPIVOT_TOKEN, k)
+            ? this._GPIVOT_TOKEN[k] : '--text-dim') || '#8FA3C4';
+    },
+
     // Fiche de noeud pour la disposition : on ne recopie QUE des champs connus,
     // rien du serveur ne se glisse dans le dessin par surprise.
     _gRec(n, extra) {
@@ -4007,11 +4173,13 @@ const PaperModule = {
             fam: this._gfam(t),
             label: this._gLabelOf(n, t),
             meta: (n.meta && typeof n.meta === 'object') ? n.meta : null,
-            lines: (t === 'reddit_trend') ? this._gTrendLines(n) : [],
+            lines: this._gLines(n, t),
             ts: n.ts,
             link: this._safeUrl(n.link),
             sentiment: n.sentiment,
+            outcome: this._gOutcome(n.outcome),
             anchor: this._isAnchorType(t),
+            counts: extra.counts || null,
             x: extra.x, y: extra.y, r: extra.r,
             gx: extra.gx, gy: extra.gy,
             labelPos: extra.labelPos,
@@ -4054,249 +4222,165 @@ const PaperModule = {
         return { minX: minX, maxX: maxX, minY: minY, maxY: maxY };
     },
 
-    // ------------------------------------------------------ vue globale : foret
+    // ------------------------------------------------------ vue globale : index
+    //
+    // La vue globale ne dessine AUCUNE feuille. Elle repond a une seule
+    // question : « ou est-ce que ca chauffe ? ». Un TRONC par titre suivi,
+    // portant ses compteurs par famille de source ; trois CARTES du meme rang
+    // pour les bosquets qui ne nomment aucun titre (monde, foule, radar). Le
+    // detail se deplie d'un clic.
+    //
+    // Pourquoi ce renoncement : dessiner ici tout ce que la memoire contient
+    // donnait des arcs de points muets des que le decor mondial se remplissait
+    // (79 evenements politiques ont suffi a manger le plafond de dessin —
+    // capture utilisateur a l'appui). Un index dit la meme chose en une image
+    // qui tient, et le detail reste a un clic.
 
-    _layoutForest(nodes) {
+    _layoutIndex(nodes, cssW) {
         const P = this._graphParts(nodes);
-        const out = [], edges = [], titles = [];
+        const out = [];
         const push = (rec) => { out.push(rec); return out.length - 1; };
-        // ENV = l'ouverture TOTALE d'un bouquet. Chaque famille recoit une part
-        // egale de cet angle et son eventail de feuilles reste DANS sa part :
-        // deux familles ne peuvent pas melanger leurs feuilles, et la canopee
-        // d'un tronc ne part jamais a l'horizontale sur le tronc voisin.
-        const GAP = 300, R_BRANCH = 118, R_LEAF = 130, ENV = 2;
 
-        // --- 1. les troncs, sur la ligne de base, dans l'ordre alphabetique ---
-        const anchorIdx = {};
-        P.anchors.forEach((n, i) => {
-            anchorIdx[String(n.id)] = push(this._gRec(n, {
-                kind: 'anchor', x: i * GAP, y: 0, r: 9, gx: 0, gy: -1, labelPos: 'below',
-            }));
+        // --- 1. compter, par titre, ce que chaque famille a apporte ---------
+        // On lit les HOTES (l'arete titre <-> info, deja relue dans les deux
+        // sens par _graphParts), donc une tendance de la foule rattachee a un
+        // titre compte comme sociale POUR CE TITRE — c'est bien ce qu'elle est.
+        // Cle composee jointe par un OCTET NUL, comme partout ailleurs ici : un
+        // symbole peut contenir un point ou une espace, jamais un octet nul.
+        const famCount = {};
+        nodes.forEach((n) => {
+            if (this._isAnchorType(n.type)) return;
+            const fam = this._gfam(n.type) || 'other';
+            (P.hosts[String(n.id)] || []).forEach((a) => {
+                const k = a + '\u0000' + fam;
+                famCount[k] = (famCount[k] || 0) + 1;
+            });
         });
 
-        // --- 2. repartition des infos : feuille d'un seul tronc, ou PARTAGEE ---
-        const single = {}, shared = [], orphans = [], famCount = {};
-        P.infos.forEach((n) => {
-            const fam = this._gfam(n.type) || 'other';
-            const hs = (P.hosts[String(n.id)] || []).filter((a) => anchorIdx[a] !== undefined);
-            hs.forEach((a) => {
-                const key = a + '\u0000' + fam;
-                famCount[key] = (famCount[key] || 0) + 1;
+        // --- 2. les cellules : titres (ordre alphabetique) puis bosquets ----
+        // L'ordre des bosquets est FIXE : un objet JSON n'a pas d'ordre, et
+        // deux rendus des memes donnees doivent donner exactement la meme image.
+        const cells = P.anchors.map((n) => ({ node: n, role: '' }));
+        this._GPIVOT_ORDER.forEach((role) => {
+            P.allPivots.forEach((n) => {
+                if (P.roleOf[String(n.id)] === role) cells.push({ node: n, role: role });
             });
-            if (!hs.length) { orphans.push(n); return; }
-            if (hs.length === 1) {
-                const key = hs[0] + '\u0000' + fam;
-                (single[key] = single[key] || []).push(n);
+        });
+        if (!cells.length) return null;
+
+        // --- 3. la grille ---------------------------------------------------
+        // Carree autant que possible : c'est la forme qui laisse la plus grande
+        // echelle apres l'homothetie, donc les etiquettes les plus lisibles. La
+        // largeur DISPONIBLE borne le nombre de colonnes — sur un telephone
+        // l'index devient une simple colonne, ce qui est sa forme naturelle.
+        const COL = 300, ROW = 152;
+        const w = (cssW > 0) ? cssW : 900;
+        const maxCols = Math.max(1, Math.min(5, Math.floor((w - 160) / 200)));
+        const cols = Math.max(1, Math.min(maxCols, Math.ceil(Math.sqrt(cells.length))));
+        const rows = Math.ceil(cells.length / cols);
+
+        cells.forEach((c, i) => {
+            const col = i % cols, row = Math.floor(i / cols);
+            const x = (col - (cols - 1) / 2) * COL;
+            const y = (row - (rows - 1) / 2) * ROW;
+            if (!c.role) {
+                const a = String(c.node.id);
+                const badges = this._GFAM_ORDER
+                    .filter((f) => famCount[a + '\u0000' + f])
+                    .map((f) => ({ fam: f, role: '', n: famCount[a + '\u0000' + f] }));
+                push(this._gRec(c.node, {
+                    kind: 'anchor', x: x, y: y, r: 11, gx: 0, gy: -1,
+                    labelPos: 'below', counts: badges,
+                }));
                 return;
             }
-            shared.push({ node: n, fam: fam, hosts: hs });
-        });
-
-        // --- 3. les rameaux : une famille de source par tronc ---
-        const branchIdx = {};
-        P.anchors.forEach((n) => {
-            const a = String(n.id);
-            const fams = this._GFAM_ORDER.filter((f) => famCount[a + '\u0000' + f]);
-            const nf = fams.length;
-            if (!nf) return;
-            const ai = anchorIdx[a];
-            const A = out[ai];
-            const slot = ENV / nf;
-            fams.forEach((f, j) => {
-                const ang = -Math.PI / 2 - ENV / 2 + slot * (j + 0.5);
-                const gx = Math.cos(ang), gy = Math.sin(ang);
-                const bi = push(this._gBranchRec(a, f, famCount[a + '\u0000' + f],
-                    A.x + gx * R_BRANCH, A.y + gy * R_BRANCH, gx, gy,
-                    (gx >= 0 ? 'right' : 'left')));
-                branchIdx[a + '\u0000' + f] = bi;
-                edges.push({ a: ai, b: bi, sentiment: '', type: '', struct: true, cross: false });
+            // La carte d'un bosquet annonce son TOTAL : ce qui se dessine quand
+            // on le deplie, PLUS ce que le serveur a range dans l'agregat.
+            // Annoncer les douze visibles ferait passer « 79 » pour « 12 ».
+            const pid = String(c.node.id);
+            const kept = (P.satOf[pid] || []).length;
+            const agg = P.aggOf[pid];
+            const more = agg ? this._n(agg.meta && agg.meta.count) : null;
+            const total = kept + ((more === null || more < 0) ? 0 : more);
+            const rec = this._gRec(c.node, {
+                kind: 'card', x: x, y: y, r: 11, gx: 0, gy: -1,
+                labelPos: 'below', counts: [{ fam: '', role: c.role, n: total }],
             });
+            rec.label = this._gPivotLabel(c.role);
+            rec.role = c.role;
+            push(rec);
         });
 
-        // --- 4. les feuilles, en eventail au bout de LEUR rameau ---
-        P.anchors.forEach((n) => {
-            const a = String(n.id);
-            const nf = this._GFAM_ORDER.filter((f) => famCount[a + '\u0000' + f]).length;
-            const slot = ENV / Math.max(1, nf);
-            this._GFAM_ORDER.forEach((f) => {
-                const key = a + '\u0000' + f;
-                const bi = branchIdx[key];
-                if (bi === undefined) return;
-                const B = out[bi];
-                const list = single[key] || [];        // deja trie du plus recent
-                const k = list.length;
-                // L'eventail reste DANS la part angulaire de sa famille : les
-                // feuilles d'une famille ne se melent jamais a la voisine.
-                const sp = (k <= 1) ? 0 : Math.min(slot * 0.8, 0.24 * k);
-                const base = Math.atan2(B.gy, B.gx);
-                list.forEach((leaf, j) => {
-                    const off = (k === 1) ? 0 : (-sp / 2 + sp * (j / (k - 1)));
-                    const ang = base + off;
-                    // Une couronne sur deux est repoussee : deux feuilles
-                    // voisines ne se recouvrent plus quand l'eventail est charge.
-                    const rr = R_LEAF + ((j % 2) ? 30 : 0);
-                    const gx = Math.cos(ang), gy = Math.sin(ang);
-                    const li = push(this._gRec(leaf, {
-                        kind: 'leaf', x: B.x + gx * rr, y: B.y + gy * rr, r: 4,
-                        gx: gx, gy: gy, labelPos: 'none',
-                    }));
-                    edges.push(this._gDataEdge(bi, li,
-                        P.linkOf[String(leaf.id) + '\u0000' + a]));
-                });
-            });
-        });
-
-        // --- 5. une info qui touche PLUSIEURS titres : dessinee UNE seule fois,
-        // a mi-chemin, et reliee aux rameaux concernes. La dupliquer ferait
-        // croire a deux nouvelles la ou il n'y en a qu'une.
-        shared.forEach((s, m) => {
-            const bs = s.hosts.map((a) => branchIdx[a + '\u0000' + s.fam])
-                .filter((i) => i !== undefined);
-            if (!bs.length) return;
-            let sx = 0, sy = 0;
-            bs.forEach((i) => { sx += out[i].x; sy += out[i].y; });
-            // Etagement DETERMINISTE : deux infos partagees par les memes titres
-            // ne se superposent pas.
-            const col = (m % 3) - 1, row = Math.floor(m / 3);
-            const li = push(this._gRec(s.node, {
-                kind: 'leaf', x: sx / bs.length + col * 78,
-                y: sy / bs.length - 96 - row * 46,
-                r: 4.5, gx: 0, gy: -1, labelPos: 'none',
-            }));
-            // Chaque lien reprend l'arete REELLE de son titre : une nouvelle
-            // partagee reste positive pour l'un et l'autre, elle ne devient pas
-            // grise parce qu'elle est partagee.
-            s.hosts.forEach((a) => {
-                const bi = branchIdx[a + '\u0000' + s.fam];
-                if (bi === undefined) return;
-                edges.push(this._gDataEdge(bi, li,
-                    P.linkOf[String(s.node.id) + '\u0000' + a]));
-            });
-        });
-
-        const baseline = P.anchors.length
-            ? { y: 0, x0: -70, x1: (P.anchors.length - 1) * GAP + 70 }
-            : null;
-
-        // --- 6. l'arbuste « monde » et le bosquet Reddit, aux deux coins hauts.
-        // Leurs positions sont derivees de la boite REELLE de la foret : une
-        // constante devinerait la taille de l'ecran, jamais celle des donnees.
-        const bb = this._gBBox(out);
-        // Les deux coins hauts sont pris DANS l'emprise de la foret quand elle
-        // est large, ecartes d'un minimum quand elle est etroite. Les poser
-        // AU-DELA de ses bords elargirait la boite, et l'homothetie finale
-        // ecraserait la foret pour faire de la place a deux satellites.
-        const cxF = (bb.minX + bb.maxX) / 2;
-        const half = Math.max(320, (bb.maxX - bb.minX) / 2 - 60);
-        const topY = bb.minY - 128;
-        const C = { out: out, edges: edges, titles: titles, push: push, anchorIdx: anchorIdx };
-        this._growShrub(P, C, orphans, cxF - half, topY);
-        this._growGrove(P, C, cxF + half, topY);
-
-        return { nodes: out, edges: edges, titles: titles, baseline: baseline };
+        return { nodes: out, edges: [], titles: [], baseline: null, maxScale: 2.2 };
     },
 
-    // L'arbuste « monde » : le macro qui ne nomme aucun titre. Il ne pend a
-    // AUCUN tronc — c'est justement ce qui le distingue d'une nouvelle sur un
-    // titre, et le confondre avec une branche serait un contresens.
-    _growShrub(P, C, orphans, cx, cy) {
-        if (!P.pivots.length && !orphans.length) return;
-        const pivotIdx = {};
-        P.pivots.forEach((n, i) => {
-            pivotIdx[String(n.id)] = C.push(this._gRec(n, {
-                kind: 'pivot', x: cx + i * 190, y: cy, r: 8, gx: 0, gy: -1, labelPos: 'below',
-            }));
-        });
-        const first = P.pivots.length ? String(P.pivots[0].id) : '';
-        const groups = {};
-        orphans.forEach((n) => {
-            const p = P.pivotOf[String(n.id)];
-            const key = (p !== undefined && pivotIdx[p] !== undefined) ? p : first;
-            (groups[key] = groups[key] || []).push(n);
-        });
-        Object.keys(groups).sort().forEach((key) => {
-            const list = groups[key];
-            const pi = (key !== '' && pivotIdx[key] !== undefined) ? pivotIdx[key] : -1;
-            const px = (pi >= 0) ? C.out[pi].x : cx;
-            const py = (pi >= 0) ? C.out[pi].y : cy;
-            list.forEach((n, j) => {
-                // Demi-cercle du HAUT uniquement : le nom du pivot est ecrit
-                // dessous, un satellite pose la le rendrait illisible.
-                const ang = -Math.PI + Math.PI * ((j + 0.5) / Math.max(1, list.length));
-                const rr = 84 + ((j % 2) ? 26 : 0);
-                const gx = Math.cos(ang), gy = Math.sin(ang);
-                const li = C.push(this._gRec(n, {
-                    kind: 'leaf', x: px + gx * rr, y: py + gy * rr, r: 4,
-                    gx: gx, gy: gy, labelPos: 'none',
-                }));
-                if (pi >= 0) C.edges.push(this._gDataEdge(pi, li, P.pivotLink[String(n.id)]));
-            });
-        });
+    // Ordre FIXE des cartes de bosquet, et famille de chacune. Le monde n'a pas
+    // de famille : il melange politique, crypto et macro.
+    _GPIVOT_ORDER: ['world', 'crowd', 'radar'],
+    _GPIVOT_FAM: { crowd: 'social', radar: 'radar' },
+
+    _gPivotFam(role) {
+        const k = String(role == null ? '' : role);
+        return Object.prototype.hasOwnProperty.call(this._GPIVOT_FAM, k)
+            ? this._GPIVOT_FAM[k] : '';
     },
 
-    // Le bosquet « Tendances Reddit » : hors branches par contrat, il vit au
-    // coin oppose de l'arbuste. Une tendance dont le symbole est ANCRE tire un
-    // fil jusqu'a son tronc — un fil long, donc discret au repos, qui
-    // s'illumine au survol comme les autres.
-    _growGrove(P, C, cx, cy) {
-        if (!P.trends.length) return;
-        // Une COLONNE tant qu'il y a peu de tendances : chaque nom (« AAPL x42 »
-        // et sa fleche) est ecrit sous sa pastille, et deux noms cote a cote se
-        // chevaucheraient bien avant que la place manque en hauteur.
-        const per = (P.trends.length <= 3) ? 1
-            : Math.max(1, Math.min(3, Math.ceil(Math.sqrt(P.trends.length))));
-        const rows = Math.ceil(P.trends.length / per);
-        C.titles.push({
-            text: Lang.t('paper.gnode_reddit'),
-            x: cx, y: cy - ((rows - 1) / 2) * 70 - 48,
-        });
-        P.trends.forEach((n, j) => {
-            const col = j % per, row = Math.floor(j / per);
-            const ti = C.push(this._gRec(n, {
-                kind: 'trend',
-                x: cx + (col - (per - 1) / 2) * 170,
-                y: cy + (row - (rows - 1) / 2) * 70,
-                r: this._gTrendR(n), gx: 0, gy: -1, labelPos: 'below',
-            }));
-            (P.hosts[String(n.id)] || []).forEach((a) => {
-                const ai = C.anchorIdx[a];
-                if (ai === undefined) return;
-                const e = P.linkOf[String(n.id) + '\u0000' + a];
-                C.edges.push({
-                    a: ai, b: ti,
-                    sentiment: e ? e.sentiment : '',
-                    type: e ? e.type : '',
-                    struct: false, cross: true,
-                });
-            });
-        });
+    // Couleur d'un compteur : celle de sa famille de source, ou celle du
+    // bosquet quand le compteur est le total d'une carte.
+    _gBadgeColor(b) {
+        if (b && b.fam) return this._gfamColor(b.fam);
+        return this._gPivotColor(b && b.role);
+    },
+
+    _gBadgeLabel(b) {
+        if (b && b.fam) return this._gfamLabel(b.fam);
+        return this._gPivotLabel(b && b.role);
     },
 
     // ------------------------------------------- vue rapprochee : arbre couche
 
     _layoutTree(nodes) {
         const P = this._graphParts(nodes);
-        const want = String(this._graphSymbol == null ? '' : this._graphSymbol);
-        let root = null;
-        P.anchors.forEach((n) => { if (root === null && String(n.id) === want) root = n; });
-        if (root === null) root = P.anchors.length ? P.anchors[0] : null;
-        // Pas d'ancre du tout : il n'y a pas de sujet a arborer. On retombe sur
-        // la foret plutot que d'inventer un tronc que la memoire ne porte pas.
-        if (root === null) return this._layoutForest(nodes);
+        const want = this._graphRootId();
+
+        // Le sujet deplie est soit un TITRE (l'arbre vient du serveur, qui a
+        // renvoye son voisinage), soit un BOSQUET (deplie sur place, dans la
+        // toile deja chargee — aucune requete : le serveur ne connait pas
+        // « monde » comme un symbole). La FORME est la meme dans les deux cas.
+        let root = null, role = '', items = null, agg = null;
+        P.allPivots.forEach((n) => {
+            if (root !== null || String(n.id) !== want) return;
+            root = n;
+            role = P.roleOf[want] || 'world';
+            items = (P.satOf[want] || []).slice();
+            agg = P.aggOf[want] || null;
+        });
+        if (root === null) {
+            P.anchors.forEach((n) => { if (root === null && String(n.id) === want) root = n; });
+            if (root === null) root = P.anchors.length ? P.anchors[0] : null;
+            // Pas d'ancre du tout : il n'y a pas de sujet a arborer. On retombe
+            // sur l'index plutot que d'inventer un tronc que la memoire ne
+            // porte pas.
+            if (root === null) return this._layoutIndex(nodes, 0);
+            // Tendances, pivots et bosquets compris : en vue rapprochee, TOUT
+            // ce que la memoire rattache a ce titre devient une feuille — il
+            // n'y a plus de coin oppose ou aller, et rien ne doit disparaitre.
+            items = P.infos.concat(P.trends, P.pivots, P.loose);
+        }
 
         const out = [], edges = [], titles = [];
         const push = (rec) => { out.push(rec); return out.length - 1; };
         const X_BR = 200, X_LEAF = 230, GAP_LEAF = 30, GAP_FAM = 36;
 
-        const ri = push(this._gRec(root, {
-            kind: 'anchor', x: 0, y: 0, r: 10, gx: 1, gy: 0, labelPos: 'below',
-        }));
+        const rootRec = this._gRec(root, {
+            kind: role ? 'card' : 'anchor', x: 0, y: 0, r: 10,
+            gx: 1, gy: 0, labelPos: 'below',
+        });
+        if (role) { rootRec.label = this._gPivotLabel(role); rootRec.role = role; }
+        const ri = push(rootRec);
 
-        // Tendances et pivot compris : en vue rapprochee, TOUT ce que la memoire
-        // rattache a ce titre devient une feuille — il n'y a plus de coin oppose
-        // ou aller, et rien ne doit disparaitre au passage.
         const groups = {};
-        P.infos.concat(P.trends, P.pivots).forEach((n) => {
+        items.forEach((n) => {
             const f = this._gfam(n.type) || 'other';
             (groups[f] = groups[f] || []).push(n);
         });
@@ -4320,11 +4404,16 @@ const PaperModule = {
             edges.push({ a: ri, b: bi, sentiment: '', type: '', struct: true, cross: false });
             list.forEach((n, j) => {
                 const t = this._gtype(n.type);
+                // La SORTE suit le TYPE, jamais le chemin par lequel le noeud
+                // est arrive : un agregat garde son anneau meme quand il tombe
+                // dans une bande de famille (vue rapprochee d'un titre).
                 const li = push(this._gRec(n, {
-                    kind: (t === 'reddit_trend') ? 'trend' : 'leaf',
+                    kind: (t === 'reddit_trend') ? 'trend'
+                        : ((t === 'aggregate') ? 'agg' : 'leaf'),
                     x: X_BR + X_LEAF + ((j % 2) ? 26 : 0),
                     y: y0 + band.top + GAP_LEAF * (j + 0.5),
-                    r: (t === 'reddit_trend') ? this._gTrendR(n) : 4.5,
+                    r: (t === 'reddit_trend') ? this._gTrendR(n)
+                        : ((t === 'aggregate') ? 6.5 : 4.5),
                     gx: 1, gy: 0, labelPos: 'right',
                 }));
                 edges.push(this._gDataEdge(bi, li,
@@ -4332,21 +4421,38 @@ const PaperModule = {
             });
         });
 
+        // L'agregat au PIED de l'arbre, accroche au tronc et a rien d'autre :
+        // il ne vient d'aucune famille, et le ranger dans « Autre » lui
+        // inventerait une source. C'est un compteur — il dit ce que le serveur
+        // n'a pas envoye, et il le dit toujours (jamais masque par l'echelle).
+        if (agg) {
+            const bottom = y0 + Math.max(1, cursor - GAP_FAM);
+            const aggRec = this._gRec(agg, {
+                kind: 'agg', x: X_BR, y: bottom + 40, r: 6.5,
+                gx: 1, gy: 0, labelPos: 'right',
+            });
+            aggRec.fam = this._gPivotFam(role);
+            const ai = push(aggRec);
+            edges.push({ a: ri, b: ai, sentiment: '', type: '', struct: true, cross: false });
+        }
+
         // Les feuilles portent leur nom A DROITE : sans cette reserve, le
         // dernier mot de chaque ligne sort du cadre (mesure : coupe nette au
-        // bord du canvas des que l'echelle plafonne).
+        // bord du canvas des que l'echelle plafonne). La reserve suit la plus
+        // LONGUE etiquette possible — une these du radar, quarante signes —
+        // sinon c'est elle, et elle seule, qui se fait couper.
         return { nodes: out, edges: edges, titles: titles, baseline: null,
-            padRight: 210 };
+            padRight: 280 };
     },
 
     // Une seule homothetie ramene tout le monde dans le cadre : la toile occupe
     // toujours la place disponible, sans qu'aucune constante ait a deviner la
     // taille de l'ecran. Les RAYONS, eux, ne suivent pas l'echelle : une
     // pastille de deux pixels ne se vise plus a la souris.
-    _graphFit(raw, cssW, cssH, cut) {
-        // Les TITRES de bosquet entrent dans la boite : poses au-dessus du
-        // premier noeud, ils sortiraient du cadre si l'homothetie ne comptait
-        // que les pastilles (constate : titre de bosquet coupe en haut du cadre).
+    _graphFit(raw, cssW, cssH) {
+        // Les TITRES entrent dans la boite : poses au-dessus du premier noeud,
+        // ils sortiraient du cadre si l'homothetie ne comptait que les
+        // pastilles (constate : titre coupe en haut du cadre).
         const bb = this._gBBox(raw.nodes.concat(raw.titles));
         // Les marges laissent la place aux ETIQUETTES, qui debordent des
         // pastilles. La droite est reservable a part : l'arbre couche y ecrit
@@ -4355,8 +4461,14 @@ const PaperModule = {
         const padR = Math.max(padL, raw.padRight || 0);
         const spanX = Math.max(1e-6, bb.maxX - bb.minX);
         const spanY = Math.max(1e-6, bb.maxY - bb.minY);
+        // Plafond d'agrandissement : les rayons ne suivent pas l'echelle, donc
+        // grandir n'ecarte que les positions. L'index, qui tient en quelques
+        // cellules, a le droit de s'etaler davantage — sinon quatre pastilles
+        // se serrent au milieu d'un cadre vide. L'arbre, lui, reste serre : ses
+        // feuilles portent leur nom, et les ecarter les couperait du tronc.
+        const cap = raw.maxScale || 1.35;
         const scale = Math.max(0.08, Math.min((cssW - padL - padR) / spanX,
-            (cssH - padY * 2) / spanY, 1.35));
+            (cssH - padY * 2) / spanY, cap));
         // Centre du cadre UTILE (marges retirees), pas du canvas : sinon la
         // reserve de droite deplacerait tout le dessin vers la droite.
         const offX = padL + (cssW - padL - padR) / 2 - ((bb.minX + bb.maxX) / 2) * scale;
@@ -4370,7 +4482,7 @@ const PaperModule = {
             bl.x1 = bl.x1 * scale + offX;
         }
         return { nodes: raw.nodes, edges: raw.edges, titles: raw.titles,
-            baseline: bl, scale: scale, cut: cut, kept: raw.nodes.length };
+            baseline: bl, scale: scale, kept: raw.nodes.length };
     },
 
     // =====================================================================
@@ -4501,7 +4613,7 @@ const PaperModule = {
         const labels = [];
         L.nodes.forEach((n, i) => {
             const on = lit(i);
-            const col = (n.kind === 'branch') ? this._gfamColor(n.fam) : this._gcolor(n.type);
+            const col = this._gNodeColor(n);
             ctx.globalAlpha = on ? 1 : 0.2;
             // Halo du noeud vise : il se voit sans changer sa taille (donc sans
             // deplacer la cible sous le curseur).
@@ -4515,7 +4627,18 @@ const PaperModule = {
             }
             ctx.beginPath();
             ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
-            if (n.type === 'watchlist') {
+            if (n.kind === 'agg' || n.kind === 'card') {
+                // ANNEAU, pas disque : ni l'agregat ni la carte d'un bosquet ne
+                // sont une information — ce sont des COMPTEURS. Le creux les
+                // separe a l'oeil de tout ce qui, autour, en est une.
+                ctx.globalAlpha = on ? (n.kind === 'agg' ? 0.16 : 0.24) : 0.08;
+                ctx.fillStyle = col;
+                ctx.fill();
+                ctx.globalAlpha = on ? (n.kind === 'agg' ? 0.62 : 1) : 0.2;
+                ctx.strokeStyle = col;
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            } else if (n.type === 'watchlist') {
                 // Un favori est un titre PAS ENCORE tenu : meme accent que la
                 // position, mais evide. L'argent engage garde le disque plein.
                 ctx.globalAlpha = on ? 0.4 : 0.12;
@@ -4526,8 +4649,16 @@ const PaperModule = {
                 ctx.lineWidth = 2;
                 ctx.stroke();
             } else {
+                // Une info NEUTRE (une depeche qui n'annonce ni bonne ni
+                // mauvaise nouvelle) garde la couleur de sa SOURCE — une breve
+                // de presse reste cyan — mais en retrait : elle est la, elle ne
+                // crie pas. Une nouvelle jugee, elle, garde tout son eclat.
+                const soft = Object.prototype.hasOwnProperty.call(this._GSENT_SOFT,
+                    this._gtype(n.sentiment));
+                ctx.globalAlpha = on ? (soft ? 0.5 : 1) : (soft ? 0.12 : 0.2);
                 ctx.fillStyle = col;
                 ctx.fill();
+                ctx.globalAlpha = on ? 1 : 0.2;
                 // Un lisere de fond detache la pastille de l'arete qui passe
                 // dessous.
                 ctx.strokeStyle = bg;
@@ -4536,15 +4667,31 @@ const PaperModule = {
             }
             ctx.globalAlpha = 1;
 
-            // Qui porte son nom a l'ecran ? Les TRONCS, les tendances et le
-            // pivot toujours (ils structurent la lecture) ; les rameaux et les
-            // feuilles de la vue rapprochee seulement quand l'echelle laisse
-            // la place ; une feuille de foret uniquement sous le curseur — son
-            // titre entier est dans l'infobulle, l'ecrire partout ferait un mur.
-            const strong = (n.kind === 'anchor' || n.kind === 'trend' || n.kind === 'pivot');
+            // Le VERDICT d'une hypothese, en pastille, du cote oppose a son
+            // etiquette : vert = vu juste, rouge = vu faux, gris = indecidable.
+            // Il est aussi ecrit en toutes lettres dans l'infobulle — une
+            // couleur seule ne se lit pas.
+            if (n.outcome) {
+                ctx.globalAlpha = on ? 1 : 0.2;
+                ctx.beginPath();
+                ctx.arc(n.x - n.r - 7, n.y, 3.2, 0, Math.PI * 2);
+                ctx.fillStyle = this._tok(this._GHYP_OUT[n.outcome][0]) || muted;
+                ctx.fill();
+                ctx.globalAlpha = 1;
+            }
+
+            // Qui porte son nom a l'ecran ? Les TRONCS et les CARTES toujours
+            // (l'index n'est QUE ca), les tendances aussi ; l'AGREGAT toujours,
+            // parce que c'est un compteur — le masquer rendrait invisible la
+            // coupe du serveur ; les rameaux et les feuilles de l'arbre deplie
+            // quand l'echelle laisse la place ; une feuille sans cote impose
+            // uniquement sous le curseur, son titre entier etant dans
+            // l'infobulle — l'ecrire partout ferait un mur.
+            const strong = (n.kind === 'anchor' || n.kind === 'card'
+                || n.kind === 'trend' || n.kind === 'pivot');
             let show = false;
             if (i === hi) show = true;
-            else if (strong) show = true;
+            else if (strong || n.kind === 'agg') show = true;
             else if (n.kind === 'branch') show = (L.scale >= 0.46);
             else show = (n.labelPos !== 'none' && L.scale >= 0.46);
             if (show && n.label) labels.push({ n: n, i: i, on: on, strong: strong });
@@ -4555,19 +4702,24 @@ const PaperModule = {
         labels.forEach((it) => {
             const n = it.n;
             const hovered = (it.i === hi);
+            const alpha = (hi >= 0 && !it.on) ? 0.16 : 1;
             ctx.font = (it.strong ? '600 12px ' : '11px ') + mono;
-            ctx.globalAlpha = (hi >= 0 && !it.on) ? 0.16 : 1;
+            ctx.globalAlpha = alpha;
             ctx.fillStyle = (it.strong || hovered) ? fg
-                : (n.kind === 'branch' ? muted : dim);
-            const text = (it.strong || n.kind === 'branch') ? n.label : this._gtrim(n.label, 30);
-            // Une feuille sans cote impose (foret) prend celui qui la garde dans
-            // le cadre : a droite dans la moitie gauche, a gauche sinon.
+                : ((n.kind === 'branch' || n.kind === 'agg') ? muted : dim);
+            const text = (it.strong || n.kind === 'branch')
+                ? n.label : this._gtrim(n.label, this._gLabelMax(n));
+            // Une feuille sans cote impose prend celui qui la garde dans le
+            // cadre : a droite dans la moitie gauche, a gauche sinon.
             let pos = n.labelPos;
             if (pos === 'none') pos = (n.x <= cssW / 2) ? 'right' : 'left';
             if (pos === 'below') {
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'top';
                 ctx.fillText(text, n.x, n.y + n.r + 6);
+                // Les COMPTEURS sous l'etiquette : ils ne peuvent se poser
+                // qu'une fois le nom ecrit, sinon ils passeraient dessus.
+                this._paintCounts(ctx, n, mono, alpha, n.y + n.r + 21);
             } else if (pos === 'above') {
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'bottom';
@@ -4584,6 +4736,65 @@ const PaperModule = {
             ctx.textBaseline = 'middle';
         });
         ctx.globalAlpha = 1;
+    },
+
+    // Couleur d'une pastille. Un rameau porte celle de sa famille ; l'agregat
+    // celle du bosquet qu'il resume (et le gris neutre quand ce bosquet n'a pas
+    // de famille) ; une carte celle de son bosquet ; tout le reste celle de son
+    // type. Aucune couleur n'est fabriquee par concatenation depuis la donnee.
+    _gNodeColor(n) {
+        if (n.kind === 'branch') return this._gfamColor(n.fam);
+        if (n.kind === 'card') return this._gPivotColor(n.role);
+        if (n.kind === 'agg') {
+            return n.fam ? this._gfamColor(n.fam) : this._gcolor(n.type);
+        }
+        return this._gcolor(n.type);
+    },
+
+    // Longueur d'etiquette PAR TYPE : une these du radar a droit a plus de place
+    // (c'est une phrase, et son bosquet en tient douze au plus), tout le reste
+    // tient en trente signes.
+    _gLabelMax(n) {
+        const t = this._gtype(n && n.type);
+        return Object.prototype.hasOwnProperty.call(this._GLABEL_MAX, t)
+            ? this._GLABEL_MAX[t] : 30;
+    },
+
+    // Les COMPTEURS sous un tronc : une pastille par famille de source presente,
+    // avec son nombre. C'est ce qui REMPLACE les feuilles dans l'index — on voit
+    // ou ca chauffe sans dessiner ce qui chauffe.
+    //
+    // Trois par rangee au plus : au-dela, deux troncs voisins se toucheraient
+    // des que l'echelle baisse (le texte, lui, ne retrecit pas avec le dessin).
+    _paintCounts(ctx, n, mono, alpha, yTop) {
+        const list = Array.isArray(n.counts) ? n.counts : [];
+        if (!list.length) return;
+        const PER = 3, DOT = 3.2, GAP = 5, PAD = 10, H = 14;
+        ctx.font = '600 10px ' + mono;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        for (let r = 0; r * PER < list.length; r++) {
+            const row = list.slice(r * PER, r * PER + PER);
+            const txt = row.map((b) => this._num(b.n, 0));
+            const w = txt.map((t) => DOT * 2 + GAP + ctx.measureText(t).width + PAD);
+            let total = 0;
+            w.forEach((v) => { total += v; });
+            let x = n.x - total / 2;
+            const y = yTop + r * H + H / 2;
+            row.forEach((b, j) => {
+                const col = this._gBadgeColor(b);
+                ctx.fillStyle = col;
+                ctx.globalAlpha = alpha * 0.85;
+                ctx.beginPath();
+                ctx.arc(x + DOT, y, DOT, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = alpha;
+                ctx.fillText(txt[j], x + DOT * 2 + GAP, y);
+                x += w[j];
+            });
+        }
+        ctx.globalAlpha = alpha;
+        ctx.textBaseline = 'middle';
     },
 
     // Troncature a la LIMITE DE MOT quand c'est possible : « Résultats T3 dé… »
@@ -4672,6 +4883,14 @@ const PaperModule = {
             }, 120);
         };
         window.addEventListener('resize', this._onGraphResize);
+        // Un SECOND trace au tour suivant. Mesure : monte alors que la mise en
+        // page n'est pas encore faite, clientWidth vaut 0, on retombe sur la
+        // taille de repli (640) — la toile est alors calculee pour un cadre qui
+        // n'existe pas, le bitmap est etire par le CSS (pastilles ovales) et les
+        // etiquettes de droite se font couper. Le tour suivant, la boite est
+        // connue. Groupe par requestAnimationFrame, donc jamais deux fois, et
+        // annule par _disposeGraph : aucune boucle continue.
+        this._graphQueuePaint();
         cv._paperGraphOff = () => {
             cv.removeEventListener('pointermove', onMove);
             cv.removeEventListener('pointerdown', onDown);
@@ -4695,13 +4914,19 @@ const PaperModule = {
         if (this._graphRaf) { window.cancelAnimationFrame(this._graphRaf); this._graphRaf = 0; }
     },
 
-    // Clic sur un noeud : une ANCRE rapproche la toile sur elle, un noeud
-    // d'information ouvre sa source quand il en a une. Un noeud sans lien ne
-    // fait rien — mais il a deja tout dit dans son infobulle.
+    // Clic sur un noeud : une ANCRE deplie l'arbre de son titre (une requete au
+    // serveur), une CARTE deplie le bosquet dans la toile deja chargee (aucune
+    // requete), un noeud d'information ouvre sa source quand il en a une. Un
+    // noeud sans lien ne fait rien — mais il a deja tout dit dans son infobulle.
     _graphActivate(i) {
         const L = this._graphLayout;
         const n = L && L.nodes[i];
         if (!n) return;
+        if (n.kind === 'card') {
+            if (this._graphPivot === n.id) return;    // deja deplie
+            this.focusPivot(n.id);
+            return;
+        }
         if (n.anchor) {
             if (this._graphSymbol === n.id) return;   // deja rapproche sur lui
             this.loadGraph(n.id);
@@ -4722,7 +4947,10 @@ const PaperModule = {
         const n = (L && i !== null && i !== undefined) ? L.nodes[i] : null;
         if (!n) { tip.style.display = 'none'; tip.innerHTML = ''; return; }
 
-        const type = this._gtypeLabel(n.type);
+        // La carte d'un bosquet ne repete pas son type : les trois sont des
+        // pivots « contexte » cote serveur, et l'ecrire sous « Radar » dirait
+        // « Contexte mondial » — un contresens.
+        const type = (n.kind === 'card') ? '' : this._gtypeLabel(n.type);
         const when = (n.ts === undefined || n.ts === null || n.ts === '')
             ? '' : this._dateShort(n.ts);
         const bits = [];
@@ -4734,7 +4962,19 @@ const PaperModule = {
         // la meme chose, une fois en francais et une fois en nom de champ.
         let metaHtml = '';
         const lines = Array.isArray(n.lines) ? n.lines : [];
-        if (lines.length) {
+        // Le DETAIL des compteurs d'un tronc : « Presse 12 », « Politique 3 ».
+        // C'est la contrepartie de l'index — la pastille dit combien, l'infobulle
+        // dit de quoi. Sept familles au plus, donc pas de troncature a inventer.
+        const counts = Array.isArray(n.counts) ? n.counts : [];
+        if (counts.length) {
+            // Une carte n'a qu'un compteur, et son nom est deja en tete : la
+            // ligne dit « elements », pas une seconde fois le nom du bosquet.
+            metaHtml = counts.map((b) =>
+                '<div class="paper-graph-tip-meta">' +
+                '<span>' + esc(this._gtrim((n.kind === 'card')
+                    ? Lang.t('paper.graph_items') : this._gBadgeLabel(b), 22)) + '</span>' +
+                '<span>' + esc(this._num(b.n, 0)) + '</span></div>').join('');
+        } else if (lines.length) {
             metaHtml = lines.slice(0, 3).map((t) =>
                 '<div class="paper-graph-tip-sub">' + esc(this._gtrim(String(t), 60)) +
                 '</div>').join('');
@@ -4754,11 +4994,13 @@ const PaperModule = {
             '<div class="paper-graph-tip-head">' + esc(n.label) + '</div>' +
             (bits.length ? '<div class="paper-graph-tip-sub">' + esc(bits.join(' · ')) + '</div>' : '') +
             metaHtml +
-            (n.anchor
-              ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_focus')) + '</div>'
-              : (n.link
-                  ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_link')) + '</div>'
-                  : ''));
+            (n.kind === 'card'
+              ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_open_grove')) + '</div>'
+              : (n.anchor
+                ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_focus')) + '</div>'
+                : (n.link
+                    ? '<div class="paper-graph-tip-cta">' + esc(Lang.t('paper.graph_link')) + '</div>'
+                    : '')));
 
         // Placement : a droite du noeud par defaut, bascule a gauche quand il
         // n'y a plus la place. L'infobulle ne sort jamais du cadre.
@@ -4785,11 +5027,12 @@ const PaperModule = {
         const nodes = this._graphNodes();
         const g = this._graph;
         const ego = this._graphSymbol;
+        const root = this._graphRootId();
 
         // Rangee de filtres : « Tout » puis les ancres relevees. Elle reste la
-        // meme en vue rapprochee — c'est ce qui permet de sauter d'un titre a
-        // l'autre sans repasser par la toile entiere.
-        const pills = '<button class="paper-tab' + (ego ? '' : ' active') + '" ' +
+        // meme quand un sujet est deplie — c'est ce qui permet de sauter d'un
+        // titre a l'autre sans repasser par l'index.
+        const pills = '<button class="paper-tab' + (root ? '' : ' active') + '" ' +
                 'data-paper-act="graph-all">' + esc(Lang.t('paper.graph_all')) + '</button>' +
             this._graphAnchors.map((a) =>
                 '<button class="paper-tab' + (ego === a.id ? ' active' : '') + '" ' +
@@ -4802,27 +5045,34 @@ const PaperModule = {
         } else if (!nodes.length) {
             body = this._muted(Lang.t('paper.graph_empty'));
         } else {
-            const kept = this._graphKept();
-            const cut = kept.cut || !!(g && g.truncated);
             body = '<div class="paper-graph-wrap">' +
                     '<canvas data-paper-graph="1" class="paper-graph"></canvas>' +
                     '<div id="paper-graph-tip" class="paper-graph-tip"></div>' +
                   '</div>' +
-                  this._graphLegend() +
-                  (cut
+                  this._graphLegend(root) +
+                  // Le serveur DIT quand il a rogne ce qu'il envoie. On le
+                  // repete tel quel : plus aucun plafond de dessin cote client
+                  // ne s'y ajoute, donc ce message ne peut venir que de lui.
+                  ((g && g.truncated)
                     ? '<div style="font-size:12px;color:var(--text-dim);margin-top:8px;">' +
                         esc(Lang.t('paper.graph_truncated') + ' ' +
-                            this._num(kept.nodes.length, 0) + ' ' + Lang.t('paper.graph_nodes')) +
+                            this._num(nodes.length, 0) + ' ' + Lang.t('paper.graph_nodes')) +
                       '</div>'
                     : '');
         }
 
+        // L'entete dit CE QU'ON REGARDE : l'index, l'arbre d'un titre, ou celui
+        // d'un bosquet (dont le nom est traduit, jamais celui du serveur).
+        // Un bosquet porte son propre nom, sans « voisins directs de » : ce
+        // n'est pas le voisinage d'un titre, c'est le bosquet lui-meme.
+        let hint = Lang.t('paper.graph_hint');
+        if (this._graphPivot) hint = this._graphGroveLabel();
+        else if (ego) hint = Lang.t('paper.graph_ego') + ' ' + ego;
+
         return this._card(
             '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px;">' +
               '<h3 style="margin:0;font-size:17px;">' + esc(Lang.t('paper.graph_title')) + '</h3>' +
-              '<span style="font-size:12px;color:var(--text-dim);">' +
-                esc(ego ? (Lang.t('paper.graph_ego') + ' ' + ego) : Lang.t('paper.graph_hint')) +
-              '</span>' +
+              '<span style="font-size:12px;color:var(--text-dim);">' + esc(hint) + '</span>' +
               '<button class="btn btn-ghost btn-sm" data-paper-act="graph-reload" ' +
                   'style="margin-left:auto;">' + esc(Lang.t('paper.refresh')) + '</button>' +
             '</div>' +
@@ -4831,10 +5081,22 @@ const PaperModule = {
         );
     },
 
+    // Nom TRADUIT du bosquet deplie, reconnu par sa forme dans la toile
+    // courante. Le nom que le serveur envoie est en francais : on ne l'affiche
+    // pas, on le retrouve par le role.
+    _graphGroveLabel() {
+        const id = String(this._graphPivot == null ? '' : this._graphPivot);
+        if (!id) return '';
+        const P = this._graphParts(this._graphNodes());
+        return this._gPivotLabel(P.roleOf[id] || 'world');
+    },
+
     // La legende dit la meme chose que la toile, dans le meme ordre : une
     // pastille par FAMILLE DE SOURCE (le nœud dit d'ou vient l'info), puis une
-    // ligne pour les LIENS (le lien dit ce que l'info raconte).
-    _graphLegend() {
+    // ligne pour les LIENS (le lien dit ce que l'info raconte). Cette derniere
+    // ligne ne parait QUE quand des liens sont dessines : l'index n'en a aucun,
+    // et expliquer la couleur d'un trait absent est un contresens.
+    _graphLegend(root) {
         const seen = {};
         this._graphNodes().forEach((n) => { seen[this._gtype(n.type)] = 1; });
         const famSeen = {};
@@ -4857,7 +5119,9 @@ const PaperModule = {
             fams.map((f) => item(this._gfamColor(f), this._gfamLabel(f))).join('') +
             others.map((t) => item(neutral, t)).join('') +
         '</div>' +
-        '<div class="paper-graph-note">' + esc(Lang.t('paper.graph_legend_edges')) + '</div>';
+        '<div class="paper-graph-note">' +
+            esc(root ? Lang.t('paper.graph_legend_edges') : Lang.t('paper.graph_legend_index')) +
+        '</div>';
     },
 
     // =====================================================================
@@ -4880,10 +5144,29 @@ const PaperModule = {
     },
 
     // Pastille de la rangée de filtres : « Tout » (null) ou une ancre.
+    // « Tout » referme AUSSI un bosquet déplié — sans quoi le bouton n'aurait
+    // aucun effet visible quand on regarde le monde ou le radar.
     focusGraph(symbol) {
         const sym = (symbol === null || symbol === undefined || symbol === '') ? null : String(symbol);
+        if (sym === null && this._graphPivot !== null && this._graphSymbol === null) {
+            this._graphPivot = null;
+            this._graphHover = null;
+            this._renderBody();
+            return;
+        }
         if (sym === this._graphSymbol) return;
         this.loadGraph(sym);
+    },
+
+    // Clic sur la carte d'un bosquet : on le déplie DANS la toile déjà chargée.
+    // Aucune requête — le serveur ne connaît pas « monde » comme un symbole, et
+    // ses douze items sont déjà là.
+    focusPivot(id) {
+        const pid = (id === null || id === undefined || id === '') ? null : String(id);
+        if (pid === this._graphPivot) return;
+        this._graphPivot = pid;
+        this._graphHover = null;
+        this._renderBody();
     },
 
     // Chip d'un graphique : on OUVRE la vue Connexions déjà rapprochée sur ce
