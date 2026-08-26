@@ -118,6 +118,32 @@ def _block(title: str, payload: Any) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Dossier HISTORIQUE — la consigne qui dit au modèle quoi en faire
+#
+# Le champ ``historique`` voyage DANS le bloc de contexte déjà sérialisé (les
+# idées et les scénarios le portent au niveau du contexte, la revue le porte
+# sur chaque position) : il n'y a donc pas de second bloc à écrire, seulement
+# cette consigne. Elle est écrite UNE fois et injectée dans les trois prompts —
+# trois formulations parallèles finiraient par diverger.
+#
+# La dernière phrase n'est pas une précaution de style : sans elle, un titre
+# jamais collecté se lirait comme « il ne s'est rien passé depuis un an », ce
+# qui est exactement le contresens qu'on cherche à éviter.
+# --------------------------------------------------------------------------- #
+_HISTORY_LINE = (
+    "HISTORIQUE (12 derniers mois, collecté d'archives) : le champ "
+    "``historique`` du contexte ci-dessus (au niveau du contexte, ou porté par "
+    "chaque position selon le cas) donne, PAR TITRE, ce que la presse a écrit "
+    "sur les douze derniers mois — une ligne par repère, au format "
+    "« AAAA-MM titre (sentiment) », de la plus ancienne à la plus récente. "
+    "Sers-t'en comme BASE : ce qui est nouveau ne l'est vraiment que par "
+    "rapport à ça. Dis si le fait du jour ROMPT avec cette année-là ou s'il la "
+    "RÉPÈTE, et nomme alors la ligne d'historique sur laquelle tu t'appuies. "
+    "Un titre ABSENT de ``historique`` n'a simplement pas encore été collecté : "
+    "n'en conclus RIEN — surtout pas qu'il ne s'est rien passé.")
+
+
+# --------------------------------------------------------------------------- #
 # Langue de SORTIE
 #
 # Les prompts eux-mêmes restent en FRANÇAIS : ce sont des instructions au
@@ -409,6 +435,7 @@ def build_ideas_prompt(context: Optional[Dict[str, Any]], lang: str = "fr",
         "(pour ne pas les reproposer), et les événements récents (presse, "
         "dépôts 13F) qui peuvent servir de catalyseur.",
         _block("CONTEXTE", context or {}),
+        _HISTORY_LINE,
     ] + memory + [
         _RISK_BLOCKS[level],
         "Commence ta réponse par UNE ligne d'en-tête qui annonce le niveau de "
@@ -478,6 +505,7 @@ def build_scenarios_prompt(context: Optional[Dict[str, Any]],
         "(``pipeline``), les hypothèses du radar ouvertes, et les événements "
         "récents (presse, annonces politiques, dépôts 13F).",
         _block("CONTEXTE", context or {}),
+        _HISTORY_LINE,
         "Construis UN SEUL arbre :\n"
         "- un TITRE : la question macro du moment, celle dont dépend le reste "
         "(ex. « La Fed baisse-t-elle en septembre ? ») — une question, pas un "
@@ -578,6 +606,7 @@ def build_review_prompt(context: Optional[Dict[str, Any]],
         "(``gov_recent``) et les mouvements de grands gérants sur ce titre "
         "(``whale_moves_on_this``).",
         _block("POSITIONS ET FAITS", context or {}),
+        _HISTORY_LINE,
         "Écris d'abord, pour CHAQUE position, un paragraphe court : où elle en "
         "est, ce qui la menace, ce qui la soutient, et ce que tu surveillerais "
         "pour trancher. Puis conclus par ta posture.",

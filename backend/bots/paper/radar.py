@@ -167,6 +167,11 @@ _NON_USER_FILES = frozenset({
     # les utilisateurs fantômes qu'on vient de faire disparaître de l'écran.
     "alerts_mode.json",
     "x_accounts.json",
+    # Dossiers historiques (26/08). Même piège, en plus vicieux : le chemin
+    # ``backfill.json`` EST exactement ``store.portfolio_path("backfill")`` —
+    # sans cette ligne, « backfill » serait recensé comme un compte ET son
+    # état passerait pour un portefeuille.
+    "backfill.json",
 })
 _USER_FILE_RE = re.compile(r"^([A-Za-z0-9_-]+)\.json$")
 
@@ -427,7 +432,7 @@ def save_state(state: Dict[str, Any]) -> None:
 
 def build_prompt(events: Any, filings: Any, open_hyps: Any, scored_hyps: Any,
                  stats: Any, now_iso: str, social: Any = None,
-                 whale_moves: Any = None) -> str:
+                 whale_moves: Any = None, history: Any = None) -> str:
     """Le prompt du radar (PUR — aucune I/O, aucun appel).
 
     Il porte toute la doctrine : chercher le RICOCHET et pas le premier degré,
@@ -547,6 +552,24 @@ def build_prompt(events: Any, filings: Any, open_hyps: Any, scored_hyps: Any,
             lines.append("- [%s] %s" % (str(post.get("source") or "social"), text))
     else:
         lines.append("- (aucune)")
+    lines.append("")
+
+    lines.append(
+        "HISTORIQUE (12 derniers mois, collecté d'archives de presse) — c'est "
+        "la BASE : un événement d'aujourd'hui n'est NEUF que par rapport à "
+        "ça. Sers-t'en pour savoir si le matériau ci-dessus rompt avec les "
+        "douze derniers mois ou s'il répète une histoire déjà vue :")
+    rows = [(symbol, lines_)
+            for symbol, lines_ in sorted((history or {}).items())
+            if isinstance(lines_, list) and lines_] \
+        if isinstance(history, dict) else []
+    if rows:
+        for symbol, symbol_lines in rows:
+            lines.append("- %s :" % symbol)
+            for entry in symbol_lines:
+                lines.append("  · %s" % str(entry))
+    else:
+        lines.append("- (aucun dossier historique collecté pour l'instant)")
     lines.append("")
 
     lines.append("HYPOTHÈSES DÉJÀ OUVERTES (à NE PAS reproposer) :")
@@ -1006,6 +1029,41 @@ def _collect_events(users: List[str], now: datetime) -> List[Dict[str, Any]]:
     return out
 
 
+def _collect_history() -> Dict[str, List[str]]:
+    """Le dossier HISTORIQUE des titres suivis (12 mois d'archives de presse,
+    collecté en pur code par ``backfill``) — best-effort STRICT.
+
+    Sa valeur au radar est exactement celle qu'on lui demande partout ailleurs :
+    dire si la dépêche du jour rompt avec l'année écoulée ou si elle rejoue une
+    histoire déjà vue. Module absent ou état illisible -> ``{}`` : le radar
+    raisonne sans, il raisonne juste moins bien.
+    """
+    try:
+        from backend.bots.paper import backfill
+        return backfill.digest_for_anchors() or {}
+    except Exception as exc:   # noqa: BLE001 — module voisin absent ou en panne
+        logger.warning("paper radar: historique indisponible (%s)",
+                       type(exc).__name__)
+        return {}
+
+
+def _fill_history() -> Dict[str, Any]:
+    """Avance la file des dossiers historiques d'UN symbole — best-effort.
+
+    Branché à la toute fin du run, pour la même raison que la convergence : le
+    radar a déjà fait son travail et sauvé son état quand on arrive ici. Un
+    symbole par passage (quatre requêtes espacées), pas la watchlist entière :
+    c'est ce qui rend la collecte invisible pour l'appelant.
+    """
+    try:
+        from backend.bots.paper import backfill
+        return backfill.run_pending(max_symbols=1) or {}
+    except Exception as exc:   # noqa: BLE001 — jamais fatal
+        logger.warning("paper radar: collecte historique indisponible (%s)",
+                       type(exc).__name__)
+        return {}
+
+
 def _collect_whale_moves() -> List[Dict[str, Any]]:
     """Ce que les grands gérants ont VENDU, allégé, acheté ou renforcé — depuis
     le CACHE seul (aucune requête SEC ici, cf. ``whales.moves_summary``).
@@ -1211,7 +1269,8 @@ def _score_and_generate(now_dt: datetime,
 
     scored_hyps = [h for h in hypotheses if h.get("status") == "scored"]
     prompt = build_prompt(events, filings, open_hyps, scored_hyps, stats,
-                          now_iso, social_items, whale_moves)
+                          now_iso, social_items, whale_moves,
+                          _collect_history())
     try:
         raw = llm(prompt)
     except Exception:  # noqa: BLE001 — LLM muet = run dégradé, jamais perdu
@@ -1300,6 +1359,11 @@ def run_once(now: Any = None,
     counters["errors"] += outcome["errors"]
     counters["notified"] += outcome["notified"]
     counters["fired"] = outcome["fired"]
+
+    # En DERNIER, et sans jamais rien remonter dans les compteurs du radar :
+    # la collecte d'archives sert le PROCHAIN passage, pas celui-ci. Une
+    # erreur ici ne doit pas se lire comme une erreur de radar.
+    _fill_history()
     return counters
 
 

@@ -51,6 +51,19 @@ l'utilisateur ET les événements politiques globaux (sentiment "gov", symbole
 "GOV", partagés par tout le monde) -- le router n'a rien à changer, la
 fusion est interne à cette fonction.
 
+Extension 2026-08-26 (fin de journée), deux ajouts qui se répondent :
+
+  * volet REDDIT « tendances de la foule » -- un cycle sur trois, une seule
+    requête multireddit. Il ne notifie JAMAIS (cf. _run_reddit_volet) : il
+    nourrit la mémoire et la convergence, parce que le bruit social est un
+    accélérant, pas une preuve ;
+  * DÉTECTION D'ENTREPRISES (paper/entities.py) branchée sur les volets
+    politique, X et Reddit. « L'administration Trump veut acheter des cartes
+    graphiques à Nvidia » devient un event portant symbol="NVDA" -- il rejoint
+    donc la branche du titre dans la toile et pèse sur les facteurs qui
+    regardent les titres DÉTENUS. Avant, il partait au pivot « monde » et ne
+    servait à rien de précis.
+
 Aucune nouvelle dépendance : curl_cffi (déjà utilisé par bond-scanner et
 market-pulse -- Yahoo bloque les clients HTTP nus au niveau TLS, piège #67/#68)
 + stdlib (xml.etree, email.utils, re, hashlib, json, os).
@@ -69,9 +82,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
-from backend.bots.paper import alerts, store
+from backend.bots.paper import alerts, entities, store
 
 logger = logging.getLogger("omenserver")
+
+# Le moteur Market Pulse, atteint par pont ``sys.path`` (le dossier est tirété,
+# donc ``import pulse.social`` ne marche pas tel quel) — même patron que
+# ``quotes.ENGINE_DIR`` et ``radar.ENGINE_DIR``.
+ENGINE_DIR = Path(__file__).resolve().parents[3] / "market-pulse"
 
 # --------------------------------------------------------------------------- #
 # Constantes
@@ -176,6 +194,45 @@ _X_ESCALATE_AFTER = 2
 _X_STEALTH_TTL_S = 24 * 3600
 
 _CASHTAG_RE = re.compile(r"\$([A-Z]{1,5})\b")
+
+# --- volet REDDIT « tendances de la foule » (extension 2026-08-26) --------- #
+#
+# Chemin PROUVÉ (sondé pour le radar, spec §13) : le ``.json`` de Reddit rend
+# 403 même en empreinte Chrome, mais le flux Atom d'un MULTIREDDIT rend jusqu'à
+# 100 posts en UNE requête. On emprunte donc ``pulse.social`` du moteur Market
+# Pulse (``reddit_url`` + ``parse_reddit``) plutôt que de réécrire un parseur.
+#
+# ⚠️ Plafond MESURÉ : **1 requête / 60 s / IP**. Le guetteur tourne toutes les
+# 5 minutes ; on n'interroge donc Reddit qu'UN CYCLE SUR TROIS (~15 min), ce qui
+# laisse quinze fois la marge du plafond — et suffit largement pour un compteur
+# de mentions dont la fenêtre est de 24 heures. Un 429 n'est JAMAIS réessayé
+# dans le même cycle (marteler un service qui vient de dire non est la façon la
+# plus sûre de se faire bloquer l'IP) : il compte une erreur, et le prochain
+# cycle dû retentera un quart d'heure plus tard.
+REDDIT_SUBS = ("wallstreetbets", "stocks", "investing", "StockMarket")
+REDDIT_LIMIT = 100
+_REDDIT_CYCLE_EVERY = 3          # 1 cycle sur 3 (cf. ci-dessus)
+_REDDIT_MAX_AGE_S = 24 * 3600    # comme le gov et le crypto : l'immédiateté
+
+# Le flux rend 100 posts d'un coup. Tous comptent pour les TENDANCES (un
+# compteur ne coûte qu'un horodatage), mais seule une poignée devient un
+# événement affiché : sans ce cap, un seul passage Reddit chasserait toute la
+# presse et toute la politique du fil (plafonné à ``_MAX_EVENTS``).
+_REDDIT_MAX_EVENTS_PER_RUN = 6
+
+# Tonalité DÉDIÉE, et surtout : neutre pour tous les facteurs existants. Donner
+# « neg » à un post Reddit ferait tirer SEUL le facteur de menace ``held_risk``
+# (cf. ``convergence.THREAT_FACTORS``) — un coup de gueule anonyme réveillerait
+# le téléphone comme un avertissement sur résultats. La foule pèse par son
+# NOMBRE (facteur ``crowd_buzz``), jamais par le ton d'un post isolé.
+REDDIT_SENTIMENT = "crowd"
+
+# Fenêtres du compteur de mentions. 24 h contre les 24 h précédentes : c'est
+# l'ACCÉLÉRATION qu'on cherche, pas le volume absolu (un titre populaire l'est
+# tous les jours, ça ne dit rien de neuf).
+REDDIT_TREND_WINDOW_H = 24
+REDDIT_TREND_MAX_AGE_H = 48      # au-delà, l'horodatage ne sert plus à rien
+REDDIT_TRENDS_MAX = 40           # cap du nombre de tickers suivis
 
 
 # =========================================================================== #
@@ -529,10 +586,10 @@ def cashtag_symbol(text: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def classify_x(text: str) -> Optional[Dict[str, Any]]:
+def classify_x(text: str, anchors: Any = None) -> Optional[Dict[str, Any]]:
     """Un post X est-il IMPORTANT ? -> ``{"sentiment", "symbol"}`` ou ``None``.
 
-    C'est la demande explicite : « important seulement ». Trois portes, aucune
+    C'est la demande explicite : « important seulement ». Quatre portes, aucune
     ouverte par défaut — un mème, une photo, une pique politique sans contenu
     économique ne franchit rien et disparaît :
 
@@ -542,12 +599,19 @@ def classify_x(text: str) -> Optional[Dict[str, Any]]:
     2. **impact politique/économique** (``classify_gov``, réutilisé tel quel) ->
        ``gov``, exactement comme une dépêche du volet politique ;
     3. **crypto** (``classify_crypto``, réutilisé tel quel) -> son ton et sa
-       paire Yahoo.
+       paire Yahoo ;
+    4. une **entreprise NOMMÉE** (``entities.first_company``, extension du
+       26/08) — « Trump veut acheter des cartes graphiques à Nvidia » ne porte
+       ni cashtag, ni mot politique de la liste, ni marqueur crypto, et
+       disparaissait donc en silence alors qu'il parle très précisément d'un
+       titre. ``anchors`` = les noms des positions et de la watchlist (cf.
+       ``entities.anchor_index``), qui PRIMENT sur la table livrée.
 
-    Ordre de priorité : ``gov`` puis ``crypto`` puis le cashtag seul. Un post
-    qui annonce des droits de douane ET cite ``$F`` est d'abord une annonce
-    politique — mais il garde le symbole, qui reste l'information la plus
-    précise qu'il porte.
+    Ordre de priorité : ``gov`` puis ``crypto`` puis le cashtag puis
+    l'entreprise nommée. Un post qui annonce des droits de douane ET cite
+    ``$F`` est d'abord une annonce politique — mais il garde le symbole, qui
+    reste l'information la plus précise qu'il porte ; et à défaut de cashtag,
+    c'est l'entreprise nommée qui le fournit.
     """
     if not text:
         return None
@@ -556,13 +620,16 @@ def classify_x(text: str) -> Optional[Dict[str, Any]]:
         return None
 
     cash = cashtag_symbol(body)
+    named = entities.first_company(body, anchors)
     if classify_gov(body):
-        return {"sentiment": "gov", "symbol": cash}
+        return {"sentiment": "gov", "symbol": cash or named}
     crypto = classify_crypto(body)
     if crypto:
-        return {"sentiment": crypto, "symbol": cash or crypto_symbol(body)}
+        return {"sentiment": crypto, "symbol": cash or crypto_symbol(body) or named}
     if cash:
         return {"sentiment": classify(body) or "watch", "symbol": cash}
+    if named:
+        return {"sentiment": classify(body) or "watch", "symbol": named}
     return None
 
 
@@ -607,6 +674,120 @@ def x_cycle_due(cycle: Any) -> bool:
         return int(cycle) % _X_CYCLE_EVERY == 0
     except (TypeError, ValueError):
         return True
+
+
+def reddit_cycle_due(cycle: Any) -> bool:
+    """Ce cycle doit-il interroger Reddit ? (PUR — un cycle sur
+    ``_REDDIT_CYCLE_EVERY``, soit ~15 min.)
+
+    Même posture que ``x_cycle_due`` pour un compteur illisible : ``True``, on
+    ne laisse pas un état corrompu éteindre un volet pour toujours. Le plafond
+    de Reddit (1 req/60 s) reste respecté avec une marge de quinze : un cycle de
+    trop ne coûte rien, un volet mort ne se voit jamais.
+    """
+    try:
+        return int(cycle) % _REDDIT_CYCLE_EVERY == 0
+    except (TypeError, ValueError):
+        return True
+
+
+# --- tendances Reddit : le compteur de mentions (PUR) ---------------------- #
+#
+# Ce qui est PERSISTÉ (``reddit_trends`` de l'état global) est
+# ``{SYMBOLE: [horodatage ISO, ...]}`` — les mentions elles-mêmes. Ce qui est
+# CONSOMMÉ (convergence, toile, router) est ``{SYMBOLE: {count, prev}}``,
+# recalculé à la lecture par ``trends_view``.
+#
+# Pourquoi pas stocker directement les deux compteurs ? Parce qu'une fenêtre
+# GLISSANTE ne se recalcule pas depuis un compteur nu : à 14 h, « les 24
+# dernières heures » ne contiennent plus ce qu'elles contenaient à 13 h. Sans
+# les horodatages, on ne pourrait que remettre le compteur à zéro à heure fixe
+# — et un pic qui traverse minuit deviendrait invisible.
+
+def _iso_dt(value: Any) -> Optional[datetime]:
+    """Un horodatage ISO -> datetime AWARE (UTC si le fuseau manque). Illisible
+    -> ``None`` (même prudence que ``_purge_old_seen``)."""
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def purge_trends(trends: Any, now_dt: datetime,
+                 max_age_h: float = REDDIT_TREND_MAX_AGE_H,
+                 cap: int = REDDIT_TRENDS_MAX) -> None:
+    """Purge EN PLACE le compteur de mentions (PUR).
+
+    Trois coupes : les horodatages plus vieux que ``max_age_h`` (ils ne peuvent
+    plus peser sur aucune des deux fenêtres), les symboles qui n'en ont plus
+    aucun, puis les symboles au-delà de ``cap`` — on garde les plus mentionnés,
+    le symbole tranchant les ex æquo pour que deux purges rendent exactement le
+    même état. Un horodatage illisible est purgé par prudence, comme partout
+    ailleurs dans ce module.
+
+    Elle NORMALISE aussi : une valeur qui n'est pas une liste d'horodatages
+    disparaît. C'est ce qui rend le volet insensible à un état corrompu.
+    """
+    if not isinstance(trends, dict):
+        return
+    cutoff = now_dt.timestamp() - max_age_h * 3600
+    kept: Dict[str, List[str]] = {}
+    for symbol, stamps in trends.items():
+        if not isinstance(symbol, str) or not isinstance(stamps, list):
+            continue
+        fresh = []
+        for raw in stamps:
+            parsed = _iso_dt(raw)
+            if parsed is not None and parsed.timestamp() >= cutoff:
+                fresh.append(raw)
+        if fresh:
+            kept[symbol] = fresh
+    if len(kept) > cap:
+        ranked = sorted(kept.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+        kept = dict(ranked[:cap])
+    trends.clear()
+    trends.update(kept)
+
+
+def trends_view(trends: Any, now: Any = None) -> Dict[str, Dict[str, int]]:
+    """``{SYMBOLE: {"count", "prev"}}`` depuis les mentions brutes (PUR).
+
+    ``count`` = mentions des ``REDDIT_TREND_WINDOW_H`` dernières heures,
+    ``prev`` = mentions des ``REDDIT_TREND_WINDOW_H`` heures d'AVANT. C'est le
+    rapport des deux qui dit « la foule s'agite », pas le volume absolu.
+
+    Un symbole dont ``count`` est nul est OMIS : afficher « SYM ×0 » sur la
+    toile ou le proposer au digest serait du bruit — sa seule histoire, c'est
+    qu'il ne se passe plus rien.
+    """
+    now_dt = now if isinstance(now, datetime) else datetime.now(timezone.utc)
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=timezone.utc)
+    recent_cut = now_dt.timestamp() - REDDIT_TREND_WINDOW_H * 3600
+    older_cut = now_dt.timestamp() - 2 * REDDIT_TREND_WINDOW_H * 3600
+
+    out: Dict[str, Dict[str, int]] = {}
+    if not isinstance(trends, dict):
+        return out
+    for symbol, stamps in trends.items():
+        if not isinstance(symbol, str) or not isinstance(stamps, list):
+            continue
+        count = prev = 0
+        for raw in stamps:
+            parsed = _iso_dt(raw)
+            if parsed is None:
+                continue
+            when = parsed.timestamp()
+            if when >= recent_cut:
+                count += 1
+            elif when >= older_cut:
+                prev += 1
+        if count:
+            out[symbol] = {"count": count, "prev": prev}
+    return out
 
 
 # --- anti-spam du volet politique : clé d'HISTOIRE (cf. le commentaire de
@@ -759,7 +940,8 @@ def _global_seen_path() -> Path:
 def _default_seen_state() -> Dict[str, Any]:
     return {"seen": {}, "events": [], "seeded": {}, "stories": {},
             "sent_log": [], "crypto_sent_log": [], "x_sent_log": [],
-            "x_cycle": 0, "x_tiers": {}, "x_fails": {}}
+            "x_cycle": 0, "x_tiers": {}, "x_fails": {},
+            "reddit_cycle": 0, "reddit_trends": {}}
 
 
 def _load_seen_state(path: Path) -> Dict[str, Any]:
@@ -780,7 +962,10 @@ def _load_seen_state(path: Path) -> Dict[str, Any]:
     "x_sent_log" (budgets propres, cf. constantes), "x_cycle" (cadence un
     cycle sur deux), "x_tiers" (quel chemin de récupération marche pour quel
     compte) et "x_fails" (anomalies consécutives avant escalade). Un état
-    écrit AVANT cette extension repart donc de zéro sans migration."""
+    écrit AVANT cette extension repart donc de zéro sans migration.
+
+    Idem pour le volet REDDIT : "reddit_cycle" (cadence un cycle sur trois) et
+    "reddit_trends" (les mentions horodatées par ticker, cf. trends_view)."""
     if not path.is_file():
         return _default_seen_state()
     try:
@@ -802,10 +987,12 @@ def _load_seen_state(path: Path) -> Dict[str, Any]:
         value = data.get(key)
         return value if isinstance(value, list) else []
 
-    try:
-        cycle = int(data.get("x_cycle") or 0)
-    except (TypeError, ValueError):
-        cycle = 0
+    def _counter(key):
+        try:
+            return int(data.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
     return {
         "seen": _dict("seen"),
         "events": _list("events"),
@@ -814,9 +1001,11 @@ def _load_seen_state(path: Path) -> Dict[str, Any]:
         "sent_log": _list("sent_log"),
         "crypto_sent_log": _list("crypto_sent_log"),
         "x_sent_log": _list("x_sent_log"),
-        "x_cycle": cycle,
+        "x_cycle": _counter("x_cycle"),
         "x_tiers": _dict("x_tiers"),
         "x_fails": _dict("x_fails"),
+        "reddit_cycle": _counter("reddit_cycle"),
+        "reddit_trends": _dict("reddit_trends"),
     }
 
 
@@ -1007,35 +1196,99 @@ def _fetch_x_stealth(handle: str) -> str:
     return fetcher.get(_x_url(handle))
 
 
+def _social_module():
+    """``pulse.social`` du moteur Market Pulse (pont ``sys.path``, même patron
+    que ``quotes.py`` et ``radar._social_module`` : le dossier est tirété, donc
+    ``import pulse.social`` ne marche pas tel quel).
+
+    UN seul point d'entrée pour les deux volets qui en dépendent (X et Reddit) :
+    deux ponts parallèles finiraient par pointer deux chemins différents.
+    """
+    path = str(ENGINE_DIR)
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    from pulse import social                  # noqa: E402 — pont sys.path
+    return social
+
+
 def _parse_x_posts(page: str, handle: str) -> List[Dict[str, Any]]:
-    """Les posts d'une page de profil, via ``pulse.social.parse_x`` du moteur
-    market-pulse (pont ``sys.path``, même patron que ``quotes.py`` : le dossier
-    est tirété, donc ``import pulse.social`` ne marche pas tel quel).
+    """Les posts d'une page de profil, via ``pulse.social.parse_x``.
 
     Laisse remonter ``XSerializationChanged`` : c'est un SIGNAL (la page a
     changé de forme, ou on nous sert un mur), pas un détail — l'appelant s'en
     sert pour décider d'escalader.
     """
-    engine_dir = str(Path(__file__).resolve().parents[3] / "market-pulse")
-    if engine_dir not in sys.path:
-        sys.path.insert(0, engine_dir)
-    from pulse import social                  # noqa: E402 — pont sys.path
-    return social.parse_x(page, handle)
+    return _social_module().parse_x(page, handle)
 
 
 def _x_serialization_error():
     """La classe ``XSerializationChanged`` du moteur, ou un repli inoffensif si
     le moteur n'est pas déployé (``except`` sur une classe absente lèverait)."""
     try:
-        engine_dir = str(Path(__file__).resolve().parents[3] / "market-pulse")
-        if engine_dir not in sys.path:
-            sys.path.insert(0, engine_dir)
-        from pulse import social
-        return social.XSerializationChanged
+        return _social_module().XSerializationChanged
     except Exception:      # noqa: BLE001 — moteur absent
         class _Never(RuntimeError):
             pass
         return _Never
+
+
+# --- volet Reddit : URL, fetch et parseur (I/O) ----------------------------- #
+
+def _reddit_url() -> str:
+    """L'URL multireddit du flux Atom, ou ``""`` si le moteur manque.
+
+    ``pulse.social.reddit_url`` est empruntée telle quelle : c'est elle qui
+    porte la connaissance du format (``/r/a+b+c/.rss?limit=N``), sondée et
+    vérifiée à la main pour le radar.
+    """
+    try:
+        return _social_module().reddit_url(REDDIT_SUBS, REDDIT_LIMIT) or ""
+    except Exception:      # noqa: BLE001 — moteur absent
+        logger.warning("paper newswatch: moteur market-pulse absent, Reddit ignoré")
+        return ""
+
+
+def _fetch_reddit(url: str) -> bytes:
+    """Le flux Atom, en OCTETS, via la session curl_cffi déjà partagée.
+
+    Des octets et non du texte : le flux porte sa déclaration d'encodage, et
+    c'est la forme que ``pulse.social._default_fetch`` a elle-même retenue pour
+    Reddit après sondage — on ne réinvente pas ce qui a déjà été mesuré.
+
+    Lève sur 429 comme sur tout autre statut non-200 : l'appelant compte une
+    erreur et passe. **Aucune reprise dans le cycle** — le plafond est de
+    1 requête / 60 s, le prochain cycle dû arrive dans un quart d'heure.
+    """
+    session = _get_session()
+    resp = session.get(url, timeout=20.0)
+    status = getattr(resp, "status_code", 0)
+    if status == 429:
+        raise RuntimeError("Reddit a répondu 429 (plafond 1 req/60 s)")
+    if status != 200:
+        raise RuntimeError("Reddit HTTP %s" % status)
+    return resp.content
+
+
+def _parse_reddit_posts(raw: Any) -> List[Dict[str, Any]]:
+    """Les posts du flux, via ``pulse.social.parse_reddit``, TITRES NETTOYÉS.
+
+    ``clean_social_text`` retire l'URL collée dans le titre, la grappe de
+    hashtags terminale et les marqueurs de continuation — un titre Reddit en
+    charrie constamment. Un post dont le titre n'était QUE ça est écarté plutôt
+    que journalisé nu.
+    """
+    social = _social_module()
+    out: List[Dict[str, Any]] = []
+    for post in (social.parse_reddit(raw) or []):
+        if not isinstance(post, dict):
+            continue
+        title = social.clean_social_text(post.get("title"))
+        if not title:
+            continue
+        row = dict(post)
+        row["title"] = title
+        out.append(row)
+    return out
 
 
 def _x_default_pacer():
@@ -1095,6 +1348,16 @@ def recent_events(username: str) -> List[Dict[str, Any]]:
     merged = user_events + gov_events
     merged.sort(key=lambda e: e.get("ts") or "", reverse=True)
     return merged
+
+
+def recent_trends(now: Any = None) -> Dict[str, Dict[str, int]]:
+    """CONTRAT PUBLIC (convergence, toile, router) : ``{SYMBOLE: {count, prev}}``
+    — les tickers dont la foule Reddit parle, et à quel rythme.
+
+    GLOBAL comme le sont les volets politique, crypto et X : la foule ne parle
+    pas à un compte, elle parle au marché. Fichier absent -> dictionnaire vide.
+    """
+    return trends_view(_load_global_seen().get("reddit_trends"), now)
 
 
 # --- portefeuilles + watchlist (extension 25/08 -- "sans baisser le nombre
@@ -1189,6 +1452,155 @@ def _discover_portfolios() -> List[Tuple[str, Dict[str, Any]]]:
         if _position_symbols(portfolio) or _load_watchlist_symbols(username):
             out.append((username, portfolio))
     return out
+
+
+def _anchor_extra(portfolios: List[Tuple[str, Dict[str, Any]]]) -> Dict[str, str]:
+    """``{nom en minuscules: SYMBOLE}`` des titres détenus ET suivis, tous
+    comptes confondus — la matière que ``entities`` fait PRIMER sur sa table.
+
+    Le simulateur est mono-utilisateur en pratique ; on additionne quand même
+    les comptes, exactement comme ``convergence._collect_positions``, pour que
+    la reconnaissance d'un titre ne dépende pas de QUI l'a mis en watchlist.
+
+    ⚠️ Une POSITION ne porte pas de nom, seulement son symbole ; c'est la
+    watchlist qui fournit les noms (mêmes précautions que
+    ``convergence._symbol_names``). Best-effort de bout en bout : un compte
+    illisible rétrécit la reconnaissance, il ne casse jamais le cycle.
+    """
+    rows: List[Dict[str, Any]] = []
+    for username, portfolio in portfolios:
+        for symbol in _position_symbols(portfolio):
+            rows.append({"symbol": symbol})
+        try:
+            entries = store.load_watchlist(username) or []
+        except Exception:      # noqa: BLE001 — un compte cassé ne casse rien
+            continue
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("symbol"):
+                rows.append({"symbol": entry.get("symbol"),
+                             "name": entry.get("name")})
+    return entities.anchor_index(rows)
+
+
+def _post_dt(published: Any, now_dt: datetime,
+             max_age_s: float = _REDDIT_MAX_AGE_S) -> Optional[datetime]:
+    """La date d'un post social, si elle est FRAÎCHE — sinon ``None``.
+
+    Un horodatage absent ou illisible rend ``None`` (le post est écarté), même
+    règle que les trois autres volets : sans date, on ne peut pas prétendre à
+    la fraîcheur, et un flux qui change de format ne doit pas remplir le
+    compteur de mentions avec des posts d'il y a trois semaines.
+    """
+    try:
+        when = datetime.fromtimestamp(float(published), tz=timezone.utc)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+    age_s = now_dt.timestamp() - when.timestamp()
+    if age_s < 0 or age_s > max_age_s:
+        return None
+    return when
+
+
+def _run_reddit_volet(state: Dict[str, Any], now_dt: datetime,
+                      anchor_extra: Dict[str, str], counters: Dict[str, Any],
+                      reddit_fetch: Optional[Callable[[str], Any]] = None,
+                      reddit_parse: Optional[Callable[[Any], List[Dict[str, Any]]]] = None
+                      ) -> None:
+    """Le volet « tendances de la foule » : UNE requête multireddit, deux
+    produits, ZÉRO notification. MUTE ``state`` — la persistance est faite par
+    l'appelant.
+
+    **Il n'envoie jamais rien, dans aucun mode.** Ce n'est pas un oubli : la
+    foule est un ACCÉLÉRANT, pas une preuve, et lui donner un canal direct vers
+    le téléphone recréerait exactement le bruit qu'on a passé la journée à
+    tuer. Ses deux produits parlent à la convergence, qui décide :
+
+    1. des **événements** (``src: "reddit"``), UNIQUEMENT pour les posts qui
+       portent un ticker reconnaissable — cashtag ``$X``, ou entreprise nommée
+       (``entities``). Un post sans ticker n'apprend rien à ce portefeuille ;
+    2. les **mentions** par ticker (``reddit_trends``), qui alimentent le
+       facteur ``crowd_buzz`` de la convergence.
+
+    Pas d'amorçage silencieux (le « seed » des autres volets) : il n'existe que
+    pour empêcher une tempête de notifications au déploiement, et ce volet
+    n'en émet aucune. Ce sont le filtre de fraîcheur (24 h) et le cap
+    d'événements par passage qui tiennent le premier cycle.
+    """
+    url = _reddit_url()
+    if not url:
+        return
+
+    fetch_fn = reddit_fetch if reddit_fetch is not None else _fetch_reddit
+    parse_fn = reddit_parse if reddit_parse is not None else _parse_reddit_posts
+
+    try:
+        raw = fetch_fn(url)
+    except Exception as exc:      # noqa: BLE001 — 429, réseau, TLS
+        logger.warning("paper newswatch: Reddit injoignable (%s)",
+                       type(exc).__name__)
+        counters["errors"] += 1
+        return
+    counters["fetched"] += 1
+
+    try:
+        posts = parse_fn(raw) or []
+    except Exception as exc:      # noqa: BLE001 — flux illisible
+        logger.warning("paper newswatch: Reddit illisible (%s)",
+                       type(exc).__name__)
+        counters["errors"] += 1
+        return
+
+    seen = state["seen"]
+    events = state["events"]
+    trends = state["reddit_trends"]
+    # Purge D'ABORD : elle jette les mentions périmées, mais surtout elle
+    # NORMALISE le dictionnaire relu du disque (une valeur qui ne serait pas une
+    # liste disparaît). Sans ça, un état corrompu ferait lever le ``.append``
+    # ci-dessous et emporterait tout le cycle de veille, pas seulement ce volet.
+    purge_trends(trends, now_dt)
+    logged = 0
+
+    for post in posts:
+        if not isinstance(post, dict):
+            continue
+        title = str(post.get("title") or "").strip()
+        link = str(post.get("url") or "").strip()
+        if not title or not link:
+            continue
+        key = _hash_link("reddit:%s" % link)
+        if key in seen:
+            continue
+        seen[key] = now_dt.isoformat()
+
+        when = _post_dt(post.get("published"), now_dt)
+        if when is None:
+            continue
+        # Le cashtag d'abord : c'est l'auteur qui dit de quel titre il parle,
+        # on ne va pas lui préférer notre propre reconnaissance.
+        symbol = cashtag_symbol(title) or entities.first_company(title, anchor_extra)
+        if not symbol:
+            continue
+
+        # TOUTES les mentions comptent pour la tendance (un horodatage ne coûte
+        # rien) ; seule une poignée devient un événement affiché.
+        trends.setdefault(symbol, []).append(when.isoformat())
+        if logged >= _REDDIT_MAX_EVENTS_PER_RUN:
+            continue
+        logged += 1
+        events.insert(0, {
+            "ts": now_dt.isoformat(),
+            "symbol": symbol,
+            "title": title,
+            "link": link,
+            "sentiment": REDDIT_SENTIMENT,
+            "src": "reddit",
+            "subreddit": str(post.get("subreddit") or ""),
+            # Toujours vrai : ce volet ne dispose d'aucun canal d'envoi.
+            "muted": True,
+        })
+
+    # Purge de sortie : c'est elle qui applique le CAP, après les ajouts.
+    purge_trends(trends, now_dt)
 
 
 def _pushback_error():
@@ -1299,10 +1711,15 @@ def _run_x_volet(state: Dict[str, Any], now_dt: datetime, cfg: Dict[str, Any],
                  x_fetch: Optional[Callable[[str], str]] = None,
                  x_stealth: Optional[Callable[[str], str]] = None,
                  x_parse: Optional[Callable[[str, str], List[Dict[str, Any]]]] = None,
-                 x_pacer: Any = None) -> None:
+                 x_pacer: Any = None,
+                 anchor_extra: Optional[Dict[str, str]] = None) -> None:
     """Le volet « comptes influents » : lit les profils suivis, ne garde que ce
     qui est IMPORTANT (``classify_x``), journalise, et n'envoie qu'en mode
-    « tout ». MUTE ``state`` — la persistance est faite par l'appelant."""
+    « tout ». MUTE ``state`` — la persistance est faite par l'appelant.
+
+    ``anchor_extra`` (les noms des titres détenus et suivis) descend jusqu'à
+    ``classify_x`` : c'est ce qui fait qu'un post nommant une entreprise, sans
+    cashtag ni mot politique, devient un événement SYMBOLISÉ."""
     handles = load_x_accounts()
     if not handles:
         return
@@ -1354,7 +1771,7 @@ def _run_x_volet(state: Dict[str, Any], now_dt: datetime, cfg: Dict[str, Any],
                 if age_s < 0 or age_s > _GOV_MAX_AGE_S:
                     continue
 
-            verdict = classify_x(text)
+            verdict = classify_x(text, anchor_extra)
             if verdict is None:
                 continue  # mème, pique, photo : jeté, c'est la demande
 
@@ -1399,6 +1816,23 @@ def _run_x_volet(state: Dict[str, Any], now_dt: datetime, cfg: Dict[str, Any],
 
 # --- le cycle ----------------------------------------------------------------- #
 
+def _gov_event(now_dt: datetime, title: str, link: str, symbol: str,
+               muted: bool) -> Dict[str, Any]:
+    """Un événement du volet politique, sous ses trois formes (envoyé, mis en
+    sourdine, ou mode calme) — une seule fabrique pour que les trois portent
+    exactement les mêmes champs.
+
+    ``symbol`` vaut le PSEUDO-symbole « GOV » quand l'annonce ne nomme aucune
+    entreprise, et le vrai ticker quand elle en nomme une. La tonalité, elle,
+    reste ``gov`` dans les deux cas : c'est toujours une annonce politique, et
+    c'est elle qui allume le facteur ``gov`` de la convergence. Un titre
+    symbolisé rejoint EN PLUS la branche de ce titre dans la toile — au lieu de
+    finir au pivot « monde », où personne n'allait le chercher.
+    """
+    return {"ts": now_dt.isoformat(), "symbol": symbol, "title": title,
+            "link": link, "sentiment": "gov", "muted": muted}
+
+
 def run_once(now: Optional[datetime] = None,
             fetch: Optional[Callable[[str], str]] = None,
             notifier: Optional[Callable[[str, Dict[str, Any]], bool]] = None,
@@ -1409,13 +1843,16 @@ def run_once(now: Optional[datetime] = None,
             x_stealth: Optional[Callable[[str], str]] = None,
             x_parse: Optional[Callable[[str, str], List[Dict[str, Any]]]] = None,
             x_pacer: Any = None,
+            reddit_fetch: Optional[Callable[[str], Any]] = None,
+            reddit_parse: Optional[Callable[[Any], List[Dict[str, Any]]]] = None,
             converge: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
-    """Un cycle de veille news, QUATRE volets :
+    """Un cycle de veille news, CINQ volets :
 
     1. **politique GLOBAL** (toujours, même sans portefeuille) ;
     2. **crypto GLOBAL** (26/08 — le coach n'avait aucune matière crypto) ;
-    3. **par utilisateur, par symbole** détenu ∪ suivi (RSS Yahoo) ;
-    4. **comptes X influents** (26/08 — un cycle sur deux).
+    3. **comptes X influents** (26/08 — un cycle sur deux) ;
+    4. **tendances Reddit** (26/08 — un cycle sur trois, ne notifie jamais) ;
+    5. **par utilisateur, par symbole** détenu ∪ suivi (RSS Yahoo).
 
     Retourne ``{users, symbols, fetched, notified, errors, convergence_fired}``
     — les volets globaux contribuent à fetched/notified/errors mais jamais à
@@ -1454,6 +1891,19 @@ def run_once(now: Optional[datetime] = None,
     # tomber de part et d'autre d'un changement de réglage et rendre le même
     # passage à moitié bavard.
     quiet = alerts.is_quiet(mode)
+
+    # Les portefeuilles sont découverts UNE fois pour tout le cycle : le volet
+    # par-symbole les parcourt, et les QUATRE volets ont besoin des noms des
+    # titres détenus/suivis pour reconnaître une entreprise citée dans un titre
+    # (« ...à Nvidia » -> NVDA). Deux découvertes parallèles finiraient par
+    # diverger — l'une verrait un compte que l'autre ignore.
+    portfolios = _discover_portfolios()
+    try:
+        anchor_extra = _anchor_extra(portfolios)
+    except Exception as exc:      # noqa: BLE001 — reconnaissance best-effort
+        logger.warning("paper newswatch: ancres illisibles (%s)",
+                       type(exc).__name__)
+        anchor_extra = {}
 
     first_call = True
 
@@ -1517,18 +1967,16 @@ def run_once(now: Optional[datetime] = None,
             if not classify_gov(title):
                 continue  # neutre/électoral -> juste marqué vu
 
+            # Une annonce politique qui NOMME une entreprise porte son ticker
+            # (extension 26/08) ; sinon le pseudo-symbole « GOV » historique.
+            gov_symbol = entities.first_company(title, anchor_extra) or "GOV"
+
             if quiet:
                 # Mode calme : la matière est gardée intacte (feed, mémoire,
                 # convergence), seul l'ENVOI disparaît. On court-circuite donc
                 # tout l'appareil anti-spam, qui ne protège que l'envoi.
-                gov_events.insert(0, {
-                    "ts": now_dt.isoformat(),
-                    "symbol": "GOV",
-                    "title": title,
-                    "link": link,
-                    "sentiment": "gov",
-                    "muted": True,
-                })
+                gov_events.insert(0, _gov_event(now_dt, title, link, gov_symbol,
+                                                muted=True))
                 continue
 
             skey = story_key(title)
@@ -1547,14 +1995,8 @@ def run_once(now: Optional[datetime] = None,
                 muted = True
 
             if muted:
-                gov_events.insert(0, {
-                    "ts": now_dt.isoformat(),
-                    "symbol": "GOV",
-                    "title": title,
-                    "link": link,
-                    "sentiment": "gov",
-                    "muted": True,
-                })
+                gov_events.insert(0, _gov_event(now_dt, title, link, gov_symbol,
+                                                muted=True))
                 continue
 
             if gov_notified_count >= _MAX_GOV_NOTIFY_PER_RUN:
@@ -1571,14 +2013,8 @@ def run_once(now: Optional[datetime] = None,
                 gov_notified_count += 1
                 gov_stories[skey] = now_dt.isoformat()
                 gov_sent_log.append(now_dt.isoformat())
-                gov_events.insert(0, {
-                    "ts": now_dt.isoformat(),
-                    "symbol": "GOV",
-                    "title": title,
-                    "link": link,
-                    "sentiment": "gov",
-                    "muted": False,
-                })
+                gov_events.insert(0, _gov_event(now_dt, title, link, gov_symbol,
+                                                muted=False))
             else:
                 counters["errors"] += 1
 
@@ -1687,7 +2123,23 @@ def run_once(now: Optional[datetime] = None,
     gov_changed = True
     if x_cycle_due(x_cycle):
         _run_x_volet(gov_state, now_dt, cfg, notify_fn, sleep_fn, quiet,
-                     counters, x_fetch, x_stealth, x_parse, x_pacer)
+                     counters, x_fetch, x_stealth, x_parse, x_pacer,
+                     anchor_extra=anchor_extra)
+
+    # ----------------------------------------------------------------- #
+    # Volet 1quater -- tendances Reddit (26/08), UN CYCLE SUR TROIS.
+    #
+    # Même lecture du compteur AVANT incrément que le volet X : un
+    # déploiement neuf interroge Reddit dès son premier cycle. Ce volet
+    # n'envoie RIEN (cf. _run_reddit_volet) — il n'a donc ni budget d'envoi
+    # ni cap de notification, seulement un cap d'événements journalisés.
+    # ----------------------------------------------------------------- #
+    reddit_cycle = int(gov_state.get("reddit_cycle") or 0)
+    gov_state["reddit_cycle"] = reddit_cycle + 1
+    gov_changed = True          # le compteur de cadence DOIT être persisté
+    if reddit_cycle_due(reddit_cycle):
+        _run_reddit_volet(gov_state, now_dt, anchor_extra, counters,
+                          reddit_fetch, reddit_parse)
 
     if gov_changed:
         gov_state["events"] = gov_events[:_MAX_EVENTS]
@@ -1698,7 +2150,7 @@ def run_once(now: Optional[datetime] = None,
     # Volet 2 -- par utilisateur, par symbole détenu ∪ symbole en watchlist
     # (extension 25/08 -- cf. _merged_symbols).
     # ----------------------------------------------------------------- #
-    for username, portfolio in _discover_portfolios():
+    for username, portfolio in portfolios:
         counters["users"] += 1
         symbols = _merged_symbols(portfolio, username)
         state = _load_seen(username)

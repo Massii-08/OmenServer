@@ -33,12 +33,14 @@ def build(**kwargs):
     """``build_graph`` avec des entrées vides par défaut — chaque test ne pose
     que ce qui le concerne."""
     params = {"anchors": [], "events": [], "hypotheses": [], "whale_moves": [],
-              "pipeline": [], "now": NOW.isoformat(), "symbol": None}
+              "pipeline": [], "now": NOW.isoformat(), "symbol": None,
+              "reddit_trends": None}
     params.update(kwargs)
     return graph.build_graph(params["anchors"], params["events"],
                              params["hypotheses"], params["whale_moves"],
                              params["pipeline"], params["now"],
-                             symbol=params["symbol"])
+                             symbol=params["symbol"],
+                             reddit_trends=params["reddit_trends"])
 
 
 # --------------------------------------------------------------------------- #
@@ -582,3 +584,142 @@ def test_the_graph_is_deterministic():
                           {"symbol": "MSFT", "kind": "watchlist"}],
               "events": _many_events(10) + _many_events(10, symbol="MSFT")}
     assert build(**kwargs) == build(**kwargs)
+
+
+# --------------------------------------------------------------------------- #
+# Le bosquet de la foule (tendances Reddit)
+# --------------------------------------------------------------------------- #
+
+def crowd_edges(built):
+    return [e for e in built["edges"] if e["target"] == graph.CROWD_ID]
+
+
+def test_a_reddit_trend_hangs_on_its_own_pivot():
+    """Un ticker dont la foule parle a sa place à l'écran même si le
+    portefeuille ne le connaît pas : c'est là qu'on découvre un titre."""
+    built = build(anchors=[{"symbol": "AAPL", "kind": "position"}],
+                  reddit_trends={"GME": {"count": 42, "prev": 3}})
+    trend = node_by_type(built, graph.TREND_TYPE)[0]
+    assert trend["id"] == "rt:GME" and trend["label"] == "GME ×42"
+    assert trend["symbol"] == "GME"
+    assert trend["meta"] == {"count": 42, "prev": 3}
+
+    pivot = node_by_type(built, graph.CONTEXT_TYPE)
+    assert len(pivot) == 1 and pivot[0]["id"] == graph.CROWD_ID
+    assert crowd_edges(built) == [{"source": "rt:GME", "target": graph.CROWD_ID,
+                                   "type": graph.EDGE_CONTEXT}]
+    # Le pivot de la foule n'est relié à AUCUNE ancre.
+    assert not [e for e in built["edges"] if e["target"] == "AAPL"]
+
+
+def test_a_trend_on_an_anchor_also_gets_an_edge_to_that_anchor():
+    """« EN PLUS » : la tendance reste dans son bosquet ET rejoint la branche
+    du titre — c'est là qu'elle éclaire une décision."""
+    built = build(anchors=[{"symbol": "AAPL", "kind": "position"}],
+                  reddit_trends={"AAPL": {"count": 9, "prev": 1}})
+    assert crowd_edges(built)
+    assert {"source": "rt:AAPL", "target": "AAPL",
+            "type": graph.EDGE_SYMBOL} in built["edges"]
+
+
+def test_the_branch_shows_the_trend_but_never_the_crowd_pivot():
+    built = build(anchors=[{"symbol": "AAPL", "kind": "position"}],
+                  reddit_trends={"AAPL": {"count": 9, "prev": 1}},
+                  symbol="AAPL")
+    assert ids(built["nodes"]) == ["AAPL", "rt:AAPL"]
+    assert built["edges"] == [{"source": "rt:AAPL", "target": "AAPL",
+                               "type": graph.EDGE_SYMBOL}]
+    assert graph.CROWD_ID not in ids(built["nodes"])
+
+
+def test_the_crowd_pivot_is_absent_without_any_trend():
+    built = build(anchors=[{"symbol": "AAPL", "kind": "position"}])
+    assert node_by_type(built, graph.CONTEXT_TYPE) == []
+
+
+def test_the_grove_is_capped():
+    trends = {"SYM%02d" % i: {"count": 50 - i, "prev": 0} for i in range(30)}
+    built = build(reddit_trends=trends)
+    grove = node_by_type(built, graph.TREND_TYPE)
+    assert len(grove) == graph.MAX_TRENDS
+    # Les PLUS mentionnés, pas les premiers venus.
+    assert grove[0]["id"] == "rt:SYM00"
+
+
+def test_a_trend_without_mentions_is_not_a_trend():
+    built = build(reddit_trends={"GME": {"count": 0, "prev": 12}})
+    assert built["nodes"] == []
+
+
+def test_a_deformed_trend_state_never_breaks_the_graph():
+    for bad in (None, "cassé", {"GME": "pas un dict"}, {"": {"count": 5}},
+                {"GME": {"count": "beaucoup"}}):
+        built = build(anchors=[{"symbol": "AAPL", "kind": "position"}],
+                      reddit_trends=bad)
+        assert ids(built["nodes"]) == ["AAPL"]
+
+
+def test_the_grove_is_deterministic():
+    kwargs = {"anchors": [{"symbol": "AAPL", "kind": "position"}],
+              "reddit_trends": {"AAPL": {"count": 9, "prev": 1},
+                                "GME": {"count": 9, "prev": 0},
+                                "TSLA": {"count": 40, "prev": 2}}}
+    assert build(**kwargs) == build(**kwargs)
+
+
+# --------------------------------------------------------------------------- #
+# Les dépêches Reddit (src "reddit")
+# --------------------------------------------------------------------------- #
+
+def test_a_reddit_headline_keeps_its_own_type():
+    built = build(anchors=[{"symbol": "AAPL", "kind": "position"}],
+                  events=[{"ts": _iso(hours_ago=2), "symbol": "AAPL",
+                           "src": "reddit", "title": "AAPL to the moon",
+                           "link": "http://r/1", "sentiment": "crowd"}])
+    assert len(node_by_type(built, "reddit")) == 1
+    assert built["edges"][0]["target"] == "AAPL"
+
+
+def test_an_orphan_reddit_headline_is_omitted_not_pivoted():
+    """Un post Reddit n'est pas du macro : il parle d'un titre, simplement pas
+    d'un titre qu'on suit. Il suit donc la règle des orphelins — omis."""
+    built = build(anchors=[{"symbol": "AAPL", "kind": "position"}],
+                  events=[{"ts": _iso(hours_ago=2), "symbol": "GME",
+                           "src": "reddit", "title": "GME squeeze",
+                           "link": "http://r/2", "sentiment": "crowd"}])
+    assert ids(built["nodes"]) == ["AAPL"]
+    assert built["edges"] == []
+
+
+def test_a_gov_headline_naming_a_held_title_reaches_that_title():
+    """Depuis que ``newswatch`` reconnaît les entreprises, une annonce politique
+    peut porter un vrai ticker : elle doit alors rejoindre la BRANCHE du titre,
+    et non le pivot « monde » où personne n'allait la chercher."""
+    built = build(anchors=[{"symbol": "NVDA", "kind": "position"}],
+                  events=[{"ts": _iso(hours_ago=2), "symbol": "NVDA",
+                           "title": "Tarifs sur les puces Nvidia",
+                           "link": "http://g/9", "sentiment": "gov"}])
+    gov = node_by_type(built, "gov")[0]
+    assert built["edges"] == [{"source": gov["id"], "target": "NVDA",
+                               "type": graph.EDGE_SYMBOL, "sentiment": "gov"}]
+    assert graph.WORLD_ID not in ids(built["nodes"])
+    # …et elle est bien visible depuis la branche de ce titre.
+    branch = build(anchors=[{"symbol": "NVDA", "kind": "position"}],
+                   events=[{"ts": _iso(hours_ago=2), "symbol": "NVDA",
+                            "title": "Tarifs sur les puces Nvidia",
+                            "link": "http://g/9", "sentiment": "gov"}],
+                   symbol="NVDA")
+    assert len(node_by_type(branch, "gov")) == 1
+
+
+def test_a_gov_headline_naming_an_unheld_title_still_reaches_the_world_pivot():
+    """La règle du macro ne change PAS : une annonce politique reste du macro,
+    même quand elle nomme une entreprise qu'on ne suit pas. Elle rejoint le
+    pivot au lieu d'être omise comme une dépêche orpheline."""
+    built = build(anchors=[{"symbol": "AAPL", "kind": "position"}],
+                  events=[{"ts": _iso(hours_ago=2), "symbol": "NVDA",
+                           "title": "Tarifs sur les puces Nvidia",
+                           "link": "http://g/9", "sentiment": "gov"}])
+    assert built["edges"] == [{"source": node_by_type(built, "gov")[0]["id"],
+                               "target": graph.WORLD_ID,
+                               "type": graph.EDGE_CONTEXT, "sentiment": "gov"}]

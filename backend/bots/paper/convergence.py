@@ -24,6 +24,7 @@ Les cinq facteurs, tous mesurés sur une fenêtre de 48 h :
                         élargi à la watchlist (extension utilisateur)
 ``whale_filing``        un dépôt 13F d'un grand gérant
 ``cross_source``        un même symbole vu dans ≥ 2 familles de sources
+``crowd_buzz``          la foule Reddit s'agite sur un titre détenu ou suivi
 ======================  ====================================================
 
 Trois garde-fous contre le bavardage : seuil de 2 facteurs, **cooldown de 6 h**,
@@ -92,7 +93,8 @@ MAX_FALLBACK_ITEMS = 18
 MAX_FALLBACK_LINES = 25
 
 FACTOR_CODES = ("fresh_hyps", "gov", "held_catalyst", "held_risk",
-                "whale_filing", "whale_sold_watched", "cross_source")
+                "whale_filing", "whale_sold_watched", "cross_source",
+                "crowd_buzz")
 
 FACTOR_LABELS = {
     "fresh_hyps": "plusieurs hypothèses fraîches du radar",
@@ -103,6 +105,7 @@ FACTOR_LABELS = {
     "whale_sold_watched": "un grand gérant a VENDU ou allégé un titre que tu "
                           "détiens ou suis",
     "cross_source": "même titre vu dans plusieurs sources",
+    "crowd_buzz": "la foule Reddit s'agite sur un titre que tu détiens ou suis",
 }
 
 # Facteurs de MENACE DIRECTE sur le compte. Ils tirent SEULS (cf. ``should_fire``)
@@ -117,6 +120,20 @@ THREAT_FACTORS = ("held_risk", "whale_sold_watched")
 # reviendrait à commenter l'avant-dernier trimestre.
 WHALE_MOVE_FRESH_D = 7
 WHALE_SELL_ACTIONS = ("sortie", "allégé")
+
+# --- la foule (``crowd_buzz``, extension 2026-08-26) ----------------------- #
+#
+# Deux conditions, et il FAUT les deux. Le seuil absolu écarte le titre dont
+# trois personnes ont parlé (ce n'est pas une foule) ; l'accélération écarte le
+# titre dont la foule parle TOUS LES JOURS (ce n'est pas une nouvelle). C'est
+# la rencontre des deux qui dit « il se passe quelque chose là, maintenant ».
+#
+# Facteur NORMAL et non facteur de MENACE (cf. ``THREAT_FACTORS``) : la foule
+# ne tire jamais seule. Il lui faut un second facteur — un catalyseur, une
+# annonce, une hypothèse — parce que le bruit social est un accélérant, pas une
+# preuve. Un forum qui s'excite n'est pas une raison d'ouvrir le téléphone.
+CROWD_MIN_MENTIONS = 5
+CROWD_ACCELERATION = 2.0
 
 # En-tête COMMUN au digest rédigé et au résumé de secours : quel que soit
 # l'état du LLM, le message porte la même signature dans le fil Telegram.
@@ -330,11 +347,68 @@ def _item_whale(move: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _item_crowd(symbol: str, count: int, prev: int) -> Dict[str, Any]:
+    """Un item « la foule s'agite ». Le libellé porte le NOMBRE et
+    l'ACCÉLÉRATION : « ça monte » sans dire de combien ne se vérifie pas.
+
+    L'identité inclut les deux compteurs — donc elle CHANGE quand la vague
+    grossit. C'est voulu : l'empreinte anti-redite doit laisser repartir un
+    digest quand la foule est passée de 6 à 40 mentions, mais pas quand rien
+    n'a bougé depuis le dernier envoi.
+    """
+    if prev > 0:
+        detail = "%d mentions en 24 h, ×%s" % (
+            count, ("%.1f" % (float(count) / prev)).replace(".", ","))
+    else:
+        detail = "%d mentions en 24 h, aucune la veille" % count
+    return {
+        "src": "crowd",
+        "id": _hash("crowd", symbol, count, prev),
+        "title": "la foule Reddit s'agite sur %s (%s)" % (symbol, detail),
+        "symbol": symbol,
+        "ts": "",
+    }
+
+
+def _crowd_items(reddit_trends: Any, watched: set) -> List[Dict[str, Any]]:
+    """Les tickers dont la foule s'agite ET que ce portefeuille regarde (PUR).
+
+    ``reddit_trends`` = ``{SYMBOLE: {count, prev}}``, tel que le rend
+    ``newswatch.trends_view``. Le filtre par ``watched`` est ici et pas dans le
+    guetteur : la veille compte les mentions du marché entier, c'est la
+    convergence qui sait ce que CE portefeuille regarde.
+
+    Tri par nombre de mentions décroissant, le symbole tranchant les ex æquo —
+    deux appels rendent exactement la même liste, donc la même empreinte.
+    """
+    if not isinstance(reddit_trends, dict) or not watched:
+        return []
+    rows: List[Tuple[int, int, str]] = []
+    for symbol, row in reddit_trends.items():
+        symbol = _upper(symbol)
+        if not symbol or symbol not in watched or not isinstance(row, dict):
+            continue
+        count, prev = _int(row.get("count")), _int(row.get("prev"))
+        if count < CROWD_MIN_MENTIONS or count < CROWD_ACCELERATION * prev:
+            continue
+        rows.append((-count, prev, symbol))
+    return [_item_crowd(symbol, -neg_count, prev)
+            for neg_count, prev, symbol in sorted(rows)]
+
+
 def collect_factors(now: Any, hypotheses: Any, news_events: Any,
                     filing_events: Any, watched_symbols: Any,
                     held_symbols: Any = None,
-                    whale_moves: Any = None) -> Dict[str, Any]:
-    """Les sept facteurs et les items qui les portent (PUR).
+                    whale_moves: Any = None,
+                    reddit_trends: Any = None) -> Dict[str, Any]:
+    """Les huit facteurs et les items qui les portent (PUR).
 
     Rend ``{"factors": {code: bool, ...}, "items": [...]}``. Chaque item porte
     un ``src`` (``hyp``/``news``/``gov``/``filing``) et un ``id`` STABLE : c'est
@@ -365,6 +439,12 @@ def collect_factors(now: Any, hypotheses: Any, news_events: Any,
     obligerait cette fonction pure à importer un module d'I/O. Facteur
     ``whale_sold_watched`` : une SORTIE ou un ALLÈGEMENT sur un titre détenu ou
     suivi, vu par un snapshot de moins de ``WHALE_MOVE_FRESH_D`` jours.
+
+    ``reddit_trends`` = ``{SYMBOLE: {count, prev}}`` (``newswatch.trends_view``)
+    — le facteur ``crowd_buzz``, cf. ``_crowd_items``. Il ne participe
+    VOLONTAIREMENT pas à ``cross_source`` : une quatrième famille faite de bruit
+    social permettrait à une seule dépêche de fabriquer un croisement, et on
+    aurait converti du bruit en facteur au lieu de le peser pour ce qu'il est.
     """
     now_dt = _parse_dt(now) or _now()
     cutoff = now_dt - timedelta(hours=WINDOW_H)
@@ -424,6 +504,7 @@ def collect_factors(now: Any, hypotheses: Any, news_events: Any,
         "whale_filing": [_item_filing(f) for f in fresh_filings],
         "whale_sold_watched": [_item_whale(m) for m in whale_sells],
         "cross_source": cross_items,
+        "crowd_buzz": _crowd_items(reddit_trends, watched),
     }
     factors = {code: bool(by_factor[code]) for code in FACTOR_CODES}
 
@@ -658,6 +739,18 @@ def build_digest_prompt(factors: Any, items: Any, stats: Any, positions: Any,
             "qu'une rotation interne ou une sortie de fonds, pas un avis sur "
             "le titre. Cette double honnêteté est OBLIGATOIRE : sans elle, "
             "l'information est trompeuse.")
+    if flags.get("crowd_buzz"):
+        blocks.append(
+            "Un bloc titré exactement « LA FOULE S'AGITE » — OBLIGATOIRE ici. "
+            "Les lignes marquées [crowd] ci-dessus comptent combien de fois un "
+            "ticker a été cité sur les forums boursiers de Reddit en 24 heures, "
+            "comparé aux 24 heures d'avant. Reprends le titre et le nombre, "
+            "puis dis-le franchement dans la même section : le bruit social est "
+            "un ACCÉLÉRANT, pas une preuve — il dit que d'autres regardent le "
+            "même titre au même moment (donc que ça peut bouger vite, dans les "
+            "DEUX sens), jamais que la thèse est bonne. Une foule peut avoir "
+            "tort longtemps. Si aucun autre élément de la matière ne soutient "
+            "ce titre, dis-le aussi : l'agitation seule ne se joue pas.")
     blocks.append("Une dernière ligne rappelant le bilan du radar : %s."
                   % _stats_line(stats))
     for index, block in enumerate(blocks, start=1):
@@ -985,6 +1078,22 @@ def _collect_whale_moves(names: Dict[str, str]) -> List[Dict[str, Any]]:
     return out
 
 
+def _collect_reddit_trends(now: Any = None) -> Dict[str, Any]:
+    """Les mentions Reddit par ticker, depuis l'état du guetteur (best-effort).
+
+    Lecture de fichier LOCAL seulement : c'est ``newswatch`` qui interroge
+    Reddit (un cycle sur trois, plafond de 1 requête/60 s). Cette fonction est
+    appelée à chaque évaluation de convergence — donc toutes les 5 minutes —
+    et doit rester gratuite.
+    """
+    try:
+        from backend.bots.paper import newswatch
+        rows = newswatch.recent_trends(now)
+    except Exception:      # noqa: BLE001 — module absent ou état illisible
+        return {}
+    return rows if isinstance(rows, dict) else {}
+
+
 def _collect_watchlist(users: List[str]) -> List[str]:
     """Symboles SUIVIS (watchlist) de tous les comptes, dédoublonnés en
     majuscules, ordre stable (best-effort — un compte sans watchlist ou en
@@ -1083,10 +1192,15 @@ def maybe_fire(now: Any = None,
     watched_symbols = list(dict.fromkeys(held + watchlist_symbols))
 
     whale_moves = _collect_whale_moves(_symbol_names(users))
+    # ``now_dt`` et pas l'horloge du système : les fenêtres 24 h / 24-48 h du
+    # compteur de mentions doivent parler du même instant que le reste du
+    # calcul, sinon un test à horloge figée mesurerait autre chose que la prod.
+    reddit_trends = _collect_reddit_trends(now_dt)
 
     collected = collect_factors(now_dt, hypotheses, news, filings,
                                 watched_symbols, held_symbols=held,
-                                whale_moves=whale_moves)
+                                whale_moves=whale_moves,
+                                reddit_trends=reddit_trends)
     flags = collected["factors"]
     items = collected["items"]
     fp = fingerprint(items)

@@ -1781,6 +1781,139 @@ def _whales():
 
 
 # --------------------------------------------------------------------------- #
+# Dossier HISTORIQUE (12 mois d'archives de presse, collectés en pur code)
+#
+# « Envoyer le radar chercher des VIEILLES infos qui donnent une BASE aux infos
+# qu'on a maintenant » : la mémoire du simulateur n'a que quelques jours
+# d'événements, donc rien à quoi comparer la dépêche du jour. Le module
+# ``paper/backfill.py`` comble ce trou ; le router le LIT (contexte du coach,
+# fait-pack de la revue) et l'ALIMENTE (endpoint de collecte).
+#
+# Tout est best-effort : sans dossier, le coach écrit sans — il écrit juste
+# moins bien.
+# --------------------------------------------------------------------------- #
+
+def _backfill():
+    """Le module des dossiers historiques, importé paresseusement — même
+    indirection que ``_radar``/``_newswatch``/``_whales`` : le router doit
+    vivre sans lui (déploiement partiel), et les tests doivent pouvoir simuler
+    son absence sans toucher au mécanisme d'import de Python."""
+    from backend.bots.paper import backfill
+    return backfill
+
+
+# Lignes d'historique servies à un prompt. Quatre : c'est ce qu'il faut pour
+# qu'un an tienne debout (une par trimestre) sans que le passé prenne la place
+# des faits du jour — le dossier est une BASE de comparaison, pas le sujet.
+HISTORY_LINES = 4
+
+
+def _backfill_digest(symbols: Any,
+                     limit_per: int = HISTORY_LINES) -> Dict[str, List[str]]:
+    """Le dossier historique des symboles demandés, prêt pour un prompt.
+
+    Lecture PURE côté réseau : on ne collecte RIEN ici (une collecte coûte
+    quatre requêtes espacées et n'a rien à faire dans le chemin d'un endpoint
+    interactif) — on lit ce que la file de travail a déjà rangé.
+
+    Best-effort de bout en bout : module absent ou état illisible -> ``{}``.
+    """
+    wanted: List[str] = []
+    seen = set()
+    for raw in symbols or []:
+        symbol = str(raw or "").strip().upper()
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            wanted.append(symbol)
+    if not wanted:
+        return {}
+    try:
+        return _backfill().digest_for(wanted, limit_per) or {}
+    except ImportError:
+        return {}
+    except Exception as e:                      # noqa: BLE001 - lecture best-effort
+        logger.warning("paper: historique indisponible pour le contexte: %s", e)
+        return {}
+
+
+class BackfillPayload(BaseModel):
+    """Corps de ``POST /backfill/run``. Défini ICI, à côté de son endpoint,
+    plutôt qu'avec les autres modèles : ce lot a été écrit en parallèle d'un
+    autre sur le même fichier, et un bloc contigu vaut mieux qu'une ligne
+    ajoutée au milieu d'un bloc partagé."""
+    symbol: Optional[str] = None
+
+
+@router.post("/backfill/run")
+def paper_backfill_run(data: Optional[BackfillPayload] = None,
+                       current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Avance la collecte des dossiers historiques.
+
+    Avec ``symbol`` : ce titre précisément, et on REFAIT son dossier même s'il
+    est encore frais — c'est le geste manuel « regarde celui-là maintenant »,
+    qui n'aurait aucun sens s'il répondait « déjà fait le mois dernier ».
+
+    Sans ``symbol`` : les trois premiers titres en attente de la file. Trois et
+    pas trente : chaque titre coûte quatre requêtes espacées de 1,1 s, donc une
+    quinzaine de secondes — au-delà, l'appel deviendrait un gel de l'interface.
+
+    Comme pour le radar, l'absence du module est ici une vraie erreur (503) :
+    l'utilisateur a demandé une action qui ne peut pas avoir lieu.
+    """
+    try:
+        module = _backfill()
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="La collecte d'historique n'est pas déployée sur ce serveur.")
+
+    symbol = str((data.symbol if data else None) or "").strip().upper()
+    try:
+        if symbol:
+            outcome = module.backfill_symbol(symbol, force=True)
+            return {"processed": 0 if outcome.get("skipped") else 1,
+                    "skipped": 1 if outcome.get("skipped") else 0,
+                    "items": outcome.get("items", 0),
+                    "errors": outcome.get("errors", 0),
+                    "symbols": [] if outcome.get("skipped") else [symbol]}
+        return module.run_pending(max_symbols=3)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)[:300])
+
+
+@router.get("/backfill")
+def paper_backfill(symbol: str = "",
+                   current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Le dossier historique BRUT d'un titre (fenêtres et titres), ou l'index
+    de ce qui est collecté quand ``symbol`` est absent.
+
+    Lecture best-effort : module absent ou état illisible -> dossier vide. Un
+    titre jamais collecté rend lui aussi un dossier vide — c'est un 200, pas
+    une erreur : « pas encore collecté » est une réponse légitime.
+    """
+    wanted = str(symbol or "").strip().upper()
+    try:
+        module = _backfill()
+        if wanted:
+            return {"symbol": wanted, "entry": module.entry_for(wanted)}
+        state = module.load_state()
+        return {"symbols": sorted(
+            ({"symbol": key,
+              "name": entry.get("name"),
+              "fetched_at": entry.get("fetched_at"),
+              "windows": len(entry.get("windows") or [])}
+             for key, entry in (state.get("symbols") or {}).items()
+             if isinstance(entry, dict)),
+            key=lambda row: row["symbol"])}
+    except ImportError:
+        return {"symbol": wanted, "entry": {}} if wanted else {"symbols": []}
+    except Exception as e:                      # noqa: BLE001 - lecture best-effort
+        logger.warning("paper: dossier historique indisponible: %s", e)
+        return {"symbol": wanted, "entry": {}, "error": str(e)[:200]} if wanted \
+            else {"symbols": [], "error": str(e)[:200]}
+
+
+# --------------------------------------------------------------------------- #
 # Endpoints — idées de trade (extension utilisateur, orientées rentabilité)
 #
 # Le coach change de registre : il ne fait plus le point, il PROPOSE. Chaque
@@ -1973,6 +2106,24 @@ def _recent_crypto(username: str) -> List[Dict[str, Any]]:
             if isinstance(e, dict) and e.get("src") == "crypto"]
 
 
+def _reddit_trends() -> Dict[str, Any]:
+    """Les tickers dont la foule Reddit parle — ``{SYM: {count, prev}}``.
+
+    Lecture d'un fichier LOCAL (l'état du guetteur) : aucune requête vers
+    Reddit ici, c'est ``newswatch`` qui l'interroge, un cycle sur trois — et le
+    plafond mesuré est d'une requête par minute, ce qui interdit d'y toucher
+    depuis un endpoint. Même contrat best-effort que ``_recent_news`` : un état
+    absent rend un dictionnaire vide, jamais une exception.
+    """
+    try:
+        return dict(_newswatch().recent_trends() or {})
+    except ImportError:
+        return {}
+    except Exception as e:                          # noqa: BLE001
+        logger.warning("paper: tendances Reddit indisponibles: %s", e)
+        return {}
+
+
 def _whale_moves() -> List[Dict[str, Any]]:
     """Les mouvements des grands gérants, depuis le CACHE seul (best-effort).
 
@@ -2013,6 +2164,12 @@ def _strategy_context(username: str,
     context["recent_filings"] = _recent_filings()
     context["recent_crypto"] = _recent_crypto(username)
     context["whale_moves"] = _whale_moves()
+    # La BASE : douze mois d'archives sur ce qu'il détient et ce qu'il suit.
+    # Sans elle, chaque dépêche du contexte se lit comme un fait isolé, et le
+    # coach ne peut pas dire si elle rompt avec l'année ou si elle la répète.
+    context["historique"] = _backfill_digest(
+        [position.symbol for position in portfolio.positions]
+        + [row.get("symbol") for row in context["watchlist"]])
     if llm.normalize_risk_level(risk_level) == "crypto" and risk_level:
         context["crypto_market"] = _crypto_factpack()
     return context
@@ -2353,6 +2510,10 @@ def _position_factpack(username: str,
         if symbol in names and names[symbol] == symbol and name:
             names[symbol] = name
 
+    # Un seul appel pour toutes les positions : le dossier historique est un
+    # état sur disque, pas une requête par titre.
+    history = _backfill_digest([p.symbol for p in portfolio.positions])
+
     rows: List[Dict[str, Any]] = []
     for position in portfolio.positions:
         symbol = str(position.symbol).upper()
@@ -2401,6 +2562,7 @@ def _position_factpack(username: str,
             "news_recentes": titles,
             "gov_recent": gov_recent,
             "whale_moves_on_this": on_this,
+            "historique": history.get(symbol, []),
         })
     return {"positions": rows}
 
@@ -2806,6 +2968,7 @@ def _graph_inputs(username: str) -> Dict[str, Any]:
         "events": _recent_news(username),
         "hypotheses": _radar_hypotheses(),
         "whale_moves": _whale_moves(),
+        "reddit_trends": _reddit_trends(),
     }
 
 
@@ -2819,7 +2982,8 @@ def _build_graph(username: str, symbol: Optional[str],
     data = _graph_inputs(username)
     return graph.build_graph(data["anchors"], data["events"], data["hypotheses"],
                              data["whale_moves"], data["pipeline"],
-                             now_iso or _now_iso(), symbol=symbol)
+                             now_iso or _now_iso(), symbol=symbol,
+                             reddit_trends=data["reddit_trends"])
 
 
 @router.get("/graph")

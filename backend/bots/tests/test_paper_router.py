@@ -2785,11 +2785,14 @@ def test_review_asks_the_price_once_per_symbol(tmp_path, monkeypatch):
 #  GRAPHE DES CONNEXIONS (lecture pure — zéro LLM, zéro réseau)
 # ================================================================
 
-def graph_stubs(monkeypatch, events=None, hypotheses=None, moves=None):
+def graph_stubs(monkeypatch, events=None, hypotheses=None, moves=None,
+                trends=None):
     """Câble les trois modules OPTIONNELS que le graphe consomme. Chacun est
     lazy dans le router, donc on remplace l'accesseur, pas le module."""
     monkeypatch.setattr(pr, "_newswatch",
-                        lambda: FakeModule(recent_events=lambda user: list(events or [])))
+                        lambda: FakeModule(
+                            recent_events=lambda user: list(events or []),
+                            recent_trends=lambda now=None: dict(trends or {})))
     monkeypatch.setattr(pr, "_radar",
                         lambda: FakeModule(load_state=lambda: {
                             "hypotheses": list(hypotheses or []),
@@ -2880,6 +2883,38 @@ def test_graph_branch_keeps_only_that_title(tmp_path, monkeypatch):
     assert [node["label"] for node in branch["nodes"] if node["type"] == "news"] \
         == ["Sur Nestlé"]
     assert all(edge["target"] == "NESN.SW" for edge in branch["edges"])
+
+
+def test_graph_hangs_reddit_trends_on_the_crowd_pivot(tmp_path, monkeypatch):
+    """Les tendances traversent bien le router jusqu'au bosquet — c'est le test
+    qui échoue si on oublie d'assembler cette entrée (piège #61)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch, trends={"GME": {"count": 42, "prev": 3},
+                                     "NESN.SW": {"count": 9, "prev": 1}})
+    buy(c)
+
+    body = graph_of(c)
+    by_id = {node["id"]: node for node in body["nodes"]}
+    assert by_id["rt:GME"]["label"] == "GME ×42"
+    assert "foule" in by_id
+    # Le ticker DÉTENU rejoint aussi sa branche ; celui qu'on ne suit pas, non.
+    branch = graph_of(c, "NESN.SW")
+    assert [node["id"] for node in branch["nodes"]] == ["NESN.SW", "rt:NESN.SW"]
+    assert "foule" not in [node["id"] for node in branch["nodes"]]
+
+
+def test_graph_survives_a_watcher_without_trends(tmp_path, monkeypatch):
+    """Un guetteur d'une version antérieure n'expose pas ``recent_trends`` : un
+    graphe partiel se lit, une erreur non."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(pr, "_newswatch",
+                        lambda: FakeModule(recent_events=lambda user: []))
+    monkeypatch.setattr(pr, "_radar", lambda: FakeModule(
+        load_state=lambda: {"hypotheses": [], "stats": {}}))
+    monkeypatch.setattr(pr, "_whales", lambda: FakeModule(
+        moves_summary=lambda: [], recent_filing_events=lambda: []))
+    buy(c)
+    assert [node["id"] for node in graph_of(c)["nodes"]] == ["NESN.SW"]
 
 
 def test_graph_branch_of_an_unknown_symbol_is_empty_and_still_200(tmp_path,

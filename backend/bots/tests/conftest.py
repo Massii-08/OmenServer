@@ -62,3 +62,20 @@ def _no_pump_cleanup_race(monkeypatch, request):
         monkeypatch.setattr(mgr, "_cleanup_session_files", _guarded)
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _no_backfill_network(request, monkeypatch):
+    """Le backfill historique donne à ``radar.run_once`` un chemin RÉSEAU de fin
+    de run (``_fill_history`` → Google News). Les fixtures actuelles n'ont pas
+    d'ancre donc ne le déclenchent pas — mais un futur test radar/router qui
+    poserait un portefeuille AVEC position sortirait sur le réseau en silence.
+    Verrou : neutralisé partout ; les tests qui valident SPÉCIFIQUEMENT le
+    câblage radar→backfill s'exemptent via ``@pytest.mark.real_backfill``."""
+    if request.node.get_closest_marker("real_backfill"):
+        return
+    try:
+        from backend.bots.paper import radar
+        monkeypatch.setattr(radar, "_fill_history", lambda *a, **k: None, raising=False)
+    except Exception:
+        pass

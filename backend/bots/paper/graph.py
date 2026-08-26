@@ -24,10 +24,11 @@ Trois règles qui tiennent le graphe honnête :
    ou un nom d'émetteur rapproché par ``whales.match_issuer`` — jamais sur une
    intuition. Ce qui ne se rattache à rien de connu n'est pas rattaché.
 2. **Un graphe montre des connexions, pas un dépotoir.** Une info qui ne
-   touche aucune ancre est OMISE de la vue globale. Seule exception : le macro
-   (annonce politique, actualité crypto sans titre nommé) rejoint un pivot
-   unique « monde », qui n'est relié à AUCUNE ancre — donc n'apparaît dans
-   aucune branche par titre.
+   touche aucune ancre est OMISE de la vue globale. Deux exceptions, et deux
+   seulement : le macro (annonce politique, actualité crypto sans titre nommé)
+   rejoint un pivot unique « monde » ; les tendances Reddit rejoignent un
+   second pivot « foule ». Ni l'un ni l'autre n'est relié à une ancre — donc
+   aucun des deux n'apparaît dans une branche par titre.
 3. **Les ancres ne se coupent jamais.** Quand le plafond mord, on garde toutes
    les ancres et on sacrifie les infos les plus VIEILLES ; le retour porte
    alors ``truncated: True``, jamais un silence.
@@ -67,18 +68,27 @@ _ANCHOR_RANK = {kind: rank for rank, kind in enumerate(ANCHOR_TYPES)}
 CLOSED_STAGE = "clos"
 
 # Types de nœuds d'INFO.
-INFO_TYPES = ("news", "catalyst", "gov", "crypto", "x", "hypothesis",
-              "whale_move")
+INFO_TYPES = ("news", "catalyst", "gov", "crypto", "x", "reddit", "hypothesis",
+              "whale_move", "reddit_trend")
 
-# Le pivot du macro — relié à RIEN d'autre que ses satellites.
+# Les deux pivots — reliés à RIEN d'autre que leurs satellites.
 CONTEXT_TYPE = "context"
 WORLD_ID = "monde"
 WORLD_LABEL = "Monde"
+CROWD_ID = "foule"
+CROWD_LABEL = "Foule Reddit"
 
-# Les familles qui ont droit au pivot quand elles ne nomment aucun titre. Une
-# dépêche d'entreprise orpheline, elle, est simplement omise : on ne sait pas
-# de quoi elle parle pour CE portefeuille.
+# Les familles qui ont droit au pivot « monde » quand elles ne nomment aucun
+# titre. Une dépêche d'entreprise orpheline, elle, est simplement omise : on ne
+# sait pas de quoi elle parle pour CE portefeuille. Un post Reddit orphelin
+# suit la même règle — il n'est pas du macro, il parle d'un titre qu'on ne
+# suit pas.
 PIVOT_TYPES = ("gov", "crypto")
+
+# Le bosquet de la foule : les tickers dont Reddit parle. Douze au plus — au-
+# delà ce n'est plus une tendance, c'est la liste des tickers du forum.
+TREND_TYPE = "reddit_trend"
+MAX_TRENDS = 12
 
 # Types d'ARÊTE = le MÉCANISME du rapprochement, pas la famille du nœud (celle-
 # ci est déjà lisible sur le nœud source). Le frontend peut ainsi dire qu'un
@@ -274,7 +284,7 @@ def _event_type(event: Dict[str, Any]) -> str:
     venir), le reste étant de la dépêche.
     """
     src = _text(event.get("src")).lower()
-    if src in ("x", "crypto"):
+    if src in ("x", "crypto", "reddit"):
         return src
     tone = _sentiment(event)
     if tone == "gov":
@@ -366,6 +376,48 @@ def _whale_node(move: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _trend_rows(reddit_trends: Any) -> List[Tuple[str, int, int]]:
+    """``[(SYMBOLE, count, prev)]`` triés et plafonnés (PUR).
+
+    Du plus mentionné au moins mentionné, le symbole tranchant les ex æquo :
+    deux appels rendent exactement le même bosquet. Un symbole sans mention
+    n'entre pas — « SYM ×0 » n'est pas une tendance.
+    """
+    if not isinstance(reddit_trends, dict):
+        return []
+    rows: List[Tuple[int, str, int]] = []
+    for symbol, row in reddit_trends.items():
+        symbol = _upper(symbol)
+        if not symbol or not isinstance(row, dict):
+            continue
+        count = _int(row.get("count"))
+        if count <= 0:
+            continue
+        rows.append((-count, symbol, _int(row.get("prev"))))
+    return [(symbol, -neg, prev) for neg, symbol, prev in sorted(rows)][:MAX_TRENDS]
+
+
+def _trend_node(symbol: str, count: int, prev: int) -> Dict[str, Any]:
+    """Un nœud du bosquet de la foule.
+
+    Pas d'horodatage : une tendance est un COMPTEUR courant, pas un événement
+    daté. Conséquence assumée du tri par fraîcheur d'``_assemble`` — quand le
+    plafond de nœuds mord, c'est le bosquet qui part en premier, avant une
+    dépêche datée. C'est le bon ordre : une dépêche dit ce qui s'est passé, un
+    compteur dit seulement que ça bruisse.
+    """
+    return {"id": "rt:%s" % symbol, "type": TREND_TYPE,
+            "label": "%s ×%d" % (symbol, count), "symbol": symbol, "ts": "",
+            "meta": {"count": count, "prev": prev}}
+
+
 def _default_matcher() -> Optional[Callable[[Any, Any], Optional[str]]]:
     """``whales.match_issuer`` — le rapprochement « nom d'émetteur -> ticker »
     qui existe DÉJÀ, et qui est lui-même pur (tokens significatifs, jamais un
@@ -417,6 +469,11 @@ def _world_node() -> Dict[str, Any]:
             "symbol": "", "ts": ""}
 
 
+def _crowd_node() -> Dict[str, Any]:
+    return {"id": CROWD_ID, "type": CONTEXT_TYPE, "label": CROWD_LABEL,
+            "symbol": "", "ts": ""}
+
+
 def _recency_key(node: Dict[str, Any]) -> Tuple[int, float, str]:
     """Du plus RÉCENT au plus ancien ; date illisible en dernier (on ne peut pas
     prétendre qu'elle est fraîche), puis l'identifiant pour que deux appels
@@ -444,10 +501,10 @@ def _assemble(anchor_nodes: List[Dict[str, Any]],
     graphe, jamais l'accessoire), puis les infos les plus récentes jusqu'au
     plafond, puis les arêtes qui relient ce qui reste.
 
-    Le pivot « monde » est émis EN DERNIER, et seulement si une arête le vise
-    encore APRÈS les deux coupes — un « Monde » solitaire ne dirait rien. Le
-    décider avant laisserait un nœud orphelin le jour où le plafond d'arêtes
-    mord précisément là.
+    Les deux pivots (« monde », « foule ») sont émis EN DERNIER, et seulement
+    si une arête les vise encore APRÈS les deux coupes — un pivot solitaire ne
+    dirait rien. Le décider avant laisserait un nœud orphelin le jour où le
+    plafond d'arêtes mord précisément là.
     """
     truncated = False
     ordered = sorted(info_nodes, key=_recency_key)
@@ -457,38 +514,45 @@ def _assemble(anchor_nodes: List[Dict[str, Any]],
         truncated = True
 
     nodes = list(anchor_nodes) + ordered
-    # WORLD_ID est admis d'office comme CIBLE : aucune arête n'en part jamais
-    # (le pivot n'est relié qu'à ses satellites), donc rien ne peut se glisser.
-    kept = {node["id"] for node in nodes} | {WORLD_ID}
+    # Les pivots sont admis d'office comme CIBLES : aucune arête n'en part
+    # jamais (ils ne sont reliés qu'à leurs satellites), donc rien ne peut se
+    # glisser par là.
+    kept = {node["id"] for node in nodes} | {WORLD_ID, CROWD_ID}
 
     out_edges = [edge for edge in edges
                  if edge["source"] in kept and edge["target"] in kept]
     if len(out_edges) > MAX_EDGES:
         out_edges = out_edges[:MAX_EDGES]
         truncated = True
-    if any(edge["target"] == WORLD_ID for edge in out_edges):
+    targets = {edge["target"] for edge in out_edges}
+    if WORLD_ID in targets:
         nodes.append(_world_node())
+    if CROWD_ID in targets:
+        nodes.append(_crowd_node())
     return {"nodes": nodes, "edges": out_edges, "truncated": truncated}
 
 
 def build_graph(anchors: Any, events: Any, hypotheses: Any, whale_moves: Any,
                 pipeline: Any, now: Any = None,
-                symbol: Any = None) -> Dict[str, Any]:
+                symbol: Any = None, reddit_trends: Any = None) -> Dict[str, Any]:
     """Le graphe des connexions (PUR) — ``{"nodes", "edges", "truncated"}``.
 
-    Sans ``symbol`` : la vue GLOBALE — les ancres, tout ce qui s'y rattache, et
-    le pivot « monde » pour le macro qui ne nomme aucun titre. Ce qui ne se
-    rattache à rien est OMIS (un graphe montre des connexions).
+    Sans ``symbol`` : la vue GLOBALE — les ancres, tout ce qui s'y rattache, le
+    pivot « monde » pour le macro qui ne nomme aucun titre, et le pivot
+    « foule » pour les tendances Reddit. Ce qui ne se rattache à rien est OMIS
+    (un graphe montre des connexions).
 
     Avec ``symbol`` : la BRANCHE de ce titre — son ancre, ses voisins directs,
-    et les arêtes entre eux uniquement. Le pivot « monde » n'y entre jamais : il
-    n'est relié à aucune ancre, donc il n'est le voisin de personne. Un symbole
-    qui n'est ni détenu, ni suivi, ni en projet n'a pas d'ancre : la branche est
-    alors VIDE plutôt que d'inventer un centre que la mémoire ne porte pas.
+    et les arêtes entre eux uniquement. Les deux pivots n'y entrent jamais : ils
+    ne sont reliés à aucune ancre, donc ils ne sont les voisins de personne. Un
+    symbole qui n'est ni détenu, ni suivi, ni en projet n'a pas d'ancre : la
+    branche est alors VIDE plutôt que d'inventer un centre que la mémoire ne
+    porte pas.
 
     ``events`` = les dépêches de ``newswatch.recent_events`` (elles portent déjà
     leur symbole et leur tonalité), ``hypotheses`` = l'état du radar tel quel,
-    ``whale_moves`` = ``whales.moves_summary``, ``pipeline`` = la vue « Plan ».
+    ``whale_moves`` = ``whales.moves_summary``, ``pipeline`` = la vue « Plan »,
+    ``reddit_trends`` = ``newswatch.recent_trends`` (``{SYM: {count, prev}}``).
     Chaque entrée est lue avec prudence : une liste absente vaut liste vide.
     """
     now_dt = _parse_dt(now) or _now()
@@ -538,6 +602,20 @@ def build_graph(anchors: Any, events: Any, hypotheses: Any, whale_moves: Any,
         if matched:
             node["symbol"] = matched
         _add(node, [matched] if matched else [], EDGE_ISSUER)
+
+    # Le bosquet de la foule. Chaque tendance rejoint TOUJOURS son pivot — un
+    # ticker dont Reddit parle a sa place à l'écran même si le portefeuille ne
+    # le connaît pas, c'est précisément là qu'on découvre un titre. Et quand ce
+    # ticker EST une ancre, il gagne EN PLUS une arête vers elle : il apparaît
+    # alors dans la branche de ce titre, à côté des dépêches qui le concernent.
+    for trend_symbol, count, prev in _trend_rows(reddit_trends):
+        node = _trend_node(trend_symbol, count, prev)
+        node = info.setdefault(node["id"], node)
+        edges.append({"source": node["id"], "target": CROWD_ID,
+                      "type": EDGE_CONTEXT})
+        if trend_symbol in anchor_map:
+            edges.append({"source": node["id"], "target": trend_symbol,
+                          "type": EDGE_SYMBOL})
 
     wanted = _upper(symbol)
     if wanted:

@@ -27,6 +27,9 @@ from backend.bots.paper import alerts, newswatch, store
 # fonction pour éteindre le volet X par défaut, et les tests de la CONFIG des
 # comptes ont justement besoin de la vraie.
 _REAL_LOAD_X_ACCOUNTS = newswatch.load_x_accounts
+# Idem pour le volet Reddit : la fixture l'éteint en rendant une URL vide, et
+# le test qui vérifie le FORMAT de l'URL a besoin de la vraie fonction.
+_REAL_REDDIT_URL = newswatch._reddit_url
 
 
 @pytest.fixture(autouse=True)
@@ -37,17 +40,21 @@ def _isolate_data_dir(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_side_channels(monkeypatch):
-    """Deux portes de sortie s'ouvriraient sinon PAR DÉFAUT dans cette suite :
+    """Trois portes de sortie s'ouvriraient sinon PAR DÉFAUT dans cette suite :
 
     * le **volet X** — sans configuration, ``load_x_accounts`` rend les comptes
       livrés par défaut et le volet irait vraiment chercher x.com ;
+    * le **volet Reddit** — il ne dépend d'AUCUNE configuration (les subs sont
+      en dur) : sans neutralisation, chaque cycle de test partirait sur
+      reddit.com. On coupe par l'URL, seul point de passage du volet ;
     * la **convergence** — appelée à la fin de chaque cycle, elle appellerait
       le VRAI CLI Claude le jour où deux facteurs s'alignent dans une fixture.
 
-    Les deux sont neutralisés ici, et les tests qui les visent réinstallent
+    Les trois sont neutralisés ici, et les tests qui les visent réinstallent
     leur propre doublure. Un test de veille ne doit jamais dépendre du réseau.
     """
     monkeypatch.setattr(newswatch, "load_x_accounts", lambda: [])
+    monkeypatch.setattr(newswatch, "_reddit_url", lambda: "")
     from backend.bots.paper import convergence
     monkeypatch.setattr(convergence, "maybe_fire",
                         lambda **kwargs: {"fired": False, "sent": False})
@@ -1829,6 +1836,361 @@ def test_le_volet_x_ne_tourne_pas_sans_compte_configure(monkeypatch):
     _run_x(_FetchQueue(), _NotifySpy(), x_fetch=lambda h: calls.append(h) or "",
            x_parse=lambda p, h: [], x_pacer=_XPacer())
     assert calls == []
+
+
+# =========================================================================== #
+#  PUR — détection d'entreprises branchée sur classify_x (26/08 soir)
+# =========================================================================== #
+
+def test_un_post_x_qui_nomme_une_entreprise_devient_un_event_symbolise():
+    """Le cas décrit par l'utilisateur : ni cashtag, ni mot politique de la
+    liste, ni marqueur crypto — et pourtant le post parle très précisément d'un
+    titre. Avant, il disparaissait."""
+    out = newswatch.classify_x(
+        "Nvidia is shipping a lot more chips than anyone expected")
+    assert out == {"sentiment": "watch", "symbol": "NVDA"}
+
+
+def test_une_annonce_politique_qui_nomme_une_entreprise_garde_les_deux():
+    """La tonalité reste politique (c'est elle qui allume le facteur ``gov``),
+    et le symbole s'ajoute (c'est lui qui la raccroche à la branche du titre)."""
+    out = newswatch.classify_x(
+        "New tariffs will hit every chip Nvidia sells into China")
+    assert out == {"sentiment": "gov", "symbol": "NVDA"}
+
+
+def test_le_cashtag_prime_sur_l_entreprise_nommee():
+    """C'est l'auteur qui dit de quel titre il parle."""
+    out = newswatch.classify_x("$AAPL will suffer more than Nvidia here")
+    assert out["symbol"] == "AAPL"
+
+
+def test_une_ancre_de_l_utilisateur_prime_dans_classify_x():
+    extra = newswatch.entities.anchor_index(
+        [{"symbol": "NVDA.SW", "name": "Nvidia"}])
+    out = newswatch.classify_x("Nvidia ships more chips than expected", extra)
+    assert out["symbol"] == "NVDA.SW"
+
+
+def test_un_post_sans_ticker_ni_politique_ni_crypto_disparait_toujours():
+    """L'ajout de la détection n'ouvre PAS la porte à tout : « important
+    seulement » reste la règle."""
+    assert newswatch.classify_x("belle journée, allez au parc") is None
+
+
+def test_un_conseil_d_achat_nommant_une_entreprise_n_est_toujours_pas_relaye():
+    assert newswatch.classify_x("top stocks to buy now: Nvidia and Apple") is None
+
+
+# =========================================================================== #
+#  I/O — le volet politique gagne un symbole quand il nomme une entreprise
+# =========================================================================== #
+
+def test_une_annonce_politique_qui_nomme_une_entreprise_porte_son_ticker():
+    fetch = _FetchQueue()
+    fetch.push(_EMPTY_RSS)
+    fetch.push(_EMPTY_RSS)
+    _run(fetch, _NotifySpy(), prime_gov=False)          # amorçage silencieux
+
+    later = NOW + timedelta(minutes=5)
+    fetch.push(_rss([("US announces tariffs on Nvidia chips",
+                      "https://n/nvda", later)]))
+    fetch.push(_EMPTY_RSS)
+    _run(fetch, _NotifySpy(), now=later, prime_gov=False)
+
+    events = newswatch.recent_events("nobody")
+    assert len(events) == 1
+    assert events[0]["symbol"] == "NVDA"
+    # La TONALITÉ reste politique : c'est elle qui allume le facteur ``gov``.
+    assert events[0]["sentiment"] == "gov"
+
+
+def test_une_annonce_politique_sans_entreprise_garde_le_pseudo_symbole_gov():
+    fetch = _FetchQueue()
+    fetch.push(_EMPTY_RSS)
+    fetch.push(_EMPTY_RSS)
+    _run(fetch, _NotifySpy(), prime_gov=False)
+
+    later = NOW + timedelta(minutes=5)
+    fetch.push(_rss([("US announces tariffs on imported steel",
+                      "https://n/steel", later)]))
+    fetch.push(_EMPTY_RSS)
+    _run(fetch, _NotifySpy(), now=later, prime_gov=False)
+
+    assert newswatch.recent_events("nobody")[0]["symbol"] == "GOV"
+
+
+def test_un_titre_detenu_est_reconnu_par_son_nom_de_watchlist():
+    """Le nom vient de la watchlist (une position n'en porte pas) et PRIME sur
+    la table livrée — le symbole de l'utilisateur est celui qui compte."""
+    store.save_portfolio("anchor_user", _portfolio(["SREN.SW"]))
+    store.save_watchlist("anchor_user",
+                         [{"symbol": "SREN.SW", "name": "Swiss Re AG"}])
+    fetch = _FetchQueue()
+    fetch.push(_EMPTY_RSS)
+    fetch.push(_EMPTY_RSS)
+    fetch.push(_EMPTY_RSS)                              # le symbole surveillé
+    _run(fetch, _NotifySpy(), prime_gov=False)
+
+    later = NOW + timedelta(minutes=5)
+    fetch.push(_rss([("Government announces subsidies for Swiss Re",
+                      "https://n/sre", later)]))
+    fetch.push(_EMPTY_RSS)
+    fetch.push(_EMPTY_RSS)
+    _run(fetch, _NotifySpy(), now=later, prime_gov=False)
+
+    events = [e for e in newswatch.recent_events("anchor_user")
+              if e.get("sentiment") == "gov"]
+    assert events and events[0]["symbol"] == "SREN.SW"
+
+
+# =========================================================================== #
+#  PUR — le compteur de mentions Reddit
+# =========================================================================== #
+
+def _stamps(*hours_ago):
+    return [(NOW - timedelta(hours=h)).isoformat() for h in hours_ago]
+
+
+def test_trends_view_separe_les_dernieres_24h_des_24h_d_avant():
+    view = newswatch.trends_view({"NVDA": _stamps(1, 5, 23, 30, 47)}, NOW)
+    assert view == {"NVDA": {"count": 3, "prev": 2}}
+
+
+def test_trends_view_omet_un_symbole_dont_plus_personne_ne_parle():
+    """« SYM ×0 » n'est pas une tendance : sa seule histoire, c'est qu'il ne se
+    passe plus rien."""
+    assert newswatch.trends_view({"NVDA": _stamps(30, 40)}, NOW) == {}
+
+
+def test_trends_view_est_tolerant_a_un_etat_deforme():
+    assert newswatch.trends_view(None, NOW) == {}
+    assert newswatch.trends_view("cassé", NOW) == {}
+    assert newswatch.trends_view({"NVDA": "pas une liste"}, NOW) == {}
+    assert newswatch.trends_view({"NVDA": ["pas une date", NOW.isoformat()]},
+                                 NOW) == {"NVDA": {"count": 1, "prev": 0}}
+
+
+def test_purge_trends_jette_les_mentions_de_plus_de_48h():
+    trends = {"NVDA": _stamps(1, 60), "AAPL": _stamps(100)}
+    newswatch.purge_trends(trends, NOW)
+    assert list(trends) == ["NVDA"]
+    assert len(trends["NVDA"]) == 1
+
+
+def test_purge_trends_plafonne_le_nombre_de_tickers_suivis():
+    trends = {"SYM%02d" % i: _stamps(*range(i + 1)) for i in range(50)}
+    newswatch.purge_trends(trends, NOW)
+    assert len(trends) == newswatch.REDDIT_TRENDS_MAX
+    # On garde les PLUS mentionnés (SYM49 en tête), pas les premiers venus.
+    assert "SYM49" in trends and "SYM00" not in trends
+
+
+def test_la_cadence_reddit_est_d_un_cycle_sur_trois():
+    assert newswatch.reddit_cycle_due(0) is True
+    assert newswatch.reddit_cycle_due(1) is False
+    assert newswatch.reddit_cycle_due(2) is False
+    assert newswatch.reddit_cycle_due(3) is True
+    assert newswatch.reddit_cycle_due("cassé") is True   # jamais éteint
+
+
+# =========================================================================== #
+#  I/O — le volet Reddit
+# =========================================================================== #
+
+_REDDIT_URL = "https://www.reddit.com/r/stocks/.rss?limit=100"
+
+
+def _rpost(title, link, ts=None, sub="stocks"):
+    return {"title": title, "url": link, "subreddit": sub,
+            "published": int((ts or NOW).timestamp())}
+
+
+def _reddit_env(monkeypatch, posts, url=_REDDIT_URL):
+    """Réinstalle un volet Reddit pilotable (la fixture autouse l'éteint) et
+    rend la liste des URL réellement demandées."""
+    calls = []
+    monkeypatch.setattr(newswatch, "_reddit_url", lambda: url)
+
+    def fetch(target):
+        calls.append(target)
+        return b"<feed/>"
+
+    monkeypatch.setattr(newswatch, "_fetch_reddit", fetch)
+    monkeypatch.setattr(newswatch, "_parse_reddit_posts", lambda raw: list(posts))
+    return calls
+
+
+def _run_reddit(monkeypatch, fetch, notifier, now=NOW, mode="tout", due=True,
+                url=_REDDIT_URL, **kw):
+    """Un cycle où le volet Reddit tourne à coup sûr (la cadence a son propre
+    test — ailleurs elle obligerait à intercaler des cycles blancs).
+
+    ``url`` réinstalle la cible que la fixture autouse avait coupée ; ``url=""``
+    rejoue le cas « moteur market-pulse absent »."""
+    monkeypatch.setattr(newswatch, "_reddit_url", lambda: url)
+    if due:
+        state = newswatch._load_global_seen()
+        state["reddit_cycle"] = 0
+        newswatch._save_global_seen(state)
+    fetch.prime_gov()
+    return newswatch.run_once(now=now, fetch=fetch, notifier=notifier,
+                              tg_cfg=CFG, sleep=lambda s: None, mode=mode, **kw)
+
+
+def test_un_post_reddit_portant_un_cashtag_devient_un_event(monkeypatch):
+    fetch = _FetchQueue()
+    posts = [_rpost("$NVDA is going to the moon", "https://r.test/1")]
+    counters = _run_reddit(monkeypatch, fetch, _NotifySpy(),
+                           reddit_fetch=lambda url: b"x",
+                           reddit_parse=lambda raw: posts)
+
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "reddit"]
+    assert len(events) == 1
+    assert events[0]["symbol"] == "NVDA"
+    assert events[0]["sentiment"] == newswatch.REDDIT_SENTIMENT
+    assert events[0]["subreddit"] == "stocks"
+    assert counters["fetched"] >= 1
+
+
+def test_un_post_reddit_qui_nomme_une_entreprise_devient_un_event(monkeypatch):
+    posts = [_rpost("Nvidia earnings are going to be wild", "https://r.test/1")]
+    _run_reddit(monkeypatch, _FetchQueue(), _NotifySpy(), reddit_fetch=lambda url: b"x",
+                reddit_parse=lambda raw: posts)
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "reddit"]
+    assert [e["symbol"] for e in events] == ["NVDA"]
+
+
+def test_un_post_reddit_sans_ticker_reconnaissable_est_ignore(monkeypatch):
+    """La foule parle beaucoup ; on ne garde que ce qui désigne un titre."""
+    posts = [_rpost("lost my whole account today, AMA", "https://r.test/1")]
+    _run_reddit(monkeypatch, _FetchQueue(), _NotifySpy(), reddit_fetch=lambda url: b"x",
+                reddit_parse=lambda raw: posts)
+    assert [e for e in newswatch.recent_events("nobody")
+            if e.get("src") == "reddit"] == []
+
+
+def test_le_volet_reddit_n_envoie_jamais_rien_meme_en_mode_tout(monkeypatch):
+    """La foule est un ACCÉLÉRANT, pas une preuve : elle n'a aucun canal vers le
+    téléphone, dans aucun mode. Elle nourrit la convergence, qui décide."""
+    posts = [_rpost("$NVDA to the moon", "https://r.test/%d" % i)
+             for i in range(10)]
+    notifier = _NotifySpy()
+    _run_reddit(monkeypatch, _FetchQueue(), notifier, mode="tout",
+                reddit_fetch=lambda url: b"x", reddit_parse=lambda raw: posts)
+    assert notifier.calls == []
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "reddit"]
+    assert events and all(e["muted"] is True for e in events)
+
+
+def test_toutes_les_mentions_comptent_mais_les_events_sont_plafonnes(monkeypatch):
+    """Un compteur ne coûte qu'un horodatage ; un fil illisible coûte tout le
+    reste de la mémoire."""
+    posts = [_rpost("$NVDA again", "https://r.test/%d" % i) for i in range(20)]
+    _run_reddit(monkeypatch, _FetchQueue(), _NotifySpy(), reddit_fetch=lambda url: b"x",
+                reddit_parse=lambda raw: posts)
+
+    events = [e for e in newswatch.recent_events("nobody")
+              if e.get("src") == "reddit"]
+    assert len(events) == newswatch._REDDIT_MAX_EVENTS_PER_RUN
+    assert newswatch.recent_trends(NOW) == {"NVDA": {"count": 20, "prev": 0}}
+
+
+def test_un_post_reddit_deja_vu_ne_recompte_pas(monkeypatch):
+    posts = [_rpost("$NVDA to the moon", "https://r.test/1")]
+    kw = dict(reddit_fetch=lambda url: b"x", reddit_parse=lambda raw: posts)
+    _run_reddit(monkeypatch, _FetchQueue(), _NotifySpy(), **kw)
+    _run_reddit(monkeypatch, _FetchQueue(), _NotifySpy(), now=NOW + timedelta(minutes=15), **kw)
+    assert newswatch.recent_trends(NOW)["NVDA"]["count"] == 1
+
+
+def test_un_post_reddit_trop_vieux_ne_compte_pas(monkeypatch):
+    old = NOW - timedelta(days=3)
+    posts = [_rpost("$NVDA old news", "https://r.test/1", ts=old),
+             _rpost("$AAPL sans date", "https://r.test/2")]
+    posts[1].pop("published")
+    _run_reddit(monkeypatch, _FetchQueue(), _NotifySpy(), reddit_fetch=lambda url: b"x",
+                reddit_parse=lambda raw: posts)
+    assert newswatch.recent_trends(NOW) == {}
+
+
+def test_un_429_de_reddit_compte_une_erreur_et_ne_casse_rien(monkeypatch):
+    """Plafond 1 req/60 s : on ne réessaie PAS dans le cycle, on compte et on
+    repart au prochain cycle dû."""
+    def refuse(url):
+        raise RuntimeError("Reddit a répondu 429 (plafond 1 req/60 s)")
+
+    counters = _run_reddit(monkeypatch, _FetchQueue(), _NotifySpy(), reddit_fetch=refuse,
+                           reddit_parse=lambda raw: [])
+    assert counters["errors"] == 1
+    assert counters["users"] == 0                # le reste du cycle a tourné
+
+
+def test_un_flux_reddit_illisible_compte_une_erreur_et_ne_casse_rien(monkeypatch):
+    def boom(raw):
+        raise ValueError("XML cassé")
+
+    counters = _run_reddit(monkeypatch, _FetchQueue(), _NotifySpy(),
+                           reddit_fetch=lambda url: b"x", reddit_parse=boom)
+    assert counters["errors"] == 1
+
+
+def test_le_volet_reddit_ne_tourne_qu_un_cycle_sur_trois(monkeypatch):
+    calls = _reddit_env(monkeypatch, [])
+    for index in range(4):
+        _run_reddit(monkeypatch, _FetchQueue(), _NotifySpy(), due=(index == 0),
+                    now=NOW + timedelta(minutes=5 * index))
+    # cycles 0 et 3 -> deux passages seulement.
+    assert len(calls) == 2
+
+
+def test_le_volet_reddit_demande_UNE_seule_url_multireddit(monkeypatch):
+    """Plafond MESURÉ 1 req/60 s : jamais un sub à la fois."""
+    calls = _reddit_env(monkeypatch, [])
+    _run_reddit(monkeypatch, _FetchQueue(), _NotifySpy())
+    assert calls == [_REDDIT_URL]
+
+
+def test_sans_moteur_market_pulse_le_volet_reddit_se_tait(monkeypatch):
+    """Moteur absent -> URL vide -> le volet ne tourne pas. Ce n'est PAS une
+    erreur : un déploiement sans market-pulse doit garder les autres volets."""
+    counters = _run_reddit(monkeypatch, _FetchQueue(), _NotifySpy(), url="",
+                           reddit_fetch=lambda url: b"x",
+                           reddit_parse=lambda raw: [_rpost("$NVDA",
+                                                            "https://r.test/1")])
+    assert counters["errors"] == 0
+    assert newswatch.recent_trends(NOW) == {}
+
+
+def test_recent_trends_est_vide_quand_le_guetteur_n_a_jamais_tourne():
+    assert newswatch.recent_trends(NOW) == {}
+
+
+def test_un_compteur_corrompu_sur_le_disque_ne_casse_pas_le_cycle(monkeypatch):
+    """Un état déformé doit être NORMALISÉ, pas faire lever le volet : la
+    veille entière tomberait avec lui."""
+    state = newswatch._load_global_seen()
+    state["reddit_trends"] = {"NVDA": "pas une liste", "AAPL": 42}
+    newswatch._save_global_seen(state)
+
+    posts = [_rpost("$NVDA to the moon", "https://r.test/1")]
+    counters = _run_reddit(monkeypatch, _FetchQueue(), _NotifySpy(),
+                           reddit_fetch=lambda url: b"x",
+                           reddit_parse=lambda raw: posts)
+    assert counters["errors"] == 0
+    assert newswatch.recent_trends(NOW) == {"NVDA": {"count": 1, "prev": 0}}
+
+
+def test_l_url_reddit_reelle_est_bien_un_multireddit():
+    """Le pont vers ``pulse.social`` est le seul point de vérité du format."""
+    url = _REAL_REDDIT_URL()
+    assert url.startswith("https://www.reddit.com/r/")
+    assert "+" in url and url.endswith("/.rss?limit=%d" % newswatch.REDDIT_LIMIT)
+    for sub in newswatch.REDDIT_SUBS:
+        assert sub in url
 
 
 # =========================================================================== #

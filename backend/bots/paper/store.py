@@ -198,6 +198,12 @@ def save_watchlist(username: str, symbols: List[Dict[str, Any]]) -> None:
 RESERVED_VAULT_NAMES = frozenset({
     "newswatch_global", "whales_watch", "whales_cache", "convergence", "radar",
     "alerts_mode", "x_accounts",
+    # ⚠️ « backfill » (dossiers historiques, 26/08) est le seul nom de cette
+    # liste dont le fichier d'état, ``backfill.json``, est AUSSI le chemin que
+    # ``portfolio_path`` rendrait pour un compte du même nom. La règle « un
+    # utilisateur a un portefeuille » ci-dessous répondrait donc VRAI pour lui :
+    # c'est cette ligne, vérifiée en premier, qui ferme la porte.
+    "backfill",
 })
 
 

@@ -52,13 +52,19 @@ def sources(monkeypatch):
             self.events = []
             self.filings = []
             self.moves = []          # mouvements de gérants (26/08)
+            self.trends = {}         # mentions Reddit par ticker (26/08 soir)
             self.asked = []
+            self.trend_clock = []
 
     bag = _Bag()
 
     def _recent_events(username):
         bag.asked.append(username)
         return list(bag.events)
+
+    def _recent_trends(now=None):
+        bag.trend_clock.append(now)
+        return dict(bag.trends)
 
     def _match_issuer(name, candidates):
         """Rapprochement volontairement NAÏF dans le stub (le vrai est testé
@@ -70,6 +76,7 @@ def sources(monkeypatch):
 
     news_stub = types.ModuleType("backend.bots.paper.newswatch")
     news_stub.recent_events = _recent_events
+    news_stub.recent_trends = _recent_trends
     whales_stub = types.ModuleType("backend.bots.paper.whales")
     whales_stub.recent_filing_events = lambda: list(bag.filings)
     whales_stub.moves_summary = lambda: list(bag.moves)
@@ -575,6 +582,31 @@ def test_maybe_fire_chemin_heureux(sources, alice, tmp_path):
     assert "Voici ce qui converge." in note
 
 
+def test_maybe_fire_lit_les_tendances_reddit_du_guetteur(sources, alice):
+    """Le facteur ``crowd_buzz`` vient de l'état de ``newswatch`` — et l'horloge
+    passée est celle du RUN, pas celle du système : les fenêtres 24 h / 24-48 h
+    doivent parler du même instant que le reste du calcul."""
+    sources.events = [_news(symbol="GOV", sentiment="gov",
+                            link="http://x.test/gov")]
+    sources.trends = {"NESN.SW": {"count": 15, "prev": 2}}
+
+    out = convergence.maybe_fire(now=NOW, llm=_llm("digest"),
+                                 notifier=_notifier([]), tg_cfg=TG,
+                                 fetch_state=_radar_state())
+
+    assert out["factors"]["crowd_buzz"] is True
+    assert sources.trend_clock == [NOW]
+
+
+def test_un_guetteur_sans_tendances_ne_casse_rien(sources, alice):
+    """Le module ou l'état absent -> pas de facteur, jamais une exception."""
+    sources.trends = {}
+    out = convergence.maybe_fire(now=NOW, llm=_llm("digest"),
+                                 notifier=_notifier([]), tg_cfg=TG,
+                                 fetch_state=_radar_state())
+    assert out["factors"]["crowd_buzz"] is False
+
+
 def test_maybe_fire_ecrit_la_note_chez_chaque_compte(sources, tmp_path):
     sources.events = [_news(symbol="GOV", sentiment="gov", link="http://x.test/gov")]
     sources.filings = [_filing()]
@@ -962,6 +994,101 @@ def test_whale_sold_watched_accepte_un_allegement_avec_son_pourcentage():
 
 
 # =========================================================================== #
+#  PUR — crowd_buzz : la foule Reddit s'agite (26/08 soir)
+# =========================================================================== #
+
+def _crowd(hyps=(), news=(), watched=(), held=(), trends=None):
+    return convergence.collect_factors(NOW, list(hyps), list(news), [],
+                                       list(watched), held_symbols=list(held),
+                                       reddit_trends=trends if trends is not None
+                                       else {})
+
+
+def test_crowd_buzz_sur_un_titre_detenu_qui_s_emballe():
+    out = _crowd(trends={"NESN.SW": {"count": 12, "prev": 3}}, held=["NESN.SW"],
+                 watched=["NESN.SW"])
+    assert out["factors"]["crowd_buzz"] is True
+    item = [i for i in out["items"] if i["src"] == "crowd"][0]
+    assert item["symbol"] == "NESN.SW"
+    assert "la foule Reddit s'agite sur NESN.SW" in item["title"]
+    assert "12 mentions" in item["title"] and "×4,0" in item["title"]
+
+
+def test_crowd_buzz_compte_aussi_un_titre_seulement_SUIVI():
+    out = _crowd(trends={"TSLA": {"count": 9, "prev": 0}}, watched=["TSLA"])
+    assert out["factors"]["crowd_buzz"] is True
+    assert "aucune la veille" in out["items"][0]["title"]
+
+
+def test_crowd_buzz_ignore_un_titre_ni_detenu_ni_suivi():
+    """La foule parle de tout ; ce facteur ne parle que de CE portefeuille."""
+    out = _crowd(trends={"GME": {"count": 80, "prev": 2}}, watched=["NESN.SW"])
+    assert out["factors"]["crowd_buzz"] is False
+
+
+def test_crowd_buzz_exige_un_nombre_minimum_de_mentions():
+    """Trois personnes qui en parlent, ce n'est pas une foule."""
+    assert _crowd(trends={"TSLA": {"count": 4, "prev": 0}},
+                  watched=["TSLA"])["factors"]["crowd_buzz"] is False
+    assert _crowd(trends={"TSLA": {"count": 5, "prev": 0}},
+                  watched=["TSLA"])["factors"]["crowd_buzz"] is True
+
+
+def test_crowd_buzz_exige_une_ACCELERATION_pas_un_volume():
+    """Un titre dont la foule parle tous les jours ne dit rien de neuf."""
+    assert _crowd(trends={"TSLA": {"count": 40, "prev": 30}},
+                  watched=["TSLA"])["factors"]["crowd_buzz"] is False
+    assert _crowd(trends={"TSLA": {"count": 61, "prev": 30}},
+                  watched=["TSLA"])["factors"]["crowd_buzz"] is True
+
+
+def test_crowd_buzz_est_insensible_a_la_casse_du_symbole():
+    out = _crowd(trends={"tsla": {"count": 9, "prev": 1}}, watched=["TSLA"])
+    assert out["factors"]["crowd_buzz"] is True
+
+
+@pytest.mark.parametrize("bad", [None, "cassé", {"TSLA": "pas un dict"},
+                                 {"TSLA": {"count": "beaucoup"}}, {}])
+def test_crowd_buzz_est_tolerant_a_un_etat_deforme(bad):
+    out = _crowd(trends=bad, watched=["TSLA"])
+    assert out["factors"]["crowd_buzz"] is False
+
+
+def test_les_tickers_les_plus_mentionnes_viennent_en_premier():
+    out = _crowd(trends={"AAPL": {"count": 6, "prev": 0},
+                         "TSLA": {"count": 20, "prev": 1}},
+                 watched=["AAPL", "TSLA"])
+    assert [i["symbol"] for i in out["items"]] == ["TSLA", "AAPL"]
+
+
+def test_l_empreinte_change_quand_la_vague_grossit():
+    """Sinon un digest resterait bloqué sur « même matière » alors que la foule
+    est passée de 6 à 40 mentions."""
+    small = _crowd(trends={"TSLA": {"count": 6, "prev": 0}}, watched=["TSLA"])
+    big = _crowd(trends={"TSLA": {"count": 40, "prev": 0}}, watched=["TSLA"])
+    assert convergence.fingerprint(small["items"]) \
+        != convergence.fingerprint(big["items"])
+
+
+def test_la_foule_ne_tire_JAMAIS_seule():
+    """Le bruit social est un accélérant, pas une preuve : ``crowd_buzz`` n'est
+    PAS un facteur de menace, il lui faut un second facteur."""
+    assert "crowd_buzz" not in convergence.THREAT_FACTORS
+    flags = {c: False for c in convergence.FACTOR_CODES}
+    flags["crowd_buzz"] = True
+    assert convergence.should_fire(flags, {}, NOW, "fp") == (False, "too_few")
+
+
+def test_la_foule_ne_fabrique_pas_un_cross_source():
+    """Une quatrième famille faite de bruit social permettrait à UNE dépêche de
+    fabriquer un croisement. On la tient hors de ce calcul."""
+    out = _crowd(news=[_news()], trends={"NESN.SW": {"count": 20, "prev": 0}},
+                 held=["NESN.SW"], watched=["NESN.SW"])
+    assert out["factors"]["crowd_buzz"] is True
+    assert out["factors"]["cross_source"] is False
+
+
+# =========================================================================== #
 #  PUR — should_fire : les facteurs de MENACE tirent SEULS (26/08)
 # =========================================================================== #
 
@@ -1028,12 +1155,26 @@ def test_le_prompt_ouvre_une_section_gerant_et_dit_les_45_jours():
     assert "rotation" in prompt
 
 
+def test_le_prompt_ouvre_une_section_foule_et_dit_ce_qu_elle_ne_prouve_pas():
+    """La phrase demandée : « le bruit social est un accélérant, pas une
+    preuve » — elle doit atteindre le modèle, pas seulement le code."""
+    prompt = _prompt(crowd_buzz=True)
+    assert "LA FOULE S'AGITE" in prompt
+    assert "ACCÉLÉRANT, pas une preuve" in prompt
+    assert "crowd" in prompt
+
+
+def test_le_prompt_n_ouvre_pas_la_section_foule_sans_agitation():
+    assert "LA FOULE S'AGITE" not in _prompt(gov=True)
+
+
 def test_le_prompt_numerote_ses_blocs_dans_l_ordre():
-    prompt = _prompt(held_risk=True, whale_sold_watched=True)
+    prompt = _prompt(held_risk=True, whale_sold_watched=True, crowd_buzz=True)
     for n, titre in ((1, "CE QUI S'ALIGNE"), (2, "OPPORTUNITÉS"),
-                     (3, "RISQUES SUR TES POSITIONS"), (4, "UN GRAND GÉRANT")):
+                     (3, "RISQUES SUR TES POSITIONS"), (4, "UN GRAND GÉRANT"),
+                     (5, "LA FOULE S'AGITE")):
         assert prompt.index("%d. " % n) < prompt.index(titre)
-    assert "5. Une dernière ligne" in prompt
+    assert "6. Une dernière ligne" in prompt
 
 
 def test_le_prompt_interdit_d_attendre_la_confirmation():
