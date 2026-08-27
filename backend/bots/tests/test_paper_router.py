@@ -236,6 +236,9 @@ def test_player_role_is_refused_everywhere(tmp_path, monkeypatch):
     assert c.get("/api/paper/graph").status_code == 403
     assert c.get("/api/paper/graph/count?symbol=NESN.SW").status_code == 403
     assert c.get("/api/paper/graph/grove?kind=monde").status_code == 403
+    assert c.get("/api/paper/journal/setups").status_code == 403
+    assert c.get("/api/paper/journal/emotions").status_code == 403
+    assert c.get("/api/paper/discipline").status_code == 403
 
 
 def test_money_role_is_allowed(tmp_path, monkeypatch):
@@ -257,6 +260,9 @@ def test_trader_role_is_allowed(tmp_path, monkeypatch):
     assert c.post("/api/paper/board/pipeline",
                   json={"symbol": "NESN.SW"}).status_code == 200
     assert c.post("/api/paper/board/scenarios/generate?sync=1", json={}).status_code == 200
+    assert c.get("/api/paper/journal/setups").status_code == 200
+    assert c.get("/api/paper/journal/emotions").status_code == 200
+    assert c.get("/api/paper/discipline").status_code == 200
 
 
 def test_trader_role_is_registered_but_not_invitable():
@@ -433,6 +439,280 @@ def test_sell_orders_carry_no_entry_warnings(tmp_path, monkeypatch):
     buy(c, qty=10, thesis="Thèse suffisamment longue pour passer le seuil")
     body = buy(c, side="sell", qty=4)
     assert body["warnings"] == []
+
+
+# ================================================================
+#  LOT 2 — JOURNAL NIVEAU PRO (B1-B5)
+# ================================================================
+
+# --- B2/B3 : setup/émotion, whitelists fermées, portées jusqu'au trade -----
+
+def test_setup_and_emotion_are_optional_and_validated_against_a_closed_whitelist(
+        tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = buy(c, setup="breakout", emotion="fomo",
+              thesis="Cassure nette du plus haut du mois sur fort volume")
+    assert body["order"]["setup"] == "breakout"
+    assert body["order"]["emotion"] == "fomo"
+    position = portfolio_of(c)["portfolio"]["positions"][0]
+    assert position["setup"] == "breakout" and position["emotion"] == "fomo"
+
+    assert order(c, setup="n-existe-pas").status_code == 400
+    assert order(c, emotion="n-existe-pas").status_code == 400
+
+
+def test_setup_and_emotion_default_to_empty_when_not_given(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = buy(c)
+    assert body["order"]["setup"] == "" and body["order"]["emotion"] == ""
+
+
+def test_setup_and_emotion_survive_from_entry_to_the_closed_trade(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, setup="trend", emotion="doute",
+       thesis="Tendance de fond haussière confirmée sur plusieurs unités de temps")
+    market.prices["NESN.SW"] = (120.0, "CHF", "Nestle SA")
+    body = buy(c, side="sell", qty=10)
+    trade = body["fill"]["trade"]
+    assert trade["setup"] == "trend"
+    assert trade["emotion"] == "doute"
+    # Sortie via un ordre marché (pas le dialogue de clôture) : pas d'émotion
+    # de SORTIE, même si l'entrée en portait une.
+    assert trade["emotion_close"] == ""
+
+
+def test_emotion_close_is_accepted_only_by_the_close_endpoint(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c, thesis="Une thèse suffisamment longue pour passer le seuil du coach")
+    r = c.post("/api/paper/positions/NESN.SW/close", json={"emotion_close": "euphorie"})
+    assert r.status_code == 200
+    assert r.json()["fill"]["trade"]["emotion_close"] == "euphorie"
+
+
+def test_emotion_close_is_validated_and_refuses_to_close_on_a_bad_value(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c, thesis="Une thèse suffisamment longue pour passer le seuil du coach")
+    r = c.post("/api/paper/positions/NESN.SW/close", json={"emotion_close": "n-existe-pas"})
+    assert r.status_code == 400
+    assert len(portfolio_of(c)["portfolio"]["positions"]) == 1     # rien n'a bougé
+
+
+def test_a_mechanical_stop_close_never_carries_an_emotion_close(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10, stop_loss=90.0, thesis="Cassure haussière, invalidation sous 90")
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 95.0, "high": 96.0, "low": 88.0, "close": 89.0}]
+    result = c.post("/api/paper/tick").json()
+    assert result["stopped"][0]["trade"]["emotion_close"] == ""
+
+
+# --- B1/B5 : MAE/MFE + « laissé sur la table », câblés aux clôtures --------
+
+def test_close_position_attaches_mae_mfe_and_the_gap_left_on_the_table(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10, thesis="Une thèse suffisamment longue pour passer le seuil du coach")
+    market.prices["NESN.SW"] = (108.0, "CHF", "Nestle SA")
+    market.candles["NESN.SW"] = [{"high": 112.0, "low": 97.0}]
+
+    r = c.post("/api/paper/positions/NESN.SW/close", json={})
+    trade = r.json()["fill"]["trade"]
+    assert trade["mae_pct"] == -3.0
+    assert trade["mfe_pct"] == 12.0
+    assert trade["best_exit_gap_pct"] == round(12.0 - trade["pnl_pct"], 2)
+    # Persistance : le trade RELU depuis le portefeuille porte les mêmes champs
+    # (et pas seulement la réponse HTTP de l'instant).
+    stored = portfolio_of(c)["portfolio"]["trades"][0]
+    assert stored["mae_pct"] == -3.0 and stored["mfe_pct"] == 12.0
+
+
+def test_a_market_sell_order_also_attaches_mae_mfe(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10, thesis="Une thèse suffisamment longue pour passer le seuil du coach")
+    market.prices["NESN.SW"] = (108.0, "CHF", "Nestle SA")
+    market.candles["NESN.SW"] = [{"high": 112.0, "low": 97.0}]
+
+    body = buy(c, side="sell", qty=10)
+    trade = body["fill"]["trade"]
+    assert trade["mae_pct"] == -3.0 and trade["mfe_pct"] == 12.0
+
+
+def test_tick_limit_sell_close_also_attaches_mae_mfe(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10, thesis="Une thèse suffisamment longue pour passer le seuil du coach")
+    buy(c, side="sell", kind="limit", limit_price=110.0, qty=10)
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 108.0, "high": 115.0, "low": 99.0, "close": 111.0}]
+
+    result = c.post("/api/paper/tick").json()
+    trade = result["fills"][0]["trade"]
+    assert trade["mae_pct"] == -1.0
+    assert trade["mfe_pct"] == 15.0
+
+
+def test_tick_protective_stop_also_attaches_mae_mfe(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10, stop_loss=90.0, thesis="Cassure haussière, invalidation sous 90")
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 95.0, "high": 96.0, "low": 88.0, "close": 89.0}]
+    result = c.post("/api/paper/tick").json()
+    trade = result["stopped"][0]["trade"]
+    assert trade["mae_pct"] is not None and trade["mfe_pct"] is not None
+
+
+def test_mae_mfe_asks_for_a_wider_candle_window_on_a_long_holding_period(tmp_path, monkeypatch):
+    """B1 : ``range_for`` doit varier avec la durée de détention -- pas rester
+    scotché à la fenêtre 1 jour/15 min que le TICK utilise pour lui-même."""
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10, thesis="Une thèse suffisamment longue pour passer le seuil du coach")
+    raw = store.load_portfolio("tester")
+    raw["positions"][0]["opened_at"] = "2026-01-01T09:00:00"     # ~236 jours avant FIXED_NOW
+    store.save_portfolio("tester", raw)
+    market.candles["NESN.SW"] = [{"high": 112.0, "low": 97.0}]
+
+    c.post("/api/paper/positions/NESN.SW/close", json={})
+    assert ("NESN.SW", "1y", "1d") in market.candle_calls
+
+
+def test_close_position_never_fails_when_excursion_candles_are_unavailable(
+        tmp_path, monkeypatch):
+    """Best-effort (invariant 2 du module) : une panne SPÉCIFIQUE aux bougies
+    d'excursion (le cours de clôture, lui, a bien été obtenu) ne doit jamais
+    faire échouer la clôture — les champs restent simplement absents."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c, thesis="Une thèse suffisamment longue pour passer le seuil du coach")
+
+    def _boom(symbol, range_, interval):
+        raise quotes.QuoteError("bougies indisponibles")
+    monkeypatch.setattr(quotes, "get_candles", _boom)
+
+    r = c.post("/api/paper/positions/NESN.SW/close", json={})
+    assert r.status_code == 200
+    trade = r.json()["fill"]["trade"]
+    assert trade["mae_pct"] is None and trade["mfe_pct"] is None
+
+
+def test_close_position_leaves_excursions_absent_on_empty_candles(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, thesis="Une thèse suffisamment longue pour passer le seuil du coach")
+    # ``market.candles`` ne connaît pas NESN.SW -> get_candles rend [].
+    r = c.post("/api/paper/positions/NESN.SW/close", json={})
+    trade = r.json()["fill"]["trade"]
+    assert trade["mae_pct"] is None and trade["mfe_pct"] is None
+    assert trade["best_exit_gap_pct"] is None
+
+
+# --- ``_attach_trade_extras``/``_holding_days`` en direct, sans HTTP -------
+
+def _bare_trade(**kwargs):
+    base = dict(symbol="NESN.SW", side="long", entry_price=100.0, exit_price=110.0,
+               entry_at="2026-08-24T09:00:00", exit_at="2026-08-24T10:00:00",
+               pnl_pct=5.0)
+    base.update(kwargs)
+    from backend.bots.paper import models as m
+    return m.Trade(**base)
+
+
+def test_holding_days_computes_the_delta_in_days():
+    assert pr._holding_days("2026-01-01T00:00:00", "2026-01-03T12:00:00") == 2.5
+
+
+def test_holding_days_is_none_on_unreadable_dates():
+    assert pr._holding_days(None, "2026-01-01T00:00:00") is None
+    assert pr._holding_days("2026-01-01T00:00:00", "n/a") is None
+
+
+def test_attach_trade_extras_mutates_both_the_trade_object_and_the_fill_dict(monkeypatch):
+    from backend.bots.paper import models as m
+    trade = _bare_trade()
+    portfolio = m.Portfolio(trades=[trade])
+    fill = {"trade": trade.to_dict()}
+    monkeypatch.setattr(quotes, "get_candles",
+                        lambda symbol, range_, interval: [{"high": 112.0, "low": 97.0}])
+
+    pr._attach_trade_extras(portfolio, fill)
+
+    assert portfolio.trades[0].mae_pct == -3.0
+    assert portfolio.trades[0].mfe_pct == 12.0
+    assert portfolio.trades[0].best_exit_gap_pct == 7.0     # 12.0 - 5.0
+    assert fill["trade"]["mae_pct"] == -3.0
+    assert fill["trade"]["mfe_pct"] == 12.0
+    assert fill["trade"]["best_exit_gap_pct"] == 7.0
+
+
+def test_attach_trade_extras_is_a_noop_without_a_fill_or_a_trade():
+    from backend.bots.paper import models as m
+    portfolio = m.Portfolio(trades=[_bare_trade()])
+    pr._attach_trade_extras(portfolio, None)                       # ne lève pas
+    pr._attach_trade_extras(portfolio, {"trade": None})            # ne lève pas
+    pr._attach_trade_extras(m.Portfolio(), {"trade": {"symbol": "X"}})  # pas de trades[]
+
+
+def test_attach_trade_extras_swallows_any_exception_from_get_candles(monkeypatch):
+    from backend.bots.paper import models as m
+    trade = _bare_trade()
+    portfolio = m.Portfolio(trades=[trade])
+    fill = {"trade": trade.to_dict()}
+
+    def _boom(symbol, range_, interval):
+        raise RuntimeError("panne quelconque")
+    monkeypatch.setattr(quotes, "get_candles", _boom)
+
+    pr._attach_trade_extras(portfolio, fill)          # ne lève PAS
+    assert portfolio.trades[0].mae_pct is None
+    assert fill["trade"]["mae_pct"] is None
+
+
+# --- Endpoints dérivés : /journal/setups, /journal/emotions, /discipline --
+
+def test_journal_setups_endpoint_reflects_closed_trades(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, setup="breakout", thesis="Cassure nette du plus haut du mois sur fort volume")
+    market.prices["NESN.SW"] = (110.0, "CHF", "Nestle SA")
+    buy(c, side="sell", qty=10)
+
+    rows = c.get("/api/paper/journal/setups").json()["rows"]
+    assert len(rows) == 1
+    assert rows[0]["setup"] == "breakout"
+    assert rows[0]["n"] == 1
+    assert rows[0]["winrate"] == 100.0
+    assert rows[0]["total_pnl_chf"] > 0
+
+
+def test_journal_emotions_endpoint_reflects_closed_trades(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, emotion="calme", thesis="Position posée sans urgence, plan clair et écrit")
+    market.prices["NESN.SW"] = (110.0, "CHF", "Nestle SA")
+    buy(c, side="sell", qty=10)
+
+    rows = c.get("/api/paper/journal/emotions").json()["rows"]
+    assert len(rows) == 1
+    assert rows[0]["emotion"] == "calme"
+    assert rows[0]["n"] == 1
+    assert "total_pnl_chf" not in rows[0]           # B3 n'a pas ce champ (≠ B2)
+
+
+def test_journal_endpoints_are_empty_on_a_fresh_account(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.get("/api/paper/journal/setups").json() == {"rows": []}
+    assert c.get("/api/paper/journal/emotions").json() == {"rows": []}
+
+
+def test_discipline_endpoint_is_honestly_none_under_five_trades(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.get("/api/paper/discipline").json() == {"score": None}
+
+
+def test_discipline_endpoint_scores_five_disciplined_trades_perfectly(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    for _ in range(5):
+        buy(c, qty=1, stop_loss=95.0,
+           thesis="Une thèse écrite avant l'entrée, assez longue pour compter")
+        market.prices["NESN.SW"] = (105.0, "CHF", "Nestle SA")
+        buy(c, side="sell", qty=1)
+        market.prices["NESN.SW"] = (100.0, "CHF", "Nestle SA")
+
+    out = c.get("/api/paper/discipline").json()
+    assert out["score"] == 100
 
 
 # ================================================================
@@ -2666,6 +2946,47 @@ def test_the_strategy_context_is_the_same_for_ideas_and_scenarios(tmp_path, monk
     assert expected <= set(seen["ideas"])
     # les scénarios voient la MÊME chose, plus le pipeline
     assert set(seen["scenarios"]) == set(seen["ideas"]) | {"pipeline"}
+
+
+def test_strategy_context_carries_a_compact_emotion_summary_lot2_b3(tmp_path, monkeypatch):
+    """B3 : le coach VOIT la corrélation émotion -> résultat déjà calculée, il
+    ne la recalcule pas. Une seule ligne PAR ÉMOTION significative (n>=3) ;
+    ``untagged`` n'apprend rien et n'apparaît jamais."""
+    c, market = make_client(tmp_path, monkeypatch)
+    for _ in range(3):
+        buy(c, emotion="fomo", thesis="Une thèse suffisamment longue pour le coach")
+        market.prices["NESN.SW"] = (90.0, "CHF", "Nestle SA")
+        buy(c, side="sell", qty=10)
+        market.prices["NESN.SW"] = (100.0, "CHF", "Nestle SA")
+    buy(c, emotion="calme", thesis="Une thèse suffisamment longue pour le coach")
+    buy(c, side="sell", qty=10)                          # une seule -> sous le seuil
+
+    seen = {}
+    monkeypatch.setattr(pr.llm, "suggest_ideas",
+                        lambda context, lang="fr", risk_level="mesure", journal=None:
+                        seen.__setitem__("ideas", dict(context))
+                        or '```json\n{"ideas": []}\n```')
+    c.post("/api/paper/ideas?sync=1", json={})
+
+    lines = seen["ideas"]["emotion_patterns"]
+    assert len(lines) == 1
+    assert "fomo" in lines[0]
+    assert all("calme" not in line for line in lines)
+
+
+def test_strategy_context_has_no_emotion_key_below_the_significance_threshold(
+        tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c, emotion="doute", thesis="Une thèse suffisamment longue pour le coach")
+    buy(c, side="sell", qty=10)
+
+    seen = {}
+    monkeypatch.setattr(pr.llm, "suggest_ideas",
+                        lambda context, lang="fr", risk_level="mesure", journal=None:
+                        seen.__setitem__("ideas", dict(context))
+                        or '```json\n{"ideas": []}\n```')
+    c.post("/api/paper/ideas?sync=1", json={})
+    assert "emotion_patterns" not in seen["ideas"]
 
 
 # ================================================================

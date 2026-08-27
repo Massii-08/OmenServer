@@ -66,6 +66,8 @@ const PaperModule = {
     _analysisSymbol: null,    // symbole de la derniere fiche d'analyse
     _tradeIdx: null,           // journal : trade ouvert en détail
     _postmortem: null,
+    _closingSym: null,         // journal niveau pro (LOT 2) : clôture en cours (émotion optionnelle)
+    _journalStats: null,       // {setups, emotions, discipline} : stats dérivées du journal (B2-B4)
     _answer: null,             // réponse du coach
     _analysis: null,           // fiche d'analyse
     _results: null,            // résultats de recherche
@@ -725,6 +727,19 @@ const PaperModule = {
         return this._label('paper.kind_' + k, kind);
     },
 
+    // Journal niveau pro (LOT 2, B2/B3) : un code hors whitelist (vieux trade,
+    // valeur historique) s'affiche BRUT plutôt que de fabriquer une clé i18n
+    // depuis une chaîne étrangère (même doctrine que ``_milestoneLabel``).
+    _setupLabel(code) {
+        const c = String(code || '').trim();
+        return c ? this._label('paper.setup_' + c, c) : '';
+    },
+
+    _emotionLabel(code) {
+        const c = String(code || '').trim();
+        return c ? this._label('paper.emotion_' + c, c) : '';
+    },
+
     _biasLabel(code) {
         const c = String(code || '');
         return this._label('paper.bias_' + c, c);
@@ -773,14 +788,21 @@ const PaperModule = {
     // Champs du brouillon : liste FERMÉE. Rien d'autre n'est ni écrit ni relu —
     // un stockage est éditable à la main, il n'a pas à décider de ce qui existe.
     _DRAFT_FIELDS: ['side', 'kind', 'qty', 'limit_price', 'stop_price',
-        'stop_loss', 'target', 'thesis', 'fee_profile'],
+        'stop_loss', 'target', 'thesis', 'fee_profile', 'setup', 'emotion'],
 
     // Identifiants des champs de l'ordre → sauvegarde du brouillon à la frappe.
     _FORM_IDS: {
         'paper-side': 1, 'paper-kind': 1, 'paper-qty': 1, 'paper-limit': 1,
         'paper-stop': 1, 'paper-sl': 1, 'paper-target': 1, 'paper-thesis': 1,
-        'paper-feeprofile': 1,
+        'paper-feeprofile': 1, 'paper-setup': 1, 'paper-emotion': 1,
     },
+
+    // Journal niveau pro (LOT 2, B2/B3) — whitelists FERMÉES, MÊMES valeurs et
+    // MÊME ORDRE que ``backend.bots.paper.models.SETUPS``/``EMOTIONS`` :
+    // dupliquées ici pour que ce module reste autonome (comme ``_MOOD_META``
+    // et les autres tables de ce fichier, jamais servies par une API dédiée).
+    _SETUPS: ['breakout', 'pullback', 'news', 'coach_idea', 'trend', 'contrarian', 'other'],
+    _EMOTIONS: ['calme', 'fomo', 'revanche', 'doute', 'euphorie'],
 
     _draftTimer: null,
 
@@ -1337,6 +1359,27 @@ const PaperModule = {
             if (this._tab === 'radar') this._renderBody();
             return;
         }
+        // Journal niveau pro (LOT 2, B2-B4) : stats dérivées, lues une fois à
+        // la première ouverture de l'onglet -- pas au poll de 60 s (le poll
+        // ne touche que le tick + le portefeuille, cf. ``_tickAndLoad``).
+        if (this._tab === 'journal' && !this._journalStats) {
+            const results = await Promise.all([
+                this._get('/api/paper/journal/setups'),
+                this._get('/api/paper/journal/emotions'),
+                this._get('/api/paper/discipline'),
+            ]);
+            const setups = results[0];
+            const emotions = results[1];
+            const discipline = results[2];
+            this._journalStats = {
+                setups: (setups && Array.isArray(setups.rows)) ? setups.rows : [],
+                emotions: (emotions && Array.isArray(emotions.rows)) ? emotions.rows : [],
+                discipline: (discipline && typeof discipline === 'object')
+                    ? discipline : { score: null },
+            };
+            if (this._tab === 'journal') this._renderBody();
+            return;
+        }
         // Réglage du portefeuille : régime d'alertes. Lu UNE fois (il ne bouge
         // que si on le change), pas au poll de 60 s.
         if (this._tab === 'portfolio' && this._alertsMode === null) {
@@ -1803,11 +1846,40 @@ const PaperModule = {
         // avec ses reperes stop / PRU, puis ce que la toile sait de ce titre.
         const open = this._posOpen
             ? (this._positionChart(this._posOpen) + this._egoCard(this._posOpen)) : '';
+        // Journal niveau pro (LOT 2, B3) : le panneau de clôture (émotion
+        // optionnelle) vit HORS du tableau -- un <select> imbriqué dans une
+        // <tr data-paper-act="pos-toggle"> ferait rouvrir/refermer la ligne au
+        // lieu d'ouvrir son propre menu (le clic bulle jusqu'au `closest`
+        // délégué le plus proche AVEC data-paper-act, cf. `_click`).
+        const closing = this._closingSym ? this._closeEmotionPanel(this._closingSym) : '';
         return this._card(this._positionsHead() +
             this._table([
                 Lang.t('paper.col_symbol'), Lang.t('paper.col_qty'), Lang.t('paper.col_avg_price'),
                 Lang.t('paper.col_last'), Lang.t('paper.col_pnl'), Lang.t('paper.col_actions'),
-            ], body)) + open;
+            ], body)) + open + closing;
+    },
+
+    // Panneau de clôture (LOT 2, B3) : une émotion optionnelle avant de
+    // confirmer -- "propose l'émotion" sans forcer de saisie (défaut « — »).
+    _closeEmotionPanel(symbol) {
+        const opt = (val, labelKey) =>
+            '<option value="' + esc(val) + '">' + esc(Lang.t(labelKey)) + '</option>';
+        const options = opt('', 'paper.emotion_none') +
+            this._EMOTIONS.map((e) => opt(e, 'paper.emotion_' + e)).join('');
+        return this._card(
+            this._head(Lang.t('paper.close_confirm_title'), symbol) +
+            '<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">' +
+              '<div style="flex:1 1 200px;min-width:0;max-width:260px;">' +
+                '<label class="form-label">' + esc(Lang.t('paper.form_emotion_close')) + '</label>' +
+                '<select id="paper-close-emotion" class="form-input">' + options + '</select>' +
+              '</div>' +
+              '<button class="btn btn-primary btn-sm" data-paper-act="close-pos-confirm" ' +
+                      'data-sym="' + esc(symbol) + '">' +
+                esc(Lang.t('paper.close_position')) + '</button>' +
+              '<button class="btn btn-ghost btn-sm" data-paper-act="close-pos-cancel">' +
+                esc(Lang.t('paper.cancel_order')) + '</button>' +
+            '</div>'
+        );
     },
 
     _ordersCard() {
@@ -1969,14 +2041,31 @@ const PaperModule = {
         this._loadTab();
     },
 
-    async closePosition(symbol) {
+    // Ouvre le panneau de clôture (LOT 2, B3) : propose l'émotion AVANT de
+    // confirmer, sans forcer la saisie -- une seconde action, jamais un
+    // blocage.
+    startClose(symbol) {
         if (!symbol) return;
+        this._closingSym = symbol;
+        this._renderBody();
+    },
+
+    cancelClose() {
+        this._closingSym = null;
+        this._renderBody();
+    },
+
+    async closePosition(symbol, emotionClose) {
+        if (!symbol) return;
+        const body = {};
+        if (emotionClose) body.emotion_close = emotionClose;
         let r = null;
         try {
             r = await Auth.apiCall('/api/paper/positions/' + encodeURIComponent(symbol) + '/close',
-                { method: 'POST', body: JSON.stringify({}) });
+                { method: 'POST', body: JSON.stringify(body) });
         } catch (e) { r = null; }
         if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
+        this._closingSym = null;
         this._toast('success', Lang.t('paper.closed_ok') + ' ' + symbol);
         await this._loadPortfolio();
         this._renderBody();
@@ -2116,6 +2205,19 @@ const PaperModule = {
                   opt('swissquote', 'paper.fee_swissquote', feeProfile) +
                   opt('ibkr', 'paper.fee_ibkr', feeProfile) +
                 '</select>') +
+              // Journal niveau pro (LOT 2, B2/B3) — deux étiquettes optionnelles,
+              // discrètes, défaut « — » : elles ne pèsent sur aucun calcul de
+              // taille ni de risque, juste sur ce que le journal pourra montrer.
+              field('paper.form_setup',
+                '<select id="paper-setup" class="form-input">' +
+                  opt('', 'paper.setup_none', f.setup || '') +
+                  this._SETUPS.map((s) => opt(s, 'paper.setup_' + s, f.setup || '')).join('') +
+                '</select>') +
+              field('paper.form_emotion',
+                '<select id="paper-emotion" class="form-input">' +
+                  opt('', 'paper.emotion_none', f.emotion || '') +
+                  this._EMOTIONS.map((e) => opt(e, 'paper.emotion_' + e, f.emotion || '')).join('') +
+                '</select>') +
             '</div>' +
             '<div style="margin-top:12px;">' +
               '<label class="form-label">' + esc(Lang.t('paper.form_thesis')) + '</label>' +
@@ -2239,6 +2341,8 @@ const PaperModule = {
         const tg = val('paper-target'); if (tg !== undefined) f.target = tg;
         const th = val('paper-thesis'); if (th !== undefined) f.thesis = th;
         const fp = val('paper-feeprofile'); if (fp !== undefined) f.fee_profile = fp;
+        const su = val('paper-setup'); if (su !== undefined) f.setup = su;
+        const em = val('paper-emotion'); if (em !== undefined) f.emotion = em;
         // Formulaire d'alerte (A1) : ephemere (pas un brouillon persiste par
         // titre) -- capture seulement pour survivre a un re-rendu incident.
         const aop = val('paper-alert-op'); if (aop !== undefined) f.alert_op = aop;
@@ -2355,6 +2459,8 @@ const PaperModule = {
         if (sl !== null) body.stop_loss = sl;
         const tg = this._n(this._form.target);
         if (tg !== null) body.target = tg;
+        if (this._form.setup) body.setup = this._form.setup;
+        if (this._form.emotion) body.emotion = this._form.emotion;
 
         let r = null;
         try { r = await Auth.apiCall('/api/paper/orders', { method: 'POST', body: JSON.stringify(body) }); }
@@ -2387,10 +2493,17 @@ const PaperModule = {
     _viewJournal() {
         if (!this._p) return this._card(this._muted(Lang.t('paper.no_data')));
         const trades = this._p.trades;
-        if (!trades.length) {
-            return this._card(this._head(Lang.t('paper.journal_title')) +
-                this._muted(Lang.t('paper.journal_empty')));
-        }
+        const table = trades.length ? this._journalTable(trades) : this._card(
+            this._head(Lang.t('paper.journal_title')) + this._muted(Lang.t('paper.journal_empty')));
+        // Setups/émotions/discipline (LOT 2) sont chargés à part (``_loadTab``) :
+        // ils restent lisibles même sur un compte qui n'a encore aucun trade
+        // clos (le compte VIENT d'ouvrir sa première ligne, par exemple).
+        const js = this._journalStats;
+        return table + this._tradeDetail() + this._setupStatsCard() +
+            this._emotionStatsCard() + this._disciplineCard(js ? js.discipline : undefined);
+    },
+
+    _journalTable(trades) {
         const td = this._td();
         // Le plus récent en tête : on relit ce qu'on vient de faire.
         const idx = trades.map((t, i) => i).reverse();
@@ -2399,6 +2512,9 @@ const PaperModule = {
             const r = this._n(t.r_multiple);
             const pnl = this._n(t.pnl_chf);
             const fees = (this._n(t.fees_chf) || 0) + (this._n(t.stamp_duty_chf) || 0);
+            const mae = this._n(t.mae_pct);
+            const mfe = this._n(t.mfe_pct);
+            const gap = this._n(t.best_exit_gap_pct);
             const selected = (this._tradeIdx === i);
             return '<tr data-paper-act="open-trade" data-idx="' + esc(String(i)) + '" ' +
                    'style="cursor:pointer;' + (selected ? 'background:var(--bg-elev-2);' : '') + '">' +
@@ -2414,6 +2530,15 @@ const PaperModule = {
                   esc(this._chf(fees)) + '</td>' +
                 '<td style="' + td + 'font-size:13px;color:var(--text-muted);">' +
                   esc(t.exit_reason || '') + '</td>' +
+                // Journal niveau pro (LOT 2, B1/B5) : « — » sur les trades
+                // d'avant le lot ou dont les bougies d'excursion ont manqué
+                // (best-effort côté backend, jamais un chiffre inventé ici).
+                '<td style="' + td + this._mono + 'font-size:12px;color:' + this._color(mae) + ';">' +
+                  esc(mae === null ? '—' : this._signed(mae, 2, '%')) + '</td>' +
+                '<td style="' + td + this._mono + 'font-size:12px;color:' + this._color(mfe) + ';">' +
+                  esc(mfe === null ? '—' : this._signed(mfe, 2, '%')) + '</td>' +
+                '<td style="' + td + this._mono + 'font-size:12px;color:var(--text-muted);">' +
+                  esc(gap === null ? '—' : this._signed(gap, 2, '%')) + '</td>' +
             '</tr>';
         }).join('');
         return this._card(this._head(Lang.t('paper.journal_title'),
@@ -2421,8 +2546,122 @@ const PaperModule = {
             this._table([
                 Lang.t('paper.col_date'), Lang.t('paper.col_symbol'), Lang.t('paper.col_side'),
                 Lang.t('paper.col_r'), Lang.t('paper.col_pnl'), Lang.t('paper.col_fees'),
-                Lang.t('paper.col_exit_reason'),
-            ], body)) + this._tradeDetail();
+                Lang.t('paper.col_exit_reason'), Lang.t('paper.col_mae'), Lang.t('paper.col_mfe'),
+                Lang.t('paper.col_gap'),
+            ], body));
+    },
+
+    // --- B2/B3 : stats dérivées par setup / par émotion ---------------------
+
+    _statsRow(labelText, n, winrate, avgR, totalPnl) {
+        const td = this._td();
+        const r = this._n(avgR);
+        return '<tr>' +
+            '<td style="' + td + 'font-weight:600;">' + esc(labelText) + '</td>' +
+            '<td style="' + td + this._mono + '">' + esc(this._num(n, 0)) + '</td>' +
+            '<td style="' + td + this._mono + '">' + esc(this._num(winrate, 1)) + '%</td>' +
+            '<td style="' + td + this._mono + 'color:' + this._color(r) + ';">' +
+              esc(r === null ? '—' : this._signed(r, 2, ' R')) + '</td>' +
+            (totalPnl === undefined ? '' :
+              '<td style="' + td + this._mono + 'color:' + this._color(this._n(totalPnl)) + ';">' +
+                esc(this._signedChf(this._n(totalPnl))) + '</td>') +
+        '</tr>';
+    },
+
+    _setupStatsCard() {
+        const stats = this._journalStats;
+        if (!stats) return this._card(this._muted(Lang.t('paper.loading')));
+        const rows = Array.isArray(stats.setups) ? stats.setups : [];
+        if (!rows.length) {
+            return this._card(this._head(Lang.t('paper.setup_stats_title')) +
+                this._muted(Lang.t('paper.setup_stats_empty')));
+        }
+        const body = rows.map((row) => this._statsRow(
+            this._setupLabel(row.setup), row.n, row.winrate, row.avg_r,
+            row.total_pnl_chf)).join('');
+        return this._card(this._head(Lang.t('paper.setup_stats_title')) +
+            this._table([Lang.t('paper.col_setup'), Lang.t('paper.col_n'),
+                Lang.t('paper.col_winrate'), Lang.t('paper.col_avg_r'),
+                Lang.t('paper.col_total_pnl')], body));
+    },
+
+    _emotionStatsCard() {
+        const stats = this._journalStats;
+        if (!stats) return '';                    // déjà annoncé par la carte setup
+        const rows = Array.isArray(stats.emotions) ? stats.emotions : [];
+        if (!rows.length) {
+            return this._card(this._head(Lang.t('paper.emotion_stats_title')) +
+                this._muted(Lang.t('paper.emotion_stats_empty')));
+        }
+        const body = rows.map((row) => this._statsRow(
+            this._emotionLabel(row.emotion), row.n, row.winrate, row.avg_r)).join('');
+        return this._card(this._head(Lang.t('paper.emotion_stats_title')) +
+            this._table([Lang.t('paper.col_emotion'), Lang.t('paper.col_n'),
+                Lang.t('paper.col_winrate'), Lang.t('paper.col_avg_r')], body));
+    },
+
+    // --- B4 : score de discipline (jauge 0-100 + composantes) ---------------
+
+    _DISCIPLINE_COMPONENTS: ['stop_set', 'thesis_written', 'risk_respected', 'profit_factor'],
+
+    _disciplineGauge(score) {
+        const s = this._n(score);
+        const w = (s === null) ? 0 : Math.max(0, Math.min(100, s));
+        const color = (s === null) ? 'var(--text-muted)' :
+            (s >= 70 ? 'var(--accent)' : (s >= 40 ? 'var(--warning)' : 'var(--danger)'));
+        return '<div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;">' +
+              '<span style="flex:1 1 200px;min-width:0;font-size:14px;">' +
+                esc(Lang.t('paper.discipline_score')) + '</span>' +
+              '<span style="' + this._mono + 'font-size:18px;font-weight:700;color:' + color + ';">' +
+                esc(s === null ? '—' : this._num(s, 0)) + '<span style="font-size:12px;' +
+                'color:var(--text-dim);font-weight:400;">/100</span></span>' +
+            '</div>' +
+            '<div style="height:6px;background:var(--bg-elev-3);border-radius:var(--r-pill);' +
+                 'overflow:hidden;margin-top:7px;">' +
+              '<div style="height:100%;width:' + w.toFixed(2) + '%;background:' + color + ';' +
+                   'border-radius:var(--r-pill);"></div>' +
+            '</div>';
+    },
+
+    _disciplineComponentRow(key, comp) {
+        if (!comp || typeof comp !== 'object') return '';
+        const points = this._n(comp.points);
+        const detail = (comp.pct !== undefined)
+            ? this._num(this._n(comp.pct), 0) + '%'
+            : (comp.value === null || comp.value === undefined ? '—' : this._num(this._n(comp.value), 2));
+        return '<div style="display:flex;gap:10px;align-items:baseline;padding:4px 0;">' +
+              '<span style="flex:1 1 200px;min-width:0;font-size:13px;color:var(--text-muted);">' +
+                esc(Lang.t('paper.discipline_' + key)) + '</span>' +
+              '<span style="font-size:12px;' + this._mono + 'color:var(--text-dim);margin-right:8px;">' +
+                esc(detail) + '</span>' +
+              '<span style="font-size:13px;' + this._mono + 'font-weight:600;">' +
+                esc(points === null ? '—' : this._num(points, 1)) + '<span style="font-size:11px;' +
+                'color:var(--text-dim);font-weight:400;">/25</span></span>' +
+            '</div>';
+    },
+
+    // Carte partagée entre la vue Journal (``_journalStats.discipline``) et la
+    // section apprentissage de la vue Plan (``_board.learning.discipline``) —
+    // même score, deux endroits (le calcul VIT côté serveur, cf.
+    // ``tradestats.discipline_score`` + ``board.learning_summary``).
+    // ``discipline`` absent (``undefined``/``null``) = pas encore chargé ;
+    // ``{score: null}`` = chargé mais honnêtement vide (< 5 trades clos).
+    _disciplineCard(discipline) {
+        if (discipline === undefined || discipline === null) {
+            return this._card(this._muted(Lang.t('paper.loading')));
+        }
+        const d = (typeof discipline === 'object') ? discipline : {};
+        if (d.score === null || d.score === undefined) {
+            return this._card(this._head(Lang.t('paper.discipline_title')) +
+                this._muted(Lang.t('paper.discipline_not_enough')));
+        }
+        const comps = (d.components && typeof d.components === 'object') ? d.components : {};
+        const rows = this._DISCIPLINE_COMPONENTS
+            .map((key) => this._disciplineComponentRow(key, comps[key])).join('');
+        return this._card(this._head(Lang.t('paper.discipline_title'),
+                Lang.t('paper.discipline_hint')) +
+            this._disciplineGauge(d.score) +
+            '<div style="margin-top:12px;">' + rows + '</div>');
     },
 
     _tradeDetail() {
@@ -2453,6 +2692,16 @@ const PaperModule = {
                 (this._n(t.pnl_pct) === null ? '' : '  ' + this._signed(t.pnl_pct, 2, '%'))) +
               line('paper.col_fees', this._chf((this._n(t.fees_chf) || 0) + (this._n(t.stamp_duty_chf) || 0))) +
               line('paper.col_exit_reason', t.exit_reason || '—') +
+              // Journal niveau pro (LOT 2) — uniquement les champs que CE trade
+              // porte réellement (un trade d'avant le lot, ou une clôture
+              // mécanique sans émotion, ne montre pas une ligne vide).
+              (t.setup ? line('paper.form_setup', this._setupLabel(t.setup)) : '') +
+              (t.emotion ? line('paper.form_emotion', this._emotionLabel(t.emotion)) : '') +
+              (t.emotion_close ? line('paper.form_emotion_close', this._emotionLabel(t.emotion_close)) : '') +
+              (this._n(t.mae_pct) === null ? '' : line('paper.col_mae', this._signed(t.mae_pct, 2, '%'))) +
+              (this._n(t.mfe_pct) === null ? '' : line('paper.col_mfe', this._signed(t.mfe_pct, 2, '%'))) +
+              (this._n(t.best_exit_gap_pct) === null ? '' :
+                line('paper.col_gap', this._signed(t.best_exit_gap_pct, 2, '%'))) +
             '</div>' +
             this._sub('paper.thesis_label') +
             '<div style="font-size:14px;line-height:1.6;background:var(--bg-elev-3);' +
@@ -3922,7 +4171,7 @@ const PaperModule = {
             this._learnBar('paper.plan_bar_arena', ar.done, ar.accepted) +
             this._learnBar('paper.plan_bar_biases', bi.resolved, biTotal) +
             chips + stats
-        );
+        ) + this._disciplineCard(this._board ? l.discipline : undefined);
     },
 
     // --- Section 3 : scénarios du coach -------------------------------------
@@ -9265,7 +9514,13 @@ const PaperModule = {
         if (act === 'submit-order') { this.submitOrder(); return; }
         if (act === 'alert-create') { this.createAlert(); return; }
         if (act === 'alert-delete') { this.deleteAlert(el.getAttribute('data-id')); return; }
-        if (act === 'close-pos') { this.closePosition(el.getAttribute('data-sym')); return; }
+        if (act === 'close-pos') { this.startClose(el.getAttribute('data-sym')); return; }
+        if (act === 'close-pos-confirm') {
+            const sel = document.getElementById('paper-close-emotion');
+            this.closePosition(el.getAttribute('data-sym'), sel ? sel.value : '');
+            return;
+        }
+        if (act === 'close-pos-cancel') { this.cancelClose(); return; }
         if (act === 'cancel-order') { this.cancelOrder(el.getAttribute('data-id')); return; }
         if (act === 'open-trade') {
             const i = parseInt(el.getAttribute('data-idx'), 10);

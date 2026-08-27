@@ -478,6 +478,19 @@ def test_learning_summary_does_not_invent_arena_wins():
     assert summary["arena"] == {"accepted": 1, "done": 0}
 
 
+def test_learning_summary_carries_the_discipline_score_lot2_b4():
+    """B4 : le score de discipline (``tradestats.discipline_score``) doit
+    être RECALCULÉ ici comme tout le reste du tableau -- jamais stocké."""
+    trade = {"pnl_chf": 10.0, "planned_stop": 90.0, "thesis": "une thèse",
+             "entry_price": 100.0, "qty": 1, "fx_rate": 1.0}
+    summary = board.learning_summary({}, [trade] * 5, initial_capital=10000.0)
+    assert summary["discipline"]["score"] == 100
+
+    # Compte neuf (aucun trade) : honnête, pas de note sur du vide.
+    empty = board.learning_summary({}, [])
+    assert empty["discipline"] == {"score": None}
+
+
 # ================================================================
 #  BORNES PARTAGÉES AVEC LE PROMPT
 # ================================================================

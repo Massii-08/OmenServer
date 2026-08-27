@@ -24,6 +24,15 @@ ORDER_SIDES = ("buy", "sell", "short", "cover")
 ORDER_KINDS = ("market", "limit", "stop")
 ORDER_STATUSES = ("open", "filled", "cancelled")
 
+# Journal niveau pro (LOT 2) — deux whitelists FERMÉES, posées à l'entrée
+# (``setup``/``emotion`` sur l'ordre) et portées jusqu'au ``Trade`` clos. Ce
+# sont des CODES internes (comme ``ORDER_SIDES``/``ORDER_KINDS`` ci-dessus) :
+# ``EMOTIONS`` est en français ici parce que c'est le vocabulaire que Massii a
+# fixé lui-même pour ce lot — l'affichage traduit ×3 langues (via
+# ``paper.emotion_<code>``) vit dans le frontend, comme pour tout le reste.
+SETUPS = ("breakout", "pullback", "news", "coach_idea", "trend", "contrarian", "other")
+EMOTIONS = ("calme", "fomo", "revanche", "doute", "euphorie")
+
 
 # --------------------------------------------------------------------------- #
 # Coercitions tolérantes (un JSON abîmé ne doit jamais faire planter la lecture)
@@ -102,6 +111,10 @@ class Position:
     stop_loss: Optional[float] = None
     target: Optional[float] = None
     risk_chf: Optional[float] = None
+    # Étiquettes du journal (LOT 2, B2/B3) : posées à l'ouverture (via l'ordre),
+    # portées jusqu'au ``Trade`` clos — même geste que ``thesis``/``stop_loss``.
+    setup: str = ""
+    emotion: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -121,6 +134,8 @@ class Position:
             stop_loss=_as_opt_float(data.get("stop_loss")),
             target=_as_opt_float(data.get("target")),
             risk_chf=_as_opt_float(data.get("risk_chf")),
+            setup=_as_str(data.get("setup")),
+            emotion=_as_str(data.get("emotion")),
         )
 
 
@@ -147,6 +162,10 @@ class Order:
     risk_chf: Optional[float] = None
     currency: str = DEFAULT_CURRENCY
     fee_profile: str = DEFAULT_FEE_PROFILE
+    # Étiquettes du journal (LOT 2, B2/B3) — transférées à la ``Position`` que
+    # l'ordre crée ou renforce (cf. ``_open_long``/``_open_short``/``_average_into``).
+    setup: str = ""
+    emotion: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -170,6 +189,8 @@ class Order:
             risk_chf=_as_opt_float(data.get("risk_chf")),
             currency=_as_str(data.get("currency"), DEFAULT_CURRENCY),
             fee_profile=_as_str(data.get("fee_profile"), DEFAULT_FEE_PROFILE),
+            setup=_as_str(data.get("setup")),
+            emotion=_as_str(data.get("emotion")),
         )
 
 
@@ -199,6 +220,20 @@ class Trade:
     planned_stop: Optional[float] = None
     currency: str = DEFAULT_CURRENCY
     fx_rate: float = 1.0
+    # Étiquettes du journal (LOT 2, B2/B3) — ``setup``/``emotion`` viennent de
+    # la position (l'intention à l'ENTRÉE) ; ``emotion_close`` n'existe que sur
+    # une clôture MANUELLE (``/positions/{symbol}/close``) — un fill mécanique
+    # (stop, limite, tick) n'a pas d'émotion, cf. ``paper_router.close_position``.
+    setup: str = ""
+    emotion: str = ""
+    emotion_close: str = ""
+    # Excursions (LOT 2, B1/B5) — best-effort depuis les bougies de la période
+    # de détention (cf. ``tradestats.excursions``) : ``None`` tant que le cours
+    # n'a pas pu être relu, JAMAIS un 0.0 qui prétendrait avoir mesuré quelque
+    # chose. ``best_exit_gap_pct`` = ``mfe_pct`` - ``pnl_pct`` (B5).
+    mae_pct: Optional[float] = None
+    mfe_pct: Optional[float] = None
+    best_exit_gap_pct: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -224,6 +259,12 @@ class Trade:
             planned_stop=_as_opt_float(data.get("planned_stop")),
             currency=_as_str(data.get("currency"), DEFAULT_CURRENCY),
             fx_rate=_as_float(data.get("fx_rate"), 1.0),
+            setup=_as_str(data.get("setup")),
+            emotion=_as_str(data.get("emotion")),
+            emotion_close=_as_str(data.get("emotion_close")),
+            mae_pct=_as_opt_float(data.get("mae_pct")),
+            mfe_pct=_as_opt_float(data.get("mfe_pct")),
+            best_exit_gap_pct=_as_opt_float(data.get("best_exit_gap_pct")),
         )
 
 

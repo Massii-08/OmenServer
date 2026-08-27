@@ -37,7 +37,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from backend.bots.paper import risk, store
+from backend.bots.paper import risk, store, tradestats
 
 # --------------------------------------------------------------------------- #
 # Contrat
@@ -684,4 +684,7 @@ def learning_summary(profile: Optional[Dict[str, Any]],
         "milestones": [dict(m) for m in _dicts(prof.get("milestones"))],
         "n_trades": stats.get("n_trades", 0),
         "expectancy_r": stats.get("expectancy_r"),
+        # LOT 2, B4 : même doctrine que le reste de ce tableau — RECALCULÉ à
+        # chaque lecture depuis les trades, jamais stocké dans le profil.
+        "discipline": tradestats.discipline_score(rows, initial_capital),
     }

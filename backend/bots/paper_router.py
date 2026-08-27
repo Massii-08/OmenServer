@@ -43,7 +43,7 @@ from backend.auth.models import User
 from backend.auth.permissions import require_role
 from backend.bots.paper import (alerts, board, coach, entities, fees, fills,
                                 graph, idea_journal, llm, models, mood,
-                                price_alerts, quotes, risk, store)
+                                price_alerts, quotes, risk, store, tradestats)
 
 logger = logging.getLogger("omenserver")
 
@@ -437,6 +437,21 @@ def compute_warnings(side: str, thesis: str, stop_loss: Optional[float],
     return out
 
 
+def _clean_choice(value: Optional[str], whitelist: tuple, field_label: str) -> str:
+    """Une valeur de whitelist FERMÉE, optionnelle (LOT 2, B2/B3) : vide/absente
+    -> ``""`` ; sinon DOIT être dans ``whitelist``, sinon 400 — même politique
+    que ``fee_profile`` un peu plus bas dans ce fichier. Un ``setup``/une
+    ``emotion`` inconnus ne sont jamais silencieusement ignorés : ce serait
+    laisser croire au client que le tag a été posé."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text not in whitelist:
+        raise HTTPException(status_code=400,
+                            detail="%s inconnu: %s" % (field_label, text))
+    return text
+
+
 def _fees_for(profile: str, notional_chf: float, symbol: str) -> Dict[str, float]:
     """Frais d'une transaction ; un profil inconnu retombe sur le défaut en le
     signalant (un portefeuille ancien ne doit pas devenir inutilisable)."""
@@ -450,11 +465,17 @@ def _fees_for(profile: str, notional_chf: float, symbol: str) -> Dict[str, float
 
 def execute_order(portfolio: models.Portfolio, order: models.Order,
                   price: float, fx_rate: float, now_iso: str,
-                  exit_reason: str = "manual") -> Dict[str, Any]:
+                  exit_reason: str = "manual",
+                  emotion_close: str = "") -> Dict[str, Any]:
     """Exécute ``order`` au prix donné. MUTE ``portfolio``. Lève ``OrderError``.
 
     Rend le détail de l'exécution (``fill``) : montant, frais, et le ``Trade``
     produit quand l'ordre CLÔTURE tout ou partie d'une position.
+
+    ``emotion_close`` (LOT 2, B3) ne s'applique qu'à une clôture (``sell``/
+    ``cover``) — ignoré sans effet pour un ordre d'ouverture, jamais une
+    erreur : un appelant générique n'a pas à connaître le sens de l'ordre pour
+    le passer.
     """
     symbol = order.symbol
     qty = int(order.qty)
@@ -486,7 +507,7 @@ def execute_order(portfolio: models.Portfolio, order: models.Order,
         _open_short(portfolio, order, price, fx_rate, notional, fee, now_iso)
     elif side in ("sell", "cover"):
         trade = _close_leg(portfolio, order, price, fx_rate, notional, fee,
-                           now_iso, exit_reason)
+                           now_iso, exit_reason, emotion_close)
         fill["trade"] = trade.to_dict()
         fill["exit_reason"] = trade.exit_reason
     else:
@@ -513,7 +534,8 @@ def _open_long(portfolio, order, price, fx_rate, notional, fee, now_iso) -> None
             currency=order.currency or models.DEFAULT_CURRENCY,
             fx_rate=float(fx_rate), opened_at=now_iso, side="long",
             thesis=order.thesis, stop_loss=order.stop_loss,
-            target=order.target, risk_chf=order.risk_chf))
+            target=order.target, risk_chf=order.risk_chf,
+            setup=order.setup, emotion=order.emotion))
     else:
         _average_into(position, order, price, fx_rate)
     portfolio.cash_chf = round(portfolio.cash_chf - cost, 2)
@@ -543,7 +565,8 @@ def _open_short(portfolio, order, price, fx_rate, notional, fee, now_iso) -> Non
             currency=order.currency or models.DEFAULT_CURRENCY,
             fx_rate=float(fx_rate), opened_at=now_iso, side="short",
             thesis=order.thesis, stop_loss=order.stop_loss,
-            target=order.target, risk_chf=order.risk_chf))
+            target=order.target, risk_chf=order.risk_chf,
+            setup=order.setup, emotion=order.emotion))
     else:
         _average_into(position, order, price, fx_rate)
     portfolio.cash_chf = round(portfolio.cash_chf + notional - fee["total_chf"], 2)
@@ -574,10 +597,14 @@ def _average_into(position: models.Position, order: models.Order,
         position.target = order.target
     if order.risk_chf is not None:
         position.risk_chf = order.risk_chf
+    if order.setup:
+        position.setup = order.setup
+    if order.emotion:
+        position.emotion = order.emotion
 
 
 def _close_leg(portfolio, order, price, fx_rate, notional, fee,
-               now_iso, exit_reason) -> models.Trade:
+               now_iso, exit_reason, emotion_close: str = "") -> models.Trade:
     """Clôture (totale ou partielle) et produit le ``Trade`` pédagogique.
 
     Les frais du ``Trade`` AGRÈGENT l'entrée et la sortie (recalculés sur le
@@ -629,6 +656,9 @@ def _close_leg(portfolio, order, price, fx_rate, notional, fee,
         planned_stop=position.stop_loss,
         currency=position.currency,
         fx_rate=float(fx_rate),
+        setup=position.setup,
+        emotion=position.emotion,
+        emotion_close=str(emotion_close or ""),
     )
     portfolio.trades.append(trade)
 
@@ -645,11 +675,17 @@ def _close_leg(portfolio, order, price, fx_rate, notional, fee,
 
 def close_position(portfolio: models.Portfolio, position: models.Position,
                    qty: int, price: float, fx_rate: float, now_iso: str,
-                   exit_reason: str = "manual") -> Dict[str, Any]:
+                   exit_reason: str = "manual",
+                   emotion_close: str = "") -> Dict[str, Any]:
     """Clôture au marché — passe par le MÊME chemin que n'importe quel ordre.
 
     Un seul code d'exécution : une sortie déclenchée par un stop, par le
     dashboard ou par un ordre limite produit exactement le même ``Trade``.
+
+    ``emotion_close`` (LOT 2, B3) : SEULE la clôture manuelle en pose une
+    (``paper_close_position``) — un stop de protection ou un ordre limite qui
+    se déclenche dans le tick n'en fournit jamais, ce qui laisse le champ vide
+    par construction (une sortie mécanique n'a pas d'émotion).
     """
     order = models.Order(
         id=uuid.uuid4().hex,
@@ -662,7 +698,8 @@ def close_position(portfolio: models.Portfolio, position: models.Position,
         currency=position.currency,
         fee_profile=portfolio.fee_profile,
     )
-    return execute_order(portfolio, order, price, fx_rate, now_iso, exit_reason)
+    return execute_order(portfolio, order, price, fx_rate, now_iso, exit_reason,
+                         emotion_close)
 
 
 # --------------------------------------------------------------------------- #
@@ -687,6 +724,63 @@ def _window(candles: List[Dict[str, Any]], since: Optional[float]) -> List[Dict[
     if since is None:
         return rows
     return [c for c in rows if (c.get("ts") or 0) > since]
+
+
+def _holding_days(entry_at: Any, exit_at: Any) -> Optional[float]:
+    """Durée de détention en jours (flottant), ou ``None`` si l'une des deux
+    dates est illisible — sert à choisir la fenêtre de bougies de
+    ``tradestats.range_for`` (LOT 2, B1)."""
+    entry_dt = _parse_iso(entry_at)
+    exit_dt = _parse_iso(exit_at)
+    if entry_dt is None or exit_dt is None:
+        return None
+    return (exit_dt - entry_dt).total_seconds() / 86400.0
+
+
+def _attach_trade_extras(portfolio: models.Portfolio,
+                         fill: Optional[Dict[str, Any]]) -> None:
+    """MAE/MFE + « laissé sur la table » (LOT 2, B1/B5) sur le ``Trade`` qui
+    vient de se clôturer — appelé aux QUATRE points qui en produisent un :
+    l'ordre marché (achat/vente immédiats, y compris une vente qui clôture),
+    le bouton Clore, et les deux boucles de ``run_tick`` (ordre limite/stop
+    qui clôture, stop de protection).
+
+    MUTE deux choses en parallèle : le ``Trade`` RÉEL (dernier de
+    ``portfolio.trades`` — c'est lui qui sera persisté) ET le dict
+    ``fill["trade"]`` déjà construit (c'est lui que la réponse HTTP renvoie)
+    — sans les deux, le fichier sur disque et ce que l'écran affiche
+    divergeraient.
+
+    N'ÉCHOUE JAMAIS (best-effort autour de ``quotes.get_candles`` — invariant
+    2 du module, cf. le docstring de tête) : un cours indisponible laisse
+    simplement les champs absents, la clôture elle-même a déjà eu lieu.
+    """
+    if not fill or not fill.get("trade") or not portfolio.trades:
+        return
+    trade_dict = fill["trade"]
+    trade_obj = portfolio.trades[-1]
+
+    holding_days = _holding_days(trade_dict.get("entry_at"), trade_dict.get("exit_at"))
+    try:
+        range_, interval = tradestats.range_for(holding_days)
+        candles = quotes.get_candles(trade_dict.get("symbol") or "", range_, interval)
+        exc = tradestats.excursions(candles, trade_dict.get("entry_price"),
+                                    trade_dict.get("side"))
+    except Exception as e:                          # noqa: BLE001 - best-effort
+        logger.warning("paper: excursions indisponibles pour %s: %s",
+                       trade_dict.get("symbol"), type(e).__name__)
+        return
+    if not exc:
+        return
+
+    gap = tradestats.best_exit_gap(exc.get("mfe_pct"), trade_dict.get("pnl_pct"))
+
+    trade_obj.mae_pct = exc.get("mae_pct")
+    trade_obj.mfe_pct = exc.get("mfe_pct")
+    trade_obj.best_exit_gap_pct = gap
+
+    trade_dict.update(exc)
+    trade_dict["best_exit_gap_pct"] = gap
 
 
 def run_tick(portfolio: models.Portfolio, now_iso: str,
@@ -742,6 +836,7 @@ def run_tick(portfolio: models.Portfolio, now_iso: str,
             else:
                 order.status = "filled"
                 fill["order_id"] = order.id
+                _attach_trade_extras(portfolio, fill)
                 filled.append(fill)
             portfolio.open_orders = [o for o in portfolio.open_orders if o is not order]
             break
@@ -767,10 +862,13 @@ def run_tick(portfolio: models.Portfolio, now_iso: str,
                 errors.append({"symbol": position.symbol, "error": str(e)[:200]})
                 break
             try:
-                stopped.append(close_position(portfolio, position, position.qty,
-                                              exit_price, fx_rate, now_iso, "stop"))
+                fill = close_position(portfolio, position, position.qty,
+                                      exit_price, fx_rate, now_iso, "stop")
             except OrderError as e:
                 errors.append({"symbol": position.symbol, "error": str(e)})
+            else:
+                _attach_trade_extras(portfolio, fill)
+                stopped.append(fill)
             break
 
     return {"fills": filled, "stopped": stopped, "cancelled": cancelled,
@@ -1178,6 +1276,9 @@ class OrderPayload(BaseModel):
     target: Optional[float] = None
     thesis: str = ""
     fee_profile: Optional[str] = None
+    # LOT 2 (B2/B3) — whitelists FERMÉES, cf. ``_clean_choice``.
+    setup: Optional[str] = None
+    emotion: Optional[str] = None
 
 
 class ResetPayload(BaseModel):
@@ -1187,6 +1288,8 @@ class ResetPayload(BaseModel):
 
 class ClosePayload(BaseModel):
     qty: Optional[int] = None
+    # LOT 2 (B3) — SEULE la clôture manuelle en propose une (cf. ``close_position``).
+    emotion_close: Optional[str] = None
 
 
 class AskPayload(BaseModel):
@@ -1521,6 +1624,8 @@ def paper_place_order(data: OrderPayload,
     fee_profile = data.fee_profile or portfolio.fee_profile
     if fee_profile not in fees.FEE_PROFILES:
         raise HTTPException(status_code=400, detail="Profil de frais inconnu: %s" % fee_profile)
+    setup = _clean_choice(data.setup, models.SETUPS, "Setup")
+    emotion = _clean_choice(data.emotion, models.EMOTIONS, "Émotion")
 
     try:
         quote = quotes.get_quote(symbol)
@@ -1555,6 +1660,8 @@ def paper_place_order(data: OrderPayload,
         risk_chf=risk_chf,
         currency=currency,
         fee_profile=fee_profile,
+        setup=setup,
+        emotion=emotion,
     )
 
     # Avertissements calculés sur la PROJECTION (avant exécution) : une position
@@ -1581,6 +1688,7 @@ def paper_place_order(data: OrderPayload,
         except OrderError as e:
             raise HTTPException(status_code=400, detail=str(e))
         order.status = "filled"
+        _attach_trade_extras(portfolio, fill)
     else:
         portfolio.open_orders.append(order)
 
@@ -1632,6 +1740,7 @@ def paper_close_position(symbol: str, data: ClosePayload,
     if qty > position.qty:
         raise HTTPException(status_code=400,
                             detail="Quantité supérieure à la position (%d)." % position.qty)
+    emotion_close = _clean_choice(data.emotion_close, models.EMOTIONS, "Émotion")
 
     try:
         quote = quotes.get_quote(wanted)
@@ -1648,9 +1757,11 @@ def paper_close_position(symbol: str, data: ClosePayload,
         raise HTTPException(status_code=502, detail=str(e))
 
     try:
-        fill = close_position(portfolio, position, qty, price, fx_rate, _now_iso())
+        fill = close_position(portfolio, position, qty, price, fx_rate, _now_iso(),
+                              emotion_close=emotion_close)
     except OrderError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    _attach_trade_extras(portfolio, fill)
 
     _save(username, portfolio)
     _sync_coach(username, portfolio.to_dict())
@@ -1674,6 +1785,41 @@ def paper_tick(current_user: User = Depends(require_role("admin", "money", "trad
     _save(username, portfolio)
     _sync_coach(username, portfolio.to_dict())
     return result
+
+
+# --------------------------------------------------------------------------- #
+# Endpoints — journal niveau pro (LOT 2)
+#
+# Les trois endpoints ci-dessous ne font QUE lire le portefeuille et appeler
+# les fonctions PURES de ``tradestats`` — aucun réseau, aucun LLM, rien de
+# stocké en double (même doctrine que ``board.learning_summary`` : le journal
+# ne peut pas mentir, il est recalculé à chaque lecture).
+# --------------------------------------------------------------------------- #
+@router.get("/journal/setups")
+def paper_journal_setups(
+        current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Performance PAR SETUP sur les trades clôturés (B2)."""
+    portfolio = _load(current_user.username)
+    trades = [t.to_dict() for t in portfolio.trades]
+    return {"rows": tradestats.setup_breakdown(trades)}
+
+
+@router.get("/journal/emotions")
+def paper_journal_emotions(
+        current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Performance PAR ÉMOTION D'ENTRÉE sur les trades clôturés (B3)."""
+    portfolio = _load(current_user.username)
+    trades = [t.to_dict() for t in portfolio.trades]
+    return {"rows": tradestats.emotion_breakdown(trades)}
+
+
+@router.get("/discipline")
+def paper_discipline(
+        current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Score de discipline 0-100 (B4). Moins de 5 trades clos -> ``score: null``."""
+    portfolio = _load(current_user.username)
+    trades = [t.to_dict() for t in portfolio.trades]
+    return tradestats.discipline_score(trades, portfolio.initial_capital)
 
 
 # --------------------------------------------------------------------------- #
@@ -3017,6 +3163,29 @@ def _agenda_macro() -> Dict[str, Any]:
     return {"consigne": AGENDA_CONSIGNE, "rendez_vous": rows}
 
 
+# En dessous, une émotion n'a pas assez de trades pour dire quoi que ce soit
+# — même seuil que la mission (LOT 2, B3) : « n>=3 ».
+MIN_EMOTION_PATTERN_N = 3
+
+
+def _emotion_context_lines(trades: List[Dict[str, Any]]) -> List[str]:
+    """Résumé COMPACT des émotions d'entrée significatives (LOT 2, B3).
+
+    Le coach VOIT la corrélation émotion -> résultat déjà calculée (même
+    doctrine que le reste de ``_strategy_context`` : des faits, jamais un
+    calcul délégué au LLM). ``untagged`` est toujours écarté : on ne sait pas
+    CE QUI a été tagué, donc rien à en dire.
+    """
+    lines: List[str] = []
+    for row in tradestats.emotion_breakdown(trades):
+        if row["emotion"] == tradestats.UNTAGGED or row["n"] < MIN_EMOTION_PATTERN_N:
+            continue
+        avg_r = "?" if row["avg_r"] is None else ("%.2f" % row["avg_r"])
+        lines.append("%s: %d trades, %.1f%% de réussite, R moyen %s"
+                     % (row["emotion"], row["n"], row["winrate"], avg_r))
+    return lines
+
+
 def _strategy_context(username: str,
                       risk_level: Optional[str] = None) -> Dict[str, Any]:
     """Le contexte du coach quand il PROPOSE (``/ideas``) ou qu'il
@@ -3031,10 +3200,16 @@ def _strategy_context(username: str,
     série d'actions.
     """
     portfolio = _load(username)
-    synced = _sync_coach(username, portfolio.to_dict(), force=True)
+    portfolio_dict = portfolio.to_dict()
+    synced = _sync_coach(username, portfolio_dict, force=True)
     context = _coach_context(portfolio, synced["profile"], synced["biases"],
                              synced["stats"])
     context["watchlist"] = _watchlist_context(username)
+    # LOT 2, B3 : la clé n'existe que s'il y a au moins une émotion
+    # significative — même politique que ``agenda_macro`` un peu plus bas.
+    emotion_patterns = _emotion_context_lines(portfolio_dict.get("trades") or [])
+    if emotion_patterns:
+        context["emotion_patterns"] = emotion_patterns
     context["radar_open_hypotheses"] = _open_radar_hypotheses()
     # ⚠️ PLAFONNÉ — cf. ``STRATEGY_NEWS_CAP``. C'est le seul consommateur de la
     # veille qui recopiait tout dans un PROMPT, et le seul qui ne bornait rien.

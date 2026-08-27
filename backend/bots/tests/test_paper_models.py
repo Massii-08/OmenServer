@@ -183,3 +183,48 @@ def test_plan_fields_tolerate_wrong_types():
     pos = Position.from_dict({"symbol": "AAPL", "stop_loss": "n/a", "target": None,
                               "risk_chf": "beaucoup", "thesis": None})
     assert (pos.stop_loss, pos.target, pos.risk_chf, pos.thesis) == (None, None, None, "")
+
+
+# --------------------------------------------------------------------------- #
+# Journal niveau pro (LOT 2) — setup/emotion/emotion_close + MAE/MFE/gap
+# --------------------------------------------------------------------------- #
+def test_setup_and_emotion_default_to_empty_and_survive_the_round_trip():
+    pos = Position(symbol="NESN.SW", setup="breakout", emotion="fomo")
+    assert Position.from_dict(json.loads(json.dumps(pos.to_dict()))) == pos
+
+    order = Order(id="x", symbol="NESN.SW", setup="pullback", emotion="calme")
+    assert Order.from_dict(json.loads(json.dumps(order.to_dict()))) == order
+
+    # Défaut d'un vieux portefeuille écrit avant le LOT 2 : chaîne vide, jamais
+    # une exception ni un ``None`` (même politique que ``thesis``).
+    assert Position.from_dict({"symbol": "AAPL"}).setup == ""
+    assert Position.from_dict({"symbol": "AAPL"}).emotion == ""
+    assert Order.from_dict({"id": "x", "symbol": "AAPL"}).setup == ""
+    assert Order.from_dict({"id": "x", "symbol": "AAPL"}).emotion == ""
+
+
+def test_trade_carries_journal_tags_and_excursions_and_tolerates_their_absence():
+    trade = Trade(symbol="NESN.SW", setup="trend", emotion="doute",
+                  emotion_close="euphorie", mae_pct=-3.2, mfe_pct=5.8,
+                  best_exit_gap_pct=3.7)
+    revived = Trade.from_dict(json.loads(json.dumps(trade.to_dict())))
+    assert revived == trade
+
+    # Un trade d'avant le LOT 2 (fichier existant) n'a AUCUN de ces champs :
+    # ils retombent sur leur défaut, jamais une exception.
+    legacy = Trade.from_dict({"symbol": "AAPL"})
+    assert (legacy.setup, legacy.emotion, legacy.emotion_close) == ("", "", "")
+    assert (legacy.mae_pct, legacy.mfe_pct, legacy.best_exit_gap_pct) == (None, None, None)
+
+
+def test_excursion_fields_tolerate_wrong_types():
+    trade = Trade.from_dict({"symbol": "AAPL", "mae_pct": "n/a", "mfe_pct": None,
+                             "best_exit_gap_pct": "beaucoup"})
+    assert (trade.mae_pct, trade.mfe_pct, trade.best_exit_gap_pct) == (None, None, None)
+
+
+def test_setups_and_emotions_whitelists_are_closed_and_match_the_mission():
+    from backend.bots.paper.models import EMOTIONS, SETUPS
+    assert SETUPS == ("breakout", "pullback", "news", "coach_idea", "trend",
+                      "contrarian", "other")
+    assert EMOTIONS == ("calme", "fomo", "revanche", "doute", "euphorie")
