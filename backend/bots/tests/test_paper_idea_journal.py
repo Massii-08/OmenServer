@@ -175,6 +175,79 @@ def test_le_fichier_est_du_json_lisible():
     assert isinstance(payload["entries"], list)
 
 
+
+# --------------------------------------------------------------------------- #
+# advice_from_text — le paragraphe qui parle d'un ticker (PUR)
+#
+# Repli pour les idées journalisées AVANT l'enrichissement du schéma JSON
+# (``stop``/``risk_pct``/``invalidated_if``/``why_now``) : le conseil complet
+# du coach existe déjà dans ``entry["text"]``, seulement pas découpé par
+# titre — on va le chercher, un paragraphe à la fois.
+# --------------------------------------------------------------------------- #
+
+def test_advice_from_text_returns_the_paragraph_mentioning_the_ticker():
+    text = ("AAPL — hausse probable sur le lancement produit.\n\n"
+            "TSLA — la thèse s'essouffle, prudence sur le momentum.")
+    assert idea_journal.advice_from_text(text, "TSLA") == \
+        "TSLA — la thèse s'essouffle, prudence sur le momentum."
+
+
+def test_advice_from_text_is_case_insensitive():
+    text = "aapl — un joli catalyseur cette semaine."
+    assert idea_journal.advice_from_text(text, "AAPL") == \
+        "aapl — un joli catalyseur cette semaine."
+
+
+def test_advice_from_text_tries_the_base_before_dot_or_dash():
+    text = "Bitcoin (BTC) reste porté par le momentum institutionnel."
+    advice = idea_journal.advice_from_text(text, "BTC-USD")
+    assert advice is not None and "Bitcoin" in advice
+
+
+def test_advice_from_text_base_needs_at_least_three_chars():
+    """``A.SW`` -> base ``A`` : trop court, jamais essayé seul (faux positif
+    quasi garanti sur n'importe quel texte)."""
+    text = "Une phrase quelconque qui contient la lettre A partout."
+    assert idea_journal.advice_from_text(text, "A.SW") is None
+
+
+def test_advice_from_text_no_match_returns_none():
+    text = "AAPL — hausse probable.\n\nMSFT — cloud toujours solide."
+    assert idea_journal.advice_from_text(text, "TSLA") is None
+
+
+def test_advice_from_text_whole_word_only_no_substring_match():
+    """Doctrine anti-faux-positif (même famille que le piège #31) : ``GM`` ne
+    doit pas matcher dans ``GMO``."""
+    text = "GMO Resources annonce un partenariat inattendu."
+    assert idea_journal.advice_from_text(text, "GM") is None
+
+
+@pytest.mark.parametrize("text,ticker", [
+    ("", "AAPL"), (None, "AAPL"), ("du texte", ""), ("du texte", None),
+    (None, None),
+])
+def test_advice_from_text_empty_inputs_return_none(text, ticker):
+    assert idea_journal.advice_from_text(text, ticker) is None
+
+
+def test_advice_from_text_short_paragraph_is_not_truncated():
+    text = "AAPL — thèse courte."
+    assert idea_journal.advice_from_text(text, "AAPL") == "AAPL — thèse courte."
+
+
+def test_advice_from_text_is_truncated_on_a_word_boundary():
+    words = " ".join("mot%d" % i for i in range(200))
+    text = "AAPL — " + words
+    advice = idea_journal.advice_from_text(text, "AAPL")
+    assert len(advice) <= idea_journal.ADVICE_CLAMP_LEN + 1     # + l'ellipse
+    assert advice.endswith("…")
+    assert not advice[:-1].endswith(" ")          # pas d'espace avant l'ellipse
+    # jamais coupé au milieu d'un token « motN »
+    last_token = advice[:-1].rsplit(" ", 1)[-1]
+    assert last_token == "" or last_token.startswith("mot") and last_token[3:].isdigit()
+
+
 def test_les_fichiers_de_reglage_ne_creent_pas_de_compte_fantome(tmp_path):
     """``alerts_mode.json`` et ``x_accounts.json`` sont posés DANS le même
     répertoire que les portefeuilles et leur radical ne porte AUCUN point :

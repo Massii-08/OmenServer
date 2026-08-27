@@ -41,8 +41,9 @@ from pydantic import BaseModel
 
 from backend.auth.models import User
 from backend.auth.permissions import require_role
-from backend.bots.paper import (alerts, board, coach, fees, fills, graph,
-                                idea_journal, llm, models, quotes, risk, store)
+from backend.bots.paper import (alerts, board, coach, entities, fees, fills,
+                                graph, idea_journal, llm, models, quotes,
+                                risk, store)
 
 logger = logging.getLogger("omenserver")
 
@@ -1373,11 +1374,22 @@ def paper_reset(data: ResetPayload,
 @router.get("/search")
 def paper_search(q: str = "",
                  current_user: User = Depends(require_role("admin", "money", "trader"))):
-    """Recherche de ticker. Moins de 2 caractères -> liste vide, sans réseau."""
-    if len(str(q or "").strip()) < MIN_SEARCH_LEN:
+    """Recherche de ticker. Moins de 2 caractères -> liste vide, sans réseau.
+
+    Si la requête, une fois passée par :func:`quotes.canonical`, matche un
+    alias connu (ex. ``ROG.SW`` -> ``RO.SW``), on cherche sur le symbole
+    CANONIQUE — sinon Yahoo rendrait 0 résultat sur un ticker qu'il ne connaît
+    que sous une autre forme. Aucun alias touché -> requête inchangée
+    (comportement actuel, y compris pour une recherche par NOM comme
+    « nestle » qui n'est pas un symbole).
+    """
+    term = str(q or "").strip()
+    if len(term) < MIN_SEARCH_LEN:
         return []
+    canon = quotes.canonical(term)
+    query = canon if canon != term.upper() else term
     try:
-        return quotes.search(q)
+        return quotes.search(query)
     except quotes.QuoteError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -1385,8 +1397,13 @@ def paper_search(q: str = "",
 @router.get("/quotes")
 def paper_quotes(symbols: str = "",
                  current_user: User = Depends(require_role("admin", "money", "trader"))):
-    """Cotations d'une liste de symboles séparés par des virgules (20 maximum)."""
-    wanted = [s.strip().upper() for s in str(symbols or "").split(",") if s.strip()]
+    """Cotations d'une liste de symboles séparés par des virgules (20 maximum).
+
+    Chaque symbole passe par :func:`quotes.canonical` : un alias connu (ex.
+    ``ROG.SW``) est traduit AVANT l'appel Yahoo, sinon la ligne rendrait une
+    erreur pour un titre qui existe bel et bien sous son vrai symbole.
+    """
+    wanted = [quotes.canonical(s) for s in str(symbols or "").split(",") if s.strip()]
     out: Dict[str, Any] = {}
     for symbol in wanted[:MAX_QUOTE_SYMBOLS]:
         try:
@@ -1415,8 +1432,11 @@ def paper_candles(symbol: str = "", range_: str = "6mo", interval: str = "1d",
 
     La devise vient de ``get_meta`` en best-effort : un graphique sans étiquette
     de devise reste lisible, un 502 pour ça ne le serait pas.
+
+    Le symbole passe par :func:`quotes.canonical` (un alias connu, ex.
+    ``ROG.SW``, est traduit avant l'appel Yahoo).
     """
-    wanted = str(symbol or "").strip().upper()
+    wanted = quotes.canonical(symbol)
     if not wanted:
         raise HTTPException(status_code=400, detail="Symbole requis.")
     if range_ not in CANDLE_RANGES:
@@ -1454,9 +1474,14 @@ def paper_place_order(data: OrderPayload,
 
     On AVERTIT (thèse absente, pas de stop, taille excessive, concentration) mais
     on ne bloque que l'infaisable : trésorerie, quantité, marge.
+
+    Le symbole passe par :func:`quotes.canonical` : la position ouverte (ou
+    renforcée) est stockée sous le symbole CANONIQUE, jamais sous un alias —
+    sinon les consommateurs en aval (veille par symbole, graphe, backfill)
+    verraient deux identités pour le même titre.
     """
     username = current_user.username
-    symbol = str(data.symbol or "").strip().upper()
+    symbol = quotes.canonical(data.symbol)
     if not symbol:
         raise HTTPException(status_code=400, detail="Symbole manquant.")
 
@@ -1569,9 +1594,15 @@ def paper_cancel_order(order_id: str,
 @router.post("/positions/{symbol}/close")
 def paper_close_position(symbol: str, data: ClosePayload,
                          current_user: User = Depends(require_role("admin", "money", "trader"))):
-    """Clôture au marché tout ou partie d'une ligne."""
+    """Clôture au marché tout ou partie d'une ligne.
+
+    Le symbole passe par :func:`quotes.canonical` : une position ouverte sous
+    l'alias avant ce lot n'existe pas (Yahoo la refusait déjà à la création),
+    mais un client qui tape encore l'alias dans l'URL doit retomber sur la
+    même ligne que celle affichée (stockée canonique).
+    """
     username = current_user.username
-    wanted = str(symbol or "").strip().upper()
+    wanted = quotes.canonical(symbol)
     portfolio = _load(username)
     position = _find_position(portfolio, wanted)
     if position is None:
@@ -1752,8 +1783,11 @@ def paper_analysis(data: AnalysisPayload, sync: bool = False,
 
 def _analysis_work(data: AnalysisPayload) -> Dict[str, Any]:
     """Le travail de ``/analysis`` — le seul des six qui ne touche à aucune
-    mémoire d'utilisateur (il lit une cotation et fait rédiger)."""
-    symbol = str(data.symbol or "").strip().upper()
+    mémoire d'utilisateur (il lit une cotation et fait rédiger).
+
+    Le symbole passe par :func:`quotes.canonical` (alias -> symbole Yahoo).
+    """
+    symbol = quotes.canonical(data.symbol)
     if not symbol:
         raise HTTPException(status_code=400, detail="Symbole manquant.")
     try:
@@ -2527,7 +2561,7 @@ def paper_backfill_run(data: Optional[BackfillPayload] = None,
             status_code=503,
             detail="La collecte d'historique n'est pas déployée sur ce serveur.")
 
-    symbol = str((data.symbol if data else None) or "").strip().upper()
+    symbol = quotes.canonical(data.symbol if data else None)
     try:
         if symbol:
             outcome = module.backfill_symbol(symbol, force=True)
@@ -2551,7 +2585,7 @@ def paper_backfill(symbol: str = "",
     titre jamais collecté rend lui aussi un dossier vide — c'est un 200, pas
     une erreur : « pas encore collecté » est une réponse légitime.
     """
-    wanted = str(symbol or "").strip().upper()
+    wanted = quotes.canonical(symbol)
     try:
         module = _backfill()
         if wanted:
@@ -2598,6 +2632,14 @@ def _parse_ideas_json(text: Any,
     * ``asset_kind`` est repris du LLM s'il est valide, sinon DEVINÉ depuis la
       forme du ticker (``BTC-USD`` -> crypto, ``EURUSD=X`` -> forex). Une idée
       crypto étiquetée « action » salirait le bilan par étage.
+
+    Quatre champs ADDITIFS portent le CONSEIL structuré (``stop``,
+    ``risk_pct``, ``invalidated_if``, ``why_now``) — TOLÉRANTS : absents,
+    vides ou mal typés -> ``None``, jamais une exception. Ils traversent tels
+    quels vers le journal (``idea_journal.append_entry`` stocke l'idée
+    entière) puis vers ``/ideas/for-symbol``, qui les sert à la pop-up « le
+    coach sur <symbole> ». Une réponse d'AVANT cet enrichissement (ou un
+    modèle qui les oublie) reste un idée valide, juste sans conseil détaillé.
     """
     if not isinstance(text, str):
         return []
@@ -2640,8 +2682,31 @@ def _parse_ideas_json(text: Any,
             "thesis": str(item.get("thesis") or "").strip(),
             "risk_level": level,
             "asset_kind": asset_kind,
+            "stop": _optional_text(item.get("stop")),
+            "risk_pct": _optional_float(item.get("risk_pct")),
+            "invalidated_if": _optional_text(item.get("invalidated_if")),
+            "why_now": _optional_text(item.get("why_now")),
         })
     return out
+
+
+def _optional_text(value: Any) -> Optional[str]:
+    """``str`` nettoyée, ou ``None`` si vide/absente — jamais une chaîne vide
+    qui se lirait comme un vrai conseil (utilisé par ``_parse_ideas_json``)."""
+    text = str(value or "").strip()
+    return text or None
+
+
+def _optional_float(value: Any) -> Optional[float]:
+    """``float``, ou ``None`` si absente/illisible — TOLÉRANT (utilisé par
+    ``_parse_ideas_json`` pour ``risk_pct``, un champ que le modèle peut
+    laisser vide ou écrire en texte libre)."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _radar_hypotheses() -> List[Dict[str, Any]]:
@@ -3151,6 +3216,39 @@ def paper_ideas_journal(limit: int = JOURNAL_PAGE_LIMIT,
     return {"entries": entries[:limit]}
 
 
+_ADVICE_STRUCTURED_FIELDS = ("stop", "risk_pct", "invalidated_if", "why_now")
+
+
+def _add_advice(row: Dict[str, Any], idea: Dict[str, Any],
+                entry: Dict[str, Any], ticker: str) -> None:
+    """Ajoute le CONSEIL du coach à une ligne ``from: "journal"`` — MUTE
+    ``row``, ne rend rien (patron des ajouts conditionnels de cet endpoint,
+    cf. le ``risk_level`` du bloc radar juste au-dessus).
+
+    Deux sources, jamais les deux à la fois :
+
+    1. les champs STRUCTURÉS de l'idée (schéma JSON enrichi, cf.
+       ``_parse_ideas_json``) — quand au moins un existe, ils suffisent : le
+       frontend les affiche en lignes compactes ;
+    2. à défaut (idée journalisée AVANT l'enrichissement, ou modèle qui les a
+       oubliés), le PARAGRAPHE du texte complet qui parle de ce ticker
+       (``idea_journal.advice_from_text``) — c'est le même conseil, juste pas
+       encore découpé par titre.
+
+    Rien de tout ça -> ``row`` reste tel quel (pas de clé ``advice`` vide qui
+    ferait afficher un cadre sans contenu).
+    """
+    structured = {field: idea.get(field) for field in _ADVICE_STRUCTURED_FIELDS}
+    if any(value not in (None, "") for value in structured.values()):
+        for field, value in structured.items():
+            if value not in (None, ""):
+                row[field] = value
+        return
+    advice = idea_journal.advice_from_text(entry.get("text"), ticker)
+    if advice:
+        row["advice"] = advice
+
+
 @router.get("/ideas/for-symbol")
 def paper_ideas_for_symbol(symbol: str = "",
                            current_user: User = Depends(require_role("admin", "money", "trader"))):
@@ -3167,8 +3265,12 @@ def paper_ideas_for_symbol(symbol: str = "",
     Trié du plus récent au plus ancien, borné à ``IDEAS_FOR_SYMBOL_LIMIT``.
     Aucun résultat -> ``{"items": []}`` et un 200 : le frontend n'affiche rien,
     ce n'est pas une erreur.
+
+    Le symbole passe par :func:`quotes.canonical` — cohérent avec le reste des
+    endpoints, même si les tickers du radar/journal sont déjà écrits sous leur
+    forme canonique depuis la création de l'ordre ou de l'idée.
     """
-    wanted = str(symbol or "").strip().upper()
+    wanted = quotes.canonical(symbol)
     if not wanted:
         raise HTTPException(status_code=400, detail="Symbole manquant.")
 
@@ -3205,7 +3307,7 @@ def paper_ideas_for_symbol(symbol: str = "",
                 continue
             if str(idea.get("ticker") or "").strip().upper() != wanted:
                 continue
-            items.append({
+            row = {
                 "from": "journal",
                 "ts": ts,
                 "risk_level": idea.get("risk_level") or entry.get("risk_level"),
@@ -3213,7 +3315,9 @@ def paper_ideas_for_symbol(symbol: str = "",
                 "horizon_days": idea.get("horizon_days"),
                 "thesis": idea.get("thesis"),
                 "tracked": bool(idea.get("tracked")),
-            })
+            }
+            _add_advice(row, idea, entry, wanted)
+            items.append(row)
         for verdict in (entry.get("verdicts") or []):
             if not isinstance(verdict, dict):
                 continue
@@ -3465,8 +3569,12 @@ def paper_watchlist_list(current_user: User = Depends(require_role("admin", "mon
 def paper_watchlist_add(data: WatchlistPayload,
                         current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Ajoute un titre à la watchlist. Idempotent sur un doublon (pas d'erreur,
-    liste inchangée) — dédoublonnage CASE-INSENSITIVE."""
-    symbol = str(data.symbol or "").strip().upper()
+    liste inchangée) — dédoublonnage CASE-INSENSITIVE.
+
+    Le symbole passe par :func:`quotes.canonical` : la ligne est stockée sous
+    le symbole CANONIQUE, jamais sous un alias.
+    """
+    symbol = quotes.canonical(data.symbol)
     if not symbol:
         raise HTTPException(status_code=400, detail="Symbole manquant.")
 
@@ -3499,9 +3607,12 @@ def paper_watchlist_add(data: WatchlistPayload,
 @router.delete("/watchlist/{symbol}")
 def paper_watchlist_remove(symbol: str,
                            current_user: User = Depends(require_role("admin", "money", "trader"))):
-    """Retire un titre de la watchlist. 404 s'il n'y était pas."""
+    """Retire un titre de la watchlist. 404 s'il n'y était pas.
+
+    Le symbole passe par :func:`quotes.canonical` — symétrique de l'ajout.
+    """
     username = current_user.username
-    wanted = str(symbol or "").strip().upper()
+    wanted = quotes.canonical(symbol)
     symbols = store.load_watchlist(username)
     remaining = [row for row in symbols
                 if str(row.get("symbol") or "").upper() != wanted]
@@ -3577,8 +3688,10 @@ def paper_board_pipeline_add(data: BoardItemPayload,
 
     Idempotent par symbole ACTIF : re-poster un titre déjà suivi rend la ligne
     existante (``duplicate: true``) sans rien dupliquer.
+
+    Le symbole passe par :func:`quotes.canonical` (alias -> symbole Yahoo).
     """
-    symbol = str(data.symbol or "").strip().upper()
+    symbol = quotes.canonical(data.symbol)
     if not symbol:
         raise HTTPException(status_code=400, detail="Symbole manquant.")
 
@@ -3776,21 +3889,73 @@ def _graph_inputs(username: str) -> Dict[str, Any]:
 
 
 def _build_graph(username: str, symbol: Optional[str],
-                 now_iso: Optional[str] = None) -> Dict[str, Any]:
+                 now_iso: Optional[str] = None,
+                 name: Optional[str] = None) -> Dict[str, Any]:
     """Assemble puis construit — le chemin COMMUN au graphe et au compteur.
 
     ``now_iso`` vient de l'appelant pour que la fenêtre de fraîcheur et le
     ``generated_at`` de la réponse parlent du MÊME instant.
+
+    ``name`` (optionnel) n'intervient QUE pour une branche précise (``symbol``
+    non vide) dont l'ancre EXACTE est vide : cf. :func:`_resolve_via_company`.
+    Sans ``symbol`` (vue d'ensemble), un nom n'a rien à y résoudre.
     """
     data = _graph_inputs(username)
-    return graph.build_graph(data["anchors"], data["events"], data["hypotheses"],
-                             data["whale_moves"], data["pipeline"],
-                             now_iso or _now_iso(), symbol=symbol,
-                             reddit_trends=data["reddit_trends"])
+    now_iso = now_iso or _now_iso()
+    built = graph.build_graph(data["anchors"], data["events"], data["hypotheses"],
+                              data["whale_moves"], data["pipeline"], now_iso,
+                              symbol=symbol, reddit_trends=data["reddit_trends"])
+    if symbol and not built.get("nodes") and name:
+        via = _resolve_via_company(data, symbol, name, now_iso)
+        if via is not None:
+            built = via
+    return built
+
+
+def _resolve_via_company(data: Dict[str, Any], wanted: str, name: str,
+                         now_iso: str) -> Optional[Dict[str, Any]]:
+    """Retente la branche d'un symbole FRÈRE de la même société, trouvé par
+    NOM (``entities.py``) — ``None`` si rien ne fait mieux que la branche déjà
+    vide de ``wanted``.
+
+    Vécu : chercher « nestlé » peut faire tomber sur ``NSRGY`` (ADR US, OTC)
+    alors que positions/watchlist/pipeline ne connaissent le titre QUE sous
+    ``NESN.SW`` (SIX) — c'est le symbole réellement négocié, pas tous les
+    tickers d'une même société. Le symbole EXACT reste toujours prioritaire
+    (déjà tenté par l'appelant) ; ceci n'est qu'un second essai.
+
+    ⚠️ PAS un alias de PRIX : NSRGY et NESN.SW sont deux instruments réels, en
+    deux devises différentes (cf. ``quotes.SYMBOL_ALIASES`` — décision
+    explicite de ne PAS les confondre). Cette résolution ne touche QUE la
+    toile (dépêches/hypothèses/mouvements déjà rattachés au symbole ancré),
+    jamais un cours.
+
+    ``entities.anchor_index`` (les ancres de l'utilisateur) PRIME sur la table
+    livrée : si Massii suit une société sous un nom qui lui est propre, c'est
+    CE symbole qui doit sortir en premier.
+    """
+    try:
+        extra = entities.anchor_index(data["anchors"])
+        candidates = entities.detect_companies(name, extra=extra)
+    except Exception as e:                      # noqa: BLE001 — best-effort
+        logger.warning("paper: résolution par société indisponible pour %r: %s",
+                       name, e)
+        return None
+    for candidate in candidates:
+        candidate = str(candidate or "").strip().upper()
+        if not candidate or candidate == wanted:
+            continue
+        alt = graph.build_graph(data["anchors"], data["events"], data["hypotheses"],
+                                data["whale_moves"], data["pipeline"], now_iso,
+                                symbol=candidate, reddit_trends=data["reddit_trends"])
+        if alt.get("nodes"):
+            alt = dict(alt, via_symbol=candidate)
+            return alt
+    return None
 
 
 @router.get("/graph")
-def paper_graph(symbol: str = "",
+def paper_graph(symbol: str = "", name: str = "",
                 current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Le graphe des connexions — LECTURE PURE.
 
@@ -3804,12 +3969,22 @@ def paper_graph(symbol: str = "",
     directs. Un titre ni détenu, ni suivi, ni en projet n'a pas d'ancre : la
     branche est alors vide, et c'est un 200 (le frontend n'affiche rien, ce
     n'est pas une erreur).
+
+    ``name`` (optionnel, ex. « Nestlé S.A. ») : si la branche exacte est vide,
+    on retente via le symbole d'une société repérée dans ce nom
+    (``entities.py``) — cf. :func:`_resolve_via_company`. La réponse porte
+    alors ``via_symbol`` en plus, pour que le frontend le dise. Rien trouvé ->
+    comportement inchangé.
     """
-    wanted = str(symbol or "").strip().upper()
+    wanted = quotes.canonical(symbol)
     now_iso = _now_iso()
-    built = _build_graph(current_user.username, wanted or None, now_iso)
-    return {"nodes": built["nodes"], "edges": built["edges"],
-            "truncated": built["truncated"], "generated_at": now_iso}
+    built = _build_graph(current_user.username, wanted or None, now_iso,
+                         name=str(name or "").strip() or None)
+    out = {"nodes": built["nodes"], "edges": built["edges"],
+          "truncated": built["truncated"], "generated_at": now_iso}
+    if built.get("via_symbol"):
+        out["via_symbol"] = built["via_symbol"]
+    return out
 
 
 @router.get("/graph/grove")
@@ -3843,19 +4018,25 @@ def paper_graph_grove(kind: str = "",
 
 
 @router.get("/graph/count")
-def paper_graph_count(symbol: str = "",
+def paper_graph_count(symbol: str = "", name: str = "",
                       current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Combien de connexions la mémoire porte sur CE titre — réponse minimale,
     faite pour un pastillage (« N connexions en mémoire ») sans transporter tout
-    le graphe. Même assemblage que ``/graph`` : les deux ne peuvent pas
-    diverger."""
-    wanted = str(symbol or "").strip().upper()
+    le graphe. Même assemblage que ``/graph`` (``name`` compris) : les deux ne
+    peuvent pas diverger — sinon le chip resterait à zéro pendant que le
+    dessin, lui, trouve une branche via le nom."""
+    wanted = quotes.canonical(symbol)
     if not wanted:
         raise HTTPException(status_code=400, detail="Symbole manquant.")
-    nodes = _build_graph(current_user.username, wanted)["nodes"]
+    built = _build_graph(current_user.username, wanted,
+                         name=str(name or "").strip() or None)
+    nodes = built["nodes"]
     # ``nodes`` = l'ancre + ses voisins (vide si le titre n'est pas une ancre).
     # Les nœuds de THÈME sont des intercalaires de mise en forme, pas des
     # connexions : les compter ferait grimper « N connexions en mémoire » sans
     # qu'une seule information de plus soit arrivée.
     real = [n for n in nodes if n.get("type") != graph.THEME_TYPE]
-    return {"count": max(0, len(real) - 1)}
+    out = {"count": max(0, len(real) - 1)}
+    if built.get("via_symbol"):
+        out["via_symbol"] = built["via_symbol"]
+    return out

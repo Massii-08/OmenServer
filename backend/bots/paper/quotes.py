@@ -94,6 +94,42 @@ TRADING_DAYS_PER_YEAR = 252
 MIN_VOL_POINTS = 20
 
 
+# --------------------------------------------------------------------------- #
+# Alias -> symbole CANONIQUE Yahoo
+#
+# Table CURÉE, volontairement courte : un ticker officiel (SIX, Euronext…) que
+# Massii tape naturellement mais que Yahoo ne connaît pas sous cette forme.
+# Vécu : ``ROG.SW`` (ticker officiel SIX de Roche) rend « No data found » côté
+# Yahoo, qui la cote sous ``RO.SW``. On ne DEVINE jamais une correspondance
+# (même doctrine que ``entities.py`` — piège #31) : chaque entrée est vérifiée
+# à la main avant d'entrer ici.
+# --------------------------------------------------------------------------- #
+SYMBOL_ALIASES: Dict[str, str] = {
+    "ROG.SW": "RO.SW",
+}
+
+
+def canonical(symbol: Any) -> str:
+    """Le symbole tel que Yahoo le connaît (PUR — aucun réseau).
+
+    Nettoie (espaces, casse) puis cherche l'entrée dans :data:`SYMBOL_ALIASES`
+    (recherche insensible à la casse) ; sans correspondance, rend le symbole
+    nettoyé tel quel — c'est le comportement qui existait déjà partout dans ce
+    fichier (``.strip().upper()``), désormais centralisé ICI pour que la
+    correspondance d'alias s'applique au même endroit.
+
+    Appelée aux POINTS D'ENTRÉE du router (ordre, watchlist, candles,
+    analyse…), jamais en profondeur dans ce module : une position ou une ligne
+    de watchlist doit être stockée sous le symbole CANONIQUE dès sa création,
+    sinon les consommateurs en aval (veille par symbole, backfill, bougies)
+    verraient deux identités pour le même titre.
+    """
+    cleaned = str(symbol or "").strip().upper()
+    if not cleaned:
+        return ""
+    return SYMBOL_ALIASES.get(cleaned, cleaned)
+
+
 class QuoteError(RuntimeError):
     """Cours indisponible (réseau, TLS, moteur absent, devise inconnue)."""
 

@@ -133,6 +133,7 @@ const PaperModule = {
     // liste sous un formulaire d'ordre.
     _ego: {},                  // symbole -> {nodes, edges}
     _egoLoading: {},           // symbole -> true pendant la lecture
+    _egoVia: {},               // symbole demandé -> symbole FRÈRE dont la branche a servi (ou null)
 
     _calendar: null,           // agenda : {entries:[{date, kind, label, …}]}
 
@@ -216,6 +217,24 @@ const PaperModule = {
         crypto: ['paper.kind_crypto', 'warn'],
         forex: ['paper.kind_fx', 'info'],
         etf: ['paper.kind_etf', 'muted'],
+    },
+
+    // Bourse Yahoo (``exchDisp``/``exchange``) -> libellé lisible dans le
+    // dropdown de recherche. Table FERMÉE + repli sur le CODE BRUT (jamais un
+    // libellé inventé) — même doctrine que ``_ASSET_KINDS``. Ce sont des NOMS
+    // PROPRES : ils restent identiques dans les 3 langues (décision UX), donc
+    // pas de clé ``Lang.t`` ici.
+    _EXCHANGE_LABELS: {
+        EBS: 'SIX (Suisse)',
+        PNK: 'OTC (US)',
+        OQX: 'OTC (US)',
+        NMS: 'NASDAQ',
+        NYQ: 'NYSE',
+        GER: 'Francfort',
+        FRA: 'Francfort',
+        LSE: 'Londres',
+        MIL: 'Milan',
+        PAR: 'Paris',
     },
 
     // --- Revue, journal, alertes : whitelists FERMÉES ------------------------
@@ -849,6 +868,16 @@ const PaperModule = {
         if (!Object.prototype.hasOwnProperty.call(this._ASSET_KINDS, k)) return '';
         const d = this._ASSET_KINDS[k];
         return '<span class="badge ' + d[1] + '">' + esc(Lang.t(d[0])) + '</span>';
+    },
+
+    // Code de bourse Yahoo -> libellé lisible (« EBS » -> « SIX (Suisse) »).
+    // Code hors table -> rendu TEL QUEL (jamais de libellé inventé) : c'est le
+    // même filet que ``_kindBadge``, juste sans le cas « rien à afficher ».
+    _exchangeLabel(code) {
+        const c = String(code == null ? '' : code).trim().toUpperCase();
+        if (!c) return '';
+        return Object.prototype.hasOwnProperty.call(this._EXCHANGE_LABELS, c)
+            ? this._EXCHANGE_LABELS[c] : c;
     },
 
     // La langue de l'interface pilote aussi le CONTENU rendu par le backend
@@ -1948,7 +1977,7 @@ const PaperModule = {
                         this._kindBadge(x.kind) +
                       '</div>' +
                       '<div style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
-                        esc(sym) + (x.exchange ? ' · ' + esc(String(x.exchange)) : '') +
+                        esc(sym) + (x.exchange ? ' · ' + esc(this._exchangeLabel(x.exchange)) : '') +
                         (x.currency ? ' · ' + esc(String(x.currency)) : '') + '</div>' +
                     '</div>' +
                     '<span class="badge">' + esc(Lang.t('paper.pick')) + '</span>' +
@@ -2143,8 +2172,10 @@ const PaperModule = {
         // Mémoire du coach sur ce titre : lecture seule, aucun appel LLM.
         this._loadSymIdeas(symbol);
         // Et ce que la TOILE en sait déjà : un simple compteur, silencieux
-        // tant qu'il vaut 0.
-        this._loadGraphCount(symbol);
+        // tant qu'il vaut 0. Le nom voyage avec — il permet au backend de
+        // retenter par SOCIÉTÉ si ce symbole exact (ex. un ADR US) n'a pas de
+        // branche alors qu'un frère (ex. la ligne SIX) en a une.
+        this._loadGraphCount(symbol, name);
         const d = await this._get('/api/paper/quotes?symbols=' + encodeURIComponent(symbol));
         const q = (d && typeof d === 'object') ? (d[symbol] || d[String(symbol).toUpperCase()] || null) : null;
         if (q && typeof q === 'object') this._quote = q;
@@ -6600,10 +6631,18 @@ const PaperModule = {
     // element a l'ecran. Un compteur a 0 est du bruit, et un encart vide
     // apprend a ignorer l'encart.
 
-    async _loadGraphCount(symbol) {
+    // ``name`` (optionnel) : le nom affiché du titre (ex. « Nestlé S.A. »),
+    // pour que le backend retente une résolution par SOCIÉTÉ quand le symbole
+    // exact n'a pas de branche (cf. ``/api/paper/graph`` — vécu sur NSRGY/
+    // NESN.SW). Sans lui, comportement inchangé. Le compteur DOIT suivre la
+    // même résolution que la lecture complète, sinon la règle 0-DOM cacherait
+    // la section avant même que ``_loadEgo`` ait eu la chance de la trouver.
+    async _loadGraphCount(symbol, name) {
         const sym = String(symbol || '');
         if (!sym) return;
-        const d = await this._get('/api/paper/graph/count?symbol=' + encodeURIComponent(sym));
+        let url = '/api/paper/graph/count?symbol=' + encodeURIComponent(sym);
+        if (name) url += '&name=' + encodeURIComponent(name);
+        const d = await this._get(url);
         const n = this._n(d && d.count);
         this._graphCounts[sym] = (n === null || n < 0) ? 0 : Math.floor(n);
         if (!this._graphCounts[sym]) return;      // rien a dire : on ne dessine rien
@@ -6612,7 +6651,7 @@ const PaperModule = {
         // Le compteur dit qu'il y a QUELQUE CHOSE : on va donc chercher QUOI.
         // Cet appel-la n'a lieu que dans ce cas — a zero connexion, aucune
         // requete, aucun encart, rien du tout (regle 0-DOM).
-        this._loadEgo(sym);
+        this._loadEgo(sym, name);
     },
 
     // =====================================================================
@@ -6624,14 +6663,18 @@ const PaperModule = {
     // savoir ce qui touche ce titre, range par famille de source, avec la date
     // et le lien. Le dessin reste a un clic (bouton « ouvrir la toile »).
 
-    async _loadEgo(symbol) {
+    async _loadEgo(symbol, name) {
         const sym = String(symbol || '');
         if (!sym) return;
         if (this._ego[sym] || this._egoLoading[sym]) return;   // lu une fois, garde
         this._egoLoading[sym] = true;
-        const d = await this._get('/api/paper/graph?symbol=' + encodeURIComponent(sym));
+        let url = '/api/paper/graph?symbol=' + encodeURIComponent(sym);
+        if (name) url += '&name=' + encodeURIComponent(name);
+        const d = await this._get(url);
         delete this._egoLoading[sym];
         this._ego[sym] = (d && typeof d === 'object') ? d : { nodes: [], edges: [] };
+        // Résolu via un symbole FRÈRE (même société) : la section le dira.
+        this._egoVia[sym] = (d && d.via_symbol) ? String(d.via_symbol) : null;
         if (this._tab === 'trade' || this._tab === 'portfolio') this._renderBody();
     },
 
@@ -6694,16 +6737,23 @@ const PaperModule = {
             return this._card(head + this._muted(Lang.t('paper.graph_loading')),
                 '', 'paper-ego');
         }
+        // Résolu via un symbole FRÈRE de la même société (ex. NSRGY -> NESN.SW) :
+        // ligne discrète pour dire QUEL symbole porte réellement ces connexions —
+        // sans elle, un lecteur croirait que la toile connaît NSRGY lui-même.
+        const via = this._egoVia[sym];
+        const viaLine = via ? '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">' +
+            esc(Lang.t('paper.ego_via').replace('{sym}', via)) + '</div>' : '';
         if (!rows.length) {
             // Le compteur annoncait quelque chose, la lecture ne rend rien
             // d'affichable : on le DIT plutot que de laisser une carte muette.
-            return this._card(head + this._muted(Lang.t('paper.ego_empty')), '', 'paper-ego');
+            return this._card(head + viaLine + this._muted(Lang.t('paper.ego_empty')),
+                '', 'paper-ego');
         }
         const body = this._egoSections(rows).map((sec) =>
             this._egoHead(sec) +
             sec.rows.map((n) => this._groveRow(n, sec.fam === 'radar' ? 'radar' : '')).join('')
         ).join('');
-        return this._card(head +
+        return this._card(head + viaLine +
             '<div class="row-list" style="max-height:420px;overflow-y:auto;">' + body + '</div>' +
             '<div class="paper-graph-note">' + esc(Lang.t('paper.ego_note')) + '</div>',
             '', 'paper-ego');
@@ -7415,7 +7465,11 @@ const PaperModule = {
             body = this._muted(Lang.t('paper.chart_loading'));
         } else if (st.error) {
             body = '<div style="color:var(--danger);font-size:14px;line-height:1.55;">' +
-                esc(Lang.t('paper.chart_error')) + '</div>';
+                esc(Lang.t('paper.chart_error')) +
+                '<div style="margin-top:6px;color:var(--text-dim);font-size:13px;">' +
+                    esc(Lang.t('paper.chart_error_hint')) +
+                '</div>' +
+            '</div>';
         } else if (!st.data || !Array.isArray(st.data.candles) || !st.data.candles.length) {
             body = this._muted(Lang.t('paper.chart_empty'));
         } else {
@@ -7430,6 +7484,12 @@ const PaperModule = {
         // deja un texte du coach.
         const decides = (ctxKey === 'trade' || String(ctxKey).indexOf('pos:') === 0);
         const memory = decides ? this._symIdeasHtml(symbol) : '';
+        // La RESERVATION de largeur (.with-memory) ne vaut que pour le PANNEAU
+        // ouvert (300px) — repliee en chip, la carte est un petit bouton, pas
+        // une carte flottante : reserver 312px laisserait un trou vide a cote
+        // des pastilles de periode.
+        const memoryOpen = decides && this._symIdeasCount(symbol) > 0
+            && !this._symIdeasClosed[String(symbol || '')];
         // Meme endroit, meme regle : le chip n'existe que si la toile a
         // VRAIMENT quelque chose sur ce titre (compteur a 0 => rien du tout).
         const chip = decides ? this._graphChip(symbol) : '';
@@ -7440,7 +7500,7 @@ const PaperModule = {
             // carte recouvrait les pastilles de periode et le bouton Actualiser
             // — vu a l'ecran, ils devenaient inclicables.
             memory +
-            '<div class="paper-chart-head' + (memory ? ' with-memory' : '') + '" ' +
+            '<div class="paper-chart-head' + (memoryOpen ? ' with-memory' : '') + '" ' +
                  'style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px;">' +
               '<span style="font-size:16px;font-weight:600;">' + esc(symbol) + '</span>' +
               (cur ? '<span style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
@@ -7471,16 +7531,50 @@ const PaperModule = {
         this._renderBody();
     },
 
+    // Fermer/rouvrir la carte ne re-rend JAMAIS le corps (contrairement à
+    // presque toute autre action de ce module) : elle vit au coin du bloc
+    // graphique, à côté du formulaire d'ordre — un _renderBody() y effacerait
+    // toute saisie non capturée (la Thèse en cours de frappe, notamment).
+    // Bascule DOM ciblée à la place (cf. _toggleSymIdeasVisibility), et l'état
+    // est quand même retenu (_symIdeasClosed) pour que le PROCHAIN vrai
+    // re-rendu (nouveau titre choisi, etc.) reste cohérent.
     closeSymIdeas(symbol) {
         const sym = String(symbol || '');
         if (!sym) return;
         this._symIdeasClosed[sym] = true;
-        this._renderBody();
+        this._toggleSymIdeasVisibility(true);
+    },
+
+    reopenSymIdeas(symbol) {
+        const sym = String(symbol || '');
+        if (!sym) return;
+        delete this._symIdeasClosed[sym];
+        this._toggleSymIdeasVisibility(false);
+    },
+
+    // Une seule carte de ce genre peut être à l'écran à la fois (Nouveau trade
+    // OU une position dépliée du Portefeuille, jamais les deux) : mêmes
+    // identifiants FIXES que ``paper-ego`` (cf. _egoCard), pas besoin de les
+    // qualifier par symbole.
+    _toggleSymIdeasVisibility(closed) {
+        const panel = document.getElementById('paper-symideas-panel');
+        const symChip = document.getElementById('paper-symideas-chip');
+        if (panel) panel.style.display = closed ? 'none' : '';
+        if (symChip) symChip.style.display = closed ? '' : 'none';
+        // Repliée en chip, la carte n'est plus une carte flottante de 300px :
+        // la ligne de titre du graphique n'a plus besoin de lui réserver de
+        // largeur (cf. .with-memory dans style.css).
+        const head = document.querySelector('.paper-chart-head');
+        if (head) head.classList.toggle('with-memory', !closed);
     },
 
     toggleSymText(key) {
         const k = String(key || '');
         if (!k) return;
+        // Ce bouton vit dans la même carte que la Thèse (Nouveau trade) : un
+        // re-rendu sans capture avalerait la saisie en cours (même piège que
+        // closeSymIdeas, cf. le contrat documenté sur _captureForm()).
+        if (this._tab === 'trade') this._captureForm();
         if (this._symTextOpen[k]) delete this._symTextOpen[k];
         else this._symTextOpen[k] = true;
         this._renderBody();
@@ -7526,18 +7620,87 @@ const PaperModule = {
                     : '') +
                 '</div>'
               : '') +
+            this._symAdviceHtml(sym, it, i) +
         '</div>';
     },
 
+    // Le CONSEIL complet du coach (stop, risque, invalidation, catalyseur) —
+    // pas seulement la thèse en une phrase. Deux sources, jamais les deux à
+    // la fois (même contrat que le backend, ``_add_advice``) : les champs
+    // STRUCTURÉS d'une idée récente (schéma JSON enrichi) en lignes
+    // compactes, ou — à défaut (idée journalisée avant cet enrichissement) —
+    // le paragraphe extrait par ``advice_from_text``, en texte clampé avec le
+    // même bouton Replier que la thèse. Rien des deux -> rien à l'écran (pas
+    // de cadre vide).
+    _symAdviceHtml(sym, it, i) {
+        if (!it || typeof it !== 'object') return '';
+        const title = '<div style="font-size:11px;letter-spacing:.04em;text-transform:uppercase;' +
+            'color:var(--text-dim);margin-top:8px;">' +
+            esc(Lang.t('paper.symideas_advice_title')) + '</div>';
+
+        const hasStructured = it.stop != null || it.risk_pct != null ||
+            it.invalidated_if != null || it.why_now != null;
+        if (hasStructured) {
+            const bits = [];
+            if (it.stop != null && String(it.stop).trim()) {
+                bits.push(esc(Lang.t('paper.symideas_advice_stop')) + ' ' + esc(String(it.stop)));
+            }
+            const riskPct = this._n(it.risk_pct);
+            if (riskPct !== null) {
+                bits.push(esc(Lang.t('paper.symideas_advice_risk')) + ' ' +
+                    esc(this._num(riskPct, 1)) + ' %');
+            }
+            if (it.invalidated_if != null && String(it.invalidated_if).trim()) {
+                bits.push(esc(Lang.t('paper.symideas_advice_invalidated')) + ' ' +
+                    esc(String(it.invalidated_if)));
+            }
+            const why = (it.why_now != null && String(it.why_now).trim())
+                ? '<div style="font-size:13px;line-height:1.5;margin-top:2px;">' +
+                      esc(String(it.why_now)) + '</div>'
+                : '';
+            const line = bits.length
+                ? '<div style="font-size:12px;line-height:1.5;margin-top:2px;">' +
+                      bits.join(' · ') + '</div>'
+                : '';
+            return (why || line) ? title + why + line : '';
+        }
+
+        const advice = String(it.advice || '').trim();
+        if (!advice) return '';
+        const key = 'adv|' + String(sym) + '|' + String(i);
+        const open = !!this._symTextOpen[key];
+        const short = (advice.length > 160) ? (advice.slice(0, 160) + '…') : advice;
+        return title +
+            '<div style="font-size:13px;line-height:1.5;margin-top:2px;">' +
+                esc(open ? advice : short) +
+                ((advice.length > 160)
+                    ? ' <button class="btn btn-ghost btn-sm" data-paper-act="sym-text" ' +
+                          'data-key="' + esc(key) + '" style="padding:0 5px;">' +
+                        esc(Lang.t(open ? 'paper.hide_text' : 'paper.show_text')) + '</button>'
+                    : '') +
+            '</div>';
+    },
+
+    _symIdeasCount(symbol) {
+        const d = this._symIdeas[String(symbol || '')];
+        return (d && Array.isArray(d.items)) ? d.items.length : 0;
+    },
+
+    // Panneau (300px, flottant) OU chip repliée (un petit bouton) — jamais les
+    // deux visibles à la fois. Les DEUX sont toujours dans le DOM dès qu'il y
+    // a quelque chose à dire : fermer/rouvrir bascule juste leur visibilité
+    // (cf. _toggleSymIdeasVisibility), sans jamais re-rendre le corps.
     _symIdeasHtml(symbol) {
         const sym = String(symbol || '');
-        if (!sym || this._symIdeasClosed[sym]) return '';
+        if (!sym) return '';
         const d = this._symIdeas[sym];
         const items = (d && Array.isArray(d.items)) ? d.items : [];
         // LA regle : rien a dire => rien du tout dans le DOM.
         if (!items.length) return '';
+        const closed = !!this._symIdeasClosed[sym];
         const head = Lang.t('paper.symideas_title') + ' ' + sym;
-        return '<div class="paper-symideas">' +
+        const panel = '<div class="paper-symideas" id="paper-symideas-panel"' +
+                (closed ? ' style="display:none;"' : '') + '>' +
             '<div style="display:flex;gap:8px;align-items:baseline;">' +
               '<span style="flex:1 1 auto;min-width:0;font-size:12px;letter-spacing:.06em;' +
                    'text-transform:uppercase;color:var(--text-dim);">' + esc(head) + '</span>' +
@@ -7552,6 +7715,19 @@ const PaperModule = {
                 esc(Lang.t('paper.symideas_all')) + '</button>' +
             '</div>' +
         '</div>';
+        // Repliée : le MÊME encart (``.paper-symideas`` — position, fond,
+        // bordure, repli mobile déjà tous corrects) réduit à un chip compact
+        // via des styles en ligne. Zéro classe CSS neuve.
+        const chipLabel = head + ' (' + this._num(items.length, 0) + ')';
+        const symChip = '<div class="paper-symideas" id="paper-symideas-chip" ' +
+                'data-paper-act="sym-reopen" data-sym="' + esc(sym) + '" ' +
+                'style="width:auto;max-width:calc(100% - 24px);max-height:none;' +
+                'padding:6px 10px;cursor:pointer;font-size:12px;color:var(--text-muted);' +
+                'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' +
+                (closed ? '' : 'display:none;') + '">' +
+            esc(chipLabel) +
+        '</div>';
+        return panel + symChip;
     },
 
     // Actualiser le graphique : on jette les bougies EN CACHE de ce titre
@@ -8562,6 +8738,7 @@ const PaperModule = {
         if (act === 'review-text') { this._reviewOpen = !this._reviewOpen; this._renderBody(); return; }
         if (act === 'alerts-mode') { this.setAlertsMode(el.getAttribute('data-mode')); return; }
         if (act === 'sym-close') { this.closeSymIdeas(el.getAttribute('data-sym')); return; }
+        if (act === 'sym-reopen') { this.reopenSymIdeas(el.getAttribute('data-sym')); return; }
         if (act === 'sym-text') { this.toggleSymText(el.getAttribute('data-key')); return; }
         if (act === 'sym-all') { this.switchTab('coach'); return; }
         if (act === 'fab-toggle') { this.toggleFab(); return; }

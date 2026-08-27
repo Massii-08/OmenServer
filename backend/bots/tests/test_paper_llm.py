@@ -335,6 +335,16 @@ def test_an_unknown_level_produces_the_measured_prompt():
         llm.build_ideas_prompt({}, risk_level="mesure")
 
 
+def test_the_ideas_json_schema_asks_for_the_structured_advice_fields():
+    """Le conseil complet (stop, risque conseillé, invalidation, catalyseur)
+    doit atterrir dans le JSON STRUCTURÉ, pas seulement dans le texte libre —
+    sinon la pop-up « le coach sur <symbole> » ne peut jamais l'afficher
+    proprement (elle devrait ré-extraire un paragraphe à chaque fois)."""
+    prompt = llm.build_ideas_prompt({}, risk_level="mesure")
+    for field in ('"stop"', '"risk_pct"', '"invalidated_if"', '"why_now"'):
+        assert field in prompt
+
+
 def test_the_default_ideas_prompt_is_the_measured_one():
     """Rétro-compatibilité : l'appel d'avant la fonctionnalité rend exactement
     le prompt de l'étage mesuré."""

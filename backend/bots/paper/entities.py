@@ -103,7 +103,11 @@ _COMPANIES: Tuple[Tuple[str, str], ...] = (
     # pas manquer d'une table qui sert d'abord SON portefeuille.
     ("nestle", "NESN.SW"), ("nestlé", "NESN.SW"),
     ("novartis", "NOVN.SW"),
-    ("roche", "ROG.SW"),
+    # Yahoo cote Roche sous ``RO.SW`` — ``ROG.SW`` (ticker officiel SIX) n'y
+    # existe pas (cf. ``quotes.SYMBOL_ALIASES``, vécu). Même émetteur, même
+    # cohérence : un événement « Roche » ne doit pas pointer vers un symbole
+    # que le reste du simulateur ne connaît pas.
+    ("roche", "RO.SW"),
     ("ubs", "UBSG.SW"),
     ("lvmh", "MC.PA"),
     # Semis et pharma : la matière la plus fréquente des annonces politiques

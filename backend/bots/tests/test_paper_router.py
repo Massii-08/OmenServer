@@ -71,6 +71,7 @@ class Market(object):
         self.meta_broken = set()      # métadonnées en panne, bougies OK
         self.candle_calls = []
         self.results = []
+        self.search_calls = []
         self.facts = {"symbol": "NESN.SW", "price": 100.0, "trend": "haussier"}
 
     # --- API consommée par le router -----------------------------------
@@ -104,6 +105,7 @@ class Market(object):
         return {"symbol": symbol, "currency": currency}
 
     def search(self, q):
+        self.search_calls.append(q)
         return list(self.results)
 
     def fiche_facts(self, symbol):
@@ -1013,8 +1015,54 @@ def test_ideas_respects_the_radar_max_open_queue(tmp_path, monkeypatch):
     assert body["ideas"] == [{"ticker": "AAPL", "direction": "up",
                              "horizon_days": 10, "thesis": "Momentum",
                              "risk_level": "mesure", "asset_kind": "equity",
+                             "stop": None, "risk_pct": None,
+                             "invalidated_if": None, "why_now": None,
                              "tracked": False}]
     assert len(radar.load_state()["hypotheses"]) == radar.MAX_OPEN
+
+
+# ----------------------------------------------------------------
+#  Conseil structuré (stop / risk_pct / invalidated_if / why_now)
+# ----------------------------------------------------------------
+
+def test_parse_ideas_json_carries_the_structured_advice_fields():
+    text = _ideas_json({"ticker": "AAPL", "direction": "up", "horizon_days": 10,
+                        "thesis": "Momentum", "stop": "195 ou -5 %",
+                        "risk_pct": 1.2, "invalidated_if": "clôture sous 195",
+                        "why_now": "résultats trimestriels demain"})
+    idea = pr._parse_ideas_json(text)[0]
+    assert idea["stop"] == "195 ou -5 %"
+    assert idea["risk_pct"] == 1.2
+    assert idea["invalidated_if"] == "clôture sous 195"
+    assert idea["why_now"] == "résultats trimestriels demain"
+
+
+def test_parse_ideas_json_defaults_the_advice_fields_to_none_when_absent():
+    """Rétro-compat : une réponse d'AVANT l'enrichissement du schéma (ou un
+    modèle qui oublie les champs) ne doit pas faire tomber le parseur."""
+    text = _ideas_json({"ticker": "AAPL", "direction": "up", "horizon_days": 10,
+                        "thesis": "Momentum"})
+    idea = pr._parse_ideas_json(text)[0]
+    assert idea["stop"] is None
+    assert idea["risk_pct"] is None
+    assert idea["invalidated_if"] is None
+    assert idea["why_now"] is None
+
+
+def test_parse_ideas_json_tolerates_a_non_numeric_risk_pct():
+    text = _ideas_json({"ticker": "AAPL", "direction": "up", "horizon_days": 10,
+                        "thesis": "Momentum", "risk_pct": "environ 1 %"})
+    assert pr._parse_ideas_json(text)[0]["risk_pct"] is None
+
+
+def test_parse_ideas_json_treats_blank_advice_strings_as_absent():
+    text = _ideas_json({"ticker": "AAPL", "direction": "up", "horizon_days": 10,
+                        "thesis": "Momentum", "stop": "   ",
+                        "invalidated_if": "", "why_now": None})
+    idea = pr._parse_ideas_json(text)[0]
+    assert idea["stop"] is None
+    assert idea["invalidated_if"] is None
+    assert idea["why_now"] is None
 
 
 def test_ideas_without_a_json_block_still_returns_the_text(tmp_path, monkeypatch):
@@ -1244,6 +1292,94 @@ def test_coach_ask_context_includes_the_watchlist(tmp_path, monkeypatch):
     monkeypatch.setattr(pr.llm, "ask_coach", fake_ask)
     c.post("/api/paper/coach/ask?sync=1", json={"question": "?"})
     assert seen["context"]["watchlist"][0]["symbol"] == "TSLA"
+
+
+# ================================================================
+#  ALIAS DE SYMBOLE (ROG.SW n'existe pas chez Yahoo, RO.SW oui)
+#
+# ``quotes.canonical`` est appliqué à l'ENTRÉE de chaque endpoint qui reçoit un
+# symbole brut de l'utilisateur : la position/ligne de suivi est stockée sous
+# le symbole CANONIQUE, jamais sous l'alias tapé.
+# ================================================================
+
+def test_order_with_a_known_alias_stores_the_canonical_symbol(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["RO.SW"] = (280.0, "CHF", "Roche Holding AG")
+    body = buy(c, symbol="ROG.SW",
+              thesis="Thèse suffisamment longue pour passer le seuil")
+    assert body["order"]["symbol"] == "RO.SW"
+    positions = portfolio_of(c)["portfolio"]["positions"]
+    assert positions[0]["symbol"] == "RO.SW"
+
+
+def test_candles_redirects_a_known_alias_to_its_canonical_symbol(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.candles["RO.SW"] = [{"ts": _ts(9), "close": 280.0}]
+    body = c.get("/api/paper/candles?symbol=rog.sw").json()
+    assert body["symbol"] == "RO.SW"
+    assert market.candle_calls == [("RO.SW", "6mo", "1d")]
+
+
+def test_analysis_redirects_a_known_alias_to_its_canonical_symbol(tmp_path, monkeypatch):
+    """``market.fiche_facts`` 404 sur tout ce qui n'est pas dans ``prices`` :
+    un 200 ici prouve que ``quotes.fiche_facts`` a bien été appelé avec
+    ``RO.SW``, pas avec l'alias tapé."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["RO.SW"] = (280.0, "CHF", "Roche Holding AG")
+    body = c.post("/api/paper/analysis?sync=1", json={"symbol": "ROG.SW"}).json()
+    assert body["facts"]["trend"] == "haussier"
+
+
+def test_watchlist_add_with_a_known_alias_stores_the_canonical_symbol(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["RO.SW"] = (280.0, "CHF", "Roche Holding AG")
+    body = c.post("/api/paper/watchlist", json={"symbol": "ROG.SW"}).json()
+    assert body["symbols"] == [{"symbol": "RO.SW", "name": "Roche Holding AG",
+                                "currency": "CHF", "added_at": FIXED_NOW}]
+
+
+def test_watchlist_remove_accepts_the_alias_of_a_canonical_entry(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["RO.SW"] = (280.0, "CHF", "Roche Holding AG")
+    c.post("/api/paper/watchlist", json={"symbol": "ROG.SW"})
+    removed = c.delete("/api/paper/watchlist/rog.sw")
+    assert removed.status_code == 200
+    assert removed.json()["symbols"] == []
+
+
+def test_close_position_accepts_the_alias_of_a_canonical_position(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["RO.SW"] = (280.0, "CHF", "Roche Holding AG")
+    buy(c, symbol="ROG.SW", thesis="Thèse suffisamment longue pour passer le seuil")
+    response = c.post("/api/paper/positions/rog.sw/close", json={})
+    assert response.status_code == 200, response.text
+    assert portfolio_of(c)["portfolio"]["positions"] == []
+
+
+def test_quotes_endpoint_redirects_a_known_alias(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["RO.SW"] = (280.0, "CHF", "Roche Holding AG")
+    body = c.get("/api/paper/quotes?symbols=ROG.SW").json()
+    assert "RO.SW" in body and body["RO.SW"]["price"] == 280.0
+    assert "ROG.SW" not in body
+
+
+def test_search_redirects_a_known_alias_to_its_canonical_symbol(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.results = [{"symbol": "RO.SW", "name": "Roche Holding AG",
+                       "exchange": "Swiss", "currency": "CHF"}]
+    body = c.get("/api/paper/search?q=ROG.SW").json()
+    assert market.search_calls == ["RO.SW"]
+    assert body == market.results
+
+
+def test_search_without_an_alias_match_is_unchanged(tmp_path, monkeypatch):
+    """Yahoo rend 0 résultat et aucun alias ne matche -> requête inchangée
+    (recherche par NOM, ex. « nestle », qui n'est pas un symbole)."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.results = []
+    c.get("/api/paper/search?q=nestle")
+    assert market.search_calls == ["nestle"]
 
 
 # ================================================================
@@ -2022,6 +2158,13 @@ def test_pipeline_add_reads_the_name_from_the_quote(tmp_path, monkeypatch):
     assert len(body["pipeline"]) == 1
 
 
+def test_pipeline_add_with_a_known_alias_stores_the_canonical_symbol(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["RO.SW"] = (280.0, "CHF", "Roche Holding AG")
+    body = add_item(c, symbol="ROG.SW").json()
+    assert body["item"]["symbol"] == "RO.SW"
+
+
 def test_pipeline_add_is_idempotent_on_an_active_symbol(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     add_item(c)
@@ -2494,6 +2637,49 @@ def test_ideas_for_symbol_includes_review_verdicts(tmp_path, monkeypatch):
                       "reason": "stop proche"}]
 
 
+def test_ideas_for_symbol_journal_row_carries_the_structured_advice(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.idea_journal.append_entry(
+        "tester", "ideas", "texte quelconque",
+        ideas=[{"ticker": "AAPL", "direction": "up", "tracked": True,
+                "stop": "195 ou -5 %", "risk_pct": 1.2,
+                "invalidated_if": "clôture sous 195",
+                "why_now": "résultats demain"}],
+        now_iso=FIXED_NOW)
+    row = c.get("/api/paper/ideas/for-symbol?symbol=AAPL").json()["items"][0]
+    assert row["stop"] == "195 ou -5 %"
+    assert row["risk_pct"] == 1.2
+    assert row["invalidated_if"] == "clôture sous 195"
+    assert row["why_now"] == "résultats demain"
+    assert "advice" not in row          # les champs structurés suffisent
+
+
+def test_ideas_for_symbol_journal_row_falls_back_to_extracted_advice(tmp_path, monkeypatch):
+    """Idée journalisée AVANT l'enrichissement du schéma (pas de champs
+    structurés) : le conseil complet vit dans le texte, on va le chercher."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    text = ("MSFT — cloud toujours solide.\n\n"
+            "AAPL — hausse probable, stop sous 190, invalidée si -5 %.")
+    pr.idea_journal.append_entry(
+        "tester", "ideas", text,
+        ideas=[{"ticker": "AAPL", "direction": "up", "tracked": True}],
+        now_iso=FIXED_NOW)
+    row = c.get("/api/paper/ideas/for-symbol?symbol=AAPL").json()["items"][0]
+    assert row["advice"] == "AAPL — hausse probable, stop sous 190, invalidée si -5 %."
+    assert "stop" not in row
+
+
+def test_ideas_for_symbol_journal_row_has_no_advice_when_nothing_to_show(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.idea_journal.append_entry(
+        "tester", "ideas", "texte muet sur ce titre",
+        ideas=[{"ticker": "AAPL", "direction": "up", "tracked": True}],
+        now_iso=FIXED_NOW)
+    row = c.get("/api/paper/ideas/for-symbol?symbol=AAPL").json()["items"][0]
+    assert "advice" not in row
+    assert "stop" not in row
+
+
 def test_ideas_for_symbol_is_case_insensitive(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     pr.idea_journal.append_entry(
@@ -2842,9 +3028,13 @@ def graph_stubs(monkeypatch, events=None, hypotheses=None, moves=None,
                                            recent_filing_events=lambda: []))
 
 
-def graph_of(client, symbol=None):
-    url = "/api/paper/graph" + ("?symbol=%s" % symbol if symbol else "")
-    response = client.get(url)
+def graph_of(client, symbol=None, name=None):
+    params = {}
+    if symbol:
+        params["symbol"] = symbol
+    if name:
+        params["name"] = name
+    response = client.get("/api/paper/graph", params=params)
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -2965,6 +3155,54 @@ def test_graph_branch_of_an_unknown_symbol_is_empty_and_still_200(tmp_path,
                                    "generated_at": FIXED_NOW}
 
 
+# ----------------------------------------------------------------
+#  Résolution par SOCIÉTÉ (``name``) — NSRGY (ADR US) vs NESN.SW (SIX)
+#
+#  PAS un alias de prix (cf. quotes.SYMBOL_ALIASES) : deux instruments réels,
+#  deux devises. La résolution ne concerne QUE la toile, et seulement quand la
+#  branche EXACTE est vide.
+# ----------------------------------------------------------------
+
+def test_graph_resolves_via_company_name_when_the_exact_symbol_has_no_branch(
+        tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch)
+    store.save_watchlist("tester", [{"symbol": "NESN.SW", "name": "Nestlé S.A."}])
+
+    body = graph_of(c, "NSRGY", name="Nestlé S.A.")
+    assert body["via_symbol"] == "NESN.SW"
+    assert [node["id"] for node in body["nodes"]] == ["NESN.SW"]
+
+
+def test_graph_exact_symbol_stays_priority_even_with_a_name_hint(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch)
+    store.save_watchlist("tester", [{"symbol": "NSRGY", "name": "Nestle ADR"},
+                                    {"symbol": "NESN.SW", "name": "Nestlé S.A."}])
+
+    body = graph_of(c, "NSRGY", name="Nestlé S.A.")
+    assert "via_symbol" not in body
+    assert [node["id"] for node in body["nodes"]] == ["NSRGY"]
+
+
+def test_graph_name_without_a_mapped_company_stays_empty(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch)
+    assert graph_of(c, "ZZZZ", name="Une société totalement inconnue") == \
+        {"nodes": [], "edges": [], "truncated": False, "generated_at": FIXED_NOW}
+
+
+def test_graph_company_resolution_prefers_the_users_own_anchor_name(tmp_path, monkeypatch):
+    """``entities.anchor_index`` prime sur la table livrée : si Massii suit
+    « Roche » sous un symbole qui lui est propre, c'est CELUI-LÀ qui doit
+    sortir, pas celui de la table statique (RO.SW)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch)
+    store.save_watchlist("tester", [{"symbol": "RHHBY", "name": "Roche"}])
+    body = graph_of(c, "ZZZZ", name="Roche")
+    assert body["via_symbol"] == "RHHBY"
+
+
 def test_graph_count_gives_the_number_of_direct_neighbours(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     graph_stubs(
@@ -2980,6 +3218,20 @@ def test_graph_count_gives_the_number_of_direct_neighbours(tmp_path, monkeypatch
     assert c.get("/api/paper/graph/count?symbol=NESN.SW").json() == {"count": 3}
     assert c.get("/api/paper/graph/count?symbol=nesn.sw").json() == {"count": 3}
     assert c.get("/api/paper/graph/count?symbol=ZZZZ").json() == {"count": 0}
+
+
+def test_graph_count_resolves_via_company_name_too(tmp_path, monkeypatch):
+    """Même logique que ``/graph`` : le compteur/chip ne doit pas rester à
+    zéro pendant que le dessin, lui, trouve une branche via le nom."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch, events=[
+        {"ts": FIXED_NOW, "symbol": "NESN.SW", "title": "Résultats",
+         "link": "http://n/1", "sentiment": "pos"}])
+    store.save_watchlist("tester", [{"symbol": "NESN.SW", "name": "Nestlé S.A."}])
+
+    body = c.get("/api/paper/graph/count",
+                 params={"symbol": "NSRGY", "name": "Nestlé S.A."}).json()
+    assert body == {"count": 1, "via_symbol": "NESN.SW"}
 
 
 def test_graph_count_without_a_symbol_is_a_400(tmp_path, monkeypatch):

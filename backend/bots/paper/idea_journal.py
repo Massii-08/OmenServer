@@ -22,6 +22,7 @@ utilisateurs fantômes de la communauté.
 """
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -40,6 +41,12 @@ MAX_ENTRIES = 50
 SUMMARY_LIMIT = 8
 
 JOURNAL_SUFFIX = ".ideas.json"
+
+# ``advice_from_text`` : longueur max du paragraphe rendu (un conseil, pas un
+# roman) et longueur minimale de la BASE d'un ticker composé pour être essayée
+# seule (``A.SW`` -> ``A`` est trop court, faux positif quasi garanti).
+ADVICE_CLAMP_LEN = 600
+ADVICE_MIN_BASE_LEN = 3
 
 
 def _store():
@@ -134,6 +141,66 @@ def append_entry(username: str, kind: str = DEFAULT_KIND,
 # --------------------------------------------------------------------------- #
 # PUR — le résumé injecté dans le prompt
 # --------------------------------------------------------------------------- #
+
+def _word_pattern(needle: str) -> "re.Pattern":
+    """Reconnaît ``needle`` en MOT ENTIER, insensible à la casse — même garde
+    que ``entities._word_pattern`` (piège #31 : jamais de sous-chaîne, ``GM``
+    ne doit pas matcher dans ``GMO``)."""
+    return re.compile(r"(?<!\w)" + re.escape(needle) + r"(?!\w)", re.IGNORECASE)
+
+
+def _advice_needles(ticker: str) -> List[str]:
+    """Les formes à chercher pour CE ticker : lui-même, et sa BASE avant le
+    premier ``.``/``-`` quand elle fait au moins :data:`ADVICE_MIN_BASE_LEN`
+    caractères (``BTC-USD`` -> aussi ``BTC`` : un paragraphe qui dit
+    « Bitcoin (BTC) » sans jamais écrire ``BTC-USD`` doit matcher)."""
+    needles = [ticker]
+    base = re.split(r"[.\-]", ticker, maxsplit=1)[0]
+    if base and base != ticker and len(base) >= ADVICE_MIN_BASE_LEN:
+        needles.append(base)
+    return needles
+
+
+def _clamp_advice(text: str, limit: int = ADVICE_CLAMP_LEN) -> str:
+    """Tronque sur un MOT entier, jamais en plein milieu — ``…`` en bout."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rstrip()
+    space = cut.rfind(" ")
+    if space > 0:
+        cut = cut[:space]
+    return cut.rstrip() + "…"
+
+
+def advice_from_text(text: Any, ticker: Any) -> Optional[str]:
+    """Le paragraphe d'``text`` qui parle de CE ticker (PUR).
+
+    Repli pour les idées journalisées AVANT l'enrichissement du schéma JSON du
+    coach (``stop``/``risk_pct``/``invalidated_if``/``why_now``) : le conseil
+    complet existe déjà dans ``entry["text"]``, seulement pas découpé par
+    titre. Le texte est coupé en PARAGRAPHES (lignes vides) — c'est la
+    structure que le prompt impose (« un paragraphe court et dense par
+    idée ») — et on rend le premier qui mentionne le ticker en MOT ENTIER,
+    jamais en sous-chaîne (même doctrine que ``entities.py``, piège #31).
+
+    ``None`` si le texte ou le ticker est vide, ou si aucun paragraphe ne le
+    mentionne — jamais une chaîne vide qui se lirait comme un vrai conseil.
+    """
+    body = _text(text)
+    tick = _text(ticker).upper()
+    if not body or not tick:
+        return None
+
+    patterns = [_word_pattern(n) for n in _advice_needles(tick)]
+    for paragraph in re.split(r"\n\s*\n", body):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        if any(pattern.search(paragraph) for pattern in patterns):
+            return _clamp_advice(paragraph)
+    return None
+
 
 def outcome_index(hypotheses: Any) -> Dict[str, str]:
     """``{"TICKER|AAAA-MM-JJ": "hit"|"miss"|…}`` depuis l'état du radar (PUR).

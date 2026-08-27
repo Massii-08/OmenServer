@@ -547,9 +547,16 @@ def build_ideas_prompt(context: Optional[Dict[str, Any]], lang: str = "fr",
         "Massii qui choisit son étage, pas toi.",
         "Termine IMPÉRATIVEMENT ta réponse par ce bloc, et rien après "
         "(``risk_level`` vaut exactement \"%s\" pour TOUTES les idées de cette "
-        "série ; ``asset_kind`` vaut l'un de : %s) : "
+        "série ; ``asset_kind`` vaut l'un de : %s ; ``stop``/``risk_pct``/"
+        "``invalidated_if``/``why_now`` reprennent EXACTEMENT ce que tu viens "
+        "de détailler dans le texte ci-dessus pour cette idée — même stop, "
+        "même risque, même condition, même catalyseur, pas une reformulation "
+        "approximative) : "
         '```json\n{"ideas": [{"ticker": "AAPL", "direction": "up", '
         '"horizon_days": 10, "thesis": "une phrase courte", '
+        '"stop": "niveau de prix ou %% (chaîne courte)", '
+        '"risk_pct": 1.0, "invalidated_if": "condition courte", '
+        '"why_now": "catalyseur en une phrase", '
         '"risk_level": "%s", "asset_kind": "%s"}]}\n```'
         % (level, kinds_text, level, kinds[0]),
     ])

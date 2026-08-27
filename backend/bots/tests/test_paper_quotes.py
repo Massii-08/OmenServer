@@ -376,6 +376,46 @@ def test_search_network_failure_raises_quote_error(monkeypatch):
 
 
 # ================================================================
+#  alias -> symbole canonique (ROG.SW n'existe pas chez Yahoo, RO.SW oui)
+# ================================================================
+
+def test_canonical_resolves_the_known_alias():
+    assert quotes.canonical("ROG.SW") == "RO.SW"
+
+
+def test_canonical_alias_lookup_is_case_insensitive():
+    assert quotes.canonical("rog.sw") == "RO.SW"
+
+
+def test_canonical_strips_surrounding_whitespace_before_lookup():
+    assert quotes.canonical("  rog.sw  ") == "RO.SW"
+
+
+def test_canonical_non_alias_symbol_is_just_cleaned_up():
+    assert quotes.canonical("aapl") == "AAPL"
+    assert quotes.canonical("  nesn.sw ") == "NESN.SW"
+
+
+def test_canonical_empty_or_none_yields_empty_string():
+    assert quotes.canonical("") == ""
+    assert quotes.canonical(None) == ""
+    assert quotes.canonical("   ") == ""
+
+
+def test_canonical_does_no_network_call(monkeypatch):
+    """Pure : aucune dépendance à ``_fetch_json`` ni à un client chart."""
+    monkeypatch.setattr(quotes, "_fetch_json",
+                        lambda url: (_ for _ in ()).throw(AssertionError("réseau")))
+    assert quotes.canonical("ROG.SW") == "RO.SW"
+
+
+def test_symbol_aliases_table_is_curated_to_roche_only():
+    """Verrou anti-dérive : la table ne s'enrichit pas en douce — un seul alias
+    curé, celui vécu (ticker officiel SIX vs ticker Yahoo)."""
+    assert quotes.SYMBOL_ALIASES == {"ROG.SW": "RO.SW"}
+
+
+# ================================================================
 #  fiche d'analyse
 # ================================================================
 
