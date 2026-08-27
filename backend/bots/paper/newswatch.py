@@ -3866,7 +3866,8 @@ def run_once(now: Optional[datetime] = None,
             bsky_fetch: Optional[Callable[[str], Any]] = None,
             bsky_parse: Optional[Callable[[Any], List[Dict[str, Any]]]] = None,
             converge: Optional[Callable[..., Any]] = None,
-            judge: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
+            judge: Optional[Callable[..., Any]] = None,
+            translate: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
     """Un cycle de veille news, DIX volets :
 
     1. **politique GLOBAL** (toujours, même sans portefeuille) ;
@@ -3900,6 +3901,14 @@ def run_once(now: Optional[datetime] = None,
     sont là, il s'active tout de suite, pas au prochain réveil planifié ». Le
     coût reste nul en régime normal : ``convergence.should_fire`` sort avant
     tout appel au modèle tant que les facteurs ne s'alignent pas.
+
+    **Traduction des titres étrangers** (27/08) : EN TOUT DERNIER, un sweep
+    best-effort (``paper.translate``) traduit vers le français les titres
+    ALLEMANDS accumulés dans les dépêches politiques GLOBALES (c'est là que
+    la presse mondiale du volet 6 écrit — NZZ/cash.ch/Handelsblatt). Coût nul
+    en régime normal : le sweep gate lui-même sur l'heure (son propre cache
+    disque, pas un compteur de cycle ici — cf. tête de ``translate.py``), et
+    n'appelle le modèle qu'une fois par heure au plus, jamais par titre.
 
     Sans config Telegram -> ne fait RIEN du tout (ni disque ni réseau, feature
     opt-in silencieuse) : c'est vérifié EN PREMIER, avant tout accès à data/.
@@ -4397,7 +4406,59 @@ def run_once(now: Optional[datetime] = None,
     counters["convergence_fired"] = _fire_convergence(
         now_dt, tg_cfg=tg_cfg, notifier=notifier, converge=converge,
         counters=counters)
+
+    # ----------------------------------------------------------------- #
+    # Volet transverse -- traduction des titres ALLEMANDS accumulés par la
+    # presse mondiale (NZZ/cash.ch/Handelsblatt, cf. _run_pressefi_volet),
+    # EN TOUT DERNIER : après la convergence, comme la doc de tête le dit.
+    # ``gov_events`` (déjà en mémoire depuis le volet 1, jamais relu depuis le
+    # disque) est la SEULE source de titres allemands -- la presse mondiale
+    # écrit dans l'état politique GLOBAL, jamais dans un état par utilisateur.
+    # N'affecte AUCUN volet ci-dessus : le sweep n'écrit que son propre cache
+    # de traduction, jamais gov_state.
+    # ----------------------------------------------------------------- #
+    _run_translate_sweep(now_dt, gov_events, counters, translate=translate)
+
     return counters
+
+
+def _run_translate_sweep(now_dt: datetime,
+                         events: List[Dict[str, Any]],
+                         counters: Optional[Dict[str, Any]] = None,
+                         translate: Optional[Callable[..., Any]] = None
+                         ) -> Dict[str, Any]:
+    """Traduit les titres de presse allemande accumulés dans ``events`` --
+    best-effort STRICT, même patron que ``_run_calendar_verdicts`` : un
+    module de confort qui plante ne doit JAMAIS emporter le cycle de veille
+    qui l'appelle.
+
+    Ne touche à AUCUN état de veille : la sortie ne sert qu'à peupler le
+    cache disque de traduction (``paper/translate.py``), relu par le SERVICE
+    au moment de servir ``/graph``/``/graph/grove``/``/digest`` -- jamais
+    ici. Une panne de ce volet ne fait donc perdre AUCUNE matière déjà
+    collectée par les volets précédents.
+
+    ⚠️ Le gating horaire (« pas plus d'un sweep par heure ») vit DANS le
+    cache de traduction lui-même (``last_sweep_ts``), PAS dans un compteur de
+    cycle ajouté à ``_load_seen_state`` -- ce serait retomber dans son piège
+    allowlist documenté en tête de fichier (une clé de cadence oubliée à la
+    relecture y est silencieusement perdue). C'est pourquoi cet appel est
+    SANS CONDITION à chaque cycle : c'est ``run_sweep`` qui décide, seul, de
+    ne rien faire.
+    """
+    try:
+        if translate is not None:
+            result = translate(now=now_dt, events=events)
+        else:
+            from backend.bots.paper import translate as translate_mod
+            result = translate_mod.run_sweep(now=now_dt, events=events)
+    except Exception as exc:      # noqa: BLE001 -- jamais fatal pour le cycle
+        logger.warning("paper newswatch: traduction en panne (%s)",
+                       type(exc).__name__)
+        if counters is not None:
+            counters["errors"] = int(counters.get("errors") or 0) + 1
+        return {}
+    return result if isinstance(result, dict) else {}
 
 
 def _run_calendar_verdicts(now_dt: datetime,

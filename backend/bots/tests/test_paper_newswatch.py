@@ -4432,3 +4432,98 @@ def test_les_verdicts_sont_rendus_AVANT_la_convergence():
 
     _run(_FetchQueue(), _NotifySpy(), judge=spy_judge, converge=spy_converge)
     assert order == ["judge", "converge"]
+
+
+# =========================================================================== #
+#  TRADUCTION DES TITRES ÉTRANGERS (27/08) — le cycle balaie les titres
+#  allemands accumulés par la presse mondiale, EN TOUT DERNIER
+#
+#  « L'utilisateur (français) ne peut pas lire les titres ALLEMANDS qui
+#  s'affichent dans les listes de la toile/connexions. »
+# =========================================================================== #
+
+class _Translate(object):
+    """Faux sweep de traduction : compte ses passages, rend ce qu'on lui dit."""
+
+    def __init__(self, result=None, boom=False):
+        self.calls = []
+        self.result = dict(result or {"translated": 0})
+        self.boom = boom
+
+    def __call__(self, now=None, events=None):
+        self.calls.append({"now": now, "events": list(events or [])})
+        if self.boom:
+            raise RuntimeError("CLI Claude indisponible")
+        return dict(self.result)
+
+
+def test_le_cycle_appelle_le_sweep_de_traduction_une_fois_par_cycle():
+    tr = _Translate()
+    _run(_FetchQueue(), _NotifySpy(), translate=tr)
+    assert len(tr.calls) == 1
+    assert tr.calls[0]["now"] == NOW
+    assert isinstance(tr.calls[0]["events"], list)
+
+
+def test_le_sweep_de_traduction_recoit_les_depeches_politiques_globales():
+    """La presse mondiale (source des titres allemands) écrit dans l'état
+    politique GLOBAL, jamais par utilisateur (cf. ``_run_pressefi_volet``) --
+    c'est donc CETTE liste que le sweep doit recevoir, et non un état vide
+    reconstruit à côté.
+
+    Deux cycles : le premier SEED le volet gov (anti-tempête au déploiement,
+    cf. ``gov_is_first_pass``) -- une annonce du tout premier cycle n'entre
+    jamais dans ``gov_events``, quel que soit son titre."""
+    _run(_FetchQueue(), _NotifySpy())
+    fetch = _FetchQueue()
+    fetch.prime_gov(_rss([("New tariffs announced on steel imports",
+                          "http://g/1", NOW)]))
+    tr = _Translate()
+    # ``prime_gov=False`` : la file a déjà été amorcée à la main ci-dessus --
+    # laisser ``_run`` la primer une SECONDE fois repousserait notre item
+    # derrière deux réponses vides (piège vécu en écrivant ce test).
+    _run(fetch, _NotifySpy(), translate=tr, prime_gov=False)
+    titles = [e.get("title") for e in tr.calls[0]["events"]]
+    assert "New tariffs announced on steel imports" in titles
+
+
+def test_un_sweep_de_traduction_en_panne_ne_fait_JAMAIS_perdre_un_cycle():
+    """Best-effort STRICT, même patron que la convergence et le calendrier :
+    l'échec est compté et logué, jamais propagé."""
+    tr = _Translate(boom=True)
+    counters = _run(_FetchQueue(), _NotifySpy(), translate=tr)
+    assert counters["errors"] >= 1
+    assert len(tr.calls) == 1
+
+
+def test_le_sweep_de_traduction_tourne_APRES_la_convergence():
+    order = []
+
+    def spy_converge(**kwargs):
+        order.append("converge")
+        return {"fired": False, "sent": False}
+
+    def spy_translate(now=None, events=None):
+        order.append("translate")
+        return {"translated": 0}
+
+    _run(_FetchQueue(), _NotifySpy(), converge=spy_converge,
+        translate=spy_translate)
+    assert order == ["converge", "translate"]
+
+
+def test_sans_translate_injecte_le_cycle_appelle_le_vrai_module(monkeypatch):
+    """Câblage par défaut : le VRAI ``translate.run_sweep`` -- vérifié en le
+    substituant, jamais en laissant tourner le vrai CLI Claude (la presse
+    mondiale est éteinte par ``_no_side_channels`` dans cette suite, donc
+    zéro candidat allemand de toute façon -- ce test vérifie le CÂBLAGE, pas
+    le contenu du sweep, qui a ses propres tests dans
+    ``test_paper_translate.py``)."""
+    from backend.bots.paper import translate as translate_mod
+    calls = []
+    monkeypatch.setattr(translate_mod, "run_sweep",
+                        lambda **kw: calls.append(kw) or {"translated": 0})
+    _run(_FetchQueue(), _NotifySpy())
+    assert len(calls) == 1
+    assert calls[0]["now"] == NOW
+    assert isinstance(calls[0]["events"], list)

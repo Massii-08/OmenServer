@@ -1553,6 +1553,32 @@ def test_news_endpoint_without_the_module(tmp_path, monkeypatch):
     assert response.json() == {"events": []}
 
 
+def test_news_endpoint_carries_cached_translations(tmp_path, monkeypatch):
+    """Le panneau Actualites affiche les memes titres que la toile — il recoit
+    donc le meme enrichissement (title_fr/src_lang), l'original intact."""
+    from backend.bots.paper import translate
+    c, _ = make_client(tmp_path, monkeypatch)
+    german_title = "Naechster Nackenschlag fuer Nestle: Zuercher Bank straft ab"
+    events = [{"ts": 1, "symbol": "NESN.SW", "title": german_title,
+               "link": "http://nzz.test/2", "sentiment": "neg"},
+              {"ts": 2, "symbol": "AAPL", "title": "Results beat", "link": "http://y",
+               "sentiment": "pos"}]
+    monkeypatch.setattr(pr, "_newswatch",
+                        lambda: FakeModule(recent_events=lambda user: events))
+    translate.save_cache({"last_sweep_ts": None, "entries": {
+        translate._title_key(german_title): {
+            "fr": "Nouveau coup dur pour Nestle : une banque zurichoise sanctionne",
+            "src": "de", "ts": 1}}})
+
+    body = c.get("/api/paper/news").json()
+    de, en = body["events"][0], body["events"][1]
+    assert de["title_fr"] == ("Nouveau coup dur pour Nestle : une banque "
+                              "zurichoise sanctionne")
+    assert de["src_lang"] == "DE"
+    assert de["title"] == german_title            # l'original ne bouge JAMAIS
+    assert "title_fr" not in en
+
+
 def test_news_endpoint_survives_a_broken_watch(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
 
@@ -3311,6 +3337,66 @@ def test_graph_survives_a_broken_portfolio(tmp_path, monkeypatch):
 
 
 # ================================================================
+#  TRADUCTION DES TITRES ÉTRANGERS (27/08) — enrichissement au SERVICE,
+#  lecture disque PURE, ZÉRO LLM dans le chemin de rendu.
+#
+#  « L'utilisateur (français) ne peut pas lire les titres ALLEMANDS qui
+#  s'affichent dans les listes de la toile/connexions. »
+# ================================================================
+
+def test_graph_nodes_carry_a_cached_french_translation(tmp_path, monkeypatch):
+    from backend.bots.paper import translate
+    c, _ = make_client(tmp_path, monkeypatch)
+    german_title = "Nestlé unter Druck: Analysten senken das Kursziel"
+    graph_stubs(monkeypatch, events=[
+        {"ts": FIXED_NOW, "symbol": "NESN.SW", "title": german_title,
+         "link": "http://nzz.test/1", "sentiment": "neg"}])
+    buy(c)
+    translate.save_cache({"last_sweep_ts": None, "entries": {
+        translate._title_key(german_title): {
+            "fr": "Nestlé sous pression : les analystes abaissent l'objectif "
+                 "de cours",
+            "src": "de", "ts": FIXED_NOW}}})
+
+    body = graph_of(c)
+    news = [n for n in body["nodes"] if n["type"] == "news"][0]
+    assert news["title_fr"] == ("Nestlé sous pression : les analystes "
+                                "abaissent l'objectif de cours")
+    assert news["src_lang"] == "DE"
+    assert news["label"] == german_title          # l'original ne bouge JAMAIS
+
+
+def test_graph_nodes_without_a_cache_hit_stay_intact(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch, events=[
+        {"ts": FIXED_NOW, "symbol": "NESN.SW", "title": "Résultats",
+         "link": "http://n/1", "sentiment": "pos"}])
+    buy(c)
+
+    body = graph_of(c)
+    news = [n for n in body["nodes"] if n["type"] == "news"][0]
+    assert "title_fr" not in news
+    assert "src_lang" not in news
+
+
+def test_graph_survives_the_translation_cache_being_unreadable(tmp_path, monkeypatch):
+    """Un module de confort qui plante ne doit jamais faire tomber la toile :
+    les nœuds ressortent, simplement pas enrichis."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch, events=[
+        {"ts": FIXED_NOW, "symbol": "NESN.SW", "title": "Résultats",
+         "link": "http://n/1", "sentiment": "pos"}])
+    buy(c)
+
+    def boom():
+        raise ImportError("translate absent")
+
+    monkeypatch.setattr(pr, "_translate", boom)
+    body = graph_of(c)
+    assert [n["type"] for n in body["nodes"] if n["type"] == "news"] == ["news"]
+
+
+# ================================================================
 #  LISTE COMPLÈTE D'UN BOSQUET (« +N autres » devient cliquable)
 #
 #  Doctrine : « quand on ouvre, on voit tout ». La toile garde ses douze
@@ -3455,6 +3541,35 @@ def test_grove_omits_what_the_canvas_hangs_on_a_title(tmp_path, monkeypatch):
 
     assert [item["label"] for item in grove_of(c, "monde")["items"]] \
         == ["Tarifs acier"]
+
+
+def test_grove_items_carry_a_cached_french_translation(tmp_path, monkeypatch):
+    from backend.bots.paper import translate
+    c, _ = make_client(tmp_path, monkeypatch)
+    german_title = "Die Nestlé Bank warnt vor einem Rückgang"
+    graph_stubs(monkeypatch, events=[
+        {"ts": FIXED_NOW, "symbol": "GOV", "title": german_title,
+         "link": "http://nzz.test/1", "sentiment": "gov"}])
+    buy(c)
+    translate.save_cache({"last_sweep_ts": None, "entries": {
+        translate._title_key(german_title):
+            {"fr": "La banque met en garde contre un recul",
+             "src": "de", "ts": FIXED_NOW}}})
+
+    body = grove_of(c, "monde")
+    assert body["items"][0]["title_fr"] == "La banque met en garde contre un recul"
+    assert body["items"][0]["src_lang"] == "DE"
+    assert body["items"][0]["label"] == german_title
+
+
+def test_grove_items_without_a_cache_hit_stay_intact(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    graph_stubs(monkeypatch, events=_gov_events(1))
+    buy(c)
+
+    item = grove_of(c, "monde")["items"][0]
+    assert "title_fr" not in item
+    assert "src_lang" not in item
 
 
 # ================================================================
@@ -4260,6 +4375,40 @@ def test_the_digest_list_carries_its_items(tmp_path, monkeypatch):
                                                     "Le fret bondit"]
 
 
+def test_digest_list_items_carry_a_cached_french_translation(tmp_path, monkeypatch):
+    """C'est CETTE liste (``_convItem`` côté frontend) qui affiche « les
+    éléments un par un » du journal des convergences -- celle qu'un titre
+    allemand rendrait illisible."""
+    from backend.bots.paper import translate
+    c, _ = make_client(tmp_path, monkeypatch)
+    german_title = "Die Nestlé Bank warnt vor einem Rückgang"
+    entry = {
+        "ts": "2026-08-24T12:00:00", "factors": ["gov"], "n_items": 1,
+        "digest": "…", "llm": True,
+        "items": [{"src": "pressefi", "id": "http://nzz.test/1",
+                  "title": german_title, "symbol": "NESN.SW",
+                  "sentiment": "neg", "link": "http://nzz.test/1"}],
+    }
+    _digest_history(monkeypatch, [entry])
+    translate.save_cache({"last_sweep_ts": None, "entries": {
+        translate._title_key(german_title):
+            {"fr": "La banque met en garde contre un recul",
+             "src": "de", "ts": FIXED_NOW}}})
+
+    item = c.get("/api/paper/digest").json()["history"][0]["items"][0]
+    assert item["title_fr"] == "La banque met en garde contre un recul"
+    assert item["src_lang"] == "DE"
+    assert item["title"] == german_title           # l'original ne bouge JAMAIS
+
+
+def test_digest_list_items_without_a_cache_hit_stay_intact(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    _digest_history(monkeypatch, [ENTRY_WITH_ITEMS])
+    item = c.get("/api/paper/digest").json()["history"][0]["items"][0]
+    assert "title_fr" not in item
+    assert "src_lang" not in item
+
+
 def test_a_digest_entry_opens_on_its_own_mini_graph(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     _digest_history(monkeypatch, [ENTRY_WITH_ITEMS])
@@ -4275,6 +4424,29 @@ def test_a_digest_entry_opens_on_its_own_mini_graph(tmp_path, monkeypatch):
     assert body["edges"] == [{"source": body["nodes"][2]["id"],
                               "target": "NESN.SW", "type": "symbol",
                               "sentiment": "neg"}]
+
+
+def test_digest_graph_nodes_carry_a_cached_french_translation(tmp_path, monkeypatch):
+    """Même forme de nœud que la grande toile (``entry_graph`` la reproduit à
+    l'identique) -- l'enrichissement doit donc s'y appliquer pareil."""
+    from backend.bots.paper import translate
+    c, _ = make_client(tmp_path, monkeypatch)
+    german_title = "Die Nestlé Bank warnt vor einem Rückgang"
+    entry = dict(ENTRY_WITH_ITEMS, items=[
+        {"src": "pressefi", "id": "http://nzz.test/1", "title": german_title,
+         "symbol": "NESN.SW", "sentiment": "neg", "link": "http://nzz.test/1"},
+    ])
+    _digest_history(monkeypatch, [entry])
+    translate.save_cache({"last_sweep_ts": None, "entries": {
+        translate._title_key(german_title):
+            {"fr": "La banque met en garde contre un recul",
+             "src": "de", "ts": FIXED_NOW}}})
+
+    body = c.get("/api/paper/digest/0/graph").json()
+    node = [n for n in body["nodes"] if n["type"] == "news"][0]
+    assert node["title_fr"] == "La banque met en garde contre un recul"
+    assert node["src_lang"] == "DE"
+    assert node["label"] == german_title
 
 
 def test_a_digest_entry_can_be_addressed_by_its_timestamp(tmp_path, monkeypatch):

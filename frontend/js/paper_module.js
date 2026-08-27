@@ -1577,8 +1577,7 @@ const PaperModule = {
                     s.color + ';">' + esc(sym) + '</span>' : '') +
                 ((sym && this._isWatched(sym))
                   ? '<span class="badge">' + esc(Lang.t('paper.watchlist_title')) + '</span>' : '') +
-                '<span style="flex:1 1 260px;min-width:0;font-size:14px;line-height:1.45;">' +
-                  esc((e && e.title) || '') + '</span>' +
+                this._titleCell((e && e.title) || '', e && e.title_fr, e && e.src_lang) +
                 '<span style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
                   esc(this._dateTime(e && e.ts)) + '</span>' +
                 link +
@@ -6435,6 +6434,41 @@ const PaperModule = {
         return this._legendHtml(fams, rest, Lang.t('paper.graph_legend_edges'));
     },
 
+    // Cellule de titre, PARTAGÉE bosquet/connexions/journal (_groveRow +
+    // _convItem) : titre traduit EN AVANT quand l'UI est en français ET
+    // qu'une traduction existe, l'ORIGINAL toujours en dessous en dim --
+    // JAMAIS caché, seulement relégué (une traduction est une
+    // TRANSFORMATION, pas un remplacement, cf. piège Market Pulse #68k : le
+    // lecteur doit pouvoir vérifier). Badge mono = langue SOURCE en
+    // majuscules. v1 : IT/EN gardent le texte original, inchangé -- seule la
+    // lecture en français bénéficie de la traduction (le backend ne traduit
+    // que vers le français, cf. paper/translate.py).
+    _titleCell(label, titleFr, srcLang) {
+        const orig = (label === undefined || label === null) ? '' : String(label);
+        const fr = (titleFr === undefined || titleFr === null) ? '' : String(titleFr);
+        const src = (srcLang === undefined || srcLang === null) ? '' : String(srcLang);
+        if (!fr || this._lang() !== 'fr') {
+            return '<span style="flex:1 1 260px;min-width:0;font-size:14px;line-height:1.45;" ' +
+                'title="' + esc(orig) + '">' +
+              esc(this._gtrim(orig, this._GROVE_TITLE_MAX)) + '</span>';
+        }
+        return '<span style="flex:1 1 260px;min-width:0;">' +
+            '<span style="display:block;font-size:14px;line-height:1.45;" ' +
+                'title="' + esc(orig) + '">' +
+              esc(this._gtrim(fr, this._GROVE_TITLE_MAX)) +
+              (src
+                ? ' <span class="badge" style="' + this._mono + 'font-size:10px;' +
+                    'vertical-align:middle;" title="' +
+                    esc(Lang.t('paper.translated_badge_hint')) + '">' + esc(src) + '</span>'
+                : '') +
+            '</span>' +
+            '<span style="display:block;font-size:12px;color:var(--text-dim);' +
+                'line-height:1.4;margin-top:2px;">' +
+              esc(this._gtrim(orig, this._GROVE_TITLE_MAX)) +
+            '</span>' +
+        '</span>';
+    },
+
     // Un élément de la convergence. Forme PROPRE au digest ({id,title,src,
     // symbol,link,sentiment}) : ce n'est pas un nœud de toile, il ne passe donc
     // pas par _groveRow. « src » est du vocabulaire serveur — on le rend TEL
@@ -6455,9 +6489,7 @@ const PaperModule = {
               ? '<span style="font-size:12px;color:var(--text-dim);' + this._mono +
                 'flex:0 0 auto;">' + esc(this._gtrim(src, 18)) + '</span>' : '') +
             this._groveSentBadge(it) +
-            '<span style="flex:1 1 240px;min-width:0;font-size:14px;line-height:1.45;" ' +
-                'title="' + esc(title) + '">' +
-              esc(this._gtrim(title, this._GROVE_TITLE_MAX)) + '</span>' +
+            this._titleCell(title, it.title_fr, it.src_lang) +
             // Le titre concerné mène là où l'on DÉCIDE — jamais à un ordre : le
             // module n'en passe aucun tout seul.
             syms.map((s) =>
@@ -7333,9 +7365,7 @@ const PaperModule = {
             ((kind === 'radar' && out)
               ? '<span class="badge ' + esc(this._GROVE_OUT_BADGE[out]) + '">' +
                   esc(Lang.t(this._GHYP_OUT[out][1])) + '</span>' : '') +
-            '<span style="flex:1 1 260px;min-width:0;font-size:14px;line-height:1.45;" ' +
-                'title="' + esc(label) + '">' +
-              esc(this._gtrim(label, this._GROVE_TITLE_MAX)) + '</span>' +
+            this._titleCell(label, n.title_fr, n.src_lang) +
             (tickers
               ? '<span style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
                   esc(tickers) + '</span>' : '') +

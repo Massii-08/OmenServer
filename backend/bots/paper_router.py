@@ -2019,7 +2019,9 @@ def paper_news(current_user: User = Depends(require_role("admin", "money", "trad
     except ImportError:
         return {"events": []}
     try:
-        return {"events": list(module.recent_events(current_user.username) or [])}
+        events = list(module.recent_events(current_user.username) or [])
+        _enrich_titles(events, key="title")
+        return {"events": events}
     except Exception as e:                      # noqa: BLE001 - veille best-effort
         logger.warning("paper: veille news indisponible: %s", e)
         return {"events": [], "error": str(e)[:200]}
@@ -2029,6 +2031,59 @@ def _convergence():
     """Le module de convergence (digest Telegram), importé paresseusement."""
     from backend.bots.paper import convergence
     return convergence
+
+
+def _translate():
+    """Le module de traduction des titres étrangers, importé paresseusement
+    (même patron que ``_convergence``/``_newswatch`` : un confort d'affichage
+    ne doit jamais empêcher le router de vivre sans lui)."""
+    from backend.bots.paper import translate
+    return translate
+
+
+def _enrich_titles(items: Any, key: str = "label") -> None:
+    """Ajoute ``title_fr``/``src_lang`` EN PLACE aux items dont le titre a une
+    traduction en cache -- lecture disque PURE, ZÉRO LLM dans le chemin de
+    rendu (doctrine du module : « économie LLM par construction » -- le sweep
+    qui PEUPLE ce cache tourne à part, cf. ``newswatch._run_translate_sweep``).
+
+    ``key`` vaut ``"label"`` pour les nœuds de toile (``/graph``,
+    ``/graph/grove``, ``/digest/{ref}/graph`` -- même forme de nœud partout,
+    cf. ``graph._event_node``/``convergence._entry_node``) et ``"title"``
+    pour les items compacts du journal des convergences (``/digest``, cf.
+    ``convergence.history_items``) -- deux vocabulaires pour le même concept,
+    jamais mélangés dans ce dépôt.
+
+    Cache chargé UNE SEULE FOIS ici, jamais par item : une toile ou un
+    bosquet peut porter des dizaines de nœuds. L'ORIGINAL n'est JAMAIS
+    modifié -- une traduction est une transformation, pas un remplacement
+    (piège Market Pulse #68k) : le frontend doit pouvoir montrer les deux.
+
+    Best-effort : module absent ou cache illisible -> les items ressortent
+    intacts, jamais un 500 pour un confort d'affichage.
+    """
+    if not items:
+        return
+    try:
+        module = _translate()
+        cache = module.load_cache()
+    except Exception as e:                      # noqa: BLE001 - confort best-effort
+        logger.warning("paper: cache de traduction indisponible: %s", e)
+        return
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        text = item.get(key)
+        if not text:
+            continue
+        try:
+            hit = module.lookup(text, cache)
+        except Exception as e:                  # noqa: BLE001 - confort best-effort
+            logger.warning("paper: traduction illisible pour un titre: %s", e)
+            continue
+        if hit:
+            item["title_fr"] = hit.get("fr")
+            item["src_lang"] = str(hit.get("src") or "").upper()
 
 
 @router.get("/digest")
@@ -2045,10 +2100,17 @@ def paper_digest(current_user: User = Depends(require_role("admin", "money", "tr
     except ImportError:
         return {"history": []}
     try:
-        return module.recent()
+        result = module.recent()
     except Exception as e:                      # noqa: BLE001 - lecture best-effort
         logger.warning("paper: convergence indisponible: %s", e)
         return {"history": [], "error": str(e)[:200]}
+    # Traduction des titres allemands -- ce sont CES items (``_convItem`` côté
+    # frontend) qui affichent « les éléments un par un » du journal, cf.
+    # ``_enrich_titles``.
+    for entry in (result.get("history") or []):
+        if isinstance(entry, dict):
+            _enrich_titles(entry.get("items"), key="title")
+    return result
 
 
 def _digest_entry(module: Any, ref: str) -> Optional[Dict[str, Any]]:
@@ -2105,6 +2167,7 @@ def paper_digest_graph(ref: str,
     if entry is None:
         raise HTTPException(status_code=404, detail="Convergence introuvable.")
     built = module.entry_graph(entry)
+    _enrich_titles(built.get("nodes"))
     return {"ts": entry.get("ts") or "", "factors": entry.get("factors") or [],
             "n_items": entry.get("n_items") or 0,
             "nodes": built.get("nodes") or [], "edges": built.get("edges") or [],
@@ -3980,6 +4043,7 @@ def paper_graph(symbol: str = "", name: str = "",
     now_iso = _now_iso()
     built = _build_graph(current_user.username, wanted or None, now_iso,
                          name=str(name or "").strip() or None)
+    _enrich_titles(built.get("nodes"))
     out = {"nodes": built["nodes"], "edges": built["edges"],
           "truncated": built["truncated"], "generated_at": now_iso}
     if built.get("via_symbol"):
@@ -4013,6 +4077,7 @@ def paper_graph_grove(kind: str = "",
                               data["hypotheses"], data["whale_moves"],
                               data["pipeline"], _now_iso(),
                               reddit_trends=data["reddit_trends"])
+    _enrich_titles(built.get("items"))
     return {"kind": built["kind"], "items": built["items"],
             "total": built["total"]}
 
