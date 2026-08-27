@@ -49,7 +49,9 @@ def _isolate_data_dir(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_side_channels(monkeypatch):
-    """CINQ portes de sortie s'ouvriraient sinon PAR DÉFAUT dans cette suite :
+    """SEPT portes de sortie s'ouvriraient sinon PAR DÉFAUT dans cette suite
+    (le compte était resté à « CINQ » depuis l'ajout des verdicts du
+    calendrier — mis à jour en même temps que l'ajout de la sauvegarde) :
 
     * le **volet X** — sans configuration, ``load_x_accounts`` rend les comptes
       livrés par défaut et le volet irait vraiment chercher x.com ;
@@ -71,9 +73,15 @@ def _no_side_channels(monkeypatch):
       C'est une porte réseau, et elle s'est ouverte toute seule : le premier
       lancement après le branchement a rendu ``verdicts: 2`` dans un test qui
       se croyait hors ligne (des fixtures d'hypothèses arrivées à échéance). On
-      coupe donc au même endroit que les autres.
+      coupe donc au même endroit que les autres ;
+    * la **sauvegarde nocturne** (G1, 27/08) — ``backup.maybe_run`` écrirait un
+      VRAI ``tar.gz`` sur le disque à chaque test (``store.DATA_DIR`` vaut
+      ``tmp_path`` ici, mais ``backup.default_dest_dir()`` en dérive un dossier
+      FRÈRE, ``tmp_path.parent/backups/paper_trading`` — hors de l'isolation
+      par test). Neutralisé par défaut ; les tests dédiés de ce garde-fou
+      injectent leur propre ``backup_check``.
 
-    Et un SEPTIÈME garde-fou, celui-là contre un piège mesuré : un compte X dont
+    Et un HUITIÈME garde-fou, celui-là contre un piège mesuré : un compte X dont
     la page ne rend AUCUN post compte une « anomalie », et deux anomalies de
     suite escaladent vers le NAVIGATEUR FURTIF du Harvester. Un test qui rend
     deux fois une liste de posts vide déclenchait donc le vrai
@@ -82,8 +90,9 @@ def _no_side_channels(monkeypatch):
     remplace par un échec IMMÉDIAT, qui est exactement ce que fait le vrai étage
     quand patchright manque. Un test qui vise l'escalade injecte le sien.
 
-    Les six sont neutralisés ici, et les tests qui les visent réinstallent leur
-    propre doublure. Un test de veille ne doit jamais dépendre du réseau.
+    Les sept premiers sont neutralisés ici, et les tests qui les visent
+    réinstallent leur propre doublure. Un test de veille ne doit jamais
+    dépendre du réseau ni écrire hors de son ``tmp_path``.
 
     ⚠️ Le volet **banques centrales**, lui, N'EST PAS neutralisé : c'est un volet
     RSS ordinaire servi par le même moteur qu'``eco``/``climat`` et par le même
@@ -101,6 +110,8 @@ def _no_side_channels(monkeypatch):
                         lambda **kwargs: {"fired": False, "sent": False})
     from backend.bots.paper import calendar as calendar_mod
     monkeypatch.setattr(calendar_mod, "run_verdicts", lambda **kwargs: [])
+    from backend.bots.paper import backup as backup_mod
+    monkeypatch.setattr(backup_mod, "maybe_run", lambda **kwargs: {"ran": False})
 
 
 def _no_stealth(handle):
@@ -3332,10 +3343,114 @@ def test_le_flux_de_la_bce_n_est_pas_servi_par_deux_volets():
     « presse », selon le volet qui a tourné le premier."""
     urls = {feed["url"] for feed in _REAL_PRESSEFI_FEEDS()}
     assert not urls.intersection(newswatch._BC_SOURCES)
-    # …et les neuf flux sondés le 26/08 sont bien tous là.
+    # …et les flux sondés (26/08 puis 27/08 pour la presse US, D8) sont tous là.
     for feed in newswatch.PRESSEFI_EXTRA_FEEDS:
         assert feed["url"] in urls
     assert len(urls) > len(newswatch.PRESSEFI_EXTRA_FEEDS)   # + ceux du moteur
+
+
+# --- presse US directe (D8) ------------------------------------------------- #
+
+_US_FEED_NAMES = ("Bloomberg Markets", "CNBC Markets", "CNBC Top", "NYT Business")
+
+
+def test_d8_the_four_us_feeds_are_registered_in_english():
+    by_name = {feed["name"]: feed for feed in newswatch.PRESSEFI_EXTRA_FEEDS}
+    for name in _US_FEED_NAMES:
+        assert name in by_name, name
+        assert by_name[name]["lang"] == "en"
+        assert by_name[name]["url"].startswith("https://")
+
+
+def test_d8_us_feeds_urls_are_the_exact_ones_specified():
+    by_name = {feed["name"]: feed["url"] for feed in newswatch.PRESSEFI_EXTRA_FEEDS}
+    assert by_name["Bloomberg Markets"] == "https://feeds.bloomberg.com/markets/news.rss"
+    assert by_name["CNBC Markets"] == (
+        "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664")
+    assert by_name["CNBC Top"] == "https://www.cnbc.com/id/100003114/device/rss/rss.html"
+    assert by_name["NYT Business"] == "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml"
+
+
+def test_d8_wsj_is_deliberately_not_included():
+    """Flux sondés ZOMBIES le 27/08 (rien de frais depuis janvier 2025) --
+    voir le commentaire à côté de ``PRESSEFI_EXTRA_FEEDS``."""
+    names = " ".join(feed["name"].lower() for feed in newswatch.PRESSEFI_EXTRA_FEEDS)
+    urls = " ".join(feed["url"].lower() for feed in newswatch.PRESSEFI_EXTRA_FEEDS)
+    assert "wsj" not in names and "wsj" not in urls
+    assert "dowjones" not in urls and "dj.com" not in urls
+
+
+def test_d8_bloomberg_item_is_collected_symbolised_and_classified(monkeypatch):
+    """Fixture RSS réaliste (2 items, forme réelle) sur le flux Bloomberg --
+    la MÊME cascade que les flux existants s'applique : fraîcheur, parsing,
+    symbolisation, tonalité."""
+    feed = {"name": "Bloomberg Markets", "lang": "en",
+           "url": "https://feeds.bloomberg.com/markets/news.rss"}
+    _pressefi_env(monkeypatch, feeds=(feed,))
+    fetch = _FetchQueue()
+    fetch.push_pressefi(_rss([("Seed", "https://bloomberg/seed", NOW)]))
+    _run_pressefi(fetch, _NotifySpy())          # amorçage muet
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push_pressefi(_rss([
+        ("Nestle beats estimates on strong pet-care sales",
+         "https://www.bloomberg.com/news/articles/1", later),
+        ("Oil prices slide as OPEC weighs output hike",
+         "https://www.bloomberg.com/news/articles/2", later),
+    ]))
+    notifier = _NotifySpy()
+    _run_pressefi(fetch, notifier, now=later)
+
+    events = [e for e in newswatch.recent_events("nobody") if e.get("src") == "pressefi"]
+    assert len(events) == 2
+    assert events[0]["source"] == "Bloomberg Markets"
+    assert events[0]["lang"] == "en"
+    nestle = next(e for e in events if e["symbol"] == "NESN.SW")
+    assert nestle["sentiment"] == "pos"
+
+
+def test_d8_us_feeds_filter_investment_advice_like_the_others(monkeypatch):
+    """Preuve explicite de la demande A1/D8 : « les fils US charrient du
+    conseil d'achat » -- le titre est écarté (jamais envoyé), pas relayé."""
+    feed = {"name": "CNBC Top", "lang": "en",
+           "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html"}
+    _pressefi_env(monkeypatch, feeds=(feed,))
+    fetch = _FetchQueue()
+    fetch.push_pressefi(_rss([("Seed", "https://cnbc/seed", NOW)]))
+    _run_pressefi(fetch, _NotifySpy())
+
+    later = NOW + timedelta(minutes=10)
+    fetch.push_pressefi(_rss([
+        ("3 stocks to buy right now as rates fall", "https://cnbc/advice", later)]))
+    notifier = _NotifySpy()
+    _run_pressefi(fetch, notifier, now=later)
+
+    assert notifier.calls == []
+    events = [e for e in newswatch.recent_events("nobody") if e.get("src") == "pressefi"]
+    assert events == []       # la cascade l'a déjà écarté -- rien à journaliser
+
+
+def test_d8_us_feeds_share_the_same_budget_as_the_rest_of_pressefi(monkeypatch):
+    """Aucun budget dédié : les flux US passent par le MÊME appel de cascade
+    que les flux existants, donc par les mêmes ``max_age_h``/``per_source``/
+    ``max_items`` (déjà vérifiés par
+    test_la_cascade_de_market_pulse_est_REUTILISEE_pas_reecrite)."""
+    feeds = (
+        {"name": "Bloomberg Markets", "lang": "en",
+         "url": "https://feeds.bloomberg.com/markets/news.rss"},
+        {"name": "NYT Business", "lang": "en",
+         "url": "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml"},
+    )
+    _pressefi_env(monkeypatch, feeds=feeds)
+    engine = newswatch._news_module()
+    seen = []
+    monkeypatch.setattr(engine, "collect_news",
+                        lambda **kw: seen.append(kw) or {"items": [], "sources_ok": []})
+    _run_pressefi(_FetchQueue(), _NotifySpy())
+    assert len(seen) == 1
+    assert seen[0]["max_age_h"] == newswatch._PRESSEFI_MAX_AGE_H
+    assert seen[0]["per_source"] == newswatch._PRESSEFI_PER_SOURCE
+    assert [f["url"] for f in seen[0]["feeds"]] == [f["url"] for f in feeds]
 
 
 # --- PUR : les requêtes Bluesky --------------------------------------------- #
@@ -4527,3 +4642,233 @@ def test_sans_translate_injecte_le_cycle_appelle_le_vrai_module(monkeypatch):
     assert len(calls) == 1
     assert calls[0]["now"] == NOW
     assert isinstance(calls[0]["events"], list)
+
+
+# =========================================================================== #
+#  I/O -- sauvegarde nocturne (Lot G1)
+# =========================================================================== #
+
+def test_run_once_calls_the_injected_backup_check():
+    calls = []
+    _run(_FetchQueue(), _NotifySpy(), backup_check=lambda now: calls.append(now))
+    assert calls == [NOW]
+
+
+def test_run_once_default_backup_check_calls_the_real_module(monkeypatch):
+    """Câblage par défaut : le VRAI ``backup.maybe_run`` -- vérifié en le
+    substituant (jamais en laissant tourner une vraie sauvegarde disque, cf.
+    la neutralisation par ``_no_side_channels``)."""
+    from backend.bots.paper import backup as backup_mod
+    calls = []
+    monkeypatch.setattr(backup_mod, "maybe_run",
+                        lambda **kw: calls.append(kw) or {"ran": False})
+    _run(_FetchQueue(), _NotifySpy())
+    assert len(calls) == 1
+    assert calls[0]["now"] == NOW
+
+
+def test_a_broken_backup_check_never_breaks_the_cycle():
+    def _boom(now):
+        raise RuntimeError("disque plein")
+    counters = _run(_FetchQueue(), _NotifySpy(), backup_check=_boom)
+    assert counters["users"] == 0    # le cycle a continué normalement
+
+
+def test_backup_check_does_not_affect_the_counters_contract():
+    """La sauvegarde ne touche PAS `counters` -- un cycle sans portefeuille
+    ni config Telegram reste EXACTEMENT ce qu'il était avant G1 (même
+    assertion stricte que test_run_once_no_config_does_nothing)."""
+    counters = newswatch.run_once(now=NOW, fetch=_FetchQueue(), notifier=_NotifySpy(),
+                                  tg_cfg={}, sleep=lambda s: None, mode="tout")
+    assert counters == {"users": 0, "symbols": 0, "fetched": 0, "notified": 0,
+                        "errors": 0, "convergence_fired": False,
+                        "verdicts": 0}
+
+
+def test_backup_does_not_run_when_telegram_unconfigured():
+    """Doctrine du fichier : sans Telegram, AUCUN accès disque -- la
+    sauvegarde ne doit donc même pas être appelée."""
+    calls = []
+    newswatch.run_once(now=NOW, fetch=_FetchQueue(), notifier=_NotifySpy(),
+                       tg_cfg={}, sleep=lambda s: None, mode="tout",
+                       backup_check=lambda now: calls.append(now))
+    assert calls == []
+
+
+# =========================================================================== #
+#  I/O -- alertes de prix (Lot A1)
+# =========================================================================== #
+
+def _seed_alert(username, **overrides):
+    from backend.bots.paper import price_alerts
+    alert_id = overrides.pop("id", "a1")
+    symbol = overrides.pop("symbol", "NESN.SW")
+    op = overrides.pop("op", "above")
+    price = overrides.pop("price", 100.0)
+    created_at = overrides.pop("created_at", NOW.isoformat())
+    row = price_alerts.new_alert(alert_id, symbol, op, price, created_at)
+    row.update(overrides)
+    existing = store.load_alerts(username)
+    existing.append(row)
+    store.save_alerts(username, existing)
+    return row
+
+
+def _quote_fn(prices):
+    def _q(symbol):
+        if symbol not in prices:
+            raise RuntimeError("cours introuvable pour %s" % symbol)
+        return {"symbol": symbol, "price": prices[symbol]}
+    return _q
+
+
+def test_price_alert_fires_when_condition_is_crossed():
+    _seed_alert("alice", op="above", price=100.0)
+    notifier = _NotifySpy()
+    _run(_FetchQueue(), notifier, alert_quote=_quote_fn({"NESN.SW": 101.0}))
+    row = store.load_alerts("alice")[0]
+    assert row["status"] == "triggered"
+    assert row["trigger_price"] == 101.0
+    assert row["triggered_at"] == NOW.isoformat()
+    assert len(notifier.calls) == 1
+    assert "NESN.SW" in notifier.calls[0][0]
+
+
+def test_price_alert_stays_armed_when_condition_not_met():
+    _seed_alert("alice", op="above", price=100.0)
+    notifier = _NotifySpy()
+    _run(_FetchQueue(), notifier, alert_quote=_quote_fn({"NESN.SW": 99.0}))
+    assert store.load_alerts("alice")[0]["status"] == "armed"
+    assert notifier.calls == []
+
+
+def test_price_alert_stays_armed_when_quote_unavailable():
+    _seed_alert("alice", op="above", price=100.0)
+
+    def _boom(symbol):
+        raise RuntimeError("panne Yahoo")
+
+    notifier = _NotifySpy()
+    _run(_FetchQueue(), notifier, alert_quote=_boom)
+    assert store.load_alerts("alice")[0]["status"] == "armed"
+    assert notifier.calls == []
+
+
+def test_price_alert_fires_even_in_quiet_mode():
+    """Doctrine A1 : une alerte de prix est un ordre EXPLICITE de
+    l'utilisateur -- elle tire dans les DEUX modes, contrairement à toute
+    autre matière du guetteur (cf. tête de run_once)."""
+    _seed_alert("alice", op="above", price=100.0)
+    notifier = _NotifySpy()
+    _run(_FetchQueue(), notifier, mode="calme",
+        alert_quote=_quote_fn({"NESN.SW": 101.0}))
+    assert len(notifier.calls) == 1
+    assert store.load_alerts("alice")[0]["status"] == "triggered"
+
+
+def test_price_alert_is_one_shot():
+    _seed_alert("alice", op="above", price=100.0)
+    notifier = _NotifySpy()
+    _run(_FetchQueue(), notifier, alert_quote=_quote_fn({"NESN.SW": 101.0}))
+    assert len(notifier.calls) == 1
+
+    later = NOW + timedelta(minutes=5)
+    _run(_FetchQueue(), notifier, now=later,
+        alert_quote=_quote_fn({"NESN.SW": 105.0}))
+    assert len(notifier.calls) == 1        # toujours UN seul envoi, jamais un second
+
+
+def test_price_alert_writes_an_event_in_the_user_feed():
+    _seed_alert("alice", op="above", price=100.0)
+    _run(_FetchQueue(), _NotifySpy(), alert_quote=_quote_fn({"NESN.SW": 101.0}))
+    events = [e for e in newswatch.recent_events("alice") if e.get("src") == "alert"]
+    assert len(events) == 1
+    assert events[0]["symbol"] == "NESN.SW"
+    assert events[0]["muted"] is False
+    assert events[0]["sentiment"] == "alert"
+
+
+def test_price_alert_event_marked_muted_when_notify_fails():
+    _seed_alert("alice", op="above", price=100.0)
+    _run(_FetchQueue(), _NotifySpy(ok=False), alert_quote=_quote_fn({"NESN.SW": 101.0}))
+    events = [e for e in newswatch.recent_events("alice") if e.get("src") == "alert"]
+    assert events[0]["muted"] is True
+
+
+def test_price_alerts_batch_a_single_quote_call_per_distinct_symbol():
+    """Deux comptes, deux alertes sur le MÊME symbole -> UN SEUL appel de
+    cours (le batch est partagé, jamais répété par alerte ni par compte)."""
+    _seed_alert("alice", id="a1", symbol="NESN.SW", op="above", price=100.0)
+    _seed_alert("bob", id="b1", symbol="NESN.SW", op="above", price=90.0)
+    calls = []
+
+    def _q(symbol):
+        calls.append(symbol)
+        return {"symbol": symbol, "price": 101.0}
+
+    _run(_FetchQueue(), _NotifySpy(), alert_quote=_q)
+    assert calls == ["NESN.SW"]
+    assert store.load_alerts("alice")[0]["status"] == "triggered"
+    assert store.load_alerts("bob")[0]["status"] == "triggered"
+
+
+def test_price_alerts_do_not_collide_across_users():
+    _seed_alert("alice", op="above", price=100.0)
+    _seed_alert("bob", op="below", price=50.0)     # 101.0 n'est PAS <= 50 -> reste armée
+    _run(_FetchQueue(), _NotifySpy(), alert_quote=_quote_fn({"NESN.SW": 101.0}))
+    assert store.load_alerts("alice")[0]["status"] == "triggered"
+    assert store.load_alerts("bob")[0]["status"] == "armed"
+
+
+def test_no_alert_files_means_zero_quote_calls():
+    calls = []
+
+    def _q(symbol):
+        calls.append(symbol)
+        return {"symbol": symbol, "price": 1.0}
+
+    _run(_FetchQueue(), _NotifySpy(), alert_quote=_q)
+    assert calls == []
+
+
+def test_run_once_no_telegram_config_never_checks_alerts():
+    """Doctrine du fichier : sans Telegram, RIEN ne tourne -- alertes de prix
+    comprises, même si l'utilisateur en a d'armées."""
+    _seed_alert("alice", op="above", price=100.0)
+    calls = []
+
+    def _q(symbol):
+        calls.append(symbol)
+        return {"symbol": symbol, "price": 999.0}
+
+    newswatch.run_once(now=NOW, fetch=_FetchQueue(), notifier=_NotifySpy(),
+                       tg_cfg={}, sleep=lambda s: None, mode="tout",
+                       alert_quote=_q)
+    assert calls == []
+    assert store.load_alerts("alice")[0]["status"] == "armed"
+
+
+def test_default_alert_quote_calls_the_real_quotes_module(monkeypatch):
+    """Câblage par défaut : le VRAI ``quotes.get_quote`` -- vérifié en le
+    substituant, jamais en laissant partir un vrai appel réseau."""
+    from backend.bots.paper import quotes as quotes_mod
+    calls = []
+    monkeypatch.setattr(quotes_mod, "get_quote",
+                        lambda symbol: calls.append(symbol) or {"price": 101.0})
+    _seed_alert("alice", op="above", price=100.0)
+    _run(_FetchQueue(), _NotifySpy())
+    assert calls == ["NESN.SW"]
+    assert store.load_alerts("alice")[0]["status"] == "triggered"
+
+
+def test_a_broken_alert_account_does_not_break_the_others():
+    """Un fichier d'alertes corrompu pour un compte ne doit jamais faire
+    perdre les alertes des autres (même doctrine best-effort que le reste du
+    guetteur)."""
+    _seed_alert("bob", op="above", price=100.0)
+    store.alerts_path("alice").parent.mkdir(parents=True, exist_ok=True)
+    store.alerts_path("alice").write_text("{not valid json", encoding="utf-8")
+
+    notifier = _NotifySpy()
+    _run(_FetchQueue(), notifier, alert_quote=_quote_fn({"NESN.SW": 101.0}))
+    assert store.load_alerts("bob")[0]["status"] == "triggered"

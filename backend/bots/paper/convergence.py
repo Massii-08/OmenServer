@@ -1155,8 +1155,43 @@ def _power_named_line() -> str:
     return str(POWER_NAMED_LINE or "")
 
 
+_MOOD_LABELS = {
+    "calme": "calme", "normal": "normal",
+    "nerveux": "nerveux", "panique": "en PANIQUE",
+}
+
+
+def _market_mood_line(market_mood: Any) -> str:
+    """La ligne de contexte VIX (PUR) — chaîne VIDE si non exploitable, jamais
+    une ligne qui invente une lecture. Un ``mood`` inconnu (forme future,
+    valeur imprévue) s'affiche TEL QUEL plutôt que de disparaître en
+    silence."""
+    if not isinstance(market_mood, dict):
+        return ""
+    vix = market_mood.get("vix")
+    if vix is None:
+        return ""
+    try:
+        vix_text = "%.1f" % float(vix)
+    except (TypeError, ValueError):
+        return ""
+    mood = str(market_mood.get("mood") or "")
+    mood_label = _MOOD_LABELS.get(mood, mood) if mood else "inconnu"
+    change = market_mood.get("change_pct")
+    change_text = ""
+    try:
+        if change is not None:
+            change_text = " (%+.1f %% sur la séance)" % float(change)
+    except (TypeError, ValueError):
+        change_text = ""
+    return ("CONTEXTE DE MARCHÉ : VIX à %s, marché %s%s — sers-t'en pour "
+            "calibrer le TON (prudence si nerveux/panique), jamais comme un "
+            "facteur qui déclenche une opportunité à lui seul."
+            % (vix_text, mood_label, change_text))
+
+
 def build_digest_prompt(factors: Any, items: Any, stats: Any, positions: Any,
-                        now_iso: str) -> str:
+                        now_iso: str, market_mood: Any = None) -> str:
     """Le prompt du digest de convergence (PUR).
 
     Il demande explicitement des MOUVEMENTS À JOUER — c'est la demande de
@@ -1174,6 +1209,12 @@ def build_digest_prompt(factors: Any, items: Any, stats: Any, positions: Any,
     * quand ``held_risk`` est allumé, une section DÉDIÉE dit ce qui menace le
       portefeuille. C'est la moitié de la demande (« opportunité d'achat OU
       chute de nos actions ») et elle n'existait nulle part.
+
+    ``market_mood`` (D3, best-effort) : la lecture du VIX du moment
+    (``{"vix", "change_pct", "mood"}``, cf. ``mood.get()``) — une ligne de
+    CONTEXTE en plus, jamais un facteur qui déclenche quoi que ce soit
+    (``should_fire`` ne le regarde pas). ``None``/``{}`` -> AUCUNE ligne
+    ajoutée : un VIX absent ne doit jamais se lire comme « marché calme ».
     """
     flags = _flags(factors)
     rows = _dicts(items)[:MAX_ITEMS_IN_PROMPT]
@@ -1244,6 +1285,11 @@ def build_digest_prompt(factors: Any, items: Any, stats: Any, positions: Any,
     else:
         lines.append("- (aucune)")
     lines.append("")
+
+    mood_line = _market_mood_line(market_mood)
+    if mood_line:
+        lines.append(mood_line)
+        lines.append("")
 
     lines.append("BILAN CUMULÉ DU RADAR : %s." % _stats_line(stats))
     lines.append("")
@@ -1544,6 +1590,20 @@ def _collect_filings() -> List[Dict[str, Any]]:
         return []
 
 
+def _collect_market_mood() -> Dict[str, Any]:
+    """La lecture courante du VIX (D3, best-effort) — ``{}`` si le module de
+    jauge est absent ou en panne. Import PARESSEUX, même patron que
+    ``_collect_calendar_verdicts``/``_collect_reddit_trends`` : un lot
+    parallèle qui n'aurait pas encore livré ce module ne doit priver le
+    digest que d'une ligne de contexte, jamais de tout le reste."""
+    try:
+        from backend.bots.paper import mood
+        result = mood.get()
+    except Exception:      # noqa: BLE001
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
 def _collect_calendar_verdicts(now: Any) -> List[Dict[str, Any]]:
     """Les rendez-vous JUGÉS récemment par le calendrier (best-effort).
 
@@ -1824,10 +1884,12 @@ def maybe_fire(now: Any = None,
             return {"fired": False, "reason": "no_telegram", "factors": flags,
                     "sent": False, "llm": False}
 
+        market_mood = _collect_market_mood()
         used_llm = True
         try:
             text = (llm or _default_llm)(
-                build_digest_prompt(flags, items, stats, positions, now_iso))
+                build_digest_prompt(flags, items, stats, positions, now_iso,
+                                    market_mood=market_mood))
             text = _text(text)
             if not text:
                 raise RuntimeError("digest vide")

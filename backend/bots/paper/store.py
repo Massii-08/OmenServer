@@ -180,6 +180,31 @@ def save_watchlist(username: str, symbols: List[Dict[str, Any]]) -> None:
     _atomic_write_json(watchlist_path(username), {"symbols": list(symbols or [])})
 
 
+def alerts_path(username: str) -> Path:
+    """Chemin du fichier d'alertes de prix de l'utilisateur (username validé).
+
+    Fichier SÉPARÉ du portefeuille (``<user>.alerts.json``) — même raison que
+    la watchlist (``watchlist_path`` ci-dessus) : le round-trip par la
+    dataclass ``models.Portfolio`` stripperait toute clé inconnue.
+    """
+    safe = _sanitize_username(username)
+    return DATA_DIR / f"{safe}.alerts.json"
+
+
+def load_alerts(username: str) -> List[Dict[str, Any]]:
+    """Charge les alertes de prix de l'utilisateur. Absentes/corrompues -> []."""
+    raw = _load_json(alerts_path(username))
+    if not isinstance(raw, dict):
+        return []
+    rows = raw.get("alerts")
+    return [a for a in rows if isinstance(a, dict)] if isinstance(rows, list) else []
+
+
+def save_alerts(username: str, alerts: List[Dict[str, Any]]) -> None:
+    """Persiste les alertes de prix de façon atomique, 0o600."""
+    _atomic_write_json(alerts_path(username), {"alerts": list(alerts or [])})
+
+
 # --------------------------------------------------------------------------- #
 # API publique — carnet Markdown façon Obsidian (§11)
 # --------------------------------------------------------------------------- #

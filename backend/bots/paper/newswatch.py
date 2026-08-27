@@ -391,6 +391,30 @@ PRESSEFI_EXTRA_FEEDS: Tuple[Dict[str, str], ...] = (
      "url": "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"},
     {"name": "Yahoo Finance", "lang": "en",
      "url": "https://finance.yahoo.com/news/rssindex"},
+    # --- Presse US directe (D8, sondés vivants le 27/08) -------------------
+    # « Tout ce qui peut bouger la courbe » incluait déjà la presse
+    # britannique/asiatique/indienne ; il manquait la presse AMÉRICAINE
+    # directe (jusqu'ici seulement via Google News / Yahoo, en anglais
+    # générique). Mêmes filtres que tout le reste de ce volet (fraîcheur,
+    # ``is_advice``, ``is_offtopic`` — la presse US charrie autant de
+    # conseils d'achat et de courrier des lecteurs que les autres, cf.
+    # piège #67d/#68h) et même budget par passage, puisqu'ils rejoignent la
+    # même cascade ``pulse.news.collect_news``.
+    #
+    # ⚠️ Le WSJ (``feeds.a.dj.com/rss/RSSMarketsMain.xml`` et consorts) N'EST
+    # PAS ajouté : sondé le 27/08, ses flux publics répondent 200 mais n'ont
+    # plus rien de frais depuis janvier 2025 (flux ABANDONNÉ, même piège que
+    # ``marketwatch/marketpulse/`` documenté dans ``pulse/news.py`` — un
+    # « 200 OK » ne prouve rien, cf. piège #67c). Le WSJ reste couvert
+    # indirectement via Google News.
+    {"name": "Bloomberg Markets", "lang": "en",
+     "url": "https://feeds.bloomberg.com/markets/news.rss"},
+    {"name": "CNBC Markets", "lang": "en",
+     "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664"},
+    {"name": "CNBC Top", "lang": "en",
+     "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html"},
+    {"name": "NYT Business", "lang": "en",
+     "url": "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml"},
 )
 
 # UN CYCLE SUR SIX (~30 min). C'est du CONTEXTE, pas de l'urgence : une revue de
@@ -3867,7 +3891,9 @@ def run_once(now: Optional[datetime] = None,
             bsky_parse: Optional[Callable[[Any], List[Dict[str, Any]]]] = None,
             converge: Optional[Callable[..., Any]] = None,
             judge: Optional[Callable[..., Any]] = None,
-            translate: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
+            translate: Optional[Callable[..., Any]] = None,
+            backup_check: Optional[Callable[..., Any]] = None,
+            alert_quote: Optional[Callable[[str], Any]] = None) -> Dict[str, Any]:
     """Un cycle de veille news, DIX volets :
 
     1. **politique GLOBAL** (toujours, même sans portefeuille) ;
@@ -3910,8 +3936,24 @@ def run_once(now: Optional[datetime] = None,
     disque, pas un compteur de cycle ici — cf. tête de ``translate.py``), et
     n'appelle le modèle qu'une fois par heure au plus, jamais par titre.
 
+    **Alertes de prix** (Lot A1, ``paper.price_alerts``) : EN PREMIER, tous
+    comptes confondus — un batch UNIQUE de cours sur les symboles DISTINCTS de
+    toutes les alertes ARMÉES, pas un appel par alerte. Une alerte est un ordre
+    EXPLICITE de l'utilisateur ("préviens-moi si…") : elle tire dans les DEUX
+    modes, y compris "calme" (cf. tête de ``paper/alerts.py``). ONE-SHOT : une
+    alerte déclenchée repasse à ``"triggered"`` et ne tire plus jamais.
+
+    **Sauvegarde nocturne** (Lot G1, ``paper.backup``) : le GATE
+    (``backup.should_run`` — une fois par jour, pas avant 7h heure locale)
+    tourne à chaque passage, best-effort strict : un échec de sauvegarde ne
+    doit jamais faire perdre un cycle de veille.
+
     Sans config Telegram -> ne fait RIEN du tout (ni disque ni réseau, feature
-    opt-in silencieuse) : c'est vérifié EN PREMIER, avant tout accès à data/.
+    opt-in silencieuse) : c'est vérifié EN PREMIER, avant tout accès à data/ —
+    y compris la sauvegarde nocturne et les alertes de prix, qui vivent donc
+    APRÈS cette porte (une sauvegarde reste utile même sans Telegram configuré,
+    mais ce cycle est celui du guetteur, pas un cron indépendant : le jour où
+    ça devient gênant, un appel direct à ``backup.maybe_run()`` s'en affranchit).
     """
     counters: Dict[str, Any] = {"users": 0, "symbols": 0, "fetched": 0,
                                 "notified": 0, "errors": 0,
@@ -3932,6 +3974,21 @@ def run_once(now: Optional[datetime] = None,
     # tomber de part et d'autre d'un changement de réglage et rendre le même
     # passage à moitié bavard.
     quiet = alerts.is_quiet(mode)
+
+    # ----------------------------------------------------------------- #
+    # Sauvegarde nocturne (G1) -- EN TOUT PREMIER, indépendante de tout le
+    # reste du cycle. Best-effort STRICT : ``_run_daily_backup`` n'avale ses
+    # exceptions ELLE-MÊME, donc rien ici ne peut faire perdre un passage.
+    # ----------------------------------------------------------------- #
+    _run_daily_backup(now_dt, backup_check=backup_check)
+
+    # ----------------------------------------------------------------- #
+    # Alertes de prix (A1) -- tous comptes confondus, un batch de cours
+    # unique. Tire dans les DEUX modes (cf. doc de tête de run_once) : une
+    # alerte est un ordre explicite, pas une émission éditoriale.
+    # ----------------------------------------------------------------- #
+    _run_price_alerts_volet(now_dt, cfg, notify_fn, counters,
+                            quote_fn=alert_quote)
 
     # Les portefeuilles sont découverts UNE fois pour tout le cycle : le volet
     # par-symbole les parcourt, et les QUATRE volets ont besoin des noms des
@@ -4459,6 +4516,197 @@ def _run_translate_sweep(now_dt: datetime,
             counters["errors"] = int(counters.get("errors") or 0) + 1
         return {}
     return result if isinstance(result, dict) else {}
+
+
+def _alert_users() -> List[str]:
+    """Comptes ayant un fichier d'alertes de prix (armées ou non).
+
+    Scan DÉDIÉ (pas ``_discover_portfolios``, qui n'énumère que positions ∪
+    watchlist) : une alerte peut porter sur un symbole qu'on n'a ni acheté ni
+    mis en watchlist — l'utilisateur veut être prévenu AVANT de décider, pas
+    seulement une fois qu'il a déjà agi.
+
+    Le radical ``<user>.alerts`` porte un point : ``store.alerts_path``
+    (via ``_sanitize_username``) le REJETTE structurellement si le nom
+    extrait (après avoir retiré le SEUL suffixe ``.alerts.json``, pas
+    ``.json``) contenait lui-même un point — même ceinture-et-bretelles que
+    ``radar._users_with_portfolio``.
+    """
+    data_dir = store.DATA_DIR
+    if not data_dir.is_dir():
+        return []
+    suffix = ".alerts.json"
+    out: List[str] = []
+    for path in sorted(data_dir.glob("*" + suffix)):
+        username = path.name[: -len(suffix)]
+        try:
+            store.alerts_path(username)
+        except ValueError:
+            continue
+        out.append(username)
+    return out
+
+
+def _default_alert_quote(symbol: str) -> Optional[Dict[str, Any]]:
+    """Le cours courant d'un symbole (import paresseux, même patron que
+    ``calendar._default_quote``) — ``None`` si Yahoo est en panne, jamais une
+    exception : une alerte sans cours reste ARMÉE, elle ne casse rien."""
+    try:
+        from backend.bots.paper import quotes
+        return quotes.get_quote(symbol)
+    except Exception:      # noqa: BLE001 — best-effort
+        return None
+
+
+def _run_price_alerts_volet(now_dt: datetime, cfg: Dict[str, Any],
+                            notify_fn: Callable[[str, Dict[str, Any]], bool],
+                            counters: Dict[str, Any],
+                            quote_fn: Optional[Callable[[str], Any]] = None
+                            ) -> None:
+    """Vérifie les alertes de prix ARMÉES de TOUS les comptes (A1).
+
+    UN SEUL batch de cours par cycle, sur les symboles DISTINCTS toutes
+    alertes confondues — jamais un appel Yahoo par alerte. Tire dans les
+    DEUX modes (« calme » compris) : une alerte est un ordre EXPLICITE de
+    l'utilisateur, pas une émission éditoriale qu'on peut faire taire (cf.
+    doc de tête de ``run_once``).
+
+    ONE-SHOT : une alerte déclenchée passe ``STATUS_TRIGGERED`` et n'est plus
+    jamais réévaluée (``price_alerts.trigger``). Best-effort de bout en
+    bout : un compte illisible, un cours introuvable ou un envoi Telegram en
+    échec laissent l'alerte ARMÉE — elle sera réévaluée au cycle suivant (5
+    min plus tard), jamais perdue.
+    """
+    from backend.bots.paper import price_alerts
+
+    try:
+        usernames = _alert_users()
+    except Exception as exc:      # noqa: BLE001
+        logger.warning("paper newswatch: alertes de prix — comptes illisibles (%s)",
+                       type(exc).__name__)
+        return
+    if not usernames:
+        return
+
+    per_user: Dict[str, List[Dict[str, Any]]] = {}
+    symbols = set()
+    for username in usernames:
+        try:
+            rows = store.load_alerts(username)
+        except Exception as exc:  # noqa: BLE001 — un compte cassé n'en casse pas d'autre
+            logger.warning("paper newswatch: alertes illisibles pour %s (%s)",
+                           username, type(exc).__name__)
+            continue
+        if not rows:
+            continue
+        per_user[username] = rows
+        for row in rows:
+            if isinstance(row, dict) and row.get("status") == price_alerts.STATUS_ARMED:
+                symbol = str(row.get("symbol") or "").upper()
+                if symbol:
+                    symbols.add(symbol)
+    if not symbols:
+        return
+
+    get_quote = quote_fn if quote_fn is not None else _default_alert_quote
+    prices: Dict[str, Optional[float]] = {}
+    for symbol in symbols:
+        try:
+            quote = get_quote(symbol)
+        except Exception as exc:  # noqa: BLE001 — cours en panne, jamais fatal
+            logger.warning(
+                "paper newswatch: cours d'alerte indisponible pour %s (%s)",
+                symbol, type(exc).__name__)
+            quote = None
+        price = None
+        if isinstance(quote, dict) and quote.get("price") is not None:
+            try:
+                price = float(quote.get("price"))
+            except (TypeError, ValueError):
+                price = None
+        prices[symbol] = price
+
+    for username, rows in per_user.items():
+        changed = False
+        for row in rows:
+            if not isinstance(row, dict) or row.get("status") != price_alerts.STATUS_ARMED:
+                continue
+            symbol = str(row.get("symbol") or "").upper()
+            current_price = prices.get(symbol)
+            if current_price is None:
+                continue          # cours indisponible -> reste armée
+            if not price_alerts.condition_met(row.get("op"), current_price,
+                                              row.get("price")):
+                continue
+
+            fired = price_alerts.trigger(row, current_price, now_dt.isoformat())
+            row.clear()
+            row.update(fired)     # mute EN PLACE : `rows` porte le changement
+            changed = True
+
+            message = price_alerts.format_trigger_message(
+                username, symbol, row.get("op"), row.get("price"), current_price)
+            try:
+                ok = notify_fn(message, cfg)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("paper newswatch: notif d'alerte échouée (%s)",
+                               type(exc).__name__)
+                ok = False
+            if ok:
+                counters["notified"] += 1
+            else:
+                counters["errors"] += 1
+
+            try:
+                state = _load_seen(username)
+                state["events"].insert(0, {
+                    "ts": now_dt.isoformat(),
+                    "symbol": symbol,
+                    "title": message,
+                    "link": "",
+                    "sentiment": "alert",
+                    "src": "alert",
+                    "muted": not ok,
+                })
+                state["events"] = state["events"][:_MAX_EVENTS]
+                _purge_old_seen(state, now_dt)
+                _save_seen(username, state)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "paper newswatch: événement d'alerte non journalisé (%s)",
+                    type(exc).__name__)
+
+        if changed:
+            try:
+                store.save_alerts(username, rows)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "paper newswatch: alertes non persistées pour %s (%s)",
+                    username, type(exc).__name__)
+
+
+def _run_daily_backup(now_dt: datetime,
+                      backup_check: Optional[Callable[..., Any]] = None) -> None:
+    """Sauvegarde nocturne (G1) — best-effort STRICT, jamais fatal pour le
+    cycle (même patron que ``_run_calendar_verdicts``/``_fire_convergence``).
+
+    Le GATE (une fois par jour, pas avant 7h heure locale) vit dans
+    ``backup.should_run`` ; ici on ne fait qu'appeler ``backup.maybe_run`` et
+    avaler toute exception — une panne de sauvegarde ne doit jamais faire
+    perdre un passage de veille. Ne touche PAS ``counters`` : un cycle avec
+    Telegram vide reste un cycle qui ne fait STRICTEMENT rien (cf. tests), et
+    le résultat de ``maybe_run`` (déjà loggé par lui-même) n'apporte rien à un
+    compteur pensé pour la presse.
+    """
+    try:
+        if backup_check is not None:
+            backup_check(now_dt)
+        else:
+            from backend.bots.paper import backup as backup_mod
+            backup_mod.maybe_run(now=now_dt)
+    except Exception as exc:      # noqa: BLE001 — jamais fatal pour le cycle
+        logger.warning("paper newswatch: sauvegarde nocturne en panne (%s)",
+                       type(exc).__name__)
 
 
 def _run_calendar_verdicts(now_dt: datetime,

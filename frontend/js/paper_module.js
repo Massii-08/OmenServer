@@ -79,6 +79,9 @@ const PaperModule = {
     _reviewOpen: false,        // texte complet de la revue déplié
     _alertsMode: null,         // 'calme' | 'tout' (lu au serveur)
     _alertsBusy: false,        // un POST de bascule est en vol
+    _alerts: null,             // A1 : {alerts:[{id,symbol,op,price,status,...}]}
+    _chartInd: null,           // A2 : {sma20,sma50,sma200,ema20,bb,rsi,macd} -> bool
+    _mood: null,               // D3 : {vix,change_pct,mood} | null (VIX introuvable)
     _symIdeas: {},             // symbole -> {items:[...]} : ce que le coach a DÉJÀ dit
     _symIdeasClosed: {},       // symbole -> la carte a été fermée à la main
     _symTextOpen: {},          // 'symbole|rang' -> thèse dépliée
@@ -813,6 +816,9 @@ const PaperModule = {
         if (this._pick && this._pick.symbol) st.symbol = String(this._pick.symbol);
         const per = this._chartRange['trade'];
         if (per) st.chartPeriod = String(per);
+        // Indicateurs techniques (A2) : reglage GLOBAL du graphique (pas par
+        // titre), persiste comme le reste de l'ecran.
+        if (this._chartInd) st.ind = this._chartInd;
         this._writeStore(this._UI_KEY, JSON.stringify(st));
     },
 
@@ -824,6 +830,14 @@ const PaperModule = {
         if (!st) return null;
         if (this._isTab(st.tab)) this._tab = String(st.tab);
         if (this._isChartRange(st.chartPeriod)) this._chartRange['trade'] = String(st.chartPeriod);
+        // Un localStorage est editable a la main : on ne recopie QUE les clefs
+        // connues, en booleen -- jamais un objet/tableau/chaine qui ferait
+        // planter un rendu plus loin.
+        if (st.ind && typeof st.ind === 'object') {
+            const ind = {};
+            this._IND_DEFS.forEach((d) => { if (st.ind[d[0]]) ind[d[0]] = true; });
+            this._chartInd = ind;
+        }
         const sym = (st.symbol === null || st.symbol === undefined) ? '' : String(st.symbol);
         return (sym && !this._pick) ? sym : null;
     },
@@ -977,7 +991,11 @@ const PaperModule = {
               '<div style="font-size:17px;font-weight:600;">' + esc(Lang.t('paper.title')) + '</div>' +
               '<div style="font-size:13px;color:var(--text-muted);">' + esc(Lang.t('paper.subtitle')) + '</div>' +
             '</div>' +
-            '<span class="badge" id="paper-feebadge" style="margin-left:auto;"></span>' +
+            // D3 : jauge VIX -- masquée par défaut (display:none), peuplée par
+            // _paintVixChip() une fois la lecture arrivée ({} -> rien à montrer).
+            '<span class="badge" id="paper-vixchip" style="margin-left:auto;display:none;' +
+                this._mono + '"></span>' +
+            '<span class="badge" id="paper-feebadge"></span>' +
           '</div>' +
           '<div style="font-size:14px;line-height:1.55;color:var(--text-muted);margin-bottom:10px;">' +
             esc(Lang.t('paper.desc')) + '</div>' +
@@ -1090,6 +1108,7 @@ const PaperModule = {
         await this._loadPortfolio();
         await this._loadNews();
         await this._loadWatchlist();
+        await this._loadMarketMood();
     },
 
     // Veille de presse sur les positions détenues. Les alertes partent déjà sur
@@ -1098,6 +1117,36 @@ const PaperModule = {
         const d = await this._get('/api/paper/news');
         if (!d) return;
         this._news = Array.isArray(d) ? d : (Array.isArray(d.events) ? d.events : []);
+    },
+
+    // Jauge VIX (D3) : le backend cache déjà 10 min en mémoire -- un GET à
+    // chaque tick (60 s) reste gratuit. {} (VIX introuvable) -> chip retiré,
+    // jamais une valeur inventée.
+    async _loadMarketMood() {
+        const d = await this._get('/api/paper/market-mood');
+        this._mood = (d && typeof d === 'object' && d.mood) ? d : null;
+        this._paintVixChip();
+    },
+
+    _MOOD_META: {
+        calme: ['paper.mood_calme', 'var(--accent)'],
+        normal: ['paper.mood_normal', 'var(--text-muted)'],
+        nerveux: ['paper.mood_nerveux', 'var(--warning)'],
+        panique: ['paper.mood_panique', 'var(--danger)'],
+    },
+
+    // Peint le chip SANS re-rendre le corps -- il vit dans le bandeau du
+    // module (_shell()), hors de #paper-body, comme paper-feebadge.
+    _paintVixChip() {
+        const el = document.getElementById('paper-vixchip');
+        if (!el) return;
+        const m = this._mood;
+        if (!m) { el.style.display = 'none'; el.textContent = ''; return; }
+        const meta = this._MOOD_META[m.mood] || ['paper.mood_normal', 'var(--text-muted)'];
+        el.style.display = '';
+        el.style.color = meta[1];
+        el.title = Lang.t('paper.mood_hint');
+        el.textContent = 'VIX ' + this._num(this._n(m.vix), 1) + ' · ' + Lang.t(meta[0]);
     },
 
     // POST /tick : passe les ordres en attente et les stops contre les bougies
@@ -1246,6 +1295,7 @@ const PaperModule = {
         await this._loadPortfolio();
         await this._loadNews();
         await this._loadWatchlist();
+        await this._loadMarketMood();
         // On ne réécrit le corps que là où aucune saisie n'est en cours : un
         // re-rendu au mauvais moment volerait le curseur au milieu d'un mot.
         // La garde reste, même si la vue Portefeuille ne porte plus de champ —
@@ -1292,6 +1342,15 @@ const PaperModule = {
         if (this._tab === 'portfolio' && this._alertsMode === null) {
             await this._loadAlertsMode();
             if (this._tab === 'portfolio') this._renderBody();
+            return;
+        }
+        // Alertes de PRIX (A1) : liste globale de l'utilisateur, lue une fois
+        // à la première ouverture de l'onglet -- pas par titre (le formulaire,
+        // lui, se pré-remplit du symbole choisi, mais la liste affichée est
+        // celle de TOUS les titres, cf. spec A1).
+        if (this._tab === 'trade' && this._alerts === null) {
+            this._alerts = await this._get('/api/paper/alerts') || { alerts: [] };
+            if (this._tab === 'trade') this._renderBody();
             return;
         }
         if (this._tab === 'coach' && (!this._coach || !this._ideasJournal)) {
@@ -1945,11 +2004,15 @@ const PaperModule = {
         // le moment ou on regarde la courbe avant de decider.
         const chart = (this._pick && this._pick.symbol)
             ? this._chartCard('trade', this._pick.symbol, this._pick.currency) : '';
+        // Sous le graphe : l'alerte de prix (A1) -- se pose au moment ou l'on
+        // regarde la courbe, avant meme de decider d'un ordre.
+        const alertsCard = (this._pick && this._pick.symbol)
+            ? this._alertsCard(this._pick.symbol) : '';
         // Et SOUS le formulaire, ce que la toile sait déjà de ce titre : on lit
         // les connexions là où l'on décide, sans quitter la page (retour
         // utilisateur du 27/08 — « pas dans la page Connexions : ICI »).
         const ego = (this._pick && this._pick.symbol) ? this._egoCard(this._pick.symbol) : '';
-        return this._searchCard() + chart + this._orderCard() + ego;
+        return this._searchCard() + chart + alertsCard + this._orderCard() + ego;
     },
 
     _searchCard() {
@@ -2071,6 +2134,93 @@ const PaperModule = {
         );
     },
 
+    // =====================================================================
+    //  ALERTES DE PRIX (A1) — mini-formulaire + liste, sous le graphe
+    // =====================================================================
+
+    _alertRow(a) {
+        if (!a || typeof a !== 'object') return '';
+        const triggered = (String(a.status || '') === 'triggered');
+        const badge = triggered
+            ? '<span class="badge">' + esc(Lang.t('paper.alert_triggered')) +
+              ' · ' + esc(this._dateTime(a.triggered_at)) + '</span>'
+            : '<span class="badge online">' + esc(Lang.t('paper.alert_armed')) + '</span>';
+        const opLabel = (a.op === 'below') ? Lang.t('paper.alert_below') : Lang.t('paper.alert_above');
+        return '<div class="row" style="display:flex;gap:10px;align-items:center;' +
+               'flex-wrap:wrap;padding:8px 12px;">' +
+            '<span style="font-weight:600;' + this._mono + '">' + esc(a.symbol || '') + '</span>' +
+            '<span style="font-size:13px;color:var(--text-muted);">' +
+              esc(opLabel) + ' ' + esc(this._num(this._n(a.price), 2)) + '</span>' +
+            badge +
+            '<button class="btn btn-ghost btn-sm" style="margin-left:auto;" ' +
+                'data-paper-act="alert-delete" data-id="' + esc(String(a.id || '')) + '">' +
+              esc(Lang.t('paper.alert_delete')) + '</button>' +
+        '</div>';
+    },
+
+    _alertsCard(symbol) {
+        const rows = (this._alerts && Array.isArray(this._alerts.alerts)) ? this._alerts.alerts : [];
+        const f = this._form;
+        const op = (f.alert_op === 'below') ? 'below' : 'above';
+        const opt = (val, labelKey, sel) =>
+            '<option value="' + esc(val) + '"' + (sel === val ? ' selected' : '') + '>' +
+            esc(Lang.t(labelKey)) + '</option>';
+        const list = rows.length
+            ? '<div class="row-list" style="margin-top:10px;">' +
+                  rows.map((a) => this._alertRow(a)).join('') + '</div>'
+            : '<div style="margin-top:10px;">' + this._muted(Lang.t('paper.alert_none')) + '</div>';
+        return this._card(
+            this._head(Lang.t('paper.alert_title') + ' — ' + symbol, Lang.t('paper.alert_hint')) +
+            '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">' +
+              '<select id="paper-alert-op" class="form-input" style="flex:0 0 auto;">' +
+                opt('above', 'paper.alert_above', op) + opt('below', 'paper.alert_below', op) +
+              '</select>' +
+              '<input id="paper-alert-price" class="form-input" type="number" step="any" ' +
+                  'style="flex:0 0 140px;" ' +
+                  'value="' + esc(f.alert_price === undefined || f.alert_price === null ? '' : f.alert_price) + '" ' +
+                  'placeholder="' + esc(Lang.t('paper.alert_price_ph')) + '" />' +
+              '<button class="btn btn-primary" data-paper-act="alert-create">' +
+                esc(Lang.t('paper.alert_submit')) + '</button>' +
+            '</div>' +
+            list
+        );
+    },
+
+    async createAlert() {
+        this._captureForm();
+        if (!this._pick || !this._pick.symbol) { this._toast('warn', Lang.t('paper.symbol_required')); return; }
+        const price = this._n(this._form.alert_price);
+        if (price === null || price <= 0) { this._toast('warn', Lang.t('paper.alert_price_ph')); return; }
+        const op = (this._form.alert_op === 'below') ? 'below' : 'above';
+        const body = { symbol: this._pick.symbol, op: op, price: price };
+        let r = null;
+        try { r = await Auth.apiCall('/api/paper/alerts', { method: 'POST', body: JSON.stringify(body) }); }
+        catch (e) { r = null; }
+        if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
+        let d = null;
+        try { d = await r.json(); } catch (e) { d = null; }
+        this._alerts = { alerts: (d && Array.isArray(d.alerts)) ? d.alerts : [] };
+        this._form.alert_price = '';
+        this._toast('success', Lang.t('paper.alert_created_ok'));
+        if (this._tab === 'trade') this._renderBody();
+    },
+
+    async deleteAlert(id) {
+        const alertId = String(id || '');
+        if (!alertId) return;
+        let r = null;
+        try {
+            r = await Auth.apiCall('/api/paper/alerts/' + encodeURIComponent(alertId),
+                { method: 'DELETE' });
+        } catch (e) { r = null; }
+        if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
+        let d = null;
+        try { d = await r.json(); } catch (e) { d = null; }
+        this._alerts = { alerts: (d && Array.isArray(d.alerts)) ? d.alerts : [] };
+        this._toast('success', Lang.t('paper.alert_deleted_ok'));
+        if (this._tab === 'trade') this._renderBody();
+    },
+
     // Lit le formulaire tel qu'il est À L'ÉCRAN (le re-rendu du corps ne doit
     // jamais avaler ce qui a été tapé).
     _captureForm() {
@@ -2089,6 +2239,10 @@ const PaperModule = {
         const tg = val('paper-target'); if (tg !== undefined) f.target = tg;
         const th = val('paper-thesis'); if (th !== undefined) f.thesis = th;
         const fp = val('paper-feeprofile'); if (fp !== undefined) f.fee_profile = fp;
+        // Formulaire d'alerte (A1) : ephemere (pas un brouillon persiste par
+        // titre) -- capture seulement pour survivre a un re-rendu incident.
+        const aop = val('paper-alert-op'); if (aop !== undefined) f.alert_op = aop;
+        const apr = val('paper-alert-price'); if (apr !== undefined) f.alert_price = apr;
     },
 
     // Prix d'entrée retenu pour le calcul : le prix POSÉ (limite/stop) prime sur
@@ -7503,9 +7657,15 @@ const PaperModule = {
         } else if (!st.data || !Array.isArray(st.data.candles) || !st.data.candles.length) {
             body = this._muted(Lang.t('paper.chart_empty'));
         } else {
-            body = '<canvas data-paper-chart="' + esc(ctxKey) + '" ' +
+            // Hauteur du canvas : +98px par sous-panneau RSI/MACD actif (90px +
+            // 8px d'ecart) -- le prix/volume gardent leurs proportions
+            // d'origine, la place en plus vient s'ajouter en bas.
+            const subCount = (this._indOn('rsi') ? 1 : 0) + (this._indOn('macd') ? 1 : 0);
+            const canvasH = 300 + subCount * 98;
+            body = this._indicatorChips() +
+                   '<canvas data-paper-chart="' + esc(ctxKey) + '" ' +
                         'data-sym="' + esc(symbol) + '" data-range="' + esc(range) + '" ' +
-                        'style="width:100%;height:300px;display:block;touch-action:pan-y;"></canvas>' +
+                        'style="width:100%;height:' + canvasH + 'px;display:block;touch-action:pan-y;"></canvas>' +
                    this._chartLegend(symbol);
         }
         const cur = (st && st.data && st.data.currency) || currency || '';
@@ -7926,6 +8086,178 @@ const PaperModule = {
         });
     },
 
+    // ------------------------------------------------------- indicateurs (A2)
+    //
+    // 100% frontend, calculs PURS sur les bougies deja chargees (this._candles) --
+    // aucun appel reseau, aucune donnee inventee. Meme doctrine que le backend
+    // (quotes.py._sma) : une periode plus longue que la serie disponible rend
+    // une serie ENTIEREMENT vide plutot qu'une moyenne partielle qui mentirait
+    // ("une SMA200 calculee sur 60 jours est un mensonge").
+
+    _IND_DEFS: [
+        ['sma20', 'paper.ind_sma20'],
+        ['sma50', 'paper.ind_sma50'],
+        ['sma200', 'paper.ind_sma200'],
+        ['ema20', 'paper.ind_ema20'],
+        ['bb', 'paper.ind_bb'],
+        ['rsi', 'paper.ind_rsi'],
+        ['macd', 'paper.ind_macd'],
+    ],
+
+    _indState() {
+        if (!this._chartInd || typeof this._chartInd !== 'object') this._chartInd = {};
+        return this._chartInd;
+    },
+
+    _indOn(key) { return !!this._indState()[key]; },
+
+    // Bascule un indicateur -- un re-rendu complet suffit (meme idiome que
+    // setChartRange) : le canvas est detruit/remonte, le chip regenere son
+    // etat actif depuis _chartInd.
+    toggleIndicator(key) {
+        const k = String(key || '');
+        if (!this._IND_DEFS.some((d) => d[0] === k)) return;
+        if (this._tab === 'trade') this._captureForm();
+        const st = this._indState();
+        st[k] = !st[k];
+        this._saveUi();
+        this._renderBody();
+    },
+
+    _indicatorChips() {
+        const st = this._indState();
+        return '<div class="paper-tabs" style="margin-bottom:8px;flex-wrap:wrap;">' +
+            this._IND_DEFS.map((d) =>
+                '<button class="paper-tab' + (st[d[0]] ? ' active' : '') + '" ' +
+                    'data-paper-act="ind-toggle" data-ind="' + esc(d[0]) + '">' +
+                  esc(Lang.t(d[1])) + '</button>'
+            ).join('') +
+        '</div>';
+    },
+
+    // Fermeture d'iteration : extrait les clotures des bougies, null gardes
+    // (jamais 0 ni une clef qui deciderait a la place de l'appelant).
+    _closesOf(rows) {
+        return (rows || []).map((c) => this._n(c && c.close));
+    },
+
+    // Moyenne mobile simple. `null` tant que la fenetre n'est pas remplie OU
+    // si un trou (`null`) traverse la fenetre -- une moyenne qui saute un jour
+    // sans cours n'est pas une moyenne. O(n*periode) : negligeable pour une
+    // serie de quelques centaines de bougies, et surtout jamais faux.
+    _smaSeries(closes, period) {
+        const n = closes.length;
+        const out = new Array(n).fill(null);
+        if (period <= 0) return out;
+        for (let i = period - 1; i < n; i++) {
+            let sum = 0, ok = true;
+            for (let j = i - period + 1; j <= i; j++) {
+                if (closes[j] === null) { ok = false; break; }
+                sum += closes[j];
+            }
+            if (ok) out[i] = sum / period;
+        }
+        return out;
+    },
+
+    // Moyenne mobile exponentielle. Accepte une serie porteuse de `null` EN
+    // TETE (ex. la ligne MACD, nulle tant que les deux EMA sources ne sont pas
+    // definies) : l'amorcage (SMA du premier point valide) part du premier
+    // index exploitable, pas de l'index 0.
+    _emaSeries(values, period) {
+        const n = values.length;
+        const out = new Array(n).fill(null);
+        if (period <= 0) return out;
+        let start = -1;
+        for (let i = 0; i < n; i++) { if (values[i] !== null) { start = i; break; } }
+        if (start === -1 || (n - start) < period) return out;
+        const k = 2 / (period + 1);
+        let sum = 0;
+        for (let i = start; i < start + period; i++) sum += values[i];
+        let prev = sum / period;
+        out[start + period - 1] = prev;
+        for (let i = start + period; i < n; i++) {
+            const v = values[i];
+            if (v === null) { out[i] = null; continue; }
+            prev = v * k + prev * (1 - k);
+            out[i] = prev;
+        }
+        return out;
+    },
+
+    // Bandes de Bollinger (periode 20, ecart-type x2 par defaut) -- meme
+    // fenetre que la SMA du milieu, ecart-type de POPULATION sur cette fenetre.
+    _bollingerSeries(closes, period, mult) {
+        const n = closes.length;
+        const mid = this._smaSeries(closes, period);
+        const upper = new Array(n).fill(null);
+        const lower = new Array(n).fill(null);
+        for (let i = 0; i < n; i++) {
+            if (mid[i] === null) continue;
+            const window = closes.slice(i - period + 1, i + 1);
+            if (window.indexOf(null) !== -1) continue;
+            const mean = mid[i];
+            let variance = 0;
+            for (let j = 0; j < window.length; j++) variance += Math.pow(window[j] - mean, 2);
+            const sd = Math.sqrt(variance / period);
+            upper[i] = mean + mult * sd;
+            lower[i] = mean - mult * sd;
+        }
+        return { mid: mid, upper: upper, lower: lower };
+    },
+
+    // RSI(14), lissage de Wilder standard. `null` avant le (periode+1)-ieme
+    // point (il faut `period` variations pour amorcer la moyenne).
+    _rsiSeries(closes, period) {
+        const n = closes.length;
+        const out = new Array(n).fill(null);
+        if (n <= period) return out;
+        const gains = new Array(n).fill(0);
+        const losses = new Array(n).fill(0);
+        for (let i = 1; i < n; i++) {
+            if (closes[i] === null || closes[i - 1] === null) continue;
+            const delta = closes[i] - closes[i - 1];
+            gains[i] = delta > 0 ? delta : 0;
+            losses[i] = delta < 0 ? -delta : 0;
+        }
+        let avgGain = 0, avgLoss = 0;
+        for (let i = 1; i <= period; i++) { avgGain += gains[i]; avgLoss += losses[i]; }
+        avgGain /= period; avgLoss /= period;
+        out[period] = this._rsiFromAvg(avgGain, avgLoss);
+        for (let i = period + 1; i < n; i++) {
+            avgGain = (avgGain * (period - 1) + gains[i]) / period;
+            avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
+            out[i] = this._rsiFromAvg(avgGain, avgLoss);
+        }
+        return out;
+    },
+
+    _rsiFromAvg(avgGain, avgLoss) {
+        if (avgLoss === 0) return avgGain === 0 ? 50 : 100;
+        const rs = avgGain / avgLoss;
+        return 100 - (100 / (1 + rs));
+    },
+
+    // MACD(12,26,9) : ligne = EMA rapide - EMA lente, signal = EMA(ligne),
+    // histogramme = ligne - signal.
+    _macdSeries(closes, fast, slow, signal) {
+        const emaFast = this._emaSeries(closes, fast);
+        const emaSlow = this._emaSeries(closes, slow);
+        const n = closes.length;
+        const line = new Array(n).fill(null);
+        for (let i = 0; i < n; i++) {
+            if (emaFast[i] === null || emaSlow[i] === null) continue;
+            line[i] = emaFast[i] - emaSlow[i];
+        }
+        const sig = this._emaSeries(line, signal);
+        const hist = new Array(n).fill(null);
+        for (let i = 0; i < n; i++) {
+            if (line[i] === null || sig[i] === null) continue;
+            hist[i] = line[i] - sig[i];
+        }
+        return { line: line, signal: sig, hist: hist };
+    },
+
     // ------------------------------------------------------- graduations
 
     // Graduations « rondes » : 1, 2, 5 x 10^n. Renvoie aussi le nombre de
@@ -7990,14 +8322,33 @@ const PaperModule = {
             strong: this._tok('--border-strong') || '#2C4066',
         };
 
+        // --- indicateurs (A2) : calcules AVANT la mise a l'echelle -- les
+        // Bandes de Bollinger doivent pouvoir elargir l'echelle du prix, et
+        // les sous-panneaux RSI/MACD doivent reserver leur hauteur AVANT que
+        // le prix/volume ne se partagent le reste.
+        const closes = this._closesOf(rows);
+        const indSma20 = this._indOn('sma20') ? this._smaSeries(closes, 20) : null;
+        const indSma50 = this._indOn('sma50') ? this._smaSeries(closes, 50) : null;
+        const indSma200 = this._indOn('sma200') ? this._smaSeries(closes, 200) : null;
+        const indEma20 = this._indOn('ema20') ? this._emaSeries(closes, 20) : null;
+        const indBb = this._indOn('bb') ? this._bollingerSeries(closes, 20, 2) : null;
+        const indRsi = this._indOn('rsi') ? this._rsiSeries(closes, 14) : null;
+        const indMacd = this._indOn('macd') ? this._macdSeries(closes, 12, 26, 9) : null;
+
         const padT = 10, padB = 22, padR = 62, padL = 6;
         const plotX = padL;
         const plotW = Math.max(20, cssW - padL - padR);
+        const subGap = 8;
+        const subPanelH = 90;
+        const subCount = (indRsi ? 1 : 0) + (indMacd ? 1 : 0);
+        const subTotalH = subCount * (subPanelH + subGap);
         const totalH = Math.max(40, cssH - padT - padB);
-        const volH = Math.max(10, Math.round(totalH * 0.15));
-        const priceH = Math.max(20, totalH - volH - 8);
+        const chartAreaH = Math.max(40, totalH - subTotalH);
+        const volH = Math.max(10, Math.round(chartAreaH * 0.15));
+        const priceH = Math.max(20, chartAreaH - volH - 8);
         const priceY = padT;
         const volY = padT + priceH + 8;
+        const subStartY = volY + volH + subGap;
 
         // Echelle de prix : bougies + reperes du portefeuille (un stop hors
         // echelle serait dessine hors cadre, donc invisible et trompeur).
@@ -8012,6 +8363,18 @@ const PaperModule = {
             });
         });
         if (!isFinite(lo) || !isFinite(hi)) return;
+        // Les Bandes de Bollinger sont de la DONNEE DE PRIX (contrairement a un
+        // stop manuel) : elles elargissent l'echelle sans condition, sinon une
+        // bande qui deborde en periode volatile serait dessinee hors cadre.
+        if (indBb) {
+            [indBb.upper, indBb.lower].forEach((series) => {
+                series.forEach((v) => {
+                    if (v === null) return;
+                    if (v > hi) hi = v;
+                    if (v < lo) lo = v;
+                });
+            });
+        }
         // Les BOUGIES commandent l'echelle. Un repere du portefeuille (stop, PRU)
         // ne l'elargit que s'il reste proche — sinon un stop 10 % plus bas ecrase
         // toutes les bougies dans le haut du cadre (vu a l'ecran sur la vue 1 mois).
@@ -8090,6 +8453,48 @@ const PaperModule = {
                 ctx.globalAlpha = 1;
             }
         });
+
+        // --- overlays SMA/EMA/Bandes de Bollinger (A2), au-dessus des bougies --
+        // Trace une serie CONTINUE : un `null` ouvre un trou (nouveau sous-trace)
+        // plutot que de relier deux points de part et d'autre d'une absence.
+        const drawSeries = (series, color, dash) => {
+            if (!series) return;
+            ctx.save();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1.4;
+            if (dash) ctx.setLineDash(dash);
+            let started = false;
+            ctx.beginPath();
+            for (let i = 0; i < n; i++) {
+                const v = series[i];
+                if (v === null || v === undefined) { started = false; continue; }
+                const x = xOf(i), y = yOf(v);
+                if (!started) { ctx.moveTo(x, y); started = true; }
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+            ctx.restore();
+        };
+        if (indBb) {
+            drawSeries(indBb.upper, C.muted, [3, 3]);
+            drawSeries(indBb.lower, C.muted, [3, 3]);
+            drawSeries(indBb.mid, C.strong, null);
+        }
+        if (indSma20) drawSeries(indSma20, this._tok('--info') || '#60A5FA', null);
+        if (indSma50) drawSeries(indSma50, this._tok('--violet') || '#C084FC', null);
+        if (indSma200) drawSeries(indSma200, this._tok('--warning') || '#FBBF24', null);
+        if (indEma20) drawSeries(indEma20, this._tok('--orange') || '#FB923C', null);
+
+        // --- sous-panneaux RSI / MACD (A2), sous le volume -------------------
+        if (indRsi) {
+            this._drawRsiPanel(ctx, indRsi, rows, n, plotX, plotW, subStartY,
+                subPanelH, mono, C, xOf);
+        }
+        if (indMacd) {
+            const macdY = subStartY + (indRsi ? subPanelH + subGap : 0);
+            this._drawMacdPanel(ctx, indMacd, rows, n, plotX, plotW, macdY,
+                subPanelH, mono, C, xOf);
+        }
 
         // --- axe des dates, clairseme ---
         // Le premier et le dernier libelle sont CALES sur le bord : centres, ils
@@ -8291,6 +8696,119 @@ const PaperModule = {
             ctx.fillStyle = (chg > 0) ? C.up : ((chg < 0) ? C.down : C.muted);
             ctx.fillText(chgTxt, plotX + 12, ty);
         }
+    },
+
+    // Sous-panneau RSI(14) : echelle FIXE 0-100, lignes 30/70 en pointille
+    // (zones survente/surachat), axe droit minimal (juste ces deux valeurs).
+    _drawRsiPanel(ctx, series, rows, n, plotX, plotW, y, h, mono, C, xOf) {
+        ctx.save();
+        ctx.strokeStyle = C.grid;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(plotX, Math.round(y) + 0.5);
+        ctx.lineTo(plotX + plotW, Math.round(y) + 0.5);
+        ctx.stroke();
+
+        const yOf = (v) => y + h - (v / 100) * h;
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = C.dim;
+        [30, 70].forEach((level) => {
+            const ly = Math.round(yOf(level)) + 0.5;
+            ctx.beginPath();
+            ctx.moveTo(plotX, ly);
+            ctx.lineTo(plotX + plotW, ly);
+            ctx.stroke();
+        });
+        ctx.setLineDash([]);
+
+        ctx.strokeStyle = this._tok('--info') || '#60A5FA';
+        ctx.lineWidth = 1.4;
+        let started = false;
+        ctx.beginPath();
+        for (let i = 0; i < n; i++) {
+            const v = series[i];
+            if (v === null || v === undefined) { started = false; continue; }
+            const x = xOf(i), py = yOf(v);
+            if (!started) { ctx.moveTo(x, py); started = true; } else ctx.lineTo(x, py);
+        }
+        ctx.stroke();
+
+        ctx.font = '10px ' + mono;
+        ctx.fillStyle = C.dim;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText('RSI 14', plotX + 4, y + 2);
+        ctx.textAlign = 'right';
+        ctx.fillText('70', plotX + plotW + 20, Math.round(yOf(70)) - 6);
+        ctx.fillText('30', plotX + plotW + 20, Math.round(yOf(30)) + 2);
+        ctx.restore();
+    },
+
+    // Sous-panneau MACD(12,26,9) : histogramme (haut/bas comme les bougies) +
+    // ligne MACD + ligne signal, echelle dynamique autour de zero.
+    _drawMacdPanel(ctx, series, rows, n, plotX, plotW, y, h, mono, C, xOf) {
+        let lo = Infinity, hi = -Infinity;
+        [series.line, series.signal, series.hist].forEach((s) => {
+            s.forEach((v) => { if (v === null) return; if (v > hi) hi = v; if (v < lo) lo = v; });
+        });
+        ctx.save();
+        ctx.strokeStyle = C.grid;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(plotX, Math.round(y) + 0.5);
+        ctx.lineTo(plotX + plotW, Math.round(y) + 0.5);
+        ctx.stroke();
+
+        ctx.font = '10px ' + mono;
+        ctx.fillStyle = C.dim;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText('MACD 12/26/9', plotX + 4, y + 2);
+
+        if (!isFinite(lo) || !isFinite(hi)) { ctx.restore(); return; }
+        // Symetrique autour de zero : un histogramme dont l'axe ne passe pas
+        // par zero se lirait comme un cours, pas comme un ecart.
+        const span = Math.max(Math.abs(hi), Math.abs(lo), 1e-9) * 1.15;
+        const yOf = (v) => y + h / 2 - (v / span) * (h / 2);
+        const zeroY = Math.round(yOf(0)) + 0.5;
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = C.dim;
+        ctx.beginPath();
+        ctx.moveTo(plotX, zeroY);
+        ctx.lineTo(plotX + plotW, zeroY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const step = (n > 1) ? (plotW / n) : plotW;
+        const barW = Math.max(1, Math.floor(step - (step > 6 ? 2 : 1)));
+        for (let i = 0; i < n; i++) {
+            const v = series.hist[i];
+            if (v === null || v === undefined) continue;
+            const x = xOf(i);
+            const py = yOf(v);
+            ctx.fillStyle = (v >= 0) ? C.up : C.down;
+            ctx.globalAlpha = 0.55;
+            ctx.fillRect(Math.round(x - barW / 2), Math.min(py, zeroY),
+                barW, Math.max(1, Math.abs(py - zeroY)));
+            ctx.globalAlpha = 1;
+        }
+
+        const drawLine = (values, color) => {
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1.2;
+            let started = false;
+            ctx.beginPath();
+            for (let i = 0; i < n; i++) {
+                const v = values[i];
+                if (v === null || v === undefined) { started = false; continue; }
+                const x = xOf(i), py = yOf(v);
+                if (!started) { ctx.moveTo(x, py); started = true; } else ctx.lineTo(x, py);
+            }
+            ctx.stroke();
+        };
+        drawLine(series.line, this._tok('--info') || '#60A5FA');
+        drawLine(series.signal, this._tok('--orange') || '#FB923C');
+        ctx.restore();
     },
 
     // =====================================================================
@@ -8745,6 +9263,8 @@ const PaperModule = {
             return;
         }
         if (act === 'submit-order') { this.submitOrder(); return; }
+        if (act === 'alert-create') { this.createAlert(); return; }
+        if (act === 'alert-delete') { this.deleteAlert(el.getAttribute('data-id')); return; }
         if (act === 'close-pos') { this.closePosition(el.getAttribute('data-sym')); return; }
         if (act === 'cancel-order') { this.cancelOrder(el.getAttribute('data-id')); return; }
         if (act === 'open-trade') {
@@ -8851,6 +9371,7 @@ const PaperModule = {
             this.setChartRange(el.getAttribute('data-ctx'), el.getAttribute('data-range'));
             return;
         }
+        if (act === 'ind-toggle') { this.toggleIndicator(el.getAttribute('data-ind')); return; }
         if (act === 'pos-toggle') {
             const sy = el.getAttribute('data-sym');
             const opening = (this._posOpen !== sy);

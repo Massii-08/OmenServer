@@ -44,6 +44,17 @@ def _no_telegram_channel(monkeypatch):
     monkeypatch.setattr(alerts, "load_cfg", lambda path=None: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_market_mood_network(monkeypatch):
+    """La jauge VIX (D3, ``_collect_market_mood``) appelle ``mood.get()``, qui
+    ferait un VRAI appel réseau (Yahoo) si on la laissait tourner ici — même
+    porte que ``calendar.run_verdicts`` côté newswatch (cf. sa neutralisation
+    dans test_paper_newswatch.py). Neutralisée par défaut ; les tests dédiés
+    au contexte VIX réinstallent leur propre ``mood.get``."""
+    from backend.bots.paper import mood
+    monkeypatch.setattr(mood, "get", lambda **kwargs: {})
+
+
 @pytest.fixture
 def sources(monkeypatch):
     """Stubs de newswatch/whales, pilotables depuis le test."""
@@ -448,6 +459,90 @@ def test_le_prompt_liste_la_matiere_et_les_positions():
 def test_le_prompt_sans_rien_reste_lisible():
     prompt = convergence.build_digest_prompt({}, [], None, None, "")
     assert "(aucun item)" in prompt and "(aucune)" in prompt
+
+
+# --- D3 : contexte VIX dans le prompt (best-effort, jamais un facteur) ------ #
+
+def test_le_prompt_sans_market_mood_ne_dit_rien_du_vix():
+    prompt = convergence.build_digest_prompt({}, [], None, None, "")
+    assert "VIX" not in prompt
+
+
+def test_le_prompt_porte_le_contexte_vix_quand_fourni():
+    prompt = convergence.build_digest_prompt(
+        {}, [], None, None, "",
+        market_mood={"vix": 17.2, "change_pct": -1.5, "mood": "normal"})
+    assert "VIX à 17.2" in prompt
+    assert "marché normal" in prompt
+    assert "-1.5 %" in prompt
+    # Jamais présenté comme un facteur qui déclenche à lui seul.
+    assert "jamais comme un facteur" in prompt
+
+
+def test_le_prompt_market_mood_panique_est_mis_en_evidence():
+    prompt = convergence.build_digest_prompt(
+        {}, [], None, None, "", market_mood={"vix": 42.0, "mood": "panique"})
+    assert "en PANIQUE" in prompt
+
+
+def test_le_prompt_ignore_un_market_mood_sans_vix():
+    for bad in ({}, None, {"mood": "calme"}, "pas un dict", {"vix": "n/a"}):
+        prompt = convergence.build_digest_prompt({}, [], None, None, "",
+                                                  market_mood=bad)
+        assert "VIX" not in prompt
+
+
+def test_market_mood_line_pure_labels():
+    assert "calme" in convergence._market_mood_line({"vix": 10.0, "mood": "calme"})
+    assert "nerveux" in convergence._market_mood_line({"vix": 25.0, "mood": "nerveux"})
+
+
+def test_market_mood_line_tolerates_missing_change_pct():
+    line = convergence._market_mood_line({"vix": 17.2, "mood": "normal"})
+    assert "VIX à 17.2" in line
+    assert "%" not in line.split("marché normal")[1].split("—")[0]
+
+
+def test_collect_market_mood_is_best_effort_when_it_raises(monkeypatch):
+    """Best-effort STRICT (même patron que test_maybe_fire_source_en_panne_
+    est_avalee) : une panne de mood.get() rend {} plutôt que de faire tomber
+    tout le digest."""
+    from backend.bots.paper import mood
+
+    def _boom(**kw):
+        raise RuntimeError("cassé")
+
+    monkeypatch.setattr(mood, "get", _boom)
+    assert convergence._collect_market_mood() == {}
+
+
+def test_maybe_fire_threads_the_market_mood_into_the_prompt(sources, alice, monkeypatch):
+    """Câblage de bout en bout : maybe_fire collecte mood.get() et le passe
+    au prompt -- vérifié en réinstallant mood.get (neutralisée par défaut,
+    cf. _no_market_mood_network) et en lisant ce que le LLM injecté a reçu.
+
+    Même configuration que test_maybe_fire_chemin_heureux (gov + filing =
+    deux facteurs indépendants) pour atteindre fired=True SANS force=True."""
+    from backend.bots.paper import mood
+    monkeypatch.setattr(mood, "get",
+                        lambda **kw: {"vix": 30.0, "change_pct": 5.0, "mood": "panique"})
+    sources.events = [_news(symbol="GOV", sentiment="gov", link="http://x.test/gov")]
+    sources.filings = [_filing()]
+
+    seen_prompts = []
+
+    def _capture_llm(prompt):
+        seen_prompts.append(prompt)
+        return "Texte du digest."
+
+    out = convergence.maybe_fire(now=NOW, llm=_capture_llm,
+                                 notifier=_notifier([]), tg_cfg=TG,
+                                 fetch_state=_radar_state())
+
+    assert out["fired"] is True
+    assert len(seen_prompts) == 1
+    assert "VIX à 30.0" in seen_prompts[0]
+    assert "en PANIQUE" in seen_prompts[0]
 
 
 def test_le_resume_de_secours_tient_en_25_lignes():

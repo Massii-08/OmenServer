@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from backend.auth.utils import get_current_user
 from backend.bots import paper_router as pr
-from backend.bots.paper import coach, fees, quotes, store
+from backend.bots.paper import coach, fees, mood, quotes, store
 
 # Les VRAIES fonctions du balayage frais, capturées AVANT que ``make_client`` ne
 # les neutralise (même patron que ``_REAL_COLLECT_SOCIAL`` côté radar) : les
@@ -134,6 +134,10 @@ def make_client(tmp_path, monkeypatch, role="admin"):
     """Client isolé : disque en tmp, horloge figée, marché et LLM factices."""
     monkeypatch.setattr(store, "DATA_DIR", tmp_path / "paper_trading")
     monkeypatch.setattr(pr, "_now_iso", lambda: FIXED_NOW)
+    # La jauge VIX (D3) est cachée EN MÉMOIRE PROCESSUS (mood._CACHE) -- ce
+    # cache survivrait sinon d'un test à l'autre, contrairement à tout le
+    # reste de cette fixture qui vit dans tmp_path.
+    mood.clear_cache()
 
     market = Market()
     for name in ("get_quote", "fx_to_chf", "get_candles", "get_meta", "search",
@@ -708,6 +712,38 @@ def test_quotes_endpoint_returns_a_map_with_fx(tmp_path, monkeypatch):
     assert body["NESN.SW"]["fx_rate_chf"] == 1.0
     assert body["AAPL"]["fx_rate_chf"] == 0.88
     assert body["ZZZZ"]["price"] is None and "error" in body["ZZZZ"]
+
+
+# ================================================================
+#  JAUGE VIX (D3)
+# ================================================================
+
+def test_market_mood_returns_the_vix_reading(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["^VIX"] = (17.2, "USD", "CBOE Volatility Index")
+    body = c.get("/api/paper/market-mood").json()
+    assert body == {"vix": 17.2, "change_pct": 1.5, "mood": "normal"}
+
+
+def test_market_mood_empty_when_vix_unavailable(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    # ^VIX absent de market.prices -> Market.get_quote lève UnknownSymbol.
+    assert c.get("/api/paper/market-mood").status_code == 200
+    assert c.get("/api/paper/market-mood").json() == {}
+
+
+def test_market_mood_is_cached_across_calls(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["^VIX"] = (17.2, "USD", "VIX")
+    first = c.get("/api/paper/market-mood").json()
+    market.prices["^VIX"] = (40.0, "USD", "VIX")   # changerait le mood si relu
+    second = c.get("/api/paper/market-mood").json()
+    assert first == second == {"vix": 17.2, "change_pct": 1.5, "mood": "normal"}
+
+
+def test_market_mood_role_gating_matches_the_rest_of_the_router(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch, role="player")
+    assert c.get("/api/paper/market-mood").status_code == 403
 
 
 # ================================================================
@@ -1431,6 +1467,140 @@ def test_watchlist_caps_at_the_maximum(tmp_path, monkeypatch):
 def test_watchlist_remove_unknown_is_404(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     assert c.delete("/api/paper/watchlist/ZZZZ").status_code == 404
+
+
+# ================================================================
+#  ALERTES DE PRIX (A1)
+# ================================================================
+
+def test_alerts_create_list_delete_roundtrip(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.get("/api/paper/alerts").json() == {"alerts": []}
+
+    created = c.post("/api/paper/alerts",
+                     json={"symbol": "nesn.sw", "op": "above", "price": 150})
+    assert created.status_code == 200, created.text
+    alert = created.json()["alert"]
+    assert alert["symbol"] == "NESN.SW"
+    assert alert["op"] == "above"
+    assert alert["price"] == 150
+    assert alert["status"] == "armed"
+    assert alert["triggered_at"] is None
+    assert isinstance(alert["id"], str) and alert["id"]
+
+    listed = c.get("/api/paper/alerts").json()["alerts"]
+    assert listed == [alert]
+
+    deleted = c.delete("/api/paper/alerts/%s" % alert["id"])
+    assert deleted.status_code == 200
+    assert deleted.json()["alerts"] == []
+    assert c.get("/api/paper/alerts").json() == {"alerts": []}
+
+
+def test_alerts_create_uses_canonical_symbol(tmp_path, monkeypatch):
+    """Un alias connu (ROG.SW -> RO.SW) est stocké sous le symbole
+    CANONIQUE — symétrique de la watchlist."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["RO.SW"] = (50.0, "CHF", "Roche")
+    body = c.post("/api/paper/alerts",
+                  json={"symbol": "ROG.SW", "op": "below", "price": 40}).json()
+    assert body["alert"]["symbol"] == "RO.SW"
+
+
+def test_alerts_reject_empty_symbol(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    r = c.post("/api/paper/alerts", json={"symbol": "  ", "op": "above", "price": 10})
+    assert r.status_code == 400
+
+
+def test_alerts_reject_invalid_op(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    r = c.post("/api/paper/alerts",
+               json={"symbol": "NESN.SW", "op": "sideways", "price": 10})
+    assert r.status_code == 400
+
+
+def test_alerts_reject_non_positive_price(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    for bad_price in (0, -5):
+        r = c.post("/api/paper/alerts",
+                   json={"symbol": "NESN.SW", "op": "above", "price": bad_price})
+        assert r.status_code == 400
+
+
+def test_alerts_reject_condition_already_true_above(tmp_path, monkeypatch):
+    """NESN.SW cote 100.0 dans le faux marché -- une alerte "au-dessus de 90"
+    tirerait à la seconde où on la pose."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    r = c.post("/api/paper/alerts",
+               json={"symbol": "NESN.SW", "op": "above", "price": 90})
+    assert r.status_code == 400
+    assert c.get("/api/paper/alerts").json() == {"alerts": []}   # rien n'a été posé
+
+
+def test_alerts_reject_condition_already_true_below(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    r = c.post("/api/paper/alerts",
+               json={"symbol": "NESN.SW", "op": "below", "price": 110})
+    assert r.status_code == 400
+
+
+def test_alerts_accept_condition_not_yet_true(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    above = c.post("/api/paper/alerts",
+                   json={"symbol": "NESN.SW", "op": "above", "price": 150})
+    assert above.status_code == 200
+    below = c.post("/api/paper/alerts",
+                   json={"symbol": "NESN.SW", "op": "below", "price": 50})
+    assert below.status_code == 200
+
+
+def test_alerts_armed_even_when_quote_unavailable(tmp_path, monkeypatch):
+    """Cours introuvable -> on arme quand même (best-effort) : mieux vaut une
+    alerte posée que pas d'alerte du tout parce que Yahoo hoquette."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.broken.add("UNKNOWNQ")   # get_quote lève QuoteError pour ce symbole
+    r = c.post("/api/paper/alerts",
+              json={"symbol": "UNKNOWNQ", "op": "above", "price": 5})
+    assert r.status_code == 200, r.text
+    assert r.json()["alert"]["status"] == "armed"
+
+
+def test_alerts_cap_at_the_maximum(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    for i in range(pr.MAX_ALERTS):
+        symbol = "SYM%d" % i
+        market.prices[symbol] = (10.0, "CHF", "Titre %d" % i)
+        r = c.post("/api/paper/alerts",
+                  json={"symbol": symbol, "op": "above", "price": 999})
+        assert r.status_code == 200, r.text
+    r = c.post("/api/paper/alerts",
+              json={"symbol": "NESN.SW", "op": "above", "price": 999})
+    assert r.status_code == 400
+
+
+def test_alerts_delete_unknown_is_404(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.delete("/api/paper/alerts/doesnotexist").status_code == 404
+
+
+def test_alerts_are_isolated_per_user(tmp_path, monkeypatch):
+    c1, _ = make_client(tmp_path, monkeypatch)
+    c1.post("/api/paper/alerts", json={"symbol": "NESN.SW", "op": "above", "price": 999})
+
+    app2 = FastAPI()
+    app2.include_router(pr.router)
+    from backend.auth.utils import get_current_user as _gcu
+    app2.dependency_overrides[_gcu] = lambda: FakeUser("admin", username="bob")
+    c2 = TestClient(app2)
+    assert c2.get("/api/paper/alerts").json() == {"alerts": []}
+
+
+def test_alerts_role_gating_matches_watchlist(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch, role="player")
+    assert c.get("/api/paper/alerts").status_code == 403
+    assert c.post("/api/paper/alerts", json={"symbol": "X"}).status_code == 403
+    assert c.delete("/api/paper/alerts/x").status_code == 403
 
 
 # ================================================================

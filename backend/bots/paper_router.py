@@ -42,8 +42,8 @@ from pydantic import BaseModel
 from backend.auth.models import User
 from backend.auth.permissions import require_role
 from backend.bots.paper import (alerts, board, coach, entities, fees, fills,
-                                graph, idea_journal, llm, models, quotes,
-                                risk, store)
+                                graph, idea_journal, llm, models, mood,
+                                price_alerts, quotes, risk, store)
 
 logger = logging.getLogger("omenserver")
 
@@ -71,6 +71,10 @@ MIN_SEARCH_LEN = 2
 # Watchlist : bornée pour rester une liste de titres à CREUSER, pas un
 # fourre-tout qui finirait par ne plus rien dire au coach.
 MAX_WATCHLIST = 30
+
+# Alertes de prix (A1) — même ordre de grandeur que la watchlist, même
+# raison : au-delà, ce n'est plus une poignée de niveaux à surveiller.
+MAX_ALERTS = price_alerts.MAX_ALERTS_PER_USER
 
 # Horizon par défaut d'une idée de trade sans horizon exploitable dans le
 # JSON du LLM — même ordre de grandeur que ``radar.DEFAULT_HORIZON_D``.
@@ -1217,6 +1221,12 @@ class WatchlistPayload(BaseModel):
     symbol: str = ""
 
 
+class AlertPayload(BaseModel):
+    symbol: str = ""
+    op: str = ""
+    price: float = 0.0
+
+
 class AlertsModePayload(BaseModel):
     # "calme" (défaut) ou "tout". Normalisé côté serveur — une valeur inconnue
     # retombe sur "calme", jamais sur le mode bavard.
@@ -1418,6 +1428,14 @@ def paper_quotes(symbols: str = "",
         quote["fx_rate_chf"] = fx_rate
         out[symbol] = quote
     return out
+
+
+@router.get("/market-mood")
+def paper_market_mood(current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Jauge d'humeur du marché (^VIX, Lot D3) — cachée EN MÉMOIRE 10 min côté
+    ``mood.get()``, jamais un fichier. VIX introuvable -> ``{}`` (200 vide) :
+    l'interface n'affiche alors AUCUN chip, jamais une valeur inventée."""
+    return mood.get()
 
 
 @router.get("/candles")
@@ -3683,6 +3701,73 @@ def paper_watchlist_remove(symbol: str,
         raise HTTPException(status_code=404, detail="Titre absent de la liste de suivi.")
     store.save_watchlist(username, remaining)
     return {"symbols": remaining}
+
+
+# --------------------------------------------------------------------------- #
+# Endpoints — alertes de prix personnalisées (A1)
+#
+# Vérifiées par ``newswatch._run_price_alerts_volet`` (cycle du guetteur,
+# toutes les 5 min) — ce router ne fait que CRUD + le garde-fou de création
+# (« ne tire pas à la seconde où on la pose »).
+# --------------------------------------------------------------------------- #
+
+@router.post("/alerts")
+def paper_create_alert(data: AlertPayload,
+                       current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Pose une alerte de prix. Refuse une condition DÉJÀ vraie au moment de
+    la création (une alerte qui tire à la seconde où on la pose ne sert à
+    rien) — mais un cours introuvable n'empêche PAS d'armer : mieux vaut une
+    alerte posée que pas d'alerte du tout parce que Yahoo hoquette."""
+    symbol = quotes.canonical(data.symbol)
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Symbole manquant.")
+    if not price_alerts.is_valid_op(data.op):
+        raise HTTPException(status_code=400,
+                            detail="Condition invalide (au-dessus / en dessous attendu).")
+    if data.price is None or data.price <= 0:
+        raise HTTPException(status_code=400, detail="Prix invalide.")
+
+    username = current_user.username
+    rows = store.load_alerts(username)
+    if price_alerts.active_count(rows) >= MAX_ALERTS:
+        raise HTTPException(status_code=400,
+                            detail="Trop d'alertes actives (%d maximum)." % MAX_ALERTS)
+
+    current_price = None
+    try:
+        current_price = quotes.get_quote(symbol).get("price")
+    except quotes.QuoteError:
+        current_price = None      # cours indisponible -> on arme quand même
+    if current_price is not None and price_alerts.condition_met(
+            data.op, current_price, data.price):
+        raise HTTPException(
+            status_code=400,
+            detail="Le cours (%s) est déjà au-delà de ce niveau." % current_price)
+
+    alert = price_alerts.new_alert(uuid.uuid4().hex[:8], symbol, data.op,
+                                   data.price, _now_iso())
+    rows.append(alert)
+    store.save_alerts(username, rows)
+    return {"alert": alert, "alerts": rows}
+
+
+@router.get("/alerts")
+def paper_list_alerts(current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Les alertes de prix de l'utilisateur, telles quelles."""
+    return {"alerts": store.load_alerts(current_user.username)}
+
+
+@router.delete("/alerts/{alert_id}")
+def paper_delete_alert(alert_id: str,
+                       current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Retire une alerte (armée ou déjà déclenchée). 404 si l'id est inconnu."""
+    username = current_user.username
+    rows = store.load_alerts(username)
+    remaining = [row for row in rows if str(row.get("id")) != str(alert_id)]
+    if len(remaining) == len(rows):
+        raise HTTPException(status_code=404, detail="Alerte introuvable.")
+    store.save_alerts(username, remaining)
+    return {"alerts": remaining}
 
 
 # --------------------------------------------------------------------------- #
