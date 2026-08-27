@@ -9,6 +9,8 @@ remplace ``quotes``, les trois fonctions du ``llm`` sont neutralisées, et
 ``store.DATA_DIR`` pointe sur le répertoire temporaire du test.
 """
 import json
+import threading
+import time
 from datetime import datetime, timedelta
 
 import pytest
@@ -32,6 +34,22 @@ FIXED_NOW = "2026-08-24T10:00:00"
 def _ts(hour):
     """Epoch local d'une heure du 24 août 2026 (les bougies du faux marché)."""
     return datetime(2026, 8, 24, hour, 0, 0).timestamp()
+
+
+@pytest.fixture(autouse=True)
+def _empty_job_registry():
+    """Le registre des travaux détachés est un état de MODULE : sans remise à
+    zéro, il fuit d'un test à l'autre.
+
+    Ce n'est pas de l'hygiène gratuite, c'est un échec MESURÉ : les travaux
+    laissés ``pending`` par les tests précédents comptaient dans le plafond par
+    compte, et les deux tests du plafond passaient SEULS puis échouaient dans la
+    suite complète (429 dès la première requête). Un test qui dépend de l'ordre
+    d'exécution ne prouve rien.
+    """
+    pr._JOBS.clear()
+    yield
+    pr._JOBS.clear()
 
 
 class FakeUser(object):
@@ -199,13 +217,13 @@ def test_player_role_is_refused_everywhere(tmp_path, monkeypatch):
     assert c.post("/api/paper/digest/run").status_code == 403
     assert c.get("/api/paper/candles?symbol=NESN.SW").status_code == 403
     assert c.get("/api/paper/community").status_code == 403
-    assert c.post("/api/paper/ideas", json={}).status_code == 403
+    assert c.post("/api/paper/ideas?sync=1", json={}).status_code == 403
     assert c.get("/api/paper/watchlist").status_code == 403
     assert c.get("/api/paper/board").status_code == 403
     assert c.post("/api/paper/board/pipeline", json={"symbol": "NESN.SW"}).status_code == 403
     assert c.post("/api/paper/board/pipeline/x", json={"stage_manual": "pret"}).status_code == 403
     assert c.delete("/api/paper/board/pipeline/x").status_code == 403
-    assert c.post("/api/paper/board/scenarios/generate", json={}).status_code == 403
+    assert c.post("/api/paper/board/scenarios/generate?sync=1", json={}).status_code == 403
     assert c.post("/api/paper/board/scenarios/t/branches/b",
                   json={"status": "happened"}).status_code == 403
     assert c.delete("/api/paper/board/scenarios/t").status_code == 403
@@ -225,14 +243,14 @@ def test_trader_role_is_allowed(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch, role="trader")
     assert c.get("/api/paper/portfolio").status_code == 200
     assert c.get("/api/paper/community").status_code == 200
-    assert c.post("/api/paper/ideas", json={}).status_code == 200
+    assert c.post("/api/paper/ideas?sync=1", json={}).status_code == 200
     assert c.get("/api/paper/watchlist").status_code == 200
     assert c.get("/api/paper/board").status_code == 200
     assert c.get("/api/paper/graph").status_code == 200
     assert c.get("/api/paper/graph/grove?kind=monde").status_code == 200
     assert c.post("/api/paper/board/pipeline",
                   json={"symbol": "NESN.SW"}).status_code == 200
-    assert c.post("/api/paper/board/scenarios/generate", json={}).status_code == 200
+    assert c.post("/api/paper/board/scenarios/generate?sync=1", json={}).status_code == 200
 
 
 def test_trader_role_is_registered_but_not_invitable():
@@ -704,7 +722,7 @@ def test_coach_endpoint_reads_without_network(tmp_path, monkeypatch):
 
 def test_coach_ask_answers_and_journals(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
-    body = c.post("/api/paper/coach/ask", json={"question": "je fais quoi ?"}).json()
+    body = c.post("/api/paper/coach/ask?sync=1", json={"question": "je fais quoi ?"}).json()
     assert body["answer"] == "Ta taille est le sujet."
 
     names = [n["name"] for n in c.get("/api/paper/coach/notes").json()]
@@ -721,7 +739,7 @@ def test_coach_ask_returns_502_when_the_llm_fails(tmp_path, monkeypatch):
         raise RuntimeError("le coach n'a pas répondu dans les 120 s")
 
     monkeypatch.setattr(pr.llm, "ask_coach", boom)
-    response = c.post("/api/paper/coach/ask", json={})
+    response = c.post("/api/paper/coach/ask?sync=1", json={})
     assert response.status_code == 502
     assert "120" in response.json()["detail"]
 
@@ -730,7 +748,7 @@ def test_coach_ask_persists_the_discussion_in_the_shared_vault(tmp_path, monkeyp
     """Discussions.md est un carnet PARTAGÉ (extension communauté) — distinct
     du Journal.md privé déjà couvert par test_coach_ask_answers_and_journals."""
     c, _ = make_client(tmp_path, monkeypatch)
-    body = c.post("/api/paper/coach/ask", json={"question": "je fais quoi ?"}).json()
+    body = c.post("/api/paper/coach/ask?sync=1", json={"question": "je fais quoi ?"}).json()
     assert body["answer"] == "Ta taille est le sujet."
 
     names = [n["name"] for n in c.get("/api/paper/coach/notes").json()]
@@ -751,14 +769,14 @@ def test_coach_ask_survives_a_broken_vault_write(tmp_path, monkeypatch):
         raise OSError("disque plein")
 
     monkeypatch.setattr(pr.store, "append_note", boom)
-    response = c.post("/api/paper/coach/ask", json={"question": "je fais quoi ?"})
+    response = c.post("/api/paper/coach/ask?sync=1", json={"question": "je fais quoi ?"})
     assert response.status_code == 200
     assert response.json()["answer"] == "Ta taille est le sujet."
 
 
 def test_postmortem_needs_a_closed_trade(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
-    assert c.post("/api/paper/postmortem", json={}).status_code == 404
+    assert c.post("/api/paper/postmortem?sync=1", json={}).status_code == 404
 
 
 def test_postmortem_writes_the_journal_entry(tmp_path, monkeypatch):
@@ -767,7 +785,7 @@ def test_postmortem_writes_the_journal_entry(tmp_path, monkeypatch):
     market.prices["NESN.SW"] = (120.0, "CHF", "Nestle SA")
     buy(c, side="sell", qty=10)
 
-    body = c.post("/api/paper/postmortem", json={}).json()
+    body = c.post("/api/paper/postmortem?sync=1", json={}).json()
     assert body["postmortem"] == "Post-mortem du trade."
     assert body["trade_index"] == 0
 
@@ -780,7 +798,7 @@ def test_postmortem_rejects_an_out_of_range_index(tmp_path, monkeypatch):
     buy(c, qty=10, thesis="Thèse suffisamment longue pour passer le seuil")
     market.prices["NESN.SW"] = (120.0, "CHF", "Nestle SA")
     buy(c, side="sell", qty=10)
-    assert c.post("/api/paper/postmortem", json={"trade_index": 7}).status_code == 404
+    assert c.post("/api/paper/postmortem?sync=1", json={"trade_index": 7}).status_code == 404
 
 
 def test_postmortem_502_when_the_llm_fails(tmp_path, monkeypatch):
@@ -793,26 +811,26 @@ def test_postmortem_502_when_the_llm_fails(tmp_path, monkeypatch):
         raise RuntimeError("claude cli rc=2")
 
     monkeypatch.setattr(pr.llm, "write_postmortem", boom)
-    assert c.post("/api/paper/postmortem", json={}).status_code == 502
+    assert c.post("/api/paper/postmortem?sync=1", json={}).status_code == 502
 
 
 def test_analysis_returns_facts_and_text(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
-    body = c.post("/api/paper/analysis", json={"symbol": "nesn.sw"}).json()
+    body = c.post("/api/paper/analysis?sync=1", json={"symbol": "nesn.sw"}).json()
     assert body["facts"]["trend"] == "haussier"
     assert body["analysis"] == "Fiche du titre."
 
 
 def test_analysis_guards(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
-    assert c.post("/api/paper/analysis", json={"symbol": ""}).status_code == 400
-    assert c.post("/api/paper/analysis", json={"symbol": "ZZZZ"}).status_code == 404
+    assert c.post("/api/paper/analysis?sync=1", json={"symbol": ""}).status_code == 400
+    assert c.post("/api/paper/analysis?sync=1", json={"symbol": "ZZZZ"}).status_code == 404
 
     def boom(facts, lang="fr"):
         raise RuntimeError("claude introuvable")
 
     monkeypatch.setattr(pr.llm, "write_analysis", boom)
-    assert c.post("/api/paper/analysis", json={"symbol": "NESN.SW"}).status_code == 502
+    assert c.post("/api/paper/analysis?sync=1", json={"symbol": "NESN.SW"}).status_code == 502
 
 
 def test_notes_guards(tmp_path, monkeypatch):
@@ -960,7 +978,7 @@ def test_ideas_happy_path_registers_radar_hypotheses(tmp_path, monkeypatch):
             {"ticker": "tsla", "direction": "down", "horizon_days": 5,
              "thesis": "Retournement"},
         ))
-    body = c.post("/api/paper/ideas", json={}).json()
+    body = c.post("/api/paper/ideas?sync=1", json={}).json()
     assert len(body["ideas"]) == 2
     assert all(idea["tracked"] for idea in body["ideas"])
     assert {idea["ticker"] for idea in body["ideas"]} == {"AAPL", "TSLA"}
@@ -991,7 +1009,7 @@ def test_ideas_respects_the_radar_max_open_queue(tmp_path, monkeypatch):
         lambda context, lang="fr", risk_level="mesure", journal=None: _ideas_json(
             {"ticker": "AAPL", "direction": "up", "horizon_days": 10,
              "thesis": "Momentum"}))
-    body = c.post("/api/paper/ideas", json={}).json()
+    body = c.post("/api/paper/ideas?sync=1", json={}).json()
     assert body["ideas"] == [{"ticker": "AAPL", "direction": "up",
                              "horizon_days": 10, "thesis": "Momentum",
                              "risk_level": "mesure", "asset_kind": "equity",
@@ -1004,7 +1022,7 @@ def test_ideas_without_a_json_block_still_returns_the_text(tmp_path, monkeypatch
     monkeypatch.setattr(pr.llm, "suggest_ideas",
                         lambda context, lang="fr", risk_level="mesure", journal=None:
                         "Contexte trop maigre, je ne peux rien proposer.")
-    body = c.post("/api/paper/ideas", json={}).json()
+    body = c.post("/api/paper/ideas?sync=1", json={}).json()
     assert body["text"] == "Contexte trop maigre, je ne peux rien proposer."
     assert body["ideas"] == []
 
@@ -1016,7 +1034,7 @@ def test_ideas_returns_502_when_the_llm_fails(tmp_path, monkeypatch):
         raise RuntimeError("le coach n'a pas répondu dans les 120 s")
 
     monkeypatch.setattr(pr.llm, "suggest_ideas", boom)
-    response = c.post("/api/paper/ideas", json={})
+    response = c.post("/api/paper/ideas?sync=1", json={})
     assert response.status_code == 502
 
 
@@ -1031,7 +1049,7 @@ def test_ideas_context_includes_the_watchlist(tmp_path, monkeypatch):
         return _ideas_json()
 
     monkeypatch.setattr(pr.llm, "suggest_ideas", fake_suggest)
-    c.post("/api/paper/ideas", json={})
+    c.post("/api/paper/ideas?sync=1", json={})
     assert seen["context"]["watchlist"] == [{"symbol": "TSLA", "name": "Tesla Inc",
                                              "currency": "USD", "added_at": FIXED_NOW}]
 
@@ -1062,14 +1080,14 @@ def _ideas_double(monkeypatch, *rows):
 def test_ideas_defaults_to_the_measured_level(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     seen = _ideas_double(monkeypatch)
-    assert c.post("/api/paper/ideas", json={}).json()["risk_level"] == "mesure"
+    assert c.post("/api/paper/ideas?sync=1", json={}).json()["risk_level"] == "mesure"
     assert seen["risk_level"] == "mesure"
 
 
 def test_ideas_forwards_the_requested_level_to_the_coach(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     seen = _ideas_double(monkeypatch)
-    body = c.post("/api/paper/ideas", json={"risk_level": "spéculatif"}).json()
+    body = c.post("/api/paper/ideas?sync=1", json={"risk_level": "spéculatif"}).json()
     assert seen["risk_level"] == "speculatif"
     # la réponse dit l'étage RÉELLEMENT appliqué, pas celui qu'on croit avoir
     # demandé (l'accent a été normalisé en chemin)
@@ -1079,7 +1097,7 @@ def test_ideas_forwards_the_requested_level_to_the_coach(tmp_path, monkeypatch):
 def test_an_unknown_level_falls_back_to_measured(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     seen = _ideas_double(monkeypatch)
-    body = c.post("/api/paper/ideas", json={"risk_level": "yolo"}).json()
+    body = c.post("/api/paper/ideas?sync=1", json={"risk_level": "yolo"}).json()
     assert seen["risk_level"] == "mesure"
     assert body["risk_level"] == "mesure"
 
@@ -1092,7 +1110,7 @@ def test_the_level_and_the_asset_kind_reach_the_radar(tmp_path, monkeypatch):
                    "thesis": "Short crypto", "asset_kind": "crypto"},
                   {"ticker": "EURUSD=X", "direction": "up", "horizon_days": 60,
                    "thesis": "Semi-long euro", "asset_kind": "forex"})
-    body = c.post("/api/paper/ideas", json={"risk_level": "speculatif"}).json()
+    body = c.post("/api/paper/ideas?sync=1", json={"risk_level": "speculatif"}).json()
     assert [(i["ticker"], i["asset_kind"], i["risk_level"]) for i in body["ideas"]] == [
         ("BTC-USD", "crypto", "speculatif"),
         ("EURUSD=X", "forex", "speculatif")]
@@ -1114,7 +1132,7 @@ def test_a_semi_long_forex_idea_keeps_its_real_horizon(tmp_path, monkeypatch):
     _ideas_double(monkeypatch,
                   {"ticker": "EURUSD=X", "direction": "up", "horizon_days": 75,
                    "thesis": "Écart de taux Fed/BCE", "asset_kind": "forex"})
-    c.post("/api/paper/ideas", json={"risk_level": "speculatif"})
+    c.post("/api/paper/ideas?sync=1", json={"risk_level": "speculatif"})
 
     stored = radar.load_state()["hypotheses"][0]
     assert stored["horizon_days"] == 75
@@ -1130,7 +1148,7 @@ def test_the_coach_cannot_promote_its_own_ideas(tmp_path, monkeypatch):
     _ideas_double(monkeypatch,
                   {"ticker": "AAPL", "direction": "up", "horizon_days": 10,
                    "thesis": "Momentum", "risk_level": "speculatif"})
-    body = c.post("/api/paper/ideas", json={"risk_level": "mesure"}).json()
+    body = c.post("/api/paper/ideas?sync=1", json={"risk_level": "mesure"}).json()
     assert body["ideas"][0]["risk_level"] == "mesure"
 
 
@@ -1145,7 +1163,7 @@ def test_the_asset_kind_is_guessed_when_the_coach_omits_it(tmp_path, monkeypatch
                    "thesis": "Genre fantaisiste", "asset_kind": "banane"},
                   {"ticker": "AAPL", "direction": "up", "horizon_days": 8,
                    "thesis": "Action ordinaire"})
-    ideas = c.post("/api/paper/ideas", json={"risk_level": "speculatif"}).json()["ideas"]
+    ideas = c.post("/api/paper/ideas?sync=1", json={"risk_level": "speculatif"}).json()["ideas"]
     assert [i["asset_kind"] for i in ideas] == ["crypto", "forex", "equity"]
 
 
@@ -1195,7 +1213,7 @@ def test_an_old_radar_state_is_reread_and_extended(tmp_path, monkeypatch):
     assert c.get("/api/paper/radar").status_code == 200
     _ideas_double(monkeypatch, {"ticker": "SOL-USD", "direction": "up",
                                 "horizon_days": 14, "thesis": "Nouvelle"})
-    body = c.post("/api/paper/ideas", json={"risk_level": "agressif"}).json()
+    body = c.post("/api/paper/ideas?sync=1", json={"risk_level": "agressif"}).json()
     assert body["ideas"][0]["tracked"] is True
 
     stored = radar.load_state()["hypotheses"]
@@ -1224,7 +1242,7 @@ def test_coach_ask_context_includes_the_watchlist(tmp_path, monkeypatch):
         return "Ta taille est le sujet."
 
     monkeypatch.setattr(pr.llm, "ask_coach", fake_ask)
-    c.post("/api/paper/coach/ask", json={"question": "?"})
+    c.post("/api/paper/coach/ask?sync=1", json={"question": "?"})
     assert seen["context"]["watchlist"][0]["symbol"] == "TSLA"
 
 
@@ -1948,14 +1966,14 @@ def test_the_llm_endpoints_forward_the_reading_language(tmp_path, monkeypatch):
                         lambda context, lang="fr", risk_level="mesure", journal=None:
                         seen.__setitem__("ideas", lang) or '```json\n{"ideas": []}\n```')
 
-    c.post("/api/paper/coach/ask", json={"question": "?", "lang": "it"})
-    c.post("/api/paper/postmortem", json={"lang": "it"})
-    c.post("/api/paper/analysis", json={"symbol": "NESN.SW", "lang": "it"})
-    c.post("/api/paper/ideas", json={"lang": "it"})
+    c.post("/api/paper/coach/ask?sync=1", json={"question": "?", "lang": "it"})
+    c.post("/api/paper/postmortem?sync=1", json={"lang": "it"})
+    c.post("/api/paper/analysis?sync=1", json={"symbol": "NESN.SW", "lang": "it"})
+    c.post("/api/paper/ideas?sync=1", json={"lang": "it"})
     assert seen == {"ask": "it", "postmortem": "it", "analysis": "it", "ideas": "it"}
 
-    c.post("/api/paper/coach/ask", json={"question": "?"})
-    c.post("/api/paper/analysis", json={"symbol": "NESN.SW", "lang": "klingon"})
+    c.post("/api/paper/coach/ask?sync=1", json={"question": "?"})
+    c.post("/api/paper/analysis?sync=1", json={"symbol": "NESN.SW", "lang": "klingon"})
     assert seen["ask"] == "fr" and seen["analysis"] == "fr"
 
 
@@ -2074,7 +2092,7 @@ def test_ideas_land_in_the_pipeline(tmp_path, monkeypatch):
             {"ticker": "aapl", "direction": "up", "horizon_days": 10,
              "thesis": "Momentum"},
         ))
-    assert c.post("/api/paper/ideas", json={}).status_code == 200
+    assert c.post("/api/paper/ideas?sync=1", json={}).status_code == 200
 
     pipeline = c.get("/api/paper/board").json()["pipeline"]
     assert [row["symbol"] for row in pipeline] == ["AAPL"]
@@ -2082,7 +2100,7 @@ def test_ideas_land_in_the_pipeline(tmp_path, monkeypatch):
     assert pipeline[0]["thesis"] == "Momentum"
 
     # relancer le coach ne duplique pas la ligne
-    c.post("/api/paper/ideas", json={})
+    c.post("/api/paper/ideas?sync=1", json={})
     assert len(c.get("/api/paper/board").json()["pipeline"]) == 1
 
 
@@ -2106,7 +2124,7 @@ def test_an_untracked_idea_never_lands_in_the_pipeline(tmp_path, monkeypatch):
         pr.llm, "suggest_ideas",
         lambda context, lang="fr", risk_level="mesure", journal=None: _ideas_json(
             {"ticker": "AAPL", "direction": "up", "thesis": "Momentum"}))
-    body = c.post("/api/paper/ideas", json={}).json()
+    body = c.post("/api/paper/ideas?sync=1", json={}).json()
     assert body["ideas"][0]["tracked"] is False
     assert c.get("/api/paper/board").json()["pipeline"] == []
 
@@ -2124,14 +2142,14 @@ def test_a_broken_board_never_breaks_the_ideas_answer(tmp_path, monkeypatch):
         pr.llm, "suggest_ideas",
         lambda context, lang="fr", risk_level="mesure", journal=None: _ideas_json(
             {"ticker": "AAPL", "direction": "up", "thesis": "Momentum"}))
-    body = c.post("/api/paper/ideas", json={})
+    body = c.post("/api/paper/ideas?sync=1", json={})
     assert body.status_code == 200
     assert body.json()["ideas"][0]["tracked"] is True
 
 
 def test_scenarios_generate_happy_path(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
-    body = c.post("/api/paper/board/scenarios/generate", json={})
+    body = c.post("/api/paper/board/scenarios/generate?sync=1", json={})
     assert body.status_code == 200
     data = body.json()
     assert data["text"] == "Voici les chemins que je vois."      # sans le bloc JSON
@@ -2151,7 +2169,7 @@ def test_scenarios_generate_sees_the_pipeline(tmp_path, monkeypatch):
     monkeypatch.setattr(pr.llm, "suggest_scenarios",
                         lambda context, lang="fr":
                         seen.update(context) or scenarios_answer())
-    c.post("/api/paper/board/scenarios/generate", json={})
+    c.post("/api/paper/board/scenarios/generate?sync=1", json={})
     assert [row["symbol"] for row in seen["pipeline"]] == ["NESN.SW"]
     assert "watchlist" in seen and "stats" in seen
 
@@ -2162,9 +2180,9 @@ def test_scenarios_generate_forwards_the_language(tmp_path, monkeypatch):
     monkeypatch.setattr(pr.llm, "suggest_scenarios",
                         lambda context, lang="fr":
                         seen.__setitem__("lang", lang) or scenarios_answer())
-    c.post("/api/paper/board/scenarios/generate", json={"lang": "it"})
+    c.post("/api/paper/board/scenarios/generate?sync=1", json={"lang": "it"})
     assert seen["lang"] == "it"
-    c.post("/api/paper/board/scenarios/generate", json={"lang": "klingon"})
+    c.post("/api/paper/board/scenarios/generate?sync=1", json={"lang": "klingon"})
     assert seen["lang"] == "fr"
 
 
@@ -2175,7 +2193,7 @@ def test_scenarios_generate_502s_on_a_llm_outage(tmp_path, monkeypatch):
         raise RuntimeError("le coach n'a pas répondu dans les 120 s")
 
     monkeypatch.setattr(pr.llm, "suggest_scenarios", boom)
-    assert c.post("/api/paper/board/scenarios/generate", json={}).status_code == 502
+    assert c.post("/api/paper/board/scenarios/generate?sync=1", json={}).status_code == 502
 
 
 def test_scenarios_generate_502s_on_an_unusable_answer(tmp_path, monkeypatch):
@@ -2183,7 +2201,7 @@ def test_scenarios_generate_502s_on_an_unusable_answer(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     monkeypatch.setattr(pr.llm, "suggest_scenarios",
                         lambda context, lang="fr": "je n'ai rien à dire")
-    resp = c.post("/api/paper/board/scenarios/generate", json={})
+    resp = c.post("/api/paper/board/scenarios/generate?sync=1", json={})
     assert resp.status_code == 502
     assert c.get("/api/paper/board").json()["scenarios"] == []
 
@@ -2191,7 +2209,7 @@ def test_scenarios_generate_502s_on_an_unusable_answer(tmp_path, monkeypatch):
 def test_only_three_scenarios_stay_active_through_the_api(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     for i in range(4):
-        c.post("/api/paper/board/scenarios/generate", json={})
+        c.post("/api/paper/board/scenarios/generate?sync=1", json={})
     statuses = [t["status"] for t in c.get("/api/paper/board").json()["scenarios"]]
     assert statuses.count("active") == 3
     assert statuses.count("archived") == 1
@@ -2199,7 +2217,7 @@ def test_only_three_scenarios_stay_active_through_the_api(tmp_path, monkeypatch)
 
 def test_resolving_a_branch(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
-    tree = c.post("/api/paper/board/scenarios/generate", json={}).json()["tree"]
+    tree = c.post("/api/paper/board/scenarios/generate?sync=1", json={}).json()["tree"]
     branch_id = tree["branches"][0]["id"]
 
     body = c.post("/api/paper/board/scenarios/%s/branches/%s" % (tree["id"], branch_id),
@@ -2214,7 +2232,7 @@ def test_resolving_a_branch(tmp_path, monkeypatch):
 
 def test_resolving_a_branch_refuses_a_reopening(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
-    tree = c.post("/api/paper/board/scenarios/generate", json={}).json()["tree"]
+    tree = c.post("/api/paper/board/scenarios/generate?sync=1", json={}).json()["tree"]
     url = "/api/paper/board/scenarios/%s/branches/%s" % (tree["id"],
                                                          tree["branches"][0]["id"])
     assert c.post(url, json={"status": "open"}).status_code == 400
@@ -2223,7 +2241,7 @@ def test_resolving_a_branch_refuses_a_reopening(tmp_path, monkeypatch):
 
 def test_resolving_an_unknown_branch_or_tree_is_a_404(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
-    tree = c.post("/api/paper/board/scenarios/generate", json={}).json()["tree"]
+    tree = c.post("/api/paper/board/scenarios/generate?sync=1", json={}).json()["tree"]
     assert c.post("/api/paper/board/scenarios/nope/branches/x",
                   json={"status": "happened"}).status_code == 404
     assert c.post("/api/paper/board/scenarios/%s/branches/nope" % tree["id"],
@@ -2232,7 +2250,7 @@ def test_resolving_an_unknown_branch_or_tree_is_a_404(tmp_path, monkeypatch):
 
 def test_deleting_a_scenario_archives_it(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
-    tree = c.post("/api/paper/board/scenarios/generate", json={}).json()["tree"]
+    tree = c.post("/api/paper/board/scenarios/generate?sync=1", json={}).json()["tree"]
     body = c.delete("/api/paper/board/scenarios/%s" % tree["id"])
     assert body.status_code == 200
     assert body.json()["tree"]["status"] == "archived"
@@ -2300,8 +2318,8 @@ def test_the_strategy_context_is_the_same_for_ideas_and_scenarios(tmp_path, monk
                         lambda context, lang="fr":
                         seen.__setitem__("scenarios", dict(context))
                         or scenarios_answer())
-    c.post("/api/paper/ideas", json={})
-    c.post("/api/paper/board/scenarios/generate", json={})
+    c.post("/api/paper/ideas?sync=1", json={})
+    c.post("/api/paper/board/scenarios/generate?sync=1", json={})
 
     expected = {"stats", "biases", "coach_summary", "last_trades",
                 "capital_initial_chf", "cash_chf", "watchlist",
@@ -2397,7 +2415,7 @@ def test_ideas_are_appended_to_the_journal(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     _ideas_double(monkeypatch, {"ticker": "TSLA", "direction": "up",
                                 "horizon_days": 10, "thesis": "un pari"})
-    c.post("/api/paper/ideas", json={"risk_level": "agressif"})
+    c.post("/api/paper/ideas?sync=1", json={"risk_level": "agressif"})
 
     entries = c.get("/api/paper/ideas/journal").json()["entries"]
     assert len(entries) == 1
@@ -2411,9 +2429,9 @@ def test_the_journal_reaches_the_next_prompt(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     seen = _ideas_double(monkeypatch, {"ticker": "TSLA", "direction": "up",
                                        "horizon_days": 10, "thesis": "un pari"})
-    c.post("/api/paper/ideas", json={})
+    c.post("/api/paper/ideas?sync=1", json={})
     assert seen["journal"] == []                # première série : rien derrière
-    c.post("/api/paper/ideas", json={})
+    c.post("/api/paper/ideas?sync=1", json={})
     assert seen["journal"][0]["ideas"][0]["ticker"] == "TSLA"
 
 
@@ -2421,7 +2439,7 @@ def test_the_journal_is_capped_by_the_limit_parameter(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     _ideas_double(monkeypatch)
     for _ in range(3):
-        c.post("/api/paper/ideas", json={})
+        c.post("/api/paper/ideas?sync=1", json={})
     assert len(c.get("/api/paper/ideas/journal?limit=2").json()["entries"]) == 2
 
 
@@ -2434,7 +2452,7 @@ def test_an_unwritable_journal_never_breaks_the_answer(tmp_path, monkeypatch):
         raise OSError("disque plein")
 
     monkeypatch.setattr(pr.idea_journal, "append_entry", boom)
-    assert c.post("/api/paper/ideas", json={}).status_code == 200
+    assert c.post("/api/paper/ideas?sync=1", json={}).status_code == 200
 
 
 def test_the_journal_is_refused_to_the_player_role(tmp_path, monkeypatch):
@@ -2451,7 +2469,7 @@ def test_ideas_for_symbol_aggregates_radar_and_journal(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     _ideas_double(monkeypatch, {"ticker": "TSLA", "direction": "up",
                                 "horizon_days": 10, "thesis": "un pari"})
-    c.post("/api/paper/ideas", json={})
+    c.post("/api/paper/ideas?sync=1", json={})
 
     state = radar.load_state()
     state["hypotheses"][0]["status"] = "scored"
@@ -2545,7 +2563,7 @@ def _review_double(monkeypatch, text=None):
 def test_review_refuses_an_empty_portfolio(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     _review_double(monkeypatch)
-    response = c.post("/api/paper/positions/review", json={})
+    response = c.post("/api/paper/positions/review?sync=1", json={})
     assert response.status_code == 400
     assert "revue" in response.json()["detail"]
 
@@ -2556,7 +2574,7 @@ def test_review_builds_a_deterministic_factpack(tmp_path, monkeypatch):
     market.prices["NESN.SW"] = (92.0, "CHF", "Nestle SA")
     seen = _review_double(monkeypatch)
 
-    c.post("/api/paper/positions/review", json={})
+    c.post("/api/paper/positions/review?sync=1", json={})
     position = seen["context"]["positions"][0]
     assert position["symbol"] == "NESN.SW"
     assert position["last_price"] == 92.0
@@ -2574,7 +2592,7 @@ def test_review_says_null_when_the_price_is_unavailable(tmp_path, monkeypatch):
     market.broken.add("NESN.SW")
     seen = _review_double(monkeypatch)
 
-    c.post("/api/paper/positions/review", json={})
+    c.post("/api/paper/positions/review?sync=1", json={})
     position = seen["context"]["positions"][0]
     assert position["last_price"] is None and position["pnl_pct"] is None
 
@@ -2595,7 +2613,7 @@ def test_review_carries_recent_news_and_whale_moves(tmp_path, monkeypatch):
         match_issuer=lambda name, candidates: "NESN.SW"))
     seen = _review_double(monkeypatch)
 
-    c.post("/api/paper/positions/review", json={})
+    c.post("/api/paper/positions/review?sync=1", json={})
     position = seen["context"]["positions"][0]
     assert position["news_recentes"][0]["sentiment"] == "neg"
     assert position["gov_recent"] is True
@@ -2606,7 +2624,7 @@ def test_review_parses_the_verdicts(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     buy(c, qty=10)
     _review_double(monkeypatch)
-    body = c.post("/api/paper/positions/review", json={}).json()
+    body = c.post("/api/paper/positions/review?sync=1", json={}).json()
     assert body["verdicts"] == [{"symbol": "NESN.SW", "stance": "alleger",
                                  "reason": "le stop est proche"}]
     assert body["text"].startswith("Ma revue.")
@@ -2616,7 +2634,7 @@ def test_review_survives_an_unreadable_json_block(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     buy(c, qty=10)
     _review_double(monkeypatch, text="Ma revue sans bloc final.")
-    body = c.post("/api/paper/positions/review", json={}).json()
+    body = c.post("/api/paper/positions/review?sync=1", json={}).json()
     assert body["verdicts"] == [] and body["text"]
 
 
@@ -2624,7 +2642,7 @@ def test_review_is_appended_to_the_journal(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     buy(c, qty=10)
     _review_double(monkeypatch)
-    c.post("/api/paper/positions/review", json={})
+    c.post("/api/paper/positions/review?sync=1", json={})
 
     entries = c.get("/api/paper/ideas/journal").json()["entries"]
     assert entries[0]["kind"] == "review"
@@ -2639,26 +2657,26 @@ def test_review_returns_a_clean_502_when_the_coach_is_down(tmp_path, monkeypatch
         raise RuntimeError("le coach n'a pas répondu")
 
     monkeypatch.setattr(pr.llm, "review_positions", boom)
-    assert c.post("/api/paper/positions/review", json={}).status_code == 502
+    assert c.post("/api/paper/positions/review?sync=1", json={}).status_code == 502
 
 
 def test_review_forwards_the_reading_language(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     buy(c, qty=10)
     seen = _review_double(monkeypatch)
-    c.post("/api/paper/positions/review", json={"lang": "it"})
+    c.post("/api/paper/positions/review?sync=1", json={"lang": "it"})
     assert seen["lang"] == "it"
 
 
 def test_review_is_refused_to_the_player_role(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch, role="player")
-    assert c.post("/api/paper/positions/review", json={}).status_code == 403
+    assert c.post("/api/paper/positions/review?sync=1", json={}).status_code == 403
 
 
 def test_review_is_allowed_to_the_trader_role(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch, role="trader")
     _review_double(monkeypatch)
-    assert c.post("/api/paper/positions/review", json={}).status_code == 400
+    assert c.post("/api/paper/positions/review?sync=1", json={}).status_code == 400
 
 
 # ================================================================
@@ -2672,10 +2690,10 @@ def test_the_crypto_factpack_is_built_only_for_the_crypto_level(tmp_path, monkey
         market.candles[symbol] = [{"ts": i, "close": 90.0 + i} for i in range(12)]
     seen = _ideas_double(monkeypatch)
 
-    c.post("/api/paper/ideas", json={"risk_level": "mesure"})
+    c.post("/api/paper/ideas?sync=1", json={"risk_level": "mesure"})
     assert "crypto_market" not in seen["context"]
 
-    c.post("/api/paper/ideas", json={"risk_level": "crypto"})
+    c.post("/api/paper/ideas?sync=1", json={"risk_level": "crypto"})
     facts = seen["context"]["crypto_market"]
     assert [row["symbol"] for row in facts] == list(pr.CRYPTO_MAJORS)
     assert facts[0]["price"] == 100.0
@@ -2686,7 +2704,7 @@ def test_the_crypto_factpack_survives_a_broken_quote(tmp_path, monkeypatch):
     """Le coach a TOUJOURS un bloc, même si une pièce ne répond pas."""
     c, market = make_client(tmp_path, monkeypatch)
     seen = _ideas_double(monkeypatch)
-    c.post("/api/paper/ideas", json={"risk_level": "crypto"})
+    c.post("/api/paper/ideas?sync=1", json={"risk_level": "crypto"})
     facts = seen["context"]["crypto_market"]
     assert len(facts) == len(pr.CRYPTO_MAJORS)
     assert facts[0]["price"] is None and facts[0]["change_7d_pct"] is None
@@ -2706,7 +2724,7 @@ def test_the_context_carries_crypto_news_and_whale_moves(tmp_path, monkeypatch):
         recent_filing_events=lambda: []))
     seen = _ideas_double(monkeypatch)
 
-    c.post("/api/paper/ideas", json={})
+    c.post("/api/paper/ideas?sync=1", json={})
     assert [e["title"] for e in seen["context"]["recent_crypto"]] == ["Exchange hack"]
     assert seen["context"]["whale_moves"][0]["action"] == "sortie"
 
@@ -2720,7 +2738,7 @@ def test_a_broken_whales_module_never_breaks_the_context(tmp_path, monkeypatch):
     monkeypatch.setattr(pr, "_whales", lambda: FakeModule(
         moves_summary=boom, recent_filing_events=lambda: []))
     seen = _ideas_double(monkeypatch)
-    assert c.post("/api/paper/ideas", json={}).status_code == 200
+    assert c.post("/api/paper/ideas?sync=1", json={}).status_code == 200
     assert seen["context"]["whale_moves"] == []
 
 
@@ -2784,7 +2802,7 @@ def test_review_matches_a_whale_move_through_the_yahoo_name(tmp_path, monkeypatc
         match_issuer=match_issuer, recent_filing_events=lambda: []))
     seen = _review_double(monkeypatch)
 
-    c.post("/api/paper/positions/review", json={})
+    c.post("/api/paper/positions/review?sync=1", json={})
     assert seen_names == {"NESN.SW": "Nestle SA"}       # le nom, pas le ticker
     assert seen["context"]["positions"][0]["whale_moves_on_this"]
 
@@ -2799,7 +2817,7 @@ def test_review_asks_the_price_once_per_symbol(tmp_path, monkeypatch):
     real_get_quote = quotes.get_quote
     monkeypatch.setattr(quotes, "get_quote",
                         lambda s: calls.append(s) or real_get_quote(s))
-    c.post("/api/paper/positions/review", json={})
+    c.post("/api/paper/positions/review?sync=1", json={})
     assert calls.count("NESN.SW") == 1
 
 
@@ -3405,7 +3423,7 @@ def test_the_fresh_sweep_reaches_the_ideas_prompt(tmp_path, monkeypatch):
         return _ideas_json()
 
     monkeypatch.setattr(pr.llm, "suggest_ideas", spy)
-    assert c.post("/api/paper/ideas", json={}).status_code == 200
+    assert c.post("/api/paper/ideas?sync=1", json={}).status_code == 200
 
     sweep = seen["context"]["recherche_fraiche"]
     assert sweep["titres"]["NESN.SW"][0]["title"] == "Nestlé beats estimates"
@@ -3426,7 +3444,7 @@ def test_the_fresh_sweep_reaches_the_scenarios_prompt(tmp_path, monkeypatch):
         return scenarios_answer()
 
     monkeypatch.setattr(pr.llm, "suggest_scenarios", spy)
-    assert c.post("/api/paper/board/scenarios/generate",
+    assert c.post("/api/paper/board/scenarios/generate?sync=1",
                   json={}).status_code == 200
     assert "RECHERCHE À L'INSTANT" in seen["prompt"]
 
@@ -3449,7 +3467,7 @@ def test_a_sweep_outage_still_calls_the_model_without_the_key(tmp_path, monkeypa
         return _ideas_json()
 
     monkeypatch.setattr(pr.llm, "suggest_ideas", spy)
-    assert c.post("/api/paper/ideas", json={}).status_code == 200
+    assert c.post("/api/paper/ideas?sync=1", json={}).status_code == 200
     assert "recherche_fraiche" not in seen["context"]
     assert "RECHERCHE À L'INSTANT" not in seen["prompt"]
 
@@ -3485,7 +3503,7 @@ def test_the_coach_curiosity_feeds_its_own_base(tmp_path, monkeypatch):
         lambda context, lang="fr", risk_level="mesure", journal=None: _ideas_json(
             {"ticker": "AAPL", "direction": "up", "horizon_days": 10,
              "thesis": "Momentum"}))
-    assert c.post("/api/paper/ideas", json={}).status_code == 200
+    assert c.post("/api/paper/ideas?sync=1", json={}).status_code == 200
 
     # Le NOM fait la requête (piège #29a) : il vient de la cotation, pas du ticker.
     assert calls == [{"symbol": "AAPL", "name": "Apple Inc"}]
@@ -3583,8 +3601,8 @@ def test_the_agenda_reaches_the_ideas_and_scenarios_context(tmp_path, monkeypatc
                         lambda context, lang="fr":
                         seen.__setitem__("scenarios", dict(context))
                         or scenarios_answer())
-    c.post("/api/paper/ideas", json={})
-    c.post("/api/paper/board/scenarios/generate", json={})
+    c.post("/api/paper/ideas?sync=1", json={})
+    c.post("/api/paper/board/scenarios/generate?sync=1", json={})
 
     for key in ("ideas", "scenarios"):
         agenda = seen[key]["agenda_macro"]
@@ -3602,7 +3620,7 @@ def test_the_agenda_reaches_the_review_factpack(tmp_path, monkeypatch):
     _agenda_double(monkeypatch, AGENDA_ROWS)
     seen = _review_double(monkeypatch)
 
-    c.post("/api/paper/positions/review", json={})
+    c.post("/api/paper/positions/review?sync=1", json={})
     agenda = seen["context"]["agenda_macro"]
     assert agenda["rendez_vous"][0]["bank"] == "Fed"
     assert agenda["consigne"] == pr.AGENDA_CONSIGNE
@@ -3629,7 +3647,7 @@ def test_an_empty_agenda_adds_no_key_at_all(tmp_path, monkeypatch):
                         lambda context, lang="fr", risk_level="mesure", journal=None:
                         seen.__setitem__("ideas", dict(context))
                         or '```json\n{"ideas": []}\n```')
-    c.post("/api/paper/ideas", json={})
+    c.post("/api/paper/ideas?sync=1", json={})
     assert "agenda_macro" not in seen["ideas"]
 
 
@@ -3643,7 +3661,7 @@ def test_a_broken_agenda_never_breaks_an_answer(tmp_path, monkeypatch):
     monkeypatch.setattr(agenda_bridge, "upcoming_events", boom)
     monkeypatch.setattr(pr, "_agenda_macro", _REAL_AGENDA_MACRO)
     assert pr._agenda_macro() == {}
-    assert c.post("/api/paper/ideas", json={}).status_code == 200
+    assert c.post("/api/paper/ideas?sync=1", json={}).status_code == 200
 
 
 def test_the_agenda_costs_no_network_when_the_module_is_missing(monkeypatch):
@@ -3666,3 +3684,527 @@ def test_the_agenda_costs_no_network_when_the_module_is_missing(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", no_bridge)
     assert _REAL_AGENDA_MACRO() == {}
     assert blocked == ["backend.bots.paper"]
+
+
+# ================================================================
+#  TRAVAUX DÉTACHÉS (27/08) — les six appels au modèle ne tiennent
+#  plus la requête HTTP
+#
+#  Incident : 60-90 s en ligne à travers le tunnel Cloudflare (qui coupe vers
+#  100 s) -> le moindre hoquet réseau rendait un 502 alors que le travail avait
+#  bien eu lieu. Le POST rend maintenant un accusé, le client relève.
+# ================================================================
+
+def _await_job(client, job_id, tries=200):
+    """Relève le travail jusqu'à ce qu'il ne soit plus ``pending``.
+
+    Les fils sont réels (pas de doublure) : c'est justement ce qu'on veut
+    vérifier. Ils ne font qu'appeler un LLM doublé, donc la boucle rend la main
+    en quelques itérations — mais on la BORNE, un test qui tourne à l'infini
+    sur une régression ne dit rien à personne.
+    """
+    for _ in range(tries):
+        response = client.get("/api/paper/job/%s" % job_id)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        if body["status"] != "pending":
+            return body
+        time.sleep(0.01)
+    raise AssertionError("le travail %s n'a jamais fini" % job_id)
+
+
+def test_the_six_llm_endpoints_answer_with_a_job_ticket(tmp_path, monkeypatch):
+    """DÉTACHÉ PAR DÉFAUT : c'est le point du lot. Un POST rend un accusé
+    immédiat, pas le résultat."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c)
+    calls = [
+        ("/api/paper/coach/ask", {"question": "et ma taille ?"}),
+        ("/api/paper/analysis", {"symbol": "NESN.SW"}),
+        ("/api/paper/postmortem", {}),
+        ("/api/paper/ideas", {}),
+        ("/api/paper/positions/review", {}),
+        ("/api/paper/board/scenarios/generate", {}),
+    ]
+    for url, payload in calls:
+        body = c.post(url, json=payload).json()
+        assert list(body) == ["job"], url
+        assert isinstance(body["job"], str) and len(body["job"]) == 32, url
+
+
+def test_a_detached_job_carries_the_exact_former_payload(tmp_path, monkeypatch):
+    """``result`` est EXACTEMENT ce que l'endpoint rendait avant ce lot : le
+    client ne doit pas avoir deux façons de lire la même réponse."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    job = c.post("/api/paper/coach/ask", json={"question": "et ma taille ?"}).json()["job"]
+    detached = _await_job(c, job)
+    assert detached["status"] == "done"
+    assert detached["result"] == {"answer": "Ta taille est le sujet."}
+
+    inline = c.post("/api/paper/coach/ask?sync=1", json={"question": "idem"}).json()
+    assert detached["result"] == inline
+
+
+def test_a_detached_job_really_does_the_side_effects(tmp_path, monkeypatch):
+    """Le travail écrit le journal, le pipeline et le radar DANS le fil — c'est
+    tout l'intérêt de le détacher, pas seulement de rendre la main plus vite."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(pr.llm, "suggest_ideas",
+                        lambda context, lang="fr", risk_level="mesure", journal=None:
+                        '```json\n{"ideas": [{"ticker": "NESN.SW",'
+                        ' "thesis": "le café renchérit", "direction": "up"}]}\n```')
+
+    job = c.post("/api/paper/ideas", json={}).json()["job"]
+    body = _await_job(c, job)
+
+    assert body["status"] == "done"
+    assert body["result"]["ideas"][0]["tracked"] is True
+    # ...et les trois mémoires ont bien été écrites depuis le fil.
+    assert c.get("/api/paper/ideas/journal").json()["entries"][0]["kind"] == "ideas"
+    assert [r["symbol"] for r in c.get("/api/paper/board").json()["pipeline"]] \
+        == ["NESN.SW"]
+    assert c.get("/api/paper/radar").json()["hypotheses"][0]["source"] == "coach"
+
+
+def test_a_llm_outage_inside_a_job_keeps_its_502(tmp_path, monkeypatch):
+    """Une ``HTTPException`` levée dans le travail n'est pas perdue : un 502
+    « le coach n'a pas répondu » doit rester un 502, pas devenir un 500
+    anonyme. La RELÈVE, elle, est un 200 — c'est elle qui a réussi."""
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom(context, question, lang="fr"):
+        raise RuntimeError("le coach est muet")
+
+    monkeypatch.setattr(pr.llm, "ask_coach", boom)
+    job = c.post("/api/paper/coach/ask", json={"question": "?"}).json()["job"]
+    body = _await_job(c, job)
+    assert body == {"status": "error", "error": "le coach est muet", "code": 502}
+
+
+def test_a_business_refusal_inside_a_job_keeps_its_400(tmp_path, monkeypatch):
+    """Même règle pour les refus MÉTIER : « aucune position à passer en revue »
+    est un 400, il le reste à travers le fil."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    job = c.post("/api/paper/positions/review", json={}).json()["job"]
+    body = _await_job(c, job)
+    assert body["status"] == "error" and body["code"] == 400
+    assert "Aucune position" in body["error"]
+
+
+def test_an_unexpected_crash_inside_a_job_is_a_500_not_a_stuck_pending(tmp_path,
+                                                                      monkeypatch):
+    """Une exception qui remonterait d'un fil ne serait vue de personne et le
+    travail resterait ``pending`` À VIE. ``_run_job`` n'explose jamais."""
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom(facts, lang="fr"):
+        raise ValueError("bug inattendu")
+
+    monkeypatch.setattr(pr.llm, "write_analysis", boom)
+    job = c.post("/api/paper/analysis", json={"symbol": "NESN.SW"}).json()["job"]
+    body = _await_job(c, job)
+    assert body == {"status": "error", "error": "bug inattendu", "code": 500}
+
+
+def test_an_unknown_job_is_a_404(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.get("/api/paper/job/pas-un-travail").status_code == 404
+
+
+def test_a_job_of_another_account_is_a_404_never_a_403(tmp_path, monkeypatch):
+    """404 et pas 403 : répondre « interdit » confirmerait qu'il existe. Le
+    résultat porte un portefeuille — deux verrous valent mieux qu'un."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    job = c.post("/api/paper/analysis", json={"symbol": "NESN.SW"}).json()["job"]
+    _await_job(c, job)
+    c.app.dependency_overrides[get_current_user] = \
+        lambda: FakeUser("money", username="bob")
+    assert c.get("/api/paper/job/%s" % job).status_code == 404
+
+
+def test_the_job_relay_is_closed_to_the_player_role(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch, role="player")
+    assert c.get("/api/paper/job/x").status_code == 403
+
+
+def test_a_pending_job_says_pending_and_nothing_else(tmp_path, monkeypatch):
+    """Le contrat de la relève : trois formes, et ``pending`` n'en porte
+    aucune autre clé (un ``result: null`` se lirait « fini, sans réponse »)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    started, release = threading.Event(), threading.Event()
+
+    def slow(facts, lang="fr"):
+        started.set()
+        release.wait(5)
+        return "Fiche du titre."
+
+    monkeypatch.setattr(pr.llm, "write_analysis", slow)
+    job = c.post("/api/paper/analysis", json={"symbol": "NESN.SW"}).json()["job"]
+    assert started.wait(5)
+    assert c.get("/api/paper/job/%s" % job).json() == {"status": "pending"}
+    release.set()
+    assert _await_job(c, job)["status"] == "done"
+
+
+def test_expired_jobs_are_purged_at_the_next_creation(tmp_path, monkeypatch):
+    """Purge à la CRÉATION : pas de tâche de fond à surveiller pour ça."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    old = c.post("/api/paper/analysis", json={"symbol": "NESN.SW"}).json()["job"]
+    _await_job(c, old)
+
+    with pr._JOBS_LOCK:
+        pr._JOBS[old]["created"] -= pr.JOB_TTL_S + 1
+    fresh = c.post("/api/paper/analysis", json={"symbol": "NESN.SW"}).json()["job"]
+    _await_job(c, fresh)
+
+    assert c.get("/api/paper/job/%s" % old).status_code == 404
+    assert c.get("/api/paper/job/%s" % fresh).status_code == 200
+
+
+def test_a_job_purged_mid_flight_does_not_resurrect(tmp_path, monkeypatch):
+    """Le fil qui finit APRÈS la purge ne ressuscite pas son entrée : sinon un
+    travail périmé reviendrait dans le registre sans date de création tenable."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    started, release = threading.Event(), threading.Event()
+
+    def slow(facts, lang="fr"):
+        started.set()
+        release.wait(5)
+        return "Fiche du titre."
+
+    monkeypatch.setattr(pr.llm, "write_analysis", slow)
+    job = c.post("/api/paper/analysis", json={"symbol": "NESN.SW"}).json()["job"]
+    assert started.wait(5)
+    with pr._JOBS_LOCK:
+        pr._JOBS.pop(job)
+    release.set()
+    time.sleep(0.2)
+    with pr._JOBS_LOCK:
+        assert job not in pr._JOBS
+
+
+def test_sync_keeps_the_former_inline_behaviour(tmp_path, monkeypatch):
+    """``?sync=1`` = la porte de sortie : le résultat, pas un accusé. C'est ce
+    mode que la suite existante utilise (86 appels bascules d'un coup)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = c.post("/api/paper/analysis?sync=1", json={"symbol": "NESN.SW"}).json()
+    assert body["analysis"] == "Fiche du titre."
+    assert "job" not in body
+
+
+def test_sync_still_raises_its_http_errors_in_line(tmp_path, monkeypatch):
+    """En mode en ligne, un 502 reste un 502 HTTP — on n'a pas déplacé les
+    erreurs dans le corps de la réponse pour tout le monde."""
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom(facts, lang="fr"):
+        raise RuntimeError("le coach est muet")
+
+    monkeypatch.setattr(pr.llm, "write_analysis", boom)
+    response = c.post("/api/paper/analysis?sync=1", json={"symbol": "NESN.SW"})
+    assert response.status_code == 502
+
+
+def test_two_concurrent_jobs_never_lose_a_journal_entry(tmp_path, monkeypatch):
+    """LE test du verrou. ``idea_journal.append_entry`` relit tout le journal,
+    ajoute en tête et réécrit — et nomme son temporaire d'après le seul PID.
+    Deux travaux détachés qui finissent ensemble ne perdaient pas seulement une
+    entrée : ils écrivaient dans le MÊME fichier temporaire.
+
+    La barrière force le chevauchement : sans verrou dans le router, les deux
+    fils lisent le journal vide en même temps et le second écrase le premier.
+    """
+    c, _ = make_client(tmp_path, monkeypatch)
+    barrier = threading.Barrier(2, timeout=5)
+
+    def rendezvous(context, lang="fr", risk_level="mesure", journal=None):
+        barrier.wait()          # les deux fils sortent du modèle ENSEMBLE
+        return '```json\n{"ideas": []}\n```'
+
+    monkeypatch.setattr(pr.llm, "suggest_ideas", rendezvous)
+    jobs = [c.post("/api/paper/ideas", json={}).json()["job"] for _ in range(2)]
+    for job in jobs:
+        assert _await_job(c, job)["status"] == "done"
+
+    entries = c.get("/api/paper/ideas/journal").json()["entries"]
+    assert len(entries) == 2
+
+
+def test_two_concurrent_jobs_never_lose_a_radar_hypothesis(tmp_path, monkeypatch):
+    """Même barrière sur l'état du RADAR : un lire-modifier-réécrire qui
+    s'entrelace perdrait un lot d'idées ET fausserait le décompte de
+    ``MAX_OPEN``."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    barrier = threading.Barrier(2, timeout=5)
+    tickers = iter(["NESN.SW", "AAPL"])
+
+    def rendezvous(context, lang="fr", risk_level="mesure", journal=None):
+        ticker = next(tickers)
+        barrier.wait()
+        return ('```json\n{"ideas": [{"ticker": "%s", "thesis": "une thèse",'
+                ' "direction": "up"}]}\n```' % ticker)
+
+    monkeypatch.setattr(pr.llm, "suggest_ideas", rendezvous)
+    for job in [c.post("/api/paper/ideas", json={}).json()["job"] for _ in range(2)]:
+        assert _await_job(c, job)["status"] == "done"
+
+    hypotheses = c.get("/api/paper/radar").json()["hypotheses"]
+    assert sorted(h["tickers"][0] for h in hypotheses) == ["AAPL", "NESN.SW"]
+
+
+def test_the_write_lock_is_reentrant(tmp_path, monkeypatch):
+    """``_sync_coach`` appelle ``_append_journal``, qui prend le même verrou.
+    Avec un ``Lock`` simple, ce chemin s'auto-bloquerait — au premier jalon
+    atteint, donc jamais en test et toujours en production."""
+    assert isinstance(pr._WRITE_LOCK, type(threading.RLock()))
+    with pr._WRITE_LOCK:
+        with pr._WRITE_LOCK:
+            pass
+
+
+def test_the_backfill_lock_is_separate_from_the_write_lock(tmp_path):
+    """Deux verrous DISTINCTS et jamais imbriqués : la collecte des dossiers
+    fait du réseau (secondes) avant d'écrire, la mettre sous le verrou des
+    écritures rapides sérialiserait deux travaux pour rien."""
+    assert pr._BACKFILL_LOCK is not pr._WRITE_LOCK
+
+
+# ================================================================
+#  LE JOURNAL DES CONVERGENCES, CLIQUABLE (27/08)
+#
+#  « La liste des convergences dites sur Telegram ; je clique -> toutes les
+#  infos dites et les liens entre. »
+# ================================================================
+
+def _digest_history(monkeypatch, entries):
+    """Une convergence dont l'état porte ``entries`` — le VRAI module pour le
+    dessin (``entry_graph`` est pur), l'état seul étant doublé."""
+    from backend.bots.paper import convergence
+    module = FakeModule(recent=lambda: {"history": list(entries)},
+                        load_state=lambda: {"history": list(entries)},
+                        entry_graph=convergence.entry_graph)
+    monkeypatch.setattr(pr, "_convergence", lambda: module)
+
+
+ENTRY_WITH_ITEMS = {
+    "ts": "2026-08-24T12:00:00", "factors": ["gov", "held_catalyst"],
+    "n_items": 2, "digest": "…", "llm": True,
+    "items": [
+        {"src": "gov", "id": "http://x.test/g", "title": "Droits de douane",
+         "symbol": "GOV", "sentiment": "gov", "link": "http://x.test/g"},
+        {"src": "news", "id": "http://x.test/n", "title": "Le fret bondit",
+         "symbol": "NESN.SW", "sentiment": "neg", "link": "http://x.test/n"},
+    ],
+}
+
+
+def test_the_digest_list_carries_its_items(tmp_path, monkeypatch):
+    """``/digest`` sert l'entrée TELLE QUELLE : les items voyagent sans que
+    l'endpoint ait à les recopier (c'est ce qui rend la liste cliquable)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    _digest_history(monkeypatch, [ENTRY_WITH_ITEMS])
+    entry = c.get("/api/paper/digest").json()["history"][0]
+    assert [i["title"] for i in entry["items"]] == ["Droits de douane",
+                                                    "Le fret bondit"]
+
+
+def test_a_digest_entry_opens_on_its_own_mini_graph(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    _digest_history(monkeypatch, [ENTRY_WITH_ITEMS])
+
+    body = c.get("/api/paper/digest/0/graph").json()
+    assert body["ts"] == "2026-08-24T12:00:00"
+    assert body["factors"] == ["gov", "held_catalyst"]
+    assert body["n_items"] == 2 and body["legacy"] is False
+    # L'ancre du seul VRAI titre, plus les deux pièces. « GOV » n'est pas un
+    # titre : il n'ouvre pas d'ancre (il resterait un faux centre au milieu).
+    assert [n["id"] for n in body["nodes"] if n["type"] == "watchlist"] == ["NESN.SW"]
+    assert sorted(n["type"] for n in body["nodes"]) == ["gov", "news", "watchlist"]
+    assert body["edges"] == [{"source": body["nodes"][2]["id"],
+                              "target": "NESN.SW", "type": "symbol",
+                              "sentiment": "neg"}]
+
+
+def test_a_digest_entry_can_be_addressed_by_its_timestamp(tmp_path, monkeypatch):
+    """L'horodatage est la seule clé qui reste JUSTE quand un nouveau digest
+    part entre l'affichage de la liste et le clic — l'index, lui, a glissé."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    fresher = dict(ENTRY_WITH_ITEMS, ts="2026-08-25T12:00:00", items=[])
+    _digest_history(monkeypatch, [fresher, ENTRY_WITH_ITEMS])
+
+    by_ts = c.get("/api/paper/digest/2026-08-24T12:00:00/graph").json()
+    assert by_ts["ts"] == "2026-08-24T12:00:00" and len(by_ts["edges"]) == 1
+    # ...et l'index 0 désigne bien l'autre, le plus récent.
+    assert c.get("/api/paper/digest/0/graph").json()["ts"] == "2026-08-25T12:00:00"
+
+
+def test_an_old_digest_entry_is_marked_legacy_not_empty(tmp_path, monkeypatch):
+    """Une entrée d'AVANT le lot rend un graphe vide MARQUÉ : le client peut
+    le DIRE, au lieu d'afficher un vide qui se lirait « cette convergence ne
+    reposait sur rien »."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    old = {k: v for k, v in ENTRY_WITH_ITEMS.items() if k != "items"}
+    _digest_history(monkeypatch, [old])
+
+    body = c.get("/api/paper/digest/0/graph").json()
+    assert body["legacy"] is True
+    assert body["nodes"] == [] and body["edges"] == []
+    # ...mais les MÉTADONNÉES de l'entrée restent servies : on sait de quelle
+    # convergence on parle, même sans ses pièces.
+    assert body["n_items"] == 2 and body["factors"] == ["gov", "held_catalyst"]
+
+
+def test_an_unknown_digest_entry_is_a_404(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    _digest_history(monkeypatch, [ENTRY_WITH_ITEMS])
+    assert c.get("/api/paper/digest/9/graph").status_code == 404
+    assert c.get("/api/paper/digest/2020-01-01T00:00:00/graph").status_code == 404
+
+
+def test_the_digest_graph_without_the_module_is_a_503(tmp_path, monkeypatch):
+    """On a demandé quelque chose de PRÉCIS : rendre un graphe vide ferait
+    passer une panne pour un fait (≠ la LECTURE de la liste, qui dégrade)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def absent():
+        raise ImportError("no module named convergence")
+
+    monkeypatch.setattr(pr, "_convergence", absent)
+    assert c.get("/api/paper/digest/0/graph").status_code == 503
+
+
+def test_the_digest_graph_survives_a_broken_state(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom():
+        raise IOError("état illisible")
+
+    monkeypatch.setattr(pr, "_convergence",
+                        lambda: FakeModule(load_state=boom))
+    assert c.get("/api/paper/digest/0/graph").status_code == 503
+
+
+def test_the_digest_graph_is_closed_to_the_player_role(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch, role="player")
+    assert c.get("/api/paper/digest/0/graph").status_code == 403
+
+
+# ================================================================
+#  LE CALENDRIER (27/08) — les rendez-vous notés à l'avance, et ce
+#  qu'ils ont donné
+# ================================================================
+
+def test_the_calendar_serves_the_dated_appointments(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    entries = [
+        {"date": "2026-08-26", "kind": "hypothesis", "label": "échéance NESN.SW",
+         "tickers": ["NESN.SW"], "direction": "up", "source_id": "h1",
+         "verdict": "flop", "move_pct": -4.2, "headline": "Nestlé déçoit",
+         "checked_at": "2026-08-26T18:00:00"},
+        {"date": "2026-09-17", "kind": "bc", "label": "réunion de la Fed",
+         "source_id": "fed-2026-09-17", "verdict": None, "move_pct": None,
+         "headline": "", "checked_at": None},
+    ]
+    monkeypatch.setattr(pr, "_calendar",
+                        lambda: FakeModule(calendar_view=lambda: entries))
+    assert c.get("/api/paper/calendar").json() == {"entries": entries}
+
+
+def test_the_calendar_without_the_module_is_an_empty_list(tmp_path, monkeypatch):
+    """Déploiement partiel : un tableau de bord ne tombe pas parce qu'un lot
+    n'est pas encore déployé (même posture que ``/news`` et ``/digest``)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def absent():
+        raise ImportError("no module named calendar")
+
+    monkeypatch.setattr(pr, "_calendar", absent)
+    assert c.get("/api/paper/calendar").json() == {"entries": []}
+
+
+def test_the_calendar_survives_a_broken_source(tmp_path, monkeypatch):
+    """Best-effort : un site de banque centrale qui hoquette ne rend pas 500."""
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom():
+        raise IOError("agenda illisible")
+
+    monkeypatch.setattr(pr, "_calendar",
+                        lambda: FakeModule(calendar_view=boom))
+    body = c.get("/api/paper/calendar").json()
+    assert body["entries"] == [] and "error" in body
+
+
+def test_the_calendar_is_closed_to_the_player_role(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch, role="player")
+    assert c.get("/api/paper/calendar").status_code == 403
+
+
+def test_the_calendar_is_open_to_the_trader_role(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch, role="trader")
+    monkeypatch.setattr(pr, "_calendar",
+                        lambda: FakeModule(calendar_view=lambda: []))
+    assert c.get("/api/paper/calendar").status_code == 200
+
+
+def test_too_many_pending_jobs_is_a_429(tmp_path, monkeypatch):
+    """Chaque travail détaché lance un SUBPROCESS du CLI Claude sur l'Omen. En
+    ligne, la requête HTTP servait de frein naturel ; détaché, ce frein
+    disparaît et une boucle de relance côté client en démarrerait autant qu'elle
+    veut."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    release = threading.Event()
+
+    def slow(facts, lang="fr"):
+        release.wait(5)
+        return "Fiche du titre."
+
+    monkeypatch.setattr(pr.llm, "write_analysis", slow)
+    body = {"symbol": "NESN.SW"}
+    jobs = []
+    for _ in range(pr.MAX_PENDING_JOBS_PER_USER):
+        response = c.post("/api/paper/analysis", json=body)
+        assert response.status_code == 200, response.text
+        jobs.append(response.json()["job"])
+
+    refused = c.post("/api/paper/analysis", json=body)
+    assert refused.status_code == 429
+    assert "en cours" in refused.json()["detail"]
+
+    release.set()
+    for job in jobs:
+        assert _await_job(c, job)["status"] == "done"
+    # ...et une fois la file vidée, on repart normalement.
+    assert c.post("/api/paper/analysis", json=body).status_code == 200
+
+
+def test_the_cap_counts_PER_USER_not_globally(tmp_path, monkeypatch):
+    """Deux traders qui travaillent en même temps ne se bloquent pas l'un
+    l'autre : le plafond protège la machine d'UN emballement, il ne rationne
+    pas le service."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    release = threading.Event()
+
+    def slow(facts, lang="fr"):
+        release.wait(5)
+        return "Fiche du titre."
+
+    monkeypatch.setattr(pr.llm, "write_analysis", slow)
+    body = {"symbol": "NESN.SW"}
+    for _ in range(pr.MAX_PENDING_JOBS_PER_USER):
+        assert c.post("/api/paper/analysis", json=body).status_code == 200
+    assert c.post("/api/paper/analysis", json=body).status_code == 429
+
+    c.app.dependency_overrides[get_current_user] = \
+        lambda: FakeUser("money", username="bob")
+    assert c.post("/api/paper/analysis", json=body).status_code == 200
+    release.set()
+
+
+def test_the_inline_mode_is_not_capped(tmp_path, monkeypatch):
+    """``?sync=1`` n'ouvre aucun fil : c'est la requête HTTP elle-même qui
+    tient le travail, donc le frein naturel est toujours là."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    for _ in range(pr.MAX_PENDING_JOBS_PER_USER + 2):
+        assert c.post("/api/paper/analysis?sync=1",
+                      json={"symbol": "NESN.SW"}).status_code == 200

@@ -29,6 +29,7 @@ Les flux de trésorerie réels, eux, portent bien le taux de chaque transaction.
 import hashlib
 import json
 import logging
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -99,6 +100,180 @@ class OrderError(Exception):
     Distinct d'une panne de cours : un OrderError devient un 400 avec un message
     lisible, parce que c'est l'utilisateur qui doit corriger quelque chose.
     """
+
+
+# --------------------------------------------------------------------------- #
+# TRAVAUX EN ARRIÈRE-PLAN — les six appels au modèle ne tiennent plus la requête
+#
+# INCIDENT MESURÉ. Les six endpoints qui appellent le modèle mettent 60 à 90
+# secondes. Ils répondaient EN LIGNE, donc la requête HTTP restait ouverte tout
+# ce temps, à travers le tunnel Cloudflare — qui coupe vers 100 s. Le moindre
+# hoquet réseau pendant l'attente, et l'utilisateur récoltait un 502 : le
+# travail avait bien eu lieu (le journal, le pipeline, le radar étaient écrits),
+# mais la réponse était perdue et l'écran disait « erreur ».
+#
+# Le patron est celui des autres bots du dépôt (Bond Scanner, Harvester) : on
+# DÉTACHE le travail, la requête rend un accusé, et le client vient chercher le
+# résultat. Ici un THREAD suffit là où eux lancent un subprocess — le travail
+# est un appel réseau qui attend, pas du calcul, et le résultat doit revenir
+# dans le même processus pour être rendu au client.
+#
+# Trois choix qui méritent d'être dits :
+#
+# 1. **Le fil est ``daemon``.** Il survit à la requête (c'est tout l'objet), mais
+#    il ne retient PAS l'arrêt du serveur : l'auto-deploy redémarre uvicorn
+#    toutes les minutes dès qu'un commit arrive, et bloquer 90 s à chaque
+#    redémarrage coûterait plus cher que de perdre un digest. Un travail coupé
+#    par un redémarrage se relance d'un clic.
+# 2. **``current_user`` ne franchit JAMAIS la frontière du fil.** L'objet vient
+#    d'une session SQLAlchemy que FastAPI referme à la fin de la requête ; le
+#    lire depuis le fil léverait un ``DetachedInstanceError`` — et il le
+#    lèverait DANS le fil, donc en silence, le travail se soldant par une erreur
+#    incompréhensible. On extrait le nom d'utilisateur AVANT de partir.
+# 3. **Une ``HTTPException`` levée dans le travail n'est pas perdue.** Elle est
+#    rangée telle quelle (code + message) et rendue par la relève : un 502
+#    « le coach n'a pas répondu » doit rester un 502 « le coach n'a pas
+#    répondu », pas devenir un 500 anonyme.
+#
+# Le registre est en MÉMOIRE, comme celui des sessions MC : un redémarrage le
+# perd, et c'est assumé (la relève rend alors 404, le client relance).
+# --------------------------------------------------------------------------- #
+
+# {id: {"status", "created", "user", "result"?, "error"?, "code"?, "finished"?}}
+_JOBS: Dict[str, Dict[str, Any]] = {}
+_JOBS_LOCK = threading.Lock()
+
+# Au-delà, un travail est soit fini et déjà lu, soit bloqué depuis longtemps.
+# Purgé à chaque création — pas de tâche de fond à surveiller pour ça.
+JOB_TTL_S = 30 * 60
+
+JOB_PENDING = "pending"
+JOB_DONE = "done"
+JOB_ERROR = "error"
+
+# Combien de travaux un même compte peut avoir EN COURS à la fois.
+#
+# Chaque travail détaché lance un appel au modèle, c'est-à-dire un SUBPROCESS
+# du CLI Claude sur l'Omen — une machine de 15 Go qui fait déjà tourner le
+# serveur, les conteneurs de jeu et les autres bots. En ligne, la requête HTTP
+# servait de frein naturel : on ne pouvait pas en avoir plus d'un par onglet
+# ouvert. Détaché, ce frein disparaît, et une boucle de relance côté client (ou
+# six boutons cliqués de suite) en démarrerait autant qu'elle veut.
+#
+# Quatre suffit à couvrir l'usage réel (l'interface interdit déjà le double-clic
+# sur un même bouton) et borne la casse. Au-delà : 429, avec un message qui dit
+# quoi faire — attendre, pas réessayer.
+MAX_PENDING_JOBS_PER_USER = 4
+
+# Verrou des ÉCRITURES D'ÉTAT PARTAGÉ faites dans un travail.
+#
+# Avant ce lot, deux appels au modèle ne pouvaient pas se chevaucher : la
+# requête HTTP les sérialisait de fait. Détachés, ils le peuvent — et trois de
+# ces écritures sont des lire-modifier-réécrire SANS verrou
+# (``idea_journal.append_entry``, ``radar.save_state``, ``board``) : deux
+# travaux qui finissent en même temps, et l'un écrase l'entrée de l'autre.
+#
+# Pire, ``idea_journal.append_entry`` nomme son fichier temporaire d'après le
+# PID SEUL : deux fils du même processus écrivent dans le MÊME temporaire, et
+# l'un le renomme pendant que l'autre y écrit encore. Ce n'est plus une entrée
+# perdue, c'est un journal corrompu.
+#
+# Le verrou ne couvre QUE l'écriture (millisecondes), jamais l'appel au modèle
+# (une minute et demie) : deux travaux restent parallèles là où ça compte.
+#
+# ``RLock`` et non ``Lock`` : ces écrivains s'appellent entre eux
+# (``_sync_coach`` -> ``_append_journal``, ``_sync_coach`` -> ``_safe_bias_note``).
+# Avec un verrou simple, protéger le gros bloc ferait s'auto-bloquer le petit —
+# un interblocage qui ne se manifesterait qu'au premier jalon atteint, donc
+# jamais en test et toujours en production.
+_WRITE_LOCK = threading.RLock()
+
+# Verrou SÉPARÉ pour la collecte des dossiers historiques : elle fait du RÉSEAU
+# (plusieurs secondes) avant d'écrire son état, et la mettre sous ``_WRITE_LOCK``
+# sérialiserait les travaux pendant tout ce temps. Deux verrous distincts, jamais
+# imbriqués — donc aucun interblocage possible.
+_BACKFILL_LOCK = threading.Lock()
+
+
+def _purge_jobs(now: float) -> None:
+    """Retire les travaux périmés. À appeler VERROU TENU.
+
+    Purge sur la date de CRÉATION, quel que soit le statut : un travail encore
+    ``pending`` après trente minutes n'attend plus rien (l'appel au modèle dure
+    une minute et demie), il est bloqué. Le fil qui finirait quand même ne
+    ressuscite pas son entrée — ``_finish_job`` ne réécrit que ce qui existe.
+    """
+    dead = [key for key, job in _JOBS.items()
+            if now - float(job.get("created") or 0) > JOB_TTL_S]
+    for key in dead:
+        _JOBS.pop(key, None)
+
+
+def _finish_job(job_id: str, outcome: Dict[str, Any]) -> None:
+    """Range le résultat — sauf si le travail a été purgé entre-temps."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job is None:
+            return
+        job.update(outcome)
+        job["finished"] = time.time()
+
+
+def _run_job(job_id: str, work: Callable[[], Any]) -> None:
+    """Exécute le travail et range son résultat. N'EXPLOSE JAMAIS : une
+    exception qui remonterait d'un fil ne serait vue de personne, et le travail
+    resterait ``pending`` à vie."""
+    try:
+        outcome = {"status": JOB_DONE, "result": work()}
+    except HTTPException as e:                      # 502 LLM, 400 métier, 404…
+        outcome = {"status": JOB_ERROR, "error": str(e.detail)[:300],
+                   "code": e.status_code}
+    except Exception as e:                          # noqa: BLE001 — jamais fatal
+        logger.exception("paper: travail %s en échec", job_id)
+        outcome = {"status": JOB_ERROR, "error": str(e)[:300], "code": 500}
+    _finish_job(job_id, outcome)
+
+
+def _start_job(username: str, work: Callable[[], Any]) -> Dict[str, str]:
+    """Détache ``work`` et rend l'accusé ``{"job": id}``.
+
+    ``username`` est le PROPRIÉTAIRE : la relève n'appartient qu'à lui. Les
+    identifiants sont déjà imprévisibles, mais le résultat porte un
+    portefeuille — deux verrous valent mieux qu'un.
+
+    Au-delà de ``MAX_PENDING_JOBS_PER_USER`` travaux en cours pour ce compte :
+    429. La purge tourne AVANT le décompte, donc un travail bloqué depuis une
+    demi-heure ne peut pas condamner le compte à vie.
+    """
+    job_id = uuid.uuid4().hex
+    with _JOBS_LOCK:
+        _purge_jobs(time.time())
+        pending = sum(1 for job in _JOBS.values()
+                      if job.get("user") == username
+                      and job.get("status") == JOB_PENDING)
+        if pending >= MAX_PENDING_JOBS_PER_USER:
+            raise HTTPException(
+                status_code=429,
+                detail="Trop d'analyses en cours (%d). Attends qu'elles "
+                       "finissent avant d'en lancer une autre."
+                       % MAX_PENDING_JOBS_PER_USER)
+        _JOBS[job_id] = {"status": JOB_PENDING, "created": time.time(),
+                         "user": username}
+    threading.Thread(target=_run_job, args=(job_id, work), daemon=True,
+                     name="paper-job-%s" % job_id[:8]).start()
+    return {"job": job_id}
+
+
+def _job_or_sync(sync: Any, username: str,
+                 work: Callable[[], Any]) -> Dict[str, Any]:
+    """Le branchement des six endpoints : détaché par DÉFAUT, en ligne sur
+    ``?sync=1``.
+
+    Le mode en ligne n'est pas là pour décorer : c'est la porte de sortie des
+    tests (qui n'ont rien à gagner à tourner un fil pour un LLM doublé) et
+    d'un client qui préfère attendre.
+    """
+    return work() if sync else _start_job(username, work)
 
 
 # --------------------------------------------------------------------------- #
@@ -657,7 +832,19 @@ def _sync_coach(username: str, portfolio: Dict[str, Any],
     deviendrait illisible en une journée.
 
     Rend ``{profile, biases, stats, synced}``.
+
+    Sous ``_WRITE_LOCK`` (réentrant : ce corps appelle ``_append_journal`` et
+    ``_safe_bias_note``, qui le prennent aussi) — c'est un lire-modifier-
+    réécrire du profil, et deux travaux détachés commencent tous les deux par
+    un ``force=True``.
     """
+    with _WRITE_LOCK:
+        return _sync_coach_locked(username, portfolio, now_iso, force)
+
+
+def _sync_coach_locked(username: str, portfolio: Dict[str, Any],
+                       now_iso: Optional[str], force: bool) -> Dict[str, Any]:
+    """Le corps de ``_sync_coach``, VERROU TENU."""
     now = now_iso or _now_iso()
     profile = store.load_coach(username) or coach.empty_profile()
 
@@ -714,10 +901,14 @@ def _sync_coach(username: str, portfolio: Dict[str, Any],
 
 def _append_journal(username: str, title: str, body: str, now_iso: str) -> None:
     """Ajoute une entrée au ``Journal.md``. Best-effort : le carnet ne doit
-    jamais faire échouer la réponse HTTP qu'il documente."""
+    jamais faire échouer la réponse HTTP qu'il documente.
+
+    Sous ``_WRITE_LOCK`` : deux travaux détachés peuvent finir en même temps.
+    """
     try:
-        store.append_note(username, "Journal.md",
-                          coach.journal_entry(title, body, now_iso))
+        with _WRITE_LOCK:
+            store.append_note(username, "Journal.md",
+                              coach.journal_entry(title, body, now_iso))
     except (ValueError, OSError) as e:
         logger.warning("paper: entrée de journal non écrite: %s", e)
 
@@ -740,7 +931,10 @@ def _append_discussion(username: str, question: str, answer: str, now_iso: str) 
     entry = ("## %s — Question de %s\n\n**Q :** %s\n\n**Coach :** %s\n"
              % (date, username, question, answer))
     try:
-        store.append_note(username, "Discussions.md", entry)
+        # Carnet PARTAGÉ -> deux traders peuvent y écrire en même temps, et
+        # depuis ce lot deux travaux d'un même trader aussi.
+        with _WRITE_LOCK:
+            store.append_note(username, "Discussions.md", entry)
     except (ValueError, OSError) as e:
         logger.warning("paper: discussion non persistée: %s", e)
 
@@ -1055,6 +1249,41 @@ class BoardScenarioPayload(BaseModel):
 
 class BoardBranchPayload(BaseModel):
     status: str = ""
+
+
+# --------------------------------------------------------------------------- #
+# Endpoint — la RELÈVE d'un travail détaché
+# --------------------------------------------------------------------------- #
+
+@router.get("/job/{job_id}")
+def paper_job(job_id: str,
+              current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Où en est un travail lancé par l'un des six endpoints du modèle.
+
+    Trois formes, et une seule d'entre elles est un 200 « tout va bien » :
+
+    * ``{"status": "pending"}`` — il tourne encore, revenir dans deux secondes ;
+    * ``{"status": "done", "result": {...}}`` — ``result`` est EXACTEMENT ce
+      que l'endpoint rendait avant ce lot, sans réenveloppe ;
+    * ``{"status": "error", "error": "...", "code": 502}`` — le travail a
+      échoué. C'est un 200 HTTP : la relève, elle, a réussi. Mélanger les deux
+      (rendre 502 ici) empêcherait le client de distinguer « le coach est en
+      panne » de « ma requête de relève est passée à côté ».
+
+    Travail inconnu -> 404. Travail d'un AUTRE compte -> 404 aussi, jamais 403 :
+    répondre « interdit » confirmerait qu'il existe.
+    """
+    with _JOBS_LOCK:
+        job = _JOBS.get(str(job_id or ""))
+        if job is None or job.get("user") != current_user.username:
+            raise HTTPException(status_code=404, detail="Travail introuvable.")
+        out: Dict[str, Any] = {"status": job.get("status") or JOB_PENDING}
+        if job.get("status") == JOB_DONE:
+            out["result"] = job.get("result")
+        elif job.get("status") == JOB_ERROR:
+            out["error"] = job.get("error") or "erreur inconnue"
+            out["code"] = job.get("code") or 500
+        return out
 
 
 # --------------------------------------------------------------------------- #
@@ -1423,16 +1652,28 @@ def paper_coach(lang: str = "fr",
 
 
 @router.post("/coach/ask")
-def paper_coach_ask(data: AskPayload,
+def paper_coach_ask(data: AskPayload, sync: bool = False,
                     current_user: User = Depends(require_role("admin", "money", "trader"))):
     """Une question au coach. Le LLM RÉDIGE à partir de faits déjà calculés.
+
+    DÉTACHÉ par défaut (cf. le registre de travaux en tête de fichier) : rend
+    ``{"job": id}``, le résultat se relève sur ``GET /job/{id}``. ``?sync=1``
+    garde l'ancien comportement en ligne.
+    """
+    # Le nom est extrait ICI : ``current_user`` meurt avec la session (cf. le
+    # point 2 du registre de travaux). Même geste dans les cinq voisins.
+    username = current_user.username
+    return _job_or_sync(sync, username, lambda: _coach_ask_work(username, data))
+
+
+def _coach_ask_work(username: str, data: AskPayload) -> Dict[str, Any]:
+    """Le travail de ``/coach/ask`` — exécuté en ligne ou dans un fil.
 
     ``lang`` change la langue de la RÉPONSE, pas celle du contexte : les faits
     passés au modèle restent en français (ce sont ceux que ``_sync_coach`` vient
     d'écrire dans le carnet, qui reste français par décision) — un modèle lit
     des faits dans une langue et rédige dans une autre sans difficulté.
     """
-    username = current_user.username
     portfolio = _load(username)
     synced = _sync_coach(username, portfolio.to_dict(), force=True)
     context = _coach_context(portfolio, synced["profile"], synced["biases"],
@@ -1451,10 +1692,22 @@ def paper_coach_ask(data: AskPayload,
 
 
 @router.post("/postmortem")
-def paper_postmortem(data: PostmortemPayload,
+def paper_postmortem(data: PostmortemPayload, sync: bool = False,
                      current_user: User = Depends(require_role("admin", "money", "trader"))):
-    """Post-mortem d'un trade clôturé, archivé dans le ``Journal.md`` (§11)."""
+    """Post-mortem d'un trade clôturé, archivé dans le ``Journal.md`` (§11).
+
+    DÉTACHÉ par défaut ; ``?sync=1`` pour l'ancien comportement en ligne.
+    """
     username = current_user.username
+    return _job_or_sync(sync, username, lambda: _postmortem_work(username, data))
+
+
+def _postmortem_work(username: str, data: PostmortemPayload) -> Dict[str, Any]:
+    """Le travail de ``/postmortem`` — exécuté en ligne ou dans un fil.
+
+    Les 404 (aucun trade, trade introuvable) sont levés ICI, donc DANS le
+    travail : la relève les rend tels quels, code compris.
+    """
     portfolio = _load(username)
     if not portfolio.trades:
         raise HTTPException(status_code=404, detail="Aucun trade clôturé à analyser.")
@@ -1487,9 +1740,19 @@ def paper_postmortem(data: PostmortemPayload,
 
 
 @router.post("/analysis")
-def paper_analysis(data: AnalysisPayload,
+def paper_analysis(data: AnalysisPayload, sync: bool = False,
                    current_user: User = Depends(require_role("admin", "money", "trader"))):
-    """Fiche pédagogique d'un titre : les chiffres ET leur lecture, sans opinion."""
+    """Fiche pédagogique d'un titre : les chiffres ET leur lecture, sans opinion.
+
+    DÉTACHÉ par défaut ; ``?sync=1`` pour l'ancien comportement en ligne.
+    """
+    return _job_or_sync(sync, current_user.username,
+                        lambda: _analysis_work(data))
+
+
+def _analysis_work(data: AnalysisPayload) -> Dict[str, Any]:
+    """Le travail de ``/analysis`` — le seul des six qui ne touche à aucune
+    mémoire d'utilisateur (il lit une cotation et fait rédiger)."""
     symbol = str(data.symbol or "").strip().upper()
     if not symbol:
         raise HTTPException(status_code=400, detail="Symbole manquant.")
@@ -1736,7 +1999,13 @@ def _convergence():
 
 @router.get("/digest")
 def paper_digest(current_user: User = Depends(require_role("admin", "money", "trader"))):
-    """Historique des digests de convergence. Best-effort comme ses voisins."""
+    """Historique des digests de convergence. Best-effort comme ses voisins.
+
+    Chaque entrée porte désormais ses ``items`` — les pièces qui ont déclenché
+    ce digest, figées au moment du tir. C'est ce qui rend le journal cliquable
+    (le mini-graphe d'une entrée se demande à ``/digest/{ref}/graph``). Les
+    entrées d'avant le 27/08 n'en ont pas : le champ est simplement absent.
+    """
     try:
         module = _convergence()
     except ImportError:
@@ -1746,6 +2015,66 @@ def paper_digest(current_user: User = Depends(require_role("admin", "money", "tr
     except Exception as e:                      # noqa: BLE001 - lecture best-effort
         logger.warning("paper: convergence indisponible: %s", e)
         return {"history": [], "error": str(e)[:200]}
+
+
+def _digest_entry(module: Any, ref: str) -> Optional[Dict[str, Any]]:
+    """L'entrée d'historique désignée par ``ref`` — un INDEX ou un horodatage.
+
+    Les deux formes parce que les deux sont naturelles côté client : la liste
+    est rendue dans l'ordre, donc l'index suffit ; mais l'horodatage est la
+    seule clé qui reste JUSTE quand un nouveau digest est parti entre
+    l'affichage de la liste et le clic (l'index, lui, a glissé d'un cran).
+    """
+    history = [h for h in (module.load_state().get("history") or [])
+               if isinstance(h, dict)]
+    ref = str(ref or "").strip()
+    if not ref:
+        return None
+    try:
+        index = int(ref)
+    except (TypeError, ValueError):
+        for entry in history:
+            if str(entry.get("ts") or "") == ref:
+                return entry
+        return None
+    if index < 0:
+        index += len(history)
+    return history[index] if 0 <= index < len(history) else None
+
+
+@router.get("/digest/{ref}/graph")
+def paper_digest_graph(ref: str,
+                       current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Le MINI-GRAPHE d'UNE convergence : ce qui a été dit, et les liens entre.
+
+    ``ref`` est l'index dans l'historique (0 = le plus récent) ou l'horodatage
+    ``ts`` de l'entrée. Mêmes types de nœuds et d'arêtes que la grande toile
+    (``/graph``), pour que le frontend le dessine avec le même code.
+
+    Une entrée ANTÉRIEURE à ce lot n'a pas gardé ses pièces : elle rend un
+    graphe vide marqué ``legacy: true``. Le client peut alors le DIRE, au lieu
+    d'afficher un vide qui se lirait « cette convergence ne reposait sur rien ».
+
+    Entrée introuvable -> 404. Module absent -> 503 : on a demandé quelque chose
+    de précis, rendre un graphe vide ferait passer une panne pour un fait.
+    """
+    try:
+        module = _convergence()
+    except ImportError:
+        raise HTTPException(status_code=503,
+                            detail="La convergence n'est pas déployée sur ce serveur.")
+    try:
+        entry = _digest_entry(module, ref)
+    except Exception as e:                      # noqa: BLE001 - lecture best-effort
+        logger.warning("paper: historique de convergence illisible: %s", e)
+        raise HTTPException(status_code=503, detail="Historique illisible.")
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Convergence introuvable.")
+    built = module.entry_graph(entry)
+    return {"ts": entry.get("ts") or "", "factors": entry.get("factors") or [],
+            "n_items": entry.get("n_items") or 0,
+            "nodes": built.get("nodes") or [], "edges": built.get("edges") or [],
+            "legacy": bool(built.get("legacy"))}
 
 
 @router.post("/digest/run")
@@ -1771,6 +2100,44 @@ def paper_digest_run(force: bool = False,
         return module.maybe_fire(force=bool(force))
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)[:300])
+
+
+def _calendar():
+    """Le module du calendrier (rendez-vous datés + verdict du jour J), importé
+    paresseusement — même esprit que ses voisins."""
+    from backend.bots.paper import calendar as calendar_module
+    return calendar_module
+
+
+@router.get("/calendar")
+def paper_calendar(current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Les rendez-vous que le simulateur a NOTÉS À L'AVANCE, et ce qu'ils ont
+    donné — LECTURE PURE.
+
+    Trois familles, assemblées par le module : les réunions de banque centrale,
+    les échéances des hypothèses ouvertes (le jour où le pari se juge), et les
+    catalyseurs dont une dépêche portait une date lisible. Chaque entrée échue
+    porte son verdict (``flop``/``confirme``/``mitige``) et le mouvement chiffré
+    du titre.
+
+    Le calendrier est DÉRIVÉ : il n'est stocké nulle part, il est recalculé à
+    chaque lecture depuis les mémoires qui existent déjà. Seuls les VERDICTS
+    sont persistés — parce qu'eux, on ne peut plus les recalculer une fois le
+    jour passé (les cours d'hier ne reviennent pas).
+
+    Best-effort comme ses voisins : module absent ou état illisible -> liste
+    vide, jamais un 500. Un tableau de bord ne tombe pas parce qu'un site de
+    banque centrale a hoqueté.
+    """
+    try:
+        module = _calendar()
+    except ImportError:
+        return {"entries": []}
+    try:
+        return {"entries": list(module.calendar_view() or [])}
+    except Exception as e:                      # noqa: BLE001 - lecture best-effort
+        logger.warning("paper: calendrier indisponible: %s", e)
+        return {"entries": [], "error": str(e)[:200]}
 
 
 def _whales():
@@ -2074,12 +2441,26 @@ def _backfill_new_tickers(ideas: Any,
     neuf (``backfill_symbol`` le sauterait de toute façon, il est frais 30 j).
 
     Rend la liste des symboles réellement collectés — jamais une exception.
+
+    Sous ``_BACKFILL_LOCK`` et NON ``_WRITE_LOCK`` : ``backfill_symbol`` fait
+    des requêtes réseau (plusieurs secondes) avant de réécrire son état, qu'il
+    a relu au début. Le mettre sous le verrou des écritures rapides
+    sérialiserait deux travaux détachés pendant tout ce réseau, pour rien. Les
+    deux verrous ne sont JAMAIS imbriqués — aucun interblocage possible.
     """
     try:
         backfill_mod = _backfill()
     except ImportError:
         return []
+    with _BACKFILL_LOCK:
+        return _backfill_new_tickers_locked(backfill_mod, ideas, fetch, sleep)
 
+
+def _backfill_new_tickers_locked(backfill_mod: Any, ideas: Any,
+                                 fetch: Optional[Callable[[str], str]],
+                                 sleep: Optional[Callable[[float], None]]
+                                 ) -> List[str]:
+    """Le corps de ``_backfill_new_tickers``, VERROU TENU."""
     wanted: List[str] = []
     seen = set()
     for idea in (ideas or []):
@@ -2303,6 +2684,24 @@ def _recent_news(username: str) -> List[Dict[str, Any]]:
         return []
 
 
+# Plafond des dépêches recopiées dans le PROMPT du coach (``/ideas`` et
+# ``/board/scenarios/generate``).
+#
+# Posé le 27/08 en même temps que le passage de ``newswatch._MAX_EVENTS`` de
+# 100 à 300. Tous les autres consommateurs de la veille bornent par le TEMPS
+# (48 h pour la convergence, sept jours pour la toile) ; celui-ci recopiait la
+# liste ENTIÈRE dans un prompt facturé au jeton. Sans plafond, tripler
+# l'historique aurait triplé la facture de chaque appel au modèle — un effet de
+# bord invisible à la lecture du diff de ``newswatch``.
+#
+# 200 = exactement le pire cas D'AVANT le bump (un état utilisateur de 100 plus
+# l'état global de 100, que ``recent_events`` fusionne) : ce plafond ne retire
+# rien de ce que le coach voyait hier, il empêche seulement la croissance. Et
+# ``recent_events`` rend la liste triée du plus récent au plus ancien, donc
+# tronquer garde les dépêches fraîches.
+STRATEGY_NEWS_CAP = 200
+
+
 def _recent_filings() -> List[Dict[str, Any]]:
     """Les dépôts 13F récents — best-effort, même contrat que ``_recent_news``."""
     try:
@@ -2491,9 +2890,11 @@ def _strategy_context(username: str,
                              synced["stats"])
     context["watchlist"] = _watchlist_context(username)
     context["radar_open_hypotheses"] = _open_radar_hypotheses()
-    context["recent_news"] = _recent_news(username)
+    # ⚠️ PLAFONNÉ — cf. ``STRATEGY_NEWS_CAP``. C'est le seul consommateur de la
+    # veille qui recopiait tout dans un PROMPT, et le seul qui ne bornait rien.
+    context["recent_news"] = _recent_news(username)[:STRATEGY_NEWS_CAP]
     context["recent_filings"] = _recent_filings()
-    context["recent_crypto"] = _recent_crypto(username)
+    context["recent_crypto"] = _recent_crypto(username)[:STRATEGY_NEWS_CAP]
     context["whale_moves"] = _whale_moves()
     # Les rendez-vous DATÉS (W2b) — la clé n'existe que s'il y en a.
     agenda = _agenda_macro()
@@ -2520,6 +2921,10 @@ def _register_radar_ideas(ideas: List[Dict[str, Any]], now_iso: str) -> List[Dic
     N'IMPORTE quelle étape — lecture, écriture) ne casse jamais la réponse ;
     dans ce cas TOUTES les idées reviennent non trackées plutôt que de
     prétendre à moitié un enregistrement qui n'a pas eu lieu.
+
+    Sous ``_WRITE_LOCK`` : lire l'état du radar, compter les hypothèses
+    ouvertes, ajouter, réécrire — deux travaux détachés qui s'entrelacent ici
+    perdraient un lot d'idées ET fausseraient le décompte de ``MAX_OPEN``.
     """
     if not ideas:
         return []
@@ -2528,6 +2933,13 @@ def _register_radar_ideas(ideas: List[Dict[str, Any]], now_iso: str) -> List[Dic
     except ImportError:
         return [dict(idea, tracked=False) for idea in ideas]
 
+    with _WRITE_LOCK:
+        return _register_radar_ideas_locked(radar_module, ideas, now_iso)
+
+
+def _register_radar_ideas_locked(radar_module: Any, ideas: List[Dict[str, Any]],
+                                 now_iso: str) -> List[Dict[str, Any]]:
+    """Le corps de ``_register_radar_ideas``, VERROU TENU."""
     try:
         state = radar_module.load_state()
         hypotheses = state["hypotheses"]
@@ -2592,22 +3004,34 @@ def _pipeline_from_ideas(username: str, ideas: List[Dict[str, Any]]) -> None:
 
     Best-effort PAR IDÉE : un symbole bancal ne doit pas faire perdre les
     autres, ni casser une réponse LLM déjà payée.
+
+    Sous ``_WRITE_LOCK`` : ``add_pipeline_item`` relit le tableau, dédoublonne
+    par symbole actif, puis réécrit — sans verrou, deux travaux détachés se
+    dédoublonnent l'un contre un tableau que l'autre est en train de remplacer.
     """
     for idea in ideas or []:
         if not idea.get("tracked"):
             continue
         try:
-            board.add_pipeline_item(username, idea.get("ticker") or "",
-                                    idea.get("thesis") or "", "coach",
-                                    now_iso=_now_iso())
+            with _WRITE_LOCK:
+                board.add_pipeline_item(username, idea.get("ticker") or "",
+                                        idea.get("thesis") or "", "coach",
+                                        now_iso=_now_iso())
         except Exception as e:                  # noqa: BLE001 - tableau best-effort
             logger.warning("paper: idée %r non ajoutée au pipeline: %s",
                            idea.get("ticker"), e)
 
 
 @router.post("/ideas")
-def paper_ideas(data: IdeasPayload,
+def paper_ideas(data: IdeasPayload, sync: bool = False,
                 current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Idées de trade — DÉTACHÉ par défaut, ``?sync=1`` pour l'ancien
+    comportement en ligne. Le travail est décrit par ``_ideas_work``."""
+    username = current_user.username
+    return _job_or_sync(sync, username, lambda: _ideas_work(username, data))
+
+
+def _ideas_work(username: str, data: IdeasPayload) -> Dict[str, Any]:
     """Idées de trade orientées RENTABILITÉ — le coach change de registre : il
     ne fait plus le point, il propose (décision utilisateur).
 
@@ -2632,7 +3056,6 @@ def paper_ideas(data: IdeasPayload,
     croit avoir demandé. Chaque idée le porte, et le radar le garde — c'est ce
     qui rend le bilan par niveau possible.
     """
-    username = current_user.username
     lang = normalize_lang(data.lang)
     risk_level = llm.normalize_risk_level(data.risk_level)
     context = _strategy_context(username, risk_level=data.risk_level)
@@ -2700,11 +3123,18 @@ def _journal_append(username: str, kind: str, text: str, lang: str = "fr",
 
     Une écriture qui échoue ne doit JAMAIS faire perdre une réponse LLM déjà
     payée : c'est le même raisonnement que ``_pipeline_from_ideas``.
+
+    ⚠️ Sous ``_WRITE_LOCK``, et c'est ICI que ça compte le plus :
+    ``append_entry`` relit tout le journal, ajoute en tête, réécrit — et nomme
+    son fichier temporaire d'après le seul PID. Deux travaux détachés qui
+    finissent ensemble ne perdraient pas seulement une entrée, ils se
+    marcheraient dessus dans le même temporaire.
     """
     try:
-        idea_journal.append_entry(username, kind=kind, text=text, lang=lang,
-                                  risk_level=risk_level, ideas=ideas,
-                                  verdicts=verdicts, now_iso=_now_iso())
+        with _WRITE_LOCK:
+            idea_journal.append_entry(username, kind=kind, text=text, lang=lang,
+                                      risk_level=risk_level, ideas=ideas,
+                                      verdicts=verdicts, now_iso=_now_iso())
     except Exception as e:                          # noqa: BLE001
         logger.warning("paper: entrée de journal non écrite: %s", e)
 
@@ -2912,8 +3342,17 @@ def _position_factpack(username: str,
 
 
 @router.post("/positions/review")
-def paper_positions_review(data: ReviewPayload,
+def paper_positions_review(data: ReviewPayload, sync: bool = False,
                            current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Revue des positions détenues — DÉTACHÉ par défaut, ``?sync=1`` pour
+    l'ancien comportement en ligne. Le travail est décrit par
+    ``_positions_review_work``."""
+    username = current_user.username
+    return _job_or_sync(sync, username,
+                        lambda: _positions_review_work(username, data))
+
+
+def _positions_review_work(username: str, data: ReviewPayload) -> Dict[str, Any]:
     """Revue des positions DÉTENUES — « le bouton qui analyse avec les infos
     qu'on a déjà ».
 
@@ -2926,7 +3365,6 @@ def paper_positions_review(data: ReviewPayload,
     revue de rien n'est pas une erreur du serveur, c'est un malentendu.
     Panne LLM -> 502. Le texte est APPENDÉ au journal, comme les idées.
     """
-    username = current_user.username
     portfolio = _load(username)
     if not portfolio.positions:
         raise HTTPException(
@@ -3197,8 +3635,15 @@ def paper_board_pipeline_remove(item_id: str,
 
 
 @router.post("/board/scenarios/generate")
-def paper_board_scenarios_generate(data: BoardScenarioPayload,
+def paper_board_scenarios_generate(data: BoardScenarioPayload, sync: bool = False,
                                    current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Arbre de scénarios — DÉTACHÉ par défaut, ``?sync=1`` pour l'ancien
+    comportement en ligne. Le travail est décrit par ``_scenarios_work``."""
+    username = current_user.username
+    return _job_or_sync(sync, username, lambda: _scenarios_work(username, data))
+
+
+def _scenarios_work(username: str, data: BoardScenarioPayload) -> Dict[str, Any]:
     """Le coach dessine un arbre de chemins possibles pour le marché.
 
     Contexte assemblé comme ``/ideas`` (``_strategy_context``) + le pipeline en
@@ -3209,7 +3654,6 @@ def paper_board_scenarios_generate(data: BoardScenarioPayload,
     502, comme une panne du LLM : mieux vaut le dire que d'afficher un
     demi-arbre.
     """
-    username = current_user.username
     context = _strategy_context(username)
     context["pipeline"] = _pipeline_view(username)
     # Même balayage frais que ``/ideas`` : cartographier les chemins possibles
@@ -3230,9 +3674,11 @@ def paper_board_scenarios_generate(data: BoardScenarioPayload,
         raise HTTPException(status_code=502,
                             detail="Le coach n'a pas rendu d'arbre exploitable.")
 
-    tree = board.add_scenario(username, parsed, _now_iso())
-    return {"text": llm.intro_of(text), "tree": tree,
-            "scenarios": board.scenarios_view(board.load_board(username))}
+    # Sous ``_WRITE_LOCK`` : ``add_scenario`` relit le tableau et le réécrit.
+    with _WRITE_LOCK:
+        tree = board.add_scenario(username, parsed, _now_iso())
+        return {"text": llm.intro_of(text), "tree": tree,
+                "scenarios": board.scenarios_view(board.load_board(username))}
 
 
 @router.post("/board/scenarios/{tree_id}/branches/{branch_id}")

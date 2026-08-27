@@ -65,9 +65,15 @@ def _no_side_channels(monkeypatch):
       soixantaine de tests écrits avant lui, dont aucun comportement n'a changé.
       On coupe par sa liste de flux ;
     * la **convergence** — appelée à la fin de chaque cycle, elle appellerait
-      le VRAI CLI Claude le jour où deux facteurs s'alignent dans une fixture.
+      le VRAI CLI Claude le jour où deux facteurs s'alignent dans une fixture ;
+    * les **verdicts du calendrier** (27/08) — un cycle sur trois juge les
+      rendez-vous échus, et pour les juger il DEMANDE UNE COTATION par titre.
+      C'est une porte réseau, et elle s'est ouverte toute seule : le premier
+      lancement après le branchement a rendu ``verdicts: 2`` dans un test qui
+      se croyait hors ligne (des fixtures d'hypothèses arrivées à échéance). On
+      coupe donc au même endroit que les autres.
 
-    Et un SIXIÈME garde-fou, celui-là contre un piège mesuré : un compte X dont
+    Et un SEPTIÈME garde-fou, celui-là contre un piège mesuré : un compte X dont
     la page ne rend AUCUN post compte une « anomalie », et deux anomalies de
     suite escaladent vers le NAVIGATEUR FURTIF du Harvester. Un test qui rend
     deux fois une liste de posts vide déclenchait donc le vrai
@@ -76,7 +82,7 @@ def _no_side_channels(monkeypatch):
     remplace par un échec IMMÉDIAT, qui est exactement ce que fait le vrai étage
     quand patchright manque. Un test qui vise l'escalade injecte le sien.
 
-    Les cinq sont neutralisés ici, et les tests qui les visent réinstallent leur
+    Les six sont neutralisés ici, et les tests qui les visent réinstallent leur
     propre doublure. Un test de veille ne doit jamais dépendre du réseau.
 
     ⚠️ Le volet **banques centrales**, lui, N'EST PAS neutralisé : c'est un volet
@@ -93,6 +99,8 @@ def _no_side_channels(monkeypatch):
     from backend.bots.paper import convergence
     monkeypatch.setattr(convergence, "maybe_fire",
                         lambda **kwargs: {"fired": False, "sent": False})
+    from backend.bots.paper import calendar as calendar_mod
+    monkeypatch.setattr(calendar_mod, "run_verdicts", lambda **kwargs: [])
 
 
 def _no_stealth(handle):
@@ -575,7 +583,8 @@ def test_run_once_no_config_does_nothing():
     counters = newswatch.run_once(now=NOW, fetch=fetch, notifier=notifier,
                                   tg_cfg={}, sleep=lambda s: None, mode="tout")
     assert counters == {"users": 0, "symbols": 0, "fetched": 0, "notified": 0,
-                        "errors": 0, "convergence_fired": False}
+                        "errors": 0, "convergence_fired": False,
+                        "verdicts": 0}
     assert fetch.calls == []   # ni le volet gov ni le volet par symbole ne tournent
     assert notifier.calls == []
 
@@ -1002,7 +1011,8 @@ def test_run_once_no_portfolios_still_runs_gov_watch():
     fetch = _FetchQueue()
     counters = _run(fetch, _NotifySpy())
     assert counters == {"users": 0, "symbols": 0, "fetched": 9, "notified": 0,
-                        "errors": 0, "convergence_fired": False}
+                        "errors": 0, "convergence_fired": False,
+                        "verdicts": 0}
 
 
 # =========================================================================== #
@@ -4304,3 +4314,121 @@ def test_F10_une_liste_vide_n_interroge_evidemment_aucun_compte(monkeypatch):
            x_pacer=_XPacer(), x_parse=lambda page, handle: [])
 
     assert calls == []
+
+
+# =========================================================================== #
+#  LE PLAFOND D'HISTORIQUE (27/08) — « la base ne grandit pas »
+# =========================================================================== #
+
+def test_le_plafond_d_historique_tient_trois_cents_evenements():
+    """100 -> 300 le 27/08. Le chiffre datait de DEUX volets ; ils sont huit et
+    plus, chacun journalisant quatre à huit événements par cycle, plusieurs
+    cycles par jour. À 100, la fenêtre ROULAIT : une dépêche de la veille était
+    déjà chassée par le bruit du matin.
+
+    Le test épingle la VALEUR parce que c'est elle que l'utilisateur voit —
+    « la base ne grandit pas » était le symptôme exact de ce plafond."""
+    assert newswatch._MAX_EVENTS == 300
+
+
+def test_les_caps_PAR_VOLET_restent_tres_en_dessous_du_plafond():
+    """Le rapport entre les deux est ce qui protège la diversité du fil : un
+    seul volet ne doit jamais pouvoir chasser tous les autres. Monter le
+    plafond sans regarder ce rapport aurait laissé la garde-fou intacte mais
+    silencieuse."""
+    per_run = (newswatch._BC_MAX_EVENTS_PER_RUN,
+               newswatch._PRESSEFI_MAX_EVENTS_PER_RUN,
+               newswatch._BSKY_MAX_EVENTS_PER_RUN,
+               newswatch._REDDIT_MAX_EVENTS_PER_RUN,
+               newswatch.X_CANDIDATE_MAX_EVENTS_PER_RUN)
+    assert max(per_run) * len(per_run) < newswatch._MAX_EVENTS
+
+
+# =========================================================================== #
+#  LE VERDICT DU JOUR J (27/08) — le cycle juge les rendez-vous échus
+#
+#  « Le simulateur savait dire "il va se passer quelque chose le 17" ; il ne
+#  disait jamais ce qui s'était RÉELLEMENT passé le 17. »
+# =========================================================================== #
+
+class _Judge(object):
+    """Faux juge : compte ses passages, rend ce qu'on lui dit."""
+
+    def __init__(self, judged=None, boom=False):
+        self.calls = []
+        self.judged = list(judged or [])
+        self.boom = boom
+
+    def __call__(self, now=None):
+        self.calls.append(now)
+        if self.boom:
+            raise RuntimeError("cotations injoignables")
+        return {"checked": len(self.judged), "judged": list(self.judged)}
+
+
+def test_le_cycle_juge_les_rendez_vous_un_cycle_sur_trois():
+    """Même cadence que Reddit, et compteur lu AVANT incrément : un déploiement
+    neuf juge dès son PREMIER cycle."""
+    judge = _Judge(judged=[{"key": "hypothesis|2026-08-24|h1",
+                            "verdict": "flop"}])
+    for _ in range(4):
+        counters = _run(_FetchQueue(), _NotifySpy(), judge=judge)
+    # cycles 0, 1, 2, 3 -> jugés aux cycles 0 et 3 seulement
+    assert len(judge.calls) == 2
+    assert counters["verdicts"] == 1
+
+
+def test_le_compteur_de_cadence_du_calendrier_est_PERSISTE():
+    """Sans persistance, chaque cycle repartirait de zéro et jugerait à chaque
+    fois — la cadence serait morte sans que rien ne le signale."""
+    judge = _Judge()
+    _run(_FetchQueue(), _NotifySpy(), judge=judge)
+    state = newswatch._load_global_seen()
+    assert state["calendar_cycle"] == 1
+
+
+def test_calendar_cycle_due_est_TOLERANT_a_un_compteur_illisible():
+    """Un état corrompu ne doit pas éteindre pour toujours la seule boucle qui
+    dit ce qui s'est vraiment passé au rendez-vous."""
+    assert newswatch.calendar_cycle_due(0) is True
+    assert newswatch.calendar_cycle_due(1) is False
+    assert newswatch.calendar_cycle_due(3) is True
+    assert newswatch.calendar_cycle_due("pas un nombre") is True
+    assert newswatch.calendar_cycle_due(None) is True
+
+
+def test_un_calendrier_en_panne_ne_fait_JAMAIS_perdre_un_cycle():
+    """Best-effort STRICT, même patron que la convergence : l'échec est compté
+    et logué, jamais propagé."""
+    judge = _Judge(boom=True)
+    counters = _run(_FetchQueue(), _NotifySpy(), judge=judge)
+    assert counters["verdicts"] == 0
+    assert counters["errors"] >= 1
+
+
+def test_le_compteur_de_verdicts_lit_judged_et_non_les_cles_du_dict():
+    """``run_verdicts`` rend ``{"checked", "judged"}``. Un ``len()`` posé
+    dessus sans y penser compterait ses DEUX clés et annoncerait « 2 verdicts »
+    à chaque cycle, y compris quand rien n'a été jugé — mesuré au premier
+    branchement."""
+    judge = _Judge(judged=[])
+    counters = _run(_FetchQueue(), _NotifySpy(), judge=judge)
+    assert counters["verdicts"] == 0
+
+
+def test_les_verdicts_sont_rendus_AVANT_la_convergence():
+    """La convergence RELIT les verdicts pour ses facteurs ``event_*`` : elle
+    doit voir ceux de CE cycle, pas ceux du précédent."""
+    order = []
+    judge = _Judge()
+
+    def spy_judge(now=None):
+        order.append("judge")
+        return judge(now=now)
+
+    def spy_converge(**kwargs):
+        order.append("converge")
+        return {"fired": False, "sent": False}
+
+    _run(_FetchQueue(), _NotifySpy(), judge=spy_judge, converge=spy_converge)
+    assert order == ["judge", "converge"]

@@ -135,7 +135,31 @@ _RSS_URL_TEMPLATE = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}
 
 _MAX_AGE_S = 48 * 3600          # une news plus vieille ne déclenche jamais de notif
 _MAX_NOTIFY_PER_SYMBOL = 3      # cap PAR SYMBOLE PAR RUN, partagé pos/neg/watch
-_MAX_EVENTS = 100                # cap de l'historique persisté (par état)
+
+# Cap de l'historique persisté, PAR ÉTAT (l'état global des volets partagés, et
+# celui de chaque compte).
+#
+# ⚠️ 100 -> 300 le 27/08. Ce chiffre datait de DEUX volets ; ils sont huit et
+# plus (politique, crypto, éco, climat, X, Bluesky, Reddit, presse mondiale, plus
+# le volet par symbole). Chacun journalise jusqu'à quatre à huit événements par
+# cycle, et le cycle tourne plusieurs fois par jour : à 100, la fenêtre ROULAIT
+# — une dépêche de la veille était déjà chassée par le bruit du matin, et
+# l'utilisateur voyait « la base ne grandit pas » alors qu'elle se vidait par le
+# bas aussi vite qu'elle se remplissait par le haut.
+#
+# Conséquences vérifiées avant de bouger le chiffre :
+#   * les CONSOMMATEURS bornent déjà par le TEMPS et non par le nombre —
+#     ``convergence`` sur 48 h, ``radar`` sur ``EVENT_WINDOW_H``, la toile sur
+#     sept jours puis ``graph.MAX_NODES``. Trois fois plus d'histoire ne leur
+#     fait pas trois fois plus de travail : elle leur donne accès aux dépêches
+#     de la veille, qui tombaient dehors ;
+#   * le seul consommateur qui ne bornait rien était le contexte du coach
+#     (``paper_router._strategy_context``), qui recopie les dépêches dans un
+#     PROMPT. Il a reçu son propre plafond (``STRATEGY_NEWS_CAP``) — sinon ce
+#     bump aurait triplé la facture de chaque appel au modèle ;
+#   * la purge par âge (``_purge_old_seen``) est inchangée : elle continue de
+#     borner le fichier par le haut, indépendamment de ce cap.
+_MAX_EVENTS = 300
 _SEEN_MAX_AGE_DAYS = 30          # purge des entrées "seen" trop vieilles
 _PACE_S = 1.1                    # piège #67 : un burst de requêtes = 429
 
@@ -450,7 +474,8 @@ X_PENDING_SEEN_MAX = 10
 
 # Cap d'événements JOURNALISÉS par passage de la file de probation. Dix
 # candidats × huit posts = quatre-vingts événements possibles en un passage,
-# contre ``_MAX_EVENTS`` = 100 pour TOUT l'historique : la file la moins fiable
+# contre ``_MAX_EVENTS`` (300, et 100 quand ce cap a été écrit) pour TOUT
+# l'historique : la file la moins fiable
 # du guetteur pouvait à elle seule chasser la presse, la politique et les
 # banques centrales du fil. Le cap borne la JOURNALISATION, jamais la MESURE :
 # les ``hits`` qui décident d'une promotion continuent de compter au-delà (même
@@ -568,6 +593,14 @@ REDDIT_SUBS = REDDIT_CORE + REDDIT_INTL
 REDDIT_LIMIT = 100
 _REDDIT_CYCLE_EVERY = 3          # 1 cycle sur 3 (cf. ci-dessus)
 _REDDIT_MAX_AGE_S = 24 * 3600    # comme le gov et le crypto : l'immédiateté
+
+# --- le VERDICT du jour J (27/08) ------------------------------------------ #
+#
+# Un cycle sur trois, comme Reddit — mais pour une raison inverse : Reddit est
+# limité par le débit qu'on nous accorde, le calendrier par l'utilité. Les cours
+# bougent en continu, un verdict rendu quinze minutes plus tôt ne change aucune
+# décision, et chaque passage coûte une cotation par titre échu.
+_CALENDAR_CYCLE_EVERY = 3
 
 # Le flux rend 100 posts d'un coup. Tous comptent pour les TENDANCES (un
 # compteur ne coûte qu'un horodatage), mais seule une poignée devient un
@@ -1764,6 +1797,21 @@ def x_cycle_due(cycle: Any) -> bool:
         return True
 
 
+def calendar_cycle_due(cycle: Any) -> bool:
+    """Ce cycle doit-il juger les rendez-vous échus ? (PUR — un cycle sur
+    ``_CALENDAR_CYCLE_EVERY``.)
+
+    Même posture qu'``x_cycle_due``/``reddit_cycle_due`` pour un compteur
+    illisible : ``True``. Un état corrompu ne doit pas éteindre pour toujours la
+    seule boucle qui dit ce qui s'est VRAIMENT passé au rendez-vous — et un
+    passage de trop ne coûte que des cotations déjà mises en cache.
+    """
+    try:
+        return int(cycle) % _CALENDAR_CYCLE_EVERY == 0
+    except (TypeError, ValueError):
+        return True
+
+
 def reddit_cycle_due(cycle: Any) -> bool:
     """Ce cycle doit-il interroger Reddit ? (PUR — un cycle sur
     ``_REDDIT_CYCLE_EVERY``, soit ~15 min.)
@@ -2102,9 +2150,20 @@ def _load_seen_state(path: Path) -> Dict[str, Any]:
     "x_cand_cycle" (leur cadence de sondage) et "x_pending_seen" (la trace des
     candidats libérés faute de place dans la liste manuelle).
 
-    Idem, enfin, pour "reddit_group_cycle" (27/08) : quel GROUPE de subreddits
+    Idem, encore, pour "reddit_group_cycle" (27/08) : quel GROUPE de subreddits
     a été interrogé au dernier passage — cf. REDDIT_GROUPS. Absent -> 0, donc
-    le groupe historique d'abord."""
+    le groupe historique d'abord.
+
+    Idem, enfin, pour "calendar_cycle" (27/08) : la cadence du VERDICT du jour J
+    (cf. ``calendar_cycle_due``).
+
+    ⚠️ Ce retour est une ALLOWLIST : toute clé absente de la liste ci-dessous
+    est SILENCIEUSEMENT perdue à la relecture, même si le cycle vient de
+    l'écrire. Un compteur de cadence oublié ici serait donc relu à zéro à chaque
+    passage — la cadence n'existerait plus, le volet tournerait à CHAQUE cycle,
+    et rien ne le signalerait (c'est exactement ce qui est arrivé à
+    "calendar_cycle" au premier branchement, attrapé par un test dédié). Tout
+    ajout de clé d'état doit passer par ici."""
     if not path.is_file():
         return _default_seen_state()
     try:
@@ -2157,6 +2216,7 @@ def _load_seen_state(path: Path) -> Dict[str, Any]:
         "reddit_cycle": _counter("reddit_cycle"),
         "reddit_group_cycle": _counter("reddit_group_cycle"),
         "reddit_trends": _dict("reddit_trends"),
+        "calendar_cycle": _counter("calendar_cycle"),
     }
 
 
@@ -3169,7 +3229,8 @@ def _poll_candidates(state: Dict[str, Any], now_dt: datetime,
       pour un 404 en boucle est le pire achat du guetteur ;
     * ses événements sont plafonnés à ``X_CANDIDATE_MAX_EVENTS_PER_RUN`` pour
       TOUT le passage (dix candidats × huit posts = quatre-vingts événements
-      possibles contre ``_MAX_EVENTS`` = 100 pour l'historique entier : la file
+      possibles contre ``_MAX_EVENTS`` — 300, et 100 quand ce cap a été écrit —
+      pour l'historique entier : la file
       la moins fiable chassait tout le reste du fil). Le cap borne la
       JOURNALISATION, jamais la MESURE — les ``hits`` qui décident d'une
       promotion continuent de compter au-delà.
@@ -3804,7 +3865,8 @@ def run_once(now: Optional[datetime] = None,
             news_collect: Optional[Callable[..., Any]] = None,
             bsky_fetch: Optional[Callable[[str], Any]] = None,
             bsky_parse: Optional[Callable[[Any], List[Dict[str, Any]]]] = None,
-            converge: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
+            converge: Optional[Callable[..., Any]] = None,
+            judge: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
     """Un cycle de veille news, DIX volets :
 
     1. **politique GLOBAL** (toujours, même sans portefeuille) ;
@@ -3844,7 +3906,7 @@ def run_once(now: Optional[datetime] = None,
     """
     counters: Dict[str, Any] = {"users": 0, "symbols": 0, "fetched": 0,
                                 "notified": 0, "errors": 0,
-                                "convergence_fired": False}
+                                "convergence_fired": False, "verdicts": 0}
 
     cfg = tg_cfg if tg_cfg is not None else (alerts.load_cfg() or {})
     if not cfg.get("token") or not cfg.get("chat_id"):
@@ -4169,6 +4231,35 @@ def run_once(now: Optional[datetime] = None,
         _run_reddit_volet(gov_state, now_dt, anchor_extra, counters,
                           reddit_fetch, reddit_parse)
 
+    # ----------------------------------------------------------------- #
+    # Volet 1sexies -- le VERDICT DU JOUR J (27/08), UN CYCLE SUR TROIS.
+    #
+    # Le simulateur savait dire « il va se passer quelque chose le 17 » ; il ne
+    # disait jamais ce qui s'était RÉELLEMENT passé le 17. Ce passage juge les
+    # rendez-vous arrivés à échéance, et ses verdicts deviennent des facteurs
+    # de convergence (``event_flop``/``event_confirmed``).
+    #
+    # POURQUOI ICI, et pas dans le chemin d'un endpoint : le jugement coûte des
+    # cotations et une relecture des dépêches. Le brancher sur le cycle du
+    # guetteur le rend gratuit du point de vue de l'utilisateur — et surtout il
+    # tourne même quand personne n'a ouvert le tableau de bord, ce qui est
+    # exactement le cas où l'avertissement compte (« le jour J c'est un flop ->
+    # le coach m'avertit VITE »).
+    #
+    # Un cycle sur trois, comme Reddit : les cours bougent en continu, mais un
+    # verdict rendu quinze minutes plus tôt ne change aucune décision, et le
+    # compteur lu AVANT incrément fait qu'un déploiement neuf juge dès son
+    # premier cycle.
+    #
+    # AVANT la sauvegarde de l'état global et AVANT ``_fire_convergence`` : la
+    # convergence relit les verdicts, elle doit voir ceux de CE cycle.
+    # ----------------------------------------------------------------- #
+    calendar_cycle = int(gov_state.get("calendar_cycle") or 0)
+    gov_state["calendar_cycle"] = calendar_cycle + 1
+    if calendar_cycle_due(calendar_cycle):
+        counters["verdicts"] = _run_calendar_verdicts(now_dt, counters,
+                                                      judge=judge)
+
     if gov_changed:
         gov_state["events"] = gov_events[:_MAX_EVENTS]
         _purge_old_seen(gov_state, now_dt)
@@ -4307,6 +4398,52 @@ def run_once(now: Optional[datetime] = None,
         now_dt, tg_cfg=tg_cfg, notifier=notifier, converge=converge,
         counters=counters)
     return counters
+
+
+def _run_calendar_verdicts(now_dt: datetime,
+                           counters: Optional[Dict[str, Any]] = None,
+                           judge: Optional[Callable[..., Any]] = None) -> int:
+    """Juge les rendez-vous arrivés à échéance — best-effort STRICT.
+
+    Même patron que ``_fire_convergence``, et pour la même raison : le guetteur
+    a déjà fait son travail quand on arrive ici, un calendrier en panne ne doit
+    JAMAIS faire perdre un cycle de veille. L'échec est compté et logué, jamais
+    propagé.
+
+    Le module peut ne pas être déployé (déploiement partiel) : l'``ImportError``
+    est traitée comme n'importe quelle panne — zéro verdict, cycle intact.
+
+    Rend le NOMBRE de rendez-vous jugés à ce passage, pour que le compteur du
+    cycle le dise. Un zéro est le cas NORMAL : la plupart des jours, aucun
+    rendez-vous n'arrive à échéance.
+
+    ⚠️ ``run_verdicts`` rend un DICT ``{"checked", "judged"}``, pas une liste.
+    Un ``len()`` posé dessus sans y penser compterait ses DEUX clés et
+    annoncerait « 2 verdicts » à chaque cycle, y compris quand rien n'a été
+    jugé — un compteur qui ment est pire que pas de compteur (mesuré : c'est
+    exactement ce qu'a rendu le premier lancement).
+    """
+    try:
+        if judge is not None:
+            result = judge(now=now_dt)
+        else:
+            from backend.bots.paper import calendar as calendar_mod
+            result = calendar_mod.run_verdicts(now=now_dt)
+    except Exception as exc:      # noqa: BLE001 — jamais fatal pour le cycle
+        logger.warning("paper newswatch: verdicts du calendrier en panne (%s)",
+                       type(exc).__name__)
+        if counters is not None:
+            counters["errors"] = int(counters.get("errors") or 0) + 1
+        return 0
+    if isinstance(result, dict):
+        try:
+            return len(result.get("judged") or [])
+        except TypeError:
+            return 0
+    try:
+        return len(result or [])  # tolérance : une doublure de test peut rendre une liste
+    except TypeError:
+        return 0
 
 
 def _fire_convergence(now_dt: datetime,

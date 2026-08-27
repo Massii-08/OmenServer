@@ -1001,10 +1001,20 @@ def test_un_catalyseur_monde_sur_un_titre_suivi_allume_held_catalyst(src):
 
 
 def test_les_volets_monde_n_ajoutent_aucun_facteur_au_contrat():
-    """« Pas de nouveau facteur » : le contrat public reste les huit codes."""
-    assert convergence.FACTOR_CODES == (
+    """« Pas de nouveau facteur » — l'invariant du lot « volets monde » : ces
+    volets élargissent la MATIÈRE, jamais la liste des facteurs.
+
+    Les deux codes de calendrier ajoutés le 27/08 ne le contredisent pas : ils
+    ne viennent pas d'un volet de veille mais de la boucle du jour J (un
+    rendez-vous NOTÉ À L'AVANCE qui arrive à échéance), et ils ont été demandés
+    explicitement. Le test épingle donc les huit codes historiques EN TÊTE et
+    laisse la liste s'allonger par la FIN — ce qui garde l'ordre des items
+    stable pour tout ce qui existait avant.
+    """
+    assert convergence.FACTOR_CODES[:8] == (
         "fresh_hyps", "gov", "held_catalyst", "held_risk", "whale_filing",
         "whale_sold_watched", "cross_source", "crowd_buzz")
+    assert convergence.FACTOR_CODES[8:] == ("event_flop", "event_confirmed")
 
 
 # =========================================================================== #
@@ -1559,9 +1569,11 @@ def test_F7_une_source_anonyme_pese_quand_meme_comme_facteur_ORDINAIRE():
 
 
 def test_F7_whale_sold_watched_ne_vient_JAMAIS_d_une_depeche():
-    """Le second facteur de menace n'a pas besoin de ce garde-fou : sa matière
-    vient de ``whales``, pas du guetteur de presse."""
-    assert convergence.THREAT_FACTORS == ("held_risk", "whale_sold_watched")
+    """Les deux AUTRES facteurs de menace n'ont pas besoin de ce garde-fou :
+    leur matière ne vient pas du guetteur de presse — ``whales`` pour l'un, un
+    mouvement de COURS mesuré pour l'autre (cf. ``THREAT_FACTORS``)."""
+    assert convergence.THREAT_FACTORS == ("held_risk", "whale_sold_watched",
+                                          "event_flop")
     anonyme = _news(symbol="NESN.SW", sentiment="neg", src="reddit",
                     link="http://x.test/r2")
     assert _collect6(news=[anonyme], held=["NESN.SW"],
@@ -1611,3 +1623,368 @@ def test_F8_un_vrai_titre_reste_evidemment_compte():
     named = _news(symbol="NVDA", sentiment="gov", link="http://x.test/nv",
                   title="Nvidia nommée")
     assert _collect6(news=[named], watched=["NVDA"])["factors"]["held_catalyst"] is True
+
+
+# =========================================================================== #
+#  LE JOURNAL CLIQUABLE — les PIÈCES d'une entrée, et le mini-graphe (27/08)
+#
+#  « En bas de la page Connexions, la liste des convergences dites sur Telegram ;
+#  je clique -> toutes les infos dites et les liens entre. »
+# =========================================================================== #
+
+def test_J1_history_items_ne_garde_que_les_champs_utiles():
+    """Compact par CHOIX : de quoi RECONNAÎTRE la pièce, la ROUVRIR, la SITUER."""
+    items = [{"src": "news", "id": "http://x.test/1", "title": "Le fret bondit",
+              "symbol": "NESN.SW", "ts": "2026-08-24T09:00:00",
+              "sentiment": "neg", "inutile": "à jeter"}]
+    assert convergence.history_items(items) == [{
+        "src": "news", "id": "http://x.test/1", "title": "Le fret bondit",
+        "symbol": "NESN.SW", "ts": "2026-08-24T09:00:00",
+        "sentiment": "neg", "link": "http://x.test/1"}]
+
+
+def test_J1_une_cle_vide_est_ABSENTE_pas_nulle():
+    """Une entrée d'historique se relit à l'œil : pas de colonne de ``null``."""
+    row = convergence.history_items([{"src": "filing", "id": "acc-1",
+                                      "title": "Berkshire — dépôt 13F",
+                                      "symbol": "", "ts": ""}])[0]
+    assert row == {"src": "filing", "id": "acc-1",
+                   "title": "Berkshire — dépôt 13F"}
+
+
+def test_J1_le_lien_n_est_rendu_que_s_il_est_VRAIMENT_une_url():
+    """Une dépêche sans lien porte une EMPREINTE comme identité — la servir
+    comme lien cliquable donnerait un hachage à cliquer."""
+    hashed = convergence.history_items([{"src": "news", "id": "a1b2c3d4e5f6",
+                                         "title": "Sans lien"}])[0]
+    assert "link" not in hashed
+    real = convergence.history_items([{"src": "news", "id": "https://x.test/2",
+                                       "title": "Avec lien"}])[0]
+    assert real["link"] == "https://x.test/2"
+
+
+def test_J1_le_cap_est_de_trente():
+    items = [{"src": "news", "id": "id-%d" % i, "title": "t%d" % i}
+             for i in range(50)]
+    out = convergence.history_items(items)
+    assert len(out) == convergence.MAX_HISTORY_ITEMS == 30
+    # L'ordre d'entrée est celui de ``collect_factors`` (par facteur) : tronquer
+    # garde donc les items des facteurs les plus structurants.
+    assert out[0]["id"] == "id-0" and out[-1]["id"] == "id-29"
+
+
+def test_J2_le_tir_range_les_items_dans_l_entree(sources, alice):
+    """Les pièces sont FIGÉES au tir : la fenêtre du guetteur roule, dans trois
+    jours ces dépêches n'existeront plus nulle part."""
+    sources.events = [_news(symbol="GOV", sentiment="gov", link="http://x.test/gov",
+                            title="Droits de douane sur l'acier")]
+    sources.filings = [_filing()]
+
+    convergence.maybe_fire(now=NOW, llm=_llm("digest"), notifier=_notifier([]),
+                           tg_cfg=TG, fetch_state=_radar_state())
+
+    entry = convergence.load_state()["history"][0]
+    assert entry["n_items"] == 2
+    assert [i["src"] for i in entry["items"]] == ["gov", "filing"]
+    assert entry["items"][0]["title"] == "Droits de douane sur l'acier"
+    assert entry["items"][0]["link"] == "http://x.test/gov"
+
+
+def test_J2_n_items_reste_le_compte_REEL_meme_tronque(sources, alice, monkeypatch):
+    """``n_items`` est ce qui dit au lecteur qu'il n'a pas tout sous les yeux :
+    il compte les items CONTRIBUTIFS, pas ceux que l'entrée a pu emporter."""
+    monkeypatch.setattr(convergence, "MAX_HISTORY_ITEMS", 2)
+    sources.events = [_news(symbol="GOV", sentiment="gov",
+                            link="http://x.test/g%d" % i, title="gov %d" % i)
+                      for i in range(5)]
+    sources.filings = [_filing()]
+
+    convergence.maybe_fire(now=NOW, llm=_llm("digest"), notifier=_notifier([]),
+                           tg_cfg=TG, fetch_state=_radar_state())
+
+    entry = convergence.load_state()["history"][0]
+    assert entry["n_items"] == 6 and len(entry["items"]) == 2
+
+
+def test_J3_le_mini_graphe_relie_les_items_a_leurs_ancres():
+    entry = {"ts": "2026-08-24T12:00:00", "items": [
+        {"src": "news", "id": "http://x.test/1", "title": "Le fret bondit",
+         "symbol": "NESN.SW", "sentiment": "neg", "link": "http://x.test/1"},
+        {"src": "hyp", "id": "h1", "title": "Le café renchérit",
+         "symbol": "NESN.SW"},
+    ]}
+    built = convergence.entry_graph(entry)
+
+    assert built.get("legacy") is None
+    # L'ancre D'ABORD : le frontend peint dans l'ordre reçu.
+    assert built["nodes"][0] == {"id": "NESN.SW", "type": "watchlist",
+                                 "label": "NESN.SW", "symbol": "NESN.SW", "ts": ""}
+    assert [n["type"] for n in built["nodes"][1:]] == ["news", "hypothesis"]
+    assert built["nodes"][1]["link"] == "http://x.test/1"
+    # Une arête par item, du type de sa FAMILLE (comme la toile).
+    assert [(e["target"], e["type"]) for e in built["edges"]] == [
+        ("NESN.SW", "symbol"), ("NESN.SW", "ticker")]
+    assert built["edges"][0]["sentiment"] == "neg"
+
+
+def test_J3_les_types_de_noeuds_et_d_aretes_sont_CEUX_DE_LA_TOILE():
+    """Un type inventé ici serait un type que le frontend ne saurait pas
+    peindre : le mini-graphe se dessine avec le code de ``/graph``."""
+    from backend.bots.paper import graph
+    for node_type in convergence._ITEM_NODE_TYPES.values():
+        assert node_type in graph.INFO_TYPES
+    for edge_type in list(convergence._ITEM_EDGE_TYPES.values()) + \
+            [convergence._DEFAULT_EDGE_TYPE]:
+        assert edge_type in (graph.EDGE_SYMBOL, graph.EDGE_TICKER,
+                             graph.EDGE_ISSUER)
+    assert convergence._ENTRY_ANCHOR_TYPE == graph.DEFAULT_ANCHOR_TYPE
+
+
+def test_J3_un_pseudo_symbole_n_ouvre_JAMAIS_d_ancre():
+    """« GOV » n'est pas un titre : lui donner une ancre planterait un faux
+    centre au milieu du dessin. L'item reste, isolé — c'est ce qu'il est."""
+    built = convergence.entry_graph({"items": [
+        {"src": "gov", "id": "http://x.test/g", "title": "Droits de douane",
+         "symbol": "GOV"}]})
+    assert [n["id"] for n in built["nodes"]] == [built["nodes"][0]["id"]]
+    assert built["nodes"][0]["type"] == "gov"
+    assert built["edges"] == []
+
+
+def test_J3_deux_items_sur_le_meme_titre_partagent_UNE_ancre():
+    built = convergence.entry_graph({"items": [
+        {"src": "news", "id": "http://x.test/1", "title": "a", "symbol": "NESN.SW"},
+        {"src": "news", "id": "http://x.test/2", "title": "b", "symbol": "NESN.SW"},
+    ]})
+    assert len([n for n in built["nodes"] if n["type"] == "watchlist"]) == 1
+    assert len(built["edges"]) == 2
+
+
+def test_J3_un_item_en_double_ne_compte_qu_une_fois():
+    built = convergence.entry_graph({"items": [
+        {"src": "news", "id": "http://x.test/1", "title": "a", "symbol": "NESN.SW"},
+        {"src": "news", "id": "http://x.test/1", "title": "a", "symbol": "NESN.SW"},
+    ]})
+    assert len(built["nodes"]) == 2 and len(built["edges"]) == 1
+
+
+def test_J4_une_entree_D_AVANT_LE_LOT_est_marquee_legacy():
+    """Sans ``items``, on rend un graphe vide MARQUÉ — le client peut dire
+    « antérieure au journal détaillé » au lieu d'afficher un vide qui se lirait
+    « cette convergence ne reposait sur rien »."""
+    old = {"ts": "2026-08-01T12:00:00", "factors": ["gov"], "n_items": 3,
+           "digest": "…", "llm": True}
+    assert convergence.entry_graph(old) == {"nodes": [], "edges": [],
+                                            "legacy": True}
+    assert convergence.entry_graph(None) == {"nodes": [], "edges": [],
+                                             "legacy": True}
+
+
+def test_J4_une_entree_AVEC_items_vides_n_est_PAS_legacy():
+    """Nuance qui compte : « le tir n'a rien emporté » n'est pas « l'entrée est
+    d'avant le journal détaillé »."""
+    assert convergence.entry_graph({"items": []}) == {"nodes": [], "edges": []}
+
+
+# =========================================================================== #
+#  LE VERDICT DU JOUR J (27/08) — « la convergence m'avait fait acheter, le
+#  jour J c'est un flop : le coach m'avertit VITE de vendre »
+# =========================================================================== #
+
+def _verdict(**over):
+    """Un rendez-vous JUGÉ, tel que ``calendar.recent_verdicts`` le rend."""
+    base = {
+        "key": "hypothesis|2026-08-24|h1",
+        "kind": "hypothesis",
+        "date": "2026-08-24",
+        "label": "échéance du pari sur NESN.SW",
+        "symbol": "NESN.SW",
+        "direction": "up",
+        "verdict": "flop",
+        "move_pct": -4.2,
+        "headline": "Nestlé rate ses objectifs",
+        "checked_at": NOW.isoformat(),
+        "source_id": "h1",
+    }
+    base.update(over)
+    return base
+
+
+def _collect_cal(verdicts, watched=(), held=()):
+    return convergence.collect_factors(NOW, [], [], [], list(watched),
+                                       held_symbols=list(held),
+                                       calendar_verdicts=list(verdicts))
+
+
+def test_V1_un_flop_sur_un_titre_DETENU_est_un_facteur_de_MENACE():
+    """Le cas de la demande : on a acheté sur la convergence, le rendez-vous a
+    déçu — il faut le dire tout de suite, sans attendre un second facteur."""
+    out = _collect_cal([_verdict()], held=["NESN.SW"], watched=["NESN.SW"])
+    assert out["factors"]["event_flop"] is True
+    assert out["factors"]["event_confirmed"] is False
+    assert "event_flop" in convergence.THREAT_FACTORS
+    item = [i for i in out["items"] if i["src"] == "calendar"][0]
+    assert "a fait long feu" in item["title"] and "-4.2 %" in item["title"]
+    assert item["symbol"] == "NESN.SW"
+
+
+def test_V1_un_flop_TIRE_SEUL_sans_second_facteur():
+    """C'est tout l'objet de ``THREAT_FACTORS`` : le seuil de deux facteurs
+    filtre le bruit d'opportunité, il n'a rien à faire devant une position qui
+    vient de perdre son pari."""
+    out = _collect_cal([_verdict()], held=["NESN.SW"])
+    ok, reason = convergence.should_fire(out, {}, NOW, "fp")
+    assert (ok, reason) == (True, "ok")
+    assert convergence.active_factors(out) == ["event_flop"]
+
+
+def test_V2_un_flop_sur_un_titre_CONSEILLE_A_L_ACHAT_est_aussi_une_menace():
+    """Une idée poussée par le coach est une ligne du pipeline, donc un achat
+    sur le point d'être fait : apprendre vite que le rendez-vous a déçu, c'est
+    ce qui évite d'entrer dans une thèse déjà morte."""
+    out = _collect_cal([_verdict()], watched=[])   # ni détenu, ni suivi
+    assert out["factors"]["event_flop"] is True
+
+
+def test_V2_un_flop_sur_un_pari_BAISSIER_ne_menace_rien():
+    """``direction: down`` = on ne conseillait pas l'achat. Sans détention, ce
+    verdict ne concerne pas ce portefeuille."""
+    out = _collect_cal([_verdict(direction="down")], watched=[])
+    assert out["factors"]["event_flop"] is False
+    assert out["items"] == []
+
+
+def test_V3_un_flop_sur_un_titre_QU_ON_NE_REGARDE_PAS_ne_donne_RIEN():
+    """Le calendrier juge tout ce qu'il sait ; la convergence ne relaie que ce
+    qui touche CE portefeuille. Sans ce filtre, chaque publication de résultats
+    du marché deviendrait un facteur."""
+    out = _collect_cal([_verdict(kind="catalyst", direction=None,
+                                 symbol="ZZZZ")],
+                       watched=["NESN.SW"], held=["NESN.SW"])
+    assert out["factors"]["event_flop"] is False
+    assert out["items"] == []
+
+
+def test_V4_une_confirmation_sur_un_titre_SUIVI_est_un_facteur_NORMAL():
+    """L'inverse de la demande — « et l'inverse pour acheter ». Une opportunité
+    n'a pas à réveiller le téléphone SEULE : elle attend un second facteur."""
+    out = _collect_cal([_verdict(kind="catalyst", direction=None,
+                                 verdict="confirme", move_pct=5.1)],
+                       watched=["NESN.SW"])
+    assert out["factors"]["event_confirmed"] is True
+    assert out["factors"]["event_flop"] is False
+    assert "event_confirmed" not in convergence.THREAT_FACTORS
+    ok, reason = convergence.should_fire(out, {}, NOW, "fp")
+    assert (ok, reason) == (False, "too_few")
+
+
+def test_V4_une_confirmation_sur_un_titre_non_suivi_ne_donne_RIEN():
+    out = _collect_cal([_verdict(kind="catalyst", direction=None,
+                                 verdict="confirme", symbol="ZZZZ")],
+                       watched=["NESN.SW"])
+    assert out["factors"]["event_confirmed"] is False
+
+
+def test_V5_un_verdict_MITIGE_ne_pese_JAMAIS():
+    """« Mitigé » ne dit rien : le compter ferait partir un digest sur une
+    absence d'information."""
+    out = _collect_cal([_verdict(verdict="mitige", move_pct=0.4)],
+                       held=["NESN.SW"], watched=["NESN.SW"])
+    assert out["factors"]["event_flop"] is False
+    assert out["factors"]["event_confirmed"] is False
+    assert out["items"] == []
+
+
+def test_V6_l_identite_de_l_item_CHANGE_avec_le_verdict():
+    """Mécanique de ``_item_crowd`` : une entrée jugée ``mitige`` puis ``flop``
+    au re-passage du lendemain doit pouvoir faire repartir un digest. Sans le
+    verdict dans la clé, l'empreinte anti-redite tairait exactement le moment
+    où la nouvelle devient mauvaise."""
+    a = convergence._item_calendar(_verdict(verdict="mitige"))
+    b = convergence._item_calendar(_verdict(verdict="flop"))
+    assert a["id"] != b["id"]
+    # ...mais deux lectures du MÊME verdict rendent la même identité.
+    assert b["id"] == convergence._item_calendar(_verdict(verdict="flop"))["id"]
+
+
+def test_V7_les_tickers_d_une_hypothese_sont_lus_comme_le_symbole():
+    """Une échéance d'hypothèse porte ``tickers`` (elle peut viser plusieurs
+    titres), un catalyseur porte ``symbol``. L'appelant n'a pas à savoir de
+    quelle famille vient l'entrée qu'il transmet."""
+    out = _collect_cal([_verdict(symbol=None, tickers=["AAPL", "NESN.SW"])],
+                       held=["NESN.SW"])
+    assert out["factors"]["event_flop"] is True
+
+
+def test_V7_un_pseudo_symbole_ne_rend_pas_un_verdict_jugeable():
+    """« GOV » n'est pas un titre — même filtre d'entrée que partout ailleurs."""
+    out = _collect_cal([_verdict(symbol="GOV", direction=None, kind="bc")],
+                       held=["GOV"], watched=["GOV"])
+    assert out["factors"]["event_flop"] is False
+
+
+def test_V8_un_calendrier_absent_n_allume_rien_et_ne_casse_rien():
+    """Déploiement partiel : la convergence perd deux facteurs, pas un message."""
+    out = convergence.collect_factors(NOW, [], [], [], ["NESN.SW"])
+    assert out["factors"]["event_flop"] is False
+    assert out["factors"]["event_confirmed"] is False
+
+
+def test_V9_le_prompt_porte_la_section_du_rendez_vous():
+    """« Dis CLAIREMENT ce que tu ferais MAINTENANT » — le « parler tôt »
+    s'applique doublement quand le rendez-vous est PASSÉ."""
+    out = _collect_cal([_verdict()], held=["NESN.SW"])
+    prompt = convergence.build_digest_prompt(out["factors"], out["items"],
+                                             {}, [], NOW.isoformat())
+    assert "LE RENDEZ-VOUS ATTENDU A EU LIEU" in prompt
+    assert "sortir, alléger, garder, ou entrer" in prompt
+    assert "NESN.SW" in prompt
+    # La phrase de DÉTENTION n'apparaît que sur un flop.
+    assert "le rendez-vous a DÉÇU" in prompt
+
+
+def test_V9_une_confirmation_seule_ouvre_la_section_sans_la_phrase_de_menace():
+    out = _collect_cal([_verdict(kind="catalyst", direction=None,
+                                 verdict="confirme")], watched=["NESN.SW"])
+    prompt = convergence.build_digest_prompt(out["factors"], out["items"],
+                                             {}, [], NOW.isoformat())
+    assert "LE RENDEZ-VOUS ATTENDU A EU LIEU" in prompt
+    assert "le rendez-vous a DÉÇU" not in prompt
+
+
+def test_V9_sans_verdict_la_section_n_existe_pas():
+    prompt = convergence.build_digest_prompt({"gov": True}, [], {}, [],
+                                             NOW.isoformat())
+    assert "LE RENDEZ-VOUS ATTENDU A EU LIEU" not in prompt
+
+
+def test_V6_deux_rendez_vous_du_MEME_JOUR_ne_fusionnent_pas():
+    """``recent_verdicts`` ne publie que ``key`` (``kind|date|source_id``), pas
+    ``source_id`` : une identité bâtie sur date+verdict seuls ferait compter
+    DEUX verdicts distincts pour un seul."""
+    a = convergence._item_calendar(_verdict(key="hypothesis|2026-08-24|h1",
+                                            source_id=None))
+    b = convergence._item_calendar(_verdict(key="hypothesis|2026-08-24|h2",
+                                            source_id=None, symbol="AAPL"))
+    assert a["id"] != b["id"]
+
+
+def test_V6_l_identite_reste_STABLE_entre_deux_lectures():
+    """Deux appels sur le même verdict rendent la même identité : sinon
+    l'empreinte anti-redite changerait à chaque cycle et le digest se
+    répéterait indéfiniment."""
+    row = _verdict(key="catalyst|2026-08-24|http://x.test/1", source_id=None)
+    assert convergence._item_calendar(row)["id"] == \
+        convergence._item_calendar(dict(row))["id"]
+
+
+def test_V6_le_contrat_de_recent_verdicts_porte_TOUT_ce_que_le_facteur_lit():
+    """Épinglage du contrat entre les deux modules : le facteur lit
+    ``kind``/``symbol``/``tickers``/``direction``/``verdict``/``move_pct``, et
+    ``recent_verdicts`` doit tous les servir. Un champ perdu en route rendrait
+    la branche silencieusement fausse (piège #61 du dépôt)."""
+    from backend.bots.paper import calendar as calendar_mod
+    doc = calendar_mod.recent_verdicts.__doc__ or ""
+    for field in ("kind", "symbol", "tickers", "direction", "verdict",
+                  "move_pct", "key"):
+        assert '"%s"' % field in doc, field

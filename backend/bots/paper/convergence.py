@@ -97,9 +97,28 @@ MAX_POSITIONS_IN_PROMPT = 20
 MAX_FALLBACK_ITEMS = 18
 MAX_FALLBACK_LINES = 25
 
+# Combien d'items CONTRIBUTIFS une entrée d'historique emporte avec elle.
+#
+# Le digest disait « voici ce qui converge » et l'entrée d'historique n'en
+# gardait que le TEXTE et les codes de facteurs : le lecteur voyait la
+# conclusion, jamais les pièces. Depuis le 27/08 chaque entrée emporte ses
+# items — c'est ce qui rend le journal CLIQUABLE (une entrée s'ouvre sur ce qui
+# l'a déclenchée, et sur les liens entre ces pièces).
+#
+# Trente, et pas ``MAX_ITEMS_IN_PROMPT`` (40) : le prompt paie pour convaincre
+# un modèle, l'historique paie 30 fois (``MAX_HISTORY``) pour être relu par un
+# humain. Les items sont rangés par ordre de FACTEUR (cf. ``collect_factors``),
+# donc les trente premiers sont ceux des facteurs les plus structurants.
+MAX_HISTORY_ITEMS = 30
+
+# Les champs d'un item d'historique — compact par CHOIX. Un item complet
+# porterait la dépêche entière ; ici on garde de quoi RECONNAÎTRE la pièce
+# (titre, source, symbole), la ROUVRIR (lien) et la SITUER (tonalité, date).
+_HISTORY_ITEM_KEYS = ("id", "src", "title", "symbol", "ts", "sentiment", "link")
+
 FACTOR_CODES = ("fresh_hyps", "gov", "held_catalyst", "held_risk",
                 "whale_filing", "whale_sold_watched", "cross_source",
-                "crowd_buzz")
+                "crowd_buzz", "event_flop", "event_confirmed")
 
 FACTOR_LABELS = {
     "fresh_hyps": "plusieurs hypothèses fraîches du radar",
@@ -111,14 +130,54 @@ FACTOR_LABELS = {
                           "détiens ou suis",
     "cross_source": "même titre vu dans plusieurs sources",
     "crowd_buzz": "la foule Reddit s'agite sur un titre que tu détiens ou suis",
+    "event_flop": "le rendez-vous attendu a FAIT LONG FEU sur un titre que tu "
+                  "détiens ou qu'on t'a conseillé à l'achat",
+    "event_confirmed": "le rendez-vous attendu s'est CONFIRMÉ sur un titre que "
+                       "tu suis",
 }
+
+# --- le verdict du jour J (27/08) ------------------------------------------ #
+#
+# La boucle qui manquait. Le simulateur savait dire « il va se passer quelque
+# chose le 17 » ; il ne disait jamais ce qui s'était RÉELLEMENT passé le 17. Le
+# calendrier (``paper/calendar.py``) juge chaque rendez-vous arrivé à échéance,
+# et ces verdicts reviennent ici comme facteurs.
+#
+# ⚠️ DEUX codes et non un seul ``event_verdict``, et c'est un choix de MÉCANISME,
+# pas de goût : ``should_fire`` décide de tirer-seul en testant l'appartenance
+# d'un CODE à ``THREAT_FACTORS``. Un code unique qui serait tantôt une menace
+# (« le rendez-vous a fait long feu sur ce que tu détiens ») tantôt une
+# opportunité (« il s'est confirmé sur ce que tu suis ») obligerait à faire
+# entrer une décision dynamique dans un contrat aujourd'hui statique et bien
+# testé — exactement le genre de champ lu au mauvais niveau qui rend une
+# fonctionnalité muette (piège #61 du dépôt). Deux codes, deux sens, zéro
+# changement au garde-fou.
+#
+# Ils partagent leur source (``_calendar_items``) et leurs items portent tous
+# ``src: "calendar"``.
+CALENDAR_SRC = "calendar"
+VERDICT_FLOP = "flop"
+VERDICT_CONFIRMED = "confirme"
 
 # Facteurs de MENACE DIRECTE sur le compte. Ils tirent SEULS (cf. ``should_fire``)
 # : « être le dernier à vendre est le seul cas qu'on ne peut pas se permettre ».
-# Le coût reste borné par le cooldown et l'empreinte, et ces deux facteurs sont
+# Le coût reste borné par le cooldown et l'empreinte, et ces facteurs sont
 # intrinsèquement rares — ils n'existent que si un titre DÉTENU ou SUIVI est
 # touché.
-THREAT_FACTORS = ("held_risk", "whale_sold_watched")
+#
+# ``event_flop`` en fait partie pour la même raison exactement : le rendez-vous
+# qu'on attendait a eu lieu et il a déçu, sur un titre qu'on possède ou qu'on
+# était sur le point d'acheter. Attendre un second facteur pour le dire, ce
+# serait attendre que le marché ait fini de baisser.
+#
+# ⚠️ Pourquoi ``event_flop`` n'a PAS besoin du garde-fou de provenance qui
+# protège ``held_risk`` (``CURATED_NEWS_SOURCES``, « la foule et les inconnus ne
+# réveillent jamais seuls ») : un verdict ``flop`` exige un MOUVEMENT DE COURS
+# significatif (cf. ``calendar.event_verdict``), pas seulement une tonalité de
+# presse. Un anonyme peut faire pencher la tonalité ; il ne peut pas faire
+# baisser le titre de trois pour cent. La preuve dure est le prix, et le prix ne
+# vient ni de Reddit ni de Bluesky.
+THREAT_FACTORS = ("held_risk", "whale_sold_watched", "event_flop")
 
 # --- qui a le droit de RÉVEILLER seul (garde-fou 27/08) -------------------- #
 #
@@ -480,11 +539,121 @@ def _crowd_items(reddit_trends: Any, watched: set) -> List[Dict[str, Any]]:
             for neg_count, prev, symbol in sorted(rows)]
 
 
+def _verdict_symbols(entry: Dict[str, Any]) -> List[str]:
+    """Les symboles qu'une entrée de calendrier concerne (PUR).
+
+    Une entrée porte ``symbol`` (catalyseur daté) OU ``tickers`` (échéance
+    d'hypothèse, qui peut en viser plusieurs). Les deux sont lus : un appelant
+    n'a pas à savoir de quelle famille vient l'entrée qu'il transmet.
+    """
+    out: List[str] = []
+    for value in [entry.get("symbol")] + list(entry.get("tickers") or []):
+        symbol = _upper(value)
+        if symbol and symbol not in PSEUDO_SYMBOLS and symbol not in out:
+            out.append(symbol)
+    return out
+
+
+def _item_calendar(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Un item « le rendez-vous a eu lieu » (PUR).
+
+    Le libellé porte le VERDICT, le titre du rendez-vous et le mouvement chiffré :
+    « le rendez-vous a déçu » sans dire de combien ne se vérifie pas, et le
+    prompt doit pouvoir citer le chiffre sans l'inventer.
+
+    ⚠️ L'identité inclut le VERDICT, pas seulement le rendez-vous. C'est voulu,
+    et c'est la même mécanique que ``_item_crowd`` : une entrée jugée
+    ``mitige`` un jour puis ``flop`` le lendemain (le re-passage à D+1 du
+    calendrier) doit pouvoir faire repartir un digest. Sans le verdict dans la
+    clé, l'empreinte anti-redite le bloquerait — et on tairait précisément le
+    moment où la nouvelle devient mauvaise.
+    """
+    verdict = _text(entry.get("verdict"))
+    label = _text(entry.get("label")) or "(rendez-vous sans intitulé)"
+    move = entry.get("move_pct")
+    detail = ""
+    if move is not None:
+        try:
+            detail = " (%+.1f %%)" % float(move)
+        except (TypeError, ValueError):
+            detail = ""
+    word = {VERDICT_FLOP: "a fait long feu",
+            VERDICT_CONFIRMED: "s'est confirmé"}.get(verdict, "reste mitigé")
+    symbols = _verdict_symbols(entry)
+    # ``key`` D'ABORD (``kind|date|source_id`` — l'identité que le calendrier
+    # utilise lui-même), ``source_id`` en repli. Se contenter de
+    # ``source_id + date`` ferait fusionner en UN SEUL item deux rendez-vous du
+    # même jour rendus par ``recent_verdicts``, qui ne publie que ``key`` : deux
+    # verdicts distincts n'en pèseraient qu'un, et l'empreinte anti-redite ne
+    # verrait pas la différence entre eux.
+    identity = _text(entry.get("key")) or _text(entry.get("source_id"))
+    return {
+        "src": CALENDAR_SRC,
+        "id": _hash("calendar", identity, _text(entry.get("date")), verdict),
+        "title": "le rendez-vous attendu %s — %s%s" % (word, label, detail),
+        "symbol": symbols[0] if symbols else "",
+        "ts": _text(entry.get("checked_at")) or _text(entry.get("date")),
+        "verdict": verdict,
+    }
+
+
+def _calendar_items(calendar_verdicts: Any, watched: set, held: set
+                    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """``(flops, confirmés)`` — les rendez-vous jugés QUI NOUS CONCERNENT (PUR).
+
+    Trois cas, et le troisième est le plus important :
+
+    * **flop** sur un titre DÉTENU, ou sur un titre qu'une hypothèse OUVERTE
+      conseille À L'ACHAT (``kind == "hypothesis"``, ``direction == "up"``) ->
+      MENACE. Le second cas surprend moins qu'il n'y paraît : une idée poussée
+      par le coach est une ligne du pipeline, donc un achat sur le point d'être
+      fait. Apprendre vite que le rendez-vous attendu a déçu, c'est exactement
+      ce qui évite d'entrer dans une thèse déjà morte ;
+    * **confirmé** sur un titre détenu ou suivi (ou porté par une hypothèse) ->
+      facteur NORMAL. Une opportunité n'a pas à réveiller le téléphone seule ;
+    * **flop ou confirmation sur un titre que ce compte ne regarde pas** ->
+      RIEN. Le calendrier juge tout ce qu'il sait, la convergence ne relaie que
+      ce qui touche CE portefeuille. Sans ce filtre, chaque publication de
+      résultats du marché deviendrait un facteur.
+
+    Les items sont dédoublonnés par identité (une même entrée ne peut pas être
+    à la fois flop et confirmée, mais deux tickers d'une même hypothèse
+    pourraient la proposer deux fois).
+    """
+    flops: List[Dict[str, Any]] = []
+    confirmed: List[Dict[str, Any]] = []
+    seen = set()
+    for entry in _dicts(calendar_verdicts):
+        verdict = _text(entry.get("verdict"))
+        if verdict not in (VERDICT_FLOP, VERDICT_CONFIRMED):
+            continue                    # ``mitige`` ne dit rien : il ne pèse pas
+        symbols = _verdict_symbols(entry)
+        if not symbols:
+            continue                    # un rendez-vous sans titre ne se juge pas
+        advised_buy = (_text(entry.get("kind")) == "hypothesis"
+                       and _text(entry.get("direction")) == "up")
+        item = _item_calendar(entry)
+        if item["id"] in seen:
+            continue
+        if verdict == VERDICT_FLOP:
+            if not (held.intersection(symbols) or advised_buy):
+                continue
+            seen.add(item["id"])
+            flops.append(item)
+        else:
+            if not (watched.intersection(symbols) or advised_buy):
+                continue
+            seen.add(item["id"])
+            confirmed.append(item)
+    return flops, confirmed
+
+
 def collect_factors(now: Any, hypotheses: Any, news_events: Any,
                     filing_events: Any, watched_symbols: Any,
                     held_symbols: Any = None,
                     whale_moves: Any = None,
-                    reddit_trends: Any = None) -> Dict[str, Any]:
+                    reddit_trends: Any = None,
+                    calendar_verdicts: Any = None) -> Dict[str, Any]:
     """Les huit facteurs et les items qui les portent (PUR).
 
     Rend ``{"factors": {code: bool, ...}, "items": [...]}``. Chaque item porte
@@ -526,6 +695,13 @@ def collect_factors(now: Any, hypotheses: Any, news_events: Any,
     VOLONTAIREMENT pas à ``cross_source`` : une quatrième famille faite de bruit
     social permettrait à une seule dépêche de fabriquer un croisement, et on
     aurait converti du bruit en facteur au lieu de le peser pour ce qu'il est.
+
+    ``calendar_verdicts`` = les rendez-vous ARRIVÉS À ÉCHÉANCE et déjà jugés
+    (``paper/calendar.py``) — les facteurs ``event_flop`` et
+    ``event_confirmed``, cf. ``_calendar_items``. Eux non plus n'entrent pas
+    dans ``cross_source``, et pour une raison plus forte encore que la foule :
+    un verdict est DÉRIVÉ des hypothèses et des dépêches que ce même calcul
+    compte déjà. L'y ajouter ferait croiser une information avec elle-même.
     """
     now_dt = _parse_dt(now) or _now()
     cutoff = now_dt - timedelta(hours=WINDOW_H)
@@ -608,6 +784,8 @@ def collect_factors(now: Any, hypotheses: Any, news_events: Any,
                                                         or _sentiment(event) == "watch"):
             cross_items.append(_item_news(event))
 
+    event_flops, event_confirmed = _calendar_items(calendar_verdicts, watched, held)
+
     by_factor: Dict[str, List[Dict[str, Any]]] = {
         "fresh_hyps": [_item_hyp(h) for h in fresh_hyps] if len(fresh_hyps) >= 2 else [],
         "gov": [_item_news(e) for e in gov_events],
@@ -617,6 +795,8 @@ def collect_factors(now: Any, hypotheses: Any, news_events: Any,
         "whale_sold_watched": [_item_whale(m) for m in whale_sells],
         "cross_source": cross_items,
         "crowd_buzz": _crowd_items(reddit_trends, watched),
+        "event_flop": event_flops,
+        "event_confirmed": event_confirmed,
     }
     factors = {code: bool(by_factor[code]) for code in FACTOR_CODES}
 
@@ -658,6 +838,180 @@ def fingerprint(items: Any) -> str:
     keys = sorted("%s:%s" % (_text(i.get("src")) or "?", _text(i.get("id")))
                   for i in _dicts(items))
     return hashlib.sha1("|".join(keys).encode("utf-8")).hexdigest()
+
+
+# --------------------------------------------------------------------------- #
+# PUR — ce qu'une entrée d'historique emporte, et comment on la RELIT
+#
+# « En bas de la page Connexions, la liste des convergences dites sur Telegram ;
+# je clique -> toutes les infos dites et les liens entre. » Deux fonctions pures
+# répondent à ça, et rien d'autre ne change dans l'état :
+#
+#   * ``history_items`` fige les pièces AU MOMENT DU TIR. C'est le point
+#     important : les mêmes pièces relues trois jours plus tard auraient
+#     disparu de la mémoire du guetteur (fenêtre roulante), et l'entrée
+#     n'ouvrirait plus rien. Un journal qui perd ses preuves n'est pas un
+#     journal.
+#   * ``entry_graph`` redessine les LIENS entre ces pièces — pas une nouvelle
+#     lecture des sources, juste ce que l'entrée porte déjà.
+# --------------------------------------------------------------------------- #
+
+def _link_of(item: Dict[str, Any]) -> str:
+    """Le lien ROUVRABLE d'un item, ou "".
+
+    Une dépêche n'a pas de champ ``link`` : son identité EST son lien
+    (``_item_news``), avec repli sur une empreinte quand la source n'en donne
+    pas. On ne rend donc que ce qui ressemble vraiment à une URL — sinon on
+    servirait un hachage comme s'il était cliquable.
+    """
+    link = _text(item.get("link"))
+    if not link:
+        link = _text(item.get("id"))
+    return link if link[:7] == "http://" or link[:8] == "https://" else ""
+
+
+def history_items(items: Any, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Les items contributifs, COMPACTS, pour l'entrée d'historique (PUR).
+
+    Ne garde que ``_HISTORY_ITEM_KEYS``, et seulement les clés RENSEIGNÉES : une
+    entrée d'historique se relit à l'œil, elle n'a pas à porter une colonne de
+    ``null``. Plafonnée à ``limit`` — l'ordre d'entrée est celui de
+    ``collect_factors`` (par facteur), donc tronquer garde les plus structurants.
+
+    ⚠️ ``limit=None`` -> ``MAX_HISTORY_ITEMS`` lu À L'APPEL, et non une valeur
+    par défaut figée à la définition de la fonction. Un défaut figé rendrait la
+    constante impossible à ajuster depuis un test (le ``monkeypatch`` porterait
+    sur le module, l'ancienne valeur resterait dans la signature) — c'est la
+    même raison qui fait relire ``store.DATA_DIR`` à chaque ``state_path()``.
+    """
+    if limit is None:
+        limit = MAX_HISTORY_ITEMS
+    try:
+        limit = max(0, int(limit))
+    except (TypeError, ValueError):
+        limit = MAX_HISTORY_ITEMS
+
+    out: List[Dict[str, Any]] = []
+    for item in _dicts(items)[:limit]:
+        row: Dict[str, Any] = {}
+        for key in _HISTORY_ITEM_KEYS:
+            value = _link_of(item) if key == "link" else _text(item.get(key))
+            if value:
+                row[key] = value
+        if row:
+            out.append(row)
+    return out
+
+
+# Correspondance item de convergence -> type de nœud de la TOILE
+# (``graph.INFO_TYPES``). Le mini-graphe d'une entrée doit se dessiner avec le
+# code qui dessine déjà la toile : mêmes types de nœuds, mêmes types d'arêtes.
+# Un type inventé ici serait un type que le frontend ne saurait pas peindre.
+#
+# ``filing`` -> ``whale_move`` : la toile n'a pas de famille « dépôt », et un
+# dépôt 13F EST un mouvement de gérant vu à la source. Lui ouvrir une famille
+# pour une seule entrée d'historique coûterait plus qu'elle ne dit.
+_ITEM_NODE_TYPES = {
+    "hyp": "hypothesis",
+    "news": "news",
+    "gov": "gov",
+    "neg_held": "news",
+    "filing": "whale_move",
+    "whale_move": "whale_move",
+    "crowd": "reddit_trend",
+}
+
+# Type d'ARÊTE par famille d'item — repris de ``graph`` : une hypothèse rejoint
+# son ticker, un gérant rejoint l'émetteur qu'on lui a rapproché, tout le reste
+# porte directement le symbole.
+_ITEM_EDGE_TYPES = {"hyp": "ticker", "filing": "issuer", "whale_move": "issuer"}
+_DEFAULT_EDGE_TYPE = "symbol"
+
+# Le type d'ancre d'un symbole redessiné depuis une entrée d'historique.
+# L'entrée ne dit PAS si le titre était détenu ou seulement suivi (elle garde
+# des pièces, pas l'état du portefeuille de ce jour-là) : on prend donc la
+# lecture la moins engageante, exactement l'arbitrage de
+# ``graph.DEFAULT_ANCHOR_TYPE`` — on a vu ce titre quelque part, on ne prétend
+# pas qu'il y avait de l'argent dessus.
+_ENTRY_ANCHOR_TYPE = "watchlist"
+
+
+def _entry_node(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Un nœud de mini-graphe, à la forme EXACTE d'un nœud de la toile."""
+    src = _text(item.get("src"))
+    node: Dict[str, Any] = {
+        "id": "cv:%s" % _hash(src or "?", _text(item.get("id"))),
+        "type": _ITEM_NODE_TYPES.get(src, "news"),
+        "label": _text(item.get("title")) or "(sans titre)",
+        "symbol": _upper(item.get("symbol")),
+        "ts": _text(item.get("ts")),
+    }
+    sentiment = _text(item.get("sentiment"))
+    if sentiment:
+        node["sentiment"] = sentiment
+    link = _link_of(item)
+    if link:
+        node["link"] = link
+    return node
+
+
+def entry_graph(entry: Any) -> Dict[str, Any]:
+    """Le MINI-GRAPHE d'une entrée d'historique (PUR).
+
+    ``{"nodes", "edges"}`` — les items de CETTE entrée, plus les symboles
+    qu'ils touchent, reliés par famille. Rien d'autre : on ne relit aucune
+    source, on ne rouvre aucun fichier. C'est le dessin de ce que le digest a
+    RÉELLEMENT dit, pas de ce que la mémoire porte aujourd'hui.
+
+    Une entrée d'AVANT le 27/08 n'a pas d'items : elle rend un graphe vide
+    marqué ``legacy`` — le frontend peut alors dire « cette convergence est
+    antérieure au journal détaillé » plutôt que d'afficher un vide qui se lit
+    « il ne s'est rien passé ».
+
+    ⚠️ Un item dont le symbole vaut ``GOV`` (ou un autre pseudo-symbole) n'ouvre
+    PAS d'ancre : « GOV » n'est pas un titre, et lui en donner une planterait un
+    faux centre au milieu du dessin. L'item reste, isolé — c'est exactement ce
+    qu'il est.
+    """
+    if not isinstance(entry, dict):
+        return {"nodes": [], "edges": [], "legacy": True}
+    raw = entry.get("items")
+    if not isinstance(raw, list):
+        return {"nodes": [], "edges": [], "legacy": True}
+
+    nodes: List[Dict[str, Any]] = []
+    edges: List[Dict[str, Any]] = []
+    anchors: Dict[str, Dict[str, Any]] = {}
+    seen_nodes = set()
+    seen_edges = set()
+
+    for item in _dicts(raw):
+        node = _entry_node(item)
+        if node["id"] in seen_nodes:
+            continue
+        seen_nodes.add(node["id"])
+        nodes.append(node)
+
+        symbol = node["symbol"]
+        if not symbol or symbol in PSEUDO_SYMBOLS:
+            continue
+        if symbol not in anchors:
+            anchors[symbol] = {"id": symbol, "type": _ENTRY_ANCHOR_TYPE,
+                               "label": symbol, "symbol": symbol, "ts": ""}
+        edge_type = _ITEM_EDGE_TYPES.get(_text(item.get("src")),
+                                         _DEFAULT_EDGE_TYPE)
+        key = (node["id"], symbol, edge_type)
+        if key in seen_edges:
+            continue
+        seen_edges.add(key)
+        edge = {"source": node["id"], "target": symbol, "type": edge_type}
+        if node.get("sentiment"):
+            edge["sentiment"] = node["sentiment"]
+        edges.append(edge)
+
+    # Les ancres D'ABORD : le frontend dessine dans l'ordre reçu, et un centre
+    # posé après ses satellites se retrouve peint par-dessus eux.
+    return {"nodes": list(anchors.values()) + nodes, "edges": edges}
 
 
 def _flags(factors: Any) -> Dict[str, bool]:
@@ -942,6 +1296,30 @@ def build_digest_prompt(factors: Any, items: Any, stats: Any, positions: Any,
             "DEUX sens), jamais que la thèse est bonne. Une foule peut avoir "
             "tort longtemps. Si aucun autre élément de la matière ne soutient "
             "ce titre, dis-le aussi : l'agitation seule ne se joue pas.")
+    if flags.get("event_flop") or flags.get("event_confirmed"):
+        # Le « parler tôt » s'applique DOUBLEMENT ici : ce n'est plus une
+        # situation qui se forme, c'est un rendez-vous qu'on attendait et qui
+        # vient d'avoir lieu. Il n'y a plus rien à attendre — sauf la baisse.
+        verdicts = [i for i in rows if _text(i.get("src")) == CALENDAR_SRC]
+        symbols = ", ".join(dict.fromkeys(
+            _upper(i.get("symbol")) for i in verdicts if _text(i.get("symbol")))) or "?"
+        blocks.append(
+            "Un bloc titré exactement « LE RENDEZ-VOUS ATTENDU A EU LIEU » — "
+            "OBLIGATOIRE ici. Les lignes marquées [%s] ci-dessus sont des "
+            "rendez-vous que le simulateur avait NOTÉS À L'AVANCE (échéance "
+            "d'une hypothèse, catalyseur daté, réunion de banque centrale) et "
+            "qui sont arrivés à leur date : elles portent le verdict et le "
+            "mouvement chiffré du titre (%s). Reprends le verdict et le "
+            "chiffre, puis — c'est le cœur de ce bloc — dis CLAIREMENT ce que "
+            "tu ferais MAINTENANT dans le simulateur : sortir, alléger, garder, "
+            "ou entrer. Un seul verbe, pas « à surveiller ». Donne le niveau "
+            "qui invaliderait ta lecture. %sIci l'attente ne coûte pas une "
+            "occasion manquée, elle coûte la baisse elle-même : le rendez-vous "
+            "est PASSÉ, il n'y a plus d'information à attendre." % (
+                CALENDAR_SRC, symbols,
+                ("Tu DÉTIENS ou tu étais sur le point d'acheter ce ou ces "
+                 "titres, et le rendez-vous a DÉÇU : dis-le en première phrase. "
+                 if flags.get("event_flop") else "")))
     blocks.append("Une dernière ligne rappelant le bilan du radar : %s."
                   % _stats_line(stats))
     for index, block in enumerate(blocks, start=1):
@@ -1163,6 +1541,24 @@ def _collect_filings() -> List[Dict[str, Any]]:
         from backend.bots.paper import whales
         return _dicts(whales.recent_filing_events() or [])
     except Exception:      # noqa: BLE001
+        return []
+
+
+def _collect_calendar_verdicts(now: Any) -> List[Dict[str, Any]]:
+    """Les rendez-vous JUGÉS récemment par le calendrier (best-effort).
+
+    Import PARESSEUX comme ``newswatch``/``whales`` : le module peut ne pas être
+    déployé (lot parallèle), et la convergence doit vivre sans lui. Elle
+    perdrait alors deux facteurs, pas un message.
+
+    ⚠️ On LIT des verdicts déjà rendus, on n'en calcule aucun ici. Le jugement
+    coûte des cours et des dépêches : il vit dans le cycle du guetteur, pas dans
+    le chemin d'un digest qui peut partir trois fois par jour.
+    """
+    try:
+        from backend.bots.paper import calendar as calendar_mod
+        return _dicts(calendar_mod.recent_verdicts(now) or [])
+    except Exception:      # noqa: BLE001 — module absent, état illisible
         return []
 
 
@@ -1388,10 +1784,14 @@ def maybe_fire(now: Any = None,
     # calcul, sinon un test à horloge figée mesurerait autre chose que la prod.
     reddit_trends = _collect_reddit_trends(now_dt)
 
+    # Les rendez-vous arrivés à échéance et déjà jugés (boucle du jour J).
+    calendar_verdicts = _collect_calendar_verdicts(now_dt)
+
     collected = collect_factors(now_dt, hypotheses, news, filings,
                                 watched_symbols, held_symbols=held,
                                 whale_moves=whale_moves,
-                                reddit_trends=reddit_trends)
+                                reddit_trends=reddit_trends,
+                                calendar_verdicts=calendar_verdicts)
     flags = collected["factors"]
     items = collected["items"]
     fp = fingerprint(items)
@@ -1446,6 +1846,12 @@ def maybe_fire(now: Any = None,
             "n_items": len(items),
             "digest": message,
             "llm": used_llm,
+            # Les PIÈCES, figées ici et pas relues plus tard : la fenêtre du
+            # guetteur roule, et dans trois jours ces dépêches n'existeront
+            # plus nulle part. ``n_items`` reste le compte RÉEL (il peut
+            # dépasser ``len(entry["items"])``, qui est plafonné) — c'est lui
+            # qui dit au lecteur qu'il n'a pas tout sous les yeux.
+            "items": history_items(items),
         }
         state["history"] = ([entry] + list(state.get("history") or []))[:MAX_HISTORY]
         try:

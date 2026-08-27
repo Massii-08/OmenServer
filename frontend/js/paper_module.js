@@ -108,6 +108,39 @@ const PaperModule = {
     _drillTheme: '',           // bosquet : sujet ouvert — une CLÉ, pas un libellé
     _drillSub: '',             // bosquet : sous-sujet ouvert — une CLÉ, pas un libellé
 
+    // --- Journal des convergences (ce que le bot a DIT sur Telegram) --------
+    //
+    // Le bot annonce une convergence quand plusieurs facteurs indépendants
+    // tombent ensemble. Ce qu'il a dit ne vivait que dans le fil Telegram : ici
+    // on le relit, daté, et on peut rouvrir CE qu'il avait relié — le
+    // mini-arbre d'une convergence est dessiné par le moteur de la toile, à
+    // l'identique (mêmes types de nœuds, mêmes couleurs de famille).
+    _digest: null,             // {entries:[{ts, factors, digest, llm, items}]}
+    _digestLoading: false,
+    _dgTs: null,               // convergence ouverte (horodatage BRUT du serveur)
+    _dgGraph: null,            // {nodes, edges, legacy} de la convergence ouverte
+    _dgLoading: false,
+    _dgCanvas: null,           // canvas du mini-arbre (écouteurs retirés au re-rendu)
+    _dgLayout: null,           // sa disposition — jamais celle de la grande toile
+    _onDgResize: null,
+    _dgResizeTimer: null,
+    _dgRaf: 0,
+
+    // --- Ce que la toile sait d'UN titre, lu SOUS ce titre ------------------
+    //
+    // Même endpoint que la vue Connexions (mode ego), mais rangé à part : la
+    // grande toile garde son propre état — on ne l'écrase pas pour afficher une
+    // liste sous un formulaire d'ordre.
+    _ego: {},                  // symbole -> {nodes, edges}
+    _egoLoading: {},           // symbole -> true pendant la lecture
+
+    _calendar: null,           // agenda : {entries:[{date, kind, label, …}]}
+
+    // Sondages de jobs LLM EN VOL. Le POST rend un identifiant tout de suite
+    // (plus aucun appel long synchrone — c'est lui qui produisait le 502 de la
+    // passerelle) et la réponse arrive par /job/{id}. UN sondage par clé.
+    _jobWaits: {},             // clé -> {timer, resolve}
+
     _fabOpen: false,           // panneau coach flottant ouvert
     _fabQ: '',                 // question en cours de saisie (survit à la fermeture)
     _fabAnswer: null,          // dernier échange {q, a}
@@ -139,6 +172,21 @@ const PaperModule = {
         scenarios: ['plan', 'paper.ready_scenarios'],
         review: ['portfolio', 'paper.ready_review'],
     },
+
+    // --- Sondage des jobs LLM ------------------------------------------------
+    //
+    // Le serveur rend un identifiant tout de suite et travaille derrière : on
+    // le SONDE. setTimeout CHAÎNÉ, jamais setInterval — un sondage qui traîne
+    // ne doit pas en déclencher un deuxième par-dessus.
+    //
+    // Le job survit à un rechargement de page (il vit côté serveur) ; l'écran,
+    // lui, l'oublierait. On note donc {clé -> identifiant} sur le disque et on
+    // REPREND le sondage au rendu suivant. Une réponse retrouve alors sa vue
+    // par le même chemin qu'en direct (_applyResult, rejouable).
+    _JOB_POLL_MS: 3000,
+    _JOB_MAX_MS: 300000,       // 5 min : au-delà on rend la main, on le DIT
+    _JOB_MISS_MAX: 10,         // 10 réponses illisibles d'affilée (~30 s) = perdu
+    _JOBS_KEY: 'paper-jobs',
 
     _mono: 'font-family:var(--font-mono);font-feature-settings:\'tnum\';',
 
@@ -194,6 +242,27 @@ const PaperModule = {
 
     // Régime de notification. « calme » est le défaut et le repli.
     _ALERT_MODES: ['calme', 'tout'],
+
+    // Facteurs d'une convergence → [clé i18n, famille de source]. Table FERMÉE :
+    // un code inconnu ne fabrique NI clé NI classe, il paraît tel quel en chip
+    // neutre — on n'invente pas de nom pour ce que le serveur vient d'ajouter.
+    // Le code n'est PAS une famille (« held_catalyst » n'existe pas dans la
+    // légende) : la famille est posée ici à la main pour que la pastille garde
+    // l'alphabet de couleurs de la toile. Vide = pas de famille (voir menaces).
+    _CONV_FACTORS: {
+        fresh_hyps: ['paper.conv_f_fresh_hyps', 'radar'],
+        gov: ['paper.conv_f_gov', 'gov'],
+        held_catalyst: ['paper.conv_f_held_catalyst', 'press'],
+        held_risk: ['paper.conv_f_held_risk', ''],
+        whale_filing: ['paper.conv_f_whale_filing', 'whale'],
+        whale_sold_watched: ['paper.conv_f_whale_sold_watched', ''],
+        cross_source: ['paper.conv_f_cross_source', 'press'],
+        crowd_buzz: ['paper.conv_f_crowd_buzz', 'social'],
+    },
+
+    // Les deux facteurs de MENACE DIRECTE sur le compte : ils ne portent pas une
+    // couleur de source mais un avertissement — c'est ce qu'on doit voir d'abord.
+    _CONV_THREAT: { held_risk: 1, whale_sold_watched: 1 },
 
     // --- Toile « Connexions » : whitelists FERMÉES ---------------------------
     //
@@ -470,6 +539,9 @@ const PaperModule = {
         // _loadTab ne tourne sinon qu'au clic sur un onglet. (Vu à l'écran.)
         this._loadTab();
         this._paintFab();
+        // Une demande partie avant le rechargement de page continue côté
+        // serveur : on reprend son sondage là où l'écran l'avait laissé.
+        this._resumeJobs();
         // Le titre qu'on étudiait revient par le MÊME chemin qu'un clic sur
         // « Choisir » : cours, graphique et brouillon du formulaire compris.
         if (pending) this.pick(pending, '', '', '');
@@ -488,6 +560,10 @@ const PaperModule = {
         if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; this._saveDraft(); }
         this._disposeCharts();
         this._disposeGraph();
+        this._disposeDG();
+        // Les sondages en cours s'arrêtent AVEC la vue — mais la trace disque
+        // reste : le job continue côté serveur et sera repris au prochain rendu.
+        this._cancelJobs();
         // Le coach flottant n'existe QUE dans ce module : il part avec lui.
         this._removeFab();
         if (this._onKey) { document.removeEventListener('keydown', this._onKey); this._onKey = null; }
@@ -815,6 +891,12 @@ const PaperModule = {
         this._review = null;
         this._symIdeas = {};
         this._fabAnswer = null;
+        // Le journal des convergences porte le texte que le bot a DIT : écrit
+        // lui aussi dans l'ancienne langue. Le mini-arbre ouvert part avec —
+        // il n'a plus de convergence à illustrer.
+        this._digest = null;
+        this._dgTs = null;
+        this._dgGraph = null;
     },
 
     // Un href ne part JAMAIS dans le DOM sans être vérifié : seuls http(s)
@@ -837,6 +919,19 @@ const PaperModule = {
         try { r = await Auth.apiCall(url); } catch (e) { r = null; }
         if (!r || !r.ok) return null;
         try { return await r.json(); } catch (e) { return null; }
+    },
+
+    // Comme _get, mais le CODE est rendu avec la charge : le sondage d'un job
+    // doit distinguer « pas encore » (réseau qui hoquette) de « ce travail
+    // n'existe pas » (404), et les deux passent par un corps illisible.
+    // status 0 = on n'a même pas eu de réponse.
+    async _getRaw(url) {
+        let r = null;
+        try { r = await Auth.apiCall(url); } catch (e) { r = null; }
+        if (!r) return { status: 0, data: null };
+        let d = null;
+        try { d = await r.json(); } catch (e) { d = null; }
+        return { status: r.status || 0, data: r.ok ? d : null };
     },
 
     // ------------------------------------------------------------- coquille
@@ -890,6 +985,7 @@ const PaperModule = {
             ['whales', 'paper.tab_whales'],
             ['radar', 'paper.tab_radar'],
             ['plan', 'paper.tab_plan'],
+            ['agenda', 'paper.tab_agenda'],
             ['graph', 'paper.tab_graph'],
         ];
     },
@@ -912,8 +1008,11 @@ const PaperModule = {
         this._applyBusy();
     },
 
-    _card(inner, extra) {
-        return '<div class="card" style="margin-bottom:14px;' + (extra || '') + '">' + inner + '</div>';
+    // id : facultatif, et pris dans le CODE uniquement (jamais une donnée du
+    // serveur) — c'est ce qui permet à un chip de faire défiler jusqu'à sa carte.
+    _card(inner, extra, id) {
+        return '<div class="card"' + (id ? ' id="' + esc(String(id)) + '"' : '') +
+            ' style="margin-bottom:14px;' + (extra || '') + '">' + inner + '</div>';
     },
 
     _head(title, note) {
@@ -1191,10 +1290,18 @@ const PaperModule = {
             if (this._tab === 'plan') this._renderBody();
             return;
         }
+        if (this._tab === 'agenda' && !this._calendar) {
+            this._calendar = await this._get('/api/paper/calendar') || {};
+            if (this._tab === 'agenda') this._renderBody();
+            return;
+        }
         // La toile n'est relue qu'à la première ouverture (ou sur demande) : la
         // mémoire du module ne bouge pas à la minute.
-        if (this._tab === 'graph' && !this._graph && !this._graphLoading) {
-            await this.loadGraph(this._graphSymbol);
+        if (this._tab === 'graph') {
+            // Le journal des convergences vit SOUS la toile : il se lit à part,
+            // et son absence ne doit jamais retarder le dessin.
+            this._loadDigest();
+            if (!this._graph && !this._graphLoading) await this.loadGraph(this._graphSymbol);
         }
     },
 
@@ -1204,6 +1311,7 @@ const PaperModule = {
     _renderBody() {
         this._disposeCharts();
         this._disposeGraph();
+        this._disposeDG();
         this._chartWanted = [];
         let html;
         if (this._tab === 'trade') html = this._viewTrade();
@@ -1214,12 +1322,13 @@ const PaperModule = {
         else if (this._tab === 'whales') html = this._viewWhales();
         else if (this._tab === 'radar') html = this._viewRadar();
         else if (this._tab === 'plan') html = this._viewPlan();
+        else if (this._tab === 'agenda') html = this._viewAgenda();
         else if (this._tab === 'graph') html = this._viewGraph();
         else html = this._viewPortfolio();
         this._setBody(html);
         if (this._tab === 'portfolio') this._paintEquity();
         this._mountCharts();
-        if (this._tab === 'graph') this._mountGraph();
+        if (this._tab === 'graph') { this._mountGraph(); this._mountDG(); }
     },
 
     async refresh() {
@@ -1246,6 +1355,8 @@ const PaperModule = {
             this._radar = await this._get('/api/paper/radar') || {};
         } else if (this._tab === 'plan') {
             this._board = await this._get('/api/paper/board') || this._board;
+        } else if (this._tab === 'agenda') {
+            this._calendar = await this._get('/api/paper/calendar') || this._calendar;
         } else if (this._tab === 'graph') {
             // loadGraph re-rend déjà : on lui laisse la main, sinon le canvas
             // serait monté deux fois pour rien.
@@ -1324,15 +1435,9 @@ const PaperModule = {
         // On le dit clairement plutôt que d'aller chercher une erreur.
         const rows = (this._p && Array.isArray(this._p.positions)) ? this._p.positions : [];
         if (!rows.length) { this._toast('warn', Lang.t('paper.review_no_positions')); return; }
-        let ok = false;
-        await this._llm('review', '/api/paper/positions/review', { lang: this._lang() }, (d) => {
-            this._review = (d && typeof d === 'object') ? d : null;
-            this._reviewOpen = false;
-            ok = true;
-            this._arrived('review');
-        });
-        // La revue est une entrée de journal comme les idées : on le relit.
-        if (ok) await this._refreshJournal();
+        // La revue est une entrée de journal comme les idées : sa relecture est
+        // la « suite » de cette clé (_afterJob).
+        await this._llm('review', '/api/paper/positions/review', { lang: this._lang() });
     },
 
     // --- Réglages des alertes : régime de notification -----------------------
@@ -1608,8 +1713,9 @@ const PaperModule = {
             '</tr>';
         }).join('');
         // Clic sur une ligne -> le graphique de CETTE position se deplie dessous,
-        // avec ses reperes stop / PRU.
-        const open = this._posOpen ? this._positionChart(this._posOpen) : '';
+        // avec ses reperes stop / PRU, puis ce que la toile sait de ce titre.
+        const open = this._posOpen
+            ? (this._positionChart(this._posOpen) + this._egoCard(this._posOpen)) : '';
         return this._card(this._positionsHead() +
             this._table([
                 Lang.t('paper.col_symbol'), Lang.t('paper.col_qty'), Lang.t('paper.col_avg_price'),
@@ -1811,7 +1917,11 @@ const PaperModule = {
         // le moment ou on regarde la courbe avant de decider.
         const chart = (this._pick && this._pick.symbol)
             ? this._chartCard('trade', this._pick.symbol, this._pick.currency) : '';
-        return this._searchCard() + chart + this._orderCard();
+        // Et SOUS le formulaire, ce que la toile sait déjà de ce titre : on lit
+        // les connexions là où l'on décide, sans quitter la page (retour
+        // utilisateur du 27/08 — « pas dans la page Connexions : ICI »).
+        const ego = (this._pick && this._pick.symbol) ? this._egoCard(this._pick.symbol) : '';
+        return this._searchCard() + chart + this._orderCard() + ego;
     },
 
     _searchCard() {
@@ -2362,16 +2472,11 @@ const PaperModule = {
     },
 
     async askIdeas() {
-        const body = { lang: this._lang(), risk_level: this._riskLevel() };
-        let ok = false;
-        await this._llm('ideas', '/api/paper/ideas', body, (d) => {
-            this._ideas = (d && typeof d === 'object') ? d : null;
-            ok = true;
-            this._arrived('ideas');
-        });
-        // Le journal vient de gagner une entrée : on le relit APRÈS coup (le
-        // callback de _llm n'est pas attendu, on ne lui confie rien d'async).
-        if (ok) await this._refreshJournal();
+        // Le journal gagne une entrée : sa relecture est la « suite » de cette
+        // clé (_afterJob), jouée aussi bien en direct qu'à la reprise après un
+        // rechargement de page.
+        await this._llm('ideas', '/api/paper/ideas',
+            { lang: this._lang(), risk_level: this._riskLevel() });
     },
 
     // Depuis une idée : on ouvre Nouveau trade sur ce titre. C'est LUI qui
@@ -3775,22 +3880,10 @@ const PaperModule = {
     },
 
     async generateScenarios() {
-        // _llm n'attend PAS son callback : on ne lui confie donc que du travail
-        // synchrone, et la relecture du board se fait ici, après coup — sinon la
-        // promesse du GET flotterait pendant que le bouton se croit fini.
-        let ok = false;
-        await this._llm('scenarios', '/api/paper/board/scenarios/generate', { lang: this._lang() }, (d) => {
-            this._scenarioText = this._llmText(d);
-            ok = true;
-        });
-        if (!ok) { return; }
-        if (this._tab !== 'plan') this._toast('success', Lang.t('paper.ready_scenarios'));
-        if (!ok) return;
-        // L'arbre rendu par l'appel est déjà persisté côté backend : on relit le
-        // board plutôt que de le greffer à la main — la liste affichée reste
-        // celle du serveur, jamais une copie locale.
-        this._board = await this._get('/api/paper/board') || this._board;
-        if (this._tab === 'plan') this._renderBody();
+        // Le texte arrive par _applyResult, la relecture du board par _afterJob :
+        // deux chemins asynchrones que la reprise après rechargement rejoue à
+        // l'identique — rien ne flotte plus pendant que le bouton se croit fini.
+        await this._llm('scenarios', '/api/paper/board/scenarios/generate', { lang: this._lang() });
     },
 
     async resolveBranch(treeId, branchId, status) {
@@ -3828,7 +3921,224 @@ const PaperModule = {
     },
 
     // =====================================================================
-    //  10. CONNEXIONS — la toile de ce que le module a retenu
+    //  10. AGENDA — ce qui est DATÉ devant, et ce que ça a donné derrière
+    // =====================================================================
+    //
+    // Une liste chronologique groupée par jour, pas une grille mensuelle : sur
+    // un téléphone une grille de 31 cases ne dit rien, et ce qu'on vient
+    // chercher ici c'est « qu'est-ce qui tombe bientôt ». Trois sortes de
+    // rendez-vous : les banques centrales, les échéances des hypothèses du
+    // radar, les catalyseurs annoncés.
+    //
+    // Et la moitié qui manquait ailleurs : les rendez-vous PASSÉS déjà jugés
+    // restent une semaine avec leur verdict. Prévoir puis VÉRIFIER — un
+    // calendrier qui oublie ce qu'il annonçait n'apprend rien à personne.
+
+    // Sorte de rendez-vous → [clé i18n, famille de source, classe .badge].
+    // Table FERMÉE : une sorte inconnue ne fabrique ni clé ni classe — la ligne
+    // reste lisible, elle n'est simplement pas étiquetée.
+    _CAL_KINDS: {
+        bc: ['paper.cal_kind_bc', 'eco', ''],
+        hypothesis: ['paper.cal_kind_hyp', 'radar', ''],
+        catalyst: ['paper.cal_kind_cat', '', 'warn'],
+    },
+
+    // Verdict d'un rendez-vous passé → [clé i18n, classe .badge]. « mitigé »
+    // est neutre : ni victoire ni échec, et on ne le peint pas comme tel.
+    _CAL_VERDICTS: {
+        flop: ['paper.cal_v_flop', 'danger'],
+        confirme: ['paper.cal_v_confirme', 'online'],
+        mitige: ['paper.cal_v_mitige', 'muted'],
+    },
+
+    _CAL_PAST_DAYS: 7,
+
+    // « AAAA-MM-JJ » -> date LOCALE. Surtout pas new Date(s) : la chaîne courte
+    // est lue en UTC par la norme, et un fuseau derrière Greenwich afficherait
+    // la veille. Rend null pour tout ce qui n'a pas exactement cette forme.
+    _calDate(s) {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s == null ? '' : s));
+        if (!m) return null;
+        const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+        if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+        const dt = new Date(y, mo - 1, d);
+        // 31 février : la date existe mais ce n'est plus celle qu'on a lue.
+        if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
+        return dt;
+    },
+
+    // Clé de jour d'une date LOCALE (« 2026-08-28 ») : c'est elle qui sert à
+    // comparer, jamais un horodatage — deux instants du même jour sont le même
+    // jour, quelle que soit l'heure.
+    _dayKey(dt) {
+        const p = (x) => (x < 10 ? '0' : '') + x;
+        return dt.getFullYear() + '-' + p(dt.getMonth() + 1) + '-' + p(dt.getDate());
+    },
+
+    _todayKey() { return this._dayKey(new Date()); },
+
+    // En-tête de jour : « jeu. 28 août » dans la langue de l'écran. Le nom du
+    // jour et celui du mois viennent du navigateur (pas 19 clés i18n de plus) ;
+    // si la locale n'est pas connue, on retombe sur la date en chiffres.
+    _calDayLabel(dt) {
+        try {
+            const s = dt.toLocaleDateString(this._lang(),
+                { weekday: 'short', day: 'numeric', month: 'long' });
+            if (s) return String(s);
+        } catch (e) { /* locale inconnue */ }
+        return this._date(dt);
+    },
+
+    _calVerdict(v) {
+        const k = String(v == null ? '' : v).toLowerCase();
+        return Object.prototype.hasOwnProperty.call(this._CAL_VERDICTS, k) ? k : '';
+    },
+
+    // Les entrées retenues, DÉDUPLIQUÉES du bruit : une date illisible ne peut
+    // pas se ranger dans un jour, et un rendez-vous passé n'a le droit de rester
+    // que s'il a été JUGÉ — et pas plus d'une semaine.
+    _calEntries() {
+        const d = this._calendar;
+        const rows = (d && Array.isArray(d.entries)) ? d.entries : [];
+        const today = this._todayKey();
+        const floor = new Date();
+        floor.setDate(floor.getDate() - this._CAL_PAST_DAYS);
+        const floorKey = this._dayKey(floor);
+        const out = [];
+        rows.forEach((e) => {
+            if (!e || typeof e !== 'object') return;
+            const dt = this._calDate(e.date);
+            if (!dt) return;
+            const key = this._dayKey(dt);
+            if (key < today) {
+                if (!this._calVerdict(e.verdict) || key < floorKey) return;
+            }
+            out.push({ e: e, dt: dt, key: key });
+        });
+        // Tri TOTAL : par jour, puis par sorte, puis par libellé — deux rendus
+        // des mêmes données rendent exactement la même liste, quel que soit
+        // l'ordre dans lequel le serveur a rangé la sienne.
+        out.sort((a, b) => {
+            if (a.key !== b.key) return a.key < b.key ? -1 : 1;
+            const ka = String(a.e.kind || '') + '\u0000' + String(a.e.label || '');
+            const kb = String(b.e.kind || '') + '\u0000' + String(b.e.label || '');
+            return ka < kb ? -1 : (ka > kb ? 1 : 0);
+        });
+        return out;
+    },
+
+    _calGroups(rows) {
+        const out = [];
+        let cur = null;
+        rows.forEach((r) => {
+            if (cur === null || cur.key !== r.key) {
+                cur = { key: r.key, dt: r.dt, rows: [] };
+                out.push(cur);
+            }
+            cur.rows.push(r.e);
+        });
+        return out;
+    },
+
+    _viewAgenda() {
+        if (!this._calendar) return this._card(this._muted(Lang.t('paper.no_data')));
+        const rows = this._calEntries();
+        if (!rows.length) {
+            return this._card(
+                this._head(Lang.t('paper.agenda_title'), Lang.t('paper.agenda_hint')) +
+                this._muted(Lang.t('paper.agenda_empty')));
+        }
+        const today = this._todayKey();
+        // Le repère « Aujourd'hui » se pose AVANT le premier jour qui n'est plus
+        // passé — donc même quand rien ne tombe aujourd'hui. Sans lui, on ne sait
+        // pas où s'arrête ce qui a eu lieu et où commence ce qui vient.
+        let markPut = false;
+        const body = this._calGroups(rows).map((g) => {
+            let mark = '';
+            if (!markPut && g.key >= today) { markPut = true; mark = this._calToday(); }
+            return mark + this._calGroupHtml(g, today);
+        }).join('') + (markPut ? '' : this._calToday());
+        return this._card(
+            this._head(Lang.t('paper.agenda_title'), Lang.t('paper.agenda_hint')) +
+            '<div class="paper-cal">' + body + '</div>');
+    },
+
+    _calToday() {
+        return '<div class="paper-cal-now"><span>' +
+            esc(Lang.t('paper.agenda_today')) + '</span></div>';
+    },
+
+    _calGroupHtml(g, today) {
+        const isToday = (g.key === today);
+        const past = (g.key < today);
+        return '<div class="paper-cal-day' + (isToday ? ' today' : '') +
+                   (past ? ' past' : '') + '">' +
+            '<div class="paper-cal-head" style="' + this._mono + '">' +
+              esc(this._calDayLabel(g.dt)) + '</div>' +
+            '<div class="row-list">' + g.rows.map((e) => this._calRow(e)).join('') + '</div>' +
+        '</div>';
+    },
+
+    _calKindBadge(kind) {
+        const k = String(kind == null ? '' : kind).toLowerCase();
+        if (!Object.prototype.hasOwnProperty.call(this._CAL_KINDS, k)) return '';
+        const d = this._CAL_KINDS[k];
+        const label = Lang.t(d[0]);
+        if (d[1]) {
+            return '<span class="paper-graph-key" style="flex:0 0 auto;">' +
+                '<i style="background:' + esc(this._gfamColor(d[1])) + ';"></i>' +
+                esc(label) + '</span>';
+        }
+        return '<span class="badge ' + esc(d[2] || '') + '">' + esc(label) + '</span>';
+    },
+
+    // Le verdict, avec l'ampleur du mouvement quand elle est là. Un verdict sans
+    // chiffre reste un verdict : on ne fabrique pas le chiffre manquant.
+    _calVerdictBadge(e) {
+        const v = this._calVerdict(e && e.verdict);
+        if (!v) return '';
+        const d = this._CAL_VERDICTS[v];
+        const mv = this._n(e && e.move_pct);
+        const txt = Lang.t(d[0]) + (mv === null ? '' : (' ' + this._signed(mv, 2, ' %')));
+        return '<span class="badge ' + esc(d[1]) + '">' + esc(txt) + '</span>';
+    },
+
+    // Les titres concernés : celui du rendez-vous, puis ceux que le serveur y
+    // rattache. Chacun mène là où l'on DÉCIDE — jamais à un ordre.
+    _calTickers(e) {
+        const seen = {};
+        const out = [];
+        const push = (v) => {
+            const s = String(v == null ? '' : v).trim();
+            if (!s || Object.prototype.hasOwnProperty.call(seen, s)) return;
+            seen[s] = 1;
+            out.push(s);
+        };
+        push(e && e.symbol);
+        if (e && Array.isArray(e.tickers)) e.tickers.forEach(push);
+        return out.slice(0, 5).map((s) =>
+            '<button class="btn btn-ghost btn-sm paper-graph-chip" ' +
+                'data-paper-act="cal-trade" data-sym="' + esc(s) + '" ' +
+                'title="' + esc(Lang.t('paper.conv_trade_hint')) + '">' +
+              esc(s) + '</button>').join('');
+    },
+
+    _calRow(e) {
+        const label = (e && e.label !== undefined && e.label !== null) ? String(e.label) : '';
+        return '<div class="row" style="display:flex;gap:10px;align-items:center;' +
+               'flex-wrap:wrap;padding:9px 12px;">' +
+            this._calKindBadge(e && e.kind) +
+            '<span style="flex:1 1 240px;min-width:0;font-size:14px;line-height:1.45;" ' +
+                'title="' + esc(label) + '">' +
+              esc(this._gtrim(label, this._GROVE_TITLE_MAX)) + '</span>' +
+            this._playArrow(e && e.direction) +
+            this._calVerdictBadge(e) +
+            this._calTickers(e) +
+        '</div>';
+    },
+
+    // =====================================================================
+    //  11. CONNEXIONS — la toile de ce que le module a retenu
     // =====================================================================
     //
     // Une seule question a l'ecran : « qu'est-ce qui touche a ce titre ? ».
@@ -5822,7 +6132,10 @@ const PaperModule = {
                   'style="margin-left:auto;">' + esc(Lang.t('paper.refresh')) + '</button>' +
             '</div>' +
             '<div class="paper-tabs">' + pills + '</div>' +
-            body
+            body +
+            // Ce que le bot a DIT, sous ce qu'il sait : la toile est l'état de
+            // la mémoire, le journal en est le récit daté.
+            this._convCard()
         );
     },
 
@@ -5901,6 +6214,385 @@ const PaperModule = {
     },
 
     // =====================================================================
+    //  JOURNAL DES CONVERGENCES — ce que le bot a DIT, et ce qu'il reliait
+    // =====================================================================
+    //
+    // Une convergence part sur Telegram quand plusieurs facteurs INDÉPENDANTS
+    // tombent ensemble. Le message disparaissait dans le fil : ici il est daté,
+    // relisible, et surtout OUVRABLE — un clic rend le texte entier, le
+    // mini-arbre de ce qu'il reliait, et la liste de ses éléments.
+    //
+    // Le mini-arbre est dessiné par LE MOTEUR DE LA TOILE, sans le dupliquer :
+    // le temps d'un tracé (strictement synchrone), la portée de dessin bascule
+    // sur la convergence, puis revient. Mêmes types de nœuds, mêmes couleurs de
+    // famille, même disposition déterministe — deux tracés des mêmes données
+    // rendent exactement la même image.
+
+    async _loadDigest(force) {
+        if (this._digestLoading) return;
+        if (this._digest && !force) return;
+        this._digestLoading = true;
+        const d = await this._get('/api/paper/digest');
+        this._digestLoading = false;
+        this._digest = (d && typeof d === 'object') ? d : { entries: [] };
+        if (this._tab === 'graph') this._renderBody();
+    },
+
+    // Le serveur nomme cette liste « history » ; le contrat qu'on m'a passé
+    // disait « entries ». On lit les DEUX : le contrat fige le concept, pas
+    // toujours le nom du champ — et une liste lue au mauvais nom ne plante
+    // jamais, elle rend la section vide POUR TOUJOURS (piège #61).
+    _digestEntries() {
+        const d = this._digest;
+        const raw = d ? (Array.isArray(d.history) ? d.history
+            : (Array.isArray(d.entries) ? d.entries : null)) : null;
+        const rows = raw || [];
+        // Une entrée sans horodatage ne peut être ni datée ni ouverte : elle
+        // n'a pas d'identité. On ne l'affiche pas plutôt que d'en inventer une.
+        return rows.filter((e) => e && e.ts !== undefined && e.ts !== null && e.ts !== '');
+    },
+
+    _digestOf(ts) {
+        const key = String(ts == null ? '' : ts);
+        if (!key) return null;
+        const rows = this._digestEntries();
+        for (let i = 0; i < rows.length; i++) {
+            if (String(rows[i].ts) === key) return rows[i];
+        }
+        return null;
+    },
+
+    // Un facteur : pastille de famille quand il en a une, badge d'alerte quand
+    // c'est une MENACE sur le compte, chip neutre quand le code est inconnu.
+    _convFactor(code) {
+        const c = String(code == null ? '' : code);
+        if (!c) return '';
+        if (!Object.prototype.hasOwnProperty.call(this._CONV_FACTORS, c)) {
+            return '<span class="paper-conv-chip">' + esc(c) + '</span>';
+        }
+        const d = this._CONV_FACTORS[c];
+        const label = Lang.t(d[0]);
+        if (Object.prototype.hasOwnProperty.call(this._CONV_THREAT, c)) {
+            return '<span class="badge danger">' + esc(label) + '</span>';
+        }
+        if (!d[1]) return '<span class="paper-conv-chip">' + esc(label) + '</span>';
+        return '<span class="paper-graph-key">' +
+            '<i style="background:' + esc(this._gfamColor(d[1])) + ';"></i>' +
+            esc(label) + '</span>';
+    },
+
+    _convFactors(e) {
+        const codes = (e && Array.isArray(e.factors)) ? e.factors : [];
+        const seen = {};
+        return codes.map((c) => {
+            const k = String(c == null ? '' : c);
+            if (!k || Object.prototype.hasOwnProperty.call(seen, k)) return '';
+            seen[k] = 1;
+            return this._convFactor(k);
+        }).join('');
+    },
+
+    // La liste, SOUS la toile et sa légende. Chaque ligne s'ouvre ; l'ouverte
+    // porte son panneau juste dessous — pas une modale, on garde le dessin à
+    // l'œil (même doctrine que la liste d'un bosquet).
+    _convCard() {
+        const rows = this._digestEntries();
+        if (!rows.length) {
+            // Rien à dire ET rien en route : la règle 0-DOM s'applique — un
+            // encart vide apprend à ignorer l'encart. Pendant la lecture, en
+            // revanche, on le DIT plutôt que de laisser un trou.
+            if (!this._digestLoading) return '';
+            return '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px;">' +
+                '<h4 style="margin:0 0 8px;font-size:15px;">' +
+                  esc(Lang.t('paper.conv_title')) + '</h4>' +
+                this._muted(Lang.t('paper.conv_loading')) + '</div>';
+        }
+        return '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px;">' +
+            '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px;">' +
+              '<h4 style="margin:0;font-size:15px;">' + esc(Lang.t('paper.conv_title')) + '</h4>' +
+              '<span style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
+                esc(this._num(rows.length, 0)) + '</span>' +
+            '</div>' +
+            '<div class="paper-graph-note" style="margin-top:0;margin-bottom:8px;">' +
+              esc(Lang.t('paper.conv_hint')) + '</div>' +
+            '<div class="row-list">' + rows.map((e) => this._convRow(e)).join('') + '</div>' +
+        '</div>';
+    },
+
+    _convRow(e) {
+        const ts = String(e.ts);
+        const open = (this._dgTs === ts);
+        const text = (e.digest === undefined || e.digest === null) ? '' : String(e.digest);
+        return '<div class="row paper-conv-row' + (open ? ' open' : '') + '" ' +
+                   'data-paper-act="conv-open" data-ts="' + esc(ts) + '" ' +
+                   'title="' + esc(Lang.t('paper.conv_open')) + '">' +
+            '<div class="paper-conv-when" style="' + this._mono + '">' +
+              esc(this._dateShort(e.ts)) + '</div>' +
+            '<div style="flex:1 1 260px;min-width:0;">' +
+              '<div class="paper-graph-legend" style="margin-top:0;margin-bottom:4px;">' +
+                this._convFactors(e) +
+                (e.llm === true
+                  ? '<span class="paper-conv-chip" title="' + esc(Lang.t('paper.conv_llm_hint')) + '">' +
+                      esc(Lang.t('paper.conv_llm')) + '</span>'
+                  : '') +
+              '</div>' +
+              (text
+                ? '<div class="paper-conv-x">' + esc(text) + '</div>'
+                : this._muted(Lang.t('paper.conv_no_text'))) +
+            '</div>' +
+        '</div>' + (open ? this._convPanel(e) : '');
+    },
+
+    // Le panneau d'une convergence ouverte : le texte ENTIER, le mini-arbre de
+    // ce qu'elle reliait, puis ses éléments un par un.
+    _convPanel(e) {
+        const text = (e.digest === undefined || e.digest === null) ? '' : String(e.digest);
+        const items = Array.isArray(e.items) ? e.items : [];
+        return '<div class="paper-conv-panel">' +
+            '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px;">' +
+              '<span style="font-size:13px;color:var(--text-dim);' + this._mono + '">' +
+                esc(this._dateTime(e.ts)) + '</span>' +
+              '<button class="btn btn-ghost btn-sm" data-paper-act="conv-close" ' +
+                  'style="margin-left:auto;">' + esc(Lang.t('paper.close')) + '</button>' +
+            '</div>' +
+            (text
+              ? '<div class="paper-conv-full">' + esc(text) + '</div>'
+              : this._muted(Lang.t('paper.conv_no_text'))) +
+            this._convGraph() +
+            (items.length
+              ? '<div class="row-list" style="margin-top:12px;">' +
+                  items.map((it) => this._convItem(it)).join('') + '</div>'
+              : '') +
+        '</div>';
+    },
+
+    // Le mini-arbre. Trois états seulement : en lecture, ancien (le serveur DIT
+    // qu'il n'a pas gardé le détail), ou dessiné. Un dessin impossible faute
+    // d'ancre ne laisse pas un cadre vide : la liste dessous porte tout.
+    _convGraph() {
+        if (this._dgLoading) return this._muted(Lang.t('paper.conv_graph_loading'));
+        const g = this._dgGraph;
+        if (!g) return '';
+        if (g.legacy === true) {
+            return '<div class="paper-graph-note">' + esc(Lang.t('paper.conv_legacy')) + '</div>';
+        }
+        if (!this._dgNodes().length) return '';
+        return '<div class="paper-graph-wrap" style="margin-top:12px;">' +
+              '<canvas data-paper-dgraph="1" class="paper-graph paper-graph-mini"></canvas>' +
+            '</div>' +
+            this._convLegend();
+    },
+
+    // La légende du mini-arbre : les familles RÉELLEMENT présentes, dans
+    // l'ordre fixe — la même règle que la légende de la grande toile, y compris
+    // pour un type hors table (pastille neutre sous son propre nom : on ne
+    // cache pas ce qu'on ne sait pas nommer, on n'invente pas de famille).
+    _convLegend() {
+        const seen = {};
+        const others = {};
+        this._dgNodes().forEach((n) => {
+            const t = this._gtype(n.type);
+            if (this._isAnchorType(t)) return;
+            if (!this._isGraphType(t)) { if (t) others[t] = 1; return; }
+            const f = this._gfam(t);
+            if (f) seen[f] = 1;
+        });
+        const fams = this._GFAM_ORDER.filter((f) =>
+            Object.prototype.hasOwnProperty.call(seen, f));
+        const rest = Object.keys(others).sort();
+        if (!fams.length && !rest.length) return '';
+        return this._legendHtml(fams, rest, Lang.t('paper.graph_legend_edges'));
+    },
+
+    // Un élément de la convergence. Forme PROPRE au digest ({id,title,src,
+    // symbol,link,sentiment}) : ce n'est pas un nœud de toile, il ne passe donc
+    // pas par _groveRow. « src » est du vocabulaire serveur — on le rend TEL
+    // QUEL, jamais en clé i18n fabriquée par concaténation.
+    _convItem(it) {
+        if (!it || typeof it !== 'object') return '';
+        const title = (it.title === undefined || it.title === null) ? '' : String(it.title);
+        const src = (it.src === undefined || it.src === null) ? '' : String(it.src);
+        // « symbol » peut porter PLUSIEURS titres séparés par des virgules (une
+        // hypothèse du radar en vise souvent deux ou trois). Un seul bouton
+        // enverrait « NVDA, AMD » à la recherche : on en fait une pastille par
+        // titre, et l'ordre du serveur est conservé.
+        const syms = this._convSymbols(it.symbol);
+        const url = this._safeUrl(it.link);
+        return '<div class="row" style="display:flex;gap:10px;align-items:center;' +
+               'flex-wrap:wrap;padding:9px 12px;">' +
+            (src
+              ? '<span style="font-size:12px;color:var(--text-dim);' + this._mono +
+                'flex:0 0 auto;">' + esc(this._gtrim(src, 18)) + '</span>' : '') +
+            this._groveSentBadge(it) +
+            '<span style="flex:1 1 240px;min-width:0;font-size:14px;line-height:1.45;" ' +
+                'title="' + esc(title) + '">' +
+              esc(this._gtrim(title, this._GROVE_TITLE_MAX)) + '</span>' +
+            // Le titre concerné mène là où l'on DÉCIDE — jamais à un ordre : le
+            // module n'en passe aucun tout seul.
+            syms.map((s) =>
+              '<button class="btn btn-ghost btn-sm paper-graph-chip" ' +
+                  'data-paper-act="conv-trade" data-sym="' + esc(s) + '" ' +
+                  'title="' + esc(Lang.t('paper.conv_trade_hint')) + '">' +
+                esc(s) + '</button>').join('') +
+            (url
+              ? '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer" ' +
+                'class="btn btn-ghost btn-sm" style="text-decoration:none;">' +
+                esc(Lang.t('paper.open')) + '</a>' : '') +
+        '</div>';
+    },
+
+    // Les titres d'un item, dédupliqués et bornés. Un champ vide ne rend rien
+    // (règle 0-DOM), et on ne fabrique jamais de symbole : on découpe le texte
+    // du serveur, on ne l'interprète pas.
+    _convSymbols(v) {
+        const seen = {};
+        const out = [];
+        String(v == null ? '' : v).split(',').forEach((raw) => {
+            const s = raw.trim();
+            if (!s || Object.prototype.hasOwnProperty.call(seen, s)) return;
+            seen[s] = 1;
+            out.push(s);
+        });
+        return out.slice(0, 4);
+    },
+
+    // --- Ouverture / fermeture ----------------------------------------------
+
+    async openConvergence(ts) {
+        const key = String(ts == null ? '' : ts);
+        if (!key || !this._digestOf(key)) return;
+        // Re-cliquer la même convergence la REFERME : c'est le seul geste
+        // disponible sur la ligne, il doit faire l'aller ET le retour.
+        if (this._dgTs === key) { this.closeConvergence(); return; }
+        this._dgTs = key;
+        this._dgGraph = null;
+        this._dgLayout = null;
+        this._dgLoading = true;
+        if (this._tab === 'graph') this._renderBody();
+        const d = await this._get('/api/paper/digest/' + encodeURIComponent(key) + '/graph');
+        // Deux lignes ouvertes coup sur coup : la réponse qui n'est plus celle
+        // qu'on regarde est jetée, sinon on dessinerait l'une sous le titre de
+        // l'autre (même garde que loadGraph).
+        if (this._dgTs !== key) return;
+        this._dgLoading = false;
+        this._dgGraph = (d && typeof d === 'object') ? d : null;
+        if (this._tab === 'graph') this._renderBody();
+    },
+
+    closeConvergence() {
+        this._dgTs = null;
+        this._dgGraph = null;
+        this._dgLayout = null;
+        this._dgLoading = false;
+        if (this._tab === 'graph') this._renderBody();
+    },
+
+    // --- Le mini-arbre : le moteur de la toile, le temps d'un tracé ---------
+
+    _dgNodes() {
+        const g = this._dgGraph;
+        return (g && Array.isArray(g.nodes)) ? g.nodes.filter((n) => n && n.id !== undefined
+            && n.id !== null && String(n.id) !== '') : [];
+    },
+
+    // La racine du mini-arbre : la première ANCRE (un titre), par ordre
+    // d'identifiant — DÉTERMINISTE. Sans ancre, chaîne vide : le moteur retombe
+    // alors sur sa disposition d'index, qui n'a besoin d'aucune racine.
+    _dgRoot() {
+        let best = '';
+        this._dgNodes().forEach((n) => {
+            if (!this._isAnchorType(n.type)) return;
+            const id = String(n.id);
+            if (!best || id < best) best = id;
+        });
+        return best;
+    },
+
+    // Bascule la portée de dessin sur la convergence, exécute fn, remet tout en
+    // place. STRICTEMENT SYNCHRONE : rien d'asynchrone ne doit passer ici, sinon
+    // la grande toile se peindrait avec les données du mini-arbre.
+    _withDG(fn) {
+        const s = {
+            g: this._graph, p: this._graphPivot, y: this._graphSymbol,
+            c: this._graphCanvas, l: this._graphLayout, h: this._graphHover,
+        };
+        this._graph = this._dgGraph;
+        this._graphPivot = null;
+        this._graphSymbol = this._dgRoot();
+        this._graphCanvas = this._dgCanvas;
+        this._graphLayout = this._dgLayout;
+        this._graphHover = null;          // le mini-arbre se lit, il ne se survole pas
+        try { return fn(); } finally {
+            this._dgLayout = this._graphLayout;
+            this._graph = s.g; this._graphPivot = s.p; this._graphSymbol = s.y;
+            this._graphCanvas = s.c; this._graphLayout = s.l; this._graphHover = s.h;
+        }
+    },
+
+    _paintDG() { this._withDG(() => { this._paintGraph(); }); },
+
+    _mountDG() {
+        const cv = document.querySelector('#paper-body canvas[data-paper-dgraph]');
+        if (!cv) return;
+        this._dgCanvas = cv;
+        const onClick = (ev) => {
+            const rect = cv.getBoundingClientRect();
+            const i = this._withDG(() =>
+                this._graphHit(ev.clientX - rect.left, ev.clientY - rect.top));
+            if (i < 0) return;
+            ev.preventDefault();
+            this._dgActivate(i);
+        };
+        cv.addEventListener('click', onClick);
+        cv._paperDgOff = () => { cv.removeEventListener('click', onClick); };
+        this._onDgResize = () => {
+            if (this._dgResizeTimer) clearTimeout(this._dgResizeTimer);
+            this._dgResizeTimer = setTimeout(() => {
+                this._dgResizeTimer = null;
+                this._paintDG();
+            }, 120);
+        };
+        window.addEventListener('resize', this._onDgResize);
+        this._paintDG();
+        // Un SECOND tracé au tour suivant, même raison que la grande toile : au
+        // montage la boîte n'est pas encore mesurée (clientWidth = 0) et le
+        // dessin serait calculé pour un cadre qui n'existe pas.
+        if (!this._dgRaf) {
+            this._dgRaf = window.requestAnimationFrame(() => {
+                this._dgRaf = 0;
+                this._paintDG();
+            });
+        }
+    },
+
+    _disposeDG() {
+        const cv = this._dgCanvas;
+        if (cv && cv._paperDgOff) { cv._paperDgOff(); cv._paperDgOff = null; }
+        this._dgCanvas = null;
+        this._dgLayout = null;
+        if (this._onDgResize) {
+            window.removeEventListener('resize', this._onDgResize);
+            this._onDgResize = null;
+        }
+        if (this._dgResizeTimer) { clearTimeout(this._dgResizeTimer); this._dgResizeTimer = null; }
+        if (this._dgRaf) { window.cancelAnimationFrame(this._dgRaf); this._dgRaf = 0; }
+    },
+
+    // Clic dans le mini-arbre. Whitelist de gestes FERMÉE : un titre rapproche
+    // la GRANDE toile sur lui (c'est « voir tous ses liens »), un élément ouvre
+    // sa source. Tout le reste est muet — ce dessin est une lecture, pas une
+    // navigation, et il ne doit surtout pas déplier un bosquet de la toile.
+    _dgActivate(i) {
+        const L = this._dgLayout;
+        const n = L && L.nodes[i];
+        if (!n) return;
+        if (n.anchor) { this.loadGraph(n.id); return; }
+        if (!n.link) return;
+        // _safeUrl a déjà écarté tout ce qui n'est pas http(s) à la construction.
+        window.open(n.link, '_blank', 'noopener,noreferrer');
+    },
+
+    // =====================================================================
     //  Le signal : « ce titre a deja des connexions »
     // =====================================================================
     //
@@ -5917,6 +6609,113 @@ const PaperModule = {
         if (!this._graphCounts[sym]) return;      // rien a dire : on ne dessine rien
         // Le chip ne vit que dans ces deux vues : ailleurs, rien a redessiner.
         if (this._tab === 'trade' || this._tab === 'portfolio') this._renderBody();
+        // Le compteur dit qu'il y a QUELQUE CHOSE : on va donc chercher QUOI.
+        // Cet appel-la n'a lieu que dans ce cas — a zero connexion, aucune
+        // requete, aucun encart, rien du tout (regle 0-DOM).
+        this._loadEgo(sym);
+    },
+
+    // =====================================================================
+    //  CONNEXIONS DE CE TITRE — la toile, lue SOUS le titre qu'on regarde
+    // =====================================================================
+    //
+    // Meme endpoint que la vue Connexions en mode ego, mais rendu en LISTE :
+    // sous un formulaire d'ordre on ne veut pas un dessin a explorer, on veut
+    // savoir ce qui touche ce titre, range par famille de source, avec la date
+    // et le lien. Le dessin reste a un clic (bouton « ouvrir la toile »).
+
+    async _loadEgo(symbol) {
+        const sym = String(symbol || '');
+        if (!sym) return;
+        if (this._ego[sym] || this._egoLoading[sym]) return;   // lu une fois, garde
+        this._egoLoading[sym] = true;
+        const d = await this._get('/api/paper/graph?symbol=' + encodeURIComponent(sym));
+        delete this._egoLoading[sym];
+        this._ego[sym] = (d && typeof d === 'object') ? d : { nodes: [], edges: [] };
+        if (this._tab === 'trade' || this._tab === 'portfolio') this._renderBody();
+    },
+
+    // Les noeuds a montrer : tout sauf les ANCRES (le titre lui-meme et ses
+    // voisins de portefeuille ne sont pas des « connexions »), du plus frais au
+    // plus ancien — tri TOTAL (dernier departage : l'identifiant) pour que deux
+    // rendus des memes donnees rendent exactement la meme liste.
+    _egoNodes(symbol) {
+        const g = this._ego[String(symbol || '')];
+        const rows = (g && Array.isArray(g.nodes)) ? g.nodes : [];
+        return rows.filter((n) => n && n.id !== undefined && n.id !== null
+            && String(n.id) !== '' && !this._isAnchorType(n.type))
+            .sort((a, b) => this._gCmpRecent(a, b));
+    },
+
+    // Regroupement par FAMILLE DE SOURCE, dans l'ordre fixe de la legende.
+    _egoSections(rows) {
+        const by = {};
+        rows.forEach((n) => {
+            const f = this._gfam(this._gtype(n.type)) || 'other';
+            (by[f] = by[f] || []).push(n);
+        });
+        return this._GFAM_ORDER.filter((f) => by[f] && by[f].length)
+            .map((f) => ({ fam: f, rows: by[f] }));
+    },
+
+    _egoHead(sec) {
+        return '<div style="display:flex;gap:8px;align-items:baseline;' +
+               'padding:12px 12px 4px;font-size:12px;color:var(--text-dim);' +
+               this._mono + 'text-transform:uppercase;letter-spacing:.06em;">' +
+            '<span class="paper-graph-key" style="font-size:12px;">' +
+              '<i style="background:' + esc(this._gfamColor(sec.fam)) + ';"></i>' +
+              esc(this._gfamLabel(sec.fam)) + '</span>' +
+            '<span style="opacity:.7;">' + esc(this._num(sec.rows.length, 0)) + '</span>' +
+        '</div>';
+    },
+
+    // La section, SOUS le titre ouvert. Absente quand la toile ne sait rien de
+    // ce titre — le compteur vaut alors 0 et il n'y a rien a dire.
+    //
+    // L'identifiant est FIXE (une seule section a l'ecran a la fois : le titre
+    // choisi dans Nouveau trade, ou la position depliee du Portefeuille) : un
+    // symbole porte des points et des accents circonflexes, il n'a rien a faire
+    // dans un identifiant HTML.
+    _egoCard(symbol) {
+        const sym = String(symbol || '');
+        if (!sym || !this._graphCounts[sym]) return '';
+        const rows = this._egoNodes(sym);
+        const loading = !this._ego[sym];
+        const head =
+            '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px;">' +
+              '<h3 style="margin:0;font-size:16px;">' + esc(Lang.t('paper.ego_title')) + '</h3>' +
+              '<span style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
+                esc(sym) + '</span>' +
+              '<button class="btn btn-ghost btn-sm" data-paper-act="ego-open" ' +
+                  'data-sym="' + esc(sym) + '" style="margin-left:auto;">' +
+                esc(Lang.t('paper.ego_open')) + '</button>' +
+            '</div>';
+        if (loading) {
+            return this._card(head + this._muted(Lang.t('paper.graph_loading')),
+                '', 'paper-ego');
+        }
+        if (!rows.length) {
+            // Le compteur annoncait quelque chose, la lecture ne rend rien
+            // d'affichable : on le DIT plutot que de laisser une carte muette.
+            return this._card(head + this._muted(Lang.t('paper.ego_empty')), '', 'paper-ego');
+        }
+        const body = this._egoSections(rows).map((sec) =>
+            this._egoHead(sec) +
+            sec.rows.map((n) => this._groveRow(n, sec.fam === 'radar' ? 'radar' : '')).join('')
+        ).join('');
+        return this._card(head +
+            '<div class="row-list" style="max-height:420px;overflow-y:auto;">' + body + '</div>' +
+            '<div class="paper-graph-note">' + esc(Lang.t('paper.ego_note')) + '</div>',
+            '', 'paper-ego');
+    },
+
+    // Le chip « N connexions » ne quitte plus la page : il DESCEND vers la
+    // section qui porte ces connexions, juste dessous.
+    scrollToEgo() {
+        const el = document.getElementById('paper-ego');
+        if (!el) return;
+        try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+        catch (e) { el.scrollIntoView(); }
     },
 
     // Pastille de la rangée de filtres : « Tout » (null) ou une ancre.
@@ -6519,9 +7318,10 @@ const PaperModule = {
             esc(Lang.t(this._GROVE_SENT[s][1])) + '</span>';
     },
 
-    // Chip d'un graphique : on OUVRE la vue Connexions déjà rapprochée sur ce
-    // titre. L'onglet bascule tout de suite (l'écran répond), la toile arrive
-    // derrière — jamais l'inverse.
+    // On OUVRE la vue Connexions déjà rapprochée sur ce titre. L'onglet bascule
+    // tout de suite (l'écran répond), la toile arrive derrière — jamais
+    // l'inverse. C'est le bouton « ouvrir la toile » de la section Connexions
+    // de ce titre : le chip, lui, ne quitte plus la page.
     openGraph(symbol) {
         const sym = String(symbol || '');
         if (!sym) return;
@@ -6532,12 +7332,14 @@ const PaperModule = {
         this.loadGraph(sym);
     },
 
+    // Le chip est l'ANCRE de la section « Connexions de ce titre », qui vit
+    // maintenant sous le formulaire : il y descend au lieu de changer d'onglet.
     _graphChip(symbol) {
         const sym = String(symbol || '');
         const n = this._graphCounts[sym];
         if (!n) return '';
         return '<button class="btn btn-ghost btn-sm paper-graph-chip" ' +
-                'data-paper-act="graph-open" data-sym="' + esc(sym) + '" ' +
+                'data-paper-act="ego-scroll" ' +
                 'title="' + esc(Lang.t('paper.graph_chip_hint')) + '">' +
             esc(this._num(n, 0) + ' ' + Lang.t('paper.graph_chip')) + '</button>';
     },
@@ -7352,25 +8154,249 @@ const PaperModule = {
         this._toast('success', Lang.t(home[1]));
     },
 
+    // =====================================================================
+    //  Les jobs : le POST rend un identifiant, la réponse arrive par sondage
+    // =====================================================================
+    //
+    // Un appel LLM peut demander deux minutes. Tenu ouvert, il traversait la
+    // passerelle Cloudflare qui le coupait à 100 s — d'où le 502 : le travail
+    // avait bien lieu, la réponse ne revenait jamais. Le serveur rend donc un
+    // identifiant TOUT DE SUITE et on le sonde ; plus aucune requête longue.
+    //
+    // Le registre _busy (au-dessus) continue de faire survivre le loader à la
+    // navigation : ce qui change ici, c'est le CHEMIN de la réponse.
+
+    // L'identifiant de job d'une réponse de POST, ou '' si le serveur a répondu
+    // directement (contrat antérieur — on le sert alors sans rien attendre).
+    _jobId(d) {
+        if (!d || typeof d !== 'object') return '';
+        const v = d.job;
+        if (v === null || v === undefined || v === '') return '';
+        if (typeof v === 'object') return '';
+        return String(v);
+    },
+
+    _readJobs() {
+        const d = this._readJson(this._JOBS_KEY);
+        return d || {};
+    },
+
+    // La trace disque : {clé -> {id, ts}}. C'est elle, et elle seule, qui
+    // permet de reprendre un sondage après un rechargement de page.
+    _noteJob(k, id) {
+        const all = this._readJobs();
+        all[k] = { id: String(id), ts: Date.now() };
+        this._writeStore(this._JOBS_KEY, JSON.stringify(all));
+    },
+
+    _dropJob(k) {
+        const all = this._readJobs();
+        if (!Object.prototype.hasOwnProperty.call(all, k)) return;
+        delete all[k];
+        this._writeStore(this._JOBS_KEY, JSON.stringify(all));
+    },
+
+    // Sondage CHAÎNÉ (setTimeout, jamais setInterval : une réponse lente ne
+    // doit pas empiler un deuxième sondage par-dessus le premier).
+    //
+    // Rend {state, result, error} :
+    //   done      — la réponse est là ;
+    //   error     — le serveur DIT que le travail a échoué ;
+    //   timeout   — la limite est passée, on rend la main ;
+    //   lost      — le serveur ne répond plus rien de lisible sur ce job ;
+    //   cancelled — la vue a été déchargée : la trace disque, elle, RESTE.
+    //
+    // deadline : la limite compte depuis le DÉPART du job, pas depuis la reprise
+    // du sondage — sinon un job repris à chaque rechargement ne mourrait jamais.
+    _waitJob(k, id, startedAt) {
+        return new Promise((resolve) => {
+            const t0 = this._n(startedAt);
+            const dead = (t0 === null ? Date.now() : t0) + this._JOB_MAX_MS;
+            let miss = 0;
+            const done = (state, result, error) => {
+                delete this._jobWaits[k];
+                resolve({ state: state, result: result, error: error });
+            };
+            const tick = async () => {
+                const r = await this._getRaw('/api/paper/job/' + encodeURIComponent(String(id)));
+                // Un sondage déchargé pendant l'aller-retour ne parle plus.
+                if (!Object.prototype.hasOwnProperty.call(this._jobWaits, k)) return;
+                // 404 : le serveur ne connaît pas (ou plus) ce travail — et il
+                // répond aussi 404 pour celui d'un AUTRE compte. Inutile
+                // d'insister quinze fois : c'est un verdict, pas un hoquet.
+                if (r.status === 404) { done('lost', null, ''); return; }
+                const d = r.data;
+                // Les TROIS formes du contrat sont des 200 : on lit « status »,
+                // jamais le code HTTP — un travail échoué n'est pas une relève
+                // ratée, et les confondre masquerait le message du serveur.
+                const st = d ? String(d.status || '') : '';
+                if (st === 'done') { done('done', d.result, ''); return; }
+                if (st === 'error') { done('error', null, d && d.error ? String(d.error) : ''); return; }
+                // Réponse illisible : une coupure passagère ne doit pas tuer le
+                // suivi, mais un job que le serveur ne rend plus lisible, si.
+                if (st !== 'pending') {
+                    miss += 1;
+                    if (miss >= this._JOB_MISS_MAX) { done('lost', null, ''); return; }
+                } else { miss = 0; }
+                if (Date.now() >= dead) { done('timeout', null, ''); return; }
+                this._jobWaits[k].timer = setTimeout(tick, this._JOB_POLL_MS);
+            };
+            this._jobWaits[k] = { timer: setTimeout(tick, this._JOB_POLL_MS), resolve: resolve };
+        });
+    },
+
+    // Le déchargement de la vue coupe les sondages EN COURS — sans toucher à la
+    // trace disque : le job continue côté serveur, on le reprendra au retour.
+    _cancelJobs() {
+        Object.keys(this._jobWaits).forEach((k) => {
+            const w = this._jobWaits[k];
+            delete this._jobWaits[k];
+            if (w && w.timer) clearTimeout(w.timer);
+            if (w && w.resolve) w.resolve({ state: 'cancelled', result: null, error: '' });
+        });
+    },
+
+    // Ce que devient une réponse. UNE seule fonction pour les deux chemins —
+    // en direct et à la reprise après rechargement : c'est ce qui rend un
+    // résultat rejouable au rendu suivant. Table FERMÉE par les clés de _busy.
+    _applyResult(k, d) {
+        if (k === 'ideas') {
+            this._ideas = (d && typeof d === 'object') ? d : null;
+            this._arrived('ideas');
+            return;
+        }
+        if (k === 'ask') {
+            this._answer = this._llmText(d) || Lang.t('paper.no_data');
+            this._arrived('ask');
+            return;
+        }
+        if (k === 'analysis') {
+            this._analysis = this._llmText(d) || Lang.t('paper.no_data');
+            this._arrived('analysis');
+            return;
+        }
+        if (k === 'postmortem') {
+            this._postmortem = this._llmText(d) || Lang.t('paper.no_data');
+            this._arrived('postmortem');
+            return;
+        }
+        if (k === 'scenarios') {
+            this._scenarioText = this._llmText(d);
+            this._arrived('scenarios');
+            return;
+        }
+        if (k === 'review') {
+            this._review = (d && typeof d === 'object') ? d : null;
+            this._reviewOpen = false;
+            this._arrived('review');
+        }
+    },
+
+    // Les suites d'une réponse : ce qu'il faut RELIRE au serveur derrière. À
+    // part de _applyResult parce que c'est asynchrone — et parce que la reprise
+    // après rechargement doit les jouer exactement pareil.
+    async _afterJob(k) {
+        if (k === 'ideas' || k === 'review') { await this._refreshJournal(); return; }
+        if (k === 'scenarios') {
+            // L'arbre rendu par l'appel est déjà persisté côté backend : on relit
+            // le board plutôt que de le greffer à la main — la liste affichée
+            // reste celle du serveur, jamais une copie locale.
+            this._board = await this._get('/api/paper/board') || this._board;
+            if (this._tab === 'plan') this._renderBody();
+        }
+    },
+
     // key : la clé du registre (obligatoire — c'est elle qui porte l'attente).
+    // apply : facultatif. Sans lui, la réponse suit le chemin canonique de sa
+    // clé (_applyResult) — le même qu'à la reprise après rechargement.
     async _llm(key, url, body, apply) {
         const k = String(key == null ? '' : key);
-        if (!Object.prototype.hasOwnProperty.call(this._busy, k)) return;
+        if (!Object.prototype.hasOwnProperty.call(this._busy, k)) return false;
         // Anti double-clic : une seule requête à la fois par clé. On le DIT,
         // sinon un deuxième clic a l'air d'être tombé dans le vide.
-        if (this._busy[k]) { this._toast('info', Lang.t('paper.busy_wait')); return; }
+        if (this._busy[k]) { this._toast('info', Lang.t('paper.busy_wait')); return false; }
         this._setBusy(k, true);
-        try {
-            let r = null;
-            try { r = await Auth.apiCall(url, { method: 'POST', body: JSON.stringify(body || {}) }); }
-            catch (e) { r = null; }
-            if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
-            let d = null;
-            try { d = await r.json(); } catch (e) { d = null; }
-            apply(d);
-        } finally {
-            this._setBusy(k, false);
+        let ok = false;
+        try { ok = await this._llmRun(k, url, body, apply); }
+        finally { this._setBusy(k, false); }
+        if (ok) await this._afterJob(k);
+        return ok;
+    },
+
+    async _llmRun(k, url, body, apply) {
+        let r = null;
+        try { r = await Auth.apiCall(url, { method: 'POST', body: JSON.stringify(body || {}) }); }
+        catch (e) { r = null; }
+        if (r && r.status === 429) {
+            // Le compte a déjà trop de travaux en vol. On le DIT dans la langue
+            // de l'écran, et on ne réessaie PAS tout seul : relancer en boucle
+            // une file déjà pleine ne fait qu'allonger l'attente.
+            this._toast('warn', Lang.t('paper.job_too_many'));
+            return false;
         }
+        if (!r || !r.ok) { this._toast('error', await this._detail(r)); return false; }
+        let d = null;
+        try { d = await r.json(); } catch (e) { d = null; }
+        const jid = this._jobId(d);
+        if (!jid) { this._deliver(k, d, apply); return true; }
+        this._noteJob(k, jid);
+        const out = await this._waitJob(k, jid, Date.now());
+        return this._settleJob(k, out, apply);
+    },
+
+    // Le verdict d'un sondage, en direct comme à la reprise. Un job cancelled
+    // GARDE sa trace disque : c'est la vue qui est partie, pas le travail.
+    _settleJob(k, out, apply) {
+        const st = out ? String(out.state) : 'lost';
+        if (st === 'cancelled') return false;
+        this._dropJob(k);
+        if (st === 'done') { this._deliver(k, out.result, apply); return true; }
+        if (st === 'error') {
+            this._toast('error', (out && out.error) ? out.error : Lang.t('paper.error'));
+            return false;
+        }
+        this._toast('warn', Lang.t(st === 'timeout' ? 'paper.job_timeout' : 'paper.job_lost'));
+        return false;
+    },
+
+    _deliver(k, d, apply) {
+        if (apply) { apply(d); return; }
+        this._applyResult(k, d);
+    },
+
+    // Rechargement de page : les jobs notés sur le disque et encore dans les
+    // temps reprennent leur sondage. Rien n'est relancé côté serveur — on se
+    // rebranche sur un travail qui, lui, n'a jamais été interrompu.
+    _resumeJobs() {
+        const all = this._readJobs();
+        const now = Date.now();
+        const keep = {};
+        const start = [];
+        Object.keys(all).forEach((k) => {
+            // Whitelist FERMÉE : une clé venue du disque (que n'importe qui peut
+            // éditer dans la console) qui n'arme aucun bouton n'arme rien ici.
+            if (!Object.prototype.hasOwnProperty.call(this._busy, k)) return;
+            const e = all[k];
+            const id = (e && e.id !== null && e.id !== undefined) ? String(e.id) : '';
+            const ts = this._n(e && e.ts);
+            if (!id || ts === null || ts > now || (now - ts) > this._JOB_MAX_MS) return;
+            keep[k] = { id: id, ts: ts };
+            start.push(k);
+        });
+        this._writeStore(this._JOBS_KEY, JSON.stringify(keep));
+        start.forEach((k) => { this._resumeJob(k, keep[k].id, keep[k].ts); });
+    },
+
+    async _resumeJob(k, id, ts) {
+        // La garde porte sur le SUIVEUR, pas sur le loader : un registre marqué
+        // occupé sans personne pour sonder est exactement le cas qu'on veut
+        // reprendre (et _busy, lui, se relâche une micro-tâche plus tard).
+        if (Object.prototype.hasOwnProperty.call(this._jobWaits, k)) return;
+        this._setBusy(k, true);
+        let ok = false;
+        try { ok = this._settleJob(k, await this._waitJob(k, id, ts), null); }
+        finally { this._setBusy(k, false); }
+        if (ok) await this._afterJob(k);
     },
 
     _llmText(d) {
@@ -7383,10 +8409,7 @@ const PaperModule = {
     async ask() {
         const el = document.getElementById('paper-question');
         const q = el ? String(el.value || '').trim() : '';
-        await this._llm('ask', '/api/paper/coach/ask', { question: q, lang: this._lang() }, (d) => {
-            this._answer = this._llmText(d) || Lang.t('paper.no_data');
-            this._arrived('ask');
-        });
+        await this._llm('ask', '/api/paper/coach/ask', { question: q, lang: this._lang() });
     },
 
     async analysis() {
@@ -7394,19 +8417,13 @@ const PaperModule = {
         const sym = el ? String(el.value || '').trim() : '';
         if (!sym) { this._toast('warn', Lang.t('paper.symbol_required')); return; }
         this._analysisSymbol = sym;
-        await this._llm('analysis', '/api/paper/analysis', { symbol: sym, lang: this._lang() }, (d) => {
-            this._analysis = this._llmText(d) || Lang.t('paper.no_data');
-            this._arrived('analysis');
-        });
+        await this._llm('analysis', '/api/paper/analysis', { symbol: sym, lang: this._lang() });
     },
 
     async postmortem(idx) {
         const body = { lang: this._lang() };
         if (idx !== null && idx !== undefined) body.trade_index = idx;
-        await this._llm('postmortem', '/api/paper/postmortem', body, (d) => {
-            this._postmortem = this._llmText(d) || Lang.t('paper.no_data');
-            this._arrived('postmortem');
-        });
+        await this._llm('postmortem', '/api/paper/postmortem', body);
     },
 
     // =====================================================================
@@ -7599,11 +8616,20 @@ const PaperModule = {
         // (la source de tous ses niveaux), et le chemin ouvert est conservé ;
         // ailleurs, la toile elle-même.
         if (act === 'graph-reload') {
+            // Le journal des convergences vit sous la toile : « Actualiser »
+            // le relit lui aussi, quel que soit le niveau où l'on se trouve.
+            this._loadDigest(true);
             const gk = this._groveKindOf(this._graphPivot);
             if (gk) { this._groveFetch(gk, true); return; }
             this.loadGraph(this._graphSymbol);
             return;
         }
+        if (act === 'conv-open') { this.openConvergence(el.getAttribute('data-ts')); return; }
+        if (act === 'conv-close') { this.closeConvergence(); return; }
+        if (act === 'conv-trade') { this.openTrade(el.getAttribute('data-sym')); return; }
+        if (act === 'cal-trade') { this.openTrade(el.getAttribute('data-sym')); return; }
+        if (act === 'ego-scroll') { this.scrollToEgo(); return; }
+        if (act === 'ego-open') { this.openGraph(el.getAttribute('data-sym')); return; }
         if (act === 'graph-open') { this.openGraph(el.getAttribute('data-sym')); return; }
         // Fil d'Ariane : les valeurs viennent du DOM, donc de nulle part de sûr
         // — c'est _drillPlan qui les confronte aux données et retombe au niveau
