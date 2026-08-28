@@ -11,7 +11,7 @@ remplace ``quotes``, les trois fonctions du ``llm`` sont neutralisées, et
 import json
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import FastAPI
@@ -5483,3 +5483,671 @@ def test_the_inline_mode_is_not_capped(tmp_path, monkeypatch):
     for _ in range(pr.MAX_PENDING_JOBS_PER_USER + 2):
         assert c.post("/api/paper/analysis?sync=1",
                       json={"symbol": "NESN.SW"}).status_code == 200
+
+
+# ================================================================
+#  COMPTE DE TRADING DU COACH (LOT 4, tâche 3)
+#
+#  Le coach reçoit SES 10 000 CHF fictifs et trade lui-même. Trois choses se
+#  vérifient ici : que son compte EXISTE, qu'il TOURNE (le tick, sans lequel
+#  ses stops ne partiraient jamais faute de navigateur) et qu'il S'EXÉCUTE
+#  (le chemin complet d'un ordre, refus compris).
+# ================================================================
+
+COACH = "coach"
+COACH_THESIS = "cassure du range mensuel sur volume soutenu"
+
+
+def coach_action(**over):
+    """Une entrée qui passe TOUT le garde-fou avec le marché par défaut
+    (NESN.SW à 100 CHF, équité 10 000) : 1500 CHF = 15 % (plancher 10, plafond
+    30), risque 150 CHF = 1,5 % (plafond 2), trésorerie restante 8500."""
+    base = {"action": "buy", "symbol": "NESN.SW", "qty": 15, "stop": 90.0,
+            "target": 130.0, "thesis": COACH_THESIS, "setup": "breakout"}
+    base.update(over)
+    return base
+
+
+def coach_portfolio():
+    return pr._load(COACH).to_dict()
+
+
+def coach_ledger():
+    return store.load_ledger(COACH)
+
+
+def seed_coach_position(qty=10, stop_loss=90.0, avg_price=100.0):
+    """Une ligne déjà ouverte sur le compte du coach, écrite en direct (les
+    tests du TICK n'ont pas à repasser par le chemin d'exécution)."""
+    portfolio = pr._ensure_coach_account()
+    portfolio.positions.append(pr.models.Position(
+        symbol="NESN.SW", qty=qty, avg_price=avg_price, currency="CHF",
+        fx_rate=1.0, opened_at=FIXED_NOW, side="long",
+        thesis=COACH_THESIS, stop_loss=stop_loss))
+    portfolio.cash_chf = round(portfolio.cash_chf - qty * avg_price, 2)
+    pr._save(COACH, portfolio)
+    return portfolio
+
+
+# --- 1) Le compte existe ------------------------------------------------
+
+def test_the_coach_account_is_created_with_ten_thousand_chf(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    assert portfolio.cash_chf == 10000.0
+    assert portfolio.initial_capital == 10000.0
+    assert store.portfolio_path(COACH).is_file()      # persisté tout de suite
+
+
+def test_the_coach_account_is_loaded_not_recreated(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    first = pr._ensure_coach_account()
+    first.cash_chf = 4242.0
+    pr._save(COACH, first)
+    assert pr._ensure_coach_account().cash_chf == 4242.0
+
+
+def test_the_coach_is_listed_once_in_the_community(tmp_path, monkeypatch):
+    """Ses positions sont PUBLIQUES par design : dès qu'il a un carnet, il est
+    un trader comme les autres — présent, et une seule fois."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action()], source="daily")
+    users = [row["user"] for row in c.get("/api/paper/community").json()["users"]]
+    assert users.count(COACH) == 1
+
+
+# --- 2) Le chemin d'exécution ------------------------------------------
+
+def test_execute_coach_actions_places_the_order(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_action()], source="daily")
+
+    assert len(rows) == 1 and rows[0]["accepted"] is True
+    assert rows[0]["action"] == "buy" and rows[0]["symbol"] == "NESN.SW"
+    portfolio = coach_portfolio()
+    assert len(portfolio["positions"]) == 1
+    assert portfolio["positions"][0]["qty"] == 15
+    assert portfolio["cash_chf"] < 10000.0            # payé, frais compris
+    assert coach_ledger()[0]["accepted"] is True
+
+
+def test_an_accepted_entry_carries_the_whole_plan_to_the_position(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action()], source="daily")
+    position = coach_portfolio()["positions"][0]
+    assert position["thesis"] == COACH_THESIS
+    assert position["stop_loss"] == 90.0
+    assert position["target"] == 130.0
+    assert position["setup"] == "breakout"
+    assert position["emotion"] == "calme"             # il n'a pas d'émotion
+    assert position["risk_chf"] == 150.0              # (100 - 90) x 15 x 1.0
+
+
+def test_an_accepted_entry_with_a_target_leaves_a_pending_limit_order(tmp_path, monkeypatch):
+    """``fills.check_protective_stops`` ne connaît QUE ``stop_loss`` : sans cet
+    ordre limite, l'objectif ne serait jamais exécuté mécaniquement."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action()], source="daily")
+    orders = coach_portfolio()["open_orders"]
+    assert len(orders) == 1
+    assert orders[0]["side"] == "sell" and orders[0]["kind"] == "limit"
+    assert orders[0]["limit_price"] == 130.0
+    assert orders[0]["qty"] == 15
+    assert orders[0]["status"] == "open"
+
+
+def test_an_entry_without_target_leaves_no_pending_order(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action(target=None)], source="daily")
+    assert coach_portfolio()["open_orders"] == []
+
+
+def test_the_target_order_is_executable_by_the_tick(tmp_path, monkeypatch):
+    """La preuve que l'objectif est RÉEL : la première boucle de ``run_tick``
+    le déclenche et la ligne se solde."""
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action()], source="daily")
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 128.0, "high": 135.0, "low": 127.0, "close": 133.0}]
+
+    result = pr.tick_coach_account()
+    assert len(result["fills"]) == 1
+    assert coach_portfolio()["positions"] == []
+    assert len(coach_portfolio()["trades"]) == 1
+
+
+def test_the_confirmation_gate_never_fires_for_the_coach(tmp_path, monkeypatch):
+    """``needs_confirm`` est une pause d'INTERFACE pour un humain devant un
+    formulaire — le coach vient de franchir un garde-fou PLUS STRICT."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_action(qty=28, stop=95.0)],
+                                   source="daily")
+    assert all("needs_confirm" not in row for row in rows)
+    assert rows[0]["accepted"] is True
+    assert coach_portfolio()["positions"][0]["qty"] == 28   # exécuté, pas suspendu
+
+
+def test_preorder_warnings_are_recorded_on_the_order(tmp_path, monkeypatch):
+    """28 % de l'équité : accepté par le mandat du coach (plafond 30 %), mais
+    au-delà du seuil d'avertissement humain (25 %) — CONSIGNÉ, comme pour un
+    humain qui confirme."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action(qty=28, stop=95.0)], source="daily")
+    assert coach_portfolio()["positions"][0]["forced_warnings"] == ["oversize"]
+
+
+def test_a_clean_entry_records_no_forced_warning(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action()], source="daily")
+    assert coach_portfolio()["positions"][0]["forced_warnings"] == []
+
+
+def test_the_coach_can_sell_what_he_holds(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10)
+    rows = pr.execute_coach_actions([{"action": "sell", "symbol": "NESN.SW"}],
+                                   source="daily")
+    assert rows[0]["accepted"] is True
+    assert coach_portfolio()["positions"] == []
+
+
+# --- 3) Les refus : pédagogiques, chiffrés, sans effet -----------------
+
+def test_a_rejected_action_leaves_the_portfolio_untouched(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    before = coach_portfolio()
+    # 42 x 100 = 4200 CHF, soit 42 % de l'équité (plafond 30) ; le stop à 97
+    # garde le RISQUE sous les 2 % pour que ce soit bien la TAILLE qui tombe.
+    rows = pr.execute_coach_actions([coach_action(qty=42, stop=97.0)],
+                                   source="daily")
+
+    assert rows[0]["accepted"] is False
+    assert rows[0]["reason"] == "oversize"
+    assert coach_portfolio()["positions"] == []
+    assert coach_portfolio()["cash_chf"] == before["cash_chf"]
+
+
+def test_a_rejected_action_carries_a_readable_figure(tmp_path, monkeypatch):
+    """C'est ce ``detail`` que l'écran affichera : « voulait 4200.00 CHF,
+    42% de l'équité » — un refus qui n'enseigne rien ne sert à rien."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_action(qty=42, stop=97.0)],
+                                   source="daily")
+    detail = rows[0]["detail"] or ""
+    assert "4200" in detail and "42" in detail
+    assert coach_ledger()[0]["detail"] == detail
+
+
+def test_the_too_small_refusal_names_the_floor(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_action(qty=1)], source="daily")
+    assert rows[0]["reason"] == "too_small"
+    assert "10" in (rows[0]["detail"] or "")           # le plancher, en %
+
+
+def test_the_no_stop_refusal_says_so(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_action(stop=None)], source="daily")
+    assert rows[0]["reason"] == "no_stop"
+    assert rows[0]["detail"]
+
+
+def test_a_broken_quote_is_logged_as_no_quote_without_raising(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.broken.add("NESN.SW")
+    rows = pr.execute_coach_actions([coach_action()], source="daily")
+    assert rows[0]["accepted"] is False and rows[0]["reason"] == "no_quote"
+    assert coach_portfolio()["positions"] == []
+
+
+def test_an_unknown_symbol_is_logged_as_no_quote(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_action(symbol="ZZZZ.XX")], source="daily")
+    assert rows[0]["reason"] == "no_quote"
+
+
+def test_a_broken_quote_does_not_stop_the_next_action(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["NOVN.SW"] = (100.0, "CHF", "Novartis")
+    market.broken.add("NESN.SW")
+    rows = pr.execute_coach_actions(
+        [coach_action(), coach_action(symbol="NOVN.SW")], source="daily")
+    assert rows[0]["reason"] == "no_quote"
+    assert rows[1]["accepted"] is True
+
+
+def test_a_parse_error_writes_one_line_and_places_nothing(tmp_path, monkeypatch):
+    """On n'invente JAMAIS un ordre : bloc illisible ⇒ zéro action."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_action()], source="daily",
+                                   parse_error="parse_failed")
+    assert len(rows) == 1
+    assert rows[0] == {"ts": FIXED_NOW, "source": "daily", "action": "parse",
+                       "symbol": "", "accepted": False, "reason": "parse_failed",
+                       "detail": None}
+    assert coach_portfolio()["positions"] == []
+    assert len(coach_ledger()) == 1
+
+
+def test_an_empty_decision_is_logged_as_a_deliberate_hold(tmp_path, monkeypatch):
+    """L'inaction doit être un CHOIX visible, jamais un silence : le modèle a
+    répondu, il a choisi de ne rien changer."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([], source="daily")
+    assert len(rows) == 1
+    assert rows[0]["action"] == "hold" and rows[0]["accepted"] is True
+    assert rows[0]["detail"]
+    assert coach_portfolio()["positions"] == []
+    assert len(coach_ledger()) == 1
+
+
+def test_a_parse_error_never_produces_a_hold(tmp_path, monkeypatch):
+    """Une panne n'est pas un choix : les deux ne doivent pas se confondre."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([], source="daily", parse_error="no_block")
+    assert [row["action"] for row in rows] == ["parse"]
+
+
+def test_execute_coach_actions_never_raises(tmp_path, monkeypatch):
+    """Appelée depuis un cycle de veille ET depuis la convergence : elle ne
+    doit JAMAIS faire tomber son appelant."""
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def _boom(*a, **kw):
+        raise RuntimeError("le disque a disparu")
+    monkeypatch.setattr(pr, "_ensure_coach_account", _boom)
+    assert pr.execute_coach_actions([coach_action()], source="daily") == []
+
+
+def test_execute_coach_actions_swallows_unknown_keywords(tmp_path, monkeypatch):
+    """L'appelant convergence peut lui passer des mots-clés qu'elle ne connaît
+    pas encore."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_action()], source="digest",
+                                   lang="it", trigger="convergence")
+    assert rows[0]["accepted"] is True
+
+
+def test_an_accepted_action_is_written_to_the_coach_journal(tmp_path, monkeypatch):
+    """La trace lisible de « comment il fait » — et ce qui lui donne un carnet."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action()], source="daily")
+    journal = store.read_note(COACH, "Journal.md") or ""
+    assert "NESN.SW" in journal
+
+
+def test_a_rejected_action_is_not_written_to_the_journal(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action(qty=42, stop=97.0)], source="daily")
+    assert (store.read_note(COACH, "Journal.md") or "") == ""
+
+
+# --- 4) L'inclusion dans le tick (LE point critique du lot) -------------
+
+def test_tick_coach_account_executes_the_protective_stop(tmp_path, monkeypatch):
+    """``run_tick`` n'énumère aucun compte et le coach n'a pas de navigateur :
+    sans ce chemin, son stop ne partirait jamais."""
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, stop_loss=90.0)
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 95.0, "high": 96.0, "low": 88.0, "close": 89.0}]
+
+    result = pr.tick_coach_account()
+    assert len(result["stopped"]) == 1
+    portfolio = coach_portfolio()
+    assert portfolio["positions"] == []
+    assert len(portfolio["trades"]) == 1                # la ligne est SOLDÉE
+
+
+def test_a_coach_close_goes_through_attach_trade_extras(tmp_path, monkeypatch):
+    """Le post-mortem automatique est déclenché comme pour un humain."""
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, stop_loss=90.0)
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 95.0, "high": 96.0, "low": 88.0, "close": 89.0}]
+
+    result = pr.tick_coach_account()
+    assert result["stopped"][0]["postmortem_job"]
+
+
+@pytest.mark.real_coach_trader
+def test_the_watch_cycle_hook_reaches_the_coach_tick(tmp_path, monkeypatch):
+    """Le chemin COMPLET, du crochet du guetteur jusqu'au stop exécuté :
+    ``newswatch._run_coach_trader`` -> ``coach_trader.maybe_run`` ->
+    ``paper_router.tick_coach_account`` -> ``run_tick``.
+
+    On entre par le CROCHET et non par ``run_once`` entier : que ``run_once``
+    appelle bien ce crochet est épinglé côté ``test_paper_newswatch.py`` (deux
+    tests, injecté ET par défaut), et faire tourner un cycle complet ici
+    ouvrirait les neuf autres volets — dont la sauvegarde nocturne, qui écrit
+    un vrai ``tar.gz`` HORS de ``tmp_path``.
+
+    Un SAMEDI : la passe quotidienne ne se déclenche pas (aucun appel au
+    modèle dans ce test), et le tick tourne quand même — c'est exactement ce
+    qu'on veut prouver, un stop peut sauter le week-end sur une crypto.
+    """
+    from backend.bots.paper import newswatch
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, stop_loss=90.0)
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 95.0, "high": 96.0, "low": 88.0, "close": 89.0}]
+
+    newswatch._run_coach_trader(datetime(2026, 8, 29, 15, 0, 0,
+                                         tzinfo=timezone.utc))
+    assert coach_portfolio()["positions"] == []         # le stop est parti
+    assert store.load_equity(COACH)                     # et la photo est prise
+
+
+# --- 5) La photo de patrimoine -----------------------------------------
+
+def test_snapshot_equity_all_writes_one_point_per_account(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10)                                       # le compte « tester »
+    pr._ensure_coach_account()
+
+    pr.snapshot_equity_all(FIXED_NOW)
+    coach_points = store.load_equity(COACH)
+    user_points = store.load_equity("tester")
+    assert len(coach_points) == 1 and coach_points[0]["date"] == FIXED_NOW[:10]
+    assert coach_points[0]["equity"] == 10000.0
+    assert len(user_points) == 1
+    assert user_points[0]["equity"] > 0
+
+
+def test_snapshot_equity_all_is_idempotent_within_the_day(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr._ensure_coach_account()
+    pr.snapshot_equity_all(FIXED_NOW)
+    pr.snapshot_equity_all(FIXED_NOW)
+    assert len(store.load_equity(COACH)) == 1
+
+
+def test_snapshot_equity_values_the_positions_at_the_current_price(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, avg_price=100.0)         # 9000 de cash + 10 titres
+    market.prices["NESN.SW"] = (120.0, "CHF", "Nestle SA")
+
+    pr.snapshot_equity_all(FIXED_NOW)
+    assert store.load_equity(COACH)[0]["equity"] == 10200.0     # 9000 + 10 x 120
+
+
+def test_snapshot_equity_falls_back_to_cost_basis_when_the_quote_is_broken(tmp_path,
+                                                                          monkeypatch):
+    """Un cours en panne ne doit pas faire PERDRE le point (même doctrine que
+    ``risk.exposure``) : on retombe sur le prix de revient."""
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, avg_price=100.0)
+    market.broken.add("NESN.SW")
+
+    pr.snapshot_equity_all(FIXED_NOW)
+    points = store.load_equity(COACH)
+    assert len(points) == 1 and points[0]["equity"] == 10000.0
+
+
+def test_snapshot_equity_asks_one_quote_per_distinct_symbol(tmp_path, monkeypatch):
+    """Un batch UNIQUE sur les symboles DISTINCTS de tous les comptes — jamais
+    un appel par compte (patron ``_run_price_alerts_volet``)."""
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=5)                                        # « tester » sur NESN.SW
+    seed_coach_position(qty=10)                          # le coach aussi
+
+    calls = []
+    real_quote = market.get_quote
+    monkeypatch.setattr(quotes, "get_quote",
+                        lambda symbol: calls.append(symbol) or real_quote(symbol))
+    pr.snapshot_equity_all(FIXED_NOW)
+    assert calls == ["NESN.SW"]
+
+
+def test_snapshot_equity_never_raises(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def _boom():
+        raise RuntimeError("radar en panne")
+    monkeypatch.setattr(pr, "_snapshot_usernames", _boom)
+    assert pr.snapshot_equity_all(FIXED_NOW)["accounts"] == 0
+
+
+# --- 6) La passe quotidienne -------------------------------------------
+
+def _actions_block(actions):
+    return ("Voici ce que je fais ce soir.\n```COACH_ACTIONS\n%s\n```"
+            % json.dumps({"actions": actions}))
+
+
+def test_run_coach_daily_pass_executes_what_the_model_returns(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    seen = {}
+
+    def _claude(prompt):
+        seen["prompt"] = prompt
+        return _actions_block([coach_action()])
+
+    monkeypatch.setattr(pr.llm, "build_coach_trader_prompt",
+                        lambda context, lang="fr": "PROMPT " + str(context["now"]),
+                        raising=False)
+    out = pr.run_coach_daily_pass(FIXED_NOW, claude=_claude)
+
+    assert out["ledger"][0]["accepted"] is True
+    assert coach_portfolio()["positions"][0]["qty"] == 15
+    assert seen["prompt"].startswith("PROMPT")
+
+
+def test_the_daily_pass_context_is_deterministic(tmp_path, monkeypatch):
+    """Le contexte est construit SANS LLM : positions valorisées, statistiques,
+    discipline — et les sources best-effort (radar/humeur/agenda) n'y sont
+    jamais une exception."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10)
+    captured = {}
+
+    monkeypatch.setattr(pr.llm, "build_coach_trader_prompt",
+                        lambda context, lang="fr": captured.update(context) or "P",
+                        raising=False)
+    pr.run_coach_daily_pass(FIXED_NOW, claude=lambda prompt: "rien à faire")
+
+    assert captured["cash_chf"] == 9000.0
+    assert captured["initial_capital"] == 10000.0
+    assert captured["equity_chf"] == 10000.0
+    assert captured["positions"][0]["symbol"] == "NESN.SW"
+    assert captured["positions"][0]["value_chf"] == 1000.0
+    assert captured["positions"][0]["thesis"] == COACH_THESIS
+    assert "stats" in captured and "discipline" in captured
+    assert isinstance(captured["radar"], list)
+
+
+def test_the_daily_pass_logs_llm_failed_and_acts_on_nothing(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def _boom(prompt):
+        raise RuntimeError("le coach n'a pas répondu dans les 180 s")
+    monkeypatch.setattr(pr.llm, "build_coach_trader_prompt",
+                        lambda context, lang="fr": "P", raising=False)
+    out = pr.run_coach_daily_pass(FIXED_NOW, claude=_boom)
+
+    assert out["ledger"][0]["reason"] == "llm_failed"
+    assert out["ledger"][0]["action"] == "pass"
+    assert coach_ledger()[0]["reason"] == "llm_failed"
+    assert coach_portfolio()["positions"] == []
+
+
+def test_the_daily_pass_without_a_prompt_builder_logs_a_failure(tmp_path, monkeypatch):
+    """Import PARESSEUX tolérant : le constructeur de prompt arrive par une
+    autre tâche — absent, la passe consigne une panne et n'agit pas."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    monkeypatch.delattr(pr.llm, "build_coach_trader_prompt", raising=False)
+    out = pr.run_coach_daily_pass(FIXED_NOW, claude=lambda prompt: "")
+    assert out["ledger"][0]["reason"] == "llm_failed"
+
+
+def test_a_quiet_daily_pass_logs_a_hold(tmp_path, monkeypatch):
+    """Le modèle a répondu sans bloc d'actions : rien à faire, mais on le DIT."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(pr.llm, "build_coach_trader_prompt",
+                        lambda context, lang="fr": "P", raising=False)
+    pr.run_coach_daily_pass(FIXED_NOW, claude=lambda prompt: "Je ne touche à rien.")
+    assert coach_ledger()[0]["action"] == "hold"
+
+
+def test_the_daily_pass_never_raises(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def _boom(*a, **kw):
+        raise RuntimeError("tout brûle")
+    monkeypatch.setattr(pr, "_ensure_coach_account", _boom)
+    assert isinstance(pr.run_coach_daily_pass(FIXED_NOW,
+                                              claude=lambda p: ""), dict)
+
+
+# --- 6bis) Le LIVRE du coach : ce que la convergence vient chercher ------
+#
+#  ``convergence._coach_book`` appelle CETTE fonction. C'est elle qui fait
+#  passer le coach de « il parle » à « il agit » quand une convergence part —
+#  sans elle, le prompt ne demande aucune action et l'exécuteur n'est jamais
+#  engagé, sans une erreur ni un test rouge.
+
+def test_coach_book_rend_les_quatre_cles_sur_un_compte_neuf(tmp_path, monkeypatch):
+    """La forme EXACTE que ``llm.coach_actions_block`` consomme, sur un compte
+    tout neuf — et rien ne lève."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    book = pr.coach_book()
+    assert set(book) == {"cash_chf", "equity_chf", "positions", "open_orders"}
+    assert book["cash_chf"] == 10000.0
+    assert book["equity_chf"] == 10000.0
+    assert book["positions"] == []
+    assert book["open_orders"] == []
+
+
+def test_coach_book_a_la_MEME_forme_que_celui_de_la_passe_quotidienne(
+        tmp_path, monkeypatch):
+    """Une seule vérité : les clés sont celles de ``llm._coach_book_of``, qui
+    est l'extracteur de la passe quotidienne. Deux formes divergentes rendraient
+    la section d'actions muette en silence (piège #61)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert set(pr.coach_book()) == set(pr.llm._coach_book_of({}))
+
+
+def test_coach_book_porte_these_stop_et_objectif_sur_chaque_ligne(tmp_path,
+                                                                  monkeypatch):
+    """Sans thèse, sans stop et sans objectif, le modèle ne peut décider ni de
+    déplacer un stop ni de sortir : ce sont ces trois champs qui font du livre
+    autre chose qu'une liste de tickers."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    portfolio = seed_coach_position(qty=10, stop_loss=90.0)
+    portfolio.positions[0].target = 130.0
+    pr._save(COACH, portfolio)
+
+    rows = pr.coach_book()["positions"]
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "NESN.SW"
+    assert rows[0]["qty"] == 10
+    assert rows[0]["thesis"] == COACH_THESIS
+    assert rows[0]["stop_loss"] == 90.0
+    assert rows[0]["target"] == 130.0
+
+
+def test_coach_book_n_invente_NI_cours_NI_plus_value(tmp_path, monkeypatch):
+    """Le livre se lit sans réseau : sans cours, ``price`` vaudrait le prix de
+    revient et ``pnl_pct`` « 0 % » — c'est-à-dire toutes les lignes à plat, un
+    fait FAUX. Absent vaut mieux qu'inventé."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, avg_price=100.0)
+    row = pr.coach_book()["positions"][0]
+    assert "price" not in row
+    assert "pnl_pct" not in row
+
+
+def test_coach_book_donne_la_MEME_equite_que_le_garde_fou(tmp_path, monkeypatch):
+    """⚠️ Point dur : le prompt dit au modèle de viser « X % de TON équité », et
+    c'est ``coach_trader._equity_chf`` (prix de revient) qui REFUSE ensuite. Une
+    autre équité le ferait dimensionner contre un chiffre dont le garde-fou ne
+    se sert pas — les refus paraîtraient arbitraires."""
+    from backend.bots.paper import coach_trader
+
+    c, _ = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, avg_price=100.0)
+    raw = coach_portfolio()
+
+    assert pr.coach_book()["equity_chf"] == round(
+        coach_trader._equity_chf(raw["cash_chf"], raw["positions"]), 2)
+
+
+def test_coach_book_ne_leve_JAMAIS_et_rend_un_livre_VIDE(tmp_path, monkeypatch):
+    """Best-effort : un compte illisible ne doit ni faire tomber le digest, ni
+    faire décider le modèle sur un livre inventé. Le dict VIDE est le seul
+    retour qui dégrade correctement des DEUX côtés — aucune section d'actions
+    dans le prompt, et ``maybe_fire`` n'engage pas l'exécuteur (livre falsy)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def _boom(*a, **kw):
+        raise RuntimeError("compte illisible")
+
+    monkeypatch.setattr(pr, "_ensure_coach_account", _boom)
+    book = pr.coach_book()
+    assert book == {}
+    assert not book                                   # falsy -> pas d'exécuteur
+    assert pr.llm.coach_actions_block(book) == ""     # ... et pas de section
+
+
+# --- 7) Les endpoints ---------------------------------------------------
+
+def test_coach_trader_endpoint_is_refused_without_a_role(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch, role="player")
+    assert c.get("/api/paper/coach-trader").status_code == 403
+    assert c.post("/api/paper/coach-trader/run?sync=1").status_code == 403
+
+
+def test_coach_trader_run_is_admin_only(tmp_path, monkeypatch):
+    """Forcer une passe consomme le modèle : réservé à l'admin, contrairement
+    à la LECTURE qui reste ouverte aux trois rôles."""
+    for role in ("money", "trader"):
+        c, _ = make_client(tmp_path, monkeypatch, role=role)
+        assert c.get("/api/paper/coach-trader").status_code == 200
+        assert c.post("/api/paper/coach-trader/run?sync=1").status_code == 403
+
+
+def test_coach_trader_run_forces_the_pass_for_an_admin(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(pr, "run_coach_daily_pass",
+                        lambda now_iso=None: calls.append(now_iso) or {"ok": True})
+    body = c.post("/api/paper/coach-trader/run?sync=1")
+    assert body.status_code == 200 and body.json() == {"ok": True}
+    assert len(calls) == 1
+
+
+def test_coach_trader_view_returns_both_equity_series(tmp_path, monkeypatch):
+    """La comparaison exige les DEUX courbes : celle du coach et celle de
+    l'utilisateur qui appelle."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    store.save_equity(COACH, [{"date": "2026-08-23", "equity": 10100.0}])
+    store.save_equity("tester", [{"date": "2026-08-23", "equity": 9800.0}])
+
+    body = c.get("/api/paper/coach-trader").json()
+    assert body["username"] == COACH
+    assert body["capital"] == 10000.0
+    assert body["equity"]["coach"][0]["equity"] == 10100.0
+    assert body["equity"]["user"][0]["equity"] == 9800.0
+    assert body["next_pass"]["after_hour"] == 17
+    assert "portfolio" in body and "stats" in body and "discipline" in body
+    assert body["ledger"] == []
+
+
+def test_coach_trader_view_shows_the_ledger_including_refusals(tmp_path, monkeypatch):
+    """Le livre du coach est PUBLIC : aucun filtrage, les refus compris."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action(qty=42, stop=97.0)], source="daily")
+    body = c.get("/api/paper/coach-trader").json()
+    assert body["ledger"][0]["reason"] == "oversize"
+    assert body["quotes"] == {}          # rien n'a été acheté
+
+
+def test_portfolio_carries_the_equity_curve(tmp_path, monkeypatch):
+    """La carte « Courbe d'équité » du dashboard lit ``equity_curve`` — aucun
+    backend ne l'avait jamais produite."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert portfolio_of(c)["equity_curve"] == []
+    store.save_equity("tester", [{"date": "2026-08-23", "equity": 9800.0},
+                                 {"date": "2026-08-24", "equity": 9900.0}])
+    curve = portfolio_of(c)["equity_curve"]
+    assert [point["equity"] for point in curve] == [9800.0, 9900.0]

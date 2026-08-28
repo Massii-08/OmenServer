@@ -35,6 +35,17 @@ def pytest_configure(config):
         "real_pump_cleanup: le test vérifie le cleanup déclenché par le pump-thread "
         "(mort naturelle) -> ne pas neutraliser le cleanup secondaire",
     )
+    config.addinivalue_line(
+        "markers",
+        "real_coach_trader: le test vise le crochet du compte de trading DU COACH "
+        "(coach_trader.maybe_run) -> ne pas le neutraliser",
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_coach_book: le test vise la RÉSOLUTION du livre du coach "
+        "(convergence._coach_book -> paper_router.coach_book) -> ne pas la "
+        "neutraliser",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -77,5 +88,58 @@ def _no_backfill_network(request, monkeypatch):
     try:
         from backend.bots.paper import radar
         monkeypatch.setattr(radar, "_fill_history", lambda *a, **k: None, raising=False)
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _no_coach_trader_cycle(request, monkeypatch):
+    """Le compte de trading DU COACH (LOT 4) ouvre un chemin RÉSEAU + LLM
+    depuis le cycle de veille : ``newswatch.run_once`` appelle
+    ``coach_trader.maybe_run``, qui tique le compte (cours Yahoo), photographie
+    le patrimoine de TOUS les comptes (cours Yahoo) et lance la passe
+    quotidienne (CLI Claude). Neutralisé partout par défaut ; les tests qui
+    visent SPÉCIFIQUEMENT ce crochet s'exemptent via
+    ``@pytest.mark.real_coach_trader`` (même patron que ``_no_backfill_network``
+    juste au-dessus).
+
+    ⚠️ Pourquoi UN SEUL point suffit : les trois exécutants du router
+    (``tick_coach_account``/``snapshot_equity_all``/``run_coach_daily_pass``) et
+    les deux endpoints ``/coach-trader`` ne sont atteints QUE par un appel
+    explicite — aucun test « qui ne vise pas le coach » ne les traverse. La
+    seule porte qu'un tel test franchit sans le savoir est ce crochet du cycle,
+    et c'est donc celle-là qu'on ferme."""
+    if request.node.get_closest_marker("real_coach_trader"):
+        return
+    try:
+        from backend.bots.paper import coach_trader
+        monkeypatch.setattr(
+            coach_trader, "maybe_run",
+            lambda **kwargs: {"ticked": False, "snapshotted": False,
+                              "passed": False, "reason": "neutralise_en_test"},
+            raising=False)
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _no_coach_book_resolution(request, monkeypatch):
+    """``convergence.maybe_fire`` résout DÉSORMAIS le compte du coach toute
+    seule (c'est la couture du LOT 4 : sans elle, aucun des quatre appelants de
+    prod ne faisait agir le coach). Laissée active en test, elle entraînerait
+    les appels EXISTANTS de ``maybe_fire`` dans le vrai
+    ``paper_router.execute_coach_actions`` — qui CRÉE un compte de coach, passe
+    des ordres et écrit un registre dans ``data/paper_trading/`` RÉEL : tous
+    les tests qui traversent ``maybe_fire`` ne redirigent pas ``store.DATA_DIR``.
+
+    Neutralisée partout par défaut ; les tests qui valident SPÉCIFIQUEMENT ce
+    câblage s'exemptent via ``@pytest.mark.real_coach_book`` (même patron que
+    ``_no_backfill_network`` et ``_no_coach_trader_cycle`` juste au-dessus)."""
+    if request.node.get_closest_marker("real_coach_book"):
+        return
+    try:
+        from backend.bots.paper import convergence
+        monkeypatch.setattr(convergence, "_coach_book", lambda: None,
+                            raising=False)
     except Exception:
         pass

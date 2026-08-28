@@ -235,6 +235,64 @@ def save_replay_sessions(username: str, sessions: List[Dict[str, Any]]) -> None:
     _atomic_write_json(replay_path(username), {"sessions": list(sessions or [])})
 
 
+def ledger_path(username: str) -> Path:
+    """Chemin du REGISTRE des décisions du compte (LOT 4) — ce qu'il a fait ET
+    ce qu'on lui a refusé, la plus RÉCENTE en tête (username validé).
+
+    Fichier SÉPARÉ du portefeuille (``<user>.ledger.json``) — même raison que
+    la watchlist/les alertes/le replay ci-dessus : le round-trip par la
+    dataclass ``models.Portfolio`` (``from_dict``/``to_dict``) STRIPPE toute
+    clé inconnue, y ranger le registre le ferait disparaître au premier
+    ``_save`` (piège #61 du dépôt).
+    """
+    safe = _sanitize_username(username)
+    return DATA_DIR / f"{safe}.ledger.json"
+
+
+def load_ledger(username: str) -> List[Dict[str, Any]]:
+    """Le registre des décisions, la plus RÉCENTE en tête. Absent/corrompu -> []."""
+    raw = _load_json(ledger_path(username))
+    if not isinstance(raw, dict):
+        return []
+    rows = raw.get("rows")
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def save_ledger(username: str, rows: List[Dict[str, Any]]) -> None:
+    """Persiste le registre de façon atomique, 0o600. Le plafond
+    (``coach_trader.MAX_LEDGER``) est de la RESPONSABILITÉ de l'appelant — ce
+    module ne fait que l'I/O, jamais du métier (cf. tête de fichier)."""
+    _atomic_write_json(ledger_path(username), {"rows": list(rows or [])})
+
+
+def equity_path(username: str) -> Path:
+    """Chemin de la courbe de PATRIMOINE du compte (LOT 4) — une photo
+    ``{"date", "equity"}`` par jour, ordre CHRONOLOGIQUE (username validé).
+
+    Fichier SÉPARÉ du portefeuille (``<user>.equity.json``), même raison que
+    :func:`ledger_path` juste au-dessus.
+    """
+    safe = _sanitize_username(username)
+    return DATA_DIR / f"{safe}.equity.json"
+
+
+def load_equity(username: str) -> List[Dict[str, Any]]:
+    """Les points de la courbe de patrimoine, du plus ANCIEN au plus récent.
+    Absents/corrompus -> []."""
+    raw = _load_json(equity_path(username))
+    if not isinstance(raw, dict):
+        return []
+    points = raw.get("points")
+    return [p for p in points if isinstance(p, dict)] if isinstance(points, list) else []
+
+
+def save_equity(username: str, points: List[Dict[str, Any]]) -> None:
+    """Persiste la courbe de patrimoine de façon atomique, 0o600. Le plafond
+    (``coach_trader.MAX_EQUITY_POINTS``) est de la RESPONSABILITÉ de
+    l'appelant, comme pour le registre."""
+    _atomic_write_json(equity_path(username), {"points": list(points or [])})
+
+
 def postmortem_auto_path(username: str) -> Path:
     """Chemin du compteur anti-rafale des post-mortems AUTOMATIQUES (LOT 3,
     C1) de l'utilisateur (username validé) — ``<user>.postmortem_auto.json``,

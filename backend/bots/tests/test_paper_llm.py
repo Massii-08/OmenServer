@@ -779,3 +779,258 @@ def test_la_doctrine_est_ecrite_a_UN_seul_endroit():
     diverger, et c'est le genre de dérive qu'on ne verrait jamais."""
     from backend.bots.paper import convergence
     assert convergence._power_named_line() == llm.POWER_NAMED_LINE
+
+
+# =========================================================================== #
+#  LOT 4 — le bloc d'ACTIONS du coach trader
+#
+#  Le coach a son propre compte : ce qu'il DIT et ce qu'il FAIT doivent sortir
+#  du MÊME appel au modèle. Le bloc est donc écrit UNE fois ici, et réclamé par
+#  DEUX prompts (le digest de convergence et la passe quotidienne).
+# =========================================================================== #
+
+BOOK = {
+    "cash_chf": 6200.0,
+    "equity_chf": 10450.0,
+    "positions": [
+        {"symbol": "NESN.SW", "qty": 12, "avg_price": 92.4, "currency": "CHF",
+         "thesis": "reprise des volumes en Europe", "stop_loss": 85.0,
+         "target": 110.0, "opened_at": "2026-08-10T09:00:00"},
+    ],
+    "open_orders": [{"symbol": "AAPL", "side": "buy", "qty": 3, "kind": "limit"}],
+}
+
+
+def test_coach_actions_block_est_vide_sans_compte():
+    """Pas de compte -> pas de bloc : un prompt qui décrit une section absente
+    invite le modèle à la combler tout seul (même précaution que _sweep_line)."""
+    for empty in (None, {}, [], "pas un dict", 0):
+        assert llm.coach_actions_block(empty) == ""
+
+
+def test_coach_actions_block_montre_au_coach_SON_compte():
+    block = llm.coach_actions_block(BOOK)
+    assert "6200" in block and "10450" in block
+    assert "NESN.SW" in block
+    assert "reprise des volumes en Europe" in block     # la thèse de la ligne
+    assert "85.0" in block and "110.0" in block         # stop et objectif
+    assert "AAPL" in block                              # les ordres en attente
+
+
+def test_coach_actions_block_enonce_les_regles_dures_du_garde_fou():
+    """Les six bornes du mandat, en clair. Un modèle qui ne les connaît pas
+    propose des ordres refusés — et le refus, lui, est visible publiquement."""
+    from backend.bots.paper import coach_trader
+
+    block = llm.coach_actions_block(BOOK)
+    assert "sans stop" in block.lower()
+    assert "10 %" in block and "centimes" in block      # MIN_POSITION_PCT
+    assert "30 %" in block                              # MAX_POSITION_PCT
+    assert "2 %" in block                               # MAX_RISK_PCT
+    assert "6 " in block and "ligne" in block           # MAX_POSITIONS
+    assert "crypto" in block                            # MAX_CRYPTO
+    assert "5 %" in block and "trésorerie" in block     # MIN_CASH_PCT
+    # Les chiffres sont LUS sur le garde-fou, jamais recopiés : un seuil ajusté
+    # d'un côté ne peut pas mentir de l'autre.
+    assert coach_trader.MAX_POSITIONS == 6
+    assert "%g" % coach_trader.MAX_POSITION_PCT == "30"
+
+
+def test_coach_actions_block_donne_le_format_exact_du_bloc():
+    from backend.bots.paper import coach_trader
+
+    block = llm.coach_actions_block(BOOK)
+    assert "```%s" % coach_trader.ACTIONS_MARKER in block
+    assert '{"actions": [' in block
+    assert '"action": "buy"' in block
+    for field in ("symbol", "qty", "stop", "target", "thesis", "setup"):
+        assert '"%s"' % field in block, field
+    for kind in coach_trader.ACTION_KINDS:
+        assert kind in block, kind
+
+
+def test_coach_actions_block_dit_que_zero_action_est_legitime():
+    """« On n'invente jamais un ordre pour avoir l'air actif. »"""
+    block = llm.coach_actions_block(BOOK)
+    assert '{"actions": []}' in block
+    # Insensible à la casse : le dépôt met les mots-clés en capitales pour
+    # l'emphase, et ce test pin le FOND, pas la typographie.
+    assert "légitime" in block.lower()
+
+
+def test_coach_actions_block_precise_les_regles_de_forme():
+    block = llm.coach_actions_block(BOOK)
+    assert "TECHNIQUE" in block                 # le bloc ne répète pas le texte
+    assert "devise du titre" in block.lower()   # stop/target dans la devise
+    assert "sell" in block and "solder" in block  # sell sans qty = tout solder
+
+
+def test_coach_actions_block_liste_les_setups_autorises():
+    from backend.bots.paper import models
+
+    block = llm.coach_actions_block(BOOK)
+    for setup in models.SETUPS:
+        assert '"%s"' % setup in block, setup
+
+
+# --- la passe quotidienne de gestion ---------------------------------------- #
+
+CTX = {
+    "now": "2026-08-28T17:30:00",
+    "cash_chf": 6200.0,
+    "equity_chf": 10450.0,
+    "initial_capital": 10000.0,
+    "positions": [
+        {"symbol": "NESN.SW", "qty": 12, "avg_price": 92.4, "currency": "CHF",
+         "price": 96.1, "value_chf": 1153.2, "pnl_pct": 4.0,
+         "thesis": "reprise des volumes en Europe", "stop_loss": 85.0,
+         "target": 110.0, "opened_at": "2026-08-10T09:00:00"},
+    ],
+    "open_orders": [{"symbol": "AAPL", "side": "buy", "qty": 3}],
+    "stats": {"trades": 9, "win_rate": 55.0},
+    "discipline": {"score": 72},
+    "radar": [{"title": "Le fret cher renchérit le café", "tickers": ["NESN.SW"],
+               "status": "open"}],
+    "market_mood": {"vix": 17.2, "change_pct": -1.5, "mood": "normal"},
+    "agenda": [{"date": "2026-09-04", "label": "Résultats Nestlé",
+                "symbol": "NESN.SW"}],
+}
+
+
+def test_build_coach_trader_prompt_ne_leve_pas_sur_un_contexte_partiel():
+    from backend.bots.paper import coach_trader
+
+    for bad in (None, {}, "pas un dict", [], {"positions": "cassé"}):
+        prompt = llm.build_coach_trader_prompt(bad)
+        assert llm.SYSTEM_PROMPT in prompt
+        # Le marqueur reste là même sans compte : c'est LE contrat de sortie.
+        assert coach_trader.ACTIONS_MARKER in prompt
+
+
+def test_build_coach_trader_prompt_porte_tout_le_contexte():
+    prompt = llm.build_coach_trader_prompt(CTX)
+    assert "NESN.SW" in prompt and "reprise des volumes en Europe" in prompt
+    assert "win_rate" in prompt and "55" in prompt          # stats
+    assert "discipline" in prompt and "72" in prompt
+    assert "Le fret cher renchérit le café" in prompt       # radar
+    assert "17.2" in prompt                                 # VIX
+    assert "Résultats Nestlé" in prompt and "2026-09-04" in prompt  # agenda
+
+
+def test_build_coach_trader_prompt_dit_le_ton_professionnel_discipline():
+    low = llm.build_coach_trader_prompt(CTX).lower()
+    assert "invalid" in low          # on coupe ce qui est invalidé
+    assert "courir" in low           # on laisse courir ce qui marche
+    assert "conviction" in low       # on n'entre que par conviction
+    assert "ne rien faire" in low    # et on assume de ne rien faire
+
+
+def test_build_coach_trader_prompt_reprend_les_trois_interdits():
+    prompt = llm.build_coach_trader_prompt(CTX)
+    assert "sûr" in prompt and "garanti" in prompt       # certitude
+    assert "ARGENT RÉEL" in prompt                       # jamais de conseil réel
+    assert "invente" in prompt.lower()                   # rien hors contexte
+
+
+def test_build_coach_trader_prompt_termine_par_le_bloc_d_actions():
+    """Le bloc CLÔT le prompt : c'est la dernière chose que le modèle lit."""
+    prompt = llm.build_coach_trader_prompt(CTX)
+    tail = llm.coach_actions_block(llm._coach_book_of(CTX))
+    assert tail and prompt.endswith(tail)
+
+
+def test_build_coach_trader_prompt_change_la_langue_de_sortie():
+    assert "italiano" in llm.build_coach_trader_prompt(CTX, lang="it")
+    assert "English" in llm.build_coach_trader_prompt(CTX, lang="en")
+    assert "français" in llm.build_coach_trader_prompt(CTX, lang="fr")
+    assert "français" in llm.build_coach_trader_prompt(CTX, lang="klingon")
+
+
+# --- posture de PERFORMANCE (directive utilisateur : « le but, c'est qu'il
+#     gagne le plus possible — cela ne veut pas dire d'oublier toute mesure de
+#     sûreté »). Le garde-fou déterministe ne bouge PAS : c'est lui, la sûreté.
+#     Seul le PROMPT vise la performance. ------------------------------------ #
+
+def test_coach_actions_block_vise_la_performance_maximale_SOUS_les_regles():
+    low = llm.coach_actions_block(BOOK).lower()
+    assert "performance" in low
+    # Un livre qui dort en cash sans raison échoue autant qu'un livre qui explose.
+    assert "dort" in low or "dormir" in low
+    assert "préservation du capital" in low
+
+
+def test_coach_actions_block_dit_d_utiliser_PLEINEMENT_le_budget_de_risque():
+    """Viser le bas de la fourchette « par prudence » est un mauvais réflexe
+    ici : le plancher de 10 % existe déjà pour ça."""
+    block = llm.coach_actions_block(BOOK)
+    low = block.lower()
+    assert "plafond" in low or "proche de" in low
+    assert "prudence" in low and "mauvais réflexe" in low
+    assert "10 %" in block and "30 %" in block and "2 %" in block
+
+
+def test_coach_actions_block_dit_courir_couper_et_jamais_moyenner_en_baisse():
+    low = llm.coach_actions_block(BOOK).lower()
+    assert "courir" in low                 # laisser courir les gagnants
+    assert "déplace" in low or "remonte" in low   # le stop, pas le mini-profit
+    assert "moyenner à la baisse" in low
+    assert "invalid" in low                # couper VITE ce qui est invalidé
+
+
+def test_coach_actions_block_veut_une_inaction_ARGUMENTEE():
+    """Ne rien faire reste légitime — mais comme un CHOIX, pas par timidité :
+    le registre archive aussi les passes sans action."""
+    low = llm.coach_actions_block(BOOK).lower()
+    assert "timidité" in low
+    assert "choix" in low and "argument" in low
+
+
+def test_coach_actions_block_rappelle_que_TOUT_est_archive_note_et_compare():
+    """C'est ce qui le tient honnête, exactement comme « ton bilan public te
+    tient honnête » du digest."""
+    low = llm.coach_actions_block(BOOK).lower()
+    assert "registre" in low and "refus" in low      # acceptées ET refusées
+    assert "discipline" in low
+    assert "mae" in low and "mfe" in low
+    assert "courbe" in low and "face" in low         # comparée à la sienne
+    assert "crédibilité" in low
+
+
+def test_les_DEUX_prompts_portent_la_posture_de_performance():
+    """Le bloc est partagé : la posture ne peut pas diverger entre le digest et
+    la passe quotidienne, elle est écrite une seule fois."""
+    from backend.bots.paper import convergence
+
+    daily = llm.build_coach_trader_prompt(CTX)
+    digest = convergence.build_digest_prompt({}, [], None, None, "",
+                                             coach_book=BOOK)
+    for prompt in (daily, digest):
+        low = prompt.lower()
+        assert "performance" in low
+        assert "registre" in low and "discipline" in low
+
+
+def test_coach_actions_block_FINIT_par_le_bloc_lui_meme():
+    """« Termine par ce bloc, et RIEN après » doit être VRAI dans la mise en
+    page : une consigne démentie par ce qui la suit apprend au modèle que les
+    consignes sont approximatives — et le bloc finirait au milieu du message.
+    """
+    block = llm.coach_actions_block(BOOK).rstrip()
+    assert block.endswith("```")
+    # La consigne de format et son exemple ferment le prompt, APRÈS le rappel
+    # « ne rien faire est légitime » (sinon celui-ci s'intercale entre l'ordre
+    # et son exemple).
+    assert block.index("Termine IMPÉRATIVEMENT") > block.index("timidité")
+    assert block.index("Termine IMPÉRATIVEMENT") > block.index("TU ES NOTÉ")
+
+
+def test_coach_actions_block_ne_repete_pas_l_intro_de_ses_appelants():
+    """Les deux appelants posent déjà le cadre (« ce compte est à toi »/« tu
+    gères ton livre ») : le bloc n'ouvre pas une troisième fois là-dessus."""
+    from backend.bots.paper import convergence
+
+    section = convergence.build_digest_prompt(
+        {}, [], None, None, "", coach_book=BOOK
+    ).split("150 à 400 mots.")[-1]
+    assert section.count("TON PROPRE compte") + \
+        section.count("TON PROPRE COMPTE") == 1

@@ -782,7 +782,10 @@ def test_maybe_fire_sans_canal_telegram_n_arme_rien(sources, alice):
                                  fetch_state=_radar_state())
 
     assert out == {"fired": False, "reason": "no_telegram",
-                   "factors": out["factors"], "sent": False, "llm": False}
+                   "factors": out["factors"], "sent": False, "llm": False,
+                   # LOT 4 : les deux clés du coach sont présentes sur TOUS les
+                   # chemins de retour, sorties précoces comprises.
+                   "coach_actions": 0, "coach_parse_error": None}
     assert calls == []                                  # pas un jeton dépensé
     assert convergence.load_state() == convergence.blank_state()
 
@@ -827,7 +830,8 @@ def test_maybe_fire_trop_peu_de_facteurs(sources, alice):
                                  notifier=_notifier(sent), tg_cfg=TG,
                                  fetch_state=_radar_state())
     assert out == {"fired": False, "reason": "too_few", "factors": out["factors"],
-                   "sent": False, "llm": False}
+                   "sent": False, "llm": False,
+                   "coach_actions": 0, "coach_parse_error": None}
     assert sent == []
     assert convergence.load_state() == convergence.blank_state()
 
@@ -878,7 +882,8 @@ def test_maybe_fire_force_ne_force_pas_un_digest_vide(sources, alice):
                                  notifier=_notifier(sent), tg_cfg=TG,
                                  fetch_state=_radar_state(), force=True)
     assert out == {"fired": False, "reason": "too_few", "factors": out["factors"],
-                   "sent": False, "llm": False}
+                   "sent": False, "llm": False,
+                   "coach_actions": 0, "coach_parse_error": None}
     assert sent == []
 
 
@@ -2083,3 +2088,618 @@ def test_V6_le_contrat_de_recent_verdicts_porte_TOUT_ce_que_le_facteur_lit():
     for field in ("kind", "symbol", "tickers", "direction", "verdict",
                   "move_pct", "key"):
         assert '"%s"' % field in doc, field
+
+
+# =========================================================================== #
+#  LOT 4 — le coach DÉCIDE dans le même appel qu'il PARLE
+#
+#  Exigence centrale : ce que le coach DIT à l'utilisateur et ce qu'il FAIT
+#  viennent du MÊME appel au modèle. Sinon on ne mesure rien — on compare deux
+#  discours. Zéro appel LLM supplémentaire : on étend le contrat du digest.
+# =========================================================================== #
+
+COACH_BOOK = {
+    "cash_chf": 6200.0,
+    "equity_chf": 10450.0,
+    "positions": [
+        {"symbol": "NESN.SW", "qty": 12, "avg_price": 92.4, "currency": "CHF",
+         "thesis": "reprise des volumes en Europe", "stop_loss": 85.0,
+         "target": 110.0},
+    ],
+    "open_orders": [],
+}
+
+ACTION = {"action": "buy", "symbol": "NESN.SW", "qty": 12, "stop": 85.0,
+          "target": 110.0, "thesis": "reprise des volumes en Europe",
+          "setup": "news"}
+
+MARKER = "COACH_ACTIONS"
+
+
+def _with_block(text="Voici ce qui converge.", payload=None, raw=None):
+    """Un LLM qui rend « texte lisible + bloc structuré »."""
+    body = raw if raw is not None else json.dumps(
+        {"actions": [ACTION]} if payload is None else payload,
+        ensure_ascii=False)
+    return _llm("%s\n\n```%s\n%s\n```" % (text, MARKER, body))
+
+
+class _Exec(object):
+    """Exécuteur injecté qui note ce qu'il reçoit, et dans quel ordre."""
+
+    def __init__(self, log=None, boom=False):
+        self.calls = []
+        self.log = log if log is not None else []
+        self.boom = boom
+
+    def __call__(self, actions, source="digest", now_iso=None, parse_error=None):
+        self.log.append("execute")
+        self.calls.append({"actions": list(actions), "source": source,
+                           "now_iso": now_iso, "parse_error": parse_error})
+        if self.boom:
+            raise RuntimeError("moteur d'ordres cassé")
+        return [{"accepted": True}]
+
+
+def _arm_two_factors(sources):
+    """gov + dépôt 13F : deux facteurs indépendants -> fired sans force=True."""
+    sources.events = [_news(symbol="GOV", sentiment="gov",
+                            link="http://x.test/gov")]
+    sources.filings = [_filing()]
+
+
+# --- le prompt -------------------------------------------------------------- #
+
+def test_le_prompt_sans_coach_book_est_STRICTEMENT_identique_a_avant():
+    """Rétro-compatibilité totale : les quatre appelants de prod ne passent
+    pas ``coach_book``, leur prompt ne doit pas bouger d'un caractère."""
+    out = _digest_items()
+    args = (out["factors"], out["items"], {"hits": 3, "misses": 2, "unclear": 1},
+            [{"symbol": "NESN.SW", "side": "long", "qty": 10}], NOW.isoformat())
+    ref = convergence.build_digest_prompt(*args)
+    assert convergence.build_digest_prompt(*args, coach_book=None) == ref
+    assert MARKER not in ref
+
+
+def test_le_prompt_avec_coach_book_ajoute_la_section_TOUT_A_LA_FIN():
+    out = _digest_items()
+    args = (out["factors"], out["items"], {}, [], NOW.isoformat())
+    ref = convergence.build_digest_prompt(*args)
+    prompt = convergence.build_digest_prompt(*args, coach_book=COACH_BOOK)
+
+    # Rien avant n'a bougé, et la section est APRÈS les interdits et la
+    # consigne de longueur : le modèle lit le bloc en dernier.
+    assert prompt.startswith(ref)
+    assert len(prompt) > len(ref)
+    assert MARKER in prompt
+    assert prompt.index("INTERDITS ABSOLUS") < prompt.index(MARKER)
+    assert prompt.index("150 à 400 mots") < prompt.index(MARKER)
+
+
+def test_la_section_coach_cite_les_six_regles_du_garde_fou():
+    out = _digest_items()
+    prompt = convergence.build_digest_prompt(
+        out["factors"], out["items"], {}, [], NOW.isoformat(),
+        coach_book=COACH_BOOK)
+    tail = prompt.split("150 à 400 mots.")[-1]
+    assert "sans stop" in tail.lower()
+    assert "10 %" in tail and "30 %" in tail and "2 %" in tail
+    assert "5 %" in tail and "crypto" in tail and "ligne" in tail
+
+
+def test_la_section_coach_dit_que_le_compte_est_SIEN_PUBLIC_et_COHERENT():
+    """C'est là toute la mesure : il est regardé, donc ce qu'il conseille et ce
+    qu'il exécute doivent coller."""
+    out = _digest_items()
+    prompt = convergence.build_digest_prompt(
+        out["factors"], out["items"], {}, [], NOW.isoformat(),
+        coach_book=COACH_BOOK)
+    tail = prompt.split("150 à 400 mots.")[-1]
+    assert "TON" in tail
+    assert "PUBLIC" in tail
+    assert "cohérent" in tail
+
+
+def test_la_section_coach_est_best_effort_si_le_moteur_de_prompt_manque(monkeypatch):
+    """Même posture que ``_power_named_line`` : un digest doit partir même si
+    le module de prompt manque. Une section de plus n'a jamais valu un message
+    perdu."""
+    monkeypatch.setitem(sys.modules, "backend.bots.paper.llm", None)
+    assert convergence._coach_actions_block(COACH_BOOK) == ""
+    out = _digest_items()
+    prompt = convergence.build_digest_prompt(
+        out["factors"], out["items"], {}, [], NOW.isoformat(),
+        coach_book=COACH_BOOK)
+    assert MARKER not in prompt
+    assert "INTERDITS ABSOLUS" in prompt
+
+
+def test_maybe_fire_passe_le_coach_book_au_prompt(sources, alice):
+    _arm_two_factors(sources)
+    seen = []
+
+    def _capture(prompt):
+        seen.append(prompt)
+        return "Texte du digest."
+
+    out = convergence.maybe_fire(now=NOW, llm=_capture, notifier=_notifier([]),
+                                 tg_cfg=TG, fetch_state=_radar_state(),
+                                 coach_book=COACH_BOOK)
+    assert out["fired"] is True
+    assert len(seen) == 1 and MARKER in seen[0]
+
+
+# --- parler, PUIS agir ------------------------------------------------------ #
+
+def test_maybe_fire_execute_apres_l_envoi_et_ne_fuite_le_bloc_NULLE_PART(
+        sources, alice, tmp_path):
+    """Les trois destinations du message (Telegram, historique, carnet) sont
+    vérifiées une par une : l'utilisateur ne doit JAMAIS voir de JSON."""
+    _arm_two_factors(sources)
+    order = []
+    sent = []
+
+    def _notif(text, cfg):
+        order.append("send")
+        sent.append((text, cfg))
+        return True
+
+    runner = _Exec(log=order)
+
+    out = convergence.maybe_fire(now=NOW, llm=_with_block(), notifier=_notif,
+                                 tg_cfg=TG, fetch_state=_radar_state(),
+                                 coach_book=COACH_BOOK, execute_actions=runner)
+
+    assert out["fired"] is True and out["sent"] is True and out["llm"] is True
+    assert out["coach_actions"] == 1
+    assert out["coach_parse_error"] is None
+
+    # (d) l'exécuteur reçoit les actions parsées, APRÈS l'envoi.
+    assert order == ["send", "execute"]
+    assert runner.calls[0]["actions"] == [ACTION]
+    assert runner.calls[0]["source"] == "digest"
+    assert runner.calls[0]["now_iso"] == NOW.isoformat()
+    assert runner.calls[0]["parse_error"] is None
+
+    # (a) Telegram.
+    text = sent[0][0]
+    assert MARKER not in text and "{" not in text
+    assert text.startswith(convergence.HEADER)
+    assert "Voici ce qui converge." in text
+
+    # (b) l'historique persisté.
+    digest = convergence.load_state()["history"][0]["digest"]
+    assert MARKER not in digest and "Voici ce qui converge." in digest
+
+    # (c) le carnet Markdown de chaque compte.
+    note = (tmp_path / "alice-vault" / "Signaux.md").read_text(encoding="utf-8")
+    assert MARKER not in note and "Voici ce qui converge." in note
+
+
+def test_maybe_fire_un_bloc_CASSE_ne_produit_aucune_action(sources, alice, tmp_path):
+    """Le JSON illisible est retiré du texte quand même : l'utilisateur ne
+    reçoit jamais un bloc à moitié écrit."""
+    _arm_two_factors(sources)
+    sent = []
+    runner = _Exec()
+
+    out = convergence.maybe_fire(
+        now=NOW, llm=_with_block("Texte lisible.", raw="{cassé"),
+        notifier=_notifier(sent), tg_cfg=TG, fetch_state=_radar_state(),
+        coach_book=COACH_BOOK, execute_actions=runner)
+
+    assert out["fired"] is True and out["sent"] is True
+    assert out["coach_actions"] == 0
+    assert out["coach_parse_error"] == "parse_failed"
+    assert runner.calls[0]["actions"] == []
+    assert runner.calls[0]["parse_error"] == "parse_failed"
+    assert MARKER not in sent[0][0] and "cassé" not in sent[0][0]
+    assert "Texte lisible." in sent[0][0]
+    assert MARKER not in (tmp_path / "alice-vault" / "Signaux.md").read_text(
+        encoding="utf-8")
+
+
+def test_maybe_fire_sans_bloc_laisse_le_message_INTACT(sources, alice):
+    """Un digest sans bloc est un digest normal (le coach n'a rien à faire ce
+    jour-là), pas une anomalie à rattraper en devinant des intentions."""
+    _arm_two_factors(sources)
+    sent = []
+    runner = _Exec()
+
+    out = convergence.maybe_fire(now=NOW, llm=_llm("Voici ce qui converge."),
+                                 notifier=_notifier(sent), tg_cfg=TG,
+                                 fetch_state=_radar_state(),
+                                 coach_book=COACH_BOOK, execute_actions=runner)
+
+    assert out["coach_actions"] == 0
+    assert out["coach_parse_error"] == "no_block"
+    assert runner.calls[0]["actions"] == []
+    assert runner.calls[0]["parse_error"] == "no_block"
+    assert sent[0][0] == convergence.with_header("Voici ce qui converge.")
+
+
+def test_maybe_fire_un_executeur_qui_LEVE_ne_casse_pas_le_digest(sources, alice):
+    """Best-effort TOTAL : une panne d'exécution ne doit pas empêcher un digest
+    DÉJÀ ENVOYÉ de compter comme envoyé."""
+    _arm_two_factors(sources)
+    sent = []
+    runner = _Exec(boom=True)
+
+    out = convergence.maybe_fire(now=NOW, llm=_with_block(),
+                                 notifier=_notifier(sent), tg_cfg=TG,
+                                 fetch_state=_radar_state(),
+                                 coach_book=COACH_BOOK, execute_actions=runner)
+
+    assert out["fired"] is True and out["sent"] is True
+    assert out["coach_actions"] == 1
+    assert len(sent) == 1
+    assert convergence.load_state()["last_fired"] == NOW.isoformat()
+
+
+def test_maybe_fire_tolere_un_executeur_a_l_ancienne_signature(sources, alice):
+    """L'autre tâche construit ``execute_coach_actions`` EN PARALLÈLE : un
+    TypeError de signature est avalé comme le reste, le digest part."""
+    _arm_two_factors(sources)
+
+    def _old_signature(actions):        # ni source, ni now_iso, ni parse_error
+        raise AssertionError("ne devrait jamais aboutir")
+
+    out = convergence.maybe_fire(now=NOW, llm=_with_block(),
+                                 notifier=_notifier([]), tg_cfg=TG,
+                                 fetch_state=_radar_state(),
+                                 coach_book=COACH_BOOK,
+                                 execute_actions=_old_signature)
+    assert out["fired"] is True and out["sent"] is True
+
+
+def test_maybe_fire_llm_en_panne_aucune_action_et_le_digest_part(sources, alice):
+    """Comportement historique intact : le résumé de secours n'a aucun bloc à
+    parser, donc aucune action — et il part quand même."""
+    _arm_two_factors(sources)
+    sent = []
+    runner = _Exec()
+
+    def _boom(prompt):
+        raise RuntimeError("LLM muet")
+
+    out = convergence.maybe_fire(now=NOW, llm=_boom, notifier=_notifier(sent),
+                                 tg_cfg=TG, fetch_state=_radar_state(),
+                                 coach_book=COACH_BOOK, execute_actions=runner)
+
+    assert out["fired"] is True and out["sent"] is True and out["llm"] is False
+    assert out["coach_actions"] == 0
+    assert out["coach_parse_error"] == "no_block"
+    assert convergence.FALLBACK_TAIL in sent[0][0]
+    assert runner.calls[0]["actions"] == []
+
+
+def test_maybe_fire_sans_executeur_disponible_ne_casse_rien(sources, alice,
+                                                            monkeypatch):
+    """Ni injecté, ni importable (la fonction n'existe pas encore côté router)
+    -> aucune action exécutée, aucune exception."""
+    monkeypatch.setitem(sys.modules, "backend.bots.paper_router", None)
+    _arm_two_factors(sources)
+    sent = []
+
+    out = convergence.maybe_fire(now=NOW, llm=_with_block(),
+                                 notifier=_notifier(sent), tg_cfg=TG,
+                                 fetch_state=_radar_state(),
+                                 coach_book=COACH_BOOK)
+
+    assert out["fired"] is True and out["sent"] is True
+    assert out["coach_actions"] == 1          # parsées, simplement non exécutées
+    assert MARKER not in sent[0][0]
+
+
+def test_maybe_fire_resout_l_executeur_depuis_le_router(sources, alice,
+                                                        monkeypatch):
+    """Sans injection, l'exécuteur est cherché PARESSEUSEMENT sur le router."""
+    _arm_two_factors(sources)
+    runner = _Exec()
+    stub = types.ModuleType("backend.bots.paper_router")
+    stub.execute_coach_actions = runner
+    monkeypatch.setitem(sys.modules, "backend.bots.paper_router", stub)
+
+    out = convergence.maybe_fire(now=NOW, llm=_with_block(),
+                                 notifier=_notifier([]), tg_cfg=TG,
+                                 fetch_state=_radar_state(),
+                                 coach_book=COACH_BOOK)
+
+    assert out["fired"] is True
+    assert runner.calls[0]["actions"] == [ACTION]
+    assert runner.calls[0]["source"] == "digest"
+
+
+def test_maybe_fire_sans_coach_book_n_engage_JAMAIS_l_executeur(sources, alice,
+                                                                monkeypatch):
+    """Aucun livre = le prompt n'a jamais demandé d'actions : rien à exécuter,
+    et rien à consigner comme « bloc absent ».
+
+    ⚠️ « Aucun livre » ne veut plus dire « aucun appelant ne le passe » depuis
+    la couture : ``maybe_fire`` le RÉSOUT toute seule. C'est le garde-fou de
+    ``conftest`` (``_no_coach_book_resolution``, désarmable par
+    ``@pytest.mark.real_coach_book``) qui rend ici la résolution muette — le
+    cas couvert est donc « compte du coach injoignable », le seul où la prod
+    voit encore un livre nul."""
+    _arm_two_factors(sources)
+    runner = _Exec()
+    stub = types.ModuleType("backend.bots.paper_router")
+    stub.execute_coach_actions = runner
+    monkeypatch.setitem(sys.modules, "backend.bots.paper_router", stub)
+
+    out = convergence.maybe_fire(now=NOW, llm=_with_block(),
+                                 notifier=_notifier([]), tg_cfg=TG,
+                                 fetch_state=_radar_state())
+
+    assert out["fired"] is True
+    assert runner.calls == []
+    # Le texte reste NETTOYÉ dans tous les cas : un bloc qui traînerait dans un
+    # digest sans coach_book atterrirait quand même sur le téléphone.
+    assert out["coach_actions"] == 1
+    assert out["coach_parse_error"] is None
+
+
+def test_maybe_fire_porte_TOUJOURS_les_deux_cles_coach(sources, alice):
+    """Y compris sur une sortie précoce : un appelant qui lit ``coach_actions``
+    ne doit pas tomber sur un KeyError selon le chemin pris (piège #61)."""
+    out = convergence.maybe_fire(now=NOW, llm=_llm("d"), notifier=_notifier([]),
+                                 tg_cfg=TG, fetch_state=_radar_state())
+    assert out["reason"] == "too_few"
+    assert out["coach_actions"] == 0 and out["coach_parse_error"] is None
+
+    _arm_two_factors(sources)
+    convergence.maybe_fire(now=NOW, llm=_llm("d"), notifier=_notifier([]),
+                           tg_cfg=TG, fetch_state=_radar_state())
+    again = convergence.maybe_fire(now=NOW + timedelta(minutes=5), llm=_llm("d"),
+                                   notifier=_notifier([]), tg_cfg=TG,
+                                   fetch_state=_radar_state())
+    assert again["reason"] == "cooldown"
+    assert again["coach_actions"] == 0 and again["coach_parse_error"] is None
+
+
+def test_maybe_fire_garde_toutes_les_cles_historiques(sources, alice):
+    """Aucune clé retirée ni renommée."""
+    _arm_two_factors(sources)
+    out = convergence.maybe_fire(now=NOW, llm=_with_block(),
+                                 notifier=_notifier([]), tg_cfg=TG,
+                                 fetch_state=_radar_state(),
+                                 coach_book=COACH_BOOK, execute_actions=_Exec())
+    for key in ("fired", "reason", "factors", "sent", "llm",
+                "coach_actions", "coach_parse_error"):
+        assert key in out, key
+
+
+def test_la_section_coach_porte_la_posture_de_performance_et_l_archivage():
+    """Directive utilisateur : le prompt vise la PERFORMANCE (le garde-fou, lui,
+    ne bouge pas) — et le rappel « tout est archivé et comparé » est ce qui le
+    tient honnête."""
+    out = _digest_items()
+    prompt = convergence.build_digest_prompt(
+        out["factors"], out["items"], {}, [], NOW.isoformat(),
+        coach_book=COACH_BOOK)
+    tail = prompt.split("150 à 400 mots.")[-1].lower()
+    assert "performance" in tail
+    assert "registre" in tail and "discipline" in tail
+    assert "courbe" in tail
+
+
+def test_le_marqueur_de_repli_est_le_MEME_que_celui_du_garde_fou():
+    """Miroir assumé (le repli sert quand ``coach_trader`` est justement
+    injoignable) : épinglé des deux côtés, comme ``_equity_chf``."""
+    from backend.bots.paper import coach_trader
+
+    assert convergence.ACTIONS_MARKER_FALLBACK == coach_trader.ACTIONS_MARKER
+
+
+def test_la_source_des_decisions_du_digest_est_dans_le_contrat_du_registre():
+    """Une provenance inventée falsifierait le registre sans jamais lever."""
+    from backend.bots.paper import coach_trader
+
+    assert convergence.COACH_SOURCE in coach_trader.SOURCES
+
+
+def test_le_repli_du_parseur_retire_QUAND_MEME_le_bloc(monkeypatch):
+    """Si ``coach_trader`` était injoignable, laisser passer le texte brut
+    déverserait du JSON sur le téléphone. Le repli coupe au marqueur : aucune
+    action, mais la garantie tient.
+
+    ⚠️ Vider ``sys.modules`` NE SUFFIT PAS : ``from paquet import module``
+    trouve d'abord l'attribut déjà lié sur le paquet (piège maison — un stub
+    posé dans le seul ``sys.modules`` est contourné en silence).
+    """
+    import backend.bots.paper as paper_pkg
+
+    monkeypatch.setitem(sys.modules, "backend.bots.paper.coach_trader", None)
+    monkeypatch.delattr(paper_pkg, "coach_trader", raising=False)
+
+    out = convergence._parse_coach_actions(
+        'Texte lisible.\n\n```%s\n{"actions": [%s]}\n```'
+        % (MARKER, json.dumps(ACTION)))
+
+    assert MARKER not in out["text"]
+    assert "{" not in out["text"]
+    assert out["text"] == "Texte lisible."
+    assert out["actions"] == []
+    assert out["error"] == "parse_failed"
+
+
+def test_le_repli_du_parseur_laisse_un_texte_SANS_bloc_intact(monkeypatch):
+    import backend.bots.paper as paper_pkg
+
+    monkeypatch.setitem(sys.modules, "backend.bots.paper.coach_trader", None)
+    monkeypatch.delattr(paper_pkg, "coach_trader", raising=False)
+
+    out = convergence._parse_coach_actions("Voici ce qui converge.")
+    assert out["text"] == "Voici ce qui converge."
+    assert out["actions"] == []
+
+
+# --- LA COUTURE : le livre du coach est résolu TOUT SEUL -------------------- #
+#
+# C'est ce qui manquait au lot. Les deux moitiés — le prompt qui sait demander
+# des actions, l'exécuteur qui sait les passer — étaient chacune correcte et
+# testée, mais AUCUN des quatre appelants de prod (radar, whales, newswatch,
+# router) ne passait ``coach_book`` : la fonctionnalité était morte-née, sans
+# une erreur ni un test rouge (piège #61 du dépôt).
+#
+# ⚠️ Les tests qui font tourner la VRAIE résolution désarment le garde-fou de
+# ``conftest`` (``_no_coach_book_resolution``) via ``@pytest.mark.real_coach_book``
+# — ils écrivent donc dans ``store.DATA_DIR``, isolé en ``tmp_path`` par
+# ``_isolate_data_dir``.
+
+
+def _spy_coach_book(monkeypatch, book=None):
+    """Remplace le résolveur par un mouchard. Rend la liste de ses appels."""
+    calls = []
+
+    def _resolve():
+        calls.append(True)
+        return book
+
+    monkeypatch.setattr(convergence, "_coach_book", _resolve)
+    return calls
+
+
+@pytest.mark.real_coach_book
+def test_maybe_fire_resout_le_livre_du_coach_TOUT_SEUL(sources, alice, monkeypatch):
+    """LE test qui manquait : SANS ``coach_book`` ni ``execute_actions``
+    explicites, le prompt demande quand même des actions et l'exécuteur les
+    reçoit. C'est ce qui fait vivre la fonctionnalité en prod."""
+    _arm_two_factors(sources)
+    runner = _Exec()
+    stub = types.ModuleType("backend.bots.paper_router")
+    stub.coach_book = lambda: COACH_BOOK
+    stub.execute_coach_actions = runner
+    monkeypatch.setitem(sys.modules, "backend.bots.paper_router", stub)
+
+    seen = []
+    answer = _with_block()
+
+    def _capture(prompt):
+        seen.append(prompt)
+        return answer(prompt)
+
+    out = convergence.maybe_fire(now=NOW, llm=_capture, notifier=_notifier([]),
+                                 tg_cfg=TG, fetch_state=_radar_state())
+
+    assert out["fired"] is True
+    assert len(seen) == 1 and MARKER in seen[0]
+    assert out["coach_actions"] == 1
+    assert runner.calls and runner.calls[0]["actions"] == [ACTION]
+    assert runner.calls[0]["source"] == "digest"
+
+
+@pytest.mark.real_coach_book
+def test_maybe_fire_resout_le_VRAI_livre_du_router(sources, alice):
+    """Pas un stub : le vrai ``paper_router.coach_book``, sur un compte de coach
+    créé à la volée dans ``tmp_path``. C'est lui qui prouve que la couture tient
+    jusqu'au bout de la chaîne réelle (le compte neuf porte ses 10 000 CHF)."""
+    _arm_two_factors(sources)
+    seen = []
+    runner = _Exec()
+
+    out = convergence.maybe_fire(
+        now=NOW, llm=lambda prompt: seen.append(prompt) or "Texte du digest.",
+        notifier=_notifier([]), tg_cfg=TG, fetch_state=_radar_state(),
+        execute_actions=runner)
+
+    assert out["fired"] is True
+    assert len(seen) == 1
+    assert MARKER in seen[0]
+    assert "TON COMPTE" in seen[0]
+    assert '"cash_chf": 10000.0' in seen[0]
+
+
+def test_le_livre_du_coach_n_est_PAS_resolu_quand_ca_ne_converge_pas(
+        sources, alice, monkeypatch):
+    """L'évaluation à chaque cycle de 5 min doit rester GRATUITE (pur I/O
+    local) : créer le compte du coach et valoriser ses lignes à chaque passage
+    violerait l'invariant. La résolution vit APRÈS la porte ``should_fire``."""
+    calls = _spy_coach_book(monkeypatch, COACH_BOOK)
+
+    out = convergence.maybe_fire(now=NOW, llm=_llm("d"), notifier=_notifier([]),
+                                 tg_cfg=TG, fetch_state=_radar_state())
+
+    assert out["reason"] == "too_few"
+    assert calls == []
+
+
+def test_le_livre_du_coach_n_est_PAS_resolu_sans_canal_telegram(
+        sources, alice, monkeypatch):
+    """Même raison, deuxième porte : aucun canal, aucun message composé — donc
+    rien à résoudre non plus."""
+    _arm_two_factors(sources)
+    calls = _spy_coach_book(monkeypatch, COACH_BOOK)
+
+    out = convergence.maybe_fire(now=NOW, llm=_llm("d"), notifier=_notifier([]),
+                                 tg_cfg=None, fetch_state=_radar_state())
+
+    assert out["reason"] == "no_telegram"
+    assert calls == []
+
+
+def test_un_livre_explicite_court_circuite_la_resolution(sources, alice,
+                                                         monkeypatch):
+    """Un appelant qui sait déjà (les tests) passe son propre livre : la
+    résolution paresseuse ne doit alors pas tourner du tout."""
+    _arm_two_factors(sources)
+    calls = _spy_coach_book(monkeypatch, None)
+    seen = []
+
+    out = convergence.maybe_fire(
+        now=NOW, llm=lambda prompt: seen.append(prompt) or "Texte du digest.",
+        notifier=_notifier([]), tg_cfg=TG, fetch_state=_radar_state(),
+        coach_book=COACH_BOOK, execute_actions=_Exec())
+
+    assert out["fired"] is True
+    assert calls == []
+    assert MARKER in seen[0]
+
+
+def test_un_livre_du_coach_illisible_ne_fait_pas_tomber_le_digest(
+        sources, alice, monkeypatch):
+    """Best-effort jusqu'au bout : un résolveur qui LÈVE ne doit pas coûter le
+    message. Le digest part, simplement sans demander ni exécuter d'actions."""
+    _arm_two_factors(sources)
+
+    def _boom():
+        raise RuntimeError("router cassé")
+
+    monkeypatch.setattr(convergence, "_coach_book", _boom)
+    runner = _Exec()
+    stub = types.ModuleType("backend.bots.paper_router")
+    stub.execute_coach_actions = runner
+    monkeypatch.setitem(sys.modules, "backend.bots.paper_router", stub)
+
+    sent = []
+    seen = []
+    out = convergence.maybe_fire(
+        now=NOW, llm=lambda prompt: seen.append(prompt) or "Texte du digest.",
+        notifier=_notifier(sent), tg_cfg=TG, fetch_state=_radar_state())
+
+    assert out["fired"] is True and out["sent"] is True
+    assert len(sent) == 1
+    assert MARKER not in seen[0]
+    assert runner.calls == []
+
+
+@pytest.mark.real_coach_book
+def test_le_resolveur_du_livre_rend_None_si_le_router_manque(monkeypatch):
+    """Même posture que ``_execute_coach`` juste à côté : router absent ->
+    pas de livre, pas de crash."""
+    monkeypatch.setitem(sys.modules, "backend.bots.paper_router", None)
+    assert convergence._coach_book() is None
+
+
+@pytest.mark.real_coach_book
+def test_le_resolveur_du_livre_avale_un_router_qui_LEVE(monkeypatch):
+    """Le compte du coach peut être illisible : c'est un pépin, pas une panne
+    du digest."""
+    stub = types.ModuleType("backend.bots.paper_router")
+
+    def _boom():
+        raise RuntimeError("compte du coach illisible")
+
+    stub.coach_book = _boom
+    monkeypatch.setitem(sys.modules, "backend.bots.paper_router", stub)
+    assert convergence._coach_book() is None

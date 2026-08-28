@@ -206,6 +206,13 @@ _NON_USER_FILES = frozenset({
     # sans cette ligne, « backfill » serait recensé comme un compte ET son
     # état passerait pour un portefeuille.
     "backfill.json",
+    # État du module de trading DU COACH (LOT 4). Son radical porte un point
+    # (``coach_trader.state``), donc ``_USER_FILE_RE`` le rejette déjà
+    # structurellement ; la ligne reste la PREMIÈRE ligne de défense — elle
+    # DOCUMENTE que ce n'est pas un compte. ⚠️ À ne pas confondre avec
+    # ``coach.json``, qui EST le portefeuille du coach : un VRAI compte,
+    # visible dans la communauté par design (cf. ``coach_trader.py``).
+    "coach_trader.state.json",
 })
 _USER_FILE_RE = re.compile(r"^([A-Za-z0-9_-]+)\.json$")
 

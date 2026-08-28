@@ -129,6 +129,19 @@ const PaperModule = {
     // on le relit, daté, et on peut rouvrir CE qu'il avait relié — le
     // mini-arbre d'une convergence est dessiné par le moteur de la toile, à
     // l'identique (mêmes types de nœuds, mêmes couleurs de famille).
+    // --- LOT 4 : le compte de trading DU COACH ------------------------------
+    //
+    // Le coach a SON portefeuille fictif et il le tient lui-même. Cette vue ne
+    // décide rien : elle montre son livre en entier (positions, ordres,
+    // registre des REFUS compris) et met sa courbe de patrimoine à côté de
+    // celle du lecteur — « mesurer si ce qu'il annonce fonctionne ».
+    _ct: null,                 // {portfolio, quotes, exposure, stats, discipline,
+                               //  ledger, equity:{coach,user}, next_pass, capital}
+    _ctCanvas: null,           // toile des deux courbes (écouteurs retirés au re-rendu)
+    _onCtResize: null,         // UN seul écouteur window, retiré avec la toile
+    _ctResizeTimer: null,
+    _CT_LEDGER_MAX: 40,        // le serveur en garde 200 : on en montre 40, on dit le reste
+
     _digest: null,             // {entries:[{ts, factors, digest, llm, items}]}
     _digestLoading: false,
     _dgTs: null,               // convergence ouverte (horodatage BRUT du serveur)
@@ -171,6 +184,10 @@ const PaperModule = {
     _busy: {
         ideas: false, scenarios: false, ask: false,
         review: false, postmortem: false, analysis: false, radar: false,
+        // LOT 4 : « Forcer une passe » du coach-trader. Même clé que
+        // data-paper-act / data-paper-busy — c'est ce nom-là que _applyBusy
+        // confronte à cette table.
+        'ct-run': false,
     },
 
     // Libellé d'attente par clé — le radar a le sien. Défaut : paper.thinking.
@@ -186,6 +203,7 @@ const PaperModule = {
         postmortem: ['journal', 'paper.ready_postmortem'],
         scenarios: ['plan', 'paper.ready_scenarios'],
         review: ['portfolio', 'paper.ready_review'],
+        'ct-run': ['coachtrader', 'paper.ct_ready'],
     },
 
     // --- Sondage des jobs LLM ------------------------------------------------
@@ -594,6 +612,7 @@ const PaperModule = {
         this._disposeCharts();
         this._disposeGraph();
         this._disposeDG();
+        this._disposeCoachEquity();
         // Les sondages en cours s'arrêtent AVEC la vue — mais la trace disque
         // reste : le job continue côté serveur et sera repris au prochain rendu.
         this._cancelJobs();
@@ -1058,6 +1077,9 @@ const PaperModule = {
             ['trade', 'paper.tab_trade'],
             ['journal', 'paper.tab_journal'],
             ['coach', 'paper.tab_coach'],
+            // Le coach qui CONSEILLE et le coach qui TRADE se lisent ensemble :
+            // l'un dit quoi faire, l'autre le fait sur son propre compte.
+            ['coachtrader', 'paper.tab_coach_trader'],
             ['lessons', 'paper.tab_lessons'],
             ['arena', 'paper.tab_arena'],
             ['whales', 'paper.tab_whales'],
@@ -1415,6 +1437,14 @@ const PaperModule = {
             if (this._tab === 'coach') this._renderBody();
             return;
         }
+        // Le compte du coach (LOT 4) : lu à la première ouverture de l'onglet.
+        // Il bouge à ses convergences et à sa passe du soir, pas à la minute —
+        // le poll de 60 s ne le touche donc pas.
+        if (this._tab === 'coachtrader' && !this._ct) {
+            this._ct = await this._get('/api/paper/coach-trader') || {};
+            if (this._tab === 'coachtrader') this._renderBody();
+            return;
+        }
         if (this._tab === 'lessons' && !this._lessons) {
             this._lessons = await this._get(this._withLang('/api/paper/lessons')) || {};
             if (this._tab === 'lessons') this._renderBody();
@@ -1455,11 +1485,13 @@ const PaperModule = {
         this._disposeCharts();
         this._disposeGraph();
         this._disposeDG();
+        this._disposeCoachEquity();
         this._chartWanted = [];
         let html;
         if (this._tab === 'trade') html = this._viewTrade();
         else if (this._tab === 'journal') html = this._viewJournal();
         else if (this._tab === 'coach') html = this._viewCoach();
+        else if (this._tab === 'coachtrader') html = this._viewCoachTrader();
         else if (this._tab === 'lessons') html = this._viewLessons();
         else if (this._tab === 'arena') html = this._viewArena();
         else if (this._tab === 'whales') html = this._viewWhales();
@@ -1470,6 +1502,7 @@ const PaperModule = {
         else html = this._viewPortfolio();
         this._setBody(html);
         if (this._tab === 'portfolio') this._paintEquity();
+        if (this._tab === 'coachtrader') this._paintCoachEquity();
         this._mountCharts();
         if (this._tab === 'graph') { this._mountGraph(); this._mountDG(); }
         if (this._tab === 'arena') this._replayPaint();     // LOT 3, A3
@@ -1485,6 +1518,8 @@ const PaperModule = {
             this._notes = await this._get('/api/paper/coach/notes');
             this._community = await this._get('/api/paper/community');
             await this._loadIdeasJournal();
+        } else if (this._tab === 'coachtrader') {
+            this._ct = await this._get('/api/paper/coach-trader') || this._ct;
         } else if (this._tab === 'lessons') {
             this._lessons = await this._get(this._withLang('/api/paper/lessons')) || {};
         } else if (this._tab === 'arena') {
@@ -3276,6 +3311,587 @@ const PaperModule = {
         this._noteName = String(d.name || name);
         this._noteBody = String(this._pickField(d, ['markdown', 'content', 'text']) || '');
         this._renderBody();
+    },
+
+    // =====================================================================
+    //  4bis. LE COACH EN ACTION — son propre compte, en public
+    // =====================================================================
+    //
+    // Le coach ne se contente plus de conseiller : il a SON compte de paper
+    // trading, avec le même capital de départ, les mêmes frais et les mêmes
+    // cours. Cette vue ne décide rien et ne recalcule rien que le serveur ait
+    // déjà chiffré — elle MONTRE, et elle montre TOUT :
+    //
+    //   - la courbe de son patrimoine, avec celle du lecteur par-dessus, pour
+    //     répondre à la seule question qui compte (« est-ce que ce qu'il
+    //     annonce fonctionne ? ») ;
+    //   - ses positions AVEC leur thèse, leur stop et leur objectif, jamais
+    //     repliés : c'est le « voir COMMENT il fait » ;
+    //   - son registre de décisions, REFUS COMPRIS. Un registre qui ne
+    //     garderait que les ordres passés montrerait un coach irréprochable et
+    //     cacherait tout ce que son mandat a empêché — les refus sont la
+    //     moitié de l'intérêt de la page, ils se lisent donc comme le reste.
+
+    _ctPortfolio() {
+        const ct = this._ct;
+        const p = (ct && ct.portfolio && typeof ct.portfolio === 'object') ? ct.portfolio : {};
+        return p;
+    },
+
+    _ctList(v) { return Array.isArray(v) ? v : []; },
+
+    _ctQuote(symbol) {
+        const ct = this._ct || {};
+        const q = (ct.quotes && typeof ct.quotes === 'object') ? ct.quotes : {};
+        const sym = String(symbol == null ? '' : symbol);
+        const hit = Object.prototype.hasOwnProperty.call(q, sym) ? q[sym] : null;
+        return (hit && typeof hit === 'object') ? hit : null;
+    },
+
+    // Le cours du jour, ou null quand la lecture a échoué (le serveur pose
+    // alors un champ « error » sur la cotation). On ne remplace JAMAIS un cours
+    // absent par le prix de revient : la colonne dirait « le titre vaut ce qu'il a
+    // coûté », ce qui est faux — elle affiche « — » et la ligne reste là.
+    _ctLast(pos) {
+        const q = this._ctQuote(pos && pos.symbol);
+        return q ? this._n(q.price) : null;
+    },
+
+    // Gain/perte d'une ligne, en %. MÊME formule que le backend, inversion du
+    // vendeur à découvert comprise.
+    _ctPnlPct(pos) {
+        const avg = this._n(pos && pos.avg_price);
+        const last = this._ctLast(pos);
+        if (avg === null || last === null || avg === 0) return null;
+        const pct = (last - avg) / avg * 100;
+        return (String(pos && pos.side) === 'short') ? -pct : pct;
+    },
+
+    // Patrimoine : le total du serveur (champ « exposure »), sinon reconstruit
+    // — jamais un « — » quand l'information est calculable (même doctrine que
+    // _totalValue pour le portefeuille du lecteur).
+    _ctEquityNow() {
+        const ct = this._ct || {};
+        const direct = this._n(this._pickField(ct.exposure,
+            ['total_chf', 'total_value_chf', 'total_value']));
+        if (direct !== null) return direct;
+        const p = this._ctPortfolio();
+        const cash = this._n(this._pickField(p, ['cash_chf', 'cash']));
+        if (cash === null) return null;
+        let sum = cash;
+        this._ctList(p.positions).forEach((pos) => {
+            const qty = this._n(pos && pos.qty);
+            const fx = this._n(pos && pos.fx_rate) || 1;
+            let px = this._ctLast(pos);
+            if (px === null) px = this._n(pos && pos.avg_price);
+            if (qty !== null && px !== null) sum += Math.abs(qty) * px * fx;
+        });
+        return sum;
+    },
+
+    _ctCapital() {
+        const ct = this._ct || {};
+        const direct = this._n(ct.capital);
+        if (direct !== null) return direct;
+        return this._n(this._pickField(this._ctPortfolio(),
+            ['initial_capital', 'initial_capital_chf']));
+    },
+
+    // Une série de patrimoine du serveur -> [{t, v}] triée. Les points sans
+    // date ou sans valeur lisible sont écartés ; le tri est refait ici (le
+    // fichier est chronologique, mais une courbe ne doit jamais dépendre de
+    // l'ordre d'un fichier qu'on ne contrôle pas).
+    _ctSeries(which) {
+        const ct = this._ct || {};
+        const eq = (ct.equity && typeof ct.equity === 'object') ? ct.equity : {};
+        const out = [];
+        this._ctList(eq[which]).forEach((pt) => {
+            if (!pt || typeof pt !== 'object') return;
+            const d = this._toDate(pt.date);
+            const v = this._n(pt.equity);
+            if (!d || v === null) return;
+            out.push({ t: d.getTime(), v: v });
+        });
+        out.sort((a, b) => a.t - b.t);
+        return out;
+    },
+
+    // Le compte n'a encore RIEN vécu : ni position, ni ordre, ni trade, ni la
+    // moindre décision consignée. On ne montre alors ni toile ni tableaux
+    // vides — on dit ce qui va se passer.
+    _ctVirgin() {
+        const ct = this._ct || {};
+        const p = this._ctPortfolio();
+        return !this._ctList(p.positions).length &&
+            !this._ctList(p.trades).length &&
+            !this._ctList(this._pickField(p, ['open_orders', 'orders']) || []).length &&
+            !this._ctList(ct.ledger).length;
+    },
+
+    // « Forcer une passe » est ADMIN STRICT côté serveur (403 pour money et
+    // trader). On lit le compte de la session — même source que les autres
+    // modules du panel, Auth.getUser() — pour ne pas montrer un bouton
+    // qui ne peut que refuser. CHOIX ASSUMÉ : source illisible (stockage vidé,
+    // navigation privée) -> on AFFICHE le bouton. Un 403 est alors rendu
+    // lisible par le toast d'erreur du POST ; masquer le bouton par défaut
+    // priverait l'administrateur de sa seule commande sans rien lui dire.
+    _ctIsAdmin() {
+        let u = null;
+        try { u = (typeof Auth !== 'undefined' && Auth.getUser) ? Auth.getUser() : null; }
+        catch (e) { u = null; }
+        if (!u || typeof u !== 'object') return true;
+        return !!(u.is_admin || String(u.role || '') === 'admin');
+    },
+
+    _viewCoachTrader() {
+        if (!this._ct) return this._card(this._muted(Lang.t('paper.loading')));
+        const intro = this._ctIntroCard();
+        if (this._ctVirgin()) return intro + this._card(this._muted(Lang.t('paper.ct_empty')));
+        return intro + this._ctStatCards() + this._ctEquityCard() +
+            this._ctPositionsCard() + this._ctOrdersCard() + this._ctLedgerCard();
+    },
+
+    // --- En-tête : ce qu'est ce compte, quand il repasse, et le bouton ------
+
+    _ctIntroCard() {
+        const ct = this._ct || {};
+        const cap = this._ctCapital();
+        const np = (ct.next_pass && typeof ct.next_pass === 'object') ? ct.next_pass : {};
+        const hour = this._n(np.after_hour);
+        const due = !!np.due;
+        const last = np.last_pass
+            ? this._dateTime(np.last_pass) : Lang.t('paper.ct_last_pass_never');
+        const when = due
+            ? Lang.t('paper.ct_next_due')
+            : (Lang.t('paper.ct_next_schedule') +
+               (hour === null ? '' : (' ' + this._num(hour, 0) + ':00')));
+        return this._card(
+            this._head(Lang.t('paper.ct_title'),
+                (cap === null) ? '' : (Lang.t('paper.ct_capital') + ' ' + this._chf(cap, 0))) +
+            '<div style="font-size:14px;line-height:1.6;color:var(--text-muted);">' +
+              esc(Lang.t('paper.ct_intro')) + '</div>' +
+            '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px;">' +
+              '<span class="badge' + (due ? ' warn' : '') + '">' +
+                esc(Lang.t('paper.ct_next_title')) + '</span>' +
+              '<span style="font-size:13px;color:var(--text-muted);">' + esc(when) + '</span>' +
+              '<span style="font-size:12px;color:var(--text-dim);' + this._mono + '">' +
+                esc(Lang.t('paper.ct_last_pass') + ' ' + last) + '</span>' +
+              (this._ctIsAdmin()
+                ? '<button class="btn btn-sm" data-paper-act="ct-run" data-paper-busy="ct-run" ' +
+                      'style="margin-left:auto;" title="' + esc(Lang.t('paper.ct_run_hint')) + '">' +
+                    esc(Lang.t('paper.ct_run_btn')) + '</button>'
+                : '') +
+            '</div>'
+        );
+    },
+
+    // --- Les six chiffres : le coach noté par SES PROPRES métriques ---------
+
+    _ctStatCards() {
+        const ct = this._ct || {};
+        const st = (ct.stats && typeof ct.stats === 'object') ? ct.stats : {};
+        const disc = (ct.discipline && typeof ct.discipline === 'object') ? ct.discipline : {};
+        const cap = this._ctCapital();
+        const eq = this._ctEquityNow();
+        const pnl = (eq === null || cap === null) ? null : (eq - cap);
+        const pnlPct = (pnl === null || !cap) ? null : (pnl / cap * 100);
+        const pf = this._n(st.profit_factor);
+        const score = this._n(disc.score);
+
+        const hint = (key) => '<span style="font-size:12px;color:var(--text-dim);">' +
+            esc(Lang.t(key)) + '</span>';
+        const cell = (labelKey, value, unit, color, footer) =>
+            '<div class="stat-card">' +
+              '<div class="label">' + esc(Lang.t(labelKey)) + '</div>' +
+              '<div class="value"' + (color ? ' style="color:' + color + ';"' : '') + '>' +
+                esc(value) + (unit ? '<span class="unit">' + esc(unit) + '</span>' : '') +
+              '</div>' +
+              '<div class="footer">' + footer + '</div>' +
+            '</div>';
+
+        const eqFooter = (pnlPct === null)
+            ? hint('paper.ct_stat_equity_hint')
+            : ('<span style="' + this._mono + 'color:' + this._color(pnlPct) + ';">' +
+               esc(this._signed(pnlPct, 2, '%')) + '</span> ' +
+               '<span style="font-size:12px;color:var(--text-dim);">' +
+               esc(Lang.t('paper.ct_vs_start')) + '</span>');
+
+        // Grille SOUPLE : six chiffres tiennent sur un écran large et se
+        // replient tout seuls sur un téléphone — pas de repeat(N,1fr) qui
+        // battrait les points de rupture (leçon du tableau de bord).
+        return '<div class="bento-overview" style="grid-template-columns:' +
+                    'repeat(auto-fit,minmax(150px,1fr));grid-template-rows:auto;' +
+                    'margin-bottom:8px;">' +
+            cell('paper.ct_stat_equity', this._num(eq), 'CHF', '', eqFooter) +
+            cell('paper.ct_stat_pnl', this._signed(pnl, 2, ''), 'CHF',
+                this._color(pnl), hint('paper.ct_stat_pnl_hint')) +
+            cell('paper.ct_stat_drawdown', this._num(this._n(st.max_drawdown_pct), 2), '%',
+                '', hint('paper.ct_stat_drawdown_hint')) +
+            cell('paper.ct_stat_pf', (pf === null) ? '—' : this._num(pf, 2), '',
+                '', hint(pf === null ? 'paper.ct_pf_none' : 'paper.ct_stat_pf_hint')) +
+            cell('paper.ct_stat_winrate', this._num(this._n(st.win_rate), 1), '%',
+                '', hint('paper.ct_stat_winrate_hint')) +
+            cell('paper.ct_stat_discipline', (score === null) ? '—' : this._num(score, 0), '',
+                '', hint(score === null ? 'paper.ct_disc_none' : 'paper.ct_stat_discipline_hint')) +
+        '</div>' +
+        '<div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">' +
+          esc(Lang.t('paper.ct_stats_hint')) + '</div>';
+    },
+
+    // --- La courbe : la sienne, la vôtre, et le capital de départ -----------
+
+    _ctEquityCard() {
+        const coach = this._ctSeries('coach');
+        const user = this._ctSeries('user');
+        const head = this._head(Lang.t('paper.ct_equity_title'));
+        // Moins de deux points sur les DEUX séries : il n'y a pas de courbe à
+        // tracer, et une toile vide serait un mensonge poli.
+        if (coach.length < 2 && user.length < 2) {
+            return this._card(head + this._muted(Lang.t('paper.ct_equity_empty')));
+        }
+        return this._card(head +
+            '<canvas data-paper-ctequity="1" class="paper-graph" style="height:280px;"></canvas>' +
+            this._ctLegend(coach, user));
+    },
+
+    _ctLegend(coach, user) {
+        const key = (color, dashed, labelKey) =>
+            '<span class="paper-graph-key">' +
+              '<span style="display:inline-block;width:18px;height:0;vertical-align:middle;' +
+                   'border-top:2px ' + (dashed ? 'dashed ' : 'solid ') + color + ';' +
+                   'margin-right:6px;"></span>' +
+              esc(Lang.t(labelKey)) +
+            '</span>';
+        // Une série absente est DITE : sans ça, une seule courbe à l'écran
+        // laisserait croire que les deux se superposent.
+        const miss = [];
+        if (!coach.length) miss.push(Lang.t('paper.ct_legend_no_coach'));
+        if (!user.length) miss.push(Lang.t('paper.ct_legend_no_user'));
+        return '<div class="paper-graph-legend">' +
+            key('var(--accent)', false, 'paper.ct_legend_coach') +
+            key('var(--info)', false, 'paper.ct_legend_user') +
+            key('var(--border-strong)', true, 'paper.ct_legend_start') +
+        '</div>' +
+        (miss.length
+          ? '<div class="paper-graph-note">' + esc(miss.join(' · ')) + '</div>' : '');
+    },
+
+    _paintCoachEquity() {
+        const cv = document.querySelector('#paper-body canvas[data-paper-ctequity]');
+        if (!cv) return;
+        this._ctCanvas = cv;
+        this._onCtResize = () => {
+            if (this._ctResizeTimer) clearTimeout(this._ctResizeTimer);
+            this._ctResizeTimer = setTimeout(() => {
+                this._ctResizeTimer = null;
+                this._drawCoachEquity();
+            }, 120);
+        };
+        window.addEventListener('resize', this._onCtResize);
+        this._drawCoachEquity();
+        // Un SECOND tracé au tour suivant : au montage la mise en page n'est
+        // pas encore faite, clientWidth vaut 0 et le dessin partirait sur la
+        // largeur de repli (même mesure que la toile des connexions). Le
+        // démontage met _ctCanvas à null : la frame retardée ne peint alors rien.
+        window.requestAnimationFrame(() => this._drawCoachEquity());
+    },
+
+    _disposeCoachEquity() {
+        this._ctCanvas = null;
+        if (this._onCtResize) {
+            window.removeEventListener('resize', this._onCtResize);
+            this._onCtResize = null;
+        }
+        if (this._ctResizeTimer) { clearTimeout(this._ctResizeTimer); this._ctResizeTimer = null; }
+    },
+
+    _drawCoachEquity() {
+        const cv = this._ctCanvas;
+        if (!cv || !cv.isConnected) return;
+        const ctx = cv.getContext ? cv.getContext('2d') : null;
+        if (!ctx) return;
+
+        // Retina : sans le facteur de densité, tout est flou.
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = cv.clientWidth || 600;
+        const cssH = cv.clientHeight || 280;
+        const pw = Math.max(1, Math.round(cssW * dpr));
+        const ph = Math.max(1, Math.round(cssH * dpr));
+        if (cv.width !== pw || cv.height !== ph) { cv.width = pw; cv.height = ph; }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, cssW, cssH);
+
+        const coach = this._ctSeries('coach');
+        const user = this._ctSeries('user');
+        if (coach.length < 2 && user.length < 2) return;
+
+        // Tokens relus MAINTENANT : les deux modes sortent justes.
+        const mono = this._tok('--font-mono') || 'ui-monospace, monospace';
+        const C = {
+            coach: this._tok('--accent') || '#00FFB0',
+            user: this._tok('--info') || '#60A5FA',
+            grid: this._tok('--border') || '#1C2947',
+            strong: this._tok('--border-strong') || '#2C4066',
+            dim: this._tok('--text-dim') || '#5A6C90',
+        };
+
+        const padT = 12, padB = 24, padL = 8, padR = 62;
+        const plotX = padL;
+        const plotW = Math.max(20, cssW - padL - padR);
+        const plotY = padT;
+        const plotH = Math.max(20, cssH - padT - padB);
+
+        // Axe des dates : l'UNION des deux séries (chacune reste tracée sur ses
+        // propres points). Axe des valeurs : les deux séries ET le capital de
+        // départ — c'est cette ligne qui rend « il gagne / il perd » lisible
+        // d'un coup d'œil, elle doit donc tenir dans le cadre.
+        let t0 = Infinity, t1 = -Infinity, lo = Infinity, hi = -Infinity;
+        coach.concat(user).forEach((p) => {
+            if (p.t < t0) t0 = p.t;
+            if (p.t > t1) t1 = p.t;
+            if (p.v < lo) lo = p.v;
+            if (p.v > hi) hi = p.v;
+        });
+        if (!isFinite(lo) || !isFinite(hi) || !isFinite(t0) || !isFinite(t1)) return;
+        const cap = this._ctCapital();
+        if (cap !== null) { if (cap < lo) lo = cap; if (cap > hi) hi = cap; }
+        if (hi - lo < 1e-9) { const m = Math.abs(hi) * 0.01 || 1; lo -= m; hi += m; }
+        const margin = (hi - lo) * 0.08;
+        lo -= margin; hi += margin;
+
+        const xOf = (t) => ((t1 > t0)
+            ? (plotX + (t - t0) / (t1 - t0) * plotW) : (plotX + plotW / 2));
+        const yOf = (v) => plotY + plotH - ((v - lo) / (hi - lo)) * plotH;
+
+        // --- grille + axe des valeurs (à droite) ---
+        const tk = this._niceTicks(lo, hi, 4);
+        ctx.font = '10px ' + mono;
+        ctx.textBaseline = 'middle';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([]);
+        tk.ticks.forEach((t) => {
+            const y = Math.round(yOf(t)) + 0.5;
+            ctx.strokeStyle = C.grid;
+            ctx.beginPath();
+            ctx.moveTo(plotX, y);
+            ctx.lineTo(plotX + plotW, y);
+            ctx.stroke();
+            ctx.fillStyle = C.dim;
+            ctx.textAlign = 'left';
+            ctx.fillText(this._num(t, tk.dec), plotX + plotW + 6, y);
+        });
+
+        // --- le capital de départ, en pointillés ---
+        if (cap !== null) {
+            const y = Math.round(yOf(cap)) + 0.5;
+            ctx.strokeStyle = C.strong;
+            ctx.lineCap = 'butt';
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(plotX, y);
+            ctx.lineTo(plotX + plotW, y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        // --- axe des dates : début, milieu, fin ---
+        // _toDate lit un NOMBRE comme un epoch en SECONDES : on divise.
+        const marks = (t1 > t0) ? 3 : 1;
+        ctx.fillStyle = C.dim;
+        ctx.textBaseline = 'top';
+        for (let i = 0; i < marks; i++) {
+            const t = (marks > 1) ? (t0 + (t1 - t0) * (i / (marks - 1))) : t0;
+            ctx.textAlign = (i === 0) ? 'left' : ((i === marks - 1) ? 'right' : 'center');
+            ctx.fillText(this._date(t / 1000), xOf(t), plotY + plotH + 7);
+        }
+
+        // --- les deux courbes ---
+        const line = (pts, color) => {
+            if (!pts.length) return;
+            ctx.strokeStyle = color;
+            ctx.fillStyle = color;
+            ctx.lineWidth = 2;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            const dot = (p) => {
+                ctx.beginPath();
+                ctx.arc(xOf(p.t), yOf(p.v), 3, 0, Math.PI * 2);
+                ctx.fill();
+            };
+            // Un seul point ne fait pas une ligne : on le POSE, sinon la série
+            // serait invisible alors qu'elle existe.
+            if (pts.length === 1) { dot(pts[0]); return; }
+            ctx.beginPath();
+            pts.forEach((p, i) => {
+                const x = xOf(p.t), y = yOf(p.v);
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+            dot(pts[pts.length - 1]);
+        };
+        // Le coach passe EN DERNIER : c'est le sujet de la page, il ne doit
+        // jamais disparaître sous la courbe du lecteur.
+        line(user, C.user);
+        line(coach, C.coach);
+    },
+
+    // --- Ses positions : le plan complet, à découvert -----------------------
+
+    _ctPositionsCard() {
+        const rows = this._ctList(this._ctPortfolio().positions);
+        const head = this._head(Lang.t('paper.ct_positions_title'));
+        if (!rows.length) return this._card(head + this._muted(Lang.t('paper.ct_positions_empty')));
+        const td = this._td();
+        const body = rows.map((pos) => {
+            const sym = String((pos && pos.symbol) || '');
+            const cur = (pos && pos.currency) || '';
+            const pct = this._ctPnlPct(pos);
+            const thesis = String((pos && pos.thesis) || '').trim();
+            const plan = (labelKey, v) =>
+                '<span><span style="color:var(--text-dim);">' + esc(Lang.t(labelKey)) +
+                '</span> <span style="' + this._mono + '">' +
+                esc(this._money(v, cur)) + '</span></span>';
+            return '<tr>' +
+                '<td style="' + td + 'font-weight:600;">' + esc(sym) + '</td>' +
+                '<td style="' + td + '">' + esc(this._sideLabel(pos && pos.side)) + '</td>' +
+                '<td style="' + td + this._mono + '">' +
+                  esc(this._num(this._n(pos && pos.qty), 0)) + '</td>' +
+                '<td style="' + td + this._mono + '">' +
+                  esc(this._money(this._n(pos && pos.avg_price), cur)) + '</td>' +
+                '<td style="' + td + this._mono + '">' +
+                  esc(this._money(this._ctLast(pos), cur)) + '</td>' +
+                '<td style="' + td + this._mono + 'color:' + this._color(pct) + ';">' +
+                  esc(this._signed(pct, 2, '%')) + '</td>' +
+            '</tr>' +
+            // La thèse, le stop et l'objectif ne sont PAS repliés derrière un
+            // dépliant : c'est précisément ce qu'on vient lire.
+            '<tr><td colspan="6" style="' + td + 'padding-top:0;">' +
+              '<div style="font-size:13px;line-height:1.55;color:' +
+                   (thesis ? 'var(--text-muted)' : 'var(--text-dim)') + ';">' +
+                '<span style="color:var(--text-dim);">' + esc(Lang.t('paper.ct_thesis')) +
+                '</span> ' + esc(thesis || Lang.t('paper.ct_no_thesis')) +
+              '</div>' +
+              '<div style="font-size:13px;margin-top:4px;display:flex;gap:18px;flex-wrap:wrap;">' +
+                plan('paper.ct_stop', this._n(pos && pos.stop_loss)) +
+                plan('paper.ct_target', this._n(pos && pos.target)) +
+              '</div>' +
+            '</td></tr>';
+        }).join('');
+        return this._card(head + this._table([
+            Lang.t('paper.col_symbol'), Lang.t('paper.col_side'), Lang.t('paper.col_qty'),
+            Lang.t('paper.col_avg_price'), Lang.t('paper.col_last'), Lang.t('paper.ct_col_pnl_pct'),
+        ], body));
+    },
+
+    // --- Ses ordres en attente ---------------------------------------------
+
+    _ctOrdersCard() {
+        const rows = this._ctList(
+            this._pickField(this._ctPortfolio(), ['open_orders', 'orders']) || []);
+        const head = this._head(Lang.t('paper.ct_orders_title'));
+        if (!rows.length) return this._card(head + this._muted(Lang.t('paper.ct_orders_empty')));
+        const td = this._td();
+        const body = rows.map((o) => {
+            // Un ordre LIMITE de VENTE, c'est l'objectif de la ligne rendu
+            // exécutable : on le dit, sinon la table ne montre qu'un prix.
+            const isTarget = (String(o && o.kind) === 'limit' && String(o && o.side) === 'sell');
+            return '<tr>' +
+                '<td style="' + td + 'font-weight:600;">' + esc(String((o && o.symbol) || '')) + '</td>' +
+                '<td style="' + td + '">' + esc(this._sideLabel(o && o.side)) + '</td>' +
+                '<td style="' + td + '">' + esc(this._kindLabel(o && o.kind)) +
+                  (isTarget
+                    ? ' <span class="badge online">' + esc(Lang.t('paper.ct_order_target')) +
+                      '</span>' : '') +
+                '</td>' +
+                '<td style="' + td + this._mono + '">' +
+                  esc(this._num(this._n(o && o.qty), 0)) + '</td>' +
+                '<td style="' + td + this._mono + '">' +
+                  esc(this._num(this._n(this._pickField(o, ['limit_price', 'stop_price'])), 2)) +
+                '</td>' +
+            '</tr>';
+        }).join('');
+        return this._card(head + this._table([
+            Lang.t('paper.col_symbol'), Lang.t('paper.col_side'), Lang.t('paper.col_kind'),
+            Lang.t('paper.col_qty'), Lang.t('paper.col_price'),
+        ], body));
+    },
+
+    // --- Le registre : ce qu'il a fait ET ce qu'on lui a refusé -------------
+
+    _ctLedgerCard() {
+        const all = this._ctList((this._ct || {}).ledger);
+        const head = this._head(Lang.t('paper.ct_ledger_title'), Lang.t('paper.ct_ledger_hint'));
+        if (!all.length) return this._card(head + this._muted(Lang.t('paper.ct_ledger_empty')));
+        // Le serveur en garde 200 (trace récente, pas archive) : on en montre
+        // 40 et on DIT combien dorment derrière, on ne les efface pas.
+        const rows = all.slice(0, this._CT_LEDGER_MAX);
+        const rest = all.length - rows.length;
+        return this._card(head +
+            '<div class="row-list">' + rows.map((e) => this._ctLedgerRow(e)).join('') + '</div>' +
+            ((rest > 0)
+              ? '<div style="font-size:12px;color:var(--text-dim);margin-top:8px;">' +
+                esc('+' + this._num(rest, 0) + ' ' + Lang.t('paper.ct_ledger_more')) + '</div>'
+              : ''));
+    },
+
+    _ctLedgerRow(e) {
+        if (!e || typeof e !== 'object') return '';
+        const action = String(e.action || '').toLowerCase();
+        const source = String(e.source || '').toLowerCase();
+        const sym = String(e.symbol || '');
+        const reason = String(e.reason || '');
+        const detail = String(e.detail || '');
+        const ok = !!e.accepted;
+        // Un CHOIX (« ne rien changer ») et une PANNE (passe manquée, réponse
+        // illisible) ne se lisent pas pareil : le premier est une décision du
+        // coach, les seconds un incident. On l'écrit sous la ligne.
+        const note = (action === 'hold')
+            ? Lang.t('paper.ct_hold_note')
+            : ((action === 'pass' || action === 'parse') ? Lang.t('paper.ct_fail_note') : '');
+        // La classe .row est une grille à 4 colonnes : sans display:block, chaque
+        // enfant s'y rangerait en colonne (piège du design system).
+        return '<div class="row" style="display:block;">' +
+            '<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;">' +
+              (source
+                ? '<span class="badge">' +
+                  esc(this._label('paper.ct_source_' + source, source)) + '</span>' : '') +
+              '<span class="badge ' + (ok ? 'online' : 'warn') + '">' +
+                esc(Lang.t(ok ? 'paper.ct_accepted' : 'paper.ct_refused')) + '</span>' +
+              (action
+                ? '<span style="font-size:14px;font-weight:600;">' +
+                  esc(this._label('paper.ct_act_' + action, action)) + '</span>' : '') +
+              (sym
+                ? '<span style="' + this._mono + 'font-size:14px;">' + esc(sym) + '</span>' : '') +
+              '<span style="margin-left:auto;font-size:12px;color:var(--text-dim);' +
+                   this._mono + '">' + esc(this._dateTime(e.ts)) + '</span>' +
+            '</div>' +
+            (note
+              ? '<div style="font-size:13px;color:var(--text-muted);margin-top:4px;">' +
+                esc(note) + '</div>' : '') +
+            // Le motif du refus est TRADUIT depuis son code (repli : le code
+            // brut, jamais la clé i18n — piège #12) et le détail chiffré du
+            // serveur est rendu TEL QUEL, on ne recalcule rien.
+            ((!ok && (reason || detail))
+              ? '<div style="margin-top:6px;border-left:2px solid var(--warning);' +
+                     'padding-left:10px;font-size:13px;line-height:1.55;">' +
+                (reason
+                  ? '<span style="color:var(--warning);">' +
+                    esc(this._label('paper.ct_reason_' + reason, reason)) + '</span>' : '') +
+                (detail
+                  ? ((reason ? ' — ' : '') + '<span style="color:var(--text-muted);">' +
+                     esc(detail) + '</span>') : '') +
+                '</div>'
+              : '') +
+        '</div>';
+    },
+
+    // Forcer la passe du soir. ADMIN STRICT côté serveur, DÉTACHÉ par défaut :
+    // même chemin que les six autres travaux longs du module (POST -> job ->
+    // sondage), avec le registre _busy qui fait survivre l'attente à un
+    // changement d'onglet. Un rôle non-admin qui atteindrait ce bouton reçoit
+    // un 403 rendu lisible par le toast d'erreur de _llmRun — jamais un silence.
+    async runCoachPass() {
+        await this._llm('ct-run', '/api/paper/coach-trader/run', {});
     },
 
     // =====================================================================
@@ -9581,6 +10197,12 @@ const PaperModule = {
             this._arrived('scenarios');
             return;
         }
+        if (k === 'ct-run') {
+            // La passe du coach ne rend rien d'affichable en soi : ce qui
+            // compte, c'est l'ÉTAT de son compte après coup — relu par
+            // _afterJob, en direct comme à la reprise après rechargement.
+            return;
+        }
         if (k === 'review') {
             this._review = (d && typeof d === 'object') ? d : null;
             this._reviewOpen = false;
@@ -9593,6 +10215,14 @@ const PaperModule = {
     // après rechargement doit les jouer exactement pareil.
     async _afterJob(k) {
         if (k === 'ideas' || k === 'review') { await this._refreshJournal(); return; }
+        if (k === 'ct-run') {
+            // Le compte du coach vient de bouger : on le relit AU SERVEUR
+            // plutôt que d'en greffer une copie locale, puis on redessine (ou
+            // on prévient si le lecteur regarde ailleurs).
+            this._ct = await this._get('/api/paper/coach-trader') || this._ct;
+            this._arrived('ct-run');
+            return;
+        }
         if (k === 'scenarios') {
             // L'arbre rendu par l'appel est déjà persisté côté backend : on relit
             // le board plutôt que de le greffer à la main — la liste affichée
@@ -9906,6 +10536,7 @@ const PaperModule = {
         if (act === 'reset') { this.resetPortfolio(); return; }
         if (act === 'whale-pick') { this.openWhale(el.getAttribute('data-whale')); return; }
         if (act === 'radar-run') { this.runRadar(); return; }
+        if (act === 'ct-run') { this.runCoachPass(); return; }
         if (act === 'plan-add') { this.addPipeline(); return; }
         if (act === 'plan-stage') {
             this.setPipelineStage(el.getAttribute('data-id'), el.getAttribute('data-stage'));

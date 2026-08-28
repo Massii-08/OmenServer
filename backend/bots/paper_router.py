@@ -42,10 +42,10 @@ from pydantic import BaseModel
 
 from backend.auth.models import User
 from backend.auth.permissions import require_role
-from backend.bots.paper import (alerts, board, coach, entities, fees, fills,
-                                graph, idea_journal, llm, models, mood,
-                                price_alerts, quotes, replay, risk, store,
-                                tradestats)
+from backend.bots.paper import (alerts, board, coach, coach_trader, entities,
+                                fees, fills, graph, idea_journal, llm, models,
+                                mood, price_alerts, quotes, replay, risk,
+                                store, tradestats)
 
 logger = logging.getLogger("omenserver")
 
@@ -1140,6 +1140,747 @@ def _append_discussion(username: str, question: str, answer: str, now_iso: str) 
         logger.warning("paper: discussion non persistée: %s", e)
 
 
+# --------------------------------------------------------------------------- #
+# Compte de paper trading DU COACH (LOT 4)
+#
+# Le coach cesse d'être un commentateur : il reçoit SES 10 000 CHF fictifs, les
+# mêmes frais et le même moteur d'ordres qu'un humain, et il trade lui-même. Le
+# but est de MESURER ce qu'il annonce et de VOIR COMMENT il fait.
+#
+# Le mandat (ce qu'il a le droit de faire) est PUR et vit dans
+# ``paper.coach_trader`` ; ce qui vit ici, c'est l'ORCHESTRATION : le cours à
+# aller chercher, la conversion en francs, le moteur d'ordres, le registre, le
+# carnet.
+#
+# ⚠️ Le mot d'ordre du registre : **on n'invente jamais un ordre, et on
+# n'efface jamais un refus.** Un registre qui ne garderait que les ordres
+# passés montrerait un coach irréprochable et cacherait tout ce que le mandat
+# a empêché.
+# --------------------------------------------------------------------------- #
+COACH_DISPLAY = "Coach"
+
+# Ce que dit le registre quand le coach a délibérément choisi de ne rien faire
+# (le modèle a répondu, sans bloc d'actions). Son inaction doit être un CHOIX
+# visible, jamais un silence : sans cette ligne, une soirée sans décision et
+# une soirée où la passe n'a pas tourné se ressembleraient à l'écran.
+COACH_HOLD_DETAIL = "aucune action : le coach a choisi de ne rien changer"
+
+
+def _num(value: Any) -> Optional[float]:
+    """Nombre flottant, ou ``None`` (un booléen n'est jamais un nombre) —
+    même coercition tolérante que ``risk._val``/``coach_trader._val``."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ensure_coach_account() -> models.Portfolio:
+    """Le portefeuille du coach, créé au premier besoin.
+
+    ``coach_trader.COACH_USERNAME`` est un nom **RÉSERVÉ** : aucun compte
+    d'authentification ne porte ce nom (il n'est ni dans ``users`` ni
+    inscriptible), et pourtant le fichier ``coach.json`` est un portefeuille
+    tout à fait ordinaire — c'est voulu.
+
+    **Ses positions sont PUBLIQUES par design**, contrairement à celles des
+    humains (strictement privées) : tout l'intérêt du lot est de le REGARDER
+    FAIRE. Il est donc recensé comme un vrai compte par
+    ``radar._users_with_portfolio`` et ``store._is_real_account``, et il
+    apparaît dans ``/api/paper/community`` dès qu'il a un carnet.
+
+    Créé avec ``coach_trader.COACH_CAPITAL`` en trésorerie ET en capital
+    initial — les mêmes 10 000 CHF qu'un humain, sans quoi la comparaison de
+    performance ne voudrait rien dire — puis persisté tout de suite : un compte
+    qui n'existerait qu'en mémoire disparaîtrait au premier redémarrage.
+    """
+    username = coach_trader.COACH_USERNAME
+    raw = store.load_portfolio(username)
+    if raw is not None:
+        return models.Portfolio.from_dict(raw)
+    portfolio = new_portfolio(coach_trader.COACH_CAPITAL, None, _now_iso())
+    _save(username, portfolio)
+    return portfolio
+
+
+def _coach_quote(symbol: str) -> Optional[Dict[str, Any]]:
+    """``{"price", "currency", "fx_rate"}`` pour le garde-fou, ou ``None``.
+
+    ``coach_trader.gate_decision`` est PUR : **la conversion en CHF est la
+    responsabilité de l'appelant**, c'est-à-dire d'ici. On résout donc le
+    cours ET le taux du jour, et on les passe ensemble — un seul taux pour
+    toute l'opération (invariant du module, cf. tête de fichier).
+
+    ``None`` sur toute panne de cours : sans prix ni taux valides, aucun
+    contrôle de taille n'a de sens, et refuser vaut mieux que calculer sur un
+    chiffre inventé.
+    """
+    try:
+        quote = quotes.get_quote(symbol)
+        currency = quote.get("currency") or models.DEFAULT_CURRENCY
+        rate = quotes.fx_to_chf(currency)
+    except quotes.QuoteError:          # ``UnknownSymbol`` en hérite
+        return None
+    price = _num(quote.get("price"))
+    rate = _num(rate)
+    if price is None or price <= 0 or rate is None or rate <= 0:
+        return None
+    return {"price": price, "currency": currency, "fx_rate": rate}
+
+
+def _coach_equity_chf(portfolio: models.Portfolio) -> float:
+    """Équité au PRIX DE REVIENT — exactement la convention de
+    ``paper_place_order`` (trésorerie + lignes longues + lignes courtes)."""
+    return (portfolio.cash_chf + _positions_value_chf(portfolio, "long")
+            + _positions_value_chf(portfolio, "short"))
+
+
+def _coach_reject_detail(code: str, decision: Dict[str, Any],
+                         portfolio: models.Portfolio,
+                         quote: Optional[Dict[str, Any]]) -> Optional[str]:
+    """La phrase LISIBLE et CHIFFRÉE qui accompagne un code de refus.
+
+    Le code (``oversize``) dit CE QUI a été violé ; ce détail dit DE COMBIEN.
+    C'est lui que l'écran affichera sous le refus — « voulait 4200.00 CHF, 42 %
+    de l'équité » enseigne quelque chose, « oversize » tout seul n'enseigne
+    rien. Best-effort : un détail illisible ne doit jamais empêcher le refus
+    d'être consigné, d'où le ``None`` de repli.
+    """
+    try:
+        symbol = str(decision.get("symbol") or "") or "?"
+        qty = _num(decision.get("qty"))
+        equity = _coach_equity_chf(portfolio)
+        level = None
+        if quote:
+            level = float(quote["price"]) * float(quote["fx_rate"])
+        held = _find_position(portfolio, symbol, "long")
+        held_qty = float(held.qty) if held is not None else 0.0
+        value = None if (level is None or qty is None) else qty * level
+
+        if code == "unknown_action":
+            return "action inconnue : %s" % (str(decision.get("action") or "")
+                                             or "(absente)")
+        if code == "no_symbol":
+            return "aucun symbole"
+        if code == "bad_qty":
+            return "quantité illisible : %s" % (decision.get("qty"),)
+        if code == "no_quote":
+            return "aucun cours exploitable pour %s" % symbol
+        if code == "no_thesis":
+            return ("thèse de %d caractères (minimum %d)"
+                    % (len(str(decision.get("thesis") or "").strip()),
+                       coach_trader.MIN_THESIS_LEN))
+        if code == "no_stop":
+            stop = _num(decision.get("stop"))
+            if stop is None:
+                return "aucun stop"
+            return ("stop %.2f au-dessus du prix d'entrée %.2f — il ne protège "
+                    "rien" % (stop, quote["price"] if quote else 0.0))
+        if code == "risk_high":
+            stop = _num(decision.get("stop"))
+            risk_chf = (abs(level - stop * float(quote["fx_rate"])) * qty
+                        if (level is not None and stop is not None
+                            and qty is not None) else 0.0)
+            return ("risque %.2f CHF, %.1f%% de l'équité (plafond %.0f%%)"
+                    % (risk_chf, _pct_of(risk_chf, equity),
+                       coach_trader.MAX_RISK_PCT))
+        if code == "too_small":
+            return ("%.2f CHF, sous le plancher de %.0f%%"
+                    % (value or 0.0, coach_trader.MIN_POSITION_PCT))
+        if code == "oversize":
+            projected = ((held_qty + (qty or 0.0)) * level) if level else 0.0
+            return ("voulait %.2f CHF, %.0f%% de l'équité (plafond %.0f%%)"
+                    % (projected, _pct_of(projected, equity),
+                       coach_trader.MAX_POSITION_PCT))
+        if code == "too_many_positions":
+            return ("%d lignes déjà ouvertes (plafond %d)"
+                    % (len(portfolio.positions), coach_trader.MAX_POSITIONS))
+        if code == "too_many_crypto":
+            return "plafond de %d cryptos atteint" % coach_trader.MAX_CRYPTO
+        if code == "cash_floor":
+            left = portfolio.cash_chf - (value or 0.0)
+            floor = equity * coach_trader.MIN_CASH_PCT / 100.0
+            return ("resterait %.2f CHF, sous le plancher de %.0f%% (%.2f CHF)"
+                    % (left, coach_trader.MIN_CASH_PCT, floor))
+        if code == "no_position":
+            return "aucune position sur %s" % symbol
+        if code == "qty_over_position":
+            return "%d demandés, %d détenus" % (int(qty or 0), int(held_qty))
+    except Exception as e:                  # noqa: BLE001 — jamais fatal
+        logger.warning("paper coach: détail de refus illisible (%s)",
+                       type(e).__name__)
+    return None
+
+
+def _pct_of(value: float, total: float) -> float:
+    return (value / total * 100.0) if total else 0.0
+
+
+def _coach_journal_entry(order: models.Order, fill: Dict[str, Any],
+                         source: str) -> Any:
+    """Le titre et le corps de l'entrée de carnet d'une décision EXÉCUTÉE.
+
+    C'est la trace lisible de « comment il fait » — et accessoirement ce qui
+    donne un carnet au coach, donc sa présence dans la communauté."""
+    verb = "achat" if order.side == "buy" else "vente"
+    lines = ["%d x %s @ %.2f %s (%s)"
+             % (order.qty, order.symbol, float(fill.get("price") or 0.0),
+                order.currency, source)]
+    if order.thesis:
+        lines.append("Thèse : %s" % order.thesis)
+    if order.stop_loss is not None:
+        lines.append("Stop : %.2f" % order.stop_loss)
+    if order.target is not None:
+        lines.append("Objectif : %.2f" % order.target)
+    if order.forced_warnings:
+        lines.append("Avertissements consignés : %s"
+                     % ", ".join(order.forced_warnings))
+    return ("%s %s" % (verb, order.symbol), "\n\n".join(lines))
+
+
+def _push_coach_ledger(entries: List[Dict[str, Any]]) -> None:
+    """Archive les lignes de registre, la plus récente en tête. Best-effort :
+    un registre en échec ne doit pas défaire un ordre déjà exécuté."""
+    try:
+        rows = store.load_ledger(coach_trader.COACH_USERNAME)
+        for entry in entries:
+            rows = coach_trader.push_ledger(rows, entry)
+        store.save_ledger(coach_trader.COACH_USERNAME, rows)
+    except (ValueError, OSError) as e:
+        logger.warning("paper coach: registre non persisté: %s", e)
+
+
+def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
+                       source: str, now_iso: str) -> Any:
+    """UNE décision : cours -> garde-fou -> moteur d'ordres.
+
+    Rend ``(entrée_de_registre, (titre, corps)|None)``. MUTE ``portfolio``
+    seulement si la décision est acceptée ET exécutée.
+    """
+    raw = action.get("symbol")
+    symbol = quotes.canonical(raw) if isinstance(raw, str) else ""
+    kind = str(action.get("action") or "").strip().lower()
+    decision = dict(action)
+    if symbol:
+        # Le symbole CANONIQUE, jamais un alias : sinon les consommateurs en
+        # aval (veille par symbole, graphe, dossiers) verraient deux identités
+        # pour le même titre (même geste que ``paper_place_order``).
+        decision["symbol"] = symbol
+
+    quote = _coach_quote(symbol) if symbol else None
+    if symbol and quote is None:
+        return (coach_trader.ledger_entry(
+            now_iso, source, kind, symbol, False, reason="no_quote",
+            detail="aucun cours exploitable pour %s" % symbol), None)
+
+    verdict = coach_trader.gate_decision(decision, portfolio.to_dict(),
+                                         quote or {})
+    if not verdict.get("accepted"):
+        code = str(verdict.get("reason") or "")
+        return (coach_trader.ledger_entry(
+            now_iso, source, kind, symbol, False, reason=code,
+            detail=_coach_reject_detail(code, decision, portfolio, quote)), None)
+
+    plan = verdict.get("order") or {}
+    price = float(quote["price"])
+    fx_rate = float(quote["fx_rate"])
+    qty = int(plan.get("qty") or 0)
+
+    order = models.Order(
+        id=uuid.uuid4().hex,
+        symbol=plan.get("symbol") or symbol,
+        side=plan.get("side") or "buy",
+        kind="market",
+        qty=qty,
+        created_at=now_iso,
+        status="open",
+        thesis=str(plan.get("thesis") or ""),
+        stop_loss=plan.get("stop_loss"),
+        target=plan.get("target"),
+        risk_chf=planned_risk_chf(price, plan.get("stop_loss"), qty, fx_rate),
+        currency=quote["currency"],
+        fee_profile=portfolio.fee_profile,
+        setup=str(plan.get("setup") or ""),
+        emotion=str(plan.get("emotion") or ""),
+    )
+
+    # ⚠️ La porte de confirmation N'EST PAS contournée, elle est CONSIGNÉE.
+    # ``needs_confirm`` est une pause d'INTERFACE, destinée à un humain devant
+    # un formulaire — il n'y a personne à qui poser la question ici. Et le
+    # coach vient de franchir un garde-fou PLUS STRICT que celle-ci
+    # (``gate_decision`` REFUSE là où ``preorder_warnings`` se contente
+    # d'avertir : 30 % contre 25 % sur la taille, et un stop est OBLIGATOIRE).
+    # Les avertissements sont donc posés sur l'ordre — exactement comme pour un
+    # humain qui confirme — et suivent la chaîne jusqu'au ``Trade`` clos.
+    order.forced_warnings = risk.preorder_warnings(
+        {"side": order.side, "symbol": order.symbol, "thesis": order.thesis,
+         "stop_loss": order.stop_loss, "qty": order.qty},
+        portfolio.to_dict(), price * fx_rate)
+
+    try:
+        fill = execute_order(portfolio, order, price, fx_rate, now_iso, "coach")
+    except OrderError as e:
+        # Refus du MOTEUR (trésorerie ou marge réelle, frais compris), pas du
+        # mandat : le garde-fou est conservateur (il ignore les frais, cf.
+        # ``coach_trader``), le moteur a le dernier mot.
+        return (coach_trader.ledger_entry(
+            now_iso, source, kind, symbol, False, reason="engine",
+            detail=str(e)[:200]), None)
+
+    order.status = "filled"
+    _attach_trade_extras(portfolio, fill, coach_trader.COACH_USERNAME)
+
+    # --- l'objectif, rendu EXÉCUTABLE ------------------------------------ #
+    # ``fills.check_protective_stops`` ne connaît QUE ``stop_loss`` : un
+    # ``target`` posé sur une Position n'est JAMAIS exécuté mécaniquement.
+    # C'est cet ordre limite en attente qui rend l'objectif réel — et c'est la
+    # PREMIÈRE boucle de ``run_tick`` qui le déclenchera. Si le stop part
+    # d'abord, la position n'existe plus : l'ordre échouera proprement en
+    # ``cancelled`` au tick suivant (comportement déjà géré par ``run_tick``).
+    target = _num(plan.get("target"))
+    if order.side == "buy" and target is not None and target > 0:
+        portfolio.open_orders.append(models.Order(
+            id=uuid.uuid4().hex,
+            symbol=order.symbol,
+            side="sell",
+            kind="limit",
+            qty=qty,
+            limit_price=target,
+            created_at=now_iso,
+            status="open",
+            thesis=order.thesis,
+            currency=order.currency,
+            fee_profile=portfolio.fee_profile,
+        ))
+
+    entry = coach_trader.ledger_entry(
+        now_iso, source, kind, order.symbol, True,
+        detail="%d x %.2f %s" % (qty, price, order.currency))
+    return entry, _coach_journal_entry(order, fill, source)
+
+
+def execute_coach_actions(actions: Any, source: str = "digest",
+                          now_iso: Optional[str] = None,
+                          parse_error: Any = None,
+                          **_ignored: Any) -> List[Dict[str, Any]]:
+    """Exécute les décisions du coach. Rend les lignes de registre produites.
+
+    **NE LÈVE JAMAIS** (best-effort TOTAL) : elle est appelée depuis un cycle
+    de veille ET depuis la couche de convergence — ni l'un ni l'autre ne doit
+    tomber parce que le compte du coach a hoqueté.
+
+    ``**_ignored`` est délibéré : l'appelant convergence peut lui passer des
+    mots-clés qu'elle ne connaît pas encore (un ``trigger``, une langue), et
+    une signature trop stricte transformerait un ajout anodin en panne.
+
+    Trois cas, dans cet ordre :
+
+    1. ``parse_error`` non nul -> UNE ligne ``action="parse"`` et rien d'autre.
+       **On n'invente jamais un ordre** : un bloc absent ou illisible ne se
+       rattrape pas en devinant des intentions dans la prose.
+    2. aucune action, aucune erreur -> UNE ligne ``action="hold"``,
+       ``accepted=True``. C'est le SEUL cas où une ligne acceptée ne
+       correspond pas à un ordre passé : le modèle a répondu et a choisi de ne
+       rien changer, et ce choix doit se VOIR (une panne, elle, a déjà sa
+       ligne ``parse`` — les deux ne doivent pas se confondre à l'écran).
+    3. sinon, chaque décision passe par le cours, le garde-fou, puis le moteur
+       d'ordres. Un refus n'interrompt jamais la suivante.
+    """
+    try:
+        return _execute_coach_actions_locked(actions, source, now_iso,
+                                             parse_error)
+    except Exception as e:                  # noqa: BLE001 — jamais fatal
+        logger.exception("paper coach: exécution des décisions en échec (%s)",
+                         type(e).__name__)
+        return []
+
+
+def _execute_coach_actions_locked(actions: Any, source: str,
+                                  now_iso: Optional[str],
+                                  parse_error: Any) -> List[Dict[str, Any]]:
+    """Le corps de ``execute_coach_actions``.
+
+    Le lire-modifier-écrire (portefeuille + registre) est sous ``_WRITE_LOCK``
+    ; le carnet et la synchro du profil sortent du verrou — ils le reprennent
+    eux-mêmes (il est réentrant) et n'ont pas à rallonger la section critique.
+    """
+    now = now_iso or _now_iso()
+
+    if parse_error:
+        entry = coach_trader.ledger_entry(now, source, "parse", "", False,
+                                          reason=str(parse_error))
+        with _WRITE_LOCK:
+            _push_coach_ledger([entry])
+        return [entry]
+
+    pending = [a for a in (actions or []) if isinstance(a, dict)]
+    journal: List[Any] = []
+    rows: List[Dict[str, Any]] = []
+
+    with _WRITE_LOCK:
+        portfolio = _ensure_coach_account()
+        if not pending:
+            entry = coach_trader.ledger_entry(now, source, "hold", "", True,
+                                              detail=COACH_HOLD_DETAIL)
+            _push_coach_ledger([entry])
+            return [entry]
+
+        for action in pending:
+            entry, note = _coach_execute_one(portfolio, action, source, now)
+            rows.append(entry)
+            if note is not None:
+                journal.append(note)
+        _save(coach_trader.COACH_USERNAME, portfolio)
+        _push_coach_ledger(rows)
+
+    _sync_coach(coach_trader.COACH_USERNAME, portfolio.to_dict())
+    for title, body in journal:
+        _append_journal(coach_trader.COACH_USERNAME, title, body, now)
+    return rows
+
+
+def tick_coach_account(now_iso: Optional[str] = None) -> Dict[str, Any]:
+    """Confronte les ordres et les stops DU COACH aux bougies récentes.
+
+    ⚠️ **C'est la garantie d'inclusion du coach dans le simulateur.**
+    ``run_tick`` n'énumère AUCUN compte : c'est une fonction par-portefeuille,
+    appelée depuis ``POST /api/paper/tick``, que déclenche le NAVIGATEUR de
+    l'utilisateur connecté. Le coach n'a pas de navigateur — sans cet appel
+    (branché sur le cycle du guetteur via ``coach_trader.maybe_run``), ses
+    stops et ses objectifs ne s'exécuteraient JAMAIS.
+
+    Chemin STRICTEMENT identique à celui d'un humain (``paper_tick``), verrou
+    compris (aucun : ``run_tick`` fait du réseau, le mettre sous
+    ``_WRITE_LOCK`` sérialiserait tout le module pendant plusieurs secondes).
+    """
+    username = coach_trader.COACH_USERNAME
+    now = now_iso or _now_iso()
+    portfolio = _ensure_coach_account()
+
+    def fetch_candles(symbol: str) -> List[Dict[str, Any]]:
+        return quotes.get_candles(symbol, TICK_RANGE, TICK_INTERVAL)
+
+    result = run_tick(portfolio, now, fetch_candles, quotes.fx_to_chf, username)
+    _save(username, portfolio)
+    _sync_coach(username, portfolio.to_dict())
+    return result
+
+
+def _snapshot_usernames() -> List[str]:
+    """Les comptes recensés — la liste du radar, la seule du paquet qui parte
+    des PORTEFEUILLES (et donc qui inclut le coach). Isolée dans sa propre
+    fonction pour rester substituable en test."""
+    return list(_radar()._users_with_portfolio())
+
+
+def _equity_now_chf(raw: Dict[str, Any], prices: Dict[str, float],
+                    rates: Dict[str, float]) -> float:
+    """Équité d'un compte AU COURS DU JOUR : trésorerie + valeur de marché.
+
+    Un cours indisponible retombe sur le PRIX DE REVIENT de la ligne (et son
+    taux historique) plutôt que de perdre le point — exactement la doctrine de
+    ``risk.exposure`` : une ligne sans cours garde son dernier prix connu au
+    lieu de disparaître du total, ce qui creuserait un faux trou dans la
+    courbe.
+    """
+    total = _num(raw.get("cash_chf")) or 0.0
+    for position in raw.get("positions") or []:
+        if not isinstance(position, dict):
+            continue
+        qty = abs(_num(position.get("qty")) or 0.0)
+        avg = _num(position.get("avg_price")) or 0.0
+        stored_rate = _num(position.get("fx_rate")) or 1.0
+        symbol = str(position.get("symbol") or "").upper()
+        currency = str(position.get("currency") or "").upper()
+
+        price = prices.get(symbol)
+        if price is None:
+            price, rate = avg, stored_rate
+        else:
+            rate = rates.get(currency) or stored_rate
+        total += qty * price * rate
+    return round(total, 2)
+
+
+def snapshot_equity_all(now_iso: Optional[str] = None) -> Dict[str, Any]:
+    """Une photo de patrimoine par jour, POUR TOUS LES COMPTES (coach ET
+    humains) — c'est elle qui alimente les « graphiques du patrimoine ».
+
+    UN SEUL batch de cours par passage, sur les symboles DISTINCTS de tous les
+    comptes réunis (patron de ``newswatch._run_price_alerts_volet``) : jamais
+    un appel Yahoo par compte, sinon dix comptes détenant le même titre le
+    demanderaient dix fois.
+
+    Best-effort de bout en bout : un compte illisible, un cours en panne ou une
+    écriture en échec ne font jamais perdre les autres, et ne lèvent jamais.
+
+    Le gate par compte est ``coach_trader.should_snapshot`` — c'est LUI
+    l'autorité sur la donnée (``push_equity`` refuse en plus toute date déjà
+    présente). Le gate extérieur de ``coach_trader.maybe_run`` ne fait
+    qu'éviter d'appeler cette fonction 288 fois par jour.
+    """
+    now = now_iso or _now_iso()
+    day = str(now)[:10]
+    out: Dict[str, Any] = {"day": day, "accounts": 0, "points": 0}
+
+    try:
+        usernames = _snapshot_usernames()
+    except Exception as e:                  # noqa: BLE001 — jamais fatal
+        logger.warning("paper coach: comptes illisibles pour la photo (%s)",
+                       type(e).__name__)
+        return out
+
+    holdings: Dict[str, Dict[str, Any]] = {}
+    symbols = set()
+    currencies = set()
+    for username in usernames:
+        try:
+            raw = store.load_portfolio(username)
+        except (ValueError, OSError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        holdings[username] = raw
+        for position in raw.get("positions") or []:
+            if not isinstance(position, dict):
+                continue
+            symbol = str(position.get("symbol") or "").upper()
+            if symbol:
+                symbols.add(symbol)
+            currency = str(position.get("currency") or "").upper()
+            if currency:
+                currencies.add(currency)
+    out["accounts"] = len(holdings)
+
+    prices: Dict[str, float] = {}
+    for symbol in sorted(symbols):
+        try:
+            quote = quotes.get_quote(symbol)
+        except Exception:                   # noqa: BLE001 — cours en panne
+            continue
+        price = _num((quote or {}).get("price"))
+        if price is not None:
+            prices[symbol] = price
+        currency = str((quote or {}).get("currency") or "").upper()
+        if currency:
+            currencies.add(currency)
+
+    rates: Dict[str, float] = {}
+    for currency in sorted(currencies):
+        try:
+            rate = _num(quotes.fx_to_chf(currency))
+        except Exception:                   # noqa: BLE001 — taux en panne
+            continue
+        if rate:
+            rates[currency] = rate
+
+    for username, raw in holdings.items():
+        try:
+            series = store.load_equity(username)
+            if not coach_trader.should_snapshot(series, day):
+                continue
+            equity = _equity_now_chf(raw, prices, rates)
+            store.save_equity(username,
+                              coach_trader.push_equity(series, day, equity))
+            out["points"] += 1
+        except Exception as e:              # noqa: BLE001 — un compte n'en casse pas d'autre
+            logger.warning("paper coach: photo de patrimoine ratée pour %s (%s)",
+                           username, type(e).__name__)
+    return out
+
+
+def _coach_position_row(position: models.Position,
+                        price: Optional[float],
+                        rate: Optional[float]) -> Dict[str, Any]:
+    """Une ligne du coach, valorisée, pour le contexte de sa passe."""
+    fx = rate if rate else (position.fx_rate or 1.0)
+    live = price if price is not None else position.avg_price
+    cost = position.avg_price or 0.0
+    return {
+        "symbol": position.symbol,
+        "qty": position.qty,
+        "avg_price": position.avg_price,
+        "currency": position.currency,
+        "price": live,
+        "value_chf": round(abs(position.qty) * live * fx, 2),
+        "pnl_pct": round((live - cost) / cost * 100.0, 2) if cost else None,
+        "thesis": position.thesis,
+        "stop_loss": position.stop_loss,
+        "target": position.target,
+        "opened_at": position.opened_at,
+    }
+
+
+def _coach_pass_context(portfolio: models.Portfolio,
+                        now_iso: str) -> Dict[str, Any]:
+    """Le contexte de la passe quotidienne : des faits DÉJÀ CALCULÉS.
+
+    100 % DÉTERMINISTE, et best-effort sur ses sources annexes : radar, humeur
+    de marché et agenda macro sont ABSENTS quand ils sont en panne, jamais une
+    exception — le coach décidera sans, il décidera juste moins bien.
+    """
+    positions: List[Dict[str, Any]] = []
+    equity = portfolio.cash_chf
+    for position in portfolio.positions:
+        quote = _coach_quote(position.symbol)
+        row = _coach_position_row(position,
+                                  quote["price"] if quote else None,
+                                  quote["fx_rate"] if quote else None)
+        positions.append(row)
+        equity += row["value_chf"]
+
+    trades = [t.to_dict() for t in portfolio.trades]
+    context: Dict[str, Any] = {
+        "now": now_iso,
+        "cash_chf": round(portfolio.cash_chf, 2),
+        "equity_chf": round(equity, 2),
+        "initial_capital": portfolio.initial_capital,
+        "positions": positions,
+        "open_orders": [o.to_dict() for o in portfolio.open_orders],
+        "stats": risk.portfolio_stats(trades,
+                                      initial_capital=portfolio.initial_capital),
+        "discipline": tradestats.discipline_score(trades,
+                                                  portfolio.initial_capital),
+        "radar": _open_radar_hypotheses(),
+        "market_mood": {},
+        "agenda": [],
+    }
+    try:
+        context["market_mood"] = mood.get() or {}
+    except Exception:                       # noqa: BLE001 — best-effort
+        context["market_mood"] = {}
+    try:
+        context["agenda"] = list((_agenda_macro() or {}).get("rendez_vous") or [])
+    except Exception:                       # noqa: BLE001 — best-effort
+        context["agenda"] = []
+    return context
+
+
+def coach_book() -> Dict[str, Any]:
+    """CONTRAT PUBLIC — le compte du coach, dans la forme que le PROMPT lit.
+
+    Les quatre clés (``cash_chf``, ``equity_chf``, ``positions``,
+    ``open_orders``) sont EXACTEMENT celles que ``llm.coach_actions_block``
+    consomme — ``llm._coach_book_of`` en est l'extracteur côté passe
+    quotidienne, et un test épingle l'égalité des deux jeux de clés. C'est
+    ``convergence._coach_book`` qui appelle cette fonction : sans elle, le
+    digest ne demanderait aucune action et le coach ne ferait jamais rien.
+
+    **``equity_chf`` = ``_coach_equity_chf``** (trésorerie + lignes au PRIX DE
+    REVIENT, bâti sur ``_positions_value_chf``) et NON la valeur de marché. La
+    raison est dure : le prompt dit au modèle de viser « une taille pleine
+    entre X et Y % de TON équité », et c'est ``coach_trader._equity_chf`` — la
+    même convention, au prix de revient — qui REFUSE ensuite. Lui montrer une
+    autre équité le ferait dimensionner contre un chiffre dont le garde-fou ne
+    se sert pas, et les refus paraîtraient arbitraires. Bénéfice second :
+    aucun appel réseau, là où ``_coach_pass_context`` interroge un cours par
+    ligne — cette fonction-ci est sur le chemin du digest.
+    ⚠️ Divergence assumée : la passe quotidienne, elle, montre bien la valeur
+    de MARCHÉ. Deux photos, deux usages — pas un oubli.
+
+    Les lignes sont celles de ``_coach_position_row`` PRIVÉES de ``price`` et
+    ``pnl_pct`` : faute de cours, ces deux champs vaudraient le prix de revient
+    et « 0 % », c'est-à-dire toutes les lignes à plat — un fait FAUX. Absent
+    vaut mieux qu'inventé. Le reste (thèse, stop, objectif) est précisément ce
+    qu'il faut au modèle pour décider de déplacer un stop ou de sortir.
+
+    **NE LÈVE JAMAIS** : un pépin rend un livre VIDE (``{}``), le seul retour
+    qui dégrade correctement des DEUX côtés — ``coach_actions_block`` ne rend
+    alors aucune section (le modèle ne dimensionne pas à l'aveugle) et
+    ``maybe_fire``, qui teste la vérité du livre, n'engage pas l'exécuteur.
+    """
+    try:
+        portfolio = _ensure_coach_account()
+        positions = []
+        for position in portfolio.positions:
+            row = _coach_position_row(position, None, None)
+            # cf. docstring : sans cours, ces deux-là seraient INVENTÉS.
+            row.pop("price", None)
+            row.pop("pnl_pct", None)
+            positions.append(row)
+        return {
+            "cash_chf": round(portfolio.cash_chf, 2),
+            "equity_chf": round(_coach_equity_chf(portfolio), 2),
+            "positions": positions,
+            "open_orders": [o.to_dict() for o in portfolio.open_orders],
+        }
+    except Exception as e:                  # noqa: BLE001 — jamais fatal
+        logger.warning("paper coach: livre indisponible pour le digest (%s)",
+                       type(e).__name__)
+        return {}
+
+
+def _coach_llm_failure(now_iso: str, detail: str) -> List[Dict[str, Any]]:
+    """Une panne du modèle -> AUCUNE action, mais une ligne au registre.
+
+    Le silence serait le pire des cas : une soirée où le coach n'a rien fait
+    parce qu'il l'a décidé et une soirée où il n'a rien pu faire doivent se
+    distinguer à l'écran."""
+    entry = coach_trader.ledger_entry(now_iso, "daily", "pass", "", False,
+                                      reason="llm_failed",
+                                      detail=str(detail)[:200])
+    with _WRITE_LOCK:
+        _push_coach_ledger([entry])
+    return [entry]
+
+
+def run_coach_daily_pass(now_iso: Optional[str] = None,
+                         claude: Optional[Callable[[str], str]] = None
+                         ) -> Dict[str, Any]:
+    """La passe quotidienne de gestion du compte du coach.
+
+    Contexte DÉTERMINISTE -> prompt -> modèle -> bloc structuré -> exécution.
+    Le modèle ne fait que PROPOSER : c'est ``coach_trader.gate_decision`` qui
+    tranche, et ``execute_coach_actions`` qui exécute ce qui a survécu.
+
+    ``claude`` est injectable (les tests n'ont jamais besoin du CLI).
+
+    Le constructeur de prompt est résolu par un ``getattr`` TOLÉRANT : il
+    arrive par un lot voisin, et son absence doit dégrader proprement (une
+    ligne de registre) plutôt que faire tomber le cycle de veille.
+
+    ⚠️ ``parse_actions`` rend ``"no_block"`` quand la réponse ne porte aucun
+    bloc d'actions. Ce n'est PAS une anomalie — c'est une journée où le coach
+    n'a rien à faire — donc on ne le propage pas comme ``parse_error`` : il
+    ressort en ligne ``hold`` (choix assumé), là où ``"parse_failed"`` (bloc
+    présent mais illisible) reste bien une ligne ``parse``.
+
+    NE LÈVE JAMAIS.
+    """
+    now = now_iso or _now_iso()
+    try:
+        portfolio = _ensure_coach_account()
+        context = _coach_pass_context(portfolio, now)
+    except Exception as e:                  # noqa: BLE001 — jamais fatal
+        logger.warning("paper coach: contexte de passe indisponible (%s)",
+                       type(e).__name__)
+        return {"ledger": [], "error": type(e).__name__}
+
+    builder = getattr(llm, "build_coach_trader_prompt", None)
+    if builder is None:
+        return {"ledger": _coach_llm_failure(now, "prompt indisponible")}
+
+    speak = claude if claude is not None else llm._claude_text
+    try:
+        answer = speak(builder(context))
+    except Exception as e:                  # noqa: BLE001 — modèle en panne
+        logger.warning("paper coach: passe quotidienne sans réponse (%s)",
+                       type(e).__name__)
+        return {"ledger": _coach_llm_failure(now, str(e))}
+    if not str(answer or "").strip():
+        return {"ledger": _coach_llm_failure(now, "réponse vide")}
+
+    parsed = coach_trader.parse_actions(answer)
+    error = parsed.get("error")
+    rows = execute_coach_actions(parsed.get("actions") or [], source="daily",
+                                 now_iso=now,
+                                 parse_error=(error if error == "parse_failed"
+                                              else None))
+    return {"ledger": rows, "text": parsed.get("text") or ""}
+
+
 def _coach_context(portfolio: models.Portfolio, profile: Dict[str, Any],
                    biases: List[Dict[str, Any]],
                    stats: Dict[str, Any]) -> Dict[str, Any]:
@@ -1563,6 +2304,12 @@ def paper_portfolio(lang: str = "fr",
         "afc": afc,
         "biases": biases,
         "fee_profiles": fees.list_profiles(),
+        # Courbe de patrimoine (LOT 4) : la carte « Courbe d'équité » du
+        # dashboard la lit depuis toujours (``_equitySeries``) — aucun backend
+        # ne l'avait jamais produite, elle affichait donc « pas assez
+        # d'historique » en permanence. Les points sont écrits une fois par
+        # jour par ``snapshot_equity_all``.
+        "equity_curve": store.load_equity(username),
     }
 
 
@@ -1946,6 +2693,108 @@ def paper_discipline(
     portfolio = _load(current_user.username)
     trades = [t.to_dict() for t in portfolio.trades]
     return tradestats.discipline_score(trades, portfolio.initial_capital)
+
+
+# --------------------------------------------------------------------------- #
+# Endpoints — compte de trading DU COACH (LOT 4)
+# --------------------------------------------------------------------------- #
+@router.get("/coach-trader")
+def paper_coach_trader(
+        current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Le compte du coach, en entier — et la courbe de l'appelant à côté.
+
+    **Aucun filtrage** : le livre du coach est PUBLIC par design (positions,
+    registre, refus compris). C'est tout l'intérêt du lot — mesurer si ce qu'il
+    annonce fonctionne, et voir COMMENT il fait.
+
+    ``equity.user`` est la série de l'utilisateur QUI APPELLE : la comparaison
+    (« il gagne, et moi ? ») exige les deux courbes dans la même réponse,
+    sinon l'écran devrait les recoller lui-même.
+
+    Effet de bord assumé : la première lecture CRÉE le compte
+    (``_ensure_coach_account``). Le coach est un compte permanent du
+    simulateur, pas une ressource optionnelle — le faire naître à la lecture
+    évite un écran vide qui ne se remplirait qu'après la première passe.
+    """
+    portfolio = _ensure_coach_account()
+
+    quote_map: Dict[str, Any] = {}
+    prices: Dict[str, float] = {}
+    fx_rates: Dict[str, float] = {}
+    for position in portfolio.positions:
+        symbol = position.symbol
+        if symbol in quote_map:
+            continue
+        try:
+            quote = quotes.get_quote(symbol)
+        except quotes.QuoteError as e:
+            quote_map[symbol] = {"symbol": symbol, "price": None,
+                                 "currency": position.currency,
+                                 "change_pct": None, "name": "",
+                                 "error": str(e)[:200]}
+            continue
+        quote_map[symbol] = quote
+        if quote.get("price") is not None:
+            prices[symbol] = quote["price"]
+        currency = (quote.get("currency") or position.currency or "").upper()
+        if currency and currency not in fx_rates:
+            try:
+                fx_rates[currency] = quotes.fx_to_chf(currency)
+            except quotes.QuoteError:
+                pass
+
+    positions = [p.to_dict() for p in portfolio.positions]
+    trades = [t.to_dict() for t in portfolio.trades]
+    last_pass = coach_trader.load_state().get("last_pass")
+
+    return {
+        "username": coach_trader.COACH_USERNAME,
+        "display": COACH_DISPLAY,
+        "portfolio": portfolio.to_dict(),
+        "quotes": quote_map,
+        "exposure": risk.exposure(positions, prices, portfolio.cash_chf,
+                                  fx_rates),
+        "stats": risk.portfolio_stats(trades,
+                                      initial_capital=portfolio.initial_capital),
+        "discipline": tradestats.discipline_score(trades,
+                                                  portfolio.initial_capital),
+        "ledger": store.load_ledger(coach_trader.COACH_USERNAME),
+        "equity": {
+            "coach": store.load_equity(coach_trader.COACH_USERNAME),
+            "user": store.load_equity(current_user.username),
+        },
+        "next_pass": {
+            # ``pass_due(None, …)`` prend l'heure courante (UTC) et la lit en
+            # heure LOCALE — le module est l'unique horloge de ce rituel.
+            "due": coach_trader.pass_due(None, last_pass),
+            "after_hour": coach_trader.RUN_AFTER_HOUR,
+            "last_pass": last_pass,
+        },
+        "capital": coach_trader.COACH_CAPITAL,
+    }
+
+
+@router.post("/coach-trader/run")
+def paper_coach_trader_run(
+        sync: bool = False,
+        current_user: User = Depends(require_role("admin"))):
+    """Force la passe quotidienne du coach — **admin STRICT**.
+
+    La LECTURE du compte reste ouverte aux trois rôles ; ce bouton-ci consomme
+    le modèle (60-90 s de CLI Claude sur une machine qui fait déjà tourner le
+    serveur et les autres bots), il n'a rien à faire entre toutes les mains.
+
+    Saute l'horloge (``pass_due``) — c'est le sens du mot « forcer » — mais
+    **respecte la porte LLM** : sans modèle disponible, la passe échoue
+    proprement en consignant ``llm_failed`` au registre, elle n'invente aucun
+    ordre.
+
+    Détaché par DÉFAUT, en ligne sur ``?sync=1`` : même patron ``_job_or_sync``
+    que les six autres endpoints coûteux de ce fichier, et pour la même raison
+    (un appel au modèle dépasse largement le délai d'une requête HTTP).
+    """
+    return _job_or_sync(sync, current_user.username,
+                        lambda: run_coach_daily_pass(_now_iso()))
 
 
 # --------------------------------------------------------------------------- #

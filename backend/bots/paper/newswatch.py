@@ -2753,9 +2753,10 @@ def _discover_portfolios() -> List[Tuple[str, Dict[str, Any]]]:
     """Liste (username, portfolio) pour chaque portefeuille possédant au
     moins une position ouverte OU un symbole en watchlist (extension 25/08).
     Ignore les fichiers auxiliaires (.coach.json, .news_seen.json,
-    .watchlist.json, .board.json -- ils matchent aussi le glob "*.json") ; les
-    fichiers corrompus sont déjà hors du glob (store.py les renomme en .corrupt
-    à la lecture, extension qui ne matche plus "*.json").
+    .watchlist.json, .board.json, .ledger.json, .equity.json -- ils matchent
+    aussi le glob "*.json") ; les fichiers corrompus sont déjà hors du glob
+    (store.py les renomme en .corrupt à la lecture, extension qui ne matche
+    plus "*.json").
 
     Ceinture ET bretelles : même si un suffixe auxiliaire manquait à la liste
     ci-dessous, son radical porterait un point ("alice.board") et
@@ -2774,6 +2775,11 @@ def _discover_portfolios() -> List[Tuple[str, Dict[str, Any]]]:
                 or name.endswith(".watchlist.json")
                 or name.endswith(".board.json")
                 or name.endswith(".ideas.json")
+                # Compte de trading DU COACH (LOT 4) : registre des décisions
+                # et courbe de patrimoine — deux fichiers PAR COMPTE, pas des
+                # portefeuilles.
+                or name.endswith(".ledger.json")
+                or name.endswith(".equity.json")
                 # Fichiers de RÉGLAGE (26/08) : leur radical ne porte pas de
                 # point, donc l'allowlist de store ne les rejette PAS — ils
                 # doivent être nommés explicitement.
@@ -3894,6 +3900,7 @@ def run_once(now: Optional[datetime] = None,
             translate: Optional[Callable[..., Any]] = None,
             backup_check: Optional[Callable[..., Any]] = None,
             weekly_check: Optional[Callable[..., Any]] = None,
+            coach_check: Optional[Callable[..., Any]] = None,
             alert_quote: Optional[Callable[[str], Any]] = None) -> Dict[str, Any]:
     """Un cycle de veille news, DIX volets :
 
@@ -3954,6 +3961,16 @@ def run_once(now: Optional[datetime] = None,
     chaque passage, best-effort strict. Il ENVOIE sur Telegram ET écrit au
     carnet de chaque compte quand il se déclenche.
 
+    **Compte de trading DU COACH** (LOT 4, ``paper.coach_trader``) : même
+    patron, juste après le bilan. Ce crochet-là n'est pas une commodité, c'est
+    la **garantie d'inclusion** du coach dans le simulateur — ``run_tick``
+    n'énumère AUCUN compte (il est appelé par-portefeuille depuis
+    ``POST /api/paper/tick``, déclenché par le NAVIGATEUR de l'utilisateur
+    connecté), et le coach n'a pas de navigateur. Sans ce passage, ses stops et
+    ses objectifs ne s'exécuteraient JAMAIS. Il tique son compte à chaque
+    cycle, photographie le patrimoine de tous les comptes une fois par jour, et
+    lance sa passe de gestion en semaine après 17 h locales.
+
     Sans config Telegram -> ne fait RIEN du tout (ni disque ni réseau, feature
     opt-in silencieuse) : c'est vérifié EN PREMIER, avant tout accès à data/ —
     y compris la sauvegarde nocturne, le bilan hebdomadaire et les alertes de
@@ -3994,6 +4011,13 @@ def run_once(now: Optional[datetime] = None,
     # sauvegarde : indépendant du reste du cycle, best-effort STRICT.
     # ----------------------------------------------------------------- #
     _run_weekly_briefing(now_dt, weekly_check=weekly_check)
+
+    # ----------------------------------------------------------------- #
+    # Compte de trading DU COACH (LOT 4) -- même patron, juste après le
+    # bilan : indépendant du reste du cycle, best-effort STRICT. C'est LE
+    # point d'entrée du coach dans le simulateur (cf. doc de tête).
+    # ----------------------------------------------------------------- #
+    _run_coach_trader(now_dt, coach_check=coach_check)
 
     # ----------------------------------------------------------------- #
     # Alertes de prix (A1) -- tous comptes confondus, un batch de cours
@@ -4740,6 +4764,35 @@ def _run_weekly_briefing(now_dt: datetime,
             weekly_mod.maybe_run(now=now_dt)
     except Exception as exc:      # noqa: BLE001 — jamais fatal pour le cycle
         logger.warning("paper newswatch: bilan hebdomadaire en panne (%s)",
+                       type(exc).__name__)
+
+
+def _run_coach_trader(now_dt: datetime,
+                      coach_check: Optional[Callable[..., Any]] = None) -> None:
+    """Compte de paper trading DU COACH (LOT 4) — best-effort STRICT, jamais
+    fatal pour le cycle (copie exacte du patron de ``_run_weekly_briefing``).
+
+    ⚠️ **Ce crochet est une GARANTIE D'INCLUSION, pas une commodité** :
+    ``paper_router.run_tick`` n'énumère AUCUN compte — il est appelé
+    par-portefeuille depuis ``POST /api/paper/tick``, que déclenche le
+    NAVIGATEUR de l'utilisateur connecté. Le coach n'a pas de navigateur : sans
+    ce passage-là, ses stops et ses objectifs ne s'exécuteraient JAMAIS.
+
+    Les GATES (tick à chaque passage, photo de patrimoine une fois par jour,
+    passe de gestion en semaine après 17 h locales) vivent dans
+    ``coach_trader.maybe_run`` ; ici on ne fait qu'appeler et avaler toute
+    exception — une panne du compte du coach ne doit jamais faire perdre un
+    passage de veille. Ne touche PAS ``counters`` (même raison que la
+    sauvegarde nocturne et le bilan hebdomadaire).
+    """
+    try:
+        if coach_check is not None:
+            coach_check(now_dt)
+        else:
+            from backend.bots.paper import coach_trader as coach_trader_mod
+            coach_trader_mod.maybe_run(now=now_dt)
+    except Exception as exc:      # noqa: BLE001 — jamais fatal pour le cycle
+        logger.warning("paper newswatch: compte de trading du coach en panne (%s)",
                        type(exc).__name__)
 
 

@@ -1155,6 +1155,31 @@ def _power_named_line() -> str:
     return str(POWER_NAMED_LINE or "")
 
 
+def _coach_actions_block(book: Any) -> str:
+    """Le bloc d'actions du coach trader (LOT 4), lu chez ``llm`` (best-effort).
+
+    Écrit UNE seule fois là-bas, parce que DEUX prompts le réclament (ce digest
+    et la passe quotidienne de gestion). Import LOCAL, même posture que
+    :func:`_power_named_line` : moteur de prompt absent -> la section manque et
+    le digest part quand même. Une section de plus n'a jamais valu qu'on perde
+    un message.
+
+    Conséquence assumée et sans danger : sans la section, le modèle ne rend
+    aucun bloc, donc le coach ne fait rien ce jour-là — il ne fait JAMAIS
+    n'importe quoi.
+    """
+    if not book:
+        return ""
+    try:
+        from backend.bots.paper.llm import coach_actions_block
+    except Exception:      # noqa: BLE001 — module absent ou cassé
+        return ""
+    try:
+        return str(coach_actions_block(book) or "")
+    except Exception:      # noqa: BLE001
+        return ""
+
+
 _MOOD_LABELS = {
     "calme": "calme", "normal": "normal",
     "nerveux": "nerveux", "panique": "en PANIQUE",
@@ -1191,7 +1216,8 @@ def _market_mood_line(market_mood: Any) -> str:
 
 
 def build_digest_prompt(factors: Any, items: Any, stats: Any, positions: Any,
-                        now_iso: str, market_mood: Any = None) -> str:
+                        now_iso: str, market_mood: Any = None,
+                        coach_book: Any = None) -> str:
     """Le prompt du digest de convergence (PUR).
 
     Il demande explicitement des MOUVEMENTS À JOUER — c'est la demande de
@@ -1215,6 +1241,16 @@ def build_digest_prompt(factors: Any, items: Any, stats: Any, positions: Any,
     CONTEXTE en plus, jamais un facteur qui déclenche quoi que ce soit
     (``should_fire`` ne le regarde pas). ``None``/``{}`` -> AUCUNE ligne
     ajoutée : un VIX absent ne doit jamais se lire comme « marché calme ».
+
+    ``coach_book`` (LOT 4) : le compte de paper trading DU COACH
+    (``{"cash_chf", "equity_chf", "positions", "open_orders"}``). Fourni, il
+    ajoute EN TOUTE FIN la section qui lui demande de DÉCIDER — dans le MÊME
+    appel au modèle que celui où il PARLE. C'est toute la mesure voulue : deux
+    appels séparés ne compareraient que deux discours, et le second aurait
+    toujours raison après coup.
+
+    ``None`` -> sortie STRICTEMENT identique à celle d'avant ce lot, au
+    caractère près (les quatre appelants de prod ne passent pas ce paramètre).
     """
     flags = _flags(factors)
     rows = _dicts(items)[:MAX_ITEMS_IN_PROMPT]
@@ -1385,6 +1421,24 @@ def build_digest_prompt(factors: Any, items: Any, stats: Any, positions: Any,
     lines.append("")
     lines.append("Réponds en français, sans emojis, sans titres markdown "
                  "pompeux, 150 à 400 mots.")
+
+    # --- LOT 4 : et maintenant, AGIS ------------------------------------- #
+    # Ajoutée EN DERNIER, après les interdits et la consigne de longueur : ce
+    # qui précède ne bouge pas d'un caractère (invariant épinglé par les
+    # tests), et le modèle lit le contrat de sortie en dernier.
+    coach_block = _coach_actions_block(coach_book)
+    if coach_block:
+        lines.append("")
+        lines.append(
+            "CE QUI SUIT EST À TOI — tu ne te contentes pas de conseiller. Tu "
+            "as TON PROPRE compte de paper trading, doté du même capital "
+            "fictif que le sien, et il est PUBLIC : il te regarde faire, ligne "
+            "par ligne. Ce que tu viens de lui conseiller ci-dessus et ce que "
+            "tu vas exécuter ci-dessous doivent être cohérents — c'est "
+            "exactement ce qu'on mesure. Lui dire d'acheter sans acheter, ou "
+            "acheter ce que tu ne lui as pas dit, se verra.")
+        lines.append("")
+        lines.append(coach_block)
 
     return "\n".join(lines)
 
@@ -1793,6 +1847,117 @@ def _send(notifier: Optional[Callable[[str, Dict[str, Any]], Any]],
 
 
 # --------------------------------------------------------------------------- #
+# LOT 4 — séparer ce que le coach DIT de ce qu'il DÉCIDE
+# --------------------------------------------------------------------------- #
+
+# La provenance des décisions issues d'ICI, au sens de ``coach_trader.SOURCES``
+# (épinglée par un test contre cette table : une valeur inventée falsifierait
+# le registre sans jamais lever).
+COACH_SOURCE = "digest"
+
+# Le marqueur du bloc structuré. MIROIR de ``coach_trader.ACTIONS_MARKER``,
+# recopié ici pour le SEUL cas où ce module-là est justement injoignable (cf.
+# :func:`_parse_coach_actions`) — même convention que le miroir assumé de
+# ``coach_trader._equity_chf`` : documenté, et épinglé par un test qui compare
+# les deux valeurs.
+ACTIONS_MARKER_FALLBACK = "COACH_ACTIONS"
+
+
+def _parse_coach_actions(text: Any) -> Dict[str, Any]:
+    """Sépare le digest LISIBLE du bloc d'actions qu'il porte.
+
+    Délègue à ``coach_trader.parse_actions``, importé ICI et **pas** au niveau
+    du module — mais **sans** le repli silencieux des autres emprunts
+    (:func:`_power_named_line`, :func:`_coach_actions_block`) : ceux-là ne
+    coûtent qu'une consigne manquante, celui-ci porte une GARANTIE — le bloc
+    structuré ne doit atteindre AUCUNE des trois destinations du message
+    (Telegram, historique, carnet). Si la couche du compte du coach manquait,
+    laisser passer le texte brut y déverserait du JSON.
+
+    On préfère donc, dans ce cas de figure qui ne devrait jamais arriver
+    (module du même paquet, committé avec celui-ci), la seule issue qui tienne
+    la garantie : aucune action, et un texte NETTOYÉ du bloc par le même motif
+    que le parseur — d'où le repli sur un retrait local, volontairement
+    grossier, qui coupe à partir du marqueur.
+    """
+    body = _text(text)
+    try:
+        from backend.bots.paper import coach_trader
+        parsed = coach_trader.parse_actions(body)
+        return {"text": _text(parsed.get("text")),
+                "actions": _dicts(parsed.get("actions")),
+                "error": parsed.get("error")}
+    except Exception:      # noqa: BLE001 — couche du compte absente ou cassée
+        logger.warning("paper convergence: parseur d'actions indisponible")
+        cut = body.find("```" + ACTIONS_MARKER_FALLBACK)
+        return {"text": body if cut < 0 else body[:cut].strip(),
+                "actions": [], "error": "parse_failed"}
+
+
+def _coach_book() -> Any:
+    """Le compte du coach, résolu PARESSEUSEMENT sur ``paper_router``.
+
+    Même geste et même posture que :func:`_execute_coach` juste en dessous —
+    import LOCAL, tout avalé, repli silencieux. Le router tire la moitié du
+    paquet derrière lui (FastAPI, cours, stockage) : l'importer en tête de ce
+    module-ci créerait un cycle et ferait payer un guetteur qui ne demande
+    rien.
+
+    C'est LA couture du lot : les quatre appelants de prod ne passent pas de
+    ``coach_book``, donc sans cette résolution le prompt ne demanderait jamais
+    d'actions et l'exécuteur ne serait jamais engagé — une fonctionnalité morte
+    sans une erreur ni un test rouge (piège #61 du dépôt).
+
+    ``None`` en cas de pépin = pas de livre, donc pas de section d'actions dans
+    le prompt et pas d'exécuteur engagé : le digest part quand même, le coach
+    ne décide simplement rien ce tour-ci. Il ne fait JAMAIS n'importe quoi.
+    """
+    try:
+        from backend.bots.paper_router import coach_book
+        return coach_book()
+    except Exception:      # noqa: BLE001 — router absent, ou compte illisible
+        logger.warning("paper convergence: compte du coach indisponible")
+        return None
+
+
+def _execute_coach(execute_actions: Optional[Callable[..., Any]],
+                   actions: List[Dict[str, Any]], now_iso: str,
+                   parse_error: Any) -> int:
+    """Confie au moteur d'ordres ce que le coach vient de décider.
+
+    **Best-effort TOTAL** : le digest est DÉJÀ parti quand on arrive ici, et
+    une panne d'exécution ne doit pas le faire compter comme non envoyé.
+
+    L'exécuteur est injecté (les tests s'y branchent) ou résolu PARESSEUSEMENT
+    sur ``paper_router`` — fonction construite en parallèle de ce lot, donc son
+    absence est un cas NORMAL, pas une anomalie.
+
+    ``parse_error`` voyage avec la liste : un bloc absent ou cassé n'est pas un
+    silence, il se consigne au registre du coach (« il n'a rien décidé », ou
+    « il a rendu du JSON illisible »). L'appel passe tout en mots-clés et
+    avale un ``TypeError`` comme le reste — la signature de l'autre côté peut
+    ne pas encore porter ce paramètre.
+
+    Rend le nombre d'entrées de registre produites (0 si rien n'a tourné).
+    """
+    runner = execute_actions
+    if runner is None:
+        try:
+            from backend.bots.paper_router import execute_coach_actions
+        except Exception:  # noqa: BLE001 — pas encore construit, ou router absent
+            return 0
+        runner = execute_coach_actions
+    try:
+        rows = runner(list(actions), source=COACH_SOURCE, now_iso=now_iso,
+                      parse_error=parse_error)
+    except Exception:      # noqa: BLE001 — y compris TypeError de signature
+        logger.warning("paper convergence: actions du coach non exécutées",
+                       exc_info=True)
+        return 0
+    return len(rows) if isinstance(rows, list) else 0
+
+
+# --------------------------------------------------------------------------- #
 # I/O — le déclencheur
 # --------------------------------------------------------------------------- #
 
@@ -1801,13 +1966,52 @@ def maybe_fire(now: Any = None,
                notifier: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
                tg_cfg: Optional[Dict[str, Any]] = None,
                fetch_state: Optional[Callable[[], Any]] = None,
-               force: bool = False) -> Dict[str, Any]:
+               force: bool = False,
+               coach_book: Any = None,
+               execute_actions: Optional[Callable[..., Any]] = None
+               ) -> Dict[str, Any]:
     """Regarde ce qui s'est accumulé et envoie UN digest si ça converge.
 
-    Retourne ``{fired, reason, factors, sent, llm}``. ``fired`` dit si un
-    digest est parti (ou a tenté de partir), ``reason`` pourquoi pas
+    Retourne ``{fired, reason, factors, sent, llm, coach_actions,
+    coach_parse_error}``. ``fired`` dit si un digest est parti (ou a tenté de
+    partir), ``reason`` pourquoi pas
     (``too_few``/``cooldown``/``same_items``/``no_telegram``), ``sent`` si
     Telegram a accusé réception, ``llm`` si la prose vient du modèle.
+
+    **LOT 4 — parler PUIS agir.** ``coach_book`` (le compte du coach) est passé
+    au prompt : le modèle rend alors, dans le MÊME appel, sa prose ET un bloc
+    d'actions. Le bloc est retiré du texte AVANT toute destination — ni
+    Telegram, ni l'historique, ni le carnet ne portent jamais de JSON — puis,
+    **une fois le message envoyé**, les actions sont confiées à
+    ``execute_actions`` (injecté, ou résolu paresseusement sur
+    ``paper_router.execute_coach_actions``). Cette dernière étape est
+    best-effort TOTAL : une panne d'exécution ne doit pas faire compter comme
+    non envoyé un digest qui est déjà parti.
+
+    ``coach_actions`` compte les actions PARSÉES (pas celles qui ont été
+    acceptées : c'est le garde-fou qui tranche, chez l'exécuteur) et
+    ``coach_parse_error`` vaut ``None``/``"no_block"``/``"parse_failed"``. Les
+    deux clés sont présentes sur TOUS les chemins de retour, sorties précoces
+    comprises — un appelant ne doit pas tomber sur un ``KeyError`` selon la
+    branche prise.
+
+    **Le livre est RÉSOLU TOUT SEUL** (:func:`_coach_book` ->
+    ``paper_router.coach_book``) quand ``coach_book`` n'est pas fourni. C'est
+    la couture du lot, et elle est indispensable : AUCUN des quatre appelants
+    de prod (radar, whales, newswatch, router) ne passe ce paramètre, donc
+    sans elle le coach n'agirait jamais — sans une erreur ni un test rouge
+    (piège #61 du dépôt). Un ``coach_book`` explicite court-circuite la
+    résolution : c'est ce que font les tests, et tout appelant qui sait déjà.
+
+    La résolution se fait APRÈS les deux portes de sortie ci-dessous, jamais
+    avant : l'évaluation à chaque cycle de 5 min doit rester GRATUITE.
+
+    **Livre nul ET ``execute_actions`` absent -> l'exécuteur n'est pas
+    engagé** : le prompt n'a alors rien demandé, il n'y a rien à exécuter ni
+    rien à consigner comme « bloc absent ». C'est ce qui arrive quand le compte
+    du coach est injoignable — best-effort, le digest part quand même. Le
+    texte, lui, est nettoyé dans TOUS les cas : un bloc qui traînerait dans un
+    digest sans livre atterrirait quand même sur le téléphone.
 
     Appelée à la fin de chaque passage du radar (3×/jour) et par
     ``POST /api/paper/digest/run``. Toutes les dépendances sont injectables ->
@@ -1870,7 +2074,8 @@ def maybe_fire(now: Any = None,
             # Sortie AVANT tout appel au LLM et tout envoi : c'est ce qui rend
             # l'évaluation à chaque cycle de 5 min gratuite (pur I/O local).
             return {"fired": False, "reason": reason, "factors": flags,
-                    "sent": False, "llm": False}
+                    "sent": False, "llm": False,
+                    "coach_actions": 0, "coach_parse_error": None}
 
         cfg = tg_cfg
         if cfg is None:
@@ -1882,21 +2087,46 @@ def maybe_fire(now: Any = None,
         if not (cfg or {}).get("token") or not (cfg or {}).get("chat_id"):
             logger.debug("paper convergence: convergence détectée mais aucun canal")
             return {"fired": False, "reason": "no_telegram", "factors": flags,
-                    "sent": False, "llm": False}
+                    "sent": False, "llm": False,
+                    "coach_actions": 0, "coach_parse_error": None}
+
+        # Le compte du coach est résolu ICI, et surtout pas plus haut :
+        # ``maybe_fire`` passe toutes les 5 minutes, et son invariant est que
+        # l'évaluation reste GRATUITE (pur I/O local) tant que les facteurs ne
+        # s'alignent pas. Créer le compte du coach et valoriser ses lignes à
+        # CHAQUE passage violerait cet invariant — d'où la place, après
+        # ``should_fire`` ET après la porte « aucun canal » (sans canal, aucun
+        # message n'est composé : il n'y a rien à décider).
+        if coach_book is None:
+            try:
+                coach_book = _coach_book()
+            except Exception:  # noqa: BLE001 — résolveur SUBSTITUABLE (tests)
+                # ``_coach_book`` avale déjà tout ; ce filet couvre le cas où
+                # un test — ou un lot futur — lui substitue autre chose. Un
+                # digest ne se perd pas pour une section de prompt.
+                coach_book = None
 
         market_mood = _collect_market_mood()
         used_llm = True
         try:
             text = (llm or _default_llm)(
                 build_digest_prompt(flags, items, stats, positions, now_iso,
-                                    market_mood=market_mood))
+                                    market_mood=market_mood,
+                                    coach_book=coach_book))
             text = _text(text)
             if not text:
                 raise RuntimeError("digest vide")
         except Exception:  # noqa: BLE001 — LLM muet : on envoie le résumé brut
             used_llm = False
             text = fallback_digest(flags, items, stats)
-        message = with_header(text)
+
+        # Le coach a PARLÉ ; on sépare maintenant ce qu'il a DÉCIDÉ. Ce retrait
+        # vient AVANT la composition du message, donc avant les trois
+        # destinations : c'est la garantie qu'aucune d'elles ne porte de JSON.
+        parsed = _parse_coach_actions(text)
+        coach_actions = parsed["actions"]
+        coach_error = parsed["error"]
+        message = with_header(parsed["text"])
 
         sent = _send(notifier, message, cfg)
 
@@ -1922,8 +2152,17 @@ def maybe_fire(now: Any = None,
             logger.warning("paper convergence: état non persisté")
 
     _note_all(users, format_note(message, now_iso, flags, used_llm))
+
+    # ... et SEULEMENT MAINTENANT, il agit. Après l'envoi, après le carnet, et
+    # HORS de la section critique : le moteur d'ordres lit des cours et écrit
+    # un portefeuille, il n'a rien à faire sous le verrou du déclencheur.
+    if coach_book or execute_actions is not None:
+        _execute_coach(execute_actions, coach_actions, now_iso, coach_error)
+
     return {"fired": True, "reason": "ok", "factors": flags,
-            "sent": sent, "llm": used_llm}
+            "sent": sent, "llm": used_llm,
+            "coach_actions": len(coach_actions),
+            "coach_parse_error": coach_error}
 
 
 def recent(limit: int = 10) -> Dict[str, Any]:

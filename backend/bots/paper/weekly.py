@@ -75,10 +75,15 @@ FALLBACK_TAIL = "(modèle indisponible — bilan brut, à toi de le commenter.)"
 _AUX_SUFFIXES = (
     ".coach.json", ".news_seen.json", ".watchlist.json", ".board.json",
     ".ideas.json", ".alerts.json", ".replay.json", ".postmortem_auto.json",
+    # Compte de trading DU COACH (LOT 4) : registre des décisions et courbe de
+    # patrimoine — deux fichiers PAR COMPTE, jamais des portefeuilles.
+    ".ledger.json", ".equity.json",
 )
 _AUX_NAMES = ("alerts_mode.json", "x_accounts.json", "backup.state.json",
              "backfill.json", "calendar.verdicts.json", "convergence.json",
-             "radar.json", "newswatch_global.json", "weekly.state.json")
+             "radar.json", "newswatch_global.json", "weekly.state.json",
+             # État du module de trading du coach (LOT 4).
+             "coach_trader.state.json")
 
 
 # --------------------------------------------------------------------------- #

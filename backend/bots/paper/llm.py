@@ -27,6 +27,15 @@ import subprocess
 import tempfile
 from typing import Any, Callable, Dict, List, Optional
 
+# Seuls imports du paquet dans ce module, et ils sont VOLONTAIRES : le bloc
+# d'actions du coach (LOT 4) lit les bornes du garde-fou sur ``coach_trader``
+# et la whitelist des setups sur ``models`` plutôt que de les RECOPIER — un
+# seuil recopié diverge, et la divergence ne se voit qu'au refus.
+# Chaîne vérifiée ACYCLIQUE : coach_trader -> {models, quotes, risk}, et aucun
+# des trois n'importe ``llm`` (les quatre modules qui l'utilisent le font par
+# import PARESSEUX). ``backend.bots.paper.__init__`` est vide.
+from backend.bots.paper import coach_trader, models
+
 DEFAULT_MODEL = "claude-sonnet-5"
 DEFAULT_TIMEOUT = 120
 
@@ -804,6 +813,214 @@ def build_analysis_prompt(facts: Optional[Dict[str, Any]],
         "thèse dessus. "
         "INTERDIT ABSOLU : ne donne aucun avis d'achat ou de vente, aucun "
         "objectif de cours, aucune prévision. Tu décris et tu enseignes à lire.",
+    ])
+
+
+# --------------------------------------------------------------------------- #
+# LOT 4 — le coach a SON compte, et il DÉCIDE dans le même souffle qu'il PARLE
+#
+# Demande de Massii : « quand tu m'envoies une convergence, il doit réagir lui
+# aussi » et « mesurer si ce qu'il m'annonce fonctionne ». D'où l'exigence
+# centrale : ce que le coach DIT et ce qu'il FAIT sortent du MÊME appel au
+# modèle. Deux appels séparés ne mesureraient rien — ils compareraient deux
+# discours, et le second aurait toujours raison après coup.
+#
+# DEUX prompts réclament donc ce même bloc de clôture : le digest de
+# convergence (``convergence.build_digest_prompt``) et la passe quotidienne de
+# gestion (:func:`build_coach_trader_prompt`). Il est écrit ICI, une seule
+# fois — un format décrit à deux endroits diverge au premier ajustement, et la
+# divergence ne se voit que le jour où le parseur rend zéro action, en silence.
+#
+# Les SEUILS ne sont PAS recopiés : ils sont lus sur ``coach_trader``, la
+# source unique du garde-fou. Ainsi le prompt et le refus parlent toujours des
+# mêmes chiffres — un seuil ajusté d'un côté ne peut plus mentir de l'autre.
+# --------------------------------------------------------------------------- #
+
+def _pct(value: Any) -> str:
+    """« 2 % » et non « 2.0 % » : ce texte se LIT, il ne se sérialise pas."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "?"
+    return "%s %%" % ("%g" % number).replace(".", ",")
+
+
+def _coach_book_of(context: Any) -> Dict[str, Any]:
+    """Le compte du coach, extrait d'un contexte de passe quotidienne (PUR).
+
+    Les quatre clés sont TOUJOURS présentes, même vides : le bloc d'actions ne
+    doit pas disparaître d'un prompt sous prétexte que le compte est neuf (un
+    coach sans position doit pouvoir ouvrir sa première ligne).
+    """
+    ctx = context if isinstance(context, dict) else {}
+    return {
+        "cash_chf": ctx.get("cash_chf"),
+        "equity_chf": ctx.get("equity_chf"),
+        "positions": ctx.get("positions") or [],
+        "open_orders": ctx.get("open_orders") or [],
+    }
+
+
+def coach_actions_block(book: Any) -> str:
+    """Le bloc de clôture qui transforme un avis en DÉCISION (PUR).
+
+    ``book`` = ``{"cash_chf", "equity_chf", "positions", "open_orders"}``.
+    ``None``, vide ou d'une autre forme -> chaîne VIDE : un prompt qui décrit
+    une section absente invite le modèle à la combler tout seul (même
+    précaution que :func:`_sweep_line`).
+
+    Il dit quatre choses, et les quatre comptent :
+      1. ce que le coach a en main (sans quoi il dimensionne à l'aveugle) ;
+      2. les bornes DURES du mandat, en clair — un modèle qui ne les connaît
+         pas propose des ordres refusés, et le refus est PUBLIC ;
+      3. le format exact du bloc que la machine lira ;
+      4. que **zéro action est une réponse légitime** — on n'invente jamais un
+         ordre pour avoir l'air actif.
+    """
+    if not isinstance(book, dict) or not book:
+        return ""
+
+    setups = ", ".join('"%s"' % setup for setup in models.SETUPS)
+    kinds = " | ".join(coach_trader.ACTION_KINDS)
+
+    # ⚠️ ORDRE SIGNIFIANT : la consigne « termine par ce bloc, et RIEN après »
+    # doit être VRAIE dans la mise en page. Elle et son exemple ferment donc la
+    # section — une consigne démentie par ce qui la suit apprend au modèle que
+    # les consignes sont approximatives, et le bloc finirait au milieu du
+    # message. Épinglé par un test.
+    return "\n\n".join([
+        "Voici ce que tu as en main à cette seconde — c'est TON livre, pas "
+        "celui de Massii :",
+        _block("TON COMPTE", book),
+        # Directive de Massii : « le but, vu que c'est un test, c'est qu'il
+        # gagne le plus possible — cela ne veut pas dire d'oublier toute mesure
+        # de sûreté ». La sûreté vit dans le garde-fou DÉTERMINISTE
+        # (``coach_trader.gate_decision``), qui ne bouge pas d'un iota ; le
+        # PROMPT, lui, doit viser la performance. Sans ce paragraphe, un modèle
+        # à qui on n'énonce que des plafonds joue systématiquement en dessous
+        # — et un livre trop timide ne mesure rien.
+        "MANDAT — TU JOUES POUR GAGNER. Ce compte est un TEST : l'objectif est "
+        "la PERFORMANCE la plus haute possible SOUS les règles ci-dessous, pas "
+        "la préservation du capital pour elle-même. Un livre qui dort en cash "
+        "sans raison échoue à ce test autant qu'un livre qui explose. "
+        "Concrètement : quand la conviction est là, vise un risque PROCHE du "
+        "plafond de %s de ton équité sur le trade — jamais au-dessus, le "
+        "garde-fou refuse — et une taille PLEINE entre %s et %s de ton équité. "
+        "Viser le bas de la fourchette « par prudence » est un MAUVAIS RÉFLEXE "
+        "ici : le plancher de %s existe déjà pour ça, la prudence est DANS les "
+        "règles, tu n'as pas à en rajouter par-dessus. Laisse COURIR les "
+        "gagnants — on déplace le stop, on ne solde pas pour encaisser un "
+        "mini-profit rassurant. Coupe VITE ce qui est invalidé, le jour où "
+        "c'est invalidé. Et ne JAMAIS moyenner à la baisse une thèse morte : "
+        "ajouter à une perte, c'est doubler une erreur." % (
+            _pct(coach_trader.MAX_RISK_PCT),
+            _pct(coach_trader.MIN_POSITION_PCT),
+            _pct(coach_trader.MAX_POSITION_PCT),
+            _pct(coach_trader.MIN_POSITION_PCT)),
+        "Ces bornes sont celles de TON livre. Elles n'ont rien à voir avec le "
+        "dimensionnement prudent que tu conseilles à un débutant : la "
+        "cohérence qu'on te demande entre ce que tu dis et ce que tu fais "
+        "porte sur la LECTURE (le titre, le sens, la thèse), pas sur la "
+        "taille.",
+        "RÈGLES DURES DU MANDAT (elles ne se négocient pas, et elles ne se "
+        "rognent pas : franchir l'une d'elles ne réduit pas ton ordre, elle le "
+        "REFUSE, et le refus est archivé publiquement avec son motif) — "
+        "un achat SANS stop est refusé ; une ligne qui vaudrait moins de %s de "
+        "ton équité est refusée (pas d'actions en centimes : ce n'est pas une "
+        "position, c'est un ticket de loterie) ; une ligne qui dépasserait %s "
+        "de ton équité est refusée ; un ordre dont la perte planifiée "
+        "(distance entrée-stop x quantité) dépasse %s de ton équité est "
+        "refusé ; tu ne tiens jamais plus de %d lignes ouvertes, dont au plus "
+        "%d cryptos ; et il te reste TOUJOURS au moins %s de trésorerie — on "
+        "ne se met jamais à sec." % (
+            _pct(coach_trader.MIN_POSITION_PCT),
+            _pct(coach_trader.MAX_POSITION_PCT),
+            _pct(coach_trader.MAX_RISK_PCT),
+            coach_trader.MAX_POSITIONS,
+            coach_trader.MAX_CRYPTO,
+            _pct(coach_trader.MIN_CASH_PCT)),
+        "Une SORTIE (%s) n'a besoin ni de thèse ni de stop : elle réduit "
+        "l'exposition. Une ENTRÉE (%s) exige une thèse écrite d'au moins %d "
+        "caractères et un stop SOUS le prix — sans quoi elle est refusée."
+        % (" et ".join(coach_trader.ACTION_KINDS[1:]),
+           coach_trader.ACTION_KINDS[0], coach_trader.MIN_THESIS_LEN),
+        "TU ES NOTÉ, ET LA NOTE EST PUBLIQUE. Chaque décision est archivée puis "
+        "comparée : le REGISTRE garde tes ordres acceptés ET tes REFUS avec "
+        "leur motif ; un score de DISCIPLINE mesure le respect de ta propre "
+        "méthode ; chaque trade clos est mesuré en MAE/MFE (le pire creux et "
+        "le meilleur sommet traversés avant ta sortie) ; et ta COURBE de "
+        "patrimoine s'affiche FACE à celle de Massii. Tu joues ta CRÉDIBILITÉ "
+        "à chaque ligne — c'est ce qui te tient honnête, et c'est pourquoi ni "
+        "le sur-risque ni la timidité ne passent inaperçus.",
+        "Si tu n'as RIEN à faire aujourd'hui, rends le bloc VIDE : "
+        '``{"actions": []}``. Ne rien faire reste une réponse légitime, et '
+        "parfois la bonne — mais ce doit être un CHOIX ARGUMENTÉ, jamais de la "
+        "timidité : le registre archive AUSSI les passes sans action. On "
+        "n'invente jamais un ordre pour avoir l'air actif ; on ne s'abstient "
+        "jamais non plus pour éviter d'avoir tort.",
+        "Termine IMPÉRATIVEMENT ta réponse par ce bloc, et RIEN après. Il est "
+        "purement TECHNIQUE : il ne répète rien du texte lisible qui précède, "
+        "c'est la machine qui le lit, pas Massii. ``action`` vaut %s ; "
+        "``symbol`` est un ticker Yahoo ; ``qty`` est un entier ; ``stop`` et "
+        "``target`` sont des PRIX exprimés dans la DEVISE DU TITRE (jamais "
+        "convertis) ; ``thesis`` tient en une phrase ; ``setup`` est "
+        "facultatif et vaut l'un de : %s. Un ``sell`` SANS ``qty`` veut dire "
+        "« solder la ligne entière »." % (kinds, setups),
+        "```%s\n"
+        '{"actions": [{"action": "buy", "symbol": "NESN.SW", "qty": 12, '
+        '"stop": 92.5, "target": 118.0, "thesis": "une phrase courte", '
+        '"setup": "news"}]}\n'
+        "```" % coach_trader.ACTIONS_MARKER,
+    ])
+
+
+def build_coach_trader_prompt(context: Optional[Dict[str, Any]],
+                              lang: str = "fr") -> str:
+    """Prompt de la PASSE QUOTIDIENNE de gestion du compte du coach (PUR).
+
+    Registre distinct des autres : ici il ne conseille personne, il GÈRE son
+    livre. Une passe par jour de marché au maximum (``coach_trader.pass_due``),
+    donc un appel au modèle par jour — l'économie est le contrat.
+
+    ``context`` (tout facultatif, un contexte partiel ne LÈVE jamais) :
+    ``now``/``cash_chf``/``equity_chf``/``initial_capital``/``positions``/
+    ``open_orders``/``stats``/``discipline``/``radar``/``market_mood``/
+    ``agenda``. Le compte passé au bloc de clôture en est extrait
+    (:func:`_coach_book_of`) : une seule vérité, jamais deux photos du même
+    portefeuille à deux endroits du prompt.
+    """
+    ctx = context if isinstance(context, dict) else {}
+    return "\n\n".join([
+        SYSTEM_PROMPT,
+        _lang_line(lang),
+        "PASSE QUOTIDIENNE DE GESTION. Tu n'es pas ici en train de conseiller "
+        "quelqu'un : tu gères TON livre, comme un professionnel discipliné. Ta "
+        "doctrine tient en quatre gestes — tu COUPES ce qui est invalidé (la "
+        "thèse ne tient plus, le stop est touché, le catalyseur est passé sans "
+        "rien produire), tu laisses COURIR ce qui marche (une position qui "
+        "travaille ne se solde pas pour encaisser un petit gain rassurant), tu "
+        "n'entres que par CONVICTION (une thèse que tu peux écrire en une "
+        "phrase, un stop que tu peux nommer), et tu assumes de NE RIEN FAIRE "
+        "quand il n'y a rien à faire.",
+        _block("CONTEXTE", ctx),
+        "Écris, dans cet ordre et sans titres pompeux : (1) l'état de ton "
+        "livre en deux ou trois phrases — ce qui travaille, ce qui traîne, ce "
+        "qui te coûte ; (2) ligne par ligne, ce que tu fais de chacune "
+        "(garder, alléger, sortir) et POURQUOI, en nommant le niveau qui "
+        "invaliderait ta lecture ; (3) ce que tu ouvres aujourd'hui, s'il y a "
+        "quelque chose à ouvrir — avec la thèse, le stop et la taille.",
+        "Sers-toi de tout ce que le contexte te donne : tes statistiques (ce "
+        "que ta méthode réussit ET ce qu'elle rate), ton score de discipline, "
+        "les hypothèses ouvertes du radar, la nervosité du marché, et "
+        "l'agenda des rendez-vous à venir — une échéance dans trois jours sur "
+        "une ligne que tu détiens change ce que tu en fais aujourd'hui.",
+        "INTERDITS ABSOLUS, comme toujours : jamais les mots « sûr » ou "
+        "« garanti », ni aucun vocabulaire de la certitude — ce sont des "
+        "paris, tu le dis ; jamais aucune recommandation d'acheter ou de "
+        "vendre avec de l'ARGENT RÉEL (ceci est un simulateur d'apprentissage, "
+        "et ce compte est fictif) ; et n'invente RIEN qui ne soit pas dans le "
+        "contexte ci-dessus — pas un chiffre, pas un événement, pas un cours.",
+        coach_actions_block(_coach_book_of(ctx)),
     ])
 
 

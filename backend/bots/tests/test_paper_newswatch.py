@@ -4930,3 +4930,78 @@ def test_a_broken_alert_account_does_not_break_the_others():
     notifier = _NotifySpy()
     _run(_FetchQueue(), notifier, alert_quote=_quote_fn({"NESN.SW": 101.0}))
     assert store.load_alerts("bob")[0]["status"] == "triggered"
+
+
+# =========================================================================== #
+#  I/O -- compte de trading DU COACH (LOT 4, tâche 3)
+#
+#  Le crochet du cycle est la GARANTIE D'INCLUSION du coach : ``run_tick``
+#  n'énumère aucun compte (il est appelé par le NAVIGATEUR de chaque humain
+#  via POST /api/paper/tick) et le coach n'a pas de navigateur. Sans ce
+#  crochet, ses stops et ses objectifs ne s'exécuteraient JAMAIS.
+# =========================================================================== #
+
+def test_run_once_calls_the_injected_coach_check():
+    calls = []
+    _run(_FetchQueue(), _NotifySpy(), coach_check=lambda now: calls.append(now))
+    assert calls == [NOW]
+
+
+def test_run_once_default_coach_check_calls_the_real_module(monkeypatch):
+    """Câblage par défaut : le VRAI ``coach_trader.maybe_run`` -- vérifié en le
+    substituant (le conftest le neutralise déjà par défaut ; on écrase ici sa
+    doublure par un espion)."""
+    from backend.bots.paper import coach_trader as ct
+    calls = []
+    monkeypatch.setattr(ct, "maybe_run",
+                        lambda **kw: calls.append(kw) or {"ticked": False})
+    _run(_FetchQueue(), _NotifySpy())
+    assert len(calls) == 1
+    assert calls[0]["now"] == NOW
+
+
+def test_a_broken_coach_check_never_breaks_the_cycle():
+    def _boom(now):
+        raise RuntimeError("le compte du coach est en panne")
+    counters = _run(_FetchQueue(), _NotifySpy(), coach_check=_boom)
+    assert counters["users"] == 0    # le cycle a continué normalement
+
+
+def test_coach_check_does_not_affect_the_counters_contract():
+    """Le compte du coach ne touche PAS `counters` -- même assertion stricte
+    que ``test_weekly_check_does_not_affect_the_counters_contract``."""
+    counters = newswatch.run_once(now=NOW, fetch=_FetchQueue(), notifier=_NotifySpy(),
+                                  tg_cfg={}, sleep=lambda s: None, mode="tout")
+    assert counters == {"users": 0, "symbols": 0, "fetched": 0, "notified": 0,
+                        "errors": 0, "convergence_fired": False,
+                        "verdicts": 0}
+
+
+def test_coach_does_not_run_when_telegram_unconfigured():
+    """Doctrine du fichier : sans Telegram, AUCUN accès disque -- le compte du
+    coach ne doit donc même pas être appelé."""
+    calls = []
+    newswatch.run_once(now=NOW, fetch=_FetchQueue(), notifier=_NotifySpy(),
+                       tg_cfg={}, sleep=lambda s: None, mode="tout",
+                       coach_check=lambda now: calls.append(now))
+    assert calls == []
+
+
+def test_the_coach_hook_runs_right_after_the_weekly_briefing():
+    """L'ORDRE compte : sauvegarde -> bilan hebdo -> compte du coach, tous les
+    trois AVANT les volets de presse (ils sont indépendants du cycle)."""
+    order = []
+    _run(_FetchQueue(), _NotifySpy(),
+         backup_check=lambda now: order.append("backup"),
+         weekly_check=lambda now: order.append("weekly"),
+         coach_check=lambda now: order.append("coach"))
+    assert order == ["backup", "weekly", "coach"]
+
+
+def test_a_coach_portfolio_with_a_position_is_watched_by_symbol():
+    """Le coach est un compte comme un autre pour la veille : dès qu'il détient
+    un titre, ce titre rejoint l'union des symboles surveillés."""
+    store.save_portfolio("coach", _portfolio(["NESN.SW"]))
+    found = dict(newswatch._discover_portfolios())
+    assert "coach" in found
+    assert newswatch._position_symbols(found["coach"]) == ["NESN.SW"]
