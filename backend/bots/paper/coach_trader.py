@@ -442,11 +442,31 @@ def _tidy(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+def _note_of(payload: Any) -> Optional[str]:
+    """Le ``note`` de tête du bloc, ou ``None`` — TOLÉRANT (PUR).
+
+    Une liste nue (l'autre forme acceptée par :func:`_actions_of`) n'a pas de
+    clé ``note`` possible -> ``None``, jamais une exception. Un ``note`` d'un
+    autre type que ``str`` (le modèle a un jour sur deux des lubies de forme,
+    cf. :func:`_actions_of`) compte aussi comme absent : mieux vaut zéro note
+    qu'une note inventée en stringifiant n'importe quoi. Une chaîne vide ou
+    blanche compte de même comme absente — elle ne dit rien de plus qu'un
+    silence, et l'appelant a déjà son repli générique pour ce cas.
+    """
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("note")
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
 def parse_actions(text: Any) -> Dict[str, Any]:
     """Sépare le digest LISIBLE du bloc d'actions qu'il porte (PUR).
 
-    Rend ``{"text": str, "actions": list, "error": None|"no_block"|
-    "parse_failed"}``.
+    Rend ``{"text": str, "actions": list, "note": str|None, "error": None|
+    "no_block"|"parse_failed"}``.
 
     **On n'invente JAMAIS un ordre** : pas de bloc lisible ⇒ zéro action. Un
     digest sans bloc est un digest normal (le coach n'a rien à faire ce
@@ -460,23 +480,34 @@ def parse_actions(text: Any) -> Dict[str, Any]:
 
     Le texte rendu est strippé à ses deux bouts et ses trous recollés
     (:func:`_tidy`) ; il n'est jamais réécrit autrement.
+
+    ``note`` (LOT 4bis) est le champ de tête FACULTATIF du bloc — la raison
+    ARGUMENTÉE du coach quand ``actions`` est vide, ou une phrase de lecture
+    de marché quand il agit (cf. ``llm.coach_actions_block``, seul endroit qui
+    écrit ce contrat). Absent, mal typé ou vide -> ``None`` (:func:`_note_of`)
+    ; jamais de bloc lisible du tout (``"no_block"``/``"parse_failed"``) ->
+    ``None`` aussi, on n'a rien pu lire.
     """
     body = text if isinstance(text, str) else ""
     matches = list(_BLOCK_RE.finditer(body))
     if not matches:
-        return {"text": _tidy(body), "actions": [], "error": "no_block"}
+        return {"text": _tidy(body), "actions": [], "note": None,
+                "error": "no_block"}
 
     cleaned = _tidy(_BLOCK_RE.sub("", body))
 
     try:
         payload = json.loads(matches[0].group(1).strip())
     except (TypeError, ValueError):
-        return {"text": cleaned, "actions": [], "error": "parse_failed"}
+        return {"text": cleaned, "actions": [], "note": None,
+                "error": "parse_failed"}
 
     actions = _actions_of(payload)
     if actions is None:
-        return {"text": cleaned, "actions": [], "error": "parse_failed"}
-    return {"text": cleaned, "actions": actions, "error": None}
+        return {"text": cleaned, "actions": [], "note": None,
+                "error": "parse_failed"}
+    return {"text": cleaned, "actions": actions, "note": _note_of(payload),
+            "error": None}
 
 
 # --------------------------------------------------------------------------- #

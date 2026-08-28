@@ -5748,6 +5748,86 @@ def test_a_parse_error_never_produces_a_hold(tmp_path, monkeypatch):
     assert [row["action"] for row in rows] == ["parse"]
 
 
+# --- LOT 4bis : le ``note`` du coach, jusqu'au registre --------------------- #
+
+def test_an_empty_decision_WITH_a_note_records_the_ACTUAL_reason(tmp_path, monkeypatch):
+    """Vécu en prod : le coach a rendu deux passes ``hold`` de suite, et le
+    registre n'archivait que la phrase générique — sa vraie raison écrite dans
+    ``note`` était perdue. Elle devient le ``detail`` de la ligne ``hold``."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    reason = "il me faut le cours actuel du titre pour fixer un stop technique"
+    rows = pr.execute_coach_actions([], source="daily", note=reason)
+    assert len(rows) == 1
+    assert rows[0]["action"] == "hold" and rows[0]["accepted"] is True
+    assert rows[0]["detail"] == reason
+    assert coach_ledger()[0]["detail"] == reason
+
+
+def test_an_empty_decision_without_a_note_keeps_the_generic_detail(tmp_path, monkeypatch):
+    """Repli sur la phrase historique : comportement inchangé quand le coach
+    (ou un appelant plus ancien) ne fournit rien."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([], source="daily")
+    assert rows[0]["detail"] == pr.COACH_HOLD_DETAIL
+
+
+@pytest.mark.parametrize("blank_note", [None, "", "   ", 42, ["x"], {"a": 1}])
+def test_an_empty_decision_with_a_blank_or_untyped_note_falls_back(
+        tmp_path, monkeypatch, blank_note):
+    """Tolérant comme le reste du module : un ``note`` mal typé ne doit jamais
+    lever, et ne doit pas se lire comme une raison inventée."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([], source="daily", note=blank_note)
+    assert rows[0]["detail"] == pr.COACH_HOLD_DETAIL
+
+
+def test_a_parse_error_ignores_any_note(tmp_path, monkeypatch):
+    """Une panne n'a rien à voir avec une lecture de marché : elle reste une
+    ligne ``parse`` isolée, ``note`` ou pas."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([], source="daily", parse_error="parse_failed",
+                                   note="jamais utilisée")
+    assert len(rows) == 1
+    assert rows[0]["action"] == "parse"
+
+
+def test_actions_WITH_a_note_add_one_accompanying_note_row(tmp_path, monkeypatch):
+    """Quand il agit ET commente, les deux coexistent : la ligne d'ordre garde
+    SON détail chiffré, une ligne ``note`` séparée porte la lecture de marché
+    — choix documenté au lieu d'écraser le détail de la 1ʳᵉ ligne (cf.
+    ``_execute_coach_actions_locked``)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_action()], source="daily",
+                                   note="Le marché est nerveux ce soir.")
+    assert len(rows) == 2
+    kinds = [row["action"] for row in rows]
+    assert kinds.count("note") == 1
+    note_row = next(row for row in rows if row["action"] == "note")
+    assert note_row["accepted"] is True
+    assert note_row["detail"] == "Le marché est nerveux ce soir."
+    assert note_row["symbol"] == ""
+    order_row = next(row for row in rows if row["action"] == "buy")
+    assert order_row["detail"] == "15 x 100.00 CHF"     # PAS écrasé par la note
+
+
+def test_actions_without_a_note_add_no_accompanying_row(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_action()], source="daily")
+    assert len(rows) == 1
+    assert rows[0]["action"] != "note"
+
+
+def test_the_note_row_reads_most_recent_in_the_persisted_ledger(tmp_path, monkeypatch):
+    """Le registre se lit du plus récent au plus ancien : la RAISON d'ensemble
+    doit apparaître AVANT l'action concrète qu'elle accompagne."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action()], source="daily",
+                             note="Le marché est nerveux ce soir.")
+    persisted = coach_ledger()
+    assert persisted[0]["action"] == "note"
+    assert persisted[1]["action"] == "buy"
+
+
 def test_execute_coach_actions_never_raises(tmp_path, monkeypatch):
     """Appelée depuis un cycle de veille ET depuis la convergence : elle ne
     doit JAMAIS faire tomber son appelant."""
@@ -5910,9 +5990,12 @@ def test_snapshot_equity_never_raises(tmp_path, monkeypatch):
 
 # --- 6) La passe quotidienne -------------------------------------------
 
-def _actions_block(actions):
+def _actions_block(actions, note=None):
+    payload = {"actions": actions}
+    if note is not None:
+        payload["note"] = note
     return ("Voici ce que je fais ce soir.\n```COACH_ACTIONS\n%s\n```"
-            % json.dumps({"actions": actions}))
+            % json.dumps(payload))
 
 
 def test_run_coach_daily_pass_executes_what_the_model_returns(tmp_path, monkeypatch):
@@ -5954,6 +6037,7 @@ def test_the_daily_pass_context_is_deterministic(tmp_path, monkeypatch):
     assert captured["positions"][0]["thesis"] == COACH_THESIS
     assert "stats" in captured and "discipline" in captured
     assert isinstance(captured["radar"], list)
+    assert isinstance(captured["candidates"], list)
 
 
 def test_the_daily_pass_logs_llm_failed_and_acts_on_nothing(tmp_path, monkeypatch):
@@ -5987,6 +6071,22 @@ def test_a_quiet_daily_pass_logs_a_hold(tmp_path, monkeypatch):
                         lambda context, lang="fr": "P", raising=False)
     pr.run_coach_daily_pass(FIXED_NOW, claude=lambda prompt: "Je ne touche à rien.")
     assert coach_ledger()[0]["action"] == "hold"
+    # Pas de bloc du tout -> pas de ``note`` à lire -> repli générique.
+    assert coach_ledger()[0]["detail"] == pr.COACH_HOLD_DETAIL
+
+
+def test_a_quiet_daily_pass_WITH_a_note_records_the_ARGUED_reason(tmp_path, monkeypatch):
+    """LOT 4bis — vécu en prod : le coach a rendu deux passes ``hold`` de suite
+    et seule la phrase générique était archivée, sa vraie raison perdue."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(pr.llm, "build_coach_trader_prompt",
+                        lambda context, lang="fr": "P", raising=False)
+    reason = ("il me faut le cours actuel du titre pour fixer un stop "
+             "technique et une taille cohérente avec le risque à 2 %")
+    pr.run_coach_daily_pass(FIXED_NOW,
+                            claude=lambda prompt: _actions_block([], note=reason))
+    assert coach_ledger()[0]["action"] == "hold"
+    assert coach_ledger()[0]["detail"] == reason
 
 
 def test_the_daily_pass_never_raises(tmp_path, monkeypatch):
@@ -6006,16 +6106,19 @@ def test_the_daily_pass_never_raises(tmp_path, monkeypatch):
 #  sans elle, le prompt ne demande aucune action et l'exécuteur n'est jamais
 #  engagé, sans une erreur ni un test rouge.
 
-def test_coach_book_rend_les_quatre_cles_sur_un_compte_neuf(tmp_path, monkeypatch):
+def test_coach_book_rend_les_cinq_cles_sur_un_compte_neuf(tmp_path, monkeypatch):
     """La forme EXACTE que ``llm.coach_actions_block`` consomme, sur un compte
-    tout neuf — et rien ne lève."""
+    tout neuf — et rien ne lève. ``candidates`` (LOT 4bis) rejoint les quatre
+    clés historiques."""
     c, _ = make_client(tmp_path, monkeypatch)
     book = pr.coach_book()
-    assert set(book) == {"cash_chf", "equity_chf", "positions", "open_orders"}
+    assert set(book) == {"cash_chf", "equity_chf", "positions", "open_orders",
+                         "candidates"}
     assert book["cash_chf"] == 10000.0
     assert book["equity_chf"] == 10000.0
     assert book["positions"] == []
     assert book["open_orders"] == []
+    assert book["candidates"] == []
 
 
 def test_coach_book_a_la_MEME_forme_que_celui_de_la_passe_quotidienne(
@@ -6087,6 +6190,125 @@ def test_coach_book_ne_leve_JAMAIS_et_rend_un_livre_VIDE(tmp_path, monkeypatch):
     assert book == {}
     assert not book                                   # falsy -> pas d'exécuteur
     assert pr.llm.coach_actions_block(book) == ""     # ... et pas de section
+
+
+# --- 6ter) Les CANDIDATS : le cours de ce que le coach ne détient pas encore
+#
+#  Vécu en prod (2026-08-28) : un livre neuf ou vide n'a AUCUN prix hors de ce
+#  qu'il détient déjà — trois passes de suite se sont terminées sur la même
+#  raison honnête (« il me faut le cours actuel du titre pour fixer un stop
+#  technique ») avant que ce cours n'existe nulle part dans le contexte. Le
+#  coach était affamé de données, pas timide.
+
+def _open_hyp(tickers, hyp_id="h1", status="open"):
+    return {"id": hyp_id, "created_at": FIXED_NOW, "status": status,
+            "outcome": None, "scored_at": None, "move_pct": None,
+            "thesis": "une thèse", "chain": ["a"], "markets": [],
+            "tickers": tickers, "direction": "up", "horizon_days": 7,
+            "confidence": "moyenne", "invalidation": "?"}
+
+
+def _seed_radar(hyps):
+    from backend.bots.paper import radar
+    state = radar.blank_state()
+    state["hypotheses"] = hyps
+    radar.save_state(state)
+
+
+def test_coach_candidates_quotes_each_distinct_ticker_from_open_hypotheses(
+        tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["AAPL"] = (200.0, "USD", "Apple Inc")
+    _seed_radar([_open_hyp(["AAPL"], "h1"), _open_hyp(["NESN.SW"], "h2")])
+
+    candidates = pr._coach_candidates(pr._open_radar_hypotheses())
+    by_symbol = {row["symbol"]: row for row in candidates}
+    assert set(by_symbol) == {"AAPL", "NESN.SW"}
+    assert by_symbol["AAPL"]["currency"] == "USD"
+    assert by_symbol["AAPL"]["price_chf"] == round(200.0 * 0.88, 2)
+    assert by_symbol["NESN.SW"]["price_chf"] == 100.0   # déjà en CHF, fx=1.0
+
+
+def test_coach_candidates_dedupes_tickers_across_hypotheses(tmp_path, monkeypatch):
+    """Le même ticker cité par deux hypothèses ne doit pas être coté deux fois
+    — l'ordre est celui de la PREMIÈRE apparition."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["AAPL"] = (200.0, "USD", "Apple Inc")
+    _seed_radar([_open_hyp(["NESN.SW"], "h1"),
+                 _open_hyp(["NESN.SW", "AAPL"], "h2")])
+
+    candidates = pr._coach_candidates(pr._open_radar_hypotheses())
+    assert [row["symbol"] for row in candidates] == ["NESN.SW", "AAPL"]
+
+
+def test_coach_candidates_ignores_hypotheses_that_are_not_open(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["AAPL"] = (200.0, "USD", "Apple Inc")
+    _seed_radar([_open_hyp(["AAPL"], "h1", status="scored")])
+
+    assert pr._coach_candidates(pr._open_radar_hypotheses()) == []
+
+
+def test_coach_candidates_omits_a_broken_quote_without_raising(tmp_path, monkeypatch):
+    """Panne -> candidat OMIS, jamais une exception : le reste du contexte ne
+    doit pas tomber pour un seul ticker muet."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.broken.add("AAPL")
+    _seed_radar([_open_hyp(["AAPL"], "h1"), _open_hyp(["NESN.SW"], "h2")])
+
+    candidates = pr._coach_candidates(pr._open_radar_hypotheses())
+    assert [row["symbol"] for row in candidates] == ["NESN.SW"]
+
+
+def test_coach_candidates_omits_an_unknown_symbol_without_raising(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    _seed_radar([_open_hyp(["ZZZZ.UNKNOWN"], "h1"), _open_hyp(["NESN.SW"], "h2")])
+
+    candidates = pr._coach_candidates(pr._open_radar_hypotheses())
+    assert [row["symbol"] for row in candidates] == ["NESN.SW"]
+
+
+def test_coach_candidates_caps_at_ten_distinct_tickers(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    hyps = []
+    for i in range(15):
+        symbol = "T%d.SW" % i
+        market.prices[symbol] = (10.0 + i, "CHF", "Titre %d" % i)
+        hyps.append(_open_hyp([symbol], "h%d" % i))
+    _seed_radar(hyps)
+
+    candidates = pr._coach_candidates(pr._open_radar_hypotheses())
+    assert len(candidates) == 10
+    assert [row["symbol"] for row in candidates] == ["T%d.SW" % i for i in range(10)]
+
+
+def test_coach_candidates_is_empty_without_any_open_hypothesis(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert pr._coach_candidates([]) == []
+    assert pr._coach_candidates(None) == []
+
+
+def test_coach_pass_context_carries_candidates(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["AAPL"] = (200.0, "USD", "Apple Inc")
+    _seed_radar([_open_hyp(["AAPL"], "h1")])
+    portfolio = pr._ensure_coach_account()
+
+    context = pr._coach_pass_context(portfolio, FIXED_NOW)
+    assert context["candidates"] == [
+        {"symbol": "AAPL", "price_chf": round(200.0 * 0.88, 2), "currency": "USD"}]
+
+
+def test_coach_book_carries_candidates_too(tmp_path, monkeypatch):
+    """Le digest n'a NULLE PART de cours pour ses items — même faim de
+    données que la passe quotidienne, donc le même enrichissement."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["AAPL"] = (200.0, "USD", "Apple Inc")
+    _seed_radar([_open_hyp(["AAPL"], "h1")])
+
+    book = pr.coach_book()
+    assert book["candidates"] == [
+        {"symbol": "AAPL", "price_chf": round(200.0 * 0.88, 2), "currency": "USD"}]
 
 
 # --- 7) Les endpoints ---------------------------------------------------

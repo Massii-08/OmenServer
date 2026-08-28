@@ -2132,10 +2132,12 @@ class _Exec(object):
         self.log = log if log is not None else []
         self.boom = boom
 
-    def __call__(self, actions, source="digest", now_iso=None, parse_error=None):
+    def __call__(self, actions, source="digest", now_iso=None, parse_error=None,
+                note=None):
         self.log.append("execute")
         self.calls.append({"actions": list(actions), "source": source,
-                           "now_iso": now_iso, "parse_error": parse_error})
+                           "now_iso": now_iso, "parse_error": parse_error,
+                           "note": note})
         if self.boom:
             raise RuntimeError("moteur d'ordres cassé")
         return [{"accepted": True}]
@@ -2274,6 +2276,36 @@ def test_maybe_fire_execute_apres_l_envoi_et_ne_fuite_le_bloc_NULLE_PART(
     # (c) le carnet Markdown de chaque compte.
     note = (tmp_path / "alice-vault" / "Signaux.md").read_text(encoding="utf-8")
     assert MARKER not in note and "Voici ce qui converge." in note
+
+
+def test_maybe_fire_transmet_la_note_du_coach_a_l_executeur(sources, alice, tmp_path):
+    """LOT 4bis : la raison ARGUMENTÉE du coach (bloc vide + ``note``, ou
+    actions + lecture de marché) doit atteindre l'exécuteur — sans quoi le
+    registre retomberait sur la phrase générique même quand le modèle a
+    écrit pourquoi."""
+    _arm_two_factors(sources)
+    runner = _Exec()
+
+    out = convergence.maybe_fire(
+        now=NOW, llm=_with_block(payload={"actions": [ACTION],
+                                          "note": "Le marché est nerveux ce soir."}),
+        notifier=_notifier([]), tg_cfg=TG, fetch_state=_radar_state(),
+        coach_book=COACH_BOOK, execute_actions=runner)
+
+    assert out["fired"] is True
+    assert runner.calls[0]["note"] == "Le marché est nerveux ce soir."
+
+
+def test_maybe_fire_transmet_none_quand_le_coach_n_ecrit_pas_de_note(
+        sources, alice, tmp_path):
+    _arm_two_factors(sources)
+    runner = _Exec()
+
+    convergence.maybe_fire(now=NOW, llm=_with_block(), notifier=_notifier([]),
+                           tg_cfg=TG, fetch_state=_radar_state(),
+                           coach_book=COACH_BOOK, execute_actions=runner)
+
+    assert runner.calls[0]["note"] is None
 
 
 def test_maybe_fire_un_bloc_CASSE_ne_produit_aucune_action(sources, alice, tmp_path):
@@ -2532,6 +2564,40 @@ def test_le_repli_du_parseur_laisse_un_texte_SANS_bloc_intact(monkeypatch):
     out = convergence._parse_coach_actions("Voici ce qui converge.")
     assert out["text"] == "Voici ce qui converge."
     assert out["actions"] == []
+
+
+# --- LOT 4bis : le ``note`` de tête traverse aussi le miroir convergence --- #
+
+def test_parse_coach_actions_porte_la_note_du_bloc():
+    out = convergence._parse_coach_actions(
+        'Texte lisible.\n\n```%s\n%s\n```'
+        % (MARKER, json.dumps({"actions": [], "note": "Le marché est nerveux."})))
+    assert out["note"] == "Le marché est nerveux."
+
+
+def test_parse_coach_actions_note_est_none_sans_note():
+    out = convergence._parse_coach_actions(
+        'Texte lisible.\n\n```%s\n{"actions": []}\n```' % MARKER)
+    assert out["note"] is None
+
+
+def test_parse_coach_actions_note_est_none_sans_bloc():
+    out = convergence._parse_coach_actions("Voici ce qui converge.")
+    assert out["note"] is None
+
+
+def test_le_repli_du_parseur_rend_aussi_une_note_a_none(monkeypatch):
+    """Le repli grossier (module ``coach_trader`` injoignable) ne sait pas lire
+    de note — ``None``, jamais une exception."""
+    import backend.bots.paper as paper_pkg
+
+    monkeypatch.setitem(sys.modules, "backend.bots.paper.coach_trader", None)
+    monkeypatch.delattr(paper_pkg, "coach_trader", raising=False)
+
+    out = convergence._parse_coach_actions(
+        'Texte lisible.\n\n```%s\n{"actions": [%s], "note": "X"}\n```'
+        % (MARKER, json.dumps(ACTION)))
+    assert out["note"] is None
 
 
 # --- LA COUTURE : le livre du coach est résolu TOUT SEUL -------------------- #

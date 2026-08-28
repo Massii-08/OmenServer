@@ -873,6 +873,65 @@ def test_coach_actions_block_liste_les_setups_autorises():
         assert '"%s"' % setup in block, setup
 
 
+# --- LOT 4bis : le ``note`` de tête — l'inaction doit être ARGUMENTÉE ------- #
+
+def test_coach_actions_block_exige_une_note_quand_les_actions_sont_vides():
+    """Ne rien faire reste légitime, mais la raison doit être ÉCRITE — jamais
+    un silence générique."""
+    block = llm.coach_actions_block(BOOK)
+    assert '"note"' in block
+    assert "OBLIGATOIRE" in block
+    low = block.lower()
+    assert "spécifiques" in low
+    assert "niveau de prix" in low
+    assert "agenda" in low
+
+
+def test_coach_actions_block_interdit_la_generalite_type_j_attends_une_opportunite():
+    """L'exemple banni doit être ÉCRIT dans le prompt, pas seulement décrit en
+    abstrait — un modèle apprend mieux d'un contre-exemple concret."""
+    low = llm.coach_actions_block(BOOK).lower()
+    assert "j'attends une meilleure opportunité" in low
+    assert "ça ne dit rien" in low
+
+
+def test_coach_actions_block_dit_que_le_registre_affiche_la_note_telle_quelle():
+    low = llm.coach_actions_block(BOOK).lower()
+    assert "registre l'afficherait" in low or "afficherait tel quel" in low
+
+
+def test_coach_actions_block_note_reste_facultative_et_bienvenue_avec_des_actions():
+    """Quand il agit, ``note`` n'est qu'une phrase de lecture de marché —
+    bienvenue, jamais exigée."""
+    block = llm.coach_actions_block(BOOK)
+    low = block.lower()
+    assert "facultatif" in low and "bienvenu" in low
+    assert '"note"' in block
+
+
+def test_coach_actions_block_donne_note_comme_champ_de_tete_hors_actions():
+    low = llm.coach_actions_block(BOOK).lower()
+    assert "champ de tête" in low or "champ de tete" in low
+    assert "à côté de" in low or "a cote de" in low
+
+
+def test_coach_actions_block_l_exemple_json_porte_desormais_une_note():
+    block = llm.coach_actions_block(BOOK)
+    assert '"note": "une phrase de lecture de marché"' in block
+    # ... et le format d'origine n'a pas bougé : ``{"actions": [`` toujours là.
+    assert '{"actions": [' in block
+
+
+def test_coach_actions_block_mentionne_les_candidats_et_leurs_cours():
+    """Vécu en prod : sans cours des candidats, un livre neuf/vide ne peut
+    RIEN dimensionner — le coach était affamé de données, pas timide."""
+    block = llm.coach_actions_block(BOOK)
+    low = block.lower()
+    assert "candidates" in low
+    assert "manque de donn" in low       # « le manque de données n'est plus une excuse »
+    assert "chf" in low
+
+
 # --- la passe quotidienne de gestion ---------------------------------------- #
 
 CTX = {
@@ -930,6 +989,24 @@ def test_build_coach_trader_prompt_reprend_les_trois_interdits():
     assert "sûr" in prompt and "garanti" in prompt       # certitude
     assert "ARGENT RÉEL" in prompt                       # jamais de conseil réel
     assert "invente" in prompt.lower()                   # rien hors contexte
+
+
+def test_coach_book_of_porte_desormais_cinq_cles_dont_candidates():
+    book = llm._coach_book_of(CTX)
+    assert set(book) == {"cash_chf", "equity_chf", "positions", "open_orders",
+                         "candidates"}
+    assert book["candidates"] == []                 # absent du contexte CTX
+
+
+def test_coach_book_of_porte_les_candidats_fournis_par_le_contexte():
+    ctx = dict(CTX)
+    ctx["candidates"] = [{"symbol": "AAPL", "price_chf": 176.0, "currency": "USD"}]
+    assert llm._coach_book_of(ctx)["candidates"] == ctx["candidates"]
+
+
+def test_coach_book_of_tolere_un_contexte_sans_candidats():
+    for bad in (None, {}, "pas un dict", []):
+        assert llm._coach_book_of(bad)["candidates"] == []
 
 
 def test_build_coach_trader_prompt_termine_par_le_bloc_d_actions():

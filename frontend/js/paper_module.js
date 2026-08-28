@@ -3868,17 +3868,22 @@ const PaperModule = {
             (note
               ? '<div style="font-size:13px;color:var(--text-muted);margin-top:4px;">' +
                 esc(note) + '</div>' : '') +
-            // Le motif du refus est TRADUIT depuis son code (repli : le code
-            // brut, jamais la clé i18n — piège #12) et le détail chiffré du
-            // serveur est rendu TEL QUEL, on ne recalcule rien.
-            ((!ok && (reason || detail))
-              ? '<div style="margin-top:6px;border-left:2px solid var(--warning);' +
-                     'padding-left:10px;font-size:13px;line-height:1.55;">' +
-                (reason
+            // Le motif du refus (TOUJOURS un code de REJET) est TRADUIT depuis
+            // son code (repli : le code brut, jamais la clé i18n — piège #12).
+            // Le détail, lui, s'affiche désormais qu'il soit accepté OU
+            // refusé (LOT 4bis) : ``hold``/``note`` portent maintenant la
+            // VRAIE raison argumentée du coach dans ``detail`` — pas
+            // seulement le motif chiffré d'un refus — le réserver aux lignes
+            // refusées aurait rendu le fix du registre invisible à l'écran.
+            ((reason || detail)
+              ? '<div style="margin-top:6px;border-left:2px solid ' +
+                     (ok ? 'var(--border-strong)' : 'var(--warning)') +
+                     ';padding-left:10px;font-size:13px;line-height:1.55;">' +
+                ((!ok && reason)
                   ? '<span style="color:var(--warning);">' +
                     esc(this._label('paper.ct_reason_' + reason, reason)) + '</span>' : '') +
                 (detail
-                  ? ((reason ? ' — ' : '') + '<span style="color:var(--text-muted);">' +
+                  ? (((!ok && reason) ? ' — ' : '') + '<span style="color:var(--text-muted);">' +
                      esc(detail) + '</span>') : '') +
                 '</div>'
               : '') +

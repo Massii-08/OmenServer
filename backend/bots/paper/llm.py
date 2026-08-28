@@ -848,9 +848,16 @@ def _pct(value: Any) -> str:
 def _coach_book_of(context: Any) -> Dict[str, Any]:
     """Le compte du coach, extrait d'un contexte de passe quotidienne (PUR).
 
-    Les quatre clés sont TOUJOURS présentes, même vides : le bloc d'actions ne
+    Les cinq clés sont TOUJOURS présentes, même vides : le bloc d'actions ne
     doit pas disparaître d'un prompt sous prétexte que le compte est neuf (un
     coach sans position doit pouvoir ouvrir sa première ligne).
+
+    ``candidates`` (LOT 4bis) : le cours ACTUEL des tickers suivis par le
+    radar (``_coach_pass_context``/``coach_book`` en sont les producteurs côté
+    router). Né d'un vécu en prod : un livre neuf ou vide n'a AUCUN prix hors
+    de ce qu'il détient déjà, et le coach a passé trois soirs de suite à
+    refuser d'ouvrir quoi que ce soit faute de cours pour fixer un stop — une
+    faim de données, pas de la timidité.
     """
     ctx = context if isinstance(context, dict) else {}
     return {
@@ -858,6 +865,7 @@ def _coach_book_of(context: Any) -> Dict[str, Any]:
         "equity_chf": ctx.get("equity_chf"),
         "positions": ctx.get("positions") or [],
         "open_orders": ctx.get("open_orders") or [],
+        "candidates": ctx.get("candidates") or [],
     }
 
 
@@ -892,6 +900,17 @@ def coach_actions_block(book: Any) -> str:
         "Voici ce que tu as en main à cette seconde — c'est TON livre, pas "
         "celui de Massii :",
         _block("TON COMPTE", book),
+        # LOT 4bis — vécu en prod : un livre neuf n'a NULLE PART de cours hors
+        # de ce qu'il détient déjà (``positions`` ne cote QUE l'existant), et
+        # le coach a enchaîné trois passes « je ne peux rien ouvrir sans cours
+        # pour fixer un stop » — une faim de données, pas de la prudence.
+        "``candidates`` (dans TON COMPTE ci-dessus) donne le cours ACTUEL, "
+        "converti en CHF, de chaque ticker suivi par une hypothèse OUVERTE du "
+        "radar : tu as tout pour dimensionner un stop technique et une "
+        "taille cohérente avec ton risque — entre quand une thèse le mérite, "
+        "le manque de données n'est plus une excuse. Une liste vide veut "
+        "dire qu'aucune hypothèse n'est ouverte en ce moment, pas qu'aucun "
+        "titre n'existe.",
         # Directive de Massii : « le but, vu que c'est un test, c'est qu'il
         # gagne le plus possible — cela ne veut pas dire d'oublier toute mesure
         # de sûreté ». La sûreté vit dans le garde-fou DÉTERMINISTE
@@ -952,12 +971,18 @@ def coach_actions_block(book: Any) -> str:
         "patrimoine s'affiche FACE à celle de Massii. Tu joues ta CRÉDIBILITÉ "
         "à chaque ligne — c'est ce qui te tient honnête, et c'est pourquoi ni "
         "le sur-risque ni la timidité ne passent inaperçus.",
-        "Si tu n'as RIEN à faire aujourd'hui, rends le bloc VIDE : "
+        "Si tu n'as RIEN à faire aujourd'hui, rends les actions VIDES : "
         '``{"actions": []}``. Ne rien faire reste une réponse légitime, et '
         "parfois la bonne — mais ce doit être un CHOIX ARGUMENTÉ, jamais de la "
         "timidité : le registre archive AUSSI les passes sans action. On "
         "n'invente jamais un ordre pour avoir l'air actif ; on ne s'abstient "
-        "jamais non plus pour éviter d'avoir tort.",
+        "jamais non plus pour éviter d'avoir tort. Dans ce cas précis, "
+        "``note`` devient OBLIGATOIRE : explique en 2 à 3 phrases "
+        "SPÉCIFIQUES ce que tu vois et ce que tu attends pour agir — un "
+        "niveau de prix précis, un événement daté de l'agenda, une "
+        "confirmation nommée. Une généralité comme « j'attends une "
+        "meilleure opportunité » ne passe pas : ça ne dit rien, et le "
+        "registre l'afficherait tel quel, mot pour mot.",
         "Termine IMPÉRATIVEMENT ta réponse par ce bloc, et RIEN après. Il est "
         "purement TECHNIQUE : il ne répète rien du texte lisible qui précède, "
         "c'est la machine qui le lit, pas Massii. ``action`` vaut %s ; "
@@ -965,11 +990,14 @@ def coach_actions_block(book: Any) -> str:
         "``target`` sont des PRIX exprimés dans la DEVISE DU TITRE (jamais "
         "convertis) ; ``thesis`` tient en une phrase ; ``setup`` est "
         "facultatif et vaut l'un de : %s. Un ``sell`` SANS ``qty`` veut dire "
-        "« solder la ligne entière »." % (kinds, setups),
+        "« solder la ligne entière ». ``note`` est un champ de TÊTE, à côté "
+        "de ``actions`` (pas dedans) : FACULTATIF et bienvenu en une phrase "
+        "de lecture de marché quand tu agis, OBLIGATOIRE quand tu n'agis pas "
+        "(cf. ci-dessus)." % (kinds, setups),
         "```%s\n"
         '{"actions": [{"action": "buy", "symbol": "NESN.SW", "qty": 12, '
         '"stop": 92.5, "target": 118.0, "thesis": "une phrase courte", '
-        '"setup": "news"}]}\n'
+        '"setup": "news"}], "note": "une phrase de lecture de marché"}\n'
         "```" % coach_trader.ACTIONS_MARKER,
     ])
 

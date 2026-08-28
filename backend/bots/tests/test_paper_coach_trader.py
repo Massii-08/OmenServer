@@ -597,7 +597,7 @@ def test_parse_actions_tolerates_a_non_string(raw):
 
 def test_parse_actions_output_shape_is_stable():
     out = coach_trader.parse_actions(_digest(BLOCK_OK))
-    assert set(out) == {"text", "actions", "error"}
+    assert set(out) == {"text", "actions", "note", "error"}
 
 
 def test_parse_actions_survives_a_truncated_block():
@@ -632,6 +632,85 @@ def test_parse_actions_can_render_an_empty_text():
     out = coach_trader.parse_actions(BLOCK_OK)
     assert out["text"] == ""
     assert len(out["actions"]) == 1
+
+
+# --------------------------------------------------------------------------- #
+# parse_actions — le ``note`` de tête (LOT 4bis)
+#
+# L'inaction doit être un CHOIX ARGUMENTÉ, jamais un silence générique : le
+# coach écrit désormais POURQUOI il ne fait rien (ou ce qu'il lit du marché
+# quand il agit) dans un champ ``note`` de tête, à côté de ``actions``.
+# --------------------------------------------------------------------------- #
+
+def _block_with(note=None, actions=None):
+    payload = {"actions": actions if actions is not None else []}
+    if note is not None:
+        payload["note"] = note
+    return _digest("```COACH_ACTIONS\n%s\n```" % json.dumps(payload))
+
+
+def test_parse_actions_extracts_the_note_next_to_empty_actions():
+    out = coach_trader.parse_actions(
+        _block_with(note="J'attends la confirmation du support à 92."))
+    assert out["error"] is None
+    assert out["actions"] == []
+    assert out["note"] == "J'attends la confirmation du support à 92."
+
+
+def test_parse_actions_extracts_the_note_alongside_real_actions():
+    out = coach_trader.parse_actions(
+        _block_with(note="Le marché est nerveux ce soir.",
+                   actions=[{"action": "buy", "symbol": "NESN.SW"}]))
+    assert out["note"] == "Le marché est nerveux ce soir."
+    assert out["actions"] == [{"action": "buy", "symbol": "NESN.SW"}]
+
+
+def test_parse_actions_note_is_none_when_absent():
+    out = coach_trader.parse_actions(_block_with())
+    assert out["error"] is None
+    assert out["note"] is None
+
+
+@pytest.mark.parametrize("bad", [42, 3.5, True, ["x"], {"a": 1}, None])
+def test_parse_actions_note_non_string_is_none(bad):
+    """Un ``note`` mal typé ne doit jamais lever — juste compter comme absent,
+    même tolérance que le reste du parseur (cf. ``_actions_of``)."""
+    out = coach_trader.parse_actions(_block_with(note=bad))
+    assert out["note"] is None
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
+def test_parse_actions_note_blank_string_is_none(blank):
+    """Une chaîne vide ou blanche ne dit rien de plus qu'un silence : elle
+    compte comme absente, pas comme une raison."""
+    out = coach_trader.parse_actions(_block_with(note=blank))
+    assert out["note"] is None
+
+
+def test_parse_actions_note_is_stripped():
+    out = coach_trader.parse_actions(_block_with(note="  espaces autour  "))
+    assert out["note"] == "espaces autour"
+
+
+def test_parse_actions_note_is_none_on_a_bare_list_payload():
+    """Une liste nue n'a pas de clé ``note`` possible — jamais une exception,
+    juste ``None``."""
+    out = coach_trader.parse_actions(
+        _digest('```COACH_ACTIONS\n[{"action": "sell", "symbol": "X"}]\n```'))
+    assert out["note"] is None
+
+
+def test_parse_actions_note_is_none_on_parse_failed():
+    broken = _digest('```COACH_ACTIONS\n{"note": "X", "actions": [ceci}\n```')
+    out = coach_trader.parse_actions(broken)
+    assert out["error"] == "parse_failed"
+    assert out["note"] is None
+
+
+def test_parse_actions_note_is_none_without_a_block():
+    out = coach_trader.parse_actions("Bonjour Massii. Rien à faire.")
+    assert out["error"] == "no_block"
+    assert out["note"] is None
 
 
 # --------------------------------------------------------------------------- #

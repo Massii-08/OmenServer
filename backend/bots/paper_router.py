@@ -1160,10 +1160,18 @@ def _append_discussion(username: str, question: str, answer: str, now_iso: str) 
 COACH_DISPLAY = "Coach"
 
 # Ce que dit le registre quand le coach a délibérément choisi de ne rien faire
-# (le modèle a répondu, sans bloc d'actions). Son inaction doit être un CHOIX
-# visible, jamais un silence : sans cette ligne, une soirée sans décision et
-# une soirée où la passe n'a pas tourné se ressembleraient à l'écran.
+# ET n'a laissé aucune raison exploitable (``note`` absente/vide, LOT 4bis) —
+# le repli générique historique. Son inaction doit être un CHOIX visible,
+# jamais un silence : sans cette ligne, une soirée sans décision et une soirée
+# où la passe n'a pas tourné se ressembleraient à l'écran.
 COACH_HOLD_DETAIL = "aucune action : le coach a choisi de ne rien changer"
+
+# Le nombre de tickers DISTINCTS des hypothèses radar ouvertes dont le coach
+# reçoit le cours (LOT 4bis, ``_coach_candidates``). Même ordre de grandeur
+# que ``MAX_POSITIONS_IN_PROMPT``/``radar.MAX_OPEN`` : assez pour couvrir tout
+# ce que le radar suit activement, borné pour ne pas facturer un cours par
+# ticker jamais retenu par une hypothèse morte.
+MAX_COACH_CANDIDATES = 10
 
 
 def _num(value: Any) -> Optional[float]:
@@ -1228,6 +1236,61 @@ def _coach_quote(symbol: str) -> Optional[Dict[str, Any]]:
     if price is None or price <= 0 or rate is None or rate <= 0:
         return None
     return {"price": price, "currency": currency, "fx_rate": rate}
+
+
+def _coach_candidate_symbols(hypotheses: Any) -> List[str]:
+    """Tickers DISTINCTS des hypothèses radar reçues, dans l'ordre où ils
+    apparaissent (PUR — aucun réseau), plafonnés à
+    :data:`MAX_COACH_CANDIDATES`.
+
+    Appelée avec des hypothèses déjà filtrées OUVERTES
+    (``_open_radar_hypotheses``) : ce filtre-ci ne fait QUE dédoublonner et
+    canoniser, il ne relit pas le statut."""
+    seen: List[str] = []
+    for hyp in hypotheses or []:
+        if not isinstance(hyp, dict):
+            continue
+        for ticker in hyp.get("tickers") or []:
+            symbol = quotes.canonical(ticker) if isinstance(ticker, str) else ""
+            if not symbol or symbol in seen:
+                continue
+            seen.append(symbol)
+            if len(seen) >= MAX_COACH_CANDIDATES:
+                return seen
+    return seen
+
+
+def _coach_candidates(hypotheses: Any) -> List[Dict[str, Any]]:
+    """Le cours ACTUEL, converti en CHF, de chaque candidat des hypothèses
+    radar OUVERTES — un par ticker DISTINCT (:func:`_coach_candidate_symbols`).
+
+    Vécu en prod (2026-08-28) : sans lui, le coach n'a AUCUN prix hors de ce
+    qu'il détient déjà — ``positions``/``coach_book`` ne cotent QUE
+    l'existant, et un livre neuf ou vide n'a alors RIEN à dimensionner. Trois
+    passes de suite se sont terminées sur la même raison honnête : « il me
+    faut le cours actuel du titre pour fixer un stop technique et une taille
+    cohérente avec le risque à 2 % ». Il était affamé de données, pas timide.
+
+    Best-effort PAR SYMBOLE (même doctrine que ``_coach_quote``) : une panne
+    de cours OMET le candidat plutôt que de lever ou d'inventer un prix, et un
+    symbole qui plante N'EMPÊCHE PAS les suivants d'être cotés.
+    """
+    out: List[Dict[str, Any]] = []
+    for symbol in _coach_candidate_symbols(hypotheses):
+        try:
+            quote = _coach_quote(symbol)
+        except Exception as e:                  # noqa: BLE001 — jamais fatal
+            logger.warning("paper coach: cours candidat indisponible pour %s (%s)",
+                           symbol, type(e).__name__)
+            continue
+        if quote is None:
+            continue
+        out.append({
+            "symbol": symbol,
+            "price_chf": round(quote["price"] * quote["fx_rate"], 2),
+            "currency": quote["currency"],
+        })
+    return out
 
 
 def _coach_equity_chf(portfolio: models.Portfolio) -> float:
@@ -1461,9 +1524,26 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
     return entry, _coach_journal_entry(order, fill, source)
 
 
+def _clean_coach_note(value: Any) -> Optional[str]:
+    """Le ``note`` du coach, texte propre ou ``None`` — TOLÉRANT (PUR).
+
+    Même doctrine que ``coach_trader._note_of`` (qui l'a déjà nettoyé une
+    première fois côté parseur) : un type inattendu ou une chaîne vide/blanche
+    ne doit JAMAIS lever ici, et ne dit rien de plus qu'une absence. Cette
+    fonction-ci est la SECONDE ligne de défense — ``execute_coach_actions``
+    est une API publique que d'autres appelants (tests, une tâche future)
+    peuvent nourrir directement, sans repasser par le parseur.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
 def execute_coach_actions(actions: Any, source: str = "digest",
                           now_iso: Optional[str] = None,
                           parse_error: Any = None,
+                          note: Any = None,
                           **_ignored: Any) -> List[Dict[str, Any]]:
     """Exécute les décisions du coach. Rend les lignes de registre produites.
 
@@ -1475,22 +1555,39 @@ def execute_coach_actions(actions: Any, source: str = "digest",
     mots-clés qu'elle ne connaît pas encore (un ``trigger``, une langue), et
     une signature trop stricte transformerait un ajout anodin en panne.
 
+    ``note`` (LOT 4bis) est le champ de tête FACULTATIF du bloc ``COACH_
+    ACTIONS`` (``coach_trader.parse_actions``/``convergence._parse_coach_
+    actions`` en sont les producteurs) — TOLÉRANT (:func:`_clean_coach_note`) :
+    absent, vide ou mal typé compte comme aucune note.
+
     Trois cas, dans cet ordre :
 
-    1. ``parse_error`` non nul -> UNE ligne ``action="parse"`` et rien d'autre.
-       **On n'invente jamais un ordre** : un bloc absent ou illisible ne se
-       rattrape pas en devinant des intentions dans la prose.
+    1. ``parse_error`` non nul -> UNE ligne ``action="parse"`` et rien d'autre,
+       ``note`` IGNORÉE. **On n'invente jamais un ordre** : un bloc absent ou
+       illisible ne se rattrape pas en devinant des intentions dans la prose,
+       et une panne n'a rien à voir avec une lecture de marché.
     2. aucune action, aucune erreur -> UNE ligne ``action="hold"``,
        ``accepted=True``. C'est le SEUL cas où une ligne acceptée ne
        correspond pas à un ordre passé : le modèle a répondu et a choisi de ne
        rien changer, et ce choix doit se VOIR (une panne, elle, a déjà sa
        ligne ``parse`` — les deux ne doivent pas se confondre à l'écran).
+       ⚠️ Vécu en prod : le coach a enchaîné deux passes ``hold`` dont le
+       registre n'archivait que la phrase générique — sa vraie raison,
+       écrite dans ``note``, était perdue. Elle devient désormais le
+       ``detail`` de cette ligne (repli sur :data:`COACH_HOLD_DETAIL` si
+       ``note`` est absente/vide).
     3. sinon, chaque décision passe par le cours, le garde-fou, puis le moteur
-       d'ordres. Un refus n'interrompt jamais la suivante.
+       d'ordres. Un refus n'interrompt jamais la suivante. Si ``note`` est
+       fournie, UNE ligne D'ACCOMPAGNEMENT ``action="note"`` (``accepted=
+       True``, ``detail=note``) est ajoutée EN PLUS des lignes d'actions —
+       choix ARGUMENTÉ plutôt que de poser la note sur le ``detail`` de la
+       1ʳᵉ ligne, qui écraserait un contenu déjà signifiant (« 15 x 100.00
+       CHF » pour un ordre exécuté, ou le motif chiffré d'un refus).
     """
     try:
         return _execute_coach_actions_locked(actions, source, now_iso,
-                                             parse_error)
+                                             parse_error,
+                                             _clean_coach_note(note))
     except Exception as e:                  # noqa: BLE001 — jamais fatal
         logger.exception("paper coach: exécution des décisions en échec (%s)",
                          type(e).__name__)
@@ -1499,7 +1596,8 @@ def execute_coach_actions(actions: Any, source: str = "digest",
 
 def _execute_coach_actions_locked(actions: Any, source: str,
                                   now_iso: Optional[str],
-                                  parse_error: Any) -> List[Dict[str, Any]]:
+                                  parse_error: Any,
+                                  note: Optional[str]) -> List[Dict[str, Any]]:
     """Le corps de ``execute_coach_actions``.
 
     Le lire-modifier-écrire (portefeuille + registre) est sous ``_WRITE_LOCK``
@@ -1522,16 +1620,26 @@ def _execute_coach_actions_locked(actions: Any, source: str,
     with _WRITE_LOCK:
         portfolio = _ensure_coach_account()
         if not pending:
-            entry = coach_trader.ledger_entry(now, source, "hold", "", True,
-                                              detail=COACH_HOLD_DETAIL)
+            entry = coach_trader.ledger_entry(
+                now, source, "hold", "", True,
+                detail=note if note else COACH_HOLD_DETAIL)
             _push_coach_ledger([entry])
             return [entry]
 
         for action in pending:
-            entry, note = _coach_execute_one(portfolio, action, source, now)
+            entry, journal_entry = _coach_execute_one(portfolio, action, source, now)
             rows.append(entry)
-            if note is not None:
-                journal.append(note)
+            if journal_entry is not None:
+                journal.append(journal_entry)
+        if note:
+            # EN PLUS des lignes d'actions, jamais À LA PLACE d'une : voir la
+            # docstring d'``execute_coach_actions`` pour le choix documenté.
+            # Ajoutée en DERNIER dans ``rows`` -> ``_push_coach_ledger``
+            # (qui pousse « en tête » un par un) la place la plus RÉCENTE du
+            # lot au registre : la raison d'ensemble se lit avant l'action
+            # concrète qu'elle accompagne.
+            rows.append(coach_trader.ledger_entry(
+                now, source, "note", "", True, detail=note))
         _save(coach_trader.COACH_USERNAME, portfolio)
         _push_coach_ledger(rows)
 
@@ -1746,6 +1854,7 @@ def _coach_pass_context(portfolio: models.Portfolio,
         "radar": _open_radar_hypotheses(),
         "market_mood": {},
         "agenda": [],
+        "candidates": [],
     }
     try:
         context["market_mood"] = mood.get() or {}
@@ -1755,18 +1864,26 @@ def _coach_pass_context(portfolio: models.Portfolio,
         context["agenda"] = list((_agenda_macro() or {}).get("rendez_vous") or [])
     except Exception:                       # noqa: BLE001 — best-effort
         context["agenda"] = []
+    try:
+        # LOT 4bis — le cours de ce qu'il ne détient PAS ENCORE : sans lui, un
+        # livre neuf n'a aucun prix pour dimensionner une entrée (cf. tête de
+        # fonction de ``_coach_candidates``).
+        context["candidates"] = _coach_candidates(context["radar"])
+    except Exception:                       # noqa: BLE001 — best-effort
+        context["candidates"] = []
     return context
 
 
 def coach_book() -> Dict[str, Any]:
     """CONTRAT PUBLIC — le compte du coach, dans la forme que le PROMPT lit.
 
-    Les quatre clés (``cash_chf``, ``equity_chf``, ``positions``,
-    ``open_orders``) sont EXACTEMENT celles que ``llm.coach_actions_block``
-    consomme — ``llm._coach_book_of`` en est l'extracteur côté passe
-    quotidienne, et un test épingle l'égalité des deux jeux de clés. C'est
-    ``convergence._coach_book`` qui appelle cette fonction : sans elle, le
-    digest ne demanderait aucune action et le coach ne ferait jamais rien.
+    Les cinq clés (``cash_chf``, ``equity_chf``, ``positions``,
+    ``open_orders``, ``candidates``) sont EXACTEMENT celles que
+    ``llm.coach_actions_block`` consomme — ``llm._coach_book_of`` en est
+    l'extracteur côté passe quotidienne, et un test épingle l'égalité des deux
+    jeux de clés. C'est ``convergence._coach_book`` qui appelle cette
+    fonction : sans elle, le digest ne demanderait aucune action et le coach
+    ne ferait jamais rien.
 
     **``equity_chf`` = ``_coach_equity_chf``** (trésorerie + lignes au PRIX DE
     REVIENT, bâti sur ``_positions_value_chf``) et NON la valeur de marché. La
@@ -1774,17 +1891,29 @@ def coach_book() -> Dict[str, Any]:
     entre X et Y % de TON équité », et c'est ``coach_trader._equity_chf`` — la
     même convention, au prix de revient — qui REFUSE ensuite. Lui montrer une
     autre équité le ferait dimensionner contre un chiffre dont le garde-fou ne
-    se sert pas, et les refus paraîtraient arbitraires. Bénéfice second :
-    aucun appel réseau, là où ``_coach_pass_context`` interroge un cours par
-    ligne — cette fonction-ci est sur le chemin du digest.
+    se sert pas, et les refus paraîtraient arbitraires.
     ⚠️ Divergence assumée : la passe quotidienne, elle, montre bien la valeur
-    de MARCHÉ. Deux photos, deux usages — pas un oubli.
+    de MARCHÉ sur les POSITIONS DÉJÀ DÉTENUES. Deux photos, deux usages — pas
+    un oubli.
 
-    Les lignes sont celles de ``_coach_position_row`` PRIVÉES de ``price`` et
-    ``pnl_pct`` : faute de cours, ces deux champs vaudraient le prix de revient
-    et « 0 % », c'est-à-dire toutes les lignes à plat — un fait FAUX. Absent
-    vaut mieux qu'inventé. Le reste (thèse, stop, objectif) est précisément ce
-    qu'il faut au modèle pour décider de déplacer un stop ou de sortir.
+    Les lignes de ``positions`` sont celles de ``_coach_position_row``
+    PRIVÉES de ``price`` et ``pnl_pct`` : faute de cours, ces deux champs
+    vaudraient le prix de revient et « 0 % », c'est-à-dire toutes les lignes à
+    plat — un fait FAUX. Absent vaut mieux qu'inventé. Le reste (thèse, stop,
+    objectif) est précisément ce qu'il faut au modèle pour décider de déplacer
+    un stop ou de sortir.
+
+    **``candidates`` (LOT 4bis, ``_coach_candidates``) FAIT du réseau** — un
+    cours par ticker DISTINCT suivi par une hypothèse radar OUVERTE, plafonné
+    à :data:`MAX_COACH_CANDIDATES` — ce qui ÉTAIT faux de cette fonction avant
+    ce lot (elle ne cotait rien). Sans lui, un livre neuf ou vide n'a NUL PART
+    de prix pour dimensionner une entrée : trois passes de suite se sont
+    terminées sur la même raison honnête (« il me faut le cours actuel du
+    titre »), le coach était affamé de données, pas timide. Ce n'est pas un
+    problème pour l'invariant « l'évaluation d'un cycle de 5 min reste
+    gratuite » de ``maybe_fire`` : cette fonction n'est appelée qu'APRÈS que
+    ``should_fire``/« aucun canal » ont laissé passer un digest RÉEL sur le
+    point de partir, jamais à chaque passage du radar.
 
     **NE LÈVE JAMAIS** : un pépin rend un livre VIDE (``{}``), le seul retour
     qui dégrade correctement des DEUX côtés — ``coach_actions_block`` ne rend
@@ -1805,6 +1934,7 @@ def coach_book() -> Dict[str, Any]:
             "equity_chf": round(_coach_equity_chf(portfolio), 2),
             "positions": positions,
             "open_orders": [o.to_dict() for o in portfolio.open_orders],
+            "candidates": _coach_candidates(_open_radar_hypotheses()),
         }
     except Exception as e:                  # noqa: BLE001 — jamais fatal
         logger.warning("paper coach: livre indisponible pour le digest (%s)",
@@ -1847,6 +1977,11 @@ def run_coach_daily_pass(now_iso: Optional[str] = None,
     ressort en ligne ``hold`` (choix assumé), là où ``"parse_failed"`` (bloc
     présent mais illisible) reste bien une ligne ``parse``.
 
+    ``note`` (LOT 4bis, ``parsed.get("note")``) voyage jusqu'à
+    ``execute_coach_actions`` : c'est elle qui devient le ``detail`` de la
+    ligne ``hold`` quand le coach n'a rien à faire — la raison ARGUMENTÉE,
+    pas le repli générique.
+
     NE LÈVE JAMAIS.
     """
     now = now_iso or _now_iso()
@@ -1877,7 +2012,8 @@ def run_coach_daily_pass(now_iso: Optional[str] = None,
     rows = execute_coach_actions(parsed.get("actions") or [], source="daily",
                                  now_iso=now,
                                  parse_error=(error if error == "parse_failed"
-                                              else None))
+                                              else None),
+                                 note=parsed.get("note"))
     return {"ledger": rows, "text": parsed.get("text") or ""}
 
 

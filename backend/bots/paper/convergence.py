@@ -1879,19 +1879,28 @@ def _parse_coach_actions(text: Any) -> Dict[str, Any]:
     la garantie : aucune action, et un texte NETTOYÉ du bloc par le même motif
     que le parseur — d'où le repli sur un retrait local, volontairement
     grossier, qui coupe à partir du marqueur.
+
+    ``note`` (LOT 4bis) MIROIR de ``coach_trader.parse_actions`` : la raison
+    ARGUMENTÉE que le coach écrit quand il n'agit pas (ou sa lecture de marché
+    quand il agit). Le repli grossier ci-dessous ne sait pas la lire — il rend
+    ``None``, jamais une exception : une raison manquée dans ce cas déjà
+    dégradé n'aggrave rien, elle retombe simplement sur le repli générique du
+    registre (cf. ``paper_router.COACH_HOLD_DETAIL``).
     """
     body = _text(text)
     try:
         from backend.bots.paper import coach_trader
         parsed = coach_trader.parse_actions(body)
+        note = parsed.get("note")
         return {"text": _text(parsed.get("text")),
                 "actions": _dicts(parsed.get("actions")),
+                "note": note if isinstance(note, str) else None,
                 "error": parsed.get("error")}
     except Exception:      # noqa: BLE001 — couche du compte absente ou cassée
         logger.warning("paper convergence: parseur d'actions indisponible")
         cut = body.find("```" + ACTIONS_MARKER_FALLBACK)
         return {"text": body if cut < 0 else body[:cut].strip(),
-                "actions": [], "error": "parse_failed"}
+                "actions": [], "note": None, "error": "parse_failed"}
 
 
 def _coach_book() -> Any:
@@ -1922,7 +1931,7 @@ def _coach_book() -> Any:
 
 def _execute_coach(execute_actions: Optional[Callable[..., Any]],
                    actions: List[Dict[str, Any]], now_iso: str,
-                   parse_error: Any) -> int:
+                   parse_error: Any, note: Any = None) -> int:
     """Confie au moteur d'ordres ce que le coach vient de décider.
 
     **Best-effort TOTAL** : le digest est DÉJÀ parti quand on arrive ici, et
@@ -1934,9 +1943,11 @@ def _execute_coach(execute_actions: Optional[Callable[..., Any]],
 
     ``parse_error`` voyage avec la liste : un bloc absent ou cassé n'est pas un
     silence, il se consigne au registre du coach (« il n'a rien décidé », ou
-    « il a rendu du JSON illisible »). L'appel passe tout en mots-clés et
-    avale un ``TypeError`` comme le reste — la signature de l'autre côté peut
-    ne pas encore porter ce paramètre.
+    « il a rendu du JSON illisible »). ``note`` (LOT 4bis) voyage de même : la
+    raison ARGUMENTÉE du coach quand il n'agit pas, sa lecture de marché quand
+    il agit. L'appel passe tout en mots-clés et avale un ``TypeError`` comme
+    le reste — la signature de l'autre côté peut ne pas encore porter ce
+    paramètre.
 
     Rend le nombre d'entrées de registre produites (0 si rien n'a tourné).
     """
@@ -1949,7 +1960,7 @@ def _execute_coach(execute_actions: Optional[Callable[..., Any]],
         runner = execute_coach_actions
     try:
         rows = runner(list(actions), source=COACH_SOURCE, now_iso=now_iso,
-                      parse_error=parse_error)
+                      parse_error=parse_error, note=note)
     except Exception:      # noqa: BLE001 — y compris TypeError de signature
         logger.warning("paper convergence: actions du coach non exécutées",
                        exc_info=True)
@@ -1980,8 +1991,13 @@ def maybe_fire(now: Any = None,
 
     **LOT 4 — parler PUIS agir.** ``coach_book`` (le compte du coach) est passé
     au prompt : le modèle rend alors, dans le MÊME appel, sa prose ET un bloc
-    d'actions. Le bloc est retiré du texte AVANT toute destination — ni
-    Telegram, ni l'historique, ni le carnet ne portent jamais de JSON — puis,
+    d'actions. **LOT 4bis** : ce bloc peut aussi porter un ``note`` de tête —
+    la raison ARGUMENTÉE du coach quand il n'agit pas, extraite par
+    ``_parse_coach_actions`` et transmise à l'exécuteur (``coach_note``, non
+    exposée dans le retour de cette fonction — elle voyage jusqu'au registre,
+    pas jusqu'à l'appelant). Le bloc est retiré du texte AVANT toute
+    destination — ni Telegram, ni l'historique, ni le carnet ne portent jamais
+    de JSON — puis,
     **une fois le message envoyé**, les actions sont confiées à
     ``execute_actions`` (injecté, ou résolu paresseusement sur
     ``paper_router.execute_coach_actions``). Cette dernière étape est
@@ -2126,6 +2142,7 @@ def maybe_fire(now: Any = None,
         parsed = _parse_coach_actions(text)
         coach_actions = parsed["actions"]
         coach_error = parsed["error"]
+        coach_note = parsed.get("note")
         message = with_header(parsed["text"])
 
         sent = _send(notifier, message, cfg)
@@ -2157,7 +2174,8 @@ def maybe_fire(now: Any = None,
     # HORS de la section critique : le moteur d'ordres lit des cours et écrit
     # un portefeuille, il n'a rien à faire sous le verrou du déclencheur.
     if coach_book or execute_actions is not None:
-        _execute_coach(execute_actions, coach_actions, now_iso, coach_error)
+        _execute_coach(execute_actions, coach_actions, now_iso, coach_error,
+                       coach_note)
 
     return {"fired": True, "reason": "ok", "factors": flags,
             "sent": sent, "llm": used_llm,
