@@ -48,6 +48,14 @@ const PaperModule = {
     _lessonId: null,
     _quizResult: null,
     _arena: null,
+    // --- LOT 3, A3 : entraînement « bar replay » ------------------------
+    _replay: null,             // partie en cours : {id, candles, reveal:{candles,symbol,period}}
+    _replayStep: 0,            // combien des 20 bougies à révéler ont déjà été jouées
+    _replayDecisions: [],      // [{prev_close,close,action}] -- une entrée par bougie jouée
+    _replayChoice: 'flat',     // choix ARMÉ pour la PROCHAINE bougie
+    _replayLoading: false,     // lecture de /replay/window en vol
+    _replayResult: null,       // dernière partie terminée : {symbol,pnl_pct,hold_pnl_pct}
+    _replayStats: null,        // cumul du journal : {n,avg_pnl_pct,avg_hold_pnl_pct,beat_hold_pct}
     _whales: null,            // {managers:[{id,label,cached,quarter}]}
     _whaleId: null,           // gerant selectionne
     _whaleSnap: null,         // instantane 13F du gerant selectionne
@@ -73,6 +81,7 @@ const PaperModule = {
     _results: null,            // résultats de recherche
     _pick: null,               // {symbol,name,exchange,currency}
     _quote: null,              // {price,currency,change_pct,fx_rate_chf}
+    _orderConfirm: null,       // LOT 3, C3 : {warnings:[codes]} en attente de confirmation
     _form: {},                 // survit aux re-rendus du corps
 
     _ideasJournal: null,       // journal daté : {entries:[{id,ts,kind,...}]}
@@ -1413,6 +1422,9 @@ const PaperModule = {
         }
         if (this._tab === 'arena' && !this._arena) {
             this._arena = await this._get(this._withLang('/api/paper/arena')) || {};
+            // LOT 3, A3 : le cumul de l'entraînement se charge EN MÊME TEMPS
+            // (même onglet, même carte) -- pas la peine d'un aller-retour à part.
+            if (!this._replayStats) this._replayStats = await this._get('/api/paper/replay/stats');
             if (this._tab === 'arena') this._renderBody();
             return;
         }
@@ -1460,6 +1472,7 @@ const PaperModule = {
         if (this._tab === 'portfolio') this._paintEquity();
         this._mountCharts();
         if (this._tab === 'graph') { this._mountGraph(); this._mountDG(); }
+        if (this._tab === 'arena') this._replayPaint();     // LOT 3, A3
     },
 
     async refresh() {
@@ -1476,6 +1489,7 @@ const PaperModule = {
             this._lessons = await this._get(this._withLang('/api/paper/lessons')) || {};
         } else if (this._tab === 'arena') {
             this._arena = await this._get(this._withLang('/api/paper/arena')) || {};
+            this._replayStats = await this._get('/api/paper/replay/stats');
         } else if (this._tab === 'whales') {
             this._whales = await this._get('/api/paper/whales') || {};
             this._whaleEvents = await this._get('/api/paper/whales/events');
@@ -2065,10 +2079,14 @@ const PaperModule = {
                 { method: 'POST', body: JSON.stringify(body) });
         } catch (e) { r = null; }
         if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
+        let d = null;
+        try { d = await r.json(); } catch (e) { d = null; }
         this._closingSym = null;
         this._toast('success', Lang.t('paper.closed_ok') + ' ' + symbol);
         await this._loadPortfolio();
         this._renderBody();
+        // Post-mortem automatique (LOT 3, C1).
+        this._watchAutoPostmortem(d && d.fill);
     },
 
     async cancelOrder(id) {
@@ -2229,11 +2247,45 @@ const PaperModule = {
             // Aide au dimensionnement : la seule chose que le coach ne négocie pas.
             '<div id="paper-sizing" style="margin-top:10px;font-size:13px;' + this._mono +
                  'color:var(--text-muted);">' + esc(this._sizingText()) + '</div>' +
-            '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">' +
-              '<button class="btn btn-primary" data-paper-act="submit-order">' +
-                esc(Lang.t('paper.submit_order')) + '</button>' +
-            '</div>'
+            (this._orderConfirm ? this._orderConfirmPanel(this._orderConfirm) :
+              '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">' +
+                '<button class="btn btn-primary" data-paper-act="submit-order">' +
+                  esc(Lang.t('paper.submit_order')) + '</button>' +
+              '</div>')
         );
+    },
+
+    // Porte de confirmation (LOT 3, C3) : REMPLACE le bouton d'envoi tant
+    // qu'elle est ouverte -- un seul chemin possible à la fois, jamais de
+    // double-clic entre « confirmer » et « soumettre à nouveau ». Les codes
+    // eux-mêmes viennent du backend (``risk.preorder_warnings``) — pas de
+    // liste fermée ici, ``_confirmMessage`` reste lisible même sur un code
+    // que ce frontend ne connaît pas encore (cf. son commentaire).
+    _confirmMessage(code) {
+        const key = 'paper.confirm_' + String(code || '');
+        const label = Lang.t(key);
+        // Un code que le frontend ne connaît pas encore reste lisible : la
+        // clé elle-même vaut mieux qu'un texte vide (piège i18n #12).
+        return label.indexOf('paper.confirm_') === 0 ? String(code || '') : label;
+    },
+
+    _orderConfirmPanel(state) {
+        const codes = Array.isArray(state && state.warnings) ? state.warnings : [];
+        const items = codes.map((code) =>
+            '<li style="margin:4px 0;">' + esc(this._confirmMessage(code)) + '</li>').join('');
+        return '<div style="margin-top:14px;padding:12px 14px;border-radius:var(--r-md);' +
+                   'border:1px solid var(--warning);background:var(--bg-elev-2);">' +
+              '<div style="font-weight:600;color:var(--warning);margin-bottom:6px;">' +
+                esc(Lang.t('paper.confirm_title')) + '</div>' +
+              '<ul style="margin:0 0 10px;padding-left:18px;font-size:13px;line-height:1.5;">' +
+                items + '</ul>' +
+              '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+                '<button class="btn btn-ghost" data-paper-act="order-confirm-cancel">' +
+                  esc(Lang.t('paper.confirm_fix')) + '</button>' +
+                '<button class="btn btn-primary" data-paper-act="order-confirm-go">' +
+                  esc(Lang.t('paper.confirm_go')) + '</button>' +
+              '</div>' +
+            '</div>';
     },
 
     // =====================================================================
@@ -2419,6 +2471,7 @@ const PaperModule = {
         this._pick = { symbol: symbol, name: name || '', currency: currency || '', exchange: exchange || '' };
         this._results = null;
         this._quote = null;
+        this._orderConfirm = null;          // LOT 3, C3 : un panneau ouvert ne survit pas au changement de titre
         // Un brouillon est rangé PAR TITRE : on repart de celui-ci, pas de la
         // saisie laissée sur un autre. Le champ de recherche, lui, survit.
         const keepQ = this._form.q;
@@ -2439,7 +2492,9 @@ const PaperModule = {
         if (this._tab === 'trade') { this._captureForm(); this._renderBody(); }
     },
 
-    async submitOrder() {
+    // ``forceConfirm`` (LOT 3, C3) : posé UNIQUEMENT par confirmOrder(), quand
+    // Massii a cliqué « Exécuter quand même » sur le panneau d'avertissements.
+    async submitOrder(forceConfirm) {
         this._captureForm();
         if (!this._pick || !this._pick.symbol) { this._toast('warn', Lang.t('paper.symbol_required')); return; }
         const qty = this._n(this._form.qty);
@@ -2461,6 +2516,7 @@ const PaperModule = {
         if (tg !== null) body.target = tg;
         if (this._form.setup) body.setup = this._form.setup;
         if (this._form.emotion) body.emotion = this._form.emotion;
+        if (forceConfirm) body.confirmed = true;
 
         let r = null;
         try { r = await Auth.apiCall('/api/paper/orders', { method: 'POST', body: JSON.stringify(body) }); }
@@ -2468,6 +2524,16 @@ const PaperModule = {
         if (!r || !r.ok) { this._toast('error', await this._detail(r)); return; }
         let d = null;
         try { d = await r.json(); } catch (e) { d = null; }
+
+        // Porte de confirmation (LOT 3, C3) : une pause, pas un blocage --
+        // rien n'a été exécuté, le formulaire reste tel quel.
+        if (d && d.needs_confirm) {
+            this._orderConfirm = { warnings: Array.isArray(d.warnings) ? d.warnings : [] };
+            this._renderBody();
+            return;
+        }
+        this._orderConfirm = null;
+
         // Les avertissements du backend (thèse vide, pas de stop, risque > 2 %)
         // sont affichés — on AVERTIT, on ne bloque JAMAIS.
         const warnings = (d && Array.isArray(d.warnings)) ? d.warnings : [];
@@ -2484,6 +2550,26 @@ const PaperModule = {
             fee_profile: this._form.fee_profile };
         await this._loadPortfolio();
         if (this._tab === 'trade') this._renderBody();
+
+        // Post-mortem automatique (LOT 3, C1) : une clôture peut avoir gagné
+        // un job en arrière-plan -- sondé en silence, un toast à l'arrivée.
+        this._watchAutoPostmortem(d && d.fill);
+    },
+
+    // Panneau d'avertissements (LOT 3, C3) : « Corriger » referme le panneau
+    // SANS toucher au formulaire (Massii ajuste thèse/stop/taille lui-même) ;
+    // « Exécuter quand même » resoumet EXACTEMENT le même formulaire, confirmé.
+    cancelOrderConfirm() {
+        // Capture d'abord : le panneau ne désactive pas le formulaire
+        // dessous, un re-rendu sans ça effacerait une correction commencée
+        // pendant que le panneau était ouvert.
+        this._captureForm();
+        this._orderConfirm = null;
+        this._renderBody();
+    },
+
+    async confirmOrder() {
+        await this.submitOrder(true);
     },
 
     // =====================================================================
@@ -3394,7 +3480,8 @@ const PaperModule = {
                 '</div>';
             }).join('') + '</div>'
             : this._muted(Lang.t('paper.arena_empty'));
-        return head + this._card(this._head(Lang.t('paper.arena_history')) + histHtml);
+        return head + this._replayCard() +
+            this._card(this._head(Lang.t('paper.arena_history')) + histHtml);
     },
 
     async acceptArena() {
@@ -3405,6 +3492,221 @@ const PaperModule = {
         this._toast('success', Lang.t('paper.arena_accepted'));
         this._arena = await this._get(this._withLang('/api/paper/arena')) || this._arena;
         if (this._tab === 'arena') this._renderBody();
+    },
+
+    // =====================================================================
+    //  LOT 3, A3 — entraînement « bar replay »
+    //
+    // 60 bougies journalières RÉELLES d'un titre anonymisé, puis 20 à
+    // révéler une par une : avant chaque révélation, Massii choisit
+    // Acheter/Rester/Vendre. À la fin, le titre est révélé et le résultat
+    // comparé au simple buy-and-hold de la même fenêtre.
+    //
+    // « Pas d'anti-triche » (assumé, documenté côté backend dans
+    // replay.py) : ``reveal`` arrive AVEC le symbole dès le lancement --
+    // c'est cet objet qui le cache à l'écran jusqu'à la fin de la partie.
+    //
+    // État de session en MÉMOIRE du module seulement : une partie
+    // interrompue (rechargement de page, changement d'onglet) est perdue.
+    // Assumé -- c'est un outil d'entraînement, pas un ordre en cours.
+    // =====================================================================
+
+    _replayStatsLine() {
+        const s = this._replayStats;
+        if (!s || !s.n) return Lang.t('paper.replay_stats_empty');
+        return Lang.t('paper.replay_stats_line')
+            .replace('{n}', String(s.n))
+            .replace('{avg}', this._signed(this._n(s.avg_pnl_pct), 2, '%'))
+            .replace('{hold}', this._signed(this._n(s.avg_hold_pnl_pct), 2, '%'))
+            .replace('{beat}', this._num(this._n(s.beat_hold_pct), 0));
+    },
+
+    _replayCard() {
+        if (this._replayResult) return this._replayResultCard();
+        if (this._replay) return this._replayPlayCard();
+
+        return this._card(
+            this._head(Lang.t('paper.replay_title'), Lang.t('paper.replay_hint')) +
+            '<div style="font-size:13px;color:var(--text-muted);line-height:1.55;margin-bottom:12px;">' +
+              esc(Lang.t('paper.replay_intro')) + '</div>' +
+            '<button class="btn btn-primary" data-paper-act="replay-start"' +
+                (this._replayLoading ? ' disabled' : '') + '>' +
+              esc(Lang.t(this._replayLoading ? 'paper.replay_loading' : 'paper.replay_start')) +
+            '</button>' +
+            '<div style="font-size:12px;color:var(--text-dim);margin-top:10px;' + this._mono + '">' +
+              esc(this._replayStatsLine()) + '</div>'
+        );
+    },
+
+    _replayPlayCard() {
+        const revealCandles = (this._replay.reveal && this._replay.reveal.candles) || [];
+        const total = revealCandles.length;
+        const choice = this._replayChoice || 'flat';
+        const btn = (val, labelKey) =>
+            '<button class="btn ' + (choice === val ? 'btn-primary' : 'btn-ghost') + '" ' +
+                'data-paper-act="replay-choice" data-choice="' + val + '">' +
+              esc(Lang.t(labelKey)) + '</button>';
+        return this._card(
+            this._head(Lang.t('paper.replay_title'),
+                Lang.t('paper.replay_progress')
+                    .replace('{n}', String(this._replayStep)).replace('{total}', String(total))) +
+            '<canvas id="paper-replay-canvas" ' +
+                'style="width:100%;height:280px;display:block;touch-action:pan-y;"></canvas>' +
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">' +
+              btn('buy', 'paper.replay_buy') + btn('flat', 'paper.replay_flat') +
+              btn('sell', 'paper.replay_sell') +
+            '</div>' +
+            '<div style="margin-top:10px;">' +
+              '<button class="btn btn-primary" data-paper-act="replay-next">' +
+                esc(Lang.t('paper.replay_next_candle')) + '</button>' +
+            '</div>'
+        );
+    },
+
+    _replayResultCard() {
+        const r = this._replayResult;
+        const pnl = this._n(r.pnl_pct);
+        const hold = this._n(r.hold_pnl_pct);
+        const beat = pnl !== null && hold !== null && pnl > hold;
+        return this._card(
+            this._head(Lang.t('paper.replay_title'), Lang.t('paper.replay_hint')) +
+            '<div style="font-size:15px;margin-bottom:10px;">' +
+              esc(Lang.t('paper.replay_reveal')) + ' <strong>' + esc(r.symbol || '') + '</strong>' +
+            '</div>' +
+            '<div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:10px;' + this._mono + '">' +
+              '<div>' + esc(Lang.t('paper.replay_your_pnl')) + '<br/>' +
+                '<span style="font-size:18px;font-weight:600;color:' + this._color(pnl) + ';">' +
+                  esc(this._signed(pnl, 2, '%')) + '</span></div>' +
+              '<div>' + esc(Lang.t('paper.replay_hold_pnl')) + '<br/>' +
+                '<span style="font-size:18px;color:var(--text-muted);">' +
+                  esc(this._signed(hold, 2, '%')) + '</span></div>' +
+            '</div>' +
+            '<div style="margin-bottom:12px;">' +
+              '<span class="badge' + (beat ? ' online' : '') + '">' +
+                esc(Lang.t(beat ? 'paper.replay_beat' : 'paper.replay_not_beat')) + '</span>' +
+            '</div>' +
+            '<div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;' + this._mono + '">' +
+              esc(this._replayStatsLine()) + '</div>' +
+            '<button class="btn btn-primary" data-paper-act="replay-again">' +
+              esc(Lang.t('paper.replay_again')) + '</button>'
+        );
+    },
+
+    _replayVisibleCandles() {
+        if (!this._replay) return [];
+        const shown = (this._replay.candles || []);
+        const revealed = ((this._replay.reveal && this._replay.reveal.candles) || [])
+            .slice(0, this._replayStep);
+        return shown.concat(revealed);
+    },
+
+    // Dessin dédié, SANS passer par _chartCard/_mountCharts (qui gèrent leur
+    // propre cache réseau '<symbole>|<période>' -- sans objet ici, la fenêtre
+    // vient d'un seul GET, pas d'un cycle fetch/cache) : on réutilise
+    // directement le moteur de dessin, _drawCandles.
+    _replayPaint() {
+        const cv = document.getElementById('paper-replay-canvas');
+        if (!cv || !this._replay) return;
+        this._drawCandles(cv, { candles: this._replayVisibleCandles() }, {});
+    },
+
+    async replayStart() {
+        this._replayLoading = true;
+        this._renderBody();
+        const d = await this._get('/api/paper/replay/window');
+        this._replayLoading = false;
+        if (!d || !Array.isArray(d.candles) || !d.reveal) {
+            this._toast('error', Lang.t('paper.replay_error'));
+            this._renderBody();
+            return;
+        }
+        this._replay = d;
+        this._replayStep = 0;
+        this._replayDecisions = [];
+        this._replayChoice = 'flat';
+        this._replayResult = null;
+        this._renderBody();
+    },
+
+    replayChoice(choice) {
+        if (!this._replay) return;
+        this._replayChoice = (choice === 'buy' || choice === 'sell') ? choice : 'flat';
+        this._renderBody();
+    },
+
+    async replayNext() {
+        if (!this._replay) return;
+        const revealCandles = (this._replay.reveal && this._replay.reveal.candles) || [];
+        if (this._replayStep >= revealCandles.length) return;
+
+        const shownCandles = this._replay.candles || [];
+        const prevRow = (this._replayStep === 0)
+            ? shownCandles[shownCandles.length - 1]
+            : revealCandles[this._replayStep - 1];
+        const curRow = revealCandles[this._replayStep];
+        this._replayDecisions.push({
+            prev_close: this._n(prevRow && prevRow.close),
+            close: this._n(curRow && curRow.close),
+            action: this._replayChoice || 'flat',
+        });
+        this._replayStep += 1;
+        this._replayChoice = 'flat';
+
+        if (this._replayStep >= revealCandles.length) { await this._replayFinish(); return; }
+        this._renderBody();
+    },
+
+    // Rejoue les décisions CÔTÉ CLIENT (même arithmétique que replay.grade
+    // côté serveur : somme, pas produit composé -- cf. son docstring) pour un
+    // retour immédiat ; ``/replay/log`` recalcule et ARCHIVE sa propre
+    // version, qui prime si elle répond (un seul calcul doit faire foi).
+    _replayGradeLocal(decisions) {
+        const pos = { buy: 1, flat: 0, sell: -1 };
+        let pnl = 0;
+        (decisions || []).forEach((row) => {
+            const prev = this._n(row.prev_close), close = this._n(row.close);
+            if (prev === null || close === null || prev === 0) return;
+            pnl += (pos[row.action] || 0) * (close - prev) / prev * 100;
+        });
+        const first = (decisions || [])[0];
+        const last = (decisions || [])[(decisions || []).length - 1];
+        const start = first ? this._n(first.prev_close) : null;
+        const end = last ? this._n(last.close) : null;
+        const hold = (start !== null && end !== null && start !== 0)
+            ? (end - start) / start * 100 : 0;
+        return { pnl_pct: Math.round(pnl * 100) / 100, hold_pnl_pct: Math.round(hold * 100) / 100 };
+    },
+
+    async _replayFinish() {
+        const local = this._replayGradeLocal(this._replayDecisions);
+        let stored = local;
+        let r = null;
+        try {
+            r = await Auth.apiCall('/api/paper/replay/log', { method: 'POST', body: JSON.stringify({
+                id: this._replay.id, decisions: this._replayDecisions,
+                pnl_pct: local.pnl_pct, hold_pnl_pct: local.hold_pnl_pct,
+            }) });
+        } catch (e) { r = null; }
+        if (r && r.ok) {
+            try {
+                const d = await r.json();
+                if (d && d.session) stored = d.session;
+            } catch (e) { /* le calcul local reste affiché */ }
+        }
+        this._replayResult = {
+            symbol: this._replay.reveal.symbol,
+            pnl_pct: stored.pnl_pct, hold_pnl_pct: stored.hold_pnl_pct,
+        };
+        this._replay = null;
+        this._replayStep = 0;
+        this._replayDecisions = [];
+        this._replayStats = await this._get('/api/paper/replay/stats') || this._replayStats;
+        this._renderBody();
+    },
+
+    replayAgain() {
+        this._replayResult = null;
+        this._renderBody();
     },
 
 
@@ -9230,6 +9532,26 @@ const PaperModule = {
         });
     },
 
+    // Post-mortem AUTOMATIQUE (LOT 3, C1) : sondage LÉGER, en dehors du
+    // registre ``_busy`` (ce n'est pas un bouton qui attend, c'est une
+    // clôture déjà terminée qui gagne un extra en arrière-plan). Réutilise
+    // ``_waitJob`` (même mécanique de sondage chaîné que les six jobs LLM),
+    // sous une clé DÉDIÉE à ce job précis pour ne jamais entrer en collision
+    // avec une clé de ``_busy`` ni avec un autre post-mortem automatique en
+    // vol. Silence total sur error/timeout/lost/cancelled : le post-mortem
+    // reste de toute façon lisible depuis l'onglet Journal, ce n'est pas une
+    // panne à afficher.
+    _watchAutoPostmortem(fill) {
+        const jobId = (fill && typeof fill === 'object') ? fill.postmortem_job : null;
+        if (!jobId) return;
+        const key = 'auto_pm_' + String(jobId);
+        this._waitJob(key, jobId, Date.now()).then((out) => {
+            if (out && out.state === 'done') {
+                this._toast('success', Lang.t('paper.postmortem_auto_ready'));
+            }
+        });
+    },
+
     // Ce que devient une réponse. UNE seule fonction pour les deux chemins —
     // en direct et à la reprise après rechargement : c'est ce qui rend un
     // résultat rejouable au rendu suivant. Table FERMÉE par les clés de _busy.
@@ -9513,6 +9835,8 @@ const PaperModule = {
             return;
         }
         if (act === 'submit-order') { this.submitOrder(); return; }
+        if (act === 'order-confirm-cancel') { this.cancelOrderConfirm(); return; }
+        if (act === 'order-confirm-go') { this.confirmOrder(); return; }
         if (act === 'alert-create') { this.createAlert(); return; }
         if (act === 'alert-delete') { this.deleteAlert(el.getAttribute('data-id')); return; }
         if (act === 'close-pos') { this.startClose(el.getAttribute('data-sym')); return; }
@@ -9575,6 +9899,10 @@ const PaperModule = {
         }
         if (act === 'quiz-submit') { this.submitQuiz(el.getAttribute('data-lesson')); return; }
         if (act === 'arena-accept') { this.acceptArena(); return; }
+        if (act === 'replay-start') { this.replayStart(); return; }
+        if (act === 'replay-choice') { this.replayChoice(el.getAttribute('data-choice')); return; }
+        if (act === 'replay-next') { this.replayNext(); return; }
+        if (act === 'replay-again') { this.replayAgain(); return; }
         if (act === 'reset') { this.resetPortfolio(); return; }
         if (act === 'whale-pick') { this.openWhale(el.getAttribute('data-whale')); return; }
         if (act === 'radar-run') { this.runRadar(); return; }

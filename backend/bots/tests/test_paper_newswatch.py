@@ -80,6 +80,11 @@ def _no_side_channels(monkeypatch):
       FRÈRE, ``tmp_path.parent/backups/paper_trading`` — hors de l'isolation
       par test). Neutralisé par défaut ; les tests dédiés de ce garde-fou
       injectent leur propre ``backup_check``.
+    * le **bilan hebdomadaire** (LOT 3, C2, 28/08) — ``weekly.maybe_run``
+      appellerait le VRAI CLI Claude si le gate ``weekly_due`` tombe juste
+      (peu probable avec ``NOW`` = un lundi, mais un test dédié pourrait tout
+      à fait choisir un dimanche soir). Neutralisé par défaut ; les tests
+      dédiés injectent leur propre ``weekly_check``.
 
     Et un HUITIÈME garde-fou, celui-là contre un piège mesuré : un compte X dont
     la page ne rend AUCUN post compte une « anomalie », et deux anomalies de
@@ -112,6 +117,9 @@ def _no_side_channels(monkeypatch):
     monkeypatch.setattr(calendar_mod, "run_verdicts", lambda **kwargs: [])
     from backend.bots.paper import backup as backup_mod
     monkeypatch.setattr(backup_mod, "maybe_run", lambda **kwargs: {"ran": False})
+    from backend.bots.paper import weekly as weekly_mod
+    monkeypatch.setattr(weekly_mod, "maybe_run",
+                        lambda **kwargs: {"ran": False, "n_accounts": 0, "sent": 0})
 
 
 def _no_stealth(handle):
@@ -4692,6 +4700,56 @@ def test_backup_does_not_run_when_telegram_unconfigured():
     newswatch.run_once(now=NOW, fetch=_FetchQueue(), notifier=_NotifySpy(),
                        tg_cfg={}, sleep=lambda s: None, mode="tout",
                        backup_check=lambda now: calls.append(now))
+    assert calls == []
+
+
+# =========================================================================== #
+#  I/O -- bilan hebdomadaire (LOT 3, C2)
+# =========================================================================== #
+
+def test_run_once_calls_the_injected_weekly_check():
+    calls = []
+    _run(_FetchQueue(), _NotifySpy(), weekly_check=lambda now: calls.append(now))
+    assert calls == [NOW]
+
+
+def test_run_once_default_weekly_check_calls_the_real_module(monkeypatch):
+    """Câblage par défaut : le VRAI ``weekly.maybe_run`` -- vérifié en le
+    substituant (jamais en laissant tourner un vrai bilan, cf. la
+    neutralisation par ``_no_side_channels``)."""
+    from backend.bots.paper import weekly as weekly_mod
+    calls = []
+    monkeypatch.setattr(weekly_mod, "maybe_run",
+                        lambda **kw: calls.append(kw) or {"ran": False})
+    _run(_FetchQueue(), _NotifySpy())
+    assert len(calls) == 1
+    assert calls[0]["now"] == NOW
+
+
+def test_a_broken_weekly_check_never_breaks_the_cycle():
+    def _boom(now):
+        raise RuntimeError("le coach n'a pas répondu")
+    counters = _run(_FetchQueue(), _NotifySpy(), weekly_check=_boom)
+    assert counters["users"] == 0    # le cycle a continué normalement
+
+
+def test_weekly_check_does_not_affect_the_counters_contract():
+    """Le bilan hebdomadaire ne touche PAS `counters` -- même assertion
+    stricte que ``test_backup_check_does_not_affect_the_counters_contract``."""
+    counters = newswatch.run_once(now=NOW, fetch=_FetchQueue(), notifier=_NotifySpy(),
+                                  tg_cfg={}, sleep=lambda s: None, mode="tout")
+    assert counters == {"users": 0, "symbols": 0, "fetched": 0, "notified": 0,
+                        "errors": 0, "convergence_fired": False,
+                        "verdicts": 0}
+
+
+def test_weekly_does_not_run_when_telegram_unconfigured():
+    """Doctrine du fichier : sans Telegram, AUCUN accès disque -- le bilan
+    hebdomadaire ne doit donc même pas être appelé."""
+    calls = []
+    newswatch.run_once(now=NOW, fetch=_FetchQueue(), notifier=_NotifySpy(),
+                       tg_cfg={}, sleep=lambda s: None, mode="tout",
+                       weekly_check=lambda now: calls.append(now))
     assert calls == []
 
 

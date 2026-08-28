@@ -457,6 +457,37 @@ def build_postmortem_prompt(trade: Optional[Dict[str, Any]],
     ])
 
 
+def build_weekly_prompt(context: Optional[Dict[str, Any]],
+                        lang: str = "fr") -> str:
+    """Prompt du bilan hebdomadaire du dimanche soir (LOT 3, C2).
+
+    ``context`` (déterministe, construit par ``weekly.build_context``) porte
+    les trades clôturés des 7 derniers jours, les statistiques de méthode
+    (``risk.portfolio_stats``), le score de discipline, les positions encore
+    ouvertes, les biais dominants du coach et le bilan du radar d'hypothèses.
+    """
+    return "\n\n".join([
+        SYSTEM_PROMPT,
+        _lang_line(lang),
+        "Bilan HEBDOMADAIRE (dimanche soir). C'est un rituel, pas une "
+        "urgence : Massii le lit une fois par semaine pour prendre du recul "
+        "sur SA méthode, pas sur un trade en particulier.",
+        _block("SEMAINE", context or {}),
+        "Structure ta réponse en trois parties, dans cet ordre et sans "
+        "titres pompeux : un bilan HONNÊTE de la semaine (ce qui a marché, "
+        "ce qui a coûté cher — appuie-toi sur les chiffres fournis, "
+        "n'invente rien) ; le biais ou l'habitude à surveiller en premier la "
+        "semaine prochaine (choisis parmi ceux fournis, ou dis qu'aucun ne "
+        "domine) ; UN plan concret et actionnable pour la semaine qui vient "
+        "(pas une liste de vœux — une ou deux choses précises à faire ou à "
+        "arrêter de faire).",
+        "Si aucun trade n'a clôturé cette semaine, dis-le simplement et "
+        "commente plutôt les positions encore ouvertes et la discipline "
+        "générale — un bilan vide n'est pas un problème à masquer, c'est un "
+        "fait à commenter.",
+    ])
+
+
 def build_ideas_prompt(context: Optional[Dict[str, Any]], lang: str = "fr",
                        risk_level: str = DEFAULT_RISK_LEVEL,
                        journal: Any = None) -> str:
@@ -936,6 +967,16 @@ def write_postmortem(trade: Optional[Dict[str, Any]],
                      run: Callable = subprocess.run) -> str:
     """Post-mortem rédigé d'un trade clôturé (destiné au carnet ``Journal.md``)."""
     return _claude_text(build_postmortem_prompt(trade, context, lang),
+                        model=model, timeout=timeout, run=run)
+
+
+def write_weekly_report(context: Optional[Dict[str, Any]] = None,
+                        lang: str = "fr",
+                        model: str = DEFAULT_MODEL, timeout: int = DEFAULT_TIMEOUT,
+                        run: Callable = subprocess.run) -> str:
+    """Bilan hebdomadaire rédigé (LOT 3, C2) — destiné à Telegram ET au
+    carnet ``Journal.md``."""
+    return _claude_text(build_weekly_prompt(context, lang),
                         model=model, timeout=timeout, run=run)
 
 

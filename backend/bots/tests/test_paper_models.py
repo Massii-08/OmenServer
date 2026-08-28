@@ -228,3 +228,36 @@ def test_setups_and_emotions_whitelists_are_closed_and_match_the_mission():
     assert SETUPS == ("breakout", "pullback", "news", "coach_idea", "trend",
                       "contrarian", "other")
     assert EMOTIONS == ("calme", "fomo", "revanche", "doute", "euphorie")
+
+
+# --------------------------------------------------------------------------- #
+# LOT 3, C3 — forced_warnings (garde-fou pré-ordre)
+# --------------------------------------------------------------------------- #
+
+def test_forced_warnings_default_to_empty_and_survive_the_round_trip():
+    pos = Position(symbol="NESN.SW", forced_warnings=["no_stop", "risk_high"])
+    assert Position.from_dict(json.loads(json.dumps(pos.to_dict()))) == pos
+
+    order = Order(id="x", symbol="NESN.SW", forced_warnings=["oversize"])
+    assert Order.from_dict(json.loads(json.dumps(order.to_dict()))) == order
+
+    trade = Trade(symbol="NESN.SW", forced_warnings=["no_thesis"])
+    assert Trade.from_dict(json.loads(json.dumps(trade.to_dict()))) == trade
+
+    # Un fichier écrit avant ce lot n'a jamais ce champ : liste vide, jamais
+    # une exception ni un ``None`` (même politique que ``setup``/``emotion``).
+    assert Position.from_dict({"symbol": "AAPL"}).forced_warnings == []
+    assert Order.from_dict({"id": "x", "symbol": "AAPL"}).forced_warnings == []
+    assert Trade.from_dict({"symbol": "AAPL"}).forced_warnings == []
+
+
+def test_forced_warnings_tolerates_wrong_types():
+    assert Position.from_dict({"symbol": "AAPL", "forced_warnings": "no_stop"}) \
+        .forced_warnings == []
+    assert Position.from_dict({"symbol": "AAPL", "forced_warnings": None}) \
+        .forced_warnings == []
+    # Une liste qui mélange des chaînes et autre chose : seules les chaînes
+    # survivent, jamais une exception.
+    assert Order.from_dict({"id": "x", "symbol": "AAPL",
+                            "forced_warnings": ["no_stop", 4, None, "oversize"]}) \
+        .forced_warnings == ["no_stop", "oversize"]

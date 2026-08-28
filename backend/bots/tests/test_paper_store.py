@@ -297,3 +297,77 @@ def test_notes_are_isolated_per_user():
     store.append_note("bob", "Journal.md", "bob content")
     assert store.read_note("alice", "Journal.md") == "alice content"
     assert store.read_note("bob", "Journal.md") == "bob content"
+
+
+# --------------------------------------------------------------------------- #
+# LOT 3, A3 — journal d'entraînement « bar replay »
+# --------------------------------------------------------------------------- #
+
+def test_replay_path_uses_data_dir(tmp_path):
+    assert store.replay_path("alice") == tmp_path / "alice.replay.json"
+
+
+def test_load_replay_sessions_missing_returns_empty_list():
+    assert store.load_replay_sessions("alice") == []
+
+
+def test_save_then_load_replay_sessions_roundtrip():
+    sessions = [{"id": "a" * 32, "pnl_pct": 3.5, "hold_pnl_pct": 1.2, "n_decisions": 20}]
+    store.save_replay_sessions("alice", sessions)
+    assert store.load_replay_sessions("alice") == sessions
+
+
+def test_save_replay_sessions_is_chmod_600():
+    store.save_replay_sessions("alice", [{"id": "x"}])
+    mode = stat.S_IMODE(os.stat(store.replay_path("alice")).st_mode)
+    assert mode == 0o600
+
+
+def test_load_replay_sessions_corrupt_json_returns_empty_list():
+    path = store.replay_path("alice")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    assert store.load_replay_sessions("alice") == []
+
+
+def test_load_replay_sessions_skips_non_dict_entries():
+    store._atomic_write_json(store.replay_path("alice"),
+                             {"sessions": [{"id": "ok"}, "junk", 4, None]})
+    assert store.load_replay_sessions("alice") == [{"id": "ok"}]
+
+
+def test_replay_sessions_are_isolated_per_user():
+    store.save_replay_sessions("alice", [{"id": "a"}])
+    store.save_replay_sessions("bob", [{"id": "b"}])
+    assert store.load_replay_sessions("alice") == [{"id": "a"}]
+    assert store.load_replay_sessions("bob") == [{"id": "b"}]
+
+
+# --------------------------------------------------------------------------- #
+# LOT 3, C1 — compteur anti-rafale du post-mortem automatique
+# --------------------------------------------------------------------------- #
+
+def test_postmortem_auto_path_uses_data_dir(tmp_path):
+    assert store.postmortem_auto_path("alice") == tmp_path / "alice.postmortem_auto.json"
+
+
+def test_load_postmortem_auto_missing_returns_empty_dict():
+    assert store.load_postmortem_auto("alice") == {}
+
+
+def test_save_then_load_postmortem_auto_roundtrip():
+    store.save_postmortem_auto("alice", {"date": "2026-08-28", "count": 3})
+    assert store.load_postmortem_auto("alice") == {"date": "2026-08-28", "count": 3}
+
+
+def test_save_postmortem_auto_is_chmod_600():
+    store.save_postmortem_auto("alice", {"date": "2026-08-28", "count": 1})
+    mode = stat.S_IMODE(os.stat(store.postmortem_auto_path("alice")).st_mode)
+    assert mode == 0o600
+
+
+def test_load_postmortem_auto_corrupt_json_returns_empty_dict():
+    path = store.postmortem_auto_path("alice")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    assert store.load_postmortem_auto("alice") == {}

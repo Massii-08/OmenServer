@@ -83,6 +83,14 @@ def _as_dict_list(value: Any) -> List[Dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
+def _as_str_list(value: Any) -> List[str]:
+    """Liste de codes-chaînes (LOT 3, C3 : ``forced_warnings``) ; toute entrée
+    qui n'est pas une chaîne est ignorée, jamais une exception."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
 # --------------------------------------------------------------------------- #
 # Structures
 # --------------------------------------------------------------------------- #
@@ -115,6 +123,12 @@ class Position:
     # portées jusqu'au ``Trade`` clos — même geste que ``thesis``/``stop_loss``.
     setup: str = ""
     emotion: str = ""
+    # LOT 3, C3 — les codes du garde-fou pré-ordre (``no_stop``/``no_thesis``/
+    # ``risk_high``/``oversize``) que Massii a EXPLICITEMENT forcés
+    # (``confirmed: true`` malgré l'avertissement). Portée depuis l'ordre
+    # jusqu'au ``Trade`` clos, même geste que ``setup``/``emotion`` — le score
+    # de discipline pourra les lire plus tard (stocké, pas encore câblé).
+    forced_warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -136,6 +150,7 @@ class Position:
             risk_chf=_as_opt_float(data.get("risk_chf")),
             setup=_as_str(data.get("setup")),
             emotion=_as_str(data.get("emotion")),
+            forced_warnings=_as_str_list(data.get("forced_warnings")),
         )
 
 
@@ -166,6 +181,9 @@ class Order:
     # l'ordre crée ou renforce (cf. ``_open_long``/``_open_short``/``_average_into``).
     setup: str = ""
     emotion: str = ""
+    # LOT 3, C3 — cf. le même champ sur ``Position`` : posé par le router quand
+    # l'ordre passe malgré des avertissements pré-ordre (``confirmed: true``).
+    forced_warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -191,6 +209,7 @@ class Order:
             fee_profile=_as_str(data.get("fee_profile"), DEFAULT_FEE_PROFILE),
             setup=_as_str(data.get("setup")),
             emotion=_as_str(data.get("emotion")),
+            forced_warnings=_as_str_list(data.get("forced_warnings")),
         )
 
 
@@ -234,6 +253,10 @@ class Trade:
     mae_pct: Optional[float] = None
     mfe_pct: Optional[float] = None
     best_exit_gap_pct: Optional[float] = None
+    # LOT 3, C3 — copié depuis la ``Position`` à la clôture (cf. ``_close_leg``) :
+    # ce que Massii avait forcé à L'ENTRÉE. Stocké pour que le score de
+    # discipline puisse un jour le lire ; rien ne le consomme encore.
+    forced_warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -265,6 +288,7 @@ class Trade:
             mae_pct=_as_opt_float(data.get("mae_pct")),
             mfe_pct=_as_opt_float(data.get("mfe_pct")),
             best_exit_gap_pct=_as_opt_float(data.get("best_exit_gap_pct")),
+            forced_warnings=_as_str_list(data.get("forced_warnings")),
         )
 
 

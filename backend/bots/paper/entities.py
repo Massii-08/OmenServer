@@ -264,3 +264,18 @@ def first_company(title: Any, extra: Any = None) -> Optional[str]:
     """
     found = detect_companies(title, extra)
     return found[0] if found else None
+
+
+def known_symbols() -> Tuple[str, ...]:
+    """Les symboles UNIQUES de la table livrée (PUR), ordre stable — l'accès
+    PUBLIC à ``_COMPANIES`` pour un appelant qui veut l'UNIVERS des titres
+    reconnus (LOT 3, A3 : le choix du titre du « bar replay »), pas
+    reconnaître un nom dans un texte. Aucun autre module ne doit lire
+    ``_COMPANIES`` directement — c'est le rôle de cette fonction."""
+    seen = set()
+    out: List[str] = []
+    for _name, symbol in _COMPANIES:
+        if symbol not in seen:
+            seen.add(symbol)
+            out.append(symbol)
+    return tuple(out)

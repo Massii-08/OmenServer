@@ -195,3 +195,24 @@ def test_une_ancre_de_l_utilisateur_prime_meme_sur_un_titre_etranger():
     anchors = entities.anchor_index([{"symbol": "APC.DE", "name": "Apple Inc."}])
     assert entities.first_company("Apple legt in Frankfurt zu",
                                   anchors) == "APC.DE"
+
+
+# --------------------------------------------------------------------------- #
+# known_symbols — l'accès PUBLIC à la table (LOT 3, A3)
+# --------------------------------------------------------------------------- #
+
+def test_known_symbols_contains_the_reference_tickers():
+    symbols = entities.known_symbols()
+    assert "NVDA" in symbols and "NESN.SW" in symbols
+
+
+def test_known_symbols_has_no_duplicate_even_though_several_names_share_a_ticker():
+    # "alphabet" et "google" pointent tous deux GOOGL dans la table -- il ne
+    # doit ressortir qu'UNE fois.
+    symbols = entities.known_symbols()
+    assert symbols.count("GOOGL") == 1
+    assert len(symbols) == len(set(symbols))
+
+
+def test_known_symbols_is_a_tuple_not_the_mutable_source_table():
+    assert isinstance(entities.known_symbols(), tuple)

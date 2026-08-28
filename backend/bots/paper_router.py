@@ -29,6 +29,7 @@ Les flux de trésorerie réels, eux, portent bien le taux de chaque transaction.
 import hashlib
 import json
 import logging
+import random
 import threading
 import time
 import uuid
@@ -43,7 +44,8 @@ from backend.auth.models import User
 from backend.auth.permissions import require_role
 from backend.bots.paper import (alerts, board, coach, entities, fees, fills,
                                 graph, idea_journal, llm, models, mood,
-                                price_alerts, quotes, risk, store, tradestats)
+                                price_alerts, quotes, replay, risk, store,
+                                tradestats)
 
 logger = logging.getLogger("omenserver")
 
@@ -90,6 +92,14 @@ CANDLE_INTERVALS = ("15m", "1h", "1d", "1wk")
 # Assez fin pour voir un stop sauter, assez court pour ne pas relire l'histoire.
 TICK_RANGE = "1d"
 TICK_INTERVAL = "15m"
+
+# Post-mortem AUTOMATIQUE (LOT 3, C1) : garde-fou anti-rafale, par compte et
+# par jour. Chaque clôture détache un appel au modèle (60-90 s, cf. le
+# registre de travaux ci-dessous) — sans plafond, une série de stops qui
+# sautent en cascade (marché qui plonge pendant la nuit) lancerait autant
+# d'appels au CLI Claude que de trades clôturés, sur une machine qui fait
+# déjà tourner le serveur et les autres bots.
+MAX_AUTO_POSTMORTEMS_PER_DAY = 6
 
 _SEVERITY_ORDER = {"critical": 0, "warn": 1, "info": 2}
 
@@ -535,7 +545,8 @@ def _open_long(portfolio, order, price, fx_rate, notional, fee, now_iso) -> None
             fx_rate=float(fx_rate), opened_at=now_iso, side="long",
             thesis=order.thesis, stop_loss=order.stop_loss,
             target=order.target, risk_chf=order.risk_chf,
-            setup=order.setup, emotion=order.emotion))
+            setup=order.setup, emotion=order.emotion,
+            forced_warnings=list(order.forced_warnings)))
     else:
         _average_into(position, order, price, fx_rate)
     portfolio.cash_chf = round(portfolio.cash_chf - cost, 2)
@@ -566,7 +577,8 @@ def _open_short(portfolio, order, price, fx_rate, notional, fee, now_iso) -> Non
             fx_rate=float(fx_rate), opened_at=now_iso, side="short",
             thesis=order.thesis, stop_loss=order.stop_loss,
             target=order.target, risk_chf=order.risk_chf,
-            setup=order.setup, emotion=order.emotion))
+            setup=order.setup, emotion=order.emotion,
+            forced_warnings=list(order.forced_warnings)))
     else:
         _average_into(position, order, price, fx_rate)
     portfolio.cash_chf = round(portfolio.cash_chf + notional - fee["total_chf"], 2)
@@ -601,6 +613,10 @@ def _average_into(position: models.Position, order: models.Order,
         position.setup = order.setup
     if order.emotion:
         position.emotion = order.emotion
+    if order.forced_warnings:
+        # LOT 3, C3 — même geste que setup/emotion : le renfort le plus
+        # récent qui a forcé des avertissements est celui qui compte.
+        position.forced_warnings = list(order.forced_warnings)
 
 
 def _close_leg(portfolio, order, price, fx_rate, notional, fee,
@@ -659,6 +675,7 @@ def _close_leg(portfolio, order, price, fx_rate, notional, fee,
         setup=position.setup,
         emotion=position.emotion,
         emotion_close=str(emotion_close or ""),
+        forced_warnings=list(position.forced_warnings),
     )
     portfolio.trades.append(trade)
 
@@ -738,12 +755,16 @@ def _holding_days(entry_at: Any, exit_at: Any) -> Optional[float]:
 
 
 def _attach_trade_extras(portfolio: models.Portfolio,
-                         fill: Optional[Dict[str, Any]]) -> None:
-    """MAE/MFE + « laissé sur la table » (LOT 2, B1/B5) sur le ``Trade`` qui
-    vient de se clôturer — appelé aux QUATRE points qui en produisent un :
-    l'ordre marché (achat/vente immédiats, y compris une vente qui clôture),
-    le bouton Clore, et les deux boucles de ``run_tick`` (ordre limite/stop
-    qui clôture, stop de protection).
+                         fill: Optional[Dict[str, Any]],
+                         username: str = "") -> None:
+    """MAE/MFE + « laissé sur la table » (LOT 2, B1/B5) + post-mortem
+    AUTOMATIQUE (LOT 3, C1) sur le ``Trade`` qui vient de se clôturer —
+    appelé aux QUATRE points qui en produisent un : l'ordre marché
+    (achat/vente immédiats, y compris une vente qui clôture), le bouton
+    Clore, et les deux boucles de ``run_tick`` (ordre limite/stop qui
+    clôture, stop de protection). C'est le point UNIQUE, documenté, où ces
+    quatre chemins convergent — le poser ici plutôt qu'aux quatre endroits
+    est ce qui évite d'en oublier un.
 
     MUTE deux choses en parallèle : le ``Trade`` RÉEL (dernier de
     ``portfolio.trades`` — c'est lui qui sera persisté) ET le dict
@@ -751,12 +772,24 @@ def _attach_trade_extras(portfolio: models.Portfolio,
     — sans les deux, le fichier sur disque et ce que l'écran affiche
     divergeraient.
 
+    ``username`` est FACULTATIF (``""`` par défaut, compat les appels
+    directs des tests qui n'en ont pas besoin) : vide, le post-mortem
+    automatique est silencieusement sauté — jamais une exception.
+
     N'ÉCHOUE JAMAIS (best-effort autour de ``quotes.get_candles`` — invariant
     2 du module, cf. le docstring de tête) : un cours indisponible laisse
-    simplement les champs absents, la clôture elle-même a déjà eu lieu.
+    simplement les champs MAE/MFE absents, la clôture elle-même a déjà eu
+    lieu.
     """
     if not fill or not fill.get("trade") or not portfolio.trades:
         return
+
+    # Post-mortem AUTOMATIQUE (LOT 3, C1) -- AVANT tout retour anticipé des
+    # excursions ci-dessous : un cours Yahoo indisponible ne doit PAS priver
+    # le trade de son post-mortem, ce sont deux enrichissements INDÉPENDANTS
+    # du même Trade qui vient de se clôturer.
+    _maybe_auto_postmortem(username, portfolio, fill)
+
     trade_dict = fill["trade"]
     trade_obj = portfolio.trades[-1]
 
@@ -783,14 +816,79 @@ def _attach_trade_extras(portfolio: models.Portfolio,
     trade_dict["best_exit_gap_pct"] = gap
 
 
+def _postmortem_auto_allowed(username: str, today: str) -> bool:
+    """Compte + autorise/refuse un post-mortem AUTOMATIQUE (LOT 3, C1) —
+    :data:`MAX_AUTO_POSTMORTEMS_PER_DAY` par compte et par jour (le jour du
+    SERVEUR, ``_now_iso()[:10]`` — même granularité simple que le reste du
+    router, aucune finesse de fuseau ici).
+
+    MUTE l'état SEULEMENT en cas d'acceptation : un refus ne consomme rien de
+    plus (le compteur reste ce qu'il était). À appeler sous ``_WRITE_LOCK``
+    (lire-modifier-réécrire, même précaution que ``_append_journal``)."""
+    state = store.load_postmortem_auto(username)
+    count = int(state.get("count") or 0) if state.get("date") == today else 0
+    if count >= MAX_AUTO_POSTMORTEMS_PER_DAY:
+        return False
+    store.save_postmortem_auto(username, {"date": today, "count": count + 1})
+    return True
+
+
+def _maybe_auto_postmortem(username: str, portfolio: models.Portfolio,
+                           fill: Dict[str, Any]) -> None:
+    """Déclenche EN ARRIÈRE-PLAN le post-mortem du trade qui vient de se
+    clôturer (LOT 3, C1) — best-effort TOTAL : ne lève JAMAIS, la clôture
+    n'attend jamais (même doctrine que le reste de cette fonction).
+
+    Réutilise le registre de travaux détachés (``_start_job``) et le CŒUR du
+    bouton manuel « Post-mortem » (``_postmortem_core``) : c'est le MÊME
+    prompt, le MÊME appel au modèle, la MÊME écriture au carnet — seul le
+    DÉCLENCHEUR change. ``_postmortem_core`` (pas ``_postmortem_work``) parce
+    que ce dernier RECHARGE le portefeuille depuis le disque, qui n'a pas
+    encore été sauvegardé à cet instant (cf. son docstring) : le job capture
+    ``portfolio``, l'objet EN MÉMOIRE de la requête en cours, par fermeture.
+
+    ``fill`` gagne TOUJOURS la clé ``postmortem_job`` (id du travail, ou
+    ``None`` si aucun n'a été lancé — pas de username, rafale du jour
+    dépassée, ou erreur). Les DEUX endpoints manuels (ordre marché, bouton
+    Clore) la font remonter au client, qui la sonde via l'infra existante
+    pour afficher un toast quand c'est prêt. Les fills MÉCANIQUES du tick
+    (stop, ordre limite/stop qui clôture) la reçoivent aussi, mais personne
+    ne la sonde côté client : le travail s'écrit au carnet en silence, ce qui
+    est le comportement voulu (cf. mission — pas de toast pour un fill que
+    personne ne regarde en direct).
+    """
+    fill["postmortem_job"] = None
+    if not username or not portfolio.trades:
+        return
+    try:
+        today = _now_iso()[:10]
+        with _WRITE_LOCK:
+            if not _postmortem_auto_allowed(username, today):
+                return
+        index = len(portfolio.trades) - 1
+        job = _start_job(username,
+                         lambda: _postmortem_core(username, portfolio, index, "fr"))
+        fill["postmortem_job"] = job.get("job")
+    except Exception as e:                      # noqa: BLE001 — jamais fatal
+        logger.warning("paper: post-mortem automatique non déclenché (%s): %s",
+                       username, type(e).__name__)
+
+
 def run_tick(portfolio: models.Portfolio, now_iso: str,
              fetch_candles: Callable[[str], List[Dict[str, Any]]],
-             fetch_fx: Callable[[str], float]) -> Dict[str, List[Dict[str, Any]]]:
+             fetch_fx: Callable[[str], float],
+             username: str = "") -> Dict[str, List[Dict[str, Any]]]:
     """Confronte les ordres ouverts et les stops aux bougies récentes.
 
     Ne lève JAMAIS : un symbole en panne est consigné dans ``errors`` et les
     autres continuent (invariant 2). Un ordre devenu infaisable (la trésorerie a
     fondu entre-temps) est ANNULÉ, pas exécuté à découvert.
+
+    ``username`` (LOT 3, C1, facultatif) — transmis à ``_attach_trade_extras``
+    pour le post-mortem automatique : un ordre limite/stop qui clôture ou un
+    stop de protection qui saute PENDANT LA NUIT sont exactement les fills
+    qu'un post-mortem silencieux sert le mieux (personne n'est là pour
+    cliquer le bouton). Vide -> aucun déclenché, jamais une exception.
     """
     filled: List[Dict[str, Any]] = []
     stopped: List[Dict[str, Any]] = []
@@ -836,7 +934,7 @@ def run_tick(portfolio: models.Portfolio, now_iso: str,
             else:
                 order.status = "filled"
                 fill["order_id"] = order.id
-                _attach_trade_extras(portfolio, fill)
+                _attach_trade_extras(portfolio, fill, username)
                 filled.append(fill)
             portfolio.open_orders = [o for o in portfolio.open_orders if o is not order]
             break
@@ -867,7 +965,7 @@ def run_tick(portfolio: models.Portfolio, now_iso: str,
             except OrderError as e:
                 errors.append({"symbol": position.symbol, "error": str(e)})
             else:
-                _attach_trade_extras(portfolio, fill)
+                _attach_trade_extras(portfolio, fill, username)
                 stopped.append(fill)
             break
 
@@ -1279,6 +1377,11 @@ class OrderPayload(BaseModel):
     # LOT 2 (B2/B3) — whitelists FERMÉES, cf. ``_clean_choice``.
     setup: Optional[str] = None
     emotion: Optional[str] = None
+    # LOT 3, C3 — la porte de confirmation : ``False`` (le défaut) = « laisse
+    # le serveur prévenir avant d'exécuter s'il y a un avertissement pré-ordre » ;
+    # ``True`` = « je sais, exécute quand même ». Ignoré silencieusement pour
+    # un ordre de SORTIE (jamais gated, cf. ``risk.preorder_warnings``).
+    confirmed: bool = False
 
 
 class ResetPayload(BaseModel):
@@ -1677,6 +1780,29 @@ def paper_place_order(data: OrderPayload,
     warnings = compute_warnings(side, order.thesis, data.stop_loss, risk_chf,
                                 portfolio.initial_capital, projected, equity)
 
+    # Porte de confirmation (LOT 3, C3) — AVANT toute exécution ou mise en
+    # attente. ``level`` = le même prix de référence que ``risk_chf``/
+    # ``projected`` ci-dessus (l'estimation d'entrée, DÉJÀ convertie en CHF —
+    # ``preorder_warnings`` reste pur, zéro réseau, zéro taux de change à
+    # elle). Un ordre de SORTIE ne rend jamais de code (cf. la fonction) :
+    # ``confirm_codes`` y est systématiquement vide, la porte ne se referme
+    # donc jamais sur un ``sell``/``cover``.
+    confirm_level = None if entry_estimate is None else entry_estimate * fx_rate
+    confirm_codes = risk.preorder_warnings(
+        {"side": side, "symbol": symbol, "thesis": data.thesis,
+         "stop_loss": data.stop_loss, "qty": qty},
+        portfolio.to_dict(), confirm_level)
+    if confirm_codes and not data.confirmed:
+        # 200, JAMAIS un refus dur (invariant 1 du module) : une pause, pas
+        # un blocage — rien n'est exécuté, rien n'est mis en attente, rien
+        # n'est sauvegardé.
+        return {"needs_confirm": True, "warnings": confirm_codes}
+    if confirm_codes:
+        # Le score de discipline pourra un jour les lire sur le Trade clos
+        # (stocké, pas câblé — cf. mission) : posé sur l'ORDRE, il suit la
+        # même chaîne que setup/emotion jusqu'à la Position puis le Trade.
+        order.forced_warnings = confirm_codes
+
     fill = None
     if kind == "market":
         price = quote.get("price")
@@ -1688,7 +1814,7 @@ def paper_place_order(data: OrderPayload,
         except OrderError as e:
             raise HTTPException(status_code=400, detail=str(e))
         order.status = "filled"
-        _attach_trade_extras(portfolio, fill)
+        _attach_trade_extras(portfolio, fill, username)
     else:
         portfolio.open_orders.append(order)
 
@@ -1761,7 +1887,7 @@ def paper_close_position(symbol: str, data: ClosePayload,
                               emotion_close=emotion_close)
     except OrderError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    _attach_trade_extras(portfolio, fill)
+    _attach_trade_extras(portfolio, fill, username)
 
     _save(username, portfolio)
     _sync_coach(username, portfolio.to_dict())
@@ -1781,7 +1907,7 @@ def paper_tick(current_user: User = Depends(require_role("admin", "money", "trad
     def fetch_candles(symbol: str) -> List[Dict[str, Any]]:
         return quotes.get_candles(symbol, TICK_RANGE, TICK_INTERVAL)
 
-    result = run_tick(portfolio, _now_iso(), fetch_candles, quotes.fx_to_chf)
+    result = run_tick(portfolio, _now_iso(), fetch_candles, quotes.fx_to_chf, username)
     _save(username, portfolio)
     _sync_coach(username, portfolio.to_dict())
     return result
@@ -1897,19 +2023,21 @@ def paper_postmortem(data: PostmortemPayload, sync: bool = False,
     return _job_or_sync(sync, username, lambda: _postmortem_work(username, data))
 
 
-def _postmortem_work(username: str, data: PostmortemPayload) -> Dict[str, Any]:
-    """Le travail de ``/postmortem`` — exécuté en ligne ou dans un fil.
+def _postmortem_core(username: str, portfolio: models.Portfolio, index: int,
+                     lang: str = "fr") -> Dict[str, Any]:
+    """Le cœur du post-mortem — PAS de rechargement disque : opère sur le
+    ``portfolio`` DÉJÀ EN MÉMOIRE que l'appelant fournit.
 
-    Les 404 (aucun trade, trade introuvable) sont levés ICI, donc DANS le
-    travail : la relève les rend tels quels, code compris.
+    Partagé entre le bouton manuel (``_postmortem_work``, qui recharge depuis
+    le disque avant d'appeler — une requête séparée, longtemps après la
+    clôture) et le déclenchement AUTOMATIQUE (LOT 3, C1, ``_maybe_auto_postmortem``
+    — qui capture le ``portfolio`` de la requête EN COURS). La distinction
+    compte : un job détaché qui rechargerait le disque pour un trade qui
+    vient tout juste de se clôturer courrait après une sauvegarde pas encore
+    écrite (``_save`` n'a lieu qu'APRÈS ``_attach_trade_extras``, plus loin
+    dans l'endpoint) — mesuré en test, le job atterrissait sur un
+    portefeuille vide et rendait 404.
     """
-    portfolio = _load(username)
-    if not portfolio.trades:
-        raise HTTPException(status_code=404, detail="Aucun trade clôturé à analyser.")
-
-    index = len(portfolio.trades) - 1 if data.trade_index is None else int(data.trade_index)
-    if index < 0:
-        index += len(portfolio.trades)
     if index < 0 or index >= len(portfolio.trades):
         raise HTTPException(status_code=404, detail="Trade introuvable.")
 
@@ -1923,7 +2051,7 @@ def _postmortem_work(username: str, data: PostmortemPayload) -> Dict[str, Any]:
     try:
         text = llm.write_postmortem(trade,
                                     _coach_context(portfolio, profile, biases, stats),
-                                    lang=normalize_lang(data.lang))
+                                    lang=normalize_lang(lang))
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)[:300])
 
@@ -1932,6 +2060,27 @@ def _postmortem_work(username: str, data: PostmortemPayload) -> Dict[str, Any]:
                        "?R" if r_multiple is None else "%+.2fR" % r_multiple)
     _append_journal(username, label, text, _now_iso())
     return {"postmortem": text, "trade": trade, "trade_index": index}
+
+
+def _postmortem_work(username: str, data: PostmortemPayload) -> Dict[str, Any]:
+    """Le travail de ``/postmortem`` — exécuté en ligne ou dans un fil.
+
+    Les 404 (aucun trade, trade introuvable) sont levés ICI, donc DANS le
+    travail : la relève les rend tels quels, code compris.
+
+    Recharge le portefeuille depuis le DISQUE : c'est une requête MANUELLE,
+    une action séparée de celle qui a clôturé le trade, potentiellement
+    longtemps après — contrairement au déclenchement automatique (LOT 3, C1),
+    cf. ``_postmortem_core``.
+    """
+    portfolio = _load(username)
+    if not portfolio.trades:
+        raise HTTPException(status_code=404, detail="Aucun trade clôturé à analyser.")
+
+    index = len(portfolio.trades) - 1 if data.trade_index is None else int(data.trade_index)
+    if index < 0:
+        index += len(portfolio.trades)
+    return _postmortem_core(username, portfolio, index, data.lang)
 
 
 @router.post("/analysis")
@@ -2109,6 +2258,110 @@ def paper_arena_accept(current_user: User = Depends(require_role("admin", "money
         profile["arena_history"] = history
         store.save_coach(username, profile)
     return {"week": week, "challenge": challenge, "accepted": True}
+
+
+# --------------------------------------------------------------------------- #
+# Endpoints — LOT 3, A3 : le « bar replay » (entraînement)
+#
+# Trois endpoints, aucun LLM : ``replay.py`` est PUR, tout ce qui touche au
+# réseau (le choix du symbole, ses bougies) vit ICI.
+# --------------------------------------------------------------------------- #
+
+# Fenêtre journalière assez longue pour couvrir large des séries de 90+
+# bougies pour la quasi-totalité des ~40 titres de la table — 5 ans en
+# quotidien, même fenêtre que ``CANDLE_RANGES`` en propose de toute façon.
+REPLAY_RANGE = "5y"
+REPLAY_INTERVAL = "1d"
+
+# Un symbole introuvable/trop jeune (IPO récente) ne doit pas faire échouer
+# tout de suite : on en tente un autre, borné — jamais une boucle qui
+# ratisserait toute la table à chaque requête.
+REPLAY_MAX_ATTEMPTS = 3
+
+
+def _new_rng() -> random.Random:
+    """Source d'aléa de la fenêtre d'entraînement. Fonction MODULE,
+    monkeypatchable (même patron que ``_now_iso``) — les tests substituent un
+    générateur déterministe sans jamais toucher au module ``random`` global."""
+    return random.Random()
+
+
+def _replay_symbol_pool() -> List[str]:
+    """Symboles de l'univers du jeu (~40 méga-capitalisations, la même table
+    que la reconnaissance de titres dans un texte) — accès PUBLIC via
+    ``entities.known_symbols()``, jamais ``entities._COMPANIES`` directement."""
+    return list(entities.known_symbols())
+
+
+class ReplayLogPayload(BaseModel):
+    id: str = ""
+    decisions: List[Dict[str, Any]] = []
+    # Facultatifs : le client peut les envoyer pour SON propre affichage en
+    # direct pendant la partie, mais ce qui est ARCHIVÉ est TOUJOURS recalculé
+    # par ``replay.grade`` côté serveur à partir de ``decisions`` — un seul
+    # calcul fait foi, jamais deux qui pourraient diverger.
+    pnl_pct: Optional[float] = None
+    hold_pnl_pct: Optional[float] = None
+
+
+@router.get("/replay/window")
+def paper_replay_window(
+        current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Une fenêtre d'entraînement : 60 bougies visibles + 20 à révéler d'un
+    titre réel PIOCHÉ AU HASARD dans l'univers de la toile.
+
+    ``reveal`` porte le symbole ET les 20 bougies cachées — exposé au client
+    dès cette réponse (cf. la doctrine « pas d'anti-triche » de ``replay.py``,
+    documentée en tête de ce module).
+    """
+    pool = _replay_symbol_pool()
+    rng = _new_rng()
+    last_detail = "aucun titre exploitable pour l'instant."
+    for _ in range(REPLAY_MAX_ATTEMPTS):
+        symbol = rng.choice(pool)
+        try:
+            candles = quotes.get_candles(symbol, REPLAY_RANGE, REPLAY_INTERVAL)
+            window = replay.make_window(candles, rng)
+        except (quotes.QuoteError, quotes.UnknownSymbol, ValueError) as e:
+            last_detail = str(e)[:200]
+            continue
+        return {
+            "id": uuid.uuid4().hex,
+            "candles": window["candles"],
+            "reveal": {"candles": window["reveal"], "symbol": symbol,
+                      "period": REPLAY_INTERVAL},
+        }
+    raise HTTPException(status_code=503,
+                        detail="Aucune fenêtre d'entraînement disponible pour "
+                               "l'instant (%s)" % last_detail)
+
+
+@router.post("/replay/log")
+def paper_replay_log(data: ReplayLogPayload,
+                     current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Archive une session d'entraînement terminée. Plafonné à
+    :data:`replay.MAX_REPLAY_SESSIONS` (les plus RÉCENTES) — le journal sert à
+    mesurer une tendance, pas à archiver une vie entière de parties."""
+    username = current_user.username
+    graded = replay.grade({"decisions": data.decisions})
+    entry = {
+        "id": str(data.id or "")[:64],
+        "ts": _now_iso(),
+        "pnl_pct": graded["pnl_pct"],
+        "hold_pnl_pct": graded["hold_pnl_pct"],
+        "n_decisions": graded["n_decisions"],
+    }
+    sessions = ([entry] + store.load_replay_sessions(username))[:replay.MAX_REPLAY_SESSIONS]
+    store.save_replay_sessions(username, sessions)
+    return {"session": entry}
+
+
+@router.get("/replay/stats")
+def paper_replay_stats(
+        current_user: User = Depends(require_role("admin", "money", "trader"))):
+    """Statistiques cumulées du journal d'entraînement de l'utilisateur."""
+    sessions = store.load_replay_sessions(current_user.username)
+    return replay.stats(sessions)
 
 
 # --------------------------------------------------------------------------- #

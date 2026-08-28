@@ -182,7 +182,14 @@ def make_client(tmp_path, monkeypatch, role="admin"):
 
 # --- raccourcis ---------------------------------------------------------
 def order(client, **kwargs):
-    payload = {"symbol": "NESN.SW", "side": "buy", "kind": "market", "qty": 10}
+    # ``confirmed: True`` par défaut (LOT 3, C3) : la quasi-totalité des
+    # ~130 appels de ce fichier posent un ordre nu (sans thèse ni stop) pour
+    # tester tout AUTRE CHOSE que la porte de confirmation elle-même — sans
+    # ce défaut, ils tomberaient tous sur ``needs_confirm`` au lieu
+    # d'exécuter. Les tests qui visent SPÉCIFIQUEMENT la porte passent
+    # ``confirmed=False`` explicitement.
+    payload = {"symbol": "NESN.SW", "side": "buy", "kind": "market", "qty": 10,
+              "confirmed": True}
     payload.update(kwargs)
     return client.post("/api/paper/orders", json=payload)
 
@@ -439,6 +446,96 @@ def test_sell_orders_carry_no_entry_warnings(tmp_path, monkeypatch):
     buy(c, qty=10, thesis="Thèse suffisamment longue pour passer le seuil")
     body = buy(c, side="sell", qty=4)
     assert body["warnings"] == []
+
+
+# ================================================================
+#  LOT 3, C3 — porte de confirmation PRÉ-ordre
+# ================================================================
+
+def test_an_order_with_warnings_needs_confirmation_when_not_confirmed(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    r = order(c, thesis="", confirmed=False)
+    assert r.status_code == 200          # une pause, jamais un refus dur
+    body = r.json()
+    assert body["needs_confirm"] is True
+    assert "no_thesis" in body["warnings"]
+    assert "no_stop" in body["warnings"]
+    assert sorted(body.keys()) == ["needs_confirm", "warnings"]
+
+
+def test_needs_confirm_never_touches_the_portfolio(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    before = portfolio_of(c)["portfolio"]
+    order(c, thesis="", confirmed=False)
+    after = portfolio_of(c)["portfolio"]
+    assert after["cash_chf"] == before["cash_chf"]
+    assert after["positions"] == before["positions"] == []
+
+
+def test_confirming_executes_despite_the_warnings(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = buy(c, thesis="", confirmed=True)
+    assert body["order"]["status"] == "filled"
+    assert "no_thesis" in body["warnings"]     # l'avertissement informatif reste
+
+
+def test_a_clean_order_never_needs_confirmation(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    r = order(c, qty=5, stop_loss=95.0,
+             thesis="Thèse suffisamment longue pour passer le seuil du coach",
+             confirmed=False)
+    body = r.json()
+    assert "needs_confirm" not in body
+    assert body["order"]["status"] == "filled"
+
+
+def test_sell_orders_never_need_confirmation_even_unconfirmed(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10, thesis="Thèse suffisamment longue pour passer le seuil")
+    r = order(c, side="sell", qty=4, thesis="", confirmed=False)
+    body = r.json()
+    assert "needs_confirm" not in body
+    assert body["fill"]["trade"] is not None
+
+
+def test_a_pending_limit_order_can_also_need_confirmation(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    r = order(c, kind="limit", limit_price=90.0, thesis="", confirmed=False)
+    body = r.json()
+    assert body["needs_confirm"] is True
+
+    r2 = order(c, kind="limit", limit_price=90.0, thesis="", confirmed=True)
+    body2 = r2.json()
+    assert body2["fill"] is None
+    assert body2["order"]["status"] == "open"
+
+
+def test_forced_warnings_land_on_the_trade_at_close(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    entry = buy(c, qty=5, stop_loss=95.0, thesis="", confirmed=True)  # force no_thesis
+    assert entry["order"]["forced_warnings"] == ["no_thesis"]
+
+    market.prices["NESN.SW"] = (120.0, "CHF", "Nestle SA")
+    close = buy(c, side="sell", qty=5)
+    assert close["fill"]["trade"]["forced_warnings"] == ["no_thesis"]
+
+
+def test_forced_warnings_stay_empty_when_nothing_was_forced(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = buy(c, qty=5, stop_loss=95.0,
+              thesis="Thèse suffisamment longue pour passer le seuil du coach",
+              confirmed=True)
+    assert body["order"]["forced_warnings"] == []
+
+
+def test_averaging_into_a_position_updates_forced_warnings(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c, qty=2, stop_loss=95.0,
+       thesis="Thèse suffisamment longue pour passer le seuil du coach",
+       confirmed=True)
+    buy(c, qty=2, stop_loss=95.0, thesis="", confirmed=True)   # renfort forcé
+    positions = portfolio_of(c)["portfolio"]["positions"]
+    assert positions[0]["forced_warnings"] == ["no_thesis"]
 
 
 # ================================================================
@@ -1130,6 +1227,120 @@ def test_postmortem_502_when_the_llm_fails(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pr.llm, "write_postmortem", boom)
     assert c.post("/api/paper/postmortem?sync=1", json={}).status_code == 502
+
+
+# ================================================================
+#  LOT 3, C1 — post-mortem AUTOMATIQUE à chaque clôture
+# ================================================================
+
+def test_closing_via_a_market_sell_auto_triggers_a_postmortem_job(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10, stop_loss=90.0, thesis="Cassure haussière, invalidation sous 90")
+    market.prices["NESN.SW"] = (120.0, "CHF", "Nestle SA")
+    body = buy(c, side="sell", qty=10)
+
+    job = body["fill"]["postmortem_job"]
+    assert isinstance(job, str) and len(job) == 32
+
+    done = _await_job(c, job)
+    assert done["status"] == "done"
+    assert done["result"]["postmortem"] == "Post-mortem du trade."
+
+    markdown = c.get("/api/paper/coach/notes/Journal.md").json()["markdown"]
+    assert "Post-mortem du trade." in markdown
+
+
+def test_closing_via_the_close_endpoint_auto_triggers_a_postmortem_job(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10, thesis="Thèse suffisamment longue pour passer le seuil")
+    market.prices["NESN.SW"] = (120.0, "CHF", "Nestle SA")
+    r = c.post("/api/paper/positions/NESN.SW/close", json={})
+    assert r.status_code == 200
+    job = r.json()["fill"]["postmortem_job"]
+    assert isinstance(job, str) and len(job) == 32
+    assert _await_job(c, job)["status"] == "done"
+
+
+def test_a_stop_fill_in_the_tick_also_auto_triggers_a_postmortem(tmp_path, monkeypatch):
+    """Le fill MÉCANIQUE (stop de protection qui saute dans /tick) déclenche
+    lui aussi le job -- c'est justement le cas où personne n'est là pour
+    cliquer le bouton manuel."""
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10, stop_loss=95.0, thesis="Thèse suffisamment longue pour passer")
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 100.0, "high": 100.0, "low": 90.0, "close": 92.0},
+    ]
+    result = c.post("/api/paper/tick").json()
+    assert len(result["stopped"]) == 1
+    job = result["stopped"][0]["postmortem_job"]
+    assert isinstance(job, str) and len(job) == 32
+    assert _await_job(c, job)["status"] == "done"
+    markdown = c.get("/api/paper/coach/notes/Journal.md").json()["markdown"]
+    assert "Post-mortem du trade." in markdown
+
+
+def test_a_market_buy_that_does_not_close_anything_gets_no_postmortem_job(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = buy(c, qty=10, thesis="Thèse suffisamment longue pour passer le seuil")
+    assert "postmortem_job" not in body["fill"]
+
+
+def test_queuing_a_limit_order_gets_no_postmortem_job(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = buy(c, kind="limit", limit_price=90.0,
+              thesis="Thèse suffisamment longue pour passer le seuil")
+    assert body["fill"] is None
+
+
+def test_the_auto_postmortem_rafale_gate_caps_at_six_per_account_per_day(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    jobs = []
+    for _ in range(7):
+        buy(c, qty=1, thesis="Thèse suffisamment longue pour passer le seuil")
+        body = buy(c, side="sell", qty=1)
+        job = body["fill"]["postmortem_job"]
+        jobs.append(job)
+        if job:
+            _await_job(c, job)     # vide la file avant le tour suivant
+
+    assert jobs[:6] == [j for j in jobs[:6] if isinstance(j, str)]
+    assert len(jobs[:6]) == 6 and all(jobs[:6])
+    assert jobs[6] is None     # la 7e clôture du jour est au-delà du plafond
+
+
+def test_the_auto_postmortem_rafale_gate_resets_the_next_day(tmp_path, monkeypatch):
+    """Le plafond est PAR JOUR (``_now_iso()[:10]``) : la veille au plafond ne
+    doit pas priver le compte du jour suivant."""
+    c, market = make_client(tmp_path, monkeypatch)
+    store.save_postmortem_auto("tester", {"date": "2026-08-23", "count": 6})
+    buy(c, qty=1, thesis="Thèse suffisamment longue pour passer le seuil")
+    body = buy(c, side="sell", qty=1)
+    job = body["fill"]["postmortem_job"]
+    assert isinstance(job, str) and len(job) == 32
+
+
+def test_auto_postmortem_never_blocks_the_close_when_the_job_queue_is_full(tmp_path, monkeypatch):
+    """Best-effort TOTAL (invariant C1) : même quand _start_job refuserait
+    (429, file de travaux pleine), la clôture elle-même doit réussir."""
+    c, market = make_client(tmp_path, monkeypatch)
+    release = threading.Event()
+
+    def slow(facts, lang="fr"):
+        release.wait(5)
+        return "Fiche du titre."
+    monkeypatch.setattr(pr.llm, "write_analysis", slow)
+
+    for _ in range(pr.MAX_PENDING_JOBS_PER_USER):
+        r = c.post("/api/paper/analysis", json={"symbol": "NESN.SW"})
+        assert r.status_code == 200, r.text
+
+    buy(c, qty=10, thesis="Thèse suffisamment longue pour passer le seuil")
+    market.prices["NESN.SW"] = (120.0, "CHF", "Nestle SA")
+    body = buy(c, side="sell", qty=10)
+    assert body["fill"]["trade"] is not None       # la clôture a bien eu lieu
+    assert body["fill"]["postmortem_job"] is None  # mais pas de job (file pleine)
+
+    release.set()
 
 
 def test_analysis_returns_facts_and_text(tmp_path, monkeypatch):
@@ -1970,6 +2181,155 @@ def test_arena_accept_is_idempotent(tmp_path, monkeypatch):
     assert body["accepted"] is True
     assert len(body["history"]) == 1
     assert body["history"][0]["status"] == "en_cours"     # la semaine se joue encore
+
+
+# ================================================================
+#  LOT 3, A3 — le « bar replay » (entraînement)
+# ================================================================
+
+class _FixedReplayRng(object):
+    """Source d'aléa injectée : ``choice`` pioche dans une file (le premier
+    symbole tenté, puis le suivant si le test veut simuler un échec), et
+    ``randint`` rend toujours le même décalage de départ."""
+    def __init__(self, choices, start=0):
+        self._choices = list(choices)
+        self.start = start
+        self.choice_calls = []
+        self.randint_calls = []
+
+    def choice(self, seq):
+        self.choice_calls.append(list(seq))
+        return self._choices.pop(0)
+
+    def randint(self, a, b):
+        self.randint_calls.append((a, b))
+        return self.start
+
+
+def _90_candles(base=100.0):
+    return [{"ts": i, "open": base + i, "high": base + i + 1, "low": base + i - 1,
+            "close": base + i, "volume": 10} for i in range(90)]
+
+
+def test_replay_window_is_closed_to_the_player_role(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch, role="player")
+    assert c.get("/api/paper/replay/window").status_code == 403
+
+
+def test_replay_window_returns_60_visible_and_20_reveal_from_a_real_symbol(
+        tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.candles["NVDA"] = _90_candles()
+    monkeypatch.setattr(pr, "_new_rng", lambda: _FixedReplayRng(["NVDA"]))
+
+    body = c.get("/api/paper/replay/window").json()
+    assert len(body["id"]) == 32
+    assert len(body["candles"]) == 60
+    assert len(body["reveal"]["candles"]) == 20
+    assert body["reveal"]["symbol"] == "NVDA"
+    assert body["reveal"]["period"] == pr.REPLAY_INTERVAL
+    assert ("NVDA", pr.REPLAY_RANGE, pr.REPLAY_INTERVAL) in market.candle_calls
+
+
+def test_replay_window_retries_on_a_symbol_with_too_few_candles(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.candles["NVDA"] = []            # pas assez de bougies -> ValueError
+    market.candles["AAPL"] = _90_candles()
+    monkeypatch.setattr(pr, "_new_rng", lambda: _FixedReplayRng(["NVDA", "AAPL"]))
+
+    body = c.get("/api/paper/replay/window").json()
+    assert body["reveal"]["symbol"] == "AAPL"
+
+
+def test_replay_window_retries_on_an_unknown_symbol(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.unknown.add("NVDA")
+    market.candles["AAPL"] = _90_candles()
+    monkeypatch.setattr(pr, "_new_rng", lambda: _FixedReplayRng(["NVDA", "AAPL"]))
+
+    body = c.get("/api/paper/replay/window").json()
+    assert body["reveal"]["symbol"] == "AAPL"
+
+
+def test_replay_window_503_after_three_failed_attempts(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(pr, "_new_rng",
+                        lambda: _FixedReplayRng(["NVDA", "AAPL", "MSFT"]))
+    r = c.get("/api/paper/replay/window")
+    assert r.status_code == 503
+
+
+def test_replay_log_grades_the_session_server_side(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = c.post("/api/paper/replay/log", json={
+        "id": "a" * 32,
+        "decisions": [
+            {"prev_close": 100.0, "close": 110.0, "action": "buy"},
+            {"prev_close": 110.0, "close": 121.0, "action": "buy"},
+        ],
+    }).json()
+    assert body["session"]["pnl_pct"] == 20.0
+    assert body["session"]["hold_pnl_pct"] == 21.0
+    assert body["session"]["n_decisions"] == 2
+    assert body["session"]["id"] == "a" * 32
+
+
+def test_replay_log_ignores_a_client_submitted_pnl_and_recomputes(tmp_path, monkeypatch):
+    """Un seul calcul fait foi (cf. ``ReplayLogPayload``) : le serveur ignore
+    ce que le client prétend et rejoue lui-même les décisions."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = c.post("/api/paper/replay/log", json={
+        "id": "b" * 32, "pnl_pct": 999.0, "hold_pnl_pct": -999.0,
+        "decisions": [{"prev_close": 100.0, "close": 105.0, "action": "buy"}],
+    }).json()
+    assert body["session"]["pnl_pct"] == 5.0
+    assert body["session"]["hold_pnl_pct"] == 5.0
+
+
+def test_replay_log_is_readable_afterwards_via_stats(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    c.post("/api/paper/replay/log", json={
+        "id": "a" * 32,
+        "decisions": [{"prev_close": 100.0, "close": 110.0, "action": "buy"}]})
+    c.post("/api/paper/replay/log", json={
+        "id": "b" * 32,
+        "decisions": [{"prev_close": 100.0, "close": 95.0, "action": "buy"}]})
+
+    stats = c.get("/api/paper/replay/stats").json()
+    assert stats["n"] == 2
+    assert stats["avg_pnl_pct"] == round((10.0 - 5.0) / 2, 2)
+    assert stats["beat_hold_pct"] == 0.0   # pnl == hold sur les 2 (pas de short)
+
+
+def test_replay_stats_empty_journal(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert c.get("/api/paper/replay/stats").json() == {
+        "n": 0, "avg_pnl_pct": None, "avg_hold_pnl_pct": None, "beat_hold_pct": None}
+
+
+def test_replay_log_caps_at_the_max_and_keeps_the_most_recent(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    old = [{"id": "old-%d" % i, "ts": "2020-01-01T00:00:00", "pnl_pct": 0.0,
+           "hold_pnl_pct": 0.0, "n_decisions": 1}
+          for i in range(pr.replay.MAX_REPLAY_SESSIONS)]
+    store.save_replay_sessions("tester", old)
+
+    c.post("/api/paper/replay/log", json={
+        "id": "f" * 32,
+        "decisions": [{"prev_close": 100.0, "close": 110.0, "action": "buy"}]})
+
+    sessions = store.load_replay_sessions("tester")
+    assert len(sessions) == pr.replay.MAX_REPLAY_SESSIONS
+    assert sessions[0]["pnl_pct"] == 10.0          # la plus récente en tête
+    assert "old-%d" % (pr.replay.MAX_REPLAY_SESSIONS - 1) not in [s["id"] for s in sessions]
+
+
+def test_replay_sessions_are_isolated_per_account(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    c.post("/api/paper/replay/log", json={
+        "id": "a" * 32,
+        "decisions": [{"prev_close": 100.0, "close": 110.0, "action": "buy"}]})
+    assert store.load_replay_sessions("bob") == []
 
 
 # ================================================================

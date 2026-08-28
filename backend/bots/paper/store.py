@@ -205,6 +205,56 @@ def save_alerts(username: str, alerts: List[Dict[str, Any]]) -> None:
     _atomic_write_json(alerts_path(username), {"alerts": list(alerts or [])})
 
 
+def replay_path(username: str) -> Path:
+    """Chemin du journal d'entraînement « bar replay » (LOT 3, A3) de
+    l'utilisateur (username validé).
+
+    Fichier SÉPARÉ du portefeuille (``<user>.replay.json``) — même raison que
+    la watchlist/les alertes ci-dessus : le round-trip par la dataclass
+    ``models.Portfolio`` stripperait toute clé inconnue.
+    """
+    safe = _sanitize_username(username)
+    return DATA_DIR / f"{safe}.replay.json"
+
+
+def load_replay_sessions(username: str) -> List[Dict[str, Any]]:
+    """Les sessions d'entraînement de l'utilisateur, la plus RÉCENTE en tête.
+    Absentes/corrompues -> []."""
+    raw = _load_json(replay_path(username))
+    if not isinstance(raw, dict):
+        return []
+    rows = raw.get("sessions")
+    return [s for s in rows if isinstance(s, dict)] if isinstance(rows, list) else []
+
+
+def save_replay_sessions(username: str, sessions: List[Dict[str, Any]]) -> None:
+    """Persiste les sessions d'entraînement de façon atomique, 0o600. Le
+    plafond (``replay.MAX_REPLAY_SESSIONS``) est de la RESPONSABILITÉ de
+    l'appelant — ce module ne fait que l'I/O, jamais du métier (cf. tête de
+    fichier)."""
+    _atomic_write_json(replay_path(username), {"sessions": list(sessions or [])})
+
+
+def postmortem_auto_path(username: str) -> Path:
+    """Chemin du compteur anti-rafale des post-mortems AUTOMATIQUES (LOT 3,
+    C1) de l'utilisateur (username validé) — ``<user>.postmortem_auto.json``,
+    même famille que ``watchlist_path``/``alerts_path``/``replay_path``."""
+    safe = _sanitize_username(username)
+    return DATA_DIR / f"{safe}.postmortem_auto.json"
+
+
+def load_postmortem_auto(username: str) -> Dict[str, Any]:
+    """L'état du compteur anti-rafale (``{"date", "count"}``). Absent/corrompu
+    -> ``{}`` (le compteur repart de zéro, jamais une exception)."""
+    raw = _load_json(postmortem_auto_path(username))
+    return raw if isinstance(raw, dict) else {}
+
+
+def save_postmortem_auto(username: str, state: Dict[str, Any]) -> None:
+    """Persiste l'état du compteur anti-rafale de façon atomique, 0o600."""
+    _atomic_write_json(postmortem_auto_path(username), dict(state or {}))
+
+
 # --------------------------------------------------------------------------- #
 # API publique — carnet Markdown façon Obsidian (§11)
 # --------------------------------------------------------------------------- #

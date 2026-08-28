@@ -3893,6 +3893,7 @@ def run_once(now: Optional[datetime] = None,
             judge: Optional[Callable[..., Any]] = None,
             translate: Optional[Callable[..., Any]] = None,
             backup_check: Optional[Callable[..., Any]] = None,
+            weekly_check: Optional[Callable[..., Any]] = None,
             alert_quote: Optional[Callable[[str], Any]] = None) -> Dict[str, Any]:
     """Un cycle de veille news, DIX volets :
 
@@ -3948,12 +3949,18 @@ def run_once(now: Optional[datetime] = None,
     tourne à chaque passage, best-effort strict : un échec de sauvegarde ne
     doit jamais faire perdre un cycle de veille.
 
+    **Bilan hebdomadaire** (LOT 3, C2, ``paper.weekly``) : même patron —
+    ``weekly.weekly_due`` (dimanche soir, une fois par semaine ISO) tourne à
+    chaque passage, best-effort strict. Il ENVOIE sur Telegram ET écrit au
+    carnet de chaque compte quand il se déclenche.
+
     Sans config Telegram -> ne fait RIEN du tout (ni disque ni réseau, feature
     opt-in silencieuse) : c'est vérifié EN PREMIER, avant tout accès à data/ —
-    y compris la sauvegarde nocturne et les alertes de prix, qui vivent donc
-    APRÈS cette porte (une sauvegarde reste utile même sans Telegram configuré,
-    mais ce cycle est celui du guetteur, pas un cron indépendant : le jour où
-    ça devient gênant, un appel direct à ``backup.maybe_run()`` s'en affranchit).
+    y compris la sauvegarde nocturne, le bilan hebdomadaire et les alertes de
+    prix, qui vivent donc APRÈS cette porte (une sauvegarde/un bilan restent
+    utiles même sans Telegram configuré, mais ce cycle est celui du guetteur,
+    pas un cron indépendant : le jour où ça devient gênant, un appel direct à
+    ``backup.maybe_run()``/``weekly.maybe_run()`` s'en affranchit).
     """
     counters: Dict[str, Any] = {"users": 0, "symbols": 0, "fetched": 0,
                                 "notified": 0, "errors": 0,
@@ -3981,6 +3988,12 @@ def run_once(now: Optional[datetime] = None,
     # exceptions ELLE-MÊME, donc rien ici ne peut faire perdre un passage.
     # ----------------------------------------------------------------- #
     _run_daily_backup(now_dt, backup_check=backup_check)
+
+    # ----------------------------------------------------------------- #
+    # Bilan hebdomadaire (LOT 3, C2) -- même patron, juste après la
+    # sauvegarde : indépendant du reste du cycle, best-effort STRICT.
+    # ----------------------------------------------------------------- #
+    _run_weekly_briefing(now_dt, weekly_check=weekly_check)
 
     # ----------------------------------------------------------------- #
     # Alertes de prix (A1) -- tous comptes confondus, un batch de cours
@@ -4706,6 +4719,27 @@ def _run_daily_backup(now_dt: datetime,
             backup_mod.maybe_run(now=now_dt)
     except Exception as exc:      # noqa: BLE001 — jamais fatal pour le cycle
         logger.warning("paper newswatch: sauvegarde nocturne en panne (%s)",
+                       type(exc).__name__)
+
+
+def _run_weekly_briefing(now_dt: datetime,
+                         weekly_check: Optional[Callable[..., Any]] = None) -> None:
+    """Bilan hebdomadaire du dimanche soir (LOT 3, C2) — best-effort STRICT,
+    jamais fatal pour le cycle (même patron que ``_run_daily_backup``).
+
+    Le GATE (une fois par semaine ISO, pas avant 18h heure locale un
+    dimanche) vit dans ``weekly.weekly_due`` ; ici on ne fait qu'appeler
+    ``weekly.maybe_run`` et avaler toute exception — une panne du rituel
+    hebdomadaire ne doit jamais faire perdre un passage de veille.
+    """
+    try:
+        if weekly_check is not None:
+            weekly_check(now_dt)
+        else:
+            from backend.bots.paper import weekly as weekly_mod
+            weekly_mod.maybe_run(now=now_dt)
+    except Exception as exc:      # noqa: BLE001 — jamais fatal pour le cycle
+        logger.warning("paper newswatch: bilan hebdomadaire en panne (%s)",
                        type(exc).__name__)
 
 

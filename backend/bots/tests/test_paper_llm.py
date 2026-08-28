@@ -183,6 +183,26 @@ def test_write_postmortem_returns_the_text():
     assert out == "Analyse."
 
 
+def test_write_weekly_report_returns_the_text():
+    out = llm.write_weekly_report({"stats": {"n_trades": 3}},
+                                  run=runner(FakeProc(0, envelope("  Bilan.  "))))
+    assert out == "Bilan."
+
+
+def test_build_weekly_prompt_carries_the_week_context_and_the_doctrine():
+    prompt = llm.build_weekly_prompt(
+        {"closed_this_week": [{"symbol": "NESN.SW"}], "discipline": {"score": 62}})
+    assert llm.SYSTEM_PROMPT in prompt
+    assert "NESN.SW" in prompt
+    assert "62" in prompt
+    assert "hebdomadaire" in prompt.lower()
+
+
+def test_build_weekly_prompt_handles_a_week_without_any_closed_trade():
+    prompt = llm.build_weekly_prompt({"closed_this_week": []})
+    assert "aucun trade" in prompt.lower()
+
+
 def test_write_analysis_returns_the_text():
     out = llm.write_analysis({"symbol": "X"},
                              run=runner(FakeProc(0, envelope("Fiche."))))
@@ -190,11 +210,11 @@ def test_write_analysis_returns_the_text():
 
 
 # --------------------------------------------------------------------------- #
-# Langue de sortie — UNE table, quatre prompts
+# Langue de sortie — UNE table, tous les prompts du coach
 #
 # Le prompt reste français (c'est l'instruction au modèle) ; seule la consigne
-# de langue de RÉPONSE change. Ces tests interdisent qu'un des quatre endpoints
-# reparte en français pendant que les trois autres suivent l'interface.
+# de langue de RÉPONSE change. Ces tests interdisent qu'un des endpoints
+# reparte en français pendant que les autres suivent l'interface.
 # --------------------------------------------------------------------------- #
 
 def _all_prompts(lang):
@@ -204,6 +224,7 @@ def _all_prompts(lang):
         "analysis": llm.build_analysis_prompt({"symbol": "X"}, lang),
         "ideas": llm.build_ideas_prompt({}, lang),
         "scenarios": llm.build_scenarios_prompt({}, lang),
+        "weekly": llm.build_weekly_prompt({}, lang),
     }
 
 

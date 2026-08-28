@@ -7,6 +7,7 @@ from backend.bots.paper.risk import (
     afc_counters,
     exposure,
     portfolio_stats,
+    preorder_warnings,
     r_multiple,
     suggested_qty,
 )
@@ -231,6 +232,107 @@ def test_exposure_skips_empty_lines():
     out = exposure([{"symbol": "", "qty": 5, "avg_price": 10.0},
                     {"symbol": "AAPL", "qty": 0, "avg_price": 10.0}], {}, 100.0)
     assert out["invested_chf"] == 0.0 and out["per_position_pct"] == {}
+
+
+# --------------------------------------------------------------------------- #
+# LOT 3, C3 — garde-fou PRÉ-ordre (porte de confirmation)
+# --------------------------------------------------------------------------- #
+_LONG_THESIS = "Thèse suffisamment longue pour passer le seuil"
+
+
+def _pf(cash=10000.0, positions=None, capital=10000.0):
+    return {"cash_chf": cash, "positions": positions or [], "initial_capital": capital}
+
+
+def test_preorder_warnings_empty_on_a_clean_entry():
+    payload = {"side": "buy", "thesis": _LONG_THESIS, "stop_loss": 95.0, "qty": 5}
+    assert preorder_warnings(payload, _pf(), 100.0) == []
+
+
+def test_preorder_warnings_flags_no_thesis():
+    payload = {"side": "buy", "thesis": "", "stop_loss": 95.0, "qty": 5}
+    assert preorder_warnings(payload, _pf(), 100.0) == ["no_thesis"]
+
+
+def test_preorder_warnings_short_thesis_still_flags():
+    payload = {"side": "buy", "thesis": "trop court", "stop_loss": 95.0, "qty": 5}
+    assert "no_thesis" in preorder_warnings(payload, _pf(), 100.0)
+
+
+def test_preorder_warnings_flags_no_stop():
+    payload = {"side": "buy", "thesis": _LONG_THESIS, "stop_loss": None, "qty": 5}
+    assert preorder_warnings(payload, _pf(), 100.0) == ["no_stop"]
+
+
+def test_preorder_warnings_flags_risk_high_alone():
+    # risque = |100-20| x 5 = 400 CHF = 4 % du capital (> 2 %) ; position projetée
+    # = 5 x 100 = 500 CHF = 5 % de l'équité (< 25 %) -- isole risk_high.
+    payload = {"side": "buy", "thesis": _LONG_THESIS, "stop_loss": 20.0, "qty": 5}
+    assert preorder_warnings(payload, _pf(), 100.0) == ["risk_high"]
+
+
+def test_preorder_warnings_flags_oversize_alone():
+    # risque = |100-95| x 30 = 150 CHF = 1,5 % du capital (< 2 %) ; position
+    # projetée = 30 x 100 = 3000 CHF = 30 % de l'équité (> 25 %) -- isole oversize.
+    payload = {"side": "buy", "thesis": _LONG_THESIS, "stop_loss": 95.0, "qty": 30}
+    assert preorder_warnings(payload, _pf(), 100.0) == ["oversize"]
+
+
+def test_preorder_warnings_only_applies_to_opening_orders():
+    payload = {"side": "sell", "thesis": "", "stop_loss": None, "qty": 500}
+    assert preorder_warnings(payload, _pf(cash=0.0), 100.0) == []
+    payload["side"] = "cover"
+    assert preorder_warnings(payload, _pf(cash=0.0), 100.0) == []
+
+
+def test_preorder_warnings_without_a_level_skips_the_two_numeric_checks():
+    # Un cours indisponible : risk_high/oversize ne peuvent pas se calculer,
+    # jamais un chiffre inventé -- seuls les deux avertissements structurels
+    # (thèse/stop) restent évaluables.
+    payload = {"side": "buy", "thesis": "", "stop_loss": None, "qty": 999}
+    assert preorder_warnings(payload, _pf(), None) == ["no_thesis", "no_stop"]
+
+
+def test_preorder_warnings_counts_an_existing_position_of_the_same_side():
+    positions = [{"symbol": "NESN.SW", "side": "long", "qty": 20,
+                 "avg_price": 100.0, "fx_rate": 1.0}]
+    payload = {"symbol": "NESN.SW", "side": "buy", "thesis": _LONG_THESIS,
+              "stop_loss": 95.0, "qty": 10}
+    # équité = 8000 cash + 2000 valorisé = 10000 ; projeté = (20+10) x 100 = 3000
+    # = 30 % -- oversize à cause de la ligne déjà détenue.
+    assert preorder_warnings(payload, _pf(cash=8000.0, positions=positions), 100.0) \
+        == ["oversize"]
+
+
+def test_preorder_warnings_ignores_a_position_on_the_opposite_side():
+    # Même symbole, mais SHORT : ne compte pas comme "détenu" pour un BUY (les
+    # deux sens ne se compensent ni ne s'additionnent dans cette projection).
+    positions = [{"symbol": "NESN.SW", "side": "short", "qty": 20,
+                 "avg_price": 100.0, "fx_rate": 1.0}]
+    payload = {"symbol": "NESN.SW", "side": "buy", "thesis": _LONG_THESIS,
+              "stop_loss": 95.0, "qty": 10}
+    assert preorder_warnings(payload, _pf(cash=8000.0, positions=positions), 100.0) \
+        == []
+
+
+def test_preorder_warnings_ignores_a_position_on_another_symbol():
+    positions = [{"symbol": "AAPL", "side": "long", "qty": 20,
+                 "avg_price": 100.0, "fx_rate": 1.0}]
+    payload = {"symbol": "NESN.SW", "side": "buy", "thesis": _LONG_THESIS,
+              "stop_loss": 95.0, "qty": 10}
+    assert preorder_warnings(payload, _pf(cash=8000.0, positions=positions), 100.0) \
+        == []
+
+
+def test_preorder_warnings_tolerates_a_missing_or_empty_payload():
+    assert preorder_warnings({}, _pf(), 100.0) == []
+    assert preorder_warnings(None, _pf(), 100.0) == []
+
+
+def test_preorder_warnings_tolerates_a_missing_or_empty_portfolio():
+    payload = {"side": "buy", "thesis": _LONG_THESIS, "stop_loss": 95.0, "qty": 5}
+    assert preorder_warnings(payload, {}, 100.0) == []
+    assert preorder_warnings(payload, None, 100.0) == []
 
 
 # --------------------------------------------------------------------------- #

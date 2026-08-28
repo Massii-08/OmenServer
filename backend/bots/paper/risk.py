@@ -289,6 +289,107 @@ def exposure(positions: List[Dict[str, Any]],
 
 
 # --------------------------------------------------------------------------- #
+# Garde-fou PRÉ-ordre (LOT 3, C3) — la porte de confirmation
+# --------------------------------------------------------------------------- #
+
+# Même seuil que ``paper_router.MIN_THESIS_LEN`` (qui mirrore lui-même
+# ``coach._NO_THESIS_MIN_LEN``) : les trois vivent dans des modules qui ne
+# peuvent pas s'importer entre eux (``paper_router`` importe déjà ``risk``,
+# l'inverse créerait un cycle) — même politique de MIROIR DOCUMENTÉ que le
+# couple existant, pas une nouvelle divergence.
+PREORDER_MIN_THESIS_LEN = 15
+
+# Mêmes proportions que ``paper_router.OVERSIZED_PCT``/``CONCENTRATION_PCT``,
+# sous des noms dédiés : ce sont deux gardes-fous DISTINCTS (l'un informatif et
+# non bloquant, l'autre une porte de confirmation) qui partagent la même
+# doctrine de seuil, pas la même variable.
+PREORDER_RISK_PCT = 2.0
+PREORDER_SIZE_PCT = 25.0
+
+
+def preorder_warnings(payload: Dict[str, Any], portfolio: Dict[str, Any],
+                      level: Optional[float]) -> List[str]:
+    """Avertissements PRÉ-ordre (LOT 3, C3) — la porte de confirmation posée
+    par le router AVANT d'exécuter un ordre d'OUVERTURE, PURE (aucun réseau).
+
+    Codes possibles, dans cet ordre : ``no_thesis`` (thèse vide ou trop
+    courte), ``no_stop`` (aucun stop de protection planifié), ``risk_high``
+    (risque planifié au-delà de ``PREORDER_RISK_PCT`` % du capital initial),
+    ``oversize`` (position projetée au-delà de ``PREORDER_SIZE_PCT`` % de
+    l'équité). Liste vide -> rien à confirmer.
+
+    Ne s'applique qu'aux ordres d'OUVERTURE (``buy``/``short``) — une sortie
+    n'a besoin ni de thèse ni de stop, et elle réduit toujours l'exposition
+    (même restriction que l'avertissement informatif jumeau du router,
+    ``compute_warnings``).
+
+    ``payload`` : les champs bruts de l'ordre (``side``/``thesis``/
+    ``stop_loss``/``qty``) — un dict, jamais le modèle Pydantic (ce module
+    reste PUR au sens du dépôt : zéro dépendance FastAPI).
+    ``portfolio`` : ``Portfolio.to_dict()`` — ``cash_chf``/``positions``/
+    ``initial_capital``.
+    ``level`` : le prix de référence de l'ordre, DÉJÀ CONVERTI EN CHF par
+    l'appelant (même taux que le reste du trade — invariant du module, cf.
+    tête de ``paper_router.py`` : un seul taux de change par opération).
+    ``None`` -> ``risk_high``/``oversize`` ne peuvent pas être évalués et ne
+    sortent jamais (mieux vaut ne rien confirmer que confirmer sur un chiffre
+    inventé).
+    """
+    side = str((payload or {}).get("side") or "").strip().lower()
+    if side not in ("buy", "short"):
+        return []
+
+    out: List[str] = []
+    thesis = str((payload or {}).get("thesis") or "").strip()
+    if len(thesis) < PREORDER_MIN_THESIS_LEN:
+        out.append("no_thesis")
+
+    stop_loss = _val((payload or {}).get("stop_loss"))
+    if stop_loss is None:
+        out.append("no_stop")
+
+    qty = _val((payload or {}).get("qty")) or 0.0
+    price = _val(level)
+
+    if price is not None and stop_loss is not None and qty > 0:
+        risk_chf = abs(price - stop_loss) * qty
+        capital = _val((portfolio or {}).get("initial_capital"))
+        if capital and capital > 0 and risk_chf > capital * PREORDER_RISK_PCT / 100.0:
+            out.append("risk_high")
+
+    if price is not None and qty > 0:
+        symbol = str((payload or {}).get("symbol") or "").strip()
+        wanted_side = "long" if side == "buy" else "short"
+        rows = _dicts((portfolio or {}).get("positions"))
+        held = sum(abs(_val(p.get("qty")) or 0.0) for p in rows
+                  if str(p.get("symbol") or "") == symbol
+                  and str(p.get("side") or "long") == wanted_side)
+        projected = (held + qty) * price
+        equity = (_val((portfolio or {}).get("cash_chf")) or 0.0) \
+            + _positions_cost_basis_chf(rows)
+        if equity > 0 and projected > equity * PREORDER_SIZE_PCT / 100.0:
+            out.append("oversize")
+
+    return out
+
+
+def _positions_cost_basis_chf(positions: List[Dict[str, Any]]) -> float:
+    """Valeur au PRIX DE REVIENT de TOUTES les lignes (long et short
+    confondus, la marge du simulateur traite les deux comme du risque) — pas
+    de réseau, même calcul que ``paper_router._positions_value_chf`` sommé
+    sur les deux sens."""
+    total = 0.0
+    for pos in positions:
+        qty = _val(pos.get("qty"))
+        price = _val(pos.get("avg_price"))
+        fx = _val(pos.get("fx_rate"))
+        if qty is None or price is None:
+            continue
+        total += abs(qty) * price * (fx if fx and fx > 0 else 1.0)
+    return total
+
+
+# --------------------------------------------------------------------------- #
 # Garde-fou fiscal suisse (circulaire AFC n°36)
 # --------------------------------------------------------------------------- #
 def afc_counters(trades: List[Dict[str, Any]],
