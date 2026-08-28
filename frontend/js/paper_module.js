@@ -3286,10 +3286,11 @@ const PaperModule = {
                     '<span>' + esc(String(o)) + '</span>' +
                 '</label>';
             }).join('');
-            const expl = (q && (q.explanation || q.why)) ? String(q.explanation || q.why) : '';
+            const expl = (q && (q.explanation || q.explain || q.why))
+                ? String(q.explanation || q.explain || q.why) : '';
             return '<div style="margin-bottom:14px;">' +
                 '<div style="font-size:15px;font-weight:600;margin-bottom:6px;">' +
-                  esc(String(this._pickField(q, ['question', 'text', 'title']) || '')) + '</div>' +
+                  esc(String(this._pickField(q, ['question', 'q', 'text', 'title']) || '')) + '</div>' +
                 optHtml +
                 ((correct && expl)
                     ? '<div style="font-size:13px;color:var(--text-muted);margin-top:6px;' +
